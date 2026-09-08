@@ -18,9 +18,10 @@ description: 清理 main 上被替代的外部子代理桥接、旧角色与旧�
 - 删除：extensions/subagents-preflight.ts — 外部子代理系统探测
 - 删除：prompts/spec-new.md、prompts/spec-resume.md、prompts/spec-revise.md、prompts/spec-sync.md — 旧命令入口
 - 删除：agents/acceptance-reviewer.md、agents/impl-engineer.md、agents/pre-reviewer.md、agents/review-engineer.md、agents/test-engineer.md、agents/planner.md — 旧六角色定义
-- 删除：skills/spec-docs/scripts/decision-ledger.ts、tests/decision-ledger.test.ts、tests/decision-record.test.ts、tests/helpers/requirement-fixture.ts — 需求目录内决策台账实现与测试，由本机决策记录取代
+- 删除：extensions/decision-record.ts、skills/spec-docs/scripts/decision-ledger.ts、tests/decision-ledger.test.ts、tests/decision-record.test.ts、tests/helpers/requirement-fixture.ts — 需求目录内决策台账工具、实现与测试，由本机决策记录取代
 - 删除：tests/subagents-preflight.test.ts、tests/acceptance-direct-json.test.ts、tests/git-push-direct-json.test.ts、tests/git-push-auto-repair.test.ts、tests/review-failure-handling.test.ts、tests/spec-flow-auto-repair.test.ts、tests/task-file-line-limit-authoring.test.ts、tests/task-file-line-limit-planning-check.test.ts — 断言旧角色与旧流程文本的契约测试
 - 修改：package.json — 按成品定义整体替换
+- 修改：skills/spec-docs/scripts/lint.sh、skills/spec-docs/SKILL.md — 摘除对已删除决策台账脚本的调用与用法段
 - 修改：.gitignore — 追加 `.pi-company/.cache/`
 - 新建：tests/helpers/temp-home.ts — 隔离 HOME、agentDir 与本机数据根
 - 新建：tests/helpers/controlled-provider.ts — 不联网的脚本化模型 provider
@@ -111,12 +112,12 @@ description: 清理 main 上被替代的外部子代理桥接、旧角色与旧�
 - 本 plan 不新增任何生产模块；删除项与被替代实现的对应关系在各自 plan 中重新建立。
 
 ## 验证方式
-- 测试入口：`bun test tests`；`node --experimental-strip-types --check <file>`；读取 package.json
+- 测试入口：`bun test tests`；宿主 Node 的 `node:module` 导出的 `stripTypeScriptTypes`（strip 模式）；读取 package.json
 - 测试输入：仓库工作树；临时目录
 - 预期结果：
   - package.json 的 name 为 `@0xbb2b/pi-company`，`pi.prompts` 为空数组，`files` 含 agents、daemon、extensions、runtime、rules、skills，dependencies 含 typebox，peerDependencies 恰为三个 pi 包且值为 `*`
-  - 被删除的十个源文件与十个测试文件均不存在；`agents/` 下不存在旧六角色文件名
-  - runtime/ 与 daemon/ 下每个 .ts 文件的类型剥离语法检查退出码为 0；任一文件含 `enum ` 或 `namespace ` 关键字或无后缀相对 import 即失败
+  - 被删除的十一个源文件与十个测试文件均不存在；`agents/` 下不存在旧六角色文件名
+  - runtime/ 与 daemon/ 下每个 .ts 文件经宿主 Node 的 `stripTypeScriptTypes`（strip 模式）剥离不抛错；任一文件含 `enum ` 或 `namespace ` 关键字、构造函数参数属性或无后缀相对 import 即失败；目录不存在或为空时以零文件通过
   - `createTempHome` 返回的目录互不重复，HOME 下无真实用户文件；`removeTempHome` 后目录不存在
   - `registerControlledProvider` 注册后，脚本化的文本回复、工具调用与"连接失败"能依次被取出；未排队时请求得到明确错误而非挂起
   - `createWorkspaceFixture` 生成的父目录含两个独立 Git 仓库与一个 node_modules 下的伪仓库

@@ -28,7 +28,7 @@ description: .pi-spec 的格式权威源——spec/<域>/<name>.md（唯一的�
 
 `ai-decisions.jsonl` 与 `user-decisions.jsonl` 分开保存本需求已形成的材料性决定；一项决定恰好占一行，两个台账不得与其他需求混写。决策台账是追加式事实源，既有行不得改写、删除或重新编号。
 
-新需求先建分支（分支名 = slug），复制 `requirements.template.md`，建立 `tasks/INDEX.md` 与 `acceptance.md` 占位，再以 `init --requirement-dir <需求目录>` 创建两个空台账，形成需求包。`init` 只接受目录名为 `<YYYY-MM-DD>.<slug>`、frontmatter 状态为 `draft` 且两个台账均不存在的需求目录；任何已存在的台账都不覆盖。
+新需求先建分支（分支名 = slug），复制 `requirements.template.md`，建立 `tasks/INDEX.md` 与 `acceptance.md` 占位，建立两个空台账，形成需求包。
 
 `<slug>`、`<域>` 与规则 `<name>` 均为小写英文短横线连接。
 
@@ -250,14 +250,6 @@ type DecisionReceiptV1 = {
 ```
 
 AI 输入必须有 scope、basis、action 且不得有 impact；user 输入必须有 impact 且不得有 scope、basis、action。writer 生成 id、actor、recordedAt 和 ledger 路由。成功只表示一行已 fsync 且双 ledger 写后重读校验；receipt 的 decisionHash 是最终单行 canonical JSON 加换行的 SHA-256。writer 不读取迁移 mapping。
-
-正式命令为：
-
-```
-bun decision-ledger.ts init --requirement-dir <absolute-dir>
-bun decision-ledger.ts validate --requirement-dir <absolute-dir>
-bun decision-ledger.ts inspect --requirement-dir <absolute-dir> --id <AI-n|USER-n>
-```
 
 append 只能由受材料性检查保护的 `decision_record` 调用，不能通过通用 append CLI 绕过检查。追加在需求级原子锁中完成，单次 O_APPEND 写入后 fsync、写后重读并精确核对旧字节前缀；任何失败不返回 receipt，不截断、重写或删除既有行。ID 分配使用该 ledger 已有最大数字后缀加一。
 

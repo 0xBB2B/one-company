@@ -1,7 +1,7 @@
 # 执行进度
 | 序号 | Plan | 状态 | 完成时间 |
 |---|---|---|---|
-| 01 | package-skeleton | pending | — |
+| 01 | package-skeleton | done | 2026-09-08 |
 | 02 | local-identity | pending | — |
 | 03 | versioned-store | pending | — |
 | 04 | sleep-aware-clock | pending | — |
@@ -53,6 +53,8 @@
 | 50 | user-documentation | pending | — |
 | 51 | integration-verification | pending | — |
 ## 当前
-尚未开始执行。
+准备执行 `02-local-identity.md`。
+
+已记录：package-skeleton 首轮 Review 指出验证口径缺陷与 8 条 impl-defect，plan 验证方式改为 stripTypeScriptTypes，其余自修一次后复审全部解决；enum/namespace 全文正则可能对注释误报，留待出现时收窄。
 ## 阻塞
 （无）

@@ -119,9 +119,4 @@ while IFS= read -r row; do
   esac
 done <<< "$changes"
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if ! bun "$script_dir/decision-ledger.ts" validate --requirement-dir "$requirement_dir" >/dev/null; then
-  fail "需求目录必须包含并通过 canonical v1 AI/user JSONL 台账校验"
-fi
-
 echo "PASS"
