@@ -41,19 +41,20 @@
 | 42 | workspace-coordination | pending | — |
 | 43 | spec-docs-format | done | 2026-09-09 |
 | 45 | role-prompts | pending | — |
-| 46 | planner-role | pending | — |
+| 46 | planner-role | done | 2026-09-09 |
 | 49 | main-session-skills | pending | — |
 | 51 | integration-verification | pending | — |
 ## 当前
-第五波完成（2026-09-09）：07 workflow-tool、12 settings-controller、21 shell-bash-tool、39 range-claims 全部通过复审并提交（连带 06 workflow-state 判别位、20 shell-registry wait 管道）。已完成 01–07、09–12、14–18、20–22、38、39 共 23 个单元。第六波进行中：19 session-records（三轮）、43 spec-docs-format（三轮）、08 migration（六轮）已完成；27 daemon-client（修复中；SDK getPackageDir 在 bun 下指向 bun 自身，测试改用 harness 定位 SDK）。
+第五波完成（2026-09-09）：07 workflow-tool、12 settings-controller、21 shell-bash-tool、39 range-claims 全部通过复审并提交（连带 06 workflow-state 判别位、20 shell-registry wait 管道）。已完成 01–07、09–12、14–18、20–22、38、39 共 23 个单元。第六波进行中：19 session-records（三轮）、43 spec-docs-format（三轮）、08 migration（六轮）已完成；27 daemon-client（第二轮复审指出：stderr 管道随窗口退出致守护进程 EPIPE 崩溃、stderr 无界累积、close 的 SIGKILL 误杀刚成为共享实例的守护进程、工作区占位客户端永不自愈；第三轮 Red 进行中。SDK getPackageDir 在 bun 下指向 bun 自身，测试改用 harness 定位 SDK）。第七波已提前启动：23 role-session Red 进行中（占用核对与指纹改为注入式，缺省用 ranges）；46 planner-role 已完成（三轮）；23 role-session Red 完成（14 用例）、Green 进行中；28 dispatch-tools、32 agents-activity 待 27 入库后启动。
 
-已完成单元的自修记录：migration（六轮：运行字段与阶段真正迁入并逐字段双向核对、五类冲突分叉按需求隔离、按需求指纹、溯源判归属、源已清理识别、进度损坏可定位、清理前反向比对）、spec-docs-format（三轮：权威示例带注释可通过、AC 整块含回指比对、files 与涉及文件节交叉校验、索引四类定位、不可读输入退出码 2、围栏 ~~~、lint.sh 口径）、session-records（三轮：缺失/损坏改为明确结果、部分损坏不被宿主静默丢弃、悬空调用补入幂等、ended 跳过工具结果判定）、settings-controller（三轮：宿主编辑器契约、按范围解析 MCP 初始勾选、搜索后确认语义、主题着色注入、候选页窗口化与异步确认、测试工具截图时机）、range-claims（四轮：路径规范化与逃逸、release 持有者必填、waiting 精确清理、目录符号链接、两阶段 claim 先授权后算指纹及失败补偿、目录清单散列与差异去重、探针总预算）、shell-bash-tool（三轮：临时文件包装致命令注入与末行注释破坏→改注册表 wait 管道并委托 SDK；外部 stop 挂死；Node 下管道未抽干死锁；后台登记失败改抛出）、workflow-tool（四轮：shape-confirm 绑定核对、requirement 前置校验与回执脱敏、update 缺 task 虚报、版本冲突判别位下沉到 workflow-state、指纹路径/记录边界框定、符号链接逃逸）、daemon-lifecycle（三轮：退出只标记自身运行、link() 原子夺锁、启动窗口 shutdown 守卫、hello 门槛、路径上限校验、指数退避；harness 改为 Node 拉起后暴露长路径假绿）、shell-registry（六轮：方法名对齐 plan、令牌只取环境段、kill(-1) 边界、locale 与 maxBuffer、订阅方异常隔离、ps 采样超时与熔断、后代 EPERM 三态、pidStartedAt 探针替代测试分叉、存活分支扫描节流）、workflow-state（三轮：用户决定门禁按台账来源判定、空任务集与形状确认编号、commit 形态与绑定 cwd 归属、回退改为需求名下任一未停止运行即阻塞）、window-registry（三轮：fail-open 证据、注销竞态、路径穿越、心跳回调；修复引入三条回归再修）、local-identity（两轮）、sleep-aware-clock（两轮）、role-catalog（两轮）、structured-verdict（两轮）、versioned-store（五轮：锁回收最终为两次观察 + inode 核对，可重入持有集带 active 标记）、role-settings（三轮）、error-details（规范变更后重做 + 五轮）、network-pause（四轮）、daemon-protocol（三轮）、decision-ledger（三轮）、run-store（三轮，含新版 shellToken）、mcp-discovery（五轮）。
+已完成单元的自修记录：planner-role（三轮：plan 成品 frontmatter 对齐 09 入库定义、planning-artifacts.md 由"模板同 spec-docs"三重复制改为需求代理核对清单、补目录授权/未知技术前提/不重置运行状态/不另建报告不增轮次/外部系统契约/生成器解析器禁令/三类伪证据/完成状态限制、"必须真实贯通"撞词拆为入口可运行与模拟边界两项、测试按段落体定位与白名单整体相等）、migration（六轮：运行字段与阶段真正迁入并逐字段双向核对、五类冲突分叉按需求隔离、按需求指纹、溯源判归属、源已清理识别、进度损坏可定位、清理前反向比对）、spec-docs-format（三轮：权威示例带注释可通过、AC 整块含回指比对、files 与涉及文件节交叉校验、索引四类定位、不可读输入退出码 2、围栏 ~~~、lint.sh 口径）、session-records（三轮：缺失/损坏改为明确结果、部分损坏不被宿主静默丢弃、悬空调用补入幂等、ended 跳过工具结果判定）、settings-controller（三轮：宿主编辑器契约、按范围解析 MCP 初始勾选、搜索后确认语义、主题着色注入、候选页窗口化与异步确认、测试工具截图时机）、range-claims（四轮：路径规范化与逃逸、release 持有者必填、waiting 精确清理、目录符号链接、两阶段 claim 先授权后算指纹及失败补偿、目录清单散列与差异去重、探针总预算）、shell-bash-tool（三轮：临时文件包装致命令注入与末行注释破坏→改注册表 wait 管道并委托 SDK；外部 stop 挂死；Node 下管道未抽干死锁；后台登记失败改抛出）、workflow-tool（四轮：shape-confirm 绑定核对、requirement 前置校验与回执脱敏、update 缺 task 虚报、版本冲突判别位下沉到 workflow-state、指纹路径/记录边界框定、符号链接逃逸）、daemon-lifecycle（三轮：退出只标记自身运行、link() 原子夺锁、启动窗口 shutdown 守卫、hello 门槛、路径上限校验、指数退避；harness 改为 Node 拉起后暴露长路径假绿）、shell-registry（六轮：方法名对齐 plan、令牌只取环境段、kill(-1) 边界、locale 与 maxBuffer、订阅方异常隔离、ps 采样超时与熔断、后代 EPERM 三态、pidStartedAt 探针替代测试分叉、存活分支扫描节流）、workflow-state（三轮：用户决定门禁按台账来源判定、空任务集与形状确认编号、commit 形态与绑定 cwd 归属、回退改为需求名下任一未停止运行即阻塞）、window-registry（三轮：fail-open 证据、注销竞态、路径穿越、心跳回调；修复引入三条回归再修）、local-identity（两轮）、sleep-aware-clock（两轮）、role-catalog（两轮）、structured-verdict（两轮）、versioned-store（五轮：锁回收最终为两次观察 + inode 核对，可重入持有集带 active 标记）、role-settings（三轮）、error-details（规范变更后重做 + 五轮）、network-pause（四轮）、daemon-protocol（三轮）、decision-ledger（三轮）、run-store（三轮，含新版 shellToken）、mcp-discovery（五轮）。
 
 已记录：package-skeleton 首轮 Review 指出验证口径缺陷与 8 条 impl-defect，plan 验证方式改为 stripTypeScriptTypes，其余自修一次后复审全部解决；enum/namespace 全文正则可能对注释误报，留待出现时收窄。
 ## 阻塞
 （无）
 
 ## 待解决（不阻塞）
+- 46 planner-role：两份 references（planning-preflight.md、planning-artifacts.md）目前无加载路径，须在 45 requirement-agent-prompt 中落实需求代理派工前/核对产物时加载；`skills/spec-flow/SKILL.md` 仍是旧角色模型与 `.pi-spec/` 路径，由 49 main-session-skills 重写。
 - role-settings：未知角色名条目按 plan 明文整层抛错（审查认为爆炸半径偏大，留设置页处理）；保存后未 fsync 目录。
 - network-pause：强制门户下任意 HTTP 响应被视为可达；网络续接无次数上限（归 run-manager）。
 - versioned-store：可重入锁在同一持锁上下文内的并发写者之间不互斥（契约：持锁上下文内不得并发写）。
