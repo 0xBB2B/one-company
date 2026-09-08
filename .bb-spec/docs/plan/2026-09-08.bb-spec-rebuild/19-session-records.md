@@ -21,11 +21,11 @@ description: 需求代理与角色会话以可重载会话文件落本机运行�
 | 函数 | 职责 |
 |---|---|
 | `sessionFilePath` | 返回运行目录下会话文件位置 |
-| `createSessionManagerForRun` | 用 SDK 的会话管理器在运行目录创建新会话文件并设置权限 |
-| `openSessionManagerForRun` | 打开已存在的会话文件供续接，缺失或损坏时返回明确错误 |
-| `synthesizeInterruptedResults` | 重载前扫描会话文件，为每个没有对应结果的工具调用追加一条固定中断结果条目（文本为"调用因守护进程中断"，isError），原条目不改写；返回补入的调用清单 |
-| `readTranscript` | 解析会话文件为查看页条目（思考、输出、工具调用、结果摘要、错误），支持从序号起读 |
-| `transcriptSeq` | 返回当前最新序号，供实时订阅与离线回读衔接 |
+| `createSessionManagerForRun` | 用 SDK 的会话管理器在运行目录创建新会话文件（先以独占方式建 0600 空文件再交给 SDK 写入 header，目录 0700）；文件已存在时报"已存在"不覆盖 |
+| `openSessionManagerForRun` | 打开已存在的会话文件供续接，缺失返回 missing；损坏（含 header 完好但某行截断、条目父链断裂等部分损坏）返回 corrupt 并带行号，不得让宿主静默丢弃条目 |
+| `synthesizeInterruptedResults` | 重载前扫描会话文件，为每个没有对应结果的工具调用（按文件顺序，含同一消息内多个）追加一条固定中断结果条目（文本为"调用因守护进程中断"，isError），原条目不改写；幂等；返回 { ok, appended } 或缺失/损坏的明确错误，不抛出 |
+| `readTranscript` | 解析会话文件为查看页条目（思考、输出、工具调用、结果摘要、错误），支持从序号起读；seq 稳定（追加与压缩不改变既有序号）；缺失/损坏返回明确错误而非空会话 |
+| `transcriptSeq` | 返回当前最新序号，供实时订阅与离线回读衔接；缺失/损坏返回明确错误 |
 
 ## 协作关系
 `daemon/role-session.ts` 与 `daemon/requirement-agent.ts` 创建会话时使用 `createSessionManagerForRun`；`daemon/run-manager.ts` 续接时先 `synthesizeInterruptedResults` 再 `openSessionManagerForRun`，并把补入清单作为续跑提示的"结果不明操作"；`daemon/server.ts` 的 `subscribe.transcript` 先用 `readTranscript` 回放再接实时事件。

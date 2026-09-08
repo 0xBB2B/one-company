@@ -18,7 +18,7 @@
 | 16 | structured-verdict | done | 2026-09-08 |
 | 17 | error-details | done | 2026-09-09 |
 | 18 | run-store | done | 2026-09-09 |
-| 19 | session-records | pending | — |
+| 19 | session-records | done | 2026-09-09 |
 | 20 | shell-registry | done | 2026-09-09 |
 | 21 | shell-bash-tool | done | 2026-09-09 |
 | 22 | network-pause | done | 2026-09-09 |
@@ -45,9 +45,9 @@
 | 49 | main-session-skills | pending | — |
 | 51 | integration-verification | pending | — |
 ## 当前
-第五波完成（2026-09-09）：07 workflow-tool、12 settings-controller、21 shell-bash-tool、39 range-claims 全部通过复审并提交（连带 06 workflow-state 判别位、20 shell-registry wait 管道）。已完成 01–07、09–12、14–18、20–22、38、39 共 23 个单元。第六波进行中（Red 阶段）：08 migration（依赖 05、07）、19 session-records（依赖 18）、27 daemon-client（依赖 14、15）、43 spec-docs-format（依赖 07）。
+第五波完成（2026-09-09）：07 workflow-tool、12 settings-controller、21 shell-bash-tool、39 range-claims 全部通过复审并提交（连带 06 workflow-state 判别位、20 shell-registry wait 管道）。已完成 01–07、09–12、14–18、20–22、38、39 共 23 个单元。第六波进行中：19 session-records 已完成（三轮复审）；08 migration（第二轮复审）、27 daemon-client（复审；SDK getPackageDir 在 bun 下指向 bun 自身，测试改用 harness 定位 SDK）、43 spec-docs-format（修复中）。
 
-已完成单元的自修记录：settings-controller（三轮：宿主编辑器契约、按范围解析 MCP 初始勾选、搜索后确认语义、主题着色注入、候选页窗口化与异步确认、测试工具截图时机）、range-claims（四轮：路径规范化与逃逸、release 持有者必填、waiting 精确清理、目录符号链接、两阶段 claim 先授权后算指纹及失败补偿、目录清单散列与差异去重、探针总预算）、shell-bash-tool（三轮：临时文件包装致命令注入与末行注释破坏→改注册表 wait 管道并委托 SDK；外部 stop 挂死；Node 下管道未抽干死锁；后台登记失败改抛出）、workflow-tool（四轮：shape-confirm 绑定核对、requirement 前置校验与回执脱敏、update 缺 task 虚报、版本冲突判别位下沉到 workflow-state、指纹路径/记录边界框定、符号链接逃逸）、daemon-lifecycle（三轮：退出只标记自身运行、link() 原子夺锁、启动窗口 shutdown 守卫、hello 门槛、路径上限校验、指数退避；harness 改为 Node 拉起后暴露长路径假绿）、shell-registry（六轮：方法名对齐 plan、令牌只取环境段、kill(-1) 边界、locale 与 maxBuffer、订阅方异常隔离、ps 采样超时与熔断、后代 EPERM 三态、pidStartedAt 探针替代测试分叉、存活分支扫描节流）、workflow-state（三轮：用户决定门禁按台账来源判定、空任务集与形状确认编号、commit 形态与绑定 cwd 归属、回退改为需求名下任一未停止运行即阻塞）、window-registry（三轮：fail-open 证据、注销竞态、路径穿越、心跳回调；修复引入三条回归再修）、local-identity（两轮）、sleep-aware-clock（两轮）、role-catalog（两轮）、structured-verdict（两轮）、versioned-store（五轮：锁回收最终为两次观察 + inode 核对，可重入持有集带 active 标记）、role-settings（三轮）、error-details（规范变更后重做 + 五轮）、network-pause（四轮）、daemon-protocol（三轮）、decision-ledger（三轮）、run-store（三轮，含新版 shellToken）、mcp-discovery（五轮）。
+已完成单元的自修记录：session-records（三轮：缺失/损坏改为明确结果、部分损坏不被宿主静默丢弃、悬空调用补入幂等、ended 跳过工具结果判定）、settings-controller（三轮：宿主编辑器契约、按范围解析 MCP 初始勾选、搜索后确认语义、主题着色注入、候选页窗口化与异步确认、测试工具截图时机）、range-claims（四轮：路径规范化与逃逸、release 持有者必填、waiting 精确清理、目录符号链接、两阶段 claim 先授权后算指纹及失败补偿、目录清单散列与差异去重、探针总预算）、shell-bash-tool（三轮：临时文件包装致命令注入与末行注释破坏→改注册表 wait 管道并委托 SDK；外部 stop 挂死；Node 下管道未抽干死锁；后台登记失败改抛出）、workflow-tool（四轮：shape-confirm 绑定核对、requirement 前置校验与回执脱敏、update 缺 task 虚报、版本冲突判别位下沉到 workflow-state、指纹路径/记录边界框定、符号链接逃逸）、daemon-lifecycle（三轮：退出只标记自身运行、link() 原子夺锁、启动窗口 shutdown 守卫、hello 门槛、路径上限校验、指数退避；harness 改为 Node 拉起后暴露长路径假绿）、shell-registry（六轮：方法名对齐 plan、令牌只取环境段、kill(-1) 边界、locale 与 maxBuffer、订阅方异常隔离、ps 采样超时与熔断、后代 EPERM 三态、pidStartedAt 探针替代测试分叉、存活分支扫描节流）、workflow-state（三轮：用户决定门禁按台账来源判定、空任务集与形状确认编号、commit 形态与绑定 cwd 归属、回退改为需求名下任一未停止运行即阻塞）、window-registry（三轮：fail-open 证据、注销竞态、路径穿越、心跳回调；修复引入三条回归再修）、local-identity（两轮）、sleep-aware-clock（两轮）、role-catalog（两轮）、structured-verdict（两轮）、versioned-store（五轮：锁回收最终为两次观察 + inode 核对，可重入持有集带 active 标记）、role-settings（三轮）、error-details（规范变更后重做 + 五轮）、network-pause（四轮）、daemon-protocol（三轮）、decision-ledger（三轮）、run-store（三轮，含新版 shellToken）、mcp-discovery（五轮）。
 
 已记录：package-skeleton 首轮 Review 指出验证口径缺陷与 8 条 impl-defect，plan 验证方式改为 stripTypeScriptTypes，其余自修一次后复审全部解决；enum/namespace 全文正则可能对注释误报，留待出现时收窄。
 ## 阻塞
