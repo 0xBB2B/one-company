@@ -36,7 +36,7 @@
 | 34 | transcript-view | pending | — |
 | 35 | shell-page | pending | — |
 | 38 | window-registry | done | 2026-09-09 |
-| 39 | range-claims | pending | — |
+| 39 | range-claims | done | 2026-09-09 |
 | 40 | write-guard | pending | — |
 | 42 | workspace-coordination | pending | — |
 | 43 | spec-docs-format | pending | — |
@@ -45,9 +45,9 @@
 | 49 | main-session-skills | pending | — |
 | 51 | integration-verification | pending | — |
 ## 当前
-第四波完成（2026-09-09）：06 workflow-state、15 daemon-lifecycle、20 shell-registry、38 window-registry 全部通过复审并提交；02 local-identity 的 socket 路径随 15 改为数据根下独立短目录，18 run-store 随 15 新增退出路径只标记自身运行的方法。已完成 01–06、09–11、14–18、20、22、38 共 18 个单元。第五波进行中：07 workflow-tool 已完成（四轮复审；连带 06 workflow-state 定向修正：失败结果带 staleVersion 判别位、checkResume 返回 version、任务字段增 blockedReason/workspaceDir）；21 shell-bash-tool 已完成（三轮复审；连带 20 注册表 wait 模式改 stdio pipe 且始终消费、超时不广播中间态）；12 settings-controller（修复中）、39 range-claims（第四轮修复中）。
+第四波完成（2026-09-09）：06 workflow-state、15 daemon-lifecycle、20 shell-registry、38 window-registry 全部通过复审并提交；02 local-identity 的 socket 路径随 15 改为数据根下独立短目录，18 run-store 随 15 新增退出路径只标记自身运行的方法。已完成 01–06、09–11、14–18、20、22、38 共 18 个单元。第五波进行中：07 workflow-tool 已完成（四轮复审；连带 06 workflow-state 定向修正：失败结果带 staleVersion 判别位、checkResume 返回 version、任务字段增 blockedReason/workspaceDir）；21 shell-bash-tool 已完成（三轮复审；连带 20 注册表 wait 模式改 stdio pipe 且始终消费、超时不广播中间态）；39 range-claims 已完成（四轮复审）；12 settings-controller（修复中）。
 
-已完成单元的自修记录：shell-bash-tool（三轮：临时文件包装致命令注入与末行注释破坏→改注册表 wait 管道并委托 SDK；外部 stop 挂死；Node 下管道未抽干死锁；后台登记失败改抛出）、workflow-tool（四轮：shape-confirm 绑定核对、requirement 前置校验与回执脱敏、update 缺 task 虚报、版本冲突判别位下沉到 workflow-state、指纹路径/记录边界框定、符号链接逃逸）、daemon-lifecycle（三轮：退出只标记自身运行、link() 原子夺锁、启动窗口 shutdown 守卫、hello 门槛、路径上限校验、指数退避；harness 改为 Node 拉起后暴露长路径假绿）、shell-registry（六轮：方法名对齐 plan、令牌只取环境段、kill(-1) 边界、locale 与 maxBuffer、订阅方异常隔离、ps 采样超时与熔断、后代 EPERM 三态、pidStartedAt 探针替代测试分叉、存活分支扫描节流）、workflow-state（三轮：用户决定门禁按台账来源判定、空任务集与形状确认编号、commit 形态与绑定 cwd 归属、回退改为需求名下任一未停止运行即阻塞）、window-registry（三轮：fail-open 证据、注销竞态、路径穿越、心跳回调；修复引入三条回归再修）、local-identity（两轮）、sleep-aware-clock（两轮）、role-catalog（两轮）、structured-verdict（两轮）、versioned-store（五轮：锁回收最终为两次观察 + inode 核对，可重入持有集带 active 标记）、role-settings（三轮）、error-details（规范变更后重做 + 五轮）、network-pause（四轮）、daemon-protocol（三轮）、decision-ledger（三轮）、run-store（三轮，含新版 shellToken）、mcp-discovery（五轮）。
+已完成单元的自修记录：range-claims（四轮：路径规范化与逃逸、release 持有者必填、waiting 精确清理、目录符号链接、两阶段 claim 先授权后算指纹及失败补偿、目录清单散列与差异去重、探针总预算）、shell-bash-tool（三轮：临时文件包装致命令注入与末行注释破坏→改注册表 wait 管道并委托 SDK；外部 stop 挂死；Node 下管道未抽干死锁；后台登记失败改抛出）、workflow-tool（四轮：shape-confirm 绑定核对、requirement 前置校验与回执脱敏、update 缺 task 虚报、版本冲突判别位下沉到 workflow-state、指纹路径/记录边界框定、符号链接逃逸）、daemon-lifecycle（三轮：退出只标记自身运行、link() 原子夺锁、启动窗口 shutdown 守卫、hello 门槛、路径上限校验、指数退避；harness 改为 Node 拉起后暴露长路径假绿）、shell-registry（六轮：方法名对齐 plan、令牌只取环境段、kill(-1) 边界、locale 与 maxBuffer、订阅方异常隔离、ps 采样超时与熔断、后代 EPERM 三态、pidStartedAt 探针替代测试分叉、存活分支扫描节流）、workflow-state（三轮：用户决定门禁按台账来源判定、空任务集与形状确认编号、commit 形态与绑定 cwd 归属、回退改为需求名下任一未停止运行即阻塞）、window-registry（三轮：fail-open 证据、注销竞态、路径穿越、心跳回调；修复引入三条回归再修）、local-identity（两轮）、sleep-aware-clock（两轮）、role-catalog（两轮）、structured-verdict（两轮）、versioned-store（五轮：锁回收最终为两次观察 + inode 核对，可重入持有集带 active 标记）、role-settings（三轮）、error-details（规范变更后重做 + 五轮）、network-pause（四轮）、daemon-protocol（三轮）、decision-ledger（三轮）、run-store（三轮，含新版 shellToken）、mcp-discovery（五轮）。
 
 已记录：package-skeleton 首轮 Review 指出验证口径缺陷与 8 条 impl-defect，plan 验证方式改为 stripTypeScriptTypes，其余自修一次后复审全部解决；enum/namespace 全文正则可能对注释误报，留待出现时收窄。
 ## 阻塞
@@ -64,6 +64,7 @@
 - shell-registry：事件循环长阻塞时 probeProcessGroup 可能得到 EPERM 而把实际成功的命令判为 uncertain（复审 3/3 复现，既有探测逻辑），建议 EPERM 转入身份/后代核对而非直接不确定；stop() 与超时撞车时可能各起一轮轮询、终态标签由竞速决定（对 stopping 早退即可）。
 - shell-registry：macOS 的 ps 只对非系统二进制显示环境变量，/bin/sh、/bin/sleep 等系统二进制的逃逸后代无法经令牌发现，也无法被 adoptOrphans 接管（规范未界定该平台限制，测试夹具用 bun 进程）；启动时刻基线为 null 的路径因真实 ps 不可注入而无用例；任务表长驻不删项，保留策略未在规范定义；closeOwner 与 stopHost 行为相同。
 - daemon-lifecycle：残留 socket 分支 probe→rm 窗口在高并发（≥6）拉起时仍可能短暂（≤5 秒）双实例，最终收敛且互不干扰；退避窗口内 shutdown 的拒绝文案指向"有活动运行"而非读失败；harness 的 socket 后缀长度仍本地复刻。
+- range-claims：补偿移除占位也拿不到锁时占位残留（claimId 随错误抛出，需人工 releaseByUser）；探针超时用原生计时不扣睡眠（结果为保留占用，fail-closed）；`./` 无法作为整仓范围；符号链接指向仓库外的范围在边界校验上合法。
 - run-store：list 与启动标记全量遍历运行目录无上限，保留策略与索引未在规范定义；记录文件中不在当前状态集合内的状态串（如旧版写下的 uncertain）不会被拒读，会被启动标记改为可续接的 interrupted——按预发布期不存在旧数据处理，未加校验，是否需要 fail-close 待裁定。
 - daemon-protocol：decodeFrames 的 rest 无长度上限（交 daemon-lifecycle）；仓库无 tsconfig 与 typecheck 脚本，类型层不变量对测试不可见（shell-bash-tool 复审用独立 tsconfig 跑 tsc 发现 3 处潜伏类型错误），补 typescript 依赖需用户批准——建议尽早裁定。
 - local-identity：工作区扫描不跟随符号链接目录，规范未界定，未处理。

@@ -34,10 +34,13 @@ description: 工作范围声明：文件锁下原子申请多范围、独占与�
   ],
   "waiting": [
     { "waitId": "uuid", "holder": { "kind": "main", "windowId": "uuid" }, "paths": ["src/a.ts"], "since": "…" }
+  ],
+  "released": [
+    { "claimId": "uuid", "holder": { "…" : "…" }, "decisionId": "USER-3", "evidence": "run-terminal", "releasedAt": "…", "fingerprints": { "src/a.ts": "sha256-hex" } }
   ]
 }
 ```
-路径为仓库相对路径；目录以斜杠结尾表示整棵子树。
+路径在入口统一规范化为仓库相对 POSIX 路径（别名 `./a`、`a/../b`、`src//a`、仓库内绝对路径均等价），逃逸仓库根的路径一律拒绝；目录以斜杠结尾表示整棵子树，`a.ts` 与 `a.ts/` 视为重叠。`waiting` 按（持有者, 路径集）去重，本方获准、等待结束或取消时移除。`released` 供接手方核对交付指纹，最多保留 200 条（丢弃最旧）；决策记录本身由调用方写入决策台账。
 
 持有者消失的机械证据：
 ```
@@ -51,15 +54,15 @@ kind=main：窗口登记表 holderGone 成立（已注销 / 心跳过期且开�
 | 函数名 | 职责 |
 |---|---|
 | `RangeClaims` | 绑定仓库数据目录，所有变更在目录锁内读改写；构造时注入运行记录读取、窗口登记表与"运行活动任务查询"三个依赖 |
-| `RangeClaims.claim` | 一次申请多个范围：全部无冲突则整体获准，否则整体不获准并进入等待队列，返回冲突范围与持有者 |
-| `RangeClaims.release` | 持有者释放；释放前记录交付指纹 |
-| `RangeClaims.wait` | 轮询等待指定范围释放，可取消；返回受阻原因文本 |
+| `RangeClaims.claim` | 一次申请多个范围：规范化路径后在目录锁内判定，全部无冲突则先写入不带指纹的占位占用（此刻范围已独占），锁外计算指纹，再短锁补写；补写前占位已被释放则返回不获准；补写失败（锁超时、指纹计算抛错）时补偿移除占位并在错误中携带占位标识，不得残留无指纹占位；否则整体不获准并进入等待队列（按持有者与排序后的路径集去重），返回冲突范围与持有者；获准时只移除本方对应该路径集的等待条目 |
+| `RangeClaims.release` | 持有者释放：校验调用方持有者与记录一致，不一致拒绝；释放前记录交付指纹到 `released`；重复释放幂等返回未持有 |
+| `RangeClaims.wait` | 轮询等待指定范围释放，可取消；持有者必填，结束或取消时只移除本方条目（清理失败不改写原始取消原因）；返回受阻原因文本 |
 | `RangeClaims.holderOf` | 查询某路径当前持有者 |
-| `RangeClaims.releaseIfHolderGone` | 对指定占用按持有者种类核对机械证据：成立即自动释放并返回证据种类；不成立保留并返回原因 |
+| `RangeClaims.releaseIfHolderGone` | 对指定占用按持有者种类核对机械证据（探针合计预算约 2 秒，小于目录锁超时）：成立即自动释放并返回证据种类；不成立、探针抛错或超时、记录缺少持有者标识时保留并返回原因 |
 | `RangeClaims.releaseByUser` | 用户显式释放：要求决定编号，释放并把编号写入释放记录；写决策记录由调用方负责 |
 | `overlaps` | 判断两个范围集合是否重叠（文件、目录前缀） |
-| `fingerprint` | 计算范围内文件内容指纹 |
-| `verifyFingerprint` | 接手前比对指纹，变化则返回差异清单 |
+| `fingerprint` | 计算范围内文件内容指纹：目录递归并为目录范围写一个清单散列键，指向目录的符号链接按目标串参与不递归，FIFO/设备文件记 nonfile:<类型>，不存在记 absent |
+| `verifyFingerprint` | 接手前比对指纹，变化则返回差异清单（含目录范围内新增与删除的文件、类型变化；每项只报一次；目录清单散列只覆盖真实文件键，嵌套目录范围顺序无关） |
 
 ## 协作关系
 - 依赖 `runtime/identity.ts`、`runtime/store.ts`（`withDirLock`、CAS 写）、`runtime/windows.ts`（`holderGone`）、`runtime/run-store.ts`（运行状态）、`runtime/clock.ts`；"运行活动任务查询"由守护进程用 `runtime/shell-registry.ts` 实现、窗口侧经 `shells.list` 实现后注入。
