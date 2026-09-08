@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
-import { link, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 export class StaleVersionError extends Error {
@@ -19,6 +19,7 @@ export class LockTimeoutError extends Error {
 
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const LOCK_RETRY_MS = 20;
+const RECLAIM_OBSERVE_GAP_MS = 50;
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
@@ -34,7 +35,12 @@ function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException).code;
 }
 
-const heldLocks = new AsyncLocalStorage<Set<string>>();
+interface HeldLock {
+  lockPath: string;
+  active: boolean;
+}
+
+const heldLocks = new AsyncLocalStorage<HeldLock[]>();
 
 async function lockOwnerToken(lockPath: string): Promise<string | null> {
   try {
@@ -76,18 +82,44 @@ async function tryAcquireLock(lockPath: string): Promise<string | null> {
   }
 }
 
+async function observeLock(lockPath: string): Promise<{ token: string; ino: number } | null> {
+  const token = await lockOwnerToken(lockPath);
+  if (token === null) return null;
+  try {
+    return { token, ino: (await stat(lockPath)).ino };
+  } catch {
+    return null;
+  }
+}
+
+// 路径层没有比较交换：两次间隔观察要求令牌与 inode 都不变才搬走，搬走后再按 inode 核对，
+// 把"搬走别人刚建的活锁"的窗口压到实际为零；核对不符即归还。
 async function reclaimStaleLock(lockPath: string): Promise<boolean> {
-  const observed = await lockOwnerToken(lockPath);
-  const pid = observed === null ? null : tokenPid(observed);
-  if (pid !== null && processAlive(pid)) return false;
+  const first = await observeLock(lockPath);
+  if (first === null) return false;
+  const pid = tokenPid(first.token);
+  if (pid === null || processAlive(pid)) return false;
+  await new Promise((resolve) => setTimeout(resolve, RECLAIM_OBSERVE_GAP_MS));
+  const second = await observeLock(lockPath);
+  if (second === null || second.token !== first.token || second.ino !== first.ino) return false;
   const graveyard = `${lockPath}.dead.${randomSuffix()}`;
   try {
     await rename(lockPath, graveyard);
   } catch {
     return false;
   }
-  if ((await lockOwnerToken(graveyard)) !== observed) {
-    await rename(graveyard, lockPath);
+  let movedIno: number | null = null;
+  try {
+    movedIno = (await stat(graveyard)).ino;
+  } catch {
+    movedIno = null;
+  }
+  if (movedIno !== first.ino) {
+    try {
+      await rename(graveyard, lockPath);
+    } catch {
+      await rm(graveyard, { recursive: true, force: true });
+    }
     return false;
   }
   try {
@@ -111,21 +143,23 @@ async function releaseLock(lockPath: string, token: string): Promise<void> {
 
 export async function withDirLock<T>(dir: string, fn: () => Promise<T>, options: WithDirLockOptions = {}): Promise<T> {
   const lockPath = join(dir, ".lock");
-  const held = heldLocks.getStore();
-  if (held?.has(lockPath)) return fn();
+  const held = heldLocks.getStore() ?? [];
+  if (held.some((entry) => entry.lockPath === lockPath && entry.active)) return fn();
   const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
   let token = await tryAcquireLock(lockPath);
   while (token === null) {
     if (!(await reclaimStaleLock(lockPath))) {
       if (Date.now() > deadline) throw new LockTimeoutError(`获取目录锁超时: ${lockPath}`);
-      await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
+      await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS + Math.random() * LOCK_RETRY_MS));
     }
     token = await tryAcquireLock(lockPath);
   }
+  const entry: HeldLock = { lockPath, active: true };
   try {
-    return await heldLocks.run(new Set([...(held ?? []), lockPath]), fn);
+    return await heldLocks.run([...held, entry], fn);
   } finally {
+    entry.active = false;
     await releaseLock(lockPath, token);
   }
 }
@@ -147,9 +181,12 @@ async function writeTempFsynced(dir: string, name: string, content: string): Pro
   try {
     await handle.writeFile(content, "utf8");
     await handle.sync();
-  } finally {
+  } catch (error) {
     await handle.close();
+    await rm(tempPath, { force: true });
+    throw error;
   }
+  await handle.close();
   return tempPath;
 }
 
@@ -299,7 +336,7 @@ export async function readLines(path: string, options: WithDirLockOptions = {}):
   }
 }
 
-export async function appendLine(path: string, data: unknown): Promise<{ lineNumber: number }> {
+export async function appendLine(path: string, data: unknown): Promise<{ lineNumber: number; line: string }> {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: DIR_MODE });
   return withDirLock(dir, async () => {
@@ -319,7 +356,7 @@ export async function appendLine(path: string, data: unknown): Promise<{ lineNum
     if (after !== `${beforeContent}${line}\n`) {
       throw new Error(`记录文件损坏: 追加后内容校验失败: ${path}`);
     }
-    return { lineNumber: lines.length + 1 };
+    return { lineNumber: lines.length + 1, line };
   });
 }
 

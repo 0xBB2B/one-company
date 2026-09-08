@@ -1,7 +1,6 @@
-import { randomBytes } from "node:crypto";
-import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { withDirLock } from "./store.ts";
+import { withDirLock, writeFileAtomic } from "./store.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -239,22 +238,6 @@ function assertBaseline(current: string | null, baseline: string | null): void {
   }
 }
 
-async function writeAtomic(path: string, content: string): Promise<void> {
-  const dir = dirname(path);
-  const tempPath = join(dir, `.settings.${randomBytes(6).toString("hex")}.tmp`);
-  try {
-    await writeFile(tempPath, content, { encoding: "utf8", mode: SETTINGS_FILE_MODE });
-  } catch (error) {
-    await rm(tempPath, { force: true });
-    throw error;
-  }
-  try {
-    await rename(tempPath, path);
-  } catch (error) {
-    await rm(tempPath, { force: true });
-    throw error;
-  }
-}
 
 function parseTopLevel(current: string | null): Record<string, unknown> {
   if (current === null) return {};
@@ -285,7 +268,7 @@ async function mutateSettingsFile(
     const { piCompany, roles } = extractRoles(parsed);
     const next = { ...parsed, piCompany: { ...piCompany, roles: mutate(roles) } };
     const raw = JSON.stringify(next, null, 2);
-    await writeAtomic(path, raw);
+    await writeFileAtomic(path, raw);
     return raw;
   });
 }

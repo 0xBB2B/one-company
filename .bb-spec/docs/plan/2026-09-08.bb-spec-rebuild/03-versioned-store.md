@@ -24,10 +24,11 @@ description: 本机数据区的原子文档写入、目录锁、状态版本冲�
 | `readDocument` | 读取 JSON 文档并返回内容与 version；文件不存在返回空标记；内容不是合法 JSON 或缺少 version 抛出"损坏"错误 |
 | `writeDocument` | 在目录锁内比对期望 version 后写入（临时文件 + fsync + rename），version 递增；不匹配抛出 `StaleVersionError` |
 | `createDocument` | 仅当文件不存在时写入初始内容，version 为 1；已存在抛错 |
-| `withDirLock` | 以 mkdir 锁目录串行化对同一目录的写操作，超时抛 `LockTimeoutError`，异常时释放锁 |
-| `appendLine` | 在锁内把单行 canonical JSON 追加到记录文件，先校验既有内容每行 canonical 且以换行结尾，写后重读确认字节前缀不变 |
+| `withDirLock` | 以带唯一令牌的锁目录串行化对同一目录的写操作，残留锁按令牌中的 pid 判死后抢占回收；同一异步上下文内可重入（持锁上下文内不得并发写）；超时抛 `LockTimeoutError`，异常时释放锁 |
+| `appendLine` | 在锁内把单行 canonical JSON 追加到记录文件，先校验既有内容每行 canonical 且以换行结尾，写后重读确认内容恰为旧内容加新行，返回行号与已校验的行文本 |
 | `readLines` | 读取记录文件全部行并逐行解析，任一行非 canonical 抛出含行号的"损坏"错误 |
 | `fileFingerprint` | 计算文件内容 sha256，供证据核对 |
+| `writeFileAtomic` | 不受版本控制的整文件原子写（临时文件 + fsync + rename + 目录 fsync），供设置文件与错误详情等非文档型文件使用；调用方须自行置于 `withDirLock` 内 |
 
 ## 协作关系
 - 所有路径由 `runtime/identity.ts` 提供；本模块不感知业务含义。

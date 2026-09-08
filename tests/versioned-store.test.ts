@@ -311,7 +311,7 @@ describe("appendLine / readLines", () => {
     const dir = await makeTempDir();
     const path = join(dir, "log.ndjson");
     const result = await appendLine(path, { a: 1 });
-    expect(result).toEqual({ lineNumber: 1 });
+    expect(result).toEqual({ lineNumber: 1, line: JSON.stringify({ a: 1 }) });
     const raw = await readFile(path, "utf8");
     expect(raw).toBe(`${JSON.stringify({ a: 1 })}\n`);
   });
@@ -524,8 +524,8 @@ describe("写入路径的健壮性", () => {
 });
 
 describe("锁的令牌身份与可重入", () => {
-  test("百轮多等待者残留锁下持锁期间锁目录 inode 不变且无重叠", async () => {
-    for (let round = 0; round < 100; round += 1) {
+  test("三百轮十等待者残留锁下持锁期间锁目录 inode 不变、无重叠且无锁残留", async () => {
+    for (let round = 0; round < 300; round += 1) {
       const dir = await makeTempDir();
       await mkdir(join(dir, ".lock"));
       await writeFile(join(dir, ".lock", "owner"), "999999\n");
@@ -533,7 +533,7 @@ describe("锁的令牌身份与可重入", () => {
       let overlap = 0;
       let replaced = 0;
       await Promise.all(
-        Array.from({ length: 4 }, () =>
+        Array.from({ length: 10 }, () =>
           withDirLock(dir, async () => {
             inside += 1;
             if (inside > 1) overlap += 1;
@@ -547,8 +547,9 @@ describe("锁的令牌身份与可重入", () => {
       );
       expect(overlap).toBe(0);
       expect(replaced).toBe(0);
+      expect((await readdir(dir)).filter((name) => name.startsWith(".lock"))).toEqual([]);
     }
-  }, 60_000);
+  }, 120_000);
 
   test("同一异步上下文内嵌套加锁可重入，锁内读记录再追加不死锁", async () => {
     const dir = await makeTempDir();
@@ -571,4 +572,37 @@ describe("锁的令牌身份与可重入", () => {
     expect((await stat(join(dir, "n1"))).mode & 0o777).toBe(0o700);
     expect((await stat(join(dir, "n1", "n2"))).mode & 0o777).toBe(0o700);
   });
+});
+
+describe("持有集只在临界区内有效", () => {
+  test("临界区内启动、释放后才执行的异步链必须真正加锁", async () => {
+    const dir = await makeTempDir();
+    let lockedDuringLateCall = false;
+    let late: Promise<void> | null = null;
+    await withDirLock(dir, async () => {
+      late = new Promise((resolve) => {
+        setTimeout(() => {
+          void withDirLock(dir, async () => {
+            lockedDuringLateCall = await stat(join(dir, ".lock")).then(() => true, () => false);
+          }).then(() => resolve());
+        }, 30);
+      });
+    });
+    await late!;
+    expect(lockedDuringLateCall).toBe(true);
+  });
+
+  test("多轮并发追加与读取都不误报损坏且不超时", async () => {
+    for (let round = 0; round < 20; round += 1) {
+      const dir = await makeTempDir();
+      const path = join(dir, "log.jsonl");
+      await appendLine(path, { seed: true });
+      const settled = await Promise.allSettled([
+        ...Array.from({ length: 10 }, (_, i) => appendLine(path, { i })),
+        ...Array.from({ length: 10 }, () => readLines(path)),
+      ]);
+      expect(settled.filter((r) => r.status === "rejected").map((r) => String((r as PromiseRejectedResult).reason))).toEqual([]);
+      expect((await readLines(path)).length).toBe(11);
+    }
+  }, 60_000);
 });
