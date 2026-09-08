@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { runDataDir } from "../runtime/identity.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import { RunStore, assertTransition, isTerminalState } from "../runtime/run-store.ts";
+import type { RunState } from "../runtime/run-store.ts";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -80,7 +81,6 @@ describe("RunStore.create", () => {
     expect(run.state).toBe("queued");
     expect(run.turns).toBe(0);
     expect(run.errorDetails.status).toBe("none");
-    expect(run.cleanupConfirmed).toBe(false);
     expect(run.daemonStartedAt).toBe(daemonStartedAt);
     expect(isValidUtcTimestamp(run.startedAt)).toBe(true);
     expect(isValidUtcTimestamp(run.updatedAt)).toBe(true);
@@ -226,7 +226,7 @@ describe("RunStore.list", () => {
     expect(page1.items.map((item) => item.id)).not.toEqual(page2.items.map((item) => item.id));
   });
 
-  test("runningCount 统计 running/pausing/waiting_answer，uncertainCount 统计 uncertain", async () => {
+  test("runningCount 统计 running/pausing/waiting_answer，结果不含 uncertainCount 字段", async () => {
     const { store } = await makeStore();
     const running = await store.create(requirementInput());
     await store.update(running.id, { state: "running" });
@@ -239,15 +239,12 @@ describe("RunStore.list", () => {
     await store.update(waitingAnswer.id, { state: "running" });
     await store.update(waitingAnswer.id, { state: "waiting_answer" });
 
-    const uncertain = await store.create(requirementInput());
-    await store.update(uncertain.id, { state: "uncertain" });
-
     const queued = await store.create(requirementInput());
 
     const result = await store.list({ limit: 100 });
     expect(result.runningCount).toBe(3);
-    expect(result.uncertainCount).toBe(1);
-    expect(result.total).toBe(5);
+    expect(result.total).toBe(4);
+    expect("uncertainCount" in result).toBe(false);
     void queued;
   });
 });
@@ -280,12 +277,29 @@ describe("RunStore.update", () => {
     const firstEndedAt = completed.endedAt;
 
     const secondUpdate = await store.update(created.id, {
-      cleanupConfirmed: true,
+      stateReason: "补记说明",
       endedAt: "2000-01-01T00:00:00.000Z",
     });
 
     expect(secondUpdate.endedAt).toBe(firstEndedAt);
-    expect(secondUpdate.cleanupConfirmed).toBe(true);
+    expect(secondUpdate.stateReason).toBe("补记说明");
+  });
+
+  test("用户停止后补写说明与结果不改变 stopped 状态与 endedAt", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    await store.update(created.id, { state: "running" });
+    const stopped = await store.update(created.id, { state: "stopped", stateReason: "用户停止" });
+
+    const after = await store.update(created.id, {
+      stateReason: "后代进程清理未确认",
+      result: { phase: "work", verdict: "FAIL" },
+    });
+
+    expect(after.state).toBe("stopped");
+    expect(after.endedAt).toBe(stopped.endedAt);
+    expect(after.stateReason).toBe("后代进程清理未确认");
+    expect(isTerminalState(after.state)).toBe(true);
   });
 
   test.each([
@@ -326,14 +340,14 @@ describe("RunStore.update", () => {
 
     await Promise.all([
       ...reasons.map((reason) => store.update(created.id, { stateReason: reason })),
-      ...Array.from({ length: 5 }, () => store.update(created.id, { cleanupConfirmed: true })),
+      ...Array.from({ length: 5 }, () => store.update(created.id, { errorDetails: { status: "saved", path: "e.json" } })),
       ...results.map((result) => store.update(created.id, { result })),
     ]);
 
     const after = await store.get(created.id);
     expect(after.ok).toBe(true);
     if (after.ok) {
-      expect(after.run.cleanupConfirmed).toBe(true);
+      expect(after.run.errorDetails).toEqual({ status: "saved", path: "e.json" });
       expect(after.run.result).toBeDefined();
       expect(reasons).toContain(after.run.stateReason);
       expect(after.run.turns).toBe(created.turns);
@@ -346,12 +360,15 @@ describe("RunStore.markInterruptedOnStartup", () => {
     const { dataRoot, repoId, daemonStartedAt: firstDaemonStartedAt } = await makeStore();
     const firstStore = new RunStore({ dataRoot, repoId, daemonStartedAt: firstDaemonStartedAt });
 
-    const running1 = await firstStore.create(requirementInput());
-    await firstStore.update(running1.id, { state: "running" });
-    const running2 = await firstStore.create(requirementInput());
-    await firstStore.update(running2.id, { state: "running" });
-    const running3 = await firstStore.create(requirementInput());
-    await firstStore.update(running3.id, { state: "running" });
+    const running = await firstStore.create(requirementInput());
+    await firstStore.update(running.id, { state: "running" });
+    const paused = await firstStore.create(requirementInput());
+    await firstStore.update(paused.id, { state: "running" });
+    await firstStore.update(paused.id, { state: "pausing" });
+    await firstStore.update(paused.id, { state: "paused" });
+    const waitingAnswer = await firstStore.create(requirementInput());
+    await firstStore.update(waitingAnswer.id, { state: "running" });
+    await firstStore.update(waitingAnswer.id, { state: "waiting_answer" });
 
     const completedRun = await firstStore.create(requirementInput());
     await firstStore.update(completedRun.id, { state: "running" });
@@ -364,9 +381,9 @@ describe("RunStore.markInterruptedOnStartup", () => {
 
     const result = await secondStore.markInterruptedOnStartup();
 
-    expect(new Set(result.interrupted)).toEqual(new Set([running1.id, running2.id, running3.id]));
+    expect(new Set(result.interrupted)).toEqual(new Set([running.id, paused.id, waitingAnswer.id]));
 
-    for (const id of [running1.id, running2.id, running3.id]) {
+    for (const id of [running.id, paused.id, waitingAnswer.id]) {
       const got = await secondStore.get(id);
       expect(got.ok).toBe(true);
       if (got.ok) {
@@ -392,11 +409,10 @@ describe("isTerminalState", () => {
     expect(isTerminalState("stopped")).toBe(true);
   });
 
-  test("queued / running / interrupted / uncertain 不是终态", () => {
+  test("queued / running / interrupted 不是终态", () => {
     expect(isTerminalState("queued")).toBe(false);
     expect(isTerminalState("running")).toBe(false);
     expect(isTerminalState("interrupted")).toBe(false);
-    expect(isTerminalState("uncertain")).toBe(false);
   });
 });
 
@@ -410,7 +426,6 @@ describe("assertTransition", () => {
     ["waiting_answer", "running"],
     ["paused", "running"],
     ["paused_network", "running"],
-    ["running", "uncertain"],
     ["running", "completed"],
     ["interrupted", "running"],
   ])("合法转换 %s→%s 不抛出", (from, to) => {
@@ -423,10 +438,8 @@ describe("assertTransition", () => {
     ["queued", "paused"],
     ["completed", "failed"],
     ["interrupted", "interrupted"],
-    ["uncertain", "uncertain"],
     ["running", "paused"],
     ["pausing", "running"],
-    ["uncertain", "running"],
     ["paused", "pausing"],
     ["failed", "running"],
     ["stopped", "running"],
@@ -435,12 +448,31 @@ describe("assertTransition", () => {
   });
 
   test.each([
-    ["queued", "failed"],
-    ["interrupted", "stopped"],
-    ["waiting_answer", "stopped"],
+    ["queued", "stopped"],
+    ["running", "stopped"],
     ["pausing", "stopped"],
-  ])("合法转换 %s→%s 不抛出", (from, to) => {
+    ["paused", "stopped"],
+    ["paused_network", "stopped"],
+    ["waiting_answer", "stopped"],
+    ["interrupted", "stopped"],
+    ["queued", "failed"],
+    ["pausing", "failed"],
+    ["paused_network", "failed"],
+    ["waiting_answer", "failed"],
+    ["interrupted", "failed"],
+  ])("任何非终态 %s→%s 均允许", (from, to) => {
     expect(() => assertTransition(from as never, to as never)).not.toThrow();
+  });
+
+  test("stopped 之后任何转换均被拒绝", () => {
+    expect(() => assertTransition("stopped", "running")).toThrow("不允许");
+    expect(() => assertTransition("stopped", "stopped")).toThrow("不允许");
+  });
+
+  test("以字符串 uncertain 构造来源或目标调用均抛出'不允许的状态转换'", () => {
+    const uncertain: string = "uncertain";
+    expect(() => assertTransition(uncertain as RunState, "running")).toThrow("不允许的状态转换");
+    expect(() => assertTransition("running", uncertain as RunState)).toThrow("不允许的状态转换");
   });
 });
 
@@ -612,16 +644,6 @@ describe("RunStore.update 错误场景", () => {
     expect(failed.stateReason).toBe("模型异常退出");
     expect(failed.errorDetails).toEqual({ path: errorDetailsPath, status: "saved" });
     expect(isValidUtcTimestamp(failed.endedAt)).toBe(true);
-  });
-
-  test("进入 uncertain 不写 endedAt", async () => {
-    const { store } = await makeStore();
-    const created = await store.create(requirementInput());
-    await store.update(created.id, { state: "running" });
-    const uncertain = await store.update(created.id, { state: "uncertain" });
-
-    expect(uncertain.state).toBe("uncertain");
-    expect(uncertain.endedAt).toBeUndefined();
   });
 
   test("进入 stopped 写入 endedAt", async () => {
@@ -814,20 +836,6 @@ describe("启动标记的临界区与现场保留", () => {
     const read = await second.get(run.id);
     expect(read.ok && read.run.state).toBe("interrupted");
     expect(read.ok && read.run.stateReason).toBe("连接中断");
-  });
-
-  test("停止不确定的运行不因守护进程重启变成可续接", async () => {
-    const home = await createTempHome();
-    tempHomes.push(home);
-    const first = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T00:00:00.000Z" });
-    const run = await first.create({ kind: "requirement", requirement: "2026-09-08.x", task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
-    await first.update(run.id, { state: "running" });
-    await first.update(run.id, { state: "uncertain", stateReason: "停止后无法确认子进程退出" });
-    const second = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T01:00:00.000Z" });
-    const result = await second.markInterruptedOnStartup();
-    expect(result.interrupted).toEqual([]);
-    const read = await second.get(run.id);
-    expect(read.ok && read.run.state).toBe("uncertain");
   });
 
   test("守卫读取后记录变为终态则不再被标记", async () => {

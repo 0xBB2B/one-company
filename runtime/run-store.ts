@@ -16,8 +16,7 @@ export type RunState =
   | "completed"
   | "failed"
   | "stopped"
-  | "interrupted"
-  | "uncertain";
+  | "interrupted";
 
 export interface RunRecord {
   id: string;
@@ -41,7 +40,6 @@ export interface RunRecord {
   turns: number;
   result?: unknown;
   errorDetails: { path?: string; status: "none" | "saved" | "incomplete" | "unreadable" | "unavailable" };
-  cleanupConfirmed: boolean;
   daemonStartedAt: string;
 }
 
@@ -73,11 +71,10 @@ export interface ListRunResult {
   items: RunRecord[];
   total: number;
   runningCount: number;
-  uncertainCount: number;
 }
 
 export type UpdateRunFields = Partial<
-  Pick<RunRecord, "state" | "stateReason" | "turns" | "result" | "errorDetails" | "cleanupConfirmed" | "endedAt">
+  Pick<RunRecord, "state" | "stateReason" | "turns" | "result" | "errorDetails" | "endedAt">
 >;
 
 const UPDATE_PATCH_KEYS = [
@@ -86,12 +83,11 @@ const UPDATE_PATCH_KEYS = [
   "turns",
   "result",
   "errorDetails",
-  "cleanupConfirmed",
   "endedAt",
 ] as const satisfies readonly (keyof UpdateRunFields)[];
 
 const TERMINAL_STATES = new Set<RunState>(["completed", "failed", "stopped"]);
-const UNIVERSAL_TARGETS = new Set<RunState>(["failed", "stopped", "uncertain"]);
+const UNIVERSAL_TARGETS = new Set<RunState>(["failed", "stopped"]);
 const TRANSITIONS: Partial<Record<RunState, Set<RunState>>> = {
   queued: new Set(["running"]),
   running: new Set(["pausing", "paused_network", "waiting_answer", "completed"]),
@@ -172,7 +168,6 @@ export class RunStore {
       updatedAt: now,
       turns: 0,
       errorDetails: { status: "none" },
-      cleanupConfirmed: false,
       daemonStartedAt: this.daemonStartedAt,
     };
     await createDocument(this.statePath(id), run);
@@ -218,7 +213,6 @@ export class RunStore {
       items: filtered.slice(offset, offset + options.limit),
       total: filtered.length,
       runningCount: filtered.filter((run) => RUNNING_LIKE_STATES.has(run.state)).length,
-      uncertainCount: filtered.filter((run) => run.state === "uncertain").length,
     };
   }
 
@@ -262,7 +256,7 @@ export class RunStore {
   }
 
   private needsInterruptedMark(run: RunRecord): boolean {
-    if (run.state === "interrupted" || run.state === "uncertain" || isTerminalState(run.state)) return false;
+    if (run.state === "interrupted" || isTerminalState(run.state)) return false;
     return run.daemonStartedAt !== this.daemonStartedAt;
   }
 
