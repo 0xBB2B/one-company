@@ -13,3 +13,9 @@ describe("探测目标主机校验", () => {
     }
   });
 });
+
+describe("默认端口归一化", () => {
+  test("显式写 :443 的主机合法", () => {
+    expect(toValidHostUrl("api.example.com:443")?.href).toBe("https://api.example.com/");
+  });
+});

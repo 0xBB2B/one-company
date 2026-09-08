@@ -9,9 +9,10 @@ export interface StartConnectivityProbeOptions {
 }
 
 export function toValidHostUrl(host: string): URL | null {
+  if (/[\s/@?#\\]/.test(host)) return null;
   try {
     const url = new URL(`https://${host}/`);
-    return url.host === host.toLowerCase() && url.username === "" && url.pathname === "/" ? url : null;
+    return url.username === "" && url.password === "" && url.pathname === "/" ? url : null;
   } catch {
     return null;
   }

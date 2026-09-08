@@ -137,7 +137,7 @@ export class ConnectivityProbe {
     } catch {
       result = false;
     } finally {
-      this.inFlight = false;
+      if (generation === this.generation) this.inFlight = false;
     }
     if (generation !== this.generation) return;
     if (result === null) return;

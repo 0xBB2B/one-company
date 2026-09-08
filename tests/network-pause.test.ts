@@ -629,3 +629,36 @@ describe("分类与探测器的边界", () => {
     expect(calls).toBeGreaterThan(1);
   });
 });
+
+describe("跨代际在飞守卫", () => {
+  test("旧代际探测晚到 settle 不会清掉新代际的在飞守卫", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    let calls = 0;
+    let resolveOld: ((value: boolean) => void) | null = null;
+    let hangNew = true;
+    const probe = new ConnectivityProbe({
+      clock,
+      probe: () => {
+        calls++;
+        if (resolveOld === null) return new Promise<boolean>((resolve) => { resolveOld = resolve; });
+        return hangNew ? new Promise<boolean>(() => {}) : Promise.resolve(true);
+      },
+      intervalMs: 1_000,
+    });
+    probe.start();
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+    probe.stop();
+    probe.start();
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(2);
+    resolveOld!(true);
+    await flushMicrotasks();
+    timeSource.advance(2_000);
+    await flushMicrotasks();
+    expect(calls).toBe(2);
+  });
+});
