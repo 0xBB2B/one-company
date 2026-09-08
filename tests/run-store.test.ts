@@ -355,6 +355,30 @@ describe("RunStore.update", () => {
   });
 });
 
+describe("RunStore.markOwnRunsInterrupted", () => {
+  test("只把本实例的非终态运行标记为中断，其他实例与终态记录不动", async () => {
+    const { dataRoot, repoId, daemonStartedAt } = await makeStore();
+    const own = new RunStore({ dataRoot, repoId, daemonStartedAt });
+    const other = new RunStore({ dataRoot, repoId, daemonStartedAt: "other-instance" });
+    const ownRunning = await own.create(requirementInput());
+    await own.update(ownRunning.id, { state: "running" });
+    const ownDone = await own.create(requirementInput());
+    await own.update(ownDone.id, { state: "running" });
+    await own.update(ownDone.id, { state: "completed" });
+    const otherRunning = await other.create(requirementInput());
+    await other.update(otherRunning.id, { state: "running" });
+
+    const result = await own.markOwnRunsInterrupted();
+
+    expect(result.interrupted).toEqual([ownRunning.id]);
+    expect(result.failed).toEqual([]);
+    const after = await Promise.all([ownRunning.id, ownDone.id, otherRunning.id].map((id) => own.get(id)));
+    expect(after.map((r) => (r.ok ? r.run.state : r.reason))).toEqual(["interrupted", "completed", "running"]);
+    const again = await own.markOwnRunsInterrupted();
+    expect(again.interrupted).toEqual([]);
+  });
+});
+
 describe("RunStore.markInterruptedOnStartup", () => {
   test("守护进程重启后把旧实例的非终态运行标记为 interrupted，终态与新实例的记录不变", async () => {
     const { dataRoot, repoId, daemonStartedAt: firstDaemonStartedAt } = await makeStore();

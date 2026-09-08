@@ -18,6 +18,8 @@ description: 守护进程入口、SDK 动态加载、以 socket 连接探测实�
 - 新建：`daemon/lifecycle.ts` — 单实例、监听、空闲退出
 - 新建：`daemon/server.ts` — 连接管理与方法分发骨架（hello / ping / shutdown / 订阅登记；业务方法处理器由 run-manager 单元接入）
 - 修改：`runtime/identity.ts` — `daemonSocketPath` 改为返回 `<dataRoot>/sock/<repoId 前 16 位>.sock`（目录 0o700，首次创建）；删除 `daemonLockPath`
+- 修改：`runtime/run-store.ts` — 新增 `RunStore.markOwnRunsInterrupted`（把 `daemonStartedAt` 等于本实例的非终态运行改为 interrupted，供退出路径使用）
+- 新建：`tests/helpers/daemon-harness.ts` 用 PATH 上的 `node`（生产运行时）拉起守护进程，不用 bun
 - 新建：`tests/helpers/daemon-harness.ts` — 测试用真实拉起与连接
 - 新建：`tests/daemon-lifecycle.test.ts`
 
@@ -33,6 +35,8 @@ description: 守护进程入口、SDK 动态加载、以 socket 连接探测实�
   PI_COMPANY_REPO_DIR   = 仓库 git common dir 的 realpath
   PI_COMPANY_DATA_ROOT  = 本机数据根（缺省 ~/.pi/agent/pi-company）
   PI_CODING_AGENT_DIR   = 透传（缺省 ~/.pi/agent）
+  PI_COMPANY_IDLE_TIMEOUT_MS = 空闲时限毫秒（缺省 600000，测试缩短）
+  PI_COMPANY_CLOCK_SKEW_FILE = 可选；守护进程每个自检周期读取该文件中的毫秒数并注入时钟跳变（测试模拟睡眠），文件缺失或内容非数字忽略
 stdio：ignore；detached：true；spawn 后 unref
 socket：<dataRoot>/sock/<repoId 前 16 位>.sock（不在 repos/<repoId>/ 下，避免路径超出 Unix socket 长度上限）
 单实例：无锁文件、不判 pid。拉起方与守护进程都先连接 socket：连上即复用现有实例；
@@ -44,33 +48,33 @@ socket：<dataRoot>/sock/<repoId 前 16 位>.sock（不在 repos/<repoId>/ 下�
 ### daemon/main.ts
 | 函数 | 职责 |
 |---|---|
-| `main` | 读环境变量、加载 SDK、调用 `startDaemon`，任何启动失败以非零退出并写 stderr |
+| `main` | 读环境变量（空闲时限须为有限正数，否则非零退出并写原因）、加载 SDK、调用 `startDaemon`，任何启动失败以非零退出并写 stderr |
 
 ### daemon/sdk.ts
 | 函数 | 职责 |
 |---|---|
 | `loadSdk` | 动态 import `<sdkDir>/dist/index.js`，返回需要的 SDK 符号集合 |
 | `loadSdkModule` | 用 SDK 目录的 `createRequire` 解析并 import 指定包（pi-ai 兼容入口、jiti） |
-| `assertSdkVersion` | 读取 SDK package 版本并校验满足下限 |
+| `assertSdkVersion` | 读取 SDK package 版本并校验满足下限（带预发布后缀的版本低于同号正式版） |
 
 ### daemon/lifecycle.ts
 | 函数 | 职责 |
 |---|---|
-| `startDaemon` | 先 `probeExistingInstance`：已有实例在监听则以退出码 0 退出；否则 `listenExclusive`、建服务端、启动空闲检查、socket 自检与退出清理 |
+| `startDaemon` | socket 路径超过平台上限（macOS 104 / Linux 108 字节）时以明确原因非零退出；先 `probeExistingInstance`：已有实例在监听则以退出码 0 退出；否则 `listenExclusive`、建服务端、启动空闲检查、socket 自检与退出清理；监听前完成全部状态初始化，启动窗口内 `shutdown` 一律不接受 |
 | `probeExistingInstance` | 连接 socket 路径并完成 `ping`：成功返回"已有实例"；ECONNREFUSED / ENOENT 返回"残留或缺失" |
-| `listenExclusive` | 删除残留 socket 文件后监听，监听成功后记录自身 socket 文件的 inode |
-| `checkSocketOwnership` | 用睡眠感知时钟周期（5 秒）stat socket 路径并比对 inode；不一致或文件消失时停止接受新连接、标记运行中断、退出 |
+| `listenExclusive` | 在唯一临时路径监听后以 `link()` 原子抢占正式路径（EEXIST 即认输去连接对方），确认残留（连接被拒）才删除残留文件重试；不对活文件做 rm；成功后记录自身 socket 文件的 inode |
+| `checkSocketOwnership` | 用睡眠感知时钟周期（5 秒）stat socket 路径并比对 inode；不一致或文件消失时停止接受新连接、`markOwnRunsInterrupted`、不经 `server.close()` 的 unlink 直接退出（不删新文件）；定时器回调捕获异常，读失败按有活动保守处理并写 stderr |
 | `releaseSocket` | 退出时只删除 inode 仍等于自身记录的 socket 文件 |
 | `IdleExit.touch` | 记录最近活动时刻（连接、请求、运行事件） |
-| `IdleExit.check` | 按扣除睡眠后的时长判断是否应退出，有活动需求代理时不退出 |
-| `installSignalHandlers` | 处理可处理终止信号：停止运行的 Shell、标记运行中断、释放 socket 后退出 |
+| `IdleExit.check` | 按扣除睡眠后的时长判断是否应退出，有活动需求代理（queued/running/pausing/paused/paused_network/waiting_answer）或有连接时不退出 |
+| `installSignalHandlers` | 处理可处理终止信号：停止运行的 Shell、`markOwnRunsInterrupted`、释放 socket 后退出；优雅退出带看门狗超时，第二次信号立即退出 |
 
 ### daemon/server.ts
 | 函数 | 职责 |
 |---|---|
 | `DaemonServer.listen` | 在 socket 路径监听，逐连接解码帧 |
 | `DaemonServer.handleHello` | 校验协议版本，登记客户端的窗口身份、工作区与仓库集合 |
-| `DaemonServer.dispatchMethod` | 按方法名路由到已注册处理器，未知方法返回错误 |
+| `DaemonServer.dispatchMethod` | 未 hello 的连接只放行 `ping`，其他方法返回协议错误；按方法名路由到已注册处理器，未知方法返回错误 |
 | `DaemonServer.registerHandler` | 供 run-manager 单元登记 dispatch/runs/relay/shells/subscribe 方法处理器 |
 | `DaemonServer.broadcast` | 向满足过滤条件的客户端发送事件帧 |
 | `DaemonServer.clients` | 列出当前连接及其登记信息 |

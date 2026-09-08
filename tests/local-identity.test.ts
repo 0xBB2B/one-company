@@ -14,7 +14,6 @@ import {
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import {
   dataRoot,
-  daemonLockPath,
   daemonSocketPath,
   discoverWorkspace,
   isInsideRepository,
@@ -480,18 +479,15 @@ describe("runDataDir", () => {
   });
 });
 
-describe("daemonSocketPath / daemonLockPath", () => {
-  test("返回仓库数据目录下的 daemon.sock 与 daemon.lock", async () => {
+describe("daemonSocketPath", () => {
+  test("返回数据根 sock 目录下以 repoId 前 16 位命名的 socket 路径", async () => {
     const home = await createTempHome();
     tempHomes.push(home);
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const identity = await repositoryIdentity(repo.root);
     expect(daemonSocketPath(home.dataRoot, identity.repoId)).toBe(
-      join(home.dataRoot, "repos", identity.repoId, "daemon.sock"),
-    );
-    expect(daemonLockPath(home.dataRoot, identity.repoId)).toBe(
-      join(home.dataRoot, "repos", identity.repoId, "daemon.lock"),
+      join(home.dataRoot, "sock", `${identity.repoId.slice(0, 16)}.sock`),
     );
   });
 

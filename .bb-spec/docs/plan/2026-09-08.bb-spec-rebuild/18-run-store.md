@@ -56,6 +56,7 @@ description: 守护进程内运行记录的持久化：状态集合（无停止�
 | `RunStore.list` | 按 kind、requirement、状态过滤并分页，统计运行中数量 |
 | `RunStore.update` | 按转换表更新状态与字段，终态不可回退，`endedAt` 只写一次，`shellToken` 不可改写，按记录串行化写入 |
 | `RunStore.markInterruptedOnStartup` | 把 `daemonStartedAt` 不等于本次启动且非终态的记录在锁内复判后改为 `interrupted` 并写入本次 `daemonStartedAt`（幂等）；单条失败收集到返回值而不中断整轮 |
+| `RunStore.markOwnRunsInterrupted` | 把 `daemonStartedAt` 等于本实例且非终态、非 interrupted 的记录改为 interrupted（守护进程退出路径调用，不触碰其他实例的运行） |
 | `isTerminalState` | 判断状态是否终态 |
 | `assertTransition` | 校验状态转换合法，否则抛出说明 |
 

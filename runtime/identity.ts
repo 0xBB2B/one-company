@@ -221,9 +221,5 @@ export function runDataDir(dataRootPath: string, repoId: string, runId: string):
 }
 
 export function daemonSocketPath(dataRootPath: string, repoId: string): string {
-  return join(dataRootPath, "repos", repoId, "daemon.sock");
-}
-
-export function daemonLockPath(dataRootPath: string, repoId: string): string {
-  return join(dataRootPath, "repos", repoId, "daemon.lock");
+  return join(dataRootPath, "sock", `${repoId.slice(0, 16)}.sock`);
 }

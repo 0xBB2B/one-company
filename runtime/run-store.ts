@@ -255,9 +255,53 @@ export class RunStore {
     return { interrupted, failed };
   }
 
+  async markOwnRunsInterrupted(): Promise<{ interrupted: string[]; failed: Array<{ id: string; reason: string }> }> {
+    const ids = await this.listRunIds();
+    const interrupted: string[] = [];
+    const failed: Array<{ id: string; reason: string }> = [];
+    for (const id of ids) {
+      const result = await this.get(id);
+      if (!result.ok) {
+        failed.push({ id, reason: result.reason });
+        continue;
+      }
+      if (!this.needsOwnInterruptedMark(result.run)) continue;
+      try {
+        if (await this.writeOwnInterrupted(id)) interrupted.push(id);
+      } catch (error) {
+        failed.push({ id, reason: (error as Error).message });
+      }
+    }
+    return { interrupted, failed };
+  }
+
   private needsInterruptedMark(run: RunRecord): boolean {
     if (run.state === "interrupted" || isTerminalState(run.state)) return false;
     return run.daemonStartedAt !== this.daemonStartedAt;
+  }
+
+  private needsOwnInterruptedMark(run: RunRecord): boolean {
+    if (run.state === "interrupted" || isTerminalState(run.state)) return false;
+    return run.daemonStartedAt === this.daemonStartedAt;
+  }
+
+  private async writeOwnInterrupted(id: string): Promise<boolean> {
+    const dir = runDataDir(this.dataRoot, this.repoId, id);
+    const path = join(dir, "state.json");
+    return withDirLock(dir, async () => {
+      const current = await readDocument(path);
+      if (!current.exists) throw new Error(`运行不存在: ${id}`);
+      const run = current.data as RunRecord;
+      if (!this.needsOwnInterruptedMark(run)) return false;
+      const merged: RunRecord = {
+        ...run,
+        state: "interrupted",
+        stateReason: run.stateReason || "守护进程退出：运行在退出前未完成",
+        updatedAt: new Date().toISOString(),
+      };
+      await writeDocument(path, merged, { expectedVersion: current.version });
+      return true;
+    });
   }
 
   private async writeInterrupted(id: string): Promise<boolean> {
