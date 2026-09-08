@@ -24,6 +24,7 @@ import {
   requirementDataDir,
   requirementIdentity,
   runDataDir,
+  runsDataDir,
 } from "../runtime/identity.ts";
 
 const execFileAsync = promisify(execFile);
@@ -542,5 +543,13 @@ describe("git 判定不依赖环境", () => {
     const fromParent = await discoverWorkspace(workspace.root);
     const fromInside = await discoverWorkspace(workspace.repos[0]!);
     expect(fromParent.repos.map((r) => r.path)).toContain(fromInside.repos[0]?.path);
+  });
+});
+
+describe("runsDataDir", () => {
+  test("是 runDataDir 的父目录", () => {
+    const root = "/tmp/data";
+    const runId = "3b241101-e2bb-4255-8caf-4136c566a962";
+    expect(runDataDir(root, "repo", runId)).toBe(join(runsDataDir(root, "repo"), runId));
   });
 });

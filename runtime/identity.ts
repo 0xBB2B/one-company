@@ -211,9 +211,13 @@ export function requirementDataDir(dataRootPath: string, repoId: string, reqId: 
 
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export function runsDataDir(dataRootPath: string, repoId: string): string {
+  return join(dataRootPath, "repos", repoId, "runs");
+}
+
 export function runDataDir(dataRootPath: string, repoId: string, runId: string): string {
   if (!UUID_V4_PATTERN.test(runId)) throw new Error(`不合法的 UUIDv4: ${runId}`);
-  return join(dataRootPath, "repos", repoId, "runs", runId);
+  return join(runsDataDir(dataRootPath, repoId), runId);
 }
 
 export function daemonSocketPath(dataRootPath: string, repoId: string): string {

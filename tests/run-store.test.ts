@@ -1,0 +1,851 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { runDataDir } from "../runtime/identity.ts";
+import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
+import { RunStore, assertTransition, isTerminalState } from "../runtime/run-store.ts";
+
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const tempHomes: Array<Awaited<ReturnType<typeof createTempHome>>> = [];
+
+afterEach(async () => {
+  for (const home of tempHomes.splice(0)) {
+    await removeTempHome(home);
+  }
+});
+
+function isValidUtcTimestamp(value: unknown): boolean {
+  return typeof value === "string" && new Date(value).toISOString() === value;
+}
+
+async function makeStore(overrides: { daemonStartedAt?: string } = {}): Promise<{
+  store: RunStore;
+  dataRoot: string;
+  repoId: string;
+  daemonStartedAt: string;
+}> {
+  const home = await createTempHome();
+  tempHomes.push(home);
+  const repoId = randomUUID();
+  const daemonStartedAt = overrides.daemonStartedAt ?? new Date().toISOString();
+  const store = new RunStore({ dataRoot: home.dataRoot, repoId, daemonStartedAt });
+  return { store, dataRoot: home.dataRoot, repoId, daemonStartedAt };
+}
+
+function requirementInput(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: "requirement",
+    requirement: "2026-09-09.demo",
+    task: "示例任务",
+    cwd: "/tmp/example-cwd",
+    writePaths: [],
+    readPaths: [],
+    model: { provider: "anthropic", id: "claude-test" },
+    thinking: "high",
+    mcp: [],
+    ...overrides,
+  };
+}
+
+function roleInput(parentRunId: string, overrides: Record<string, unknown> = {}) {
+  return requirementInput({
+    kind: "role",
+    role: "pi-company.worker",
+    parentRunId,
+    ...overrides,
+  });
+}
+
+async function statePath(dataRoot: string, repoId: string, runId: string): Promise<string> {
+  return join(runDataDir(dataRoot, repoId, runId), "state.json");
+}
+
+async function overwriteStateFile(path: string, mutate: (data: Record<string, unknown>) => void): Promise<void> {
+  const raw = await readFile(path, "utf8");
+  const parsed = JSON.parse(raw) as { version: number; data: Record<string, unknown> };
+  mutate(parsed.data);
+  await writeFile(path, `${JSON.stringify(parsed)}\n`, "utf8");
+}
+
+describe("RunStore.create", () => {
+  test("kind requirement 创建成功返回合法运行身份与初始字段", async () => {
+    const { store, daemonStartedAt } = await makeStore();
+    const run = await store.create(requirementInput());
+
+    expect(UUID_V4.test(run.id)).toBe(true);
+    expect(run.kind).toBe("requirement");
+    expect(run.requirement).toBe("2026-09-09.demo");
+    expect(run.state).toBe("queued");
+    expect(run.turns).toBe(0);
+    expect(run.errorDetails.status).toBe("none");
+    expect(run.cleanupConfirmed).toBe(false);
+    expect(run.daemonStartedAt).toBe(daemonStartedAt);
+    expect(isValidUtcTimestamp(run.startedAt)).toBe(true);
+    expect(isValidUtcTimestamp(run.updatedAt)).toBe(true);
+  });
+
+  test("kind role 创建成功携带 role 与 parentRunId", async () => {
+    const { store } = await makeStore();
+    const parent = await store.create(requirementInput());
+    const child = await store.create(roleInput(parent.id));
+
+    expect(child.kind).toBe("role");
+    expect(child.role).toBe("pi-company.worker");
+    expect(child.parentRunId).toBe(parent.id);
+  });
+
+  test("state.json 写入目录权限 0700、文件权限 0600", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const run = await store.create(requirementInput());
+    const dir = runDataDir(dataRoot, repoId, run.id);
+    const path = await statePath(dataRoot, repoId, run.id);
+
+    expect((await stat(dir)).mode & 0o777).toBe(0o700);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+  });
+
+  test("50 个并发创建各自生成互不相同的运行身份且文件权限正确", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const runs = await Promise.all(Array.from({ length: 50 }, () => store.create(requirementInput())));
+
+    expect(new Set(runs.map((run) => run.id)).size).toBe(50);
+    for (const run of runs) {
+      expect(UUID_V4.test(run.id)).toBe(true);
+      const dir = runDataDir(dataRoot, repoId, run.id);
+      const path = await statePath(dataRoot, repoId, run.id);
+      expect((await stat(dir)).mode & 0o777).toBe(0o700);
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test("缺少 requirement 时抛错", async () => {
+    const { store } = await makeStore();
+    const input = requirementInput();
+    delete (input as Record<string, unknown>).requirement;
+    await expect(store.create(input)).rejects.toThrow();
+  });
+
+  test("kind 为 role 但缺 parentRunId 时抛错", async () => {
+    const { store } = await makeStore();
+    const input = requirementInput({ kind: "role", role: "pi-company.worker" });
+    await expect(store.create(input)).rejects.toThrow();
+  });
+
+  test("role 不以 pi-company. 开头时抛错", async () => {
+    const { store } = await makeStore();
+    const parent = await store.create(requirementInput());
+    const input = requirementInput({ kind: "role", role: "worker", parentRunId: parent.id });
+    await expect(store.create(input)).rejects.toThrow();
+  });
+});
+
+describe("RunStore.get", () => {
+  test("能读回刚创建的记录", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    const result = await store.get(created.id);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.run.id).toBe(created.id);
+  });
+
+  test("不存在的运行身份返回 not_found", async () => {
+    const { store } = await makeStore();
+    const result = await store.get(randomUUID());
+    expect(result).toMatchObject({ ok: false, reason: "not_found" });
+  });
+
+  test("文件损坏为非 JSON 时返回 unreadable 而不抛出", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const created = await store.create(requirementInput());
+    const path = await statePath(dataRoot, repoId, created.id);
+    await writeFile(path, "不是合法 JSON", "utf8");
+
+    const result = await store.get(created.id);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unreadable");
+  });
+});
+
+describe("RunStore.list", () => {
+  test("按 startedAt 倒序排列", async () => {
+    const { store } = await makeStore();
+    const first = await store.create(requirementInput());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = await store.create(requirementInput());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const third = await store.create(requirementInput());
+
+    const { items } = await store.list({ limit: 100 });
+    expect(items.map((item) => item.id)).toEqual([third.id, second.id, first.id]);
+  });
+
+  test("按 kind 过滤", async () => {
+    const { store } = await makeStore();
+    const parent = await store.create(requirementInput());
+    const child = await store.create(roleInput(parent.id));
+
+    const { items } = await store.list({ kind: "role", limit: 100 });
+    expect(items.map((item) => item.id)).toEqual([child.id]);
+  });
+
+  test("按 requirement 过滤", async () => {
+    const { store } = await makeStore();
+    const a = await store.create(requirementInput({ requirement: "2026-09-09.demo-a" }));
+    await store.create(requirementInput({ requirement: "2026-09-09.demo-b" }));
+
+    const { items } = await store.list({ requirement: "2026-09-09.demo-a", limit: 100 });
+    expect(items.map((item) => item.id)).toEqual([a.id]);
+  });
+
+  test("按 states 过滤", async () => {
+    const { store } = await makeStore();
+    const queued = await store.create(requirementInput());
+    const running = await store.create(requirementInput());
+    await store.update(running.id, { state: "running" });
+
+    const { items } = await store.list({ states: ["running"], limit: 100 });
+    expect(items.map((item) => item.id)).toEqual([running.id]);
+    expect(items.map((item) => item.id)).not.toContain(queued.id);
+  });
+
+  test("offset 与 limit 分页", async () => {
+    const { store } = await makeStore();
+    for (let i = 0; i < 5; i += 1) {
+      await store.create(requirementInput());
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+
+    const page1 = await store.list({ offset: 0, limit: 2 });
+    const page2 = await store.list({ offset: 2, limit: 2 });
+    expect(page1.items.length).toBe(2);
+    expect(page2.items.length).toBe(2);
+    expect(page1.total).toBe(5);
+    expect(page2.total).toBe(5);
+    expect(page1.items.map((item) => item.id)).not.toEqual(page2.items.map((item) => item.id));
+  });
+
+  test("runningCount 统计 running/pausing/waiting_answer，uncertainCount 统计 uncertain", async () => {
+    const { store } = await makeStore();
+    const running = await store.create(requirementInput());
+    await store.update(running.id, { state: "running" });
+
+    const pausing = await store.create(requirementInput());
+    await store.update(pausing.id, { state: "running" });
+    await store.update(pausing.id, { state: "pausing" });
+
+    const waitingAnswer = await store.create(requirementInput());
+    await store.update(waitingAnswer.id, { state: "running" });
+    await store.update(waitingAnswer.id, { state: "waiting_answer" });
+
+    const uncertain = await store.create(requirementInput());
+    await store.update(uncertain.id, { state: "uncertain" });
+
+    const queued = await store.create(requirementInput());
+
+    const result = await store.list({ limit: 100 });
+    expect(result.runningCount).toBe(3);
+    expect(result.uncertainCount).toBe(1);
+    expect(result.total).toBe(5);
+    void queued;
+  });
+});
+
+describe("RunStore.update", () => {
+  test("合法转换更新 state 与 updatedAt", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const updated = await store.update(created.id, { state: "running" });
+
+    expect(updated.state).toBe("running");
+    expect(updated.updatedAt).not.toBe(created.updatedAt);
+  });
+
+  test("进入终态时若未提供 endedAt 则自动写入当前时间", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    await store.update(created.id, { state: "running" });
+    const completed = await store.update(created.id, { state: "completed" });
+
+    expect(isValidUtcTimestamp(completed.endedAt)).toBe(true);
+  });
+
+  test("已有 endedAt 的记录再次更新时 endedAt 不再改变", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    await store.update(created.id, { state: "running" });
+    const completed = await store.update(created.id, { state: "completed" });
+    const firstEndedAt = completed.endedAt;
+
+    const secondUpdate = await store.update(created.id, {
+      cleanupConfirmed: true,
+      endedAt: "2000-01-01T00:00:00.000Z",
+    });
+
+    expect(secondUpdate.endedAt).toBe(firstEndedAt);
+    expect(secondUpdate.cleanupConfirmed).toBe(true);
+  });
+
+  test.each([
+    ["completed", "running"],
+    ["stopped", "paused"],
+    ["queued", "paused"],
+  ])("非法转换 %s→%s 抛出含'不允许'的错误且文件不变", async (from, to) => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+
+    if (from === "stopped") {
+      await store.update(created.id, { state: "stopped" });
+    } else if (from === "completed") {
+      await store.update(created.id, { state: "running" });
+      await store.update(created.id, { state: "completed" });
+    }
+
+    const before = await store.get(created.id);
+    let caught: unknown;
+    try {
+      await store.update(created.id, { state: to as never });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("不允许");
+
+    const after = await store.get(created.id);
+    expect(after).toEqual(before);
+  });
+
+  test("20 个并发 update 混合写入不同字段全部生效且互不清空", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+
+    const reasons = Array.from({ length: 10 }, (_, i) => `原因-${i}`);
+    const results = Array.from({ length: 5 }, (_, i) => ({ index: i }));
+
+    await Promise.all([
+      ...reasons.map((reason) => store.update(created.id, { stateReason: reason })),
+      ...Array.from({ length: 5 }, () => store.update(created.id, { cleanupConfirmed: true })),
+      ...results.map((result) => store.update(created.id, { result })),
+    ]);
+
+    const after = await store.get(created.id);
+    expect(after.ok).toBe(true);
+    if (after.ok) {
+      expect(after.run.cleanupConfirmed).toBe(true);
+      expect(after.run.result).toBeDefined();
+      expect(reasons).toContain(after.run.stateReason);
+      expect(after.run.turns).toBe(created.turns);
+    }
+  });
+});
+
+describe("RunStore.markInterruptedOnStartup", () => {
+  test("守护进程重启后把旧实例的非终态运行标记为 interrupted，终态与新实例的记录不变", async () => {
+    const { dataRoot, repoId, daemonStartedAt: firstDaemonStartedAt } = await makeStore();
+    const firstStore = new RunStore({ dataRoot, repoId, daemonStartedAt: firstDaemonStartedAt });
+
+    const running1 = await firstStore.create(requirementInput());
+    await firstStore.update(running1.id, { state: "running" });
+    const running2 = await firstStore.create(requirementInput());
+    await firstStore.update(running2.id, { state: "running" });
+    const running3 = await firstStore.create(requirementInput());
+    await firstStore.update(running3.id, { state: "running" });
+
+    const completedRun = await firstStore.create(requirementInput());
+    await firstStore.update(completedRun.id, { state: "running" });
+    await firstStore.update(completedRun.id, { state: "completed" });
+
+    const secondDaemonStartedAt = new Date(Date.now() + 1000).toISOString();
+    const secondStore = new RunStore({ dataRoot, repoId, daemonStartedAt: secondDaemonStartedAt });
+    const ownRunning = await secondStore.create(requirementInput());
+    await secondStore.update(ownRunning.id, { state: "running" });
+
+    const result = await secondStore.markInterruptedOnStartup();
+
+    expect(new Set(result.interrupted)).toEqual(new Set([running1.id, running2.id, running3.id]));
+
+    for (const id of [running1.id, running2.id, running3.id]) {
+      const got = await secondStore.get(id);
+      expect(got.ok).toBe(true);
+      if (got.ok) {
+        expect(got.run.state).toBe("interrupted");
+        expect(got.run.stateReason).toContain("守护进程");
+      }
+    }
+
+    const completedAfter = await secondStore.get(completedRun.id);
+    expect(completedAfter.ok).toBe(true);
+    if (completedAfter.ok) expect(completedAfter.run.state).toBe("completed");
+
+    const ownAfter = await secondStore.get(ownRunning.id);
+    expect(ownAfter.ok).toBe(true);
+    if (ownAfter.ok) expect(ownAfter.run.state).toBe("running");
+  });
+});
+
+describe("isTerminalState", () => {
+  test("completed / failed / stopped 是终态", () => {
+    expect(isTerminalState("completed")).toBe(true);
+    expect(isTerminalState("failed")).toBe(true);
+    expect(isTerminalState("stopped")).toBe(true);
+  });
+
+  test("queued / running / interrupted / uncertain 不是终态", () => {
+    expect(isTerminalState("queued")).toBe(false);
+    expect(isTerminalState("running")).toBe(false);
+    expect(isTerminalState("interrupted")).toBe(false);
+    expect(isTerminalState("uncertain")).toBe(false);
+  });
+});
+
+describe("assertTransition", () => {
+  test.each([
+    ["queued", "running"],
+    ["running", "pausing"],
+    ["pausing", "paused"],
+    ["running", "paused_network"],
+    ["running", "waiting_answer"],
+    ["waiting_answer", "running"],
+    ["paused", "running"],
+    ["paused_network", "running"],
+    ["running", "uncertain"],
+    ["running", "completed"],
+    ["interrupted", "running"],
+  ])("合法转换 %s→%s 不抛出", (from, to) => {
+    expect(() => assertTransition(from as never, to as never)).not.toThrow();
+  });
+
+  test.each([
+    ["completed", "running"],
+    ["stopped", "paused"],
+    ["queued", "paused"],
+    ["completed", "failed"],
+    ["interrupted", "interrupted"],
+    ["uncertain", "uncertain"],
+    ["running", "paused"],
+    ["pausing", "running"],
+    ["uncertain", "running"],
+    ["paused", "pausing"],
+    ["failed", "running"],
+    ["stopped", "running"],
+  ])("非法转换 %s→%s 抛出含'不允许'的错误", (from, to) => {
+    expect(() => assertTransition(from as never, to as never)).toThrow("不允许");
+  });
+
+  test.each([
+    ["queued", "failed"],
+    ["interrupted", "stopped"],
+    ["waiting_answer", "stopped"],
+    ["pausing", "stopped"],
+  ])("合法转换 %s→%s 不抛出", (from, to) => {
+    expect(() => assertTransition(from as never, to as never)).not.toThrow();
+  });
+});
+
+describe("RunStore.markInterruptedOnStartup 幂等", () => {
+  test("已标记的记录不会被后续新守护进程实例重复标记，daemonStartedAt 更新为标记时的实例值", async () => {
+    const { dataRoot, repoId, daemonStartedAt: firstDaemonStartedAt } = await makeStore();
+    const firstStore = new RunStore({ dataRoot, repoId, daemonStartedAt: firstDaemonStartedAt });
+    const running = await firstStore.create(requirementInput());
+    await firstStore.update(running.id, { state: "running" });
+
+    const secondDaemonStartedAt = new Date(Date.now() + 1000).toISOString();
+    const secondStore = new RunStore({ dataRoot, repoId, daemonStartedAt: secondDaemonStartedAt });
+    const firstMark = await secondStore.markInterruptedOnStartup();
+    expect(firstMark.interrupted).toEqual([running.id]);
+
+    const afterFirstMark = await secondStore.get(running.id);
+    expect(afterFirstMark.ok).toBe(true);
+    if (!afterFirstMark.ok) return;
+    expect(afterFirstMark.run.state).toBe("interrupted");
+    expect(afterFirstMark.run.daemonStartedAt).toBe(secondDaemonStartedAt);
+    expect(afterFirstMark.run.endedAt).toBeUndefined();
+
+    const thirdDaemonStartedAt = new Date(Date.now() + 2000).toISOString();
+    const thirdStore = new RunStore({ dataRoot, repoId, daemonStartedAt: thirdDaemonStartedAt });
+    const secondMark = await thirdStore.markInterruptedOnStartup();
+    expect(secondMark.interrupted).toEqual([]);
+
+    const afterSecondMark = await thirdStore.get(running.id);
+    expect(afterSecondMark.ok).toBe(true);
+    if (!afterSecondMark.ok) return;
+    expect(afterSecondMark.run.updatedAt).toBe(afterFirstMark.run.updatedAt);
+    expect(afterSecondMark.run.stateReason).toBe(afterFirstMark.run.stateReason);
+  });
+});
+
+describe("RunStore.markInterruptedOnStartup 部分失败", () => {
+  test("单条记录损坏不阻断整轮标记，返回 failed 明细", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const running1 = await store.create(requirementInput());
+    await store.update(running1.id, { state: "running" });
+    const running2 = await store.create(requirementInput());
+    await store.update(running2.id, { state: "running" });
+
+    const corruptedPath = await statePath(dataRoot, repoId, running2.id);
+    await writeFile(corruptedPath, "不是合法 JSON", "utf8");
+
+    const newDaemonStartedAt = new Date(Date.now() + 1000).toISOString();
+    const newStore = new RunStore({ dataRoot, repoId, daemonStartedAt: newDaemonStartedAt });
+
+    let result: { interrupted: string[]; failed?: Array<{ id: string; reason: string }> } | undefined;
+    let caught: unknown;
+    try {
+      result = await newStore.markInterruptedOnStartup();
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeUndefined();
+    expect(result?.interrupted).toEqual([running1.id]);
+    expect(result?.failed).toBeDefined();
+    expect(result?.failed?.length).toBe(1);
+    expect(result?.failed?.[0]?.id).toBe(running2.id);
+    expect(result?.failed?.[0]?.reason.length).toBeGreaterThan(0);
+  });
+});
+
+describe("RunStore.markInterruptedOnStartup 兼容旧记录", () => {
+  test("缺失 daemonStartedAt 的旧记录在启动时被标记 interrupted", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const created = await store.create(requirementInput());
+    await store.update(created.id, { state: "running" });
+    const path = await statePath(dataRoot, repoId, created.id);
+    await overwriteStateFile(path, (data) => {
+      delete data.daemonStartedAt;
+    });
+
+    const newStore = new RunStore({ dataRoot, repoId, daemonStartedAt: new Date(Date.now() + 1000).toISOString() });
+    const result = await newStore.markInterruptedOnStartup();
+
+    expect(result.interrupted).toContain(created.id);
+    const after = await newStore.get(created.id);
+    expect(after.ok).toBe(true);
+    if (after.ok) expect(after.run.state).toBe("interrupted");
+  });
+});
+
+describe("RunStore.update 错误场景", () => {
+  test("合法 UUID 但目录不存在时抛出含'运行不存在'的错误且不含绝对路径", async () => {
+    const { store, dataRoot } = await makeStore();
+    const missingId = randomUUID();
+
+    let caught: unknown;
+    try {
+      await store.update(missingId, { state: "running" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toContain("运行不存在");
+    expect(message).not.toContain(dataRoot);
+  });
+
+  test("非 UUID 的 id 抛出含 UUIDv4 的错误", async () => {
+    const { store } = await makeStore();
+
+    let caught: unknown;
+    try {
+      await store.update("not-a-uuid", { state: "running" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("UUIDv4");
+  });
+
+  test("直接 update 到 interrupted 时抛出含'不允许'的错误", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    await store.update(created.id, { state: "running" });
+
+    let caught: unknown;
+    try {
+      await store.update(created.id, { state: "interrupted" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("不允许");
+  });
+
+  test("patch 中的 id/daemonStartedAt/startedAt/kind/requirement/未知键不生效", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+
+    await store.update(created.id, {
+      id: "spoofed-id",
+      daemonStartedAt: "spoofed-daemon",
+      startedAt: "spoofed-started-at",
+      kind: "role",
+      requirement: "spoofed-requirement",
+      bogus: "spoofed-bogus",
+    } as never);
+
+    const after = await store.get(created.id);
+    expect(after.ok).toBe(true);
+    if (!after.ok) return;
+    expect(after.run.id).toBe(created.id);
+    expect(after.run.daemonStartedAt).toBe(created.daemonStartedAt);
+    expect(after.run.startedAt).toBe(created.startedAt);
+    expect(after.run.kind).toBe(created.kind);
+    expect(after.run.requirement).toBe(created.requirement);
+    expect((after.run as Record<string, unknown>).bogus).toBeUndefined();
+  });
+
+  test("state 转 failed 时 stateReason/errorDetails 落盘且写入 endedAt", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const created = await store.create(requirementInput());
+    await store.update(created.id, { state: "running" });
+    const errorDetailsPath = `${runDataDir(dataRoot, repoId, created.id)}/error-details.json`;
+
+    const failed = await store.update(created.id, {
+      state: "failed",
+      stateReason: "模型异常退出",
+      errorDetails: { path: errorDetailsPath, status: "saved" },
+    });
+
+    expect(failed.state).toBe("failed");
+    expect(failed.stateReason).toBe("模型异常退出");
+    expect(failed.errorDetails).toEqual({ path: errorDetailsPath, status: "saved" });
+    expect(isValidUtcTimestamp(failed.endedAt)).toBe(true);
+  });
+
+  test("进入 uncertain 不写 endedAt", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    await store.update(created.id, { state: "running" });
+    const uncertain = await store.update(created.id, { state: "uncertain" });
+
+    expect(uncertain.state).toBe("uncertain");
+    expect(uncertain.endedAt).toBeUndefined();
+  });
+
+  test("进入 stopped 写入 endedAt", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    await store.update(created.id, { state: "running" });
+    const stopped = await store.update(created.id, { state: "stopped" });
+
+    expect(stopped.state).toBe("stopped");
+    expect(isValidUtcTimestamp(stopped.endedAt)).toBe(true);
+  });
+});
+
+describe("RunStore.get 非 UUID 场景", () => {
+  test("非 UUID 的 id 返回 not_found 而非 unreadable", async () => {
+    const { store } = await makeStore();
+    const result = await store.get("not-a-uuid");
+    expect(result).toEqual({ ok: false, reason: "not_found" });
+  });
+});
+
+describe("RunStore.list 排序与容错", () => {
+  test("相同 startedAt 的记录按 id 升序稳定排序", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const a = await store.create(requirementInput());
+    const b = await store.create(requirementInput());
+    const c = await store.create(requirementInput());
+    const tiedStartedAt = "2026-01-01T00:00:00.000Z";
+    for (const run of [a, b, c]) {
+      const path = await statePath(dataRoot, repoId, run.id);
+      await overwriteStateFile(path, (data) => {
+        data.startedAt = tiedStartedAt;
+      });
+    }
+    const expectedOrder = [a.id, b.id, c.id].sort();
+
+    for (let i = 0; i < 10; i += 1) {
+      const { items } = await store.list({ limit: 100 });
+      expect(items.map((item) => item.id)).toEqual(expectedOrder);
+    }
+  });
+
+  test("跳过非 UUID 目录、普通文件与损坏记录，total 只计合法记录", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const valid = await store.create(requirementInput());
+    const corrupted = await store.create(requirementInput());
+    const corruptedPath = await statePath(dataRoot, repoId, corrupted.id);
+    await writeFile(corruptedPath, "不是合法 JSON", "utf8");
+
+    const runsDir = join(dataRoot, "repos", repoId, "runs");
+    await mkdir(join(runsDir, "not-a-uuid-dir"), { recursive: true });
+    await writeFile(join(runsDir, "stray-file.txt"), "noop", "utf8");
+
+    const { items, total } = await store.list({ limit: 100 });
+    expect(items.map((item) => item.id)).toEqual([valid.id]);
+    expect(total).toBe(1);
+  });
+});
+
+describe("RunStore.create 落盘内容", () => {
+  test("state.json 落盘内容包含 create 输入的全部字段", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const parent = await store.create(requirementInput());
+    const input = roleInput(parent.id, {
+      writePaths: ["/tmp/a"],
+      readPaths: ["/tmp/b"],
+      mcp: ["server-a"],
+    });
+    const created = await store.create(input);
+    const raw = await readFile(await statePath(dataRoot, repoId, created.id), "utf8");
+    const parsed = JSON.parse(raw) as { version: number; data: Record<string, unknown> };
+
+    expect(parsed.data.mcp).toEqual(input.mcp);
+    expect(parsed.data.thinking).toBe(input.thinking);
+    expect(parsed.data.writePaths).toEqual(input.writePaths);
+    expect(parsed.data.readPaths).toEqual(input.readPaths);
+    expect(parsed.data.parentRunId).toBe(input.parentRunId);
+    expect(parsed.data.model).toEqual(input.model);
+    expect(parsed.data.task).toBe(input.task);
+    expect(parsed.data.cwd).toBe(input.cwd);
+  });
+});
+
+describe("RunStore.create shellToken", () => {
+  test("生成 UUIDv4 的 shellToken 并落盘，get 读回一致", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const created = await store.create(requirementInput());
+
+    expect(UUID_V4.test((created).shellToken)).toBe(true);
+
+    const raw = await readFile(await statePath(dataRoot, repoId, created.id), "utf8");
+    const parsed = JSON.parse(raw) as { data: Record<string, unknown> };
+    expect(parsed.data.shellToken).toBe((created).shellToken);
+
+    const got = await store.get(created.id);
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect((got.run).shellToken).toBe(
+        (created).shellToken,
+      );
+    }
+  });
+
+  test("shellToken 与运行 id 不同", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    const shellToken = (created).shellToken;
+    expect(UUID_V4.test(shellToken)).toBe(true);
+    expect(shellToken).not.toBe(created.id);
+  });
+
+  test("50 个并发创建的 shellToken 互不相同且各自与本运行 id 不同", async () => {
+    const { store } = await makeStore();
+    const runs = await Promise.all(Array.from({ length: 50 }, () => store.create(requirementInput())));
+    const shellTokens = runs.map((run) => (run).shellToken);
+
+    expect(new Set(shellTokens).size).toBe(50);
+    for (let i = 0; i < runs.length; i += 1) {
+      expect(UUID_V4.test(shellTokens[i]!)).toBe(true);
+      expect(shellTokens[i]).not.toBe(runs[i]!.id);
+    }
+  });
+});
+
+describe("RunStore.update 拒绝改写 shellToken", () => {
+  test("patch 携带 shellToken 时抛出含'不允许'或'不可改写'的错误，且文件内容不变", async () => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const created = await store.create(requirementInput());
+    const path = await statePath(dataRoot, repoId, created.id);
+    const before = await readFile(path, "utf8");
+
+    let caught: unknown;
+    try {
+      await store.update(created.id, { shellToken: randomUUID() } as never);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message.includes("不允许") || message.includes("不可改写")).toBe(true);
+
+    const after = await readFile(path, "utf8");
+    expect(after).toBe(before);
+  });
+
+  test("其他合法字段的 update 不改变 shellToken", async () => {
+    const { store } = await makeStore();
+    const created = await store.create(requirementInput());
+    const originalShellToken = (created).shellToken;
+    expect(UUID_V4.test(originalShellToken)).toBe(true);
+    const updated = await store.update(created.id, { state: "running" });
+
+    expect((updated).shellToken).toBe(originalShellToken);
+  });
+});
+
+describe("RunStore.markInterruptedOnStartup 后 shellToken 不变", () => {
+  test("守护进程重启标记 interrupted 后 shellToken 保持不变", async () => {
+    const { dataRoot, repoId, daemonStartedAt: firstDaemonStartedAt } = await makeStore();
+    const firstStore = new RunStore({ dataRoot, repoId, daemonStartedAt: firstDaemonStartedAt });
+    const running = await firstStore.create(requirementInput());
+    await firstStore.update(running.id, { state: "running" });
+    const originalShellToken = (running).shellToken;
+    expect(UUID_V4.test(originalShellToken)).toBe(true);
+
+    const secondDaemonStartedAt = new Date(Date.now() + 1000).toISOString();
+    const secondStore = new RunStore({ dataRoot, repoId, daemonStartedAt: secondDaemonStartedAt });
+    await secondStore.markInterruptedOnStartup();
+
+    const after = await secondStore.get(running.id);
+    expect(after.ok).toBe(true);
+    if (after.ok) {
+      expect(after.run.state).toBe("interrupted");
+      expect((after.run).shellToken).toBe(originalShellToken);
+    }
+  });
+});
+
+describe("启动标记的临界区与现场保留", () => {
+  test("已有 stateReason 的记录标记中断后原因保留", async () => {
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const first = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T00:00:00.000Z" });
+    const run = await first.create({ kind: "requirement", requirement: "2026-09-08.x", task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
+    await first.update(run.id, { state: "running" });
+    await first.update(run.id, { state: "paused_network", stateReason: "连接中断" });
+    const second = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T01:00:00.000Z" });
+    await second.markInterruptedOnStartup();
+    const read = await second.get(run.id);
+    expect(read.ok && read.run.state).toBe("interrupted");
+    expect(read.ok && read.run.stateReason).toBe("连接中断");
+  });
+
+  test("停止不确定的运行不因守护进程重启变成可续接", async () => {
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const first = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T00:00:00.000Z" });
+    const run = await first.create({ kind: "requirement", requirement: "2026-09-08.x", task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
+    await first.update(run.id, { state: "running" });
+    await first.update(run.id, { state: "uncertain", stateReason: "停止后无法确认子进程退出" });
+    const second = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T01:00:00.000Z" });
+    const result = await second.markInterruptedOnStartup();
+    expect(result.interrupted).toEqual([]);
+    const read = await second.get(run.id);
+    expect(read.ok && read.run.state).toBe("uncertain");
+  });
+
+  test("守卫读取后记录变为终态则不再被标记", async () => {
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const first = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T00:00:00.000Z" });
+    const run = await first.create({ kind: "requirement", requirement: "2026-09-08.x", task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
+    await first.update(run.id, { state: "running" });
+    const second = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T01:00:00.000Z" });
+    const originalGet = second.get.bind(second);
+    (second as unknown as { get: typeof originalGet }).get = async (id: string) => {
+      const result = await originalGet(id);
+      await first.update(run.id, { state: "completed" });
+      return result;
+    };
+    const marked = await second.markInterruptedOnStartup();
+    expect(marked.interrupted).toEqual([]);
+    const read = await originalGet(run.id);
+    expect(read.ok && read.run.state).toBe("completed");
+  });
+});
