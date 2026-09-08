@@ -10,14 +10,14 @@
 | 07 | workflow-tool | pending | — |
 | 08 | migration | pending | — |
 | 09 | role-catalog | done | 2026-09-08 |
-| 10 | role-settings | pending | — |
+| 10 | role-settings | in-progress | — |
 | 11 | mcp-discovery | pending | — |
 | 12 | settings-controller | pending | — |
 | 13 | settings-page | pending | — |
 | 14 | daemon-protocol | pending | — |
 | 15 | daemon-lifecycle | pending | — |
-| 16 | structured-verdict | in-progress | — |
-| 17 | error-details | pending | — |
+| 16 | structured-verdict | done | 2026-09-08 |
+| 17 | error-details | in-progress | — |
 | 18 | run-store | pending | — |
 | 19 | session-records | pending | — |
 | 20 | shell-registry | pending | — |
@@ -53,7 +53,7 @@
 | 50 | user-documentation | pending | — |
 | 51 | integration-verification | pending | — |
 ## 当前
-并行组（用户已同意按依赖波次并发，每波 ≤4）：local-identity — 首轮 Review 指出 4 条 spec 违规与 7 条鲁棒问题（均 impl-defect），自修中（补 Red → Green → 复审）；sleep-aware-clock — 首轮 Review 指出睡眠区间起点近似导致三条同根问题，主代理补 Red 自修后复审中；role-catalog — 已完成（首轮 6 条鲁棒 impl-defect 自修一次，复审全部核销，复审新发现的错误原因回显问题已补测修复）；structured-verdict — 首轮 Review 指出 3 条 spec 违规（去重、空标识、终态覆盖）与鲁棒问题，主代理补 Red 自修后复审中。
+并行组（用户已同意按依赖波次并发，每波 ≤4）：local-identity — 首轮 Review 指出 4 条 spec 违规与 7 条鲁棒问题（均 impl-defect），自修中（补 Red → Green → 复审）；sleep-aware-clock — 首轮 Review 指出睡眠区间起点近似导致三条同根问题，主代理补 Red 自修后复审中；role-catalog — 已完成（首轮 6 条鲁棒 impl-defect 自修一次，复审全部核销，复审新发现的错误原因回显问题已补测修复）；structured-verdict — 已完成（首轮 3 条 spec 违规自修一次，复审全部核销，复审新发现的共享子格式误杀与 stop→error 收敛已补测修复）；role-settings — Red 进行中；error-details — Red 进行中。
 
 已记录：package-skeleton 首轮 Review 指出验证口径缺陷与 8 条 impl-defect，plan 验证方式改为 stripTypeScriptTypes，其余自修一次后复审全部解决；enum/namespace 全文正则可能对注释误报，留待出现时收窄。
 ## 阻塞
