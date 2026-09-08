@@ -3,26 +3,26 @@
 |---|---|---|---|
 | 01 | package-skeleton | done | 2026-09-08 |
 | 02 | local-identity | done | 2026-09-08 |
-| 03 | versioned-store | in-progress | — |
+| 03 | versioned-store | done | 2026-09-09 |
 | 04 | sleep-aware-clock | done | 2026-09-08 |
-| 05 | decision-ledger | pending | — |
+| 05 | decision-ledger | in-progress | — |
 | 06 | workflow-state | pending | — |
 | 07 | workflow-tool | pending | — |
 | 08 | migration | pending | — |
 | 09 | role-catalog | done | 2026-09-08 |
-| 10 | role-settings | in-progress | — |
-| 11 | mcp-discovery | pending | — |
+| 10 | role-settings | done | 2026-09-09 |
+| 11 | mcp-discovery | in-progress | — |
 | 12 | settings-controller | pending | — |
 | 13 | settings-page | pending | — |
-| 14 | daemon-protocol | pending | — |
+| 14 | daemon-protocol | in-progress | — |
 | 15 | daemon-lifecycle | pending | — |
 | 16 | structured-verdict | done | 2026-09-08 |
-| 17 | error-details | in-progress | — |
-| 18 | run-store | pending | — |
+| 17 | error-details | done | 2026-09-09 |
+| 18 | run-store | in-progress | — |
 | 19 | session-records | pending | — |
 | 20 | shell-registry | pending | — |
 | 21 | shell-bash-tool | pending | — |
-| 22 | network-pause | in-progress | — |
+| 22 | network-pause | done | 2026-09-09 |
 | 23 | role-session | pending | — |
 | 24 | requirement-agent-session | pending | — |
 | 25 | run-manager | pending | — |
@@ -53,13 +53,17 @@
 | 50 | user-documentation | pending | — |
 | 51 | integration-verification | pending | — |
 ## 当前
-并行组（用户已同意按依赖波次并发，每波 ≤4）：local-identity — 已完成（两轮 Review：工作区边界、数据根、路径穿越、git 判定 locale 与故障分类均已修复；符号链接目录不跟随记入待解决）；versioned-store — Red 进行中；sleep-aware-clock — 已完成（两轮 Review 共 9 条鲁棒问题，自修后定时器 API 自动保证看门狗、监听器隔离、区间求交）；role-catalog — 已完成（首轮 6 条鲁棒 impl-defect 自修一次，复审全部核销，复审新发现的错误原因回显问题已补测修复）；structured-verdict — 已完成（首轮 3 条 spec 违规自修一次，复审全部核销，复审新发现的共享子格式误杀与 stop→error 收敛已补测修复）；role-settings — Red 进行中；error-details — Red 进行中；network-pause — Red 进行中。
+并行组（用户已同意按依赖波次并发，每波 ≤4）：mcp-discovery — Red 进行中；decision-ledger — Red 进行中；daemon-protocol — Red 进行中；run-store — Red 进行中。
+
+已完成单元的自修记录：local-identity（两轮）、sleep-aware-clock（两轮）、role-catalog（两轮）、structured-verdict（两轮）、versioned-store（两轮：锁回收 TOCTOU 改为令牌核对，锁可重入）、role-settings（两轮）、error-details（规范变更后重做 + 两轮）、network-pause（两轮）。
 
 已记录：package-skeleton 首轮 Review 指出验证口径缺陷与 8 条 impl-defect，plan 验证方式改为 stripTypeScriptTypes，其余自修一次后复审全部解决；enum/namespace 全文正则可能对注释误报，留待出现时收窄。
 ## 阻塞
 （无）
 
 ## 待解决（不阻塞）
+- role-settings：未知角色名条目按 plan 明文整层抛错（审查认为爆炸半径偏大，留设置页处理）；保存后未 fsync 目录。
+- network-pause：强制门户下任意 HTTP 响应被视为可达；网络续接无次数上限（归 run-manager）。
 - local-identity：工作区扫描不跟随符号链接目录，规范未界定，未处理。
 - role-catalog：prompt_mode 取值域未在 plan 定义，暂宽松直通，待角色提示词单元定义后收紧；assertDispatchAllowed 只按 kind 判定，目录成员性校验需在 dispatch-tools 单元落地。
 - sleep-aware-clock：单一墙钟来源下事件循环长阻塞或 NTP 步进会被判为睡眠（设计取舍，未处理）；周期定时器唤醒即触发一次的语义未在规范界定。
