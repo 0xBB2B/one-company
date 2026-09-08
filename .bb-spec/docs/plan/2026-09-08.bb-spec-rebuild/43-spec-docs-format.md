@@ -89,8 +89,8 @@ SKILL.md 必需段落：
 |---|---|
 | `lint_spec_file` | 单个规则文件的格式、章节、编号、双向覆盖与实现细节扫描 |
 | `lint_requirements` | 需求文档四节、变更表行数与格式、被引用规则存在且入索引 |
-| `run_tasks_check` | `--tasks` 分支：校验参数唯一后转发任务检查脚本并透传退出码 |
-| `main` | 子命令分派，未知用法输出用法并退出码 2 |
+| `run_tasks_check` | `--tasks` 分支：校验参数唯一、bun 可用（否则退出码 2）后转发任务检查脚本并透传退出码 |
+| `main` | 子命令分派，未知用法与输入不存在/不可读退出码 2；AC 标题格式不合法时报出原因而不静默退出 |
 
 ### skills/spec-docs/scripts/task-check.ts
 | 函数 | 职责 |
@@ -99,16 +99,16 @@ SKILL.md 必需段落：
 | `loadRequirement` | 读需求文档，解析第 3 节规范变更表得到新增/修改/删除规则清单 |
 | `loadRuleAcceptance` | 读每条被引用规则，提取 AC 编号、AC 原文及其回指的 C 原文 |
 | `readTaskFiles` | 读取 tasks 目录全部任务文件与索引，解析 frontmatter |
-| `checkFrontmatter` | 字段集合与顺序恰为 id、title、depends_on、files、refs、verify；id 格式、files 绝对路径、refs 格式、verify 非空；出现 parallel 或任何运行字段报错 |
+| `checkFrontmatter` | 字段集合与顺序恰为 id、title、depends_on、files、refs、verify；列表字段只接受行内 `[...]`（剥离行尾 `#` 注释），块式列表报格式不合法；id 格式、files 绝对路径、refs 格式、verify 非空；出现 parallel 或任何运行字段报错 |
 | `checkSections` | 必需节次存在且非空，允许成品定义与新增第三方依赖为可选 |
-| `countTaskLines` | 扣除示例与成品代码块（含围栏）后计数，未闭合围栏报错 |
-| `classifyFile` | 按涉及文件行的类别声明分类，缺声明记为不可分类 |
+| `countTaskLines` | 扣除全部围栏代码块（``` 与 ~~~，按开栏长度配对，含围栏）后计数，未闭合围栏报错；文档说明任务文件中的围栏代码块只用于示例与成品定义 |
+| `classifyFile` | 按涉及文件行的类别声明分类，缺声明记为不可分类；标注为生产的路径集合须与 frontmatter files 一致 |
 | `checkFileOwnership` | 生产文件 ≤2、同一生产文件不得两任务持有 |
 | `checkDependencyGraph` | 依赖存在、不自引、只引更小编号、无环 |
-| `checkIndex` | 索引 ≤30 行、每任务恰被链接一次、行格式、无指向不存在任务的链接 |
-| `checkRefs` | refs ≤3、规则与 AC 存在、业务规则节含"来源：<域>/<name>。"且逐字包含 AC 原文与其回指 C 原文 |
+| `checkIndex` | 索引 ≤30 行、行格式 `- [T-n <标题>](NN-<name>.md) — <说明>`、每任务恰被链接一次、无指向不存在任务的链接 |
+| `checkRefs` | refs ≤3、规则与 AC 存在、业务规则节含"来源：<域>/<name>。"且逐字包含 AC 原文（按 AC 标题到下一标题截取整块，不依赖行前缀）与其回指 C 原文 |
 | `checkCoverage` | 变更清单内新增/修改规则的全部 AC 被任务 refs 覆盖，删除规则文件已不存在 |
-| `checkReadOnly` | 检查前后记录输入文件指纹一致 |
+| `checkReadOnly` | 检查前后记录输入文件（需求目录与被引用规则文件）指纹一致；任何输入读取失败（权限、目录冒充文件）退出码 2 并定位，不输出堆栈 |
 | `report` | 汇总为退出码与逐条可定位输出 |
 | `main` | 串联以上步骤 |
 

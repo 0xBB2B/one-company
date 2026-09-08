@@ -1,7 +1,6 @@
 ---
 name: <slug>
 title: <需求名>
-status: draft
 created: <YYYY-MM-DD>
 ---
 

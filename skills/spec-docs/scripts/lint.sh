@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage="用法: lint.sh <requirements.md> | lint.sh --spec <规则文件>..."
-[[ $# -ge 1 ]] || { echo "FAIL: $usage"; exit 1; }
+usage="用法: lint.sh <requirements.md> | lint.sh --tasks <requirements.md> | lint.sh --spec <规则文件>..."
+script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 fail() {
   echo "FAIL: $1"
   exit 1
+}
+
+fail2() {
+  echo "FAIL: $1"
+  exit 2
 }
 
 detail_patterns=(
@@ -29,7 +34,7 @@ assert_black_box() {
 
 lint_spec_file() {
   local file="$1" expected_name="$2"
-  [[ -f "$file" ]] || fail "规范文件不存在: $file"
+  [[ -f "$file" ]] || fail2 "规范文件不存在: $file"
   (( $(grep -c '' "$file") <= 100 )) || fail "$file 超过 100 行"
   local name
   name=$(sed -n '2,6p' "$file" | sed -n 's/^name:[[:space:]]*//p' | head -1)
@@ -60,7 +65,8 @@ lint_spec_file() {
   done <<< "$cids"
   while IFS= read -r acid; do
     [[ -z "$acid" ]] && continue
-    ac_line=$(grep -m1 -E "^### $acid([[:space:]]|$)" "$file")
+    ac_line=$(grep -m1 -E "^### $acid([[:space:]]|$)" "$file" || true)
+    [[ -n "$ac_line" ]] || fail "$file 的 $acid 标题格式不合法（AC-n 后必须紧跟空白）"
     printf '%s\n' "$ac_line" | grep -qE '←[[:space:]]*C-[0-9]+' || fail "$file 的 $acid 必须回指至少一条约束"
   done <<< "$acids"
 
@@ -77,46 +83,71 @@ END { check() }
   [[ -z "$ac_shape" ]] || fail "$file 的验收缺少固定的触发 / Given / When / Then: $ac_shape"
 }
 
-if [[ "$1" == "--spec" ]]; then
-  shift
-  [[ $# -ge 1 ]] || fail "$usage"
-  for spec in "$@"; do
-    lint_spec_file "$spec" "$(basename "$spec" .md)"
-  done
+lint_requirements() {
+  local f="$1"
+  [[ -f "$f" ]] || fail2 "requirements.md 不存在"
+  local sections
+  sections=$(grep -oE '^## [0-9]+\.' "$f" || true)
+  [[ "$sections" == $'## 1.\n## 2.\n## 3.\n## 4.' ]] || fail "requirements.md 必须恰好包含第 1 至第 4 节"
+
+  local requirement_dir spec_dir index
+  requirement_dir=$(CDPATH= cd -- "$(dirname -- "$f")" && pwd)
+  spec_dir=$(CDPATH= cd -- "$requirement_dir/../../spec" 2>/dev/null && pwd) || fail2 "找不到 spec 目录"
+  index="$spec_dir/INDEX.md"
+
+  local changes
+  changes=$(sed -n '/^## 3\./,/^## 4\./p' "$f" | grep -E '^\| *[a-z0-9-]+/[a-z0-9-]+ *\| *(新增|修改|删除) *\|' || true)
+  [[ -n "$changes" ]] || fail "第 3 节规范变更表至少需要一行 <域>/<name> | 新增/修改/删除 | 说明"
+  (( $(printf '%s\n' "$changes" | grep -c .) <= 8 )) || fail "单个需求触及的规范文件不得超过 8 个，需拆成多个需求"
+
+  local row spec_path change spec_file rule_name
+  while IFS= read -r row; do
+    [[ -z "$row" ]] && continue
+    spec_path=$(printf '%s' "$row" | awk -F'|' '{gsub(/^ +| +$/, "", $2); print $2}')
+    change=$(printf '%s' "$row" | awk -F'|' '{gsub(/^ +| +$/, "", $3); print $3}')
+    spec_file="$spec_dir/$spec_path.md"
+    rule_name="${spec_path##*/}"
+    case "$change" in
+      新增|修改)
+        lint_spec_file "$spec_file" "$rule_name"
+        [[ -f "$index" ]] || fail "spec/INDEX.md 不存在"
+        grep -qF "($spec_path.md)" "$index" || fail "spec/INDEX.md 未收录 $spec_path"
+        ;;
+      删除)
+        [[ ! -e "$spec_file" ]] || fail "标记删除的规范仍然存在: $spec_path"
+        if [[ -f "$index" ]] && grep -qF "($spec_path.md)" "$index"; then fail "spec/INDEX.md 仍收录已删除的 $spec_path"; fi
+        ;;
+    esac
+  done <<< "$changes"
+
   echo "PASS"
-  exit 0
-fi
+}
 
-f="$1"
-[[ -f "$f" ]] || fail "requirements.md 不存在"
-sections=$(grep -oE '^## [0-9]+\.' "$f" || true)
-[[ "$sections" == $'## 1.\n## 2.\n## 3.\n## 4.' ]] || fail "requirements.md 必须恰好包含第 1 至第 4 节"
+run_tasks_check() {
+  [[ $# -eq 1 ]] || { echo "FAIL: 用法: lint.sh --tasks <requirements.md>"; exit 2; }
+  command -v bun >/dev/null 2>&1 || { echo "FAIL: 未找到 bun"; exit 2; }
+  exec bun "$script_dir/task-check.ts" "$1"
+}
 
-requirement_dir=$(CDPATH= cd -- "$(dirname -- "$f")" && pwd)
-spec_dir=$(CDPATH= cd -- "$requirement_dir/../../spec" 2>/dev/null && pwd) || fail "找不到 .pi-spec/spec 目录"
-index="$spec_dir/INDEX.md"
-
-changes=$(sed -n '/^## 3\./,/^## 4\./p' "$f" | grep -E '^\| *[a-z0-9-]+/[a-z0-9-]+ *\| *(新增|修改|删除) *\|' || true)
-[[ -n "$changes" ]] || fail "第 3 节规范变更表至少需要一行 <域>/<name> | 新增/修改/删除 | 说明"
-(( $(printf '%s\n' "$changes" | grep -c .) <= 8 )) || fail "单个需求触及的规范文件不得超过 8 个，需拆成多个需求"
-
-while IFS= read -r row; do
-  [[ -z "$row" ]] && continue
-  spec_path=$(printf '%s' "$row" | awk -F'|' '{gsub(/^ +| +$/, "", $2); print $2}')
-  change=$(printf '%s' "$row" | awk -F'|' '{gsub(/^ +| +$/, "", $3); print $3}')
-  spec_file="$spec_dir/$spec_path.md"
-  rule_name="${spec_path##*/}"
-  case "$change" in
-    新增|修改)
-      lint_spec_file "$spec_file" "$rule_name"
-      [[ -f "$index" ]] || fail "spec/INDEX.md 不存在"
-      grep -qF "($spec_path.md)" "$index" || fail "spec/INDEX.md 未收录 $spec_path"
+main() {
+  [[ $# -ge 1 ]] || { echo "FAIL: $usage"; exit 2; }
+  case "$1" in
+    --spec)
+      shift
+      [[ $# -ge 1 ]] || fail2 "$usage"
+      for spec in "$@"; do
+        lint_spec_file "$spec" "$(basename "$spec" .md)"
+      done
+      echo "PASS"
       ;;
-    删除)
-      [[ ! -e "$spec_file" ]] || fail "标记删除的规范仍然存在: $spec_path"
-      if [[ -f "$index" ]] && grep -qF "($spec_path.md)" "$index"; then fail "spec/INDEX.md 仍收录已删除的 $spec_path"; fi
+    --tasks)
+      shift
+      run_tasks_check "$@"
+      ;;
+    *)
+      lint_requirements "$1"
       ;;
   esac
-done <<< "$changes"
+}
 
-echo "PASS"
+main "$@"
