@@ -484,7 +484,7 @@ describe("ResultCollector - 提交与门禁", () => {
   });
 });
 
-describe("审查补充：标识去重、结束终态与诊断计数", () => {
+describe("标识去重、结束终态与诊断计数", () => {
   test("同标识相同内容但键顺序不同视为重复投递，不增加尝试数", () => {
     const collector = new ResultCollector({ schema: WORK_SCHEMA, phase: "work" });
     const value = validWork();
@@ -570,7 +570,7 @@ describe("审查补充：标识去重、结束终态与诊断计数", () => {
   });
 });
 
-describe("审查补充：共享子格式与终态收敛", () => {
+describe("共享子格式与终态收敛", () => {
   test("同一子格式对象被多个属性复用时仍合法", () => {
     const shared = Type.String();
     const schema = Type.Object({ phase: Type.Literal("work"), a: shared, b: shared }, { additionalProperties: false });

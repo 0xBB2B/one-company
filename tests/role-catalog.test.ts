@@ -533,7 +533,7 @@ describe("assertDispatchAllowed 派工规则", () => {
   });
 });
 
-describe("审查补充：边界输入不静默", () => {
+describe("边界输入不静默降级", () => {
   test("skills 或 context_files 写成非布尔值时定义标不可用并说明字段", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-company-role-catalog-"));
     tempRoots.push(root);
@@ -638,7 +638,7 @@ describe("审查补充：边界输入不静默", () => {
   });
 });
 
-describe("审查补充：不可用原因不回显文件内容", () => {
+describe("不可用原因不回显文件内容", () => {
   test("符号链接指向含敏感内容的非法文件时原因不含目标内容", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-company-role-catalog-"));
     tempRoots.push(root);
