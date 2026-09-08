@@ -2,21 +2,21 @@
 | 序号 | Plan | 状态 | 完成时间 |
 |---|---|---|---|
 | 01 | package-skeleton | done | 2026-09-08 |
-| 02 | local-identity | pending | — |
+| 02 | local-identity | in-progress | — |
 | 03 | versioned-store | pending | — |
-| 04 | sleep-aware-clock | pending | — |
+| 04 | sleep-aware-clock | in-progress | — |
 | 05 | decision-ledger | pending | — |
 | 06 | workflow-state | pending | — |
 | 07 | workflow-tool | pending | — |
 | 08 | migration | pending | — |
-| 09 | role-catalog | pending | — |
+| 09 | role-catalog | done | 2026-09-08 |
 | 10 | role-settings | pending | — |
 | 11 | mcp-discovery | pending | — |
 | 12 | settings-controller | pending | — |
 | 13 | settings-page | pending | — |
 | 14 | daemon-protocol | pending | — |
 | 15 | daemon-lifecycle | pending | — |
-| 16 | structured-verdict | pending | — |
+| 16 | structured-verdict | in-progress | — |
 | 17 | error-details | pending | — |
 | 18 | run-store | pending | — |
 | 19 | session-records | pending | — |
@@ -53,8 +53,13 @@
 | 50 | user-documentation | pending | — |
 | 51 | integration-verification | pending | — |
 ## 当前
-准备执行 `02-local-identity.md`。
+并行组（用户已同意按依赖波次并发，每波 ≤4）：local-identity — 首轮 Review 指出 4 条 spec 违规与 7 条鲁棒问题（均 impl-defect），自修中（补 Red → Green → 复审）；sleep-aware-clock — 首轮 Review 指出睡眠区间起点近似导致三条同根问题，主代理补 Red 自修后复审中；role-catalog — 已完成（首轮 6 条鲁棒 impl-defect 自修一次，复审全部核销，复审新发现的错误原因回显问题已补测修复）；structured-verdict — 首轮 Review 指出 3 条 spec 违规（去重、空标识、终态覆盖）与鲁棒问题，主代理补 Red 自修后复审中。
 
 已记录：package-skeleton 首轮 Review 指出验证口径缺陷与 8 条 impl-defect，plan 验证方式改为 stripTypeScriptTypes，其余自修一次后复审全部解决；enum/namespace 全文正则可能对注释误报，留待出现时收窄。
 ## 阻塞
 （无）
+
+## 待解决（不阻塞）
+- role-catalog：prompt_mode 取值域未在 plan 定义，暂宽松直通，待角色提示词单元定义后收紧；assertDispatchAllowed 只按 kind 判定，目录成员性校验需在 dispatch-tools 单元落地。
+- sleep-aware-clock：单一墙钟来源下事件循环长阻塞或 NTP 步进会被判为睡眠（设计取舍，未处理）；周期定时器唤醒即触发一次的语义未在规范界定。
+- role-catalog Review 指出：reviewer 与 acceptance 默认工具含 bash，"审查只读 / 验收不读源码"边界当前只由提示词承载；归因 plan/spec 层，留待 shell 与角色提示词单元处理。
