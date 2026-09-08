@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
-  assertDispatchAllowed,
   defaultRoleDir,
   loadRoleCatalog,
   projectRoleDir,
@@ -71,29 +70,6 @@ const FULL_FIELDS: FrontmatterFields = {
   prompt_mode: "append",
 };
 
-function targetEntry(kind: string, options: { available?: boolean } = {}) {
-  const available = options.available ?? true;
-  return {
-    name: "target",
-    source: "project" as const,
-    path: "/dev/null/target.md",
-    available,
-    reason: available ? undefined : "definition 损坏",
-    definition: available
-      ? {
-          name: "target",
-          description: "目标角色",
-          kind,
-          tools: [],
-          skills: false,
-          contextFiles: false,
-          promptMode: "append",
-          body: "",
-        }
-      : undefined,
-  };
-}
-
 describe("loadRoleCatalog 三层合并", () => {
   test("同名角色按 项目 > 全局 > 包内默认 覆盖，三处独有角色均出现", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-company-role-catalog-"));
@@ -133,7 +109,7 @@ describe("loadRoleCatalog 三层合并", () => {
       kind: "review",
     });
 
-    const { roles } = await loadRoleCatalog({ defaultDir, userDir, projectDir, parseFrontmatter });
+    const { roles } = await loadRoleCatalog({ defaultDir, userDir, projectDir, parseFrontmatter, projectTrusted: true });
 
     const workers = roles.filter((r) => r.name === "worker");
     expect(workers.length).toBe(1);
@@ -157,6 +133,7 @@ describe("loadRoleCatalog 三层合并", () => {
       userDir: join(root, "no-user"),
       projectDir: join(root, "no-project"),
       parseFrontmatter,
+      projectTrusted: true,
     });
     expect(roles).toEqual([]);
   });
@@ -190,6 +167,7 @@ describe("损坏或缺必需字段的角色定义", () => {
       userDir,
       projectDir,
       parseFrontmatter,
+      projectTrusted: true,
     });
 
     const reviewer = roles.find((r) => r.name === "reviewer");
@@ -221,6 +199,7 @@ describe("损坏或缺必需字段的角色定义", () => {
       userDir: join(root, "no-user"),
       projectDir,
       parseFrontmatter,
+      projectTrusted: true,
     });
 
     const reviewer = roles.find((r) => r.name === "reviewer");
@@ -240,6 +219,7 @@ describe("损坏或缺必需字段的角色定义", () => {
       userDir: join(root, "no-user"),
       projectDir,
       parseFrontmatter,
+      projectTrusted: true,
     });
 
     const broken = roles.find((r) => r.name === "broken");
@@ -449,6 +429,7 @@ describe("包内默认角色定义骨架", () => {
       userDir: join(root, "no-user"),
       projectDir: join(root, "no-project"),
       parseFrontmatter,
+      projectTrusted: true,
     });
 
     for (const [name, spec] of Object.entries(expected)) {
@@ -490,46 +471,10 @@ describe("roleToolAllowlist", () => {
       userDir: join(root, "no-user"),
       projectDir: join(root, "no-project"),
       parseFrontmatter,
+      projectTrusted: true,
     });
     const acceptance = roles.find((r) => r.name === "acceptance");
     expect(roleToolAllowlist(acceptance!)).toEqual(["bash", "write"]);
-  });
-});
-
-describe("assertDispatchAllowed 派工规则", () => {
-  test("main 派工 manage 角色允许", () => {
-    expect(() => assertDispatchAllowed("main", targetEntry("manage"))).not.toThrow();
-  });
-
-  test("main 派工 review 角色允许", () => {
-    expect(() => assertDispatchAllowed("main", targetEntry("review"))).not.toThrow();
-  });
-
-  test("main 派工 plan/work/acceptance 角色被拒绝", () => {
-    expect(() => assertDispatchAllowed("main", targetEntry("plan"))).toThrow();
-    expect(() => assertDispatchAllowed("main", targetEntry("work"))).toThrow();
-    expect(() => assertDispatchAllowed("main", targetEntry("acceptance"))).toThrow();
-  });
-
-  test("manage 派工 plan/work/review/acceptance 角色允许", () => {
-    expect(() => assertDispatchAllowed("manage", targetEntry("plan"))).not.toThrow();
-    expect(() => assertDispatchAllowed("manage", targetEntry("work"))).not.toThrow();
-    expect(() => assertDispatchAllowed("manage", targetEntry("review"))).not.toThrow();
-    expect(() => assertDispatchAllowed("manage", targetEntry("acceptance"))).not.toThrow();
-  });
-
-  test("manage 派工 manage 角色被拒绝", () => {
-    expect(() => assertDispatchAllowed("manage", targetEntry("manage"))).toThrow();
-  });
-
-  test("plan/work/review/acceptance 角色发起的派工一律被拒绝", () => {
-    for (const dispatcher of ["plan", "work", "review", "acceptance"]) {
-      expect(() => assertDispatchAllowed(dispatcher, targetEntry("work"))).toThrow();
-    }
-  });
-
-  test("目标角色不可用时派工被拒绝", () => {
-    expect(() => assertDispatchAllowed("main", targetEntry("manage", { available: false }))).toThrow();
   });
 });
 
@@ -543,7 +488,7 @@ describe("边界输入不静默降级", () => {
       "acceptance",
       "---\nname: acceptance\ndescription: 验收\nkind: acceptance\ntools: [bash]\ncontext_files: off\n---\n正文\n",
     );
-    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter });
+    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter, projectTrusted: true });
     const acceptance = roles.find((role) => role.name === "acceptance");
     expect(acceptance?.available).toBe(false);
     expect(acceptance?.reason).toContain("context_files");
@@ -568,7 +513,7 @@ describe("边界输入不静默降级", () => {
     await writeFile(join(projectDir, "upper.MD"), `---\n${buildFrontmatter({ name: "upper", description: "大写", ...FULL_FIELDS })}\n---\n正文\n`);
     await mkdir(join(projectDir, "nested"), { recursive: true });
     await writeFile(join(projectDir, "notes.txt"), "不是角色");
-    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter });
+    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter, projectTrusted: true });
     expect(roles.map((role) => role.name).sort()).toEqual(["linked", "upper"]);
     expect(roles.every((role) => role.available)).toBe(true);
   });
@@ -579,7 +524,7 @@ describe("边界输入不静默降级", () => {
     const userDir = join(root, "user");
     await writeFile(userDir, "这是文件不是目录");
     await writeRoleFile(join(root, "project"), "worker", { name: "worker", description: "w", ...FULL_FIELDS });
-    const catalog = await loadRoleCatalog({ defaultDir: join(root, "missing"), userDir, projectDir: join(root, "project"), parseFrontmatter });
+    const catalog = await loadRoleCatalog({ defaultDir: join(root, "missing"), userDir, projectDir: join(root, "project"), parseFrontmatter, projectTrusted: true });
     expect(catalog.roles.map((role) => role.name)).toEqual(["worker"]);
     expect(catalog.problems.length).toBe(1);
     expect(catalog.problems[0]?.source).toBe("user");
@@ -594,7 +539,7 @@ describe("边界输入不静默降级", () => {
     const throwing = () => {
       throw "字符串异常";
     };
-    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter: throwing });
+    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter: throwing, projectTrusted: true });
     expect(roles[0]?.available).toBe(false);
     expect(roles[0]?.reason).toBe("字符串异常");
   });
@@ -604,30 +549,15 @@ describe("边界输入不静默降级", () => {
     tempRoots.push(root);
     const projectDir = join(root, "project");
     await writeRoleFile(projectDir, "alias", { name: "worker", description: "w", ...FULL_FIELDS });
-    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter });
+    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter, projectTrusted: true });
     const alias = roles.find((role) => role.name === "alias");
     expect(alias?.available).toBe(false);
     expect(alias?.reason).toContain("alias");
     expect(alias?.reason).toContain("worker");
   });
 
-  test("装载得到的不可用 reviewer 条目直接派工被拒绝并带原因", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pi-company-role-catalog-"));
-    tempRoots.push(root);
-    const projectDir = join(root, "project");
-    await writeRoleFile(projectDir, "reviewer", { name: "reviewer", description: "r", tools: ["read"] });
-    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter });
-    const reviewer = roles.find((role) => role.name === "reviewer")!;
-    expect(() => assertDispatchAllowed("main", reviewer)).toThrow("reviewer");
-    expect(roleToolAllowlist(reviewer)).toEqual([]);
-  });
-
-  test("派工方类型为原型链属性名时得到可读拒绝而非类型错误", () => {
-    expect(() => assertDispatchAllowed("constructor", targetEntry("work"))).toThrow("不允许");
-  });
-
   test("五份默认定义的 name 与 description 与成品一致", async () => {
-    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter });
+    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: true });
     const byName = new Map(roles.map((role) => [role.name, role.definition?.description]));
     expect(byName.get("planner")).toBe("规划角色：先核对任务骨架再生成自包含任务文件");
     expect(byName.get("worker")).toBe("实现角色：同次核对测试证明力、Red → Green → 自验收并提交结构化交付");
@@ -647,11 +577,89 @@ describe("不可用原因不回显文件内容", () => {
     await writeFile(secretFile, "---\npassword: [SUPER-SECRET-VALUE\ntoken: ghp_REALTOKEN\n---\n");
     await mkdir(projectDir, { recursive: true });
     await symlink(secretFile, join(projectDir, "leak.md"));
-    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter });
+    const { roles } = await loadRoleCatalog({ defaultDir: join(root, "d"), userDir: join(root, "u"), projectDir, parseFrontmatter, projectTrusted: true });
     const leak = roles.find((role) => role.name === "leak");
     expect(leak?.available).toBe(false);
     expect(leak?.reason).not.toContain("SUPER-SECRET-VALUE");
     expect(leak?.reason).not.toContain("ghp_REALTOKEN");
     expect(leak?.reason?.length).toBeGreaterThan(0);
+  });
+});
+
+describe("项目层角色定义的宿主信任门禁", () => {
+  async function setupLayers() {
+    const root = await mkdtemp(join(tmpdir(), "pi-company-role-catalog-"));
+    tempRoots.push(root);
+    const userDir = join(root, "user");
+    const projectDir = join(root, "project");
+    await writeRoleFile(userDir, "worker", { ...FULL_FIELDS, name: "worker", description: "全局 worker" });
+    await writeRoleFile(projectDir, "worker", { ...FULL_FIELDS, name: "worker", description: "项目 worker" });
+    await writeRoleFile(projectDir, "only-project", { ...FULL_FIELDS, name: "only-project", description: "仅项目独有" });
+    return { root, userDir, projectDir };
+  }
+
+  test("项目未受宿主信任时忽略项目层，仅装载包内默认与用户全局两层", async () => {
+    const { root, userDir, projectDir } = await setupLayers();
+    const { roles, problems } = await loadRoleCatalog({
+      defaultDir: join(root, "no-default"),
+      userDir,
+      projectDir,
+      parseFrontmatter,
+      projectTrusted: false,
+    });
+
+    expect(roles.find((r) => r.name === "only-project")).toBeUndefined();
+    const worker = roles.find((r) => r.name === "worker");
+    expect(worker?.source).toBe("user");
+    expect(worker?.definition?.description).toBe("全局 worker");
+
+    const projectProblem = problems.find((p) => p.source === "project");
+    expect(projectProblem?.reason).toContain("信任");
+  });
+
+  test("项目受宿主信任时正常装载项目层，问题清单不含未信任提示", async () => {
+    const { root, userDir, projectDir } = await setupLayers();
+    const { roles, problems } = await loadRoleCatalog({
+      defaultDir: join(root, "no-default"),
+      userDir,
+      projectDir,
+      parseFrontmatter,
+      projectTrusted: true,
+    });
+
+    expect(roles.find((r) => r.name === "only-project")?.source).toBe("project");
+    const worker = roles.find((r) => r.name === "worker");
+    expect(worker?.source).toBe("project");
+    expect(worker?.definition?.description).toBe("项目 worker");
+
+    expect(problems.some((p) => p.source === "project" && p.reason.includes("信任"))).toBe(false);
+  });
+
+  test("项目未受宿主信任时不读取项目层目录，损坏文件与不可读目录都不产生额外问题", async () => {
+    const { root, userDir, projectDir } = await setupLayers();
+    await writeRawRoleFile(projectDir, "broken", "---\nname: [unterminated\n---\n正文\n");
+    const fileAsDir = join(root, "project-is-file");
+    await writeFile(fileAsDir, "not a directory");
+
+    for (const dir of [projectDir, fileAsDir]) {
+      const { roles, problems } = await loadRoleCatalog({
+        defaultDir: join(root, "no-default"),
+        userDir,
+        projectDir: dir,
+        parseFrontmatter,
+        projectTrusted: false,
+      });
+      expect(roles.find((r) => r.name === "broken")).toBeUndefined();
+      const projectProblems = problems.filter((p) => p.source === "project");
+      expect(projectProblems).toHaveLength(1);
+      expect(projectProblems[0]?.reason).toContain("信任");
+    }
+  });
+});
+
+describe("角色目录模块的导出边界", () => {
+  test("不导出任何按 kind 判定派工的函数", async () => {
+    const module: Record<string, unknown> = await import("../runtime/roles.ts");
+    expect(module.assertDispatchAllowed).toBeUndefined();
   });
 });

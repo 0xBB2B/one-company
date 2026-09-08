@@ -32,6 +32,7 @@ export interface LoadRoleCatalogOptions {
   userDir: string;
   projectDir: string;
   parseFrontmatter: FrontmatterParser;
+  projectTrusted: boolean;
 }
 
 export interface RoleCatalogProblem {
@@ -46,11 +47,6 @@ export interface RoleCatalog {
 }
 
 const ROLE_KINDS = new Set<RoleKind>(["plan", "work", "review", "acceptance", "manage"]);
-
-const DISPATCH_ALLOWLIST = new Map<string, Set<RoleKind>>([
-  ["main", new Set<RoleKind>(["manage", "review"])],
-  ["manage", new Set<RoleKind>(["plan", "work", "review", "acceptance"])],
-]);
 
 function isRoleKind(value: unknown): value is RoleKind {
   return typeof value === "string" && ROLE_KINDS.has(value as RoleKind);
@@ -154,8 +150,8 @@ export async function loadRoleCatalog(options: LoadRoleCatalogOptions): Promise<
   const layers: Array<{ dir: string; source: RoleSource }> = [
     { dir: options.defaultDir, source: "default" },
     { dir: options.userDir, source: "user" },
-    { dir: options.projectDir, source: "project" },
   ];
+  if (options.projectTrusted) layers.push({ dir: options.projectDir, source: "project" });
 
   const merged = new Map<string, RoleCatalogEntry>();
   const problems: RoleCatalogProblem[] = [];
@@ -163,20 +159,13 @@ export async function loadRoleCatalog(options: LoadRoleCatalogOptions): Promise<
     const entries = await loadLayerEntries(layer.dir, layer.source, options.parseFrontmatter, problems);
     for (const entry of entries) merged.set(entry.name, entry);
   }
+  if (!options.projectTrusted) {
+    problems.push({ source: "project", dir: options.projectDir, reason: "项目未受宿主信任，项目层角色定义未生效" });
+  }
 
   return { roles: [...merged.values()], problems };
 }
 
 export function roleToolAllowlist(entry: RoleCatalogEntry): string[] {
   return entry.definition?.tools ?? [];
-}
-
-export function assertDispatchAllowed(dispatcherKind: string, target: RoleCatalogEntry): void {
-  if (!target.available || !target.definition) {
-    throw new Error(`角色 ${target.name} 不可用，无法派工`);
-  }
-  const allowedKinds = DISPATCH_ALLOWLIST.get(dispatcherKind);
-  if (!allowedKinds || !allowedKinds.has(target.definition.kind)) {
-    throw new Error(`派工方 ${dispatcherKind} 不允许派工目标角色（kind=${target.definition.kind}）`);
-  }
 }
