@@ -14,7 +14,7 @@
 - [role-catalog](agents/role-catalog.md) — 角色来自包内默认与用户配置的 agent 定义文件，需求代理只调用目录内角色，角色不再向下派，主会话只派需求代理与提交前审查者
 - [role-settings](agents/role-settings.md) — 角色目录中每个角色分别解析模型、思考等级与 MCP 服务集合，项目配置覆盖全局默认，保存不改变已启动任务
 - [run-diagnostics](agents/run-diagnostics.md) — 为失败运行原样保存完整错误详情、定位信息与提交诊断，独立于会话记录可查，不截断
-- [run-lifecycle](agents/run-lifecycle.md) — 需求代理与角色在守护进程内跨窗口回合与关窗继续，窗口切换只清理窗口自身 Shell，守护进程中断标记为中断并在续接前核对原运行
+- [run-lifecycle](agents/run-lifecycle.md) — 需求代理与角色在守护进程内跨窗口回合与关窗继续，窗口切换只清理窗口自身 Shell，守护进程中断标记为中断并在续接前核对接管的 Shell 任务
 - [session-records](agents/session-records.md) — 守护进程内每个会话以可重载的会话文件原样完整记录在本机，按运行身份定位、不上传不入库，压缩由宿主产生，续接时按压缩后视图重载
 - [settings-page](agents/settings-page.md) — /pi-company:setting 以单页聚焦式界面按角色目录配置各角色模型、思考等级与 MCP 服务，支持全局或项目范围
 - [transcript-view](agents/transcript-view.md) — 从面板打开任一需求代理或角色会话的记录查看页，实时显示思考、输出与工具活动，只读、可滚动、离线可回读
@@ -51,7 +51,7 @@
 
 ## shell
 
-- [host-lifecycle](shell/host-lifecycle.md) — Shell 跟随所属主会话或子运行清理，会话切换与可处理退出不遗留无人管理命令
+- [host-lifecycle](shell/host-lifecycle.md) — Shell 跟随所属主会话或子运行清理，会话切换与可处理退出不遗留无人管理命令，守护进程重新拉起时接管前一实例遗留的任务
 - [managed-execution](shell/managed-execution.md) — 所有约定入口统一登记 Shell，仅 agent 可显式后台执行且后台仍受超时约束
 - [process-control](shell/process-control.md) — 从 Shell 列表确认停止选定任务及后代，不停止宿主，不误伤其他命令或虚报成功
 - [process-list](shell/process-list.md) — /ps 在输入栏位置打开一行一个 Shell 的管理列表，详情只读简洁，不提供输出与操作按钮

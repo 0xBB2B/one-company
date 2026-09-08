@@ -12,9 +12,11 @@ description: 守护进程内运行记录的持久化：状态集合、原子写�
 - run-lifecycle：守护进程崩溃、被强杀或机器重启后运行标记为中断并保留现场；异常退出记录失败原因，不把自然语言当作完成证据。
 - user-stop：停止是终态，不提供恢复；重新派出产生新的运行身份。
 - local-ownership：运行数据保存在本机用户数据区，按仓库归属，不随 Git 同步。
+- host-lifecycle：守护进程内任务的识别信息随所属运行持久保存，供重新拉起的守护进程定位遗留任务。
 
 ## 涉及文件
 - 新建：`runtime/run-store.ts`
+- 修改：`runtime/identity.ts` — 导出运行目录根 `runsDataDir`，供列举与启动标记使用
 - 新建：`tests/run-store.test.ts`
 
 ## 成品定义
@@ -30,6 +32,7 @@ description: 守护进程内运行记录的持久化：状态集合、原子写�
   "parentRunId": "<需求代理运行 id，角色运行才有>",
   "task": "<任务标题或需求标题>",
   "cwd": "/abs/worktree",
+  "shellToken": "<UUIDv4，该运行全部 Shell 任务共用的识别令牌，创建时生成后不再改变>",
   "writePaths": ["…"], "readPaths": ["…"],
   "model": { "provider": "…", "id": "…" }, "thinking": "high", "mcp": ["context7"],
   "state": "queued|running|pausing|paused|paused_network|waiting_answer|completed|failed|stopped|interrupted|uncertain",
@@ -43,17 +46,17 @@ description: 守护进程内运行记录的持久化：状态集合、原子写�
 }
 ```
 
-状态转换：`queued→running`；`running→pausing→paused`；`running→paused_network`；`running↔waiting_answer`；`paused|paused_network→running`；任何非终态 `→failed|stopped|uncertain`；守护进程启动时 非终态 `→interrupted`；`interrupted→running`（续接）。终态 `completed|failed|stopped` 不可再变。
+状态转换：`queued→running`；`running→pausing→paused`；`running→paused_network`；`running↔waiting_answer`；`paused|paused_network→running`；任何非终态 `→failed|stopped|uncertain`；守护进程启动时 非终态且非 `uncertain` `→interrupted`（停止不确定不因重启变为可续接；标记时保留已有的状态说明，仅为空时写入重启说明）；`interrupted→running`（续接）。终态 `completed|failed|stopped` 不可再变。
 
 ## 函数清单
 ### runtime/run-store.ts
 | 函数 | 职责 |
 |---|---|
-| `RunStore.create` | 生成 UUIDv4 记录并原子写入，拒绝非法角色与缺失需求身份 |
+| `RunStore.create` | 生成 UUIDv4 记录与 shellToken 并原子写入，拒绝非法角色与缺失需求身份 |
 | `RunStore.get` | 读取并校验一条记录，损坏返回不可读错误 |
 | `RunStore.list` | 按 kind、requirement、状态过滤并分页，统计运行中与不确定数量 |
-| `RunStore.update` | 按转换表更新状态与字段，终态不可回退，`endedAt` 只写一次，按记录串行化写入 |
-| `RunStore.markInterruptedOnStartup` | 把 `daemonStartedAt` 不等于本次启动且非终态的记录改为 `interrupted` |
+| `RunStore.update` | 按转换表更新状态与字段，终态不可回退，`endedAt` 只写一次，`shellToken` 不可改写，按记录串行化写入 |
+| `RunStore.markInterruptedOnStartup` | 把 `daemonStartedAt` 不等于本次启动、非终态且非 `uncertain` 的记录在锁内复判后改为 `interrupted` 并写入本次 `daemonStartedAt`（幂等）；单条失败收集到返回值而不中断整轮 |
 | `isTerminalState` | 判断状态是否终态 |
 | `assertTransition` | 校验状态转换合法，否则抛出说明 |
 
@@ -62,9 +65,9 @@ description: 守护进程内运行记录的持久化：状态集合、原子写�
 
 ## 验证方式
 - 测试入口：`RunStore` 各方法，输入为临时数据根
-- 测试输入：并发创建 50 条；对同一记录并发 20 次 update；非法转换（completed→running、stopped→paused）；两次写 endedAt；预置三条 running 与一条 completed 后以新的 daemonStartedAt 调用启动标记；篡改文件为非 JSON
-- 预期结果：50 个 id 互不相同且文件权限 0600；并发更新后记录一致无丢失；非法转换抛出且文件不变；第二次 endedAt 被忽略；三条 running 变 interrupted、completed 不变；损坏文件读取返回不可读而非抛出未捕获异常
-- [ ] 唯一身份与权限
+- 测试输入：并发创建 50 条并读回核对 shellToken；尝试 update 改写 shellToken；对同一记录并发 20 次 update；非法转换（completed→running、stopped→paused）；两次写 endedAt；预置三条 running 与一条 completed 后以新的 daemonStartedAt 调用启动标记；篡改文件为非 JSON
+- 预期结果：50 个 id 与 shellToken 互不相同、落盘可读回且文件权限 0600；改写 shellToken 被拒且文件不变；并发更新后记录一致无丢失；非法转换抛出且文件不变；第二次 endedAt 被忽略；三条 running 变 interrupted、completed 不变；损坏文件读取返回不可读而非抛出未捕获异常
+- [ ] 唯一身份、shellToken 与权限
 - [ ] 转换表正反例
 - [ ] 并发串行化
 - [ ] 启动标记中断
