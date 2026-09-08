@@ -41,7 +41,8 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 | `dispatch.requirement` | `{ requirement, cwd, mcp?: { adapterEntry, configPath } }` | `{ runId }` 或错误 `already_active`（附现有 runId）、`not_confirmed` |
 | `runs.list` | `{ kind?, offset?, limit? }` | `{ items: RunRecord[], total, runningCount, uncertainCount }` |
 | `runs.get` | `{ runId }` | `{ run: RunRecord, errorDetails?: 摘要 }` |
-| `runs.pause` / `runs.resume` / `runs.stop` / `runs.resumeInterrupted` | `{ runId }` | `{ state, confirmed: boolean, reason? }` |
+| `runs.pause` / `runs.resume` / `runs.stop` | `{ runId }` | `{ state, confirmed: boolean, reason? }` |
+| `runs.resumeInterrupted` | `{ runId }` | `{ state, confirmed: boolean, reason?, blockingTasks?: ShellTask[] }`（注册表中该运行仍有活动或不确定 Shell 任务时拒绝续接，回执携带任务清单且状态不变） |
 | `runs.pauseAll` / `runs.resumeAll` / `runs.stopAll` | `{}` | `{ results: [{ runId, state, confirmed, reason? }] }` |
 | `subscribe.activity` | `{}` | `{ subscriptionId, snapshot: RunRecord[] }` |
 | `subscribe.transcript` | `{ runId, fromSeq? }` | `{ subscriptionId, entries: TranscriptEntry[], ended: boolean }` |
@@ -59,26 +60,28 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 |---|---|
 | `activity` | `{ runId, kind: "tool_start"\|"tool_end"\|"turn"\|"state", toolName?, filePath?, state?, at }` |
 | `transcript` | `{ runId, seq, kind: "thinking"\|"text"\|"toolcall"\|"tool_result"\|"error", delta?, summary?, at }` |
-| `runs.changed` | `{ run: RunRecord }` |
+| `runs.changed` | `{ run: RunRecord, activeShellTasks?: number }`（中断运行携带接管的活动 Shell 任务数） |
 | `relay.question` | `RelayQuestion` |
 | `relay.notice` | `RelayNotice` |
 | `relay.withdraw` | `{ questionId }` |
 | `shells.changed` | `{ task: ShellTask }` |
 | `daemon.idle` | `{ exitAt }` |
 
-错误码：`protocol_version`、`unknown_method`、`bad_params`、`not_found`、`already_active`、`not_confirmed`、`shape_violation`、`daemon_busy`、`internal`。
+错误码：`protocol_version`、`unknown_method`、`unknown_event`、`bad_params`、`not_found`、`already_active`、`not_confirmed`、`shape_violation`、`daemon_busy`、`internal`。
 
 ## 函数清单
 ### runtime/protocol.ts
 | 函数 | 职责 |
 |---|---|
 | `encodeFrame` | 把帧对象序列化为单行 JSON 并追加 LF |
-| `decodeFrames` | 从累积缓冲区按 LF 切出完整帧并解析，保留残余字节 |
+| `decodeFrames` | 从累积缓冲区按 LF 切出完整帧并解析，保留残余字节；空行跳过，非法 JSON 或非帧形状的行进入错误列表而不丢弃其余帧 |
 | `createRequest` | 生成带递增 id 的请求帧 |
 | `createResponse` | 生成成功响应帧 |
 | `createErrorResponse` | 生成失败响应帧 |
 | `createEvent` | 生成事件帧 |
 | `assertKnownMethod` | 校验方法名在目录内，否则抛 `unknown_method` |
+| `assertKnownEvent` | 校验事件名在目录内，否则抛 `unknown_event`；`createEvent` 内调用 |
+| `isFrame` | 按 `t` 分支判别帧类型并校验各类帧的必需字段（req 的 id/method/params，res 的 id 与 ok 对应的 result 或 error，evt 的 event/data） |
 | `validateParams` | 用各方法的 typebox schema 校验 params，失败抛 `bad_params` |
 
 ## 协作关系
