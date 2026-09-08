@@ -11,7 +11,7 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 - daemon-host：每仓库单实例、按需拉起、空闲退出、崩溃后中断、睡眠不计入超时。
 - requirement-agent / workflow-shape / user-relay：派出前提、形状提议确认、提问投递本工作区窗口首答生效、无窗口排队推送、代理间不直连。
 - pause-control / user-stop / run-lifecycle：任意窗口暂停继续停止、级联、断网局部暂停与联网自动续接并通知、中断续接核对与重载。
-- cross-window-panel / transcript-view / status-entry / process-list：底部顺序、空输入 ↓ 导航、20 秒保留、查看页只读、汇总行与 /ps 跨宿主。
+- cross-window-panel / transcript-view / status-entry / process-list：底部顺序、空输入 ↓ 直接进面板、20 秒保留、查看页只读、状态栏汇总文本与 /ps 跨宿主。
 - host-lifecycle / managed-execution：窗口退出路径清理窗口 Shell、守护进程 Shell 不受影响、后台 Shell 超时与后代清理。
 - workspace-coordination：父目录窗口看到两个仓库、契约变更经主会话裁定并转发。
 - safe-migration：旧格式预检、停写校验、保真迁移、中断恢复。
@@ -21,7 +21,7 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 - 新建 `tests/integration/control-and-resume.test.ts`
 - 新建 `tests/integration/network-and-sleep.test.ts`
 - 新建 `tests/integration/host-exit.test.ts`
-- 新建 `tests/integration/bottom-dock.test.ts`
+- 新建 `tests/integration/agents-panel.test.ts`
 - 新建 `tests/integration/workspace.test.ts`
 - 新建 `tests/integration/migration.test.ts`
 - 修改 `package.json` — `test:integration` 脚本（`bun test tests/integration`）
@@ -64,10 +64,10 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 | 守护进程正常退出 | `shutdown` 方法 | 角色 Shell 运行中 | 守护进程内 Shell 全部停止后退出 |
 | 后台超时 | `background: true, timeout: 1` 产生后代 | — | 满 1 秒开始停止，后代清理确认后报告超时 |
 
-### bottom-dock
+### agents-panel
 | 用例 | 入口 | 输入 | 预期 |
 |---|---|---|---|
-| 顺序与导航 | VirtualTerminal 渲染 | 空输入按 ↓、↓、Esc | 先选汇总行再进面板，Esc 回输入栏；原状态栏可见 |
+| 顺序与导航 | VirtualTerminal 渲染 | 空输入按 ↓、Esc | ↓ 直接进面板，Esc 回输入栏；原状态栏与汇总文本可见，汇总文本不可选中 |
 | 不抢按键 | 输入非空 / 设置页打开时按 ↓ | — | 面板不响应 |
 | 查看页 | 面板"查看"Enter | 运行中会话 | 替换输入栏、实时跟随、Esc 回原选中 |
 | 20 秒保留 | 结束运行与操作失败提示 | 注入时钟 19 秒、20 秒 | 19 秒仍在，20 秒移出 |

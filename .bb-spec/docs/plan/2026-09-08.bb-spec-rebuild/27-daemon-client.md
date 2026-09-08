@@ -24,7 +24,7 @@ description: 窗口侧守护进程客户端：按工作区内仓库建立多连�
 | 函数名 | 职责 |
 |---|---|
 | `resolveSdkDir` | 用 SDK 导出的 `getPackageDir` 取 pi 安装目录，供拉起守护进程时经 `PI_COMPANY_SDK_DIR` 传入 |
-| `spawnDaemon` | 以 `process.execPath` 分离启动 `daemon/main.ts`，传入 SDK 目录、仓库目录、数据根，等待锁文件与 socket 就绪或超时返回具体原因 |
+| `spawnDaemon` | 以 `process.execPath` 分离启动 `daemon/main.ts`，传入 SDK 目录、仓库目录、数据根，以连接探测等待 socket 可连接并完成 hello，超时返回具体原因（不存在锁文件） |
 | `connectDaemon` | 对单个仓库：尝试连接 socket，不存在或拒绝时调用 `spawnDaemon` 后重试，成功后发送 `hello` 帧并返回 `DaemonClient` |
 | `DaemonClient.call` | 发送请求帧并按 id 等待响应；断开时以不可达错误拒绝而非挂起 |
 | `DaemonClient.subscribe` | 订阅 `activity` / `transcript` / `relay.*` / `shells.changed` / `runs.changed` 事件并分发给监听者 |
@@ -34,7 +34,7 @@ description: 窗口侧守护进程客户端：按工作区内仓库建立多连�
 | `WorkspaceClients` | 按工作区仓库集合维护多个 `DaemonClient`，提供 `forRepo`、`all`、`closeAll` |
 
 ## 协作关系
-- `connectDaemon` 依赖 `runtime/identity.ts` 的 `daemonSocketPath`、`daemonLockPath`、`repoDataDir`，依赖 `runtime/protocol.ts` 的编解码与 `hello` 参数类型。
+- `connectDaemon` 依赖 `runtime/identity.ts` 的 `daemonSocketPath`、`repoDataDir`，依赖 `runtime/protocol.ts` 的编解码与 `hello` 参数类型。
 - `WorkspaceClients` 由 `extensions/lifecycle.ts` 在 `session_start` 创建、`session_shutdown` 关闭；`extensions/dispatch.ts`、`extensions/relay.ts`、`extensions/agents-ui.ts`、`extensions/shell-ui.ts` 通过它调用方法与订阅事件。
 - `hello` 参数：`windowId`、`pid`、`cwd`、`workspaceRoot`、`repos`（仓库身份列表）、`protocolVersion`。
 - 重连计时用 `runtime/clock.ts` 的 `createClock`，不用裸 `setTimeout`。

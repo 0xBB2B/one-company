@@ -13,7 +13,6 @@
 | 10 | role-settings | done | 2026-09-09 |
 | 11 | mcp-discovery | done | 2026-09-09 |
 | 12 | settings-controller | pending | — |
-| 13 | settings-page | pending | — |
 | 14 | daemon-protocol | done | 2026-09-09 |
 | 15 | daemon-lifecycle | pending | — |
 | 16 | structured-verdict | done | 2026-09-08 |
@@ -35,25 +34,18 @@
 | 32 | agents-activity | pending | — |
 | 33 | agents-panel | pending | — |
 | 34 | transcript-view | pending | — |
-| 35 | shell-summary | pending | — |
-| 36 | shell-page | pending | — |
-| 37 | bottom-dock | pending | — |
+| 35 | shell-page | pending | — |
 | 38 | window-registry | pending | — |
 | 39 | range-claims | pending | — |
 | 40 | write-guard | pending | — |
-| 41 | shared-branch-guard | pending | — |
 | 42 | workspace-coordination | pending | — |
 | 43 | spec-docs-format | pending | — |
-| 44 | mechanical-validation | pending | — |
-| 45 | requirement-agent-prompt | pending | — |
+| 45 | role-prompts | pending | — |
 | 46 | planner-role | pending | — |
-| 47 | worker-role | pending | — |
-| 48 | checking-roles | pending | — |
 | 49 | main-session-skills | pending | — |
-| 50 | user-documentation | pending | — |
 | 51 | integration-verification | pending | — |
 ## 当前
-已暂停（用户要求先重新 review spec 与 plan）。已完成 01–05、09–11、14、16–18、22 共 13 个单元；下一波候选：06 workflow-state（依赖 03、05）、12 settings-controller（依赖 10、11）、15 daemon-lifecycle（依赖 03、04、14）、20 shell-registry（依赖 04，按新版 plan 执行）、38 window-registry（依赖 02、03、04）。
+规范与计划经设计审查重排（spec 52→42 份，plan 51→43 份，2026-09-09），暂停解除。已完成 01–05、09–11、14、16–18、22 共 13 个单元；先按新规范返修 09 role-catalog（项目层定义随宿主信任、删除按 kind 的派工判定）、14 daemon-protocol（新增 dispatch.review 与 shells.markStopped，删除 uncertain）、18 run-store（删除 uncertain 状态，stop 直接终态），再进入下一波：06 workflow-state（依赖 03、05）、12 settings-controller（依赖 10、11）、15 daemon-lifecycle（依赖 03、04、14）、20 shell-registry（依赖 04）、38 window-registry（依赖 02、03、04）。02 local-identity 的守护进程路径断言随 15 一起改。
 
 已完成单元的自修记录：local-identity（两轮）、sleep-aware-clock（两轮）、role-catalog（两轮）、structured-verdict（两轮）、versioned-store（五轮：锁回收最终为两次观察 + inode 核对，可重入持有集带 active 标记）、role-settings（三轮）、error-details（规范变更后重做 + 五轮）、network-pause（四轮）、daemon-protocol（三轮）、decision-ledger（三轮）、run-store（三轮，含新版 shellToken）、mcp-discovery（五轮）。
 

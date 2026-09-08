@@ -9,7 +9,7 @@ description: 包装 bash 工具增加 background 与超时语义，等待模式�
 
 ## 业务规则（来源：spec）
 - managed-execution：主会话与守护进程内角色的 bash 以及手动 `!`、`!!` 都是受管理入口；省略 background 或为 false 时等待真实结果，失败不得显示为成功；background 为 true 时命令未结束即返回任务编号与状态，已启动不等于成功；手动入口不增加后台选项，保持原输入与等待行为及输出是否进入模型上下文的区别；后台可同时指定超时，按秒从启动计时；无法登记或启动返回具体失败，不改用未受管理入口。
-- role-catalog / mcp-access：不扩大既有命令权限，不改变工作目录与环境。
+- role-catalog / role-settings：不扩大既有命令权限，不改变工作目录与环境。
 
 ## 涉及文件
 - 新建：`runtime/shell-bash.ts`

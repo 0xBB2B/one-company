@@ -10,7 +10,7 @@
 | material-decision | 存在合理替代方案、已选定其一准备执行，且该选择会改变行为、范围、授权、架构、风险、恢复路径或流程分支的选择 | 材料性决定 |
 | decision-ledger | 在本机用户数据区按仓库及需求分别保存 AI 决定与用户决定的追加式记录，一项材料性决定恰好占一行 | 决策记录 |
 | product-decision | 会改变外部可观察行为、数据、安全、权限、验收标准，或无法从已确认规范与项目惯例唯一推导的选择 | 产品决策 |
-| repair-round | 某个审查角色返回未通过后，由主 agent 完成一次归因、修复派发并再次调用原审查角色的完整循环 | 自动返修轮次 |
+| repair-round | 某个审查角色返回未通过后，由需求代理完成一次归因、修复派发并再次调用原审查角色的完整循环 | 自动返修轮次 |
 | task-file | 描述单项任务的自包含文档，包括 frontmatter 元数据及正文 | 任务文件、task 文件 |
 | example-code-block | 任务文件中用于展示代码示例的围栏代码块 | 示例代码块 |
 | deliverable-code-block | 任务文件中承载 DDL、API 契约或配置完整成品的围栏代码块 | 成品代码块 |
@@ -34,8 +34,13 @@
 | managed-shell | 经受管理入口启动的一次命令及其后代进程，绑定唯一任务身份和具体宿主；一个任务只计一个 Shell | Shell 任务、受管理 Shell |
 | shell-host | 启动 Shell 的具体主会话或子运行；手动 !、!! 命令归属当前主会话 | Shell 宿主 |
 | background-shell | 主或子 agent 通过 bash 的 background: true 启动、返回任务编号而不等待结束的受管理 Shell；指定的 timeout 仍约束执行寿命 | 后台 Shell、background-bash |
-| shell-summary | 位于原状态栏下方、Agents 上方，显示当前主会话全部活动 Shell 总数与宿主角色分布的入口行 | Shell 汇总行 |
-| shell-manager-page | /ps 与汇总行回车共用、临时替换输入栏的 Shell 列表及只读详情界面 | Shell 管理页 |
+| shell-summary | 原状态栏内显示本窗口主会话与本工作区守护进程内全部活动 Shell 总数与宿主分布的纯文本，不可聚焦 | Shell 汇总行 |
+| shell-manager-page | 由 /ps 打开、临时替换输入栏的 Shell 列表及只读详情界面 | Shell 管理页 |
+| shell-registry | 守护进程或窗口内登记全部受管理 Shell 任务及其宿主、进程与活动状态的表 | Shell 登记表 |
+| window-record | 窗口在本机登记的身份、启动路径、进程与心跳信息 | 窗口登记 |
+| heartbeat | 窗口或守护进程周期写入的存活时间戳，扣除睡眠间隔后判定是否过期 | 心跳 |
+| boot-id | 机器每次启动生成的标识，用于判定登记信息是否来自重启之前 | 开机标识 |
+| terminal-state | 运行进入后不再改变的状态：正常结束、失败、用户停止 | 运行终态 |
 | work-range | 任务声明并获准处理的文件或目录范围，包含写入及需要稳定内容的验证保护 | 工作范围 |
 | safe-handoff | 原任务不再对范围写入且交付信息可读后，新任务重新核对现场并取得该范围的交接 | 安全交接 |
 | local-workflow-data | 保存在本机用户数据区、按仓库及需求归属的决策与运行数据，仅在本机保存而不随 Git 同步 | 本机流程数据、流程数据 |
