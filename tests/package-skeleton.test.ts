@@ -71,7 +71,6 @@ describe("被替代文件不存在", () => {
     "agents/pre-reviewer.md",
     "agents/review-engineer.md",
     "agents/test-engineer.md",
-    "agents/planner.md",
     "skills/spec-docs/scripts/decision-ledger.ts",
   ];
 

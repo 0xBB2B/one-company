@@ -116,7 +116,7 @@ description: 清理 main 上被替代的外部子代理桥接、旧角色与旧�
 - 测试输入：仓库工作树；临时目录
 - 预期结果：
   - package.json 的 name 为 `@0xbb2b/pi-company`，`pi.prompts` 为空数组，`files` 含 agents、daemon、extensions、runtime、rules、skills，dependencies 含 typebox，peerDependencies 恰为三个 pi 包且值为 `*`
-  - 被删除的十一个源文件与十个测试文件均不存在；`agents/` 下不存在旧六角色文件名
+  - 被删除的十一个源文件与十个测试文件均不存在；`agents/` 下不存在旧五个角色文件名（planner.md 由角色目录单元以新格式重建，不在此断言）
   - runtime/ 与 daemon/ 下每个 .ts 文件经宿主 Node 的 `stripTypeScriptTypes`（strip 模式）剥离不抛错；任一文件含 `enum ` 或 `namespace ` 关键字、构造函数参数属性或无后缀相对 import 即失败；目录不存在或为空时以零文件通过
   - `createTempHome` 返回的目录互不重复，HOME 下无真实用户文件；`removeTempHome` 后目录不存在
   - `registerControlledProvider` 注册后，脚本化的文本回复、工具调用与"连接失败"能依次被取出；未排队时请求得到明确错误而非挂起
