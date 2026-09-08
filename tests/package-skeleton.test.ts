@@ -61,7 +61,6 @@ describe("被替代文件不存在", () => {
   const removedFiles = [
     "extensions/agents-bridge.ts",
     "extensions/subagents-preflight.ts",
-    "extensions/decision-record.ts",
     "prompts/spec-new.md",
     "prompts/spec-resume.md",
     "prompts/spec-revise.md",
@@ -83,7 +82,6 @@ describe("被替代文件不存在", () => {
 
 describe("旧测试文件不存在", () => {
   const removedTests = [
-    "tests/decision-ledger.test.ts",
     "tests/decision-record.test.ts",
     "tests/helpers/requirement-fixture.ts",
     "tests/subagents-preflight.test.ts",
