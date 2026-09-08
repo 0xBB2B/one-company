@@ -24,7 +24,7 @@ description: 需求阶段与任务进度的本机状态模型、随形状声明�
 ```json
 { "requirement": "<reqId>", "stage": "draft",
   "shape": null,
-  "tasks": { "<taskId>": { "progress": "todo", "runId": null, "description": "", "agent": "", "note": "", "commit": null, "reason": "", "repairRound": 0 } },
+  "tasks": { "<taskId>": { "progress": "todo", "runId": null, "description": "", "agent": "", "note": "", "commit": null, "blockedReason": "", "workspaceDir": "", "reason": "", "repairRound": 0 } },
   "followUps": [],
   "history": [ { "stage": "confirmed", "at": "<UTC>", "runId": null, "decisionId": "U-1", "reason": null } ] }
 ```
@@ -61,7 +61,7 @@ description: 需求阶段与任务进度的本机状态模型、随形状声明�
 |---|---|
 | `initRequirementState` | 创建需求状态文档：阶段 draft、任务表空、后续问题清单空、version 1；已存在则拒绝 |
 | `readRequirementState` | 读取状态与 version，损坏时抛"损坏"而非空状态 |
-| `updateTaskFields` | 在 version 一致时更新任务的 note、agent、commit、description 等普通字段与需求的后续问题清单；拒绝未知字段与把阶段/进度混入普通更新 |
+| `updateTaskFields` | 在 version 一致时更新任务的 note、description、agent、commit、blockedReason、workspaceDir 与需求的后续问题清单；拒绝未知字段与把阶段/进度混入普通更新 |
 | `advanceStage` | 校验目标阶段是当前阶段按已确认形状声明的下一步（声明跳过的门禁对应阶段直接越过，以确认形状时记录的用户决定编号为证据），并对 `evidenceFromRun` 返回的运行结果执行该阶段门禁谓词，成立才写入新阶段与证据引用（runId） |
 | `retreatStage` | 受控回退：reviewing→executing、accepting→executing、planned→confirmed；要求理由与用户决定编号；本需求名下存在任何未停止（非终态且非 interrupted，含 paused/waiting_answer/queued）的运行即拒绝并列出其标识，不接收调用方指定的运行；history 登记的原运行只用于溯源。陈旧的 queued/running 记录只能由守护进程启动时的中断标记解封 |
 | `gateForStage` | 返回某阶段的门禁谓词：需要的运行类型、结构化结果种类与判定 |
@@ -75,8 +75,10 @@ description: 需求阶段与任务进度的本机状态模型、随形状声明�
 | `rejectRequirement` | 仅在提供用户裁决决定时置 rejected |
 | `bindEvidence` | 把 runId 对应的审查或验收结果与定义指纹、代码 HEAD、工作目录绑定后写入 evidence 文件 |
 | `checkEvidence` | 核对证据版本与当前定义指纹、代码 HEAD 是否一致，不一致返回"待重新核对" |
-| `checkResume` | 续接核对：状态存在且未损坏、原运行已停止、已绑定证据与传入的当前版本一致；返回可续接位置或阻塞原因（含待重新核对） |
+| `checkResume` | 续接核对：状态存在且未损坏、原运行已停止、已绑定证据与传入的当前版本一致；返回可续接位置与当前 version，或阻塞原因（含待重新核对） |
 | `skippedGates` | 返回形状声明跳过的门禁及其决定编号 |
+
+所有变更函数的失败结果为 `{ ok: false, reason, staleVersion?: true }`：版本冲突时 `staleVersion` 为 true 且 reason 只陈述事实（"版本已变化"），重试提示由调用方追加。
 
 ## 协作关系
 - 读写经 `runtime/store.ts`；路径经 `runtime/identity.ts`；决定编号由 `runtime/decisions.ts` 核对存在；运行记录经 `runtime/run-store.ts` 读取。

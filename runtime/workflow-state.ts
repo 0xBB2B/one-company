@@ -6,7 +6,7 @@ import { inspectDecision } from "./decisions.ts";
 import { repositoryIdentity, requirementDataDir } from "./identity.ts";
 import { isTerminalState, RunStore } from "./run-store.ts";
 import type { RunRecord, RunState } from "./run-store.ts";
-import { createDocument, readDocument, writeDocument, writeFileAtomic } from "./store.ts";
+import { createDocument, readDocument, StaleVersionError, writeDocument, writeFileAtomic } from "./store.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -30,6 +30,8 @@ export interface TaskState {
   commit: string | null;
   reason: string;
   repairRound: number;
+  blockedReason: string;
+  workspaceDir: string;
   [key: string]: unknown;
 }
 
@@ -69,7 +71,12 @@ export interface RequirementState {
   history: HistoryEntry[];
 }
 
-export type ActionResult = { ok: true; version: number } | { ok: false; reason: string };
+export type ActionResult = { ok: true; version: number } | { ok: false; reason: string; staleVersion?: true };
+
+function failureFromError(error: unknown): { ok: false; reason: string; staleVersion?: true } {
+  if (error instanceof StaleVersionError) return { ok: false, reason: "版本已变化", staleVersion: true };
+  return { ok: false, reason: (error as Error).message };
+}
 
 export const VALID_STAGES = [
   "draft",
@@ -160,7 +167,7 @@ export async function initRequirementState(ctx: WorkflowContext): Promise<Action
     const { version } = await createDocument(statePath(ctx, identity.repoId), initial);
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -313,7 +320,7 @@ export async function advanceStage(input: AdvanceInput, ctx: WorkflowContext): P
   try {
     assertValidStage(input.targetStage);
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
   const identity = await repositoryIdentity(ctx.cwd);
   const current = await readStateOrFail(ctx, identity.repoId);
@@ -345,7 +352,7 @@ export async function advanceStage(input: AdvanceInput, ctx: WorkflowContext): P
     );
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -409,7 +416,7 @@ export async function retreatStage(
     );
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -426,6 +433,8 @@ function registerTasks(existing: Record<string, TaskState>, shapeTasks: Array<{ 
       commit: null,
       reason: "",
       repairRound: 0,
+      blockedReason: "",
+      workspaceDir: "",
     };
   }
   return tasks;
@@ -463,7 +472,7 @@ export async function recordShape(
     );
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -485,7 +494,7 @@ export async function updateTaskFields(
     const task = tasks[input.taskId];
     if (!task) return { ok: false, reason: `任务不存在: ${input.taskId}` };
     const fields = input.fields ?? {};
-    const allowed = ["note", "agent", "commit", "description"];
+    const allowed = ["note", "description", "agent", "commit", "blockedReason", "workspaceDir"];
     for (const key of Object.keys(fields)) {
       if (!allowed.includes(key)) return { ok: false, reason: `不允许更新的字段: ${key}` };
     }
@@ -501,7 +510,7 @@ export async function updateTaskFields(
     );
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -527,7 +536,7 @@ export async function startTask(
     );
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -614,7 +623,7 @@ export async function finishTask(
     );
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -641,7 +650,7 @@ export async function failTask(
     );
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -676,7 +685,7 @@ export async function rollbackTask(
     );
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -703,7 +712,7 @@ export async function rejectRequirement(
     );
     return { ok: true, version };
   } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+    return failureFromError(error);
   }
 }
 
@@ -762,7 +771,7 @@ export async function checkEvidence(
 export async function checkResume(
   ctx: WorkflowContext,
   currentVersion?: DefinitionVersion,
-): Promise<{ ok: true; stage: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; stage: string; version: number } | { ok: false; reason: string }> {
   let stateResult: Awaited<ReturnType<typeof readRequirementState>>;
   try {
     stateResult = await readRequirementState(ctx);
@@ -797,5 +806,5 @@ export async function checkResume(
     }
   }
 
-  return { ok: true, stage: data.stage };
+  return { ok: true, stage: data.stage, version: stateResult.version };
 }

@@ -58,12 +58,13 @@ Type.Object({
 ### runtime/workflow-tool.ts
 | 函数名 | 职责 |
 |---|---|
-| `createWorkflowTool` | 生成 pi 工具定义（名称、说明、参数、执行），供窗口扩展与守护进程会话共用 |
+| `createWorkflowTool` | 生成 pi 工具定义（名称、说明、参数、执行），供窗口扩展与守护进程会话共用；选项 `{ dataRoot, cwd?, migration? }`，`migration` 为迁移单元注入的 `{ preflight, apply, status }` 处理器，未注入时三个迁移动作返回失败回执"迁移功能未接入" |
 | `executeWorkflowAction` | 按 action 分派到状态机或迁移函数，统一把错误映射为失败回执，绝不抛未处理异常 |
 | `retryOnStaleVersion` | 供程序化调用方（run-manager 等）使用：以"重读状态 → 重算更新 → 重写"的回调形式执行更新，遇版本冲突自动重读重算重写，达到上限后返回失败 |
 | `requireRequirement` | 解析并校验 requirement 与 cwd 得到身份，缺失时返回阻塞回执 |
-| `formatReceipt` | 生成简短成功/失败文案与结构化 details |
+| `formatReceipt` | 生成简短成功/失败文案与结构化 details；版本冲突以状态机结果的 `staleVersion` 判别并单点追加"请重新查询后重试"；失败文案中的绝对路径一律脱敏 |
 | `listRequirements` | 列出本仓库本机数据中的需求及阶段，供续接选择 |
+| `currentVersion` | 计算当前版本：`definitionFingerprint` 为 `<cwd 仓库根>/.pi-company/requirements/<reqId>/` 下全部文件按相对路径排序后的（路径、NUL 分隔、内容）sha256（目录缺失记 `none`；符号链接经 realpath 解析后须仍位于仓库根内，否则跳过；只对目录链接做防环去重，深度上限 32），`codeHead` 为 `git rev-parse HEAD`（LC_ALL=C，10 秒超时）；advance/task-finish/resume-check 用它作为状态机的当前版本 |
 
 ### extensions/workflow.ts
 | 函数名 | 职责 |
@@ -71,7 +72,7 @@ Type.Object({
 | `workflowExtension` | 默认导出：在窗口注册 `pi_company_workflow`，渲染只显示回执文本 |
 
 ## 协作关系
-- 状态动作调用 `runtime/workflow-state.ts`；迁移动作调用 `runtime/migration.ts`；身份经 identity；运行记录经 `runtime/run-store.ts`。
+- 状态动作调用 `runtime/workflow-state.ts`；迁移动作经 `createWorkflowTool` 注入的处理器分派（由 migration 单元提供 `runtime/migration.ts` 并在窗口扩展里注入）；身份经 identity；运行记录经 `runtime/run-store.ts`。
 - 需求代理会话通过 `createWorkflowTool` 注册同一工具；守护进程的 run-manager 在派工与交付核对时直接调用 `executeWorkflowAction`，并对可能并发的更新走 `retryOnStaleVersion`，不带旧 version 盲目重试。
 - 模型调用方收到版本冲突回执后自行重新 `query` 再提交。
 
@@ -86,7 +87,7 @@ Type.Object({
   - `retreat` reviewing→executing 附 reason 与 decisionId 成功；缺 decisionId 或目标阶段不在允许路径失败
   - `reject` 无 decisionId 失败；`task-finish` runId 指向的运行缺交付证据失败，齐全成功后任务 done
   - `shape-confirm` 以 runId 读取提议形状：形状不含黑盒验收且无 decisionId 失败，附 decisionId 成功
-  - `resume-check` 对无状态需求返回阻塞而非完成；`list` 返回两个进行中需求
+  - `resume-check` 对无状态需求返回阻塞而非完成；`list` 返回两个进行中需求；未注入迁移处理器时 `migrate-preflight` 返回失败回执而不抛出
   - 写入过程被模拟为失败时回执为失败或结果不明，不返回成功
 - [ ] 定向查询与局部更新
 - [ ] 版本冲突提示与程序化重读重写

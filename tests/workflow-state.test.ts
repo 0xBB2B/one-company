@@ -1317,6 +1317,44 @@ describe("版本化与并发", () => {
     const second = await advanceStage({ expectedVersion: readB.version, targetStage: "confirmed", decisionId: decision.decisionId }, world.ctx);
     expect(second.ok).toBe(false);
   });
+
+  test("版本冲突时 updateTaskFields 第二次调用结果携带 staleVersion:true", async () => {
+    const world = await setupWorld();
+    await toExecuting(world);
+    const readA = await currentState(world);
+    const readB = await currentState(world);
+
+    const first = await updateTaskFields({ expectedVersion: readA.version, taskId: "task-a", fields: { note: "第一次更新" } }, world.ctx);
+    expect(first.ok).toBe(true);
+
+    const second = await updateTaskFields({ expectedVersion: readB.version, taskId: "task-a", fields: { note: "第二次更新" } }, world.ctx);
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect((second as { staleVersion?: boolean }).staleVersion).toBe(true);
+  });
+
+  test("非版本冲突的失败（缺决定编号）结果不携带 staleVersion", async () => {
+    const world = await setupWorld();
+    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
+    const state = await currentState(world);
+    const result = await advanceStage({ expectedVersion: state.version, targetStage: "confirmed" }, world.ctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect((result as { staleVersion?: boolean }).staleVersion).toBeUndefined();
+  });
+
+  test("版本冲突失败原因只陈述事实，不包含操作提示", async () => {
+    const world = await setupWorld();
+    await toExecuting(world);
+    const readA = await currentState(world);
+    const readB = await currentState(world);
+
+    await updateTaskFields({ expectedVersion: readA.version, taskId: "task-a", fields: { note: "第一次更新" } }, world.ctx);
+    const second = await updateTaskFields({ expectedVersion: readB.version, taskId: "task-a", fields: { note: "第二次更新" } }, world.ctx);
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.reason).toContain("版本已变化");
+      expect(second.reason).not.toContain("请重新读取后重试");
+    }
+  });
 });
 
 describe("证据绑定与核对", () => {
@@ -1377,6 +1415,14 @@ describe("续接核对 checkResume", () => {
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
     const result = await checkResume(world.ctx);
     expect(result.ok).toBe(true);
+  });
+
+  test("成功时返回状态文档当前版本 version", async () => {
+    const world = await setupWorld();
+    const created = await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
+    const result = await checkResume(world.ctx);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect((result as { version?: number }).version).toBe(created.version);
   });
 
   test("已绑定证据与传入当前版本不一致时返回阻塞并说明待重新核对", async () => {
@@ -1553,6 +1599,24 @@ describe("updateTaskFields", () => {
     const after = await currentState(world);
     expect(after.data.tasks["task-a"]?.note).toBe("备注");
     expect(after.data.followUps).toEqual(["跟进事项"]);
+  });
+
+  test("接受 blockedReason 与 workspaceDir 更新并写入任务记录", async () => {
+    const world = await setupWorld();
+    await toExecuting(world);
+    const state = await currentState(world);
+    const result = await updateTaskFields(
+      {
+        expectedVersion: state.version,
+        taskId: "task-a",
+        fields: { blockedReason: "等待外部审批", workspaceDir: "/tmp/task-a-workspace" },
+      },
+      world.ctx,
+    );
+    expect(result.ok).toBe(true);
+    const after = await currentState(world);
+    expect(after.data.tasks["task-a"]?.blockedReason).toBe("等待外部审批");
+    expect(after.data.tasks["task-a"]?.workspaceDir).toBe("/tmp/task-a-workspace");
   });
 });
 
