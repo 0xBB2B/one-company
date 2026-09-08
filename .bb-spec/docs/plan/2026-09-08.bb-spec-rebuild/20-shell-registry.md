@@ -60,7 +60,7 @@ kill 桩抛出 → 探测出错：任务 uncertain 并记原因
 | 函数 | 职责 |
 |---|---|
 | `shellOwnerKey` | 由进程窗口标识、工作目录与会话生成 owner 键 |
-| `ShellRegistry.spawn` | 登记任务（starting）后以 detached 进程组启动命令，注入调用方给出的 runToken 与 taskId 组成的令牌，启动后置 running；失败返回具体原因且不留下记录；启动时刻取不到时不伪造基线，身份核对在无基线时跳过 |
+| `ShellRegistry.spawn` | 登记任务（starting）后以 detached 进程组启动命令（`mode: "wait"` 时 stdout/stderr 为 pipe，始终被消费，有 `onOutput(chunk, stream)` 则逐块转发、否则丢弃；`background` 为 ignore），注入调用方给出的 runToken 与 taskId 组成的令牌并合并调用方 `env`，启动后置 running；失败返回具体原因且不留下记录；启动时刻取不到时不伪造基线，身份核对在无基线时跳过 |
 | `ShellRegistry.list` | 列出全部或按宿主过滤的任务 |
 | `ShellRegistry.get` | 读取一条任务当前状态 |
 | `probeProcessGroup` | 对 pgid 发 0 号信号：返回 alive / gone / error（含 errno） |
@@ -73,7 +73,7 @@ kill 桩抛出 → 探测出错：任务 uncertain 并记原因
 | `ShellRegistry.closeOwner` | owner 退出时停止其全部任务，未确认的保留并标不确定 |
 | `ShellRegistry.adoptOrphans` | 按给定 owner 与 runToken 用 ps 采样定位环境令牌以 `<runToken>:` 开头的存活进程，按令牌的 taskId 段分组还原为该 owner 的 running 任务（每组一条，command 取自 ps、startedAt 取进程启动时刻、pid/pgid 取组内最早进程）并返回任务清单；无进程返回空清单；ps 失败返回具体原因而非空清单 |
 | `ShellRegistry.subscribe` | 按任务推送状态变化；监听器异常被隔离，不影响任务流转 |
-| `scheduleTimeout` | 用睡眠感知时钟从启动时刻按秒计时，到期触发 stop 并标 timed_out |
+| `scheduleTimeout` | 用睡眠感知时钟从启动时刻按秒计时，到期停止任务及后代，确认清理后直接置 timed_out（不广播 stopped 中间态） |
 
 ## 协作关系
 窗口 `extensions/shell-ui.ts` 与守护进程 `daemon/run-manager.ts` 各持有一个实例；`runtime/shell-bash.ts` 通过 `spawn` 执行命令；`runtime/clock.ts` 提供睡眠感知计时；守护进程把任务变化经 `shells.changed` 事件推给窗口；`daemon/run-manager.ts` 启动时对每个中断运行以其 shellToken 调用 `adoptOrphans`；Shell 管理页对 uncertain 任务提供"视为已停止"入口，先写决策记录再调用 `markStoppedByUser`。

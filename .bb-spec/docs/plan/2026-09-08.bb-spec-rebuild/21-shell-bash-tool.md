@@ -13,6 +13,7 @@ description: 包装 bash 工具增加 background 与超时语义，等待模式�
 
 ## 涉及文件
 - 新建：`runtime/shell-bash.ts`
+- 修改：`runtime/shell-registry.ts` — `spawn` 的 wait 模式改为 stdio pipe 并经 `onOutput` 转发，接受调用方 `env`
 - 新建：`tests/shell-bash-tool.test.ts`
 
 ## 成品定义
@@ -34,11 +35,13 @@ export const BASH_PARAMETERS = Type.Object({
 ### runtime/shell-bash.ts
 | 函数 | 职责 |
 |---|---|
-| `createManagedBashOperations` | 生成 SDK bash 工具的执行层，把命令交给注册表 spawn 并转发输出、退出码、abort 与超时 |
-| `createManagedBashTool` | 以 SDK 内置 bash 定义为展示基底、替换参数与执行层，按 background 分流等待或后台 |
-| `runBackground` | 登记并启动后短暂观察，返回回执，不等待结束 |
-| `handleUserBash` | 处理宿主 `user_bash` 事件，用注册表执行并保持原有输出与上下文语义 |
+| `createManagedBashOperations` | 生成 SDK `BashOperations`（选项 `{ registry, host, runToken }`，runToken 由会话/运行身份注入而非每次生成）：`exec(command, cwd, { onData, signal, timeout, env })` 以 `sh -c <command>` 原样交给注册表 wait 模式（不包装命令串），`onOutput` 逐块转发到 `onData`；等待终态或 uncertain：exited → 退出码；stopped（无论由本次 abort 还是外部停止触发）→ 抛 aborted/stopped；abort 监听在 spawn 前注册、已 aborted 不启动、abort 后 `registry.stop` 再按 SDK 惯例抛 aborted；timed_out 抛 `Command timed out after N seconds`；uncertain 抛无法确认并提示用户裁定 |
+| `createManagedBashTool` | `createBashToolDefinition(cwd, { operations })` 为基底，替换 `parameters` 为 BASH_PARAMETERS；execute 在 `background` 为 true 时走 `runBackground`，否则原样委托基底 execute（失败抛出、截断、onUpdate 流式与 fullOutputPath 全部沿用 SDK） |
+| `runBackground` | 登记并启动后短暂观察，返回回执（details.host 为 { kind, id }，文本用 kind:id，startedAt 为数值或 null），不等待结束；登记失败抛出含原因的错误 |
+| `handleUserBash` | 返回 `{ operations }` 交给 pi 自行驱动执行（signal、截断、cancelled、excludeFromContext 全部保持原语义）；签名只接 `{ registry, host, runToken }`，手动入口不接受 background 由事件形状结构性保证 |
 | `formatBackgroundReceipt` | 生成回执文本与 details |
+
+工具不暴露 PI_* 会话环境变量（`exposeSessionEnvironment: false`），与内置 bash 有别；工具定义显式标注 `ToolDefinition<typeof BASH_PARAMETERS, …>`，不套用基底的 execute 类型。
 
 ## 协作关系
 窗口 `extensions/shell-ui.ts` 用 `createManagedBashTool` 注册同名 `bash` 覆盖内置，并注册 `user_bash` 处理器；`daemon/role-session.ts` 与 `daemon/requirement-agent.ts` 把该工具作为 customTools 传入会话；执行层依赖 `runtime/shell-registry.ts`。
@@ -46,7 +49,7 @@ export const BASH_PARAMETERS = Type.Object({
 ## 验证方式
 - 测试入口：工具定义的 `execute`（等待与后台两种参数）、`handleUserBash`
 - 测试输入：延迟 1 秒成功命令、延迟失败命令、`background:true` 的持续命令、`background:true, timeout:1` 的持续命令、注册失败的注册表桩、abort 信号
-- 预期结果：等待模式在结束后返回真实输出与退出码且失败标 isError；后台模式在 300 毫秒内返回回执且任务在注册表中 running；超时后任务 timed_out 且后代停止；注册失败返回具体错误且未启动进程；abort 后任务停止且工具抛 aborted；`handleUserBash` 不新增参数且结果进入或不进入上下文与原语义一致
+- 预期结果：等待模式在结束后返回真实输出（流式经 onUpdate/onData 到达）与退出码，失败时 execute 抛出（框架只以抛出判定失败）；参数 schema 拒绝额外字段、空命令与越界超时；后台模式在 300 毫秒内返回回执且任务在注册表中 running；超时后任务 timed_out 且后代停止；注册失败返回具体错误且未启动进程；abort 后任务停止且工具抛 aborted；`handleUserBash` 不新增参数且结果进入或不进入上下文与原语义一致
 - [ ] 等待模式真实结果
 - [ ] 后台回执不等待
 - [ ] 后台超时

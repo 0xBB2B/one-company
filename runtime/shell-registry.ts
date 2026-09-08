@@ -62,6 +62,8 @@ export interface SpawnInput {
   mode: "wait" | "background";
   timeoutSeconds?: number;
   runToken: string;
+  env?: NodeJS.ProcessEnv;
+  onOutput?: (chunk: Buffer, stream: "stdout" | "stderr") => void;
 }
 
 export type SpawnResult = { ok: true; task: TaskRecord } | { ok: false; reason: string };
@@ -421,9 +423,15 @@ export class ShellRegistry {
     const child = spawn(input.command, input.args ?? [], {
       cwd: input.cwd,
       detached: true,
-      stdio: "ignore",
-      env: { ...process.env, [TOKEN_ENV_VAR]: token },
+      stdio: input.mode === "wait" ? ["ignore", "pipe", "pipe"] : "ignore",
+      env: { ...process.env, ...input.env, [TOKEN_ENV_VAR]: token },
     });
+
+    if (input.mode === "wait") {
+      const onOutput = input.onOutput;
+      child.stdout?.on("data", (chunk: Buffer) => onOutput?.(chunk, "stdout"));
+      child.stderr?.on("data", (chunk: Buffer) => onOutput?.(chunk, "stderr"));
+    }
 
     const spawnOutcome = await new Promise<{ ok: true } | { ok: false; reason: string }>((resolve) => {
       child.once("spawn", () => resolve({ ok: true }));
@@ -440,6 +448,10 @@ export class ShellRegistry {
 
     let task: TaskRecord | undefined;
     let earlyExitCode: number | null | undefined;
+    child.on("close", () => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    });
     child.on("exit", (code) => {
       if (task) this.handleExit(task, code);
       else earlyExitCode = code;
@@ -572,6 +584,10 @@ export class ShellRegistry {
   }
 
   async stop(taskId: string): Promise<StopResult> {
+    return this.stopWithFinalStatus(taskId, "stopped");
+  }
+
+  private async stopWithFinalStatus(taskId: string, finalStatus: "stopped" | "timed_out"): Promise<StopResult> {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, reason: `未知任务：${taskId}` };
     if (!(task.pgid > 1)) return { ok: false, reason: `任务 pgid 非法：${task.pgid}` };
@@ -658,7 +674,7 @@ export class ShellRegistry {
         if (probe.state === "gone" && descendantsAlive === 0) {
           consecutiveGone++;
           if (consecutiveGone >= STOP_CONFIRM_COUNT) {
-            task.status = "stopped";
+            task.status = finalStatus;
             task.stoppedBy = "signal";
             task.activity = "ended";
             this.clearTimeoutTimer(taskId);
@@ -765,10 +781,6 @@ export class ShellRegistry {
     this.timeoutTimers.delete(taskId);
     const task = this.tasks.get(taskId);
     if (!task || isTerminalStatus(task.status)) return;
-    const stopped = await this.stop(taskId);
-    if (stopped.ok && stopped.task.status === "stopped") {
-      stopped.task.status = "timed_out";
-      this.notify(stopped.task);
-    }
+    await this.stopWithFinalStatus(taskId, "timed_out");
   }
 }

@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn as spawnChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createClock } from "../runtime/clock.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import * as ShellRegistryModule from "../runtime/shell-registry.ts";
@@ -1442,5 +1443,127 @@ describe("进程组探测 probeProcessGroup", () => {
     }).not.toThrow();
     expect(resultForOne?.ok).toBe(false);
     expect(resultForZero?.ok).toBe(false);
+  }, LONG_TIMEOUT);
+});
+
+describe("等待模式管道输出", () => {
+  test("wait 模式下 spawn 通过 onOutput 分块转发 stdout/stderr，且 env 覆盖生效同时保留注入 token", async () => {
+    const registry = makeRegistry();
+    const runToken = randomUUID();
+
+    const taskId = randomUUID();
+    const chunks: { stream: "stdout" | "stderr"; text: string }[] = [];
+    const result = await registry.spawn({
+      taskId,
+      host: HOST_MAIN,
+      command: "sh",
+      args: ["-c", "echo out; echo err 1>&2"],
+      mode: "wait",
+      runToken,
+      onOutput: (chunk: Buffer, stream: "stdout" | "stderr") => {
+        chunks.push({ stream, text: chunk.toString() });
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    trackPgid(result.task.pgid);
+
+    await waitFor(() => registry.get(taskId)?.status === "exited", LONG_TIMEOUT);
+    expect(registry.get(taskId)?.exitCode).toBe(0);
+
+    const stdoutText = chunks.filter((c) => c.stream === "stdout").map((c) => c.text).join("");
+    const stderrText = chunks.filter((c) => c.stream === "stderr").map((c) => c.text).join("");
+    expect(stdoutText).toContain("out");
+    expect(stderrText).toContain("err");
+
+    const envTaskId = randomUUID();
+    const envChunks: string[] = [];
+    const envResult = await registry.spawn({
+      taskId: envTaskId,
+      host: HOST_MAIN,
+      command: "sh",
+      args: ["-c", "echo $FOO; echo $PI_COMPANY_SHELL_TOKEN"],
+      mode: "wait",
+      runToken,
+      env: { FOO: "bar" },
+      onOutput: (chunk: Buffer, stream: "stdout" | "stderr") => {
+        if (stream === "stdout") envChunks.push(chunk.toString());
+      },
+    });
+    expect(envResult.ok).toBe(true);
+    if (!envResult.ok) return;
+    trackPgid(envResult.task.pgid);
+
+    await waitFor(() => registry.get(envTaskId)?.status === "exited", LONG_TIMEOUT);
+    const envLines = envChunks
+      .join("")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    expect(envLines[0]).toBe("bar");
+    expect(envLines[1]?.length).toBeGreaterThan(0);
+  }, LONG_TIMEOUT);
+});
+
+describe("wait 模式管道背压（真实 Node 子进程）", () => {
+  test("无 onOutput 时管道仍必须被消费：≥1MB 输出的 wait 任务在真实 Node 下 5 秒内 exited", async () => {
+    const nodePath = Bun.which("node");
+    expect(typeof nodePath).toBe("string");
+    if (!nodePath) return;
+
+    const clockPath = fileURLToPath(new URL("../runtime/clock.ts", import.meta.url));
+    const registryPath = fileURLToPath(new URL("../runtime/shell-registry.ts", import.meta.url));
+    const shellCommand = 'head -c 1048576 /dev/zero | tr "\\0" a';
+
+    const scriptSource = [
+      `import { createClock } from ${JSON.stringify(clockPath)};`,
+      `import { ShellRegistry } from ${JSON.stringify(registryPath)};`,
+      "",
+      "const registry = new ShellRegistry({ clock: createClock() });",
+      "const result = await registry.spawn({",
+      "  taskId: crypto.randomUUID(),",
+      '  host: { kind: "main", id: "main" },',
+      '  command: "sh",',
+      `  args: ["-c", ${JSON.stringify(shellCommand)}],`,
+      '  mode: "wait",',
+      "  runToken: crypto.randomUUID(),",
+      "});",
+      "if (!result.ok) {",
+      '  console.log("STUCK");',
+      "  process.exit(1);",
+      "}",
+      "const taskId = result.task.taskId;",
+      "const deadline = Date.now() + 5000;",
+      "while (Date.now() < deadline) {",
+      '  if (registry.get(taskId)?.status === "exited") {',
+      '    console.log("OK");',
+      "    process.exit(0);",
+      "  }",
+      "  await new Promise((resolve) => setTimeout(resolve, 50));",
+      "}",
+      'console.log("STUCK");',
+      "process.exit(1);",
+    ].join("\n");
+
+    const scriptDir = await mkdtemp(join(tmpdir(), "shell-registry-pipe-backpressure-"));
+    try {
+      const scriptPath = join(scriptDir, "probe.mts");
+      await writeFile(scriptPath, scriptSource, "utf8");
+
+      const { code, stdout } = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
+        const child = spawnChildProcess(nodePath, [scriptPath], { stdio: ["ignore", "pipe", "inherit"] });
+        let out = "";
+        child.stdout?.on("data", (chunk: Buffer) => {
+          out += chunk.toString();
+        });
+        child.on("error", reject);
+        child.on("exit", (exitCode) => resolve({ code: exitCode, stdout: out }));
+      });
+
+      expect(stdout).toContain("OK");
+      expect(code).toBe(0);
+    } finally {
+      await rm(scriptDir, { recursive: true, force: true });
+    }
   }, LONG_TIMEOUT);
 });
