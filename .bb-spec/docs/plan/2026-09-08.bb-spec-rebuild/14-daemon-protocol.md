@@ -10,6 +10,8 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 ## 业务规则（来源：spec）
 - daemon-host：一个仓库一个守护进程，窗口经本机通信通道与其交互；工作区窗口连接其启动目录子树内全部仓库的守护进程；守护进程不可达时窗口如实显示不可达，不把旧状态当作运行中。
 - cross-window-panel：面板活动来自守护进程推送的实际工具开始与结束事件，任意窗口可对本工作区任一运行发起暂停、继续、停止、续接，按真实结果更新状态。
+- whitebox-review / role-catalog：提交前审查由主会话记录审查快照（分支头与内容指纹）后一次直接派出白盒审查者，快照随派工传入；派工权由守护进程按调用方身份判定。
+- process-list / user-stop：Shell 任务的清理是否确认是任务自身状态；用户可把不确定任务显式裁定为已停止，裁定先写决策记录再登记；运行状态不再有停止不确定。
 - transcript-view：查看页订阅某会话的实时事件流，区分思考、输出、工具调用与结果摘要。
 - user-relay：提问投递到本工作区已连接窗口，首答生效其余撤回；无窗口时排队，新窗口连接后推送。
 - 协议只承载已定义的方法与事件；未知方法返回错误，不静默忽略。
@@ -39,7 +41,8 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 | `ping` | `{}` | `{ now }` |
 | `shutdown` | `{}` | `{ accepted }`（仅在无活动运行时接受） |
 | `dispatch.requirement` | `{ requirement, cwd, mcp?: { adapterEntry, configPath } }` | `{ runId }` 或错误 `already_active`（附现有 runId）、`not_confirmed` |
-| `runs.list` | `{ kind?, offset?, limit? }` | `{ items: RunRecord[], total, runningCount, uncertainCount }` |
+| `dispatch.review` | `{ requirement, cwd, baseline, snapshot: { head, fingerprint }, mcp?: { adapterEntry, configPath } }` | `{ runId }` 或错误 `already_active`（该需求已有活动的提交前审查运行）、`not_confirmed`；主会话经窗口连接派出提交前白盒审查者，快照原样传给审查者 |
+| `runs.list` | `{ kind?, offset?, limit? }` | `{ items: RunRecord[], total, runningCount }` |
 | `runs.get` | `{ runId }` | `{ run: RunRecord, errorDetails?: 摘要 }` |
 | `runs.pause` / `runs.resume` / `runs.stop` | `{ runId }` | `{ state, confirmed: boolean, reason? }` |
 | `runs.resumeInterrupted` | `{ runId }` | `{ state, confirmed: boolean, reason?, blockingTasks?: ShellTask[] }`（注册表中该运行仍有活动或不确定 Shell 任务时拒绝续接，回执携带任务清单且状态不变） |
@@ -52,6 +55,7 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 | `relay.forward` | `{ requirement, message, windowId }` | `{ delivered: boolean, runId?, reason? }` |
 | `shells.list` | `{}` | `{ items: ShellTask[] }` |
 | `shells.stop` | `{ taskId, expectedPid, expectedStartedAt }` | `{ status, reason? }` |
+| `shells.markStopped` | `{ taskId, expectedPid, expectedStartedAt, decisionId }` | `{ status, reason? }`（用户裁定把不确定的 Shell 任务登记为已停止，决策记录编号随请求携带；非不确定任务拒绝） |
 | `mcp.register` | `{ adapterEntry, configPath }` | `{ servers: string[] }` |
 
 事件目录：

@@ -9,6 +9,7 @@ export const METHODS = [
   "ping",
   "shutdown",
   "dispatch.requirement",
+  "dispatch.review",
   "runs.list",
   "runs.get",
   "runs.pause",
@@ -26,6 +27,7 @@ export const METHODS = [
   "relay.forward",
   "shells.list",
   "shells.stop",
+  "shells.markStopped",
   "mcp.register",
 ] as const;
 
@@ -124,6 +126,19 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
     },
     { additionalProperties: false },
   ),
+  "dispatch.review": Type.Object(
+    {
+      requirement: Type.String(),
+      cwd: Type.String(),
+      baseline: Type.String(),
+      snapshot: Type.Object(
+        { head: Type.String(), fingerprint: Type.String() },
+        { additionalProperties: false },
+      ),
+      mcp: Type.Optional(McpConfigSchema),
+    },
+    { additionalProperties: false },
+  ),
   "runs.list": Type.Object(
     {
       kind: Type.Optional(Type.String()),
@@ -172,6 +187,15 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
       taskId: Type.String(),
       expectedPid: Type.Number(),
       expectedStartedAt: Type.String(),
+    },
+    { additionalProperties: false },
+  ),
+  "shells.markStopped": Type.Object(
+    {
+      taskId: Type.String(),
+      expectedPid: Type.Number(),
+      expectedStartedAt: Type.String(),
+      decisionId: Type.String(),
     },
     { additionalProperties: false },
   ),
@@ -248,6 +272,8 @@ export function validateParams(method: string, params: unknown): void {
   assertKnownMethod(method);
   const schema = PARAM_SCHEMAS[method as (typeof METHODS)[number]];
   if (Value.Check(schema, params)) return;
-  const messages = Array.from(Value.Errors(schema, params)).map((error) => error.message);
+  const messages = Array.from(Value.Errors(schema, params)).map((error) =>
+    error.instancePath ? `${error.instancePath} ${error.message}` : error.message,
+  );
   throw protocolError("bad_params", messages.join("; "));
 }

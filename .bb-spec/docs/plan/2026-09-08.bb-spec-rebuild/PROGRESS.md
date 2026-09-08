@@ -45,7 +45,7 @@
 | 49 | main-session-skills | pending | — |
 | 51 | integration-verification | pending | — |
 ## 当前
-规范与计划经设计审查重排（spec 52→42 份，plan 51→43 份，2026-09-09），暂停解除。已完成 01–05、09–11、14、16–18、22 共 13 个单元；先按新规范返修 09 role-catalog（项目层定义随宿主信任、删除按 kind 的派工判定）、14 daemon-protocol（新增 dispatch.review 与 shells.markStopped，删除 uncertain）、18 run-store（删除 uncertain 状态，stop 直接终态），再进入下一波：06 workflow-state（依赖 03、05）、12 settings-controller（依赖 10、11）、15 daemon-lifecycle（依赖 03、04、14）、20 shell-registry（依赖 04）、38 window-registry（依赖 02、03、04）。02 local-identity 的守护进程路径断言随 15 一起改。
+规范与计划经设计审查重排（spec 52→42 份，plan 51→43 份，2026-09-09），暂停解除。返修 14 已完成（两轮复审），09/18 复审中。已完成 01–05、09–11、14、16–18、22 共 13 个单元；先按新规范返修 09 role-catalog（项目层定义随宿主信任、删除按 kind 的派工判定）、14 daemon-protocol（新增 dispatch.review 与 shells.markStopped，删除 uncertain）、18 run-store（删除 uncertain 状态，stop 直接终态），再进入下一波：06 workflow-state（依赖 03、05）、12 settings-controller（依赖 10、11）、15 daemon-lifecycle（依赖 03、04、14）、20 shell-registry（依赖 04）、38 window-registry（依赖 02、03、04）。02 local-identity 的守护进程路径断言随 15 一起改。
 
 已完成单元的自修记录：local-identity（两轮）、sleep-aware-clock（两轮）、role-catalog（两轮）、structured-verdict（两轮）、versioned-store（五轮：锁回收最终为两次观察 + inode 核对，可重入持有集带 active 标记）、role-settings（三轮）、error-details（规范变更后重做 + 五轮）、network-pause（四轮）、daemon-protocol（三轮）、decision-ledger（三轮）、run-store（三轮，含新版 shellToken）、mcp-discovery（五轮）。
 
@@ -62,6 +62,6 @@
 - run-store：list 与启动标记全量遍历运行目录无上限，保留策略与索引未在规范定义。
 - daemon-protocol：decodeFrames 的 rest 无长度上限（交 daemon-lifecycle）；仓库无 typecheck 脚本，类型层不变量对测试不可见，补 typescript 依赖需用户批准。
 - local-identity：工作区扫描不跟随符号链接目录，规范未界定，未处理。
-- role-catalog：prompt_mode 取值域未在 plan 定义，暂宽松直通，待角色提示词单元定义后收紧；assertDispatchAllowed 只按 kind 判定，目录成员性校验需在 dispatch-tools 单元落地。
+- role-catalog：prompt_mode 取值域未在 plan 定义，暂宽松直通，待角色提示词单元定义后收紧。
 - sleep-aware-clock：单一墙钟来源下事件循环长阻塞或 NTP 步进会被判为睡眠（设计取舍，未处理）；周期定时器唤醒即触发一次的语义未在规范界定。
 - role-catalog Review 指出：reviewer 与 acceptance 默认工具含 bash，"审查只读 / 验收不读源码"边界当前只由提示词承载；归因 plan/spec 层，留待 shell 与角色提示词单元处理。

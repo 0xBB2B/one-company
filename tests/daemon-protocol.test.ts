@@ -21,6 +21,7 @@ const EXPECTED_METHODS = [
   "ping",
   "shutdown",
   "dispatch.requirement",
+  "dispatch.review",
   "runs.list",
   "runs.get",
   "runs.pause",
@@ -38,6 +39,7 @@ const EXPECTED_METHODS = [
   "relay.forward",
   "shells.list",
   "shells.stop",
+  "shells.markStopped",
   "mcp.register",
 ];
 
@@ -95,7 +97,19 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "relay.forward": { requirement: "需求描述", message: "补充说明", windowId: "win-1" },
   "shells.list": {},
   "shells.stop": { taskId: "task-1", expectedPid: 123, expectedStartedAt: "2026-09-09T00:00:00.000Z" },
+  "shells.markStopped": {
+    taskId: "task-1",
+    expectedPid: 123,
+    expectedStartedAt: "2026-09-09T00:00:00.000Z",
+    decisionId: "decision-1",
+  },
   "mcp.register": { adapterEntry: "./adapter.ts", configPath: "/config.json" },
+  "dispatch.review": {
+    requirement: "实现登录页",
+    cwd: "/repo",
+    baseline: "main",
+    snapshot: { head: "abc123", fingerprint: "sha256:deadbeef" },
+  },
 };
 
 function catchError(fn: () => unknown): { code?: string; message?: string } | null {
@@ -323,6 +337,14 @@ describe("validateParams — 方法目录合法示例", () => {
   test("subscribe.transcript 携带可选 fromSeq 时通过校验", () => {
     expect(() => validateParams("subscribe.transcript", { runId: "run-1", fromSeq: 5 })).not.toThrow();
   });
+
+  test("dispatch.review 携带可选 mcp 字段时通过校验", () => {
+    const params = {
+      ...VALID_EXAMPLES["dispatch.review"]!,
+      mcp: { adapterEntry: "./adapter.ts", configPath: "/config.json" },
+    };
+    expect(() => validateParams("dispatch.review", params)).not.toThrow();
+  });
 });
 
 describe("validateParams — 缺字段被拒绝", () => {
@@ -364,6 +386,22 @@ describe("validateParams — 缺字段被拒绝", () => {
     expect(error?.code).toBe("bad_params");
     expect(error?.message).toContain("configPath");
   });
+
+  test("dispatch.review 缺少 snapshot 抛出 bad_params", () => {
+    const { snapshot: _snapshot, ...rest } = VALID_EXAMPLES["dispatch.review"]!;
+    const error = catchError(() => validateParams("dispatch.review", rest));
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("bad_params");
+    expect(error?.message).toContain("snapshot");
+  });
+
+  test("shells.markStopped 缺少 decisionId 抛出 bad_params", () => {
+    const { decisionId: _decisionId, ...rest } = VALID_EXAMPLES["shells.markStopped"]!;
+    const error = catchError(() => validateParams("shells.markStopped", rest));
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("bad_params");
+    expect(error?.message).toContain("decisionId");
+  });
 });
 
 describe("validateParams — 多余字段被拒绝", () => {
@@ -382,6 +420,54 @@ describe("validateParams — 多余字段被拒绝", () => {
   test("hello 携带未定义字段抛出 bad_params", () => {
     const params = { ...VALID_EXAMPLES.hello!, unexpected: "x" };
     const error = catchError(() => validateParams("hello", params));
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("bad_params");
+  });
+
+  test("dispatch.review 携带未定义字段抛出 bad_params", () => {
+    const params = { ...VALID_EXAMPLES["dispatch.review"]!, unexpected: "x" };
+    const error = catchError(() => validateParams("dispatch.review", params));
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("bad_params");
+  });
+
+  test("shells.markStopped 携带未定义字段抛出 bad_params", () => {
+    const params = { ...VALID_EXAMPLES["shells.markStopped"]!, unexpected: "x" };
+    const error = catchError(() => validateParams("shells.markStopped", params));
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("bad_params");
+  });
+
+  test("dispatch.review 的 snapshot 内携带未定义字段抛出 bad_params", () => {
+    const base = VALID_EXAMPLES["dispatch.review"]!;
+    const params = { ...base, snapshot: { ...(base.snapshot as object), unexpected: "x" } };
+    const error = catchError(() => validateParams("dispatch.review", params));
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("bad_params");
+  });
+});
+
+describe("validateParams — 字段类型被校验", () => {
+  test("dispatch.review 的 snapshot.head 非字符串抛出 bad_params", () => {
+    const base = VALID_EXAMPLES["dispatch.review"]!;
+    const params = { ...base, snapshot: { ...(base.snapshot as object), head: 42 } };
+    const error = catchError(() => validateParams("dispatch.review", params));
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("bad_params");
+    expect(error?.message).toContain("head");
+  });
+
+  test("shells.markStopped 的 expectedPid 非数字抛出 bad_params", () => {
+    const params = { ...VALID_EXAMPLES["shells.markStopped"]!, expectedPid: "123" };
+    const error = catchError(() => validateParams("shells.markStopped", params));
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("bad_params");
+    expect(error?.message).toContain("expectedPid");
+  });
+
+  test("shells.stop 的 expectedPid 非数字抛出 bad_params", () => {
+    const params = { ...VALID_EXAMPLES["shells.stop"]!, expectedPid: "123" };
+    const error = catchError(() => validateParams("shells.stop", params));
     expect(error).not.toBeNull();
     expect(error?.code).toBe("bad_params");
   });
