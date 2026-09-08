@@ -19,7 +19,7 @@ export interface ErrorDetail {
 }
 
 export interface SubmissionAttempt {
-  toolCallId: string;
+  toolCallId?: string;
   valid: boolean;
   accepted: boolean;
   error: string | null;
@@ -96,14 +96,15 @@ function mergeSubmissions(existing: Submissions, incoming: Submissions | undefin
     }
     const prior = attempts[index]!;
     attempts[index] = {
-      ...prior,
+      ...attempt,
+      error: prior.error ?? attempt.error,
       duplicateEvents: Math.max(prior.duplicateEvents, attempt.duplicateEvents),
       conflictingEvents: Math.max(prior.conflictingEvents, attempt.conflictingEvents),
     };
   }
   return {
     attemptCount: Math.max(existing.attemptCount, incoming.attemptCount, attempts.length),
-    validCount: Math.max(existing.validCount, incoming.validCount),
+    validCount: Math.max(existing.validCount, incoming.validCount, attempts.filter((a) => a.valid).length),
     attempts,
   };
 }
@@ -179,10 +180,11 @@ function sanitizeAttempt(attempt: SubmissionAttempt): SubmissionAttempt {
 }
 
 function sanitizeSubmissions(submissions: Submissions): Submissions {
+  const attempts = submissions.attempts.map(sanitizeAttempt);
   return {
-    attemptCount: submissions.attemptCount,
-    validCount: submissions.validCount,
-    attempts: submissions.attempts.map(sanitizeAttempt),
+    attemptCount: Math.max(submissions.attemptCount, attempts.length),
+    validCount: Math.max(submissions.validCount, attempts.filter((a) => a.valid).length),
+    attempts,
   };
 }
 
@@ -200,9 +202,11 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-async function atomicWrite(path: string, content: string): Promise<WriteResult> {
+async function atomicWrite(path: string, document: ErrorDetailsDocument): Promise<WriteResult> {
+  const validation = validateDocument(document);
+  if (!validation.ok) return { saved: false, reason: `写入前自检失败: ${validation.reason}` };
   try {
-    await writeFileAtomic(path, content);
+    await writeFileAtomic(path, `${JSON.stringify(document, null, 2)}\n`);
     return { saved: true, path };
   } catch (error) {
     return { saved: false, reason: (error as Error).message };
@@ -235,7 +239,7 @@ async function writeErrorDetailsLocked(runDir: string, input: WriteErrorDetailsI
       cleanup,
       submissions,
     };
-    return atomicWrite(path, `${JSON.stringify(document, null, 2)}\n`);
+    return atomicWrite(path, document);
   }
 
   const cleanup: ErrorDetail[] = [];
@@ -244,13 +248,13 @@ async function writeErrorDetailsLocked(runDir: string, input: WriteErrorDetailsI
   const document: ErrorDetailsDocument = {
     version: 1,
     runId: input.runId,
-    model: input.model,
+    model: { provider: input.model.provider, id: input.model.id },
     failedAt: new Date().toISOString(),
     original: extractErrorDetail(input.error),
     cleanup,
     submissions: sanitizeSubmissions(input.submissions ?? { attemptCount: 0, validCount: 0, attempts: [] }),
   };
-  return atomicWrite(path, `${JSON.stringify(document, null, 2)}\n`);
+  return atomicWrite(path, document);
 }
 
 export async function writeErrorDetails(runDir: string, input: WriteErrorDetailsInput): Promise<WriteResult> {
@@ -287,7 +291,7 @@ function isSubmissionsShape(value: unknown): value is Submissions {
   return submissions.attempts.every((attempt) => {
     if (attempt === null || typeof attempt !== "object") return false;
     const a = attempt as Record<string, unknown>;
-    if (typeof a.toolCallId !== "string") return false;
+    if (a.toolCallId !== undefined && typeof a.toolCallId !== "string") return false;
     if (typeof a.valid !== "boolean") return false;
     if (typeof a.accepted !== "boolean") return false;
     if (a.error !== null && typeof a.error !== "string") return false;

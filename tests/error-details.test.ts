@@ -662,3 +662,80 @@ describe("错误值与合并的边界", () => {
     expect((await stat(runDir)).mode & 0o777).toBe(0o700);
   });
 });
+
+describe("提交诊断合并与写前自检", () => {
+  test("合并后 validCount 按实际有效条数重算", async () => {
+    const runDir = await createRunDir();
+    const input = baseInput({ error: new Error("原始失败") });
+    await writeErrorDetails(runDir, { ...input, submissions: { attemptCount: 1, validCount: 1, attempts: [{ toolCallId: "c1", valid: true, accepted: true, error: null, duplicateEvents: 0, conflictingEvents: 0 }] } });
+    await writeErrorDetails(runDir, { ...input, submissions: { attemptCount: 1, validCount: 1, attempts: [{ toolCallId: "c2", valid: true, accepted: false, error: null, duplicateEvents: 0, conflictingEvents: 0 }] } });
+    const read = await readErrorDetails(runDir);
+    expect(read.readable).toBe(true);
+    if (read.readable) {
+      expect(read.details.submissions.attemptCount).toBe(2);
+      expect(read.details.submissions.validCount).toBe(2);
+    }
+  });
+
+  test("缺标识的提交尝试可写可读", async () => {
+    const runDir = await createRunDir();
+    const input = baseInput({ error: new Error("原始失败") });
+    const attempt = { valid: false, accepted: false, error: "无标识", duplicateEvents: 0, conflictingEvents: 0 };
+    await writeErrorDetails(runDir, { ...input, submissions: { attemptCount: 1, validCount: 0, attempts: [attempt] } });
+    await writeErrorDetails(runDir, { ...input, submissions: { attemptCount: 2, validCount: 0, attempts: [attempt, attempt] } });
+    const read = await readErrorDetails(runDir);
+    expect(read.readable).toBe(true);
+    if (read.readable) expect(read.details.submissions.attempts.length).toBe(3);
+  });
+
+  test("同标识后到的有效与接受状态覆盖首次值而错误保留首次", async () => {
+    const runDir = await createRunDir();
+    const input = baseInput({ error: new Error("原始失败") });
+    await writeErrorDetails(runDir, { ...input, submissions: { attemptCount: 1, validCount: 0, attempts: [{ toolCallId: "c1", valid: false, accepted: false, error: "首次错误", duplicateEvents: 0, conflictingEvents: 0 }] } });
+    await writeErrorDetails(runDir, { ...input, submissions: { attemptCount: 1, validCount: 1, attempts: [{ toolCallId: "c1", valid: true, accepted: true, error: null, duplicateEvents: 0, conflictingEvents: 0 }] } });
+    const read = await readErrorDetails(runDir);
+    expect(read.readable).toBe(true);
+    if (read.readable) {
+      expect(read.details.submissions.attempts[0]).toEqual({ toolCallId: "c1", valid: true, accepted: true, error: "首次错误", duplicateEvents: 0, conflictingEvents: 0 });
+      expect(read.details.submissions.validCount).toBe(1);
+    }
+  });
+
+  test("调用方计数自相矛盾时写入返回失败且不产出不可读文件", async () => {
+    const runDir = await createRunDir();
+    const input = baseInput({ error: new Error("原始失败") });
+    const result = await writeErrorDetails(runDir, { ...input, submissions: { attemptCount: 1, validCount: 5, attempts: [] } });
+    expect(result.saved).toBe(false);
+    if (!result.saved) expect(result.reason).toContain("submissions");
+    const exists = await stat(join(runDir, "error-details.json")).then(() => true, () => false);
+    expect(exists).toBe(false);
+  });
+});
+
+describe("合并时错误与模型字段的收敛", () => {
+  test("同标识首次 error 为 null 时记录后续的具体错误", async () => {
+    const runDir = await createRunDir();
+    const input = baseInput({ error: new Error("原始失败") });
+    await writeErrorDetails(runDir, { ...input, submissions: { attemptCount: 1, validCount: 1, attempts: [{ toolCallId: "c1", valid: true, accepted: true, error: null, duplicateEvents: 0, conflictingEvents: 0 }] } });
+    await writeErrorDetails(runDir, { ...input, submissions: { attemptCount: 1, validCount: 1, attempts: [{ toolCallId: "c1", valid: true, accepted: false, error: "重复投递被拒", duplicateEvents: 0, conflictingEvents: 1 }] } });
+    const read = await readErrorDetails(runDir);
+    expect(read.readable).toBe(true);
+    if (read.readable) expect(read.details.submissions.attempts[0]?.error).toBe("重复投递被拒");
+  });
+
+  test("model 只保留 provider 与 id", async () => {
+    const runDir = await createRunDir();
+    await writeErrorDetails(runDir, baseInput({ error: new Error("失败"), model: { provider: "p", id: "m", apiKeyHint: "额外字段XYZ" } as { provider: string; id: string } }));
+    const raw = await readFile(join(runDir, "error-details.json"), "utf8");
+    expect(raw).not.toContain("额外字段XYZ");
+  });
+
+  test("首次写入的计数与记录条数取齐", async () => {
+    const runDir = await createRunDir();
+    const attempt = { toolCallId: "c1", valid: true, accepted: true, error: null, duplicateEvents: 0, conflictingEvents: 0 };
+    await writeErrorDetails(runDir, baseInput({ error: new Error("失败"), submissions: { attemptCount: 0, validCount: 0, attempts: [attempt] } }));
+    const read = await readErrorDetails(runDir);
+    expect(read.readable).toBe(true);
+    if (read.readable) expect(read.details.submissions).toMatchObject({ attemptCount: 1, validCount: 1 });
+  });
+});
