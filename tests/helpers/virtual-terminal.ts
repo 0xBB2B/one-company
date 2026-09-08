@@ -103,8 +103,9 @@ function mountComponent(component: Component, width: number, height: number): { 
 export async function renderComponent(component: Component, width: number, height: number): Promise<string[]> {
   const { tui, terminal } = mountComponent(component, width, height);
   tui.renderNow(true);
+  const lines = screenLines(terminal, height, width);
   tui.stop();
-  return screenLines(terminal, height, width);
+  return lines;
 }
 
 export async function pressKeys(

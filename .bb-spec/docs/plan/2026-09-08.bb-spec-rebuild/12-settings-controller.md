@@ -29,28 +29,27 @@ description: 设置页：界面无关控制器（主页行模型、模型/思考
 | `applyMainPageKey` | 处理主页按键：左右切角色、上下切字段、Tab 切范围、Enter 进候选、Esc 关闭 |
 | `modelCandidates` | 生成模型候选（含沿用主会话）并按搜索词过滤，标出初始定位项 |
 | `thinkingCandidates` | 生成思考候选（含使用上级/角色默认），只含有效模型支持等级 |
-| `mcpCandidates` | 生成 MCP 多选候选：探测到的服务 + 已保存不可用项，带勾选态与不可用标注 |
+| `mcpCandidates` | 生成 MCP 多选候选：探测到的服务 + 已保存不可用项，带勾选态与不可用标注；初始勾选按当前范围（global 取 global 层显式值否则空；project 取 project 层显式值否则 global 层） |
 | `applyCandidateKey` | 处理候选页按键：上下移动、输入搜索（仅模型）、Space 勾选（仅 MCP）、Enter 确认、Esc 取消 |
-| `saveField` | 调用配置保存并返回回执（成功含范围与来源；失败含原因，状态回退到保存前） |
+| `saveField` | 调用配置保存并返回回执（成功含范围与来源；失败含原因，状态回退到保存前）；沿用项/默认项在内存层删除该字段使来源随之回退；MCP 空集合作为显式值保存 |
 | `fieldSource` | 判断某角色某字段当前值的来源：项目、全局或默认 |
+| `createSettingsComponent` | 由会话生成界面组件（`render(width)`、`handleInput(data)`，并满足宿主 EditorComponent 契约的 `getText`/`setText`/`invalidate`；选项 `theme?`（`{ fg(kind, text), bg(kind, text) }`，kind 含 muted/border/selectedBg，缺省不着色）、`onClose?`、`rows?`（终端行数）、`requestRender?`）：横线经 border 着色、来源经 muted 着色、仅选中值行 selectedBg；角色标签行按宽度折行；限宽 72；高度不足先压缩空白；候选页标题/搜索行/列表（按可用行数窗口化，游标可见，多选页当前项带 › 标记）/提示（窄屏折行）、候选为空显示明确空态；保存回执渲染在提示行上方（失败原因可见）；候选确认为异步，settle 后调用 requestRender，确认期间重复 Enter 被忽略；不依赖 pi-tui，文本宽度按东亚全角计 2 |
 
 ### extensions/settings.ts
 | 函数名 | 职责 |
 |---|---|
-| `settingsExtension` | 默认导出：注册 /pi-company:setting 命令；非终端模式提示"需要交互终端"并返回 |
-| `openSettingsPage` | 用宿主的自定义组件接口（非浮层）替换输入栏，创建控制器会话，直到主页 Esc 才结束 |
-| `renderMainPage` | 按控制器行模型渲染主页：蓝线、标题、范围行、角色标签、三字段、提示；应用限宽、空白压缩与选中蓝底 |
-| `renderCandidatePage` | 渲染模型/思考/MCP 候选页：标题、可选搜索行、列表（含勾选标记与不可用标注）、提示 |
-| `handleInput` | 把按键交给控制器，根据返回的视图状态切换主页或候选页，保存回执以通知显示 |
-| `layoutMetrics` | 由终端宽高计算内容宽度、可用行数与是否压缩空白 |
+| `settingsExtension` | 默认导出：注册 /pi-company:setting 命令；`ctx.mode !== "tui"` 时提示"需要交互终端"并返回 |
+| `openSettingsPage` | 仓库根经 git 顶层目录（非 ctx.cwd）读取角色目录、两层配置、模型上下文（尊重 ctx.scopedModels）与 MCP 探测结果建立会话（读取失败时通知具体原因、不打开界面），用宿主 `setEditorComponent` 替换输入栏，factory 内复用同一个组件实例并传入宿主主题与 `requestRender`，直到主页 Esc 才 `setEditorComponent(undefined)`；MCP 空集合经 saveRoleSettings 写显式 [] |
+
+已知取舍：组件以鸭子类型满足宿主编辑器契约（getText/setText/invalidate，输入栏草稿原样往返），不继承 CustomEditor，设置页打开期间 Ctrl+C/Ctrl+D 等应用级按键不接线，唯一出口为主页 Esc；保存成功以刷新后的值与来源作为反馈，不另弹成功提示；主页任一导航键清除上一次保存回执；候选为空时模型/思考页回车不保存。
 
 ## 协作关系
 - 控制器读写配置经 `runtime/settings.ts`；角色列表经 `runtime/roles.ts`；MCP 候选经 `runtime/mcp.ts` 的窗口探测服务清单。
 - 终端界面的状态与行为全部来自控制器，只把 `settingsRows` 与候选列表画出来并把按键交给 `applyMainPageKey` / `applyCandidateKey`；模型上下文来自宿主模型注册表与当前会话模型、思考等级。
-- 组件只使用 pi-tui 的文本宽度工具与主题的前景/背景着色接口。
+- 组件渲染在控制器模块内完成，只经注入的主题着色；扩展层不含渲染逻辑。
 
 ## 验证方式
-- 测试入口：`runtime/settings-ui.ts` 导出函数；`extensions/settings.ts` 默认导出（假宿主收集命令与自定义组件工厂），用 `renderComponent` 在 100×40 与 60×12 两种终端尺寸渲染
+- 测试入口：`runtime/settings-ui.ts` 导出函数与 `createSettingsComponent`；`extensions/settings.ts` 默认导出（假宿主收集命令与自定义组件工厂），用 `renderComponent` 在 100×40 与 60×12 两种终端尺寸渲染
 - 测试输入：三层角色目录（含需求代理与一个用户自定义角色）、两层配置、假模型上下文、可用 MCP 集合；按键序列
 - 预期结果（控制器）：
   - 主页行顺序为标题、范围行、角色标签行、模型标题、模型值、思考标题、思考值、MCP 标题、MCP 值、提示行；范围行同时含"全局"与"项目"且仅当前范围带方括号；角色标签按目录顺序且含需求代理与自定义角色
