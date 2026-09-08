@@ -20,12 +20,12 @@ description: 把旧版本写在需求目录内的运行字段与决策记录迁�
 ### runtime/migration.ts
 | 函数名 | 职责 |
 |---|---|
-| `migrationPreflight` | 枚举仓库全部 worktree 的旧格式需求目录，解析需求 frontmatter 的 status、任务文件的运行字段与两份决策记录，输出来源清单、问题清单（损坏行、同编号不同内容、阶段分歧、冻结不匹配）与稳定指纹 |
-| `migrationApply` | 校验授权标记、预检指纹未变、无活动窗口写入（窗口登记为空或全部已停止）后，按需求逐个迁入本机：写状态文档、追加决策、记录进度；每个需求完成后重新读取并与源核对 |
-| `migrationStatus` | 读取进度文件返回已完成、进行中、失败与剩余需求 |
-| `clearMigratedSourceFields` | 校验通过后从任务文件移除 status/step/agent/commit/note 字段、从需求文档移除 status，删除两份决策文件；定义正文与验收报告不变 |
+| `migrationPreflight` | 枚举仓库全部 worktree 的旧格式需求目录，解析需求 frontmatter 的 status、任务文件的运行字段与两份决策记录，输出来源清单、问题清单（损坏行或非对象行、同编号不同内容（含同一 worktree 内）、需求阶段分歧、任务字段分歧（含 note）、缺需求文档的目录、不合法的需求目录名、任务缺编号、未知阶段、本机已有该需求状态且不是本迁移产物（以其历史含迁移来源条目为唯一判据，不看内容是否一致）、旧数据根目录读取失败、进度文件不可解析）与稳定指纹；逐需求错误隔离，任何单个目录的失败只记为问题不抛出；冲突检测覆盖所有会进入本机状态的字段，不以枚举顺序静默择一；预检对本机数据区同样只读，不物化目录 |
+| `migrationApply` | 校验授权标记、预检指纹未变、无活动窗口写入（探针返回否定才通过；null 或抛错视为无法确认）后（这些为整体前提），按需求逐个迁入本机（有问题的需求只阻塞自身，其他需求照常；源已清理且本机存在迁移产物的需求视为已完成、跳过重写）：经 store 直接写入状态文档（stage 取需求 status，tasks 按任务编号搬运 progress/agent/commit/note 等运行字段，history 记一条迁移来源；不经工作流门禁）、追加决策（按整条规范化内容去重）、记录进度含该需求的源指纹（按需求计算，不是全局指纹）；每个需求写入后重新读取并逐字段与源核对，核对通过才清理；源指纹守卫只在写入后核对前生效，清理前改为反向比对源中仍存在的运行字段与目标（半清理跳过、外部改写则报告并阻塞该需求）；不覆盖本机既有状态文档 |
+| `migrationStatus` | 读取进度文件返回已完成、进行中（已写入未清理）、失败（含原因）与剩余需求；进度文件缺失视为无进度，不可解析记问题；已完成需求可由本机迁移产物与源已清理推断 |
+| `clearMigratedSourceFields` | 校验通过后从任务文件移除 status/step/agent/commit/note 与旧调度字段 parallel（新格式由依赖与写入范围推导并行）、从需求文档移除 status，删除两份决策文件；id/title/depends_on/files/refs/verify、定义正文与验收报告逐字不变 |
 | `dedupeDecisions` | 多个 worktree 的相同记录（同编号同内容）合并为一条，不同内容报冲突 |
-| `resumeMigration` | 中断后从进度文件核对已迁需求，跳过已完成、重新校验进行中的，不重复追加 |
+| `resumeMigration` | 中断后从进度文件核对已迁需求：跳过已完成；进行中的先比对进度记录的源指纹，源变化即阻塞该需求；不重复追加决策 |
 
 ## 协作关系
 - 调用 identity 的 `listWorktrees` 与数据目录；写入经 store 与 decisions；状态经 workflow-state 的 `initRequirementState` 与 `updateTaskFields`。
