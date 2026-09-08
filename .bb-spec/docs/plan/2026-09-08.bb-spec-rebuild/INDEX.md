@@ -18,7 +18,7 @@
 - [daemon-protocol](14-daemon-protocol.md) — 帧格式与方法/事件目录 [依赖: local-identity]
 - [daemon-lifecycle](15-daemon-lifecycle.md) — 入口、单实例、空闲退出、中断标记 [依赖: versioned-store, sleep-aware-clock, daemon-protocol]
 - [structured-verdict](16-structured-verdict.md) — 结构化裁决校验与收集 [依赖: package-skeleton]
-- [error-details](17-error-details.md) — 错误详情与脱敏 [依赖: structured-verdict]
+- [error-details](17-error-details.md) — 错误详情 [依赖: structured-verdict]
 - [run-store](18-run-store.md) — 运行记录持久化 [依赖: versioned-store, error-details]
 - [session-records](19-session-records.md) — 会话文件落盘与重载 [依赖: run-store]
 - [shell-registry](20-shell-registry.md) — Shell 登记与后代追踪 [依赖: sleep-aware-clock]

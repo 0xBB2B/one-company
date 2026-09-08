@@ -13,9 +13,9 @@
 - [requirement-agent](agents/requirement-agent.md) — 主会话确认需求文档后派出需求代理，由它持有需求上下文完成规划、提议、执行与门禁推进，简单任务可自行完成
 - [role-catalog](agents/role-catalog.md) — 角色来自包内默认与用户配置的 agent 定义文件，需求代理只调用目录内角色，角色不再向下派，主会话只派需求代理与提交前审查者
 - [role-settings](agents/role-settings.md) — 角色目录中每个角色分别解析模型、思考等级与 MCP 服务集合，项目配置覆盖全局默认，保存不改变已启动任务
-- [run-diagnostics](agents/run-diagnostics.md) — 为失败运行保存完整错误详情、定位信息与提交诊断，独立于会话记录可查，凭据脱敏且不截断
+- [run-diagnostics](agents/run-diagnostics.md) — 为失败运行原样保存完整错误详情、定位信息与提交诊断，独立于会话记录可查，不截断
 - [run-lifecycle](agents/run-lifecycle.md) — 需求代理与角色在守护进程内跨窗口回合与关窗继续，窗口切换只清理窗口自身 Shell，守护进程中断标记为中断并在续接前核对原运行
-- [session-records](agents/session-records.md) — 守护进程内每个会话以可重载的会话文件完整记录在本机，脱敏、按运行身份定位、不上传不入库，续接时原样重载
+- [session-records](agents/session-records.md) — 守护进程内每个会话以可重载的会话文件原样完整记录在本机，按运行身份定位、不上传不入库，压缩由宿主产生，续接时按压缩后视图重载
 - [settings-page](agents/settings-page.md) — /pi-company:setting 以单页聚焦式界面按角色目录配置各角色模型、思考等级与 MCP 服务，支持全局或项目范围
 - [transcript-view](agents/transcript-view.md) — 从面板打开任一需求代理或角色会话的记录查看页，实时显示思考、输出与工具活动，只读、可滚动、离线可回读
 - [user-relay](agents/user-relay.md) — 需求代理与用户的一切对话经主会话中继，提问投递到本工作区已连接窗口且首答生效，无窗口时排队并在下次打开窗口时推送
