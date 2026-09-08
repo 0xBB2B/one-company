@@ -36,6 +36,8 @@ description: 窗口登记表：按仓库记录窗口进程、会话、工作区�
 失联判定：连续 3 个心跳周期无更新且期间无睡眠间隔；已注销 = 文件被删除。
 持有者已消失（任一成立即为机械证据）：记录已注销；心跳过期且记录的 bootId 与当前开机标识不同；pid 不存在或 pid 对应进程的启动时刻与记录不一致。
 
+注入点：`new WindowRegistry({ repoDir, clock, bootId: () => Promise<string>, processStartedAt: (pid: number) => Promise<string | null> })`；心跳周期 5 秒，失联阈值 3 个周期；`list` 的判定字段名为 `liveness`，取值 `alive | lost | gone`；`holderGone` 返回 `{ gone: true, evidence: "unregistered" | "boot-changed" | "pid-missing" | "pid-reused" } | { gone: false, reason }`。
+
 ## 函数清单
 ### runtime/windows.ts
 | 函数名 | 职责 |
