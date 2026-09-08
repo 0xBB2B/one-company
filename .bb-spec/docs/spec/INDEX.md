@@ -16,7 +16,7 @@
 - [run-diagnostics](agents/run-diagnostics.md) — 为失败运行保存完整错误详情、定位信息与提交诊断，独立于会话记录可查，凭据脱敏且不截断
 - [run-lifecycle](agents/run-lifecycle.md) — 需求代理与角色在守护进程内跨窗口回合与关窗继续，窗口切换只清理窗口自身 Shell，守护进程中断标记为中断并在续接前核对原运行
 - [session-records](agents/session-records.md) — 守护进程内每个会话以可重载的会话文件完整记录在本机，脱敏、按运行身份定位、不上传不入库，续接时原样重载
-- [settings-page](agents/settings-page.md) — /pi-spec:setting 以单页聚焦式界面按角色目录配置各角色模型、思考等级与 MCP 服务，支持全局或项目范围
+- [settings-page](agents/settings-page.md) — /pi-company:setting 以单页聚焦式界面按角色目录配置各角色模型、思考等级与 MCP 服务，支持全局或项目范围
 - [transcript-view](agents/transcript-view.md) — 从面板打开任一需求代理或角色会话的记录查看页，实时显示思考、输出与工具活动，只读、可滚动、离线可回读
 - [user-relay](agents/user-relay.md) — 需求代理与用户的一切对话经主会话中继，提问投递到本工作区已连接窗口且首答生效，无窗口时排队并在下次打开窗口时推送
 - [user-stop](agents/user-stop.md) — 任意窗口停止需求代理或角色并连带清理其子运行与 Shell，保留成果并经中继通知，停止为终态不提供恢复
@@ -31,16 +31,16 @@
 
 ## commands
 
-- [namespaced-entrypoints](commands/namespaced-entrypoints.md) — 五个流程与设置入口使用 /pi-spec: 命名空间，独立 /ps 管理 Shell，不提供其他流程别名
+- [namespaced-entrypoints](commands/namespaced-entrypoints.md) — 五个流程与设置入口使用 /pi-company: 命名空间，独立 /ps 管理 Shell，不提供其他流程别名
 
 ## review-gates
 
-- [auto-repair](review-gates/auto-repair.md) — 不需要产品决策且不超出既有授权的审查问题，由需求代理 自动派发 worker 修复并再次调用原审查角色
+- [auto-repair](review-gates/auto-repair.md) — 不需要产品决策且不超出既有授权的审查问题，由需求代理自动派发 worker 修复并再次调用原审查角色
 - [blackbox-acceptance-focus](review-gates/blackbox-acceptance-focus.md) — 黑盒验收的关注点是功能是否完善、是否可用，逐条验收通过不等于验收通过
 - [credible-tests](review-gates/credible-tests.md) — 同一实现角色先核对测试证明力再实现，不以理想模拟、手工状态或环境失败冒充行为验证
-- [direct-acceptance](review-gates/direct-acceptance.md) — 黑盒验收由需求代理 单次直接调用验收者，验收者唯一写报告，需求代理 只核对结构化对象与报告一致性
+- [direct-acceptance](review-gates/direct-acceptance.md) — 黑盒验收由需求代理单次直接调用验收者，验收者唯一写报告，需求代理只核对结构化对象与报告一致性
 - [direct-pre-review](review-gates/direct-pre-review.md) — 提交前审查由主 agent 单次直接调用白盒审查者，只依据结构化裁决与审查快照决定是否远端写入
-- [failure-attribution](review-gates/failure-attribution.md) — 白盒审查者或黑盒验收者返回 FAIL 后，需求代理 在角色只读的前提下归因为产品决策或可自动解决的问题并记录
+- [failure-attribution](review-gates/failure-attribution.md) — 白盒审查者或黑盒验收者返回 FAIL 后，需求代理在角色只读的前提下归因为产品决策或可自动解决的问题并记录
 - [independent-issue-task](review-gates/independent-issue-task.md) — 审查发现的与当前任务根因无关且可独立验证的问题，新增后续任务而不并入当前返修
 - [product-decision-escalation](review-gates/product-decision-escalation.md) — 只有会改变外部行为、数据、安全、权限或验收标准的审查问题才询问用户，未回答的问题不留痕
 - [repair-round-limit](review-gates/repair-round-limit.md) — 同一审查门禁的自动返修最多三轮，第三轮仍未通过即记录技术阻塞并停止
