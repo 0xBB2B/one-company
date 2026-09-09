@@ -24,14 +24,14 @@ description: 窗口侧守护进程客户端：按工作区内仓库建立多连�
 | 函数名 | 职责 |
 |---|---|
 | `resolveSdkDir` | 用 SDK 导出的 `getPackageDir` 取 pi 安装目录，供拉起守护进程时经 `PI_COMPANY_SDK_DIR` 传入 |
-| `spawnDaemon` | 以 `process.execPath` 分离启动 `daemon/main.ts`，传入 SDK 目录、仓库目录、数据根，以连接探测等待 socket 可连接并完成 hello，超时返回具体原因（不存在锁文件） |
-| `connectDaemon` | 对单个仓库：尝试连接 socket，不存在或拒绝时调用 `spawnDaemon` 后重试，成功后发送 `hello` 帧并返回 `DaemonClient` |
+| `spawnDaemon` | 以 `process.execPath`（可覆盖）分离启动 `daemon/main.ts`，传入 SDK 目录、仓库目录、数据根与调用方附加环境（如空闲时限），仓库身份经 identity 归一；以连接探测等待 socket 可连接并完成 ping，spawn 失败或守护进程启动失败（含 stderr 原因）与超时都作为具体原因抛出而不是未捕获异常（不存在锁文件） |
+| `connectDaemon` | 对单个仓库：尝试连接 socket，不存在、拒绝或路径上是非 socket 文件时调用 `spawnDaemon` 后重试，成功后发送 `hello` 帧并核对响应的仓库身份，返回 `DaemonClient`；首连失败（含 hello 被拒）先关闭自身再抛出，不留下重连循环 |
 | `DaemonClient.call` | 发送请求帧并按 id 等待响应；断开时以不可达错误拒绝而非挂起 |
-| `DaemonClient.subscribe` | 订阅 `activity` / `transcript` / `relay.*` / `shells.changed` / `runs.changed` 事件并分发给监听者 |
+| `DaemonClient.subscribe` | 订阅 `activity` / `transcript` / `relay.*` / `shells.changed` / `runs.changed` 事件并分发给监听者（监听器异常隔离） |
 | `DaemonClient.state` | 暴露 `connected` / `starting` / `unreachable` 及最近一次失败原因 |
-| `DaemonClient.close` | 取消订阅、关闭 socket、停止重连 |
-| `scheduleReconnect` | 断开后用睡眠感知时钟做指数退避重连，重连成功重新 `hello` 并恢复订阅 |
-| `WorkspaceClients` | 按工作区仓库集合维护多个 `DaemonClient`，提供 `forRepo`、`all`、`closeAll` |
+| `DaemonClient.close` | 以不可达拒绝全部在途调用、取消订阅、关闭 socket、停止重连（重连窗口内关闭亦生效）、停止自建时钟 |
+| `scheduleReconnect` | 断开后用睡眠感知时钟做带随机抖动的指数退避重连（上限 5 秒），重连成功重新 `hello` 并恢复订阅 |
+| `WorkspaceClients` | 按工作区仓库集合（按仓库身份去重，同仓库主目录与 worktree 只建一个连接）维护多个 `DaemonClient`，单个仓库连接失败时该仓库降级为不可达并附原因而不整体失败；发现阶段被跳过的仓库连同原因暴露；提供 `forRepo`、`all`、`skipped`、`closeAll` |
 
 ## 协作关系
 - `connectDaemon` 依赖 `runtime/identity.ts` 的 `daemonSocketPath`、`repoDataDir`，依赖 `runtime/protocol.ts` 的编解码与 `hello` 参数类型。
