@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { createClock } from "../runtime/clock.ts";
 import type { TimeSource } from "../runtime/clock.ts";
 import { AgentsActivity } from "../runtime/agents-activity.ts";
+import { dataRoot as resolveDataRoot } from "../runtime/identity.ts";
+import { openTranscriptView } from "../runtime/transcript-view.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import agentsUiExtension from "../extensions/agents-ui.ts";
 import type { AgentsUiDeps } from "../extensions/agents-ui.ts";
@@ -88,6 +91,14 @@ function flushMicrotasks(): Promise<void> {
   return delay(0);
 }
 
+async function waitFor(check: () => boolean, timeoutMs = 1000): Promise<void> {
+  const start = Date.now();
+  while (!check()) {
+    if (Date.now() - start > timeoutMs) throw new Error("等待条件超时");
+    await delay(5);
+  }
+}
+
 // 只用来证明"处理器没有卡在 await windowReady()"——deferred 不会自己超时兑现，
 // 若实现误 await 了就绪，trigger() 永远不会先于超时分支完成
 async function resolvesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
@@ -143,6 +154,8 @@ function createWindowContextValue(repoId: string, repoPath: string, client: Fake
 function createFakeUi() {
   const widgetCalls: { key: string; content: unknown; options?: { placement?: string } }[] = [];
   const notifyCalls: { message: string; level?: string }[] = [];
+  const customCalls: { options?: Record<string, unknown> }[] = [];
+  const customResolvers: Array<{ resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = [];
   let activeSubscriptions = 0;
   let requestRenderCalls = 0;
   let mountedComponent: unknown;
@@ -173,12 +186,24 @@ function createFakeUi() {
       },
       notify: (message: string, level?: string) => notifyCalls.push({ message, level }),
       getEditorText: () => "",
+      custom: (
+        factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown,
+        options?: Record<string, unknown>,
+      ) => {
+        customCalls.push({ options });
+        return new Promise((resolve, reject) => {
+          customResolvers.push({ resolve, reject });
+          factory(fakeTui, {}, {}, (result: unknown) => resolve(result));
+        });
+      },
     },
     widgetCalls,
     notifyCalls,
+    customCalls,
     activeSubscriptions: () => activeSubscriptions,
     requestRenderCalls: () => requestRenderCalls,
     mountedComponent: () => mountedComponent,
+    rejectLastCustom: (error: unknown) => customResolvers.at(-1)?.reject(error),
   };
 }
 
@@ -429,4 +454,116 @@ describe("非 tui 模式不挂载", () => {
 
     expect(fakeUi.widgetCalls).toHaveLength(0);
   });
+});
+
+describe("查看页：onView 打开查看页，被拒绝时提示", () => {
+  test("onView 触发后 ctx.ui.custom 被调用打开查看页；custom 被拒绝时 ctx.ui.notify 收到提示", async () => {
+    const fakePi = createFakePi();
+    let capturedActivity: AgentsActivity | undefined;
+    const client = createPollableClient();
+    const windowContextValue = createWindowContextValue(REPO_A.repoId, "/workspace/repo-a", client);
+    const deps: AgentsUiDeps = {
+      windowReady: () => Promise.resolve(windowContextValue) as never,
+      createClock: () => createClock({ timeSource: createFakeTimeSource() }),
+      createAgentsActivity: (options: never) => {
+        capturedActivity = new AgentsActivity(options);
+        return capturedActivity;
+      },
+    };
+    agentsUiExtension(fakePi.pi, deps);
+
+    const fakeUi = createFakeUi();
+    const ctx = createFakeCtx(fakeUi);
+    await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
+    await flushMicrotasks();
+    expect(capturedActivity).toBeDefined();
+
+    const viewRunId = randomUUID();
+    pushRun(capturedActivity as AgentsActivity, REPO_A.repoId, runFixture({ id: viewRunId, state: "waiting_answer" }), {
+      requirementTitle: "查看需求",
+    });
+
+    const mountedPanel = fakeUi.mountedComponent() as { handleInput(data: string): unknown } | undefined;
+    expect(mountedPanel).toBeDefined();
+    mountedPanel?.handleInput("\x1b[C");
+    mountedPanel?.handleInput("\r");
+    await flushMicrotasks();
+
+    expect(fakeUi.customCalls).toHaveLength(1);
+
+    fakeUi.rejectLastCustom(new Error("查看页打开失败（测试注入）"));
+    await flushMicrotasks();
+
+    expect(fakeUi.notifyCalls.length).toBeGreaterThan(0);
+  }, 1_000);
+});
+
+describe("查看页随扩展 teardown 一并关闭", () => {
+  test("查看页打开期间触发 session_shutdown：同一 runId 之后仍可通过 openTranscriptView 重新打开", async () => {
+    const fakePi = createFakePi();
+    let capturedActivity: AgentsActivity | undefined;
+    const client = createPollableClient();
+    const windowContextValue = createWindowContextValue(REPO_A.repoId, "/workspace/repo-a", client);
+    const deps: AgentsUiDeps = {
+      windowReady: () => Promise.resolve(windowContextValue) as never,
+      createClock: () => createClock({ timeSource: createFakeTimeSource() }),
+      createAgentsActivity: (options: never) => {
+        capturedActivity = new AgentsActivity(options);
+        return capturedActivity;
+      },
+    };
+    agentsUiExtension(fakePi.pi, deps);
+
+    const fakeUi = createFakeUi();
+    const ctx = createFakeCtx(fakeUi);
+    await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
+    await flushMicrotasks();
+    expect(capturedActivity).toBeDefined();
+
+    const viewRunId = randomUUID();
+    pushRun(capturedActivity as AgentsActivity, REPO_A.repoId, runFixture({ id: viewRunId, state: "waiting_answer" }), {
+      requirementTitle: "查看需求",
+    });
+
+    const mountedPanel = fakeUi.mountedComponent() as { handleInput(data: string): unknown } | undefined;
+    mountedPanel?.handleInput("\x1b[C");
+    mountedPanel?.handleInput("\r");
+    await flushMicrotasks();
+    expect(fakeUi.customCalls).toHaveLength(1);
+
+    await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+    await flushMicrotasks();
+
+    let reopenedComponent: unknown;
+    const reopenCtx = {
+      ui: {
+        custom: (
+          factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown,
+        ) =>
+          new Promise((resolve) => {
+            reopenedComponent = factory({ requestRender: () => {} }, {}, {}, (result: unknown) => resolve(result));
+          }),
+        notify: () => {},
+      },
+    };
+    const reopenDock = { markPageOpen: () => {}, markPageClosed: () => {} };
+    const reopenClock = createClock({ timeSource: createFakeTimeSource() });
+
+    const reopenPromise = openTranscriptView({
+      ctx: reopenCtx,
+      client: createPollableClient(),
+      clock: reopenClock,
+      runId: viewRunId,
+      dataRoot: resolveDataRoot(process.env),
+      repoId: REPO_A.repoId,
+      dock: reopenDock,
+      restoreSelection: () => {},
+    });
+
+    await waitFor(() => reopenedComponent !== undefined);
+    expect(reopenedComponent).toBeDefined();
+
+    (reopenedComponent as { handleInput(data: string): unknown }).handleInput("\x1b");
+    await reopenPromise;
+  }, 2_000);
 });

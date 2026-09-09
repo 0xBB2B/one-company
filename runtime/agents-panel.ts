@@ -240,6 +240,18 @@ export class AgentsPanel {
     return this.currentRows().some((row) => row.buttons.length > 0);
   }
 
+  selectedRunId(): string | undefined {
+    const selectable = this.currentRows().filter((row) => row.buttons.length > 0);
+    if (selectable.length === 0) return undefined;
+    return selectable[this.clampedCursor(selectable.length)]?.id;
+  }
+
+  selectRun(runId: string): void {
+    const selectable = this.currentRows().filter((row) => row.buttons.length > 0);
+    const idx = selectable.findIndex((row) => row.id === runId);
+    if (idx !== -1) this.cursor = idx;
+  }
+
   invalidate(): void {
     this.hostBinding.requestRender?.();
   }

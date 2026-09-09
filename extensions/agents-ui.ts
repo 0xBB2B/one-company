@@ -7,6 +7,8 @@ import type { AgentsPanelClient } from "../runtime/agents-panel.ts";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock } from "../runtime/clock.ts";
 import { BottomDock } from "../runtime/dock.ts";
+import { dataRoot as resolveDataRoot } from "../runtime/identity.ts";
+import { closeActiveTranscriptView, openTranscriptView } from "../runtime/transcript-view.ts";
 import { windowReady as defaultWindowReady } from "./lifecycle.ts";
 import type { WindowContextValue } from "./lifecycle.ts";
 
@@ -64,12 +66,34 @@ export default function agentsUiExtension(pi: ExtensionAPI, deps: AgentsUiDeps =
           },
         };
 
+        let dock: BottomDock | undefined;
+
         const mountResult = mountAgentsPanel(
           { mode: ctx.mode, hasUI: ctx.hasUI, ui: ctx.ui },
-          { activity, clock, clients: panelClients, onView: () => {} },
+          {
+            activity,
+            clock,
+            clients: panelClients,
+            onView: (runId) => {
+              const row = activity.rows().find((entry) => entry.id === runId);
+              const client = row ? window.clients.forRepo(row.repoId) : undefined;
+              const panel = mountResult.panel;
+              if (!row || !client || !dock || !panel) return;
+              const selectedBeforeOpen = panel.selectedRunId() ?? runId;
+              openTranscriptView({
+                ctx,
+                client,
+                runId,
+                dataRoot: resolveDataRoot(process.env),
+                repoId: row.repoId,
+                dock,
+                clock,
+                restoreSelection: () => panel.selectRun(selectedBeforeOpen),
+              }).catch((error: unknown) => ctx.ui.notify((error as Error).message, "error"));
+            },
+          },
         );
 
-        let dock: BottomDock | undefined;
         let refreshHandle: ReturnType<Clock["setIntervalExcludingSleep"]> | undefined;
 
         if (mountResult.mounted && mountResult.panel) {
@@ -95,6 +119,7 @@ export default function agentsUiExtension(pi: ExtensionAPI, deps: AgentsUiDeps =
           dock?.release();
           mountResult.unmount?.();
           clock.stopGapWatcher();
+          closeActiveTranscriptView();
         };
       })
       .catch((error: unknown) => {

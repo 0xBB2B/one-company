@@ -1011,3 +1011,23 @@ describe("mountAgentsPanel 的宿主能力检测、placement、requestRender 与
     expect(hostChildren[0]).toBeInstanceOf(FooterComponent);
   });
 });
+
+describe("selectedRunId/selectRun 用于查看页关闭后恢复选中", () => {
+  test("selectedRunId 返回当前光标行 runId；selectRun 定位到指定行并高亮；未知 id 夹到最近合法行", () => {
+    const clock = createClock({ timeSource: createFakeTimeSource() });
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "run-0", state: "running" }), { requirementTitle: "光标甲" });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "run-1", state: "running" }), { requirementTitle: "光标乙" });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "run-2", state: "running" }), { requirementTitle: "光标丙" });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme(), onView: () => {} });
+
+    expect(panel.selectedRunId()).toBe("run-0");
+
+    panel.selectRun("run-2");
+    expect(panel.selectedRunId()).toBe("run-2");
+    expect(lineFor(panel.render(80), "光标丙")).toContain("[SEL]");
+
+    panel.selectRun("run-missing");
+    expect(["run-0", "run-1", "run-2"]).toContain(panel.selectedRunId());
+  });
+});
