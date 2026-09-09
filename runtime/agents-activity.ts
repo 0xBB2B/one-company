@@ -36,6 +36,7 @@ export interface ConnectionState {
 
 export interface AgentsActivityRow {
   id: string;
+  repoId: string;
   indent: number;
   title: string;
   status: RunState;
@@ -263,6 +264,7 @@ export class AgentsActivity {
     const startMs = typeof entry.startedAt === "string" ? Date.parse(entry.startedAt) : NaN;
     return {
       id: entry.id,
+      repoId: entry.repoId,
       indent,
       title,
       status: entry.state,

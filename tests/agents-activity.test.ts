@@ -131,7 +131,11 @@ describe("条目顺序与仓库范围", () => {
     expect(roleRow.indent).toBe(1);
     expect(roleRow.title).toBe("pi-company.tester");
 
-    expect(JSON.stringify(rows)).not.toContain(REPO_A.repoId);
+    for (const row of rows) {
+      for (const text of [row.title, row.activity, row.status, row.unreachableReason ?? ""]) {
+        expect(String(text)).not.toContain(REPO_A.repoId);
+      }
+    }
   });
 });
 
