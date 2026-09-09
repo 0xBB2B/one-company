@@ -15,7 +15,10 @@ description: 注册五个 /pi-company: 流程与设置入口和独立 /ps，参�
 
 ## 涉及文件
 - 新建 `extensions/commands.ts`
-- 新建 `tests/commands.test.ts`
+- 新建 `extensions/index.ts`（本包唯一扩展入口）
+- 修改 `package.json`（`pi.extensions` 指向 `./extensions/index.ts`）
+- 修改 `extensions/settings.ts`（去掉默认导出的命令注册，只导出打开函数；打开失败以抛出表达，不自吞）
+- 新建 `tests/commands.test.ts`、`tests/extension-entry.test.ts`
 
 ## 成品定义
 | 命令 | 参数提示 | 行为 |
@@ -31,7 +34,8 @@ description: 注册五个 /pi-company: 流程与设置入口和独立 /ps，参�
 ### extensions/commands.ts
 | 函数名 | 职责 |
 |---|---|
-| `commandsExtension` | 默认导出：注册六个命令 |
+| `commandsExtension` | 注册六个命令（唯一注册点；`/pi-company:setting` 在无交互终端时通知原因不打开） |
+| `index.ts` 默认导出 | 本包唯一扩展入口：以固定顺序（lifecycle → decision-record → workflow → rules → dispatch → relay → agents-ui → shell-ui → commands）用同一个 `pi` 调用各子扩展工厂；pi 对每个扩展入口各起一次 jiti 导入且不共享模块实例，只有单一入口才能让 `extensions/lifecycle.ts` 等模块级共享状态在各子扩展间成立 |
 | `registerCommands` | 可注入包根与打开设置页/Shell 页的回调，便于测试 |
 | `loadSkillBody` | 读取指定技能文档正文（去 frontmatter），缺失或不可读时返回具体错误 |
 | `sendFlowPrompt` | 把技能正文与原样参数组合为用户消息发送 |
@@ -40,7 +44,8 @@ description: 注册五个 /pi-company: 流程与设置入口和独立 /ps，参�
 
 ## 协作关系
 - 依赖 SDK 的 `stripFrontmatter`、`pi.registerCommand`、`pi.sendUserMessage`。
-- 设置页由 `extensions/settings.ts` 提供打开函数；Shell 页由 `extensions/shell-ui.ts` 提供；本模块只路由。
+- 设置页由 `extensions/settings.ts` 提供打开函数（失败抛出，由本模块 notify）；Shell 页由 `extensions/shell-ui.ts` 提供；本模块只路由。
+- `extensions/index.ts` 是 package.json `pi.extensions` 唯一声明的入口；各子扩展文件不再被逐个发现，其默认导出只由 index.ts 调用。技能正文经 `stripFrontmatter` 解析失败时与文件不可读同样报告含路径的原因。
 - 技能文档位于 `skills/spec-flow`、`skills/spec-revise`、`skills/spec-sync`。
 
 ## 验证方式
@@ -49,7 +54,8 @@ description: 注册五个 /pi-company: 流程与设置入口和独立 /ps，参�
 - 预期结果：
   - 注册的命令名集合精确为六个，不含任何 `/spec-*`。
   - `new`、`revise` 发送的消息包含完整描述；`resume --verify` 保留 `--verify`；`sync agents` 保留域名。
-  - 技能文档缺失时通知具体路径与原因，未发送消息；设置页或 Shell 页打开失败时通知原因，未调用其他入口。
+  - 技能文档缺失或 frontmatter 损坏时通知具体路径与原因，未发送消息；设置页或 Shell 页打开失败时通知原因，未调用其他入口；无交互终端时 `/pi-company:setting` 通知原因且不调用打开函数。
+  - 用假 pi 调用 `extensions/index.ts` 默认导出：注册的命令名无重复且恰为六个流程/设置/Shell 命令加各子扩展自身命令，各子扩展的工具/事件只注册一次；package.json `pi.extensions` 恰为 `./extensions/index.ts`。
 - [ ] 命令集合与无别名
 - [ ] 参数透传
 - [ ] 加载失败不绕过

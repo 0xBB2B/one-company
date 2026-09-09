@@ -10,7 +10,7 @@
     "test": "bun test tests"
   },
   "pi": {
-    "extensions": ["./extensions"],
+    "extensions": ["./extensions/index.ts"],
     "skills": ["./skills"],
     "prompts": []
   },

@@ -153,81 +153,61 @@ export interface SettingsExtensionContext {
 }
 
 export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<void> {
-  try {
-    const projectTrusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true;
-    const agentDir = resolveAgentDir(process.env);
-    const repoRoot = await resolveRepoRoot(ctx.cwd);
+  const projectTrusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true;
+  const agentDir = resolveAgentDir(process.env);
+  const repoRoot = await resolveRepoRoot(ctx.cwd);
 
-    const catalog = await loadRoleCatalog({
-      defaultDir: defaultRoleDir(),
-      userDir: userRoleDir(agentDir),
-      projectDir: projectRoleDir(repoRoot),
-      parseFrontmatter,
-      projectTrusted,
-    });
+  const catalog = await loadRoleCatalog({
+    defaultDir: defaultRoleDir(),
+    userDir: userRoleDir(agentDir),
+    projectDir: projectRoleDir(repoRoot),
+    parseFrontmatter,
+    projectTrusted,
+  });
 
-    const paths = settingsPaths({ agentDir, repoRoot, projectTrusted });
-    const loaded = await loadRoleSettings(paths, { roleNames: catalog.roles.map((role) => role.name) });
+  const paths = settingsPaths({ agentDir, repoRoot, projectTrusted });
+  const loaded = await loadRoleSettings(paths, { roleNames: catalog.roles.map((role) => role.name) });
 
-    const models = buildModelsContext(ctx);
-    const detected = detectMcpServers(agentDir);
+  const models = buildModelsContext(ctx);
+  const detected = detectMcpServers(agentDir);
 
-    const baselines: { global: string | null; project: string | null } = {
-      global: loaded.global.raw,
-      project: loaded.project?.raw ?? null,
-    };
+  const baselines: { global: string | null; project: string | null } = {
+    global: loaded.global.raw,
+    project: loaded.project?.raw ?? null,
+  };
 
-    const save = async (scope: SettingsScope, role: string, field: SettingsField, value: unknown): Promise<void> => {
-      const path = scope === "project" ? paths.project : paths.global;
-      if (!path) throw new Error("项目层设置不可写入：项目未受信任");
-      const isDefaultValue = field !== "mcp" && value === "inherit";
-      const raw = isDefaultValue
-        ? await clearRoleField(path, { role, field, baseline: baselines[scope] })
-        : await saveRoleSettings(path, { role, patch: { [field]: value }, baseline: baselines[scope] });
-      baselines[scope] = raw;
-    };
+  const save = async (scope: SettingsScope, role: string, field: SettingsField, value: unknown): Promise<void> => {
+    const path = scope === "project" ? paths.project : paths.global;
+    if (!path) throw new Error("项目层设置不可写入：项目未受信任");
+    const isDefaultValue = field !== "mcp" && value === "inherit";
+    const raw = isDefaultValue
+      ? await clearRoleField(path, { role, field, baseline: baselines[scope] })
+      : await saveRoleSettings(path, { role, patch: { [field]: value }, baseline: baselines[scope] });
+    baselines[scope] = raw;
+  };
 
-    const session = createSettingsSession({
-      catalog: { roles: catalog.roles.map((role) => ({ name: role.name })) },
-      settings: {
-        global: { roles: loaded.global.roles },
-        project: loaded.project ? { roles: loaded.project.roles } : null,
-      },
-      scope: "global",
-      models,
-      mcp: { detected },
-      save,
-    });
-
-    let component: SettingsComponent | undefined;
-    ctx.ui.setEditorComponent((tui: { terminal: { rows: number }; requestRender?: () => void }) => {
-      if (!component) {
-        component = createSettingsComponent(session, {
-          theme: buildTheme(ctx),
-          onClose: () => ctx.ui.setEditorComponent(undefined),
-          rows: () => tui.terminal.rows,
-          requestRender: () => tui.requestRender?.(),
-        });
-      }
-      return component;
-    });
-  } catch (error) {
-    ctx.ui.notify((error as Error).message);
-  }
-}
-
-export default function settingsExtension(pi: {
-  registerCommand(name: string, options: { description: string; handler: (args: string, ctx: SettingsExtensionContext) => Promise<void> }): void;
-}): void {
-  pi.registerCommand("pi-company:setting", {
-    description: "打开角色配置设置页",
-    handler: async (_args, ctx) => {
-      const nonInteractive = !ctx.hasUI || ctx.mode !== "tui";
-      if (nonInteractive) {
-        ctx.ui.notify("需要交互终端才能打开设置页");
-        return;
-      }
-      await openSettingsPage(ctx);
+  const session = createSettingsSession({
+    catalog: { roles: catalog.roles.map((role) => ({ name: role.name })) },
+    settings: {
+      global: { roles: loaded.global.roles },
+      project: loaded.project ? { roles: loaded.project.roles } : null,
     },
+    scope: "global",
+    models,
+    mcp: { detected },
+    save,
+  });
+
+  let component: SettingsComponent | undefined;
+  ctx.ui.setEditorComponent((tui: { terminal: { rows: number }; requestRender?: () => void }) => {
+    if (!component) {
+      component = createSettingsComponent(session, {
+        theme: buildTheme(ctx),
+        onClose: () => ctx.ui.setEditorComponent(undefined),
+        rows: () => tui.terminal.rows,
+        requestRender: () => tui.requestRender?.(),
+      });
+    }
+    return component;
   });
 }

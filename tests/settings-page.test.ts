@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSettingsComponent, createSettingsSession } from "../runtime/settings-ui.ts";
-import settingsExtension from "../extensions/settings.ts";
+import { openSettingsPage } from "../extensions/settings.ts";
 import { pressKeys, renderComponent } from "./helpers/virtual-terminal.ts";
 
 const ROLE_ORDER = ["worker", "planner", "reviewer", "acceptance", "requirement-agent"];
@@ -171,7 +171,7 @@ describe("主页 Esc 关闭回调", () => {
   });
 });
 
-describe("extensions/settings.ts 命令契约", () => {
+describe("openSettingsPage 失败契约", () => {
   const tempRoots: string[] = [];
 
   afterEach(async () => {
@@ -180,20 +180,7 @@ describe("extensions/settings.ts 命令契约", () => {
     }
   });
 
-  function makeFakePi() {
-    const registrations: Record<string, { description: string; handler: (args: string, ctx: unknown) => Promise<void> }> = {};
-    return {
-      pi: {
-        registerCommand(name: string, options: { description: string; handler: (args: string, ctx: unknown) => Promise<void> }) {
-          registrations[name] = options;
-        },
-      },
-      registrations,
-    };
-  }
-
   function makeFakeCtx(overrides: Record<string, unknown> = {}) {
-    const notifications: Array<{ message: string; level?: string }> = [];
     const setEditorComponentCalls: unknown[] = [];
     return {
       ctx: {
@@ -202,37 +189,16 @@ describe("extensions/settings.ts 命令契约", () => {
         cwd: process.cwd(),
         isProjectTrusted: () => false,
         ui: {
-          notify(message: string, level?: string) {
-            notifications.push({ message, level });
-          },
+          notify() {},
           setEditorComponent(factory: unknown) {
             setEditorComponentCalls.push(factory);
           },
         },
         ...overrides,
       },
-      notifications,
       setEditorComponentCalls,
     };
   }
-
-  test("注册命令 pi-company:setting 且携带非空描述", () => {
-    const { pi, registrations } = makeFakePi();
-    settingsExtension(pi);
-    expect(registrations["pi-company:setting"]).toBeTruthy();
-    expect(registrations["pi-company:setting"]!.description.length).toBeGreaterThan(0);
-  });
-
-  test("非交互终端（hasUI=false）时提示需要交互终端，且不打开设置页", async () => {
-    const { pi, registrations } = makeFakePi();
-    settingsExtension(pi);
-    const { ctx, notifications, setEditorComponentCalls } = makeFakeCtx({ hasUI: false });
-
-    await registrations["pi-company:setting"]!.handler("", ctx);
-
-    expect(notifications.some((n) => n.message.includes("需要交互终端"))).toBe(true);
-    expect(setEditorComponentCalls.length).toBe(0);
-  });
 
   test("全局设置文件内容非法时提示具体失败原因，且不打开设置页", async () => {
     const home = await mkdtemp(join(tmpdir(), "pi-company-settings-ext-"));
@@ -247,15 +213,9 @@ describe("extensions/settings.ts 命令契约", () => {
     const previousHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const { pi, registrations } = makeFakePi();
-      settingsExtension(pi);
-      const { ctx, notifications, setEditorComponentCalls } = makeFakeCtx({ cwd: home });
+      const { ctx, setEditorComponentCalls } = makeFakeCtx({ cwd: home });
 
-      await registrations["pi-company:setting"]!.handler("", ctx);
-
-      expect(notifications.length).toBeGreaterThan(0);
-      const message = notifications[notifications.length - 1]!.message;
-      expect(message).toContain("worker");
+      await expect(openSettingsPage(ctx)).rejects.toThrow(/worker/);
       expect(setEditorComponentCalls.length).toBe(0);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
@@ -386,7 +346,7 @@ describe("候选列表窗口化", () => {
   });
 });
 
-describe("extensions/settings.ts 补充契约", () => {
+describe("openSettingsPage 补充契约", () => {
   const tempRoots: string[] = [];
 
   afterEach(async () => {
@@ -395,20 +355,7 @@ describe("extensions/settings.ts 补充契约", () => {
     }
   });
 
-  function makeFakePi() {
-    const registrations: Record<string, { description: string; handler: (args: string, ctx: unknown) => Promise<void> }> = {};
-    return {
-      pi: {
-        registerCommand(name: string, options: { description: string; handler: (args: string, ctx: unknown) => Promise<void> }) {
-          registrations[name] = options;
-        },
-      },
-      registrations,
-    };
-  }
-
   function makeFakeCtx(overrides: Record<string, unknown> = {}) {
-    const notifications: Array<{ message: string; level?: string }> = [];
     const setEditorComponentCalls: unknown[] = [];
     return {
       ctx: {
@@ -417,16 +364,13 @@ describe("extensions/settings.ts 补充契约", () => {
         cwd: process.cwd(),
         isProjectTrusted: () => false,
         ui: {
-          notify(message: string, level?: string) {
-            notifications.push({ message, level });
-          },
+          notify() {},
           setEditorComponent(factory: unknown) {
             setEditorComponentCalls.push(factory);
           },
         },
         ...overrides,
       },
-      notifications,
       setEditorComponentCalls,
     };
   }
@@ -440,27 +384,14 @@ describe("extensions/settings.ts 补充契约", () => {
     return home;
   }
 
-  test("非 tui 模式即使 hasUI 为 true 仍提示需要交互终端且不打开设置页", async () => {
-    const { pi, registrations } = makeFakePi();
-    settingsExtension(pi);
-    const { ctx, notifications, setEditorComponentCalls } = makeFakeCtx({ hasUI: true, mode: "rpc" });
-
-    await registrations["pi-company:setting"]!.handler("", ctx);
-
-    expect(notifications.some((n) => n.message.includes("需要交互终端"))).toBe(true);
-    expect(setEditorComponentCalls.length).toBe(0);
-  });
-
   test("跨视图切换过程中 setEditorComponent 仅被调用一次", async () => {
     const home = await makeValidHome();
     const previousHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const { pi, registrations } = makeFakePi();
-      settingsExtension(pi);
       const { ctx, setEditorComponentCalls } = makeFakeCtx({ cwd: home });
 
-      await registrations["pi-company:setting"]!.handler("", ctx);
+      await openSettingsPage(ctx);
       expect(setEditorComponentCalls.length).toBe(1);
       const factory = setEditorComponentCalls[0] as (tui: unknown) => { handleInput(data: string): void };
       const component = factory({ terminal: { rows: 40 } });
@@ -491,11 +422,9 @@ describe("extensions/settings.ts 补充契约", () => {
     const previousHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const { pi, registrations } = makeFakePi();
-      settingsExtension(pi);
       const { ctx, setEditorComponentCalls } = makeFakeCtx({ cwd: home });
 
-      await registrations["pi-company:setting"]!.handler("", ctx);
+      await openSettingsPage(ctx);
       const factory = setEditorComponentCalls[0] as (tui: unknown) => { render(width: number): string[]; handleInput(data: string): void };
       const component = factory({ terminal: { rows: 40 } });
 
