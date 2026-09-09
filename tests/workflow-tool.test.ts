@@ -166,6 +166,16 @@ async function call(world: World, params: Record<string, unknown>): Promise<{ te
   };
 }
 
+// 业务失败现在以抛出表达（SDK 只把抛出识别为 isError），需要断言失败原因文本时先捕获异常
+async function callExpectingError(world: World, params: Record<string, unknown>): Promise<Error> {
+  try {
+    await call(world, params);
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error("测试装置失败: 期望抛出但未抛出");
+}
+
 describe("pi_company_workflow 工具", () => {
   test("createWorkflowTool 返回名为 pi_company_workflow 的工具定义", () => {
     const tool = createWorkflowTool({ dataRoot: "/tmp/pi-company-schema-only", cwd: "/tmp/pi-company-schema-only" });
@@ -283,15 +293,15 @@ describe("update 字段更新", () => {
     await seedWithTaskA(world);
     const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
-      action: "update",
-      requirement: world.requirement,
-      task: "T-1",
-      version: before.version,
-      update: { note: "备注A", bogusField: "x" },
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "update",
+        requirement: world.requirement,
+        task: "T-1",
+        version: before.version,
+        update: { note: "备注A", bogusField: "x" },
+      }),
+    ).rejects.toThrow(/不允许|参数不合法|additional properties/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.tasks["T-1"]?.note).toBe("");
   });
@@ -301,15 +311,15 @@ describe("update 字段更新", () => {
     await seedWithTaskA(world);
     const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
-      action: "update",
-      requirement: world.requirement,
-      task: "T-1",
-      version: before.version,
-      update: { note: "备注A", stage: "accepted" },
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "update",
+        requirement: world.requirement,
+        task: "T-1",
+        version: before.version,
+        update: { note: "备注A", stage: "accepted" },
+      }),
+    ).rejects.toThrow(/不允许|参数不合法|additional properties/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.tasks["T-1"]?.note).toBe("");
   });
@@ -406,15 +416,15 @@ describe("advance 阶段推进到 accepted", () => {
     await world.runStore.update(run.id, { state: "running" });
 
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const result = await call(world, {
-      action: "advance",
-      requirement: world.requirement,
-      stage: "accepted",
-      runId: run.id,
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "advance",
+        requirement: world.requirement,
+        stage: "accepted",
+        runId: run.id,
+        version: state.version,
+      }),
+    ).rejects.toThrow(/运行未完成/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.stage).toBe("accepting");
   });
@@ -436,7 +446,7 @@ describe("advance 阶段推进到 accepted", () => {
     });
 
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const result = await call(world, {
+    const error = await callExpectingError(world, {
       action: "advance",
       requirement: world.requirement,
       stage: "accepted",
@@ -444,8 +454,7 @@ describe("advance 阶段推进到 accepted", () => {
       version: state.version,
     });
 
-    expect(result.details.isError).toBe(true);
-    expect(result.text).toContain("不一致");
+    expect(error.message).toContain("不一致");
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.stage).toBe("accepting");
   });
@@ -467,7 +476,7 @@ describe("advance 阶段推进到 accepted", () => {
     });
 
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const result = await call(world, {
+    const error = await callExpectingError(world, {
       action: "advance",
       requirement: world.requirement,
       stage: "accepted",
@@ -475,8 +484,7 @@ describe("advance 阶段推进到 accepted", () => {
       version: state.version,
     });
 
-    expect(result.details.isError).toBe(true);
-    expect(result.text).toContain("不一致");
+    expect(error.message).toContain("不一致");
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.stage).toBe("accepting");
   });
@@ -508,15 +516,15 @@ describe("retreat 受控回退", () => {
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, { stage: "reviewing" });
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
-      action: "retreat",
-      requirement: world.requirement,
-      stage: "executing",
-      reason: "补充修复",
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "retreat",
+        requirement: world.requirement,
+        stage: "executing",
+        reason: "补充修复",
+        version: state.version,
+      }),
+    ).rejects.toThrow(/缺少决定编号/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.stage).toBe("reviewing");
   });
@@ -527,16 +535,16 @@ describe("retreat 受控回退", () => {
     const decisionId = await appendUserDecisionId(world, "越级回退", "尝试越级回退");
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
-      action: "retreat",
-      requirement: world.requirement,
-      stage: "planned",
-      reason: "尝试越级回退",
-      decisionId,
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "retreat",
+        requirement: world.requirement,
+        stage: "planned",
+        reason: "尝试越级回退",
+        decisionId,
+        version: state.version,
+      }),
+    ).rejects.toThrow(/不允许从/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.stage).toBe("executing");
   });
@@ -548,9 +556,9 @@ describe("reject 裁决", () => {
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, { action: "reject", requirement: world.requirement, version: state.version });
-
-    expect(result.details.isError).toBe(true);
+    await expect(call(world, { action: "reject", requirement: world.requirement, version: state.version })).rejects.toThrow(
+      /缺少用户裁决决定编号/,
+    );
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.stage).toBe("draft");
   });
@@ -567,15 +575,15 @@ describe("task-finish 任务完成", () => {
     await world.runStore.update(workRun.id, { state: "running" });
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
-      action: "task-finish",
-      requirement: world.requirement,
-      task: "T-1",
-      runId: workRun.id,
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "task-finish",
+        requirement: world.requirement,
+        task: "T-1",
+        runId: workRun.id,
+        version: state.version,
+      }),
+    ).rejects.toThrow(/运行未完成/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.tasks["T-1"]?.progress).toBe("doing");
   });
@@ -647,15 +655,15 @@ describe("shape-confirm 形状确认", () => {
     });
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
-      action: "shape-confirm",
-      requirement: world.requirement,
-      runId,
-      decisionId: confirmDecisionId,
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "shape-confirm",
+        requirement: world.requirement,
+        runId,
+        decisionId: confirmDecisionId,
+        version: state.version,
+      }),
+    ).rejects.toThrow(/声明为跳过但缺少用户决定编号/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.shape).toBeNull();
   });
@@ -690,8 +698,7 @@ describe("shape-confirm 形状确认", () => {
 describe("resume-check 续接核对", () => {
   test("对无状态需求返回阻塞而非完成", async () => {
     const world = await setupWorld();
-    const result = await call(world, { action: "resume-check", requirement: world.requirement });
-    expect(result.details.isError).toBe(true);
+    await expect(call(world, { action: "resume-check", requirement: world.requirement })).rejects.toThrow(/需求状态不存在/);
   });
 
   test("成功回执的 version 是数字，不出现 version undefined", async () => {
@@ -724,53 +731,42 @@ describe("list 需求列表", () => {
 });
 
 describe("迁移动作（未注入处理器）", () => {
-  test("migrate-preflight 未注入处理器时返回失败回执", async () => {
+  test("migrate-preflight 未注入处理器时以抛出表达失败", async () => {
     const world = await setupWorld();
-    const result = await call(world, { action: "migrate-preflight", requirement: world.requirement });
-    expect(result.details.isError).toBe(true);
-    expect(result.text).toContain("迁移功能未接入");
+    await expect(call(world, { action: "migrate-preflight", requirement: world.requirement })).rejects.toThrow(/迁移功能未接入/);
   });
 
-  test("migrate-apply 未注入处理器时返回失败回执", async () => {
+  test("migrate-apply 未注入处理器时以抛出表达失败", async () => {
     const world = await setupWorld();
-    const result = await call(world, { action: "migrate-apply", requirement: world.requirement });
-    expect(result.details.isError).toBe(true);
-    expect(result.text).toContain("迁移功能未接入");
+    await expect(call(world, { action: "migrate-apply", requirement: world.requirement })).rejects.toThrow(/迁移功能未接入/);
   });
 
-  test("migrate-status 未注入处理器时返回失败回执", async () => {
+  test("migrate-status 未注入处理器时以抛出表达失败", async () => {
     const world = await setupWorld();
-    const result = await call(world, { action: "migrate-status", requirement: world.requirement });
-    expect(result.details.isError).toBe(true);
-    expect(result.text).toContain("迁移功能未接入");
+    await expect(call(world, { action: "migrate-status", requirement: world.requirement })).rejects.toThrow(/迁移功能未接入/);
   });
 });
 
 describe("写入失败与异常兜底", () => {
-  test("state.json 所在目录只读时写入失败，回执为失败而非成功且不抛出", async () => {
+  test("state.json 所在目录只读时写入失败，以抛出表达失败原因", async () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
     const dir = requirementDataDir(world.home.dataRoot, world.identity.repoId, world.requirement);
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
     await chmod(dir, 0o500);
-    let threw = false;
-    let result: { text: string; details: Record<string, unknown> } | undefined;
     try {
-      result = await call(world, {
-        action: "update",
-        requirement: world.requirement,
-        version: state.version,
-        update: { followUpIssues: ["x"] },
-      });
-    } catch {
-      threw = true;
+      await expect(
+        call(world, {
+          action: "update",
+          requirement: world.requirement,
+          version: state.version,
+          update: { followUpIssues: ["x"] },
+        }),
+      ).rejects.toThrow();
     } finally {
       await chmod(dir, 0o700);
     }
-
-    expect(threw).toBe(false);
-    expect(result?.details.isError).toBe(true);
   });
 
   test("已中止的 AbortSignal 传入 execute 时返回 isError 且不写入", async () => {
@@ -826,15 +822,15 @@ describe("shape-confirm 与 advance/task-finish 同口径的证据校验", () =>
     });
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
-      action: "shape-confirm",
-      requirement: world.requirement,
-      runId: run.id,
-      decisionId: confirmDecisionId,
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "shape-confirm",
+        requirement: world.requirement,
+        runId: run.id,
+        decisionId: confirmDecisionId,
+        version: state.version,
+      }),
+    ).rejects.toThrow(/不一致/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.shape).toBeNull();
   });
@@ -865,64 +861,59 @@ describe("shape-confirm 与 advance/task-finish 同口径的证据校验", () =>
     });
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
-      action: "shape-confirm",
-      requirement: world.requirement,
-      runId: run.id,
-      decisionId: confirmDecisionId,
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "shape-confirm",
+        requirement: world.requirement,
+        runId: run.id,
+        decisionId: confirmDecisionId,
+        version: state.version,
+      }),
+    ).rejects.toThrow(/phase 期望 plan/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.data.shape).toBeNull();
   });
 });
 
 describe("requirement 参数在读盘/计算前的校验", () => {
-  test("advance 对格式非法或含路径穿越的 requirement 返回失败回执且不泄漏绝对路径", async () => {
+  test("advance 对格式非法或含路径穿越的 requirement 以抛出表达失败且不泄漏绝对路径", async () => {
     const world = await setupWorld();
     for (const requirement of ["bad name", "../../../../etc"]) {
-      const result = await call(world, { action: "advance", requirement, stage: "confirmed", version: 1, decisionId: "USER-1" });
-      expect(result.details.isError).toBe(true);
-      expect(containsAbsolutePath(result.text)).toBe(false);
+      const error = await callExpectingError(world, { action: "advance", requirement, stage: "confirmed", version: 1, decisionId: "USER-1" });
+      expect(containsAbsolutePath(error.message)).toBe(false);
     }
   });
 
-  test("resume-check 对格式非法或含路径穿越的 requirement 返回失败回执且不泄漏绝对路径", async () => {
+  test("resume-check 对格式非法或含路径穿越的 requirement 以抛出表达失败且不泄漏绝对路径", async () => {
     const world = await setupWorld();
     for (const requirement of ["bad name", "../../../../etc"]) {
-      const result = await call(world, { action: "resume-check", requirement });
-      expect(result.details.isError).toBe(true);
-      expect(containsAbsolutePath(result.text)).toBe(false);
+      const error = await callExpectingError(world, { action: "resume-check", requirement });
+      expect(containsAbsolutePath(error.message)).toBe(false);
     }
   });
 
-  test("advance 对拼接读盘命中仓库内已存在文件的 requirement 不泄漏仓库绝对路径", async () => {
+  test("advance 对拼接读盘命中仓库内已存在文件的 requirement 以抛出表达失败且不泄漏仓库绝对路径", async () => {
     const world = await setupWorld();
     const requirement = "../../README.md";
-    const result = await call(world, { action: "advance", requirement, stage: "confirmed", version: 1, decisionId: "USER-1" });
-    expect(result.details.isError).toBe(true);
-    expect(result.text.includes(world.repo.root)).toBe(false);
-    expect(containsAbsolutePath(result.text)).toBe(false);
+    const error = await callExpectingError(world, { action: "advance", requirement, stage: "confirmed", version: 1, decisionId: "USER-1" });
+    expect(error.message.includes(world.repo.root)).toBe(false);
+    expect(containsAbsolutePath(error.message)).toBe(false);
   });
 
-  test("resume-check 对拼接读盘命中仓库内已存在文件的 requirement 不泄漏仓库绝对路径", async () => {
+  test("resume-check 对拼接读盘命中仓库内已存在文件的 requirement 以抛出表达失败且不泄漏仓库绝对路径", async () => {
     const world = await setupWorld();
     const requirement = "../../README.md";
-    const result = await call(world, { action: "resume-check", requirement });
-    expect(result.details.isError).toBe(true);
-    expect(result.text.includes(world.repo.root)).toBe(false);
-    expect(containsAbsolutePath(result.text)).toBe(false);
+    const error = await callExpectingError(world, { action: "resume-check", requirement });
+    expect(error.message.includes(world.repo.root)).toBe(false);
+    expect(containsAbsolutePath(error.message)).toBe(false);
   });
 
-  test("list 的 cwd 指向不存在目录触发仓库读取错误时不泄漏绝对路径", async () => {
+  test("list 的 cwd 指向不存在目录触发仓库读取错误时以抛出表达失败且不泄漏绝对路径", async () => {
     const world = await setupWorld();
     const brokenCwd = join(world.repo.root, "missing-subdir");
-    const result = await call(world, { action: "list", cwd: brokenCwd });
-    expect(result.details.isError).toBe(true);
-    expect(result.text.includes(brokenCwd)).toBe(false);
-    expect(containsAbsolutePath(result.text)).toBe(false);
+    const error = await callExpectingError(world, { action: "list", cwd: brokenCwd });
+    expect(error.message.includes(brokenCwd)).toBe(false);
+    expect(containsAbsolutePath(error.message)).toBe(false);
   });
 });
 
@@ -932,14 +923,14 @@ describe("update 参数缺失时的校验", () => {
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
     const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
-      action: "update",
-      requirement: world.requirement,
-      version: before.version,
-      update: { note: "备注A" },
-    });
-
-    expect(result.details.isError).toBe(true);
+    await expect(
+      call(world, {
+        action: "update",
+        requirement: world.requirement,
+        version: before.version,
+        update: { note: "备注A" },
+      }),
+    ).rejects.toThrow(/缺少 task/);
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.version).toBe(before.version);
   });
@@ -949,9 +940,9 @@ describe("update 参数缺失时的校验", () => {
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
     const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, { action: "update", requirement: world.requirement, version: before.version });
-
-    expect(result.details.isError).toBe(true);
+    await expect(call(world, { action: "update", requirement: world.requirement, version: before.version })).rejects.toThrow(
+      /缺少可更新字段/,
+    );
     const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
     expect(after.version).toBe(before.version);
   });
@@ -960,15 +951,14 @@ describe("update 参数缺失时的校验", () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    const result = await call(world, {
+    const error = await callExpectingError(world, {
       action: "update",
       requirement: world.requirement,
       update: { followUpIssues: ["跟进事项A"] },
     });
 
-    expect(result.details.isError).toBe(true);
-    expect(result.text).not.toContain("版本已变化");
-    expect(result.text).toContain("version");
+    expect(error.message).not.toContain("版本已变化");
+    expect(error.message).toContain("version");
   });
 
   test("支持更新 blockedReason 与 workspaceDir，更新后 query 该任务可见两字段", async () => {

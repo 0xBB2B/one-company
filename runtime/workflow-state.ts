@@ -91,7 +91,7 @@ export const VALID_STAGES = [
 
 export const VALID_TASK_PROGRESS = ["todo", "doing", "done", "failed"] as const;
 
-const STAGE_ORDER = ["draft", "confirmed", "planned", "executing", "reviewing", "accepting", "accepted"] as const;
+export const STAGE_ORDER = ["draft", "confirmed", "planned", "executing", "reviewing", "accepting", "accepted"] as const;
 
 export function assertValidStage(stage: string): void {
   if (!(VALID_STAGES as readonly string[]).includes(stage)) {

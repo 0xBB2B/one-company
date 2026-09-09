@@ -455,6 +455,7 @@ export function createWorkflowTool(options: CreateWorkflowToolOptions) {
       }
       const cwd = options.cwd ?? ctx.cwd;
       const result = await executeWorkflowAction(params, { dataRoot: options.dataRoot, cwd }, options.migration);
+      if (!result.ok) throw new Error(result.text);
       return { content: [{ type: "text", text: result.text }], details: result.details };
     },
   };

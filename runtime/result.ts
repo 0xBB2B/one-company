@@ -45,7 +45,7 @@ export const ACCEPTANCE_SCHEMA = Type.Object({
   uncovered: Type.Array(Type.String()),
 }, { additionalProperties: false });
 
-export type Phase = "work" | "review" | "acceptance";
+export type Phase = "plan" | "work" | "review" | "acceptance";
 
 type WorkResult = Static<typeof WORK_SCHEMA>;
 type ReviewResult = Static<typeof REVIEW_SCHEMA>;

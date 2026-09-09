@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { dirname, join, resolve as resolvePath, sep } from "node:path";
@@ -39,6 +38,7 @@ export interface CreateRoleSessionOptions {
   dataRoot: string;
   repoId: string;
   runId: string;
+  shellToken: string;
   cwd: string;
   roleName: string;
   role: RoleCatalogEntry;
@@ -56,6 +56,7 @@ export interface CreateRoleSessionOptions {
   shellRegistry: ShellRegistry;
   guards: RoleSessionGuards;
   networkGate: NetworkPauseGate;
+  extraExtensionFactories?: Array<(pi: ExtensionAPI) => Promise<void> | void>;
 }
 
 export type RoleSessionState = "running" | "paused" | "paused_network" | "completed" | "failed" | "stopped";
@@ -125,7 +126,7 @@ function extractPath(input: unknown, cwd: string): string {
 }
 
 // 候选路径可能尚未创建（写入目标）；沿父目录逐级 realpath，找到已存在的祖先后再拼回后续片段
-async function bestEffortRealpath(path: string): Promise<string> {
+export async function bestEffortRealpath(path: string): Promise<string> {
   try {
     return await realpath(path);
   } catch {
@@ -153,6 +154,8 @@ interface CheckToolCallContext {
   mcp?: { servers: string[] };
   mcpRoleKind: RoleKind;
   readOnlyRole: boolean;
+  allowReportPathWrite: boolean;
+  reportPath?: string;
   verifying: () => boolean;
   paused: () => boolean;
   submitted: () => boolean;
@@ -177,10 +180,23 @@ export async function checkToolCall(event: ToolCallEvent, ctx: CheckToolCallCont
     return;
   }
   if (event.toolName === "write" || event.toolName === "edit") {
+    const path = extractPath(event.input, ctx.cwd);
     if (ctx.readOnlyRole) {
+      if (ctx.allowReportPathWrite && ctx.reportPath) {
+        const resolvedReport = await bestEffortRealpath(resolvePath(ctx.cwd, ctx.reportPath));
+        // reportPath 本身必须落在 cwd 之内（含经符号链接跳出的情形），否则不管写入目标
+        // 是否与它逐字相同都不放行；这条核对独立于注入的 guards，不能靠宽松的 guards 兜底
+        if (await withinScope(ctx.cwd, ctx.reportPath, [ctx.cwd])) {
+          const resolvedPath = await bestEffortRealpath(resolvePath(ctx.cwd, path));
+          if (resolvedPath === resolvedReport) {
+            const occupancy = await ctx.guards.checkWrite(path);
+            if (!occupancy.ok) return { block: true, reason: occupancy.reason };
+            return;
+          }
+        }
+      }
       return { block: true, reason: "只读角色不允许直接调用写类工具" };
     }
-    const path = extractPath(event.input, ctx.cwd);
     if (!(await withinScope(ctx.cwd, path, ctx.writePaths))) {
       return { block: true, reason: `写入路径超出范围: ${path}` };
     }
@@ -374,6 +390,8 @@ export interface ConfigureRoleExtensionInput {
   submitted: () => boolean;
   guards: RoleSessionGuards;
   readOnlyRole: boolean;
+  allowReportPathWrite: boolean;
+  usesStructuredOutput: boolean;
   mcpRoleKind: RoleKind;
   scopeRoots: string[];
   cwd: string;
@@ -429,7 +447,9 @@ export function configureRoleExtension(input: ConfigureRoleExtensionInput): (pi:
     });
     pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${rolePrompt}` }));
 
-    registerStructuredOutput(pi, { outputSchema: input.outputSchema, collector: input.collector });
+    if (input.usesStructuredOutput) {
+      registerStructuredOutput(pi, { outputSchema: input.outputSchema, collector: input.collector });
+    }
 
     const guardAnchors = input.readOnlyRole ? await resolveRepoGuardAnchors(input.cwd) : undefined;
     const pendingGuards = new Map<string, GuardSnapshot>();
@@ -450,6 +470,8 @@ export function configureRoleExtension(input: ConfigureRoleExtensionInput): (pi:
         mcp: input.mcp,
         mcpRoleKind: input.mcpRoleKind,
         readOnlyRole: input.readOnlyRole,
+        allowReportPathWrite: input.allowReportPathWrite,
+        reportPath: input.reportPath,
         verifying: input.verifying,
         paused: input.paused,
         submitted: input.submitted,
@@ -516,7 +538,9 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   });
 
   const readOnlyRole = options.roleName === "reviewer" || options.roleName === "acceptance";
+  const allowReportPathWrite = options.roleName === "acceptance";
   const mcpRoleKind: RoleKind = readOnlyRole ? "review" : definition.kind;
+  const usesStructuredOutput = options.roleName !== "requirement-agent";
   const scopeRoots = options.readPaths.length > 0 ? options.readPaths : [options.cwd];
   const collector = new ResultCollector({ schema: options.outputSchema, phase: options.expectedPhase });
 
@@ -582,7 +606,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   }
 
   const shellRegistry = options.shellRegistry;
-  const runToken = randomUUID();
+  const runToken = options.shellToken;
   const host: Host = { kind: "role", id: options.runId, role: options.roleName, runId: options.runId };
 
   const extensionFactory = configureRoleExtension({
@@ -598,6 +622,8 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     submitted: () => submitted,
     guards: options.guards,
     readOnlyRole,
+    allowReportPathWrite,
+    usesStructuredOutput,
     mcpRoleKind,
     scopeRoots,
     cwd: options.cwd,
@@ -627,11 +653,11 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     noSkills: !definition.skills,
     noContextFiles: !definition.contextFiles,
     noExtensions: true,
-    extensionFactories: [extensionFactory],
+    extensionFactories: [extensionFactory, ...(options.extraExtensionFactories ?? [])],
   });
   await resourceLoader.reload();
 
-  const activeToolNames = [...definition.tools, "structured_output"];
+  const activeToolNames = [...definition.tools, ...(usesStructuredOutput ? ["structured_output"] : [])];
   if (options.mcp) activeToolNames.push("mcp");
 
   const created = await createAgentSession({
@@ -797,8 +823,22 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     // 要被"仅 running 才处理"的守卫挡在外面，不能让它被误判成一次业务失败
     currentState = "stopped";
     rejectResult(new Error("会话已被用户停止"));
-    await session.abort().catch(() => {});
+
+    // Shell 清理是我们自己的机制，不依赖模型会话是否响应中止；先做这一步，
+    // 让真实结果不被下面对 abort 的有界等待卡住
     const shellResults = await shellRegistry.stopHost(host);
+
+    // abort 要等 session 转为空闲，而空闲判定要等在飞工具调用真正结束；
+    // 工具调用若挂在不响应 signal 的外部依赖上会永远不结束，因此这里只等一个上限，
+    // 超时就放弃等待——currentState 早已同步置为 stopped，不依赖这次 abort 是否落定
+    let timeoutTimer: TimerHandle | null = null;
+    const abortPromise = session.abort().catch(() => {});
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timeoutTimer = options.clock.setTimeoutExcludingSleep(() => resolve(), PAUSE_ABORT_TIMEOUT_MS);
+    });
+    await Promise.race([abortPromise, timeoutPromise]);
+    if (timeoutTimer) options.clock.clearTimer(timeoutTimer);
+
     const stopped = shellResults.every((entry) => entry.result.ok === true && entry.result.task.status !== "uncertain");
     return { stopped, shellResults };
   }

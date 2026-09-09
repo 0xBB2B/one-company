@@ -72,6 +72,7 @@ Type.Object({
 | `workflowExtension` | 默认导出：在窗口注册 `pi_company_workflow`，渲染只显示回执文本 |
 
 ## 协作关系
+- 业务失败的表达：`pi_company_workflow` 的 `execute` 在业务失败时抛出（错误消息即原回执文本），因为 SDK 只把抛出识别为工具 isError；成功回执形状不变。主会话与守护进程内会话共用同一实现，不做二次包装。
 - 状态动作调用 `runtime/workflow-state.ts`；迁移动作经 `createWorkflowTool` 注入的处理器分派（由 migration 单元提供 `runtime/migration.ts` 并在窗口扩展里注入）；身份经 identity；运行记录经 `runtime/run-store.ts`。
 - 需求代理会话通过 `createWorkflowTool` 注册同一工具；守护进程的 run-manager 在派工与交付核对时直接调用 `executeWorkflowAction`，并对可能并发的更新走 `retryOnStaleVersion`，不带旧 version 盲目重试。
 - 模型调用方收到版本冲突回执后自行重新 `query` 再提交。

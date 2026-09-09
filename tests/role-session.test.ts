@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,14 +9,16 @@ import { promisify } from "node:util";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { createRoleSession } from "../daemon/role-session.ts";
-import { createClock, type TimeSource } from "../runtime/clock.ts";
+import { createClock } from "../runtime/clock.ts";
 import { NetworkPauseGate, type PauseReason } from "../runtime/network-pause.ts";
 import { ShellRegistry, type Host, type ShellRegistryProbes } from "../runtime/shell-registry.ts";
 import type { McpConfig } from "../runtime/mcp.ts";
 import { readRoleDefinition, type RoleCatalogEntry } from "../runtime/roles.ts";
+import { Type } from "typebox";
 import { WORK_SCHEMA } from "../runtime/result.ts";
 import { openSessionManagerForRun, sessionFilePath } from "../runtime/session-records.ts";
 import { registerControlledProvider, scriptReplies, setReplies, type ControlledProvider } from "./helpers/controlled-provider.ts";
+import { createFakeTimeSource, withClockPump, withTimeout } from "./helpers/fake-clock.ts";
 import { createTempHome, removeTempHome, type TempHome } from "./helpers/temp-home.ts";
 import { addWorktree, createRepoFixture, removeRepoFixture, type RepoFixture } from "./helpers/repo-fixture.ts";
 import { calls as fakeMcpCalls, resetCalls as resetFakeMcpCalls } from "./fixtures/fake-mcp-adapter/index.ts";
@@ -172,13 +174,6 @@ async function waitForCount(getLength: () => number, min: number, timeoutMs = 15
   }
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs)),
-  ]);
-}
-
 function hasBareSpaceUserMessage(dataRoot: string, repoId: string, runId: string): boolean {
   const opened = openSessionManagerForRun({ dataRoot, repoId, runId });
   if (!opened.ok) return false;
@@ -188,74 +183,6 @@ function hasBareSpaceUserMessage(dataRoot: string, repoId: string, runId: string
     const text = typeof content === "string" ? content : content.map((block: any) => block.text ?? "").join("");
     return text === " ";
   });
-}
-
-interface FakeTimeSource extends TimeSource {
-  advance(ms: number): void;
-  jump(ms: number): void;
-}
-
-function createFakeTimeSource(): FakeTimeSource {
-  let current = 0;
-  let nextId = 1;
-  const timers = new Map<number, { fireAt: number; fn: () => void }>();
-
-  function setTimeoutFake(fn: () => void, ms: number): unknown {
-    const id = nextId++;
-    timers.set(id, { fireAt: current + ms, fn });
-    return id;
-  }
-
-  function clearTimeoutFake(handle: unknown): void {
-    timers.delete(handle as number);
-  }
-
-  function advance(ms: number): void {
-    const target = current + ms;
-    while (true) {
-      let earliestId: number | undefined;
-      let earliestFireAt = Infinity;
-      for (const [id, entry] of timers) {
-        if (entry.fireAt <= target && entry.fireAt < earliestFireAt) {
-          earliestId = id;
-          earliestFireAt = entry.fireAt;
-        }
-      }
-      if (earliestId === undefined) break;
-      const entry = timers.get(earliestId);
-      timers.delete(earliestId);
-      current = earliestFireAt;
-      entry?.fn();
-    }
-    current = target;
-  }
-
-  function jump(ms: number): void {
-    const target = current + ms;
-    current = target;
-    const due: Array<{ fireAt: number; fn: () => void }> = [];
-    for (const [id, entry] of timers) {
-      if (entry.fireAt <= target) {
-        due.push(entry);
-        timers.delete(id);
-      }
-    }
-    for (const entry of due) entry.fn();
-  }
-
-  return { now: () => current, setTimeout: setTimeoutFake, clearTimeout: clearTimeoutFake, advance, jump };
-}
-
-// 停止确认的轮询本身依赖这把注入时钟才能收敛；真实等待与虚拟时间推进并行，
-// 而不是等真实墙钟走完停止上限
-async function withClockPump<T>(timeSource: FakeTimeSource, fn: () => Promise<T>): Promise<T> {
-  const handle = setInterval(() => timeSource.advance(500), 20);
-  (handle as unknown as { unref?: () => void }).unref?.();
-  try {
-    return await fn();
-  } finally {
-    clearInterval(handle);
-  }
 }
 
 interface NetworkGateSpy {
@@ -310,6 +237,7 @@ describe("独立会话与运行身份", () => {
       dataRoot: home.dataRoot,
       repoId,
       runId,
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -348,6 +276,7 @@ describe("独立会话与运行身份", () => {
       dataRoot: home.dataRoot,
       repoId: "unavailable-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -392,6 +321,7 @@ describe("独立会话与运行身份", () => {
         dataRoot: home.dataRoot,
         repoId: "broken-role-repo",
         runId: randomUUID(),
+        shellToken: randomUUID(),
         cwd,
         roleName: "worker",
         role: brokenEntry,
@@ -444,6 +374,7 @@ describe("工具白名单、读写路径与占用核对", () => {
       dataRoot: home.dataRoot,
       repoId: "worker-script-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -503,6 +434,7 @@ describe("工具白名单、读写路径与占用核对", () => {
       dataRoot: home.dataRoot,
       repoId: "tool-allowlist-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -552,6 +484,7 @@ describe("只读工具省略 path 与相对路径解析", () => {
       dataRoot: home.dataRoot,
       repoId: "omit-path-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -599,6 +532,7 @@ describe("只读工具省略 path 与相对路径解析", () => {
       dataRoot: home.dataRoot,
       repoId: "relative-path-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -645,6 +579,7 @@ describe("只读工具省略 path 与相对路径解析", () => {
       dataRoot: home.dataRoot,
       repoId: "readonly-write-tool-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "reviewer",
       role,
@@ -692,6 +627,7 @@ describe("MCP 服务限制", () => {
       dataRoot: home.dataRoot,
       repoId: "mcp-missing-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -748,6 +684,7 @@ describe("MCP 真实装载对照", () => {
       dataRoot: home.dataRoot,
       repoId: "mcp-real-adapter-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -797,6 +734,7 @@ describe("MCP 真实装载对照", () => {
       dataRoot: home.dataRoot,
       repoId: "mcp-readonly-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "reviewer",
       role,
@@ -841,6 +779,7 @@ describe("MCP 真实装载对照", () => {
       dataRoot: home.dataRoot,
       repoId: "mcp-load-failure-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -891,6 +830,7 @@ describe("结构化提交", () => {
       dataRoot: home.dataRoot,
       repoId: "invalid-submission-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -937,6 +877,7 @@ describe("结构化提交", () => {
       dataRoot: home.dataRoot,
       repoId: "submission-is-last-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -965,6 +906,57 @@ describe("结构化提交", () => {
     expect(toolEnds[1]?.isError).toBe(true);
     await expect(readFile(postSubmitFile, "utf8")).rejects.toBeTruthy();
   }, 20000);
+
+  test("kind 为 plan 的 planner 角色会话仍注册 structured_output（按角色名而非 kind 判定），合法 phase plan 提交后 completed 并落盘", async () => {
+    const { runtime, provider } = await setupProvider("role-session-planner-structured-output");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "planner", kind: "plan", tools: ["read", "bash"] });
+    const repoId = "planner-structured-output-repo";
+    const runId = randomUUID();
+    const planSchema = Type.Object(
+      { phase: Type.Literal("plan"), verdict: Type.Union([Type.Literal("PASS"), Type.Literal("FAIL")]), summary: Type.String({ minLength: 1 }) },
+      { additionalProperties: false },
+    );
+
+    scriptReplies(provider, [
+      { type: "toolcall", name: "structured_output", input: { phase: "plan", verdict: "PASS", summary: "规划完成" } },
+      { type: "text", text: "done" },
+    ]);
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId,
+      runId,
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "planner",
+      role,
+      task: "规划任务",
+      readPaths: [],
+      writePaths: [],
+      outputSchema: planSchema,
+      expectedPhase: "plan",
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }),
+      guards: createGuards(),
+      networkGate: new NetworkPauseGate(),
+    });
+    handles.push(handle);
+
+    handle.prompt("规划任务");
+    const result = await handle.result();
+
+    expect(result).toBeTruthy();
+    expect(handle.state()).toBe("completed");
+    const opened = openSessionManagerForRun({ dataRoot: home.dataRoot, repoId, runId });
+    expect(opened.ok).toBe(true);
+    const raw = await readFile(sessionFilePath({ dataRoot: home.dataRoot, repoId, runId }), "utf8");
+    expect(raw.length).toBeGreaterThan(0);
+  }, 20000);
 });
 
 describe("暂停与恢复", () => {
@@ -988,6 +980,7 @@ describe("暂停与恢复", () => {
       dataRoot: home.dataRoot,
       repoId,
       runId,
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1048,6 +1041,7 @@ describe("暂停与恢复", () => {
       dataRoot: home.dataRoot,
       repoId: "pause-verify-gate-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1116,6 +1110,7 @@ describe("暂停与恢复", () => {
       dataRoot: home.dataRoot,
       repoId,
       runId,
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1182,6 +1177,7 @@ describe("核对期收敛（自然结束回合即照常结算，不追加核验�
       dataRoot: home.dataRoot,
       repoId: "verify-settle-text-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1239,6 +1235,7 @@ describe("核对期收敛（自然结束回合即照常结算，不追加核验�
       dataRoot: home.dataRoot,
       repoId: "verify-settle-bash-only-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1293,6 +1290,7 @@ describe("多轮与 finalize 结算", () => {
       dataRoot: home.dataRoot,
       repoId: "multi-turn-idle-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1351,6 +1349,7 @@ describe("多轮与 finalize 结算", () => {
       dataRoot: home.dataRoot,
       repoId: "finalize-not-submitted-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1401,6 +1400,7 @@ describe("多轮与 finalize 结算", () => {
       dataRoot: home.dataRoot,
       repoId: "finalize-submitted-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1454,6 +1454,7 @@ describe("网络流空闲与暂停", () => {
       dataRoot: home.dataRoot,
       repoId: "network-idle-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1501,6 +1502,7 @@ describe("网络流空闲与暂停", () => {
       dataRoot: home.dataRoot,
       repoId: "sleep-gap-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1550,6 +1552,7 @@ describe("网络流空闲与暂停", () => {
       dataRoot: home.dataRoot,
       repoId: "network-resume-repo",
       runId,
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1594,6 +1597,7 @@ describe("网络流空闲与暂停", () => {
       dataRoot: home.dataRoot,
       repoId: "network-gate-short-circuit-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1685,6 +1689,7 @@ describe("暂停超时与停止确认", () => {
       dataRoot: home.dataRoot,
       repoId: "pause-stop-timeout-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1756,6 +1761,7 @@ describe("暂停超时与停止确认", () => {
       dataRoot: home.dataRoot,
       repoId: "stop-uncertain-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1823,6 +1829,7 @@ describe("暂停超时与停止确认", () => {
       dataRoot: home.dataRoot,
       repoId: "pause-stophost-recorded-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -1867,6 +1874,102 @@ describe("暂停超时与停止确认", () => {
     expect(pauseOutcome.confirmed).toBe(false);
     expect(killCalls.some((call) => Math.abs(call.pid) === pid)).toBe(true);
   }, 8000);
+
+  test("工具调用挂死时 stop() 先停止本运行的后台 Shell（真实子进程消失）再对 abort 做有界等待，返回真实 shellResults", async () => {
+    const { runtime, provider } = await setupProvider("role-session-stop-stuck-tool");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["bash"] });
+    const pidFile = join(cwd, "bash.pid");
+    const runId = randomUUID();
+
+    scriptReplies(provider, [
+      { type: "toolcall", name: "bash", input: { command: `echo $$ > ${pidFile} && sleep 10` } },
+      { type: "text", text: "done" },
+    ]);
+
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    const shellRegistry = new ShellRegistry({ clock });
+    // 与 daemon/role-session.ts 内部构造的 host 同形，用来直接向 registry 查询任务是否已登记
+    const host: Host = { kind: "role", id: runId, role: "worker", runId };
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId: "stop-stuck-tool-repo",
+      runId,
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "worker",
+      role,
+      task: "停止时工具调用挂死任务",
+      readPaths: [],
+      writePaths: [],
+      outputSchema: WORK_SCHEMA,
+      expectedPhase: "work",
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock,
+      shellRegistry,
+      guards: createGuards(),
+      networkGate: new NetworkPauseGate(),
+    });
+    handles.push(handle);
+
+    handle.prompt("停止时工具调用挂死任务");
+
+    // pidFile 只证明子进程本身已经起来；registry 自己的登记（this.tasks.set）还要再等一次
+    // 外部 ps 往返（baselineStartedAt）才落定，两者独立等，否则 stopHost 可能在登记完成前
+    // 就把这个任务当成"从未见过"而跳过，白白得到一个看似成功却什么也没停的空结果
+    let pid: number | undefined;
+    const pidDeadline = Date.now() + 2000;
+    while (Date.now() < pidDeadline) {
+      try {
+        const content = (await readFile(pidFile, "utf8")).trim();
+        if (content) {
+          pid = Number(content);
+          break;
+        }
+      } catch {
+        // pidFile 尚未写入
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(pid).toBeGreaterThan(0);
+
+    const registeredDeadline = Date.now() + 2000;
+    let registered = false;
+    while (Date.now() < registeredDeadline) {
+      if (shellRegistry.list(host).some((task) => task.status !== "starting")) {
+        registered = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(registered).toBe(true);
+
+    try {
+      // stopHost 的确认轮询靠真实进程死亡驱动：这里只用 withClockPump 按真实小间隔推进注入时钟，
+      // 不再额外一次性 advance(5000)——那样会在同一个同步栈里把整段等待窗口耗尽，
+      // SIGTERM 还没来得及被内核真正处理、轮询就已经因为假时钟到期而判定超时，产生 uncertain
+      const stopOutcome = await withClockPump(timeSource, () =>
+        withTimeout(handle.stop(), 6000, "stop() 未在合理时间内返回"),
+      );
+
+      expect(stopOutcome.shellResults.length).toBeGreaterThan(0);
+      const entry = stopOutcome.shellResults[0];
+      expect(entry?.result.ok).toBe(true);
+      if (entry?.result.ok) expect(entry.result.task.status).not.toBe("uncertain");
+      await waitForProcessGone(pid as number);
+    } finally {
+      try {
+        process.kill(-(pid as number), "SIGKILL");
+      } catch {
+        // 进程组已消失，无需处理
+      }
+    }
+  }, 8000);
 });
 
 describe("只读角色的写入核验", () => {
@@ -1892,6 +1995,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "reviewer-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -1940,6 +2044,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "acceptance-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "acceptance",
       role,
@@ -1988,6 +2093,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "reviewer-never-submit-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -2043,6 +2149,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "acceptance-never-submit-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "acceptance",
       role,
@@ -2103,6 +2210,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "reviewer-node-modules-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -2153,6 +2261,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "reviewer-git-hooks-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -2197,6 +2306,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "reviewer-node-modules-bin-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -2246,6 +2356,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "reviewer-hookspath-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -2292,6 +2403,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "reviewer-subtree-hooks-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -2336,6 +2448,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "reviewer-untracked-cache-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -2382,6 +2495,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "worktree-hooks-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: worktree.root,
       roleName: "reviewer",
       role,
@@ -2428,6 +2542,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "worktree-attributes-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: worktree.root,
       roleName: "reviewer",
       role,
@@ -2480,6 +2595,7 @@ describe("只读角色的写入核验", () => {
         dataRoot: home.dataRoot,
         repoId: `config-${testCase.label}-repo`,
         runId: randomUUID(),
+        shellToken: randomUUID(),
         cwd: repo.root,
         roleName: "reviewer",
         role,
@@ -2527,6 +2643,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "global-hookspath-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -2582,6 +2699,7 @@ describe("只读角色的写入核验", () => {
       dataRoot: home.dataRoot,
       repoId: "relative-hookspath-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: subdir,
       roleName: "reviewer",
       role,
@@ -2626,6 +2744,7 @@ describe("终态守卫", () => {
       dataRoot: home.dataRoot,
       repoId,
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -2698,6 +2817,7 @@ describe("会话文件落盘", () => {
       dataRoot: home.dataRoot,
       repoId,
       runId,
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -2744,6 +2864,7 @@ describe("会话隔离", () => {
       dataRoot: home.dataRoot,
       repoId: "isolation-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: cwdA,
       roleName: "worker",
       role,
@@ -2772,6 +2893,7 @@ describe("会话隔离", () => {
       dataRoot: home.dataRoot,
       repoId: "isolation-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: cwdB,
       roleName: "worker",
       role,
@@ -2821,6 +2943,7 @@ describe("网络暂停恢复的一致性与异常安全", () => {
       dataRoot: home.dataRoot,
       repoId: "network-consistency-repo",
       runId,
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -2887,6 +3010,7 @@ describe("性能：只读角色单条命令的 git 子进程数", () => {
       dataRoot: home.dataRoot,
       repoId: "git-subprocess-count-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
       role,
@@ -2942,6 +3066,7 @@ describe("用户停止是独立终态", () => {
       dataRoot: home.dataRoot,
       repoId,
       runId,
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -3004,6 +3129,7 @@ describe("用户停止是独立终态", () => {
       dataRoot: home.dataRoot,
       repoId: "stop-after-submit-repo",
       runId: randomUUID(),
+      shellToken: randomUUID(),
       cwd,
       roleName: "worker",
       role,
@@ -3075,6 +3201,7 @@ describe("终态清理", () => {
       dataRoot: home.dataRoot,
       repoId: "terminal-cleanup-repo",
       runId,
+      shellToken: randomUUID(),
       cwd,
       roleName,
       role,
@@ -3151,6 +3278,7 @@ describe("终态清理", () => {
       dataRoot: home.dataRoot,
       repoId: "terminal-stop-again-repo",
       runId,
+      shellToken: randomUUID(),
       cwd,
       roleName,
       role,
@@ -3203,5 +3331,218 @@ describe("终态清理", () => {
         // 组已消失，无需处理
       }
     }
+  }, 20000);
+});
+
+describe("验收者写入范围限定为指定报告路径", () => {
+  test("acceptance 会话对 reportPath 的 write 放行并落盘，写其它路径被拒绝", async () => {
+    const { runtime, provider } = await setupProvider("role-session-acceptance-report-path");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "acceptance", kind: "acceptance", tools: ["read", "write", "bash"] });
+    const reportPath = join(cwd, "acceptance-report.md");
+    const otherPath = join(cwd, "not-report.md");
+
+    scriptReplies(provider, [
+      { type: "toolcall", name: "write", input: { path: reportPath, content: "验收报告内容" } },
+      { type: "toolcall", name: "write", input: { path: otherPath, content: "不该写入" } },
+      { type: "text", text: "done" },
+    ]);
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId: "acceptance-report-path-repo",
+      runId: randomUUID(),
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "acceptance",
+      role,
+      task: "验收报告任务",
+      readPaths: [],
+      writePaths: [reportPath, otherPath],
+      reportPath,
+      outputSchema: WORK_SCHEMA,
+      expectedPhase: "acceptance",
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }),
+      guards: createGuards(),
+      networkGate: new NetworkPauseGate(),
+    });
+    handles.push(handle);
+
+    const toolEnds = collect(handle, "tool_end") as Array<{ isError?: boolean }>;
+    handle.prompt("验收报告任务");
+
+    await waitForCount(() => toolEnds.length, 2);
+    expect(toolEnds[0]?.isError).toBe(false);
+    expect(toolEnds[1]?.isError).toBe(true);
+
+    const written = await readFile(reportPath, "utf8");
+    expect(written).toBe("验收报告内容");
+    await expect(readFile(otherPath, "utf8")).rejects.toBeTruthy();
+  }, 20000);
+
+  test("reviewer 会话对任意路径的 write 仍被拒绝，即便该路径就是注入的 reportPath", async () => {
+    const { runtime, provider } = await setupProvider("role-session-reviewer-write-still-blocked");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "reviewer", kind: "review", tools: ["read", "write", "bash"] });
+    const targetPath = join(cwd, "should-not-write.md");
+
+    scriptReplies(provider, [
+      { type: "toolcall", name: "write", input: { path: targetPath, content: "不该写入" } },
+      { type: "text", text: "done" },
+    ]);
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId: "reviewer-write-still-blocked-repo",
+      runId: randomUUID(),
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "reviewer",
+      role,
+      task: "只读审查任务",
+      readPaths: [],
+      writePaths: [targetPath],
+      reportPath: targetPath,
+      outputSchema: WORK_SCHEMA,
+      expectedPhase: "review",
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }),
+      guards: createGuards(),
+      networkGate: new NetworkPauseGate(),
+    });
+    handles.push(handle);
+
+    const toolEnds = collect(handle, "tool_end") as Array<{ isError?: boolean }>;
+    handle.prompt("只读审查任务");
+    await waitForCount(() => toolEnds.length, 1);
+    expect(toolEnds[0]?.isError).toBe(true);
+    await expect(readFile(targetPath, "utf8")).rejects.toBeTruthy();
+  }, 20000);
+
+  test("reportPath 本身直接位于会话 cwd 之外时拒绝写入，宽松 guards 不得放行", async () => {
+    const { runtime, provider } = await setupProvider("role-session-acceptance-reportpath-outside-cwd");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "acceptance", kind: "acceptance", tools: ["read", "write", "bash"] });
+    const outsideRoot = await mkdtemp(join(tmpdir(), "role-session-outside-"));
+    tempRoots.push(outsideRoot);
+    const outsideReportPath = join(outsideRoot, "direct-report.md");
+
+    scriptReplies(provider, [
+      { type: "toolcall", name: "write", input: { path: outsideReportPath, content: "尝试写入 cwd 外" } },
+      { type: "text", text: "done" },
+    ]);
+
+    const alwaysAllowGuards = {
+      async checkWrite() {
+        return { ok: true as const };
+      },
+      async fingerprint(paths: string[]): Promise<Record<string, string>> {
+        return Object.fromEntries(paths.map((p) => [p, "unchanged"]));
+      },
+      async verifyFingerprint(): Promise<Array<{ path: string }>> {
+        return [];
+      },
+    };
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId: "acceptance-reportpath-outside-cwd-repo",
+      runId: randomUUID(),
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "acceptance",
+      role,
+      task: "验收报告任务（reportPath 在 cwd 外）",
+      readPaths: [],
+      writePaths: [outsideReportPath],
+      reportPath: outsideReportPath,
+      outputSchema: WORK_SCHEMA,
+      expectedPhase: "acceptance",
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }),
+      guards: alwaysAllowGuards,
+      networkGate: new NetworkPauseGate(),
+    });
+    handles.push(handle);
+
+    const toolEnds = collect(handle, "tool_end") as Array<{ isError?: boolean }>;
+    handle.prompt("验收报告任务（reportPath 在 cwd 外）");
+    await waitForCount(() => toolEnds.length, 1);
+    expect(toolEnds[0]?.isError).toBe(true);
+    await expect(readFile(outsideReportPath, "utf8")).rejects.toBeTruthy();
+  }, 20000);
+
+  test("reportPath 落在 cwd 内但经符号链接指向仓库外时拒绝写入，即便写入目标与 reportPath 逐字相同，宽松 guards 不得放行", async () => {
+    const { runtime, provider } = await setupProvider("role-session-acceptance-reportpath-symlink-outside");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "acceptance", kind: "acceptance", tools: ["read", "write", "bash"] });
+    const outsideRoot = await mkdtemp(join(tmpdir(), "role-session-outside-"));
+    tempRoots.push(outsideRoot);
+    const actualTarget = join(outsideRoot, "actual-report.md");
+    await writeFile(actualTarget, "");
+    const symlinkReportPath = join(cwd, "linked-report.md");
+    await symlink(actualTarget, symlinkReportPath);
+
+    scriptReplies(provider, [
+      { type: "toolcall", name: "write", input: { path: symlinkReportPath, content: "尝试经符号链接写入仓库外" } },
+      { type: "text", text: "done" },
+    ]);
+
+    const alwaysAllowGuards = {
+      async checkWrite() {
+        return { ok: true as const };
+      },
+      async fingerprint(paths: string[]): Promise<Record<string, string>> {
+        return Object.fromEntries(paths.map((p) => [p, "unchanged"]));
+      },
+      async verifyFingerprint(): Promise<Array<{ path: string }>> {
+        return [];
+      },
+    };
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId: "acceptance-reportpath-symlink-outside-repo",
+      runId: randomUUID(),
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "acceptance",
+      role,
+      task: "验收报告任务（reportPath 经符号链接指向仓库外）",
+      readPaths: [],
+      writePaths: [symlinkReportPath],
+      reportPath: symlinkReportPath,
+      outputSchema: WORK_SCHEMA,
+      expectedPhase: "acceptance",
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }),
+      guards: alwaysAllowGuards,
+      networkGate: new NetworkPauseGate(),
+    });
+    handles.push(handle);
+
+    const toolEnds = collect(handle, "tool_end") as Array<{ isError?: boolean }>;
+    handle.prompt("验收报告任务（reportPath 经符号链接指向仓库外）");
+    await waitForCount(() => toolEnds.length, 1);
+    expect(toolEnds[0]?.isError).toBe(true);
+    const outsideContent = await readFile(actualTarget, "utf8");
+    expect(outsideContent).toBe("");
   }, 20000);
 });
