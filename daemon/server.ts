@@ -36,9 +36,15 @@ export interface DaemonServerOptions {
   repoId: string;
   startedAt: string;
   onActivity?: () => void;
-  hasActiveRuns?: () => Promise<boolean> | boolean;
+  hasActiveRuns?: () => Promise<boolean | { active: boolean; reason?: string }> | boolean | { active: boolean; reason?: string };
   isReady?: () => boolean;
   onShutdownRequested?: () => void;
+}
+
+const HANDLERS_READY_TIMEOUT_MS = 10_000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function errorCode(error: unknown): string {
@@ -46,18 +52,41 @@ function errorCode(error: unknown): string {
   return typeof code === "string" ? code : "internal";
 }
 
+function errorData(error: unknown): Record<string, unknown> | undefined {
+  const data = (error as { data?: unknown }).data;
+  return data !== null && typeof data === "object" ? (data as Record<string, unknown>) : undefined;
+}
+
 export class DaemonServer {
   private readonly options: DaemonServerOptions;
   private server: Server | null = null;
   private readonly connections = new Set<ClientConnection>();
   private readonly handlers = new Map<string, MethodHandler>();
+  private resolveHandlersReady!: () => void;
+  private readonly handlersReady: Promise<void>;
+  onHello: ((client: ClientInfo) => Promise<void> | void) | null = null;
 
   constructor(options: DaemonServerOptions) {
     this.options = options;
+    this.handlersReady = new Promise((resolve) => {
+      this.resolveHandlersReady = resolve;
+    });
   }
 
   registerHandler(method: string, handler: MethodHandler): void {
     this.handlers.set(method, handler);
+  }
+
+  // 路由表本身的装配（registerProtocolHandlers）与业务是否就绪（manager.awaitStarted）是两道独立的闸；
+  // 前者晚于 socket 开始接受连接时，客户端的早到请求要能等到路由表填完，而不是直接判 unknown_method
+  markHandlersReady(): void {
+    this.resolveHandlersReady();
+  }
+
+  // 装配一旦真的卡死（而非仅仅慢），排队请求不能无限期挂着——给个上界，超时明确报"启动中"
+  // 而不是让调用方误判成路由不存在
+  private async waitHandlersReady(): Promise<boolean> {
+    return Promise.race([this.handlersReady.then(() => true), delay(HANDLERS_READY_TIMEOUT_MS).then(() => false)]);
   }
 
   listen(path: string): Promise<void> {
@@ -103,7 +132,9 @@ export class DaemonServer {
           : await this.dispatchMethod(frame.method, frame.params, client);
       client.socket.write(encodeFrame(createResponse(frame.id, result)));
     } catch (error) {
-      client.socket.write(encodeFrame(createErrorResponse(frame.id, errorCode(error), (error as Error).message)));
+      client.socket.write(
+        encodeFrame(createErrorResponse(frame.id, errorCode(error), (error as Error).message, errorData(error))),
+      );
       if (errorCode(error) === "protocol_version") client.socket.end();
     }
   }
@@ -118,6 +149,20 @@ export class DaemonServer {
       workspaceRoot: params.workspaceRoot as string,
       repoIds: params.repoIds as string[],
     };
+    // 推送延后到下一轮事件循环：hello 响应帧必须先于任何推送帧写入 socket，
+    // 否则客户端可能在收到响应、注册事件监听器之前就已经收到并丢弃了推送；
+    // onHello 由 registerProtocolHandlers 在装配完成时才赋值，装配未完工时 hello 也要等，
+    // 不能因为此刻还没有回调就悄悄丢掉这次推送
+    const info = client.info;
+    if (this.onHello) {
+      setImmediate(() => {
+        void this.onHello?.(info);
+      });
+    } else {
+      void this.waitHandlersReady().then((ready) => {
+        if (ready) void this.onHello?.(info);
+      });
+    }
     return {
       daemonPid: process.pid,
       repoId: this.options.repoId,
@@ -140,12 +185,25 @@ export class DaemonServer {
     }
     if (method === "shutdown") {
       if (!(this.options.isReady?.() ?? true)) return { accepted: false, reason: "守护进程正在启动" };
-      const activeRuns = (await this.options.hasActiveRuns?.()) ?? false;
-      if (activeRuns) return { accepted: false, reason: "存在活动的需求代理运行" };
+      const activeResult = (await this.options.hasActiveRuns?.()) ?? false;
+      const active = typeof activeResult === "boolean" ? activeResult : activeResult.active;
+      if (active) {
+        const reason = typeof activeResult === "boolean" ? "存在活动的需求代理运行" : (activeResult.reason ?? "存在活动的需求代理运行");
+        return { accepted: false, reason };
+      }
       this.options.onShutdownRequested?.();
       return { accepted: true };
     }
-    const handler = this.handlers.get(method);
+    let handler = this.handlers.get(method);
+    if (!handler) {
+      const ready = await this.waitHandlersReady();
+      if (!ready) {
+        const error = new Error(`守护进程启动中，方法尚未登记: ${method}`) as Error & { code: string };
+        error.code = "daemon_starting";
+        throw error;
+      }
+      handler = this.handlers.get(method);
+    }
     if (!handler) {
       const error = new Error(`未注册的方法: ${method}`) as Error & { code: string };
       error.code = "unknown_method";

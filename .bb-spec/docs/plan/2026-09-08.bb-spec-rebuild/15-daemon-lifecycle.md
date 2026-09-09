@@ -88,6 +88,9 @@ socket：<dataRoot>/sock/<repoId 前 16 位>.sock（不在 repos/<repoId>/ 下�
 | `killDaemon` | 强杀守护进程模拟崩溃 |
 
 ## 协作关系
+- socket 开始接受连接早于业务处理器登记：分发层持有处理器就绪信号，已知方法在登记完成前到达时等待就绪后再分发，只有登记完成后仍未命中的方法才回 unknown_method；等待有上界，超时回明确的启动中错误；hello 后的中继待办推送同样等待登记完成后再发。
+- 进程级兜底：`unhandledRejection` 记 stderr 不退出；`uncaughtException` 记 stderr 后走与 SIGTERM 同一条 shutdown（标记自身运行中断、释放 socket、非零退出）。启动期扫描（标记中断、接管遗留 Shell）任一步 IO 失败只记 stderr 并继续就绪，不让整进程退出。
+- 可注入项统一由 `daemon/main.ts` 读取环境并经 `StartDaemonOptions` 传入（名字中立、生产语义成立）：`PI_COMPANY_MODEL_PROVIDER_MODULE`（provider 注册模块）、`PI_COMPANY_CONNECTIVITY_PROBE_MODULE`（导出 `probe(): Promise<boolean|null>` 的模块）、`PI_COMPANY_NETWORK_PROBE_INTERVAL_MS`；lifecycle 内不直接读环境。
 `main` → `loadSdk` → `startDaemon` → `DaemonServer.listen`。`startDaemon` 使用 `runtime/identity.ts` 的 `daemonSocketPath`、`runtime/clock.ts` 的睡眠感知计时、`runtime/run-store.ts` 的 `markInterruptedOnStartup`。窗口侧 `runtime/daemon-client.ts` 的 `spawnDaemon` 按上方启动契约拉起，并以"连接成功"而非锁文件作为就绪判据。
 
 ## 验证方式

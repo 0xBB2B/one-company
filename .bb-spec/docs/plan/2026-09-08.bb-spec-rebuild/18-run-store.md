@@ -61,6 +61,9 @@ description: 守护进程内运行记录的持久化：状态集合（无停止�
 | `assertTransition` | 校验状态转换合法，否则抛出说明 |
 
 ## 协作关系
+- 运行记录持久化派工期参数中续接所需的字段：`reportPath`（验收者报告路径）随运行创建写入，续接时回填角色会话。
+- 状态机允许 `paused`/`pausing` 直接到 `completed`/`failed`（运行落定不是用户继续，不经中间 running 写入）。
+- 角色运行的 parentRunId 默认必填；调用方以 `standalone: true` 显式声明无父运行（如窗口连接派出的提交前审查者）时允许缺省，存储层不按角色名特判。
 `daemon/run-manager.ts` 是唯一写入方；`daemon/server.ts` 的 `runs.list`/`runs.get` 只读；`daemon/lifecycle.ts` 启动时调用 `markInterruptedOnStartup`；目录路径来自 `runtime/identity.ts` 的 `runDataDir`；原子写入用 `runtime/store.ts`。
 
 ## 验证方式

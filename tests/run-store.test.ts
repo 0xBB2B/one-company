@@ -139,6 +139,34 @@ describe("RunStore.create", () => {
     const input = requirementInput({ kind: "role", role: "worker", parentRunId: parent.id });
     await expect(store.create(input)).rejects.toThrow();
   });
+
+  test("role 为 pi-company.reviewer 但缺 parentRunId 且未声明 standalone 时仍抛错（不再按角色名特判）", async () => {
+    const { store } = await makeStore();
+    const input = requirementInput({ kind: "role", role: "pi-company.reviewer" });
+    await expect(store.create(input)).rejects.toThrow();
+  });
+
+  test("standalone: true 时允许缺少 parentRunId，不限角色名", async () => {
+    const { store } = await makeStore();
+    const input = requirementInput({ kind: "role", role: "pi-company.worker", standalone: true });
+    const run = await store.create(input);
+    expect(run.parentRunId).toBeUndefined();
+  });
+
+  test("acceptance 角色运行携带 reportPath 时被持久化，读回后原样可得", async () => {
+    const { store } = await makeStore();
+    const parent = await store.create(requirementInput());
+    const input = roleInput(parent.id, {
+      role: "pi-company.acceptance",
+      reportPath: "/repo/evidence/acceptance-report.md",
+    });
+    const run = await store.create(input);
+    expect(run.reportPath).toBe("/repo/evidence/acceptance-report.md");
+
+    const reread = await store.get(run.id);
+    expect(reread.ok).toBe(true);
+    if (reread.ok) expect(reread.run.reportPath).toBe("/repo/evidence/acceptance-report.md");
+  });
 });
 
 describe("RunStore.get", () => {
@@ -497,6 +525,15 @@ describe("assertTransition", () => {
     const uncertain: string = "uncertain";
     expect(() => assertTransition(uncertain as RunState, "running")).toThrow("不允许的状态转换");
     expect(() => assertTransition("running", uncertain as RunState)).toThrow("不允许的状态转换");
+  });
+});
+
+describe("assertTransition：paused/pausing 可直接结算", () => {
+  test.each([
+    ["paused", "completed"],
+    ["pausing", "completed"],
+  ])("%s→%s 不抛出（无需先经 running 中转）", (from, to) => {
+    expect(() => assertTransition(from as never, to as never)).not.toThrow();
   });
 });
 

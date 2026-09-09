@@ -5,7 +5,7 @@ import type { Clock } from "../runtime/clock.ts";
 import { appendDecision } from "../runtime/decisions.ts";
 import { requirementDataDir, requirementIdentity } from "../runtime/identity.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
-import type { RoleCatalogEntry, RoleDefinition } from "../runtime/roles.ts";
+import type { RoleCatalogEntry } from "../runtime/roles.ts";
 import { isTerminalState, RunStore } from "../runtime/run-store.ts";
 import type { ShellRegistry } from "../runtime/shell-registry.ts";
 import { createDecisionRecordTool } from "../runtime/decision-record-tool.ts";
@@ -34,6 +34,7 @@ export const AGENT_PARAMETERS = Type.Object(
     outputSchema: Type.Optional(Type.Unknown()),
     runId: Type.Optional(Type.String()),
     result: Type.Optional(Type.Unknown()),
+    reportPath: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );
@@ -100,6 +101,7 @@ export interface RequirementAgentDispatch {
     instructions?: string;
     writePaths: string[];
     readPaths: string[];
+    reportPath?: string;
   }): Promise<{ ok: true; runId: string } | { ok: false; reason: string }>;
   status(runId: string): Promise<{ ok: true; state: string } | { ok: false; reason: string }>;
   wait(runId: string): Promise<{ ok: true; state: string } | { ok: false; reason: string }>;
@@ -183,7 +185,6 @@ async function queryRequirementState(ctx: { dataRoot: string; cwd: string; requi
 }
 
 export function buildRequirementAgentPrompt(input: {
-  role: RoleDefinition;
   requirement: string;
   cwd: string;
   roleCatalog: RoleCatalogEntry[];
@@ -194,7 +195,6 @@ export function buildRequirementAgentPrompt(input: {
     .map((entry) => `- ${entry.name}：${entry.definition!.description.replace(/\s+/g, " ").trim()}`)
     .join("\n");
   const sections = [
-    input.role.body.trim(),
     `## 需求身份与工作目录\n需求：${input.requirement}\n工作目录：${input.cwd}`,
     `## 规范索引与需求文档位置\n规范索引位于仓库 .pi-company/spec/INDEX.md（术语表在同目录 GLOSSARY.md）；本需求文档位于仓库内 .pi-company/requirements/${input.requirement}/。`,
     `## 可用角色目录\n${catalogList.length > 0 ? catalogList : "无可用角色"}`,
@@ -345,12 +345,17 @@ export function registerAgentTool(pi: ExtensionAPI, ctx: RequirementAgentToolCon
         const writeCheck = await checkWritePaths({ cwd: ctx.cwd, writePaths: requestedWritePaths, declaredWritePaths: allowed.task.writePaths });
         if (!writeCheck.ok) throw new Error(`写入路径越出授权范围: ${writeCheck.violations.join("、")}`);
 
+        if (role === "acceptance" && !params.reportPath) {
+          throw new Error("run 动作派 acceptance 时缺少 reportPath");
+        }
+
         const dispatched = await ctx.dispatch.dispatchRole({
           role,
           task,
           instructions: params.instructions,
           writePaths: requestedWritePaths,
           readPaths: params.readPaths ?? [],
+          reportPath: params.reportPath,
         });
         if (!dispatched.ok) throw new Error(dispatched.reason);
         return textResult(`已派工: ${dispatched.runId}`);
@@ -583,7 +588,7 @@ export function registerProposeShapeTool(pi: ExtensionAPI, ctx: RequirementAgent
 const SUPPLEMENT_GUIDANCE =
   "以下是主会话转发的补充。请先判断该补充是否改变已确认形状的任务集或形状：改变则须重新经 pi_company_propose_shape 提议并等待确认，否则直接并入当前执行。";
 
-function requirementAgentExtension(ctx: RequirementAgentToolContext, role: RoleDefinition, askState: { count: number }) {
+function requirementAgentExtension(ctx: RequirementAgentToolContext, askState: { count: number }) {
   return async (pi: ExtensionAPI): Promise<void> => {
     pi.registerTool(createWorkflowTool({ dataRoot: ctx.dataRoot, cwd: ctx.cwd }));
     pi.registerTool(createDecisionRecordTool({ dataRoot: ctx.dataRoot, cwd: ctx.cwd }));
@@ -594,7 +599,6 @@ function requirementAgentExtension(ctx: RequirementAgentToolContext, role: RoleD
     pi.on("before_agent_start", async (event) => {
       const state = await queryRequirementState(ctx);
       const promptText = buildRequirementAgentPrompt({
-        role,
         requirement: ctx.requirement,
         cwd: ctx.cwd,
         roleCatalog: ctx.roleCatalog,
@@ -647,6 +651,20 @@ export async function createRequirementAgentSession(options: CreateRequirementAg
 
   if (found.reused) return { ok: true, reused: true, runId: found.runId };
 
+  const built = await buildRequirementAgentHandle(options, found.runId, found.shellToken, false);
+  if (!built.ok) return built;
+  return { ok: true, reused: false, runId: found.runId, handle: built.handle };
+}
+
+async function buildRequirementAgentHandle(
+  options: CreateRequirementAgentSessionOptions,
+  runId: string,
+  shellToken: string,
+  resume: boolean,
+): Promise<{ ok: true; handle: RequirementAgentHandle } | { ok: false; reason: string }> {
+  const definition = options.role.definition;
+  if (!definition) return { ok: false, reason: options.role.reason ?? `角色定义不可用: ${options.role.name}` };
+
   const askState = { count: 0 };
   const toolCtx: RequirementAgentToolContext = {
     dataRoot: options.dataRoot,
@@ -655,7 +673,7 @@ export async function createRequirementAgentSession(options: CreateRequirementAg
     cwd: options.cwd,
     roleCatalog: options.roleCatalog,
     roleName: options.role.name,
-    runId: found.runId,
+    runId,
     runStore: options.runStore,
     workspaceRepoIds: options.workspaceRepoIds,
     dispatch: options.dispatch,
@@ -668,26 +686,28 @@ export async function createRequirementAgentSession(options: CreateRequirementAg
     innerHandle = await createRoleSession({
       dataRoot: options.dataRoot,
       repoId: options.repoId,
-      runId: found.runId,
-      shellToken: found.shellToken,
+      runId,
+      shellToken,
       cwd: options.cwd,
       roleName: options.role.name,
       role: options.role,
       task: "持有需求上下文，规划、提议工作流形状并按形状统筹推进",
       readPaths: [options.cwd],
       writePaths: [options.cwd],
-      outputSchema: Type.Unknown(),
-      expectedPhase: "work",
       runtime: options.runtime,
       modelRef: options.modelRef,
       clock: options.clock,
       shellRegistry: options.shellRegistry,
       guards: options.guards,
       networkGate: options.networkGate,
-      extraExtensionFactories: [requirementAgentExtension(toolCtx, options.role.definition, askState)],
+      resume,
+      // 需求代理靠 ask/dispatch 等工具自行驱动多轮编排，任一次纯文字回合结束都不代表任务完成，
+      // 收尾时机完全由 stop() 决定
+      contract: { kind: "plain", completion: "idle-only" },
+      extraExtensionFactories: [requirementAgentExtension(toolCtx, askState)],
     });
   } catch (error) {
-    await options.runStore.update(found.runId, { state: "failed", stateReason: (error as Error).message }).catch(() => {});
+    await options.runStore.update(runId, { state: "failed", stateReason: (error as Error).message }).catch(() => {});
     return { ok: false, reason: (error as Error).message };
   }
 
@@ -705,11 +725,19 @@ export async function createRequirementAgentSession(options: CreateRequirementAg
     resume: () => innerHandle.resume(),
     stop: async () => {
       const outcome = await innerHandle.stop();
-      await options.runStore.update(found.runId, { state: "stopped" }).catch(() => {});
+      await options.runStore.update(runId, { state: "stopped" }).catch(() => {});
       return outcome;
     },
     dispose: () => innerHandle.dispose(),
   };
 
-  return { ok: true, reused: false, runId: found.runId, handle };
+  return { ok: true, handle };
+}
+
+export async function resumeRequirementAgentSession(
+  options: CreateRequirementAgentSessionOptions & { runId: string },
+): Promise<{ ok: true; handle: RequirementAgentHandle } | { ok: false; reason: string }> {
+  const existing = await options.runStore.get(options.runId);
+  if (!existing.ok) return { ok: false, reason: existing.reason };
+  return buildRequirementAgentHandle(options, options.runId, existing.run.shellToken, true);
 }

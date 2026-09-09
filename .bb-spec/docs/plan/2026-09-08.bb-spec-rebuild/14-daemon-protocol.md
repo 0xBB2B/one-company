@@ -71,7 +71,7 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 | `shells.changed` | `{ task: ShellTask }` |
 | `daemon.idle` | `{ exitAt }` |
 
-错误码：`protocol_version`、`unknown_method`、`unknown_event`、`bad_params`、`not_found`、`already_active`、`not_confirmed`、`shape_violation`、`daemon_busy`、`internal`。错误帧 `error: { code, message, data? }`，`data` 携带结构化附加信息（`already_active` 附 `{ runId }`）；窗口侧 `DaemonClient.call` 以带 `code` 与 `data` 的错误对象拒绝。
+错误码：`protocol_version`、`unknown_method`、`unknown_event`、`bad_params`、`not_found`、`already_active`、`not_confirmed`、`shape_violation`、`daemon_busy`、`daemon_starting`（处理器登记未在上界内完成）、`internal`。错误帧 `error: { code, message, data? }`，`data` 携带结构化附加信息（`already_active` 附 `{ runId }`）；窗口侧 `DaemonClient.call` 以带 `code` 与 `data` 的错误对象拒绝。
 
 ## 函数清单
 ### runtime/protocol.ts

@@ -3,9 +3,12 @@ import type { ChildProcess } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { RunStore } from "../runtime/run-store.ts";
-import { daemonSocketPath, runsDataDir } from "../runtime/identity.ts";
+import { daemonSocketPath, repoDataDir, runsDataDir } from "../runtime/identity.ts";
 import { PROTOCOL_VERSION } from "../runtime/protocol.ts";
+import { RelayQueue } from "../daemon/relay-queue.ts";
 import {
   connectRawClient,
   connectTestClient,
@@ -18,6 +21,14 @@ import {
   waitForSocketReady,
 } from "./helpers/daemon-harness.ts";
 import type { DaemonFixture, DaemonHandle, TestClient } from "./helpers/daemon-harness.ts";
+import { MODEL_PROVIDER_MODULE_ENV_VAR } from "./helpers/daemon-model-fixture.ts";
+import {
+  ASSEMBLY_DELAY_MS_ENV_VAR,
+  TRIGGER_UNCAUGHT_EXCEPTION_ENV_VAR,
+  TRIGGER_UNHANDLED_REJECTION_ENV_VAR,
+} from "./helpers/model-provider-module.ts";
+
+const modelProviderModulePath = fileURLToPath(new URL("./helpers/model-provider-module.ts", import.meta.url));
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -163,7 +174,9 @@ describe("单实例收敛", () => {
     trackHandle(await startDaemonForTest(fixture));
     const client = await connectTestClient(fixture.socketPath);
     clients.push(client);
-    await client.call("ping");
+    // ping 绕过 handlersReady 闸门，与 acquireListener 内的陈旧文件清理无 happens-before；
+    // runs.list 经 register() 的 awaitStarted() 排队，只有清理与处理器登记都完成后才会返回
+    await client.call("runs.list", {});
 
     await expect(stat(stale)).rejects.toThrow();
   }, 20_000);
@@ -284,6 +297,9 @@ describe("SIGTERM 退出", () => {
     const handle = trackHandle(await startDaemonForTest(fixture));
     const client = await connectTestClient(fixture.socketPath);
     const daemonStartedAt = String(client.helloResult.startedAt);
+    // hello 早于 handlersReady 闸门应答，与装配完成（runManager 等 SIGTERM 收尾所依赖的状态）无 happens-before；
+    // runs.list 经 register() 的 awaitStarted() 排队，返回即说明装配已完整完成，再发 SIGTERM 才有意义
+    await client.call("runs.list", {});
     client.close();
 
     const ownStore = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt });
@@ -485,6 +501,195 @@ describe("RunStore 读失败不影响存活", () => {
     const pong = await client.call("ping");
     expect(typeof pong.now).toBe("number");
   }, 20_000);
+
+  test("runs 目录在守护进程启动前已不可读：仍能启动、ping，但 shutdown 被拒并给出读失败原因；目录恢复后 shutdown 成功", async () => {
+    const fixture = await createDaemonFixture();
+    fixtures.push(fixture);
+    const runsDir = runsDataDir(fixture.dataRoot, fixture.repoId);
+    await mkdir(runsDir, { recursive: true });
+    await chmod(runsDir, 0o000);
+    chmodedDir = runsDir;
+
+    const { proc, exited } = spawnDaemonProcess({
+      home: fixture.home,
+      repoDir: fixture.repoDir,
+      dataRoot: fixture.dataRoot,
+      captureOutput: true,
+    });
+    procs.push(proc);
+    await waitForSocketReady(fixture.socketPath, 10_000);
+
+    const client = await connectTestClient(fixture.socketPath);
+    clients.push(client);
+    const pong = await client.call("ping");
+    expect(typeof pong.now).toBe("number");
+
+    const rejected = await client.call("shutdown");
+    expect(rejected.accepted).toBe(false);
+    expect(String(rejected.reason ?? "")).toMatch(/读取|读失败|unreadable|EACCES|permission/i);
+    expect(proc.exitCode).toBeNull();
+    expect(proc.signalCode).toBeNull();
+
+    await chmod(runsDir, 0o700);
+    chmodedDir = null;
+    const accepted = await client.call("shutdown");
+    expect(accepted.accepted).toBe(true);
+    const result = await exited;
+    expect(result.code).toBe(0);
+  }, 20_000);
+});
+
+describe("进程级未处理拒绝兜底", () => {
+  test("一次孤立的未处理 Promise 拒绝不会让守护进程退出，仍可 ping", async () => {
+    const fixture = await createDaemonFixture();
+    fixtures.push(fixture);
+    const handle = trackHandle(
+      await startDaemonForTest(fixture, {
+        extraEnv: {
+          [MODEL_PROVIDER_MODULE_ENV_VAR]: modelProviderModulePath,
+          [TRIGGER_UNHANDLED_REJECTION_ENV_VAR]: "1",
+        },
+      }),
+    );
+
+    await delay(1_000);
+    expect(handle.proc.exitCode).toBeNull();
+    expect(handle.proc.signalCode).toBeNull();
+
+    const client = await connectTestClient(fixture.socketPath);
+    clients.push(client);
+    const pong = await client.call("ping");
+    expect(typeof pong.now).toBe("number");
+  }, 20_000);
+});
+
+describe("分发层就绪信号：socket 就绪早于业务方法登记完成", () => {
+  test("装配窗口内 socket 就绪后立即 hello + runs.list：排队等到登记完成后正常返回，而非 unknown_method", async () => {
+    const fixture = await createDaemonFixture();
+    fixtures.push(fixture);
+    const handle = trackHandle(
+      await startDaemonForTest(fixture, {
+        extraEnv: {
+          [MODEL_PROVIDER_MODULE_ENV_VAR]: modelProviderModulePath,
+          [ASSEMBLY_DELAY_MS_ENV_VAR]: "1500",
+        },
+      }),
+    );
+    expect(handle.proc.exitCode).toBeNull();
+
+    const client = await connectTestClient(fixture.socketPath);
+    clients.push(client);
+    const result = await client.call("runs.list", {});
+    expect(Array.isArray(result.items)).toBe(true);
+  }, 20_000);
+
+  test("装配长时间卡死（超过启动上界）时 runs.list 在上界后收到明确的启动中错误而非无限等待", async () => {
+    const fixture = await createDaemonFixture();
+    fixtures.push(fixture);
+    const handle = trackHandle(
+      await startDaemonForTest(fixture, {
+        extraEnv: {
+          [MODEL_PROVIDER_MODULE_ENV_VAR]: modelProviderModulePath,
+          [ASSEMBLY_DELAY_MS_ENV_VAR]: "15000",
+        },
+      }),
+    );
+    expect(handle.proc.exitCode).toBeNull();
+
+    const client = await connectTestClient(fixture.socketPath);
+    clients.push(client);
+
+    const start = Date.now();
+    let rejected: Error | undefined;
+    try {
+      await client.call("runs.list", {});
+    } catch (error) {
+      rejected = error as Error;
+    }
+    const elapsedMs = Date.now() - start;
+
+    expect(rejected).toBeDefined();
+    // 断言重点是"有一个明确的启动中上界"，不是具体几秒；14s 留出余量，只要求早于完整 15s 装配延迟结束
+    expect(elapsedMs).toBeLessThan(14_000);
+    expect(rejected?.message).toMatch(/daemon_starting|启动中|starting/i);
+  }, 20_000);
+
+  test("装配窗口内 hello 的中继待办推送在登记完成后仍会送达（不丢失）", async () => {
+    const fixture = await createDaemonFixture();
+    fixtures.push(fixture);
+    const repoDir = await repoDataDir(fixture.dataRoot, fixture.repoId, fixture.repoDir);
+    const seedQueue = new RelayQueue({
+      dataDir: repoDir,
+      deliver: async () => [],
+      locateRequirementAgent: () => undefined,
+    });
+    await seedQueue.ask({
+      requirement: "2026-09-01.assembly-window-relay-seed",
+      repoId: fixture.repoId,
+      runId: randomUUID(),
+      question: "装配窗口测试预置的待办问题",
+      options: [],
+      recommended: "",
+    });
+
+    const handle = trackHandle(
+      await startDaemonForTest(fixture, {
+        extraEnv: {
+          [MODEL_PROVIDER_MODULE_ENV_VAR]: modelProviderModulePath,
+          [ASSEMBLY_DELAY_MS_ENV_VAR]: "1500",
+        },
+      }),
+    );
+    expect(handle.proc.exitCode).toBeNull();
+
+    // hello 本身由 socket 层直接处理，不经过 register() 的 awaitStarted 排队；
+    // 这里紧跟 socket 就绪后立刻 hello，落在装配窗口内
+    const client = await connectTestClient(fixture.socketPath, {
+      cwd: fixture.repoDir,
+      workspaceRoot: fixture.repoDir,
+      repoIds: [fixture.repoId],
+    });
+    clients.push(client);
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("装配完成后仍未收到 relay.question 推送，待办丢失")), 8_000);
+      client.onEvent("relay.question", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }, 20_000);
+});
+
+describe("uncaughtException 看门狗", () => {
+  test("装配期内一次真正未捕获的异常：守护进程在看门狗时限内以非零码退出，socket 文件被清理", async () => {
+    const fixture = await createDaemonFixture();
+    fixtures.push(fixture);
+    const { proc, exited } = spawnDaemonProcess({
+      home: fixture.home,
+      repoDir: fixture.repoDir,
+      dataRoot: fixture.dataRoot,
+      captureOutput: true,
+      extraEnv: {
+        [MODEL_PROVIDER_MODULE_ENV_VAR]: modelProviderModulePath,
+        [TRIGGER_UNCAUGHT_EXCEPTION_ENV_VAR]: "1",
+      },
+    });
+    procs.push(proc);
+
+    const start = Date.now();
+    const result = await exited;
+    const elapsedMs = Date.now() - start;
+
+    expect(result.code).not.toBe(0);
+    expect(elapsedMs).toBeLessThan(8_000);
+    await delay(200);
+    const exists = await stat(fixture.socketPath).then(
+      () => true,
+      () => false,
+    );
+    expect(exists).toBe(false);
+  }, 15_000);
 });
 
 describe("SDK 加载失败", () => {

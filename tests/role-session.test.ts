@@ -244,8 +244,7 @@ describe("独立会话与运行身份", () => {
       task: "身份测试任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -283,8 +282,7 @@ describe("独立会话与运行身份", () => {
       task: "模型不可用任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -328,8 +326,7 @@ describe("独立会话与运行身份", () => {
         task: "损坏角色任务",
         readPaths: [],
         writePaths: [],
-        outputSchema: WORK_SCHEMA,
-        expectedPhase: "work",
+        contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
         runtime,
         modelRef: { provider: provider.providerId, id: provider.modelId },
         clock: createClock(),
@@ -382,8 +379,7 @@ describe("工具白名单、读写路径与占用核对", () => {
       readPaths: [inScopeReadFile],
       writePaths: [occupiedFile, inScopeWriteFile],
       mcp: { servers: ["context7"] },
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -441,8 +437,7 @@ describe("工具白名单、读写路径与占用核对", () => {
       task: "工具白名单任务",
       readPaths: [],
       writePaths: [writeTarget],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -491,8 +486,7 @@ describe("只读工具省略 path 与相对路径解析", () => {
       task: "省略 path 任务",
       readPaths: [allowedFile],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -539,8 +533,7 @@ describe("只读工具省略 path 与相对路径解析", () => {
       task: "相对路径任务",
       readPaths: [],
       writePaths: [outFile],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -586,8 +579,7 @@ describe("只读工具省略 path 与相对路径解析", () => {
       task: "只读角色直写任务",
       readPaths: [],
       writePaths: [targetFile],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "review",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "review" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -635,8 +627,7 @@ describe("MCP 服务限制", () => {
       readPaths: [],
       writePaths: [inScopeWriteFile],
       mcp: { servers: [] },
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -692,8 +683,7 @@ describe("MCP 真实装载对照", () => {
       readPaths: [],
       writePaths: [],
       mcp: { servers: ["codegraph", "legacy"], entryPath: FAKE_MCP_ENTRY, packageDir: FIXTURE_DIR, config: mcpConfig },
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -742,8 +732,7 @@ describe("MCP 真实装载对照", () => {
       readPaths: [],
       writePaths: [],
       mcp: { servers: ["codegraph"], entryPath: FAKE_MCP_ENTRY, packageDir: FIXTURE_DIR, config: mcpConfig },
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "review",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "review" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -787,8 +776,7 @@ describe("MCP 真实装载对照", () => {
       readPaths: [],
       writePaths: [],
       mcp: { servers: ["codegraph"], entryPath: brokenEntry, packageDir: dirname(brokenEntry), config: mcpConfig },
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -837,8 +825,7 @@ describe("结构化提交", () => {
       task: "非法提交任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -884,8 +871,7 @@ describe("结构化提交", () => {
       task: "提交是最后动作任务",
       readPaths: [],
       writePaths: [postSubmitFile],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -907,56 +893,6 @@ describe("结构化提交", () => {
     await expect(readFile(postSubmitFile, "utf8")).rejects.toBeTruthy();
   }, 20000);
 
-  test("kind 为 plan 的 planner 角色会话仍注册 structured_output（按角色名而非 kind 判定），合法 phase plan 提交后 completed 并落盘", async () => {
-    const { runtime, provider } = await setupProvider("role-session-planner-structured-output");
-    const home = await createTempHome();
-    tempHomes.push(home);
-    const cwd = await tempCwd();
-    const role = await writeRoleEntry({ name: "planner", kind: "plan", tools: ["read", "bash"] });
-    const repoId = "planner-structured-output-repo";
-    const runId = randomUUID();
-    const planSchema = Type.Object(
-      { phase: Type.Literal("plan"), verdict: Type.Union([Type.Literal("PASS"), Type.Literal("FAIL")]), summary: Type.String({ minLength: 1 }) },
-      { additionalProperties: false },
-    );
-
-    scriptReplies(provider, [
-      { type: "toolcall", name: "structured_output", input: { phase: "plan", verdict: "PASS", summary: "规划完成" } },
-      { type: "text", text: "done" },
-    ]);
-
-    const handle = await createRoleSession({
-      dataRoot: home.dataRoot,
-      repoId,
-      runId,
-      shellToken: randomUUID(),
-      cwd,
-      roleName: "planner",
-      role,
-      task: "规划任务",
-      readPaths: [],
-      writePaths: [],
-      outputSchema: planSchema,
-      expectedPhase: "plan",
-      runtime,
-      modelRef: { provider: provider.providerId, id: provider.modelId },
-      clock: createClock(),
-      shellRegistry: new ShellRegistry({ clock: createClock() }),
-      guards: createGuards(),
-      networkGate: new NetworkPauseGate(),
-    });
-    handles.push(handle);
-
-    handle.prompt("规划任务");
-    const result = await handle.result();
-
-    expect(result).toBeTruthy();
-    expect(handle.state()).toBe("completed");
-    const opened = openSessionManagerForRun({ dataRoot: home.dataRoot, repoId, runId });
-    expect(opened.ok).toBe(true);
-    const raw = await readFile(sessionFilePath({ dataRoot: home.dataRoot, repoId, runId }), "utf8");
-    expect(raw.length).toBeGreaterThan(0);
-  }, 20000);
 });
 
 describe("暂停与恢复", () => {
@@ -987,8 +923,7 @@ describe("暂停与恢复", () => {
       task: "暂停恢复任务",
       readPaths: [file1],
       writePaths: [file1],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -1048,8 +983,7 @@ describe("暂停与恢复", () => {
       task: "核对期解除任务",
       readPaths: [file1],
       writePaths: [file1, file2],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -1117,8 +1051,7 @@ describe("暂停与恢复", () => {
       task: "暂停中止进行中操作任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -1184,8 +1117,7 @@ describe("核对期收敛（自然结束回合即照常结算，不追加核验�
       task: "核对期收敛任务",
       readPaths: [file1],
       writePaths: [file1],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -1242,8 +1174,7 @@ describe("核对期收敛（自然结束回合即照常结算，不追加核验�
       task: "核对期收敛任务（仅 bash）",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -1297,8 +1228,7 @@ describe("多轮与 finalize 结算", () => {
       task: "多轮任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -1356,8 +1286,7 @@ describe("多轮与 finalize 结算", () => {
       task: "finalize 未提交任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -1407,8 +1336,7 @@ describe("多轮与 finalize 结算", () => {
       task: "finalize 已提交任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -1461,8 +1389,7 @@ describe("网络流空闲与暂停", () => {
       task: "网络空闲任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       streamIdleTimeoutMs: 200,
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
@@ -1509,8 +1436,7 @@ describe("网络流空闲与暂停", () => {
       task: "睡眠跳变任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       streamIdleTimeoutMs: 200,
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
@@ -1559,8 +1485,7 @@ describe("网络流空闲与暂停", () => {
       task: "网络续接任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       streamIdleTimeoutMs: 200,
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
@@ -1604,8 +1529,7 @@ describe("网络流空闲与暂停", () => {
       task: "网络闸门任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       streamIdleTimeoutMs: 200,
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
@@ -1696,8 +1620,7 @@ describe("暂停超时与停止确认", () => {
       task: "暂停停止超时任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock,
@@ -1768,8 +1691,7 @@ describe("暂停超时与停止确认", () => {
       task: "停止确认任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock,
@@ -1836,8 +1758,7 @@ describe("暂停超时与停止确认", () => {
       task: "暂停停止记录任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock,
@@ -1906,8 +1827,7 @@ describe("暂停超时与停止确认", () => {
       task: "停止时工具调用挂死任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock,
@@ -2002,8 +1922,7 @@ describe("只读角色的写入核验", () => {
       task: "只读核验任务",
       readPaths: [repo.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "review",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "review" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2052,8 +1971,7 @@ describe("只读角色的写入核验", () => {
       readPaths: [cwd],
       writePaths: [],
       reportPath,
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "acceptance",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "acceptance" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2100,8 +2018,7 @@ describe("只读角色的写入核验", () => {
       task: "从不提交任务",
       readPaths: [repo.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2157,8 +2074,7 @@ describe("只读角色的写入核验", () => {
       readPaths: [cwd],
       writePaths: [],
       reportPath,
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2217,8 +2133,7 @@ describe("只读角色的写入核验", () => {
       task: "含 node_modules 的只读核验任务",
       readPaths: [repo.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2268,8 +2183,7 @@ describe("只读角色的写入核验", () => {
       task: "写入 git hooks 任务",
       readPaths: [repo.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2313,8 +2227,7 @@ describe("只读角色的写入核验", () => {
       task: "写入 node_modules/.bin 任务",
       readPaths: [repo.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2363,8 +2276,7 @@ describe("只读角色的写入核验", () => {
       task: "core.hooksPath 绕过任务",
       readPaths: [repo.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2410,8 +2322,7 @@ describe("只读角色的写入核验", () => {
       task: "子树只读范围任务",
       readPaths: [join(repo.root, "src")],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2455,8 +2366,7 @@ describe("只读角色的写入核验", () => {
       task: "git status 噪声任务",
       readPaths: [repo.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2502,8 +2412,7 @@ describe("只读角色的写入核验", () => {
       task: "worktree 写主仓 hooks 任务",
       readPaths: [worktree.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2549,8 +2458,7 @@ describe("只读角色的写入核验", () => {
       task: "worktree 写主仓 info/attributes 任务",
       readPaths: [worktree.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2602,8 +2510,7 @@ describe("只读角色的写入核验", () => {
         task: `写入 git config ${testCase.label} 任务`,
         readPaths: [repo.root],
         writePaths: [],
-        outputSchema: WORK_SCHEMA,
-        expectedPhase: "work",
+        contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
         runtime,
         modelRef: { provider: provider.providerId, id: provider.modelId },
         clock: createClock(),
@@ -2650,8 +2557,7 @@ describe("只读角色的写入核验", () => {
       task: "全局 hooksPath 任务",
       readPaths: [repo.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2706,8 +2612,7 @@ describe("只读角色的写入核验", () => {
       task: "相对 hooksPath 任务",
       readPaths: [subdir],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2751,8 +2656,7 @@ describe("终态守卫", () => {
       task: "终态守卫任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2824,8 +2728,7 @@ describe("会话文件落盘", () => {
       task: "凭据不泄漏任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2871,8 +2774,7 @@ describe("会话隔离", () => {
       task: "isolate-marker-A",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2900,8 +2802,7 @@ describe("会话隔离", () => {
       task: "isolate-marker-B",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -2950,8 +2851,7 @@ describe("网络暂停恢复的一致性与异常安全", () => {
       task: "网络一致性任务",
       readPaths: [file1],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       streamIdleTimeoutMs: 200,
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
@@ -3017,8 +2917,7 @@ describe("性能：只读角色单条命令的 git 子进程数", () => {
       task: "git 子进程计数任务",
       readPaths: [repo.root],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -3073,8 +2972,7 @@ describe("用户停止是独立终态", () => {
       task: "运行中停止任务",
       readPaths: [],
       writePaths: [outputFile],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -3136,8 +3034,7 @@ describe("用户停止是独立终态", () => {
       task: "已提交后停止任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -3208,8 +3105,7 @@ describe("终态清理", () => {
       task: "终态清理任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock,
@@ -3285,8 +3181,7 @@ describe("终态清理", () => {
       task: "终态后再停止任务",
       readPaths: [],
       writePaths: [],
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "work",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock,
@@ -3362,8 +3257,7 @@ describe("验收者写入范围限定为指定报告路径", () => {
       readPaths: [],
       writePaths: [reportPath, otherPath],
       reportPath,
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "acceptance",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "acceptance" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -3410,8 +3304,7 @@ describe("验收者写入范围限定为指定报告路径", () => {
       readPaths: [],
       writePaths: [targetPath],
       reportPath: targetPath,
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "review",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "review" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -3467,8 +3360,7 @@ describe("验收者写入范围限定为指定报告路径", () => {
       readPaths: [],
       writePaths: [outsideReportPath],
       reportPath: outsideReportPath,
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "acceptance",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "acceptance" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -3527,8 +3419,7 @@ describe("验收者写入范围限定为指定报告路径", () => {
       readPaths: [],
       writePaths: [symlinkReportPath],
       reportPath: symlinkReportPath,
-      outputSchema: WORK_SCHEMA,
-      expectedPhase: "acceptance",
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "acceptance" },
       runtime,
       modelRef: { provider: provider.providerId, id: provider.modelId },
       clock: createClock(),
@@ -3545,4 +3436,166 @@ describe("验收者写入范围限定为指定报告路径", () => {
     const outsideContent = await readFile(actualTarget, "utf8");
     expect(outsideContent).toBe("");
   }, 20000);
+});
+
+describe("kind:plan 角色的输出契约", () => {
+  test("回合以纯文字结束即 completed，不要求 structured_output 提交", async () => {
+    const { runtime, provider } = await setupProvider("role-session-plan-kind");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "planner", kind: "plan", tools: ["read", "write"] });
+
+    scriptReplies(provider, [{ type: "text", text: "已核对任务骨架，规划完成" }]);
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId: "plan-kind-repo",
+      runId: randomUUID(),
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "planner",
+      role,
+      task: "规划任务",
+      readPaths: [],
+      writePaths: [],
+      contract: { kind: "plain", completion: "complete-on-idle" },
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }),
+      guards: createGuards(),
+      networkGate: new NetworkPauseGate(),
+    } as never);
+    handles.push(handle);
+
+    handle.prompt("规划任务");
+    const result = await withTimeout(handle.result(), 10_000, "kind:plan 会话未在时限内结束");
+
+    expect(handle.state()).toBe("completed");
+    expect((result as { verdict?: unknown } | undefined)?.verdict).toBeUndefined();
+    expect((result as { binding?: unknown } | undefined)?.binding).toBeUndefined();
+  }, 15000);
+
+  test("提交工具（structured_output）对 kind:plan 会话不存在：脚本调用它会被当作未知工具处理", async () => {
+    const { runtime, provider } = await setupProvider("role-session-plan-no-submit-tool");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "planner", kind: "plan", tools: ["read", "write"] });
+
+    scriptReplies(provider, [
+      { type: "toolcall", name: "structured_output", input: { phase: "plan" } },
+      { type: "text", text: "已完成规划" },
+    ]);
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId: "plan-no-submit-repo",
+      runId: randomUUID(),
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "planner",
+      role,
+      task: "规划任务（尝试误用提交工具）",
+      readPaths: [],
+      writePaths: [],
+      contract: { kind: "plain", completion: "complete-on-idle" },
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }),
+      guards: createGuards(),
+      networkGate: new NetworkPauseGate(),
+    } as never);
+    handles.push(handle);
+
+    const toolEnds = collect(handle, "tool_end") as Array<{ toolName?: string; isError?: boolean }>;
+    handle.prompt("规划任务（尝试误用提交工具）");
+    await withTimeout(handle.result(), 10_000, "kind:plan 会话未在时限内结束");
+
+    const submitAttempt = toolEnds.find((event) => event.toolName === "structured_output");
+    expect(submitAttempt?.isError).toBe(true);
+  }, 15000);
+});
+
+describe("无契约角色（kind manage 且未传 outputSchema）不构造提交通道", () => {
+  test("createRoleSession 不注册 structured_output、不构造结果收集器，回合以纯文字结束即 completed", async () => {
+    const { runtime, provider } = await setupProvider("role-session-no-contract");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "coordinator", kind: "manage", tools: ["read"] });
+
+    scriptReplies(provider, [
+      { type: "toolcall", name: "structured_output", input: {} },
+      { type: "text", text: "已处理完毕" },
+    ]);
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId: "no-contract-repo",
+      runId: randomUUID(),
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "coordinator",
+      role,
+      task: "无契约任务",
+      readPaths: [],
+      writePaths: [],
+      contract: { kind: "plain", completion: "complete-on-idle" },
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }),
+      guards: createGuards(),
+      networkGate: new NetworkPauseGate(),
+    } as never);
+    handles.push(handle);
+
+    const toolEnds = collect(handle, "tool_end") as Array<{ toolName?: string; isError?: boolean }>;
+    handle.prompt("无契约任务");
+    await withTimeout(handle.result(), 10_000, "无契约会话未在时限内结束");
+
+    const submitAttempt = toolEnds.find((event) => event.toolName === "structured_output");
+    expect(submitAttempt?.isError).toBe(true);
+    expect(handle.state()).toBe("completed");
+  }, 15000);
+
+  test("completion:idle-only 时纯文字结束只发 idle，保持 running 而非自动 completed", async () => {
+    const { runtime, provider } = await setupProvider("role-session-no-contract-no-autocomplete");
+    const home = await createTempHome();
+    tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "coordinator", kind: "manage", tools: ["read"] });
+
+    scriptReplies(provider, [{ type: "text", text: "仍在推进" }]);
+
+    const handle = await createRoleSession({
+      dataRoot: home.dataRoot,
+      repoId: "no-contract-no-autocomplete-repo",
+      runId: randomUUID(),
+      shellToken: randomUUID(),
+      cwd,
+      roleName: "coordinator",
+      role,
+      task: "无契约任务（关闭自动完成）",
+      readPaths: [],
+      writePaths: [],
+      contract: { kind: "plain", completion: "idle-only" },
+      runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId },
+      clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }),
+      guards: createGuards(),
+      networkGate: new NetworkPauseGate(),
+    } as never);
+    handles.push(handle);
+
+    const idleEvents = collect(handle, "idle");
+    handle.prompt("无契约任务（关闭自动完成）");
+    await waitForCount(() => idleEvents.length, 1);
+
+    expect(handle.state()).toBe("running");
+  }, 15000);
 });

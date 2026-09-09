@@ -26,22 +26,31 @@ description: 守护进程运行编排与协议处理器接入：派工权与范�
 | 函数 | 职责 |
 |---|---|
 | `RunManager.dispatchRequirement` | 校验需求已确认、同需求唯一、`cwd` 的 realpath 属于本仓库（工作树或其 worktree），创建运行记录（运行类型 requirement）与需求代理会话，返回运行身份 |
-| `RunManager.dispatchRole` | 派工权：调用方为需求代理运行时可派目录内任一角色；调用方为窗口连接（主会话）时只能派提交前白盒审查者，且不绑定需求代理；其余一律拒绝（不看角色定义 kind）；再校验角色在目录内、形状、依赖与写入范围冲突，创建角色运行（运行类型 role）并启动 |
-| `canRunInParallel` | 判断新任务与在跑任务是否写入范围重叠或依赖未完成；重叠判定对象为登记表中仍活动或不确定的 Shell 任务所属运行与运行中的角色运行，而非运行记录上的不确定状态 |
+| `RunManager.dispatchRole` | 派工权按发起方运行身份核对（`sessions.get(callerRunId)` 为需求代理会话才可派角色，不按需求名反查）：调用方为需求代理运行时可派目录内任一角色；调用方为窗口连接（主会话）时只能派提交前白盒审查者，且不绑定需求代理；其余一律拒绝（不看角色定义 kind）；再校验角色在目录内、形状、依赖与写入范围冲突，创建角色运行（运行类型 role）并启动；派验收者时要求派工入参给出仓库内的报告路径（复用角色会话导出的范围核对判定 realpath 落在该需求 cwd 内，否则拒绝派工；路径随运行记录持久化），作为 `reportPath` 传入角色会话（只读守卫据此放行该路径的写入），不自行生成、不落到本机数据区；冲突检查与创建运行在按仓库串行的临界区内完成 |
+| `canRunInParallel` | 判断新任务与在跑任务是否写入范围重叠（路径先按需求 cwd 解析规范化再比较，与写入守卫同口径）或依赖未完成（依赖状态查询失败即视为未完成）；重叠判定对象为登记表中仍活动或不确定的 Shell 任务所属运行与运行中的角色运行，而非运行记录上的不确定状态 |
 | `RunManager.status` / `list` | 读取运行记录并附错误摘要与统计 |
-| `RunManager.pause` | 对需求代理级联到其角色与 Shell，等待确认或超时返回 pausing |
+| `RunManager.pause` | 先按当前状态判定可暂停（仅 running/waiting_answer 可暂停，其余返回明确拒绝，不假报 paused），置 pausing 后对需求代理级联到其角色与 Shell，等待确认；确认后写 paused，未确认则保持 pausing 并把原因写入 stateReason，允许再次 pause 重试；存储更新失败必须反映到返回值 |
 | `RunManager.resume` | 校验状态为 paused/paused_network，触发续跑并解除闸门 |
-| `RunManager.stop` | 级联终止会话并向全部 Shell 任务发出停止；停止请求发出后立即写 stopped 终态并通知中继；Shell 清理是否确认只在登记表任务状态上体现，运行记录不再有 uncertain |
+| `RunManager.stop` | 级联终止会话并向全部 Shell 任务发出停止（会话 stop 失败也必须 stopHost）；停止请求发出后立即写 stopped 终态并通知中继；已 stopped 的运行不得被随后落定的会话结果改写为 completed/failed（结算写入用条件更新或以状态机拒绝为准，不吞异常）；Shell 清理是否确认只在登记表任务状态上体现，运行记录不再有 uncertain |
 | `RunManager.pauseAll` / `resumeAll` / `stopAll` | 对本守护进程全部运行批量执行并逐条汇报 |
-| `RunManager.adoptInterruptedShells` | 启动时对每个 interrupted 运行按 shellToken 调用注册表接管遗留任务，定位失败写入 stateReason |
-| `RunManager.resumeInterrupted` | 核对该运行在登记表中无活动或不确定任务、会话文件与工作区；通过后先为悬空工具调用合成中断结果再重载会话续接，续跑提示含补入清单；否则返回被拒原因与任务清单且状态不变 |
-| `RunManager.resumeNetworkPaused` | 网络恢复回调：对 paused_network 运行先注入只读核对提示再继续，并发通知 |
+| `RunManager.adoptInterruptedShells` | 启动时对每个 interrupted 运行调用注册表接管遗留任务：注册表先按该运行目录下持久化的任务记录以 pid + startedAt 核对身份，再以 shellToken 环境扫描补充；定位失败写入 stateReason |
+| `RunManager.resumeInterrupted` | 核对该运行在登记表中无活动或不确定任务、会话文件可读、工作区（cwd 存在且仍属本仓库）；通过后先为悬空工具调用合成中断结果，再以会话文件真正重建会话（需求代理/角色会话的续接入口，见 23/24 的 resume 选项；角色运行回填持久化的 reportPath 等派工期参数）并注入含补入清单的续跑提示，运行随会话事件推进；否则返回被拒原因与任务清单且状态不变 |
+| `RunManager.resumeNetworkPaused` | 网络恢复回调（由 `daemon/lifecycle.ts` 装配 `runtime/network-pause.ts` 的连通性探测并订阅恢复事件触发）：对 paused_network 运行先注入只读核对提示再继续，并经中继发通知 |
 | `RunManager.onSessionEvent` | 把会话事件投影为运行状态变化、活动与记录事件并广播 |
-| `RunManager.finalizeRun` | 会话结束后用结果收集器判定 completed/failed，把结构化结果连同需求、任务、定义指纹与代码 HEAD 绑定写入运行记录，保存错误详情，释放会话 |
-| `RunManager.close` | 守护进程退出时停止全部运行的 Shell 并标记中断 |
+| 角色会话 idle 处理 | 工作/审查/验收角色会话回合结束而未提交时：该运行无活动或不确定 Shell 任务则补一次要求提交结构化结果的续跑提示，最多一次（暂停后继续或网络续接视为新一轮，重置计数）；再次 idle 即 `finalize()` 按未提交判失败；有活动 Shell 任务时不提醒、保持 running 等待用户或任务结束 |
+| `RunManager.finalizeRun` | 会话结束后用结果收集器判定 completed/failed（状态机允许 paused/pausing 直接落定，一次写入；写入失败写 stateReason 而非静默丢弃），把结构化结果连同需求、任务、定义指纹与代码 HEAD 绑定写入运行记录，保存错误详情，释放会话 |
+| `RunManager.close` | 守护进程退出时按登记表全部宿主逐个 stopHost（含接管的遗留任务）并标记中断 |
+| `RunManager.wait` | 等待运行到达终态或超时后返回其状态（与 status 不同，有真实等待语义；供 pi_company_agent 的 wait 动作） |
+| `outputContractForRole` | 按角色定义的 kind（权威源，不按角色名）映射结构化契约：work/review/acceptance 各自 schema 与 expectedPhase；plan 不挂契约且收尾方式为「回合结束即完成」、结果不含裁决与绑定、idle 处理不催不判失败；manage 不可经派工路径创建（需求代理会话入口自行给出「只发 idle」的无契约收尾），本函数对 manage 拒绝；契约对象连同收尾方式一路传给角色会话（会话内契约分派带穷尽性兜底），调用点按分支整块传入或整块省略，不传显式 undefined；未知 kind 明确拒绝派工 |
+| `childrenOf` | 按父运行身份列出其角色子运行（供 pause/stop/resume 级联共用） |
 | `registerProtocolHandlers` | 把协议方法映射到 `RunManager`、`RelayQueue`、`ShellRegistry` 方法并登记到 `DaemonServer`；`hello` 后调用 `RelayQueue.pendingFor` 推送 |
 
 ## 协作关系
+- 显式 shutdown 的活动运行闸门 fail-closed：运行记录读失败时拒绝并给出具体原因（用户可修复后重试），与自动空闲退出的保守判定同向。
+- 网络恢复探测按 provider 分组：运行记录保存派工所用 provider，轮询由 `runtime/network-pause.ts` 的带在途守卫与代际令牌的调度器驱动（一轮未结束不重入），每轮对各 paused_network 运行所属 provider 的基址（经宿主地址校验后）分别探测，只续接已恢复 provider 的运行；`resumeNetworkPaused(providerId)` 的 providerId 必填。
+- uncaughtException 走 shutdown 时装与信号路径相同的看门狗强退，装配期异常不得挂住进程。
+- 模型 provider 的可替换入口：守护进程启动时若设置 `PI_COMPANY_MODEL_PROVIDER_MODULE`（模块绝对路径），动态导入该模块并调用其导出的 `registerProviders(runtime)`；生产代码不引用测试目录，测试 harness 提供该模块（内含受控 provider 与脚本）。
+- 无父运行的运行（窗口连接派出的提交前审查者）以 `CreateRunInput.standalone: true` 显式表达，运行存储不按角色名特判（18 已同步）。
 `registerProtocolHandlers` 是全部业务方法进入 `daemon/server.ts` 的唯一入口；`RunManager` 依赖 `runtime/run-store.ts`、`daemon/role-session.ts`、`daemon/requirement-agent.ts`、`runtime/shell-registry.ts`、`runtime/network-pause.ts`、`runtime/result.ts`、`runtime/error-details.ts`、`daemon/relay-queue.ts`（通知与投递）、`runtime/session-records.ts`（`synthesizeInterruptedResults`）、`runtime/identity.ts`（cwd 归属）；`daemon/lifecycle.ts` 启动时先 `markInterruptedOnStartup` 再 `adoptInterruptedShells`。
 
 ## 验证方式

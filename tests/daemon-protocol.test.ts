@@ -65,6 +65,7 @@ const EXPECTED_ERROR_CODES = [
   "not_confirmed",
   "shape_violation",
   "daemon_busy",
+  "daemon_starting",
   "internal",
 ];
 

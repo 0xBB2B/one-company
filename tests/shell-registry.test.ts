@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn as spawnChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { createClock } from "../runtime/clock.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import * as ShellRegistryModule from "../runtime/shell-registry.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";
+import { createDocument, readDocument } from "../runtime/store.ts";
 
 interface Host {
   kind: "main" | "requirement" | "role";
@@ -108,6 +109,7 @@ function makeRegistry(
     kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
     ps?: () => Promise<PsEntry[]>;
     pidStartedAt?: (pid: number) => Promise<number | null>;
+    recordsDirFor?: (host: Host) => string;
   } = {},
 ) {
   const clock = overrides.clock ?? createClock();
@@ -115,7 +117,16 @@ function makeRegistry(
   if (overrides.kill) probes.kill = overrides.kill;
   if (overrides.ps) probes.ps = overrides.ps;
   if (overrides.pidStartedAt) probes.pidStartedAt = overrides.pidStartedAt;
-  return new ShellRegistry({ clock, probes: Object.keys(probes).length > 0 ? probes : undefined });
+  const options: { clock: Clock; probes?: typeof probes; recordsDirFor?: (host: Host) => string } = {
+    clock,
+    probes: Object.keys(probes).length > 0 ? probes : undefined,
+  };
+  if (overrides.recordsDirFor) options.recordsDirFor = overrides.recordsDirFor;
+  return new ShellRegistry(options as ConstructorParameters<typeof ShellRegistry>[0]);
+}
+
+function recordsDirFor(base: string): (host: Host) => string {
+  return (host: Host) => join(base, host.runId ?? host.id);
 }
 
 function trackPgid(pgid: number | undefined): void {
@@ -1388,6 +1399,182 @@ describe("守护进程重启后接管", () => {
     expect(adopted.ok).toBe(true);
     if (!adopted.ok) return;
     expect(adopted.tasks).toEqual([]);
+  }, LONG_TIMEOUT);
+});
+
+describe("持久化任务记录接管（macOS 系统签名二进制场景）", () => {
+  test("spawn 后所属运行目录下出现该任务的持久记录，终态后记录被删除", async () => {
+    const base = await makeTempDir();
+    const getRecordsDir = recordsDirFor(base);
+    const host = roleHost("record-owner");
+    const runToken = randomUUID();
+    const taskId = randomUUID();
+    const registry = makeRegistry({ recordsDirFor: getRecordsDir });
+
+    const result = await registry.spawn({
+      taskId,
+      host,
+      command: "sh",
+      args: ["-c", "true"],
+      mode: "wait",
+      runToken,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    trackPgid(result.task.pgid);
+
+    const recordPath = join(getRecordsDir(host), `${taskId}.json`);
+    const beforeExit = await readDocument(recordPath);
+    expect(beforeExit.exists).toBe(true);
+    if (beforeExit.exists) {
+      const data = beforeExit.data as Record<string, unknown>;
+      expect(data.taskId).toBe(taskId);
+      expect(data.pid).toBe(result.task.pid);
+      expect(data.pgid).toBe(result.task.pgid);
+      expect(typeof data.startedAt).toBe("number");
+      expect(typeof data.token).toBe("string");
+      expect(data.host).toEqual(host);
+      expect(typeof data.command).toBe("string");
+    }
+
+    await waitFor(() => registry.get(taskId)?.status === "exited", LONG_TIMEOUT);
+    await sleepMs(150);
+    const afterExit = await readDocument(recordPath);
+    expect(afterExit.exists).toBe(false);
+  }, LONG_TIMEOUT);
+
+  test("新建注册表实例凭持久记录接管系统签名二进制启动的任务，即使环境扫描找不到令牌", async () => {
+    const base = await makeTempDir();
+    const getRecordsDir = recordsDirFor(base);
+    const owner = roleHost("restart-owner");
+    const runToken = randomUUID();
+    const taskId = randomUUID();
+    const registryA = makeRegistry({ recordsDirFor: getRecordsDir });
+
+    const started = await registryA.spawn({
+      taskId,
+      host: owner,
+      command: "sh",
+      args: ["-c", "sleep 30"],
+      mode: "background",
+      runToken,
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    trackPgid(started.task.pgid);
+    await sleepMs(300);
+
+    const registryB = makeRegistry({ recordsDirFor: getRecordsDir, ps: async () => [] });
+    const adopted = await registryB.adoptOrphans({ runToken, owner });
+    expect(adopted.ok).toBe(true);
+    if (!adopted.ok) return;
+    const task = adopted.tasks.find((entry) => entry.taskId === taskId);
+    expect(task).toBeDefined();
+    expect(task?.host).toEqual(owner);
+    expect(task?.status).toBe("running");
+    expect(task?.pid).toBe(started.task.pid);
+    expect(task?.startedAt).toBe(started.task.startedAt);
+
+    if (task) {
+      const stopped = await registryB.stop(task.taskId);
+      expect(stopped.ok).toBe(true);
+      if (stopped.ok) expect(stopped.task.status).toBe("stopped");
+    }
+  }, LONG_TIMEOUT);
+
+  test("持久记录指向的进程已退出时不接管，同一次接管中仍存活的记录正常接管", async () => {
+    const base = await makeTempDir();
+    const getRecordsDir = recordsDirFor(base);
+    const host = roleHost("gone-owner");
+    const runToken = randomUUID();
+    const goneTaskId = randomUUID();
+    const aliveTaskId = randomUUID();
+    const registryA = makeRegistry({ recordsDirFor: getRecordsDir });
+
+    const started = await registryA.spawn({
+      taskId: aliveTaskId,
+      host,
+      command: "sh",
+      args: ["-c", "sleep 30"],
+      mode: "background",
+      runToken,
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    trackPgid(started.task.pgid);
+    await sleepMs(200);
+
+    await createDocument(join(getRecordsDir(host), `${goneTaskId}.json`), {
+      taskId: goneTaskId,
+      pid: 999_999,
+      pgid: 999_999,
+      startedAt: Date.now() - 60_000,
+      token: `${runToken}:${goneTaskId}`,
+      host,
+      command: "sh -c sleep 30",
+    });
+
+    const registryB = makeRegistry({ recordsDirFor: getRecordsDir, ps: async () => [] });
+    const adopted = await registryB.adoptOrphans({ runToken, owner: host });
+    expect(adopted.ok).toBe(true);
+    if (!adopted.ok) return;
+    expect(adopted.tasks.some((entry) => entry.taskId === goneTaskId)).toBe(false);
+    const aliveAdopted = adopted.tasks.find((entry) => entry.taskId === aliveTaskId);
+    expect(aliveAdopted).toBeDefined();
+    expect(aliveAdopted?.status).toBe("running");
+  }, LONG_TIMEOUT);
+
+  test("持久记录 startedAt 与真实进程不符（伪造）时不接管，存活进程不受影响", async () => {
+    const base = await makeTempDir();
+    const getRecordsDir = recordsDirFor(base);
+    const host = roleHost("mismatch-owner");
+    const runToken = randomUUID();
+    const taskId = randomUUID();
+    const registryA = makeRegistry({ recordsDirFor: getRecordsDir });
+
+    const started = await registryA.spawn({
+      taskId,
+      host,
+      command: "sh",
+      args: ["-c", "sleep 30"],
+      mode: "background",
+      runToken,
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    trackPgid(started.task.pgid);
+    await sleepMs(200);
+
+    const recordPath = join(getRecordsDir(host), `${taskId}.json`);
+    const current = await readDocument(recordPath);
+    expect(current.exists).toBe(true);
+    if (!current.exists) return;
+    const forged = { ...(current.data as Record<string, unknown>), startedAt: started.task.startedAt! - 999_000 };
+    await writeFile(recordPath, `${JSON.stringify({ version: current.version, data: forged })}\n`, "utf8");
+
+    const registryB = makeRegistry({ recordsDirFor: getRecordsDir, ps: async () => [] });
+    const adopted = await registryB.adoptOrphans({ runToken, owner: host });
+    expect(adopted.ok).toBe(true);
+    if (!adopted.ok) return;
+    expect(adopted.tasks.some((entry) => entry.taskId === taskId)).toBe(false);
+    expect(groupAlive(started.task.pgid)).toBe(true);
+  }, LONG_TIMEOUT);
+
+  test("持久记录文件本身损坏（非法 JSON）时接管返回具体原因而不静默丢弃", async () => {
+    const base = await makeTempDir();
+    const getRecordsDir = recordsDirFor(base);
+    const host = roleHost("corrupt-owner");
+    const runToken = randomUUID();
+    const taskId = randomUUID();
+
+    await mkdir(getRecordsDir(host), { recursive: true });
+    await writeFile(join(getRecordsDir(host), `${taskId}.json`), "{ 不是合法 JSON", "utf8");
+
+    const registry = makeRegistry({ recordsDirFor: getRecordsDir, ps: async () => [] });
+    const adopted = await registry.adoptOrphans({ runToken, owner: host });
+    expect(adopted.ok).toBe(false);
+    if (adopted.ok) return;
+    expect(adopted.reason.length).toBeGreaterThan(0);
   }, LONG_TIMEOUT);
 });
 

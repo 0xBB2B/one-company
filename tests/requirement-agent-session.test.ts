@@ -258,6 +258,17 @@ function collect(handle: any, type: string): unknown[] {
   return events;
 }
 
+// 同一 handle 的 tool_end 事件流跨越多个阶段（形状提议、多轮派工…）；一次会话内先后发生的
+// 多个动作共用同一条流时，前一阶段的收尾事件可能在下一次 collect 注册后才真正触发，
+// 按 toolName 过滤能避免把它错当成这一阶段第一条结果
+function collectToolEnds(handle: any, toolName: string): Array<{ toolCallId?: string; toolName?: string; isError?: boolean }> {
+  const events: Array<{ toolCallId?: string; toolName?: string; isError?: boolean }> = [];
+  handle.events.on("tool_end", (event: { toolName?: string }) => {
+    if (event.toolName === toolName) events.push(event as { toolCallId?: string; toolName?: string; isError?: boolean });
+  });
+  return events;
+}
+
 async function waitForCount(getLength: () => number, min: number, timeoutMs = 10000): Promise<void> {
   const start = Date.now();
   while (getLength() < min) {
@@ -319,6 +330,7 @@ async function waitForShapeRecorded(world: World): Promise<void> {
 }
 
 async function proposeAndConfirmShape(world: World, handle: any, shapePayload: Record<string, unknown>, answer = "确认"): Promise<void> {
+  const requestCountBeforePropose = world.provider.requests.length;
   scriptReplies(world.provider, [
     { type: "toolcall", name: "pi_company_propose_shape", input: shapePayload },
     { type: "text", text: "已提议形状" },
@@ -329,6 +341,14 @@ async function proposeAndConfirmShape(world: World, handle: any, shapePayload: R
   if (!question) throw new Error("测试装置失败: 未捕获到形状确认提问");
   question.resolve(answer);
   await waitForShapeRecorded(world);
+  // 只等外部状态写入不够：确认后"已提议形状"这一轮文字回合要真实再发一次模型请求才算落定，
+  // 调用方若紧接着追加下一条 prompt，这一轮请求有时还没真正发出，
+  // 后续断言看到的"最后一条请求"其实还是这一轮尚未完成前的旧请求
+  await waitForCondition(
+    () => world.provider.requests.length >= requestCountBeforePropose + 2,
+    10000,
+    "超时等待形状确认后的模型回合真正发出请求",
+  );
 }
 
 describe("派出前提、唯一性与并发", () => {
@@ -642,7 +662,7 @@ describe("形状提议校验、确认与门禁决定、阶段推进", () => {
     const planRunId = runIdMatch[0];
 
     let state = await queryState(world.home.dataRoot, world.repo.root, world.requirement);
-    const toolEndsPlanned = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+    const toolEndsPlanned = collectToolEnds(created.handle, "pi_company_workflow");
     scriptReplies(world.provider, [
       { type: "toolcall", name: "pi_company_workflow", input: { action: "advance", requirement: world.requirement, stage: "planned", runId: planRunId, version: state.details.version } },
       { type: "text", text: "已推进到 planned" },
@@ -652,7 +672,7 @@ describe("形状提议校验、确认与门禁决定、阶段推进", () => {
     expect(toolEndsPlanned[0]?.isError).toBeFalsy();
 
     state = await queryState(world.home.dataRoot, world.repo.root, world.requirement);
-    const toolEndsExecuting = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+    const toolEndsExecuting = collectToolEnds(created.handle, "pi_company_workflow");
     scriptReplies(world.provider, [
       { type: "toolcall", name: "pi_company_workflow", input: { action: "advance", requirement: world.requirement, stage: "executing", version: state.details.version } },
       { type: "text", text: "已推进到 executing" },
@@ -681,7 +701,7 @@ describe("形状与目录约束派工", () => {
       rationale: "单任务直接实现",
     });
 
-    const toolEnds = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+    const toolEnds = collectToolEnds(created.handle, "pi_company_agent");
     scriptReplies(world.provider, [
       { type: "toolcall", name: "pi_company_agent", input: { action: "run", role: "reviewer", task: "T-1", writePaths: [taskWrite], readPaths: [] } },
       { type: "toolcall", name: "pi_company_agent", input: { action: "run", role: "ghost-role", task: "T-1", writePaths: [taskWrite], readPaths: [] } },
@@ -724,7 +744,7 @@ describe("写入范围与 cwd 边界（包含式）", () => {
       rationale: "单任务直接实现",
     });
 
-    const toolEnds = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+    const toolEnds = collectToolEnds(created.handle, "pi_company_agent");
     scriptReplies(world.provider, [
       { type: "toolcall", name: "pi_company_agent", input: { action: "run", role: "catalogrole9x2", task: "T-1", writePaths: [outOfScopeFile], readPaths: [] } },
       { type: "toolcall", name: "pi_company_agent", input: { action: "run", role: "catalogrole9x2", task: "T-1", writePaths: [symlinkPath], readPaths: [] } },
@@ -946,7 +966,7 @@ describe("独立问题只记录", () => {
     const before = await queryState(world.home.dataRoot, world.repo.root, world.requirement);
     const beforeData = before.details.data as { tasks: Record<string, unknown>; shape: unknown; followUps: unknown[] };
 
-    const toolEnds = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+    const toolEnds = collectToolEnds(created.handle, "pi_company_workflow");
     scriptReplies(world.provider, [
       {
         type: "toolcall",
@@ -995,7 +1015,7 @@ describe("自行完成的提交与核对", () => {
     );
     expect(startResult.details.isError).toBeFalsy();
 
-    const toolEndsMissingEvidence = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+    const toolEndsMissingEvidence = collectToolEnds(created.handle, "pi_company_workflow");
     state = await queryState(world.home.dataRoot, world.repo.root, world.requirement);
     scriptReplies(world.provider, [
       { type: "toolcall", name: "pi_company_workflow", input: { action: "task-finish", requirement: world.requirement, task: "T-1", runId: created.runId, version: state.details.version } },
@@ -1007,7 +1027,7 @@ describe("自行完成的提交与核对", () => {
     let after = await queryState(world.home.dataRoot, world.repo.root, world.requirement);
     expect((after.details.data as { tasks: Record<string, { progress: string }> }).tasks["T-1"]?.progress).toBe("doing");
 
-    const toolEndsSubmit = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+    const toolEndsSubmit = collectToolEnds(created.handle, "pi_company_agent");
     scriptReplies(world.provider, [
       {
         type: "toolcall",
@@ -1046,7 +1066,7 @@ describe("自行完成的提交与核对", () => {
     expect(submitRun.role).toContain("requirement-agent");
     expect(submitRun.parentRunId).toBe(created.runId);
 
-    const toolEndsFinish = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+    const toolEndsFinish = collectToolEnds(created.handle, "pi_company_workflow");
     state = await queryState(world.home.dataRoot, world.repo.root, world.requirement);
     scriptReplies(world.provider, [
       { type: "toolcall", name: "pi_company_workflow", input: { action: "task-finish", requirement: world.requirement, task: "T-1", runId: submitRun.id, version: state.details.version } },
@@ -1144,7 +1164,7 @@ describe("跨仓等待的判定", () => {
     });
 
     async function attemptDispatch(): Promise<string> {
-      const toolEnds = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+      const toolEnds = collectToolEnds(created.handle, "pi_company_agent");
       const requestCountBefore = world.provider.requests.length;
       scriptReplies(world.provider, [
         { type: "toolcall", name: "pi_company_agent", input: { action: "run", role: "catalogrole9x2", task: "T-1", writePaths: [waitTaskWrite], readPaths: [] } },
@@ -1209,7 +1229,7 @@ describe("跨仓等待的判定", () => {
       question.resolve("确认");
       await waitForShapeRecorded(world);
 
-      const toolEndsDispatch = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+      const toolEndsDispatch = collectToolEnds(created.handle, "pi_company_agent");
       scriptReplies(world.provider, [
         { type: "toolcall", name: "pi_company_agent", input: { action: "run", role: "catalogrole9x2", task: "T-1", writePaths: [join(world.repo.root, "output.txt")], readPaths: [] } },
         { type: "text", text: "已知悉" },
@@ -1273,9 +1293,13 @@ describe("系统提示骨架顺序", () => {
     });
 
     scriptReplies(world.provider, [{ type: "text", text: "继续" }]);
-    const idleAfterShape = collect(created.handle, "idle");
     created.handle.prompt("形状已确认，请继续");
-    await waitForCount(() => idleAfterShape.length, 1);
+    // 形状写入与"继续"这一轮请求实际发出之间没有硬先后保证；轮询最后一条请求的系统提示
+    // 直到真正带上 T-77，而不是假定第一次 idle 就对应这次追加提示
+    await waitForCondition(() => {
+      const lastPrompt = world.provider.requests[world.provider.requests.length - 1]?.systemPrompt ?? "";
+      return lastPrompt.includes("T-77");
+    }, 10000, "超时等待最后一条请求的系统提示写入形状标记 T-77");
 
     const laterPrompt = world.provider.requests[world.provider.requests.length - 1]?.systemPrompt ?? "";
     expect(laterPrompt).toContain("T-77");
@@ -1471,7 +1495,7 @@ describe("需求代理会话不注册 structured_output", () => {
     expect(created.handle.state()).not.toBe("stopped");
     expect(created.handle.state()).not.toBe("failed");
 
-    const toolEndsWorkflow = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
+    const toolEndsWorkflow = collectToolEnds(created.handle, "pi_company_workflow");
     scriptReplies(world.provider, [
       { type: "toolcall", name: "pi_company_workflow", input: { action: "query", requirement: world.requirement } },
       { type: "text", text: "已查询" },

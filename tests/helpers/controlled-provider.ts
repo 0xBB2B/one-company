@@ -5,6 +5,7 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 export interface RegisterControlledProviderOptions {
   providerId: string;
   modelId: string;
+  baseUrl?: string;
 }
 
 export type ScriptedReply =
@@ -16,6 +17,7 @@ export type ScriptedReply =
 export interface ControlledProvider {
   providerId: string;
   modelId: string;
+  baseUrl: string;
   queue: ScriptedReply[];
   requests: Context[];
 }
@@ -35,15 +37,15 @@ export function registerControlledProvider(
   runtime: ModelRuntime,
   options: RegisterControlledProviderOptions,
 ): ControlledProvider {
-  const { providerId, modelId } = options;
+  const { providerId, modelId, baseUrl } = options;
   if (runtime.getModels(providerId).length > 0) {
     throw new Error(`controlled provider 已在该 runtime 注册: ${providerId}`);
   }
-  const handle: ControlledProvider = { providerId, modelId, queue: [], requests: [] };
+  const handle: ControlledProvider = { providerId, modelId, baseUrl: baseUrl ?? "http://127.0.0.1:1", queue: [], requests: [] };
 
   runtime.registerProvider(providerId, {
     apiKey: "controlled-key",
-    baseUrl: "http://127.0.0.1:1",
+    baseUrl: baseUrl ?? "http://127.0.0.1:1",
     api: "anthropic-messages" as Api,
     models: [
       {

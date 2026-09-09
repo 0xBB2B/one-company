@@ -311,250 +311,251 @@ describe("NetworkPauseGate", () => {
   });
 });
 
-describe("ConnectivityProbe", () => {
-  test("未探测过时状态为初始值", () => {
+describe("ConnectivityProbe：通用异步 tick 调度器", () => {
+  test("start 后按固定间隔调用 probe", async () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: async () => true, intervalMs: 5_000 });
-    expect(probe.status()).toEqual({ reachable: null, consecutiveFailures: 0, probes: 0 });
-  });
-
-  test("首次探测即可达时不触发恢复回调", async () => {
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: async () => true, intervalMs: 5_000 });
-    let recovered = 0;
-    probe.onRecovered(() => recovered++);
-    probe.start();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    expect(probe.status()).toEqual({ reachable: true, consecutiveFailures: 0, probes: 1 });
-    expect(recovered).toBe(0);
-  });
-
-  test("连续可达不重复触发恢复回调", async () => {
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: async () => true, intervalMs: 5_000 });
-    let recovered = 0;
-    probe.onRecovered(() => recovered++);
-    probe.start();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    expect(recovered).toBe(0);
-  });
-
-  test("先失败三次再成功时恢复边沿只触发一次", async () => {
-    const results = [false, false, false, true];
-    let index = 0;
-    const probeFn = async () => results[index++] ?? true;
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    let recovered = 0;
-    probe.onRecovered(() => recovered++);
-    probe.start();
-    for (let i = 0; i < 4; i++) {
-      timeSource.advance(5_000);
-      await flushMicrotasks();
-    }
-    expect(probe.status()).toEqual({ reachable: true, consecutiveFailures: 0, probes: 4 });
-    expect(recovered).toBe(1);
-  });
-
-  test("探测函数抛异常等同返回 false 且不向外抛出", async () => {
-    const probeFn = async () => {
-      throw new Error("探测异常");
-    };
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    let recovered = 0;
-    probe.onRecovered(() => recovered++);
-    probe.start();
-    expect(async () => {
-      timeSource.advance(5_000);
-      await flushMicrotasks();
-    }).not.toThrow();
-    await flushMicrotasks();
-    expect(probe.status().reachable).toBe(false);
-    expect(probe.status().consecutiveFailures).toBe(1);
-    expect(recovered).toBe(0);
-  });
-
-  test("stop 后不再周期探测", async () => {
     let calls = 0;
-    const probeFn = async () => {
-      calls++;
-      return true;
-    };
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    probe.start();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    expect(calls).toBe(1);
-    probe.stop();
-    timeSource.advance(20_000);
-    await flushMicrotasks();
-    expect(calls).toBe(1);
-  });
-
-  test("stop 后 start 将 consecutiveFailures 归零", async () => {
-    const probeFn = async () => false;
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    probe.start();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    expect(probe.status().consecutiveFailures).toBe(2);
-    probe.stop();
-    probe.start();
-    expect(probe.status().consecutiveFailures).toBe(0);
-  });
-
-  test("onRecovered 注销函数调用后不再触发", async () => {
-    const results = [false, true, false, true];
-    let index = 0;
-    const probeFn = async () => results[index++] ?? true;
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    let recovered = 0;
-    const unsubscribe = probe.onRecovered(() => recovered++);
-    probe.start();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    expect(recovered).toBe(1);
-    unsubscribe();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    expect(recovered).toBe(1);
-  });
-
-  test("睡眠 5 分钟跳变唤醒后只多探测一次且不计入失败", async () => {
-    let calls = 0;
-    const probeFn = async () => {
-      calls++;
-      return true;
-    };
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    probe.start();
-    timeSource.jump(300_000);
-    await flushMicrotasks();
-    expect(calls).toBe(1);
-    expect(probe.status()).toEqual({ reachable: true, consecutiveFailures: 0, probes: 1 });
-  });
-
-  test("重复调用 start 三次后一个周期内探测函数只调用一次，stop 后推进多个周期不再探测", async () => {
-    let calls = 0;
-    const probeFn = async () => {
-      calls++;
-      return true;
-    };
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    probe.start();
-    probe.start();
-    probe.start();
-    timeSource.advance(5_000);
-    await flushMicrotasks();
-    expect(calls).toBe(1);
-    probe.stop();
-    timeSource.advance(20_000);
-    await flushMicrotasks();
-    expect(calls).toBe(1);
-  });
-
-  test("探测函数返回永不 resolve 的 Promise 时推进十个周期只产生一次在飞探测", async () => {
-    let calls = 0;
-    let resolveFirst: (value: boolean) => void = () => {};
-    const probeFn = () =>
-      new Promise<boolean>((resolve) => {
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
         calls++;
-        if (calls === 1) resolveFirst = resolve;
-      });
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    probe.start();
-    for (let i = 0; i < 10; i++) {
-      timeSource.advance(5_000);
-      await flushMicrotasks();
-    }
-    expect(calls).toBe(1);
-    resolveFirst(true);
+        return Promise.resolve();
+      },
+      intervalMs: 1_000,
+    });
+    scheduler.start();
+    expect(calls).toBe(0);
+    timeSource.advance(1_000);
     await flushMicrotasks();
-    timeSource.advance(5_000);
+    expect(calls).toBe(1);
+    timeSource.advance(1_000);
     await flushMicrotasks();
     expect(calls).toBe(2);
+    scheduler.stop();
   });
 
-  test("探测在飞状态下调用 stop 后即使晚到 resolve 也不触发恢复且状态保持不可达", async () => {
+  test("上一轮探测仍挂起时，下一轮定时器触发不会重入（调用计数不变）", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
     let calls = 0;
-    let resolveSecond: (value: boolean) => void = () => {};
-    const probeFn = () =>
-      new Promise<boolean>((resolve) => {
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
         calls++;
-        if (calls === 1) {
-          resolve(false);
-        } else {
-          resolveSecond = resolve;
-        }
-      });
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    let recovered = 0;
-    probe.onRecovered(() => recovered++);
-    probe.start();
-    timeSource.advance(5_000);
+        return new Promise(() => {});
+      },
+      intervalMs: 1_000,
+    });
+    scheduler.start();
+    timeSource.advance(1_000);
     await flushMicrotasks();
-    expect(probe.status().reachable).toBe(false);
-    timeSource.advance(5_000);
-    probe.stop();
-    resolveSecond(true);
+    expect(calls).toBe(1);
+    timeSource.advance(3_000);
     await flushMicrotasks();
-    expect(recovered).toBe(0);
-    expect(probe.status().reachable).toBe(false);
+    expect(calls).toBe(1);
+    scheduler.stop();
   });
 
-  test("onRecovered 回调之一抛错不影响另一回调被调用且不产生未捕获的 Promise rejection", async () => {
-    const results = [false, true, false, true];
-    let index = 0;
-    const probeFn = async () => results[index++] ?? true;
+  test("stop 后即使定时器曾触发过也不再调用 probe", async () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
-    const probe = new ConnectivityProbe({ clock, probe: probeFn, intervalMs: 5_000 });
-    let secondCalls = 0;
-    let unhandledRejections = 0;
-    const onUnhandledRejection = () => unhandledRejections++;
-    process.on("unhandledRejection", onUnhandledRejection);
-    probe.onRecovered(() => {
-      throw new Error("第一个回调抛错");
+    let calls = 0;
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
+        calls++;
+        return Promise.resolve();
+      },
+      intervalMs: 1_000,
     });
-    probe.onRecovered(() => secondCalls++);
-    probe.start();
-    for (let i = 0; i < 4; i++) {
-      timeSource.advance(5_000);
-      await flushMicrotasks();
-    }
-    process.removeListener("unhandledRejection", onUnhandledRejection);
-    expect(secondCalls).toBe(2);
-    expect(unhandledRejections).toBe(0);
+    scheduler.start();
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+    scheduler.stop();
+    timeSource.advance(5_000);
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+  });
+
+  test("旧代际探测晚到 resolve 不会清掉新代际的在飞守卫（代际令牌）", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    let calls = 0;
+    let resolveOld: (() => void) | null = null;
+    let hangNew = true;
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
+        calls++;
+        if (resolveOld === null) return new Promise<void>((resolve) => { resolveOld = resolve; });
+        return hangNew ? new Promise<void>(() => {}) : Promise.resolve();
+      },
+      intervalMs: 1_000,
+    });
+    scheduler.start();
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+
+    scheduler.stop();
+    scheduler.start();
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(2);
+
+    resolveOld!();
+    await flushMicrotasks();
+    timeSource.advance(2_000);
+    await flushMicrotasks();
+    // 旧代际 settle 不该把新代际的在飞状态清空，新一轮定时器触发不应额外重入
+    expect(calls).toBe(2);
+    scheduler.stop();
+  });
+
+  test("睡眠数分钟跳变唤醒后只多触发一次", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    let calls = 0;
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
+        calls++;
+        return Promise.resolve();
+      },
+      intervalMs: 1_000,
+    });
+    scheduler.start();
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+
+    timeSource.jump(5 * 60_000);
+    await flushMicrotasks();
+    expect(calls).toBe(2);
+    scheduler.stop();
+  });
+
+  test("probe 函数抛出异常不向外抛出，且下一轮仍会触发", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    let calls = 0;
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
+        calls++;
+        throw new Error("探测函数同步抛错");
+      },
+      intervalMs: 1_000,
+    });
+    scheduler.start();
+    expect(() => timeSource.advance(1_000)).not.toThrow();
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(2);
+    scheduler.stop();
+  });
+
+  test("probe 函数返回被拒绝的 Promise 不向外抛出，且下一轮仍会触发", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    let calls = 0;
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
+        calls++;
+        return Promise.reject(new Error("探测函数异步拒绝"));
+      },
+      intervalMs: 1_000,
+    });
+    scheduler.start();
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(2);
+    scheduler.stop();
+  });
+
+  test("重复调用 start 是幂等的：只有一个定时器在跑", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    let calls = 0;
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
+        calls++;
+        return Promise.resolve();
+      },
+      intervalMs: 1_000,
+    });
+    scheduler.start();
+    scheduler.start();
+    scheduler.start();
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+    scheduler.stop();
+  });
+
+  test("重复调用 stop 是安全的", () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    const scheduler = new ConnectivityProbe({ clock, probe: () => Promise.resolve(), intervalMs: 1_000 });
+    scheduler.start();
+    expect(() => {
+      scheduler.stop();
+      scheduler.stop();
+    }).not.toThrow();
+  });
+
+  test("未 start 直接 stop 不抛出且不调用 probe", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    let calls = 0;
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
+        calls++;
+        return Promise.resolve();
+      },
+      intervalMs: 1_000,
+    });
+    expect(() => scheduler.stop()).not.toThrow();
+    timeSource.advance(5_000);
+    await flushMicrotasks();
+    expect(calls).toBe(0);
+  });
+
+  test("并发多次 start/stop 交替后最终仍只有一次有效调度在跑", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    let calls = 0;
+    const scheduler = new ConnectivityProbe({
+      clock,
+      probe: () => {
+        calls++;
+        return Promise.resolve();
+      },
+      intervalMs: 1_000,
+    });
+    scheduler.start();
+    scheduler.stop();
+    scheduler.start();
+    scheduler.stop();
+    scheduler.start();
+
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+    timeSource.advance(1_000);
+    await flushMicrotasks();
+    expect(calls).toBe(2);
+    scheduler.stop();
   });
 });
 
@@ -579,86 +580,32 @@ describe("分类与探测器的边界", () => {
     const abort = Object.assign(new Error("aborted"), { name: "AbortError", cause: withCode("reset", "ECONNRESET") });
     expect(classifyFailure(abort)).toBe("cancelled");
   });
-
-  test("探测返回 null 时视为不可判定，不改状态也不计数", async () => {
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const results: Array<boolean | null> = [false, null, null, true];
-    let index = 0;
-    let recovered = 0;
-    const probe = new ConnectivityProbe({ clock, probe: async () => (index < results.length ? results[index++]! : true), intervalMs: 1_000 });
-    probe.onRecovered(() => {
-      recovered++;
-    });
-    probe.start();
-    timeSource.advance(1_000);
-    await flushMicrotasks();
-    expect(probe.status().reachable).toBe(false);
-    for (let i = 0; i < 2; i++) {
-      timeSource.advance(1_000);
-      await flushMicrotasks();
-    }
-    expect(probe.status()).toEqual({ reachable: false, consecutiveFailures: 1, probes: 1 });
-    timeSource.advance(1_000);
-    await flushMicrotasks();
-    expect(recovered).toBe(1);
-  });
-
-  test("旧探测悬挂时 stop 再 start 后新代际仍能探测", async () => {
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    let calls = 0;
-    let hang = true;
-    const probe = new ConnectivityProbe({
-      clock,
-      probe: () => {
-        calls++;
-        return hang ? new Promise<boolean>(() => {}) : Promise.resolve(true);
-      },
-      intervalMs: 1_000,
-    });
-    probe.start();
-    timeSource.advance(1_000);
-    await flushMicrotasks();
-    expect(calls).toBe(1);
-    probe.stop();
-    hang = false;
-    probe.start();
-    timeSource.advance(3_000);
-    await flushMicrotasks();
-    expect(calls).toBeGreaterThan(1);
-  });
 });
 
-describe("跨代际在飞守卫", () => {
-  test("旧代际探测晚到 settle 不会清掉新代际的在飞守卫", async () => {
+describe("调度器：在途探测期间 stop 后再 start", () => {
+  test("探测挂起时调用 stop()，随后 start() 并推进时钟：新回合正常触发（inFlight 不卡死）", async () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
     let calls = 0;
-    let resolveOld: ((value: boolean) => void) | null = null;
-    let hangNew = true;
-    const probe = new ConnectivityProbe({
+    const scheduler = new ConnectivityProbe({
       clock,
       probe: () => {
         calls++;
-        if (resolveOld === null) return new Promise<boolean>((resolve) => { resolveOld = resolve; });
-        return hangNew ? new Promise<boolean>(() => {}) : Promise.resolve(true);
+        return new Promise(() => {});
       },
       intervalMs: 1_000,
     });
-    probe.start();
+    scheduler.start();
     timeSource.advance(1_000);
     await flushMicrotasks();
     expect(calls).toBe(1);
-    probe.stop();
-    probe.start();
+
+    scheduler.stop();
+    scheduler.start();
     timeSource.advance(1_000);
     await flushMicrotasks();
     expect(calls).toBe(2);
-    resolveOld!(true);
-    await flushMicrotasks();
-    timeSource.advance(2_000);
-    await flushMicrotasks();
-    expect(calls).toBe(2);
+
+    scheduler.stop();
   });
 });

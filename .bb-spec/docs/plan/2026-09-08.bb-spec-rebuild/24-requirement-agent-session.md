@@ -36,6 +36,7 @@ export const AGENT_PARAMETERS = Type.Object({
   outputSchema: Type.Optional(Type.Unknown()),
   runId: Type.Optional(Type.String()),
   result: Type.Optional(Type.Unknown()),          // submit：需求代理自行完成任务的结构化交付（与实现角色相同的形状）
+  reportPath: Type.Optional(Type.String()),        // run 派验收者时必填：仓库内的验收报告路径
 }, { additionalProperties: false });
 export const ASK_PARAMETERS = Type.Object({
   question: Type.String({ minLength: 1 }),
@@ -62,7 +63,7 @@ export const PROPOSE_SHAPE_PARAMETERS = Type.Object({
 | 函数 | 职责 |
 |---|---|
 | `createRequirementAgentSession` | 会话工具集：四个专属工具 + 真实 `pi_company_workflow` + `decision_record`（其定义抽到 `runtime/decision-record-tool.ts` 供窗口扩展与守护进程会话共用）；handle 的 `stop()` 透传角色会话的停止结果（先停 Shell、abort 有界等待），不自造「已停止」值；需求代理没有结构化提交，其正常终结由运行管理器在需求到达 accepted/rejected 或用户停止时经 `stop()` 收尾，handle 不暴露 `finalize()`；校验需求已确认（阶段为已确认之后、且非已拒绝/已验收）与唯一性（同需求 `kind:"requirement"` 且非终态的运行存在即返回其 runId；`interrupted` 属可续接而非活动，不计入），在需求目录锁内完成"查找→创建"避免并发双建（锁超时等异常按 `{ok:false, reason}` 返回）；使用注入的守护进程 `RunStore`（真实 `daemonStartedAt`），创建需求代理角色会话并注册专属工具；建会话失败把运行标 failed 并附原因 |
-| `buildRequirementAgentPrompt` | 按骨架拼装需求代理提示并**追加**在宿主默认系统提示之后（不替换宿主提示与角色会话的读写范围/结构化提交/MCP 段）：角色定义正文 → 需求身份与工作目录 → 规范索引与需求文档位置 → 可用角色目录（名称与职责，描述折叠为单行） → 工具使用规则（先提议形状并等确认；形状默认含白盒审查与黑盒验收；状态只经运行信息工具；提问只经 `pi_company_ask`；补充改变任务集或形状须重新提议、否则并入；独立问题只经运行信息工具写入后续问题清单，不新增任务；不得直接联系其他需求代理）→ 交付核对要求（自行完成的任务须经 `pi_company_agent` submit 提交交付再 task-finish）→ 当前已确认形状（续接或补充时） |
+| `buildRequirementAgentPrompt` | 按骨架拼装需求代理提示并**追加**在宿主默认系统提示与角色会话提示之后（不替换宿主提示与角色会话的读写范围/结构化提交/MCP 段；角色定义正文已由角色会话提示承载，此处不重复）：需求身份与工作目录 → 规范索引与需求文档位置 → 可用角色目录（名称与职责，描述折叠为单行） → 工具使用规则（先提议形状并等确认；形状默认含白盒审查与黑盒验收；状态只经运行信息工具；提问只经 `pi_company_ask`；补充改变任务集或形状须重新提议、否则并入；独立问题只经运行信息工具写入后续问题清单，不新增任务；不得直接联系其他需求代理）→ 交付核对要求（自行完成的任务须经 `pi_company_agent` submit 提交交付再 task-finish）→ 当前已确认形状（续接或补充时） |
 | `registerAgentTool` | `pi_company_agent`：run 校验角色在目录内、任务与角色在已确认形状内、写入范围合法后经注入的 dispatch 派角色；status/wait/list/cancel 转调 dispatch；submit 只接受已确认形状中角色序列为空（自行完成）的任务，否则拒绝并要求重新提议；把该任务的结构化交付落为一条已完成的子运行（`kind:"role"`、role 为需求代理自身角色名、parentRunId 为本运行、task 为该任务、result 含 phase/verdict/binding，binding 取运行信息工具的当前版本）并返回其 runId 供 task-finish 核对 |
 | `checkWritePaths` | 每个 writePath 的 realpath 必须位于本需求 cwd 内，且位于已确认形状中该任务声明的某个 writePath 之内（包含关系，目录授权其下文件）；任一越界拒绝并列出越界路径 |
 | `registerAskTool` | `pi_company_ask`：经 relay.ask（载荷带仓库身份与需求身份）提问；提问期间运行记录置 `waiting_answer`，答复或撤回后回 `running`（多问并行按计数，运行记录更新失败时计数回退，不留永久待答态）；会话内层已为终态时 `state()` 返回内层终态而非待答；响应工具调用的 AbortSignal：暂停/停止时撤回提问、结束等待并清理待答态 |

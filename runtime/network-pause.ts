@@ -98,27 +98,33 @@ export class NetworkPauseGate {
   }
 }
 
-export interface ProbeStatus {
-  reachable: boolean | null;
-  consecutiveFailures: number;
-  probes: number;
+// 探测目标是登记在案的 provider baseUrl（已带 scheme），不是裸主机名——校验其可解析、
+// 无内嵌凭据、协议受限于 http/https，拦掉畸形或夹带凭据的地址后再放它去发起探测请求
+export function toValidHostUrl(baseUrl: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return null;
+  }
+  if (url.username !== "" || url.password !== "") return null;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return url;
 }
 
 export interface ConnectivityProbeOptions {
   clock: Clock;
-  probe: () => Promise<boolean | null>;
+  probe: () => Promise<unknown>;
   intervalMs: number;
 }
 
+// 通用的异步 tick 调度器：按固定间隔调用一次 probe，保证同一时刻至多一次在飞调用（inFlight），
+// stop 后晚到的旧代际调用不再生效（generation）；探测结果如何解读完全由调用方决定，本类不解释返回值
 export class ConnectivityProbe {
   private readonly clock: Clock;
-  private readonly probeFn: () => Promise<boolean | null>;
+  private readonly probeFn: () => Promise<unknown>;
   private readonly intervalMs: number;
-  private readonly listeners = new Set<() => void>();
   private timerHandle: TimerHandle | null = null;
-  private reachable: boolean | null = null;
-  private consecutiveFailures = 0;
-  private probes = 0;
   private generation = 0;
   private inFlight = false;
 
@@ -128,36 +134,15 @@ export class ConnectivityProbe {
     this.intervalMs = options.intervalMs;
   }
 
-  private async tick(generation: number): Promise<void> {
+  private async runTick(generation: number): Promise<void> {
     if (this.inFlight) return;
     this.inFlight = true;
-    let result: boolean | null;
     try {
-      result = await this.probeFn();
+      await this.probeFn();
     } catch {
-      result = false;
+      // 单次探测的异常不该冒泡成未处理拒绝，也不该打断后续周期的调度
     } finally {
       if (generation === this.generation) this.inFlight = false;
-    }
-    if (generation !== this.generation) return;
-    if (result === null) return;
-    this.probes++;
-    if (result) {
-      const wasUnreachable = this.reachable === false;
-      this.reachable = true;
-      this.consecutiveFailures = 0;
-      if (wasUnreachable) {
-        for (const listener of this.listeners) {
-          try {
-            listener();
-          } catch {
-            continue;
-          }
-        }
-      }
-    } else {
-      this.reachable = false;
-      this.consecutiveFailures++;
     }
   }
 
@@ -165,9 +150,8 @@ export class ConnectivityProbe {
     if (this.timerHandle) return;
     this.generation++;
     const generation = this.generation;
-    this.consecutiveFailures = 0;
     this.timerHandle = this.clock.setIntervalExcludingSleep(() => {
-      void this.tick(generation);
+      void this.runTick(generation);
     }, this.intervalMs);
   }
 
@@ -177,14 +161,5 @@ export class ConnectivityProbe {
     if (!this.timerHandle) return;
     this.clock.clearTimer(this.timerHandle);
     this.timerHandle = null;
-  }
-
-  onRecovered(callback: () => void): () => void {
-    this.listeners.add(callback);
-    return () => this.listeners.delete(callback);
-  }
-
-  status(): ProbeStatus {
-    return { reachable: this.reachable, consecutiveFailures: this.consecutiveFailures, probes: this.probes };
   }
 }

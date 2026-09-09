@@ -4,7 +4,14 @@ import { lstat, readdir, realpath } from "node:fs/promises";
 import { dirname, join, resolve as resolvePath, sep } from "node:path";
 import { promisify } from "node:util";
 import { createAgentSession, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
-import type { AgentSession, ExtensionAPI, ModelRuntime, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSession,
+  ExtensionAPI,
+  ModelRuntime,
+  SessionManager,
+  ToolCallEvent,
+  ToolCallEventResult,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { TSchema } from "typebox";
 import { checkMcpCall, describeMcpStatus, loadMcpForRole } from "../runtime/mcp.ts";
@@ -14,7 +21,7 @@ import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import type { RoleCatalogEntry, RoleDefinition, RoleKind } from "../runtime/roles.ts";
 import { ResultCollector } from "../runtime/result.ts";
 import type { Phase } from "../runtime/result.ts";
-import { createSessionManagerForRun } from "../runtime/session-records.ts";
+import { createSessionManagerForRun, openSessionManagerForRun } from "../runtime/session-records.ts";
 import { createManagedBashTool } from "../runtime/shell-bash.ts";
 import type { Host, ShellRegistry, StopResult } from "../runtime/shell-registry.ts";
 import type { Clock, TimerHandle } from "../runtime/clock.ts";
@@ -34,7 +41,7 @@ export interface RoleSessionMcpOptions {
   config?: McpConfig;
 }
 
-export interface CreateRoleSessionOptions {
+interface CreateRoleSessionBaseOptions {
   dataRoot: string;
   repoId: string;
   runId: string;
@@ -47,8 +54,6 @@ export interface CreateRoleSessionOptions {
   writePaths: string[];
   mcp?: RoleSessionMcpOptions;
   reportPath?: string;
-  outputSchema: TSchema;
-  expectedPhase: Phase;
   streamIdleTimeoutMs?: number;
   runtime: ModelRuntime;
   modelRef: { provider: string; id: string };
@@ -57,6 +62,43 @@ export interface CreateRoleSessionOptions {
   guards: RoleSessionGuards;
   networkGate: NetworkPauseGate;
   extraExtensionFactories?: Array<(pi: ExtensionAPI) => Promise<void> | void>;
+  /** true 时以既有会话文件重建会话（续接），而非创建一份新的空会话文件 */
+  resume?: boolean;
+}
+
+// 角色的收尾方式与是否要求提交结构化结果是同一份契约的两面，调用方整块传入，本模块不再按
+// 角色 kind/名称推断：structured 有真实提交格式；plain 没有提交格式，区别只在于纯文字回合
+// 结束时是直接结算 completed（单轮即完成的角色，如 plan），还是只发 idle 交回控制权
+// （自身驱动多轮外部编排的角色，如需求代理，不能被任一次纯文字回合提前结束）
+export type RoleOutputContract =
+  | { kind: "structured"; outputSchema: TSchema; expectedPhase: Phase }
+  | { kind: "plain"; completion: "complete-on-idle" }
+  | { kind: "plain"; completion: "idle-only" };
+
+export type CreateRoleSessionOptions = CreateRoleSessionBaseOptions & { contract: RoleOutputContract };
+
+// 无有效结构化提交时，纯文字回合结束是直接结算 completed 还是只发 idle 交回控制权——
+// 穷尽契约的每一种分支，新增契约种类时这里编译期（never 断言）或运行期即暴露，不会静默按 idle 兜底
+function completesOnIdle(contract: RoleOutputContract): boolean {
+  switch (contract.kind) {
+    case "structured":
+      return false;
+    case "plain":
+      switch (contract.completion) {
+        case "complete-on-idle":
+          return true;
+        case "idle-only":
+          return false;
+        default: {
+          const exhaustive: never = contract.completion;
+          throw new Error(`未知的 plain 契约收尾方式: ${String(exhaustive)}`);
+        }
+      }
+    default: {
+      const exhaustive: never = contract;
+      throw new Error(`未知的角色输出契约种类: ${String((exhaustive as { kind: string }).kind)}`);
+    }
+  }
 }
 
 export type RoleSessionState = "running" | "paused" | "paused_network" | "completed" | "failed" | "stopped";
@@ -83,7 +125,7 @@ export function buildRolePrompt(input: {
   task: string;
   readPaths: string[];
   writePaths: string[];
-  outputSchema: TSchema;
+  outputSchema?: TSchema;
   mcpStatus: string;
 }): string {
   const describeList = (paths: string[]): string => (paths.length > 0 ? paths.join("、") : "无");
@@ -94,8 +136,10 @@ export function buildRolePrompt(input: {
     "",
     `## 读写范围\n可读：${describeList(input.readPaths)}\n可写：${describeList(input.writePaths)}`,
     "",
-    `## 结构化提交格式\n完成后必须调用 structured_output 工具提交一次，参数须满足以下 JSON Schema：\n${JSON.stringify(input.outputSchema)}`,
-    "",
+    // plan 角色不提交结构化结果，回合结束即代表完成，不承诺一个不存在的提交工具
+    input.outputSchema
+      ? `## 结构化提交格式\n完成后必须调用 structured_output 工具提交一次，参数须满足以下 JSON Schema：\n${JSON.stringify(input.outputSchema)}\n`
+      : "",
     `## MCP 状态\n${input.mcpStatus}`,
   ].join("\n");
 }
@@ -137,7 +181,7 @@ export async function bestEffortRealpath(path: string): Promise<string> {
   }
 }
 
-async function withinScope(cwd: string, candidate: string, scopes: string[]): Promise<boolean> {
+export async function withinScope(cwd: string, candidate: string, scopes: string[]): Promise<boolean> {
   const resolvedCandidate = await bestEffortRealpath(resolvePath(cwd, candidate));
   for (const scope of scopes) {
     const resolvedScope = await bestEffortRealpath(resolvePath(cwd, scope));
@@ -377,21 +421,26 @@ async function snapshotScope(scopeRoots: string[], anchors: RepoGuardAnchors | u
   return { files, fp, gitConfig };
 }
 
+// configureRoleExtension 只关心"有没有真实提交格式"，用不到 completion 的收尾细节；
+// 与 RoleOutputContract 的差别只在于 structured 分支额外带上已构造好的 collector 实例
+export type RoleExtensionContract =
+  | { kind: "structured"; outputSchema: TSchema; expectedPhase: Phase; collector: ResultCollector }
+  | { kind: "plain"; completion: "complete-on-idle" }
+  | { kind: "plain"; completion: "idle-only" };
+
 export interface ConfigureRoleExtensionInput {
   role: RoleDefinition;
   task: string;
   readPaths: string[];
   writePaths: string[];
   mcp?: RoleSessionMcpOptions;
-  outputSchema: TSchema;
-  collector: ResultCollector;
+  contract: RoleExtensionContract;
   verifying: () => boolean;
   paused: () => boolean;
   submitted: () => boolean;
   guards: RoleSessionGuards;
   readOnlyRole: boolean;
   allowReportPathWrite: boolean;
-  usesStructuredOutput: boolean;
   mcpRoleKind: RoleKind;
   scopeRoots: string[];
   cwd: string;
@@ -442,13 +491,13 @@ export function configureRoleExtension(input: ConfigureRoleExtensionInput): (pi:
       task: input.task,
       readPaths: input.readPaths,
       writePaths: input.writePaths,
-      outputSchema: input.outputSchema,
+      outputSchema: input.contract.kind === "structured" ? input.contract.outputSchema : undefined,
       mcpStatus: describeMcpStatus(mcpResult),
     });
     pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${rolePrompt}` }));
 
-    if (input.usesStructuredOutput) {
-      registerStructuredOutput(pi, { outputSchema: input.outputSchema, collector: input.collector });
+    if (input.contract.kind === "structured") {
+      registerStructuredOutput(pi, { outputSchema: input.contract.outputSchema, collector: input.contract.collector });
     }
 
     const guardAnchors = input.readOnlyRole ? await resolveRepoGuardAnchors(input.cwd) : undefined;
@@ -530,19 +579,39 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   const model = models.find((entry) => entry.id === options.modelRef.id);
   if (!model) throw new Error(`未找到模型: ${options.modelRef.provider}/${options.modelRef.id}`);
 
-  const sessionManager = createSessionManagerForRun({
-    dataRoot: options.dataRoot,
-    repoId: options.repoId,
-    runId: options.runId,
-    cwd: options.cwd,
-  });
+  let sessionManager: SessionManager;
+  if (options.resume) {
+    const opened = openSessionManagerForRun({
+      dataRoot: options.dataRoot,
+      repoId: options.repoId,
+      runId: options.runId,
+      cwd: options.cwd,
+    });
+    if (!opened.ok) throw new Error(opened.detail);
+    sessionManager = opened.manager;
+  } else {
+    sessionManager = createSessionManagerForRun({
+      dataRoot: options.dataRoot,
+      repoId: options.repoId,
+      runId: options.runId,
+      cwd: options.cwd,
+    });
+  }
 
   const readOnlyRole = options.roleName === "reviewer" || options.roleName === "acceptance";
   const allowReportPathWrite = options.roleName === "acceptance";
   const mcpRoleKind: RoleKind = readOnlyRole ? "review" : definition.kind;
-  const usesStructuredOutput = options.roleName !== "requirement-agent";
   const scopeRoots = options.readPaths.length > 0 ? options.readPaths : [options.cwd];
-  const collector = new ResultCollector({ schema: options.outputSchema, phase: options.expectedPhase });
+  const contract = options.contract;
+  let collector: ResultCollector | undefined;
+  let extensionContract: RoleExtensionContract;
+  if (contract.kind === "structured") {
+    collector = new ResultCollector({ schema: contract.outputSchema, phase: contract.expectedPhase });
+    extensionContract = { ...contract, collector };
+  } else {
+    extensionContract = contract;
+  }
+  const usesStructuredOutput = collector !== undefined;
 
   const events = new EventEmitter();
   const activeTools = new Set<string>();
@@ -595,12 +664,12 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   // 供 agent_end 的"已有效提交"分支、finalize()、stop() 复用
   function settleFinal(): void {
     if (isTerminal()) return;
-    collector.markSettled({ stopReason: "stop" });
-    const outcome = collector.finish();
+    collector!.markSettled({ stopReason: "stop" });
+    const outcome = collector!.finish();
     if (outcome.ok) {
       finishCompleted(outcome.result);
     } else {
-      const reason = collector.diagnostics().attempts === 0 ? "模型结束运行但未提交结构化结果" : outcome.reason;
+      const reason = collector!.diagnostics().attempts === 0 ? "模型结束运行但未提交结构化结果" : outcome.reason;
       finishFailed(reason);
     }
   }
@@ -615,15 +684,13 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     readPaths: options.readPaths,
     writePaths: options.writePaths,
     mcp: options.mcp,
-    outputSchema: options.outputSchema,
-    collector,
+    contract: extensionContract,
     verifying: () => verifying,
     paused: isPaused,
     submitted: () => submitted,
     guards: options.guards,
     readOnlyRole,
     allowReportPathWrite,
-    usesStructuredOutput,
     mcpRoleKind,
     scopeRoots,
     cwd: options.cwd,
@@ -693,11 +760,15 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
 
     if (event.type === "agent_end") {
       // 一次自然回合结束未必是角色任务的终点（多轮场景下模型可能先汇报再继续）；
-      // 只有已经拿到一个有效结构化提交时才据此结算，否则保持 running 并交回控制权，
-      // 由调用方决定是继续追加 prompt 还是显式 finalize()
+      // structured 契约只有已经拿到一个有效结构化提交才据此结算，否则保持 running 交回控制权
+      // 由调用方决定是继续追加 prompt 还是显式 finalize()；plain 契约按其 completion 决定：
+      // complete-on-idle（如 plan，单轮即完成）纯文字回合结束直接结算，idle-only（如需求代理，
+      // 自身驱动多轮编排）同样交回控制权，不能被任一次纯文字回合提前结束
       if (currentState === "running") {
-        if (collector.diagnostics().valid > 0) {
+        if (collector && collector.diagnostics().valid > 0) {
           settleFinal();
+        } else if (completesOnIdle(contract)) {
+          finishCompleted(undefined);
         } else {
           events.emit("idle", { submitted: false });
         }
@@ -844,7 +915,11 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   }
 
   async function finalize(): Promise<unknown> {
-    settleFinal();
+    if (!collector) {
+      finishCompleted(undefined);
+    } else {
+      settleFinal();
+    }
     return resultPromise;
   }
 

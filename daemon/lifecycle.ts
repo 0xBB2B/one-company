@@ -2,13 +2,71 @@ import { createHash, randomBytes } from "node:crypto";
 import { link, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
+import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";
-import { daemonSocketPath } from "../runtime/identity.ts";
+import { daemonSocketPath, repoDataDir, runDataDir } from "../runtime/identity.ts";
+import { ConnectivityProbe, NetworkPauseGate, toValidHostUrl } from "../runtime/network-pause.ts";
 import { createRequest, decodeFrames } from "../runtime/protocol.ts";
+import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import type { RunState } from "../runtime/run-store.ts";
+import { ShellRegistry } from "../runtime/shell-registry.ts";
+import { RelayQueue } from "./relay-queue.ts";
+import { registerProtocolHandlers, RunManager } from "./run-manager.ts";
+import type { ModelSelector, SelectedModel } from "./run-manager.ts";
 import { DaemonServer } from "./server.ts";
+
+function loadDaemonRoleCatalog(agentDir: string, repoRoot: string) {
+  return loadRoleCatalog({
+    defaultDir: defaultRoleDir(),
+    userDir: userRoleDir(agentDir),
+    projectDir: projectRoleDir(repoRoot),
+    parseFrontmatter,
+    projectTrusted: false,
+  });
+}
+
+function defaultSelectModel(runtime: ModelRuntime): ModelSelector {
+  return () => {
+    const models = runtime.getModels();
+    if (models.length === 0) throw new Error("没有可用模型：未配置任何模型提供方");
+    const first = models[0] as SelectedModel;
+    return { provider: first.provider, id: first.id };
+  };
+}
+
+async function setupModelRuntime(modulePath: string | undefined): Promise<{ runtime: ModelRuntime; selectModel: ModelSelector }> {
+  const runtime = await ModelRuntime.create({ refreshOnCreate: false });
+  if (!modulePath) return { runtime, selectModel: defaultSelectModel(runtime) };
+
+  const providerModule = (await import(modulePath)) as {
+    registerProviders: (runtime: ModelRuntime) => Promise<void>;
+    selectModel?: ModelSelector;
+  };
+  await providerModule.registerProviders(runtime);
+  return { runtime, selectModel: providerModule.selectModel ?? defaultSelectModel(runtime) };
+}
+
+const DEFAULT_NETWORK_PROBE_INTERVAL_MS = 30_000;
+const NETWORK_PROBE_TIMEOUT_MS = 3_000;
+
+// 探测按已校验合法的 provider baseUrl 发起，不绑死任何具体厂商域名；
+// 测试经 modulePath 注入自己的探测模块时完全绕过生产 fetch 路径
+async function buildConnectivityProbeFn(modulePath: string | undefined): Promise<(baseUrl: string) => Promise<boolean | null>> {
+  if (modulePath) {
+    const probeModule = (await import(modulePath)) as { probe: (baseUrl?: string) => Promise<boolean | null> };
+    return (baseUrl: string) => probeModule.probe(baseUrl);
+  }
+  return async (baseUrl: string) => {
+    try {
+      await fetch(baseUrl, { signal: AbortSignal.timeout(NETWORK_PROBE_TIMEOUT_MS) });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
 
 const PROBE_TIMEOUT_MS = 3_000;
 const SOCKET_CHECK_INTERVAL_MS = 5_000;
@@ -42,6 +100,9 @@ export interface StartDaemonOptions {
   dataRoot: string;
   idleTimeoutMs: number;
   clockSkewFile?: string;
+  modelProviderModulePath?: string;
+  connectivityProbeModulePath?: string;
+  networkProbeIntervalMs?: number;
 }
 
 type ProbeResult = "existing" | "stale" | "ambiguous";
@@ -256,22 +317,35 @@ export class IdleExit {
   }
 }
 
-export function installSignalHandlers(onSignal: () => Promise<void> | void): void {
+export function installSignalHandlers(
+  onSignal: () => Promise<void> | void,
+  options?: { onFatalException?: () => Promise<void> | void; forceCleanup?: () => Promise<void> },
+): void {
   let signalled = false;
-  const handle = () => {
+  const run = (task: () => Promise<void> | void) => {
     if (signalled) {
       process.exit(1);
       return;
     }
     signalled = true;
-    setTimeout(() => process.exit(1), SIGNAL_WATCHDOG_MS);
-    Promise.resolve(onSignal()).catch((error: unknown) => {
-      process.stderr.write(`信号处理失败: ${error instanceof Error ? error.message : String(error)}\n`);
+    // 装配期异常可能发生在 shutdown() 依赖的对象都就绪之前，导致其自身的收尾逻辑挂住；
+    // 看门狗独立于 onSignal/onFatalException 的执行结果，到点强制退出前尽力清理 socket
+    setTimeout(() => {
+      Promise.resolve(options?.forceCleanup?.())
+        .catch(() => {})
+        .finally(() => process.exit(1));
+    }, SIGNAL_WATCHDOG_MS);
+    Promise.resolve(task()).catch((error: unknown) => {
+      process.stderr.write(`收尾处理失败: ${error instanceof Error ? error.message : String(error)}\n`);
     });
   };
   for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
-    process.on(signal, handle);
+    process.on(signal, () => run(onSignal));
   }
+  process.on("uncaughtException", (error) => {
+    process.stderr.write(`未捕获异常: ${error.message}\n`);
+    run(options?.onFatalException ?? onSignal);
+  });
 }
 
 export async function startDaemon(options: StartDaemonOptions): Promise<void> {
@@ -305,7 +379,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     repoId,
     startedAt,
     onActivity: () => idleExit?.touch(),
-    hasActiveRuns: () => runActivity.hasActiveRuns(),
+    // 显式 shutdown 是不可逆操作，读不到运行记录时无法确认真的没有活动运行，宁可拒绝也不能误关；
+    // 与自动空闲退出的保守判定（runActivity）各自独立，这里把读失败原因直接带回给调用方
+    hasActiveRuns: async () => {
+      try {
+        const result = await runStore.list({ kind: "requirement", states: ACTIVE_REQUIREMENT_STATES, limit: 1 });
+        return { active: result.total > 0 };
+      } catch (error) {
+        return { active: true, reason: `读取运行记录失败，拒绝显式 shutdown: ${(error as Error).message}` };
+      }
+    },
     isReady: () => ready,
     onShutdownRequested: () => {
       shutdown().catch((error: unknown) => {
@@ -314,27 +397,33 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     },
   });
 
+  // acquireListener 必须在任何耗时的异步装配之前调用：并发拉起时输家要能尽快从 socket
+  // 竞争中出局退出，不能被 ModelRuntime/角色目录等重活拖住，否则单实例收敛会变慢变得不可靠
   const acquired = await acquireListener(server, socketPath);
   if (acquired === "existing") return;
   const ownership = acquired;
 
-  await runStore.markInterruptedOnStartup();
-
-  idleExit = new IdleExit({
-    clock,
-    timeoutMs: options.idleTimeoutMs,
-    hasConnections: () => server.clients().length > 0,
-    hasActiveRuns: () => runActivity.hasActiveRuns(),
+  // 信号处理必须在赢得 socket 归属后立刻装好：hello 不等 ready 就能响应，若信号处理还没
+  // 装上就收到 SIGTERM，进程会被系统默认行为直接终止而不会走到下面的优雅关闭与状态标记
+  let resolveInitialized!: () => void;
+  const initializedPromise = new Promise<void>((resolve) => {
+    resolveInitialized = resolve;
   });
-
   let shuttingDown = false;
-  async function shutdown(): Promise<void> {
+  async function shutdown(exitCode = 0): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
+    await initializedPromise;
     clock.clearTimer(idleTimer);
     clock.clearTimer(ownershipTimer);
+    networkProbe.stop();
     clock.stopGapWatcher();
 
+    try {
+      await runManager.close();
+    } catch (error) {
+      process.stderr.write(`停止运行 Shell 失败: ${(error as Error).message}\n`);
+    }
     try {
       await runStore.markOwnRunsInterrupted();
     } catch (error) {
@@ -345,8 +434,107 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       await server.close();
       await releaseSocket(socketPath, ownership.inode);
     }
-    process.exit(0);
+    process.exit(exitCode);
   }
+  // 孤立的未处理拒绝不该拖垮已确认单实例的守护进程，只记录；未捕获异常已破坏当前调用栈的
+  // 不变量，走与 SIGTERM 共用的看门狗收尾但以非零码退出，强退前尽力释放 socket 归属
+  installSignalHandlers(() => shutdown(), {
+    onFatalException: () => shutdown(1),
+    forceCleanup: async () => {
+      if (await checkSocketOwnership(socketPath, ownership.inode)) {
+        await releaseSocket(socketPath, ownership.inode);
+      }
+    },
+  });
+  process.on("unhandledRejection", (reason) => {
+    process.stderr.write(`未处理的 Promise 拒绝: ${reason instanceof Error ? reason.message : String(reason)}\n`);
+  });
+  // shutdown() 内部会先 await initializedPromise 再动手，所以 ready 可以早于重活配装完成前置位：
+  // 一旦成为确认的单实例即可接受 shutdown 请求，不必等 ModelRuntime/角色目录等装配完
+  ready = true;
+
+  const agentDir = dirname(options.dataRoot);
+  const repoRootGuess = dirname(options.repoDir);
+  const [{ runtime, selectModel }, roleCatalogResult, repoDir] = await Promise.all([
+    setupModelRuntime(options.modelProviderModulePath),
+    loadDaemonRoleCatalog(agentDir, repoRootGuess),
+    repoDataDir(options.dataRoot, repoId, options.repoDir),
+  ]);
+
+  const shellRegistry = new ShellRegistry({
+    clock,
+    recordsDirFor: (host) => runDataDir(options.dataRoot, repoId, host.runId ?? host.id),
+  });
+  const networkGate = new NetworkPauseGate();
+  const relayQueue = new RelayQueue({
+    dataDir: repoDir,
+    deliver: async (event, payload, deliverOptions) => {
+      const targets = server
+        .clients()
+        .filter((info) => info.repoIds.includes(deliverOptions.repoId) && info.windowId !== deliverOptions.excludeWindowId);
+      for (const target of targets) {
+        server.broadcast(event, payload, (info) => info.windowId === target.windowId);
+      }
+      return targets.map((info) => info.windowId);
+    },
+    locateRequirementAgent: (requirement) => runManager.locateRequirementAgent(requirement),
+  });
+  const runManager = new RunManager({
+    dataRoot: options.dataRoot,
+    repoId,
+    runStore,
+    shellRegistry,
+    networkGate,
+    relayQueue,
+    roleCatalog: roleCatalogResult.roles,
+    runtime,
+    selectModel,
+    clock,
+    workspaceRepoIds: [repoId],
+    emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
+  });
+  registerProtocolHandlers({ server, manager: runManager, relayQueue, shellRegistry });
+
+  const probeProvider = await buildConnectivityProbeFn(options.connectivityProbeModulePath);
+  // 每轮只探测当前确有 paused_network 运行挂着的 provider，且只续接探测到已恢复的那个 provider——
+  // 无遗留暂停运行时完全不发起探测调用；baseUrl 未注册或校验不合法时跳过该 provider 本轮探测
+  const networkProbe = new ConnectivityProbe({
+    clock,
+    intervalMs: options.networkProbeIntervalMs ?? DEFAULT_NETWORK_PROBE_INTERVAL_MS,
+    probe: async () => {
+      const paused = await runStore.list({ states: ["paused_network"], limit: 1000 });
+      const providerIds = new Set(paused.items.map((run) => run.model.provider));
+      for (const providerId of providerIds) {
+        const baseUrl = runtime.getProvider(providerId)?.baseUrl;
+        const validUrl = baseUrl ? toValidHostUrl(baseUrl) : null;
+        if (!validUrl) {
+          process.stderr.write(`跳过非法探测目标: provider=${providerId} baseUrl=${baseUrl ?? "未注册"}\n`);
+          continue;
+        }
+        if (await probeProvider(baseUrl!)) await runManager.resumeNetworkPaused(providerId);
+      }
+    },
+  });
+  networkProbe.start();
+
+  try {
+    await runStore.markInterruptedOnStartup();
+  } catch (error) {
+    process.stderr.write(`标记启动前中断运行失败: ${(error as Error).message}\n`);
+  }
+  try {
+    await runManager.adoptInterruptedShells();
+  } catch (error) {
+    process.stderr.write(`接管遗留 Shell 任务失败: ${(error as Error).message}\n`);
+  }
+  runManager.markStarted();
+
+  idleExit = new IdleExit({
+    clock,
+    timeoutMs: options.idleTimeoutMs,
+    hasConnections: () => server.clients().length > 0,
+    hasActiveRuns: () => runActivity.hasActiveRuns(),
+  });
 
   const idleTimer = clock.setIntervalExcludingSleep(() => {
     (async () => {
@@ -366,6 +554,5 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     });
   }, SOCKET_CHECK_INTERVAL_MS);
 
-  installSignalHandlers(() => shutdown());
-  ready = true;
+  resolveInitialized();
 }

@@ -1,7 +1,9 @@
 import { execFile, spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Clock, TimerHandle } from "./clock.ts";
+import { createDocument, readDocument } from "./store.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -81,6 +83,17 @@ export interface ShellRegistryProbes {
 export interface ShellRegistryOptions {
   clock: Clock;
   probes?: ShellRegistryProbes;
+  recordsDirFor?: (host: Host) => string;
+}
+
+interface PersistedTaskRecord {
+  taskId: string;
+  pid: number;
+  pgid: number;
+  startedAt: number;
+  token: string;
+  host: Host;
+  command: string;
 }
 
 const MONITOR_INTERVAL_MS = 150;
@@ -288,13 +301,41 @@ export class ShellRegistry {
   private readonly lastDescendantScanAt = new Map<string, number>();
 
   private readonly pidStartedAt: (pid: number) => Promise<number | null>;
+  private readonly recordsDirFor?: (host: Host) => string;
 
   constructor(options: ShellRegistryOptions) {
     this.clock = options.clock;
     this.kill = options.probes?.kill ?? defaultKill;
     this.rawPs = options.probes?.ps ?? defaultPsSampler;
     this.pidStartedAt = options.probes?.pidStartedAt ?? queryPidStartedAt;
+    this.recordsDirFor = options.recordsDirFor;
     this.clock.startGapWatcher();
+  }
+
+  private recordPath(host: Host, taskId: string): string | undefined {
+    if (!this.recordsDirFor) return undefined;
+    return join(this.recordsDirFor(host), `${taskId}.json`);
+  }
+
+  private async writeTaskRecord(task: TaskRecord, token: string): Promise<void> {
+    const path = this.recordPath(task.host, task.taskId);
+    if (!path) return;
+    const record: PersistedTaskRecord = {
+      taskId: task.taskId,
+      pid: task.pid,
+      pgid: task.pgid,
+      startedAt: task.startedAt ?? 0,
+      token,
+      host: task.host,
+      command: task.command,
+    };
+    await createDocument(path, record).catch(() => {});
+  }
+
+  private async deleteTaskRecord(task: TaskRecord): Promise<void> {
+    const path = this.recordPath(task.host, task.taskId);
+    if (!path) return;
+    await rm(path, { force: true }).catch(() => {});
   }
 
   // 只有超时才计入熔断——解析失败等其他拒绝仅让本轮采样按不可用处理，不影响后续调用
@@ -479,6 +520,7 @@ export class ShellRegistry {
     this.tasks.set(input.taskId, task);
     this.taskTokens.set(input.taskId, token);
     this.notify(task);
+    await this.writeTaskRecord(task, token);
 
     if (earlyExitCode !== undefined) this.handleExit(task, earlyExitCode);
     task.status = "running";
@@ -578,6 +620,7 @@ export class ShellRegistry {
       task.activity = "ended";
       this.clearTimeoutTimer(taskId);
       this.notify(task);
+      await this.deleteTaskRecord(task);
     } finally {
       this.inspecting.delete(taskId);
     }
@@ -679,6 +722,7 @@ export class ShellRegistry {
             task.activity = "ended";
             this.clearTimeoutTimer(taskId);
             this.notify(task);
+            void this.deleteTaskRecord(task);
             finish({ ok: true, task });
             return;
           }
@@ -705,6 +749,7 @@ export class ShellRegistry {
     task.reason = `用户裁定停止（决定编号 ${input.decisionId}）`;
     this.clearTimeoutTimer(taskId);
     this.notify(task);
+    void this.deleteTaskRecord(task);
     return { ok: true, task };
   }
 
@@ -722,11 +767,69 @@ export class ShellRegistry {
     return this.stopHost(host);
   }
 
+  // 持久记录接管：macOS 只对非系统签名二进制在 ps -E 中暴露环境变量，sh -c 展开为 sleep 等
+  // 系统二进制后环境令牌扫描读不到，只能凭 spawn 时落盘的记录按 pid+startedAt 核对身份接管
+  private async adoptFromRecords(input: { runToken: string; owner: Host }): Promise<TaskRecord[]> {
+    const dir = this.recordsDirFor?.(input.owner);
+    if (!dir) return [];
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+
+    const prefix = `${input.runToken}:`;
+    const tasks: TaskRecord[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const taskId = entry.slice(0, -".json".length);
+      if (this.tasks.has(taskId)) continue;
+      const doc = await readDocument(join(dir, entry));
+      if (!doc.exists) continue;
+      const record = doc.data as PersistedTaskRecord;
+      if (!record.token?.startsWith(prefix)) continue;
+      const currentStartedAt = await this.baselineStartedAt(record.pid);
+      if (currentStartedAt === null || currentStartedAt !== record.startedAt) continue;
+
+      const task: TaskRecord = {
+        taskId: record.taskId,
+        host: input.owner,
+        command: record.command,
+        cwd: process.cwd(),
+        mode: "background",
+        pid: record.pid,
+        pgid: record.pgid,
+        startedAt: record.startedAt,
+        status: "running",
+        activity: "active",
+        exitCode: null,
+        descendants: [],
+        descendantsScanned: false,
+        identityVerified: true,
+      };
+      this.tasks.set(taskId, task);
+      this.taskTokens.set(taskId, record.token);
+      this.startMonitor(task);
+      tasks.push(task);
+    }
+    return tasks;
+  }
+
   async adoptOrphans(input: { runToken: string; owner: Host }): Promise<AdoptOrphansResult> {
+    let fromRecords: TaskRecord[];
+    try {
+      fromRecords = await this.adoptFromRecords(input);
+    } catch (error) {
+      return { ok: false, reason: (error as Error).message ?? String(error) };
+    }
+
     let entries: PsEntry[];
     try {
       entries = await this.ps();
     } catch (error) {
+      if (fromRecords.length > 0) return { ok: true, tasks: fromRecords };
       return { ok: false, reason: (error as Error).message ?? String(error) };
     }
 
@@ -741,7 +844,7 @@ export class ShellRegistry {
       groups.set(taskId, group);
     }
 
-    const tasks: TaskRecord[] = [];
+    const tasks: TaskRecord[] = [...fromRecords];
     for (const [taskId, group] of groups) {
       if (this.tasks.has(taskId)) continue;
       const root = group.reduce((earliest, entry) => (entry.startedAt < earliest.startedAt ? entry : earliest));

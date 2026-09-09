@@ -29,6 +29,7 @@ export interface RunRecord {
   cwd: string;
   writePaths: string[];
   readPaths: string[];
+  reportPath?: string;
   model: { provider: string; id: string };
   thinking: string;
   mcp: string[];
@@ -48,10 +49,12 @@ export interface CreateRunInput {
   role?: string;
   requirement: string;
   parentRunId?: string;
+  standalone?: boolean;
   task: string;
   cwd: string;
   writePaths: string[];
   readPaths: string[];
+  reportPath?: string;
   model: { provider: string; id: string };
   thinking: string;
   mcp: string[];
@@ -91,10 +94,10 @@ const UNIVERSAL_TARGETS = new Set<RunState>(["failed", "stopped"]);
 const TRANSITIONS: Partial<Record<RunState, Set<RunState>>> = {
   queued: new Set(["running"]),
   running: new Set(["pausing", "paused_network", "waiting_answer", "completed"]),
-  pausing: new Set(["paused"]),
-  paused: new Set(["running"]),
+  pausing: new Set(["paused", "completed"]),
+  paused: new Set(["running", "completed"]),
   paused_network: new Set(["running"]),
-  waiting_answer: new Set(["running"]),
+  waiting_answer: new Set(["running", "pausing"]),
   interrupted: new Set(["running"]),
 };
 
@@ -139,7 +142,7 @@ export class RunStore {
       throw new Error("缺少 requirement");
     }
     if (input.kind === "role") {
-      if (typeof input.parentRunId !== "string" || input.parentRunId.length === 0) {
+      if (!input.standalone && (typeof input.parentRunId !== "string" || input.parentRunId.length === 0)) {
         throw new Error("kind 为 role 时必须提供 parentRunId");
       }
       if (typeof input.role !== "string" || !input.role.startsWith("pi-company.")) {
@@ -160,6 +163,7 @@ export class RunStore {
       cwd: input.cwd,
       writePaths: input.writePaths,
       readPaths: input.readPaths,
+      reportPath: input.reportPath,
       model: input.model,
       thinking: input.thinking,
       mcp: input.mcp,

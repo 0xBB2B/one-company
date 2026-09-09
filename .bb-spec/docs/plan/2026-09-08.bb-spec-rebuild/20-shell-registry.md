@@ -76,6 +76,7 @@ kill 桩抛出 → 探测出错：任务 uncertain 并记原因
 | `scheduleTimeout` | 用睡眠感知时钟从启动时刻按秒计时，到期停止任务及后代，确认清理后直接置 timed_out（不广播 stopped 中间态） |
 
 ## 协作关系
+- 重启接管的身份来源：登记表把每条任务的 pid、pgid、startedAt、令牌与宿主持久化到所属运行的数据目录（任务登记、状态变更时写入，终态后删除）；守护进程重新拉起时 `adoptOrphans` 先读持久记录、按 pid + startedAt 核对进程身份后接管，环境令牌扫描（`ps -E`）只作补充——macOS 对系统签名二进制隐藏进程环境，仅靠环境扫描会漏接管。
 窗口 `extensions/shell-ui.ts` 与守护进程 `daemon/run-manager.ts` 各持有一个实例；`runtime/shell-bash.ts` 通过 `spawn` 执行命令；`runtime/clock.ts` 提供睡眠感知计时；守护进程把任务变化经 `shells.changed` 事件推给窗口；`daemon/run-manager.ts` 启动时对每个中断运行以其 shellToken 调用 `adoptOrphans`；Shell 管理页对 uncertain 任务提供"视为已停止"入口，先写决策记录再调用 `markStoppedByUser`。
 
 ## 验证方式

@@ -13,7 +13,6 @@ description: 模型请求故障分类、按运行的暂停闸门、连通性探�
 
 ## 涉及文件
 - 新建：`runtime/network-pause.ts`
-- 新建：`daemon/probe.ts`
 - 新建：`tests/network-pause.test.ts`
 
 ## 函数清单
@@ -25,17 +24,13 @@ description: 模型请求故障分类、按运行的暂停闸门、连通性探�
 | `NetworkPauseGate.canProceed` | 每次模型请求或工具执行前检查是否允许继续 |
 | `NetworkPauseGate.resume` | 解除指定运行的暂停 |
 | `NetworkPauseGate.listPaused` | 按原因列出已暂停运行 |
-| `ConnectivityProbe.start` | 按间隔用睡眠感知时钟对模型服务主机发起轻量请求 |
-| `ConnectivityProbe.stop` | 停止探测 |
-| `ConnectivityProbe.onRecovered` | 从不可达到可达的边沿触发回调 |
-
-### daemon/probe.ts
-| 函数 | 职责 |
-|---|---|
-| `startConnectivityProbe` | 用运行中记录的模型服务主机构造探测目标，恢复时调用运行管理器的自动续接 |
+| `ConnectivityProbe.start` | 按间隔用睡眠感知时钟执行一次异步探测回合；带在途守卫与代际令牌，一回合未结束不重入，停止后再启动可正常恢复调度 |
+| `ConnectivityProbe.stop` | 停止探测并作废在途回合 |
+| `toValidHostUrl` | 校验完整基址（可解析、无 userinfo、协议为 http/https），非法则不发起探测 |
 
 ## 协作关系
-`daemon/role-session.ts` 与 `daemon/requirement-agent.ts` 在请求前调用 `canProceed`，请求失败时调用 `classifyFailure`；connection 类由 `daemon/run-manager.ts` 置为 `paused_network` 并登记闸门；`ConnectivityProbe.onRecovered` 触发 `RunManager.resumeNetworkPaused`。
+- 探测回合内容由守护进程装配：按 provider 分组探测各 paused_network 运行所属 provider 的基址（不硬编码某一厂商域名），经 `toValidHostUrl` 校验后才发起，探测到可达即调用运行管理器按 provider 续接；探测函数与间隔可经启动选项注入。
+- `daemon/role-session.ts` 与 `daemon/requirement-agent.ts` 在请求前调用 `canProceed`，请求失败时调用 `classifyFailure`；connection 类由 `daemon/run-manager.ts` 置为 `paused_network` 并登记闸门。
 
 ## 验证方式
 - 测试入口：`classifyFailure`、`NetworkPauseGate`、`ConnectivityProbe`（注入探测函数与时钟）
