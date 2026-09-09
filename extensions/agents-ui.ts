@@ -9,7 +9,7 @@ import type { Clock } from "../runtime/clock.ts";
 import { BottomDock } from "../runtime/dock.ts";
 import { dataRoot as resolveDataRoot } from "../runtime/identity.ts";
 import { closeActiveTranscriptView, openTranscriptView } from "../runtime/transcript-view.ts";
-import { windowReady as defaultWindowReady } from "./lifecycle.ts";
+import { registerDock, windowReady as defaultWindowReady } from "./lifecycle.ts";
 import type { WindowContextValue } from "./lifecycle.ts";
 
 const REFRESH_INTERVAL_MS = 1_000;
@@ -105,6 +105,7 @@ export default function agentsUiExtension(pi: ExtensionAPI, deps: AgentsUiDeps =
             isOverlayOpen: () => mountResult.host?.isOverlayOpen() ?? false,
           });
           dock.attach();
+          registerDock(dock);
 
           refreshHandle = clock.setIntervalExcludingSleep(() => {
             for (const { repoId, client } of repoEntries) activity.applyConnectionState(repoId, client.state());
@@ -117,6 +118,7 @@ export default function agentsUiExtension(pi: ExtensionAPI, deps: AgentsUiDeps =
           if (refreshHandle) clock.clearTimer(refreshHandle);
           for (const unsubscribe of unsubscribes) unsubscribe();
           dock?.release();
+          registerDock(undefined);
           mountResult.unmount?.();
           clock.stopGapWatcher();
           closeActiveTranscriptView();

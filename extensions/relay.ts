@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, MessageRenderer } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { DaemonClient, WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
+import { sanitizeText } from "../runtime/text-sanitize.ts";
 import { windowReady as defaultWindowReady } from "./lifecycle.ts";
 import type { WindowContextValue } from "./lifecycle.ts";
 
@@ -87,27 +88,8 @@ function asNoticeItem(raw: unknown): RelayNoticeItem | undefined {
   return item;
 }
 
-const OSC_SEQUENCE = /\x1B\][\s\S]*?(?:\x07|\x1B\\)/g;
-const CSI_SEQUENCE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
-const FE_SEQUENCE = /\x1B[@-_]/g;
-const C0_C1_CONTROLS = /[\x00-\x09\x0B-\x1F\x7F-\x9F]/g;
-const BIDI_AND_ZERO_WIDTH = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
-
-function truncateByCodepoint(text: string, maxLength: number): string {
-  const codepoints = Array.from(text);
-  return codepoints.length > maxLength ? codepoints.slice(0, maxLength).join("") : text;
-}
-
 function sanitizeRelayText(input: string): string {
-  // OSC 必须先于通用 ESC 清理处理：其终止符可以是 BEL（\x07），
-  // 若先跑通用控制字符清理会把 BEL 提前吃掉，导致 OSC 序列的其余部分被当成普通文本保留
-  const withoutOsc = input.replace(OSC_SEQUENCE, "");
-  const withoutCsi = withoutOsc.replace(CSI_SEQUENCE, "");
-  const withoutFe = withoutCsi.replace(FE_SEQUENCE, "");
-  const withoutControls = withoutFe.replace(C0_C1_CONTROLS, "");
-  const withoutBidi = withoutControls.replace(BIDI_AND_ZERO_WIDTH, "");
-  // 按码点而非 UTF-16 code unit 截断，避免把代理对从中间切开
-  return truncateByCodepoint(withoutBidi, MAX_RELAY_TEXT_LENGTH);
+  return sanitizeText(input, MAX_RELAY_TEXT_LENGTH);
 }
 
 function displayQuestion(item: RelayQuestionItem): { id: string; question: string; options: RelayOption[]; recommended: string } {

@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock } from "../runtime/clock.ts";
 import { WorkspaceClients, resolveSdkDir } from "../runtime/daemon-client.ts";
+import type { BottomDock } from "../runtime/dock.ts";
 import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
 import { dataRoot, repoDataDir } from "../runtime/identity.ts";
 import type { Workspace, WorkspaceRepo } from "../runtime/identity.ts";
@@ -94,6 +95,7 @@ let activeWindow: ActiveWindow | undefined;
 let startupError: Error | undefined;
 let readyController = createReadyController();
 let capturedShutdown: (() => void) | undefined;
+let sharedDock: BottomDock | undefined;
 
 function ensureFreshReadyController(): void {
   if (readyController.settled) readyController = createReadyController();
@@ -294,6 +296,14 @@ export function windowContext(): WindowContextValue {
 
 export function windowReady(): Promise<WindowContextValue> {
   return readyController.promise;
+}
+
+export function registerDock(dock: BottomDock | undefined): void {
+  sharedDock = dock;
+}
+
+export function currentDock(): BottomDock | undefined {
+  return sharedDock;
 }
 
 export default function lifecycleExtension(pi: ExtensionAPI, deps: LifecycleDeps = {}): void {
