@@ -8,7 +8,7 @@ export interface RegisterControlledProviderOptions {
 }
 
 export type ScriptedReply =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; chunkDelayMs?: number }
   | { type: "thinking"; text: string }
   | { type: "toolcall"; name: string; input: Record<string, unknown> }
   | { type: "error"; message: string };
@@ -85,6 +85,20 @@ export function registerControlledProvider(
 
         switch (reply.type) {
           case "text": {
+            if (reply.chunkDelayMs !== undefined) {
+              stream.push({ type: "text_start", contentIndex: 0, partial: base });
+              setTimeout(() => {
+                const message: AssistantMessage = {
+                  ...base,
+                  content: [{ type: "text", text: reply.text }],
+                  stopReason: "stop",
+                };
+                stream.push({ type: "text_delta", contentIndex: 0, delta: reply.text, partial: message });
+                stream.push({ type: "text_end", contentIndex: 0, content: reply.text, partial: message });
+                stream.push({ type: "done", reason: "stop", message });
+              }, reply.chunkDelayMs);
+              break;
+            }
             const message: AssistantMessage = {
               ...base,
               content: [{ type: "text", text: reply.text }],
@@ -128,6 +142,10 @@ export function registerControlledProvider(
 
 export function scriptReplies(provider: ControlledProvider, replies: ScriptedReply[]): void {
   provider.queue.push(...replies);
+}
+
+export function setReplies(provider: ControlledProvider, replies: ScriptedReply[]): void {
+  provider.queue.splice(0, provider.queue.length, ...replies);
 }
 
 export function requestLog(provider: ControlledProvider): readonly Context[] {
