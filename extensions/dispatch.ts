@@ -166,6 +166,14 @@ async function locateClient(cwd: string, clients: WorkspaceClientsHandle): Promi
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
+// 与守护进程侧唯一性判定同口径：confirmed 及其后的进行中阶段（含 retreat 回到的 executing）均可再次派出，
+// 唯一性交给守护进程的 already_active 判定
+const DISPATCH_BLOCKED_STAGE_REASONS: Record<string, string> = {
+  draft: "尚未确认",
+  rejected: "已被拒绝",
+  accepted: "已验收",
+};
+
 async function executeDispatch(
   params: { requirement: string; cwd: string },
   dctx: DispatchContext,
@@ -174,9 +182,9 @@ async function executeDispatch(
   const { requirement, cwd } = params;
   if (!isAbsolute(cwd)) return errorResult(`cwd 必须是绝对路径: ${cwd}`);
   const state = await readRequirementState({ dataRoot: dataRoot(process.env), cwd, requirement });
-  if (!state.exists || state.data.stage !== "confirmed") {
-    return errorResult(`${requirement} 尚未确认，无法派出`);
-  }
+  if (!state.exists) return errorResult(`${requirement} 尚未确认，无法派出`);
+  const blockedReason = DISPATCH_BLOCKED_STAGE_REASONS[state.data.stage];
+  if (blockedReason) return errorResult(`${requirement} ${blockedReason}，无法派出`);
   const client = await locateClient(cwd, dctx.clients);
   if (!client) return errorResult(`${requirement} 所在仓库不在工作区内`);
   try {

@@ -477,6 +477,43 @@ describe("dispatch 派出需求代理前提与身份传递", () => {
     }
     expect(daemon.calls.length).toBe(0);
   });
+
+  test("confirmed 之后的进行中阶段（含 retreat 回到的 executing）仍能派出，draft/rejected/accepted 拒绝", async () => {
+    const ALLOWED_STAGES = ["planned", "executing", "reviewing", "accepting"];
+    for (const stage of ALLOWED_STAGES) {
+      const world = await setupRepoWorld();
+      await seedRequirementState(world.home.dataRoot, world.identity.repoId, REQUIREMENT, stage);
+      const daemon = createFakeDaemonClient({ "dispatch.requirement": () => ({ id: `run-${stage}` }) });
+      const clients = createFakeWorkspaceClients({ [world.identity.repoId]: daemon.client });
+      const workspace = buildWorkspace([world]);
+
+      const result = await withTempEnv(world.home, async () => {
+        const tool = findTool(registerTools(clients, workspace), "pi_company_dispatch");
+        return callTool(tool, { requirement: REQUIREMENT, cwd: world.repo.root }, world.repo.root);
+      });
+
+      expect(result.details.isError).toBeFalsy();
+      expect(result.text).not.toContain("尚未确认");
+      expect(daemon.calls.length).toBe(1);
+    }
+
+    const REJECTED_STAGES = ["draft", "rejected", "accepted"];
+    for (const stage of REJECTED_STAGES) {
+      const world = await setupRepoWorld();
+      await seedRequirementState(world.home.dataRoot, world.identity.repoId, REQUIREMENT, stage);
+      const daemon = createFakeDaemonClient({ "dispatch.requirement": () => ({ id: "run-should-not-happen" }) });
+      const clients = createFakeWorkspaceClients({ [world.identity.repoId]: daemon.client });
+      const workspace = buildWorkspace([world]);
+
+      const result = await withTempEnv(world.home, async () => {
+        const tool = findTool(registerTools(clients, workspace), "pi_company_dispatch");
+        return callTool(tool, { requirement: REQUIREMENT, cwd: world.repo.root }, world.repo.root);
+      });
+
+      expect(result.details.isError).toBe(true);
+      expect(daemon.calls.length).toBe(0);
+    }
+  });
 });
 
 describe("review 派出提交前白盒审查者", () => {

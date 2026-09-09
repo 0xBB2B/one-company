@@ -1,17 +1,17 @@
 <div align="center">
 
-# pi-spec
+# pi-company
 
 **pi 的需求驱动开发流程包**
 
-把「澄清需求 → 规则文件增删改 → 一任务一文件 → 三角色 TDD → 黑盒验收 → PR 前审查」整条链路交给一组分工明确的子代理，主 agent 只负责推进状态与守门。
+主会话在窗口内澄清需求、写规范；需求代理常驻守护进程，持有单个需求的完整上下文并推进门禁；角色子代理完成具体的规划、实现、审查与验收。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-bun%20test-black.svg)](#开发)
 [![pi package](https://img.shields.io/badge/pi-package-8A2BE2.svg)](#安装)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen.svg)](package.json)
 
-[安装](#安装) · [快速开始](#快速开始) · [工作流程](#工作流程) · [包内容](#包内容) · [常见问题](#常见问题)
+[安装](#安装) · [快速开始](#快速开始) · [守护进程](#守护进程) · [常见问题](#常见问题)
 
 </div>
 
@@ -19,136 +19,90 @@
 
 ## 这是什么
 
-pi-spec 是一个 [pi](https://github.com/earendil-works/pi) package。安装后，pi 会多出四个斜杠命令、一组流程规则和六个子代理角色，用来把一句话需求推进成经过验收的代码：
-
-- **规范先行（spec-first）**：系统现行行为只存在 `.pi-spec/spec/` 下的规则文件里，一规则一文件；每个需求只是对这些规则文件的一次增删改。
-- **三角色 TDD 门禁**：test-engineer 写失败测试、impl-engineer 用最小代码让测试通过、review-engineer 逐条核对可追踪关系。三者串行跑在同一个结构化 workflow 里，verdict 只能是 PASS 或 FAIL，不允许用文本解析放行。
-- **黑盒验收**：acceptance-reviewer 不读源码，只按规则文件里的验收条目在真实环境执行并比对输出。
-- **决策台账**：AI 和用户的每一个材料性决定都经 `decision_record` 工具写入需求目录，先拿回执再执行。
-- **断点续接**：状态只存在 requirements.md 一处，会话中断后 `/spec-resume` 从记录的断点继续。
-- **PR 前审查**：pre-reviewer 只读审查分支完整改动，PASS 才允许 push 或开 PR。
+pi-company 把需求驱动开发拆成三层：主会话在当前窗口澄清需求、编写规范与需求文档、取得用户确认；需求代理常驻守护进程，持有单个需求的完整上下文，负责规划、派工并推进门禁；需求代理按需派出的角色子代理（planner、worker、reviewer、acceptance 等）完成具体的规划、实现、审查与验收。需求代理运行在每个仓库各自的守护进程内，一旦派出即可跨窗口查看进度、追加说明和控制运行，不受某个窗口关闭影响。
 
 ## 安装
 
-本包依赖 `@tintinweb/pi-subagents`（0.19.0 及以上）：`Agent`、`SubagentWorkflow`、`StructuredOutput` 三个工具以及 `agents/` 下角色定义的加载都由它提供。两条命令按顺序执行：
-
 ```bash
-pi install npm:@tintinweb/pi-subagents
-pi install git:github.com/0xBB2B/pi-spec
+pi install git:github.com/0xBB2B/pi-company
 ```
 
-本地开发时把第二条换成 `pi install /absolute/path/to/pi-spec`。
+本地开发时把命令换成 `pi install /absolute/path/to/pi-company`，并自行在该目录下执行一次 `bun install` 补齐依赖。宿主 Node 版本需 ≥ 22.19。角色子代理随包直接可用，无需额外链接安装，也不需要再安装其他子代理系统。
 
-每次会话启动时，本包会探测 pi-subagents 是否已加载，缺失时提示上述安装命令。本包不捆绑 pi-subagents：捆绑副本与用户自装的那份会被 pi 当作两个扩展各加载一次，导致同名工具重复注册。
+## 卸载
+
+```bash
+pi remove git:github.com/0xBB2B/pi-company
+```
+
+移除包不会立即停止已在运行的守护进程：守护进程会在空闲后自动退出，也可以手动停止。停止后，本机数据目录（各仓库的需求状态、运行与会话记录，见"本机数据"一节）继续保留，不随卸载清除，重新安装后可以继续读取。
 
 ## 快速开始
 
-在任意 git 仓库里打开 pi，按需求类型选择入口：
+在任意 git 仓库里打开 pi：
 
 | 命令 | 用途 |
 |---|---|
-| `/spec-new <一句话需求>` | 全新需求：澄清 → 规则文件增删改 → 任务拆解 → 并发 TDD → 黑盒验收 |
-| `/spec-resume [--verify]` | 从 `.pi-spec` 记录的断点继续未完成的需求 |
-| `/spec-revise <问题描述>` | 修 bug / 改已有功能：复现 → 对照现行规范归因 → 路由回需求流程 |
-| `/spec-sync [域名 ...]` | 规范与代码对账：黑盒执行验收例子 + 白盒扫描未记录入口，不一致项逐条裁决 |
-| `/skill:git-push` | 本地 commit 后调用 pre-reviewer 审查，PASS 才 push 或开 PR |
+| `/pi-company:new <一句话需求>` | 从阶段一开始处理全新需求 |
+| `/pi-company:resume` | 断点续接进行中的需求 |
+| `/pi-company:revise <问题描述>` | 处理已有功能的问题或 bug |
+| `/pi-company:sync [域名 ...]` | 对账规范与代码现态 |
+| `/pi-company:setting` | 打开角色设置页 |
+| `/ps` | 打开 Shell 管理页 |
 
-第一次 `/spec-new` 会在仓库里创建 `.pi-spec/` 目录：
+典型流程：执行 `/pi-company:new 给订单列表加导出功能`，主会话完成澄清并写好规范与需求文档后请求确认；确认后主会话依次建立本机流程状态、推进到 confirmed、派出需求代理，需求代理在守护进程内规划、实现、审查并验收；期间如需你补充信息，主会话会转达需求代理的提问并中继你的回答；会话中断后用 `/pi-company:resume` 从记录的现场继续。
 
-```
-<repo>/.pi-spec/
-├── .cache/                              临时证据（不提交）
-├── spec/
-│   ├── INDEX.md                         规则索引，按域分组
-│   ├── GLOSSARY.md                      术语唯一权威源
-│   └── <域>/<name>.md                   一规则一文件，系统此刻的对外行为
-└── requirements/<YYYY-MM-DD>.<slug>/
-    ├── requirements.md                  本次变更的背景、目标、触及的规范清单与边界
-    ├── tasks/
-    │   ├── INDEX.md                     阶段分组、依赖、被否定的备选方案
-    │   └── NN-<name>.md                 一任务一文件，自包含
-    ├── acceptance.md                    黑盒验收报告
-    ├── ai-decisions.jsonl               本需求唯一的 AI 决策事实源
-    └── user-decisions.jsonl             本需求唯一的用户决策事实源
-```
+## 守护进程
 
-## 工作流程
+守护进程按仓库粒度运行，每个仓库一个守护进程；同一仓库的多个 worktree 共享同一个守护进程实例。首次需要派出需求代理或提交前审查时自动拉起，不需要手动启动。守护进程会在空闲后自动退出，空闲时限 10 分钟；计时期间设备合盖睡眠不算超时，合盖期间流逝的时间不计入空闲时长。守护进程崩溃重启或宿主机重启后重新拉起时，会把重启前仍在运行的角色运行标记为中断；此类运行可用 `pi_company_agents` 的 `resumeInterrupted` 动作续接。运行期间网络短暂断开会先暂停相关运行，网络恢复后自动续接，不需要手动干预。
 
-每个需求沿一条状态机推进，`status` 只存在 requirements.md frontmatter 一处，只由主 agent 在门禁处推进：
+## 面板与查看页
 
-```mermaid
-flowchart LR
-    draft -->|用户确认规范变更| confirmed
-    confirmed -->|planner 产出任务集| planned
-    planned -->|并行组计算完成| executing
-    executing -->|全部任务 done| accepting
-    accepting --> accepted
-    accepting --> rejected
-```
+面板固定停靠在输入框下方；输入框为空且没有补全菜单打开时，按 ↓ 进入面板浏览各仓库正在运行与最近结束的角色运行。每行右侧是一组动作按钮（暂停、继续、续接、停止、查看等），按 ←→ 在同一行的按钮间移动，按 Enter 执行当前选中的按钮：选中「查看」按钮时按 Enter 打开该运行的查看页，查看页只读展示实时会话记录，不支持在查看页内直接操作运行；选中暂停、继续、续接、停止等按钮时按 Enter 立即发起对应动作（续接用于中断后的运行）。运行结束后对应行灰显显示，并在结束后保留 20 秒才从列表移出；控制动作失败的提示单独保留 20 秒后自动清除。
 
-executing 阶段每个任务独立跑一条串行的 TDD 流水线，多个无依赖任务并发：
+## 角色与设置
 
-```mermaid
-flowchart LR
-    T[test-engineer<br/>Red：写失败测试] --> I[impl-engineer<br/>Green：最小实现]
-    I --> R[review-engineer<br/>逐条核对 PASS / FAIL]
-    R -->|FAIL| F[任务标记 failed，停止派发]
-    R -->|PASS| A[acceptance-reviewer<br/>黑盒验收]
-```
+角色定义有三层来源：包内默认（`agents/` 下的五个角色：planner、worker、reviewer、acceptance、requirement-agent）、用户级（`~/.pi/agent/agents/`）与项目级（仓库内 `.pi/agents/`），同名时项目级优先于用户级、用户级优先于包内默认。项目级定义只在该项目受宿主信任时才生效；项目未受信任时，项目级定义不加载，只用用户级与包内默认两层。`/pi-company:setting` 打开角色设置页，按 ←→ 切换角色、↑↓ 切换字段、Tab 在全局与项目两种设置范围间切换、Enter 修改当前字段。每个角色可设置模型、思考、MCP 三个字段；每个字段旁标注其当前生效值来自项目、全局还是默认三层中的哪一层，这个来源标注只读，不能直接编辑——要让某个字段生效在全局或项目层，需要先切换到对应范围再用 Enter 写入新值。MCP 字段的候选依赖单独安装的适配器扩展，未安装该扩展时候选为空。
 
-| 角色 | 产出 | 能做什么 | 不能做什么 |
-|---|---|---|---|
-| 主 agent | requirements.md、任务运行字段、commit | 推进状态、派工、守门 | 替子代理写测试或实现 |
-| planner | tasks/INDEX.md 与 tasks/NN-name.md | 读需求与代码、拆任务 | 改源码、操作 git |
-| test-engineer | 结构化 Test 证据 | 写行为测试并确认有意义地失败 | 改生产代码、操作 git |
-| impl-engineer | 结构化 Impl 证据 | 最小生产代码让测试通过 | 改测试、加未授权依赖、操作 git |
-| review-engineer | PASS / FAIL | 核对需求、验收、Red、Green 的可追踪关系 | 改文件、操作 git |
-| acceptance-reviewer | acceptance.md 与严格 JSON 结果 | 真实环境执行验收条目 | 读源码、读任务文件、改代码 |
-| pre-reviewer | 结构化提交前审查结果 | 审查分支相对基线的完整改动 | 改文件、操作 git |
+## Shell 管理
 
-## 包内容
+本窗口主会话与本工作区守护进程发起的 Shell 任务统一登记到同一份注册表，包括主会话、角色子代理和需求代理各自发起的任务；工作区外的仓库或窗口发起的任务不进入这份注册表，工作区外不计入。角色子代理调用 Shell 时可以传入 `background: true` 转入后台执行，仅 agent 可用；后台任务仍受各自的超时限制，不会因为转入后台而豁免超时。状态栏把当前工作区内的 Shell 任务汇总成一段文本，包含总数与按来源分组的计数。`/ps` 打开 Shell 管理页列出全部任务，选中一行按 `K` 停止该任务；任务是否仍需要人工确认属于不确定状态时，由用户在该页面裁定继续或停止。
 
-| 目录 | 内容 |
-|---|---|
-| `skills/` | spec-docs（需求包格式）、spec-flow（需求生命周期）、spec-revise（改动与修复归因）、spec-sync（规范与代码对账）、git-commit、git-push |
-| `prompts/` | `/spec-new`、`/spec-resume`、`/spec-revise`、`/spec-sync` |
-| `agents/` | planner、test-engineer、impl-engineer、review-engineer、acceptance-reviewer、pre-reviewer 子代理定义 |
-| `rules/` | 自动注入 system prompt 的流程规则：任务分流、执行授权、递进式澄清、决策记录、审查失败归因 |
-| `extensions/rules.ts` | 每轮对话前把 `rules/*.md` 按文件名顺序追加到 system prompt |
-| `extensions/agents-bridge.ts` | 会话启动时把 `agents/*.md` 符号链接到 `~/.pi/agent/agents/` |
-| `extensions/subagents-preflight.ts` | 会话启动时探测 pi-subagents 是否已加载，缺失时提示安装命令 |
-| `extensions/decision-record.ts` | 注册 `decision_record` 工具：经材料性检查把一条 AI 或用户决定追加到需求目录的决策台账并返回回执 |
-| `tests/` | 扩展与流程契约的行为测试 |
+## 本机数据
+
+本机数据根目录默认在 `~/.pi/agent/pi-company/`（设置了 `PI_CODING_AGENT_DIR` 环境变量时改用该目录下的 `pi-company` 子目录），按仓库分目录：`repos/<仓库身份>/` 下有仓库身份记录（`repo.json`）、`requirements/<需求身份>/` 存该需求的运行状态、`runs/<运行身份>/` 存该次角色运行的会话记录（`session.jsonl`）、仓库级 `relay/` 目录存主会话与需求代理之间的中继问答队列。`sock/` 目录是数据根一级的目录，不属于按仓库分的列表，存各仓库守护进程监听的 socket 文件。这部分数据全部在本机，不随 Git 同步。
+
+仓库内还有一个 `.pi-company/` 目录，只存需求文档与规范（`spec/` 下的规则文件、`requirements/<需求身份>/requirements.md` 等），随 Git 同步、纳入版本管理。
+
+仓库里如果留有旧版本的 `.pi-spec/` 目录（旧数据），可先执行迁移预检确认能否安全迁移，确认后执行一次停写迁移：运行字段与决策记录迁入本机数据；需求文档原地保留，仅移除已迁出的运行字段与决策记录，定义正文与验收报告不改写。迁移完成后不再对旧目录的运行字段与决策写入。
+
+## 多窗口与工作区
+
+工作区按启动目录划分：每个窗口对应从其启动目录发现的仓库子树，可能是单个仓库，也可能是多个仓库组成的工作区。同一仓库的不同 worktree 共享同一份仓库身份与同一个守护进程，跨 worktree 打开的窗口看到的是同一批需求与运行。多仓库工作区里，跨仓库的接口或数据契约先行写入各仓库规范，由主会话裁定后再各自建立需求文档、分别派出需求代理。同一时间只有一个窗口能占用某个需求或某片代码范围的执行权，占用需要显式释放后才能被其他窗口重新占用。
 
 ## 常见问题
 
-**为什么子代理定义要符号链接到全局目录？**
-pi package 只能分发 extensions、skills、prompts、themes 四类资源。pi-subagents 只从 `~/.pi/agent/agents/`、项目 `.pi/agents/` 与 `.agents/agents/` 发现子代理定义，不读 package。因此 `agents-bridge.ts` 在每次会话启动时把本包 `agents/` 下的每个定义以符号链接放进全局 agents 目录：
+**守护进程不可达会怎样？**
+派工、状态查询等工具调用会返回明确的不可达错误，不会静默重试或假装成功；重新打开一次面板或窗口通常能让守护进程重新拉起。
 
-- 目标位置已是指向本包同一文件的链接：跳过。
-- 目标位置已有其他文件或链接：不覆盖，会话内给出告警。
-- 指向本包但源文件已不存在的旧链接：删除。
+**为什么我遇到的问题出现在另一个窗口？**
+需求代理运行在共享的守护进程里，不属于某个窗口；提问、失败提示等事件会送达当前仍连接同一仓库的其他窗口，所以其他打开该仓库的窗口也可能看到同一次运行的动态。
 
-**子代理用的模型能换吗？**
-各 agent 定义不写 `model:` 字段，子代理沿用主会话当前的模型。要单独指定，在对应 agent 定义的 frontmatter 里加 `model: <provider/modelId 或模糊名>`。
+**为什么面板看不到别的项目？**
+面板只显示当前工作区能发现的仓库——按启动目录划分的那批仓库；没有打开对应仓库窗口的项目不会出现在面板里。
 
-**主 agent 会在没确认的情况下改代码吗？**
-不会。注入的执行授权规则要求在写入任何文件前先说明理解、范围与验证方式并取得批准；目标或范围变化时重新取得批准。
+**如何添加自定义角色？**
+在用户级目录 `~/.pi/agent/agents/` 或项目级目录仓库内 `.pi/agents/` 下新增角色定义文件，同名文件按项目级优先于用户级、用户级优先于包内默认的顺序生效，项目级还需该项目受宿主信任才会加载；新增后可在 `/pi-company:setting` 打开的设置页确认已被发现。
 
-**怎么卸载？**
-pi 没有卸载钩子：`pi remove` 只是把包从 settings.json 里移除，不会运行本包任何代码，所以链接到 `~/.pi/agent/agents/` 的子代理定义不会随之清掉。桥接逻辑只在会话启动时清理源文件已不存在的死链，从本地路径安装时源文件一直在，链接会一直有效，pi-subagents 也会继续加载这些角色。卸载需要两步：
-
-```bash
-pi remove <source>
-find ~/.pi/agent/agents -type l -lname '*/pi-spec/agents/*' -delete
-```
+**提交前审查失败后会发生什么？**
+主会话记录归因决定后把需求回退到执行阶段并重新派出需求代理，由需求代理接手返修；返修完成、需求代理重新验收后，主会话重新采集一次审查快照并重新发起审查，直到通过才能推送。
 
 ## 开发
 
 ```bash
 bun install
 bun test tests
-pi install /absolute/path/to/pi-spec
+pi install /absolute/path/to/pi-company
 ```
 
 ## License
