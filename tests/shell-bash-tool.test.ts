@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { Value } from "typebox/value";
 import { createClock } from "../runtime/clock.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
@@ -399,5 +400,255 @@ describe("handleUserBash - 手动入口委托 SDK operations", () => {
 
     expect(chunks.join("")).toContain("hi-from-bang");
     expect(execResult.exitCode).toBe(0);
+  }, LONG_TIMEOUT);
+});
+
+interface GuardCall {
+  token: unknown;
+  outcome: unknown;
+}
+
+function makeRecordingGuard(violations: string[] = []): {
+  guard: { before(): Promise<unknown>; after(token: unknown, outcome: unknown): Promise<string[]> };
+  beforeCalls: unknown[];
+  afterCalls: GuardCall[];
+} {
+  const beforeCalls: unknown[] = [];
+  const afterCalls: GuardCall[] = [];
+  let seq = 0;
+  return {
+    guard: {
+      before: async () => {
+        const token = `guard-token-${++seq}`;
+        beforeCalls.push(token);
+        return token;
+      },
+      after: async (token: unknown, outcome: unknown) => {
+        afterCalls.push({ token, outcome });
+        return violations;
+      },
+    },
+    beforeCalls,
+    afterCalls,
+  };
+}
+
+describe("createManagedBashOperations - guard 钩子", () => {
+  test("正常命令：guard.before 先于执行调用一次，guard.after 在命令结束后调用一次", async () => {
+    const registry = makeRegistry();
+    const { guard, beforeCalls, afterCalls } = makeRecordingGuard();
+    const operations = createManagedBashOperations({ registry, host: HOST_MAIN, runToken: randomUUID(), guard });
+
+    await operations.exec("echo guarded", cwd, { onData: () => {} });
+
+    expect(beforeCalls.length).toBe(1);
+    expect(afterCalls.length).toBe(1);
+    expect(afterCalls[0]?.token).toBe(beforeCalls[0]);
+  }, LONG_TIMEOUT);
+
+  test("命令超时：guard.after 仍被调用且收到的 outcome 提及超时状态", async () => {
+    const registry = makeRegistry();
+    const { guard, afterCalls } = makeRecordingGuard();
+    const operations = createManagedBashOperations({ registry, host: HOST_MAIN, runToken: randomUUID(), guard });
+
+    const execPromise = operations.exec("sleep 30", cwd, { timeout: 1 });
+    await waitFor(() => registry.list(HOST_MAIN).length > 0, 3_000);
+    const task = registry.list(HOST_MAIN)[0]!;
+    trackedPgids.push(task.pgid);
+
+    await expectRejects(execPromise, /timed out/i);
+    expect(afterCalls.length).toBe(1);
+    expect(JSON.stringify(afterCalls[0]?.outcome)).toMatch(/timed_out/);
+  }, LONG_TIMEOUT);
+
+  test("执行中途 abort：guard.after 仍被调用且收到的 outcome 提及中止/停止状态", async () => {
+    const registry = makeRegistry();
+    const { guard, afterCalls } = makeRecordingGuard();
+    const operations = createManagedBashOperations({ registry, host: HOST_MAIN, runToken: randomUUID(), guard });
+    const controller = new AbortController();
+
+    const execPromise = operations.exec("sleep 5", cwd, { signal: controller.signal });
+    await waitFor(() => registry.list(HOST_MAIN).length > 0, 3_000);
+    const task = registry.list(HOST_MAIN)[0]!;
+    trackedPgids.push(task.pgid);
+    controller.abort();
+
+    await expectRejects(execPromise, /abort/i);
+    await waitFor(() => afterCalls.length > 0, 3_000);
+    expect(JSON.stringify(afterCalls[0]?.outcome)).toMatch(/stop|abort/i);
+  }, LONG_TIMEOUT);
+
+  test("guard.before 抛错：命令不执行，且未留下中止监听器", async () => {
+    const registry = makeRegistry();
+    const beforeError = new Error("guard 拒绝越界写入");
+    const guard = {
+      before: async (): Promise<unknown> => {
+        throw beforeError;
+      },
+      after: async (): Promise<string[]> => [],
+    };
+    const operations = createManagedBashOperations({ registry, host: HOST_MAIN, runToken: randomUUID(), guard });
+    const controller = new AbortController();
+
+    await expectRejects(operations.exec("echo should-not-run", cwd, { signal: controller.signal }), /guard 拒绝越界写入/);
+
+    expect(registry.list(HOST_MAIN).length).toBe(0);
+    expect(getEventListeners(controller.signal, "abort").length).toBe(0);
+  }, LONG_TIMEOUT);
+});
+
+describe("createManagedBashTool - guard 透传", () => {
+  test("非 background 执行：guard 前后各调用一次，after 返回的违规清单出现在命令结果文本中", async () => {
+    const registry = makeRegistry();
+    const { guard, beforeCalls, afterCalls } = makeRecordingGuard(["own.txt 之外发现越界修改: occupied.txt"]);
+    const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID(), guard });
+
+    const result = await tool.execute(randomUUID(), { command: "echo guarded-by-tool" }, new AbortController().signal, () => {}, { cwd });
+
+    expect(beforeCalls.length).toBe(1);
+    expect(afterCalls.length).toBe(1);
+    expect(result.content[0]?.text).toContain("occupied.txt");
+  }, LONG_TIMEOUT);
+
+  test("background:true 命令：guard.before 在 spawn 前调用，guard.after 在任务终态回调时调用", async () => {
+    const registry = makeRegistry();
+    const { guard, beforeCalls, afterCalls } = makeRecordingGuard();
+    const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID(), guard });
+
+    const result = await tool.execute(randomUUID(), { command: "echo bg-done", background: true }, new AbortController().signal, () => {}, { cwd });
+    expect(beforeCalls.length).toBe(1);
+
+    const taskId = (result.details as { taskId?: string }).taskId as string;
+    const task = registry.get(taskId);
+    if (task) trackedPgids.push(task.pgid);
+
+    await waitFor(() => registry.get(taskId)?.status === "exited", 5_000);
+    await waitFor(() => afterCalls.length > 0, 3_000);
+    expect(afterCalls[0]?.token).toBe(beforeCalls[0]);
+  }, LONG_TIMEOUT);
+
+  test("命令超时且 guard.after 返回违规：抛出的错误消息中含违规文本（失败/超时路径不得丢弃违规）", async () => {
+    const registry = makeRegistry();
+    const guard = { before: async () => undefined, after: async (): Promise<string[]> => ["检测到越界: occupied.txt"] };
+    const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID(), guard });
+
+    const execPromise = tool.execute(randomUUID(), { command: "sleep 30", timeout: 1 }, new AbortController().signal, () => {}, { cwd });
+    await waitFor(() => registry.list(HOST_MAIN).length > 0, 3_000);
+    const task = registry.list(HOST_MAIN)[0]!;
+    trackedPgids.push(task.pgid);
+
+    await expectRejects(execPromise, /occupied\.txt/);
+  }, LONG_TIMEOUT);
+
+  test("失败命令（非零退出）且 guard.after 返回违规：抛出的错误消息中含违规文本", async () => {
+    const registry = makeRegistry();
+    const guard = { before: async () => undefined, after: async (): Promise<string[]> => ["检测到越界: occupied.txt"] };
+    const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID(), guard });
+
+    await expectRejects(
+      tool.execute(randomUUID(), { command: "exit 3" }, new AbortController().signal, () => {}, { cwd }),
+      /occupied\.txt/,
+    );
+  }, LONG_TIMEOUT);
+});
+
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+describe("createManagedBashTool - guard 异常隔离与并发安全", () => {
+  test("后台任务 guard.after 抛错不产生 unhandledRejection", async () => {
+    const registry = makeRegistry();
+    const guard = {
+      before: async () => undefined,
+      after: async (): Promise<string[]> => {
+        throw new Error("guard.after 故障");
+      },
+    };
+    const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID(), guard });
+
+    let unhandledCount = 0;
+    const onUnhandled = (): void => {
+      unhandledCount++;
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const result = await tool.execute(
+        randomUUID(),
+        { command: "echo bg-guard-throw", background: true },
+        new AbortController().signal,
+        () => {},
+        { cwd },
+      );
+      const taskId = (result.details as { taskId?: string }).taskId as string;
+      const task = registry.get(taskId);
+      if (task) trackedPgids.push(task.pgid);
+
+      await waitFor(() => registry.get(taskId)?.status === "exited", 5_000);
+      await sleepMs(200);
+      expect(unhandledCount).toBe(0);
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+    }
+  }, LONG_TIMEOUT);
+
+  test("同一工具实例交错两次 execute：各自结果只含自己的违规（lastViolations 不得是实例级共享状态）", async () => {
+    const registry = makeRegistry();
+    const gate1 = createDeferred<string[]>();
+    const gate2 = createDeferred<string[]>();
+    const reachedAfter: string[] = [];
+    let seq = 0;
+    const guard = {
+      before: async (): Promise<string> => `call-${++seq}`,
+      after: async (token: unknown): Promise<string[]> => {
+        reachedAfter.push(token as string);
+        return token === "call-1" ? gate1.promise : gate2.promise;
+      },
+    };
+    const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID(), guard });
+
+    const first = tool.execute(randomUUID(), { command: "echo first" }, new AbortController().signal, () => {}, { cwd });
+    const second = tool.execute(randomUUID(), { command: "echo second" }, new AbortController().signal, () => {}, { cwd });
+
+    await waitFor(() => reachedAfter.includes("call-1") && reachedAfter.includes("call-2"), 3_000);
+
+    gate1.resolve(["violation-for-call-1"]);
+    gate2.resolve(["violation-for-call-2"]);
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult.content[0]?.text).toContain("violation-for-call-1");
+    expect(firstResult.content[0]?.text).not.toContain("violation-for-call-2");
+    expect(secondResult.content[0]?.text).toContain("violation-for-call-2");
+    expect(secondResult.content[0]?.text).not.toContain("violation-for-call-1");
+  }, LONG_TIMEOUT);
+
+  test("中止路径且 guard 返回违规：抛出的错误保留原始中止身份为 cause，message 仍以 aborted 开头且带违规文本", async () => {
+    const registry = makeRegistry();
+    const guard = { before: async () => undefined, after: async (): Promise<string[]> => ["检测到越界: occupied.txt"] };
+    const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID(), guard });
+    const controller = new AbortController();
+
+    const execPromise = tool.execute(randomUUID(), { command: "sleep 5" }, controller.signal, () => {}, { cwd });
+    await waitFor(() => registry.list(HOST_MAIN).length > 0, 3_000);
+    const task = registry.list(HOST_MAIN)[0]!;
+    trackedPgids.push(task.pgid);
+    controller.abort();
+
+    let thrown: (Error & { cause?: unknown }) | undefined;
+    try {
+      await execPromise;
+    } catch (error) {
+      thrown = error as Error & { cause?: unknown };
+    }
+
+    expect(thrown).toBeDefined();
+    expect(thrown?.message).toContain("aborted");
+    expect(thrown?.message).toContain("occupied.txt");
+    expect(thrown?.cause).toBeInstanceOf(Error);
+    expect((thrown?.cause as Error | undefined)?.message).toBe("aborted");
   }, LONG_TIMEOUT);
 });

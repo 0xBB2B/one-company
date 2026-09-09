@@ -44,11 +44,24 @@ function waitForOutcome(registry: ShellRegistry, taskId: string): Promise<TaskRe
   });
 }
 
-export function createManagedBashOperations(input: { registry: ShellRegistry; host: Host; runToken: string }): BashOperations {
-  const { registry, host, runToken } = input;
+export interface BashCommandGuard {
+  before(): Promise<unknown>;
+  after(token: unknown, outcome: unknown): Promise<string[]>;
+}
+
+export function createManagedBashOperations(input: {
+  registry: ShellRegistry;
+  host: Host;
+  runToken: string;
+  guard?: BashCommandGuard;
+}): BashOperations {
+  const { registry, host, runToken, guard } = input;
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (signal?.aborted) throw new Error("aborted");
+
+      // guard.before 必须先于注册中止监听器执行：guard 拒绝时命令不能留下监听器或占用 taskId
+      const guardToken = await guard?.before();
 
       const taskId = randomUUID();
       let userAborted = false;
@@ -58,6 +71,7 @@ export function createManagedBashOperations(input: { registry: ShellRegistry; ho
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 
+      let outcome: unknown;
       try {
         const spawnResult = await registry.spawn({
           taskId,
@@ -71,9 +85,13 @@ export function createManagedBashOperations(input: { registry: ShellRegistry; ho
           env,
           onOutput: (chunk) => onData(chunk),
         });
-        if (!spawnResult.ok) throw new Error(spawnResult.reason);
+        if (!spawnResult.ok) {
+          outcome = { status: "spawn_failed", reason: spawnResult.reason };
+          throw new Error(spawnResult.reason);
+        }
 
         const task = await waitForOutcome(registry, taskId);
+        outcome = task;
         switch (task.status) {
           case "exited":
             return { exitCode: task.exitCode };
@@ -86,6 +104,7 @@ export function createManagedBashOperations(input: { registry: ShellRegistry; ho
         }
       } finally {
         signal?.removeEventListener("abort", onAbort);
+        await guard?.after(guardToken, outcome);
       }
     },
   };
@@ -97,8 +116,10 @@ async function runBackground(
   cwd: string,
   runToken: string,
   params: BashToolParams,
+  guard?: BashCommandGuard,
 ): Promise<ToolResult> {
   const taskId = randomUUID();
+  const guardToken = await guard?.before();
   const spawnResult = await registry.spawn({
     taskId,
     host,
@@ -109,7 +130,14 @@ async function runBackground(
     timeoutSeconds: params.timeout,
     runToken,
   });
-  if (!spawnResult.ok) throw new Error(spawnResult.reason);
+  if (!spawnResult.ok) {
+    await guard?.after(guardToken, { status: "spawn_failed", reason: spawnResult.reason });
+    throw new Error(spawnResult.reason);
+  }
+
+  // 后台任务此时尚未结束：违规核对要等任务真正到达终态才有意义，不能在这里同步调用；
+  // 回执已经返回给调用方，guard.after 出错时无人能再接住，只能吞掉避免 unhandledRejection
+  if (guard) void waitForOutcome(registry, taskId).then((task) => guard.after(guardToken, task)).catch(() => {});
 
   const task = spawnResult.task;
   return {
@@ -122,19 +150,66 @@ export function formatBackgroundReceipt(task: { taskId: string; host: Host; stat
   return `Background shell task ${task.taskId} (${task.host.kind}:${task.host.id}) is ${task.status}.`;
 }
 
+function appendGuardViolations(result: ToolResult, violations: string[]): ToolResult {
+  if (violations.length === 0) return result;
+  const [first, ...rest] = result.content;
+  const text = `${first?.text ?? ""}\n\n${violations.join("\n")}`;
+  return { ...result, content: [{ type: "text", text }, ...rest] };
+}
+
 export function createManagedBashTool(
-  input: { registry: ShellRegistry; host: Host; cwd: string; runToken: string },
+  input: { registry: ShellRegistry; host: Host; cwd: string; runToken: string; guard?: BashCommandGuard },
 ): ToolDefinition<typeof BASH_PARAMETERS, BashToolDetails | undefined> {
-  const { registry, host, cwd, runToken } = input;
-  const operations = createManagedBashOperations({ registry, host, runToken });
-  const base = createBashToolDefinition(cwd, { operations, exposeSessionEnvironment: false });
+  const { registry, host, cwd, runToken, guard } = input;
+  // 仅用于取 name/description 等静态元数据，不用于实际执行——真正执行走每次调用各自的 operations
+  const base = createBashToolDefinition(cwd, {
+    operations: createManagedBashOperations({ registry, host, runToken }),
+    exposeSessionEnvironment: false,
+  });
 
   return {
     ...base,
     parameters: BASH_PARAMETERS,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      if (params.background) return runBackground(registry, host, ctx?.cwd || cwd, runToken, params);
-      return base.execute(toolCallId, params, signal, onUpdate, ctx);
+      if (params.background) return runBackground(registry, host, ctx?.cwd || cwd, runToken, params, guard);
+
+      // 违规结果绑定到本次调用自己的闭包变量：多次 execute 并发交错时互不覆盖
+      let violations: string[] = [];
+      const callOperations = createManagedBashOperations({
+        registry,
+        host,
+        runToken,
+        guard: guard && {
+          before: () => guard.before(),
+          after: async (token, outcome) => {
+            violations = await guard.after(token, outcome);
+            return violations;
+          },
+        },
+      });
+      // SDK 在 aborted/超时等场景会把 operations.exec 抛出的错误重新包一层新 Error（原始错误就此丢失），
+      // 这里先在到达 SDK 之前截下原始错误，好在最终抛出时把它原样接到 cause 上
+      let rawError: unknown;
+      const tappedOperations: BashOperations = {
+        async exec(command, cwd2, options) {
+          try {
+            return await callOperations.exec(command, cwd2, options);
+          } catch (error) {
+            rawError = error;
+            throw error;
+          }
+        },
+      };
+      const callBase = createBashToolDefinition(cwd, { operations: tappedOperations, exposeSessionEnvironment: false });
+      try {
+        const result = (await callBase.execute(toolCallId, params, signal, onUpdate, ctx)) as ToolResult;
+        return appendGuardViolations(result, violations);
+      } catch (error) {
+        if (violations.length === 0) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        const cause = rawError instanceof Error ? rawError : error;
+        throw new Error(`${message}\n\n${violations.join("\n")}`, { cause });
+      }
     },
   };
 }

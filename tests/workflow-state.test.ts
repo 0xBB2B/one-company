@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
@@ -20,6 +20,8 @@ import {
   failTask,
   finishTask,
   initRequirementState,
+  invalidateEvidence,
+  listEvidenceStages,
   recordShape,
   rejectRequirement,
   retreatStage,
@@ -1377,6 +1379,69 @@ describe("证据绑定与核对", () => {
     const checked = await checkEvidence({ stage: "review", currentVersion: changedFingerprint }, world.ctx);
     expect(checked.ok).toBe(false);
     if (!checked.ok) expect(checked.reason).toContain("重新核对");
+  });
+});
+
+describe("invalidateEvidence：标记失效而非删除证据文件", () => {
+  test("失效后 checkEvidence 未通过、listEvidenceStages 仍列出该阶段、证据文件仍存在", async () => {
+    const world = await setupWorld();
+    await toReviewing(world);
+    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
+    await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
+
+    await invalidateEvidence(world.ctx, "review", "写入越界: occupied.txt");
+
+    const checked = await checkEvidence({ stage: "review", currentVersion: world.currentVersion }, world.ctx);
+    expect(checked.ok).toBe(false);
+    if (!checked.ok) expect(checked.reason).toContain("失效");
+
+    const stages = await listEvidenceStages(world.ctx);
+    expect(stages).toContain("review");
+
+    const evidenceFilePath = `${requirementDataDir(world.home.dataRoot, world.identity.repoId, world.requirement)}/evidence/review.json`;
+    const raw = await readFile(evidenceFilePath, "utf8");
+    expect(raw.length).toBeGreaterThan(0);
+  });
+
+  test("失效后 checkResume 返回阻塞且原因含失效", async () => {
+    const world = await setupWorld();
+    await toReviewing(world);
+    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
+    await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
+    await invalidateEvidence(world.ctx, "review", "写入越界: occupied.txt");
+
+    const result = await checkResume(world.ctx, world.currentVersion);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("失效");
+  });
+
+  test("错误场景：对未绑定过证据的阶段调用 invalidateEvidence 不抛", async () => {
+    const world = await setupWorld();
+
+    let threw = false;
+    try {
+      await invalidateEvidence(world.ctx, "never-bound", "无对应证据时的失效调用");
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+  });
+
+  test("失效后重新 bindEvidence：checkResume 恢复通过", async () => {
+    const world = await setupWorld();
+    await toReviewing(world);
+    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
+    await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
+    await invalidateEvidence(world.ctx, "review", "写入越界: occupied.txt");
+
+    const blocked = await checkResume(world.ctx, world.currentVersion);
+    expect(blocked.ok).toBe(false);
+
+    const rerunId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
+    await bindEvidence({ stage: "review", runId: rerunId, currentVersion: world.currentVersion }, world.ctx);
+
+    const recovered = await checkResume(world.ctx, world.currentVersion);
+    expect(recovered.ok).toBe(true);
   });
 });
 

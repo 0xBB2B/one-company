@@ -98,7 +98,7 @@ const TRANSITIONS: Partial<Record<RunState, Set<RunState>>> = {
   interrupted: new Set(["running"]),
 };
 
-const RUNNING_LIKE_STATES = new Set<RunState>(["running", "pausing", "waiting_answer"]);
+export const RUNNING_LIKE_STATES = new Set<RunState>(["running", "pausing", "waiting_answer"]);
 
 export function isTerminalState(state: RunState): boolean {
   return TERMINAL_STATES.has(state);

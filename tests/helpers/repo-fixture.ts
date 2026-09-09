@@ -21,7 +21,7 @@ export interface WorkspaceFixture {
   repos: string[];
 }
 
-const GIT_ENV = {
+export const GIT_ENV = {
   PATH: process.env.PATH ?? "",
   HOME: process.env.HOME ?? "",
   GIT_CONFIG_GLOBAL: "/dev/null",

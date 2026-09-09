@@ -103,7 +103,7 @@ export function overlaps(aRaw: string, bRaw: string): boolean {
   return false;
 }
 
-function resolveRepoRelative(repoRoot: string, rawPath: string): string {
+export function resolveRepoRelative(repoRoot: string, rawPath: string): string {
   const isDir = rawPath.endsWith("/");
   const absoluteRoot = resolve(repoRoot);
   const absoluteTarget = isAbsolute(rawPath) ? resolve(rawPath) : resolve(absoluteRoot, rawPath);

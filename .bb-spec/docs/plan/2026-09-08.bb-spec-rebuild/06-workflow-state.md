@@ -80,6 +80,9 @@ description: 需求阶段与任务进度的本机状态模型、随形状声明�
 
 所有变更函数的失败结果为 `{ ok: false, reason, staleVersion?: true }`：版本冲突时 `staleVersion` 为 true 且 reason 只陈述事实（"版本已变化"），重试提示由调用方追加。
 
+## 追加（40 write-guard 联动）
+- `invalidateEvidence(ctx, stage, reason)`：把该阶段证据覆写为失效载荷（保留阶段可列出，`checkEvidence` 返回未通过并附原因，`checkResume` 阻断）；`listEvidenceStages(ctx)` 列出已存在证据的阶段。
+
 ## 协作关系
 - 读写经 `runtime/store.ts`；路径经 `runtime/identity.ts`；决定编号由 `runtime/decisions.ts` 核对存在；运行记录经 `runtime/run-store.ts` 读取。
 - 所有需要证据的动作只接收 runId 与当前版本（定义指纹、代码 HEAD），不接收调用方拼装的证据对象；守护进程在运行结束时把结构化结果连同需求、任务与版本绑定写入运行记录。

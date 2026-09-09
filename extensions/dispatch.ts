@@ -1,11 +1,9 @@
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { lstat, readFile, readlink } from "node:fs/promises";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import type { DaemonClient, WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
+import { collectGitSnapshot } from "../runtime/git-snapshot.ts";
 import { dataRoot, repositoryIdentity } from "../runtime/identity.ts";
 import type { Workspace } from "../runtime/identity.ts";
 import type { RunState } from "../runtime/run-store.ts";
@@ -168,112 +166,6 @@ async function locateClient(cwd: string, clients: WorkspaceClientsHandle): Promi
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
-// git 子进程失败原因五选一，判定顺序即优先级：中止最先判、其次是 exec 层面的 kill/超时，
-// 再是 execFile 自身报出的缓冲区超限（比 killed 更具体，需先于笼统的超时归因判定），
-// 最后落到 stderr 文本匹配；顺序颠倒会把"变更过大"误报成"超时"或反之
-function normalizeGitError(
-  error: NodeJS.ErrnoException & { killed?: boolean },
-  signal: AbortSignal | undefined,
-  stderr: Buffer,
-): Error {
-  if (signal?.aborted) return new Error(ABORT_RECEIPT);
-  if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return new Error("变更过大，超出快照上限");
-  if (error.killed) return new Error("git 命令超时");
-  const stderrText = stderr.toString("utf8");
-  if (/unknown revision or path not in the working tree|ambiguous argument 'HEAD'/i.test(stderrText)) {
-    return new Error("仓库尚无提交，无法计算审查快照");
-  }
-  return new Error("git 命令执行失败，请核对仓库状态");
-}
-
-function runGit(cwd: string, args: string[], signal: AbortSignal | undefined, timeoutMs: number, maxBuffer: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      args,
-      { cwd, timeout: timeoutMs, maxBuffer, encoding: "buffer", env: { ...process.env, LC_ALL: "C" }, signal },
-      (error, stdout, stderr) => {
-        if (error) {
-          reject(normalizeGitError(error as NodeJS.ErrnoException & { killed?: boolean }, signal, stderr as unknown as Buffer));
-          return;
-        }
-        resolve(stdout as unknown as Buffer);
-      },
-    );
-  });
-}
-
-function hashSegment(hash: ReturnType<typeof createHash>, segment: Buffer): void {
-  hash.update(`${segment.length}\0`);
-  hash.update(segment);
-}
-
-function parseUntrackedPaths(status: Buffer): string[] {
-  return status
-    .toString("utf8")
-    .split("\0")
-    .filter((entry) => entry.startsWith("?? "))
-    .map((entry) => entry.slice(3));
-}
-
-const UNTRACKED_FILE_SIZE_LIMIT = 64 * 1024 * 1024;
-
-function statsTypeLabel(stats: { isDirectory(): boolean; isFIFO(): boolean; isSocket(): boolean }): string {
-  if (stats.isDirectory()) return "directory";
-  if (stats.isFIFO()) return "fifo";
-  if (stats.isSocket()) return "socket";
-  return "other";
-}
-
-// 符号链接只喂目标路径字符串，不解引用读内容：目标可能在仓库外、可能不存在，
-// 解引用既不安全也偏离"这条链接指向哪里"这一真正会影响审查的信息
-async function untrackedEntrySegment(cwd: string, relPath: string): Promise<Buffer> {
-  const fullPath = join(cwd, relPath);
-  let stats;
-  try {
-    stats = await lstat(fullPath);
-  } catch {
-    return Buffer.from("unreadable");
-  }
-  if (stats.isSymbolicLink()) {
-    try {
-      return Buffer.from(await readlink(fullPath), "utf8");
-    } catch {
-      return Buffer.from("unreadable");
-    }
-  }
-  if (stats.isFile()) {
-    if (stats.size > UNTRACKED_FILE_SIZE_LIMIT) return Buffer.from(`size:${stats.size}`);
-    try {
-      return await readFile(fullPath);
-    } catch {
-      return Buffer.from("unreadable");
-    }
-  }
-  return Buffer.from(`type:${statsTypeLabel(stats)}`);
-}
-
-async function computeReviewSnapshot(
-  cwd: string,
-  signal: AbortSignal | undefined,
-  timeoutMs: number,
-  maxBuffer: number,
-): Promise<{ head: string; fingerprint: string }> {
-  const head = (await runGit(cwd, ["rev-parse", "HEAD"], signal, timeoutMs, maxBuffer)).toString("utf8").trim();
-  // -uall：未跟踪目录逐文件展开，不塌缩成目录名一行，否则目录内文件改内容不改路径时指纹不变
-  const status = await runGit(cwd, ["status", "--porcelain=v1", "-z", "-uall"], signal, timeoutMs, maxBuffer);
-  const diff = await runGit(cwd, ["diff", "HEAD", "--binary"], signal, timeoutMs, maxBuffer);
-  const hash = createHash("sha256");
-  hashSegment(hash, status);
-  hashSegment(hash, diff);
-  // 未跟踪文件的内容不出现在 diff 里，porcelain 状态行也不含内容——不单独喂入会漏检改动
-  for (const relPath of parseUntrackedPaths(status).sort()) {
-    hashSegment(hash, Buffer.from(relPath, "utf8"));
-    hashSegment(hash, await untrackedEntrySegment(cwd, relPath));
-  }
-  return { head, fingerprint: hash.digest("hex") };
-}
-
 async function executeDispatch(
   params: { requirement: string; cwd: string },
   dctx: DispatchContext,
@@ -307,10 +199,22 @@ async function executeReview(
   const timeoutMs = dctx.gitTimeoutMs ?? GIT_TIMEOUT_MS;
   const maxBuffer = dctx.gitMaxBuffer ?? GIT_MAX_BUFFER;
   // 快照计算先于连接定位：定位仓库连接也要经 git 子进程，先出发才能在 PATH 被劫持/git 挂起时被同一个 signal 及时中止
-  const snapshot = await computeReviewSnapshot(cwd, signal, timeoutMs, maxBuffer);
+  let snapshot;
+  try {
+    snapshot = await collectGitSnapshot({ repoRoot: cwd, gitTimeoutMs: timeoutMs, gitMaxBuffer: maxBuffer, signal });
+  } catch (error) {
+    // collectGitSnapshot 对中止只报"已中止"，这里按守护进程调用惯例换成 ABORT_RECEIPT 措辞
+    if (signal?.aborted) throw new Error(ABORT_RECEIPT);
+    throw error;
+  }
   const client = await locateClient(cwd, dctx.clients);
   if (!client) return errorResult(`${requirement} 所在仓库不在工作区内`);
-  const result = await callWithAbort(client, "dispatch.review", { requirement, cwd, baseline, snapshot }, signal);
+  const result = await callWithAbort(
+    client,
+    "dispatch.review",
+    { requirement, cwd, baseline, snapshot: { head: snapshot.head, fingerprint: snapshot.fingerprint } },
+    signal,
+  );
   return okResult(`${requirement} 已派出提交前白盒审查：${briefResult(result)}`);
 }
 

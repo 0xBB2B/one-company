@@ -753,11 +753,14 @@ export async function checkEvidence(
   } catch {
     return { ok: false, reason: "证据文件不存在，待重新核对" };
   }
-  let evidence: { definitionFingerprint: string; codeHead: string };
+  let evidence: { definitionFingerprint: string; codeHead: string; invalid?: boolean; reason?: string };
   try {
     evidence = JSON.parse(raw);
   } catch {
     return { ok: false, reason: "证据文件损坏，待重新核对" };
+  }
+  if (evidence.invalid) {
+    return { ok: false, reason: `证据已失效: ${evidence.reason ?? ""}` };
   }
   if (
     evidence.definitionFingerprint !== input.currentVersion.definitionFingerprint ||
@@ -766,6 +769,24 @@ export async function checkEvidence(
     return { ok: false, reason: "证据版本已过期，待重新核对" };
   }
   return { ok: true };
+}
+
+export async function invalidateEvidence(ctx: WorkflowContext, stage: string, reason: string): Promise<void> {
+  const identity = await repositoryIdentity(ctx.cwd);
+  const path = evidencePath(ctx, identity.repoId, stage);
+  await mkdir(dirname(path), { recursive: true });
+  const payload = { stage, invalid: true, reason, invalidatedAt: new Date().toISOString() };
+  await writeFileAtomic(path, `${JSON.stringify(payload)}\n`);
+}
+
+export async function listEvidenceStages(ctx: WorkflowContext): Promise<string[]> {
+  const identity = await repositoryIdentity(ctx.cwd);
+  const evidenceDir = `${requirementDataDir(ctx.dataRoot, identity.repoId, ctx.requirement)}/evidence`;
+  try {
+    return (await readdir(evidenceDir)).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -".json".length));
+  } catch {
+    return [];
+  }
 }
 
 export async function checkResume(
@@ -793,13 +814,7 @@ export async function checkResume(
   }
 
   if (currentVersion) {
-    const evidenceDir = `${requirementDataDir(ctx.dataRoot, identity.repoId, ctx.requirement)}/evidence`;
-    let stages: string[] = [];
-    try {
-      stages = (await readdir(evidenceDir)).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -".json".length));
-    } catch {
-      stages = [];
-    }
+    const stages = await listEvidenceStages(ctx);
     for (const stage of stages) {
       const checked = await checkEvidence({ stage, currentVersion }, ctx);
       if (!checked.ok) return checked;
