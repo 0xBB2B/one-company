@@ -399,22 +399,22 @@ describe("包内默认角色定义骨架", () => {
     },
     worker: {
       kind: "work",
-      tools: ["read", "grep", "find", "ls", "edit", "write", "bash"],
+      tools: ["read", "bash", "grep", "find", "ls", "edit", "write", "structured_output"],
       skills: true,
       contextFiles: true,
       promptMode: "append",
     },
     reviewer: {
       kind: "review",
-      tools: ["read", "grep", "find", "ls", "bash"],
+      tools: ["read", "bash", "grep", "find", "ls", "structured_output"],
       skills: true,
       contextFiles: true,
       promptMode: "append",
     },
-    acceptance: { kind: "acceptance", tools: ["bash", "write"], skills: false, contextFiles: false, promptMode: "append" },
+    acceptance: { kind: "acceptance", tools: ["read", "bash", "write", "structured_output"], skills: false, contextFiles: false, promptMode: "append" },
     "requirement-agent": {
       kind: "manage",
-      tools: ["read", "grep", "find", "ls", "edit", "write", "bash"],
+      tools: ["read", "bash", "grep", "find", "ls", "edit", "write", "pi_company_workflow", "pi_company_agent", "pi_company_ask", "pi_company_propose_shape", "decision_record"],
       skills: true,
       contextFiles: true,
       promptMode: "append",
@@ -463,7 +463,7 @@ describe("roleToolAllowlist", () => {
     expect(roleToolAllowlist(entry)).toEqual(["read", "grep", "bash"]);
   });
 
-  test("acceptance 默认角色仅含 bash 与 write", async () => {
+  test("acceptance 默认角色工具集与成品一致", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-company-role-catalog-"));
     tempRoots.push(root);
     const { roles } = await loadRoleCatalog({
@@ -474,7 +474,7 @@ describe("roleToolAllowlist", () => {
       projectTrusted: true,
     });
     const acceptance = roles.find((r) => r.name === "acceptance");
-    expect(roleToolAllowlist(acceptance!)).toEqual(["bash", "write"]);
+    expect(roleToolAllowlist(acceptance!)).toEqual(["read", "bash", "write", "structured_output"]);
   });
 });
 
@@ -560,10 +560,10 @@ describe("边界输入不静默降级", () => {
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: true });
     const byName = new Map(roles.map((role) => [role.name, role.definition?.description]));
     expect(byName.get("planner")).toBe("规划角色：先核对任务骨架再生成自包含任务文件");
-    expect(byName.get("worker")).toBe("实现角色：同次核对测试证明力、Red → Green → 自验收并提交结构化交付");
-    expect(byName.get("reviewer")).toBe("白盒审查角色：只读审查整个分支，安全与鲁棒优先");
-    expect(byName.get("acceptance")).toBe("黑盒验收角色：只依据规则文件在真实环境操作并唯一写入验收报告");
-    expect(byName.get("requirement-agent")).toBe("需求代理：持有需求上下文，规划、提议工作流形状、按形状派出角色并推进门禁");
+    expect(byName.get("worker")).toBe("按任务文件与验证约定先写可信失败测试，再以最小实现通过，自验收后提交工作裁决");
+    expect(byName.get("reviewer")).toBe("对整个分支做一次只读白盒审查，安全与鲁棒优先，再核对验收到测试与实现的可追踪关系");
+    expect(byName.get("acceptance")).toBe("只依据规则文件在真实环境执行黑盒验收，写入指定报告并提交验收裁决");
+    expect(byName.get("requirement-agent")).toBe("持有单个需求的完整上下文，负责规划、提议工作流形状、派出角色、核对交付并推进门禁");
     for (const role of roles) expect(role.definition?.name).toBe(role.name);
   });
 });

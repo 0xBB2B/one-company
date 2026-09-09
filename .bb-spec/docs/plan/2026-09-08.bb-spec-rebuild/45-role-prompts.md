@@ -76,7 +76,7 @@ prompt_mode: append
 ```
 work：phase=work、verdict、summary、issues[]、evidence[]、changeKind（behavior-change|refactor|unclear）、workState（red-green|green-baseline-no-change|blocked）、coverage[{ref,test}]、redCommands[{command,status,details}]、greenCommands[]、changedFiles[]、productionPath[]、preexistingEvidence[]、fakeRed:false
 review：phase=review、verdict、summary、issues[]、evidence[]、reviewedHead、contentFingerprint、traceability[]、findings[{kind: security|robustness|traceability|tdd|scope, severity: Blocker|Important, location, problem, fix}]
-acceptance：phase=acceptance、verdict、summary、issues[]、evidence[]、acceptanceResult（accepted|rejected）、reportPath、items[{id,result,observed,difference}]、uncovered[]、commands[]
+acceptance：phase=acceptance、verdict、summary、issues[]、evidence[]、acceptanceResult（accepted|rejected）、reportPath、items[{id,result,observed,difference}]、uncovered[]（所用命令清单只写在报告里，不作为裁决字段）
 ```
 
 ## 函数清单
@@ -87,14 +87,14 @@ acceptance：phase=acceptance、verdict、summary、issues[]、evidence[]、acce
 |---|---|
 | 身份与前提 | 只处理派工时绑定的仓库、需求与工作目录；同一需求只有一个需求代理；不读写其他仓库 |
 | 规划前检 | 派 planner 或自行规划前核对需求已确认、规划类型、受影响任务编辑状态、范围占用、验证条件；任一不满足即报告阻塞，不派工 |
-| 规划 | 先骨架再正文；增量只改影响范围；产物必须通过 `lint.sh --tasks` |
+| 规划 | 先骨架再正文；增量只改影响范围；产物必须通过 `lint.sh --tasks`，不临时编写检查脚本、生成器或验收解析器；自行规划时同守验证约定（真实入口与契约、必须成立的行为、场景、模拟边界、三层责任）与任务文件 ≤200 行口径；高风险任务（状态控制、安全边界、宿主接入、不可重复副作用）在实施前核对验证方案；关键前提未核实时报告受影响任务，不宣布可执行 |
 | 形状提议 | 用 `pi_company_propose_shape` 一次提出任务集、角色序列与门禁声明；默认含白盒审查与黑盒验收；跳过门禁须说明理由并等待用户确认记录为用户决定；确认前不派工；需新增任务或角色时重新提议 |
 | 执行 | 按形状用 `pi_company_agent` 派角色，writePaths 不得超出该任务形状范围；简单任务可自行完成但同样提交交付证据 |
 | 交付核对 | 逐条验收映射到真实测试位置且在验证范围内；最终命令符合任务约定并成功；相关回归失败分四类并说明责任与恢复节点；本次造成或未解释的失败不放行；核对通过后独立复跑再 `pi_company_workflow task-finish` |
-| 归因与返修 | FAIL 后角色只读；逐条归因为产品决策 / 可自动解决 / 独立问题；自动返修先 `decision_record` 再派 worker 并重审；同一门禁最多三轮，第三轮仍失败记技术阻塞并停止；同根因再失败先重查设计；独立问题只经 `pi_company_workflow update` 写入后续问题清单，不新增任务、不改形状 |
-| 门禁 | 全部任务完成后对整个分支派一次 reviewer；通过后派一次 acceptance，验收者唯一写报告；阶段推进只经 `pi_company_workflow advance` |
+| 归因与返修 | FAIL 后角色只读；逐条归因为产品决策 / 可自动解决 / 独立问题；需扩大目标、文件范围或验收标准的修复归产品决策，不自动返修；自动返修先 `decision_record` 记录归因与修复路径，写入失败即停止派发任何修复；首轮返修派工列明错误假设、同类受影响场景与验证补充；同一门禁最多三轮，第三轮仍失败记技术阻塞并停止；用户授权后从原轮次继续、不重置轮次；同根因再失败先重查设计；产品决策未回答时不写任何记录、不改行为；独立问题只经 `pi_company_workflow update` 写入后续问题清单，不新增任务、不改形状，在下次形状提议或完成总结时交用户确认才成任务 |
+| 门禁 | 全部任务完成后对整个分支派一次 reviewer；通过后派一次 acceptance，派工输入只含规则文件清单、报告位置、环境启动方式与结构化格式，验收者唯一写报告；阶段推进只经 `pi_company_workflow advance` |
 | 对话中继 | 所有提问与产品决策经 `pi_company_ask`；补充需求影响任务集或形状时重新提议，否则并入 |
-| 跨仓库 | 契约变更经 `pi_company_ask` 请求主会话裁定；不联系其他需求代理；waitFor 任务按本机流程数据核对 |
+| 跨仓库 | 契约变更经 `pi_company_ask` 请求主会话裁定，裁定前不得按变更后的契约实现；不联系其他需求代理；waitFor 任务按本机流程数据核对 |
 | 结束 | 需求 accepted、rejected 或被停止后结束；结束与阻塞经中继通知 |
 
 `agents/worker.md`：
@@ -114,25 +114,26 @@ acceptance：phase=acceptance、verdict、summary、issues[]、evidence[]、acce
 |---|---|
 | 范围与只读 | 审查当前分支相对基线的完整改动；输入含仓库位置、基线、规范与验收、审查快照；只读，任何写入（含命令造成的）会被命令层判为运行失败并关闭 |
 | 安全优先 | 攻击者视角找可触发的安全问题；每条发现含位置、攻击路径或触发条件、影响、修复方向 |
-| 鲁棒性 | 真实非恶意故障视角；无实际触发路径的问题写为建议，不阻断，不要求加防御 |
+| 鲁棒性 | 真实非恶意故障视角；无实际触发路径的问题只写进 summary 作为建议，不进 issues 与 findings，不阻断，不要求加防御 |
 | 可追踪关系 | 逐任务核对每条验收在测试与实现中的映射与 TDD 可信度；遗漏或不可信即 Blocker |
-| 提交 | 经 `structured_output` 提交审查裁决；`reviewedHead` 与 `contentFingerprint` 原样回填调用方快照；PASS 时 `issues` 与 `findings` 为空 |
+| 提交 | 经 `structured_output` 提交审查裁决；`reviewedHead` 与 `contentFingerprint` 原样回填调用方快照；PASS 时 `issues` 与 `findings` 为空且 `traceability` 与 `evidence` 非空 |
 
 `agents/acceptance.md`：
 | 段落 | 必须表达的规则 |
 |---|---|
 | 输入边界 | 只读取给定规则文件与自己写出的报告；不读源码、任务文件或其他仓库文件；除指定报告外的任何写入（含命令造成的）会被命令层判为运行失败并关闭 |
 | 执行 | 在真实运行环境按每条验收的触发、Given、When、Then 操作并记录原样观察 |
-| 可用性 | 使用者视角检查入口存在且可达、按例子能走通、错误提示可理解；功能缺失或只在精确输入下成立即 rejected |
-| 报告 | 先写入调用方指定的唯一报告（result、date、结果表、未覆盖、所用命令清单、结论），再提交裁决；`reportPath` 等于指定路径、`commands` 与报告一致 |
+| 可用性 | 使用者视角检查入口存在且可达、按例子能走通、错误提示可理解；功能缺失、不可达、不可用或只在精确输入下成立即 rejected |
+| 报告 | 先经 `write` 写入调用方指定的唯一报告（result、date、结果表、未覆盖、所用命令清单、结论），再提交裁决；`reportPath` 等于指定路径 |
 | 提交 | PASS 要求 `items` 非空且全部通过、`issues` 与 `uncovered` 为空、报告结论 accepted |
 
 ## 协作关系
 - 需求代理会话把 `agents/requirement-agent.md` 作为系统提示并注册专属工具；角色会话把其余四份作为系统提示并注册 `structured_output`；结构化裁决单元的 schema 校验提交对象；只读边界由角色会话的命令层核对执行。
 - 主会话流程 Skill 在提交前直接派 reviewer；派工权由运行管理器按运行类型判定，与本文件的 kind 无关。
+- 与命令层的一致性：验收者的 `write` 只允许写调用方指定的报告路径（角色会话的只读守卫对该路径豁免）；需求代理会话注册 `decision_record` 且不注册 `structured_output`；角色会话注册的工具集以角色定义为准。
 
 ## 验证方式
-- 测试入口：读取五份角色文件，解析 frontmatter；正文行为交由集成验证单元在真实派工中核对
+- 测试入口：读取五份角色文件，解析 frontmatter；正文按段落断言必需表达（以本表规则要点为准，语义等价的措辞可多选一，不锁定整句）；正文行为交由集成验证单元在真实派工中核对
 - 测试输入：文件全文
 - 预期结果：
   - 五份文件存在且 frontmatter 字段恰为 name、description、kind、tools、skills、context_files、prompt_mode；name 与文件名一致；kind 与 tools 集合与成品逐项相等（顺序无关）
