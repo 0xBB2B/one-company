@@ -41,7 +41,7 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 | `ping` | `{}` | `{ now }` |
 | `shutdown` | `{}` | `{ accepted }`（仅在无活动运行时接受） |
 | `dispatch.requirement` | `{ requirement, cwd, mcp?: { adapterEntry, configPath } }` | `{ runId }` 或错误 `already_active`（附现有 runId）、`not_confirmed` |
-| `dispatch.review` | `{ requirement, cwd, baseline, snapshot: { head, fingerprint }, mcp?: { adapterEntry, configPath } }` | `{ runId }` 或错误 `already_active`（该需求已有活动的提交前审查运行）、`not_confirmed`；主会话经窗口连接派出提交前白盒审查者，快照原样传给审查者 |
+| `dispatch.review` | `{ requirement, cwd, baseline, snapshot: { head, fingerprint } }`（MCP 集合由守护进程按角色设置装载，不经工具参数） | `{ runId }` 或错误 `already_active`（该需求已有活动的提交前审查运行）、`not_confirmed`；主会话经窗口连接派出提交前白盒审查者，快照原样传给审查者 |
 | `runs.list` | `{ kind?, offset?, limit? }` | `{ items: RunRecord[], total, runningCount }` |
 | `runs.get` | `{ runId }` | `{ run: RunRecord, errorDetails?: 摘要 }` |
 | `runs.pause` / `runs.resume` / `runs.stop` | `{ runId }` | `{ state, confirmed: boolean, reason? }` |
@@ -62,16 +62,16 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 
 | 事件 | data |
 |---|---|
-| `activity` | `{ runId, kind: "tool_start"\|"tool_end"\|"turn"\|"state", toolName?, filePath?, state?, at }` |
+| `activity` | `{ runId, kind: "tool_start"\|"tool_end"\|"turn"\|"state", toolCallId?, toolName?, filePath?, state?, at }`（工具事件必带 `toolCallId`；`filePath` 为绝对路径） |
 | `transcript` | `{ runId, seq, kind: "thinking"\|"text"\|"toolcall"\|"tool_result"\|"error", delta?, summary?, at }` |
-| `runs.changed` | `{ run: RunRecord, activeShellTasks?: number }`（中断运行携带接管的活动 Shell 任务数） |
+| `runs.changed` | `{ run: RunRecord, requirementTitle?: string, activeShellTasks?: number, pendingShellCleanup?: number }`（中断运行携带接管的活动 Shell 任务数；已停止运行携带清理未确认的 Shell 任务数；需求代理运行携带需求标题） |
 | `relay.question` | `RelayQuestion` |
 | `relay.notice` | `RelayNotice` |
 | `relay.withdraw` | `{ questionId }` |
 | `shells.changed` | `{ task: ShellTask }` |
 | `daemon.idle` | `{ exitAt }` |
 
-错误码：`protocol_version`、`unknown_method`、`unknown_event`、`bad_params`、`not_found`、`already_active`、`not_confirmed`、`shape_violation`、`daemon_busy`、`internal`。
+错误码：`protocol_version`、`unknown_method`、`unknown_event`、`bad_params`、`not_found`、`already_active`、`not_confirmed`、`shape_violation`、`daemon_busy`、`internal`。错误帧 `error: { code, message, data? }`，`data` 携带结构化附加信息（`already_active` 附 `{ runId }`）；窗口侧 `DaemonClient.call` 以带 `code` 与 `data` 的错误对象拒绝。
 
 ## 函数清单
 ### runtime/protocol.ts
