@@ -13,6 +13,7 @@ import {
   createResponse,
   decodeFrames,
   encodeFrame,
+  isFrame,
   validateParams,
 } from "../runtime/protocol.ts";
 
@@ -279,6 +280,33 @@ describe("createRequest / createResponse / createErrorResponse / createEvent", (
   test("createErrorResponse 生成失败响应帧", () => {
     const err = createErrorResponse("42", "not_found", "run 不存在");
     expect(err).toEqual({ t: "res", id: "42", ok: false, error: { code: "not_found", message: "run 不存在" } });
+  });
+
+  test("createErrorResponse 不传 data 时 error 不含 data 键", () => {
+    const err = createErrorResponse("42", "not_found", "run 不存在");
+    expect("data" in err.error).toBe(false);
+  });
+
+  test("createErrorResponse 支持可选 data 参数并原样保留", () => {
+    const err = createErrorResponse("42", "already_active", "需求已有活动运行", { runId: "run-1" });
+    expect(err).toEqual({
+      t: "res",
+      id: "42",
+      ok: false,
+      error: { code: "already_active", message: "需求已有活动运行", data: { runId: "run-1" } },
+    });
+  });
+
+  test("带 data 的错误响应经 encode → decode 往返后被 isFrame 接受，且 data 保留", () => {
+    const err = createErrorResponse("42", "already_active", "需求已有活动运行", { runId: "run-1", extra: [1, 2, 3] });
+    const encoded = encodeFrame(err);
+    expect(isFrame(JSON.parse(encoded.trim()))).toBe(true);
+
+    const { frames, errors } = decodeFrames(encoded);
+    expect(errors).toEqual([]);
+    expect(frames.length).toBe(1);
+    expect(frames[0]).toEqual(err);
+    expect((frames[0] as { error: { data?: unknown } }).error.data).toEqual({ runId: "run-1", extra: [1, 2, 3] });
   });
 
   test("createEvent 生成事件帧", () => {

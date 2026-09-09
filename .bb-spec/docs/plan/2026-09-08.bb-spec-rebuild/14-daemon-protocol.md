@@ -27,7 +27,7 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 ```json
 {"t":"req","id":"<客户端递增整数或 uuid>","method":"<方法名>","params":{}}
 {"t":"res","id":"<对应请求 id>","ok":true,"result":{}}
-{"t":"res","id":"<对应请求 id>","ok":false,"error":{"code":"<错误码>","message":"<原因>"}}
+{"t":"res","id":"<对应请求 id>","ok":false,"error":{"code":"<错误码>","message":"<原因>","data":{"<可选的结构化附加信息>":"…"}}}
 {"t":"evt","event":"<事件名>","data":{}}
 ```
 
@@ -40,7 +40,7 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 | `hello` | 见上 | `{ daemonPid, repoId, protocolVersion, startedAt }` |
 | `ping` | `{}` | `{ now }` |
 | `shutdown` | `{}` | `{ accepted }`（仅在无活动运行时接受） |
-| `dispatch.requirement` | `{ requirement, cwd, mcp?: { adapterEntry, configPath } }` | `{ runId }` 或错误 `already_active`（附现有 runId）、`not_confirmed` |
+| `dispatch.requirement` | `{ requirement, cwd }` | `{ runId }` 或错误 `already_active`（`data: { runId }`）、`not_confirmed` |
 | `dispatch.review` | `{ requirement, cwd, baseline, snapshot: { head, fingerprint } }`（MCP 集合由守护进程按角色设置装载，不经工具参数） | `{ runId }` 或错误 `already_active`（该需求已有活动的提交前审查运行）、`not_confirmed`；主会话经窗口连接派出提交前白盒审查者，快照原样传给审查者 |
 | `runs.list` | `{ kind?, offset?, limit? }` | `{ items: RunRecord[], total, runningCount }` |
 | `runs.get` | `{ runId }` | `{ run: RunRecord, errorDetails?: 摘要 }` |

@@ -58,7 +58,7 @@ export const ERROR_CODES = [
 type RequestFrame = { t: "req"; id: string; method: string; params: Record<string, unknown> };
 type ResponseFrame =
   | { t: "res"; id: string; ok: true; result: Record<string, unknown> }
-  | { t: "res"; id: string; ok: false; error: { code: string; message: string } };
+  | { t: "res"; id: string; ok: false; error: { code: string; message: string; data?: Record<string, unknown> } };
 type EventFrame = { t: "evt"; event: string; data: Record<string, unknown> };
 export type Frame = RequestFrame | ResponseFrame | EventFrame;
 
@@ -241,8 +241,10 @@ export function createResponse(id: string, result: Record<string, unknown>): Res
   return { t: "res", id, ok: true, result };
 }
 
-export function createErrorResponse(id: string, code: string, message: string): ResponseFrame {
-  return { t: "res", id, ok: false, error: { code, message } };
+export function createErrorResponse(id: string, code: string, message: string, data?: Record<string, unknown>): ResponseFrame {
+  return data === undefined
+    ? { t: "res", id, ok: false, error: { code, message } }
+    : { t: "res", id, ok: false, error: { code, message, data } };
 }
 
 export function assertKnownEvent(event: string): void {
