@@ -336,6 +336,37 @@ export async function readLines(path: string, options: WithDirLockOptions = {}):
   }
 }
 
+export interface ReadLinesLenientResult {
+  records: unknown[];
+  skipped: number;
+}
+
+async function readLinesLenientUnlocked(path: string): Promise<ReadLinesLenientResult> {
+  const raw = await readRawOrNull(path);
+  if (raw === null || raw.length === 0) return { records: [], skipped: 0 };
+  // 结尾换行是 appendLine 写入格式的一部分，不算一条记录；其它空行按损坏行计数。
+  const body = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  const records: unknown[] = [];
+  let skipped = 0;
+  for (const rawLine of body.split("\n")) {
+    try {
+      records.push(JSON.parse(rawLine));
+    } catch {
+      skipped += 1;
+    }
+  }
+  return { records, skipped };
+}
+
+export async function readLinesLenient(path: string, options: WithDirLockOptions = {}): Promise<ReadLinesLenientResult> {
+  try {
+    return await withDirLock(dirname(path), () => readLinesLenientUnlocked(path), options);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return { records: [], skipped: 0 };
+    throw error;
+  }
+}
+
 export async function appendLine(path: string, data: unknown): Promise<{ lineNumber: number; line: string }> {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: DIR_MODE });

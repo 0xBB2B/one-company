@@ -11,6 +11,7 @@ import {
   fileFingerprint,
   readDocument,
   readLines,
+  readLinesLenient,
   withDirLock,
   writeDocument,
 } from "../runtime/store.ts";
@@ -605,4 +606,17 @@ describe("持有集只在临界区内有效", () => {
       expect((await readLines(path)).length).toBe(11);
     }
   }, 60_000);
+});
+
+describe("readLinesLenient", () => {
+  test("中间空行计入 skipped，文件末尾换行产生的尾随空串不计入", async () => {
+    const dir = await makeTempDir();
+    const path = join(dir, "log.jsonl");
+    await writeFile(path, `${JSON.stringify({ a: 1 })}\n\n${JSON.stringify({ b: 2 })}\n`, "utf8");
+
+    const result = await readLinesLenient(path);
+
+    expect(result.records).toEqual([{ a: 1 }, { b: 2 }]);
+    expect(result.skipped).toBe(1);
+  });
 });
