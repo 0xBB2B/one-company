@@ -10,7 +10,7 @@ import { probeExistingInstance } from "../daemon/lifecycle.ts";
 import { createClock } from "./clock.ts";
 import type { Clock, TimerHandle } from "./clock.ts";
 import { daemonSocketPath, discoverWorkspace, repoDataDir, repositoryIdentity } from "./identity.ts";
-import type { RepositoryIdentity, WorkspaceSkipped } from "./identity.ts";
+import type { RepositoryIdentity, Workspace, WorkspaceSkipped } from "./identity.ts";
 import { createRequest, decodeFrames, encodeFrame, PROTOCOL_VERSION } from "./protocol.ts";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -25,6 +25,18 @@ const SPAWN_POLL_INTERVAL_MS = 100;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export class DaemonCallError extends Error {
+  readonly code: string;
+  readonly data: Record<string, unknown> | undefined;
+
+  constructor(code: string, message: string, data?: Record<string, unknown>) {
+    super(message);
+    this.name = "DaemonCallError";
+    this.code = code;
+    this.data = data;
+  }
 }
 
 export function resolveSdkDir(): string {
@@ -215,7 +227,7 @@ class SocketLink {
         if (!waiter) continue;
         this.pending.delete(frame.id);
         if (frame.ok) waiter.resolve(frame.result);
-        else waiter.reject(new Error(`${frame.error.code}: ${frame.error.message}`));
+        else waiter.reject(new DaemonCallError(frame.error.code, frame.error.message, frame.error.data));
       } else if (frame.t === "evt") {
         this.onEvent(frame.event, frame.data);
       }
@@ -502,6 +514,7 @@ export interface WorkspaceClientsHandle {
   forRepo(repoId: string): DaemonClient | undefined;
   all(): DaemonClient[];
   skipped(): WorkspaceSkipped[];
+  workspace(): Workspace;
   closeAll(): void;
 }
 
@@ -535,6 +548,7 @@ export const WorkspaceClients = {
       forRepo: (repoId: string) => clients.get(repoId),
       all: () => Array.from(clients.values()),
       skipped: () => workspace.skipped,
+      workspace: () => workspace,
       closeAll: () => {
         for (const client of clients.values()) client.close();
       },

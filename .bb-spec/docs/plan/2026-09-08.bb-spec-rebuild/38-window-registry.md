@@ -43,7 +43,7 @@ description: 窗口登记表：按仓库记录窗口进程、会话、工作区�
 | 函数名 | 职责 |
 |---|---|
 | `WindowRegistry` | 绑定仓库数据目录，读写窗口记录 |
-| `WindowRegistry.register` | 原子写入新记录（含 pid、进程启动时刻、开机标识），返回窗口标识 |
+| `WindowRegistry.register` | 原子写入新记录（含调用方提供的窗口标识 UUID、pid、进程启动时刻、开机标识），返回窗口标识；同一窗口在工作区多个仓库登记时使用同一个标识 |
 | `WindowRegistry.heartbeat` | 更新心跳时间与序号，写入前核对文件仍属本窗口 |
 | `WindowRegistry.unregister` | 删除记录（幂等） |
 | `WindowRegistry.list` | 列出全部记录并附 `alive` / `lost` / `gone` 判定 |

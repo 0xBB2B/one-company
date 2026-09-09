@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -15,6 +14,7 @@ const DIR_MODE = 0o700;
 const WINDOW_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface WindowRegisterInput {
+  windowId: string;
   pid: number;
   sessionId: string;
   cwd: string;
@@ -74,11 +74,14 @@ export class WindowRegistry {
   }
 
   async register(input: WindowRegisterInput): Promise<string> {
+    if (!input.windowId || !WINDOW_ID_PATTERN.test(input.windowId)) {
+      throw new Error(`不合法的窗口标识: ${input.windowId}`);
+    }
+    const windowId = input.windowId;
     const startedAt = await this.processStartedAtFn(input.pid);
     if (startedAt === null) {
       throw new Error(`无法读取进程启动时刻，拒绝登记窗口: pid=${input.pid}`);
     }
-    const windowId = randomUUID();
     const now = new Date(this.clock.now()).toISOString();
     const record: WindowRecord = {
       windowId,

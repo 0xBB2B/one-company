@@ -31,7 +31,7 @@ description: 窗口侧守护进程客户端：按工作区内仓库建立多连�
 | `DaemonClient.state` | 暴露 `connected` / `starting` / `unreachable` 及最近一次失败原因 |
 | `DaemonClient.close` | 以不可达拒绝全部在途调用、取消订阅、关闭 socket、停止重连（重连窗口内关闭亦生效）、停止自建时钟 |
 | `scheduleReconnect` | 断开后用睡眠感知时钟做带随机抖动的指数退避重连（上限 5 秒），重连成功重新 `hello` 并恢复订阅 |
-| `WorkspaceClients` | 按工作区仓库集合（按仓库身份去重，同仓库主目录与 worktree 只建一个连接）维护多个 `DaemonClient`，单个仓库连接失败时该仓库降级为不可达并附原因而不整体失败；发现阶段被跳过的仓库连同原因暴露；提供 `forRepo`、`all`、`skipped`、`closeAll` |
+| `WorkspaceClients` | 按工作区仓库集合（按仓库身份去重，同仓库主目录与 worktree 只建一个连接）维护多个 `DaemonClient`，单个仓库连接失败时该仓库降级为不可达并附原因而不整体失败；发现阶段被跳过的仓库连同原因暴露；提供 `forRepo`、`all`、`skipped`、`closeAll`、`workspace()`（创建时发现一次的工作区结果，供窗口生命周期登记与其它扩展取仓库路径，避免重复发现） |
 
 ## 协作关系
 - `connectDaemon` 依赖 `runtime/identity.ts` 的 `daemonSocketPath`、`repoDataDir`，依赖 `runtime/protocol.ts` 的编解码与 `hello` 参数类型。

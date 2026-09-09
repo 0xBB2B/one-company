@@ -17,7 +17,7 @@ import {
   encodeFrame,
 } from "../runtime/protocol.ts";
 import type { Frame } from "../runtime/protocol.ts";
-import { WorkspaceClients, connectDaemon, spawnDaemon } from "../runtime/daemon-client.ts";
+import { DaemonCallError, WorkspaceClients, connectDaemon, spawnDaemon } from "../runtime/daemon-client.ts";
 import {
   connectTestClient,
   createDaemonFixture,
@@ -369,6 +369,45 @@ describe("worktree 与工作区", () => {
 
     const outsideId = (await repositoryIdentity(outside.root)).repoId;
     expect(workspaceClients.forRepo(outsideId)).toBeUndefined();
+  }, 40_000);
+
+  test("workspace() 返回含两仓库 path/repoId 的发现结果", async () => {
+    const workspace = await createWorkspaceFixture();
+    repoFixtures.push(workspace);
+
+    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    extraTempDirs.push(dataRoot);
+
+    const workspaceClients = await WorkspaceClients.create({
+      workspaceRoot: workspace.root,
+      dataRoot,
+      sdkDir: resolveSdkDir(),
+      execPath: resolveNodeExecutable(),
+      hello: {
+        windowId: "window-workspace-accessor",
+        pid: process.pid,
+        sessionId: "session-workspace-accessor",
+        cwd: workspace.root,
+        workspaceRoot: workspace.root,
+      },
+    });
+    closables.push(workspaceClients);
+
+    const discovered = workspaceClients.workspace();
+    expect(discovered.repos.length).toBe(2);
+
+    for (const repoPath of workspace.repos) {
+      const identity = await repositoryIdentity(repoPath);
+      const match = discovered.repos.find((repo) => repo.repoId === identity.repoId);
+      expect(match).toBeDefined();
+      expect(typeof match?.path).toBe("string");
+      expect(match?.path.length ?? 0).toBeGreaterThan(0);
+    }
+
+    const repoIds = await Promise.all(workspace.repos.map(async (repoPath) => (await repositoryIdentity(repoPath)).repoId));
+    for (const repoId of repoIds) {
+      daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, repoId)));
+    }
   }, 40_000);
 });
 
@@ -900,6 +939,67 @@ describe("hello 阶段失败", () => {
           },
         }),
       ).rejects.toThrow();
+    } finally {
+      fake.close();
+    }
+  }, 15_000);
+});
+
+describe("失败帧转换为 DaemonCallError", () => {
+  test("守护进程返回带 data 的错误帧时，client.call reject 的是 DaemonCallError 实例且 code/data 正确", async () => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    extraTempDirs.push(dataRoot);
+    const identity = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+
+    const fake = createFakeDaemonServer(
+      socketPath,
+      (frame, socket) => {
+        socket.write(
+          encodeFrame(
+            createResponse(frame.id, {
+              daemonPid: process.pid,
+              repoId: identity.repoId,
+              protocolVersion: PROTOCOL_VERSION,
+              startedAt: new Date().toISOString(),
+            }),
+          ),
+        );
+      },
+      (frame, socket) => {
+        socket.write(encodeFrame(createErrorResponse(frame.id, "already_active", "需求已有活动运行", { runId: "run-1" })));
+      },
+    );
+
+    try {
+      const client = await connectDaemon({
+        repoDir: repo.root,
+        dataRoot,
+        sdkDir: resolveSdkDir(),
+        execPath: resolveNodeExecutable(),
+        hello: {
+          windowId: "window-error-data",
+          pid: process.pid,
+          sessionId: "session-error-data",
+          cwd: repo.root,
+          workspaceRoot: repo.root,
+        },
+      });
+      closables.push(client);
+
+      let caught: unknown;
+      try {
+        await client.call("dispatch.requirement", { requirement: "2026-09-09.demo", cwd: repo.root });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(DaemonCallError);
+      expect((caught as DaemonCallError).code).toBe("already_active");
+      expect((caught as DaemonCallError).data).toEqual({ runId: "run-1" });
     } finally {
       fake.close();
     }

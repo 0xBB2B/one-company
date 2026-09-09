@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -81,6 +82,7 @@ async function makeRepoDir(): Promise<string> {
 
 function windowInput(overrides: Record<string, unknown> = {}) {
   return {
+    windowId: randomUUID(),
     pid: process.pid,
     sessionId: "session-demo",
     cwd: "/tmp/example-cwd",
@@ -204,6 +206,49 @@ describe("WindowRegistry.register", () => {
     let caught: unknown;
     try {
       await registry.register(windowInput());
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+
+    const entries = await listDirIfExists(join(repoDir, "windows"));
+    expect(entries.length).toBe(0);
+  });
+
+  test("windowId 由调用方传入，返回值与记录中的 windowId 均等于传入值", async () => {
+    const { registry, repoDir } = await makeRegistry();
+    const windowId = randomUUID();
+    const returned = await registry.register(windowInput({ windowId }));
+
+    expect(returned).toBe(windowId);
+    const raw = await readFile(join(repoDir, "windows", `${windowId}.json`), "utf8");
+    const record = JSON.parse(raw);
+    expect(record.windowId).toBe(windowId);
+  });
+
+  test("缺少 windowId 时拒绝登记且不写入记录", async () => {
+    const { registry, repoDir } = await makeRegistry();
+    const input = windowInput() as Record<string, unknown>;
+    delete input.windowId;
+
+    let caught: unknown;
+    try {
+      await registry.register(input as unknown as Parameters<typeof registry.register>[0]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+
+    const entries = await listDirIfExists(join(repoDir, "windows"));
+    expect(entries.length).toBe(0);
+  });
+
+  test("windowId 非合法 UUID 时拒绝登记且不写入记录", async () => {
+    const { registry, repoDir } = await makeRegistry();
+
+    let caught: unknown;
+    try {
+      await registry.register(windowInput({ windowId: "not-a-uuid" }));
     } catch (error) {
       caught = error;
     }
