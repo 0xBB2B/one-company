@@ -148,6 +148,8 @@ test("主会话接手前读取仓库 Shell 登记，终态运行仍有后台命�
   const spawned = await w.shells.spawn({ taskId, host: { kind: "role", id: w.foreign.id, runId: w.foreign.id }, command: process.execPath, args: ["-e", "setTimeout(() => {}, 30000)"], cwd: w.repo.root, mode: "background", runToken: uuidv7() });
   expect(spawned.ok).toBe(true);
   await w.runs.update(w.foreign.id, { state: "completed" });
+  const claim = (await w.other.claims.entries()).find((entry) => entry.holder.runId === w.foreign.id)!;
+  expect(await w.other.claims.releaseIfHolderGone(claim.claimId)).toEqual({ released: false, reason: "仍有 1 个活动/不确定任务" });
   const windowShells = new ShellRegistry({ clock: w.clock });
   const main = await createRangeProtection({ cwd: w.repo.root, dataRoot: w.home.dataRoot, holder: { kind: "main", windowId: uuidv7() }, writePaths: [w.repo.root], clock: w.clock, shells: windowShells });
   cleanup.push(() => main.release());

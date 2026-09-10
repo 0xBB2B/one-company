@@ -31,7 +31,7 @@ export async function createRangeProtection(input: {
     activeShellTasks: async (id) => {
       const local = input.shells.list().filter((task) => task.host.runId === id && ["starting", "running", "stopping", "uncertain"].includes(task.status));
       const persisted = withDatabase(repositoryDatabase(input.dataRoot, identity.repoId), (db) => db.list<{ host: { runId?: string } }>("shells").filter((record) => record.data.host.runId === id));
-      return local.length + persisted.length;
+      return new Set([...local.map((task) => task.taskId), ...persisted.map((record) => record.key)]).size;
     },
   });
   const owned = new Map<string, string>();
