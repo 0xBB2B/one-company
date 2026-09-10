@@ -9,7 +9,7 @@ export interface TempHome {
   env: Record<string, string>;
 }
 
-const ENV_ALLOWLIST = ["PATH", "LANG", "LC_ALL", "TMPDIR"];
+const ENV_ALLOWLIST = ["PATH", "LANG", "LC_ALL", "TMPDIR", "GIT_CEILING_DIRECTORIES"];
 
 export async function createTempHome(): Promise<TempHome> {
   const home = await mkdtemp(join(tmpdir(), "pi-company-home-"));

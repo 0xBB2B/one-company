@@ -1,3 +1,4 @@
+import { temporaryRoot } from "./temporary-root.ts";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -144,8 +145,7 @@ export async function createDaemonFixture(): Promise<DaemonFixture> {
   const home = await createTempHome();
   const repo = await createRepoFixture();
   const identity = await repositoryIdentity(repo.root);
-  // os.tmpdir() 在部分沙箱环境下路径本身已超过平台 socket 长度上限，数据根需独立于 HOME 短路径锚定
-  const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
   return {
     home,
     repo,

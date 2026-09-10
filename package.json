@@ -4,14 +4,35 @@
   "description": "pi 的需求驱动开发流程包：主会话对齐需求，守护进程内的需求代理按工作流形状调度角色子代理完成实施、审查与验收",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "spec", "tdd", "workflow", "subagents"],
-  "files": ["agents", "daemon", "extensions", "runtime", "rules", "skills", "README.md", "LICENSE"],
+  "keywords": [
+    "pi-package",
+    "spec",
+    "tdd",
+    "workflow",
+    "subagents"
+  ],
+  "files": [
+    "agents",
+    "daemon",
+    "extensions",
+    "runtime",
+    "rules",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "test": "bun test tests"
+    "test": "bun test tests",
+    "test:integration": "bun test tests/integration",
+    "typecheck": "tsc --noEmit"
   },
   "pi": {
-    "extensions": ["./extensions/index.ts"],
-    "skills": ["./skills"],
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
     "prompts": []
   },
   "dependencies": {
@@ -23,9 +44,11 @@
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-tui": "0.85.1"
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=22.19.0"

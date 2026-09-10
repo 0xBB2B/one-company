@@ -24,6 +24,7 @@ export interface WorkspaceFixture {
 export const GIT_ENV = {
   PATH: process.env.PATH ?? "",
   HOME: process.env.HOME ?? "",
+  GIT_CEILING_DIRECTORIES: process.env.GIT_CEILING_DIRECTORIES ?? "",
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_SYSTEM: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",

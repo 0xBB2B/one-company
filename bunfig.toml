@@ -1,0 +1,2 @@
+[test]
+preload = ["./tests/helpers/test-environment.ts"]

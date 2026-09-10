@@ -67,13 +67,11 @@ async function checkErasableSyntax(dir: string): Promise<{ checked: string[]; vi
   const violations: Violation[] = [];
   for (const file of files) {
     const content = await readFile(file, "utf8");
-    if (/\benum\s/.test(content)) violations.push({ file, reason: "enum" });
-    if (/\bnamespace\s/.test(content)) violations.push({ file, reason: "namespace" });
     for (const spec of findBadRelativeImports(content)) {
       violations.push({ file, reason: `relative import 缺少 .ts 后缀: ${spec}` });
     }
     const stripError = checkNodeTypeStripping(content);
-    if (stripError) violations.push({ file, reason: `node 类型剥离检查失败: ${stripError}` });
+    if (stripError) violations.push({ file, reason: /\benum\b/i.test(stripError) ? "enum" : /\bnamespace\b/i.test(stripError) ? "namespace" : `node 类型剥离检查失败: ${stripError}` });
   }
   return { checked: files, violations };
 }
