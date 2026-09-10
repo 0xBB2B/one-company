@@ -18,11 +18,10 @@
 - [x] F01/F02/F03/F04/F05：统一合法裁决、系统绑定、实际交付复跑、报告核验和完整内容版本；正常路径闭环，伪造与旧证据拒绝。
 - [ ] F06/F07/F08/F09：主会话/需求代理/角色统一范围保护，未清理 Shell 独占，绑定工具和 MCP 能力不越权。
 - [x] F10：设置页保存值作用于真实派工，项目信任与角色目录使用实际上下文。
-- [x] F11：需求结束自动终结；归因、每门禁轮次、回退和授权继续可验证。
+- [x] F11：需求结束自动终结；归因、每项检查轮次、回退和授权继续可验证。
 - [x] F12：恢复确认与实际会话一致，核对结果关联中断操作。
 - [x] F13：初始快照、活动事件、实时查看、终态查看和真实高度布局。
 - [x] F14/F15：原始诊断可查询，离线消息统一排序且送达确认持久化。
-- [x] F16：公开迁移入口完整演练，所有活动写入者阻塞迁移。
 - [x] F17：坏运行记录不能进入控制或让列表误判安全。
 - [x] F18/F19：跨仓等待与唤醒、宿主信号和真实 PTY 清理通过。
 - [ ] F20/S01—S10：同步规范、计划与测试，删除相反断言与失效引用；全量与真实入口验收通过。
@@ -37,18 +36,17 @@
 | F01—F05 | `default-workflow.test.ts` 完整默认工作流；`rebuild-delivery.test.ts` 实际复跑、报告与内容变化拒绝；`structured-verdict.test.ts` 与 `workflow-state.test.ts` 拒绝伪造和旧证据 |
 | F06—F09 | `role-session.test.ts` 真实 SDK 文件、命令和 MCP 越界反例；`write-guard.test.ts` 与 `shared-branch-guard.test.ts` 范围及分支保护；`control-and-resume.test.ts` 未确认 Shell 禁止重叠派工 |
 | F10 | `settings-dispatch.test.ts` 真实设置页保存至 SQLite，真实 SDK 请求使用全局或项目模型，项目角色按信任状态装载 |
-| F11 | `default-workflow.test.ts` accepted 自动结束；`repair-authorization.test.ts` 缺归因拒绝、每门禁三轮后停止、拒答不授权、旧轮次或其他门禁授权无效；`workflow-state.test.ts` 提交前白盒失败可凭归因回退执行 |
+| F11 | `default-workflow.test.ts` accepted 自动结束；`repair-authorization.test.ts` 缺归因拒绝、每项检查三轮后停止、拒答不授权、旧轮次或其他阶段检查授权无效；`workflow-state.test.ts` 提交前白盒失败可凭归因回退执行 |
 | F12 | `control-and-resume.test.ts` 强杀重启与实际会话重载，queued 无会话恢复同一身份，重复续接与取消后复活拒绝 |
 | F13 | `agents-panel.test.ts` 真实订阅快照、导航、实时查看与保留时间；`agents-activity.test.ts` 活动事件；`transcript-view.test.ts` 历史与终态查看 |
 | F14/F15 | `error-details.test.ts` 与 `sqlite-business.test.ts` 原始诊断持久化；`relay-queue.test.ts` 顺序、首答与回执；`daemon-dispatch-relay.test.ts` 多窗口离线重新投递 |
-| F16 | `migration.test.ts` 默认公开迁移入口阻止活动与中断运行、全局与仓库真实 Shell，停写后迁移可查询；多 worktree、窗口停写、保真和中断重试集成验证 |
 | F17 | `run-store.test.ts` 多类损坏记录拒绝读取与列表；`daemon-client.test.ts` 通过协议传播列表失败 |
 | F18/F19 | `workspace.test.ts` 跨仓依赖等待后启动同一运行；`host-exit.test.ts` 正常退出、信号与真实 PTY 主端关闭触发内核挂断并清理 |
 | F20/S01—S10 | 全量 2415 项通过、0 失败；严格生产类型检查、12 份修改规范机械检查与 diff 空白检查通过，测试进程及临时产物清理完成 |
 
 ## 验收状态纠正
 
-逐项复核确认共享 Git 保护仍不满足规范：本任务提交可混入他人已暂存内容，切换在发生之后才被判违规。F06—F09 与总体收尾重新打开，自动化测试全绿不代表完整验收通过。清单覆盖全部 198 条验收，指令契约与真实行为证据分开标识。
+逐项复核确认共享 Git 保护仍不满足规范：本任务提交可混入他人已暂存内容，切换在发生之后才被判违规。F06—F09 与总体收尾重新打开，自动化测试全绿不代表完整验收通过。清单覆盖全部 193 条验收，指令契约与真实行为证据分开标识。
 
 ## 共享 Git 定向修复
 
