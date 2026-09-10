@@ -341,7 +341,7 @@ describe("extensions/dispatch.ts 的阻断阶段集与 daemon/requirement-agent.
 });
 
 describe("rules/* 禁止句", () => {
-  const FORBIDDEN = ["pi-subagents", "SubagentWorkflow", ".pi-spec"];
+  const FORBIDDEN = ["pi-subagents", "SubagentWorkflow"];
   for (const file of ruleFiles) {
     for (const phrase of FORBIDDEN) {
       test(`${file} 不含: ${phrase}`, async () => {

@@ -1,6 +1,3 @@
-import { migrationPreflight, migrationApply, migrationStatus } from "./migration.ts";
-import { createClock } from "./clock.ts";
-import { currentBootId, processStartedAt, WindowRegistry } from "./windows.ts";
 import { collectGitSnapshot } from "./git-snapshot.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,9 +6,9 @@ import { isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { repoDataDir, repositoryIdentity, requirementIdentity } from "./identity.ts";
+import { repositoryIdentity, requirementIdentity } from "./identity.ts";
 import { RunStore } from "./run-store.ts";
-import { StaleVersionError, globalDatabase, repositoryDatabase, withDatabase } from "./database.ts";
+import { StaleVersionError, repositoryDatabase, withDatabase } from "./database.ts";
 import {
   advanceStage,
   checkResume,
@@ -36,7 +33,7 @@ const PARAMETERS = Type.Object(
       Type.Literal("query"), Type.Literal("list"), Type.Literal("init"), Type.Literal("update"),
       Type.Literal("advance"), Type.Literal("retreat"), Type.Literal("task-start"), Type.Literal("task-finish"),
       Type.Literal("task-fail"), Type.Literal("rollback"), Type.Literal("reject"), Type.Literal("shape-confirm"),
-      Type.Literal("resume-check"), Type.Literal("migrate-preflight"), Type.Literal("migrate-apply"), Type.Literal("migrate-status"),
+      Type.Literal("resume-check"),
     ]),
     requirement: Type.Optional(Type.String()),
     cwd: Type.Optional(Type.String()),
@@ -53,9 +50,6 @@ const PARAMETERS = Type.Object(
     decisionId: Type.Optional(Type.String({ pattern: "^(AI|USER)-\\d+$" })),
     runId: Type.Optional(Type.String()),
     reason: Type.Optional(Type.String()),
-    confirm: Type.Optional(Type.Boolean()),
-    expectedFingerprint: Type.Optional(Type.String()),
-    legacyWritesStopped: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -66,18 +60,9 @@ export interface WorkflowActionResult {
   details: Record<string, unknown>;
 }
 
-export type MigrationHandler = (ctx: WorkflowContext, params: Record<string, unknown>) => Promise<ActionResult>;
-
-export interface MigrationHandlers {
-  preflight: MigrationHandler;
-  apply: MigrationHandler;
-  status: MigrationHandler;
-}
-
 export interface CreateWorkflowToolOptions {
   dataRoot: string;
   cwd?: string;
-  migration?: MigrationHandlers;
   boundRequirement?: string;
   beforeTaskFinish?: (runId: string, signal?: AbortSignal) => Promise<void>;
   onStateChange?: (state: RequirementState) => void;
@@ -236,18 +221,9 @@ export async function currentVersion(ctx: { cwd: string; requirement: string }):
   };
 }
 
-function migrationHandlerFor(migration: MigrationHandlers | undefined, action: string): MigrationHandler | undefined {
-  if (!migration) return undefined;
-  if (action === "migrate-preflight") return migration.preflight;
-  if (action === "migrate-apply") return migration.apply;
-  if (action === "migrate-status") return migration.status;
-  return undefined;
-}
-
 async function dispatch(
   params: Record<string, unknown>,
   ctx: { dataRoot: string; cwd: string },
-  migration: MigrationHandlers | undefined,
 ): Promise<WorkflowActionResult> {
   const action = params.action as string;
 
@@ -394,42 +370,6 @@ async function dispatch(
         details: { isError: false, stage: result.stage },
       };
     }
-    case "migrate-preflight":
-    case "migrate-apply":
-    case "migrate-status": {
-      const handler = migrationHandlerFor(migration, action);
-      if (handler) return formatReceipt(wctx.requirement, action, await handler(wctx, params), action);
-      let result: unknown;
-      if (action === "migrate-preflight") result = await migrationPreflight(wctx);
-      else if (action === "migrate-status") result = await migrationStatus(wctx);
-      else {
-        const identity = await repositoryIdentity(wctx.cwd);
-        const clock = createClock();
-        const windows = new WindowRegistry({ repoDir: await repoDataDir(wctx.dataRoot, identity.repoId, identity.commonDir), clock, bootId: currentBootId, processStartedAt });
-        const runStore = new RunStore({ dataRoot: wctx.dataRoot, repoId: identity.repoId, daemonStartedAt: "migration-check" });
-        const writersActive = async () => {
-          if ((await windows.list()).some((window) => window.liveness !== "gone")) return true;
-          const runs = await runStore.list({ limit: Number.MAX_SAFE_INTEGER });
-          if (runs.items.some((run) => !["completed", "failed", "stopped"].includes(run.state))) return true;
-          const shellDatabases = [repositoryDatabase(wctx.dataRoot, identity.repoId), globalDatabase(wctx.dataRoot)];
-          for (const database of shellDatabases) {
-            const tasks = withDatabase(database, (db) => db.list<{ pid: number; startedAt: number; cwd: string }>("shells").map((record) => record.data));
-            for (const task of tasks) {
-              const startedAt = await processStartedAt(task.pid);
-              if (startedAt === null || new Date(startedAt).getTime() !== task.startedAt) continue;
-              if (!task.cwd || (await repositoryIdentity(task.cwd)).repoId === identity.repoId) return true;
-            }
-          }
-          return false;
-        };
-        try {
-          const applied = await migrationApply({ ...wctx, authorized: params.confirm === true, legacyWritesStopped: params.legacyWritesStopped === true, expectedFingerprint: String(params.expectedFingerprint ?? ""), hasActiveWindows: writersActive, hooks: { beforeVerify: async () => { if (await writersActive()) throw new Error("迁移期间出现活动写入者"); }, beforeClear: async () => { if (await writersActive()) throw new Error("清理前出现活动写入者"); } } });
-          if (!applied.ok) return failReceipt(wctx.requirement, action, applied.blocked.join("；"));
-          result = applied;
-        } finally { clock.stopGapWatcher(); }
-      }
-      return { ok: true, text: `${wctx.requirement} ${action} 成功：${JSON.stringify(result)}`, details: { isError: false, data: result } };
-    }
     default:
       return failReceipt(wctx.requirement, action, "不支持的动作");
   }
@@ -438,7 +378,6 @@ async function dispatch(
 export async function executeWorkflowAction(
   params: Record<string, unknown>,
   ctx: { dataRoot: string; cwd: string },
-  migration?: MigrationHandlers,
 ): Promise<WorkflowActionResult> {
   const requirement = typeof params.requirement === "string" ? params.requirement : "(未知需求)";
   const action = typeof params.action === "string" ? params.action : "(未知动作)";
@@ -447,7 +386,7 @@ export async function executeWorkflowAction(
     return failReceipt(requirement, action, `参数不合法: ${reason}`);
   }
   try {
-    return await dispatch(params, ctx, migration);
+    return await dispatch(params, ctx);
   } catch (error) {
     const staleVersion = error instanceof StaleVersionError;
     return failReceipt(requirement, action, (error as Error).message, staleVersion);
@@ -489,11 +428,11 @@ export function createWorkflowTool(options: CreateWorkflowToolOptions) {
       if (options.boundRequirement && (
         (params.requirement !== undefined && params.requirement !== options.boundRequirement) ||
         (params.cwd !== undefined && await realpath(params.cwd as string) !== await realpath(cwd)) ||
-        String(params.action).startsWith("migrate-") || params.action === "list"
+        params.action === "list"
       )) throw new Error("需求代理只能操作绑定的仓库与需求");
       const boundParams = options.boundRequirement ? { ...params, requirement: options.boundRequirement, cwd } : params;
       if (params.action === "task-finish" && typeof params.runId === "string") await options.beforeTaskFinish?.(params.runId, signal);
-      const result = await executeWorkflowAction(boundParams, { dataRoot: options.dataRoot, cwd }, options.migration);
+      const result = await executeWorkflowAction(boundParams, { dataRoot: options.dataRoot, cwd });
       if (result.ok && options.boundRequirement && options.onStateChange) {
         const state = await readRequirementState({ dataRoot: options.dataRoot, cwd, requirement: options.boundRequirement });
         if (state.exists) options.onStateChange(state.data);

@@ -24,7 +24,7 @@ description: 仓库身份、需求身份与工作区发现，以及本机用户�
 ~/.pi/agent/pi-company/
 ├── global.sqlite                 全局角色设置、主会话 Shell 登记
 ├── sock/<repoId前16位>.sock      仓库守护进程通信资源
-└── repos/<repoId>/data.sqlite     仓库身份、需求、运行、决策、会话、中继、窗口、占用、诊断与迁移
+└── repos/<repoId>/data.sqlite     仓库身份、需求、运行、决策、会话、中继、窗口、占用、诊断
 ```
 
 数据库及 WAL/SHM 仅允许当前用户读写，每条记录主键为 UUIDv7。仓库 SHA256、需求名称、任务编号属于业务键。同仓 worktree 共享数据库，删除开发现场不删除数据库。

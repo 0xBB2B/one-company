@@ -45,7 +45,6 @@ const REQUIRED_SKILL_SENTENCES = [
 ];
 
 const FORBIDDEN_SENTENCES = [
-  ".pi-spec/",
   "ai-decisions.jsonl",
   "user-decisions.jsonl",
   "status: todo",

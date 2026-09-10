@@ -1,6 +1,6 @@
 ---
 name: integration-verification
-description: 真实守护进程与多窗口子进程的端到端验证矩阵：派出与中继、控制与续接、断网与睡眠、宿主退出、底部键盘流、多仓库工作区、迁移演练
+description: 真实守护进程与多窗口子进程的端到端验证矩阵：派出与中继、控制与续接、断网与睡眠、宿主退出、底部键盘流、多仓库工作区
 ---
 # 集成验证
 
@@ -14,7 +14,6 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 - cross-window-panel / transcript-view / status-entry / process-list：底部顺序、空输入 ↓ 直接进面板、20 秒保留、查看页只读、状态栏汇总文本与 /ps 跨宿主。
 - host-lifecycle / managed-execution：窗口退出路径清理窗口 Shell、守护进程 Shell 不受影响、后台 Shell 超时与后代清理。
 - workspace-coordination：父目录窗口看到两个仓库、契约变更经主会话裁定并转发。
-- safe-migration：旧格式预检、停写校验、保真迁移、中断恢复。
 
 ## 涉及文件
 - 新建 `tests/integration/default-workflow.test.ts`
@@ -26,7 +25,6 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 - 新建 `tests/integration/host-exit.test.ts`
 - 新建 `tests/integration/agents-panel.test.ts`
 - 新建 `tests/integration/workspace.test.ts`
-- 新建 `tests/integration/migration.test.ts`
 - 修改 `package.json` — `test:integration` 脚本（`bun test tests/integration`）
 
 ## 函数清单
@@ -82,14 +80,6 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 | 契约变更 | 后端需求代理 `pi_company_ask` 契约变更 | 主会话裁定后 `pi_company_forward` | 前端需求代理收到补充；直连被拒 |
 | 跨仓库等待 | 形状声明等待后端 accepted | 后端未通过 / 通过 | 等待并显示原因 / 核对后执行 |
 
-### migration
-| 用例 | 入口 | 输入 | 预期 |
-|---|---|---|---|
-| 预检 | `pi_company_workflow migrate-preflight` | 含两个 worktree 的旧 `.pi-spec` 夹具 | 列出全部来源；未修改文件 |
-| 停写阻塞 | `migrate-apply` | 存在活动窗口 | 阻塞并列明条件 |
-| 保真迁移 | 停写后 `migrate-apply` | 含重复记录与替代关系 | 本机可查、编号与引用一致、仓库只移除运行字段 |
-| 中断恢复 | 校验阶段中断后重试 | — | 源数据未删除；重试不重复 |
-
 ## 协作关系
 - 依赖全部前序 plan 的产物；集成测试不 mock 守护进程、子进程与套接字，只用受控模型与注入时钟。
 
@@ -112,5 +102,4 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 - `repair-authorization.test.ts` 经真实中继答复和公开审查派工入口验证门禁三轮后阻塞，拒答不授权；授权仅对指定门禁与轮次有效，改名重派不重置计数。
 - `settings-dispatch.test.ts` 在真实设置页保存全局与项目模型，再验证实际 SDK 请求使用对应模型；项目角色正文仅在项目受信任时装载。
 
-- `migration.test.ts` 通过默认公开迁移工具完成预检、阻止活动和中断运行、阻止仓库及全局真实 Shell、停写迁移及查询。
 - `agents-panel.test.ts` 在派工之后才打开面板，验证订阅快照让已有运行立即可见。

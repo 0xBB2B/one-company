@@ -8,7 +8,6 @@
 - [workflow-state](06-workflow-state.md) — 阶段/进度集合、随形状的门禁、受控回退、以运行身份取证据 [依赖: versioned-store, decision-ledger]
 - [workflow-tool](07-workflow-tool.md) — 运行信息工具（含 retreat，证据只以 runId 传入） [依赖: workflow-state]
 - [window-registry](38-window-registry.md) — 窗口登记、睡眠感知心跳、持有者消失的机械判定 [依赖: local-identity, versioned-store, sleep-aware-clock]
-- [migration](08-migration.md) — 旧格式迁移预检/执行/恢复 [依赖: decision-ledger, workflow-tool, window-registry]
 ## 阶段 2：角色、配置与 MCP
 - [role-catalog](09-role-catalog.md) — 三层角色定义合并与派工关系 [依赖: package-skeleton]
 - [role-settings](10-role-settings.md) — 模型/思考/MCP 解析与保存 [依赖: role-catalog]
@@ -51,6 +50,6 @@
 ## 阶段 8：集成验证
 - [integration-verification](51-integration-verification.md) — 端到端集成验证矩阵 [依赖: 全部]
 
-- [sqlite-storage](52-sqlite-storage.md) — 业务与审计数据统一 SQLite 与 UUIDv7、普通日志使用 .log、迁移及验收
+- [sqlite-storage](52-sqlite-storage.md) — 业务与审计数据统一 SQLite 与 UUIDv7、普通日志使用 .log、验收
 
 - [ACCEPTANCE](ACCEPTANCE.md) — 全部规范验收的证据关联、已复现失败与验证边界

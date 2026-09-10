@@ -58,6 +58,5 @@
 - [controlled-updates](workflow-data/controlled-updates.md) — 运行信息通过受校验工具局部读写，拒绝未知字段和过期更新并返回简短回执
 - [data-ownership](workflow-data/data-ownership.md) — 需求和任务定义及验收报告留在仓库，运行字段与决策只保存在本机用户数据区，按仓库与需求隔离且不依赖工作目录存在
 - [decision-append](workflow-data/decision-append.md) — 决策由专用工具在本机按需求追加，回执先于行动且既有内容不可改写
-- [safe-migration](workflow-data/safe-migration.md) — 全量迁移在相关写入全部停止后校验执行，保留历史内容并在冲突或失败时保护源数据
 - [state-transitions](workflow-data/state-transitions.md) — 需求和任务状态由工具按固定集合及随形状的门禁推进，证据只按运行身份读取，阶段回退带理由与决定编号
 - [version-bound-recovery](workflow-data/version-bound-recovery.md) — 续接从本机状态定位需求并核对版本和原运行，缺失数据或旧通过证据不能放行

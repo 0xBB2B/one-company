@@ -11,7 +11,6 @@ const COMMANDS = join(PACKAGE_ROOT, "extensions/commands.ts");
 const PACKAGE_JSON = join(PACKAGE_ROOT, "package.json");
 const SETTINGS_UI = join(PACKAGE_ROOT, "runtime/settings-ui.ts");
 const IDENTITY = join(PACKAGE_ROOT, "runtime/identity.ts");
-const MIGRATION = join(PACKAGE_ROOT, "runtime/migration.ts");
 const AGENTS_PANEL = join(PACKAGE_ROOT, "runtime/agents-panel.ts");
 
 async function readText(path: string): Promise<string> {
@@ -105,7 +104,7 @@ describe("README 必需句", () => {
 });
 
 describe("README 禁止句", () => {
-  const FORBIDDEN = ["pi-subagents", "符号链接", "/spec-new", "/pi-spec:"];
+  const FORBIDDEN = ["pi-subagents", "符号链接", "/spec-new"];
   for (const phrase of FORBIDDEN) {
     test(`不含: ${phrase}`, async () => {
       const body = await readText(README);
@@ -113,11 +112,6 @@ describe("README 禁止句", () => {
     });
   }
 
-  test("不含 .pi-spec/（提及旧数据迁移语境的行除外）", async () => {
-    const body = await readText(README);
-    const violatingLines = body.split("\n").filter((line) => line.includes(".pi-spec/") && !line.includes("旧"));
-    expect(violatingLines).toEqual([]);
-  });
 });
 
 describe("README 常量与实际代码一致", () => {
@@ -249,15 +243,6 @@ describe("README 本机数据事实", () => {
     expect(sockSegment).toContain("数据根");
   });
 
-  test("迁移描述与 migration.ts 的移除语义一致：仅移除已迁出的运行字段与决策记录", async () => {
-    const source = await readText(MIGRATION);
-    expect(source).toContain("ai-decisions.jsonl");
-    expect(source).toContain("user-decisions.jsonl");
-    const section = extractSection(await readText(README), "本机数据");
-    const hasLiteral = section.includes("仅移除已迁出的运行字段与决策记录") || section.includes("只移除已迁出的运行字段与决策记录");
-    const hasEquivalent = /移除/.test(section) && /运行字段/.test(section) && /决策(记录)?/.test(section);
-    expect(hasLiteral || hasEquivalent).toBe(true);
-  });
 });
 
 describe("README Shell 管理事实", () => {

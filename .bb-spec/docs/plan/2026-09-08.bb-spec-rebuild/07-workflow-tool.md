@@ -1,6 +1,6 @@
 ---
 name: workflow-tool
-description: pi_company_workflow 工具：查询、初始化、局部更新、阶段推进与回退、任务进度、形状确认、续接核对与迁移入口，窗口与守护进程共用；证据只以运行身份传入
+description: pi_company_workflow 工具：查询、初始化、局部更新、阶段推进与回退、任务进度、形状确认、续接核对，窗口与守护进程共用；证据只以运行身份传入
 ---
 # 运行信息工具
 
@@ -11,7 +11,6 @@ description: pi_company_workflow 工具：查询、初始化、局部更新、�
 - controlled-updates：流程通过专用工具查询、初始化和修改运行信息，不通过文件编辑或命令改写；请求指定需求、可选任务与更新内容，不要求整份文档；普通字段更新与阶段推进分开校验；任一字段不合法整个请求不生效；过期版本被拒绝并提示重新读取；成功回执只含归属、变更字段、新版本与必要提示。
 - data-ownership：用运行信息入口修改需求或任务定义、或以报告结论代替完成门禁的请求被拒绝。
 - version-bound-recovery：规划、调度、修订、对账与续接从本机数据取阶段；多个待续需求需用户选择。
-- safe-migration：迁移预检、正式迁移与状态查询作为工具动作提供。
 
 ## 涉及文件
 - 新建：runtime/workflow-tool.ts
@@ -28,7 +27,7 @@ Type.Object({
     Type.Literal("query"), Type.Literal("list"), Type.Literal("init"), Type.Literal("update"),
     Type.Literal("advance"), Type.Literal("retreat"), Type.Literal("task-start"), Type.Literal("task-finish"),
     Type.Literal("task-fail"), Type.Literal("rollback"), Type.Literal("reject"), Type.Literal("shape-confirm"),
-    Type.Literal("resume-check"), Type.Literal("migrate-preflight"), Type.Literal("migrate-apply"), Type.Literal("migrate-status")
+    Type.Literal("resume-check"),
   ]),
   requirement: Type.Optional(Type.String()),
   cwd: Type.Optional(Type.String()),
@@ -44,8 +43,7 @@ Type.Object({
   stage: Type.Optional(Type.String()),
   decisionId: Type.Optional(Type.String({ pattern: "^(AI|USER)-\\d+$" })),
   runId: Type.Optional(Type.String()),
-  reason: Type.Optional(Type.String()),
-  confirm: Type.Optional(Type.Boolean())
+  reason: Type.Optional(Type.String())
 }, { additionalProperties: false })
 ```
 
@@ -58,8 +56,8 @@ Type.Object({
 ### runtime/workflow-tool.ts
 | 函数名 | 职责 |
 |---|---|
-| `createWorkflowTool` | 生成 pi 工具定义（名称、说明、参数、执行），供窗口扩展与守护进程会话共用；选项 `{ dataRoot, cwd?, migration? }`，`migration` 为迁移单元注入的 `{ preflight, apply, status }` 处理器，未注入时三个迁移动作返回失败回执"迁移功能未接入" |
-| `executeWorkflowAction` | 按 action 分派到状态机或迁移函数，统一把错误映射为失败回执，绝不抛未处理异常 |
+| `createWorkflowTool` | 生成窗口与守护进程共用的工具定义，提供绑定需求、交付核对与状态变更通知选项 |
+| `executeWorkflowAction` | 按 action 分派到状态机，统一把错误映射为失败回执，绝不抛未处理异常 |
 | `retryOnStaleVersion` | 供程序化调用方（run-manager 等）使用：以"重读状态 → 重算更新 → 重写"的回调形式执行更新，遇版本冲突自动重读重算重写，达到上限后返回失败 |
 | `requireRequirement` | 解析并校验 requirement 与 cwd 得到身份，缺失时返回阻塞回执 |
 | `formatReceipt` | 生成简短成功/失败文案与结构化 details；版本冲突以状态机结果的 `staleVersion` 判别并单点追加"请重新查询后重试"；失败文案中的绝对路径一律脱敏 |
@@ -73,7 +71,7 @@ Type.Object({
 
 ## 协作关系
 - 业务失败的表达：`pi_company_workflow` 的 `execute` 在业务失败时抛出（错误消息即原回执文本），因为 SDK 只把抛出识别为工具 isError；成功回执形状不变。主会话与守护进程内会话共用同一实现，不做二次包装。
-- 状态动作调用 `runtime/workflow-state.ts`；迁移动作经 `createWorkflowTool` 注入的处理器分派（由 migration 单元提供 `runtime/migration.ts` 并在窗口扩展里注入）；身份经 identity；运行记录经 `runtime/run-store.ts`。
+- 状态动作调用 `runtime/workflow-state.ts`；身份经 identity；运行记录经 `runtime/run-store.ts`。
 - 需求代理会话通过 `createWorkflowTool` 注册同一工具；守护进程的 run-manager 在派工与交付核对时直接调用 `executeWorkflowAction`，并对可能并发的更新走 `retryOnStaleVersion`，不带旧 version 盲目重试。
 - 模型调用方收到版本冲突回执后自行重新 `query` 再提交。
 
@@ -88,7 +86,7 @@ Type.Object({
   - `retreat` reviewing→executing 附 reason 与 decisionId 成功；缺 decisionId 或目标阶段不在允许路径失败
   - `reject` 无 decisionId 失败；`task-finish` runId 指向的运行缺交付证据失败，齐全成功后任务 done
   - `shape-confirm` 以 runId 读取提议形状：形状不含黑盒验收且无 decisionId 失败，附 decisionId 成功
-  - `resume-check` 对无状态需求返回阻塞而非完成；`list` 返回两个进行中需求；未注入迁移处理器时 `migrate-preflight` 返回失败回执而不抛出
+  - `resume-check` 对无状态需求返回阻塞而非完成；`list` 返回两个进行中需求
   - 写入过程被模拟为失败时回执为失败或结果不明，不返回成功
 - [x] 定向查询与局部更新
 - [x] 版本冲突提示与程序化重读重写

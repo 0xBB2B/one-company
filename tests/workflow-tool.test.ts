@@ -648,7 +648,7 @@ describe("shape-confirm 形状确认", () => {
   test("形状不含黑盒验收且无跳过决定时失败", async () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
     const runId = await createPlanRunWithProposedShape(world, {
       tasks: [{ id: "T-1", roles: ["impl"] }],
       gates: { plan: true, whiteboxReview: true, blackboxAcceptance: false },
@@ -674,7 +674,7 @@ describe("shape-confirm 形状确认", () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
     const skipDecisionId = await appendUserDecisionId(world, "跳过黑盒验收", "本需求不做黑盒验收");
-    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
     const runId = await createPlanRunWithProposedShape(world, {
       tasks: [{ id: "T-1", roles: ["impl"] }],
       gates: { plan: true, whiteboxReview: true, blackboxAcceptance: false },
@@ -732,12 +732,10 @@ describe("list 需求列表", () => {
   });
 });
 
-describe("迁移动作的默认入口", () => {
-  test("预检与状态查询无需注入处理器，未授权的正式迁移仍被拒绝", async () => {
+describe("工作流仅提供当前动作", () => {
+  test.each(["migrate-preflight", "migrate-apply", "migrate-status"])("未注册的动作 %s 被拒绝", async (action) => {
     const world = await setupWorld();
-    expect((await call(world, { action: "migrate-preflight", requirement: world.requirement })).details.isError).toBe(false);
-    expect((await call(world, { action: "migrate-status", requirement: world.requirement })).details.isError).toBe(false);
-    await expect(call(world, { action: "migrate-apply", requirement: world.requirement })).rejects.toThrow(/未授权/);
+    await expect(call(world, { action, requirement: world.requirement })).rejects.toThrow(/参数不合法/);
   });
 });
 
@@ -797,7 +795,7 @@ describe("shape-confirm 与 advance/task-finish 同口径的证据校验", () =>
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
     const otherRequirement = "2026-09-09.workflow-tool-other";
-    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
     const run = await world.runStore.create(baseRunInput(otherRequirement, world.repo.root));
     await world.runStore.update(run.id, { state: "running" });
     await world.runStore.update(run.id, {
@@ -833,7 +831,7 @@ describe("shape-confirm 与 advance/task-finish 同口径的证据校验", () =>
   test("对 phase 不是 plan 的运行返回失败回执，形状未写入", async () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
     const run = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "T-1"));
     await world.runStore.update(run.id, { state: "running" });
     await world.runStore.update(run.id, {
