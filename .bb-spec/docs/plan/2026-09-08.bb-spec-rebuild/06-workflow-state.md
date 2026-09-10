@@ -19,7 +19,7 @@ description: 需求阶段与任务进度的本机状态模型、随形状声明�
 
 ## 成品定义
 
-需求状态文档（本机数据区 `requirements/<reqId>/state.json`，经 store 的版本化文档读写）：
+需求状态记录（仓库 SQLite 的 `requirements` 命名空间，业务键为需求名，UUIDv7 主键与 version 由数据库管理）：
 
 ```json
 { "requirement": "<reqId>", "stage": "draft",
@@ -39,7 +39,7 @@ description: 需求阶段与任务进度的本机状态模型、随形状声明�
   "delivery": { "commit": "<sha 或 null>", "verificationOk": true } }
 ```
 
-证据文件 `requirements/<reqId>/evidence/<stage>.json`：`{ "stage", "runId", "phase", "definitionFingerprint", "codeHead", "cwd", "boundAt" }`。
+证据记录（仓库 SQLite 的 `evidence:<reqId>` 命名空间，业务键为 stage）：`{ "stage", "runId", "phase", "definitionFingerprint", "codeHead", "cwd", "boundAt" }`。
 
 逐阶段门禁（目标阶段 ← 前提；"当前版本"由调用方传入的定义指纹与代码 HEAD 给出）：
 
@@ -101,9 +101,11 @@ description: 需求阶段与任务进度的本机状态模型、随形状声明�
   - 两个调用方读同一 version 后先后更新，后者得到版本冲突
   - `bindEvidence` 后修改定义指纹再 `checkEvidence` 返回待重新核对；`checkResume` 对缺失状态、损坏状态、原运行未停止分别返回明确阻塞而不初始化
   - `rejectRequirement` 无用户决定被拒绝；已 accepted 的需求 `rollbackTask` 被拒绝
-- [ ] 集合与非法值
-- [ ] 随形状声明的逐阶段门禁与跳过
-- [ ] 运行结果绑定核对
-- [ ] 任务完成条件
-- [ ] 受控回退
-- [ ] 证据版本失效与续接核对
+- [x] 集合与非法值
+- [x] 随形状声明的逐阶段门禁与跳过
+- [x] 运行结果绑定核对
+- [x] 任务完成条件
+- [x] 受控回退
+- [x] 证据版本失效与续接核对
+
+阶段或任务完成与证据绑定在同一短事务提交；外部核验前读取证据版本，提交时比较身份和版本，核验期间发生失效操作时拒绝旧绑定。

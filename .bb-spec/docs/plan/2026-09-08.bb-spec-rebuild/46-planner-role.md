@@ -48,7 +48,7 @@ prompt_mode: append
 `references/planning-artifacts.md`（需求代理核对规划产物时加载）必需内容：只写需求代理核对产物的清单，不复述 `agents/planner.md` 与 spec-docs 已有的要素定义和模板——骨架五要素按名称逐项在场且落在任务索引与协作说明；高风险任务（状态控制、安全边界、宿主接入、不可重复副作用）在实施前由需求代理核对验证方案；验证条件无法确认时列出具体缺项、不判为实施就绪，模拟通过、模型自觉遵守提示、既有测试数量均不作为证明；产物中不得出现临时编写的检查脚本、任务生成器或验收解析器；验证入口必须可运行；模拟边界须把本次改动引入或修改的连接、鉴权与保护逻辑排除在模拟之外。
 
 ## 协作关系
-- 45 需求代理在派 planner 前按 `planning-preflight.md` 前检，派工后按 `planning-artifacts.md` 核对产物并调用 44 的检查入口。
+- 45 需求代理在派 planner 前按 `planning-preflight.md` 前检，派工后按 `planning-artifacts.md` 核对产物并调用固定入口 `lint.sh --tasks`。
 - 09 角色目录装载 `agents/planner.md`。
 
 ## 验证方式
@@ -61,6 +61,6 @@ prompt_mode: append
   - `planning-artifacts.md` 含 `在实施前由需求代理核对验证方案`、`验证入口必须可运行`、`排除在模拟之外`、`不判为实施就绪`、`模拟通过`、`模型自觉遵守提示`、`既有测试数量`、`任务生成器`、`验收解析器`；不含 spec-docs 的验证约定块模板正文（不含 `- 真实入口：`），不含骨架五要素的成立标准正文（不含 `互斥`）
   - tools 为 `[read, grep, find, ls, write, edit, bash]` 白名单整体相等
   - 禁止句不存在（三份文件）：`预估改动不超过 200 行`、`status:`、`可以调用 worker`、`.pi-spec/`、`规划派工次数为零`、`每个待规划的行为切片`
-- [ ] frontmatter 断言
-- [ ] 三份文件必需句全部命中
-- [ ] 禁止句全部缺席
+- [x] frontmatter 断言
+- [x] 三份文件必需句全部命中
+- [x] 禁止句全部缺席

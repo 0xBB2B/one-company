@@ -84,8 +84,8 @@ export const AGENTS_PARAMETERS = Type.Object({
   - `agents list` 合并两个仓库的运行；一仓库不可达时另一仓库结果仍列出并标注不可达原因；`pause` 结果反映守护进程真实状态（`pausing` 未确认时不报已暂停）；`pauseAll` 回执含各仓库真实计数；`resumeInterrupted` 被拒时列出原因；守护进程不回应时 signal 中止在 1 秒内以中止原因失败。
   - 守护进程不可达时五个工具返回不可达原因，不在窗口内执行。
   - `renderCall` / `renderResult` 渲染零行输出。
-- [ ] 工具名与 schema
-- [ ] 派出前提与唯一性（不按 kind 判定）
-- [ ] 首答生效与转发回执
-- [ ] 控制结果按真实状态
-- [ ] 渲染零行
+- [x] 工具名与 schema
+- [x] 派出前提与唯一性（不按 kind 判定）
+- [x] 首答生效与转发回执
+- [x] 控制结果按真实状态
+- [x] 渲染零行

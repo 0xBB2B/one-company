@@ -2,7 +2,7 @@
 ## 阶段 1：骨架与共享基础
 - [package-skeleton](01-package-skeleton.md) — 清除旧执行链，包声明与测试助手
 - [local-identity](02-local-identity.md) — 仓库/需求身份、工作区发现、本机数据布局 [依赖: package-skeleton]
-- [versioned-store](03-versioned-store.md) — 原子文档、目录锁、状态版本 CAS [依赖: local-identity]
+- [versioned-store](03-versioned-store.md) — SQLite 事务、UUIDv7、状态版本 CAS [依赖: local-identity]
 - [sleep-aware-clock](04-sleep-aware-clock.md) — 扣除睡眠间隔的统一计时器 [依赖: package-skeleton]
 - [decision-ledger](05-decision-ledger.md) — 本机决策追加与决策记录工具 [依赖: versioned-store]
 - [workflow-state](06-workflow-state.md) — 阶段/进度集合、随形状的门禁、受控回退、以运行身份取证据 [依赖: versioned-store, decision-ledger]
@@ -20,7 +20,7 @@
 - [structured-verdict](16-structured-verdict.md) — 结构化裁决校验与收集 [依赖: package-skeleton]
 - [error-details](17-error-details.md) — 错误详情 [依赖: structured-verdict]
 - [run-store](18-run-store.md) — 运行记录持久化 [依赖: versioned-store, error-details]
-- [session-records](19-session-records.md) — 会话文件落盘、悬空调用补中断结果、重载 [依赖: run-store]
+- [session-records](19-session-records.md) — SQLite 会话记录落盘、悬空调用补中断结果、重载 [依赖: run-store]
 - [shell-registry](20-shell-registry.md) — Shell 登记、信号探测与逃逸后代、用户裁定、按运行令牌接管 [依赖: sleep-aware-clock]
 - [shell-bash-tool](21-shell-bash-tool.md) — bash 包装与手动入口接管 [依赖: shell-registry]
 - [network-pause](22-network-pause.md) — 故障分类、闸门、连通探测 [依赖: sleep-aware-clock]
@@ -50,3 +50,7 @@
 - [main-session-skills](49-main-session-skills.md) — 主会话流程 Skill、规则与 README [依赖: dispatch-tools, write-guard, role-prompts, commands]
 ## 阶段 8：集成验证
 - [integration-verification](51-integration-verification.md) — 端到端集成验证矩阵 [依赖: 全部]
+
+- [sqlite-storage](52-sqlite-storage.md) — 业务与审计数据统一 SQLite 与 UUIDv7、普通日志使用 .log、迁移及验收
+
+- [ACCEPTANCE](ACCEPTANCE.md) — 全部规范验收的证据关联、已复现失败与验证边界

@@ -121,7 +121,7 @@ description: 清理 main 上被替代的外部子代理桥接、旧角色与旧�
   - `createTempHome` 返回的目录互不重复，HOME 下无真实用户文件；`removeTempHome` 后目录不存在
   - `registerControlledProvider` 注册后，脚本化的文本回复、工具调用与"连接失败"能依次被取出；未排队时请求得到明确错误而非挂起
   - `createWorkspaceFixture` 生成的父目录含两个独立 Git 仓库与一个 node_modules 下的伪仓库
-- [ ] 包声明契约
-- [ ] 删除项不存在
-- [ ] 可剥离语法逐文件通过
-- [ ] 四个测试助手各自的正常与错误路径
+- [x] 包声明契约
+- [x] 删除项不存在
+- [x] 可剥离语法逐文件通过
+- [x] 四个测试助手各自的正常与错误路径

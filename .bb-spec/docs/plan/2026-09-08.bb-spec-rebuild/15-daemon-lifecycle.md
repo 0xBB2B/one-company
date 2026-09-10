@@ -17,7 +17,6 @@ description: 守护进程入口、SDK 动态加载、以 socket 连接探测实�
 - 新建：`daemon/sdk.ts` — SDK 动态加载
 - 新建：`daemon/lifecycle.ts` — 单实例、监听、空闲退出
 - 新建：`daemon/server.ts` — 连接管理与方法分发骨架（hello / ping / shutdown / 订阅登记；业务方法处理器由 run-manager 单元接入）
-- 修改：`runtime/identity.ts` — `daemonSocketPath` 改为返回 `<dataRoot>/sock/<repoId 前 16 位>.sock`（目录 0o700，首次创建）；删除 `daemonLockPath`
 - 修改：`runtime/run-store.ts` — 新增 `RunStore.markOwnRunsInterrupted`（把 `daemonStartedAt` 等于本实例的非终态运行改为 interrupted，供退出路径使用）
 - 新建：`tests/helpers/daemon-harness.ts` 用 PATH 上的 `node`（生产运行时）拉起守护进程，不用 bun
 - 新建：`tests/helpers/daemon-harness.ts` — 测试用真实拉起与连接
@@ -97,10 +96,10 @@ socket：<dataRoot>/sock/<repoId 前 16 位>.sock（不在 repos/<repoId>/ 下�
 - 测试入口：`tests/helpers/daemon-harness.ts` 的 `startDaemonForTest` / `connectTestClient`；socket 上的 `hello`、`ping`、`shutdown`
 - 测试输入：同一仓库并发两次与三次拉起；预置无监听者的残留 socket 文件；已有实例运行时再次拉起；用另一个监听者替换正在运行实例的 socket 文件；客户端断开后等待超过空闲时限（注入时钟跳变模拟睡眠 5 分钟）；运行目录预置一条 `running` 记录后启动；数据根路径很长的仓库
 - 预期结果：并发拉起后一个自检周期内只有一个进程存活且 socket 可连、`hello` 返回同一 daemonPid；残留 socket 被清理并正常启动；已有实例时新实例退出码 0 且原实例连接不受影响；socket 被替换后原实例在一个自检周期内退出且不删除新文件；无连接无运行时超过 10 分钟退出并删除 socket；睡眠跳变不计入空闲时长；预置记录在启动后变为 `interrupted`；socket 路径位于 `<dataRoot>/sock/` 且文件名为 repoId 前 16 位，长路径仓库也能监听
-- [ ] 并发拉起收敛为单实例
-- [ ] 残留 socket 清理与已有实例复用
-- [ ] socket 被替换即退出
-- [ ] 空闲退出与睡眠扣除
-- [ ] 存在暂停或等待答复运行时不退出
-- [ ] 启动标记中断
-- [ ] SDK 目录缺失或版本不足时以非零退出并给出原因
+- [x] 并发拉起收敛为单实例
+- [x] 残留 socket 清理与已有实例复用
+- [x] socket 被替换即退出
+- [x] 空闲退出与睡眠扣除
+- [x] 存在暂停或等待答复运行时不退出
+- [x] 启动标记中断
+- [x] SDK 目录缺失或版本不足时以非零退出并给出原因

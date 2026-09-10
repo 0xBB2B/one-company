@@ -41,7 +41,7 @@ description: 会话记录查看页：替换输入栏，实时显示思考、输�
   - 凭据与标记文本在渲染输出中原样出现；输入字符不产生任何变化。
   - 已结束运行显示记录并标"已结束"（本地记录 ended 时不发起订阅与轮询；订阅被拒或连接断开都不改写已结束）；未结束运行打开后 client.state() 变为 unreachable 时轮询一次 tick 后标"不可达"且保留已显示内容；生产打开路径把宿主 tui 传入视图（rows=10 时渲染不超过 5 行、rows=40 时不超过 20 行且短内容按自然行数、增量到达调用 requestRender；Esc 后再触发关闭不二次 done）；readTranscript 抛出时标不可读且再次打开同一 runId 仍可打开；两页并发打开被拒且 dock 页标志在唯一页关闭后才复位；teardown 关闭在途查看页；readTranscript 返回 missing/corrupt 时标"记录不可读"且 notify，不显示运行中。
   - Esc 后 `custom` 的 done 被调用且面板经 selectRun 收到原选中的 runId（该行已移出时选中夹到最近行）；Esc 早于订阅兑现时不建立实时监听、不发非法 unsubscribe、restoreSelection 仍执行；custom 拒绝时 markPageClosed 仍执行；同一 runId 二次打开被忽略；每行宽度 ≤ 终端宽度。
-- [ ] 顺序、跟随与滚动
-- [ ] 只读与原样展示
-- [ ] 结束与不可达标注
-- [ ] 打开与返回焦点
+- [x] 顺序、跟随与滚动
+- [x] 只读与原样展示
+- [x] 结束与不可达标注
+- [x] 打开与返回焦点

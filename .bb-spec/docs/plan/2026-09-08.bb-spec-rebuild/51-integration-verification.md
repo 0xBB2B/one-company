@@ -17,6 +17,9 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 - safe-migration：旧格式预检、停写校验、保真迁移、中断恢复。
 
 ## 涉及文件
+- 新建 `tests/integration/default-workflow.test.ts`
+- 新建 `tests/integration/repair-authorization.test.ts`
+- 新建 `tests/integration/settings-dispatch.test.ts`
 - 新建 `tests/integration/daemon-dispatch-relay.test.ts`
 - 新建 `tests/integration/control-and-resume.test.ts`
 - 新建 `tests/integration/network-and-sleep.test.ts`
@@ -43,8 +46,8 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 | 用例 | 入口 | 输入 | 预期 |
 |---|---|---|---|
 | 跨窗口暂停继续 | 窗口 B `pi_company_agents pause/resume` | 窗口 A 派出的运行 | 确认后才显示已暂停；继续保留上下文 |
-| 级联停止 | `pi_company_agents stop` 需求代理 | 两个角色各有后台 Shell | 全部停止且 Shell 后代无残留后才确认；文件保留 |
-| 中断续接 | 强杀守护进程后 `resumeInterrupted` | 会话文件存在 | 标记中断；续接从会话文件重载，未重做已完成步骤 |
+| 级联停止 | `pi_company_agents stop` 需求代理 | 两个角色各有后台 Shell | 停止请求发出即确认运行终态；Shell 清理独立展示，未清理前禁止重叠写入；文件保留 |
+| 中断续接 | 强杀守护进程后 `resumeInterrupted` | SQLite 会话记录存在 | 标记中断；续接从 SQLite 会话记录重载，未重做已完成步骤 |
 | 停止不确定 | 角色启动脱管后代 | 停止 | 显示不确定原因，不派出重叠新运行 |
 
 ### network-and-sleep
@@ -94,6 +97,20 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 - 测试入口：`bun test tests/integration`
 - 测试输入：上述矩阵；每个用例在独立临时 HOME 与临时仓库内执行，结束后清理守护进程与子进程
 - 预期结果：全部用例通过；进程列表无残留守护进程、窗口子进程或 Shell 后代；临时目录被删除
-- [ ] 七个测试文件全部通过
-- [ ] 无进程残留（用例结束后按 token 扫描进程列表为零）
-- [ ] 全量 `bun test tests` 通过
+- [x] 全部集成测试文件通过
+- [x] 无进程残留（用例结束后按 token 扫描进程列表为零）
+- [x] 全量 `bun test tests` 通过
+
+## SQLite 与完整默认流程补充验收
+
+- `default-workflow.test.ts` 使用真实 SDK、默认角色、真实 Git 和 SQLite，覆盖前检决定、planner 写任务并通过机械检查、用户形状确认、worker 红绿验证和提交、系统独立复跑、系统快照审查、真实黑盒命令与报告、accepted 自动终结。仅模型响应受控。
+- `control-and-resume.test.ts` 从真实派工创建 queued 运行，强杀守护进程后恢复同一 UUIDv7，拒绝重复续接，父运行和跨仓依赖未恢复时不启动，取消后不复活。
+- `rebuild-delivery.test.ts` 验证复跑期间内容变化拒绝、linked worktree 正常提交、命令不继承认证环境变量、只读角色不能改源码、跨仓访问拒绝。
+- `workflow-state.test.ts` 用 SQLite 写入失败证明阶段与证据一起回滚，交错失效不能被旧绑定覆盖。
+- `session-records.test.ts` 验证分支与重置位置、压缩恢复、当前分支中断补全、竞争写入拒绝和保存失败后的停止。
+
+- `repair-authorization.test.ts` 经真实中继答复和公开审查派工入口验证门禁三轮后阻塞，拒答不授权；授权仅对指定门禁与轮次有效，改名重派不重置计数。
+- `settings-dispatch.test.ts` 在真实设置页保存全局与项目模型，再验证实际 SDK 请求使用对应模型；项目角色正文仅在项目受信任时装载。
+
+- `migration.test.ts` 通过默认公开迁移工具完成预检、阻止活动和中断运行、阻止仓库及全局真实 Shell、停写迁移及查询。
+- `agents-panel.test.ts` 在派工之后才打开面板，验证订阅快照让已有运行立即可见。

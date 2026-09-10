@@ -1,53 +1,29 @@
 ---
 name: versioned-store
-description: 本机数据区的原子文档写入、目录锁、状态版本冲突检测与追加型记录文件，供所有流程数据模块共用
+description: SQLite 短事务、UUIDv7 主键、版本比较、顺序追加与崩溃恢复
 ---
 # 带版本的本机存储
 
 ## 目标
-窗口与守护进程可以并发读写同一份本机流程数据而不互相覆盖：整份文档原子落盘，更新必须基于已读版本，追加型记录逐行可校验。
+pi-company 自有业务与审计记录经 SQLite 读写；普通运行日志使用按启动 UUIDv7 命名的 .log 文件。每仓一个 `repos/<repoId>/data.sqlite`，同仓 worktree 共用；全局设置与主会话 Shell 登记存 `global.sqlite`。
 
-## 业务规则（来源：spec）
-- controlled-updates：查询返回状态版本，更新基于已读版本；两个窗口基于同一版本更新时后到的过期更新被拒绝并提示重新读取，先前内容保留；一次请求的字段全部通过才生效，不允许部分写入；保存未确认时返回失败或结果不明，不伪报成功。
-- decision-append：并发追加不覆盖彼此，同一次成功追加只产生一条新记录；已有记录损坏时拒绝追加，不自动修补。
-- local-ownership：流程数据只在本机保存，工作目录或分支删除不影响。
+## 数据结构
+`records` 保存可变记录：UUIDv7 主键 `id`、命名空间 `namespace`、业务键 `record_key`、递增 `version` 与 JSON 载荷 `data`。命名空间和业务键联合唯一。
+`events` 保存追加条目：UUIDv7 主键 `id`、`stream`、事务内分配的 `sequence` 与 JSON 载荷 `data`。流和序号联合唯一。
+数据库以 CHECK 约束拒绝非 UUIDv7 主键；业务标识和 SDK 内部条目引用不承担主键职责。UUIDv7 的时间部分不用于超时、精确排序或安全令牌。
 
-## 涉及文件
-- 新建：runtime/store.ts
-- 新建：tests/versioned-store.test.ts
+## 事务与安全
+开启 WAL、外键、同步落盘和 5 秒有界忙等待，使用 `user_version` 记录数据库版本。写事务为同步 `BEGIN IMMEDIATE`；禁止嵌套或异步回调，不在事务内等待 Git、网络、模型或用户。
+更新与删除携带已读版本，SQL 条件不匹配时抛出 `StaleVersionError`。阶段推进与证据绑定、编号分配与事件追加、首答确认、送达回执合并、占用检查与登记必须在各自的同一事务完成。事务失败整体回滚。
+数据库目录权限 0700，数据库及 WAL/SHM 权限 0600。数据库路径为普通文件，拒绝符号链接、坏数据库和不支持的版本；不得通过另一文件格式继续写入。
 
-## 函数清单
+## 实现
+`runtime/database.ts` 提供 UUIDv7、数据库路径、事务、版本记录与事件读写；Node 使用原生 node:sqlite，Bun 使用 bun:sqlite。`runtime/store.ts` 仅保留 Git 定义文件的原子替换及文件指纹，不承担应用数据持久化。
 
-### runtime/store.ts
-| 函数名 | 职责 |
-|---|---|
-| `readDocument` | 读取 JSON 文档并返回内容与 version；文件不存在返回空标记；内容不是合法 JSON 或缺少 version 抛出"损坏"错误 |
-| `writeDocument` | 在目录锁内比对期望 version 后写入（临时文件 + fsync + rename），version 递增；不匹配抛出 `StaleVersionError` |
-| `createDocument` | 仅当文件不存在时写入初始内容，version 为 1；已存在抛错 |
-| `withDirLock` | 以带唯一令牌的锁目录串行化对同一目录的写操作，残留锁按令牌中的 pid 判死后抢占回收；同一异步上下文内可重入（持锁上下文内不得并发写）；超时抛 `LockTimeoutError`，异常时释放锁 |
-| `appendLine` | 在锁内把单行 canonical JSON 追加到记录文件，先校验既有内容每行 canonical 且以换行结尾，写后重读确认内容恰为旧内容加新行，返回行号与已校验的行文本 |
-| `readLines` | 读取记录文件全部行并逐行解析，任一行非 canonical 抛出含行号的"损坏"错误 |
-| `fileFingerprint` | 计算文件内容 sha256，供证据核对 |
-| `writeFileAtomic` | 不受版本控制的整文件原子写（临时文件 + fsync + rename + 目录 fsync），供设置文件与错误详情等非文档型文件使用；调用方须自行置于 `withDirLock` 内 |
-
-## 协作关系
-- 所有路径由 `runtime/identity.ts` 提供；本模块不感知业务含义。
-- `writeDocument` 被 workflow-state、run-store、windows、ranges 使用；`appendLine` 被 decisions 与 relay 使用。
-- 错误类 `StaleVersionError`、`LockTimeoutError` 被工具层翻译为用户可读回执。
-- 依赖：Node 内置 fs（含 open/fsync/rename）、path、crypto。
-
-## 验证方式
-- 测试入口：`runtime/store.ts` 导出函数
-- 测试输入：临时目录中的文档与记录文件；两个并发写入方（同进程并发 Promise 或两个子进程）
-- 预期结果：
-  - 首次 `createDocument` 后 `readDocument` 返回 version 1；重复 `createDocument` 抛错且内容不变
-  - 两个写入方读到同一 version 后先后 `writeDocument`，第一个成功且 version 变为 2，第二个抛 `StaleVersionError`，文件内容为第一个写入方的内容
-  - 写入过程中被中断（模拟 rename 前失败）后文件仍是旧内容，目录内无残留临时文件
-  - 十个并发 `appendLine` 全部成功，文件恰有十行且每行 canonical，无交错
-  - 记录文件中插入一行非 canonical 内容后，`appendLine` 与 `readLines` 均抛出含行号的损坏错误，文件未被修改
-  - 锁被占用超过超时时间时 `withDirLock` 抛 `LockTimeoutError`；持锁函数抛异常后锁目录被移除
-  - `fileFingerprint` 对相同内容返回相同值，改一个字节即不同
-- [ ] 版本冲突保护
-- [ ] 原子写与中断保护
-- [ ] 并发追加与损坏拒绝
-- [ ] 锁超时与异常释放
+## 验证
+- 首次读取无创建副作用；重复业务键与无效主键被拒绝。
+- 过期版本拒绝且旧记录完整；同事务部分失败不产生记录或事件。
+- Node 与 Bun 多进程并发追加，序号连续且 UUIDv7 不重复。
+- 强杀未提交事务后重新打开，已提交内容完整、未提交内容消失、后续可继续追加。
+- 符号链接和坏数据库失败关闭；数据库及 WAL/SHM 权限正确。
+- Git 文件原子替换失败无临时文件残留，指纹随内容变化。

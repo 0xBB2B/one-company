@@ -27,7 +27,7 @@ description: 角色提示词：需求代理、实现、审查、验收四个角�
 - 新建 `tests/role-prompts.test.ts` — frontmatter 断言
 
 ## 成品定义
-五份 frontmatter（以本单元为准）：
+四份 frontmatter（以本单元为准）：
 ```markdown
 ---
 name: requirement-agent
@@ -91,7 +91,7 @@ acceptance：phase=acceptance、verdict、summary、issues[]、evidence[]、acce
 | 形状提议 | 用 `pi_company_propose_shape` 一次提出任务集、角色序列与门禁声明；默认含白盒审查与黑盒验收；跳过门禁须说明理由并等待用户确认记录为用户决定；确认前不派工；需新增任务或角色时重新提议 |
 | 执行 | 按形状用 `pi_company_agent` 派角色，writePaths 不得超出该任务形状范围；简单任务可自行完成但同样提交交付证据 |
 | 交付核对 | 逐条验收映射到真实测试位置且在验证范围内；最终命令符合任务约定并成功；相关回归失败分四类并说明责任与恢复节点；本次造成或未解释的失败不放行；核对通过后独立复跑再 `pi_company_workflow task-finish` |
-| 归因与返修 | FAIL 后角色只读；逐条归因为产品决策 / 可自动解决 / 独立问题；需扩大目标、文件范围或验收标准的修复归产品决策，不自动返修；自动返修先 `decision_record` 记录归因与修复路径，写入失败即停止派发任何修复；首轮返修派工列明错误假设、同类受影响场景与验证补充；同一门禁最多三轮，第三轮仍失败记技术阻塞并停止；用户授权后从原轮次继续、不重置轮次；同根因再失败先重查设计；产品决策未回答时不写任何记录、不改行为；独立问题只经 `pi_company_workflow update` 写入后续问题清单，不新增任务、不改形状，在下次形状提议或完成总结时交用户确认才成任务 |
+| 归因与返修 | FAIL 后角色只读；逐条归因为产品决策 / 可自动解决 / 独立问题；需扩大目标、文件范围或验收标准的修复归产品决策，不自动返修；自动返修先 `decision_record` 记录归因与修复路径，写入失败即停止派发任何修复；首轮返修派工列明错误假设、同类受影响场景与验证补充；同一门禁最多三轮，第三轮仍失败记技术阻塞并停止；用户授权后从原轮次继续、不重置轮次；同根因再失败先重查设计；产品决策未回答时不写用户决策记录、不改行为；独立问题只经 `pi_company_workflow update` 写入后续问题清单，不新增任务、不改形状，在下次形状提议或完成总结时交用户确认才成任务 |
 | 门禁 | 全部任务完成后对整个分支派一次 reviewer；通过后派一次 acceptance，派工输入只含规则文件清单、报告位置、环境启动方式与结构化格式，验收者唯一写报告；阶段推进只经 `pi_company_workflow advance` |
 | 对话中继 | 所有提问与产品决策经 `pi_company_ask`；补充需求影响任务集或形状时重新提议，否则并入 |
 | 跨仓库 | 契约变更经 `pi_company_ask` 请求主会话裁定，裁定前不得按变更后的契约实现；不联系其他需求代理；waitFor 任务按本机流程数据核对 |
@@ -133,12 +133,12 @@ acceptance：phase=acceptance、verdict、summary、issues[]、evidence[]、acce
 - 与命令层的一致性：验收者的 `write` 只允许写调用方指定的报告路径（角色会话的只读守卫对该路径豁免）；需求代理会话注册 `decision_record` 且不注册 `structured_output`；角色会话注册的工具集以角色定义为准。
 
 ## 验证方式
-- 测试入口：读取五份角色文件，解析 frontmatter；正文按段落断言必需表达（以本表规则要点为准，语义等价的措辞可多选一，不锁定整句）；正文行为交由集成验证单元在真实派工中核对
+- 测试入口：读取四份角色文件，解析 frontmatter；正文按段落断言必需表达（以本表规则要点为准，语义等价的措辞可多选一，不锁定整句）；正文行为交由集成验证单元在真实派工中核对
 - 测试输入：文件全文
 - 预期结果：
-  - 五份文件存在且 frontmatter 字段恰为 name、description、kind、tools、skills、context_files、prompt_mode；name 与文件名一致；kind 与 tools 集合与成品逐项相等（顺序无关）
+  - 四份文件存在且 frontmatter 字段恰为 name、description、kind、tools、skills、context_files、prompt_mode；name 与文件名一致；kind 与 tools 集合与成品逐项相等（顺序无关）
   - reviewer 的 tools 不含 edit、write；acceptance 的 tools 不含 grep、find、ls、edit 且 skills、context_files 为 false；worker、reviewer、acceptance 的 tools 均含 `structured_output` 且不含 `pi_company_agent`；requirement-agent 的 tools 不含 `structured_output`
   - 每份正文非空，且二级标题集合与上表段落名一致、顺序相同
-- [ ] 五份 frontmatter 与成品一致
-- [ ] 工具集合边界
-- [ ] 段落结构存在（措辞不锁定）
+- [x] 四份 frontmatter 与成品一致
+- [x] 工具集合边界
+- [x] 段落结构存在（措辞不锁定）

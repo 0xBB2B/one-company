@@ -1,6 +1,6 @@
 ---
 name: range-claims
-description: 工作范围声明：文件锁下原子申请多范围、独占与等待、机械证据成立才自动释放失联持有者、否则保留并提供用户显式释放、交接前重新读取与指纹核对
+description: 工作范围声明：SQLite 短事务内原子申请多范围、独占与等待、机械证据成立才自动释放失联持有者、否则保留并提供用户显式释放、交接前重新读取与指纹核对
 ---
 # 工作范围声明
 
@@ -20,7 +20,7 @@ description: 工作范围声明：文件锁下原子申请多范围、独占与�
 
 ## 成品定义
 ```json
-// ~/.pi/agent/pi-company/repos/<repoId>/ranges/claims.json
+
 {
   "version": 12,
   "claims": [
@@ -53,19 +53,19 @@ kind=main：窗口登记表 holderGone 成立（已注销 / 心跳过期且开�
 ### runtime/ranges.ts
 | 函数名 | 职责 |
 |---|---|
-| `RangeClaims` | 绑定仓库数据目录，所有变更在目录锁内读改写；构造时注入运行记录读取、窗口登记表与"运行活动任务查询"三个依赖 |
-| `RangeClaims.claim` | 一次申请多个范围：规范化路径后在目录锁内判定，全部无冲突则先写入不带指纹的占位占用（此刻范围已独占），锁外计算指纹，再短锁补写；补写前占位已被释放则返回不获准；补写失败（锁超时、指纹计算抛错）时补偿移除占位并在错误中携带占位标识，不得残留无指纹占位；否则整体不获准并进入等待队列（按持有者与排序后的路径集去重），返回冲突范围与持有者；获准时只移除本方对应该路径集的等待条目 |
+| `RangeClaims` | 绑定仓库数据目录，所有变更在SQLite 短事务内读改写；构造时注入运行记录读取、窗口登记表与"运行活动任务查询"三个依赖 |
+| `RangeClaims.claim` | 一次申请多个范围：规范化路径后在SQLite 短事务内判定，全部无冲突则先写入不带指纹的占位占用（此刻范围已独占），事务外计算指纹，再以短事务核对身份后补写；补写前占位已被释放则返回不获准；补写失败（数据库写入失败、指纹计算抛错）时补偿移除占位并在错误中携带占位标识，不得残留无指纹占位；否则整体不获准并进入等待队列（按持有者与排序后的路径集去重），返回冲突范围与持有者；获准时只移除本方对应该路径集的等待条目 |
 | `RangeClaims.release` | 持有者释放：校验调用方持有者与记录一致，不一致拒绝；释放前记录交付指纹到 `released`；重复释放幂等返回未持有 |
 | `RangeClaims.wait` | 轮询等待指定范围释放，可取消；持有者必填，结束或取消时只移除本方条目（清理失败不改写原始取消原因）；返回受阻原因文本 |
 | `RangeClaims.holderOf` | 查询某路径当前持有者 |
-| `RangeClaims.releaseIfHolderGone` | 对指定占用按持有者种类核对机械证据（探针合计预算约 2 秒，小于目录锁超时）：成立即自动释放并返回证据种类；不成立、探针抛错或超时、记录缺少持有者标识时保留并返回原因 |
+| `RangeClaims.releaseIfHolderGone` | 对指定占用按持有者种类核对机械证据（探针合计预算约 2 秒，小于数据库忙等待上限）：成立即自动释放并返回证据种类；不成立、探针抛错或超时、记录缺少持有者标识时保留并返回原因 |
 | `RangeClaims.releaseByUser` | 用户显式释放：要求决定编号，释放并把编号写入释放记录；写决策记录由调用方负责 |
 | `overlaps` | 判断两个范围集合是否重叠（文件、目录前缀） |
 | `fingerprint` | 计算范围内文件内容指纹：目录递归并为目录范围写一个清单散列键，指向目录的符号链接按目标串参与不递归，FIFO/设备文件记 nonfile:<类型>，不存在记 absent |
 | `verifyFingerprint` | 接手前比对指纹，变化则返回差异清单（含目录范围内新增与删除的文件、类型变化；每项只报一次；目录清单散列只覆盖真实文件键，嵌套目录范围顺序无关） |
 
 ## 协作关系
-- 依赖 `runtime/identity.ts`、`runtime/store.ts`（`withDirLock`、CAS 写）、`runtime/windows.ts`（`holderGone`）、`runtime/run-store.ts`（运行状态）、`runtime/clock.ts`；"运行活动任务查询"由守护进程用 `runtime/shell-registry.ts` 实现、窗口侧经 `shells.list` 实现后注入。
+- 依赖 `runtime/identity.ts`、`runtime/database.ts`（短事务与版本条件更新）、`runtime/windows.ts`（`holderGone`）、`runtime/run-store.ts`（运行状态）、`runtime/clock.ts`；"运行活动任务查询"由守护进程用 `runtime/shell-registry.ts` 实现、窗口侧经 `shells.list` 实现后注入。
 - 由 `runtime/write-guard.ts`、`daemon/run-manager.ts`（派工前申请任务写入范围，运行结束后 `releaseIfHolderGone`）、`extensions/lifecycle.ts`（主会话文档编辑范围）使用；Agents 面板与 Shell 管理页对保留占用提供"显式释放"入口，先写决策记录再调用 `releaseByUser`。
 
 ## 验证方式
@@ -78,9 +78,11 @@ kind=main：窗口登记表 holderGone 成立（已注销 / 心跳过期且开�
   - stopped 且无活动任务的 role 持有者与已注销的 main 持有者被自动释放并返回证据种类；仍有 uncertain 任务、运行 running、心跳过期但开机标识相同的三种情况保持占用并返回原因。
   - `releaseByUser` 有决定编号时释放并记录编号，无编号拒绝。
   - 接手前 `verifyFingerprint` 报告被修改文件。
-- [ ] 并发独占
-- [ ] 整体申请与局部等待
-- [ ] 交叉范围不互等
-- [ ] 机械证据自动释放与不成立保留
-- [ ] 用户显式释放
-- [ ] 指纹核对
+- [x] 并发独占
+- [x] 整体申请与局部等待
+- [x] 交叉范围不互等
+- [x] 机械证据自动释放与不成立保留
+- [x] 用户显式释放
+- [x] 指纹核对
+
+占用、等待、已释放记录分别存 `range_claims`、`range_waiting`、`range_released` 命名空间，每条记录主键 UUIDv7；聚合视图不另行持久化。

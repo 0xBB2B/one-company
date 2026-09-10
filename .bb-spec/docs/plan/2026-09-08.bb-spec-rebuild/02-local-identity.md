@@ -22,25 +22,12 @@ description: 仓库身份、需求身份与工作区发现，以及本机用户�
 
 ```text
 ~/.pi/agent/pi-company/
-└── repos/<repoId>/                      repoId = sha256(realpath(git common dir)) 的十六进制
-    ├── repo.json                        { "commonDir": "<realpath>", "firstSeenAt": "<UTC RFC3339>" }
-    ├── daemon.sock                      守护进程 Unix socket
-    ├── daemon.lock                      { "pid": <n>, "startedAt": "<UTC>", "protocolVersion": <n> }
-    ├── requirements/<reqId>/            reqId = 需求目录名 <YYYY-MM-DD>.<slug>
-    │   ├── state.json                   需求阶段、任务运行字段、形状、证据，带 version
-    │   ├── ai-decisions.jsonl
-    │   ├── user-decisions.jsonl
-    │   └── evidence/<stage>.json
-    ├── runs/<runId>/                    runId = UUIDv4
-    │   ├── state.json                   运行记录
-    │   ├── error-details.json           失败错误详情
-    │   └── session.jsonl                会话文件
-    ├── relay/
-    │   ├── questions.jsonl · notices.jsonl · answers.jsonl
-    ├── windows/<windowId>.json          { pid, sessionId, cwd, workspaceRoot, heartbeatAt }
-    ├── ranges/claims.json
-    └── migration/progress.json
+├── global.sqlite                 全局角色设置、主会话 Shell 登记
+├── sock/<repoId前16位>.sock      仓库守护进程通信资源
+└── repos/<repoId>/data.sqlite     仓库身份、需求、运行、决策、会话、中继、窗口、占用、诊断与迁移
 ```
+
+数据库及 WAL/SHM 仅允许当前用户读写，每条记录主键为 UUIDv7。仓库 SHA256、需求名称、任务编号属于业务键。同仓 worktree 共享数据库，删除开发现场不删除数据库。
 
 目录权限 0o700，文件权限 0o600。
 
@@ -51,19 +38,16 @@ description: 仓库身份、需求身份与工作区发现，以及本机用户�
 |---|---|
 | `repositoryIdentity` | 由任意目录解析所属 Git 仓库的 common dir 实际路径并生成仓库身份；非 Git 目录或解析失败抛出含原因的错误 |
 | `requirementIdentity` | 由需求目录名解析需求身份（日期 + slug），格式不合法抛错 |
-| `discoverWorkspace` | 从启动目录向下扫描（深度上限 4，跳过 node_modules 与 .git）收集 Git 仓库；启动目录本身在仓库或 worktree 内时只返回该仓库 |
+| `discoverWorkspace` | 从启动目录向下扫描（不设固定深度上限，跳过 node_modules 与 .git）收集 Git 仓库；启动目录本身在仓库或 worktree 内时只返回该仓库 |
 | `isInsideRepository` | 判断目录是否位于某个 Git 工作树或 linked worktree 内 |
 | `listWorktrees` | 列出仓库的全部 worktree 路径 |
 | `dataRoot` | 本机数据根路径 |
-| `repoDataDir` | 仓库数据目录，首次访问时创建并写 repo.json |
-| `requirementDataDir` | 需求数据目录 |
-| `runDataDir` | 运行数据目录 |
+| `repoDataDir` | 仓库数据目录，首次访问时创建并写 SQLite 仓库记录 |
 | `daemonSocketPath` | 守护进程 socket 路径 |
-| `daemonLockPath` | 守护进程锁文件路径 |
 
 ## 协作关系
-- `repositoryIdentity` 与 `discoverWorkspace` 调用 git 命令读取 common dir 与 worktree 列表；其余函数只做路径拼接与目录创建。
-- 后续 store、run-store、decisions、windows、ranges、daemon-client、daemon-lifecycle 全部经本模块取路径，不自行拼接。
+- `repositoryIdentity` 与 `discoverWorkspace` 调用 git 命令读取 common dir 与 worktree 列表；数据目录登记通过 SQLite 完成。
+- 后续 store、run-store、decisions、windows、ranges、daemon-client、daemon-lifecycle 经 identity 取得业务身份，再由 database 统一定位数据库。
 - 依赖：Node 内置 fs、path、crypto、child_process；不依赖 pi SDK。
 
 ## 验证方式
@@ -73,10 +57,9 @@ description: 仓库身份、需求身份与工作区发现，以及本机用户�
   - A 与 A2 的仓库身份相同；A 与 B 不同；重命名 A 的分支或从 A 内子目录调用，身份不变
   - 非 Git 目录调用仓库身份抛出含"不是 Git 仓库"的错误
   - 需求身份接受 `2026-09-08.order-export`，拒绝 `order-export` 与 `2026-9-8.x`
-  - 从父目录发现工作区得到 A 与 B，不含 node_modules 下的伪仓库；深度 5 层的仓库不被发现；从 A 内或 A2 内发现只得到 A
-  - 首次取 `repoDataDir` 时创建目录并写 repo.json，第二次不改写 firstSeenAt；目录权限为 0o700
-  - `runDataDir` 拒绝非 UUIDv4 的运行标识
-- [ ] 仓库身份跨 worktree 一致且跨仓库隔离
-- [ ] 工作区发现的三种启动位置
-- [ ] 数据目录创建与权限
-- [ ] 非法输入拒绝
+  - 从父目录发现工作区得到 A 与 B，不含 node_modules 下的伪仓库；深度 5 层的仓库仍被发现；从 A 内或 A2 内发现只得到 A
+  - 首次取 `repoDataDir` 时创建目录并写 SQLite 仓库记录，第二次不改写 firstSeenAt；目录权限为 0o700
+- [x] 仓库身份跨 worktree 一致且跨仓库隔离
+- [x] 工作区发现的三种启动位置
+- [x] 数据目录创建与权限
+- [x] 非法输入拒绝

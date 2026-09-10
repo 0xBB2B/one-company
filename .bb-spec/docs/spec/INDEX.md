@@ -14,7 +14,7 @@
 - [role-settings](agents/role-settings.md) — 角色目录中每个角色分别解析模型、思考等级与 MCP 服务集合，项目配置覆盖全局默认，保存不改变已启动任务；角色只获得配置中勾选且当前可用的 MCP 服务，所有入口同受该集合约束
 - [run-diagnostics](agents/run-diagnostics.md) — 为失败运行原样保存完整错误详情、定位信息与提交诊断，独立于会话记录可查，不截断
 - [run-lifecycle](agents/run-lifecycle.md) — 需求代理与角色在守护进程内跨窗口回合与关窗继续，中断运行续接前核对接管的 Shell 任务、会话记录与工作区，全部结束后才重载接续
-- [session-records](agents/session-records.md) — 守护进程内每个会话以可重载的会话文件原样完整记录在本机，按运行身份定位、不上传不入库，压缩由宿主产生，续接时按压缩后视图重载
+- [session-records](agents/session-records.md) — 守护进程内每个会话以可重载的SQLite 会话记录原样完整记录在本机，按运行身份定位、不自动上传、不进入版本管理，压缩由宿主产生，续接时按压缩后视图重载
 - [settings-page](agents/settings-page.md) — 角色设置页以单页聚焦式界面按角色目录配置各角色模型、思考等级与 MCP 服务，支持全局或项目范围，MCP 字段以多选候选页勾选宿主当前已配置的服务
 - [transcript-view](agents/transcript-view.md) — 从面板打开任一需求代理或角色会话的记录查看页，实时显示思考、输出与工具活动，只读、可滚动、离线可回读
 - [user-relay](agents/user-relay.md) — 需求代理与用户的一切对话经主会话中继，提问投递到本工作区已连接窗口且首答生效，无窗口时排队并在下次打开窗口时推送

@@ -11,7 +11,7 @@ description: 写入与共享分支守卫：写入前对照他人占用；命令�
 - range-handoff：重叠写入只由一个任务获准；未获准的写入不得发生。
 - range-handoff：执行无法静态确认写入范围的命令时，启动前记录其他任务所占范围的内容指纹，结束后核对；发现越界修改即把本任务判为失败并使受影响范围的验证结论失效，不依赖口头提醒。
 - validation-consistency：验证期间或放行前发现验证对象变化，拒绝沿用旧通过结论并要求重新核对。
-- validation-consistency：多个宿主在共享工作目录提交时只把本任务获准范围内的路径纳入提交；其他宿主存在活动任务时不得切换分支或重置共享现场，发生即判违规并显示原因。
+- validation-consistency：多个宿主在共享工作目录提交时只把本任务获准范围内的路径纳入提交；其他宿主存在活动任务时必须在修改发生前拒绝切换分支或重置共享现场，事后判违规不能代替保护。
 - validation-consistency：完整分支审查保持既定范围与裁决要求，无法取得一致验证现场时等待或阻塞，不假报通过。
 - whitebox-review：记录审查快照（分支头与内容指纹）；对象与快照一致才允许远端写入；远端写入前重新采集的快照也必须一致。
 - workspace-coordination：需求代理与角色不得读写其他仓库。
@@ -35,7 +35,6 @@ description: 写入与共享分支守卫：写入前对照他人占用；命令�
 | `snapshotWorkspace` / `verifyWorkspace` | 只读角色用：命令前后对整个工作区变更路径集合与其指纹（`Record<path, fingerprint>`）比对，新增、消失、指纹变化三类都算写入，返回清单（可排除给定路径） |
 | `reportViolation` | 先使受影响验证失效再把越界结果写入运行记录（状态 failed、原因含文件清单；运行已终态时只补原因不抛），并把违规清单回传调用方 |
 | `invalidateValidations` | 把**被越界的持有者**（他人任务所属需求）关联该范围的全部阶段验证结论标记为失效：经 workflow-state 的 `invalidateEvidence(ctx, stage, reason)` 覆写证据为失效载荷（阶段仍被列出、`checkEvidence` 返回未通过、`checkResume` 因此阻断并附原因），不删除文件；按持有者需求分组逐个处理 |
-| `isCommandScopeStatic` | 判断工具调用是否只写入可静态确认的路径（edit/write），否则走前后核对 |
 | `beforeCommand` / `afterCommand` | 组合入口（`windows`、`windowId`、`runStore` 均必填，缺失即抛，不允许静默关闭分支守卫）：前置采集他人范围指纹与分支状态，后置核对并在越界或（存在其它活动宿主时）切换/重置时 `reportViolation`（分支违规同样标 failed 并进违规清单）；`afterCommand` 返回违规清单供调用方呈现 |
 ### runtime/git-snapshot.ts（新建，从 extensions/dispatch.ts 抽出）
 | 函数名 | 职责 |
@@ -69,8 +68,12 @@ description: 写入与共享分支守卫：写入前对照他人占用；命令�
   - 可提交路径只含本范围文件（本范围内重命名同时含新旧路径）；修改未跟踪文件后 `verifySnapshot` 报告不一致；git 超时时 `verifySnapshot` 返回不一致/无法采集而不抛。
   - `beforeCommand`/`afterCommand` 组合：存在其它存活窗口时命令切换分支被判违规并列出宿主；`activeForeignHosts` 对"另一窗口记录存在/不存在"与"其它 runId 运行中"各有用例。
   - shell-bash：经 `createManagedBashTool` 注入 guard 时每条 bash 前后调用；命令超时/中止路径 after 仍调用；后台命令 before/after 也调用；after 返回的违规出现在命令结果文本中。
-- [ ] 路径写入拒绝与放行
-- [ ] 交集指纹核对与越界判失败、验证失效
-- [ ] 分支/HEAD 前后比对
-- [ ] 只读角色工作区核对
-- [ ] 范围路径提交与快照一致性
+- [x] 路径写入拒绝与放行
+- [x] 交集指纹核对与越界判失败、验证失效
+- [x] 分支/HEAD 前后比对
+- [x] 只读角色工作区核对
+- [ ] 实际 Shell 提交只包含获准范围，其他宿主活动时切换与重置在修改前拒绝
+
+## 实际入口复核
+
+隔离仓库复现了共享暂存区混入提交和切换后才判违规，均不满足验收。辅助函数的单独测试不作为实际 Shell 的通过证据。生产范围组合入口是 createRangeProtection；旧 beforeCommand/afterCommand 组合及仅被测试调用的包装需要迁移行为测试并删除。

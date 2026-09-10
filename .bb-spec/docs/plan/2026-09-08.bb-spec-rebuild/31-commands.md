@@ -56,6 +56,6 @@ description: 注册五个 /pi-company: 流程与设置入口和独立 /ps，参�
   - `new`、`revise` 发送的消息包含完整描述；`resume --verify` 保留 `--verify`；`sync agents` 保留域名。
   - 技能文档缺失或 frontmatter 损坏时通知具体路径与原因，未发送消息；设置页或 Shell 页打开失败时通知原因，未调用其他入口；无交互终端时 `/pi-company:setting` 通知原因且不调用打开函数。
   - 用假 pi 调用 `extensions/index.ts` 默认导出：注册的命令名无重复且恰为六个流程/设置/Shell 命令加各子扩展自身命令，各子扩展的工具/事件只注册一次；package.json `pi.extensions` 恰为 `./extensions/index.ts`。
-- [ ] 命令集合与无别名
-- [ ] 参数透传
-- [ ] 加载失败不绕过
+- [x] 命令集合与无别名
+- [x] 参数透传
+- [x] 加载失败不绕过

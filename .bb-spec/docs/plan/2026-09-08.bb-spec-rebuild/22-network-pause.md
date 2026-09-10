@@ -36,8 +36,8 @@ description: 模型请求故障分类、按运行的暂停闸门、连通性探�
 - 测试入口：`classifyFailure`、`NetworkPauseGate`、`ConnectivityProbe`（注入探测函数与时钟）
 - 测试输入：ECONNRESET / ENOTFOUND / 超时 / 401 / 429 与额度文案 / 400 业务错误 / AbortError；两个运行分别登记 network 与 manual；探测函数先失败三次再成功；注入 5 分钟时钟跳变
 - 预期结果：分类正确；network 运行在 canProceed 时被拦、manual 同样被拦；恢复边沿只触发一次且只解除 network 运行；探测失败不产生错误记录；睡眠跳变不额外触发探测也不计入失败次数
-- [ ] 分类表
-- [ ] 闸门拦截与解除
-- [ ] 恢复边沿只续接网络暂停
-- [ ] 探测失败不计错
-- [ ] 睡眠不干扰
+- [x] 分类表
+- [x] 闸门拦截与解除
+- [x] 恢复边沿只续接网络暂停
+- [x] 探测失败不计错
+- [x] 睡眠不干扰

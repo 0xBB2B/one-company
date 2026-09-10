@@ -82,6 +82,6 @@ description: 主会话流程 Skill、规则与 README：澄清到确认后派出
   - 窗口侧派工阻断阶段集与守护进程 BLOCKED_STAGES 动态比对一致；README 面板按钮名与 agents-panel 按钮标签一致；迁移描述与 migration.ts 的移除字段语义一致。
   - 文档中的工具调用形态与代码动态核对：spec-revise/git-push 的 retreat 目标阶段属于 workflow-state 允许的回退路径；派出需求代理的阶段门禁（extensions/dispatch.ts）放行 confirmed 之后的进行中阶段；retreat/advance 所用 decisionId 为用户决定；README 里的设置字段与 settings-ui 字段表一致、socket 路径与 identity 一致、`/pi-company:` 出现项全部在已注册命令集合内。
   - README 二级标题按上表顺序全部存在；必需句：`/pi-company:new`、`/pi-company:setting`、`/ps`、`每个仓库一个守护进程`、`自动拉起`、`空闲后自动退出`、`标记为中断`、`合盖睡眠`、`20 秒`、`background: true`、`.pi-company/`、`不随 Git 同步`、`按启动目录`、`pi install git:github.com/0xBB2B/pi-company`；禁止句：`pi-subagents`、`符号链接`、`/spec-new`、`/pi-spec:`、`汇总行`、`.pi-spec/`（迁移章节允许出现在"旧数据"语境，测试用正则排除 `旧` 前缀的行）
-- [ ] 各 Skill 与规则文件必需句全部命中、禁止句全部缺席
-- [ ] README 章节顺序断言
-- [ ] README 必需句全部命中、禁止句全部缺席
+- [x] 各 Skill 与规则文件必需句全部命中、禁止句全部缺席
+- [x] README 章节顺序断言
+- [x] README 必需句全部命中、禁止句全部缺席

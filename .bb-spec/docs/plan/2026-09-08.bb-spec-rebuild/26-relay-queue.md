@@ -18,13 +18,13 @@ description: 守护进程内的提问与通知队列接口：持久化、按工�
 
 ## 成品定义
 
-`relay/questions.jsonl` 每行：
+SQLite `relay_questions` 命名空间，每条 UUIDv7 记录：
 
 ```json
 { "id": "<uuid>", "requirement": "<reqId>", "repoId": "…", "runId": "…", "question": "…", "options": [ { "label": "…", "description": "…" } ], "recommended": "…", "createdAt": "<UTC>", "status": "pending|answered|withdrawn", "answer": "…", "answeredBy": "<windowId>", "answeredAt": "<UTC>" }
 ```
 
-`relay/notices.jsonl` 每行：
+SQLite `relay_notices` 命名空间，每条 UUIDv7 记录：
 
 ```json
 { "id": "<uuid>", "requirement": "<reqId>", "repoId": "…", "runId": "…", "kind": "completed|blocked|auto_resumed|stopped|interrupted|contract_change", "message": "…", "createdAt": "<UTC>", "deliveredTo": ["<windowId>"] }
@@ -44,14 +44,14 @@ description: 守护进程内的提问与通知队列接口：持久化、按工�
 | `RelayQueue.subscribe` | 供调用方订阅入队与状态变化；监听器异常逐个隔离 |
 
 ## 协作关系
-本单元只暴露 `RelayQueue` 类，不触碰 `daemon/server.ts`：投递函数 `deliver(event, payload, { repoId, excludeWindowId? }) → Promise<string[]>`（按仓库筛选当前活跃客户端、发送事件帧并返回实际送达的窗口标识）与需求代理定位函数由 `daemon/run-manager.ts` 在构造时注入，队列自身不持有任何连接状态；`relay.answer` / `relay.forward` 方法与 `hello` 后的 `pendingFor` 推送也由 run-manager 的协议处理器接入。`daemon/requirement-agent.ts` 的 `pi_company_ask` 调用 `ask` 并等待；run-manager 在完成、阻塞、自动续接、停止、中断时调用 `notify`。持久化经 `runtime/store.ts` 的 `appendLine`（目录锁、fsync、0600）；读取经 store 新增的容错入口 `readLinesLenient(path) → { records, skipped }`（损坏行与行中空行跳过并计数，文件末尾结尾换行不计，非 ENOENT 的读失败抛出），队列把跳过计数经 `subscribe` 的 `corrupt_skipped` 事件上报，不静默。
+本单元只暴露 `RelayQueue` 类，不触碰 `daemon/server.ts`：投递函数 `deliver(event, payload, { repoId, excludeWindowId? }) → Promise<string[]>`（按仓库筛选当前活跃客户端、发送事件帧并返回实际送达的窗口标识）与需求代理定位函数由 `daemon/run-manager.ts` 在构造时注入，队列自身不持有任何连接状态；`relay.answer` / `relay.forward` 方法与 `hello` 后的 `pendingFor` 推送也由 run-manager 的协议处理器接入。`daemon/requirement-agent.ts` 的 `pi_company_ask` 调用 `ask` 并等待；run-manager 在完成、阻塞、自动续接、停止、中断时调用 `notify`。持久化经 SQLite 短事务完成：入队与流内序号一起提交，首答比较并更新问题状态，送达回执基于最新记录合并。坏结构拒绝读取，不跳过；写入失败不结算待答句柄，不广播成功，数据库恢复后允许重试。
 
 ## 验证方式
 - 测试入口：`RelayQueue` 方法，注入记录投递调用的窗口桩（两个本工作区窗口、一个声明不同工作区的窗口）与需求代理定位桩；临时数据目录
 - 测试输入：三个窗口在线时提问，从其中一个作答，另一个再次作答；所有窗口离线时提问并产生完成通知，再登记新窗口调用 `pendingFor` 与 `markDelivered`；转发一条补充到有活动需求代理的需求与一条到不存在需求；用同一数据目录重建 `RelayQueue` 后查询未答问题
 - 预期结果：只有两个本工作区窗口收到问题投递（投递桩收到 `{ repoId }` 目标而非窗口列表，返回送达的窗口标识）；作答后其余窗口收到撤回，第二次作答返回已答；投递桩对某窗口抛错时其余窗口仍送达、入队成功、deliveredTo 只含送达者；新窗口的 `pendingFor` 恰返回一条问题与一条通知（均产生于无在线窗口时）且顺序与产生顺序一致，`markDelivered` 后再次查询不再包含该通知；产生时已有窗口在线并送达的通知不进入后来窗口的积压；作答后的问题不再出现在 pendingFor；转发到活动需求返回已投递，到不存在需求返回原因，注入抛错返回 delivered:false；withdraw 后等待方句柄以已撤回兑现且各窗口收到撤回；重建后未答问题仍为 pending 且可继续作答、deliveredTo 保留；损坏行被跳过并经事件上报计数；监听器抛错不影响其它监听器与调用方
-- [ ] 投递范围
-- [ ] 首答生效与撤回
-- [ ] 离线排队与推送不重不漏
-- [ ] 转发回执
-- [ ] 持久化跨重启
+- [x] 投递范围
+- [x] 首答生效与撤回
+- [x] 离线排队与推送不重不漏
+- [x] 转发回执
+- [x] 持久化跨重启

@@ -95,7 +95,7 @@ description: 窗口与守护进程之间的 JSON Lines over Unix socket 协议�
 - 测试入口：`runtime/protocol.ts` 的 `encodeFrame`、`decodeFrames`、`validateParams`、`assertKnownMethod`
 - 测试输入：完整帧、跨两次写入拆开的半帧、一次写入含三帧、含 U+2028 的字符串字段、未知方法名、缺字段的 params、版本不一致的 hello
 - 预期结果：解码只按 LF 切分并保留残余；三帧全部解出；U+2028 不被当作分隔符；未知方法抛 `unknown_method`；缺字段抛 `bad_params`；每个目录内方法都有 schema
-- [ ] 半帧拼接与多帧一次解出
-- [ ] U+2028 / U+2029 不切分
-- [ ] 目录内每个方法与事件都有 schema 且 `validateParams` 对合法示例通过
-- [ ] 未知方法、坏参数、版本不一致分别返回对应错误码
+- [x] 半帧拼接与多帧一次解出
+- [x] U+2028 / U+2029 不切分
+- [x] 目录内每个方法与事件都有 schema 且 `validateParams` 对合法示例通过
+- [x] 未知方法、坏参数、版本不一致分别返回对应错误码
