@@ -13,6 +13,7 @@ import { createClock } from "../runtime/clock.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import { createRangeProtection } from "../runtime/range-protection.ts";
 import { createManagedBashOperations } from "../runtime/shell-bash.ts";
+import { createGitCommitTool } from "../runtime/git-commit-tool.ts";
 import { sandboxLaunch } from "../runtime/command-boundary.ts";
 
 const exec = promisify(execFile);
@@ -110,6 +111,8 @@ test("真实命令隔离允许任务写入、阻止跨仓读写和修改流程�
 test("真实 linked worktree 可正常提交，命令不继承认证环境变量，只读角色不能改源码", async () => {
   const world = await fixture();
   const worktree = await addWorktree(world.repo);
+  await exec("git", ["config", "user.name", "Test"], { cwd: worktree.root, env: GIT_ENV });
+  await exec("git", ["config", "user.email", "test@example.test"], { cwd: worktree.root, env: GIT_ENV });
   const clock = createClock(); cleanup.push(async () => clock.stopGapWatcher());
   const shells = new ShellRegistry({ clock });
   const host = { kind: "role" as const, id: world.run.id, runId: world.run.id, role: "worker" };
@@ -119,8 +122,11 @@ test("真实 linked worktree 可正常提交，命令不继承认证环境变量
   const before = process.env.PI_COMPANY_TEST_SECRET;
   process.env.PI_COMPANY_TEST_SECRET = "不得传给命令";
   try {
-    const outcome = await bash.exec("test -z \"$PI_COMPANY_TEST_SECRET\" && printf hello > README.md && git add README.md && git -c user.name=Test -c user.email=test@example.test commit -m 'worktree 提交'", worktree.root, { onData: () => {}, timeout: 10 });
+    const outcome = await bash.exec("test -z \"$PI_COMPANY_TEST_SECRET\" && printf hello > README.md", worktree.root, { onData: () => {}, timeout: 10 });
     expect(outcome.exitCode).toBe(0);
+    const commit = createGitCommitTool(async () => protection.commit);
+    await commit.execute("commit", { paths: ["README.md"], message: "worktree 提交" }, undefined, undefined, { cwd: worktree.root } as never);
+    expect((await exec("git", ["show", "HEAD:README.md"], { cwd: worktree.root, env: GIT_ENV })).stdout).toBe("hello");
   } finally {
     if (before === undefined) delete process.env.PI_COMPANY_TEST_SECRET;
     else process.env.PI_COMPANY_TEST_SECRET = before;
