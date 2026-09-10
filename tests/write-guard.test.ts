@@ -1,3 +1,4 @@
+import { uuidv7 } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -87,7 +88,7 @@ function runInput(requirement: string, cwd: string, task: string) {
 
 function windowInput(overrides: Record<string, unknown> = {}) {
   return {
-    windowId: randomUUID(),
+    windowId: uuidv7(),
     pid: 1,
     sessionId: "session-write-guard-test",
     cwd: "/tmp/example-cwd",
@@ -109,7 +110,7 @@ async function makeWindowsRegistry(): Promise<WindowRegistry> {
 
 async function selfWindow(): Promise<{ windows: WindowRegistry; windowId: string }> {
   const windows = await makeWindowsRegistry();
-  const windowId = randomUUID();
+  const windowId = uuidv7();
   await windows.register(windowInput({ windowId, pid: 1 }));
   return { windows, windowId };
 }
@@ -218,6 +219,8 @@ async function bindStagesEvidence(
       result: {
         phase: stage,
         verdict: "PASS",
+        summary: "验证保护夹具", issues: [], evidence: ["own.txt:1"],
+        ...(stage === "work" ? { changeKind: "refactor", workState: "green-baseline-no-change", coverage: [{ ref: "AC-1", test: "own.txt:1" }], redCommands: [], greenCommands: [{ command: "cat own.txt", status: "passed", details: "通过" }], changedFiles: [], productionPath: ["own.txt"], preexistingEvidence: ["own.txt:1"], fakeRed: false } : { reviewedHead: CURRENT_VERSION.codeHead, contentFingerprint: "保护夹具", traceability: [{ ref: "AC-1", test: "own.txt:1", implementation: "own.txt:1" }], findings: [] }),
         binding: {
           requirement,
           definitionFingerprint: CURRENT_VERSION.definitionFingerprint,
@@ -226,7 +229,7 @@ async function bindStagesEvidence(
         },
       },
     });
-    await bindEvidence({ stage, runId: evidenceRun.id, currentVersion: CURRENT_VERSION }, ctx);
+    expect(await bindEvidence({ stage, runId: evidenceRun.id, currentVersion: CURRENT_VERSION }, ctx)).toEqual({ ok: true });
   }
   return ctx;
 }
@@ -654,8 +657,8 @@ describe("beforeCommand/afterCommand：与分支守卫组合", () => {
     const holder: Holder = { kind: "requirement", runId, requirement };
 
     const windows = await makeWindowsRegistry();
-    const selfWindowId = randomUUID();
-    const otherWindowId = randomUUID();
+    const selfWindowId = uuidv7();
+    const otherWindowId = uuidv7();
     await windows.register(windowInput({ windowId: selfWindowId, pid: 101 }));
     await windows.register(windowInput({ windowId: otherWindowId, pid: 102 }));
 
@@ -684,8 +687,8 @@ describe("beforeCommand/afterCommand：与分支守卫组合", () => {
     const holder: Holder = { kind: "requirement", runId, requirement };
 
     const windows = await makeWindowsRegistry();
-    const selfWindowId = randomUUID();
-    const otherWindowId = randomUUID();
+    const selfWindowId = uuidv7();
+    const otherWindowId = uuidv7();
     await windows.register(windowInput({ windowId: selfWindowId, pid: 131 }));
     await windows.register(windowInput({ windowId: otherWindowId, pid: 132 }));
 
@@ -711,8 +714,8 @@ describe("beforeCommand/afterCommand：与分支守卫组合", () => {
     const holder: Holder = { kind: "requirement", runId, requirement };
 
     const windows = await makeWindowsRegistry();
-    const selfWindowId = randomUUID();
-    const otherWindowId = randomUUID();
+    const selfWindowId = uuidv7();
+    const otherWindowId = uuidv7();
     await windows.register(windowInput({ windowId: selfWindowId, pid: 111 }));
     await windows.register(windowInput({ windowId: otherWindowId, pid: 112 }));
 
@@ -733,7 +736,7 @@ describe("beforeCommand/afterCommand：与分支守卫组合", () => {
     const holder: Holder = { kind: "requirement", runId, requirement };
 
     const windows = await makeWindowsRegistry();
-    const selfWindowId = randomUUID();
+    const selfWindowId = uuidv7();
     await windows.register(windowInput({ windowId: selfWindowId, pid: 121 }));
 
     const token = await beforeCommand({ repoRoot: repo.root, holder, claims, runStore, runId, workflowCtx: ctx, windows, windowId: selfWindowId });
@@ -774,8 +777,8 @@ describe("beforeCommand/afterCommand：与分支守卫组合", () => {
     const holder: Holder = { kind: "requirement", runId, requirement };
 
     const windows = await makeWindowsRegistry();
-    const selfWindowId = randomUUID();
-    const otherWindowId = randomUUID();
+    const selfWindowId = uuidv7();
+    const otherWindowId = uuidv7();
     await windows.register(windowInput({ windowId: selfWindowId, pid: 141 }));
     await windows.register(windowInput({ windowId: otherWindowId, pid: 142 }));
 
@@ -802,8 +805,8 @@ describe("beforeCommand/afterCommand：与分支守卫组合", () => {
     const holder: Holder = { kind: "requirement", runId, requirement };
 
     const windows = await makeWindowsRegistry();
-    const selfWindowId = randomUUID();
-    const otherWindowId = randomUUID();
+    const selfWindowId = uuidv7();
+    const otherWindowId = uuidv7();
     await windows.register(windowInput({ windowId: selfWindowId, pid: 151 }));
     await windows.register(windowInput({ windowId: otherWindowId, pid: 152 }));
 

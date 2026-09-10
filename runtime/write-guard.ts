@@ -43,7 +43,7 @@ async function deepestExistingAncestor(absPath: string): Promise<{ real: string;
 
 // 符号链接可能把仓库内一个合法路径指向别处（仓库外，或仓库内的另一个范围）：字符串层面的规整看不出这点，
 // 占用与范围判定必须落在"最深已存在祖先"的真实路径拼回剩余段之后，词法路径只用于逃逸时的报错文案
-async function resolveRealRepoPath(repoRoot: string, absTarget: string, isDir: boolean): Promise<string> {
+export async function resolveRealRepoPath(repoRoot: string, absTarget: string, isDir: boolean): Promise<string> {
   const realRoot = await realpath(repoRoot);
   const { real, remainder } = await deepestExistingAncestor(absTarget);
   const resolvedTarget = remainder.length > 0 ? join(real, ...remainder) : real;
@@ -106,7 +106,7 @@ export async function snapshotForeignRanges(input: {
   claims: RangeClaims;
   holder: Holder;
 }): Promise<Record<string, string>> {
-  const foreign = await foreignIntersection(input.repoRoot, input.claims, input.holder);
+  const foreign = (await input.claims.entries()).filter((claim) => !holdersEqual(claim.holder, input.holder)).flatMap((claim) => claim.paths);
   if (foreign.length === 0) return {};
   return fingerprint(input.repoRoot, foreign);
 }
@@ -212,12 +212,6 @@ export async function reportViolation(input: {
   }
 
   await markRunFailed(input.runStore, input.runId, reason);
-}
-
-const STATIC_SCOPE_TOOLS = new Set(["edit", "write"]);
-
-export function isCommandScopeStatic(toolName: string): boolean {
-  return STATIC_SCOPE_TOOLS.has(toolName);
 }
 
 export interface CommandToken {

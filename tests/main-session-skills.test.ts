@@ -219,9 +219,9 @@ describe("spec-revise 归因记录为用户决定", () => {
 });
 
 describe("workflow-state.ts 的 RETREAT_PATHS 与 spec-revise/git-push 的回退路径描述一致", () => {
-  test("RETREAT_PATHS 结构为 planned→confirmed、reviewing/accepting→executing", async () => {
+  test("RETREAT_PATHS 结构为 planned→confirmed、reviewing/accepting/accepted→executing", async () => {
     const source = await readDoc(WORKFLOW_STATE);
-    expect(parseRetreatPaths(source)).toEqual({ planned: "confirmed", reviewing: "executing", accepting: "executing" });
+    expect(parseRetreatPaths(source)).toEqual({ planned: "confirmed", reviewing: "executing", accepting: "executing", accepted: "executing" });
   });
 
   test("spec-revise 按阶段分流：planned 回退到 confirmed", async () => {

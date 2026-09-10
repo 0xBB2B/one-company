@@ -43,6 +43,7 @@ export const REVIEW_PARAMETERS = Type.Object({
 }, { additionalProperties: false });
 
 export interface DispatchContext {
+  execution?: { projectTrusted: boolean; model?: { provider: string; id: string }; thinking?: string };
   clients: WorkspaceClientsHandle;
   windowId: string;
   workspace: Workspace;
@@ -188,7 +189,7 @@ async function executeDispatch(
   const client = await locateClient(cwd, dctx.clients);
   if (!client) return errorResult(`${requirement} 所在仓库不在工作区内`);
   try {
-    const result = await callWithAbort(client, "dispatch.requirement", { requirement, cwd }, signal);
+    const result = await callWithAbort(client, "dispatch.requirement", { requirement, cwd, ...(dctx.execution ? { context: dctx.execution } : {}) }, signal);
     return okResult(`${requirement} 已派出：${briefResult(result)}`);
   } catch (error) {
     const runId = daemonErrorCode(error) === "already_active" ? daemonErrorData(error)?.runId : undefined;
@@ -220,7 +221,7 @@ async function executeReview(
   const result = await callWithAbort(
     client,
     "dispatch.review",
-    { requirement, cwd, baseline, snapshot: { head: snapshot.head, fingerprint: snapshot.fingerprint } },
+    { requirement, cwd, baseline, ...(dctx.execution ? { context: dctx.execution } : {}), snapshot: { head: snapshot.head, fingerprint: snapshot.fingerprint } },
     signal,
   );
   return okResult(`${requirement} 已派出提交前白盒审查：${briefResult(result)}`);
@@ -400,7 +401,7 @@ export function registerDispatchTools(pi: ExtensionAPI, context: () => DispatchC
     renderShell: "self",
     async execute(_toolCallId, params, signal, _onUpdate, _ctx: ExtensionContext) {
       try {
-        return await executeDispatch(params, context(), signal);
+        return await executeDispatch(params, { ...context(), execution: { projectTrusted: _ctx?.isProjectTrusted?.() ?? false, model: _ctx?.model && { provider: _ctx.model.provider, id: _ctx.model.id }, thinking: _ctx?.thinkingLevel } }, signal);
       } catch (error) {
         return errorResult(briefReason(errorMessage(error)));
       }
@@ -417,7 +418,7 @@ export function registerDispatchTools(pi: ExtensionAPI, context: () => DispatchC
     renderShell: "self",
     async execute(_toolCallId, params, signal, _onUpdate, _ctx: ExtensionContext) {
       try {
-        return await executeReview(params, context(), signal);
+        return await executeReview(params, { ...context(), execution: { projectTrusted: _ctx?.isProjectTrusted?.() ?? false, model: _ctx?.model && { provider: _ctx.model.provider, id: _ctx.model.id }, thinking: _ctx?.thinkingLevel } }, signal);
       } catch (error) {
         return errorResult(briefReason(errorMessage(error)));
       }

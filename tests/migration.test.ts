@@ -8,8 +8,10 @@ import type { RepoFixture, WorktreeFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import type { TempHome } from "./helpers/temp-home.ts";
 import { readDecisions } from "../runtime/decisions.ts";
-import { repoDataDir, repositoryIdentity, requirementDataDir } from "../runtime/identity.ts";
-import { createDocument, readDocument, writeDocument } from "../runtime/store.ts";
+import { repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
+import { createRecord, readRecord, writeRecord, putRecord, repositoryDatabase } from "../runtime/database.ts";
+import { requirementStateRef } from "../runtime/workflow-state.ts";
+import { deleteRecord } from "./helpers/database-fixture.ts";
 import {
   clearMigratedSourceFields,
   dedupeDecisions,
@@ -198,20 +200,19 @@ async function repoCommitCount(repoRoot: string): Promise<number> {
   return stdout.split("\n").filter((line) => line.length > 0).length;
 }
 
-async function migrationProgressPath(dataRoot: string, cwd: string): Promise<string> {
+async function migrationProgressPath(dataRoot: string, cwd: string) {
   const identity = await repositoryIdentity(cwd);
-  const dir = await repoDataDir(dataRoot, identity.repoId, identity.commonDir);
-  return join(dir, "migration", "progress.json");
+  return { database: repositoryDatabase(dataRoot, identity.repoId), namespace: "migration", key: "progress" };
 }
 
-async function stateDocPath(dataRoot: string, cwd: string, requirement: string): Promise<string> {
+async function stateDocPath(dataRoot: string, cwd: string, requirement: string) {
   const identity = await repositoryIdentity(cwd);
-  return join(requirementDataDir(dataRoot, identity.repoId, requirement), "state.json");
+  return requirementStateRef(dataRoot, identity.repoId, requirement);
 }
 
 async function readStateDoc(dataRoot: string, cwd: string, requirement: string) {
   const path = await stateDocPath(dataRoot, cwd, requirement);
-  return readDocument(path);
+  return readRecord(path);
 }
 
 async function windowProbeThrows(): Promise<boolean | null> {
@@ -656,7 +657,7 @@ describe("migrationApply 成功迁移", () => {
     });
     expect(result.ok).toBe(true);
 
-    const after = splitFrontmatter(await readFile(taskPath, "utf8"));
+    const after = splitFrontmatter(await readFile(taskPath.replace("/.pi-spec/", "/.pi-company/"), "utf8"));
     expect(after.body).toBe(before.body);
     expect(frontmatterHasKey(after.frontmatter, "status")).toBe(false);
     expect(frontmatterHasKey(after.frontmatter, "step")).toBe(false);
@@ -687,7 +688,7 @@ describe("migrationApply 成功迁移", () => {
     });
     expect(result.ok).toBe(true);
 
-    const after = splitFrontmatter(await readFile(reqPath, "utf8"));
+    const after = splitFrontmatter(await readFile(reqPath.replace("/.pi-spec/", "/.pi-company/"), "utf8"));
     expect(after.body).toBe(before.body);
     expect(frontmatterHasKey(after.frontmatter, "status")).toBe(false);
     expect(frontmatterHasKey(after.frontmatter, "name")).toBe(true);
@@ -716,7 +717,7 @@ describe("migrationApply 成功迁移", () => {
     });
     expect(result.ok).toBe(true);
 
-    const after = await readFile(acceptancePath, "utf8");
+    const after = await readFile(acceptancePath.replace("/.pi-spec/", "/.pi-company/"), "utf8");
     expect(after).toBe(acceptanceContent);
   });
 
@@ -1026,7 +1027,7 @@ describe("源任务文件清理保留声明式字段", () => {
     });
     expect(result.ok).toBe(true);
 
-    const after = splitFrontmatter(await readFile(taskPath, "utf8"));
+    const after = splitFrontmatter(await readFile(taskPath.replace("/.pi-spec/", "/.pi-company/"), "utf8"));
     expect(after.body).toBe(before.body);
     for (const key of ["id", "title", "depends_on", "files", "refs", "verify"]) {
       expect(frontmatterHasKey(after.frontmatter, key)).toBe(true);
@@ -1214,7 +1215,7 @@ describe("无 id 决策记录的去重与重试", () => {
     expect(interrupted.ok).toBe(false);
 
     const progressPath = await migrationProgressPath(home.dataRoot, repo.root);
-    await rm(progressPath, { force: true });
+    deleteRecord(progressPath);
 
     const resumed = await migrationApply({
       cwd: repo.root,
@@ -1255,14 +1256,14 @@ describe("apply 校验按字段逐项核对目标与源", () => {
       hooks: {
         beforeVerify: async () => {
           const path = await stateDocPath(home.dataRoot, repo.root, slug);
-          const doc = await readDocument(path);
+          const doc = await readRecord(path);
           if (!doc.exists) throw new Error("目标状态文档尚未写入");
           const data = doc.data as { tasks: Record<string, unknown>; [key: string]: unknown };
           const tampered = {
             ...data,
             tasks: { ...data.tasks, "T-1": { progress: "doing", agent: "agent-real", note: "被篡改的备注" } },
           };
-          await writeDocument(path, tampered, { expectedVersion: doc.version });
+          await writeRecord(path, tampered, { expectedVersion: doc.version });
         },
       },
     });
@@ -1396,14 +1397,14 @@ describe("migrationStatus 呈现中断与失败状态", () => {
       hasActiveWindows: noActiveWindows,
     });
     const identity = await repositoryIdentity(repo.root);
-    const progressFile = join(home.dataRoot, "repos", identity.repoId, "migration", "progress.json");
-    const dirMode = (await stat(join(home.dataRoot, "repos", identity.repoId, "migration"))).mode & 0o777;
+    const progressFile = await migrationProgressPath(home.dataRoot, repo.root);
+    const dirMode = (await stat(join(home.dataRoot, "repos", identity.repoId))).mode & 0o777;
     expect(dirMode).toBe(0o700);
 
-    await writeFile(progressFile, "{\"requirements\": {");
+    putRecord(progressFile, { requirements: null });
     const damaged = await migrationPreflight({ cwd: repo.root, dataRoot: home.dataRoot });
     const problem = damaged.problems.find((p) => p.kind === "progress-unreadable");
-    expect(problem?.detail).toContain(progressFile);
+    expect(problem?.detail).toContain("迁移进度结构无效");
   });
 
   test("beforeVerify 中断后 failed 含该需求与原因", async () => {
@@ -1592,7 +1593,7 @@ describe("本机已存在目标状态文档时的保护", () => {
       tasks: [{ id: "T-1", title: "任务一", status: "doing" }],
     });
     const path = await stateDocPath(home.dataRoot, repo.root, slug);
-    await createDocument(path, {
+    await createRecord(path, {
       requirement: slug,
       stage: "planned",
       shape: null,
@@ -1612,7 +1613,7 @@ describe("本机已存在目标状态文档时的保护", () => {
     });
 
     expect(result.ok).toBe(false);
-    const doc = await readDocument(path);
+    const doc = await readRecord(path);
     expect(doc.exists).toBe(true);
     if (doc.exists) {
       const data = doc.data as { stage: string; followUps: unknown[] };
@@ -1742,7 +1743,7 @@ describe("本机已有状态文档的归属判据", () => {
         { stage: "confirmed", at: "2026-01-02T00:00:00.000Z", runId: null, decisionId: "USER-001", reason: null },
       ],
     };
-    await createDocument(path, preexisting);
+    await createRecord(path, preexisting);
 
     const preflight = await migrationPreflight({ cwd: repo.root, dataRoot: home.dataRoot });
     expect(preflight.problems.some((p) => p.requirement === slug && p.kind === "target-state-exists")).toBe(true);
@@ -1757,7 +1758,7 @@ describe("本机已有状态文档的归属判据", () => {
     });
     expect(result.ok).toBe(false);
 
-    const doc = await readDocument(path);
+    const doc = await readRecord(path);
     expect(doc.exists).toBe(true);
     if (doc.exists) {
       const data = doc.data as typeof preexisting;
@@ -1769,7 +1770,7 @@ describe("本机已有状态文档的归属判据", () => {
 });
 
 describe("进度丢失后重试不得重写已清理完成的需求", () => {
-  test("首个需求完整迁移并清理后 progress 丢失，重试既不重写它也能推断为 completed，且第二个需求正常完成", async () => {
+  test("迁移完成后 progress 丢失仍能恢复状态，重新出现的旧定义目录阻塞重试", async () => {
     const repo = await makeRepo();
     const home = await makeHome();
     const slugA = "2026-04-02.resume-no-rewrite-a";
@@ -1800,7 +1801,7 @@ describe("进度丢失后重试不得重写已清理完成的需求", () => {
     });
 
     const progPath = await migrationProgressPath(home.dataRoot, repo.root);
-    await rm(progPath, { force: true });
+    deleteRecord(progPath);
 
     const preflight2 = await migrationPreflight({ cwd: repo.root, dataRoot: home.dataRoot });
     expect(preflight2.problems.some((p) => p.requirement === slugA)).toBe(false);
@@ -1813,7 +1814,7 @@ describe("进度丢失后重试不得重写已清理完成的需求", () => {
       expectedFingerprint: preflight2.fingerprint,
       hasActiveWindows: noActiveWindows,
     });
-    expect(secondResult.ok).toBe(true);
+    expect(secondResult.ok).toBe(false);
 
     const docAfter = await readStateDoc(home.dataRoot, repo.root, slugA);
     expect(docAfter.exists).toBe(true);
@@ -1823,7 +1824,7 @@ describe("进度丢失后重试不得重写已清理完成的需求", () => {
 
     const status = await migrationStatus({ cwd: repo.root, dataRoot: home.dataRoot });
     expect(status.completed).toContain(slugA);
-    expect(status.completed).toContain(slugB);
+    expect(status.remaining).toContain(slugB);
   });
 });
 
@@ -1849,7 +1850,7 @@ describe("进度文件损坏时的错误处理", () => {
     expect(applied.ok).toBe(true);
 
     const progPath = await migrationProgressPath(home.dataRoot, repo.root);
-    await writeFile(progPath, '{"requirements": {"2026-04-03');
+    putRecord(progPath, { requirements: null });
 
     const preflight2 = await migrationPreflight({ cwd: repo.root, dataRoot: home.dataRoot });
     expect(preflight2.problems.some((p) => p.kind === "progress-unreadable")).toBe(true);
@@ -1876,7 +1877,7 @@ describe("进度文件损坏时的错误处理", () => {
     expect(applied.ok).toBe(true);
 
     const progPath = await migrationProgressPath(home.dataRoot, repo.root);
-    await writeFile(progPath, '{"requirements": {"2026-04-04');
+    putRecord(progPath, { requirements: null });
 
     const status = await migrationStatus({ cwd: repo.root, dataRoot: home.dataRoot });
     expect(status.remaining).not.toContain(slug);
@@ -1932,7 +1933,7 @@ describe("problem 的阻塞粒度收敛到单需求", () => {
     expect(result.migrated).toContain(slugGood);
 
     const status = await migrationStatus({ cwd: repo.root, dataRoot: home.dataRoot });
-    expect(status.completed).toContain(slugGood);
+    expect(status.inProgress).toContain(slugGood);
 
     const goodTaskPath = join(requirementDir(repo.root, slugGood), "tasks", "01-t-1.md");
     const afterGood = splitFrontmatter(await readFile(goodTaskPath, "utf8"));

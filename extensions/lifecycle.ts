@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { globalDatabase, uuidv7 } from "../runtime/database.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock } from "../runtime/clock.ts";
@@ -28,6 +28,7 @@ export interface LifecycleDeps {
 }
 
 export interface WindowContextValue {
+  shellRegistry?: ShellRegistry;
   windowId: string;
   sessionId: string;
   workspace: Workspace;
@@ -106,7 +107,7 @@ function defaultCreateClock(): Clock {
 }
 
 function defaultCreateShellRegistry(clock: Clock): ShellRegistry {
-  return new ShellRegistry({ clock });
+  return new ShellRegistry({ clock, database: globalDatabase(dataRoot(process.env)) });
 }
 
 async function defaultCreateWindowRegistry(input: { repo: WorkspaceRepo; clock: Clock }): Promise<WindowRegistry> {
@@ -158,7 +159,7 @@ interface StartWindowInput {
   cwd: string;
   sessionId: string;
   processPid: number;
-  notify: (message: string, level?: string) => void;
+  notify: (message: string, level?: "info" | "warning" | "error") => void;
   resolveClock: () => Clock;
   resolveShellRegistry: (clock: Clock) => ShellRegistry;
   createWindowRegistry: (input: { repo: WorkspaceRepo; clock: Clock }) => Promise<WindowRegistry>;
@@ -171,7 +172,7 @@ interface StartWindowInput {
 
 async function startWindow(input: StartWindowInput): Promise<void> {
   ensureFreshReadyController();
-  const windowId = randomUUID();
+  const windowId = uuidv7();
   let clients: WorkspaceClientsHandle | undefined;
   const registrations: RepoRegistration[] = [];
   try {
@@ -215,7 +216,7 @@ async function startWindow(input: StartWindowInput): Promise<void> {
 }
 
 interface NotifyCtx {
-  ui: { notify(message: string, level?: string): void };
+  ui: { notify(message: string, level?: "info" | "warning" | "error"): void };
 }
 
 async function guardBeforeSwitch(ctx: NotifyCtx): Promise<{ cancel: boolean }> {
@@ -270,9 +271,12 @@ export async function shutdownWindow(budgetMs?: number): Promise<ShutdownResult>
   return { unregisterFailures };
 }
 
+const installedSignalHandlers = new WeakSet<NodeJS.Process>();
+
 export function installExitSignalHandlers(proc: NodeJS.Process): void {
+  if (installedSignalHandlers.has(proc)) return;
+  installedSignalHandlers.add(proc);
   for (const signal of EXIT_SIGNALS) {
-    if (proc.listenerCount(signal) > 0) continue;
     proc.on(signal, () => {
       // shutdownWindow 会在自己的清理里清空 capturedShutdown，这里先取快照，
       // 否则触发本次信号的回调在 shutdownWindow 完成后已经读不到它
@@ -290,8 +294,8 @@ export function installExitSignalHandlers(proc: NodeJS.Process): void {
 
 export function windowContext(): WindowContextValue {
   if (!activeWindow) throw startupError ?? new Error("窗口未启动");
-  const { windowId, sessionId, workspace, clients, heartbeatError } = activeWindow;
-  return { windowId, sessionId, workspace, clients, heartbeatError };
+  const { windowId, sessionId, workspace, clients, heartbeatError, shellRegistry } = activeWindow;
+  return { windowId, sessionId, workspace, clients, heartbeatError, shellRegistry };
 }
 
 export function windowReady(): Promise<WindowContextValue> {

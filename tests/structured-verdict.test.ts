@@ -411,7 +411,7 @@ describe("ResultCollector - 提交与门禁", () => {
     expect(outcome.ok).toBe(true);
   });
 
-  test("同一标识内容冲突判为失败但不影响已接受结果", () => {
+  test("同一标识内容冲突使最终结算失败", () => {
     const collector = new ResultCollector({ schema: WORK_SCHEMA, phase: "work" });
     const value = validWork();
     const first = collector.accept({ toolCallId: "call-1", value });
@@ -423,8 +423,7 @@ describe("ResultCollector - 提交与门禁", () => {
     expect(conflicting.accepted).toBe(false);
     collector.markSettled({ stopReason: "stop" });
     const outcome = collector.finish();
-    expect(outcome.ok).toBe(true);
-    if (outcome.ok) expect(outcome.result).toEqual(value);
+    expect(outcome.ok).toBe(false);
   });
 
   test("无标识的两次提交各自独立处理", () => {
@@ -582,6 +581,28 @@ describe("共享子格式与终态收敛", () => {
     collector.accept({ toolCallId: "call-1", value: validWork() });
     collector.markSettled({ stopReason: "stop" });
     collector.markSettled({ stopReason: "error" });
+    expect(collector.finish().ok).toBe(false);
+  });
+});
+
+
+describe("裁决结算失败关闭", () => {
+  test.each([
+    [WORK_SCHEMA, "work", validWork({ greenCommands: [] })],
+    [REVIEW_SCHEMA, "review", validReview({ issues: ["存在阻断"] })],
+    [ACCEPTANCE_SCHEMA, "acceptance", validAcceptance({ items: [] })],
+  ])("拒绝语义矛盾的通过裁决 %s", (schema, phase, value) => {
+    const collector = new ResultCollector({ schema, phase });
+    expect(collector.accept({ toolCallId: "first", value }).accepted).toBe(false);
+    collector.markSettled({ stopReason: "stop" });
+    expect(collector.finish().ok).toBe(false);
+  });
+
+  test.each(["second", "first", undefined])("合法结果之后的新增或冲突提交使最终结算失败 %s", (toolCallId) => {
+    const collector = new ResultCollector({ schema: WORK_SCHEMA, phase: "work" });
+    collector.accept({ toolCallId: "first", value: validWork() });
+    collector.accept({ toolCallId, value: validWork({ summary: "另一提交" }) });
+    collector.markSettled({ stopReason: "stop" });
     expect(collector.finish().ok).toBe(false);
   });
 });

@@ -1,12 +1,15 @@
+import { checkAcceptanceReport } from "./delivery.ts";
+import { verifyFingerprint } from "./ranges.ts";
+import { ACCEPTANCE_SCHEMA, REVIEW_SCHEMA, WORK_SCHEMA, validateResult } from "./result.ts";
+import type { AcceptanceResult } from "./result.ts";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, readdir } from "node:fs/promises";
-import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { inspectDecision } from "./decisions.ts";
-import { repositoryIdentity, requirementDataDir } from "./identity.ts";
+import { repositoryIdentity, requirementIdentity } from "./identity.ts";
 import { isTerminalState, RunStore } from "./run-store.ts";
 import type { RunRecord, RunState } from "./run-store.ts";
-import { createDocument, readDocument, StaleVersionError, writeDocument, writeFileAtomic } from "./store.ts";
+import { createRecord, readRecord, StaleVersionError, writeRecord, putRecord, repositoryDatabase, withDatabase } from "./database.ts";
+import type { RecordRef, LocalDatabase } from "./database.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -110,12 +113,17 @@ function nextStage(stage: string): string | undefined {
   return idx === -1 ? undefined : STAGE_ORDER[idx + 1];
 }
 
-function statePath(ctx: WorkflowContext, repoId: string): string {
-  return `${requirementDataDir(ctx.dataRoot, repoId, ctx.requirement)}/state.json`;
+export function requirementStateRef(dataRoot: string, repoId: string, requirement: string): RecordRef {
+  requirementIdentity(requirement);
+  return { database: repositoryDatabase(dataRoot, repoId), namespace: "requirements", key: requirement };
 }
 
-function evidencePath(ctx: WorkflowContext, repoId: string, stage: string): string {
-  return `${requirementDataDir(ctx.dataRoot, repoId, ctx.requirement)}/evidence/${stage}.json`;
+function stateRef(ctx: WorkflowContext, repoId: string): RecordRef {
+  return requirementStateRef(ctx.dataRoot, repoId, ctx.requirement);
+}
+
+function evidenceRef(ctx: WorkflowContext, repoId: string, stage: string): RecordRef {
+  return { database: repositoryDatabase(ctx.dataRoot, repoId), namespace: `evidence:${ctx.requirement}`, key: stage };
 }
 
 function newRunStore(ctx: WorkflowContext, repoId: string): RunStore {
@@ -126,17 +134,26 @@ function isStoppedState(state: RunState): boolean {
   return isTerminalState(state) || state === "interrupted";
 }
 
+function checkedRequirement(value: unknown, requirement: string): RequirementState {
+  const data = value as RequirementState | null;
+  if (!data || typeof data !== "object" || Array.isArray(data) || data.requirement !== requirement
+    || !(VALID_STAGES as readonly string[]).includes(data.stage) || !data.tasks || typeof data.tasks !== "object" || Array.isArray(data.tasks)
+    || !Array.isArray(data.history) || !Array.isArray(data.followUps) || !(data.shape === null || (typeof data.shape === "object" && !Array.isArray(data.shape)))) throw new Error("需求状态结构无效");
+  return data;
+}
+
 type ReadStateResult = { ok: true; version: number; data: RequirementState } | { ok: false; reason: string };
 
 async function readStateOrFail(ctx: WorkflowContext, repoId: string): Promise<ReadStateResult> {
   let result;
   try {
-    result = await readDocument(statePath(ctx, repoId));
+    result = await readRecord(stateRef(ctx, repoId));
+    if (result.exists) checkedRequirement(result.data, ctx.requirement);
   } catch (error) {
     return { ok: false, reason: `需求状态损坏: ${(error as Error).message}` };
   }
   if (!result.exists) return { ok: false, reason: "需求状态不存在" };
-  return { ok: true, version: result.version, data: result.data as RequirementState };
+  return { ok: true, version: result.version, data: checkedRequirement(result.data, ctx.requirement) };
 }
 
 async function requireUserDecision(
@@ -164,7 +181,7 @@ export async function initRequirementState(ctx: WorkflowContext): Promise<Action
     history: [],
   };
   try {
-    const { version } = await createDocument(statePath(ctx, identity.repoId), initial);
+    const { version } = await createRecord(stateRef(ctx, identity.repoId), initial);
     return { ok: true, version };
   } catch (error) {
     return failureFromError(error);
@@ -175,9 +192,9 @@ export async function readRequirementState(
   ctx: WorkflowContext,
 ): Promise<{ exists: false } | { exists: true; version: number; data: RequirementState }> {
   const identity = await repositoryIdentity(ctx.cwd);
-  const result = await readDocument(statePath(ctx, identity.repoId));
+  const result = await readRecord(stateRef(ctx, identity.repoId));
   if (!result.exists) return { exists: false };
-  return { exists: true, version: result.version, data: result.data as RequirementState };
+  return { exists: true, version: result.version, data: checkedRequirement(result.data, ctx.requirement) };
 }
 
 interface RunBinding {
@@ -210,6 +227,15 @@ async function evidenceFromRun(
   if (!result || !result.binding) return { ok: false, reason: "运行结果或绑定缺失" };
 
   const mismatches: string[] = [];
+  if (run.requirement !== ctx.requirement || run.task !== (result.binding.task ?? run.task)) mismatches.push("运行身份与结果绑定不一致");
+  if (!(await bindingWithinRepo(result.binding.cwd, identity.repoId))) mismatches.push("绑定工作目录不属于本仓库");
+  if (expected.phase !== "plan") {
+    const { binding: _binding, delivery: _delivery, reportDigest: _reportDigest, ...raw } = result;
+    const schema = { work: WORK_SCHEMA, review: REVIEW_SCHEMA, acceptance: ACCEPTANCE_SCHEMA }[expected.phase as "work" | "review" | "acceptance"];
+    if (!schema) return { ok: false, reason: "未知的结果阶段" };
+    const checked = validateResult(schema, expected.phase as "work" | "review" | "acceptance", raw);
+    if (!checked.ok) mismatches.push(...checked.errors);
+  }
   if (result.phase !== expected.phase) mismatches.push(`phase 期望 ${expected.phase} 实际 ${result.phase}`);
   if (result.verdict !== "PASS") mismatches.push(`verdict 期望 PASS 实际 ${result.verdict}`);
   if (result.binding.requirement !== expected.requirement) mismatches.push("绑定需求不一致");
@@ -308,6 +334,10 @@ async function evaluateStageGate(
         if (result.reportPath !== data.shape?.acceptanceReport) {
           return { ok: false, reason: "验收报告位置与形状记录不一致" };
         }
+        try {
+          const digest = await checkAcceptanceReport(evidence.result as unknown as AcceptanceResult, data.shape!.acceptanceReport!);
+          if (digest !== evidence.result.reportDigest) return { ok: false, reason: "验收报告在交付后已变化" };
+        } catch (error) { return failureFromError(error); }
       }
       return { ok: true };
     }
@@ -331,9 +361,18 @@ export async function advanceStage(input: AdvanceInput, ctx: WorkflowContext): P
   }
   const spec = gateForStage(input.targetStage);
   if (!spec) return { ok: false, reason: `未支持的阶段门禁: ${input.targetStage}` };
+  const binding = spec.kind === "runEvidence" ? observeEvidence(ctx, identity.repoId, spec.phase!) : undefined;
   const gateResult = await evaluateStageGate(spec, data, input, ctx);
   if (!gateResult.ok) return gateResult;
 
+  let prepared: PreparedEvidence | undefined;
+  if (binding && input.runId && input.currentVersion && !gateResult.decisionId) {
+    try {
+      const bound = await prepareEvidence({ stage: spec.phase!, runId: input.runId, currentVersion: input.currentVersion }, ctx, binding);
+      if (!bound.ok) return bound;
+      prepared = bound.prepared;
+    } catch (error) { return failureFromError(error); }
+  }
   const history: HistoryEntry[] = [
     ...data.history,
     {
@@ -345,11 +384,7 @@ export async function advanceStage(input: AdvanceInput, ctx: WorkflowContext): P
     },
   ];
   try {
-    const { version } = await writeDocument(
-      statePath(ctx, identity.repoId),
-      { ...data, stage: input.targetStage, history },
-      { expectedVersion: input.expectedVersion },
-    );
+    const version = commitWithEvidence(stateRef(ctx, identity.repoId), { ...data, stage: input.targetStage, history }, input.expectedVersion, prepared);
     return { ok: true, version };
   } catch (error) {
     return failureFromError(error);
@@ -360,6 +395,7 @@ const RETREAT_PATHS: Record<string, string> = {
   reviewing: "executing",
   accepting: "executing",
   planned: "confirmed",
+  accepted: "executing",
 };
 
 function mostRecentRunIdForStage(history: HistoryEntry[], stage: string): string | null {
@@ -373,7 +409,7 @@ function mostRecentRunIdForStage(history: HistoryEntry[], stage: string): string
 const UNSTOPPED_STATES: RunState[] = ["queued", "running", "pausing", "paused", "paused_network", "waiting_answer"];
 
 async function blockingActiveRun(ctx: WorkflowContext, repoId: string): Promise<RunRecord | undefined> {
-  const page = await newRunStore(ctx, repoId).list({ requirement: ctx.requirement, states: UNSTOPPED_STATES, limit: 1 });
+  const page = await newRunStore(ctx, repoId).list({ kind: "role", requirement: ctx.requirement, states: UNSTOPPED_STATES, limit: 1 });
   return page.items[0];
 }
 
@@ -385,13 +421,18 @@ export async function retreatStage(
   const current = await readStateOrFail(ctx, identity.repoId);
   if (!current.ok) return current;
   const data = current.data;
-  if (data.stage === "accepted") return { ok: false, reason: "已验收需求禁止回退" };
+  if (data.stage === "accepted") {
+    if (!input.runId) return { ok: false, reason: "已验收需求禁止无提交前审查证据回退" };
+    const review = await newRunStore(ctx, identity.repoId).get(input.runId);
+    if (!review.ok || review.run.requirement !== ctx.requirement || review.run.task !== "submit-review" || review.run.state !== "completed" || (review.run.result as { phase?: string; verdict?: string } | undefined)?.phase !== "review" || (review.run.result as { verdict?: string }).verdict !== "FAIL") return { ok: false, reason: "已验收需求回退需要本需求提交前白盒未通过证据" };
+  }
   if (RETREAT_PATHS[data.stage] !== input.targetStage) {
     return { ok: false, reason: `不允许从 ${data.stage} 回退到 ${input.targetStage}` };
   }
   if (!input.reason) return { ok: false, reason: "缺少回退理由" };
-  const check = await requireUserDecision(input.decisionId, ctx, "决定编号");
-  if (!check.ok) return check;
+  if (!input.decisionId) return { ok: false, reason: "缺少决定编号" };
+  const decision = await inspectDecision({ dataRoot: ctx.dataRoot, cwd: ctx.cwd, requirement: ctx.requirement, id: input.decisionId }) as { actor?: string; effects?: string[] } | null;
+  if (!decision || (decision.actor !== "user" && !decision.effects?.some((effect) => effect === "repair:review" || effect === "repair:acceptance"))) return { ok: false, reason: "回退需用户决定或已记录的 AI 门禁归因" };
   const blocking = await blockingActiveRun(ctx, identity.repoId);
   if (blocking) {
     return { ok: false, reason: `存在未停止的运行 ${blocking.id}（${blocking.state}${blocking.task ? `，任务 ${blocking.task}` : ""}），回退前须先停止` };
@@ -409,11 +450,7 @@ export async function retreatStage(
     },
   ];
   try {
-    const { version } = await writeDocument(
-      statePath(ctx, identity.repoId),
-      { ...data, stage: input.targetStage, history },
-      { expectedVersion: input.expectedVersion },
-    );
+    const version = commitWithEvidence(stateRef(ctx, identity.repoId), { ...data, stage: input.targetStage, history }, input.expectedVersion);
     return { ok: true, version };
   } catch (error) {
     return failureFromError(error);
@@ -465,8 +502,8 @@ export async function recordShape(
 
   const tasks = registerTasks(data.tasks, shape.tasks);
   try {
-    const { version } = await writeDocument(
-      statePath(ctx, identity.repoId),
+    const { version } = await writeRecord(
+      stateRef(ctx, identity.repoId),
       { ...data, shape, tasks },
       { expectedVersion: input.expectedVersion },
     );
@@ -503,8 +540,8 @@ export async function updateTaskFields(
 
   const followUps = input.followUps ?? data.followUps;
   try {
-    const { version } = await writeDocument(
-      statePath(ctx, identity.repoId),
+    const { version } = await writeRecord(
+      stateRef(ctx, identity.repoId),
       { ...data, tasks, followUps },
       { expectedVersion: input.expectedVersion },
     );
@@ -529,8 +566,8 @@ export async function startTask(
   }
   const tasks = { ...data.tasks, [input.taskId]: { ...task, progress: "doing", runId: input.runId } };
   try {
-    const { version } = await writeDocument(
-      statePath(ctx, identity.repoId),
+    const { version } = await writeRecord(
+      stateRef(ctx, identity.repoId),
       { ...data, tasks },
       { expectedVersion: input.expectedVersion },
     );
@@ -575,6 +612,7 @@ export async function finishTask(
   if (!task) return { ok: false, reason: `任务不存在: ${input.taskId}` };
   if (task.progress !== "doing") return { ok: false, reason: `任务进度 ${task.progress} 不能完成` };
 
+  const binding = observeEvidence(ctx, identity.repoId, `work-${input.taskId}`);
   const evidence = await evidenceFromRun(
     input.runId,
     { phase: "work", requirement: ctx.requirement, task: input.taskId, currentVersion: input.currentVersion },
@@ -611,16 +649,18 @@ export async function finishTask(
     }
   }
 
+  let prepared: PreparedEvidence;
+  try {
+    const bound = await prepareEvidence({ stage: `work-${input.taskId}`, runId: input.runId, currentVersion: input.currentVersion }, ctx, binding);
+    if (!bound.ok) return bound;
+    prepared = bound.prepared;
+  } catch (error) { return failureFromError(error); }
   const tasks = {
     ...data.tasks,
-    [input.taskId]: { ...task, progress: "done", commit: result.delivery.commit ?? null },
+    [input.taskId]: { ...task, progress: "done", runId: input.runId, commit: result.delivery.commit ?? null },
   };
   try {
-    const { version } = await writeDocument(
-      statePath(ctx, identity.repoId),
-      { ...data, tasks },
-      { expectedVersion: input.expectedVersion },
-    );
+    const version = commitWithEvidence(stateRef(ctx, identity.repoId), { ...data, tasks }, input.expectedVersion, prepared);
     return { ok: true, version };
   } catch (error) {
     return failureFromError(error);
@@ -643,8 +683,8 @@ export async function failTask(
     [input.taskId]: { ...task, progress: "failed", reason: input.reason, repairRound: (task.repairRound ?? 0) + 1 },
   };
   try {
-    const { version } = await writeDocument(
-      statePath(ctx, identity.repoId),
+    const { version } = await writeRecord(
+      stateRef(ctx, identity.repoId),
       { ...data, tasks },
       { expectedVersion: input.expectedVersion },
     );
@@ -678,8 +718,8 @@ export async function rollbackTask(
   }
   const tasks = { ...data.tasks, [input.taskId]: { ...task, progress: "todo" } };
   try {
-    const { version } = await writeDocument(
-      statePath(ctx, identity.repoId),
+    const { version } = await writeRecord(
+      stateRef(ctx, identity.repoId),
       { ...data, tasks },
       { expectedVersion: input.expectedVersion },
     );
@@ -705,8 +745,8 @@ export async function rejectRequirement(
     { stage: "rejected", at: new Date().toISOString(), runId: null, decisionId: input.decisionId as string, reason: null },
   ];
   try {
-    const { version } = await writeDocument(
-      statePath(ctx, identity.repoId),
+    const { version } = await writeRecord(
+      stateRef(ctx, identity.repoId),
       { ...data, stage: "rejected", history },
       { expectedVersion: input.expectedVersion },
     );
@@ -716,14 +756,46 @@ export async function rejectRequirement(
   }
 }
 
-export async function bindEvidence(
+interface EvidenceObservation {
+  ref: RecordRef;
+  id?: string;
+  version?: number;
+}
+
+interface PreparedEvidence extends EvidenceObservation {
+  payload: unknown;
+}
+
+function observeEvidence(ctx: WorkflowContext, repoId: string, stage: string): EvidenceObservation {
+  const ref = evidenceRef(ctx, repoId, stage);
+  const record = readRecord(ref);
+  return record.exists ? { ref, id: record.id, version: record.version } : { ref };
+}
+
+function commitEvidence(db: LocalDatabase, prepared: PreparedEvidence): void {
+  const { ref, id, version, payload } = prepared;
+  const current = db.read(ref.namespace, ref.key);
+  if (current?.id !== id || current?.version !== version) throw new StaleVersionError();
+  if (current) db.update(ref.namespace, ref.key, current.version, payload);
+  else db.create(ref.namespace, ref.key, payload);
+}
+
+function commitWithEvidence(ref: RecordRef, data: RequirementState, version: number, prepared?: PreparedEvidence): number {
+  return withDatabase(ref.database, (db) => db.transaction(() => {
+    const nextVersion = db.update(ref.namespace, ref.key, version, data);
+    if (prepared) commitEvidence(db, prepared);
+    return nextVersion;
+  }));
+}
+
+async function prepareEvidence(
   input: { stage: string; runId: string; currentVersion: DefinitionVersion },
   ctx: WorkflowContext,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const identity = await repositoryIdentity(ctx.cwd);
+  observed: EvidenceObservation,
+): Promise<{ ok: true; prepared: PreparedEvidence } | { ok: false; reason: string }> {
   const evidence = await evidenceFromRun(
     input.runId,
-    { phase: input.stage, requirement: ctx.requirement, currentVersion: input.currentVersion },
+    { phase: input.stage.startsWith("work-") ? "work" : input.stage, task: input.stage.startsWith("work-") ? input.stage.slice(5) : undefined, requirement: ctx.requirement, currentVersion: input.currentVersion },
     ctx,
   );
   if (!evidence.ok) return evidence;
@@ -735,11 +807,23 @@ export async function bindEvidence(
     codeHead: input.currentVersion.codeHead,
     cwd: evidence.result.binding.cwd,
     boundAt: new Date().toISOString(),
+    fileFingerprints: (evidence.result.delivery as { fileFingerprints?: Record<string, string> } | undefined)?.fileFingerprints,
   };
-  const path = evidencePath(ctx, identity.repoId, input.stage);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFileAtomic(path, `${JSON.stringify(payload)}\n`);
-  return { ok: true };
+  return { ok: true, prepared: { ...observed, payload } };
+}
+
+export async function bindEvidence(
+  input: { stage: string; runId: string; currentVersion: DefinitionVersion },
+  ctx: WorkflowContext,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    const identity = await repositoryIdentity(ctx.cwd);
+    const observed = observeEvidence(ctx, identity.repoId, input.stage);
+    const result = await prepareEvidence(input, ctx, observed);
+    if (!result.ok) return result;
+    withDatabase(observed.ref.database, (db) => db.transaction(() => commitEvidence(db, result.prepared)));
+    return { ok: true };
+  } catch (error) { return failureFromError(error); }
 }
 
 export async function checkEvidence(
@@ -747,20 +831,22 @@ export async function checkEvidence(
   ctx: WorkflowContext,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const identity = await repositoryIdentity(ctx.cwd);
-  let raw: string;
+  let evidence: { definitionFingerprint: string; codeHead: string; invalid?: boolean; reason?: string; fileFingerprints?: Record<string, string> };
   try {
-    raw = await readFile(evidencePath(ctx, identity.repoId, input.stage), "utf8");
-  } catch {
-    return { ok: false, reason: "证据文件不存在，待重新核对" };
-  }
-  let evidence: { definitionFingerprint: string; codeHead: string; invalid?: boolean; reason?: string };
-  try {
-    evidence = JSON.parse(raw);
-  } catch {
-    return { ok: false, reason: "证据文件损坏，待重新核对" };
-  }
+    const record = readRecord<typeof evidence>(evidenceRef(ctx, identity.repoId, input.stage));
+    if (!record.exists) return { ok: false, reason: "证据不存在，待重新核对" };
+    evidence = record.data;
+    if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) throw new Error("证据结构无效");
+  } catch { return { ok: false, reason: "证据不可读，待重新核对" }; }
   if (evidence.invalid) {
     return { ok: false, reason: `证据已失效: ${evidence.reason ?? ""}` };
+  }
+  if (input.stage.startsWith("work-")) {
+    if (!evidence.fileFingerprints || Object.keys(evidence.fileFingerprints).length === 0) return { ok: false, reason: "交付缺少文件保护证据" };
+    try {
+      if ((await verifyFingerprint(ctx.cwd, evidence.fileFingerprints)).length > 0) return { ok: false, reason: "交付涉及文件已变化，待重新核对" };
+      return { ok: true };
+    } catch (error) { return failureFromError(error); }
   }
   if (
     evidence.definitionFingerprint !== input.currentVersion.definitionFingerprint ||
@@ -773,20 +859,13 @@ export async function checkEvidence(
 
 export async function invalidateEvidence(ctx: WorkflowContext, stage: string, reason: string): Promise<void> {
   const identity = await repositoryIdentity(ctx.cwd);
-  const path = evidencePath(ctx, identity.repoId, stage);
-  await mkdir(dirname(path), { recursive: true });
   const payload = { stage, invalid: true, reason, invalidatedAt: new Date().toISOString() };
-  await writeFileAtomic(path, `${JSON.stringify(payload)}\n`);
+  putRecord(evidenceRef(ctx, identity.repoId, stage), payload);
 }
 
 export async function listEvidenceStages(ctx: WorkflowContext): Promise<string[]> {
   const identity = await repositoryIdentity(ctx.cwd);
-  const evidenceDir = `${requirementDataDir(ctx.dataRoot, identity.repoId, ctx.requirement)}/evidence`;
-  try {
-    return (await readdir(evidenceDir)).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -".json".length));
-  } catch {
-    return [];
-  }
+  return withDatabase(repositoryDatabase(ctx.dataRoot, identity.repoId), (db) => db.list(`evidence:${ctx.requirement}`).map((record) => record.key));
 }
 
 export async function checkResume(
@@ -814,11 +893,17 @@ export async function checkResume(
   }
 
   if (currentVersion) {
-    const stages = await listEvidenceStages(ctx);
-    for (const stage of stages) {
-      const checked = await checkEvidence({ stage, currentVersion }, ctx);
-      if (!checked.ok) return checked;
-    }
+    try {
+      const existing = await listEvidenceStages(ctx);
+      const stages = Object.entries(data.tasks).filter(([, task]) => task.progress === "done").map(([id]) => `work-${id}`);
+      if (data.stage === "planned" && data.shape?.gates.plan !== false) stages.push("plan");
+      if (["accepting", "accepted"].includes(data.stage) && data.shape?.gates.whiteboxReview !== false) stages.push("review");
+      if (data.stage === "accepted" && data.shape?.gates.blackboxAcceptance !== false) stages.push("acceptance");
+      for (const stage of new Set([...stages, ...existing.filter((stage) => stage !== "plan" || data.stage === "planned")])) {
+        const checked = await checkEvidence({ stage, currentVersion }, ctx);
+        if (!checked.ok) return checked;
+      }
+    } catch (error) { return failureFromError(error); }
   }
 
   return { ok: true, stage: data.stage, version: stateResult.version };

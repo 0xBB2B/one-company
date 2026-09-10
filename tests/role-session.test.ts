@@ -1,3 +1,5 @@
+import { testRepoId, sessionJson, failDatabaseWrites } from "./helpers/database-fixture.ts";
+import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -16,7 +18,7 @@ import type { McpConfig } from "../runtime/mcp.ts";
 import { readRoleDefinition, type RoleCatalogEntry } from "../runtime/roles.ts";
 import { Type } from "typebox";
 import { WORK_SCHEMA } from "../runtime/result.ts";
-import { openSessionManagerForRun, sessionFilePath } from "../runtime/session-records.ts";
+import { openSessionManagerForRun, sessionRecordRef } from "../runtime/session-records.ts";
 import { registerControlledProvider, scriptReplies, setReplies, type ControlledProvider } from "./helpers/controlled-provider.ts";
 import { createFakeTimeSource, withClockPump, withTimeout } from "./helpers/fake-clock.ts";
 import { createTempHome, removeTempHome, type TempHome } from "./helpers/temp-home.ts";
@@ -147,9 +149,9 @@ function invalidWorkObject(): Record<string, unknown> {
 }
 
 async function tempCwd(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "role-session-cwd-"));
-  tempRoots.push(dir);
-  return dir;
+  const repo = await createRepoFixture();
+  repoFixtures.push(repo);
+  return repo.root;
 }
 
 function collect(handle: any, type: string): unknown[] {
@@ -225,8 +227,8 @@ describe("独立会话与运行身份", () => {
     tempHomes.push(home);
     const cwd = await tempCwd();
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["read", "grep", "find", "ls", "edit", "write", "bash"] });
-    const repoId = "identity-repo";
-    const runId = randomUUID();
+    const repoId = testRepoId("identity-repo");
+    const runId = uuidv7();
 
     scriptReplies(provider, [
       { type: "toolcall", name: "structured_output", input: validWorkObject() },
@@ -260,7 +262,7 @@ describe("独立会话与运行身份", () => {
     expect(handle.state()).toBe("completed");
     const opened = openSessionManagerForRun({ dataRoot: home.dataRoot, repoId, runId });
     expect(opened.ok).toBe(true);
-    const rawExists = await readFile(sessionFilePath({ dataRoot: home.dataRoot, repoId, runId }), "utf8");
+    const rawExists = sessionJson({ dataRoot: home.dataRoot, repoId, runId });
     expect(rawExists.length).toBeGreaterThan(0);
   }, 20000);
 
@@ -273,8 +275,8 @@ describe("独立会话与运行身份", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "unavailable-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("unavailable-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -317,8 +319,8 @@ describe("独立会话与运行身份", () => {
     await expect(
       createRoleSession({
         dataRoot: home.dataRoot,
-        repoId: "broken-role-repo",
-        runId: randomUUID(),
+        repoId: testRepoId("broken-role-repo"),
+        runId: uuidv7(),
         shellToken: randomUUID(),
         cwd,
         roleName: "worker",
@@ -363,14 +365,13 @@ describe("工具白名单、读写路径与占用核对", () => {
       { type: "toolcall", name: "mcp", input: { tool: "codegraph_explore", server: "codegraph", search: "x" } },
       { type: "toolcall", name: "write", input: { path: inScopeWriteFile, content: "worker content" } },
       { type: "toolcall", name: "structured_output", input: validWorkObject() },
-      { type: "toolcall", name: "structured_output", input: validWorkObject() },
       { type: "text", text: "done" },
     ]);
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "worker-script-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("worker-script-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -396,7 +397,7 @@ describe("工具白名单、读写路径与占用核对", () => {
 
     expect(result).toBeTruthy();
     expect(handle.state()).toBe("completed");
-    await waitForCount(() => toolEnds.length, 7);
+    await waitForCount(() => toolEnds.length, 6);
 
     expect(toolEnds[0]?.isError).toBe(true);
     expect(toolEnds[1]?.isError).toBe(true);
@@ -404,7 +405,6 @@ describe("工具白名单、读写路径与占用核对", () => {
     expect(toolEnds[3]?.isError).toBe(true);
     expect(toolEnds[4]?.isError).toBe(false);
     expect(toolEnds[5]?.isError).toBe(false);
-    expect(toolEnds[6]?.isError).toBe(true);
 
     const written = await readFile(inScopeWriteFile, "utf8");
     expect(written).toBe("worker content");
@@ -428,8 +428,8 @@ describe("工具白名单、读写路径与占用核对", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "tool-allowlist-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("tool-allowlist-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -477,8 +477,8 @@ describe("只读工具省略 path 与相对路径解析", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "omit-path-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("omit-path-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -524,8 +524,8 @@ describe("只读工具省略 path 与相对路径解析", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "relative-path-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("relative-path-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -570,8 +570,8 @@ describe("只读工具省略 path 与相对路径解析", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "readonly-write-tool-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("readonly-write-tool-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "reviewer",
@@ -617,8 +617,8 @@ describe("MCP 服务限制", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "mcp-missing-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("mcp-missing-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -673,8 +673,8 @@ describe("MCP 真实装载对照", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "mcp-real-adapter-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("mcp-real-adapter-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -722,8 +722,8 @@ describe("MCP 真实装载对照", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "mcp-readonly-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("mcp-readonly-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "reviewer",
@@ -766,8 +766,8 @@ describe("MCP 真实装载对照", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "mcp-load-failure-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("mcp-load-failure-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -816,8 +816,8 @@ describe("结构化提交", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "invalid-submission-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("invalid-submission-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -862,8 +862,8 @@ describe("结构化提交", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "submission-is-last-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("submission-is-last-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -883,10 +883,8 @@ describe("结构化提交", () => {
 
     const toolEnds = collect(handle, "tool_end") as Array<{ isError?: boolean }>;
     handle.prompt("提交是最后动作任务");
-    const result = await handle.result();
-
-    expect(result).toBeTruthy();
-    expect(handle.state()).toBe("completed");
+    await expect(handle.result()).rejects.toThrow("裁决提交后仍发起工具调用");
+    expect(handle.state()).toBe("failed");
     await waitForCount(() => toolEnds.length, 2);
     expect(toolEnds[0]?.isError).toBe(false);
     expect(toolEnds[1]?.isError).toBe(true);
@@ -896,6 +894,26 @@ describe("结构化提交", () => {
 });
 
 describe("暂停与恢复", () => {
+  test("SQLite 会话保存失败使角色失败并阻止后续文件写入", async () => {
+    const { runtime, provider } = await setupProvider("role-session-persist-failure");
+    const home = await createTempHome(); tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["write"] });
+    const repoId = testRepoId(); const runId = uuidv7();
+    scriptReplies(provider, [{ type: "toolcall", name: "write", input: { path: "unsaved.txt", content: "不应执行" } }, { type: "text", text: "结束" }]);
+    const clock = createClock();
+    const handle = await createRoleSession({ dataRoot: home.dataRoot, repoId, runId, shellToken: randomUUID(), cwd, roleName: "worker", role, task: "保存失败", readPaths: [cwd], writePaths: [cwd], contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" }, runtime, modelRef: { provider: provider.providerId, id: provider.modelId }, clock, shellRegistry: new ShellRegistry({ clock }), guards: createGuards(), networkGate: new NetworkPauseGate() });
+    handles.push(handle);
+    const restore = failDatabaseWrites(repositoryDatabase(home.dataRoot, repoId), "events", "stream", `session:${runId}`);
+    try {
+      handle.prompt("开始");
+      await expect(handle.result()).rejects.toThrow("会话保存失败");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(handle.state()).toBe("failed");
+      await expect(readFile(join(cwd, "unsaved.txt"), "utf8")).rejects.toThrow();
+    } finally { restore(); clock.stopGapWatcher(); }
+  });
+
   test("暂停后 resume 只产生一次真实续跑请求，排队消息送达，会话文件不含裸空格用户消息", async () => {
     const { runtime, provider } = await setupProvider("role-session-pause-resume");
     const home = await createTempHome();
@@ -904,8 +922,8 @@ describe("暂停与恢复", () => {
     const file1 = join(cwd, "file1.txt");
     await writeFile(file1, "初始内容");
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["read", "write", "bash"] });
-    const repoId = "pause-resume-repo";
-    const runId = randomUUID();
+    const repoId = testRepoId("pause-resume-repo");
+    const runId = uuidv7();
 
     scriptReplies(provider, [
       { type: "toolcall", name: "write", input: { path: file1, content: "第一次写入" } },
@@ -950,6 +968,7 @@ describe("暂停与恢复", () => {
     setReplies(provider, [{ type: "text", text: "resumed" }]);
 
     await handle.resume();
+    await waitForCount(() => provider.requests.length, requestsBeforeResume + 1);
     expect(provider.requests.length).toBe(requestsBeforeResume + 1);
 
     const resumeRequest = provider.requests[requestsBeforeResume];
@@ -957,7 +976,7 @@ describe("暂停与恢复", () => {
     expect(hasBareSpaceUserMessage(home.dataRoot, repoId, runId)).toBe(false);
   }, 20000);
 
-  test("核对期解除需要一次只读操作：直接重试同一写操作两次仍被拒，做一次只读操作后才放行", async () => {
+  test("恢复核对工具实际读取现场后才解除写入门禁", async () => {
     const { runtime, provider } = await setupProvider("role-session-pause-verify-gate");
     const home = await createTempHome();
     tempHomes.push(home);
@@ -974,8 +993,8 @@ describe("暂停与恢复", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "pause-verify-gate-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("pause-verify-gate-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1006,7 +1025,7 @@ describe("暂停与恢复", () => {
     setReplies(provider, [
       { type: "toolcall", name: "write", input: { path: file2, content: "核对期第一次重试" } },
       { type: "toolcall", name: "write", input: { path: file2, content: "核对期第二次重试" } },
-      { type: "toolcall", name: "read", input: { path: file1 } },
+      { type: "toolcall", name: "pi_company_resume_check", input: {} },
       { type: "toolcall", name: "write", input: { path: file2, content: "核对完成后写入" } },
       { type: "toolcall", name: "structured_output", input: validWorkObject() },
       { type: "text", text: "resumed" },
@@ -1032,8 +1051,8 @@ describe("暂停与恢复", () => {
     tempHomes.push(home);
     const cwd = await tempCwd();
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["bash"] });
-    const repoId = "pause-inflight-bash-repo";
-    const runId = randomUUID();
+    const repoId = testRepoId("pause-inflight-bash-repo");
+    const runId = uuidv7();
 
     scriptReplies(provider, [
       { type: "toolcall", name: "bash", input: { command: "sleep 2" } },
@@ -1067,7 +1086,6 @@ describe("暂停与恢复", () => {
     // 真实等待，让受控 provider 的 toolcall 走完 tool_call 拦截并让 bash 真正 spawn 出 sleep 子进程，
     // 确保下面的 pause() 是在一次真正进行中的长耗时操作期间调用，而非操作尚未开始
     await new Promise((resolve) => setTimeout(resolve, 250));
-    // 运行中（尚未暂停）通过 handle.prompt 入队的消息应落入 SDK 自身的排队机制，而非直接抛错
     expect(() => handle.prompt("运行中排队消息")).not.toThrow();
 
     const pauseStartedAt = Date.now();
@@ -1084,6 +1102,7 @@ describe("暂停与恢复", () => {
     setReplies(provider, [{ type: "text", text: "resumed" }]);
     await withTimeout(handle.resume(), 5000, "超时等待 resume() 完成");
 
+    await waitForCount(() => provider.requests.length, requestsBeforeResume + 1);
     expect(provider.requests.length).toBe(requestsBeforeResume + 1);
     const resumeRequest = provider.requests[requestsBeforeResume];
     expect(JSON.stringify(resumeRequest)).toContain("运行中排队消息");
@@ -1108,8 +1127,8 @@ describe("核对期收敛（自然结束回合即照常结算，不追加核验�
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "verify-settle-text-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("verify-settle-text-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1146,6 +1165,7 @@ describe("核对期收敛（自然结束回合即照常结算，不追加核验�
     expect(handle.state()).toBe("running");
     expect((idleEvents[0] as { submitted?: boolean })?.submitted).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 300));
+    await waitForCount(() => provider.requests.length, requestsBeforeResume + 1);
     expect(provider.requests.length).toBe(requestsBeforeResume + 1);
   }, 20000);
 
@@ -1165,8 +1185,8 @@ describe("核对期收敛（自然结束回合即照常结算，不追加核验�
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "verify-settle-bash-only-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("verify-settle-bash-only-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1203,11 +1223,40 @@ describe("核对期收敛（自然结束回合即照常结算，不追加核验�
     expect(handle.state()).toBe("running");
     expect((idleEvents[0] as { submitted?: boolean })?.submitted).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 300));
+    await waitForCount(() => provider.requests.length, requestsBeforeResume + 1);
     expect(provider.requests.length).toBe(requestsBeforeResume + 1);
   }, 20000);
 });
 
 describe("多轮与 finalize 结算", () => {
+  test("同时提交及 idle 回调内追加消息串行进入 SDK，全部写入历史且无请求冲突", async () => {
+    const { runtime, provider } = await setupProvider("role-session-concurrent-prompts");
+    const home = await createTempHome(); tempHomes.push(home);
+    const cwd = await tempCwd();
+    const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["read"] });
+    const runId = uuidv7();
+    const repoId = testRepoId("concurrent-prompts");
+    scriptReplies(provider, ["第一条已处理", "第二条已处理", "第三条已处理"].map((text) => ({ type: "text" as const, text })));
+    const handle = await createRoleSession({ dataRoot: home.dataRoot, repoId, runId, shellToken: randomUUID(), cwd,
+      roleName: "worker", role, task: "串行消息", readPaths: [], writePaths: [],
+      contract: { kind: "structured", outputSchema: WORK_SCHEMA, expectedPhase: "work" }, runtime,
+      modelRef: { provider: provider.providerId, id: provider.modelId }, clock: createClock(),
+      shellRegistry: new ShellRegistry({ clock: createClock() }), guards: createGuards(), networkGate: new NetworkPauseGate(),
+    });
+    handles.push(handle);
+    let idle = 0;
+    handle.events.on("idle", () => { if (++idle === 1) handle.prompt("第三条消息"); });
+    handle.prompt("第一条消息");
+    handle.prompt("第二条消息");
+    await waitForCount(() => idle, 3, 5000);
+    expect(handle.state()).toBe("running");
+    expect(provider.requests).toHaveLength(3);
+    const opened = openSessionManagerForRun({ dataRoot: home.dataRoot, repoId, runId });
+    if (!opened.ok) throw new Error(opened.detail);
+    const userMessages = opened.manager.getEntries().filter((entry: any) => entry.type === "message" && entry.message.role === "user").map((entry: any) => entry.message.content.map((block: any) => block.text ?? "").join(""));
+    expect(userMessages).toEqual(["第一条消息", "第二条消息", "第三条消息"]);
+  });
+
   test("第一轮只回文字未提交：保持 running、emit idle、result 未结算；第二轮提交后 completed", async () => {
     const { runtime, provider } = await setupProvider("role-session-multi-turn-idle");
     const home = await createTempHome();
@@ -1219,8 +1268,8 @@ describe("多轮与 finalize 结算", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "multi-turn-idle-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("multi-turn-idle-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1277,8 +1326,8 @@ describe("多轮与 finalize 结算", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "finalize-not-submitted-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("finalize-not-submitted-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1327,8 +1376,8 @@ describe("多轮与 finalize 结算", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "finalize-submitted-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("finalize-submitted-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1380,8 +1429,8 @@ describe("网络流空闲与暂停", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "network-idle-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("network-idle-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1427,8 +1476,8 @@ describe("网络流空闲与暂停", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "sleep-gap-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("sleep-gap-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1465,7 +1514,7 @@ describe("网络流空闲与暂停", () => {
     tempHomes.push(home);
     const cwd = await tempCwd();
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["bash"] });
-    const runId = randomUUID();
+    const runId = uuidv7();
 
     scriptReplies(provider, [
       { type: "text", text: "分块回复", chunkDelayMs: 600 },
@@ -1476,7 +1525,7 @@ describe("网络流空闲与暂停", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "network-resume-repo",
+      repoId: testRepoId("network-resume-repo"),
       runId,
       shellToken: randomUUID(),
       cwd,
@@ -1520,8 +1569,8 @@ describe("网络流空闲与暂停", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "network-gate-short-circuit-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("network-gate-short-circuit-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1611,8 +1660,8 @@ describe("暂停超时与停止确认", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "pause-stop-timeout-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("pause-stop-timeout-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1682,8 +1731,8 @@ describe("暂停超时与停止确认", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "stop-uncertain-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("stop-uncertain-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1749,8 +1798,8 @@ describe("暂停超时与停止确认", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "pause-stophost-recorded-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("pause-stophost-recorded-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -1803,7 +1852,7 @@ describe("暂停超时与停止确认", () => {
     const cwd = await tempCwd();
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["bash"] });
     const pidFile = join(cwd, "bash.pid");
-    const runId = randomUUID();
+    const runId = uuidv7();
 
     scriptReplies(provider, [
       { type: "toolcall", name: "bash", input: { command: `echo $$ > ${pidFile} && sleep 10` } },
@@ -1818,7 +1867,7 @@ describe("暂停超时与停止确认", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "stop-stuck-tool-repo",
+      repoId: testRepoId("stop-stuck-tool-repo"),
       runId,
       shellToken: randomUUID(),
       cwd,
@@ -1880,7 +1929,7 @@ describe("暂停超时与停止确认", () => {
       expect(stopOutcome.shellResults.length).toBeGreaterThan(0);
       const entry = stopOutcome.shellResults[0];
       expect(entry?.result.ok).toBe(true);
-      if (entry?.result.ok) expect(entry.result.task.status).not.toBe("uncertain");
+      if (entry?.result.ok) expect(entry.result.task).not.toMatchObject({ status: "uncertain" });
       await waitForProcessGone(pid as number);
     } finally {
       try {
@@ -1893,7 +1942,7 @@ describe("暂停超时与停止确认", () => {
 });
 
 describe("只读角色的写入核验", () => {
-  test("reviewer 按派工角色名判定为只读，git status 放行，写入判违规并结束会话（定义 kind 与判定无关）", async () => {
+  test("review kind 角色的 git status 放行，写入判违规并结束会话", async () => {
     const { runtime, provider } = await setupProvider("role-session-reviewer");
     const home = await createTempHome();
     tempHomes.push(home);
@@ -1902,8 +1951,7 @@ describe("只读角色的写入核验", () => {
     await mkdir(join(repo.root, "src"), { recursive: true });
     await writeFile(join(repo.root, "src", "a.ts"), "export const a = 1;\n");
 
-    // 定义 kind 故意设为 work，验证只读判定按派工角色名而非 kind
-    const role = await writeRoleEntry({ name: "reviewer", kind: "work", tools: ["read", "grep", "find", "ls", "bash"] });
+    const role = await writeRoleEntry({ name: "reviewer", kind: "review", tools: ["read", "grep", "find", "ls", "bash"] });
 
     scriptReplies(provider, [
       { type: "toolcall", name: "bash", input: { command: "git status" } },
@@ -1913,8 +1961,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "reviewer-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("reviewer-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -1961,8 +2009,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "acceptance-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("acceptance-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "acceptance",
@@ -2009,8 +2057,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "reviewer-never-submit-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("reviewer-never-submit-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -2064,8 +2112,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "acceptance-never-submit-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("acceptance-never-submit-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "acceptance",
@@ -2124,8 +2172,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "reviewer-node-modules-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("reviewer-node-modules-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -2174,8 +2222,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "reviewer-git-hooks-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("reviewer-git-hooks-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -2218,8 +2266,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "reviewer-node-modules-bin-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("reviewer-node-modules-bin-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -2267,8 +2315,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "reviewer-hookspath-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("reviewer-hookspath-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -2313,8 +2361,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "reviewer-subtree-hooks-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("reviewer-subtree-hooks-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -2357,8 +2405,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "reviewer-untracked-cache-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("reviewer-untracked-cache-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -2403,8 +2451,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "worktree-hooks-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("worktree-hooks-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: worktree.root,
       roleName: "reviewer",
@@ -2449,8 +2497,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "worktree-attributes-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("worktree-attributes-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: worktree.root,
       roleName: "reviewer",
@@ -2501,8 +2549,8 @@ describe("只读角色的写入核验", () => {
 
       const handle = await createRoleSession({
         dataRoot: home.dataRoot,
-        repoId: `config-${testCase.label}-repo`,
-        runId: randomUUID(),
+        repoId: testRepoId(`config-${testCase.label}-repo`),
+        runId: uuidv7(),
         shellToken: randomUUID(),
         cwd: repo.root,
         roleName: "reviewer",
@@ -2548,8 +2596,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "global-hookspath-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("global-hookspath-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -2603,8 +2651,8 @@ describe("只读角色的写入核验", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "relative-hookspath-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("relative-hookspath-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: subdir,
       roleName: "reviewer",
@@ -2647,8 +2695,8 @@ describe("终态守卫", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId,
-      runId: randomUUID(),
+      repoId: testRepoId(repoId),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -2709,8 +2757,8 @@ describe("会话文件落盘", () => {
     tempHomes.push(home);
     const cwd = await tempCwd();
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["bash"] });
-    const repoId = "credential-repo";
-    const runId = randomUUID();
+    const repoId = testRepoId("credential-repo");
+    const runId = uuidv7();
 
     scriptReplies(provider, [
       { type: "toolcall", name: "structured_output", input: validWorkObject() },
@@ -2741,7 +2789,7 @@ describe("会话文件落盘", () => {
     handle.prompt("凭据不泄漏任务");
     await handle.result();
 
-    const raw = await readFile(sessionFilePath({ dataRoot: home.dataRoot, repoId, runId }), "utf8");
+    const raw = sessionJson({ dataRoot: home.dataRoot, repoId, runId });
     expect(raw).not.toContain(CONTROLLED_API_KEY);
 
     const requestsText = provider.requests
@@ -2765,8 +2813,8 @@ describe("会话隔离", () => {
     ]);
     const handleA = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "isolation-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("isolation-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: cwdA,
       roleName: "worker",
@@ -2793,8 +2841,8 @@ describe("会话隔离", () => {
     ]);
     const handleB = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "isolation-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("isolation-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: cwdB,
       roleName: "worker",
@@ -2835,14 +2883,14 @@ describe("网络暂停恢复的一致性与异常安全", () => {
     const file1 = join(cwd, "file1.txt");
     await writeFile(file1, "初始内容");
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["read", "bash"] });
-    const runId = randomUUID();
+    const runId = uuidv7();
 
     scriptReplies(provider, [{ type: "text", text: "分块回复", chunkDelayMs: 2000 }]);
 
     const gate = new NetworkPauseGate();
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "network-consistency-repo",
+      repoId: testRepoId("network-consistency-repo"),
       runId,
       shellToken: randomUUID(),
       cwd,
@@ -2908,8 +2956,8 @@ describe("性能：只读角色单条命令的 git 子进程数", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "git-subprocess-count-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("git-subprocess-count-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd: repo.root,
       roleName: "reviewer",
@@ -2952,8 +3000,8 @@ describe("用户停止是独立终态", () => {
     const cwd = await tempCwd();
     const outputFile = join(cwd, "output.txt");
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["write", "bash"] });
-    const repoId = "stop-running-unsubmitted-repo";
-    const runId = randomUUID();
+    const repoId = testRepoId("stop-running-unsubmitted-repo");
+    const runId = uuidv7();
 
     scriptReplies(provider, [
       { type: "toolcall", name: "write", input: { path: outputFile, content: "已完成的成果" } },
@@ -3007,7 +3055,7 @@ describe("用户停止是独立终态", () => {
 
     const written = await readFile(outputFile, "utf8");
     expect(written).toBe("已完成的成果");
-    const raw = await readFile(sessionFilePath({ dataRoot: home.dataRoot, repoId, runId }), "utf8");
+    const raw = sessionJson({ dataRoot: home.dataRoot, repoId, runId });
     expect(raw.length).toBeGreaterThan(0);
   }, 20000);
 
@@ -3025,8 +3073,8 @@ describe("用户停止是独立终态", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "stop-after-submit-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("stop-after-submit-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "worker",
@@ -3083,7 +3131,7 @@ describe("终态清理", () => {
     const cwd = await tempCwd();
     const pidFile = join(cwd, "bg.pid");
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["bash"] });
-    const runId = randomUUID();
+    const runId = uuidv7();
     const roleName = "worker";
 
     scriptReplies(provider, [
@@ -3096,7 +3144,7 @@ describe("终态清理", () => {
     const shellRegistry = new ShellRegistry({ clock });
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "terminal-cleanup-repo",
+      repoId: testRepoId("terminal-cleanup-repo"),
       runId,
       shellToken: randomUUID(),
       cwd,
@@ -3159,7 +3207,7 @@ describe("终态清理", () => {
     const cwd = await tempCwd();
     const pidFile = join(cwd, "bg.pid");
     const role = await writeRoleEntry({ name: "worker", kind: "work", tools: ["bash"] });
-    const runId = randomUUID();
+    const runId = uuidv7();
     const roleName = "worker";
 
     scriptReplies(provider, [
@@ -3172,7 +3220,7 @@ describe("终态清理", () => {
     const shellRegistry = new ShellRegistry({ clock });
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "terminal-stop-again-repo",
+      repoId: testRepoId("terminal-stop-again-repo"),
       runId,
       shellToken: randomUUID(),
       cwd,
@@ -3247,8 +3295,8 @@ describe("验收者写入范围限定为指定报告路径", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "acceptance-report-path-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("acceptance-report-path-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "acceptance",
@@ -3294,8 +3342,8 @@ describe("验收者写入范围限定为指定报告路径", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "reviewer-write-still-blocked-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("reviewer-write-still-blocked-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "reviewer",
@@ -3350,8 +3398,8 @@ describe("验收者写入范围限定为指定报告路径", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "acceptance-reportpath-outside-cwd-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("acceptance-reportpath-outside-cwd-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "acceptance",
@@ -3409,8 +3457,8 @@ describe("验收者写入范围限定为指定报告路径", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "acceptance-reportpath-symlink-outside-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("acceptance-reportpath-symlink-outside-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "acceptance",
@@ -3450,8 +3498,8 @@ describe("kind:plan 角色的输出契约", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "plan-kind-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("plan-kind-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "planner",
@@ -3491,8 +3539,8 @@ describe("kind:plan 角色的输出契约", () => {
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "plan-no-submit-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("plan-no-submit-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "planner",
@@ -3534,8 +3582,8 @@ describe("无契约角色（kind manage 且未传 outputSchema）不构造提交
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "no-contract-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("no-contract-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "coordinator",
@@ -3573,8 +3621,8 @@ describe("无契约角色（kind manage 且未传 outputSchema）不构造提交
 
     const handle = await createRoleSession({
       dataRoot: home.dataRoot,
-      repoId: "no-contract-no-autocomplete-repo",
-      runId: randomUUID(),
+      repoId: testRepoId("no-contract-no-autocomplete-repo"),
+      runId: uuidv7(),
       shellToken: randomUUID(),
       cwd,
       roleName: "coordinator",

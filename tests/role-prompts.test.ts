@@ -263,7 +263,7 @@ const REQUIRED_EXPRESSIONS: Array<{ name: ContractRoleName; section: string; phr
       "从原轮次继续",
       "同根因",
       "技术阻塞",
-      "不写任何记录",
+      "不写用户决策记录",
     ],
   },
   { name: "requirement-agent", section: "门禁", phrases: ["规则文件清单", "报告位置", "环境启动方式", "结构化格式", "advance"] },

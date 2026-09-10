@@ -1,13 +1,17 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, test, spyOn } from "bun:test";
+import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
-import { repositoryIdentity, requirementDataDir } from "../runtime/identity.ts";
+import { repositoryIdentity } from "../runtime/identity.ts";
 import { appendDecision } from "../runtime/decisions.ts";
 import { RunStore } from "../runtime/run-store.ts";
-import { createDocument, readDocument } from "../runtime/store.ts";
+import { createRecord, readRecord, putRecord, repositoryDatabase } from "../runtime/database.ts";
+import { requirementStateRef } from "../runtime/workflow-state.ts";
 import {
   VALID_STAGES,
   VALID_TASK_PROGRESS,
@@ -50,9 +54,7 @@ interface StateDoc {
   history: unknown[];
 }
 
-function statePath(dataRoot: string, repoId: string, requirement: string): string {
-  return `${requirementDataDir(dataRoot, repoId, requirement)}/state.json`;
-}
+const statePath = requirementStateRef;
 
 async function seedState(dataRoot: string, repoId: string, requirement: string, overrides: Record<string, unknown> = {}) {
   const initial: StateDoc = {
@@ -64,11 +66,11 @@ async function seedState(dataRoot: string, repoId: string, requirement: string, 
     history: [],
     ...overrides,
   };
-  return createDocument(statePath(dataRoot, repoId, requirement), initial);
+  return createRecord(statePath(dataRoot, repoId, requirement), initial);
 }
 
 async function readState(dataRoot: string, repoId: string, requirement: string): Promise<{ version: number; data: StateDoc }> {
-  const result = await readDocument(statePath(dataRoot, repoId, requirement));
+  const result = await readRecord(statePath(dataRoot, repoId, requirement));
   if (!result.exists) throw new Error("期望状态文档存在");
   return { version: result.version, data: result.data as StateDoc };
 }
@@ -78,7 +80,7 @@ async function repoHeadCommit(repoRoot: string): Promise<string> {
   return stdout.trim();
 }
 
-const ACCEPTANCE_REPORT = "/reports/workflow-demo/acceptance.md";
+let ACCEPTANCE_REPORT: string;
 
 function userDecisionInput(requirement: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -150,7 +152,9 @@ function shapeInput(decisionId: string, overrides: Record<string, unknown> = {})
 
 function baseRunInput(requirement: string, cwd: string, task = "") {
   return {
-    kind: "requirement" as const,
+    kind: "role" as const,
+    role: "pi-company.worker",
+    standalone: true,
     requirement,
     task,
     cwd,
@@ -165,6 +169,12 @@ function baseRunInput(requirement: string, cwd: string, task = "") {
 async function completedRun(store: RunStore, requirement: string, cwd: string, result: unknown, task = ""): Promise<string> {
   const run = await store.create(baseRunInput(requirement, cwd, task));
   await store.update(run.id, { state: "running" });
+  const value = result as Record<string, unknown>;
+  if (value.phase === "acceptance" && value.reportPath === ACCEPTANCE_REPORT) {
+    const content = `---\ndate: 2026-09-10\nresult: ${value.acceptanceResult}\n---\n## 验收结果\n| AC-1 | PASS | 符合预期 | |\n## 所用命令\nbun test\n`;
+    await writeFile(ACCEPTANCE_REPORT, content);
+    value.reportDigest = createHash("sha256").update(content).digest("hex");
+  }
   await store.update(run.id, { state: "completed", result });
   return run.id;
 }
@@ -192,6 +202,9 @@ function reviewResult(
   return {
     phase: "review",
     verdict: "PASS",
+    summary: "审查通过", issues: [], evidence: ["真实仓库测试装置"],
+    reviewedHead: currentVersion.codeHead, contentFingerprint: currentVersion.definitionFingerprint,
+    traceability: [{ ref: "demo/AC-1", test: "README.md:1", implementation: "README.md:1" }], findings: [],
     binding: { requirement, definitionFingerprint: currentVersion.definitionFingerprint, codeHead: currentVersion.codeHead, cwd },
     ...overrides,
   };
@@ -208,6 +221,8 @@ function acceptanceResult(
     phase: "acceptance",
     verdict: "PASS",
     acceptanceResult: "accepted",
+    summary: "验收通过", issues: [], evidence: ["README.md:1"],
+    items: [{ id: "AC-1", result: "PASS", observed: "符合预期", difference: "" }], uncovered: [],
     reportPath,
     binding: { requirement, definitionFingerprint: currentVersion.definitionFingerprint, codeHead: currentVersion.codeHead, cwd },
     ...overrides,
@@ -225,11 +240,16 @@ function workResult(
   return {
     phase: "work",
     verdict: "PASS",
+    summary: "实施通过", issues: [], evidence: ["README.md:1"], changeKind: "behavior-change",
+    coverage: [{ ref: "demo/AC-1", test: "README.md:1" }],
+    redCommands: [{ command: "bun test", status: "failed", details: "新增断言失败" }],
+    greenCommands: [{ command: "bun test", status: "passed", details: "回归通过" }],
+    productionPath: ["a.ts"], fakeRed: false,
     changedFiles: ["a.ts"],
     workState: "red-green",
     preexistingEvidence: [],
     binding: { requirement, task, definitionFingerprint: currentVersion.definitionFingerprint, codeHead: currentVersion.codeHead, cwd },
-    delivery: { commit, verificationOk: true },
+    delivery: { commit, verificationOk: true, fileFingerprints: { "README.md": createHash("sha256").update(readFileSync(`${cwd}/README.md`)).digest("hex") } },
     ...overrides,
   };
 }
@@ -238,6 +258,7 @@ async function setupWorld() {
   const home = await createTempHome();
   tempHomes.push(home);
   const repo = await createRepoFixture();
+  ACCEPTANCE_REPORT = `${repo.root}/acceptance.md`;
   repoFixtures.push(repo);
   const identity = await repositoryIdentity(repo.root);
   const requirement = REQUIREMENT;
@@ -1150,7 +1171,7 @@ describe("受控回退 retreatStage", () => {
   test("原运行仍处于活动状态时回退被拒绝", async () => {
     const world = await setupWorld();
     await toPlanned(world);
-    const activeRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
+    const activeRun = await world.runStore.create({ ...baseRunInput(world.requirement, world.repo.root), kind: "role", role: "pi-company.worker", standalone: true });
     await world.runStore.update(activeRun.id, { state: "running" });
     const decision = await appendDecision(userDecisionInput(world.requirement, { trigger: "范围调整", decision: "退回确认阶段重议范围" }), {
       dataRoot: world.home.dataRoot,
@@ -1176,7 +1197,7 @@ describe("受控回退 retreatStage", () => {
     expect(after.data.stage).toBe("planned");
   });
 
-  test("accepted 需求禁止任何回退", async () => {
+  test("accepted 需求缺少提交前失败证据时禁止回退", async () => {
     const world = await setupWorld();
     await toAccepted(world);
     const decision = await appendDecision(userDecisionInput(world.requirement, { trigger: "回退请求", decision: "尝试回退已验收需求" }), {
@@ -1191,6 +1212,18 @@ describe("受控回退 retreatStage", () => {
     expect(result.ok).toBe(false);
     const after = await currentState(world);
     expect(after.data.stage).toBe("accepted");
+  });
+
+  test("accepted 需求以本需求提交前白盒失败和 AI 归因回退执行", async () => {
+    const world = await setupWorld();
+    await toAccepted(world);
+    const runId = await completedRun(world.runStore, world.requirement, world.repo.root,
+      reviewResult(world.requirement, world.currentVersion, world.repo.root, { verdict: "FAIL" }), "submit-review");
+    const decision = await appendDecision(aiDecisionInput(world.requirement, { effects: ["repair:review"], decision: "修复提交前发现的遗漏" }), world.ctx);
+    const state = await currentState(world);
+    const result = await retreatStage({ expectedVersion: state.version, targetStage: "executing", reason: "提交前白盒失败", decisionId: decision.decisionId, runId }, world.ctx);
+    expect(result.ok).toBe(true);
+    expect((await currentState(world)).data.stage).toBe("executing");
   });
 
   test("不在允许路径内的回退（executing → planned）被拒绝", async () => {
@@ -1226,7 +1259,7 @@ describe("受控回退 retreatStage", () => {
 
   test("存在未停止的运行时回退被拒绝且原因列出该运行标识，调用方另传已停止的 runId 也无效", async () => {
     const world = await setupWorld();
-    const activeRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
+    const activeRun = await world.runStore.create({ ...baseRunInput(world.requirement, world.repo.root), kind: "role", role: "pi-company.worker", standalone: true });
     await world.runStore.update(activeRun.id, { state: "running" });
     const stoppedRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
     await world.runStore.update(stoppedRun.id, { state: "running" });
@@ -1360,6 +1393,44 @@ describe("版本化与并发", () => {
 });
 
 describe("证据绑定与核对", () => {
+  test("证据写入失败时阶段和版本一起回滚", async () => {
+    const world = await setupWorld();
+    await toReviewing(world);
+    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
+    const before = await currentState(world);
+    const restore = failDatabaseWrites(repositoryDatabase(world.home.dataRoot, world.identity.repoId), "records", "namespace", `evidence:${world.requirement}`);
+    try {
+      const result = await advanceStage({ expectedVersion: before.version, targetStage: "accepting", runId, currentVersion: world.currentVersion }, world.ctx);
+      expect(result.ok).toBe(false);
+      expect(await currentState(world)).toEqual(before);
+      expect(await listEvidenceStages(world.ctx)).not.toContain("review");
+    } finally { restore(); }
+  });
+
+  test("核验期间发生失效时迟到的绑定不能覆盖失效标记", async () => {
+    const world = await setupWorld();
+    await toReviewing(world);
+    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
+    const original = RunStore.prototype.get;
+    let invalidated = false;
+    const intercepted = spyOn(RunStore.prototype, "get").mockImplementation(async function (id) {
+      const found = await original.call(this, id);
+      if (id === runId && !invalidated) {
+        invalidated = true;
+        await invalidateEvidence(world.ctx, "review", "核验期间发现现场越界");
+      }
+      return found;
+    });
+    try {
+      const result = await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
+      expect(result.ok).toBe(false);
+      expect(invalidated).toBe(true);
+      const checked = await checkEvidence({ stage: "review", currentVersion: world.currentVersion }, world.ctx);
+      expect(checked.ok).toBe(false);
+      if (!checked.ok) expect(checked.reason).toContain("失效");
+    } finally { intercepted.mockRestore(); }
+  });
+
   test("bindEvidence 写入证据文件后 checkEvidence 通过", async () => {
     const world = await setupWorld();
     await toReviewing(world);
@@ -1398,9 +1469,8 @@ describe("invalidateEvidence：标记失效而非删除证据文件", () => {
     const stages = await listEvidenceStages(world.ctx);
     expect(stages).toContain("review");
 
-    const evidenceFilePath = `${requirementDataDir(world.home.dataRoot, world.identity.repoId, world.requirement)}/evidence/review.json`;
-    const raw = await readFile(evidenceFilePath, "utf8");
-    expect(raw.length).toBeGreaterThan(0);
+    const evidenceFilePath = { database: repositoryDatabase(world.home.dataRoot, world.identity.repoId), namespace: `evidence:${world.requirement}`, key: "review" };
+    expect(readRecord(evidenceFilePath).exists).toBe(true);
   });
 
   test("失效后 checkResume 返回阻塞且原因含失效", async () => {
@@ -1455,7 +1525,7 @@ describe("续接核对 checkResume", () => {
   test("状态文档损坏时返回明确阻塞", async () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    await writeFile(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "not-json{{{", "utf8");
+    putRecord(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "损坏的需求记录");
     const result = await checkResume(world.ctx);
     expect(result.ok).toBe(false);
   });
@@ -1506,7 +1576,7 @@ describe("读盘失败时的行为", () => {
   test("state.json 损坏时 advanceStage 返回 ok:false 而不是抛出", async () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    await writeFile(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "not-json{{{", "utf8");
+    putRecord(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "损坏的需求记录");
     let threw = false;
     let result: Awaited<ReturnType<typeof advanceStage>> | undefined;
     try {
@@ -1521,7 +1591,7 @@ describe("读盘失败时的行为", () => {
   test("state.json 损坏时 finishTask 返回 ok:false 而不是抛出", async () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    await writeFile(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "not-json{{{", "utf8");
+    putRecord(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "损坏的需求记录");
     let threw = false;
     let result: Awaited<ReturnType<typeof finishTask>> | undefined;
     try {
@@ -1539,7 +1609,7 @@ describe("读盘失败时的行为", () => {
   test("state.json 损坏时 startTask 返回 ok:false 而不是抛出", async () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    await writeFile(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "not-json{{{", "utf8");
+    putRecord(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "损坏的需求记录");
     let threw = false;
     let result: Awaited<ReturnType<typeof startTask>> | undefined;
     try {
@@ -1556,8 +1626,8 @@ describe("读盘失败时的行为", () => {
     await toReviewing(world);
     const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
     await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
-    const evidenceFilePath = `${requirementDataDir(world.home.dataRoot, world.identity.repoId, world.requirement)}/evidence/review.json`;
-    await writeFile(evidenceFilePath, "not-json{{{", "utf8");
+    const evidenceFilePath = { database: repositoryDatabase(world.home.dataRoot, world.identity.repoId), namespace: `evidence:${world.requirement}`, key: "review" };
+    putRecord(evidenceFilePath, "损坏的证据记录");
     let threw = false;
     let result: Awaited<ReturnType<typeof checkEvidence>> | undefined;
     try {

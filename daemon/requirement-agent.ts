@@ -1,15 +1,18 @@
+import { bindRunResult } from "../runtime/delivery.ts";
+import { validateResult, WORK_SCHEMA } from "../runtime/result.ts";
 import { resolve as resolvePath, sep } from "node:path";
 import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Clock } from "../runtime/clock.ts";
-import { appendDecision } from "../runtime/decisions.ts";
-import { requirementDataDir, requirementIdentity } from "../runtime/identity.ts";
+import { appendDecision, readDecisions } from "../runtime/decisions.ts";
+import { requirementIdentity } from "../runtime/identity.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import type { RoleCatalogEntry } from "../runtime/roles.ts";
-import { isTerminalState, RunStore } from "../runtime/run-store.ts";
+import { RunStore } from "../runtime/run-store.ts";
 import type { ShellRegistry } from "../runtime/shell-registry.ts";
 import { createDecisionRecordTool } from "../runtime/decision-record-tool.ts";
-import { readDocument, withDirLock } from "../runtime/store.ts";
+import { readRecord } from "../runtime/database.ts";
+import { requirementStateRef } from "../runtime/workflow-state.ts";
 import { STAGE_ORDER } from "../runtime/workflow-state.ts";
 import { createWorkflowTool, currentVersion, executeWorkflowAction } from "../runtime/workflow-tool.ts";
 import type { RoleSessionGuards, RoleSessionHandle, RoleSessionState, RoleSessionStopOutcome } from "./role-session.ts";
@@ -30,8 +33,6 @@ export const AGENT_PARAMETERS = Type.Object(
     instructions: Type.Optional(Type.String()),
     writePaths: Type.Optional(Type.Array(Type.String())),
     readPaths: Type.Optional(Type.Array(Type.String())),
-    dependencies: Type.Optional(Type.Array(Type.String())),
-    outputSchema: Type.Optional(Type.Unknown()),
     runId: Type.Optional(Type.String()),
     result: Type.Optional(Type.Unknown()),
     reportPath: Type.Optional(Type.String()),
@@ -42,6 +43,9 @@ export const AGENT_PARAMETERS = Type.Object(
 export const ASK_PARAMETERS = Type.Object(
   {
     question: Type.String({ minLength: 1 }),
+    contractChange: Type.Optional(Type.Object({ field: Type.String({ minLength: 1 }), reason: Type.String({ minLength: 1 }), affectedRepos: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }) }, { additionalProperties: false })),
+    repairGate: Type.Optional(Type.Union([Type.Literal("review"), Type.Literal("acceptance")])),
+    repairRound: Type.Optional(Type.Integer({ minimum: 4 })),
     options: Type.Optional(Type.Array(Type.Object({ label: Type.String(), description: Type.String() }, { additionalProperties: false }))),
     recommended: Type.Optional(Type.String()),
   },
@@ -102,6 +106,7 @@ export interface RequirementAgentDispatch {
     writePaths: string[];
     readPaths: string[];
     reportPath?: string;
+    waitFor?: ShapeTaskDeclaration["waitFor"];
   }): Promise<{ ok: true; runId: string } | { ok: false; reason: string }>;
   status(runId: string): Promise<{ ok: true; state: string } | { ok: false; reason: string }>;
   wait(runId: string): Promise<{ ok: true; state: string } | { ok: false; reason: string }>;
@@ -113,6 +118,7 @@ export interface RequirementAgentRelay {
   ask(
     input: {
       question: string;
+      kind?: "question" | "contract_change";
       options?: Array<{ label: string; description: string }>;
       recommended?: string;
       repoId: string;
@@ -123,6 +129,10 @@ export interface RequirementAgentRelay {
 }
 
 export interface CreateRequirementAgentSessionOptions {
+  dispatchContext?: import("../runtime/run-store.ts").DispatchSettingsContext;
+  thinking?: string;
+  mcp?: import("./role-session.ts").RoleSessionMcpOptions;
+  verifyDelivery?: (runId: string, signal?: AbortSignal) => Promise<void>;
   dataRoot: string;
   repoId: string;
   requirement: string;
@@ -161,6 +171,8 @@ export type CreateRequirementAgentSessionResult =
   | { ok: true; reused: false; runId: string; handle: RequirementAgentHandle };
 
 interface RequirementAgentToolContext {
+  verifyDelivery?: (runId: string, signal?: AbortSignal) => Promise<void>;
+  onStateChange?: (state: { stage: string }) => void;
   dataRoot: string;
   repoId: string;
   requirement: string;
@@ -200,9 +212,10 @@ export function buildRequirementAgentPrompt(input: {
     `## 可用角色目录\n${catalogList.length > 0 ? catalogList : "无可用角色"}`,
     [
       "## 工具使用规则",
-      "- 先经 pi_company_propose_shape 提议任务集与门禁形状并等待确认，未确认前不得派工；形状默认含白盒审查与黑盒验收两项门禁。",
-      "- 形状确认成功的回执文本携带规划运行编号；请以该编号先用 pi_company_workflow 的 advance 推进到 planned，再 advance 推进到 executing。",
+      "- 先完成规划前检并在 AI 决定 effects 记录 planning-preflight，可在 confirmed 阶段派 planner，仅写本需求 tasks 目录；实施前经 pi_company_propose_shape 确认任务集与门禁。形状默认含白盒审查与黑盒验收。",
+      "- 规划运行通过核验后经 pi_company_workflow 的 advance 推进到 planned；形状确认回执携带规划运行编号，确认后按当前阶段推进到 executing，已到达的阶段无需重复推进。",
       "- 状态推进、任务登记、后续问题记录只经 pi_company_workflow。",
+      "- 门禁未通过时先记录 AI 归因与修复路径，effects 包含 repair:review 或 repair:acceptance；三轮仍失败时报告技术阻塞并停止，不主动询问技术解法。用户明确要求新一轮时，提问记录 repairGate 与 repairRound，不重置原轮次。",
       "- 需要用户决策时只经 pi_company_ask 提问。",
       "- 补充需求改变已确认的任务集或形状时须重新提议并等待确认，否则直接并入当前执行。",
       "- 归因为独立问题的条目只经 pi_company_workflow 的 update.followUpIssues 写入后续问题清单，不新增任务、不触发重新提议。",
@@ -220,26 +233,16 @@ function isWorkspaceMember(workspaceRepoIds: string[], repo: string): boolean {
   return REPO_ID_PATTERN.test(repo) && workspaceRepoIds.includes(repo);
 }
 
-export async function awaitCrossRepoStage(
-  workspaceRepoIds: string[],
-  dataRoot: string,
+export function evaluateCrossRepoStage(
   waitFor: { repo: string; requirement: string; stage: string },
-): Promise<{ ok: true } | { ok: false; reason: string }> {
-  if (!isWorkspaceMember(workspaceRepoIds, waitFor.repo)) {
-    return { ok: false, reason: `等待的仓库不是本工作区成员: ${waitFor.repo}` };
-  }
-  let path: string;
-  let result;
-  try {
-    path = `${requirementDataDir(dataRoot, waitFor.repo, waitFor.requirement)}/state.json`;
-    result = await readDocument(path);
-  } catch (error) {
-    return { ok: false, reason: `对方仓库需求状态无法读取: ${(error as Error).message}` };
-  }
-  if (!result.exists) {
+  documentExists: boolean,
+  documentData: unknown,
+): { ok: true } | { ok: false; reason: string } {
+  if (!documentExists) {
     return { ok: false, reason: `对方仓库需求状态不存在: ${waitFor.repo}/${waitFor.requirement}` };
   }
-  const data = result.data as { stage: string };
+  if (!documentData || typeof documentData !== "object" || Array.isArray(documentData) || typeof (documentData as { stage?: unknown }).stage !== "string") return { ok: false, reason: "对方仓库需求状态损坏或缺少阶段" };
+  const data = documentData as { stage: string };
   if (data.stage === "rejected") {
     return { ok: false, reason: `对方仓库需求 ${waitFor.requirement} 已被拒绝，不会到达阶段 ${waitFor.stage}` };
   }
@@ -249,6 +252,23 @@ export async function awaitCrossRepoStage(
     return { ok: false, reason: `对方仓库需求 ${waitFor.requirement} 尚未到达阶段 ${waitFor.stage}（当前 ${data.stage}）` };
   }
   return { ok: true };
+}
+
+export async function awaitCrossRepoStage(
+  workspaceRepoIds: string[],
+  dataRoot: string,
+  waitFor: { repo: string; requirement: string; stage: string },
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!isWorkspaceMember(workspaceRepoIds, waitFor.repo)) {
+    return { ok: false, reason: `等待的仓库不是本工作区成员: ${waitFor.repo}` };
+  }
+  let result;
+  try {
+    result = readRecord(requirementStateRef(dataRoot, waitFor.repo, waitFor.requirement));
+  } catch (error) {
+    return { ok: false, reason: `对方仓库需求状态无法读取: ${(error as Error).message}` };
+  }
+  return evaluateCrossRepoStage(waitFor, result.exists, result.exists ? result.data : undefined);
 }
 
 export function assertShapeAllows(
@@ -333,29 +353,29 @@ export function registerAgentTool(pi: ExtensionAPI, ctx: RequirementAgentToolCon
         if (!roleEntry || !roleEntry.available) throw new Error(`角色不在目录内: ${role}`);
 
         const state = await queryRequirementState(ctx);
-        const allowed = assertShapeAllows(state.data.shape, task, role);
+        const plannerBeforeShape = !state.data.shape && state.data.stage === "confirmed" && roleEntry.definition?.kind === "plan";
+        if (plannerBeforeShape) {
+          const preflight = await readDecisions({ dataRoot: ctx.dataRoot, cwd: ctx.cwd, requirement: ctx.requirement, actor: "ai" }) as Array<{ effects?: string[] }>;
+          if (!preflight.some((decision) => decision.effects?.includes("planning-preflight"))) throw new Error("规划前须先完成并记录 planning-preflight 前检");
+        }
+        const allowed = plannerBeforeShape ? { ok: true as const, task: { id: task, title: "规划", roles: [role], dependsOn: [], writePaths: [`.pi-company/requirements/${ctx.requirement}/tasks/`], waitFor: undefined } } : assertShapeAllows(state.data.shape, task, role);
         if (!allowed.ok) throw new Error(allowed.reason);
 
-        if (allowed.task.waitFor) {
-          const waitResult = await awaitCrossRepoStage(ctx.workspaceRepoIds, ctx.dataRoot, allowed.task.waitFor);
-          if (!waitResult.ok) throw new Error(waitResult.reason);
-        }
-
-        const requestedWritePaths = params.writePaths ?? [];
+        const requestedWritePaths = params.writePaths ?? (plannerBeforeShape ? allowed.task.writePaths : []);
         const writeCheck = await checkWritePaths({ cwd: ctx.cwd, writePaths: requestedWritePaths, declaredWritePaths: allowed.task.writePaths });
         if (!writeCheck.ok) throw new Error(`写入路径越出授权范围: ${writeCheck.violations.join("、")}`);
 
-        if (role === "acceptance" && !params.reportPath) {
-          throw new Error("run 动作派 acceptance 时缺少 reportPath");
-        }
+        const reportPath = roleEntry.definition?.kind === "acceptance" ? resolvePath(ctx.cwd, `.pi-company/requirements/${ctx.requirement}/acceptance.md`) : undefined;
+        if (reportPath && params.reportPath && resolvePath(ctx.cwd, params.reportPath) !== reportPath) throw new Error("验收报告路径与确认形状不一致");
 
         const dispatched = await ctx.dispatch.dispatchRole({
           role,
           task,
           instructions: params.instructions,
-          writePaths: requestedWritePaths,
-          readPaths: params.readPaths ?? [],
-          reportPath: params.reportPath,
+          writePaths: roleEntry.definition?.kind === "review" ? [] : reportPath ? [reportPath] : requestedWritePaths,
+          readPaths: params.readPaths ?? [ctx.cwd],
+          reportPath: reportPath ?? params.reportPath,
+          waitFor: allowed.task.waitFor,
         });
         if (!dispatched.ok) throw new Error(dispatched.reason);
         return textResult(`已派工: ${dispatched.runId}`);
@@ -370,16 +390,20 @@ export function registerAgentTool(pi: ExtensionAPI, ctx: RequirementAgentToolCon
         if (!shapeTask || shapeTask.roles.length > 0) {
           throw new Error(`任务 ${task} 已分派角色或未在已确认形状内，不能自行完成，需重新提议形状`);
         }
-        const version = await currentVersion({ cwd: ctx.cwd, requirement: ctx.requirement });
+        const checked = validateResult(WORK_SCHEMA, "work", params.result);
+        if (!checked.ok) throw new Error(`自行交付不合法: ${checked.errors.join("；")}`);
+        const parent = await ctx.runStore.get(ctx.runId);
+        if (!parent.ok) throw new Error("需求运行不可读");
         const submitRun = await ctx.runStore.create({
-          kind: "role",
+          sourceVersion: parent.run.sourceVersion,
+          phase: "work", kind: "role",
           role: `pi-company.${ctx.roleName}`,
           parentRunId: ctx.runId,
           requirement: ctx.requirement,
           task,
           cwd: ctx.cwd,
-          writePaths: [],
-          readPaths: [],
+          writePaths: (shapeTask as ShapeTaskDeclaration).writePaths,
+          readPaths: [ctx.cwd],
           model: ctx.modelRef,
           thinking: "high",
           mcp: [],
@@ -387,17 +411,7 @@ export function registerAgentTool(pi: ExtensionAPI, ctx: RequirementAgentToolCon
         await ctx.runStore.update(submitRun.id, { state: "running" });
         await ctx.runStore.update(submitRun.id, {
           state: "completed",
-          result: {
-            ...(params.result as Record<string, unknown>),
-            phase: "work",
-            binding: {
-              requirement: ctx.requirement,
-              task,
-              definitionFingerprint: version.definitionFingerprint,
-              codeHead: version.codeHead,
-              cwd: ctx.cwd,
-            },
-          },
+          result: await bindRunResult(submitRun, "work", params.result),
         });
         return textResult(`已提交交付，运行编号: ${submitRun.id}`);
       }
@@ -433,6 +447,14 @@ export function registerAskTool(pi: ExtensionAPI, ctx: RequirementAgentToolConte
     description: "就产品或方案决策向用户提问并阻塞等待答复",
     parameters: ASK_PARAMETERS,
     async execute(_toolCallId, params, signal) {
+      if ((params.repairGate === undefined) !== (params.repairRound === undefined)) throw new Error("返修门禁与轮次必须同时提供");
+      if (params.repairGate && params.contractChange) throw new Error("返修授权与契约变更必须分别提问");
+      const options = params.repairGate ? [
+        { label: "继续返修", description: `授权 ${params.repairGate} 第 ${params.repairRound} 轮返修` },
+        { label: "停止", description: "不授权新的返修轮次" },
+      ] : params.options;
+      if (params.contractChange?.affectedRepos.some((repo) => !isWorkspaceMember(ctx.workspaceRepoIds, repo))) throw new Error("契约变更的影响仓库必须属于本工作区");
+      const question = params.contractChange ? `${params.question}\n契约字段：${params.contractChange.field}\n变更理由：${params.contractChange.reason}\n影响仓库：${params.contractChange.affectedRepos.join("、")}` : params.repairGate ? `${params.question}\n是否授权 ${params.repairGate} 第 ${params.repairRound} 轮返修？仅选择“继续返修”授予本轮权限。` : params.question;
       askState.count += 1;
       if (askState.count === 1) {
         try {
@@ -444,10 +466,14 @@ export function registerAskTool(pi: ExtensionAPI, ctx: RequirementAgentToolConte
       }
       try {
         const answer = await ctx.relay.ask(
-          { question: params.question, options: params.options, recommended: params.recommended, repoId: ctx.repoId, requirement: ctx.requirement },
+          { question, kind: params.contractChange ? "contract_change" : "question", options, recommended: params.repairGate ? "停止" : params.recommended, repoId: ctx.repoId, requirement: ctx.requirement },
           { signal },
         );
-        return textResult(answer);
+        const receipt = await appendDecision({
+          actor: "user", requirement: ctx.requirement, source: "requirement-agent-relay", trigger: question,
+          decision: answer, alternatives: (options ?? []).map((option) => `${option.label}：${option.description}`), effects: params.repairGate && answer === "继续返修" ? [`repair:${params.repairGate}:${params.repairRound}`] : ["用户作答"], impact: question,
+        }, { dataRoot: ctx.dataRoot, cwd: ctx.cwd });
+        return textResult(`${answer}；用户决定编号 ${receipt.decisionId}`);
       } finally {
         askState.count -= 1;
         if (askState.count === 0) {
@@ -490,7 +516,7 @@ export function registerProposeShapeTool(pi: ExtensionAPI, ctx: RequirementAgent
       if (!validation.ok) throw new Error(validation.reason);
 
       const planRun = await ctx.runStore.create({
-        kind: "role",
+        phase: "plan", kind: "role",
         role: `pi-company.${ctx.roleName}`,
         parentRunId: ctx.runId,
         requirement: ctx.requirement,
@@ -546,7 +572,7 @@ export function registerProposeShapeTool(pi: ExtensionAPI, ctx: RequirementAgent
             phase: "plan",
             verdict: "PASS",
             summary: params.rationale,
-            proposedShape: { tasks: params.tasks, gates: params.gates, skipped, acceptanceReport: null },
+            proposedShape: { tasks: params.tasks, gates: params.gates, skipped, acceptanceReport: resolvePath(ctx.cwd, `.pi-company/requirements/${ctx.requirement}/acceptance.md`) },
             binding: {
               requirement: ctx.requirement,
               definitionFingerprint: version.definitionFingerprint,
@@ -590,8 +616,8 @@ const SUPPLEMENT_GUIDANCE =
 
 function requirementAgentExtension(ctx: RequirementAgentToolContext, askState: { count: number }) {
   return async (pi: ExtensionAPI): Promise<void> => {
-    pi.registerTool(createWorkflowTool({ dataRoot: ctx.dataRoot, cwd: ctx.cwd }));
-    pi.registerTool(createDecisionRecordTool({ dataRoot: ctx.dataRoot, cwd: ctx.cwd }));
+    pi.registerTool(createWorkflowTool({ dataRoot: ctx.dataRoot, cwd: ctx.cwd, boundRequirement: ctx.requirement, beforeTaskFinish: ctx.verifyDelivery, onStateChange: ctx.onStateChange }));
+    pi.registerTool(createDecisionRecordTool({ dataRoot: ctx.dataRoot, cwd: ctx.cwd, boundRequirement: ctx.requirement }));
     registerAgentTool(pi, ctx);
     registerAskTool(pi, ctx, askState);
     registerProposeShapeTool(pi, ctx);
@@ -624,14 +650,10 @@ export async function createRequirementAgentSession(options: CreateRequirementAg
     return { ok: false, reason: `需求处于 ${stage} 阶段，不可派出需求代理` };
   }
 
-  const requirementDir = requirementDataDir(options.dataRoot, options.repoId, options.requirement);
   let found: { reused: boolean; runId: string; shellToken: string };
   try {
-    found = await withDirLock(requirementDir, async () => {
-      const page = await options.runStore.list({ kind: "requirement", requirement: options.requirement, limit: 200 });
-      const active = page.items.find((run) => !isTerminalState(run.state) && run.state !== "interrupted");
-      if (active) return { reused: true as const, runId: active.id, shellToken: active.shellToken };
-      const run = await options.runStore.create({
+    const { run, reused } = await options.runStore.createOrReuseRequirement({
+        sourceVersion: await currentVersion({ cwd: options.cwd, requirement: options.requirement }),
         kind: "requirement",
         requirement: options.requirement,
         task: "需求代理会话",
@@ -639,12 +661,12 @@ export async function createRequirementAgentSession(options: CreateRequirementAg
         writePaths: [options.cwd],
         readPaths: [options.cwd],
         model: options.modelRef,
-        thinking: "high",
-        mcp: [],
-      });
-      await options.runStore.update(run.id, { state: "running" });
-      return { reused: false as const, runId: run.id, shellToken: run.shellToken };
+        dispatchContext: options.dispatchContext,
+        thinking: options.thinking ?? "high",
+        mcp: options.mcp?.servers ?? [],
     });
+    if (!reused) await options.runStore.update(run.id, { state: "running" });
+    found = { reused, runId: run.id, shellToken: run.shellToken };
   } catch (error) {
     return { ok: false, reason: (error as Error).message };
   }
@@ -672,6 +694,10 @@ async function buildRequirementAgentHandle(
     requirement: options.requirement,
     cwd: options.cwd,
     roleCatalog: options.roleCatalog,
+    verifyDelivery: options.verifyDelivery,
+    onStateChange: (state) => {
+      if (state.stage === "accepted" || state.stage === "rejected") void innerHandle.finalize();
+    },
     roleName: options.role.name,
     runId,
     runStore: options.runStore,
@@ -696,6 +722,7 @@ async function buildRequirementAgentHandle(
       writePaths: [options.cwd],
       runtime: options.runtime,
       modelRef: options.modelRef,
+      thinking: options.thinking, mcp: options.mcp,
       clock: options.clock,
       shellRegistry: options.shellRegistry,
       guards: options.guards,

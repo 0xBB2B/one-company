@@ -8,9 +8,10 @@ import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
-import { repositoryIdentity, requirementDataDir } from "../runtime/identity.ts";
+import { repositoryIdentity } from "../runtime/identity.ts";
 import type { Workspace } from "../runtime/identity.ts";
-import { createDocument } from "../runtime/store.ts";
+import { createRecord } from "../runtime/database.ts";
+import { requirementStateRef } from "../runtime/workflow-state.ts";
 import { validateParams } from "../runtime/protocol.ts";
 import { registerDispatchTools, default as dispatchExtension } from "../extensions/dispatch.ts";
 import { DaemonCallError } from "../runtime/daemon-client.ts";
@@ -234,12 +235,10 @@ function buildWorkspace(worlds: RepoWorld[]): Workspace {
   };
 }
 
-function statePath(dataRoot: string, repoId: string, requirement: string): string {
-  return `${requirementDataDir(dataRoot, repoId, requirement)}/state.json`;
-}
+const statePath = requirementStateRef;
 
 function seedRequirementState(dataRoot: string, repoId: string, requirement: string, stage: string) {
-  return createDocument(statePath(dataRoot, repoId, requirement), {
+  return createRecord(statePath(dataRoot, repoId, requirement), {
     requirement,
     stage,
     shape: null,
@@ -659,7 +658,7 @@ describe("review 派出提交前白盒审查者", () => {
     expect(fingerprintAfterTargetPathChange).not.toBe(fingerprintByTarget);
   });
 
-  test("未跟踪文件不可读时指纹与同名空文件不同", async () => {
+  test("未跟踪文件不可读时拒绝派审，恢复可读后正常派审", async () => {
     const world = await setupRepoWorld();
     const daemon = createFakeDaemonClient({ "dispatch.review": () => ({ id: "review-1" }) });
     const clients = createFakeWorkspaceClients({ [world.identity.repoId]: daemon.client });
@@ -668,14 +667,13 @@ describe("review 派出提交前白盒审查者", () => {
     await writeFile(lockedPath, "");
     await chmod(lockedPath, 0o000);
 
-    let fingerprintUnreadable: string;
     try {
       const result = await withTempEnv(world.home, async () => {
         const tool = findTool(registerTools(clients, workspace), "pi_company_review");
         return callTool(tool, { requirement: REQUIREMENT, cwd: world.repo.root, baseline: "main" }, world.repo.root);
       });
-      expect(result.details.isError).toBeFalsy();
-      fingerprintUnreadable = (daemon.calls[0]?.params.snapshot as { fingerprint: string }).fingerprint;
+      expect(result.details.isError).toBe(true);
+      expect(daemon.calls).toHaveLength(0);
     } finally {
       await chmod(lockedPath, 0o644);
     }
@@ -686,8 +684,8 @@ describe("review 派出提交前白盒审查者", () => {
       return callTool(tool, { requirement: REQUIREMENT, cwd: world.repo.root, baseline: "main" }, world.repo.root);
     });
     expect(resultEmpty.details.isError).toBeFalsy();
-    const fingerprintEmpty = (daemon.calls[1]?.params.snapshot as { fingerprint: string }).fingerprint;
-    expect(fingerprintEmpty).not.toBe(fingerprintUnreadable);
+    const fingerprintEmpty = (daemon.calls[0]?.params.snapshot as { fingerprint: string }).fingerprint;
+    expect(fingerprintEmpty).toMatch(/^[a-f0-9]{64}$/);
   });
 
   test("空仓库（无提交）时 review 回执含尚无提交，不含 fatal: 或 Command failed", async () => {

@@ -47,9 +47,9 @@ export const ACCEPTANCE_SCHEMA = Type.Object({
 
 export type Phase = "plan" | "work" | "review" | "acceptance";
 
-type WorkResult = Static<typeof WORK_SCHEMA>;
-type ReviewResult = Static<typeof REVIEW_SCHEMA>;
-type AcceptanceResult = Static<typeof ACCEPTANCE_SCHEMA>;
+export type WorkResult = Static<typeof WORK_SCHEMA>;
+export type ReviewResult = Static<typeof REVIEW_SCHEMA>;
+export type AcceptanceResult = Static<typeof ACCEPTANCE_SCHEMA>;
 
 export type ValidateOutcome = { ok: true; value: unknown } | { ok: false; errors: string[] };
 
@@ -102,6 +102,20 @@ export function validateResult(schema: TSchema, expectedPhase: Phase, value: unk
   if (!Value.Check(schema, value)) {
     for (const error of Value.Errors(schema, value)) errors.push(error.message);
   }
+  if (errors.length === 0 && expectedPhase !== "plan") {
+    const canonical = { work: WORK_SCHEMA, review: REVIEW_SCHEMA, acceptance: ACCEPTANCE_SCHEMA }[expectedPhase];
+    if (!Value.Check(canonical, value)) {
+      for (const error of Value.Errors(canonical, value)) errors.push(error.message);
+    } else {
+      const result = value as WorkResult | ReviewResult | AcceptanceResult;
+      const semantic = result.phase === "work" ? isWorkPass(result)
+        : result.phase === "review" ? isReviewPass(result, result)
+        : isAcceptancePass(result, { reportPath: result.reportPath, reportConclusion: result.acceptanceResult });
+      if ((result.verdict === "PASS" && !semantic.pass) || semantic.reasons.some((reason) => reason.includes("判定矛盾"))) {
+        errors.push(...semantic.reasons);
+      }
+    }
+  }
   return errors.length > 0 ? { ok: false, errors } : { ok: true, value };
 }
 
@@ -121,6 +135,7 @@ export function isWorkPass(value: WorkResult): Verdict {
   if (value.workState === "blocked") reasons.push("workState 为 blocked");
   if (value.issues.length > 0) reasons.push("issues 非空");
   if (value.coverage.length === 0) reasons.push("coverage 为空");
+  if (value.greenCommands.length === 0) reasons.push("greenCommands 为空");
   if (!value.greenCommands.every((command) => command.status === "passed")) reasons.push("greenCommands 存在未通过项");
   if (value.changeKind === "behavior-change" && !value.redCommands.some((command) => command.status === "failed")) {
     reasons.push("behavior-change 但 redCommands 无 failed 记录");
@@ -251,6 +266,11 @@ export class ResultCollector {
   finish(): FinishOutcome {
     if (!this.settled) return { ok: false, reason: "运行未正常结束" };
     if (this.stopReason !== "stop") return { ok: false, reason: `运行以 ${this.stopReason} 结束` };
+    if (this.records.some((record) => record.conflictingEvents > 0)) return { ok: false, reason: "同一提交标识内容冲突" };
+    const firstAccepted = this.records.findIndex((record) => record.accepted);
+    if (firstAccepted >= 0 && firstAccepted !== this.records.length - 1) {
+      return { ok: false, reason: "首个有效结果后出现新的提交" };
+    }
     const validRecords = this.records.filter((record) => record.accepted);
     if (validRecords.length !== 1) return { ok: false, reason: "有效结构化结果数量不为一" };
     return { ok: true, result: validRecords[0]!.value };

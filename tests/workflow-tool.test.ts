@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Value } from "typebox/value";
-import { chmod, mkdir, rename, symlink, writeFile } from "node:fs/promises";
+import { rename, rm, chmod, mkdir, rename, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
-import { repositoryIdentity, requirementDataDir } from "../runtime/identity.ts";
+import { repositoryIdentity } from "../runtime/identity.ts";
 import { appendDecision } from "../runtime/decisions.ts";
 import { RunStore } from "../runtime/run-store.ts";
-import { createDocument, readDocument } from "../runtime/store.ts";
+import { createRecord, readRecord, putRecord, repositoryDatabase } from "../runtime/database.ts";
+import { requirementStateRef } from "../runtime/workflow-state.ts";
 import { createWorkflowTool, currentVersion, executeWorkflowAction, retryOnStaleVersion } from "../runtime/workflow-tool.ts";
 import workflowExtension from "../extensions/workflow.ts";
 
@@ -91,17 +92,15 @@ function fakeCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
   } as ExtensionContext;
 }
 
-function statePath(dataRoot: string, repoId: string, requirement: string): string {
-  return `${requirementDataDir(dataRoot, repoId, requirement)}/state.json`;
-}
+const statePath = requirementStateRef;
 
 async function seedState(dataRoot: string, repoId: string, requirement: string, overrides: Record<string, unknown> = {}) {
   const initial: StateDoc = { requirement, stage: "draft", shape: null, tasks: {}, followUps: [], history: [], ...overrides };
-  return createDocument(statePath(dataRoot, repoId, requirement), initial);
+  return createRecord(statePath(dataRoot, repoId, requirement), initial);
 }
 
 async function readRawState(dataRoot: string, repoId: string, requirement: string): Promise<{ version: number; data: StateDoc }> {
-  const result = await readDocument(statePath(dataRoot, repoId, requirement));
+  const result = await readRecord(statePath(dataRoot, repoId, requirement));
   if (!result.exists) throw new Error("测试装置失败: 期望状态文档存在");
   return { version: result.version, data: result.data as StateDoc };
 }
@@ -603,6 +602,9 @@ describe("task-finish 任务完成", () => {
       result: {
         phase: "work",
         verdict: "PASS",
+        summary: "实施完成", issues: [], evidence: ["测试装置"], changeKind: "refactor",
+        coverage: [{ ref: "demo/AC-1", test: "README.md:1" }], redCommands: [],
+        greenCommands: [{ command: "bun test", status: "passed", details: "通过" }], productionPath: ["a.ts"], fakeRed: false,
         changedFiles: ["a.ts"],
         workState: "red-green",
         preexistingEvidence: [],
@@ -730,42 +732,35 @@ describe("list 需求列表", () => {
   });
 });
 
-describe("迁移动作（未注入处理器）", () => {
-  test("migrate-preflight 未注入处理器时以抛出表达失败", async () => {
+describe("迁移动作的默认入口", () => {
+  test("预检与状态查询无需注入处理器，未授权的正式迁移仍被拒绝", async () => {
     const world = await setupWorld();
-    await expect(call(world, { action: "migrate-preflight", requirement: world.requirement })).rejects.toThrow(/迁移功能未接入/);
-  });
-
-  test("migrate-apply 未注入处理器时以抛出表达失败", async () => {
-    const world = await setupWorld();
-    await expect(call(world, { action: "migrate-apply", requirement: world.requirement })).rejects.toThrow(/迁移功能未接入/);
-  });
-
-  test("migrate-status 未注入处理器时以抛出表达失败", async () => {
-    const world = await setupWorld();
-    await expect(call(world, { action: "migrate-status", requirement: world.requirement })).rejects.toThrow(/迁移功能未接入/);
+    expect((await call(world, { action: "migrate-preflight", requirement: world.requirement })).details.isError).toBe(false);
+    expect((await call(world, { action: "migrate-status", requirement: world.requirement })).details.isError).toBe(false);
+    await expect(call(world, { action: "migrate-apply", requirement: world.requirement })).rejects.toThrow(/未授权/);
   });
 });
 
 describe("写入失败与异常兜底", () => {
-  test("state.json 所在目录只读时写入失败，以抛出表达失败原因", async () => {
+  test("数据库不可打开时返回失败且原状态未改变", async () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const dir = requirementDataDir(world.home.dataRoot, world.identity.repoId, world.requirement);
+    const dir = repositoryDatabase(world.home.dataRoot, world.identity.repoId);
     const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
 
-    await chmod(dir, 0o500);
+    await rename(dir, `${dir}.saved`);
+    await mkdir(dir);
     try {
-      await expect(
-        call(world, {
+      await expect(call(world, {
           action: "update",
           requirement: world.requirement,
           version: state.version,
           update: { followUpIssues: ["x"] },
-        }),
-      ).rejects.toThrow();
+        })).rejects.toThrow("数据库必须是普通文件");
     } finally {
-      await chmod(dir, 0o700);
+      await rm(dir, { recursive: true });
+      await rename(`${dir}.saved`, dir);
+      expect(await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement)).toEqual(state);
     }
   });
 
@@ -846,6 +841,9 @@ describe("shape-confirm 与 advance/task-finish 同口径的证据校验", () =>
       result: {
         phase: "work",
         verdict: "PASS",
+        summary: "实施完成", issues: [], evidence: ["测试装置"], changeKind: "refactor",
+        coverage: [{ ref: "demo/AC-1", test: "README.md:1" }], redCommands: [],
+        greenCommands: [{ command: "bun test", status: "passed", details: "通过" }], productionPath: ["a.ts"], fakeRed: false,
         changedFiles: ["a.ts"],
         workState: "red-green",
         preexistingEvidence: [],
@@ -1012,10 +1010,10 @@ describe("currentVersion 定义指纹计算", () => {
     return join(world.repo.root, ".pi-company", "requirements", world.requirement);
   }
 
-  test("需求定义目录缺失时指纹为 none", async () => {
+  test("需求定义目录缺失时仍保留工作区内容指纹", async () => {
     const world = await setupWorld();
     const version = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-    expect(version.definitionFingerprint).toBe("none");
+    expect(version.definitionFingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
   test("写入定义文件后指纹在两次计算间保持稳定", async () => {
@@ -1120,19 +1118,14 @@ describe("currentVersion 定义指纹计算", () => {
     expect(after.definitionFingerprint).not.toBe(before.definitionFingerprint);
   });
 
-  test("定义目录内指向仓库外目录的符号链接，其目标内容变化不影响指纹", async () => {
+  test("定义目录内指向仓库外的符号链接被拒绝", async () => {
     const world = await setupWorld();
     const dir = definitionDir(world);
     await mkdir(dir, { recursive: true });
     const outsideFile = join(world.home.home, "outside.md");
-    await writeFile(outsideFile, "仓库外内容V1\n");
+    await writeFile(outsideFile, "仓库外内容\n");
     await symlink(outsideFile, join(dir, "escape-link.md"));
-    const before = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    await writeFile(outsideFile, "仓库外内容V2\n");
-    const after = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    expect(after.definitionFingerprint).toBe(before.definitionFingerprint);
+    await expect(currentVersion({ cwd: world.repo.root, requirement: world.requirement })).rejects.toThrow("定义链接越出仓库");
   });
 });
 
@@ -1149,5 +1142,23 @@ describe("list 动作的 cwd 覆盖", () => {
 
     expect(result.details.isError).toBeFalsy();
     expect(result.text).toContain(otherRequirement);
+  });
+});
+
+
+describe("内容版本覆盖真实工作区", () => {
+  test("同 HEAD 下代码、规则和暂存内容变化均使证据版本失效", async () => {
+    const repo = await createRepoFixture(); repoFixtures.push(repo);
+    const ctx = { cwd: repo.root, requirement: REQUIREMENT };
+    const first = await currentVersion(ctx);
+    await writeFile(join(repo.root, "README.md"), "改变代码现场");
+    const second = await currentVersion(ctx);
+    expect(second.definitionFingerprint).not.toBe(first.definitionFingerprint);
+    await mkdir(join(repo.root, ".pi-company/spec"), { recursive: true });
+    await writeFile(join(repo.root, ".pi-company/spec/rule.md"), "规则一");
+    const third = await currentVersion(ctx);
+    expect(third.definitionFingerprint).not.toBe(second.definitionFingerprint);
+    await execFileAsync("git", ["add", "README.md"], { cwd: repo.root });
+    expect((await currentVersion(ctx)).definitionFingerprint).not.toBe(third.definitionFingerprint);
   });
 });

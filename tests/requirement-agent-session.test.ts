@@ -1,3 +1,4 @@
+import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -8,12 +9,13 @@ import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent"
 import { createRequirementAgentSession } from "../daemon/requirement-agent.ts";
 import { createClock } from "../runtime/clock.ts";
 import { appendDecision, readDecisions } from "../runtime/decisions.ts";
-import { repositoryIdentity, requirementDataDir } from "../runtime/identity.ts";
+import { repositoryIdentity } from "../runtime/identity.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { defaultRoleDir, readRoleDefinition, type RoleCatalogEntry } from "../runtime/roles.ts";
 import { RunStore, type RunState } from "../runtime/run-store.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
-import { readDocument, withDirLock, writeDocument } from "../runtime/store.ts";
+import { readRecord, writeRecord, repositoryDatabase } from "../runtime/database.ts";
+import { requirementStateRef } from "../runtime/workflow-state.ts";
 import { currentVersion, executeWorkflowAction } from "../runtime/workflow-tool.ts";
 import { registerControlledProvider, scriptReplies, type ControlledProvider } from "./helpers/controlled-provider.ts";
 import { buildInlineRoleCatalogEntry, createPassthroughGuards, writeRoleEntry } from "./helpers/role-fixture.ts";
@@ -145,6 +147,7 @@ function createUpdateOnceFailingRunStore(real: RunStore) {
   let shouldFailNextWaitingAnswerUpdate = true;
   return {
     create: real.create.bind(real),
+    createOrReuseRequirement: real.createOrReuseRequirement.bind(real),
     get: real.get.bind(real),
     list: real.list.bind(real),
     markInterruptedOnStartup: real.markInterruptedOnStartup.bind(real),
@@ -316,10 +319,10 @@ async function confirmRequirement(world: World, requirement: string = world.requ
 }
 
 async function forceStage(dataRoot: string, repoId: string, requirement: string, stage: string): Promise<void> {
-  const path = `${requirementDataDir(dataRoot, repoId, requirement)}/state.json`;
-  const current = await readDocument(path);
+  const path = requirementStateRef(dataRoot, repoId, requirement);
+  const current = await readRecord(path);
   if (!current.exists) throw new Error("测试装置失败: 需求状态不存在");
-  await writeDocument(path, { ...(current.data as Record<string, unknown>), stage }, { expectedVersion: current.version });
+  await writeRecord(path, { ...(current.data as Record<string, unknown>), stage }, { expectedVersion: current.version });
 }
 
 async function waitForShapeRecorded(world: World): Promise<void> {
@@ -452,9 +455,7 @@ describe("形状提议校验、确认与门禁决定、阶段推进", () => {
     if (!created.ok || created.reused) throw new Error("测试装置失败: 会话未成功创建");
     handles.push(created.handle);
 
-    const requirementDir = requirementDataDir(world.home.dataRoot, world.repoId, world.requirement);
-    // 目录只读（r-x）会挡住台账与状态文档的原子写入，模拟决策记录不可写
-    await chmod(requirementDir, 0o500);
+    const restore = failDatabaseWrites(repositoryDatabase(world.home.dataRoot, world.repoId), "events", "stream", `decisions:${world.requirement}:user`);
     const toolEnds = collect(created.handle, "tool_end") as Array<{ isError?: boolean }>;
     try {
       scriptReplies(world.provider, [
@@ -477,7 +478,7 @@ describe("形状提议校验、确认与门禁决定、阶段推进", () => {
       await waitForCount(() => toolEnds.length, 1);
       expect(toolEnds[0]?.isError).toBe(true);
     } finally {
-      await chmod(requirementDir, 0o700);
+      restore();
     }
 
     const state = await queryState(world.home.dataRoot, world.repo.root, world.requirement);
@@ -994,7 +995,7 @@ describe("独立问题只记录", () => {
 });
 
 describe("自行完成的提交与核对", () => {
-  test("缺证据的完成请求被拒绝，经 submit 提交结构化交付后 task-finish 成功", async () => {
+  test("缺证据的完成请求被拒绝，submit 生成绑定但未经独立复跑仍不能完成", async () => {
     const world = await setupWorld("self-complete");
     await confirmRequirement(world);
     const created = await createRequirementAgentSession(sessionOptions(world));
@@ -1036,20 +1037,20 @@ describe("自行完成的提交与核对", () => {
           action: "submit",
           task: "T-1",
           result: {
+            phase: "work",
             verdict: "PASS",
             summary: "已补充说明文档",
             issues: [],
             evidence: ["自测通过"],
-            changeKind: "docs",
+            changeKind: "refactor",
             workState: "green-baseline-no-change",
-            coverage: [],
+            coverage: [{ ref: "demo/readme/AC-1", test: "README.md:1" }],
             redCommands: [],
-            greenCommands: [],
+            greenCommands: [{ command: "cat README.md", status: "passed", details: "读取成功" }],
             changedFiles: [],
-            productionPath: [],
+            productionPath: ["README.md"],
             preexistingEvidence: ["既有证据"],
             fakeRed: false,
-            delivery: { commit: null, verificationOk: true },
           },
         },
       },
@@ -1074,10 +1075,10 @@ describe("自行完成的提交与核对", () => {
     ]);
     created.handle.prompt("交付已核实，请完成 T-1");
     await waitForCount(() => toolEndsFinish.length, 1);
-    expect(toolEndsFinish[0]?.isError).toBeFalsy();
+    expect(toolEndsFinish[0]?.isError).toBe(true);
 
     after = await queryState(world.home.dataRoot, world.repo.root, world.requirement);
-    expect((after.details.data as { tasks: Record<string, { progress: string }> }).tasks["T-1"]?.progress).toBe("done");
+    expect((after.details.data as { tasks: Record<string, { progress: string }> }).tasks["T-1"]?.progress).toBe("doing");
   }, 20000);
 
   test("submit 只接受角色序列为空的任务，已分派角色的任务 submit 被拒绝并提示重新提议", async () => {
@@ -1131,7 +1132,7 @@ describe("自行完成的提交与核对", () => {
 });
 
 describe("跨仓等待的判定", () => {
-  test("对方未达阶段拒绝并给原因，对方已拒绝给出终止性原因而非未到达，对方状态损坏给出错误原因", async () => {
+  test("派工把已确认的跨仓等待条件交给运行管理器", async () => {
     const world = await setupWorld("cross-repo");
     await confirmRequirement(world);
 
@@ -1163,37 +1164,16 @@ describe("跨仓等待的判定", () => {
       rationale: "联调任务等待后端进入执行阶段",
     });
 
-    async function attemptDispatch(): Promise<string> {
-      const toolEnds = collectToolEnds(created.handle, "pi_company_agent");
-      const requestCountBefore = world.provider.requests.length;
-      scriptReplies(world.provider, [
-        { type: "toolcall", name: "pi_company_agent", input: { action: "run", role: "catalogrole9x2", task: "T-1", writePaths: [waitTaskWrite], readPaths: [] } },
-        { type: "text", text: "已知悉" },
-      ]);
-      created.handle.prompt("重试执行 T-1");
-      await waitForCount(() => toolEnds.length, 1);
-      expect(toolEnds[0]?.isError).toBe(true);
-      await waitForCount(() => world.provider.requests.length, requestCountBefore + 2);
-      return JSON.stringify(world.provider.requests[requestCountBefore + 1]);
-    }
-
-    const notReachedText = await attemptDispatch();
-    expect(world.dispatchCalls.length).toBe(0);
-
-    const rejectDecision = await appendDecision(decisionInput(otherRequirement, { trigger: "裁决拒绝", decision: "拒绝需求" }), otherCtx);
-    const beforeReject = await queryState(world.home.dataRoot, otherRepo.root, otherRequirement);
-    await executeWorkflowAction(
-      { action: "reject", requirement: otherRequirement, decisionId: rejectDecision.decisionId, version: beforeReject.details.version as number },
-      otherCtx,
-    );
-    const rejectedText = await attemptDispatch();
-    expect(world.dispatchCalls.length).toBe(0);
-    expect(rejectedText).not.toBe(notReachedText);
-
-    const otherStatePath = `${requirementDataDir(world.home.dataRoot, otherIdentity.repoId, otherRequirement)}/state.json`;
-    await writeFile(otherStatePath, "not-json{{{", "utf8");
-    await attemptDispatch();
-    expect(world.dispatchCalls.length).toBe(0);
+    const toolEnds = collectToolEnds(created.handle, "pi_company_agent");
+    scriptReplies(world.provider, [
+      { type: "toolcall", name: "pi_company_agent", input: { action: "run", role: "catalogrole9x2", task: "T-1", writePaths: [waitTaskWrite], readPaths: [] } },
+      { type: "text", text: "已派工" },
+    ]);
+    created.handle.prompt("执行 T-1");
+    await waitForCount(() => toolEnds.length, 1);
+    expect(toolEnds[0]?.isError).toBeFalsy();
+    expect(world.dispatchCalls).toHaveLength(1);
+    expect(world.dispatchCalls[0]?.waitFor).toEqual({ repo: otherIdentity.repoId, requirement: otherRequirement, stage: "executing" });
   }, 20000);
 
   test("waitFor.requirement 格式非法：日历非法但形如 YYYY-MM-DD.slug 的需求名不会导致未捕获抛出", async () => {
@@ -1274,7 +1254,6 @@ describe("系统提示骨架顺序", () => {
     expect(firstPrompt.split("\n").some((line) => line.trim() === "## 工具使用规则")).toBe(true);
     // 宿主默认系统提示原样保留，不做任何剔除或改写
     expect(firstPrompt).toContain("Current working directory:");
-    // 工具使用规则须说明确认回执里的规划运行编号如何使用：先 advance 到 planned 再 advance 到 executing
     expect(firstPrompt).toContain("advance");
     expect(firstPrompt).toContain("planned");
     expect(firstPrompt).toContain("executing");
@@ -1336,40 +1315,21 @@ describe("角色目录描述单行化", () => {
   }, 20000);
 });
 
-describe("目录锁超时", () => {
-  test("需求目录锁被存活进程持有时创建会话返回 {ok:false, reason 含超时} 而非抛出", async () => {
-    const world = await setupWorld("dir-lock-timeout");
+describe("数据库写入失败", () => {
+  test("数据库拒绝创建运行时返回失败且不遗留活动需求运行", async () => {
+    const world = await setupWorld("database-failure");
     await confirmRequirement(world);
-    const dir = requirementDataDir(world.home.dataRoot, world.repoId, world.requirement);
-
-    let lockAcquiredResolve: () => void = () => {};
-    const lockAcquired = new Promise<void>((resolve) => {
-      lockAcquiredResolve = resolve;
-    });
-    let releaseLock: () => void = () => {};
-    const holder = withDirLock(dir, () => {
-      lockAcquiredResolve();
-      return new Promise<void>((resolve) => {
-        releaseLock = resolve;
-      });
-    });
-    await lockAcquired;
-
-    let result: Awaited<ReturnType<typeof createRequirementAgentSession>> | undefined;
-    let threw = false;
+    const restore = failDatabaseWrites(repositoryDatabase(world.home.dataRoot, world.repoId), "records", "namespace", "runs");
     try {
-      result = await createRequirementAgentSession(sessionOptions(world));
-    } catch {
-      threw = true;
-    } finally {
-      releaseLock();
-      await holder;
-    }
-
-    expect(threw).toBe(false);
-    expect(result?.ok).toBe(false);
-    if (result && !result.ok) expect(result.reason).toMatch(/超时/);
-  }, 20000);
+      const result = await createRequirementAgentSession(sessionOptions(world));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toContain("拒绝写入");
+      expect((await world.runStore.list({ limit: 100 })).items).toEqual([]);
+    } finally { restore(); }
+    const result = await createRequirementAgentSession(sessionOptions(world));
+    expect(result.ok).toBe(true);
+    if (result.ok && !result.reused) handles.push(result.handle);
+  });
 });
 
 describe("停止透传真实结果", () => {

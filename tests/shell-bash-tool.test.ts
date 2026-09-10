@@ -652,3 +652,33 @@ describe("createManagedBashTool - guard 异常隔离与并发安全", () => {
     expect((thrown?.cause as Error | undefined)?.message).toBe("aborted");
   }, LONG_TIMEOUT);
 });
+
+
+test.each([false, true])("启动边界取消不会留下 Shell：background=%s", async (background) => {
+  const registry = makeRegistry();
+  const abort = new AbortController();
+  const original = registry.spawn.bind(registry);
+  registry.spawn = async (input) => {
+    abort.abort();
+    const result = await original(input);
+    if (result.ok) trackedPgids.push(result.task.pgid);
+    return result;
+  };
+  const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID() });
+  await expectRejectsWithin(tool.execute("cancel-start", { command: "sleep 60", background }, abort.signal), /aborted/, 3000);
+  expect(registry.list()).toHaveLength(1);
+  expect(registry.list()[0]!.activity).toBe("ended");
+  expect(() => process.kill(registry.list()[0]!.pid, 0)).toThrow();
+}, 5000);
+
+test.each([false, true])("命令隔离准备期间取消不启动进程：background=%s", async (background) => {
+  const registry = makeRegistry();
+  const abort = new AbortController();
+  const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID(), guard: {
+    before: async () => undefined,
+    launch: async () => { abort.abort(); return { command: "sh", args: ["-c", "sleep 60"] }; },
+    after: async () => [],
+  } });
+  await expectRejectsWithin(tool.execute("cancel-guard", { command: "sleep 60", background }, abort.signal), /aborted/, 3000);
+  expect(registry.list()).toEqual([]);
+});

@@ -1,3 +1,7 @@
+import { migrationPreflight, migrationApply, migrationStatus } from "./migration.ts";
+import { createClock } from "./clock.ts";
+import { currentBootId, processStartedAt, WindowRegistry } from "./windows.ts";
+import { collectGitSnapshot } from "./git-snapshot.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
@@ -5,9 +9,9 @@ import { isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { repositoryIdentity, requirementIdentity } from "./identity.ts";
+import { repoDataDir, repositoryIdentity, requirementIdentity } from "./identity.ts";
 import { RunStore } from "./run-store.ts";
-import { readDocument, StaleVersionError } from "./store.ts";
+import { StaleVersionError, globalDatabase, repositoryDatabase, withDatabase } from "./database.ts";
 import {
   advanceStage,
   checkResume,
@@ -50,6 +54,8 @@ const PARAMETERS = Type.Object(
     runId: Type.Optional(Type.String()),
     reason: Type.Optional(Type.String()),
     confirm: Type.Optional(Type.Boolean()),
+    expectedFingerprint: Type.Optional(Type.String()),
+    legacyWritesStopped: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -72,6 +78,9 @@ export interface CreateWorkflowToolOptions {
   dataRoot: string;
   cwd?: string;
   migration?: MigrationHandlers;
+  boundRequirement?: string;
+  beforeTaskFinish?: (runId: string, signal?: AbortSignal) => Promise<void>;
+  onStateChange?: (state: RequirementState) => void;
 }
 
 const STALE_VERSION_MARK = "请重新查询后重试";
@@ -141,22 +150,11 @@ async function listRequirements(
   } catch (error) {
     return { ok: false, reason: (error as Error).message };
   }
-  const dir = join(ctx.dataRoot, "repos", identity.repoId, "requirements");
-  let entries;
   try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, items: [] };
-    return { ok: false, reason: (error as Error).message };
-  }
-  const items: Array<{ requirement: string; stage: string }> = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const result = await readDocument(join(dir, entry.name, "state.json"));
-    if (!result.exists) continue;
-    items.push({ requirement: entry.name, stage: (result.data as { stage: string }).stage });
-  }
-  return { ok: true, items: items.filter((item) => item.stage !== "accepted") };
+    const items = withDatabase(repositoryDatabase(ctx.dataRoot, identity.repoId), (db) => db.list<{ stage: string }>("requirements")
+      .map((record) => ({ requirement: record.key, stage: record.data.stage })));
+    return { ok: true, items: items.filter((item) => item.stage !== "accepted") };
+  } catch (error) { return { ok: false, reason: (error as Error).message }; }
 }
 
 async function gitOutput(args: string[], cwd: string): Promise<string> {
@@ -172,7 +170,7 @@ function isWithinRoot(candidate: string, root: string): boolean {
 }
 
 async function listFilesRecursive(dir: string, root: string, depth: number, visitedDirLinks: Set<string>): Promise<string[]> {
-  if (depth > MAX_DEFINITION_DEPTH) return [];
+  if (depth > MAX_DEFINITION_DEPTH) throw new Error("定义目录层级过深，无法完整核对");
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -189,10 +187,10 @@ async function listFilesRecursive(dir: string, root: string, depth: number, visi
       try {
         real = await realpath(full);
         target = await stat(full);
-      } catch {
-        continue;
+      } catch (error) {
+        throw new Error(`定义链接无法读取: ${full}`, { cause: error });
       }
-      if (!isWithinRoot(real, root)) continue;
+      if (!isWithinRoot(real, root)) throw new Error(`定义链接越出仓库: ${full}`);
       if (target.isDirectory()) {
         if (visitedDirLinks.has(real)) continue;
         visitedDirLinks.add(real);
@@ -211,7 +209,10 @@ async function listFilesRecursive(dir: string, root: string, depth: number, visi
 
 async function definitionFingerprint(root: string, requirement: string): Promise<string> {
   const dir = join(root, ".pi-company", "requirements", requirement);
-  const files = (await listFilesRecursive(dir, root, 0, new Set())).sort();
+  const files = (await Promise.all([
+    listFilesRecursive(dir, root, 0, new Set()),
+    listFilesRecursive(join(root, ".pi-company", "spec"), root, 0, new Set()),
+  ])).flat().filter((file) => file !== join(dir, "acceptance.md")).sort();
   if (files.length === 0) return "none";
   const hash = createHash("sha256");
   for (const file of files) {
@@ -225,11 +226,14 @@ async function definitionFingerprint(root: string, requirement: string): Promise
 
 export async function currentVersion(ctx: { cwd: string; requirement: string }): Promise<DefinitionVersion> {
   const root = await realpath(await gitOutput(["rev-parse", "--show-toplevel"], ctx.cwd));
-  const [fingerprint, codeHead] = await Promise.all([
+  const [fingerprint, snapshot] = await Promise.all([
     definitionFingerprint(root, ctx.requirement),
-    gitOutput(["rev-parse", "HEAD"], ctx.cwd),
+    collectGitSnapshot({ repoRoot: root, excludePaths: [`.pi-company/requirements/${ctx.requirement}/acceptance.md`] }),
   ]);
-  return { definitionFingerprint: fingerprint, codeHead };
+  return {
+    definitionFingerprint: createHash("sha256").update(`${fingerprint}\0${snapshot.fingerprint}`).digest("hex"),
+    codeHead: snapshot.head,
+  };
 }
 
 function migrationHandlerFor(migration: MigrationHandlers | undefined, action: string): MigrationHandler | undefined {
@@ -394,9 +398,37 @@ async function dispatch(
     case "migrate-apply":
     case "migrate-status": {
       const handler = migrationHandlerFor(migration, action);
-      if (!handler) return failReceipt(wctx.requirement, action, "迁移功能未接入");
-      const result = await handler(wctx, params);
-      return formatReceipt(wctx.requirement, action, result, action);
+      if (handler) return formatReceipt(wctx.requirement, action, await handler(wctx, params), action);
+      let result: unknown;
+      if (action === "migrate-preflight") result = await migrationPreflight(wctx);
+      else if (action === "migrate-status") result = await migrationStatus(wctx);
+      else {
+        const identity = await repositoryIdentity(wctx.cwd);
+        const clock = createClock();
+        const windows = new WindowRegistry({ repoDir: await repoDataDir(wctx.dataRoot, identity.repoId, identity.commonDir), clock, bootId: currentBootId, processStartedAt });
+        const runStore = new RunStore({ dataRoot: wctx.dataRoot, repoId: identity.repoId, daemonStartedAt: "migration-check" });
+        const writersActive = async () => {
+          if ((await windows.list()).some((window) => window.liveness !== "gone")) return true;
+          const runs = await runStore.list({ limit: Number.MAX_SAFE_INTEGER });
+          if (runs.items.some((run) => !["completed", "failed", "stopped"].includes(run.state))) return true;
+          const shellDatabases = [repositoryDatabase(wctx.dataRoot, identity.repoId), globalDatabase(wctx.dataRoot)];
+          for (const database of shellDatabases) {
+            const tasks = withDatabase(database, (db) => db.list<{ pid: number; startedAt: number; cwd: string }>("shells").map((record) => record.data));
+            for (const task of tasks) {
+              const startedAt = await processStartedAt(task.pid);
+              if (startedAt === null || new Date(startedAt).getTime() !== task.startedAt) continue;
+              if (!task.cwd || (await repositoryIdentity(task.cwd)).repoId === identity.repoId) return true;
+            }
+          }
+          return false;
+        };
+        try {
+          const applied = await migrationApply({ ...wctx, authorized: params.confirm === true, legacyWritesStopped: params.legacyWritesStopped === true, expectedFingerprint: String(params.expectedFingerprint ?? ""), hasActiveWindows: writersActive, hooks: { beforeVerify: async () => { if (await writersActive()) throw new Error("迁移期间出现活动写入者"); }, beforeClear: async () => { if (await writersActive()) throw new Error("清理前出现活动写入者"); } } });
+          if (!applied.ok) return failReceipt(wctx.requirement, action, applied.blocked.join("；"));
+          result = applied;
+        } finally { clock.stopGapWatcher(); }
+      }
+      return { ok: true, text: `${wctx.requirement} ${action} 成功：${JSON.stringify(result)}`, details: { isError: false, data: result } };
     }
     default:
       return failReceipt(wctx.requirement, action, "不支持的动作");
@@ -451,12 +483,23 @@ export function createWorkflowTool(options: CreateWorkflowToolOptions) {
       ctx: { cwd: string },
     ) {
       if (signal?.aborted) {
-        return { content: [{ type: "text", text: "操作已中止" }], details: { isError: true } };
+        return { content: [{ type: "text" as const, text: "操作已中止" }], details: { isError: true } };
       }
       const cwd = options.cwd ?? ctx.cwd;
-      const result = await executeWorkflowAction(params, { dataRoot: options.dataRoot, cwd }, options.migration);
+      if (options.boundRequirement && (
+        (params.requirement !== undefined && params.requirement !== options.boundRequirement) ||
+        (params.cwd !== undefined && await realpath(params.cwd as string) !== await realpath(cwd)) ||
+        String(params.action).startsWith("migrate-") || params.action === "list"
+      )) throw new Error("需求代理只能操作绑定的仓库与需求");
+      const boundParams = options.boundRequirement ? { ...params, requirement: options.boundRequirement, cwd } : params;
+      if (params.action === "task-finish" && typeof params.runId === "string") await options.beforeTaskFinish?.(params.runId, signal);
+      const result = await executeWorkflowAction(boundParams, { dataRoot: options.dataRoot, cwd }, options.migration);
+      if (result.ok && options.boundRequirement && options.onStateChange) {
+        const state = await readRequirementState({ dataRoot: options.dataRoot, cwd, requirement: options.boundRequirement });
+        if (state.exists) options.onStateChange(state.data);
+      }
       if (!result.ok) throw new Error(result.text);
-      return { content: [{ type: "text", text: result.text }], details: result.details };
+      return { content: [{ type: "text" as const, text: result.text }], details: result.details };
     },
   };
 }

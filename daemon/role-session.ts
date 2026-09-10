@@ -1,9 +1,10 @@
+import { collectGitSnapshot } from "../runtime/git-snapshot.ts";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { dirname, join, resolve as resolvePath, sep } from "node:path";
 import { promisify } from "node:util";
-import { createAgentSession, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type {
   AgentSession,
   ExtensionAPI,
@@ -29,6 +30,8 @@ import type { Clock, TimerHandle } from "../runtime/clock.ts";
 const execFileAsync = promisify(execFile);
 
 export interface RoleSessionGuards {
+  commandGuard?: import("../runtime/shell-bash.ts").BashCommandGuard;
+  release?: () => Promise<void>;
   checkWrite(path: string): Promise<{ ok: true } | { ok: false; reason: string }>;
   fingerprint(paths: string[]): Promise<Record<string, string>>;
   verifyFingerprint(fp: Record<string, string>): Promise<Array<{ path: string }>>;
@@ -57,6 +60,7 @@ interface CreateRoleSessionBaseOptions {
   streamIdleTimeoutMs?: number;
   runtime: ModelRuntime;
   modelRef: { provider: string; id: string };
+  thinking?: string;
   clock: Clock;
   shellRegistry: ShellRegistry;
   guards: RoleSessionGuards;
@@ -90,7 +94,7 @@ function completesOnIdle(contract: RoleOutputContract): boolean {
         case "idle-only":
           return false;
         default: {
-          const exhaustive: never = contract.completion;
+          const exhaustive: never = contract;
           throw new Error(`未知的 plain 契约收尾方式: ${String(exhaustive)}`);
         }
       }
@@ -195,7 +199,7 @@ interface CheckToolCallContext {
   readPaths: string[];
   writePaths: string[];
   guards: RoleSessionGuards;
-  mcp?: { servers: string[] };
+  mcp?: { servers: string[]; config?: import("../runtime/mcp.ts").McpConfig };
   mcpRoleKind: RoleKind;
   readOnlyRole: boolean;
   allowReportPathWrite: boolean;
@@ -213,7 +217,7 @@ export async function checkToolCall(event: ToolCallEvent, ctx: CheckToolCallCont
     // 结构化提交是会话的最后一个动作，其后任何调用都必须让本轮尽快收尾
     return { block: true, reason: "已提交结构化结果，会话即将结束", terminate: true };
   }
-  if (ctx.verifying() && !READ_ONLY_TOOL_NAMES.has(event.toolName)) {
+  if (ctx.verifying() && !READ_ONLY_TOOL_NAMES.has(event.toolName) && event.toolName !== "pi_company_resume_check") {
     return { block: true, reason: "核对期内仅允许只读操作" };
   }
   if (READ_ONLY_TOOL_NAMES.has(event.toolName)) {
@@ -254,6 +258,7 @@ export async function checkToolCall(event: ToolCallEvent, ctx: CheckToolCallCont
     const decision = checkMcpCall({
       roleKind: ctx.mcpRoleKind,
       allowedServers: ctx.mcp?.servers ?? [],
+      readOnlyTools: Object.values(ctx.mcp?.config?.mcpServers ?? {}).flatMap((server) => server.readOnlyTools ?? []),
       request: {
         mode,
         server: input.server as string | undefined,
@@ -445,6 +450,7 @@ export interface ConfigureRoleExtensionInput {
   scopeRoots: string[];
   cwd: string;
   reportPath?: string;
+  onToolStart?: (event: { toolCallId: string; toolName: string; input: Record<string, unknown> }) => void;
   onToolEnd: (event: { toolCallId: string; toolName: string; isError: boolean; suppressed: boolean }) => void;
   onActiveToolChange: (toolCallId: string, active: boolean) => void;
   onGuardViolation: (violations: string[]) => void;
@@ -526,11 +532,13 @@ export function configureRoleExtension(input: ConfigureRoleExtensionInput): (pi:
         submitted: input.submitted,
       });
       if (result?.block && wasPausedBeforeCall) suppressedToolCallIds.add(event.toolCallId);
+      if (result?.block && !wasPausedBeforeCall && input.submitted()) input.onGuardViolation(["裁决提交后仍发起工具调用"]);
       return result;
     });
 
     pi.on("tool_execution_start", (event) => {
       input.onActiveToolChange(event.toolCallId, true);
+      input.onToolStart?.({ toolCallId: event.toolCallId, toolName: event.toolName, input: event.args as Record<string, unknown> });
     });
 
     pi.on("tool_execution_end", async (event) => {
@@ -586,6 +594,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
       repoId: options.repoId,
       runId: options.runId,
       cwd: options.cwd,
+      onPersistError,
     });
     if (!opened.ok) throw new Error(opened.detail);
     sessionManager = opened.manager;
@@ -595,11 +604,12 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
       repoId: options.repoId,
       runId: options.runId,
       cwd: options.cwd,
+      onPersistError,
     });
   }
 
-  const readOnlyRole = options.roleName === "reviewer" || options.roleName === "acceptance";
-  const allowReportPathWrite = options.roleName === "acceptance";
+  const readOnlyRole = definition.kind === "review" || definition.kind === "acceptance";
+  const allowReportPathWrite = definition.kind === "acceptance";
   const mcpRoleKind: RoleKind = readOnlyRole ? "review" : definition.kind;
   const scopeRoots = options.readPaths.length > 0 ? options.readPaths : [options.cwd];
   const contract = options.contract;
@@ -616,7 +626,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   const events = new EventEmitter();
   const activeTools = new Set<string>();
   let currentState: RoleSessionState = "running";
-  let verifying = false;
+  let verifying = options.resume === true;
   let submitted = false;
   let queuedMessages: string[] = [];
   let idleTimer: TimerHandle | null = null;
@@ -641,15 +651,24 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   // 三种终态都不该再留着本次运行自己登记的后台 Shell；结算已经决定了运行的去向，
   // 不必等调用方另外调 stop() 才清理，失败/异常路径下更容易被忘记调用
   function stopBackgroundShell(): void {
-    void shellRegistry.stopHost(host).catch(() => {});
+    void shellRegistry.stopHost(host).then(() => options.guards.release?.()).catch(() => {});
   }
 
-  function finishFailed(reason: string): void {
+  function finishFailed(cause: unknown): void {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    const reason = error.message;
     if (isTerminal()) return;
     currentState = "failed";
     events.emit("failed", { reason });
-    rejectResult(new Error(reason));
+    const diagnostics = collector?.diagnostics();
+    if (diagnostics) Object.assign(error, { submissions: { attemptCount: diagnostics.attempts, validCount: diagnostics.valid, attempts: diagnostics.records.map((record) => ({ ...record, valid: record.accepted, error: record.errors.join("；") })) } });
+    rejectResult(error);
     stopBackgroundShell();
+  }
+
+  function onPersistError(error: Error): void {
+    finishFailed(new Error(`会话保存失败: ${error.message}`));
+    void session?.abort().catch(() => {});
   }
 
   function finishCompleted(value: unknown): void {
@@ -686,7 +705,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     mcp: options.mcp,
     contract: extensionContract,
     verifying: () => verifying,
-    paused: isPaused,
+    paused: () => isPaused() || isTerminal(),
     submitted: () => submitted,
     guards: options.guards,
     readOnlyRole,
@@ -695,6 +714,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     scopeRoots,
     cwd: options.cwd,
     reportPath: options.reportPath,
+    onToolStart: (event) => events.emit("tool_start", event),
     onToolEnd: (event) => {
       if (event.toolName === "structured_output" && !event.isError) submitted = true;
       // 暂停后才发起、从未真正执行的调用不算一次真实操作；暂停前已在执行、暂停后才收尾的
@@ -706,12 +726,10 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
       else activeTools.delete(toolCallId);
     },
     onGuardViolation: (violations) => {
-      finishFailed(`只读角色 ${options.roleName} 的 bash 命令改变了工作区: ${violations.join("、")}`);
+      finishFailed(`角色 ${options.roleName} 违反执行边界: ${violations.join("、")}`);
       void session.abort().catch(() => {});
     },
-    onReadOnlySuccess: () => {
-      verifying = false;
-    },
+    onReadOnlySuccess: () => {},
   });
 
   const resourceLoader = new DefaultResourceLoader({
@@ -720,22 +738,48 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     noSkills: !definition.skills,
     noContextFiles: !definition.contextFiles,
     noExtensions: true,
-    extensionFactories: [extensionFactory, ...(options.extraExtensionFactories ?? [])],
+    extensionFactories: [extensionFactory, (pi) => {
+      pi.registerTool({
+        name: "pi_company_resume_check", label: "核对中断现场", description: "读取本运行 Shell 状态及工作区真实差异，完成恢复前的机械核对", parameters: Type.Object({}, { additionalProperties: false }),
+        async execute() {
+          const tasks = shellRegistry.list().filter((task) => task.host.runId === options.runId);
+          if (tasks.some((task) => ["starting", "running", "stopping", "uncertain"].includes(task.status))) throw new Error("Shell 操作仍未确认结束，不能解除核对门禁");
+          const snapshot = await collectGitSnapshot({ repoRoot: options.cwd });
+          const status = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: options.cwd, timeout: 10_000 });
+          const diff = await execFileAsync("git", ["diff", "--no-ext-diff", "--no-textconv", "HEAD"], { cwd: options.cwd, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+          verifying = false;
+          return { content: [{ type: "text", text: JSON.stringify({ snapshot, interruptedOperations: tasks.map((task) => ({ taskId: task.taskId, command: task.command, status: task.status, exitCode: task.exitCode })), status: status.stdout, diff: diff.stdout }) }], details: {} };
+        },
+      });
+    }, ...(options.extraExtensionFactories ?? [])],
   });
   await resourceLoader.reload();
 
-  const activeToolNames = [...definition.tools, ...(usesStructuredOutput ? ["structured_output"] : [])];
+  const activeToolNames = ["pi_company_resume_check", ...definition.tools, ...(usesStructuredOutput ? ["structured_output"] : [])];
   if (options.mcp) activeToolNames.push("mcp");
 
+  const sdkSettings = SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });
+  // 网络暂停归运行管理器调度，SDK 重试会在 abort 后再次启动请求。
+  const settingsManager = SettingsManager.inMemory({ ...sdkSettings.getGlobalSettings(), retry: { ...sdkSettings.getRetrySettings(), enabled: false } });
   const created = await createAgentSession({
+    settingsManager,
     cwd: options.cwd,
     agentDir,
     modelRuntime: options.runtime,
     model,
+    thinkingLevel: options.thinking as NonNullable<Parameters<typeof createAgentSession>[0]>["thinkingLevel"],
     resourceLoader,
     sessionManager,
     tools: activeToolNames,
-    customTools: [createManagedBashTool({ registry: shellRegistry, host, cwd: options.cwd, runToken })],
+    customTools: [createManagedBashTool({ registry: shellRegistry, host, cwd: options.cwd, runToken, guard: options.guards.commandGuard && {
+      launch: options.guards.commandGuard.launch,
+      before: () => options.guards.commandGuard!.before(),
+      after: async (token, outcome) => {
+        const violations = await options.guards.commandGuard!.after(token, outcome);
+        if (violations.length) { finishFailed(`命令违反范围保护: ${violations.join("、")}`); void session.abort().catch(() => {}); }
+        return violations;
+      },
+    } }) as NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["customTools"]>[number]],
   });
   session = created.session;
 
@@ -757,6 +801,8 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
 
   const unsubscribe = session.subscribe((event) => {
     armIdleWatchdog();
+    if (event.type === "turn_end") events.emit("turn");
+    if (event.type === "message_start" || event.type === "message_update" || event.type === "message_end") events.emit("transcript_message", event);
 
     if (event.type === "agent_end") {
       // 一次自然回合结束未必是角色任务的终点（多轮场景下模型可能先汇报再继续）；
@@ -794,23 +840,24 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     }
   });
 
+  let prompting = false;
+
+  function drainPrompts(): void {
+    if (prompting || isTerminal() || isPaused() || !options.networkGate.canProceed(options.runId).allowed) return;
+    const text = queuedMessages.shift();
+    if (text === undefined) return;
+    prompting = true;
+    armIdleWatchdog();
+    void session.prompt(text).catch(finishFailed).finally(() => {
+      prompting = false;
+      drainPrompts();
+    });
+  }
+
   function prompt(text: string): void {
     if (isTerminal()) return;
-    if (currentState === "paused") {
-      queuedMessages.push(text);
-      return;
-    }
-    const gate = options.networkGate.canProceed(options.runId);
-    if (!gate.allowed) {
-      queuedMessages.push(text);
-      return;
-    }
-    armIdleWatchdog();
-    if (session.isStreaming) {
-      void session.prompt(text, { streamingBehavior: "followUp" });
-    } else {
-      void session.prompt(text);
-    }
+    queuedMessages.push(text);
+    drainPrompts();
   }
 
   async function pause(): Promise<{ confirmed: boolean; reason?: string }> {
@@ -831,9 +878,8 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
       })
       .catch(() => {});
 
+    const stoppingShells = shellRegistry.stopHost(host);
     let timeoutTimer: TimerHandle | null = null;
-    // abort 是否在超时窗口内确认要在竞速落定的那一刻定案；abortPromise 后续即便自己也 settle，
-    // 也不能追溯改判——那代表的是"超时之后才勉强confirm"，不是"按时确认"
     let timedOut = false;
     const timeoutPromise = new Promise<void>((resolve) => {
       timeoutTimer = options.clock.setTimeoutExcludingSleep(() => {
@@ -844,14 +890,16 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
 
     await Promise.race([abortPromise, timeoutPromise]);
     if (timeoutTimer) options.clock.clearTimer(timeoutTimer);
-    const abortConfirmedInTime = abortConfirmed && !timedOut;
-
-    const stopResults = await shellRegistry.stopHost(host);
+    const stopResults = await stoppingShells;
     const shellConfirmed = stopResults.every((entry) => entry.result.ok === true && entry.result.task.status !== "uncertain");
-    const confirmed = abortConfirmedInTime && activeTools.size === 0 && shellConfirmed;
+    const confirmed = abortConfirmed && !timedOut && activeTools.size === 0 && shellConfirmed;
     if (confirmed) return { confirmed };
+    void abortPromise.then(() => {
+      if (currentState === "paused" && abortConfirmed && activeTools.size === 0 && shellConfirmed) events.emit("pause_confirmed");
+    });
     const reasons: string[] = [];
-    if (!abortConfirmedInTime) reasons.push("abort 未在超时内确认");
+    if (!abortConfirmed || timedOut) reasons.push("abort 未在超时内确认");
+    if (activeTools.size > 0) reasons.push("工具未确认全部停止");
     if (!shellConfirmed) reasons.push("Shell 未确认全部停止");
     return { confirmed, reason: reasons.join("；") };
   }
@@ -869,13 +917,12 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     verifying = true;
     const queued = queuedMessages.splice(0);
     const resumeText = [
-      "已恢复运行：暂停期间任何操作的结果均结果不明，请先核对工作区当前实际状态再继续，不要假设之前的操作已生效。",
+      "已恢复运行：请先调用 pi_company_resume_check 核对本运行中断操作、Shell 状态和工作区实际差异，再根据核对结果继续；普通 read 不能解除恢复门禁。",
       queued.length > 0 ? `排队消息：\n${queued.join("\n")}` : "",
     ]
       .filter((part) => part.length > 0)
       .join("\n\n");
-    armIdleWatchdog();
-    await session.prompt(resumeText);
+    prompt(resumeText);
   }
 
   async function stop(): Promise<RoleSessionStopOutcome> {

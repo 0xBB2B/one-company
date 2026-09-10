@@ -91,7 +91,7 @@ export async function activeForeignHosts(input: {
     if (window.liveness === "alive" && window.windowId !== input.windowId) hosts.push(`window-${window.windowId}`);
   }
   // 跨需求汇总：分支是整个仓库共享的现场，其他需求下运行中的任务同样构成风险
-  const runs = await input.runStore.list({ states: [...RUNNING_LIKE_STATES], limit: 500 });
+  const runs = await input.runStore.list({ states: [...RUNNING_LIKE_STATES], limit: Number.MAX_SAFE_INTEGER });
   for (const run of runs.items) {
     if (run.id !== input.runId) hosts.push(`run-${run.id}`);
   }

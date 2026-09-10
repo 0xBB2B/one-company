@@ -1,3 +1,4 @@
+import { uuidv7 } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -164,7 +165,7 @@ function runInput(requirement: string, cwd: string, task: string) {
 
 function windowInput(overrides: Record<string, unknown> = {}) {
   return {
-    windowId: randomUUID(),
+    windowId: uuidv7(),
     pid: 1,
     sessionId: "session-shared-branch-guard-test",
     cwd: "/tmp/example-cwd",
@@ -187,7 +188,7 @@ async function makeWindowsRegistry(): Promise<WindowRegistry> {
 async function makeRunStore(): Promise<RunStore> {
   const home = await createTempHome();
   tempHomes.push(home);
-  return new RunStore({ dataRoot: home.dataRoot, repoId: randomUUID(), daemonStartedAt: "shared-branch-guard-test" });
+  return new RunStore({ dataRoot: home.dataRoot, repoId: "a".repeat(64), daemonStartedAt: "shared-branch-guard-test" });
 }
 
 describe("verifyBranchState：存在活动宿主时判违规，无活动宿主时只报告变化", () => {
@@ -320,8 +321,8 @@ describe("activeForeignHosts：另一窗口存活或另一 runId 运行中时列
   test("另一窗口存活记录存在时列出该宿主", async () => {
     const windows = await makeWindowsRegistry();
     const runStore = await makeRunStore();
-    const selfWindowId = randomUUID();
-    const otherWindowId = randomUUID();
+    const selfWindowId = uuidv7();
+    const otherWindowId = uuidv7();
     await windows.register(windowInput({ windowId: selfWindowId, pid: 201 }));
     await windows.register(windowInput({ windowId: otherWindowId, pid: 202 }));
 
@@ -332,7 +333,7 @@ describe("activeForeignHosts：另一窗口存活或另一 runId 运行中时列
   test("无其它窗口且无其它运行中任务时为空", async () => {
     const windows = await makeWindowsRegistry();
     const runStore = await makeRunStore();
-    const selfWindowId = randomUUID();
+    const selfWindowId = uuidv7();
     await windows.register(windowInput({ windowId: selfWindowId, pid: 211 }));
 
     const hosts = await activeForeignHosts({ runStore, windows, windowId: selfWindowId, runId: "run-self" });
@@ -342,7 +343,7 @@ describe("activeForeignHosts：另一窗口存活或另一 runId 运行中时列
   test("边界：其它 runId 处于运行中时列出", async () => {
     const windows = await makeWindowsRegistry();
     const runStore = await makeRunStore();
-    const selfWindowId = randomUUID();
+    const selfWindowId = uuidv7();
     await windows.register(windowInput({ windowId: selfWindowId, pid: 221 }));
     const otherRun = await runStore.create(runInput("2026-09-09.activehost-demo", "/tmp/example-cwd", "other-task"));
     await runStore.update(otherRun.id, { state: "running" });

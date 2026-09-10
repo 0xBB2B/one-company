@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { uuidv7 } from "./database.ts";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BashOperations, BashToolDetails, ToolDefinition, UserBashEvent as SdkUserBashEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -45,6 +45,7 @@ function waitForOutcome(registry: ShellRegistry, taskId: string): Promise<TaskRe
 }
 
 export interface BashCommandGuard {
+  launch?(command: string, cwd: string): Promise<{ command: string; args: string[]; env?: NodeJS.ProcessEnv; inheritEnv?: boolean }>;
   before(): Promise<unknown>;
   after(token: unknown, outcome: unknown): Promise<string[]>;
 }
@@ -62,27 +63,32 @@ export function createManagedBashOperations(input: {
 
       // guard.before 必须先于注册中止监听器执行：guard 拒绝时命令不能留下监听器或占用 taskId
       const guardToken = await guard?.before();
+      const launch = await guard?.launch?.(command, cwd);
 
-      const taskId = randomUUID();
+      const taskId = uuidv7();
       let userAborted = false;
+      let spawned = false;
+      let stopping: Promise<unknown> | undefined;
       const onAbort = (): void => {
         userAborted = true;
-        void registry.stop(taskId);
+        if (spawned) stopping ??= registry.stop(taskId);
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 
       let outcome: unknown;
       try {
+        if (signal?.aborted) throw new Error("aborted");
         const spawnResult = await registry.spawn({
           taskId,
           host,
-          command: "sh",
-          args: ["-c", command],
+          command: launch?.command ?? "sh",
+          args: launch?.args ?? ["-c", command],
           cwd,
           mode: "wait",
           timeoutSeconds: timeout,
           runToken,
-          env,
+          env: launch?.inheritEnv === false ? launch.env : { ...env, ...launch?.env },
+          inheritEnv: launch?.inheritEnv,
           onOutput: (chunk) => onData(chunk),
         });
         if (!spawnResult.ok) {
@@ -90,6 +96,8 @@ export function createManagedBashOperations(input: {
           throw new Error(spawnResult.reason);
         }
 
+        spawned = true;
+        if (signal?.aborted) { onAbort(); await stopping; }
         const task = await waitForOutcome(registry, taskId);
         outcome = task;
         switch (task.status) {
@@ -117,14 +125,23 @@ async function runBackground(
   runToken: string,
   params: BashToolParams,
   guard?: BashCommandGuard,
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
-  const taskId = randomUUID();
+  if (signal?.aborted) throw new Error("aborted");
+  const taskId = uuidv7();
   const guardToken = await guard?.before();
+  const launch = await guard?.launch?.(params.command, cwd);
+  if (signal?.aborted) {
+    await guard?.after(guardToken, { status: "aborted" });
+    throw new Error("aborted");
+  }
   const spawnResult = await registry.spawn({
     taskId,
     host,
-    command: "sh",
-    args: ["-c", params.command],
+    command: launch?.command ?? "sh",
+    args: launch?.args ?? ["-c", params.command],
+    env: launch?.env,
+    inheritEnv: launch?.inheritEnv,
     cwd,
     mode: "background",
     timeoutSeconds: params.timeout,
@@ -133,6 +150,12 @@ async function runBackground(
   if (!spawnResult.ok) {
     await guard?.after(guardToken, { status: "spawn_failed", reason: spawnResult.reason });
     throw new Error(spawnResult.reason);
+  }
+
+  if (signal?.aborted) {
+    const stopped = await registry.stop(taskId);
+    await guard?.after(guardToken, stopped);
+    throw new Error("aborted");
   }
 
   // 后台任务此时尚未结束：违规核对要等任务真正到达终态才有意义，不能在这里同步调用；
@@ -171,7 +194,7 @@ export function createManagedBashTool(
     ...base,
     parameters: BASH_PARAMETERS,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      if (params.background) return runBackground(registry, host, ctx?.cwd || cwd, runToken, params, guard);
+      if (params.background) return runBackground(registry, host, ctx?.cwd || cwd, runToken, params, guard, signal);
 
       // 违规结果绑定到本次调用自己的闭包变量：多次 execute 并发交错时互不覆盖
       let violations: string[] = [];
@@ -180,6 +203,7 @@ export function createManagedBashTool(
         host,
         runToken,
         guard: guard && {
+          launch: guard.launch,
           before: () => guard.before(),
           after: async (token, outcome) => {
             violations = await guard.after(token, outcome);
@@ -220,7 +244,7 @@ export interface UserBashHandled {
 
 export async function handleUserBash(
   event: Pick<SdkUserBashEvent, "command" | "cwd" | "excludeFromContext">,
-  input: { registry: ShellRegistry; host: Host; runToken: string },
+  input: { registry: ShellRegistry; host: Host; runToken: string; guard?: BashCommandGuard },
 ): Promise<UserBashHandled> {
-  return { operations: createManagedBashOperations({ registry: input.registry, host: input.host, runToken: input.runToken }) };
+  return { operations: createManagedBashOperations({ registry: input.registry, host: input.host, runToken: input.runToken, guard: input.guard }) };
 }

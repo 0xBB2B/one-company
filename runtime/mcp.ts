@@ -20,6 +20,7 @@ export interface McpServerEntry {
   disabled?: boolean;
   lifecycle?: string;
   directTools?: boolean | string[];
+  readOnlyTools?: string[];
 }
 
 export interface McpConfig {
@@ -50,6 +51,7 @@ export interface McpCallRequest {
 export interface CheckMcpCallInput {
   roleKind: RoleKind;
   allowedServers: string[];
+  readOnlyTools?: string[];
   request: McpCallRequest;
 }
 
@@ -210,38 +212,6 @@ function inferServerFromTool(tool: string, knownServers: string[]): string | und
   return undefined;
 }
 
-const READ_ONLY_ARG_KEYS = new Set([
-  "query",
-  "search",
-  "pattern",
-  "filePattern",
-  "projectPath",
-  "paths",
-  "id",
-  "name",
-  "limit",
-  "offset",
-  "page",
-  "format",
-  "profile",
-  "server",
-  "tool",
-  "detail",
-  "depth",
-  "language",
-]);
-
-function isReadOnlyArgs(args: unknown): boolean {
-  if (args === undefined) return true;
-  if (args === null || typeof args !== "object" || Array.isArray(args)) return false;
-  return Object.entries(args).every(([key, value]) => {
-    if (!READ_ONLY_ARG_KEYS.has(key)) return false;
-    if (value === null || typeof value !== "object") return true;
-    if (Array.isArray(value)) return value.every((item) => item === null || typeof item !== "object");
-    return isReadOnlyArgs(value);
-  });
-}
-
 export function checkMcpCall(input: CheckMcpCallInput): CheckMcpCallResult {
   const inferredServer = input.request.tool ? inferServerFromTool(input.request.tool, input.allowedServers) : undefined;
   if (input.request.tool && inferredServer === undefined) {
@@ -260,8 +230,8 @@ export function checkMcpCall(input: CheckMcpCallInput): CheckMcpCallResult {
   }
 
   const isReadOnlyRole = input.roleKind === "review" || input.roleKind === "acceptance";
-  if (isReadOnlyRole && input.request.mode === "call" && !isReadOnlyArgs(input.request.args)) {
-    return { allowed: false, reason: "只读角色不允许调用超出只读参数白名单的 MCP 工具" };
+  if (isReadOnlyRole && input.request.mode === "call" && (!input.request.tool || !input.readOnlyTools?.includes(input.request.tool))) {
+    return { allowed: false, reason: "只读角色只能调用可信配置明确声明的只读 MCP 工具" };
   }
 
   return { allowed: true };

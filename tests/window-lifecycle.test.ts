@@ -833,7 +833,7 @@ describe("关闭后心跳定时器释放", () => {
 });
 
 describe("installExitSignalHandlers 只覆盖 SIGTERM/SIGHUP，SIGINT 永不挂载", () => {
-  test("SIGTERM 未被宿主监听、SIGHUP 已被监听：仅对 SIGTERM 新增监听器，SIGINT 不新增", () => {
+  test("已有宿主 SIGHUP 监听时仍安装自身清理处理器，SIGINT 不新增", () => {
     const proc = new EventEmitter();
     const hostSighupHandler = () => {};
     proc.on("SIGHUP", hostSighupHandler);
@@ -841,7 +841,7 @@ describe("installExitSignalHandlers 只覆盖 SIGTERM/SIGHUP，SIGINT 永不挂�
     installExitSignalHandlers(proc as unknown as NodeJS.Process);
 
     expect(proc.listenerCount("SIGTERM")).toBe(1);
-    expect(proc.listeners("SIGHUP")).toHaveLength(1);
+    expect(proc.listeners("SIGHUP")).toHaveLength(2);
     expect(proc.listeners("SIGHUP")[0]).toBe(hostSighupHandler);
     expect(proc.listenerCount("SIGINT")).toBe(0);
   });

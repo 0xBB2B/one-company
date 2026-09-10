@@ -429,6 +429,7 @@ describe("checkMcpCall", () => {
     const result = checkMcpCall({
       roleKind: "review",
       allowedServers: ["context7"],
+      readOnlyTools: ["context7_query"],
       request: { mode: "call", server: "context7", tool: "context7_query", args: { query: "x" } },
     });
     expect(result.allowed).toBe(true);
@@ -475,6 +476,7 @@ describe("checkMcpCall", () => {
     const result = checkMcpCall({
       roleKind: "review",
       allowedServers: ["context7"],
+      readOnlyTools: ["context7_read"],
       request: { mode: "call", server: "context7", tool: "context7_read", args: { profile: "x" } },
     });
     expect(result.allowed).toBe(true);
@@ -484,6 +486,7 @@ describe("checkMcpCall", () => {
     const result = checkMcpCall({
       roleKind: "review",
       allowedServers: ["context7"],
+      readOnlyTools: ["context7_read"],
       request: { mode: "call", server: "context7", tool: "context7_read", args: { filePattern: "*.ts" } },
     });
     expect(result.allowed).toBe(true);
@@ -493,6 +496,7 @@ describe("checkMcpCall", () => {
     const result = checkMcpCall({
       roleKind: "review",
       allowedServers: ["context7"],
+      readOnlyTools: ["context7_read"],
       request: { mode: "call", server: "context7", tool: "context7_read", args: { projectPath: "/repo" } },
     });
     expect(result.allowed).toBe(true);
@@ -819,13 +823,13 @@ describe("真实 SDK 会话集成", () => {
 });
 
 describe("参数形状、服务推断、入口校验与配置克隆的边界", () => {
-  const base = { roleKind: "review" as const, allowedServers: ["context7", "context7_docs"] };
-  test("数组或字符串形式的 args 被只读角色拒绝", () => {
-    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: ["--output", "/etc/x"] } }).allowed).toBe(false);
-    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: "--output /etc/x" } }).allowed).toBe(false);
+  const base = { roleKind: "review" as const, allowedServers: ["context7", "context7_docs"], readOnlyTools: ["context7__x", "context7_docs__search"] };
+  test("可信只读工具接受其自己的参数格式", () => {
+    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: ["--output", "/etc/x"] } }).allowed).toBe(true);
+    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: "--output /etc/x" } }).allowed).toBe(true);
   });
-  test("白名单键下的嵌套对象同样按白名单判定", () => {
-    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: { query: { write: "/etc/x" } } } }).allowed).toBe(false);
+  test("只读能力按可信工具声明判定，不猜测嵌套参数含义", () => {
+    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: { query: { write: "/etc/x" } } } }).allowed).toBe(true);
     expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: { query: { pattern: "*.ts" }, paths: ["a", "b"] } } }).allowed).toBe(true);
   });
   test("工具名无法推断服务时即使声明了 server 也拒绝", () => {
@@ -835,10 +839,10 @@ describe("参数形状、服务推断、入口校验与配置克隆的边界", (
   test("带下划线的服务名按最长前缀匹配", () => {
     expect(checkMcpCall({ ...base, request: { mode: "call", tool: "context7_docs__search" } }).allowed).toBe(true);
   });
-  test("白名单不含 args 与 url，携带者被只读角色拒绝", () => {
-    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: { args: ["-o", "/etc/x"] } } }).allowed).toBe(false);
-    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: { url: "file:///etc/x" } } }).allowed).toBe(false);
-    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: { query: { query: { args: ["-o"] } } } } }).allowed).toBe(false);
+  test("可信只读工具的参数由工具契约校验", () => {
+    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: { args: ["-o", "/etc/x"] } } }).allowed).toBe(true);
+    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: { url: "file:///etc/x" } } }).allowed).toBe(true);
+    expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: { query: { query: { args: ["-o"] } } } } }).allowed).toBe(true);
   });
 
   test("相对路径入口即使注入 importer 也被拒绝，伪协议入口才豁免", async () => {

@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { repositoryIdentity, requirementDataDir, requirementIdentity, listWorktrees } from "./identity.ts";
-import { appendLine, createDocument, readDocument, readLines, writeDocument, writeFileAtomic } from "./store.ts";
+import { lstat, readFile, readdir, rename, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { repositoryIdentity, requirementIdentity, listWorktrees } from "./identity.ts";
+import { writeFileAtomic } from "./store.ts";
+import { repositoryDatabase, readRecord, putRecord, withDatabase } from "./database.ts";
+import type { RecordRef } from "./database.ts";
+import { requirementStateRef } from "./workflow-state.ts";
+import { decisionStream } from "./decisions.ts";
+import { currentBootId, processStartedAt } from "./windows.ts";
 import { assertValidStage } from "./workflow-state.ts";
 import type { RequirementState, TaskState } from "./workflow-state.ts";
 
 const LEGACY_ROOT_SEGMENTS = [".pi-spec", "requirements"] as const;
-const GLOBAL_PROBLEM_KINDS = new Set(["legacy-root-unreadable", "progress-unreadable"]);
+const GLOBAL_PROBLEM_KINDS = new Set(["legacy-root-unreadable", "progress-unreadable", "definition-directory-conflict"]);
 
 export interface MigrationSource {
   worktree: string;
@@ -355,9 +360,9 @@ async function buildPreflightResult(scans: LegacyRequirementScan[]): Promise<Mig
   return { sources, problems, fingerprint };
 }
 
-async function progressPath(dataRoot: string, cwd: string): Promise<string> {
+async function progressRef(dataRoot: string, cwd: string): Promise<RecordRef> {
   const identity = await repositoryIdentity(cwd);
-  return join(dataRoot, "repos", identity.repoId, "migration", "progress.json");
+  return { database: repositoryDatabase(dataRoot, identity.repoId), namespace: "migration", key: "progress" };
 }
 
 interface ReadProgressResult {
@@ -366,24 +371,26 @@ interface ReadProgressResult {
   detail?: string;
 }
 
-async function readProgress(path: string): Promise<ReadProgressResult> {
-  let raw: string;
+async function readProgress(ref: RecordRef): Promise<ReadProgressResult> {
   try {
-    raw = await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { progress: { requirements: {} }, unreadable: false };
-    return { progress: { requirements: {} }, unreadable: true, detail: (error as Error).message };
-  }
-  try {
-    return { progress: JSON.parse(raw) as ProgressFile, unreadable: false };
+    const record = readRecord<ProgressFile>(ref);
+    if (!record.exists) return { progress: { requirements: {} }, unreadable: false };
+    const value = record.data;
+    if (!value || typeof value !== "object" || Array.isArray(value) || !value.requirements || typeof value.requirements !== "object" || Array.isArray(value.requirements)) throw new Error("迁移进度结构无效");
+    for (const entry of Object.values(value.requirements) as ProgressEntry[]) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)
+        || (entry.status !== undefined && !["written", "verified", "cleared"].includes(entry.status))
+        || (entry.sourceFingerprint !== undefined && typeof entry.sourceFingerprint !== "string")
+        || (entry.lastFailure !== undefined && (!entry.lastFailure || typeof entry.lastFailure.reason !== "string" || typeof entry.lastFailure.at !== "string"))) throw new Error("迁移进度条目无效");
+    }
+    return { progress: value, unreadable: false };
   } catch (error) {
     return { progress: { requirements: {} }, unreadable: true, detail: (error as Error).message };
   }
 }
 
-async function writeProgress(path: string, data: ProgressFile): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await writeFileAtomic(path, `${JSON.stringify(data, null, 2)}\n`);
+async function writeProgress(ref: RecordRef, data: ProgressFile): Promise<void> {
+  putRecord(ref, data);
 }
 
 async function computeFullPreflight(
@@ -392,31 +399,38 @@ async function computeFullPreflight(
   const { scans, rootIssues } = await scanRepository(input.cwd);
   const preflight = await buildPreflightResult(scans);
   preflight.problems.push(...rootIssues);
+  for (const worktree of await listWorktrees(input.cwd)) {
+    const legacy = join(worktree, ".pi-spec");
+    const target = join(worktree, ".pi-company");
+    const exists = async (path: string) => lstat(path).then(() => true, (error) => { if (error.code === "ENOENT") return false; throw error; });
+    if (await exists(legacy) && await exists(target)) preflight.problems.push({ requirement: "", kind: "definition-directory-conflict", detail: `定义目录同时存在，无法安全迁移: ${legacy} → ${target}` });
+  }
+
 
   const identity = await repositoryIdentity(input.cwd);
-  const progFile = await progressPath(input.dataRoot, input.cwd);
+  const progFile = await progressRef(input.dataRoot, input.cwd);
   const progressResult = await readProgress(progFile);
   if (progressResult.unreadable) {
     preflight.problems.push({
       requirement: "",
       kind: "progress-unreadable",
-      detail: `进度文件无法读取（${progFile}）: ${progressResult.detail ?? ""}`,
+      detail: `迁移进度无法读取: ${progressResult.detail ?? ""}`,
     });
   }
   const progress = progressResult.progress;
   const requirementIds = [...new Set(scans.map((scan) => scan.requirement))];
   for (const reqId of requirementIds) {
     if (progress.requirements[reqId]) continue;
-    let statePath: string;
+    let statePath: RecordRef;
     try {
-      statePath = join(requirementDataDir(input.dataRoot, identity.repoId, reqId), "state.json");
+      statePath = requirementStateRef(input.dataRoot, identity.repoId, reqId);
     } catch {
       continue;
     }
-    const doc = await readDocument(statePath);
+    const doc = await readRecord(statePath);
     if (!doc.exists) continue;
     if (!hasMigrationHistory(doc.data as RequirementState)) {
-      preflight.problems.push({ requirement: reqId, kind: "target-state-exists", detail: statePath });
+      preflight.problems.push({ requirement: reqId, kind: "target-state-exists", detail: reqId });
     }
   }
 
@@ -428,25 +442,6 @@ export async function migrationPreflight(input: { cwd: string; dataRoot: string 
   return preflight;
 }
 
-async function migrateDecisionLedger(
-  dataRoot: string,
-  repoId: string,
-  reqId: string,
-  actor: "ai" | "user",
-  records: Array<Record<string, unknown>>,
-): Promise<void> {
-  const dir = requirementDataDir(dataRoot, repoId, reqId);
-  const path = join(dir, actor === "ai" ? "ai-decisions.jsonl" : "user-decisions.jsonl");
-  const existing = await readLines(path);
-  const existingKeys = new Set(existing.map((record) => canonicalStringify(record)));
-  for (const record of records) {
-    const key = canonicalStringify(record);
-    if (existingKeys.has(key)) continue;
-    await appendLine(path, record);
-    existingKeys.add(key);
-  }
-}
-
 async function assertLedgerContains(
   dataRoot: string,
   repoId: string,
@@ -454,9 +449,7 @@ async function assertLedgerContains(
   actor: "ai" | "user",
   expected: Array<Record<string, unknown>>,
 ): Promise<void> {
-  const dir = requirementDataDir(dataRoot, repoId, reqId);
-  const path = join(dir, actor === "ai" ? "ai-decisions.jsonl" : "user-decisions.jsonl");
-  const actual = await readLines(path);
+  const actual = withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.events(decisionStream(reqId, actor)).map((event) => event.data));
   const actualKeys = new Set(actual.map((record) => canonicalStringify(record)));
   for (const record of expected) {
     if (!actualKeys.has(canonicalStringify(record))) {
@@ -505,7 +498,7 @@ function buildRequirementStateData(reqId: string, stage: string, group: LegacyRe
 }
 
 function hasMigrationHistory(data: RequirementState): boolean {
-  return data.history.some((entry) => typeof entry.reason === "string" && entry.reason.startsWith("migrated from"));
+  return !!data && Array.isArray(data.history) && data.history.some((entry) => entry && typeof entry.reason === "string" && entry.reason.startsWith("migrated from"));
 }
 
 function isSourceAlreadyCleared(group: LegacyRequirementScan[]): boolean {
@@ -514,30 +507,28 @@ function isSourceAlreadyCleared(group: LegacyRequirementScan[]): boolean {
   );
 }
 
-async function writeStateDoc(path: string, data: RequirementState): Promise<void> {
-  const existing = await readDocument(path);
-  if (existing.exists) {
-    await writeDocument(path, data, { expectedVersion: existing.version });
-  } else {
-    await createDocument(path, data);
-  }
-}
-
 async function writeTargets(dataRoot: string, repoId: string, reqId: string, group: LegacyRequirementScan[]): Promise<void> {
-  const stage = resolveStage(group);
-  const statePath = join(requirementDataDir(dataRoot, repoId, reqId), "state.json");
-  await writeStateDoc(statePath, buildRequirementStateData(reqId, stage, group));
-
-  const ai = dedupeDecisions(group.flatMap((scan) => scan.aiDecisions) as Array<Record<string, unknown>>);
-  const user = dedupeDecisions(group.flatMap((scan) => scan.userDecisions) as Array<Record<string, unknown>>);
-  await migrateDecisionLedger(dataRoot, repoId, reqId, "ai", ai);
-  await migrateDecisionLedger(dataRoot, repoId, reqId, "user", user);
+  const state = buildRequirementStateData(reqId, resolveStage(group), group);
+  const ledgers = { ai: dedupeDecisions(group.flatMap((scan) => scan.aiDecisions) as Array<Record<string, unknown>>), user: dedupeDecisions(group.flatMap((scan) => scan.userDecisions) as Array<Record<string, unknown>>) };
+  withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.transaction(() => {
+    const existing = db.read("requirements", reqId);
+    if (existing) db.update("requirements", reqId, existing.version, state);
+    else db.create("requirements", reqId, state);
+    for (const actor of ["ai", "user"] as const) {
+      const stream = decisionStream(reqId, actor);
+      const known = new Set(db.events(stream).map((event) => canonicalStringify(event.data)));
+      for (const record of ledgers[actor]) {
+        const key = canonicalStringify(record);
+        if (!known.has(key)) { db.append(stream, record); known.add(key); }
+      }
+    }
+  }));
 }
 
 async function verifyTargets(dataRoot: string, repoId: string, reqId: string, group: LegacyRequirementScan[]): Promise<void> {
   const stage = resolveStage(group);
-  const statePath = join(requirementDataDir(dataRoot, repoId, reqId), "state.json");
-  const doc = await readDocument(statePath);
+  const statePath = requirementStateRef(dataRoot, repoId, reqId);
+  const doc = await readRecord(statePath);
   if (!doc.exists) throw new Error(`需求状态未写入: ${reqId}`);
   const data = doc.data as RequirementState;
   if (data.stage !== stage) throw new Error(`阶段核对失败: ${reqId}`);
@@ -568,8 +559,8 @@ async function assertSourceStillMatchesTarget(
   reqId: string,
   group: LegacyRequirementScan[],
 ): Promise<void> {
-  const statePath = join(requirementDataDir(dataRoot, repoId, reqId), "state.json");
-  const doc = await readDocument(statePath);
+  const statePath = requirementStateRef(dataRoot, repoId, reqId);
+  const doc = await readRecord(statePath);
   if (!doc.exists) throw new Error(`需求状态未写入: ${reqId}`);
   const data = doc.data as RequirementState;
   for (const scan of group) {
@@ -640,8 +631,8 @@ async function migrateOneRequirement(
   if (entry?.status === "cleared") return;
 
   if (!entry?.status && isSourceAlreadyCleared(group)) {
-    const statePath = join(requirementDataDir(input.dataRoot, repoId, reqId), "state.json");
-    const doc = await readDocument(statePath);
+    const statePath = requirementStateRef(input.dataRoot, repoId, reqId);
+    const doc = await readRecord(statePath);
     if (doc.exists && hasMigrationHistory(doc.data as RequirementState)) {
       progress.requirements[reqId] = { status: "cleared" };
       return;
@@ -680,7 +671,7 @@ async function applyRequirements(
   problemRequirements: Map<string, MigrationProblem[]>,
 ): Promise<MigrationApplyResult> {
   const identity = await repositoryIdentity(input.cwd);
-  const progFile = await progressPath(input.dataRoot, input.cwd);
+  const progFile = await progressRef(input.dataRoot, input.cwd);
   const progress = (await readProgress(progFile)).progress;
 
   const requirementIds = [...new Set(scans.map((scan) => scan.requirement))];
@@ -721,7 +712,7 @@ async function checkActiveWindows(probe: () => Promise<boolean | null>): Promise
   }
 }
 
-export async function migrationApply(input: MigrationApplyInput): Promise<MigrationApplyResult> {
+async function applyMigration(input: MigrationApplyInput): Promise<MigrationApplyResult> {
   const blocked: string[] = [];
   if (!input.authorized) blocked.push("未授权");
   if (!input.legacyWritesStopped) blocked.push("旧写入方式未切换");
@@ -746,19 +737,59 @@ export async function migrationApply(input: MigrationApplyInput): Promise<Migrat
     problemRequirements.set(problem.requirement, list);
   }
 
-  return applyRequirements(input, scans, problemRequirements);
+  const applied = await applyRequirements(input, scans, problemRequirements);
+  if (!applied.ok) return applied;
+  try {
+    if (await checkActiveWindows(input.hasActiveWindows) !== false) throw new Error("迁移定义目录前存在或无法确认活动写入者");
+    for (const worktree of await listWorktrees(input.cwd)) {
+      const legacy = join(worktree, ".pi-spec");
+      const target = join(worktree, ".pi-company");
+      try { await lstat(legacy); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+      try { await lstat(target); throw new Error(`迁移目标目录已存在: ${target}`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      await rename(legacy, target);
+    }
+  } catch (error) { return { ok: false, migrated: applied.migrated, blocked: [`定义目录迁移未完成: ${(error as Error).message}`] }; }
+  return applied;
+}
+
+export async function migrationApply(input: MigrationApplyInput): Promise<MigrationApplyResult> {
+  if (!input.authorized || !input.legacyWritesStopped) return { ok: false, migrated: [], blocked: [!input.authorized ? "未授权" : "旧写入方式未切换"] };
+  const ref = await progressRef(input.dataRoot, input.cwd);
+  const bootId = await currentBootId();
+  const startedAt = await processStartedAt(process.pid);
+  if (!startedAt) return { ok: false, migrated: [], blocked: ["无法核对迁移进程身份"] };
+  const existing = readRecord<{ pid: number; bootId: string; startedAt: string }>({ ...ref, key: "owner" });
+  if (existing.exists && existing.data.bootId === bootId && await processStartedAt(existing.data.pid) === existing.data.startedAt) {
+    return { ok: false, migrated: [], blocked: ["已有迁移正在运行"] };
+  }
+  let owner: { id: string } | undefined;
+  try {
+    owner = withDatabase(ref.database, (db) => db.transaction(() => {
+      const current = db.read("migration", "owner");
+      if (current && (!existing.exists || current.id !== existing.id || current.version !== existing.version)) throw new Error("迁移占用已变化，请重试");
+      if (current) db.remove("migration", "owner", current.version);
+      return db.create("migration", "owner", { pid: process.pid, bootId, startedAt });
+    }));
+    return await applyMigration(input);
+  } finally {
+    if (owner) withDatabase(ref.database, (db) => db.transaction(() => {
+      const current = db.read("migration", "owner");
+      if (current && current.id === owner!.id) db.remove("migration", "owner", current.version);
+    }));
+  }
 }
 
 export const resumeMigration = migrationApply;
 
 export async function migrationStatus(input: { cwd: string; dataRoot: string }): Promise<MigrationStatusResult> {
   const identity = await repositoryIdentity(input.cwd);
-  const progFile = await progressPath(input.dataRoot, input.cwd);
-  const progress = (await readProgress(progFile)).progress;
+  const progFile = await progressRef(input.dataRoot, input.cwd);
+  const progressResult = await readProgress(progFile);
+  const progress = progressResult.progress;
 
   const completed = new Set<string>();
   const inProgress: string[] = [];
-  const failed: Array<{ requirement: string; reason: string }> = [];
+  const failed: Array<{ requirement: string; reason: string }> = progressResult.unreadable ? [{ requirement: "", reason: progressResult.detail ?? "迁移进度不可读" }] : [];
   for (const [reqId, entry] of Object.entries(progress.requirements)) {
     if (entry.status === "cleared") completed.add(reqId);
     else if (entry.status === "written" || entry.status === "verified") inProgress.push(reqId);
@@ -767,20 +798,26 @@ export async function migrationStatus(input: { cwd: string; dataRoot: string }):
 
   const { scans } = await scanRepository(input.cwd);
   const allRequirementIds = [...new Set(scans.map((scan) => scan.requirement))];
-  for (const reqId of allRequirementIds) {
-    if (completed.has(reqId)) continue;
-    const group = scans.filter((scan) => scan.requirement === reqId);
-    if (!isSourceAlreadyCleared(group)) continue;
-    let statePath: string;
-    try {
-      statePath = join(requirementDataDir(input.dataRoot, identity.repoId, reqId), "state.json");
-    } catch {
+  for (const worktree of await listWorktrees(input.cwd)) {
+    let entries;
+    try { entries = await readdir(join(worktree, ".pi-company", "requirements"), { withFileTypes: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      failed.push({ requirement: "", reason: `定义目录不可读: ${(error as Error).message}` });
       continue;
     }
-    const doc = await readDocument(statePath);
-    if (doc.exists && hasMigrationHistory(doc.data as RequirementState)) completed.add(reqId);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const doc = await readRecord(requirementStateRef(input.dataRoot, identity.repoId, entry.name));
+        if (doc.exists && hasMigrationHistory(doc.data as RequirementState)) completed.add(entry.name);
+      } catch (error) { failed.push({ requirement: entry.name, reason: (error as Error).message }); }
+    }
   }
 
+  for (const reqId of allRequirementIds) {
+    if (completed.delete(reqId) && !inProgress.includes(reqId)) inProgress.push(reqId);
+  }
   const remaining = allRequirementIds.filter((reqId) => !completed.has(reqId));
 
   return { completed: [...completed], inProgress, failed, remaining };

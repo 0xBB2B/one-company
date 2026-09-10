@@ -1,3 +1,4 @@
+import { testRepoId } from "./helpers/database-fixture.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -7,6 +8,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   connectTestClient,
+  connectRawClient,
   createDaemonFixture,
   killDaemon,
   removeDaemonFixture,
@@ -212,7 +214,7 @@ async function waitForRun(
     if (found) return found;
     await delay(150);
   }
-  throw new Error("等待目标运行超时");
+  throw new Error(`等待目标运行超时: ${JSON.stringify((await listRuns(client)).map(({ task, state, stateReason }) => ({ task, state, stateReason })))}`);
 }
 
 async function waitForRuns(
@@ -915,21 +917,16 @@ describe("协议处理器接入：hello 后的中继待办推送", () => {
       });
       firstClient.close();
 
+      const secondClient = await connectRawClient(fixture.socketPath);
       const pushedAfterHello = new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("hello 后未在时限内收到 relay.question 推送")), 8_000);
-        void connectTestClient(fixture.socketPath, {
-          windowId: "second-window",
-          cwd: fixture.repo.root,
-          workspaceRoot: fixture.repo.root,
-          repoIds: [fixture.repoId],
-        }).then((secondClient) => {
-          extraClients.push(secondClient);
-          secondClient.onEvent("relay.question", () => {
-            clearTimeout(timer);
-            resolve();
-          });
-        }, reject);
+        const timer = setTimeout(() => reject(new Error("hello 后未收到待办")), 8_000);
+        secondClient.onEvent("relay.question", () => { clearTimeout(timer); resolve(); });
       });
+      const helloResult = await secondClient.call("hello", {
+        windowId: "second-window", pid: process.pid, sessionId: "second-session",
+        cwd: fixture.repo.root, workspaceRoot: fixture.repo.root, repoIds: [fixture.repoId], protocolVersion: 1,
+      });
+      extraClients.push({ ...secondClient, helloResult });
       await pushedAfterHello;
     },
     25_000,
@@ -955,7 +952,7 @@ afterEach(async () => {
 async function makeUnitManager(overrides: { repoId?: string; workspaceRepoIds?: string[] } = {}): Promise<UnitManagerContext> {
   const dataRoot = await mkdtemp(join(tmpdir(), "run-manager-unit-"));
   const relayDataDir = await mkdtemp(join(tmpdir(), "run-manager-unit-relay-"));
-  const repoId = overrides.repoId ?? randomUUID();
+  const repoId = overrides.repoId ?? testRepoId();
   const runStore = new RunStore({ dataRoot, repoId, daemonStartedAt: new Date().toISOString() });
   const shellRegistry = new ShellRegistry({ clock: createClock() });
   const relayQueue = new RelayQueue({
@@ -1281,7 +1278,7 @@ describe("RunManager 单元级（直接构造，绕开协议层与真实模型�
     expect(after.ok && after.run.state).toBe("stopped");
   });
 
-  test("finalize：paused 运行的会话自行结束时直接结算为 completed（不途经 running 中转）", async () => {
+  test("finalize：paused 角色无合法裁决时失败关闭，不途经 running", async () => {
     const ctx = await makeUnitManager();
     const { manager, runStore } = ctx;
     const run = await createUnitRoleRun(ctx, {
@@ -1308,7 +1305,7 @@ describe("RunManager 单元级（直接构造，绕开协议层与真实模型�
     const after = await runStore.get(run.id);
     expect(after.ok).toBe(true);
     if (!after.ok) return;
-    expect(["completed", "paused"]).toContain(after.run.state);
+    expect(after.run.state).toBe("failed");
     if (after.run.state === "paused") {
       expect(after.run.stateReason).toBeTruthy();
     }
@@ -1388,13 +1385,13 @@ describe("RunManager 单元级（直接构造，绕开协议层与真实模型�
     const handle = makeFakeHandle();
     injectSession(manager, run.id, { kind: "role", handle, requirement: run.requirement, writePaths: [] });
 
-    setTimeout(() => handle.settle({ ok: true }), 400);
+    setTimeout(() => handle.fail(new Error("测试终态")), 400);
     const start = Date.now();
     const waitResult = await callPrivate<{ state: string }>(manager, "wait", run.id, 5_000);
     const elapsed = Date.now() - start;
 
     expect(elapsed).toBeGreaterThanOrEqual(350);
-    expect(waitResult.state).toBe("completed");
+    expect(waitResult.state).toBe("failed");
   }, 10_000);
 
   test("wait：超时时返回当前（非终态）状态而不是一直阻塞", async () => {
@@ -1503,7 +1500,7 @@ describe("pause-control：网络故障自动续接", () => {
           modelId: "controlled-model",
           roleName: "worker",
           taskId: "T-1",
-          replies: [{ type: "error", message: "fetch failed: 网络连接被重置 (network)" }],
+          replies: [{ type: "error", message: "fetch failed: 网络连接被重置 (network)" }, toolReply("pi_company_resume_check", {}), textReply("恢复核对完成", 10_000)],
         },
       ];
       const world = await startWorld(scripts, connectivityProbeEnv(reachableFile, 500));
@@ -1548,12 +1545,12 @@ describe("pause-control：网络故障自动续接", () => {
 
 describe("structured-verdict：验收者 reportPath 校验", () => {
   test(
-    "acceptance 派工缺少 reportPath 或指向仓库外时被拒，仓库内路径时验收者写报告并 completed",
+    "acceptance 派工拒绝仓库外报告路径，未传路径时使用需求默认报告",
     async () => {
       const requirement = "2026-09-01.report-path";
       const fixture = await createDaemonFixture();
       extraDaemonFixtures.push(fixture);
-      const reportPath = join(fixture.repo.root, "evidence", "acceptance-report.md");
+      const reportPath = join(fixture.repo.root, ".pi-company", "requirements", requirement, "acceptance.md");
       const outsidePath = "/tmp/outside-repo-report.md";
 
       const scripts: TestProviderScript[] = [
@@ -1561,11 +1558,9 @@ describe("structured-verdict：验收者 reportPath 校验", () => {
           ...REQUIREMENT_PROVIDER,
           replies: [
             proposeShapeReply([
-              shapeTask("T-1", "acceptance", ["evidence"]),
               shapeTask("T-2", "acceptance", ["evidence"]),
               shapeTask("T-3", "acceptance", ["evidence"]),
             ]),
-            toolReply("pi_company_agent", { action: "run", role: "acceptance", task: "T-1", writePaths: ["evidence"], readPaths: [] }),
             toolReply("pi_company_agent", {
               action: "run",
               role: "acceptance",
@@ -1580,7 +1575,6 @@ describe("structured-verdict：验收者 reportPath 校验", () => {
               task: "T-3",
               writePaths: ["evidence"],
               readPaths: [],
-              reportPath,
             }),
             textReply("已尝试全部派工"),
           ],
@@ -1591,7 +1585,7 @@ describe("structured-verdict：验收者 reportPath 校验", () => {
           roleName: "acceptance",
           taskId: "T-3",
           replies: [
-            toolReply("write", { path: reportPath, content: "# 验收报告（测试固定）\n" }),
+            toolReply("write", { path: reportPath, content: "---\ndate: 2026-09-10\nresult: accepted\n---\n| AC-1 | PASS | 符合预期 | |\n## 所用命令\n无\n" }),
             toolReply("structured_output", validAcceptanceResult(reportPath)),
             textReply("完成"),
           ],
@@ -1610,8 +1604,6 @@ describe("structured-verdict：验收者 reportPath 校验", () => {
       await confirmRequirement(fixture.dataRoot, fixture.repo.root, requirement);
       await dispatchRequirement(client, fixture.repo.root, requirement);
 
-      // T-1（缺 reportPath）与 T-2（reportPath 指向仓库外）应被派工拒绝，从未创建运行；
-      // T-3（仓库内 reportPath）应被接受创建运行——先确认这条派工权校验本身成立
       const t3 = await waitForRun(client, (run) => run.kind === "role" && run.task === "T-3", 15_000);
       const runsAfterDispatch = await listRuns(client);
       unsubscribe();
@@ -1992,7 +1984,7 @@ describe("角色会话 idle 提醒随暂停/继续重置", () => {
           modelId: "controlled-model",
           roleName: "worker",
           taskId: "T-1",
-          replies: [textReply("我在评估任务"), textReply("继续处理中", 3_000), textReply("仍未准备好提交")],
+          replies: [textReply("我在评估任务"), textReply("继续处理中", 3_000), toolReply("pi_company_resume_check", {}), textReply("仍未准备好提交"), textReply("继续处理", 10_000)],
         },
       ];
       const providersPath = await writeTestModelProviders(fixture.dataRoot, scripts);
@@ -2024,11 +2016,11 @@ describe("角色会话 idle 提醒随暂停/继续重置", () => {
       // 若 idleReminded 随暂停/继续正确重置，这次仍应先补一次提示（第四次调用）而不是直接判失败
       const afterReset = await waitForProviderLogEntries(
         requestsLog,
-        (entries) => entries.filter((entry) => entry.providerId === "controlled-worker-T-1").length >= 4,
+        (entries) => entries.filter((entry) => entry.providerId === "controlled-worker-T-1").length >= 5,
         15_000,
       );
       const workerCalls = afterReset.filter((entry) => entry.providerId === "controlled-worker-T-1");
-      expect(workerCalls.length).toBeGreaterThanOrEqual(4);
+      expect(workerCalls.length).toBeGreaterThanOrEqual(5);
 
       const current = (await listRuns(client)).find((run) => run.id === t1.id);
       expect(current?.state).not.toBe("failed");
@@ -2044,7 +2036,7 @@ describe("structured-verdict：reportPath 续接回填", () => {
       const requirement = "2026-09-01.report-path-resume-refill";
       const fixture = await createDaemonFixture();
       extraDaemonFixtures.push(fixture);
-      const reportPath = join(fixture.repo.root, "evidence", "acceptance-report.md");
+      const reportPath = join(fixture.repo.root, ".pi-company", "requirements", requirement, "acceptance.md");
 
       const firstScripts: TestProviderScript[] = [
         {
@@ -2094,7 +2086,7 @@ describe("structured-verdict：reportPath 续接回填", () => {
           modelId: "controlled-model",
           roleName: "acceptance",
           taskId: "T-1",
-          replies: [toolReply("write", { path: reportPath, content: "# 验收报告（续接回填测试固定）\n" })],
+          replies: [toolReply("pi_company_resume_check", {}), toolReply("write", { path: reportPath, content: "# 验收报告（续接回填测试固定）\n" }), textReply("已写入原报告")],
         },
       ];
       const providersPath2 = await writeTestModelProviders(fixture.dataRoot, secondScripts);
@@ -2120,7 +2112,7 @@ describe("structured-verdict：reportPath 续接回填", () => {
 
 describe("role-catalog：按角色 kind 的输出契约", () => {
   test(
-    "kind:plan 的 planner 回合结束（只回文字）即 completed，result 不含 verdict/binding 且不能作为 planned 证据",
+    "planner 只有完成文字而缺少合法规划产物时失败关闭，不能作为 planned 证据",
     async () => {
       const requirement = "2026-09-01.plan-kind-autocomplete";
       const requestsLog = await createProviderRequestsLog();
@@ -2158,10 +2150,9 @@ describe("role-catalog：按角色 kind 的输出契约", () => {
       const t1 = await waitForRun(client, (run) => run.kind === "role" && run.task === "T-1");
       unsubscribe();
 
-      const completed = await waitForRun(client, (run) => run.id === t1.id && run.state === "completed", 15_000);
-      const result = completed.result as { verdict?: string; binding?: unknown } | undefined;
-      expect(result?.verdict).toBeUndefined();
-      expect(result?.binding).toBeUndefined();
+      const failed = await waitForRun(client, (run) => run.id === t1.id && run.state === "failed", 15_000);
+      expect(failed.result).toBeUndefined();
+      expect(failed.stateReason).toBeTruthy();
 
       const lines = await readProviderRequestsLog(requestsLog);
       const plannerCalls = lines.filter((entry) => entry.providerId === "controlled-planner-T-1");
@@ -2208,7 +2199,7 @@ describe("RunManager 单元级：未知角色 kind 的派工权", () => {
       await rm(dataRoot, { recursive: true, force: true });
       await rm(relayDataDir, { recursive: true, force: true });
     });
-    const repoId = randomUUID();
+    const repoId = testRepoId();
     const runStore = new RunStore({ dataRoot, repoId, daemonStartedAt: new Date().toISOString() });
     const shellRegistry = new ShellRegistry({ clock: createClock() });
     const relayQueue = new RelayQueue({
@@ -2277,7 +2268,7 @@ describe("pause-control：网络故障按 provider baseUrl 分组续接", () => 
           roleName: "worker",
           taskId: "T-1",
           baseUrl: baseUrlA,
-          replies: [{ type: "error", message: "fetch failed: network A 连接被重置" }],
+          replies: [{ type: "error", message: "fetch failed: network A 连接被重置" }, toolReply("pi_company_resume_check", {}), textReply("恢复核对完成", 10_000)],
         },
         {
           providerId: "controlled-worker-T-2",
@@ -2285,7 +2276,7 @@ describe("pause-control：网络故障按 provider baseUrl 分组续接", () => 
           roleName: "worker",
           taskId: "T-2",
           baseUrl: baseUrlB,
-          replies: [{ type: "error", message: "fetch failed: network B 连接被重置" }],
+          replies: [{ type: "error", message: "fetch failed: network B 连接被重置" }, toolReply("pi_company_resume_check", {}), textReply("恢复核对完成", 10_000)],
         },
       ];
       const world = await startWorld(scripts, connectivityProbeMapEnv(mapPath, 500));
@@ -2364,7 +2355,7 @@ describe("pause-control：provider baseUrl 非法时不发起探测", () => {
           roleName: "worker",
           taskId: "T-1",
           baseUrl: invalidBaseUrl,
-          replies: [{ type: "error", message: "fetch failed: network 连接被重置" }],
+          replies: [{ type: "error", message: "fetch failed: network 连接被重置" }, toolReply("pi_company_resume_check", {}), textReply("恢复核对完成", 10_000)],
         },
       ];
       const world = await startWorld(scripts, connectivityProbeEnv(reachableFile, 500));

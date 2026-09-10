@@ -1,11 +1,11 @@
+import { createReadStream } from "node:fs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, readFile, readlink } from "node:fs/promises";
+import { lstat, readlink } from "node:fs/promises";
 import { join } from "node:path";
 
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
-const UNTRACKED_FILE_SIZE_LIMIT = 64 * 1024 * 1024;
 
 export interface GitSnapshot {
   head: string;
@@ -18,6 +18,7 @@ export interface CollectGitSnapshotInput {
   gitTimeoutMs?: number;
   gitMaxBuffer?: number;
   signal?: AbortSignal;
+  excludePaths?: string[];
 }
 
 // git 子进程失败原因五选一，判定顺序即优先级：中止最先判、其次是 exec 层面的 kill/超时，
@@ -83,21 +84,22 @@ async function untrackedEntrySegment(cwd: string, relPath: string): Promise<Buff
   try {
     stats = await lstat(fullPath);
   } catch {
-    return Buffer.from("unreadable");
+    throw new Error(`无法读取快照文件: ${relPath}`);
   }
   if (stats.isSymbolicLink()) {
     try {
       return Buffer.from(await readlink(fullPath), "utf8");
     } catch {
-      return Buffer.from("unreadable");
+      throw new Error(`无法读取快照文件: ${relPath}`);
     }
   }
   if (stats.isFile()) {
-    if (stats.size > UNTRACKED_FILE_SIZE_LIMIT) return Buffer.from(`size:${stats.size}`);
     try {
-      return await readFile(fullPath);
+      const hash = createHash("sha256");
+      for await (const chunk of createReadStream(fullPath)) hash.update(chunk);
+      return Buffer.from(hash.digest("hex"));
     } catch {
-      return Buffer.from("unreadable");
+      throw new Error(`无法读取快照文件: ${relPath}`);
     }
   }
   return Buffer.from(`type:${statsTypeLabel(stats)}`);
@@ -142,20 +144,37 @@ export async function collectGitSnapshot(input: CollectGitSnapshotInput): Promis
   const { repoRoot, signal } = input;
   const timeoutMs = input.gitTimeoutMs ?? GIT_TIMEOUT_MS;
   const maxBuffer = input.gitMaxBuffer ?? GIT_MAX_BUFFER;
+  const pathspec = ["--", ".", ...(input.excludePaths ?? []).map((path) => `:(exclude,literal)${path}`)];
   const head = (await runGit(repoRoot, ["rev-parse", "HEAD"], signal, timeoutMs, maxBuffer)).toString("utf8").trim();
   const rawBranch = (
     await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"], signal, timeoutMs, maxBuffer)
   ).toString("utf8").trim();
   // -uall：未跟踪目录逐文件展开，不塌缩成目录名一行，否则目录内文件改内容不改路径时指纹不变
-  const status = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "-uall"], signal, timeoutMs, maxBuffer);
-  const diff = await runGit(repoRoot, ["diff", "HEAD", "--binary"], signal, timeoutMs, maxBuffer);
+  const status = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "-uall", ...pathspec], signal, timeoutMs, maxBuffer);
+  const diff = await runGit(repoRoot, ["diff", "HEAD", "--binary", ...pathspec], signal, timeoutMs, maxBuffer);
   const hash = createHash("sha256");
   hashSegment(hash, status);
   hashSegment(hash, diff);
+  hashSegment(hash, await runGit(repoRoot, ["diff", "--cached", "--binary", ...pathspec], signal, timeoutMs, maxBuffer));
   // 未跟踪文件的内容不出现在 diff 里，porcelain 状态行也不含内容——不单独喂入会漏检改动
   for (const relPath of parseUntrackedPaths(status).sort()) {
     hashSegment(hash, Buffer.from(relPath, "utf8"));
     hashSegment(hash, await untrackedEntrySegment(repoRoot, relPath));
   }
   return { head, branch: rawBranch === "HEAD" ? null : rawBranch, fingerprint: hash.digest("hex") };
+}
+
+
+export async function collectContentFingerprint(repoRoot: string, excludePaths: string[] = []): Promise<string> {
+  const paths = (await runGit(repoRoot, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], undefined, GIT_TIMEOUT_MS, GIT_MAX_BUFFER))
+    .toString("utf8").split("\0").filter(Boolean);
+  const hash = createHash("sha256");
+  for (const path of [...new Set(paths)].sort()) {
+    if (excludePaths.includes(path)) continue;
+    try { await lstat(join(repoRoot, path)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    hashSegment(hash, Buffer.from(path));
+    hashSegment(hash, await untrackedEntrySegment(repoRoot, path));
+  }
+  return hash.digest("hex");
 }

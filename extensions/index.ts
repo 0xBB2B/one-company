@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import writeProtectionExtension from "./write-protection.ts";
 import lifecycleExtension from "./lifecycle.ts";
 import decisionRecordExtension from "./decision-record.ts";
 import workflowExtension from "./workflow.ts";
@@ -20,5 +21,6 @@ export default function registerExtensions(pi: ExtensionAPI): void {
   relayExtension(pi);
   agentsUiExtension(pi);
   shellUiExtension(pi);
+  writeProtectionExtension(pi);
   commandsExtension(pi);
 }

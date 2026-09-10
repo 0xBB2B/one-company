@@ -104,6 +104,12 @@ const McpConfigSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const DispatchContextSchema = Type.Object({
+  projectTrusted: Type.Boolean(),
+  model: Type.Optional(Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false })),
+  thinking: Type.Optional(Type.String()),
+}, { additionalProperties: false });
+
 const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   hello: Type.Object(
     {
@@ -124,6 +130,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
       requirement: Type.String(),
       cwd: Type.String(),
       mcp: Type.Optional(McpConfigSchema),
+      context: Type.Optional(DispatchContextSchema),
     },
     { additionalProperties: false },
   ),
@@ -137,6 +144,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
         { additionalProperties: false },
       ),
       mcp: Type.Optional(McpConfigSchema),
+      context: Type.Optional(DispatchContextSchema),
     },
     { additionalProperties: false },
   ),
