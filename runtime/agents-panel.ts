@@ -318,9 +318,12 @@ export class AgentsPanel {
     this.pendingActions.set(row.id, token);
     // 到期后重新下发会换成一枚新令牌；旧请求这时才姗姗来迟，结算前必须核对令牌，否则会误清掉新一轮的在途标记
     client.call(METHOD_FOR_BUTTON[buttonKey], { runId: row.id }).then(
-      () => {
+      (result) => {
         if (this.pendingActions.get(row.id) !== token) return;
         this.pendingActions.delete(row.id);
+        if (result.confirmed === false) {
+          this.options.activity.reportActionFailure(`${BUTTON_LABEL[buttonKey]}未确认：${String(result.reason ?? "操作仍未确认结束")}`);
+        }
       },
       (error: unknown) => {
         if (this.pendingActions.get(row.id) !== token) return;

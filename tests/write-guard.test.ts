@@ -126,7 +126,7 @@ test("真实受管命令阻止他人范围写入，允许本任务写入", async
   expect(await readFile(join(w.repo.root, "own.txt"), "utf8")).toBe("good");
 });
 
-test.each(["occupied.txt", "shared-dir/new.txt"])("生产命令后核对发现外部修改 %s，使违规运行失败及被影响需求证据失效", async (path) => {
+test.each(["occupied.txt", "shared-dir/new.txt"])("并行执行者修改 %s，使旧证据失效且不误判当前运行违规", async (path) => {
   const w = await world();
   const ownCtx = await bindStagesEvidence(w.repo, w.home, w.own.requirement, ["work"]);
   const foreignCtx = await bindStagesEvidence(w.repo, w.home, w.foreign.requirement, ["work", "review"]);
@@ -134,12 +134,12 @@ test.each(["occupied.txt", "shared-dir/new.txt"])("生产命令后核对发现�
   // 用沙箱外的测试写入模拟外部进程改变验证对象。
   await writeFile(join(w.repo.root, path), "external change\n");
   const violations = await w.guard.commandGuard.after(token, { exitCode: 0 });
-  expect(violations).toContain(path);
+  expect(violations).toEqual([]);
   const run = await w.runs.get(w.own.id);
-  expect(run.ok && run.run.state).toBe("failed");
+  expect(run.ok && run.run.state).toBe("running");
   for (const stage of ["work", "review"]) expect((await checkEvidence({ stage, currentVersion: CURRENT_VERSION }, foreignCtx)).ok).toBe(false);
   expect((await checkEvidence({ stage: "work", currentVersion: CURRENT_VERSION }, ownCtx)).ok).toBe(true);
-  expect(await w.guard.commandGuard.after(token, { exitCode: 0 })).toContain(path);
+  expect(await w.guard.commandGuard.after(token, { exitCode: 0 })).toEqual([]);
 });
 
 test("主会话接手前读取仓库 Shell 登记，终态运行仍有后台命令时保留保护", async () => {

@@ -1,3 +1,4 @@
+import { controlToken } from "../../runtime/daemon-auth.ts";
 import { temporaryRoot } from "./temporary-root.ts";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -223,7 +224,7 @@ export interface TestClient extends RawClient {
   helloResult: Record<string, unknown>;
 }
 
-function createFrameClient(socket: Socket): RawClient {
+function createFrameClient(socket: Socket, dataRoot: string): RawClient {
   let buffer = "";
   const pending = new Map<
     string,
@@ -249,7 +250,7 @@ function createFrameClient(socket: Socket): RawClient {
   });
 
   function call(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    const request = createRequest(method, params);
+    const request = createRequest(method, method === "hello" ? { authToken: controlToken(dataRoot), ...params } : params);
     return new Promise((resolve, reject) => {
       pending.set(request.id, { resolve, reject });
       socket.write(`${JSON.stringify(request)}\n`);
@@ -291,7 +292,7 @@ export async function connectRawClient(socketPath: string): Promise<RawClient> {
     socket.once("connect", () => resolve());
     socket.once("error", reject);
   });
-  return createFrameClient(socket);
+  return createFrameClient(socket, dirname(dirname(socketPath)));
 }
 
 export async function connectTestClient(socketPath: string, hello: HelloOverrides = {}): Promise<TestClient> {

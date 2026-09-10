@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const METHODS = [
   "hello",
@@ -44,6 +44,7 @@ export const EVENTS = [
 
 export const ERROR_CODES = [
   "protocol_version",
+  "unauthorized",
   "unknown_method",
   "unknown_event",
   "bad_params",
@@ -113,6 +114,7 @@ const DispatchContextSchema = Type.Object({
 const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   hello: Type.Object(
     {
+      authToken: Type.String({ minLength: 1 }),
       windowId: Type.String(),
       pid: Type.Number(),
       sessionId: Type.String(),

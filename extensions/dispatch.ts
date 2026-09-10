@@ -118,7 +118,9 @@ function stateLabel(state: string): string {
 function briefResult(result: Record<string, unknown>): string {
   const parts: string[] = [];
   if (typeof result.id === "string") parts.push(result.id);
-  if (typeof result.state === "string") parts.push(stateLabel(result.state));
+  if (result.confirmed === false) parts.push("操作尚未确认完成");
+  else if (typeof result.state === "string") parts.push(stateLabel(result.state));
+  if (typeof result.reason === "string") parts.push(briefReason(result.reason));
   if (typeof result.stateReason === "string") parts.push(result.stateReason);
   return parts.join(" ");
 }

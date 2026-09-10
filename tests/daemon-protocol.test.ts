@@ -57,6 +57,7 @@ const EXPECTED_EVENTS = [
 
 const EXPECTED_ERROR_CODES = [
   "protocol_version",
+  "unauthorized",
   "unknown_method",
   "unknown_event",
   "bad_params",
@@ -71,6 +72,7 @@ const EXPECTED_ERROR_CODES = [
 
 const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   hello: {
+    authToken: "test-control-token",
     windowId: "win-1",
     pid: 4321,
     sessionId: "session-abc",
@@ -124,8 +126,8 @@ function catchError(fn: () => unknown): { code?: string; message?: string } | nu
 }
 
 describe("协议常量", () => {
-  test("PROTOCOL_VERSION 为 1", () => {
-    expect(PROTOCOL_VERSION).toBe(1);
+  test("PROTOCOL_VERSION 为 2", () => {
+    expect(PROTOCOL_VERSION).toBe(2);
   });
 
   test("目录精确等于协议成品", () => {

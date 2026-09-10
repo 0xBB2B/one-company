@@ -1,5 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { readGit } from "./git-read.ts";
 import { changedEntries } from "./git-snapshot.ts";
 import type { ChangedEntry } from "./git-snapshot.ts";
 import { overlaps } from "./ranges.ts";
@@ -7,7 +6,6 @@ import { RUNNING_LIKE_STATES } from "./run-store.ts";
 import type { RunStore } from "./run-store.ts";
 import type { WindowRegistry } from "./windows.ts";
 
-const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -17,12 +15,7 @@ export interface BranchSnapshot {
 }
 
 function runGit(repoRoot: string, args: string[]): Promise<string> {
-  return execFileAsync("git", args, {
-    cwd: repoRoot,
-    timeout: GIT_TIMEOUT_MS,
-    maxBuffer: GIT_MAX_BUFFER,
-    env: { ...process.env, LC_ALL: "C" },
-  }).then((result) => result.stdout.trim());
+  return readGit(repoRoot, args, { timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER }).then((result) => result.stdout.trim());
 }
 
 // 只读 HEAD 与分支名：不走 collectGitSnapshot，避免命令期间工作区差异巨大时被 diff/status 的
@@ -39,11 +32,7 @@ type AncestorResult = "ancestor" | "not-ancestor" | "undetermined";
 // 不能当成"确定发生了切换/重置"处理，否则会把 git 自身故障误报成分支违规
 async function isAncestorCommit(repoRoot: string, ancestor: string, descendant: string): Promise<AncestorResult> {
   try {
-    await execFileAsync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
-      cwd: repoRoot,
-      timeout: GIT_TIMEOUT_MS,
-      env: { ...process.env, LC_ALL: "C" },
-    });
+    await readGit(repoRoot, ["merge-base", "--is-ancestor", ancestor, descendant], { timeout: GIT_TIMEOUT_MS });
     return "ancestor";
   } catch (error) {
     return (error as { code?: number }).code === 1 ? "not-ancestor" : "undetermined";

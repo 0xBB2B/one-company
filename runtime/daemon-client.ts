@@ -1,3 +1,4 @@
+import { controlToken } from "./daemon-auth.ts";
 import { closeSync, openSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -192,15 +193,16 @@ class SocketLink {
     this.pending = new Map();
     this.onEvent = onEvent;
     this.onClose = onClose;
-    socket.on("data", (chunk: Buffer) => this.handleData(chunk));
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => this.handleData(chunk));
     socket.on("error", (error: Error) => {
       this.lastErrorMessage = error.message;
     });
     socket.once("close", () => this.handleClose());
   }
 
-  private handleData(chunk: Buffer): void {
-    this.buffer += chunk.toString("utf8");
+  private handleData(chunk: string): void {
+    this.buffer += chunk;
     const { frames, rest } = decodeFrames(this.buffer);
     this.buffer = rest;
     for (const frame of frames) {
@@ -328,7 +330,7 @@ class DaemonClientImpl implements DaemonClient {
     this.link = link;
     let result: Record<string, unknown>;
     try {
-      result = await link.call("hello", this.ctx.helloParams);
+      result = await link.call("hello", { ...this.ctx.helloParams, authToken: controlToken(this.ctx.dataRoot) });
     } catch (error) {
       // 失败的这次握手在关闭协商完成前不摘掉监听器，其 socket 稍后触发的 close 事件会调用
       // handleDisconnect 误伤此后可能已建立好的新连接；这里提前摘监听器切断这条迟到的回调路径

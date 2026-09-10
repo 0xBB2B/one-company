@@ -1,9 +1,8 @@
 import { collectGitSnapshot } from "../runtime/git-snapshot.ts";
-import { execFile } from "node:child_process";
+import { readGit } from "../runtime/git-read.ts";
 import { EventEmitter } from "node:events";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { dirname, join, resolve as resolvePath, sep } from "node:path";
-import { promisify } from "node:util";
 import { createAgentSession, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type {
   AgentSession,
@@ -28,8 +27,6 @@ import { createGitCommitTool } from "../runtime/git-commit-tool.ts";
 import type { CommitPaths } from "../runtime/git-commit-tool.ts";
 import type { Host, ShellRegistry, StopResult } from "../runtime/shell-registry.ts";
 import type { Clock, TimerHandle } from "../runtime/clock.ts";
-
-const execFileAsync = promisify(execFile);
 
 export interface RoleSessionGuards {
   commit?: CommitPaths;
@@ -289,7 +286,7 @@ function isGitConfigBenignKey(key: string): boolean {
 
 async function gitCommand(cwd: string, args: string[]): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 10_000, env: { ...process.env, LC_ALL: "C" } });
+    const { stdout } = await readGit(cwd, args);
     return stdout.trim();
   } catch {
     // --global 在没有全局配置文件时以非零码退出；和"仓库外/未装 git"一样按空内容处理，
@@ -750,8 +747,8 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
           const tasks = shellRegistry.list().filter((task) => task.host.runId === options.runId);
           if (tasks.some((task) => ["starting", "running", "stopping", "uncertain"].includes(task.status))) throw new Error("Shell 操作仍未确认结束，不能解除核对阶段检查");
           const snapshot = await collectGitSnapshot({ repoRoot: options.cwd });
-          const status = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: options.cwd, timeout: 10_000 });
-          const diff = await execFileAsync("git", ["diff", "--no-ext-diff", "--no-textconv", "HEAD"], { cwd: options.cwd, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+          const status = await readGit(options.cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
+          const diff = await readGit(options.cwd, ["diff", "HEAD"], { maxBuffer: 8 * 1024 * 1024 });
           verifying = false;
           return { content: [{ type: "text", text: JSON.stringify({ snapshot, interruptedOperations: tasks.map((task) => ({ taskId: task.taskId, command: task.command, status: task.status, exitCode: task.exitCode })), status: status.stdout, diff: diff.stdout }) }], details: {} };
         },
@@ -936,7 +933,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     // 不能因为"已经终态"就假装这次清理是恒定的空操作
     if (isTerminal()) {
       const shellResults = await shellRegistry.stopHost(host);
-      const stopped = shellResults.every((entry) => entry.result.ok === true && entry.result.task.status !== "uncertain");
+      const stopped = activeTools.size === 0 && !prompting && shellResults.every((entry) => entry.result.ok === true && entry.result.task.status !== "uncertain");
       return { stopped, shellResults };
     }
     if (idleTimer) {
@@ -963,7 +960,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     await Promise.race([abortPromise, timeoutPromise]);
     if (timeoutTimer) options.clock.clearTimer(timeoutTimer);
 
-    const stopped = shellResults.every((entry) => entry.result.ok === true && entry.result.task.status !== "uncertain");
+    const stopped = activeTools.size === 0 && !prompting && shellResults.every((entry) => entry.result.ok === true && entry.result.task.status !== "uncertain");
     return { stopped, shellResults };
   }
 

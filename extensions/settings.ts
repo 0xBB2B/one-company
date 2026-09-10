@@ -1,7 +1,6 @@
-import { execFile } from "node:child_process";
+import { readGit } from "../runtime/git-read.ts";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { detectMcpAdapter, listMcpServers } from "../runtime/mcp.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
 import {
@@ -20,7 +19,6 @@ import type {
   SettingsTheme,
 } from "../runtime/settings-ui.ts";
 
-const execFileAsync = promisify(execFile);
 const THINKING_LEVEL_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function parseFrontmatterValue(raw: string): unknown {
@@ -63,11 +61,7 @@ function resolveAgentDir(env: NodeJS.ProcessEnv): string {
 
 async function resolveRepoRoot(cwd: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
-      cwd,
-      env: { ...process.env, LC_ALL: "C" },
-      timeout: 10_000,
-    });
+    const { stdout } = await readGit(cwd, ["rev-parse", "--show-toplevel"]);
     return stdout.trim();
   } catch {
     return cwd;

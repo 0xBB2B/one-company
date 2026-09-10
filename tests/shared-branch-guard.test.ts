@@ -2,7 +2,7 @@ import { uuidv7 } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -72,63 +72,6 @@ async function captureBranchSnapshot(repoRoot: string): Promise<BranchSnapshot> 
   const head = (await runGit(["rev-parse", "HEAD"], repoRoot)).trim();
   const rawBranch = (await runGit(["rev-parse", "--abbrev-ref", "HEAD"], repoRoot)).trim();
   return { head, branch: rawBranch === "HEAD" ? null : rawBranch };
-}
-
-// 假 git：rev-parse 走真实语义（固定值即可，snapshotBranchState 只关心 head/branch），
-// diff 故意喂超大输出——用来验证 snapshotBranchState 不该走到需要读 diff 内容的那条路径
-async function withHugeDiffFakeGit<T>(fn: () => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), "shared-branch-guard-huge-diff-"));
-  const scriptPath = join(dir, "git");
-  await writeFile(
-    scriptPath,
-    [
-      "#!/bin/sh",
-      'if [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then',
-      "  echo deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-      "  exit 0",
-      "fi",
-      'if [ "$1" = "rev-parse" ] && [ "$2" = "--abbrev-ref" ]; then',
-      "  echo main",
-      "  exit 0",
-      "fi",
-      'if [ "$1" = "status" ]; then',
-      "  exit 0",
-      "fi",
-      "head -c 70000000 /dev/zero",
-      "exit 0",
-      "",
-    ].join("\n"),
-  );
-  await chmod(scriptPath, 0o755);
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${dir}:${originalPath ?? ""}`;
-  try {
-    return await fn();
-  } finally {
-    process.env.PATH = originalPath;
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
-// 假 git：除 merge-base 外全部转交真实 git 执行，merge-base 固定按注入的退出码失败——
-// 用来把"git 判定非后代"（退出码 1）和"git 本身故障，判不出来"（如退出码 128/超时）区分开
-async function withMergeBaseExitCode<T>(exitCode: number, fn: () => Promise<T>): Promise<T> {
-  const realGitPath = (await execFileAsync("which", ["git"])).stdout.trim();
-  const dir = await mkdtemp(join(tmpdir(), "shared-branch-guard-mergebase-"));
-  const scriptPath = join(dir, "git");
-  await writeFile(
-    scriptPath,
-    ["#!/bin/sh", 'if [ "$1" = "merge-base" ]; then', `  exit ${exitCode}`, "fi", `exec "${realGitPath}" "$@"`, ""].join("\n"),
-  );
-  await chmod(scriptPath, 0o755);
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${dir}:${originalPath ?? ""}`;
-  try {
-    return await fn();
-  } finally {
-    process.env.PATH = originalPath;
-    await rm(dir, { recursive: true, force: true });
-  }
 }
 
 function runInput(requirement: string, cwd: string, task: string) {
@@ -258,9 +201,11 @@ describe("snapshotBranchState：只读 head/branch，不受工作区体量拖累
   test("边界：工作区差异体量巨大（超出常规 maxBuffer）时仍返回 head/branch 且不抛", async () => {
     const repo = await makeBranchedRepo();
 
-    const result = await withHugeDiffFakeGit(() => snapshotBranchState({ repoRoot: repo.root }));
+    const before = await captureBranchSnapshot(repo.root);
+    await writeFile(join(repo.root, "own.txt"), Buffer.alloc(65 * 1024 * 1024, "x"));
+    const result = await snapshotBranchState({ repoRoot: repo.root });
 
-    expect(result.head).toBe("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+    expect(result.head).toBe(before.head);
     expect(result.branch).toBe("main");
   }, 15_000);
 });
@@ -273,9 +218,9 @@ describe("verifyBranchState：merge-base 判定失败与不可判定的归因区
     await runGit(["add", "own.txt"], repo.root);
     await runGit(["commit", "-m", "own 正常推进"], repo.root);
 
-    const result = await withMergeBaseExitCode(128, () =>
-      verifyBranchState({ repoRoot: repo.root, before, activeHosts: ["window-other"] }),
-    );
+    // 不存在的对象使真实 Git 返回 128，不能误判为非祖先。
+    before.head = "f".repeat(40);
+    const result = await verifyBranchState({ repoRoot: repo.root, before, activeHosts: ["window-other"] });
 
     expect(result.violation).toBe(false);
     expect(result.changed).toBe(true);
@@ -290,9 +235,9 @@ describe("verifyBranchState：merge-base 判定失败与不可判定的归因区
     await runGit(["add", "own.txt"], repo.root);
     await runGit(["commit", "-m", "own 正常推进"], repo.root);
 
-    const result = await withMergeBaseExitCode(1, () =>
-      verifyBranchState({ repoRoot: repo.root, before, activeHosts: ["window-other"] }),
-    );
+    const unrelated = (await runGit(["commit-tree", "HEAD^{tree}", "-m", "independent root"], repo.root)).trim();
+    await runGit(["reset", "--hard", unrelated], repo.root);
+    const result = await verifyBranchState({ repoRoot: repo.root, before, activeHosts: ["window-other"] });
 
     expect(result.violation).toBe(true);
     expect((result as { undetermined?: boolean }).undetermined).toBeFalsy();

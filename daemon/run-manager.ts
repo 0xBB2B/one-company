@@ -860,40 +860,53 @@ export class RunManager {
     return { state: "running" };
   }
 
-  async stop(runId: string): Promise<{ state: string; confirmed: boolean }> {
+  async stop(runId: string): Promise<{ state: string; confirmed: boolean; reason?: string }> {
     this.waiting.delete(runId);
     const result = await this.runStore.get(runId);
     if (!result.ok) throw protocolError("not_found", `运行不存在: ${runId}`);
-    const run = result.run;
-    if (isTerminalState(run.state)) return { state: run.state, confirmed: true };
-
-    await this.runStore.update(runId, { state: "stopped" }).catch(() => {});
-    const stopped = await this.runStore.get(runId);
-    if (stopped.ok) {
-      this.emit("runs.changed", { run: stopped.run });
-      this.notifyParentOfChildTermination(stopped.run);
-      await this.relayQueue
-        .notify({ requirement: run.requirement, repoId: this.repoId, runId, kind: "stopped", message: `运行 ${runId} 已被用户停止` })
-        .catch(() => {});
+    let run = result.run;
+    let requested = false;
+    if (!isTerminalState(run.state)) {
+      try {
+        run = await this.runStore.update(runId, { state: "stopped" });
+        requested = true;
+      } catch (error) {
+        const latest = await this.runStore.get(runId);
+        if (!latest.ok || !isTerminalState(latest.run.state)) throw error;
+        run = latest.run;
+      }
+    }
+    if (requested) {
+      this.emit("runs.changed", { run });
+      this.notifyParentOfChildTermination(run);
     }
 
     const entry = this.sessions.get(runId);
-    if (entry) {
-      void entry.handle
-        .stop()
-        .catch(() => {})
-        .then(() => {
-          this.sessions.delete(runId);
-        });
+    // 会话和登记表分别接收停止请求；一方失败不阻止另一方清理。
+    const [sessionStop, shellStop, childrenStop] = await Promise.allSettled([
+      entry ? entry.handle.stop() : Promise.resolve({ stopped: true }),
+      this.shellRegistry.stopHost(taskHost(run)),
+      this.childrenOf(run).then((children) => Promise.all(children.map((child) => this.stop(child.id)))),
+    ]);
+    const reasons: string[] = [];
+    if (sessionStop.status === "rejected") reasons.push(`会话停止失败: ${String(sessionStop.reason)}`);
+    else if (!sessionStop.value.stopped) reasons.push("会话操作尚未确认停止");
+    if (shellStop.status === "rejected") reasons.push(`Shell 停止失败: ${String(shellStop.reason)}`);
+    else if (shellStop.value.some(({ result }) => !result.ok || !["exited", "stopped", "timed_out"].includes(result.task.status))) reasons.push("Shell 进程尚未确认停止");
+    if (childrenStop.status === "rejected") reasons.push(`子运行停止失败: ${String(childrenStop.reason)}`);
+    else if (childrenStop.value.some((child) => !child.confirmed)) reasons.push("子运行尚未确认停止");
+    const confirmed = reasons.length === 0;
+    if (confirmed && this.sessions.get(runId) === entry) this.sessions.delete(runId);
+    const state = run.state;
+    const reason = confirmed ? undefined : reasons.join("；");
+    if (state === "stopped") await this.runStore.update(runId, { stateReason: reason ?? "" });
+    const updated = await this.runStore.get(runId);
+    if (updated.ok) this.emit("runs.changed", { run: updated.run });
+    if (requested) {
+      await this.relayQueue.notify({ requirement: run.requirement, repoId: this.repoId, runId, kind: "stopped",
+        message: confirmed ? `运行 ${runId} 已确认停止` : `运行 ${runId} 已接受停止请求；${reason}` }).catch(() => {});
     }
-    // 会话持有的宿主是否真的收到停止请求不依赖 handle.stop() 内部实现是否抛错，
-    // 独立向登记表发起一次停止确保该宿主的 Shell 任务不被漏掉
-    void this.shellRegistry.stopHost(taskHost(run)).catch(() => {});
-
-    const children = (await this.childrenOf(run)).filter((candidate) => !isTerminalState(candidate.state));
-    for (const child of children) await this.stop(child.id).catch(() => {});
-
-    return { state: "stopped", confirmed: true };
+    return { state, confirmed, ...(reason ? { reason } : {}) };
   }
 
   async pauseAll(): Promise<{ results: Array<{ runId: string; state: string; confirmed: boolean; reason?: string }> }> {
@@ -921,7 +934,7 @@ export class RunManager {
   async stopAll(): Promise<{ results: Array<{ runId: string; state: string; confirmed: boolean }> }> {
     const page = await this.runStore.list({ limit: Number.MAX_SAFE_INTEGER });
     const topLevel = page.items.filter(
-      (run) => !isTerminalState(run.state) && (run.kind === "requirement" || run.parentRunId === undefined),
+      (run) => (!isTerminalState(run.state) || (run.state === "stopped" && Boolean(run.stateReason))) && (run.kind === "requirement" || run.parentRunId === undefined),
     );
     const results: Array<{ runId: string; state: string; confirmed: boolean }> = [];
     for (const run of topLevel) results.push({ runId: run.id, ...(await this.stop(run.id)) });
@@ -1215,7 +1228,7 @@ export class RunManager {
     const current = await this.runStore.get(runId);
     if (!current.ok) return;
     if (isTerminalState(current.run.state)) {
-      this.sessions.delete(runId);
+      if (current.run.state !== "stopped") this.sessions.delete(runId);
       return;
     }
 
@@ -1253,9 +1266,9 @@ export class RunManager {
       await this.runStore.update(runId, { errorDetails: detail.saved ? { status: "saved", recordId: detail.recordId } : { status: "unavailable" } });
     }
 
-    this.sessions.delete(runId);
     const updated = await this.runStore.get(runId);
     if (updated.ok) {
+      if (updated.run.state !== "stopped") this.sessions.delete(runId);
       this.emit("runs.changed", { run: updated.run });
       if (isTerminalState(updated.run.state)) {
         this.notifyParentOfChildTermination(updated.run);

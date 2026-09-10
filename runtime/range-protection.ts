@@ -1,5 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { gitExecutable, readGit as queryGit, readGitBytes } from "./git-read.ts";
 import { commandBoundary, sandboxLaunch } from "./command-boundary.ts";
 import { lstat, realpath, rm, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
@@ -8,7 +7,7 @@ import { RangeClaims, fingerprint, verifyFingerprint } from "./ranges.ts";
 import type { Holder } from "./ranges.ts";
 import { RunStore } from "./run-store.ts";
 import { currentBootId, processStartedAt, WindowRegistry } from "./windows.ts";
-import { resolveRealRepoPath, snapshotForeignRanges, verifyAfterCommand, invalidateValidations } from "./write-guard.ts";
+import { resolveRealRepoPath, snapshotForeignRanges, changedForeignRanges, invalidateValidations } from "./write-guard.ts";
 import { activeForeignHosts, scopedCommitPaths, snapshotBranchState, verifyBranchState } from "./branch-guard.ts";
 import { createManagedBashOperations } from "./shell-bash.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
@@ -21,7 +20,7 @@ export async function createRangeProtection(input: {
   cwd: string; dataRoot: string; holder: Holder; writePaths: string[]; clock: Clock; shells: ShellRegistry;
 }) {
   const identity = await repositoryIdentity(input.cwd);
-  const gitDir = await realpath((await promisify(execFile)("git", ["rev-parse", "--absolute-git-dir"], { cwd: input.cwd })).stdout.trim());
+  const gitDir = await realpath((await queryGit(input.cwd, ["rev-parse", "--absolute-git-dir"])).stdout.trim());
   const repoDir = await repoDataDir(input.dataRoot, identity.repoId, identity.commonDir);
   const windows = new WindowRegistry({ repoDir, clock: input.clock, bootId: currentBootId, processStartedAt });
   const runs = new RunStore({ dataRoot: input.dataRoot, repoId: identity.repoId, daemonStartedAt: "range-check" });
@@ -48,15 +47,19 @@ export async function createRangeProtection(input: {
     if (!granted.granted) throw new Error(granted.reason);
     for (const path of desired) owned.set(path, granted.claimId);
   }
-  async function violation(paths: string[]) {
+  async function invalidateChangedRanges(paths: string[]) {
     if (paths.length === 0) return;
-    const reason = `命令越界或现场核对失败: ${paths.join("、")}`;
+    const reason = `工作区文件已变化: ${paths.join("、")}`;
     const requirements = new Set<string>();
     for (const path of paths) {
       const owner = await claims.holderOf(path).catch(() => null);
       if (owner?.requirement) requirements.add(owner.requirement);
     }
     for (const requirement of requirements) await invalidateValidations({ workflowCtx: { dataRoot: input.dataRoot, cwd: input.cwd, requirement }, reason });
+  }
+  async function violation(paths: string[]) {
+    if (paths.length === 0) return;
+    const reason = `命令越界或现场核对失败: ${paths.join("、")}`;
     if (input.holder.runId) {
       const found = await runs.get(input.holder.runId);
       if (!found.ok) throw new Error("违规运行记录不可读");
@@ -66,11 +69,6 @@ export async function createRangeProtection(input: {
   const scratchPaths = new Set<string>();
   let commitsInFlight = 0;
   const gitPaths = [identity.commonDir, gitDir, join(input.cwd, ".git")];
-  let gitExecutable: Promise<string> | undefined;
-  const executable = () => gitExecutable ??= (async () => {
-    if (process.platform !== "darwin") throw new Error("此平台尚无可用的命令文件隔离后端");
-    return realpath((await promisify(execFile)("/usr/bin/xcrun", ["--find", "git"])).stdout.trim());
-  })();
   const foreignHosts = () => activeForeignHosts({ runStore: runs, windows, windowId: input.holder.windowId ?? "daemon", runId: input.holder.runId ?? "" });
   async function boundary() {
     const foreignPaths = (await claims.entries()).filter((claim) => claim.holder.runId !== input.holder.runId || claim.holder.windowId !== input.holder.windowId).flatMap((claim) => claim.paths);
@@ -80,12 +78,7 @@ export async function createRangeProtection(input: {
     return result;
   }
   async function readGit(args: string[]) {
-    const limits = await boundary();
-    limits.writeRoots = [limits.scratch];
-    limits.deniedWrites.push(...gitPaths);
-    const launch = sandboxLaunch("", limits, { path: await executable(), args });
-    const result = await promisify(execFile)(launch.command, launch.args, { cwd: input.cwd, env: launch.env, timeout: 10_000, maxBuffer: 64 * 1024 * 1024, encoding: "buffer" });
-    return result.stdout;
+    return (await readGitBytes(input.cwd, args)).stdout;
   }
   const readChanges = async () => parseChangedEntries(await readGit(["status", "--porcelain=v1", "-z", "-uall"]));
   const commandGuard: BashCommandGuard = {
@@ -104,7 +97,8 @@ export async function createRangeProtection(input: {
     },
     async after(raw) {
       const token = raw as { snapshot: Record<string, string>; branch: Awaited<ReturnType<typeof snapshotBranchState>> };
-      const paths = await verifyAfterCommand({ repoRoot: input.cwd, claims, holder: input.holder, snapshot: token.snapshot, changedPaths: (await readChanges()).flatMap((entry) => entry.paths) });
+      await invalidateChangedRanges(await changedForeignRanges({ repoRoot: input.cwd, claims, holder: input.holder, snapshot: token.snapshot, changedPaths: (await readChanges()).flatMap((entry) => entry.paths) }));
+      const paths: string[] = [];
       const hosts = await activeForeignHosts({ runStore: runs, windows, windowId: input.holder.windowId ?? "daemon", runId: input.holder.runId ?? "" });
       const branch = await verifyBranchState({ repoRoot: input.cwd, before: token.branch, activeHosts: hosts });
       if (branch.violation || branch.undetermined) paths.push("分支现场变化或无法核对");
@@ -153,7 +147,7 @@ export async function createRangeProtection(input: {
           const checked = await checkWrite(path);
           if (!checked.ok) throw new Error(checked.reason);
         }
-        const git = await executable();
+        const git = await gitExecutable();
         const host = { kind: input.holder.kind, id: input.holder.runId ?? input.holder.windowId!, runId: input.holder.runId };
         const tracked = new Set((await readGit(["ls-files", "-z"])).toString().split("\0"));
         const stagePaths: string[] = [];

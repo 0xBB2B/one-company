@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "../runtime/protocol.ts";
 import { testRepoId } from "./helpers/database-fixture.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
@@ -924,7 +925,7 @@ describe("协议处理器接入：hello 后的中继待办推送", () => {
       });
       const helloResult = await secondClient.call("hello", {
         windowId: "second-window", pid: process.pid, sessionId: "second-session",
-        cwd: fixture.repo.root, workspaceRoot: fixture.repo.root, repoIds: [fixture.repoId], protocolVersion: 1,
+        cwd: fixture.repo.root, workspaceRoot: fixture.repo.root, repoIds: [fixture.repoId], protocolVersion: PROTOCOL_VERSION,
       });
       extraClients.push({ ...secondClient, helloResult });
       await pushedAfterHello;

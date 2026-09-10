@@ -1,3 +1,4 @@
+import { readGit } from "./git-read.ts";
 import { fingerprint } from "./ranges.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -118,7 +119,7 @@ export async function verifyTaskDelivery(input: { run: RunRecord; execute(comman
   if (recorded.requirement !== run.requirement || recorded.task !== run.task || recorded.cwd !== await realpath(run.cwd) ||
     recorded.workspaceContent !== await workspaceContent(run)) throw new Error("交付版本或工作现场已变化，须重新核对交付");
   if (recorded.codeHead !== current.codeHead) {
-    await execFileAsync("git", ["merge-base", "--is-ancestor", String(recorded.codeHead), current.codeHead], { cwd: run.cwd });
+    await readGit(run.cwd, ["merge-base", "--is-ancestor", String(recorded.codeHead), current.codeHead]);
   }
   const task = await readTaskDefinition(run.cwd, run.requirement, run.task);
   const root = await realpath(run.cwd);
@@ -140,7 +141,7 @@ export async function verifyTaskDelivery(input: { run: RunRecord; execute(comman
   if (changes.some((path) => [...allowed, ...task.files.map((file) => resolve(root, file))].some((scope) => within(resolve(root, path), scope)))) throw new Error("获准范围仍有未提交改动，请经正常提交入口提交交付文件后再核验");
   if (result.changedFiles.length === 0 && (result.workState !== "green-baseline-no-change" || result.preexistingEvidence.length === 0)) throw new Error("无改动交付缺少既有行为证据");
   if (result.changedFiles.length > 0) {
-    const committed = (await execFileAsync("git", ["diff", "--name-only", String(run.sourceVersion?.codeHead ?? recorded.codeHead), current.codeHead], { cwd: root })).stdout.split("\n").filter(Boolean);
+    const committed = (await readGit(root, ["diff", "--name-only", String(run.sourceVersion?.codeHead ?? recorded.codeHead), current.codeHead])).stdout.split("\n").filter(Boolean);
     if (result.changedFiles.some((path) => !committed.some((file) => resolve(root, file) === resolve(root, path)))) throw new Error("提交未包含声明的交付改动");
   }
   await input.execute(task.verify);

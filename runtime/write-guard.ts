@@ -61,7 +61,8 @@ export async function snapshotForeignRanges(input: {
   return fingerprint(input.repoRoot, foreign);
 }
 
-export async function verifyAfterCommand(input: {
+// 文件变化用于使旧证据失效；共享工作区的变化不能归责于某个并行命令。
+export async function changedForeignRanges(input: {
   repoRoot: string;
   claims: RangeClaims;
   holder: Holder;

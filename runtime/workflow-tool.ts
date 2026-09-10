@@ -1,9 +1,8 @@
 import { collectGitSnapshot } from "./git-snapshot.ts";
-import { execFile } from "node:child_process";
+import { readGit } from "./git-read.ts";
 import { createHash } from "node:crypto";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
-import { promisify } from "node:util";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { repositoryIdentity, requirementIdentity } from "./identity.ts";
@@ -24,8 +23,6 @@ import {
   updateTaskFields,
 } from "./workflow-state.ts";
 import type { ActionResult, DefinitionVersion, RequirementShape, RequirementState, WorkflowContext } from "./workflow-state.ts";
-
-const execFileAsync = promisify(execFile);
 
 const PARAMETERS = Type.Object(
   {
@@ -143,7 +140,7 @@ async function listRequirements(
 }
 
 async function gitOutput(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd, timeout: 10_000, env: { ...process.env, LC_ALL: "C" } });
+  const { stdout } = await readGit(cwd, args);
   return stdout.trim();
 }
 

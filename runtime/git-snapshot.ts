@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { execFile } from "node:child_process";
+import { readGitBytes } from "./git-read.ts";
 import { createHash } from "node:crypto";
 import { lstat, readlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -39,21 +39,13 @@ function normalizeGitError(
   return new Error("git 命令执行失败，请核对仓库状态");
 }
 
-function runGit(cwd: string, args: string[], signal: AbortSignal | undefined, timeoutMs: number, maxBuffer: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      args,
-      { cwd, timeout: timeoutMs, maxBuffer, encoding: "buffer", env: { ...process.env, LC_ALL: "C" }, signal },
-      (error, stdout, stderr) => {
-        if (error) {
-          reject(normalizeGitError(error as NodeJS.ErrnoException & { killed?: boolean }, signal, stderr as unknown as Buffer));
-          return;
-        }
-        resolve(stdout as unknown as Buffer);
-      },
-    );
-  });
+async function runGit(cwd: string, args: string[], signal: AbortSignal | undefined, timeoutMs: number, maxBuffer: number): Promise<Buffer> {
+  try {
+    return (await readGitBytes(cwd, args, { signal, timeout: timeoutMs, maxBuffer })).stdout;
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { killed?: boolean; stderr?: Buffer };
+    throw normalizeGitError(failure, signal, failure.stderr ?? Buffer.alloc(0));
+  }
 }
 
 function hashSegment(hash: ReturnType<typeof createHash>, segment: Buffer): void {

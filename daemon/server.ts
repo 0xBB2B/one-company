@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import {
@@ -33,6 +34,7 @@ export type MethodHandler = (
 ) => Promise<Record<string, unknown>> | Record<string, unknown>;
 
 export interface DaemonServerOptions {
+  authToken: string;
   repoId: string;
   startedAt: string;
   onActivity?: () => void;
@@ -106,8 +108,9 @@ export class DaemonServer {
     const client: ClientConnection = { socket, info: null, buffer: "" };
     this.connections.add(client);
     this.options.onActivity?.();
-    socket.on("data", (chunk: Buffer) => {
-      client.buffer += chunk.toString("utf8");
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      client.buffer += chunk;
       const { frames, rest } = decodeFrames(client.buffer);
       client.buffer = rest;
       for (const frame of frames) {
@@ -141,6 +144,12 @@ export class DaemonServer {
 
   private async handleHello(client: ClientConnection, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     assertProtocolVersion(params.protocolVersion as number);
+    client.info = null;
+    const token = Buffer.from(typeof params.authToken === "string" ? params.authToken : "");
+    const expected = Buffer.from(this.options.authToken);
+    if (token.length !== expected.length || token.length === 0 || !timingSafeEqual(token, expected)) {
+      throw Object.assign(new Error("控制连接认证失败"), { code: "unauthorized" });
+    }
     client.info = {
       windowId: params.windowId as string,
       pid: params.pid as number,

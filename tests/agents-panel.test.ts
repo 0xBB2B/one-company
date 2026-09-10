@@ -1031,3 +1031,18 @@ describe("selectedRunId/selectRun 用于查看页关闭后恢复选中", () => {
     expect(["run-0", "run-1", "run-2"]).toContain(panel.selectedRunId());
   });
 });
+
+test("停止回执 confirmed:false 显示未确认原因", async () => {
+  const clock = createClock({ timeSource: createFakeTimeSource() });
+  const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+  pushRun(activity, REPO_A.repoId, runFixture({ id: "run-stop", state: "running" }));
+  const controllable = createControllableClient();
+  const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: controllable }), onView: () => {} });
+  panel.handleInput(KEY.right);
+  panel.handleInput(KEY.enter);
+  expect(controllable.calls[0]?.method).toBe("runs.stop");
+  controllable.resolveLast({ state: "stopped", confirmed: false, reason: "Shell 进程尚未确认停止" });
+  await flushMicrotasks();
+  expect(activity.notice()?.message).toContain("停止未确认");
+  expect(activity.notice()?.message).toContain("Shell 进程尚未确认停止");
+});

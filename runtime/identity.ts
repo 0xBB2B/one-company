@@ -1,12 +1,9 @@
-import { execFile } from "node:child_process";
+import { readGit } from "./git-read.ts";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { promisify } from "node:util";
 
 import { repositoryDatabase, withDatabase } from "./database.ts";
-
-const execFileAsync = promisify(execFile);
 
 export interface RepositoryIdentity {
   repoId: string;
@@ -47,11 +44,7 @@ function gitFailure(error: unknown, dir: string): Error {
 
 // 判定依赖 git 的英文文案，所以固定子进程的 locale
 async function git(args: string[], dir: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, {
-    cwd: dir,
-    timeout: 10_000,
-    env: { ...process.env, LC_ALL: "C" },
-  });
+  const { stdout } = await readGit(dir, args);
   return stdout;
 }
 

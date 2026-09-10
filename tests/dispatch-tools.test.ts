@@ -218,8 +218,7 @@ async function setupNestedRepoWorld(): Promise<RepoWorld> {
 
 type Raced<T> = { kind: "resolved"; value: T; elapsedMs: number } | { kind: "timedOut" };
 
-// 与被测 promise 赛跑而非死等：实现尚未接线中止/超时时，避免测试为等一个真实卡住的
-// 子进程而无限期占着共享的 process.env.PATH，殃及同进程里随后运行的其他用例
+// 限制测试等待时间，及时报告子进程的中止或超时未生效。
 async function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<Raced<T>> {
   const start = Date.now();
   return Promise.race([
@@ -715,33 +714,25 @@ describe("review 派出提交前白盒审查者", () => {
     async () => {
       const world = await setupRepoWorld();
       const workspace = buildWorkspace([world]);
-      const fakeGitDir = await mkdtemp(join(tmpdir(), "pi-company-fake-git-"));
-      plainDirs.push(fakeGitDir);
-      await writeFile(join(fakeGitDir, "git"), "#!/bin/sh\nsleep 5\n");
-      await chmod(join(fakeGitDir, "git"), 0o755);
+      const blockedConfig = join(world.repo.root, "blocked-config");
+      await execFileAsync("mkfifo", [blockedConfig]);
+      await execFileAsync("git", ["config", "include.path", blockedConfig], { cwd: world.repo.root, env: RAW_GIT_ENV });
       const daemon = createFakeDaemonClient({ "dispatch.review": () => ({ id: "review-1" }) });
       const clients = createFakeWorkspaceClients({ [world.identity.repoId]: daemon.client });
-      const originalPath = process.env.PATH;
 
-      // 与实现是否真的取消挂起的 git 子进程赛跑而不是死等，防止未实现时 process.env.PATH
-      // 的还原被无限期拖延，进而污染同一进程里随后运行的其他用例
+      // 命名管道使真实 Git 阻塞在配置读取，取消必须终止受管进程。
       const raced = await withTempEnv(world.home, async () => {
         const tool = findTool(registerTools(clients, workspace), "pi_company_review");
         const controller = new AbortController();
-        process.env.PATH = `${fakeGitDir}:${originalPath ?? ""}`;
-        try {
-          const promise = tool.execute(
-            "call-1",
-            { requirement: REQUIREMENT, cwd: world.repo.root, baseline: "main" },
-            controller.signal,
-            undefined,
-            fakeCtx({ cwd: world.repo.root }),
-          );
-          controller.abort();
-          return await raceWithTimeout(promise, 1500);
-        } finally {
-          process.env.PATH = originalPath;
-        }
+        const promise = tool.execute(
+          "call-1",
+          { requirement: REQUIREMENT, cwd: world.repo.root, baseline: "main" },
+          controller.signal,
+          undefined,
+          fakeCtx({ cwd: world.repo.root }),
+        );
+        controller.abort();
+        return await raceWithTimeout(promise, 1500);
       });
 
       expect(raced.kind).toBe("resolved");
@@ -763,30 +754,23 @@ describe("review 派出提交前白盒审查者", () => {
     async () => {
       const world = await setupRepoWorld();
       const workspace = buildWorkspace([world]);
-      const fakeGitDir = await mkdtemp(join(tmpdir(), "pi-company-fake-git-timeout-"));
-      plainDirs.push(fakeGitDir);
-      await writeFile(join(fakeGitDir, "git"), "#!/bin/sh\nsleep 3\n");
-      await chmod(join(fakeGitDir, "git"), 0o755);
+      const blockedConfig = join(world.repo.root, "blocked-config");
+      await execFileAsync("mkfifo", [blockedConfig]);
+      await execFileAsync("git", ["config", "include.path", blockedConfig], { cwd: world.repo.root, env: RAW_GIT_ENV });
       const daemon = createFakeDaemonClient({ "dispatch.review": () => ({ id: "review-1" }) });
       const clients = createFakeWorkspaceClients({ [world.identity.repoId]: daemon.client });
-      const originalPath = process.env.PATH;
 
-      // 同上：与注入的 gitTimeoutMs 是否真的生效赛跑，避免未接线时长时间占用 PATH
+      // 限制等待时间，以验证 Git 配置读取阻塞时的超时回执。
       const raced = await withTempEnv(world.home, async () => {
         const tool = findTool(registerTools(clients, workspace, { gitTimeoutMs: 500 }), "pi_company_review");
-        process.env.PATH = `${fakeGitDir}:${originalPath ?? ""}`;
-        try {
-          const promise = tool.execute(
-            "call-1",
-            { requirement: REQUIREMENT, cwd: world.repo.root, baseline: "main" },
-            undefined,
-            undefined,
-            fakeCtx({ cwd: world.repo.root }),
-          );
-          return await raceWithTimeout(promise, 2500);
-        } finally {
-          process.env.PATH = originalPath;
-        }
+        const promise = tool.execute(
+          "call-1",
+          { requirement: REQUIREMENT, cwd: world.repo.root, baseline: "main" },
+          undefined,
+          undefined,
+          fakeCtx({ cwd: world.repo.root }),
+        );
+        return await raceWithTimeout(promise, 2500);
       });
 
       expect(raced.kind).toBe("resolved");

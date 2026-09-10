@@ -50,10 +50,11 @@ export function sandboxLaunch(command: string, boundary: CommandBoundary, execut
     "(version 1)", "(allow default)",
     `(deny file-read-data (require-all (require-any ${subpaths(["/Users", "/private/tmp", "/private/var/folders", "/Volumes", "/home", "/root", "/mnt", "/media"])}) (require-not (require-any ${subpaths(boundary.readRoots)} ${[...ancestors].map((path) => `(literal ${JSON.stringify(path)})`).join(" ")}))))`,
     "(deny file-write*)",
+    ...boundary.deniedReads.map((path) => `(deny network-outbound (remote unix-socket (subpath ${JSON.stringify(path)})))`),
     `(allow file-write* ${subpaths(boundary.writeRoots)} (literal "/dev/null") (literal "/dev/tty"))`,
     ...(boundary.deniedReads.length ? [`(deny file-read* ${subpaths(boundary.deniedReads)})`] : []),
     ...(boundary.deniedWrites.length ? [`(deny file-write* ${subpaths(boundary.deniedWrites)})`] : []),
-    ...(executable ? [`(deny process-exec (require-not (literal ${JSON.stringify(executable.path)})))`] : []),
+    ...(executable ? ["(deny network*)", `(deny process-exec (require-not (literal ${JSON.stringify(executable.path)})))`] : []),
   ].join("\n");
   const env = Object.fromEntries(["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "GIT_CEILING_DIRECTORIES"].flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
   return { inheritEnv: false, command: "/usr/bin/sandbox-exec", args: ["-p", profile, ...(executable ? [executable.path, ...executable.args] : ["/bin/sh", "-c", command])], env: { ...env, GIT_OPTIONAL_LOCKS: "0", TMPDIR: boundary.scratch, TMP: boundary.scratch, TEMP: boundary.scratch } };

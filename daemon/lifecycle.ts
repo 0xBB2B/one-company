@@ -1,3 +1,4 @@
+import { controlToken } from "../runtime/daemon-auth.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { link, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
@@ -376,6 +377,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   let idleExit: IdleExit | undefined;
   let ready = false;
   const server = new DaemonServer({
+    authToken: controlToken(options.dataRoot),
     repoId,
     startedAt,
     onActivity: () => idleExit?.touch(),

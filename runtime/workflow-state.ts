@@ -2,16 +2,13 @@ import { checkAcceptanceReport } from "./delivery.ts";
 import { verifyFingerprint } from "./ranges.ts";
 import { ACCEPTANCE_SCHEMA, REVIEW_SCHEMA, WORK_SCHEMA, validateResult } from "./result.ts";
 import type { AcceptanceResult } from "./result.ts";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { readGit } from "./git-read.ts";
 import { inspectDecision } from "./decisions.ts";
 import { repositoryIdentity, requirementIdentity } from "./identity.ts";
 import { isTerminalState, RunStore } from "./run-store.ts";
 import type { RunRecord, RunState } from "./run-store.ts";
 import { createRecord, readRecord, StaleVersionError, writeRecord, putRecord, repositoryDatabase, withDatabase } from "./database.ts";
 import type { RecordRef, LocalDatabase } from "./database.ts";
-
-const execFileAsync = promisify(execFile);
 
 export interface WorkflowContext {
   dataRoot: string;
@@ -581,10 +578,7 @@ const COMMIT_SHA_PATTERN = /^[0-9a-f]{7,40}$/;
 
 async function commitExists(cwd: string, commit: string): Promise<boolean> {
   try {
-    await execFileAsync("git", ["rev-parse", "--verify", "--end-of-options", `${commit}^{commit}`], {
-      cwd,
-      timeout: 10_000,
-    });
+    await readGit(cwd, ["rev-parse", "--verify", "--end-of-options", `${commit}^{commit}`]);
     return true;
   } catch {
     return false;
