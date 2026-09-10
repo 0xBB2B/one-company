@@ -212,10 +212,10 @@ export function buildRequirementAgentPrompt(input: {
     `## 可用角色目录\n${catalogList.length > 0 ? catalogList : "无可用角色"}`,
     [
       "## 工具使用规则",
-      "- 先完成规划前检并在 AI 决定 effects 记录 planning-preflight，可在 confirmed 阶段派 planner，仅写本需求 tasks 目录；实施前经 pi_company_propose_shape 确认任务集与门禁。形状默认含白盒审查与黑盒验收。",
+      "- 先完成规划前检并在 AI 决定 effects 记录 planning-preflight，可在 confirmed 阶段派 planner，仅写本需求 tasks 目录；实施前经 pi_company_propose_shape 确认任务集与阶段检查。形状默认含白盒审查与黑盒验收。",
       "- 规划运行通过核验后经 pi_company_workflow 的 advance 推进到 planned；形状确认回执携带规划运行编号，确认后按当前阶段推进到 executing，已到达的阶段无需重复推进。",
       "- 状态推进、任务登记、后续问题记录只经 pi_company_workflow。",
-      "- 门禁未通过时先记录 AI 归因与修复路径，effects 包含 repair:review 或 repair:acceptance；三轮仍失败时报告技术阻塞并停止，不主动询问技术解法。用户明确要求新一轮时，提问记录 repairGate 与 repairRound，不重置原轮次。",
+      "- 阶段检查未通过时先记录 AI 归因与修复路径，effects 包含 repair:review 或 repair:acceptance；三轮仍失败时报告技术阻塞并停止，不主动询问技术解法。用户明确要求新一轮时，提问记录 repairGate 与 repairRound，不重置原轮次。",
       "- 需要用户决策时只经 pi_company_ask 提问。",
       "- 补充需求改变已确认的任务集或形状时须重新提议并等待确认，否则直接并入当前执行。",
       "- 归因为独立问题的条目只经 pi_company_workflow 的 update.followUpIssues 写入后续问题清单，不新增任务、不触发重新提议。",
@@ -447,7 +447,7 @@ export function registerAskTool(pi: ExtensionAPI, ctx: RequirementAgentToolConte
     description: "就产品或方案决策向用户提问并阻塞等待答复",
     parameters: ASK_PARAMETERS,
     async execute(_toolCallId, params, signal) {
-      if ((params.repairGate === undefined) !== (params.repairRound === undefined)) throw new Error("返修门禁与轮次必须同时提供");
+      if ((params.repairGate === undefined) !== (params.repairRound === undefined)) throw new Error("返修阶段检查与轮次必须同时提供");
       if (params.repairGate && params.contractChange) throw new Error("返修授权与契约变更必须分别提问");
       const options = params.repairGate ? [
         { label: "继续返修", description: `授权 ${params.repairGate} 第 ${params.repairRound} 轮返修` },
@@ -502,14 +502,14 @@ function describeShapeForConfirmation(params: {
   const gateLines = Object.entries(params.gates)
     .map(([gate, enabled]) => `${gate}: ${enabled ? "启用" : "跳过"}`)
     .join("、");
-  return `请确认以下工作流形状：\n${taskLines}\n门禁：${gateLines}\n理由：${params.rationale}`;
+  return `请确认以下工作流形状：\n${taskLines}\n阶段检查：${gateLines}\n理由：${params.rationale}`;
 }
 
 export function registerProposeShapeTool(pi: ExtensionAPI, ctx: RequirementAgentToolContext): void {
   pi.registerTool({
     name: "pi_company_propose_shape",
     label: "提议工作流形状",
-    description: "校验并提议任务集与门禁声明，经用户确认后记录为已确认形状",
+    description: "校验并提议任务集与阶段检查声明，经用户确认后记录为已确认形状",
     parameters: PROPOSE_SHAPE_PARAMETERS,
     async execute(_toolCallId, params, signal) {
       const validation = await validateProposedShape(params, ctx);
@@ -554,7 +554,7 @@ export function registerProposeShapeTool(pi: ExtensionAPI, ctx: RequirementAgent
               requirement: ctx.requirement,
               actor: "user",
               source: "requirement-agent",
-              trigger: `跳过门禁 ${gate}`,
+              trigger: `跳过阶段检查 ${gate}`,
               decision: `确认跳过 ${gate}`,
               alternatives: [],
               effects: ["gate"],
@@ -588,7 +588,7 @@ export function registerProposeShapeTool(pi: ExtensionAPI, ctx: RequirementAgent
             actor: "user",
             source: "requirement-agent",
             trigger: "确认形状",
-            decision: "确认任务集与门禁声明",
+            decision: "确认任务集与阶段检查声明",
             alternatives: [],
             effects: ["scope"],
             impact: params.rationale,

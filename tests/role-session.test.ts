@@ -976,7 +976,7 @@ describe("暂停与恢复", () => {
     expect(hasBareSpaceUserMessage(home.dataRoot, repoId, runId)).toBe(false);
   }, 20000);
 
-  test("恢复核对工具实际读取现场后才解除写入门禁", async () => {
+  test("恢复核对工具实际读取现场后才解除写入阶段检查", async () => {
     const { runtime, provider } = await setupProvider("role-session-pause-verify-gate");
     const home = await createTempHome();
     tempHomes.push(home);

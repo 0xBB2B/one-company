@@ -51,7 +51,7 @@ description: 写入范围与共享 Git 保护：文件隔离、命令前后核�
 - `tests/integration/default-workflow.test.ts`：默认角色经真实 SDK 和 RunManager 调用受管提交，再独立复跑、审查与验收；模型回复受控。
 - `tests/integration/sdk-loading.test.ts`：真实 SDK 从扩展入口加载提交工具。
 - `tests/shared-branch-guard.test.ts` 与 `tests/write-guard.test.ts`：范围、指纹、失效证据及分支快照辅助行为；测试中直接执行不受管 Git 的事后判定不能代替生产入口的预防性验证。
-- `tests/shell-bash-tool.test.ts`、`tests/role-session.test.ts`、`tests/run-manager.test.ts`：命令失败、中止、后台、会话门禁与运行生命周期。
+- `tests/shell-bash-tool.test.ts`、`tests/role-session.test.ts`、`tests/run-manager.test.ts`：命令失败、中止、后台、会话阶段检查与运行生命周期。
 
 ## 状态
 

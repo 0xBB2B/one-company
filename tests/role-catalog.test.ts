@@ -563,7 +563,7 @@ describe("边界输入不静默降级", () => {
     expect(byName.get("worker")).toBe("按任务文件与验证约定先写可信失败测试，再以最小实现通过，自验收后提交工作裁决");
     expect(byName.get("reviewer")).toBe("对整个分支做一次只读白盒审查，安全与鲁棒优先，再核对验收到测试与实现的可追踪关系");
     expect(byName.get("acceptance")).toBe("只依据规则文件在真实环境执行黑盒验收，写入指定报告并提交验收裁决");
-    expect(byName.get("requirement-agent")).toBe("持有单个需求的完整上下文，负责规划、提议工作流形状、派出角色、核对交付并推进门禁");
+    expect(byName.get("requirement-agent")).toBe("持有单个需求的完整上下文，负责规划、提议工作流形状、派出角色、核对交付并推进阶段检查");
     for (const role of roles) expect(role.definition?.name).toBe(role.name);
   });
 });
@@ -586,7 +586,7 @@ describe("不可用原因不回显文件内容", () => {
   });
 });
 
-describe("项目层角色定义的宿主信任门禁", () => {
+describe("项目层角色定义的宿主信任阶段检查", () => {
   async function setupLayers() {
     const root = await mkdtemp(join(tmpdir(), "pi-company-role-catalog-"));
     tempRoots.push(root);

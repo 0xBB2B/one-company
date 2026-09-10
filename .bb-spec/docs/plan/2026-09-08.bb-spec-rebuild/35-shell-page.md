@@ -1,16 +1,16 @@
 ---
 name: shell-page
-description: Shell 状态与列表：汇总文本写入宿主状态栏（不可聚焦、不拦按键）；/ps 管理页在输入栏位置列出本窗口与工作区守护进程的每条 Shell，只读详情、K 停止确认、不确定任务的用户裁定
+description: Shell 状态与列表：汇总文本写入宿主状态栏（不可聚焦、不拦按键）；/pi-company:ps 管理页在输入栏位置列出本窗口与工作区守护进程的每条 Shell，只读详情、K 停止确认、不确定任务的用户裁定
 ---
 # Shell 状态与列表
 
 ## 目标
-用户在原状态栏随时看到当前有多少 Shell 在跑、分别属于谁；通过 /ps 在输入栏位置查看每一条 Shell，看清归属，精确停止选定任务，并对清理无法确认的任务作出裁定。
+用户在原状态栏随时看到当前有多少 Shell 在跑、分别属于谁；通过 /pi-company:ps 在输入栏位置查看每一条 Shell，看清归属，精确停止选定任务，并对清理无法确认的任务作出裁定。
 
 ## 业务规则（来源：spec）
 - status-entry：当前有活动 Shell 时在原状态栏显示汇总，统计本窗口主会话与本工作区守护进程内全部等待结果及后台运行任务，按主 agent 与角色汇总；一个命令及其后代只计一个 Shell，工作区外和已确认结束的任务不计入；格式为"shell：总数 · 主 agent：数量 · 角色：数量"，同角色子运行合计。
 - status-entry：状态读取失败或停止无法确认时显示具体读取错误或单独的不确定数量，不显示为零活动或已清理；数量不受滚动、分组或重复刷新影响。汇总是宿主状态栏的纯文本，不可聚焦、不拦截任何按键。
-- process-list：`/ps` 打开管理页，临时替换输入栏，保持原状态栏与 Agents 的相对顺序；关闭后恢复输入栏焦点。
+- process-list：`/pi-company:ps` 打开管理页，临时替换输入栏，保持原状态栏与 Agents 的相对顺序；关闭后恢复输入栏焦点。
 - process-list：一行一个任务，显示编号、具体宿主（本窗口主会话，或守护进程内需求代理、角色及其运行身份）、状态、耗时、命令；选中行蓝色无箭头；↑↓ 选择、Enter 详情、K 停止、Esc 关闭；按键不同时操作 Agents。
 - process-list：详情只展示任务身份、宿主、状态、完整命令、目录、进程号和耗时，仅提示 Esc 返回；不提供查看输出或停止按钮。
 - process-list：K 请求确认，确认页显示编号、宿主、命令，默认取消；确认只停止该 Shell 及后代；先显示正在停止，清理确认后才报告停止；目标身份固定，不转移到同一行的新任务；无法核对或清理失败时保留任务并显示原因；不确定任务可由用户显式裁定为已停止，裁定先写决策记录再登记。
@@ -55,7 +55,7 @@ description: Shell 状态与列表：汇总文本写入宿主状态栏（不可�
 - 确认页 Esc 只取消确认回到列表（与详情页 Esc 同构），列表 Esc 才关闭页面。
 - 外来文本净化复用中继收件箱的净化逻辑：从 `extensions/relay.ts` 抽到 `runtime/text-sanitize.ts`（OSC→CSI→Fe→C0/C1→BiDi/零宽），relay.ts 改为导入（29 交界的小改动，在本单元完成）。
 - 死参数不保留：接口只声明有读取点的字段（去掉未使用的 mainHost、fg、repoId 等）。
-- `extensions/commands.ts` 的 `/ps` 调用 `openShellPage`；管理页是进入 Shell 列表的唯一入口。
+- `extensions/commands.ts` 的 `/pi-company:ps` 调用 `openShellPage`；管理页是进入 Shell 列表的唯一入口。
 
 ## 验证方式
 - 测试入口：`summarizeShells`、`formatShellSummary`、`publishShellStatus`（假状态栏接口）；`ShellPage`（虚拟终端渲染，注入本窗口注册表夹具与假守护进程客户端）、`openShellPage`（假 `ctx.ui.custom` 与假 `BottomDock`）

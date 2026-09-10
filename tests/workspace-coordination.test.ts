@@ -131,7 +131,7 @@ test("返修提问撤回不写决定，授权记录写失败不返回成功", as
   } finally { restore(); }
 });
 
-test("返修门禁与轮次缺项、混入契约变更时在提问前拒绝", async () => {
+test("返修阶段检查与轮次缺项、混入契约变更时在提问前拒绝", async () => {
   const w = await repairQuestion();
   for (const params of [{ repairGate: undefined }, { repairRound: undefined }, { contractChange: { field: "code", reason: "变更", affectedRepos: [w.repoId] } }]) {
     await expect(w.ask(params)).rejects.toThrow();

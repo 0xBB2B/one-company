@@ -14,7 +14,7 @@ const REQUIRED_COMMAND_NAMES = [
   "pi-company:revise",
   "pi-company:sync",
   "pi-company:setting",
-  "ps",
+  "pi-company:ps",
 ];
 
 // lifecycle.ts 的 session_start 处理器体内唯一出现的变量名，用来在不触发真实会话的前提下辨认注册顺序中的第一个处理器来自谁
@@ -33,7 +33,7 @@ function makeShellUiCtx() {
 }
 
 describe("extensions/index.ts 唯一扩展入口", () => {
-  test("registerCommand 收到的命令名无重复，包含六个 pi-company/ps 命令，不含 spec-* 别名", () => {
+  test("registerCommand 收到的命令名无重复，包含六个带 pi-company: 前缀的命令，不含 spec-* 别名", () => {
     const fakePi = createFakePi();
 
     registerExtensions(fakePi.pi);

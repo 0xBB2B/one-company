@@ -1,14 +1,15 @@
 ---
 name: commands
-description: 注册五个 /pi-company: 流程与设置入口和独立 /ps，参数透传给对应技能正文，不注册别名，加载失败不绕过
+description: 注册六个 /pi-company: 命令，覆盖需求流程、设置与 Shell 管理，参数透传给对应技能正文，不注册别名，加载失败不绕过
 ---
 # 命令入口
 
 ## 目标
-用户能通过统一前缀发现并调用五个流程与设置入口，用 /ps 打开 Shell 管理页，任何入口失败都如实报告。
+用户能通过统一前缀发现并调用六个入口，其中 /pi-company:ps 打开 Shell 管理页，任何入口失败都如实报告。
 
 ## 业务规则（来源：spec）
-- namespaced-entrypoints：提供 `/pi-company:new`、`/pi-company:resume`、`/pi-company:revise`、`/pi-company:sync`、`/pi-company:setting` 五个入口及独立 `/ps`；帮助与继续操作指引使用各自名称。
+- 当前和后续新增的全部会话命令必须以 `/pi-company:` 开头；命令注册集合测试检查每个名称，不提供前缀外别名。
+- namespaced-entrypoints：提供 `/pi-company:new`、`/pi-company:resume`、`/pi-company:revise`、`/pi-company:sync`、`/pi-company:setting` 和 `/pi-company:ps` 六个入口；帮助与继续操作指引使用各自名称。
 - namespaced-entrypoints：需求描述、问题描述、`--verify`、域名范围按业务语义传给对应流程，不混淆、不丢参数。
 - namespaced-entrypoints：不提供其他流程别名，不注册 `/spec-new`、`/spec-resume`、`/spec-revise`、`/spec-sync`。
 - namespaced-entrypoints：入口无法加载目标流程、设置页或 Shell 管理页时显示具体失败原因，不自动调用其他入口或报告成功。
@@ -28,7 +29,7 @@ description: 注册五个 /pi-company: 流程与设置入口和独立 /ps，参�
 | `/pi-company:revise <问题描述>` | 问题描述 | 读取 spec-revise 技能正文，发送"处理这个问题：<描述>" |
 | `/pi-company:sync [域名 ...]` | 可选域名列表 | 读取 spec-sync 技能正文，发送"执行对账，范围：<原样>" |
 | `/pi-company:setting` | 无 | 打开角色设置页 |
-| `/ps` | 无 | 打开 Shell 管理页 |
+| `/pi-company:ps` | 无 | 打开 Shell 管理页 |
 
 ## 函数清单
 ### extensions/commands.ts

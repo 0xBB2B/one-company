@@ -64,7 +64,7 @@ async function openShellPageOrReport(
 
 export function registerCommands(pi: CommandsPi, options: RegisterCommandsOptions): void {
   pi.registerCommand("pi-company:new", {
-    description: "从阶段一开始处理一句话需求",
+    description: "开始处理新需求",
     handler: async (args, ctx) => {
       const description = args.trim();
       if (!description) {
@@ -83,7 +83,7 @@ export function registerCommands(pi: CommandsPi, options: RegisterCommandsOption
   });
 
   pi.registerCommand("pi-company:resume", {
-    description: "断点续接处理进行中的需求",
+    description: "继续处理进行中的需求",
     handler: async (args, ctx) => {
       let body: string;
       try {
@@ -116,7 +116,7 @@ export function registerCommands(pi: CommandsPi, options: RegisterCommandsOption
   });
 
   pi.registerCommand("pi-company:sync", {
-    description: "对账 spec 与代码现态",
+    description: "核对规范与代码是否一致",
     handler: async (args, ctx) => {
       let body: string;
       try {
@@ -140,7 +140,7 @@ export function registerCommands(pi: CommandsPi, options: RegisterCommandsOption
     },
   });
 
-  pi.registerCommand("ps", {
+  pi.registerCommand("pi-company:ps", {
     description: "打开 Shell 管理页",
     handler: async (_args, ctx) => {
       await openShellPageOrReport(options, ctx);

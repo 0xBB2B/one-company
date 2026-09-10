@@ -748,7 +748,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
         name: "pi_company_resume_check", label: "核对中断现场", description: "读取本运行 Shell 状态及工作区真实差异，完成恢复前的机械核对", parameters: Type.Object({}, { additionalProperties: false }),
         async execute() {
           const tasks = shellRegistry.list().filter((task) => task.host.runId === options.runId);
-          if (tasks.some((task) => ["starting", "running", "stopping", "uncertain"].includes(task.status))) throw new Error("Shell 操作仍未确认结束，不能解除核对门禁");
+          if (tasks.some((task) => ["starting", "running", "stopping", "uncertain"].includes(task.status))) throw new Error("Shell 操作仍未确认结束，不能解除核对阶段检查");
           const snapshot = await collectGitSnapshot({ repoRoot: options.cwd });
           const status = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: options.cwd, timeout: 10_000 });
           const diff = await execFileAsync("git", ["diff", "--no-ext-diff", "--no-textconv", "HEAD"], { cwd: options.cwd, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
@@ -923,7 +923,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     verifying = true;
     const queued = queuedMessages.splice(0);
     const resumeText = [
-      "已恢复运行：请先调用 pi_company_resume_check 核对本运行中断操作、Shell 状态和工作区实际差异，再根据核对结果继续；普通 read 不能解除恢复门禁。",
+      "已恢复运行：请先调用 pi_company_resume_check 核对本运行中断操作、Shell 状态和工作区实际差异，再根据核对结果继续；普通 read 不能解除恢复阶段检查。",
       queued.length > 0 ? `排队消息：\n${queued.join("\n")}` : "",
     ]
       .filter((part) => part.length > 0)

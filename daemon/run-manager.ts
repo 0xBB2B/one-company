@@ -522,7 +522,7 @@ export class RunManager {
       const last = attempts.at(-1);
       if (!last || (last.result as { verdict?: string } | undefined)?.verdict === "PASS") continue;
       const decisions = await readDecisions({ cwd, dataRoot: this.dataRoot, requirement, actor: "ai" }) as Array<{ recordedAt: string; effects?: string[] }>;
-      if (!decisions.some((decision) => decision.recordedAt >= (last.endedAt ?? last.startedAt) && decision.effects?.includes(`repair:${gate}`))) throw new Error(`${gate} 未通过，须先记录该门禁的 AI 归因和修复路径，effects 包含 repair:${gate}`);
+      if (!decisions.some((decision) => decision.recordedAt >= (last.endedAt ?? last.startedAt) && decision.effects?.includes(`repair:${gate}`))) throw new Error(`${gate} 未通过，须先记录该阶段检查的 AI 归因和修复路径，effects 包含 repair:${gate}`);
       if (attempts.length >= 4) {
         const user = await readDecisions({ cwd, dataRoot: this.dataRoot, requirement, actor: "user" }) as Array<{ recordedAt: string; effects?: string[] }>;
         if (!user.some((decision) => decision.recordedAt >= (last.endedAt ?? last.startedAt) && decision.effects?.includes(`repair:${gate}:${attempts.length}`))) throw new Error(`${gate} 第 ${attempts.length - 1} 轮返修仍未通过，技术阻塞；仅用户明确授权第 ${attempts.length} 轮后可继续`);

@@ -121,7 +121,7 @@ SKILL.md 必需段落：
 - 测试输入：文件全文字符串；在临时目录构造 `.pi-company/spec/<域>/*.md`（含变更清单内规则与一条范围外规则）与 `requirements/<日期>.<slug>/{requirements.md,tasks/}`；有效案例：两个任务、全部 AC 覆盖、一个任务恰 200 行需计数内容并含不计的成品代码块；违规案例各只改一个条件：201 行、缺字段、含 parallel 字段、缺索引链接、生产文件重复归属、向后依赖、依赖环、refs 原文不一致、未知 AC 引用、缺类别声明、变更内规则漏一条 AC、不可读输入
 - 预期结果：
   - 必需句逐字存在：`.pi-company/`、`任务文件不包含 status、step、agent、commit、note、parallel 等运行或调度字段`、`扣除示例代码块与成品代码块（含首尾围栏）后最多 200 行`、`不限制任务的代码改动量`、`决策记录与运行信息只保存在本机，不进入仓库`、`验证约定`、`必须真实贯通`、`三层责任`、`规划者不得自行编写检查脚本`
-  - 禁止句不存在：`.pi-spec/`、`ai-decisions.jsonl`、`user-decisions.jsonl`、`status: todo`、`agent: wf_`、`parallel:`、`预估改动不超过 200 行`
+  - 禁止句不存在：`ai-decisions.jsonl`、`user-decisions.jsonl`、`status: todo`、`agent: wf_`、`parallel:`、`预估改动不超过 200 行`
   - `task.template.md` frontmatter 键顺序恰为 id、title、depends_on、files、refs、verify；正文含"## 验证方式"且含五个要点行；`requirements.template.md` 无 `status:` 行，含 `## 1.` 至 `## 4.` 四节
   - 有效案例连续两次退出码 0 且首行为 `PASS: 仅证明任务机械条件，不证明行为正确`，输入文件指纹不变，verify 命令未被执行（verify 指向会写标记文件的脚本，标记文件不存在）；各违规案例退出码 1 且输出含对应任务 id 与字段名；缺类别与不可读案例退出码 2；范围外规则未覆盖的 AC 不报错
 - [x] 必需句全部命中、禁止句全部缺席

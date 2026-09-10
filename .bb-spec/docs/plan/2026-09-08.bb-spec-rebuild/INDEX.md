@@ -5,7 +5,7 @@
 - [versioned-store](03-versioned-store.md) — SQLite 事务、UUIDv7、状态版本 CAS [依赖: local-identity]
 - [sleep-aware-clock](04-sleep-aware-clock.md) — 扣除睡眠间隔的统一计时器 [依赖: package-skeleton]
 - [decision-ledger](05-decision-ledger.md) — 本机决策追加与决策记录工具 [依赖: versioned-store]
-- [workflow-state](06-workflow-state.md) — 阶段/进度集合、随形状的门禁、受控回退、以运行身份取证据 [依赖: versioned-store, decision-ledger]
+- [workflow-state](06-workflow-state.md) — 阶段/进度集合、随形状的阶段检查、受控回退、以运行身份取证据 [依赖: versioned-store, decision-ledger]
 - [workflow-tool](07-workflow-tool.md) — 运行信息工具（含 retreat，证据只以 runId 传入） [依赖: workflow-state]
 - [window-registry](38-window-registry.md) — 窗口登记、睡眠感知心跳、持有者消失的机械判定 [依赖: local-identity, versioned-store, sleep-aware-clock]
 ## 阶段 2：角色、配置与 MCP
@@ -34,12 +34,12 @@
 - [dispatch-tools](28-dispatch-tools.md) — 主会话四个工具 [依赖: daemon-client]
 - [relay-inbox](29-relay-inbox.md) — 中继收件箱注入主会话 [依赖: daemon-client]
 - [window-lifecycle](30-window-lifecycle.md) — 窗口登记、切换门槛、退出信号与清理 [依赖: shell-bash-tool, daemon-client, window-registry]
-- [commands](31-commands.md) — 五个命令与 /ps [依赖: settings-controller, dispatch-tools]
+- [commands](31-commands.md) — 六个统一前缀命令 [依赖: settings-controller, dispatch-tools]
 ## 阶段 5：界面
 - [agents-activity](32-agents-activity.md) — 面板树模型与 20 秒保留 [依赖: daemon-client]
 - [agents-panel](33-agents-panel.md) — 面板组件、挂载与底部焦点编排 [依赖: agents-activity]
 - [transcript-view](34-transcript-view.md) — 记录查看页 [依赖: daemon-client, session-records, agents-panel]
-- [shell-page](35-shell-page.md) — Shell 状态与列表：状态栏汇总文本、/ps 列表、详情、停止确认、用户裁定 [依赖: shell-registry, daemon-client, write-guard, agents-panel]
+- [shell-page](35-shell-page.md) — Shell 状态与列表：状态栏汇总文本、/pi-company:ps 列表、详情、停止确认、用户裁定 [依赖: shell-registry, daemon-client, write-guard, agents-panel]
 ## 阶段 6：多仓库协作
 - [workspace-coordination](42-workspace-coordination.md) — 跨仓库等待与契约变更路由 [依赖: requirement-agent-session, relay-queue, range-claims]
 ## 阶段 7：角色提示词、流程 Skill 与脚本

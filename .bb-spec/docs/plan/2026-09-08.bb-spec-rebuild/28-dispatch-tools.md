@@ -67,7 +67,7 @@ export const AGENTS_PARAMETERS = Type.Object({
 | `callWithAbort` | 所有守护进程调用与工具 `signal` 竞速并设 30 秒上限；中止或超时的回执写明"已停止等待，守护进程可能仍在执行，请用 agents list 核对"，不宣称操作未发生 |
 
 ## 协作关系
-- 派出需求代理的阶段门禁与守护进程同口径：draft/rejected/accepted 拒绝，confirmed 及其后的进行中阶段（含回退到 executing 后）放行；唯一性由守护进程判定。
+- 派出需求代理的阶段检查与守护进程同口径：draft/rejected/accepted 拒绝，confirmed 及其后的进行中阶段（含回退到 executing 后）放行；唯一性由守护进程判定。
 - 依赖 `runtime/daemon-client.ts` 的 `WorkspaceClients`（由 `extensions/lifecycle.ts` 的 `windowContext()` 提供实例与 `windowId`，30 单元落地后接线）、`runtime/protocol.ts` 方法参数类型、`runtime/workflow-state.ts` 的 `readRequirementState`（核对 confirmed）、`runtime/identity.ts` 的 `repositoryIdentity`。
 - 守护进程侧对应 `daemon/server.ts` 的 `dispatch.requirement`、`relay.answer`、`relay.forward`、`runs.*`。
 - 不在工具内实现任何编排，不调用 `runtime/roles.ts` 的派工关系判定；结果文本只含运行身份与简短状态。

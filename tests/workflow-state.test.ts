@@ -300,7 +300,7 @@ async function toPlanned(world: World): Promise<string> {
 
 async function toExecuting(world: World, shapeOverrides: Record<string, unknown> = {}): Promise<void> {
   await toPlanned(world);
-  const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+  const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
   let state = await currentState(world);
   const shapeResult = await recordShape({ expectedVersion: state.version, shape: shapeInput(shapeDecisionId, shapeOverrides) }, world.ctx);
   if (!shapeResult.ok) throw new Error("测试装置失败: 无法记录形状");
@@ -624,11 +624,11 @@ describe("阶段推进的前提核对", () => {
   });
 });
 
-describe("recordShape 门禁声明", () => {
-  test("门禁声明为 false 且未附用户决定编号时记录形状被拒绝", async () => {
+describe("recordShape 阶段检查声明", () => {
+  test("阶段检查声明为 false 且未附用户决定编号时记录形状被拒绝", async () => {
     const world = await setupWorld();
     await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
     const state = await currentState(world);
     const result = await recordShape(
       {
@@ -642,10 +642,10 @@ describe("recordShape 门禁声明", () => {
     expect(after.data.shape).toBeNull();
   });
 
-  test("门禁声明为 false 且附用户决定编号时记录形状成功并记录跳过依据", async () => {
+  test("阶段检查声明为 false 且附用户决定编号时记录形状成功并记录跳过依据", async () => {
     const world = await setupWorld();
     await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
     const skip = await appendDecision(
       userDecisionInput(world.requirement, { trigger: "跳过黑盒验收", decision: "本需求不做黑盒验收" }),
       { dataRoot: world.home.dataRoot, cwd: world.repo.root },
@@ -667,10 +667,10 @@ describe("recordShape 门禁声明", () => {
     expect(JSON.stringify(after.data)).toContain(skip.decisionId);
   });
 
-  test("门禁跳过使用 AI 决定编号时被拒绝", async () => {
+  test("阶段检查跳过使用 AI 决定编号时被拒绝", async () => {
     const world = await setupWorld();
     await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
     const aiSkipId = await appendAiDecisionId(world, "AI 判断跳过黑盒验收", "AI 自行决定跳过黑盒验收");
     const state = await currentState(world);
     const result = await recordShape(
@@ -702,7 +702,7 @@ describe("recordShape 门禁声明", () => {
   test("缺少形状确认决定编号时记录形状被拒绝", async () => {
     const world = await setupWorld();
     await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
     const shape = shapeInput(shapeDecisionId) as Record<string, unknown>;
     delete shape.decisionId;
     const state = await currentState(world);
@@ -715,7 +715,7 @@ describe("recordShape 门禁声明", () => {
   test("形状任务集为空时记录形状被拒绝", async () => {
     const world = await setupWorld();
     await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明");
+    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
     const state = await currentState(world);
     const result = await recordShape({ expectedVersion: state.version, shape: shapeInput(shapeDecisionId, { tasks: [] }) }, world.ctx);
     expect(result.ok).toBe(false);
@@ -724,8 +724,8 @@ describe("recordShape 门禁声明", () => {
   });
 });
 
-describe("越过黑盒验收门禁的推进路径", () => {
-  test("形状声明不含黑盒验收且附决定时经 accepting 越过黑盒门禁推进到 accepted 并记录跳过依据", async () => {
+describe("越过黑盒验收检查的推进路径", () => {
+  test("形状声明不含黑盒验收且附决定时经 accepting 越过黑盒阶段检查推进到 accepted 并记录跳过依据", async () => {
     const world = await setupWorld();
     const skip = await appendDecision(
       userDecisionInput(world.requirement, { trigger: "跳过黑盒验收", decision: "本需求不做黑盒验收" }),
@@ -1641,12 +1641,12 @@ describe("读盘失败时的行为", () => {
   });
 });
 
-describe("跳过 plan / whiteboxReview 门禁的推进路径", () => {
-  test("形状声明跳过 plan 门禁且附决定时 confirmed → planned 无需运行证据", async () => {
+describe("跳过 plan / whiteboxReview 阶段检查的推进路径", () => {
+  test("形状声明跳过 plan 阶段检查且附决定时 confirmed → planned 无需运行证据", async () => {
     const world = await setupWorld();
     await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const skipDecisionId = await appendUserDecisionId(world, "跳过 plan 门禁", "本需求跳过 plan 审阅");
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与门禁声明（跳过 plan）");
+    const skipDecisionId = await appendUserDecisionId(world, "跳过 plan 阶段检查", "本需求跳过 plan 审阅");
+    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明（跳过 plan）");
     let state = await currentState(world);
     const shapeResult = await recordShape(
       {
@@ -1672,7 +1672,7 @@ describe("跳过 plan / whiteboxReview 门禁的推进路径", () => {
     expect(after.data.stage).toBe("planned");
   });
 
-  test("形状声明跳过 whiteboxReview 门禁且附决定时 reviewing → accepting 无需运行证据", async () => {
+  test("形状声明跳过 whiteboxReview 阶段检查且附决定时 reviewing → accepting 无需运行证据", async () => {
     const world = await setupWorld();
     await toReviewing(world);
     const skipDecisionId = await appendUserDecisionId(world, "跳过白盒评审", "本需求跳过白盒评审");

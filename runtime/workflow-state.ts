@@ -318,7 +318,7 @@ async function evaluateStageGate(
           : undefined;
       if (skip) return { ok: true, decisionId: skip.decisionId };
       if (!input.runId || !input.currentVersion) {
-        return { ok: false, reason: `缺少 runId 或版本信息以核对 ${spec.phase} 门禁` };
+        return { ok: false, reason: `缺少 runId 或版本信息以核对 ${spec.phase} 阶段检查` };
       }
       const evidence = await evidenceFromRun(
         input.runId,
@@ -342,7 +342,7 @@ async function evaluateStageGate(
       return { ok: true };
     }
     default:
-      return { ok: false, reason: "未支持的阶段门禁" };
+      return { ok: false, reason: "未支持的阶段检查" };
   }
 }
 
@@ -360,7 +360,7 @@ export async function advanceStage(input: AdvanceInput, ctx: WorkflowContext): P
     return { ok: false, reason: `阶段 ${data.stage} 不能直接推进到 ${input.targetStage}` };
   }
   const spec = gateForStage(input.targetStage);
-  if (!spec) return { ok: false, reason: `未支持的阶段门禁: ${input.targetStage}` };
+  if (!spec) return { ok: false, reason: `未支持的阶段检查: ${input.targetStage}` };
   const binding = spec.kind === "runEvidence" ? observeEvidence(ctx, identity.repoId, spec.phase!) : undefined;
   const gateResult = await evaluateStageGate(spec, data, input, ctx);
   if (!gateResult.ok) return gateResult;
@@ -432,7 +432,7 @@ export async function retreatStage(
   if (!input.reason) return { ok: false, reason: "缺少回退理由" };
   if (!input.decisionId) return { ok: false, reason: "缺少决定编号" };
   const decision = await inspectDecision({ dataRoot: ctx.dataRoot, cwd: ctx.cwd, requirement: ctx.requirement, id: input.decisionId }) as { actor?: string; effects?: string[] } | null;
-  if (!decision || (decision.actor !== "user" && !decision.effects?.some((effect) => effect === "repair:review" || effect === "repair:acceptance"))) return { ok: false, reason: "回退需用户决定或已记录的 AI 门禁归因" };
+  if (!decision || (decision.actor !== "user" && !decision.effects?.some((effect) => effect === "repair:review" || effect === "repair:acceptance"))) return { ok: false, reason: "回退需用户决定或已记录的 AI 阶段检查归因" };
   const blocking = await blockingActiveRun(ctx, identity.repoId);
   if (blocking) {
     return { ok: false, reason: `存在未停止的运行 ${blocking.id}（${blocking.state}${blocking.task ? `，任务 ${blocking.task}` : ""}），回退前须先停止` };
@@ -495,8 +495,8 @@ export async function recordShape(
   for (const [gate, enabled] of Object.entries(shape.gates)) {
     if (enabled) continue;
     const skip = shape.skipped.find((entry) => entry.gate === gate);
-    if (!skip) return { ok: false, reason: `门禁 ${gate} 声明为跳过但缺少用户决定编号` };
-    const skipCheck = await requireUserDecision(skip.decisionId, ctx, `门禁 ${gate} 关联的决定编号`);
+    if (!skip) return { ok: false, reason: `阶段检查 ${gate} 声明为跳过但缺少用户决定编号` };
+    const skipCheck = await requireUserDecision(skip.decisionId, ctx, `阶段检查 ${gate} 关联的决定编号`);
     if (!skipCheck.ok) return skipCheck;
   }
 

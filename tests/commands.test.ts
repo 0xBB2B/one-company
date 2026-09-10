@@ -110,9 +110,9 @@ describe("命令注册集合", () => {
     const { registrations } = await setup();
     const names = Object.keys(registrations).sort();
     expect(names).toEqual(
-      ["pi-company:new", "pi-company:resume", "pi-company:revise", "pi-company:setting", "pi-company:sync", "ps"].sort(),
+      ["pi-company:new", "pi-company:resume", "pi-company:revise", "pi-company:setting", "pi-company:sync", "pi-company:ps"].sort(),
     );
-    expect(names.some((name) => name.startsWith("spec-"))).toBe(false);
+    expect(names.every((name) => name.startsWith("pi-company:"))).toBe(true);
   });
 
   test("每个命令的描述非空", async () => {
@@ -341,7 +341,7 @@ describe("/pi-company:setting", () => {
   });
 });
 
-describe("/ps", () => {
+describe("/pi-company:ps", () => {
   test("调用打开 Shell 管理页回调", async () => {
     const root = await makePackageRoot();
     tempRoots.push(root);
@@ -350,7 +350,7 @@ describe("/ps", () => {
     registerCommands(pi, options);
     const { ctx } = makeFakeCtx();
 
-    await registrations.ps!.handler("", ctx);
+    await registrations["pi-company:ps"]!.handler("", ctx);
 
     expect(shellCalls.length).toBe(1);
     expect(sentMessages.length).toBe(0);
@@ -369,7 +369,7 @@ describe("/ps", () => {
     registerCommands(pi, options);
     const { ctx, notifications } = makeFakeCtx();
 
-    await registrations.ps!.handler("", ctx);
+    await registrations["pi-company:ps"]!.handler("", ctx);
 
     expect(sentMessages.length).toBe(0);
     expect(settingsCalls.length).toBe(0);

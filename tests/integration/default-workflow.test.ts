@@ -118,7 +118,7 @@ test("默认完整工作流：规划真文件、用户确认、合法提交、�
   scriptReplies(providers.planner!, [tool("write", { path: join(taskDir, "T-1.md"), content: taskBody }), tool("write", { path: join(taskDir, "INDEX.md"), content: "# 任务\n- [T-1 输出问候](T-1.md) — 单一命令切片\n" }), text("规划完成")]);
   const plan = await roleRun("planner", "T-1", [taskDir + "/"]);
   await workflow("advance", { stage: "planned", runId: plan.id });
-  await invoke(tool("pi_company_propose_shape", { tasks: [{ id: "T-1", title: "输出问候", roles: ["worker", "reviewer", "acceptance"], dependsOn: [], writePaths: ["app.js", "verify.cjs"] }], gates: { whiteboxReview: true, blackboxAcceptance: true }, rationale: "一个切片，默认双门禁" }), true);
+  await invoke(tool("pi_company_propose_shape", { tasks: [{ id: "T-1", title: "输出问候", roles: ["worker", "reviewer", "acceptance"], dependsOn: [], writePaths: ["app.js", "verify.cjs"] }], gates: { whiteboxReview: true, blackboxAcceptance: true }, rationale: "一个切片，默认双阶段检查" }), true);
   await workflow("advance", { stage: "executing" });
   const check = 'const {execFileSync}=require("node:child_process");require("node:assert/strict").equal(execFileSync(process.execPath,["app.js"],{encoding:"utf8"}),"hello\\n");\n';
   const work = { phase: "work", verdict: "PASS", summary: "输出 hello", issues: [], evidence: ["verify.cjs:1"], changeKind: "behavior-change", workState: "red-green", coverage: [{ ref: "demo/greeting/AC-1", test: "verify.cjs:1" }], redCommands: [{ command: verify, status: "failed", details: "old 不等于 hello" }], greenCommands: [{ command: verify, status: "passed", details: "输出匹配" }], changedFiles: ["app.js", "verify.cjs"], productionPath: ["app.js"], preexistingEvidence: [], fakeRed: false };

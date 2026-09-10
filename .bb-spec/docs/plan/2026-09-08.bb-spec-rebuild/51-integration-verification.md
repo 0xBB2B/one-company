@@ -11,7 +11,7 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 - daemon-host：每仓库单实例、按需拉起、空闲退出、崩溃后中断、睡眠不计入超时。
 - requirement-agent / workflow-shape / user-relay：派出前提、形状提议确认、提问投递本工作区窗口首答生效、无窗口排队推送、代理间不直连。
 - pause-control / user-stop / run-lifecycle：任意窗口暂停继续停止、级联、断网局部暂停与联网自动续接并通知、中断续接核对与重载。
-- cross-window-panel / transcript-view / status-entry / process-list：底部顺序、空输入 ↓ 直接进面板、20 秒保留、查看页只读、状态栏汇总文本与 /ps 跨宿主。
+- cross-window-panel / transcript-view / status-entry / process-list：底部顺序、空输入 ↓ 直接进面板、20 秒保留、查看页只读、状态栏汇总文本与 /pi-company:ps 跨宿主。
 - host-lifecycle / managed-execution：窗口退出路径清理窗口 Shell、守护进程 Shell 不受影响、后台 Shell 超时与后代清理。
 - workspace-coordination：父目录窗口看到两个仓库、契约变更经主会话裁定并转发。
 
@@ -99,7 +99,7 @@ description: 真实守护进程与多窗口子进程的端到端验证矩阵：�
 - `workflow-state.test.ts` 用 SQLite 写入失败证明阶段与证据一起回滚，交错失效不能被旧绑定覆盖。
 - `session-records.test.ts` 验证分支与重置位置、压缩恢复、当前分支中断补全、竞争写入拒绝和保存失败后的停止。
 
-- `repair-authorization.test.ts` 经真实中继答复和公开审查派工入口验证门禁三轮后阻塞，拒答不授权；授权仅对指定门禁与轮次有效，改名重派不重置计数。
+- `repair-authorization.test.ts` 经真实中继答复和公开审查派工入口验证阶段检查三轮后阻塞，拒答不授权；授权仅对指定阶段检查与轮次有效，改名重派不重置计数。
 - `settings-dispatch.test.ts` 在真实设置页保存全局与项目模型，再验证实际 SDK 请求使用对应模型；项目角色正文仅在项目受信任时装载。
 
 - `agents-panel.test.ts` 在派工之后才打开面板，验证订阅快照让已有运行立即可见。

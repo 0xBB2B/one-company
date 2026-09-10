@@ -447,7 +447,7 @@ describe("派出前提、唯一性与并发", () => {
   }, 20000);
 });
 
-describe("形状提议校验、确认与门禁决定、阶段推进", () => {
+describe("形状提议校验、确认与阶段检查决定、阶段推进", () => {
   test("决策记录目录不可写时形状未生效，执行未开始", async () => {
     const world = await setupWorld("undecidable");
     await confirmRequirement(world);

@@ -7,9 +7,9 @@
 - [builtin-execution](agents/builtin-execution.md) — 本包在守护进程内独立派工需求代理与角色，返回可查询的运行身份，按依赖和写入范围并行而不设并发数量上限
 - [cross-window-panel](agents/cross-window-panel.md) — 任意窗口底部 Agents 面板显示本工作区全部需求代理及其子角色树与真实活动，可控制任一运行，结束灰显与临时提示保留 20 秒
 - [daemon-host](agents/daemon-host.md) — 每个仓库一个守护进程，由工作区内窗口按需拉起、空闲退出，承载需求代理与角色会话，不可达与崩溃如实显示，计时排除睡眠间隔
-- [namespaced-entrypoints](agents/namespaced-entrypoints.md) — 五个流程与设置入口使用 /pi-company: 命名空间，独立 /ps 管理 Shell，不提供其他流程别名
+- [namespaced-entrypoints](agents/namespaced-entrypoints.md) — 本包所有会话命令统一使用 /pi-company: 前缀
 - [pause-control](agents/pause-control.md) — 任意窗口可暂停与继续守护进程内的运行并保留进度，连接故障局部暂停且联网后自动核对续接，手动暂停只由用户继续
-- [requirement-agent](agents/requirement-agent.md) — 主会话确认需求文档后派出需求代理，由它持有需求上下文完成规划、提议、执行与门禁推进，简单任务可自行完成
+- [requirement-agent](agents/requirement-agent.md) — 主会话确认需求文档后派出需求代理，由它持有需求上下文完成规划、提议、执行与阶段检查推进，简单任务可自行完成
 - [role-catalog](agents/role-catalog.md) — 角色来自包内默认、用户全局与项目三层角色定义文件，项目层仅在项目受信任时生效，派工权绑定运行身份：主会话只派需求代理与提交前审查者，需求代理只派目录内角色，角色不向下派工
 - [role-settings](agents/role-settings.md) — 角色目录中每个角色分别解析模型、思考等级与 MCP 服务集合，项目配置覆盖全局默认，保存不改变已启动任务；角色只获得配置中勾选且当前可用的 MCP 服务，所有入口同受该集合约束
 - [run-diagnostics](agents/run-diagnostics.md) — 为失败运行原样保存完整错误详情、定位信息与提交诊断，独立于会话记录可查，不截断
@@ -19,7 +19,7 @@
 - [transcript-view](agents/transcript-view.md) — 从面板打开任一需求代理或角色会话的记录查看页，实时显示思考、输出与工具活动，只读、可滚动、离线可回读
 - [user-relay](agents/user-relay.md) — 需求代理与用户的一切对话经主会话中继，提问投递到本工作区已连接窗口且首答生效，无窗口时排队并在下次打开窗口时推送
 - [user-stop](agents/user-stop.md) — 任意窗口停止需求代理或角色并连带停止其子运行与 Shell，停止请求确认发出即为终态，Shell 清理进度另行显示并约束范围释放，保留成果并经中继通知
-- [workflow-shape](agents/workflow-shape.md) — 工作流形状由任务集、每任务角色序列与门禁声明组成，需求代理提议一次经用户确认后执行，升级再问，跳过门禁需用户决定
+- [workflow-shape](agents/workflow-shape.md) — 工作流形状由任务集、每任务角色序列与阶段检查声明组成，需求代理提议一次经用户确认后执行，升级再问，跳过阶段检查需用户决定
 
 ## collaboration
 
@@ -30,7 +30,7 @@
 
 ## review-gates
 
-- [auto-repair-loop](review-gates/auto-repair-loop.md) — 可自动解决的审查问题由需求代理派实现角色修复并再调原审查角色，先核对错误假设与同类场景，每个门禁最多三轮，第三轮仍未通过记录技术阻塞，用户授权才开新一轮且不重置轮次
+- [auto-repair-loop](review-gates/auto-repair-loop.md) — 可自动解决的审查问题由需求代理派实现角色修复并再调原审查角色，先核对错误假设与同类场景，每个阶段检查最多三轮，第三轮仍未通过记录技术阻塞，用户授权才开新一轮且不重置轮次
 - [blackbox-acceptance](review-gates/blackbox-acceptance.md) — 黑盒验收由需求代理单次直接调用验收者，验收者只依据规则与真实环境关注功能是否可用，唯一写报告并列出全部命令，命令造成写入即失败，需求代理只核对对象与报告一致
 - [credible-tests](review-gates/credible-tests.md) — 同一实现角色先核对测试证明力再实现，不以理想模拟、手工状态或环境失败冒充行为验证
 - [review-failure-handling](review-gates/review-failure-handling.md) — 审查未通过后需求代理先归因并记录再行动：可自动解决的派修，产品决策经中继问用户且未回答不留痕，独立问题只记入后续清单经用户确认才成任务
@@ -42,8 +42,8 @@
 
 - [host-lifecycle](shell/host-lifecycle.md) — Shell 跟随所属主会话或子运行清理，会话切换与可处理退出不遗留无人管理命令，清理以已知进程树全部消失为准并明确保证边界，守护进程重新拉起时接管前一实例遗留的任务
 - [managed-execution](shell/managed-execution.md) — 所有约定入口统一登记 Shell，仅 agent 可显式后台执行且后台仍受超时约束
-- [process-list](shell/process-list.md) — /ps 在输入栏位置打开一行一个 Shell 的管理列表与只读详情，按 K 确认后只停止选定任务及其后代，清理确认前显示正在停止，无法确认的任务保留并标明原因
-- [status-entry](shell/status-entry.md) — 在原状态栏内以纯文本汇总本窗口主会话与本工作区守护进程内全部活动 Shell 的总数与宿主分布，不可聚焦、不拦截按键，/ps 为唯一进入列表的入口
+- [process-list](shell/process-list.md) — /pi-company:ps 在输入栏位置打开一行一个 Shell 的管理列表与只读详情，按 K 确认后只停止选定任务及其后代，清理确认前显示正在停止，无法确认的任务保留并标明原因
+- [status-entry](shell/status-entry.md) — 在原状态栏内以纯文本汇总本窗口主会话与本工作区守护进程内全部活动 Shell 的总数与宿主分布，不可聚焦、不拦截按键，/pi-company:ps 为唯一进入列表的入口
 
 ## task-planning
 
@@ -58,5 +58,5 @@
 - [controlled-updates](workflow-data/controlled-updates.md) — 运行信息通过受校验工具局部读写，拒绝未知字段和过期更新并返回简短回执
 - [data-ownership](workflow-data/data-ownership.md) — 需求和任务定义及验收报告留在仓库，运行字段与决策只保存在本机用户数据区，按仓库与需求隔离且不依赖工作目录存在
 - [decision-append](workflow-data/decision-append.md) — 决策由专用工具在本机按需求追加，回执先于行动且既有内容不可改写
-- [state-transitions](workflow-data/state-transitions.md) — 需求和任务状态由工具按固定集合及随形状的门禁推进，证据只按运行身份读取，阶段回退带理由与决定编号
+- [state-transitions](workflow-data/state-transitions.md) — 需求和任务状态由工具按固定集合及随形状的阶段检查推进，证据只按运行身份读取，阶段回退带理由与决定编号
 - [version-bound-recovery](workflow-data/version-bound-recovery.md) — 续接从本机状态定位需求并核对版本和原运行，缺失数据或旧通过证据不能放行

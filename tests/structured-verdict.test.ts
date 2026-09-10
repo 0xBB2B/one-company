@@ -357,7 +357,7 @@ describe("isAcceptancePass", () => {
   });
 });
 
-describe("ResultCollector - 提交与门禁", () => {
+describe("ResultCollector - 提交与阶段检查", () => {
   test("合法对象被接受且正常结束后 finish 返回该结果", () => {
     const collector = new ResultCollector({ schema: WORK_SCHEMA, phase: "work" });
     const value = validWork();

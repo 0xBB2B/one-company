@@ -198,7 +198,7 @@ const SECTION_ORDER: Array<{ name: ContractRoleName; sections: string[] }> = [
       "执行",
       "交付核对",
       "归因与返修",
-      "门禁",
+      "阶段检查",
       "对话中继",
       "跨仓库",
       "结束",
@@ -243,7 +243,7 @@ const REQUIRED_EXPRESSIONS: Array<{ name: ContractRoleName; section: string; phr
   {
     name: "requirement-agent",
     section: "形状提议",
-    phrases: ["pi_company_propose_shape", "白盒审查", "黑盒验收", "跳过门禁", "用户决定", "重新提议"],
+    phrases: ["pi_company_propose_shape", "白盒审查", "黑盒验收", "跳过阶段检查", "用户决定", "重新提议"],
   },
   { name: "requirement-agent", section: "执行", phrases: ["形状中声明的范围", "提交交付证据"] },
   {
@@ -266,7 +266,7 @@ const REQUIRED_EXPRESSIONS: Array<{ name: ContractRoleName; section: string; phr
       "不写用户决策记录",
     ],
   },
-  { name: "requirement-agent", section: "门禁", phrases: ["规则文件清单", "报告位置", "环境启动方式", "结构化格式", "advance"] },
+  { name: "requirement-agent", section: "阶段检查", phrases: ["规则文件清单", "报告位置", "环境启动方式", "结构化格式", "advance"] },
   { name: "requirement-agent", section: "对话中继", phrases: ["pi_company_ask", "并入"] },
   {
     name: "requirement-agent",

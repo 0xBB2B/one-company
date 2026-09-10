@@ -79,9 +79,9 @@ describe("README 必需句", () => {
   const REQUIRED = [
     "/pi-company:new",
     "/pi-company:setting",
-    "/ps",
+    "/pi-company:ps",
     "每个仓库一个守护进程",
-    "自动拉起",
+    "自动启动",
     "空闲后自动退出",
     "标记为中断",
     "合盖睡眠",
@@ -149,11 +149,11 @@ describe("README 常量与实际代码一致", () => {
   test("命令表覆盖 extensions/commands.ts 注册的全部入口名，且不出现未注册的入口", async () => {
     const source = await readText(COMMANDS);
     const registered = [...source.matchAll(/registerCommand\(\s*"([^"]+)"/g)].map((match) => match[1]).sort();
-    expect(registered).toEqual(["pi-company:new", "pi-company:resume", "pi-company:revise", "pi-company:setting", "pi-company:sync", "ps"]);
+    expect(registered).toEqual(["pi-company:new", "pi-company:resume", "pi-company:revise", "pi-company:setting", "pi-company:sync", "pi-company:ps"].sort());
 
     const body = await readText(README);
     for (const name of registered) {
-      const expected = name === "ps" ? "/ps" : `/${name}`;
+      const expected = `/${name}`;
       expect(body).toContain(expected);
     }
   });

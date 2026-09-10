@@ -21,7 +21,7 @@ import { createTempHome, removeTempHome } from "../helpers/temp-home.ts";
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
-test.each(["review", "acceptance"] as const)("真实派工：%s 门禁三轮后阻塞，拒答不授权，明确授权仅限本门禁本轮", async (gate) => {
+test.each(["review", "acceptance"] as const)("真实派工：%s 阶段检查三轮后阻塞，拒答不授权，明确授权仅限本项检查本轮", async (gate) => {
   const repo = await createRepoFixture(); cleanup.push(() => removeRepoFixture(repo));
   const home = await createTempHome(); cleanup.push(() => removeTempHome(home));
   const { repoId } = await repositoryIdentity(repo.root);
@@ -46,7 +46,7 @@ test.each(["review", "acceptance"] as const)("真实派工：%s 门禁三轮后�
   const snapshot = await collectGitSnapshot({ repoRoot: repo.root });
   const dispatch = () => manager.dispatchReview({ requirement, cwd: repo.root, baseline: snapshot.head, snapshot });
   await expect(dispatch()).rejects.toThrow("AI 归因");
-  const attribute = () => appendDecision({ requirement, actor: "ai", source: "需求代理", trigger: "门禁失败", decision: "补全输入边界验证", scope: requirement, basis: ["失败用例"], action: "先补测试再修实现", effects: [`repair:${gate}`], alternatives: [] }, ctx);
+  const attribute = () => appendDecision({ requirement, actor: "ai", source: "需求代理", trigger: "阶段检查失败", decision: "补全输入边界验证", scope: requirement, basis: ["失败用例"], action: "先补测试再修实现", effects: [`repair:${gate}`], alternatives: [] }, ctx);
   await attribute();
   await expect(dispatch()).rejects.toThrow("技术阻塞");
   const user = (effect: string) => appendDecision({ requirement, actor: "user", source: "中继", trigger: "继续返修", decision: "继续返修", effects: [effect], alternatives: [], impact: "新增一轮" }, ctx);

@@ -42,7 +42,7 @@ description: 多仓库工作区协调：跨仓库等待条件按本机状态核�
 - 命令在 macOS 隔离边界内执行，授权仓库可读，其他仓库及本机流程数据库不可读写；未提供隔离后端的平台拒绝执行。
 
 ## 验证方式
-- 测试入口：经真实入口——需求代理会话的 `pi_company_agent` run（waitFor 排队与放行，经 RunManager 单元级或守护进程协议）、`pi_company_ask`（contractChange）、角色会话工具门禁（跨仓库读写）、`RelayQueue.ask`/`forward`（两个临时仓库的本机数据目录；守护进程测试夹具）。
+- 测试入口：经真实入口——需求代理会话的 `pi_company_agent` run（waitFor 排队与放行，经 RunManager 单元级或守护进程协议）、`pi_company_ask`（contractChange）、角色会话工具阶段检查（跨仓库读写）、`RelayQueue.ask`/`forward`（两个临时仓库的本机数据目录；守护进程测试夹具）。
 - 测试输入：后端需求状态分别为 executing 与 accepted；缺失数据库记录；角色尝试读写另一仓库路径；需求代理发起契约变更；需求代理尝试直接向另一需求代理发送消息。
 - 预期结果：
   - 后端 executing 时前端联调任务的派工进入 queued 且 stateReason 含等待原因、不启动；后端到达 accepted 后随下一次心跳自动启动（running）；状态缺失或数据损坏时保持等待并显示原因；stop 后等待项清除不再放行。
