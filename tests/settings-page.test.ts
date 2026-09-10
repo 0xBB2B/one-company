@@ -1,3 +1,4 @@
+import { putRecord, withDatabase, globalDatabase } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -205,10 +206,7 @@ describe("openSettingsPage 失败契约", () => {
     tempRoots.push(home);
     const agentDir = join(home, ".pi", "agent");
     await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      join(agentDir, "settings.json"),
-      JSON.stringify({ piCompany: { roles: { "pi-company.worker": { model: "bad-model-no-slash" } } } }),
-    );
+    putRecord({ database: globalDatabase(join(agentDir, "pi-company")), namespace: "role_settings", key: "pi-company.worker" }, { model: "bad-model-no-slash" });
 
     const previousHome = process.env.HOME;
     process.env.HOME = home;
@@ -380,7 +378,7 @@ describe("openSettingsPage 补充契约", () => {
     tempRoots.push(home);
     const agentDir = join(home, ".pi", "agent");
     await mkdir(agentDir, { recursive: true });
-    await writeFile(join(agentDir, "settings.json"), "{}\n");
+
     return home;
   }
 
@@ -410,14 +408,9 @@ describe("openSettingsPage 补充契约", () => {
     const agentDir = join(home, ".pi", "agent");
     await mkdir(agentDir, { recursive: true });
     const defaultRoles = ["planner", "worker", "reviewer", "acceptance", "requirement-agent"];
-    await writeFile(
-      join(agentDir, "settings.json"),
-      JSON.stringify({
-        piCompany: {
-          roles: Object.fromEntries(defaultRoles.map((role) => [`pi-company.${role}`, { mcp: ["context7"] }])),
-        },
-      }),
-    );
+    for (const role of defaultRoles) {
+      putRecord({ database: globalDatabase(join(agentDir, "pi-company")), namespace: "role_settings", key: `pi-company.${role}` }, { mcp: ["context7"] });
+    }
 
     const previousHome = process.env.HOME;
     process.env.HOME = home;
@@ -440,10 +433,8 @@ describe("openSettingsPage 补充契约", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const raw = await readFile(join(agentDir, "settings.json"), "utf8");
-      const parsed = JSON.parse(raw) as { piCompany: { roles: Record<string, { mcp?: string[] }> } };
-      expect(parsed.piCompany.roles[`pi-company.${currentRole}`]).toHaveProperty("mcp");
-      expect(parsed.piCompany.roles[`pi-company.${currentRole}`]!.mcp).toEqual([]);
+      const saved = withDatabase(globalDatabase(join(agentDir, "pi-company")), (db) => db.read("role_settings", `pi-company.${currentRole}`)!.data);
+      expect(saved).toEqual({ mcp: [] });
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

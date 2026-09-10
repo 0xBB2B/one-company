@@ -1,3 +1,6 @@
+import { testRepoId, sessionJson } from "./helpers/database-fixture.ts";
+import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
+import { RunStore } from "../runtime/run-store.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdtemp, rm } from "node:fs/promises";
@@ -7,7 +10,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import { createClock } from "../runtime/clock.ts";
 import type { TimeSource } from "../runtime/clock.ts";
-import { createSessionManagerForRun, readTranscript, sessionFilePath } from "../runtime/session-records.ts";
+import { createSessionManagerForRun, readTranscript, sessionRecordRef } from "../runtime/session-records.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import { closeActiveTranscriptView, openTranscriptView, TranscriptView } from "../runtime/transcript-view.ts";
 
@@ -89,7 +92,11 @@ async function makeRunContext() {
   tempHomes.push(home);
   const cwd = await mkdtemp(join(tmpdir(), "transcript-view-cwd-"));
   tempCwds.push(cwd);
-  return { dataRoot: home.dataRoot, repoId: randomUUID(), runId: randomUUID(), cwd };
+  const repoId = testRepoId();
+  const store = new RunStore({ dataRoot: home.dataRoot, repoId, daemonStartedAt: "transcript-test" });
+  const run = await store.create({ kind: "requirement", requirement: "2026-09-10.transcript", task: "查看", cwd, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
+  await store.update(run.id, { state: "running" });
+  return { dataRoot: home.dataRoot, repoId, runId: run.id, cwd, store };
 }
 
 function baseUsage() {
@@ -147,6 +154,7 @@ async function loadEndedRecord() {
   );
   manager.appendMessage(toolResultMessage("call-1", "bash", [{ type: "text", text: "ok\n" }], false));
   manager.appendMessage(assistantMessage([{ type: "text", text: "完成" }], "stop"));
+  await ctx.store.update(ctx.runId, { state: "completed" });
   const result = readTranscript(ctx);
   if (!result.ok) throw new Error("夹具会话读取失败");
   return { ctx, entries: result.entries, ended: result.ended };
@@ -185,7 +193,7 @@ async function loadThrowingRecord() {
     parentId: null,
     message: { role: "user", content: null, timestamp: Date.now() },
   };
-  await appendFile(sessionFilePath(ctx), `${JSON.stringify(malformed)}\n`, "utf8");
+  withDatabase(repositoryDatabase(ctx.dataRoot, ctx.repoId), (db) => db.append(`session:${ctx.runId}`, malformed));
   return ctx;
 }
 

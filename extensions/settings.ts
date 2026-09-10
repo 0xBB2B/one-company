@@ -165,7 +165,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<v
     projectTrusted,
   });
 
-  const paths = settingsPaths({ agentDir, repoRoot, projectTrusted });
+  const paths = await settingsPaths({ agentDir, repoRoot, projectTrusted });
   const loaded = await loadRoleSettings(paths, { roleNames: catalog.roles.map((role) => role.name) });
 
   const models = buildModelsContext(ctx);

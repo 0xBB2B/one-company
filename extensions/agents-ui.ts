@@ -57,6 +57,10 @@ export default function agentsUiExtension(pi: ExtensionAPI, deps: AgentsUiDeps =
             ),
           );
           unsubscribes.push(client.subscribe("activity", (data) => activity.applyActivity(data as unknown as ActivityEvent)));
+          void client.call("subscribe.activity", {}).then((result) => {
+            if (myGeneration !== generation) return;
+            for (const run of (result.snapshot ?? []) as RunsChangedPayload["run"][]) activity.applyRunsChanged(repoId, { run });
+          }).catch((error: unknown) => ctx.ui.notify(`代理快照读取失败：${(error as Error).message}`, "error"));
         }
 
         const panelClients = {

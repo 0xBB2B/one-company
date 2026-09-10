@@ -100,7 +100,7 @@ function buttonsFor(state: RunState): string[] {
     case "completed":
     case "failed":
     case "stopped":
-      return [];
+      return ["view"];
     default:
       // 守护进程协议版本可能领先面板引入新状态字面量，未知状态按"仍需人工处理"兜底而非无按钮
       return ["stop", "view"];

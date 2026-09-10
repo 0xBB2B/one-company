@@ -1,3 +1,4 @@
+import { mainWriteProtection } from "./write-protection.ts";
 import { randomUUID } from "node:crypto";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -26,6 +27,7 @@ const REFRESH_INTERVAL_MS = 1_000;
 
 export interface ShellUiDeps {
   windowReady?: () => Promise<WindowContextValue>;
+  commandGuard?: (cwd: string) => Promise<import("../runtime/shell-bash.ts").BashCommandGuard>;
   createClock?: () => Clock;
   createShellRegistry?: (clock: Clock) => ShellRegistry;
 }
@@ -90,6 +92,7 @@ function metadataBashOperations() {
 }
 
 export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {}): void {
+  const resolveCommandGuard = deps.commandGuard ?? (async (cwd) => (await mainWriteProtection(cwd)).commandGuard);
   const resolveWindowReady = deps.windowReady ?? defaultWindowReady;
   const resolveClock = deps.createClock ?? (() => createClock());
   const resolveShellRegistry = deps.createShellRegistry ?? ((clock) => new ShellRegistry({ clock }));
@@ -109,6 +112,7 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
         host: current.host,
         cwd: execCtx?.cwd ?? process.cwd(),
         runToken: current.runToken,
+        guard: await resolveCommandGuard(execCtx?.cwd ?? process.cwd()),
       });
       return routed.execute(toolCallId, params, signal, onUpdate, execCtx);
     },
@@ -125,6 +129,7 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
       registry: current.registry,
       host: current.host,
       runToken: current.runToken,
+      guard: await resolveCommandGuard((event as { cwd?: string }).cwd ?? process.cwd()),
     });
   });
 
@@ -134,10 +139,11 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
   pi.on("session_start", async (_event, ctx: ExtensionContext) => {
     teardown?.();
     teardown = undefined;
+    current = undefined;
     const myGeneration = ++generation;
 
     const clock = resolveClock();
-    const registry = resolveShellRegistry(clock);
+    let registry = resolveShellRegistry(clock);
     const runToken = randomUUID();
 
     resolveWindowReady()
@@ -145,6 +151,7 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
         // session_shutdown 或更晚一次 session_start 可能在 windowReady 兑现前就已发生，此时这次会话已经过期
         if (myGeneration !== generation) return;
 
+        registry = window.shellRegistry ?? registry;
         const host: Host = { kind: "main", id: window.windowId };
 
         const repoEntries = window.workspace.repos

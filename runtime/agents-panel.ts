@@ -87,7 +87,7 @@ export interface MountAgentsPanelCtx {
   mode?: string;
   hasUI?: boolean;
   ui?: {
-    setWidget?: (key: string, content: unknown, options?: { placement?: string }) => void;
+    setWidget?: import("@earendil-works/pi-coding-agent").ExtensionUIContext["setWidget"];
     onTerminalInput?: (handler: (data: string) => { consume?: boolean; data?: string } | undefined) => () => void;
   };
 }
@@ -403,6 +403,7 @@ export function createAgentsPanel(options: AgentsPanelOptions): AgentsPanel {
 const FOOTER_WIDGET_KEY = "agents-panel";
 
 interface HostTuiLike {
+  terminal?: { rows: number };
   mode?: CaptureMode;
   hasOverlay?: () => boolean;
   getFocusedComponent?: () => { isShowingAutocomplete?: () => boolean } | null | undefined;
@@ -418,8 +419,8 @@ export function mountAgentsPanel(ctx: MountAgentsPanelCtx, options: AgentsPanelO
     return { mounted: false, reason: "宿主缺少 setWidget/onTerminalInput 能力，无法挂载面板" };
   }
 
-  const panel = createAgentsPanel(options);
   let boundTui: HostTuiLike | undefined;
+  const panel = createAgentsPanel({ ...options, availableRows: options.availableRows ?? (() => Math.max(3, (boundTui?.terminal?.rows ?? process.stdout.rows ?? 24) - 8)) });
 
   const host: MountAgentsPanelHost = {
     isOverlayOpen: () => boundTui?.hasOverlay?.() ?? false,

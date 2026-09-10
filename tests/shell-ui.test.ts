@@ -4,11 +4,15 @@ import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
-import shellUiExtension, { openShellUiPage } from "../extensions/shell-ui.ts";
+import installShellUi, { openShellUiPage } from "../extensions/shell-ui.ts";
 import type { ShellUiDeps } from "../extensions/shell-ui.ts";
 import agentsUiExtension from "../extensions/agents-ui.ts";
 import type { AgentsUiDeps } from "../extensions/agents-ui.ts";
 import { currentDock } from "../extensions/lifecycle.ts";
+
+function shellUiExtension(pi: Parameters<typeof installShellUi>[0], deps: ShellUiDeps = {}) {
+  installShellUi(pi, { commandGuard: async () => ({ before: async () => undefined, after: async () => [] }), ...deps });
+}
 
 interface FakeTimeSource extends TimeSource {
   advance(ms: number): void;

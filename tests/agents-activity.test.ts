@@ -807,9 +807,9 @@ describe("各状态按钮集合", () => {
     }
   });
 
-  test("已终止（完成/失败/停止）无可用按钮", () => {
+  test("已终止（完成/失败/停止）可查看历史", () => {
     for (const state of ["completed", "failed", "stopped"]) {
-      expect(buttonsFor(state)).toEqual([]);
+      expect(buttonsFor(state)).toEqual(["view"]);
     }
   });
 

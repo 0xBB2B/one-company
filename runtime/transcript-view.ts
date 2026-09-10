@@ -1,3 +1,4 @@
+import { RunStore, isTerminalState } from "./run-store.ts";
 import { isKeyRelease, matchesKey, sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
 import { readTranscript } from "./session-records.ts";
 import type { TranscriptEntry, TranscriptEntryKind } from "./session-records.ts";
@@ -5,14 +6,10 @@ import type { Clock, TimerHandle } from "./clock.ts";
 
 const POLL_INTERVAL_MS = 1_000;
 
-// 保留 \n：换行承载分行语义；其余 C0/C1（含 ESC）会破坏渲染宽度计算，需清除
 const CONTROL_CHARS = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/g;
-const TAB_EXPANSION = "    ";
 
 function normalizeText(text: string): string {
-  const withoutCr = text.replace(/\r\n/g, "\n").replace(/\r/g, "");
-  const withoutTabs = withoutCr.replace(/\t/g, TAB_EXPANSION);
-  return withoutTabs.replace(CONTROL_CHARS, "");
+  return text.replace(CONTROL_CHARS, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 // 用 sliceByColumn 逐段取正好 width 列的子串：只搬运原文字符，不产生省略号/ANSI
@@ -42,7 +39,7 @@ const MIN_BUDGET_ROWS = 5;
 
 // 总预算（含末尾状态行）随宿主整屏行数打对折，但不超过实际有多少行内容可显示，也不低于一个可用下限
 function renderBudget(rows: number, naturalContentLines: number): number {
-  const cap = Math.max(MIN_BUDGET_ROWS, Math.floor(rows / 2));
+  const cap = Math.min(Math.max(1, rows), Math.max(MIN_BUDGET_ROWS, Math.floor(rows / 2)));
   return Math.min(naturalContentLines + 1, cap);
 }
 
@@ -306,6 +303,8 @@ export async function openTranscriptView(options: OpenTranscriptViewOptions): Pr
 
   try {
     activeRunId = runId;
+    const storedRun = await new RunStore({ dataRoot, repoId, daemonStartedAt: "transcript-view" }).get(runId);
+    let ended = storedRun.ok && isTerminalState(storedRun.run.state);
     const localResult = safeReadTranscript({ dataRoot, repoId, runId });
     const localEntries = localResult.ok ? localResult.entries : [];
     const lastSeq = localEntries[localEntries.length - 1]?.seq ?? 0;
@@ -329,37 +328,36 @@ export async function openTranscriptView(options: OpenTranscriptViewOptions): Pr
           ctx.ui.notify(`会话记录读取失败：${localResult.detail}`, "error");
           return view;
         }
-        if (localResult.ended) {
-          // 已结束是终态：不会再有新增量，订阅与轮询都没有意义
-          view.setStatus("ended");
-          return view;
-        }
+        if (ended) { view.setStatus("ended"); return view; }
         view.setStatus("running");
 
+        unsubscribeLive = client.subscribe("transcript", (data) => {
+          const payload = data as { runId?: string } & TranscriptDeltaInput;
+          if (!closed && payload.runId === runId) {
+            if ((data as { ended?: boolean }).ended) { ended = true; view.setStatus("ended"); }
+            else view.appendDelta(payload);
+          }
+        });
         client.call("subscribe.transcript", { runId, fromSeq: lastSeq }).then(
           (result) => {
             const remoteEntries = result.entries as TranscriptEntry[] | undefined;
             if (remoteEntries) view.loadFromRecord(remoteEntries);
-            if (result.ended) view.setStatus("ended");
+            if (result.ended) { ended = true; view.setStatus("ended"); }
             subscriptionId = result.subscriptionId as string | undefined;
             if (closed) {
               // 关闭发生在订阅兑现之前：不再建立监听，只把服务端侧的订阅收尾掉
               if (subscriptionId) client.call("unsubscribe", { subscriptionId }).catch(() => {});
               return;
             }
-            unsubscribeLive = client.subscribe("transcript", (data) => {
-              const payload = data as { runId?: string } & TranscriptDeltaInput;
-              if (payload.runId !== runId) return;
-              view.appendDelta(payload);
-            });
+
           },
           () => {
-            if (!closed) view.setStatus("unreachable");
+            if (!closed && !ended) view.setStatus("unreachable");
           },
         );
 
         pollHandle = clock.setIntervalExcludingSleep(() => {
-          if (client.state().status === "unreachable") view.setStatus("unreachable");
+          if (!ended && client.state().status === "unreachable") view.setStatus("unreachable");
         }, POLL_INTERVAL_MS);
 
         return view;
