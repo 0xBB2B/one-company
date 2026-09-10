@@ -463,16 +463,20 @@ describe("git 判定不依赖环境", () => {
     }
   });
 
-  test("git 不可用时工作区发现与仓库判定拒绝并说明原因而不是返回空", async () => {
+  test("PATH 无 Git 时仍通过可信 Git 正确发现工作区和判定仓库", async () => {
     const workspace = await createWorkspaceFixture();
     repoFixtures.push(workspace);
     const previous = process.env.PATH;
     process.env.PATH = join(workspace.root, "empty-bin");
     try {
-      await expect(isInsideRepository(workspace.repos[0]!)).rejects.toThrow("git");
-      await expect(discoverWorkspace(workspace.root)).rejects.toThrow("git");
+      expect(await isInsideRepository(workspace.repos[0]!)).toBe(true);
+      expect(await isInsideRepository(workspace.root)).toBe(false);
+      const discovered = await discoverWorkspace(workspace.root);
+      expect(discovered.repos.map((repo) => repo.path).sort()).toEqual([...workspace.repos].sort());
+      expect(discovered.skipped).toEqual([]);
     } finally {
-      process.env.PATH = previous!;
+      if (previous === undefined) delete process.env.PATH;
+      else process.env.PATH = previous;
     }
   });
 
