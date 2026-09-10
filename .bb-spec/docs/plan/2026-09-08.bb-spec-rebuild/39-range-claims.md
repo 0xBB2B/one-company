@@ -58,15 +58,15 @@ kind=main：窗口登记表 holderGone 成立（已注销 / 心跳过期且开�
 | `RangeClaims.release` | 持有者释放：校验调用方持有者与记录一致，不一致拒绝；释放前记录交付指纹到 `released`；重复释放幂等返回未持有 |
 | `RangeClaims.wait` | 轮询等待指定范围释放，可取消；持有者必填，结束或取消时只移除本方条目（清理失败不改写原始取消原因）；返回受阻原因文本 |
 | `RangeClaims.holderOf` | 查询某路径当前持有者 |
-| `RangeClaims.releaseIfHolderGone` | 对指定占用按持有者种类核对机械证据（探针合计预算约 2 秒，小于数据库忙等待上限）：成立即自动释放并返回证据种类；不成立、探针抛错或超时、记录缺少持有者标识时保留并返回原因 |
+| `RangeClaims.releaseIfHolderGone` | 对指定占用按持有者种类核对机械证据（探针合计预算约 2 秒，小于数据库忙等待上限）：成立即自动释放并返回证据种类；占用已被其他调用释放时幂等返回已释放；不成立、探针抛错或超时、记录缺少持有者标识时保留并返回原因 |
 | `RangeClaims.releaseByUser` | 用户显式释放：要求决定编号，释放并把编号写入释放记录；写决策记录由调用方负责 |
 | `overlaps` | 判断两个范围集合是否重叠（文件、目录前缀） |
 | `fingerprint` | 计算范围内文件内容指纹：目录递归并为目录范围写一个清单散列键，指向目录的符号链接按目标串参与不递归，FIFO/设备文件记 nonfile:<类型>，不存在记 absent |
 | `verifyFingerprint` | 接手前比对指纹，变化则返回差异清单（含目录范围内新增与删除的文件、类型变化；每项只报一次；目录清单散列只覆盖真实文件键，嵌套目录范围顺序无关） |
 
 ## 协作关系
-- 依赖 `runtime/identity.ts`、`runtime/database.ts`（短事务与版本条件更新）、`runtime/windows.ts`（`holderGone`）、`runtime/run-store.ts`（运行状态）、`runtime/clock.ts`；"运行活动任务查询"由守护进程用 `runtime/shell-registry.ts` 实现、窗口侧经 `shells.list` 实现后注入。
-- 由 `runtime/write-guard.ts`、`daemon/run-manager.ts`（派工前申请任务写入范围，运行结束后 `releaseIfHolderGone`）、`extensions/lifecycle.ts`（主会话文档编辑范围）使用；Agents 面板与 Shell 管理页对保留占用提供"显式释放"入口，先写决策记录再调用 `releaseByUser`。
+- 依赖 `runtime/identity.ts`、`runtime/database.ts`（短事务与版本条件更新）、`runtime/windows.ts`（`holderGone`）、`runtime/run-store.ts`（运行状态）、`runtime/clock.ts`；"运行活动任务查询"由 `createRangeProtection` 同时核对宿主内存任务与仓库 SQLite 中尚未清理的 Shell 登记，避免窗口提前释放后台运行的范围。
+- `runtime/range-protection.ts` 组合占用与文件、命令检查，由 `daemon/run-manager.ts` 和 `extensions/write-protection.ts` 接入。用户显式释放仍需接入主会话工具或界面：先核验用户决定及范围归属，再调用 `releaseByUser`；目前该内部函数只有单元测试调用。
 
 ## 验证方式
 - 测试入口：`RangeClaims`（临时数据目录；并发用两个真实子进程各自调用 `claim`；注入运行记录、窗口登记表与活动任务桩）
@@ -82,7 +82,7 @@ kind=main：窗口登记表 holderGone 成立（已注销 / 心跳过期且开�
 - [x] 整体申请与局部等待
 - [x] 交叉范围不互等
 - [x] 机械证据自动释放与不成立保留
-- [x] 用户显式释放
-- [x] 指纹核对
+- [ ] 用户显式释放：内部函数已验证，用户入口与决定核验尚未接入
+- [ ] 接手前核对：指纹函数已验证，交接时强制重读与核对仍需接入
 
 占用、等待、已释放记录分别存 `range_claims`、`range_waiting`、`range_released` 命名空间，每条记录主键 UUIDv7；聚合视图不另行持久化。

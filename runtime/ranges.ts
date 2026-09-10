@@ -529,13 +529,13 @@ export class RangeClaims {
 
   async releaseIfHolderGone(claimId: string): Promise<ReleaseIfHolderGoneResult> {
     const observed = this.readDoc().claims.find((record) => record.claimId === claimId);
-    if (!observed) throw new Error(`未知的 claimId: ${claimId}`);
+    if (!observed) return { released: true, evidence: "already-released" };
     const evidenceResult = await this.evaluateHolderGone(observed.holder);
     if (!evidenceResult.gone) return { released: false, reason: evidenceResult.reason };
     const deliveryFingerprints = Object.keys(observed.fingerprints).length === 0 ? {} : await fingerprint(this.repoRoot, observed.paths);
     return this.mutateDoc((doc) => {
       const index = doc.claims.findIndex((c) => c.claimId === claimId);
-      if (index === -1) throw new Error(`未知的 claimId: ${claimId}`);
+      if (index === -1) return { released: true, evidence: "already-released" };
       const record = doc.claims[index];
       if (JSON.stringify(record) !== JSON.stringify(observed)) throw new Error("占用已变化，请重新核对");
       doc.claims.splice(index, 1);

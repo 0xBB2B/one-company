@@ -7,16 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createClock } from "../runtime/clock.ts";
-import { collectGitSnapshot } from "../runtime/git-snapshot.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { WindowRegistry } from "../runtime/windows.ts";
 import {
   activeForeignHosts,
-  reviewSnapshot,
   scopedCommitPaths,
   snapshotBranchState,
   verifyBranchState,
-  verifySnapshot,
 } from "../runtime/branch-guard.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
@@ -75,21 +72,6 @@ async function captureBranchSnapshot(repoRoot: string): Promise<BranchSnapshot> 
   const head = (await runGit(["rev-parse", "HEAD"], repoRoot)).trim();
   const rawBranch = (await runGit(["rev-parse", "--abbrev-ref", "HEAD"], repoRoot)).trim();
   return { head, branch: rawBranch === "HEAD" ? null : rawBranch };
-}
-
-async function withBlockingGitOnPath<T>(fn: () => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), "shared-branch-guard-fake-git-"));
-  const scriptPath = join(dir, "git");
-  await writeFile(scriptPath, "#!/bin/sh\nsleep 30\n");
-  await chmod(scriptPath, 0o755);
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${dir}:${originalPath ?? ""}`;
-  try {
-    return await fn();
-  } finally {
-    process.env.PATH = originalPath;
-    await rm(dir, { recursive: true, force: true });
-  }
 }
 
 // 假 git：rev-parse 走真实语义（固定值即可，snapshotBranchState 只关心 head/branch），
@@ -415,64 +397,5 @@ describe("scopedCommitPaths：提交范围只含本任务获准的路径", () =>
 
     const result = await scopedCommitPaths({ repoRoot: repo.root, writePaths: [] });
     expect(result.paths).toEqual([]);
-  });
-});
-
-describe("reviewSnapshot/verifySnapshot：远端写入前审查现场必须一致", () => {
-  test("现场未变化：verifySnapshot 判一致", async () => {
-    const repo = await makeRepoWithFiles();
-    const snapshot = await reviewSnapshot({ repoRoot: repo.root });
-
-    const result = await verifySnapshot({ repoRoot: repo.root, snapshot });
-    expect(result.consistent).toBe(true);
-  });
-
-  test("采集快照后修改一个未跟踪文件：verifySnapshot 判不一致", async () => {
-    const repo = await makeRepoWithFiles();
-    await writeFile(join(repo.root, "untracked-during-review.txt"), "审查期间新增\n");
-    const snapshot = await reviewSnapshot({ repoRoot: repo.root });
-    await writeFile(join(repo.root, "untracked-during-review.txt"), "又被改了\n");
-
-    const result = await verifySnapshot({ repoRoot: repo.root, snapshot });
-    expect(result.consistent).toBe(false);
-  });
-
-  test("边界：远端写入前重新采集的快照也必须一致，分支被切换后判不一致", async () => {
-    const repo = await makeBranchedRepo();
-    const snapshot = await reviewSnapshot({ repoRoot: repo.root });
-    await runGit(["switch", "other"], repo.root);
-
-    const result = await verifySnapshot({ repoRoot: repo.root, snapshot });
-    expect(result.consistent).toBe(false);
-  });
-
-  test("错误场景：现场持续变化时连续两次核对均不一致，不假报通过", async () => {
-    const repo = await makeRepoWithFiles();
-    const firstSnapshot = await reviewSnapshot({ repoRoot: repo.root });
-    await writeFile(join(repo.root, "flapping.txt"), "v1\n");
-    const firstResult = await verifySnapshot({ repoRoot: repo.root, snapshot: firstSnapshot });
-    expect(firstResult.consistent).toBe(false);
-
-    const secondSnapshot = await reviewSnapshot({ repoRoot: repo.root });
-    await writeFile(join(repo.root, "flapping.txt"), "v2\n");
-    const secondResult = await verifySnapshot({ repoRoot: repo.root, snapshot: secondSnapshot });
-    expect(secondResult.consistent).toBe(false);
-  });
-
-  test("错误场景：git 子进程超时（可注入 gitTimeoutMs）时返回不一致而不抛，原因含“无法采集”", async () => {
-    const repo = await makeRepoWithFiles();
-    const snapshot = await reviewSnapshot({ repoRoot: repo.root });
-
-    const result = await withBlockingGitOnPath(() => verifySnapshot({ repoRoot: repo.root, snapshot, gitTimeoutMs: 200 }));
-
-    expect(result.consistent).toBe(false);
-    expect(result.reason ?? "").toContain("无法采集");
-  }, 15_000);
-
-  test("reviewSnapshot 的 fingerprint 与直接调用 collectGitSnapshot 得到的一致（共享同一算法，不重复实现）", async () => {
-    const repo = await makeRepoWithFiles();
-    const viaCollect = await collectGitSnapshot({ repoRoot: repo.root });
-    const viaReview = await reviewSnapshot({ repoRoot: repo.root });
-    expect(viaReview.fingerprint).toBe(viaCollect.fingerprint);
   });
 });

@@ -11,7 +11,7 @@ import { currentBootId, processStartedAt, WindowRegistry } from "./windows.ts";
 import { resolveRealRepoPath, snapshotForeignRanges, verifyAfterCommand, invalidateValidations } from "./write-guard.ts";
 import { activeForeignHosts, scopedCommitPaths, snapshotBranchState, verifyBranchState } from "./branch-guard.ts";
 import { createManagedBashOperations } from "./shell-bash.ts";
-import { uuidv7 } from "./database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import { parseChangedEntries } from "./git-snapshot.ts";
 import type { Clock } from "./clock.ts";
 import type { ShellRegistry } from "./shell-registry.ts";
@@ -28,7 +28,11 @@ export async function createRangeProtection(input: {
   const claims = new RangeClaims({ repoDir, repoRoot: input.cwd, clock: input.clock,
     runState: async (id) => { const run = await runs.get(id); if (!run.ok) throw new Error(`范围持有者不可读: ${id}`); return run.run.state; },
     holderGone: (id) => windows.holderGone(id),
-    activeShellTasks: async (id) => input.shells.list().filter((task) => task.host.runId === id && ["starting", "running", "stopping", "uncertain"].includes(task.status)).length,
+    activeShellTasks: async (id) => {
+      const local = input.shells.list().filter((task) => task.host.runId === id && ["starting", "running", "stopping", "uncertain"].includes(task.status));
+      const persisted = withDatabase(repositoryDatabase(input.dataRoot, identity.repoId), (db) => db.list<{ host: { runId?: string } }>("shells").filter((record) => record.data.host.runId === id));
+      return local.length + persisted.length;
+    },
   });
   const owned = new Map<string, string>();
   const normalize = async (path: string) => {

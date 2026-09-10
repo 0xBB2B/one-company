@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { changedEntries, collectGitSnapshot } from "./git-snapshot.ts";
-import type { ChangedEntry, GitSnapshot } from "./git-snapshot.ts";
+import { changedEntries } from "./git-snapshot.ts";
+import type { ChangedEntry } from "./git-snapshot.ts";
 import { overlaps } from "./ranges.ts";
 import { RUNNING_LIKE_STATES } from "./run-store.ts";
 import type { RunStore } from "./run-store.ts";
@@ -122,30 +122,4 @@ export async function scopedCommitPaths(input: { repoRoot: string; writePaths: s
     }
   }
   return { paths, blocked };
-}
-
-export type ReviewSnapshot = GitSnapshot;
-
-export async function reviewSnapshot(input: { repoRoot: string }): Promise<ReviewSnapshot> {
-  return collectGitSnapshot({ repoRoot: input.repoRoot });
-}
-
-export async function verifySnapshot(input: {
-  repoRoot: string;
-  snapshot: ReviewSnapshot;
-  gitTimeoutMs?: number;
-}): Promise<{ consistent: boolean; reason?: string }> {
-  let current: ReviewSnapshot;
-  try {
-    current = await collectGitSnapshot({ repoRoot: input.repoRoot, gitTimeoutMs: input.gitTimeoutMs });
-  } catch (error) {
-    return { consistent: false, reason: `无法采集现场：${(error as Error).message}` };
-  }
-  if (current.head !== input.snapshot.head || current.branch !== input.snapshot.branch) {
-    return { consistent: false, reason: "分支现场已变化" };
-  }
-  if (current.fingerprint !== input.snapshot.fingerprint) {
-    return { consistent: false, reason: "工作区内容已变化" };
-  }
-  return { consistent: true };
 }
