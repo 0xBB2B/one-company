@@ -91,8 +91,8 @@ export async function checkWrite(input: {
   return { allowed: true };
 }
 
-async function foreignIntersection(repoRoot: string, claims: RangeClaims, holder: Holder): Promise<string[]> {
-  const changed = await changedPaths(repoRoot);
+async function foreignIntersection(repoRoot: string, claims: RangeClaims, holder: Holder, paths?: string[]): Promise<string[]> {
+  const changed = paths ?? await changedPaths(repoRoot);
   const foreign: string[] = [];
   for (const path of changed) {
     const occupant = await claims.holderOf(path);
@@ -116,8 +116,9 @@ export async function verifyAfterCommand(input: {
   claims: RangeClaims;
   holder: Holder;
   snapshot: Record<string, string>;
+  changedPaths?: string[];
 }): Promise<string[]> {
-  const foreignNow = await foreignIntersection(input.repoRoot, input.claims, input.holder);
+  const foreignNow = await foreignIntersection(input.repoRoot, input.claims, input.holder, input.changedPaths);
   const violations: string[] = [];
   for (const path of foreignNow) {
     if (!(path in input.snapshot)) violations.push(path);

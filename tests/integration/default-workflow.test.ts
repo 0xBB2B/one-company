@@ -59,6 +59,8 @@ test("默认完整工作流：规划真文件、用户确认、合法提交、�
   await exec("git", ["add", "."], { cwd: repo.root, env: GIT_ENV });
   await exec("git", ["commit", "-m", "准备需求定义"], { cwd: repo.root, env: GIT_ENV });
 
+  await exec("git", ["config", "user.name", "Test"], { cwd: repo.root, env: GIT_ENV });
+  await exec("git", ["config", "user.email", "test@example.test"], { cwd: repo.root, env: GIT_ENV });
   const { repoId } = await repositoryIdentity(repo.root);
   const ctx = { dataRoot: home.dataRoot, cwd: repo.root, requirement };
   const clock = createClock(); cleanup.push(async () => clock.stopGapWatcher());
@@ -120,7 +122,7 @@ test("默认完整工作流：规划真文件、用户确认、合法提交、�
   await workflow("advance", { stage: "executing" });
   const check = 'const {execFileSync}=require("node:child_process");require("node:assert/strict").equal(execFileSync(process.execPath,["app.js"],{encoding:"utf8"}),"hello\\n");\n';
   const work = { phase: "work", verdict: "PASS", summary: "输出 hello", issues: [], evidence: ["verify.cjs:1"], changeKind: "behavior-change", workState: "red-green", coverage: [{ ref: "demo/greeting/AC-1", test: "verify.cjs:1" }], redCommands: [{ command: verify, status: "failed", details: "old 不等于 hello" }], greenCommands: [{ command: verify, status: "passed", details: "输出匹配" }], changedFiles: ["app.js", "verify.cjs"], productionPath: ["app.js"], preexistingEvidence: [], fakeRed: false };
-  scriptReplies(providers.worker!, [tool("write", { path: "verify.cjs", content: check }), tool("bash", { command: verify }), tool("write", { path: "app.js", content: 'console.log("hello");\n' }), tool("bash", { command: verify }), tool("bash", { command: "git add app.js verify.cjs && git -c user.name=Test -c user.email=test@example.test commit -m '实现问候'" }), tool("structured_output", work), text("完成")]);
+  scriptReplies(providers.worker!, [tool("write", { path: "verify.cjs", content: check }), tool("bash", { command: verify }), tool("write", { path: "app.js", content: 'console.log("hello");\n' }), tool("bash", { command: verify }), tool("pi_company_git_commit", { paths: ["app.js", "verify.cjs"], message: "实现问候" }), tool("structured_output", work), text("完成")]);
   const worker = await roleRun("worker", "T-1", ["app.js", "verify.cjs"]);
   const workerSession = openSessionManagerForRun({ dataRoot: home.dataRoot, repoId, runId: worker.id });
   if (!workerSession.ok) throw new Error(workerSession.detail);

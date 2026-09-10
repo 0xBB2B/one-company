@@ -111,7 +111,7 @@ export interface ChangedEntry {
 
 // 重命名条目在 -z 输出里是"新路径"与"不带前缀的旧路径"两个连续段：两者算一次改动，
 // 旧路径若命中获准范围就得带着新路径一起放行，否则改名后的文件反而没法提交
-function parseChangedEntries(status: Buffer): ChangedEntry[] {
+export function parseChangedEntries(status: Buffer): ChangedEntry[] {
   const raw = status.toString("utf8").split("\0").filter((entry) => entry.length > 0);
   const entries: ChangedEntry[] = [];
   for (let i = 0; i < raw.length; i++) {

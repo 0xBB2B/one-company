@@ -24,12 +24,15 @@ import { ResultCollector } from "../runtime/result.ts";
 import type { Phase } from "../runtime/result.ts";
 import { createSessionManagerForRun, openSessionManagerForRun } from "../runtime/session-records.ts";
 import { createManagedBashTool } from "../runtime/shell-bash.ts";
+import { createGitCommitTool } from "../runtime/git-commit-tool.ts";
+import type { CommitPaths } from "../runtime/git-commit-tool.ts";
 import type { Host, ShellRegistry, StopResult } from "../runtime/shell-registry.ts";
 import type { Clock, TimerHandle } from "../runtime/clock.ts";
 
 const execFileAsync = promisify(execFile);
 
 export interface RoleSessionGuards {
+  commit?: CommitPaths;
   commandGuard?: import("../runtime/shell-bash.ts").BashCommandGuard;
   release?: () => Promise<void>;
   checkWrite(path: string): Promise<{ ok: true } | { ok: false; reason: string }>;
@@ -220,6 +223,7 @@ export async function checkToolCall(event: ToolCallEvent, ctx: CheckToolCallCont
   if (ctx.verifying() && !READ_ONLY_TOOL_NAMES.has(event.toolName) && event.toolName !== "pi_company_resume_check") {
     return { block: true, reason: "核对期内仅允许只读操作" };
   }
+  if (event.toolName === "pi_company_git_commit" && ctx.readOnlyRole) return { block: true, reason: "只读角色不允许提交" };
   if (READ_ONLY_TOOL_NAMES.has(event.toolName)) {
     const path = extractPath(event.input, ctx.cwd);
     if (!(await withinScope(ctx.cwd, path, [...ctx.readPaths, ...ctx.writePaths]))) {
@@ -739,6 +743,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     noContextFiles: !definition.contextFiles,
     noExtensions: true,
     extensionFactories: [extensionFactory, (pi) => {
+      if (!readOnlyRole && options.guards.commit) pi.registerTool(createGitCommitTool(async () => options.guards.commit!));
       pi.registerTool({
         name: "pi_company_resume_check", label: "核对中断现场", description: "读取本运行 Shell 状态及工作区真实差异，完成恢复前的机械核对", parameters: Type.Object({}, { additionalProperties: false }),
         async execute() {
@@ -756,6 +761,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   await resourceLoader.reload();
 
   const activeToolNames = ["pi_company_resume_check", ...definition.tools, ...(usesStructuredOutput ? ["structured_output"] : [])];
+  if (!readOnlyRole && options.guards.commit && definition.tools.includes("bash")) activeToolNames.push("pi_company_git_commit");
   if (options.mcp) activeToolNames.push("mcp");
 
   const sdkSettings = SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });

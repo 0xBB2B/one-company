@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { changedEntries, collectGitSnapshot } from "./git-snapshot.ts";
-import type { GitSnapshot } from "./git-snapshot.ts";
+import type { ChangedEntry, GitSnapshot } from "./git-snapshot.ts";
 import { overlaps } from "./ranges.ts";
 import { RUNNING_LIKE_STATES } from "./run-store.ts";
 import type { RunStore } from "./run-store.ts";
@@ -108,8 +108,8 @@ export interface ScopedCommitResult {
   blocked: ScopedCommitBlocked[];
 }
 
-export async function scopedCommitPaths(input: { repoRoot: string; writePaths: string[] }): Promise<ScopedCommitResult> {
-  const entries = await changedEntries(input.repoRoot);
+export async function scopedCommitPaths(input: { repoRoot: string; writePaths: string[]; entries?: ChangedEntry[] }): Promise<ScopedCommitResult> {
+  const entries = input.entries ?? await changedEntries(input.repoRoot);
   const paths: string[] = [];
   const blocked: ScopedCommitBlocked[] = [];
   for (const entry of entries) {

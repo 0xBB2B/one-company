@@ -250,6 +250,7 @@ export class RunManager {
     })();
     return {
       checkWrite: async (path) => (await get()).checkWrite(path),
+      commit: async (paths, message, signal) => (await get()).commit(paths, message, signal),
       fingerprint: (paths) => rangesFingerprint(cwd, paths),
       verifyFingerprint: (fp) => rangesVerifyFingerprint(cwd, fp),
       commandGuard: { launch: async (command, commandCwd) => (await get()).commandGuard.launch!(command, commandCwd), before: async () => (await get()).commandGuard.before(), after: async (token, outcome) => (await get()).commandGuard.after(token, outcome) },

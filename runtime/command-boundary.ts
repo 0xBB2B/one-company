@@ -36,7 +36,7 @@ export async function commandBoundary(input: { cwd: string; writePaths: string[]
   };
 }
 
-export function sandboxLaunch(command: string, boundary: CommandBoundary) {
+export function sandboxLaunch(command: string, boundary: CommandBoundary, executable?: { path: string; args: string[] }) {
   if (process.platform !== "darwin") throw new Error("此平台尚无可用的命令文件隔离后端，已拒绝不受保护的执行");
   const subpaths = (paths: string[]) => paths.map((path) => `(subpath ${JSON.stringify(path)})`).join(" ");
   const ancestors = new Set<string>();
@@ -53,7 +53,8 @@ export function sandboxLaunch(command: string, boundary: CommandBoundary) {
     `(allow file-write* ${subpaths(boundary.writeRoots)} (literal "/dev/null") (literal "/dev/tty"))`,
     ...(boundary.deniedReads.length ? [`(deny file-read* ${subpaths(boundary.deniedReads)})`] : []),
     ...(boundary.deniedWrites.length ? [`(deny file-write* ${subpaths(boundary.deniedWrites)})`] : []),
+    ...(executable ? [`(deny process-exec (require-not (literal ${JSON.stringify(executable.path)})))`] : []),
   ].join("\n");
   const env = Object.fromEntries(["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "GIT_CEILING_DIRECTORIES"].flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
-  return { inheritEnv: false, command: "/usr/bin/sandbox-exec", args: ["-p", profile, "/bin/sh", "-c", command], env: { ...env, TMPDIR: boundary.scratch, TMP: boundary.scratch, TEMP: boundary.scratch } };
+  return { inheritEnv: false, command: "/usr/bin/sandbox-exec", args: ["-p", profile, ...(executable ? [executable.path, ...executable.args] : ["/bin/sh", "-c", command])], env: { ...env, GIT_OPTIONAL_LOCKS: "0", TMPDIR: boundary.scratch, TMP: boundary.scratch, TEMP: boundary.scratch } };
 }

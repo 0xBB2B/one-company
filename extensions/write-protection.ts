@@ -4,6 +4,7 @@ import { createClock } from "../runtime/clock.ts";
 import { dataRoot, repositoryIdentity } from "../runtime/identity.ts";
 import { createRangeProtection } from "../runtime/range-protection.ts";
 import { windowReady } from "./lifecycle.ts";
+import { createGitCommitTool } from "../runtime/git-commit-tool.ts";
 
 let generation = 0;
 const protections = new Map<string, Promise<Awaited<ReturnType<typeof createRangeProtection>>>>();
@@ -25,6 +26,7 @@ export async function mainWriteProtection(cwd: string) {
 }
 
 export default function writeProtectionExtension(pi: ExtensionAPI): void {
+  pi.registerTool(createGitCommitTool(async (cwd) => (await mainWriteProtection(cwd)).commit));
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "write" && event.toolName !== "edit") return;
     const protection = await mainWriteProtection(ctx.cwd);
