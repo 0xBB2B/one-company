@@ -1,3 +1,5 @@
+import { withDatabase, repositoryDatabase, uuidv7 } from "../runtime/database.ts";
+import { readDecisions, decisionStream } from "../runtime/decisions.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Value } from "typebox/value";
 import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -6,7 +8,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
-import { repositoryIdentity, requirementDataDir } from "../runtime/identity.ts";
+import { repositoryIdentity } from "../runtime/identity.ts";
 import decisionRecordExtension, { describeReceipt } from "../extensions/decision-record.ts";
 
 const REQUIREMENT = "2026-09-08.fixture";
@@ -175,8 +177,8 @@ describe("decision_record execute", () => {
     expect(result.content[0]?.type).toBe("text");
     const text = (result.content[0] as { text: string }).text;
     expect(text.startsWith("已记录 AI-001")).toBe(true);
-    expect(text).toContain("ai-decisions.jsonl");
-    expect(text).toMatch(/第\s*1\s*行/);
+    expect(text).toContain(result.details.receipt.recordId);
+    expect(text).toContain("序号 1");
   });
 
   test("含未知字段的参数执行时返回 isError 且不抛出", async () => {
@@ -259,8 +261,8 @@ describe("decision_record execute", () => {
     const ctx = fakeCtx({ cwd: repo.root });
 
     const first = await withTempEnv(home, () => def.execute("call-1", validAiParams(), undefined, undefined, ctx));
-    const ledgerPath = (first.details as any).receipt.ledgerPath as string;
-    await appendFile(ledgerPath, '{"broken": true, "x": 1}\n', "utf8");
+    const identity = await repositoryIdentity(repo.root);
+    withDatabase(repositoryDatabase(home.dataRoot, identity.repoId), (db) => db.append(decisionStream(REQUIREMENT, "ai"), { broken: true }));
 
     const result = await withTempEnv(home, () => def.execute("call-1", validAiParams(), undefined, undefined, ctx));
 
@@ -282,8 +284,7 @@ describe("decision_record execute", () => {
 
     expect((result as any).details.isError).toBe(true);
     const identity = await repositoryIdentity(repo.root);
-    const ledgerPath = join(requirementDataDir(home.dataRoot, identity.repoId, REQUIREMENT), "ai-decisions.jsonl");
-    await expect(readFile(ledgerPath, "utf8")).rejects.toThrow();
+    expect(await readDecisions({ dataRoot: home.dataRoot, cwd: repo.root, requirement: REQUIREMENT, actor: "ai" })).toEqual([]);
   });
 });
 
@@ -296,12 +297,12 @@ describe("describeReceipt", () => {
       actor: "ai" as const,
       repoId: "repo123",
       requirement: REQUIREMENT,
-      ledgerPath: "/data/ai-decisions.jsonl",
-      lineNumber: 1,
+      recordId: "01a089ac-3b45-7448-afea-e0143b58fcdc",
+      sequence: 1,
       decisionHash: "hash",
       recordedAt: "2026-09-08T00:00:00.000Z",
     };
 
-    expect(describeReceipt(receipt)).toBe("已记录 AI-001：/data/ai-decisions.jsonl 第 1 行");
+    expect(describeReceipt(receipt)).toBe("已记录 AI-001：记录 01a089ac-3b45-7448-afea-e0143b58fcdc，序号 1");
   });
 });

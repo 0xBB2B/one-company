@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFile, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
-import { repositoryIdentity, requirementDataDir } from "../runtime/identity.ts";
-import { appendLine, fileFingerprint } from "../runtime/store.ts";
+import { repositoryIdentity } from "../runtime/identity.ts";
+import { repositoryDatabase, withDatabase, UUID_V7_PATTERN } from "../runtime/database.ts";
 import {
+  decisionStream,
   appendDecision,
   buildRecord,
   inspectDecision,
@@ -69,9 +70,17 @@ function userInput(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function ledgerPathFor(home: Awaited<ReturnType<typeof createTempHome>>, repoRoot: string, file: "ai-decisions.jsonl" | "user-decisions.jsonl") {
+async function ledgerFor(home: Awaited<ReturnType<typeof createTempHome>>, repoRoot: string, actor: "ai" | "user") {
   const identity = await repositoryIdentity(repoRoot);
-  return join(requirementDataDir(home.dataRoot, identity.repoId, REQUIREMENT), file);
+  return { database: repositoryDatabase(home.dataRoot, identity.repoId), stream: decisionStream(REQUIREMENT, actor) };
+}
+
+function ledgerJson(ref: { database: string; stream: string }): string {
+  return withDatabase(ref.database, (db) => db.events(ref.stream).map((event) => JSON.stringify(event.data)).join("\n"));
+}
+
+function corruptLedger(ref: { database: string; stream: string }): void {
+  withDatabase(ref.database, (db) => db.append(ref.stream, { broken: true, x: 1 }));
 }
 
 describe("validateDecisionInput", () => {
@@ -146,28 +155,27 @@ describe("appendDecision", () => {
     expect(receipt.actor).toBe("ai");
     expect(receipt.repoId).toBe(identity.repoId);
     expect(receipt.requirement).toBe(REQUIREMENT);
-    expect(receipt.lineNumber).toBe(1);
+    expect(receipt.sequence).toBe(1);
 
-    const expectedLedgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    expect(receipt.ledgerPath).toBe(expectedLedgerPath);
-    expect(receipt.ledgerPath.startsWith(repo.root)).toBe(false);
-
-    const raw = await readFile(receipt.ledgerPath, "utf8");
-    const lines = raw.split("\n").filter(Boolean);
-    expect(lines.length).toBe(1);
-    expect(receipt.decisionHash).toBe(createHash("sha256").update(lines[0]!).digest("hex"));
+    expect(receipt.recordId).toMatch(UUID_V7_PATTERN);
+    expect(receipt.receiptId).toMatch(UUID_V7_PATTERN);
+    const ref = await ledgerFor(home, repo.root, "ai");
+    const events = withDatabase(ref.database, (db) => db.events(ref.stream));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.id).toBe(receipt.recordId);
+    expect(receipt.decisionHash).toBe(createHash("sha256").update(JSON.stringify(events[0]!.data)).digest("hex"));
     expect(receipt.recordedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
   });
 
-  test("首次用户决定成功并写入 user-decisions.jsonl", async () => {
+  test("首次用户决定成功并写入用户决策流", async () => {
     const { home, repo } = await setup();
 
     const receipt = await appendDecision(userInput(), { dataRoot: home.dataRoot, cwd: repo.root });
 
     expect(receipt.decisionId).toBe("USER-001");
     expect(receipt.actor).toBe("user");
-    const expectedLedgerPath = await ledgerPathFor(home, repo.root, "user-decisions.jsonl");
-    expect(receipt.ledgerPath).toBe(expectedLedgerPath);
+    const ref = await ledgerFor(home, repo.root, "user");
+    expect(withDatabase(ref.database, (db) => db.events(ref.stream))[0]!.id).toBe(receipt.recordId);
   });
 
   test("AI 决定校验失败时拒绝写入且不产生台账文件", async () => {
@@ -179,8 +187,8 @@ describe("appendDecision", () => {
       "AI 决定必须同时提供 scope、basis、action",
     );
 
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    await expect(readFile(ledgerPath, "utf8")).rejects.toThrow();
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    expect(await readDecisions({ dataRoot: home.dataRoot, cwd: repo.root, requirement: REQUIREMENT, actor: "ai" })).toEqual([]);
   });
 
   test("用户决定携带 basis 时拒绝写入", async () => {
@@ -198,8 +206,8 @@ describe("appendDecision", () => {
 
     await expect(appendDecision(input, { dataRoot: home.dataRoot, cwd: repo.root })).rejects.toThrow(/decision/);
 
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    await expect(readFile(ledgerPath, "utf8")).rejects.toThrow();
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    expect(await readDecisions({ dataRoot: home.dataRoot, cwd: repo.root, requirement: REQUIREMENT, actor: "ai" })).toEqual([]);
   });
 
   test("effects 字段缺失时拒绝写入且报错提及字段名", async () => {
@@ -209,8 +217,8 @@ describe("appendDecision", () => {
 
     await expect(appendDecision(input, { dataRoot: home.dataRoot, cwd: repo.root })).rejects.toThrow(/effects/);
 
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    await expect(readFile(ledgerPath, "utf8")).rejects.toThrow();
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    expect(await readDecisions({ dataRoot: home.dataRoot, cwd: repo.root, requirement: REQUIREMENT, actor: "ai" })).toEqual([]);
   });
 
   test("effects 为空数组时拒绝写入且报错提及字段名", async () => {
@@ -220,8 +228,8 @@ describe("appendDecision", () => {
       /effects/,
     );
 
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    await expect(readFile(ledgerPath, "utf8")).rejects.toThrow();
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    expect(await readDecisions({ dataRoot: home.dataRoot, cwd: repo.root, requirement: REQUIREMENT, actor: "ai" })).toEqual([]);
   });
 
   test("缺少 trigger 字段时拒绝写入且报错提及字段名", async () => {
@@ -231,8 +239,8 @@ describe("appendDecision", () => {
 
     await expect(appendDecision(input, { dataRoot: home.dataRoot, cwd: repo.root })).rejects.toThrow(/trigger/);
 
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    await expect(readFile(ledgerPath, "utf8")).rejects.toThrow();
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    expect(await readDecisions({ dataRoot: home.dataRoot, cwd: repo.root, requirement: REQUIREMENT, actor: "ai" })).toEqual([]);
   });
 
   test("缺少 source 字段时拒绝写入且报错提及字段名", async () => {
@@ -242,47 +250,47 @@ describe("appendDecision", () => {
 
     await expect(appendDecision(input, { dataRoot: home.dataRoot, cwd: repo.root })).rejects.toThrow(/source/);
 
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    await expect(readFile(ledgerPath, "utf8")).rejects.toThrow();
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    expect(await readDecisions({ dataRoot: home.dataRoot, cwd: repo.root, requirement: REQUIREMENT, actor: "ai" })).toEqual([]);
   });
 
   test("supersedes 指向不存在的决定时拒绝且台账不变", async () => {
     const { home, repo } = await setup();
     await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repo.root });
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    const before = await fileFingerprint(ledgerPath);
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    const before = ledgerJson(ledgerPath);
 
     await expect(
       appendDecision(aiInput({ supersedes: ["AI-009"] }), { dataRoot: home.dataRoot, cwd: repo.root }),
     ).rejects.toThrow();
 
-    expect(await fileFingerprint(ledgerPath)).toBe(before);
+    expect(ledgerJson(ledgerPath)).toBe(before);
   });
 
   test("supersedes 指向自身尚未分配的编号时拒绝且台账不变", async () => {
     const { home, repo } = await setup();
     await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repo.root });
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    const before = await fileFingerprint(ledgerPath);
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    const before = ledgerJson(ledgerPath);
 
     await expect(
       appendDecision(aiInput({ supersedes: ["AI-002"] }), { dataRoot: home.dataRoot, cwd: repo.root }),
     ).rejects.toThrow();
 
-    expect(await fileFingerprint(ledgerPath)).toBe(before);
+    expect(ledgerJson(ledgerPath)).toBe(before);
   });
 
   test("supersedes 含重复编号时拒绝且台账不变", async () => {
     const { home, repo } = await setup();
     await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repo.root });
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    const before = await fileFingerprint(ledgerPath);
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    const before = ledgerJson(ledgerPath);
 
     await expect(
       appendDecision(aiInput({ supersedes: ["AI-001", "AI-001"] }), { dataRoot: home.dataRoot, cwd: repo.root }),
     ).rejects.toThrow();
 
-    expect(await fileFingerprint(ledgerPath)).toBe(before);
+    expect(ledgerJson(ledgerPath)).toBe(before);
   });
 
   test("AI 决定 supersedes 引用用户台账中的决定时允许追加且双方记录不变", async () => {
@@ -340,13 +348,13 @@ describe("appendDecision", () => {
   test("合法替代追加成功且旧行逐字不变", async () => {
     const { home, repo } = await setup();
     await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repo.root });
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    const firstLine = (await readFile(ledgerPath, "utf8")).split("\n").filter(Boolean)[0];
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    const firstLine = (ledgerJson(ledgerPath)).split("\n").filter(Boolean)[0];
 
     const receipt = await appendDecision(aiInput({ supersedes: ["AI-001"] }), { dataRoot: home.dataRoot, cwd: repo.root });
 
     expect(receipt.decisionId).toBe("AI-002");
-    const lines = (await readFile(ledgerPath, "utf8")).split("\n").filter(Boolean);
+    const lines = (ledgerJson(ledgerPath)).split("\n").filter(Boolean);
     expect(lines.length).toBe(2);
     expect(lines[0]).toBe(firstLine);
   });
@@ -359,8 +367,8 @@ describe("appendDecision", () => {
     );
 
     expect(new Set(results.map((r) => r.decisionId)).size).toBe(20);
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    const lines = (await readFile(ledgerPath, "utf8")).split("\n").filter(Boolean);
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    const lines = (ledgerJson(ledgerPath)).split("\n").filter(Boolean);
     expect(lines.length).toBe(20);
   });
 
@@ -402,23 +410,23 @@ describe("appendDecision", () => {
       expect(result.code).toBe(0);
     }
 
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    const lines = (await readFile(ledgerPath, "utf8")).split("\n").filter(Boolean);
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    const lines = (ledgerJson(ledgerPath)).split("\n").filter(Boolean);
     expect(lines.length).toBe(10);
     const ids = lines.map((line) => (JSON.parse(line) as { id: string }).id);
     expect(new Set(ids).size).toBe(10);
   });
 
-  test("记录文件被插入一行非 canonical 内容后追加被拒绝且文件未变", async () => {
+  test("决策流被插入坏结构后追加被拒绝且原记录未变", async () => {
     const { home, repo } = await setup();
     await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repo.root });
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    await appendFile(ledgerPath, '{"broken": true, "x": 1}\n', "utf8");
-    const before = await fileFingerprint(ledgerPath);
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    corruptLedger(ledgerPath);
+    const before = ledgerJson(ledgerPath);
 
     await expect(appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repo.root })).rejects.toThrow();
 
-    expect(await fileFingerprint(ledgerPath)).toBe(before);
+    expect(ledgerJson(ledgerPath)).toBe(before);
   });
 
   test("同一仓库两个 worktree 下追加的记录落在同一文件", async () => {
@@ -428,7 +436,7 @@ describe("appendDecision", () => {
     const first = await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repo.root });
     const second = await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: worktree.root });
 
-    expect(second.ledgerPath).toBe(first.ledgerPath);
+    expect(second.repoId).toBe(first.repoId);
     expect(second.decisionId).toBe("AI-002");
   });
 
@@ -443,7 +451,7 @@ describe("appendDecision", () => {
     const receiptA = await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repoA.root });
     const receiptB = await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repoB.root });
 
-    expect(receiptA.ledgerPath).not.toBe(receiptB.ledgerPath);
+    expect(receiptA.repoId).not.toBe(receiptB.repoId);
     expect(receiptA.decisionId).toBe("AI-001");
     expect(receiptB.decisionId).toBe("AI-001");
   });
@@ -467,7 +475,7 @@ describe("appendDecision", () => {
     ).rejects.toThrow();
   });
 
-  test("首次写入后 repos/<repoId>/repo.json 存在且 commonDir 正确、目录权限 0700", async () => {
+  test("首次写入后仓库记录的 commonDir 正确、目录权限 0700", async () => {
     const { home, repo } = await setup();
     const identity = await repositoryIdentity(repo.root);
 
@@ -477,7 +485,7 @@ describe("appendDecision", () => {
     const dirStat = await stat(repoDir);
     expect(dirStat.mode & 0o777).toBe(0o700);
 
-    const payload = JSON.parse(await readFile(join(repoDir, "repo.json"), "utf8"));
+    const payload = withDatabase(repositoryDatabase(home.dataRoot, identity.repoId), (db) => db.read<{ commonDir: string }>("repository", identity.repoId)!.data);
     expect(payload.commonDir).toBe(identity.commonDir);
   });
 });
@@ -504,8 +512,8 @@ describe("readDecisions", () => {
   test("台账损坏时抛出损坏错误", async () => {
     const { home, repo } = await setup();
     await appendDecision(aiInput(), { dataRoot: home.dataRoot, cwd: repo.root });
-    const ledgerPath = await ledgerPathFor(home, repo.root, "ai-decisions.jsonl");
-    await appendFile(ledgerPath, '{"broken": true, "x": 1}\n', "utf8");
+    const ledgerPath = await ledgerFor(home, repo.root, "ai");
+    corruptLedger(ledgerPath);
 
     await expect(
       readDecisions({ dataRoot: home.dataRoot, cwd: repo.root, requirement: REQUIREMENT, actor: "ai" }),
@@ -626,20 +634,6 @@ describe("buildRecord", () => {
       "action",
       "supersedes",
     ]);
-  });
-});
-
-describe("appendLine", () => {
-  test("返回值 line 字段等于写入的行文本且不含换行", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-append-line-"));
-    tempRoots.push(dir);
-    const path = join(dir, "records.jsonl");
-
-    const result = await appendLine(path, { a: 1 });
-
-    expect(result.line).toBe(JSON.stringify({ a: 1 }));
-    expect(result.line.includes("\n")).toBe(false);
-    expect(await readFile(path, "utf8")).toBe(`${result.line}\n`);
   });
 });
 

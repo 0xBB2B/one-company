@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, readlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, readdir, readlink } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import type { Clock } from "./clock.ts";
-import { fileFingerprint, withDirLock, writeFileAtomic } from "./store.ts";
+import { fileFingerprint } from "./store.ts";
+import { withDatabase, uuidv7 } from "./database.ts";
+import type { LocalDatabase } from "./database.ts";
 
-const DIR_MODE = 0o700;
 const WAIT_POLL_MS = 75;
 const MAX_RELEASED = 200;
 const PROBE_TOTAL_BUDGET_MS = 2_000;
@@ -43,7 +44,6 @@ export interface ReleasedRecord {
 }
 
 interface ClaimsDoc {
-  version: number;
   claims: ClaimRecord[];
   waiting: WaitingRecord[];
   released: ReleasedRecord[];
@@ -285,8 +285,7 @@ function withDeadline<T>(promise: Promise<T>, deadlineAt: number): Promise<T> {
 
 export class RangeClaims {
   private readonly repoRoot: string;
-  private readonly rangesDir: string;
-  private readonly claimsPath: string;
+  private readonly database: string;
   private readonly clock: Clock;
   private readonly runStateFn: (runId: string) => Promise<string | null>;
   private readonly holderGoneFn: (windowId: string) => Promise<HolderGoneProbeResult>;
@@ -294,8 +293,7 @@ export class RangeClaims {
 
   constructor(options: RangeClaimsOptions) {
     this.repoRoot = options.repoRoot;
-    this.rangesDir = join(options.repoDir, "ranges");
-    this.claimsPath = join(this.rangesDir, "claims.json");
+    this.database = join(options.repoDir, "data.sqlite");
     this.clock = options.clock;
     this.runStateFn = options.runState;
     this.holderGoneFn = options.holderGone;
@@ -306,23 +304,36 @@ export class RangeClaims {
     return new Date(this.clock.now()).toISOString();
   }
 
-  private async ensureRangesDir(): Promise<void> {
-    await mkdir(this.rangesDir, { recursive: true, mode: DIR_MODE });
+  private loadDoc(db: LocalDatabase): ClaimsDoc {
+    return {
+      claims: db.list<ClaimRecord>("range_claims").map((record) => record.data),
+      waiting: db.list<WaitingRecord>("range_waiting").map((record) => record.data),
+      released: db.list<ReleasedRecord>("range_released").map((record) => record.data),
+    };
   }
 
-  private async readDoc(): Promise<ClaimsDoc> {
-    try {
-      const raw = await readFile(this.claimsPath, "utf8");
-      return JSON.parse(raw) as ClaimsDoc;
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return { version: 0, claims: [], waiting: [], released: [] };
-      throw error;
-    }
-  }
+  private readDoc(): ClaimsDoc { return withDatabase(this.database, (db) => this.loadDoc(db)); }
 
-  private async writeDoc(doc: ClaimsDoc): Promise<void> {
-    const next: ClaimsDoc = { ...doc, version: doc.version + 1 };
-    await writeFileAtomic(this.claimsPath, JSON.stringify(next));
+  private mutateDoc<T>(fn: (doc: ClaimsDoc) => T): T {
+    return withDatabase(this.database, (db) => db.transaction(() => {
+      const doc = this.loadDoc(db);
+      const result = fn(doc);
+      const groups = [
+        { namespace: "range_claims", values: doc.claims, key: (value: ClaimRecord) => value.claimId },
+        { namespace: "range_waiting", values: doc.waiting, key: (value: WaitingRecord) => value.waitId },
+        { namespace: "range_released", values: doc.released, key: (value: ReleasedRecord) => value.claimId },
+      ];
+      for (const group of groups) {
+        const next = new Map(group.values.map((value) => [group.key(value as ClaimRecord & WaitingRecord & ReleasedRecord), value]));
+        const records = db.list(group.namespace);
+        for (const record of records) {
+          if (!next.has(record.key)) db.remove(group.namespace, record.key, record.version);
+          else if (JSON.stringify(record.data) !== JSON.stringify(next.get(record.key))) db.update(group.namespace, record.key, record.version, next.get(record.key));
+        }
+        for (const [key, value] of next) if (!records.some((record) => record.key === key)) db.create(group.namespace, key, value);
+      }
+      return result;
+    }));
   }
 
   private pushReleased(doc: ClaimsDoc, record: ReleasedRecord): void {
@@ -335,7 +346,7 @@ export class RangeClaims {
   private upsertWaiting(doc: ClaimsDoc, holder: Holder, paths: string[]): void {
     const key = `${holderKey(holder)}::${pathsKey(paths)}`;
     doc.waiting = doc.waiting.filter((w) => `${holderKey(w.holder)}::${pathsKey(w.paths)}` !== key);
-    doc.waiting.push({ waitId: randomUUID(), holder, paths, since: this.nowIso() });
+    doc.waiting.push({ waitId: uuidv7(), holder, paths, since: this.nowIso() });
   }
 
   private removeWaitingEntryFromDoc(doc: ClaimsDoc, holder: Holder, paths: string[]): void {
@@ -344,14 +355,15 @@ export class RangeClaims {
   }
 
   private async removeWaitingEntry(holder: Holder, paths: string[]): Promise<void> {
-    await this.ensureRangesDir();
-    await withDirLock(this.rangesDir, async () => {
-      const doc = await this.readDoc();
+    await this.mutateDoc((doc) => {
       const before = doc.waiting.length;
       this.removeWaitingEntryFromDoc(doc, holder, paths);
       if (doc.waiting.length === before) return;
-      await this.writeDoc(doc);
     });
+  }
+
+  async entries(): Promise<ClaimRecord[]> {
+    return (await this.readDoc()).claims;
   }
 
   async claim(holder: Holder, rawPaths: string[]): Promise<ClaimResult> {
@@ -361,35 +373,29 @@ export class RangeClaims {
     } catch (error) {
       return { granted: false, conflicts: [], reason: (error as Error).message };
     }
-    await this.ensureRangesDir();
 
-    const grant = await withDirLock(this.rangesDir, async () => {
-      const doc = await this.readDoc();
+    const grant = await this.mutateDoc((doc) => {
       const conflicts = findConflicts(doc.claims, canonicalPaths);
       if (conflicts.length > 0) {
         const holders = Array.from(new Set(conflicts.map((c) => JSON.stringify(c.holder))));
         const reason = `范围冲突: ${conflicts.map((c) => c.path).join(", ")}（持有者 ${holders.join(", ")}）`;
         this.upsertWaiting(doc, holder, canonicalPaths);
-        await this.writeDoc(doc);
-        return { granted: false as const, conflicts, reason };
+          return { granted: false as const, conflicts, reason };
       }
-      const claimId = randomUUID();
+      const claimId = uuidv7();
       doc.claims.push({ claimId, holder, paths: canonicalPaths, claimedAt: this.nowIso(), fingerprints: {} });
       this.removeWaitingEntryFromDoc(doc, holder, canonicalPaths);
-      await this.writeDoc(doc);
       return { granted: true as const, claimId };
     });
     if (!grant.granted) return grant;
 
     try {
       const fp = await fingerprint(this.repoRoot, canonicalPaths);
-      const writeback = await withDirLock(this.rangesDir, async () => {
-        const doc = await this.readDoc();
+      const writeback = await this.mutateDoc((doc) => {
         const record = doc.claims.find((c) => c.claimId === grant.claimId);
         if (!record) return { ok: false as const };
         record.fingerprints = fp;
-        await this.writeDoc(doc);
-        return { ok: true as const };
+          return { ok: true as const };
       });
       if (!writeback.ok) {
         return { granted: false, conflicts: [], reason: "占位在补写指纹前已被释放" };
@@ -403,13 +409,11 @@ export class RangeClaims {
 
   private async compensateFailedPlaceholder(claimId: string): Promise<void> {
     try {
-      await withDirLock(this.rangesDir, async () => {
-        const doc = await this.readDoc();
+      await this.mutateDoc((doc) => {
         const index = doc.claims.findIndex((c) => c.claimId === claimId);
         if (index === -1) return;
         doc.claims.splice(index, 1);
-        await this.writeDoc(doc);
-      });
+        });
     } catch {
       // 补偿失败不掩盖上层已抛出的补写错误；占位留给后续 releaseIfHolderGone/releaseByUser 兜底清理
     }
@@ -417,20 +421,24 @@ export class RangeClaims {
 
   async release(claimId: string, holder: Holder): Promise<void> {
     if (!holder) throw new Error("释放需要提供 holder 以核对身份");
-    await this.ensureRangesDir();
-    await withDirLock(this.rangesDir, async () => {
-      const doc = await this.readDoc();
+    const observed = this.readDoc().claims.find((record) => record.claimId === claimId);
+    if (!observed) {
+      if (this.readDoc().released.some((record) => record.claimId === claimId)) return;
+      throw new Error(`未知的 claimId: ${claimId}`);
+    }
+    const deliveryFingerprints = Object.keys(observed.fingerprints).length === 0 ? {} : await fingerprint(this.repoRoot, observed.paths);
+    await this.mutateDoc((doc) => {
       const index = doc.claims.findIndex((c) => c.claimId === claimId);
       if (index === -1) {
         if (doc.released.some((r) => r.claimId === claimId)) return;
         throw new Error(`未知的 claimId: ${claimId}`);
       }
       const record = doc.claims[index];
+      if (JSON.stringify(record) !== JSON.stringify(observed)) throw new Error("占用已变化，请重新核对");
       if (!holdersEqual(record.holder, holder)) {
         throw new Error(`持有者不一致，拒绝释放: ${claimId}`);
       }
       doc.claims.splice(index, 1);
-      const deliveryFingerprints = await fingerprint(this.repoRoot, record.paths);
       this.pushReleased(doc, {
         claimId: record.claimId,
         holder: record.holder,
@@ -438,7 +446,6 @@ export class RangeClaims {
         fingerprints: deliveryFingerprints,
         releasedAt: this.nowIso(),
       });
-      await this.writeDoc(doc);
     });
   }
 
@@ -521,16 +528,17 @@ export class RangeClaims {
   }
 
   async releaseIfHolderGone(claimId: string): Promise<ReleaseIfHolderGoneResult> {
-    await this.ensureRangesDir();
-    return withDirLock(this.rangesDir, async () => {
-      const doc = await this.readDoc();
+    const observed = this.readDoc().claims.find((record) => record.claimId === claimId);
+    if (!observed) throw new Error(`未知的 claimId: ${claimId}`);
+    const evidenceResult = await this.evaluateHolderGone(observed.holder);
+    if (!evidenceResult.gone) return { released: false, reason: evidenceResult.reason };
+    const deliveryFingerprints = Object.keys(observed.fingerprints).length === 0 ? {} : await fingerprint(this.repoRoot, observed.paths);
+    return this.mutateDoc((doc) => {
       const index = doc.claims.findIndex((c) => c.claimId === claimId);
       if (index === -1) throw new Error(`未知的 claimId: ${claimId}`);
       const record = doc.claims[index];
-      const evidenceResult = await this.evaluateHolderGone(record.holder);
-      if (!evidenceResult.gone) return { released: false, reason: evidenceResult.reason };
+      if (JSON.stringify(record) !== JSON.stringify(observed)) throw new Error("占用已变化，请重新核对");
       doc.claims.splice(index, 1);
-      const deliveryFingerprints = await fingerprint(this.repoRoot, record.paths);
       this.pushReleased(doc, {
         claimId: record.claimId,
         holder: record.holder,
@@ -539,21 +547,21 @@ export class RangeClaims {
         evidence: evidenceResult.evidence,
         releasedAt: this.nowIso(),
       });
-      await this.writeDoc(doc);
       return { released: true, evidence: evidenceResult.evidence };
     });
   }
 
   async releaseByUser(claimId: string, input: { decisionId: string }): Promise<ReleaseByUserResult> {
     if (!input.decisionId) throw new Error("释放需要决定编号");
-    await this.ensureRangesDir();
-    return withDirLock(this.rangesDir, async () => {
-      const doc = await this.readDoc();
+    const observed = this.readDoc().claims.find((record) => record.claimId === claimId);
+    if (!observed) throw new Error(`未知的 claimId: ${claimId}`);
+    const deliveryFingerprints = Object.keys(observed.fingerprints).length === 0 ? {} : await fingerprint(this.repoRoot, observed.paths);
+    return this.mutateDoc((doc) => {
       const index = doc.claims.findIndex((c) => c.claimId === claimId);
       if (index === -1) throw new Error(`未知的 claimId: ${claimId}`);
       const record = doc.claims[index];
+      if (JSON.stringify(record) !== JSON.stringify(observed)) throw new Error("占用已变化，请重新核对");
       doc.claims.splice(index, 1);
-      const deliveryFingerprints = await fingerprint(this.repoRoot, record.paths);
       this.pushReleased(doc, {
         claimId: record.claimId,
         holder: record.holder,
@@ -562,7 +570,6 @@ export class RangeClaims {
         decisionId: input.decisionId,
         releasedAt: this.nowIso(),
       });
-      await this.writeDoc(doc);
       return { released: true, claimId: record.claimId, decisionId: input.decisionId };
     });
   }

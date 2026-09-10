@@ -1,8 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
-import { repoDataDir, repositoryIdentity, requirementDataDir } from "./identity.ts";
-import { appendLine, readLines, withDirLock } from "./store.ts";
+import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { repoDataDir, repositoryIdentity, requirementIdentity } from "./identity.ts";
+import { repositoryDatabase, withDatabase, uuidv7 } from "./database.ts";
 
 export type DecisionActor = "ai" | "user";
 
@@ -32,8 +31,8 @@ export interface DecisionReceipt {
   actor: DecisionActor;
   repoId: string;
   requirement: string;
-  ledgerPath: string;
-  lineNumber: number;
+  recordId: string;
+  sequence: number;
   decisionHash: string;
   recordedAt: string;
 }
@@ -41,7 +40,7 @@ export interface DecisionReceipt {
 const REQUIRED_STRING_FIELDS = ["requirement", "source", "trigger", "decision"] as const;
 const AI_REQUIRED_FIELDS = ["scope", "basis", "action"] as const;
 const USER_FORBIDDEN_FIELDS = ["scope", "basis", "action"] as const;
-const LEDGER_FILE: Record<DecisionActor, string> = { ai: "ai-decisions.jsonl", user: "user-decisions.jsonl" };
+export const decisionStream = (requirement: string, actor: DecisionActor): string => `decisions:${requirement}:${actor}`;
 const ID_PREFIX: Record<DecisionActor, string> = { ai: "AI", user: "USER" };
 
 function isMissing(value: unknown): boolean {
@@ -110,19 +109,31 @@ export function buildRecord(input: Record<string, unknown>, meta: { id: string; 
   return record;
 }
 
+function checkedDecisions(db: import("./database.ts").LocalDatabase, requirement: string, actor: DecisionActor): Record<string, unknown>[] {
+  const records = db.events(decisionStream(requirement, actor)).map((event) => event.data);
+  const ids = new Set<string>();
+  return records.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("决策记录损坏");
+    const record = value as Record<string, unknown>;
+    if (record.requirement !== requirement || record.actor !== actor ||
+      !REQUIRED_STRING_FIELDS.every((field) => typeof record[field] === "string" && (record[field] as string).length > 0) ||
+      (record.id !== undefined && (typeof record.id !== "string" || !new RegExp(`^${ID_PREFIX[actor]}-[0-9]{3,}$`).test(record.id) || ids.has(record.id))) ||
+      typeof record.recordedAt !== "string" || !Number.isFinite(Date.parse(record.recordedAt))) throw new Error("决策记录身份或时间无效");
+    if (typeof record.id === "string") ids.add(record.id);
+    return record;
+  });
+}
+
 export async function appendDecision(input: Record<string, unknown>, options: AppendDecisionOptions): Promise<DecisionReceipt> {
   validateDecisionInput(input);
   const actor = input.actor as DecisionActor;
   const requirement = input.requirement as string;
   const identity = await repositoryIdentity(options.cwd);
   await repoDataDir(options.dataRoot, identity.repoId, identity.commonDir);
-  const dir = requirementDataDir(options.dataRoot, identity.repoId, requirement);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-
-  return withDirLock(dir, async () => {
-    const aiPath = join(dir, LEDGER_FILE.ai);
-    const userPath = join(dir, LEDGER_FILE.user);
-    const [aiRecords, userRecords] = await Promise.all([readLines(aiPath), readLines(userPath)]);
+  requirementIdentity(requirement);
+  return withDatabase(repositoryDatabase(options.dataRoot, identity.repoId), (db) => db.transaction(() => {
+    const aiRecords = checkedDecisions(db, requirement, "ai");
+    const userRecords = checkedDecisions(db, requirement, "user");
 
     const supersedes = input.supersedes as string[] | null | undefined;
     if (isPresent(supersedes) && (supersedes as string[]).length > 0) {
@@ -140,29 +151,30 @@ export async function appendDecision(input: Record<string, unknown>, options: Ap
     const recordedAt = new Date().toISOString();
     const record = buildRecord(input, { id, recordedAt });
 
-    const ledgerPath = actor === "ai" ? aiPath : userPath;
-    const { lineNumber, line } = await appendLine(ledgerPath, record);
-    const decisionHash = createHash("sha256").update(line).digest("hex");
+    const event = db.append(decisionStream(requirement, actor), record);
+    const decisionHash = createHash("sha256").update(JSON.stringify(record)).digest("hex");
 
     return {
       schema: "decision-receipt/v1",
-      receiptId: randomUUID(),
+      receiptId: uuidv7(),
       decisionId: id,
       actor,
       repoId: identity.repoId,
       requirement,
-      ledgerPath,
-      lineNumber,
+      recordId: event.id,
+      sequence: event.sequence,
       decisionHash,
       recordedAt,
     };
-  });
+  }));
 }
 
 export async function readDecisions(options: ReadDecisionsOptions): Promise<unknown[]> {
   const identity = await repositoryIdentity(options.cwd);
-  const dir = requirementDataDir(options.dataRoot, identity.repoId, options.requirement);
-  return readLines(join(dir, LEDGER_FILE[options.actor]));
+  requirementIdentity(options.requirement);
+  const database = repositoryDatabase(options.dataRoot, identity.repoId);
+  if (!existsSync(database)) return [];
+  return withDatabase(database, (db) => checkedDecisions(db, options.requirement, options.actor));
 }
 
 export async function inspectDecision(options: InspectDecisionOptions): Promise<unknown | null> {

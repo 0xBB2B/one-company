@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readdir, realpath, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+
+import { repositoryDatabase, withDatabase } from "./database.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -103,11 +105,9 @@ export async function isInsideRepository(dir: string): Promise<boolean> {
 }
 
 const WORKSPACE_SCAN_SKIP = new Set(["node_modules", ".git"]);
-const WORKSPACE_SCAN_MAX_DEPTH = 4;
 
 async function scanForRepos(
   dir: string,
-  depth: number,
   repos: WorkspaceRepo[],
   skipped: WorkspaceSkipped[],
 ): Promise<void> {
@@ -121,8 +121,6 @@ async function scanForRepos(
   for (const entry of entries) {
     if (!entry.isDirectory() || WORKSPACE_SCAN_SKIP.has(entry.name)) continue;
     const full = join(dir, entry.name);
-    const nextDepth = depth + 1;
-    if (nextDepth > WORKSPACE_SCAN_MAX_DEPTH) continue;
     let root: string | undefined;
     try {
       root = await worktreeRoot(full);
@@ -136,7 +134,7 @@ async function scanForRepos(
       repos.push({ path: root, ...(await repositoryIdentity(root)) });
       continue;
     }
-    await scanForRepos(full, nextDepth, repos, skipped);
+    await scanForRepos(full, repos, skipped);
   }
 }
 
@@ -147,7 +145,7 @@ export async function discoverWorkspace(startDir: string): Promise<Workspace> {
   }
   const repos: WorkspaceRepo[] = [];
   const skipped: WorkspaceSkipped[] = [];
-  await scanForRepos(startDir, 0, repos, skipped);
+  await scanForRepos(startDir, repos, skipped);
   return { repos, skipped };
 }
 
@@ -180,15 +178,6 @@ export function dataRoot(env: Record<string, string | undefined>): string {
   return join(home, ".pi", "agent", "pi-company");
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export async function repoDataDir(dataRootPath: string, repoId: string, commonDir: string): Promise<string> {
   const reposDir = join(dataRootPath, "repos");
   const dir = join(reposDir, repoId);
@@ -196,28 +185,12 @@ export async function repoDataDir(dataRootPath: string, repoId: string, commonDi
   await chmod(dataRootPath, 0o700);
   await chmod(reposDir, 0o700);
   await chmod(dir, 0o700);
-  const repoJsonPath = join(dir, "repo.json");
-  if (!(await pathExists(repoJsonPath))) {
-    const payload = { commonDir, firstSeenAt: new Date().toISOString() };
-    await writeFile(repoJsonPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-  }
+  withDatabase(repositoryDatabase(dataRootPath, repoId), (db) => db.transaction(() => {
+    const existing = db.read<{ commonDir: string }>("repository", repoId);
+    if (existing && existing.data.commonDir !== commonDir) throw new Error("仓库身份与记录不一致");
+    if (!existing) db.create("repository", repoId, { commonDir, firstSeenAt: new Date().toISOString() });
+  }));
   return dir;
-}
-
-export function requirementDataDir(dataRootPath: string, repoId: string, reqId: string): string {
-  requirementIdentity(reqId);
-  return join(dataRootPath, "repos", repoId, "requirements", reqId);
-}
-
-const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-export function runsDataDir(dataRootPath: string, repoId: string): string {
-  return join(dataRootPath, "repos", repoId, "runs");
-}
-
-export function runDataDir(dataRootPath: string, repoId: string, runId: string): string {
-  if (!UUID_V4_PATTERN.test(runId)) throw new Error(`不合法的 UUIDv4: ${runId}`);
-  return join(runsDataDir(dataRootPath, repoId), runId);
 }
 
 export function daemonSocketPath(dataRootPath: string, repoId: string): string {

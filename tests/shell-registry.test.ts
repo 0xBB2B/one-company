@@ -9,7 +9,7 @@ import { createClock } from "../runtime/clock.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import * as ShellRegistryModule from "../runtime/shell-registry.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";
-import { createDocument, readDocument } from "../runtime/store.ts";
+import { createRecord, readRecord, putRecord } from "../runtime/database.ts";
 
 interface Host {
   kind: "main" | "requirement" | "role";
@@ -109,7 +109,7 @@ function makeRegistry(
     kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
     ps?: () => Promise<PsEntry[]>;
     pidStartedAt?: (pid: number) => Promise<number | null>;
-    recordsDirFor?: (host: Host) => string;
+    database?: string;
   } = {},
 ) {
   const clock = overrides.clock ?? createClock();
@@ -117,17 +117,15 @@ function makeRegistry(
   if (overrides.kill) probes.kill = overrides.kill;
   if (overrides.ps) probes.ps = overrides.ps;
   if (overrides.pidStartedAt) probes.pidStartedAt = overrides.pidStartedAt;
-  const options: { clock: Clock; probes?: typeof probes; recordsDirFor?: (host: Host) => string } = {
+  const options: { clock: Clock; probes?: typeof probes; database?: string } = {
     clock,
     probes: Object.keys(probes).length > 0 ? probes : undefined,
   };
-  if (overrides.recordsDirFor) options.recordsDirFor = overrides.recordsDirFor;
+  if (overrides.database) options.database = overrides.database;
   return new ShellRegistry(options as ConstructorParameters<typeof ShellRegistry>[0]);
 }
 
-function recordsDirFor(base: string): (host: Host) => string {
-  return (host: Host) => join(base, host.runId ?? host.id);
-}
+
 
 function trackPgid(pgid: number | undefined): void {
   if (typeof pgid === "number") spawnedPgids.push(pgid);
@@ -1405,11 +1403,11 @@ describe("守护进程重启后接管", () => {
 describe("持久化任务记录接管（macOS 系统签名二进制场景）", () => {
   test("spawn 后所属运行目录下出现该任务的持久记录，终态后记录被删除", async () => {
     const base = await makeTempDir();
-    const getRecordsDir = recordsDirFor(base);
+    const database = join(base, "data.sqlite");
     const host = roleHost("record-owner");
     const runToken = randomUUID();
     const taskId = randomUUID();
-    const registry = makeRegistry({ recordsDirFor: getRecordsDir });
+    const registry = makeRegistry({ database });
 
     const result = await registry.spawn({
       taskId,
@@ -1423,8 +1421,8 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
     if (!result.ok) return;
     trackPgid(result.task.pgid);
 
-    const recordPath = join(getRecordsDir(host), `${taskId}.json`);
-    const beforeExit = await readDocument(recordPath);
+    const recordPath = { database, namespace: "shells", key: taskId };
+    const beforeExit = await readRecord(recordPath);
     expect(beforeExit.exists).toBe(true);
     if (beforeExit.exists) {
       const data = beforeExit.data as Record<string, unknown>;
@@ -1439,17 +1437,17 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
 
     await waitFor(() => registry.get(taskId)?.status === "exited", LONG_TIMEOUT);
     await sleepMs(150);
-    const afterExit = await readDocument(recordPath);
+    const afterExit = await readRecord(recordPath);
     expect(afterExit.exists).toBe(false);
   }, LONG_TIMEOUT);
 
   test("新建注册表实例凭持久记录接管系统签名二进制启动的任务，即使环境扫描找不到令牌", async () => {
     const base = await makeTempDir();
-    const getRecordsDir = recordsDirFor(base);
+    const database = join(base, "data.sqlite");
     const owner = roleHost("restart-owner");
     const runToken = randomUUID();
     const taskId = randomUUID();
-    const registryA = makeRegistry({ recordsDirFor: getRecordsDir });
+    const registryA = makeRegistry({ database });
 
     const started = await registryA.spawn({
       taskId,
@@ -1464,7 +1462,7 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
     trackPgid(started.task.pgid);
     await sleepMs(300);
 
-    const registryB = makeRegistry({ recordsDirFor: getRecordsDir, ps: async () => [] });
+    const registryB = makeRegistry({ database, ps: async () => [] });
     const adopted = await registryB.adoptOrphans({ runToken, owner });
     expect(adopted.ok).toBe(true);
     if (!adopted.ok) return;
@@ -1484,12 +1482,12 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
 
   test("持久记录指向的进程已退出时不接管，同一次接管中仍存活的记录正常接管", async () => {
     const base = await makeTempDir();
-    const getRecordsDir = recordsDirFor(base);
+    const database = join(base, "data.sqlite");
     const host = roleHost("gone-owner");
     const runToken = randomUUID();
     const goneTaskId = randomUUID();
     const aliveTaskId = randomUUID();
-    const registryA = makeRegistry({ recordsDirFor: getRecordsDir });
+    const registryA = makeRegistry({ database });
 
     const started = await registryA.spawn({
       taskId: aliveTaskId,
@@ -1504,7 +1502,7 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
     trackPgid(started.task.pgid);
     await sleepMs(200);
 
-    await createDocument(join(getRecordsDir(host), `${goneTaskId}.json`), {
+    await createRecord({ database, namespace: "shells", key: goneTaskId }, {
       taskId: goneTaskId,
       pid: 999_999,
       pgid: 999_999,
@@ -1512,9 +1510,10 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
       token: `${runToken}:${goneTaskId}`,
       host,
       command: "sh -c sleep 30",
+      cwd: process.cwd(),
     });
 
-    const registryB = makeRegistry({ recordsDirFor: getRecordsDir, ps: async () => [] });
+    const registryB = makeRegistry({ database, ps: async () => [] });
     const adopted = await registryB.adoptOrphans({ runToken, owner: host });
     expect(adopted.ok).toBe(true);
     if (!adopted.ok) return;
@@ -1526,11 +1525,11 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
 
   test("持久记录 startedAt 与真实进程不符（伪造）时不接管，存活进程不受影响", async () => {
     const base = await makeTempDir();
-    const getRecordsDir = recordsDirFor(base);
+    const database = join(base, "data.sqlite");
     const host = roleHost("mismatch-owner");
     const runToken = randomUUID();
     const taskId = randomUUID();
-    const registryA = makeRegistry({ recordsDirFor: getRecordsDir });
+    const registryA = makeRegistry({ database });
 
     const started = await registryA.spawn({
       taskId,
@@ -1545,14 +1544,14 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
     trackPgid(started.task.pgid);
     await sleepMs(200);
 
-    const recordPath = join(getRecordsDir(host), `${taskId}.json`);
-    const current = await readDocument(recordPath);
+    const recordPath = { database, namespace: "shells", key: taskId };
+    const current = await readRecord(recordPath);
     expect(current.exists).toBe(true);
     if (!current.exists) return;
     const forged = { ...(current.data as Record<string, unknown>), startedAt: started.task.startedAt! - 999_000 };
-    await writeFile(recordPath, `${JSON.stringify({ version: current.version, data: forged })}\n`, "utf8");
+    putRecord(recordPath, forged);
 
-    const registryB = makeRegistry({ recordsDirFor: getRecordsDir, ps: async () => [] });
+    const registryB = makeRegistry({ database, ps: async () => [] });
     const adopted = await registryB.adoptOrphans({ runToken, owner: host });
     expect(adopted.ok).toBe(true);
     if (!adopted.ok) return;
@@ -1562,15 +1561,14 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
 
   test("持久记录文件本身损坏（非法 JSON）时接管返回具体原因而不静默丢弃", async () => {
     const base = await makeTempDir();
-    const getRecordsDir = recordsDirFor(base);
+    const database = join(base, "data.sqlite");
     const host = roleHost("corrupt-owner");
     const runToken = randomUUID();
     const taskId = randomUUID();
 
-    await mkdir(getRecordsDir(host), { recursive: true });
-    await writeFile(join(getRecordsDir(host), `${taskId}.json`), "{ 不是合法 JSON", "utf8");
+    createRecord({ database, namespace: "shells", key: taskId }, { invalid: true });
 
-    const registry = makeRegistry({ recordsDirFor: getRecordsDir, ps: async () => [] });
+    const registry = makeRegistry({ database, ps: async () => [] });
     const adopted = await registry.adoptOrphans({ runToken, owner: host });
     expect(adopted.ok).toBe(false);
     if (adopted.ok) return;

@@ -1,6 +1,7 @@
-import { lstat, mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { withDirLock, writeFileAtomic } from "./store.ts";
+import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { globalDatabase, repositoryDatabase, withDatabase } from "./database.ts";
+import { repositoryIdentity } from "./identity.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -52,7 +53,6 @@ export interface ResolvedRoleSettings {
 const THINKING_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const THINKING_LEVELS = new Set<string>(THINKING_ORDER);
 const ROLE_KEY_PREFIX = "pi-company.";
-const SETTINGS_FILE_MODE = 0o600;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -100,26 +100,16 @@ function validateEntryShape(roleName: string, raw: unknown): RoleEntry {
   return entry;
 }
 
-export function settingsPaths(input: { agentDir: string; repoRoot: string; projectTrusted: boolean }): SettingsPaths {
+export async function settingsPaths(input: { agentDir: string; repoRoot: string; projectTrusted: boolean }): Promise<SettingsPaths> {
   return {
-    global: join(input.agentDir, "settings.json"),
-    project: input.projectTrusted ? join(input.repoRoot, ".pi", "settings.json") : null,
+    global: globalDatabase(join(input.agentDir, "pi-company")),
+    project: input.projectTrusted ? repositoryDatabase(join(input.agentDir, "pi-company"), (await repositoryIdentity(input.repoRoot)).repoId) : null,
   };
 }
 
 async function loadLayer(path: string, roleNames: Set<string>): Promise<LoadedLayer> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { path, raw: null, roles: {} };
-    }
-    throw error;
-  }
-  const parsed = JSON.parse(raw) as unknown;
-  const piCompany = isRecord(parsed) ? parsed.piCompany : undefined;
-  const rolesRaw = isRecord(piCompany) ? piCompany.roles : undefined;
+  const raw = await readCurrentSettings(path);
+  const rolesRaw = raw === null ? {} : JSON.parse(raw);
   const roles: Record<string, RoleEntry> = {};
   if (isRecord(rolesRaw)) {
     for (const [key, value] of Object.entries(rolesRaw)) {
@@ -218,68 +208,44 @@ export function resolveRoleSettings(
   return { model, thinking, mcp };
 }
 
-async function readCurrentGuarded(path: string): Promise<string | null> {
-  let stat;
-  try {
-    stat = await lstat(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-  if (!stat.isFile()) {
-    throw new Error(`设置文件路径不是普通文件: ${path}`);
-  }
-  return readFile(path, "utf8");
+async function readCurrentSettings(path: string): Promise<string | null> {
+  if (!existsSync(path)) return null;
+  return withDatabase(path, (db) => {
+    const records = db.list("role_settings");
+    return records.length === 0 ? null : JSON.stringify(Object.fromEntries(records.map((record) => [record.key, record.data])));
+  });
 }
 
-function assertBaseline(current: string | null, baseline: string | null): void {
-  if (current !== baseline) {
-    throw new Error("设置文件已被外部修改，请重新打开后再应用改动");
-  }
-}
-
-
-function parseTopLevel(current: string | null): Record<string, unknown> {
-  if (current === null) return {};
-  const parsed = JSON.parse(current) as unknown;
-  if (!isRecord(parsed)) {
-    throw new Error("设置文件顶层内容格式非法，必须是 JSON 对象");
-  }
-  return parsed;
-}
-
-function extractRoles(parsed: Record<string, unknown>): { piCompany: Record<string, unknown>; roles: Record<string, unknown> } {
-  const piCompany = isRecord(parsed.piCompany) ? parsed.piCompany : {};
-  const roles = isRecord(piCompany.roles) ? piCompany.roles : {};
-  return { piCompany, roles };
-}
-
-async function mutateSettingsFile(
+async function mutateSettings(
   path: string,
   baseline: string | null,
   mutate: (roles: Record<string, unknown>) => Record<string, unknown>,
-): Promise<string> {
-  const dir = dirname(path);
-  await mkdir(dir, { recursive: true });
-  return withDirLock(dir, async () => {
-    const current = await readCurrentGuarded(path);
-    assertBaseline(current, baseline);
-    const parsed = parseTopLevel(current);
-    const { piCompany, roles } = extractRoles(parsed);
-    const next = { ...parsed, piCompany: { ...piCompany, roles: mutate(roles) } };
-    const raw = JSON.stringify(next, null, 2);
-    await writeFileAtomic(path, raw);
-    return raw;
-  });
+): Promise<string | null> {
+  return withDatabase(path, (db) => db.transaction(() => {
+    const records = db.list("role_settings");
+    const roles = Object.fromEntries(records.map((record) => [record.key, record.data]));
+    const current = records.length === 0 ? null : JSON.stringify(roles);
+    if (current !== baseline) throw new Error("设置已被修改，请重新打开后再应用改动");
+    const next = mutate(roles);
+    for (const record of records) {
+      if (!(record.key in next)) db.remove("role_settings", record.key, record.version);
+      else if (JSON.stringify(record.data) !== JSON.stringify(next[record.key])) db.update("role_settings", record.key, record.version, next[record.key]);
+    }
+    for (const [key, value] of Object.entries(next)) {
+      if (!records.some((record) => record.key === key)) db.create("role_settings", key, value);
+    }
+    const saved = db.list("role_settings");
+    return saved.length === 0 ? null : JSON.stringify(Object.fromEntries(saved.map((record) => [record.key, record.data])));
+  }));
 }
 
 export async function saveRoleSettings(
   path: string,
   options: { role: string; patch: RoleEntry; baseline: string | null },
-): Promise<string> {
-  return mutateSettingsFile(path, options.baseline, (roles) => {
+): Promise<string | null> {
+  return mutateSettings(path, options.baseline, (roles) => {
     const key = `${ROLE_KEY_PREFIX}${options.role}`;
-    const existing = isRecord(roles[key]) ? roles[key] : {};
+    const existing = roles[key] === undefined ? {} : validateEntryShape(options.role, roles[key]);
     const patchDefined = Object.fromEntries(Object.entries(options.patch).filter(([, value]) => value !== undefined));
     const merged = validateEntryShape(options.role, { ...existing, ...patchDefined });
     return { ...roles, [key]: merged };
@@ -289,10 +255,10 @@ export async function saveRoleSettings(
 export async function clearRoleField(
   path: string,
   options: { role: string; field: keyof RoleEntry; baseline: string | null },
-): Promise<string> {
-  return mutateSettingsFile(path, options.baseline, (roles) => {
+): Promise<string | null> {
+  return mutateSettings(path, options.baseline, (roles) => {
     const key = `${ROLE_KEY_PREFIX}${options.role}`;
-    const existing = isRecord(roles[key]) ? { ...roles[key] } : {};
+    const existing = roles[key] === undefined ? {} : validateEntryShape(options.role, roles[key]);
     delete existing[options.field];
     const nextRoles = { ...roles };
     if (Object.keys(existing).length === 0) {

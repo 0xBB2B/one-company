@@ -1,6 +1,5 @@
-import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { appendLine, readLinesLenient } from "../runtime/store.ts";
+import { readRecord, withDatabase, uuidv7, UUID_V7_PATTERN } from "../runtime/database.ts";
 
 export interface RelayWindow {
   windowId: string;
@@ -36,6 +35,7 @@ export interface RelayOption {
 export type RelayQuestionStatus = "pending" | "answered" | "withdrawn";
 
 export interface RelayQuestion {
+  kind?: "question" | "contract_change";
   id: string;
   requirement: string;
   repoId: string;
@@ -68,6 +68,7 @@ export interface RelayNotice {
 export type RelayPublicNotice = Omit<RelayNotice, "deliveredTo">;
 
 export interface RelayAskInput {
+  kind?: "question" | "contract_change";
   requirement: string;
   repoId: string;
   runId: string;
@@ -105,7 +106,6 @@ export type RelayEvent =
   | { type: "question_answered"; questionId: string; answer: string }
   | { type: "question_withdrawn"; questionId: string }
   | { type: "notice_enqueued"; notice: RelayNotice }
-  | { type: "corrupt_skipped"; count: number }
   | { type: "deliver_failed"; event: string; repoId: string; reason: string };
 
 export type RelayListener = (event: RelayEvent) => void;
@@ -128,6 +128,7 @@ function publicQuestion(question: RelayQuestion): RelayPublicQuestion {
     repoId: question.repoId,
     runId: question.runId,
     question: question.question,
+    kind: question.kind ?? "question",
     options: question.options.map((option) => ({ ...option })),
     recommended: question.recommended,
     createdAt: question.createdAt,
@@ -146,280 +147,171 @@ function publicNotice(notice: RelayNotice): RelayPublicNotice {
   };
 }
 
+function checkedQuestion(value: RelayQuestion & { sequence: number }, id: string): typeof value {
+  if (!value || value.id !== id || !UUID_V7_PATTERN.test(id) || !["pending", "answered", "withdrawn"].includes(value.status) ||
+    !Number.isSafeInteger(value.sequence) || value.sequence < 1 || typeof value.question !== "string" || !Array.isArray(value.options) ||
+    !value.options.every((option) => option && typeof option.label === "string" && typeof option.description === "string") ||
+    (value.status === "answered" && ![value.answer, value.answeredBy, value.answeredAt].every((field) => typeof field === "string")) ||
+    ![value.requirement, value.repoId, value.runId, value.createdAt, value.recommended].every((field) => typeof field === "string")) throw new Error("中继问题记录无效");
+  return value;
+}
+
+function checkedNotice(value: RelayNotice & { sequence: number }, id: string): typeof value {
+  if (!value || value.id !== id || !UUID_V7_PATTERN.test(id) || !Number.isSafeInteger(value.sequence) || value.sequence < 1 ||
+    !Array.isArray(value.deliveredTo) || !value.deliveredTo.every((field) => typeof field === "string") ||
+    ![value.requirement, value.repoId, value.runId, value.createdAt, value.message].every((field) => typeof field === "string")) throw new Error("中继通知记录无效");
+  return value;
+}
+
 interface AskResolver {
   resolve(outcome: RelayAskOutcome): void;
   reject(error: unknown): void;
 }
 
 export class RelayQueue {
+  private readonly database: string;
   private readonly deliver: RelayDeliverFn;
   private readonly locateRequirementAgent: RelayLocateRequirementAgentFn;
   private readonly clock: RelayClock;
-  private readonly questionsPath: string;
-  private readonly noticesPath: string;
-  private readonly questions = new Map<string, RelayQuestion>();
-  private readonly notices = new Map<string, RelayNotice>();
   private readonly pendingResolvers = new Map<string, AskResolver>();
+  private pollTimer?: ReturnType<typeof setInterval>;
   private readonly listeners = new Set<RelayListener>();
-  private readonly pendingReplayListeners = new Set<RelayListener>();
-  private loaded = false;
-  private loadPromise: Promise<void> | null = null;
-  private corruptSkippedAtLoad = 0;
 
   constructor(options: RelayQueueOptions) {
+    this.database = join(options.dataDir, "data.sqlite");
     this.deliver = options.deliver;
     this.locateRequirementAgent = options.locateRequirementAgent;
     this.clock = options.clock ?? { now: () => new Date().toISOString() };
-    const relayDir = join(options.dataDir, "relay");
-    this.questionsPath = join(relayDir, "questions.jsonl");
-    this.noticesPath = join(relayDir, "notices.jsonl");
-    this.loadPromise = this.attemptLoad();
-  }
-
-  private attemptLoad(): Promise<void> {
-    return this.load().then(
-      () => {
-        this.loaded = true;
-        // 加载失败期间订阅的监听器不随失败分支丢弃，等到某次加载成功时统一补发一次
-        const waiting = Array.from(this.pendingReplayListeners);
-        this.pendingReplayListeners.clear();
-        for (const listener of waiting) this.replayCorruptSkipped(listener);
-      },
-      (error) => {
-        // 瞬时故障（如目录锁被存活进程持有）不永久缓存失败，下一次调用重新尝试
-        this.loadPromise = null;
-        throw error;
-      },
-    );
-  }
-
-  private async load(): Promise<void> {
-    // questions.jsonl 与 notices.jsonl 同目录，并发读取会在 store 的目录锁上自我争抢；
-    // 两个文件互不依赖，顺序读取即可避免这次自我争抢带来的重试延迟。
-    const questionsResult = await readLinesLenient(this.questionsPath);
-    const noticesResult = await readLinesLenient(this.noticesPath);
-    for (const record of questionsResult.records) {
-      const question = record as RelayQuestion;
-      this.questions.set(question.id, question);
-    }
-    for (const record of noticesResult.records) {
-      const notice = record as RelayNotice;
-      this.notices.set(notice.id, notice);
-    }
-    this.corruptSkippedAtLoad = questionsResult.skipped + noticesResult.skipped;
-  }
-
-  private async ensureReady(): Promise<void> {
-    if (this.loaded) return;
-    if (!this.loadPromise) this.loadPromise = this.attemptLoad();
-    await this.loadPromise;
   }
 
   private emit(event: RelayEvent): void {
     for (const listener of this.listeners) {
-      try {
-        listener(event);
-      } catch {
-        // 单个监听器异常不得阻断其它监听器与调用方
-      }
-    }
-  }
-
-  private replayCorruptSkipped(listener: RelayListener): void {
-    if (this.corruptSkippedAtLoad === 0 || !this.listeners.has(listener)) return;
-    try {
-      listener({ type: "corrupt_skipped", count: this.corruptSkippedAtLoad });
-    } catch {
-      // 单个监听器异常不得阻断调用方
+      try { listener(event); } catch {}
     }
   }
 
   private async deliverSafe(event: string, payload: Record<string, unknown>, options: RelayDeliverOptions): Promise<string[]> {
-    try {
-      return await this.deliver(event, payload, options);
-    } catch (error) {
-      this.emit({
-        type: "deliver_failed",
-        event,
-        repoId: options.repoId,
-        reason: error instanceof Error ? error.message : String(error),
-      });
+    try { return await this.deliver(event, payload, options); }
+    catch (error) {
+      this.emit({ type: "deliver_failed", event, repoId: options.repoId, reason: (error as Error).message });
       return [];
     }
   }
 
-  private settleAskResolved(questionId: string, outcome: RelayAskOutcome): void {
-    const resolver = this.pendingResolvers.get(questionId);
-    if (!resolver) return;
-    this.pendingResolvers.delete(questionId);
-    resolver.resolve(outcome);
-  }
-
-  private settleAskRejected(questionId: string, error: unknown): void {
-    const resolver = this.pendingResolvers.get(questionId);
-    if (!resolver) return;
-    this.pendingResolvers.delete(questionId);
-    resolver.reject(error);
+  private pollAnswers(): void {
+    for (const [id, waiter] of this.pendingResolvers) {
+      try {
+        const record = readRecord<RelayQuestion & { sequence: number }>({ database: this.database, namespace: "relay_questions", key: id });
+        if (!record.exists) throw new Error("等待中的问题记录不存在");
+        const question = checkedQuestion(record.data, id);
+        if (question.status === "pending") continue;
+        waiter.resolve(question.status === "answered" ? { answered: true, answer: question.answer! } : { answered: false, reason: "withdrawn" });
+      } catch (error) { waiter.reject(error); }
+      this.pendingResolvers.delete(id);
+    }
+    if (this.pendingResolvers.size === 0 && this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = undefined;
+    }
   }
 
   async ask(input: RelayAskInput): Promise<RelayAskHandle> {
-    await this.ensureReady();
-    const id = randomUUID();
-    const question: RelayQuestion = {
-      id,
-      requirement: input.requirement,
-      repoId: input.repoId,
-      runId: input.runId,
-      question: input.question,
-      options: input.options,
-      recommended: input.recommended,
-      createdAt: this.clock.now(),
-      status: "pending",
-    };
-    await appendLine(this.questionsPath, question);
-    this.questions.set(id, question);
-    this.emit({ type: "question_enqueued", question });
-    let resolveAnswer!: (outcome: RelayAskOutcome) => void;
-    let rejectAnswer!: (error: unknown) => void;
-    const answer = new Promise<RelayAskOutcome>((resolve, reject) => {
-      resolveAnswer = resolve;
-      rejectAnswer = reject;
-    });
-    // 调用方可能晚于 settle 才附加 .then/.catch；这里先接一个空 catch 占位，
-    // 避免 settle 到附加处理器之间的窗口被判定为未处理拒绝。
+    const id = uuidv7();
+    const question: RelayQuestion = { ...input, id, kind: input.kind ?? "question", options: input.options.map((option) => ({ ...option })), createdAt: this.clock.now(), status: "pending" };
+    withDatabase(this.database, (db) => db.transaction(() => {
+      const event = db.append("relay", { kind: "question", id });
+      db.create("relay_questions", id, { ...question, sequence: event.sequence }, id);
+    }));
+    let resolveAnswer!: AskResolver["resolve"];
+    let rejectAnswer!: AskResolver["reject"];
+    const answer = new Promise<RelayAskOutcome>((resolve, reject) => { resolveAnswer = resolve; rejectAnswer = reject; });
     answer.catch(() => {});
     this.pendingResolvers.set(id, { resolve: resolveAnswer, reject: rejectAnswer });
-    await this.deliverSafe(QUESTION_EVENT, publicQuestion(question) as unknown as Record<string, unknown>, {
-      repoId: question.repoId,
-    });
+    if (!this.pollTimer) {
+      this.pollTimer = setInterval(() => this.pollAnswers(), 250);
+      this.pollTimer.unref();
+    }
+    this.emit({ type: "question_enqueued", question });
+    await this.deliverSafe(QUESTION_EVENT, publicQuestion(question) as unknown as Record<string, unknown>, { repoId: question.repoId });
     return { id, answer };
   }
 
   async answer(questionId: string, answerText: string, windowId: string): Promise<RelayAnswerResult> {
-    await this.ensureReady();
-    const question = this.questions.get(questionId);
-    if (!question) return { ok: false, reason: "not_found" };
-    if (question.status === "withdrawn") return { ok: false, reason: "withdrawn" };
-    if (question.status === "answered") return { ok: false, reason: "already_answered" };
-    const answered: RelayQuestion = {
-      ...question,
-      status: "answered",
-      answer: answerText,
-      answeredBy: windowId,
-      answeredAt: this.clock.now(),
-    };
-    // 判定与内存抢占同一 tick 完成，中间不让出，并发调用只有先抢到的一个能通过上面的状态判定
-    this.questions.set(questionId, answered);
-    try {
-      await appendLine(this.questionsPath, answered);
-    } catch (error) {
-      this.questions.set(questionId, question);
-      this.settleAskRejected(questionId, error);
-      throw error;
-    }
-    this.settleAskResolved(questionId, { answered: true, answer: answerText });
+    const result = withDatabase(this.database, (db) => db.transaction(() => {
+      const record = db.read<RelayQuestion>("relay_questions", questionId);
+      if (!record) return { ok: false as const, reason: "not_found" as const };
+      if (record.data.status === "withdrawn") return { ok: false as const, reason: "withdrawn" as const };
+      if (record.data.status === "answered") return { ok: false as const, reason: "already_answered" as const };
+      if (record.data.status !== "pending") throw new Error("问题状态无效");
+      const answered: RelayQuestion = { ...record.data, status: "answered", answer: answerText, answeredBy: windowId, answeredAt: this.clock.now() };
+      db.update("relay_questions", questionId, record.version, answered);
+      return { ok: true as const, question: answered };
+    }));
+    if (!result.ok) return result;
+    this.pendingResolvers.get(questionId)?.resolve({ answered: true, answer: answerText });
+    this.pendingResolvers.delete(questionId);
     this.emit({ type: "question_answered", questionId, answer: answerText });
-    await this.deliverSafe(WITHDRAW_EVENT, { questionId }, { repoId: question.repoId, excludeWindowId: windowId });
+    await this.deliverSafe(WITHDRAW_EVENT, { questionId }, { repoId: result.question.repoId, excludeWindowId: windowId });
     return { ok: true };
   }
 
   async notify(input: RelayNotifyInput): Promise<{ id: string }> {
-    await this.ensureReady();
-    const id = randomUUID();
-    const notice: RelayNotice = {
-      id,
-      requirement: input.requirement,
-      repoId: input.repoId,
-      runId: input.runId,
-      kind: input.kind,
-      message: input.message,
-      createdAt: this.clock.now(),
-      deliveredTo: [],
-    };
-    await appendLine(this.noticesPath, notice);
-    this.notices.set(id, notice);
+    const id = uuidv7();
+    const notice: RelayNotice = { ...input, id, createdAt: this.clock.now(), deliveredTo: [] };
+    withDatabase(this.database, (db) => db.transaction(() => {
+      const event = db.append("relay", { kind: "notice", id });
+      db.create("relay_notices", id, { ...notice, sequence: event.sequence }, id);
+    }));
     this.emit({ type: "notice_enqueued", notice });
-    const delivered = await this.deliverSafe(NOTICE_EVENT, publicNotice(notice) as unknown as Record<string, unknown>, {
-      repoId: notice.repoId,
-    });
-    if (delivered.length > 0) {
-      const settled: RelayNotice = { ...notice, deliveredTo: delivered };
-      await appendLine(this.noticesPath, settled);
-      this.notices.set(id, settled);
-    }
+    const delivered = await this.deliverSafe(NOTICE_EVENT, publicNotice(notice) as unknown as Record<string, unknown>, { repoId: notice.repoId });
+    for (const windowId of delivered) await this.markDelivered(windowId, id);
     return { id };
   }
 
   async pendingFor(window: RelayWindow): Promise<{ questions: RelayPublicQuestion[]; notices: RelayPublicNotice[] }> {
-    await this.ensureReady();
-    const questions = Array.from(this.questions.values())
-      .filter((question) => question.status === "pending" && window.repoIds.includes(question.repoId))
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map(publicQuestion);
-    const notices = Array.from(this.notices.values())
-      .filter((notice) => notice.deliveredTo.length === 0 && window.repoIds.includes(notice.repoId))
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map(publicNotice);
-    return { questions, notices };
+    return withDatabase(this.database, (db) => {
+      const questions = db.list<RelayQuestion & { sequence: number }>("relay_questions").map((row) => checkedQuestion(row.data, row.key))
+        .filter((question) => question.status === "pending" && window.repoIds.includes(question.repoId))
+        .sort((a, b) => a.sequence - b.sequence).map(publicQuestion);
+      const notices = db.list<RelayNotice & { sequence: number }>("relay_notices").map((row) => checkedNotice(row.data, row.key))
+        .filter((notice) => notice.deliveredTo.length === 0 && window.repoIds.includes(notice.repoId))
+        .sort((a, b) => a.sequence - b.sequence).map(publicNotice);
+      return { questions, notices };
+    });
   }
 
   async markDelivered(windowId: string, noticeId: string): Promise<void> {
-    await this.ensureReady();
-    const notice = this.notices.get(noticeId);
-    if (!notice || notice.deliveredTo.includes(windowId)) return;
-    const updated: RelayNotice = { ...notice, deliveredTo: [...notice.deliveredTo, windowId] };
-    this.notices.set(noticeId, updated);
-    try {
-      await appendLine(this.noticesPath, updated);
-    } catch (error) {
-      // 回滚只撤销本次窗口自己的贡献：并发 ack 下内存可能已被另一方抢占推进，
-      // 还原成本次调用前捕获的整条快照会连带抹掉对方已经写入的贡献。
-      const current = this.notices.get(noticeId);
-      if (current) this.notices.set(noticeId, { ...current, deliveredTo: current.deliveredTo.filter((w) => w !== windowId) });
-      throw error;
-    }
+    withDatabase(this.database, (db) => db.transaction(() => {
+      const record = db.read<RelayNotice>("relay_notices", noticeId);
+      if (!record || record.data.deliveredTo.includes(windowId)) return;
+      db.update("relay_notices", noticeId, record.version, { ...record.data, deliveredTo: [...record.data.deliveredTo, windowId] });
+    }));
   }
 
   async forward(input: RelayForwardInput): Promise<RelayForwardResult> {
-    await this.ensureReady();
     const agent = this.locateRequirementAgent(input.requirement);
     if (!agent) return { delivered: false, reason: "not_found" };
-    try {
-      agent.inject(input.message);
-    } catch (error) {
-      return { delivered: false, reason: error instanceof Error ? error.message : String(error) };
-    }
+    try { agent.inject(input.message); }
+    catch (error) { return { delivered: false, reason: (error as Error).message }; }
     return { delivered: true };
   }
 
   async withdraw(questionId: string): Promise<void> {
-    await this.ensureReady();
-    const question = this.questions.get(questionId);
-    if (!question || question.status !== "pending") return;
-    const withdrawn: RelayQuestion = { ...question, status: "withdrawn" };
-    this.questions.set(questionId, withdrawn);
-    try {
-      await appendLine(this.questionsPath, withdrawn);
-    } catch (error) {
-      this.questions.set(questionId, question);
-      this.settleAskRejected(questionId, error);
-      throw error;
-    }
-    this.settleAskResolved(questionId, { answered: false, reason: "withdrawn" });
+    const question = withDatabase(this.database, (db) => db.transaction(() => {
+      const record = db.read<RelayQuestion>("relay_questions", questionId);
+      if (!record || record.data.status !== "pending") return null;
+      db.update("relay_questions", questionId, record.version, { ...record.data, status: "withdrawn" });
+      return record.data;
+    }));
+    if (!question) return;
+    this.pendingResolvers.get(questionId)?.resolve({ answered: false, reason: "withdrawn" });
+    this.pendingResolvers.delete(questionId);
     this.emit({ type: "question_withdrawn", questionId });
     await this.deliverSafe(WITHDRAW_EVENT, { questionId }, { repoId: question.repoId });
   }
 
   subscribe(listener: RelayListener): () => void {
     this.listeners.add(listener);
-    if (this.loaded) {
-      this.replayCorruptSkipped(listener);
-    } else {
-      this.pendingReplayListeners.add(listener);
-    }
-    return () => {
-      this.listeners.delete(listener);
-      this.pendingReplayListeners.delete(listener);
-    };
+    return () => { this.listeners.delete(listener); };
   }
 }

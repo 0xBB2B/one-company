@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";
-import { daemonSocketPath, repoDataDir, runDataDir } from "../runtime/identity.ts";
+import { daemonSocketPath, repoDataDir } from "../runtime/identity.ts";
 import { ConnectivityProbe, NetworkPauseGate, toValidHostUrl } from "../runtime/network-pause.ts";
 import { createRequest, decodeFrames } from "../runtime/protocol.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
@@ -463,7 +463,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
 
   const shellRegistry = new ShellRegistry({
     clock,
-    recordsDirFor: (host) => runDataDir(options.dataRoot, repoId, host.runId ?? host.id),
+    database: join(repoDir, "data.sqlite"),
   });
   const networkGate = new NetworkPauseGate();
   const relayQueue = new RelayQueue({
@@ -502,7 +502,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     clock,
     intervalMs: options.networkProbeIntervalMs ?? DEFAULT_NETWORK_PROBE_INTERVAL_MS,
     probe: async () => {
-      const paused = await runStore.list({ states: ["paused_network"], limit: 1000 });
+      const paused = await runStore.list({ states: ["paused_network"], limit: Number.MAX_SAFE_INTEGER });
       const providerIds = new Set(paused.items.map((run) => run.model.provider));
       for (const providerId of providerIds) {
         const baseUrl = runtime.getProvider(providerId)?.baseUrl;

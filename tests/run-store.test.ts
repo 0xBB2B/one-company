@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { uuidv7, repositoryDatabase, readRecord, putRecord, UUID_V7_PATTERN } from "../runtime/database.ts";
+import { recordJson, mutateRecord, testRepoId } from "./helpers/database-fixture.ts";
+import type { RecordRef } from "../runtime/database.ts";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { runDataDir } from "../runtime/identity.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import { RunStore, assertTransition, isTerminalState } from "../runtime/run-store.ts";
 import type { RunState } from "../runtime/run-store.ts";
@@ -29,7 +31,7 @@ async function makeStore(overrides: { daemonStartedAt?: string } = {}): Promise<
 }> {
   const home = await createTempHome();
   tempHomes.push(home);
-  const repoId = randomUUID();
+  const repoId = testRepoId();
   const daemonStartedAt = overrides.daemonStartedAt ?? new Date().toISOString();
   const store = new RunStore({ dataRoot: home.dataRoot, repoId, daemonStartedAt });
   return { store, dataRoot: home.dataRoot, repoId, daemonStartedAt };
@@ -38,7 +40,7 @@ async function makeStore(overrides: { daemonStartedAt?: string } = {}): Promise<
 function requirementInput(overrides: Record<string, unknown> = {}) {
   return {
     kind: "requirement",
-    requirement: "2026-09-09.demo",
+    requirement: `2026-09-09.${uuidv7()}`,
     task: "示例任务",
     cwd: "/tmp/example-cwd",
     writePaths: [],
@@ -59,25 +61,19 @@ function roleInput(parentRunId: string, overrides: Record<string, unknown> = {})
   });
 }
 
-async function statePath(dataRoot: string, repoId: string, runId: string): Promise<string> {
-  return join(runDataDir(dataRoot, repoId, runId), "state.json");
+async function statePath(dataRoot: string, repoId: string, runId: string): Promise<RecordRef> {
+  return { database: repositoryDatabase(dataRoot, repoId), namespace: "runs", key: runId };
 }
-
-async function overwriteStateFile(path: string, mutate: (data: Record<string, unknown>) => void): Promise<void> {
-  const raw = await readFile(path, "utf8");
-  const parsed = JSON.parse(raw) as { version: number; data: Record<string, unknown> };
-  mutate(parsed.data);
-  await writeFile(path, `${JSON.stringify(parsed)}\n`, "utf8");
-}
+const overwriteStateFile = mutateRecord;
 
 describe("RunStore.create", () => {
   test("kind requirement 创建成功返回合法运行身份与初始字段", async () => {
     const { store, daemonStartedAt } = await makeStore();
     const run = await store.create(requirementInput());
 
-    expect(UUID_V4.test(run.id)).toBe(true);
+    expect(UUID_V7_PATTERN.test(run.id)).toBe(true);
     expect(run.kind).toBe("requirement");
-    expect(run.requirement).toBe("2026-09-09.demo");
+    expect(run.requirement).toMatch(/^2026-09-09\./);
     expect(run.state).toBe("queued");
     expect(run.turns).toBe(0);
     expect(run.errorDetails.status).toBe("none");
@@ -99,11 +95,11 @@ describe("RunStore.create", () => {
   test("state.json 写入目录权限 0700、文件权限 0600", async () => {
     const { store, dataRoot, repoId } = await makeStore();
     const run = await store.create(requirementInput());
-    const dir = runDataDir(dataRoot, repoId, run.id);
+    const dir = join(dataRoot, "repos", repoId);
     const path = await statePath(dataRoot, repoId, run.id);
 
     expect((await stat(dir)).mode & 0o777).toBe(0o700);
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect((await stat(path.database)).mode & 0o777).toBe(0o600);
   });
 
   test("50 个并发创建各自生成互不相同的运行身份且文件权限正确", async () => {
@@ -112,11 +108,11 @@ describe("RunStore.create", () => {
 
     expect(new Set(runs.map((run) => run.id)).size).toBe(50);
     for (const run of runs) {
-      expect(UUID_V4.test(run.id)).toBe(true);
-      const dir = runDataDir(dataRoot, repoId, run.id);
+      expect(UUID_V7_PATTERN.test(run.id)).toBe(true);
+      const dir = join(dataRoot, "repos", repoId);
       const path = await statePath(dataRoot, repoId, run.id);
       expect((await stat(dir)).mode & 0o777).toBe(0o700);
-      expect((await stat(path)).mode & 0o777).toBe(0o600);
+      expect((await stat(path.database)).mode & 0o777).toBe(0o600);
     }
   });
 
@@ -188,7 +184,7 @@ describe("RunStore.get", () => {
     const { store, dataRoot, repoId } = await makeStore();
     const created = await store.create(requirementInput());
     const path = await statePath(dataRoot, repoId, created.id);
-    await writeFile(path, "不是合法 JSON", "utf8");
+    putRecord(path, "损坏的运行记录");
 
     const result = await store.get(created.id);
     expect(result.ok).toBe(false);
@@ -368,14 +364,14 @@ describe("RunStore.update", () => {
 
     await Promise.all([
       ...reasons.map((reason) => store.update(created.id, { stateReason: reason })),
-      ...Array.from({ length: 5 }, () => store.update(created.id, { errorDetails: { status: "saved", path: "e.json" } })),
+      ...Array.from({ length: 5 }, () => store.update(created.id, { errorDetails: { status: "saved", recordId: "01991910-0000-7000-8000-000000000001" } })),
       ...results.map((result) => store.update(created.id, { result })),
     ]);
 
     const after = await store.get(created.id);
     expect(after.ok).toBe(true);
     if (after.ok) {
-      expect(after.run.errorDetails).toEqual({ status: "saved", path: "e.json" });
+      expect(after.run.errorDetails).toEqual({ status: "saved", recordId: "01991910-0000-7000-8000-000000000001" });
       expect(after.run.result).toBeDefined();
       expect(reasons).toContain(after.run.stateReason);
       expect(after.run.turns).toBe(created.turns);
@@ -578,7 +574,7 @@ describe("RunStore.markInterruptedOnStartup 部分失败", () => {
     await store.update(running2.id, { state: "running" });
 
     const corruptedPath = await statePath(dataRoot, repoId, running2.id);
-    await writeFile(corruptedPath, "不是合法 JSON", "utf8");
+    putRecord(corruptedPath, "损坏的运行记录");
 
     const newDaemonStartedAt = new Date(Date.now() + 1000).toISOString();
     const newStore = new RunStore({ dataRoot, repoId, daemonStartedAt: newDaemonStartedAt });
@@ -600,8 +596,8 @@ describe("RunStore.markInterruptedOnStartup 部分失败", () => {
   });
 });
 
-describe("RunStore.markInterruptedOnStartup 兼容旧记录", () => {
-  test("缺失 daemonStartedAt 的旧记录在启动时被标记 interrupted", async () => {
+describe("RunStore.markInterruptedOnStartup 拒绝不完整记录", () => {
+  test("缺失 daemonStartedAt 的记录报告损坏，不补造启动归属", async () => {
     const { store, dataRoot, repoId } = await makeStore();
     const created = await store.create(requirementInput());
     await store.update(created.id, { state: "running" });
@@ -613,17 +609,16 @@ describe("RunStore.markInterruptedOnStartup 兼容旧记录", () => {
     const newStore = new RunStore({ dataRoot, repoId, daemonStartedAt: new Date(Date.now() + 1000).toISOString() });
     const result = await newStore.markInterruptedOnStartup();
 
-    expect(result.interrupted).toContain(created.id);
-    const after = await newStore.get(created.id);
-    expect(after.ok).toBe(true);
-    if (after.ok) expect(after.run.state).toBe("interrupted");
+    expect(result.interrupted).toEqual([]);
+    expect(result.failed).toEqual([{ id: created.id, reason: "unreadable" }]);
+    expect(await newStore.get(created.id)).toEqual({ ok: false, reason: "unreadable" });
   });
 });
 
 describe("RunStore.update 错误场景", () => {
   test("合法 UUID 但目录不存在时抛出含'运行不存在'的错误且不含绝对路径", async () => {
     const { store, dataRoot } = await makeStore();
-    const missingId = randomUUID();
+    const missingId = uuidv7();
 
     let caught: unknown;
     try {
@@ -637,7 +632,7 @@ describe("RunStore.update 错误场景", () => {
     expect(message).not.toContain(dataRoot);
   });
 
-  test("非 UUID 的 id 抛出含 UUIDv4 的错误", async () => {
+  test("非 UUID 的 id 抛出含 UUIDv7 的错误", async () => {
     const { store } = await makeStore();
 
     let caught: unknown;
@@ -647,7 +642,7 @@ describe("RunStore.update 错误场景", () => {
       caught = error;
     }
     expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toContain("UUIDv4");
+    expect((caught as Error).message).toContain("UUIDv7");
   });
 
   test("直接 update 到 interrupted 时抛出含'不允许'的错误", async () => {
@@ -693,17 +688,17 @@ describe("RunStore.update 错误场景", () => {
     const { store, dataRoot, repoId } = await makeStore();
     const created = await store.create(requirementInput());
     await store.update(created.id, { state: "running" });
-    const errorDetailsPath = `${runDataDir(dataRoot, repoId, created.id)}/error-details.json`;
+    const errorDetailsPath = uuidv7();
 
     const failed = await store.update(created.id, {
       state: "failed",
       stateReason: "模型异常退出",
-      errorDetails: { path: errorDetailsPath, status: "saved" },
+      errorDetails: { recordId: errorDetailsPath, status: "saved" },
     });
 
     expect(failed.state).toBe("failed");
     expect(failed.stateReason).toBe("模型异常退出");
-    expect(failed.errorDetails).toEqual({ path: errorDetailsPath, status: "saved" });
+    expect(failed.errorDetails).toEqual({ recordId: errorDetailsPath, status: "saved" });
     expect(isValidUtcTimestamp(failed.endedAt)).toBe(true);
   });
 
@@ -747,20 +742,22 @@ describe("RunStore.list 排序与容错", () => {
     }
   });
 
-  test("跳过非 UUID 目录、普通文件与损坏记录，total 只计合法记录", async () => {
+  test("非 UUID 目录与普通文件不当运行，损坏记录阻止列表返回成功", async () => {
     const { store, dataRoot, repoId } = await makeStore();
     const valid = await store.create(requirementInput());
     const corrupted = await store.create(requirementInput());
     const corruptedPath = await statePath(dataRoot, repoId, corrupted.id);
-    await writeFile(corruptedPath, "不是合法 JSON", "utf8");
+    putRecord(corruptedPath, "损坏的运行记录");
 
     const runsDir = join(dataRoot, "repos", repoId, "runs");
     await mkdir(join(runsDir, "not-a-uuid-dir"), { recursive: true });
     await writeFile(join(runsDir, "stray-file.txt"), "noop", "utf8");
 
+    await expect(store.list({ limit: 100 })).rejects.toThrow(corrupted.id);
+    putRecord(corruptedPath, corrupted);
     const { items, total } = await store.list({ limit: 100 });
-    expect(items.map((item) => item.id)).toEqual([valid.id]);
-    expect(total).toBe(1);
+    expect(items.map((item) => item.id).sort()).toEqual([valid.id, corrupted.id].sort());
+    expect(total).toBe(2);
   });
 });
 
@@ -774,7 +771,7 @@ describe("RunStore.create 落盘内容", () => {
       mcp: ["server-a"],
     });
     const created = await store.create(input);
-    const raw = await readFile(await statePath(dataRoot, repoId, created.id), "utf8");
+    const raw = recordJson(await statePath(dataRoot, repoId, created.id));
     const parsed = JSON.parse(raw) as { version: number; data: Record<string, unknown> };
 
     expect(parsed.data.mcp).toEqual(input.mcp);
@@ -795,7 +792,7 @@ describe("RunStore.create shellToken", () => {
 
     expect(UUID_V4.test((created).shellToken)).toBe(true);
 
-    const raw = await readFile(await statePath(dataRoot, repoId, created.id), "utf8");
+    const raw = recordJson(await statePath(dataRoot, repoId, created.id));
     const parsed = JSON.parse(raw) as { data: Record<string, unknown> };
     expect(parsed.data.shellToken).toBe((created).shellToken);
 
@@ -834,7 +831,7 @@ describe("RunStore.update 拒绝改写 shellToken", () => {
     const { store, dataRoot, repoId } = await makeStore();
     const created = await store.create(requirementInput());
     const path = await statePath(dataRoot, repoId, created.id);
-    const before = await readFile(path, "utf8");
+    const before = recordJson(path);
 
     let caught: unknown;
     try {
@@ -847,7 +844,7 @@ describe("RunStore.update 拒绝改写 shellToken", () => {
     const message = (caught as Error).message;
     expect(message.includes("不允许") || message.includes("不可改写")).toBe(true);
 
-    const after = await readFile(path, "utf8");
+    const after = recordJson(path);
     expect(after).toBe(before);
   });
 
@@ -888,11 +885,11 @@ describe("启动标记的临界区与现场保留", () => {
   test("已有 stateReason 的记录标记中断后原因保留", async () => {
     const home = await createTempHome();
     tempHomes.push(home);
-    const first = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T00:00:00.000Z" });
+    const first = new RunStore({ dataRoot: home.dataRoot, repoId: testRepoId("r"), daemonStartedAt: "2026-09-09T00:00:00.000Z" });
     const run = await first.create({ kind: "requirement", requirement: "2026-09-08.x", task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
     await first.update(run.id, { state: "running" });
     await first.update(run.id, { state: "paused_network", stateReason: "连接中断" });
-    const second = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T01:00:00.000Z" });
+    const second = new RunStore({ dataRoot: home.dataRoot, repoId: testRepoId("r"), daemonStartedAt: "2026-09-09T01:00:00.000Z" });
     await second.markInterruptedOnStartup();
     const read = await second.get(run.id);
     expect(read.ok && read.run.state).toBe("interrupted");
@@ -902,10 +899,10 @@ describe("启动标记的临界区与现场保留", () => {
   test("守卫读取后记录变为终态则不再被标记", async () => {
     const home = await createTempHome();
     tempHomes.push(home);
-    const first = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T00:00:00.000Z" });
+    const first = new RunStore({ dataRoot: home.dataRoot, repoId: testRepoId("r"), daemonStartedAt: "2026-09-09T00:00:00.000Z" });
     const run = await first.create({ kind: "requirement", requirement: "2026-09-08.x", task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
     await first.update(run.id, { state: "running" });
-    const second = new RunStore({ dataRoot: home.dataRoot, repoId: "r", daemonStartedAt: "2026-09-09T01:00:00.000Z" });
+    const second = new RunStore({ dataRoot: home.dataRoot, repoId: testRepoId("r"), daemonStartedAt: "2026-09-09T01:00:00.000Z" });
     const originalGet = second.get.bind(second);
     (second as unknown as { get: typeof originalGet }).get = async (id: string) => {
       const result = await originalGet(id);
@@ -916,5 +913,17 @@ describe("启动标记的临界区与现场保留", () => {
     expect(marked.interrupted).toEqual([]);
     const read = await originalGet(run.id);
     expect(read.ok && read.run.state).toBe("completed");
+  });
+});
+
+
+describe("运行记录内容损坏", () => {
+  test.each(["state", "model", "errorDetails", "writePaths", "id"])("损坏 %s 不冒充合法记录且不允许列表判定安全", async (field) => {
+    const { store, dataRoot, repoId } = await makeStore();
+    const run = await store.create(requirementInput());
+    await overwriteStateFile(await statePath(dataRoot, repoId, run.id), (data) => { data[field] = null; });
+    expect(await store.get(run.id)).toEqual({ ok: false, reason: "unreadable" });
+    await expect(store.list({ limit: 100 })).rejects.toThrow(run.id);
+    await expect(store.update(run.id, { state: "running" })).rejects.toThrow();
   });
 });

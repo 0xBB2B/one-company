@@ -1,13 +1,12 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { FileEntry } from "@earendil-works/pi-coding-agent";
-import { runDataDir } from "./identity.ts";
+import type { FileEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { repositoryDatabase, readRecord, withDatabase, UUID_V7_PATTERN, uuidv7, StaleVersionError } from "./database.ts";
 
 interface RunRef {
   dataRoot: string;
   repoId: string;
   runId: string;
+  onPersistError?: (error: Error) => void;
 }
 
 interface CreateRunContext extends RunRef {
@@ -18,16 +17,53 @@ interface OpenRunContext extends RunRef {
   cwd?: string;
 }
 
-export function sessionFilePath(ref: RunRef): string {
-  return join(runDataDir(ref.dataRoot, ref.repoId, ref.runId), "session.jsonl");
+export function sessionRecordRef(ref: RunRef) {
+  if (!UUID_V7_PATTERN.test(ref.runId)) throw new Error("运行编号必须是 UUIDv7");
+  return { database: repositoryDatabase(ref.dataRoot, ref.repoId), namespace: "sessions", key: ref.runId };
+}
+
+function persistManager(manager: SessionManager, ref: RunRef, version: number): SessionManager {
+  const address = sessionRecordRef(ref);
+  let persistError: Error | undefined;
+  const saveLeaf = (leafId: string | null, entry?: SessionEntry) => {
+    if (persistError) throw persistError;
+    withDatabase(address.database, (db) => db.transaction(() => {
+      const stored = db.read<{ cwd: string; header: FileEntry; leafId: string | null }>(address.namespace, address.key);
+      if (!stored) throw new Error("会话元数据不存在");
+      if (stored.version !== version) throw new StaleVersionError();
+      if (entry) db.append(`session:${ref.runId}`, entry);
+      version = db.update(address.namespace, address.key, stored.version, { ...stored.data, leafId });
+    }));
+  };
+  manager._persist = (entry: SessionEntry) => {
+    try { saveLeaf(entry.id, entry); }
+    catch (error) {
+      if (persistError) {
+        if (!ref.onPersistError) throw persistError;
+        return;
+      }
+      persistError = error instanceof Error ? error : new Error(String(error));
+      if (!ref.onPersistError) throw error;
+      ref.onPersistError(persistError);
+    }
+  };
+  const branch = manager.branch.bind(manager);
+  manager.branch = (id) => {
+    if (!manager.getEntry(id)) throw new Error(`会话分支条目不存在: ${id}`);
+    saveLeaf(id);
+    branch(id);
+  };
+  const resetLeaf = manager.resetLeaf.bind(manager);
+  manager.resetLeaf = () => { saveLeaf(null); resetLeaf(); };
+  manager.newSession = manager.createBranchedSession = manager.setSessionFile = () => { throw new Error("受管理运行不能替换会话身份或改用文件存储"); };
+  return manager;
 }
 
 export function createSessionManagerForRun(ctx: CreateRunContext): SessionManager {
-  const dir = runDataDir(ctx.dataRoot, ctx.repoId, ctx.runId);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = sessionFilePath(ctx);
-  writeFileSync(file, "", { mode: 0o600, flag: "wx" });
-  return SessionManager.open(file, dir, ctx.cwd);
+  const manager = SessionManager.inMemory(ctx.cwd, { id: uuidv7() });
+  const ref = sessionRecordRef(ctx);
+  withDatabase(ref.database, (db) => db.create(ref.namespace, ref.key, { cwd: ctx.cwd, header: manager.getHeader(), leafId: null }));
+  return persistManager(manager, ctx, 1);
 }
 
 export type SessionFileFailure = { ok: false; reason: "missing" | "corrupt"; detail: string };
@@ -38,31 +74,25 @@ interface MinimalEntry {
   parentId?: string | null;
 }
 
-function validateSessionFile(file: string): { ok: true; entries: FileEntry[] } | SessionFileFailure {
-  let raw: string;
+function validateSessionRecord(ref: RunRef): { ok: true; entries: FileEntry[]; leafId: string | null; version: number } | SessionFileFailure {
+  let rawEntries: unknown[];
+  let leafId: string | null;
+  let version: number;
   try {
-    raw = readFileSync(file, "utf8");
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return { ok: false, reason: "missing", detail: `会话文件不存在: ${file}` };
-    return { ok: false, reason: "corrupt", detail: `会话文件无法读取: ${(error as Error).message}` };
-  }
-  const lines = raw.split("\n");
-  const rawEntries: unknown[] = [];
+    const address = sessionRecordRef(ref);
+    const stored = readRecord<{ cwd: string; header: FileEntry; leafId: string | null }>(address);
+    if (!stored.exists) return { ok: false, reason: "missing", detail: `会话记录不存在: ${ref.runId}` };
+    if (!stored.data || typeof stored.data.cwd !== "string" || !(stored.data.leafId === null || typeof stored.data.leafId === "string")) throw new Error("会话元数据结构无效");
+    leafId = stored.data.leafId;
+    version = stored.version;
+    rawEntries = withDatabase(address.database, (db) => [stored.data.header, ...db.events<SessionEntry>(`session:${ref.runId}`).map((event) => event.data)]);
+  } catch (error) { return { ok: false, reason: "corrupt", detail: `会话记录无法读取: ${(error as Error).message}` }; }
   const ids = new Set<string>();
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] as string;
-    if (line.trim() === "") continue;
+  for (let i = 0; i < rawEntries.length; i++) {
+    const parsed = rawEntries[i];
     const lineNumber = i + 1;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch (error) {
-      return { ok: false, reason: "corrupt", detail: `第 ${lineNumber} 行 JSON 解析失败: ${(error as Error).message}` };
-    }
-
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, reason: "corrupt", detail: `第 ${lineNumber} 条会话记录结构无效` };
     const minimal = parsed as MinimalEntry;
     if (rawEntries.length > 0 && minimal.parentId != null && !ids.has(minimal.parentId)) {
       return {
@@ -71,30 +101,34 @@ function validateSessionFile(file: string): { ok: true; entries: FileEntry[] } |
         detail: `第 ${lineNumber} 行 parentId 指向不存在的条目: ${minimal.parentId}`,
       };
     }
-    if (typeof minimal.id === "string") ids.add(minimal.id);
-    rawEntries.push(parsed);
+    if (typeof minimal.id !== "string" || ids.has(minimal.id)) return { ok: false, reason: "corrupt", detail: `第 ${lineNumber} 条记录编号缺失或重复` };
+    ids.add(minimal.id);
+    if (minimal.type === "message") {
+      const message = (parsed as { message?: { role?: unknown; content?: unknown } }).message;
+      if (!message || typeof message.role !== "string" || !(typeof message.content === "string" || (Array.isArray(message.content) && message.content.every((block) => block && typeof block === "object" && typeof block.type === "string")))) return { ok: false, reason: "corrupt", detail: `第 ${lineNumber} 条消息结构无效` };
+    }
   }
 
-  if (rawEntries.length === 0) return { ok: false, reason: "corrupt", detail: `会话文件为空: ${file}` };
+  if (rawEntries.length === 0) return { ok: false, reason: "corrupt", detail: `会话记录为空: ${ref.runId}` };
   const header = rawEntries[0] as MinimalEntry;
-  if (header.type !== "session") return { ok: false, reason: "corrupt", detail: `首条记录不是 session header: ${file}` };
+  if (header.type !== "session") return { ok: false, reason: "corrupt", detail: `首条记录不是 session header: ${ref.runId}` };
 
-  return { ok: true, entries: rawEntries as FileEntry[] };
+  if (leafId !== null && !ids.has(leafId)) return { ok: false, reason: "corrupt", detail: "会话当前位置指向不存在的条目" };
+  return { ok: true, entries: rawEntries as FileEntry[], leafId, version };
 }
 
 export type OpenSessionOutcome = { ok: true; manager: SessionManager } | SessionFileFailure;
 
 export function openSessionManagerForRun(ctx: OpenRunContext): OpenSessionOutcome {
-  const file = sessionFilePath(ctx);
-  const validated = validateSessionFile(file);
+  const validated = validateSessionRecord(ctx);
   if (!validated.ok) return validated;
-
-  const dir = runDataDir(ctx.dataRoot, ctx.repoId, ctx.runId);
   try {
-    return { ok: true, manager: SessionManager.open(file, dir, ctx.cwd) };
-  } catch (error) {
-    return { ok: false, reason: "corrupt", detail: (error as Error).message };
-  }
+    const header = validated.entries[0] as { cwd?: string };
+    const manager = SessionManager.inMemory(ctx.cwd ?? header.cwd, undefined, validated.entries);
+    if (validated.leafId === null) manager.resetLeaf();
+    else manager.branch(validated.leafId);
+    return { ok: true, manager: persistManager(manager, ctx, validated.version) };
+  } catch (error) { return { ok: false, reason: "corrupt", detail: (error as Error).message }; }
 }
 
 export type SynthesizeOutcome =
@@ -108,7 +142,7 @@ export function synthesizeInterruptedResults(ctx: RunRef): SynthesizeOutcome {
 
   const calls: Array<{ toolCallId: string; toolName: string }> = [];
   const resultIds = new Set<string>();
-  for (const entry of manager.getEntries()) {
+  for (const entry of manager.getBranch()) {
     if (entry.type !== "message") continue;
     const message = entry.message;
     if (message.role === "assistant") {
@@ -143,8 +177,6 @@ export interface TranscriptEntry {
   at?: string;
 }
 
-const TERMINAL_STOP_REASONS = new Set(["stop", "error", "aborted", "length"]);
-
 function extractText(content: string | Array<{ type: string; text?: string }>): string {
   if (typeof content === "string") return content;
   return content
@@ -156,7 +188,7 @@ function extractText(content: string | Array<{ type: string; text?: string }>): 
 export type ReadTranscriptOutcome = { ok: true; entries: TranscriptEntry[]; ended: boolean } | SessionFileFailure;
 
 export function readTranscript(ctx: RunRef & { fromSeq?: number }): ReadTranscriptOutcome {
-  const validated = validateSessionFile(sessionFilePath(ctx));
+  const validated = validateSessionRecord(ctx);
   if (!validated.ok) return validated;
 
   const entries: TranscriptEntry[] = [];
@@ -185,14 +217,8 @@ export function readTranscript(ctx: RunRef & { fromSeq?: number }): ReadTranscri
     }
   }
 
-  const lastNonToolResult = [...validated.entries]
-    .reverse()
-    .find((entry) => entry.type === "message" && entry.message.role !== "toolResult");
-  const ended =
-    lastNonToolResult !== undefined &&
-    lastNonToolResult.type === "message" &&
-    lastNonToolResult.message.role === "assistant" &&
-    TERMINAL_STOP_REASONS.has(lastNonToolResult.message.stopReason);
+  const run = readRecord<{ state: string }>({ database: repositoryDatabase(ctx.dataRoot, ctx.repoId), namespace: "runs", key: ctx.runId });
+  const ended = run.exists && ["completed", "failed", "stopped"].includes(run.data.state);
 
   const filtered = ctx.fromSeq === undefined ? entries : entries.filter((entry) => entry.seq > (ctx.fromSeq as number));
   return { ok: true, entries: filtered, ended };

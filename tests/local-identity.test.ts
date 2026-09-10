@@ -1,3 +1,4 @@
+import { withDatabase, uuidv7 } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -20,10 +21,7 @@ import {
   listWorktrees,
   repoDataDir,
   repositoryIdentity,
-  requirementDataDir,
   requirementIdentity,
-  runDataDir,
-  runsDataDir,
 } from "../runtime/identity.ts";
 
 const execFileAsync = promisify(execFile);
@@ -183,13 +181,13 @@ describe("discoverWorkspace", () => {
     expect(found.repos.map((r) => r.path)).toContain(await realpath(repoAtDepth4));
   });
 
-  test("深度 5 层的仓库不被发现", async () => {
+  test("深度 5 层的仓库同样被递归发现", async () => {
     const parent = await mkdtemp(join(tmpdir(), "pi-company-depth-"));
     tempRoots.push(parent);
     const repoAtDepth5 = join(parent, "m1", "m2", "m3", "m4", "m5");
     await initGitRepoAt(repoAtDepth5);
     const found = await discoverWorkspace(parent);
-    expect(found.repos.map((r) => r.path)).not.toContain(await realpath(repoAtDepth5));
+    expect(found.repos.map((r) => r.path)).toContain(await realpath(repoAtDepth5));
   });
 
   test("从仓库内启动只返回该仓库", async () => {
@@ -338,15 +336,14 @@ describe("dataRoot", () => {
 });
 
 describe("repoDataDir", () => {
-  test("首次访问创建目录并写入 repo.json", async () => {
+  test("首次访问创建目录并写入 SQLite 仓库记录", async () => {
     const home = await createTempHome();
     tempHomes.push(home);
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const identity = await repositoryIdentity(repo.root);
     const dir = await repoDataDir(home.dataRoot, identity.repoId, identity.commonDir);
-    const raw = await readFile(join(dir, "repo.json"), "utf8");
-    const parsed = JSON.parse(raw);
+    const parsed = withDatabase(join(dir, "data.sqlite"), (db) => db.read("repository", identity.repoId)!.data);
     expect(parsed.commonDir).toBe(identity.commonDir);
     expect(parsed.firstSeenAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
   });
@@ -369,10 +366,10 @@ describe("repoDataDir", () => {
     repoFixtures.push(repo);
     const identity = await repositoryIdentity(repo.root);
     const dir = await repoDataDir(home.dataRoot, identity.repoId, identity.commonDir);
-    const first = JSON.parse(await readFile(join(dir, "repo.json"), "utf8"));
+    const first = withDatabase(join(dir, "data.sqlite"), (db) => db.read("repository", identity.repoId)!.data);
     await new Promise((resolve) => setTimeout(resolve, 20));
     await repoDataDir(home.dataRoot, identity.repoId, identity.commonDir);
-    const second = JSON.parse(await readFile(join(dir, "repo.json"), "utf8"));
+    const second = withDatabase(join(dir, "data.sqlite"), (db) => db.read("repository", identity.repoId)!.data);
     expect(second.firstSeenAt).toBe(first.firstSeenAt);
   });
 
@@ -401,7 +398,7 @@ describe("repoDataDir", () => {
     expect(marker).toBe("kept\n");
   });
 
-  test("umask 0o022 下首次创建的三层目录与 repo.json 权限符合预期", async () => {
+  test("umask 0o022 下首次创建的三层目录与 SQLite 仓库记录 权限符合预期", async () => {
     const home = await createTempHome();
     tempHomes.push(home);
     const repo = await createRepoFixture();
@@ -414,7 +411,7 @@ describe("repoDataDir", () => {
       const rootInfo = await stat(freshRoot);
       const reposInfo = await stat(join(freshRoot, "repos"));
       const leafInfo = await stat(dir);
-      const repoJsonInfo = await stat(join(dir, "repo.json"));
+      const repoJsonInfo = await stat(join(dir, "data.sqlite"));
       expect(rootInfo.mode & 0o777).toBe(0o700);
       expect(reposInfo.mode & 0o777).toBe(0o700);
       expect(leafInfo.mode & 0o777).toBe(0o700);
@@ -422,60 +419,6 @@ describe("repoDataDir", () => {
     } finally {
       process.umask(previousUmask);
     }
-  });
-});
-
-describe("requirementDataDir", () => {
-  test("路径为 repos/<repoId>/requirements/<reqId>", async () => {
-    const home = await createTempHome();
-    tempHomes.push(home);
-    const repo = await createRepoFixture();
-    repoFixtures.push(repo);
-    const identity = await repositoryIdentity(repo.root);
-    const req = requirementIdentity("2026-09-08.order-export");
-    const dir = requirementDataDir(home.dataRoot, identity.repoId, req.reqId);
-    expect(dir).toBe(join(home.dataRoot, "repos", identity.repoId, "requirements", req.reqId));
-  });
-
-  test("拒绝形如 ../../x 的路径穿越 reqId", async () => {
-    const home = await createTempHome();
-    tempHomes.push(home);
-    expect(() => requirementDataDir(home.dataRoot, "deadbeef", "../../x")).toThrow();
-  });
-
-  test("拒绝内嵌 .. 段的 reqId", async () => {
-    const home = await createTempHome();
-    tempHomes.push(home);
-    expect(() => requirementDataDir(home.dataRoot, "deadbeef", "2026-09-08.x/../../daemon.lock")).toThrow();
-  });
-
-  test("拒绝不含合法需求标识格式的 reqId", async () => {
-    const home = await createTempHome();
-    tempHomes.push(home);
-    expect(() => requirementDataDir(home.dataRoot, "deadbeef", "order-export")).toThrow();
-  });
-});
-
-describe("runDataDir", () => {
-  test("路径为 repos/<repoId>/runs/<runId>", async () => {
-    const home = await createTempHome();
-    tempHomes.push(home);
-    const repo = await createRepoFixture();
-    repoFixtures.push(repo);
-    const identity = await repositoryIdentity(repo.root);
-    const runId = randomUUID();
-    const dir = runDataDir(home.dataRoot, identity.repoId, runId);
-    expect(dir).toBe(join(home.dataRoot, "repos", identity.repoId, "runs", runId));
-  });
-
-  test("拒绝非 UUIDv4 的运行标识", async () => {
-    const home = await createTempHome();
-    tempHomes.push(home);
-    const repo = await createRepoFixture();
-    repoFixtures.push(repo);
-    const identity = await repositoryIdentity(repo.root);
-    expect(() => runDataDir(home.dataRoot, identity.repoId, "not-a-uuid")).toThrow();
-    expect(() => runDataDir(home.dataRoot, identity.repoId, "123e4567-e89b-12d3-a456-426614174000")).toThrow();
   });
 });
 
@@ -539,13 +482,5 @@ describe("git 判定不依赖环境", () => {
     const fromParent = await discoverWorkspace(workspace.root);
     const fromInside = await discoverWorkspace(workspace.repos[0]!);
     expect(fromParent.repos.map((r) => r.path)).toContain(fromInside.repos[0]?.path);
-  });
-});
-
-describe("runsDataDir", () => {
-  test("是 runDataDir 的父目录", () => {
-    const root = "/tmp/data";
-    const runId = "3b241101-e2bb-4255-8caf-4136c566a962";
-    expect(runDataDir(root, "repo", runId)).toBe(join(runsDataDir(root, "repo"), runId));
   });
 });

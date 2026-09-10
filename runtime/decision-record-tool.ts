@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Static } from "typebox";
@@ -14,18 +15,7 @@ const PARAMETERS = Type.Object(
     trigger: Type.String({ minLength: 1 }),
     decision: Type.String({ minLength: 1 }),
     alternatives: Type.Array(Type.String({ minLength: 1 })),
-    effects: Type.Array(
-      Type.Union([
-        Type.Literal("behavior"),
-        Type.Literal("scope"),
-        Type.Literal("authorization"),
-        Type.Literal("architecture"),
-        Type.Literal("risk"),
-        Type.Literal("recovery"),
-        Type.Literal("flow-branch"),
-      ]),
-      { minItems: 1 },
-    ),
+    effects: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
     scope: Type.Optional(Type.Union([Type.String({ minLength: 1 }), Type.Null()])),
     basis: Type.Optional(Type.Union([Type.Array(Type.String({ minLength: 1 })), Type.Null()])),
     action: Type.Optional(Type.Union([Type.String({ minLength: 1 }), Type.Null()])),
@@ -38,12 +28,13 @@ const PARAMETERS = Type.Object(
 type Parameters = Static<typeof PARAMETERS>;
 
 export function describeReceipt(receipt: DecisionReceipt): string {
-  return `已记录 ${receipt.decisionId}：${receipt.ledgerPath} 第 ${receipt.lineNumber} 行`;
+  return `已记录 ${receipt.decisionId}：记录 ${receipt.recordId}，序号 ${receipt.sequence}`;
 }
 
 export interface CreateDecisionRecordToolOptions {
   dataRoot?: string;
   cwd?: string;
+  boundRequirement?: string;
 }
 
 export function createDecisionRecordTool(options: CreateDecisionRecordToolOptions = {}) {
@@ -52,7 +43,7 @@ export function createDecisionRecordTool(options: CreateDecisionRecordToolOption
     label: "记录决定",
     description: "把一次决定追加到需求台账",
     parameters: PARAMETERS,
-    async execute(_toolCallId: string, params: Parameters, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: { cwd: string }) {
+    async execute(_toolCallId: string, params: Parameters, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: { cwd: string }): Promise<{ content: Array<{ type: "text"; text: string }>; details: { isError: boolean; receipt?: DecisionReceipt } }> {
       if (signal?.aborted) {
         return { content: [{ type: "text", text: "操作已中止" }], details: { isError: true } };
       }
@@ -64,6 +55,11 @@ export function createDecisionRecordTool(options: CreateDecisionRecordToolOption
         };
       }
       try {
+        if (options.boundRequirement && (params.requirement !== options.boundRequirement ||
+          (params.cwd !== undefined && await realpath(params.cwd) !== await realpath(options.cwd ?? ctx.cwd)))) {
+          throw new Error("需求代理只能记录绑定仓库与需求的决定");
+        }
+        if (options.boundRequirement && params.actor === "user") throw new Error("用户决定只能由真实中继答复记录");
         const receipt = await appendDecision(params as unknown as Record<string, unknown>, {
           dataRoot: options.dataRoot ?? resolveDataRoot(process.env),
           cwd: params.cwd ?? options.cwd ?? ctx.cwd,

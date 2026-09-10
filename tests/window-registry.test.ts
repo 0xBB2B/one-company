@@ -1,3 +1,5 @@
+import { failDatabaseWrites } from "./helpers/database-fixture.ts";
+import { uuidv7, readRecord, putRecord, withDatabase } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -82,7 +84,7 @@ async function makeRepoDir(): Promise<string> {
 
 function windowInput(overrides: Record<string, unknown> = {}) {
   return {
-    windowId: randomUUID(),
+    windowId: uuidv7(),
     pid: process.pid,
     sessionId: "session-demo",
     cwd: "/tmp/example-cwd",
@@ -168,6 +170,16 @@ async function makeSentinel(
   return { sentinelPath, maliciousWindowId };
 }
 
+function windowRef(repoDir: string, windowId: string) {
+  return { database: join(repoDir, "data.sqlite"), namespace: "windows", key: windowId };
+}
+
+function windowJson(repoDir: string, windowId: string): string {
+  const record = readRecord(windowRef(repoDir, windowId));
+  if (!record.exists) throw new Error("窗口记录不存在");
+  return JSON.stringify(record.data);
+}
+
 describe("WindowRegistry.register", () => {
   test("登记原子写入 windows/<windowId>.json 且返回窗口标识", async () => {
     const { registry, repoDir } = await makeRegistry();
@@ -178,7 +190,7 @@ describe("WindowRegistry.register", () => {
     expect(typeof windowId).toBe("string");
     expect(windowId.length).toBeGreaterThan(0);
 
-    const raw = await readFile(join(repoDir, "windows", `${windowId}.json`), "utf8");
+    const raw = windowJson(repoDir, windowId);
     const record = JSON.parse(raw);
     expect(record.windowId).toBe(windowId);
     expect(record.sessionId).toBe("sess-1");
@@ -217,11 +229,11 @@ describe("WindowRegistry.register", () => {
 
   test("windowId 由调用方传入，返回值与记录中的 windowId 均等于传入值", async () => {
     const { registry, repoDir } = await makeRegistry();
-    const windowId = randomUUID();
+    const windowId = uuidv7();
     const returned = await registry.register(windowInput({ windowId }));
 
     expect(returned).toBe(windowId);
-    const raw = await readFile(join(repoDir, "windows", `${windowId}.json`), "utf8");
+    const raw = windowJson(repoDir, windowId);
     const record = JSON.parse(raw);
     expect(record.windowId).toBe(windowId);
   });
@@ -512,12 +524,12 @@ describe("并发与文件完整性", () => {
       registry.heartbeat(otherId),
     ]);
 
-    const raw = await readFile(join(repoDir, "windows", `${windowId}.json`), "utf8");
+    const raw = windowJson(repoDir, windowId);
     const record = JSON.parse(raw);
     expect(record.windowId).toBe(windowId);
     expect(typeof record.heartbeatSeq).toBe("number");
 
-    const otherRaw = await readFile(join(repoDir, "windows", `${otherId}.json`), "utf8");
+    const otherRaw = windowJson(repoDir, otherId);
     const otherRecord = JSON.parse(otherRaw);
     expect(otherRecord.windowId).toBe(otherId);
   });
@@ -525,10 +537,10 @@ describe("并发与文件完整性", () => {
   test("heartbeat 遇到文件已被替换为其他窗口记录时拒绝写入且不覆盖", async () => {
     const { registry, repoDir } = await makeRegistry();
     const windowId = await registry.register(windowInput());
-    const filePath = join(repoDir, "windows", `${windowId}.json`);
-    const original = JSON.parse(await readFile(filePath, "utf8"));
+    const ref = windowRef(repoDir, windowId);
+    const original = JSON.parse(windowJson(repoDir, windowId));
     const replaced = { ...original, windowId: "other-window-id", heartbeatSeq: 999 };
-    await writeFile(filePath, JSON.stringify(replaced));
+    putRecord(ref, replaced);
 
     try {
       await registry.heartbeat(windowId);
@@ -536,7 +548,7 @@ describe("并发与文件完整性", () => {
       // 拒绝可能以抛错或返回值表示，此处只关心文件是否被覆盖
     }
 
-    const after = JSON.parse(await readFile(filePath, "utf8"));
+    const after = JSON.parse(windowJson(repoDir, windowId));
     expect(after.windowId).toBe("other-window-id");
     expect(after.heartbeatSeq).toBe(999);
   });
@@ -544,11 +556,11 @@ describe("并发与文件完整性", () => {
   test("并发 20 次心跳后 heartbeatSeq 恰好增加 20（无丢更新）", async () => {
     const { registry, repoDir } = await makeRegistry();
     const windowId = await registry.register(windowInput());
-    const before = JSON.parse(await readFile(join(repoDir, "windows", `${windowId}.json`), "utf8"));
+    const before = JSON.parse(windowJson(repoDir, windowId));
 
     await Promise.all(Array.from({ length: 20 }, () => registry.heartbeat(windowId)));
 
-    const after = JSON.parse(await readFile(join(repoDir, "windows", `${windowId}.json`), "utf8"));
+    const after = JSON.parse(windowJson(repoDir, windowId));
     expect(after.heartbeatSeq).toBe(before.heartbeatSeq + 20);
   });
 
@@ -641,7 +653,7 @@ describe("list 对目录内陌生文件的容忍", () => {
   test("windows 目录里非窗口标识命名的 json 文件被跳过，不影响其他记录", async () => {
     const { registry, repoDir } = await makeRegistry();
     const windowId = await registry.register(windowInput());
-    await writeFile(join(repoDir, "windows", "legacy-note.json"), "{}");
+    withDatabase(join(repoDir, "data.sqlite"), (db) => db.create("other_namespace", "note", {}));
 
     const list = await registry.list();
     expect(list.map((r) => r.windowId)).toEqual([windowId]);
@@ -651,7 +663,7 @@ describe("list 对目录内陌生文件的容忍", () => {
 describe("WindowRegistry.unregister 在目录不存在时", () => {
   test("从未登记过的仓库上注销合法标识不抛错", async () => {
     const { registry } = await makeRegistry();
-    await registry.unregister("2b6e2d4a-1c7f-4c5e-9a8b-0d1e2f3a4b5c");
+    await registry.unregister(uuidv7());
     expect(await registry.list()).toEqual([]);
   });
 });
@@ -701,12 +713,12 @@ describe("startHeartbeat 失败处理", () => {
     const errors: unknown[] = [];
     const stop = startHeartbeat(registry, windowId, (error) => errors.push(error));
 
-    await chmod(join(repoDir, "windows"), 0o500);
+    const restore = failDatabaseWrites(join(repoDir, "data.sqlite"), "records", "namespace", "windows");
     try {
       timeSource.advance(5_000);
       await flushIO(50);
     } finally {
-      await chmod(join(repoDir, "windows"), 0o700);
+      restore();
     }
     expect(errors.length).toBe(1);
 
@@ -727,7 +739,7 @@ describe("startHeartbeat 失败处理", () => {
     };
     process.on("unhandledRejection", onUnhandledRejection);
 
-    await chmod(join(repoDir, "windows"), 0o500);
+    const restore = failDatabaseWrites(join(repoDir, "data.sqlite"), "records", "namespace", "windows");
     try {
       const stop = startHeartbeat(registry, windowId);
       timeSource.advance(5_000);
@@ -736,7 +748,7 @@ describe("startHeartbeat 失败处理", () => {
       timeSource.advance(5_000);
       await flushIO(50);
     } finally {
-      await chmod(join(repoDir, "windows"), 0o700).catch(() => {});
+      restore();
       process.off("unhandledRejection", onUnhandledRejection);
     }
 

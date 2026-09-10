@@ -1,3 +1,4 @@
+import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
@@ -6,7 +7,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { RunStore } from "../runtime/run-store.ts";
-import { daemonSocketPath, repoDataDir, runsDataDir } from "../runtime/identity.ts";
+import { daemonSocketPath, repoDataDir } from "../runtime/identity.ts";
+import { putRecord, repositoryDatabase } from "../runtime/database.ts";
+import { deleteRecord } from "./helpers/database-fixture.ts";
 import { PROTOCOL_VERSION } from "../runtime/protocol.ts";
 import { RelayQueue } from "../daemon/relay-queue.ts";
 import {
@@ -43,9 +46,8 @@ async function waitUntil(predicate: () => Promise<boolean>, timeoutMs: number, i
   throw new Error(`等待条件满足超时（${timeoutMs}ms）`);
 }
 
-// os.tmpdir() 在部分沙箱环境下路径本身已接近或超过平台 socket 长度上限，无法用于精确长度构造
 async function exactLengthDataRoot(targetLength: number): Promise<string> {
-  const base = await mkdtemp(join("/tmp", "pi-co-"));
+  const base = await mkdtemp(join(temporaryRoot(), "d"));
   extraTempDirs.push(base);
   const padLength = targetLength - base.length - 1;
   if (padLength < 0) throw new Error(`目标长度 ${targetLength} 短于基础临时目录长度 ${base.length}`);
@@ -57,7 +59,7 @@ async function exactLengthDataRoot(targetLength: number): Promise<string> {
 function requirementInput(overrides: Record<string, unknown> = {}) {
   return {
     kind: "requirement",
-    requirement: "2026-09-09.daemon-lifecycle-test",
+    requirement: `2026-09-09.daemon-lifecycle-${randomUUID()}`,
     task: "daemon lifecycle 测试占位任务",
     cwd: "/tmp/daemon-lifecycle-test-cwd",
     writePaths: [],
@@ -445,7 +447,7 @@ describe("崩溃恢复", () => {
     expect(handle.proc.exitCode).toBeNull();
   }, 20_000);
 
-  test("启动窗口内收到 shutdown 请求时因仍在扫描运行记录而拒绝", async () => {
+  test("启动恢复尚未完成且仍有活动记录时拒绝 shutdown", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
     const staleStore = new RunStore({
@@ -454,12 +456,15 @@ describe("崩溃恢复", () => {
       daemonStartedAt: "stale-previous-instance",
     });
     await Promise.all(
-      Array.from({ length: 300 }, (_, i) =>
+      Array.from({ length: 3 }, (_, i) =>
         createRunningRecord(staleStore, { requirement: `2026-09-09.startup-window-${i}` }),
       ),
     );
 
-    trackHandle(await startDaemonForTest(fixture));
+    trackHandle(await startDaemonForTest(fixture, { extraEnv: {
+      [MODEL_PROVIDER_MODULE_ENV_VAR]: modelProviderModulePath,
+      [ASSEMBLY_DELAY_MS_ENV_VAR]: "1500",
+    } }));
     const client = await connectTestClient(fixture.socketPath);
     clients.push(client);
 
@@ -474,23 +479,11 @@ describe("崩溃恢复", () => {
 });
 
 describe("RunStore 读失败不影响存活", () => {
-  let chmodedDir: string | null = null;
-
-  afterEach(async () => {
-    if (chmodedDir) {
-      await chmod(chmodedDir, 0o700).catch(() => {});
-      chmodedDir = null;
-    }
-  });
-
-  test("runs 目录不可读时守护进程仍存活并可 ping", async () => {
+  test("数据库运行记录损坏时守护进程仍存活并可 ping", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
     const handle = trackHandle(await startDaemonForTest(fixture, { idleTimeoutMs: 500 }));
-    const runsDir = runsDataDir(fixture.dataRoot, fixture.repoId);
-    await mkdir(runsDir, { recursive: true });
-    await chmod(runsDir, 0o000);
-    chmodedDir = runsDir;
+    putRecord({ database: repositoryDatabase(fixture.dataRoot, fixture.repoId), namespace: "runs", key: "corrupt-run" }, {});
 
     await delay(3_000);
     expect(handle.proc.exitCode).toBeNull();
@@ -502,13 +495,11 @@ describe("RunStore 读失败不影响存活", () => {
     expect(typeof pong.now).toBe("number");
   }, 20_000);
 
-  test("runs 目录在守护进程启动前已不可读：仍能启动、ping，但 shutdown 被拒并给出读失败原因；目录恢复后 shutdown 成功", async () => {
+  test("启动前运行记录已损坏：仍能启动、ping，修复记录后才可 shutdown", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
-    const runsDir = runsDataDir(fixture.dataRoot, fixture.repoId);
-    await mkdir(runsDir, { recursive: true });
-    await chmod(runsDir, 0o000);
-    chmodedDir = runsDir;
+    const corrupt = { database: repositoryDatabase(fixture.dataRoot, fixture.repoId), namespace: "runs", key: "corrupt-run" };
+    putRecord(corrupt, {});
 
     const { proc, exited } = spawnDaemonProcess({
       home: fixture.home,
@@ -530,8 +521,7 @@ describe("RunStore 读失败不影响存活", () => {
     expect(proc.exitCode).toBeNull();
     expect(proc.signalCode).toBeNull();
 
-    await chmod(runsDir, 0o700);
-    chmodedDir = null;
+    deleteRecord(corrupt);
     const accepted = await client.call("shutdown");
     expect(accepted.accepted).toBe(true);
     const result = await exited;

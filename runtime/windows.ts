@@ -1,17 +1,16 @@
 import { execFile } from "node:child_process";
-import { mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Clock } from "./clock.ts";
-import { withDirLock, writeFileAtomic } from "./store.ts";
+import { withDatabase, UUID_V7_PATTERN } from "./database.ts";
 
 const execFileAsync = promisify(execFile);
 
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const LOST_AFTER_INTERVALS = 3;
 const LOST_THRESHOLD_MS = HEARTBEAT_INTERVAL_MS * LOST_AFTER_INTERVALS;
-const DIR_MODE = 0o700;
-const WINDOW_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const WINDOW_ID_PATTERN = UUID_V7_PATTERN;
 
 export interface WindowRegisterInput {
   windowId: string;
@@ -49,28 +48,31 @@ export interface WindowRegistryOptions {
   processStartedAt: (pid: number) => Promise<string | null>;
 }
 
-function errorCode(error: unknown): string | undefined {
-  return (error as NodeJS.ErrnoException).code;
+function validateWindowId(windowId: string): void {
+  if (!WINDOW_ID_PATTERN.test(windowId)) throw new Error(`不合法的窗口标识: ${windowId}`);
+}
+
+function checkedWindow(value: unknown, id: string): WindowRecord {
+  const record = value as WindowRecord | null;
+  if (!record || typeof record !== "object" || Array.isArray(record) || record.windowId !== id ||
+    !Number.isInteger(record.pid) || record.pid <= 0 || !Number.isSafeInteger(record.heartbeatSeq) || record.heartbeatSeq < 0 ||
+    ![record.processStartedAt, record.bootId, record.sessionId, record.cwd, record.workspaceRoot].every((value) => typeof value === "string" && value.length > 0) ||
+    ![record.startedAt, record.heartbeatAt].every((value) => typeof value === "string" && Number.isFinite(Date.parse(value)))) throw new Error("窗口记录结构或身份无效");
+  validateWindowId(id);
+  return record;
 }
 
 export class WindowRegistry {
   readonly clock: Clock;
-  private readonly windowsDir: string;
+  private readonly database: string;
   private readonly bootIdFn: () => Promise<string>;
   private readonly processStartedAtFn: (pid: number) => Promise<string | null>;
 
   constructor(options: WindowRegistryOptions) {
     this.clock = options.clock;
-    this.windowsDir = join(options.repoDir, "windows");
+    this.database = join(options.repoDir, "data.sqlite");
     this.bootIdFn = options.bootId;
     this.processStartedAtFn = options.processStartedAt;
-  }
-
-  private recordPath(windowId: string): string {
-    if (!WINDOW_ID_PATTERN.test(windowId)) {
-      throw new Error(`不合法的窗口标识: ${windowId}`);
-    }
-    return join(this.windowsDir, `${windowId}.json`);
   }
 
   async register(input: WindowRegisterInput): Promise<string> {
@@ -95,31 +97,27 @@ export class WindowRegistry {
       heartbeatAt: now,
       heartbeatSeq: 0,
     };
-    await mkdir(this.windowsDir, { recursive: true, mode: DIR_MODE });
-    await writeFileAtomic(this.recordPath(windowId), JSON.stringify(record));
+    checkedWindow(record, windowId);
+    withDatabase(this.database, (db) => db.create("windows", windowId, record, windowId));
     return windowId;
   }
 
   async heartbeat(windowId: string): Promise<void> {
-    const path = this.recordPath(windowId);
-    await withDirLock(this.windowsDir, async () => {
-      const record = await this.readRecord(windowId);
-      if (!record || record.windowId !== windowId) return;
-      const updated: WindowRecord = {
-        ...record,
-        heartbeatAt: new Date(this.clock.now()).toISOString(),
-        heartbeatSeq: record.heartbeatSeq + 1,
-      };
-      await writeFileAtomic(path, JSON.stringify(updated));
-    });
+    validateWindowId(windowId);
+    withDatabase(this.database, (db) => db.transaction(() => {
+      const record = db.read<WindowRecord>("windows", windowId);
+      if (!record) return;
+      checkedWindow(record.data, windowId);
+      db.update("windows", windowId, record.version, { ...record.data, heartbeatAt: new Date(this.clock.now()).toISOString(), heartbeatSeq: record.data.heartbeatSeq + 1 });
+    }));
   }
 
   async unregister(windowId: string): Promise<void> {
-    const path = this.recordPath(windowId);
-    await mkdir(this.windowsDir, { recursive: true, mode: DIR_MODE });
-    await withDirLock(this.windowsDir, async () => {
-      await rm(path, { force: true });
-    });
+    validateWindowId(windowId);
+    withDatabase(this.database, (db) => db.transaction(() => {
+      const record = db.read("windows", windowId);
+      if (record) db.remove("windows", windowId, record.version);
+    }));
   }
 
   async isAlive(windowId: string): Promise<boolean> {
@@ -183,32 +181,15 @@ export class WindowRegistry {
   }
 
   private async readRecord(windowId: string): Promise<WindowRecord | null> {
-    try {
-      const raw = await readFile(this.recordPath(windowId), "utf8");
-      return JSON.parse(raw) as WindowRecord;
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return null;
-      throw error;
-    }
+    if (!WINDOW_ID_PATTERN.test(windowId)) throw new Error(`不合法的窗口标识: ${windowId}`);
+    return withDatabase(this.database, (db) => {
+      const record = db.read("windows", windowId);
+      return record ? checkedWindow(record.data, windowId) : null;
+    });
   }
 
   private async readAllRecords(): Promise<WindowRecord[]> {
-    let entries: string[];
-    try {
-      entries = await readdir(this.windowsDir);
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return [];
-      throw error;
-    }
-    const records: WindowRecord[] = [];
-    for (const entry of entries) {
-      if (!entry.endsWith(".json")) continue;
-      const stem = entry.slice(0, -".json".length);
-      if (!WINDOW_ID_PATTERN.test(stem)) continue;
-      const record = await this.readRecord(stem);
-      if (record) records.push(record);
-    }
-    return records;
+    return withDatabase(this.database, (db) => db.list<WindowRecord>("windows").map((record) => checkedWindow(record.data, record.key)));
   }
 }
 

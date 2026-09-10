@@ -1,9 +1,8 @@
 import { execFile, spawn } from "node:child_process";
-import { readFile, readdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { Clock, TimerHandle } from "./clock.ts";
-import { createDocument, readDocument } from "./store.ts";
+import { withDatabase } from "./database.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -65,6 +64,7 @@ export interface SpawnInput {
   timeoutSeconds?: number;
   runToken: string;
   env?: NodeJS.ProcessEnv;
+  inheritEnv?: boolean;
   onOutput?: (chunk: Buffer, stream: "stdout" | "stderr") => void;
 }
 
@@ -83,10 +83,11 @@ export interface ShellRegistryProbes {
 export interface ShellRegistryOptions {
   clock: Clock;
   probes?: ShellRegistryProbes;
-  recordsDirFor?: (host: Host) => string;
+  database?: string;
 }
 
 interface PersistedTaskRecord {
+  cwd: string;
   taskId: string;
   pid: number;
   pgid: number;
@@ -301,26 +302,21 @@ export class ShellRegistry {
   private readonly lastDescendantScanAt = new Map<string, number>();
 
   private readonly pidStartedAt: (pid: number) => Promise<number | null>;
-  private readonly recordsDirFor?: (host: Host) => string;
+  private readonly database?: string;
 
   constructor(options: ShellRegistryOptions) {
     this.clock = options.clock;
     this.kill = options.probes?.kill ?? defaultKill;
     this.rawPs = options.probes?.ps ?? defaultPsSampler;
     this.pidStartedAt = options.probes?.pidStartedAt ?? queryPidStartedAt;
-    this.recordsDirFor = options.recordsDirFor;
+    this.database = options.database;
     this.clock.startGapWatcher();
   }
 
-  private recordPath(host: Host, taskId: string): string | undefined {
-    if (!this.recordsDirFor) return undefined;
-    return join(this.recordsDirFor(host), `${taskId}.json`);
-  }
-
   private async writeTaskRecord(task: TaskRecord, token: string): Promise<void> {
-    const path = this.recordPath(task.host, task.taskId);
-    if (!path) return;
+    if (!this.database) return;
     const record: PersistedTaskRecord = {
+      cwd: task.cwd,
       taskId: task.taskId,
       pid: task.pid,
       pgid: task.pgid,
@@ -329,13 +325,17 @@ export class ShellRegistry {
       host: task.host,
       command: task.command,
     };
-    await createDocument(path, record).catch(() => {});
+    withDatabase(this.database, (db) => db.create("shells", task.taskId, record));
   }
 
   private async deleteTaskRecord(task: TaskRecord): Promise<void> {
-    const path = this.recordPath(task.host, task.taskId);
-    if (!path) return;
-    await rm(path, { force: true }).catch(() => {});
+    if (!this.database) return;
+    try {
+      withDatabase(this.database, (db) => db.transaction(() => {
+        const record = db.read("shells", task.taskId);
+        if (record) db.remove("shells", task.taskId, record.version);
+      }));
+    } catch (error) { task.reason = `Shell 登记清理失败: ${(error as Error).message}`; this.notify(task); }
   }
 
   // 只有超时才计入熔断——解析失败等其他拒绝仅让本轮采样按不可用处理，不影响后续调用
@@ -465,7 +465,7 @@ export class ShellRegistry {
       cwd: input.cwd,
       detached: true,
       stdio: input.mode === "wait" ? ["ignore", "pipe", "pipe"] : "ignore",
-      env: { ...process.env, ...input.env, [TOKEN_ENV_VAR]: token },
+      env: { ...(input.inheritEnv === false ? {} : process.env), ...input.env, [TOKEN_ENV_VAR]: token },
     });
 
     if (input.mode === "wait") {
@@ -520,7 +520,11 @@ export class ShellRegistry {
     this.tasks.set(input.taskId, task);
     this.taskTokens.set(input.taskId, token);
     this.notify(task);
-    await this.writeTaskRecord(task, token);
+    try { await this.writeTaskRecord(task, token); }
+    catch (error) {
+      await this.stop(task.taskId);
+      return { ok: false, reason: `Shell 登记失败: ${(error as Error).message}` };
+    }
 
     if (earlyExitCode !== undefined) this.handleExit(task, earlyExitCode);
     task.status = "running";
@@ -770,25 +774,17 @@ export class ShellRegistry {
   // 持久记录接管：macOS 只对非系统签名二进制在 ps -E 中暴露环境变量，sh -c 展开为 sleep 等
   // 系统二进制后环境令牌扫描读不到，只能凭 spawn 时落盘的记录按 pid+startedAt 核对身份接管
   private async adoptFromRecords(input: { runToken: string; owner: Host }): Promise<TaskRecord[]> {
-    const dir = this.recordsDirFor?.(input.owner);
-    if (!dir) return [];
-    let entries: string[];
-    try {
-      entries = await readdir(dir);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-
+    if (!this.database) return [];
+    const records = withDatabase(this.database, (db) => db.list<PersistedTaskRecord>("shells").map((record) => record.data));
     const prefix = `${input.runToken}:`;
     const tasks: TaskRecord[] = [];
-    for (const entry of entries) {
-      if (!entry.endsWith(".json")) continue;
-      const taskId = entry.slice(0, -".json".length);
+    for (const record of records) {
+      if (!record || typeof record !== "object" || typeof record.taskId !== "string" || typeof record.token !== "string" ||
+        !Number.isSafeInteger(record.pid) || record.pid <= 1 || !Number.isSafeInteger(record.pgid) || record.pgid <= 1 ||
+        typeof record.command !== "string" || typeof record.cwd !== "string" || !record.host ||
+        (record.startedAt !== null && !Number.isFinite(record.startedAt))) throw new Error("Shell 持久记录损坏");
+      const taskId = record.taskId;
       if (this.tasks.has(taskId)) continue;
-      const doc = await readDocument(join(dir, entry));
-      if (!doc.exists) continue;
-      const record = doc.data as PersistedTaskRecord;
       if (!record.token?.startsWith(prefix)) continue;
       const currentStartedAt = await this.baselineStartedAt(record.pid);
       if (currentStartedAt === null || currentStartedAt !== record.startedAt) continue;
@@ -797,7 +793,7 @@ export class ShellRegistry {
         taskId: record.taskId,
         host: input.owner,
         command: record.command,
-        cwd: process.cwd(),
+        cwd: record.cwd,
         mode: "background",
         pid: record.pid,
         pgid: record.pgid,

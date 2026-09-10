@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
-import { runDataDir, runsDataDir } from "./identity.ts";
-import { createDocument, readDocument, withDirLock, writeDocument } from "./store.ts";
+import { existsSync } from "node:fs";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+import { repositoryDatabase, withDatabase, uuidv7, UUID_V7_PATTERN } from "./database.ts";
 
 export type RunKind = "requirement" | "role";
 
@@ -18,7 +18,23 @@ export type RunState =
   | "stopped"
   | "interrupted";
 
+export interface DispatchSettingsContext {
+  workspaceRepoIds?: string[];
+  projectTrusted: boolean;
+  model?: { provider: string; id: string };
+  thinking?: string;
+  mcp?: { adapterEntry: string; configPath: string };
+}
+
+export interface PendingDispatch {
+  instructions?: string;
+  waitFor?: { repo: string; requirement: string; stage: string };
+}
+
 export interface RunRecord {
+  pendingDispatch?: PendingDispatch;
+  phase?: "plan" | "work" | "review" | "acceptance";
+  dispatchContext?: DispatchSettingsContext;
   id: string;
   shellToken: string;
   kind: RunKind;
@@ -40,11 +56,19 @@ export interface RunRecord {
   endedAt?: string;
   turns: number;
   result?: unknown;
-  errorDetails: { path?: string; status: "none" | "saved" | "incomplete" | "unreadable" | "unavailable" };
+  sourceVersion?: { definitionFingerprint: string; codeHead: string };
+  reviewSnapshot?: { head: string; fingerprint: string };
+  commands?: string[];
+  errorDetails: { recordId?: string; status: "none" | "saved" | "incomplete" | "unreadable" | "unavailable" };
   daemonStartedAt: string;
 }
 
 export interface CreateRunInput {
+  pendingDispatch?: PendingDispatch;
+  phase?: "plan" | "work" | "review" | "acceptance";
+  dispatchContext?: DispatchSettingsContext;
+  sourceVersion?: { definitionFingerprint: string; codeHead: string };
+  reviewSnapshot?: { head: string; fingerprint: string };
   kind: RunKind;
   role?: string;
   requirement: string;
@@ -77,7 +101,7 @@ export interface ListRunResult {
 }
 
 export type UpdateRunFields = Partial<
-  Pick<RunRecord, "state" | "stateReason" | "turns" | "result" | "errorDetails" | "endedAt">
+  Pick<RunRecord, "state" | "stateReason" | "turns" | "result" | "errorDetails" | "endedAt" | "commands" | "sourceVersion" | "reviewSnapshot">
 >;
 
 const UPDATE_PATCH_KEYS = [
@@ -87,6 +111,9 @@ const UPDATE_PATCH_KEYS = [
   "result",
   "errorDetails",
   "endedAt",
+  "commands",
+  "sourceVersion",
+  "reviewSnapshot",
 ] as const satisfies readonly (keyof UpdateRunFields)[];
 
 const TERMINAL_STATES = new Set<RunState>(["completed", "failed", "stopped"]);
@@ -98,7 +125,7 @@ const TRANSITIONS: Partial<Record<RunState, Set<RunState>>> = {
   paused: new Set(["running", "completed"]),
   paused_network: new Set(["running"]),
   waiting_answer: new Set(["running", "pausing"]),
-  interrupted: new Set(["running"]),
+  interrupted: new Set(["queued", "running"]),
 };
 
 export const RUNNING_LIKE_STATES = new Set<RunState>(["running", "pausing", "waiting_answer"]);
@@ -126,6 +153,43 @@ function pickUpdatePatch(fields: Record<string, unknown>): UpdateRunFields {
   return patch as UpdateRunFields;
 }
 
+const UUID_PATTERN = UUID_V7_PATTERN.source;
+const RunRecordSchema = Type.Object({
+  pendingDispatch: Type.Optional(Type.Object({ instructions: Type.Optional(Type.String()), waitFor: Type.Optional(Type.Object({ repo: Type.String(), requirement: Type.String(), stage: Type.String() })) })),
+  dispatchContext: Type.Optional(Type.Object({ workspaceRepoIds: Type.Optional(Type.Array(Type.String())), projectTrusted: Type.Boolean(), model: Type.Optional(Type.Object({ provider: Type.String(), id: Type.String() })), thinking: Type.Optional(Type.String()), mcp: Type.Optional(Type.Object({ adapterEntry: Type.String(), configPath: Type.String() })) })),
+  sourceVersion: Type.Optional(Type.Object({ definitionFingerprint: Type.String(), codeHead: Type.String() })),
+  reviewSnapshot: Type.Optional(Type.Object({ head: Type.String(), fingerprint: Type.String() })),
+  commands: Type.Optional(Type.Array(Type.String())),
+  id: Type.String({ pattern: UUID_PATTERN }),
+  shellToken: Type.String({ minLength: 32 }),
+  kind: Type.Union([Type.Literal("requirement"), Type.Literal("role")]),
+  role: Type.Optional(Type.String({ pattern: "^pi-company\\." })),
+  requirement: Type.String({ minLength: 1 }),
+  parentRunId: Type.Optional(Type.String({ pattern: UUID_PATTERN })),
+  phase: Type.Optional(Type.Union(["plan", "work", "review", "acceptance"].map((phase) => Type.Literal(phase)))),
+  task: Type.String(), cwd: Type.String({ minLength: 1 }),
+  writePaths: Type.Array(Type.String()), readPaths: Type.Array(Type.String()),
+  reportPath: Type.Optional(Type.String()),
+  model: Type.Object({ provider: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }) }),
+  thinking: Type.String(), mcp: Type.Array(Type.String()),
+  state: Type.Union([...Object.keys(TRANSITIONS), ...TERMINAL_STATES].map((state) => Type.Literal(state))),
+  stateReason: Type.Optional(Type.String()),
+  startedAt: Type.String({ minLength: 1 }), updatedAt: Type.String({ minLength: 1 }), endedAt: Type.Optional(Type.String()),
+  turns: Type.Integer({ minimum: 0 }),
+  errorDetails: Type.Object({
+    recordId: Type.Optional(Type.String({ pattern: UUID_PATTERN })),
+    status: Type.Union(["none", "saved", "incomplete", "unreadable", "unavailable"].map((status) => Type.Literal(status))),
+  }),
+  daemonStartedAt: Type.String({ minLength: 1 }),
+});
+
+function checkedRun(value: unknown, id: string): RunRecord {
+  if (!Value.Check(RunRecordSchema, value) || value.id !== id || (value.kind === "role" && !value.role)) {
+    throw new Error(`运行记录损坏: ${id}`);
+  }
+  return value as RunRecord;
+}
+
 export class RunStore {
   private readonly dataRoot: string;
   private readonly repoId: string;
@@ -150,10 +214,16 @@ export class RunStore {
       }
     }
 
-    const id = randomUUID();
+    const id = uuidv7();
     const now = new Date().toISOString();
     const run: RunRecord = {
       id,
+      pendingDispatch: input.pendingDispatch,
+      phase: input.phase,
+      dispatchContext: input.dispatchContext,
+      sourceVersion: input.sourceVersion,
+      reviewSnapshot: input.reviewSnapshot,
+      commands: [],
       shellToken: randomUUID(),
       kind: input.kind,
       role: input.kind === "role" ? input.role : undefined,
@@ -174,34 +244,38 @@ export class RunStore {
       errorDetails: { status: "none" },
       daemonStartedAt: this.daemonStartedAt,
     };
-    await createDocument(this.statePath(id), run);
+    checkedRun(run, id);
+    withDatabase(this.databasePath(), (db) => db.create("runs", id, run, id));
     return run;
   }
 
+  async createOrReuseRequirement(input: CreateRunInput): Promise<{ run: RunRecord; reused: boolean }> {
+    if (input.kind !== "requirement") throw new Error("需求单实例入口只接受需求代理");
+    try { return { run: await this.create(input), reused: false }; }
+    catch (error) {
+      if (!(error as Error).message.includes("active_requirement")) throw error;
+      const active = (await this.list({ kind: "requirement", requirement: input.requirement, limit: Number.MAX_SAFE_INTEGER })).items
+        .find((run) => !isTerminalState(run.state) && run.state !== "interrupted");
+      if (active) return { run: active, reused: true };
+      throw error;
+    }
+  }
+
   async get(id: string): Promise<GetRunResult> {
-    let path: string;
+    if (!UUID_V7_PATTERN.test(id)) return { ok: false, reason: "not_found" };
     try {
-      path = this.statePath(id);
-    } catch {
-      return { ok: false, reason: "not_found" };
-    }
-    let result;
-    try {
-      result = await readDocument(path);
-    } catch {
-      return { ok: false, reason: "unreadable" };
-    }
-    if (!result.exists) return { ok: false, reason: "not_found" };
-    return { ok: true, run: result.data as RunRecord };
+      const result = withDatabase(this.databasePath(), (db) => db.read("runs", id));
+      if (!result) return { ok: false, reason: "not_found" };
+      return { ok: true, run: checkedRun(result.data, id) };
+    } catch { return { ok: false, reason: "unreadable" }; }
   }
 
   async list(options: ListRunOptions): Promise<ListRunResult> {
-    const ids = await this.listRunIds();
-    const records: RunRecord[] = [];
-    for (const id of ids) {
-      const result = await this.get(id);
-      if (result.ok) records.push(result.run);
-    }
+    const database = this.databasePath();
+    const records = existsSync(database) ? withDatabase(database, (db) => db.list("runs").map((record) => {
+      try { return checkedRun(record.data, record.key); }
+      catch { throw new Error(`运行记录不可读: ${record.key}（unreadable）`); }
+    })) : [];
     const filtered = records.filter(
       (run) =>
         (options.kind === undefined || run.kind === options.kind) &&
@@ -221,22 +295,34 @@ export class RunStore {
   }
 
   async update(id: string, fields: UpdateRunFields): Promise<RunRecord> {
-    const dir = runDataDir(this.dataRoot, this.repoId, id);
-    const path = join(dir, "state.json");
-    const precheck = await readDocument(path);
-    if (!precheck.exists) throw new Error(`运行不存在: ${id}`);
-    return withDirLock(dir, async () => {
-      const current = await readDocument(path);
-      if (!current.exists) throw new Error(`运行不存在: ${id}`);
-      const run = current.data as RunRecord;
+    return this.updateFields(id, () => fields);
+  }
+
+  async recordCommand(id: string, command: string): Promise<RunRecord> {
+    return this.updateFields(id, (run) => ({ commands: [...(run.commands ?? []), command] }));
+  }
+
+  async recordTurn(id: string): Promise<RunRecord> {
+    return this.updateFields(id, (run) => ({ turns: run.turns + 1 }));
+  }
+
+  private async updateFields(id: string, build: (run: RunRecord) => UpdateRunFields): Promise<RunRecord> {
+    if (!UUID_V7_PATTERN.test(id)) throw new Error("运行编号必须是 UUIDv7");
+    return withDatabase(this.databasePath(), (db) => db.transaction(() => {
+      const current = db.read("runs", id);
+      if (!current) throw new Error(`运行不存在: ${id}`);
+      const run = checkedRun(current.data, id);
+      const fields = build(run);
+      if (("sourceVersion" in fields || "reviewSnapshot" in fields) && !(run.state === "queued" && fields.state === "running")) throw new Error("执行快照只能在排队运行启动时更新");
       if (fields.state !== undefined) assertTransition(run.state, fields.state);
       const patch = pickUpdatePatch(fields);
       const merged: RunRecord = { ...run, ...patch };
       merged.endedAt = run.endedAt ?? (isTerminalState(merged.state) ? new Date().toISOString() : undefined);
       merged.updatedAt = new Date().toISOString();
-      await writeDocument(path, merged, { expectedVersion: current.version });
+      checkedRun(merged, id);
+      db.update("runs", id, current.version, merged);
       return merged;
-    });
+    }));
   }
 
   async markInterruptedOnStartup(): Promise<{ interrupted: string[]; failed: Array<{ id: string; reason: string }> }> {
@@ -290,12 +376,10 @@ export class RunStore {
   }
 
   private async writeOwnInterrupted(id: string): Promise<boolean> {
-    const dir = runDataDir(this.dataRoot, this.repoId, id);
-    const path = join(dir, "state.json");
-    return withDirLock(dir, async () => {
-      const current = await readDocument(path);
-      if (!current.exists) throw new Error(`运行不存在: ${id}`);
-      const run = current.data as RunRecord;
+    return withDatabase(this.databasePath(), (db) => db.transaction(() => {
+      const current = db.read("runs", id);
+      if (!current) throw new Error(`运行不存在: ${id}`);
+      const run = checkedRun(current.data, id);
       if (!this.needsOwnInterruptedMark(run)) return false;
       const merged: RunRecord = {
         ...run,
@@ -303,18 +387,17 @@ export class RunStore {
         stateReason: run.stateReason || "守护进程退出：运行在退出前未完成",
         updatedAt: new Date().toISOString(),
       };
-      await writeDocument(path, merged, { expectedVersion: current.version });
+      checkedRun(merged, id);
+      db.update("runs", id, current.version, merged);
       return true;
-    });
+    }));
   }
 
   private async writeInterrupted(id: string): Promise<boolean> {
-    const dir = runDataDir(this.dataRoot, this.repoId, id);
-    const path = join(dir, "state.json");
-    return withDirLock(dir, async () => {
-      const current = await readDocument(path);
-      if (!current.exists) throw new Error(`运行不存在: ${id}`);
-      const run = current.data as RunRecord;
+    return withDatabase(this.databasePath(), (db) => db.transaction(() => {
+      const current = db.read("runs", id);
+      if (!current) throw new Error(`运行不存在: ${id}`);
+      const run = checkedRun(current.data, id);
       if (!this.needsInterruptedMark(run)) return false;
       const merged: RunRecord = {
         ...run,
@@ -323,26 +406,15 @@ export class RunStore {
         daemonStartedAt: this.daemonStartedAt,
         updatedAt: new Date().toISOString(),
       };
-      await writeDocument(path, merged, { expectedVersion: current.version });
+      checkedRun(merged, id);
+      db.update("runs", id, current.version, merged);
       return true;
-    });
+    }));
   }
 
-  private statePath(id: string): string {
-    return join(runDataDir(this.dataRoot, this.repoId, id), "state.json");
-  }
-
-  private runsDir(): string {
-    return runsDataDir(this.dataRoot, this.repoId);
-  }
+  private databasePath(): string { return repositoryDatabase(this.dataRoot, this.repoId); }
 
   private async listRunIds(): Promise<string[]> {
-    try {
-      const entries = await readdir(this.runsDir(), { withFileTypes: true });
-      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
+    return withDatabase(this.databasePath(), (db) => db.list("runs").map((record) => record.key));
   }
 }

@@ -1,6 +1,4 @@
-import { mkdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
-import { withDirLock, writeFileAtomic } from "./store.ts";
+import { repositoryDatabase, readRecord, withDatabase } from "./database.ts";
 
 export interface ErrorFields {
   code?: string;
@@ -51,11 +49,11 @@ export interface WriteErrorDetailsInput {
   submissions?: Submissions;
 }
 
-export type WriteResult = { saved: true; path: string } | { saved: false; reason: string };
+export type WriteResult = { saved: true; recordId: string } | { saved: false; reason: string };
 export type ReadResult = { readable: true; details: ErrorDetailsDocument } | { readable: false; reason: string };
 export interface ErrorDetailsSummary {
   saved: boolean;
-  path: string;
+  recordId?: string;
   headline: string;
   reason?: string;
 }
@@ -188,82 +186,42 @@ function sanitizeSubmissions(submissions: Submissions): Submissions {
   };
 }
 
-function errorDetailsPath(runDir: string): string {
-  return join(runDir, "error-details.json");
+export interface ErrorDetailsRef { dataRoot: string; repoId: string; runId: string }
+
+function errorDetailsRef(ref: ErrorDetailsRef) {
+  return { database: repositoryDatabase(ref.dataRoot, ref.repoId), namespace: "error_details", key: ref.runId };
 }
 
-async function fileExists(path: string): Promise<boolean> {
+export async function writeErrorDetails(ref: ErrorDetailsRef, input: WriteErrorDetailsInput): Promise<WriteResult> {
   try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-}
-
-async function atomicWrite(path: string, document: ErrorDetailsDocument): Promise<WriteResult> {
-  const validation = validateDocument(document);
-  if (!validation.ok) return { saved: false, reason: `写入前自检失败: ${validation.reason}` };
-  try {
-    await writeFileAtomic(path, `${JSON.stringify(document, null, 2)}\n`);
-    return { saved: true, path };
-  } catch (error) {
-    return { saved: false, reason: (error as Error).message };
-  }
-}
-
-async function writeErrorDetailsLocked(runDir: string, input: WriteErrorDetailsInput): Promise<WriteResult> {
-  const path = errorDetailsPath(runDir);
-
-  if (await fileExists(path)) {
-    const existing = await readErrorDetails(runDir);
-    if (!existing.readable) {
-      const label = existing.reason.startsWith("无法读取") ? "旧文件无法读取" : "旧文件已损坏";
-      return { saved: false, reason: `${label}，拒绝覆盖: ${existing.reason}` };
-    }
-    const cleanup = existing.details.cleanup.slice();
-    if (input.cleanupError !== undefined) {
-      const cleanupDetail = extractErrorDetail(input.cleanupError);
-      const key = cleanupDedupeKey(cleanupDetail);
-      if (!cleanup.some((entry) => cleanupDedupeKey(entry) === key)) cleanup.push(cleanupDetail);
-    }
-    const submissions = mergeSubmissions(existing.details.submissions, input.submissions);
-
-    const document: ErrorDetailsDocument = {
-      version: 1,
-      runId: existing.details.runId,
-      model: existing.details.model,
-      failedAt: existing.details.failedAt,
-      original: existing.details.original,
-      cleanup,
-      submissions,
-    };
-    return atomicWrite(path, document);
-  }
-
-  const cleanup: ErrorDetail[] = [];
-  if (input.cleanupError !== undefined) cleanup.push(extractErrorDetail(input.cleanupError));
-
-  const document: ErrorDetailsDocument = {
-    version: 1,
-    runId: input.runId,
-    model: { provider: input.model.provider, id: input.model.id },
-    failedAt: new Date().toISOString(),
-    original: extractErrorDetail(input.error),
-    cleanup,
-    submissions: sanitizeSubmissions(input.submissions ?? { attemptCount: 0, validCount: 0, attempts: [] }),
-  };
-  return atomicWrite(path, document);
-}
-
-export async function writeErrorDetails(runDir: string, input: WriteErrorDetailsInput): Promise<WriteResult> {
-  try {
-    await mkdir(runDir, { recursive: true, mode: 0o700 });
-    return await withDirLock(runDir, () => writeErrorDetailsLocked(runDir, input));
-  } catch (error) {
-    return { saved: false, reason: (error as Error).message };
-  }
+    if (ref.runId !== input.runId) throw new Error("错误详情的运行归属不一致");
+    const address = errorDetailsRef(ref);
+    return withDatabase(address.database, (db) => db.transaction(() => {
+      const stored = db.read<ErrorDetailsDocument>(address.namespace, address.key);
+      if (stored) {
+        const validation = validateDocument(stored.data);
+        if (!validation.ok) throw new Error(`旧记录损坏，拒绝覆盖: ${validation.reason}`);
+      }
+      const cleanup = stored?.data.cleanup.slice() ?? [];
+      if (input.cleanupError !== undefined) {
+        const detail = extractErrorDetail(input.cleanupError);
+        if (!cleanup.some((entry) => cleanupDedupeKey(entry) === cleanupDedupeKey(detail))) cleanup.push(detail);
+      }
+      const document: ErrorDetailsDocument = {
+        version: 1, runId: input.runId,
+        model: stored?.data.model ?? { provider: input.model.provider, id: input.model.id },
+        failedAt: stored?.data.failedAt ?? new Date().toISOString(),
+        original: stored?.data.original ?? extractErrorDetail(input.error),
+        cleanup,
+        submissions: stored ? mergeSubmissions(stored.data.submissions, input.submissions)
+          : sanitizeSubmissions(input.submissions ?? { attemptCount: 0, validCount: 0, attempts: [] }),
+      };
+      const validation = validateDocument(document);
+      if (!validation.ok) throw new Error(`写入前自检失败: ${validation.reason}`);
+      if (stored) { db.update(address.namespace, address.key, stored.version, document); return { saved: true, recordId: stored.id }; }
+      return { saved: true, recordId: db.create(address.namespace, address.key, document).id };
+    }));
+  } catch (error) { return { saved: false, reason: (error as Error).message }; }
 }
 
 function isErrorDetailShape(value: unknown): value is ErrorDetail {
@@ -319,22 +277,14 @@ function validateDocument(value: unknown): { ok: true; details: ErrorDetailsDocu
   return { ok: true, details: doc as unknown as ErrorDetailsDocument };
 }
 
-export async function readErrorDetails(runDir: string): Promise<ReadResult> {
-  let raw: string;
+export async function readErrorDetails(ref: ErrorDetailsRef): Promise<ReadResult> {
   try {
-    raw = await readFile(errorDetailsPath(runDir), "utf8");
-  } catch (error) {
-    return { readable: false, reason: `无法读取: ${(error as Error).message}` };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    return { readable: false, reason: `JSON 解析失败: ${(error as Error).message}` };
-  }
-  const validation = validateDocument(parsed);
-  if (!validation.ok) return { readable: false, reason: validation.reason };
-  return { readable: true, details: validation.details };
+    const record = readRecord(errorDetailsRef(ref));
+    if (!record.exists) return { readable: false, reason: "错误详情不存在" };
+    const validation = validateDocument(record.data);
+    if (!validation.ok) return { readable: false, reason: validation.reason };
+    return { readable: true, details: validation.details };
+  } catch (error) { return { readable: false, reason: `无法读取: ${(error as Error).message}` }; }
 }
 
 function truncateHeadline(text: string, maxLength: number): string {
@@ -346,12 +296,10 @@ function truncateHeadline(text: string, maxLength: number): string {
   return result;
 }
 
-export async function summarizeErrorDetails(runDir: string): Promise<ErrorDetailsSummary> {
-  const path = errorDetailsPath(runDir);
-  const result = await readErrorDetails(runDir);
-  if (!result.readable) return { saved: false, path, headline: "", reason: result.reason };
-
+export async function summarizeErrorDetails(ref: ErrorDetailsRef): Promise<ErrorDetailsSummary> {
+  const result = await readErrorDetails(ref);
+  if (!result.readable) return { saved: false, headline: "", reason: result.reason };
+  const record = readRecord(errorDetailsRef(ref));
   const firstLine = result.details.original.message.split("\n")[0] ?? "";
-  const headline = truncateHeadline(firstLine, HEADLINE_MAX_LENGTH);
-  return { saved: true, path, headline };
+  return { saved: true, recordId: record.exists ? record.id : undefined, headline: truncateHeadline(firstLine, HEADLINE_MAX_LENGTH) };
 }

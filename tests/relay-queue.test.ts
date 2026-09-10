@@ -1,3 +1,5 @@
+import { withDatabase, putRecord, uuidv7 } from "../runtime/database.ts";
+import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -71,12 +73,8 @@ function makeLocator(agents: Record<string, FakeRequirementAgent>): RelayLocateR
   return (requirement: string) => agents[requirement];
 }
 
-async function readRawJsonlRecords<T extends { id: string }>(path: string): Promise<T[]> {
-  const raw = await readFile(path, "utf8").catch(() => "");
-  return raw
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as T);
+function readRelayRecords<T>(dataDir: string, namespace: string): T[] {
+  return withDatabase(join(dataDir, "data.sqlite"), (db) => db.list<T>(namespace).map((row) => row.data));
 }
 
 async function makeQueue(options: {
@@ -422,79 +420,24 @@ describe("重建与持久化", () => {
     await queue.ask(askInput());
     await queue.notify(notifyInput());
 
-    const relayDir = join(dataDir, "relay");
-    expect((await stat(relayDir)).mode & 0o777).toBe(0o700);
-    expect((await stat(join(relayDir, "questions.jsonl"))).mode & 0o777).toBe(0o600);
-    expect((await stat(join(relayDir, "notices.jsonl"))).mode & 0o777).toBe(0o600);
+    expect((await stat(dataDir)).mode & 0o777).toBe(0o700);
+    expect((await stat(join(dataDir, "data.sqlite"))).mode & 0o777).toBe(0o600);
   });
 });
 
 describe("损坏记录与读取失败", () => {
-  test("questions.jsonl 中一行损坏被跳过，其它记录不受影响，经 subscribe 上报 corrupt_skipped", async () => {
-    const dataDir = await makeDataDir();
-    const relayDir = join(dataDir, "relay");
-    await mkdir(relayDir, { recursive: true });
-    const goodQuestion = {
-      id: "q-good",
-      requirement: "2026-09-09.relay-queue-demo",
-      repoId: "repo-a",
-      runId: "run-1",
-      question: "正常问题",
-      options: [],
-      recommended: "",
-      createdAt: "2026-09-09T00:00:00.000Z",
-      status: "pending",
-    };
-    await writeFile(join(relayDir, "questions.jsonl"), `${JSON.stringify(goodQuestion)}\nnot valid json\n`, "utf8");
-
-    const { queue } = await makeQueue({ dataDir });
-    const events: Array<Record<string, unknown>> = [];
-    queue.subscribe((event) => events.push(event as unknown as Record<string, unknown>));
-
-    const pending = await queue.pendingFor(windowStub());
-
-    expect(pending.questions.map((q) => q.id)).toEqual(["q-good"]);
-    const totalSkipped = events
-      .filter((event) => event.type === "corrupt_skipped")
-      .reduce((sum, event) => sum + (event.count as number), 0);
-    expect(totalSkipped).toBe(1);
+  test.each(["relay_questions", "relay_notices"])("%s 坏结构被拒绝且原记录不变", async (namespace) => {
+    const { queue, dataDir } = await makeQueue();
+    const ref = { database: join(dataDir, "data.sqlite"), namespace, key: uuidv7() };
+    putRecord(ref, { corrupt: true });
+    await expect(queue.pendingFor(windowStub())).rejects.toThrow("记录");
+    expect(readRelayRecords(dataDir, namespace)).toEqual([{ corrupt: true }]);
   });
 
-  test("notices.jsonl 中一行损坏被跳过，其它记录不受影响，经 subscribe 上报 corrupt_skipped", async () => {
+  test("数据库路径被目录占用时每次读取都失败", async () => {
     const dataDir = await makeDataDir();
-    const relayDir = join(dataDir, "relay");
-    await mkdir(relayDir, { recursive: true });
-    const goodNotice = {
-      id: "n-good",
-      requirement: "2026-09-09.relay-queue-demo",
-      repoId: "repo-a",
-      runId: "run-1",
-      kind: "completed",
-      message: "正常通知",
-      createdAt: "2026-09-09T00:00:00.000Z",
-      deliveredTo: [],
-    };
-    await writeFile(join(relayDir, "notices.jsonl"), `{broken\n${JSON.stringify(goodNotice)}\n`, "utf8");
-
+    await mkdir(join(dataDir, "data.sqlite"));
     const { queue } = await makeQueue({ dataDir });
-    const events: Array<Record<string, unknown>> = [];
-    queue.subscribe((event) => events.push(event as unknown as Record<string, unknown>));
-
-    const pending = await queue.pendingFor(windowStub());
-
-    expect(pending.notices.map((n) => n.id)).toEqual(["n-good"]);
-    const totalSkipped = events
-      .filter((event) => event.type === "corrupt_skipped")
-      .reduce((sum, event) => sum + (event.count as number), 0);
-    expect(totalSkipped).toBe(1);
-  });
-
-  test("relay 路径被非目录文件占用属于终态错误，每次读取都抛出而不是仅首次", async () => {
-    const dataDir = await makeDataDir();
-    await writeFile(join(dataDir, "relay"), "占位文件，不是目录", "utf8");
-
-    const { queue } = await makeQueue({ dataDir });
-
     await expect(queue.pendingFor(windowStub())).rejects.toThrow();
     await expect(queue.pendingFor(windowStub())).rejects.toThrow();
   });
@@ -534,44 +477,6 @@ describe("订阅事件与监听器隔离", () => {
     expect(handle.id).toBeTruthy();
   });
 
-  test("晚订阅者仍收到构造期已产生的 corrupt_skipped 回放", async () => {
-    const dataDir = await makeDataDir();
-    const relayDir = join(dataDir, "relay");
-    await mkdir(relayDir, { recursive: true });
-    const goodQuestion = {
-      id: "q-good",
-      requirement: "2026-09-09.relay-queue-demo",
-      repoId: "repo-a",
-      runId: "run-1",
-      question: "正常问题",
-      options: [],
-      recommended: "",
-      createdAt: "2026-09-09T00:00:00.000Z",
-      status: "pending",
-    };
-    await writeFile(join(relayDir, "questions.jsonl"), `${JSON.stringify(goodQuestion)}\nnot valid json\n`, "utf8");
-
-    const { queue } = await makeQueue({ dataDir });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    const events: Array<Record<string, unknown>> = [];
-    queue.subscribe((event) => events.push(event as unknown as Record<string, unknown>));
-
-    const corruptEvents = events.filter((event) => event.type === "corrupt_skipped");
-    expect(corruptEvents.length).toBe(1);
-    expect(corruptEvents[0]?.count).toBe(1);
-  });
-
-  test("没有损坏记录时晚订阅者不会被补发 corrupt_skipped", async () => {
-    const { queue } = await makeQueue();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    const events: Array<Record<string, unknown>> = [];
-    queue.subscribe((event) => events.push(event as unknown as Record<string, unknown>));
-
-    expect(events.filter((event) => event.type === "corrupt_skipped")).toEqual([]);
-  });
-
   test("投递失败时经 subscribe 上报 deliver_failed 事件", async () => {
     const { queue } = await makeQueue({ deliver: makeFailingDeliver() });
     const events: Array<Record<string, unknown>> = [];
@@ -587,120 +492,18 @@ describe("订阅事件与监听器隔离", () => {
   });
 });
 
-describe("目录锁竞争的恢复性", () => {
-  test(
-    "relay 目录锁被存活进程持有导致首次 ask 因锁超时失败，释放锁后第二次 ask 成功",
-    async () => {
-      const dataDir = await makeDataDir();
-      const relayDir = join(dataDir, "relay");
-      await mkdir(relayDir, { recursive: true });
-      await mkdir(join(relayDir, ".lock"));
-      await writeFile(join(relayDir, ".lock", "owner"), `${process.pid}\n`, "utf8");
-
-      const { queue } = await makeQueue({ dataDir });
-
-      let firstError: unknown;
-      try {
-        await queue.ask(askInput());
-      } catch (error) {
-        firstError = error;
-      }
-      expect(firstError).toBeInstanceOf(Error);
-      expect((firstError as Error).message).toContain("锁");
-
-      await rm(join(relayDir, ".lock"), { recursive: true, force: true });
-
-      const handle = await queue.ask(askInput());
-      expect(handle.id).toBeTruthy();
-    },
-    15_000,
-  );
-
-  test(
-    "构造后首次 pendingFor 不因 questions/notices 争抢同一目录锁而退避",
-    async () => {
-      const dataDir = await makeDataDir();
-      const relayDir = join(dataDir, "relay");
-      await mkdir(relayDir, { recursive: true });
-      const goodQuestion = {
-        id: "q-warm",
-        requirement: "2026-09-09.relay-queue-demo",
-        repoId: "repo-a",
-        runId: "run-1",
-        question: "预热问题",
-        options: [],
-        recommended: "",
-        createdAt: "2026-09-09T00:00:00.000Z",
-        status: "pending",
-      };
-      const goodNotice = {
-        id: "n-warm",
-        requirement: "2026-09-09.relay-queue-demo",
-        repoId: "repo-a",
-        runId: "run-1",
-        kind: "completed",
-        message: "预热通知",
-        createdAt: "2026-09-09T00:00:00.000Z",
-        deliveredTo: [],
-      };
-      await writeFile(join(relayDir, "questions.jsonl"), `${JSON.stringify(goodQuestion)}\n`, "utf8");
-      await writeFile(join(relayDir, "notices.jsonl"), `${JSON.stringify(goodNotice)}\n`, "utf8");
-
-      const { queue } = await makeQueue({ dataDir });
-
-      const startedAt = Date.now();
-      await queue.pendingFor(windowStub());
-      const elapsedMs = Date.now() - startedAt;
-
-      // 真发生自我争锁至少要付出一次锁重试退避（约 20ms 起跳），卡进真正的锁超时则是秒级；
-      // 1000ms 足以把两者分开又不因机器抖动误报。
-      expect(elapsedMs).toBeLessThan(1_000);
-    },
-    5_000,
-  );
-
-  test(
-    "首次 load 因锁超时失败期间已存在的早订阅者，锁释放后下一次 load 成功仍收到一次 corrupt_skipped",
-    async () => {
-      const dataDir = await makeDataDir();
-      const relayDir = join(dataDir, "relay");
-      await mkdir(relayDir, { recursive: true });
-      const goodQuestion = {
-        id: "q-good",
-        requirement: "2026-09-09.relay-queue-demo",
-        repoId: "repo-a",
-        runId: "run-1",
-        question: "正常问题",
-        options: [],
-        recommended: "",
-        createdAt: "2026-09-09T00:00:00.000Z",
-        status: "pending",
-      };
-      await writeFile(join(relayDir, "questions.jsonl"), `${JSON.stringify(goodQuestion)}\nnot valid json\n`, "utf8");
-      await mkdir(join(relayDir, ".lock"));
-      await writeFile(join(relayDir, ".lock", "owner"), `${process.pid}\n`, "utf8");
-
-      const { queue } = await makeQueue({ dataDir });
-      const events: Array<Record<string, unknown>> = [];
-      queue.subscribe((event) => events.push(event as unknown as Record<string, unknown>));
-
-      let firstError: unknown;
-      try {
-        await queue.ask(askInput());
-      } catch (error) {
-        firstError = error;
-      }
-      expect(firstError).toBeInstanceOf(Error);
-
-      await rm(join(relayDir, ".lock"), { recursive: true, force: true });
-      await queue.pendingFor(windowStub());
-
-      const corruptEvents = events.filter((event) => event.type === "corrupt_skipped");
-      expect(corruptEvents.length).toBe(1);
-      expect(corruptEvents[0]?.count).toBe(1);
-    },
-    15_000,
-  );
+describe("数据库写入失败恢复", () => {
+  test("入队失败不产生问题或事件，恢复后可正常提问", async () => {
+    const { queue, dataDir } = await makeQueue();
+    const path = join(dataDir, "data.sqlite");
+    withDatabase(path, () => {});
+    const restore = failDatabaseWrites(path, "records", "namespace", "relay_questions");
+    try { await expect(queue.ask(askInput())).rejects.toThrow("拒绝写入"); } finally { restore(); }
+    expect(readRelayRecords(dataDir, "relay_questions")).toEqual([]);
+    expect(withDatabase(path, (db) => db.events("relay"))).toEqual([]);
+    const handle = await queue.ask(askInput());
+    expect((await queue.pendingFor(windowStub())).questions.map((q) => q.id)).toEqual([handle.id]);
+  });
 });
 
 describe("并发操作下的一致性", () => {
@@ -729,8 +532,8 @@ describe("并发操作下的一致性", () => {
 
     await expect(handle.answer).resolves.toEqual({ answered: true, answer: winnerAttempt.answer });
 
-    const rawRecords = await readRawJsonlRecords<{ id: string; status: string; answer?: string; answeredBy?: string }>(
-      join(dataDir, "relay", "questions.jsonl"),
+    const rawRecords = await readRelayRecords<{ id: string; status: string; answer?: string; answeredBy?: string }>(
+      dataDir, "relay_questions",
     );
     const answeredRecords = rawRecords.filter((record) => record.id === handle.id && record.status === "answered");
     expect(answeredRecords.length).toBe(1);
@@ -753,8 +556,8 @@ describe("并发操作下的一致性", () => {
     const [answerResult] = await Promise.all([queue.answer(handle.id, "A", "win-a"), queue.withdraw(handle.id)]);
 
     const settled = await handle.answer;
-    const rawRecords = await readRawJsonlRecords<{ id: string; status: string; answer?: string; answeredBy?: string }>(
-      join(dataDir, "relay", "questions.jsonl"),
+    const rawRecords = await readRelayRecords<{ id: string; status: string; answer?: string; answeredBy?: string }>(
+      dataDir, "relay_questions",
     );
     const finalRecords = rawRecords.filter((record) => record.id === handle.id);
     const lastRecord = finalRecords[finalRecords.length - 1];
@@ -777,7 +580,7 @@ describe("并发操作下的一致性", () => {
 
     await Promise.all([queue.markDelivered("win-a", notice.id), queue.markDelivered("win-b", notice.id)]);
 
-    const rawRecords = await readRawJsonlRecords<{ id: string; deliveredTo: string[] }>(join(dataDir, "relay", "notices.jsonl"));
+    const rawRecords = await readRelayRecords<{ id: string; deliveredTo: string[] }>(dataDir, "relay_notices");
     const finalRecords = rawRecords.filter((record) => record.id === notice.id);
     const lastRecord = finalRecords[finalRecords.length - 1];
     expect(lastRecord?.deliveredTo?.slice().sort()).toEqual(["win-a", "win-b"]);
@@ -790,12 +593,12 @@ describe("并发操作下的一致性", () => {
     const notice = await queue.notify(notifyInput());
 
     const relayDir = join(dataDir, "relay");
-    await chmod(relayDir, 0o500);
+    const restore = failDatabaseWrites(join(dataDir, "data.sqlite"), "records", "namespace", "relay_notices");
     let results: PromiseSettledResult<void>[];
     try {
       results = await Promise.allSettled([queue.markDelivered("win-a", notice.id), queue.markDelivered("win-b", notice.id)]);
     } finally {
-      await chmod(relayDir, 0o700);
+      restore();
     }
     expect(results.every((result) => result.status === "rejected")).toBe(true);
 
@@ -804,13 +607,13 @@ describe("并发操作下的一致性", () => {
     const pendingB = await queue.pendingFor(windowStub({ windowId: "win-b" }));
     expect(pendingB.notices.map((n) => n.id)).toContain(notice.id);
 
-    const rawBefore = await readRawJsonlRecords<{ id: string; deliveredTo: string[] }>(join(relayDir, "notices.jsonl"));
+    const rawBefore = await readRelayRecords<{ id: string; deliveredTo: string[] }>(dataDir, "relay_notices");
     const lastBefore = rawBefore.filter((record) => record.id === notice.id).pop();
     expect(lastBefore?.deliveredTo ?? []).toEqual([]);
 
     await queue.markDelivered("win-a", notice.id);
 
-    const rawAfter = await readRawJsonlRecords<{ id: string; deliveredTo: string[] }>(join(relayDir, "notices.jsonl"));
+    const rawAfter = await readRelayRecords<{ id: string; deliveredTo: string[] }>(dataDir, "relay_notices");
     const lastAfter = rawAfter.filter((record) => record.id === notice.id).pop();
     expect(lastAfter?.deliveredTo).toEqual(["win-a"]);
 
@@ -818,31 +621,31 @@ describe("并发操作下的一致性", () => {
     expect(pendingAfter.notices.map((n) => n.id)).not.toContain(notice.id);
   });
 
-  test("并发作答且落盘失败（已知取舍）：一方 reject 另一方 already_answered，问题回落 pending 无残留 answered 记录且未广播撤回，恢复权限后可再次作答成功", async () => {
+  test("并发作答且写入失败：双方 reject，问题回落 pending 无残留 answered 记录且未广播撤回，恢复权限后可再次作答成功", async () => {
     const { deliver, calls } = makeDeliveryStub({ "repo-a": ["win-a", "win-b"] });
     const { queue, dataDir } = await makeQueue({ deliver });
     const handle = await queue.ask(askInput());
 
     const relayDir = join(dataDir, "relay");
-    await chmod(relayDir, 0o500);
+    const restore = failDatabaseWrites(join(dataDir, "data.sqlite"), "records", "namespace", "relay_questions");
     let results: PromiseSettledResult<Awaited<ReturnType<typeof queue.answer>>>[];
     try {
       results = await Promise.allSettled([queue.answer(handle.id, "A", "win-a"), queue.answer(handle.id, "B", "win-b")]);
     } finally {
-      await chmod(relayDir, 0o700);
+      restore();
     }
 
     const rejected = results.filter((result) => result.status === "rejected");
     const alreadyAnswered = results.filter(
       (result) => result.status === "fulfilled" && !result.value.ok && result.value.reason === "already_answered",
     );
-    expect(rejected.length).toBe(1);
-    expect(alreadyAnswered.length).toBe(1);
+    expect(rejected.length).toBe(2);
+    expect(alreadyAnswered.length).toBe(0);
 
     const pending = await queue.pendingFor(windowStub({ windowId: "win-a" }));
     expect(pending.questions.map((q) => q.id)).toContain(handle.id);
 
-    const rawRecords = await readRawJsonlRecords<{ id: string; status: string }>(join(relayDir, "questions.jsonl"));
+    const rawRecords = await readRelayRecords<{ id: string; status: string }>(dataDir, "relay_questions");
     const answeredRecords = rawRecords.filter((record) => record.id === handle.id && record.status === "answered");
     expect(answeredRecords.length).toBe(0);
 
@@ -855,19 +658,19 @@ describe("并发操作下的一致性", () => {
 });
 
 describe("持久化写失败不产生分叉状态", () => {
-  test("答复持久化失败时 answer 抛出、句柄最终 reject，pendingFor 仍视该问题为待答，恢复权限后可再次作答", async () => {
+  test("答复持久化失败时 answer 抛出、句柄保持待答，pendingFor 仍视该问题为待答，恢复权限后可再次作答", async () => {
     const dataDir = await makeDataDir();
     const { queue } = await makeQueue({ dataDir });
     const handle = await queue.ask(askInput());
 
     const relayDir = join(dataDir, "relay");
-    await chmod(relayDir, 0o500);
+    const restore = failDatabaseWrites(join(dataDir, "data.sqlite"), "records", "namespace", "relay_questions");
     try {
       await expect(queue.answer(handle.id, "A", "win-a")).rejects.toThrow();
     } finally {
       // 权限先复原：handle.answer 是否兑现是下面单独断言的对象，不能让它在这里卡住导致
       // afterEach 清理临时目录时因权限未恢复而失败
-      await chmod(relayDir, 0o700);
+      restore();
     }
 
     const pending = await queue.pendingFor(windowStub());
@@ -883,7 +686,7 @@ describe("持久化写失败不产生分叉状态", () => {
       },
     );
     await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(settled).toBe("rejected");
+    expect(settled).toBe("pending");
 
     const result = await queue.answer(handle.id, "A", "win-a");
     expect(result.ok).toBe(true);

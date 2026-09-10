@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createClock } from "../runtime/clock.ts";
 import { RangeClaims, fingerprint, overlaps, verifyFingerprint } from "../runtime/ranges.ts";
-import { withDirLock } from "../runtime/store.ts";
+import { withDatabase } from "../runtime/database.ts";
+import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -104,6 +105,14 @@ async function claimInSubprocess(
   return JSON.parse(await readFile(outFile, "utf8"));
 }
 
+function claimsJson(repoDir: string): string {
+  return withDatabase(join(repoDir, "data.sqlite"), (db) => JSON.stringify({
+    claims: db.list("range_claims").map((row) => row.data),
+    waiting: db.list("range_waiting").map((row) => row.data),
+    released: db.list("range_released").map((row) => row.data),
+  }));
+}
+
 describe("跨进程并发申请：重叠范围只有一方获准", () => {
   test("同一文件的并发跨进程申请恰有一方获准（10 轮），claims.json 始终合法", async () => {
     const scriptPath = await writeSubprocessScript();
@@ -116,9 +125,9 @@ describe("跨进程并发申请：重叠范围只有一方获准", () => {
       const grantedCount = [resultA, resultB].filter((r) => r.granted).length;
       expect(grantedCount).toBe(1);
 
-      const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+      const raw = claimsJson(repoDir);
       const parsed = JSON.parse(raw) as { version: number };
-      expect(typeof parsed.version).toBe("number");
+      expect(parsed.claims).toHaveLength(1);
     }
   }, 30_000);
 });
@@ -339,7 +348,7 @@ describe("releaseByUser：用户显式释放需决定编号", () => {
     await claims.releaseByUser(held.claimId, { decisionId: "USER-1" });
     expect(await claims.holderOf("user-a.txt")).toBeFalsy();
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { released: { claimId: string; decisionId?: string }[] };
     const record = doc.released.find((r) => r.claimId === held.claimId);
     expect(record?.decisionId).toBe("USER-1");
@@ -392,27 +401,28 @@ describe("claims.json 并发写不产生半文件", () => {
 
     const first = await claims.claim({ kind: "main", windowId: "seq-1" }, ["seq-a.txt"]);
     expect(first.granted).toBe(true);
-    const afterFirst = JSON.parse(await readFile(join(repoDir, "ranges", "claims.json"), "utf8")) as {
+    const afterFirst = JSON.parse(claimsJson(repoDir)) as {
       version: number;
     };
 
     const second = await claims.claim({ kind: "main", windowId: "seq-2" }, ["seq-b.txt"]);
     expect(second.granted).toBe(true);
-    const afterSecond = JSON.parse(await readFile(join(repoDir, "ranges", "claims.json"), "utf8")) as {
+    const afterSecond = JSON.parse(claimsJson(repoDir)) as {
       version: number;
     };
-    expect(afterSecond.version).toBeGreaterThan(afterFirst.version);
+    expect(afterFirst.claims).toHaveLength(1);
+    expect(afterSecond.claims).toHaveLength(2);
 
     const burst = await Promise.all(
       Array.from({ length: 20 }, (_, i) => claims.claim({ kind: "main", windowId: `burst-${i}` }, [`burst-${i}.txt`])),
     );
     expect(burst.every((r) => r.granted)).toBe(true);
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     expect(() => JSON.parse(raw)).not.toThrow();
     const finalDoc = JSON.parse(raw) as { version: number; claims: unknown[] };
     expect(finalDoc.claims.length).toBe(22);
-    expect(finalDoc.version).toBeGreaterThan(afterSecond.version);
+    expect(new Set(finalDoc.claims.map((claim) => claim.claimId)).size).toBe(22);
   }, 15_000);
 });
 
@@ -470,7 +480,7 @@ describe("waiting 队列生命周期：按 holder+paths 去重，结束后清理
       expect(attempt.granted).toBe(false);
     }
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { waiting: { holder: unknown }[] };
     const matching = doc.waiting.filter((w) => JSON.stringify(w.holder) === JSON.stringify(dupHolder));
     expect(matching.length).toBe(1);
@@ -491,7 +501,7 @@ describe("waiting 队列生命周期：按 holder+paths 去重，结束后清理
     const retry = await claims.claim(waiterHolder, ["release-wait.txt"]);
     expect(retry.granted).toBe(true);
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { waiting: { holder: unknown }[] };
     const stillWaiting = doc.waiting.some((w) => JSON.stringify(w.holder) === JSON.stringify(waiterHolder));
     expect(stillWaiting).toBe(false);
@@ -512,7 +522,7 @@ describe("waiting 队列生命周期：按 holder+paths 去重，结束后清理
     setTimeout(() => controller.abort(), 30);
     await expect(waitPromise).rejects.toThrow();
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { waiting: { holder: unknown }[] };
     const stillWaiting = doc.waiting.some((w) => JSON.stringify(w.holder) === JSON.stringify(cancelHolder));
     expect(stillWaiting).toBe(false);
@@ -565,7 +575,7 @@ describe("目录范围端到端：文件、指向目录的 symlink、子目录",
     expect(held.granted).toBe(true);
     if (!held.granted) return;
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { claims: { claimId: string; fingerprints: Record<string, string> }[] };
     const record = doc.claims.find((c) => c.claimId === held.claimId);
     expect(record).toBeTruthy();
@@ -681,7 +691,7 @@ describe("released 记录容量上限", () => {
       if (!held.granted) throw new Error(`第 ${i} 次申请未获准`);
       await claims.release(held.claimId, { kind: "main", windowId: `cap-${i}` });
     }
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { released: unknown[] };
     expect(doc.released.length).toBe(200);
   }, 20_000);
@@ -728,7 +738,7 @@ describe("指纹基线：必须在取得独占之后计算", () => {
     expect(resultB.granted).toBe(true);
     if (!resultB.granted) return;
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { claims: { claimId: string; fingerprints: Record<string, string> }[] };
     const record = doc.claims.find((c) => c.claimId === resultB.claimId);
     expect(record).toBeTruthy();
@@ -757,7 +767,7 @@ describe("wait 只清本方等待条目", () => {
     setTimeout(() => controller.abort(), 30);
     await expect(waitPromise).rejects.toThrow();
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { waiting: { holder: unknown }[] };
     const hasB = doc.waiting.some((w) => JSON.stringify(w.holder) === JSON.stringify(holderB));
     const hasC = doc.waiting.some((w) => JSON.stringify(w.holder) === JSON.stringify(holderC));
@@ -787,7 +797,7 @@ describe("claim 获准只清对应范围的本方等待条目", () => {
     const retryP = await claims.claim(waiter, ["p.txt"]);
     expect(retryP.granted).toBe(true);
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { waiting: { holder: unknown; paths: string[] }[] };
     const stillHasQ = doc.waiting.some(
       (w) => JSON.stringify(w.holder) === JSON.stringify(waiter) && w.paths.includes("q.txt"),
@@ -811,7 +821,7 @@ describe("waiting 去重与 paths 顺序无关", () => {
     const attempt2 = await claims.claim(waiter, ["order-b.txt", "order-a.txt"]);
     expect(attempt2.granted).toBe(false);
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { waiting: { holder: unknown }[] };
     const matching = doc.waiting.filter((w) => JSON.stringify(w.holder) === JSON.stringify(waiter));
     expect(matching.length).toBe(1);
@@ -831,7 +841,7 @@ describe("目录范围指纹：能发现事后新增的文件", () => {
 
     await claims.release(held.claimId, { kind: "main", windowId: "newfile-holder" });
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { released: { claimId: string; fingerprints: Record<string, string> }[] };
     const record = doc.released.find((r) => r.claimId === held.claimId);
     expect(record).toBeTruthy();
@@ -888,7 +898,7 @@ describe("claim 两阶段：占位在补写指纹前被释放", () => {
     const claimPromise = claims.claim(holderB, ["docs/"]);
     setTimeout(() => {
       void (async () => {
-        const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+        const raw = claimsJson(repoDir);
         const doc = JSON.parse(raw) as { claims: { claimId: string; holder: unknown }[] };
         const placeholder = doc.claims.find((c) => JSON.stringify(c.holder) === JSON.stringify(holderB));
         if (placeholder) await observer.release(placeholder.claimId, holderB);
@@ -899,7 +909,7 @@ describe("claim 两阶段：占位在补写指纹前被释放", () => {
     expect(result.granted).toBe(false);
     if (!result.granted) expect(result.reason.length).toBeGreaterThan(0);
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { claims: { holder: unknown }[] };
     const stillThere = doc.claims.some((c) => JSON.stringify(c.holder) === JSON.stringify(holderB));
     expect(stillThere).toBe(false);
@@ -925,7 +935,7 @@ describe("claim 两阶段：补写指纹失败不得残留占位", () => {
     expect(thrown).toBeTruthy();
     expect(thrown?.message).toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { claims: { holder: unknown }[] };
     const orphan = doc.claims.some((c) => JSON.stringify(c.holder) === JSON.stringify(holderC));
     expect(orphan).toBe(false);
@@ -945,7 +955,7 @@ describe("verifyFingerprint：目录范围内删除文件的差异不重复", ()
     if (!held.granted) return;
     await claims.release(held.claimId, { kind: "main", windowId: "dupdiff-holder" });
 
-    const raw = await readFile(join(repoDir, "ranges", "claims.json"), "utf8");
+    const raw = claimsJson(repoDir);
     const doc = JSON.parse(raw) as { released: { claimId: string; fingerprints: Record<string, string> }[] };
     const record = doc.released.find((r) => r.claimId === held.claimId);
     expect(record).toBeTruthy();
@@ -1012,8 +1022,7 @@ describe("wait 取消：清理阶段的锁竞争不得掩盖原始取消错误",
     const attempt = await claims.claim(waiterHolder, ["lockrace.txt"]);
     expect(attempt.granted).toBe(false);
 
-    const rangesDir = join(repoDir, "ranges");
-    const lockHold = withDirLock(rangesDir, () => new Promise((resolve) => setTimeout(resolve, 6_000)));
+    const restore = failDatabaseWrites(join(repoDir, "data.sqlite"), "records", "namespace", "range_waiting");
 
     const controller = new AbortController();
     const waitPromise = claims.wait(["lockrace.txt"], { signal: controller.signal, holder: waiterHolder });
@@ -1028,6 +1037,6 @@ describe("wait 取消：清理阶段的锁竞争不得掩盖原始取消错误",
     expect(thrown).toBeTruthy();
     expect(thrown?.message).toContain("取消");
 
-    await lockHold;
+    restore();
   }, 15_000);
 });
