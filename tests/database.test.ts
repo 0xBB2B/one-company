@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -63,3 +63,48 @@ test("Node 与 Bun 多进程共享 SQLite，追加序号连续且记录不丢失
     expect(new Set(events.map((event) => event.id)).size).toBe(90);
   } finally { db.close(); }
 });
+
+test("提交前强杀写入进程，重开数据库后保留历史并回滚整笔事务", async () => {
+  const { dir, path } = await fixture();
+  const initial = new LocalDatabase(path);
+  initial.create("tasks", "T-1", { progress: "todo" });
+  initial.append("shared", { state: "committed" });
+  initial.close();
+  const script = join(dir, "interrupted-writer.mjs");
+  await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).pathname)};
+const db = new LocalDatabase(process.argv[2]);
+db.transaction(() => {
+  db.update("tasks", "T-1", 1, { progress: "done" });
+  db.create("tasks", "T-2", {});
+  db.append("shared", { state: "uncommitted" });
+  process.stdout.write("READY\\n");
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+});
+`);
+  const writer = spawn("node", [script, path], { stdio: ["ignore", "pipe", "ignore"] });
+  const exited = new Promise<void>((resolve) => writer.once("close", () => resolve()));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("写入进程未进入事务")), 3000);
+      writer.once("error", (error) => { clearTimeout(timer); reject(error); });
+      writer.once("exit", () => { clearTimeout(timer); reject(new Error("写入进程提前退出")); });
+      writer.stdout.once("data", (chunk) => {
+        clearTimeout(timer);
+        if (chunk.toString().trim() === "READY") resolve();
+        else reject(new Error("写入进程未确认事务已写入"));
+      });
+    });
+    writer.kill("SIGKILL");
+    await exited;
+    const reopened = new LocalDatabase(path);
+    try {
+      expect(reopened.read("tasks", "T-1")?.data).toEqual({ progress: "todo" });
+      expect(reopened.read("tasks", "T-2")).toBeNull();
+      expect(reopened.events("shared").map((event) => event.data)).toEqual([{ state: "committed" }]);
+      expect(reopened.append("shared", { state: "after-restart" }).sequence).toBe(2);
+    } finally { reopened.close(); }
+  } finally {
+    writer.kill("SIGKILL");
+    await exited;
+  }
+}, 5000);
