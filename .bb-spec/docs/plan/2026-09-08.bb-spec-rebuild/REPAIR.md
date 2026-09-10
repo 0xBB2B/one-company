@@ -51,3 +51,14 @@
 ## 共享 Git 定向修复
 
 共享版本元数据由文件隔离保护，创建提交经明确路径的 pi_company_git_commit 入口。真实定向测试覆盖主会话/角色、部分暂存保留、linked worktree、切换与重置预防、脚本和别名、hook/filter 阻塞及并发提交。默认工作流与 SDK 装载通过；F06—F09 的其他范围边界及全量逐项验收仍按 ACCEPTANCE.md 核验，不据此批量关闭。
+
+## 范围复核后的具体未完成项
+
+- [x] 跨宿主释放前核对仓库持久化 Shell 登记；真实后台命令结束前保留保护，已释放范围重复清理幂等。
+- [x] 范围写入、指纹及证据失效反例迁到 createRangeProtection 生产入口，删除仅测试调用的组合接口。
+- [x] SQLite 写入者在事务提交前被 SIGKILL 后，重开验证历史保留、整笔回滚与连续编号。
+- [ ] 审查及验收读取范围的占用保护，关联 validation-consistency/AC-1、AC-4。
+- [ ] 安全交接后强制重读与核对交付，关联 range-handoff/AC-3。
+- [ ] 用户显式释放范围的实际入口、决定和归属核验，关联 range-handoff/AC-4。
+
+F06—F09 和 F20/S01—S10 保持未完成；以 ACCEPTANCE.md 的逐项结论为准。
