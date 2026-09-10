@@ -1,13 +1,18 @@
+import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { UUID_V7_PATTERN } from "../runtime/database.ts";
 import { execFileSync, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClock } from "../runtime/clock.ts";
 import type { TimeSource } from "../runtime/clock.ts";
-import { daemonSocketPath, repoDataDir, repositoryIdentity, runsDataDir } from "../runtime/identity.ts";
+import { daemonSocketPath, repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
+import { putRecord, repositoryDatabase } from "../runtime/database.ts";
+import { deleteRecord } from "./helpers/database-fixture.ts";
 import {
   PROTOCOL_VERSION,
   createErrorResponse,
@@ -163,7 +168,7 @@ function createFakeDaemonServer(
 
 async function overLimitDataRoot(): Promise<string> {
   const target = maxDataRootLength() + 1;
-  const base = await mkdtemp(join("/tmp", "pi-co-"));
+  const base = await mkdtemp(join(temporaryRoot(), "d"));
   extraTempDirs.push(base);
   const padLength = target - base.length - 1;
   const dir = padLength > 0 ? join(base, "x".repeat(padLength)) : base;
@@ -287,7 +292,7 @@ describe("worktree 与工作区", () => {
     repoFixtures.push(repo);
     const worktree = await addWorktree(repo);
 
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
 
     const mainIdentity = await repositoryIdentity(repo.root);
@@ -339,7 +344,7 @@ describe("worktree 与工作区", () => {
     const outside = await createRepoFixture();
     repoFixtures.push(outside);
 
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
 
     const workspaceClients = await WorkspaceClients.create({
@@ -375,7 +380,7 @@ describe("worktree 与工作区", () => {
     const workspace = await createWorkspaceFixture();
     repoFixtures.push(workspace);
 
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
 
     const workspaceClients = await WorkspaceClients.create({
@@ -518,7 +523,7 @@ describe("hello 帧", () => {
   test("hello 请求帧包含 windowId、pid、sessionId、cwd、workspaceRoot、repoIds、protocolVersion", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
 
     const identity = await repositoryIdentity(repo.root);
@@ -615,7 +620,7 @@ describe("spawn 失败归因", () => {
   test("SDK 目录不存在导致守护进程启动即退出时 connectDaemon 的 reject 原因包含守护进程的失败信息", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
 
     await expect(
@@ -669,7 +674,7 @@ describe("守护进程日志归因边界", () => {
   test("上一次启动失败留下的日志不会被当作本次启动失败的原因", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
     const hello = { windowId: "window-stale-log", pid: process.pid, sessionId: "session-stale-log", cwd: repo.root, workspaceRoot: repo.root };
 
@@ -682,36 +687,39 @@ describe("守护进程日志归因边界", () => {
     ).rejects.not.toThrow(/STALE-LOG-MARKER/);
   }, 30_000);
 
-  test("既有日志超过 1 MiB 时拉起前截断，日志不随守护进程累计无限增长", async () => {
+  test("启动失败写入独立 UUIDv7 日志，权限私有且不写入 SQLite 事件", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
     const identity = await repositoryIdentity(repo.root);
-    const logPath = join(await repoDataDir(dataRoot, identity.repoId, identity.commonDir), "daemon.log");
-    await writeFile(logPath, "x".repeat(1024 * 1024 + 1));
-
-    const client = await connectDaemon({
-      repoDir: repo.root,
-      dataRoot,
-      sdkDir: resolveSdkDir(),
-      execPath: resolveNodeExecutable(),
-      env: { PI_COMPANY_IDLE_TIMEOUT_MS: "1000" },
-      hello: { windowId: "window-log-cap", pid: process.pid, sessionId: "session-log-cap", cwd: repo.root, workspaceRoot: repo.root },
-    });
-    try {
-      expect((await stat(logPath)).size).toBeLessThan(1024 * 1024);
-    } finally {
-      client.close();
+    const logDir = join(dataRoot, "repos", identity.repoId, "logs");
+    const markers = ["第一次启动失败标记", "第二次启动失败标记"];
+    await Promise.all(markers.map(async (marker) => {
+      await expect(spawnDaemon({ repoDir: repo.root, dataRoot, sdkDir: `/no/such/${marker}`, execPath: resolveNodeExecutable() })).rejects.toThrow(marker);
+    }));
+    const files = await readdir(logDir);
+    expect(files).toHaveLength(2);
+    const contents: string[] = [];
+    for (const file of files) {
+      expect(file.endsWith(".log")).toBe(true);
+      expect(file.slice(0, -4)).toMatch(UUID_V7_PATTERN);
+      expect((await stat(join(logDir, file))).mode & 0o777).toBe(0o600);
+      contents.push(await readFile(join(logDir, file), "utf8"));
     }
-  }, 30_000);
+    for (const marker of markers) expect(contents.filter((content) => content.includes(marker))).toHaveLength(1);
+    expect(contents.every((content) => markers.filter((marker) => content.includes(marker)).length === 1)).toBe(true);
+    const database = new Database(repositoryDatabase(dataRoot, identity.repoId), { readonly: true });
+    try { expect(database.query("SELECT count(*) AS count FROM events").get()).toEqual({ count: 0 }); }
+    finally { database.close(); }
+  }, 15_000);
 });
 
 describe("事件分发隔离", () => {
   test("一个事件监听器抛错不影响同一事件的其他监听器", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
     const identity = await repositoryIdentity(repo.root);
     const socketPath = daemonSocketPath(dataRoot, identity.repoId);
@@ -769,7 +777,7 @@ describe("close 语义", () => {
   test("close 后在途调用以不可达在 1 秒内 reject 而非挂起", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
     const identity = await repositoryIdentity(repo.root);
     const socketPath = daemonSocketPath(dataRoot, identity.repoId);
@@ -865,7 +873,7 @@ describe("hello 阶段失败", () => {
   test("hello 阶段协议版本不一致时 connectDaemon reject 且不留下后台重连循环", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
     const identity = await repositoryIdentity(repo.root);
     const socketPath = daemonSocketPath(dataRoot, identity.repoId);
@@ -904,7 +912,7 @@ describe("hello 阶段失败", () => {
   test("hello 响应的 repoId 与预期不一致时 connectDaemon reject", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
     const identity = await repositoryIdentity(repo.root);
     const socketPath = daemonSocketPath(dataRoot, identity.repoId);
@@ -949,7 +957,7 @@ describe("失败帧转换为 DaemonCallError", () => {
   test("守护进程返回带 data 的错误帧时，client.call reject 的是 DaemonCallError 实例且 code/data 正确", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
     const identity = await repositoryIdentity(repo.root);
     const socketPath = daemonSocketPath(dataRoot, identity.repoId);
@@ -1008,14 +1016,14 @@ describe("失败帧转换为 DaemonCallError", () => {
 
 describe("WorkspaceClients 去重与降级", () => {
   test("主目录与其 worktree 同处工作区时只建立一个连接", async () => {
-    const workspaceRoot = await mkdtemp(join("/tmp", "pi-co-ws-"));
+    const workspaceRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(workspaceRoot);
     const mainDir = join(workspaceRoot, "main");
     await initRepoAt(mainDir);
     const worktreeDir = join(workspaceRoot, "wt");
     gitAt(["worktree", "add", "-b", "wt-branch", worktreeDir], mainDir);
 
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
 
     const workspaceClients = await WorkspaceClients.create({
@@ -1040,14 +1048,14 @@ describe("WorkspaceClients 去重与降级", () => {
   }, 30_000);
 
   test("某仓库首连失败时其余仓库连接不因整体 reject 而泄漏", async () => {
-    const workspaceRoot = await mkdtemp(join("/tmp", "pi-co-ws-"));
+    const workspaceRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(workspaceRoot);
     const repoADir = join(workspaceRoot, "repo-a");
     const repoBDir = join(workspaceRoot, "repo-b");
     await initRepoAt(repoADir);
     await initRepoAt(repoBDir);
 
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
 
     const identityA = await repositoryIdentity(repoADir);
@@ -1147,7 +1155,7 @@ describe("重连事件恢复", () => {
   test("断线后自动重连成功的新连接上，既有监听器仍能收到事件", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
     const identity = await repositoryIdentity(repo.root);
     const socketPath = daemonSocketPath(dataRoot, identity.repoId);
@@ -1227,14 +1235,15 @@ describe("窗口退出不影响守护进程存活", () => {
 
     const pidBefore = await probeDaemonPid(fixture.socketPath);
 
-    // readdir 一个普通文件会抛 ENOTDIR（而非 ENOENT），触发运行记录读取失败的保守分支而不影响守护进程存活
-    const runsDir = runsDataDir(fixture.dataRoot, fixture.repoId);
-    await mkdir(dirname(runsDir), { recursive: true });
-    await writeFile(runsDir, "不是目录（测试注入）");
+    const corrupt = { database: repositoryDatabase(fixture.dataRoot, fixture.repoId), namespace: "runs", key: "corrupt-run" };
+    putRecord(corrupt, {});
     await delay(2_000);
 
     const pidDuringFailure = await probeDaemonPid(fixture.socketPath);
     expect(pidDuringFailure).toBe(pidBefore);
+    const logDir = join(fixture.dataRoot, "repos", fixture.repoId, "logs");
+    const logs = await Promise.all((await readdir(logDir)).map((file) => readFile(join(logDir, file), "utf8")));
+    expect(logs.join("\n")).toContain("读取运行记录失败");
 
     const client = await connectDaemon({
       repoDir: fixture.repoDir,
@@ -1253,7 +1262,7 @@ describe("窗口退出不影响守护进程存活", () => {
     expect(client.state().status).toBe("connected");
     await expect(client.call("ping", {})).resolves.toBeDefined();
 
-    await rm(runsDir, { force: true });
+    deleteRecord(corrupt);
 
     const pidAfter = await probeDaemonPid(fixture.socketPath);
     expect(pidAfter).toBe(pidBefore);
@@ -1370,7 +1379,7 @@ describe("工作区内单仓库首连失败自愈", () => {
     const workspace = await createWorkspaceFixture();
     repoFixtures.push(workspace);
 
-    const dataRoot = await mkdtemp(join("/tmp", "pi-co-data-"));
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
 
     const [repoADir, repoBDir] = workspace.repos;

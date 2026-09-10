@@ -1,5 +1,5 @@
 import { closeSync, openSync } from "node:fs";
-import { open, stat } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
 import type { Socket } from "node:net";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { probeExistingInstance } from "../daemon/lifecycle.ts";
 import { createClock } from "./clock.ts";
+import { uuidv7 } from "./database.ts";
 import type { Clock, TimerHandle } from "./clock.ts";
 import { daemonSocketPath, discoverWorkspace, repoDataDir, repositoryIdentity } from "./identity.ts";
 import type { RepositoryIdentity, Workspace, WorkspaceSkipped } from "./identity.ts";
@@ -66,32 +67,18 @@ function buildDaemonEnv(params: {
   };
 }
 
-const LOG_TAIL_MAX_BYTES = 4096;
-const LOG_MAX_SIZE_BYTES = 1024 * 1024;
-
-// offset 卡住本次 spawn 之前已有的字节数，跨 spawn 追加的日志才不会把上一次的失败原因报成这一次的
-async function readLogTail(logPath: string, offset: number): Promise<string> {
-  let handle;
+async function readLogTail(path: string): Promise<string> {
+  let file;
   try {
-    handle = await open(logPath, "r");
-    const { size } = await handle.stat();
-    const start = Math.max(offset, size - LOG_TAIL_MAX_BYTES);
-    const buffer = Buffer.alloc(Math.max(0, size - start));
-    if (buffer.length > 0) await handle.read(buffer, 0, buffer.length, start);
-    return buffer.toString("utf8");
-  } catch {
-    return "";
-  } finally {
-    await handle?.close();
-  }
-}
-
-async function existingLogSize(logPath: string): Promise<number> {
-  try {
-    return (await stat(logPath)).size;
-  } catch {
-    return 0;
-  }
+    file = await open(path, "r");
+    const { size } = await file.stat();
+    const length = Math.min(size, 4096);
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await file.read(buffer, 0, length, size - length);
+    return buffer.subarray(0, bytesRead).toString("utf8").trim();
+  } catch (error) {
+    return `日志读取失败: ${(error as Error).message}`;
+  } finally { await file?.close(); }
 }
 
 interface SpawnedProcess {
@@ -101,25 +88,20 @@ interface SpawnedProcess {
 async function beginSpawnDaemon(options: SpawnDaemonOptions, identity: RepositoryIdentity): Promise<SpawnedProcess> {
   const execPath = options.execPath ?? process.execPath;
   const repoDir = await repoDataDir(options.dataRoot, identity.repoId, identity.commonDir);
-  const logPath = join(repoDir, "daemon.log");
-
-  const priorSize = await existingLogSize(logPath);
-  if (priorSize > LOG_MAX_SIZE_BYTES) closeSync(openSync(logPath, "w"));
-  const offset = priorSize > LOG_MAX_SIZE_BYTES ? 0 : priorSize;
-
-  // 守护进程比拉起它的窗口进程活得更久，stderr 不能接到窗口的管道上——窗口退出后管道读端关闭，
-  // 守护进程下一次写 stderr 会触发 EPIPE 崩溃；落盘到文件由守护进程自己持有 fd，与窗口生命周期无关
-  const logFd = openSync(logPath, "a", 0o600);
+  const launchId = uuidv7();
+  const logDir = join(repoDir, "logs");
+  await mkdir(logDir, { recursive: true, mode: 0o700 });
+  const logPath = join(logDir, `${launchId}.log`);
+  const logFd = openSync(logPath, "ax", 0o600);
   let child: ReturnType<typeof spawn>;
   try {
+    // 子进程持有日志文件描述符，派出窗口退出不会关闭其输出目标或触发 EPIPE。
     child = spawn(execPath, [daemonMainEntry], {
-      stdio: ["ignore", "ignore", logFd],
+      stdio: ["ignore", logFd, logFd],
       detached: true,
       env: buildDaemonEnv({ sdkDir: options.sdkDir, repoDir: identity.commonDir, dataRoot: options.dataRoot, env: options.env }),
     });
-  } finally {
-    closeSync(logFd);
-  }
+  } finally { closeSync(logFd); }
   child.unref();
 
   let spawnError: Error | undefined;
@@ -138,14 +120,14 @@ async function beginSpawnDaemon(options: SpawnDaemonOptions, identity: Repositor
     while (Date.now() - start < SPAWN_READY_TIMEOUT_MS) {
       if (spawnError) throw new Error(`拉起守护进程失败: ${spawnError.message}`);
       if (exitResult && exitResult.code !== 0) {
-        const tail = (await readLogTail(logPath, offset)).trim();
+        const tail = await readLogTail(logPath);
         throw new Error(`守护进程启动即退出（code=${exitResult.code} signal=${exitResult.signal}）：${tail || "无 stderr 输出"}`);
       }
       const probe = await probeExistingInstance(socketPath);
       if (probe === "existing") return;
       await delay(SPAWN_POLL_INTERVAL_MS);
     }
-    const tail = (await readLogTail(logPath, offset)).trim();
+    const tail = await readLogTail(logPath);
     throw new Error(`等待守护进程启动超时（${SPAWN_READY_TIMEOUT_MS}ms）：${tail || "无 stderr 输出"}`);
   })();
 
