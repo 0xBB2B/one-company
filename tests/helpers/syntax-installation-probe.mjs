@@ -26,6 +26,18 @@ if (expectedCode === "valid") {
     count++;
   }
   await assert.rejects(withSyntaxTree("python", "", () => null), { code: "unsupported_language" });
+  const { checkSpecSet } = await jiti.import(join(productRoot, "runtime/spec-format.ts"));
+  const doc = { schemaVersion: 1, feature: { id: "fixture", title: "f", aliases: [] }, rules: [
+    { id: "fixture.rule", title: "r", condition: "", trigger: "t", expected: "e", reason: "", dependsOn: [], exceptions: [], acceptance: [] },
+  ] };
+  const input = { path: "docs/spec/fixture.rules.json", content: JSON.stringify(doc) };
+  const checked = checkSpecSet([input]);
+  assert.equal(checked.rules[0].codepoints, 4);
+  assert.equal(checked.semanticReview.required, true);
+  assert.match(checked.contractSetHash, /^[0-9a-f]{64}$/);
+  assert.throws(() => checkSpecSet([{ ...input, content: '{"schemaVersion":1,"schemaVersion":1}' }]), /duplicate_key/);
+  doc.rules[0].expected = "😀".repeat(1500);
+  assert.throws(() => checkSpecSet([{ ...input, content: JSON.stringify(doc) }]), /split_required/);
 } else if (expectedCode === "warm-invalid") {
   await withSyntaxTree("js", "let a = 1;", () => null);
   const path = join(productRoot, "resources/tree-sitter/tree-sitter-javascript.wasm");

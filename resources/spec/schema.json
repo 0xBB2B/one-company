@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "当前最小行为规则",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "feature", "rules"],
+  "x-maxRuleCodepoints": 1500,
+  "properties": {
+    "$schema": { "type": "string", "maxLength": 256, "pattern": "^(?:\\.\\.?/)*schema\\.json$" },
+    "schemaVersion": { "const": 1 },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "aliases"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "title": { "type": "string", "minLength": 1 },
+        "aliases": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "condition", "trigger", "expected", "reason", "dependsOn", "exceptions", "acceptance"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+          "title": { "type": "string", "minLength": 1 },
+          "condition": { "type": "string" },
+          "trigger": { "type": "string", "minLength": 1 },
+          "expected": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string" },
+          "dependsOn": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" } },
+          "exceptions": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" } },
+          "acceptance": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "given", "when", "then"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+                "given": { "type": "string" },
+                "when": { "type": "string", "minLength": 1 },
+                "then": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

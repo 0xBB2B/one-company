@@ -17,6 +17,7 @@
     "daemon",
     "extensions",
     "resources/tree-sitter",
+    "resources/spec",
     "runtime",
     "rules",
     "skills",

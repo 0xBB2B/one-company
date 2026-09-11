@@ -42,7 +42,7 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     const artifact = await pack(productRoot);
     const runtime = await pack(dirname(require.resolve("web-tree-sitter/web-tree-sitter.wasm")));
     const typebox = await pack(await realpath(join(productRoot, "node_modules/typebox")));
-    for (const entry of ["runtime/syntax-parser.ts", "resources/tree-sitter/manifest.json", "resources/tree-sitter/tree-sitter-go.wasm", "resources/tree-sitter/tree-sitter-tsx.wasm", "resources/tree-sitter/tree-sitter-typescript.wasm", "resources/tree-sitter/tree-sitter-javascript.wasm"]) {
+    for (const entry of ["runtime/spec-format.ts", "runtime/strict-json.ts", "resources/spec/schema.json", "runtime/syntax-parser.ts", "resources/tree-sitter/manifest.json", "resources/tree-sitter/tree-sitter-go.wasm", "resources/tree-sitter/tree-sitter-tsx.wasm", "resources/tree-sitter/tree-sitter-typescript.wasm", "resources/tree-sitter/tree-sitter-javascript.wasm"]) {
       expect(artifact.files).toContain(entry);
     }
     expect(artifact.files.some((file) => /(?:^|\/)(?:data|index|global)\.(?:db|sqlite)(?:-|$)/.test(file))).toBe(false);

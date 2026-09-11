@@ -148,6 +148,8 @@ pi remove git:github.com/0xBB2B/pi-company
 
 内部语法解析入口 `runtime/syntax-parser.ts` 使用随包分发的 TS/TSX、JS/JSX、Go 语法 WASM 和固定版本 `web-tree-sitter` 运行时。安装后可离线解析，不需要 CodeGraph 或现场编译；资源缺失、损坏或版本不兼容时明确失败。该入口只解析调用方提供的源码字符串，不包含项目扫描、索引或新业务工具。资源来源、许可证和使用边界见 [解析资源说明](resources/tree-sitter/README.md)。
 
+内部规则校验入口 `runtime/spec-format.ts` 检查当前规则 JSON 的字段、重复键、大小和引用，返回内容指纹与待审查信息；它不发布规则、不写索引，也不以格式通过代替语义审查。共享 schema 的分发源与计数说明见 [规则格式说明](resources/spec/README.md)。
+
 ```bash
 pnpm install --frozen-lockfile
 pnpm test
