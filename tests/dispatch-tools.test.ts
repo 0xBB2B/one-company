@@ -1138,8 +1138,21 @@ describe("agents 查询与控制运行", () => {
 
     expect(result.details.isError).toBeFalsy();
     expect(daemonA.calls.filter((call) => call.method === "runs.pauseAll").length).toBe(1);
-    const occurrences = (result.text.match(/3/g) ?? []).length;
-    expect(occurrences).toBe(1);
+    expect(result.text).toBe(`${basename(worldA.repo.root)}: pausedCount=3`);
+  });
+
+  test("仓库名称含数字3不影响按repoId去重和暂停计数", async () => {
+    const daemon = createFakeDaemonClient({ "runs.pauseAll": () => ({ pausedCount: 3 }) });
+    const clients = createFakeWorkspaceClients({ same: daemon.client });
+    const workspace: Workspace = { repos: [
+      { path: "/fixture/repo-333", repoId: "same", commonDir: "/fixture/repo-333/.git" },
+      { path: "/fixture/worktree-3", repoId: "same", commonDir: "/fixture/repo-333/.git" },
+    ], skipped: [] };
+    const tool = findTool(registerTools(clients, workspace), "pi_company_agents");
+    const result = await callTool(tool, { action: "pauseAll" }, "/fixture/repo-333");
+    expect(result.details.isError).toBeFalsy();
+    expect(result.text).toBe("repo-333: pausedCount=3");
+    expect(daemon.calls.filter((call) => call.method === "runs.pauseAll")).toHaveLength(1);
   });
 
   test("pause 在守护进程仅回执 pausing（未确认暂停）时不报已暂停", async () => {
