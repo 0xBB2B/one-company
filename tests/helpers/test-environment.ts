@@ -1,8 +1,19 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryRoot } from "./temporary-root.ts";
+import { afterAll } from "vitest";
+import { cleanupTemporaryRoot, temporaryRoot } from "./temporary-root.ts";
 
 const root = temporaryRoot();
-process.env.TMPDIR = join(root, "verification");
+const verificationRoot = join(root, "verification");
+process.env.TMPDIR = verificationRoot;
 process.env.GIT_CEILING_DIRECTORIES = root.replace(/\/$/, "");
-mkdirSync(process.env.TMPDIR, { recursive: true });
+mkdirSync(verificationRoot, { recursive: true, mode: 0o700 });
+chmodSync(verificationRoot, 0o700);
+afterAll(() => {
+  try {
+    rmdirSync(verificationRoot);
+  } catch {
+    // 非空目录保留，用于暴露未收尾的测试数据。
+  }
+  cleanupTemporaryRoot();
+});
