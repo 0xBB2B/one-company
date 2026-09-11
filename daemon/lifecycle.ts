@@ -178,11 +178,13 @@ export async function listenExclusive(
       await rm(tempPath, { force: true }).catch(() => {});
       throw error;
     }
+    // 探测期间其他进程可能替换旧 socket；只回收本次实际探测的同一文件。
+    const observed = await stat(socketPath).catch(() => undefined);
     const probe = await probeExistingInstance(socketPath);
     await server.close();
     await rm(tempPath, { force: true }).catch(() => {});
     if (probe === "existing") return "existing";
-    if (probe === "stale") await rm(socketPath, { force: true }).catch(() => {});
+    if (probe === "stale" && observed) await releaseSocket(socketPath, observed.ino);
     return "retry";
   }
   try {
