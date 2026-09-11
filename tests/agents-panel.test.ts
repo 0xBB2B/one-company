@@ -72,7 +72,7 @@ function runFixture(overrides: RunLike = {}): RunLike {
     shellToken: "shell-default",
     kind: "requirement",
     requirement: "2026-09-09.demo",
-    task: "/workspace/.bb-spec/docs/plan/2026-09-09.demo/tasks/01-demo-task.md",
+    task: "/workspace/private/task-record.txt",
     cwd: "/workspace/repo-a",
     writePaths: [],
     readPaths: [],

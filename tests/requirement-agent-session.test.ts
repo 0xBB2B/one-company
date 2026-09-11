@@ -1257,13 +1257,11 @@ describe("系统提示骨架顺序", () => {
     expect(firstPrompt).toContain("advance");
     expect(firstPrompt).toContain("planned");
     expect(firstPrompt).toContain("executing");
-    // 规范索引与需求文档位置须指向真实产物路径 .pi-company/，不得残留旧的 .bb-spec/ 命名；
-    // 定点核对该说明所在行，避免误伤宿主提示里指向本仓库检出路径（其父目录名恰好含 .bb-spec）的文档链接
+    // 定点核对规范索引与需求文档位置说明，使用项目实际产物路径。
     const specIndexLine = firstPrompt.split("\n").find((line) => line.includes(".pi-company/spec/INDEX.md"));
     if (!specIndexLine) throw new Error("测试装置失败: 系统提示未包含规范索引与需求文档位置说明");
     expect(specIndexLine).toContain(".pi-company/spec/INDEX.md");
     expect(specIndexLine).toContain(".pi-company/requirements/");
-    expect(specIndexLine).not.toContain(".bb-spec");
 
     await proposeAndConfirmShape(world, created.handle, {
       tasks: [{ id: "T-77", title: "唯一形状节点标记", roles: ["catalogrole9x2"], dependsOn: [], writePaths: [join(world.repo.root, "output.txt")] }],

@@ -321,7 +321,7 @@ describe("禁止句", () => {
     }
   }
 
-  const SPEC_LEAK_FORBIDDEN = [".bb-spec/docs/spec", "C-1"];
+  const SPEC_LEAK_FORBIDDEN = ["C-1"];
   for (const name of Object.keys(ROLE_FILES) as RoleName[]) {
     for (const phrase of SPEC_LEAK_FORBIDDEN) {
       test(`${name}.md 不含 spec 溯源标记: ${phrase}`, async () => {

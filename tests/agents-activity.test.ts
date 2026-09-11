@@ -75,7 +75,7 @@ function runFixture(overrides: RunLike = {}): RunLike {
     shellToken: "shell-default",
     kind: "requirement",
     requirement: "2026-09-09.demo",
-    task: "/workspace/.bb-spec/docs/plan/2026-09-09.demo/tasks/01-demo-task.md",
+    task: "/workspace/private/task-record.txt",
     cwd: "/workspace/repo-a",
     writePaths: [],
     readPaths: [],
@@ -149,7 +149,7 @@ describe("行内不显示任务文件路径", () => {
       REPO_A.repoId,
       runFixture({
         id: "run-path",
-        task: `/workspace/.bb-spec/docs/plan/2026-09-09.demo/tasks/${secretPathMarker}.md`,
+        task: `/workspace/private/${secretPathMarker}.txt`,
         state: "running",
       }),
       { requirementTitle: "demo" },
