@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -62,11 +62,24 @@ export async function createRepoFixture(): Promise<RepoFixture> {
   return { root, worktrees: [] };
 }
 
+const preparationQueues = new Map<string, Promise<void>>();
+
+// Git枚举worktrees时可能看到另一条add尚未写完的元数据；仅同仓库准备步骤互斥。
+async function prepareWorktree(repoRoot: string, branch: string, root: string): Promise<void> {
+  const key = await realpath(repoRoot);
+  const previous = preparationQueues.get(key) ?? Promise.resolve();
+  const pending = previous.then(() => git(["worktree", "add", "-b", branch, root], repoRoot));
+  const settled = pending.then(() => {}, () => {});
+  preparationQueues.set(key, settled);
+  try { await pending; }
+  finally { if (preparationQueues.get(key) === settled) preparationQueues.delete(key); }
+}
+
 export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
   const root = await mkdtemp(join(tmpdir(), "pi-company-worktree-"));
   const branch = `worktree-${basename(root)}`;
   try {
-    await git(["worktree", "add", "-b", branch, root], repo.root);
+    await prepareWorktree(repo.root, branch, root);
   } catch (error) {
     await rm(root, { recursive: true, force: true });
     throw error;

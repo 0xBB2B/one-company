@@ -237,6 +237,13 @@ describe("repo-fixture", () => {
       if (outcome.status === "fulfilled") tempRoots.push(outcome.value.root);
     }
     expect(settled.filter((outcome) => outcome.status === "rejected")).toEqual([]);
+    const created = settled.flatMap((outcome) => outcome.status === "fulfilled" ? [outcome.value] : []);
+    expect(new Set(created.map((worktree) => worktree.branch)).size).toBe(5);
+    const listed = await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repo.root });
+    for (const worktree of created) {
+      expect(listed.stdout).toContain(`worktree ${worktree.root}`);
+      expect(listed.stdout).toContain(`branch refs/heads/${worktree.branch}`);
+    }
   });
 
   test("在全局开启 commit.gpgsign 的环境下仍能创建夹具", async () => {
