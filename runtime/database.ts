@@ -29,6 +29,32 @@ interface Connection {
 const require = createRequire(import.meta.url);
 const Driver: new (path: string) => Connection = require("node:sqlite").DatabaseSync;
 
+const DATABASE_BUSY_TIMEOUT_MS = 5_000;
+const busyWait = new Int32Array(new SharedArrayBuffer(4));
+
+// journal_mode 的锁升级可能直接返回 SQLITE_BUSY；只重试幂等配置，不重放业务事务。
+function enableWal(connection: Connection): void {
+  const deadline = performance.now() + DATABASE_BUSY_TIMEOUT_MS;
+  try {
+    for (;;) {
+      const remaining = Math.max(0, Math.ceil(deadline - performance.now()));
+      connection.exec(`PRAGMA busy_timeout = ${remaining}`);
+      try {
+        const current = connection.prepare("PRAGMA journal_mode").get()?.journal_mode;
+        if (current === "wal") return;
+        const selected = connection.prepare("PRAGMA journal_mode = WAL").get()?.journal_mode;
+        if (selected !== "wal") throw new Error("数据库未能启用 WAL 日志模式");
+        return;
+      } catch (error) {
+        const code = (error as { errcode?: number }).errcode;
+        const wait = deadline - performance.now();
+        if (typeof code !== "number" || (code & 0xff) !== 5 || wait <= 0) throw error;
+        Atomics.wait(busyWait, 0, 0, Math.min(10, wait));
+      }
+    }
+  } finally { connection.exec(`PRAGMA busy_timeout = ${DATABASE_BUSY_TIMEOUT_MS}`); }
+}
+
 const ID_CONSTRAINT = `length(id) = 36 AND substr(id,9,1) = '-' AND substr(id,14,1) = '-' AND substr(id,19,1) = '-' AND substr(id,24,1) = '-' AND substr(id,15,1) = '7' AND substr(id,20,1) IN ('8','9','a','b') AND length(replace(id,'-','')) = 32 AND replace(id,'-','') NOT GLOB '*[^0-9a-f]*'`;
 
 export function repositoryDatabase(dataRoot: string, repoId: string): string {
@@ -64,10 +90,16 @@ export class LocalDatabase {
     this.connection = new Driver(path);
     try {
       chmodSync(path, 0o600);
-      this.connection.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
+      this.connection.exec(`PRAGMA busy_timeout = ${DATABASE_BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`);
+      enableWal(this.connection);
+      this.connection.exec("PRAGMA synchronous = FULL;");
       const version = Number(this.connection.prepare("PRAGMA user_version").get()?.user_version);
       if (version !== 0 && version !== 1) throw new Error(`不支持的数据库版本: ${version}`);
       if (version === 0) this.transaction(() => {
+        // 取得写锁后复核版本，不能用等待锁之前的旧版本覆盖其他进程的初始化。
+        const lockedVersion = Number(this.connection.prepare("PRAGMA user_version").get()?.user_version);
+        if (lockedVersion === 1) return;
+        if (lockedVersion !== 0) throw new Error(`不支持的数据库版本: ${lockedVersion}`);
         this.connection.exec(`
           CREATE TABLE IF NOT EXISTS records (
             id TEXT PRIMARY KEY NOT NULL CHECK (${ID_CONSTRAINT}),
