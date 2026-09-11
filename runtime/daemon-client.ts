@@ -86,7 +86,24 @@ interface SpawnedProcess {
   ready: Promise<void>;
 }
 
-async function beginSpawnDaemon(options: SpawnDaemonOptions, identity: RepositoryIdentity): Promise<SpawnedProcess> {
+const pendingSpawns = new Map<string, Promise<SpawnedProcess>>();
+
+function beginSpawnDaemon(options: SpawnDaemonOptions, identity: RepositoryIdentity): Promise<SpawnedProcess> {
+  const key = JSON.stringify([identity.commonDir, options.dataRoot, options.sdkDir, options.execPath ?? process.execPath,
+    Object.entries(options.env ?? {}).sort(([a], [b]) => a.localeCompare(b))]);
+  const existing = pendingSpawns.get(key);
+  if (existing) return existing;
+  const pending = launchDaemon(options, identity).then(async (spawned) => {
+    await spawned.ready;
+    return spawned;
+  });
+  pendingSpawns.set(key, pending);
+  const clear = () => { if (pendingSpawns.get(key) === pending) pendingSpawns.delete(key); };
+  void pending.then(clear, clear);
+  return pending;
+}
+
+async function launchDaemon(options: SpawnDaemonOptions, identity: RepositoryIdentity): Promise<SpawnedProcess> {
   const execPath = options.execPath ?? process.execPath;
   const repoDir = await repoDataDir(options.dataRoot, identity.repoId, identity.commonDir);
   const launchId = uuidv7();

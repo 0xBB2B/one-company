@@ -198,6 +198,19 @@ afterEach(async () => {
 });
 
 describe("单实例收敛", () => {
+  test("同参数并发启动失败共享一次尝试，失败后显式重试可以重新启动", async () => {
+    const fixture = await createDaemonFixture();
+    fixtures.push(fixture);
+    const options = { repoDir: fixture.repoDir, dataRoot: fixture.dataRoot, sdkDir: resolveSdkDir(), execPath: join(fixture.dataRoot, "missing-node") };
+    const results = await Promise.allSettled(Array.from({ length: 3 }, () => spawnDaemon(options)));
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    for (const result of results) if (result.status === "rejected") expect(result.reason.message).toContain("拉起守护进程失败");
+    const logs = join(fixture.dataRoot, "repos", fixture.repoId, "logs");
+    expect(await readdir(logs)).toHaveLength(1);
+    await expect(spawnDaemon(options)).rejects.toThrow("拉起守护进程失败");
+    expect(await readdir(logs)).toHaveLength(2);
+  });
+
   test("未运行时并发两次 connectDaemon 只拉起一个守护进程实例", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
@@ -240,6 +253,7 @@ describe("单实例收敛", () => {
     daemonPids.push(pidA);
     expect(pidA).toBe(pidB);
     expect(daemonPidsForDataRoot(fixture.dataRoot)).toHaveLength(1);
+    expect(await readdir(join(fixture.dataRoot, "repos", fixture.repoId, "logs"))).toHaveLength(1);
   }, 30_000);
 
   test("已运行的守护进程被再次 connectDaemon 时不再拉起新实例", async () => {
