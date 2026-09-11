@@ -252,9 +252,11 @@ describe("socket 被替换", () => {
   test("另一个监听者替换正在运行实例的 socket 文件后，原实例在一个自检周期内退出、不删除新文件、只标记自身运行为 interrupted", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
-    const handle = trackHandle(await startDaemonForTest(fixture));
+    const handle = trackHandle(await startDaemonForTest(fixture, { extraEnv: { [MODEL_PROVIDER_MODULE_ENV_VAR]: modelProviderModulePath, [ASSEMBLY_DELAY_MS_ENV_VAR]: "300" } }));
     const client = await connectTestClient(fixture.socketPath);
     const daemonStartedAt = String(client.helloResult.startedAt);
+    // hello可以早于启动恢复完成；先经过awaitStarted门槛，再建立本测试的运行现场。
+    await client.call("runs.list");
     client.close();
 
     const ownStore = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt });
