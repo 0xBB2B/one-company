@@ -463,7 +463,8 @@ describe("session_before_switch 停止本窗口 Shell 后放行", () => {
   test("本窗口后台 Shell 及后代确实停止后返回放行，daemon 连接与运行状态不受影响", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
-    const harness = await buildHarness({ cwd: repo.root });
+    // 真实进程退出/ps探测使用真实时间，不用加速时钟提前耗尽停止预算。
+    const harness = await buildHarness({ cwd: repo.root, useRealClock: true });
     await triggerSessionStart(harness);
 
     const registry = harness.windowRegistryFactory.all()[0];
@@ -487,9 +488,7 @@ describe("session_before_switch 停止本窗口 Shell 后放行", () => {
     trackPgid(spawned.task.pgid);
     await sleepMs(200);
 
-    const [result] = (await withClockPump(harness.timeSource, () =>
-      harness.fakePi.trigger("session_before_switch", { type: "session_before_switch", reason: "new" }, harness.ctx),
-    )) as [{ cancel: boolean; reason?: string } | undefined];
+    const [result] = (await harness.fakePi.trigger("session_before_switch", { type: "session_before_switch", reason: "new" }, harness.ctx)) as [{ cancel: boolean; reason?: string } | undefined];
 
     expect(result?.cancel).toBe(false);
     expect(groupAlive(spawned.task.pgid)).toBe(false);
