@@ -1,6 +1,6 @@
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { uuidv7, readRecord, putRecord, withDatabase } from "../runtime/database.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

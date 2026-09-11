@@ -1,7 +1,7 @@
 import { readRecord, putRecord, repositoryDatabase, withDatabase, uuidv7 } from "../runtime/database.ts";
 import { failDatabaseWrites, testRepoId } from "./helpers/database-fixture.ts";
 import type { ErrorDetailsRef } from "../runtime/error-details.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";

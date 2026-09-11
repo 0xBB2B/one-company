@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { Value } from "typebox/value";
-import { rename, rm, chmod, mkdir, rename, symlink, writeFile } from "node:fs/promises";
+import { rename, rm, chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -604,7 +604,7 @@ describe("task-finish 任务完成", () => {
         verdict: "PASS",
         summary: "实施完成", issues: [], evidence: ["测试装置"], changeKind: "refactor",
         coverage: [{ ref: "demo/AC-1", test: "README.md:1" }], redCommands: [],
-        greenCommands: [{ command: "bun test", status: "passed", details: "通过" }], productionPath: ["a.ts"], fakeRed: false,
+        greenCommands: [{ command: "pnpm test", status: "passed", details: "通过" }], productionPath: ["a.ts"], fakeRed: false,
         changedFiles: ["a.ts"],
         workState: "red-green",
         preexistingEvidence: [],
@@ -841,7 +841,7 @@ describe("shape-confirm 与 advance/task-finish 同口径的证据校验", () =>
         verdict: "PASS",
         summary: "实施完成", issues: [], evidence: ["测试装置"], changeKind: "refactor",
         coverage: [{ ref: "demo/AC-1", test: "README.md:1" }], redCommands: [],
-        greenCommands: [{ command: "bun test", status: "passed", details: "通过" }], productionPath: ["a.ts"], fakeRed: false,
+        greenCommands: [{ command: "pnpm test", status: "passed", details: "通过" }], productionPath: ["a.ts"], fakeRed: false,
         changedFiles: ["a.ts"],
         workState: "red-green",
         preexistingEvidence: [],

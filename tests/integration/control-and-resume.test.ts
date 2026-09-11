@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { dirname } from "node:path";

@@ -1,6 +1,6 @@
 import { withDatabase, repositoryDatabase, uuidv7 } from "../runtime/database.ts";
 import { readDecisions, decisionStream } from "../runtime/decisions.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { Value } from "typebox/value";
 import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

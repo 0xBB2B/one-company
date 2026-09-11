@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -70,7 +70,7 @@ async function runLintTasks(requirementsPath: string, envOverride?: Record<strin
 }
 
 async function runTaskCheck(requirementsPath: string): Promise<RunResult> {
-  return run("bun", [TASK_CHECK_TS, requirementsPath]);
+  return run(process.execPath, [TASK_CHECK_TS, requirementsPath]);
 }
 
 async function hashTree(dir: string): Promise<string> {
@@ -859,7 +859,7 @@ describe("lint.sh 默认模式与环境依赖的边界", () => {
     expect(result.stdout).toMatch(/^FAIL: /m);
   });
 
-  test("PATH 中缺少 bun 时 --tasks 仍以退出码 2 与 FAIL 前缀报告，而非裸命令未找到错误", async () => {
+  test("PATH 中缺少 node 时 --tasks 仍以退出码 2 与 FAIL 前缀报告，而非裸命令未找到错误", async () => {
     const root = await createTempRoot();
     const { requirementsPath, files } = await buildValidFixture(root);
     await writeFiles(root, files);

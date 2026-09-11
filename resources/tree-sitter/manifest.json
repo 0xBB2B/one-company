@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "package": "web-tree-sitter",
+    "version": "0.27.0",
+    "license": "web-tree-sitter.LICENSE",
+    "tarball": "https://registry.npmjs.org/web-tree-sitter/-/web-tree-sitter-0.27.0.tgz",
+    "integrity": "sha512-XK08gj6RwTMQatAG7uVRP8MunqotL/XC19vHgkSPKmELgbGPBj4ECvB8haHOUnyj6ls2B8t42UTro14zxGgAHg==",
+    "file": "web-tree-sitter.wasm",
+    "sha256": "c03bccdc3b448a32848f5ae327e209c982bbb0840d43eec8bc2d5759544a1ed3"
+  },
+  "grammars": {
+    "typescript": {
+      "package": "tree-sitter-typescript",
+      "version": "0.23.2",
+      "license": "tree-sitter-typescript.LICENSE",
+      "tarball": "https://registry.npmjs.org/tree-sitter-typescript/-/tree-sitter-typescript-0.23.2.tgz",
+      "integrity": "sha512-e04JUUKxTT53/x3Uq1zIL45DoYKVfHH4CZqwgZhPg5qYROl5nQjV+85ruFzFGZxu+QeFVbRTPDRnqL9UbU4VeA==",
+      "file": "tree-sitter-typescript.wasm",
+      "sha256": "778025db5a8be0e70f8ccc3671e486dfeddd048c25d9e8a70c26de2e1bf6f97d",
+      "abiVersion": 14
+    },
+    "tsx": {
+      "package": "tree-sitter-typescript",
+      "version": "0.23.2",
+      "license": "tree-sitter-typescript.LICENSE",
+      "tarball": "https://registry.npmjs.org/tree-sitter-typescript/-/tree-sitter-typescript-0.23.2.tgz",
+      "integrity": "sha512-e04JUUKxTT53/x3Uq1zIL45DoYKVfHH4CZqwgZhPg5qYROl5nQjV+85ruFzFGZxu+QeFVbRTPDRnqL9UbU4VeA==",
+      "file": "tree-sitter-tsx.wasm",
+      "sha256": "79e5da75ea62855a0cd67177685f0164eac87d5f630b3cbe1e0a099751ad30f8",
+      "abiVersion": 14
+    },
+    "javascript": {
+      "package": "tree-sitter-javascript",
+      "version": "0.25.0",
+      "license": "tree-sitter-javascript.LICENSE",
+      "tarball": "https://registry.npmjs.org/tree-sitter-javascript/-/tree-sitter-javascript-0.25.0.tgz",
+      "integrity": "sha512-1fCbmzAskZkxcZzN41sFZ2br2iqTYP3tKls1b/HKGNPQUVOpsUxpmGxdN/wMqAk3jYZnYBR1dd/y/0avMeU7dw==",
+      "file": "tree-sitter-javascript.wasm",
+      "sha256": "5fb488d0cabb4775a594bab85682de5ad6ce83c0d6ac997a9f82dd084d571240",
+      "abiVersion": 15
+    },
+    "go": {
+      "package": "tree-sitter-go",
+      "version": "0.25.0",
+      "license": "tree-sitter-go.LICENSE",
+      "tarball": "https://registry.npmjs.org/tree-sitter-go/-/tree-sitter-go-0.25.0.tgz",
+      "integrity": "sha512-APBc/Dq3xz/e35Xpkhb1blu5UgW+2E3RyGWawZSCNcbGwa7jhSQPS8KsUupuzBla8PCo8+lz9W/JDJjmfRa2tw==",
+      "file": "tree-sitter-go.wasm",
+      "sha256": "9504573f352b20be7f2f1911754d710622aedc15afff16d5ed8fb5645681aee7",
+      "abiVersion": 15
+    }
+  }
+}

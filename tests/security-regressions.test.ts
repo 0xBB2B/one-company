@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
@@ -113,7 +113,7 @@ test("受管命令不能连接控制目录 socket 或读取控制凭证，获准
     cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
   }
   const boundary = await commandBoundary({ cwd: w.cwd, dataRoot: w.dataRoot, writePaths: [], foreignPaths: [] });
-  const node = await realpath(Bun.which("node")!);
+  const node = await realpath(process.execPath);
   boundary.readRoots.push(dirname(node));
   const run = (source: string) => {
     // 普通 Shell 允许启动子进程，但仍受文件与控制 socket 边界约束。

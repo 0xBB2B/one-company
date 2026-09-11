@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "vitest";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";

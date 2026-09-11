@@ -1,5 +1,5 @@
 import { withDatabase, uuidv7 } from "../runtime/database.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";

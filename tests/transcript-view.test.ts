@@ -1,7 +1,7 @@
 import { testRepoId, sessionJson } from "./helpers/database-fixture.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
 import { RunStore } from "../runtime/run-store.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

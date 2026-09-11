@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";

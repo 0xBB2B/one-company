@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { createSettingsComponent, createSettingsSession } from "../runtime/settings-ui.ts";
 import { renderComponent } from "./helpers/virtual-terminal.ts";
 

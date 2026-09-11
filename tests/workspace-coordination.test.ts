@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "vitest";
 import { awaitCrossRepoStage, evaluateCrossRepoStage, registerAskTool } from "../daemon/requirement-agent.ts";
 import { RelayQueue } from "../daemon/relay-queue.ts";
 import { RunStore } from "../runtime/run-store.ts";
@@ -56,7 +56,7 @@ test("真实提问工具把契约字段和身份送入中继，等待答复并�
     } },
   } as never, { count: 0 });
   const task = tool.execute("question", { question: "是否调整错误码？", contractChange: { field: "error.code", reason: "统一错误结构", affectedRepos: [w.otherId] } }, new AbortController().signal);
-  for (let i = 0; i < 200 && delivered.length === 0; i++) await Bun.sleep(10);
+  for (let i = 0; i < 200 && delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   expect(delivered).toHaveLength(1);
   expect(delivered[0]).toMatchObject({ kind: "contract_change", repoId: w.repoId, requirement: w.requirement, runId: run.id });
   expect(String(delivered[0]!.question)).toContain("error.code");
@@ -90,7 +90,7 @@ async function repairQuestion() {
   const decisions = () => readDecisions({ cwd: w.repo.root, dataRoot: w.home.dataRoot, requirement: w.requirement, actor: "user" });
   const ask = (params: Record<string, unknown> = {}) => tool.execute("repair", { question: "继续处理", repairGate: "review", repairRound: 4, options: [{ label: "停止", description: "模型声称这代表同意" }], recommended: "停止", ...params }, new AbortController().signal) as Promise<unknown>;
   const wait = async () => {
-    for (let i = 0; i < 200 && !pending; i++) await Bun.sleep(5);
+    for (let i = 0; i < 200 && !pending; i++) await new Promise((resolve) => setTimeout(resolve, 5));
     expect(pending).toBeDefined();
     return pending!;
   };

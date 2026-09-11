@@ -167,8 +167,8 @@ verify: <一条命令，退出码 0 即通过>
 ```
 lint.sh --spec <规则文件>...          检查规则文件格式（≤100 行、name、五节、C/AC 双向覆盖、四行验收、无实现细节）
 lint.sh <requirements.md>            检查需求文档四节、规范变更表、被引用规则与索引
-lint.sh --tasks <requirements.md>    转发 bun task-check.ts <requirements.md>
-bun task-check.ts <requirements.md>  任务集合机械检查
+lint.sh --tasks <requirements.md>    转发 node task-check.ts <requirements.md>
+node task-check.ts <requirements.md> 任务集合机械检查
 ```
 
 任务检查（`lint.sh --tasks` 与 `task-check.ts`）的退出码与输出：全部通过 0 且首行 `PASS: 仅证明任务机械条件，不证明行为正确`；任一条件不满足 1，每条一行 `FAIL: <任务id或文件>: <字段或缺项>: <原因>`；参数错误/输入不可读/类别无法确认 2 且 `FAIL: <原因>`。规则文件与需求文档检查（`lint.sh --spec`、`lint.sh <requirements.md>`）成功只输出 `PASS`，格式不满足退出码 1，参数错误或输入不存在退出码 2。原文比对以行为单位：任务的业务规则节须逐行包含所引验收块（含标题行及其回指）与回指约束的原文，行尾空白不计，不约束顺序。路径推导：requirementDir = dirname(requirements.md)，specRoot = requirementDir/../../spec，tasksDir = requirementDir/tasks；生产文件类别声明缺失即退出码 2。

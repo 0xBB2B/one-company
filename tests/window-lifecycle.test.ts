@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";

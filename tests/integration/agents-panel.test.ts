@@ -1,5 +1,5 @@
 import { temporaryRoot } from "../helpers/temporary-root.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, rmdir, symlink } from "node:fs/promises";

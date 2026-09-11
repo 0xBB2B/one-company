@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { DatabaseSync as Database } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { readRecord, putRecord, uuidv7, withDatabase, repositoryDatabase } from "../../runtime/database.ts";
 import type { RecordRef } from "../../runtime/database.ts";

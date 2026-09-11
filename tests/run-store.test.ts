@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { uuidv7, repositoryDatabase, readRecord, putRecord, UUID_V7_PATTERN } from "../runtime/database.ts";
 import { recordJson, mutateRecord, testRepoId } from "./helpers/database-fixture.ts";
 import type { RecordRef } from "../runtime/database.ts";

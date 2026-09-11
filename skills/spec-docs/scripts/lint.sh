@@ -125,8 +125,8 @@ lint_requirements() {
 
 run_tasks_check() {
   [[ $# -eq 1 ]] || { echo "FAIL: 用法: lint.sh --tasks <requirements.md>"; exit 2; }
-  command -v bun >/dev/null 2>&1 || { echo "FAIL: 未找到 bun"; exit 2; }
-  exec bun "$script_dir/task-check.ts" "$1"
+  command -v node >/dev/null 2>&1 || { echo "FAIL: 未找到 node"; exit 2; }
+  exec node "$script_dir/task-check.ts" "$1"
 }
 
 main() {

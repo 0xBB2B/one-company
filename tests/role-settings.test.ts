@@ -1,7 +1,7 @@
 import { readRecord, putRecord, withDatabase } from "../runtime/database.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -569,7 +569,8 @@ describe("clearRoleField", () => {
     const raw = await clearRoleField(path, { role: "worker", field: "thinking", baseline });
 
     const parsed = JSON.parse(raw);
-    expect(parsed).not.toHaveProperty("pi-company.worker");
+    // 空设置返回 null；含点的角色键按字面名称核对。
+    expect(parsed === null || !Object.hasOwn(parsed, "pi-company.worker")).toBe(true);
   });
 });
 

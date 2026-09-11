@@ -8,8 +8,7 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "types": [
-      "node",
-      "bun"
+      "node"
     ]
   },
   "include": [

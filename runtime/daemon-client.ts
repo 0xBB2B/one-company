@@ -7,7 +7,7 @@ import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
-import { probeExistingInstance } from "../daemon/lifecycle.ts";
+import { probeExistingInstance, socketPathByteLimit } from "../daemon/lifecycle.ts";
 import { createClock } from "./clock.ts";
 import { uuidv7 } from "./database.ts";
 import type { Clock, TimerHandle } from "./clock.ts";
@@ -142,6 +142,9 @@ export async function spawnDaemon(options: SpawnDaemonOptions): Promise<void> {
 }
 
 function rawConnect(socketPath: string): Promise<Socket> {
+  const length = Buffer.byteLength(socketPath, "utf8");
+  const limit = socketPathByteLimit();
+  if (length > limit) return Promise.reject(new Error(`socket 路径超限（${length} 字节 > 平台上限 ${limit} 字节）: ${socketPath}`));
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
     const onError = (error: Error) => {
@@ -297,8 +300,8 @@ class DaemonClientImpl implements DaemonClient {
     }
   }
 
-  // ENOENT（socket 文件不存在）、ECONNREFUSED（崩溃遗留的旧 socket 文件）、ENOTSOCK（socket 路径被普通文件占据，
-  // 生产 Node 运行时的实际错误码；同一场景在 Bun 下表现为 ENOENT）都意味着无人监听，此时才需要拉起新实例
+  // ENOENT（socket 文件不存在）、ECONNREFUSED（崩溃遗留的旧 socket 文件）、ENOTSOCK（socket 路径被普通文件占据）
+  // 都意味着无人监听，此时才需要拉起新实例。
   private async attemptConnect(): Promise<Socket> {
     try {
       return await rawConnect(this.ctx.socketPath);

@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+
+const [productRoot, fixturePath, expectedCode = "valid", language = "js"] = process.argv.slice(2);
+let networkAttempts = 0;
+globalThis.fetch = async () => { networkAttempts++; throw new Error("测试禁止联网"); };
+// 使用宿主同类的 TypeScript 加载器；被测模块和解析资源必须来自安装产物。
+const require = createRequire(import.meta.url);
+const { createJiti } = require("jiti");
+const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: true, tryNative: false });
+const { withSyntaxTree } = await jiti.import(join(productRoot, "runtime/syntax-parser.ts"));
+const cases = JSON.parse(await readFile(fixturePath, "utf8"));
+let count = 0;
+if (expectedCode === "valid") {
+  for (const fixture of cases) {
+    await withSyntaxTree(fixture.language, fixture.source, (tree) => {
+      assert.equal(tree.rootNode.hasError, false);
+      const nodes = tree.rootNode.descendantsOfType(fixture.nodeType);
+      assert.equal(nodes.length, 1);
+      if (fixture.name) assert.equal(nodes[0].childForFieldName("name").text, fixture.name);
+      if (fixture.text) assert.equal(nodes[0].text, fixture.text);
+      assert.equal(fixture.source.slice(nodes[0].startIndex, nodes[0].endIndex), nodes[0].text);
+    });
+    count++;
+  }
+  await assert.rejects(withSyntaxTree("python", "", () => null), { code: "unsupported_language" });
+} else if (expectedCode === "warm-invalid") {
+  await withSyntaxTree("js", "let a = 1;", () => null);
+  const path = join(productRoot, "resources/tree-sitter/tree-sitter-javascript.wasm");
+  const bytes = await readFile(path);
+  try {
+    await writeFile(path, Buffer.from("damaged"));
+    await assert.rejects(withSyntaxTree("js", "let a = 2;", () => null), { code: "resource_invalid" });
+  } finally { await writeFile(path, bytes); }
+} else {
+  await assert.rejects(withSyntaxTree(language, "", () => null), (error) => {
+    assert.equal(error.code, expectedCode);
+    assert.match(error.message, /不会自动下载或编译资源/);
+    return true;
+  });
+}
+assert.equal(networkAttempts, 0);
+console.log(JSON.stringify({ status: "PASS", mode: expectedCode, count, networkAttempts, cwd: process.cwd(), runtime: `Node ${process.versions.node}`, executable: process.execPath }));

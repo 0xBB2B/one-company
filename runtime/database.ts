@@ -27,9 +27,7 @@ interface Connection {
 }
 
 const require = createRequire(import.meta.url);
-const Driver: new (path: string) => Connection = typeof Bun === "undefined"
-  ? require("node:sqlite").DatabaseSync
-  : require("bun:sqlite").Database;
+const Driver: new (path: string) => Connection = require("node:sqlite").DatabaseSync;
 
 const ID_CONSTRAINT = `length(id) = 36 AND substr(id,9,1) = '-' AND substr(id,14,1) = '-' AND substr(id,19,1) = '-' AND substr(id,24,1) = '-' AND substr(id,15,1) = '7' AND substr(id,20,1) IN ('8','9','a','b') AND length(replace(id,'-','')) = 32 AND replace(id,'-','') NOT GLOB '*[^0-9a-f]*'`;
 

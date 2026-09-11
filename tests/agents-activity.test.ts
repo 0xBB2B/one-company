@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { createClock } from "../runtime/clock.ts";
 import type { TimeSource } from "../runtime/clock.ts";
 import { AgentsActivity } from "../runtime/agents-activity.ts";

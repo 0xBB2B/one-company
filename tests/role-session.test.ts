@@ -1,6 +1,6 @@
 import { testRepoId, sessionJson, failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -134,7 +134,7 @@ function validWorkObject(): Record<string, unknown> {
     workState: "green-baseline-no-change",
     coverage: [{ ref: "r1", test: "t1" }],
     redCommands: [],
-    greenCommands: [{ command: "bun test", status: "passed", details: "全部通过" }],
+    greenCommands: [{ command: "pnpm test", status: "passed", details: "全部通过" }],
     changedFiles: [],
     productionPath: [],
     preexistingEvidence: ["既有证据"],

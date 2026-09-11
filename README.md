@@ -7,7 +7,7 @@
 你在当前对话中说明需求并确认方案，后台代理负责安排和执行任务，各角色分别完成实现、审查与验收。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-bun%20test-black.svg)](#开发)
+[![Tests](https://img.shields.io/badge/tests-pnpm%20test-black.svg)](#开发)
 [![pi package](https://img.shields.io/badge/pi-package-8A2BE2.svg)](#安装)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen.svg)](package.json)
 
@@ -33,7 +33,7 @@ pi-company 把开发分为三个层次：
 pi install git:github.com/0xBB2B/pi-company
 ```
 
-本地开发时使用 `pi install /absolute/path/to/pi-company`，并先在该目录执行 `bun install` 安装依赖。运行 pi 的 Node 版本需 ≥ 22.19。角色代理随包提供，无需另装子代理系统。
+本地开发时使用 `pi install /absolute/path/to/pi-company`，并先在该目录执行 `pnpm install --frozen-lockfile` 安装锁定依赖。本框架使用 pnpm 11.7.0，运行及测试均使用 Node；运行 pi 的 Node 版本需 ≥ 22.19。角色代理随包提供，无需另装子代理系统。
 
 ## 卸载
 
@@ -146,9 +146,12 @@ pi remove git:github.com/0xBB2B/pi-company
 
 ## 开发
 
+内部语法解析入口 `runtime/syntax-parser.ts` 使用随包分发的 TS/TSX、JS/JSX、Go 语法 WASM 和固定版本 `web-tree-sitter` 运行时。安装后可离线解析，不需要 CodeGraph 或现场编译；资源缺失、损坏或版本不兼容时明确失败。该入口只解析调用方提供的源码字符串，不包含项目扫描、索引或新业务工具。资源来源、许可证和使用边界见 [解析资源说明](resources/tree-sitter/README.md)。
+
 ```bash
-bun install
-bun test tests
+pnpm install --frozen-lockfile
+pnpm test
+pnpm run test:installation
 pi install /absolute/path/to/pi-company
 ```
 

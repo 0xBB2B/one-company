@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createClock } from "../runtime/clock.ts";
 import type { TimeSource } from "../runtime/clock.ts";
@@ -257,8 +257,8 @@ describe("ShellPage：列表只列本工作区任务，含编号/宿主/状态/�
     await page.refresh();
     const lines = page.render(100);
     expect(lines.length).toBe(2);
-    expect(lines[0]).toStartWith("1");
-    expect(lines[1]).toStartWith("2");
+    expect(lines[0]!.startsWith("1")).toBe(true);
+    expect(lines[1]!.startsWith("2")).toBe(true);
   });
 
   test("选中行带主题选中态标记，无箭头字符", async () => {

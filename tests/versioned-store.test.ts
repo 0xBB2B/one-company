@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "vitest";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { LocalDatabase, createRecord, readRecord, writeRecord, StaleVersionError } from "../runtime/database.ts";
@@ -44,21 +45,25 @@ db.transaction(() => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 });
 `);
-  const child = Bun.spawn(["node", script, ref.database], { stdout: "pipe", stderr: "pipe" });
+  const child = spawn(process.execPath, [script, ref.database], { stdio: ["ignore", "pipe", "ignore"] });
+  const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
   try {
-    const reader = child.stdout.getReader();
-    const ready = await reader.read();
-    expect(new TextDecoder().decode(ready.value)).toContain("ready");
-    reader.releaseLock();
+    const ready = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("写入进程未确认事务已写入")), 3000);
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("exit", () => { clearTimeout(timer); reject(new Error("写入进程提前退出")); });
+      child.stdout.once("data", (chunk) => { clearTimeout(timer); resolve(chunk.toString()); });
+    });
+    expect(ready).toContain("ready");
     child.kill("SIGKILL");
-    await child.exited;
+    await exited;
     const db = new LocalDatabase(ref.database);
     try {
       expect(db.read("state", "partial")).toBeNull();
       expect(db.events("history").map((event) => event.data)).toEqual([{ committed: true }]);
       expect(db.append("history", { resumed: true }).sequence).toBe(2);
     } finally { db.close(); }
-  } finally { child.kill("SIGKILL"); await child.exited; }
+  } finally { child.kill("SIGKILL"); await exited; }
 }, 10_000);
 
 test("多记录事务在序列化失败时回滚，不留下半成品", async () => {

@@ -1,6 +1,6 @@
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { afterEach, describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
+import { afterEach, describe, expect, test } from "vitest";
+import { DatabaseSync as Database } from "node:sqlite";
 import { UUID_V7_PATTERN } from "../runtime/database.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -709,8 +709,8 @@ describe("守护进程日志归因边界", () => {
     }
     for (const marker of markers) expect(contents.filter((content) => content.includes(marker))).toHaveLength(1);
     expect(contents.every((content) => markers.filter((marker) => content.includes(marker)).length === 1)).toBe(true);
-    const database = new Database(repositoryDatabase(dataRoot, identity.repoId), { readonly: true });
-    try { expect(database.query("SELECT count(*) AS count FROM events").get()).toEqual({ count: 0 }); }
+    const database = new Database(repositoryDatabase(dataRoot, identity.repoId), { readOnly: true });
+    try { expect(database.prepare("SELECT count(*) AS count FROM events").get()).toEqual({ count: 0 }); }
     finally { database.close(); }
   }, 15_000);
 });

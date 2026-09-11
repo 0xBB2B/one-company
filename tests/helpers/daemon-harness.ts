@@ -22,17 +22,14 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// bun 的 require.resolve 会解析到 bun 自身的全局安装缓存而非项目 node_modules，
-// 与生产运行时（node 从 node_modules 加载）不一致，因此直接定位项目内路径
+// 使用本项目声明的 SDK 入口，pnpm 负责解析其实际安装位置。
 export function resolveSdkDir(): string {
   return join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent");
 }
 
-// 生产运行时是用户机器上的 node，而非 bun test 自身进程；spawn 必须复现这一点，否则测试验证的是 bun 的行为
+// 子进程与当前测试使用同一个 Node 可执行文件。
 export function resolveNodeExecutable(): string {
-  const nodePath = Bun.which("node");
-  if (!nodePath) throw new Error("未在 PATH 中找到 node 可执行文件，无法以生产运行时拉起守护进程");
-  return nodePath;
+  return process.execPath;
 }
 
 const SOCKET_SUFFIX_LENGTH = "/sock/".length + 16 + ".sock".length;

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { spawn as spawnChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -59,7 +59,7 @@ async function makeTempDir(): Promise<string> {
   return dir;
 }
 
-// macOS 的 ps 只对非系统二进制显示环境变量，且没有 setsid；用 bun 自身充当持续进程与脱离进程组的后代
+// macOS 的 ps 只对非系统二进制显示环境变量，且没有 setsid；用当前 Node 充当持续进程与脱离进程组的后代
 const IDLE_SCRIPT = "setTimeout(() => {}, 30000)";
 const ESCAPING_CHILD_SCRIPT = [
   "const { spawn } = require('node:child_process');",
@@ -1692,9 +1692,8 @@ describe("等待模式管道输出", () => {
 
 describe("wait 模式管道背压（真实 Node 子进程）", () => {
   test("无 onOutput 时管道仍必须被消费：≥1MB 输出的 wait 任务在真实 Node 下 5 秒内 exited", async () => {
-    const nodePath = Bun.which("node");
+    const nodePath = process.execPath;
     expect(typeof nodePath).toBe("string");
-    if (!nodePath) return;
 
     const clockPath = fileURLToPath(new URL("../runtime/clock.ts", import.meta.url));
     const registryPath = fileURLToPath(new URL("../runtime/shell-registry.ts", import.meta.url));

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "vitest";
 import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -50,11 +50,11 @@ test("事务失败回滚全部记录与事件，异步事务被拒绝", async ()
   } finally { db.close(); }
 });
 
-test("Node 与 Bun 多进程共享 SQLite，追加序号连续且记录不丢失", async () => {
+test("三个独立 Node 进程共享 SQLite，追加序号连续且记录不丢失", async () => {
   const { dir, path } = await fixture();
   const script = join(dir, "writer.mjs");
   await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).pathname)};\nconst db = new LocalDatabase(process.argv[2]);\ntry { for (let i = 0; i < 30; i++) db.append("shared", { pid: process.pid, i }); } finally { db.close(); }\n`);
-  await Promise.all([exec("node", [script, path]), exec(process.execPath, [script, path]), exec("node", [script, path])]);
+  await Promise.all(Array.from({ length: 3 }, () => exec(process.execPath, [script, path])));
   const db = new LocalDatabase(path);
   try {
     const events = db.events("shared");
@@ -81,7 +81,7 @@ db.transaction(() => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 });
 `);
-  const writer = spawn("node", [script, path], { stdio: ["ignore", "pipe", "ignore"] });
+  const writer = spawn(process.execPath, [script, path], { stdio: ["ignore", "pipe", "ignore"] });
   const exited = new Promise<void>((resolve) => writer.once("close", () => resolve()));
   try {
     await new Promise<void>((resolve, reject) => {

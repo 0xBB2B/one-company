@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,7 +93,7 @@ describe("README 必需句", () => {
     "pi install git:github.com/0xBB2B/pi-company",
     "pi remove",
     "Node",
-    "bun test tests",
+    "pnpm test",
   ];
   for (const phrase of REQUIRED) {
     test(`含: ${phrase}`, async () => {
@@ -225,11 +225,11 @@ describe("README 角色与设置事实与 runtime/settings-ui.ts 一致", () => 
   });
 });
 
-describe("README 安装段本地开发使用 bun install", () => {
-  test("含: bun install，不含: npm install", async () => {
+describe("README 安装段本地开发使用 pnpm install --frozen-lockfile", () => {
+  test("含: pnpm install --frozen-lockfile，不含: npm install", async () => {
     const section = extractSection(await readText(README), "安装");
-    expect(section).toContain("bun install");
-    expect(section).not.toContain("npm install");
+    expect(section).toContain("pnpm install --frozen-lockfile");
+    expect(section).not.toMatch(/(^|[^\w-])npm\s+install\b/);
   });
 });
 

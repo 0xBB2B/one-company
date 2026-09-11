@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "vitest";
 import { join } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -64,7 +64,7 @@ test("真实设置页配置作用于 SDK 派工，项目角色按信任装载，
       for (let i = 0; i < 200; i++) {
         saved = await loadRoleSettings(paths, { roleNames: catalog.roles.map((role) => role.name) });
         if ((index === 0 ? saved.global : saved.project)?.roles.reviewer?.model === `${provider.providerId}/test` && redraws > previousRedraws) break;
-        await Bun.sleep(5);
+        await new Promise((resolve) => setTimeout(resolve, 5));
       }
       expect((index === 0 ? saved!.global : saved!.project)?.roles.reviewer?.model).toBe(`${provider.providerId}/test`);
     }
@@ -80,7 +80,7 @@ test("真实设置页配置作用于 SDK 派工，项目角色按信任装载，
   for (const [index, provider] of providers.entries()) {
     scriptReplies(provider, [{ type: "text", text: "等待补充", chunkDelayMs: 200 }]);
     const next = await manager.dispatchReview({ requirement, cwd: repo.root, baseline: snapshot.head, snapshot, context: { projectTrusted: index === 1, model: { provider: "missing-fallback", id: "test" }, thinking: "off" } });
-    for (let i = 0; i < 200 && provider.requests.length === 0; i++) await Bun.sleep(5);
+    for (let i = 0; i < 200 && provider.requests.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
     expect(provider.requests).toHaveLength(1);
     expect(provider.requests[0]!.systemPrompt?.includes("项目角色已受信任标记")).toBe(index === 1);
     const stored = await store.get(next.runId);

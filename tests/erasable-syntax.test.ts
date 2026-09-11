@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -45,20 +45,20 @@ function findBadRelativeImports(content: string): string[] {
 // node --check 不对 .ts 输入套用类型剥离，只有 stripTypeScriptTypes 能给出宿主 Node 的真实判定。
 const STRIP_CHECK_SCRIPT =
   'const{stripTypeScriptTypes}=require("node:module");' +
-  'const src=require("node:fs").readFileSync(0,"utf8");' +
+  'const src=require("node:fs").readFileSync(process.argv[1],"utf8");' +
   'try{stripTypeScriptTypes(src,{mode:"strip"});}' +
   "catch(e){process.stderr.write(String(e&&e.message||e));process.exit(1);}";
 
-function checkNodeTypeStripping(content: string): string | null {
+function checkNodeTypeStripping(path: string): string | null {
   try {
-    execFileSync("node", ["--no-warnings", "-e", STRIP_CHECK_SCRIPT], {
-      input: content,
-      stdio: ["pipe", "ignore", "pipe"],
+    execFileSync(process.execPath, ["--no-warnings", "-e", STRIP_CHECK_SCRIPT, path], {
+      timeout: 5_000,
+      stdio: ["ignore", "ignore", "pipe"],
     });
     return null;
   } catch (error) {
     const stderr = (error as { stderr?: Buffer }).stderr;
-    return stderr ? stderr.toString("utf8") : (error as Error).message;
+    return stderr?.toString("utf8").trim() || (error as Error).message;
   }
 }
 
@@ -70,7 +70,7 @@ async function checkErasableSyntax(dir: string): Promise<{ checked: string[]; vi
     for (const spec of findBadRelativeImports(content)) {
       violations.push({ file, reason: `relative import 缺少 .ts 后缀: ${spec}` });
     }
-    const stripError = checkNodeTypeStripping(content);
+    const stripError = checkNodeTypeStripping(file);
     if (stripError) violations.push({ file, reason: /\benum\b/i.test(stripError) ? "enum" : /\bnamespace\b/i.test(stripError) ? "namespace" : `node 类型剥离检查失败: ${stripError}` });
   }
   return { checked: files, violations };
@@ -160,7 +160,7 @@ describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
     }
   });
 
-  test("node 拒绝但 bun 接受的构造函数参数属性语法被判定为违规", async () => {
+  test("Node 类型剥离不支持的构造函数参数属性语法被判定为违规", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-company-erasable-"));
     try {
       await writeFile(

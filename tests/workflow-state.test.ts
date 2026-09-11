@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, test, spyOn } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
@@ -171,7 +171,7 @@ async function completedRun(store: RunStore, requirement: string, cwd: string, r
   await store.update(run.id, { state: "running" });
   const value = result as Record<string, unknown>;
   if (value.phase === "acceptance" && value.reportPath === ACCEPTANCE_REPORT) {
-    const content = `---\ndate: 2026-09-10\nresult: ${value.acceptanceResult}\n---\n## 验收结果\n| AC-1 | PASS | 符合预期 | |\n## 所用命令\nbun test\n`;
+    const content = `---\ndate: 2026-09-10\nresult: ${value.acceptanceResult}\n---\n## 验收结果\n| AC-1 | PASS | 符合预期 | |\n## 所用命令\npnpm test\n`;
     await writeFile(ACCEPTANCE_REPORT, content);
     value.reportDigest = createHash("sha256").update(content).digest("hex");
   }
@@ -242,8 +242,8 @@ function workResult(
     verdict: "PASS",
     summary: "实施通过", issues: [], evidence: ["README.md:1"], changeKind: "behavior-change",
     coverage: [{ ref: "demo/AC-1", test: "README.md:1" }],
-    redCommands: [{ command: "bun test", status: "failed", details: "新增断言失败" }],
-    greenCommands: [{ command: "bun test", status: "passed", details: "回归通过" }],
+    redCommands: [{ command: "pnpm test", status: "failed", details: "新增断言失败" }],
+    greenCommands: [{ command: "pnpm test", status: "passed", details: "回归通过" }],
     productionPath: ["a.ts"], fakeRed: false,
     changedFiles: ["a.ts"],
     workState: "red-green",
@@ -1413,7 +1413,7 @@ describe("证据绑定与核对", () => {
     const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
     const original = RunStore.prototype.get;
     let invalidated = false;
-    const intercepted = spyOn(RunStore.prototype, "get").mockImplementation(async function (id) {
+    const intercepted = vi.spyOn(RunStore.prototype, "get").mockImplementation(async function (id) {
       const found = await original.call(this, id);
       if (id === runId && !invalidated) {
         invalidated = true;

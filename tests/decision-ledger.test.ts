@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -396,18 +398,14 @@ describe("appendDecision", () => {
       }
     `;
     const spawnChild = () =>
-      Bun.spawn(["bun", "-e", script], {
+      promisify(execFile)(process.execPath, ["--input-type=module", "-e", script], {
         env: { ...process.env, PI_TEST_DATA_ROOT: home.dataRoot, PI_TEST_CWD: repo.root },
-        stdout: "pipe",
-        stderr: "ignore",
-      });
+        timeout: 20_000,
+      }).then(() => ({ code: 0 }), (error) => ({ code: error.code, stderr: error.stderr }));
 
-    const children = [spawnChild(), spawnChild()];
-    const results = await Promise.all(
-      children.map(async (child) => ({ code: await child.exited })),
-    );
+    const results = await Promise.all([spawnChild(), spawnChild()]);
     for (const result of results) {
-      expect(result.code).toBe(0);
+      expect(result.code, "stderr" in result ? result.stderr : undefined).toBe(0);
     }
 
     const ledgerPath = await ledgerFor(home, repo.root, "ai");

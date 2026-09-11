@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { Type } from "typebox";
 import {
   ACCEPTANCE_SCHEMA,
@@ -22,8 +22,8 @@ function validWork(overrides: Record<string, unknown> = {}) {
     changeKind: "behavior-change",
     workState: "red-green",
     coverage: [{ ref: "AC-1", test: "校验合法对象通过" }],
-    redCommands: [{ command: "bun test tests/x.test.ts", status: "failed", details: "红阶段失败" }],
-    greenCommands: [{ command: "bun test tests/x.test.ts", status: "passed", details: "绿阶段通过" }],
+    redCommands: [{ command: "pnpm test tests/x.test.ts", status: "failed", details: "红阶段失败" }],
+    greenCommands: [{ command: "pnpm test tests/x.test.ts", status: "passed", details: "绿阶段通过" }],
     changedFiles: ["runtime/result.ts"],
     productionPath: ["runtime/result.ts"],
     preexistingEvidence: [],
@@ -214,7 +214,7 @@ describe("isWorkPass", () => {
     const { pass } = isWorkPass(
       validWork({
         verdict: "FAIL",
-        greenCommands: [{ command: "bun test", status: "failed", details: "绿阶段应全过但失败" }],
+        greenCommands: [{ command: "pnpm test", status: "failed", details: "绿阶段应全过但失败" }],
       }),
     );
     expect(pass).toBe(false);
@@ -224,7 +224,7 @@ describe("isWorkPass", () => {
     const { pass } = isWorkPass(
       validWork({
         verdict: "FAIL",
-        redCommands: [{ command: "bun test", status: "passed", details: "红阶段应先失败" }],
+        redCommands: [{ command: "pnpm test", status: "passed", details: "红阶段应先失败" }],
       }),
     );
     expect(pass).toBe(false);

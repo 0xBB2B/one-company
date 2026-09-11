@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { classifyFailure, ConnectivityProbe, NetworkPauseGate } from "../runtime/network-pause.ts";
 import { createClock } from "../runtime/clock.ts";
 

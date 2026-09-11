@@ -1,5 +1,5 @@
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";

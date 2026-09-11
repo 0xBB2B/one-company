@@ -1,6 +1,6 @@
 import { PROTOCOL_VERSION } from "../runtime/protocol.ts";
 import { testRepoId } from "./helpers/database-fixture.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";

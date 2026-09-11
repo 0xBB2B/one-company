@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "vitest";
 import { join } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -69,7 +69,7 @@ test.each(["review", "acceptance"] as const)("真实派工：%s 阶段检查三�
   async function answer(value: string) {
     const task = tool.execute("repair", { question: "继续处理该技术阻塞？", repairGate: gate, repairRound: 4 }, new AbortController().signal);
     let pending = await relay.pendingFor({ windowId: "test", repoIds: [repoId] });
-    for (let i = 0; pending.questions.length === 0 && i < 200; i++) { await Bun.sleep(5); pending = await relay.pendingFor({ windowId: "test", repoIds: [repoId] }); }
+    for (let i = 0; pending.questions.length === 0 && i < 200; i++) { await new Promise((resolve) => setTimeout(resolve, 5)); pending = await relay.pendingFor({ windowId: "test", repoIds: [repoId] }); }
     expect(pending.questions).toHaveLength(1);
     expect((await relay.answer(pending.questions[0]!.id, value, "test")).ok).toBe(true);
     await task;

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { toValidHostUrl } from "../runtime/network-pause.ts";
 
 describe("探测目标 baseUrl 校验", () => {
