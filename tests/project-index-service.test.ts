@@ -173,6 +173,21 @@ test("init接通真实Tree-sitter、spec、未知语言、FTS与1基行/UTF-16 o
   } finally { store.close(); }
 });
 
+test("Go range局部函数变量在正式索引中保持未知目标，循环外恢复包级引用", async () => {
+  const w = await world();
+  await put(w.repo.root, "range.go", "package p\nfunc target(){}\nfunc caller(callbacks <-chan func()) { for target := range callbacks { target() }; target() }\n");
+  const index = await service(w);
+  expect((await index.init()).status).toBe("ready");
+  const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), index.workspace);
+  try {
+    const snapshot = store.getSnapshot();
+    const edges = snapshot.codeEdges.filter(edge => edge.name === "target").sort((a, b) => a.startColumn! - b.startColumn!);
+    expect(edges).toHaveLength(2);
+    expect(edges[0]).toMatchObject({ certainty: "unknown", toSymbolId: null, path: "range.go" });
+    expect(edges[1]).toMatchObject({ certainty: "certain", toSymbolId: snapshot.symbols.find(symbol => symbol.name === "target")!.id });
+  } finally { store.close(); }
+});
+
 test("未变hash+同语言版本跨refresh复用；同size/mtime变化仍按hash重解析；版本变化只重解析对应语言", async () => {
   const w = await world();
   await put(w.repo.root, "src/a.ts", "export const word = 'alpha';\n");

@@ -275,6 +275,22 @@ describe("首批代码结构提取", () => {
     expect(variable.references.at(-1)).toMatchObject({ targetSymbolId: null, certainty: "unknown" });
   });
 
+  test("Go range、接收和类型switch声明在对应作用域遮蔽包级函数", async () => {
+    for (const body of [
+      "for target := range callbacks { target() }",
+      "select { case target := <-callbacks: target() }",
+      "switch target := value.(type) { case func(): target() }",
+    ]) {
+      const source = `package p\nfunc target(){}\nfunc caller(callbacks <-chan func(), value any) { ${body}; target() }`;
+      const result = await extractCode({ path: "pkg/bindings.go", language: "go", source });
+      expect(result.status).toBe("complete");
+      expect(result.references[0]).toMatchObject({ targetSymbolId: null, certainty: "unknown", evidence: "lexical_shadow" });
+      expect(result.references[1]).toMatchObject({ targetSymbolId: result.symbols.find(s => s.name === "target")!.id, certainty: "certain" });
+    }
+    const assigned = await extractCode({ path: "pkg/range.go", language: "go", source: "package p\nfunc target(){}\nfunc caller(callbacks <-chan func()){for target = range callbacks {}; target()}" });
+    expect(assigned.references.at(-1)).toMatchObject({ targetSymbolId: null, certainty: "unknown", evidence: "tainted_callable_binding" });
+  });
+
   test("Go匿名函数隔离参数与调用者，不沿用外层函数", async () => {
     const source = "package p\nfunc target(){}\nfunc outer(){ cb:=func(target func()){target()}; _=cb }";
     const result = await extractCode({ path: "pkg/callback.go", language: "go", source });
@@ -328,7 +344,7 @@ describe("首批代码结构提取", () => {
 
     expect(second).toEqual(first);
     expect(first.extractorVersion).toBe(getCodeExtractorVersion("tsx"));
-    expect(getCodeExtractorVersion("tsx")).toContain("code-extractor@3");
+    expect(getCodeExtractorVersion("tsx")).toContain("code-extractor@4");
     expect(getCodeExtractorVersion("tsx")).toContain("web-tree-sitter@0.27.0");
     expect(getCodeExtractorVersion("tsx")).toContain("tree-sitter-typescript@0.23.2:tsx");
     expect(getCodeExtractorVersion("go")).toContain("tree-sitter-go@0.25.0:go");

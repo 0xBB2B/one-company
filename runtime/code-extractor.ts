@@ -16,7 +16,7 @@ export const CODE_EXTRACTOR_BUDGET = {
   maxDiagnostics: 100,
 } as const;
 
-const ALGORITHM_VERSION = "3";
+const ALGORITHM_VERSION = "4";
 const EXTRACTOR_VERSIONS: Record<SyntaxLanguage, string> = {
   ts: `code-extractor@${ALGORITHM_VERSION}:web-tree-sitter@0.27.0:tree-sitter-typescript@0.23.2:typescript`,
   tsx: `code-extractor@${ALGORITHM_VERSION}:web-tree-sitter@0.27.0:tree-sitter-typescript@0.23.2:tsx`,
@@ -688,6 +688,8 @@ export async function extractCode(input: ExtractCodeInput): Promise<ExtractCodeR
           if (declaration === "var") for (const name of names) addBinding(bindingScope, name, { kind: "local" });
           pendingBindingMutations.push({ scope: bindingScope, names });
         }
+      } else if (input.language === "go" && ["for_statement", "if_statement", "expression_switch_statement", "type_switch_statement", "communication_case", "type_case"].includes(node.type)) {
+        nextContext = { ...context, scope: { parent: context.scope, kind: "block", bindings: new Map(), hasDotImport: false } };
       } else if (node.type === "catch_clause") {
         const catchScope: Scope = { parent: context.scope, kind: "catch", bindings: new Map(), hasDotImport: false };
         for (const parameter of boundPatternNames(node.childForFieldName("parameter"))) {
@@ -701,6 +703,17 @@ export async function extractCode(input: ExtractCodeInput): Promise<ExtractCodeR
         nextContext = { ...context, containerName: className };
       }
 
+      if (input.language === "go" && node.type === "type_switch_statement") {
+        for (const name of assignmentTargetNames(node.childForFieldName("alias"))) {
+          addBinding(nextContext.scope, name, { kind: "local" });
+        }
+      }
+      if (input.language === "go" && ["range_clause", "receive_statement"].includes(node.type)) {
+        const names = assignmentTargetNames(node.childForFieldName("left"));
+        if (node.children.some((child) => child.type === ":=")) {
+          for (const name of names) addBinding(context.scope, name, { kind: "local" });
+        } else if (names.length) pendingBindingMutations.push({ scope: context.scope, names });
+      }
       if (node.type === "short_var_declaration") {
         const left = node.childForFieldName("left");
         if (left) for (const name of left.namedChildren.filter((child) => child.type === "identifier")) {
