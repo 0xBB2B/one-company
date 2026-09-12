@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   InvalidIndexQueryError,
@@ -28,7 +29,7 @@ const ENTITY_NAMESPACES = [
 ] as const;
 
 type EntityNamespace = typeof ENTITY_NAMESPACES[number];
-export type IndexState = "building" | "cancelled" | "interrupted" | "ready" | "partial" | "invalid";
+export type IndexState = "building" | "dirty" | "cancelled" | "interrupted" | "ready" | "partial" | "invalid";
 export type PublishedIndexState = Extract<IndexState, "ready" | "partial" | "invalid">;
 export type IndexedFileKind = "code" | "spec" | "document" | "config";
 
@@ -186,6 +187,7 @@ export interface IndexWorkspaceStatus extends WorkspaceIdentity {
   fence: number;
   currentGeneration: number;
   targetGeneration: number;
+  baselineHash: string | null;
   diagnostics: IndexDiagnostic[];
   updatedAt: number;
 }
@@ -246,6 +248,7 @@ interface WorkspaceRow extends WorkspaceIdentity {
   currentGeneration: number;
   targetGeneration: number;
   operationId: string;
+  baselineHash: string | null;
   diagnostics: IndexDiagnostic[];
   updatedAt: number;
 }
@@ -479,13 +482,15 @@ function validatePublication(input: IndexPublication): IndexPublication {
 }
 
 function validateWorkspaceRow(stored: StoredRecord<unknown>, identity: WorkspaceIdentity): StoredRecord<WorkspaceRow> {
-  const value = exact(stored.data, ["format", "workspaceId", "repoId", "root", "branch", "status", "fence", "currentGeneration", "targetGeneration", "operationId", "diagnostics", "updatedAt"], "invalid_index_state");
+  const baselineKey = plain(stored.data) && Object.hasOwn(stored.data, "baselineHash") ? ["baselineHash"] : [];
+  const value = exact(stored.data, ["format", "workspaceId", "repoId", "root", "branch", "status", "fence", "currentGeneration", "targetGeneration", "operationId", ...baselineKey, "diagnostics", "updatedAt"], "invalid_index_state");
   if (value.format !== "index-workspace/v1") fail("invalid_index_state");
   const row: WorkspaceRow = {
     format: "index-workspace/v1", workspaceId: String(value.workspaceId), repoId: String(value.repoId), root: String(value.root), branch: String(value.branch),
-    status: oneOf(value.status, ["building", "cancelled", "interrupted", "ready", "partial", "invalid"] as const),
+    status: oneOf(value.status, ["building", "dirty", "cancelled", "interrupted", "ready", "partial", "invalid"] as const),
     fence: integer(value.fence, 1), currentGeneration: integer(value.currentGeneration), targetGeneration: integer(value.targetGeneration, 1),
-    operationId: String(value.operationId), diagnostics: array(value.diagnostics, 1_000).map(validateDiagnostic), updatedAt: integer(value.updatedAt),
+    operationId: String(value.operationId), baselineHash: baselineKey.length ? nullableHash(value.baselineHash) : null,
+    diagnostics: array(value.diagnostics, 1_000).map(validateDiagnostic), updatedAt: integer(value.updatedAt),
   };
   if (!UUID_V7_PATTERN.test(row.operationId) || !compareIdentity(row, identity) || row.targetGeneration !== row.currentGeneration + 1) fail("invalid_index_state");
   return { ...stored, data: row };
@@ -504,6 +509,22 @@ function validateBuildToken(input: IndexBuildToken): IndexBuildToken {
 function withoutScope<T extends object>(value: WorkspaceEntity<T>): T {
   const { workspaceId: _workspaceId, generation: _generation, ...result } = value;
   return result as T;
+}
+
+function publicationBaselineHash(identity: WorkspaceIdentity, publication: IndexPublication): string {
+  const sorted = <T>(values: T[], key: (value: T) => string) => [...values].sort((left, right) => key(left).localeCompare(key(right)));
+  const payload = {
+    format: "project-index-baseline/v1",
+    workspace: identity,
+    status: publication.status,
+    files: sorted(publication.files, (item) => item.path).map(({ path, hash, parserVersion, status, kind, language }) => ({ path, hash, parserVersion, status, kind, language })),
+    features: sorted(publication.features, (item) => item.id).map(({ id, path, contractHash }) => ({ id, path, contractHash })),
+    rules: sorted(publication.rules, (item) => item.id).map(({ id, featureId, path, contractHash, dependsOn, exceptions }) => ({ id, featureId, path, contractHash, dependsOn, exceptions })),
+    ruleEdges: sorted(publication.ruleEdges, (item) => item.id),
+    diagnostics: sorted(publication.diagnostics, (item) => `${item.path ?? ""}:${item.code}`),
+    prodMetadata: sorted(publication.prodMetadata, (item) => `${item.source}:${item.path}`),
+  };
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 /**
@@ -551,7 +572,10 @@ export class IndexStore {
       const fence = (current?.data.fence ?? 0) + 1, baseGeneration = current?.data.currentGeneration ?? 0, targetGeneration = baseGeneration + 1;
       if (!Number.isSafeInteger(fence) || !Number.isSafeInteger(targetGeneration)) fail("invalid_index_state");
       const operationId = uuidv7(), updatedAt = this.time();
-      const row: WorkspaceRow = { format: "index-workspace/v1", ...this.identity, status: "building", fence, currentGeneration: baseGeneration, targetGeneration, operationId, diagnostics: [], updatedAt };
+      const row: WorkspaceRow = {
+        format: "index-workspace/v1", ...this.identity, status: "building", fence, currentGeneration: baseGeneration,
+        targetGeneration, operationId, baselineHash: current?.data.baselineHash ?? null, diagnostics: [], updatedAt,
+      };
       const workspaceVersion = current
         ? this.database.update("workspaces", this.identity.workspaceId, current.version, row)
         : this.database.create("workspaces", this.identity.workspaceId, row).version;
@@ -576,8 +600,44 @@ export class IndexStore {
   cancel(input: IndexBuildToken): IndexWorkspaceStatus { return this.stop(input, "cancelled"); }
   interrupt(input: IndexBuildToken): IndexWorkspaceStatus { return this.stop(input, "interrupted"); }
 
-  publish(input: IndexBuildToken, publicationInput: IndexPublication): IndexWorkspaceStatus {
+  /** 先使普通查询失效；若构建正在进行，同时提高fence，旧构建不能清除这次dirty。 */
+  markDirty(): IndexWorkspaceStatus {
+    return this.database.transaction(() => {
+      const current = this.workspace(this.database);
+      if (!current) fail("no_index");
+      if (current.data.status === "dirty") return this.toStatus(current);
+      const fence = current.data.fence + 1;
+      if (!Number.isSafeInteger(fence)) fail("invalid_index_state");
+      const operationId = uuidv7(), updatedAt = this.time();
+      const row: WorkspaceRow = {
+        ...current.data,
+        status: "dirty",
+        fence,
+        operationId,
+        targetGeneration: current.data.currentGeneration + 1,
+        updatedAt,
+      };
+      const version = this.database.update("workspaces", this.identity.workspaceId, current.version, row);
+      const generation = this.database.read<GenerationRow>("index_generations", this.identity.workspaceId);
+      const nextGeneration: GenerationRow = {
+        format: "index-generation/v1",
+        workspaceId: this.identity.workspaceId,
+        operationId,
+        fence,
+        baseGeneration: current.data.currentGeneration,
+        targetGeneration: current.data.currentGeneration + 1,
+        state: "dirty",
+        updatedAt,
+      };
+      if (generation) this.database.update("index_generations", this.identity.workspaceId, generation.version, nextGeneration);
+      else this.database.create("index_generations", this.identity.workspaceId, nextGeneration);
+      return this.toStatus({ id: current.id, version, data: row });
+    });
+  }
+
+  publish(input: IndexBuildToken, publicationInput: IndexPublication, verifiedBaselineHash?: string): IndexWorkspaceStatus {
     const publication = validatePublication(publicationInput);
+    const baselineHash = verifiedBaselineHash === undefined ? publicationBaselineHash(this.identity, publication) : digest(verifiedBaselineHash);
     return this.database.transaction(() => {
       const { workspace, generation, token } = this.assertBuild(this.database, input);
       if (!Number.isSafeInteger(token.targetGeneration + 1)) fail("invalid_index_state");
@@ -598,7 +658,10 @@ export class IndexStore {
       for (const item of publication.sourceFragments) add("source_fragments", item.id, item);
       for (const item of publication.prodMetadata) add("prod_metadata", `${item.source}:${item.path}`, item);
       const updatedAt = this.time();
-      const nextWorkspace: WorkspaceRow = { ...workspace.data, status: publication.status, currentGeneration: token.targetGeneration, targetGeneration: token.targetGeneration + 1, diagnostics: publication.diagnostics, updatedAt };
+      const nextWorkspace: WorkspaceRow = {
+        ...workspace.data, status: publication.status, currentGeneration: token.targetGeneration,
+        targetGeneration: token.targetGeneration + 1, baselineHash, diagnostics: publication.diagnostics, updatedAt,
+      };
       const version = this.database.update("workspaces", this.identity.workspaceId, workspace.version, nextWorkspace);
       this.database.update("index_generations", this.identity.workspaceId, generation.version, { ...generation.data, state: publication.status, updatedAt });
       return this.toStatus({ id: workspace.id, version, data: nextWorkspace });
@@ -616,19 +679,22 @@ export class IndexStore {
     return this.toStatus(record);
   }
 
-  /** 仅供已核验工作区的可信服务复用当前缓存；building/invalid/cancelled/interrupted均不返回旧正文。 */
-  getSnapshot(): IndexSnapshot {
+  private snapshot(allowUnready: boolean): IndexSnapshot {
     return this.database.transaction(() => {
       const workspace = this.workspace(this.database);
       if (!workspace) fail("no_index");
-      if (workspace.data.status !== "ready" && workspace.data.status !== "partial") fail("index_not_ready");
+      if (!allowUnready && workspace.data.status !== "ready" && workspace.data.status !== "partial") fail("index_not_ready");
+      if (allowUnready && workspace.data.currentGeneration === 0) fail("index_not_ready");
       const generation = workspace.data.currentGeneration;
       const rows = <T extends object>(namespace: EntityNamespace): T[] => this.database.list<WorkspaceEntity<T>>(namespace)
         .filter((record) => record.data.workspaceId === this.identity.workspaceId && record.data.generation === generation)
         .map((record) => withoutScope(record.data));
       const by = <T>(values: T[], key: (value: T) => string) => values.sort((a, b) => key(a).localeCompare(key(b)));
       return {
-        ...this.identity, status: workspace.data.status, generation, diagnostics: workspace.data.diagnostics,
+        ...this.identity,
+        status: workspace.data.status === "partial" || workspace.data.diagnostics.length > 0 ? "partial" : "ready",
+        generation,
+        diagnostics: workspace.data.diagnostics,
         files: by(rows<IndexedFile>("files"), (item) => item.path), symbols: by(rows<IndexedSymbol>("symbols"), (item) => item.id),
         codeEdges: by(rows<IndexedCodeEdge>("code_edges"), (item) => item.id), features: by(rows<IndexedFeature>("features_current"), (item) => item.id),
         rules: by(rows<IndexedRule>("rules_current"), (item) => item.id), ruleEdges: by(rows<IndexedRuleEdge>("rule_edges_current"), (item) => item.id),
@@ -636,6 +702,12 @@ export class IndexStore {
       };
     });
   }
+
+  /** 普通查询只读取已发布且未dirty的当前代次。 */
+  getSnapshot(): IndexSnapshot { return this.snapshot(false); }
+
+  /** 仅供可信重建复用已发布代次；即使dirty也不会把旧正文返回给普通查询。 */
+  getRebuildSnapshot(): IndexSnapshot { return this.snapshot(true); }
 
   search(query: string, limit = 10): IndexSearchResponse {
     if (typeof query !== "string" || query.trim().length === 0 || Array.from(query).length > MAX_SEARCH_QUERY_CODEPOINTS || /[\u0000-\u001f\u007f]/u.test(query) || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SEARCH_LIMIT) fail("invalid_fts_query");

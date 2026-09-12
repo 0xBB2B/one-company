@@ -90,6 +90,10 @@ export interface IndexWorkspaceScan {
   files: IndexFile[];
   skipped: IndexSkippedPath[];
   archives: IndexArchiveMetadata[];
+  /** 已通过真实路径、链接、嵌套仓库和排除策略核验，可注册非递归监听的目录。 */
+  watchDirectories: string[];
+  /** 只监听直接目录项名称、不得读取正文的归档目录。 */
+  archiveWatchDirectories: string[];
   budget: IndexBudgetResult;
   partial: boolean;
 }
@@ -271,6 +275,16 @@ function filePolicy(parts: string[]): IndexSkipReason | undefined {
   return undefined;
 }
 
+export type IndexWatchEventKind = "index" | "archive_metadata" | "ignored";
+
+/** 只按规范相对路径分类监听事件；不访问目标，因此归档事件不会先读正文。 */
+export function classifyIndexWatchEvent(path: string): IndexWatchEventKind {
+  const parts = safeRelativePath(path);
+  if (prodArchivePath(parts)) return "archive_metadata";
+  if (parts.some((part) => directoryPolicy(part) !== undefined)) return "ignored";
+  return filePolicy(parts) ? "ignored" : "index";
+}
+
 function classifyFile(parts: string[]): Pick<IndexFile, "kind" | "language"> {
   const name = (parts.at(-1) ?? "").toLowerCase();
   const extension = extname(name);
@@ -408,6 +422,8 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
   const files: IndexFile[] = [];
   const skipped: IndexSkippedPath[] = [];
   const archives: IndexArchiveMetadata[] = [];
+  const watchDirectories: string[] = [];
+  const archiveWatchDirectories: string[] = [];
   const exhausted = new Set<IndexBudgetResult["exhausted"][number]>();
   let entriesUsed = 0;
   let textBytes = 0;
@@ -475,6 +491,7 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
       addSkip(directoryRelative, "unstable");
       return;
     }
+    archiveWatchDirectories.push(directoryRelative);
     entriesUsed += listed.entries.length;
     for (const entry of listed.entries) {
       if (cancelAtBoundary(directoryRelative)) return;
@@ -532,6 +549,7 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
       addSkip(directoryRelative, "nested_repository");
       return;
     }
+    watchDirectories.push(directoryRelative);
 
     for (const entry of listed.entries) {
       if (stopped || cancelAtBoundary(directoryRelative)) return;
@@ -624,6 +642,8 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
 
   files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
   archives.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  watchDirectories.sort();
+  archiveWatchDirectories.sort();
   skipped.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : left.reason.localeCompare(right.reason));
   const exhaustedList = [...exhausted].sort();
   return {
@@ -631,6 +651,8 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
     files,
     skipped,
     archives,
+    watchDirectories,
+    archiveWatchDirectories,
     budget: {
       limits,
       used: { entries: entriesUsed, textBytes },

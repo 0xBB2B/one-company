@@ -54,7 +54,7 @@ const ARCHIVE_NAME_LIMIT = 255;
 const MAX_PUBLISHED_SYMBOLS = 100_000;
 const MAX_PUBLISHED_EDGES = 200_000;
 
-export type ProjectIndexAction = "open" | "status" | "preview" | "init" | "refresh";
+export type ProjectIndexAction = "open" | "status" | "preview" | "init" | "refresh" | "invalidate";
 export type ProjectIndexAuthorizationPhase = "before" | "after" | "read" | "publish" | "return";
 
 export interface ProjectIndexAuthorizationRequest {
@@ -131,6 +131,8 @@ export interface ProjectIndexBuildResult {
   head: string | null;
   status: "ready" | "partial" | "invalid" | "cancelled";
   generation: number;
+  /** 工作区身份与当前允许文件/规则/配置/归档元数据的稳定内容指纹；不包含generation。 */
+  baselineHash: string | null;
   parsedFiles: number;
   reusedFiles: number;
   /** 构建读取与发布前hash复核的实际完整文件字节上界；两轮合计最多为公开文本集合预算的两倍。 */
@@ -144,6 +146,10 @@ export interface ProjectIndexBuildResult {
   archives: ProjectIndexArchiveSummary;
   budget: IndexBudgetResult;
   spec: ProjectIndexSpecSummary;
+  watchPlan: {
+    directories: string[];
+    archiveDirectories: string[];
+  };
 }
 
 export type ProjectIndexServiceErrorCode =
@@ -458,12 +464,43 @@ function diagnosticPush(diagnostics: IndexDiagnostic[], value: IndexDiagnostic):
 }
 
 function comparableScan(scan: IndexWorkspaceScan): string {
-  return JSON.stringify({ files: scan.files, archives: scan.archives });
+  return JSON.stringify({
+    files: scan.files,
+    archives: scan.archives,
+    watchDirectories: scan.watchDirectories,
+    archiveWatchDirectories: scan.archiveWatchDirectories,
+  });
 }
 
 function readSignature(result: ReadIndexFileResult): string {
   if (result.status === "success") return `success:${result.size}:${result.sha256}`;
   return `${result.status}:${result.reason}`;
+}
+
+function contentBaselineHash(
+  workspace: WorkspaceIdentity,
+  scan: IndexWorkspaceScan,
+  prepared: PreparedRead[],
+  publication: IndexPublication,
+  spec: ProjectIndexSpecSummary,
+): string {
+  const payload = {
+    format: "project-index-baseline/v1",
+    workspace,
+    files: prepared.map((item) => ({
+      path: item.file.path,
+      kind: item.file.kind,
+      language: item.file.language,
+      read: readSignature(item.result),
+    })),
+    parsedFiles: [...publication.files]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map(({ path, hash, parserVersion, status, kind, language }) => ({ path, hash, parserVersion, status, kind, language })),
+    spec,
+    skipped: scan.skipped,
+    archives: scan.archives,
+  };
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 function cacheForFile(snapshot: IndexSnapshot | null, path: string, hash: string, parserVersion: string): CodeBuild | null {
@@ -700,6 +737,51 @@ export class ProjectIndexService {
     return true;
   }
 
+  /**
+   * 监听器先调用本方法使普通IndexStore查询失效。它不参加构建串行锁，因而可提高fence阻止在途旧构建发布。
+   */
+  async markDirty(): Promise<IndexWorkspaceStatus | null> {
+    this.authorizeAt("invalidate", "before");
+    await this.identity();
+    const chain = await inspectDataDirectoryChain(this.dataRoot, this.workspace.repoId, "invalidate-directory-chain");
+    if (!chain.complete) {
+      this.authorizeAt("invalidate", "return");
+      return null;
+    }
+    const databasePath = await this.checkedDatabasePath(chain.snapshots, "invalidate-database-path");
+    let stats: Stats;
+    try { stats = await lstat(databasePath); }
+    catch (error) {
+      if (missing(error)) {
+        this.authorizeAt("invalidate", "return");
+        return null;
+      }
+      throw new ProjectIndexServiceError("invalid_database", "invalidate-database");
+    }
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || (process.getuid && stats.uid !== process.getuid())) {
+      throw new ProjectIndexServiceError("invalid_database", "invalidate-database");
+    }
+    let store: IndexStore | null = null;
+    try {
+      await verifyDirectories(chain.snapshots, "invalidate-before-store");
+      assertRegularDatabaseFiles(databasePath);
+      store = new IndexStore(databasePath, this.workspace);
+      const status = store.markDirty();
+      await verifyDirectories(chain.snapshots, "invalidate-after-store");
+      await this.identity();
+      this.authorizeAt("invalidate", "return");
+      return status;
+    } catch (error) {
+      if (error instanceof IndexStoreError && error.code === "no_index") {
+        this.authorizeAt("invalidate", "return");
+        return null;
+      }
+      throw serviceError(error, "invalidate-store");
+    } finally {
+      try { store?.close(); } catch { /* 已标dirty的结果不能因关闭错误恢复成可查询。 */ }
+    }
+  }
+
   private authorizeAt(action: ProjectIndexAction, phase: ProjectIndexAuthorizationPhase, path: string | null = null): void {
     let allowed = false;
     try {
@@ -883,8 +965,8 @@ export class ProjectIndexService {
         let previousStatus: IndexWorkspaceStatus | null = null;
         try { previousStatus = store.status(); }
         catch (error) { if (!(error instanceof IndexStoreError && error.code === "no_index")) throw error; }
-        if (previousStatus?.status === "ready" || previousStatus?.status === "partial") {
-          try { snapshot = store.getSnapshot(); } catch { snapshot = null; }
+        if (previousStatus && previousStatus.currentGeneration > 0) {
+          try { snapshot = store.getRebuildSnapshot(); } catch { snapshot = null; }
         }
         await verifyDirectories(database.snapshots, "build-before-begin");
         token = store.begin(previousStatus?.version);
@@ -1045,9 +1127,10 @@ export class ProjectIndexService {
           if (readSignature(current) !== readSignature(item.result)) throw new ProjectIndexServiceError("unstable", "verify-hash", true);
         }
         await this.identity(signal);
+        const baselineHash = contentBaselineHash(this.workspace, scan, prepared, publication, spec.summary);
         await verifyDirectories(database.snapshots, "build-before-publish");
         this.authorizeAt(action, "publish");
-        const status = store.publish(token, publication);
+        const status = store.publish(token, publication, baselineHash);
         token = null;
         await verifyDirectories(database.snapshots, "build-after-publish");
         const finalIdentity = await this.identity(signal);
@@ -1059,6 +1142,7 @@ export class ProjectIndexService {
           head: finalIdentity.head,
           status: status.status as "ready" | "partial" | "invalid",
           generation: status.currentGeneration,
+          baselineHash: status.baselineHash,
           parsedFiles: metrics.parsedFiles,
           reusedFiles: metrics.reusedFiles,
           readBytes: metrics.readBytes,
@@ -1071,6 +1155,10 @@ export class ProjectIndexService {
           archives,
           budget: scan.budget,
           spec: spec.summary,
+          watchPlan: {
+            directories: [...scan.watchDirectories],
+            archiveDirectories: [...scan.archiveWatchDirectories],
+          },
         };
       } catch (error) {
         let cancelledStatus: IndexWorkspaceStatus | null = null;
@@ -1165,6 +1253,7 @@ export class ProjectIndexService {
       head: null,
       status: "cancelled",
       generation: status?.currentGeneration ?? 0,
+      baselineHash: null,
       parsedFiles: metrics.parsedFiles,
       reusedFiles: metrics.reusedFiles,
       readBytes: metrics.readBytes,
@@ -1177,6 +1266,10 @@ export class ProjectIndexService {
       archives: archiveSummary(scan?.archives ?? []),
       budget: scan ? { ...scan.budget, stoppedReason: "cancelled" } : emptyBudget,
       spec: { status: "absent", contractSetHash: null, schemaHash: null },
+      watchPlan: {
+        directories: [...(scan?.watchDirectories ?? [])],
+        archiveDirectories: [...(scan?.archiveWatchDirectories ?? [])],
+      },
     };
   }
 }
