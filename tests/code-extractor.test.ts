@@ -256,6 +256,32 @@ describe("首批代码结构提取", () => {
     });
   });
 
+  test("循环写目标与循环局部声明不伪造确定调用", async () => {
+    for (const operator of ["of", "in"]) {
+      for (const target of ["target", "[target]", "{ target }"]) {
+        const source = `function target() {}\nfor (${target} ${operator} callbacks) {}\ntarget();`;
+        const result = await extractCode({ path: "src/loop.js", language: "js", source });
+        expect(result.status).toBe("complete");
+        expect(result.references.at(-1)).toMatchObject({ targetSymbolId: null, certainty: "unknown", evidence: "tainted_callable_binding" });
+      }
+    }
+    for (const declaration of ["const", "let"]) {
+      const source = `function target() {}\nfor (${declaration} target of callbacks) { target(); }\ntarget();`;
+      const result = await extractCode({ path: "src/loop.ts", language: "ts", source });
+      expect(result.references[0]).toMatchObject({ targetSymbolId: null, certainty: "unknown", evidence: "lexical_shadow" });
+      expect(result.references[1]).toMatchObject({ targetSymbolId: result.symbols[0]!.id, certainty: "certain" });
+    }
+    const variable = await extractCode({ path: "src/loop.js", language: "js", source: "function target() {}\nfor (var target of callbacks) {}\ntarget();" });
+    expect(variable.references.at(-1)).toMatchObject({ targetSymbolId: null, certainty: "unknown" });
+  });
+
+  test("Go匿名函数隔离参数与调用者，不沿用外层函数", async () => {
+    const source = "package p\nfunc target(){}\nfunc outer(){ cb:=func(target func()){target()}; _=cb }";
+    const result = await extractCode({ path: "pkg/callback.go", language: "go", source });
+    expect(result.status).toBe("complete");
+    expect(result.references).toEqual([expect.objectContaining({ fromSymbolId: null, targetSymbolId: null, certainty: "unknown", evidence: "lexical_shadow" })]);
+  });
+
   test("Go 具名返回参数与顶层函数同名时按词法遮蔽处理", async () => {
     const source = "package sample\nfunc run() {}\nfunc outer() (run func()) { run(); return }";
     const result = await extractCode({ path: "pkg/shadow.go", language: "go", source });
@@ -302,7 +328,7 @@ describe("首批代码结构提取", () => {
 
     expect(second).toEqual(first);
     expect(first.extractorVersion).toBe(getCodeExtractorVersion("tsx"));
-    expect(getCodeExtractorVersion("tsx")).toContain("code-extractor@2");
+    expect(getCodeExtractorVersion("tsx")).toContain("code-extractor@3");
     expect(getCodeExtractorVersion("tsx")).toContain("web-tree-sitter@0.27.0");
     expect(getCodeExtractorVersion("tsx")).toContain("tree-sitter-typescript@0.23.2:tsx");
     expect(getCodeExtractorVersion("go")).toContain("tree-sitter-go@0.25.0:go");

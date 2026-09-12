@@ -16,7 +16,7 @@ export const CODE_EXTRACTOR_BUDGET = {
   maxDiagnostics: 100,
 } as const;
 
-const ALGORITHM_VERSION = "2";
+const ALGORITHM_VERSION = "3";
 const EXTRACTOR_VERSIONS: Record<SyntaxLanguage, string> = {
   ts: `code-extractor@${ALGORITHM_VERSION}:web-tree-sitter@0.27.0:tree-sitter-typescript@0.23.2:typescript`,
   tsx: `code-extractor@${ALGORITHM_VERSION}:web-tree-sitter@0.27.0:tree-sitter-typescript@0.23.2:tsx`,
@@ -647,7 +647,7 @@ export async function extractCode(input: ExtractCodeInput): Promise<ExtractCodeR
       }
 
       const createsFunctionScope = ["function_declaration", "generator_function_declaration", "function_signature",
-        "function_expression", "generator_function", "arrow_function", "method_definition", "method_declaration"].includes(node.type);
+        "function_expression", "generator_function", "arrow_function", "func_literal", "method_definition", "method_declaration"].includes(node.type);
       if (createsFunctionScope) {
         const functionScope: Scope = { parent: context.scope, kind: "function", bindings: new Map(), hasDotImport: false };
         const mapped = callableNodes.get(nodeKey(node)) ?? declaredCallable;
@@ -676,6 +676,18 @@ export async function extractCode(input: ExtractCodeInput): Promise<ExtractCodeR
           callableSymbolId: mapped?.id ?? null,
           containerName: context.containerName,
         };
+      } else if (node.type === "for_in_statement") {
+        const names = assignmentTargetNames(node.childForFieldName("left"));
+        const declaration = node.childForFieldName("kind")?.text;
+        if (declaration === "let" || declaration === "const") {
+          const loopScope: Scope = { parent: context.scope, kind: "block", bindings: new Map(), hasDotImport: false };
+          for (const name of names) addBinding(loopScope, name, { kind: "local" });
+          nextContext = { ...context, scope: loopScope };
+        } else {
+          const bindingScope = declaration === "var" ? enclosingFunctionScope(context.scope) : context.scope;
+          if (declaration === "var") for (const name of names) addBinding(bindingScope, name, { kind: "local" });
+          pendingBindingMutations.push({ scope: bindingScope, names });
+        }
       } else if (node.type === "catch_clause") {
         const catchScope: Scope = { parent: context.scope, kind: "catch", bindings: new Map(), hasDotImport: false };
         for (const parameter of boundPatternNames(node.childForFieldName("parameter"))) {
