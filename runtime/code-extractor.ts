@@ -16,7 +16,7 @@ export const CODE_EXTRACTOR_BUDGET = {
   maxDiagnostics: 100,
 } as const;
 
-const ALGORITHM_VERSION = "4";
+const ALGORITHM_VERSION = "5";
 const EXTRACTOR_VERSIONS: Record<SyntaxLanguage, string> = {
   ts: `code-extractor@${ALGORITHM_VERSION}:web-tree-sitter@0.27.0:tree-sitter-typescript@0.23.2:typescript`,
   tsx: `code-extractor@${ALGORITHM_VERSION}:web-tree-sitter@0.27.0:tree-sitter-typescript@0.23.2:tsx`,
@@ -148,6 +148,7 @@ interface Binding {
   kind: BindingKind;
   targetSymbolId?: string;
   tainted?: boolean;
+  visibleFrom?: number;
 }
 
 interface Scope {
@@ -325,8 +326,9 @@ function resolveReference(reference: PendingReference): Pick<CodeReference, "tar
   let sawDotImport = false;
   while (scope) {
     sawDotImport ||= scope.hasDotImport;
-    const bindings = scope.bindings.get(reference.name);
-    if (bindings) {
+    const bindings = scope.bindings.get(reference.name)?.filter((binding) =>
+      binding.visibleFrom === undefined || reference.callee.startIndex >= binding.visibleFrom);
+    if (bindings?.length) {
       if (bindings.length !== 1) return { targetSymbolId: null, certainty: "unknown", evidence: "ambiguous_binding" };
       const [binding] = bindings;
       if (binding!.kind === "callable" && binding!.targetSymbolId) {
@@ -688,7 +690,7 @@ export async function extractCode(input: ExtractCodeInput): Promise<ExtractCodeR
           if (declaration === "var") for (const name of names) addBinding(bindingScope, name, { kind: "local" });
           pendingBindingMutations.push({ scope: bindingScope, names });
         }
-      } else if (input.language === "go" && ["for_statement", "if_statement", "expression_switch_statement", "type_switch_statement", "communication_case", "type_case"].includes(node.type)) {
+      } else if (input.language === "go" && ["for_statement", "if_statement", "expression_switch_statement", "type_switch_statement", "communication_case", "type_case", "default_case"].includes(node.type)) {
         nextContext = { ...context, scope: { parent: context.scope, kind: "block", bindings: new Map(), hasDotImport: false } };
       } else if (node.type === "catch_clause") {
         const catchScope: Scope = { parent: context.scope, kind: "catch", bindings: new Map(), hasDotImport: false };
@@ -703,24 +705,28 @@ export async function extractCode(input: ExtractCodeInput): Promise<ExtractCodeR
         nextContext = { ...context, containerName: className };
       }
 
-      if (input.language === "go" && node.type === "type_switch_statement") {
-        for (const name of assignmentTargetNames(node.childForFieldName("alias"))) {
-          addBinding(nextContext.scope, name, { kind: "local" });
+      if (input.language === "go" && ["type_case", "default_case"].includes(node.type) && node.parent?.type === "type_switch_statement") {
+        const visibleFrom = node.children.find((child) => child.type === ":")?.endIndex ?? node.endIndex;
+        for (const name of assignmentTargetNames(node.parent.childForFieldName("alias"))) {
+          addBinding(nextContext.scope, name, { kind: "local", visibleFrom });
         }
       }
       if (input.language === "go" && ["range_clause", "receive_statement"].includes(node.type)) {
         const names = assignmentTargetNames(node.childForFieldName("left"));
         if (node.children.some((child) => child.type === ":=")) {
-          for (const name of names) addBinding(context.scope, name, { kind: "local" });
+          for (const name of names) addBinding(context.scope, name, { kind: "local", visibleFrom: node.endIndex });
         } else if (names.length) pendingBindingMutations.push({ scope: context.scope, names });
       }
+      // Go局部声明从声明结束处生效，初始化表达式仍解析外层同名绑定。
       if (node.type === "short_var_declaration") {
         const left = node.childForFieldName("left");
         if (left) for (const name of left.namedChildren.filter((child) => child.type === "identifier")) {
-          addBinding(context.scope, name.text, { kind: "local" });
+          addBinding(context.scope, name.text, { kind: "local", visibleFrom: node.endIndex });
         }
       } else if (["var_spec", "const_spec"].includes(node.type)) {
-        for (const name of node.childrenForFieldName("name")) addBinding(context.scope, name.text, { kind: "local" });
+        for (const name of node.childrenForFieldName("name")) addBinding(context.scope, name.text, {
+          kind: "local", ...(context.scope.kind === "root" ? {} : { visibleFrom: node.endIndex }),
+        });
       }
 
       for (let index = 0; index < node.namedChildCount && !nodeTraversalStopped; index++) {

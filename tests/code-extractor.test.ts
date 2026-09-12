@@ -291,6 +291,26 @@ describe("首批代码结构提取", () => {
     expect(assigned.references.at(-1)).toMatchObject({ targetSymbolId: null, certainty: "unknown", evidence: "tainted_callable_binding" });
   });
 
+  test("Go初始化表达式使用外层名字，局部绑定只在规范作用域内生效", async () => {
+    const cases = [
+      { result: "<-chan func()", body: "for target := range target() { target() }" },
+      { result: "<-chan func()", body: "select { case target := <-target(): target() }" },
+      { result: "any", body: "switch target := target().(type) { case func(): target(); default: _ = target }" },
+      { result: "func()", body: "{ target := target(); target() }" },
+      { result: "func()", body: "{ var target = target(); target() }" },
+    ];
+    for (const sample of cases) {
+      const source = `package p\nfunc target() ${sample.result} { return nil }\nfunc caller(){ ${sample.body}; target() }`;
+      const result = await extractCode({ path: "pkg/visibility.go", language: "go", source });
+      expect(result.status).toBe("complete");
+      expect(result.references).toHaveLength(3);
+      const target = result.symbols.find(symbol => symbol.name === "target")!.id;
+      expect(result.references[0]).toMatchObject({ targetSymbolId: target, certainty: "certain" });
+      expect(result.references[1]).toMatchObject({ targetSymbolId: null, certainty: "unknown", evidence: "lexical_shadow" });
+      expect(result.references[2]).toMatchObject({ targetSymbolId: target, certainty: "certain" });
+    }
+  });
+
   test("Go匿名函数隔离参数与调用者，不沿用外层函数", async () => {
     const source = "package p\nfunc target(){}\nfunc outer(){ cb:=func(target func()){target()}; _=cb }";
     const result = await extractCode({ path: "pkg/callback.go", language: "go", source });
@@ -344,7 +364,7 @@ describe("首批代码结构提取", () => {
 
     expect(second).toEqual(first);
     expect(first.extractorVersion).toBe(getCodeExtractorVersion("tsx"));
-    expect(getCodeExtractorVersion("tsx")).toContain("code-extractor@4");
+    expect(getCodeExtractorVersion("tsx")).toContain("code-extractor@5");
     expect(getCodeExtractorVersion("tsx")).toContain("web-tree-sitter@0.27.0");
     expect(getCodeExtractorVersion("tsx")).toContain("tree-sitter-typescript@0.23.2:tsx");
     expect(getCodeExtractorVersion("go")).toContain("tree-sitter-go@0.25.0:go");

@@ -175,16 +175,18 @@ test("init接通真实Tree-sitter、spec、未知语言、FTS与1基行/UTF-16 o
 
 test("Go range局部函数变量在正式索引中保持未知目标，循环外恢复包级引用", async () => {
   const w = await world();
-  await put(w.repo.root, "range.go", "package p\nfunc target(){}\nfunc caller(callbacks <-chan func()) { for target := range callbacks { target() }; target() }\n");
+  await put(w.repo.root, "range.go", "package p\nfunc target() <-chan func() {return nil}\nfunc caller() { for target := range target() { target() }; target() }\n");
   const index = await service(w);
   expect((await index.init()).status).toBe("ready");
   const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), index.workspace);
   try {
     const snapshot = store.getSnapshot();
     const edges = snapshot.codeEdges.filter(edge => edge.name === "target").sort((a, b) => a.startColumn! - b.startColumn!);
-    expect(edges).toHaveLength(2);
-    expect(edges[0]).toMatchObject({ certainty: "unknown", toSymbolId: null, path: "range.go" });
-    expect(edges[1]).toMatchObject({ certainty: "certain", toSymbolId: snapshot.symbols.find(symbol => symbol.name === "target")!.id });
+    expect(edges).toHaveLength(3);
+    const target = snapshot.symbols.find(symbol => symbol.name === "target")!.id;
+    expect(edges[0]).toMatchObject({ certainty: "certain", toSymbolId: target });
+    expect(edges[1]).toMatchObject({ certainty: "unknown", toSymbolId: null, path: "range.go" });
+    expect(edges[2]).toMatchObject({ certainty: "certain", toSymbolId: target });
   } finally { store.close(); }
 });
 
