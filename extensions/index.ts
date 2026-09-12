@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import writeProtectionExtension from "./write-protection.ts";
 import lifecycleExtension from "./lifecycle.ts";
+import requirementManageExtension from "./requirement-manage.ts";
 import decisionRecordExtension from "./decision-record.ts";
 import workflowExtension from "./workflow.ts";
 import rulesExtension from "./rules.ts";
@@ -14,6 +15,7 @@ import commandsExtension from "./commands.ts";
 // 单一入口用同一个 pi 依次调用各子扩展，才能让 lifecycle 等模块级共享状态在子扩展间保持同一份实例。
 export default function registerExtensions(pi: ExtensionAPI): void {
   lifecycleExtension(pi);
+  requirementManageExtension(pi);
   decisionRecordExtension(pi);
   workflowExtension(pi);
   rulesExtension(pi);
