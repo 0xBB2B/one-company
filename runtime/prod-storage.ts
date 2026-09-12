@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+
+import { runManagedGit, withGitProcessSession } from "./git-process-session.ts";
+import type { GitProcessObserver } from "./git-process-session.ts";
 
 const PROD_FILE = "prod.md";
 const GIT_DIR = ".git";
@@ -53,6 +55,7 @@ export interface ProdStorageConfig {
   worktreeRoots?: string[];
   expectedRepositoryIdentity?: ProdRepositoryIdentity;
   authorize?: ProdStorageAuthorize;
+  processObserver?: GitProcessObserver;
 }
 
 export interface ProdStorageSaveInput extends ProdStorageConfig {
@@ -587,47 +590,13 @@ async function runGit(config: ProdStorageConfig, paths: PreparedPaths, args: str
   maxBuffer?: number;
   repository?: boolean;
 } = {}): Promise<GitResult> {
-  const allowedExitCodes = options.allowedExitCodes ?? [0];
-  const maxBuffer = options.maxBuffer ?? GIT_MAX_BUFFER;
-  return await new Promise<GitResult>((resolvePromise, reject) => {
-    const child = spawn(paths.gitExecutable, fixedGitArgs(paths.requirementRoot, args, options.repository !== false), {
-      cwd: paths.requirementRoot,
-      env: gitEnvironment(config, options.env),
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let total = 0;
-    let overflow = false;
-    let timedOut = false;
-    let spawnError: NodeJS.ErrnoException | undefined;
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, GIT_TIMEOUT_MS);
-    const collect = (target: Buffer[]) => (chunk: Buffer) => {
-      total += chunk.length;
-      if (total > maxBuffer) { overflow = true; child.kill("SIGKILL"); return; }
-      target.push(Buffer.from(chunk));
-    };
-    child.stdout.on("data", collect(stdout));
-    child.stderr.on("data", collect(stderr));
-    child.once("error", (error) => { spawnError = error; });
-    child.stdin.on("error", () => undefined);
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      if (spawnError?.code === "ENOENT") { reject(new ProdStorageError("git_unavailable", "Git 可执行文件不可用")); return; }
-      if (spawnError) { reject(spawnError); return; }
-      if (timedOut) { reject(new ProdStorageError("git_failed", "Git 调用超时")); return; }
-      if (overflow) { reject(new ProdStorageError("git_failed", "Git 输出超过安全上限")); return; }
-      const exitCode = code ?? -1;
-      const result = { stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), exitCode };
-      if (!allowedExitCodes.includes(exitCode)) {
-        reject(new ProdStorageError("git_failed", "Git 调用失败", { exitCode }));
-        return;
-      }
-      resolvePromise(result);
-    });
-    child.stdin.end(options.input);
-  });
+  const result = await runManagedGit({ executable: paths.gitExecutable, args: fixedGitArgs(paths.requirementRoot, args, options.repository !== false),
+    cwd: paths.requirementRoot, env: gitEnvironment(config, options.env), input: options.input,
+    timeout: GIT_TIMEOUT_MS, maxBuffer: options.maxBuffer ?? GIT_MAX_BUFFER, command: args[0] ?? "" });
+  if (result.spawnCode === "ENOENT") fail("git_unavailable", "Git 可执行文件不可用");
+  if (result.spawnCode || result.timedOut || result.overflow) fail("git_failed", "Git 子进程执行失败");
+  if (!(options.allowedExitCodes ?? [0]).includes(result.exitCode)) fail("git_failed", "Git 调用失败", { exitCode: result.exitCode });
+  return result;
 }
 
 async function assertGitTreeSafe(path: string): Promise<void> {
@@ -1022,19 +991,23 @@ async function saveInternal(input: ProdStorageSaveInput, action: ProdStorageActi
 
 export async function create(input: ProdStorageSaveInput): Promise<ProdStorageWriteResult> {
   if (input.expectedParent !== null) fail("invalid_parent", "create 的 expectedParent 必须为 null");
-  return saveInternal(input, "create", "create");
+  const result = await withGitProcessSession(input.processObserver, () => saveInternal(input, "create", "create"));
+  requireAuthorized(input, { phase: "beforeReturn", action: "create", operationId: input.operationId, prodHash: result.prodHash });
+  return result;
 }
 
 export async function save(input: ProdStorageSaveInput & { action: Exclude<ProdStorageAction, "create"> }): Promise<ProdStorageWriteResult> {
   if (input.action !== "updateDraft" && input.action !== "confirmUpdate") fail("invalid_action", "save action 只能是 updateDraft 或 confirmUpdate");
-  return saveInternal(input, input.action, "save");
+  const result = await withGitProcessSession(input.processObserver, () => saveInternal(input, input.action, "save"));
+  requireAuthorized(input, { phase: "beforeReturn", action: "save", operationId: input.operationId, prodHash: result.prodHash });
+  return result;
 }
 
 function assertRequestedVersion(lineage: Map<string, string | null>, commit: string): void {
   if (!lineage.has(commit)) fail("unknown_version", "请求的提交不属于当前线性正文历史");
 }
 
-export async function verifyVersion(input: ProdStorageVerifyInput): Promise<ProdStorageVerifyResult> {
+async function verifyVersionInternal(input: ProdStorageVerifyInput): Promise<ProdStorageVerifyResult> {
   assertFullCommit(input.commit);
   assertHash(input.expectedHash);
   const { paths, identity, lineage } = await ensureReadyForRead(input, "verifyVersion", { commit: input.commit, expectedHash: input.expectedHash });
@@ -1044,7 +1017,7 @@ export async function verifyVersion(input: ProdStorageVerifyInput): Promise<Prod
   return { ok: true, commit: input.commit, prodHash: verified.prodHash, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
 }
 
-export async function readVersion(input: ProdStorageReadInput): Promise<ProdStorageReadResult> {
+async function readVersionInternal(input: ProdStorageReadInput): Promise<ProdStorageReadResult> {
   assertFullCommit(input.commit);
   assertHash(input.expectedHash);
   const { paths, lineage } = await ensureReadyForRead(input, "readVersion", { commit: input.commit, expectedHash: input.expectedHash });
@@ -1054,7 +1027,7 @@ export async function readVersion(input: ProdStorageReadInput): Promise<ProdStor
   return { commit: input.commit, prodHash: verified.prodHash, bytes: verified.bytes };
 }
 
-export async function diffVersions(input: ProdStorageDiffInput): Promise<ProdStorageDiffResult> {
+async function diffVersionsInternal(input: ProdStorageDiffInput): Promise<ProdStorageDiffResult> {
   assertFullCommit(input.fromCommit, "fromCommit");
   assertFullCommit(input.toCommit, "toCommit");
   assertHash(input.expectedFromHash);
@@ -1083,6 +1056,22 @@ export async function diffVersions(input: ProdStorageDiffInput): Promise<ProdSto
     prodHash: to.prodHash,
   });
   return { fromCommit: input.fromCommit, toCommit: input.toCommit, fromHash: from.prodHash, toHash: to.prodHash, diff };
+}
+
+export async function verifyVersion(input: ProdStorageVerifyInput): Promise<ProdStorageVerifyResult> {
+  const result = await withGitProcessSession(input.processObserver, () => verifyVersionInternal(input));
+  requireAuthorized(input, { phase: "beforeReturn", action: "verifyVersion", commit: input.commit, prodHash: result.prodHash });
+  return result;
+}
+export async function readVersion(input: ProdStorageReadInput): Promise<ProdStorageReadResult> {
+  const result = await withGitProcessSession(input.processObserver, () => readVersionInternal(input));
+  requireAuthorized(input, { phase: "beforeReturnBody", action: "readVersion", commit: input.commit, prodHash: result.prodHash });
+  return result;
+}
+export async function diffVersions(input: ProdStorageDiffInput): Promise<ProdStorageDiffResult> {
+  const result = await withGitProcessSession(input.processObserver, () => diffVersionsInternal(input));
+  requireAuthorized(input, { phase: "beforeReturnBody", action: "diffVersions", fromCommit: input.fromCommit, toCommit: input.toCommit });
+  return result;
 }
 
 export function prodRequirementPath(config: Pick<ProdStorageConfig, "dataRoot" | "repoId" | "requirementId">): string {

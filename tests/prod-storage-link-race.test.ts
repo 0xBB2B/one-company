@@ -212,6 +212,7 @@ test("dataRoot 目录在 lstat 后被替换成链接时不会修改外部目录�
   await mkdir(outside, { mode: 0o755 });
   await chmod(outside, 0o755);
   await writeFile(marker, "外部目录内容", { mode: 0o644 });
+  await chmod(marker, 0o644);
 
   permissionRace.targetPath = dataRoot;
   permissionRace.outsidePath = outside;
