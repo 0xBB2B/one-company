@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { isPromise } from "node:util/types";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import type { Static } from "typebox";
 import { LocalDatabase, repositoryDatabase, StaleVersionError, uuidv7, withDatabase } from "./database.ts";
 import type { StoredRecord, SyncResult } from "./database.ts";
@@ -7,13 +9,13 @@ import { pathExists, assertDataRootOutsideWorktrees } from "./database-paths.ts"
 import { listWorktrees, repositoryIdentity } from "./identity.ts";
 import { canonicalJson } from "./strict-json.ts";
 import type { JsonValue } from "./strict-json.ts";
-import { checked, checkRequirement, commands, hash, id, object, counter, positive, OwnerClaim, PmRecord, PmLease, RequestRecord, RequirementEvent, RequirementStateError } from "./requirement-contracts.ts";
-import type { RequirementRecord, ProdReference, WorkspaceBinding } from "./requirement-contracts.ts";
+import { checked, checkRequirement, commands, hash, id, object, counter, positive, ApprovedProdChange, BaselineDelivery, LegacyPmRecord, OwnerClaim, PmContext, PmEventCursor, PmRecord, PmLease, RequestRecord, RequirementEvent, RequirementStateError } from "./requirement-contracts.ts";
+import type { ApprovedProdChange as ApprovedProdChangeData, BaselineDelivery as BaselineDeliveryData, PmContext as PmContextData, PmEventCursor as PmEventCursorData, PmRecord as PmRecordData, RequirementRecord, ProdReference, WorkspaceBinding } from "./requirement-contracts.ts";
 import { inspectRequirementWorkspace, verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { readGit } from "./git-read.ts";
 import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn, releaseDeadRequirementWriteIn } from "./requirement-coordination.ts";
 
-export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "events" | "acknowledge" | "begin-close" | "finish-close" | "block-recovery" | "record-decisions" | "read-decisions";
+export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "rotate-pm-context" | "restore-approved-context" | "events" | "acknowledge" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "record-decisions" | "read-decisions";
 export interface StateAuthorizationRequest { action: RequirementAction; repoId: string; input: Readonly<Record<string, unknown>> }
 export interface RequirementStoreOptions {
   dataRoot: string;
@@ -23,8 +25,22 @@ export interface RequirementStoreOptions {
   authorize?: (request: StateAuthorizationRequest) => boolean;
   now?: () => number;
 }
+export type ApprovedEventPoll =
+  | { status: "caught_up"; cursor: PmEventCursorData }
+  | { status: "baseline_required"; reason: "baseline_missing" | "event_gap" | "baseline_mismatch" | "context_missing"; cursor: PmEventCursorData; revision: number; reference: ProdReference; version: number; epoch: number }
+  | { status: "recovery_required"; reason: "history_unknown"; cursor: PmEventCursorData; version: number; epoch: number }
+  | { status: "event"; eventId: string; sequence: number; redelivery: boolean; event: ApprovedProdChangeData; cursor: PmEventCursorData };
 const LEASE_MS = 30_000;
 const Operation = object({ requirementId: id, digest: hash, sequence: positive });
+const BaselineReturn = object({
+  lease: PmLease, deliveryId: id, version: positive, epoch: positive, revision: positive, reference: object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }), hash }),
+});
+const EventReturn = object({
+  lease: PmLease, eventId: id, sequence: positive, version: positive, epoch: positive,
+  fromRevision: positive, toRevision: positive,
+  from: object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }), hash }),
+  to: object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }), hash }),
+});
 const eventStream = (requirementId: string) => `requirement_events:${requirementId}`;
 const equal = (a: unknown, b: unknown) => canonicalJson(a as JsonValue) === canonicalJson(b as JsonValue);
 function increment(value: number): number {
@@ -38,6 +54,7 @@ function deepFreeze<T>(value: T): T {
 
 /** 新UUID需求的内部元数据基础；不创建prod文件、不派工、不开放模型工具。 */
 export class RequirementStateStore {
+  private static readonly accessListeners = new Map<string, Set<() => void>>();
   private readonly options: RequirementStoreOptions;
   private constructor(options: RequirementStoreOptions) {
     checked(hash, options.repoId);
@@ -73,22 +90,72 @@ export class RequirementStateStore {
     if (data.workspace) this.checkClaims(db, data.workspace);
     return { ...stored, data };
   }
+  onAccessInvalidated(requirementId: string, listener: () => void): () => void {
+    this.read(requirementId);
+    const key = `${this.path()}:${requirementId}`;
+    let listeners = RequirementStateStore.accessListeners.get(key);
+    if (!listeners) RequirementStateStore.accessListeners.set(key, listeners = new Set());
+    listeners.add(listener);
+    const registered = listeners;
+    return () => {
+      registered.delete(listener);
+      if (registered.size === 0) RequirementStateStore.accessListeners.delete(key);
+    };
+  }
+  private notifyAccessInvalidated(requirementId: string): void {
+    for (const listener of [...(RequirementStateStore.accessListeners.get(`${this.path()}:${requirementId}`) ?? [])]) {
+      try { listener(); } catch { /* 缓存观察者不能撤销已提交的状态变化。 */ }
+    }
+  }
+  private accessFingerprint(db: LocalDatabase, requirementId: string): string {
+    return JSON.stringify([db.read("requirements", requirementId)?.version,
+      db.read<{ lease?: unknown }>("pm_ownership", requirementId)?.data.lease]);
+  }
   private mutate<T>(action: RequirementAction, input: Record<string, unknown>, operation: (db: LocalDatabase) => T & SyncResult<T>): T {
     this.authorize(action, input);
-    return withDatabase(this.path(), (db) => db.transaction<T>(() => {
-      this.authorize(action, input);
-      const result = operation(db);
-      this.authorize(action, input);
-      return result;
-    }));
+    const candidate = input.requirementId ?? (input.lease as { requirementId?: unknown } | undefined)?.requirementId;
+    const requirementId = typeof candidate === "string" ? candidate : null;
+    let invalidated = false;
+    const result = withDatabase(this.path(), (db) => {
+      const before = requirementId ? this.accessFingerprint(db, requirementId) : null;
+      const value = db.transaction<T>(() => {
+        this.authorize(action, input);
+        const result = operation(db);
+        this.authorize(action, input);
+        return result;
+      });
+      invalidated = requirementId !== null && before !== this.accessFingerprint(db, requirementId);
+      return value;
+    });
+    if (invalidated && requirementId) this.notifyAccessInvalidated(requirementId);
+    return result;
+  }
+  private finalCheck<T>(
+    action: RequirementAction,
+    input: Record<string, unknown>,
+    operation: (db: LocalDatabase, now: number) => T & SyncResult<T>,
+  ): T {
+    this.authorize(action, input);
+    const now = this.now();
+    const requirementId = checked(id, (input.lease as { requirementId: string }).requirementId);
+    let invalidated = false;
+    const result = withDatabase(this.path(), (db) => {
+      const before = this.accessFingerprint(db, requirementId);
+      const value = db.transaction<T>(() => operation(db, now));
+      invalidated = before !== this.accessFingerprint(db, requirementId);
+      return value;
+    });
+    // 仅恢复拒绝分支会改变访问状态；提交且退出事务后清缓存，成功交付分支不会回调观察者。
+    if (invalidated) this.notifyAccessInvalidated(requirementId);
+    return result;
   }
   private active(record: RequirementRecord, allowDraft = false): void {
     if (record.recovery !== "ready") throw new RequirementStateError("recovery_required");
     if (record.lifecycle !== "active" && !(allowDraft && record.lifecycle === "draft")) throw new RequirementStateError("lifecycle_denied");
   }
   private version(record: StoredRecord, expected: number): void { if (record.version !== expected) throw new StaleVersionError(); }
-  private write(db: LocalDatabase, record: StoredRecord<RequirementRecord>, data: RequirementRecord, kind: RequirementEvent["kind"], from: ProdReference | null = null, to: ProdReference | null = null, receiptId: string | null = null) {
-    data.updatedAt = Math.max(data.updatedAt, this.now());
+  private write(db: LocalDatabase, record: StoredRecord<RequirementRecord>, data: RequirementRecord, kind: RequirementEvent["kind"], from: ProdReference | null = null, to: ProdReference | null = null, receiptId: string | null = null, now = this.now()) {
+    data.updatedAt = Math.max(data.updatedAt, now);
     checkRequirement(data, data.requirementId, this.options.repoId);
     const version = db.update("requirements", data.requirementId, record.version, data);
     const event = checked(RequirementEvent, { requirementId: data.requirementId, repoId: data.repoId, kind, version, epoch: data.epoch, revision: data.revision, from, to, receiptId, recoveryReason: data.recoveryReason });
@@ -98,13 +165,108 @@ export class RequirementStateStore {
   private owner(db: LocalDatabase, requirementId: string) {
     const stored = db.read("pm_ownership", requirementId);
     if (!stored) return null;
-    const data = checked(PmRecord, stored.data);
-    if (data.requirementId !== requirementId || (data.lease && (data.lease.requirementId !== requirementId || data.lease.fence !== data.fence))) throw new RequirementStateError("invalid_pm_owner");
+    let data: PmRecordData;
+    if (Value.Check(LegacyPmRecord, stored.data)) {
+      const legacy = checked(LegacyPmRecord, stored.data);
+      if (legacy.lease && (legacy.lease.requirementId !== requirementId || legacy.lease.fence !== legacy.fence)) {
+        throw new RequirementStateError("invalid_pm_owner");
+      }
+      // 读取只归一化视图，不恢复旧租约；接管或撤权事务保留sequence并提升原fence。
+      data = { ...legacy, lease: null };
+    } else data = checked(PmRecord, stored.data);
+    const context = data.context ? checked(PmContext, data.context) : null;
+    if (data.requirementId !== requirementId ||
+      (data.lease && (data.lease.requirementId !== requirementId || data.lease.fence !== data.fence ||
+        !context || context.runId !== data.lease.runId || context.fence !== data.lease.fence ||
+        context.generation !== data.lease.contextGeneration)) ||
+      (!data.lease && context !== null && context.baseline !== null)) throw new RequirementStateError("invalid_pm_owner");
     return { ...stored, data };
   }
   private revoke(db: LocalDatabase, requirementId: string): void {
     const owner = this.owner(db, requirementId);
-    if (owner) db.update("pm_ownership", requirementId, owner.version, { ...owner.data, fence: increment(owner.data.fence), lease: null });
+    if (owner) db.update("pm_ownership", requirementId, owner.version, { ...owner.data, fence: increment(owner.data.fence), lease: null,
+      ...(owner.data.context ? { context: { ...owner.data.context, baseline: null } } : {}) });
+  }
+  private eventCursor(owner: StoredRecord<PmRecordData>): PmEventCursorData {
+    const data = owner.data.prodEvents ? checked(PmEventCursor, owner.data.prodEvents) : this.cursorData(owner.data.requirementId);
+    if (data.requirementId !== owner.data.requirementId || data.deliveredSequence < data.consumedSequence ||
+      ((data.understood === null) !== (data.understoodRevision === null)) ||
+      (data.baselineDelivery !== null && data.baselineDelivery.mode === "cursor_recovery" &&
+        data.baselineDelivery.throughSequence > data.deliveredSequence)) {
+      throw new RequirementStateError("invalid_pm_event_cursor");
+    }
+    return data;
+  }
+  private cursorData(requirementId: string): PmEventCursorData {
+    return { format: "pm-prod-event-cursor/v1", requirementId, deliveredSequence: 0, consumedSequence: 0,
+      understoodRevision: null, understood: null, baselineDelivery: null };
+  }
+  private approvedEvents(db: LocalDatabase, requirementId: string, after = 0) {
+    return db.events(eventStream(requirementId), after).flatMap((event) => {
+      const audit = checked(RequirementEvent, event.data);
+      if (audit.requirementId !== requirementId || audit.repoId !== this.options.repoId) throw new RequirementStateError("event_identity_conflict");
+      if (audit.kind !== "prod.approved") return [];
+      if (!audit.to || !audit.receiptId || ((audit.from === null) !== (audit.revision === 1))) throw new RequirementStateError("approved_event_invalid");
+      const data = checked(ApprovedProdChange, {
+        format: "approved-prod-change/v1", requirementId, repoId: this.options.repoId,
+        fromRevision: audit.from === null ? null : audit.revision - 1, toRevision: audit.revision,
+        from: audit.from, to: audit.to, receiptId: audit.receiptId, lifecycleEpoch: audit.epoch,
+        recordVersion: audit.version, changedSections: null, impactReason: "section_structure_unavailable",
+      });
+      return [{ ...event, data }];
+    });
+  }
+  private putEventCursor(db: LocalDatabase, owner: StoredRecord<PmRecordData>, data: PmEventCursorData): void {
+    checked(PmEventCursor, data);
+    db.update("pm_ownership", data.requirementId, owner.version, { ...owner.data, prodEvents: data });
+  }
+  private context(owner: StoredRecord<PmRecordData>): PmContextData {
+    const context = owner.data.context ? checked(PmContext, owner.data.context) : null;
+    if (!owner.data.lease || !context || context.runId !== owner.data.lease.runId || context.fence !== owner.data.lease.fence ||
+      context.generation !== owner.data.lease.contextGeneration) throw new RequirementStateError("invalid_pm_context");
+    return context;
+  }
+  private historyUnknown(
+    record: StoredRecord<RequirementRecord>,
+    cursor: PmEventCursorData,
+    events: Array<{ sequence: number; data: ApprovedProdChangeData }>,
+  ): boolean {
+    const last = events.at(-1);
+    return !last || cursor.consumedSequence > last.sequence || last.data.toRevision !== record.data.revision ||
+      !record.data.approved || !equal(last.data.to, record.data.approved);
+  }
+  private blockUnknownHistory(db: LocalDatabase, record: StoredRecord<RequirementRecord>, now = this.now()): StoredRecord<RequirementRecord> {
+    this.revoke(db, record.id);
+    return this.write(db, record, { ...record.data, recovery: "needs_review", recoveryReason: "history_unknown",
+      epoch: increment(record.data.epoch) }, "recovery.blocked", null, null, null, now).record;
+  }
+  private contextHasUsableBaseline(
+    record: StoredRecord<RequirementRecord>,
+    owner: StoredRecord<PmRecordData>,
+    cursor: PmEventCursorData,
+  ): boolean {
+    const baseline = this.context(owner).baseline;
+    if (baseline === null || baseline.runId !== owner.data.lease!.runId || baseline.fence !== owner.data.lease!.fence ||
+      baseline.contextGeneration !== owner.data.lease!.contextGeneration || baseline.epoch !== record.data.epoch) return false;
+    const matchesCursor = cursor.understoodRevision !== null && cursor.understood !== null &&
+      baseline.revision === cursor.understoodRevision && equal(baseline.reference, cursor.understood);
+    const matchesCurrent = record.data.approved !== null && baseline.revision === record.data.revision &&
+      equal(baseline.reference, record.data.approved);
+    return matchesCursor || matchesCurrent;
+  }
+  private baselineReason(
+    record: StoredRecord<RequirementRecord>,
+    owner: StoredRecord<PmRecordData>,
+    cursor: PmEventCursorData,
+    events: Array<{ sequence: number; data: ApprovedProdChangeData }>,
+  ): Extract<ApprovedEventPoll, { status: "baseline_required" }>["reason"] | null {
+    const next = events.find((event) => event.sequence > cursor.consumedSequence);
+    if (cursor.understood === null || cursor.understoodRevision === null) return "baseline_missing";
+    if (next && next.data.fromRevision !== cursor.understoodRevision) return "event_gap";
+    if (next && !equal(next.data.from, cursor.understood)) return "baseline_mismatch";
+    if (!next && (cursor.understoodRevision !== record.data.revision || !equal(cursor.understood, record.data.approved))) return "event_gap";
+    if (!this.contextHasUsableBaseline(record, owner, cursor)) return "context_missing";
+    return null;
   }
 
   reserve(input: Static<typeof commands.reserve>): StoredRecord<RequirementRecord> {
@@ -244,20 +406,28 @@ export class RequirementStateStore {
         const claim = checked(OwnerClaim, runClaim.data);
         if (claim.requirementId !== record.id || claim.workspaceId !== record.data.workspace.workspaceId) throw new RequirementStateError("pm_run_already_bound");
       } else db.create("pm_run_claims", request.runId, { requirementId: record.id, workspaceId: record.data.workspace.workspaceId });
-      const lease = checked(PmLease, { requirementId: record.id, workspaceId: record.data.workspace.workspaceId, runId: request.runId, epoch: record.data.epoch,
-        fence: increment(owner?.data.fence ?? 0), expiresAt: now + LEASE_MS });
-      const ownership = { requirementId: record.id, fence: lease.fence, lease, seenSequence: owner?.data.seenSequence ?? 0 };
+      const fence = increment(owner?.data.fence ?? 0);
+      const contextGeneration = increment(owner?.data.context?.generation ?? 0);
+      const lease = checked(PmLease, { requirementId: record.id, workspaceId: record.data.workspace.workspaceId, runId: request.runId,
+        epoch: record.data.epoch, fence, contextGeneration, expiresAt: now + LEASE_MS });
+      const context = checked(PmContext, { format: "pm-physical-context/v1", runId: request.runId, fence,
+        generation: contextGeneration, baseline: null });
+      const prodEvents = owner?.data.prodEvents ? { ...owner.data.prodEvents, baselineDelivery: null } : undefined;
+      const ownership = { requirementId: record.id, fence: lease.fence, lease, context, seenSequence: owner?.data.seenSequence ?? 0,
+        ...(prodEvents ? { prodEvents } : {}) };
       if (owner) db.update("pm_ownership", record.id, owner.version, ownership);
       else db.create("pm_ownership", record.id, ownership);
       this.write(db, record, record.data, "pm.acquired");
       return lease;
     });
   }
-  private validateOwner(db: LocalDatabase, lease: PmLease) {
+  private validateOwner(db: LocalDatabase, lease: PmLease, now = this.now()) {
     const record = this.get(db, lease.requirementId); this.active(record.data);
     const owner = this.owner(db, record.id);
     if (!owner?.data.lease || owner.data.fence !== lease.fence || owner.data.lease.runId !== lease.runId || record.data.epoch !== lease.epoch ||
-      owner.data.lease.epoch !== lease.epoch || owner.data.lease.workspaceId !== lease.workspaceId || owner.data.lease.expiresAt <= this.now() || !record.data.workspace || record.data.workspace.workspaceId !== lease.workspaceId) throw new RequirementStateError("stale_pm_lease");
+      owner.data.lease.epoch !== lease.epoch || owner.data.lease.workspaceId !== lease.workspaceId ||
+      owner.data.lease.contextGeneration !== lease.contextGeneration || owner.data.lease.expiresAt <= now ||
+      !record.data.workspace || record.data.workspace.workspaceId !== lease.workspaceId) throw new RequirementStateError("stale_pm_lease");
     this.checkClaims(db, record.data.workspace);
     const runClaim = db.read("pm_run_claims", lease.runId);
     if (!runClaim || !equal(checked(OwnerClaim, runClaim.data), { requirementId: record.id, workspaceId: lease.workspaceId })) throw new RequirementStateError("pm_run_binding_changed");
@@ -293,6 +463,40 @@ export class RequirementStateStore {
     this.mutate("release-pm", lease, (db) => { const { record } = this.validateOwner(db, lease); this.revoke(db, record.id); this.write(db, record, record.data, "pm.released"); });
   }
 
+  async rotatePmContext(input: Static<typeof commands.rotateContext>): Promise<PmLease> {
+    const request = checked(commands.rotateContext, input);
+    await this.workspaceForLease("rotate-pm-context", request.lease);
+    return this.mutate("rotate-pm-context", request, (db) => {
+      const { owner } = this.validateOwner(db, request.lease);
+      const contextGeneration = increment(request.lease.contextGeneration);
+      const lease = checked(PmLease, { ...owner.data.lease!, contextGeneration });
+      const context = checked(PmContext, { format: "pm-physical-context/v1", runId: lease.runId, fence: lease.fence,
+        generation: contextGeneration, baseline: null });
+      const cursor = this.eventCursor(owner);
+      db.update("pm_ownership", lease.requirementId, owner.version, { ...owner.data, lease, context,
+        prodEvents: { ...cursor, baselineDelivery: null } });
+      return lease;
+    });
+  }
+
+  async restoreApprovedContext(input: Static<typeof commands.restoreContext>): Promise<void> {
+    const request = checked(commands.restoreContext, input);
+    await this.workspaceForLease("restore-approved-context", request.lease);
+    this.mutate("restore-approved-context", request, (db) => {
+      const { record, owner } = this.validateOwner(db, request.lease);
+      if (!record.data.approved || record.version !== request.version || record.data.epoch !== request.epoch ||
+        record.data.revision !== request.revision || !equal(record.data.approved, request.reference)) {
+        throw new RequirementStateError("baseline_changed");
+      }
+      const context = this.context(owner);
+      const baseline = { runId: request.lease.runId, fence: request.lease.fence,
+        contextGeneration: request.lease.contextGeneration, revision: request.revision, reference: request.reference,
+        recordVersion: request.version, epoch: request.epoch };
+      db.update("pm_ownership", request.lease.requirementId, owner.version, { ...owner.data,
+        context: { ...context, baseline } });
+    });
+  }
+
   events(requirementId: string, after = 0) {
     checked(id, requirementId); checked(counter, after); this.authorize("events", { requirementId, after });
     if (!pathExists(this.path())) throw new RequirementStateError("unknown_requirement");
@@ -318,6 +522,222 @@ export class RequirementStateStore {
       if (event.requirementId !== request.lease.requirementId || event.repoId !== this.options.repoId) throw new RequirementStateError("event_identity_conflict");
       db.update("pm_ownership", request.lease.requirementId, owner.version, { ...owner.data, seenSequence: request.sequence });
       // 接收事件不是逐任务影响复核，不解除pendingRevision或改写历史验证输入。
+    });
+  }
+
+  async nextApprovedEvent(input: Static<typeof commands.eventLease>): Promise<ApprovedEventPoll> {
+    const request = checked(commands.eventLease, input);
+    await this.workspaceForLease("deliver-approved-event", request.lease);
+    return this.mutate("deliver-approved-event", request, (db) => {
+      const { record, owner } = this.validateOwner(db, request.lease);
+      if (!record.data.approved) throw new RequirementStateError("approved_version_missing");
+      const cursor = this.eventCursor(owner);
+      const all = this.approvedEvents(db, record.id);
+      if (this.historyUnknown(record, cursor, all)) {
+        const blocked = this.blockUnknownHistory(db, record);
+        return { status: "recovery_required", reason: "history_unknown", cursor,
+          version: blocked.version, epoch: blocked.data.epoch };
+      }
+      const next = all.find((event) => event.sequence > cursor.consumedSequence);
+      const reason = this.baselineReason(record, owner, cursor, all);
+      if (reason) return { status: "baseline_required", reason, cursor, revision: record.data.revision,
+        reference: record.data.approved, version: record.version, epoch: record.data.epoch };
+      if (!next) return { status: "caught_up", cursor };
+      const redelivery = cursor.deliveredSequence >= next.sequence;
+      const updated = { ...cursor, deliveredSequence: Math.max(cursor.deliveredSequence, next.sequence) };
+      if (!equal(updated, cursor)) this.putEventCursor(db, owner, updated);
+      return { status: "event", eventId: next.id, sequence: next.sequence, redelivery, event: next.data, cursor: updated };
+    });
+  }
+
+  async approvedBaselineRequirement(input: Static<typeof commands.eventLease>): Promise<
+    Extract<ApprovedEventPoll, { status: "baseline_required" | "recovery_required" }>
+  > {
+    const request = checked(commands.eventLease, input);
+    await this.workspaceForLease("check-approved-return", request.lease);
+    return this.mutate("check-approved-return", request, (db) => {
+      const { record, owner } = this.validateOwner(db, request.lease);
+      if (!record.data.approved) throw new RequirementStateError("approved_version_missing");
+      const cursor = this.eventCursor(owner);
+      const all = this.approvedEvents(db, record.id);
+      if (this.historyUnknown(record, cursor, all)) {
+        const blocked = this.blockUnknownHistory(db, record);
+        return { status: "recovery_required" as const, reason: "history_unknown" as const, cursor,
+          version: blocked.version, epoch: blocked.data.epoch };
+      }
+      const reason = this.baselineReason(record, owner, cursor, all);
+      if (!reason) throw new RequirementStateError("baseline_not_required");
+      return { status: "baseline_required" as const, reason, cursor, revision: record.data.revision,
+        reference: record.data.approved, version: record.version, epoch: record.data.epoch };
+    });
+  }
+
+  async issueApprovedBaseline(input: Static<typeof commands.issueBaseline>): Promise<BaselineDeliveryData> {
+    const request = checked(commands.issueBaseline, input);
+    await this.workspaceForLease("issue-approved-baseline", request.lease);
+    const result = this.mutate("issue-approved-baseline", request, (db) => {
+      const { record, owner } = this.validateOwner(db, request.lease);
+      if (!record.data.approved || record.version !== request.version || record.data.epoch !== request.epoch ||
+        record.data.revision !== request.revision || !equal(record.data.approved, request.reference)) {
+        throw new RequirementStateError("baseline_changed");
+      }
+      const cursor = this.eventCursor(owner);
+      const events = this.approvedEvents(db, record.id);
+      if (this.historyUnknown(record, cursor, events)) {
+        this.blockUnknownHistory(db, record);
+        return null;
+      }
+      const reason = this.baselineReason(record, owner, cursor, events);
+      if (!reason) throw new RequirementStateError("baseline_not_required");
+      const mode = reason === "context_missing" ? "context_refresh" as const : "cursor_recovery" as const;
+      const throughSequence = events.at(-1)!.sequence;
+      const existing = cursor.baselineDelivery;
+      const delivery = existing && existing.throughSequence === throughSequence && existing.revision === request.revision &&
+        existing.recordVersion === request.version && existing.epoch === request.epoch && existing.runId === request.lease.runId &&
+        existing.fence === request.lease.fence && existing.contextGeneration === request.lease.contextGeneration &&
+        existing.mode === mode && equal(existing.reference, request.reference)
+        ? existing
+        : checked(BaselineDelivery, {
+          deliveryId: uuidv7(), throughSequence, revision: request.revision, reference: request.reference,
+          recordVersion: request.version, epoch: request.epoch, runId: request.lease.runId, fence: request.lease.fence,
+          contextGeneration: request.lease.contextGeneration, mode,
+        });
+      const updated: PmEventCursorData = { ...cursor,
+        deliveredSequence: mode === "cursor_recovery" ? Math.max(cursor.deliveredSequence, throughSequence) : cursor.deliveredSequence,
+        baselineDelivery: delivery };
+      if (!equal(updated, cursor)) this.putEventCursor(db, owner, updated);
+      return delivery;
+    });
+    if (!result) throw new RequirementStateError("recovery_required");
+    return result;
+  }
+
+  checkApprovedBaselineReturnSync(input: Static<typeof BaselineReturn>): void {
+    const request = checked(BaselineReturn, input);
+    const valid = this.finalCheck("check-approved-return", request, (db, now) => {
+      const { record, owner } = this.validateOwner(db, request.lease, now);
+      const cursor = this.eventCursor(owner);
+      const events = this.approvedEvents(db, record.id);
+      if (this.historyUnknown(record, cursor, events)) {
+        this.blockUnknownHistory(db, record, now);
+        return false;
+      }
+      const delivery = cursor.baselineDelivery;
+      if (!delivery || delivery.deliveryId !== request.deliveryId || delivery.runId !== request.lease.runId ||
+        delivery.fence !== request.lease.fence || delivery.contextGeneration !== request.lease.contextGeneration ||
+        !record.data.approved || record.version !== request.version || record.version !== delivery.recordVersion ||
+        record.data.epoch !== request.epoch || record.data.epoch !== delivery.epoch ||
+        record.data.revision !== request.revision || record.data.revision !== delivery.revision ||
+        !equal(record.data.approved, request.reference) || !equal(record.data.approved, delivery.reference)) {
+        throw new RequirementStateError("stale_baseline_delivery");
+      }
+      return true;
+    });
+    if (!valid) throw new RequirementStateError("recovery_required");
+  }
+
+  async acknowledgeApprovedBaseline(input: Static<typeof commands.acknowledgeBaseline>): Promise<void> {
+    const request = checked(commands.acknowledgeBaseline, input);
+    await this.workspaceForLease("acknowledge-approved-event", request.lease);
+    const valid = this.mutate("acknowledge-approved-event", request, (db) => {
+      const { record, owner } = this.validateOwner(db, request.lease);
+      const cursor = this.eventCursor(owner);
+      const events = this.approvedEvents(db, record.id);
+      if (this.historyUnknown(record, cursor, events)) {
+        this.blockUnknownHistory(db, record);
+        return false;
+      }
+      const delivery = cursor.baselineDelivery;
+      if (!delivery || delivery.deliveryId !== request.deliveryId || delivery.runId !== request.lease.runId ||
+        delivery.fence !== request.lease.fence || delivery.contextGeneration !== request.lease.contextGeneration ||
+        !record.data.approved || record.version !== delivery.recordVersion || record.data.epoch !== delivery.epoch ||
+        record.data.revision !== delivery.revision || !equal(record.data.approved, delivery.reference)) {
+        throw new RequirementStateError("stale_baseline_delivery");
+      }
+      if (delivery.mode === "cursor_recovery" && cursor.consumedSequence > delivery.throughSequence) {
+        throw new RequirementStateError("stale_baseline_delivery");
+      }
+      const updatedCursor: PmEventCursorData = delivery.mode === "cursor_recovery"
+        ? { ...cursor, consumedSequence: delivery.throughSequence,
+          deliveredSequence: Math.max(cursor.deliveredSequence, delivery.throughSequence),
+          understoodRevision: delivery.revision, understood: delivery.reference }
+        : cursor;
+      const context = this.context(owner);
+      const baseline = { runId: request.lease.runId, fence: request.lease.fence,
+        contextGeneration: request.lease.contextGeneration, revision: delivery.revision, reference: delivery.reference,
+        recordVersion: delivery.recordVersion, epoch: delivery.epoch };
+      const updated = { ...owner.data, context: { ...context, baseline }, prodEvents: updatedCursor };
+      if (!equal(updated, owner.data)) db.update("pm_ownership", request.lease.requirementId, owner.version, updated);
+      // 上下文基线确认与持久消费位置分开；context_refresh不会倒退或跳过逻辑事件。
+      return true;
+    });
+    if (!valid) throw new RequirementStateError("recovery_required");
+  }
+
+  checkApprovedEventReturnSync(input: Static<typeof EventReturn>): void {
+    const request = checked(EventReturn, input);
+    const valid = this.finalCheck("check-approved-return", request, (db, now) => {
+      const { record, owner } = this.validateOwner(db, request.lease, now);
+      const cursor = this.eventCursor(owner);
+      const events = this.approvedEvents(db, record.id);
+      if (this.historyUnknown(record, cursor, events)) {
+        this.blockUnknownHistory(db, record, now);
+        return false;
+      }
+      const event = events.find((candidate) => candidate.sequence === request.sequence);
+      const nextSequence = events.find((candidate) => candidate.sequence > cursor.consumedSequence)?.sequence;
+      if (record.version !== request.version || record.data.epoch !== request.epoch ||
+        cursor.consumedSequence >= request.sequence || cursor.deliveredSequence < request.sequence ||
+        request.sequence !== nextSequence || !event || event.id !== request.eventId ||
+        event.data.fromRevision !== request.fromRevision || event.data.toRevision !== request.toRevision ||
+        !equal(event.data.from, request.from) || !equal(event.data.to, request.to) ||
+        !this.contextHasUsableBaseline(record, owner, cursor)) {
+        throw new RequirementStateError("stale_event_delivery");
+      }
+      return true;
+    });
+    if (!valid) throw new RequirementStateError("recovery_required");
+  }
+
+  async acknowledgeApprovedEvent(input: Static<typeof commands.acknowledgeApproved>): Promise<void> {
+    const request = checked(commands.acknowledgeApproved, input);
+    await this.workspaceForLease("acknowledge-approved-event", request.lease);
+    const valid = this.mutate("acknowledge-approved-event", request, (db) => {
+      const { record, owner } = this.validateOwner(db, request.lease);
+      const cursor = this.eventCursor(owner);
+      const events = this.approvedEvents(db, record.id);
+      if (this.historyUnknown(record, cursor, events)) {
+        this.blockUnknownHistory(db, record);
+        return false;
+      }
+      const event = events.find((candidate) => candidate.sequence === request.sequence);
+      if (!event || event.id !== request.eventId || event.data.toRevision !== request.revision ||
+        !equal(event.data.to, request.reference)) throw new RequirementStateError("event_identity_conflict");
+      if (request.sequence <= cursor.consumedSequence) return true;
+      const nextSequence = events.find((candidate) => candidate.sequence > cursor.consumedSequence)?.sequence;
+      if (request.sequence !== nextSequence || cursor.deliveredSequence < request.sequence ||
+        cursor.understoodRevision !== event.data.fromRevision || !equal(cursor.understood, event.data.from) ||
+        !this.contextHasUsableBaseline(record, owner, cursor)) throw new RequirementStateError("event_gap");
+      const updatedCursor = { ...cursor, consumedSequence: request.sequence,
+        understoodRevision: event.data.toRevision, understood: event.data.to };
+      const context = this.context(owner);
+      const baseline = { runId: request.lease.runId, fence: request.lease.fence,
+        contextGeneration: request.lease.contextGeneration, revision: event.data.toRevision, reference: event.data.to,
+        recordVersion: event.data.recordVersion, epoch: request.lease.epoch };
+      db.update("pm_ownership", request.lease.requirementId, owner.version, { ...owner.data,
+        context: { ...context, baseline }, prodEvents: updatedCursor });
+      // 消费确认推进逻辑cursor与本次物理上下文基线，不解除pendingRevision、不派worker或改写验证证据。
+      return true;
+    });
+    if (!valid) throw new RequirementStateError("recovery_required");
+  }
+
+  async approvedEventCursor(input: Static<typeof commands.eventLease>): Promise<PmEventCursorData> {
+    const request = checked(commands.eventLease, input);
+    await this.workspaceForLease("check-approved-return", request.lease);
+    return this.mutate("check-approved-return", request, (db) => {
+      const { owner } = this.validateOwner(db, request.lease);
+      return this.eventCursor(owner);
     });
   }
 
@@ -361,7 +781,10 @@ export class RequirementStateStore {
     const request = checked(commands.block, input);
     return this.mutate("block-recovery", request, (db) => {
       const record = this.get(db, request.requirementId); this.version(record, request.version);
-      if (record.data.recovery === "needs_review") return record;
+      if (record.data.recovery === "needs_review") {
+        if (record.data.recoveryReason === request.reason || record.data.recoveryReason === "identity_conflict" || request.reason !== "identity_conflict") return record;
+        return this.write(db, record, { ...record.data, recoveryReason: "identity_conflict" }, "recovery.blocked").record;
+      }
       this.revoke(db, record.id);
       return this.write(db, record, { ...record.data, recovery: "needs_review", recoveryReason: request.reason, epoch: increment(record.data.epoch) }, "recovery.blocked").record;
     });

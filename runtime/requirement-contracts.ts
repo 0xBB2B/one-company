@@ -33,9 +33,51 @@ export type RequirementRecord = Static<typeof RequirementRecord>;
 export type ProdReference = Static<typeof ProdReference>;
 export type WorkspaceBinding = Static<typeof WorkspaceBinding>;
 export type CloseIntent = Static<typeof CloseIntent>;
-export const PmLease = object({ requirementId: id, runId: id, workspaceId: hash, epoch: positive, fence: positive, expiresAt: counter });
+export const PmLease = object({
+  requirementId: id, runId: id, workspaceId: hash, epoch: positive, fence: positive,
+  contextGeneration: positive, expiresAt: counter,
+});
 export type PmLease = Static<typeof PmLease>;
-export const PmRecord = object({ requirementId: id, fence: counter, seenSequence: counter, lease: nullable(PmLease) });
+/** 仅用于识别已有持久记录；此租约格式不能作为当前调用授权。 */
+export const LegacyPmRecord = object({
+  requirementId: id, fence: counter, seenSequence: counter,
+  lease: nullable(object({ requirementId: id, runId: id, workspaceId: hash, epoch: positive, fence: positive, expiresAt: counter })),
+});
+export const PmContextBaseline = object({
+  runId: id, fence: positive, contextGeneration: positive, revision: positive,
+  reference: ProdReference, recordVersion: positive, epoch: positive,
+});
+export type PmContextBaseline = Static<typeof PmContextBaseline>;
+export const PmContext = object({
+  format: Type.Literal("pm-physical-context/v1"), runId: id, fence: positive,
+  generation: positive, baseline: nullable(PmContextBaseline),
+});
+export type PmContext = Static<typeof PmContext>;
+export const ApprovedProdChange = object({
+  format: Type.Literal("approved-prod-change/v1"), requirementId: id, repoId: hash,
+  fromRevision: nullable(positive), toRevision: positive,
+  from: nullable(ProdReference), to: ProdReference, receiptId: id,
+  lifecycleEpoch: positive, recordVersion: positive,
+  changedSections: Type.Null(), impactReason: Type.Literal("section_structure_unavailable"),
+});
+export type ApprovedProdChange = Static<typeof ApprovedProdChange>;
+export const BaselineDelivery = object({
+  deliveryId: id, throughSequence: counter, revision: positive, reference: ProdReference,
+  recordVersion: positive, epoch: positive, runId: id, fence: positive, contextGeneration: positive,
+  mode: Type.Union([Type.Literal("cursor_recovery"), Type.Literal("context_refresh")]),
+});
+export type BaselineDelivery = Static<typeof BaselineDelivery>;
+export const PmEventCursor = object({
+  format: Type.Literal("pm-prod-event-cursor/v1"), requirementId: id,
+  deliveredSequence: counter, consumedSequence: counter,
+  understoodRevision: nullable(positive), understood: nullable(ProdReference),
+  baselineDelivery: nullable(BaselineDelivery),
+});
+export type PmEventCursor = Static<typeof PmEventCursor>;
+export const PmRecord = object({
+  requirementId: id, fence: counter, seenSequence: counter, lease: nullable(PmLease),
+  prodEvents: Type.Optional(PmEventCursor), context: Type.Optional(PmContext),
+});
 export type PmRecord = Static<typeof PmRecord>;
 export const OwnerClaim = object({ requirementId: id, workspaceId: hash });
 export const RequestRecord = object({ requirementId: id, intentHash: hash });
@@ -56,6 +98,13 @@ export const commands = {
   finish: object({ requirementId: id, version: positive, operationId: id }),
   block: object({ requirementId: id, version: positive, reason: RecoveryReason }),
   acknowledge: object({ lease: PmLease, sequence: counter }),
+  eventLease: object({ lease: PmLease }),
+  rotateContext: object({ lease: PmLease }),
+  restoreContext: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: ProdReference }),
+  issueBaseline: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: ProdReference }),
+  acknowledgeBaseline: object({ lease: PmLease, deliveryId: id }),
+  eventDelivery: object({ lease: PmLease, eventId: id, sequence: positive }),
+  acknowledgeApproved: object({ lease: PmLease, eventId: id, sequence: positive, revision: positive, reference: ProdReference }),
 };
 
 export class RequirementStateError extends Error {
