@@ -227,15 +227,6 @@ function pathWithin(root: string, target: string): boolean {
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
-function toPosixPath(path: string): string {
-  return path.split(sep).join(posix.sep);
-}
-
-function relativePosix(root: string, path: string): string {
-  const value = toPosixPath(relative(root, path));
-  return value === "" ? "." : value;
-}
-
 function sameIdentity(left: Pick<Stats, "dev" | "ino">, right: Pick<Stats, "dev" | "ino">): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
