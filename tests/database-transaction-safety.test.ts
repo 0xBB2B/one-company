@@ -8,6 +8,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { AsyncTransactionError, DatabaseUnavailableError, LocalDatabase, StaleVersionError, TransactionCleanupError, uuidv7, withDatabase } from "../runtime/database.ts";
+import { repositoryIdentity } from "../runtime/identity.ts";
+import { RequirementStateStore } from "../runtime/requirement-state.ts";
+import { ShortDecisionStore } from "../runtime/short-decisions.ts";
+import type { DecisionAdmissionRequest } from "../runtime/short-decisions.ts";
+import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { withoutSqliteExperimentalWarning } from "./helpers/node-warnings.ts";
 
@@ -310,6 +315,39 @@ test("未返回Promise中的失效写入拒绝被局部处理，不产生无关�
     expect(unhandled).toEqual([]);
     expectEmpty(path);
   } finally { process.off("unhandledRejection", handler); db.close(); }
+});
+
+test("合法同步事务护栏不误杀requirement state与short decisions组合写入", async () => {
+  const root = await mkdtemp(join(temporaryRoot(), "transaction-business-")); roots.push(root);
+  const repo = await createRepoFixture();
+  try {
+    const identity = await repositoryIdentity(repo.root);
+    const basisReceiptId = uuidv7();
+    const options = {
+      dataRoot: join(root, "private"), repoId: identity.repoId, repositoryRoot: repo.root,
+      authorize: () => true,
+      now: () => 1_000_000,
+      admit: ({ requestHash, batch }: DecisionAdmissionRequest) => ({
+        requestHash,
+        subjects: batch.decisions.map(() => ({ actor: "user" as const, status: "confirmed" as const, basisReceiptId })),
+      }),
+    };
+    const state = await RequirementStateStore.open(options);
+    const requirement = state.reserve({ requestId: uuidv7(), intentHash: "a".repeat(64) });
+    const decisions = await ShortDecisionStore.open(options);
+    const operationId = uuidv7();
+    const result = decisions.append(JSON.stringify({
+      operationId,
+      requirementId: requirement.id,
+      version: requirement.version,
+      epoch: requirement.data.epoch,
+      prod: null,
+      decisions: [{ conclusion: "保留合法同步事务", scope: "数据库事务护栏回归", references: [], supersedes: [] }],
+    }));
+    expect(result.operationId).toBe(operationId);
+    expect(decisions.read(requirement.id, result.decisionIds[0]!)).toMatchObject({ conclusion: "保留合法同步事务" });
+    expect(state.read(requirement.id)).toEqual(requirement);
+  } finally { await removeRepoFixture(repo); }
 });
 
 test("thenable只读取一次then且在失效后才执行，迟到拒绝不产生未处理异常", async () => {
