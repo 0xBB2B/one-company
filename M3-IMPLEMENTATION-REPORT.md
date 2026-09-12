@@ -2,14 +2,14 @@
 
 ## 当前状态
 
-M3（文件同步、prod 事件与关闭撤销通知）正在实施与返修，尚未验收完成。本文件由主代理统一更新，记录已发生的事实，不替代 `SQLITE-KNOWLEDGE-REBUILD-PLAN.md`。
+M3（文件同步、prod 事件与关闭撤销通知）尚未验收完成：M3-DAEMON-01必需的独立审查被模型服务安全策略中止，受影响派工暂停。传输、同步内核和需求事件基础均已完成主代理核验及独立复审；后端草稿、产品接线及阶段最终验收仍未完成。本文件由主代理统一更新，记录已发生的事实，不替代 `SQLITE-KNOWLEDGE-REBUILD-PLAN.md`。
 
 | 任务 | 当前状态 | 已核实的失败次数 |
 |---|---|---|
 | M3-TRANSPORT-01 | 主代理限定修复、53项复验及独立复审03通过，已提交 `f916425` | 2（历史保留） |
 | M3-SYNC-01 | 主代理限定修复、70项相关回归及独立复审03通过，已提交 `f038a94` | 2（历史保留） |
-| M3-EVENT-01 | 第二次实现已返回，主代理核对与独立复审待完成 | 1 |
-| M3-DAEMON-01 | 可信许可与单daemon协调后端第一次子代理实现进行中 | 0 |
+| M3-EVENT-01 | 主代理限定修复、84项相关回归及独立复审04通过，已提交 `d950ea1` | 2（历史保留） |
+| M3-DAEMON-01 | 首轮实现未验收；独立审查被模型服务安全策略中止，无结论，暂停受影响派工 | 0（工具中止不计实现失败） |
 | 宿主/生命周期接线及阶段最终验收 | 未开始，依赖任务尚未全部核验通过 | — |
 
 历史失败、原始验证输入和工具不可用记录保留在后续事件记录中，不由此表覆盖。
@@ -277,3 +277,134 @@ M3（文件同步、prod 事件与关闭撤销通知）正在实施与返修，�
 - 基线依赖为已验收提交 `f916425`/`f038a94`；只实现可信扫描许可固定元数据、单daemon多ClientInfo引用协调后端、严格内部index.sync协议及配套真实临时测试。允许新project-sync-grants/coordinator模块和测试、protocol必要改动；不改已审内核/transport/requirement/扩展/daemon启动入口。
 - 不依赖尚未通过复审的需求事件接口；生命周期风险hook作为必需安全接缝，缺失/失败时阻塞，不默认已核对归档。实际产品宿主接线后续单独任务进行。
 - 状态：运行中，失败计数0；日志前缀 `logs/m3-daemon-01-*`，结果返回后主代理与独立安全审查核验。
+
+### 2026-09-12T18:38Z · M3-RECORD-03 · 已验收单元与接手依据记录提交
+
+- 仅阶段记录提交为 `316b935`（`docs: preserve M3 verified units and scoped takeover evidence`），保存两项功能提交、全部已核实失败/限定接手、独立审查与新后端派工事实。
+- 未包含需求事件WIP、新后端代码或原`.pi/`；没有push/发布。下一步继续核对事件复审与后端结果。
+
+### 2026-09-12T18:39Z · M3-EVENT-01 · 第二次独立审查失败，限定接手
+
+- 独立 `bd5ef5b6-3c37-415` 已结束，报告 `logs/m3-event-review-02.md` 和真实SQLite/Git复现确认：M1旧owner/lease不能接管或closing撤权；最终DB检查后的授权回调可重入closing但sink仍收到正文。另有pending正文关闭/空闲过期仅懒清理、Promise-return普通sink不能在拿正文前机械识别的边界。
+- 主代理核对实际owner/finalCheck/consume控制流，确认前两项与缓存清理缺口成立；任意JS sink隔离不属首版保证，修复保留“可信同步且不延迟转发”契约并收窄描述，不假称可以撤回已经给回调的内容。
+- 两次依据：第一实现 `c4228b36-3207-44c` 被review-01以物理基线/异步返回/尾部恢复否决；第二实现 `5984bec1-2366-466` 被review-02上述真实复现否决。M3-EVENT-01累计真实失败2次，resume不可用不计失败。
+- 主代理仅接手此任务剩余兼容归一化、最终授权排序、受控同进程失效/过期清理及对应测试；保留准确diff/持久cursor/context/尾部needs_review成果。后端M3-DAEMON-01和后续宿主任务仍子代理优先。
+- 下一步：先补失败回归，限定修复并独立复审；未提交或开放该需求事件能力。
+
+### 2026-09-12T18:45—18:52Z · M3-EVENT-01 · 主代理限定接手与验证事实
+
+- 新增旧active/released owner接管/关闭、两层授权回调重入、关闭/过期清缓存回归；修改前选定9项为7失败/2通过（`logs/main-event-takeover-before.*`）。
+- 限定修复仍在原四文件：严格识别M1持久格式，读取只归一化为无有效租约视图，实际接管/撤权保留原fence/sequence并在事务中提升fence；所有可重入授权回调放在最后DB核验前；状态/租约提交变化在事务外立即通知本进程缓存失效；无正文metadata定时核验/到期清理与dispose关闭自有缓存。
+- 首次修后选定8项通过，合并3套真实Git夹具的缓存测试超过默认5秒；保留 `logs/main-event-takeover-after.*`。已按三个独立行为拆成3项测试，未修改产品超时或弱化断言。
+- 相关3文件随后为80通过/2失败（`logs/main-event-takeover-related.*`）：两项原关闭竞争测试仍期待延迟到consume才报lifecycle_denied；现在closing提交已立即清句柄，实际更早报unknown_delivery_handle。已改为精确新错误，并新增pending=0、真实closing与sink未调用断言，保留旧失败，待重新验证。
+- 当时typecheck通过（`logs/main-event-takeover-typecheck.*`），尚未将本轮改动记为完成。
+
+### 2026-09-12T18:54—18:57Z · M3-EVENT-01 · 接手修复复验与独立复审
+
+- 主代理event/state/service三文件82/82，exit0，85.92秒；typecheck与diff格式检查通过，证据 `logs/main-event-takeover-final.*`、`logs/main-event-final-typecheck.*`。
+- 额外备份回归命令传入backup/recovery两个模式，但当前仓库没有独立requirement-recovery测试文件，实际仅 `tests/requirement-backup.test.ts` 一文件9/9，29.97秒；证据 `logs/main-event-backup-recovery.*`。不把不存在的recovery测试说成已执行。
+- 独立 `M3-EVENT-REVIEW-03` 已派 `ff8f7ddf-3aa7-466`，配置和实际 `5x/gpt-5.6-sol`，session `2026-09-12T18-56-10-474Z_01a096fa-22ea-70fd-9482-0f1b16291439.jsonl` 已核对。
+- 状态：接手限定修复已测，独立复审未返回，不提交或签发需求事件通过。
+
+### 2026-09-12T18:58Z · M3-DAEMON-01 · 第一次实现已返回
+
+- `74eacf12-325f-416` 已结束；6文件为新project-sync-grants/coordinator及对应测试、runtime/protocol.ts与实际 `tests/daemon-protocol.test.ts`（原派工所指协议测试的真实路径）。没有修改数据库实现、既有内核、需求模块或产品入口。
+- 自报typecheck和6文件127项通过，证据 `logs/m3-daemon-01-{typecheck,vitest}-final.log`；仍未接扩展、daemon启动、真实风险hook/clock。
+- 主代理开始读取真实实现，发现许可签发/验证依赖同一个issuer和ClientInfo对象的可能跨进程接线问题；尚未完成核验，不能把内部同进程测试当真实宿主到daemon授权闭环。
+- 状态：首轮结果待审，未提交；下一步核对IPC/许可边界及独立安全审查。
+
+### 2026-09-12T19:04—19:05Z · M3-DAEMON-01 · 主代理核对与独立审查
+
+- 主代理完整读两个新模块和两份测试及协议diff，独立执行grant/coordinator/protocol三文件：84/84，exit0，6.99秒；证据 `logs/main-daemon-01-targeted.*`。
+- 当前测试使用同一进程内issuer和server.clients对象；不构成跨宿主/daemon进程授权证明，也未动态覆盖排队满时cleanup和一个持有者离线后剩余持有者自动同步。
+- 独立 `M3-DAEMON-REVIEW-01` 已派 `a628bcab-c8cb-49b`，配置/实际 `5x/gpt-5.6-sol`，session `2026-09-12T19-03-53-451Z_01a09701-336b-70fd-9482-0f1c094d1170.jsonl` 已核对。重点核对跨进程许可、ALS残留调用者、cleanup预算和worktree独立队列。
+- 状态：仅定向通过，独立结论待返回，未计后端任务完成。
+
+### 2026-09-12T19:08—19:11Z · M3-EVENT-01 · 接手修复复审03未通过与继续限定修复
+
+- `ff8f7ddf-3aa7-466` 已结束，报告 `logs/m3-event-review-03.md` 确认旧owner兼容、授权重入、closing/timer/dispose主路径均修复；仍有finalCheck恢复拒绝分支绕过提交后缓存通知，以及其SQL事务内调用宿主now()。
+- 主代理核对真实复现和控制流；这仍是同一已接手任务的剩余finalCheck边界，不新增或扩大接手许可。新增2项回归修改前均失败（`logs/main-event-finalcheck-before.*`）。
+- 限定修复：finalCheck事务外固化并校验时间，传给owner与history_unknown写入；仅确实改变访问状态的恢复拒绝分支在事务/连接结束后通知缓存，成功交付分支不追加可重入观察者。没有在SQL事务中调用缓存sink或宿主clock。
+- 修后两项通过、typecheck通过（`logs/main-event-finalcheck-after.*`、`logs/main-event-finalcheck-typecheck.*`），旧82项PASS不换绑新字节。下一步相关回归和独立复审04。
+
+### 2026-09-12T19:12—19:14Z · M3-EVENT-01 · finalCheck修复相关回归与独立复审
+
+- 主代理event/state/service三文件84/84，exit0，88.03秒；证据 `logs/main-event-finalcheck-related.*`。
+- 独立 `M3-EVENT-REVIEW-04` 已派 `0358e34c-9c6d-49a`，配置/实际 `5x/gpt-5.6-sol`（session `2026-09-12T19-11-59-667Z_01a09708-9eb3-70fd-9482-0f1e2f2cce6b.jsonl`）已核对。要求确认恢复拒绝通知与clock均在SQL事务外，成功交付路径不重新引入可重入回调。
+- 状态：限定任务仍待独立裁决，未提交，不称阶段通过。
+
+### 2026-09-12T19:15Z · M3-DAEMON-REVIEW-01 · 模型服务安全策略阻塞
+
+- agent `a628bcab-c8cb-49b` 通知为Error：`This content was flagged for possible cybersecurity risk`，结果为 `No output`。没有取得可核验的独立审查裁决。
+- 主代理停止受影响的后端派工；不通过改写请求、换模型或主代理自检绕过该限制。不读取受阻代理的完整私有转录来代替被中止的审查结果，不把工具错误当某项代码缺陷已证实。
+- 这是工具/模型服务中止，不计M3-DAEMON-01实现失败；首轮仍只有一次实际实现、未验收，不满足两次失败接手条件。
+- M3当前阻塞：后端独立安全审查不可取得，宿主/真实生命周期接线尚未开展；不能宣告阶段通过或进入M4。仅继续收取此前已运行的M3-EVENT-REVIEW-04结果并核对/保存其成果，之后交接同一M3。
+
+### 2026-09-12T19:19Z · M3-CLEANUP-01 · 阻塞现场保全与限定清理
+
+- 保存当前271项代码/资源/测试指纹为 `logs/blocked-stage-code-baseline.json`，不含原`.pi/`或实时记录文件；用于核对未提交成果，不代表最终验收通过。
+- 确认本轮Node22工具链无进程/文件占用后，删除本轮下载及解压的toolchain；Node22只完成环境准备，尚未运行M3代码测试，官方校验与环境日志保留。还删除本次工具自动生成、内容已由正式失败日志保留的单份重复大输出文件。
+- 清理明细 `logs/blocked-cleanup.json`；验证/审查/失败与模型证据继续保留，未删除用户文件、工作区、数据库或旧PID52973/53030。未对来源不能确认的其他/tmp测试目录执行批量删除。
+- 受影响后端派工继续暂停，事件独立复审04仍待返回；阶段最终全量/安装/两Node矩阵未执行，不能用定向结果替代。
+
+### 2026-09-12T19:22Z · M3-EVENT-01 · 独立复审04与主代理任务核验通过
+
+- `0358e34c-9c6d-49a` 已结束，报告 `logs/m3-event-review-04.md` 为限定范围PASS；7项选定回归、真实SQLite finalCheck时间/提交后通知/回滚不通知/成功分支无观察者探针及typecheck均通过。没有签发M3阶段通过。
+- 主代理完整读报告，四文件hash与报告逐项一致；既已执行的84项三文件相关回归对应这些相同字节，不重复把审查方未跑三文件误当主代理也未跑。271项阻塞现场代码基线复算零变化（`logs/handoff-baseline-comparison.json`）。
+- 严格unused诊断仍仅两项既存范围外shell声明，未发现本轮孤立残留（`logs/handoff-unused-check.*`）。主代理只整合任务四文件，未修改受阻后端。
+- 本任务核验通过，下一步只提交需求事件四文件；M3整体继续阻塞在后端必需审查，之后生成同阶段交接并停止。
+
+### 2026-09-12T19:22Z · M3-EVENT-01 · 功能本地提交
+
+- 实际提交 `d950ea1`（`feat: deliver approved requirement events with revocable context guards`），只含任务四文件，暂存diff检查通过。原两次子代理失败、主代理接手各轮失败与独立复审03/04事实均保留。
+- 该单元已保存到本地Git，不包括受阻后端草稿、`.pi/`或阶段记录；未push/发布。
+
+## 本窗口交接状态
+
+### 阶段总览
+
+当前权威计划为M0—M9，共10阶段：
+
+| 阶段 | 职责 | 状态 |
+|---|---|---|
+| M0 | Node/pnpm基线、安装资源与安全范围 | 已完成 |
+| M1 | 规则/需求协议、SQLite生命周期和本机正文存储 | 已完成 |
+| M2 | 当前代码/spec持久索引初始化及prod正文排除 | 已完成 |
+| M3 | 文件同步、可靠需求事件与撤权通知 | 当前阶段，部分完成并受阻 |
+| M4 | 完整需求工具、渐进确认与当前知识查询 | 未开始 |
+| M5 | 代码/spec专用变更与真实工具权限 | 未开始 |
+| M6 | 正式验证、关闭协议、归档和完成提醒 | 未开始 |
+| M7 | 单PM、增量plan/task与代理资源重构 | 未开始 |
+| M8 | 团队历史边界与业务Git外置 | 未开始 |
+| M9 | 真实闭环、性能、安装和总验收 | 未开始 |
+
+### 已核验并提交的M3单元
+
+- `f916425`：传输生命周期、握手缓冲和认证撤销；主代理53项相关测试通过，独立review-03 PASS。
+- `f038a94`：同步内核、稳定hash、dirty/fence、受限watcher与停止/通知顺序；主代理70项相关测试通过，独立review-03 PASS。
+- `d950ea1`：可靠批准事件、物理上下文基线、专用交付守卫、旧owner兼容和缓存撤权；主代理最终84项相关测试通过，独立review-04 PASS。此前9项备份回归通过；最终finalCheck修改仅另有84项相关回归，不把旧备份结果换绑新字节。
+- 上述均为Node26.8.2下的本任务验证。普通typecheck通过；严格unused诊断只剩已知两个范围外shell声明。没有M3最终全量、integration、installation、Node22运行矩阵或正式性能/长期资源验收通过结论。
+
+### 未完成与阻塞
+
+1. `M3-DAEMON-01`只有一次实现交付，尚未核验通过。其必需独立安全审查 `a628bcab-c8cb-49b` 被模型服务标记可能cybersecurity风险而中止，无审查结论。工具中止不计实现失败，不能据此主代理接手或签发通过，不改写请求/换模型规避。
+2. 后端待审疑点仍是疑点：许可issuer/ClientInfo的跨进程绑定、首个客户端上下文残留、cleanup队列预算与worktree独立队列等；不得将受阻审查的No output说成已证实这些问题。
+3. 未接真实daemon启动、宿主project_manage持续扫描授权/重连、Clock休眠对账、归档风险到真实生命周期的优先处理、聊天中的旧基线标记与写入/交付集成拒绝。
+4. 完整M3-AC1—AC9验收、阶段最终独立审查和全量/安装/两Node/性能资源验证未完成。仅内部接缝或定向测试通过不能替代真实产品闭环。
+
+### 保留现场及下次续接
+
+- 下一窗口仍为 **M3**，不是M4。先处理模型服务的必需审查访问限制，再核对代码/证据与实际任务状态续接。
+- 保留未提交后端6文件：`runtime/project-sync-grants.ts`、`daemon/project-index-coordinator.ts`、`runtime/protocol.ts`、`tests/project-sync-grants.test.ts`、`tests/project-index-coordinator.test.ts`、`tests/daemon-protocol.test.ts`。它们是未验收草稿，不应被混入其他功能提交或视作生产接线已完成。
+- 原`.pi/`保留；旧PID52973/53030不动。当前窗口所有本轮实现与审查代理均已结束，没有已知本轮测试子进程残留。不得自行停止旧进程或覆盖真实数据库。
+- 实时权威进度记录为本文件，主代理统一更新；私有证据根 `/tmp/m3-verification-wTYp57/logs/` 继续保留。`blocked-stage-code-baseline.json`和`handoff-baseline-comparison.json`用于核对当前源码，不能当通过证书。
+- 本轮Node22下载/解压及一份重复大输出已清理，正式诊断证据保留；没有批量删除来源不明临时目录。Node22代码验证未执行，后续需重新准备对应工具链。
+- 三项基础任务的两次失败记录不能跨任务累计；它们已由主代理限定接手、核验并提交。后端当前仍子代理优先，不能把基础任务接手扩大为后续主代理实现许可。
+
+### 收尾核对
+
+- 入口AGENTS和计划SHA-256与开工一致；未恢复被删除资料、未改变依赖/SDK或用户全局配置，未迁移/覆盖真实数据库。
+- 只保留本需求必要改动；已核验单元没有孤立导入/变量，无关的两项既存shell unused诊断保持原状。当前文档与注释直接说明职责/兼容/约束，实施历史只在本报告记录。
+- 最后进程检查仅见原有PID53030使用本仓库daemon入口，旧52973/53030均保留；没有已知本轮写入型测试/代理子进程残留。
+- 最终Git元数据由主代理统一维护在 `logs/handoff-git-state.json`，只记录实际提交和未提交路径；后端草稿明确保留、不暂存、不混入已核验功能提交。
+- **本窗口结论：M3未完成，因必需独立审查的模型服务阻塞暂停。下一窗口继续M3，不进入M4。**
