@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 
@@ -38,6 +39,32 @@ if (expectedCode === "valid") {
   assert.throws(() => checkSpecSet([{ ...input, content: '{"schemaVersion":1,"schemaVersion":1}' }]), /duplicate_key/);
   doc.rules[0].expected = "😀".repeat(1500);
   assert.throws(() => checkSpecSet([{ ...input, content: JSON.stringify(doc) }]), /split_required/);
+  const { LocalDatabase, databaseFile, uuidv7 } = await jiti.import(join(productRoot, "runtime/database.ts"));
+  const { parseDecisionBatch } = await jiti.import(join(productRoot, "runtime/short-decision-format.ts"));
+  const decision = { operationId: uuidv7(), requirementId: uuidv7(), version: 1, epoch: 1, prod: null,
+    decisions: [{ conclusion: "😀".repeat(400), scope: "只分析", references: ["G-1"], supersedes: [] }] };
+  assert.equal(parseDecisionBatch(JSON.stringify(decision)).decisions[0].conclusion, decision.decisions[0].conclusion);
+  assert.throws(() => parseDecisionBatch(JSON.stringify({ ...decision, actor: "user" })), /invalid_shape/);
+  decision.decisions[0].conclusion += "中";
+  assert.throws(() => parseDecisionBatch(JSON.stringify(decision)), /text_limit/);
+  const { withDatabaseMaintenance, createDatabaseSnapshot } = await jiti.import(join(productRoot, "runtime/database-maintenance.ts"));
+  const storage = await mkdtemp(join(tmpdir(), "installed-storage-"));
+  try {
+    const { RequirementStateStore } = await jiti.import(join(productRoot, "runtime/requirement-state.ts"));
+    await assert.rejects(RequirementStateStore.open({ dataRoot: storage, repoId: "a".repeat(64), repositoryRoot: storage }), /authorization_required/);
+    const { ShortDecisionStore } = await jiti.import(join(productRoot, "runtime/short-decisions.ts"));
+    await assert.rejects(ShortDecisionStore.open({ dataRoot: storage, repoId: "a".repeat(64), repositoryRoot: storage }), /authorization_required/);
+    const path = databaseFile(storage, "data");
+    const database = new LocalDatabase(path);
+    database.create("fixture", "retained", { value: 42 }); database.close();
+    const snapshot = await withDatabaseMaintenance({ directory: storage, worktreeRoots: [] }, (permit) => createDatabaseSnapshot(permit, "data"));
+    assert.equal(snapshot.executable, false); assert.equal(snapshot.restoreStatus, "needs_review");
+    assert.throws(() => new LocalDatabase(snapshot.snapshotPath), /snapshot_only/);
+    const index = new LocalDatabase(databaseFile(storage, "index"));
+    try { assert.throws(() => index.create("tasks", "forbidden", {}), /wrong_database_kind/); } finally { index.close(); }
+    await writeFile(join(storage, "data.sqlite"), "legacy fixture");
+    assert.throws(() => databaseFile(storage, "data"), /upgrade_required/);
+  } finally { await rm(storage, { recursive: true, force: true }); }
 } else if (expectedCode === "warm-invalid") {
   await withSyntaxTree("js", "let a = 1;", () => null);
   const path = join(productRoot, "resources/tree-sitter/tree-sitter-javascript.wasm");
