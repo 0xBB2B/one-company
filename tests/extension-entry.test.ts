@@ -54,6 +54,7 @@ describe("extensions/index.ts 唯一扩展入口", () => {
     const names = fakePi.registeredTools().map((tool) => tool.name);
     expect(names.length).toBeGreaterThan(0);
     expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain("pi_company_project_manage");
     expect(names.filter((name) => name === "bash").length).toBe(1);
   });
 

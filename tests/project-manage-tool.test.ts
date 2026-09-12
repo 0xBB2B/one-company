@@ -1,0 +1,580 @@
+import { afterEach, describe, expect, test } from "vitest";
+import { execFile } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Value } from "typebox/value";
+import projectManageExtension from "../extensions/project-manage.ts";
+import {
+  createProjectManageTool,
+  PROJECT_MANAGE_OUTPUT_LIMITS,
+  PROJECT_MANAGE_PARAMETERS,
+} from "../runtime/project-manage-tool.ts";
+import type {
+  OpenProjectIndexService,
+  ProjectIndexServiceHandle,
+  ProjectManageHostContext,
+} from "../runtime/project-manage-tool.ts";
+import type { ProjectIndexAuthorizationRequest } from "../runtime/project-index-service.ts";
+import { repositoryIdentity } from "../runtime/identity.ts";
+import { createFakePi } from "./helpers/fake-pi.ts";
+import { temporaryRoot } from "./helpers/temporary-root.ts";
+
+const exec = promisify(execFile);
+const roots: string[] = [];
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  return (await exec("/usr/bin/git", args, { cwd, env: { ...process.env, LC_ALL: "C" } })).stdout.trim();
+}
+
+async function fixture() {
+  const root = await mkdtemp(join(temporaryRoot(), "project-manage-tool-"));
+  roots.push(root);
+  const repositoryRoot = join(root, "repository");
+  const dataRoot = join(root, "data");
+  await mkdir(repositoryRoot);
+  await mkdir(dataRoot);
+  await git(repositoryRoot, ["init", "--initial-branch=main"]);
+  await writeFile(join(repositoryRoot, "README.md"), "fixture\n");
+  await git(repositoryRoot, ["add", "README.md"]);
+  await git(repositoryRoot, ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "initial"]);
+  const identity = await repositoryIdentity(repositoryRoot);
+  const repoDataRoot = join(dataRoot, "repos", identity.repoId);
+  await mkdir(repoDataRoot, { recursive: true });
+  for (const path of [dataRoot, join(dataRoot, "repos"), repoDataRoot]) await chmod(path, 0o700);
+  const host: ProjectManageHostContext = {
+    windowId: "window-main",
+    sessionId: "session-main",
+    repositories: new Map([[identity.repoId, { path: repositoryRoot }]]),
+  };
+  return { root, repositoryRoot, dataRoot, repoId: identity.repoId, host };
+}
+
+afterEach(async () => {
+  for (const root of roots.splice(0).reverse()) await rm(root, { recursive: true, force: true });
+});
+
+function context(
+  sessionId: string,
+  confirm: (title: string, message: string, options?: { signal?: AbortSignal }) => Promise<boolean>,
+  hasUI = true,
+): ExtensionContext {
+  return {
+    cwd: "/not-used",
+    mode: hasUI ? "rpc" : "print",
+    hasUI,
+    ui: { confirm } as never,
+    sessionManager: { getSessionId: () => sessionId } as never,
+  } as ExtensionContext;
+}
+
+function authorizationRequest(
+  action: "open" | "status" | "preview" | "init" | "refresh",
+  phase: "before" | "after" | "read" | "publish" | "return",
+  repoId: string,
+  repositoryRoot: string,
+  workspaceId: string | null,
+  path: string | null = null,
+): ProjectIndexAuthorizationRequest {
+  return { action, phase, repoId, repositoryRoot, workspaceId, path };
+}
+
+function statusResult(repoId: string) {
+  return {
+    action: "status",
+    workspace: { workspaceId: "b".repeat(64), repoId, root: "/must/not/escape", branch: "private-branch" },
+    head: "c".repeat(40),
+    initialized: false,
+    cacheVerified: false,
+    index: null,
+    body: "PROD_BODY_SENTINEL",
+  };
+}
+
+function budgetResult() {
+  return {
+    limits: { maxFileBytes: 2 * 1024 * 1024, maxTotalTextBytes: 20 * 1024 * 1024, maxEntries: 20_000, maxDepth: 64 },
+    used: { entries: 12, textBytes: 3456 },
+    exhausted: ["depth"],
+    stoppedReason: "complete",
+  };
+}
+
+function runtimeFor(
+  world: Awaited<ReturnType<typeof fixture>>,
+  openService: OpenProjectIndexService,
+  getCurrentHost: () => ProjectManageHostContext = () => world.host,
+) {
+  const runtime = createProjectManageTool({
+    dataRoot: world.dataRoot,
+    resolveHost: async () => getCurrentHost(),
+    currentHost: () => getCurrentHost(),
+    openService,
+  });
+  runtime.startSession(world.host);
+  return runtime;
+}
+
+async function call(
+  runtime: ReturnType<typeof runtimeFor>,
+  params: Record<string, unknown>,
+  ctx: ExtensionContext,
+  signal?: AbortSignal,
+  onUpdate?: (result: unknown) => void,
+) {
+  return runtime.tool.execute("tool-call", params as never, signal, onUpdate as never, ctx);
+}
+
+describe("project_manage 固定输入与主代理宿主边界", () => {
+  test("公开 schema 仅有 init/status/refresh、repoId 与 init 预览位，不接受路径/身份/正文/SQL/Git 字段", () => {
+    const base = { action: "init", repoId: "a".repeat(64), preview: true };
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, base)).toBe(true);
+    for (const forged of [
+      { path: "/tmp/repo" }, { root: "/tmp/repo" }, { dataRoot: "/tmp/data" }, { cwd: "/tmp/repo" },
+      { role: "main" }, { actor: "user" }, { approved: true }, { sql: "select *" }, { body: "secret" },
+      { command: "git status" }, { gitArgs: ["status"] }, { limits: { maxEntries: 999_999 } },
+    ]) expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { ...base, ...forged })).toBe(false);
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { action: "recovery-check", repoId: base.repoId })).toBe(false);
+  });
+
+  test("preview 只能是 init 的 preview=true；未知、未完成 action 和 status/refresh 携带 preview 在执行层默认拒绝", async () => {
+    const world = await fixture();
+    const runtime = runtimeFor(world, async () => ({
+      preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}),
+    }));
+    const ctx = context("session-main", async () => true);
+    await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId }, ctx)).rejects.toMatchObject({ code: "invalid_action" });
+    await expect(call(runtime, { action: "status", repoId: world.repoId, preview: true }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(call(runtime, { action: "refresh", repoId: world.repoId, preview: false }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
+    await runtime.shutdown();
+  });
+
+  test("repoId 只能选择 lifecycle Map 中的真实仓库，session/window/当前 Map 任一变化都会拒绝", async () => {
+    const world = await fixture();
+    let current = world.host;
+    const runtime = runtimeFor(world, async () => ({
+      preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => statusResult(world.repoId),
+    }), () => current);
+    const ctx = context("session-main", async () => true);
+    await expect(call(runtime, { action: "status", repoId: "f".repeat(64) }, ctx)).rejects.toMatchObject({ code: "foreign_repo" });
+    await expect(call(runtime, { action: "status", repoId: world.repoId }, context("other-session", async () => true))).rejects.toMatchObject({ code: "stale_session" });
+    current = { ...world.host, windowId: "window-replaced" };
+    await expect(call(runtime, { action: "status", repoId: world.repoId }, ctx)).rejects.toMatchObject({ code: "stale_window" });
+    await runtime.shutdown();
+  });
+
+  test("dataRoot 位于仓库内时在服务打开前拒绝", async () => {
+    const world = await fixture();
+    let opened = false;
+    const runtime = createProjectManageTool({
+      dataRoot: join(world.repositoryRoot, "local-index"),
+      resolveHost: async () => world.host,
+      currentHost: () => world.host,
+      openService: async () => { opened = true; throw new Error("must not open"); },
+    });
+    runtime.startSession(world.host);
+    await expect(call(runtime, { action: "status", repoId: world.repoId }, context("session-main", async () => true))).rejects.toMatchObject({ code: "unsafe_data_root" });
+    expect(opened).toBe(false);
+    await runtime.shutdown();
+  });
+
+  test("dataRoot/repos/repoId 被替换为指向 worktree 的符号链接时 HOST 在 service 打开前拒绝", async () => {
+    const world = await fixture();
+    const repoDataRoot = join(world.dataRoot, "repos", world.repoId);
+    const trap = join(world.repositoryRoot, "index-trap");
+    await rm(repoDataRoot, { recursive: true, force: true });
+    await mkdir(trap);
+    await symlink(trap, repoDataRoot, "dir");
+    let opened = false;
+    const runtime = runtimeFor(world, async () => {
+      opened = true;
+      return { preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) };
+    });
+    await expect(call(runtime, { action: "status", repoId: world.repoId }, context("session-main", async () => true))).rejects.toMatchObject({ code: "unsafe_data_root" });
+    expect(opened).toBe(false);
+    await runtime.shutdown();
+  });
+});
+
+describe("扫描确认、service 授权与有限输出", () => {
+  test("首次 preview 通过真实 UI 确认具体根/排除/外部 index.db，随后 init/refresh 在同 session 复用有限授权", async () => {
+    const world = await fixture();
+    const calls: string[] = [];
+    const receivedOptions: unknown[] = [];
+    let confirms = 0;
+    let confirmation = "";
+    const openService: OpenProjectIndexService = async (input) => {
+      const workspaceId = "d".repeat(64);
+      expect(input.repositoryRoot).toBe(world.repositoryRoot);
+      expect(input.dataRoot).toBe(world.dataRoot);
+      expect(input.repoId).toBe(world.repoId);
+      expect(input.authorize(authorizationRequest("open", "before", world.repoId, world.repositoryRoot, null))).toBe(true);
+      expect(input.authorize(authorizationRequest("open", "after", world.repoId, world.repositoryRoot, null))).toBe(true);
+      const service: ProjectIndexServiceHandle = {
+        async preview(options) {
+          calls.push("preview"); receivedOptions.push(options);
+          expect(input.authorize(authorizationRequest("preview", "read", world.repoId, world.repositoryRoot, workspaceId, "src/main.ts"))).toBe(true);
+          options?.onProgress?.({ phase: "read", path: "src/main.ts", completed: 1, total: 1 });
+          return { action: "preview", workspace: { workspaceId, repoId: world.repoId, root: world.repositoryRoot, branch: "main" }, files: [], skipped: [], archives: { metadata: [], issues: [] }, partial: false, databaseCreated: false };
+        },
+        async init(options) { calls.push("init"); receivedOptions.push(options); return { action: "init", status: "ready", generation: 1, files: 1, skipped: [], partial: false }; },
+        async refresh(options) { calls.push("refresh"); receivedOptions.push(options); return { action: "refresh", status: "ready", generation: 1, files: 1, skipped: [], partial: false }; },
+        async status() { calls.push("status"); return statusResult(world.repoId); },
+      };
+      return service;
+    };
+    const runtime = runtimeFor(world, openService);
+    const updates: unknown[] = [];
+    const ctx = context("session-main", async (_title, message) => { confirms += 1; confirmation = message; return true; });
+
+    await call(runtime, { action: "init", repoId: world.repoId, preview: true }, ctx, undefined, (value) => updates.push(value));
+    await call(runtime, { action: "init", repoId: world.repoId }, ctx);
+    await call(runtime, { action: "refresh", repoId: world.repoId }, ctx);
+
+    expect(calls).toEqual(["preview", "init", "refresh"]);
+    expect(confirms).toBe(1);
+    expect(confirmation).toContain(`仓库根：${world.repositoryRoot}`);
+    expect(confirmation).toContain("docs/prod 只枚举有限路径元数据，不读取正文");
+    expect(confirmation).toContain(join(world.dataRoot, "repos", world.repoId));
+    expect(confirmation).toContain("仅在当前 session 和当前 lifecycle 窗口内复用");
+    for (const options of receivedOptions as Array<{ limits: Record<string, number> }>) {
+      expect(options.limits).toEqual({ maxFileBytes: 2 * 1024 * 1024, maxTotalTextBytes: 20 * 1024 * 1024, maxEntries: 20_000, maxDepth: 64 });
+    }
+    expect(JSON.stringify(updates)).toContain("src/main.ts");
+    await runtime.shutdown();
+  });
+
+  test("status 无需扫描确认但只输出绑定仓库最少 metadata；service 正文/根/branch 与进度额外字段不会外泄", async () => {
+    const world = await fixture();
+    let confirms = 0;
+    let authorize: ((request: ProjectIndexAuthorizationRequest) => boolean) | undefined;
+    let authorizationChecks: boolean[] = [];
+    const valid = authorizationRequest("status", "return", world.repoId, world.repositoryRoot, "b".repeat(64));
+    const runtime = runtimeFor(world, async (input) => {
+      authorize = input.authorize;
+      return {
+        preview: async () => ({}), init: async () => ({}), refresh: async () => ({}),
+        status: async () => {
+          authorizationChecks = [
+            input.authorize(valid),
+            input.authorize({ ...valid, action: "init" }),
+            input.authorize({ ...valid, repoId: "a".repeat(64) }),
+            input.authorize({ ...valid, path: "docs/prod/secret.md" }),
+            input.authorize({ ...valid, role: "main" } as ProjectIndexAuthorizationRequest),
+          ];
+          return statusResult(world.repoId);
+        },
+      };
+    });
+    const result = await call(runtime, { action: "status", repoId: world.repoId }, context("session-main", async () => { confirms += 1; return true; }));
+    const encoded = JSON.stringify(result);
+    expect(confirms).toBe(0);
+    expect(encoded).toContain(world.repoId);
+    expect(encoded).toContain("initialized");
+    expect(encoded).not.toContain("PROD_BODY_SENTINEL");
+    expect(encoded).not.toContain("must/not/escape");
+    expect(encoded).not.toContain("private-branch");
+    expect((result.details as { truncation: { maxBytes: number; maxEntries: number } }).truncation).toMatchObject(PROJECT_MANAGE_OUTPUT_LIMITS);
+
+    expect(authorizationChecks).toEqual([true, false, false, false, false]);
+    expect(authorize?.(valid)).toBe(false);
+    await runtime.shutdown();
+    expect(authorize?.(valid)).toBe(false);
+  });
+
+  test("真实公开形状保留 building、spec valid、完整预算、代次/hash/计数及必要 index 状态", async () => {
+    const world = await fixture();
+    const workspace = { workspaceId: "d".repeat(64), repoId: world.repoId, root: world.repositoryRoot, branch: "refs/heads/main" };
+    let confirms = 0;
+    const runtime = runtimeFor(world, async () => ({
+      preview: async () => ({}),
+      async status() {
+        return {
+          action: "status",
+          workspace,
+          head: "a".repeat(40),
+          initialized: true,
+          cacheVerified: false,
+          index: {
+            ...workspace,
+            status: "building",
+            version: 7,
+            fence: 11,
+            currentGeneration: 3,
+            targetGeneration: 4,
+            diagnostics: [{ code: "budget_exceeded", path: null }],
+            updatedAt: 1_750_000_000_000,
+            body: "STATUS_BODY_SENTINEL",
+          },
+        };
+      },
+      async init() {
+        return {
+          action: "init",
+          workspace,
+          head: "a".repeat(40),
+          status: "partial",
+          generation: 4,
+          parsedFiles: 2,
+          reusedFiles: 3,
+          readBytes: 4096,
+          sourceCodepoints: 2048,
+          files: 5,
+          symbols: 8,
+          codeEdges: 2,
+          diagnostics: [{ code: "unsupported_language", path: "tools/check.py", body: "DIAGNOSTIC_BODY_SENTINEL" }],
+          skipped: [{ path: ".env", reason: "sensitive", body: "SKIP_BODY_SENTINEL" }],
+          archives: { metadata: [], issues: [] },
+          budget: budgetResult(),
+          spec: { status: "valid", contractSetHash: "e".repeat(64), schemaHash: "f".repeat(64), body: "SPEC_BODY_SENTINEL" },
+          body: "BUILD_BODY_SENTINEL",
+        };
+      },
+      async refresh() {
+        return {
+          action: "refresh",
+          workspace,
+          head: "b".repeat(40),
+          status: "invalid",
+          generation: 5,
+          parsedFiles: 0,
+          reusedFiles: 5,
+          readBytes: 4096,
+          sourceCodepoints: 0,
+          files: 5,
+          symbols: 0,
+          codeEdges: 0,
+          diagnostics: [{ code: "invalid_spec", path: "docs/spec/bad.rules.json" }],
+          skipped: [],
+          archives: { metadata: [], issues: [] },
+          budget: budgetResult(),
+          spec: { status: "invalid", contractSetHash: null, schemaHash: "f".repeat(64) },
+        };
+      },
+    }));
+    const ctx = context("session-main", async () => { confirms += 1; return true; });
+
+    const status = await call(runtime, { action: "status", repoId: world.repoId }, ctx);
+    expect(status.details).toMatchObject({
+      action: "status",
+      workspace: { workspaceId: workspace.workspaceId, repoId: world.repoId },
+      head: "a".repeat(40),
+      initialized: true,
+      cacheVerified: false,
+      partial: false,
+      invalid: false,
+      index: {
+        status: "building",
+        version: 7,
+        fence: 11,
+        currentGeneration: 3,
+        targetGeneration: 4,
+        diagnostics: [{ code: "budget_exceeded", path: null }],
+        updatedAt: 1_750_000_000_000,
+      },
+    });
+    const initialized = await call(runtime, { action: "init", repoId: world.repoId }, ctx);
+    expect(initialized.details).toMatchObject({
+      action: "init",
+      status: "partial",
+      generation: 4,
+      partial: true,
+      invalid: false,
+      parsedFiles: 2,
+      reusedFiles: 3,
+      readBytes: 4096,
+      sourceCodepoints: 2048,
+      files: 5,
+      symbols: 8,
+      codeEdges: 2,
+      budget: budgetResult(),
+      spec: { status: "valid", contractSetHash: "e".repeat(64), schemaHash: "f".repeat(64) },
+    });
+    const refreshed = await call(runtime, { action: "refresh", repoId: world.repoId }, ctx);
+    expect(refreshed.details).toMatchObject({
+      action: "refresh",
+      status: "invalid",
+      generation: 5,
+      partial: false,
+      invalid: true,
+      diagnostics: [{ code: "invalid_spec", path: "docs/spec/bad.rules.json" }],
+      spec: { status: "invalid", contractSetHash: null, schemaHash: "f".repeat(64) },
+    });
+    expect(confirms).toBe(1);
+    expect(JSON.stringify([status, initialized, refreshed])).not.toContain("BODY_SENTINEL");
+    await runtime.shutdown();
+  });
+
+  test("授权后 index.db 被替换为指向 worktree 的链接时，逐次同步 authorize 拒绝发布", async () => {
+    const world = await fixture();
+    const databasePath = join(world.dataRoot, "repos", world.repoId, "index.db");
+    const trap = join(world.repositoryRoot, "index-db-trap");
+    let publishAuthorized: boolean | undefined;
+    const runtime = runtimeFor(world, async (input) => ({
+      preview: async () => ({}), refresh: async () => ({}), status: async () => ({}),
+      async init() {
+        await writeFile(trap, "do-not-overwrite\n");
+        await symlink(trap, databasePath);
+        publishAuthorized = input.authorize(authorizationRequest("init", "publish", world.repoId, world.repositoryRoot, "e".repeat(64)));
+        return { action: "init", status: "ready", generation: 1 };
+      },
+    }));
+    await expect(call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true))).rejects.toMatchObject({ code: "repository_changed" });
+    expect(publishAuthorized).toBe(false);
+    expect(await readFile(trap, "utf8")).toBe("do-not-overwrite\n");
+    await runtime.shutdown();
+  });
+
+  test("输出总项数受限、截断显式，skip/archive issue 优先于普通文件路径且正文 sentinel 不返回", async () => {
+    const world = await fixture();
+    const files = Array.from({ length: 150 }, (_, index) => ({ path: `src/file-${index}.ts`, kind: "code", language: "ts", size: 1, content: `SOURCE_SENTINEL_${index}` }));
+    const runtime = runtimeFor(world, async () => ({
+      async preview() {
+        return {
+          action: "preview",
+          partial: true,
+          databaseCreated: false,
+          invalid: [{ code: "invalid_spec", path: "docs/spec/bad.rules.json", body: "SPEC_SENTINEL" }],
+          skipped: [{ path: ".env", reason: "sensitive", body: "PROD_SENTINEL" }],
+          archives: { issues: [{ path: "docs/prod/bad", reason: "invalid_archive_name" }], metadata: [] },
+          files,
+          source: "SOURCE_SENTINEL",
+          body: "PROD_SENTINEL",
+        };
+      },
+      init: async () => ({}), refresh: async () => ({}), status: async () => ({}),
+    }));
+    const result = await call(runtime, { action: "init", repoId: world.repoId, preview: true }, context("session-main", async () => true));
+    const encoded = JSON.stringify(result);
+    expect(Buffer.byteLength((result.content[0] as { text: string }).text)).toBeLessThanOrEqual(PROJECT_MANAGE_OUTPUT_LIMITS.maxBytes);
+    expect(encoded).toContain("sensitive");
+    expect(encoded).toContain("invalid_archive_name");
+    expect(encoded).not.toContain("SENTINEL");
+    expect((result.details as { truncation: { truncated: boolean; omittedEntries: number; invalidOmitted: number } }).truncation).toMatchObject({ truncated: true });
+    expect((result.details as { truncation: { omittedEntries: number } }).truncation.omittedEntries).toBeGreaterThan(0);
+    await runtime.shutdown();
+  });
+
+  test("无 UI、用户拒绝均不生成可复用扫描许可；底层错误使用固定消息且不带正文", async () => {
+    const world = await fixture();
+    let opens = 0;
+    const failing: OpenProjectIndexService = async () => {
+      opens += 1;
+      return {
+        preview: async () => { throw new Error("PROD_ERROR_SENTINEL"); },
+        init: async () => { throw new Error("PROD_ERROR_SENTINEL"); },
+        refresh: async () => { throw new Error("PROD_ERROR_SENTINEL"); },
+        status: async () => { throw new Error("PROD_ERROR_SENTINEL"); },
+      };
+    };
+    const runtime = runtimeFor(world, failing);
+    await expect(call(runtime, { action: "init", repoId: world.repoId, preview: true }, context("session-main", async () => true, false))).rejects.toMatchObject({ code: "scan_confirmation_required" });
+    await expect(call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => false))).rejects.toMatchObject({ code: "scan_declined" });
+    expect(opens).toBe(0);
+    const error = await call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true)).then(() => undefined, (value) => value as Error);
+    expect(error?.message).toBe("项目索引操作失败；未返回底层正文或错误详情");
+    expect(error?.message).not.toContain("SENTINEL");
+    await runtime.shutdown();
+  });
+});
+
+describe("取消、session_shutdown 与扩展接线", () => {
+  test("session_shutdown 撤销许可、向 service 取消并等待真实操作收尾；新 session 不继承许可", async () => {
+    const world = await fixture();
+    let startedResolve!: () => void;
+    const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+    let settleResolve!: (value: unknown) => void;
+    let cancelCalls = 0;
+    let settled = false;
+    let receivedSignal: AbortSignal | undefined;
+    let currentHost = world.host;
+    const runtime = runtimeFor(world, async () => ({
+      preview: async () => ({}), refresh: async () => ({}), status: async () => ({}),
+      init: async (options) => {
+        receivedSignal = options?.signal;
+        startedResolve();
+        return new Promise((resolve) => { settleResolve = resolve; });
+      },
+      cancel() {
+        cancelCalls += 1;
+        setTimeout(() => { settled = true; settleResolve({ action: "init", status: "cancelled", generation: 0 }); }, 20);
+        return true;
+      },
+    }), () => currentHost);
+    const pending = call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true)).then(
+      () => undefined,
+      (error) => error as { code: string },
+    );
+    await started;
+    expect(receivedSignal?.aborted).toBe(false);
+    const shutdown = runtime.shutdown();
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(cancelCalls).toBe(1);
+    expect(settled).toBe(false);
+    await shutdown;
+    expect(settled).toBe(true);
+    expect(await pending).toMatchObject({ code: "cancelled" });
+
+    const freshHost = { ...world.host, sessionId: "session-fresh", windowId: "window-fresh" };
+    currentHost = freshHost;
+    runtime.startSession(freshHost);
+    await expect(call(runtime, { action: "init", repoId: world.repoId }, context("session-fresh", async () => true, false))).rejects.toMatchObject({ code: "scan_confirmation_required" });
+    await runtime.shutdown();
+  });
+
+  test("session_shutdown 早于 windowReady 兑现时，旧 session 结果不能重新激活工具", async () => {
+    const world = await fixture();
+    let resolveWindow!: (window: unknown) => void;
+    const pendingWindow = new Promise<unknown>((resolvePromise) => { resolveWindow = resolvePromise; });
+    const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
+    let registeredTool: ReturnType<typeof createProjectManageTool>["tool"] | undefined;
+    const pi = {
+      on(name: string, handler: (event: unknown, ctx: unknown) => unknown) {
+        handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      },
+      registerTool(tool: ReturnType<typeof createProjectManageTool>["tool"]) { registeredTool = tool; },
+    } as unknown as ExtensionAPI;
+    const window = {
+      windowId: world.host.windowId,
+      sessionId: world.host.sessionId,
+      workspace: { repos: [{ repoId: world.repoId, path: world.repositoryRoot, commonDir: join(world.repositoryRoot, ".git") }], skipped: [] },
+      clients: { closeAll() {} },
+    } as never;
+    projectManageExtension(pi, {
+      dataRoot: world.dataRoot,
+      windowReady: () => pendingWindow as never,
+      windowContext: () => window,
+      openService: async () => ({ preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) }),
+    });
+    const ctx = context("session-main", async () => true);
+    const startPromise = handlers.get("session_start")![0]!({ type: "session_start", reason: "startup" }, ctx);
+    await handlers.get("session_shutdown")![0]!({ type: "session_shutdown", reason: "quit" }, ctx);
+    resolveWindow(window);
+    await startPromise;
+    await expect(registeredTool!.execute("call", { action: "status", repoId: world.repoId } as never, undefined, undefined, ctx)).rejects.toMatchObject({ code: "host_unavailable" });
+  });
+
+  test("扩展只登记一个 project_manage，并注册 session_start/session_shutdown 以绑定和清理 lifecycle", async () => {
+    const world = await fixture();
+    const fakePi = createFakePi();
+    const window = {
+      windowId: world.host.windowId,
+      sessionId: world.host.sessionId,
+      workspace: { repos: [{ repoId: world.repoId, path: world.repositoryRoot, commonDir: join(world.repositoryRoot, ".git") }], skipped: [] },
+      clients: { closeAll() {} },
+    } as never;
+    projectManageExtension(fakePi.pi as unknown as ExtensionAPI, {
+      dataRoot: world.dataRoot,
+      windowReady: async () => window,
+      windowContext: () => window,
+      openService: async () => ({ preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) }),
+    });
+    expect(fakePi.registeredTools().map((tool) => tool.name)).toEqual(["pi_company_project_manage"]);
+    expect(fakePi.handlerCount("session_start")).toBe(1);
+    expect(fakePi.handlerCount("session_shutdown")).toBe(1);
+    const ctx = context("session-main", async () => true);
+    await fakePi.trigger("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+  });
+});
