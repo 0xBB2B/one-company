@@ -27,7 +27,7 @@ pi-company 把开发分为三个层次：
 
 代码审查检查实现是否合理，功能验收检查实际行为是否符合需求。每个阶段都有明确的检查条件，检查通过后才能进入下一阶段。需求代理运行在后台进程中，启动后可从同一仓库的其他窗口查看进度、补充说明、暂停或停止；关闭某个窗口不会结束它。
 
-> 当前框架改造已提供 M1 的协议、生命周期、数据库和需求正文存储入口。下面原有命令仍运行旧工作流，不处理新 UUID 需求的授权与生命周期；M2 索引、M3 文件监听与可靠通知、M4 完整自然语言需求流程、M5 写入工具、M6 完整 QA/关闭通知和 M7 PM 流程尚未接通。
+> 当前框架改造已提供 M1 的协议、生命周期、数据库和需求正文存储入口，以及 M2 的持久项目索引初始化。下面原有命令仍运行旧工作流，不处理新 UUID 需求的授权与生命周期；M3 文件监听与可靠通知、M4 `knowledge_query` 和完整自然语言需求流程、M5 写入工具、M6 完整 QA/关闭通知、M7 PM 流程尚未接通。当前公开的新业务工具只有 `pi_company_requirement_manage` 和 `pi_company_project_manage`，不表示计划中的 11 个核心工具已经全部上线。
 
 ## 安装
 
@@ -59,6 +59,22 @@ pi remove git:github.com/0xBB2B/pi-company
 | `/pi-company:ps` | 查看和管理终端命令任务 |
 
 例如执行 `/pi-company:new 给订单列表加导出功能`：主会话先讨论需求，写好规范与需求文档，再请你确认；确认后启动需求代理，由它规划任务、实现功能、安排代码审查和功能验收。如果需要补充信息，问题会显示在对话中，你的回答会交给需求代理。对话中断后，用 `/pi-company:resume` 读取保存的进度并继续。
+
+### 当前项目索引
+
+已接入仓库可由代理调用 `pi_company_project_manage`。公开参数只有：
+
+```json
+{ "action": "init", "repoId": "<当前 lifecycle 中的 64 位仓库身份>", "preview": true }
+```
+
+- `action` 只接受 `init`、`status`、`refresh`；`preview` 只允许用于 `init`，设为 `true` 时只预览范围，不创建 `index.db`。
+- 首次预览、初始化或刷新会在当前真实 UI 中显示扫描范围并请求确认；许可只在同一 session、窗口和仓库身份内复用。`status` 不扫描文件，也不代表缓存已经做过当前性核对。
+- 初始化和刷新会索引当前代码、配置、普通文档与 `docs/spec`，提取 TS/TSX、JS/JSX、Go 的结构和可证明的同文件直接调用；其他语言只保留文件级记录。语法错误返回 `partial`，无效 spec 返回 `invalid`，不会回退旧正文。
+- `.git`、依赖、构建/缓存/日志、本机数据库、敏感凭据、链接文件、多链接文件、嵌套仓库和 `docs/prod` 正文都不进入索引。归档需求只登记合法 UUID 文件路径，状态固定为 `unknown`，不产生活动需求授权。
+- 默认预算为单文件 2 MiB、文本集合 20 MiB、20,000 个目录条目、64 层深度。发布前会再次读取并核对 hash，因此一次完整构建最多读取两倍文本集合预算。工具输出最多 32 KiB、100 项；截断、预算耗尽、跳过项和必要阻塞状态会明确返回。
+
+索引会写入仓库外的 `index.db`，未变文件可按内容 hash 和解析器版本跨刷新、跨进程复用。当前没有 M3 文件监听或自动 dirty 对账，也没有 M4 `knowledge_query`；外部修改后应再次调用 `refresh`，不能把 `status` 当成最新内容证明。
 
 ## 守护进程
 
@@ -111,7 +127,7 @@ pi remove git:github.com/0xBB2B/pi-company
 | 位置（相对于数据根目录） | 内容 |
 |---|---|
 | `repos/<仓库身份>/data.db` | 需求状态、运行、对话、决策、消息、窗口、文件占用和错误详情 |
-| `repos/<仓库身份>/index.db` | 独立的可重建索引存储基础；项目扫描与索引查询尚未接入 |
+| `repos/<仓库身份>/index.db` | 当前代码、`docs/spec`、普通资料、结构关系与全文搜索片段的可重建持久索引；公开入口目前只有初始化、状态和刷新 |
 | `repos/<仓库身份>/requirements/<UUIDv7>/` | 需求的 `prod.md` 和只跟踪该正文的独立本机 Git 仓库 |
 | `global.db` | 全局角色设置与主会话 Shell 任务登记 |
 | `repos/<仓库身份>/logs/<启动 UUIDv7>.log` | 每次后台进程启动产生的运行日志 |
@@ -156,9 +172,9 @@ M1 的 `requirement_manage` 已接通真实宿主 lifecycle、输入结构和 UI
 
 ## 开发
 
-内部语法解析入口 `runtime/syntax-parser.ts` 使用随包分发的 TS/TSX、JS/JSX、Go 语法 WASM 和固定版本 `web-tree-sitter` 运行时。安装后可离线解析，不需要 CodeGraph 或现场编译；资源缺失、损坏或版本不兼容时明确失败。该入口只解析调用方提供的源码字符串，不包含项目扫描、索引或新业务工具。资源来源、许可证和使用边界见 [解析资源说明](resources/tree-sitter/README.md)。
+内部语法解析入口 `runtime/syntax-parser.ts` 使用随包分发的 TS/TSX、JS/JSX、Go 语法 WASM 和固定版本 `web-tree-sitter` 运行时。安装后可离线解析，不需要 CodeGraph 或现场编译；资源缺失、损坏或版本不兼容时明确失败。该低层入口只解析调用方提供的源码字符串；项目扫描、结构提取、持久化和宿主授权分别由 `runtime/project-index-policy.ts`、`runtime/code-extractor.ts`、`runtime/index-store.ts`、`runtime/project-index-service.ts` 和 `runtime/project-manage-tool.ts` 负责。资源来源、许可证和使用边界见 [解析资源说明](resources/tree-sitter/README.md)。
 
-内部规则校验入口 `runtime/spec-format.ts` 检查当前规则 JSON 的字段、重复键、大小和引用，返回内容指纹与待审查信息；它不发布规则、不写索引，也不以格式通过代替语义审查。共享 schema 的分发源与计数说明见 [规则格式说明](resources/spec/README.md)。
+内部规则校验入口 `runtime/spec-format.ts` 检查当前规则 JSON 的字段、重复键、大小和引用，返回内容指纹与待审查信息；项目索引服务会把有效的当前规则写入索引，无效集合则发布 `invalid` 并清掉旧规则正文。它仍不发布业务规则，也不以格式通过代替语义审查。共享 schema 的分发源与计数说明见 [规则格式说明](resources/spec/README.md)。
 
 ```bash
 pnpm install --frozen-lockfile
