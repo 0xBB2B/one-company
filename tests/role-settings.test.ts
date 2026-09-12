@@ -98,15 +98,15 @@ describe("settingsPaths", () => {
     const repo = await createRepoFixture();
     try {
       const paths = await settingsPaths({ agentDir: "/home/x/.pi/agent", repoRoot: repo.root, projectTrusted: true });
-      expect(paths.global).toBe("/home/x/.pi/agent/pi-company/global.sqlite");
-      expect(paths.project).toMatch(/pi-company\/repos\/[0-9a-f]{64}\/data.sqlite$/);
+      expect(paths.global).toBe("/home/x/.pi/agent/pi-company/global.db");
+      expect(paths.project).toMatch(/pi-company\/repos\/[0-9a-f]{64}\/data.db$/);
     } finally { await removeRepoFixture(repo); }
   });
 
   test("项目不受信任时不解析项目目录", async () => {
     const paths = await settingsPaths({ agentDir: "/home/x/.pi/agent", repoRoot: "/repo", projectTrusted: false });
     expect(paths.project).toBeNull();
-    expect(paths.global).toBe("/home/x/.pi/agent/pi-company/global.sqlite");
+    expect(paths.global).toBe("/home/x/.pi/agent/pi-company/global.db");
   });
 });
 

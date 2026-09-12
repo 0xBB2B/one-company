@@ -74,7 +74,7 @@ function makeLocator(agents: Record<string, FakeRequirementAgent>): RelayLocateR
 }
 
 function readRelayRecords<T>(dataDir: string, namespace: string): T[] {
-  return withDatabase(join(dataDir, "data.sqlite"), (db) => db.list<T>(namespace).map((row) => row.data));
+  return withDatabase(join(dataDir, "data.db"), (db) => db.list<T>(namespace).map((row) => row.data));
 }
 
 async function makeQueue(options: {
@@ -421,14 +421,14 @@ describe("重建与持久化", () => {
     await queue.notify(notifyInput());
 
     expect((await stat(dataDir)).mode & 0o777).toBe(0o700);
-    expect((await stat(join(dataDir, "data.sqlite"))).mode & 0o777).toBe(0o600);
+    expect((await stat(join(dataDir, "data.db"))).mode & 0o777).toBe(0o600);
   });
 });
 
 describe("损坏记录与读取失败", () => {
   test.each(["relay_questions", "relay_notices"])("%s 坏结构被拒绝且原记录不变", async (namespace) => {
     const { queue, dataDir } = await makeQueue();
-    const ref = { database: join(dataDir, "data.sqlite"), namespace, key: uuidv7() };
+    const ref = { database: join(dataDir, "data.db"), namespace, key: uuidv7() };
     putRecord(ref, { corrupt: true });
     await expect(queue.pendingFor(windowStub())).rejects.toThrow("记录");
     expect(readRelayRecords(dataDir, namespace)).toEqual([{ corrupt: true }]);
@@ -436,7 +436,7 @@ describe("损坏记录与读取失败", () => {
 
   test("数据库路径被目录占用时每次读取都失败", async () => {
     const dataDir = await makeDataDir();
-    await mkdir(join(dataDir, "data.sqlite"));
+    await mkdir(join(dataDir, "data.db"));
     const { queue } = await makeQueue({ dataDir });
     await expect(queue.pendingFor(windowStub())).rejects.toThrow();
     await expect(queue.pendingFor(windowStub())).rejects.toThrow();
@@ -495,7 +495,7 @@ describe("订阅事件与监听器隔离", () => {
 describe("数据库写入失败恢复", () => {
   test("入队失败不产生问题或事件，恢复后可正常提问", async () => {
     const { queue, dataDir } = await makeQueue();
-    const path = join(dataDir, "data.sqlite");
+    const path = join(dataDir, "data.db");
     withDatabase(path, () => {});
     const restore = failDatabaseWrites(path, "records", "namespace", "relay_questions");
     try { await expect(queue.ask(askInput())).rejects.toThrow("拒绝写入"); } finally { restore(); }
@@ -593,7 +593,7 @@ describe("并发操作下的一致性", () => {
     const notice = await queue.notify(notifyInput());
 
     const relayDir = join(dataDir, "relay");
-    const restore = failDatabaseWrites(join(dataDir, "data.sqlite"), "records", "namespace", "relay_notices");
+    const restore = failDatabaseWrites(join(dataDir, "data.db"), "records", "namespace", "relay_notices");
     let results: PromiseSettledResult<void>[];
     try {
       results = await Promise.allSettled([queue.markDelivered("win-a", notice.id), queue.markDelivered("win-b", notice.id)]);
@@ -627,7 +627,7 @@ describe("并发操作下的一致性", () => {
     const handle = await queue.ask(askInput());
 
     const relayDir = join(dataDir, "relay");
-    const restore = failDatabaseWrites(join(dataDir, "data.sqlite"), "records", "namespace", "relay_questions");
+    const restore = failDatabaseWrites(join(dataDir, "data.db"), "records", "namespace", "relay_questions");
     let results: PromiseSettledResult<Awaited<ReturnType<typeof queue.answer>>>[];
     try {
       results = await Promise.allSettled([queue.answer(handle.id, "A", "win-a"), queue.answer(handle.id, "B", "win-b")]);
@@ -664,7 +664,7 @@ describe("持久化写失败不产生分叉状态", () => {
     const handle = await queue.ask(askInput());
 
     const relayDir = join(dataDir, "relay");
-    const restore = failDatabaseWrites(join(dataDir, "data.sqlite"), "records", "namespace", "relay_questions");
+    const restore = failDatabaseWrites(join(dataDir, "data.db"), "records", "namespace", "relay_questions");
     try {
       await expect(queue.answer(handle.id, "A", "win-a")).rejects.toThrow();
     } finally {

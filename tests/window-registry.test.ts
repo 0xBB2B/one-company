@@ -171,7 +171,7 @@ async function makeSentinel(
 }
 
 function windowRef(repoDir: string, windowId: string) {
-  return { database: join(repoDir, "data.sqlite"), namespace: "windows", key: windowId };
+  return { database: join(repoDir, "data.db"), namespace: "windows", key: windowId };
 }
 
 function windowJson(repoDir: string, windowId: string): string {
@@ -653,7 +653,7 @@ describe("list 对目录内陌生文件的容忍", () => {
   test("windows 目录里非窗口标识命名的 json 文件被跳过，不影响其他记录", async () => {
     const { registry, repoDir } = await makeRegistry();
     const windowId = await registry.register(windowInput());
-    withDatabase(join(repoDir, "data.sqlite"), (db) => db.create("other_namespace", "note", {}));
+    withDatabase(join(repoDir, "data.db"), (db) => db.create("other_namespace", "note", {}));
 
     const list = await registry.list();
     expect(list.map((r) => r.windowId)).toEqual([windowId]);
@@ -713,7 +713,7 @@ describe("startHeartbeat 失败处理", () => {
     const errors: unknown[] = [];
     const stop = startHeartbeat(registry, windowId, (error) => errors.push(error));
 
-    const restore = failDatabaseWrites(join(repoDir, "data.sqlite"), "records", "namespace", "windows");
+    const restore = failDatabaseWrites(join(repoDir, "data.db"), "records", "namespace", "windows");
     try {
       timeSource.advance(5_000);
       await flushIO(50);
@@ -739,7 +739,7 @@ describe("startHeartbeat 失败处理", () => {
     };
     process.on("unhandledRejection", onUnhandledRejection);
 
-    const restore = failDatabaseWrites(join(repoDir, "data.sqlite"), "records", "namespace", "windows");
+    const restore = failDatabaseWrites(join(repoDir, "data.db"), "records", "namespace", "windows");
     try {
       const stop = startHeartbeat(registry, windowId);
       timeSource.advance(5_000);

@@ -125,7 +125,7 @@ test("SDK 会话由 SQLite 保存，重复创建拒绝且不覆盖历史", async
   expect(() => createSessionManagerForRun(ctx)).toThrow();
   expect(sessionJson(ctx)).toBe(before);
   expect(manager.getSessionFile()).toBeUndefined();
-  expect((await readdir(join(ctx.dataRoot, "repos", ctx.repoId))).every((name) => name.startsWith("data.sqlite"))).toBe(true);
+  expect((await readdir(join(ctx.dataRoot, "repos", ctx.repoId))).every((name) => name.startsWith("data.db"))).toBe(true);
 });
 
 test("仅切换分支或重置位置后重开仍恢复同一上下文", async () => {

@@ -83,7 +83,7 @@ test("控制连接拒绝伪造身份和错误凭证，真实凭证允许调用�
   const w = await world();
   const token = controlToken(w.dataRoot);
   expect(controlToken(w.dataRoot)).toBe(token);
-  expect((await stat(join(w.dataRoot, "global.sqlite"))).mode & 0o777).toBe(0o600);
+  expect((await stat(join(w.dataRoot, "global.db"))).mode & 0o777).toBe(0o600);
   const server = new DaemonServer({ repoId: w.repoId, startedAt: "test", authToken: token });
   server.onHello = () => {};
   let calls = 0;
@@ -124,7 +124,7 @@ test("受管命令不能连接控制目录 socket 或读取控制凭证，获准
   const connect = (path: string) => `const s=require('node:net').createConnection(${JSON.stringify(path)});s.on('data',b=>process.stdout.write(b));s.on('error',()=>process.exitCode=1);`;
   await expect(run(connect(deniedPath))).rejects.toThrow();
   expect((await run(connect(allowedPath))).stdout).toBe("connected");
-  await expect(run(`require('node:fs').readFileSync(${JSON.stringify(join(w.dataRoot, "global.sqlite"))})`)).rejects.toThrow();
+  await expect(run(`require('node:fs').readFileSync(${JSON.stringify(join(w.dataRoot, "global.db"))})`)).rejects.toThrow();
 });
 
 test("Git 快照禁用 fsmonitor 与 textconv，无法在仓库外执行辅助程序", async () => {

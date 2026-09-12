@@ -1403,7 +1403,7 @@ describe("守护进程重启后接管", () => {
 describe("持久化任务记录接管（macOS 系统签名二进制场景）", () => {
   test("spawn 后所属运行目录下出现该任务的持久记录，终态后记录被删除", async () => {
     const base = await makeTempDir();
-    const database = join(base, "data.sqlite");
+    const database = join(base, "data.db");
     const host = roleHost("record-owner");
     const runToken = randomUUID();
     const taskId = randomUUID();
@@ -1443,7 +1443,7 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
 
   test("新建注册表实例凭持久记录接管系统签名二进制启动的任务，即使环境扫描找不到令牌", async () => {
     const base = await makeTempDir();
-    const database = join(base, "data.sqlite");
+    const database = join(base, "data.db");
     const owner = roleHost("restart-owner");
     const runToken = randomUUID();
     const taskId = randomUUID();
@@ -1482,7 +1482,7 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
 
   test("持久记录指向的进程已退出时不接管，同一次接管中仍存活的记录正常接管", async () => {
     const base = await makeTempDir();
-    const database = join(base, "data.sqlite");
+    const database = join(base, "data.db");
     const host = roleHost("gone-owner");
     const runToken = randomUUID();
     const goneTaskId = randomUUID();
@@ -1525,7 +1525,7 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
 
   test("持久记录 startedAt 与真实进程不符（伪造）时不接管，存活进程不受影响", async () => {
     const base = await makeTempDir();
-    const database = join(base, "data.sqlite");
+    const database = join(base, "data.db");
     const host = roleHost("mismatch-owner");
     const runToken = randomUUID();
     const taskId = randomUUID();
@@ -1561,7 +1561,7 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
 
   test("持久记录文件本身损坏（非法 JSON）时接管返回具体原因而不静默丢弃", async () => {
     const base = await makeTempDir();
-    const database = join(base, "data.sqlite");
+    const database = join(base, "data.db");
     const host = roleHost("corrupt-owner");
     const runToken = randomUUID();
     const taskId = randomUUID();

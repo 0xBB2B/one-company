@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { globalDatabase, repositoryDatabase, withDatabase } from "./database.ts";
+import { assertDatabasePathReady } from "./database-paths.ts";
 import { repositoryIdentity } from "./identity.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -209,6 +210,7 @@ export function resolveRoleSettings(
 }
 
 async function readCurrentSettings(path: string): Promise<string | null> {
+  assertDatabasePathReady(path);
   if (!existsSync(path)) return null;
   return withDatabase(path, (db) => {
     const records = db.list("role_settings");

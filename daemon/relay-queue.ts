@@ -1,5 +1,4 @@
-import { join } from "node:path";
-import { readRecord, withDatabase, uuidv7, UUID_V7_PATTERN } from "../runtime/database.ts";
+import { readRecord, withDatabase, uuidv7, UUID_V7_PATTERN, databaseFile } from "../runtime/database.ts";
 
 export interface RelayWindow {
   windowId: string;
@@ -178,7 +177,7 @@ export class RelayQueue {
   private readonly listeners = new Set<RelayListener>();
 
   constructor(options: RelayQueueOptions) {
-    this.database = join(options.dataDir, "data.sqlite");
+    this.database = databaseFile(options.dataDir, "data");
     this.deliver = options.deliver;
     this.locateRequirementAgent = options.locateRequirementAgent;
     this.clock = options.clock ?? { now: () => new Date().toISOString() };

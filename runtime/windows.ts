@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Clock } from "./clock.ts";
-import { withDatabase, UUID_V7_PATTERN } from "./database.ts";
+import { withDatabase, UUID_V7_PATTERN, databaseFile } from "./database.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -70,7 +69,7 @@ export class WindowRegistry {
 
   constructor(options: WindowRegistryOptions) {
     this.clock = options.clock;
-    this.database = join(options.repoDir, "data.sqlite");
+    this.database = databaseFile(options.repoDir, "data");
     this.bootIdFn = options.bootId;
     this.processStartedAtFn = options.processStartedAt;
   }

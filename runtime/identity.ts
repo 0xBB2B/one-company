@@ -4,6 +4,7 @@ import { chmod, mkdir, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 import { repositoryDatabase, withDatabase } from "./database.ts";
+import { assertDataRootOutsideWorktrees } from "./database-paths.ts";
 
 export interface RepositoryIdentity {
   repoId: string;
@@ -172,13 +173,18 @@ export function dataRoot(env: Record<string, string | undefined>): string {
 }
 
 export async function repoDataDir(dataRootPath: string, repoId: string, commonDir: string): Promise<string> {
+  const worktrees = await listWorktrees(commonDir);
+  assertDataRootOutsideWorktrees(dataRootPath, worktrees);
+  // 旧库/维护状态必须先核对，不能先建立替代目录或空库。
+  const database = repositoryDatabase(dataRootPath, repoId);
   const reposDir = join(dataRootPath, "repos");
   const dir = join(reposDir, repoId);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dataRootPath, 0o700);
   await chmod(reposDir, 0o700);
   await chmod(dir, 0o700);
-  withDatabase(repositoryDatabase(dataRootPath, repoId), (db) => db.transaction(() => {
+  assertDataRootOutsideWorktrees(dataRootPath, worktrees);
+  withDatabase(database, (db) => db.transaction(() => {
     const existing = db.read<{ commonDir: string }>("repository", repoId);
     if (existing && existing.data.commonDir !== commonDir) throw new Error("仓库身份与记录不一致");
     if (!existing) db.create("repository", repoId, { commonDir, firstSeenAt: new Date().toISOString() });

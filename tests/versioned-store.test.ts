@@ -10,7 +10,7 @@ const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function fixture() {
   const root = await mkdtemp(join(temporaryRoot(), "store-")); roots.push(root);
-  return { root, database: join(root, "data.sqlite"), namespace: "state", key: "requirement" };
+  return { root, database: join(root, "data.db"), namespace: "state", key: "requirement" };
 }
 
 test("未创建记录的读取无磁盘副作用；首次创建与重复创建具有唯一语义", async () => {
@@ -36,12 +36,13 @@ test("未提交事务被强杀后全部回滚；已提交记录与序号保留�
   const ref = await fixture();
   const script = join(ref.root, "crash.mjs");
   await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).pathname)};
+import { writeSync } from "node:fs";
 const db = new LocalDatabase(process.argv[2]);
 db.append("history", { committed: true });
 db.transaction(() => {
   db.create("state", "partial", { visible: false });
   db.append("history", { committed: false });
-  process.stdout.write("ready\\n");
+  writeSync(1, "ready\\n");
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 });
 `);
@@ -95,7 +96,7 @@ test("悬空数据库符号链接不能创建仓库之外的新文件", async ()
   const target = join(ref.root, "missing.sqlite");
   await symlink(target, ref.database);
   expect(() => new LocalDatabase(ref.database)).toThrow("符号链接");
-  expect(await readdir(ref.root)).toEqual(["data.sqlite"]);
+  expect(await readdir(ref.root)).toEqual(["data.db"]);
 });
 
 test("数据库及 WAL/SHM 仅属主可读写", async () => {

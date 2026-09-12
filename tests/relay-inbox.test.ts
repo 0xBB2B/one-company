@@ -201,7 +201,7 @@ async function flushAsync(): Promise<void> {
 }
 
 // 处理器若违反契约仍返回一个要等 windowReady 兑现才 resolve 的 Promise，直接 await 会挂到
-// bun 默认的 5000ms 用例超时；用短超时赛跑把"仍处于 pending"转成快速失败而非拖慢整个套件
+// 测试配置采用 5000ms 默认用例超时；用短超时赛跑把"仍处于 pending"转成快速失败而非拖慢整个套件
 async function raceAgainstTimeout(value: unknown, ms: number): Promise<"resolved" | "timeout"> {
   const timeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), ms));
   const resolved = Promise.resolve(value).then((): "resolved" => "resolved");

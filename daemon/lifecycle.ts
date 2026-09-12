@@ -1,4 +1,5 @@
 import { controlToken } from "../runtime/daemon-auth.ts";
+import { databaseFile } from "../runtime/database.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { link, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
@@ -467,7 +468,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
 
   const shellRegistry = new ShellRegistry({
     clock,
-    database: join(repoDir, "data.sqlite"),
+    database: databaseFile(repoDir, "data"),
   });
   const networkGate = new NetworkPauseGate();
   const relayQueue = new RelayQueue({

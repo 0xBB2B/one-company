@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ const dirs: string[] = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 async function fixture() {
   const dir = await mkdtemp(join(temporaryRoot(), "sqlite-")); dirs.push(dir);
-  return { dir, path: join(dir, "data.sqlite") };
+  return { dir, path: join(dir, "data.db") };
 }
 
 test("UUIDv7 主键包含时间且批量生成不重复", () => {
@@ -20,6 +20,24 @@ test("UUIDv7 主键包含时间且批量生成不重复", () => {
   expect(new Set(ids).size).toBe(ids.length);
   for (const id of ids) expect(UUID_V7_PATTERN.test(id)).toBe(true);
   expect(parseInt(ids[0]!.replaceAll("-", "").slice(0, 12), 16)).toBeGreaterThanOrEqual(before);
+});
+
+test("UUID不同毫秒按时间排序，事件次序不依赖UUID或时钟回退", async () => {
+  const { path } = await fixture();
+  const db = new LocalDatabase(path);
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+  try {
+    const first = uuidv7();
+    clock.mockReturnValue(1_700_000_000_001);
+    const second = uuidv7();
+    expect(first < second).toBe(true);
+    const later = db.append("clock", { value: 1 });
+    clock.mockReturnValue(1_699_999_999_000);
+    const earlier = db.append("clock", { value: 2 });
+    expect(earlier.id < later.id).toBe(true);
+    expect(db.events("clock").map((event) => event.sequence)).toEqual([1, 2]);
+    expect(db.events<{ value: number }>("clock").map((event) => event.data.value)).toEqual([1, 2]);
+  } finally { clock.mockRestore(); db.close(); }
 });
 
 test("数据库拒绝非 UUIDv7 主键、重复业务标识和过期版本", async () => {
@@ -46,6 +64,7 @@ test("事务失败回滚全部记录与事件，异步事务被拒绝", async ()
     })).toThrow("中断");
     expect(db.list("runs")).toEqual([]);
     expect(db.events("notices")).toEqual([]);
+    // @ts-expect-error 故意传入非法异步回调，验证运行时也拒绝。
     expect(() => db.transaction(() => Promise.resolve())).toThrow("异步操作");
   } finally { db.close(); }
 });
@@ -72,12 +91,13 @@ test("提交前强杀写入进程，重开数据库后保留历史并回滚整�
   initial.close();
   const script = join(dir, "interrupted-writer.mjs");
   await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).pathname)};
+import { writeSync } from "node:fs";
 const db = new LocalDatabase(process.argv[2]);
 db.transaction(() => {
   db.update("tasks", "T-1", 1, { progress: "done" });
   db.create("tasks", "T-2", {});
   db.append("shared", { state: "uncommitted" });
-  process.stdout.write("READY\\n");
+  writeSync(1, "READY\\n");
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 });
 `);

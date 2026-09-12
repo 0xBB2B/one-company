@@ -343,7 +343,7 @@ describe("repoDataDir", () => {
     repoFixtures.push(repo);
     const identity = await repositoryIdentity(repo.root);
     const dir = await repoDataDir(home.dataRoot, identity.repoId, identity.commonDir);
-    const parsed = withDatabase(join(dir, "data.sqlite"), (db) => db.read("repository", identity.repoId)!.data);
+    const parsed = withDatabase(join(dir, "data.db"), (db) => db.read("repository", identity.repoId)!.data);
     expect(parsed.commonDir).toBe(identity.commonDir);
     expect(parsed.firstSeenAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
   });
@@ -366,10 +366,10 @@ describe("repoDataDir", () => {
     repoFixtures.push(repo);
     const identity = await repositoryIdentity(repo.root);
     const dir = await repoDataDir(home.dataRoot, identity.repoId, identity.commonDir);
-    const first = withDatabase(join(dir, "data.sqlite"), (db) => db.read("repository", identity.repoId)!.data);
+    const first = withDatabase(join(dir, "data.db"), (db) => db.read("repository", identity.repoId)!.data);
     await new Promise((resolve) => setTimeout(resolve, 20));
     await repoDataDir(home.dataRoot, identity.repoId, identity.commonDir);
-    const second = withDatabase(join(dir, "data.sqlite"), (db) => db.read("repository", identity.repoId)!.data);
+    const second = withDatabase(join(dir, "data.db"), (db) => db.read("repository", identity.repoId)!.data);
     expect(second.firstSeenAt).toBe(first.firstSeenAt);
   });
 
@@ -411,7 +411,7 @@ describe("repoDataDir", () => {
       const rootInfo = await stat(freshRoot);
       const reposInfo = await stat(join(freshRoot, "repos"));
       const leafInfo = await stat(dir);
-      const repoJsonInfo = await stat(join(dir, "data.sqlite"));
+      const repoJsonInfo = await stat(join(dir, "data.db"));
       expect(rootInfo.mode & 0o777).toBe(0o700);
       expect(reposInfo.mode & 0o777).toBe(0o700);
       expect(leafInfo.mode & 0o777).toBe(0o700);

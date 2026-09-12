@@ -3,8 +3,8 @@ import { lstat, readdir, readlink } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import type { Clock } from "./clock.ts";
 import { fileFingerprint } from "./store.ts";
-import { withDatabase, uuidv7 } from "./database.ts";
-import type { LocalDatabase } from "./database.ts";
+import { withDatabase, uuidv7, databaseFile } from "./database.ts";
+import type { LocalDatabase, SyncResult } from "./database.ts";
 
 const WAIT_POLL_MS = 75;
 const MAX_RELEASED = 200;
@@ -293,7 +293,7 @@ export class RangeClaims {
 
   constructor(options: RangeClaimsOptions) {
     this.repoRoot = options.repoRoot;
-    this.database = join(options.repoDir, "data.sqlite");
+    this.database = databaseFile(options.repoDir, "data");
     this.clock = options.clock;
     this.runStateFn = options.runState;
     this.holderGoneFn = options.holderGone;
@@ -314,8 +314,8 @@ export class RangeClaims {
 
   private readDoc(): ClaimsDoc { return withDatabase(this.database, (db) => this.loadDoc(db)); }
 
-  private mutateDoc<T>(fn: (doc: ClaimsDoc) => T): T {
-    return withDatabase(this.database, (db) => db.transaction(() => {
+  private mutateDoc<T>(fn: (doc: ClaimsDoc) => T & SyncResult<T>): T {
+    return withDatabase(this.database, (db) => db.transaction<T>(() => {
       const doc = this.loadDoc(db);
       const result = fn(doc);
       const groups = [

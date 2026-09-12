@@ -106,7 +106,7 @@ async function claimInSubprocess(
 }
 
 function claimsJson(repoDir: string): string {
-  return withDatabase(join(repoDir, "data.sqlite"), (db) => JSON.stringify({
+  return withDatabase(join(repoDir, "data.db"), (db) => JSON.stringify({
     claims: db.list("range_claims").map((row) => row.data),
     waiting: db.list("range_waiting").map((row) => row.data),
     released: db.list("range_released").map((row) => row.data),
@@ -1022,7 +1022,7 @@ describe("wait 取消：清理阶段的锁竞争不得掩盖原始取消错误",
     const attempt = await claims.claim(waiterHolder, ["lockrace.txt"]);
     expect(attempt.granted).toBe(false);
 
-    const restore = failDatabaseWrites(join(repoDir, "data.sqlite"), "records", "namespace", "range_waiting");
+    const restore = failDatabaseWrites(join(repoDir, "data.db"), "records", "namespace", "range_waiting");
 
     const controller = new AbortController();
     const waitPromise = claims.wait(["lockrace.txt"], { signal: controller.signal, holder: waiterHolder });

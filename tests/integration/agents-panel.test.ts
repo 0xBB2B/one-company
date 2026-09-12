@@ -86,6 +86,7 @@ function reviewSubmission(head: string, fingerprint: string): ScriptedReply {
 // "查看" 打开时只替换编辑栏一行，状态栏与面板保持可见——照 cross-window-panel / transcript-view 的位置约定拼装成一个可挂进 VirtualTerminal 的宿主外壳
 class IntegrationShell implements Component {
   editorText = "";
+  readonly notifications: string[] = [];
   readonly statusSummaryText = "会话状态汇总：仅供展示，不可选中";
   private widgetFactory: ((tui: unknown, theme: unknown) => Component) | undefined;
   private widgetComponent: Component | undefined;
@@ -118,7 +119,7 @@ class IntegrationShell implements Component {
       };
     },
     getEditorText: (): string => this.editorText,
-    notify: (_message: string, _level?: string): void => {},
+    notify: (message: string, _level?: string): void => { this.notifications.push(message); },
     custom: <T,>(
       factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) => Component,
       _options?: { overlay?: boolean },
@@ -505,7 +506,7 @@ describe("集成：查看页实时跟随", () => {
         await pressShellKeys(mounted.harness, [KEY.escape]);
         await waitFor(() => !mounted.harness.viewingTranscript(), 5_000);
 
-        expect(afterText).toContain(MARKER);
+        expect(afterText, mounted.harness.notifications.join("\n")).toContain(MARKER);
       } finally {
         await unmountShell(mounted);
       }

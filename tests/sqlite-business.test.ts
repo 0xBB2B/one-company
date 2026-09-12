@@ -40,7 +40,7 @@ test("公开工作流和决策入口直接读写 SQLite，两个需求启动只�
   const started = await Promise.all([w.store.createOrReuseRequirement(w.input), w.store.createOrReuseRequirement(w.input)]);
   expect(started[0]!.run.id).toBe(started[1]!.run.id);
   expect(started.map((result) => result.reused).sort()).toEqual([false, true]);
-  expect((await readdir(w.repoDir)).every((name) => name.startsWith("data.sqlite"))).toBe(true);
+  expect((await readdir(w.repoDir)).every((name) => name.startsWith("data.db"))).toBe(true);
 });
 
 test("SDK 会话与原始错误详情从 SQLite 恢复，不生成会话或诊断文件", async () => {
@@ -60,7 +60,7 @@ test("SDK 会话与原始错误详情从 SQLite 恢复，不生成会话或诊�
   expect(saved.saved).toBe(true);
   const details = await readErrorDetails(ref);
   expect(details.readable && details.details.original.message).toBe("原始失败");
-  expect((await readdir(w.repoDir)).every((name) => name.startsWith("data.sqlite"))).toBe(true);
+  expect((await readdir(w.repoDir)).every((name) => name.startsWith("data.db"))).toBe(true);
 });
 
 test("多个运行存储实例交错登记回合与命令不丢失活动", async () => {
