@@ -30,6 +30,14 @@ interface Connection {
   close(): void;
 }
 
+export interface IndexFtsHit {
+  fragmentId: string;
+  path: string;
+  kind: "code" | "spec" | "document" | "config";
+  snippet: string;
+  rank: number;
+}
+
 const require = createRequire(import.meta.url);
 const Driver: new (path: string) => Connection = require("node:sqlite").DatabaseSync;
 
@@ -84,6 +92,11 @@ export class AsyncTransactionError extends Error {
 
 export class DatabaseUnavailableError extends Error {
   constructor() { super("数据库连接已关闭或失效，禁止继续使用"); this.name = "DatabaseUnavailableError"; }
+}
+
+export class InvalidIndexQueryError extends Error {
+  readonly code = "invalid_fts_query";
+  constructor() { super("索引搜索语法无效"); this.name = "InvalidIndexQueryError"; }
 }
 
 export class TransactionCleanupError extends AggregateError {
@@ -174,9 +187,150 @@ export class LocalDatabase {
         `);
       });
       if (kind && Number(this.connection.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS[kind]) throw new DatabaseStorageError("wrong_database_kind", "数据库身份已变化");
+      if (kind === "index") this.initializeIndexSchema();
       assertRegularDatabaseFiles(this.path);
       for (const suffix of ["-wal", "-shm"]) if (existsSync(this.path + suffix)) chmodSync(this.path + suffix, 0o600);
     } catch (error) { this.connection.close(); throw error; }
+  }
+
+  private initializeIndexSchema(): void {
+    this.transaction(() => {
+      const registry = this.connection.prepare("SELECT type FROM sqlite_master WHERE name = 'index_schema_metadata'").get();
+      const dedicatedObjects = [
+        ["index_schema_metadata", "table"], ["source_fragments_fts", "table"],
+        ["source_fragments_validate_insert", "trigger"], ["source_fragments_validate_update", "trigger"],
+        ["source_fragments_fts_insert", "trigger"], ["source_fragments_fts_update", "trigger"], ["source_fragments_fts_delete", "trigger"],
+      ] as const;
+      if (registry) {
+        const row = this.connection.prepare("SELECT schema_version FROM index_schema_metadata WHERE schema_key = 'current'").get();
+        if (Number(row?.schema_version) !== 1) throw new Error("不支持的索引专属schema版本");
+        for (const [name, type] of dedicatedObjects) {
+          const object = this.connection.prepare("SELECT type FROM sqlite_master WHERE name = ?").get(name);
+          if (object?.type !== type) throw new DatabaseStorageError("wrong_database_kind", "索引专属schema不完整或来源不明");
+        }
+        return;
+      }
+      for (const [name] of dedicatedObjects) {
+        if (this.connection.prepare("SELECT 1 AS present FROM sqlite_master WHERE name = ?").get(name)) {
+          throw new DatabaseStorageError("wrong_database_kind", "索引专属schema来源不明，不自动接管");
+        }
+      }
+      this.connection.exec(`
+        CREATE TABLE index_schema_metadata (
+          schema_key TEXT PRIMARY KEY NOT NULL CHECK (schema_key = 'current'),
+          schema_version INTEGER NOT NULL CHECK (schema_version > 0)
+        ) STRICT;
+        INSERT INTO index_schema_metadata(schema_key, schema_version) VALUES ('current', 1);
+        CREATE VIRTUAL TABLE source_fragments_fts USING fts5(
+          workspace_id UNINDEXED,
+          generation UNINDEXED,
+          fragment_id UNINDEXED,
+          path UNINDEXED,
+          kind UNINDEXED,
+          body,
+          tokenize = 'unicode61 remove_diacritics 2'
+        );
+        CREATE TRIGGER source_fragments_validate_insert BEFORE INSERT ON records
+        WHEN new.namespace = 'source_fragments'
+        BEGIN
+          SELECT CASE WHEN
+            EXISTS (SELECT 1 FROM json_each(new.data) WHERE key NOT IN ('workspaceId','generation','id','path','kind','language','title','body','startLine','endLine','fileHash'))
+            OR coalesce(json_type(new.data, '$.workspaceId'), '') != 'text'
+            OR length(json_extract(new.data, '$.workspaceId')) != 64
+            OR json_extract(new.data, '$.workspaceId') GLOB '*[^0-9a-f]*'
+            OR coalesce(json_type(new.data, '$.generation'), '') != 'integer'
+            OR json_extract(new.data, '$.generation') < 1
+            OR coalesce(json_type(new.data, '$.id'), '') != 'text'
+            OR length(json_extract(new.data, '$.id')) NOT BETWEEN 1 AND 256
+            OR coalesce(json_type(new.data, '$.path'), '') != 'text'
+            OR length(json_extract(new.data, '$.path')) NOT BETWEEN 1 AND 4096
+            OR substr(json_extract(new.data, '$.path'), 1, 1) = '/'
+            OR instr(json_extract(new.data, '$.path'), char(92)) > 0
+            OR lower(json_extract(new.data, '$.path')) = 'docs/prod'
+            OR lower(json_extract(new.data, '$.path')) LIKE 'docs/prod/%'
+            OR lower(json_extract(new.data, '$.path')) = '.git'
+            OR lower(json_extract(new.data, '$.path')) LIKE '.git/%'
+            OR lower(json_extract(new.data, '$.path')) LIKE '%/.git/%'
+            OR lower(json_extract(new.data, '$.path')) LIKE '%/.git'
+            OR json_extract(new.data, '$.path') LIKE '../%'
+            OR json_extract(new.data, '$.path') LIKE '%/../%'
+            OR json_extract(new.data, '$.path') LIKE '%/..'
+            OR json_extract(new.data, '$.kind') NOT IN ('code','spec','document','config')
+            OR coalesce(json_type(new.data, '$.body'), '') != 'text'
+            OR length(json_extract(new.data, '$.body')) > 131072
+            OR coalesce(json_type(new.data, '$.startLine'), '') != 'integer'
+            OR coalesce(json_type(new.data, '$.endLine'), '') != 'integer'
+            OR json_extract(new.data, '$.startLine') < 1
+            OR json_extract(new.data, '$.endLine') < json_extract(new.data, '$.startLine')
+            OR coalesce(json_type(new.data, '$.fileHash'), '') != 'text'
+            OR length(json_extract(new.data, '$.fileHash')) != 64
+            OR json_extract(new.data, '$.fileHash') GLOB '*[^0-9a-f]*'
+            OR coalesce(json_type(new.data, '$.language'), '') NOT IN ('text','null')
+            OR coalesce(json_type(new.data, '$.title'), '') NOT IN ('text','null')
+          THEN raise(ABORT, 'invalid source fragment') END;
+        END;
+        CREATE TRIGGER source_fragments_validate_update BEFORE UPDATE OF data, namespace ON records
+        WHEN new.namespace = 'source_fragments'
+        BEGIN
+          SELECT CASE WHEN
+            EXISTS (SELECT 1 FROM json_each(new.data) WHERE key NOT IN ('workspaceId','generation','id','path','kind','language','title','body','startLine','endLine','fileHash'))
+            OR coalesce(json_type(new.data, '$.workspaceId'), '') != 'text'
+            OR length(json_extract(new.data, '$.workspaceId')) != 64
+            OR json_extract(new.data, '$.workspaceId') GLOB '*[^0-9a-f]*'
+            OR coalesce(json_type(new.data, '$.generation'), '') != 'integer'
+            OR json_extract(new.data, '$.generation') < 1
+            OR coalesce(json_type(new.data, '$.id'), '') != 'text'
+            OR length(json_extract(new.data, '$.id')) NOT BETWEEN 1 AND 256
+            OR coalesce(json_type(new.data, '$.path'), '') != 'text'
+            OR length(json_extract(new.data, '$.path')) NOT BETWEEN 1 AND 4096
+            OR substr(json_extract(new.data, '$.path'), 1, 1) = '/'
+            OR instr(json_extract(new.data, '$.path'), char(92)) > 0
+            OR lower(json_extract(new.data, '$.path')) = 'docs/prod'
+            OR lower(json_extract(new.data, '$.path')) LIKE 'docs/prod/%'
+            OR lower(json_extract(new.data, '$.path')) = '.git'
+            OR lower(json_extract(new.data, '$.path')) LIKE '.git/%'
+            OR lower(json_extract(new.data, '$.path')) LIKE '%/.git/%'
+            OR lower(json_extract(new.data, '$.path')) LIKE '%/.git'
+            OR json_extract(new.data, '$.path') LIKE '../%'
+            OR json_extract(new.data, '$.path') LIKE '%/../%'
+            OR json_extract(new.data, '$.path') LIKE '%/..'
+            OR json_extract(new.data, '$.kind') NOT IN ('code','spec','document','config')
+            OR coalesce(json_type(new.data, '$.body'), '') != 'text'
+            OR length(json_extract(new.data, '$.body')) > 131072
+            OR coalesce(json_type(new.data, '$.startLine'), '') != 'integer'
+            OR coalesce(json_type(new.data, '$.endLine'), '') != 'integer'
+            OR json_extract(new.data, '$.startLine') < 1
+            OR json_extract(new.data, '$.endLine') < json_extract(new.data, '$.startLine')
+            OR coalesce(json_type(new.data, '$.fileHash'), '') != 'text'
+            OR length(json_extract(new.data, '$.fileHash')) != 64
+            OR json_extract(new.data, '$.fileHash') GLOB '*[^0-9a-f]*'
+            OR coalesce(json_type(new.data, '$.language'), '') NOT IN ('text','null')
+            OR coalesce(json_type(new.data, '$.title'), '') NOT IN ('text','null')
+          THEN raise(ABORT, 'invalid source fragment') END;
+        END;
+        CREATE TRIGGER source_fragments_fts_insert AFTER INSERT ON records
+        WHEN new.namespace = 'source_fragments'
+        BEGIN
+          INSERT INTO source_fragments_fts(rowid, workspace_id, generation, fragment_id, path, kind, body)
+          VALUES (new.rowid, json_extract(new.data, '$.workspaceId'), json_extract(new.data, '$.generation'),
+            json_extract(new.data, '$.id'), json_extract(new.data, '$.path'), json_extract(new.data, '$.kind'), json_extract(new.data, '$.body'));
+        END;
+        CREATE TRIGGER source_fragments_fts_update AFTER UPDATE OF data ON records
+        WHEN old.namespace = 'source_fragments' AND new.namespace = 'source_fragments'
+        BEGIN
+          DELETE FROM source_fragments_fts WHERE rowid = old.rowid;
+          INSERT INTO source_fragments_fts(rowid, workspace_id, generation, fragment_id, path, kind, body)
+          VALUES (new.rowid, json_extract(new.data, '$.workspaceId'), json_extract(new.data, '$.generation'),
+            json_extract(new.data, '$.id'), json_extract(new.data, '$.path'), json_extract(new.data, '$.kind'), json_extract(new.data, '$.body'));
+        END;
+        CREATE TRIGGER source_fragments_fts_delete AFTER DELETE ON records
+        WHEN old.namespace = 'source_fragments'
+        BEGIN
+          DELETE FROM source_fragments_fts WHERE rowid = old.rowid;
+        END;
+        UPDATE records SET data = data WHERE namespace = 'source_fragments';
+      `);
+    });
   }
 
   transaction<T>(fn: () => T & SyncResult<T>): T {
@@ -293,6 +447,36 @@ export class LocalDatabase {
     this.assertNamespace(stream, true);
     return this.connection.prepare("SELECT id, sequence, data FROM events WHERE stream = ? AND sequence > ? ORDER BY sequence").all(stream, after)
       .map((row) => ({ id: String(row.id), sequence: Number(row.sequence), data: JSON.parse(String(row.data)) as T }));
+  }
+
+  /** 固定索引查询入口；不接受SQL、表名、排序或任意投影。 */
+  searchIndexFragments(workspaceId: string, query: string, limit: number): IndexFtsHit[] {
+    this.assertAvailable();
+    if (databaseKind(this.path) !== "index") throw new DatabaseStorageError("wrong_database_kind", "FTS只允许用于index.db");
+    if (!/^[0-9a-f]{64}$/.test(workspaceId) || typeof query !== "string" || query.length === 0 || Array.from(query).length > 256 || !Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+      throw new InvalidIndexQueryError();
+    }
+    try {
+      return this.connection.prepare(`
+        SELECT source_fragments_fts.fragment_id, source_fragments_fts.path, source_fragments_fts.kind,
+          snippet(source_fragments_fts, 5, '[', ']', '…', 32) AS snippet,
+          bm25(source_fragments_fts) AS rank
+        FROM source_fragments_fts
+        JOIN records AS workspace ON workspace.namespace = 'workspaces' AND workspace.record_key = ?
+        WHERE source_fragments_fts MATCH ?
+          AND source_fragments_fts.workspace_id = ?
+          AND CAST(source_fragments_fts.generation AS INTEGER) = CAST(json_extract(workspace.data, '$.currentGeneration') AS INTEGER)
+          AND json_extract(workspace.data, '$.status') IN ('ready', 'partial')
+        ORDER BY rank, source_fragments_fts.path, source_fragments_fts.fragment_id
+        LIMIT ?
+      `).all(workspaceId, query, workspaceId, limit).map((row) => ({
+        fragmentId: String(row.fragment_id), path: String(row.path), kind: String(row.kind) as IndexFtsHit["kind"],
+        snippet: String(row.snippet), rank: Number(row.rank),
+      }));
+    } catch {
+      // FTS解析器和SQLite内部错误均不向调用方回显查询片段、schema或驱动细节。
+      throw new InvalidIndexQueryError();
+    }
   }
 
   close(): void {
