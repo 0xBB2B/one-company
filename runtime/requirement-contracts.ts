@@ -1,0 +1,86 @@
+import { Type } from "typebox";
+import type { Static, TProperties, TSchema } from "typebox";
+import { Value } from "typebox/value";
+import { UUID_V7_PATTERN } from "./database.ts";
+
+export const object = <P extends TProperties>(properties: P) => Type.Object(properties, { additionalProperties: false });
+export const id = Type.String({ pattern: UUID_V7_PATTERN.source });
+export const hash = Type.String({ pattern: "^[0-9a-f]{64}$" });
+export const commit = Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" });
+export const counter = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
+export const positive = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
+const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
+export const RecoveryReason = Type.Union([Type.Literal("archive_found"), Type.Literal("history_unknown"), Type.Literal("identity_conflict")]);
+export const ProdReference = object({ commit, hash });
+export const WorkspaceBinding = object({
+  requirementId: id, repoId: hash, workspaceId: hash, prepareOperationId: id,
+  path: Type.String({ minLength: 1, maxLength: 4096 }),
+  gitDir: Type.String({ minLength: 1, maxLength: 4096 }),
+  rootDevice: counter, rootInode: positive, gitDevice: counter, gitInode: positive,
+  branch: Type.String({ pattern: "^refs/heads/[^\\u0000-\\u0020]+$", maxLength: 1024 }),
+  baseCommit: commit,
+});
+export const CloseIntent = object({ operationId: id, reason: Type.Union([Type.Literal("completed"), Type.Literal("cancelled"), Type.Literal("rejected")]), receiptId: id });
+export const RequirementRecord = object({
+  format: Type.Literal("requirement-lifecycle/v1"), requirementId: id, repoId: hash,
+  requestId: id, intentHash: hash,
+  lifecycle: Type.Union([Type.Literal("draft"), Type.Literal("active"), Type.Literal("closing"), Type.Literal("closed")]),
+  revision: counter, epoch: positive, saved: nullable(ProdReference), approved: nullable(ProdReference), approvalReceiptId: nullable(id),
+  workspace: nullable(WorkspaceBinding), pendingRevision: nullable(positive), close: nullable(CloseIntent),
+  recovery: Type.Union([Type.Literal("ready"), Type.Literal("needs_review")]), recoveryReason: nullable(RecoveryReason), createdAt: counter, updatedAt: counter,
+});
+export type RequirementRecord = Static<typeof RequirementRecord>;
+export type ProdReference = Static<typeof ProdReference>;
+export type WorkspaceBinding = Static<typeof WorkspaceBinding>;
+export type CloseIntent = Static<typeof CloseIntent>;
+export const PmLease = object({ requirementId: id, runId: id, workspaceId: hash, epoch: positive, fence: positive, expiresAt: counter });
+export type PmLease = Static<typeof PmLease>;
+export const PmRecord = object({ requirementId: id, fence: counter, seenSequence: counter, lease: nullable(PmLease) });
+export type PmRecord = Static<typeof PmRecord>;
+export const OwnerClaim = object({ requirementId: id, workspaceId: hash });
+export const RequestRecord = object({ requirementId: id, intentHash: hash });
+export const RequirementEvent = object({
+  requirementId: id, repoId: hash, kind: Type.Union([
+    Type.Literal("reserved"), Type.Literal("workspace.bound"), Type.Literal("prod.saved"), Type.Literal("prod.approved"),
+    Type.Literal("pm.acquired"), Type.Literal("pm.released"), Type.Literal("closing"), Type.Literal("closed"), Type.Literal("recovery.blocked"),
+  ]), version: positive, epoch: positive, revision: counter, from: nullable(ProdReference), to: nullable(ProdReference), receiptId: nullable(id), recoveryReason: nullable(RecoveryReason),
+});
+export type RequirementEvent = Static<typeof RequirementEvent>;
+export const commands = {
+  reserve: object({ requestId: id, intentHash: hash }),
+  save: object({ requirementId: id, version: positive, operationId: id, reference: ProdReference }),
+  approve: object({ requirementId: id, version: positive, receiptId: id, reference: ProdReference }),
+  bind: object({ requirementId: id, version: positive, path: Type.String({ minLength: 1, maxLength: 4096 }), prepareOperationId: id, baseCommit: commit }),
+  acquire: object({ requirementId: id, version: positive, runId: id, expectedFence: counter }),
+  close: object({ requirementId: id, version: positive, intent: CloseIntent }),
+  finish: object({ requirementId: id, version: positive, operationId: id }),
+  block: object({ requirementId: id, version: positive, reason: RecoveryReason }),
+  acknowledge: object({ lease: PmLease, sequence: counter }),
+};
+
+export class RequirementStateError extends Error {
+  readonly code: string;
+  constructor(code: string) { super(`需求状态操作被拒绝：${code}`); this.name = "RequirementStateError"; this.code = code; }
+}
+
+export function checked<T extends TSchema>(schema: T, input: unknown): Static<T> {
+  let copy: unknown;
+  try { copy = structuredClone(input); } catch { throw new RequirementStateError("invalid_shape"); }
+  if (!Value.Check(schema, copy)) throw new RequirementStateError("invalid_shape");
+  return copy as Static<T>;
+}
+
+export function checkRequirement(value: unknown, requirementId: string, repoId: string): RequirementRecord {
+  const record = checked(RequirementRecord, value);
+  if (record.requirementId !== requirementId || record.repoId !== repoId || record.updatedAt < record.createdAt ||
+    ((record.approved === null) !== (record.approvalReceiptId === null)) || ((record.approved === null) !== (record.revision === 0)) ||
+    (record.approved !== null && record.saved === null) ||
+    (record.lifecycle === "draft" && record.approved !== null) ||
+    ((record.recovery === "ready") !== (record.recoveryReason === null)) ||
+    (record.close?.reason === "completed" && (record.approved === null || record.workspace === null || record.pendingRevision !== null)) ||
+    (record.lifecycle === "active" && (record.approved === null || record.workspace === null)) ||
+    ((record.lifecycle === "closing" || record.lifecycle === "closed") !== (record.close !== null)) ||
+    (record.pendingRevision !== null && record.pendingRevision !== record.revision) ||
+    (record.workspace !== null && (record.workspace.requirementId !== requirementId || record.workspace.repoId !== repoId))) throw new RequirementStateError("invalid_state");
+  return record;
+}

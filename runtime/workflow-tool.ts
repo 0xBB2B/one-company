@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { repositoryIdentity, requirementIdentity } from "./identity.ts";
 import { RunStore } from "./run-store.ts";
-import { StaleVersionError, repositoryDatabase, withDatabase } from "./database.ts";
+import { StaleVersionError, repositoryDatabase, withDatabase, UUID_V7_PATTERN } from "./database.ts";
 import {
   advanceStage,
   checkResume,
@@ -133,7 +133,9 @@ async function listRequirements(
     return { ok: false, reason: (error as Error).message };
   }
   try {
+    // 日期型工作流只查询其自身协议，UUID需求由专用状态服务处理。
     const items = withDatabase(repositoryDatabase(ctx.dataRoot, identity.repoId), (db) => db.list<{ stage: string }>("requirements")
+      .filter((record) => !UUID_V7_PATTERN.test(record.key))
       .map((record) => ({ requirement: record.key, stage: record.data.stage })));
     return { ok: true, items: items.filter((item) => item.stage !== "accepted") };
   } catch (error) { return { ok: false, reason: (error as Error).message }; }
