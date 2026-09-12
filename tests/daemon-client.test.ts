@@ -22,7 +22,13 @@ import {
   encodeFrame,
 } from "../runtime/protocol.ts";
 import type { Frame } from "../runtime/protocol.ts";
-import { DaemonCallError, WorkspaceClients, connectDaemon, spawnDaemon } from "../runtime/daemon-client.ts";
+import {
+  DAEMON_CLIENT_LIFECYCLE_EVENTS,
+  DaemonCallError,
+  WorkspaceClients,
+  connectDaemon,
+  spawnDaemon,
+} from "../runtime/daemon-client.ts";
 import {
   connectTestClient,
   createDaemonFixture,
@@ -1223,6 +1229,456 @@ describe("重连事件恢复", () => {
       fake.close();
     }
   }, 20_000);
+});
+
+describe("hello 前协议事件隔离", () => {
+  test("重连 hello 响应与业务事件同批到达时先发 connected 再按序放行业务事件", async () => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
+    extraTempDirs.push(dataRoot);
+    const identity = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+
+    let connectionIndex = 0;
+    const fake = createFakeDaemonServer(socketPath, (frame, socket) => {
+      connectionIndex += 1;
+      const response = encodeFrame(createResponse(frame.id, {
+        daemonPid: process.pid,
+        repoId: identity.repoId,
+        protocolVersion: PROTOCOL_VERSION,
+        startedAt: new Date().toISOString(),
+      }));
+      if (connectionIndex === 1) {
+        socket.write(response);
+        setTimeout(() => socket.destroy(), 75);
+      } else {
+        socket.write(
+          response
+          + encodeFrame(createEvent("runs.changed", { note: "same-write-1" }))
+          + encodeFrame(createEvent("runs.changed", { note: "same-write-2" })),
+        );
+      }
+    });
+
+    try {
+      const client = await connectDaemon({
+        repoDir: repo.root,
+        dataRoot,
+        sdkDir: resolveSdkDir(),
+        execPath: resolveNodeExecutable(),
+        hello: {
+          windowId: "window-same-write",
+          pid: process.pid,
+          sessionId: "session-same-write",
+          cwd: repo.root,
+          workspaceRoot: repo.root,
+        },
+      });
+      closables.push(client);
+      const order: string[] = [];
+      const businessStates: string[] = [];
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (data) => {
+        order.push(`connected:${String(data.connectionSequence)}`);
+      });
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => order.push("disconnected"));
+      client.subscribe("runs.changed", (data) => {
+        businessStates.push(client.state().status);
+        order.push(`runs.changed:${String(data.note)}`);
+      });
+
+      await waitUntil(() => order.includes("runs.changed:same-write-2"), 5_000);
+      expect(order).toEqual([
+        "connected:1",
+        "disconnected",
+        "connected:2",
+        "runs.changed:same-write-1",
+        "runs.changed:same-write-2",
+      ]);
+      expect(businessStates).toEqual(["connected", "connected"]);
+    } finally {
+      fake.close();
+    }
+  }, 15_000);
+
+  test("错误 repo 的 hello 响应与事件同批到达时不泄漏业务事件或 connected", async () => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
+    extraTempDirs.push(dataRoot);
+    const identity = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+
+    let connectionIndex = 0;
+    const fake = createFakeDaemonServer(socketPath, (frame, socket) => {
+      connectionIndex += 1;
+      const repoId = connectionIndex === 1 ? identity.repoId : "wrong-repo-same-write";
+      const response = encodeFrame(createResponse(frame.id, {
+        daemonPid: process.pid,
+        repoId,
+        protocolVersion: PROTOCOL_VERSION,
+        startedAt: new Date().toISOString(),
+      }));
+      if (connectionIndex === 1) {
+        socket.write(response);
+        setTimeout(() => socket.destroy(), 75);
+      } else if (connectionIndex === 2) {
+        socket.write(response + encodeFrame(createEvent("runs.changed", { note: "must-not-leak" })));
+      }
+    });
+
+    try {
+      const client = await connectDaemon({
+        repoDir: repo.root,
+        dataRoot,
+        sdkDir: resolveSdkDir(),
+        execPath: resolveNodeExecutable(),
+        hello: {
+          windowId: "window-wrong-repo-event",
+          pid: process.pid,
+          sessionId: "session-wrong-repo-event",
+          cwd: repo.root,
+          workspaceRoot: repo.root,
+        },
+      });
+      closables.push(client);
+      const connected: Array<Record<string, unknown>> = [];
+      const received: Array<Record<string, unknown>> = [];
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (data) => connected.push(data));
+      client.subscribe("runs.changed", (data) => received.push(data));
+
+      await waitUntil(() => client.state().reason?.includes("repoId 不一致") === true, 5_000);
+      expect(connected).toHaveLength(1);
+      expect(received).toEqual([]);
+      client.close();
+    } finally {
+      fake.close();
+    }
+  }, 15_000);
+
+  test("hello 前事件超过暂存上限时明确断开且不放行部分事件", async () => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
+    extraTempDirs.push(dataRoot);
+    const identity = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+
+    let connectionIndex = 0;
+    const fake = createFakeDaemonServer(socketPath, (frame, socket) => {
+      connectionIndex += 1;
+      const response = encodeFrame(createResponse(frame.id, {
+        daemonPid: process.pid,
+        repoId: identity.repoId,
+        protocolVersion: PROTOCOL_VERSION,
+        startedAt: new Date().toISOString(),
+      }));
+      if (connectionIndex === 1) {
+        socket.write(response);
+        setTimeout(() => socket.destroy(), 75);
+      } else if (connectionIndex === 2) {
+        const events = Array.from({ length: 257 }, (_, index) =>
+          encodeFrame(createEvent("runs.changed", { index }))).join("");
+        socket.write(events + response);
+      }
+    });
+
+    try {
+      const client = await connectDaemon({
+        repoDir: repo.root,
+        dataRoot,
+        sdkDir: resolveSdkDir(),
+        execPath: resolveNodeExecutable(),
+        hello: {
+          windowId: "window-event-budget",
+          pid: process.pid,
+          sessionId: "session-event-budget",
+          cwd: repo.root,
+          workspaceRoot: repo.root,
+        },
+      });
+      closables.push(client);
+      const connected: Array<Record<string, unknown>> = [];
+      const received: Array<Record<string, unknown>> = [];
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (data) => connected.push(data));
+      client.subscribe("runs.changed", (data) => received.push(data));
+
+      await waitUntil(() => client.state().reason?.includes("事件超出暂存上限") === true, 5_000);
+      expect(connected).toHaveLength(1);
+      expect(received).toEqual([]);
+      client.close();
+    } finally {
+      fake.close();
+    }
+  }, 15_000);
+});
+
+describe("握手未完成帧总预算", () => {
+  test.each([false, true])("分片未完成帧与已暂存事件共享字节预算（已暂存=%s）", async (includeCompleteEvent) => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
+    extraTempDirs.push(dataRoot);
+    const identity = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+    let connections = 0;
+    const socketErrors: Array<string | undefined> = [];
+    const fake = createFakeDaemonServer(socketPath, (frame, socket) => {
+      socket.on("error", (error: NodeJS.ErrnoException) => socketErrors.push(error.code));
+      connections += 1;
+      if (connections === 1) {
+        socket.write(encodeFrame(createResponse(frame.id, {
+          daemonPid: process.pid, repoId: identity.repoId,
+          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(),
+        })));
+        setTimeout(() => socket.destroy(), 75);
+      } else if (connections === 2) {
+        if (includeCompleteEvent) socket.write(encodeFrame(createEvent("runs.changed", { text: "x".repeat(600_000) })));
+        socket.write('{"t":"evt","event":"runs.changed","data":{"text":"');
+        let remaining = includeCompleteEvent ? 600_000 : 1_200_000;
+        const send = () => {
+          if (socket.destroyed || remaining <= 0) return;
+          const size = Math.min(16_384, remaining);
+          remaining -= size;
+          socket.write("x".repeat(size));
+          if (remaining > 0) setImmediate(send);
+        };
+        setImmediate(send);
+      }
+    });
+    try {
+      const client = await connectDaemon({
+        repoDir: repo.root, dataRoot, sdkDir: resolveSdkDir(), execPath: resolveNodeExecutable(),
+        hello: { windowId: "raw-budget", pid: process.pid, sessionId: "raw-budget", cwd: repo.root, workspaceRoot: repo.root },
+      });
+      closables.push(client);
+      const connected: unknown[] = [], business: unknown[] = [];
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (event) => connected.push(event));
+      client.subscribe("runs.changed", (event) => business.push(event));
+      await waitUntil(() => client.state().reason?.includes("暂存上限") === true, 5_000);
+      expect(connected).toHaveLength(1);
+      expect(business).toEqual([]);
+      client.close();
+      await delay(50);
+      expect(socketErrors.every((code) => code === "EPIPE" || code === "ECONNRESET")).toBe(true);
+    } finally { fake.close(); }
+  }, 15_000);
+
+  test("close 清空未完成帧和待事件，迟到分片不产生 connected 或业务消息", async () => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
+    extraTempDirs.push(dataRoot);
+    const identity = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+    let connections = 0;
+    let lateSocket: Socket | undefined;
+    const socketErrors: Array<string | undefined> = [];
+    const fake = createFakeDaemonServer(socketPath, (frame, socket) => {
+      socket.on("error", (error: NodeJS.ErrnoException) => socketErrors.push(error.code));
+      connections += 1;
+      if (connections === 1) {
+        socket.write(encodeFrame(createResponse(frame.id, {
+          daemonPid: process.pid, repoId: identity.repoId,
+          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(),
+        })));
+        setTimeout(() => socket.destroy(), 75);
+      } else if (connections === 2) {
+        lateSocket = socket;
+        socket.write(encodeFrame(createEvent("runs.changed", { text: "pending" })));
+        socket.write('{"t":"evt","event":"runs.changed","data":{"text":"' + "x".repeat(128_000));
+      }
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const client = await connectDaemon({
+        repoDir: repo.root, dataRoot, sdkDir: resolveSdkDir(), execPath: resolveNodeExecutable(),
+        hello: { windowId: "raw-close", pid: process.pid, sessionId: "raw-close", cwd: repo.root, workspaceRoot: repo.root },
+      });
+      closables.push(client);
+      const connected: unknown[] = [], business: unknown[] = [];
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (event) => connected.push(event));
+      client.subscribe("runs.changed", (event) => business.push(event));
+      const inspected = client as unknown as { link: { buffer: string; bufferedEvents: unknown[]; eventState: string } | null; reconnectTimer: unknown };
+      await waitUntil(() => connections === 2 && (inspected.link?.buffer.length ?? 0) > 100_000, 5_000);
+      const link = inspected.link!;
+      client.close();
+      expect(Buffer.byteLength(link.buffer, "utf8")).toBe(0);
+      expect(link.bufferedEvents).toEqual([]);
+      expect(link.eventState).toBe("discarded");
+      if (lateSocket && !lateSocket.destroyed) lateSocket.write("x".repeat(1_200_000));
+      await delay(200);
+      expect(connected).toHaveLength(1);
+      expect(business).toEqual([]);
+      expect(inspected.link).toBeNull();
+      expect(inspected.reconnectTimer).toBeNull();
+      expect(unhandled).toEqual([]);
+      expect(socketErrors.every((code) => code === "EPIPE" || code === "ECONNRESET")).toBe(true);
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+      fake.close();
+    }
+  }, 15_000);
+});
+
+describe("本地连接生命周期通知", () => {
+  test("首次连接、自动重连与主动关闭通过现有 subscribe 接口发出结构化通知", async () => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
+    extraTempDirs.push(dataRoot);
+    const identity = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+
+    let connectionIndex = 0;
+    const fake = createFakeDaemonServer(socketPath, (frame, socket) => {
+      connectionIndex += 1;
+      socket.write(
+        encodeFrame(
+          createResponse(frame.id, {
+            daemonPid: process.pid,
+            repoId: identity.repoId,
+            protocolVersion: PROTOCOL_VERSION,
+            startedAt: new Date().toISOString(),
+          }),
+        ),
+      );
+      if (connectionIndex === 1) setTimeout(() => socket.destroy(), 100);
+    });
+
+    try {
+      const client = await connectDaemon({
+        repoDir: repo.root,
+        dataRoot,
+        sdkDir: resolveSdkDir(),
+        execPath: resolveNodeExecutable(),
+        hello: {
+          windowId: "window-lifecycle",
+          pid: process.pid,
+          sessionId: "session-lifecycle",
+          cwd: repo.root,
+          workspaceRoot: repo.root,
+        },
+      });
+      closables.push(client);
+
+      const connected: Array<Record<string, unknown>> = [];
+      const disconnected: Array<Record<string, unknown>> = [];
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (data) => connected.push(data));
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, (data) => disconnected.push(data));
+
+      expect(connected).toHaveLength(1);
+      expect(connected[0]).toMatchObject({
+        status: "connected",
+        repoId: identity.repoId,
+        connectionSequence: 1,
+        reconnected: false,
+      });
+
+      await waitUntil(() => disconnected.length === 1, 5_000);
+      expect(disconnected[0]).toMatchObject({
+        status: "unreachable",
+        repoId: identity.repoId,
+        connectionSequence: 1,
+        willReconnect: true,
+        cause: "transport",
+      });
+
+      await waitUntil(() => connected.length === 2, 5_000);
+      expect(connected[1]).toMatchObject({
+        status: "connected",
+        repoId: identity.repoId,
+        connectionSequence: 2,
+        reconnected: true,
+      });
+
+      client.close();
+      expect(disconnected).toHaveLength(2);
+      expect(disconnected[1]).toMatchObject({
+        status: "unreachable",
+        repoId: identity.repoId,
+        connectionSequence: 2,
+        willReconnect: false,
+        cause: "client_close",
+      });
+      expect(client.state()).toMatchObject({ status: "unreachable", reason: "客户端已关闭" });
+    } finally {
+      fake.close();
+    }
+  }, 15_000);
+
+  test("重连 hello 尚未完成时 close，不会产生迟到的 connected 通知", async () => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
+    extraTempDirs.push(dataRoot);
+    const identity = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+
+    let connectionIndex = 0;
+    let finishDelayedHello: (() => void) | undefined;
+    const fake = createFakeDaemonServer(socketPath, (frame, socket) => {
+      connectionIndex += 1;
+      const respond = () => {
+        if (socket.destroyed) return;
+        socket.write(
+          encodeFrame(
+            createResponse(frame.id, {
+              daemonPid: process.pid,
+              repoId: identity.repoId,
+              protocolVersion: PROTOCOL_VERSION,
+              startedAt: new Date().toISOString(),
+            }),
+          ),
+        );
+      };
+      if (connectionIndex === 1) {
+        respond();
+        setTimeout(() => socket.destroy(), 50);
+      } else {
+        finishDelayedHello = respond;
+      }
+    });
+
+    try {
+      const client = await connectDaemon({
+        repoDir: repo.root,
+        dataRoot,
+        sdkDir: resolveSdkDir(),
+        execPath: resolveNodeExecutable(),
+        hello: {
+          windowId: "window-late-connected",
+          pid: process.pid,
+          sessionId: "session-late-connected",
+          cwd: repo.root,
+          workspaceRoot: repo.root,
+        },
+      });
+      closables.push(client);
+      const connected: Array<Record<string, unknown>> = [];
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (data) => connected.push(data));
+      await waitUntil(() => connectionIndex >= 2, 5_000);
+
+      client.close();
+      await delay(100);
+      finishDelayedHello?.();
+      await delay(200);
+
+      expect(connected).toHaveLength(1);
+      expect(client.state().status).toBe("unreachable");
+    } finally {
+      fake.close();
+    }
+  }, 15_000);
 });
 
 describe("窗口退出不影响守护进程存活", () => {

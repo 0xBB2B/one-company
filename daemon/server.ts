@@ -26,6 +26,7 @@ interface ClientConnection {
   socket: Socket;
   info: ClientInfo | null;
   buffer: string;
+  closed: boolean;
 }
 
 export type MethodHandler = (
@@ -67,6 +68,8 @@ export class DaemonServer {
   private resolveHandlersReady!: () => void;
   private readonly handlersReady: Promise<void>;
   onHello: ((client: ClientInfo) => Promise<void> | void) | null = null;
+  /** 每个已认证的 ClientInfo 身份在断线、重 hello 或服务关闭时至多回调一次。 */
+  onDisconnect: ((client: ClientInfo) => Promise<void> | void) | null = null;
 
   constructor(options: DaemonServerOptions) {
     this.options = options;
@@ -105,11 +108,12 @@ export class DaemonServer {
   }
 
   private handleConnection(socket: Socket): void {
-    const client: ClientConnection = { socket, info: null, buffer: "" };
+    const client: ClientConnection = { socket, info: null, buffer: "", closed: false };
     this.connections.add(client);
     this.options.onActivity?.();
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
+      if (client.closed) return;
       client.buffer += chunk;
       const { frames, rest } = decodeFrames(client.buffer);
       client.buffer = rest;
@@ -117,22 +121,48 @@ export class DaemonServer {
         if (frame.t === "req") void this.handleRequest(client, frame);
       }
     });
-    socket.on("close", () => {
-      this.connections.delete(client);
-    });
-    socket.on("error", () => {
-      this.connections.delete(client);
-    });
+    socket.on("close", () => this.disconnect(client));
+    socket.on("error", () => this.disconnect(client));
+  }
+
+  private runLifecycleCallback(callback: ((client: ClientInfo) => Promise<void> | void) | null, info: ClientInfo): void {
+    if (!callback) return;
+    try {
+      void Promise.resolve(callback(info)).catch(() => undefined);
+    } catch {
+      // 生命周期观察者故障不能打断 socket 清理或协议处理。
+    }
+  }
+
+  private retireIdentity(client: ClientConnection): void {
+    const info = client.info;
+    if (!info) return;
+    client.info = null;
+    this.runLifecycleCallback(this.onDisconnect, info);
+  }
+
+  private disconnect(client: ClientConnection): void {
+    if (client.closed) return;
+    client.closed = true;
+    this.connections.delete(client);
+    this.retireIdentity(client);
+  }
+
+  private notifyHelloWhenCurrent(client: ClientConnection, info: ClientInfo): void {
+    if (client.closed || client.info !== info || !this.connections.has(client)) return;
+    this.runLifecycleCallback(this.onHello, info);
   }
 
   private async handleRequest(client: ClientConnection, frame: Extract<Frame, { t: "req" }>): Promise<void> {
     this.options.onActivity?.();
+    const isHello = frame.method === "hello";
+    // 任意新 hello 都是身份替换边界。先撤销旧身份，再校验新参数、协议和凭证，失败时保持未认证。
+    if (isHello) this.retireIdentity(client);
     try {
       validateParams(frame.method, frame.params);
-      const result =
-        frame.method === "hello"
-          ? await this.handleHello(client, frame.params)
-          : await this.dispatchMethod(frame.method, frame.params, client);
+      const result = isHello
+        ? await this.handleHello(client, frame.params)
+        : await this.dispatchMethod(frame.method, frame.params, client);
       client.socket.write(encodeFrame(createResponse(frame.id, result)));
     } catch (error) {
       client.socket.write(
@@ -144,7 +174,6 @@ export class DaemonServer {
 
   private async handleHello(client: ClientConnection, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     assertProtocolVersion(params.protocolVersion as number);
-    client.info = null;
     const token = Buffer.from(typeof params.authToken === "string" ? params.authToken : "");
     const expected = Buffer.from(this.options.authToken);
     if (token.length !== expected.length || token.length === 0 || !timingSafeEqual(token, expected)) {
@@ -164,12 +193,10 @@ export class DaemonServer {
     // 不能因为此刻还没有回调就悄悄丢掉这次推送
     const info = client.info;
     if (this.onHello) {
-      setImmediate(() => {
-        void this.onHello?.(info);
-      });
+      setImmediate(() => this.notifyHelloWhenCurrent(client, info));
     } else {
       void this.waitHandlersReady().then((ready) => {
-        if (ready) void this.onHello?.(info);
+        if (ready) this.notifyHelloWhenCurrent(client, info);
       });
     }
     return {
@@ -237,8 +264,10 @@ export class DaemonServer {
   }
 
   close(): Promise<void> {
-    for (const client of this.connections) client.socket.destroy();
-    this.connections.clear();
+    for (const client of [...this.connections]) {
+      this.disconnect(client);
+      client.socket.destroy();
+    }
     const server = this.server;
     this.server = null;
     if (!server) return Promise.resolve();

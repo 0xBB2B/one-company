@@ -24,6 +24,8 @@ const RECONNECT_MAX_MS = 5_000;
 const RECONNECT_JITTER_RATIO = 0.25;
 const SPAWN_READY_TIMEOUT_MS = 10_000;
 const SPAWN_POLL_INTERVAL_MS = 100;
+const PRE_HANDSHAKE_EVENT_MAX_COUNT = 256;
+const PRE_HANDSHAKE_EVENT_MAX_BYTES = 1024 * 1024;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -195,12 +197,22 @@ interface PendingCall {
   reject: (error: Error) => void;
 }
 
+interface BufferedEvent {
+  event: string;
+  data: Record<string, unknown>;
+}
+
 class SocketLink {
   readonly socket: Socket;
   private buffer: string;
   private readonly pending: Map<string, PendingCall>;
   private readonly onEvent: (event: string, data: Record<string, unknown>) => void;
   private readonly onClose: (reason: string) => void;
+  private eventState: "pending" | "open" | "discarded";
+  private bufferedEvents: BufferedEvent[];
+  private bufferedEventBytes: number;
+  private closeHandled: boolean;
+  private failureMessage: string | undefined;
   private lastErrorMessage: string | undefined;
 
   constructor(
@@ -213,6 +225,11 @@ class SocketLink {
     this.pending = new Map();
     this.onEvent = onEvent;
     this.onClose = onClose;
+    this.eventState = "pending";
+    this.bufferedEvents = [];
+    this.bufferedEventBytes = 0;
+    this.closeHandled = false;
+    this.failureMessage = undefined;
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => this.handleData(chunk));
     socket.on("error", (error: Error) => {
@@ -222,10 +239,17 @@ class SocketLink {
   }
 
   private handleData(chunk: string): void {
+    if (this.eventsDiscarded()) return;
+    if (this.eventState === "pending"
+      && this.bufferedEventBytes + Buffer.byteLength(this.buffer, "utf8") + Buffer.byteLength(chunk, "utf8") > PRE_HANDSHAKE_EVENT_MAX_BYTES) {
+      this.failHandshake("hello 完成前收到的数据超出暂存上限");
+      return;
+    }
     this.buffer += chunk;
     const { frames, rest } = decodeFrames(this.buffer);
     this.buffer = rest;
     for (const frame of frames) {
+      if (this.eventsDiscarded()) return;
       if (frame.t === "res") {
         const waiter = this.pending.get(frame.id);
         if (!waiter) continue;
@@ -233,12 +257,66 @@ class SocketLink {
         if (frame.ok) waiter.resolve(frame.result);
         else waiter.reject(new DaemonCallError(frame.error.code, frame.error.message, frame.error.data));
       } else if (frame.t === "evt") {
-        this.onEvent(frame.event, frame.data);
+        if (this.eventState === "open") {
+          this.onEvent(frame.event, frame.data);
+          continue;
+        }
+        const bytes = Buffer.byteLength(JSON.stringify(frame), "utf8");
+        if (
+          this.bufferedEvents.length >= PRE_HANDSHAKE_EVENT_MAX_COUNT
+          || this.bufferedEventBytes + bytes > PRE_HANDSHAKE_EVENT_MAX_BYTES
+        ) {
+          this.failHandshake("hello 完成前收到的事件超出暂存上限");
+          return;
+        }
+        this.bufferedEvents.push({ event: frame.event, data: frame.data });
+        this.bufferedEventBytes += bytes;
       }
     }
   }
 
+  private eventsDiscarded(): boolean {
+    return this.eventState === "discarded";
+  }
+
+  private discardBufferedEvents(): void {
+    this.eventState = "discarded";
+    this.buffer = "";
+    this.bufferedEvents = [];
+    this.bufferedEventBytes = 0;
+  }
+
+  private failHandshake(reason: string): void {
+    if (this.failureMessage) return;
+    this.failureMessage = reason;
+    this.lastErrorMessage = reason;
+    this.discardBufferedEvents();
+    this.socket.destroy(new Error(reason));
+  }
+
+  handshakeFailure(): string | undefined {
+    if (this.failureMessage) return this.failureMessage;
+    if (this.closeHandled || this.socket.destroyed) return this.lastErrorMessage ?? "hello 完成前连接已关闭";
+    return undefined;
+  }
+
+  releaseBufferedEvents(): boolean {
+    if (this.handshakeFailure() || this.eventState !== "pending") return false;
+    const events = this.bufferedEvents;
+    this.bufferedEvents = [];
+    this.bufferedEventBytes = 0;
+    this.eventState = "open";
+    for (const event of events) {
+      if (this.eventState !== "open") return false;
+      this.onEvent(event.event, event.data);
+    }
+    return this.eventState === "open";
+  }
+
   private handleClose(): void {
+    if (this.closeHandled) return;
+    this.closeHandled = true;
+    this.discardBufferedEvents();
     const reason = this.lastErrorMessage ?? "连接已关闭";
     for (const waiter of this.pending.values()) waiter.reject(new Error(`守护进程不可达: ${reason}`));
     this.pending.clear();
@@ -254,6 +332,7 @@ class SocketLink {
   }
 
   destroy(): void {
+    this.discardBufferedEvents();
     for (const waiter of this.pending.values()) waiter.reject(new Error("守护进程不可达: 已关闭"));
     this.pending.clear();
     this.socket.removeAllListeners();
@@ -264,6 +343,31 @@ class SocketLink {
 export interface DaemonClientState {
   status: "connected" | "starting" | "unreachable";
   reason?: string;
+}
+
+/**
+ * 仅在当前客户端进程内分发的连接生命周期事件，不属于 daemon 协议事件。
+ * 它只提示宿主重新核对权限并重建自己的订阅，不授予用户权限，也不会重放任何调用或写操作。
+ */
+export const DAEMON_CLIENT_LIFECYCLE_EVENTS = {
+  connected: "daemon.connected",
+  disconnected: "daemon.disconnected",
+} as const;
+
+export interface DaemonClientConnectedData extends Record<string, unknown> {
+  status: "connected";
+  repoId: string;
+  connectionSequence: number;
+  reconnected: boolean;
+}
+
+export interface DaemonClientDisconnectedData extends Record<string, unknown> {
+  status: "unreachable";
+  repoId: string;
+  connectionSequence: number;
+  reason: string;
+  willReconnect: boolean;
+  cause: "transport" | "client_close";
 }
 
 export interface DaemonClient {
@@ -281,6 +385,7 @@ class DaemonClientImpl implements DaemonClient {
   private closed: boolean;
   private reconnectTimer: TimerHandle | null;
   private reconnectDelayMs: number;
+  private connectionSequence: number;
   private readonly listeners: Map<string, Set<(data: Record<string, unknown>) => void>>;
 
   constructor(ctx: ResolvedContext) {
@@ -291,6 +396,7 @@ class DaemonClientImpl implements DaemonClient {
     this.closed = false;
     this.reconnectTimer = null;
     this.reconnectDelayMs = RECONNECT_BASE_MS;
+    this.connectionSequence = 0;
     this.listeners = new Map();
   }
 
@@ -342,10 +448,11 @@ class DaemonClientImpl implements DaemonClient {
   }
 
   private async helloOn(socket: Socket): Promise<void> {
-    const link = new SocketLink(
+    let link!: SocketLink;
+    link = new SocketLink(
       socket,
       (event, data) => this.dispatchEvent(event, data),
-      (reason) => this.handleDisconnect(reason),
+      (reason) => this.handleDisconnect(link, reason),
     );
     this.link = link;
     let result: Record<string, unknown>;
@@ -363,6 +470,16 @@ class DaemonClientImpl implements DaemonClient {
       if (this.link === link) this.link = null;
       return;
     }
+    const handshakeFailure = link.handshakeFailure();
+    if (handshakeFailure) {
+      link.destroy();
+      if (this.link === link) this.link = null;
+      throw new Error(handshakeFailure);
+    }
+    if (this.link !== link) {
+      link.destroy();
+      throw new Error("hello 完成前连接已关闭");
+    }
     if (result.repoId !== this.ctx.repoId) {
       link.destroy();
       if (this.link === link) this.link = null;
@@ -371,23 +488,68 @@ class DaemonClientImpl implements DaemonClient {
     this.status = "connected";
     this.reason = undefined;
     this.reconnectDelayMs = RECONNECT_BASE_MS;
-  }
-
-  private dispatchEvent(event: string, data: Record<string, unknown>): void {
-    for (const listener of this.listeners.get(event) ?? []) {
-      try {
-        listener(data);
-      } catch {
-        // 单个监听器抛错不应影响同一事件的其他监听器，也不应拆连接
-      }
+    this.connectionSequence += 1;
+    this.dispatchEvent(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, this.connectedEventData());
+    if (this.closed || this.link !== link) {
+      link.destroy();
+      if (this.link === link) this.link = null;
+      return;
+    }
+    if (!link.releaseBufferedEvents()) {
+      link.destroy();
+      if (this.link === link) this.link = null;
+      throw new Error("hello 完成后无法放行暂存事件");
     }
   }
 
-  private handleDisconnect(reason: string): void {
-    if (this.closed) return;
+  private connectedEventData(): DaemonClientConnectedData {
+    return {
+      status: "connected",
+      repoId: this.ctx.repoId,
+      connectionSequence: this.connectionSequence,
+      reconnected: this.connectionSequence > 1,
+    };
+  }
+
+  private disconnectedEventData(
+    reason: string,
+    willReconnect: boolean,
+    cause: "transport" | "client_close",
+  ): DaemonClientDisconnectedData {
+    return {
+      status: "unreachable",
+      repoId: this.ctx.repoId,
+      connectionSequence: this.connectionSequence,
+      reason,
+      willReconnect,
+      cause,
+    };
+  }
+
+  private notifyListener(listener: (data: Record<string, unknown>) => void, data: Record<string, unknown>): void {
+    try {
+      listener(data);
+    } catch {
+      // 单个监听器抛错不应影响同一事件的其他监听器，也不应拆连接
+    }
+  }
+
+  private dispatchEvent(event: string, data: Record<string, unknown>): void {
+    for (const listener of this.listeners.get(event) ?? []) this.notifyListener(listener, data);
+  }
+
+  private handleDisconnect(link: SocketLink, reason: string): void {
+    if (this.closed || this.link !== link) return;
+    const wasConnected = this.status === "connected";
     this.link = null;
     this.status = "unreachable";
     this.reason = reason;
+    if (wasConnected) {
+      this.dispatchEvent(
+        DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected,
+        this.disconnectedEventData(reason, true, "transport"),
+      );
+    }
     this.scheduleReconnect();
   }
 
@@ -436,6 +598,11 @@ class DaemonClientImpl implements DaemonClient {
     }
     const activeSet = set;
     activeSet.add(listener);
+    // connectDaemon 在首次 hello 完成后才返回；补发当前连接状态，宿主因此无需新增注册时机。
+    // 这只是本地状态通知，不会重放远端事件、RPC 或任意写操作。
+    if (event === DAEMON_CLIENT_LIFECYCLE_EVENTS.connected && this.status === "connected" && this.connectionSequence > 0) {
+      this.notifyListener(listener, this.connectedEventData());
+    }
     return () => activeSet.delete(listener);
   }
 
@@ -444,14 +611,22 @@ class DaemonClientImpl implements DaemonClient {
   }
 
   close(): void {
+    if (this.closed) return;
     this.closed = true;
     this.link?.destroy();
     this.link = null;
-    this.listeners.clear();
     if (this.reconnectTimer) {
       this.ctx.clock.clearTimer(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    const reason = "客户端已关闭";
+    this.status = "unreachable";
+    this.reason = reason;
+    this.dispatchEvent(
+      DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected,
+      this.disconnectedEventData(reason, false, "client_close"),
+    );
+    this.listeners.clear();
     if (this.ctx.ownsClock) this.ctx.clock.stopGapWatcher();
   }
 }
