@@ -2,7 +2,17 @@
 
 ## 当前状态
 
-M3（文件同步、prod 事件与关闭撤销通知）正在恢复现场与拆分任务，尚未实现或验收完成。本文件由主代理统一更新，记录已发生的事实，不替代 `SQLITE-KNOWLEDGE-REBUILD-PLAN.md`。
+M3（文件同步、prod 事件与关闭撤销通知）正在实施与返修，尚未验收完成。本文件由主代理统一更新，记录已发生的事实，不替代 `SQLITE-KNOWLEDGE-REBUILD-PLAN.md`。
+
+| 任务 | 当前状态 | 已核实的失败次数 |
+|---|---|---|
+| M3-TRANSPORT-01 | 主代理限定修复、53项复验及独立复审03通过，已提交 `f916425` | 2（历史保留） |
+| M3-SYNC-01 | 主代理限定修复、70项相关回归及独立复审03通过，已提交 `f038a94` | 2（历史保留） |
+| M3-EVENT-01 | 第二次实现已返回，主代理核对与独立复审待完成 | 1 |
+| M3-DAEMON-01 | 可信许可与单daemon协调后端第一次子代理实现进行中 | 0 |
+| 宿主/生命周期接线及阶段最终验收 | 未开始，依赖任务尚未全部核验通过 | — |
+
+历史失败、原始验证输入和工具不可用记录保留在后续事件记录中，不由此表覆盖。
 
 ## 基线与保护范围
 
@@ -128,3 +138,142 @@ M3（文件同步、prod 事件与关闭撤销通知）正在恢复现场与拆�
 - resume 原代理 `3da2c831-1aa0-4da`，工具显式配置 `5x/gpt-5.6-sol`；沿用已核对同模型session，本次恢复后的新输出模型元数据尚待核对。
 - 保持原五文件范围，修四项缺口并补测试；补受授权且仅fresh时可取的无正文构建汇总接口，供后续单daemon接入现有project_manage输出，避免重复构建。
 - 状态：第二次运行中，累计已核实失败1次；日志前缀 `logs/m3-sync-02-*`，不提前计返回结果。
+
+### 2026-09-12T17:36Z · M3-RECORD-02 · 失败与返修记录本地提交
+
+- 仅暂存阶段实施记录，`git diff --check` 通过，实际提交 `14f2730`（`docs: record M3 transport and sync review failures and retries`）。
+- 该提交保全已发生的失败和第二次派工，不包含未验收生产代码/测试；没有push或发布。下一步等待并核对任务结果。
+
+### 2026-09-12T17:37Z · M3-EVENT-01 · 第一次结果返回（回合上限收尾）
+
+- 代理 `c4228b36-3207-44c` 已因回合上限结束，结果可能不完整；实际4文件为 `requirement-contracts.ts`、`requirement-state.ts`、新增 `requirement-events.ts` 和 `tests/requirement-events.test.ts`，没有修改原requirement-service。
+- 已定位 `logs/m3-event-01-vitest.log`、`logs/m3-event-01-typecheck{,-scoped}.log`；代理报告定向65项通过，全仓typecheck遇到并行transport返修中的类型错误，限定范围typecheck通过。该类型错误不能证明本任务失败或通过，待稳定后全仓复核。
+- 主代理已完整读取新增410行服务、299行测试及协议/状态diff，确认准确批准提交对、持久cursor、pending保留和归档元数据接口存在；实际守卫/恢复可用性还在核对，未计任务完成、未提交。
+- 下一步：独立安全审查此稳定四文件，并核对物理PM接管/上下文丢失后完整基线读取及最终正文交付边界。
+
+### 2026-09-12T17:39—17:40Z · M3-EVENT-01 · 主代理复验与独立审查派工
+
+- 主代理独立执行 `pnpm exec vitest run tests/requirement-events.test.ts tests/requirement-state.test.ts tests/requirement-service.test.ts`：3文件65/65，exit0，53.86秒。证据 `logs/main-event-targeted.{log,exit}`。
+- 独立审查 `M3-EVENT-REVIEW-01` 已派代理 `fea8a079-8c67-489`，配置和实际模型 `5x/gpt-5.6-sol`（session `2026-09-12T17-39-16-669Z_01a096b3-bc3d-70fd-9482-0f0b2f768db2.jsonl`），只审稳定需求四文件，不是阶段最终检查。
+- 状态：定向测试通过，恢复基线/最终返回疑点等待独立核验，未提交/未计任务通过。
+- 同时补核 M3-SYNC-01 第二次恢复运行的17:40:46 assistant元数据，实际仍为 `5x/gpt-5.6-sol`，模型一致。
+
+### 2026-09-12T17:43Z · M3-TRANSPORT-01 · 第二次实现返回
+
+- 原实现代理已结束；原四文件内新增每link握手事件有界缓冲（256项/1MiB）、校验成功先connected再放行、任何hello请求先退休旧身份。主代理已核对上述生产控制流，两个已知问题的修复路径存在。
+- 自报42项传输+8项security/socket通过；限定生产文件typecheck通过，全仓typecheck仍因并行sync返修中的8项错误失败。证据为 `logs/m3-transport-02-*`，不把限定检查说成全仓通过。
+- 第二次结果待独立复审与主代理复验，尚未计成功或第二次失败，累计已核实失败1次。下一步对原问题与新增回归独立复审。
+
+### 2026-09-12T17:43—17:45Z · M3-TRANSPORT-01 · 第二次主代理复验
+
+- 原审查代理已被工具清理，resume返回Agent not found；这是工具不可用，不计实现/审查执行失败。随后新派 `M3-TRANSPORT-REVIEW-02`：`8b1be725-5a9a-452`，配置及实际 `5x/gpt-5.6-sol`，session `2026-09-12T17-43-08-211Z_01a096b7-44b3-70fd-9482-0f0c28304f78.jsonl` 已核对。
+- 主代理已读第二次新增测试，独立运行原4文件定向命令：50/50，exit0，69.22秒；证据 `logs/main-transport-02-targeted.{log,exit}`。没有改动第一轮43项旧结果。
+- 状态：第二次定向复验通过，独立复审运行中；未提交生产代码。
+
+### 2026-09-12T17:49Z · M3-EVENT-01 · 第一次独立审查失败
+
+- 独立审查 `fea8a079-8c67-489` 已结束，报告 `logs/m3-event-review-01.md`：持久消费cursor错误代替当前物理上下文持有基线，新run/压缩后不能补全文；最后异步检查与实际交付之间仍有空隙；尾部批准事件缺失后只有硬错误、恢复语义不完整。
+- 主代理已核对代码并确认前两项设计缺口。报告的最终交付竞争动态脚本未进入断言（Git夹具/模块加载报错），不写成已复现；该项依据为真实异步控制流与缺失最终交付API。尾部审计丢失须与正常事件重投区分，不能以回退cursor或补造事件来恢复未知历史。
+- M3-EVENT-01第一次真实实现未通过任务核验，累计失败1次；65项通过保留。下一步第二次子代理返修当前上下文基线与专用交付边界，并补尾部损坏明确安全状态/测试，不扩大到M7调度或通用工具网关。
+
+### 2026-09-12T17:51Z · M3-EVENT-01 · 第二次实际执行已派出
+
+- 原agent已清理导致resume返回Agent not found，未实际执行，不计第二次失败。新agent `5984bec1-2366-466` 接同一任务第二次尝试，配置及实际模型 `5x/gpt-5.6-sol`（session `2026-09-12T17-51-38-922Z_01a096bf-0faa-70fd-9482-0f0f25699b95.jsonl`）已核对。
+- 仍限原四文件，修物理上下文基线、无正文待交付句柄/同步最终消费、审计尾部损坏明确阻塞。不得在SQLite事务中执行IO，不回退cursor或伪造历史，不把未知历史安全停止弱化为自动恢复。
+- 状态：第二次运行中，累计已核实失败1次；日志约定 `logs/m3-event-02-*`，旧失败及未成功动态复现记录保留。
+
+### 2026-09-12T17:52Z · M3-TRANSPORT-01 · 第二次审查失败，主代理仅接手该任务
+
+- 第二次独立复审 `8b1be725-5a9a-452` 已结束，报告 `logs/m3-transport-review-02.md`。原两项缺陷已验证修复；新增握手预算只计完整事件，不计未完成帧，真实Unix socket保留2,097,202字节并停在starting。
+- 主代理核对 `SocketLink.handleData` 和 `discardBufferedEvents`，确认未解码buffer不受预算且关闭时未立即清空该字符串。
+- 两次依据保留：第一次 `ba9f26ef-832a-471` 实现被review-01以事件早送/失败rehello旧身份否决；第二次同agent返修被review-02以上述未完成帧无界缓冲否决。M3-TRANSPORT-01累计真实失败2次，工具resume不可用不在计数内。
+- 接手范围仅该任务剩余握手原始缓冲总预算与对应分片/close竞争测试，保留已修连接时序与认证撤销，不重做其他成果。其余索引/需求及后续集成仍子代理优先；主代理完成后仍须独立复审。
+- 下一步：先加入失败回归，再限定修复buffer总预算及清理，验证后独立复审；尚未提交或签发通过。
+
+### 2026-09-12T17:54—17:56Z · M3-TRANSPORT-01 · 主代理限定修复与测试事实
+
+- 新增3项真实socket回归（纯未完成分片、完整事件+未完成分片共同超限、close清空原始缓冲/迟到分片），未修生产代码时3项均失败：`logs/main-transport-buffer-before.{log,exit}`。
+- 生产修复仅6行：pending状态在追加chunk前检查已暂存事件+已有未完成帧+新chunk的UTF-8字节总量，超过1MiB走现有failHandshake；discard同时清空原始buffer。
+- 首次修复后3项断言通过，但测试对端故意向已关闭socket发送分片产生3次未捕获EPIPE，整个命令exit1（`logs/main-transport-buffer-after.*`），不记通过。已仅为新增测试对端记录错误并核对只允许EPIPE/ECONNRESET，未吞掉产品端错误或改变安全断言；下一次验证另存日志。
+
+### 2026-09-12T17:56—17:58Z · M3-TRANSPORT-01 · 接手修复验证与独立复审
+
+- 主代理运行完整传输+security/socket四文件：53/53，exit0，72.06秒；限定生产typecheck exit0；diff格式检查通过。证据 `logs/main-transport-buffer-final.{log,exit}`、`logs/main-transport-typecheck-scoped.{log,exit}`。
+- 已派独立 `M3-TRANSPORT-REVIEW-03`：`f08e510f-6a5d-42b`，显式与实际模型 `5x/gpt-5.6-sol`，session `2026-09-12T17-57-59-105Z_01a096c4-dcc1-70fd-9482-0f1094d6b293.jsonl` 已核对。
+- 状态：接手限定修复测试通过，仍待独立复审；没有主代理自签通过或提交未审功能，其余实现继续子代理优先。
+
+### 2026-09-12T18:00Z · M3-SYNC-01 · 第二次结果已收到
+
+- 代理 `3da2c831-1aa0-4da` 已结束，仍为原五文件；新增稳定持久baselineHash、所有对账来源变化通知、目录inode链复核、每订阅者1在途+1待通知的合并上限、调用前核权和fresh限定latestBuildResult。
+- 自报相关5文件65项、专项15项、typecheck通过，证据 `logs/m3-sync-02-related-vitest-final-2.log`、`logs/m3-sync-02-sync-tests-final.log`、`logs/m3-sync-02-typecheck-final-3.log`；未重跑全量，原600秒超时仍保留。
+- 状态：第二次结果待主代理与独立审查，累计已核实失败1次，不提前计通过。下一步审查与定向复验；daemon/宿主/生命周期集成尚未实施。
+
+### 2026-09-12T18:00—18:02Z · M3-SYNC-01 · 主代理第二次核对与独立审查
+
+- 主代理已读第二次新增实现与五项新测试；独立执行sync/service/policy/store/project-manage五文件定向命令：65/65，exit0，35.27秒，证据 `logs/main-sync-02-targeted.{log,exit}`。
+- 独立审查 `M3-SYNC-REVIEW-02` 已派 `01ec1d53-11e9-498`，配置/实际 `5x/gpt-5.6-sol`（session `2026-09-12T17-59-36-409Z_01a096c6-58d9-70fd-9482-0f12926ee4ee.jsonl`），已记录模型证据。
+- 主代理提出待独立复现疑点：运行中unsubscribe再注册能否绕过callback上界、stop/start重叠及watch注册await后stop是否能复活资源。尚未动态确认，不提前计第二次失败。
+- 状态：定向通过，独立审查待返回，仍未提交或开展依赖该内核的生产接线。
+
+### 2026-09-12T18:03Z · M3-TRANSPORT-01 · 独立复审通过及主代理最终任务核验
+
+- `f08e510f-6a5d-42b` 已结束，报告 `logs/m3-transport-review-03.md` 对任务限定范围PASS，原三项缺陷均解除；独立选定10通过/35未选、限定typecheck通过，不扩大为M3阶段或AC3/9完整通过。
+- 主代理已完整读报告，复算四文件SHA-256与该报告逐项一致；53项主代理完整定向日志及独立结论衔接成立。检查本任务新增导入/变量和差异范围，没有无关改动或孤立残留。
+- 任务核验通过，接手仅完成握手预算剩余项，其余任务仍子代理优先。下一步按单元仅提交传输四文件；阶段记录含其他任务在途事实，另行提交不混入功能单元。
+
+### 2026-09-12T18:03Z · M3-TRANSPORT-01 · 功能本地提交
+
+- 实际提交 `f916425`（`feat: add bounded authenticated daemon connection lifecycle`），仅4个传输文件，暂存diff检查通过。实现+回归在本地Git保存，未push/发布。
+- 原两次失败、主代理限定接手、失败测试EPIPE与最终通过分别保留，未因成功覆盖。该提交不包含索引/需求WIP、`.pi/`或阶段记录；下一步继续核对剩余基础任务后派集成。
+
+### 2026-09-12T18:14Z · M3-SYNC-01 · 第二次独立审查失败，限定接手
+
+- 独立 `01ec1d53-11e9-498` 已结束，报告 `logs/m3-sync-review-02.md` 与 races/watch-stop-gap/archive-order/auth-return 复现日志确认5项阻塞：退订重注册绕过总回调上界；stop等待时start复活；watch安装await窗口停止后新watch泄漏；归档风险hook晚于普通通知；start返回授权失败后继续运行。
+- 主代理已读完整报告并核对对应控制流，确认是内核自身缺陷，不是尚未接daemon造成。65项通过保留，不能覆盖这些缺失竞争。
+- 两次执行依据：第一次agent `3da2c831-1aa0-4da`交付被主代理以漏通知/inode/无界回调/迟到授权否决；第二次同agent返修被上述独立动态复现否决。M3-SYNC-01累计真实失败2次。
+- 主代理仅接手该任务剩余5项：保留正在退出的订阅槽位、明确stop代次和在途启动门槛、每次await/factory后的watch失效清理、归档先处理再发普通通知、失败启动安全收尾。既有hash/解析缓存/排除/正常对账成果继续保留。其他任务（含M3-EVENT-01第二次返修及后续集成）仍子代理优先。
+- 下一步：加入失败竞争回归、限定修复、主代理验证后再派独立复审；尚未签发内核或阶段通过。
+
+### 2026-09-12T18:17—18:22Z · M3-SYNC-01 · 主代理限定接手修复
+
+- 为B1—B5新增5项竞争测试，修改前5项全部失败（`logs/main-sync-races-before.*`），没有把未复现问题直接改为通过。
+- 仅改 `runtime/project-index-sync.ts` 和其测试：退订后运行中的槽位保留并可同ID复用；stop操作与生命周期序号阻止并发/迟到start；watch检查/工厂前后核对代次并清理；归档风险队列阻止普通通知直至hook成功；启动失败走私有撤销收尾，不靠失效后的公开授权允许cleanup。
+- 接手后同步文件20/20通过（`logs/main-sync-races-after.*`），当前全仓typecheck exit0（`logs/main-sync-takeover-typecheck.*`）；这是当时输入的任务验证，不是仍有需求代理写入时的阶段最终验收。
+- 下一步：独立复审限定修复及旧保护，之后执行相关回归并按功能单元提交；尚未签发通过。
+
+### 2026-09-12T18:23Z · M3-SYNC-01 · 相关回归与复审派工
+
+- 主代理执行sync/service/policy/store/project-manage五文件：70/70，exit0，40.63秒；证据 `logs/main-sync-takeover-related.*`。
+- 独立复审 `M3-SYNC-REVIEW-03` 已派 `4fbb8245-eeea-4c2`；配置/实际模型 `5x/gpt-5.6-sol`，session `2026-09-12T18-22-57-724Z_01a096db-babc-70fd-9482-0f153422e8ed.jsonl` 已核对。
+- 状态：主代理限定修复已测，独立复审待结果；未提交同步功能，仍未开始阶段最终检查。
+
+### 2026-09-12T18:26Z · M3-EVENT-01 · 第二次实现结果已收到
+
+- `5984bec1-2366-466` 已结束，原四文件内加入物理context代次、新run补基线、prepare不含正文句柄、同步consume、32个pending上限与历史尾损坏needs_review。没有生产接线或提交。
+- 自报state/event两文件49项通过、typecheck通过；报告 `logs/m3-event-02-result.md`，日志 `logs/m3-event-02-{typecheck,vitest}-final.log`。内部两次测试失败（context刷新误推cursor、测试包装异步sink识别）已保留，不改写成从未失败。
+- 主代理已读新服务全文和合同diff，并核对关键状态方法；注意新的PmLease/context格式对既有M1持久owner的兼容、最终同步授权检查顺序和pending清理边界仍需独立审查。此刻实现代理均已结束，但生产接线与阶段验收尚未开展。
+- 下一步：对第二次事件结果独立复审、运行原service受影响回归；不提前计任务通过。
+
+### 2026-09-12T18:28—18:30Z · M3-EVENT-01 · 第二次主代理复验与独立复审
+
+- 主代理执行event/state/service三文件：71/71，exit0，69.48秒；证据 `logs/main-event-02-targeted.*`，未把原第一轮65项改写。
+- 已派独立 `M3-EVENT-REVIEW-02`：`bd5ef5b6-3c37-415`，配置及实际模型 `5x/gpt-5.6-sol`，session `2026-09-12T18-28-20-530Z_01a096e0-a7b2-70fd-9482-0f168fa172c5.jsonl` 已核对。
+- 状态：第二次定向复验通过，独立复审待结果，累计已核实失败仍1次。仍未提交需求事件功能。
+
+### 2026-09-12T18:32Z · M3-SYNC-01 · 独立复审及主代理核验通过
+
+- `4fbb8245-eeea-4c2` 已结束，报告 `logs/m3-sync-review-03.md` 为限定内核PASS；独立20/20回归、外部stop/回调stop重叠、排队start取消、归档hook失败不通知的额外断言通过，typecheck通过。
+- 主代理完整读报告，复算五文件hash与审查清单逐项相同，70项相关回归与当前字节衔接成立。严格unused诊断仅剩M2已记录的范围外 `shell-bash.ts:event`、`shell-page.ts:width`，没有本轮孤立导入/变量；证据 `logs/main-unused-check.*`，未擅自修范围外项。
+- 任务核验通过，接手仅修内核五项剩余竞态，没有扩大到后续集成。下一步只提交该内核五文件；阶段AC3/4/7/9仍需生产接线和最终验证。
+
+### 2026-09-12T18:33Z · M3-SYNC-01 · 功能本地提交
+
+- 实际提交 `f038a94`（`feat: synchronize project indexes with bounded lifecycle guards`），只含五个同步内核文件；暂存diff检查通过，未包含需求事件WIP、`.pi/`及阶段记录。
+- 主代理两个限定接手任务到此均核验并提交，后续任务继续优先子代理。下一步独立拆分可信扫描授权/单daemon协调后端与宿主接线；需求事件仍待复审，不据其未通过结果开放正文能力。
+
+### 2026-09-12T18:37Z · M3-DAEMON-01 · 第一次实现已派出
+
+- 代理 `74eacf12-325f-416`，配置及实际 `5x/gpt-5.6-sol`，session `2026-09-12T18-37-27-488Z_01a096e9-0040-70fd-9482-0f1901d5a173.jsonl` 已核对。
+- 基线依赖为已验收提交 `f916425`/`f038a94`；只实现可信扫描许可固定元数据、单daemon多ClientInfo引用协调后端、严格内部index.sync协议及配套真实临时测试。允许新project-sync-grants/coordinator模块和测试、protocol必要改动；不改已审内核/transport/requirement/扩展/daemon启动入口。
+- 不依赖尚未通过复审的需求事件接口；生命周期风险hook作为必需安全接缝，缺失/失败时阻塞，不默认已核对归档。实际产品宿主接线后续单独任务进行。
+- 状态：运行中，失败计数0；日志前缀 `logs/m3-daemon-01-*`，结果返回后主代理与独立安全审查核验。
