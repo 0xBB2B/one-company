@@ -77,6 +77,13 @@ let bindingPromise: Promise<Binding> | undefined;
 // 官方绑定不提供 Language 卸载；本模块实例最多缓存四份固定语法，不缓存源码或解析树。
 const languages = new Map<Grammar, Promise<Language>>();
 
+function grammarFor(language: SyntaxLanguage): Grammar {
+  if (!["ts", "tsx", "js", "jsx", "go"].includes(language)) {
+    throw new SyntaxResourceError("unsupported_language", "仅支持 ts/tsx/js/jsx/go");
+  }
+  return language === "ts" ? "typescript" : language === "js" || language === "jsx" ? "javascript" : language;
+}
+
 async function load(grammar: Grammar): Promise<{ binding: Binding; language: Language }> {
   const resources = await manifest();
   let runtimePath: string;
@@ -101,18 +108,35 @@ async function load(grammar: Grammar): Promise<{ binding: Binding; language: Lan
       return binding;
     } catch { throw new SyntaxResourceError("resource_incompatible", "web-tree-sitter"); }
   })();
-  const binding = await bindingPromise;
+  const pendingBinding = bindingPromise;
+  let binding: Binding;
+  try { binding = await pendingBinding; }
+  catch (error) {
+    if (bindingPromise === pendingBinding) bindingPromise = undefined;
+    throw error;
+  }
   let pending = languages.get(grammar);
   if (!pending) {
     pending = binding.Language.load(grammarBytes).catch(() => { throw new SyntaxResourceError("resource_incompatible", resources.grammars[grammar].file); });
     languages.set(grammar, pending);
   }
-  const language = await pending;
+  let language: Language;
+  try { language = await pending; }
+  catch (error) {
+    // 仅移除本次失败的加载，不能撤销另一个调用已开始的重试。
+    if (languages.get(grammar) === pending) languages.delete(grammar);
+    throw error;
+  }
   if (language.abiVersion !== resources.grammars[grammar].abiVersion ||
     language.abiVersion < binding.MIN_COMPATIBLE_VERSION || language.abiVersion > binding.LANGUAGE_VERSION) {
     throw new SyntaxResourceError("resource_incompatible", resources.grammars[grammar].file);
   }
   return { binding, language };
+}
+
+/** 只核对随安装交付的运行时及语法资源，不创建Parser、Tree或解析业务源码。 */
+export async function verifySyntaxResources(language: SyntaxLanguage): Promise<void> {
+  await load(grammarFor(language));
 }
 
 /**
@@ -121,8 +145,7 @@ async function load(grammar: Grammar): Promise<{ binding: Binding; language: Lan
  * 坐标是 JS 字符串的 UTF-16 索引，不能当作 UTF-8 字节偏移。
  */
 export async function withSyntaxTree<T>(language: SyntaxLanguage, source: string, inspect: (tree: Tree) => T | Promise<T>): Promise<T> {
-  if (!["ts", "tsx", "js", "jsx", "go"].includes(language)) throw new SyntaxResourceError("unsupported_language", "仅支持 ts/tsx/js/jsx/go");
-  const grammar: Grammar = language === "ts" ? "typescript" : language === "js" || language === "jsx" ? "javascript" : language;
+  const grammar = grammarFor(language);
   if (typeof source !== "string" || typeof inspect !== "function") throw new TypeError("必须提供源码字符串和解析树读取函数");
   const loaded = await load(grammar);
   const parser = new loaded.binding.Parser();

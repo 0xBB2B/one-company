@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { readFile } from "node:fs/promises";
 import { Parser, Tree } from "web-tree-sitter";
-import { withSyntaxTree } from "../runtime/syntax-parser.ts";
+import { verifySyntaxResources, withSyntaxTree } from "../runtime/syntax-parser.ts";
 import type { SyntaxLanguage } from "../runtime/syntax-parser.ts";
 
 const cases = JSON.parse(await readFile(new URL("./fixtures/syntax-cases.json", import.meta.url), "utf8")) as Array<{
@@ -28,6 +28,20 @@ describe("固定语言的本机解析入口", () => {
     for (const input of ["python", "typescript", "../go", "https://example.invalid/parser.wasm", "__proto__", "constructor"]) {
       await expect(withSyntaxTree(input as SyntaxLanguage, "", () => null)).rejects.toMatchObject({ code: "unsupported_language" });
     }
+  });
+
+  test("资源健康检查复用hash/版本/ABI核验且不创建解析树", async () => {
+    const parse = Parser.prototype.parse;
+    let parseCalls = 0;
+    Parser.prototype.parse = function (...args: Parameters<typeof parse>) {
+      parseCalls++;
+      return parse.apply(this, args);
+    };
+    try {
+      for (const language of ["ts", "tsx", "js", "jsx", "go"] as const) await verifySyntaxResources(language);
+      expect(parseCalls).toBe(0);
+      await expect(verifySyntaxResources("python" as SyntaxLanguage)).rejects.toMatchObject({ code: "unsupported_language" });
+    } finally { Parser.prototype.parse = parse; }
   });
 
   test("语法错误保留在树中，不伪报有效源码", async () => {
