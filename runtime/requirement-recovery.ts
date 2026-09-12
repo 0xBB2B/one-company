@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { DatabaseSync } from "node:sqlite";
 import { UUID_V7_PATTERN } from "./database.ts";
 import { databaseFilesFingerprint, reconcileDatabaseRecovery } from "./database-recovery.ts";
-import type { DatabaseRecoveryReceipt, RecoveryRequirementStatus } from "./database-recovery.ts";
+import type { RecoveryRequirementStatus } from "./database-recovery.ts";
 import { databaseMaintenanceDirectory, withDatabaseMaintenance } from "./database-maintenance.ts";
 import type { DatabaseMaintenancePermit, DatabaseManagementAuthorization } from "./database-maintenance.ts";
 import { DATABASE_SNAPSHOT_FILE, pathExists } from "./database-paths.ts";

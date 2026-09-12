@@ -442,16 +442,6 @@ async function readFileSnapshot(path: string): Promise<ProdFileSnapshot> {
   }
 }
 
-async function readNoFollow(path: string): Promise<Buffer> {
-  const snapshot = await readFileSnapshot(path);
-  if (!snapshot.exists) {
-    const error = new Error("正文文件不存在") as NodeJS.ErrnoException;
-    error.code = "ENOENT";
-    throw error;
-  }
-  return snapshot.bytes;
-}
-
 async function readProdIfExists(path: string): Promise<Buffer | undefined> {
   const snapshot = await readFileSnapshot(path);
   return snapshot.exists ? snapshot.bytes : undefined;
