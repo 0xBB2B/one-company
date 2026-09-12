@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import { PROD_ARCHIVE_GIT_PATHSPECS, isProdArchivePath, prodArchiveRoot } from "./content-policy.ts";
 import { readGitBytes } from "./git-read.ts";
 import { createHash } from "node:crypto";
 import { lstat, readlink } from "node:fs/promises";
@@ -39,9 +40,16 @@ function normalizeGitError(
   return new Error("git 命令执行失败，请核对仓库状态");
 }
 
-async function runGit(cwd: string, args: string[], signal: AbortSignal | undefined, timeoutMs: number, maxBuffer: number): Promise<Buffer> {
+async function runGit(
+  cwd: string,
+  args: string[],
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  maxBuffer: number,
+  deniedReads: string[] = [],
+): Promise<Buffer> {
   try {
-    return (await readGitBytes(cwd, args, { signal, timeout: timeoutMs, maxBuffer })).stdout;
+    return (await readGitBytes(cwd, args, { signal, timeout: timeoutMs, maxBuffer, deniedReads })).stdout;
   } catch (error) {
     const failure = error as NodeJS.ErrnoException & { killed?: boolean; stderr?: Buffer };
     throw normalizeGitError(failure, signal, failure.stderr ?? Buffer.alloc(0));
@@ -136,20 +144,28 @@ export async function collectGitSnapshot(input: CollectGitSnapshotInput): Promis
   const { repoRoot, signal } = input;
   const timeoutMs = input.gitTimeoutMs ?? GIT_TIMEOUT_MS;
   const maxBuffer = input.gitMaxBuffer ?? GIT_MAX_BUFFER;
-  const pathspec = ["--", ".", ...(input.excludePaths ?? []).map((path) => `:(exclude,literal)${path}`)];
-  const head = (await runGit(repoRoot, ["rev-parse", "HEAD"], signal, timeoutMs, maxBuffer)).toString("utf8").trim();
+  const deniedReads = [prodArchiveRoot(repoRoot)];
+  const pathspec = [
+    "--",
+    ".",
+    ...PROD_ARCHIVE_GIT_PATHSPECS,
+    ...(input.excludePaths ?? []).map((path) => `:(exclude,literal)${path}`),
+  ];
+  const head = (await runGit(repoRoot, ["rev-parse", "HEAD"], signal, timeoutMs, maxBuffer, deniedReads)).toString("utf8").trim();
   const rawBranch = (
-    await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"], signal, timeoutMs, maxBuffer)
+    await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"], signal, timeoutMs, maxBuffer, deniedReads)
   ).toString("utf8").trim();
+  // 禁用重命名比较后，跨归档边界的改名按允许范围内的删除或新增计算，不读取另一侧正文。
   // -uall：未跟踪目录逐文件展开，不塌缩成目录名一行，否则目录内文件改内容不改路径时指纹不变
-  const status = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "-uall", ...pathspec], signal, timeoutMs, maxBuffer);
-  const diff = await runGit(repoRoot, ["diff", "HEAD", "--binary", ...pathspec], signal, timeoutMs, maxBuffer);
+  const status = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "-uall", "--no-renames", ...pathspec], signal, timeoutMs, maxBuffer, deniedReads);
+  const diff = await runGit(repoRoot, ["diff", "HEAD", "--binary", "--no-renames", ...pathspec], signal, timeoutMs, maxBuffer, deniedReads);
   const hash = createHash("sha256");
   hashSegment(hash, status);
   hashSegment(hash, diff);
-  hashSegment(hash, await runGit(repoRoot, ["diff", "--cached", "--binary", ...pathspec], signal, timeoutMs, maxBuffer));
+  hashSegment(hash, await runGit(repoRoot, ["diff", "--cached", "--binary", "--no-renames", ...pathspec], signal, timeoutMs, maxBuffer, deniedReads));
   // 未跟踪文件的内容不出现在 diff 里，porcelain 状态行也不含内容——不单独喂入会漏检改动
   for (const relPath of parseUntrackedPaths(status).sort()) {
+    if (isProdArchivePath(relPath)) continue;
     hashSegment(hash, Buffer.from(relPath, "utf8"));
     hashSegment(hash, await untrackedEntrySegment(repoRoot, relPath));
   }
@@ -158,11 +174,18 @@ export async function collectGitSnapshot(input: CollectGitSnapshotInput): Promis
 
 
 export async function collectContentFingerprint(repoRoot: string, excludePaths: string[] = []): Promise<string> {
-  const paths = (await runGit(repoRoot, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], undefined, GIT_TIMEOUT_MS, GIT_MAX_BUFFER))
-    .toString("utf8").split("\0").filter(Boolean);
+  const deniedReads = [prodArchiveRoot(repoRoot)];
+  const paths = (await runGit(
+    repoRoot,
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ".", ...PROD_ARCHIVE_GIT_PATHSPECS],
+    undefined,
+    GIT_TIMEOUT_MS,
+    GIT_MAX_BUFFER,
+    deniedReads,
+  )).toString("utf8").split("\0").filter(Boolean);
   const hash = createHash("sha256");
   for (const path of [...new Set(paths)].sort()) {
-    if (excludePaths.includes(path)) continue;
+    if (isProdArchivePath(path) || excludePaths.includes(path)) continue;
     try { await lstat(join(repoRoot, path)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
     hashSegment(hash, Buffer.from(path));

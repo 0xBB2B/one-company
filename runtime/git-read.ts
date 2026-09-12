@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { sandboxLaunch } from "./command-boundary.ts";
 
@@ -20,13 +21,15 @@ export interface GitReadOptions {
   signal?: AbortSignal;
   timeout?: number;
   maxBuffer?: number;
+  deniedReads?: string[];
 }
 
 // 内部查询只能读取：禁止写入、联网和启动 Git 辅助程序，并排除外部 diff/textconv。
 export async function readGitBytes(cwd: string, args: string[], options: GitReadOptions = {}) {
   const commandArgs = args[0] === "diff" ? ["diff", "--no-ext-diff", "--no-textconv", ...args.slice(1)] : args;
+  const deniedReads = [...new Set((options.deniedReads ?? []).map((path) => resolve(cwd, path)))];
   const launch = sandboxLaunch("", {
-    readRoots: ["/"], writeRoots: [], deniedReads: [], deniedWrites: [], scratch: "/private/tmp",
+    readRoots: ["/"], writeRoots: [], deniedReads, deniedWrites: [], scratch: "/private/tmp",
   }, { path: await gitExecutable(), args: ["-c", "core.fsmonitor=false", ...commandArgs] });
   return execFileAsync(launch.command, launch.args, {
     cwd, env: { ...launch.env, LC_ALL: "C" }, encoding: "buffer",
