@@ -71,3 +71,60 @@ M3（文件同步、prod 事件与关闭撤销通知）正在恢复现场与拆�
 - 允许范围：`daemon/server.ts`、`runtime/daemon-client.ts`、对应连接测试。补幂等认证连接断开回调、阻止迟到 hello、客户端本地连接状态通知，供后续单 daemon 引用计数和授权订阅重建使用；不自动重放写操作。
 - 状态：运行中，结果未返回，失败计数0；日志约定 `logs/m3-transport-01-*`。与索引和需求代理文件范围不冲突。
 - 下一步：主代理待接口与结果交付后审查整合，宿主/daemon同步接线尚未实施。
+
+### 2026-09-12T17:08Z · M3-RECORD-01 · 实施记录首次本地提交
+
+- `git diff --check` 通过；仅暂存 `M3-IMPLEMENTATION-REPORT.md`，实际提交 `d74849d`（`docs: start M3 implementation and live coordination record`）。
+- 这是恢复现场、基线验证及已发生派工的记录提交，不是 M3 功能通过或阶段完成。其他代理文件、原 `.pi/` 未纳入；未 push/发布。
+- 下一步：继续实时追加返回、审查、验证与返修事实。
+
+### 2026-09-12T17:09Z · M3-ENV-01 · 最低 Node 验证环境准备
+
+- 在本轮专属 `/tmp/m3-verification-wTYp57/toolchain` 下载官方 Node 22.19.0 darwin-arm64，按同版本官方 SHASUMS256 核对 tar.xz：OK；实际执行版本 v22.19.0，`node:sqlite.DatabaseSync` 可用。
+- 校验与环境证据：`logs/node22-toolchain-sha256.txt`、`logs/node22-environment.log`。未覆盖已有全局Node、pnpm配置或其他任务工具链。
+- 这里只完成环境准备，尚未以 Node22 验收 M3。阶段收尾清理本轮下载与解压文件，保留校验记录。
+
+### 2026-09-12T17:24Z · M3-TRANSPORT-01 · 第一次结果已收到
+
+- 代理已真实结束；交付4文件：`daemon/server.ts`、`runtime/daemon-client.ts`、`tests/daemon-client.test.ts`、新增 `tests/daemon-connection-lifecycle.test.ts`。未提交Git。
+- 自报并已定位日志：传输2文件35项通过（`logs/m3-transport-01-transport-vitest-final.log`），security/socket 2文件8项通过（`logs/m3-transport-01-server-regressions-vitest.log`），最终typecheck通过。中间一次typecheck遇到并行需求模块未完成错误；代理没有改越界文件，该次现象保留，不作为本任务独立实现失败。
+- 主代理已读取实际生产/既有测试diff，确认新增onDisconnect及本地daemon.connected/disconnected，不增加协议授权或写操作重放；新增测试全文和独立运行核对尚在进行。
+- 状态：待主代理验证与安全审查，不先计完成；索引/需求实现未收到完成通知，尚未进入阶段最终检查。
+
+### 2026-09-12T17:25—17:26Z · M3-TRANSPORT-01 · 主代理定向复验与独立审查派工
+
+- 主代理完整读取新增连接测试，独立运行 `pnpm exec vitest run tests/daemon-client.test.ts tests/daemon-connection-lifecycle.test.ts tests/security-regressions.test.ts tests/socket-replacement.test.ts`：4文件43/43，exit 0，67.54秒；证据 `logs/main-transport-targeted.{log,exit}`。
+- 已派独立传输范围审查 `M3-TRANSPORT-REVIEW-01`，代理 `d5795c2d-5d0a-45c`；配置/实际均为 `5x/gpt-5.6-sol`（session `2026-09-12T17-24-59-994Z_01a096a6-a9da-70fd-9482-0f08d613db96.jsonl`）。只审已结束的传输任务四文件，不审其他在途实现，不冒充阶段最终审查。
+- 状态：主代理定向验证通过，独立审查待返回；未作功能提交。
+
+### 2026-09-12T17:31Z · M3-TRANSPORT-01 · 第一次尝试审查失败
+
+- 独立审查 `d5795c2d-5d0a-45c` 已结束，报告 `logs/m3-transport-review-01.md`。发现两项阻塞：同批 hello 响应/业务事件在 repo 校验和本地connected前被分发；malformed/错误协议 re-hello 未立即退休旧认证身份。
+- 主代理核对报告与 `SocketLink.handleData`、`helloOn`、`DaemonServer.handleRequest/handleHello` 的实际控制流，确认两项成立。原43项通过保留，但不能覆盖缺失场景；独立审查11通过/24未选也不构成无缺陷证明。
+- 计数：M3-TRANSPORT-01 第一次真实实现尝试未通过最终任务核验，累计失败1次；尚不满足主代理接手条件。
+- 下一步：以同任务ID进行第二次子代理返修，补真实同数据块推送与三类失败re-hello回归；不提交失败实现。
+
+### 2026-09-12T17:32Z · M3-TRANSPORT-01 · 第二次实际执行已派出
+
+- resume 原代理 `ba9f26ef-832a-471`，显式模型 `5x/gpt-5.6-sol`；原 session 最新 17:32:24 assistant 运行元数据已核对 provider/model 一致。
+- 范围仍为原传输四文件；要求逐link有界握手事件门槛、正确连接顺序、任意失败re-hello立即撤权和缺失回归。日志前缀 `logs/m3-transport-02-*`。
+- 状态：第二次运行中；第一次失败及两项依据保持不变，累计已核实失败仍为1，不提前计第二次结果。
+
+### 2026-09-12T17:33Z · M3-SYNC-01 · 第一次实现结果已收到
+
+- 实现代理 `3da2c831-1aa0-4da` 已结束，修改sync/service/store/policy与新同步测试共5文件，未提交。公开 `ProjectIndexSyncManager`，提供 start/reconnect/stop/reconcile/ensureFresh/status/subscribe、优先 beforeArchiveRisk hook；store增加dirty与可信重建快照。
+- 自报定向5文件60项通过，typecheck通过；日志 `logs/m3-sync-01-related-vitest-final-2.log`、`logs/m3-sync-01-typecheck-final-2.log`。主代理尚未核对全部代码和独立复验，不能计任务通过。
+- 保留失败事实：代理在其他实现/测试仍运行时额外执行完整 `pnpm test`，600秒超时（`logs/m3-sync-01-full-vitest.log`）；原因尚未确定，不将并行视为已证明唯一根因，也不以此作为最终验收。代理自报已结束其vitest，主代理收尾仍须核查。
+- 未完成：daemon/宿主接线、真实生命周期hook、95%延迟与资源测量。下一步主代理审查同步内核，再安排有明确接口的集成任务；全量必须等写入与其他测试结束后串行执行。
+
+### 2026-09-12T17:35Z · M3-SYNC-01 · 主代理首次审查未通过
+
+- 已完整读取635行同步内核、517行专项测试和store/service/policy实际diff，确认以下缺口：低频/手动/读取前对账即使发现实际内容变化也没有baseline通知（notify固定false，回调只在watch路径）；watch注册只按路径复用，不核对同路径目录是否已换inode；慢订阅者每事件新建Promise，callbackOperations无上限，事件队列上限不能约束它；授权检查早于Promise调度，取消订阅/撤权后排队回调仍会调用。
+- 因此第一次实现未通过任务核验，M3-SYNC-01累计真实失败1次。原60项通过与全量超时均保留，不以删断言/改限额掩盖。
+- 下一步：第二次子代理返修这四项，新增对应回归；完整阶段验收仍未开始。
+
+### 2026-09-12T17:35Z · M3-SYNC-01 · 第二次实际执行已派出
+
+- resume 原代理 `3da2c831-1aa0-4da`，工具显式配置 `5x/gpt-5.6-sol`；沿用已核对同模型session，本次恢复后的新输出模型元数据尚待核对。
+- 保持原五文件范围，修四项缺口并补测试；补受授权且仅fresh时可取的无正文构建汇总接口，供后续单daemon接入现有project_manage输出，避免重复构建。
+- 状态：第二次运行中，累计已核实失败1次；日志前缀 `logs/m3-sync-02-*`，不提前计返回结果。
