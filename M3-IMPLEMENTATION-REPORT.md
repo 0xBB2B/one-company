@@ -359,7 +359,17 @@ M3（文件同步、prod 事件与关闭撤销通知）尚未验收完成：M3-D
 - 实际提交 `d950ea1`（`feat: deliver approved requirement events with revocable context guards`），只含任务四文件，暂存diff检查通过。原两次子代理失败、主代理接手各轮失败与独立复审03/04事实均保留。
 - 该单元已保存到本地Git，不包括受阻后端草稿、`.pi/`或阶段记录；未push/发布。
 
-## 本窗口交接状态
+### 2026-09-13T03:11Z · M3-RECOVER-02 · 审查限制核实，继续保持阻塞
+
+- 本窗口完整读取当前磁盘 `AGENTS.md`、1594行计划和此前410行实施记录；工作区仍为 `pi-spec-bb-spec-rebuild`，分支 `bb-spec-rebuild`，恢复时HEAD为 `6e0c8de`。计划hash与既有记录一致，没有恢复已删除资料。
+- 对 `a628bcab-c8cb-49b` 调用 `get_subagent_result(wait=false, verbose=false)`，实际返回 `Agent not found`，可能已清理；这不能证明模型服务限制解除，也不是新的执行失败。
+- 仅提取原session的模型及错误元数据，没有输出或使用受阻审查的完整私有转录、推理、工具内容或中间复现作为审查裁决。原实际模型为 `5x/gpt-5.6-sol`，终止时间 `2026-09-12T19:14:39.765Z`，stopReason为error；错误明确为 `This content was flagged for possible cybersecurity risk`。服务提示的授权入口为 `https://chatgpt.com/cyber`；不采用其改写请求建议，不重发请求试探、不换模型、不由主代理代签。
+- 当前注册配置仍包含 `5x/gpt-5.6-sol` 和 `5x/gpt-6-astra`；只核对provider/model ID，未输出密钥。配置存在不证明服务授权已恢复。当前工具不提供该安全授权的申请/解除能力，需服务方核实授权；没有新增派工，M3-DAEMON-01仍为一次实现交付、零次已核实实现失败。
+- 实际文件逐项复算：`blocked-stage-code-baseline.json`的271项全部一致；三个功能提交涉及的4/5/4文件均与各自提交字节一致。已核对原53/70/84项测试日志，均为此前验证，不称本窗口重跑。六个后端草稿、原`.pi/`及旧PID52973/53030保留，未修改生产代码、测试、模型配置或真实数据库。
+- 证据：`/tmp/m3-verification-wTYp57/logs/m3-recover-02-restriction-check.json`（0600），保存状态查询结果、原模型/错误元数据、当前注册模型ID、提交与文件hash核对结果；不含受阻审查正文。
+- 状态：M3仍未完成，后端核验、宿主/daemon/生命周期接线及完整M3验收继续受阻；没有进入M4。下一步由用户联系当前模型服务提供方，提交上述错误时间与模型信息，核实服务提示的授权流程是否适用于该账号；在限制得到正式解决前保持受影响派工暂停。
+
+## 2026-09-12窗口交接状态（历史保留）
 
 ### 阶段总览
 
