@@ -16,6 +16,7 @@ import {
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
 import { repositoryIdentity, daemonSocketPath } from "../../runtime/identity.ts";
+import { socketPathByteLimit } from "../../daemon/lifecycle.ts";
 import { uuidv7 } from "../../runtime/database.ts";
 
 const exec = promisify(execFile);
@@ -51,7 +52,11 @@ async function packPackage(pnpm: string, path: string, destination: string): Pro
 
 // 当前正文存储锁定 /usr/bin/git，安装验收仅在对应宿主平台执行。
 test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由真实 SDK lifecycle 加载并经 prompt/input/tool 执行 create", async () => {
-  const root = await mkdtemp(join(tmpdir(), "pi-company-requirement-install-"));
+  const root = await mkdtemp(join(tmpdir(), "ri-"));
+  const rootStat = await stat(root);
+  expect(rootStat.isDirectory()).toBe(true);
+  expect(rootStat.uid).toBe(process.getuid());
+  expect(rootStat.mode & 0o077).toBe(0);
   const packs = join(root, "packs");
   const consumer = join(root, "consumer");
   const repositoryRoot = join(root, "repository");
@@ -115,6 +120,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     process.env.PI_TELEMETRY = "0";
     process.env.PI_COMPANY_IDLE_TIMEOUT_MS = "300";
     socketPath = daemonSocketPath(join(agentDir, "pi-company"), identity.repoId);
+    expect(Buffer.byteLength(socketPath, "utf8")).toBeLessThanOrEqual(socketPathByteLimit());
 
     const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
     const provider = registerControlledProvider(runtime, { providerId: "requirement-install", modelId: "controlled" });

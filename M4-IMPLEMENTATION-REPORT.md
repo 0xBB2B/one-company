@@ -260,6 +260,15 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-INSTALL-FIXTURE-01：短私有安装路径修复
+
+- 已完成：仅修正安装测试夹具的临时根长度，使用短私有`ri-`目录并检查owner/权限，在启动前检查实际socket UTF-8字节上限。保留原连接安全门槛、create幂等与本机Git检查、真实SDK加载和清理。此项不是Host H2—H4授权/续接实现，不更改它们的尝试次数。
+- 实现：首次`29b0f52b-263a-481`新增的第二客户端被主代理检查否决；第二次`f1028276-829b-407`已精确删除，不再用额外连接自证或维持daemon。两者实际模型均为`5x/gpt-5.6-sol`。首次typecheck遇并行explore临时错误保留；第二次安装1/1、socket超限负向1/1、typecheck通过。
+- 主代理核对与独立依据：安全审查`/tmp/m4-wiring-recovery-review-01.OYzVE0/REPORT.md`已实证119字节超104上限、仅短路径的原始安装副本通过。主代理完整读两次diff与报告，确认最终有效变更仅一个导入、短目录与权限检查、socket预算检查；额外client已清除。
+- 隔离验证：以当前HEAD导出自有目录，仅覆盖本项8行测试修改，未带Host/其他M4测试迁移；当前AGENTS和计划只作验证指令。`pnpm --config.verify-deps-before-run=warn exec vitest run tests/installation/requirement-manage.test.ts --no-cache` 1/1、typecheck exit0，日志`completion-03/install-fixture/main-integration/isolated-*`。暂存仅该测试的本项差异与本节记录，不夹带同文件尚未整合的M4业务测试改动。
+- 未覆盖：这是夹具独立修复，未直接读取宿主client内部状态；实际业务成功经生产connected guard，不冒称新连接探针或完整M4安装验收。没有全量/最低Node重跑；无用户资料、真实库、旧进程操作或推送。第二次代理误把两份报告写到项目相对目录，主代理已限定迁入指定私有证据根，原始内容保留，见`completion-03/evidence-relocation.json`。
+- 对应M4安装前置及既有M1-AC12/13/15存储断言；实际本地提交成功后核对并登记，不预填提交号。
+
 ## M4-QUERY-WIRING-01：当前主查询接线核验与限定提交
 
 - 完成范围：当前主会话 `knowledge_query` 工具、真实扫描grant/RPC/coordinator接线、原调用/连接/观察代次的同步最终守卫、实际provider参数序列化和32个共享在途名额；保留当前来源、分页、invalid/unknown及prod排除。当前生产查询 `requirement=null`，没有需求metadata适配，不冒称已实现六角色联合授权；未来若提供需求metadata仍必须有真正joint finalCheck。
