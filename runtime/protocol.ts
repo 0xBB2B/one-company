@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
+import { KnowledgeTransportQuerySchema, parseKnowledgeTransportQuery } from "./knowledge-query-tool.ts";
 
 export const PROTOCOL_VERSION = 2;
 
@@ -30,6 +31,7 @@ export const METHODS = [
   "shells.markStopped",
   "mcp.register",
   "index.sync",
+  "project.index.query",
 ] as const;
 
 export const EVENTS = [
@@ -245,6 +247,11 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   ),
   "mcp.register": McpConfigSchema,
   "index.sync": IndexSyncSchema,
+  "project.index.query": Type.Union([
+    Type.Object({ action: Type.Literal("query"), grantId: IndexSyncScopeSchema.grantId, query: KnowledgeTransportQuerySchema }, { additionalProperties: false }),
+    Type.Object({ action: Type.Literal("check"), grantId: IndexSyncScopeSchema.grantId,
+      receipt: Type.String({ pattern: "^[A-Za-z0-9_-]{43}$" }) }, { additionalProperties: false }),
+  ]),
 };
 
 export function encodeFrame(frame: Frame): string {
@@ -318,7 +325,13 @@ export function assertProtocolVersion(version: number): void {
 export function validateParams(method: string, params: unknown): void {
   assertKnownMethod(method);
   const schema = PARAM_SCHEMAS[method as (typeof METHODS)[number]];
-  if (Value.Check(schema, params)) return;
+  if (Value.Check(schema, params)) {
+    if (method === "project.index.query" && (params as Record<string, unknown>).action === "query") {
+      try { parseKnowledgeTransportQuery((params as Record<string, unknown>).query); }
+      catch { throw protocolError("bad_params", "知识查询参数无效"); }
+    }
+    return;
+  }
   const messages = Array.from(Value.Errors(schema, params)).map((error) =>
     error.instancePath ? `${error.instancePath} ${error.message}` : error.message,
   );

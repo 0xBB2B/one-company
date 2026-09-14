@@ -1,7 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createConnection } from "node:net";
 import type { Socket } from "node:net";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import type { KnowledgeFactPackage } from "../runtime/knowledge-query.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DaemonServer } from "../daemon/server.ts";
@@ -193,6 +194,82 @@ afterEach(async () => {
     });
   } finally { vi.restoreAllMocks(); }
 });
+
+test("knowledge RPC来自真实连接grant：中文命中/分页/partial/invalid/当前性/撤权", async () => {
+  const counter = { count: 0 };
+  const w = await world({ archiveHook: () => {}, managerCounter: counter });
+  await mkdir(join(w.repo.root, "docs/spec"), { recursive: true });
+  await mkdir(join(w.repo.root, "docs/prod"), { recursive: true });
+  await copyFile(new URL("../resources/spec/schema.json", import.meta.url), join(w.repo.root, "docs/spec/schema.json"));
+  await writeFile(join(w.repo.root, "docs/spec/jump.rules.json"), JSON.stringify({ $schema: "schema.json", schemaVersion: 1,
+    feature: { id: "jump", title: "角色跳跃", aliases: [] }, rules: [{ id: "jump.once", title: "角色跳跃",
+      condition: "在地面", trigger: "收到输入", expected: "角色跳跃", reason: "避免重复", dependsOn: [], exceptions: [],
+      acceptance: [{ id: "once", given: "在地面", when: "收到输入", then: "角色跳跃" }] }] }));
+  await writeFile(join(w.repo.root, "src/index.ts"), 'export const 跳跃 = "角色跳跃";\n');
+  await writeFile(join(w.repo.root, "docs/prod/0197b7b0-6a20-7c51-8a32-b9465fb72d10.完成.md"), "角色跳跃SECRET_PROD");
+  const a = await connect(w.socketPath, w.token, "query-a", w.identity.repoId, w.repo.root);
+  const b = await connect(w.socketPath, w.token, "query-b", w.identity.repoId, w.repo.root);
+  const ga = await grant(w, "query-a"), gb = await grant(w, "query-b");
+  const request = (query: Record<string, unknown>) => a.call("project.index.query", { action: "query", grantId: ga.params.grantId, query });
+  await expect(request({ action: "facts" })).rejects.toMatchObject({ code: "not_attached" });
+  await a.call("index.sync", { action: "init", ...ga.params });
+  await expect(b.call("project.index.query", { action: "query", grantId: ga.params.grantId, query: { action: "facts" } })).rejects.toThrow();
+  await expect(b.call("project.index.query", { action: "query", grantId: gb.params.grantId, query: { action: "facts" } })).rejects.toMatchObject({ code: "not_attached" });
+  const pages: KnowledgeFactPackage[] = [];
+  let cursor: string | undefined;
+  do {
+    const result = await request({ action: "search", text: "角色跳跃", pageSize: 1, ...(cursor ? { cursor } : {}) });
+    const page = result.page as KnowledgeFactPackage; pages.push(page);
+    expect(await a.call("project.index.query", { action: "check", grantId: ga.params.grantId, receipt: result.receipt })).toEqual({ current: true });
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  expect(pages.flatMap((page) => page.facts).some((item) => item.kind === "rule")).toBe(true);
+  expect(pages.flatMap((page) => page.facts).some((item) => item.kind === "source" && item.source.path === "src/index.ts")).toBe(true);
+  expect(JSON.stringify(pages)).not.toContain("SECRET_PROD");
+  expect(pages[0]).toMatchObject({ requirement: null, evidence: { status: "not_available" }, limitations: { formalVerification: "not_available", performanceImprovement: "unknown" } });
+  expect(new Set(pages.map((page) => page.generation)).size).toBe(1);
+  const old = await request({ action: "facts", pageSize: 1 });
+  const before = await stat(join(w.repo.root, "src/index.ts"));
+  await writeFile(join(w.repo.root, "src/index.ts"), 'export const 跳跃 = "角色快跑";\n');
+  await utimes(join(w.repo.root, "src/index.ts"), before.atime, before.mtime);
+  await expect(a.call("project.index.query", { action: "check", grantId: ga.params.grantId, receipt: old.receipt })).rejects.toThrow();
+  await expect(request({ action: "facts", pageSize: 1, cursor: (old.page as KnowledgeFactPackage).nextCursor })).rejects.toThrow();
+  await writeFile(join(w.repo.root, "src/broken.ts"), "export function broken( {\n");
+  const partial = (await request({ action: "facts" })).page as KnowledgeFactPackage;
+  expect(partial.indexStatus).toBe("partial");
+  expect(partial.limitations.diagnosticCounts.syntax_error).toBeGreaterThan(0);
+  await writeFile(join(w.repo.root, "docs/spec/jump.rules.json"), "{INVALID}");
+  const invalid = (await request({ action: "facts" })).page as KnowledgeFactPackage;
+  expect(invalid).toMatchObject({ indexStatus: "invalid", specStatus: "invalid", facts: [], contractSetHash: null });
+  expect(invalid.limitations.diagnosticCounts.invalid_spec).toBeGreaterThan(0);
+  await a.call("index.sync", { action: "detach", ...ga.params });
+  await expect(request({ action: "facts" })).rejects.toThrow();
+  expect(counter.count).toBe(1);
+}, 60_000);
+
+test("knowledge覆盖不足默认无正文阻塞，返回竞争真实修改使旧页失效", async () => {
+  let changed = false;
+  const w = await world({ archiveHook: () => {}, coordinatorOptions: {
+    async openService(options) {
+      const service = await ProjectIndexService.open(options);
+      const read = service.readCurrentForQuery.bind(service);
+      service.readCurrentForQuery = async (input) => {
+        const result = await read(input);
+        if (!changed) { changed = true; await writeFile(join(options.repositoryRoot, "new.ts"), "export const 新增 = 1;\n"); }
+        return result;
+      };
+      return service;
+    },
+  } });
+  const peer = await connect(w.socketPath, w.token, "race", w.identity.repoId, w.repo.root);
+  const g = await grant(w, "race");
+  await peer.call("index.sync", { action: "init", ...g.params });
+  await expect(peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } })).rejects.toThrow();
+  expect(changed).toBe(true);
+  await writeFile(join(w.repo.root, "huge.txt"), "x".repeat(3 * 1024 * 1024));
+  await expect(peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } }))
+    .rejects.toMatchObject({ code: "index_not_fresh", data: { coverage: "incomplete", bodyAvailable: false } });
+}, 30_000);
 
 test("两个已认证ClientInfo共享一个manager，重复init不重复watcher，最后断连才释放", async () => {
   const counter = { count: 0 };

@@ -78,6 +78,57 @@ afterEach(async (context) => {
   }
 }, 30_000);
 
+test("knowledge controller沿真实grant查询并复核，断线/异步返回竞争/其他窗口不借权", async () => {
+  const w = await world({ suppressWatch: true });
+  const a = await w.host("query-session", "query-window");
+  const b = await w.host("query-other", "query-other-window");
+  expect(a.controller()).toBeUndefined();
+  await a.call("init");
+  expect(b.controller()).toBeUndefined();
+  const controller = a.controller()!;
+  const result = await controller.knowledgeQuery!({ action: "facts", pageSize: 1 });
+  await result.verify();
+  expect(() => result.assertLive()).not.toThrow();
+  expect(result.page.requirement).toBeNull();
+  expect(result.page.nextCursor).not.toBeNull();
+  await writeFile(join(w.repositoryRoot, "new-query.ts"), "export const queryAdded = 1;\n");
+  await expect(result.verify()).rejects.toThrow();
+  const original = vi.mocked(a.client.call).getMockImplementation()!;
+  let held = false;
+  vi.spyOn(a.client, "call").mockImplementation(async (method, params) => {
+    const value = await original(method, params);
+    if (method === "project.index.query" && params?.action === "query") { held = true; a.client.close(); }
+    return value;
+  });
+  await a.call("refresh");
+  await expect(controller.knowledgeQuery!({ action: "facts", pageSize: 1 })).rejects.toThrow();
+  expect(held).toBe(true);
+  expect(() => result.assertLive()).toThrow();
+  await expect(controller.knowledgeQuery!({ action: "facts", pageSize: 1, cursor: result.page.nextCursor })).rejects.toThrow();
+  expect(a.confirmations()).toBe(1);
+}, 30_000);
+
+test.each([1, 2, 3])("controller真实check RPC后微任务深度%d断连，最外层verify必须拒绝", async (depth) => {
+  const w = await world({ suppressWatch: true }), host = await w.host(); await host.call("init");
+  const controller = host.controller()!, delivery = await controller.knowledgeQuery!({ action: "facts" });
+  const original = vi.mocked(host.client.call).getMockImplementation()!;
+  let disconnected = false;
+  vi.spyOn(host.client, "call").mockImplementation(async (method, params) => {
+    const result = await original(method, params);
+    if (method === "project.index.query" && params?.action === "check") {
+      const schedule = (remaining: number) => {
+        if (!remaining) { host.client.close(); disconnected = true; }
+        else queueMicrotask(() => schedule(remaining - 1));
+      };
+      schedule(depth);
+    }
+    return result;
+  });
+  await expect(delivery.verify()).rejects.toThrow();
+  expect(disconnected).toBe(true);
+  expect(() => delivery.assertLive()).toThrow();
+}, 30_000);
+
 test("client watcher装置只在真实close事件后归零，调用次数单独记录", async () => {
   const root = await realpath(await mkdtemp("/tmp/m3-host-fixture-"));
   await chmod(root, 0o700); fixtureRoots.push(root);

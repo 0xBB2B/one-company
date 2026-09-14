@@ -260,6 +260,16 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-QUERY-WIRING-01：当前主查询接线核验与限定提交
+
+- 完成范围：当前主会话 `knowledge_query` 工具、真实扫描grant/RPC/coordinator接线、原调用/连接/观察代次的同步最终守卫、实际provider参数序列化和32个共享在途名额；保留当前来源、分页、invalid/unknown及prod排除。当前生产查询 `requirement=null`，没有需求metadata适配，不冒称已实现六角色联合授权；未来若提供需求metadata仍必须有真正joint finalCheck。
+- 文件：`daemon/project-index-coordinator.ts`；`runtime/{protocol,project-sync-client,project-baseline,project-baseline-hooks,knowledge-query-tool}.ts`；`extensions/{index,knowledge-query}.ts`；`tests/{daemon-protocol,project-index-coordinator,project-sync-client,project-baseline,knowledge-query-tool}.test.ts`；`tests/integration/knowledge-query.test.ts`，共14文件。
+- 独立审查：`M4-WIRING-RECOVERY-REVIEW-01` 实际模型 `5x/gpt-6-astra`，报告 `/tmp/m4-wiring-recovery-review-01.OYzVE0/REPORT.md`。QWR三项原反例限定解除：实际serializer保留参数、40并行仅32接纳、真实daemon四组撤权竞争均不向后续模型发送旧正文。审查全部相关命令与起止hash已由主代理核对；不将无外部联网的serializer探针称为云端接受。
+- 主代理整合：完整读取新工具、扩展、两份新增测试及其余接线差异；受审hash与当前文件核对。为避免夹带Host/Persist/Role/退场未完成依赖，在自有临时目录以当前HEAD导出基线，仅覆盖上述14文件；生效AGENTS及计划另取当前工作区版本作验证指令，不纳入功能提交。未带原`.pi/`或其他未提交成果。
+- 实际验证：隔离树 `pnpm --config.verify-deps-before-run=warn run typecheck` exit0；同入口Vitest六文件261通过、1项最低Node条件未启用而跳过（`query-integration/isolated-tests-01.log`）。随后显式设置已官方核验的 `M3_BASELINE_NODE22`，独立重跑project-baseline 83/83无跳过，exit0（`baseline-node22-enabled.log`），补齐此前唯一条件用例，不改写原跳过结果。临时workspace复用锁定依赖，因此只对验证命令启用布局警告，不安装/修改依赖；首次导出脚本Python filter参数不可用，测试未执行，修正导出方法后使用同一自有目录。
+- 验收对应：M4-AC5/8的当前主查询路径与§8.2/9.4当前性、来源和预算；不是全部M4或模型语义质量验收。未覆盖：全部M3间歇稳定性根因、完整阶段/最低Node全量、当前查询正式性能及后续需求角色联合绑定。旧失败与未覆盖保持原状态，未签整个阶段。
+- 证据：原证据根 `completion-03/query-integration/` 内的 `candidate.json`、日志及exit；提交前复算所选14文件与隔离验证输入一致，暂存仅本功能和本节实施记录，最新计划及其他任务修改不夹带。实际提交号由成功后单独记录，不预填。
+
 ## M4-DESIGN-HANDOFF-01：代理架构设计更新与 M4 续接
 
 ### 本窗口范围与核验状态

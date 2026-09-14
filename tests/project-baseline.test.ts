@@ -43,6 +43,39 @@ for (const { name, executable, version } of [
   });
 }
 
+test("同步call守卫绑定原State/head，fresh新请求和已验证自写都不能复活旧查询", async () => {
+  const { gate, provider } = await world();
+  const request = await gate.beginRequest();
+  gate.bindCalls(["query", "write"], request);
+  const guard = gate.captureCallGuard("query", request);
+  expect(() => guard()).not.toThrow();
+  expect(() => gate.captureCallGuard("query", { ...request })).toThrow();
+  const mutation = gate.withMutation("write", known("a.ts", "C"), async () => provider.write("a.ts", "C"));
+  expect(() => guard()).toThrow();
+  await mutation;
+  expect(gate.diagnostics.stale).toBe(false);
+  expect(() => guard()).toThrow();
+  const currentHeadGuard = gate.captureCallGuard("query", request);
+  expect(() => currentHeadGuard()).not.toThrow();
+  await gate.beginRequest();
+  expect(gate.diagnostics.stale).toBe(false);
+  expect(() => currentHeadGuard()).toThrow();
+});
+
+test("真实watch受管自写观察期间及完成后，旧query同步守卫均拒绝", async () => {
+  const { gate, provider } = await watchedWorld();
+  const request = await gate.beginRequest();
+  gate.bindCalls(["query", "write"], request);
+  const guard = gate.captureCallGuard("query", request);
+  await gate.withMutation("write", known("a.ts", "C"), async () => {
+    await provider.writeObserved("a.ts", "C");
+    expect(gate.diagnostics.stale).toBe(false);
+    expect(() => guard()).toThrow();
+  });
+  expect(gate.diagnostics.stale).toBe(false);
+  expect(() => guard()).toThrow();
+});
+
 test("消息seal无须伪造工具调用，工具与消息metadata字段互斥", async () => {
   const { gate } = await world();
   const request = await gate.beginRequest();

@@ -343,6 +343,19 @@ export class RequestBaselineGate {
     for (const id of callIds) { this.#seenCalls.add(id); this.#calls.set(id, state); }
   }
 
+  /** 捕获原调用、执行头和观察代次；同步守卫只补齐异步返回边界，不替代真实指纹核验。 */
+  captureCallGuard(callId: string, request: RequestBaseline): () => void {
+    const state = this.#call(callId), head = state.head, revision = this.#revision;
+    if (state.request !== request) fail("stale");
+    const assertLive = () => {
+      this.#live(state);
+      if (this.#calls.get(callId) !== state || state.request !== request || state.head !== head
+        || this.#revision !== revision || this.#mutations || state.pendingMutations || this.#observation) fail("stale");
+    };
+    assertLive();
+    return assertLive;
+  }
+
   withMutation<T>(callId: string, mutation: ProjectBaselineMutation, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const state = this.#call(callId);
     const before = state.head;

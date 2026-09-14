@@ -163,6 +163,20 @@ export class ProjectBaselineHooks {
     this.gate.invalidate("sdk_boundary_failed");
   }
 
+  /** 可信调用绑定在首次等待前固定，后续同步检查不能重新捕获当前请求。 */
+  captureCallGuard(callId: string): { readonly request: RequestBaseline; assertLive(): void } {
+    const request = this.calls.get(callId);
+    if (!request || request !== this.request || this.closed) throw new ProjectBaselineError("stale");
+    const guard = this.gate.captureCallGuard(callId, request);
+    const assertLive = () => {
+      if (this.closed || this.calls.get(callId) !== request || this.request !== request
+        || this.shellOperations || this.unsettledMutation) throw new ProjectBaselineError("stale");
+      guard();
+    };
+    assertLive();
+    return { request, assertLive };
+  }
+
   async assertCall(callId: string): Promise<RequestBaseline> {
     const request = this.calls.get(callId);
     if (!request || request !== this.request) throw new ProjectBaselineError("stale");

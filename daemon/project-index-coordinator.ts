@@ -1,5 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { KnowledgeQuerySession } from "../runtime/knowledge-query.ts";
+import type { KnowledgeQueryCapture } from "../runtime/knowledge-query.ts";
+import type { ProjectBaselineSnapshot } from "../runtime/project-baseline.ts";
+import { knowledgeContent, parseKnowledgeTransportQuery } from "../runtime/knowledge-query-tool.ts";
 import { readFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -7,7 +11,7 @@ import { readGit } from "../runtime/git-read.ts";
 import { assertRegularDatabaseFiles, indexDatabase } from "../runtime/database-paths.ts";
 import { IndexStore } from "../runtime/index-store.ts";
 import { assertUnmanagedProjectMetadata } from "../runtime/project-sync-client.ts";
-import { classifyIndexWatchEvent } from "../runtime/project-index-policy.ts";
+import { classifyIndexWatchEvent, readIndexFile } from "../runtime/project-index-policy.ts";
 import type { ProjectBaselineCapture, ProjectBaselineInvalidation } from "../runtime/project-baseline.ts";
 import type { ClientInfo } from "./server.ts";
 import { DaemonServer } from "./server.ts";
@@ -96,6 +100,10 @@ interface Attachment {
   grantId: string;
   active: boolean;
   unsubscribe: (() => void) | null;
+  query?: KnowledgeQuerySession;
+  queryBaseline?: ProjectBaselineSnapshot;
+  queryReceipts?: Map<string, { baseline: ProjectBaselineSnapshot; expires: number }>;
+  queryFailure?: ProjectIndexCoordinatorError;
 }
 
 interface PendingCreation {
@@ -261,6 +269,7 @@ export class ProjectIndexCoordinator {
     };
     this.server.onDisconnect = this.disconnectHandler;
     this.server.registerHandler("index.sync", (params, client) => this.handleProtocol(params, client));
+    this.server.registerHandler("project.index.query", (params, client) => this.handleQuery(params, client));
   }
 
   private clientIsConnected(client: ClientInfo): boolean {
@@ -274,11 +283,15 @@ export class ProjectIndexCoordinator {
   }
 
   private validateAttachment(entry: WorkspaceEntry, attachment: Attachment): boolean {
-    if (this.closing || this.closed || !attachment.active || entry.clients.get(attachment.client) !== attachment || !this.clientIsConnected(attachment.client)) return false;
+    if (this.closing || this.closed || !attachment.active || entry.clients.get(attachment.client) !== attachment || !this.clientIsConnected(attachment.client)) {
+      this.closeQuery(attachment);
+      return false;
+    }
     try {
       this.grants.validateForClient(attachment.grantId, attachment.client, entry.scope);
       return true;
     } catch {
+      this.closeQuery(attachment);
       return false;
     }
   }
@@ -572,6 +585,168 @@ export class ProjectIndexCoordinator {
     });
   }
 
+  private closeQuery(attachment: Attachment): void {
+    attachment.query?.close();
+    attachment.query = undefined;
+    attachment.queryBaseline = undefined;
+    attachment.queryFailure = undefined;
+    attachment.queryReceipts?.clear();
+  }
+
+  private queryFence(entry: WorkspaceEntry, attachment: Attachment): void {
+    this.assertUsable();
+    if (!entry.started || !this.validateAttachment(entry, attachment)) {
+      this.closeQuery(attachment);
+      throw new ProjectIndexCoordinatorError("not_attached", "知识查询没有当前连接的有效扫描附件");
+    }
+  }
+
+  /** 已在workspace队列内执行；不递归调用公开captureBaseline或再次enqueue。 */
+  private async captureQuery(entry: WorkspaceEntry, attachment: Attachment): Promise<KnowledgeQueryCapture> {
+    this.queryFence(entry, attachment);
+    const epoch = this.baselineAuthority(entry);
+    const first = await entry.manager.ensureFresh();
+    this.queryFence(entry, attachment);
+    this.freshResult(entry, first);
+    const build = entry.manager.latestBuildResult()!;
+    const preview = await entry.service.preview();
+    this.queryFence(entry, attachment);
+    if (preview.partial || preview.budget.stoppedReason !== "complete" || preview.budget.exhausted.length
+      || build.budget.stoppedReason !== "complete" || build.budget.exhausted.length) {
+      throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询文件覆盖不完整；不提供当前正文", { coverage: "incomplete", bodyAvailable: false });
+    }
+    const files: Array<{ path: string; hash: string }> = [];
+    let bytes = 0;
+    for (const file of preview.files) {
+      this.queryFence(entry, attachment);
+      const read = await readIndexFile(entry.scope.root, file.path, { readUnsupported: true });
+      this.queryFence(entry, attachment);
+      if (read.status !== "success" || (bytes += read.size) > 20 * 1024 * 1024) {
+        throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询文件不可完整核对；不提供当前正文", { coverage: "incomplete", bodyAvailable: false });
+      }
+      files.push({ path: file.path, hash: read.sha256 });
+    }
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    // 包含invalid状态的第二次真实构建/hash核验，确保诊断也不是旧spec留下的缓存。
+    const status = await entry.manager.ensureFresh();
+    this.queryFence(entry, attachment);
+    this.freshResult(entry, status);
+    const currentBuild = entry.manager.latestBuildResult()!;
+    const finalPreview = await entry.service.preview();
+    this.queryFence(entry, attachment);
+    const index = IndexStore.readCurrent(indexDatabase(this.dataRoot, this.repoId), entry.scope, files.map((file) => file.path), true);
+    if (first.baselineHash !== status.baselineHash || build.spec.status !== currentBuild.spec.status
+      || finalPreview.partial || finalPreview.files.length !== files.length
+      || finalPreview.files.some((file) => !files.some((row) => row.path === file.path))
+      || index.status.currentGeneration !== status.generation || index.status.baselineHash !== status.baselineHash
+      || index.snapshot && (index.snapshot.files.length !== files.length
+        || index.snapshot.files.some((file) => !files.some((row) => row.path === file.path && row.hash === file.hash)))) {
+      throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间输入发生变化");
+    }
+    await new Promise<void>((done) => setImmediate(done));
+    this.queryFence(entry, attachment);
+    const end = entry.manager.status();
+    if (this.baselineAuthority(entry) !== epoch || end.dirty || end.eventSequence !== status.eventSequence
+      || end.baselineHash !== status.baselineHash) throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间授权或观察序号变化");
+    const baseline: ProjectBaselineSnapshot = { ...entry.scope, generation: status.generation, baselineHash: status.baselineHash!,
+      observedSequence: entry.baselineSequence, authorityEpoch: epoch, files,
+      coverage: { kind: "allowed-inputs", complete: true, roots: ["."], excludedPaths: ["docs/prod"],
+        policyHash: createHash("sha256").update(readFileSync(new URL("../runtime/project-index-policy.ts", import.meta.url))).digest("hex") } };
+    return { baseline, build: { workspaceId: entry.scope.workspaceId, generation: status.generation,
+      baselineHash: status.baselineHash!, spec: structuredClone(currentBuild.spec) } };
+  }
+
+  private async checkQuery(entry: WorkspaceEntry, attachment: Attachment, expected: ProjectBaselineSnapshot): Promise<void> {
+    const actual = (await this.captureQuery(entry, attachment)).baseline;
+    this.queryFence(entry, attachment);
+    const normalized = (value: ProjectBaselineSnapshot) => JSON.stringify({ ...value, generation: 0 });
+    if (actual.generation < expected.generation || normalized(actual) !== normalized(expected)) {
+      throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询结果属于旧快照");
+    }
+    this.queryFence(entry, attachment);
+  }
+
+  private async handleQuery(params: Record<string, unknown>, client: ClientInfo): Promise<Record<string, unknown>> {
+    this.assertUsable();
+    // scope从认证连接的已登记许可取得；模型不能指定role、window、数据根或workspace。
+    let grant;
+    try { grant = this.grants.validateForClient(params.grantId as string, client); }
+    catch (error) {
+      for (const entry of this.workspaces.values()) {
+        const attachment = entry.clients.get(client);
+        if (attachment && attachment.grantId === params.grantId) this.closeQuery(attachment);
+      }
+      throw error;
+    }
+    const scope = { ...grant.workspace, grantId: params.grantId as string };
+    this.attached(scope, client);
+    let assertDelivery: () => void = () => { throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询缺少交付守卫"); };
+    const result = await this.enqueue(scope.workspaceId, async () => {
+      const { entry, attachment } = this.attached(scope, client);
+      const bindDelivery = (baseline: ProjectBaselineSnapshot) => {
+        assertDelivery = () => {
+          this.queryFence(entry, attachment);
+          if (attachment.grantId !== scope.grantId || entry.baselineSequence !== baseline.observedSequence
+            || this.baselineAuthority(entry) !== baseline.authorityEpoch) {
+            throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询交付期间授权或观察代次已变化");
+          }
+        };
+      };
+      const result = await this.forRequest(attachment, async () => {
+        this.queryFence(entry, attachment);
+        const receipts = attachment.queryReceipts ??= new Map();
+        for (const [key, receipt] of receipts) if (receipt.expires <= Date.now()) receipts.delete(key);
+        if (params.action === "check") {
+          const receipt = receipts.get(params.receipt as string);
+          if (!receipt) throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询回执已失效");
+          await this.checkQuery(entry, attachment, receipt.baseline);
+          this.queryFence(entry, attachment);
+          bindDelivery(receipt.baseline);
+          assertDelivery();
+          if (receipt.expires <= Date.now()) throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询回执已过期");
+          return { current: true };
+        }
+        const query = parseKnowledgeTransportQuery(params.query);
+        if (receipts.size >= 8) receipts.delete(receipts.keys().next().value!);
+        attachment.query ??= new KnowledgeQuerySession({
+          captureFresh: async () => {
+            try {
+              const captured = await this.captureQuery(entry, attachment);
+              this.queryFence(entry, attachment);
+              return captured;
+            }
+            catch (error) { if (error instanceof ProjectIndexCoordinatorError) attachment.queryFailure = error; throw error; }
+          },
+          readCurrent: (paths) => entry.service.readCurrentForQuery({ paths }),
+          assertCurrent: async (baseline) => {
+            await this.checkQuery(entry, attachment, baseline);
+            this.queryFence(entry, attachment);
+            attachment.queryBaseline = baseline;
+          },
+        });
+        attachment.queryFailure = undefined;
+        let page;
+        try { page = await attachment.query.query(query); }
+        catch {
+          throw attachment.queryFailure ?? new ProjectIndexCoordinatorError("index_not_fresh", "知识查询或游标不可核对；不提供旧正文");
+        }
+        this.queryFence(entry, attachment);
+        knowledgeContent(page);
+        const baseline = attachment.queryBaseline;
+        if (!baseline) throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询缺少最终核验回执");
+        const receipt = randomBytes(32).toString("base64url");
+        receipts.set(receipt, { baseline, expires: Date.now() + 30_000 });
+        bindDelivery(baseline);
+        assertDelivery();
+        return { page, receipt };
+      });
+      assertDelivery();
+      return result;
+    });
+    assertDelivery();
+    return result;
+  }
+
   async checkBaselinePath(scope: ProjectSyncGrantWorkspace, absolutePath: string): Promise<string> {
     return this.enqueue(scope.workspaceId, async () => {
       this.assertUsable();
@@ -627,6 +802,7 @@ export class ProjectIndexCoordinator {
         attachment = { client, grantId: scope.grantId, active: true, unsubscribe: null };
         entry.clients.set(client, attachment);
       } else {
+        if (attachment.grantId !== scope.grantId) this.closeQuery(attachment);
         attachment.grantId = scope.grantId;
         attachment.active = true;
       }
@@ -642,6 +818,7 @@ export class ProjectIndexCoordinator {
       } catch (error) {
         if (entry.clients.get(client) === attachment) {
           attachment.active = false;
+          this.closeQuery(attachment);
           attachment.unsubscribe?.();
           attachment.unsubscribe = null;
           entry.clients.delete(client);
@@ -733,6 +910,7 @@ export class ProjectIndexCoordinator {
       const attachment = entry.clients.get(client);
       if (!attachment || scope?.grantId && attachment.grantId !== scope.grantId) continue;
       attachment.active = false;
+      this.closeQuery(attachment);
       attachment.unsubscribe?.();
       attachment.unsubscribe = null;
       entry.clients.delete(client);

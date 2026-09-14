@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { knowledgeContent, parseKnowledgeTransportQuery } from "./knowledge-query-tool.ts";
+import type { KnowledgeQueryDelivery } from "./knowledge-query-tool.ts";
+import type { KnowledgeFactPackage } from "./knowledge-query.ts";
 import { realpath } from "node:fs/promises";
 import { lstatSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -61,6 +64,7 @@ export interface ProjectSyncController {
   readonly binding: ProjectSyncBinding;
   readonly workspace: ProjectSyncGrantWorkspace;
   isActive(): boolean;
+  knowledgeQuery?(query: unknown, signal?: AbortSignal): Promise<KnowledgeQueryDelivery>;
   captureFreshBaseline(signal?: AbortSignal): Promise<Readonly<{ kind: "fresh"; snapshot: Readonly<ProjectSyncFreshBaseline> }>>;
   assertCurrent(snapshot: Readonly<ProjectSyncFreshBaseline>, signal?: AbortSignal): Promise<void>;
   subscribeInvalidation(listener: (event: Readonly<ProjectSyncClientChange>) => void): () => void;
@@ -481,6 +485,45 @@ class Controller implements ProjectSyncController {
     if (snapshot.connectionSequence !== current.connectionSequence || snapshot.authorityEpoch !== current.authorityEpoch
       || snapshot.observationSequence !== current.observationSequence || snapshot.observedSequence !== current.observedSequence
       || snapshot.baselineHash !== current.baselineHash || JSON.stringify(snapshot.files) !== JSON.stringify(current.files)) throw unavailable();
+  }
+
+  async knowledgeQuery(input: unknown, signal?: AbortSignal): Promise<KnowledgeQueryDelivery> {
+    const query = parseKnowledgeTransportQuery(input);
+    signal?.throwIfAborted();
+    if (!this.isActive()) throw unavailable();
+    const connection = this.connection, grant = this.grant!;
+    const observation = this.observationSequence;
+    const assertLive = () => {
+      signal?.throwIfAborted();
+      if (!this.isActive() || this.grant !== grant || !sameConnection(connection, this.connection)
+        || this.observationSequence !== observation) throw unavailable();
+    };
+    const delivery = await this.enqueue(async () => {
+      assertLive();
+      const result = await this.client.call("project.index.query", { action: "query", grantId: grant.grantId, query });
+      assertLive();
+      const page = result.page as KnowledgeFactPackage;
+      const receipt = result.receipt;
+      if (!page || page.format !== "knowledge-facts/v1" || page.workspace?.repoId !== this.binding.repoId
+        || page.workspace.workspaceId !== this.workspace.workspaceId || page.workspace.branch !== this.workspace.branch
+        || typeof receipt !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(receipt)) throw unavailable();
+      knowledgeContent(page);
+      return {
+        page, assertLive,
+        verify: async (checkSignal?: AbortSignal) => {
+          checkSignal?.throwIfAborted(); assertLive();
+          await this.enqueue(async () => {
+            checkSignal?.throwIfAborted(); assertLive();
+            const checked = await this.client.call("project.index.query", { action: "check", grantId: grant.grantId, receipt });
+            checkSignal?.throwIfAborted(); assertLive();
+            if (checked.current !== true) throw unavailable();
+          });
+          checkSignal?.throwIfAborted(); assertLive();
+        },
+      };
+    });
+    assertLive();
+    return delivery;
   }
 
   close(): Promise<void> {

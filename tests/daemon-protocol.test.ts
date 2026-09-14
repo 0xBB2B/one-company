@@ -43,6 +43,7 @@ const EXPECTED_METHODS = [
   "shells.markStopped",
   "mcp.register",
   "index.sync",
+  "project.index.query",
 ];
 
 const EXPECTED_EVENTS = [
@@ -118,6 +119,7 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
     decisionId: "decision-1",
   },
   "mcp.register": { adapterEntry: "./adapter.ts", configPath: "/config.json" },
+  "project.index.query": { action: "query", grantId: "12345678-1234-4123-8123-123456789abc", query: { action: "search", text: "中文😀" } },
   "index.sync": {
     action: "ensureFresh",
     grantId: "12345678-1234-4123-8123-123456789abc",
@@ -142,6 +144,20 @@ function catchError(fn: () => unknown): { code?: string; message?: string } | nu
     return error as { code?: string; message?: string };
   }
 }
+
+test("知识RPC严格拒绝模型身份/SQL/超限及非授权路径，仅接受有界query或内部回执", () => {
+  const base = VALID_EXAMPLES["project.index.query"]!;
+  for (const key of ["role", "windowId", "sessionId", "workspaceId", "repositoryRoot", "repoId", "caller", "sql"]) {
+    expect(catchError(() => validateParams("project.index.query", { ...base, [key]: "main" }))?.code).toBe("bad_params");
+    expect(catchError(() => validateParams("project.index.query", { ...base, query: { action: "facts", [key]: "main" } }))?.code).toBe("bad_params");
+  }
+  for (const query of [{ action: "facts", maxBytes: 24577 }, { action: "facts", pageSize: 21 },
+    { action: "exact", by: "path", value: "docs/prod/secret.md" }, { action: "search", text: " " }, { action: "search", text: "中".repeat(257) }]) {
+    expect(catchError(() => validateParams("project.index.query", { ...base, query }))?.code).toBe("bad_params");
+  }
+  expect(() => validateParams("project.index.query", base)).not.toThrow();
+  expect(() => validateParams("project.index.query", { action: "check", grantId: base.grantId, receipt: "a".repeat(43) })).not.toThrow();
+});
 
 describe("协议常量", () => {
   test("PROTOCOL_VERSION 为 2", () => {
