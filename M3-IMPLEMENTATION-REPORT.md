@@ -2,17 +2,100 @@
 
 ## 当前状态
 
-M3（文件同步、prod 事件与关闭撤销通知）尚未验收完成：M3-DAEMON-01必需的独立审查被模型服务安全策略中止，受影响派工暂停。传输、同步内核和需求事件基础均已完成主代理核验及独立复审；后端草稿、产品接线及阶段最终验收仍未完成。本文件由主代理统一更新，记录已发生的事实，不替代 `SQLITE-KNOWLEDGE-REBUILD-PLAN.md`。
+**M3（文件同步、prod事件与关闭撤销通知）已完成本阶段验收，停止于M3，不进入M4。** 最终生产/测试输入在Node26.8.2与最低支持Node22.19.0下各122文件、3255项全量测试通过，类型、独立集成和真实安装矩阵通过；正式千文件/三种归档规模/100样本性能通过。独立安全、正确性和证据审查发现的问题均已修复并取得复验，再由主代理核对实际差异与证据后计完成。主代理和本轮全部子代理均为用户明确授权的`5x/gpt-6-astra`。此前失败、原模型服务中止和旧输入证据保留，不改写历史。本文件记录实施与验收事实，不替代当前权威计划。
 
 | 任务 | 当前状态 | 已核实的失败次数 |
 |---|---|---|
 | M3-TRANSPORT-01 | 主代理限定修复、53项复验及独立复审03通过，已提交 `f916425` | 2（历史保留） |
 | M3-SYNC-01 | 主代理限定修复、70项相关回归及独立复审03通过，已提交 `f038a94` | 2（历史保留） |
 | M3-EVENT-01 | 主代理限定修复、84项相关回归及独立复审04通过，已提交 `d950ea1` | 2（历史保留） |
-| M3-DAEMON-01 | 首轮实现未验收；独立审查被模型服务安全策略中止，无结论，暂停受影响派工 | 0（工具中止不计实现失败） |
-| 宿主/生命周期接线及阶段最终验收 | 未开始，依赖任务尚未全部核验通过 | — |
+| M3-DAEMON-01 | 主代理仅接手撤权false处理及回归，后续独立安全复审、实际接线与最终矩阵通过；已保存于`74ae5b3` | 2（历史保留） |
+| 宿主/生命周期/请求基线/正式启动/性能及最终验收 | 已完成并由主代理整合核验；代码与测试已保存于`74ae5b3`，详见下方最终验收 | 各任务记录按实际保留，不跨任务累计 |
 
 历史失败、原始验证输入和工具不可用记录保留在后续事件记录中，不由此表覆盖。
+
+## 最终验收与交接
+
+### 最终输入、命令和结果
+
+- 工作区：`/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild`；分支`bb-spec-rebuild`；最终验收基线HEAD为`96b6de7573d20aeda32d60c16e4ea584ba968964`，当时包含已核验的未提交成果。
+- **用户随后授权本地commit，M3代码、测试、README及AGENTS模型要求已保存为`74ae5b336e848faee45181f2b3496c793de197c9`**（`feat: complete M3 synchronization and revocable baseline guards`，80文件）。此前三个基础功能提交为`f916425`、`f038a94`、`d950ea1`。提交前逐项核对311项验收输入，生产/测试字节无变化，README只有已核验的最终状态更新；本次不重跑并冒称新增验收。没有push、合并或发布。本机`.pi/`配置继续保留为未跟踪，不纳入业务提交。
+- 证据根：`/tmp/m3-completion-IwlEi0/`。最终311项输入清单`final-performance-candidate.json`，SHA-256：`e65bce102c58f3eb68e0db2e9c8179a9fed765382d9b80b734bd6f25d6fc6ed1`。全部测试/正式基准期间实际输入不变；之后仅README一处验收状态文字更新，报告不属于被测生产输入，详见`final-acceptance-evidence.json`。
+- 框架继续使用Node及`node:sqlite`，pnpm11.7.0、SDK0.85.1；jiti2.7.0仅从既有开发依赖移入正式依赖，正式bootstrap/loader用于安装包内TS，版本未升级，磁盘转换缓存关闭。
+
+| 命令 | Node26.8.2 | Node22.19.0 | 最终日志前缀 |
+|---|---|---|---|
+| `pnpm install --offline --frozen-lockfile` | exit0（同一锁定依赖树） | 后续正式测试/pack使用同锁 | `final-frozen-install` |
+| `pnpm run typecheck` | exit0 | exit0 | `final-matrix-node{26,22}-typecheck` |
+| `pnpm test` | 122文件、3255/3255，exit0 | 122文件、3255/3255，exit0 | `final-all-node{26,22}` |
+| `pnpm run test:integration` | 11文件、50/50，exit0 | 11文件、50/50，exit0 | `final-matrix-node{26,22}-test-integration` |
+| `pnpm run test:installation` | 4文件、8/8，exit0 | 4文件、8/8，exit0 | `final-matrix-node{26,22}-test-installation` |
+
+最低Node执行时将本次官方校验的Node22目录置于PATH前部，并用该绝对Node驱动pnpm；完整测试显式设置`M3_BASELINE_NODE22`，不跳过最低版本断言。每个日志均有同名`.exit`。Node22的SQLite实验性警告如实保留，不是失败。
+
+### M3-AC1—AC9
+
+| AC | 已通过的主要行为与证据入口 |
+|---|---|
+| AC1 | 真实daemon/已安装extension初始化后自动增改删改名；同大小/mtime变化由对账发现；附加worktree的.git指针从正文索引排除。`project-index-sync`、`project-linked-worktree-index`、integration及installation测试 |
+| AC2 | 别名、schema-only无效/恢复、锁文件、规则拆分的旧ID/引用/FTS清理，旧baseline不能当当前。policy/service/sync与真实spec自动同步回归 |
+| AC3 | 本地远端双克隆、独立index、离线变化；存活session重连重签并等待真实init后才有效读取，新窗口没有批准不复用旧许可；HOST/daemon共用持久管理事实，丢索引不降legacy。安装、client、management-consumers回归 |
+| AC4 | 归档仅路径元数据，普通通知前旧active先needs_review/撤lease，不伪completed；三终态真实原因、旧worktree回收及归档删除不复活。requirements/真实daemon/双克隆安装探针 |
+| AC5 | 准确批准from/to提交/hash，夹杂草稿、PM落后多次均不使用HEAD猜diff；事件/outbox仅元数据。requirement-events、跨进程事件及正式事件基准 |
+| AC6 | 重复/乱序/缺口不重复副作用；消费Node真实退出后新Node恢复cursor与活动基线、旧lease拒绝。requirement-events-process |
+| AC7 | 每个真实SDK请求、工具/消息seal绑定原依据；外改/失联/ABA、迟到旧结果、PM submit/交付不换绑，精确自写与新目录可继续；服务端模型别名不破坏流身份。SDK/HOST/ROLE/SSE/安装回归 |
+| AC8 | closing与prepare/consume竞争，另一Node关闭后旧handle仍在但最终DB门槛拒绝、sink=0；不等待通知撤权，私有缓存回收有效。事件/归档/跨进程回归 |
+| AC9 | 多窗口共享、单窗口退出另一继续、独立worktree队列、模拟休眠、目录删除/监听故障、有限恢复与真实close；后台未结束不封交付，失败保留现场。资源probe、cleanup、完整矩阵与正式10轮基准 |
+
+### 正式性能与资源
+
+按M0冻结方法：每组1000个不同内容文件（600脚本、300Go、100spec含schema，≤20MiB），归档元数据规模0/1000/10000，每组5次冷启动、10次新进程复用、100次watch更新、100次批准事件、10次同进程资源循环；p95按全部样本排序的ceil(0.95×N)，失败不剔除。
+
+运行命令：各自Node执行`--experimental-strip-types tests/helpers/m3-benchmark.ts --output <新目录> --scenario all`，最终目录`benchmark-node26-final/`、`benchmark-node22-final/`。均complete=true、failures=0、referenceTargetsMet=true、inputsChanged=false，exit0。这是**内核层正式测量**，真实宿主流程另由安装/SDK/daemon测试证明，不把内核延迟宣称为云模型响应时间。
+
+| Node / 归档数 | 冷启动p95 | watch更新p95 | 批准事件p95 |
+|---|---:|---:|---:|
+| 26 / 0 | 1.981s | 1.397s | 90.4ms |
+| 26 / 1000 | 2.115s | 1.440s | 90.7ms |
+| 26 / 10000 | 2.409s | 1.708s | 91.1ms |
+| 22 / 0 | 2.208s | 1.418s | 91.1ms |
+| 22 / 1000 | 2.184s | 1.447s | 88.9ms |
+| 22 / 10000 | 2.593s | 1.770s | 90.4ms |
+
+全部600个更新、600个事件样本成功；更新每组至少99/100在2秒内，满足95%门槛。未变重启解析数0；各组10轮资源全部完成，watcher创建/真实关闭66/66、活动0，Parser/Tree各950创建/950删除，归档正文读取探针0。内核RSS存在正常波动，10k组Node26约405—470MiB、Node22约355—396MiB，heap首尾下降；不从有限样本推导长期绝无泄漏。实际daemon六轮另有同进程句柄稳定3及真实sleep完成/取消分离证据。汇总：`final-resource-and-input-check.json`。
+
+优化仅降低重复工作：保留每次路径/身份/8名称marker和双轮hash，元数据检查同步等价；DB仅缓存五条固定SQL且每次保护不减；索引同key按版本update而非删插；周期tick合并到已在途完整对账，不伪造变更事件。独立审查确认未降低门槛。序列化toJSON重入的既有DB撤权缺口亦已最小修复，独立两Node各68场景通过。
+
+### 独立审查与主代理整合
+
+- 安全终核：`/tmp/m3-final-safety-02-dzs3u0xr/REPORT.md`；管理消费者后续终核：`/tmp/m3-consumer-final-review-64c2ze_p/REPORT.md`。
+- 消息/当前性审查及修复依据：`/tmp/m3-final-correctness-02-ygw05fhv/REPORT.md`；其唯一剩余P1已由上述消费者终核解除。
+- 验收装置终核：`/tmp/m3-evidence-final-review-eym4hrry/REVIEW.md`、`/tmp/m3-validation-final-check-RrkK6A/report.md`。
+- 性能优化独立审查：`/tmp/m3-perf-safety-review-TnUOr8/REVIEW.md`、`/tmp/m3-perf-correctness-review-kk_bnmn_/RESULT.md`；安全审查提出的既有P2由`/tmp/m3-db-reentrancy-final-SmCucM/REVIEW.md`确认解除。
+- 主代理逐项核对当前文件、任务差异、模型元数据、红绿结果与实际全量/安装/性能输出；子代理总结不直接作为通过。主代理仅在已记录两次实际失败后接手coordinator撤权false与SDK准备重试的限定范围，其他任务保持子代理优先；后续均保留独立审查。
+
+### 未完成项、限制与清理
+
+**M3验收阻断项：无。** 未验证范围：Linux/Windows与其他CPU、物理断电/真实合盖休眠、慢盘/网络文件系统响应上界、长期绝对无泄漏、真实云模型质量；M4查询性能/完整自然语言确认及M5—M9职责未提前宣布完成。普通通用工具prod旁路与主会话既有消息不会自动消失，漏事件A→B→A仍可能不可见。
+
+所有新增测试/实现进程结束，旧PID52973/53030保留；本次官方Node22工具链测试结束后回收。已确认归属且无打开文件的失败夹具清理，正式失败日志/原始样本/审查及hash保留；来源不能证实的目录不删除。清理明细`final-fixture-cleanup.json`，不删除原`/tmp/m3-verification-wTYp57/`历史证据。严格unused检查只剩既有`runtime/shell-bash.ts:event`、`runtime/shell-page.ts:width`，没有本轮新增孤立残留；普通typecheck通过，不顺手修改范围外声明。
+
+### 阶段总览与下一窗口
+
+| 阶段 | 职责 | 状态 |
+|---|---|---|
+| M0 | Node/pnpm基线、安装资源与安全范围 | 已完成（既有证据） |
+| M1 | 协议、SQLite生命周期与本机prod存储 | 已完成（既有证据及本轮受影响回归） |
+| M2 | 当前代码/spec持久索引与prod排除 | 已完成（本轮安装/索引回归通过） |
+| M3 | 同步、可靠需求事件、撤权与当前性通知 | **本轮完成** |
+| M4 | 完整prod工具、渐进确认、当前知识查询 | 未开始；下一阶段 |
+| M5 | 代码/spec专用变更与真实权限 | 未开始 |
+| M6 | 正式验证、关闭协议、归档与完成提醒 | 未开始 |
+| M7 | 单PM、增量plan/task与资源重构 | 未开始 |
+| M8 | 团队历史边界与Git外置 | 未开始 |
+| M9 | 真实完整流程、性能、安装与总交付 | 未开始 |
+
+下一窗口明确从M4续接：完整读取AGENTS与当前1594行权威计划，核对实际源码、M3提交`74ae5b3`和本报告最终证据；保留当前AGENTS、本机未跟踪`.pi/`和旧进程，不自动提交新的改动。按用户当前授权全部主/子代理继续gpt-6-astra；实现/测试/独立审查子代理优先，plan可由主代理或同模型子代理完成；同一任务两次真实失败后仅接手该任务，其余仍优先派工；所有子代理结果须主代理审查整合并核对实际验证。阶段内自主推进，M4完成后总结、生成下一窗口提示并停止，不自动跨阶段。
 
 ## 基线与保护范围
 
@@ -368,6 +451,170 @@ M3（文件同步、prod 事件与关闭撤销通知）尚未验收完成：M3-D
 - 实际文件逐项复算：`blocked-stage-code-baseline.json`的271项全部一致；三个功能提交涉及的4/5/4文件均与各自提交字节一致。已核对原53/70/84项测试日志，均为此前验证，不称本窗口重跑。六个后端草稿、原`.pi/`及旧PID52973/53030保留，未修改生产代码、测试、模型配置或真实数据库。
 - 证据：`/tmp/m3-verification-wTYp57/logs/m3-recover-02-restriction-check.json`（0600），保存状态查询结果、原模型/错误元数据、当前注册模型ID、提交与文件hash核对结果；不含受阻审查正文。
 - 状态：M3仍未完成，后端核验、宿主/daemon/生命周期接线及完整M3验收继续受阻；没有进入M4。下一步由用户联系当前模型服务提供方，提交上述错误时间与模型信息，核实服务提示的授权流程是否适用于该账号；在限制得到正式解决前保持受影响派工暂停。
+
+## 2026-09-13 · M3-MAIN-ACCEPTANCE-01 · 主代理验收不通过
+
+### 授权、基线与执行范围
+
+- 用户明确要求主代理完成M3最后验收、不启动子代理。本轮未调用Agent/Workflow，未改写请求重试此前中止的审查；主代理验收不冒充独立子代理裁决，也不宣称模型服务限制解除。
+- 完整读取当前82行AGENTS、1594行权威计划和420行既有M3报告，重核M3及相关设计/验收条件。当前分支 `bb-spec-rebuild`，HEAD `96b6de7573d20aeda32d60c16e4ea584ba968964`。
+- 原有六文件后端草稿及`.pi/`保留，旧PID52973/53030不动；未发现本轮在途实现代理或测试进程。本轮只做验收及报告更新，不补写生产接线、不提交或推送。
+- 证据根：`/tmp/m3-main-acceptance-DbKYbq/`；完整命令、范围、失败与AC矩阵见 `ACCEPTANCE.md`。本轮基线 `baseline.json` 覆盖280项现存文件（排除原`.pi/`），验证完成时逐项无变化，见 `verification-comparison.json`。
+
+### 实际验证
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| `pnpm run typecheck` | exit0 | `typecheck.log`、`typecheck.exit` |
+| 传输/同步/需求事件/后端协议15文件定向vitest | 291/291，exit0，221.27秒 | `targeted.log`、`targeted.exit`；完整命令见 `ACCEPTANCE.md` |
+| 真实project_manage工具与默认服务的自动同步探针 | **失败，exit1**；源码修改后等待3秒仍保留旧索引，手动refresh后才更新 | `product-sync-probe.mjs`、`product-sync-final.log`、`product-sync-result.json` |
+
+以上使用Node v26.8.2与pnpm11.7.0；未借用既有通过记录充当本轮执行。探针使用独立临时Git/SQLite及测试宿主确认，不调用模型或真实用户daemon，不冒充实际安装产物/完整pi宿主验证。status返回 `cacheVerified:false`，没有把它误报成保证新鲜度；本次失败是自动同步没有接入，不是status谎报已对账。
+
+探针早期有真实路径、受保护目录及不存在的service.close清理调用三处测试装置问题，已分别复核和修正；原日志保留，不计为产品缺陷或实现任务失败。第三次测量已得到自动同步未更新结果，但清理异常遮盖断言；复核实际API后，最终运行明确以自动同步断言失败退出且夹具清理成功，不把装置失败作为验收依据。
+
+### 已确认的产品缺口
+
+1. `extensions/project-manage.ts:34-39` 与 `runtime/project-manage-tool.ts:690-691,830-853` 仍走单次ProjectIndexService调用，没有持续manager；真实探针印证init后不自动同步。**M3-AC1未通过**。
+2. `daemon/lifecycle.ts:469-502`、`daemon/run-manager.ts:1319`起的真实装配没有创建ProjectIndexCoordinator/ProjectSyncGrantIssuer或注册index.sync；构造调用只存在于测试。协议schema及同进程协调器测试通过不等于宿主到daemon的集成可用。
+3. `RequirementEventService.open`仅在专项测试调用；归档风险reconcileArchiveRisk没有daemon/扩展调用方。M3-AC4的归档风险到真实生命周期优先撤权尚未接入，不能用分开的hook和服务测试代替。完整M7调度仍不提前实施。
+4. 宿主没有索引基线通知订阅，M3-AC7的聊天旧基线标记、实际写入/交付集成拒绝未验收；Clock休眠对账及真实长期资源收敛未验收。
+
+本轮未将后端原有安全审查疑点认定为已证实漏洞，未修改M3-DAEMON-01失败次数。已有三项基础任务的两次失败和限定接手范围保持不变。
+
+### AC与阶段状态
+
+- AC1：内核通过，产品入口失败；AC2/3：内核及双克隆夹具通过，产品自动传播/重连接线缺失。
+- AC4/6：元数据撤权、事件与上下文恢复专项通过，实际生命周期/通知闭环未完成。
+- AC5/8：准确批准提交对、无正文事件及专用交付撤权在服务层有本轮通过证据，不扩大为跨进程产品闭环通过。
+- AC7：未完成；AC9：内部资源/竞争专项通过，真实休眠接线与长期测量未完成。
+- 全量test、完整integration/installation、Node22矩阵、95%延迟/长期资源未执行。功能前置缺口已阻止阶段通过，不用291项专项结果替代完整矩阵。
+- 当前计划仍为10阶段：M0（运行时/资源基线）、M1（协议/生命周期/数据库）、M2（索引初始化与正文隔离）沿用既有完成记录，本轮只回归相关范围；M3当前未完成；M4（需求/当前查询）、M5（专用变更/权限）、M6（验证/关闭）、M7（PM/局部计划）、M8（团队/Git外置）、M9（闭环/总验收）未开始。
+
+### 收尾与同阶段续接
+
+- 本轮仓库内只更新本报告；生产代码、测试、计划、AGENTS、依赖和原`.pi/`保持原样。未新增本地提交，已存在的功能提交仍为 `f916425`、`f038a94`、`d950ea1`。
+- 所有自建临时Git/SQLite夹具已清理，无本轮测试进程残留；原52973/53030保留。保留失败复现脚本、日志和指纹作为必要诊断证据，目录0700/文件0600。
+- 下一窗口继续M3，先根据上述调用链缺口处理产品接线及受影响审查前置，不进入M4；本轮“仅主代理验收”不自动扩大为主代理接管全部实现。六文件草稿继续保留，不暂存或混入已验收提交。
+
+## 2026-09-13T03:35Z起 · M3-COMPLETION-02 · 获批补齐M3
+
+- 真实用户明确授权完成M3全部功能并通过验收，指定所有主/子代理gpt-6-astra；当前主代理环境和消息运行元数据均为 `5x/gpt-6-astra`，配置中同模型已登记。磁盘AGENTS的模型变更是用户已有改动，主代理未覆盖。旧注入指令本身允许用户明确授权其他模型，本次符合该例外，其他派工/安全/验收边界不变。
+- 新证据根 `/tmp/m3-completion-IwlEi0/`，模型/计划/AGENTS指纹见 `model-and-authorization-metadata.json`。上轮291项与失败探针仍在 `/tmp/m3-main-acceptance-DbKYbq/`，不改旧结果。
+- 未获得提交、推送、发布或真实数据库操作授权；原六文件草稿、`.pi/`、旧PID52973/53030保留。后续功能实现仍子代理优先，所有结果由主代理核对整合；关键安全和最终审查仍独立执行。
+
+| 任务 | 代理ID | 范围与当时状态 |
+|---|---|---|
+| M3-HOST-PLAN-02 | bd5e6544-be07-4c4 | 只读规划已返回，主代理采纳跨进程可信许可/持续宿主接线方向；继续只读细化AC7实际执行门槛，不计实现成果 |
+| M3-DAEMON-01返修 | 8eb6a58b-b6a5-42f | 仅coordinator及测试：按worktree独立队列、清理不被业务预算拒绝、后台授权不遗传首窗口；要求先复现，当前运行中，不预填失败次数 |
+| M3-ARCHIVE-01 | 720910c0-df7d-469 | 新增归档元数据到现有reconcileArchiveRisk适配器及测试；不改生命周期协议/不读正文，运行中 |
+| M3-CONTROL-01 | 7b5a6b4f-f7bd-451 | server/client连接身份、宿主签发与daemon独立验许可及跨进程测试；运行中 |
+| M3-HOST-01 | a63d6d6d-ef16-412 | project_manage持续授权/真实daemon适配、session重连与撤销及测试；运行中 |
+
+- 上表真实session模型均已从model_change核对为 `5x/gpt-6-astra`，不是只依据角色名称或提示词。不同任务文件所有权不重叠，测试只跑各自专项，阶段最终矩阵必须等所有写入结束后执行。
+- CONTROL首次因误将旧注入模型要求理解成无例外而停止，仅检查了环境与AGENTS，未实现/未测试；主代理指出原指令的明确授权例外并引用真实用户授权后续办同任务。该次不计实际实现失败，不据此接手。
+- 主代理审查规划后冻结控制方向：服务端生成daemon/connection随机身份，宿主真实确认后签发只在控制面传递的opaque token，DB仅固定元数据及token指纹；daemon独立核验当前连接，不依赖跨进程JS对象，不开放模型自填批准/RPC签发，不从旧数据库恢复宿主批准。完整M4查询/M7调度不提前实施。
+
+### M3-COMPLETION-02 · 首批返回、主代理审查与返修
+
+- M3-DAEMON-01返修返回两文件，修前独立队列/首窗口背景授权/满队列清理回归已复现；修后18项因CONTROL新许可接口中间态尚无有效通过结论。主代理授权在其原测试所有权内改为独立verifier/currentConnectionIdentity fixture并续办，跨任务接口未就绪不计第二次实现失败。证据 `/tmp/m3-daemon-repair-77yoejrc/RESULT.md`。
+- M3-ARCHIVE-01首份交付22项及typecheck通过。主代理完整读取248行实现和358行测试、核对两个hash一致后发现终态仍依赖已回收/变化的旧开发worktree，退回同任务补真实关闭后回收/换分支回归。另由主代理在Node26.8.2/22.19直接import均复现参数属性语法导致原生加载失败，合并同轮返修；没有用Vitest通过代替实际加载。原证据 `/tmp/m3-archive-01-logs/delivery.md`，主代理复现 `archive-node{26,22}-import.log`。
+- M3-BASELINE-01首份交付27项及typecheck通过。主代理完整读367行实现，两个Node直接import同样复现参数属性加载失败；同时核对真实watch必然增长观察代次，原“自身写入后继续”的成功测试缺真实watch通知。已退回同任务修原生加载并补严格的自身写入事件归因；未知路径/溢出/撤权保持立即拒绝，不允许通过关闭watch或忽略外部事件过关。原证据 `/tmp/m3-baseline-evidence-iBYPXa/manifest.json`，主代理复现 `baseline-node{26,22}-import.log`。
+- M3-MEASURE-01（agent `ea211bce-8aed-423`）仅新增两份基准助手；主代理完整读746行实现并核对hash、两Node冒烟summary（各4子进程、无失败）、冻结参数及失败保留p95算法，助手核对通过，**完整性能未执行**。主代理证据 `main-measure-review.json`；正式测量必须等待全部写入结束后按100样本等冻结规格串行执行，不把内核指标称为真实宿主端到端指标。
+- 新派 M3-ASSEMBLY-01（agent `4f150cca-3bfc-452`），只改daemon/lifecycle及新socket集成测试/助手：装配单实例verifier、requirements hook、coordinator和sleep/close收尾。上游接口为协作依赖，尚未全部通过，不将此派工视作依赖验收已满足。M3-HOST-01与M3-CONTROL-01仍在其独立范围实现/验证。
+- 全部仍使用用户授权的 `5x/gpt-6-astra`。实际任务/文件所有权/后续待派接线记录于新证据根 `coordination.json`。目前未开始阶段最终审查、全量/安装/两Node矩阵或正式性能，未计M3完成。
+
+### M3-DAEMON-01 · 第二次交付核验失败，主代理限定接手
+
+- 第一次实际实现：原agent `74eacf12-325f-416` 的六文件后端交付，协调器含全仓serial、首窗口ALS背景授权残留和满队列清理拒绝。主代理在当前窗口完整读源码后安排原范围回归，返修agent的 `before.log`、`before-lanes.log` 已动态确认这些缺陷；原模型服务中止不参与失败计数。
+- 第二次实际实现：agent `8eb6a58b-b6a5-42f` 修上述三类问题；随后仅适配CONTROL测试fixture，最终18/18、typecheck通过，代码hash `7d8900fa…`。主代理完整读实际patch后发现 `releaseEntry`、`cancelCreation` 都忽略 `revokeExact():Promise<boolean>` 的false返回，误删退休许可并把持久撤权失败当成功。
+- 主代理真实临时Git/SQLite/issuer/verifier/同步manager探针确认：注入revokeExact=false后，detach成功返回，**同一退休旧grant能再次init成功**；连接成员列表和失败返回是明确测试替身，不冒充完整网络验证。证据 `coordinator-revoke-false-before-02.log/.exit` 和 `coordinator-revoke-false-result.json`（exit1，真实断言失败）。第一次探针仅因macOS临时根未规范化而失败，另存 `coordinator-revoke-false-before.log`，不作为产品缺陷证据。
+- 至此本任务两次真实交付均有已核验失败依据。主代理仅接手 **daemon/project-index-coordinator.ts 中两个撤权结果检查、退休状态保留及对应tests/project-index-coordinator.test.ts回归**，保留已完成的worktree队列/ALS/清理重试成果，不接管CONTROL/HOST/BASELINE/ASSEMBLY等其他任务。不得把跨任务类型错误、模型限制或接口协调计成执行失败。
+- 接手前尚未修改上述生产代码。后续修前/修后回归另存；该限定修复完成后仍须独立安全/阶段审查，主代理自检不代替独立裁决。
+
+### M3-COMPLETION-02 · 接线整合与当前验收阻塞
+
+- 主代理限定修复coordinator两处撤权返回值检查：新增3项回归修前全部失败，修后原18项加新增3项共21/21通过；原真实SQLite探针也从“detach成功/旧grant可重入”变为“撤权未确认即失败/旧grant拒绝”。限定严格typecheck通过。证据 `main-coordinator-revoke-{red,green}.log/.exit`、`coordinator-revoke-false-after.log/.exit`、`main-coordinator-typecheck.log/.exit`。仅此项被主代理接手，独立审查仍未完成。
+- ARCHIVE返修后37项与双Node原生导入通过。主代理核对最终hash及终态/active新增断言，独立重跑37/37（47.75秒）及两个Node import均成功：`main-archive-final.*`、`archive-node{26,22}-import-fixed.log`。不把该单元通过扩大为阶段验收。
+- CONTROL最终8文件接口冻结、61项通过，主代理完整核对grants/transport差异、跨进程测试、hash及两个Node原生导入。Agent句柄清理后仅从原session提取最终text和模型/结束元数据，不读取思维链或工具转录；见 `control-agent-result.md`、`control-result-source.json`、`control-node{26,22}-import.log`。
+- HOST首次返修63项、typecheck及双Node import通过，补真实批准分支核验、status不冒充内容核验、关闭前置撤权及无正文原始事件。原交付 `/tmp/m3-host-01-r1/manifest.json`，复制的最终结果/元数据在新证据根 `host-repair-agent-result.md`、`host-repair-result-source.json`。尚需整合复核，尤其下面的真实capture竞争。
+- ASSEMBLY真实daemon接线已交付，主代理核对lifecycle差异和三个hash；原完整5项中4通过1失败，新增随后删除长期dirty，未以曾经一次通过掩盖。证据 `/tmp/m3-assembly-motUof/result.md`。另派 `M3-SYNC-RECOVERY-01`（agent `2c13f0ed-9cad-4dc`），只修sync内核/测试；该任务是新增集成发现的恢复问题，不借此前已结束SYNC任务失败次数授权主代理接手。
+- SYNC-RECOVERY实际证明暂态fence/文件竞争及单轮耗尽后漏补排，增加100/200/400ms最多三轮恢复，永久错误/撤权/归档hook失败不重试。两Node各32项通过，原完整产品5项连续3轮通过；主代理核对真实diff及两个hash。原历史单次失败的唯一分支未能追溯，不作过度根因结论。证据 `/tmp/m3-sync-recovery-xu6Ayp/result.md`。
+- CORE与HOST初期混用了manager请求计数和消费者通知计数，导致实际watch通知2、发布汇总3时误撤权。主代理统一契约：observedSequence为消费者真实收到的变化/失效通知序号，查询本身不增加；汇总通知也必须忠实按序处理，不伪造read_before关联来补缺口。CORE在同任务新物理agent `58eb4ba8-ace0-4a7` 中整合至69项连续两轮通过，并加入SDK实际缺失目录登记用的expectedDirectories；旧27项正文保留，旧“计数证明”测试替换为更强的通知缺口拒绝。真实HOST仍未通过，证据 `/tmp/m3-baseline-contract-SHBtSm/manifest.json`；原生导入修复及旧44项证据均保留。
+- SDK-GATE首份47项及安全子集3项通过，但真实HOST own-write失败；主代理退回同任务（新物理agent `d44647cc-50e8-464`）补mkdir+write同一窗口、真实下一请求旧资料提醒、旧commit执行拦截及真实消息seal。第二份71项通过，完整HOST为4/7，剩余3项失败定位到 `runtime/project-sync-client.ts` 的ensureFresh与随后status组合核验。signal未中止、CORE已接纳通知2/3；具体不一致字段尚未知，不能删门槛或伪造关联。只读诊断 `M3-HOST-CAPTURE-DIAG-01`（agent `f38ea33a-07a5-4c2`）仅在/tmp做透传观测；原证据 `/tmp/m3-sdk-gate-repair-9zhnez/RESULT.md`。
+- ROLE首个物理agent `beaf54d2-e6b0-452` 到回合上限，已完成角色/PM submit/原交付binding/source主要接线，取得13/70/44项及部分Node22证据；最终接口调整后未通过typecheck，不搬用旧PASS。清理后的resume未执行，不计失败；同任务由新agent `1c034f71-732b-494` 续办剩余接口、managed plain消息seal与最终复验。CORE/SDK增加真实assistant消息封存分支，不虚构工具调用ID，不在交付时新capture换绑。
+- `M3-INSTALL-AC-01`（agent `62f10bfe-9cf5-453`）只编写真实安装产物验收/更新preview授权契约断言，正式安装矩阵尚未执行。全部仍使用已核对的 `5x/gpt-6-astra`；所有写入结束、阻塞修好后才可冻结输入、独立审查及执行全量/两Node/安装/正式性能。
+
+### M3-SDK-GATE-01 · 两次交付后限定接手请求准备
+
+- 首次实际交付agent `4f1b964b-d804-4e1` 有47项与安全子集通过，但主代理核对发现mkdir在受控窗口外、旧资料提醒未可靠进入下一模型请求、commit未接实际门槛；原scope返修交给第二次实际实现agent `d44647cc-50e8-464`。
+- 第二次交付完成上述修改及真实消息seal，71项通过，但真实HOST完整7项仍未通过。已由独立只读诊断证明其中的额外后台扫描竞态属于SYNC，交相应任务修复，不能算SDK自身第二次失败依据。
+- 修正SYNC过时后台扫描后，own-write与新目录已通过，HOST仍6/7。主代理仅运行原read外改用例一次，使用既有/tmp透传探针，确证SDK自身剩余问题：旧read之后watch已到，下一请求准备capture期间收到该变化的reconciled_change，gate使准备signal中止；build/status全部一致且授权未变，SDK直接发无当前hash的失败提示，未在模型发送前有限重做准备。证据 `read-gap-diag.log/.exit`、`read-gap-diag.jsonl:62-74`，不是继续假定HOST状态不一致。
+- 这两次实际SDK实现交付均未满足原请求当前性目标。主代理仅接手 **runtime/project-baseline-hooks.ts 的模型发送前准备重试及tests/project-baseline-hooks.test.ts回归**：只处理准备期间有效发布通知导致的中止，有限重试；权限/未知错误/显式revoke/并发新请求不续权，before_provider_request、实际工具及交付不重新capture换绑。原HOST测试断言保持，不改CORE/HOST/ROLE或其他任务。
+- 接手前生产代码未修改；新红绿记录独立保存。该任务仍需独立审查；其他实现继续子代理优先。工具句柄清理/接口协调/未实际运行的resume不计失败。
+
+### M3 首轮冻结审查与全量结果：未通过，已进入限定返修
+
+- 主代理SDK准备接手先加7项边界回归，修前2失败/5通过；限定修复后SDK hooks与完整真实HOST共34/34（56.87秒）及typecheck通过。仅模型尚未发送的准备、且有效reconciled通知导致中止时最多3次重新准备；权限/未知变化/显式revoke不重试，旧能力持续撤销。`revoke`提升宿主请求序号，防止晚到准备恢复权限。证据 `sdk-preparation-{red,green}.log/.exit`、`sdk-preparation-typecheck.*`。
+- README经agent `b90f4edb-9685-4d1`更新当前行为，主代理核对5处必要差异及hash `9f62c1c3…`。主代理确认18个本轮子会话最后均stop、全部实际模型 `5x/gpt-6-astra`，无本轮测试进程；旧PID保留。冻结295项输入到 `review-candidate.json`（2026-09-13T07:32:41Z），冻结锁离线安装及两Node生产模块原生导入通过。
+- 三项独立只读审查已实际结束，均核对295项前后相同：安全 `681723ad-0ba4-4c6`，报告 `/tmp/m3-final-safety-mnSsFD/REPORT.md`；正确性 `b43f7e2c-129f-4c6`，报告 `/tmp/m3-final-correctness-y_ew8jzi/REPORT.md`；证据 `4676c206-2fe6-433`，报告 `/tmp/m3-final-evidence-5q7qw99m/REVIEW.md`。新准备有限重试/显式撤权另有独立5场景通过，不免除其他发现。
+- 安全F1已真实SQLite/socket复现：新窗口无controller时将已有持久索引误判unmanaged，原窗口关闭后仍如此，外改后mutation回调可执行。正确性F1已真实SDK Anthropic SSE复现：start为配置模型别名、end被服务端改为实际模型名，messageKey包含可变model使会话永久busy。普通start前网络失败被独立反证为可恢复，没有误列缺陷。
+- 证据审查确认3个装置/断言问题：watcher.close调用提前计为实际close；部分清理异常后仍删目录并漏后续子进程；schema修改被helper复原。还须补AC6/8真实跨进程消费恢复/关闭返回竞争、AC9真实daemon同进程资源趋势。它们不是未经验证就宣称生产功能失败。
+- 主代理首轮 `pnpm test`：113文件，109通过/4失败；2993项，**2986通过/7失败**，988.97秒，exit1。证据 `final-node26-full.log/.exit`；冻结源码逐项不变。失败包括Node22可选测试的未定义context.skip（本轮未提供环境变量触发）、三个安装场景对CLI注册路径的错误/未明断言、原M2安装preview底层operation_failed待查，以及host-exit两信号超时。主代理定位window-runner的getSessionId每次randomUUID违反真实稳定session契约，不放宽生产身份检查来通过。
+- 所有审查与全量已结束后，主代理明确退出只读检查，按独立范围派出以下返修；未继续跑Node22全量、正式安装矩阵或性能，不宣称阶段完成：
+
+| 任务 | 当前物理agent | 范围 |
+|---|---|---|
+| M3-PERSISTENT-MANAGEMENT-01 | f3f8b86f-eabb-4fa | HOST/Core跨窗口持久管理事实与旧unmanaged请求再核验；同文件Node22测试条件注册、client夹具清理 |
+| M3-MESSAGE-IDENTITY-01 | cad6d763-c467-4c5 | SDK稳定消息流身份及真实SSE别名/恢复回归；不清空流或重绑旧请求 |
+| M3-TEST-LIFECYCLE-01 | cdc0ca96-c734-4cc | probe真实close事件、integration/coordinator分阶段清理、window-runner稳定session、daemon资源趋势 |
+| M3-AC-COVERAGE-01 | 981f7949-7d69-4f9 | schema-only与拆分/FTS断言、sync manager清理、真实跨Node事件恢复和closing/consume |
+| M3-INSTALL-AC-01返修 | dd956573-ea50-4ff | 精确解析CLI注册路径、安装preview诊断、失败/未知子进程的有界保全 |
+
+- 返修继续按实际目标/文件所有权隔离，全部显式配置 `5x/gpt-6-astra`；不重算或借用其他任务历史失败次数。再次冻结前，原审查及全量结论保持“未通过”；修复后须主代理核对、独立复审及真实矩阵。
+
+### 首轮返修进展与正式加载入口
+
+- MESSAGE-IDENTITY已按真实SDK稳定字段改消息键，不含可变model；主代理核对三文件hash及真实SSE永久测试。同名/别名/网络失败/迟到旧消息回归通过，相关SDK/ROLE52项和Node22 SSE4项通过；原正确性复审待统一冻结后进行。证据 `/tmp/m3-model-identity-ivwk3i7v/REPORT.md`。
+- PERSISTENT-MANAGEMENT首份111项通过，修跨窗口持久索引判定及旧unmanaged请求再核验，并修Node22未配置时错误调用context.skip。主代理进一步按“index.db可删除重建”确认增加data.db固定无正文管理登记的必要范围：持续批准进入controller前登记，preview不升级，丢index/新会话仍不能恢复legacy。此为主代理必要设计范围补齐，不虚构前任务失败；原agent续办。另允许其只在SDK provider包装处转发assertUnmanaged，不改消息/准备逻辑。
+- TEST-LIFECYCLE最近37项通过，修真实close事件计数、分阶段清理及window-runner稳定session。资源六轮使用同一存活daemon，稳定watchers=0、实际close匹配；原日志有sleep授权失败未判无害。主代理要求透传观察真实onSleepGap Promise完成，持权等待结束后才detach，补齐最终hash/诊断字段后的复验。证据 `/tmp/m3-test-lifecycle-96267_gz/`。
+- AC-COVERAGE两Node同矩阵66/66通过：schema-only/invalid恢复、规则拆分旧ID/FTS清除、manager真实stop清理；新Node消费恢复cursor和旧lease拒绝，另一Node closing后原handle仍在、无本进程失效通知、sink=0、最终DB门槛拒绝。主代理已读取交付和适用性，待独立证据复审。证据 `/tmp/m3-ac-coverage-8vE7HW/REPORT.md`。
+- INSTALL装置修正：SDK CLI会保存相对settings目录的source，按真实DefaultPackageManager解析+realpath核对精确安装根，不用字符串包含；原M2 preview首次失败定位为122字节socket路径超过macOS104字节，改用短真实夹具路径，不改生产检查。但随后四个正式安装场景暴露 **node_modules内TS入口无法被Node原生擦除**，没有加测试loader绕过。证据 `/tmp/m3-install-ac-repair-VAApue/REPORT.md`。
+- 新任务 `M3-INSTALLED-BOOTSTRAP-01`（agent `6040aaa3-19e0-46f`）已实现正式 `daemon/bootstrap.mjs`＋共享 `daemon/loader.mjs`，客户端源码/安装统一使用；沿用已锁定jiti2.7.0，仅从dev移runtime，没有新包版本/批量升级，关闭磁盘转换缓存，SDK/SQLite保持原生实例。主代理已核对两mjs及package/lock精确分类差异。两Node真实node_modules安装16项与启动/握手选定18项通过，缺SDK/main/jiti明确非零退出。证据 `/tmp/m3-installed-bootstrap-rN67Lj/REPORT.md`。
+- 正式loader导入不启动main，probe与bootstrap复用同一加载器/缓存。TEST-LIFECYCLE明确获准只更新daemon-harness正式入口及close回执；INSTALL同逻辑任务由新agent `85759104-8b0a-442`接线安装helper的启动、模块导入和离线jiti本地包。旧resume/句柄清理不计执行失败。
+- 本轮仍在限定返修，未重新冻结或声称阶段通过；旧295项冻结与首轮全量失败证据不换绑新字节。后续必须统一复审、两Node完整矩阵和正式性能。
+
+### 后续返修已验证部分与安装重连待办
+
+- PERSISTENT-MANAGEMENT新增data.db固定管理登记及无扫描unmanaged再核对，131项通过；主代理再审发现登记及只读事务内含FS/宿主回调/指纹，要求同任务修复。新物理agent `9b8e3076-2829-4e3`限定两个文件，把准备与事后检查移出事务，私有固定native SQLite短事务只核DB值/版本并写固定登记，保留失效事务来源拒绝；原131项＋9项探针共140通过，双Node原生验证通过。主代理已读精确diff和解释，独立安全复审仍待新冻结。证据 `/tmp/m3-management-transaction-YoTShM/REPORT.md`。
+- TEST-LIFECYCLE最终统一正式bootstrap和真实close回执；probe通过实际产品loader包装onSleepGap，返回原Promise。持有许可时等待sleep真实完成再detach，Node26/22各38项通过，六轮同一daemon真实watcher创建/关闭12/12，稳定watcher0、句柄3；sleep完成22/22、25/25，无失败。原撤权后迟到sleep拒绝保留，不当成功。最终七文件hash/清理在 `/tmp/m3-test-lifecycle-96267_gz/followup/REPORT.md`，有限RSS采样不证明长期绝无增长。
+- INSTALL正式入口接线已完成，实际node_modules产物在两Node可启动，旧M2、双克隆归档、慢模型旧写拒绝和smoke通过；两Node限定安装均5通过/1失败。剩余失败是同存活session重连只观察到新grant即开始read，read虽读新文件但index仍旧、新daemon无watcher。原安装断言未弱化，报告 `/tmp/m3-install-bootstrap-integration-DmywMA/REPORT.md`；原mtime夹具Date截断已改数值秒，精度断言保持。
+- 主代理据代码确认需要区分“合法重连已排队但尚未attached”和“无许可/无controller”。已派 `M3-RECONNECT-READ-BARRIER-01`（agent `7f1e7f91-933d-484`），仅HOST baseline provider新捕获入口及相关测试，等待既有合法controller重连队列；旧snapshot/旧epoch仍拒绝，不自动签许可/init，不改安装测试等待条件。运行中，未先行计通过。
+- 新旧失败与全部测试字节边界保持原状，未提交/推送、未进入M4。所有本轮模型仍按真实元数据为 `5x/gpt-6-astra`。重连收尾后须再次冻结，重做独立复审与完整矩阵/正式性能。
+
+### 第二轮冻结复审与全量：仍未通过
+
+- 重连首次读取屏障由agent `7f1e7f91-933d-484`完成，主代理核对仅新capture的2行等待策略及实际证据：两Node HOST各11项、原限定安装各6项通过，旧snapshot即时拒绝。随后确认30个子会话全部stop/实际模型均5x/gpt-6-astra，冻结303项到 `review-candidate-2.json`（2026-09-13T09:41:53Z）。
+- 第二轮独立复审均已结束且303项前后不变：安全 `374b67bb-7ea7-48b` 报原F1修复、62项与loader/SQLite/socket探针通过，报告 `/tmp/m3-final-safety-02-dzs3u0xr/REPORT.md`。正确性 `473338d4-78db-43f` 确认模型别名修复，另复现daemon消费者忽略data.db管理登记：登记后init取消、index不存在时HOST拒绝而daemon仍unmanaged，旧请求及真实SDK写入获准，报告 `/tmp/m3-final-correctness-02-ygw05fhv/REPORT.md`。证据 `30edf816-42e8-4dd` 确认schema/跨进程/daemon资源补验成立，仍有client测试close调用计数和慢init门闩/清理时限残留，报告 `/tmp/m3-final-evidence-02-c23es5id/REVIEW.md`。
+- 第二次Node26完整 `pnpm test` 显式设置最低Node路径：117文件，114通过/3失败；3060项，**3057通过/3失败**，1258.71秒，exit1。证据 `final-node26-full-2.log/.exit`。失败为残留普通socket被过早connect的ENOTSOCK待查、旧syntax-parser离线安装夹具未适配既有jiti正式依赖、资源循环把撤权期间额外sleep拒绝混入全局成功判定。没有以独立通过报告抹掉这轮失败。
+- 复审/全量结束后再次退出只读阶段，派出三项互不冲突的限定返修：`M3-MANAGEMENT-CONSUMERS-01`（e1a27a32-1a47-49b）让HOST/daemon/旧unmanaged交付共用只读管理状态；`M3-VALIDATION-ENTRY-02`（96790167-adb6-4fe）修真实socket等待、syntax离线本地jiti包、client实际close/有界清理；`M3-TEST-LIFECYCLE-01`续修（3f660989-9a29-40b）以真实撤权时序区分必测持权sleep与额外取消，原failed原始计数保留，不能把取消计成功或忽略未归因错误。
+- 仍未签M3完成，Node22完整矩阵、单独integration/installation及全规格性能尚待通过修复后的统一输入。没有进入M4、没有提交或操作用户真实数据；旧进程保留。
+
+### 完整功能矩阵通过，正式性能未通过
+
+- 统一消费者修复、client真实close、有界清理、syntax离线依赖及sleep严格分类均完成；主代理核对必要源码差异。附加worktree真实init失败最终定位为普通`.git`指针文件未排除，与IndexStore保护冲突；agent `036fa737-63c0-405`仅加一行文件策略排除及真实双入口回归，两Node各43项通过，保留身份服务必要Git元数据读取，索引正文探针0。证据 `/tmp/m3-linked-worktree-7yxf3o6i/REPORT.md`。
+- 309项第三轮冻结下Node26全量3100/3100通过；独立消费者终核与证据终核均无阻塞，报告 `/tmp/m3-consumer-final-review-64c2ze_p/REPORT.md`、`/tmp/m3-evidence-final-review-eym4hrry/REVIEW.md`。Node22首轮3098/3100，剩余强杀close瞬时ps空档与只读SQLite锁竞争保留。
+- `M3-NODE22-VALIDATION-FINAL`（agent `1fc58390-be1a-458`）仅修测试：透传真实spawn/close确认本次在途重启自行idle退出，原30秒总预算保留；只读观察busy_timeout5000，真实释放锁/超时/WAL/非busy错误4对照不吞异常。主代理核对三份diff/hash，独立最后装置核对无阻塞，报告 `/tmp/m3-validation-final-check-RrkK6A/report.md`。
+- 最终冻结310项 `final-candidate.json`：Node26与Node22全量均 **121文件、3104/3104通过**，1357.56秒/1380.80秒，exit0；输入前后无变化。日志 `accepted-node{26,22}-full.log/.exit`。随后两Node分别执行typecheck、`test:integration`（11文件50/50）、`test:installation`（4文件8/8），全部exit0；日志 `node{26,22}-{typecheck,test-integration,test-installation}.*`。这些结果对应固定真实字节，不把以前失败改写。
+- 正式千文件基准第一次实际执行：`node --experimental-strip-types tests/helpers/m3-benchmark.ts --output /tmp/m3-completion-IwlEi0/benchmark-node26 --scenario all`。固定0/1000/10000归档规模、每组5冷/10重启/100更新/100事件/10资源轮，未smoke、输入未变，但 **exit1，性能验收失败**。冷初始化p95约5.25/5.19/6.91秒（60秒内）、批准事件p95约96/102/92ms（2秒内）；普通watch更新约4.8—6.8秒，三组均0/100在2秒内，且14/14/61失败；10k归档组资源10轮失败。所有原始样本与失败保留，不将kernel结果冒充端到端或降低门槛。
+- M3目前仍不能签发完成。只读 `M3-PERF-DIAG-01`（agent `f5399cd3-2e5f-415`，显式5x/gpt-6-astra）正在同规格少量样本分解scan/read/verify/publish/SQL耗时，禁止修改生产或门槛；主代理取得证据后再决定最小优化。未自动进入M4、未提交/推送、旧PID保留。
+
+### 正式性能诊断与最小优化派工
+
+- 只读PERF诊断完成3个真实千文件样本，310项输入无变化。0归档更新4995ms、10000归档6789ms；两轮文件读取及路径核验约3.72秒，Git marker 22000次触发176000次大小写路径探测约2.29秒；真正字节读取40—44ms、全部hash约4ms，不得通过省hash改善。发布耗时683→2405ms，10k归档额外耗时主要来自每次assertAvailable路径异常与固定SQL重复prepare。证据 `/tmp/m3-perf-diag-6gqkgN/analysis.md`。
+- 纠正上一段性能失败分类：10k组61项失败中8项实际运行失败、53项为30分钟子进程超时后的缺样；10个resource-round同样是缺样，不是实测10轮后证明泄漏。所有缺样按冻结方法作为失败计入，原JSON未改。
+- 主代理据实测批准两个必要最小优化，非夹带重构：`M3-PERF-FS-01`（9a9bbaa4-0b94-4bd）在policy保留8种Git marker和每次路径检查，改正常缺失不抛异常的固定同步探测；`M3-PERF-DB-01`（57f74657-e1a0-4a0）在database-paths保留每次维护检查但正常缺失不造异常，在单连接内仅缓存固定SQL编译，不缓存权限、不跳assert、不改fence/事务，关闭/失效清空。两任务文件隔离、均5x/gpt-6-astra，先开发量测和安全回归，之后独立审查及完整矩阵重新绑定新输入。
+- 仍未降低2秒p95或样本数量，正式100样本将由主代理在全部写入结束后重跑。当前M3性能不通过状态保持，未进入下一阶段。
 
 ## 2026-09-12窗口交接状态（历史保留）
 
