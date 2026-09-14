@@ -260,6 +260,14 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-PM-INTAKE-CONTRACT-01：接手材料与连续关系纯契约
+
+- 已完成：新增`runtime/pm-intake-contracts.ts`与`tests/pm-intake-contracts.test.ts`，约定PM理解材料、可信登记所需元数据形状及接手到当前批准版本的连续关系。输出始终`executionEnabled=false`、`scheduling=not_implemented`，不把参数中的身份或当前授权boolean当作真实授权。
+- 首次sol`924414a4-4518-45a`的F1—F3由独立审查确认；第二次sol`81ea602a-a0fe-401`分离物理身份与可桥接动作scope、按准确from/to历史ID目录核验来源，并将每段链绑定review/request/submission身份。原29项语义保留为35项；不读取或恢复旧正文，不改写root/link。
+- 主代理已完整读原模块和返修生产差异，核对独立复审全文与当前hash；`618a4e42-c6b1-49e`实际astra的复审35/35、99/99及typecheck通过。实际报告位置为原证据根下`pm-intake-review-02/REPORT.md`（不是completion-03子目录）。主代理再跑35/35，日志`completion-03/main-pm-intake-contract.*`。
+- 对应M4-AC12—14的纯材料/版本/链路判断部分。真实Main调用、SQLite核对记录、PM提交来源与生产接线仍待后续任务；不签AC12—14整体、不实施M7调度。参考主代理已审核的只读store设计，暂不新增强制scenario.*正文格式；可信来源分类/提交provider缺失时默认拒绝，不猜场景或让PM缩小必要目录。
+- 本功能只提交两文件与本节实施记录，不夹带其余未完成成果；实际提交成功后单独核验登记。
+
 ## M4-EXPLORE-CONTRACT-01：有界只读检索契约核验
 
 - 已完成：`runtime/explore-contracts.ts`、`tests/explore-contracts.test.ts` 两文件提供双父、三来源的输入/结果纯契约；main无需求且未初始化索引的纯网页约定不伪造本地基线，网络/外发引用分开，来源和失败/截断/未知必填，research不等于PASS。没有角色派出、网络工具、专业定义或M5权限网关实现。
