@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmodSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AsyncTransactionError, LocalDatabase, StaleVersionError } from "../runtime/database.ts";
@@ -479,6 +480,68 @@ test("source_fragments与FTS随同步事务一起回滚，异步违规连接仍�
   db.close();
   const other = new LocalDatabase(w.databasePath);
   try { expect(other.list("source_fragments")).toEqual([]); } finally { other.close(); }
+});
+
+test("只读current按文件范围先过滤正文，metadataOnly不载入正文，dirty/invalid不回退", async () => {
+  const w = await fixture(), identity = w.identity(hash("a"), w.workspaceA, "refs/heads/read-only");
+  expect(() => IndexStore.readCurrent(w.databasePath, identity, [])).toThrow();
+  const store = new IndexStore(w.databasePath, identity);
+  try {
+    const publication = fullPublication("VISIBLE_BODY");
+    store.publish(store.begin(), publication);
+    const metadata = IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"], true);
+    expect(metadata.snapshot).toMatchObject({ files: [{ path: "src/main.ts" }], sourceFragments: [], rules: [] });
+    const current = IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"]);
+    expect(current.snapshot?.sourceFragments).toHaveLength(1);
+    expect(current.snapshot?.rules).toEqual([]);
+    expect(current.snapshot).not.toHaveProperty("prodMetadata");
+    store.markDirty();
+    expect(() => IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"])).toThrowError(expect.objectContaining({ code: "index_not_ready" }));
+    store.publish(store.begin(), emptyPublication("invalid"));
+    expect(IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"])).toMatchObject({ status: { status: "invalid" }, snapshot: null });
+  } finally { store.close(); }
+});
+
+test.each(["database", "wal", "shm", "directory"])("只读入口拒绝%s过宽权限且不改字节/模式，0600/0700可读", async (target) => {
+  const w = await fixture(), identity = w.identity(hash("a"), w.workspaceA, "refs/heads/permissions");
+  const store = new IndexStore(w.databasePath, identity);
+  try {
+    store.publish(store.begin(), codePublication("src/main.ts", "PRIVATE"));
+    expect(IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"]).status.status).toBe("ready");
+    const files = [w.databasePath, `${w.databasePath}-wal`, `${w.databasePath}-shm`];
+    const path = target === "directory" ? w.directory : target === "database" ? w.databasePath : `${w.databasePath}-${target}`;
+    const mode = target === "directory" ? 0o755 : 0o644;
+    await chmod(path, mode);
+    const before = await Promise.all(files.map((path) => readFile(path)));
+    expect(() => IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"])).toThrowError(expect.objectContaining({ code: "invalid_index_state" }));
+    expect((await stat(path)).mode & 0o777).toBe(mode);
+    expect(await Promise.all(files.map((path) => readFile(path)))).toEqual(before);
+    await chmod(path, target === "directory" ? 0o700 : 0o600);
+    expect(IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"]).status.status).toBe("ready");
+  } finally { store.close(); }
+});
+
+test.each(["database", "wal", "shm", "directory"])("返回前再次拒绝读取期间%s权限放宽", async (target) => {
+  const w = await fixture(), identity = w.identity(hash("b"), w.workspaceA, "refs/heads/permission-race");
+  const store = new IndexStore(w.databasePath, identity);
+  try {
+    store.publish(store.begin(), codePublication("src/main.ts", "PRIVATE"));
+    const path = target === "directory" ? w.directory : target === "database" ? w.databasePath : `${w.databasePath}-${target}`;
+    const prepare = DatabaseSync.prototype.prepare;
+    let changed = false;
+    const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (sql) {
+      const statement = prepare.call(this, sql);
+      if (sql.startsWith("SELECT data FROM records")) {
+        const all = statement.all.bind(statement);
+        statement.all = (...args) => { const rows = all(...args); if (!changed) { changed = true; chmodSync(path, target === "directory" ? 0o755 : 0o644); } return rows; };
+      }
+      return statement;
+    });
+    expect(() => IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"])).toThrowError(expect.objectContaining({ code: "invalid_index_state" }));
+    expect(changed).toBe(true); spy.mockRestore();
+    expect((await stat(path)).mode & 0o777).toBe(target === "directory" ? 0o755 : 0o644);
+    await chmod(path, target === "directory" ? 0o700 : 0o600);
+  } finally { store.close(); }
 });
 
 test("含FTS专属schema的index.db可做一致快照，仍保持user_version 1", async () => {

@@ -239,3 +239,12 @@ M4证据：/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_
 - 未覆盖：真实语义消费者、语言真值及发布/完整M4；不以结构有效自动批准。
 - 本功能代码、测试和本实施记录一起提交；实际提交号在成功后记录，不预填。
 - 首次暂存差异检查发现本报告末尾多余空行，commit尚未执行；已清理并重新核对。
+- 实际本地提交：`55d6e3510e38ebc0d014577292d8dc8d333a2991`，代码、测试和本记录一并保存。
+
+### M4-QUERY-CORE-01：当前知识查询内核
+
+- 完成内容：中文/精确/事实查询、有出处与未知项的有界分页、只读当前索引、跨分片完整视图、私有存储权限及联合返回检查契约。
+- 相关文件：`runtime/knowledge-query.ts`、`runtime/knowledge-query-contracts.ts`、`runtime/index-store.ts`、`runtime/project-index-service.ts`、`tests/knowledge-query.test.ts`、`tests/index-store.test.ts`、`tests/project-index-service.test.ts`。
+- 主代理核对：七文件当前hash与独立复审通过的修复版本一致；实际源码/diff和R1—R4复现/修复依据已读，本次隔离树336项及类型检查通过，原本任务74项回归通过。
+- 未覆盖：实际工具/RPC/六角色接线、外层provider交付及完整M4。它们的未完成代码不在本提交内；提供需求metadata的使用方仍必须实现真正joint finalCheck。
+- 本功能七文件与本实施记录一起提交；实际提交号在成功后登记。

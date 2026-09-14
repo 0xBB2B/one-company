@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { lstatSync, realpathSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -11,6 +12,7 @@ import { listWorktrees, repositoryIdentity } from "./identity.ts";
 import { IndexStore, IndexStoreError } from "./index-store.ts";
 import type {
   ArchiveProdMetadata,
+  CurrentQueryIndex,
   CodeEdgeEvidence,
   IndexDiagnostic,
   IndexedCodeEdge,
@@ -28,6 +30,7 @@ import type {
 } from "./index-store.ts";
 import {
   DEFAULT_INDEX_LIMITS,
+  classifyIndexWatchEvent,
   readIndexFile,
   scanIndexWorkspace,
 } from "./project-index-policy.ts";
@@ -54,7 +57,7 @@ const ARCHIVE_NAME_LIMIT = 255;
 const MAX_PUBLISHED_SYMBOLS = 100_000;
 const MAX_PUBLISHED_EDGES = 200_000;
 
-export type ProjectIndexAction = "open" | "status" | "preview" | "init" | "refresh" | "invalidate";
+export type ProjectIndexAction = "open" | "status" | "preview" | "init" | "refresh" | "invalidate" | "query";
 export type ProjectIndexAuthorizationPhase = "before" | "after" | "read" | "publish" | "return";
 
 export interface ProjectIndexAuthorizationRequest {
@@ -223,6 +226,18 @@ async function verifyDirectories(snapshots: DirectorySnapshot[], stage: string):
       throw new ProjectIndexServiceError("invalid_data_root", stage, true);
     }
   }
+}
+
+/** 查询返回门槛同步核对受控目录链，拒绝过宽权限而不修复用户数据。 */
+function verifyPrivateQueryDirectories(snapshots: DirectorySnapshot[]): void {
+  try {
+    for (const snapshot of snapshots) {
+      const stats = lstatSync(snapshot.path);
+      if (!stats.isDirectory() || stats.isSymbolicLink() || realpathSync(snapshot.path) !== snapshot.path
+        || stats.dev !== snapshot.dev || stats.ino !== snapshot.ino || (stats.mode & 0o077) !== 0
+        || (process.getuid && stats.uid !== process.getuid())) throw new Error("unsafe directory");
+    }
+  } catch { throw new ProjectIndexServiceError("invalid_data_root", "query-private-directory"); }
 }
 
 async function inspectDataDirectoryChain(dataRoot: string, repoId: string, stage: string): Promise<DataDirectoryChain> {
@@ -875,6 +890,68 @@ export class ProjectIndexService {
       identity = await this.identity(signal);
       this.authorizeAt("status", "return");
       return { action: "status", workspace: this.workspace, head: identity.head, initialized: index !== null, cacheVerified: false, index };
+    });
+  }
+
+  /**
+   * 可信宿主专用只读入口。paths 是调用者范围与可信基线文件的交集，不能从模型取授权。
+   * 不创建空库、不刷新、不使用重建快照；全文件新增/删除与观察序号由外层基线钩子核验。
+   * sourceFiles来自第一轮实际读取，单文件沿用读取策略上限、整组最多20MiB；持久片段顺序不作为连续性依据。
+   * 外层先 captureFresh，再调用本方法，最后联合核对需求/文件/权限；不要在同一 coordinator 队列内嵌套排队。
+   */
+  async readCurrentForQuery(options: { paths: readonly string[]; signal?: AbortSignal }): Promise<CurrentQueryIndex> {
+    return this.withOperation("query", options?.signal, async (signal) => {
+      this.authorizeAt("query", "before");
+      if (!Array.isArray(options?.paths) || options.paths.length > DEFAULT_INDEX_LIMITS.maxEntries) {
+        throw new ProjectIndexServiceError("authorization_denied", "query-scope");
+      }
+      const paths = [...new Set(options.paths)];
+      for (const path of paths) {
+        try {
+          if (typeof path !== "string" || /^[A-Za-z]:/u.test(path) || /[\u0000-\u001f\u007f]/u.test(path)
+            || classifyIndexWatchEvent(path) !== "index") throw new Error("scope");
+        } catch { throw new ProjectIndexServiceError("authorization_denied", "query-scope"); }
+        this.authorizeAt("query", "read", path);
+      }
+      await this.identity(signal);
+      const chain = await inspectDataDirectoryChain(this.dataRoot, this.workspace.repoId, "query-directory-chain");
+      if (!chain.complete) throw new ProjectIndexServiceError("index_failure", "query-not-initialized");
+      const databasePath = await this.checkedDatabasePath(chain.snapshots, "query-database-path");
+      verifyPrivateQueryDirectories(chain.snapshots);
+      try {
+        const sourceFiles: SourceFragment[] = [];
+        const before = IndexStore.readCurrent(databasePath, this.workspace, paths, true);
+        const verifyFiles = async (collectSources = false) => {
+          let bytes = 0;
+          for (const file of before.snapshot?.files ?? []) {
+            if (signal.aborted) throw new ProjectIndexServiceError("unstable", "query-cancelled");
+            this.authorizeAt("query", "read", file.path);
+            const read = await readIndexFile(this.workspace.root, file.path, { signal, readUnsupported: true });
+            this.authorizeAt("query", "after", file.path);
+            if (read.status !== "success" || read.sha256 !== file.hash) throw new ProjectIndexServiceError("unstable", "query-file-changed", true);
+            bytes += read.size;
+            if (bytes > DEFAULT_INDEX_LIMITS.maxTotalTextBytes) throw new ProjectIndexServiceError("index_failure", "query-read-budget");
+            if (collectSources) sourceFiles.push({ id: `source_${hashParts(file.path, file.hash)}`, path: file.path,
+              kind: file.kind, language: file.language, title: null, body: read.content, startLine: 1,
+              endLine: 1 + (read.content.match(/\n/gu)?.length ?? 0), fileHash: read.sha256 });
+          }
+        };
+        await verifyFiles(true);
+        verifyPrivateQueryDirectories(chain.snapshots);
+        const current = IndexStore.readCurrent(databasePath, this.workspace, paths);
+        if (current.status.version !== before.status.version) throw new ProjectIndexServiceError("unstable", "query-version", true);
+        await verifyFiles();
+        verifyPrivateQueryDirectories(chain.snapshots);
+        await verifyDirectories(chain.snapshots, "query-return-chain");
+        await this.identity(signal);
+        verifyPrivateQueryDirectories(chain.snapshots);
+        const after = IndexStore.readCurrent(databasePath, this.workspace, paths, true);
+        if (after.status.version !== before.status.version) throw new ProjectIndexServiceError("unstable", "query-return-version", true);
+        for (const path of paths) this.authorizeAt("query", "return", path);
+        this.authorizeAt("query", "return");
+        if (signal.aborted) throw new ProjectIndexServiceError("unstable", "query-cancelled");
+        return { ...current, sourceFiles };
+      } catch (error) { throw serviceError(error, "query-read"); }
     });
   }
 

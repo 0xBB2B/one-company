@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { lstatSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { hasInvalidTransactionOrigin } from "./transaction-context.ts";
 import {
   InvalidIndexQueryError,
   LocalDatabase,
@@ -8,7 +11,7 @@ import {
   uuidv7,
 } from "./database.ts";
 import type { StoredRecord } from "./database.ts";
-import { databaseKind } from "./database-paths.ts";
+import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, databaseKind } from "./database-paths.ts";
 
 const HASH = /^[0-9a-f]{64}$/;
 const ENTITY_ID = /^[\p{L}\p{N}][\p{L}\p{N}._:/#@+-]{0,255}$/u;
@@ -206,6 +209,16 @@ export interface IndexSnapshot extends WorkspaceIdentity {
   prodMetadata: ProdMetadata[];
 }
 
+export interface CurrentQueryIndex {
+  status: IndexWorkspaceStatus;
+  /** 服务逐文件授权及hash核对后提供的完整文件视图；不依赖持久片段的ID/排序。 */
+  sourceFiles?: SourceFragment[];
+  /** invalid 只提供诊断；普通查询不能回退旧正文。 */
+  snapshot: (Omit<IndexSnapshot, "prodMetadata" | "codeEdges"> & {
+    codeEdges: Array<IndexedCodeEdge & { sourceCertainty?: IndexedCodeEdge["certainty"]; targetOutsideScope?: boolean }>;
+  }) | null;
+}
+
 export interface IndexSearchResult {
   fragmentId: string;
   path: string;
@@ -267,6 +280,22 @@ interface GenerationRow {
 type WorkspaceEntity<T> = T & { workspaceId: string; generation: number };
 
 function fail(code: IndexStoreError["code"] = "invalid_input"): never { throw new IndexStoreError(code); }
+/** 查询只拒绝不安全权限，不chmod、不创建或升级数据库。 */
+function assertPrivateQueryStorage(databasePath: string): void {
+  assertRegularDatabaseFiles(databasePath);
+  const directory = lstatSync(dirname(databasePath));
+  if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) !== 0
+    || (process.getuid && directory.uid !== process.getuid())) fail("invalid_index_state");
+  for (const path of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
+    let stats;
+    try { stats = lstatSync(path); }
+    catch (error) {
+      if (path !== databasePath && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      fail("invalid_index_state");
+    }
+    if ((stats.mode & 0o077) !== 0) fail("invalid_index_state");
+  }
+}
 function plain(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -750,6 +779,76 @@ export class IndexStore {
       }
       return { results, truncated };
     });
+  }
+
+  /**
+   * 固定只读接缝，不初始化/升级数据库，也不加载 prod_metadata。
+   * paths 来自可信调用者已核验的允许文件清单；在 SQLite 返回正文之前应用范围。
+   * metadataOnly 用于授权/真实文件检查前的无正文预检。实际全文件当前性由宿主核对。
+   */
+  static readCurrent(databasePath: string, identity: WorkspaceIdentity, paths: readonly string[], metadataOnly = false): CurrentQueryIndex {
+    if (hasInvalidTransactionOrigin()) fail("invalid_index_state");
+    if (databaseKind(databasePath) !== "index") fail("wrong_database_kind");
+    const workspaceIdentity = validateIdentity(resolve(databasePath), identity);
+    if (!Array.isArray(paths) || paths.length > MAX_FILES) fail("invalid_input");
+    const permitted = new Set(paths.map((path) => normalizedRelativePath(path)));
+    assertDatabasePathReady(databasePath);
+    assertPrivateQueryStorage(databasePath);
+    const before = lstatSync(databasePath);
+    const db = new DatabaseSync(databasePath, { readOnly: true, allowExtension: false });
+    try {
+      db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000; BEGIN");
+      if (Number(db.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS.index
+        || Number(db.prepare("PRAGMA user_version").get()?.user_version) !== 1
+        || Number(db.prepare("SELECT schema_version FROM index_schema_metadata WHERE schema_key = 'current'").get()?.schema_version) !== 1) fail("invalid_index_state");
+      const row = db.prepare("SELECT id, version, data FROM records WHERE namespace = 'workspaces' AND record_key = ?").get(identity.workspaceId);
+      if (!row || typeof row.data !== "string") fail("no_index");
+      const checked = validateWorkspaceRow({ id: String(row.id), version: Number(row.version), data: JSON.parse(row.data) }, workspaceIdentity);
+      const { format: _format, operationId: _operationId, ...state } = checked.data;
+      const status = { ...state, version: checked.version };
+      if (!["ready", "partial", "invalid"].includes(status.status) || status.currentGeneration < 1) fail("index_not_ready");
+      const finish = (snapshot: CurrentQueryIndex["snapshot"]): CurrentQueryIndex => {
+        assertDatabasePathReady(databasePath);
+        assertPrivateQueryStorage(databasePath);
+        const after = lstatSync(databasePath);
+        if (before.dev !== after.dev || before.ino !== after.ino) fail("invalid_index_state");
+        // 无权限路径只保留诊断类别，不能回显其名称。
+        return { status: { ...status, diagnostics: status.diagnostics.map((item) => ({ code: item.code, path: item.path && permitted.has(item.path) ? item.path : null })) }, snapshot };
+      };
+      if (status.status === "invalid") return finish(null);
+      const read = <T extends object>(namespace: EntityNamespace, validate: (value: unknown) => T): T[] => {
+        const rows = db.prepare("SELECT data FROM records WHERE namespace = ? AND json_extract(data, '$.workspaceId') = ? AND json_extract(data, '$.generation') = ? AND json_extract(data, '$.path') IN (SELECT value FROM json_each(?)) ORDER BY record_key")
+          .all(namespace, identity.workspaceId, status.currentGeneration, JSON.stringify([...permitted]));
+        return rows.map((item) => validate(withoutScope(JSON.parse(String(item.data)))));
+      };
+      const files = read("files", validateFile);
+      const snapshot: NonNullable<CurrentQueryIndex["snapshot"]> = {
+        ...workspaceIdentity, status: status.status as "ready" | "partial", generation: status.currentGeneration,
+        diagnostics: status.diagnostics.map((item) => ({ code: item.code, path: item.path && permitted.has(item.path) ? item.path : null })),
+        files, symbols: [], codeEdges: [], features: [], rules: [], ruleEdges: [], sourceFragments: [],
+      };
+      if (metadataOnly) return finish(snapshot);
+      snapshot.symbols = read("symbols", validateSymbol);
+      snapshot.features = read("features_current", validateFeature);
+      snapshot.rules = read("rules_current", validateRule);
+      snapshot.sourceFragments = read("source_fragments", validateFragment);
+      const symbolIds = new Set(snapshot.symbols.map((symbol) => symbol.id));
+      snapshot.codeEdges = read("code_edges", validateCodeEdge).map((edge) => ({ ...edge,
+        fromSymbolId: edge.fromSymbolId && symbolIds.has(edge.fromSymbolId) ? edge.fromSymbolId : null,
+        toSymbolId: edge.toSymbolId && symbolIds.has(edge.toSymbolId) ? edge.toSymbolId : null,
+        certainty: edge.toSymbolId && symbolIds.has(edge.toSymbolId) ? edge.certainty : "unknown",
+        sourceCertainty: edge.certainty,
+        targetOutsideScope: edge.toSymbolId !== null && !symbolIds.has(edge.toSymbolId),
+      }));
+      const ruleIds = snapshot.rules.map((rule) => rule.id);
+      snapshot.ruleEdges = db.prepare("SELECT data FROM records WHERE namespace = 'rule_edges_current' AND json_extract(data, '$.workspaceId') = ? AND json_extract(data, '$.generation') = ? AND json_extract(data, '$.fromRuleId') IN (SELECT value FROM json_each(?)) AND json_extract(data, '$.toRuleId') IN (SELECT value FROM json_each(?)) ORDER BY record_key")
+        .all(identity.workspaceId, status.currentGeneration, JSON.stringify(ruleIds), JSON.stringify(ruleIds))
+        .map((item) => validateRuleEdge(withoutScope(JSON.parse(String(item.data)))));
+      return finish(snapshot);
+    } catch (error) {
+      if (error instanceof IndexStoreError) throw error;
+      fail("invalid_index_state");
+    } finally { db.close(); }
   }
 
   close(): void { this.database.close(); }

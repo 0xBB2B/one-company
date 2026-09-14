@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "vitest";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmodSync } from "node:fs";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -452,6 +453,57 @@ test("真实默认解析器的运行时与语法加载瞬时失败后同进程�
   `;
   const child = await exec(process.execPath, ["--input-type=module", "-e", script], { cwd: process.cwd(), timeout: 20_000 });
   expect(JSON.parse(child.stdout.trim())).toEqual({ states: ["partial", "partial", "ready", "ready"], parsed: [0, 0, 1, 0], reused: [0, 0, 0, 1], initCalls: 2, loadCalls: 2 });
+});
+
+test("query逐路径返回前再授权；读取期间dirty禁止旧代次返回", async () => {
+  const w = await world();
+  await put(w.repo.root, "src/query.ts", "export const CURRENT = true;\n");
+  let revokeOnReturn = false, dirtyOnRead = false;
+  let dirtyStore: IndexStore | undefined;
+  const index = await ProjectIndexService.open({ repositoryRoot: w.repo.root, dataRoot: w.dataRoot, repoId: w.repoId,
+    authorize(request) {
+      if (request.action === "query" && request.phase === "after" && dirtyOnRead) {
+        dirtyOnRead = false; dirtyStore!.markDirty();
+      }
+      return !(revokeOnReturn && request.action === "query" && request.phase === "return" && request.path !== null);
+    },
+  });
+  await index.init();
+  revokeOnReturn = true;
+  await expect(index.readCurrentForQuery({ paths: ["src/query.ts"] })).rejects.toMatchObject({ code: "authorization_denied" });
+  revokeOnReturn = false;
+  dirtyStore = new IndexStore(indexDatabase(w.dataRoot, w.repoId), index.workspace);
+  try {
+    dirtyOnRead = true;
+    await expect(index.readCurrentForQuery({ paths: ["src/query.ts"] })).rejects.toBeDefined();
+    expect(dirtyStore.status().status).toBe("dirty");
+  } finally { dirtyStore.close(); }
+});
+
+test.each(["root", "repos", "repository"])("query拒绝受控%s目录过宽权限，返回检查不chmod或改数据库", async (target) => {
+  const w = await world(); await put(w.repo.root, "src/query.ts", "// private query\n");
+  let widenOnRead = false;
+  const directory = target === "root" ? w.dataRoot : target === "repos" ? join(w.dataRoot, "repos") : join(w.dataRoot, "repos", w.repoId);
+  const index = await ProjectIndexService.open({ repositoryRoot: w.repo.root, dataRoot: w.dataRoot, repoId: w.repoId,
+    authorize(request) {
+      if (widenOnRead && request.action === "query" && request.phase === "after") { widenOnRead = false; chmodSync(directory, 0o755); }
+      return true;
+    },
+  });
+  await index.init();
+  const dbPath = indexDatabase(w.dataRoot, w.repoId);
+  const before = await readFile(dbPath);
+  const good = await index.readCurrentForQuery({ paths: ["src/query.ts"] });
+  expect(good.sourceFiles).toMatchObject([{ body: "// private query\n", startLine: 1, endLine: 2, fileHash: sha("// private query\n") }]);
+  await chmod(directory, 0o755);
+  await expect(index.readCurrentForQuery({ paths: ["src/query.ts"] })).rejects.toMatchObject({ code: "invalid_data_root" });
+  expect((await stat(directory)).mode & 0o777).toBe(0o755); expect(await readFile(dbPath)).toEqual(before);
+  await chmod(directory, 0o700); widenOnRead = true;
+  await expect(index.readCurrentForQuery({ paths: ["src/query.ts"] })).rejects.toMatchObject({ code: "invalid_data_root" });
+  expect((await stat(directory)).mode & 0o777).toBe(0o755); expect(await readFile(dbPath)).toEqual(before);
+  await chmod(directory, 0o700);
+  expect((await index.readCurrentForQuery({ paths: ["src/query.ts"] })).status.status).toBe("ready");
+  expect((await stat(dbPath)).mode & 0o777).toBe(0o600);
 });
 
 test("超过10MiB且不超过20MiB的文本集合完整索引，两轮读取与片段上限如实公开", async () => {
