@@ -255,4 +255,12 @@ M4证据：/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_
 - 相关文件：`runtime/approval-manifest.ts`、`runtime/prod-view.ts`、`runtime/user-interaction-format.ts`、`runtime/user-interaction-model.ts`、`runtime/user-interaction.ts`、`tests/approval-manifest.test.ts`、`tests/prod-view.test.ts`、`tests/user-interaction.test.ts`。
 - 主代理核对：已完整读相关实现/返修diff，当前hash匹配Scope独立复审基线；本次补读最终复审报告，原F1及来源失效条件已核对。217项目标回归、独立来源/撤权探针与本次不带未完成接线的隔离336项/类型检查相互对应。
 - 未覆盖：真实云模型语言质量、Host及Persist接线、PM启动和M7局部影响复核。文档许可不等于行为或启动许可，任一审核依据变化仍保守失效；这些边界保留，不宣称完成整阶段。
-- 本功能八文件与本实施记录一起提交；实际提交号在成功后登记。
+- 本功能八文件与本实施记录一起提交；实际提交号：`d12ea5a78fb2c5478f735bdccb3e64c6ae3e4c7c`。
+
+### M4-INSTRUCTIONS-01：重建入口指令与提交交接
+
+- 完成内容：`AGENTS.md` 明确永久淘汰旧工作流、不做兼容，同时保持数据/真实库/进程及阶段授权边界。
+- 只暂存本会话新增的“重建边界”段。文件中另有非本会话新增的逐功能提交流程与授权条款，虽已按当前指令阅读遵循，但不夹带提交，原工作区字节保留。
+- 验证：完整读当前AGENTS并核对精确差异，暂存版仅为原HEAD加上述段落；不修改、撤销或提交其余已有改动。文档改动不需要运行产品测试。
+- 当前已成功保存三个内核功能提交：`55d6e35`（spec）、`3cd0b67`（query core）、`d12ea5a`（interaction/scope core）。本段与入口指令作为本地文档提交保存；未完成接线/退场实现及测试仍留工作区。
+- M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
