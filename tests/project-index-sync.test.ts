@@ -1,20 +1,23 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFile, copyFile, mkdir, mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { constants, watch } from "node:fs";
+import { appendFile, chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { extractCode, getCodeExtractorVersion } from "../runtime/code-extractor.ts";
 import { indexDatabase } from "../runtime/database-paths.ts";
+import { LocalDatabase } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { IndexStore } from "../runtime/index-store.ts";
-import { ProjectIndexService } from "../runtime/project-index-service.ts";
+import { ProjectIndexService, ProjectIndexServiceError } from "../runtime/project-index-service.ts";
 import type { ProjectIndexExtractor } from "../runtime/project-index-service.ts";
 import {
-  ProjectIndexSyncManager,
+  ProjectIndexSyncManager as ProductionSyncManager,
 } from "../runtime/project-index-sync.ts";
 import type {
   ProjectIndexBaselineChange,
+  ProjectIndexSyncOptions,
   ProjectIndexWatcher,
   ProjectIndexWatchFactory,
 } from "../runtime/project-index-sync.ts";
@@ -25,6 +28,36 @@ import { temporaryRoot } from "./helpers/temporary-root.ts";
 const exec = promisify(execFile);
 const roots: string[] = [];
 const repositories: RepoFixture[] = [];
+const managers: Array<{ manager: ProductionSyncManager; cleanup: () => void; watchersClosed: () => boolean;
+  resources: () => Record<string, number> }> = [];
+
+// 清理许可只在afterEach生效且仅限stop；测试期间原授权路径保持不变。
+class ProjectIndexSyncManager extends ProductionSyncManager {
+  constructor(options: ProjectIndexSyncOptions) {
+    let cleaning = false;
+    let nativeWatchers = 0;
+    let nativeCreated = 0;
+    let nativeClosed = 0;
+    const injected: ProjectIndexWatcher[] = [];
+    super({ ...options,
+      authorize: (request) => cleaning && request.action === "stop" ? true : options.authorize?.(request) === true,
+      watchFactory: options.watchFactory ? (path, listener) => {
+        const watcher = options.watchFactory!(path, listener);
+        injected.push(watcher);
+        return watcher;
+      } : (path, listener) => {
+        const watcher = watch(path, { persistent: false, encoding: "utf8" }, listener);
+        nativeWatchers++; nativeCreated++;
+        watcher.once("close", () => { nativeWatchers--; nativeClosed++; });
+        return watcher;
+      },
+    });
+    managers.push({ manager: this, cleanup: () => { cleaning = true; },
+      watchersClosed: () => nativeWatchers === 0 && injected.every((item) => (item as FakeWatcher).closed === true),
+      resources: () => ({ nativeCreated, nativeClosed, nativeActive: nativeWatchers, injectedCreated: injected.length,
+        injectedClosed: injected.filter((item) => (item as FakeWatcher).closed === true).length }) });
+  }
+}
 
 async function world(extractor?: ProjectIndexExtractor) {
   const repo = await createRepoFixture();
@@ -49,7 +82,8 @@ async function put(root: string, path: string, content: string | Uint8Array): Pr
 
 async function putValidSpec(root: string, alias = "起跳", dependency: string[] = []): Promise<void> {
   await mkdir(join(root, "docs/spec"), { recursive: true });
-  await copyFile(new URL("../resources/spec/schema.json", import.meta.url), join(root, "docs/spec/schema.json"));
+  await copyFile(new URL("../resources/spec/schema.json", import.meta.url), join(root, "docs/spec/schema.json"), constants.COPYFILE_EXCL)
+    .catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
   await writeFile(join(root, "docs/spec/jump.rules.json"), JSON.stringify({
     $schema: "schema.json",
     schemaVersion: 1,
@@ -102,9 +136,38 @@ function fakeWatchers() {
 }
 
 afterEach(async () => {
-  for (const repo of repositories.splice(0).reverse()) await removeRepoFixture(repo);
-  for (const root of roots.splice(0).reverse()) await rm(root, { recursive: true, force: true });
-});
+  vi.useRealTimers();
+  const failures: unknown[] = [];
+  const stoppedManagers: unknown[] = [];
+  for (const entry of managers.splice(0).reverse()) {
+    entry.cleanup();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const stopped = await Promise.race([
+        entry.manager.stop(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("manager stop未在5秒内确认")), 5_000); }),
+      ]);
+      expect(stopped).toMatchObject({ state: "stopped", started: false, watchers: 0, activeCallbacks: 0, pendingNotifications: 0 });
+      await waitFor(entry.watchersClosed, 2_000);
+      stoppedManagers.push({ confirmed: true, status: stopped, resources: entry.resources() });
+    } catch (error) { failures.push(error); stoppedManagers.push({ confirmed: false, resources: entry.resources() }); }
+    finally { if (timer) clearTimeout(timer); }
+  }
+  const repos = repositories.splice(0).reverse();
+  const paths = roots.splice(0).reverse();
+  if (!failures.length) {
+    for (const repo of repos) await removeRepoFixture(repo);
+    for (const root of paths) await rm(root, { recursive: true, force: true });
+  }
+  const evidence = process.env.M3_AC_COVERAGE_EVIDENCE;
+  if (evidence) {
+    await mkdir(evidence, { recursive: true, mode: 0o700 });
+    await chmod(evidence, 0o700);
+    await appendFile(join(evidence, `sync-cleanup-${process.pid}.jsonl`), `${JSON.stringify({ node: process.version,
+      managers: stoppedManagers, fixtures: { repos, paths }, fixturesRemoved: failures.length === 0 })}\n`, { mode: 0o600 });
+  }
+  if (failures.length) throw new AggregateError(failures, `停止未确认，保留fixtures：${JSON.stringify({ repos, paths })}`);
+}, 30_000);
 
 test("M3-AC1/2：真实watch同步增删改名、同size/mtime内容、spec全集合和锁文件，未变代码不重parse", async () => {
   const counts = new Map<string, number>();
@@ -120,6 +183,7 @@ test("M3-AC1/2：真实watch同步增删改名、同size/mtime内容、spec全�
   await put(w.repo.root, "src/b.ts", "export const stable = 'same';\n");
   await put(w.repo.root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
   await putValidSpec(w.repo.root);
+  const schemaBefore = await readFile(join(w.repo.root, "docs/spec/schema.json"), "utf8");
   const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true, debounceMs: 25, lowFrequencyMs: 60_000 });
   expect(await manager.start()).toMatchObject({ state: "fresh", dirty: false, watchHealthy: true });
   counts.clear();
@@ -172,12 +236,100 @@ test("M3-AC1/2：真实watch同步增删改名、同size/mtime内容、spec全�
     expect(snapshot.features.find((feature) => feature.id === "player.jump")?.aliases).toEqual(["跃起"]);
     expect(snapshot.ruleEdges).toContainEqual(expect.objectContaining({ fromRuleId: "player.jump.once", toRuleId: "player.land", kind: "depends_on" }));
     expect(snapshot.files.find((file) => file.path === "pnpm-lock.yaml")?.hash).toBe(sha("lockfileVersion: '9.1'\n"));
+    expect(snapshot.files.find((file) => file.path === "docs/spec/schema.json")?.hash).toBe(sha(`${schemaBefore}\n`));
     expect(snapshot.codeEdges.every((edge) => edge.certainty === "unknown" || edge.toSymbolId !== null)).toBe(true);
   } finally { store.close(); }
   expect(counts.get("src/new.ts")).toBe(1);
   expect(counts.get("src/renamed.ts")).toBe(1);
   await manager.stop();
 });
+
+test("M3-AC2：schema-only字节变化、invalid与恢复均经真实watch自动发布，旧规则和FTS不回退", async () => {
+  const w = await world();
+  await putValidSpec(w.repo.root, "SCHEMA_ONLY_SENTINEL");
+  const path = join(w.repo.root, "docs/spec/schema.json");
+  const original = await readFile(path, "utf8");
+  const ruleBytes = await readFile(join(w.repo.root, "docs/spec/jump.rules.json"), "utf8");
+  const changes: ProjectIndexBaselineChange[] = [];
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true, debounceMs: 20, lowFrequencyMs: 60_000 });
+  manager.subscribe({ id: "schema-only", authorize: () => true, onBaselineChange: (event) => { changes.push(event); } });
+  const started = await manager.start();
+  const database = indexDatabase(w.dataRoot, w.repoId);
+  const store = new IndexStore(database, w.service.workspace);
+  try {
+    expect(store.search("SCHEMA_ONLY_SENTINEL").results).toHaveLength(1);
+    const changed = `${original}\n`;
+    await writeFile(path, changed);
+    await waitFor(() => manager.status().state === "fresh" && manager.status().baselineHash !== started.baselineHash);
+    expect(await readFile(path, "utf8")).toBe(changed);
+    expect(store.getSnapshot().files.find((file) => file.path === "docs/spec/schema.json")?.hash).toBe(sha(changed));
+    expect(changes).toContainEqual(expect.objectContaining({ reason: "reconciled_change", source: "watch" }));
+    const formattedBaseline = manager.status().baselineHash;
+    const invalid = "{ invalid schema-only }\n";
+    await writeFile(path, invalid);
+    await waitFor(() => manager.status().state === "fresh" && manager.status().indexState === "invalid");
+    expect(manager.status().baselineHash).not.toBe(formattedBaseline);
+    expect(manager.status().baselineHash).not.toBe(started.baselineHash);
+    expect(manager.latestBuildResult()).toMatchObject({ status: "invalid", spec: { status: "invalid", contractSetHash: null } });
+    expect(() => store.getSnapshot()).toThrowError(expect.objectContaining({ code: "index_not_ready" }));
+    expect(() => store.search("SCHEMA_ONLY_SENTINEL")).toThrowError(expect.objectContaining({ code: "index_not_ready" }));
+    const raw = new LocalDatabase(database);
+    try {
+      const belongs = (row: { data: { workspaceId: string } }) => row.data.workspaceId === w.service.workspace.workspaceId;
+      expect(raw.list<{ workspaceId: string }>("rules_current").filter(belongs)).toEqual([]);
+      expect(raw.list<{ workspaceId: string }>("rule_edges_current").filter(belongs)).toEqual([]);
+      expect(raw.searchIndexFragments(w.service.workspace.workspaceId, "SCHEMA_ONLY_SENTINEL", 10)).toEqual([]);
+      const files = raw.list<{ workspaceId: string; path: string; hash: string }>("files").filter(belongs);
+      expect(files.find((row) => row.data.path === "docs/spec/schema.json")?.data.hash).toBe(sha(invalid));
+    } finally { raw.close(); }
+    expect(await readFile(path, "utf8")).toBe(invalid);
+    expect(await readFile(join(w.repo.root, "docs/spec/jump.rules.json"), "utf8")).toBe(ruleBytes);
+    await writeFile(path, original);
+    await waitFor(() => manager.status().state === "fresh" && manager.status().indexState === "ready");
+    expect(manager.latestBuildResult()).toMatchObject({ spec: { status: "valid" } });
+    expect(store.getSnapshot().files.find((file) => file.path === "docs/spec/schema.json")?.hash).toBe(sha(original));
+    expect(store.getSnapshot().rules.map((rule) => rule.id)).toEqual(["player.jump.once"]);
+    expect(store.search("SCHEMA_ONLY_SENTINEL").results).toHaveLength(1);
+    expect(changes.filter((event) => event.reason === "reconciled_change" && event.source === "watch").length).toBeGreaterThanOrEqual(3);
+  } finally { store.close(); }
+}, 15_000);
+
+test("M3-AC2：拆分规则经真实watch替换旧ID、引用和FTS，旧集合不可作为当前基线", async () => {
+  const w = await world();
+  await putValidSpec(w.repo.root, "SPLIT_OLD_SENTINEL");
+  const original = JSON.parse(await readFile(join(w.repo.root, "docs/spec/jump.rules.json"), "utf8"));
+  const dependent = structuredClone(original);
+  dependent.feature = { id: "player.animation", title: "动画", aliases: [] };
+  dependent.rules[0].id = "player.animation";
+  dependent.rules[0].dependsOn = ["player.jump.once"];
+  await put(w.repo.root, "docs/spec/animation.rules.json", JSON.stringify(dependent));
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true, debounceMs: 20, lowFrequencyMs: 60_000 });
+  const started = await manager.start();
+  const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), w.service.workspace);
+  try {
+    expect(store.getSnapshot().ruleEdges).toContainEqual(expect.objectContaining({ fromRuleId: "player.animation", toRuleId: "player.jump.once" }));
+    expect(store.search("SPLIT_OLD_SENTINEL").results).toHaveLength(1);
+    for (const [id, dependency] of [["player.jump.start", []], ["player.jump.land", ["player.jump.start"]]] as const) {
+      const split = structuredClone(original);
+      split.feature = { id, title: id, aliases: ["SPLIT_NEW_SENTINEL"] };
+      split.rules[0].id = id;
+      split.rules[0].dependsOn = [...dependency];
+      await put(w.repo.root, `docs/spec/${id}.rules.json`, JSON.stringify(split));
+    }
+    dependent.rules[0].dependsOn = ["player.jump.start", "player.jump.land"];
+    await put(w.repo.root, "docs/spec/animation.rules.json", JSON.stringify(dependent));
+    await rm(join(w.repo.root, "docs/spec/jump.rules.json"));
+    await waitFor(() => manager.status().state === "fresh" && manager.status().indexState === "ready" && manager.status().baselineHash !== started.baselineHash);
+    const current = store.getSnapshot();
+    expect(current.rules.map((rule) => rule.id).sort()).toEqual(["player.animation", "player.jump.land", "player.jump.start"]);
+    expect(current.rules.every((rule) => !rule.dependsOn.includes("player.jump.once"))).toBe(true);
+    expect(current.ruleEdges.some((edge) => edge.fromRuleId === "player.jump.once" || edge.toRuleId === "player.jump.once")).toBe(false);
+    expect(current.ruleEdges).toContainEqual(expect.objectContaining({ fromRuleId: "player.animation", toRuleId: "player.jump.land" }));
+    expect(current.files.some((file) => file.path === "docs/spec/jump.rules.json")).toBe(false);
+    expect(store.search("SPLIT_OLD_SENTINEL").results).toEqual([]);
+    expect(store.search("SPLIT_NEW_SENTINEL").results).toHaveLength(2);
+  } finally { store.close(); }
+}, 15_000);
 
 test("所有对账入口按稳定baselineHash通知实际变化，未变周期不重复通知，latestBuildResult只返回fresh深拷贝", async () => {
   const w = await world();
@@ -266,6 +418,253 @@ test("漏watch的内容变化由低频hash对账发现并发送来源明确的�
   expect(JSON.stringify(event)).not.toContain("after!");
   await manager.stop();
 }, 12_000);
+
+test("M3-PERF-PERIODIC-01：原生watch构建中的定时tick不提高fence或伪造来源", async () => {
+  let armed = false;
+  let entered!: () => void;
+  let release!: () => void;
+  let watched!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const watchEvent = new Promise<void>((resolve) => { watched = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const w = await world({ version: getCodeExtractorVersion, async extract(input) {
+    if (armed) { armed = false; entered(); await held; }
+    return extractCode(input);
+  } });
+  await put(w.repo.root, "src/a.ts", "export const value = 1;\n");
+  const events: ProjectIndexBaselineChange[] = [];
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true, debounceMs: 25, lowFrequencyMs: 100 });
+  manager.subscribe({ id: "native-periodic", authorize: () => true, onBaselineChange: (event) => {
+    events.push(event); if (event.reason === "watch") watched();
+  } });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const scheduling = manager as unknown as { queueBackgroundReconcile(): Promise<void> };
+  const queued = vi.spyOn(scheduling, "queueBackgroundReconcile");
+  const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), w.service.workspace);
+  try {
+    await manager.start();
+    armed = true;
+    await writeFile(join(w.repo.root, "src/a.ts"), "export const value = 2;\n");
+    await watchEvent;
+    vi.advanceTimersByTime(25); await enteredPromise;
+    const sequence = manager.status().eventSequence;
+    const fence = store.status().fence;
+    vi.advanceTimersByTime(75);
+    expect(manager.status()).toMatchObject({ state: "reconciling", eventSequence: sequence, lastReason: "watch" });
+    expect(store.status().fence).toBe(fence);
+    expect(queued.mock.results.at(-1)!.value).toBe(queued.mock.results[0]!.value);
+    release(); await queued.mock.results[0]!.value;
+    expect(manager.status()).toMatchObject({ state: "fresh", dirty: false });
+    expect(events).toContainEqual(expect.objectContaining({ reason: "reconciled_change", source: "watch" }));
+    expect(events.some((event) => event.source === "low_frequency")).toBe(false);
+    expect(store.getSnapshot().files.find((file) => file.path === "src/a.ts")?.hash).toBe(sha("export const value = 2;\n"));
+  } finally { release(); await manager.stop(); store.close(); queued.mockRestore(); vi.useRealTimers(); }
+});
+
+test.each(["building", "scanned"] as const)("M3-PERF-PERIODIC-01：tick合并watch完整对账 %s，不改序号/fence/来源且后续漏事件仍可发现", async (phase) => {
+  let armed = false;
+  let entered!: () => void;
+  let release!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const w = await world({ version: getCodeExtractorVersion, async extract(input) {
+    if (armed && phase === "building") { armed = false; entered(); await held; }
+    return extractCode(input);
+  } });
+  const path = join(w.repo.root, "src/a.ts");
+  await put(w.repo.root, "src/a.ts", "export const value = 'one';\n");
+  const fakes = fakeWatchers();
+  const events: ProjectIndexBaselineChange[] = [];
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true,
+    watchFactory: fakes.factory, debounceMs: 25, lowFrequencyMs: 100 });
+  manager.subscribe({ id: "periodic", authorize: () => true, onBaselineChange: (event) => { events.push(event); } });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const scheduling = manager as unknown as { queueBackgroundReconcile(): Promise<void>; backgroundReconcile: Promise<void> | null };
+  const queued = vi.spyOn(scheduling, "queueBackgroundReconcile");
+  const refresh = w.service.refresh.bind(w.service);
+  const refreshProbe = vi.spyOn(w.service, "refresh").mockImplementation(async () => {
+    const built = await refresh();
+    if (armed && phase === "scanned") { armed = false; entered(); await held; }
+    return built;
+  });
+  const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), w.service.workspace);
+  try {
+    await manager.start();
+    refreshProbe.mockClear();
+    armed = true;
+    await writeFile(path, "export const value = 'two';\n");
+    fakes.watchers.find((watcher) => watcher.path === join(w.repo.root, "src"))!.emit("change", "a.ts");
+    vi.advanceTimersByTime(25);
+    await enteredPromise;
+    const beforeTick = manager.status();
+    const fence = store.status().fence;
+    const dirtyProbe = vi.spyOn(w.service, "markDirty");
+    try {
+      if (phase === "scanned") {
+        // 完整扫描已经返回后才发生的无watch变化，不要求已开始的这一轮包含未来输入。
+        const before = await stat(path);
+        await writeFile(path, "export const value = 'tri';\n");
+        await utimes(path, before.atime, before.mtime);
+      }
+      vi.advanceTimersByTime(75);
+      expect(queued).toHaveBeenCalledTimes(2);
+      expect(queued.mock.results[1]!.value).toBe(queued.mock.results[0]!.value);
+      expect(manager.status()).toMatchObject({ eventSequence: beforeTick.eventSequence, lastReason: "watch", state: "reconciling" });
+      expect(store.status().fence).toBe(fence);
+      expect(dirtyProbe).not.toHaveBeenCalled();
+      release();
+      await queued.mock.results[0]!.value;
+      expect(refreshProbe).toHaveBeenCalledTimes(1);
+      expect(scheduling.backgroundReconcile).toBeNull();
+      expect(manager.status()).toMatchObject({ state: "fresh", dirty: false, reconciledSequence: beforeTick.eventSequence });
+      expect(events.filter((event) => event.reason === "reconciled_change")).toEqual([
+        expect.objectContaining({ source: "watch", eventSequence: beforeTick.eventSequence }),
+      ]);
+      expect(store.getSnapshot().files.find((file) => file.path === "src/a.ts")?.hash).toBe(sha("export const value = 'two';\n"));
+    } finally { dirtyProbe.mockRestore(); }
+    if (phase === "scanned") {
+      vi.advanceTimersByTime(100);
+      await queued.mock.results.at(-1)!.value;
+      expect(manager.status()).toMatchObject({ state: "fresh", lastReason: "low_frequency", eventSequence: beforeTick.eventSequence + 1 });
+      expect(store.getSnapshot().files.find((file) => file.path === "src/a.ts")?.hash).toBe(sha("export const value = 'tri';\n"));
+      expect(events).toContainEqual(expect.objectContaining({ reason: "reconciled_change", source: "low_frequency" }));
+      const before = await stat(path);
+      await writeFile(path, "export const value = 'end';\n");
+      await utimes(path, before.atime, before.mtime);
+      expect(await manager.ensureFresh()).toMatchObject({ state: "fresh", lastReason: "read_before" });
+      expect(store.getSnapshot().files.find((file) => file.path === "src/a.ts")?.hash).toBe(sha("export const value = 'end';\n"));
+    }
+  } finally {
+    release(); await manager.stop(); store.close();
+    queued.mockRestore(); refreshProbe.mockRestore(); vi.useRealTimers();
+  }
+});
+
+test.each(["debounce", "queued"] as const)("M3-PERF-PERIODIC-01：tick合并watch排队窗口 %s，不新增失效且只执行必要扫描", async (phase) => {
+  const w = await world();
+  await put(w.repo.root, "src/a.ts", "export const value = 1;\n");
+  const fakes = fakeWatchers();
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true,
+    watchFactory: fakes.factory, debounceMs: phase === "debounce" ? 1_000 : 25, lowFrequencyMs: 100 });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const scheduling = manager as unknown as { enqueue(operation: () => Promise<void>): Promise<void>; queueBackgroundReconcile(): Promise<void>; backgroundReconcile: Promise<void> | null; invalidation: Promise<void> | null };
+  const queued = vi.spyOn(scheduling, "queueBackgroundReconcile");
+  const refresh = vi.spyOn(w.service, "refresh");
+  const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), w.service.workspace);
+  try {
+    await manager.start();
+    refresh.mockClear();
+    const blocking = phase === "queued" ? scheduling.enqueue(() => held) : Promise.resolve();
+    await writeFile(join(w.repo.root, "src/a.ts"), "export const value = 2;\n");
+    fakes.watchers.find((watcher) => watcher.path === w.repo.root)!.emit("change", "src/a.ts");
+    await scheduling.invalidation;
+    const beforeTick = manager.status();
+    const fence = store.status().fence;
+    vi.advanceTimersByTime(100);
+    expect(manager.status()).toMatchObject({ eventSequence: beforeTick.eventSequence, lastReason: "watch" });
+    expect(store.status().fence).toBe(fence);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(queued).toHaveBeenCalledTimes(phase === "queued" ? 2 : 1);
+    if (phase === "queued") expect(queued.mock.results[0]!.value).toBe(queued.mock.results[1]!.value);
+    release(); await blocking; await queued.mock.results.at(-1)!.value;
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(manager.status()).toMatchObject({ state: "fresh", dirty: false, lastReason: "watch" });
+    expect(scheduling.backgroundReconcile).toBeNull();
+    expect(store.getSnapshot().files.find((file) => file.path === "src/a.ts")?.hash).toBe(sha("export const value = 2;\n"));
+  } finally { release(); await manager.stop(); store.close(); queued.mockRestore(); refresh.mockRestore(); vi.useRealTimers(); }
+});
+
+test("M3-PERF-PERIODIC-01：合并tick后stop等待取消收尾，不复活资源，reconnect重建周期", async () => {
+  let armed = false;
+  let entered!: () => void;
+  let release!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const w = await world({ version: getCodeExtractorVersion, async extract(input) {
+    if (armed) { armed = false; entered(); await held; }
+    return extractCode(input);
+  } });
+  await put(w.repo.root, "src/a.ts", "export const value = 1;\n");
+  const fakes = fakeWatchers();
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true,
+    watchFactory: fakes.factory, debounceMs: 25, lowFrequencyMs: 100 });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const scheduling = manager as unknown as { queueBackgroundReconcile(): Promise<void> };
+  const queued = vi.spyOn(scheduling, "queueBackgroundReconcile");
+  const refresh = vi.spyOn(w.service, "refresh");
+  try {
+    await manager.start();
+    refresh.mockClear();
+    armed = true;
+    await writeFile(join(w.repo.root, "src/a.ts"), "export const value = 2;\n");
+    fakes.watchers.find((watcher) => watcher.path === w.repo.root)!.emit("change", "src/a.ts");
+    vi.advanceTimersByTime(25); await enteredPromise;
+    vi.advanceTimersByTime(75);
+    let stopped = false;
+    const stopping = manager.stop().then((result) => { stopped = true; return result; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(stopped).toBe(false);
+    await expect(manager.reconnect()).rejects.toMatchObject({ code: "operation_in_progress" });
+    release();
+    expect(await stopping).toMatchObject({ state: "stopped", started: false, watchers: 0 });
+    expect(await refresh.mock.results[0]!.value).toMatchObject({ status: "cancelled" });
+    expect(manager as unknown).toMatchObject({ backgroundReconcile: null, lowFrequencyTimer: null, recoveryTimer: null });
+    vi.advanceTimersByTime(1_000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(fakes.watchers.every((watcher) => watcher.closed)).toBe(true);
+    expect(await manager.reconnect()).toMatchObject({ state: "fresh", started: true });
+    const generation = manager.status().generation;
+    vi.advanceTimersByTime(100); await queued.mock.results.at(-1)!.value;
+    expect(manager.status().generation).toBeGreaterThan(generation);
+    expect(manager.status()).toMatchObject({ state: "fresh", lastReason: "low_frequency" });
+    await manager.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { release(); await manager.stop(); queued.mockRestore(); refresh.mockRestore(); vi.useRealTimers(); }
+});
+
+test("M3-PERF-PERIODIC-01：合并tick的失败Promise清理且不重置有限恢复预算，后续周期仍能恢复", async () => {
+  const w = await world();
+  await put(w.repo.root, "src/a.ts", "export const value = 1;\n");
+  const fakes = fakeWatchers();
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true,
+    watchFactory: fakes.factory, debounceMs: 25, lowFrequencyMs: 100 });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let entered!: () => void;
+  let release!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const scheduling = manager as unknown as { queueBackgroundReconcile(): Promise<void>; recoveryAttempt: number; recoveryTimer: unknown; backgroundReconcile: Promise<void> | null };
+  const queued = vi.spyOn(scheduling, "queueBackgroundReconcile");
+  await manager.start();
+  const failure = new ProjectIndexServiceError("unstable", "verify-hash", true);
+  const refresh = vi.spyOn(w.service, "refresh").mockImplementationOnce(async () => {
+    entered(); await held; throw failure;
+  }).mockRejectedValue(failure);
+  try {
+    fakes.watchers.find((watcher) => watcher.path === w.repo.root)!.emit("change", "src/a.ts");
+    const sequence = manager.status().eventSequence;
+    vi.advanceTimersByTime(25); await enteredPromise;
+    vi.advanceTimersByTime(75);
+    expect(queued.mock.results[0]!.value).toBe(queued.mock.results[1]!.value);
+    release(); await queued.mock.results[0]!.value;
+    expect(scheduling).toMatchObject({ backgroundReconcile: null, recoveryAttempt: 1 });
+    for (let index = 0; index < 6; index++) {
+      vi.advanceTimersByTime(100); await queued.mock.results.at(-1)!.value;
+      expect(refresh).toHaveBeenCalledTimes(index + 2);
+      expect(scheduling).toMatchObject({ backgroundReconcile: null, recoveryAttempt: Math.min(3, index + 2) });
+      if (index >= 2) expect(scheduling.recoveryTimer).toBeNull();
+      expect(manager.status()).toMatchObject({ state: "error", dirty: true, eventSequence: sequence, lastReason: "watch" });
+      expect(manager.latestBuildResult()).toBeNull();
+    }
+    refresh.mockRestore();
+    vi.advanceTimersByTime(100); await queued.mock.results.at(-1)!.value;
+    expect(manager.status()).toMatchObject({ state: "fresh", dirty: false, eventSequence: sequence });
+    await manager.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { release(); await manager.stop(); queued.mockRestore(); refresh.mockRestore(); vi.useRealTimers(); }
+});
 
 test("同路径目录inode替换后关闭旧watcher并重新注册，真实watch仍能观察新目录文件", async () => {
   const w = await world();
@@ -722,6 +1121,294 @@ test("stop取消并等待真实构建收尾，reconnect和低频对账可恢复�
   expect(manager.status().watchers).toBeLessThanOrEqual(2);
   await manager.stop();
 }, 15_000);
+
+test("M3-SYNC-RECOVERY-01：已入队旧后台请求被显式对账吸收后不把fresh翻回reconciling", async () => {
+  const w = await world();
+  await put(w.repo.root, "src/a.ts", "export const a = 1;\n");
+  const fakes = fakeWatchers();
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true,
+    watchFactory: fakes.factory, debounceMs: 25, lowFrequencyMs: 60_000 });
+  await manager.start();
+  let entered!: () => void;
+  let release!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const refresh = w.service.refresh.bind(w.service);
+  const refreshProbe = vi.spyOn(w.service, "refresh").mockImplementationOnce(async () => {
+    const built = await refresh();
+    entered();
+    await held;
+    return built;
+  });
+  const scheduling = manager as unknown as {
+    queueBackgroundReconcile(): Promise<void>;
+    reconcileLoop(): Promise<unknown>;
+  };
+  const queued = vi.spyOn(scheduling, "queueBackgroundReconcile");
+  const reconcileLoop = scheduling.reconcileLoop.bind(manager);
+  const transitions: string[] = [];
+  const loopProbe = vi.spyOn(scheduling, "reconcileLoop").mockImplementation(() => {
+    const result = reconcileLoop();
+    transitions.push(manager.status().state);
+    return result;
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const explicit = manager.ensureFresh();
+    await enteredPromise;
+    fakes.watchers.find((watcher) => watcher.path === w.repo.root)!.emit("change", "src/a.ts");
+    vi.advanceTimersByTime(25);
+    expect(queued).toHaveBeenCalledTimes(1);
+    const background = queued.mock.results[0]!.value as Promise<void>;
+    expect(refreshProbe).toHaveBeenCalledTimes(1);
+    release();
+    const fresh = await explicit;
+    expect(fresh).toMatchObject({ state: "fresh", dirty: false });
+    expect(fresh.reconciledSequence).toBe(fresh.eventSequence);
+    await background;
+    // 每次真实reconcileLoop启动时记录即时状态，不能只检查最终又恢复fresh。
+    expect(transitions).toEqual(["reconciling"]);
+    expect(refreshProbe).toHaveBeenCalledTimes(2);
+    expect(manager.status()).toMatchObject({ state: "fresh", dirty: false, generation: fresh.generation,
+      baselineHash: fresh.baselineHash, queuedEvents: 0, overflowed: false });
+    expect(manager.latestBuildResult()).not.toBeNull();
+  } finally {
+    release();
+    vi.useRealTimers();
+    await manager.stop();
+    queued.mockRestore(); loopProbe.mockRestore(); refreshProbe.mockRestore();
+  }
+});
+
+test("M3-SYNC-RECOVERY-01：真实watch在途去抖请求不丢失，耗尽单轮后自动发布删除", async () => {
+  let armed = false;
+  let entered!: () => void;
+  let release!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const w = await world({ version: getCodeExtractorVersion, async extract(input) {
+    if (armed && input.path === "src/gate.ts") { armed = false; entered(); await held; }
+    return extractCode(input);
+  } });
+  await put(w.repo.root, "src/gate.ts", "export const gate = 1;\n");
+  await put(w.repo.root, "added.ts", "export const added = 1;\n");
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true,
+    debounceMs: 0, lowFrequencyMs: 60_000, maxReconcilePasses: 1 });
+  // 只探测真实去抖请求与在途Promise；不替换调度或伪造watch事件。
+  const scheduling = manager as unknown as { queueBackgroundReconcile(): Promise<void> };
+  const queued = vi.spyOn(scheduling, "queueBackgroundReconcile");
+  const refresh = w.service.refresh.bind(w.service);
+  const errors: unknown[] = [];
+  const refreshProbe = vi.spyOn(w.service, "refresh").mockImplementation(async () => {
+    try { return await refresh(); } catch (error) { errors.push(error); throw error; }
+  });
+  try {
+    await manager.start();
+    await manager.ensureFresh();
+    expect(manager.status().state).toBe("fresh");
+    queued.mockClear();
+    armed = true;
+    await writeFile(join(w.repo.root, "src/gate.ts"), "export const gate = 2;\n");
+    await enteredPromise;
+    const sequence = manager.status().eventSequence;
+    await rm(join(w.repo.root, "added.ts"));
+    await waitFor(() => manager.status().eventSequence > sequence && queued.mock.calls.length >= 2);
+    expect(queued.mock.results[0]!.value).toBe(queued.mock.results[1]!.value);
+    release();
+    await queued.mock.results[0]!.value;
+    expect(errors).toContainEqual(expect.objectContaining({ code: "unstable", metadata: { stage: "verify-file-list", retryable: true } }));
+    await waitFor(() => manager.status().state === "fresh", 3_000);
+    const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), w.service.workspace);
+    try {
+      expect(store.getSnapshot().files.some((file) => file.path === "added.ts")).toBe(false);
+      expect(store.search("added").results).toEqual([]);
+    } finally { store.close(); }
+    expect(manager.status().reconciledSequence).toBe(manager.status().eventSequence);
+  } finally { release(); await manager.stop(); queued.mockRestore(); refreshProbe.mockRestore(); }
+}, 12_000);
+
+test("M3-SYNC-RECOVERY-01：同序号暂态fence失败自动恢复，不依赖新事件或低频", async () => {
+  let armed = false;
+  let service!: ProjectIndexService;
+  const w = await world({ version: getCodeExtractorVersion, async extract(input) {
+    if (armed) { armed = false; await service.markDirty(); }
+    return extractCode(input);
+  } });
+  service = w.service;
+  await put(w.repo.root, "src/a.ts", "export const before = 1;\n");
+  const fakes = fakeWatchers();
+  const manager = new ProjectIndexSyncManager({ service, authorize: () => true, watchFactory: fakes.factory,
+    debounceMs: 0, lowFrequencyMs: 60_000 });
+  const original = service.refresh.bind(service);
+  const errors: unknown[] = [];
+  const refresh = vi.spyOn(service, "refresh").mockImplementation(async () => {
+    try { return await original(); } catch (error) { errors.push(error); throw error; }
+  });
+  try {
+    await manager.start();
+    armed = true;
+    await writeFile(join(w.repo.root, "src/a.ts"), "export const recovered = 2;\n");
+    fakes.watchers.find((watcher) => watcher.path === w.repo.root)!.emit("change", "src/a.ts");
+    const sequence = manager.status().eventSequence;
+    await waitFor(() => errors.length === 1);
+    expect(errors[0]).toMatchObject({ code: "index_failure", metadata: { stage: "build", retryable: true } });
+    await waitFor(() => manager.status().state === "fresh", 3_000);
+    expect(manager.status().eventSequence).toBe(sequence);
+    const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), service.workspace);
+    try { expect(store.search("recovered").results).toHaveLength(1); }
+    finally { store.close(); }
+  } finally { await manager.stop(); refresh.mockRestore(); }
+}, 12_000);
+
+test("M3-SYNC-RECOVERY-01：持续暂态失败只补排三轮，新事件开启新的有限恢复", async () => {
+  const w = await world();
+  await put(w.repo.root, "src/a.ts", "export const a = 1;\n");
+  const fakes = fakeWatchers();
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true, watchFactory: fakes.factory,
+    debounceMs: 0, lowFrequencyMs: 60_000 });
+  await manager.start();
+  const refresh = vi.spyOn(w.service, "refresh").mockRejectedValue(new ProjectIndexServiceError("unstable", "verify-hash", true));
+  try {
+    const watcher = fakes.watchers.find((item) => item.path === w.repo.root)!;
+    watcher.emit("change", "src/a.ts");
+    await waitFor(() => refresh.mock.calls.length === 4 && manager.status().state === "error");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(refresh).toHaveBeenCalledTimes(4);
+    expect(manager.status()).toMatchObject({ dirty: true, state: "error" });
+    expect(manager.latestBuildResult()).toBeNull();
+    const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), w.service.workspace);
+    try { expect(() => store.getSnapshot()).toThrowError(expect.objectContaining({ code: "index_not_ready" })); }
+    finally { store.close(); }
+    refresh.mockRestore();
+    watcher.emit("change", "src/a.ts");
+    await waitFor(() => manager.status().state === "fresh");
+  } finally { await manager.stop(); refresh.mockRestore(); }
+}, 12_000);
+
+test.each([
+  new ProjectIndexServiceError("authorization_denied", "refresh-before", true),
+  new ProjectIndexServiceError("invalid_database", "refresh-before", true),
+  new ProjectIndexServiceError("index_failure", "read-budget", false),
+  new Error("unknown permanent failure"),
+])("M3-SYNC-RECOVERY-01：永久或权限失败不自动重试 %s", async (failure) => {
+  const w = await world();
+  await put(w.repo.root, "src/a.ts", "export const a = 1;\n");
+  const fakes = fakeWatchers();
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true, watchFactory: fakes.factory,
+    debounceMs: 0, lowFrequencyMs: 60_000 });
+  await manager.start();
+  const refresh = vi.spyOn(w.service, "refresh").mockRejectedValue(failure);
+  try {
+    fakes.watchers.find((item) => item.path === w.repo.root)!.emit("change", "src/a.ts");
+    await waitFor(() => manager.status().state === "error");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(manager.latestBuildResult()).toBeNull();
+    if (failure instanceof ProjectIndexServiceError && failure.code === "authorization_denied") {
+      expect(manager.status().lastError).toEqual({ code: "authorization_denied" });
+    }
+  } finally { await manager.stop(); refresh.mockRestore(); }
+});
+
+test.each(["index_failure", "authorization_denied", "invalid_database"] as const)(
+  "M3-SYNC-RECOVERY-01：在途dirty持久化失败保留类别并仅恢复暂态 %s", async (code) => {
+    const w = await world();
+    await put(w.repo.root, "src/a.ts", "export const a = 1;\n");
+    const fakes = fakeWatchers();
+    const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true, watchFactory: fakes.factory,
+      debounceMs: 0, lowFrequencyMs: 60_000 });
+    await manager.start();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const original = w.service.markDirty.bind(w.service);
+    const invalidation = vi.spyOn(w.service, "markDirty").mockImplementationOnce(async () => {
+      await held;
+      await original();
+      throw new ProjectIndexServiceError(code, "sync-invalidate", true);
+    });
+    const refresh = vi.spyOn(w.service, "refresh");
+    try {
+      fakes.watchers.find((item) => item.path === w.repo.root)!.emit("change", "src/a.ts");
+      await waitFor(() => manager.status().state === "reconciling");
+      release();
+      if (code === "index_failure") {
+        await waitFor(() => refresh.mock.calls.length === 1 && manager.status().state === "fresh");
+      } else {
+        await waitFor(() => manager.status().state === "error");
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        expect(refresh).not.toHaveBeenCalled();
+        expect(manager.latestBuildResult()).toBeNull();
+      }
+    } finally { release(); await manager.stop(); invalidation.mockRestore(); refresh.mockRestore(); }
+  }, 10_000,
+);
+
+test("M3-SYNC-RECOVERY-01：取消的真实构建在有限恢复中发布，stop清除未触发恢复timer", async () => {
+  let armed = false;
+  let service!: ProjectIndexService;
+  const w = await world({ version: getCodeExtractorVersion, async extract(input) {
+    if (armed) { armed = false; service.cancel(); }
+    return extractCode(input);
+  } });
+  service = w.service;
+  await put(w.repo.root, "src/a.ts", "export const before = 1;\n");
+  const fakes = fakeWatchers();
+  const manager = new ProjectIndexSyncManager({ service, authorize: () => true, watchFactory: fakes.factory,
+    debounceMs: 0, lowFrequencyMs: 60_000 });
+  const refresh = vi.spyOn(service, "refresh");
+  try {
+    await manager.start();
+    refresh.mockClear();
+    armed = true;
+    await writeFile(join(w.repo.root, "src/a.ts"), "export const after = 2;\n");
+    const watcher = fakes.watchers.find((item) => item.path === w.repo.root)!;
+    watcher.emit("change", "src/a.ts");
+    await waitFor(() => refresh.mock.calls.length >= 2 && manager.status().state === "fresh");
+    expect(await refresh.mock.results[0]!.value).toMatchObject({ status: "cancelled" });
+    refresh.mockRejectedValue(new ProjectIndexServiceError("unstable", "verify-hash", true));
+    watcher.emit("change", "src/a.ts");
+    const resources = manager as unknown as { recoveryTimer: unknown; backgroundReconcile: unknown };
+    await waitFor(() => resources.recoveryTimer !== null);
+    expect(await manager.stop()).toMatchObject({ state: "stopped", watchers: 0 });
+    const calls = refresh.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(refresh).toHaveBeenCalledTimes(calls);
+    expect(resources).toMatchObject({ recoveryTimer: null, backgroundReconcile: null });
+    expect(fakes.watchers.every((item) => item.closed)).toBe(true);
+  } finally { await manager.stop(); refresh.mockRestore(); }
+}, 12_000);
+
+test("M3-SYNC-RECOVERY-01：stop等待已开始的恢复构建，不留下Promise或复活watcher", async () => {
+  const w = await world();
+  await put(w.repo.root, "src/a.ts", "export const a = 1;\n");
+  const fakes = fakeWatchers();
+  const manager = new ProjectIndexSyncManager({ service: w.service, authorize: () => true, watchFactory: fakes.factory,
+    debounceMs: 0, lowFrequencyMs: 60_000 });
+  await manager.start();
+  let entered!: () => void;
+  let release!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const original = w.service.refresh.bind(w.service);
+  const refresh = vi.spyOn(w.service, "refresh")
+    .mockRejectedValueOnce(new ProjectIndexServiceError("unstable", "verify-hash", true))
+    .mockImplementation(async () => { entered(); await held; return original(); });
+  try {
+    fakes.watchers.find((item) => item.path === w.repo.root)!.emit("change", "src/a.ts");
+    await enteredPromise;
+    let stopped = false;
+    const stopping = manager.stop().then((result) => { stopped = true; return result; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(stopped).toBe(false);
+    release();
+    expect(await stopping).toMatchObject({ state: "stopped", watchers: 0 });
+    const calls = refresh.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(refresh).toHaveBeenCalledTimes(calls);
+    expect(manager as unknown).toMatchObject({ recoveryTimer: null, backgroundReconcile: null });
+    expect(fakes.watchers.every((item) => item.closed)).toBe(true);
+  } finally { release(); await manager.stop(); refresh.mockRestore(); }
+}, 12_000);
 
 // 这些用例控制真实服务周围的异步边界，核对收尾而非只检查返回标签。
 test("生命周期竞争：退订重注册仍受运行回调总上限约束", async () => {

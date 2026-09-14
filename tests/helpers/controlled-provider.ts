@@ -58,7 +58,7 @@ export function registerControlledProvider(
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       },
     ],
-    streamSimple(model: Model<Api>, context: Context) {
+    streamSimple(model: Model<Api>, context: Context, options) {
       handle.requests.push(context);
       const reply = handle.queue.shift();
       const stream = createAssistantMessageEventStream();
@@ -73,7 +73,8 @@ export function registerControlledProvider(
         timestamp: Date.now(),
       };
 
-      queueMicrotask(() => {
+      queueMicrotask(() => { void (async () => {
+        await options?.onPayload?.({ fixture: "controlled-provider" }, model);
         if (!reply) {
           stream.push({
             type: "error",
@@ -133,7 +134,7 @@ export function registerControlledProvider(
             break;
           }
         }
-      });
+      })().catch((error) => stream.push({ type: "error", reason: "error", error: { ...base, stopReason: "error", errorMessage: String(error) } })); });
 
       return stream;
     },

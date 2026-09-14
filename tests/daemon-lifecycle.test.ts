@@ -234,15 +234,17 @@ describe("单实例收敛", () => {
       return entries.filter((name) => name.endsWith(".tmp"));
     }
 
-    await delay(1_000);
-    const clientAt1s = await connectTestClient(fixture.socketPath);
-    clientAt1s.close();
+    // bootstrap 加载不等于已监听；先取得真实连接及合法 hello，再观察原 5 秒自检周期。
+    await waitForSocketReady(fixture.socketPath, 10_000);
+    const readyClient = await connectTestClient(fixture.socketPath);
+    clients.push(readyClient);
+    expect(typeof readyClient.helloResult.daemonPid).toBe("number");
 
     await delay(5_000);
     expect(await aliveCount()).toBe(1);
-    const clientAt6s = await connectTestClient(fixture.socketPath);
-    clients.push(clientAt6s);
-    const survivor = spawned.find((s) => s.proc.pid === clientAt6s.helloResult.daemonPid);
+    const afterCheck = await connectTestClient(fixture.socketPath);
+    clients.push(afterCheck);
+    const survivor = spawned.find((s) => s.proc.pid === afterCheck.helloResult.daemonPid);
     expect(survivor).toBeDefined();
     expect(await tempFiles()).toEqual([]);
   }, 20_000);

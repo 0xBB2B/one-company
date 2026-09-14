@@ -12,6 +12,7 @@ import type {
   ToolCallEvent,
   ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { TSchema } from "typebox";
 import { checkMcpCall, describeMcpStatus, loadMcpForRole } from "../runtime/mcp.ts";
@@ -27,8 +28,14 @@ import { createGitCommitTool } from "../runtime/git-commit-tool.ts";
 import type { CommitPaths } from "../runtime/git-commit-tool.ts";
 import type { Host, ShellRegistry, StopResult } from "../runtime/shell-registry.ts";
 import type { Clock, TimerHandle } from "../runtime/clock.ts";
+import { createProtectedFileTools } from "../extensions/write-protection.ts";
+import { installProjectBaselineHooks } from "../runtime/project-baseline-hooks.ts";
+import type { ProjectBaselineHooks } from "../runtime/project-baseline-hooks.ts";
+import type { DaemonProjectBaselineProvider } from "./project-baseline-provider.ts";
+import type { RunResultBaseline } from "../runtime/delivery.ts";
 
 export interface RoleSessionGuards {
+  baselineProvider?: (runId: string) => Promise<DaemonProjectBaselineProvider>;
   commit?: CommitPaths;
   commandGuard?: import("../runtime/shell-bash.ts").BashCommandGuard;
   release?: () => Promise<void>;
@@ -121,6 +128,7 @@ export interface RoleSessionHandle {
   resume(): Promise<void>;
   stop(): Promise<RoleSessionStopOutcome>;
   finalize(): Promise<unknown>;
+  resultBaseline?(): Promise<RunResultBaseline | undefined>;
   dispose(): void;
 }
 
@@ -148,16 +156,27 @@ export function buildRolePrompt(input: {
   ].join("\n");
 }
 
-function registerStructuredOutput(pi: ExtensionAPI, input: { outputSchema: TSchema; collector: ResultCollector }): void {
+export async function sealRoleResult(hooks: ProjectBaselineHooks | undefined, callId: string, assertUnmanaged?: () => Promise<void>): Promise<RunResultBaseline | undefined> {
+  if (!hooks) return undefined;
+  const request = await hooks.assertCall(callId);
+  if (request.kind === "unmanaged") return { kind: "unmanaged", assertCurrent: assertUnmanaged ?? (async () => { await hooks.assertCall(callId); }) };
+  const seal = await hooks.sealResult(callId);
+  return { kind: "managed", seal, assertCurrent: () => hooks.assertDelivery(seal) };
+}
+
+function registerStructuredOutput(pi: ExtensionAPI, input: { outputSchema: TSchema; collector: ResultCollector;
+  seal?: (callId: string) => Promise<RunResultBaseline | undefined>; onSeal?: (baseline: RunResultBaseline | undefined) => void }): void {
   pi.registerTool({
     name: "structured_output",
     label: "提交结构化结果",
     description: "提交本次任务的结构化结果，唯一一次有效",
     parameters: input.outputSchema,
     async execute(toolCallId, params) {
+      const baseline = await input.seal?.(toolCallId);
       const outcome = input.collector.accept({ toolCallId, value: params });
       if (!outcome.accepted) throw new Error(outcome.errors.join("; "));
-      return { content: [{ type: "text", text: "提交已接受" }], details: {} };
+      input.onSeal?.(baseline);
+      return { content: [{ type: "text", text: "提交已接受" }], details: {}, ...(baseline?.kind === "managed" ? { terminate: true } : {}) };
     },
   });
 }
@@ -435,6 +454,10 @@ export type RoleExtensionContract =
   | { kind: "plain"; completion: "idle-only" };
 
 export interface ConfigureRoleExtensionInput {
+  runId?: string;
+  onBaselineHooks?: (hooks: ProjectBaselineHooks) => void;
+  onResultBaseline?: (baseline: RunResultBaseline | undefined) => void;
+  assertResultSettled?: () => void;
   role: RoleDefinition;
   task: string;
   readPaths: string[];
@@ -468,6 +491,26 @@ const MCP_STUB_PARAMS = Type.Object({
 
 export function configureRoleExtension(input: ConfigureRoleExtensionInput): (pi: ExtensionAPI) => Promise<void> {
   return async (pi: ExtensionAPI) => {
+    let hooks: ProjectBaselineHooks | undefined;
+    let provider: DaemonProjectBaselineProvider | undefined;
+    if (input.guards.baselineProvider) {
+      hooks = installProjectBaselineHooks(pi, {
+        provider: async () => {
+          if (!input.runId) throw new Error("角色基线缺少真实运行身份");
+          return provider ??= await input.guards.baselineProvider!(input.runId);
+        },
+        checkPath: async (path, request) => request.kind === "unmanaged" ? path : provider!.checkPath(path),
+        disposeProvider: (source) => (source as DaemonProjectBaselineProvider).dispose(),
+      });
+      input.onBaselineHooks?.(hooks);
+      const [write, edit] = createProtectedFileTools(async () => ({ checkWrite: async (path) => {
+        const denied = await checkToolCall({ type: "tool_call", toolCallId: "actual-file-boundary", toolName: "write", input: { path } } as ToolCallEvent, {
+          ...input, verifying: input.verifying, paused: input.paused, submitted: input.submitted,
+        });
+        return denied?.block ? { ok: false as const, reason: denied.reason ?? "角色写入被拒绝" } : { ok: true as const };
+      } }));
+      pi.registerTool(write); pi.registerTool(edit);
+    }
     const mcpResult =
       input.mcp?.entryPath && input.mcp.packageDir && input.mcp.config
         ? await loadMcpForRole({
@@ -504,7 +547,13 @@ export function configureRoleExtension(input: ConfigureRoleExtensionInput): (pi:
     pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${rolePrompt}` }));
 
     if (input.contract.kind === "structured") {
-      registerStructuredOutput(pi, { outputSchema: input.contract.outputSchema, collector: input.contract.collector });
+      registerStructuredOutput(pi, { outputSchema: input.contract.outputSchema, collector: input.contract.collector,
+        seal: async (callId) => {
+          if (hooks?.gate.diagnostics.managed) input.assertResultSettled?.();
+          return sealRoleResult(hooks, callId, async () => {
+            if (!provider || (await provider.captureFresh()).kind !== "unmanaged") throw new Error("原legacy请求已进入受管理现场，须重新执行");
+          });
+        }, onSeal: input.onResultBaseline });
     }
 
     const guardAnchors = input.readOnlyRole ? await resolveRepoGuardAnchors(input.cwd) : undefined;
@@ -632,6 +681,12 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   let queuedMessages: string[] = [];
   let idleTimer: TimerHandle | null = null;
   let session!: AgentSession;
+  let baselineHooks: ProjectBaselineHooks | undefined;
+  let resultBaseline: RunResultBaseline | undefined;
+  let lastPlainMessage: AssistantMessage | undefined;
+  let plainSettlement: Promise<void> | undefined;
+  let completionEpoch = 0;
+  let disposed = false;
 
   let resolveResult!: (value: unknown) => void;
   let rejectResult!: (error: Error) => void;
@@ -660,6 +715,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     const reason = error.message;
     if (isTerminal()) return;
     currentState = "failed";
+    baselineHooks?.revoke();
     events.emit("failed", { reason });
     const diagnostics = collector?.diagnostics();
     if (diagnostics) Object.assign(error, { submissions: { attemptCount: diagnostics.attempts, validCount: diagnostics.valid, attempts: diagnostics.records.map((record) => ({ ...record, valid: record.accepted, error: record.errors.join("；") })) } });
@@ -694,11 +750,57 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     }
   }
 
+  /** 纯文字交付封存真实完成消息的原请求；异步核对不能跨暂停、停止或下一请求结算。 */
+  function settlePlain(): Promise<void> {
+    if (plainSettlement) return plainSettlement;
+    if (isTerminal()) return Promise.resolve();
+    if (isPaused()) return Promise.reject(new Error("暂停态不能结算纯文字结果"));
+    const epoch = completionEpoch;
+    const message = lastPlainMessage;
+    const operation = (async () => {
+      try {
+        let baseline: RunResultBaseline | undefined;
+        if (baselineHooks) {
+          if (!message) throw new Error("缺少原请求的完整assistant消息");
+          const request = await baselineHooks.assertMessage(message);
+          assertResultSettled();
+          if (request.kind === "managed") {
+            const seal = await baselineHooks.sealMessage(message);
+            baseline = { kind: "managed", seal, assertCurrent: () => baselineHooks!.assertDelivery(seal) };
+          } else {
+            baseline = { kind: "unmanaged", assertCurrent: async () => { await baselineHooks!.assertMessage(message); } };
+          }
+          await baseline.assertCurrent();
+        }
+        if (currentState !== "running" || disposed || completionEpoch !== epoch) return;
+        resultBaseline = baseline;
+        finishCompleted(undefined);
+      } catch (error) {
+        if (currentState === "running" && !disposed && completionEpoch === epoch) finishFailed(error);
+      }
+    })();
+    plainSettlement = operation;
+    void operation.finally(() => {
+      if (plainSettlement === operation) plainSettlement = undefined;
+      drainPrompts();
+    });
+    return operation;
+  }
+
   const shellRegistry = options.shellRegistry;
   const runToken = options.shellToken;
   const host: Host = { kind: "role", id: options.runId, role: options.roleName, runId: options.runId };
 
+  const assertResultSettled = () => {
+    if (activeTools.size > 1) throw new Error("同批工具尚未全部结束，不能封存交付");
+    if (shellRegistry.list().some((task) => task.host.runId === options.runId && ["starting", "running", "stopping", "uncertain"].includes(task.status))) throw new Error("后台命令尚未真实结束，不能封存交付");
+  };
+
   const extensionFactory = configureRoleExtension({
+    runId: options.runId,
+    onBaselineHooks: (hooks) => { baselineHooks = hooks; },
+    onResultBaseline: (baseline) => { resultBaseline = baseline; },
+    assertResultSettled,
     role: definition,
     task: options.task,
     readPaths: options.readPaths,
@@ -795,6 +897,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
       idleTimer = null;
       if (currentState !== "running") return;
       currentState = "paused_network";
+      baselineHooks?.revoke();
       options.networkGate.requestPause(options.runId, "network");
       events.emit("paused_network", { reason: "connection" });
       pendingNetworkAbort = session.abort().catch(() => {});
@@ -817,7 +920,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
         if (collector && collector.diagnostics().valid > 0) {
           settleFinal();
         } else if (completesOnIdle(contract)) {
-          finishCompleted(undefined);
+          void settlePlain();
         } else {
           events.emit("idle", { submitted: false });
         }
@@ -826,11 +929,13 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     }
 
     if (event.type !== "message_end" || event.message.role !== "assistant") return;
+    lastPlainMessage = event.message;
     const stopReason = event.message.stopReason;
     if (stopReason === "error" && currentState === "running") {
       const failure = classifyFailure(new Error(event.message.errorMessage ?? "模型请求失败"));
       if (failure === "connection") {
         currentState = "paused_network";
+        baselineHooks?.revoke();
         options.networkGate.requestPause(options.runId, "network");
         events.emit("paused_network", { reason: "connection" });
         pendingNetworkAbort = session.abort().catch(() => {});
@@ -846,10 +951,13 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
   let prompting = false;
 
   function drainPrompts(): void {
-    if (prompting || isTerminal() || isPaused() || !options.networkGate.canProceed(options.runId).allowed) return;
+    if (prompting || plainSettlement || isTerminal() || isPaused() || !options.networkGate.canProceed(options.runId).allowed) return;
     const text = queuedMessages.shift();
     if (text === undefined) return;
     prompting = true;
+    completionEpoch++;
+    lastPlainMessage = undefined;
+    resultBaseline = undefined;
     armIdleWatchdog();
     void session.prompt(text).catch(finishFailed).finally(() => {
       prompting = false;
@@ -870,6 +978,8 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
       idleTimer = null;
     }
     currentState = "paused";
+    completionEpoch++;
+    baselineHooks?.revoke();
     const drained = session.clearQueue();
     queuedMessages.push(...drained.steering, ...drained.followUp);
 
@@ -943,6 +1053,8 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     // 先切到 stopped 再 abort：abort 引发的 message_end error（stopReason "aborted"）
     // 要被"仅 running 才处理"的守卫挡在外面，不能让它被误判成一次业务失败
     currentState = "stopped";
+    completionEpoch++;
+    baselineHooks?.revoke();
     rejectResult(new Error("会话已被用户停止"));
 
     // Shell 清理是我们自己的机制，不依赖模型会话是否响应中止；先做这一步，
@@ -966,7 +1078,7 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
 
   async function finalize(): Promise<unknown> {
     if (!collector) {
-      finishCompleted(undefined);
+      await settlePlain();
     } else {
       settleFinal();
     }
@@ -975,7 +1087,10 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
 
   function dispose(): void {
     if (currentState === "paused") throw new Error("暂停态禁止释放会话");
+    if (disposed) return;
+    disposed = true;
     if (idleTimer) options.clock.clearTimer(idleTimer);
+    baselineHooks?.dispose();
     unsubscribe();
     session.dispose();
   }
@@ -989,6 +1104,12 @@ export async function createRoleSession(options: CreateRoleSessionOptions): Prom
     resume,
     stop,
     finalize,
+    resultBaseline: async () => {
+      if (baselineHooks?.gate.diagnostics.managed) assertResultSettled();
+      if (options.guards.baselineProvider && !resultBaseline) throw new Error("受管理角色缺少原请求结果seal");
+      await resultBaseline?.assertCurrent();
+      return resultBaseline;
+    },
     dispose,
   };
 }

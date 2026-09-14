@@ -121,6 +121,8 @@ describe("DaemonServer 已认证连接生命周期", () => {
     await authenticated.call("hello", hello("authenticated"));
     const identity = server.clients()[0];
     expect(identity).toBeDefined();
+    expect(() => Object.assign(identity!, { connectionId: "forged" })).toThrow();
+    expect(() => Object.assign(identity!, { daemonInstanceId: "forged" })).toThrow();
     const serverConnection = [...(server as unknown as {
       connections: Set<{ socket: Socket }>;
     }).connections][0];
@@ -139,13 +141,21 @@ describe("DaemonServer 已认证连接生命周期", () => {
     server.onDisconnect = (client) => disconnected.push(client);
 
     const peer = await connectPeer(socketPath);
-    await peer.call("hello", hello("first"));
-    await peer.call("hello", hello("second"));
+    const firstHello = await peer.call("hello", hello("first"));
+    const secondHello = await peer.call("hello", hello("second"));
+    expect(firstHello.daemonInstanceId).toBe(server.daemonInstanceId);
+    expect(secondHello.daemonInstanceId).toBe(server.daemonInstanceId);
+    expect(firstHello.connectionId).not.toBe(secondHello.connectionId);
+    expect(firstHello.connectionId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(secondHello.connectionId).toMatch(/^[0-9a-f-]{36}$/u);
 
     expect(disconnected).toHaveLength(1);
     expect(disconnected[0]?.windowId).toBe("first");
     const current = server.clients()[0];
     expect(current?.windowId).toBe("second");
+    expect(current?.connectionId).toBe(secondHello.connectionId);
+    expect(current?.daemonInstanceId).toBe(secondHello.daemonInstanceId);
+    expect(disconnected[0]?.connectionId).toBe(firstHello.connectionId);
 
     server.onHello = (client) => welcomed.push(client);
     server.markHandlersReady();
@@ -260,6 +270,25 @@ describe("DaemonServer 已认证连接生命周期", () => {
     } finally {
       process.removeListener("unhandledRejection", onUnhandled);
     }
+  });
+
+  test("hello不允许客户端指定daemon或connection身份，新server实例不复用标识", async () => {
+    const { server, socketPath } = await makeServer();
+    server.onHello = () => {};
+    const peer = await connectPeer(socketPath);
+    for (const extra of [{ daemonInstanceId: server.daemonInstanceId }, { connectionId: "forged" }]) {
+      await expect(peer.call("hello", { ...hello("forged"), ...extra })).rejects.toThrow("bad_params");
+      expect(server.clients()).toEqual([]);
+    }
+    const first = await peer.call("hello", hello("first"));
+    await server.close();
+    const next = new DaemonServer({ authToken: "lifecycle-token", repoId: "repo-lifecycle", startedAt: "test" });
+    servers.push(next);
+    next.onHello = () => {};
+    await next.listen(socketPath);
+    const second = await (await connectPeer(socketPath)).call("hello", hello("first"));
+    expect(second.daemonInstanceId).not.toBe(first.daemonInstanceId);
+    expect(second.connectionId).not.toBe(first.connectionId);
   });
 
   test("多个连接分别按各自 ClientInfo 对象身份减引用", async () => {

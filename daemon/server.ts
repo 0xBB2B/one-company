@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import {
@@ -20,6 +20,9 @@ export interface ClientInfo {
   cwd: string;
   workspaceRoot: string;
   repoIds: string[];
+  /** 由服务端每次认证生成，模型或 hello 参数不能指定。 */
+  readonly daemonInstanceId?: string;
+  readonly connectionId?: string;
 }
 
 interface ClientConnection {
@@ -61,6 +64,7 @@ function errorData(error: unknown): Record<string, unknown> | undefined {
 }
 
 export class DaemonServer {
+  readonly daemonInstanceId = randomUUID();
   private readonly options: DaemonServerOptions;
   private server: Server | null = null;
   private readonly connections = new Set<ClientConnection>();
@@ -186,7 +190,13 @@ export class DaemonServer {
       cwd: params.cwd as string,
       workspaceRoot: params.workspaceRoot as string,
       repoIds: params.repoIds as string[],
+      daemonInstanceId: this.daemonInstanceId,
+      connectionId: randomUUID(),
     };
+    Object.defineProperties(client.info, {
+      daemonInstanceId: { writable: false, configurable: false },
+      connectionId: { writable: false, configurable: false },
+    });
     // 推送延后到下一轮事件循环：hello 响应帧必须先于任何推送帧写入 socket，
     // 否则客户端可能在收到响应、注册事件监听器之前就已经收到并丢弃了推送；
     // onHello 由 registerProtocolHandlers 在装配完成时才赋值，装配未完工时 hello 也要等，
@@ -204,6 +214,8 @@ export class DaemonServer {
       repoId: this.options.repoId,
       protocolVersion: PROTOCOL_VERSION,
       startedAt: this.options.startedAt,
+      daemonInstanceId: info.daemonInstanceId,
+      connectionId: info.connectionId,
     };
   }
 

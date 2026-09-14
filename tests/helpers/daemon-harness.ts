@@ -16,7 +16,7 @@ import { createTempHome, removeTempHome } from "./temp-home.ts";
 import type { TempHome } from "./temp-home.ts";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const daemonMainEntry = join(packageRoot, "daemon", "main.ts");
+const daemonMainEntry = join(packageRoot, "daemon", "bootstrap.mjs");
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -99,7 +99,7 @@ export function spawnDaemonProcess(options: SpawnDaemonOptions): SpawnedDaemon {
   }
 
   const exited = new Promise<DaemonExitResult>((resolve) => {
-    proc.once("exit", (code, signal) => resolve({ code, signal, stdout, stderr }));
+    proc.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
   proc.unref();
 

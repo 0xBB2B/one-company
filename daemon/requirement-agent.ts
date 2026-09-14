@@ -1,4 +1,5 @@
 import { bindRunResult } from "../runtime/delivery.ts";
+import { projectBaselineForContext } from "../runtime/project-baseline-hooks.ts";
 import { validateResult, WORK_SCHEMA } from "../runtime/result.ts";
 import { resolve as resolvePath, sep } from "node:path";
 import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -16,7 +17,7 @@ import { requirementStateRef } from "../runtime/workflow-state.ts";
 import { STAGE_ORDER } from "../runtime/workflow-state.ts";
 import { createWorkflowTool, currentVersion, executeWorkflowAction } from "../runtime/workflow-tool.ts";
 import type { RoleSessionGuards, RoleSessionHandle, RoleSessionState, RoleSessionStopOutcome } from "./role-session.ts";
-import { bestEffortRealpath, createRoleSession } from "./role-session.ts";
+import { bestEffortRealpath, createRoleSession, sealRoleResult } from "./role-session.ts";
 
 export const AGENT_PARAMETERS = Type.Object(
   {
@@ -171,6 +172,8 @@ export type CreateRequirementAgentSessionResult =
   | { ok: true; reused: false; runId: string; handle: RequirementAgentHandle };
 
 interface RequirementAgentToolContext {
+  baselineRequired?: boolean;
+  assertSubmitSettled?: () => void;
   verifyDelivery?: (runId: string, signal?: AbortSignal) => Promise<void>;
   onStateChange?: (state: { stage: string }) => void;
   dataRoot: string;
@@ -344,7 +347,7 @@ export function registerAgentTool(pi: ExtensionAPI, ctx: RequirementAgentToolCon
     label: "派出角色",
     description: "在已确认形状内派出角色、查询状态、等待、列出、取消运行，或为自行完成任务提交交付",
     parameters: AGENT_PARAMETERS,
-    async execute(_toolCallId, params) {
+    async execute(toolCallId, params, _signal, _onUpdate, sdkContext) {
       if (params.action === "run") {
         const role = params.role;
         const task = params.task;
@@ -382,6 +385,10 @@ export function registerAgentTool(pi: ExtensionAPI, ctx: RequirementAgentToolCon
       }
 
       if (params.action === "submit") {
+        const hooks = projectBaselineForContext(sdkContext);
+        if (hooks?.gate.diagnostics.managed) ctx.assertSubmitSettled?.();
+        if (ctx.baselineRequired && !hooks) throw new Error("需求代理缺少真实请求基线");
+        const baseline = await sealRoleResult(hooks, toolCallId);
         const task = params.task;
         if (!task) throw new Error("submit 动作缺少 task");
         if (params.result === undefined) throw new Error("submit 动作缺少 result");
@@ -409,11 +416,17 @@ export function registerAgentTool(pi: ExtensionAPI, ctx: RequirementAgentToolCon
           mcp: [],
         });
         await ctx.runStore.update(submitRun.id, { state: "running" });
-        await ctx.runStore.update(submitRun.id, {
-          state: "completed",
-          result: await bindRunResult(submitRun, "work", params.result),
-        });
-        return textResult(`已提交交付，运行编号: ${submitRun.id}`);
+        try {
+          const result = await bindRunResult(submitRun, "work", params.result, baseline);
+          if (baseline?.kind === "managed") ctx.assertSubmitSettled?.();
+          await baseline?.assertCurrent();
+          await ctx.runStore.update(submitRun.id, { state: "completed", result });
+          await baseline?.assertCurrent();
+          return textResult(`已提交交付，运行编号: ${submitRun.id}`);
+        } catch (error) {
+          await ctx.runStore.update(submitRun.id, { state: "failed", stateReason: String(error) }).catch(() => {});
+          throw error;
+        }
       }
 
       if (params.action === "list") {
@@ -689,6 +702,10 @@ async function buildRequirementAgentHandle(
 
   const askState = { count: 0 };
   const toolCtx: RequirementAgentToolContext = {
+    baselineRequired: options.guards.baselineProvider !== undefined,
+    assertSubmitSettled: () => {
+      if (options.shellRegistry.list().some((task) => task.host.runId === runId && ["starting", "running", "stopping", "uncertain"].includes(task.status))) throw new Error("需求代理后台命令尚未真实结束，不能提交交付");
+    },
     dataRoot: options.dataRoot,
     repoId: options.repoId,
     requirement: options.requirement,

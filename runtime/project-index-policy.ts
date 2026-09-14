@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, lstatSync, realpathSync } from "node:fs";
 import type { BigIntStats, Dirent, Stats } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
@@ -217,10 +217,6 @@ function normalizeReadLimit(value: number | undefined): number {
   return limit;
 }
 
-function isMissing(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
 function isAccessFailure(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
   return code === "EACCES" || code === "EPERM" || code === "EMFILE" || code === "ENFILE";
@@ -266,6 +262,7 @@ function filePolicy(parts: string[]): IndexSkipReason | undefined {
     if (reason) return reason;
   }
   const name = (parts.at(-1) ?? "").toLowerCase();
+  if (name === ".git") return "excluded_file";
   const extension = extname(name);
   if (name === ".env" || name.startsWith(".env.") || SENSITIVE_FILENAMES.has(name)
     || name.startsWith("credentials.") || name.startsWith("secret.") || name.startsWith("secrets.")
@@ -322,7 +319,7 @@ function safeRelativePath(file: string): string[] {
   return parts;
 }
 
-async function safeWorkspaceRoot(root: string): Promise<{ root: string; stats: Stats }> {
+async function safeWorkspaceRoot(root: string, synchronousMetadata = false): Promise<{ root: string; stats: Stats }> {
   if (typeof root !== "string" || !isAbsolute(root)) {
     throw new ProjectIndexPolicyError("invalid_root", "工作区根必须是绝对路径");
   }
@@ -330,8 +327,8 @@ async function safeWorkspaceRoot(root: string): Promise<{ root: string; stats: S
   let stats: Stats;
   let actual: string;
   try {
-    stats = await lstat(requested);
-    actual = await realpath(requested);
+    stats = synchronousMetadata ? lstatSync(requested) : await lstat(requested);
+    actual = synchronousMetadata ? realpathSync(requested) : await realpath(requested);
   } catch {
     throw new ProjectIndexPolicyError("invalid_root", "工作区根不可访问");
   }
@@ -371,13 +368,13 @@ async function boundedDirectoryEntries(path: string, remaining: number): Promise
   return { entries, exceeded: false };
 }
 
-async function openedFileMetadata(path: string): Promise<
+async function openedFileMetadata(path: string, synchronousMetadata = false): Promise<
   | { status: "ok"; stats: BigIntStats }
   | { status: "skip"; reason: IndexSkipReason }
 > {
   let before: BigIntStats;
   try {
-    before = await lstat(path, { bigint: true });
+    before = synchronousMetadata ? lstatSync(path, { bigint: true }) : await lstat(path, { bigint: true });
   } catch (error) {
     return { status: "skip", reason: isAccessFailure(error) ? "unreadable" : "unstable" };
   }
@@ -396,7 +393,7 @@ async function openedFileMetadata(path: string): Promise<
     const opened = await handle.stat({ bigint: true });
     let after: BigIntStats;
     try {
-      after = await lstat(path, { bigint: true });
+      after = synchronousMetadata ? lstatSync(path, { bigint: true }) : await lstat(path, { bigint: true });
     } catch {
       return { status: "skip", reason: "unstable" };
     }
@@ -677,10 +674,9 @@ type AncestorCapture =
 async function gitMarkerReason(directory: string): Promise<IndexSkipReason | undefined> {
   for (const name of GIT_MARKER_CASE_VARIANTS) {
     try {
-      await lstat(join(directory, name));
-      return "nested_repository";
+      // 每个边界最多探测八个名称；缺失不创建异常，结果不跨边界缓存。
+      if (lstatSync(join(directory, name), { throwIfNoEntry: false })) return "nested_repository";
     } catch (error) {
-      if (isMissing(error)) continue;
       return isAccessFailure(error) ? "unreadable" : "unstable";
     }
   }
@@ -696,9 +692,9 @@ async function captureAncestorChain(root: string, parts: string[]): Promise<Ance
     let actual: string;
     let after: Stats;
     try {
-      before = await lstat(current);
-      actual = await realpath(current);
-      after = await lstat(current);
+      before = lstatSync(current);
+      actual = realpathSync(current);
+      after = lstatSync(current);
     } catch (error) {
       return { status: "skip", reason: isAccessFailure(error) ? "unreadable" : "unstable" };
     }
@@ -721,8 +717,8 @@ async function verifyReadBoundary(
   let rootStats: Stats;
   let actualRoot: string;
   try {
-    rootStats = await lstat(workspace.root);
-    actualRoot = await realpath(workspace.root);
+    rootStats = lstatSync(workspace.root);
+    actualRoot = realpathSync(workspace.root);
   } catch {
     return false;
   }
@@ -733,8 +729,8 @@ async function verifyReadBoundary(
     let stats: Stats;
     let actual: string;
     try {
-      stats = await lstat(snapshot.path);
-      actual = await realpath(snapshot.path);
+      stats = lstatSync(snapshot.path);
+      actual = realpathSync(snapshot.path);
     } catch {
       return false;
     }
@@ -759,7 +755,7 @@ async function readBoundedFile(
   if (!await verifyBoundary()) return { status: "unstable" };
   let before: BigIntStats;
   try {
-    before = await lstat(path, { bigint: true });
+    before = lstatSync(path, { bigint: true });
   } catch (error) {
     return isAccessFailure(error) ? { status: "skipped", reason: "unreadable" } : { status: "unstable" };
   }
@@ -799,7 +795,7 @@ async function readBoundedFile(
     const openedAfter = await handle.stat({ bigint: true });
     let pathAfter: BigIntStats;
     try {
-      pathAfter = await lstat(path, { bigint: true });
+      pathAfter = lstatSync(path, { bigint: true });
     } catch {
       return { status: "unstable" };
     }
@@ -818,7 +814,8 @@ export async function readIndexFile(
   options: ReadIndexFileOptions = {},
 ): Promise<ReadIndexFileResult> {
   const maxBytes = normalizeReadLimit(options.maxBytes);
-  const workspace = await safeWorkspaceRoot(rootInput);
+  // 路径深度受限；每次读取独立核验元数据，文件与句柄 I/O 保持异步。
+  const workspace = await safeWorkspaceRoot(rootInput, true);
   const path = typeof file === "string" ? file : file.path;
   const expectedSize = typeof file === "string" ? undefined : file.size;
   const parts = safeRelativePath(path);
@@ -835,7 +832,7 @@ export async function readIndexFile(
   const verifyBoundary = () => verifyReadBoundary(workspace, ancestors.snapshots);
   const fullPath = join(workspace.root, ...parts);
   if (!await verifyBoundary()) return { status: "unstable", path, reason: "unstable" };
-  const target = await openedFileMetadata(fullPath);
+  const target = await openedFileMetadata(fullPath, true);
   if (target.status === "skip") {
     return target.reason === "unstable"
       ? { status: "unstable", path, reason: "unstable" }
@@ -847,7 +844,7 @@ export async function readIndexFile(
   if (!await verifyBoundary()) return { status: "unstable", path, reason: "unstable" };
   let actual: string;
   try {
-    actual = await realpath(fullPath);
+    actual = realpathSync(fullPath);
   } catch (error) {
     return isAccessFailure(error)
       ? { status: "skipped", path, reason: "unreadable" }
@@ -873,7 +870,7 @@ export async function readIndexFile(
   }
   let rootAfter: Stats;
   try {
-    rootAfter = await lstat(workspace.root);
+    rootAfter = lstatSync(workspace.root);
   } catch {
     return { status: "unstable", path, reason: "unstable" };
   }

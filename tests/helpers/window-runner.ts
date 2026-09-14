@@ -58,9 +58,10 @@ async function main(): Promise<void> {
     process,
   });
 
+  const sessionId = randomUUID();
   const ctx = {
     cwd: config.cwd,
-    sessionManager: { getSessionId: () => randomUUID() },
+    sessionManager: { getSessionId: () => sessionId },
     ui: { notify: (message: string, level?: string) => process.stderr.write(`[window] ${level ?? "info"}: ${message}\n`) },
     shutdown: () => {
       writeState(config.stateFile, { phase: "shutdown-called" });

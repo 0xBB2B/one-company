@@ -17,6 +17,7 @@ const DEFAULT_MAX_QUEUED_EVENTS = 512;
 const DEFAULT_MAX_WATCHERS = 512;
 const DEFAULT_MAX_RECONCILE_PASSES = 3;
 const DEFAULT_MAX_SUBSCRIBERS = 32;
+const RECOVERY_DELAYS_MS = [100, 200, 400] as const;
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -232,6 +233,9 @@ export class ProjectIndexSyncManager {
   private lastError: ProjectIndexSyncStatus["lastError"] = null;
   private debounceTimer: Timer | null = null;
   private lowFrequencyTimer: Timer | null = null;
+  private recoveryTimer: Timer | null = null;
+  private recoveryAttempt = 0;
+  private recoveryAllowed = false;
   private serial: Promise<void> = Promise.resolve();
   private backgroundReconcile: Promise<void> | null = null;
   private invalidationRequested = false;
@@ -353,7 +357,13 @@ export class ProjectIndexSyncManager {
 
   private queueBackgroundReconcile(): Promise<void> {
     if (this.backgroundReconcile) return this.backgroundReconcile;
-    const operation = this.enqueue(async () => { await this.reconcileLoop(); });
+    const operation = this.enqueue(async () => {
+      // 出队时只跳过已被前序扫描完整覆盖、且没有失效或恢复待办的后台请求。
+      if (this.state === "fresh" && !this.dirty && this.eventSequence === this.reconciledSequence
+        && this.queue.length === 0 && !this.invalidationRequested && !this.invalidation
+        && !this.archiveRiskPending() && !this.overflowed && !this.recoveryAllowed && !this.recoveryTimer) return;
+      await this.reconcileLoop();
+    });
     this.backgroundReconcile = operation;
     const clear = () => { if (this.backgroundReconcile === operation) this.backgroundReconcile = null; };
     void operation.then(clear, clear);
@@ -368,10 +378,11 @@ export class ProjectIndexSyncManager {
         this.invalidationRequested = false;
         await this.service.markDirty();
       }
-    })().catch(() => {
-      this.lastError = { code: "index_failure" };
+    })().catch((error: unknown) => {
+      this.lastError = { code: error instanceof ProjectIndexServiceError && error.code === "authorization_denied" ? "authorization_denied" : "index_failure" };
       this.state = "error";
       this.dirty = true;
+      if (error instanceof ProjectIndexServiceError) throw error;
       throw new ProjectIndexServiceError("index_failure", "sync-invalidate", true);
     }).finally(() => { this.invalidation = null; });
     void this.invalidation.catch(() => undefined);
@@ -462,6 +473,8 @@ export class ProjectIndexSyncManager {
     this.state = "dirty";
     this.lastReason = reason;
     this.lastError = null;
+    this.recoveryAttempt = 0;
+    if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
     if (this.queue.length < this.maxQueuedEvents) this.queue.push(event);
     else {
       this.queue = [];
@@ -507,12 +520,19 @@ export class ProjectIndexSyncManager {
   private scheduleLowFrequency(): void {
     if (this.lowFrequencyTimer) clearTimeout(this.lowFrequencyTimer);
     if (!this.started || this.stopping) return;
+    const lifecycleSequence = this.lifecycleSequence;
     this.lowFrequencyTimer = setTimeout(() => {
       this.lowFrequencyTimer = null;
-      if (!this.started || this.stopping) return;
-      this.observe("low_frequency", null, null, false, false);
+      if (!this.started || this.stopping || lifecycleSequence !== this.lifecycleSequence) return;
+      // 周期需求可合并到dirty、在途或排队的完整对账；tick不是文件事件，不能提高fence或覆盖watch来源。
+      // 在途扫描不承诺覆盖它开始后的漏watch变化，后续有效读取和下一周期仍执行完整hash对账。
+      if (!this.dirty && this.state !== "reconciling" && !this.backgroundReconcile) {
+        this.observe("low_frequency", null, null, false, false);
+      }
       if (this.debounceTimer) { clearTimeout(this.debounceTimer); this.debounceTimer = null; }
-      void this.queueBackgroundReconcile().finally(() => this.scheduleLowFrequency()).catch(() => undefined);
+      void this.queueBackgroundReconcile().finally(() => {
+        if (lifecycleSequence === this.lifecycleSequence) this.scheduleLowFrequency();
+      }).catch(() => undefined);
     }, this.lowFrequencyMs);
     this.lowFrequencyTimer.unref?.();
   }
@@ -690,7 +710,37 @@ export class ProjectIndexSyncManager {
     }
   }
 
+  private retryableFailure(error: unknown): boolean {
+    return error instanceof ProjectIndexServiceError && error.metadata.retryable
+      && (error.code === "unstable" || error.code === "index_failure" || error.code === "operation_in_progress");
+  }
+
+  private scheduleRecovery(): void {
+    if (!this.started || this.stopping || !this.dirty || !this.recoveryAllowed || this.recoveryTimer) return;
+    const delay = RECOVERY_DELAYS_MS[this.recoveryAttempt];
+    if (delay === undefined) return;
+    this.recoveryAttempt += 1;
+    const lifecycleSequence = this.lifecycleSequence;
+    this.recoveryTimer = setTimeout(() => {
+      this.recoveryTimer = null;
+      if (!this.started || this.stopping || lifecycleSequence !== this.lifecycleSequence) return;
+      void this.queueBackgroundReconcile().catch(() => undefined);
+    }, delay);
+    this.recoveryTimer.unref?.();
+  }
+
   private async reconcileLoop(): Promise<ProjectIndexSyncStatus> {
+    if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
+    this.recoveryAllowed = false;
+    try { return await this.reconcilePasses(); }
+    finally {
+      // 每个已观察变化最多补排三轮；延迟让出事件循环，耗尽后保持dirty等待外部对账。
+      // 此处也覆盖在途去抖请求被合并、启动或显式对账耗尽单轮的情况。
+      this.scheduleRecovery();
+    }
+  }
+
+  private async reconcilePasses(): Promise<ProjectIndexSyncStatus> {
     const lifecycleSequence = this.lifecycleSequence;
     if (this.debounceTimer) { clearTimeout(this.debounceTimer); this.debounceTimer = null; }
     if (!this.baselineInitialized) {
@@ -706,13 +756,17 @@ export class ProjectIndexSyncManager {
       const targetSequence = this.eventSequence;
       const reconcileSource = this.lastReason ?? "manual";
       this.state = "reconciling";
+      let processingArchiveRisk = false;
       try {
         if (this.invalidation) await this.invalidation;
+        processingArchiveRisk = true;
         await this.processArchiveRisk(targetSequence);
+        processingArchiveRisk = false;
         if (this.stopping || lifecycleSequence !== this.lifecycleSequence) break;
         const built = await this.service.refresh();
         if (this.stopping || lifecycleSequence !== this.lifecycleSequence) break;
         if (built.status === "cancelled") {
+          this.recoveryAllowed = true;
           this.dirty = true;
           this.state = this.stopping ? "stopped" : "unstable";
           return this.result();
@@ -760,16 +814,23 @@ export class ProjectIndexSyncManager {
         return this.result();
       } catch (error) {
         this.dirty = true;
-        if (error instanceof ProjectIndexSyncError && error.code === "authorization_denied") throw error;
-        // 构建期间的新事件会提高IndexStore fence；旧构建失败是预期结果，继续处理更新后的序号。
-        if (!this.stopping && targetSequence !== this.eventSequence) continue;
+        if ((error instanceof ProjectIndexSyncError || error instanceof ProjectIndexServiceError) && error.code === "authorization_denied") {
+          this.lastError = { code: "authorization_denied" };
+          this.state = "error";
+          throw error;
+        }
+        const retryable = !processingArchiveRisk && this.retryableFailure(error);
+        // 只有暂态构建失败可跟随新序号继续；权限、非法输入及归档hook失败不能借新事件重试。
+        if (retryable && !this.stopping && targetSequence !== this.eventSequence) continue;
+        this.recoveryAllowed = retryable;
         if (this.beforeArchiveRisk && this.archiveQueue.some((event) => event.sequence <= targetSequence)) {
           this.lastError = { code: "archive_risk_failed" };
         } else {
           this.lastError = { code: "index_failure" };
         }
         this.state = "error";
-        try { await this.service.markDirty(); } catch { /* manager仍保持dirty，后续重连/手动对账重试。 */ }
+        try { await this.service.markDirty(); }
+        catch (failure) { this.recoveryAllowed &&= this.retryableFailure(failure); }
         return this.result();
       }
     }
@@ -779,7 +840,9 @@ export class ProjectIndexSyncManager {
     }
     this.dirty = true;
     this.state = "unstable";
-    try { await this.service.markDirty(); } catch { /* 无法持久化时manager状态仍明确dirty。 */ }
+    this.recoveryAllowed = this.watchHealthy;
+    try { await this.service.markDirty(); }
+    catch (error) { this.recoveryAllowed = this.retryableFailure(error); }
     return this.result();
   }
 
@@ -873,6 +936,9 @@ export class ProjectIndexSyncManager {
     for (const state of this.subscribers.values()) state.pending = null;
     if (this.debounceTimer) { clearTimeout(this.debounceTimer); this.debounceTimer = null; }
     if (this.lowFrequencyTimer) { clearTimeout(this.lowFrequencyTimer); this.lowFrequencyTimer = null; }
+    if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
+    this.recoveryAllowed = false;
+    this.recoveryAttempt = 0;
     this.closeWatchers();
     this.service.cancel();
     const operation = (async () => {

@@ -12,6 +12,12 @@ import { ACCEPTANCE_SCHEMA, REVIEW_SCHEMA, WORK_SCHEMA, validateResult } from ".
 import type { AcceptanceResult, Phase, WorkResult } from "./result.ts";
 import type { RunRecord } from "./run-store.ts";
 import { currentVersion } from "./workflow-tool.ts";
+import type { ProjectBaselineSeal, ProjectBaselineSealMetadata } from "./project-baseline.ts";
+
+/** 仅由真实角色请求交回；不能从模型结果或JSON重建seal能力。 */
+export type RunResultBaseline =
+  | { kind: "managed"; seal: ProjectBaselineSeal; assertCurrent(): Promise<ProjectBaselineSealMetadata> }
+  | { kind: "unmanaged"; assertCurrent(): Promise<void> };
 
 const execFileAsync = promisify(execFile);
 
@@ -30,7 +36,9 @@ async function workspaceContent(run: RunRecord): Promise<string> {
   return collectContentFingerprint(run.cwd, [`.pi-company/requirements/${run.requirement}/acceptance.md`]);
 }
 
-export async function bindRunResult(run: RunRecord, phase: Phase, value: unknown) {
+export async function bindRunResult(run: RunRecord, phase: Phase, value: unknown, baseline?: RunResultBaseline) {
+  const assertCurrent = async () => { await baseline?.assertCurrent(); };
+  await assertCurrent();
   if (phase === "plan") {
     const lint = resolve(dirname(fileURLToPath(import.meta.url)), "../skills/spec-docs/scripts/lint.sh");
     const requirementFile = join(run.cwd, ".pi-company", "requirements", run.requirement, "requirements.md");
@@ -45,10 +53,15 @@ export async function bindRunResult(run: RunRecord, phase: Phase, value: unknown
   const checked = phase === "plan" ? { ok: true as const }
     : validateResult({ work: WORK_SCHEMA, review: REVIEW_SCHEMA, acceptance: ACCEPTANCE_SCHEMA }[phase], phase, value);
   if (!checked.ok) throw new Error(`交付格式或语义不合法: ${checked.errors.join("；")}`);
+  await assertCurrent();
   const version = await currentVersion({ cwd: run.cwd, requirement: run.requirement });
+  const binding = { requirement: run.requirement, task: run.task, cwd: await realpath(run.cwd), ...version,
+    workspaceContent: await workspaceContent(run),
+    projectBaseline: baseline?.kind === "managed" ? baseline.seal.metadata : { kind: "unmanaged" as const, coverage: "legacy-not-m3-indexed" as const } };
+  await assertCurrent();
   return {
     ...(phase === "plan" ? { phase: "plan", verdict: "PASS", summary: String(value ?? "规划完成") } : value as Record<string, unknown>),
-    binding: { requirement: run.requirement, task: run.task, cwd: await realpath(run.cwd), ...version, workspaceContent: await workspaceContent(run) },
+    binding,
   };
 }
 
@@ -104,18 +117,26 @@ function within(path: string, boundary: string): boolean {
   return path === boundary || path.startsWith(`${boundary}${sep}`);
 }
 
-export async function verifyTaskDelivery(input: { run: RunRecord; execute(command: string): Promise<void> }): Promise<Record<string, unknown>> {
+export async function verifyTaskDelivery(input: { run: RunRecord; execute(command: string): Promise<void>;
+  assertBaseline?: (metadata: ProjectBaselineSealMetadata | undefined) => Promise<void> }): Promise<Record<string, unknown>> {
   const { run } = input;
   if (run.state !== "completed") throw new Error("交付运行尚未正常完成");
   const saved = run.result as Record<string, unknown> | undefined;
   if (!saved?.binding) throw new Error("交付缺少系统绑定");
   const { binding, delivery: _delivery, ...raw } = saved;
+  const recorded = binding as Record<string, unknown>;
+  const baseline = recorded.projectBaseline as ProjectBaselineSealMetadata | { kind: "unmanaged" } | undefined;
+  const managed = baseline && "format" in baseline && baseline.format === "project-baseline-seal/v1" ? baseline : undefined;
+  const assertBaseline = async () => {
+    if (managed && !input.assertBaseline) throw new Error("受管理交付缺少可信基线核对能力");
+    await input.assertBaseline?.(managed);
+  };
+  await assertBaseline();
   const checked = validateResult(WORK_SCHEMA, "work", raw);
   if (!checked.ok) throw new Error(`交付不合法: ${checked.errors.join("；")}`);
   const result = raw as WorkResult;
   if (result.verdict !== "PASS") throw new Error("交付裁决未通过");
   const current = await currentVersion({ cwd: run.cwd, requirement: run.requirement });
-  const recorded = binding as Record<string, unknown>;
   if (recorded.requirement !== run.requirement || recorded.task !== run.task || recorded.cwd !== await realpath(run.cwd) ||
     recorded.workspaceContent !== await workspaceContent(run)) throw new Error("交付版本或工作现场已变化，须重新核对交付");
   if (recorded.codeHead !== current.codeHead) {
@@ -144,10 +165,13 @@ export async function verifyTaskDelivery(input: { run: RunRecord; execute(comman
     const committed = (await readGit(root, ["diff", "--name-only", String(run.sourceVersion?.codeHead ?? recorded.codeHead), current.codeHead])).stdout.split("\n").filter(Boolean);
     if (result.changedFiles.some((path) => !committed.some((file) => resolve(root, file) === resolve(root, path)))) throw new Error("提交未包含声明的交付改动");
   }
+  await assertBaseline();
   await input.execute(task.verify);
+  await assertBaseline();
   const after = await currentVersion({ cwd: root, requirement: run.requirement });
   if (after.definitionFingerprint !== current.definitionFingerprint || after.codeHead !== current.codeHead || await workspaceContent(run) !== recorded.workspaceContent) throw new Error("复跑期间代码、定义或工作现场发生变化，验证失效");
   const evidenceFiles = [...task.files, task.sourceFile, ...task.refs.map((ref) => join(root, ".pi-company", "spec", ref.replace(/\/AC-\d+$/, ".md")))];
   const fileFingerprints = await fingerprint(root, evidenceFiles);
-  return { ...await bindRunResult(run, "work", result), delivery: { verificationOk: true, commit: result.changedFiles.length > 0 ? current.codeHead : null, command: task.verify, fileFingerprints } };
+  await assertBaseline();
+  return { ...raw, binding, delivery: { verificationOk: true, commit: result.changedFiles.length > 0 ? current.codeHead : null, command: task.verify, fileFingerprints } };
 }

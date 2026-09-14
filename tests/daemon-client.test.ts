@@ -1,8 +1,10 @@
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { DatabaseSync as Database } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import { UUID_V7_PATTERN } from "../runtime/database.ts";
-import { execFileSync, spawn } from "node:child_process";
+import childProcess, { execFileSync, spawn } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import type { Socket } from "node:net";
@@ -119,7 +121,7 @@ function daemonPidsForDataRoot(dataRoot: string): number[] {
   const table = execFileSync("ps", args, { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, maxBuffer: 32 * 1024 * 1024 });
   const pids: number[] = [];
   for (const line of table.split("\n")) {
-    if (!line.includes("daemon/main.ts") || !line.includes(`PI_COMPANY_DATA_ROOT=${dataRoot}`)) continue;
+    if (!line.includes("daemon/bootstrap.mjs") || !line.includes(`PI_COMPANY_DATA_ROOT=${dataRoot}`)) continue;
     const pid = Number.parseInt(line.trim().split(/\s+/)[0] ?? "", 10);
     if (Number.isFinite(pid) && pid > 1) pids.push(pid);
   }
@@ -858,34 +860,103 @@ describe("close 语义", () => {
   test("守护进程被强杀后立即 close 不再重连，重新拉起的守护进程随后自行空闲退出", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
+    const started = performance.now();
+    const trace: Array<Record<string, unknown>> = [];
+    const children: Array<{ proc: ReturnType<typeof spawn>; exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; closed: boolean }> = [];
+    const clock = createClock();
+    // 透传真实重连计时器，在 starting 已进入、异步启动尚未完成的确定边界关闭客户端。
+    const realTimer = clock.setTimeoutExcludingSleep;
+    let onReconnectStarted: (() => void) | undefined;
+    let timerSchedules = 0;
+    clock.setTimeoutExcludingSleep = (callback, ms) => {
+      timerSchedules += 1;
+      return realTimer(() => { callback(); onReconnectStarted?.(); }, ms);
+    };
+    const realSpawn = childProcess.spawn;
+    const spawnObserver = vi.spyOn(childProcess, "spawn").mockImplementation(((...args: Parameters<typeof spawn>) => {
+      const proc = realSpawn(...args);
+      if (args[2]?.env?.PI_COMPANY_DATA_ROOT === fixture.dataRoot) {
+        trace.push({ event: "spawn", pid: proc.pid, ms: performance.now() - started });
+        const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done, fail) => {
+          proc.once("error", fail);
+          proc.once("close", (code, signal) => {
+            trace.push({ event: "child.close", pid: proc.pid, code, signal, ms: performance.now() - started });
+            children.find((child) => child.proc === proc)!.closed = true;
+            done({ code, signal });
+          });
+        });
+        void exited.catch(() => {});
+        children.push({ proc, exited, closed: false });
+      }
+      return proc;
+    }) as typeof spawn);
+    syncBuiltinESMExports();
+    let closeClient: (() => void) | undefined;
+    try {
+      const client = await connectDaemon({
+        clock,
+        repoDir: fixture.repoDir,
+        dataRoot: fixture.dataRoot,
+        sdkDir: resolveSdkDir(),
+        execPath: resolveNodeExecutable(),
+        env: { PI_COMPANY_IDLE_TIMEOUT_MS: "1000" },
+        hello: {
+          windowId: "window-close-race",
+          pid: process.pid,
+          sessionId: "session-close-race",
+          cwd: fixture.repo.root,
+          workspaceRoot: fixture.repo.root,
+        },
+      });
+      closeClient = () => client.close();
+      closables.push(client);
+      await waitUntil(() => client.state().status === "connected", 15_000);
 
-    const client = await connectDaemon({
-      repoDir: fixture.repoDir,
-      dataRoot: fixture.dataRoot,
-      sdkDir: resolveSdkDir(),
-      execPath: resolveNodeExecutable(),
-      env: { PI_COMPANY_IDLE_TIMEOUT_MS: "1000" },
-      hello: {
-        windowId: "window-close-race",
-        pid: process.pid,
-        sessionId: "session-close-race",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
-      },
-    });
-    closables.push(client);
-    await waitUntil(() => client.state().status === "connected", 15_000);
-
-    const pidBefore = await probeDaemonPid(fixture.socketPath);
-    process.kill(pidBefore, "SIGKILL");
-
-    await waitUntil(() => client.state().status === "starting", 10_000);
-    client.close();
-
-    expect(client.state().status).not.toBe("connected");
-    await waitUntil(() => daemonPidsForDataRoot(fixture.dataRoot).length === 0, 10_000);
-    await delay(2_000);
-    expect(daemonPidsForDataRoot(fixture.dataRoot)).toHaveLength(0);
+      const pidBefore = await probeDaemonPid(fixture.socketPath);
+      let stateAtClose: string | undefined;
+      let spawnsAtClose: number | undefined;
+      onReconnectStarted = () => {
+        onReconnectStarted = undefined;
+        stateAtClose = client.state().status;
+        spawnsAtClose = children.length;
+        client.close();
+        trace.push({ event: "client.close", spawns: spawnsAtClose, ms: performance.now() - started });
+      };
+      process.kill(pidBefore, "SIGKILL");
+      await waitUntil(() => stateAtClose !== undefined, 10_000, 20);
+      expect(stateAtClose).toBe("starting");
+      expect(spawnsAtClose).toBe(1);
+      expect(client.state().status).not.toBe("connected");
+      expect(timerSchedules).toBe(1);
+      // starting 后的目录准备仍可在 close 后完成一次 spawn；必须等待这个真实孩子的 close。
+      await waitUntil(() => children.length >= 2 && children.every((child) => child.closed),
+        Math.max(1, 25_000 - (performance.now() - started)), 20);
+      expect(children).toHaveLength(2);
+      expect(await children[0]!.exited).toEqual({ code: null, signal: "SIGKILL" });
+      expect(await children[1]!.exited).toEqual({ code: 0, signal: null });
+      expect(children[1]!.proc.pid).not.toBe(pidBefore);
+      // 已确认退出后继续观察2秒，禁止关闭后新排重连或再次派出 daemon。
+      await delay(2_000);
+      expect(timerSchedules).toBe(1);
+      expect(children).toHaveLength(2);
+      expect(client.state().status).toBe("unreachable");
+      expect(daemonPidsForDataRoot(fixture.dataRoot)).toHaveLength(0);
+      trace.push({ event: "verified", spawns: children.length, ms: performance.now() - started });
+    } finally {
+      onReconnectStarted = undefined;
+      closeClient?.();
+      try {
+        // 仅失败收尾可终止本次捕获的孩子；成功断言必须先观察到无信号的真实退出。
+        for (const child of children) {
+          if (!child.closed && child.proc.exitCode === null && child.proc.signalCode === null) child.proc.kill("SIGKILL");
+        }
+        await waitUntil(() => children.every((child) => child.closed), 2_000, 20);
+      } finally {
+        spawnObserver.mockRestore(); syncBuiltinESMExports(); clock.stopGapWatcher();
+        if (process.env.M3_CLOSE_EVIDENCE) await writeFile(process.env.M3_CLOSE_EVIDENCE,
+          JSON.stringify({ node: process.version, timerSchedules, trace }, null, 2), { mode: 0o600, flag: "wx" });
+      }
+    }
   }, 30_000);
 });
 
@@ -1529,6 +1600,56 @@ describe("握手未完成帧总预算", () => {
 });
 
 describe("本地连接生命周期通知", () => {
+  test("connectionIdentity只来自已认证hello，与缓存和connected一致且断线立即不可用", async () => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
+    extraTempDirs.push(dataRoot);
+    const repository = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, repository.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+    const daemonInstanceId = randomUUID();
+    let socket: Socket | undefined;
+    let hellos = 0;
+    const fake = createFakeDaemonServer(socketPath, (frame, accepted) => {
+      socket = accepted;
+      hellos += 1;
+      accepted.write(encodeFrame(createResponse(frame.id, {
+        daemonPid: process.pid, repoId: repository.repoId, protocolVersion: PROTOCOL_VERSION,
+        startedAt: "test", daemonInstanceId, connectionId: randomUUID(),
+      })));
+    });
+    try {
+      const client = await connectDaemon({ repoDir: repo.root, dataRoot, sdkDir: resolveSdkDir(),
+        hello: { windowId: "identity", pid: process.pid, sessionId: "session", cwd: repo.root, workspaceRoot: repo.root } });
+      closables.push(client);
+      const identity = client.connectionIdentity!();
+      expect(identity).toMatchObject({ daemonInstanceId, connectionSequence: 1 });
+      expect(Object.isFrozen(identity)).toBe(true);
+      const connected: Record<string, unknown>[] = [];
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (data) => connected.push(data));
+      expect(connected[0]).toMatchObject(identity!);
+      expect(await client.call("hello")).toMatchObject(identity!);
+      expect(await client.call("hello")).toMatchObject(identity!);
+      expect(hellos).toBe(1);
+      await expect(client.call("hello", { connectionId: "forged" })).rejects.toThrow();
+      expect(client.connectionIdentity!()).toBe(identity);
+      const duringDisconnect: unknown[] = [];
+      client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => duringDisconnect.push(client.connectionIdentity!()));
+      socket!.destroy();
+      await waitUntil(() => connected.length === 2, 5_000, 10);
+      const next = client.connectionIdentity!();
+      expect(duringDisconnect).toEqual([null]);
+      expect(next).toMatchObject({ daemonInstanceId, connectionSequence: 2 });
+      expect(next!.connectionId).not.toBe(identity!.connectionId);
+      expect(connected[1]).toMatchObject(next!);
+      expect(await client.call("hello")).toMatchObject(next!);
+      client.close();
+      expect(client.connectionIdentity!()).toBeNull();
+      expect(duringDisconnect).toEqual([null, null]);
+    } finally { fake.close(); }
+  }, 15_000);
+
   test("首次连接、自动重连与主动关闭通过现有 subscribe 接口发出结构化通知", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
@@ -1576,6 +1697,7 @@ describe("本地连接生命周期通知", () => {
       client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, (data) => disconnected.push(data));
 
       expect(connected).toHaveLength(1);
+      expect(client.connectionIdentity!()).toBeNull(); // 旧服务端缺身份时不开放签发能力。
       expect(connected[0]).toMatchObject({
         status: "connected",
         repoId: identity.repoId,

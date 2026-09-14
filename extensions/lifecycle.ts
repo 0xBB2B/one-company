@@ -49,6 +49,45 @@ export interface UnregisterFailure {
 
 export interface ShutdownResult {
   unregisterFailures: UnregisterFailure[];
+  /** 可信前置撤权/收尾失败或未在信号预算内结束的数量。 */
+  shutdownHookFailures?: number;
+}
+
+export type WindowShutdownHook = () => void | Promise<void>;
+interface BoundShutdownHook {
+  readonly windowId: string;
+  readonly sessionId: string;
+  readonly callback: WindowShutdownHook;
+}
+const windowShutdownHooks = new WeakMap<WorkspaceClientsHandle, Set<BoundShutdownHook>>();
+
+/** 仅可信扩展登记：回调同步部分必须先撤销能力，返回值只等待其自有操作收尾。 */
+export function registerWindowShutdownHook(
+  window: Pick<WindowContextValue, "windowId" | "sessionId" | "clients">,
+  callback: WindowShutdownHook,
+): () => void {
+  let hooks = windowShutdownHooks.get(window.clients);
+  if (!hooks) { hooks = new Set(); windowShutdownHooks.set(window.clients, hooks); }
+  if (hooks.size >= 32) throw new Error("窗口关闭订阅已满");
+  const entry = Object.freeze({ windowId: window.windowId, sessionId: window.sessionId, callback });
+  hooks.add(entry);
+  return () => {
+    hooks.delete(entry);
+    if (hooks.size === 0 && windowShutdownHooks.get(window.clients) === hooks) windowShutdownHooks.delete(window.clients);
+  };
+}
+
+function beginWindowShutdown(window: ActiveWindow): { count: number; settled: Promise<PromiseSettledResult<void>[]> } {
+  const hooks = windowShutdownHooks.get(window.clients);
+  const pending: Promise<void>[] = [];
+  for (const hook of [...(hooks ?? [])]) {
+    if (hook.windowId !== window.windowId || hook.sessionId !== window.sessionId) continue;
+    hooks!.delete(hook);
+    try { pending.push(Promise.resolve(hook.callback())); }
+    catch (error) { pending.push(Promise.reject(error)); }
+  }
+  if (hooks?.size === 0) windowShutdownHooks.delete(window.clients);
+  return { count: pending.length, settled: Promise.allSettled(pending) };
 }
 
 interface ActiveWindow {
@@ -93,6 +132,8 @@ function createReadyController(): ReadyController {
 }
 
 let activeWindow: ActiveWindow | undefined;
+let shutdownOperation: Promise<ShutdownResult> | undefined;
+let limitShutdownWait: ((ms: number) => void) | undefined;
 let startupError: Error | undefined;
 let readyController = createReadyController();
 let capturedShutdown: (() => void) | undefined;
@@ -171,6 +212,7 @@ interface StartWindowInput {
 }
 
 async function startWindow(input: StartWindowInput): Promise<void> {
+  if (shutdownOperation) await shutdownOperation;
   ensureFreshReadyController();
   const windowId = uuidv7();
   let clients: WorkspaceClientsHandle | undefined;
@@ -245,30 +287,66 @@ async function guardBeforeSwitch(ctx: NotifyCtx): Promise<{ cancel: boolean }> {
   return { cancel: false };
 }
 
-export async function shutdownWindow(budgetMs?: number): Promise<ShutdownResult> {
-  const window = activeWindow;
-  if (!window) return { unregisterFailures: [] };
-  activeWindow = undefined;
-  const unregisterFailures: UnregisterFailure[] = [];
-  try {
-    const host: Host = { kind: "main", id: window.windowId };
-    const stopSettled = window.shellRegistry.stopHost(host).catch(() => undefined);
-    await (budgetMs === undefined ? stopSettled : raceOrTimeout(stopSettled, budgetMs));
-    for (const reg of window.registrations) {
-      try {
-        await reg.registry.unregister(window.windowId);
-      } catch (error) {
-        unregisterFailures.push({ repoId: reg.repoId, reason: (error as Error).message });
-      }
-    }
-  } finally {
-    for (const reg of window.registrations) reg.stopHeartbeat();
-    startupError = undefined;
-    readyController = createReadyController();
-    capturedShutdown = undefined;
-    window.clients.closeAll();
+export function shutdownWindow(budgetMs?: number): Promise<ShutdownResult> {
+  if (shutdownOperation) {
+    if (budgetMs !== undefined) limitShutdownWait?.(budgetMs);
+    return shutdownOperation;
   }
-  return { unregisterFailures };
+  const window = activeWindow;
+  if (!window) return Promise.resolve({ unregisterFailures: [] });
+  activeWindow = undefined;
+  let complete!: (result: ShutdownResult) => void;
+  let failed!: (error: unknown) => void;
+  const pending = new Promise<ShutdownResult>((resolve, reject) => { complete = resolve; failed = reject; });
+  shutdownOperation = pending;
+  let deadline = Infinity;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let expire!: () => void;
+  const budgetEnded = new Promise<void>((resolve) => { expire = resolve; });
+  limitShutdownWait = (ms) => {
+    const next = Date.now() + Math.max(0, ms);
+    if (next >= deadline) return;
+    deadline = next;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(expire, Math.max(0, deadline - Date.now()));
+  };
+  if (budgetMs !== undefined) limitShutdownWait(budgetMs);
+  // 同步调用所有失效回调，之后才开始等待 Shell；此处保持原 daemon 通道可用。
+  const hooks = beginWindowShutdown(window);
+  const finish = async (): Promise<ShutdownResult> => {
+    const unregisterFailures: UnregisterFailure[] = [];
+    let hookResults: PromiseSettledResult<void>[] | undefined;
+    let shutdownHookFailures = 0;
+    const hooksSettled = hooks.settled.then((results) => { hookResults = results; });
+    try {
+      const host: Host = { kind: "main", id: window.windowId };
+      const stopSettled = window.shellRegistry.stopHost(host).catch(() => undefined);
+      const allSettled = Promise.all([stopSettled, hooksSettled]);
+      await Promise.race([allSettled, budgetEnded]);
+      shutdownHookFailures = hookResults?.filter((result) => result.status === "rejected").length ?? (hooks.count > 0 ? 1 : 0);
+      for (const reg of window.registrations) {
+        try {
+          await reg.registry.unregister(window.windowId);
+        } catch (error) {
+          unregisterFailures.push({ repoId: reg.repoId, reason: (error as Error).message });
+        }
+      }
+    } finally {
+      for (const reg of window.registrations) reg.stopHeartbeat();
+      startupError = undefined;
+      readyController = createReadyController();
+      capturedShutdown = undefined;
+      window.clients.closeAll();
+    }
+    return { unregisterFailures, ...(shutdownHookFailures ? { shutdownHookFailures } : {}) };
+  };
+  void finish().then(complete, failed);
+  const clear = () => {
+    if (timer) clearTimeout(timer);
+    if (shutdownOperation === pending) { shutdownOperation = undefined; limitShutdownWait = undefined; }
+  };
+  void pending.then(clear, clear);
+  return pending;
 }
 
 const installedSignalHandlers = new WeakSet<NodeJS.Process>();
@@ -278,16 +356,17 @@ export function installExitSignalHandlers(proc: NodeJS.Process): void {
   installedSignalHandlers.add(proc);
   for (const signal of EXIT_SIGNALS) {
     proc.on(signal, () => {
-      // shutdownWindow 会在自己的清理里清空 capturedShutdown，这里先取快照，
-      // 否则触发本次信号的回调在 shutdownWindow 完成后已经读不到它
+      // 先取快照再清空，使同轮多个退出信号只通知一次宿主关闭。
       const shutdownCallback = capturedShutdown;
-      void shutdownWindow(SHELL_STOP_BUDGET_MS).finally(() => {
+      capturedShutdown = undefined;
+      const finish = () => {
         try {
           shutdownCallback?.();
         } catch {
           // 通知宿主关闭失败不应影响信号处理器已完成的窗口清理
         }
-      });
+      };
+      void shutdownWindow(SHELL_STOP_BUDGET_MS).then(finish, finish);
     });
   }
 }
@@ -331,7 +410,6 @@ export default function lifecycleExtension(pi: ExtensionAPI, deps: LifecycleDeps
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    capturedShutdown = ctx.shutdown;
     await startWindow({
       cwd: ctx.cwd,
       sessionId: ctx.sessionManager.getSessionId(),
@@ -342,6 +420,7 @@ export default function lifecycleExtension(pi: ExtensionAPI, deps: LifecycleDeps
       createWindowRegistry: createWindowRegistryDep,
       connectWorkspaceClients,
     });
+    if (activeWindow?.sessionId === ctx.sessionManager.getSessionId()) capturedShutdown = ctx.shutdown;
     installExitSignalHandlers(proc);
   });
 
@@ -350,6 +429,7 @@ export default function lifecycleExtension(pi: ExtensionAPI, deps: LifecycleDeps
 
   pi.on("session_shutdown", async (_event, ctx) => {
     const result = await shutdownWindow();
+    if (result.shutdownHookFailures) ctx.ui.notify("窗口前置撤权或自有操作收尾未全部完成", "error");
     for (const failure of result.unregisterFailures) {
       ctx.ui.notify(`仓库 ${failure.repoId} 注销失败：${failure.reason}`, "error");
     }

@@ -69,6 +69,15 @@ function enableWal(connection: Connection): void {
 
 const ID_CONSTRAINT = `length(id) = 36 AND substr(id,9,1) = '-' AND substr(id,14,1) = '-' AND substr(id,19,1) = '-' AND substr(id,24,1) = '-' AND substr(id,15,1) = '7' AND substr(id,20,1) IN ('8','9','a','b') AND length(replace(id,'-','')) = 32 AND replace(id,'-','') NOT GLOB '*[^0-9a-f]*'`;
 
+// 仅缓存这五条固定SQL；参数逐次绑定，get/all/run同步完成，不向调用方暴露迭代器。
+const RECORD_SQL = Object.freeze({
+  read: "SELECT id, version, data FROM records WHERE namespace = ? AND record_key = ?",
+  create: "INSERT INTO records (id, namespace, record_key, version, data) VALUES (?, ?, ?, 1, ?)",
+  update: "UPDATE records SET data = ?, version = version + 1 WHERE namespace = ? AND record_key = ? AND version = ?",
+  remove: "DELETE FROM records WHERE namespace = ? AND record_key = ? AND version = ?",
+  list: "SELECT id, record_key, version, data FROM records WHERE namespace = ? ORDER BY id",
+});
+
 const INDEX_NAMESPACES = new Set(["workspaces", "index_generations", "files", "symbols", "code_edges", "features_current", "rules_current", "rule_edges_current", "code_bindings", "source_fragments", "prod_metadata"]);
 
 export interface StoredRecord<T = unknown> {
@@ -111,6 +120,7 @@ export type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
 export class LocalDatabase {
   private readonly connection: Connection;
   private readonly path: string;
+  private readonly recordStatements = new Map<keyof typeof RECORD_SQL, Statement>();
   private inTransaction = false;
   private unavailable = false;
   private closed = false;
@@ -118,6 +128,15 @@ export class LocalDatabase {
   private assertAvailable(): void {
     if (this.unavailable || this.closed || hasInvalidTransactionOrigin()) throw new DatabaseUnavailableError();
     assertDatabasePathReady(this.path);
+  }
+
+  private recordStatement(operation: keyof typeof RECORD_SQL): Statement {
+    let statement = this.recordStatements.get(operation);
+    if (!statement) {
+      statement = this.connection.prepare(RECORD_SQL[operation]);
+      this.recordStatements.set(operation, statement);
+    }
+    return statement;
   }
 
   private assertNamespace(namespace: string, event = false): void {
@@ -356,6 +375,7 @@ export class LocalDatabase {
       if (transactionOriginHasAsyncWork(origin) || nativePromise || typeof then === "function") {
         // 先撤销来源和连接能力，再回滚/关闭。来源只传播给该回调创建的异步延续。
         this.unavailable = true;
+        this.recordStatements.clear();
         invalidateTransactionOrigin(origin);
         if (nativePromise) {
           // 返回值可能在事务外或其他vm上下文中创建，始终只处理该返回Promise的拒绝。
@@ -379,6 +399,8 @@ export class LocalDatabase {
       return result;
     } catch (error) {
       finishTransactionOrigin(origin);
+      // 事务失败后丢弃编译引用；连接能否继续使用仍取决于回滚和清理结果。
+      this.recordStatements.clear();
       const cleanupErrors: unknown[] = [];
       try { this.connection.exec("ROLLBACK"); }
       catch (cleanupError) { this.unavailable = true; cleanupErrors.push(cleanupError); }
@@ -397,21 +419,28 @@ export class LocalDatabase {
   read<T = unknown>(namespace: string, key: string): StoredRecord<T> | null {
     this.assertAvailable();
     this.assertNamespace(namespace);
-    const row = this.connection.prepare("SELECT id, version, data FROM records WHERE namespace = ? AND record_key = ?").get(namespace, key);
+    const row = this.recordStatement("read").get(namespace, key);
     return row ? { id: String(row.id), version: Number(row.version), data: JSON.parse(String(row.data)) as T } : null;
   }
 
   create<T>(namespace: string, key: string, data: T, id = uuidv7()): StoredRecord<T> {
     this.assertAvailable();
     this.assertNamespace(namespace);
-    this.connection.prepare("INSERT INTO records (id, namespace, record_key, version, data) VALUES (?, ?, ?, 1, ?)").run(id, namespace, key, JSON.stringify(data));
+    const serialized = JSON.stringify(data);
+    // 序列化可执行toJSON/getter；取得语句前复核重入后的连接、来源和维护状态。
+    this.assertAvailable();
+    this.assertNamespace(namespace);
+    this.recordStatement("create").run(id, namespace, key, serialized);
     return { id, version: 1, data };
   }
 
   update<T>(namespace: string, key: string, version: number, data: T): number {
     this.assertAvailable();
     this.assertNamespace(namespace);
-    const result = this.connection.prepare("UPDATE records SET data = ?, version = version + 1 WHERE namespace = ? AND record_key = ? AND version = ?").run(JSON.stringify(data), namespace, key, version);
+    const serialized = JSON.stringify(data);
+    this.assertAvailable();
+    this.assertNamespace(namespace);
+    const result = this.recordStatement("update").run(serialized, namespace, key, version);
     if (Number(result.changes) !== 1) throw new StaleVersionError();
     return version + 1;
   }
@@ -419,14 +448,14 @@ export class LocalDatabase {
   remove(namespace: string, key: string, version: number): void {
     this.assertAvailable();
     this.assertNamespace(namespace);
-    const result = this.connection.prepare("DELETE FROM records WHERE namespace = ? AND record_key = ? AND version = ?").run(namespace, key, version);
+    const result = this.recordStatement("remove").run(namespace, key, version);
     if (Number(result.changes) !== 1) throw new StaleVersionError();
   }
 
   list<T = unknown>(namespace: string): Array<StoredRecord<T> & { key: string }> {
     this.assertAvailable();
     this.assertNamespace(namespace);
-    return this.connection.prepare("SELECT id, record_key, version, data FROM records WHERE namespace = ? ORDER BY id").all(namespace)
+    return this.recordStatement("list").all(namespace)
       .map((row) => ({ id: String(row.id), key: String(row.record_key), version: Number(row.version), data: JSON.parse(String(row.data)) as T }));
   }
 
@@ -481,6 +510,7 @@ export class LocalDatabase {
 
   close(): void {
     this.unavailable = true;
+    this.recordStatements.clear();
     if (this.closed) return;
     this.connection.close();
     this.closed = true;

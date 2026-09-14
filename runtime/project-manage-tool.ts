@@ -1,5 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
-import { lstatSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, join, posix, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -14,6 +14,7 @@ import type {
   ProjectIndexServiceOptions,
 } from "./project-index-service.ts";
 import { DEFAULT_INDEX_LIMITS } from "./project-index-policy.ts";
+import { readGit } from "./git-read.ts";
 
 const REPO_ID_PATTERN = "^[0-9a-f]{64}$";
 const REQUIREMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -76,7 +77,14 @@ export interface ProjectIndexServiceHandle {
 
 export type OpenProjectIndexServiceInput = Readonly<
   Pick<ProjectIndexServiceOptions, "repositoryRoot" | "dataRoot" | "repoId">
-  & { authorize: NonNullable<ProjectIndexServiceOptions["authorize"]> }
+  & {
+    authorize: NonNullable<ProjectIndexServiceOptions["authorize"]>;
+    action: "preview" | ProjectManageAction;
+    host: ProjectManageHostContext;
+    readonly authorizedBranch: string;
+    /** 只由真实确认后的会话闭包提供；不随单次工具完成撤销。 */
+    authorizeContinuous: () => boolean;
+  }
 >;
 
 export type OpenProjectIndexService = (input: OpenProjectIndexServiceInput) => Promise<ProjectIndexServiceHandle>;
@@ -123,6 +131,10 @@ interface PathIdentity {
 }
 
 interface RootIdentity {
+  readonly branch: string;
+  readonly gitDir: PathIdentity;
+  readonly gitMarker: PathIdentity;
+  readonly gitMarkerContents: string | null;
   readonly repoId: string;
   readonly path: string;
   readonly device: bigint;
@@ -132,6 +144,7 @@ interface RootIdentity {
 }
 
 interface ScanGrant {
+  readonly branch: string;
   readonly sessionId: string;
   readonly windowId: string;
   readonly repoId: string;
@@ -156,7 +169,7 @@ const SERVICE_ACTIONS: Readonly<Record<"preview" | ProjectManageAction, Readonly
 
 const SAFE_ENUM_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   action: new Set(["preview", "init", "status", "refresh"]),
-  status: new Set(["absent", "building", "ready", "partial", "valid", "invalid", "cancelled", "interrupted", "indexed", "unsupported", "parse_error", "skipped", "running"]),
+  status: new Set(["absent", "building", "dirty", "ready", "partial", "valid", "invalid", "cancelled", "interrupted", "indexed", "unsupported", "parse_error", "skipped", "running"]),
   state: new Set(["absent", "ready", "partial", "invalid", "cancelled", "interrupted", "building"]),
   phase: new Set(["scan", "read", "parse", "verify", "before", "after", "publish", "return"]),
   mode: new Set(["preview", "init", "status", "refresh"]),
@@ -297,6 +310,21 @@ async function inspectIndexStorage(dataRoot: string, repoId: string): Promise<Pa
   return identities;
 }
 
+/** 固定 Git 身份元数据的有界只读；不跟随链接，不读取任何源码或归档。 */
+function readGitIdentityFile(path: string): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.nlink !== 1n || before.size > 4096n) throw new Error("invalid Git identity file");
+    const bytes = Buffer.alloc(Number(before.size) + 1);
+    const length = readSync(fd, bytes, 0, bytes.length, 0);
+    const after = fstatSync(fd, { bigint: true });
+    if (BigInt(length) !== before.size || before.size !== after.size || before.mtimeNs !== after.mtimeNs
+      || before.ctimeNs !== after.ctimeNs) throw new Error("unstable Git identity file");
+    return bytes.subarray(0, length).toString("utf8").trim();
+  } finally { closeSync(fd); }
+}
+
 async function inspectRoot(dataRoot: string, repoId: string, repositoryRoot: string): Promise<RootIdentity> {
   if (!isAbsolute(repositoryRoot) || resolve(repositoryRoot) !== repositoryRoot) {
     throw new ProjectManageToolError("repository_changed", "lifecycle 提供的仓库根不是规范绝对路径");
@@ -324,7 +352,18 @@ async function inspectRoot(dataRoot: string, repoId: string, repositoryRoot: str
     throw new ProjectManageToolError("unsafe_data_root", "本机索引数据根必须位于全部业务 worktree 之外");
   }
   const storage = await inspectIndexStorage(dataRoot, repoId);
-  return { repoId, path: actualRoot, device: stats.dev, inode: stats.ino, worktrees, storage };
+  const branch = (await readGit(actualRoot, ["symbolic-ref", "-q", "HEAD"])).stdout.trim();
+  if (!branch.startsWith("refs/heads/") || /[\u0000-\u001f\u007f]/u.test(branch)) throw new ProjectManageToolError("repository_changed", "项目索引需要有效分支身份");
+  const gitDirPath = await realpath((await readGit(actualRoot, ["rev-parse", "--absolute-git-dir"])).stdout.trim());
+  const gitDirStat = lstatSync(gitDirPath, { bigint: true });
+  const markerPath = join(actualRoot, ".git");
+  const markerStat = lstatSync(markerPath, { bigint: true });
+  const root: RootIdentity = { branch, repoId, path: actualRoot, device: stats.dev, inode: stats.ino, worktrees, storage,
+    gitDir: { path: gitDirPath, device: gitDirStat.dev, inode: gitDirStat.ino },
+    gitMarker: { path: markerPath, device: markerStat.dev, inode: markerStat.ino },
+    gitMarkerContents: markerStat.isFile() ? readGitIdentityFile(markerPath) : null };
+  if (!rootStillMatches(dataRoot, root)) throw new ProjectManageToolError("repository_changed", "项目索引 Git 身份发生变化");
+  return root;
 }
 
 function rootStillMatches(dataRoot: string, root: RootIdentity): boolean {
@@ -332,6 +371,17 @@ function rootStillMatches(dataRoot: string, root: RootIdentity): boolean {
     const stats = lstatSync(root.path, { bigint: true });
     if (!stats.isDirectory() || stats.isSymbolicLink() || stats.dev !== root.device || stats.ino !== root.inode) return false;
     if (realpathSync(root.path) !== root.path) return false;
+    const gitDir = lstatSync(root.gitDir.path, { bigint: true });
+    const marker = lstatSync(root.gitMarker.path, { bigint: true });
+    if (!gitDir.isDirectory() || gitDir.isSymbolicLink() || realpathSync(root.gitDir.path) !== root.gitDir.path
+      || gitDir.dev !== root.gitDir.device || gitDir.ino !== root.gitDir.inode || marker.isSymbolicLink()
+      || marker.dev !== root.gitMarker.device || marker.ino !== root.gitMarker.inode) return false;
+    if (root.gitMarkerContents === null) {
+      if (!marker.isDirectory() || root.gitMarker.path !== root.gitDir.path) return false;
+    } else if (!marker.isFile() || readGitIdentityFile(root.gitMarker.path) !== root.gitMarkerContents
+      || !root.gitMarkerContents.startsWith("gitdir: ")
+      || resolve(root.path, root.gitMarkerContents.slice(8)) !== root.gitDir.path) return false;
+    if (readGitIdentityFile(join(root.gitDir.path, "HEAD")) !== `ref: ${root.branch}`) return false;
     assertDataRootOutsideWorktrees(dataRoot, [...root.worktrees]);
     for (const expected of root.storage) {
       const current = lstatSync(expected.path, { bigint: true });
@@ -370,14 +420,17 @@ function beginOperation(externalSignal: AbortSignal | undefined): ActiveOperatio
   };
 }
 
-function scanConfirmationMessage(repositoryRoot: string, dataRoot: string, repoId: string): string {
+function scanConfirmationMessage(repositoryRoot: string, dataRoot: string, repoId: string, preview: boolean, branch: string): string {
   return [
     `仓库根：${repositoryRoot}`,
+    `当前分支：${branch}`,
     "允许读取：该仓库内通过安全边界核对的当前代码、配置、测试与 docs/spec。",
     "固定排除：.git、依赖、构建/缓存/日志、数据库、敏感凭据、符号/硬链接、嵌套仓库；docs/prod 只枚举有限路径元数据，不读取正文。",
-    `允许写入：仅仓库外本机目录 ${resolve(dataRoot, "repos", repoId)} 中的 index.db 及 SQLite 必要附属文件。`,
-    "不运行仓库脚本，不创建需求、规则、PM、业务提交或其他共享文件。init 的 preview=true 也会枚举路径，但不得创建数据库或共享输出。",
-    "本次确认仅在当前 session 和当前 lifecycle 窗口内复用；关闭会话或身份变化立即失效。",
+    `允许写入：仅仓库外本机目录 ${resolve(dataRoot, "repos", repoId)} 中的 index.db、data.db 的扫描授权元数据及 SQLite 必要附属文件。`,
+    "不运行仓库脚本，不创建需求、规则、PM、业务提交或其他共享文件。init 的 preview=true 仅枚举路径，不创建 index.db 或共享输出；确认与撤销在外部 data.db 登记授权元数据。",
+    preview
+      ? "本次仅允许一次路径枚举预览；不会创建持续监听，不能用于批准后续 init/refresh。"
+      : "本次允许仅在当前 session 和当前 lifecycle 窗口内持续扫描当前仓库/worktree/分支；工具结束后继续监听。同一存活会话断线重连时重新签发连接许可并对账；关闭会话、切换身份或宿主重启后必须重新确认。",
   ].join("\n");
 }
 
@@ -594,7 +647,7 @@ function shapeServiceResult(action: "preview" | ProjectManageAction, value: unkn
     const index = raw.index === null ? null : publicRecord(raw.index);
     if (raw.index !== null && !index) return invalidServiceResult();
     const indexStatus = index?.status;
-    if (index && !["building", "cancelled", "interrupted", "ready", "partial", "invalid"].includes(String(indexStatus))) {
+    if (index && !["building", "dirty", "cancelled", "interrupted", "ready", "partial", "invalid"].includes(String(indexStatus))) {
       return invalidServiceResult();
     }
     return {
@@ -761,7 +814,8 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
         const serviceAction: "preview" | ProjectManageAction = params.action === "init" && params.preview === true ? "preview" : params.action;
         if (serviceAction !== "status") {
           const grant = grants.get(params.repoId);
-          const reusable = grant
+          const reusable = serviceAction !== "preview" && grant
+            && grant.branch === root.branch
             && grant.sessionId === host.sessionId
             && grant.windowId === host.windowId
             && grant.repositoryRoot === root.path
@@ -773,7 +827,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
             }
             const approved = await ctx.ui.confirm(
               serviceAction === "preview" ? "确认预览项目索引范围" : "确认项目索引范围",
-              scanConfirmationMessage(root.path, options.dataRoot, params.repoId),
+              scanConfirmationMessage(root.path, options.dataRoot, params.repoId, serviceAction === "preview", root.branch),
               { signal: operation.signal },
             );
             if (!approved) throw new ProjectManageToolError("scan_declined", "用户取消或拒绝项目索引扫描授权");
@@ -785,11 +839,15 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
               throw new ProjectManageToolError("stale_window", "确认期间 lifecycle 窗口身份已变化");
             }
             const afterRoot = await inspectRoot(options.dataRoot, params.repoId, afterPrompt.repositories.get(params.repoId)!.path);
-            if (afterRoot.path !== root.path || afterRoot.device !== root.device || afterRoot.inode !== root.inode) {
+            if (afterRoot.branch !== root.branch || afterRoot.path !== root.path || afterRoot.device !== root.device || afterRoot.inode !== root.inode
+              || afterRoot.gitDir.path !== root.gitDir.path || afterRoot.gitDir.inode !== root.gitDir.inode || afterRoot.gitDir.device !== root.gitDir.device
+              || afterRoot.gitMarker.inode !== root.gitMarker.inode || afterRoot.gitMarker.device !== root.gitMarker.device
+              || afterRoot.gitMarkerContents !== root.gitMarkerContents) {
               throw new ProjectManageToolError("repository_changed", "确认期间仓库根身份已变化");
             }
             root = afterRoot;
-            grants.set(params.repoId, {
+            if (serviceAction !== "preview") grants.set(params.repoId, {
+              branch: root.branch,
               sessionId: host.sessionId,
               windowId: host.windowId,
               repoId: params.repoId,
@@ -810,7 +868,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
         const authorize = (request: ProjectIndexAuthorizationRequest): boolean => {
           if (disposed || operation.signal.aborted || !operations.has(operation)) return false;
           if (!currentHostMatches(options, activeHost, host, ctx) || !rootStillMatches(options.dataRoot, root)) return false;
-          if (serviceAction !== "status") {
+          if (serviceAction !== "status" && serviceAction !== "preview") {
             const grant = grants.get(params.repoId);
             if (!grant || grant.sessionId !== host.sessionId || grant.windowId !== host.windowId
               || grant.repositoryRoot !== root.path || grant.device !== root.device || grant.inode !== root.inode) return false;
@@ -828,11 +886,19 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
         })) {
           throw new ProjectManageToolError("stale_window", "项目索引操作授权在启动前已失效");
         }
+        const continuousGrant = grants.get(params.repoId);
+        const authorizeContinuous = (): boolean => serviceAction !== "preview" && !!continuousGrant
+          && grants.get(params.repoId) === continuousGrant && continuousGrant.branch === root.branch && !disposed
+          && currentHostMatches(options, activeHost, host, ctx) && rootStillMatches(options.dataRoot, root);
         const service = await (options.openService ?? defaultOpenService)(Object.freeze({
           repositoryRoot: root.path,
           dataRoot: options.dataRoot,
           repoId: params.repoId,
           authorize,
+          action: serviceAction,
+          host: snapshotHost(host),
+          authorizedBranch: root.branch,
+          authorizeContinuous,
         }));
         operation.service = service;
         let rawResult: unknown;

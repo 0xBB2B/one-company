@@ -27,9 +27,19 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     PI_CODING_AGENT_DIR: join(root, "agent"), PI_OFFLINE: "1", PI_TELEMETRY: "0",
   };
   const sandbox = "(version 1)(allow default)(deny network*)";
-  const run = (command: string, args: string[], cwd = root) => exec("/usr/bin/sandbox-exec", ["-p", sandbox, command, ...args], {
-    cwd, env, timeout: 30_000, maxBuffer: 4 * 1024 * 1024,
-  });
+  const run = async (command: string, args: string[], cwd = root) => {
+    try {
+      return await exec("/usr/bin/sandbox-exec", ["-p", sandbox, command, ...args], {
+        cwd, env, timeout: 30_000, maxBuffer: 4 * 1024 * 1024,
+      });
+    } catch (error) {
+      const failure = error as Error & { stdout?: string; stderr?: string };
+      console.error("离线安装命令失败", { command, args, cwd, store: env.npm_config_store_dir,
+        stdout: failure.stdout, stderr: failure.stderr });
+      throw error;
+    }
+  };
+  let passed = false;
   try {
     for (const dir of [env.HOME, env.TMPDIR, env.NODE_COMPILE_CACHE, env.PI_CODING_AGENT_DIR, join(root, "packs"), join(root, "consumer"), join(root, "other cwd 中文")]) {
       await mkdir(dir, { recursive: true });
@@ -42,6 +52,9 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     const artifact = await pack(productRoot);
     const runtime = await pack(dirname(require.resolve("web-tree-sitter/web-tree-sitter.wasm")));
     const typebox = await pack(await realpath(join(productRoot, "node_modules/typebox")));
+    const jitiRoot = await realpath(join(productRoot, "node_modules/jiti"));
+    expect(JSON.parse(await readFile(join(jitiRoot, "package.json"), "utf8")).version).toBe("2.7.0");
+    const jiti = await pack(jitiRoot);
     for (const entry of ["runtime/short-decision-format.ts", "runtime/short-decisions.ts", "runtime/requirement-state.ts", "runtime/requirement-contracts.ts", "runtime/requirement-workspace.ts", "runtime/database-paths.ts", "runtime/database-maintenance.ts", "runtime/spec-format.ts", "runtime/strict-json.ts", "resources/spec/schema.json", "runtime/syntax-parser.ts", "resources/tree-sitter/manifest.json", "resources/tree-sitter/tree-sitter-go.wasm", "resources/tree-sitter/tree-sitter-tsx.wasm", "resources/tree-sitter/tree-sitter-typescript.wasm", "resources/tree-sitter/tree-sitter-javascript.wasm"]) {
       expect(artifact.files).toContain(entry);
     }
@@ -50,14 +63,20 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     await writeFile(join(root, "consumer/package.json"), JSON.stringify({ name: "parser-install-consumer", version: "1.0.0", private: true,
       packageManager: "pnpm@11.7.0", dependencies: { "@0xbb2b/pi-company": `file:${artifact.path}` } }));
     // 宿主提供 peer 包；运行依赖固定为本机 tarball，仍使用 pnpm 的隔离链接布局。
-    await writeFile(join(root, "consumer/pnpm-workspace.yaml"), `autoInstallPeers: false\noverrides:\n  typebox: ${JSON.stringify(`file:${typebox.path}`)}\n  web-tree-sitter: ${JSON.stringify(`file:${runtime.path}`)}\n`);
+    await writeFile(join(root, "consumer/pnpm-workspace.yaml"), `autoInstallPeers: false\noverrides:\n  typebox: ${JSON.stringify(`file:${typebox.path}`)}\n  web-tree-sitter: ${JSON.stringify(`file:${runtime.path}`)}\n  jiti: ${JSON.stringify(`file:${jiti.path}`)}\n`);
     await run(node, [pnpm, "install", "--offline", "--ignore-scripts", "--lockfile-only"], join(root, "consumer"));
     await run(node, [pnpm, "install", "--offline", "--frozen-lockfile", "--ignore-scripts"], join(root, "consumer"));
     const installed = await realpath(join(root, "consumer/node_modules/@0xbb2b/pi-company"));
-    const installedRuntime = dirname(createRequire(join(installed, "package.json")).resolve("web-tree-sitter/web-tree-sitter.wasm"));
+    expect(installed).not.toBe(await realpath(productRoot));
+    const installedRequire = createRequire(join(installed, "package.json"));
+    const installedRuntime = dirname(installedRequire.resolve("web-tree-sitter/web-tree-sitter.wasm"));
+    const installedJiti = installedRequire.resolve("jiti/package.json");
+    expect(installedJiti.startsWith(join(root, "consumer") + "/")).toBe(true);
+    expect(JSON.parse(await readFile(installedJiti, "utf8")).version).toBe("2.7.0");
     const installedManifest = join(installed, "resources/tree-sitter/manifest.json");
     const installedPackage = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
     const runtimePackage = JSON.parse(await readFile(join(installedRuntime, "package.json"), "utf8"));
+    expect(installedPackage.dependencies.jiti).toBe("2.7.0");
     expect(installedPackage.dependencies["web-tree-sitter"]).toBe("0.27.0");
     expect(runtimePackage.version).toBe("0.27.0");
     for (const pkg of [installedPackage, runtimePackage]) {
@@ -125,5 +144,10 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     await writeFile(join(business, "spec.json"), '{"schemaVersion":1}');
     await writeFile(join(business, "prod.md"), "# 人工文件夹具\n");
     await run(node, ["--input-type=module", "-e", "import{readFileSync}from'node:fs';import assert from'node:assert/strict';assert.equal(JSON.parse(readFileSync('spec.json','utf8')).schemaVersion,1);assert(readFileSync('prod.md','utf8').startsWith('#'));"], business);
-  } finally { await rm(root, { recursive: true, force: true }); }
+    passed = true;
+  } finally {
+    // execFile 的回调在子进程 close 后完成；仅成功且命令全部收尾才删除安装现场。
+    if (passed) await rm(root, { recursive: true, force: true });
+    else console.error("离线安装夹具失败，保留现场：", root);
+  }
 }, 120_000);

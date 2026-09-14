@@ -18,6 +18,7 @@ import { createRepoFixture, createWorkspaceFixture, removeRepoFixture } from "./
 import type { RepoFixture, WorkspaceFixture } from "./helpers/repo-fixture.ts";
 import lifecycleExtension, {
   installExitSignalHandlers,
+  registerWindowShutdownHook,
   shutdownWindow,
   windowContext,
   windowReady,
@@ -1083,6 +1084,104 @@ describe("共享时钟", () => {
     expect(windowRegistryClock).toBeDefined();
     expect(shellRegistryClock).toBeDefined();
     expect(shellRegistryClock).toBe(windowRegistryClock);
+  });
+});
+
+describe("可信前置关闭回调", () => {
+  test("同步撤销先于Shell等待，重复shutdown等待同一收尾且退订无残留", async () => {
+    const repo = await createRepoFixture(); repoFixtures.push(repo);
+    let releaseShell!: () => void;
+    const shell = new Promise<void>((resolve) => { releaseShell = resolve; });
+    let releaseHook!: () => void;
+    const hook = new Promise<void>((resolve) => { releaseHook = resolve; });
+    const order: string[] = [];
+    const harness = await buildHarness({ cwd: repo.root, wrapShellRegistry: (registry) => new Proxy(registry, {
+      get(target, prop, receiver) {
+        if (prop === "stopHost") return async () => { order.push("shell"); await shell; return []; };
+        return Reflect.get(target, prop, receiver);
+      },
+    }) });
+    await triggerSessionStart(harness);
+    const window = windowContext();
+    let cancelledCalls = 0;
+    for (let i = 0; i < 40; i++) registerWindowShutdownHook(window, () => { cancelledCalls++; })();
+    const unsubscribe = registerWindowShutdownHook(window, () => { order.push("invalidate"); return hook; });
+    const foreign = registerWindowShutdownHook({ ...window, sessionId: "foreign" }, () => { order.push("foreign"); });
+    const closing = shutdownWindow();
+    const duplicate = shutdownWindow();
+    expect(duplicate).toBe(closing);
+    try {
+      expect(order).toEqual(["invalidate", "shell"]);
+      expect(harness.workspaceClients.closeAllCallCount()).toBe(0);
+      let settled = false; void closing.then(() => { settled = true; });
+      releaseShell(); await sleepMs(20);
+      expect(settled).toBe(false);
+      expect(harness.workspaceClients.closeAllCallCount()).toBe(0);
+    } finally { releaseShell(); releaseHook(); unsubscribe(); foreign(); await closing; }
+    expect(cancelledCalls).toBe(0);
+    expect(harness.workspaceClients.closeAllCallCount()).toBe(1);
+    await shutdownWindow(); expect(order).toEqual(["invalidate", "shell"]);
+  });
+
+  test("退出信号同步触发失效，重复信号只通知一次宿主关闭", async () => {
+    const repo = await createRepoFixture(); repoFixtures.push(repo);
+    let releaseShell!: () => void;
+    const shell = new Promise<void>((resolve) => { releaseShell = resolve; });
+    const harness = await buildHarness({ cwd: repo.root, wrapShellRegistry: (registry) => new Proxy(registry, {
+      get(target, prop, receiver) {
+        if (prop === "stopHost") return async () => { await shell; return []; };
+        return Reflect.get(target, prop, receiver);
+      },
+    }) });
+    await triggerSessionStart(harness);
+    let invalidations = 0;
+    const unsubscribe = registerWindowShutdownHook(windowContext(), () => { invalidations++; });
+    try {
+      harness.fakeProcess.emit("SIGTERM"); harness.fakeProcess.emit("SIGHUP");
+      expect(invalidations).toBe(1);
+      expect(harness.workspaceClients.closeAllCallCount()).toBe(0);
+      releaseShell();
+      await waitFor(() => harness.shutdownCalls.length === 1, 2_000);
+      expect(harness.workspaceClients.closeAllCallCount()).toBe(1);
+      expect(harness.fakeProcess.exitCalls).toEqual([]);
+    } finally { releaseShell(); unsubscribe(); await shutdownWindow(); }
+  });
+
+  test("已在等待普通关闭时退出预算仍可收紧，不因复用shutdownPromise无限等待", async () => {
+    const repo = await createRepoFixture(); repoFixtures.push(repo);
+    let release!: () => void;
+    const stopped = new Promise<void>((resolve) => { release = resolve; });
+    const harness = await buildHarness({ cwd: repo.root, wrapShellRegistry: (registry) => new Proxy(registry, {
+      get(target, prop, receiver) {
+        if (prop === "stopHost") return async () => { await stopped; return []; };
+        return Reflect.get(target, prop, receiver);
+      },
+    }) });
+    await triggerSessionStart(harness);
+    const pending = shutdownWindow();
+    let finished = false;
+    const bounded = shutdownWindow(20).then(() => { finished = true; });
+    try {
+      await sleepMs(100);
+      expect(finished).toBe(true);
+      expect(harness.workspaceClients.closeAllCallCount()).toBe(1);
+    } finally { release(); await Promise.all([pending, bounded]); }
+  });
+
+  test("一个前置回调失败不跳过其它撤权和原有资源清理，并返回固定失败元数据", async () => {
+    const repo = await createRepoFixture(); repoFixtures.push(repo);
+    const harness = await buildHarness({ cwd: repo.root });
+    await triggerSessionStart(harness);
+    const window = windowContext();
+    registerWindowShutdownHook(window, () => { throw new Error("HOOK_BODY_SENTINEL"); });
+    let invalidated = false;
+    registerWindowShutdownHook(window, () => { invalidated = true; });
+    const result = await shutdownWindow();
+    expect(invalidated).toBe(true);
+    expect(result.shutdownHookFailures).toBe(1);
+    expect(JSON.stringify(result)).not.toContain("SENTINEL");
+    expect(harness.workspaceClients.closeAllCallCount()).toBe(1);
+    expect(await harness.windowRegistryFactory.all()[0]!.list()).toEqual([]);
   });
 });
 

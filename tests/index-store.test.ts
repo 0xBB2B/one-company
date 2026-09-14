@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { AsyncTransactionError, LocalDatabase } from "../runtime/database.ts";
+import { AsyncTransactionError, LocalDatabase, StaleVersionError } from "../runtime/database.ts";
 import { createDatabaseSnapshot, withDatabaseMaintenance } from "../runtime/database-maintenance.ts";
 import { IndexStore, IndexStoreError } from "../runtime/index-store.ts";
 import type { IndexPublication, SourceFragment, WorkspaceIdentity } from "../runtime/index-store.ts";
@@ -55,6 +55,156 @@ function emptyPublication(status: "ready" | "partial" | "invalid" = "ready"): In
   return { status, diagnostics: status === "invalid" ? [{ code: "invalid_spec", path: "docs/spec/broken.json" }] : [], files: [], symbols: [], codeEdges: [], features: [], rules: [], ruleEdges: [], sourceFragments: [], prodMetadata: [] };
 }
 
+const entityNamespaces = ["files", "symbols", "code_edges", "features_current", "rules_current", "rule_edges_current", "source_fragments", "prod_metadata"] as const;
+
+function fullPublication(word: string): IndexPublication {
+  const publication = codePublication("src/main.ts", word), spec = specPublication(word);
+  publication.files.push(...spec.files); publication.sourceFragments.push(...spec.sourceFragments);
+  publication.features = spec.features; publication.rules = spec.rules;
+  publication.rules.push({ ...spec.rules[0]!, id: "player.jump.land", dependsOn: ["player.jump.once"] });
+  publication.ruleEdges.push({ id: "jump-land-dependency", fromRuleId: "player.jump.land", toRuleId: "player.jump.once", kind: "depends_on" });
+  publication.codeEdges.push({ id: "main-reference", fromSymbolId: null, toSymbolId: publication.symbols[0]!.id, kind: "references", certainty: "certain" });
+  const requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
+  publication.prodMetadata.push({ requirementId, source: "archive", path: `docs/prod/${requirementId}.完成.md`, fileName: `${requirementId}.完成.md`, lifecycle: "unknown", epoch: null, hash: null });
+  return publication;
+}
+
+function entityRows(db: LocalDatabase) {
+  return Object.fromEntries(entityNamespaces.map((namespace) => [namespace, db.list<Record<string, unknown>>(namespace)]));
+}
+
+function ftsRows(databasePath: string, workspaceId: string, query: string) {
+  const db = new DatabaseSync(databasePath, { readOnly: true, allowExtension: false });
+  try {
+    return db.prepare("SELECT generation, path, body FROM source_fragments_fts WHERE workspace_id = ? AND source_fragments_fts MATCH ? ORDER BY path").all(workspaceId, query);
+  } finally { db.close(); }
+}
+
+test("所有同键实体即使字节未变也更新代次和版本，保持内部行身份且不改另一worktree", async () => {
+  const w = await fixture(), aIdentity = w.identity(hash("1"), w.workspaceA, "refs/heads/a"), bIdentity = w.identity(hash("2"), w.workspaceB, "refs/heads/b");
+  const a = new IndexStore(w.databasePath, aIdentity), b = new IndexStore(w.databasePath, bIdentity), db = new LocalDatabase(w.databasePath);
+  try {
+    const publication = fullPublication("same_generation_word");
+    a.publish(a.begin(), publication); b.publish(b.begin(), fullPublication("foreign_workspace_word"));
+    const before = entityRows(db), token = a.begin();
+    const create = vi.spyOn(LocalDatabase.prototype, "create"), remove = vi.spyOn(LocalDatabase.prototype, "remove");
+    a.publish(token, publication);
+    expect(create).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
+    const after = entityRows(db);
+    for (const namespace of entityNamespaces) {
+      expect(after[namespace]).toHaveLength(before[namespace]!.length);
+      for (const previous of before[namespace]!) {
+        const current = after[namespace]!.find((row) => row.key === previous.key)!;
+        if (previous.data.workspaceId === bIdentity.workspaceId) expect(current).toEqual(previous);
+        else expect(current).toEqual({ ...previous, version: previous.version + 1, data: { ...previous.data, generation: token.targetGeneration } });
+      }
+    }
+    expect(a.getSnapshot()).toMatchObject({ generation: 2, symbols: publication.symbols, rules: [...publication.rules].sort((a, b) => a.id.localeCompare(b.id)) });
+    expect(a.search("same_generation_word").results).toHaveLength(2);
+    expect(a.search("foreign_workspace_word").results).toEqual([]);
+    expect(b.search("foreign_workspace_word").results).toHaveLength(2);
+    expect(b.getSnapshot().generation).toBe(1);
+  } finally { db.close(); a.close(); b.close(); }
+});
+
+test("混合同键正文替换、新增、删除与重命名清除旧行和FTS，规则公开ID不变", async () => {
+  const w = await fixture(), identity = w.identity(hash("3"), w.workspaceA, "refs/heads/reconcile");
+  const store = new IndexStore(w.databasePath, identity), db = new LocalDatabase(w.databasePath);
+  try {
+    const initial = fullPublication("previous_body_word");
+    initial.symbols[0] = { ...initial.symbols[0]!, startOffset: 0, endOffset: 20 };
+    store.publish(store.begin(), initial);
+    const before = entityRows(db);
+    const next = fullPublication("replacement_body_word");
+    const added = codePublication("src/added.ts", "added_body_word", hash("e"));
+    next.files.push(...added.files); next.symbols.push(...added.symbols); next.sourceFragments.push(...added.sourceFragments);
+    const specPath = "docs/spec/player/renamed.rules.json";
+    next.files.find((file) => file.kind === "spec")!.path = specPath;
+    next.features[0]!.path = specPath;
+    next.rules.forEach((rule) => { rule.path = specPath; });
+    next.sourceFragments.find((fragment) => fragment.kind === "spec")!.path = specPath;
+    const archive = next.prodMetadata[0]!;
+    archive.path = archive.path.replace("完成.md", "改名.md"); archive.fileName = archive.fileName.replace("完成.md", "改名.md");
+    next.codeEdges = []; next.ruleEdges = []; next.rules = next.rules.slice(0, 1);
+    store.publish(store.begin(), next);
+    const snapshot = store.getSnapshot(), after = entityRows(db);
+    expect(snapshot.symbols.find((symbol) => symbol.id === "src/main.ts#main")).not.toHaveProperty("startOffset");
+    expect(snapshot.files.map((file) => file.path)).toEqual([specPath, "src/added.ts", "src/main.ts"]);
+    expect(snapshot.rules).toEqual(next.rules); expect(snapshot.features).toEqual(next.features);
+    expect(snapshot.prodMetadata).toEqual(next.prodMetadata);
+    expect(snapshot.codeEdges).toEqual([]); expect(snapshot.ruleEdges).toEqual([]);
+    for (const namespace of ["features_current", "rules_current", "source_fragments", "symbols"] as const) {
+      const retained = before[namespace]!.find((row) => after[namespace]!.some((current) => current.key === row.key))!;
+      expect(after[namespace]!.find((row) => row.key === retained.key)).toMatchObject({ id: retained.id, version: retained.version + 1, data: { generation: 2 } });
+    }
+    expect(after.prod_metadata![0]!.id).not.toBe(before.prod_metadata![0]!.id);
+    expect(store.search("previous_body_word").results).toEqual([]);
+    expect(store.search("replacement_body_word").results.map((hit) => hit.path).sort()).toEqual([specPath, "src/main.ts"]);
+    expect(store.search("added_body_word").results).toHaveLength(1);
+    store.publish(store.begin(), emptyPublication());
+    expect(entityNamespaces.every((namespace) => db.list(namespace).length === 0)).toBe(true);
+    expect(db.searchIndexFragments(identity.workspaceId, "replacement_body_word OR added_body_word", 10)).toEqual([]);
+  } finally { db.close(); store.close(); }
+});
+
+test("发布末尾真实版本竞争使更新、新增、删除、FTS与代次整笔回滚，同token可安全重试", async () => {
+  const w = await fixture(), identity = w.identity(hash("4"), w.workspaceA, "refs/heads/version-conflict");
+  const store = new IndexStore(w.databasePath, identity), db = new LocalDatabase(w.databasePath);
+  try {
+    store.publish(store.begin(), fullPublication("before_conflict_word"));
+    const token = store.begin(), before = entityRows(db), status = store.status();
+    const generation = db.read("index_generations", identity.workspaceId);
+    const next = fullPublication("rollback_conflict_word"), added = codePublication("src/new.ts", "rollback_added_word");
+    next.files.push(...added.files); next.symbols.push(...added.symbols); next.sourceFragments.push(...added.sourceFragments);
+    next.codeEdges = [];
+    const originalUpdate = LocalDatabase.prototype.update;
+    let conflicts = 0;
+    const update = vi.spyOn(LocalDatabase.prototype, "update").mockImplementation(function (namespace, key, version, data) {
+      if (namespace === "prod_metadata") {
+        const fragments = this.list<{ body: string; generation: number }>("source_fragments");
+        expect(fragments.filter((row) => row.data.body.includes("rollback_conflict_word"))).toHaveLength(2);
+        expect(fragments.filter((row) => row.data.body.includes("rollback_added_word"))).toHaveLength(1);
+        expect(fragments.every((row) => row.data.generation === token.targetGeneration)).toBe(true);
+        expect(this.list("code_edges")).toEqual([]);
+        // 先真实推进同一行版本，再以旧版本执行原UPDATE，要求SQLite拒绝而非mock抛错。
+        originalUpdate.call(this, namespace, key, version, data); conflicts++;
+      }
+      return originalUpdate.call(this, namespace, key, version, data);
+    });
+    expect(() => store.publish(token, next)).toThrow(StaleVersionError);
+    update.mockRestore();
+    expect(conflicts).toBe(1); expect(entityRows(db)).toEqual(before);
+    expect(store.status()).toEqual(status); expect(db.read("index_generations", identity.workspaceId)).toEqual(generation);
+    const restoredFts = ftsRows(w.databasePath, identity.workspaceId, "before_conflict_word");
+    expect(restoredFts).toHaveLength(2); expect(restoredFts.every((row) => row.generation === 1)).toBe(true);
+    expect(ftsRows(w.databasePath, identity.workspaceId, "rollback_conflict_word OR rollback_added_word")).toEqual([]);
+    expect(() => store.getSnapshot()).toThrowError(expect.objectContaining({ code: "index_not_ready" }));
+    store.publish(token, next);
+    expect(store.getSnapshot()).toMatchObject({ generation: token.targetGeneration, codeEdges: [] });
+    expect(store.search("before_conflict_word").results).toEqual([]);
+    expect(store.search("rollback_conflict_word").results).toHaveLength(2);
+    expect(store.search("rollback_added_word").results).toHaveLength(1);
+  } finally { db.close(); store.close(); }
+});
+
+test("冲突稳定key指向其他workspace时不得更新或删除该行，先前写入全部回滚", async () => {
+  const w = await fixture(), identity = w.identity(hash("5"), w.workspaceA, "refs/heads/foreign-key");
+  const store = new IndexStore(w.databasePath, identity), db = new LocalDatabase(w.databasePath);
+  try {
+    store.publish(store.begin(), codePublication("src/main.ts", "original_owner_word"));
+    const next = codePublication("src/main.ts", "forbidden_owner_word"), added = codePublication("src/foreign.ts", "foreign_word");
+    next.files.push(...added.files); next.symbols.push(...added.symbols); next.sourceFragments.push(...added.sourceFragments);
+    const key = `${identity.workspaceId}:files:src/foreign.ts`;
+    const foreign = db.create("files", key, { workspaceId: hash("6"), generation: 1, ...added.files[0]! });
+    const before = entityRows(db), token = store.begin();
+    expect(() => store.publish(token, next)).toThrow();
+    expect(db.read("files", key)).toEqual(foreign); expect(entityRows(db)).toEqual(before);
+    expect(store.status()).toMatchObject({ status: "building", currentGeneration: 1 });
+    expect(ftsRows(w.databasePath, identity.workspaceId, "original_owner_word")).toHaveLength(1);
+    expect(ftsRows(w.databasePath, identity.workspaceId, "forbidden_owner_word")).toEqual([]);
+  } finally { db.close(); store.close(); }
+});
+
 test("按worktree隔离持久当前代次，FTS更新和删除会清除旧词", async () => {
   const w = await fixture();
   const aIdentity = w.identity(hash("1"), w.workspaceA, "refs/heads/a"), bIdentity = w.identity(hash("2"), w.workspaceB, "refs/heads/b");
@@ -104,6 +254,7 @@ test("invalid spec发布删除旧规则正文并拒绝返回未核对current", a
   try {
     expect(raw.list<Record<string, unknown>>("rules_current").filter((row) => row.data.workspaceId === identity.workspaceId)).toEqual([]);
     expect(raw.list<Record<string, unknown>>("source_fragments").filter((row) => row.data.workspaceId === identity.workspaceId)).toEqual([]);
+    expect(ftsRows(w.databasePath, identity.workspaceId, "legacy_rule_secret")).toEqual([]);
   } finally { raw.close(); }
 });
 
@@ -119,17 +270,10 @@ test("取消、中断和发布事务回滚后可恢复，且不会产生重复�
   const recovered = new IndexStore(w.databasePath, identity);
   expect(recovered.status().status).toBe("cancelled");
   const failedBuild = recovered.begin(recovered.status().version);
-  const originalPrepare = DatabaseSync.prototype.prepare;
-  vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (sql) {
-    const statement = originalPrepare.call(this, sql);
-    if (sql.startsWith("INSERT INTO records")) {
-      const run = statement.run.bind(statement);
-      statement.run = (...params: Parameters<typeof run>) => {
-        if (params[1] === "symbols") throw new Error("injected publish failure");
-        return run(...params);
-      };
-    }
-    return statement;
+  const originalUpdate = LocalDatabase.prototype.update;
+  vi.spyOn(LocalDatabase.prototype, "update").mockImplementation(function (namespace, key, version, data) {
+    if (namespace === "symbols") throw new Error("injected publish failure");
+    return originalUpdate.call(this, namespace, key, version, data);
   });
   expect(() => recovered.publish(failedBuild, codePublication("src/recovery.ts", "failed_word"))).toThrow("injected publish failure");
   vi.restoreAllMocks();
@@ -159,7 +303,7 @@ import { IndexStore } from ${JSON.stringify(moduleUrl)};
 const prepare = DatabaseSync.prototype.prepare;
 DatabaseSync.prototype.prepare = function(sql) {
   const statement = prepare.call(this, sql);
-  if (sql.startsWith("INSERT INTO records")) {
+  if (sql.startsWith("UPDATE records")) {
     const run = statement.run.bind(statement);
     statement.run = (...params) => {
       if (params[1] === "symbols") {

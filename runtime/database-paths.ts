@@ -20,8 +20,7 @@ export class DatabaseStorageError extends Error {
 }
 
 export function pathExists(path: string): boolean {
-  try { lstatSync(path); return true; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
 }
 
 function canonicalLocation(path: string): string {

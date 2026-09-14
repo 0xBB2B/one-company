@@ -641,22 +641,29 @@ export class IndexStore {
     return this.database.transaction(() => {
       const { workspace, generation, token } = this.assertBuild(this.database, input);
       if (!Number.isSafeInteger(token.targetGeneration + 1)) fail("invalid_index_state");
-      for (const namespace of ENTITY_NAMESPACES) {
-        for (const stored of this.database.list<Record<string, unknown>>(namespace)) {
-          if (plain(stored.data) && stored.data.workspaceId === this.identity.workspaceId) this.database.remove(namespace, stored.key, stored.version);
+      const reconcile = <T extends object>(namespace: EntityNamespace, items: T[], id: (item: T) => string) => {
+        const previous = new Map(this.database.list<Record<string, unknown>>(namespace)
+          .filter((stored) => plain(stored.data) && stored.data.workspaceId === this.identity.workspaceId)
+          .map((stored) => [stored.key, stored]));
+        for (const item of items) {
+          const key = `${this.identity.workspaceId}:${namespace}:${id(item)}`;
+          const data = { workspaceId: this.identity.workspaceId, generation: token.targetGeneration, ...item };
+          const stored = previous.get(key);
+          // 同键保留内部行身份；正文和代次始终由本次已校验发布完整替换。
+          if (stored) this.database.update(namespace, key, stored.version, data);
+          else this.database.create(namespace, key, data);
+          previous.delete(key);
         }
-      }
-      const add = <T extends object>(namespace: EntityNamespace, id: string, value: T) => {
-        this.database.create(namespace, `${this.identity.workspaceId}:${namespace}:${id}`, { workspaceId: this.identity.workspaceId, generation: token.targetGeneration, ...value });
+        for (const stored of previous.values()) this.database.remove(namespace, stored.key, stored.version);
       };
-      for (const item of publication.files) add("files", item.path, item);
-      for (const item of publication.symbols) add("symbols", item.id, item);
-      for (const item of publication.codeEdges) add("code_edges", item.id, item);
-      for (const item of publication.features) add("features_current", item.id, item);
-      for (const item of publication.rules) add("rules_current", item.id, item);
-      for (const item of publication.ruleEdges) add("rule_edges_current", item.id, item);
-      for (const item of publication.sourceFragments) add("source_fragments", item.id, item);
-      for (const item of publication.prodMetadata) add("prod_metadata", `${item.source}:${item.path}`, item);
+      reconcile("files", publication.files, (item) => item.path);
+      reconcile("symbols", publication.symbols, (item) => item.id);
+      reconcile("code_edges", publication.codeEdges, (item) => item.id);
+      reconcile("features_current", publication.features, (item) => item.id);
+      reconcile("rules_current", publication.rules, (item) => item.id);
+      reconcile("rule_edges_current", publication.ruleEdges, (item) => item.id);
+      reconcile("source_fragments", publication.sourceFragments, (item) => item.id);
+      reconcile("prod_metadata", publication.prodMetadata, (item) => `${item.source}:${item.path}`);
       const updatedAt = this.time();
       const nextWorkspace: WorkspaceRow = {
         ...workspace.data, status: publication.status, currentGeneration: token.targetGeneration,
@@ -700,6 +707,19 @@ export class IndexStore {
         rules: by(rows<IndexedRule>("rules_current"), (item) => item.id), ruleEdges: by(rows<IndexedRuleEdge>("rule_edges_current"), (item) => item.id),
         sourceFragments: by(rows<SourceFragment>("source_fragments"), (item) => item.id), prodMetadata: by(rows<ProdMetadata>("prod_metadata"), (item) => `${item.source}:${item.path}`),
       };
+    });
+  }
+
+  /** 可信基线核对只读取文件元数据，不加载符号、规则、FTS或正文片段。 */
+  getFileMetadata(): { status: IndexWorkspaceStatus; files: IndexedFile[] } {
+    return this.database.transaction(() => {
+      const status = this.status();
+      if (status.currentGeneration < 1 || !["ready", "partial", "invalid"].includes(status.status)) fail("index_not_ready");
+      const files = this.database.list<WorkspaceEntity<IndexedFile>>("files")
+        .filter((row) => row.data.workspaceId === this.identity.workspaceId && row.data.generation === status.currentGeneration)
+        .map((row) => validateFile(withoutScope(row.data)))
+        .sort((a, b) => a.path.localeCompare(b.path));
+      return { status, files };
     });
   }
 

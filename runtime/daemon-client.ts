@@ -17,7 +17,7 @@ import { createRequest, decodeFrames, encodeFrame, PROTOCOL_VERSION } from "./pr
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = dirname(moduleDir);
-const daemonMainEntry = join(packageRoot, "daemon", "main.ts");
+const daemonBootstrapEntry = join(packageRoot, "daemon", "bootstrap.mjs");
 
 const RECONNECT_BASE_MS = 200;
 const RECONNECT_MAX_MS = 5_000;
@@ -116,7 +116,7 @@ async function launchDaemon(options: SpawnDaemonOptions, identity: RepositoryIde
   let child: ReturnType<typeof spawn>;
   try {
     // 子进程持有日志文件描述符，派出窗口退出不会关闭其输出目标或触发 EPIPE。
-    child = spawn(execPath, [daemonMainEntry], {
+    child = spawn(execPath, [daemonBootstrapEntry], {
       stdio: ["ignore", logFd, logFd],
       detached: true,
       env: buildDaemonEnv({ sdkDir: options.sdkDir, repoDir: identity.commonDir, dataRoot: options.dataRoot, env: options.env }),
@@ -354,10 +354,18 @@ export const DAEMON_CLIENT_LIFECYCLE_EVENTS = {
   disconnected: "daemon.disconnected",
 } as const;
 
+export interface DaemonConnectionIdentity {
+  readonly daemonInstanceId: string;
+  readonly connectionId: string;
+  readonly connectionSequence: number;
+}
+
 export interface DaemonClientConnectedData extends Record<string, unknown> {
   status: "connected";
   repoId: string;
   connectionSequence: number;
+  daemonInstanceId?: string;
+  connectionId?: string;
   reconnected: boolean;
 }
 
@@ -374,6 +382,8 @@ export interface DaemonClient {
   call(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
   subscribe(event: string, listener: (data: Record<string, unknown>) => void): () => void;
   state(): DaemonClientState;
+  /** 仅可信宿主控制面使用；旧服务端没有身份字段时返回 null，不能签发索引许可。 */
+  connectionIdentity?(): Readonly<DaemonConnectionIdentity> | null;
   close(): void;
 }
 
@@ -386,6 +396,8 @@ class DaemonClientImpl implements DaemonClient {
   private reconnectTimer: TimerHandle | null;
   private reconnectDelayMs: number;
   private connectionSequence: number;
+  private identity: Readonly<DaemonConnectionIdentity> | null = null;
+  private helloResult: Readonly<Record<string, unknown>> | null = null;
   private readonly listeners: Map<string, Set<(data: Record<string, unknown>) => void>>;
 
   constructor(ctx: ResolvedContext) {
@@ -489,6 +501,12 @@ class DaemonClientImpl implements DaemonClient {
     this.reason = undefined;
     this.reconnectDelayMs = RECONNECT_BASE_MS;
     this.connectionSequence += 1;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+    this.identity = typeof result.daemonInstanceId === "string" && uuid.test(result.daemonInstanceId)
+      && typeof result.connectionId === "string" && uuid.test(result.connectionId)
+      ? Object.freeze({ daemonInstanceId: result.daemonInstanceId, connectionId: result.connectionId, connectionSequence: this.connectionSequence })
+      : null;
+    this.helloResult = Object.freeze({ ...result, connectionSequence: this.connectionSequence });
     this.dispatchEvent(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, this.connectedEventData());
     if (this.closed || this.link !== link) {
       link.destroy();
@@ -508,6 +526,7 @@ class DaemonClientImpl implements DaemonClient {
       repoId: this.ctx.repoId,
       connectionSequence: this.connectionSequence,
       reconnected: this.connectionSequence > 1,
+      ...(this.identity ? { daemonInstanceId: this.identity.daemonInstanceId, connectionId: this.identity.connectionId } : {}),
     };
   }
 
@@ -542,6 +561,8 @@ class DaemonClientImpl implements DaemonClient {
     if (this.closed || this.link !== link) return;
     const wasConnected = this.status === "connected";
     this.link = null;
+    this.identity = null;
+    this.helloResult = null;
     this.status = "unreachable";
     this.reason = reason;
     if (wasConnected) {
@@ -584,10 +605,19 @@ class DaemonClientImpl implements DaemonClient {
   }
 
   call(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    if (this.status !== "connected" || !this.link) {
+    if (this.status !== "connected" || !this.link || this.link.handshakeFailure()) {
       return Promise.reject(new Error(`守护进程不可达: ${this.reason ?? "尚未连接"}`));
     }
+    // 查询当前握手结果不再次发送 hello，避免查询 PID 时退役已绑定的连接能力。
+    if (method === "hello") {
+      if (Object.keys(params).length > 0) return Promise.reject(new Error("重建身份须关闭并重新连接客户端"));
+      return Promise.resolve({ ...this.helloResult });
+    }
     return this.link.call(method, params);
+  }
+
+  connectionIdentity(): Readonly<DaemonConnectionIdentity> | null {
+    return !this.closed && this.status === "connected" && this.link && !this.link.handshakeFailure() ? this.identity : null;
   }
 
   subscribe(event: string, listener: (data: Record<string, unknown>) => void): () => void {
@@ -613,6 +643,8 @@ class DaemonClientImpl implements DaemonClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.identity = null;
+    this.helloResult = null;
     this.link?.destroy();
     this.link = null;
     if (this.reconnectTimer) {

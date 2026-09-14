@@ -1,13 +1,17 @@
 import { controlToken } from "../runtime/daemon-auth.ts";
 import { databaseFile } from "../runtime/database.ts";
 import { createHash, randomBytes } from "node:crypto";
-import { link, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { link, mkdir, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../runtime/clock.ts";
-import type { Clock, TimeSource } from "../runtime/clock.ts";
-import { daemonSocketPath, repoDataDir } from "../runtime/identity.ts";
+import type { Clock, TimeSource, TimerHandle } from "../runtime/clock.ts";
+import { daemonSocketPath, listWorktrees, repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
+import { gitExecutable, readGit } from "../runtime/git-read.ts";
+import { ProjectSyncGrantVerifier } from "../runtime/project-sync-grants.ts";
+import { ProjectIndexCoordinator } from "./project-index-coordinator.ts";
+import { ProjectIndexRequirements } from "./project-index-requirements.ts";
 import { ConnectivityProbe, NetworkPauseGate, toValidHostUrl } from "../runtime/network-pause.ts";
 import { createRequest, decodeFrames } from "../runtime/protocol.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
@@ -352,6 +356,22 @@ export function installSignalHandlers(
   });
 }
 
+async function verifiedRepositoryRoot(commonDir: string, repoId: string): Promise<string> {
+  const identity = await repositoryIdentity(commonDir);
+  if (identity.commonDir !== commonDir || identity.repoId !== repoId) throw new Error("daemon 仓库公共目录身份不一致");
+  // Git登记顺序中的首个非裸工作区是主工作区；不根据.git父目录猜测业务根目录。
+  const registered = await listWorktrees(commonDir);
+  const primary = registered[0];
+  if (!primary) throw new Error("daemon 仓库没有可核对的主工作区");
+  const root = await realpath(primary);
+  const top = await realpath((await readGit(root, ["rev-parse", "--show-toplevel"])).stdout.trim());
+  const actual = await repositoryIdentity(root);
+  if (top !== root || actual.repoId !== repoId || actual.commonDir !== commonDir) {
+    throw new Error("daemon 主工作区与仓库公共目录身份不一致");
+  }
+  return root;
+}
+
 export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   const repoId = createHash("sha256").update(options.repoDir).digest("hex");
   const socketPath = daemonSocketPath(options.dataRoot, repoId);
@@ -415,23 +435,53 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     resolveInitialized = resolve;
   });
   let shuttingDown = false;
+  let startupFailed = false;
+  let indexCoordinator: ProjectIndexCoordinator | undefined;
+  let indexRequirements: ProjectIndexRequirements | undefined;
+  let unsubscribeSleep: (() => void) | undefined;
+  let runManager: RunManager | undefined;
+  let networkProbe: ConnectivityProbe | undefined;
+  let idleTimer: TimerHandle | undefined;
+  let ownershipTimer: TimerHandle | undefined;
   async function shutdown(exitCode = 0): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
+    ready = false;
+    unsubscribeSleep?.();
+    // close同步拒绝新索引操作；装配或在途请求的清理随后必须确实完成。
+    const stoppingIndex = indexCoordinator?.close().then(() => null, (error: unknown) => error);
     await initializedPromise;
-    clock.clearTimer(idleTimer);
-    clock.clearTimer(ownershipTimer);
-    networkProbe.stop();
+    unsubscribeSleep?.();
+    if (idleTimer) clock.clearTimer(idleTimer);
+    if (ownershipTimer) clock.clearTimer(ownershipTimer);
+    networkProbe?.stop();
     clock.stopGapWatcher();
 
     try {
-      await runManager.close();
+      if (stoppingIndex) {
+        const error = await stoppingIndex;
+        if (error !== null) throw error;
+      } else await indexCoordinator?.close();
     } catch (error) {
+      exitCode = 1;
+      process.stderr.write(`停止项目索引失败: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+    try {
+      await indexRequirements?.close();
+    } catch (error) {
+      exitCode = 1;
+      process.stderr.write(`关闭归档生命周期核对失败: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+    try {
+      await runManager?.close();
+    } catch (error) {
+      exitCode = 1;
       process.stderr.write(`停止运行 Shell 失败: ${(error as Error).message}\n`);
     }
     try {
       await runStore.markOwnRunsInterrupted();
     } catch (error) {
+      exitCode = 1;
       process.stderr.write(`标记自身运行为 interrupted 失败: ${(error as Error).message}\n`);
     }
 
@@ -439,7 +489,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       await server.close();
       await releaseSocket(socketPath, ownership.inode);
     }
-    process.exit(exitCode);
+    process.exit(startupFailed ? 1 : exitCode);
   }
   // 孤立的未处理拒绝不该拖垮已确认单实例的守护进程，只记录；未捕获异常已破坏当前调用栈的
   // 不变量，走与 SIGTERM 共用的看门狗收尾但以非零码退出，强退前尽力释放 socket 归属
@@ -458,106 +508,134 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   // 一旦成为确认的单实例即可接受 shutdown 请求，不必等 ModelRuntime/角色目录等装配完
   ready = true;
 
-  const agentDir = dirname(options.dataRoot);
-  const repoRootGuess = dirname(options.repoDir);
-  const [{ runtime, selectModel }, roleCatalogResult, repoDir] = await Promise.all([
-    setupModelRuntime(options.modelProviderModulePath),
-    loadDaemonRoleCatalog(agentDir, repoRootGuess),
-    repoDataDir(options.dataRoot, repoId, options.repoDir),
-  ]);
+  try {
+    const agentDir = dirname(options.dataRoot);
+    const repositoryRoot = await verifiedRepositoryRoot(options.repoDir, repoId);
+    const [{ runtime, selectModel }, roleCatalogResult, repoDir] = await Promise.all([
+      setupModelRuntime(options.modelProviderModulePath),
+      loadDaemonRoleCatalog(agentDir, repositoryRoot),
+      repoDataDir(options.dataRoot, repoId, options.repoDir),
+    ]);
 
-  const shellRegistry = new ShellRegistry({
-    clock,
-    database: databaseFile(repoDir, "data"),
-  });
-  const networkGate = new NetworkPauseGate();
-  const relayQueue = new RelayQueue({
-    dataDir: repoDir,
-    deliver: async (event, payload, deliverOptions) => {
-      const targets = server
-        .clients()
-        .filter((info) => info.repoIds.includes(deliverOptions.repoId) && info.windowId !== deliverOptions.excludeWindowId);
-      for (const target of targets) {
-        server.broadcast(event, payload, (info) => info.windowId === target.windowId);
-      }
-      return targets.map((info) => info.windowId);
-    },
-    locateRequirementAgent: (requirement) => runManager.locateRequirementAgent(requirement),
-  });
-  const runManager = new RunManager({
-    dataRoot: options.dataRoot,
-    repoId,
-    runStore,
-    shellRegistry,
-    networkGate,
-    relayQueue,
-    roleCatalog: roleCatalogResult.roles,
-    runtime,
-    selectModel,
-    clock,
-    workspaceRepoIds: [repoId],
-    emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
-  });
-  registerProtocolHandlers({ server, manager: runManager, relayQueue, shellRegistry });
+    indexRequirements = new ProjectIndexRequirements({
+      repositoryRoot, dataRoot: options.dataRoot, repoId, gitExecutable: await gitExecutable(),
+    });
+    indexCoordinator = new ProjectIndexCoordinator({
+      repoId, dataRoot: options.dataRoot, commonDir: options.repoDir, server,
+      grants: new ProjectSyncGrantVerifier({
+        dataRoot: options.dataRoot, repoId, commonDir: options.repoDir, daemonInstanceId: server.daemonInstanceId,
+      }),
+      beforeArchiveRisk: indexRequirements.beforeArchiveRisk,
+    });
+    if (shuttingDown) await indexCoordinator.close();
+    else unsubscribeSleep = clock.onSleepGap(() => {
+      indexCoordinator!.onSleepGap().catch((error: unknown) => {
+        process.stderr.write(`休眠后项目索引对账失败: ${error instanceof Error ? error.message : String(error)}\n`);
+      });
+    });
 
-  const probeProvider = await buildConnectivityProbeFn(options.connectivityProbeModulePath);
-  // 每轮只探测当前确有 paused_network 运行挂着的 provider，且只续接探测到已恢复的那个 provider——
-  // 无遗留暂停运行时完全不发起探测调用；baseUrl 未注册或校验不合法时跳过该 provider 本轮探测
-  const networkProbe = new ConnectivityProbe({
-    clock,
-    intervalMs: options.networkProbeIntervalMs ?? DEFAULT_NETWORK_PROBE_INTERVAL_MS,
-    probe: async () => {
-      const paused = await runStore.list({ states: ["paused_network"], limit: Number.MAX_SAFE_INTEGER });
-      const providerIds = new Set(paused.items.map((run) => run.model.provider));
-      for (const providerId of providerIds) {
-        const baseUrl = runtime.getProvider(providerId)?.baseUrl;
-        const validUrl = baseUrl ? toValidHostUrl(baseUrl) : null;
-        if (!validUrl) {
-          process.stderr.write(`跳过非法探测目标: provider=${providerId} baseUrl=${baseUrl ?? "未注册"}\n`);
-          continue;
+    const shellRegistry = new ShellRegistry({
+      clock,
+      database: databaseFile(repoDir, "data"),
+    });
+    const networkGate = new NetworkPauseGate();
+    const relayQueue = new RelayQueue({
+      dataDir: repoDir,
+      deliver: async (event, payload, deliverOptions) => {
+        const targets = server
+          .clients()
+          .filter((info) => info.repoIds.includes(deliverOptions.repoId) && info.windowId !== deliverOptions.excludeWindowId);
+        for (const target of targets) {
+          server.broadcast(event, payload, (info) => info.windowId === target.windowId);
         }
-        if (await probeProvider(baseUrl!)) await runManager.resumeNetworkPaused(providerId);
-      }
-    },
-  });
-  networkProbe.start();
-
-  try {
-    await runStore.markInterruptedOnStartup();
-  } catch (error) {
-    process.stderr.write(`标记启动前中断运行失败: ${(error as Error).message}\n`);
-  }
-  try {
-    await runManager.adoptInterruptedShells();
-  } catch (error) {
-    process.stderr.write(`接管遗留 Shell 任务失败: ${(error as Error).message}\n`);
-  }
-  runManager.markStarted();
-
-  idleExit = new IdleExit({
-    clock,
-    timeoutMs: options.idleTimeoutMs,
-    hasConnections: () => server.clients().length > 0,
-    hasActiveRuns: () => runActivity.hasActiveRuns(),
-  });
-
-  const idleTimer = clock.setIntervalExcludingSleep(() => {
-    (async () => {
-      await applyPendingClockSkew(options.clockSkewFile, clock, offsetState);
-      if (idleExit && (await idleExit.check())) await shutdown();
-    })().catch((error: unknown) => {
-      process.stderr.write(`空闲检查失败: ${error instanceof Error ? error.message : String(error)}\n`);
+        return targets.map((info) => info.windowId);
+      },
+      locateRequirementAgent: (requirement) => runManager!.locateRequirementAgent(requirement),
     });
-  }, IDLE_CHECK_INTERVAL_MS);
-
-  const ownershipTimer = clock.setIntervalExcludingSleep(() => {
-    (async () => {
-      const stillOwned = await checkSocketOwnership(socketPath, ownership.inode);
-      if (!stillOwned) await shutdown();
-    })().catch((error: unknown) => {
-      process.stderr.write(`socket 归属检查失败: ${error instanceof Error ? error.message : String(error)}\n`);
+    runManager = new RunManager({
+      projectBaselineProvider: async (run) => {
+        const { createDaemonProjectBaselineProvider } = await import("./project-baseline-provider.ts");
+        return createDaemonProjectBaselineProvider(indexCoordinator!, run.cwd);
+      },
+      dataRoot: options.dataRoot,
+      repoId,
+      runStore,
+      shellRegistry,
+      networkGate,
+      relayQueue,
+      roleCatalog: roleCatalogResult.roles,
+      runtime,
+      selectModel,
+      clock,
+      workspaceRepoIds: [repoId],
+      emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
     });
-  }, SOCKET_CHECK_INTERVAL_MS);
+    registerProtocolHandlers({ server, manager: runManager, relayQueue, shellRegistry });
 
-  resolveInitialized();
+    const probeProvider = await buildConnectivityProbeFn(options.connectivityProbeModulePath);
+    // 每轮只探测当前确有 paused_network 运行挂着的 provider，且只续接探测到已恢复的那个 provider——
+    // 无遗留暂停运行时完全不发起探测调用；baseUrl 未注册或校验不合法时跳过该 provider 本轮探测
+    networkProbe = new ConnectivityProbe({
+      clock,
+      intervalMs: options.networkProbeIntervalMs ?? DEFAULT_NETWORK_PROBE_INTERVAL_MS,
+      probe: async () => {
+        const paused = await runStore.list({ states: ["paused_network"], limit: Number.MAX_SAFE_INTEGER });
+        const providerIds = new Set(paused.items.map((run) => run.model.provider));
+        for (const providerId of providerIds) {
+          const baseUrl = runtime.getProvider(providerId)?.baseUrl;
+          const validUrl = baseUrl ? toValidHostUrl(baseUrl) : null;
+          if (!validUrl) {
+            process.stderr.write(`跳过非法探测目标: provider=${providerId} baseUrl=${baseUrl ?? "未注册"}\n`);
+            continue;
+          }
+          if (await probeProvider(baseUrl!)) await runManager!.resumeNetworkPaused(providerId);
+        }
+      },
+    });
+    networkProbe.start();
+
+    try {
+      await runStore.markInterruptedOnStartup();
+    } catch (error) {
+      process.stderr.write(`标记启动前中断运行失败: ${(error as Error).message}\n`);
+    }
+    try {
+      await runManager.adoptInterruptedShells();
+    } catch (error) {
+      process.stderr.write(`接管遗留 Shell 任务失败: ${(error as Error).message}\n`);
+    }
+    runManager.markStarted();
+
+    idleExit = new IdleExit({
+      clock,
+      timeoutMs: options.idleTimeoutMs,
+      hasConnections: () => server.clients().length > 0,
+      hasActiveRuns: () => runActivity.hasActiveRuns(),
+    });
+
+    idleTimer = clock.setIntervalExcludingSleep(() => {
+      (async () => {
+        await applyPendingClockSkew(options.clockSkewFile, clock, offsetState);
+        if (idleExit && (await idleExit.check())) await shutdown();
+      })().catch((error: unknown) => {
+        process.stderr.write(`空闲检查失败: ${error instanceof Error ? error.message : String(error)}\n`);
+      });
+    }, IDLE_CHECK_INTERVAL_MS);
+
+    ownershipTimer = clock.setIntervalExcludingSleep(() => {
+      (async () => {
+        const stillOwned = await checkSocketOwnership(socketPath, ownership.inode);
+        if (!stillOwned) await shutdown();
+      })().catch((error: unknown) => {
+        process.stderr.write(`socket 归属检查失败: ${error instanceof Error ? error.message : String(error)}\n`);
+      });
+    }, SOCKET_CHECK_INTERVAL_MS);
+  } catch (error) {
+    startupFailed = true;
+    process.stderr.write(`daemon 装配失败: ${error instanceof Error ? error.message : String(error)}\n`);
+    resolveInitialized();
+    await shutdown(1);
+  } finally {
+    resolveInitialized();
+  }
 }

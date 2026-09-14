@@ -29,6 +29,7 @@ export const METHODS = [
   "shells.stop",
   "shells.markStopped",
   "mcp.register",
+  "index.sync",
 ] as const;
 
 export const EVENTS = [
@@ -40,6 +41,7 @@ export const EVENTS = [
   "relay.withdraw",
   "shells.changed",
   "daemon.idle",
+  "project.index.changed",
 ] as const;
 
 export const ERROR_CODES = [
@@ -54,6 +56,14 @@ export const ERROR_CODES = [
   "shape_violation",
   "daemon_busy",
   "daemon_starting",
+  "authorization_denied",
+  "grant_invalid",
+  "invalid_scope",
+  "identity_changed",
+  "resource_limit",
+  "not_attached",
+  "index_not_fresh",
+  "coordinator_closed",
   "internal",
 ] as const;
 
@@ -110,6 +120,29 @@ const DispatchContextSchema = Type.Object({
   model: Type.Optional(Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false })),
   thinking: Type.Optional(Type.String()),
 }, { additionalProperties: false });
+
+const IndexSyncScopeSchema = {
+  grantId: Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }),
+  repoId: Type.String({ pattern: "^[0-9a-f]{64}$" }),
+  workspaceId: Type.String({ pattern: "^[0-9a-f]{64}$" }),
+  repositoryRoot: Type.String({ pattern: "^/", minLength: 1, maxLength: 4096 }),
+  branch: Type.String({ pattern: "^refs/heads/[^\\u0000-\\u001f\\u007f]{1,512}$" }),
+} as const;
+
+const IndexSyncSchema = Type.Union([
+  ...(["init", "preview", "refresh", "ensureFresh", "detach"] as const).map((action) => Type.Object(
+    { action: Type.Literal(action), ...IndexSyncScopeSchema },
+    { additionalProperties: false },
+  )),
+  Type.Object({
+    action: Type.Literal("status"),
+    grantId: Type.Optional(IndexSyncScopeSchema.grantId),
+    repoId: IndexSyncScopeSchema.repoId,
+    workspaceId: IndexSyncScopeSchema.workspaceId,
+    repositoryRoot: IndexSyncScopeSchema.repositoryRoot,
+    branch: IndexSyncScopeSchema.branch,
+  }, { additionalProperties: false }),
+]);
 
 const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   hello: Type.Object(
@@ -211,6 +244,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
     { additionalProperties: false },
   ),
   "mcp.register": McpConfigSchema,
+  "index.sync": IndexSyncSchema,
 };
 
 export function encodeFrame(frame: Frame): string {

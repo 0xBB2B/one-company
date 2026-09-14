@@ -42,6 +42,7 @@ import type {
   RequirementAgentRelay,
 } from "./requirement-agent.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
+import type { DaemonProjectBaselineProvider } from "./project-baseline-provider.ts";
 
 export interface SelectedModel {
   provider: string;
@@ -57,6 +58,7 @@ export type EmitFn = (
 ) => void;
 
 export interface RunManagerOptions {
+  projectBaselineProvider?: (run: RunRecord) => Promise<DaemonProjectBaselineProvider>;
   dataRoot: string;
   repoId: string;
   runStore: RunStore;
@@ -152,6 +154,7 @@ export class RunManager {
   private readonly clock: Clock;
   private readonly workspaceRepoIds: string[];
   private readonly emit: EmitFn;
+  private readonly projectBaselineProvider?: RunManagerOptions["projectBaselineProvider"];
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly liveTranscripts = new Map<string, { base: number; entries: TranscriptEntry[] }>();
   private readonly transcriptSubscriptions = new Map<string, { runId: string; windowId: string; connected: () => boolean }>();
@@ -185,6 +188,7 @@ export class RunManager {
     this.clock = options.clock;
     this.workspaceRepoIds = options.workspaceRepoIds;
     this.emit = options.emit;
+    this.projectBaselineProvider = options.projectBaselineProvider;
   }
 
   // 启动期 markInterruptedOnStartup 与 adoptInterruptedShells 之间的运行状态对客户端不算最终态；
@@ -249,6 +253,13 @@ export class RunManager {
       return createRangeProtection({ cwd, dataRoot: this.dataRoot, holder: { kind: run.run.kind, runId: id, requirement: run.run.requirement }, writePaths, clock: this.clock, shells: this.shellRegistry });
     })();
     return {
+      baselineProvider: this.projectBaselineProvider ? async (actualRunId) => {
+        if (runId && actualRunId !== runId) throw new Error("角色基线运行身份不匹配");
+        const found = await this.runStore.get(actualRunId);
+        if (!found.ok || found.run.cwd !== cwd || requirement && found.run.requirement !== requirement
+          || isTerminalState(found.run.state)) throw new Error("角色基线缺少有效运行绑定");
+        return this.projectBaselineProvider!(found.run);
+      } : undefined,
       checkWrite: async (path) => (await get()).checkWrite(path),
       commit: async (paths, message, signal) => (await get()).commit(paths, message, signal),
       fingerprint: (paths) => rangesFingerprint(cwd, paths),
@@ -746,12 +757,20 @@ export class RunManager {
     const { createManagedBashOperations } = await import("../runtime/shell-bash.ts");
     const parent = found.run.parentRunId ? await this.runStore.get(found.run.parentRunId) : undefined;
     if (!parent?.ok || parent.run.kind !== "requirement" || parent.run.requirement !== requirement || isTerminalState(parent.run.state)) throw new Error("交付核验需要本需求的活动需求代理");
-    const operations = createManagedBashOperations({ registry: this.shellRegistry, host: taskHost(parent.run), runToken: parent.run.shellToken, guard: this.buildGuards(found.run.cwd, [], parent.run.id).commandGuard });
-    const result = await verifyTaskDelivery({ run: found.run, execute: async (command) => {
-      const outcome = await operations.exec(command, found.run.cwd, { onData: () => {}, signal, timeout: 300 });
-      if (outcome.exitCode !== 0) throw new Error(`独立复跑失败，退出码 ${outcome.exitCode}`);
-    } });
-    await this.runStore.update(runId, { result });
+    const guards = this.buildGuards(found.run.cwd, [], parent.run.id);
+    const provider = await this.projectBaselineProvider?.(found.run);
+    try {
+      const operations = createManagedBashOperations({ registry: this.shellRegistry, host: taskHost(parent.run), runToken: parent.run.shellToken, guard: guards.commandGuard });
+      const assertBaseline = provider ? async (metadata: import("../runtime/project-baseline.ts").ProjectBaselineSealMetadata | undefined) => {
+        if (metadata) await provider.assertCurrent(metadata.executionHead, signal);
+        else if ((await provider.captureFresh(signal)).kind !== "unmanaged") throw new Error("已索引交付缺少原请求seal，禁止给旧结果换绑");
+      } : undefined;
+      const result = await verifyTaskDelivery({ run: found.run, assertBaseline, execute: async (command) => {
+        const outcome = await operations.exec(command, found.run.cwd, { onData: () => {}, signal, timeout: 300 });
+        if (outcome.exitCode !== 0) throw new Error(`独立复跑失败，退出码 ${outcome.exitCode}`);
+      } });
+      await this.runStore.update(runId, { result });
+    } finally { provider?.dispose(); await guards.release?.(); }
   }
 
   async status(runId: string): Promise<{ ok: true; run: RunRecord; errorDetails?: ErrorDetailsSummary } | { ok: false; reason: string }> {
@@ -896,7 +915,10 @@ export class RunManager {
     if (childrenStop.status === "rejected") reasons.push(`子运行停止失败: ${String(childrenStop.reason)}`);
     else if (childrenStop.value.some((child) => !child.confirmed)) reasons.push("子运行尚未确认停止");
     const confirmed = reasons.length === 0;
-    if (confirmed && this.sessions.get(runId) === entry) this.sessions.delete(runId);
+    if (confirmed && this.sessions.get(runId) === entry) {
+      entry?.handle.dispose();
+      this.sessions.delete(runId);
+    }
     const state = run.state;
     const reason = confirmed ? undefined : reasons.join("；");
     if (state === "stopped") await this.runStore.update(runId, { stateReason: reason ?? "" });
@@ -1228,7 +1250,7 @@ export class RunManager {
     const current = await this.runStore.get(runId);
     if (!current.ok) return;
     if (isTerminalState(current.run.state)) {
-      if (current.run.state !== "stopped") this.sessions.delete(runId);
+      if (current.run.state !== "stopped") { this.sessions.get(runId)?.handle.dispose(); this.sessions.delete(runId); }
       return;
     }
 
@@ -1236,7 +1258,10 @@ export class RunManager {
       try {
         const phase = this.sessions.get(runId)?.phase ?? this.findRole(current.run.role!.replace(/^pi-company\./, ""))?.definition?.kind;
         if (!["work", "review", "acceptance", "plan"].includes(phase ?? "")) throw new Error("无法确认角色结果阶段");
-        const result = await bindRunResult(current.run, phase as Phase, outcome.value);
+        const handle = this.sessions.get(runId)?.handle as RoleSessionHandle | undefined;
+        if (this.projectBaselineProvider && !handle?.resultBaseline) throw new Error("角色缺少可信结果基线回传");
+        const baseline = await handle?.resultBaseline?.();
+        const result = await bindRunResult(current.run, phase as Phase, outcome.value, baseline);
         if (phase === "review" || phase === "acceptance") {
           const binding = result.binding;
           if (!current.run.sourceVersion || binding.codeHead !== current.run.sourceVersion.codeHead || binding.definitionFingerprint !== current.run.sourceVersion.definitionFingerprint) throw new Error("审查验收期间工作内容发生变化");
@@ -1249,6 +1274,7 @@ export class RunManager {
           if (!current.run.reportPath) throw new Error("验收缺少指定报告位置");
           Object.assign(result, { reportDigest: await checkAcceptanceReport(outcome.value as AcceptanceResult, current.run.reportPath, current.run.commands ?? []) });
         }
+        await baseline?.assertCurrent();
         outcome = { ok: true, value: result };
       } catch (error) { outcome = { ok: false, error }; }
     }
@@ -1268,7 +1294,7 @@ export class RunManager {
 
     const updated = await this.runStore.get(runId);
     if (updated.ok) {
-      if (updated.run.state !== "stopped") this.sessions.delete(runId);
+      if (updated.run.state !== "stopped") { this.sessions.get(runId)?.handle.dispose(); this.sessions.delete(runId); }
       this.emit("runs.changed", { run: updated.run });
       if (isTerminalState(updated.run.state)) {
         this.notifyParentOfChildTermination(updated.run);

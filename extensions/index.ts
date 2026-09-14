@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import writeProtectionExtension from "./write-protection.ts";
 import lifecycleExtension from "./lifecycle.ts";
 import projectManageExtension from "./project-manage.ts";
+import projectBaselineExtension from "./project-baseline.ts";
 import requirementManageExtension from "./requirement-manage.ts";
 import decisionRecordExtension from "./decision-record.ts";
 import workflowExtension from "./workflow.ts";
@@ -17,6 +18,7 @@ import commandsExtension from "./commands.ts";
 export default function registerExtensions(pi: ExtensionAPI): void {
   lifecycleExtension(pi);
   projectManageExtension(pi);
+  projectBaselineExtension(pi);
   requirementManageExtension(pi);
   decisionRecordExtension(pi);
   workflowExtension(pi);

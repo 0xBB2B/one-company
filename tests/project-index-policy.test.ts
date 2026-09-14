@@ -13,6 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
+import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const archiveIoProbe = vi.hoisted(() => ({
@@ -20,9 +21,59 @@ const archiveIoProbe = vi.hoisted(() => ({
   openedArchiveFiles: [] as string[],
   bodyReadCalls: 0,
 }));
+const gitIoProbe = vi.hoisted(() => ({
+  enabled: false,
+  opens: [] as string[],
+  enumerations: [] as string[],
+}));
+const markerProbe = vi.hoisted(() => ({
+  enabled: false,
+  calls: [] as Array<{ path: string; options: unknown }>,
+  asyncCalls: 0,
+  before: undefined as ((path: string, call: number) => void) | undefined,
+}));
+const metadataProbe = vi.hoisted(() => ({
+  enabled: false,
+  calls: [] as Array<{ api: string; path: string; options: unknown }>,
+  before: undefined as ((api: string, path: string) => void) | undefined,
+}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
+      const path = String(args[0]);
+      if (metadataProbe.enabled) {
+        metadataProbe.calls.push({ api: "lstatSync", path, options: args[1] });
+        metadataProbe.before?.("lstatSync", path);
+      }
+      if (markerProbe.enabled && /\/\.git$/i.test(path)) {
+        markerProbe.calls.push({ path, options: args[1] });
+        markerProbe.before?.(path, markerProbe.calls.length);
+      }
+      return Reflect.apply(actual.lstatSync, actual, args);
+    },
+    realpathSync: (...args: Parameters<typeof actual.realpathSync>) => {
+      const path = String(args[0]);
+      if (metadataProbe.enabled) {
+        metadataProbe.calls.push({ api: "realpathSync", path, options: args[1] });
+        metadataProbe.before?.("realpathSync", path);
+      }
+      const result = Reflect.apply(actual.realpathSync, actual, args);
+      if (ancestorSwapProbe.armed && path === ancestorSwapProbe.triggerFile) {
+        ancestorSwapProbe.armed = false;
+        ancestorSwapProbe.triggeredBy = "realpathSync";
+        actual.renameSync(ancestorSwapProbe.ancestor, ancestorSwapProbe.movedAncestor);
+        actual.symlinkSync(ancestorSwapProbe.outside, ancestorSwapProbe.ancestor, "dir");
+      }
+      return result;
+    },
+  };
+});
 const ancestorSwapProbe = vi.hoisted(() => ({
   armed: false,
   triggerFile: "",
+  triggeredBy: "",
   ancestor: "",
   movedAncestor: "",
   outside: "",
@@ -32,8 +83,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      if (metadataProbe.enabled) {
+        metadataProbe.calls.push({ api: "lstat", path: String(args[0]), options: args[1] });
+        metadataProbe.before?.("lstat", String(args[0]));
+      }
+      if (markerProbe.enabled && /\/\.git$/i.test(String(args[0]))) markerProbe.asyncCalls++;
+      return Reflect.apply(actual.lstat, actual, args);
+    },
     open: async (...args: Parameters<typeof actual.open>) => {
       const path = String(args[0]);
+      if (gitIoProbe.enabled && path.split("/").some((part) => part.toLowerCase() === ".git")) gitIoProbe.opens.push(path);
       if (archiveIoProbe.enabled && /\/docs\/prod\//i.test(path)) archiveIoProbe.openedArchiveFiles.push(path);
       const handle = await actual.open(...args);
       if (!archiveIoProbe.enabled) return handle;
@@ -50,10 +110,20 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         },
       });
     },
+    opendir: async (...args: Parameters<typeof actual.opendir>) => {
+      const path = String(args[0]);
+      if (gitIoProbe.enabled && path.split("/").some((part) => part.toLowerCase() === ".git")) gitIoProbe.enumerations.push(path);
+      return actual.opendir(...args);
+    },
     realpath: async (...args: Parameters<typeof actual.realpath>) => {
+      if (metadataProbe.enabled) {
+        metadataProbe.calls.push({ api: "realpath", path: String(args[0]), options: args[1] });
+        metadataProbe.before?.("realpath", String(args[0]));
+      }
       const result = await actual.realpath(...args);
       if (ancestorSwapProbe.armed && String(args[0]) === ancestorSwapProbe.triggerFile) {
         ancestorSwapProbe.armed = false;
+        ancestorSwapProbe.triggeredBy = "realpath";
         await actual.rename(ancestorSwapProbe.ancestor, ancestorSwapProbe.movedAncestor);
         await actual.symlink(ancestorSwapProbe.outside, ancestorSwapProbe.ancestor, "dir");
       }
@@ -65,6 +135,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const {
   DEFAULT_INDEX_LIMITS,
   ProjectIndexPolicyError,
+  classifyIndexWatchEvent,
   readIndexFile,
   scanIndexWorkspace,
 } = await import("../runtime/project-index-policy.ts");
@@ -97,7 +168,18 @@ function skippedReason(result: Awaited<ReturnType<typeof scanIndexWorkspace>>, p
 }
 
 afterEach(async () => {
+  metadataProbe.enabled = false;
+  metadataProbe.calls.length = 0;
+  metadataProbe.before = undefined;
+  ancestorSwapProbe.triggeredBy = "";
+  markerProbe.enabled = false;
+  markerProbe.calls.length = 0;
+  markerProbe.asyncCalls = 0;
+  markerProbe.before = undefined;
   archiveIoProbe.enabled = false;
+  gitIoProbe.enabled = false;
+  gitIoProbe.opens.length = 0;
+  gitIoProbe.enumerations.length = 0;
   archiveIoProbe.openedArchiveFiles.length = 0;
   archiveIoProbe.bodyReadCalls = 0;
   ancestorSwapProbe.armed = false;
@@ -173,6 +255,31 @@ test("M2-AC1/5/7：混合文件确定分类，大小写 prod 只列直接路径�
   expect(skippedReason(result, "state/index.db-wal")).toBe("database");
   expect(skippedReason(result, "logs")).toBe("excluded_directory");
   expect(result.files.some((file) => file.path.toLowerCase().startsWith("docs/prod/"))).toBe(false);
+});
+
+test.each([".git", ".giT", ".gIt", ".gIT", ".Git", ".GiT", ".GIt", ".GIT"].flatMap((name) =>
+  (["file", "directory"] as const).map((kind) => ({ name, kind })),
+))("M3-AC1/3：$name $kind 在正文打开和 Git 内部枚举前排除", async ({ name, kind }) => {
+  const { root, dataRoot } = await fixture();
+  await put(root, "main.ts", "export function main() {}\n");
+  if (kind === "file") await put(root, name, "gitdir: /not-an-index-input/GIT_POINTER_SENTINEL\n");
+  else await put(root, `${name}/config`, "GIT_INTERNAL_SENTINEL");
+
+  gitIoProbe.enabled = true;
+  const result = await scanIndexWorkspace({ root, dataRoot });
+  expect(result.files.map((file) => file.path)).toEqual(["main.ts"]);
+  expect(skippedReason(result, name)).toBe(kind === "file" ? "excluded_file" : "excluded_directory");
+  expect(result.watchDirectories).toEqual(["."]);
+  expect(classifyIndexWatchEvent(name)).toBe("ignored");
+  expect(classifyIndexWatchEvent(`${name}/config`)).toBe("ignored");
+  for (const file of [name, { path: name, size: 1 }]) {
+    expect(await readIndexFile(root, file, { readUnsupported: true })).toEqual({ status: "skipped", path: name, reason: "excluded_file" });
+  }
+  expect(await readIndexFile(root, `${name}/config`, { readUnsupported: true })).toEqual({
+    status: "skipped", path: `${name}/config`, reason: "excluded_directory",
+  });
+  expect(gitIoProbe.opens).toEqual([]);
+  expect(gitIoProbe.enumerations).toEqual([]);
 });
 
 test("M2-AC5：没有 docs/spec、本机需求记录或数据库时仍可只建代码文件清单", async () => {
@@ -374,9 +481,213 @@ test("M2-AC1/4：文件 realpath 后祖先被换成外部链接时不读取或�
   archiveIoProbe.enabled = false;
 
   expect(ancestorSwapProbe.armed).toBe(false);
+  expect(ancestorSwapProbe.triggeredBy).toBe("realpathSync");
   expect(result).toEqual({ status: "unstable", path: "src/a.ts", reason: "unstable" });
   expect(JSON.stringify(result)).not.toContain(outsideSecret.trim());
   expect(archiveIoProbe.bodyReadCalls).toBe(0);
+});
+
+const MARKER_NAMES = [".git", ".giT", ".gIt", ".gIT", ".Git", ".GiT", ".GIt", ".GIT"];
+
+test.each(MARKER_NAMES.flatMap((name) =>
+  (["file", "directory", "dangling-link"] as const).map((kind) => ({ name, kind })),
+))("M3-PERF-FS-01：嵌套 $name $kind 在正文读取前拒绝", async ({ name, kind }) => {
+  const { root, dataRoot } = await fixture();
+  await put(root, "src/main.ts", "NESTED_BODY_MUST_NOT_READ");
+  const marker = join(root, "src", name);
+  if (kind === "file") await writeFile(marker, "gitdir: /outside");
+  else if (kind === "directory") await mkdir(marker);
+  else await symlink(join(root, "absent-target"), marker);
+  archiveIoProbe.enabled = true;
+  gitIoProbe.enabled = true;
+  const scan = await scanIndexWorkspace({ root, dataRoot });
+  expect(skippedReason(scan, "src")).toBe("nested_repository");
+  expect(await readIndexFile(root, "src/main.ts")).toEqual({ status: "skipped", path: "src/main.ts", reason: "nested_repository" });
+  expect(archiveIoProbe.bodyReadCalls).toBe(0);
+  expect(gitIoProbe.opens).toEqual([]);
+  expect(gitIoProbe.enumerations).toEqual([]);
+});
+
+test("M3-PERF-FS-01：每个祖先读取边界完整探测八个名称，不跨边界或调用缓存缺失", async () => {
+  const { root } = await fixture();
+  await put(root, "src/main.ts", "export const value = 1;\n");
+  markerProbe.enabled = true;
+  expect((await readIndexFile(root, "src/main.ts")).status).toBe("success");
+  // 捕获祖先一次，九次读取边界复核；文件内容读取、根与祖先身份检查仍执行。
+  expect(markerProbe.calls).toEqual(Array.from({ length: 10 }, () => MARKER_NAMES.map((name) => ({
+    path: join(root, "src", name), options: { throwIfNoEntry: false },
+  }))).flat());
+  expect(markerProbe.asyncCalls).toBe(0);
+  await writeFile(join(root, "src/.GIT"), "gitdir: /outside");
+  expect(await readIndexFile(root, "src/main.ts")).toMatchObject({ status: "skipped", reason: "nested_repository" });
+});
+
+test.each(Array.from({ length: 9 }, (_, index) => index + 2))(
+  "M3-PERF-FS-01：第 %i 次祖先检查出现 Git marker 时不得返回正文", async (boundary) => {
+    const { root } = await fixture();
+    await put(root, "src/main.ts", "RACE_CONTENT_MUST_NOT_RETURN");
+    markerProbe.enabled = true;
+    markerProbe.before = (_path, call) => {
+      if (call === (boundary - 1) * 8 + 1) writeFileSync(join(root, "src/.git"), "gitdir: /outside");
+    };
+    const result = await readIndexFile(root, "src/main.ts");
+    expect(result).toEqual({ status: "unstable", path: "src/main.ts", reason: "unstable" });
+    expect(markerProbe.calls).toHaveLength(boundary * 8 - 7);
+    expect(JSON.stringify(result)).not.toContain("RACE_CONTENT_MUST_NOT_RETURN");
+  },
+);
+
+test.each(["EACCES", "EPERM", "EMFILE", "ENFILE", "ENOTDIR", "EIO"])(
+  "M3-PERF-FS-01：Git 探测 %s 不是正常缺失，不继续放行或泄漏错误正文", async (code) => {
+    const { root } = await fixture();
+    await put(root, "src/main.ts", "BODY_MUST_NOT_READ");
+    markerProbe.enabled = true;
+    markerProbe.before = (_path, call) => {
+      if (call === 4) throw Object.assign(new Error("PRIVATE_ERROR_DETAIL"), { code });
+    };
+    archiveIoProbe.enabled = true;
+    expect(await readIndexFile(root, "src/main.ts")).toEqual({
+      status: "skipped", path: "src/main.ts", reason: ["EACCES", "EPERM", "EMFILE", "ENFILE"].includes(code) ? "unreadable" : "unstable",
+    });
+    expect(markerProbe.calls).toHaveLength(4);
+    expect(archiveIoProbe.bodyReadCalls).toBe(0);
+  },
+);
+
+test("M3-PERF-FS-01：真实目录撤权后 Git 探测不能把 EACCES 当缺失", async () => {
+  const { root } = await fixture();
+  await put(root, "src/main.ts", "PRIVATE_BODY");
+  markerProbe.enabled = true;
+  markerProbe.before = (_path, call) => { if (call === 1) chmodSync(join(root, "src"), 0o000); };
+  try {
+    expect(await readIndexFile(root, "src/main.ts")).toEqual({ status: "skipped", path: "src/main.ts", reason: "unreadable" });
+    expect(markerProbe.calls).toHaveLength(1);
+  } finally { await chmod(join(root, "src"), 0o700); }
+});
+
+test.each(["directory", "link"] as const)("M3-PERF-FS-01：第八次探测前祖先被替换成 %s 时身份核验拒绝", async (kind) => {
+  const { root } = await fixture();
+  await put(root, "src/main.ts", "ORIGINAL_CONTENT");
+  const outside = await privateDirectory("project-index-replacement-");
+  await put(outside, "main.ts", "REPLACEMENT_CONTENT_MUST_NOT_READ");
+  markerProbe.enabled = true;
+  markerProbe.before = (_path, call) => {
+    if (call !== 8) return;
+    renameSync(join(root, "src"), join(root, "moved"));
+    if (kind === "link") symlinkSync(outside, join(root, "src"), "dir");
+    else {
+      mkdirSync(join(root, "src"));
+      writeFileSync(join(root, "src/main.ts"), "REPLACEMENT_CONTENT_MUST_NOT_READ");
+    }
+  };
+  archiveIoProbe.enabled = true;
+  expect(await readIndexFile(root, "src/main.ts")).toEqual({ status: "unstable", path: "src/main.ts", reason: "unstable" });
+  expect(archiveIoProbe.bodyReadCalls).toBe(0);
+});
+
+test("M3-PERF-FS-01：元数据探测期间收到取消在原正文读取边界生效", async () => {
+  const { root } = await fixture();
+  await put(root, "src/main.ts", "CANCELLED_BODY");
+  const controller = new AbortController();
+  markerProbe.enabled = true;
+  markerProbe.before = (_path, call) => { if (call === 1) controller.abort(); };
+  archiveIoProbe.enabled = true;
+  expect(await readIndexFile(root, "src/main.ts", { signal: controller.signal })).toEqual({
+    status: "skipped", path: "src/main.ts", reason: "cancelled",
+  });
+  expect(archiveIoProbe.bodyReadCalls).toBe(0);
+});
+
+test("M3-PERF-FS-01：读取元数据同步且调用数不减少，扫描仍经过异步元数据探针", async () => {
+  const { root, dataRoot } = await fixture();
+  await put(root, "src/main.ts", "export const value = 1;\n");
+  metadataProbe.enabled = true;
+  expect((await scanIndexWorkspace({ root, dataRoot })).files).toHaveLength(1);
+  expect(metadataProbe.calls.some((call) => call.api === "lstat")).toBe(true);
+  expect(metadataProbe.calls.some((call) => call.api === "realpath")).toBe(true);
+  expect(metadataProbe.calls.some((call) => call.api.endsWith("Sync")
+    && [join(root, "src"), join(root, "src/main.ts")].includes(call.path))).toBe(false);
+  metadataProbe.calls.length = 0;
+  archiveIoProbe.enabled = true;
+  expect((await readIndexFile(root, "src/main.ts")).status).toBe("success");
+  expect(archiveIoProbe.bodyReadCalls).toBe(2);
+  expect(metadataProbe.calls.filter((call) => call.api === "lstat" || call.api === "realpath")).toEqual([]);
+  expect(metadataProbe.calls.filter((call) => call.api === "lstatSync" && !/\/\.git$/i.test(call.path))).toHaveLength(26);
+  expect(metadataProbe.calls.filter((call) => call.api === "realpathSync")).toHaveLength(21);
+  expect(metadataProbe.calls.filter((call) => call.api === "lstatSync" && call.path === join(root, "src/main.ts")))
+    .toEqual(Array.from({ length: 4 }, () => ({ api: "lstatSync", path: join(root, "src/main.ts"), options: { bigint: true } })));
+});
+
+test.each(Array.from({ length: 9 }, (_, index) => index + 1).flatMap((boundary) =>
+  (["directory", "link", "marker"] as const).map((kind) => ({ boundary, kind })),
+))("M3-PERF-FS-01：九次元数据边界 $boundary / $kind 替换仍拒绝", async ({ boundary, kind }) => {
+  const { root } = await fixture();
+  const ancestor = join(root, "src");
+  await put(root, "src/main.ts", "INSIDE_BODY_MUST_NOT_RETURN");
+  const outside = await privateDirectory("project-index-boundary-");
+  await put(outside, "main.ts", "OUTSIDE_BODY_MUST_NOT_RETURN");
+  let visits = 0;
+  metadataProbe.enabled = true;
+  metadataProbe.before = (api, path) => {
+    if (api !== "lstatSync" || path !== ancestor || ++visits !== boundary + 2) return;
+    if (kind === "marker") writeFileSync(join(ancestor, ".git"), "gitdir: /outside");
+    else {
+      renameSync(ancestor, join(root, "moved"));
+      if (kind === "link") symlinkSync(outside, ancestor, "dir");
+      else { mkdirSync(ancestor); writeFileSync(join(ancestor, "main.ts"), "OUTSIDE_BODY_MUST_NOT_RETURN"); }
+    }
+  };
+  archiveIoProbe.enabled = true;
+  expect(await readIndexFile(root, "src/main.ts")).toEqual({ status: "unstable", path: "src/main.ts", reason: "unstable" });
+  expect(visits).toBe(boundary + 2);
+  if (boundary <= 5) expect(archiveIoProbe.bodyReadCalls).toBe(0);
+});
+
+test.each(["lstatSync", "realpathSync"].flatMap((api) => ["capture", "verify"].flatMap((phase) =>
+  ["EACCES", "EPERM", "EMFILE", "ENFILE", "ENOENT", "EIO"].map((code) => ({ api, phase, code })),
+)))("M3-PERF-FS-01：$api / $phase / $code 保留拒绝分类", async ({ api, phase, code }) => {
+  const { root } = await fixture();
+  await put(root, "src/main.ts", "ERROR_BODY_MUST_NOT_READ");
+  let visits = 0;
+  metadataProbe.enabled = true;
+  metadataProbe.before = (actualApi, path) => {
+    if (actualApi !== api || path !== join(root, "src")) return;
+    const trigger = phase === "capture" ? 1 : api === "lstatSync" ? 3 : 2;
+    if (++visits === trigger) throw Object.assign(new Error("PRIVATE_ERROR_DETAIL"), { code });
+  };
+  archiveIoProbe.enabled = true;
+  expect(await readIndexFile(root, "src/main.ts")).toEqual({
+    status: phase === "capture" ? "skipped" : "unstable", path: "src/main.ts",
+    reason: phase === "capture" && ["EACCES", "EPERM", "EMFILE", "ENFILE"].includes(code) ? "unreadable" : "unstable",
+  });
+  expect(visits).toBeGreaterThan(0);
+  expect(archiveIoProbe.bodyReadCalls).toBe(0);
+});
+
+test.each(["lstat", "realpath"])("M3-PERF-FS-01：异步扫描 %s 故障探针仍有效", async (api) => {
+  const { root, dataRoot } = await fixture();
+  await put(root, "src/main.ts", "SCAN_BODY_MUST_NOT_READ");
+  let injected = false;
+  metadataProbe.enabled = true;
+  metadataProbe.before = (actualApi, path) => {
+    if (actualApi === api && path === join(root, "src")) { injected = true; throw Object.assign(new Error("private"), { code: "EACCES" }); }
+  };
+  archiveIoProbe.enabled = true;
+  const result = await scanIndexWorkspace({ root, dataRoot });
+  expect(injected).toBe(true);
+  expect(result.files).toEqual([]);
+  expect(skippedReason(result, "src")).toBe("unreadable");
+  expect(archiveIoProbe.bodyReadCalls).toBe(0);
+});
+
+test("M3-PERF-FS-01：64层祖先逐次核验且65层仍拒绝", async () => {
+  const { root } = await fixture();
+  const path = `${Array.from({ length: 64 }, (_, index) => `d${index}`).join("/")}/main.ts`;
+  await put(root, path, "export {};\n");
+  markerProbe.enabled = true;
+  expect((await readIndexFile(root, path)).status).toBe("success");
+  expect(markerProbe.calls).toHaveLength(64 * 10 * 8);
+  await expect(readIndexFile(root, `extra/${path}`)).rejects.toMatchObject({ code: "invalid_path" });
 });
 
 test("M2-AC1：dataRoot 必须与 worktree 分离，项目内数据根与链接入口均不能扫描", async () => {

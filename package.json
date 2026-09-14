@@ -40,6 +40,7 @@
     "prompts": []
   },
   "dependencies": {
+    "jiti": "2.7.0",
     "typebox": "1.3.29",
     "web-tree-sitter": "0.27.0"
   },
@@ -53,7 +54,6 @@
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@earendil-works/pi-tui": "0.85.1",
     "@types/node": "26.4.1",
-    "jiti": "2.7.0",
     "typescript": "^7.0.2",
     "vitest": "4.1.6"
   },
