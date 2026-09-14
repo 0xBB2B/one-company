@@ -247,4 +247,12 @@ M4证据：/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_
 - 相关文件：`runtime/knowledge-query.ts`、`runtime/knowledge-query-contracts.ts`、`runtime/index-store.ts`、`runtime/project-index-service.ts`、`tests/knowledge-query.test.ts`、`tests/index-store.test.ts`、`tests/project-index-service.test.ts`。
 - 主代理核对：七文件当前hash与独立复审通过的修复版本一致；实际源码/diff和R1—R4复现/修复依据已读，本次隔离树336项及类型检查通过，原本任务74项回归通过。
 - 未覆盖：实际工具/RPC/六角色接线、外层provider交付及完整M4。它们的未完成代码不在本提交内；提供需求metadata的使用方仍必须实现真正joint finalCheck。
-- 本功能七文件与本实施记录一起提交；实际提交号在成功后登记。
+- 本功能七文件与本实施记录一起提交；实际提交号：`3cd0b67ce5d823060114e0d93b89f717e6c5debb`。
+
+### M4-INTERACTION-CORE-01 / M4-APPROVAL-SCOPE-01：可信交互与部分确认内核
+
+- 完成内容：真实输入票据、主体与动作分离、短记录和撤权核验；完整文档非重叠分区、范围清单、单题反向单位边界、独立当前约束来源、有限同输入重解释及Node原生加载。
+- 相关文件：`runtime/approval-manifest.ts`、`runtime/prod-view.ts`、`runtime/user-interaction-format.ts`、`runtime/user-interaction-model.ts`、`runtime/user-interaction.ts`、`tests/approval-manifest.test.ts`、`tests/prod-view.test.ts`、`tests/user-interaction.test.ts`。
+- 主代理核对：已完整读相关实现/返修diff，当前hash匹配Scope独立复审基线；本次补读最终复审报告，原F1及来源失效条件已核对。217项目标回归、独立来源/撤权探针与本次不带未完成接线的隔离336项/类型检查相互对应。
+- 未覆盖：真实云模型语言质量、Host及Persist接线、PM启动和M7局部影响复核。文档许可不等于行为或启动许可，任一审核依据变化仍保守失效；这些边界保留，不宣称完成整阶段。
+- 本功能八文件与本实施记录一起提交；实际提交号在成功后登记。
