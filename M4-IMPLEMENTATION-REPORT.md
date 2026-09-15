@@ -260,6 +260,15 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-QUERY-BENCHMARK-HARNESS-01：固定查询测量装置
+
+- 已交付`tests/helpers/m4-query-benchmark.ts`和`tests/m4-query-benchmark.test.ts`。formal参数固定1000个不同文件（600脚本/300Go/100spec含schema）、文本≤20MiB、closed档位0/1000/10000、每种查询100样本；热态精确500ms、有限事实包2000ms参考门槛不变。smoke明确只作缩小装置自检，不签性能或阶段验收。
+- 使用真实临时SQLite、认证socket、持久grant、查询和随后receipt check，归档正文读取探针含正控。必须命中预定路径/规则来源，核对当前workspace/hash和>=1安全整数generation；允许同内容基线下代次变化。按实际page JSON UTF-8字节核对请求预算，不误用含receipt外壳；失败、缺失和截断保留在全部样本分母中。
+- queryMs包含客户端前置授权及query调用，checkMs为receipt check调用，combinedMs包含前置授权、query、页面核验、check及末端授权，不含样本落盘/初始化/收尾；不是纯SQL或SDK/云端耗时。逐资源关闭结果真实记录，任一未确认保全根，不把等待超时当已停止；正常/故障证据保留边界已验。
+- 原两次sol实现由主代理核对后，主代理按已记录限定接手补R1/R2。独立`query-benchmark-review/REPORT.md`确认F1—F4，`query-benchmark-review-02/REPORT.md`确认R1/R2和计时说明：15/15、真实RPC负向5项正确拒绝+1正控、合法字节/外壳/代次边界6/6。主代理此前15/15及相同负向通过，当前两文件hash与独立复审一致，typecheck、未跟踪文件no-index空白检查和diff检查通过。证据位于`completion-03/query-benchmark-main-repair/`及两审查目录。
+- 本功能只确认装置实现和成功/失败判据；formal尚未运行，旧smoke约3.7—4.6秒高于参考值只是小样本观察，高延迟根因未知。M4正式性能、全量/安装/真实模型验收仍未完成。不夹带生产优化、用户AGENTS/计划或其他任务。
+- 本次仅提交上述两文件和本节实施记录；实际提交号在成功后核对登记。
+
 ## M4-LEGACY-UI-01：旧运行展示与可核对停止整合
 
 - 已整合Agents/Shell的最小运行元数据展示及安全停止入口；不恢复旧正文查看、派工、转录订阅或resume。登记终态不等于需求完成或进程已停，只有当前可信停止证明才启动20秒保留计时；未知/待清理/预算外阻塞提示保留，窄宽看不清目标时拒绝操作。
