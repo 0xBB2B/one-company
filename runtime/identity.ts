@@ -56,19 +56,27 @@ async function gitCommonDir(dir: string): Promise<string> {
 }
 
 async function worktreeRoot(dir: string): Promise<string> {
-  const root = await realpath((await git(["rev-parse", "--show-toplevel"], dir)).trim());
-  currentHostGit([root]);
+  const capturedDir = dir;
+  currentHostGit([capturedDir]);
+  const rawRoot = (await git(["rev-parse", "--show-toplevel"], capturedDir)).trim();
+  currentHostGit([capturedDir]);
+  const root = await realpath(rawRoot);
+  currentHostGit([capturedDir, root]);
   return root;
 }
 
 export async function repositoryIdentity(dir: string): Promise<RepositoryIdentity> {
+  const capturedDir = dir;
+  currentHostGit([capturedDir]);
   let rawCommonDir: string;
   try {
-    rawCommonDir = await gitCommonDir(dir);
+    rawCommonDir = await gitCommonDir(capturedDir);
   } catch (error) {
-    throw gitFailure(error, dir);
+    throw gitFailure(error, capturedDir);
   }
+  currentHostGit([capturedDir]);
   const commonDir = await realpath(rawCommonDir);
+  currentHostGit([capturedDir, commonDir]);
   const repoId = createHash("sha256").update(commonDir).digest("hex");
   return { repoId, commonDir };
 }
@@ -147,51 +155,57 @@ export async function discoverWorkspace(startDir: string): Promise<Workspace> {
 }
 
 export async function listWorktrees(dir: string): Promise<string[]> {
+  const capturedDir = dir;
+  currentHostGit([capturedDir]);
   let stdout: string;
   try {
-    stdout = await git(["worktree", "list", "--porcelain"], dir);
+    stdout = await git(["worktree", "list", "--porcelain"], capturedDir);
   } catch (error) {
-    throw gitFailure(error, dir);
+    throw gitFailure(error, capturedDir);
   }
+  currentHostGit([capturedDir]);
   const paths: string[] = [];
   for (const block of stdout.split("\n\n")) {
     const lines = block.split("\n").filter((line) => line.length > 0);
     if (lines.some((line) => line === "bare" || line.startsWith("prunable"))) continue;
     const worktreeLine = lines.find((line) => line.startsWith("worktree "));
-    if (worktreeLine) paths.push(await realpath(worktreeLine.slice("worktree ".length).trim()));
+    if (worktreeLine) {
+      const path = await realpath(worktreeLine.slice("worktree ".length).trim());
+      currentHostGit([capturedDir, ...paths, path]);
+      paths.push(path);
+    }
   }
-  currentHostGit(paths);
+  currentHostGit([capturedDir, ...paths]);
   return paths;
 }
 
-export function dataRoot(env: Record<string, string | undefined>): string {
-  const agentDir = env.PI_CODING_AGENT_DIR;
-  if (agentDir !== undefined) {
-    if (!isAbsolute(agentDir)) throw new Error(`PI_CODING_AGENT_DIR 必须是绝对路径: ${agentDir}`);
-    return join(agentDir, "pi-company");
-  }
-  const home = env.HOME;
-  if (!home) throw new Error("未设置 PI_CODING_AGENT_DIR 时必须设置 HOME");
-  if (!isAbsolute(home)) throw new Error(`HOME 必须是绝对路径: ${home}`);
-  return join(home, ".pi", "agent", "pi-company");
-}
+export { dataRoot } from "./data-root.ts";
 
 export async function repoDataDir(dataRootPath: string, repoId: string, commonDir: string): Promise<string> {
-  const worktrees = await listWorktrees(commonDir);
-  assertDataRootOutsideWorktrees(dataRootPath, worktrees);
+  const captured = { dataRootPath, repoId, commonDir };
+  currentHostGit([captured.dataRootPath, captured.commonDir]);
+  const worktrees = await listWorktrees(captured.commonDir);
+  const roots = [captured.dataRootPath, captured.commonDir, ...worktrees];
+  currentHostGit(roots);
+  assertDataRootOutsideWorktrees(captured.dataRootPath, worktrees);
   // 旧库/维护状态必须先核对，不能先建立替代目录或空库。
-  const database = repositoryDatabase(dataRootPath, repoId);
-  const reposDir = join(dataRootPath, "repos");
-  const dir = join(reposDir, repoId);
+  const database = repositoryDatabase(captured.dataRootPath, captured.repoId);
+  const reposDir = join(captured.dataRootPath, "repos");
+  const dir = join(reposDir, captured.repoId);
+  currentHostGit(roots);
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  await chmod(dataRootPath, 0o700);
+  currentHostGit(roots);
+  await chmod(captured.dataRootPath, 0o700);
+  currentHostGit(roots);
   await chmod(reposDir, 0o700);
+  currentHostGit(roots);
   await chmod(dir, 0o700);
-  assertDataRootOutsideWorktrees(dataRootPath, worktrees);
+  currentHostGit(roots);
+  assertDataRootOutsideWorktrees(captured.dataRootPath, worktrees);
   withDatabase(database, (db) => db.transaction(() => {
-    const existing = db.read<{ commonDir: string }>("repository", repoId);
-    if (existing && existing.data.commonDir !== commonDir) throw new Error("仓库身份与记录不一致");
-    if (!existing) db.create("repository", repoId, { commonDir, firstSeenAt: new Date().toISOString() });
+    const existing = db.read<{ commonDir: string }>("repository", captured.repoId);
+    if (existing && existing.data.commonDir !== captured.commonDir) throw new Error("仓库身份与记录不一致");
+    if (!existing) db.create("repository", captured.repoId, { commonDir: captured.commonDir, firstSeenAt: new Date().toISOString() });
   }));
   return dir;
 }

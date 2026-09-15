@@ -426,3 +426,13 @@ M4-LEGACY-RETIRE-01 两次真实实现为 5e31a7ad-5585-426、db229c9b-3bde-4ee�
 
 按当前 AGENTS 逐功能核对实际源码、独立审查和验证，先记录结果，再由主代理在已授权范围限定本地 commit；不得暂存或提交其他改动，不用本提示扩大授权。不 push、创建 PR、发布、操作真实数据库或擅自回收现场。收尾清理仅本轮不需交付的临时产物，保留成功/失败证据。M4 完成后按 AGENTS 给出十阶段总览、本阶段完成/未完成、实际提交、下一阶段前置与可复制提示，然后停止；必要阻塞时仍交接 M4，不跳阶段。
 ```
+
+#### M4-GIT-RUNTIME-02C 限定完成与提交记录
+
+- 完成内容：daemon启动前共享纯配置解析和同loader Git初始化；现有spawn最终传承完整期望、认证hello双向核对完整根；客户端/服务端入口、成功/失败交付、身份替换、事件与terminal收尾；临时listener归属来源和限定清理；scope测试夹具的取消、真实close/PGID确认、字节预算及失败保全。没有新增启动IPC、业务身份或旧流程兼容入口。
+- 文件：runtime/{daemon-client,git-daemon-binding,identity,protocol,data-root,daemon-startup-config}.ts；daemon/{bootstrap.mjs,main.ts,lifecycle.ts,server.ts}；tests/{git-daemon-binding,git-daemon-fixture,daemon-client}.test.ts；tests/helpers/git-daemon-fixture.ts。直接测试依赖tests/helpers/test-git-binding.ts为02B已独立验证的纯初始化wrapper，本次按相同SHA明确整合；不含02B worker/storage及TaskB混合fixture/交互接线。
+- 验证：`pnpm exec vitest run tests/git-daemon-fixture.test.ts tests/git-daemon-binding.test.ts --no-cache` 23/23；最低Node22.19.0执行上述两文件及git-process-binding、prod-storage、prod-storage-link-race共67/67；`pnpm run typecheck`与限定`git diff --check`通过。67项后仅删未用Socket类型导入，去类型运行代码一致性已核实，保留原测试输入身份说明。
+- 独立审查：review-02c-02确认R1/R2/R4/R5有效；review-02c-03确认剩余R3/R6/R7功能复验无阻塞，VM10组、真实4组。后者未取得终点hash，主代理在恢复写入前补核14/14 SHA、HEAD、real-results、exit0、真实close记录及临时目录不存在/两个自产组ESRCH，保存`review-02c-03/main-end-verification.json`，不冒称审查代理做了终点动作。固定输入不能排除未观察A→B→A。
+- 对应要求：计划§3.3/§13.3系统已装Git、§7.7/§8.6进程和身份边界、§13.4真实性，以及M4-AC4/AC8相关运行前提；不据此签全部AC或整个M4。
+- 未覆盖：真实安装daemon/SDK/数据库启动闭环，旧hello测试整体迁移，range/Shell最终执行边界，本轮Linux真实daemon路径及完整TaskB/M4回归。02B其余文件仍因TaskB混合依赖暂未提交；共用纯helper的本次整合不代表02B已提交。
+- 证据根：`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/`；具体见`task-02c/main-repair/`、`review-02c-02/`、`review-02c-03/`。本地提交号由提交后记录核验，不虚填。

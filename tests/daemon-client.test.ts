@@ -31,6 +31,7 @@ import {
   connectDaemon,
   spawnDaemon,
 } from "../runtime/daemon-client.ts";
+import type { HelloInput } from "../runtime/daemon-client.ts";
 import {
   connectTestClient,
   createDaemonFixture,
@@ -81,6 +82,10 @@ const closables: Closable[] = [];
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isolatedSpawnHello(cwd: string): HelloInput {
+  return { windowId: "spawn-test", pid: process.pid, sessionId: "spawn-test", cwd, workspaceRoot: cwd };
 }
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs: number, intervalMs = 100): Promise<void> {
@@ -209,7 +214,8 @@ describe("单实例收敛", () => {
   test("同参数并发启动失败共享一次尝试，失败后显式重试可以重新启动", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
-    const options = { repoDir: fixture.repoDir, dataRoot: fixture.dataRoot, sdkDir: resolveSdkDir(), execPath: join(fixture.dataRoot, "missing-node") };
+    const options = { repoDir: fixture.repoDir, dataRoot: fixture.dataRoot, sdkDir: resolveSdkDir(),
+      execPath: join(fixture.dataRoot, "missing-node"), hello: isolatedSpawnHello(fixture.repo.root) };
     const results = await Promise.allSettled(Array.from({ length: 3 }, () => spawnDaemon(options)));
     expect(results.every((result) => result.status === "rejected")).toBe(true);
     for (const result of results) if (result.status === "rejected") expect(result.reason.message).toContain("拉起守护进程失败");
@@ -476,6 +482,7 @@ describe("不可达状态与自动重连", () => {
       dataRoot: fixture.dataRoot,
       sdkDir: resolveSdkDir(),
       execPath: resolveNodeExecutable(),
+      hello: isolatedSpawnHello(fixture.repo.root),
     });
     const pidAfter = await probeDaemonPid(fixture.socketPath);
     daemonPids.push(pidAfter);
@@ -530,6 +537,7 @@ describe("睡眠感知重连", () => {
       dataRoot: fixture.dataRoot,
       sdkDir: resolveSdkDir(),
       execPath: resolveNodeExecutable(),
+      hello: isolatedSpawnHello(fixture.repo.root),
     });
     const pidAfter = await probeDaemonPid(fixture.socketPath);
     daemonPids.push(pidAfter);
@@ -718,7 +726,8 @@ describe("守护进程日志归因边界", () => {
     const logDir = join(dataRoot, "repos", identity.repoId, "logs");
     const markers = ["第一次启动失败标记", "第二次启动失败标记"];
     await Promise.all(markers.map(async (marker) => {
-      await expect(spawnDaemon({ repoDir: repo.root, dataRoot, sdkDir: `/no/such/${marker}`, execPath: resolveNodeExecutable() })).rejects.toThrow(marker);
+      await expect(spawnDaemon({ repoDir: repo.root, dataRoot, sdkDir: `/no/such/${marker}`, execPath: resolveNodeExecutable(),
+        hello: isolatedSpawnHello(repo.root) })).rejects.toThrow(marker);
     }));
     const files = await readdir(logDir);
     expect(files).toHaveLength(2);

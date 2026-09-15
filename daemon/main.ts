@@ -1,12 +1,7 @@
-import { dataRoot as resolveDataRoot } from "../runtime/identity.ts";
+import { currentHostGit } from "../runtime/git-runtime.mjs";
+import { parseDaemonStartupConfig } from "../runtime/daemon-startup-config.ts";
 import { loadSdk } from "./sdk.ts";
 import { startDaemon } from "./lifecycle.ts";
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`缺少环境变量: ${name}`);
-  return value;
-}
 
 function parseIdleTimeoutMs(raw: string | undefined): number {
   const value = Number(raw ?? "600000");
@@ -26,16 +21,17 @@ function parseNetworkProbeIntervalMs(raw: string | undefined): number | undefine
 }
 
 async function main(): Promise<void> {
-  const sdkDir = requireEnv("PI_COMPANY_SDK_DIR");
-  const repoDir = requireEnv("PI_COMPANY_REPO_DIR");
-  const dataRootPath = process.env.PI_COMPANY_DATA_ROOT ?? resolveDataRoot(process.env);
-  const idleTimeoutMs = parseIdleTimeoutMs(process.env.PI_COMPANY_IDLE_TIMEOUT_MS);
-  const clockSkewFile = process.env.PI_COMPANY_CLOCK_SKEW_FILE;
-  const modelProviderModulePath = process.env.PI_COMPANY_MODEL_PROVIDER_MODULE;
-  const connectivityProbeModulePath = process.env.PI_COMPANY_CONNECTIVITY_PROBE_MODULE;
-  const networkProbeIntervalMs = parseNetworkProbeIntervalMs(process.env.PI_COMPANY_NETWORK_PROBE_INTERVAL_MS);
-
+  const capturedEnv = { ...process.env };
+  const startupConfig = parseDaemonStartupConfig(capturedEnv);
+  const { sdkDir, repoDir, dataRoot: dataRootPath, ownRoots } = startupConfig;
+  const idleTimeoutMs = parseIdleTimeoutMs(capturedEnv.PI_COMPANY_IDLE_TIMEOUT_MS);
+  const clockSkewFile = capturedEnv.PI_COMPANY_CLOCK_SKEW_FILE;
+  const modelProviderModulePath = capturedEnv.PI_COMPANY_MODEL_PROVIDER_MODULE;
+  const connectivityProbeModulePath = capturedEnv.PI_COMPANY_CONNECTIVITY_PROBE_MODULE;
+  const networkProbeIntervalMs = parseNetworkProbeIntervalMs(capturedEnv.PI_COMPANY_NETWORK_PROBE_INTERVAL_MS);
+  currentHostGit(ownRoots);
   await loadSdk(sdkDir);
+  currentHostGit(ownRoots);
   await startDaemon({
     repoDir,
     dataRoot: dataRootPath,

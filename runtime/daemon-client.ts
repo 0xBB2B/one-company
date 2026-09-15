@@ -11,9 +11,17 @@ import { probeExistingInstance, socketPathByteLimit } from "../daemon/lifecycle.
 import { createClock } from "./clock.ts";
 import { uuidv7 } from "./database.ts";
 import type { Clock, TimerHandle } from "./clock.ts";
-import { daemonSocketPath, discoverWorkspace, repoDataDir, repositoryIdentity } from "./identity.ts";
+import { daemonSocketPath, discoverWorkspace, listWorktrees, repoDataDir, repositoryIdentity } from "./identity.ts";
 import type { RepositoryIdentity, Workspace, WorkspaceSkipped } from "./identity.ts";
 import { createRequest, decodeFrames, encodeFrame, PROTOCOL_VERSION } from "./protocol.ts";
+import {
+  createGitExpectationText,
+  currentGitBinding,
+  decodeGitExpectation,
+  gitExpectationRoots,
+  isGitBindingFailure,
+  verifyPeerGitBinding,
+} from "./git-daemon-binding.ts";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = dirname(moduleDir);
@@ -53,12 +61,18 @@ export interface SpawnDaemonOptions {
   sdkDir: string;
   execPath?: string;
   env?: Record<string, string>;
+  hello: HelloInput;
+}
+
+interface DaemonLaunchOptions extends Omit<SpawnDaemonOptions, "hello"> {
+  gitRoots: readonly string[];
 }
 
 function buildDaemonEnv(params: {
   sdkDir: string;
   repoDir: string;
   dataRoot: string;
+  gitExpectation: string;
   env?: Record<string, string>;
 }): NodeJS.ProcessEnv {
   return {
@@ -67,6 +81,7 @@ function buildDaemonEnv(params: {
     PI_COMPANY_SDK_DIR: params.sdkDir,
     PI_COMPANY_REPO_DIR: params.repoDir,
     PI_COMPANY_DATA_ROOT: params.dataRoot,
+    PI_COMPANY_EXPECTED_GIT: params.gitExpectation,
   };
 }
 
@@ -85,18 +100,18 @@ async function readLogTail(path: string): Promise<string> {
 }
 
 interface SpawnedProcess {
-  ready: Promise<void>;
+  listening: Promise<void>;
 }
 
 const pendingSpawns = new Map<string, Promise<SpawnedProcess>>();
 
-function beginSpawnDaemon(options: SpawnDaemonOptions, identity: RepositoryIdentity): Promise<SpawnedProcess> {
+function beginSpawnDaemon(options: DaemonLaunchOptions, identity: RepositoryIdentity): Promise<SpawnedProcess> {
   const key = JSON.stringify([identity.commonDir, options.dataRoot, options.sdkDir, options.execPath ?? process.execPath,
     Object.entries(options.env ?? {}).sort(([a], [b]) => a.localeCompare(b))]);
   const existing = pendingSpawns.get(key);
   if (existing) return existing;
   const pending = launchDaemon(options, identity).then(async (spawned) => {
-    await spawned.ready;
+    await spawned.listening;
     return spawned;
   });
   pendingSpawns.set(key, pending);
@@ -105,21 +120,36 @@ function beginSpawnDaemon(options: SpawnDaemonOptions, identity: RepositoryIdent
   return pending;
 }
 
-async function launchDaemon(options: SpawnDaemonOptions, identity: RepositoryIdentity): Promise<SpawnedProcess> {
-  const execPath = options.execPath ?? process.execPath;
-  const repoDir = await repoDataDir(options.dataRoot, identity.repoId, identity.commonDir);
+async function launchDaemon(options: DaemonLaunchOptions, identity: RepositoryIdentity): Promise<SpawnedProcess> {
+  const captured = {
+    execPath: options.execPath ?? process.execPath,
+    sdkDir: options.sdkDir,
+    dataRoot: options.dataRoot,
+    env: options.env === undefined ? undefined : { ...options.env },
+    gitRoots: [...options.gitRoots],
+    repoId: identity.repoId,
+    commonDir: identity.commonDir,
+  };
+  currentGitBinding(captured.gitRoots);
+  const repoDir = await repoDataDir(captured.dataRoot, captured.repoId, captured.commonDir);
+  currentGitBinding(captured.gitRoots);
   const launchId = uuidv7();
   const logDir = join(repoDir, "logs");
   await mkdir(logDir, { recursive: true, mode: 0o700 });
+  currentGitBinding(captured.gitRoots);
   const logPath = join(logDir, `${launchId}.log`);
   const logFd = openSync(logPath, "ax", 0o600);
   let child: ReturnType<typeof spawn>;
   try {
-    // 子进程持有日志文件描述符，派出窗口退出不会关闭其输出目标或触发 EPIPE。
-    child = spawn(execPath, [daemonBootstrapEntry], {
+    const gitExpectation = createGitExpectationText(captured.gitRoots);
+    const env = buildDaemonEnv({ sdkDir: captured.sdkDir, repoDir: captured.commonDir, dataRoot: captured.dataRoot,
+      gitExpectation, env: captured.env });
+    currentGitBinding(captured.gitRoots);
+    // 期望文本和最终环境在最后一次同步复验后立即交给spawn，中间没有异步窗口。
+    child = spawn(captured.execPath, [daemonBootstrapEntry], {
       stdio: ["ignore", logFd, logFd],
       detached: true,
-      env: buildDaemonEnv({ sdkDir: options.sdkDir, repoDir: identity.commonDir, dataRoot: options.dataRoot, env: options.env }),
+      env,
     });
   } finally { closeSync(logFd); }
   child.unref();
@@ -134,8 +164,8 @@ async function launchDaemon(options: SpawnDaemonOptions, identity: RepositoryIde
     exitResult = { code, signal };
   });
 
-  const socketPath = daemonSocketPath(options.dataRoot, identity.repoId);
-  const ready = (async () => {
+  const socketPath = daemonSocketPath(captured.dataRoot, captured.repoId);
+  const listening = (async () => {
     const start = Date.now();
     while (Date.now() - start < SPAWN_READY_TIMEOUT_MS) {
       if (spawnError) throw new Error(`拉起守护进程失败: ${spawnError.message}`);
@@ -151,13 +181,12 @@ async function launchDaemon(options: SpawnDaemonOptions, identity: RepositoryIde
     throw new Error(`等待守护进程启动超时（${SPAWN_READY_TIMEOUT_MS}ms）：${tail || "无 stderr 输出"}`);
   })();
 
-  return { ready };
+  return { listening };
 }
 
 export async function spawnDaemon(options: SpawnDaemonOptions): Promise<void> {
-  const identity = await repositoryIdentity(options.repoDir);
-  const { ready } = await beginSpawnDaemon(options, identity);
-  await ready;
+  const client = await connectDaemon(options);
+  client.close();
 }
 
 function rawConnect(socketPath: string): Promise<Socket> {
@@ -190,6 +219,7 @@ interface ResolvedContext {
   clock: Clock;
   ownsClock: boolean;
   helloParams: Record<string, unknown>;
+  gitRoots: readonly string[];
 }
 
 interface PendingCall {
@@ -375,7 +405,7 @@ export interface DaemonClientDisconnectedData extends Record<string, unknown> {
   connectionSequence: number;
   reason: string;
   willReconnect: boolean;
-  cause: "transport" | "client_close";
+  cause: "transport" | "git_binding" | "client_close";
 }
 
 export interface DaemonClient {
@@ -396,6 +426,7 @@ class DaemonClientImpl implements DaemonClient {
   private reconnectTimer: TimerHandle | null;
   private reconnectDelayMs: number;
   private connectionSequence: number;
+  private bindingTerminal: boolean;
   private identity: Readonly<DaemonConnectionIdentity> | null = null;
   private helloResult: Readonly<Record<string, unknown>> | null = null;
   private readonly listeners: Map<string, Set<(data: Record<string, unknown>) => void>>;
@@ -409,6 +440,7 @@ class DaemonClientImpl implements DaemonClient {
     this.reconnectTimer = null;
     this.reconnectDelayMs = RECONNECT_BASE_MS;
     this.connectionSequence = 0;
+    this.bindingTerminal = false;
     this.listeners = new Map();
   }
 
@@ -429,17 +461,30 @@ class DaemonClientImpl implements DaemonClient {
       const socket = await this.attemptConnect();
       await this.helloOn(socket);
     } catch (error) {
-      this.status = "unreachable";
-      this.reason = (error as Error).message;
-      this.scheduleReconnect();
+      if (this.isTerminalHandshakeFailure(error)) {
+        const terminal = isGitBindingFailure(error) ? this.safeGitBindingError(error) : error as Error;
+        this.terminateGitBinding(terminal);
+      } else {
+        this.status = "unreachable";
+        this.reason = (error as Error).message;
+        this.scheduleReconnect();
+      }
     }
   }
 
   // ENOENT（socket 文件不存在）、ECONNREFUSED（崩溃遗留的旧 socket 文件）、ENOTSOCK（socket 路径被普通文件占据）
   // 都意味着无人监听，此时才需要拉起新实例。
   private async attemptConnect(): Promise<Socket> {
+    currentGitBinding(this.ctx.gitRoots);
     try {
-      return await rawConnect(this.ctx.socketPath);
+      const socket = await rawConnect(this.ctx.socketPath);
+      try {
+        currentGitBinding(this.ctx.gitRoots);
+      } catch (error) {
+        socket.destroy();
+        throw error;
+      }
+      return socket;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && code !== "ECONNREFUSED" && code !== "ENOTSOCK") throw error;
@@ -451,72 +496,76 @@ class DaemonClientImpl implements DaemonClient {
           sdkDir: this.ctx.sdkDir,
           execPath: this.ctx.execPath,
           env: this.ctx.env,
+          gitRoots: this.ctx.gitRoots,
         },
         identity,
       );
-      await spawned.ready;
-      return rawConnect(this.ctx.socketPath);
+      await spawned.listening;
+      currentGitBinding(this.ctx.gitRoots);
+      const socket = await rawConnect(this.ctx.socketPath);
+      try {
+        currentGitBinding(this.ctx.gitRoots);
+      } catch (error) {
+        socket.destroy();
+        throw error;
+      }
+      return socket;
     }
   }
 
   private async helloOn(socket: Socket): Promise<void> {
-    let link!: SocketLink;
-    link = new SocketLink(
-      socket,
-      (event, data) => this.dispatchEvent(event, data),
-      (reason) => this.handleDisconnect(link, reason),
-    );
-    this.link = link;
-    let result: Record<string, unknown>;
+    let link: SocketLink | null = null;
     try {
-      result = await link.call("hello", { ...this.ctx.helloParams, authToken: controlToken(this.ctx.dataRoot) });
+      currentGitBinding(this.ctx.gitRoots);
+      link = new SocketLink(
+        socket,
+        (event, data) => this.dispatchEvent(event, data),
+        (reason) => this.handleDisconnect(link!, reason),
+      );
+      this.link = link;
+      const authToken = controlToken(this.ctx.dataRoot);
+      const gitExpectation = createGitExpectationText(this.ctx.gitRoots);
+      const requestedRoots = gitExpectationRoots(decodeGitExpectation(gitExpectation));
+      const result = await link.call("hello", { ...this.ctx.helloParams, authToken, gitExpectation });
+      if (this.closed) return;
+      const handshakeFailure = link.handshakeFailure();
+      if (handshakeFailure) throw new Error(handshakeFailure);
+      if (this.link !== link) throw new Error("hello 完成前连接已关闭");
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+      if (result.repoId !== this.ctx.repoId || result.protocolVersion !== PROTOCOL_VERSION
+        || typeof result.daemonPid !== "number" || !Number.isSafeInteger(result.daemonPid) || result.daemonPid <= 0
+        || typeof result.startedAt !== "string" || result.startedAt.length === 0
+        || typeof result.daemonInstanceId !== "string" || !uuid.test(result.daemonInstanceId)
+        || typeof result.connectionId !== "string" || !uuid.test(result.connectionId)) {
+        throw Object.assign(new Error("hello 响应身份字段缺失或不一致"), { code: "daemon_identity_mismatch" });
+      }
+      verifyPeerGitBinding(result.gitExpectation, this.ctx.gitRoots, requestedRoots);
+      currentGitBinding(this.ctx.gitRoots);
+      this.status = "connected";
+      this.reason = undefined;
+      this.reconnectDelayMs = RECONNECT_BASE_MS;
+      this.connectionSequence += 1;
+      this.identity = Object.freeze({ daemonInstanceId: result.daemonInstanceId, connectionId: result.connectionId,
+        connectionSequence: this.connectionSequence });
+      const { gitExpectation: _internalGitExpectation, ...publicResult } = result;
+      this.helloResult = Object.freeze({ ...publicResult, connectionSequence: this.connectionSequence });
+      this.dispatchEvent(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, this.connectedEventData());
+      currentGitBinding(this.ctx.gitRoots);
+      if (this.closed || this.bindingTerminal || this.link !== link) return;
+      if (!link.releaseBufferedEvents()) throw new Error("hello 完成后无法放行暂存事件");
+      return;
     } catch (error) {
-      // 失败的这次握手在关闭协商完成前不摘掉监听器，其 socket 稍后触发的 close 事件会调用
-      // handleDisconnect 误伤此后可能已建立好的新连接；这里提前摘监听器切断这条迟到的回调路径
-      link.destroy();
-      if (this.link === link) this.link = null;
-      throw error;
-    }
-    if (this.closed) {
-      link.destroy();
-      if (this.link === link) this.link = null;
-      return;
-    }
-    const handshakeFailure = link.handshakeFailure();
-    if (handshakeFailure) {
-      link.destroy();
-      if (this.link === link) this.link = null;
-      throw new Error(handshakeFailure);
-    }
-    if (this.link !== link) {
-      link.destroy();
-      throw new Error("hello 完成前连接已关闭");
-    }
-    if (result.repoId !== this.ctx.repoId) {
-      link.destroy();
-      if (this.link === link) this.link = null;
-      throw new Error(`hello 响应 repoId 不一致: 期望 ${this.ctx.repoId}，实际 ${String(result.repoId)}`);
-    }
-    this.status = "connected";
-    this.reason = undefined;
-    this.reconnectDelayMs = RECONNECT_BASE_MS;
-    this.connectionSequence += 1;
-    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-    this.identity = typeof result.daemonInstanceId === "string" && uuid.test(result.daemonInstanceId)
-      && typeof result.connectionId === "string" && uuid.test(result.connectionId)
-      ? Object.freeze({ daemonInstanceId: result.daemonInstanceId, connectionId: result.connectionId, connectionSequence: this.connectionSequence })
-      : null;
-    this.helloResult = Object.freeze({ ...result, connectionSequence: this.connectionSequence });
-    this.dispatchEvent(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, this.connectedEventData());
-    if (this.closed || this.link !== link) {
-      link.destroy();
-      if (this.link === link) this.link = null;
-      return;
-    }
-    if (!link.releaseBufferedEvents()) {
-      link.destroy();
-      if (this.link === link) this.link = null;
-      throw new Error("hello 完成后无法放行暂存事件");
+      // raw socket创建成功后始终由本次握手负责；任何pre-link或握手失败都只关闭自己的连接。
+      if (link) {
+        link.destroy();
+        if (this.link === link) this.link = null;
+      } else socket.destroy();
+      throw isGitBindingFailure(error) ? this.safeGitBindingError(error) : error;
+    } finally {
+      if (this.closed && link) {
+        link.destroy();
+        if (this.link === link) this.link = null;
+      }
     }
   }
 
@@ -533,7 +582,7 @@ class DaemonClientImpl implements DaemonClient {
   private disconnectedEventData(
     reason: string,
     willReconnect: boolean,
-    cause: "transport" | "client_close",
+    cause: "transport" | "git_binding" | "client_close",
   ): DaemonClientDisconnectedData {
     return {
       status: "unreachable",
@@ -553,12 +602,79 @@ class DaemonClientImpl implements DaemonClient {
     }
   }
 
-  private dispatchEvent(event: string, data: Record<string, unknown>): void {
-    for (const listener of this.listeners.get(event) ?? []) this.notifyListener(listener, data);
+  private dispatchEvent(event: string, data: Record<string, unknown>, checkBinding = true): void {
+    for (const listener of this.listeners.get(event) ?? []) {
+      if (checkBinding && !this.ensureCurrentBinding()) return;
+      this.notifyListener(listener, data);
+      if (checkBinding && !this.ensureCurrentBinding()) return;
+    }
+  }
+
+  private safeGitBindingError(error: unknown): DaemonCallError {
+    const candidate = (error as { code?: unknown } | null)?.code;
+    const code = typeof candidate === "string" && isGitBindingFailure(error) ? candidate : "git_unsafe";
+    return new DaemonCallError(code, "Git 绑定已失效");
+  }
+
+  private ensureCurrentBinding(): boolean {
+    if (this.bindingTerminal) return false;
+    try {
+      currentGitBinding(this.ctx.gitRoots);
+      return true;
+    } catch (error) {
+      this.terminateGitBinding(this.safeGitBindingError(error));
+      return false;
+    }
+  }
+
+  private assertCurrentBinding(): void {
+    try {
+      currentGitBinding(this.ctx.gitRoots);
+    } catch (error) {
+      const safe = this.safeGitBindingError(error);
+      this.terminateGitBinding(safe);
+      throw safe;
+    }
+  }
+
+  private isTerminalHandshakeFailure(error: unknown): boolean {
+    const code = (error as { code?: unknown } | null)?.code;
+    return isGitBindingFailure(error) || error instanceof DaemonCallError
+      || code === "daemon_identity_mismatch" || code === "protocol_version";
+  }
+
+  private terminateGitBinding(error: Error, expectedLink?: SocketLink): void {
+    if (this.bindingTerminal || this.closed || (expectedLink && this.link !== expectedLink)) return;
+    this.bindingTerminal = true;
+    const wasConnected = this.status === "connected";
+    const link = this.link;
+    this.link = null;
+    this.identity = null;
+    this.helloResult = null;
+    if (this.reconnectTimer) {
+      this.ctx.clock.clearTimer(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    link?.destroy();
+    this.status = "unreachable";
+    this.reason = error.message;
+    if (wasConnected) {
+      this.dispatchEvent(
+        DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected,
+        this.disconnectedEventData(error.message, false, "git_binding"),
+        false,
+      );
+    }
   }
 
   private handleDisconnect(link: SocketLink, reason: string): void {
     if (this.closed || this.link !== link) return;
+    try {
+      currentGitBinding(this.ctx.gitRoots);
+    } catch (error) {
+      this.terminateGitBinding(this.safeGitBindingError(error), link);
+      return;
+    }
     const wasConnected = this.status === "connected";
     this.link = null;
     this.identity = null;
@@ -569,13 +685,14 @@ class DaemonClientImpl implements DaemonClient {
       this.dispatchEvent(
         DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected,
         this.disconnectedEventData(reason, true, "transport"),
+        false,
       );
     }
     this.scheduleReconnect();
   }
 
   private scheduleReconnect(): void {
-    if (this.closed || this.reconnectTimer) return;
+    if (this.closed || this.bindingTerminal || this.reconnectTimer) return;
     const baseDelay = this.reconnectDelayMs;
     this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, RECONNECT_MAX_MS);
     const jitter = baseDelay * RECONNECT_JITTER_RATIO * (Math.random() * 2 - 1);
@@ -587,7 +704,7 @@ class DaemonClientImpl implements DaemonClient {
   }
 
   private async tryReconnect(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.bindingTerminal) return;
     this.status = "starting";
     try {
       const socket = await this.attemptConnect();
@@ -597,26 +714,69 @@ class DaemonClientImpl implements DaemonClient {
       }
       await this.helloOn(socket);
     } catch (error) {
-      if (this.closed) return;
-      this.status = "unreachable";
-      this.reason = (error as Error).message;
-      this.scheduleReconnect();
+      if (this.closed || this.bindingTerminal) return;
+      if (this.isTerminalHandshakeFailure(error)) {
+        const terminal = isGitBindingFailure(error) ? this.safeGitBindingError(error) : error as Error;
+        this.terminateGitBinding(terminal);
+      } else {
+        this.status = "unreachable";
+        this.reason = (error as Error).message;
+        this.scheduleReconnect();
+      }
     }
   }
 
-  call(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  async call(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    this.assertCurrentBinding();
     if (this.status !== "connected" || !this.link || this.link.handshakeFailure()) {
-      return Promise.reject(new Error(`守护进程不可达: ${this.reason ?? "尚未连接"}`));
+      throw new Error(`守护进程不可达: ${this.reason ?? "尚未连接"}`);
     }
     // 查询当前握手结果不再次发送 hello，避免查询 PID 时退役已绑定的连接能力。
     if (method === "hello") {
-      if (Object.keys(params).length > 0) return Promise.reject(new Error("重建身份须关闭并重新连接客户端"));
-      return Promise.resolve({ ...this.helloResult });
+      if (Object.keys(params).length > 0) throw new Error("重建身份须关闭并重新连接客户端");
+      this.assertCurrentBinding();
+      return { ...this.helloResult };
     }
-    return this.link.call(method, params);
+    const link = this.link;
+    let result: Record<string, unknown>;
+    try {
+      result = await link.call(method, params);
+    } catch (error) {
+      if (this.closed || this.bindingTerminal || this.link !== link) {
+        throw new Error(`守护进程不可达: ${this.reason ?? "连接已变化"}`);
+      }
+      try {
+        currentGitBinding(this.ctx.gitRoots);
+      } catch (bindingError) {
+        const safe = this.safeGitBindingError(bindingError);
+        this.terminateGitBinding(safe, link);
+        throw safe;
+      }
+      if (isGitBindingFailure(error)) {
+        const safe = this.safeGitBindingError(error);
+        this.terminateGitBinding(safe, link);
+        throw safe;
+      }
+      throw error;
+    }
+    if (this.closed || this.bindingTerminal || this.status !== "connected" || this.link !== link || link.handshakeFailure()) {
+      throw new Error(`守护进程不可达: ${this.reason ?? "连接已变化"}`);
+    }
+    try {
+      currentGitBinding(this.ctx.gitRoots);
+    } catch (error) {
+      const safe = this.safeGitBindingError(error);
+      this.terminateGitBinding(safe, link);
+      throw safe;
+    }
+    if (this.closed || this.bindingTerminal || this.status !== "connected" || this.link !== link || link.handshakeFailure()) {
+      throw new Error(`守护进程不可达: ${this.reason ?? "连接已变化"}`);
+    }
+    return result;
   }
 
   connectionIdentity(): Readonly<DaemonConnectionIdentity> | null {
+    this.assertCurrentBinding();
     return !this.closed && this.status === "connected" && this.link && !this.link.handshakeFailure() ? this.identity : null;
   }
 
@@ -631,7 +791,10 @@ class DaemonClientImpl implements DaemonClient {
     // connectDaemon 在首次 hello 完成后才返回；补发当前连接状态，宿主因此无需新增注册时机。
     // 这只是本地状态通知，不会重放远端事件、RPC 或任意写操作。
     if (event === DAEMON_CLIENT_LIFECYCLE_EVENTS.connected && this.status === "connected" && this.connectionSequence > 0) {
-      this.notifyListener(listener, this.connectedEventData());
+      if (this.ensureCurrentBinding()) {
+        this.notifyListener(listener, this.connectedEventData());
+        this.ensureCurrentBinding();
+      }
     }
     return () => activeSet.delete(listener);
   }
@@ -654,10 +817,13 @@ class DaemonClientImpl implements DaemonClient {
     const reason = "客户端已关闭";
     this.status = "unreachable";
     this.reason = reason;
-    this.dispatchEvent(
-      DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected,
-      this.disconnectedEventData(reason, false, "client_close"),
-    );
+    if (!this.bindingTerminal) {
+      this.dispatchEvent(
+        DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected,
+        this.disconnectedEventData(reason, false, "client_close"),
+        false,
+      );
+    }
     this.listeners.clear();
     if (this.ctx.ownsClock) this.ctx.clock.stopGapWatcher();
   }
@@ -682,26 +848,43 @@ export interface ConnectDaemonOptions {
 }
 
 async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedContext> {
-  const identity = await repositoryIdentity(options.repoDir);
-  return {
-    socketPath: daemonSocketPath(options.dataRoot, identity.repoId),
-    repoId: identity.repoId,
-    commonDir: identity.commonDir,
+  const captured = {
+    repoDir: options.repoDir,
     dataRoot: options.dataRoot,
     sdkDir: options.sdkDir,
     execPath: options.execPath,
-    env: options.env,
-    clock: options.clock ?? createClock(),
-    ownsClock: options.clock === undefined,
+    env: options.env === undefined ? undefined : { ...options.env },
+    clock: options.clock,
+    hello: { ...options.hello },
+  };
+  const initialRoots = [captured.repoDir, captured.dataRoot, captured.hello.cwd, captured.hello.workspaceRoot];
+  currentGitBinding(initialRoots);
+  const identity = await repositoryIdentity(captured.repoDir);
+  currentGitBinding([...initialRoots, identity.commonDir]);
+  const worktrees = await listWorktrees(identity.commonDir);
+  const gitRoots = [...new Set([...initialRoots, identity.commonDir, ...worktrees])];
+  currentGitBinding(gitRoots);
+  createGitExpectationText(gitRoots);
+  return {
+    socketPath: daemonSocketPath(captured.dataRoot, identity.repoId),
+    repoId: identity.repoId,
+    commonDir: identity.commonDir,
+    dataRoot: captured.dataRoot,
+    sdkDir: captured.sdkDir,
+    execPath: captured.execPath,
+    env: captured.env,
+    clock: captured.clock ?? createClock(),
+    ownsClock: captured.clock === undefined,
     helloParams: {
-      windowId: options.hello.windowId,
-      pid: options.hello.pid,
-      sessionId: options.hello.sessionId,
-      cwd: options.hello.cwd,
-      workspaceRoot: options.hello.workspaceRoot,
+      windowId: captured.hello.windowId,
+      pid: captured.hello.pid,
+      sessionId: captured.hello.sessionId,
+      cwd: captured.hello.cwd,
+      workspaceRoot: captured.hello.workspaceRoot,
       repoIds: [identity.repoId],
       protocolVersion: PROTOCOL_VERSION,
     },
+    gitRoots,
   };
 }
 

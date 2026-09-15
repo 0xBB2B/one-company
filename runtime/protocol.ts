@@ -157,6 +157,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
       workspaceRoot: Type.String(),
       repoIds: Type.Array(Type.String()),
       protocolVersion: Type.Number(),
+      gitExpectation: Type.String({ minLength: 1 }),
     },
     { additionalProperties: false },
   ),

@@ -9,6 +9,7 @@ import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource, TimerHandle } from "../runtime/clock.ts";
 import { daemonSocketPath, listWorktrees, repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
 import { gitExecutable, readGit } from "../runtime/git-read.ts";
+import { currentHostGit } from "../runtime/git-runtime.mjs";
 import { ProjectSyncGrantVerifier } from "../runtime/project-sync-grants.ts";
 import { ProjectIndexCoordinator } from "./project-index-coordinator.ts";
 import { ProjectIndexRequirements } from "./project-index-requirements.ts";
@@ -175,32 +176,42 @@ export async function listenExclusive(
 ): Promise<{ inode: number } | "existing" | "retry"> {
   const tempPath = tempSocketPath(socketPath);
   await server.listen(tempPath);
+  let listenerIdentity;
+  try {
+    listenerIdentity = await stat(tempPath);
+  } catch (error) {
+    try { await server.close(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "无法确认自有 listener 身份及关闭失败"); }
+    throw error;
+  }
   try {
     await link(tempPath, socketPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      await server.close();
-      await rm(tempPath, { force: true }).catch(() => {});
-      throw error;
+      return failAfterOwnedListener(server, tempPath, listenerIdentity.ino, error);
     }
     // 探测期间其他进程可能替换旧 socket；只回收本次实际探测的同一文件。
     const observed = await stat(socketPath).catch(() => undefined);
     const probe = await probeExistingInstance(socketPath);
-    await server.close();
-    await rm(tempPath, { force: true }).catch(() => {});
+    await closeOwnedListener(server, tempPath, listenerIdentity.ino);
     if (probe === "existing") return "existing";
     if (probe === "stale" && observed) await releaseSocket(socketPath, observed.ino);
     return "retry";
   }
-  try {
-    const info = await stat(socketPath);
-    await rm(tempPath, { force: true }).catch(() => {});
-    return { inode: info.ino };
-  } catch {
-    await server.close();
-    await rm(tempPath, { force: true }).catch(() => {});
+  let linkedIdentity;
+  try { linkedIdentity = await stat(socketPath); }
+  catch (error) {
+    try { await closeOwnedListener(server, tempPath, listenerIdentity.ino); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "listener 归属检查及清理失败"); }
     return "retry";
   }
+  if (linkedIdentity.dev !== listenerIdentity.dev || linkedIdentity.ino !== listenerIdentity.ino) {
+    await closeOwnedListener(server, tempPath, listenerIdentity.ino);
+    return "retry";
+  }
+  try { await releaseSocket(tempPath, listenerIdentity.ino); }
+  catch (error) { return failAfterOwnedListener(server, tempPath, listenerIdentity.ino, error); }
+  return { inode: listenerIdentity.ino };
 }
 
 async function acquireListener(server: DaemonServer, socketPath: string): Promise<{ inode: number } | "existing"> {
@@ -228,12 +239,48 @@ export async function checkSocketOwnership(socketPath: string, ourInode: number)
 }
 
 export async function releaseSocket(socketPath: string, ourInode: number): Promise<void> {
+  let info;
   try {
-    const info = await stat(socketPath);
-    if (info.ino === ourInode) await rm(socketPath, { force: true });
-  } catch {
-    // socket 文件已不存在
+    info = await stat(socketPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
   }
+  if (info.ino === ourInode) await rm(socketPath, { force: true });
+}
+
+export async function closeOwnedListener(
+  server: Pick<DaemonServer, "close">,
+  socketPath: string,
+  ourInode: number,
+): Promise<void> {
+  const errors: unknown[] = [];
+  try {
+    await server.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await releaseSocket(socketPath, ourInode);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "关闭自有 listener 失败");
+}
+
+export async function failAfterOwnedListener(
+  server: Pick<DaemonServer, "close">,
+  socketPath: string,
+  ourInode: number,
+  primaryError: unknown,
+): Promise<never> {
+  try {
+    await closeOwnedListener(server, socketPath, ourInode);
+  } catch (cleanupError) {
+    throw new AggregateError([primaryError, cleanupError], "daemon 启动检查及自有 listener 清理失败");
+  }
+  throw primaryError;
 }
 
 async function applyPendingClockSkew(
@@ -373,8 +420,11 @@ async function verifiedRepositoryRoot(commonDir: string, repoId: string): Promis
 }
 
 export async function startDaemon(options: StartDaemonOptions): Promise<void> {
-  const repoId = createHash("sha256").update(options.repoDir).digest("hex");
-  const socketPath = daemonSocketPath(options.dataRoot, repoId);
+  const capturedOptions = { ...options };
+  const gitRoots = [capturedOptions.repoDir, capturedOptions.dataRoot];
+  currentHostGit(gitRoots);
+  const repoId = createHash("sha256").update(capturedOptions.repoDir).digest("hex");
+  const socketPath = daemonSocketPath(capturedOptions.dataRoot, repoId);
 
   const limit = socketPathByteLimit();
   const socketPathLength = Buffer.byteLength(socketPath, "utf8");
@@ -394,14 +444,15 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   const clock = createClock({ timeSource });
 
   const startedAt = new Date().toISOString();
-  const runStore = new RunStore({ dataRoot: options.dataRoot, repoId, daemonStartedAt: startedAt });
+  const runStore = new RunStore({ dataRoot: capturedOptions.dataRoot, repoId, daemonStartedAt: startedAt });
   const runActivity = new RunActivityChecker({ clock, runStore });
 
   let idleExit: IdleExit | undefined;
   let ready = false;
   const server = new DaemonServer({
-    authToken: controlToken(options.dataRoot),
+    authToken: controlToken(capturedOptions.dataRoot),
     repoId,
+    gitRoots,
     startedAt,
     onActivity: () => idleExit?.touch(),
     // 显式 shutdown 是不可逆操作，读不到运行记录时无法确认真的没有活动运行，宁可拒绝也不能误关；
@@ -427,6 +478,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   const acquired = await acquireListener(server, socketPath);
   if (acquired === "existing") return;
   const ownership = acquired;
+  try {
+    currentHostGit(gitRoots);
+  } catch (error) {
+    return failAfterOwnedListener(server, socketPath, ownership.inode, error);
+  }
 
   // 信号处理必须在赢得 socket 归属后立刻装好：hello 不等 ready 就能响应，若信号处理还没
   // 装上就收到 SIGTERM，进程会被系统默认行为直接终止而不会走到下面的优雅关闭与状态标记
@@ -485,9 +541,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       process.stderr.write(`标记自身运行为 interrupted 失败: ${(error as Error).message}\n`);
     }
 
-    if (await checkSocketOwnership(socketPath, ownership.inode)) {
-      await server.close();
-      await releaseSocket(socketPath, ownership.inode);
+    try {
+      await closeOwnedListener(server, socketPath, ownership.inode);
+    } catch (error) {
+      exitCode = 1;
+      process.stderr.write(`关闭 daemon listener 失败: ${error instanceof Error ? error.message : String(error)}\n`);
     }
     process.exit(startupFailed ? 1 : exitCode);
   }
@@ -506,24 +564,28 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   });
   // shutdown() 内部会先 await initializedPromise 再动手，所以 ready 可以早于重活配装完成前置位：
   // 一旦成为确认的单实例即可接受 shutdown 请求，不必等 ModelRuntime/角色目录等装配完
-  ready = true;
-
   try {
-    const agentDir = dirname(options.dataRoot);
-    const repositoryRoot = await verifiedRepositoryRoot(options.repoDir, repoId);
+    currentHostGit(gitRoots);
+    ready = true;
+    const agentDir = dirname(capturedOptions.dataRoot);
+    const repositoryRoot = await verifiedRepositoryRoot(capturedOptions.repoDir, repoId);
+    currentHostGit([...gitRoots, repositoryRoot]);
     const [{ runtime, selectModel }, roleCatalogResult, repoDir] = await Promise.all([
-      setupModelRuntime(options.modelProviderModulePath),
+      setupModelRuntime(capturedOptions.modelProviderModulePath),
       loadDaemonRoleCatalog(agentDir, repositoryRoot),
-      repoDataDir(options.dataRoot, repoId, options.repoDir),
+      repoDataDir(capturedOptions.dataRoot, repoId, capturedOptions.repoDir),
     ]);
+    currentHostGit([...gitRoots, repositoryRoot]);
+    const trustedGitExecutable = await gitExecutable();
+    currentHostGit([...gitRoots, repositoryRoot]);
 
     indexRequirements = new ProjectIndexRequirements({
-      repositoryRoot, dataRoot: options.dataRoot, repoId, gitExecutable: await gitExecutable(),
+      repositoryRoot, dataRoot: capturedOptions.dataRoot, repoId, gitExecutable: trustedGitExecutable,
     });
     indexCoordinator = new ProjectIndexCoordinator({
-      repoId, dataRoot: options.dataRoot, commonDir: options.repoDir, server,
+      repoId, dataRoot: capturedOptions.dataRoot, commonDir: capturedOptions.repoDir, server,
       grants: new ProjectSyncGrantVerifier({
-        dataRoot: options.dataRoot, repoId, commonDir: options.repoDir, daemonInstanceId: server.daemonInstanceId,
+        dataRoot: capturedOptions.dataRoot, repoId, commonDir: capturedOptions.repoDir, daemonInstanceId: server.daemonInstanceId,
       }),
       beforeArchiveRisk: indexRequirements.beforeArchiveRisk,
     });
@@ -557,7 +619,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
         const { createDaemonProjectBaselineProvider } = await import("./project-baseline-provider.ts");
         return createDaemonProjectBaselineProvider(indexCoordinator!, run.cwd);
       },
-      dataRoot: options.dataRoot,
+      dataRoot: capturedOptions.dataRoot,
       repoId,
       runStore,
       shellRegistry,
@@ -572,12 +634,13 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     });
     registerProtocolHandlers({ server, manager: runManager, relayQueue, shellRegistry });
 
-    const probeProvider = await buildConnectivityProbeFn(options.connectivityProbeModulePath);
+    const probeProvider = await buildConnectivityProbeFn(capturedOptions.connectivityProbeModulePath);
+    currentHostGit([...gitRoots, repositoryRoot]);
     // 每轮只探测当前确有 paused_network 运行挂着的 provider，且只续接探测到已恢复的那个 provider——
     // 无遗留暂停运行时完全不发起探测调用；baseUrl 未注册或校验不合法时跳过该 provider 本轮探测
     networkProbe = new ConnectivityProbe({
       clock,
-      intervalMs: options.networkProbeIntervalMs ?? DEFAULT_NETWORK_PROBE_INTERVAL_MS,
+      intervalMs: capturedOptions.networkProbeIntervalMs ?? DEFAULT_NETWORK_PROBE_INTERVAL_MS,
       probe: async () => {
         const paused = await runStore.list({ states: ["paused_network"], limit: Number.MAX_SAFE_INTEGER });
         const providerIds = new Set(paused.items.map((run) => run.model.provider));
@@ -608,14 +671,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
 
     idleExit = new IdleExit({
       clock,
-      timeoutMs: options.idleTimeoutMs,
+      timeoutMs: capturedOptions.idleTimeoutMs,
       hasConnections: () => server.clients().length > 0,
       hasActiveRuns: () => runActivity.hasActiveRuns(),
     });
 
     idleTimer = clock.setIntervalExcludingSleep(() => {
       (async () => {
-        await applyPendingClockSkew(options.clockSkewFile, clock, offsetState);
+        await applyPendingClockSkew(capturedOptions.clockSkewFile, clock, offsetState);
         if (idleExit && (await idleExit.check())) await shutdown();
       })().catch((error: unknown) => {
         process.stderr.write(`空闲检查失败: ${error instanceof Error ? error.message : String(error)}\n`);
