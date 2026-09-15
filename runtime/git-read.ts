@@ -1,20 +1,13 @@
 import { execFile } from "node:child_process";
-import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { sandboxLaunch } from "./command-boundary.ts";
+import { currentHostGit } from "./git-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
-let executable: Promise<string> | undefined;
 
-export function gitExecutable(): Promise<string> {
-  return executable ??= (async () => {
-    if (process.platform !== "darwin") throw new Error("此平台尚无可用的 Git 文件隔离后端");
-    const result = await execFileAsync("/usr/bin/xcrun", ["--find", "git"], {
-      cwd: "/", env: { PATH: "/usr/bin:/bin" }, timeout: 10_000,
-    });
-    return realpath(result.stdout.trim());
-  })();
+export async function gitExecutable(): Promise<string> {
+  return currentHostGit().executablePath;
 }
 
 export interface GitReadOptions {
@@ -28,13 +21,19 @@ export interface GitReadOptions {
 export async function readGitBytes(cwd: string, args: string[], options: GitReadOptions = {}) {
   const commandArgs = args[0] === "diff" ? ["diff", "--no-ext-diff", "--no-textconv", ...args.slice(1)] : args;
   const deniedReads = [...new Set((options.deniedReads ?? []).map((path) => resolve(cwd, path)))];
+  const binding = currentHostGit([cwd]);
   const launch = sandboxLaunch("", {
     readRoots: ["/"], writeRoots: [], deniedReads, deniedWrites: [], scratch: "/private/tmp",
-  }, { path: await gitExecutable(), args: ["-c", "core.fsmonitor=false", ...commandArgs] });
-  return execFileAsync(launch.command, launch.args, {
-    cwd, env: { ...launch.env, LC_ALL: "C" }, encoding: "buffer",
-    timeout: options.timeout ?? 10_000, maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024, signal: options.signal,
-  });
+  }, { path: binding.executablePath, args: ["-c", "core.fsmonitor=false", ...commandArgs] });
+  currentHostGit([cwd]);
+  try {
+    return await execFileAsync(launch.command, launch.args, {
+      cwd, env: { ...launch.env, LC_ALL: "C" }, encoding: "buffer",
+      timeout: options.timeout ?? 10_000, maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024, signal: options.signal,
+    });
+  } finally {
+    currentHostGit([cwd]);
+  }
 }
 
 export async function readGit(cwd: string, args: string[], options: GitReadOptions = {}) {

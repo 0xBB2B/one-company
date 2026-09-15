@@ -260,6 +260,14 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-GIT-RUNTIME-02A：固定系统Git、启用gate与只读接线
+
+- 已整合runtime/git-runtime.mjs及声明、extensions/index.ts启用前初始化、git-read.ts去xcrun及同绑定只读执行前后复验、identity实际worktree根追加、README阶段说明及两份隔离Node测试。缺Git时在任何子扩展注册前拒绝；不修改系统开发目录、许可或安装Git。
+- 进程内绑定固定不随PATH改选，原始排除根只精确去重且累计union256有界，超限拒绝不忘旧来源。重复版本检查前后携完整roots，失败不发布新状态。GitExpectation固定数据描述符解析、无accessor/toJSON、路径/记录/decimal独立限额及净数据64KiB预算；JSON不是WeakSet凭据，继承入口从唯一原entry重新验证实际Git，identityKey不是认证或业务授权。
+- 主代理全文核对两轮实现与独立`git-prerequisite/review-02a-02/REVIEW.md`；R1/R2/R3原反例、256/257、65536/65537、hook零调用、失败版本后验和独立child均有独立支持。真实macOS read/diff与同一路径通过，写配置/外部helper被拒，fsmonitor/textconv未执行；禁网profile保留但不冒称网络流量端到端已测。
+- 最新主代理三文件32/32及typecheck通过，8文件与独立审查hash一致，证据`task-02a/repair-01/final-main-regression.*`、`final-main-typecheck.*`及`main-review-inputs.json`。Linuxwrapper/净PATHchild受控探针通过另列，不等于Linux命令sandbox。旧identity/SDK/storage/daemon夹具依赖未完成的失败不被删除或说成已通过。
+- 本次只提交上述8文件及本节记录，不夹带TaskB/legacy/AGENTS/专业计划已有改动。生产storage root-only、实际managed runner和daemon期望/已有实例一致性仍须02B/02C完成，02A只是这些后续接口依赖，不签TaskB或M4整体。实际提交号在成功后核实。
+
 ## M4-GIT-PREREQUISITE-01：系统Git前置模块与安装检查
 
 - 已整合共享Node内置依赖Git解析/版本检查模块与类型声明、模块测试、Linux Docker安装测试、package唯一preinstall检查、README及原syntax-parser产品hook预期；不打包或自动安装Git。正常执行安装脚本时缺Git非零退出；--ignore-scripts、pnpm禁第三方脚本、本地引用的限制如实说明，使用前gate仍由Task02接线。

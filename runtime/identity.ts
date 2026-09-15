@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path";
 
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import { assertDataRootOutsideWorktrees } from "./database-paths.ts";
+import { currentHostGit } from "./git-runtime.mjs";
 
 export interface RepositoryIdentity {
   repoId: string;
@@ -55,7 +56,9 @@ async function gitCommonDir(dir: string): Promise<string> {
 }
 
 async function worktreeRoot(dir: string): Promise<string> {
-  return realpath((await git(["rev-parse", "--show-toplevel"], dir)).trim());
+  const root = await realpath((await git(["rev-parse", "--show-toplevel"], dir)).trim());
+  currentHostGit([root]);
+  return root;
 }
 
 export async function repositoryIdentity(dir: string): Promise<RepositoryIdentity> {
@@ -155,8 +158,9 @@ export async function listWorktrees(dir: string): Promise<string[]> {
     const lines = block.split("\n").filter((line) => line.length > 0);
     if (lines.some((line) => line === "bare" || line.startsWith("prunable"))) continue;
     const worktreeLine = lines.find((line) => line.startsWith("worktree "));
-    if (worktreeLine) paths.push(worktreeLine.slice("worktree ".length).trim());
+    if (worktreeLine) paths.push(await realpath(worktreeLine.slice("worktree ".length).trim()));
   }
+  currentHostGit(paths);
   return paths;
 }
 
