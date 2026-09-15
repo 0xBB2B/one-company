@@ -4,6 +4,11 @@ import type { Static, TProperties, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { UUID_V7_PATTERN } from "./database.ts";
 import { canonicalJson } from "./strict-json.ts";
+import { ApprovalManifestReferenceSchema } from "./requirement-contracts.ts";
+import type { ApprovalSummary, ProdReference, WorkspaceBinding } from "./requirement-contracts.ts";
+import type { ApprovalManifestReference } from "./approval-manifest.ts";
+import type { CandidateBinding, InteractionBasis } from "./user-interaction-format.ts";
+import type { ProdApprovalPartition } from "./prod-view.ts";
 
 const strictObject = <P extends TProperties>(properties: P) => Type.Object(properties, { additionalProperties: false });
 const id = Type.String({ pattern: UUID_V7_PATTERN.source });
@@ -33,11 +38,25 @@ export interface ServiceAuthorizationRequest {
   readonly version?: number;
   readonly epoch?: number;
   readonly receiptId?: string;
+  readonly manifest?: ApprovalManifestReference;
 }
 
 export const CreateRequirementInput = strictObject({ requestId: id, operationId: id, title: text, body: text });
 export const UpdateDraftInput = strictObject({ requirementId: id, operationId: id, version, title: text, body: text });
-export const ConfirmUpdateInput = strictObject({ requirementId: id, operationId: id, version, title: text, body: text, receiptId: id });
+export const ConfirmUpdateInput = strictObject({ requirementId: id, operationId: id, version, title: text, body: text, receiptId: id,
+  manifest: Type.Optional(ApprovalManifestReferenceSchema) });
+const confirmationId = ApprovalManifestReferenceSchema.properties.requirementId;
+export const LoadConfirmationInput = strictObject({ requirementId: confirmationId, savedOperationId: confirmationId, operationId: confirmationId });
+export type LoadConfirmationInput = Static<typeof LoadConfirmationInput>;
+export interface ConfirmationContext {
+  requirementId: string; repoId: string; version: number; epoch: number;
+  basis: InteractionBasis; candidate: CandidateBinding; savedOperationId: string;
+  saved: ProdReference; approved: ProdReference | null; workspace: WorkspaceBinding | null;
+  title: string; body: string; partition: ProdApprovalPartition;
+  difference: { kind: "full_candidate"; from: null; to: ProdReference; text: string }
+    | { kind: "diff"; from: ProdReference; to: ProdReference; text: string };
+}
+export type RequirementApprovalScope = { status: "available"; summary: ApprovalSummary } | { status: "unavailable" };
 export const ReadRequirementInput = strictObject({ requirementId: id, source: Type.Union([Type.Literal("saved"), Type.Literal("approved")]) });
 export const DiffRequirementInput = strictObject({ requirementId: id, fromRevision: revision, toRevision: Type.Optional(revision) });
 export const MetadataRequirementInput = id;
@@ -62,6 +81,7 @@ export interface RequirementReceipt {
   version: number;
   epoch: number;
   revision: number;
+  approvalScope?: RequirementApprovalScope;
 }
 
 export interface RequirementReadResult {
@@ -73,6 +93,7 @@ export interface RequirementReadResult {
   epoch: number;
   title: string;
   body: string;
+  approvalScope?: RequirementApprovalScope;
 }
 
 export interface RequirementDiffResult {
@@ -86,6 +107,7 @@ export interface RequirementDiffResult {
   version: number;
   epoch: number;
   diff: string;
+  approvalScope?: RequirementApprovalScope;
 }
 
 export interface RequirementMetadataResult {
@@ -98,6 +120,7 @@ export interface RequirementMetadataResult {
   saved: { commit: string; prodHash: `sha256:${string}` } | null;
   approved: { commit: string; prodHash: `sha256:${string}` } | null;
   archivePath: string | null;
+  approvalScope?: RequirementApprovalScope;
 }
 
 export class RequirementServiceError extends Error {

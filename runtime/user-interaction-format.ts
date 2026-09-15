@@ -25,10 +25,31 @@ export const ApprovalPartition = object({ prodHash: hash, totalBytes: positive,
   units: Type.Array(object({ id: ApprovalUnitId, hash, startByte: counter, endByte: positive }), { minItems: 1, maxItems: 20 }) });
 export const DocumentAnalysis = object({ candidate: CandidateBinding, title: Type.String(), body: Type.String(), partition: ApprovalPartition });
 export type DocumentAnalysis = Static<typeof DocumentAnalysis>;
+export const ContinuityRecordRef = object({ id, version: positive, hash });
+export const RetainedUnitEvidence = object({ fact: ContinuityRecordRef, decision: ContinuityRecordRef,
+  sourceBasis: InteractionBasis, sourceBinding: CandidateBinding, unitId: ApprovalUnitId, unitHash: hash,
+  kind: enumeration(["target", "constraint", "exclusion"]) });
+export type RetainedUnitEvidence = Static<typeof RetainedUnitEvidence>;
+export const ContinuityIssue = object({ fact: ContinuityRecordRef, originDecision: ContinuityRecordRef, decision: ContinuityRecordRef,
+  questionRefs: Type.Array(object({ requestId: id, hash }), { maxItems: 20 }),
+  unitId: ApprovalUnitId, unitHash: hash, targetHash: nullable(hash),
+  affectedUnitIds: Type.Array(ApprovalUnitId, { maxItems: 20, uniqueItems: true }),
+  reason: enumeration(["modify", "pending"]) });
+export type ContinuityIssue = Static<typeof ContinuityIssue>;
+export const RevisionSource = object({ fact: ContinuityRecordRef, decision: ContinuityRecordRef, sourceBasis: InteractionBasis,
+  unitIds: Type.Array(object({ id: ApprovalUnitId, hash }), { maxItems: 20 }),
+  kind: enumeration(["target", "constraint", "exclusion", "future", "delegation", "action", "unresolved", "suggestion", "ai-choice"]) });
+export type RevisionSource = Static<typeof RevisionSource>;
+export const EffectiveQuestion = object({ requestId: id, originalHash: hash, remainingUnitIds: ApprovalUnitIds,
+  currentBinding: CandidateBinding, mode: enumeration(["unchanged", "requires-explicit-review"]),
+  resolutions: Type.Array(ContinuityRecordRef, { maxItems: 128 }),
+  unitMappings: Type.Array(object({ id: ApprovalUnitId, sourceHash: hash, targetHash: nullable(hash) }), { maxItems: 16 }) });
+export type EffectiveQuestion = Static<typeof EffectiveQuestion>;
 const ConclusionIndexes = Type.Array(Type.Integer({ minimum: 0, maximum: 19 }), { minItems: 1, maxItems: 16, uniqueItems: true });
 export const UnitReview = object({ id: ApprovalUnitId,
   disposition: enumeration(["confirmed", "pending-description", "excluded"]), globalConstraint: Type.Boolean(),
-  appliesTo: ApprovalUnitIds, dependsOn: ApprovalUnitIds, conclusionIndexes: ConclusionIndexes });
+  appliesTo: ApprovalUnitIds, dependsOn: ApprovalUnitIds, conclusionIndexes: Type.Array(Type.Integer({ minimum: 0, maximum: 19 }), { maxItems: 16, uniqueItems: true }),
+  retainedFactIds: Type.Optional(Type.Array(id, { maxItems: 16, uniqueItems: true })) });
 export const ActionReview = object({ action: InteractionAction, goalIds: ApprovalUnitIds, constraintIds: ApprovalUnitIds,
   conclusionIndexes: ConclusionIndexes, unknown: Type.Boolean() });
 export const DocumentReview = object({ faithful: Type.Boolean(),
@@ -42,6 +63,7 @@ export const PendingQuestion = object({
   candidate: nullable(CandidateBinding), proposal: DecisionItem,
   actions: Type.Array(InteractionAction, { maxItems: 6, uniqueItems: true }), createdAt: counter,
   unitIds: Type.Optional(ApprovalUnitIds),
+  partition: Type.Optional(ApprovalPartition),
 });
 export type PendingQuestion = Static<typeof PendingQuestion>;
 export const InteractionContext = object({
@@ -50,6 +72,12 @@ export const InteractionContext = object({
   questions: Type.Array(PendingQuestion, { maxItems: 20 }),
   priorDecisions: Type.Array(ShortDecisionRecord, { maxItems: 20 }),
   document: Type.Optional(DocumentAnalysis),
+  savedOperationId: Type.Optional(id),
+  inputProof: Type.Optional(hash),
+  effectiveQuestions: Type.Optional(Type.Array(EffectiveQuestion, { maxItems: 20 })),
+  retainedEvidence: Type.Optional(Type.Array(RetainedUnitEvidence, { maxItems: 40 })),
+  continuityIssues: Type.Optional(Type.Array(ContinuityIssue, { maxItems: 40 })),
+  revisionSources: Type.Optional(Type.Array(RevisionSource, { maxItems: 20 })),
 });
 export type InteractionContext = Static<typeof InteractionContext>;
 export const InteractionEntry = object({
@@ -98,17 +126,45 @@ export function checkContext(value: unknown): InteractionContext {
     if (context.candidates.length !== 1 || decisionDigest(candidateBinding(context.candidates[0]!)) !== decisionDigest(doc.candidate)) throw new UserInteractionError("document_candidate_mismatch");
     const partition = partitionProdDocument(context.basis.requirementId, doc.title, doc.body);
     if (partition.prodHash !== doc.candidate.to.hash || decisionDigest(partition) !== decisionDigest(doc.partition)) throw new UserInteractionError("document_partition_mismatch");
-    for (const q of context.questions) if (!q.unitIds?.length || q.unitIds.some((unitId) => !partition.units.some((u) => u.id === unitId))) throw new UserInteractionError("question_unit_mismatch");
+    for (const q of context.questions) {
+      const view = context.effectiveQuestions?.find((v) => v.requestId === q.requestId);
+      if (!q.unitIds?.length || (!view && q.unitIds.some((unitId) => !partition.units.some((u) => u.id === unitId)))) throw new UserInteractionError("question_unit_mismatch");
+      if (view && (view.originalHash !== decisionDigest(q) || decisionDigest(view.currentBinding) !== decisionDigest(doc.candidate) ||
+        view.remainingUnitIds.some((id) => !q.unitIds!.includes(id)))) throw new UserInteractionError("question_view_mismatch");
+    }
+    for (const e of context.retainedEvidence ?? []) if (e.sourceBasis.requirementId !== context.basis.requirementId || e.sourceBasis.epoch !== context.basis.epoch ||
+      !partition.units.some((u) => u.id === e.unitId && u.hash === e.unitHash)) throw new UserInteractionError("retained_source_mismatch");
+    for (const issue of context.continuityIssues ?? []) if ((partition.units.find((u) => u.id === issue.unitId)?.hash ?? null) !== issue.targetHash ||
+      issue.affectedUnitIds.some((id) => !partition.units.some((u) => u.id === id))) throw new UserInteractionError("continuity_issue_mismatch");
   }
   for (const old of context.priorDecisions) {
     checkDecisionRecord(old);
     if (old.requirementId !== context.basis.requirementId) throw new UserInteractionError("foreign_decision");
   }
   for (const q of context.questions) {
-    if (decisionDigest(q.basis) !== decisionDigest(context.basis)) throw new UserInteractionError("question_baseline_mismatch");
+    if (decisionDigest(q.basis) !== decisionDigest(context.basis) && !context.effectiveQuestions?.some((v) => v.requestId === q.requestId)) throw new UserInteractionError("question_baseline_mismatch");
     checkProposal(q.proposal, q.basis);
   }
   return context;
+}
+export function resolvesContinuityIssue(context: InteractionContext, result: InteractionInterpretation, issue: ContinuityIssue): boolean {
+  const review = result.documentReview, doc = context.document;
+  if (!review?.faithful || !doc || result.referenceResolution === "ambiguous") return false;
+  const explicit = (entry: InteractionEntry) => entry.basis === "explicit" && ["direct", "accept"].includes(entry.resolution);
+  const unit = review.units.find((u) => u.id === issue.unitId);
+  if (result.entries.some((entry, index) => entry.supersedes.includes(issue.decision.id) && explicit(entry) &&
+    (unit ? unit.conclusionIndexes.includes(index) : entry.kind === "exclusion"))) return true;
+  if (issue.targetHash !== null && issue.targetHash !== issue.unitHash && unit && unit.disposition !== "pending-description" &&
+    unit.conclusionIndexes.some((index) => explicit(result.entries[index]!))) return true;
+  if (issue.reason !== "pending" || !unit) return false;
+  return issue.questionRefs.some((ref) => {
+    const question = context.questions.find((q) => q.requestId === ref.requestId);
+    const view = context.effectiveQuestions?.find((q) => q.requestId === ref.requestId);
+    const answer = review.questions.find((q) => q.requestId === ref.requestId);
+    return question && decisionDigest(question) === ref.hash && question.unitIds?.includes(issue.unitId) &&
+      (view ? view.mode === "unchanged" : decisionDigest(question.candidate) === decisionDigest(doc.candidate)) && answer?.answeredIds.includes(issue.unitId) &&
+      unit.conclusionIndexes.some((index) => result.entries[index]?.requestId === ref.requestId && result.entries[index]!.kind !== "action" && explicit(result.entries[index]!));
+  });
 }
 export function candidateBinding(candidate: Static<typeof InteractionCandidate>): CandidateBinding {
   const { diff: _diff, ...binding } = candidate;
@@ -125,7 +181,9 @@ export function checkInterpretation(source: string, context: InteractionContext)
     const question = context.questions.find((q) => q.requestId === entry.requestId);
     if (entry.supersedes.some((oldId) => !context.priorDecisions.some((old) => old.decisionId === oldId && old.status !== "superseded"))) throw new UserInteractionError("unknown_supersedes");
     if (entry.candidateId !== null && !candidate || entry.requestId !== null && !question) throw new UserInteractionError("unknown_reference");
-    if (question?.candidate && (!candidate || decisionDigest(question.candidate) !== decisionDigest(candidateBinding(candidate)))) throw new UserInteractionError("question_candidate_mismatch");
+    const view = context.effectiveQuestions?.find((v) => v.requestId === question?.requestId);
+    if (question?.candidate && (!candidate || decisionDigest(view?.currentBinding ?? question.candidate) !== decisionDigest(candidateBinding(candidate)))) throw new UserInteractionError("question_candidate_mismatch");
+    if (view?.mode === "requires-explicit-review" && entry.resolution === "accept") throw new UserInteractionError("changed_question_requires_review");
     if (entry.resolution === "accept" && !question) throw new UserInteractionError("question_required");
     if (question && entry.actions.some((action) => !question.actions.includes(action))) throw new UserInteractionError("question_action_mismatch");
     if (!context.document && result.referenceResolution === "single-question" && ["explicit", "delegated"].includes(entry.basis) &&

@@ -15,8 +15,16 @@ import { inspectRequirementWorkspace, verifyRequirementWorkspace } from "./requi
 import { readGit } from "./git-read.ts";
 import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn, releaseDeadRequirementWriteIn } from "./requirement-coordination.ts";
 
+import { registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
+import type { ApprovalManifestReference } from "./approval-manifest.ts";
+
 export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "rotate-pm-context" | "restore-approved-context" | "events" | "acknowledge" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "record-decisions" | "read-decisions";
 export interface StateAuthorizationRequest { action: RequirementAction; repoId: string; input: Readonly<Record<string, unknown>> }
+export interface RequirementAccessState { record: StoredRecord<RequirementRecord> | null; pmLeaseHash: string }
+export interface RequirementAccessChange {
+  repoId: string; requirementId: string; action: RequirementAction; operationId: string | null;
+  before: RequirementAccessState; after: RequirementAccessState; origin?: object;
+}
 export interface RequirementStoreOptions {
   dataRoot: string;
   repoId: string;
@@ -24,6 +32,10 @@ export interface RequirementStoreOptions {
   /** 可信宿主提供同步核验；必须核对真实主体及所引用的批准/保存/准备/收尾凭据，不得从模型参数自报身份。 */
   authorize?: (request: StateAuthorizationRequest) => boolean;
   now?: () => number;
+  /** 仅本次可信updateDraft调用持有，不序列化或持久化。 */
+  localMutationOrigin?: object;
+  /** 带manifest的批准需要独立可信入口；记录保全授权不能替代新交互许可。 */
+  authorizeManifest?: (input: { requirementId: string; version: number; receiptId: string; manifest: ApprovalManifestReference }) => boolean;
 }
 export type ApprovedEventPoll =
   | { status: "caught_up"; cursor: PmEventCursorData }
@@ -54,7 +66,7 @@ function deepFreeze<T>(value: T): T {
 
 /** 新UUID需求的内部元数据基础；不创建prod文件、不派工、不开放模型工具。 */
 export class RequirementStateStore {
-  private static readonly accessListeners = new Map<string, Set<() => void>>();
+  private static readonly accessListeners = new Map<string, Set<(change: RequirementAccessChange) => void>>();
   private readonly options: RequirementStoreOptions;
   private constructor(options: RequirementStoreOptions) {
     checked(hash, options.repoId);
@@ -90,7 +102,7 @@ export class RequirementStateStore {
     if (data.workspace) this.checkClaims(db, data.workspace);
     return { ...stored, data };
   }
-  onAccessInvalidated(requirementId: string, listener: () => void): () => void {
+  onAccessInvalidated(requirementId: string, listener: (change: RequirementAccessChange) => void): () => void {
     this.read(requirementId);
     const key = `${this.path()}:${requirementId}`;
     let listeners = RequirementStateStore.accessListeners.get(key);
@@ -102,32 +114,40 @@ export class RequirementStateStore {
       if (registered.size === 0) RequirementStateStore.accessListeners.delete(key);
     };
   }
-  private notifyAccessInvalidated(requirementId: string): void {
-    for (const listener of [...(RequirementStateStore.accessListeners.get(`${this.path()}:${requirementId}`) ?? [])]) {
-      try { listener(); } catch { /* 缓存观察者不能撤销已提交的状态变化。 */ }
+  private notifyAccessInvalidated(change: RequirementAccessChange): void {
+    for (const listener of [...(RequirementStateStore.accessListeners.get(`${this.path()}:${change.requirementId}`) ?? [])]) {
+      try { listener(change); } catch { /* 缓存观察者不能撤销已提交的状态变化。 */ }
     }
   }
-  private accessFingerprint(db: LocalDatabase, requirementId: string): string {
-    return JSON.stringify([db.read("requirements", requirementId)?.version,
-      db.read<{ lease?: unknown }>("pm_ownership", requirementId)?.data.lease]);
+  private accessState(db: LocalDatabase, requirementId: string): RequirementAccessState {
+    const row = db.read("requirements", requirementId);
+    return { record: row ? { ...row, data: checkRequirement(row.data, requirementId, this.options.repoId) } : null,
+      pmLeaseHash: createHash("sha256").update(JSON.stringify(db.read<{ lease?: unknown }>("pm_ownership", requirementId)?.data.lease ?? null)).digest("hex") };
   }
-  private mutate<T>(action: RequirementAction, input: Record<string, unknown>, operation: (db: LocalDatabase) => T & SyncResult<T>): T {
+  private accessChange(action: RequirementAction, input: Record<string, unknown>, requirementId: string, before: RequirementAccessState, after: RequirementAccessState): RequirementAccessChange {
+    const change = { repoId: this.options.repoId, requirementId, action, operationId: typeof input.operationId === "string" ? input.operationId : null,
+      before: deepFreeze(before), after: deepFreeze(after), ...(action === "saved-version" && this.options.localMutationOrigin ? { origin: this.options.localMutationOrigin } : {}) };
+    return Object.freeze(change);
+  }
+  private mutate<T>(action: RequirementAction, input: Record<string, unknown>, operation: (db: LocalDatabase) => T & SyncResult<T>, finalAuthorization?: () => void): T {
     this.authorize(action, input);
+    // 精确清单许可必须是写事务前最后一个宿主回调；随后只核对同步DB依据，避免撤权重入窗口。
+    finalAuthorization?.();
     const candidate = input.requirementId ?? (input.lease as { requirementId?: unknown } | undefined)?.requirementId;
     const requirementId = typeof candidate === "string" ? candidate : null;
-    let invalidated = false;
-    const result = withDatabase(this.path(), (db) => {
-      const before = requirementId ? this.accessFingerprint(db, requirementId) : null;
-      const value = db.transaction<T>(() => {
-        this.authorize(action, input);
-        const result = operation(db);
-        this.authorize(action, input);
-        return result;
-      });
-      invalidated = requirementId !== null && before !== this.accessFingerprint(db, requirementId);
-      return value;
-    });
-    if (invalidated && requirementId) this.notifyAccessInvalidated(requirementId);
+    let change: RequirementAccessChange | undefined;
+    const result = withDatabase(this.path(), (db) => db.transaction<T>(() => {
+      if (!finalAuthorization) this.authorize(action, input);
+      const before = requirementId ? this.accessState(db, requirementId) : null;
+      const result = operation(db);
+      if (!finalAuthorization) this.authorize(action, input);
+      if (requirementId && before) {
+        const after = this.accessState(db, requirementId);
+        if (!equal(before, after)) change = this.accessChange(action, input, requirementId, before, after);
+      }
+      return result;
+    }));
+    if (change) this.notifyAccessInvalidated(change);
     return result;
   }
   private finalCheck<T>(
@@ -138,15 +158,14 @@ export class RequirementStateStore {
     this.authorize(action, input);
     const now = this.now();
     const requirementId = checked(id, (input.lease as { requirementId: string }).requirementId);
-    let invalidated = false;
-    const result = withDatabase(this.path(), (db) => {
-      const before = this.accessFingerprint(db, requirementId);
-      const value = db.transaction<T>(() => operation(db, now));
-      invalidated = before !== this.accessFingerprint(db, requirementId);
-      return value;
-    });
+    let change: RequirementAccessChange | undefined;
+    const result = withDatabase(this.path(), (db) => db.transaction<T>(() => {
+      const before = this.accessState(db, requirementId), result = operation(db, now), after = this.accessState(db, requirementId);
+      if (!equal(before, after)) change = this.accessChange(action, input, requirementId, before, after);
+      return result;
+    }));
     // 仅恢复拒绝分支会改变访问状态；提交且退出事务后清缓存，成功交付分支不会回调观察者。
-    if (invalidated) this.notifyAccessInvalidated(requirementId);
+    if (change) this.notifyAccessInvalidated(change);
     return result;
   }
   private active(record: RequirementRecord, allowDraft = false): void {
@@ -158,7 +177,8 @@ export class RequirementStateStore {
     data.updatedAt = Math.max(data.updatedAt, now);
     checkRequirement(data, data.requirementId, this.options.repoId);
     const version = db.update("requirements", data.requirementId, record.version, data);
-    const event = checked(RequirementEvent, { requirementId: data.requirementId, repoId: data.repoId, kind, version, epoch: data.epoch, revision: data.revision, from, to, receiptId, recoveryReason: data.recoveryReason });
+    const event = checked(RequirementEvent, { requirementId: data.requirementId, repoId: data.repoId, kind, version, epoch: data.epoch, revision: data.revision, from, to, receiptId, recoveryReason: data.recoveryReason,
+      ...(kind === "prod.approved" && data.approvalManifest ? { approvalManifest: data.approvalManifest } : {}) });
     const queued = db.append(eventStream(data.requirementId), event);
     return { record: { id: record.id, version, data }, event: queued };
   }
@@ -212,6 +232,7 @@ export class RequirementStateStore {
         fromRevision: audit.from === null ? null : audit.revision - 1, toRevision: audit.revision,
         from: audit.from, to: audit.to, receiptId: audit.receiptId, lifecycleEpoch: audit.epoch,
         recordVersion: audit.version, changedSections: null, impactReason: "section_structure_unavailable",
+        ...(audit.approvalManifest ? { approvalManifest: audit.approvalManifest } : {}),
       });
       return [{ ...event, data }];
     });
@@ -365,9 +386,20 @@ export class RequirementStateStore {
   }
   async recordApprovedVersion(input: Static<typeof commands.approve>): Promise<StoredRecord<RequirementRecord>> {
     const request = checked(commands.approve, input); this.authorize("approved-version", request);
+    if (this.options.authorizeManifest && !request.manifest) throw new RequirementStateError("manifest_required");
     const previous = this.read(request.requirementId);
     if (!previous.data.workspace) throw new RequirementStateError("workspace_not_ready");
     await verifyRequirementWorkspace(this.options.dataRoot, previous.data.workspace);
+    // Core使用独立SQLite核验快照；作为写事务前最后一次授权，事务内不再调用宿主。
+    const authorizeManifest = request.manifest ? () => {
+      if (previous.data.approvalReceiptId === request.receiptId &&
+        equal(previous.data.approvalManifest?.reference ?? null, request.manifest)) return;
+      const allowed = this.options.authorizeManifest?.(deepFreeze({ requirementId: request.requirementId,
+        version: request.version, receiptId: request.receiptId, manifest: structuredClone(request.manifest!) }));
+      if (isPromise(allowed)) void Promise.prototype.then.call(allowed, () => undefined, () => undefined);
+      if (allowed !== true) throw new RequirementStateError("manifest_authorization_required");
+    } : undefined;
+    const approvalTime = this.now();
     return this.mutate("approved-version", request, (db) => {
       const record = this.get(db, request.requirementId); this.active(record.data, true);
       if (!record.data.workspace || !equal(record.data.workspace, previous.data.workspace)) throw new RequirementStateError("workspace_binding_changed");
@@ -377,16 +409,24 @@ export class RequirementStateStore {
       const consumed = db.read("requirement_approval_uses", request.receiptId);
       if (consumed) {
         const use = checked(Operation, consumed.data);
-        if (use.requirementId !== record.id || use.digest !== digest || record.data.approvalReceiptId !== request.receiptId || !equal(record.data.approved, request.reference)) throw new RequirementStateError("approval_conflict");
+        if (use.requirementId !== record.id || use.digest !== digest || record.data.approvalReceiptId !== request.receiptId || !equal(record.data.approved, request.reference) ||
+          !equal(record.data.approvalManifest?.reference ?? null, request.manifest ?? null)) throw new RequirementStateError("approval_conflict");
         return record;
       }
       this.version(record, request.version);
+      let approvalManifest;
+      if (request.manifest) {
+        const final = this.get(db, request.requirementId);
+        if (final.version !== record.version || !equal(final.data, record.data)) throw new RequirementStateError("manifest_stale");
+        approvalManifest = summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId, request.manifest, final, request.receiptId));
+      }
       const revision = increment(record.data.revision);
-      const result = this.write(db, record, { ...record.data, lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
-        pendingRevision: record.data.lifecycle === "active" ? revision : null }, "prod.approved", record.data.approved, request.reference, request.receiptId);
+      const { approvalManifest: _previousManifest, ...baseline } = record.data;
+      const result = this.write(db, record, { ...baseline, ...(approvalManifest ? { approvalManifest } : {}), lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
+        pendingRevision: record.data.lifecycle === "active" ? revision : null }, "prod.approved", record.data.approved, request.reference, request.receiptId, approvalTime);
       db.create("requirement_approval_uses", request.receiptId, { requirementId: record.id, digest, sequence: result.event.sequence });
       return result.record;
-    });
+    }, authorizeManifest);
   }
 
   async acquirePm(input: Static<typeof commands.acquire>): Promise<PmLease> {

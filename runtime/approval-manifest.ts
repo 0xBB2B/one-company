@@ -3,7 +3,7 @@ import type { Static } from "typebox";
 import { object, positive } from "./requirement-contracts.ts";
 import { decisionDigest } from "./short-decision-format.ts";
 import { ApprovalPartition, ApprovalUnitIds, CandidateBinding, InteractionAction, UnitReview, ActionReview,
-  checkInteraction, UserInteractionError } from "./user-interaction-format.ts";
+  checkInteraction, UserInteractionError, RetainedUnitEvidence, resolvesContinuityIssue } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
 import type { ProdApprovalPartition } from "./prod-view.ts";
 
@@ -16,6 +16,7 @@ export const ApprovalManifest = object({ format: Type.Literal("approval-manifest
   candidate: CandidateBinding, manifestHash: hash, totalBytes: positive,
   units: Type.Array(object({ ...unitFields, ...ApprovalPartition.properties.units.items.properties, decisionIds }), { minItems: 1, maxItems: 20 }),
   actions: Type.Array(object({ ...actionFields, decisionIds }), { maxItems: 20 }),
+  retainedSources: Type.Optional(Type.Array(RetainedUnitEvidence, { maxItems: 40 })),
   questions: Type.Array(object({ requestId: id, answeredIds: ApprovalUnitIds, pendingIds: ApprovalUnitIds,
     decisionIds: Type.Array(id, { maxItems: 16, uniqueItems: true }) }), { maxItems: 20 }) });
 export type ApprovalManifest = Static<typeof ApprovalManifest>;
@@ -88,6 +89,12 @@ export function checkApprovalManifest(value: unknown, expected: ApprovalManifest
     if (u.dependsOn.length + u.appliesTo.length + u.decisionIds.length > 16) deny("reference_limit");
   }
   if (end !== m.totalBytes || m.units[0]?.id !== "metadata") deny("manifest_partition_mismatch");
+  for (const e of m.retainedSources ?? []) {
+    const u = m.units.find((u) => u.id === e.unitId);
+    if (!u || u.hash !== e.unitHash || !u.retainedFactIds?.includes(e.fact.id) || !u.decisionIds.includes(e.decision.id) ||
+      e.sourceBasis.requirementId !== m.requirementId || (u.disposition === "excluded" ? e.kind !== "exclusion" : u.disposition !== "confirmed" || e.kind === "exclusion")) deny("manifest_retained_mismatch");
+  }
+  for (const u of m.units) if ((u.retainedFactIds ?? []).some((id) => !m.retainedSources?.some((e) => e.fact.id === id && e.unitId === u.id))) deny("manifest_retained_mismatch");
   validateScopes(m.units, m.actions);
   for (const a of m.actions) if (a.goalIds.length + a.constraintIds.length + a.decisionIds.length > 16) deny("reference_limit");
   const ids = new Set(m.units.map((u) => u.id));
@@ -102,9 +109,14 @@ export function checkApprovalManifest(value: unknown, expected: ApprovalManifest
 export function approvalManifestReference(manifest: ApprovalManifest): ApprovalManifestReference {
   return { requirementId: manifest.requirementId, candidate: structuredClone(manifest.candidate), manifestHash: manifest.manifestHash };
 }
+function retainedForReview(context: InteractionContext, result: InteractionInterpretation) {
+  const revised = new Set(result.entries.flatMap((entry) => entry.supersedes));
+  return (context.retainedEvidence ?? []).filter((source) => !revised.has(source.decision.id));
+}
 /** 语义由无工具模型归纳；机械核验覆盖、请求反向范围、分类与依赖，不能证明理解必然正确。 */
 export function validateDocumentReview(context: InteractionContext, result: InteractionInterpretation): void {
   const doc = context.document, review = result.documentReview;
+  const retainedEvidence = retainedForReview(context, result);
   if (!doc || !review) deny("document_review_required");
   if (review.units.length !== doc.partition.units.length || review.units.some((u, i) => u.id !== doc.partition.units[i]!.id)) deny("incomplete_document_review");
   const unitUsed = new Set<number>(), actionUsed = new Set<number>(), candidateId = doc.candidate.candidateId;
@@ -117,15 +129,26 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
   for (const u of review.units) {
     u.conclusionIndexes.forEach((i) => unitUsed.add(i));
     const related = entries(u.conclusionIndexes);
+    const retained = (u.retainedFactIds ?? []).map((id) => {
+      const evidence = retainedEvidence.find((e) => e.fact.id === id && e.unitId === u.id);
+      if (!evidence) return deny("retained_source_missing"); return evidence;
+    });
+    if (!related.length && !retained.length || retained.length && u.disposition === "pending-description") deny("review_entry_mismatch");
     if (u.dependsOn.length + u.appliesTo.length + u.conclusionIndexes.length > 16) deny("reference_limit");
-    if (u.globalConstraint && !related.every((e) => ["constraint", "unresolved", "suggestion"].includes(e.kind))) deny("global_constraint_kind");
+    if (u.globalConstraint && (!related.every((e) => ["constraint", "unresolved", "suggestion"].includes(e.kind)) || !retained.every((e) => e.kind === "constraint"))) deny("global_constraint_kind");
     if (review.faithful) {
       if (related.some((e) => e.resolution === "modify")) deny("document_needs_resave");
-      if (u.disposition === "confirmed" && (related.some((e) => !confirmed(e)) ||
-        !related.some((e) => ["target", "constraint", "delegation", "ai-choice"].includes(e.kind)))) deny("unit_not_confirmed");
-      if (u.disposition === "excluded" && !related.every((e) => e.kind === "exclusion" && explicit(e))) deny("unit_not_excluded");
+      if (u.disposition === "confirmed" && (retained.some((e) => e.kind === "exclusion") || related.some((e) => !confirmed(e)) ||
+        !related.some((e) => ["target", "constraint", "delegation", "ai-choice"].includes(e.kind)) && !retained.some((e) => ["target", "constraint"].includes(e.kind)))) deny("unit_not_confirmed");
+      if (u.disposition === "excluded" && (!related.every((e) => e.kind === "exclusion" && explicit(e)) || !retained.every((e) => e.kind === "exclusion"))) deny("unit_not_excluded");
       if (u.disposition === "pending-description" && !related.every((e) => !confirmed(e))) deny("pending_description_mismatch");
     }
+  }
+  if (review.faithful) for (const issue of context.continuityIssues ?? []) {
+    const unit = review.units.find((u) => u.id === issue.unitId);
+    if (resolvesContinuityIssue(context, result, issue)) continue;
+    if (!unit || unit.disposition !== "pending-description") deny("continuity_resolution_required");
+    if (review.actions.some((action) => !action.unknown && [...action.goalIds, ...action.constraintIds].some((id) => issue.affectedUnitIds.includes(id)))) deny("continuity_action_unresolved");
   }
   validateScopes(review.units, review.actions);
   for (const a of review.actions) {
@@ -135,21 +158,23 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
     if (!related.every((e) => e.kind === "action" && explicit(e) && e.actions.includes(a.action))) deny("action_not_explicit");
     for (const goalId of a.goalIds) {
       const u = review.units.find((u) => u.id === goalId)!;
-      if (!entries(u.conclusionIndexes).some((e) => e.kind === "target" && explicit(e))) deny("goal_not_explicit");
+      if (!entries(u.conclusionIndexes).some((e) => e.kind === "target" && explicit(e)) && !(u.retainedFactIds ?? []).some((id) =>
+        retainedEvidence.some((e) => e.fact.id === id && e.unitId === u.id && e.kind === "target"))) deny("goal_not_explicit");
     }
   }
   if (review.questions.length !== context.questions.length || new Set(review.questions.map((q) => q.requestId)).size !== review.questions.length) deny("incomplete_question_review");
   for (const q of review.questions) {
     if (q.answeredIds.length + q.pendingIds.length + q.conclusionIndexes.length + 1 > 16) deny("reference_limit");
     const actual = context.questions.find((v) => v.requestId === q.requestId);
-    if (!actual?.unitIds || !sameSet(actual.unitIds, [...q.answeredIds, ...q.pendingIds]) || q.answeredIds.some((id) => q.pendingIds.includes(id))) deny("question_scope_mismatch");
+    const remaining = context.effectiveQuestions?.find((v) => v.requestId === q.requestId)?.remainingUnitIds ?? actual?.unitIds;
+    if (!actual?.unitIds || !remaining || !sameSet(remaining, [...q.answeredIds, ...q.pendingIds]) || q.answeredIds.some((id) => q.pendingIds.includes(id))) deny("question_scope_mismatch");
     const related = entries(q.conclusionIndexes);
     // 从实际entries反查全部使用者，不允许通过问题索引漏列结论逃逸。
     const linked = result.entries.flatMap((e, i) => e.requestId === q.requestId ? [i] : []);
     if (linked.length !== q.conclusionIndexes.length || linked.some((i) => !q.conclusionIndexes.includes(i))) deny("question_entry_coverage");
     for (const i of linked) {
       const e = result.entries[i]!;
-      const allowedIds = confirmed(e) ? q.answeredIds : actual.unitIds;
+      const allowedIds = confirmed(e) ? q.answeredIds : remaining;
       if (review.units.some((u) => u.conclusionIndexes.includes(i) && !allowedIds.includes(u.id))) deny("question_unit_escape");
       if (review.actions.some((a) => a.conclusionIndexes.includes(i) &&
         (!actual.actions.includes(a.action) || a.goalIds.some((id) => !q.answeredIds.includes(id))))) deny("question_action_escape");
@@ -188,7 +213,7 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
 }
 export function createApprovalManifest(context: InteractionContext, result: InteractionInterpretation, savedDecisionIds: string[]): ApprovalManifest {
   validateDocumentReview(context, result);
-  const doc = context.document!, review = result.documentReview!;
+  const doc = context.document!, review = result.documentReview!, retainedEvidence = retainedForReview(context, result);
   if (!review.faithful || result.referenceResolution === "ambiguous" || savedDecisionIds.length !== result.entries.length || new Set(savedDecisionIds).size !== savedDecisionIds.length) deny("document_not_approved");
   // 清单同时保留独立约束的原始来源ID，持久化消费者必须核验它，不能只检查本次复制的短记录。
   const mapped = (indexes: number[]) => [...new Set(indexes.flatMap((i) => {
@@ -199,7 +224,10 @@ export function createApprovalManifest(context: InteractionContext, result: Inte
   }))];
   const payload = { format: "approval-manifest/v1" as const, requirementId: context.basis.requirementId, candidate: doc.candidate,
     totalBytes: doc.partition.totalBytes,
-    units: review.units.map(({ conclusionIndexes, ...u }, i) => ({ ...u, ...doc.partition.units[i]!, decisionIds: mapped(conclusionIndexes) })),
+    units: review.units.map(({ conclusionIndexes, ...u }, i) => ({ ...u, ...doc.partition.units[i]!, decisionIds: [...new Set([...mapped(conclusionIndexes),
+      ...(u.retainedFactIds ?? []).flatMap((id) => retainedEvidence.filter((e) => e.fact.id === id && e.unitId === u.id).map((e) => e.decision.id))])] })),
+    ...(review.units.some((u) => u.retainedFactIds?.length) ? { retainedSources: retainedEvidence.filter((e) =>
+      review.units.some((u) => u.id === e.unitId && u.retainedFactIds?.includes(e.fact.id))) } : {}),
     actions: review.actions.map(({ conclusionIndexes, ...a }) => ({ ...a, decisionIds: mapped(conclusionIndexes) })),
     questions: review.questions.map(({ conclusionIndexes, ...q }) => ({ ...q, decisionIds: mapped(conclusionIndexes) })) };
   return checkApprovalManifest({ ...payload, manifestHash: approvalManifestDigest(payload) }, { requirementId: context.basis.requirementId, candidate: doc.candidate, partition: doc.partition });

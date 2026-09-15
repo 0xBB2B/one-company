@@ -1,14 +1,16 @@
-import { LocalDatabase, repositoryDatabase, uuidv7, UUID_V7_PATTERN } from "./database.ts";
-import type { ServiceAuthorizationRequest } from "./requirement-manage-contracts.ts";
-import type { ProdReference } from "./requirement-contracts.ts";
-
-const REPO_ID_PATTERN = /^[0-9a-f]{64}$/;
-const INTENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
-const RECEIPT_NAMESPACE = "host_requirement_target_receipts_v1";
-const DEFAULT_RECEIPT_TTL_MS = 15 * 60 * 1_000;
-const DEFAULT_INPUT_TTL_MS = 15 * 60 * 1_000;
-
-export type TrustedInputSource = "interactive" | "rpc";
+import { lstatSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { repositoryDatabase, UUID_V7_PATTERN, withDatabase } from "./database.ts";
+import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS } from "./database-paths.ts";
+import { checkRequirement } from "./requirement-contracts.ts";
+import type { RequirementRecord } from "./requirement-contracts.ts";
+import { checkInteraction, PendingQuestion } from "./user-interaction-format.ts";
+import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
+import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
+import { approvalManifestReference } from "./approval-manifest.ts";
+import type { ApprovalManifest } from "./approval-manifest.ts";
+import { loadInteractionContinuity } from "./interaction-continuity.ts";
+import type { InteractionBasis, DocumentAnalysis } from "./user-interaction-format.ts";
 
 export interface MainHostPrincipal {
   readonly kind: "main";
@@ -16,288 +18,172 @@ export interface MainHostPrincipal {
   readonly sessionId: string;
   readonly repoIds: readonly string[];
 }
-
-interface InputCapability {
-  readonly windowId: string;
-  readonly sessionId: string;
-  readonly source: TrustedInputSource;
-  readonly expiresAt: number;
+export interface RequirementSelection { readonly kind: "requirement-selection" }
+interface SelectionClaim {
+  repoId: string; requirementId: string; version: number; hash: string; databaseIdentity: string;
+  sessionId: string; windowId: string; generation: number; expiresAt: number;
 }
-
-export interface TargetConfirmationScope {
-  readonly action: "confirmUpdate";
-  readonly purpose: "target-confirmation";
-  readonly implementation: "not-authorized";
-  readonly repoId: string;
-  readonly requirementId: string;
-  readonly operationId: string;
-  readonly intentHash: string;
-  readonly epoch: number;
-  readonly version: number;
-}
-
-export interface TargetConfirmationReceipt {
-  readonly format: "host-authorization/requirement-target/v1";
-  readonly receiptId: string;
-  readonly actor: "user";
-  readonly conclusion: "target-confirmed";
-  readonly baseline: ProdReference | null;
-  readonly subject: {
-    readonly kind: "main";
-    readonly sessionId: string;
-    readonly windowId: string;
-  };
-  readonly scope: TargetConfirmationScope;
-  readonly createdAt: number;
-  readonly expiresAt: number;
-  readonly state: "active" | "revoked";
-}
-
-export type ConfirmationLookup =
-  | { readonly status: "missing" }
-  | { readonly status: "valid"; readonly receipt: TargetConfirmationReceipt }
-  | { readonly status: "expired" | "revoked" | "conflict" };
-
-export type HostOperationBinding =
-  | { readonly action: "create"; readonly repoId: string; readonly requestId: string; readonly operationId: string; readonly intentHash: string }
-  | { readonly action: "updateDraft"; readonly repoId: string; readonly requirementId: string; readonly operationId: string; readonly version: number; readonly intentHash: string }
-  | { readonly action: "confirmUpdate"; readonly repoId: string; readonly requirementId: string; readonly operationId: string; readonly version: number; readonly intentHash: string; readonly epoch: number; readonly receiptId: string }
-  | { readonly action: "readSaved" | "readApproved" | "diff" | "metadata"; readonly repoId: string; readonly requirementId: string };
-
 export class HostAuthorizationError extends Error {
   readonly code: string;
-  constructor(code: string, message = code) {
-    super(message);
-    this.name = "HostAuthorizationError";
-    this.code = code;
-  }
+  constructor(code: string) { super(`requirement_host_denied:${code}`); this.name = "HostAuthorizationError"; this.code = code; }
 }
-
-function assertFiniteTime(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0) throw new HostAuthorizationError("invalid_time");
-}
-
-function validReceipt(value: unknown): value is TargetConfirmationReceipt {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const receipt = value as Record<string, unknown>;
-  if (Object.keys(receipt).sort().join(",") !== "actor,baseline,conclusion,createdAt,expiresAt,format,receiptId,scope,state,subject") return false;
-  if (receipt.format !== "host-authorization/requirement-target/v1" || receipt.actor !== "user" || receipt.conclusion !== "target-confirmed"
-    || typeof receipt.receiptId !== "string" || !UUID_V7_PATTERN.test(receipt.receiptId)) return false;
-  if ((receipt.state !== "active" && receipt.state !== "revoked") || !Number.isSafeInteger(receipt.createdAt) || !Number.isSafeInteger(receipt.expiresAt)) return false;
-  const baseline = receipt.baseline as Record<string, unknown> | null;
-  if (baseline !== null && (!baseline || Object.keys(baseline).sort().join(",") !== "commit,hash" || typeof baseline.commit !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(baseline.commit) || typeof baseline.hash !== "string" || !INTENT_HASH_PATTERN.test(baseline.hash))) return false;
-  const subject = receipt.subject as Record<string, unknown> | undefined;
-  if (!subject || Object.keys(subject).sort().join(",") !== "kind,sessionId,windowId" || subject.kind !== "main" || typeof subject.sessionId !== "string" || typeof subject.windowId !== "string") return false;
-  const scope = receipt.scope as Record<string, unknown> | undefined;
-  if (!scope || Object.keys(scope).sort().join(",") !== "action,epoch,implementation,intentHash,operationId,purpose,repoId,requirementId,version") return false;
-  return scope.action === "confirmUpdate" && scope.purpose === "target-confirmation" && scope.implementation === "not-authorized"
-    && typeof scope.repoId === "string" && REPO_ID_PATTERN.test(scope.repoId)
-    && typeof scope.requirementId === "string" && UUID_V7_PATTERN.test(scope.requirementId)
-    && typeof scope.operationId === "string" && UUID_V7_PATTERN.test(scope.operationId)
-    && typeof scope.intentHash === "string" && INTENT_HASH_PATTERN.test(scope.intentHash)
-    && Number.isSafeInteger(scope.epoch) && Number(scope.epoch) >= 1
-    && Number.isSafeInteger(scope.version) && Number(scope.version) >= 1;
-}
-
-function sameScope(left: TargetConfirmationScope, right: TargetConfirmationScope): boolean {
-  return left.action === right.action && left.purpose === right.purpose && left.implementation === right.implementation && left.repoId === right.repoId
-    && left.requirementId === right.requirementId && left.operationId === right.operationId
-    && left.intentHash === right.intentHash && left.epoch === right.epoch && left.version === right.version;
-}
-
-function fieldMatches(request: ServiceAuthorizationRequest, field: keyof ServiceAuthorizationRequest, expected: unknown): boolean {
-  return request[field] !== undefined && request[field] === expected;
-}
-
-/**
- * 只接受 lifecycle 建立的主窗口身份与真实宿主 input/UI 产生的能力。
- * SQLite 句柄在服务调用前打开；authorize() 只做同步内存判断和已打开句柄的同步读取。
- */
+/** 宿主身份与资源门槛；不签发目标批准，不读取聊天历史，不持久化用户输入。 */
 export class HostAuthorizationManager {
-  private readonly dataRoot: string;
-  private readonly now: () => number;
-  private readonly receiptTtlMs: number;
-  private readonly inputTtlMs: number;
-  private principal: MainHostPrincipal | undefined;
-  private inputCapability: InputCapability | undefined;
-  private readonly databases = new Map<string, LocalDatabase>();
-
-  constructor(options: { dataRoot: string; now?: () => number; receiptTtlMs?: number; inputTtlMs?: number }) {
-    this.dataRoot = options.dataRoot;
-    this.now = options.now ?? Date.now;
-    this.receiptTtlMs = options.receiptTtlMs ?? DEFAULT_RECEIPT_TTL_MS;
-    this.inputTtlMs = options.inputTtlMs ?? DEFAULT_INPUT_TTL_MS;
-    if (!Number.isSafeInteger(this.receiptTtlMs) || this.receiptTtlMs <= 0 || !Number.isSafeInteger(this.inputTtlMs) || this.inputTtlMs <= 0) {
-      throw new HostAuthorizationError("invalid_ttl");
-    }
-  }
-
+  readonly #dataRoot: string;
+  #principal: MainHostPrincipal | undefined;
+  #binding: { repoId: string; requirementId: string } | undefined;
+  #generation = 0;
+  readonly #listeners = new Set<() => void>();
+  readonly #selections = new WeakMap<object, SelectionClaim>();
+  constructor(options: { dataRoot: string }) { this.#dataRoot = options.dataRoot; }
+  get generation(): number { return this.#generation; }
   startWindow(principal: MainHostPrincipal): void {
     this.shutdown();
-    if (!principal.windowId || !principal.sessionId || principal.repoIds.length === 0 || principal.repoIds.some((repoId) => !REPO_ID_PATTERN.test(repoId))) {
-      throw new HostAuthorizationError("invalid_principal");
-    }
-    this.principal = Object.freeze({ ...principal, repoIds: Object.freeze([...new Set(principal.repoIds)]) });
+    if (principal.kind !== "main" || !principal.windowId || !principal.sessionId || !principal.repoIds.length ||
+      principal.repoIds.some((repoId) => !/^[0-9a-f]{64}$/.test(repoId))) throw new HostAuthorizationError("invalid_principal");
+    this.#principal = Object.freeze({ ...principal, repoIds: Object.freeze([...new Set(principal.repoIds)]) });
   }
-
-  captureInput(source: string, sessionId: string): void {
-    const principal = this.requirePrincipal(sessionId);
-    if (source !== "interactive" && source !== "rpc") {
-      this.inputCapability = undefined;
-      if (source === "extension") return;
-      throw new HostAuthorizationError("invalid_input_source", "未知 input 来源不能产生宿主授权");
-    }
-    const now = this.currentTime();
-    this.inputCapability = Object.freeze({ windowId: principal.windowId, sessionId: principal.sessionId, source, expiresAt: now + this.inputTtlMs });
-  }
-
-  shutdown(): void {
-    this.inputCapability = undefined;
-    this.principal = undefined;
-    for (const database of this.databases.values()) database.close();
-    this.databases.clear();
-  }
-
   assertCurrentSession(sessionId: string): MainHostPrincipal {
-    return this.requirePrincipal(sessionId);
+    if (!this.#principal || this.#principal.sessionId !== sessionId) throw new HostAuthorizationError("untrusted_host");
+    return this.#principal;
   }
-
-  prepareRepository(repoId: string, sessionId: string): void {
-    this.requireRepo(repoId, sessionId);
-    if (!this.databases.has(repoId)) this.databases.set(repoId, new LocalDatabase(repositoryDatabase(this.dataRoot, repoId)));
+  assertRepository(repoId: string, sessionId: string): void {
+    if (!this.assertCurrentSession(sessionId).repoIds.includes(repoId)) throw new HostAuthorizationError("foreign_repo");
   }
-
-  hasDraftCapability(repoId: string, sessionId: string): boolean {
-    const principal = this.requireRepo(repoId, sessionId);
-    const capability = this.inputCapability;
-    return capability !== undefined && capability.windowId === principal.windowId && capability.sessionId === principal.sessionId && capability.expiresAt >= this.currentTime();
+  /** 仅供可信宿主绑定或create成功后固定身份；不得直接转发工具中的requirementId来调用。 */
+  bindRequirement(repoId: string, requirementId: string, sessionId: string): void {
+    this.assertRepository(repoId, sessionId);
+    if (!UUID_V7_PATTERN.test(requirementId) || requirementId.length !== 36) throw new HostAuthorizationError("invalid_requirement");
+    if (this.#binding && (this.#binding.repoId !== repoId || this.#binding.requirementId !== requirementId)) this.revoke();
+    this.#binding = Object.freeze({ repoId, requirementId });
   }
-
-  confirmation(scope: TargetConfirmationScope, sessionId: string): ConfirmationLookup {
-    this.requireRepo(scope.repoId, sessionId);
-    this.assertScope(scope);
-    const stored = this.database(scope.repoId).read(RECEIPT_NAMESPACE, scope.operationId);
-    if (!stored) return { status: "missing" };
-    if (!validReceipt(stored.data) || stored.id !== (stored.data as TargetConfirmationReceipt).receiptId) return { status: "conflict" };
-    const receipt = stored.data;
-    this.requirePrincipal(sessionId);
-    if (receipt.subject.kind !== "main" || !sameScope(receipt.scope, scope)) return { status: "conflict" };
-    if (receipt.state !== "active") return { status: "revoked" };
-    if (receipt.expiresAt < this.currentTime()) return { status: "expired" };
-    return { status: "valid", receipt };
-  }
-
-  recordConfirmation(scope: TargetConfirmationScope, sessionId: string, baseline: ProdReference | null = null): TargetConfirmationReceipt {
-    this.requireRepo(scope.repoId, sessionId);
-    this.assertScope(scope);
-    const database = this.database(scope.repoId);
-    return database.transaction(() => {
-      const existing = database.read(RECEIPT_NAMESPACE, scope.operationId);
-      if (existing) {
-        const lookup = this.confirmation(scope, sessionId);
-        if (lookup.status === "valid") return lookup.receipt;
-        throw new HostAuthorizationError(`receipt_${lookup.status}`, "已有同 operationId 回执无效或范围不一致");
+  /** 只枚举有界生命周期元数据；选择对象只能由本实例签发，不能从模型JSON重建。 */
+  prepareSelections(sessionId: string) {
+    const principal = this.assertCurrentSession(sessionId), generation = this.#generation;
+    const items: Array<{ selection: RequirementSelection; repoId: string; requirementId: string; lifecycle: "draft" | "active" }> = [];
+    let unavailableRepositories = 0;
+    for (const repoId of principal.repoIds) {
+      const path = repositoryDatabase(this.#dataRoot, repoId);
+      let identity: string;
+      try { const stat = lstatSync(path); identity = `${stat.dev}:${stat.ino}`; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { unavailableRepositories++; continue; } throw error; }
+      const rows = this.#read(repoId, sessionId, (db) => db.prepare("SELECT record_key,id,version,CASE WHEN length(data)<=65536 THEN data ELSE NULL END AS data FROM records WHERE namespace='requirements' AND record_key GLOB ? AND json_extract(data,'$.lifecycle') IN ('draft','active') AND json_extract(data,'$.recovery')='ready' ORDER BY id LIMIT 33")
+        .all("????????-????-7???-[89ab]???-????????????"));
+      if (rows.length > 32) throw new HostAuthorizationError("selection_limit");
+      for (const row of rows) {
+        if (typeof row.record_key !== "string" || !UUID_V7_PATTERN.test(row.record_key) || row.id !== row.record_key ||
+          !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.data !== "string") throw new HostAuthorizationError("selection_metadata_invalid");
+        const record = checkRequirement(JSON.parse(row.data), row.record_key, repoId);
+        if (record.lifecycle !== "draft" && record.lifecycle !== "active" || record.recovery !== "ready") continue;
+        if (items.length >= 32) throw new HostAuthorizationError("selection_limit");
+        const selection: RequirementSelection = Object.freeze({ kind: "requirement-selection" });
+        this.#selections.set(selection, { repoId, requirementId: record.requirementId, version: Number(row.version), hash: decisionDigest(record), databaseIdentity: identity,
+          sessionId, windowId: principal.windowId, generation, expiresAt: Date.now() + 120_000 });
+        items.push({ selection, repoId, requirementId: record.requirementId, lifecycle: record.lifecycle });
       }
-      const principal = this.requirePrincipal(sessionId);
-      const createdAt = this.currentTime();
-      const receipt: TargetConfirmationReceipt = Object.freeze({
-        format: "host-authorization/requirement-target/v1",
-        receiptId: uuidv7(),
-        actor: "user",
-        conclusion: "target-confirmed",
-        baseline: baseline ? Object.freeze({ ...baseline }) : null,
-        subject: Object.freeze({ kind: "main", sessionId: principal.sessionId, windowId: principal.windowId }),
-        scope: Object.freeze({ ...scope }),
-        createdAt,
-        expiresAt: createdAt + this.receiptTtlMs,
-        state: "active",
+    }
+    if (this.#generation !== generation || this.assertCurrentSession(sessionId) !== principal) throw new HostAuthorizationError("stale_host");
+    return { items, unavailableRepositories };
+  }
+  verifySelection(selection: RequirementSelection, sessionId: string) {
+    const claim = this.#selections.get(selection), principal = this.assertCurrentSession(sessionId);
+    if (!claim || claim.sessionId !== sessionId || claim.windowId !== principal.windowId || claim.generation !== this.#generation || claim.expiresAt <= Date.now()) throw new HostAuthorizationError("selection_expired");
+    const result = this.#read(claim.repoId, sessionId, (db) => {
+      const row = db.prepare("SELECT id,version,CASE WHEN length(data)<=65536 THEN data ELSE NULL END AS data FROM records WHERE namespace='requirements' AND record_key=?").get(claim.requirementId);
+      if (!row || row.id !== claim.requirementId || row.version !== claim.version || typeof row.data !== "string") throw new HostAuthorizationError("selection_changed");
+      const record = checkRequirement(JSON.parse(row.data), claim.requirementId, claim.repoId);
+      if (decisionDigest(record) !== claim.hash || !["draft", "active"].includes(record.lifecycle) || record.recovery !== "ready") throw new HostAuthorizationError("selection_changed");
+      return { id: claim.requirementId, version: claim.version, data: record };
+    });
+    const stat = lstatSync(repositoryDatabase(this.#dataRoot, claim.repoId));
+    if (`${stat.dev}:${stat.ino}` !== claim.databaseIdentity || this.#generation !== claim.generation || this.assertCurrentSession(sessionId) !== principal) throw new HostAuthorizationError("selection_changed");
+    return result;
+  }
+  bindSelection(selection: RequirementSelection, sessionId: string): void {
+    const record = this.verifySelection(selection, sessionId);
+    this.#selections.delete(selection);
+    this.bindRequirement(record.data.repoId, record.id, sessionId);
+    this.assertRequirement(record.data.repoId, record.id, sessionId);
+  }
+  binding(sessionId: string) { this.assertCurrentSession(sessionId); return this.#binding; }
+  assertRequirement(repoId: string, requirementId: string, sessionId: string): void {
+    this.assertRepository(repoId, sessionId);
+    if (this.#binding?.repoId !== repoId || this.#binding.requirementId !== requirementId) throw new HostAuthorizationError("requirement_not_bound");
+  }
+  onRevoke(listener: () => void): () => void {
+    if (this.#listeners.size >= 8) throw new HostAuthorizationError("listener_limit");
+    this.#listeners.add(listener); return () => this.#listeners.delete(listener);
+  }
+  revoke(): void { this.#generation++; for (const listener of this.#listeners) listener(); }
+  shutdown(): void { this.revoke(); this.#principal = undefined; this.#binding = undefined; }
+  /** 只读打开既有data.db，缺失或用途未知时拒绝，不扫描prod或初始化空库。 */
+  #read<T>(repoId: string, sessionId: string, run: (db: DatabaseSync) => T): T {
+    this.assertRepository(repoId, sessionId);
+    const path = repositoryDatabase(this.#dataRoot, repoId);
+    assertDatabasePathReady(path); assertRegularDatabaseFiles(path);
+    let info;
+    try { info = lstatSync(path); } catch { throw new HostAuthorizationError("database_missing"); }
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new HostAuthorizationError("database_identity");
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      if (Number(db.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS.data ||
+        Number(db.prepare("PRAGMA user_version").get()?.user_version) !== 1) throw new HostAuthorizationError("database_identity");
+      const result = run(db);
+      this.assertRepository(repoId, sessionId);
+      const after = lstatSync(path);
+      if (after.dev !== info.dev || after.ino !== info.ino) throw new HostAuthorizationError("database_changed");
+      return result;
+    } finally { db.close(); }
+  }
+  snapshot(repoId: string, requirementId: string, sessionId: string): { id: string; version: number; data: RequirementRecord } {
+    this.assertRequirement(repoId, requirementId, sessionId);
+    return this.#read(repoId, sessionId, (db) => {
+      const row = db.prepare("SELECT id, version, data FROM records WHERE namespace='requirements' AND record_key=?").get(requirementId);
+      if (!row || row.id !== requirementId || typeof row.data !== "string") throw new HostAuthorizationError("unknown_requirement");
+      return { id: requirementId, version: Number(row.version), data: checkRequirement(JSON.parse(row.data), requirementId, repoId) };
+    });
+  }
+  /** 读取全部相关问题（包括旧基线）而非模型挑选的一题；超限拒绝，不漏掉其余问题。 */
+  interactionRecords(repoId: string, requirementId: string, sessionId: string, context?: { basis: InteractionBasis; document: DocumentAnalysis }) {
+    const before = this.snapshot(repoId, requirementId, sessionId);
+    if (!["draft", "active"].includes(before.data.lifecycle) || before.data.recovery !== "ready") throw new HostAuthorizationError("lifecycle_denied");
+    if (context) {
+      if (context.basis.requirementId !== requirementId || context.basis.version !== before.version || context.basis.epoch !== before.data.epoch) throw new HostAuthorizationError("state_changed");
+      const result = loadInteractionContinuity(this.#dataRoot, repoId, context.basis, context.document);
+      const after = this.snapshot(repoId, requirementId, sessionId);
+      if (before.version !== after.version || decisionDigest(before.data) !== decisionDigest(after.data)) throw new HostAuthorizationError("state_changed");
+      return result;
+    }
+    return this.#read(repoId, sessionId, (db) => {
+      // 问题的requirementId位于basis；不以候选版本过滤来隐藏旧问题。
+      const questions = db.prepare("SELECT id, data FROM records WHERE namespace='interaction_questions_v1' AND json_extract(data,'$.basis.requirementId')=? ORDER BY id LIMIT 21").all(requirementId);
+      if (questions.length > 20) throw new HostAuthorizationError("interaction_context_limit");
+      const registered = db.prepare("SELECT data FROM records WHERE namespace='approval_manifests_v1' AND json_extract(data,'$.manifest.requirementId')=? AND json_extract(data,'$.admission.version')=? AND json_extract(data,'$.admission.epoch')=? ORDER BY id LIMIT 21").all(requirementId, before.version, before.data.epoch);
+      if (registered.length > 20) throw new HostAuthorizationError("interaction_context_limit");
+      const ids = new Set<string>();
+      for (const row of registered) {
+        const stored = JSON.parse(String(row.data)) as { manifest: ApprovalManifest; admission: { receiptId: string } };
+        // 清单只提供旧决定的来源关系，不产生新能力；完整原ID/receipt交给Core逐次核验。
+        const manifest = withDatabase(repositoryDatabase(this.#dataRoot, repoId), (current) =>
+          registeredApprovalManifestIn(current, repoId, approvalManifestReference(stored.manifest), before, stored.admission.receiptId));
+        for (const id of [...manifest.units, ...manifest.actions, ...manifest.questions].flatMap((u) => u.decisionIds)) ids.add(id);
+      }
+      if (ids.size > 20) throw new HostAuthorizationError("interaction_context_limit");
+      const priorDecisions = [...ids].map((id) => {
+        const row = db.prepare("SELECT id,data FROM records WHERE namespace='short_decisions' AND record_key=?").get(id);
+        if (!row || row.id !== id) throw new HostAuthorizationError("decision_identity");
+        const record = checkDecisionRecord(JSON.parse(String(row.data)));
+        if (record.repoId !== repoId || record.requirementId !== requirementId) throw new HostAuthorizationError("decision_identity");
+        return record;
       });
-      database.create(RECEIPT_NAMESPACE, scope.operationId, receipt, receipt.receiptId);
-      return receipt;
+      const after = this.snapshot(repoId, requirementId, sessionId);
+      if (before.version !== after.version || decisionDigest(before.data) !== decisionDigest(after.data)) throw new HostAuthorizationError("state_changed");
+      return { questions: questions.map((row) => {
+        const q = checkInteraction(PendingQuestion, JSON.parse(String(row.data)));
+        if (q.requestId !== row.id || q.repoId !== repoId) throw new HostAuthorizationError("question_identity");
+        return q;
+      }), priorDecisions };
+
     });
-  }
-
-  revokeConfirmation(repoId: string, operationId: string, sessionId: string): void {
-    this.requireRepo(repoId, sessionId);
-    const database = this.database(repoId);
-    database.transaction(() => {
-      const stored = database.read(RECEIPT_NAMESPACE, operationId);
-      if (!stored || !validReceipt(stored.data) || stored.id !== stored.data.receiptId) throw new HostAuthorizationError("receipt_missing");
-      if (stored.data.state === "revoked") return;
-      database.update(RECEIPT_NAMESPACE, operationId, stored.version, { ...stored.data, state: "revoked" });
-    });
-  }
-
-  authorizer(binding: HostOperationBinding, sessionId: string): (request: ServiceAuthorizationRequest) => boolean {
-    this.prepareRepository(binding.repoId, sessionId);
-    return (request) => {
-      try {
-        const principal = this.requireRepo(binding.repoId, sessionId);
-        if (principal.sessionId !== sessionId || request.repoId !== binding.repoId) return false;
-        // RequirementService.open 只用这条无 requirementId 的 metadata 请求核对仓库级宿主接线；
-        // 具体动作随后仍须通过下方完整字段与正文返回前复核。
-        if (request.action === "metadata" && request.requirementId === undefined) return true;
-        switch (binding.action) {
-          case "create":
-            return request.action === "create" && this.hasDraftCapability(binding.repoId, sessionId)
-              && fieldMatches(request, "requestId", binding.requestId) && fieldMatches(request, "operationId", binding.operationId)
-              && fieldMatches(request, "intentHash", binding.intentHash);
-          case "updateDraft":
-            return request.action === "updateDraft" && this.hasDraftCapability(binding.repoId, sessionId)
-              && fieldMatches(request, "requirementId", binding.requirementId) && fieldMatches(request, "operationId", binding.operationId)
-              && fieldMatches(request, "version", binding.version) && fieldMatches(request, "intentHash", binding.intentHash);
-          case "confirmUpdate": {
-            if (request.action === "metadata") return fieldMatches(request, "requirementId", binding.requirementId);
-            if (request.action !== "confirmUpdate" || !fieldMatches(request, "requirementId", binding.requirementId)
-              || !fieldMatches(request, "operationId", binding.operationId) || !fieldMatches(request, "version", binding.version)
-              || !fieldMatches(request, "intentHash", binding.intentHash)
-              || (request.epoch !== undefined && request.epoch !== binding.epoch)
-              || !fieldMatches(request, "receiptId", binding.receiptId)) return false;
-            const scope: TargetConfirmationScope = { action: "confirmUpdate", purpose: "target-confirmation", implementation: "not-authorized", repoId: binding.repoId,
-              requirementId: binding.requirementId, operationId: binding.operationId, intentHash: binding.intentHash, epoch: binding.epoch, version: binding.version };
-            const lookup = this.confirmation(scope, sessionId);
-            return lookup.status === "valid" && lookup.receipt.receiptId === binding.receiptId;
-          }
-          case "readSaved":
-          case "readApproved":
-          case "diff":
-          case "metadata":
-            return request.action === binding.action && fieldMatches(request, "requirementId", binding.requirementId);
-        }
-      } catch {
-        return false;
-      }
-    };
-  }
-
-  private currentTime(): number {
-    const value = this.now();
-    assertFiniteTime(value);
-    return value;
-  }
-
-  private requirePrincipal(sessionId: string): MainHostPrincipal {
-    const principal = this.principal;
-    if (!principal || principal.kind !== "main" || principal.sessionId !== sessionId) throw new HostAuthorizationError("untrusted_host");
-    return principal;
-  }
-
-  private requireRepo(repoId: string, sessionId: string): MainHostPrincipal {
-    if (!REPO_ID_PATTERN.test(repoId)) throw new HostAuthorizationError("invalid_repo");
-    const principal = this.requirePrincipal(sessionId);
-    if (!principal.repoIds.includes(repoId)) throw new HostAuthorizationError("foreign_repo");
-    return principal;
-  }
-
-  private database(repoId: string): LocalDatabase {
-    const database = this.databases.get(repoId);
-    if (!database) throw new HostAuthorizationError("repository_not_prepared");
-    return database;
-  }
-
-  private assertScope(scope: TargetConfirmationScope): void {
-    if (scope.action !== "confirmUpdate" || scope.purpose !== "target-confirmation" || scope.implementation !== "not-authorized" || !REPO_ID_PATTERN.test(scope.repoId)
-      || !UUID_V7_PATTERN.test(scope.requirementId) || !UUID_V7_PATTERN.test(scope.operationId) || !INTENT_HASH_PATTERN.test(scope.intentHash)
-      || !Number.isSafeInteger(scope.epoch) || scope.epoch < 1 || !Number.isSafeInteger(scope.version) || scope.version < 1) throw new HostAuthorizationError("invalid_scope");
   }
 }

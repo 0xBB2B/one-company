@@ -2,7 +2,8 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
-import { checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
+import { ApprovalManifestReferenceSchema, checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
+import type { ApprovalManifestReference } from "./approval-manifest.ts";
 import type { ProdReference, RequirementRecord } from "./requirement-contracts.ts";
 import { prodRequirementPath } from "./prod-storage.ts";
 import type { ProdRepositoryIdentity, ProdStorageWriteResult } from "./prod-storage.ts";
@@ -44,6 +45,7 @@ const operationSchema = object({
   saveVersion: positive,
   epoch: positive,
   receiptId: nullable(id),
+  manifest: Type.Optional(ApprovalManifestReferenceSchema),
   archivePath: Type.String({ minLength: 1, maxLength: 1024 }),
   repositoryRoot: Type.String({ minLength: 1, maxLength: 4096 }),
   expectedRepositoryIdentity: nullable(identity),
@@ -69,6 +71,7 @@ export interface RequirementOperation {
   saveVersion: number;
   epoch: number;
   receiptId: string | null;
+  manifest?: ApprovalManifestReference;
   archivePath: string;
   repositoryRoot: string;
   expectedRepositoryIdentity: ProdRepositoryIdentity | null;
@@ -100,6 +103,7 @@ export interface PrepareRequirementOperation {
   saveVersion: number;
   epoch: number;
   receiptId: string | null;
+  manifest?: ApprovalManifestReference;
   archivePath: string;
   repositoryRoot: string;
   expectedRepositoryIdentity: ProdRepositoryIdentity | null;
@@ -133,6 +137,9 @@ function checkOperation(value: unknown): RequirementOperation {
     || (operation.action === "create") !== (operation.requestId !== null)
     || (operation.action === "confirmUpdate") !== (operation.receiptId !== null)
     || operation.updatedAt < operation.createdAt
+    || (operation.manifest !== undefined && (operation.action !== "confirmUpdate" || operation.manifest.requirementId !== operation.requirementId ||
+      operation.manifest.candidate.operationId !== operation.operationId || operation.manifest.candidate.intentHash !== operation.intentHash ||
+      operation.manifest.candidate.to.hash !== operation.targetHash || operation.manifest.candidate.to.commit !== operation.expectedParent))
     || !gitConsistent
     || (operation.savedVersion !== null && operation.git === null)
     || (operation.approvalVersion !== null && (operation.action !== "confirmUpdate" || operation.savedVersion === null))
@@ -155,6 +162,7 @@ function mutableFields(input: PrepareRequirementOperation) {
     saveVersion: input.saveVersion,
     epoch: input.epoch,
     receiptId: input.receiptId,
+    ...(input.manifest ? { manifest: input.manifest } : {}),
     archivePath: input.archivePath,
     repositoryRoot: input.repositoryRoot,
     expectedRepositoryIdentity: input.expectedRepositoryIdentity,

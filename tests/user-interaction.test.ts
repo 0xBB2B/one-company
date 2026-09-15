@@ -576,32 +576,25 @@ for (const change of ["revoke", "record", "state", "async", "scope-denied", "doc
   });
   expect(w.core.authorizeScope(capability, w.binding(), w.scope)).toBeNull(); await new Promise((resolve) => setImmediate(resolve));
 });
-test("同条真实输入仅在候选重新保存后最多重解释3次；旧能力失效，不创建原话副本", async () => {
+test("没有受控permit的外部重存不能重解释，也不能用JSON伪造permit", async () => {
   const w = await documentWorld(), ticket = w.capture("A直接实施，B未决写清楚。");
-  let previous = await w.core.interpret(ticket, w.basis.requirementId); w.core.save(previous.capability);
-  await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(/candidate_not_resaved/);
+  const previous = await w.core.interpret(ticket, w.basis.requirementId); w.core.save(previous.capability);
+  await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(/reconsideration_denied/);
   const texts: string[] = []; w.setImplementation(async (input) => { texts.push(input.text); return JSON.stringify(w.output()); });
   for (let i = 0; i < 3; i++) {
-    w.resave(); const old = previous.capability;
-    previous = await w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId);
-    expect(() => w.core.save(old)).toThrow(/invalid_capability/); w.core.save(previous.capability);
-    expect(w.core.authorizeScope(previous.capability, w.binding(), w.scope)).not.toBeNull();
+    w.resave(); await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId, { kind: "candidate-resave-permit" })).rejects.toThrow(/reconsideration_denied/);
   }
-  expect(texts).toEqual(Array(3).fill("A直接实施，B未决写清楚。"));
-  w.resave(); await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(/reconsideration_denied/);
+  expect(texts).toEqual([]); expect(w.core.authorizeScope(previous.capability, w.binding(), w.scope)).toBeNull();
   w.core.revoke(); await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow();
 });
-for (const change of ["revoke", "expiry", "input", "resave"] as const) test(`迟到重解释期间${change}拒绝旧结果且不伪造新输入`, async () => {
+for (const change of ["revoke", "expiry", "input", "resave"] as const) test(`无permit的外部重存经${change}不能启动模型或写决定`, async () => {
   const w = await documentWorld(), ticket = w.capture(); await w.core.interpret(ticket, w.basis.requirementId); w.resave();
-  let release!: (source: string) => void, entered!: () => void;
-  const ready = new Promise<void>((resolve) => { entered = resolve; });
-  w.setImplementation(async () => { entered(); return new Promise<string>((resolve) => { release = resolve; }); });
-  const pending = w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId); await ready;
+  let calls = 0; w.setImplementation(async () => { calls++; return JSON.stringify(w.output()); });
   if (change === "revoke") w.core.revoke();
   if (change === "expiry") w.setNow(1_900_000);
   if (change === "input") w.capture("真正新的输入");
   if (change === "resave") w.resave();
-  release(JSON.stringify(w.output())); await expect(pending).rejects.toThrow(/interpretation_denied/); expect(w.records()).toEqual([]);
+  await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(); expect(calls).toBe(0); expect(w.records()).toEqual([]);
 });
 test("部分短答问题元数据保留A已答/B未答，旧版本问题不自动跟新候选", async () => {
   const w = await documentWorld(); const q = w.core.ask(JSON.stringify({ basis: w.basis, candidate: candidateBinding(w.candidate), unitIds: ["A", "B"],
@@ -613,10 +606,10 @@ test("部分短答问题元数据保留A已答/B未答，旧版本问题不自�
   w.output().documentReview!.questions = [{ requestId: q.requestId, answeredIds: ["A"], pendingIds: ["B"], conclusionIndexes: [0] }];
   const ticket = w.capture("A可以，B还没想好"), parsed = await w.core.interpret(ticket, w.basis.requirementId); w.core.save(parsed.capability);
   expect(w.core.authorizeDocument(parsed.capability, w.binding())!.manifest.questions[0]).toMatchObject({ answeredIds: ["A"], pendingIds: ["B"] });
-  w.resave(); await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(/interpretation_denied/);
+  w.resave(); await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(/reconsideration_denied/);
 });
 
-test("需要修改的文档只保存短决定，不给阅读或行为许可；重新保存后同条输入可重新核对", async () => {
+test("需要修改的文档只保存短决定；外部重存没有permit不能恢复旧输入能力", async () => {
   const w = await documentWorld(), ticket = w.capture("A只对内测用户，B仍未决");
   w.output().documentReview!.faithful = false; w.output().documentReview!.actions = [];
   w.output().entries[0]!.resolution = "modify"; w.output().entries.splice(3, 1);
@@ -625,14 +618,14 @@ test("需要修改的文档只保存短决定，不给阅读或行为许可；�
   expect(w.core.authorizeScope(first.capability, w.binding(), w.scope)).toBeNull();
   w.context.document!.body = w.context.document!.body.replace("实施手机号。", "仅向内测用户提供手机号登录。");
   w.resave(); w.output().documentReview!.faithful = true; w.output().entries[0]!.resolution = "direct";
-  const next = await w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId); w.core.save(next.capability);
-  expect(w.core.authorizeDocument(next.capability, w.binding())).not.toBeNull();
-  expect(w.core.authorizeScope(next.capability, w.binding(), w.scope)).toBeNull();
+  await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(/reconsideration_denied/);
+  expect(w.core.authorizeDocument(first.capability, w.binding())).toBeNull();
+  expect(w.core.authorizeScope(first.capability, w.binding(), w.scope)).toBeNull();
 });
 test("重解释不能省略整份document审核退回完整候选授权", async () => {
   const w = await documentWorld(), ticket = w.capture(); await w.core.interpret(ticket, w.basis.requirementId); w.resave();
   delete w.context.document; delete w.output().documentReview;
-  await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(/interpretation_denied/);
+  await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(/reconsideration_denied/);
 });
 test("全确认文档仍使用同一个完整prod清单；范围许可不能通过JSON能力重建", async () => {
   const w = await documentWorld();

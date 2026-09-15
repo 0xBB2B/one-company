@@ -12,10 +12,14 @@ import { create as createStorage, diffVersions, prodRequirementPath, readVersion
 import type { ProdRepositoryIdentity, ProdStorageConfig, ProdStorageWriteResult } from "./prod-storage.ts";
 import { RequirementOperations } from "./requirement-operations.ts";
 import type { PrepareRequirementOperation, RequirementOperation, RequirementOperationAction } from "./requirement-operations.ts";
-import { uuidv7 } from "./database.ts";
+import { uuidv7, repositoryDatabase, withDatabase } from "./database.ts";
+import { decisionDigest } from "./short-decision-format.ts";
+import { partitionProdDocument } from "./prod-view.ts";
+import { assertApprovalScopeReturnIn, registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
 import type { RequirementWriteOwner } from "./requirement-coordination.ts";
 import {
   ConfirmUpdateInput,
+  LoadConfirmationInput,
   CreateRequirementInput,
   DiffRequirementInput,
   MetadataRequirementInput,
@@ -27,6 +31,9 @@ import {
 } from "./requirement-manage-contracts.ts";
 import type {
   ConfirmUpdateInput as ConfirmInput,
+  ConfirmationContext,
+  LoadConfirmationInput as LoadConfirmationRequest,
+  RequirementApprovalScope,
   CreateRequirementInput as CreateInput,
   DiffRequirementInput as DiffInput,
   ReadRequirementInput as ReadInput,
@@ -49,6 +56,9 @@ export interface RequirementServiceOptions {
   gitExecutable: string;
   /** 可信宿主同步核验已在服务外完成的授权；回调只接收无正文元数据，不执行 UI、模型或文件 I/O。 */
   authorize?: (request: Readonly<ServiceAuthorizationRequest>) => boolean;
+  authorizeManifest?: RequirementStoreOptions["authorizeManifest"];
+  /** 同进程受控重存的来源，只沿updateDraft的saved-version通知传递。 */
+  localMutationOrigin?: object;
 }
 
 const VALIDATION_REQUIREMENT_ID = "00000000-0000-7000-8000-000000000000";
@@ -105,7 +115,8 @@ function authorizationForWrite(
     prodHash,
     version,
     epoch,
-    ...(action === "confirmUpdate" ? { receiptId: (input as ConfirmInput).receiptId } : {}),
+    ...(action === "confirmUpdate" ? { receiptId: (input as ConfirmInput).receiptId,
+      ...((input as ConfirmInput).manifest ? { manifest: (input as ConfirmInput).manifest } : {}) } : {}),
   };
 }
 
@@ -157,6 +168,8 @@ export class RequirementService {
       dataRoot: this.options.dataRoot,
       repoId: this.options.repoId,
       repositoryRoot: this.options.repositoryRoot,
+      authorizeManifest: this.options.authorizeManifest,
+      ...(request.action === "updateDraft" && this.options.localMutationOrigin ? { localMutationOrigin: this.options.localMutationOrigin } : {}),
       authorize: ({ action }) => {
         if (!allowed.has(action)) return false;
         this.authorize(request);
@@ -277,6 +290,7 @@ export class RequirementService {
 
   async confirmUpdate(input: ConfirmInput): Promise<RequirementReceipt> {
     const request = checkServiceInput(ConfirmUpdateInput, input);
+    if (this.options.authorizeManifest && !request.manifest) throw new RequirementServiceError("manifest_required");
     return this.update("confirmUpdate", request);
   }
 
@@ -300,6 +314,35 @@ export class RequirementService {
       storageHash(document.prodHash),
     );
     this.authorize(authorization);
+    if (action === "confirmUpdate" && (input as ConfirmInput).manifest) {
+      const ref = (input as ConfirmInput).manifest!;
+      if (ref.requirementId !== input.requirementId || ref.candidate.operationId !== input.operationId ||
+        ref.candidate.intentHash !== intentHash || !sameReference(ref.candidate.to, before.data.saved) ||
+        ref.candidate.to.hash !== document.prodHash) throw new RequirementServiceError("manifest_candidate_mismatch");
+      const identity = this.operations.repositoryIdentity(input.requirementId);
+      if (!identity) throw new RequirementServiceError("repository_identity_missing");
+      const validate = () => {
+        const current = initialState.read(input.requirementId); available(current.data);
+        if (current.version !== before.version || current.data.epoch !== before.data.epoch ||
+          !sameReference(current.data.saved, ref.candidate.to)) throw new RequirementServiceError("manifest_stale");
+      };
+      const saved = await readVersion({ ...this.storageConfig(authorization, input.requirementId, identity, validate),
+        commit: ref.candidate.to.commit, expectedHash: storageHash(ref.candidate.to.hash) });
+      if (!Buffer.from(saved.bytes).equals(Buffer.from(document.bytes))) throw new RequirementServiceError("manifest_candidate_mismatch");
+      validate();
+      const confirmed = input as ConfirmInput;
+      const alreadyApproved = before.data.approvalReceiptId === confirmed.receiptId &&
+        decisionDigest(before.data.approvalManifest?.reference ?? null) === decisionDigest(ref);
+      if (!alreadyApproved) {
+        const allowed = this.options.authorizeManifest?.(deepFreeze({ requirementId: input.requirementId,
+          version: input.version, receiptId: confirmed.receiptId, manifest: structuredClone(ref) }));
+        if (isPromise(allowed)) void Promise.prototype.then.call(allowed, () => undefined, () => undefined);
+        if (allowed !== true) throw new RequirementServiceError("manifest_authorization_required");
+        validate();
+        withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) =>
+          registeredApprovalManifestIn(db, this.options.repoId, ref, before, confirmed.receiptId));
+      }
+    }
     if (action === "confirmUpdate") {
       if (!before.data.workspace) throw new RequirementServiceError("workspace_not_ready");
       await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
@@ -360,6 +403,9 @@ export class RequirementService {
         receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
         archivePath: document.archivePath,
       };
+      if (decisionDigest(operation.manifest ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).manifest ?? null : null)) {
+        throw new RequirementServiceError("operation_conflict");
+      }
       for (const [key, value] of Object.entries(expected)) {
         if (operation[key as keyof RequirementOperation] !== value) throw new RequirementServiceError("operation_conflict");
       }
@@ -381,6 +427,7 @@ export class RequirementService {
         saveVersion: before.version,
         epoch: before.data.epoch,
         receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
+        ...((input as ConfirmInput).manifest ? { manifest: (input as ConfirmInput).manifest } : {}),
         archivePath: document.archivePath,
         repositoryRoot: prodRequirementPath({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId: before.id }),
         expectedRepositoryIdentity,
@@ -503,7 +550,8 @@ export class RequirementService {
         const beforeApproval = saved.version === operation.approvalVersion;
         const afterApproval = saved.version === operation.approvalVersion + 1
           && sameReference(saved.data.approved, reference)
-          && saved.data.approvalReceiptId === operation.receiptId;
+          && saved.data.approvalReceiptId === operation.receiptId
+          && decisionDigest(saved.data.approvalManifest?.reference ?? null) === decisionDigest(operation.manifest ?? null);
         if (!beforeApproval && !afterApproval) throw new RequirementServiceError("operation_state_mismatch");
       }
     }
@@ -517,6 +565,7 @@ export class RequirementService {
         version: operation.approvalVersion!,
         receiptId: operation.receiptId!,
         reference,
+        ...(operation.manifest ? { manifest: operation.manifest } : {}),
       });
     }
     this.authorize(authorization);
@@ -530,7 +579,8 @@ export class RequirementService {
       throw new RequirementServiceError("operation_state_mismatch");
     }
     const reference = { commit: operation.git.commit, hash: operation.git.hash };
-    if (!sameReference(record.saved, reference) || (operation.action === "confirmUpdate" && (!sameReference(record.approved, reference) || record.approvalReceiptId !== operation.receiptId))) {
+    if (!sameReference(record.saved, reference) || (operation.action === "confirmUpdate" && (!sameReference(record.approved, reference) || record.approvalReceiptId !== operation.receiptId ||
+      decisionDigest(record.approvalManifest?.reference ?? null) !== decisionDigest(operation.manifest ?? null)))) {
       throw new RequirementServiceError("operation_state_mismatch");
     }
   }
@@ -554,6 +604,7 @@ export class RequirementService {
       version: current.version,
       epoch: current.data.epoch,
       revision: current.data.revision,
+      approvalScope: this.approvalScope(current),
     };
   }
 
@@ -623,6 +674,7 @@ export class RequirementService {
       epoch: after.data.epoch,
       title: parsed.title,
       body: parsed.body,
+      approvalScope: request.source === "approved" ? this.approvalScope(after) : { status: "unavailable" },
     };
   }
 
@@ -639,7 +691,7 @@ export class RequirementService {
     if (toRevision < request.fromRevision || toRevision > before.data.revision) throw new RequirementServiceError("invalid_revision_range");
     const approved = state.events(request.requirementId)
       .filter((event) => event.data.kind === "prod.approved" && event.data.to !== null)
-      .map((event) => ({ revision: event.data.revision, reference: event.data.to! }));
+      .map((event) => ({ revision: event.data.revision, reference: event.data.to!, summary: event.data.approvalManifest }));
     const from = approved.find((event) => event.revision === request.fromRevision)?.reference;
     const to = approved.find((event) => event.revision === toRevision)?.reference;
     if (!from || !to) throw new RequirementServiceError("unknown_revision");
@@ -681,7 +733,74 @@ export class RequirementService {
       version: after.version,
       epoch: after.data.epoch,
       diff: result.diff,
+      approvalScope: toRevision === after.data.revision ? this.approvalScope(after)
+        : approved.find((event) => event.revision === toRevision)?.summary
+          ? { status: "available", summary: approved.find((event) => event.revision === toRevision)!.summary! } : { status: "unavailable" },
     };
+  }
+
+  private approvalScope(record: { id: string; version: number; data: RequirementRecord }): RequirementApprovalScope {
+    return withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => db.transaction(() => {
+      const scope: RequirementApprovalScope = record.data.approvalManifest
+        ? { status: "available", summary: summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId,
+          record.data.approvalManifest.reference, record)) } : { status: "unavailable" };
+      assertApprovalScopeReturnIn(db, this.options.repoId, record, scope);
+      return scope;
+    }));
+  }
+
+  /** 内部宿主接缝：仅加载当前真实saved操作，不开放历史/ref/path选择。正文与diff不落库。 */
+  async loadConfirmationContext(input: LoadConfirmationRequest): Promise<ConfirmationContext> {
+    const request = checkServiceInput(LoadConfirmationInput, input);
+    const authorization: ServiceAuthorizationRequest = { action: "readSaved", repoId: this.options.repoId,
+      requirementId: request.requirementId, operationId: request.savedOperationId };
+    this.authorize(authorization);
+    const state = await this.state(authorization);
+    const before = state.read(request.requirementId); available(before.data);
+    await this.assertNoObservedArchive(state, request.requirementId);
+    const operation = this.operations.read(request.savedOperationId);
+    if (!operation || operation.data.requirementId !== request.requirementId || !operation.data.git || operation.data.finalVersion === null ||
+      operation.data.epoch !== before.data.epoch || !sameReference(before.data.saved, { commit: operation.data.git.commit, hash: operation.data.git.hash })) {
+      throw new RequirementServiceError("saved_operation_mismatch");
+    }
+    const saved = before.data.saved!;
+    const bound = { ...authorization, version: before.version, epoch: before.data.epoch, prodHash: storageHash(saved.hash) };
+    const validate = () => {
+      const current = state.read(request.requirementId); available(current.data);
+      const actual = this.operations.read(request.savedOperationId);
+      const final = withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => db.read("requirements", request.requirementId));
+      if (!final || final.version !== before.version || decisionDigest(final.data) !== decisionDigest(before.data) ||
+        current.version !== before.version || decisionDigest(current.data) !== decisionDigest(before.data) ||
+        !actual || actual.version !== operation.version || decisionDigest(actual.data) !== decisionDigest(operation.data)) {
+        throw new RequirementServiceError("state_changed_during_read");
+      }
+    };
+    if (before.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
+    const config = this.storageConfig(bound, request.requirementId, operation.data.git.repositoryIdentity, validate);
+    const result = await readVersion({ ...config, commit: saved.commit, expectedHash: storageHash(saved.hash) });
+    await this.verifyWorkingCopy(operation.data);
+    const parsed = parseProdDocument(result.bytes, request.requirementId);
+    const intentHash = requirementIntentHash({ title: parsed.title, body: parsed.body });
+    if (intentHash !== operation.data.intentHash) throw new RequirementServiceError("saved_operation_mismatch");
+    const partition = partitionProdDocument(request.requirementId, parsed.title, parsed.body);
+    if (partition.prodHash !== saved.hash) throw new RequirementServiceError("saved_operation_mismatch");
+    let difference: ConfirmationContext["difference"];
+    if (!before.data.approved) {
+      difference = { kind: "full_candidate", from: null, to: saved, text: Buffer.from(result.bytes).toString("utf8") };
+    } else {
+      const diff = await diffVersions({ ...config, fromCommit: before.data.approved.commit, toCommit: saved.commit,
+        expectedFromHash: storageHash(before.data.approved.hash), expectedToHash: storageHash(saved.hash) });
+      difference = { kind: "diff", from: before.data.approved, to: saved, text: diff.diff };
+    }
+    if (before.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
+    this.authorize(bound); validate();
+    // Core的basis是当前生命周期依据；初次无approved的差异以difference.from=null明确表示。
+    const prod = before.data.lifecycle === "active" ? before.data.approved : saved;
+    return { requirementId: request.requirementId, repoId: this.options.repoId, version: before.version, epoch: before.data.epoch,
+      basis: { requirementId: request.requirementId, version: before.version, epoch: before.data.epoch, prod },
+      candidate: { candidateId: request.operationId, operationId: request.operationId, intentHash, from: prod, to: saved },
+      savedOperationId: request.savedOperationId, saved, approved: before.data.approved, workspace: before.data.workspace,
+      title: parsed.title, body: parsed.body, partition, difference };
   }
 
   async metadata(requirementId: string): Promise<RequirementMetadataResult> {
@@ -689,10 +808,15 @@ export class RequirementService {
     const authorization: ServiceAuthorizationRequest = { action: "metadata", repoId: this.options.repoId, requirementId: id };
     this.authorize(authorization);
     const before = (await this.state(authorization)).read(id);
-    const archivePath = this.operations.archivePath(id, before.data.saved);
+    const readable = before.data.lifecycle === "draft" || before.data.lifecycle === "active";
+    const archivePath = readable ? this.operations.archivePath(id, before.data.saved) : null;
     const after = (await this.state(authorization)).read(id);
     if (after.version !== before.version || after.data.epoch !== before.data.epoch) throw new RequirementServiceError("state_changed_during_read");
     this.authorize(authorization);
+    const final = withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => db.read("requirements", id));
+    if (!final || final.version !== after.version || decisionDigest(final.data) !== decisionDigest(after.data)) {
+      throw new RequirementServiceError("state_changed_during_read");
+    }
     return {
       requirementId: id,
       lifecycle: after.data.lifecycle,
@@ -700,9 +824,10 @@ export class RequirementService {
       version: after.version,
       epoch: after.data.epoch,
       revision: after.data.revision,
-      saved: after.data.saved ? { commit: after.data.saved.commit, prodHash: storageHash(after.data.saved.hash) } : null,
-      approved: after.data.approved ? { commit: after.data.approved.commit, prodHash: storageHash(after.data.approved.hash) } : null,
+      saved: readable && after.data.saved ? { commit: after.data.saved.commit, prodHash: storageHash(after.data.saved.hash) } : null,
+      approved: readable && after.data.approved ? { commit: after.data.approved.commit, prodHash: storageHash(after.data.approved.hash) } : null,
       archivePath,
+      ...(["draft", "active"].includes(after.data.lifecycle) ? { approvalScope: this.approvalScope(after) } : {}),
     };
   }
 }

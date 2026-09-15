@@ -12,6 +12,16 @@ export const positive = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTE
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 export const RecoveryReason = Type.Union([Type.Literal("archive_found"), Type.Literal("history_unknown"), Type.Literal("identity_conflict")]);
 export const ProdReference = object({ commit, hash });
+const manifestId = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });
+const manifestHash = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 });
+const manifestProd = object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])" }), hash: manifestHash });
+export const ApprovalManifestReferenceSchema = object({ requirementId: manifestId, manifestHash,
+  candidate: object({ candidateId: manifestId, operationId: manifestId, intentHash: manifestHash,
+    from: nullable(manifestProd), to: manifestProd }) });
+const summaryIds = Type.Array(Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}(?![\\s\\S])", maxLength: 96 }), { maxItems: 20, uniqueItems: true });
+export const ApprovalSummary = object({ reference: ApprovalManifestReferenceSchema,
+  confirmed: summaryIds, pending: summaryIds, excluded: summaryIds, blocked: summaryIds });
+export type ApprovalSummary = Static<typeof ApprovalSummary>;
 export const WorkspaceBinding = object({
   requirementId: id, repoId: hash, workspaceId: hash, prepareOperationId: id,
   path: Type.String({ minLength: 1, maxLength: 4096 }),
@@ -27,6 +37,7 @@ export const RequirementRecord = object({
   lifecycle: Type.Union([Type.Literal("draft"), Type.Literal("active"), Type.Literal("closing"), Type.Literal("closed")]),
   revision: counter, epoch: positive, saved: nullable(ProdReference), approved: nullable(ProdReference), approvalReceiptId: nullable(id),
   workspace: nullable(WorkspaceBinding), pendingRevision: nullable(positive), close: nullable(CloseIntent),
+  approvalManifest: Type.Optional(ApprovalSummary),
   recovery: Type.Union([Type.Literal("ready"), Type.Literal("needs_review")]), recoveryReason: nullable(RecoveryReason), createdAt: counter, updatedAt: counter,
 });
 export type RequirementRecord = Static<typeof RequirementRecord>;
@@ -59,6 +70,7 @@ export const ApprovedProdChange = object({
   from: nullable(ProdReference), to: ProdReference, receiptId: id,
   lifecycleEpoch: positive, recordVersion: positive,
   changedSections: Type.Null(), impactReason: Type.Literal("section_structure_unavailable"),
+  approvalManifest: Type.Optional(ApprovalSummary),
 });
 export type ApprovedProdChange = Static<typeof ApprovedProdChange>;
 export const BaselineDelivery = object({
@@ -86,12 +98,14 @@ export const RequirementEvent = object({
     Type.Literal("reserved"), Type.Literal("workspace.bound"), Type.Literal("prod.saved"), Type.Literal("prod.approved"),
     Type.Literal("pm.acquired"), Type.Literal("pm.released"), Type.Literal("closing"), Type.Literal("closed"), Type.Literal("recovery.blocked"),
   ]), version: positive, epoch: positive, revision: counter, from: nullable(ProdReference), to: nullable(ProdReference), receiptId: nullable(id), recoveryReason: nullable(RecoveryReason),
+  approvalManifest: Type.Optional(ApprovalSummary),
 });
 export type RequirementEvent = Static<typeof RequirementEvent>;
 export const commands = {
   reserve: object({ requestId: id, intentHash: hash }),
   save: object({ requirementId: id, version: positive, operationId: id, reference: ProdReference }),
-  approve: object({ requirementId: id, version: positive, receiptId: id, reference: ProdReference }),
+  approve: object({ requirementId: id, version: positive, receiptId: id, reference: ProdReference,
+    manifest: Type.Optional(ApprovalManifestReferenceSchema) }),
   bind: object({ requirementId: id, version: positive, path: Type.String({ minLength: 1, maxLength: 4096 }), prepareOperationId: id, baseCommit: commit }),
   acquire: object({ requirementId: id, version: positive, runId: id, expectedFence: counter }),
   close: object({ requirementId: id, version: positive, intent: CloseIntent }),
@@ -124,6 +138,8 @@ export function checkRequirement(value: unknown, requirementId: string, repoId: 
   if (record.requirementId !== requirementId || record.repoId !== repoId || record.updatedAt < record.createdAt ||
     ((record.approved === null) !== (record.approvalReceiptId === null)) || ((record.approved === null) !== (record.revision === 0)) ||
     (record.approved !== null && record.saved === null) ||
+    (record.approvalManifest !== undefined && (!record.approved || record.approvalManifest.reference.requirementId !== requirementId ||
+      record.approvalManifest.reference.candidate.to.commit !== record.approved.commit || record.approvalManifest.reference.candidate.to.hash !== record.approved.hash)) ||
     (record.lifecycle === "draft" && record.approved !== null) ||
     ((record.recovery === "ready") !== (record.recoveryReason === null)) ||
     (record.close?.reason === "completed" && (record.approved === null || record.workspace === null || record.pendingRevision !== null)) ||

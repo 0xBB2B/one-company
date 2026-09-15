@@ -260,6 +260,16 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-HOST-WIRING-01 / M4-APPROVAL-PERSIST-01：可信主交互与批准范围读取整合
+
+- 已整合主窗口真实输入和主体核对、目标/动作范围分离、无ready时仅登记、真实ready后的manifest批准、同输入有界修订重解释及只绑定身份的`requirement-select`入口。旧自填主体/转述/历史回执不产生新授权，原决定及取代关系保留；只保存短决定与必要来源/版本元数据，不新增原话档案。
+- 代码范围：主Host/Core、user_interact与requirement_manage接线、approval-manifest/store、interaction-continuity、requirement service/state及其合同/operation元数据。包括私有原对象返回proof、Host撤权代次/会话/窗口/manager/仓库绑定，完整输入集合proof和最终事务核对；自有supersedes只作准确原输入对照，不恢复旧能力。全局未决影响沿依赖与appliesTo传递，动作同时核对目标和约束。
+- 主代理按原两次真实实现失败的限定接手完成H2—H4剩余修复。独立`host-main-review-04/REPORT.md`确认F1/F2反例解除；`completion-03/host-clock-review-05/REPORT.md`确认F3首次拒绝及内存旧顺序对照；`host-resave-review-06/REPORT.md`确认夹具去重读取未减少四轮真实过程、幂等/旧能力/三次上限/原TTL断言，旧候选答复首次拒绝且无新增授权副作用。后两文件hash与当前一致，其余25个原冻结文件与review-04相同；相关合同/operation改动另由主代理逐行核对为本功能所需元数据。
+- 最新主代理整合命令：`pnpm exec vitest run tests/user-interaction.test.ts tests/main-requirement-interaction.test.ts tests/host-result-currentness.test.ts tests/interaction-continuity.test.ts tests/requirement-state.test.ts tests/requirement-service.test.ts tests/approval-manifest-store.test.ts tests/requirement-approval-manifest.test.ts tests/requirement-scope-return.test.ts tests/short-decisions.test.ts tests/integration/requirement-interaction.test.ts tests/integration/host-requirement-continuation.test.ts tests/user-interact-tool.test.ts tests/requirement-manage-tool.test.ts tests/requirement-role-reader.test.ts tests/integration/requirement-role-reader.test.ts --no-cache`，16文件348/348、exit0；`pnpm run typecheck`及diff检查通过。主整合日志`completion-03/continue-04/host-final-integrated.*`；先前超时、诊断和失败用例证据全部保留。
+- 对应M4-AC1—4/9—11中本Host/范围/续接路径的实现及回归；固定provider是可控语义夹具，不是云模型自然语言能力认证。未在本功能中实现PM接手store/Main purpose或M7调度，不签整个M4、双Node全量/安装或正式性能。Role读取原对象guard已在本次348项中联动验证，其独立改动不夹入此提交。
+- 同步纳入本功能测试必需的`runtime/requirement-read-tool.ts`及其直接测试，避免提交依赖未跟踪文件的测试。该读取内核的原对象/同事务范围保护在`/tmp/m4-wiring-recovery-review-01.OYzVE0/REPORT.md`已独立核验，当前生产hash`7bb064a1…5cd7d3`与其reviewed-hashes一致。主代理已全文读当前287行，并额外重跑read-tool与prod-view两文件28/28，日志`continue-04/host-dependencies.*`；原hash列表没有直接测试文件，不将缺记录当匹配，测试以本轮实际运行核验。命令中的requirement-operations过滤项没有匹配测试文件，不计为第三文件或额外覆盖。
+- 本功能提交仅限17份生产文件、13份直接修改/新增测试与本节记录；不夹带用户AGENTS/计划、UI、旧流程退场、PM存储、benchmark或其他既有改动。实际提交号在提交成功后核实登记。
+
 ## M4-PM-INTAKE-CONTRACT-01：接手材料与连续关系纯契约
 
 - 已完成：新增`runtime/pm-intake-contracts.ts`与`tests/pm-intake-contracts.test.ts`，约定PM理解材料、可信登记所需元数据形状及接手到当前批准版本的连续关系。输出始终`executionEnabled=false`、`scheduling=not_implemented`，不把参数中的身份或当前授权boolean当作真实授权。
