@@ -79,9 +79,9 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     expect(installedPackage.dependencies.jiti).toBe("2.7.0");
     expect(installedPackage.dependencies["web-tree-sitter"]).toBe("0.27.0");
     expect(runtimePackage.version).toBe("0.27.0");
-    for (const pkg of [installedPackage, runtimePackage]) {
-      for (const hook of ["preinstall", "install", "postinstall"]) expect(pkg.scripts?.[hook]).toBeUndefined();
-    }
+    expect(installedPackage.scripts?.preinstall).toBe("node runtime/git-prerequisite.mjs --check");
+    for (const hook of ["install", "postinstall"]) expect(installedPackage.scripts?.[hook]).toBeUndefined();
+    for (const hook of ["preinstall", "install", "postinstall"]) expect(runtimePackage.scripts?.[hook]).toBeUndefined();
     const manifest = JSON.parse(await readFile(installedManifest, "utf8"));
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.runtime.version).toBe("0.27.0");

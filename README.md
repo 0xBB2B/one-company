@@ -39,6 +39,10 @@ pi install git:github.com/0xBB2B/pi-company
 
 本地开发时使用 `pi install /absolute/path/to/pi-company`，并先在该目录执行 `pnpm install --frozen-lockfile` 安装锁定依赖。本框架使用 pnpm 11.7.0，运行及测试均使用 Node；运行 pi 的 Node 版本需 ≥ 22.19。角色代理随包提供，无需另装子代理系统。
 
+Git 是必须由用户预先安装的系统工具，并且需要位于启动 pi 或包管理器时的可信 `PATH` 中。本包不捆绑、下载或自动安装 Git；安装前检查不调用 `xcrun`，也不要求安装完整 Xcode、接受 Xcode 许可或切换系统开发目录。检查会解析并绑定可信 PATH 目录中的符号链接别名，同时核对目录链接、真实目录祖先、最终可执行文件的身份与权限；别名绕到业务根、包目录或 `node_modules/.bin` 时仍会拒绝。macOS 只允许经过系统组文件严格核对的单条 `admin` 组记录用于目录组写例外，二进制组写及 Linux 目录组写仍拒绝。正常 npm 安装以及由 pi 触发、且允许执行安装脚本的 npm 安装会运行 `preinstall` 检查；Git 缺失、不可执行、不可信或在检查中变化时，安装会以非零状态退出，并提示“必须预先安装Git并确保PATH可用”。
+
+`--ignore-scripts`、pnpm 禁用第三方安装脚本，以及 `pi install /absolute/path` 这类仅登记本地路径的方式，可能跳过 `preinstall`，安装 hook 无法强迫这些宿主执行脚本。当前发布源码的产品启用前统一检查仍待接线，因此这些路径的安装或登记成功不能视为 Git 已检查，也不能视为完整流程已经可用。
+
 ## 卸载
 
 ```bash

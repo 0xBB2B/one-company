@@ -260,6 +260,15 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-GIT-PREREQUISITE-01：系统Git前置模块与安装检查
+
+- 已整合共享Node内置依赖Git解析/版本检查模块与类型声明、模块测试、Linux Docker安装测试、package唯一preinstall检查、README及原syntax-parser产品hook预期；不打包或自动安装Git。正常执行安装脚本时缺Git非零退出；--ignore-scripts、pnpm禁第三方脚本、本地引用的限制如实说明，使用前gate仍由Task02接线。
+- 从可信宿主PATH解析固定Git，排除包/cwd/业务根与.bin，逐段绑定所有目录/文件链接；普通目录固定路径/inode/owner/权限，不以无关ctime变化误废，文件/链接保留ctime与目标内容hash。root/当前用户及macOS经系统核对admin目录为明确宿主信任域，禁止组写二进制、Linux组写和不安全路径。版本执行绝对路径、无shell、干净环境、5秒/16KiB限制；FIFO预检/非阻塞打开及FD前后校验避免挂起。
+- 排除根保留原始输入并按真实语义解析alias/..，普通未创建尾部沿真实父路径处理；既存断链、循环或无法安全解析的配置明确拒绝。Docker命令先记录未知状态/内存结果再写日志，未知build不删镜像，操作/日志/清理错误共同报告，未确认时保全context；只按自产name/ID/label确认并清理资源，不prune。
+- 主代理已整合独立review-02/03/04/05的分项证据：FIFO双平台及竞争无FD泄漏；完整Git文件链/目录links与权限/排除；Docker18组故障保全；最终R8双平台各11组根解析通过。R8末次窄复审不单独代表全部Task01，原各项已通过逻辑与对应受审字节由主代理共同核对。未将旧Linux综合探针缺系统Git的失败隐藏或误算全过。
+- 最新主代理3文件24/24（模块19、安装4、syntax-parser安装1）及typecheck通过，七文件与最终送审指纹一致。日志`git-prerequisite/main-repair/final-task01-regression.*`、`final-task01-typecheck.*`；所有FIFO、错误输入、挂起/清理、错误日志和修复前证据保留。Task01明确依赖原当前Node/锁定pnpm，不新增任意Git最低版本号；实际macOS系统Git兼容参数和Linux预装Git安装均已验证。
+- 本次只提交上述7文件、本节记录及用户已批准的计划§3.3/13.3 Git新增要求；不夹带原专业agent计划修订、AGENTS、TaskB或legacy未完成改动。Task02的启用gate、生产xcrun移除、统一真实spawn和跨进程期望仍未实施，不签完整Git改造或M4。实际本地提交号在成功后核实。
+
 ## M4-PM-INTAKE-STORE-IMPL-01：需求侧接手存储与原对象核验
 
 - 主代理已整合TaskA五文件：`runtime/pm-intake-store.ts`、`runtime/pm-intake-service.ts`、`tests/helpers/pm-intake-fixture.ts`及store/service两份测试。真实批准prod/manifest/决定、worktree、PM lease和Host绑定生成接手基线；缺可信Main/来源目录/提交provider默认拒绝，不新增scenario.*强制正文格式、不启动PM或M7调度。
