@@ -101,6 +101,73 @@ function pushRun(
   activity.applyRunsChanged(repoId, { run, ...meta });
 }
 
+test.each(["startedAt", "kind", "requirement", "parentRunId", "role"])("确认后改变%s撤销旧TTL，不因终态和cleanup零继承确认", (changed) => {
+  const time = createFakeTimeSource(), clock = createClock({ timeSource: time });
+  try {
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    const run = runFixture({ id: "identity-change", state: "stopped" });
+    pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 0 });
+    activity.recordStopResult(REPO_A.repoId, String(run.id), true);
+    time.advance(19_999);
+    pushRun(activity, REPO_A.repoId, { ...run, [changed]: changed === "kind" ? "role" : changed === "startedAt" ? iso(1) : "changed" }, { pendingShellCleanup: 0 });
+    expect(activity.rows()[0]?.stopConfirmed).toBe(false);
+    time.advance(2); expect(activity.rows()).toHaveLength(1);
+    activity.recordStopResult(REPO_A.repoId, String(run.id), true);
+    time.advance(20_001); expect(activity.rows()).toHaveLength(0);
+  } finally { clock.stopGapWatcher(); }
+});
+
+test("新快照将已知cleanup挤到页外时保留警告，准确同身份零cleanup才解除", () => {
+  const clock = createClock({ timeSource: createFakeTimeSource() });
+  try {
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    const blocked = runFixture({ id: "blocked", state: "stopped" });
+    pushRun(activity, REPO_A.repoId, blocked, { pendingShellCleanup: 9 });
+    const page = Array.from({ length: 100 }, (_, i) => ({ run: runFixture({ id: `other-${i}` }), pendingShellCleanup: 0 }));
+    const coverage = { total: 101, returned: 100, remaining: 1, unknown: 0, unconfirmed: 101, truncated: true };
+    activity.applySnapshot(REPO_A.repoId, activity.beginSnapshot(REPO_A.repoId)!, page as never, coverage);
+    expect(activity.rows()).toHaveLength(100);
+    expect(activity.coverageNotices().join("\n")).toContain("未展示待清理");
+    activity.applySnapshot(REPO_A.repoId, activity.beginSnapshot(REPO_A.repoId)!, [...page, { run: blocked, pendingShellCleanup: 9 }] as never, coverage);
+    expect(activity.coverageNotices(1).join("\n")).toContain("未展示待清理");
+    activity.applySnapshot(REPO_A.repoId, activity.beginSnapshot(REPO_A.repoId)!, [{ run: blocked, pendingShellCleanup: 0 }] as never,
+      { total: 1, returned: 1, remaining: 0, unknown: 0, unconfirmed: 1, truncated: false });
+    expect(activity.coverageNotices().join("\n")).not.toContain("未展示待清理");
+  } finally { clock.stopGapWatcher(); }
+});
+
+test.each([100, 101, 200])("预算内第%s项的同身份cleanup零解除摘要，但不扩镜像", (position) => {
+  const clock = createClock({ timeSource: createFakeTimeSource() });
+  try {
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    const blocked = runFixture({ id: "blocked", state: "stopped" });
+    pushRun(activity, REPO_A.repoId, blocked, { pendingShellCleanup: 9 });
+    const others = Array.from({ length: 100 }, (_, i) => ({ run: runFixture({ id: `other-${i}` }), pendingShellCleanup: 0 }));
+    activity.applySnapshot(REPO_A.repoId, activity.beginSnapshot(REPO_A.repoId)!, others as never, {});
+    expect(activity.coverageNotices().join("\n")).toContain("未展示待清理");
+    const page = Array.from({ length: position - 1 }, (_, i) => ({ run: runFixture({ id: `other-${i}` }), pendingShellCleanup: 0 }));
+    page.push({ run: blocked, pendingShellCleanup: 0 });
+    activity.applySnapshot(REPO_A.repoId, activity.beginSnapshot(REPO_A.repoId)!, page as never, {});
+    expect(activity.rows().length).toBeLessThanOrEqual(100);
+    expect(activity.coverageNotices().join("\n")).not.toContain("未展示待清理");
+  } finally { clock.stopGapWatcher(); }
+});
+
+test.each([null, {}, { filePath: 123 }, { toolCallId: 5 }, { toolName: {} }, { filePath: "bad\u001b[2J" }])("畸形activity先拒绝且不部分更新：%j", (change) => {
+  const clock = createClock({ timeSource: createFakeTimeSource() });
+  try {
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "event" }));
+    const valid = { runId: "event", kind: "tool_start", toolName: "edit", toolCallId: "call", filePath: "src/a.ts", at: iso(0) };
+    const event = change === null || Object.keys(change).length === 0 ? change : { ...valid, ...change };
+    expect(() => activity.applyActivity(REPO_A.repoId, event as never)).not.toThrow();
+    expect(activity.rows()[0]).toMatchObject({ activity: "", filesEditedCount: 0 });
+    expect(activity.coverageNotices().join("\n")).toContain("元数据无效");
+    activity.applyActivity(REPO_A.repoId, valid as never);
+    expect(activity.rows()[0]).toMatchObject({ activity: "edit", filesEditedCount: 1 });
+  } finally { clock.stopGapWatcher(); }
+});
+
 describe("条目顺序与仓库范围", () => {
   test("仓库名·需求标题首行后紧跟角色缩进行，工作区外仓库不出现，repoId 不泄漏", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
@@ -193,7 +260,7 @@ describe("停止条目清理未确认 Shell 数", () => {
     expect(row?.pendingShellCleanup).toBe(1);
   });
 
-  test("清理未确认 Shell 数为 0 或未携带时仍按 20 秒规则移出", () => {
+  test("清理数为 0 或缺失不构成停止证明，20 秒后仍可重试", () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
@@ -207,8 +274,8 @@ describe("停止条目清理未确认 Shell 数", () => {
 
     timeSource.advance(20_000);
     const rows = activity.rows();
-    expect(rows.find((r: RunLike) => r.id === "run-cleanup-zero")).toBeUndefined();
-    expect(rows.find((r: RunLike) => r.id === "run-cleanup-none")).toBeUndefined();
+    expect(rows.find((r: RunLike) => r.id === "run-cleanup-zero")?.buttons).toEqual(["stop"]);
+    expect(rows.find((r: RunLike) => r.id === "run-cleanup-none")?.stopConfirmed).toBe(false);
   });
 });
 
@@ -416,8 +483,8 @@ describe("连接状态对活动展示的影响", () => {
   });
 });
 
-describe("终止条目转灰色摘要并 20 秒后移出", () => {
-  test("结束、失败、用户停止条目 19 秒仍在、20 秒移出，多次重绘不续时", () => {
+describe("本次确认停止的登记终态条目 20 秒后移出", () => {
+  test("仅确认回执启动 TTL，19 秒仍在、20 秒移出，多次重绘不续时", () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
@@ -435,6 +502,7 @@ describe("终止条目转灰色摘要并 20 秒后移出", () => {
       requirementTitle: "demo",
     });
 
+    for (const id of ["run-completed", "run-failed", "run-stopped"]) activity.recordStopResult(REPO_A.repoId, id, true);
     timeSource.advance(19_000);
     activity.rows();
     activity.rows();
@@ -462,6 +530,7 @@ describe("已移出条目不因重复终态事件复活", () => {
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-once-removed", state: "completed" }), {
       requirementTitle: "demo",
     });
+    activity.recordStopResult(REPO_A.repoId, "run-once-removed", true);
     timeSource.advance(20_000);
     expect(activity.rows().find((r: RunLike) => r.id === "run-once-removed")).toBeUndefined();
 
@@ -475,6 +544,23 @@ describe("已移出条目不因重复终态事件复活", () => {
   });
 });
 
+test("TTL墓碑只抑制相同已确认终态，新cleanup及预算外阻塞仍保留", () => {
+  const time = createFakeTimeSource(), clock = createClock({ timeSource: time });
+  const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+  const run = runFixture({ id: "resurfaced", state: "stopped" });
+  pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 0 });
+  activity.recordStopResult(REPO_A.repoId, "resurfaced", true);
+  time.advance(20_001); expect(activity.rows()).toEqual([]);
+  pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 0 }); expect(activity.rows()).toEqual([]);
+  pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 1 });
+  expect(activity.rows()).toContainEqual(expect.objectContaining({ id: "resurfaced", pendingShellCleanup: 1, stopConfirmed: false }));
+  for (let i = 0; i < 100; i++) pushRun(activity, REPO_A.repoId, runFixture({ id: `fill-${i}` }));
+  pushRun(activity, REPO_A.repoId, runFixture({ id: "outside-cleanup", state: "stopped" }), { pendingShellCleanup: 7 });
+  expect(activity.rows().length).toBeLessThanOrEqual(100);
+  expect(activity.coverageNotices().join("\n")).toContain("未展示待清理目标尚未核对");
+  clock.stopGapWatcher();
+});
+
 describe("墓碑定长", () => {
   test("连续 600 个不同运行终态移出后，最早的运行 ID 被挤出墓碑可再次出现，最近的仍被丢弃", () => {
     const timeSource = createFakeTimeSource();
@@ -482,16 +568,16 @@ describe("墓碑定长", () => {
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
 
     const TOMBSTONE_PROBE_COUNT = 600;
-    for (let i = 0; i < TOMBSTONE_PROBE_COUNT; i += 1) {
-      pushRun(activity, REPO_A.repoId, runFixture({ id: `run-tomb-${i}`, state: "completed" }), {
-        requirementTitle: "demo",
-      });
-    }
-
-    timeSource.advance(20_000);
-    const remainingIds = new Set(activity.rows().map((row: RunLike) => row.id));
-    for (let i = 0; i < TOMBSTONE_PROBE_COUNT; i += 1) {
-      expect(remainingIds.has(`run-tomb-${i}`)).toBe(false);
+    for (let batch = 0; batch < TOMBSTONE_PROBE_COUNT / 100; batch += 1) {
+      for (let offset = 0; offset < 100; offset += 1) {
+        const i = batch * 100 + offset;
+        pushRun(activity, REPO_A.repoId, runFixture({ id: `run-tomb-${i}`, state: "completed" }), {
+          requirementTitle: "demo",
+        });
+        activity.recordStopResult(REPO_A.repoId, `run-tomb-${i}`, true);
+      }
+      timeSource.advance(20_000);
+      expect(activity.rows()).toHaveLength(0);
     }
 
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-tomb-0", state: "completed" }), {
@@ -521,11 +607,12 @@ describe("孤儿子角色行标题", () => {
       runFixture({ id: "run-orphan-child", kind: "role", role: "pi-company.worker", parentRunId: "run-orphan-parent", state: "running" }),
     );
 
+    activity.recordStopResult(REPO_A.repoId, "run-orphan-parent", true);
     timeSource.advance(20_000);
     const row = activity.rows().find((r: RunLike) => r.id === "run-orphan-child");
     expect(row?.title).toBe("repo-a · 示例需求 › pi-company.worker");
     expect(row?.indent).toBe(0);
-    expect(new Set(row?.buttons as unknown[])).toEqual(new Set(["pause", "stop", "view"]));
+    expect(new Set(row?.buttons as unknown[])).toEqual(new Set(["pause", "stop"]));
   });
 
   test("run.role 缺失时孤儿子角色标题的角色名显示为「角色」", () => {
@@ -542,6 +629,7 @@ describe("孤儿子角色行标题", () => {
       runFixture({ id: "run-orphan-child-2", kind: "role", parentRunId: "run-orphan-parent-2", state: "running" }),
     );
 
+    activity.recordStopResult(REPO_A.repoId, "run-orphan-parent-2", true);
     timeSource.advance(20_000);
     const row = activity.rows().find((r: RunLike) => r.id === "run-orphan-child-2");
     expect(row?.title).toBe("repo-a · 示例需求 › 角色");
@@ -644,6 +732,7 @@ describe("父需求行移出后子角色行独立计时", () => {
       runFixture({ id: "run-child", kind: "role", role: "pi-company.worker", parentRunId: "run-parent", state: "running" }),
     );
 
+    activity.recordStopResult(REPO_A.repoId, "run-parent", true);
     timeSource.advance(20_000);
     let rows = activity.rows();
     expect(rows.find((r: RunLike) => r.id === "run-parent")).toBeUndefined();
@@ -655,6 +744,7 @@ describe("父需求行移出后子角色行独立计时", () => {
       runFixture({ id: "run-child", kind: "role", role: "pi-company.worker", parentRunId: "run-parent", state: "completed" }),
     );
 
+    activity.recordStopResult(REPO_A.repoId, "run-child", true);
     timeSource.advance(19_000);
     expect(activity.rows().find((r: RunLike) => r.id === "run-child")).toBeDefined();
 
@@ -765,6 +855,115 @@ describe("startedAt 缺失或畸形时耗时归零", () => {
   });
 });
 
+describe("快照当前性、仓库复合身份与有界镜像", () => {
+  const fullCoverage = { total: 0, returned: 0, remaining: 0, unknown: 0, unconfirmed: 0, truncated: false };
+
+  test("runs.changed、断连与重连会失效旧精确 coverage，空仓库也显示不可达/刷新中", () => {
+    const activity = new AgentsActivity({ clock: createClock({ timeSource: createFakeTimeSource() }), workspaceRepos: [REPO_A] });
+    activity.applyCoverage(REPO_A.repoId, fullCoverage);
+    expect(activity.coverageNotices().join("\n")).toContain("总0/返回0");
+
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "fresh-event", state: "running" }));
+    let notice = activity.coverageNotices().join("\n");
+    expect(notice).toContain("快照过期");
+    expect(notice).toContain("总未知/返回未知");
+
+    activity.applyConnectionState(REPO_A.repoId, { status: "unreachable", reason: "offline" });
+    notice = activity.coverageNotices().join("\n");
+    expect(notice).toContain("不可达：offline");
+    expect(notice).toContain("总未知/返回未知");
+
+    expect(activity.applyConnectionState(REPO_A.repoId, { status: "connected" })).toBe(true);
+    expect(activity.coverageNotices().join("\n")).toContain("快照刷新中");
+  });
+
+  test("snapshot 与事件或新请求交错时旧响应不能最后写回 fresh", () => {
+    const activity = new AgentsActivity({ clock: createClock({ timeSource: createFakeTimeSource() }), workspaceRepos: [REPO_A] });
+    const staleSequence = activity.beginSnapshot(REPO_A.repoId)!;
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "event-run", state: "running" }));
+    expect(activity.applySnapshot(REPO_A.repoId, staleSequence, [
+      { run: runFixture({ id: "stale-snapshot-run" }) as never },
+    ], fullCoverage)).toBe(false);
+    expect(activity.rows().map((row) => row.id)).toEqual(["event-run"]);
+    expect(activity.coverageNotices().join("\n")).toContain("快照过期");
+
+    const older = activity.beginSnapshot(REPO_A.repoId)!;
+    const latest = activity.beginSnapshot(REPO_A.repoId)!;
+    expect(activity.applySnapshot(REPO_A.repoId, older, [], fullCoverage)).toBe(false);
+    expect(activity.applySnapshot(REPO_A.repoId, latest, [
+      { run: runFixture({ id: "latest-run", state: "running" }) as never },
+    ], { ...fullCoverage, total: 1, returned: 1 })).toBe(true);
+    expect(activity.rows().map((row) => row.id)).toEqual(["latest-run"]);
+    expect(activity.coverageNotices().join("\n")).toContain("当前快照");
+  });
+
+  test("后续事件镜像每仓库最多 100 行，溢出只保留省略/运行数未知标志", () => {
+    const activity = new AgentsActivity({ clock: createClock({ timeSource: createFakeTimeSource() }), workspaceRepos: [REPO_A] });
+    activity.applyCoverage(REPO_A.repoId, fullCoverage);
+    for (let i = 0; i < 150; i += 1) {
+      pushRun(activity, REPO_A.repoId, runFixture({ id: `bounded-${i}`, state: "running", turns: i }));
+    }
+    expect(activity.rows()).toHaveLength(100);
+    expect(activity.rows().some((row) => row.id === "bounded-149")).toBe(false);
+    const notice = activity.coverageNotices().join("\n");
+    expect(notice).toContain("镜像上限100");
+    expect(notice).toContain("省略事件/运行数未知");
+    expect(notice).not.toContain("总150");
+  });
+
+  test("同 runId 的 activity 和父标题只按可信 repoId 归属，裸 runId 歧义被拒绝", () => {
+    const activity = new AgentsActivity({ clock: createClock({ timeSource: createFakeTimeSource() }), workspaceRepos: [REPO_A, REPO_B] });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "same-parent", state: "running" }), { requirementTitle: "A父" });
+    pushRun(activity, REPO_B.repoId, runFixture({ id: "same-parent", state: "running" }), { requirementTitle: "B父" });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "same-child", kind: "role", role: "worker", parentRunId: "same-parent", state: "running" }));
+    pushRun(activity, REPO_B.repoId, runFixture({ id: "same-child", kind: "role", role: "worker", parentRunId: "same-parent", state: "running" }));
+
+    activity.applyActivity({ runId: "same-child", kind: "tool_start", toolName: "write", toolCallId: "ambiguous", at: iso(0) });
+    expect(activity.rows().filter((row) => row.id === "same-child").every((row) => row.activity === "")).toBe(true);
+
+    activity.applyActivity(REPO_A.repoId, { runId: "same-child", kind: "tool_start", toolName: "edit", toolCallId: "A-call", at: iso(1) });
+    const children = activity.rows().filter((row) => row.id === "same-child");
+    expect(children.find((row) => row.repoId === REPO_A.repoId)?.activity).toBe("edit");
+    expect(children.find((row) => row.repoId === REPO_B.repoId)?.activity).toBe("");
+    expect(children.find((row) => row.repoId === REPO_A.repoId)?.title).not.toContain("B父");
+  });
+});
+
+describe("确认后的清理证明变化", () => {
+  test("新增 cleanup 或未知证明撤销确认和旧 TTL，重新真实确认后才重新计时", () => {
+    const timeSource = createFakeTimeSource();
+    const activity = new AgentsActivity({ clock: createClock({ timeSource }), workspaceRepos: [REPO_A] });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "cleanup-race", state: "stopped" }), { pendingShellCleanup: 0 });
+    activity.recordStopResult(REPO_A.repoId, "cleanup-race", true);
+    timeSource.advance(10_000);
+
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "cleanup-race", state: "stopped" }), { pendingShellCleanup: 1 });
+    expect(activity.rows()[0]?.stopConfirmed).toBe(false);
+    timeSource.advance(10_000);
+    expect(activity.rows()).toHaveLength(1);
+
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "cleanup-race", state: "stopped" }), { pendingShellCleanup: 0 });
+    timeSource.advance(20_000);
+    expect(activity.rows()).toHaveLength(1);
+    activity.recordStopResult(REPO_A.repoId, "cleanup-race", true);
+    timeSource.advance(19_999);
+    expect(activity.rows()).toHaveLength(1);
+    timeSource.advance(1);
+    expect(activity.rows()).toHaveLength(0);
+  });
+
+  test("确认后的 terminal 缺失 cleanup 字段按未知证明撤销", () => {
+    const timeSource = createFakeTimeSource();
+    const activity = new AgentsActivity({ clock: createClock({ timeSource }), workspaceRepos: [REPO_A] });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "cleanup-unknown", state: "stopped" }), { pendingShellCleanup: 0 });
+    activity.recordStopResult(REPO_A.repoId, "cleanup-unknown", true);
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "cleanup-unknown", state: "stopped" }));
+    expect(activity.rows()[0]?.stopConfirmed).toBe(false);
+    timeSource.advance(60_000);
+    expect(activity.rows()).toHaveLength(1);
+  });
+});
+
 describe("各状态按钮集合", () => {
   function buttonsFor(state: string, meta: { activeShellTasks?: number } = {}): unknown[] {
     const clock = createClock({ timeSource: createFakeTimeSource() });
@@ -776,44 +975,42 @@ describe("各状态按钮集合", () => {
     return (activity.rows().find((r: RunLike) => r.id === "run-buttons")?.buttons as unknown[]) ?? [];
   }
 
-  test("运行中：暂停/停止/查看", () => {
-    expect(new Set(buttonsFor("running"))).toEqual(new Set(["pause", "stop", "view"]));
+  test("运行中：仅暂停/停止，无恢复和正文查看", () => {
+    expect(buttonsFor("running")).toEqual(["pause", "stop"]);
   });
 
-  test("已暂停：继续/停止/查看", () => {
-    expect(new Set(buttonsFor("paused"))).toEqual(new Set(["resume", "stop", "view"]));
+  test("已暂停：仅停止，不能继续旧运行", () => {
+    expect(buttonsFor("paused")).toEqual(["stop"]);
   });
 
-  test("中断：续接/停止/查看", () => {
-    expect(new Set(buttonsFor("interrupted", { activeShellTasks: 1 }))).toEqual(
-      new Set(["resumeInterrupted", "stop", "view"]),
-    );
+  test("中断：仅停止，不能续接旧运行", () => {
+    expect(buttonsFor("interrupted", { activeShellTasks: 1 })).toEqual(["stop"]);
   });
 
-  test("等待答复：停止/查看，且待答标记为真", () => {
+  test("等待答复：仅停止，且待答标记为真", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-waiting", state: "waiting_answer" }), {
       requirementTitle: "demo",
     });
     const row = activity.rows().find((r: RunLike) => r.id === "run-waiting");
-    expect(new Set(row?.buttons as unknown[])).toEqual(new Set(["stop", "view"]));
+    expect(row?.buttons).toEqual(["stop"]);
     expect(row?.waiting).toBe(true);
   });
 
-  test("排队中/正在暂停/网络暂停：停止/查看", () => {
+  test("排队中/正在暂停/网络暂停：仅停止", () => {
     for (const state of ["queued", "pausing", "paused_network"]) {
-      expect((buttonsFor(state) as string[]).slice().sort()).toEqual(["stop", "view"]);
+      expect(buttonsFor(state)).toEqual(["stop"]);
     }
   });
 
-  test("已终止（完成/失败/停止）可查看历史", () => {
+  test("登记终态（完成/失败/停止）仅保留安全停止，不提供历史正文", () => {
     for (const state of ["completed", "failed", "stopped"]) {
-      expect(buttonsFor(state)).toEqual(["view"]);
+      expect(buttonsFor(state)).toEqual(["stop"]);
     }
   });
 
-  test("未知运行状态兜底为停止/查看，而非 undefined", () => {
-    expect((buttonsFor("bogus_state") as string[]).slice().sort()).toEqual(["stop", "view"]);
+  test("未知运行状态仅允许安全停止", () => {
+    expect(buttonsFor("bogus_state")).toEqual(["stop"]);
   });
 });

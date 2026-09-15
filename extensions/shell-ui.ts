@@ -4,18 +4,16 @@ import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock } from "../runtime/clock.ts";
-import { appendDecision } from "../runtime/decisions.ts";
-import { dataRoot as resolveDataRoot } from "../runtime/identity.ts";
 import { BASH_PARAMETERS, createManagedBashTool, handleUserBash } from "../runtime/shell-bash.ts";
 import { openShellPage } from "../runtime/shell-page.ts";
 import type {
   OpenShellPageCtx,
-  ShellPageDecisionResult,
-  ShellPageDecisionTask,
+  ShellPageClient,
   ShellPageRepo,
   ShellPageTheme,
 } from "../runtime/shell-page.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
+import { sanitizeText } from "../runtime/text-sanitize.ts";
 import type { Host } from "../runtime/shell-registry.ts";
 import { startShellStatusRefresh } from "../runtime/shell-summary.ts";
 import type { ShellSummaryRepo } from "../runtime/shell-summary.ts";
@@ -38,31 +36,9 @@ interface CurrentSession {
   runToken: string;
   clock: Clock;
   repos: ShellPageRepo[];
-  recordStopDecision: (task: ShellPageDecisionTask) => Promise<ShellPageDecisionResult>;
 }
 
 let current: CurrentSession | undefined;
-
-async function recordStopDecision(cwd: string, task: ShellPageDecisionTask): Promise<ShellPageDecisionResult> {
-  try {
-    const receipt = await appendDecision(
-      {
-        actor: "user",
-        requirement: task.requirement,
-        source: "shell-page",
-        trigger: `用户在 Shell 管理页对任务 ${task.taskId} 选择视为已停止`,
-        decision: `将任务 ${task.taskId}（${task.command}）裁定为已停止`,
-        effects: [`任务 ${task.taskId} 不再计入活动 Shell`],
-        alternatives: [],
-        impact: "清理无法自动确认，由用户人工裁定该任务已停止",
-      },
-      { dataRoot: resolveDataRoot(process.env), cwd },
-    );
-    return { ok: true, decisionId: receipt.decisionId };
-  } catch (error) {
-    return { ok: false, reason: (error as Error).message };
-  }
-}
 
 function buildTheme(ctx: OpenShellPageCtx): ShellPageTheme | undefined {
   const hostTheme = ctx.ui.theme;
@@ -81,7 +57,6 @@ export async function openShellUiPage(ctx: OpenShellPageCtx): Promise<void> {
     repos: session.repos,
     clock: session.clock,
     dock,
-    recordStopDecision: session.recordStopDecision,
     theme: buildTheme(ctx),
   });
 }
@@ -149,18 +124,29 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
     resolveWindowReady()
       .then((window) => {
         // session_shutdown 或更晚一次 session_start 可能在 windowReady 兑现前就已发生，此时这次会话已经过期
-        if (myGeneration !== generation) return;
+        if (myGeneration !== generation) { clock.stopGapWatcher(); return; }
 
         registry = window.shellRegistry ?? registry;
         const host: Host = { kind: "main", id: window.windowId };
 
-        const repoEntries = window.workspace.repos
-          .map((repo) => ({ repoId: repo.repoId, client: window.clients.forRepo(repo.repoId) }))
-          .filter((entry): entry is typeof entry & { client: NonNullable<(typeof entry)["client"]> } => entry.client !== undefined);
-        const callRepo = (client: NonNullable<ReturnType<typeof window.clients.forRepo>>) => ({
-          call: (method: string, params?: Record<string, unknown>) => client.call(method, params),
-        });
-        const repos: ShellPageRepo[] = repoEntries.map(({ repoId, client }) => ({ repoId, client: callRepo(client) }));
+        type WindowRepoClient = NonNullable<ReturnType<typeof window.clients.forRepo>>;
+        const wrappedClients = new WeakMap<WindowRepoClient, ShellPageClient>();
+        const resolveRepoClient = (repoId: string): ShellPageRepo["client"] => {
+          const client = window.clients.forRepo(repoId);
+          if (!client) return undefined;
+          const cached = wrappedClients.get(client);
+          if (cached) return cached;
+          const wrapped = {
+            call: (method: string, params?: Record<string, unknown>) => client.call(method, params),
+            ...(client.connectionIdentity ? { connectionIdentity: () => client.connectionIdentity!() } : {}),
+          };
+          wrappedClients.set(client, wrapped);
+          return wrapped;
+        };
+        const repos: ShellPageRepo[] = window.workspace.repos.map(({ repoId }) => ({
+          repoId,
+          resolveClient: () => resolveRepoClient(repoId),
+        }));
 
         current = {
           registry,
@@ -168,12 +154,20 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
           runToken,
           clock,
           repos,
-          recordStopDecision: (task) => recordStopDecision(ctx.cwd, task),
         };
 
         let stopRefresh: (() => void) | undefined;
         if (ctx.mode === "tui" && ctx.hasUI) {
-          const summaryRepos: ShellSummaryRepo[] = repos;
+          const summaryRepos: ShellSummaryRepo[] = repos.map((repo) => ({
+            repoId: repo.repoId,
+            client: {
+              call: (method, params) => {
+                const client = repo.resolveClient ? repo.resolveClient() : repo.client;
+                if (!client) throw new Error("连接不可用，Shell 状态未知");
+                return client.call(method, params);
+              },
+            },
+          }));
           stopRefresh = startShellStatusRefresh(
             {
               registry,
@@ -194,8 +188,14 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
         };
       })
       .catch((error: unknown) => {
+        clock.stopGapWatcher();
         if (myGeneration !== generation) return;
-        ctx.ui.notify?.((error as Error).message, "error");
+        let message = "Shell 状态不可用";
+        try {
+          const value = typeof error === "string" ? error : error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "message")?.value : undefined;
+          if (typeof value === "string") message = sanitizeText(value, 200).replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+        } catch { /* 保留固定错误，不执行外部对象转换。 */ }
+        ctx.ui.notify?.(message, "error");
       });
   });
 

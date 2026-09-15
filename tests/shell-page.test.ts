@@ -1,17 +1,18 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createClock } from "../runtime/clock.ts";
 import type { TimeSource } from "../runtime/clock.ts";
 import { BottomDock } from "../runtime/dock.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
-import type { Host } from "../runtime/shell-registry.ts";
+import type { Host, TaskRecord } from "../runtime/shell-registry.ts";
 import { ShellPage, hostLabel, openShellPage } from "../runtime/shell-page.ts";
-import type { ShellPageDecisionResult, ShellPageRepo } from "../runtime/shell-page.ts";
+import type { ShellPageRepo } from "../runtime/shell-page.ts";
 
 const MAIN_HOST: Host = { kind: "main", id: "main" };
 
 const KEY = {
   down: "\x1b[B",
+  up: "\x1b[A",
   right: "\x1b[C",
   enter: "\r",
   escape: "\x1b",
@@ -123,7 +124,6 @@ function fakeRepo(
   handlers: {
     list?: () => Record<string, unknown>[];
     stop?: (params: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
-    markStopped?: (params: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   },
   requirementTitle?: string,
 ): ShellPageRepo & { calls: RepoCallLog[] } {
@@ -133,12 +133,12 @@ function fakeRepo(
     requirementTitle,
     calls,
     client: {
+      connectionIdentity: () => ({ daemonInstanceId: "fixture-daemon", connectionId: repoId, connectionSequence: 1 }),
       call: async (method: string, params: Record<string, unknown> = {}) => {
         calls.push({ method, params });
         if (method === "shells.list") return { tasks: handlers.list?.() ?? [] };
         if (method === "shells.stop") return await handlers.stop!(params);
-        if (method === "shells.markStopped") return await handlers.markStopped!(params);
-        return {};
+        throw new Error(`非白名单 RPC：${method}`);
       },
     },
   };
@@ -152,33 +152,31 @@ function fakeTheme() {
   };
 }
 
-interface DecisionTaskArg {
-  taskId: string;
-  host: Host;
-  command: string;
-  requirement: string;
-}
-
-function recordingDecision(result: ShellPageDecisionResult | (() => Promise<ShellPageDecisionResult>)): {
-  recordStopDecision: (task: DecisionTaskArg) => Promise<ShellPageDecisionResult>;
-  calls: DecisionTaskArg[];
-} {
-  const calls: DecisionTaskArg[] = [];
-  return {
-    calls,
-    recordStopDecision: async (task) => {
-      calls.push(task);
-      return typeof result === "function" ? result() : result;
-    },
-  };
-}
-
 function basePageOptions(overrides: Record<string, unknown> = {}) {
   return {
     registry: new ShellRegistry({ clock: createClock() }),
     repos: [] as ShellPageRepo[],
     clock: createClock(),
-    recordStopDecision: async () => ({ ok: true, decisionId: "USER-001" }) as ShellPageDecisionResult,
+    ...overrides,
+  };
+}
+
+function localTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
+  return {
+    taskId: "local-task",
+    host: MAIN_HOST,
+    command: "本地测试命令",
+    cwd: "/local",
+    mode: "background",
+    pid: 101,
+    pgid: 101,
+    startedAt: 1_000,
+    status: "running",
+    activity: "active",
+    exitCode: null,
+    descendants: [],
+    descendantsScanned: false,
+    identityVerified: true,
     ...overrides,
   };
 }
@@ -224,14 +222,16 @@ describe("ShellPage：列表只列本工作区任务，含编号/宿主/状态/�
   test("inWorkspace=false 的守护进程任务不出现在列表中", async () => {
     const repo = fakeRepo("repo-scope", {
       list: () => [
-        { taskId: "in-scope", host: roleHost("worker"), command: "范围内命令", cwd: "/repo", pid: 1, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: true },
+        { taskId: "in-scope", host: roleHost("worker"), command: "范围内命令", cwd: "/repo", pid: 101, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: true },
         { taskId: "out-scope", host: roleHost("worker"), command: "范围外命令", cwd: "/repo", pid: 2, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: false },
       ],
     });
     const page = new ShellPage(basePageOptions({ repos: [repo] }));
     await page.refresh();
     const text = page.render(80).join("\n");
-    expect(text).toContain("范围内命令");
+    expect(text).toContain("in-scope");
+    expect(text).not.toContain("out-scope");
+    expect(text).not.toContain("范围内命令");
     expect(text).not.toContain("范围外命令");
   });
 
@@ -241,7 +241,7 @@ describe("ShellPage：列表只列本工作区任务，含编号/宿主/状态/�
     const clock = createClock({ timeSource });
     const repo = fakeRepo("repo-elapsed", {
       list: () => [
-        { taskId: "t1", host: roleHost("worker"), command: "耗时命令", cwd: "/repo", pid: 1, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: true },
+        { taskId: "t1", host: roleHost("worker"), command: "耗时命令", cwd: "/repo", pid: 101, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: true },
       ],
     });
     const page = new ShellPage(basePageOptions({ repos: [repo], clock }));
@@ -373,7 +373,8 @@ describe("ShellPage：详情按进入时固定的任务身份，刷新后不串�
     page.handleInput(KEY.enter);
     const before = page.render(80).join("\n");
     expect(before).toContain("111");
-    expect(before).toContain("/dir-x");
+    expect(before).toContain("[旧工作目录不提供]");
+    expect(before).not.toContain("/dir-x");
 
     await page.refresh();
     const after = page.render(80).join("\n");
@@ -546,26 +547,13 @@ describe("ShellPage：停止失败路径——保持不确定态并显示原因�
 });
 
 describe("ShellPage：守护进程清理不确定时保留任务并显示原因", () => {
-  test("shells.stop 回执 activity=uncertain：确认后行内保留任务并显示原因，不显示已停止", async () => {
+  test("shells.stop 回执 status=error：确认后保留任务和未确认原因，不显示已停止", async () => {
     const startedAtIso = new Date(0).toISOString();
     const repo = fakeRepo("repo-uncertain", {
       list: () => [
         { taskId: "daemon-task-1", host: roleHost("worker"), command: "daemon 命令", cwd: "/repo", pid: 4242, startedAt: startedAtIso, status: "running", activity: "active", inWorkspace: true },
       ],
-      stop: (params) => ({
-        task: {
-          taskId: "daemon-task-1",
-          host: roleHost("worker"),
-          command: "daemon 命令",
-          cwd: "/repo",
-          pid: params.expectedPid,
-          startedAt: startedAtIso,
-          status: "uncertain",
-          activity: "uncertain",
-          inWorkspace: true,
-          reason: "清理确认超时（测试注入）",
-        },
-      }),
+      stop: () => ({ status: "error", reason: "清理确认超时（测试注入）" }),
     });
 
     const page = new ShellPage(basePageOptions({ repos: [repo] }));
@@ -588,7 +576,7 @@ describe("ShellPage：守护进程清理不确定时保留任务并显示原因"
   });
 });
 
-describe("ShellPage：不确定任务用户裁定为已停止——决策先写入再登记，登记失败保留原因", () => {
+describe("ShellPage：不确定任务只能请求实际停止，不能人工裁定", () => {
   async function makeUncertainLocalTask(): Promise<{ registry: ShellRegistry; taskId: string }> {
     let baselineTaken = false;
     const registry = new ShellRegistry({
@@ -618,135 +606,120 @@ describe("ShellPage：不确定任务用户裁定为已停止——决策先写�
     return { registry, taskId };
   }
 
-  test("决策写入成功：任务变为已停止，决策记录携带该任务身份，requirement 为固定主会话桶", async () => {
+  test("本地身份核验失败仍为不确定，不调用人工标记也不生成 USER", async () => {
     const { registry, taskId } = await makeUncertainLocalTask();
-    const decision = recordingDecision({ ok: true, decisionId: "USER-042" });
-    const page = new ShellPage(basePageOptions({ registry, recordStopDecision: decision.recordStopDecision }));
+    const mark = vi.spyOn(registry, "markStoppedByUser");
+    const stop = vi.spyOn(registry, "stop");
+    const page = new ShellPage(basePageOptions({ registry }));
     await page.refresh();
-
     page.handleInput(KEY.k);
+    const confirm = page.render(80).join("\n");
+    expect(confirm).toContain("停止尚未确认");
+    expect(confirm).not.toContain("视为已停止");
     page.handleInput(KEY.right);
     page.handleInput(KEY.enter);
-    await sleepMs(50);
-
-    expect(decision.calls.length).toBe(1);
-    expect(decision.calls[0]?.taskId).toBe(taskId);
-    expect(decision.calls[0]?.host).toEqual(MAIN_HOST);
-    expect(decision.calls[0]?.requirement).toBeDefined();
-    expect((decision.calls[0]?.requirement ?? "").length).toBeGreaterThan(0);
-    expect(decision.calls[0]?.requirement ?? "").not.toContain("req-");
-
-    expect(registry.get(taskId)?.status).toBe("stopped");
-    await page.refresh();
-    expect(page.render(80).join("\n")).toContain("已停止");
-  }, 10_000);
-
-  test("决策写入失败：任务保持不确定，显示失败原因", async () => {
-    const { registry, taskId } = await makeUncertainLocalTask();
-    const failureReason = "决策记录写入失败：磁盘只读（测试注入）";
-    const decision = recordingDecision({ ok: false, reason: failureReason });
-    const page = new ShellPage(basePageOptions({ registry, recordStopDecision: decision.recordStopDecision }));
-    await page.refresh();
-
-    page.handleInput(KEY.k);
-    page.handleInput(KEY.right);
-    page.handleInput(KEY.enter);
-    await sleepMs(50);
-
-    expect(decision.calls.length).toBe(1);
+    await waitFor(() => stop.mock.results.length === 1, 1_000);
+    await stop.mock.results[0]!.value;
+    await flushMicrotasks();
+    expect(mark).not.toHaveBeenCalled();
     expect(registry.get(taskId)?.status).toBe("uncertain");
-    await page.refresh();
-    const text = page.render(80).join("\n");
-    expect(text).toContain("不确定");
-    expect(text).toContain(failureReason);
+    expect(JSON.stringify(registry.get(taskId))).not.toContain("USER-");
+    expect(page.render(80).join("\n")).not.toContain("已停止");
   }, 10_000);
 
-  test("本地 markStoppedByUser 返回 ok:false：显示登记失败原因，任务保持不确定", async () => {
+  test("不确定任务默认取消及 Esc 不发停止、不裁定，原状态与原因保留", async () => {
+    const { registry, taskId } = await makeUncertainLocalTask();
+    const mark = vi.spyOn(registry, "markStoppedByUser");
+    const stop = vi.spyOn(registry, "stop");
+    const before = registry.get(taskId);
+    const page = new ShellPage(basePageOptions({ registry }));
+    await page.refresh();
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.enter);
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.escape);
+    await flushMicrotasks();
+    expect(stop).not.toHaveBeenCalled();
+    expect(mark).not.toHaveBeenCalled();
+    expect(registry.get(taskId)).toEqual(before);
+    expect(page.render(80).join("\n")).toContain("不确定");
+  }, 10_000);
+
+  test("本地实际停止失败显示原因，无人工裁定及未处理拒绝", async () => {
     const rejection = countUnhandledRejections();
     try {
       const { registry, taskId } = await makeUncertainLocalTask();
-      const registryFailureReason = "登记失败：任务已被清理（测试注入）";
-      registry.markStoppedByUser = () => ({ ok: false, reason: registryFailureReason });
-      const decision = recordingDecision({ ok: true, decisionId: "USER-100" });
-      const page = new ShellPage(basePageOptions({ registry, recordStopDecision: decision.recordStopDecision }));
+      const mark = vi.spyOn(registry, "markStoppedByUser");
+      const stop = vi.spyOn(registry, "stop").mockResolvedValue({ ok: false, reason: "实际停止未确认（测试注入）" });
+      const page = new ShellPage(basePageOptions({ registry }));
       await page.refresh();
-
       page.handleInput(KEY.k);
       page.handleInput(KEY.right);
       page.handleInput(KEY.enter);
-      await sleepMs(50);
-
+      await flushMicrotasks();
+      expect(stop).toHaveBeenCalledWith(taskId);
+      expect(mark).not.toHaveBeenCalled();
       expect(registry.get(taskId)?.status).toBe("uncertain");
-      await page.refresh();
-      const text = page.render(80).join("\n");
-      expect(text).toContain(registryFailureReason);
+      expect(page.render(80).join("\n")).toContain("实际停止未确认");
       expect(rejection.count()).toBe(0);
     } finally {
       rejection.stop();
     }
   }, 10_000);
 
-  test("守护进程 shells.markStopped 拒绝：显示原因，requirement 为守护进程任务的需求身份，无未处理拒绝", async () => {
+  test("守护进程停止失败保留原因，仅发送绑定 PID/起始时间的 shells.stop", async () => {
     const rejection = countUnhandledRejections();
     try {
-      const repo = fakeRepo("repo-mark-fail", {
-        list: () => [
-          { taskId: "daemon-uncertain", host: roleHost("worker", randomUUID(), "req-daemon-uncertain"), command: "daemon 命令", cwd: "/repo", pid: 1, startedAt: new Date(0).toISOString(), status: "uncertain", activity: "uncertain", inWorkspace: true, reason: "清理超时（测试注入）" },
-        ],
-        markStopped: async () => {
-          throw new Error("守护进程拒绝裁定（测试注入）");
-        },
+      const startedAt = new Date(0).toISOString();
+      const repo = fakeRepo("repo-stop-uncertain", {
+        list: () => [{ taskId: "daemon-uncertain", host: roleHost("worker"), command: "", cwd: "", pid: 101, startedAt, status: "uncertain", activity: "uncertain", inWorkspace: true }],
+        stop: async () => { throw new Error("实际停止被拒绝（测试注入）"); },
       });
-      const decision = recordingDecision({ ok: true, decisionId: "USER-200" });
-      const page = new ShellPage(basePageOptions({ repos: [repo], recordStopDecision: decision.recordStopDecision }));
+      const page = new ShellPage(basePageOptions({ repos: [repo] }));
       await page.refresh();
-
       page.handleInput(KEY.k);
       page.handleInput(KEY.right);
       page.handleInput(KEY.enter);
-      await sleepMs(50);
-
-      expect(decision.calls[0]?.requirement).toBe("req-daemon-uncertain");
-      const text = page.render(80).join("\n");
-      expect(text).toContain("守护进程拒绝裁定（测试注入）");
-      await sleepMs(50);
+      await flushMicrotasks();
+      expect(repo.calls).toEqual([
+        { method: "shells.list", params: {} },
+        { method: "shells.stop", params: { taskId: "daemon-uncertain", expectedPid: 101, expectedStartedAt: startedAt } },
+      ]);
+      expect(JSON.stringify(repo.calls)).not.toContain("USER");
+      expect(page.render(80).join("\n")).toContain("实际停止被拒绝");
+      expect(page.render(80).join("\n")).not.toContain("已停止");
       expect(rejection.count()).toBe(0);
     } finally {
       rejection.stop();
     }
-  }, 10_000);
+  });
 
-  test("裁定在途去重：同一不确定任务连续两次 K→Enter 只写一条决策，处理期间行内提示处理中", async () => {
-    const { registry } = await makeUncertainLocalTask();
-    let resolveDecision!: (value: ShellPageDecisionResult) => void;
-    const gate = new Promise<ShellPageDecisionResult>((resolve) => { resolveDecision = resolve; });
-    const decision = recordingDecision(() => gate);
-    const page = new ShellPage(basePageOptions({ registry, recordStopDecision: decision.recordStopDecision }));
+  test("不确定任务停止在途去重，状态回执无确认仍显示未确认", async () => {
+    let resolveStop!: (result: Record<string, unknown>) => void;
+    const gate = new Promise<Record<string, unknown>>((resolve) => { resolveStop = resolve; });
+    const task = { taskId: "uncertain-dedup", host: roleHost("worker"), command: "", cwd: "", pid: 4, startedAt: new Date(0).toISOString(), status: "uncertain", activity: "uncertain", inWorkspace: true };
+    const repo = fakeRepo("repo-dedup", { list: () => [task], stop: () => gate });
+    const page = new ShellPage(basePageOptions({ repos: [repo] }));
     await page.refresh();
-
-    page.handleInput(KEY.k);
-    page.handleInput(KEY.right);
-    page.handleInput(KEY.enter);
+    for (let i = 0; i < 2; i++) {
+      page.handleInput(KEY.k);
+      page.handleInput(KEY.right);
+      page.handleInput(KEY.enter);
+    }
+    expect(repo.calls.filter((c) => c.method === "shells.stop")).toHaveLength(1);
+    expect(page.render(80).join("\n")).toContain("停止中");
+    expect(page.render(80).join("\n")).not.toContain("已停止");
+    resolveStop({ status: "stopped" });
     await flushMicrotasks();
-
-    expect(decision.calls.length).toBe(1);
-    const inFlightText = page.render(80).join("\n");
-    expect(inFlightText).toContain("处理中");
-
-    page.handleInput(KEY.k);
-    page.handleInput(KEY.right);
-    page.handleInput(KEY.enter);
-    await flushMicrotasks();
-
-    expect(decision.calls.length).toBe(1);
-
-    resolveDecision({ ok: true, decisionId: "USER-DEDUP" });
-    await flushMicrotasks();
-  }, 10_000);
+    expect(page.render(80).join("\n")).toContain("停止未确认");
+    expect(page.render(80).join("\n")).not.toContain("已停止");
+    expect(repo.calls.some((c) => c.method === "shells.markStopped")).toBe(false);
+    expect(JSON.stringify(repo.calls)).not.toContain("USER");
+  });
 });
 
-describe("ShellPage：刷新竞态——停止回执与 refresh 几乎同时到达时已停止行不被整表覆盖回运行中", () => {
-  test("stop 回执在陈旧的 refresh 之后到达：最终仍显示已停止", async () => {
+describe("ShellPage：刷新竞态不抹除停止未确认提示", () => {
+  test("stop 状态回执在陈旧 refresh 之后到达：再刷新仍未确认", async () => {
     const startedAtIso = new Date(0).toISOString();
     let resolveStop!: (value: Record<string, unknown>) => void;
     const stopGate = new Promise<Record<string, unknown>>((resolve) => { resolveStop = resolve; });
@@ -767,13 +740,12 @@ describe("ShellPage：刷新竞态——停止回执与 refresh 几乎同时到�
     const staleRefresh = page.refresh();
     await staleRefresh;
 
-    resolveStop({
-      task: { taskId: "race-task", host: roleHost("worker"), command: "竞态命令", cwd: "/repo", pid: 55, startedAt: startedAtIso, status: "stopped", activity: "ended", inWorkspace: true },
-    });
+    resolveStop({ status: "stopped" });
     await flushMicrotasks();
-
+    await page.refresh();
     const text = page.render(80).join("\n");
-    expect(text).toContain("已停止");
+    expect(text).toContain("停止未确认");
+    expect(text).not.toContain("已停止");
   });
 });
 
@@ -783,10 +755,10 @@ describe("ShellPage：外来文本净化——命令/目录/原因/角色名不�
       list: () => [
         {
           taskId: "dirty-task",
-          host: roleHost("wor\x1bker"),
+          host: roleHost("wor\x1bker", randomUUID(), "req-dirty"),
           command: "命令\x1b[31m红色\x1b[0m\r\n第二行",
           cwd: "/repo\r\n/子目录",
-          pid: 1,
+          pid: 101,
           startedAt: new Date(0).toISOString(),
           status: "uncertain",
           activity: "uncertain",
@@ -800,13 +772,14 @@ describe("ShellPage：外来文本净化——命令/目录/原因/角色名不�
     const text = page.render(80).join("\n");
     expect(text).not.toContain("\x1b");
     expect(text).not.toContain("\r");
-    expect(text.split("\n").some((line) => line.includes("换行原因"))).toBe(true);
+    expect(text).toContain("进程停止未确认");
+    expect(text).not.toContain("换行原因");
   });
 
   test("超长命令按渲染宽度截断", async () => {
     const repo = fakeRepo("repo-long-cmd", {
       list: () => [
-        { taskId: "long-cmd", host: roleHost("worker"), command: "指".repeat(500), cwd: "/repo", pid: 1, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: true },
+        { taskId: "long-cmd", host: roleHost("worker"), command: "指".repeat(500), cwd: "/repo", pid: 101, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: true },
       ],
     });
     const page = new ShellPage(basePageOptions({ repos: [repo] }));
@@ -843,7 +816,7 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
     };
     const healthyRepo = fakeRepo("repo-b-healthy", {
       list: () => [
-        { taskId: "healthy-task", host: roleHost("worker"), command: "健康仓库命令", cwd: "/repo", pid: 1, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: true },
+        { taskId: "healthy-task", host: roleHost("worker"), command: "健康仓库命令", cwd: "/repo", pid: 101, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: true },
       ],
     });
     const page = new ShellPage(basePageOptions({ repos: [brokenRepo, healthyRepo] }));
@@ -851,7 +824,8 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
     const text = page.render(80).join("\n");
     expect(text).toContain("repo-a-broken");
     expect(text).not.toContain("repo-b-healthy");
-    expect(text).toContain("健康仓库命令");
+    expect(text).toContain("healthy-task");
+    expect(text).not.toContain("健康仓库命令");
   });
 
   test("30 个任务、其中 10 条带 reason（占两行）、终端 10 行：渲染行数仍不超过 10，末项可通过持续 ↓ 到达", async () => {
@@ -877,12 +851,12 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
     for (let i = 0; i < 29; i++) page.handleInput(KEY.down);
     const lines = page.render(80);
     expect(lines.length).toBeLessThanOrEqual(10);
-    expect(lines.some((l) => l.includes("任务命令-29"))).toBe(true);
+    expect(lines.some((l) => l.includes("daemon-29"))).toBe(true);
   });
 });
 
 describe("ShellPage：守护进程任务载荷字段缺失/类型错误时 refresh 整周期不抛，错误行含仓库归属", () => {
-  test("command/cwd 非字符串：refresh 不产生未处理拒绝，错误行显示该仓库读取失败并带 repoId，其余仓库数据继续展示", async () => {
+  test("PID 非法：refresh 不产生未处理拒绝，错误行显示仓库归属，其余仓库元数据继续展示", async () => {
     const rejection = countUnhandledRejections();
     try {
       const malformedRepo = fakeRepo("repo-malformed", {
@@ -892,7 +866,7 @@ describe("ShellPage：守护进程任务载荷字段缺失/类型错误时 refre
             host: roleHost("worker"),
             command: 12345 as unknown as string,
             cwd: undefined as unknown as string,
-            pid: 1,
+            pid: NaN,
             startedAt: new Date(0).toISOString(),
             status: "running",
             activity: "active",
@@ -913,12 +887,12 @@ describe("ShellPage：守护进程任务载荷字段缺失/类型错误时 refre
 
       const text = page.render(80).join("\n");
       expect(text).toContain("repo-malformed");
-      expect(text).toContain("健康命令");
+      expect(text).toContain("good-task");
 
       await expect(page.refresh()).resolves.toBeUndefined();
       await sleepMs(20);
       expect(rejection.count()).toBe(0);
-      expect(page.render(80).join("\n")).toContain("健康命令");
+      expect(page.render(80).join("\n")).toContain("good-task");
     } finally {
       rejection.stop();
     }
@@ -964,7 +938,6 @@ describe("openShellPage：ctx.ui.custom 挂载、fakeTui 被用于 requestRender
       repos: [],
       clock: createClock(),
       dock,
-      recordStopDecision: async () => ({ ok: true, decisionId: "USER-001" }),
     });
 
     await waitFor(() => fc.getComponent() !== undefined, 3_000);
@@ -997,7 +970,6 @@ describe("openShellPage：ctx.ui.custom 挂载、fakeTui 被用于 requestRender
       repos: [],
       clock: pageClock,
       dock,
-      recordStopDecision: async () => ({ ok: true, decisionId: "USER-001" }),
     });
 
     await waitFor(() => fc.getComponent() !== undefined, 3_000);
@@ -1035,7 +1007,6 @@ describe("openShellPage：ctx.ui.custom 挂载、fakeTui 被用于 requestRender
         repos: [],
         clock: createClock(),
         dock: { markPageOpen: () => {}, markPageClosed: () => { closedCount += 1; } },
-        recordStopDecision: async () => ({ ok: true, decisionId: "USER-001" }),
       }),
     ).rejects.toThrow();
 
@@ -1073,7 +1044,6 @@ describe("openShellPage：与共享 BottomDock 的按键隔离，关闭后焦点
       repos: [],
       clock: createClock(),
       dock,
-      recordStopDecision: async () => ({ ok: true, decisionId: "USER-001" }),
     });
     await waitFor(() => component !== undefined, 3_000);
 
@@ -1087,4 +1057,330 @@ describe("openShellPage：与共享 BottomDock 的按键隔离，关闭后焦点
 
     expect(dock.focus()).toBe("panel");
   }, 10_000);
+});
+
+describe("ShellPage：复合行身份隔离详情、选择和停止请求", () => {
+  test("两个仓库相同 taskId 的详情与并行停止互不串用，失败只落到原仓库", async () => {
+    const stopA = vi.fn(() => new Promise<Record<string, unknown>>((resolve) => { resolveA = resolve; }));
+    const stopB = vi.fn(() => new Promise<Record<string, unknown>>((resolve) => { resolveB = resolve; }));
+    let resolveA!: (value: Record<string, unknown>) => void;
+    let resolveB!: (value: Record<string, unknown>) => void;
+    const startedAt = new Date(0).toISOString();
+    const task = (pid: number) => ({ taskId: "shared-task", host: roleHost("worker", "shared-run"), command: "", cwd: "", pid, startedAt, status: "running", activity: "active", inWorkspace: true });
+    const repoA = fakeRepo("repo-A", { list: () => [task(111)], stop: stopA });
+    const repoB = fakeRepo("repo-B", { list: () => [task(222)], stop: stopB });
+    const page = new ShellPage(basePageOptions({ repos: [repoA, repoB] }));
+    await page.refresh();
+
+    page.handleInput(KEY.enter);
+    expect(page.render(100).join("\n")).toContain("进程号：111");
+    expect(page.render(100).join("\n")).toContain("repo-A");
+    page.handleInput(KEY.escape);
+    page.handleInput(KEY.down);
+    page.handleInput(KEY.enter);
+    expect(page.render(100).join("\n")).toContain("进程号：222");
+    expect(page.render(100).join("\n")).toContain("repo-B");
+    page.handleInput(KEY.escape);
+
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+    page.handleInput(KEY.up);
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+    expect(stopA).toHaveBeenCalledOnce();
+    expect(stopB).toHaveBeenCalledOnce();
+    expect(repoA.calls.find((call) => call.method === "shells.stop")?.params).toEqual({ taskId: "shared-task", expectedPid: 111, expectedStartedAt: startedAt });
+    expect(repoB.calls.find((call) => call.method === "shells.stop")?.params).toEqual({ taskId: "shared-task", expectedPid: 222, expectedStartedAt: startedAt });
+
+    resolveA({ status: "error", reason: "A-only failure" });
+    await flushMicrotasks();
+    const afterA = page.render(120).join("\n");
+    expect(afterA.match(/A-only failure/g)).toHaveLength(1);
+    expect(afterA).toContain("停止中");
+    resolveB({ status: "stopped" });
+    await flushMicrotasks();
+  });
+
+  test("本地与 daemon 相同 taskId 仍显示不同来源并分别停止", async () => {
+    const task = localTask({ taskId: "same-id", pid: 301, startedAt: 2_000 });
+    const registry = new ShellRegistry({ clock: createClock() });
+    registry.list = () => [task];
+    registry.get = () => task;
+    const stopLocal = vi.spyOn(registry, "stop").mockResolvedValue({ ok: false, reason: "local-only" });
+    const repo = fakeRepo("repo-remote", {
+      list: () => [{ taskId: "same-id", host: roleHost("worker"), command: "", cwd: "", pid: 302, startedAt: "2000", status: "running", activity: "active", inWorkspace: true }],
+      stop: () => ({ status: "error", reason: "daemon-only" }),
+    });
+    const page = new ShellPage(basePageOptions({ registry, repos: [repo] }));
+    await page.refresh();
+    const list = page.render(120).join("\n");
+    expect(list).toContain("本机:");
+    expect(list).toContain("仓库:repo-remote");
+
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+    page.handleInput(KEY.down);
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+    await flushMicrotasks();
+    expect(stopLocal).toHaveBeenCalledWith("same-id");
+    expect(repo.calls.filter((call) => call.method === "shells.stop")).toHaveLength(1);
+    expect(page.render(120).join("\n")).toContain("local-only");
+    expect(page.render(120).join("\n")).toContain("daemon-only");
+  });
+
+  test("同仓库重复 taskId 在顺序变化后仍按 PID/startedAt 保留选择", async () => {
+    const startedAt = "3000";
+    const task = (pid: number) => ({ taskId: "duplicate", host: roleHost("worker", "stable-run"), command: "", cwd: "", pid, startedAt, status: "running", activity: "active", inWorkspace: true });
+    let tasks = [task(311), task(322)];
+    const stop = vi.fn().mockResolvedValue({ status: "stopped" });
+    const repo = fakeRepo("repo-order", { list: () => tasks, stop });
+    const page = new ShellPage(basePageOptions({ repos: [repo] }));
+    await page.refresh();
+    page.handleInput(KEY.down);
+    tasks = [task(322), task(311)];
+    await page.refresh();
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+    await flushMicrotasks();
+    expect(repo.calls.filter((call) => call.method === "shells.stop")).toHaveLength(1);
+    expect(repo.calls.find((call) => call.method === "shells.stop")?.params).toMatchObject({ expectedPid: 322, expectedStartedAt: startedAt });
+  });
+
+  test("目标消失后以新 PID 重现时，迟到回执不覆盖新行且新请求可独立发送", async () => {
+    let tasks: Record<string, unknown>[] = [{ taskId: "reused", host: roleHost("worker", "stable-run"), command: "", cwd: "", pid: 401, startedAt: "1000", status: "running", activity: "active", inWorkspace: true }];
+    let resolveOld!: (value: Record<string, unknown>) => void;
+    const oldGate = new Promise<Record<string, unknown>>((resolve) => { resolveOld = resolve; });
+    const stop = vi.fn().mockImplementationOnce(() => oldGate).mockResolvedValueOnce({ status: "stopped" });
+    const repo = fakeRepo("repo-reuse", { list: () => tasks, stop });
+    const page = new ShellPage(basePageOptions({ repos: [repo] }));
+    await page.refresh();
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+
+    tasks = [];
+    await page.refresh();
+    tasks = [{ taskId: "reused", host: roleHost("worker", "stable-run"), command: "", cwd: "", pid: 402, startedAt: "2000", status: "running", activity: "active", inWorkspace: true }];
+    await page.refresh();
+    resolveOld({ status: "error", reason: "old-late-failure" });
+    await flushMicrotasks();
+    expect(page.render(100).join("\n")).toContain("@402");
+    expect(page.render(100).join("\n")).not.toContain("old-late-failure");
+    expect(page.render(100).join("\n")).not.toContain("停止中");
+
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+    await flushMicrotasks();
+    expect(stop).toHaveBeenCalledTimes(2);
+    expect(repo.calls.filter((call) => call.method === "shells.stop").at(-1)?.params).toMatchObject({ expectedPid: 402, expectedStartedAt: "2000" });
+  });
+});
+
+describe("ShellPage：本地结束证明和停止回执严格核对", () => {
+  test("descendantsScanned 缺失或 false 时 20 秒后仍保留；true 后才计时，证明撤销后旧 TTL 清零", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    let task = localTask({ status: "exited", activity: "ended", identityVerified: true, descendantsScanned: false });
+    const registry = new ShellRegistry({ clock });
+    registry.list = () => [task];
+    registry.get = () => task;
+    const page = new ShellPage(basePageOptions({ registry, clock }));
+
+    await page.refresh();
+    timeSource.advance(20_001);
+    await page.refresh();
+    expect(page.render(100).join("\n")).toContain("未核实");
+
+    task = { ...task, descendantsScanned: undefined as unknown as boolean };
+    timeSource.advance(20_001);
+    await page.refresh();
+    expect(page.render(100).join("\n")).toContain("未核实");
+
+    task = { ...task, descendantsScanned: true };
+    await page.refresh();
+    expect(page.render(100).join("\n")).toContain("已结束");
+    timeSource.advance(10_000);
+    task = { ...task, descendantsScanned: false };
+    await page.refresh();
+    timeSource.advance(20_001);
+    await page.refresh();
+    expect(page.render(100).join("\n")).toContain("未核实");
+
+    task = { ...task, descendantsScanned: true };
+    await page.refresh();
+    timeSource.advance(20_001);
+    await page.refresh();
+    expect(page.render(100).join("\n")).toContain("无活动 Shell");
+  });
+
+  test("ok:true 只有结果身份与原请求一致且完整证明为 true 才显示确认结束", async () => {
+    let current = localTask({ taskId: "strict-stop", pid: 501, startedAt: 5_000 });
+    const original = current;
+    const registry = new ShellRegistry({ clock: createClock() });
+    registry.list = () => [current];
+    registry.get = () => current;
+    vi.spyOn(registry, "stop").mockImplementation(async () => {
+      current = localTask({ ...original, pid: 502, status: "stopped", activity: "ended", descendantsScanned: true, identityVerified: true, stoppedBy: "signal" });
+      return { ok: true, task: current };
+    });
+    const page = new ShellPage(basePageOptions({ registry }));
+    await page.refresh();
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+    await flushMicrotasks();
+    const text = page.render(100).join("\n");
+    expect(text).toContain("停止未确认");
+    expect(text).not.toContain("已停止");
+  });
+
+  test("StopResult 自称有完整证明但 registry 当前记录仍在运行时不能确认", async () => {
+    const current = localTask({ taskId: "stale-result" });
+    const registry = new ShellRegistry({ clock: createClock() });
+    registry.list = () => [current];
+    registry.get = () => current;
+    vi.spyOn(registry, "stop").mockResolvedValue({
+      ok: true,
+      task: { ...current, status: "stopped", activity: "ended", descendantsScanned: true, identityVerified: true, stoppedBy: "signal" },
+    });
+    const page = new ShellPage(basePageOptions({ registry }));
+    await page.refresh();
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+    await flushMicrotasks();
+    expect(page.render(100).join("\n")).toContain("停止未确认");
+    expect(page.render(100).join("\n")).not.toContain("已停止");
+  });
+
+  test("StopResult 的 taskId/host/PID/startedAt 或扫描证明任一不符都不能确认", async () => {
+    const cases: Array<[string, (task: TaskRecord) => TaskRecord]> = [
+      ["taskId", (task) => ({ ...task, taskId: "other-task" })],
+      ["host", (task) => ({ ...task, host: { kind: "main", id: "other-host" } })],
+      ["pid", (task) => ({ ...task, pid: task.pid + 1 })],
+      ["startedAt", (task) => ({ ...task, startedAt: (task.startedAt ?? 0) + 1 })],
+      ["descendantsScanned", (task) => ({ ...task, descendantsScanned: false })],
+    ];
+    for (const [label, mutate] of cases) {
+      const original = localTask({ taskId: `strict-${label}`, status: "running", activity: "active" });
+      let current = original;
+      const registry = new ShellRegistry({ clock: createClock() });
+      registry.list = () => [current];
+      registry.get = () => current;
+      vi.spyOn(registry, "stop").mockImplementation(async () => {
+        current = mutate({ ...original, status: "stopped", activity: "ended", descendantsScanned: true, identityVerified: true, stoppedBy: "signal" });
+        return { ok: true, task: current };
+      });
+      const page = new ShellPage(basePageOptions({ registry }));
+      await page.refresh();
+      page.handleInput(KEY.k);
+      page.handleInput(KEY.right);
+      page.handleInput(KEY.enter);
+      await flushMicrotasks();
+      const text = page.render(100).join("\n");
+      expect(text, label).toContain("停止未确认");
+      expect(text, label).not.toContain("已停止");
+    }
+  });
+
+  test("USER 终态即使扫描和身份均为 true 也始终未核实", async () => {
+    const task = localTask({ status: "stopped", activity: "ended", descendantsScanned: true, identityVerified: true, stoppedBy: "user" });
+    const registry = new ShellRegistry({ clock: createClock() });
+    registry.list = () => [task];
+    registry.get = () => task;
+    const page = new ShellPage(basePageOptions({ registry }));
+    await page.refresh();
+    expect(page.render(100).join("\n")).toContain("未核实");
+    expect(page.render(100).join("\n")).not.toContain("已停止  ");
+  });
+});
+
+test("远端查询在途时本地证明或PID变化，最终刷新不能还原旧记录", async () => {
+  for (const mutation of ["proof", "pid"] as const) {
+    const time = createFakeTimeSource(), clock = createClock({ timeSource: time });
+    let task = localTask({ pid: 111, pgid: 111, status: "stopped", activity: "ended", descendantsScanned: true });
+    let hold = false, finish!: (value: Record<string, unknown>) => void;
+    const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "current", connectionSequence: 1 }),
+      call: async () => hold ? new Promise<Record<string, unknown>>((resolve) => { finish = resolve; }) : { tasks: [] } };
+    const registry = { list: () => [task], get: () => task } as unknown as ShellRegistry;
+    const page = new ShellPage(basePageOptions({ registry, clock, repos: [{ repoId: "remote", client }] }));
+    await page.refresh(); time.advance(20_001); hold = true;
+    const pending = page.refresh();
+    if (mutation === "proof") task.descendantsScanned = false;
+    else task = localTask({ pid: 222, pgid: 222, startedAt: 2000 });
+    finish({ tasks: [] }); await pending;
+    const text = page.render(160).join("\n"); expect(text).not.toContain("无活动 Shell");
+    if (mutation === "proof") expect(text).toContain("未核实");
+    else { page.handleInput(KEY.enter); expect(page.render(160).join("\n")).toContain("进程号：222"); }
+    clock.stopGapWatcher();
+  }
+});
+
+test("同对象连接epoch变化后旧list不报空、旧stop回执不进入新行", async () => {
+  let sequence = 1, resolveStop!: (value: Record<string, unknown>) => void, resolveList!: (value: Record<string, unknown>) => void, holdList = false;
+  const task = { ...localTask(), taskId: "same-task" };
+  const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "same-object", connectionSequence: sequence }),
+    call: async (method: string) => method === "shells.stop" ? new Promise<Record<string, unknown>>((resolve) => { resolveStop = resolve; })
+      : holdList ? new Promise<Record<string, unknown>>((resolve) => { resolveList = resolve; }) : { tasks: [task] } };
+  const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", resolveClient: () => client }] }));
+  await page.refresh(); page.handleInput("K"); page.handleInput(KEY.right); page.handleInput(KEY.enter);
+  sequence++; await page.refresh();
+  expect(page.render(160).join("\n")).not.toContain("停止中");
+  resolveStop({ status: "error", reason: "OLD-CONNECTION-ONLY" }); await flushMicrotasks();
+  expect(page.render(160).join("\n")).not.toContain("OLD-CONNECTION-ONLY");
+  holdList = true; const pending = page.refresh(); sequence++;
+  resolveList({ tasks: [] }); await pending;
+  expect(page.render(160).join("\n")).toContain("未知"); expect(page.render(160).join("\n")).not.toContain("无活动 Shell");
+});
+
+test.each([null, undefined, "错误\x1b[2J\n伪造", { message: "对象错误\x1b[2J\n伪造" }])("未知异常%j只产生有界未知，不崩溃或报空", async (error) => {
+  const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "c", connectionSequence: 1 }), call: async () => { throw error; } };
+  const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", client }] }));
+  await expect(page.refresh()).resolves.toBeUndefined();
+  const lines = page.render(160); expect(lines.join("\n")).toContain("未知"); expect(lines.join("\n")).not.toContain("无活动 Shell");
+  expect(lines.some((line) => /[\x00-\x1f\x7f-\x9f]/.test(line))).toBe(false);
+});
+
+test("缺失列表和host非字符串身份属于未知数据，不转换成空或渲染崩溃", async () => {
+  for (const response of [{}, { tasks: null }, { tasks: [{ ...localTask(), host: { kind: "role", id: 123, role: "worker" } }] }]) {
+    const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "c", connectionSequence: 1 }), call: async () => response };
+    const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", client }] }));
+    await page.refresh(); expect(() => page.render(160)).not.toThrow();
+    expect(page.render(160).join("\n")).toContain("未知"); expect(page.render(160).join("\n")).not.toContain("无活动 Shell");
+  }
+});
+
+describe("ShellPage：缺连接属于未知覆盖，不当作空结果", () => {
+  test("全部或部分仓库缺 client 时不发请求且不显示无活动；恢复 client 后可重新查询", async () => {
+    const calls: string[] = [];
+    const connectedClient = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "connection", connectionSequence: 1 }),
+      call: async (method: string) => { calls.push(method); return { tasks: [] }; } };
+    const missingA: ShellPageRepo = { repoId: "repo-missing-a" };
+    const missingB: ShellPageRepo = { repoId: "repo-missing-b" };
+    const allMissing = new ShellPage(basePageOptions({ repos: [missingA, missingB] }));
+    allMissing.resize(12, 1);
+    await allMissing.refresh();
+    expect(calls).toEqual([]);
+    expect(allMissing.render(12)).toHaveLength(1);
+    expect(allMissing.render(12)[0]).toContain("未知");
+    expect(allMissing.render(12).join("\n")).not.toContain("无活动 Shell");
+
+    const partial = new ShellPage(basePageOptions({ repos: [{ repoId: "repo-ok", client: connectedClient }, missingA] }));
+    await partial.refresh();
+    expect(calls).toEqual(["shells.list"]);
+    expect(partial.render(80).join("\n")).toContain("覆盖不完整");
+    expect(partial.render(80).join("\n")).not.toContain("无活动 Shell");
+
+    missingA.client = connectedClient;
+    await partial.refresh();
+    expect(calls).toEqual(["shells.list", "shells.list", "shells.list"]);
+    expect(partial.render(80).join("\n")).toContain("无活动 Shell");
+  });
 });

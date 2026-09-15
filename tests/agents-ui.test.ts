@@ -1,10 +1,17 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, onTestFinished, test } from "vitest";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { RunManager } from "../daemon/run-manager.ts";
+import { RelayQueue } from "../daemon/relay-queue.ts";
+import { ShellRegistry } from "../runtime/shell-registry.ts";
+import { RunStore } from "../runtime/run-store.ts";
+import { NetworkPauseGate } from "../runtime/network-pause.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
+import { createDaemonFixture, removeDaemonFixture } from "./helpers/daemon-harness.ts";
+import type { AgentsPanel } from "../runtime/agents-panel.ts";
 import { createClock } from "../runtime/clock.ts";
 import type { TimeSource } from "../runtime/clock.ts";
 import { AgentsActivity } from "../runtime/agents-activity.ts";
-import { dataRoot as resolveDataRoot } from "../runtime/identity.ts";
-import { openTranscriptView } from "../runtime/transcript-view.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import agentsUiExtension from "../extensions/agents-ui.ts";
 import type { AgentsUiDeps } from "../extensions/agents-ui.ts";
@@ -91,14 +98,6 @@ function flushMicrotasks(): Promise<void> {
   return delay(0);
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 1000): Promise<void> {
-  const start = Date.now();
-  while (!check()) {
-    if (Date.now() - start > timeoutMs) throw new Error("等待条件超时");
-    await delay(5);
-  }
-}
-
 // 只用来证明"处理器没有卡在 await windowReady()"——deferred 不会自己超时兑现，
 // 若实现误 await 了就绪，trigger() 永远不会先于超时分支完成
 async function resolvesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
@@ -155,7 +154,6 @@ function createFakeUi() {
   const widgetCalls: { key: string; content: unknown; options?: { placement?: string } }[] = [];
   const notifyCalls: { message: string; level?: string }[] = [];
   const customCalls: { options?: Record<string, unknown> }[] = [];
-  const customResolvers: Array<{ resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = [];
   let activeSubscriptions = 0;
   let requestRenderCalls = 0;
   let mountedComponent: unknown;
@@ -186,15 +184,9 @@ function createFakeUi() {
       },
       notify: (message: string, level?: string) => notifyCalls.push({ message, level }),
       getEditorText: () => "",
-      custom: (
-        factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown,
-        options?: Record<string, unknown>,
-      ) => {
+      custom: async (_factory: unknown, options?: Record<string, unknown>) => {
         customCalls.push({ options });
-        return new Promise((resolve, reject) => {
-          customResolvers.push({ resolve, reject });
-          factory(fakeTui, {}, {}, (result: unknown) => resolve(result));
-        });
+        throw new Error("代理面板不得打开旧正文查看页");
       },
     },
     widgetCalls,
@@ -203,7 +195,6 @@ function createFakeUi() {
     activeSubscriptions: () => activeSubscriptions,
     requestRenderCalls: () => requestRenderCalls,
     mountedComponent: () => mountedComponent,
-    rejectLastCustom: (error: unknown) => customResolvers.at(-1)?.reject(error),
   };
 }
 
@@ -217,6 +208,106 @@ function createFakeCtx(fakeUi: ReturnType<typeof createFakeUi>, overrides: { mod
     shutdown: () => {},
   };
 }
+
+describe("实际后端停止与覆盖联动", () => {
+  test("旧 stopped 活进程不自动停止；实际 EPERM 回执未确认，用户重试真实停止后才确认", async () => {
+    const fixture = await createDaemonFixture();
+    onTestFinished(() => removeDaemonFixture(fixture));
+    const database = repositoryDatabase(fixture.dataRoot, fixture.repoId);
+    const clock = createClock();
+    let denied = true;
+    const shells = new ShellRegistry({ database, clock, probes: {
+      ps: async () => [],
+      kill: (pid, signal) => { if (denied) throw Object.assign(new Error("EPERM"), { code: "EPERM" }); process.kill(pid, signal); },
+    } });
+    const runs = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: new Date().toISOString() });
+    const run = await runs.create({ kind: "role", standalone: true, role: "pi-company.worker", task: "T-1", requirement: "2026-09-08.ui-safety", cwd: fixture.repo.root, writePaths: [], readPaths: [], model: { provider: "test", id: "unused" }, thinking: "off", mcp: [] });
+    const relay = new RelayQueue({ dataDir: join(fixture.dataRoot, "repos", fixture.repoId), deliver: async () => [], locateRequirementAgent: () => undefined });
+    const manager = new RunManager({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, runStore: runs, shellRegistry: shells, clock, relayQueue: relay,
+      networkGate: new NetworkPauseGate(), roleCatalog: [], runtime: {} as never, selectModel: () => { throw new Error("不得调用模型"); }, workspaceRepoIds: [fixture.repoId], emit: () => {} });
+    manager.markStarted();
+    const fakePi = createFakePi();
+    const fakeUi = createFakeUi();
+    const ctx = createFakeCtx(fakeUi);
+    const taskId = uuidv7();
+    let pid: number | undefined;
+    const calls: string[] = [];
+    const receipts: Array<Awaited<ReturnType<RunManager["stop"]>>> = [];
+    let pending: Promise<unknown> = Promise.resolve();
+    const client = { ...createPollableClient(), call: async (method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      calls.push(method);
+      if (method === "subscribe.activity") { const page = await manager.list({ limit: 100 }); return { snapshot: page.items, coverage: page.coverage }; }
+      if (method === "runs.stop") { const request = manager.stop(params!.runId as string); pending = request; const result = await request; receipts.push(result); return result; }
+      throw new Error("非安全入口");
+    } };
+    try {
+      const spawned = await shells.spawn({ taskId, host: { kind: "role", id: run.id, runId: run.id, role: run.role }, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], cwd: fixture.repo.root, mode: "background", runToken: run.shellToken });
+      if (!spawned.ok) throw new Error(spawned.reason);
+      pid = spawned.task.pid;
+      withDatabase(database, (db) => {
+        const current = db.read<any>("runs", run.id)!;
+        db.update("runs", run.id, current.version, { ...current.data, state: "stopped" });
+        for (let i = 0; i < 105; i++) { const id = uuidv7(); db.create("runs", id, { ...run, id, state: "stopped", startedAt: new Date(0).toISOString() }, id); }
+      });
+      agentsUiExtension(fakePi.pi, { windowReady: () => Promise.resolve(createWindowContextValue(fixture.repoId, fixture.repo.root, client)) as never,
+        createClock: () => createClock({ timeSource: createFakeTimeSource() }) });
+      await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
+      await flushMicrotasks();
+      const panel = fakeUi.mountedComponent() as AgentsPanel;
+      panel.selectRun(run.id);
+      expect(calls).toEqual(["subscribe.activity"]);
+      expect(() => process.kill(pid!, 0)).not.toThrow();
+      expect(panel.render(300).join("\n")).toContain("停止未核实106");
+      expect(panel.render(300).join("\n")).toContain("截断");
+      expect(panel.render(300).join("\n")).not.toContain("已停止");
+      panel.handleInput("\r"); await pending; await flushMicrotasks();
+      expect(receipts[0]?.confirmed).toBe(false);
+      expect(panel.render(300).join("\n")).toContain("停止未确认");
+      expect(() => process.kill(pid!, 0)).not.toThrow();
+      denied = false;
+      panel.handleInput("\r"); await pending; await flushMicrotasks();
+      expect(receipts[1]?.confirmed).toBe(true);
+      expect(() => process.kill(pid!, 0)).toThrow();
+      expect(panel.render(300).join("\n")).toContain("本次停止已确认");
+      expect(calls).toEqual(["subscribe.activity", "runs.stop", "runs.stop"]);
+      expect(fakeUi.customCalls).toHaveLength(0);
+    } finally {
+      denied = false;
+      await pending;
+      await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+      if (pid !== undefined) { await shells.stop(taskId); expect(() => process.kill(pid!, 0)).toThrow(); }
+      clock.stopGapWatcher();
+    }
+  }, 20_000);
+});
+
+describe("有界快照覆盖", () => {
+  test("截断空页仍展示未展示、未知和未核实停止项，不可误报无运行", async () => {
+    const fakePi = createFakePi();
+    const calls: string[] = [];
+    const client = { ...createPollableClient(), call: async (method: string) => {
+      calls.push(method);
+      return { snapshot: [], coverage: { total: 2001, validated: 2000, returned: 0, offset: 0, remaining: 2000, unknown: 1, unconfirmed: 2001, unconfirmedOutsidePage: 2001, nextOffset: 0, truncated: true, byteLimit: 16384 } };
+    } };
+    agentsUiExtension(fakePi.pi, {
+      windowReady: () => Promise.resolve(createWindowContextValue(REPO_A.repoId, "/workspace/repo-a", client)) as never,
+      createClock: () => createClock({ timeSource: createFakeTimeSource() }),
+    });
+    const fakeUi = createFakeUi();
+    const ctx = createFakeCtx(fakeUi);
+    await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
+    await flushMicrotasks();
+    const panel = fakeUi.mountedComponent() as { render(width: number): string[] };
+    const output = panel.render(300).join("\n");
+    expect(output).toContain("repo-a");
+    expect(output).toContain("未展示2000");
+    expect(output).toContain("未知1");
+    expect(output).toContain("停止未核实2001");
+    expect(output).not.toMatch(/没有运行|无运行|无活动/);
+    expect(calls).toEqual(["subscribe.activity"]);
+    await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+  });
+});
 
 describe("session_start 不阻塞等待窗口就绪，就绪后完成挂载", () => {
   test("lifecycle 尚未兑现时处理器已返回；兑现后 setWidget 被调用且 placement 为 belowEditor", async () => {
@@ -335,8 +426,9 @@ describe("refreshLoop 轮询 client.state() 并写入连接状态", () => {
       requirementTitle: "刷新需求",
     });
 
-    const mountedPanel = fakeUi.mountedComponent() as { handleInput(data: string): unknown } | undefined;
+    const mountedPanel = fakeUi.mountedComponent() as { handleInput(data: string): unknown; render(width: number): string[] } | undefined;
     expect(mountedPanel).toBeDefined();
+    mountedPanel?.render(80);
     mountedPanel?.handleInput("\r");
 
     timeSource.advance(30_000);
@@ -344,6 +436,142 @@ describe("refreshLoop 轮询 client.state() 并写入连接状态", () => {
 
     expect((capturedActivity as AgentsActivity).notice()?.message).toContain("未确认");
   }, 1_000);
+});
+
+describe("扩展快照代次与 activity 仓库归属", () => {
+  test("两个仓库同 runId 的活动由订阅闭包绑定 repoId，不串到另一个仓库", async () => {
+    const fakePi = createFakePi();
+    let capturedActivity: AgentsActivity | undefined;
+    const handlers = new Map<string, Map<string, (data: unknown) => void>>();
+    const makeClient = (repoId: string): FakeRepoClient => ({
+      call: async () => ({ snapshot: [], coverage: { total: 0, returned: 0, remaining: 0, unknown: 0, unconfirmed: 0, truncated: false } }),
+      subscribe: ((method: string, handler: (data: unknown) => void) => {
+        const byMethod = handlers.get(repoId) ?? new Map<string, (data: unknown) => void>();
+        byMethod.set(method, handler);
+        handlers.set(repoId, byMethod);
+        return () => byMethod.delete(method);
+      }) as never,
+      state: () => ({ status: "connected" }),
+      close: () => {},
+    });
+    const clients = new Map([[REPO_A.repoId, makeClient(REPO_A.repoId)], ["repo-b-id", makeClient("repo-b-id")]]);
+    const windowValue = {
+      windowId: "window-1",
+      sessionId: "session-1",
+      workspace: { repos: [
+        { repoId: REPO_A.repoId, path: "/workspace/repo-a", commonDir: "/workspace/repo-a/.git" },
+        { repoId: "repo-b-id", path: "/workspace/repo-b", commonDir: "/workspace/repo-b/.git" },
+      ], skipped: [] },
+      clients: {
+        forRepo: (repoId: string) => clients.get(repoId),
+        all: () => [...clients.values()],
+        skipped: () => [],
+        closeAll: () => {},
+      },
+    };
+    agentsUiExtension(fakePi.pi, {
+      windowReady: () => Promise.resolve(windowValue) as never,
+      createClock: () => createClock({ timeSource: createFakeTimeSource() }),
+      createAgentsActivity: (options: never) => (capturedActivity = new AgentsActivity(options)),
+    });
+    const fakeUi = createFakeUi();
+    const ctx = createFakeCtx(fakeUi);
+    await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
+    await flushMicrotasks();
+
+    for (const repoId of [REPO_A.repoId, "repo-b-id"]) {
+      handlers.get(repoId)?.get("runs.changed")?.({ run: runFixture({ id: "same", state: "running" }), requirementTitle: repoId });
+    }
+    handlers.get(REPO_A.repoId)?.get("activity")?.({ runId: "same", kind: "tool_start", toolName: "edit", toolCallId: "call-a", at: new Date(0).toISOString() });
+    const rows = capturedActivity!.rows().filter((row) => row.id === "same");
+    expect(rows.find((row) => row.repoId === REPO_A.repoId)?.activity).toBe("edit");
+    expect(rows.find((row) => row.repoId === "repo-b-id")?.activity).toBe("");
+    await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+  });
+
+  test("事件与初始 snapshot 交错时旧响应不覆盖；断连重连会重新取快照后才恢复 fresh", async () => {
+    const fakePi = createFakePi();
+    const timeSource = createFakeTimeSource();
+    const first = createDeferred<Record<string, unknown>>();
+    const second = createDeferred<Record<string, unknown>>();
+    const calls: string[] = [];
+    let status: "connected" | "unreachable" = "connected";
+    let runsChanged: ((data: unknown) => void) | undefined;
+    let capturedActivity: AgentsActivity | undefined;
+    const client: FakeRepoClient = {
+      call: (method: string) => {
+        calls.push(method);
+        return (calls.length === 1 ? first.promise : second.promise);
+      },
+      subscribe: ((method: string, handler: (data: unknown) => void) => {
+        if (method === "runs.changed") runsChanged = handler;
+        return () => {};
+      }) as never,
+      state: () => ({ status }),
+      close: () => {},
+    };
+    agentsUiExtension(fakePi.pi, {
+      windowReady: () => Promise.resolve(createWindowContextValue(REPO_A.repoId, "/workspace/repo-a", client)) as never,
+      createClock: () => createClock({ timeSource }),
+      createAgentsActivity: (options: never) => (capturedActivity = new AgentsActivity(options)),
+    });
+    const fakeUi = createFakeUi();
+    const ctx = createFakeCtx(fakeUi);
+    await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
+    await flushMicrotasks();
+
+    runsChanged?.({ run: runFixture({ id: "event-wins", state: "running" }), requirementTitle: "实时事件" });
+    first.resolve({ snapshot: [runFixture({ id: "stale-snapshot", state: "running" })], coverage: { total: 0, returned: 0, remaining: 0, unknown: 0, unconfirmed: 0, truncated: false } });
+    await flushMicrotasks();
+    expect(capturedActivity!.rows().map((row) => row.id)).toEqual(["event-wins"]);
+    expect(capturedActivity!.coverageNotices().join("\n")).toContain("快照过期");
+
+    status = "unreachable";
+    timeSource.advance(1_000);
+    expect(capturedActivity!.coverageNotices().join("\n")).toContain("不可达");
+    status = "connected";
+    timeSource.advance(1_000);
+    expect(calls).toEqual(["subscribe.activity", "subscribe.activity"]);
+    expect(capturedActivity!.coverageNotices().join("\n")).toContain("快照刷新中");
+    second.resolve({ snapshot: [], coverage: { total: 0, returned: 0, remaining: 0, unknown: 0, unconfirmed: 0, truncated: false } });
+    await flushMicrotasks();
+    expect(capturedActivity!.rows()).toHaveLength(0);
+    expect(capturedActivity!.coverageNotices().join("\n")).toContain("当前快照");
+    await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+  });
+});
+
+test.each([100, 101, 200, 201])("真实快照入口%s项：最多检查200项，超限事实与Shell元数据保留", async (count) => {
+  const fakePi = createFakePi(), timeSource = createFakeTimeSource();
+  const snapshot = Array.from({ length: count }, (_, i) => ({ ...runFixture({ id: `budget-${i}` }), activeShellTasks: i === 0 ? 7 : 0, pendingShellCleanup: i === 0 ? 9 : 0 }));
+  let capturedActivity: AgentsActivity | undefined, outsideReads = 0;
+  const descriptor = Object.getOwnPropertyDescriptor;
+  const client: FakeRepoClient = {
+    call: async () => ({ snapshot, coverage: { total: count, returned: count, remaining: 0, unknown: 0, unconfirmed: count, truncated: false } }),
+    subscribe: (() => () => {}) as never, state: () => ({ status: "connected" }), close: () => {},
+  };
+  agentsUiExtension(fakePi.pi, {
+    windowReady: () => Promise.resolve(createWindowContextValue(REPO_A.repoId, "/workspace/repo-a", client)) as never,
+    createClock: () => createClock({ timeSource }),
+    createAgentsActivity: (options: never) => (capturedActivity = new AgentsActivity(options)),
+  });
+  const ctx = createFakeCtx(createFakeUi());
+  try {
+    Object.getOwnPropertyDescriptor = (object, property) => {
+      if (count > 200 && object === snapshot[200]) outsideReads++;
+      return descriptor(object, property);
+    };
+    await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
+    await flushMicrotasks();
+    expect(outsideReads).toBe(0);
+    expect(capturedActivity!.rows()).toHaveLength(100);
+    expect(capturedActivity!.rows()[0]).toMatchObject({ activeShellTasks: 7, pendingShellCleanup: 9 });
+    if (count > 200) expect(capturedActivity!.coverageNotices().join("\n")).toContain("未展示待清理");
+    if (count > 100) expect(capturedActivity!.coverageNotices().join("\n")).toContain("溢出");
+  } finally {
+    Object.getOwnPropertyDescriptor = descriptor;
+    await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+  }
 });
 
 describe("第二次 session_start 先卸载前一次残留", () => {
@@ -436,6 +664,21 @@ describe("session_shutdown 卸载面板并取消订阅", () => {
   }, 1_000);
 });
 
+describe("未知外部错误净化", () => {
+  test("windowReady 拒绝未知对象时不执行对象转换，只通知固定兜底", async () => {
+    const fakePi = createFakePi();
+    agentsUiExtension(fakePi.pi, {
+      windowReady: () => Promise.reject({ toString: () => { throw new Error("不得执行"); } }) as never,
+      createClock: () => createClock({ timeSource: createFakeTimeSource() }),
+    });
+    const fakeUi = createFakeUi();
+    const ctx = createFakeCtx(fakeUi);
+    await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
+    await flushMicrotasks();
+    expect(fakeUi.notifyCalls).toEqual([{ message: "未知错误", level: "error" }]);
+  });
+});
+
 describe("非 tui 模式不挂载", () => {
   test("mode 不为 tui 时，即便 windowReady 兑现也不调用 setWidget", async () => {
     const fakePi = createFakePi();
@@ -456,50 +699,45 @@ describe("非 tui 模式不挂载", () => {
   });
 });
 
-describe("查看页：onView 打开查看页，被拒绝时提示", () => {
-  test("onView 触发后 ctx.ui.custom 被调用打开查看页；custom 被拒绝时 ctx.ui.notify 收到提示", async () => {
+describe("终态运行不能打开旧转录", () => {
+  test("旧查看位置的键盘操作不打开 custom、不订阅转录，旧正文不读取", async () => {
     const fakePi = createFakePi();
     let capturedActivity: AgentsActivity | undefined;
-    const client = createPollableClient();
+    const calls: string[] = [];
+    const client = { ...createPollableClient(), call: async (method: string) => { calls.push(method); return {}; } };
     const windowContextValue = createWindowContextValue(REPO_A.repoId, "/workspace/repo-a", client);
-    const deps: AgentsUiDeps = {
+    agentsUiExtension(fakePi.pi, {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-      createAgentsActivity: (options: never) => {
-        capturedActivity = new AgentsActivity(options);
-        return capturedActivity;
-      },
-    };
-    agentsUiExtension(fakePi.pi, deps);
-
+      createAgentsActivity: (options) => (capturedActivity = new AgentsActivity(options)),
+    });
     const fakeUi = createFakeUi();
     const ctx = createFakeCtx(fakeUi);
     await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
     await flushMicrotasks();
-    expect(capturedActivity).toBeDefined();
-
-    const viewRunId = randomUUID();
-    pushRun(capturedActivity as AgentsActivity, REPO_A.repoId, runFixture({ id: viewRunId, state: "waiting_answer" }), {
-      requirementTitle: "查看需求",
-    });
-
-    const mountedPanel = fakeUi.mountedComponent() as { handleInput(data: string): unknown } | undefined;
-    expect(mountedPanel).toBeDefined();
-    mountedPanel?.handleInput("\x1b[C");
-    mountedPanel?.handleInput("\r");
+    const run = runFixture({ id: randomUUID(), state: "completed" });
+    let bodyReads = 0;
+    for (const field of ["task", "taskDescription", "stateReason", "errorDetails", "transcript", "actor"]) {
+      Object.defineProperty(run, field, { get: () => { bodyReads++; throw new Error("旧正文不可读取"); } });
+    }
+    pushRun(capturedActivity!, REPO_A.repoId, run);
+    const panel = fakeUi.mountedComponent() as { handleInput(data: string): unknown; render(width: number): string[] };
+    for (const key of ["\x1b[C", "\r", "\t", "\r", "\x1b[D", "\r"]) {
+      panel.handleInput(key);
+      if (key !== "\r") panel.render(100);
+    }
     await flushMicrotasks();
-
-    expect(fakeUi.customCalls).toHaveLength(1);
-
-    fakeUi.rejectLastCustom(new Error("查看页打开失败（测试注入）"));
-    await flushMicrotasks();
-
-    expect(fakeUi.notifyCalls.length).toBeGreaterThan(0);
+    expect(calls).toEqual(["subscribe.activity", "runs.stop"]);
+    expect(fakeUi.customCalls).toHaveLength(0);
+    expect(fakeUi.notifyCalls).toHaveLength(0);
+    expect(panel.render(100).join("\n")).toContain("非需求完成");
+    expect(bodyReads).toBe(0);
+    await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
   }, 1_000);
 });
 
-describe("查看页随扩展 teardown 一并关闭", () => {
-  test("查看页打开期间触发 session_shutdown：同一 runId 之后仍可通过 openTranscriptView 重新打开", async () => {
+describe("退出及重载不恢复旧查看入口", () => {
+  test("旧终态会话跨两次挂载仍无转录 RPC，卸载后订阅与定时器收尾", async () => {
     const fakePi = createFakePi();
     let capturedActivity: AgentsActivity | undefined;
     const client = createPollableClient();
@@ -521,49 +759,24 @@ describe("查看页随扩展 teardown 一并关闭", () => {
     expect(capturedActivity).toBeDefined();
 
     const viewRunId = randomUUID();
-    pushRun(capturedActivity as AgentsActivity, REPO_A.repoId, runFixture({ id: viewRunId, state: "waiting_answer" }), {
-      requirementTitle: "查看需求",
-    });
-
-    const mountedPanel = fakeUi.mountedComponent() as { handleInput(data: string): unknown } | undefined;
-    mountedPanel?.handleInput("\x1b[C");
-    mountedPanel?.handleInput("\r");
-    await flushMicrotasks();
-    expect(fakeUi.customCalls).toHaveLength(1);
-
-    await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
-    await flushMicrotasks();
-
-    let reopenedComponent: unknown;
-    const reopenCtx = {
-      ui: {
-        custom: (
-          factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown,
-        ) =>
-          new Promise((resolve) => {
-            reopenedComponent = factory({ requestRender: () => {} }, {}, {}, (result: unknown) => resolve(result));
-          }),
-        notify: () => {},
-      },
-    };
-    const reopenDock = { markPageOpen: () => {}, markPageClosed: () => {} };
-    const reopenClock = createClock({ timeSource: createFakeTimeSource() });
-
-    const reopenPromise = openTranscriptView({
-      ctx: reopenCtx,
-      client: createPollableClient(),
-      clock: reopenClock,
-      runId: viewRunId,
-      dataRoot: resolveDataRoot(process.env),
-      repoId: REPO_A.repoId,
-      dock: reopenDock,
-      restoreSelection: () => {},
-    });
-
-    await waitFor(() => reopenedComponent !== undefined);
-    expect(reopenedComponent).toBeDefined();
-
-    (reopenedComponent as { handleInput(data: string): unknown }).handleInput("\x1b");
-    await reopenPromise;
+    const calls: string[] = [];
+    client.call = async (method: string) => { calls.push(method); return {}; };
+    for (let i = 0; i < 2; i++) {
+      if (i > 0) {
+        await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
+        await flushMicrotasks();
+      }
+      pushRun(capturedActivity!, REPO_A.repoId, runFixture({ id: viewRunId, state: "stopped" }));
+      const panel = fakeUi.mountedComponent() as { handleInput(data: string): unknown; render(width: number): string[] };
+      panel.handleInput("\x1b[C");
+      panel.render(100);
+      panel.handleInput("\r");
+      await flushMicrotasks();
+      expect(fakeUi.customCalls).toHaveLength(0);
+      await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+      expect(fakeUi.activeSubscriptions()).toBe(0);
+      expect(fakeUi.mountedComponent()).toBeUndefined();
+    }
+    expect(calls).toEqual(["runs.stop", "subscribe.activity", "runs.stop"]);
   }, 2_000);
 });

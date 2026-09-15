@@ -1,18 +1,23 @@
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { AgentsActivity } from "../runtime/agents-activity.ts";
+import { AgentsActivity, MAX_MIRRORED_RUNS_PER_REPO } from "../runtime/agents-activity.ts";
 import type { ActivityEvent, RunsChangedPayload, WorkspaceRepo } from "../runtime/agents-activity.ts";
 import { mountAgentsPanel } from "../runtime/agents-panel.ts";
 import type { AgentsPanelClient } from "../runtime/agents-panel.ts";
 import { createClock } from "../runtime/clock.ts";
+import { sanitizeText } from "../runtime/text-sanitize.ts";
+import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../runtime/daemon-client.ts";
 import type { Clock } from "../runtime/clock.ts";
 import { BottomDock } from "../runtime/dock.ts";
-import { dataRoot as resolveDataRoot } from "../runtime/identity.ts";
-import { closeActiveTranscriptView, openTranscriptView } from "../runtime/transcript-view.ts";
 import { registerDock, windowReady as defaultWindowReady } from "./lifecycle.ts";
 import type { WindowContextValue } from "./lifecycle.ts";
 
 const REFRESH_INTERVAL_MS = 1_000;
+
+function externalErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "未知错误";
+  return sanitizeText(raw, 200).replace(/\s+/g, " ").trim() || "未知错误";
+}
 
 export interface AgentsUiDeps {
   windowReady?: () => Promise<WindowContextValue>;
@@ -41,32 +46,66 @@ export default function agentsUiExtension(pi: ExtensionAPI, deps: AgentsUiDeps =
 
         const clock = resolveClock();
         const repoEntries = window.workspace.repos
-          .map((repo) => ({ repoId: repo.repoId, name: basename(repo.path), client: window.clients.forRepo(repo.repoId) }))
+          .map((repo) => ({ repoId: repo.repoId, client: window.clients.forRepo(repo.repoId) }))
           .filter((entry): entry is typeof entry & { client: NonNullable<(typeof entry)["client"]> } => entry.client !== undefined);
 
         const activity = resolveActivity({
           clock,
-          workspaceRepos: repoEntries.map(({ repoId, name }) => ({ repoId, name })),
+          workspaceRepos: window.workspace.repos.map(({ repoId, path }) => ({ repoId, name: basename(path) })),
         });
+
+        const mirrorConnections = new Map<string, { client: (typeof repoEntries)[number]["client"]; identity: string | undefined }>();
+        const requestSnapshot = (repoId: string, client: (typeof repoEntries)[number]["client"]): void => {
+          const sequence = activity.beginSnapshot(repoId), identity = JSON.stringify(client.connectionIdentity?.());
+          if (sequence === undefined) return;
+          void client.call("subscribe.activity", {}).then((result) => {
+            if (myGeneration !== generation) return;
+            if (window.clients.forRepo(repoId) !== client || client.state().status !== "connected" || JSON.stringify(client.connectionIdentity?.()) !== identity || !Array.isArray(result.snapshot)) {
+              activity.failSnapshot(repoId, sequence); return;
+            }
+            const rawSnapshot = result.snapshot;
+            const applied = activity.applySnapshot(
+              repoId,
+              sequence,
+              rawSnapshot.slice(0, MAX_MIRRORED_RUNS_PER_REPO * 2).map((run) => ({ run,
+                pendingShellCleanup: run && typeof run === "object" ? Object.getOwnPropertyDescriptor(run, "pendingShellCleanup")?.value : undefined,
+                activeShellTasks: run && typeof run === "object" ? Object.getOwnPropertyDescriptor(run, "activeShellTasks")?.value : undefined,
+              })) as RunsChangedPayload[],
+              result.coverage,
+              rawSnapshot.length,
+            );
+            if (applied) mirrorConnections.set(repoId, { client, identity });
+          }).catch((error: unknown) => {
+            if (myGeneration !== generation) return;
+            activity.failSnapshot(repoId, sequence);
+            ctx.ui.notify(`代理快照读取失败：${externalErrorMessage(error)}`, "error");
+          });
+        };
 
         const unsubscribes: Array<() => void> = [];
         for (const { repoId, client } of repoEntries) {
+          activity.applyConnectionState(repoId, client.state());
+          // 初次订阅的实时事件来自这条连接；重连则等待新快照建立镜像绑定。
+          mirrorConnections.set(repoId, { client, identity: JSON.stringify(client.connectionIdentity?.()) });
           unsubscribes.push(
             client.subscribe("runs.changed", (data) =>
               activity.applyRunsChanged(repoId, data as unknown as RunsChangedPayload),
             ),
           );
-          unsubscribes.push(client.subscribe("activity", (data) => activity.applyActivity(data as unknown as ActivityEvent)));
-          void client.call("subscribe.activity", {}).then((result) => {
-            if (myGeneration !== generation) return;
-            for (const run of (result.snapshot ?? []) as RunsChangedPayload["run"][]) activity.applyRunsChanged(repoId, { run });
-          }).catch((error: unknown) => ctx.ui.notify(`代理快照读取失败：${(error as Error).message}`, "error"));
+          unsubscribes.push(client.subscribe("activity", (data) => activity.applyActivity(repoId, data as unknown as ActivityEvent)));
+          unsubscribes.push(client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => {
+            mirrorConnections.delete(repoId); activity.applyConnectionState(repoId, { status: "unreachable" });
+          }));
+          unsubscribes.push(client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, () => {
+            activity.applyConnectionState(repoId, client.state()); requestSnapshot(repoId, client);
+          }));
+          requestSnapshot(repoId, client);
         }
 
         const panelClients = {
           forRepo: (repoId: string): AgentsPanelClient | undefined => {
-            const client = window.clients.forRepo(repoId);
-            return client ? { call: (method: string, params?: Record<string, unknown>) => client.call(method, params) } : undefined;
+            const client = window.clients.forRepo(repoId), mirrored = mirrorConnections.get(repoId);
+            return client && mirrored?.client === client && JSON.stringify(client.connectionIdentity?.()) === mirrored.identity ? client : undefined;
           },
         };
 
@@ -78,23 +117,6 @@ export default function agentsUiExtension(pi: ExtensionAPI, deps: AgentsUiDeps =
             activity,
             clock,
             clients: panelClients,
-            onView: (runId) => {
-              const row = activity.rows().find((entry) => entry.id === runId);
-              const client = row ? window.clients.forRepo(row.repoId) : undefined;
-              const panel = mountResult.panel;
-              if (!row || !client || !dock || !panel) return;
-              const selectedBeforeOpen = panel.selectedRunId() ?? runId;
-              openTranscriptView({
-                ctx,
-                client,
-                runId,
-                dataRoot: resolveDataRoot(process.env),
-                repoId: row.repoId,
-                dock,
-                clock,
-                restoreSelection: () => panel.selectRun(selectedBeforeOpen),
-              }).catch((error: unknown) => ctx.ui.notify((error as Error).message, "error"));
-            },
           },
         );
 
@@ -112,7 +134,9 @@ export default function agentsUiExtension(pi: ExtensionAPI, deps: AgentsUiDeps =
           registerDock(dock);
 
           refreshHandle = clock.setIntervalExcludingSleep(() => {
-            for (const { repoId, client } of repoEntries) activity.applyConnectionState(repoId, client.state());
+            for (const { repoId, client } of repoEntries) {
+              if (activity.applyConnectionState(repoId, client.state())) requestSnapshot(repoId, client);
+            }
             mountResult.panel?.tick();
             mountResult.host?.requestRender();
           }, REFRESH_INTERVAL_MS);
@@ -125,12 +149,11 @@ export default function agentsUiExtension(pi: ExtensionAPI, deps: AgentsUiDeps =
           registerDock(undefined);
           mountResult.unmount?.();
           clock.stopGapWatcher();
-          closeActiveTranscriptView();
         };
       })
       .catch((error: unknown) => {
         if (myGeneration !== generation) return;
-        ctx.ui.notify((error as Error).message, "error");
+        ctx.ui.notify(externalErrorMessage(error), "error");
       });
   });
 

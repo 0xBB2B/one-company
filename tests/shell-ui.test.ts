@@ -1,4 +1,5 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import * as decisions from "../runtime/decisions.ts";
 import { randomUUID } from "node:crypto";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";
@@ -93,11 +94,14 @@ interface FakeRepoClient {
   subscribe: () => () => void;
   state: () => { status: "connected" | "unreachable" };
   close: () => void;
+  connectionIdentity?: () => { daemonInstanceId: string; connectionId: string; connectionSequence: number } | null;
 }
 
 function createPollableClient(): FakeRepoClient {
+  const connectionId = randomUUID();
   return {
-    call: async () => ({}),
+    connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId, connectionSequence: 1 }),
+    call: async () => ({ tasks: [] }),
     subscribe: () => () => {},
     state: () => ({ status: "connected" }),
     close: () => {},
@@ -163,6 +167,17 @@ function spyRegistry(registry: ShellRegistry): ShellRegistry & { closeOwnerCalls
   };
   return Object.assign(registry, { closeOwnerCalls: () => calls });
 }
+
+test("windowReady异常通知净化控制字符，失败启动释放自身clock", async () => {
+  const fakePi = createFakePi(), ui = createFakeUi(), clock = spyClock(createClock({ timeSource: createFakeTimeSource() }));
+  shellUiExtension(fakePi.pi, { windowReady: async () => { throw new Error("连接\x1b[2J\n错误"); }, createClock: () => clock });
+  const ctx = createFakeCtx(ui);
+  await fakePi.trigger("session_start", { reason: "new" }, ctx); await flushMicrotasks();
+  expect(ui.notifyCalls).toHaveLength(1);
+  expect(ui.notifyCalls[0]!.message).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+  expect(clock.stopGapWatcherCalls()).toBeGreaterThan(0);
+  await fakePi.trigger("session_shutdown", { reason: "quit" }, ctx);
+});
 
 describe("shellUiExtension：注册与生命周期解耦——工厂返回时已完成注册，session_start 不重复注册", () => {
   test("factory 返回后 registerTool('bash') 与 on('user_bash') 各恰好一次；两次 session_start 后计数不变", async () => {
@@ -466,6 +481,130 @@ describe("sharedDock 生命周期：agents-ui teardown 后 lifecycle.currentDock
     }
     expect(thrown).toBeDefined();
   }, 10_000);
+});
+
+test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实际停止", async () => {
+  const fakePi = createFakePi();
+  const append = vi.spyOn(decisions, "appendDecision");
+  const calls: { method: string; params?: Record<string, unknown> }[] = [];
+  const task = { taskId: "ui-uncertain", host: { kind: "requirement", id: "req-ui" }, command: "", cwd: "", pid: 10, startedAt: new Date(0).toISOString(), status: "uncertain", activity: "uncertain", inWorkspace: true };
+  const stopped = createDeferred<Record<string, unknown>>();
+  const client = {
+    ...createPollableClient(),
+    call: async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params });
+      if (method === "shells.list") return { tasks: [task] };
+      if (method === "shells.stop") return stopped.promise;
+      if (method === "subscribe.activity") return {};
+      throw new Error(`非白名单 RPC：${method}`);
+    },
+  };
+  const window = createWindowContextValue("window-no-user", "repo-no-user", client);
+  const deps = { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock({ timeSource: createFakeTimeSource() }) };
+  agentsUiExtension(fakePi.pi, deps);
+  shellUiExtension(fakePi.pi, deps);
+  const ctx = {
+    mode: "tui", hasUI: true, cwd: process.cwd(),
+    ui: { ...createFakeUi().ui, setWidget: () => {}, onTerminalInput: () => () => {} },
+  };
+  let page: import("../runtime/shell-page.ts").ShellPage | undefined;
+  let opened: Promise<void> | undefined;
+  try {
+    await fakePi.trigger("session_start", { reason: "new" }, ctx);
+    await flushMicrotasks();
+    opened = openShellUiPage({ ui: { custom: (factory) => new Promise((resolve) => {
+      page = factory({ requestRender: () => {} }, {}, {}, resolve);
+    }) } });
+    await waitFor(() => page !== undefined);
+    await page!.refresh();
+    page!.handleInput("K");
+    expect(page!.render(100).join("\n")).toContain("停止尚未确认");
+    expect(page!.render(100).join("\n")).not.toContain("视为已停止");
+    page!.handleInput("\x1b[C");
+    page!.handleInput("\r");
+    expect(page!.render(100).join("\n")).toContain("停止中");
+    expect(page!.render(100).join("\n")).not.toContain("已停止");
+    expect(calls.filter((call) => call.method === "shells.stop")).toEqual([
+      { method: "shells.stop", params: { taskId: task.taskId, expectedPid: task.pid, expectedStartedAt: task.startedAt } },
+    ]);
+    stopped.resolve({ task });
+    await flushMicrotasks();
+    expect(page!.render(100).join("\n")).toContain("不确定");
+    expect(page!.render(100).join("\n")).not.toContain("已停止");
+    expect(append).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.method === "shells.markStopped")).toBe(false);
+    expect(JSON.stringify(calls)).not.toContain("USER");
+  } finally {
+    stopped.resolve({ task });
+    page?.handleInput("\x1b");
+    page?.handleInput("\x1b");
+    await opened;
+    await fakePi.trigger("session_shutdown", { reason: "quit" }, ctx);
+    append.mockRestore();
+  }
+});
+
+describe("openShellUiPage：保留缺连接仓库并可在连接恢复后查询", () => {
+  test("workspace 中部分 repo 缺 client 时显示未知而非无活动，恢复后查询全部范围", async () => {
+    const fakePi = createFakePi();
+    const callsA: string[] = [];
+    const callsB: string[] = [];
+    const clientA: FakeRepoClient = {
+      ...createPollableClient(),
+      call: async (method) => { callsA.push(method); return method === "shells.list" ? { tasks: [] } : {}; },
+    };
+    let clientB: FakeRepoClient | undefined;
+    const window = {
+      windowId: "window-coverage",
+      sessionId: "session-coverage",
+      workspace: {
+        repos: [
+          { repoId: "repo-connected", path: "/workspace/repo-connected", commonDir: "/workspace/repo-connected/.git" },
+          { repoId: "repo-recovering", path: "/workspace/repo-recovering", commonDir: "/workspace/repo-recovering/.git" },
+        ],
+        skipped: [],
+      },
+      clients: {
+        forRepo: (repoId: string) => repoId === "repo-connected" ? clientA : repoId === "repo-recovering" ? clientB : undefined,
+        all: () => [clientA, ...(clientB ? [clientB] : [])],
+        skipped: () => [],
+        closeAll: () => {},
+      },
+    };
+    const deps = { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock({ timeSource: createFakeTimeSource() }) };
+    agentsUiExtension(fakePi.pi, deps);
+    shellUiExtension(fakePi.pi, deps);
+    const ctx = {
+      mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: { getSessionId: () => window.sessionId },
+      ui: { ...createFakeUi().ui, setWidget: () => {}, onTerminalInput: () => () => {} },
+    };
+    let page: import("../runtime/shell-page.ts").ShellPage | undefined;
+    let opened: Promise<void> | undefined;
+    try {
+      await fakePi.trigger("session_start", { reason: "new" }, ctx);
+      await flushMicrotasks();
+      opened = openShellUiPage({ ui: { custom: (factory) => new Promise((resolve) => {
+        page = factory({ requestRender: () => {}, terminal: { columns: 14, rows: 1 } }, {}, {}, resolve);
+      }) } });
+      await waitFor(() => page !== undefined);
+      await page!.refresh();
+      expect(callsB).toEqual([]);
+      expect(page!.render(14)[0]).toContain("未知");
+      expect(page!.render(80).join("\n")).not.toContain("无活动 Shell");
+
+      clientB = {
+        ...createPollableClient(),
+        call: async (method) => { callsB.push(method); return method === "shells.list" ? { tasks: [] } : {}; },
+      };
+      await page!.refresh();
+      expect(callsB).toEqual(["shells.list"]);
+      expect(page!.render(80).join("\n")).toContain("无活动 Shell");
+    } finally {
+      page?.handleInput("\x1b");
+      await opened;
+      await fakePi.trigger("session_shutdown", { reason: "quit" }, ctx);
+    }
+  });
 });
 
 describe("openShellUiPage：透传宿主 ctx.ui.theme 到页面主题", () => {

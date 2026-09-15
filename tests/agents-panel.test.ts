@@ -161,6 +161,101 @@ function createFakeClients(byRepo: Record<string, ReturnType<typeof createFakeCl
   return { forRepo: (repoId: string) => byRepo[repoId] };
 }
 
+for (const input of ["keyboard", "mouse", "batch"] as const) test.each(["identity", "identity-return", "snapshot", "client", "epoch"])(
+  `render后%s变化，${input}不按旧画面发请求，刷新后可操作`, async (change) => {
+    const time = createFakeTimeSource(), clock = createClock({ timeSource: time });
+    try {
+      const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+      const run = runFixture({ id: "render-bound", state: "stopped" });
+      pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 0 });
+      let sequence = 1;
+      const first = { ...createFakeClient(), connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "first", connectionSequence: sequence }) };
+      const second = { ...createFakeClient(), connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "second", connectionSequence: 1 }) };
+      let client = first;
+      const panel = new AgentsPanel({ activity, clock, clients: { forRepo: () => client }, captureMode: input === "mouse" ? "fullscreen" : "regular" });
+      if (input === "batch") panel.handleInput(KEY.tab);
+      const lines = panel.render(180), rowY = lines.findIndex((line) => line.includes("render-bound"));
+      expect(rowY).toBeGreaterThan(0);
+      if (change === "identity" || change === "identity-return") pushRun(activity, REPO_A.repoId, { ...run, startedAt: new Date(1).toISOString() }, { pendingShellCleanup: 0 });
+      if (change === "identity-return") pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 0 });
+      if (change === "snapshot") activity.applySnapshot(REPO_A.repoId, activity.beginSnapshot(REPO_A.repoId)!, [{ run, pendingShellCleanup: 0 }] as never, {});
+      if (change === "client") client = second;
+      if (change === "epoch") sequence++;
+      const press = (y: number) => input === "mouse" ? panel.handleMouse({ type: "click", y, width: 180 }) : panel.handleInput(KEY.enter);
+      press(rowY);
+      expect(first.calls).toHaveLength(0); expect(second.calls).toHaveLength(0);
+      const refreshed = panel.render(180); press(refreshed.findIndex((line) => line.includes("render-bound")));
+      expect(client.calls).toHaveLength(1);
+      await Promise.resolve();
+    } finally { clock.stopGapWatcher(); }
+  });
+
+test("停止旧回执不能跨重连或同对象连接代次确认新镜像", async () => {
+  for (const mode of ["snapshot", "connection", "identity-return"] as const) {
+    const time = createFakeTimeSource(), clock = createClock({ timeSource: time });
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    const run = runFixture({ id: `old-${mode}`, state: "stopped" });
+    pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 0 });
+    let sequence = 1;
+    const client = { ...createControllableClient(), connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: `connection-${sequence}`, connectionSequence: sequence }) };
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }) });
+    panel.render(160); panel.handleInput(KEY.enter); expect(client.calls).toHaveLength(1);
+    if (mode === "snapshot") {
+      activity.applyConnectionState(REPO_A.repoId, { status: "unreachable" });
+      activity.applyConnectionState(REPO_A.repoId, { status: "connected" });
+      const request = activity.beginSnapshot(REPO_A.repoId)!;
+      activity.applySnapshot(REPO_A.repoId, request, [{ run, pendingShellCleanup: 0 }] as never, { total: 1, returned: 1, remaining: 0, unknown: 0, unconfirmed: 1, truncated: false });
+    } else if (mode === "identity-return") {
+      pushRun(activity, REPO_A.repoId, { ...run, startedAt: new Date(1).toISOString() }, { pendingShellCleanup: 0 });
+      pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 0 });
+    } else sequence++;
+    panel.render(160); panel.handleInput(KEY.enter); expect(client.calls).toHaveLength(2);
+    client.resolveAt(0, { confirmed: true }); await Promise.resolve();
+    expect(activity.rows()[0]!.stopConfirmed).toBe(false);
+    client.resolveAt(1, { confirmed: false }); await Promise.resolve();
+    time.advance(21_000); expect(activity.rows()).toHaveLength(1);
+    clock.stopGapWatcher();
+  }
+});
+
+test.each(["startedAt", "kind", "requirement", "parentRunId", "role"])("在途停止期间%s往返原值，旧回执不能重获当前身份", async (field) => {
+  const time = createFakeTimeSource(), clock = createClock({ timeSource: time });
+  try {
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    const run = runFixture({ id: "round-trip", state: "stopped" });
+    pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 0 });
+    const client = createControllableClient(), panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }) });
+    const before = activity.stopBinding(REPO_A.repoId, String(run.id));
+    panel.render(180); panel.handleInput(KEY.enter); expect(client.calls).toHaveLength(1);
+    pushRun(activity, REPO_A.repoId, { ...run, [field]: field === "kind" ? "role" : field === "startedAt" ? new Date(1).toISOString() : "changed" }, { pendingShellCleanup: 0 });
+    pushRun(activity, REPO_A.repoId, run, { pendingShellCleanup: 0 });
+    expect(activity.stopBinding(REPO_A.repoId, String(run.id))).not.toBe(before);
+    client.resolveAt(0, { confirmed: true }); await Promise.resolve();
+    expect(activity.rows()[0]?.stopConfirmed).toBe(false);
+    time.advance(20_001); expect(activity.rows()).toHaveLength(1);
+    panel.render(180); panel.handleInput(KEY.enter); expect(client.calls).toHaveLength(2);
+    client.resolveAt(1, { confirmed: true }); await Promise.resolve();
+    expect(activity.rows()[0]?.stopConfirmed).toBe(true);
+    time.advance(20_001); expect(activity.rows()).toHaveLength(0);
+  } finally { clock.stopGapWatcher(); }
+});
+
+test("长名称和已知cleanup优先显示，异常turns不能进入ANSI渲染", () => {
+  const time = createFakeTimeSource(), clock = createClock({ timeSource: time });
+  const activity = new AgentsActivity({ clock, workspaceRepos: [{ ...REPO_A, name: "很长仓库名称".repeat(30) }] });
+  pushRun(activity, REPO_A.repoId, runFixture({ id: "target-id", state: "running" }), { requirementTitle: "唯一停止目标", pendingShellCleanup: 9 });
+  const client = createFakeClient(), panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }), availableRows: () => 3 });
+  const narrow = panel.render(40); panel.handleInput(KEY.enter); expect(client.calls).toHaveLength(0);
+  expect(narrow.join("\n")).toContain("待清理9");
+  time.advance(21_000);
+  const wide = panel.render(160);
+  expect(wide.join("\n")).toContain("唯一停止目标"); expect(wide.join("\n")).toContain("target-id"); expect(wide.join("\n")).toContain(REPO_A.repoId);
+  pushRun(activity, REPO_A.repoId, runFixture({ id: "unsafe", turns: "1\x1b[2J\n伪造行" }));
+  const output = panel.render(160).join("|");
+  expect(output).not.toContain("\x1b[2J"); expect(output).not.toContain("伪造行"); expect(output).toContain("元数据无效");
+  clock.stopGapWatcher();
+});
+
 // 用可观测哨兵包裹而非真实 ANSI，断言时才能确认高亮/灰显确实生效而非巧合命中其他文本
 function fakeTheme() {
   return {
@@ -202,6 +297,31 @@ function clickEvent(y: number) {
   };
 }
 
+describe("登记终态与停止回执分开", () => {
+  test("登记 stopped 不证明已停止，未确认返回后保留安全重试入口", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "legacy-stopped", state: "stopped", stateReason: "全部已确认" }));
+    const client = createControllableClient();
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }) });
+    const text = panel.render(200).join("\n");
+    expect(text).not.toContain("已停止");
+    expect(text).toContain("登记停止");
+    expect(text).toContain("未核实");
+    panel.handleInput(KEY.enter);
+    expect(client.calls).toEqual([{ method: "runs.stop", params: { runId: "legacy-stopped" } }]);
+    client.resolveLast({ state: "stopped", confirmed: false, reason: "持久进程身份未核实" });
+    await flushMicrotasks();
+    expect(panel.render(200).join("\n")).toContain("停止未确认");
+    timeSource.advance(60_000);
+    expect(panel.hasRows()).toBe(true);
+    panel.render(200);
+    panel.handleInput(KEY.enter);
+    expect(client.calls).toHaveLength(2);
+  });
+});
+
 describe("行内字段：标题/状态/活动/轮次/耗时/待答/中断Shell数/停止清理数/不可达原因", () => {
   test("各字段的具体取值都能在对应条目所在行中找到", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
@@ -222,8 +342,8 @@ describe("行内字段：标题/状态/活动/轮次/耗时/待答/中断Shell�
     pushRun(activity, REPO_B.repoId, runFixture({ id: "run-unreachable", state: "running" }), { requirementTitle: "不可达需求" });
     activity.applyConnectionState(REPO_B.repoId, { status: "unreachable", reason: "测试注入连接原因" });
 
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
-    const lines = panel.render(80);
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
+    const lines = panel.render(160);
 
     expect(lineFor(lines, "轮次需求")).toContain("71");
     expect(lineFor(lines, "活动需求")).toContain("bash");
@@ -239,7 +359,7 @@ describe("行内字段：标题/状态/活动/轮次/耗时/待答/中断Shell�
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-no-reason", state: "running" }), { requirementTitle: "无原因需求" });
     activity.applyConnectionState(REPO_A.repoId, { status: "unreachable" });
 
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
     expect(lineFor(panel.render(80), "无原因需求")).toContain("不可达");
   });
 
@@ -248,7 +368,7 @@ describe("行内字段：标题/状态/活动/轮次/耗时/待答/中断Shell�
     const clock = createClock({ timeSource });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-elapsed", state: "running" }), { requirementTitle: "耗时需求" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
 
     const before = lineFor(panel.render(80), "耗时需求");
     timeSource.advance(90_000);
@@ -262,7 +382,7 @@ describe("行内字段：标题/状态/活动/轮次/耗时/待答/中断Shell�
     const clock = createClock({ timeSource });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-90s", state: "running" }), { requirementTitle: "九十秒需求" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
 
     timeSource.advance(90_000);
     expect(lineFor(panel.render(80), "九十秒需求")).toContain("1m30s");
@@ -273,7 +393,7 @@ describe("行内字段：标题/状态/活动/轮次/耗时/待答/中断Shell�
     const clock = createClock({ timeSource });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-2h", state: "running" }), { requirementTitle: "两小时需求" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
 
     timeSource.advance(7_200_000);
     expect(lineFor(panel.render(80), "两小时需求")).toContain("2h");
@@ -295,8 +415,9 @@ describe("行内字段：标题/状态/活动/轮次/耗时/待答/中断Shell�
 
     const controllable = createControllableClient();
     const clients = createFakeClients({ [REPO_A.repoId]: controllable });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients });
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     controllable.rejectLast(new Error("\x1b[31m未确认\x1b[0m"));
     await flushMicrotasks();
@@ -326,7 +447,7 @@ describe("行内字段：标题/状态/活动/轮次/耗时/待答/中断Shell�
       requirementTitle: `含${c1Title}标题`,
     });
 
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
     const output = panel.render(80).join("\n");
 
     for (let code = 0x80; code <= 0x9f; code++) expect(output).not.toContain(String.fromCharCode(code));
@@ -343,7 +464,7 @@ describe("状态查表不走原型链", () => {
         requirementTitle: `原型键需求${index}`,
       });
     }
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
     const lines = panel.render(80);
     for (const line of lines) {
       expect(line).not.toContain("native code");
@@ -359,20 +480,20 @@ describe("行内状态为中文标签，轮次格式为「第 N 轮」", () => {
     const stateLabels: Array<[string, string]> = [
       ["running", "运行中"],
       ["pausing", "暂停中"],
-      ["paused", "已暂停"],
+      ["paused", "登记暂停"],
       ["paused_network", "网络暂停"],
       ["waiting_answer", "等待答复"],
-      ["interrupted", "已中断"],
-      ["completed", "已完成"],
+      ["interrupted", "登记中断"],
+      ["completed", "登记完成（非需求完成）"],
       ["failed", "失败"],
-      ["stopped", "已停止"],
+      ["stopped", "登记停止"],
       ["queued", "排队"],
     ];
     for (const [state, label] of stateLabels) {
       const clock = createClock({ timeSource: createFakeTimeSource() });
       const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
       pushRun(activity, REPO_A.repoId, runFixture({ id: "run-state", state }), { requirementTitle: "状态需求" });
-      const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+      const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
       expect(lineFor(panel.render(80), "状态需求")).toContain(label);
     }
   });
@@ -381,8 +502,8 @@ describe("行内状态为中文标签，轮次格式为「第 N 轮」", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-round", state: "running", turns: 3 }), { requirementTitle: "轮次格式需求" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
-    expect(lineFor(panel.render(80), "轮次格式需求")).toContain("第 3 轮");
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
+    expect(lineFor(panel.render(120), "轮次格式需求")).toContain("第 3 轮");
   });
 });
 
@@ -392,7 +513,7 @@ describe("结束条目灰显", () => {
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-live", state: "running" }), { requirementTitle: "存活需求" });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-ended", state: "completed" }), { requirementTitle: "结束需求" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme(), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme() });
 
     const lines = panel.render(80);
     expect(lineFor(lines, "结束需求")).toContain("[DIM]");
@@ -400,60 +521,60 @@ describe("结束条目灰显", () => {
   });
 });
 
-describe("按状态展示相符的按钮，三个按钮字样始终共存", () => {
+describe("按状态仅展示暂停与安全停止按钮", () => {
   test("运行中/已暂停/中断/等待答复四种条目各自展示应有按钮标签", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = buildFiveEntryActivity(clock);
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
 
     const lines = panel.render(80);
 
     const runningLine = lineFor(lines, "需求甲");
     expect(runningLine).toContain("暂停");
     expect(runningLine).toContain("停止");
-    expect(runningLine).toContain("查看");
+    expect(runningLine).not.toContain("查看");
 
     const pausedLine = lineFor(lines, "需求乙");
-    expect(pausedLine).toContain("继续");
+    expect(pausedLine).not.toContain("继续");
     expect(pausedLine).toContain("停止");
-    expect(pausedLine).toContain("查看");
+    expect(pausedLine).not.toContain("查看");
 
     const interruptedLine = lineFor(lines, "需求丙");
-    expect(interruptedLine).toContain("续接");
+    expect(interruptedLine).not.toContain("续接");
     expect(interruptedLine).toContain("停止");
-    expect(interruptedLine).toContain("查看");
+    expect(interruptedLine).not.toContain("查看");
 
     const waitingLine = lineFor(lines, "需求丁");
     expect(waitingLine).toContain("停止");
-    expect(waitingLine).toContain("查看");
+    expect(waitingLine).not.toContain("查看");
   });
 });
 
-describe("选中按钮高亮位移，三个按钮共存，无箭头字符", () => {
+describe("选中按钮高亮位移，暂停与停止共存，无箭头字符", () => {
   test("默认选中首个按钮并带主题高亮哨兵，渲染文本不含箭头字符", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-x", state: "running" }), { requirementTitle: "选中态需求" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme(), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme() });
 
     const line = lineFor(panel.render(80), "选中态需求");
     expect(line).toContain("[SEL]暂停[/SEL]");
     expect(line).toContain("停止");
-    expect(line).toContain("查看");
+    expect(line).not.toContain("查看");
     for (const arrow of ["→", "▶", "➤", ">"]) expect(line).not.toContain(arrow);
   });
 
-  test("按 → 后高亮位移到下一个按钮，三个按钮字样仍共存", () => {
+  test("按 → 后高亮位移到停止按钮，暂停与停止共存", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-x", state: "running" }), { requirementTitle: "选中态需求" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme(), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme() });
 
     panel.handleInput(KEY.right);
     const line = lineFor(panel.render(80), "选中态需求");
     expect(line).toContain("[SEL]停止[/SEL]");
     expect(line).toContain("暂停");
-    expect(line).toContain("查看");
+    expect(line).not.toContain("查看");
   });
 });
 
@@ -462,7 +583,7 @@ describe("focus/blur 控制选中态是否渲染", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-x", state: "running" }), { requirementTitle: "选中态需求" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme(), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme() });
 
     panel.blur();
     expect(lineFor(panel.render(80), "选中态需求")).not.toContain("[SEL]");
@@ -481,7 +602,7 @@ describe("Kitty 协议释放事件不重复触发按键", () => {
       pushRun(activity, REPO_A.repoId, runFixture({ id: "run-0", state: "running" }), { requirementTitle: "光标甲" });
       pushRun(activity, REPO_A.repoId, runFixture({ id: "run-1", state: "running" }), { requirementTitle: "光标乙" });
       pushRun(activity, REPO_A.repoId, runFixture({ id: "run-2", state: "running" }), { requirementTitle: "光标丙" });
-      const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme(), onView: () => {} });
+      const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme() });
 
       panel.handleInput(KEY.down);
       panel.handleInput(KEY.downKittyRelease);
@@ -504,11 +625,12 @@ describe("Kitty 协议释放事件不重复触发按键", () => {
       const clientA = createFakeClient();
       const clientB = createFakeClient();
       const clients = createFakeClients({ [REPO_A.repoId]: clientA, [REPO_B.repoId]: clientB });
-      const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+      const panel = new AgentsPanel({ activity, clock, clients });
 
       panel.handleInput(KEY.tab);
       panel.handleInput("\x1b[9;1:3u");
       await flushMicrotasks();
+      expect(panel.render(80)[0]).toContain("批量");
       panel.handleInput(KEY.enter);
       await flushMicrotasks();
 
@@ -531,7 +653,7 @@ describe("容量上限与滚动，↓ 移动到末项后 Enter 执行到正确�
     const repoAClient = createFakeClient();
     const repoBClient = createFakeClient();
     const clients = createFakeClients({ [REPO_A.repoId]: repoAClient, [REPO_B.repoId]: repoBClient });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {}, availableRows: () => 4 });
+    const panel = new AgentsPanel({ activity, clock, clients, availableRows: () => 4 });
 
     expect(panel.render(80).length).toBeLessThanOrEqual(4);
 
@@ -552,7 +674,7 @@ describe("鼠标行号映射与渲染共用窗口计算", () => {
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-mouse", state: "running" }), { requirementTitle: "鼠标需求" });
     const client = createFakeClient();
     const clients = createFakeClients({ [REPO_A.repoId]: client });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {}, captureMode: "regular" });
+    const panel = new AgentsPanel({ activity, clock, clients, captureMode: "regular" });
 
     const result = panel.handleMouse?.(clickEvent(0));
     expect(result).toBeUndefined();
@@ -565,9 +687,10 @@ describe("鼠标行号映射与渲染共用窗口计算", () => {
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-mouse", state: "running" }), { requirementTitle: "鼠标需求" });
     const client = createFakeClient();
     const clients = createFakeClients({ [REPO_A.repoId]: client });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {}, captureMode: "fullscreen" });
+    const panel = new AgentsPanel({ activity, clock, clients, captureMode: "fullscreen" });
 
-    const result = panel.handleMouse?.(clickEvent(0));
+    panel.render(80);
+    const result = panel.handleMouse?.(clickEvent(1));
     expect(result?.handled).toBe(true);
     expect(client.calls).toHaveLength(1);
     expect(client.calls[0]?.params.runId).toBe("run-mouse");
@@ -583,23 +706,25 @@ describe("鼠标行号映射与渲染共用窗口计算", () => {
     const repoAClient = createControllableClient();
     const repoBClient = createFakeClient();
     const clients = createFakeClients({ [REPO_A.repoId]: repoAClient, [REPO_B.repoId]: repoBClient });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {}, availableRows: () => 4, captureMode: "fullscreen" });
+    const panel = new AgentsPanel({ activity, clock, clients, availableRows: () => 4, captureMode: "fullscreen" });
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     repoAClient.rejectLast(new Error("请求未确认（测试注入）"));
     await flushMicrotasks();
 
     const lines = panel.render(80);
     expect(lines.length).toBeLessThanOrEqual(4);
-    const noticeIndex = lines.findIndex((line) => !/需求-\d+/.test(line));
+    const noticeIndex = lines.findIndex((line, index) => index > 0 && !/需求-\d+/.test(line));
     expect(noticeIndex).toBeGreaterThanOrEqual(0);
 
-    const firstLineRunId = /需求-(\d+)/.exec(lines[0] ?? "")?.[1];
+    const rowIndex = lines.findIndex((line) => /需求-\d+/.test(line));
+    const firstLineRunId = /需求-(\d+)/.exec(lines[rowIndex] ?? "")?.[1];
     expect(firstLineRunId).toBeDefined();
     const targetClient = Number(firstLineRunId) < 6 ? repoAClient : repoBClient;
     const callsBeforeRowClick = targetClient.calls.length;
 
-    panel.handleMouse?.(clickEvent(0));
+    panel.handleMouse?.(clickEvent(rowIndex));
     expect(targetClient.calls.length).toBe(callsBeforeRowClick + 1);
     expect(targetClient.calls.at(-1)?.params.runId).toBe(`run-${firstLineRunId}`);
 
@@ -618,8 +743,9 @@ describe("Tab 切换单项/批量，批量执行时对全部仓库广播", () =>
     const clientA = createFakeClient();
     const clientB = createFakeClient();
     const clients = createFakeClients({ [REPO_A.repoId]: clientA, [REPO_B.repoId]: clientB });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients });
 
+    expect(panel.render(80)[0]).toContain("单项");
     panel.handleInput(KEY.enter);
     await flushMicrotasks();
     expect(clientA.calls).toHaveLength(1);
@@ -627,6 +753,7 @@ describe("Tab 切换单项/批量，批量执行时对全部仓库广播", () =>
 
     panel.handleInput(KEY.tab);
     await flushMicrotasks();
+    expect(panel.render(80)[0]).toContain("批量");
     panel.handleInput(KEY.enter);
     await flushMicrotasks();
     expect(clientA.calls).toHaveLength(2);
@@ -634,6 +761,7 @@ describe("Tab 切换单项/批量，批量执行时对全部仓库广播", () =>
 
     panel.handleInput(KEY.tab);
     await flushMicrotasks();
+    expect(panel.render(80)[0]).toContain("单项");
     panel.handleInput(KEY.enter);
     await flushMicrotasks();
     expect(clientA.calls).toHaveLength(3);
@@ -646,16 +774,113 @@ describe("Tab 切换单项/批量，批量执行时对全部仓库广播", () =>
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-tab-inflight", state: "running" }), { requirementTitle: "在途需求" });
     const controllable = createControllableClient();
     const clients = createFakeClients({ [REPO_A.repoId]: controllable });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients });
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     expect(controllable.calls).toHaveLength(1);
 
     panel.handleInput(KEY.tab);
     panel.handleInput(KEY.tab);
+    panel.render(80);
     panel.handleInput(KEY.enter);
 
     expect(controllable.calls).toHaveLength(1);
+  });
+});
+
+describe("可见确认范围、最小尺寸与复合导航", () => {
+  test("高度 0/1/2 无可见目标不发 RPC，高度 3 只允许当前实际渲染的一行", () => {
+    for (const height of [0, 1, 2, 3]) {
+      const clock = createClock({ timeSource: createFakeTimeSource() });
+      const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+      pushRun(activity, REPO_A.repoId, runFixture({ id: `height-${height}`, state: "running" }), { requirementTitle: "尺寸需求" });
+      const client = createFakeClient();
+      const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }), availableRows: () => height });
+      const lines = panel.render(80);
+      expect(lines).toHaveLength(height);
+      panel.handleInput(KEY.enter);
+      expect(client.calls).toHaveLength(height === 3 ? 1 : 0);
+      if (height > 0 && height < 3) expect(lines[0]).toContain("拒绝");
+    }
+  });
+
+  test("窄宽不能辨识目标时拒绝，80列显示目标和安全状态后才允许", () => {
+    for (const width of [10, 20, 40, 80]) {
+      const clock = createClock({ timeSource: createFakeTimeSource() });
+      const activity = new AgentsActivity({ clock, workspaceRepos: [{ repoId: REPO_A.repoId, name: "很长仓库".repeat(20) }] });
+      pushRun(activity, REPO_A.repoId, runFixture({ id: `width-${width}`, state: "stopped" }), { requirementTitle: "很长中文标题".repeat(30) });
+      const client = createFakeClient();
+      const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }), availableRows: () => 3 });
+      const lines = panel.render(width);
+      expect(lines[0]).toContain("单项");
+      if (width >= 40) {
+        expect(lines.join("\n")).toContain("登记停止");
+        expect(lines.join("\n")).toContain("未核实");
+        expect(lines.join("\n")).toContain("停止");
+      }
+      panel.handleInput(KEY.enter);
+      if (width === 80) {
+        expect(lines.join("\n")).toContain(REPO_A.repoId);
+        expect(lines.join("\n")).toContain(`width-${width}`);
+        expect(lines.join("\n")).toContain("很长中文");
+      }
+      expect(client.calls).toHaveLength(width === 80 ? 1 : 0);
+    }
+  });
+
+  test("批量明确显示实际可见目标和视口省略，只执行屏幕内两行而非 12 条 loaded", () => {
+    const clock = createClock({ timeSource: createFakeTimeSource() });
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    for (let i = 0; i < 12; i += 1) pushRun(activity, REPO_A.repoId, runFixture({ id: `batch-${i}`, state: "running" }), { requirementTitle: `批量需求${i}` });
+    activity.applyCoverage(REPO_A.repoId, { total: 20, returned: 12, remaining: 8, unknown: 0, unconfirmed: 20, truncated: true });
+    const client = createFakeClient();
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }), availableRows: () => 4 });
+
+    panel.handleInput(KEY.tab);
+    const lines = panel.render(80);
+    expect(lines[0]).toContain("批量");
+    expect(lines[0]).toContain("目标2");
+    expect(lines[0]).toContain("视口省略10");
+    expect(lines.join("\n")).toContain("查询页外未展示8");
+    panel.handleInput(KEY.enter);
+    expect(client.calls).toHaveLength(2);
+    expect(client.calls.map((call) => call.params.runId)).toEqual(["batch-0", "batch-1"]);
+  });
+
+  test("render 前、视口尺寸变化后都拒绝操作并不发 RPC", () => {
+    const clock = createClock({ timeSource: createFakeTimeSource() });
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "render-bound", state: "running" }), { requirementTitle: "渲染绑定" });
+    const client = createFakeClient();
+    let height = 3;
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }), availableRows: () => height });
+    panel.handleInput(KEY.enter);
+    expect(client.calls).toHaveLength(0);
+    panel.render(80);
+    height = 2;
+    panel.handleInput(KEY.enter);
+    expect(client.calls).toHaveLength(0);
+    expect(activity.notice()?.message).toContain("拒绝");
+  });
+
+  test("同 runId 的裸导航歧义拒绝，显式 repoId 后只向该仓库 RPC", () => {
+    const clock = createClock({ timeSource: createFakeTimeSource() });
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A, REPO_B] });
+    pushRun(activity, REPO_A.repoId, runFixture({ id: "same", state: "running" }), { requirementTitle: "A需求" });
+    pushRun(activity, REPO_B.repoId, runFixture({ id: "same", state: "running" }), { requirementTitle: "B需求" });
+    const clientA = createFakeClient();
+    const clientB = createFakeClient();
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: clientA, [REPO_B.repoId]: clientB }) });
+
+    expect(panel.selectRun("same")).toBe(false);
+    expect(panel.selectedRunKey()).toEqual({ repoId: REPO_A.repoId, runId: "same" });
+    expect(panel.selectRun("same", REPO_B.repoId)).toBe(true);
+    expect(panel.selectedRunKey()).toEqual({ repoId: REPO_B.repoId, runId: "same" });
+    panel.render(80);
+    panel.handleInput(KEY.enter);
+    expect(clientA.calls).toHaveLength(0);
+    expect(clientB.calls).toHaveLength(1);
   });
 });
 
@@ -666,8 +891,9 @@ describe("执行：发送中乐观标签、去重、按令牌校验结算并按�
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-pause-flow", state: "running" }), { requirementTitle: "暂停流程需求" });
     const controllable = createControllableClient();
     const clients = createFakeClients({ [REPO_A.repoId]: controllable });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients });
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     panel.handleInput(KEY.enter);
     expect(controllable.calls).toHaveLength(1);
@@ -682,9 +908,9 @@ describe("执行：发送中乐观标签、去重、按令牌校验结算并按�
 
     const confirmedText = lineFor(panel.render(80), "暂停流程需求");
     expect(confirmedText).not.toContain("暂停中");
-    expect(confirmedText).toContain("继续");
+    expect(confirmedText).not.toContain("继续");
     expect(confirmedText).toContain("停止");
-    expect(confirmedText).toContain("查看");
+    expect(confirmedText).not.toContain("查看");
   });
 
   test("到期检测只由 tick() 触发，render() 是纯投影：不调用 tick() 时推进 30 秒不产生未确认提示", () => {
@@ -694,8 +920,9 @@ describe("执行：发送中乐观标签、去重、按令牌校验结算并按�
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-pure-render", state: "running" }), { requirementTitle: "纯投影需求" });
     const controllable = createControllableClient();
     const clients = createFakeClients({ [REPO_A.repoId]: controllable });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients });
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     timeSource.advance(30_000);
     panel.render(80);
@@ -710,8 +937,9 @@ describe("执行：发送中乐观标签、去重、按令牌校验结算并按�
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-timeout", state: "running" }), { requirementTitle: "超时需求" });
     const controllable = createControllableClient();
     const clients = createFakeClients({ [REPO_A.repoId]: controllable });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients });
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     expect(lineFor(panel.render(80), "超时需求")).toContain("暂停中");
 
@@ -731,13 +959,15 @@ describe("执行：发送中乐观标签、去重、按令牌校验结算并按�
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-late", state: "running" }), { requirementTitle: "迟到需求" });
     const controllable = createControllableClient();
     const clients = createFakeClients({ [REPO_A.repoId]: controllable });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients });
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     timeSource.advance(30_000);
     panel.tick();
     expect(activity.notice()?.message).toContain("未确认");
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     expect(controllable.calls).toHaveLength(2);
 
@@ -763,8 +993,9 @@ describe("失败：条目仍在、独立提示行出现，19 秒仍在、20 秒�
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-a", state: "running" }), { requirementTitle: "甲需求" });
     const controllable = createControllableClient();
     const clients = createFakeClients({ [REPO_A.repoId]: controllable });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients });
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     controllable.rejectLast(new Error("请求未确认（测试注入）"));
     await flushMicrotasks();
@@ -778,7 +1009,8 @@ describe("失败：条目仍在、独立提示行出现，19 秒仍在、20 秒�
     expect(panel.render(80).some((line) => !line.includes("甲需求"))).toBe(true);
 
     timeSource.advance(1_000);
-    expect(panel.render(80).every((line) => line.includes("甲需求"))).toBe(true);
+    expect(panel.render(80).join("\n")).not.toContain("请求未确认（测试注入）");
+    expect(activity.notice()).toBeUndefined();
   });
 
   test("新的失败提示替换旧提示并重新计时（旧提示原本已到期的时间点仍显示新提示）", async () => {
@@ -788,13 +1020,15 @@ describe("失败：条目仍在、独立提示行出现，19 秒仍在、20 秒�
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-a", state: "running" }), { requirementTitle: "甲需求" });
     const controllable = createControllableClient();
     const clients = createFakeClients({ [REPO_A.repoId]: controllable });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients });
 
+    panel.render(80);
     panel.handleInput(KEY.enter);
     controllable.rejectLast(new Error("第一次请求未确认（测试注入）"));
     await flushMicrotasks();
 
     timeSource.advance(15_000);
+    panel.render(80);
     panel.handleInput(KEY.enter);
     controllable.rejectLast(new Error("第二次请求未确认（测试注入）"));
     await flushMicrotasks();
@@ -804,7 +1038,8 @@ describe("失败：条目仍在、独立提示行出现，19 秒仍在、20 秒�
     expect(panel.render(80).some((line) => !line.includes("甲需求"))).toBe(true);
 
     timeSource.advance(15_000);
-    expect(panel.render(80).every((line) => line.includes("甲需求"))).toBe(true);
+    expect(panel.render(80).join("\n")).not.toContain("第二次请求未确认");
+    expect(activity.notice()).toBeUndefined();
   });
 
   test("有提示时总行数仍不超过 availableRows 上限", async () => {
@@ -812,33 +1047,48 @@ describe("失败：条目仍在、独立提示行出现，19 秒仍在、20 秒�
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-a", state: "running" }), { requirementTitle: "甲需求" });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-b", state: "running" }), { requirementTitle: "乙需求" });
-    const controllable = createControllableClient();
-    const clients = createFakeClients({ [REPO_A.repoId]: controllable });
-    const panel = new AgentsPanel({ activity, clock, clients, onView: () => {}, availableRows: () => 2 });
-
-    panel.handleInput(KEY.enter);
-    controllable.rejectLast(new Error("请求未确认（测试注入）"));
-    await flushMicrotasks();
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), availableRows: () => 2 });
+    activity.reportActionFailure("请求未确认（测试注入）");
 
     expect(panel.render(80).length).toBeLessThanOrEqual(2);
   });
 });
 
-describe("查看按钮触发 onView 回调而非客户端调用", () => {
-  test("选中查看按钮并 Enter 时调用 onView 并传入 runId", () => {
+describe("已淘汰操作不存在键盘与鼠标入口", () => {
+  test("登记终态批量/鼠标仅可请求安全停止，禁止旧执行与查看 RPC", async () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
-    pushRun(activity, REPO_A.repoId, runFixture({ id: "run-view", state: "waiting_answer" }), { requirementTitle: "查看需求" });
+    for (const state of ["completed", "failed", "stopped"]) pushRun(activity, REPO_A.repoId, runFixture({ id: state, state }));
     const client = createFakeClient();
-    const clients = createFakeClients({ [REPO_A.repoId]: client });
-    const viewed: string[] = [];
-    const panel = new AgentsPanel({ activity, clock, clients, onView: (runId: string) => viewed.push(runId) });
-
-    panel.handleInput(KEY.right);
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }), captureMode: "fullscreen" });
+    panel.handleInput(KEY.tab);
+    expect(panel.render(100)[0]).toContain("批量");
     panel.handleInput(KEY.enter);
+    await flushMicrotasks();
+    expect(panel.selectRun("stopped", REPO_A.repoId)).toBe(true);
+    expect(panel.selectedRunKey()).toEqual({ repoId: REPO_A.repoId, runId: "stopped" });
+    expect(panel.render(100).join("\n")).not.toMatch(/查看|继续|续接/);
+    expect(client.calls).toEqual(["completed", "failed", "stopped"].map((runId) => ({ method: "runs.stop", params: { runId } })));
+  });
 
-    expect(viewed).toEqual(["run-view"]);
-    expect(client.calls).toHaveLength(0);
+  test("暂停/中断/等待答复旧操作位置只允许安全停止，不发恢复/转录 RPC", async () => {
+    const clock = createClock({ timeSource: createFakeTimeSource() });
+    const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+    for (const state of ["paused", "interrupted", "waiting_answer"]) pushRun(activity, REPO_A.repoId, runFixture({ id: state, state }));
+    const client = createFakeClient();
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: client }), captureMode: "fullscreen" });
+    panel.handleInput(KEY.tab);
+    panel.render(80);
+    panel.handleInput(KEY.enter);
+    await flushMicrotasks();
+    for (let y = 1; y <= 3; y += 1) {
+      panel.render(80);
+      panel.handleMouse(clickEvent(y));
+      await flushMicrotasks();
+    }
+    expect(client.calls).toHaveLength(6);
+    expect(client.calls.every((call) => call.method === "runs.stop")).toBe(true);
+    expect(activity.rows().map((row) => row.status)).toEqual(["paused", "interrupted", "waiting_answer"]);
   });
 });
 
@@ -846,7 +1096,7 @@ describe("hasRows 供宿主判断面板是否存在可选条目", () => {
   test("无条目时为假，出现条目后为真", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
 
     expect(panel.hasRows()).toBe(false);
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-only", state: "running" }), { requirementTitle: "唯一需求" });
@@ -859,7 +1109,7 @@ describe("宽度按显示列裁剪，不约束标签语言", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-wide", state: "running" }), { requirementTitle: "汉".repeat(60) });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
 
     const lines = panel.render(80);
     for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(80);
@@ -871,7 +1121,7 @@ describe("宽度按显示列裁剪，不约束标签语言", () => {
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-control", state: "running" }), {
       requirementTitle: "恶意\x1b[31m标题\x07标记",
     });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}) });
 
     const output = panel.render(80).join("\n");
     expect(output).not.toContain("\x1b");
@@ -882,7 +1132,7 @@ describe("宽度按显示列裁剪，不约束标签语言", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-ansi", state: "running" }), { requirementTitle: "ANSI需求" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: ansiTheme(), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: ansiTheme() });
 
     const line = lineFor(panel.render(80), "ANSI需求");
     expect(visibleWidth(line)).toBeLessThanOrEqual(80);
@@ -896,7 +1146,7 @@ describe("createAgentsPanel 工厂函数", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-factory", state: "running" }), { requirementTitle: "工厂需求" });
-    const panel = createAgentsPanel({ activity, clock, clients: createFakeClients({}), onView: () => {} });
+    const panel = createAgentsPanel({ activity, clock, clients: createFakeClients({}) });
 
     const lines = panel.render(80);
     expect(lines.some((line) => line.includes("工厂需求"))).toBe(true);
@@ -915,7 +1165,7 @@ describe("mountAgentsPanel 的宿主能力检测、placement、requestRender 与
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-mount", state: "running" }), { requirementTitle: "挂载需求" });
-    return { activity, clock, clients: createFakeClients({}), onView: () => {} };
+    return { activity, clock, clients: createFakeClients({}) };
   }
 
   test("mode 非 tui（即便 ui 能力齐全）时返回未挂载与原因，且不抛错", () => {
@@ -1012,14 +1262,14 @@ describe("mountAgentsPanel 的宿主能力检测、placement、requestRender 与
   });
 });
 
-describe("selectedRunId/selectRun 用于查看页关闭后恢复选中", () => {
+describe("selectedRunId/selectRun 保留正常行导航", () => {
   test("selectedRunId 返回当前光标行 runId；selectRun 定位到指定行并高亮；未知 id 夹到最近合法行", () => {
     const clock = createClock({ timeSource: createFakeTimeSource() });
     const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-0", state: "running" }), { requirementTitle: "光标甲" });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-1", state: "running" }), { requirementTitle: "光标乙" });
     pushRun(activity, REPO_A.repoId, runFixture({ id: "run-2", state: "running" }), { requirementTitle: "光标丙" });
-    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme(), onView: () => {} });
+    const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({}), theme: fakeTheme() });
 
     expect(panel.selectedRunId()).toBe("run-0");
 
@@ -1037,12 +1287,27 @@ test("停止回执 confirmed:false 显示未确认原因", async () => {
   const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
   pushRun(activity, REPO_A.repoId, runFixture({ id: "run-stop", state: "running" }));
   const controllable = createControllableClient();
-  const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: controllable }), onView: () => {} });
+  const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: controllable }) });
   panel.handleInput(KEY.right);
+  panel.render(80);
   panel.handleInput(KEY.enter);
   expect(controllable.calls[0]?.method).toBe("runs.stop");
   controllable.resolveLast({ state: "stopped", confirmed: false, reason: "Shell 进程尚未确认停止" });
   await flushMicrotasks();
   expect(activity.notice()?.message).toContain("停止未确认");
   expect(activity.notice()?.message).toContain("Shell 进程尚未确认停止");
+});
+
+test("未知停止回执原因不会执行对象转换，使用净化后的固定兜底", async () => {
+  const clock = createClock({ timeSource: createFakeTimeSource() });
+  const activity = new AgentsActivity({ clock, workspaceRepos: [REPO_A] });
+  pushRun(activity, REPO_A.repoId, runFixture({ id: "run-unknown-reason", state: "running" }));
+  const controllable = createControllableClient();
+  const panel = new AgentsPanel({ activity, clock, clients: createFakeClients({ [REPO_A.repoId]: controllable }) });
+  panel.handleInput(KEY.right);
+  panel.render(80);
+  panel.handleInput(KEY.enter);
+  controllable.resolveLast({ confirmed: false, reason: { toString: () => { throw new Error("不得执行"); } } });
+  await flushMicrotasks();
+  expect(activity.notice()?.message).toBe("停止未确认：未取得确认回执");
 });
