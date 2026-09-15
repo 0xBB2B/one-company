@@ -260,6 +260,16 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-PM-INTAKE-STORE-IMPL-01：需求侧接手存储与原对象核验
+
+- 主代理已整合TaskA五文件：`runtime/pm-intake-store.ts`、`runtime/pm-intake-service.ts`、`tests/helpers/pm-intake-fixture.ts`及store/service两份测试。真实批准prod/manifest/决定、worktree、PM lease和Host绑定生成接手基线；缺可信Main/来源目录/提交provider默认拒绝，不新增scenario.*强制正文格式、不启动PM或M7调度。
+- 三阶段私有凭据固定基础依据、操作前相关行集合及精确提交后的结果；完整行ID/version/内容与唯一性关系、当前head及实际幂等结果意图核对，只有准确自身写集/等价幂等进展可接受。新结果签新proof，旧凭据不换绑；首笔creator/reviewer保留。同步原对象交付检查使用本实例WeakMap及原call/provider句柄，最终DB后不再调用resolver/注入时钟。资料只存元数据与短问题，详细理解不入DB，通过仍不产生用户新授权或执行权限。
+- `pm-intake-store-review-02/REVIEW.md`已独立核对原九反例、F1/F2精确写集/幂等、F3末端回调、D1原对象、合法retained及有界frame；余下F4-02/S1由主代理限定返修。`pm-intake-store-review-03/REVIEW.md`独立105/105、25组时序/类型探针及6组安全对照确认这两项通过；主代理完整回读两报告、源码增量及实际指纹后整合，不把单份窄复审当整个TaskA证明。
+- 本轮主代理同一候选在Node26及最低Node22.19.0分别105/105，typecheck、五个新增文件no-index空白检查及提交依赖检查通过。最新五文件与review-03及`pm-intake-main-repair/lease-type-review-inputs.json`一致，证据`lease-type-regression-04.*`、`lease-type-node22.*`、`acceptance-typecheck.*`。旧失败和暂停前未验证版本日志保留，不跨版本拼通过数。
+- 对应M4-AC12—14的TaskA需求侧存储/绑定/失效部分。尚未实现TaskB真实SDK Main的user_interact目的分流和最终工具交付，不能签三项AC整体或M4。来源分类/提交的生产者、M7真实接手/规划/派工仍按阶段落实；当前正向使用真实服务加受控provider夹具，不是云模型业务理解认证。
+- 边界：末端租约检查覆盖业务扫描/复制并在事务回调结束前拒绝过期写入，不承诺磁盘COMMIT物理瞬间与任意OS暂停原子化；合法提交后撤权保留元数据但阻止交付。完整工具外壳49152/49153精确边界及实际SDK闭环留待TaskB/阶段验收；内部frame上限256行/512KiB已测，db.list内部枚举成本未作恒定承诺。系统Python的Xcode许可报错原证据保留，本次未修改系统许可。
+- 本功能只提交上述五文件与本节记录，不夹带其他旧流程/Role改动、用户AGENTS/计划或未完成TaskB。实际本地提交号在成功后核实登记。
+
 ## M4-HOST-IMPORT-CLEANUP-01：Host导入项收尾
 
 - 实际sol任务`59c10e59-0b4e-46c`仅移除`runtime/interaction-continuity.ts`未引用的`positive`导入。主代理以HEAD全文精确替换对照核验，只有这一行变化，不改变模块加载或运行逻辑，不触碰PM五文件。
