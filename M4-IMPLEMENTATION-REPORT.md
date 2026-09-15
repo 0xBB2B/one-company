@@ -260,6 +260,12 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-HOST-IMPORT-CLEANUP-01：Host导入项收尾
+
+- 实际sol任务`59c10e59-0b4e-46c`仅移除`runtime/interaction-continuity.ts`未引用的`positive`导入。主代理以HEAD全文精确替换对照核验，只有这一行变化，不改变模块加载或运行逻辑，不触碰PM五文件。
+- 子代理及主代理`pnpm run typecheck`、限定diff检查通过；严格unused检查本项消失，仍有原`shell-bash:event`和`shell-page:width`两项范围外错误，不声称全仓unused通过。交付与主验证证据：`completion-03/host-import-cleanup/`。
+- 仅提交上述单文件与本节记录，不夹带其他已有改动；实际提交号在提交后核实。
+
 ## M4-UI-INTEGRATION-MIGRATION-01：面板集成迁移与夹具安全收尾
 
 - 已将原七项面板集成迁移为真实临时运行元数据+认证daemon+实际UI路径，保留导航、状态栏、不抢键、旧正文/resume拒绝、实时状态、停止确认后TTL和晚打开快照断言；不恢复旧派工/转录。配套夹具在分配前登记资源，基于实际child、缓存hello/连接代次及当前PID/PGID核对收尾，客户端关闭失败、未知身份或进程组未确认均保全根。
