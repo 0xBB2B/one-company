@@ -260,6 +260,15 @@ pnpm run typecheck
 - M4 仍暂停、未通过整体验收；此次提交不代表恢复实施、不改变已知问题，也没有推送。
 - 入口指令与记录的实际提交：`5126ce20f6ac7288704ce9860315d64791a35fcb`。其后仅更新当前续接提示，避免继续把暂停前HEAD或“全部未提交”当现状；不改变历史验证记录或功能代码。
 
+## M4-UI-INTEGRATION-MIGRATION-01：面板集成迁移与夹具安全收尾
+
+- 已将原七项面板集成迁移为真实临时运行元数据+认证daemon+实际UI路径，保留导航、状态栏、不抢键、旧正文/resume拒绝、实时状态、停止确认后TTL和晚打开快照断言；不恢复旧派工/转录。配套夹具在分配前登记资源，基于实际child、缓存hello/连接代次及当前PID/PGID核对收尾，客户端关闭失败、未知身份或进程组未确认均保全根。
+- 故障探针由父持有独立私有目录的canonical路径/dev/ino/nonce；子只在该根创建资源，默认unknown，资源记录和诊断不单独授予删除。父等待/TERM→必要KILL/close/组消失针对自己的真实child；超时始终失败、独立daemon未确认时不自动删根，不从日志PID发终止信号。正常故障对照只在精确身份及退出双true核验后删除准确三根/已知文件/空目录。
+- 原两次实际实现留下的C1—C4由主代理按限定接手修复。独立`ui-fixture-review-02/REPORT.md`14/14确认原四项解除；主代理提交前另遇PGID探测EPERM，保全后只读证实后来ESRCH，再复验路径/inode清本次夹具，原故障日志保留。只调整为原5秒预算内等待未知结果，持续未知/仍活到期拒绝；`ui-fixture-review-03/REPORT.md`13/13确认未弱化停止/保全，原结论继续成立。
+- 当前主代理全文件12/12（原7项+5项新增门槛）、typecheck/diff通过；当前完整hash`be6f55ceed6843dc2334abe2d375dec02eef5e667ba794e52bfd3ee67ebca36a`与最新独立复审一致。证据`completion-03/ui-fixture-main-repair/probe-wait-regression.*`、`probe-wait-typecheck.*`及两复审目录。25ms轮询不是硬实时上限，不重置预算或期限后追加探测放行。
+- 限制：最初EPERM原因未知；同步spawn抛错时未创建child、目录保全，但可能没有parent-result，不能声称任何失败均有结果文件。日志上限为各256Ki个JS字符而非严格字节；同UID并发替换、全局PID竞态、父被强杀及隐式重启的所有路径未穷举。本功能不签M4全量/安装/正式性能。
+- 本次只提交`tests/integration/agents-panel.test.ts`及本节实施记录，不夹带PM存储、后端退场或用户AGENTS/计划。实际提交号在成功后核实。
+
 ## M4-QUERY-BENCHMARK-HARNESS-01：固定查询测量装置
 
 - 已交付`tests/helpers/m4-query-benchmark.ts`和`tests/m4-query-benchmark.test.ts`。formal参数固定1000个不同文件（600脚本/300Go/100spec含schema）、文本≤20MiB、closed档位0/1000/10000、每种查询100样本；热态精确500ms、有限事实包2000ms参考门槛不变。smoke明确只作缩小装置自检，不签性能或阶段验收。
