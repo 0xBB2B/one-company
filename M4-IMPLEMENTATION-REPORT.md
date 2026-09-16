@@ -468,3 +468,31 @@ M4-LEGACY-RETIRE-01 两次真实实现为 5e31a7ad-5585-426、db229c9b-3bde-4ee�
 - 证据：`completion-03/git-prerequisite/task-02e/pm-unit/sdk-worktree-receipt/attempt-01/`、`attempt-02/`、`main-integration.json`、`main-node22.log/.exit`，及同级`sdk-worktree-receipt-review-01/REVIEW.md`和验证记录；根目录为`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/`。首轮setup保护缺口及配置/证据格式错误原记录保留。
 - 对应验收：支持M4-AC8及§14.4的真实证据/测试资源归属前置；不单凭收据签M4-AC12—14全项。收据本身不证明进程结束、不授权删除；PM cleanup消费者、F5完整账本、真实SDK/daemon和Linux本功能验证均未完成。全阶段M4与TaskB/B2继续按实际缺项推进。
 - 本地保存：本功能通过必要验证及独立/主代理核对后，按既有授权限定提交；实际提交号由提交后核验并另记证据，不预写成功号。
+
+## M4-PM-Q1：纯结束状态模型独立功能整合
+
+- 完成范围：`tests/helpers/pm-sdk-quiescence-state.mjs` 与 `tests/pm-sdk-quiescence-state.test.ts`。模型无外部模块依赖、不执行进程/网络/SDK/目录删除；测试仅依赖该helper、Node内建模块与已声明Vitest。主代理核当前package/锁文件/测试配置与HEAD无差异，本功能不捆绑未提交的TaskB/B2、PMfixture、daemon或legacy实现。
+- 当前行为：原owner/epoch与原资源/适用handle确定来源；五个子流入口共享保护边界，流校验先于auth/fact完整外壳及载荷。来源未成立不污染，已认证拒收永久保全，日志满额不替换首个异常。reserved/bound/close、独立group、连续序号与完整EOF分别记录；父group独立于子流；执行域终止判定单调锁存，坏消息不复活stop；已发出回收的原attempt使用有界固定终态槽保留实际结果及原错误。
+- 状态边界：case/stop/正常执行、物理结束候选、回收候选、实际removed及overallPass分列。`executionPassCandidate`只表示独立业务条件；协议损坏阻断physical/reclaim/integrity/overall。`stopDomain=execution-tree`只是适用域声明；所有候选仅诊断，不能证明OS来源或授予删除权。removed永久退役，原凭据只读诊断。
+- 任务尝试：原Q1两次实际实现后由主代理限定接手，依据及剩余范围保留在`q1-state/MAIN-TAKEOVER.md`；设计/审查由实际`5x/gpt-6-astra`完成。R1同根因三轮未闭合时已暂停局部补丁、核对统一入口设计后实施；没有扩大主代理对其他任务的接手范围。
+- 主代理验证：Node26.8.2与最低Node22.19.0分别执行专属无setup Vitest，均60/60、exit0；显式strict/checkJs两文件exit0。13个新增展开内含双故障、来源隔离、外壳/描述符、原引用、满额首错等组合，组合数不与Vitest展开数相加。当前21个变异均成功加载后触发精确ERR_ASSERTION。
+- 独立核验：review-04在未改变的helper上执行34+12安全探针，六个旧假PASS已阻断、R2—R5受影响回归通过；发现旧测试21个变异仅20个满足精确异常类型，exit1保留。随后仅两处测试断言增强，review-05核其字节范围、合法迟到正向、60原callbacks、原7变异逐项ERR_ASSERTION与随回调运行的新14变异、strict，全exit0。独立callback执行不是正式Vitest；review-05没有重复安全探针/全排列或Node22。主代理核当前hash、实际模型回执、命令退出与范围后，仅接受Q1纯模型。
+
+### 准确验证入口与证据
+
+证据根`P=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit`。
+
+- 当前源码：helper SHA-256 `a9ec0720df77577674f47e5f1d7317a61ab0bb5b9a573649e5992d8006da96a1`；test `9fac7721790548dacbb9c7392977748d13292c46ce2c43de2e000bde900849fd`。
+- 关键证据：`$P/q1-state-review-04/REVIEW.md`、`$P/q1-state-review-05/{REVIEW.md,verification.json,commands.json}`、`$P/q1-state/mutation-assertion-repair/`的两Node日志/严格类型检查/精确diff、`$P/q1-state/main-integration.json`。原失败、错误声明更正与边界偏差保留，不覆写为通过。
+- `Q1_CONFIG=$P/q1-state/attempt-02/vitest.pure-state.config.mjs`。它仅include本test，environment=node、pool=forks、isolate=true、fileParallelism=false、testTimeout=5000、setupFiles=[]，root绑定本检出。该临时证据配置不作为仓库产品配置交付；跨检出复现须保存同样的临时配置并绑定实际root。默认仓库setup会分配真实临时目录，不能把默认运行等同本次纯模型环境；未声称干净检出或安装验收已测。
+
+实际验证命令（Node22使用既有toolchain/runtime/node-v22.19.0-darwin-arm64/bin/node绝对入口执行同一Vitest命令）：
+
+```sh
+node node_modules/vitest/vitest.mjs run --config "$Q1_CONFIG" tests/pm-sdk-quiescence-state.test.ts --no-cache --bail=1
+node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node tests/helpers/pm-sdk-quiescence-state.mjs tests/pm-sdk-quiescence-state.test.ts
+```
+
+- 验收归属：仅M4-AC8的证据真实性与SDK测试安全装置前置；不签M4-AC12—14真实调度，也不以此宣布M4完成。普通项目typecheck不覆盖这些文件，不能替代上述显式检查。
+- 未覆盖：N1真实在途reserve与关门协调、Q2无业务Node/Unix机制实验、OS事实认证、父层未结束访问者、ROOT-B实际逐根回收、SDK/PM/daemon联调、真实网络/安装、Linux及M4完整验收。恶意Proxy、被改写内建对象和任意同步重入也不在Q1保证内。
+- 保存范围：本功能本地提交仅两文件及本实施小节；成功提交的实际编号和树/索引核对见`$P/q1-state/commit.json`。其他已有未提交成果保持原状，不push、不发布、不回收旧进程或用户资料。
