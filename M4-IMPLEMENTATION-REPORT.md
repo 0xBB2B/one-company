@@ -524,3 +524,32 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 主代理Node22使用既有toolchain/runtime/node-v22.19.0-darwin-arm64/bin/node绝对入口执行VM和`$A1/review-01/independent.mjs`。未运行默认Vitest、整仓测试、安装或真实资源；不对恶意Proxy/内建对象篡改、内存耗尽及任意依赖无限阻塞作保证。
 
 - 验收归属：M4-AC8证据真实性及§7.7/§13.4/§14.4测试装置子范围；主代理仅接受A1。本地提交仅两文件和本实施小节，实际编号与树/索引核对记录在`$A1/commit.json`，其他已有未提交成果保持。
+
+## M4-PM-Q2-A2A-BRIDGE：纯内存发送桥独立整合
+
+- 完成文件：`tests/helpers/pm-sdk-quiescence-bridge.mjs`、`tests/pm-sdk-quiescence-bridge.vm.mjs`。静态复用已审A1，不替换其工厂、不修改A1/Q1；没有接收器、Q1调用、preload或真实模块回退。首次实现由实际`5x/gpt-5.6-sol`完成，独立安全审查为实际`5x/gpt-6-astra`，主代理已核对源码、脚本、模型回执及证据。
+- 当前行为：将A1原R/B帧转换为带独立wire序号的R/B，只有完整新包回执及写后健康核对成功才返回旧A1帧长；C必须在B后，G是关门排空屏障但不等close齐备，T须全部B/C/G已报告且健康。G/T不是EOF。公开spawn直接使用A1函数，flush/finish失败不向finally抛错、不替换原native异常；失败不回滚q或重试，T后迟到A1错误仍导致失败。
+- 状态边界：桥首错与A1首错按存在位分别保留，诊断只冻壳，不深冻原receiver/异常/结果。槽/包/字节/诊断有界；正常最多26包，最大24字节单包。独立实测末次T失败可达27条桥诊断；更宽的32次/256字节/8192字节等不可达上限保留源码推导，未改常量假造覆盖。
+- 保证仅限纯发送契约：成功长度不证明实际OS写入，T不证明EOF/来源或资源结束。保存本地receiver不等跨进程ChildProcess；assertHealthy是当前守卫/桥健康检查，不是kill、reclaim或cleanup授权。A2B、Q1接线、OS独占流、最后健康传播、B1/SDK/ROOT-B及完整Q2/M4均未完成。
+
+### 验证与审查证据
+
+证据根`A2A=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-a2a`。
+
+- 源码SHA-256：bridge `08b46f06698f8d64749bd59521a3cb13e19b4e6e6054e040314162b1812c3ea7`；VM测试 `45de469ba073588b5239f5c91ee2f2693b48aac62d2265f0693ad3d8083d023a`；A1静态依赖保持 `cd98fc23d9215e6ab4d0133290086e643bbdca7b999e2a56a672d26d71f1a347`。
+- 原21组与显式strict/checkJs：实现者、主代理、独立审查均实际执行成功。独立审查另跑184个纯内存场景：每种包的回执/throw/缓冲变化，逐包重入/观察，多槽迟到排列、缓存快照、未报告A1槽、首错与预算边界；当前原测试只测到的组合不追溯扩大。
+- 七个变异逐项确认正确ESM与正确strict VM基线通过、mutant成功加载、再由真实AssertionError/ERR_ASSERTION命中。VM绑定同一个真实A1工厂及指定共享内建引用，不宣称完整loader/跨realm/跨进程等价。
+- 主代理完整读取`review-01/audit.mjs`与`mutations.mjs`，核Node26.8.2审查日志及起止hash，并以最低Node22.19.0绝对入口重跑原21组、同一184场景及七项逐项变异，均exit0。没有合并不同来源/版本的数量冒称更多独立用例，也不是Linux/真实Node机制验证。
+- 失败证据：实现代理的11次历史验证tool回执由主代理补档于`main-check/agent-validation-tool-receipts.json`，5次明确exit1，其余未单列数字的回执保持null，不伪填0。独立审查的一次realm比较装置失败单独保留，未计变异命中/实现失败；最终实际重跑退出码另存。
+- 关键证据：`review-01/{REVIEW.md,audit.mjs,mutations.mjs,start.json,end.json}`及对应.stdout.log/.exit.txt，`main-check/`主代理两Node日志，`main-integration.json`。必要诊断/失败记录保留，未创建需清理的被测资源。
+
+精确纯验证入口：
+
+```sh
+node tests/pm-sdk-quiescence-bridge.vm.mjs
+node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node tests/helpers/pm-sdk-quiescence-bridge.mjs tests/pm-sdk-quiescence-bridge.vm.mjs
+```
+
+主代理Node22使用既有`toolchain/runtime/node-v22.19.0-darwin-arm64/bin/node`执行原VM及`$A2A/review-01/{audit.mjs,mutations.mjs}`，均只操作内存替身和读取源码，不运行默认setup/生产/安装或真实资源。任意恶意Proxy、内建对象篡改、无限阻塞等不在本项保证内。
+
+- 验收归属：仅M4-AC8证据真实性及测试装置前置。主代理只接受A2A；本地提交限两新文件和本小节，实际提交号/树/空暂存区核对在`$A2A/commit.json`。其他未提交成果保持原状，不push或发布。
