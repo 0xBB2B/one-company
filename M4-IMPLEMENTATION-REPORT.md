@@ -458,3 +458,13 @@ M4-LEGACY-RETIRE-01 两次真实实现为 5e31a7ad-5585-426、db229c9b-3bde-4ee�
 - 直接依赖的共享scope子成果已另行保存为`89f828890d3573a53d42d960d19ccedc7e9a7e2a`，其代码与原02D已审版本一致，不夹入混合shell-registry。此处只提交五文件与本节记录；三个正常raw/rehello消费者增量仍保留工作区，两处无法直接应用HEAD且与legacy改动混合，本次不整文件提交，也不把它们说成已执行联调。
 - 未覆盖：真实业务bootstrap/daemon/SDK模型/索引/安装、三消费者运行及整个M4。后续worktree的分配归属仍不能由可变数组提供删除权，当前明确保全，不因核心第一层完成扩大删除许可。真实未知进程/强杀/网络隔离不由VM证明。
 - 证据根`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/daemon-fixture/`，main-repair/c12-*及review-03/04。本地提交号完成后核实，不宣称M4通过。
+
+## M4-PM-SDK-P1B-WORKTREE-RECEIPT：独立功能整合
+
+- 完成内容：`tests/helpers/repo-fixture.ts`增加worktree原始分配收据。私有WeakMap只绑定`addWorktree`成功返回的原对象；收据来自分配时`owned`，返回冻结副本，克隆/伪造对象不能取得收据，公开字段或列表变异不能改写原身份。原Git绑定、准备队列、失败和删除逻辑保持。
+- 测试文件：`tests/git-repo-fixture.test.ts`增加一个受管子进程用例，真实核对两处目录身份、冻结副本、克隆拒绝、独立收据和公开变异；原11例及imports逐字不变。所有repo/worktree位于父scope原分配临时根，子脚本不执行递归删除，父scope按原ChildProcess/真实close/组和目录身份处理收尾。
+- 验证：`node node_modules/vitest/vitest.mjs run tests/git-repo-fixture.test.ts --no-cache --bail=1`在Node26.8.2下12/12、exit0；主代理以既有最低Node22.19.0绝对入口执行相同文件与参数，12/12、exit0。显式两文件`tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --strict --allowImportingTsExtensions --skipLibCheck --types node`通过。
+- 独立审查：e0a5f26a-ae63-467实际`5x/gpt-6-astra`，13组静态/纯VM/类型核对通过；主代理重核54输入hash与11个实际依赖的HEAD字节一致，两目标任务前无既有差异。实现/返修使用实际`5x/gpt-5.6-sol`。本功能可以只提交两代码文件及本小节，不夹带TaskB/B2等混合成果。
+- 证据：`completion-03/git-prerequisite/task-02e/pm-unit/sdk-worktree-receipt/attempt-01/`、`attempt-02/`、`main-integration.json`、`main-node22.log/.exit`，及同级`sdk-worktree-receipt-review-01/REVIEW.md`和验证记录；根目录为`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/`。首轮setup保护缺口及配置/证据格式错误原记录保留。
+- 对应验收：支持M4-AC8及§14.4的真实证据/测试资源归属前置；不单凭收据签M4-AC12—14全项。收据本身不证明进程结束、不授权删除；PM cleanup消费者、F5完整账本、真实SDK/daemon和Linux本功能验证均未完成。全阶段M4与TaskB/B2继续按实际缺项推进。
+- 本地保存：本功能通过必要验证及独立/主代理核对后，按既有授权限定提交；实际提交号由提交后核验并另记证据，不预写成功号。

@@ -27,6 +27,75 @@ function errorCodes(error) {
 afterEach(() => cleanupGitDaemonFixtures());
 
 describe("repo fixture 的宿主 Git 绑定", () => {
+  test("worktree根收据只绑定addWorktree成功返回的原对象和分配身份", async () => withGitDaemonFixtures(async () => {
+    const scopeRoot = await ownedTempRoot("repo-fixture-worktree-receipt-scope-");
+    const result = await runJsonChild(productRoot, `
+import assert from "node:assert/strict";
+import { lstat } from "node:fs/promises";
+const fixtureUrl = ${JSON.stringify(fixtureUrl)};
+${loadFixtureSource}
+const repo = await fixture.createRepoFixture();
+const first = await fixture.addWorktree(repo);
+const second = await fixture.addWorktree(repo);
+const originalFirst = { ...first };
+const originalWorktrees = [...repo.worktrees];
+let summary;
+try {
+  const firstStat = await lstat(first.root);
+  const secondStat = await lstat(second.root);
+  const receipt = fixture.worktreeFixtureRootReceipt(first);
+  const repeated = fixture.worktreeFixtureRootReceipt(first);
+  const secondReceipt = fixture.worktreeFixtureRootReceipt(second);
+  assert.deepEqual(receipt, { path: first.root, dev: firstStat.dev, ino: firstStat.ino });
+  assert.deepEqual(secondReceipt, { path: second.root, dev: secondStat.dev, ino: secondStat.ino });
+  assert.equal(Object.isFrozen(receipt), true);
+  assert.equal(Reflect.set(receipt, "path", repo.root), false);
+  assert.deepEqual(fixture.worktreeFixtureRootReceipt(first), receipt);
+  assert.deepEqual(repeated, receipt);
+  assert.notStrictEqual(repeated, receipt);
+  assert.notDeepEqual(secondReceipt, receipt);
+
+  const rejected = [
+    fixture.worktreeFixtureRootReceipt({ ...first }),
+    fixture.worktreeFixtureRootReceipt(JSON.parse(JSON.stringify(first))),
+    fixture.worktreeFixtureRootReceipt(Object.create(first)),
+    fixture.worktreeFixtureRootReceipt({ root: first.root, branch: first.branch }),
+  ];
+  assert.deepEqual(rejected, [undefined, undefined, undefined, undefined]);
+
+  first.root = repo.root;
+  first.branch = "mutated-branch";
+  repo.worktrees.push(repo.root);
+  assert.deepEqual(fixture.worktreeFixtureRootReceipt(first), receipt);
+  assert.equal(fixture.worktreeFixtureRootReceipt({ root: repo.worktrees.at(-1), branch: first.branch }), undefined);
+  summary = {
+    firstIdentity: receipt,
+    secondIdentity: secondReceipt,
+    frozen: Object.isFrozen(receipt),
+    independentSnapshots: repeated !== receipt,
+    rejectedCloneKinds: rejected.length,
+    distinctWorktrees: secondReceipt.path !== receipt.path,
+    mutationKeptAllocatedIdentity: fixture.worktreeFixtureRootReceipt(first).path === originalFirst.root,
+    publicListMutationRejected: fixture.worktreeFixtureRootReceipt({ root: repo.worktrees.at(-1), branch: first.branch }) === undefined,
+  };
+} finally {
+  first.root = originalFirst.root;
+  first.branch = originalFirst.branch;
+  repo.worktrees.splice(0, repo.worktrees.length, ...originalWorktrees);
+}
+process.stdout.write(JSON.stringify(summary));
+`, [], { env: { PATH: process.env.PATH ?? "", TMPDIR: scopeRoot } });
+    expect(result).toMatchObject({
+      frozen: true,
+      independentSnapshots: true,
+      rejectedCloneKinds: 4,
+      distinctWorktrees: true,
+      mutationKeptAllocatedIdentity: true,
+      publicListMutationRejected: true,
+    });
+    expect(result.firstIdentity).not.toEqual(result.secondIdentity);
+  }));
+
   test("导入模块不初始化Git，也不执行Git或分配仓库根", async () => withGitDaemonFixtures(async () => {
     const scopeRoot = await ownedTempRoot("repo-fixture-import-scope-");
     const result = await runJsonChild(productRoot, `

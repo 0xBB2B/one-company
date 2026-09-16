@@ -15,12 +15,24 @@ export interface RepoFixtureRootReceipt {
   readonly dev: number;
   readonly ino: number;
 }
+export interface WorktreeFixtureRootReceipt {
+  readonly path: string;
+  readonly dev: number;
+  readonly ino: number;
+}
 class PreserveFixtureRootError extends AggregateError {}
 const repoRootReceipts = new WeakMap<object, OwnedRoot>();
+const worktreeRootReceipts = new WeakMap<object, OwnedRoot>();
 
 /** 只向持有原始 createRepoFixture 返回对象的夹具提供主根分配收据。 */
 export function repoFixtureRootReceipt(fixture: RepoFixture): RepoFixtureRootReceipt | undefined {
   const receipt = repoRootReceipts.get(fixture);
+  return receipt ? Object.freeze({ path: receipt.path, dev: receipt.dev, ino: receipt.ino }) : undefined;
+}
+
+/** 只向持有原始 addWorktree 返回对象的夹具提供worktree根分配收据。 */
+export function worktreeFixtureRootReceipt(fixture: WorktreeFixture): WorktreeFixtureRootReceipt | undefined {
+  const receipt = worktreeRootReceipts.get(fixture);
   return receipt ? Object.freeze({ path: receipt.path, dev: receipt.dev, ino: receipt.ino }) : undefined;
 }
 
@@ -198,7 +210,9 @@ export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
     await prepareWorktree(repoRoot, branch, owned);
     await assertOwnedRoot(owned);
     worktrees.push(owned.path);
-    return { root: owned.path, branch };
+    const fixture = { root: owned.path, branch };
+    worktreeRootReceipts.set(fixture, Object.freeze({ ...owned }));
+    return fixture;
   } catch (error) {
     return failCreation(owned, error);
   }
