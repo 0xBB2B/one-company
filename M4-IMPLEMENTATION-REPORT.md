@@ -496,3 +496,31 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 验收归属：仅M4-AC8的证据真实性与SDK测试安全装置前置；不签M4-AC12—14真实调度，也不以此宣布M4完成。普通项目typecheck不覆盖这些文件，不能替代上述显式检查。
 - 未覆盖：N1真实在途reserve与关门协调、Q2无业务Node/Unix机制实验、OS事实认证、父层未结束访问者、ROOT-B实际逐根回收、SDK/PM/daemon联调、真实网络/安装、Linux及M4完整验收。恶意Proxy、被改写内建对象和任意同步重入也不在Q1保证内。
 - 保存范围：本功能本地提交仅两文件及本实施小节；成功提交的实际编号和树/索引核对见`$P/q1-state/commit.json`。其他已有未提交成果保持原状，不push、不发布、不回收旧进程或用户资料。
+
+## M4-PM-Q2-A1：纯同步原型创建守卫独立整合
+
+- 完成文件：`tests/helpers/pm-sdk-quiescence-adapter.mjs`、`tests/pm-sdk-quiescence-adapter.vm.mjs`。helper无模块导入/真实回退；独立测试仅用Node assert/vm及读取helper源码的fs，不依赖生产、SDK、Q1或默认测试setup。仅首次实现交付，实际实现模型`5x/gpt-5.6-sol`，主代理核对后由实际`5x/gpt-6-astra`独立审查。
+- 实际契约：原receiver在依赖调用前保存；原this/参数/返回与同步throw保留，reserve完整写入并复查后才调用原方法。native后的bound报告失败锁存整轮失败而不替换原返回；全局首错与nativeOutcome分开，所有falsy值按存在位保留。观察回调不向事件栈抛守卫错误；关门不撤销已进入native的调用，重入与后续创建不能绕过失败锁存。
+- 固定预算：8 slots、32普通事实、32次写、单帧256字节、总8192字节。实际合法帧仅ASCII R/B；更强slot/pid门槛使正常上界为16次写、21字节单帧、200总字节，未篡改常量时部分次级超限不可达，未将源码推导冒称运行覆盖。原receiver、native结果和首错不因日志超额丢失，snapshot/owned只冻结视图壳。
+- 明确边界：该守卫仅记录本地创建尝试；原receiver引用不证明native句柄仍有效，不提供kill权或结束/删除候选。spawn返回0不是整体通过，唯一PASS出口须核assertHealthy和snapshot。A2接收解码/Q1接线、preload、真实Node/FD/EventEmitter、SDK/daemon、ROOT-B、N1/唯一creator死亡及整个Q2/M4均未完成。
+
+### 验证、审查与证据
+
+证据根`A1=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-a1`。
+
+- 当前SHA-256：helper `cd98fc23d9215e6ab4d0133290086e643bbdca7b999e2a56a672d26d71f1a347`；VM测试 `79674365cb09686ce6e5d46f6e2f19454e7b9bbefe52a8185dc50582b937b038`。
+- 实现与主代理均执行原VM 21组及显式strict/checkJs，exit0；独立审查再执行同两命令，并在真实ESM导入/严格VM各执行141案例（共282次，不是282种不同场景）。六个变异均在原实现不变量通过、变异成功加载后，由真实AssertionError/ERR_ASSERTION命中；没有以加载/语法错误冒充反证。
+- 主代理完整读取`review-01/independent.mjs`，核原日志/退出/hash并在最低Node22.19.0执行原21组及同一独立脚本282案例/六变异，exit0。Node26.8.2与Node22是本机纯内存执行，不是Linux或真实Node进程机制验证。
+- 原21组与独立补测分开：bound写回执完整矩阵、缓冲区分离/byteLength遮蔽、更多falsy值及各阶段组合由独立脚本补测；不追溯扩大仓库原测试覆盖。Promise只作为非法回执/原值样本，不保证撤销任意异步依赖副作用。
+- 必要证据：`attempt-01/DELIVERY.md`及`attempt-failures.log`，`review-01/{REVIEW.md,independent.mjs,independent.log,start.json,end.json}`，`main-check/`两Node日志，`main-integration.json`。早期帧长度误算、TS缩窄、VM严格模式装置错误原记录保留，未降低校验参数。
+
+精确纯验证入口：
+
+```sh
+node tests/pm-sdk-quiescence-adapter.vm.mjs
+node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node tests/helpers/pm-sdk-quiescence-adapter.mjs tests/pm-sdk-quiescence-adapter.vm.mjs
+```
+
+主代理Node22使用既有toolchain/runtime/node-v22.19.0-darwin-arm64/bin/node绝对入口执行VM和`$A1/review-01/independent.mjs`。未运行默认Vitest、整仓测试、安装或真实资源；不对恶意Proxy/内建对象篡改、内存耗尽及任意依赖无限阻塞作保证。
+
+- 验收归属：M4-AC8证据真实性及§7.7/§13.4/§14.4测试装置子范围；主代理仅接受A1。本地提交仅两文件和本实施小节，实际编号与树/索引核对记录在`$A1/commit.json`，其他已有未提交成果保持。
