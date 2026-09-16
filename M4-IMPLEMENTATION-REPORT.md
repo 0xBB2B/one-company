@@ -450,3 +450,11 @@ M4-LEGACY-RETIRE-01 两次真实实现为 5e31a7ad-5585-426、db229c9b-3bde-4ee�
 - 从原02D中单独整合`tests/helpers/git-daemon-fixture.ts`：固定scope的真实spawn工厂、先登记的在途操作、关闭hook和保全原因传递，支持宿主独立清理及迟到操作拒绝。它是已完成并独立审查过的共享测试基础模块，不新增实现任务、不改变02D两次失败记录，也不夹入shell-registry的混合生产差异。
 - 当前SHA与02D `r2-final-inputs.json`相同，原02D review-03/04及后续02E-B相关验证适用同一helper字节；当前节点/最低Node的116项关联回归均通过，既有git-daemon-fixture VM测试已在HEAD且验证通过。必要独立证据仍在git-prerequisite/task-02d/main-repair及review-02d-03/04，后续使用者证据在task-02e/daemon-fixture/main-repair。
 - 本次只提交这个共享依赖及本节记录，供已验证的02E-B夹具核心使用；不把它称为整个02D已提交，也不签业务daemon、M4或实际安装。其它混合改动继续保留。
+
+#### M4-GIT-02E-B 共享daemon夹具核心第一层完成
+
+- 整合`tests/helpers/daemon-harness.ts`、`temp-home.ts`、`repo-fixture.ts`及`tests/daemon-harness.test.ts`、`daemon-harness-vm.test.ts`五文件：原allocator收据、固定输入/目录与Git证明、Raw/default-token与便利认证、一次结算、完整根/身份检查、取消/fence/期限、真实close与进程组/逐根删除/未知保全、创建期外层清理、硬字节预算；不新增生产RPC或业务身份。
+- 证据：主代理当前明确6测试文件Node26/最低Node22均116/116，项目tsc及两测试文件单独strict tsc通过；独立review-03核S1—S6并找到C1/C2，review-04复核两窄修及正常对照8组通过，终点八SHA/HEAD/暂存不变。主代理已完整读取报告并复算当前八hash相符；真实与VM范围按原日志区分。
+- 直接依赖的共享scope子成果已另行保存为`89f828890d3573a53d42d960d19ccedc7e9a7e2a`，其代码与原02D已审版本一致，不夹入混合shell-registry。此处只提交五文件与本节记录；三个正常raw/rehello消费者增量仍保留工作区，两处无法直接应用HEAD且与legacy改动混合，本次不整文件提交，也不把它们说成已执行联调。
+- 未覆盖：真实业务bootstrap/daemon/SDK模型/索引/安装、三消费者运行及整个M4。后续worktree的分配归属仍不能由可变数组提供删除权，当前明确保全，不因核心第一层完成扩大删除许可。真实未知进程/强杀/网络隔离不由VM证明。
+- 证据根`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/daemon-fixture/`，main-repair/c12-*及review-03/04。本地提交号完成后核实，不宣称M4通过。

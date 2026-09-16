@@ -10,7 +10,19 @@ const execFileAsync = promisify(execFile);
 const GIT_SETUP_CONFIG = ["-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "core.hooksPath=/dev/null"];
 
 interface OwnedRoot { path: string; dev: number; ino: number }
+export interface RepoFixtureRootReceipt {
+  readonly path: string;
+  readonly dev: number;
+  readonly ino: number;
+}
 class PreserveFixtureRootError extends AggregateError {}
+const repoRootReceipts = new WeakMap<object, OwnedRoot>();
+
+/** 只向持有原始 createRepoFixture 返回对象的夹具提供主根分配收据。 */
+export function repoFixtureRootReceipt(fixture: RepoFixture): RepoFixtureRootReceipt | undefined {
+  const receipt = repoRootReceipts.get(fixture);
+  return receipt ? Object.freeze({ path: receipt.path, dev: receipt.dev, ino: receipt.ino }) : undefined;
+}
 
 function reportPreserved(root: string, reason: string): void {
   console.error(JSON.stringify({ status: "repo_fixture_preserved", reason, root }));
@@ -149,7 +161,9 @@ export async function createRepoFixture(): Promise<RepoFixture> {
     checkedHostGit([owned.path]);
     await initRepo(owned.path, owned);
     await assertOwnedRoot(owned);
-    return { root: owned.path, worktrees: [] };
+    const fixture = { root: owned.path, worktrees: [] };
+    repoRootReceipts.set(fixture, Object.freeze({ ...owned }));
+    return fixture;
   } catch (error) {
     return failCreation(owned, error);
   }
