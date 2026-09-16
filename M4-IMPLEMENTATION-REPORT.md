@@ -436,3 +436,11 @@ M4-LEGACY-RETIRE-01 两次真实实现为 5e31a7ad-5585-426、db229c9b-3bde-4ee�
 - 对应要求：计划§3.3/§13.3系统已装Git、§7.7/§8.6进程和身份边界、§13.4真实性，以及M4-AC4/AC8相关运行前提；不据此签全部AC或整个M4。
 - 未覆盖：真实安装daemon/SDK/数据库启动闭环，旧hello测试整体迁移，range/Shell最终执行边界，本轮Linux真实daemon路径及完整TaskB/M4回归。02B其余文件仍因TaskB混合依赖暂未提交；共用纯helper的本次整合不代表02B已提交。
 - 证据根：`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/`；具体见`task-02c/main-repair/`、`review-02c-02/`、`review-02c-03/`。本地提交号由提交后记录核验，不虚填。
+
+#### M4-GIT-02E-A-REPO-FIXTURE 限定完成
+
+- 完成：`tests/helpers/repo-fixture.ts`明确测试宿主入口初始化固定Git、使用绑定绝对路径及命令前后复验；setup环境白名单与命令级maintenance/gc/hook限制；自产根首次真目录及创建期dev/ino复核；workspace/worktree和同仓队列适用同一保护，未知/绑定失效保全。`tests/git-repo-fixture.test.ts`覆盖上述入口/配置/失败及目录竞争，顶层afterEach负责外层scope关闭。
+- 当前验证：`pnpm exec vitest run tests/git-repo-fixture.test.ts tests/local-identity.test.ts tests/managed-git.test.ts --no-cache`本机65/65；最低Node22.19.0同3文件65/65；`pnpm run typecheck`与限定diff-check通过。文件未与其它任务混写，不涉及生产或global setup。
+- 独立审查：review-01分类及固定绑定限定有效；review-02完成原R1修复复核，三个真实FS/Git场景、独立单文件11/11、21项分类/队列VM及2项外层清理VM通过。主代理已读报告/终点对比/资源记录，重新核两SHA/HEAD一致、真实probe scope不存在及handles=0；不把VM计成真实OS故障。
+- 对应计划§3.3/§13.3 Git前置与§13.4验证真实性及M4相关夹具前提。未覆盖真实signal/timeout/worker强杀/未知进程及rm部分失败；不承诺FS检查到写入原子，不扩大未改removeRepoFixture的调用者信任边界，不签整个M4/TaskB/安装。
+- 证据：`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/repo-fixture/`下repair-01与review-01/02；本地提交完成后记录实际号，不夹入其它未提交成果。
