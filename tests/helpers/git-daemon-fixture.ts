@@ -25,9 +25,12 @@ interface Scope {
   sockets: Set<SocketRecord>;
   servers: Set<ServerRecord>;
   cleanup?: Promise<void>;
+  closingHooks: Set<() => Promise<void>>;
+  retained: unknown[];
 }
 const context = new AsyncLocalStorage<Scope>();
 const scopes = new Set<Scope>();
+const childRecords = new WeakMap<ChildProcess, { scope: Scope; record: ChildRecord }>();
 const CLOSE_MS = 1_000;
 const OUTPUT_BYTES = 2 * 1024 * 1024;
 
@@ -45,23 +48,25 @@ function bounded<T>(promise: Promise<T>, ms: number, label: string): Promise<T> 
     timer = setTimeout(() => reject(new Error(label)), ms);
   })]).finally(() => clearTimeout(timer));
 }
-function operation<T>(scope: Scope, run: () => Promise<T>): Promise<T> {
-  assertOpen(scope);
-  const pending = Promise.resolve().then(async () => {
-    assertOpen(scope);
-    const result = await run();
-    assertOpen(scope);
-    return result;
-  });
+function operation<T>(scope: Scope, run: () => Promise<T>, cleanup = false): Promise<T> {
+  if (!cleanup) assertOpen(scope);
+  let resolve!: (value: T | PromiseLike<T>) => void, reject!: (error: unknown) => void;
+  const pending = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   scope.pending.add(pending);
   void pending.then(() => scope.pending.delete(pending), () => scope.pending.delete(pending));
+  try {
+    Promise.resolve(run()).then((result) => {
+      try { if (!cleanup) assertOpen(scope); resolve(result); }
+      catch (error) { reject(error); }
+    }, reject);
+  } catch (error) { reject(error); }
   return pending;
 }
 function reportPreserved(scope: Scope, reason: string): void {
   console.error(JSON.stringify({ status: "git_daemon_fixture_preserved", reason, roots: [...scope.roots.keys()], pending: scope.pending.size }));
 }
 export async function withGitDaemonFixtures<T>(run: () => Promise<T>): Promise<T> {
-  const scope: Scope = { closed: false, pending: new Set(), roots: new Map(), children: new Set(), sockets: new Set(), servers: new Set() };
+  const scope: Scope = { closed: false, pending: new Set(), roots: new Map(), children: new Set(), sockets: new Set(), servers: new Set(), closingHooks: new Set(), retained: [] };
   scopes.add(scope);
   return context.run(scope, async () => {
     let failed = false, primary: unknown;
@@ -181,6 +186,49 @@ function groupGone(pid: number): boolean {
   try { process.kill(-pid, 0); return false; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 }
+function registerChild(scope: Scope, child: ChildProcess): ChildRecord {
+  assertOpen(scope);
+  const existing = childRecords.get(child);
+  if (existing) {
+    if (existing.scope !== scope) throw new Error("ChildProcess 已属于其他测试scope");
+    return existing.record;
+  }
+  const record = { child, closed: false } as ChildRecord;
+  record.done = new Promise((resolve) => child.once("close", () => { record.closed = true; resolve(); }));
+  child.once("error", (error) => { record.spawnError = error; });
+  scope.children.add(record);
+  childRecords.set(child, { scope, record });
+  return record;
+}
+export function createOwnedSpawner(): typeof spawn {
+  const scope = currentScope();
+  assertOpen(scope);
+  const nativeSpawn = spawn;
+  return ((...args: Parameters<typeof spawn>) => {
+    assertOpen(scope);
+    const options = args[2] ?? args[1];
+    if (!options || typeof options !== "object" || Array.isArray(options) || !("detached" in options) || options.detached !== true) {
+      throw new Error("自有进程必须使用独立进程组");
+    }
+    const child = nativeSpawn(...args);
+    registerChild(scope, child);
+    return child;
+  }) as typeof spawn;
+}
+
+/** 绑定创建时的scope，旧异步链不能借用后来测试的scope。 */
+export function captureFixtureScope() {
+  const scope = currentScope();
+  assertOpen(scope);
+  return Object.freeze({
+    assertOpen: () => assertOpen(scope),
+    isClosed: () => scope.closed,
+    run: <T>(run: () => Promise<T>) => operation(scope, run),
+    cleanupOperation: <T>(run: () => Promise<T>) => operation(scope, run, true),
+    onClosing(run: () => Promise<void>) { assertOpen(scope); scope.closingHooks.add(run); },
+    preserve(error: unknown) { scope.retained.push(error); reportPreserved(scope, "外部资源尚未确认收尾"); },
+  });
+}
 async function confirmChild(record: ChildRecord): Promise<void> {
   await bounded(record.done, CLOSE_MS, "子进程未观察到真实close");
   const pid = record.child.pid;
@@ -229,9 +277,7 @@ export function runOwnedProcess(
     const env = isolatedGitEnvironment(home, options.env);
     assertOpen(scope);
     const child = spawn(executable, [...args], { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-    const record = { child, closed: false } as ChildRecord;
-    record.done = new Promise((resolve) => child.once("close", () => { record.closed = true; resolve(); }));
-    scope.children.add(record);
+    const record = registerChild(scope, child);
     let failure: Error | undefined, total = 0;
     const stdout: Buffer[] = [], stderr: Buffer[] = [];
     const fail = (error: Error) => { failure ??= error; void stopChild(record).catch(() => undefined); };
@@ -273,7 +319,10 @@ function cleanupScope(scope: Scope): Promise<void> {
   scope.cleanup = (async () => {
     const errors: unknown[] = [];
     const attempt = async (run: () => Promise<void>) => { try { await run(); } catch (error) { errors.push(error); } };
-    await Promise.all([...scope.children].map((record) => attempt(async () => { await stopChild(record); scope.children.delete(record); })));
+    const closing = [...scope.closingHooks].map((run) => attempt(async () => {
+      await bounded(Promise.resolve().then(run), 2 * CLOSE_MS, "外部资源关闭超时");
+    }));
+    await Promise.all([...closing, ...[...scope.children].map((record) => attempt(async () => { await stopChild(record); scope.children.delete(record); }))]);
     await Promise.all([...scope.sockets].map((record) => attempt(async () => {
       if (!record.closed) record.socket.destroy();
       await bounded(record.done, CLOSE_MS, "socket未观察到真实close");
@@ -281,6 +330,7 @@ function cleanupScope(scope: Scope): Promise<void> {
     })));
     await attempt(async () => { await bounded(Promise.allSettled([...scope.pending]), 2 * CLOSE_MS, "夹具在途操作未完成"); });
     await Promise.all([...scope.servers].map((record) => attempt(async () => { await record.close(); scope.servers.delete(record); })));
+    errors.push(...scope.retained);
     if (scope.pending.size || scope.children.size || scope.sockets.size || scope.servers.size) errors.push(new Error("仍有未完成的自有资源"));
     if (!errors.length) {
       for (const [root, identity] of [...scope.roots].reverse()) {

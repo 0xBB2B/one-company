@@ -444,3 +444,9 @@ M4-LEGACY-RETIRE-01 两次真实实现为 5e31a7ad-5585-426、db229c9b-3bde-4ee�
 - 独立审查：review-01分类及固定绑定限定有效；review-02完成原R1修复复核，三个真实FS/Git场景、独立单文件11/11、21项分类/队列VM及2项外层清理VM通过。主代理已读报告/终点对比/资源记录，重新核两SHA/HEAD一致、真实probe scope不存在及handles=0；不把VM计成真实OS故障。
 - 对应计划§3.3/§13.3 Git前置与§13.4验证真实性及M4相关夹具前提。未覆盖真实signal/timeout/worker强杀/未知进程及rm部分失败；不承诺FS检查到写入原子，不扩大未改removeRepoFixture的调用者信任边界，不签整个M4/TaskB/安装。
 - 证据：`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/repo-fixture/`下repair-01与review-01/02；本地提交完成后记录实际号，不夹入其它未提交成果。
+
+#### M4-GIT-02D 已验证scope子成果独立保存
+
+- 从原02D中单独整合`tests/helpers/git-daemon-fixture.ts`：固定scope的真实spawn工厂、先登记的在途操作、关闭hook和保全原因传递，支持宿主独立清理及迟到操作拒绝。它是已完成并独立审查过的共享测试基础模块，不新增实现任务、不改变02D两次失败记录，也不夹入shell-registry的混合生产差异。
+- 当前SHA与02D `r2-final-inputs.json`相同，原02D review-03/04及后续02E-B相关验证适用同一helper字节；当前节点/最低Node的116项关联回归均通过，既有git-daemon-fixture VM测试已在HEAD且验证通过。必要独立证据仍在git-prerequisite/task-02d/main-repair及review-02d-03/04，后续使用者证据在task-02e/daemon-fixture/main-repair。
+- 本次只提交这个共享依赖及本节记录，供已验证的02E-B夹具核心使用；不把它称为整个02D已提交，也不签业务daemon、M4或实际安装。其它混合改动继续保留。
