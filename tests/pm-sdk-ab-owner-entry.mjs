@@ -4,7 +4,11 @@ import { closeSync, fstatSync } from "node:fs";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createSdkTestScene, sdkTestSceneReceipt } from "./helpers/pm-sdk-private-scene.mjs";
+import {
+  createSdkTestScene,
+  sdkTestSceneFailureReceipt,
+  sdkTestSceneReceipt,
+} from "./helpers/pm-sdk-private-scene.mjs";
 import {
   FIXTURE, TEST_NAME, PRELOAD_URL, rejection, createFailureLatch,
   createControlWriter, createControlReader, installProcessGuard, assertEnvironment,
@@ -18,6 +22,24 @@ const CONFIG_HASH = hash(Buffer.from(CONFIG_BYTES));
 // Strong retention is deliberate: no resource or directory deletion API exists.
 const scenes = new Set();
 const runReceipts = new WeakMap();
+const ownerRunReceipts = new WeakMap();
+/**
+ * @typedef {"guard-install" | "environment" | "fixture-check" | "scene-allocation" |
+ *   "scene-receipt" | "scene-verification" | "child-launch" | "child-observation" |
+ *   "handshake" | "child-wait" | "post-run-verification" | "candidate-record" |
+ *   "candidate-output" | "complete"} OwnerRunPhase
+ */
+/** @typedef {Readonly<{scene: object | null}>} OwnerRunResult */
+/**
+ * @typedef {Readonly<{
+ *   status: "preserved",
+ *   phase: string,
+ *   allocationAttempted: boolean,
+ *   projectRoot: string | null,
+ *   root: string | null,
+ *   rootIdentity: string | null,
+ * }>} AllocationFailure
+ */
 /** @param {Uint8Array} bytes */
 function hash(bytes) { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
 
@@ -35,6 +57,35 @@ export function ownerReceipt(handle) {
     root: scene.root, preserved: true, ...run.facts,
     executionCandidate: run.facts.executionCandidate === true && !run.latch.snapshot().failed,
   }) : undefined;
+}
+
+/** @param {AllocationFailure | undefined} receipt */
+function allocationFailureSnapshot(receipt) {
+  return receipt === undefined ? undefined : Object.freeze({
+    status: receipt.status,
+    phase: receipt.phase,
+    allocationAttempted: receipt.allocationAttempted,
+    projectRoot: receipt.projectRoot,
+    root: receipt.root,
+    rootIdentity: receipt.rootIdentity,
+  });
+}
+
+/**
+ * Queries only the original result identity. The phase is the last entry stage
+ * reached; it is not a claim about the location of a later asynchronous error.
+ * @param {unknown} originalResult
+ */
+export function ownerRunReceipt(originalResult) {
+  if ((typeof originalResult !== "object" || originalResult === null) && typeof originalResult !== "function") return undefined;
+  const run = ownerRunReceipts.get(originalResult);
+  if (!run) return undefined;
+  const failure = run.latch.snapshot();
+  return Object.freeze({
+    owner: ownerReceipt(run.scene),
+    failure: Object.freeze({ failed: failure.failed, code: failure.code, phase: run.phase }),
+    allocationFailure: allocationFailureSnapshot(run.allocationFailure),
+  });
 }
 
 /** @typedef {{root: string, parentBinding: string, configHash: string, vitestTarget: string}} Coordinates */
@@ -258,25 +309,39 @@ export async function main() {
   }
   if (!authorized(args)) { process.exitCode = 64; return; }
   const latch = createFailureLatch();
-  const guard = installProcessGuard("O", latch, () => {}, () => { throw rejection(); });
+  /** @type {ReturnType<typeof installProcessGuard> | undefined} */ let guard;
   /** @type {object | undefined} */ let scene;
+  /** @type {AllocationFailure | undefined} */ let allocationFailure;
+  /** @type {OwnerRunPhase} */ let phase = "guard-install";
   try {
+    guard = installProcessGuard("O", latch, () => {}, () => { throw rejection(); });
+    phase = "environment";
     if (process.execPath !== NODE || process.version !== "v26.8.2" || process.execArgv.length !== 0 ||
         process.platform !== "darwin" || process.env.NODE_OPTIONS !== undefined || process.env.NODE_PATH !== undefined ||
         process.env.NODE_V8_COVERAGE !== undefined) throw rejection();
     // Fixture existence is checked before allocation; no default-suite fallback.
+    phase = "fixture-check";
     if (!(await lstat(join(PROJECT, FIXTURE))).isFile()) throw rejection();
-    scene = await createSdkTestScene();
+    phase = "scene-allocation";
+    try { scene = await createSdkTestScene(); }
+    catch (error) {
+      allocationFailure = /** @type {AllocationFailure | undefined} */ (sdkTestSceneFailureReceipt(error));
+      throw error;
+    }
     scenes.add(scene);
+    phase = "scene-receipt";
     const receipt = sdkTestSceneReceipt(scene);
     if (!receipt) throw rejection();
     const c = { root: receipt.root, configHash: receipt.configHash, parentBinding: receipt.parentBinding, vitestTarget: receipt.vitestTarget };
+    phase = "scene-verification";
     await verifyCoordinates(c);
     const nonce = randomBytes(16).toString("hex");
+    phase = "child-launch";
     const child = guard.launch(NODE, [ENTRY, "--internal-pm-sdk-ab-owner-A", nonce], {
       cwd: PROJECT, env: environment(c), detached: false, stdio: ["pipe", "pipe", "pipe", "pipe"],
     });
     guard.seal();
+    phase = "child-observation";
     const original = guard.original();
     const stream = child.stdio[3];
     if (!original || original.child !== child || !stream || !child.stdin || !child.stdout || !child.stderr) throw rejection();
@@ -289,27 +354,44 @@ export async function main() {
       outputBytes += Buffer.isBuffer(chunk) ? chunk.length : 1048577;
       if (outputBytes > 1048576) latch.fail("library-output-budget");
     });
+    phase = "handshake";
     const handshake = Buffer.from(JSON.stringify({ v: 1, nonce, ...c }));
     if (handshake.length > 8192) throw rejection();
     child.stdin.end(handshake);
+    phase = "child-wait";
     const ended = await original.wait();
     const observed = original.snapshot();
+    phase = "post-run-verification";
     await verifyCoordinates(c);
     const candidate = ended && reader.snapshot().complete && observed.exitCode === 0 && observed.signal === null && !latch.snapshot().failed;
     guard.assert();
     if (!scene) throw rejection();
+    phase = "candidate-record";
     runReceipts.set(scene, Object.freeze({ latch, facts: Object.freeze({
       executionCandidate: candidate, aEnded: observed.ended,
       bEndedReported: reader.snapshot().complete, reclaim: "not-requested",
     }) }));
     if (!candidate) throw rejection();
+    phase = "candidate-output";
     process.stdout.write("PM_SDK_AB_EXECUTION_CANDIDATE_PRESERVED\n");
+    phase = "complete";
   } catch (error) {
     latch.fail("o-failed", error);
     if (scene) runReceipts.set(scene, Object.freeze({ latch, facts: Object.freeze({
       ...runReceipts.get(scene)?.facts, executionCandidate: false, reclaim: "not-requested",
     }) }));
-  } finally { guard.seal(); }
+  } finally {
+    try { guard?.seal(); }
+    catch (error) { latch.fail("o-guard-seal", error); }
+  }
+  const result = /** @type {OwnerRunResult} */ (Object.freeze({ scene: scene ?? null }));
+  ownerRunReceipts.set(result, Object.freeze({
+    scene: scene ?? null,
+    latch,
+    phase,
+    allocationFailure: allocationFailureSnapshot(allocationFailure),
+  }));
+  return result;
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {

@@ -116,10 +116,14 @@ class FakeProcess extends EventEmitter {
 }
 
 /** @typedef {{kind:"directory", mode:bigint, uid:bigint, dev:bigint, ino:bigint} | {kind:"file", mode:bigint, uid:bigint, dev:bigint, ino:bigint, bytes:Buffer} | {kind:"symlink", mode:bigint, uid:bigint, dev:bigint, ino:bigint, target:string}} MemoryEntry */
+/** @typedef {"before-allocation" | "attempt-no-path" | "path-no-identity"} SceneFailureMode */
 class SceneMemoryFs {
-  constructor() {
+  /** @param {SceneFailureMode | undefined} failureMode */
+  constructor(failureMode) {
     /** @type {Map<string, MemoryEntry>} */ this.entries = new Map();
     this.nextIno = 100n;
+    this.failureMode = failureMode;
+    /** @type {string | undefined} */ this.failedIdentityPath = undefined;
     this.addDirectory("/", 0o755n, 0n, 1n);
     this.addDirectory("/tmp", 0o1777n, 0n, 2n);
     this.addDirectory(PROJECT, 0o755n, 501n, 7n);
@@ -128,7 +132,7 @@ class SceneMemoryFs {
     this.addDirectory(ROOT, 0o700n, 501n, 7n, 77n);
     this.addFile(join(ROOT, "vitest.config.ts"), Buffer.from(CONFIG_BYTES), 0o600n, 501n, 7n);
     this.addFile(join(PROJECT, "vitest.config.ts"), Buffer.from(CONFIG_BYTES), 0o644n, 501n, 7n);
-    this.addFile(join(PROJECT, "package.json"), PACKAGE_BYTES, 0o644n, 501n, 7n);
+    this.addFile(join(PROJECT, "package.json"), failureMode === "before-allocation" ? Buffer.from("{") : PACKAGE_BYTES, 0o644n, 501n, 7n);
     this.addFile(fileURLToPath(ENTRY_URL), Buffer.from(ENTRY_SOURCE), 0o644n, 501n, 7n);
     this.addFile(fileURLToPath(HELPER_URL), Buffer.from(HELPER_SOURCE), 0o644n, 501n, 7n);
     this.addFile(join(PROJECT, "tests/fixtures/pm-sdk-ab-owner.fixture.ts"), Buffer.from(FIXTURE_SOURCE), 0o644n, 501n, 7n);
@@ -153,6 +157,7 @@ class SceneMemoryFs {
   }
   /** @param {string} target @param {{bigint?:boolean}} [options] */
   lstat = async (target, options = {}) => {
+    if (path.normalize(target) === this.failedIdentityPath) throw Object.freeze({ sceneFsFailure: "root-identity" });
     const value = this.entry(target);
     const numeric = (/** @type {bigint} */ number) => options.bigint ? number : Number(number);
     return {
@@ -181,8 +186,10 @@ class SceneMemoryFs {
   };
   /** @param {string} prefix */
   mkdtemp = async (prefix) => {
+    if (this.failureMode === "attempt-no-path") throw Object.freeze({ sceneFsFailure: "mkdtemp" });
     const target = `${prefix}memory01`;
     this.addDirectory(target, 0o755n, 501n, 3n);
+    if (this.failureMode === "path-no-identity") this.failedIdentityPath = path.normalize(target);
     return target;
   };
   /** @param {string} target @param {number} mode */
@@ -401,7 +408,7 @@ function aEnvironment() {
   };
 }
 
-/** @typedef {{unsafeConfig?:boolean, specs?:"one"|"empty"|"many"|"wrong", stop?:"before"|"after", earlyPatch?:(config:any)=>void, resolvedPatch?:(config:any)=>void, specProject?:"wrong", specPool?:string, duplicateStart?:boolean, testName?:string, testCount?:number, testState?:string, moduleState?:string, reason?:string, runErrors?:unknown[], unhandled?:unknown[], hang?:boolean, lateWorkerError?:boolean, childBehavior?:ChildBehavior}} StartBehavior */
+/** @typedef {{unsafeConfig?:boolean, specs?:"one"|"empty"|"many"|"wrong", stop?:"before"|"after", earlyPatch?:(config:any)=>void, resolvedPatch?:(config:any)=>void, specProject?:"wrong", specPool?:string, duplicateStart?:boolean, testName?:string, testCount?:number, testState?:string, moduleState?:string, reason?:string, runErrors?:unknown[], unhandled?:unknown[], hang?:boolean, lateWorkerError?:boolean, childBehavior?:ChildBehavior, sceneFailure?:SceneFailureMode, guardInstallFailure?:unknown}} StartBehavior */
 /** @param {StartBehavior} behavior @param {any} cp @param {FakeProcess} processLike */
 function createStartVitest(behavior, cp, processLike) {
   /** @type {any[]} */ const effects = [];
@@ -502,7 +509,7 @@ async function createEntryWorld(behavior = {}, entrySource = ENTRY_SOURCE) {
   const helperModule = await helperWorld.loadHelper();
   const start = createStartVitest(behavior, helperWorld.child.cp, processLike);
   const context = helperWorld.context;
-  const memoryFs = new SceneMemoryFs();
+  const memoryFs = new SceneMemoryFs(behavior.sceneFailure);
   const cryptoModule = await synthetic(context, "node:crypto", { createHash, randomBytes: () => Buffer.alloc(16, 1) });
   let fd3Closed = false;
   const fsModule = await synthetic(context, "node:fs", {
@@ -533,14 +540,34 @@ async function createEntryWorld(behavior = {}, entrySource = ENTRY_SOURCE) {
   const actualSceneNamespace = /** @type {any} */ (actualScene.namespace);
   let sceneCalls = 0;
   /** @type {object | undefined} */ let originalScene;
+  /** @type {unknown} */ let originalSceneFailure;
   const sceneModule = await synthetic(context, SCENE_URL.href, {
     async createSdkTestScene() {
       sceneCalls += 1;
-      originalScene = await actualSceneNamespace.createSdkTestScene();
-      return originalScene;
+      try {
+        originalScene = await actualSceneNamespace.createSdkTestScene();
+        return originalScene;
+      } catch (error) {
+        originalSceneFailure = error;
+        throw error;
+      }
     },
+    sdkTestSceneFailureReceipt(/** @type {unknown} */ value) { return actualSceneNamespace.sdkTestSceneFailureReceipt(value); },
     sdkTestSceneReceipt(/** @type {unknown} */ value) { return actualSceneNamespace.sdkTestSceneReceipt(value); },
   });
+  const entryHelperModule = Object.hasOwn(behavior, "guardInstallFailure")
+    ? await synthetic(context, `${HELPER_URL.href}?entry-guard-failure`, {
+      FIXTURE: /** @type {any} */ (helperModule.namespace).FIXTURE,
+      TEST_NAME: /** @type {any} */ (helperModule.namespace).TEST_NAME,
+      PRELOAD_URL: /** @type {any} */ (helperModule.namespace).PRELOAD_URL,
+      rejection: /** @type {any} */ (helperModule.namespace).rejection,
+      createFailureLatch: /** @type {any} */ (helperModule.namespace).createFailureLatch,
+      createControlWriter: /** @type {any} */ (helperModule.namespace).createControlWriter,
+      createControlReader: /** @type {any} */ (helperModule.namespace).createControlReader,
+      installProcessGuard() { throw behavior.guardInstallFailure; },
+      assertEnvironment: /** @type {any} */ (helperModule.namespace).assertEnvironment,
+    })
+    : helperModule;
   const vitestModule = await synthetic(context, "vitest/node", { startVitest: start.startVitest });
   const entry = new SourceTextModule(entrySource, {
     context, identifier: ENTRY_URL.href,
@@ -557,12 +584,12 @@ async function createEntryWorld(behavior = {}, entrySource = ENTRY_SOURCE) {
     if (specifier === "node:path") return pathModule;
     if (specifier === "node:url") return urlModule;
     if (specifier === "./helpers/pm-sdk-private-scene.mjs") return sceneModule;
-    if (specifier === "./helpers/pm-sdk-ab-owner.mjs") return helperModule;
+    if (specifier === "./helpers/pm-sdk-ab-owner.mjs") return entryHelperModule;
     throw new Error(`unexpected entry dependency: ${specifier}`);
   });
   await entry.evaluate();
   async function beginA() {
-    const promise = /** @type {Promise<void>} */ (/** @type {any} */ (entry.namespace).main());
+    const promise = /** @type {Promise<unknown>} */ (/** @type {any} */ (entry.namespace).main());
     await Promise.resolve();
     return { promise };
   }
@@ -574,12 +601,14 @@ async function createEntryWorld(behavior = {}, entrySource = ENTRY_SOURCE) {
     const pending = await beginA();
     for (const chunk of chunks) processLike.stdin.emit("data", chunk);
     if (end) processLike.stdin.emit("end");
-    await pending.promise;
+    return await pending.promise;
   }
   return {
     entry: /** @type {any} */ (entry.namespace), helper: /** @type {any} */ (helperModule.namespace), helperWorld,
     process: processLike, start, beginA, runA, memoryFs, sceneCalls: () => sceneCalls,
-    sceneHandle: () => originalScene, sceneReceipt: (/** @type {unknown} */ value) => actualSceneNamespace.sdkTestSceneReceipt(value),
+    sceneHandle: () => originalScene, sceneFailure: () => originalSceneFailure,
+    sceneReceipt: (/** @type {unknown} */ value) => actualSceneNamespace.sdkTestSceneReceipt(value),
+    sceneFailureReceipt: (/** @type {unknown} */ value) => actualSceneNamespace.sdkTestSceneFailureReceipt(value),
     fd3Closed: () => fd3Closed,
   };
 }
@@ -648,10 +677,10 @@ async function runOuter(completion, entrySource = ENTRY_SOURCE) {
   if (Object.hasOwn(completion, "ownerOutputThrow")) {
     world.process.stdout.write = () => { throw completion.ownerOutputThrow; };
   }
-  await world.entry.main();
+  const result = await world.entry.main();
   assert.equal(reportEndpoint.reports(), 1);
   assert.equal(reportEndpoint.reportWorld.writes.length, 6);
-  return { world, child, reportEndpoint };
+  return { world, child, reportEndpoint, result };
 }
 
 /** @param {Record<string, unknown>} [changes] */
@@ -680,13 +709,23 @@ async function check(name, run) {
 await check("公开gate与普通import零资源", async () => {
   const world = await createEntryWorld();
   world.process.argv = [NODE, "/virtual/not-direct.mjs", "--case=vitest-fork"];
-  await world.entry.main();
+  const result = await world.entry.main();
+  assert.equal(result, undefined);
   assert.equal(world.process.exitCode, 64);
   assert.equal(world.sceneCalls(), 0);
   assert.equal(world.helperWorld.child.children.length, 0);
   assert.equal(world.helperWorld.clock.intervals.size, 0);
   assert.equal(world.entry.authorized(["--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"]), true);
   assert.equal(world.entry.ownerReceipt(Object.freeze({})), undefined);
+  let reads = 0;
+  const opaque = new Proxy({}, {
+    get() { reads += 1; throw new Error("opaque result read"); },
+    ownKeys() { reads += 1; throw new Error("opaque result keys read"); },
+    getOwnPropertyDescriptor() { reads += 1; throw new Error("opaque result descriptor read"); },
+  });
+  assert.equal(world.entry.ownerRunReceipt(opaque), undefined);
+  assert.equal(world.entry.ownerRunReceipt(null), undefined);
+  assert.equal(reads, 0);
 });
 
 await check("O精确gate后使用真实Scene句柄和WeakMap收据完成四流", async () => {
@@ -702,10 +741,13 @@ await check("O精确gate后使用真实Scene句柄和WeakMap收据完成四流",
   const world = await createEntryWorld(behavior);
   world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
   world.process.env = {};
-  await world.entry.main();
+  const result = await world.entry.main();
   assert.equal(world.process.exitCode, undefined);
   assert.equal(world.sceneCalls(), 1);
   const handle = world.sceneHandle();
+  assert.ok(result);
+  assert.equal(result.scene, handle);
+  assert.equal(Object.isFrozen(result), true);
   assert.ok(handle);
   assert.equal(Reflect.ownKeys(handle).length, 0);
   assert.ok(world.sceneReceipt(handle));
@@ -718,6 +760,22 @@ await check("O精确gate后使用真实Scene句柄和WeakMap收据完成四流",
   assert.equal(world.entry.ownerReceipt(Object.assign({}, handle)), undefined);
   assert.equal(world.entry.ownerReceipt(world.sceneReceipt(handle)), undefined);
   assert.equal(world.entry.ownerReceipt(Object.freeze({})), undefined);
+  const runReceipt = world.entry.ownerRunReceipt(result);
+  const repeatedRunReceipt = world.entry.ownerRunReceipt(result);
+  assert.ok(runReceipt);
+  assert.notEqual(repeatedRunReceipt, runReceipt);
+  assert.equal(runReceipt.owner.executionCandidate, true);
+  assert.deepEqual({ ...runReceipt.failure }, { failed: false, code: null, phase: "complete" });
+  assert.equal(runReceipt.allocationFailure, undefined);
+  assert.equal(Object.isFrozen(runReceipt), true);
+  assert.equal(Object.isFrozen(runReceipt.failure), true);
+  assert.equal(world.entry.ownerRunReceipt({ scene: handle }), undefined);
+  let proxyReads = 0;
+  const proxyResult = new Proxy(result, { get() { proxyReads += 1; throw new Error("result proxy read"); } });
+  assert.equal(world.entry.ownerRunReceipt(proxyResult), undefined);
+  assert.equal(proxyReads, 0);
+  const otherWorld = await createEntryWorld();
+  assert.equal(otherWorld.entry.ownerRunReceipt(result), undefined);
   assert.equal(originalA.stdio.every((/** @type {FakeStream | null} */ stream) => stream?.closed === true), true);
   assert.equal(reportEndpoint.reports(), 1);
   assert.equal(reportEndpoint.reportWorld.writes.length, 6);
@@ -725,11 +783,103 @@ await check("O精确gate后使用真实Scene句柄和WeakMap收据完成四流",
   assert.equal(world.helperWorld.clock.intervals.size, 0);
 });
 
+await check("内部A成功仍返回undefined且不登记O结果", async () => {
+  const world = await createEntryWorld();
+  const result = await world.runA();
+  assert.equal(result, undefined);
+  assert.equal(world.entry.ownerRunReceipt(result), undefined);
+  assert.equal(world.fd3Closed(), true);
+});
+
+await check("O guard安装失败返回原结果身份和固定失败阶段", async () => {
+  let opaqueReads = 0;
+  const opaque = new Proxy(Object.create(null), {
+    get() { opaqueReads += 1; throw new Error("guard error read"); },
+    ownKeys() { opaqueReads += 1; throw new Error("guard error keys read"); },
+    getOwnPropertyDescriptor() { opaqueReads += 1; throw new Error("guard error descriptor read"); },
+  });
+  const world = await createEntryWorld({ guardInstallFailure: opaque });
+  world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
+  world.process.env = {};
+  const result = await world.entry.main();
+  assert.ok(result);
+  assert.equal(result.scene, null);
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(world.sceneCalls(), 0);
+  assert.equal(world.helperWorld.child.children.length, 0);
+  const receipt = world.entry.ownerRunReceipt(result);
+  assert.equal(receipt.owner, undefined);
+  assert.deepEqual({ ...receipt.failure }, { failed: true, code: "o-failed", phase: "guard-install" });
+  assert.equal(receipt.allocationFailure, undefined);
+  assert.equal(opaqueReads, 0);
+});
+
+await check("O Scene前置失败不伪造allocation事实", async () => {
+  const world = await createEntryWorld();
+  world.memoryFs.entries.delete(path.normalize(join(PROJECT, "tests/fixtures/pm-sdk-ab-owner.fixture.ts")));
+  world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
+  world.process.env = {};
+  const result = await world.entry.main();
+  assert.equal(result.scene, null);
+  assert.equal(world.sceneCalls(), 0);
+  const receipt = world.entry.ownerRunReceipt(result);
+  assert.equal(receipt.owner, undefined);
+  assert.deepEqual({ ...receipt.failure }, { failed: true, code: "o-failed", phase: "fixture-check" });
+  assert.equal(receipt.allocationFailure, undefined);
+});
+
+for (const [mode, expected] of /** @type {const} */ ([
+  ["before-allocation", { phase: "package-input", attempted: false, root: null, identity: null }],
+  ["attempt-no-path", { phase: "allocate-root", attempted: true, root: null, identity: null }],
+  ["path-no-identity", { phase: "secure-root", attempted: true, root: "/tmp/pi-s-memory01", identity: null }],
+])) {
+  await check(`O Scene factory失败保留安全定位:${mode}`, async () => {
+    const world = await createEntryWorld({ sceneFailure: mode });
+    world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
+    world.process.env = {};
+    const result = await world.entry.main();
+    assert.equal(result.scene, null);
+    assert.equal(world.sceneCalls(), 1);
+    const originalError = world.sceneFailure();
+    assert.ok(originalError);
+    const direct = world.sceneFailureReceipt(originalError);
+    assert.ok(direct);
+    const receipt = world.entry.ownerRunReceipt(result);
+    assert.equal(receipt.owner, undefined);
+    assert.deepEqual({ ...receipt.failure }, { failed: true, code: "o-failed", phase: "scene-allocation" });
+    assert.deepEqual({ ...receipt.allocationFailure }, { ...direct });
+    assert.notEqual(receipt.allocationFailure, direct);
+    assert.equal(receipt.allocationFailure.phase, expected.phase);
+    assert.equal(receipt.allocationFailure.allocationAttempted, expected.attempted);
+    assert.equal(receipt.allocationFailure.root, expected.root);
+    assert.equal(receipt.allocationFailure.rootIdentity, expected.identity);
+    assert.equal(Object.isFrozen(receipt.allocationFailure), true);
+    assert.deepEqual(Reflect.ownKeys(receipt.allocationFailure).sort(),
+      ["allocationAttempted", "phase", "projectRoot", "root", "rootIdentity", "status"].sort());
+    assert.equal(Object.hasOwn(receipt.allocationFailure, "cause"), false);
+    assert.equal(Object.hasOwn(receipt.allocationFailure, "message"), false);
+    assert.equal(Object.hasOwn(receipt.allocationFailure, "stack"), false);
+  });
+}
+
+await check("O Scene后失败仍交回原Scene且当前失败", async () => {
+  const { world, result } = await runOuter({ exitCode: 9 });
+  const handle = world.sceneHandle();
+  assert.equal(result.scene, handle);
+  const receipt = world.entry.ownerRunReceipt(result);
+  assert.equal(receipt.owner.executionCandidate, false);
+  assert.equal(receipt.owner.aEnded, true);
+  assert.equal(receipt.owner.bEndedReported, true);
+  assert.deepEqual({ ...receipt.failure }, { failed: true, code: "o-failed", phase: "candidate-record" });
+  assert.equal(receipt.allocationFailure, undefined);
+});
+
 for (const stimulus of ["unhandled", "child-error", "control-late", "sealed-create"]) {
   await check(`R4 O候选后${stimulus}使当前原收据失效`, async () => {
-    const { world, child } = await runOuter({});
+    const { world, child, result } = await runOuter({});
     const handle = world.sceneHandle();
     const previous = world.entry.ownerReceipt(handle);
+    const previousRun = world.entry.ownerRunReceipt(result);
     assert.equal(previous.executionCandidate, true);
     assert.equal(Object.isFrozen(previous), true);
     let opaqueReads = 0;
@@ -754,6 +904,15 @@ for (const stimulus of ["unhandled", "child-error", "control-late", "sealed-crea
     assert.equal(current.bEndedReported, true);
     assert.equal(current.reclaim, "not-requested");
     assert.equal(current.preserved, true);
+    const currentRun = world.entry.ownerRunReceipt(result);
+    assert.equal(currentRun.owner.executionCandidate, false);
+    assert.equal(currentRun.failure.failed, true);
+    assert.notEqual(currentRun.failure.code, null);
+    assert.equal(currentRun.failure.phase, "complete");
+    assert.equal(previousRun.owner.executionCandidate, true, "旧运行快照只保留查询当时历史");
+    assert.equal(previousRun.failure.failed, false);
+    assert.equal(Object.hasOwn(currentRun, "latch"), false);
+    assert.equal(Object.hasOwn(currentRun, "scene"), false);
     assert.equal(Object.hasOwn(current, "latch"), false);
     assert.equal(Object.hasOwn(current, "facts"), false);
     assert.equal(Object.isFrozen(current), true);
@@ -761,6 +920,7 @@ for (const stimulus of ["unhandled", "child-error", "control-late", "sealed-crea
     assert.equal(world.entry.ownerReceipt({ ...current }), undefined);
     world.process.exitCode = 0;
     assert.equal(world.entry.ownerReceipt(handle).executionCandidate, false, "不能只靠外部exitCode重置恢复候选");
+    assert.equal(world.entry.ownerRunReceipt(result).failure.failed, true, "外部exitCode重置不能洗白运行失败");
     world.process.emit("exit", 0);
     assert.equal(world.process.exitCode, 1);
     assert.equal(opaqueReads, 0);
@@ -768,13 +928,18 @@ for (const stimulus of ["unhandled", "child-error", "control-late", "sealed-crea
 }
 
 await check("R4 候选输出同步throw不丢已观测历史事实", async () => {
-  const { world } = await runOuter({ ownerOutputThrow: Object.freeze({ output: "failed" }) });
+  const { world, result } = await runOuter({ ownerOutputThrow: Object.freeze({ output: "failed" }) });
   const current = world.entry.ownerReceipt(world.sceneHandle());
   assert.equal(world.process.exitCode, 1);
   assert.equal(current.executionCandidate, false);
   assert.equal(current.aEnded, true);
   assert.equal(current.bEndedReported, true);
   assert.equal(current.reclaim, "not-requested");
+  assert.equal(result.scene, world.sceneHandle());
+  const run = world.entry.ownerRunReceipt(result);
+  assert.equal(run.owner.executionCandidate, false);
+  assert.deepEqual({ ...run.failure }, { failed: true, code: "o-failed", phase: "candidate-output" });
+  assert.equal(run.allocationFailure, undefined);
 });
 
 await check("R4 A final后迟到失败保持退出失败且O拒绝", async () => {

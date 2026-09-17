@@ -816,3 +816,15 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 证据包括core/test-attempt各轮全文备份/hash/diff/逐命令结果、core-review01/02、full-review01/02、CORE-MAIN-TAKEOVER、core-main-repair及main-integration.json。O报告端初次手拼JSON已按主代理意见改成实际writer；库替身缺6环境键、跨realm数组、装置时序/类型等原失败照留，不掩成核心失败或反写PASS。旧first-error单元/注册器边界准确沿core-review02，不声称任意on替换都可安全恢复。
 - 明确未验证：实际Node/Vitest hooks/原生stdio/真实计时、真实Scene分配、SDK九例/D/W/Root-B、全部FS与网络隔离、真实信号或回收。当前入口只固定Node26.8.2/darwin；候选输出不能grep当最终PASS，Scene保全且无删除API。M4整体仍未完成，不授live。
 - 本功能仅提交四新文件与本节，原TaskB/legacy等改动保留；实际提交号/树/源码hash/空暂存区/混合工作报告保全见`$AB/commit.json`。证据700600保留，无本次真实业务资源需清理，无push/发布。后续任务恢复subagent优先。
+
+## M4-PM-SDK-AB-RESULT-01：同O原运行结果与安全当前诊断
+
+- 仅修改`tests/pm-sdk-ab-owner-entry.mjs`和原VM。O精确gate路径返回冻结`{scene}`，保原Scene引用或null；无gate/内部A仍undefined，不新增资源或gate。guard安装进入受控try/finally，不以错误处理创建补偿根/停止新对象。
+- 新`ownerRunReceipt(originalResult)`只从私有WeakMap原结果取该运行真实latch、最后固定entry阶段、原工厂包装Error的安全allocationFailure；每次重新查原Scene的当前ownerReceipt，返回新冻结owner/failure/定位快照。clone/Proxy/撤销Proxy/跨world/攻击metadata不获记录、零属性探测；不泄latch、cause/message/stack或新权限。phase是最后进入阶段，late时仍complete不是伪造异步错误发生点。
+- 工厂未尝试分配、尝试但无path、path已知但identity未知均原样保留；这些诊断数据不是删除权。同O调用方可强持原结果/Scene并报告前重查；序列化不保原对象身份。旧候选文字与冻结旧快照只保历史，late后新owner false/failure true，重置exitCode不洗白，仍需真实O退出合判。当前不加回收/信号/执行能力。
+- 首次实际sol 3b1bc9b2实现，主代理读完整差异和交付；实际astra f4bc73e8独立复审有限通过。当前entry SHA256 `cf1527e67533302132451652df674618bc67cfb8ce802cc8345e3e36bd659d7c`，VM `f9d2d11af0f047e5df04e4d4dfe9e223adbf3808aa6a3d7e5f6b0aaf382b67ac`；helper/fixture仍0ecf1050…/fd41d778…，Scene/A1/Parent/config未改。
+- 固定Node26四语法、明确四源strict/checkJs/noUnused全0，正式VM141/0、原134及3有效变异保留；独审补6例形成147/0（不是新增147）。包括真实helper重复安装拒绝/部分绑定失败无Scene/native/keeper，区别正式VM的install stub；成功原Scene、前置/工厂定位/Scene后/输出throw undefined、late-currentness/首码/原身份。部分guard失败不回滚，不声称已完整安装或exit监听必然存在。
+- 证据根`RESULT=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-ab-result`：attempt01备份/exact.diff/hash/verify01/DELIVERY，review01报告/start-final指纹/end.stdout/supplemental-02及main-integration.json。主代理读完整补测原文及其定点故障修正，核当前hash/各exit/141与147结果后有限整合。独审首次路径/文件名定位错误及故障注入过宽装置失败照留，未当实现失败或改源弱化。
+- 命令为固定Node `--check`四源、`--experimental-vm-modules tests/pm-sdk-ab-owner.vm.mjs`及独立脚本；`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --noUnusedLocals --noUnusedParameters --allowImportingTsExtensions --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node`明确entry/helper/fixture/VM。原warning保留，无pnpm/Python/Git测试运行。
+- 未覆盖真实Scene/factory/Vitest/SDK/ChildProcess/网络/信号/目录回收、Root-B与M4整体；保全和后续真实运行仍须另明边界，不据本接口直接live。证据700600保留，无本次真实业务资源待清理。
+- 本功能仅提交entry/VM增量和本节；实际本地提交号、树/hash/空暂存区/原混合报告保全见`$RESULT/commit.json`，无push/发布或其他用户改动夹带。
