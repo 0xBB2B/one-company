@@ -744,3 +744,15 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 证据：`attempt-01/02/DELIVERY.md`及各原stdout/stderr/exit、修改前全文与精确diff；`review-01/REVIEW.md`、`supplemental.vm.mjs`及六输入起止hash；`main-check/repair02-*`和`main-integration.json`。代理最后DELIVERY权限收尾由主代理核700/600补齐；回合/句柄收尾不算额外实施失败。
 - 未覆盖：真实Jiti/TS转换和两Node×两API live、完整SDK/daemon、任意旧引用/Worker/native及ROOT-B回收。只计本探针代码和纯VM有限整合，不签M4整体；后续真实单例须另有准确授权。
 - 本功能提交仅两新仓库文件与本节；VM按既定范围作为证据保存在L1，不改A1/B2或生产loader，不夹带原TaskB/legacy等成果。实际提交号、提交树/源码hash/工作报告保全与空暂存区核对见`$L1/commit.json`，无push/发布。
+
+## M4-PM-L1-LIVE-EVIDENCE：Jiti固定薄fixture四例自然运行
+
+- L1源码/纯VM提交`2ec770cfdebf596b8aab5f3e9a9424ba6ada0e33`后，按分别明确的条件授权完成macOS arm64两Node（26.8.2、22.19.0）×两API（spawn、execFile）四个新鲜CLI自然case。真实Jiti2.7.0首次加载并转换固定TS薄fixture，原Node函数身份相符；加载期八处创建/写哨兵尝试均0，完整descriptor与ESM恢复后调用原B2/A1的同Node --version。不是SDK或生产daemon加载实验。
+- 每例原child exit/close均code0/signalnull，stdin callback/finish/close、stdout/stderr end/close及四原observer齐备，guard闭合无失败、单原receiver/原native return0/prototype恢复。spawn callback0、execFile callback1且errornull；事件数分别13/14、顺序连续无丢失，输出精确版本换行/空stderr，无deadline或overflow。四例父O实际exit与准确validator均0，不能只看报告ok或PID。
+- 固定命令`env -i LANG=C LC_ALL=C <授权绝对Node> tests/pm-sdk-quiescence-jiti-entry.mjs --authorize=M4-PM-Q2-L1-JITI --case=<spawn|execFile>`，每次独立新进程、工具观察30秒，白名单环境无预载/重复并发。输入预核及末核覆盖Node26/22、入口/fixture、A1/B2和Jiti package/lib/dist共11项realPath/dev/ino/SHA256；这不是完整传递依赖图或binary编译来源证明。
+- 当前入口`3a5074e0cc48bb95a5c61dc492146734cae2411f117de5b6fb36be42350cd9f0`、fixture`c9279aaf82ee4c7dc20babf9bdbfd8c9cbd1129c1366b91d997cefa2858cb951`均与代码验收及四例输入一致。实际执行模型5x/gpt-5.6-sol；独立9ceaedad为5x/gpt-6-astra，只读原证据而未重跑加载、VM或validator。主代理全文读REVIEW及结构化检查，当前再核11输入/4日志hash与退出后接受本有限证据。
+- 首例原工具有合法chmod/静态precheck前缀，主代理早期whole-command相等查找0的诊断保留，后按精确前缀+原core核，未重跑。Node26两例成功后，旧执行代理在Node22静态precheck误拼证据目录，首read即ENOENT并停批，两个Node22 gate当时均未运行；主代理核原失败/未执行事实，提供按import.meta.url派生目录的固定静态脚本并另批两例。旧REMAINING-RESULT/失败回执不覆盖，不能说四例在同一批无错误完成。
+- 独立审查初用毫秒严格大于判断相邻回执，遇同毫秒而报错；最终以同trace的调用索引确在前结果之后、时间非递减核验顺序，诊断保留，未降低退出/终态门槛或重跑live。首例还保留探查未生成precheck文件的read ENOENT，非probe失败。回合续接/句柄清理不计源码失败。
+- 证据根`L1=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-l1`；`LIVE-FIRST-DECISION.md`、`live-natural/{inputs.json,remaining-authorization.json,NODE22-REAUTHORIZATION.json}`、四prefix原stdout/stderr/exit/precheck/verification、`original-live-verify-receipts.json`（8组原成功call/result）及原失败回执，`live-review/{REVIEW.md,checks.json}`和`live-natural/main-integration.json`。validator仅在原运行后按prefix/version/API精确检查；独审另作静态逐字段断言。唯一性只限给定两个原trace，不外推全会话。
+- 未覆盖：同进程旧引用/缓存重用/并发、任意FS/网络/Worker/native、完整库图、不可见A→B→A、取消保O或硬有限时间；正常结束不是取消安全。未测SDK九例/生产daemon/Vite/ROOT-B/全树回收，不签M4整体。Parent01违禁pnpm依赖检查是另项已记录事件，不混入L1执行，也不由11项当前一致推出整个M4无额外副作用。
+- 证据700/600保留，无本项业务根或原资料删除。本次仅提交本节记录，不改L1源码、不夹带Parent01/TaskB等在途改动；实际本地提交号/树/空暂存区/原报告保全核对见`$L1/live-natural/commit.json`，无push/发布。
