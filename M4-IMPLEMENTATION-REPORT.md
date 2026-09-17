@@ -714,3 +714,14 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 证据：`attempt-01/02/DELIVERY.md`及各逐次stdout/stderr/exit、`review-01/02/REVIEW.md`、`review-02/{end-hash.json,evidence-manifest.json}`、`main-check/node22-*`与`main-integration.json`。实际实现模型5x/gpt-5.6-sol、独立审查5x/gpt-6-astra已核。前后hash不作绝对不可变证明。
 - 未覆盖：真实spawnSync自然case、生产Git timeout/SIGKILL/native异常释放、旧引用/lexical拦截、SDK整树与Q1结束、M4整体。公开库文档/精确tag研究只作契约依据，不代实测；本实现没有timeout选项或任何信号调用。
 - 本功能提交仅两新文件和本节，实际提交号/树/hash/空暂存区核对见`$B4/commit.json`；不夹带并行L1新文件/用户成果，不push/发布或删除资料。
+
+## M4-PM-Q2-B4-LIVE-EVIDENCE：两固定Node同步自然返回观察
+
+- B4代码/VM提交`31046fb8e2461d689eecc40329b4d230cf1c545b`后，主代理先批Node26单例，原live/精确verify均0并独立核日志/工具回执，再另批canonical Node22单例。实际sol执行两次无timeout的固定同Node `--version`，不是生产Git/timeout或SIGKILL实验；任何异常停批不重试/按PID补杀/删根的限定保持。
+- 两例均经原CJS导出替换和静态ESM named spawnSync调用，返回result与guard原native引用相同、自有status0/signalnull、整条原型链无error属性，子stdout精确版本加换行、空stderr；父完整单行输出/原退出0、R/S恰两条/nativeCalls1/无失败、descriptor与ESM恢复。JSON只记录比较结果，不声称保存完整原result或能由JSON重建对象身份。
+- 实际macOS arm64运行时：Node26.8.2耗时`16,704,708ns`，Node22.19.0耗时`10,892,625ns`；均为返回后bigint计时≤5秒，不是性能提升、正式性能基准或阻塞中断保证。两例源码完全相同：probe `7a6bc00a530afe10333612928a60ca5a529985a90e90144a1f6c52f0258a14c5`，VM `c4626ed2c154a901f8a22ad26e6c9eb3ae0797621aa71bff58bc8dd68369cb99`。
+- 父命令统一`env -i LANG=C LC_ALL=C <固定Node> tests/pm-sdk-quiescence-sync-entry.mjs --authorize=M4-PM-Q2-B4-SYNC-ENTRY --case=spawnSync`，工具观察30秒；child cwd `/`、最小env、shellfalse、空input、pipe stdio、maxBuffer4096，无timeout/killSignal选项。Node26固定`/opt/homebrew/Cellar/node/26.8.2/bin/node`；Node22使用既定toolchain `/private/var/folders/.../node-v22.19.0-darwin-arm64/bin/node`的完整canonical命令，实际原路径/identity/hash/dev/ino见命令和预核记录，不以该缩写执行。
+- 证据根`B4=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-b4`。`live-natural/{n26,n22}-spawnSync*`保原stdout/stderr/exit、精确verify、独立runtime预核；`original-tool-receipts.json`保存4条live/verify原回执。`verify-case.mjs`显式核白名单、所有关键native/guard/protocol/restoration/limitations和hash，不仅ok。原trace内两次自然调用与四条完成顺序逐字段核对；不签全会话无其他调用或输入绝对不可变。
+- 独立实际astra `56e244e7`静态核原日志、当前源码/validator及原trace，无重跑；`live-review/{REVIEW.md,checks.json}`无阻塞。首次仅读相关计划的入口缺项已如实保留，后`PLAN-READ-ADDENDUM.md`完整读取当前1—1783行，限定结论不变；这不计B4实施失败。主代理读补记、核实际hash/回执/原日志后在`live-natural/main-integration.json`接受本两例有限证据。
+- 未覆盖：无公共ChildProcess close观测，pid仅元数据；不构造Q1 physicalEnd、证明全树静止/取消保O、生产Git五秒/SIGKILL/native异常释放或SDK/ROOT-B清理。旧CJS引用与lexical路径不受导出拦截，源码研究不认证本机binary编译来源；不以此签M4或M7调度。必要原日志保留，证据700/600，无业务根或用户文件清理。
+- 本次仅提交本节证据记录，未改B4源码、不夹带L1/TaskB/其他既有改动。实际本地提交号及树/暂存/报告保全核对见`$B4/live-natural/commit.json`，无push/发布。
