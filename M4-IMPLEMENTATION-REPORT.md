@@ -756,3 +756,22 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 证据根`L1=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-l1`；`LIVE-FIRST-DECISION.md`、`live-natural/{inputs.json,remaining-authorization.json,NODE22-REAUTHORIZATION.json}`、四prefix原stdout/stderr/exit/precheck/verification、`original-live-verify-receipts.json`（8组原成功call/result）及原失败回执，`live-review/{REVIEW.md,checks.json}`和`live-natural/main-integration.json`。validator仅在原运行后按prefix/version/API精确检查；独审另作静态逐字段断言。唯一性只限给定两个原trace，不外推全会话。
 - 未覆盖：同进程旧引用/缓存重用/并发、任意FS/网络/Worker/native、完整库图、不可见A→B→A、取消保O或硬有限时间；正常结束不是取消安全。未测SDK九例/生产daemon/Vite/ROOT-B/全树回收，不签M4整体。Parent01违禁pnpm依赖检查是另项已记录事件，不混入L1执行，也不由11项当前一致推出整个M4无额外副作用。
 - 证据700/600保留，无本项业务根或原资料删除。本次仅提交本节记录，不改L1源码、不夹带Parent01/TaskB等在途改动；实际本地提交号/树/空暂存区/原报告保全核对见`$L1/live-natural/commit.json`，无push/发布。
+
+## M4-PM-SDK-PARENT-01：测试专用私有父根接线
+
+- 修改`tests/helpers/temporary-root.ts`、`tests/helpers/test-environment.ts`，新增`tests/pm-sdk-owned-parent.vm.mjs`。测试专用`PI_COMPANY_TEST_PARENT_BINDING`接收path/dev/ino定位数据：绝对canonical普通目录、native bigint身份、当前uid与0700（含特殊位检查），已有symlink/权限身份不符拒绝，不修父根权限、不额外mkdtemp加长Unix socket路径。此配置不是原分配证明或删除许可；外层O须先自产父根并持原收据。
+- managed根与默认可删缓存分离，进程状态及正常保全标记外层不可替换/删除、内层冻结；未知可配置/仍可写标记在抛错前固定成不可撤销的无效拒绝状态，既有不可配置未知属性自身保全。绑定移除/更换或重复helper加载不能恢复默认分配、缓存或删除；cleanup首次看到有效/损坏配置亦只保全，不为建立状态创建目录。普通未受控单测的正常分配/afterAll/exit清理保留。
+- setup把TMPDIR与Git ceiling指向受控父根内的verification；仅创建缺失的直属目录，不recursive/chmod已有异常路径，父根身份再次核对，稳定symlink/uid/权限错误和若干身份漂移拒绝并保全。非owner afterAll/exit不删除O父根/verification，不将“未删”写成reclaimed。有限端点检查不保证原子阻止任意外部竞态或A→B→A。
+
+### 两次真实失败、仅本任务接手与当前验证
+
+证据根`PARENT=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-owned-parent`。
+
+- 首次实际sol 040dcc05产物经独立astra 7616fc08确认R1公开状态降级误删O根、R2首次cleanup跳过受控配置误删外部缓存；第二次实际sol 55e602cb关闭正常R1/R2，但独立astra 34ef422e确认R3未知可变flag初始化失败后丢失保全历史，16组合原源反例成立。主代理按MAIN-TAKEOVER只接手该任务剩余修复，不重做已有成果或接管整M4。类型补齐/回合/verify01 linker语法失败与命令数不作为额外实施失败。
+- 当前SHA256：temporary-root `f4c80f869079c7f8994343c199203684ac258eb65cfef2ddf895c08726da56cb`；test-environment `9855112b29b725ac92456462cb11caac22b1c5cc4c09a991826959a61a2e88dc`；正式VM `8763a1733e5c631127da70cd99e708456417461026e81d6d005f9491d6b848bd`。主代理固定Node26三语法/VM/显式三文件strict+checkJs+noUnused全0；最低Node22当前VM0。原回归及R1/R2、32未知标记组合、5属性边缘/getter零读取、4个成功加载后真实AssertionError变异均过。
+- 独立3b4212e6实际5x/gpt-6-astra review03有限APPROVE：192组descriptor×绑定×缓存×入口×重载安全断言、未知STATE/正常managed/默认自建根对照、原VM/四变异、严格三文件检查和语法全0，起止hash一致。主代理全文读报告/独立脚本，再在Node22实跑同192组合全0，当前再核源码/hash/退出/逐例数量后才计有限整合；主代理自检没有冒充独审。
+- 当前命令：固定Node `--experimental-vm-modules tests/pm-sdk-owned-parent.vm.mjs`；独立脚本`$PARENT/review-03/review-cases.mjs`；`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --noUnusedLocals --noUnusedParameters --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck --allowImportingTsExtensions tests/helpers/temporary-root.ts tests/helpers/test-environment.ts tests/pm-sdk-owned-parent.vm.mjs`；各`node --check`。VM Modules/stripTypeScriptTypes实验性warning保留，不称stderr空；不是默认tsconfig/Vitest setup或真实FS测试。
+- 原失败/主代理反例、review01/02 REQUEST_CHANGES、两次实施全文备份/差异/验证、main-repair/verify01中间版本及最终verify02、review03报告/192逐例日志、主代理Node22日志和main-integration.json均保留。当前修复后的安全断言与旧“漏洞复现成功”脚本严格分开，不以旧脚本exit0冒PASS。
+- 首轮实施代理违禁至少五条pnpm exec tsc，触发依赖检查；原回执与未知副作用记录在main-check/pnpm-deviation-original-calls.json/INITIAL-REVIEW。定向package.json/pnpm-lock/.npmrc/workspace无差异不证明缓存/全局/网络零副作用，不读凭据或擅清理。后续返修、主代理与独审都只直接固定Node/已装compiler，没有复用违禁命令，不把历史偏差改写成从未发生。
+- 未覆盖：真实目录/symlink/Unix socket实验、外层O原分配与config/cache/HOME资源发现隔离、跨进程owner/原连接/daemon/Git实际结束、closeWorld→reclaimPending→真实回收、原SDK九例、ROOT-B和M4整体。当前不提供父根回收权限，不授权直接启动旧SDK测试。
+- 本功能提交只三仓库文件与本节，保护其他未提交成果；实际提交号、原两helper基线及提交树/源码hash/空暂存区/工作报告保全核对见`$PARENT/commit.json`。证据700/600保留，无本次真实业务根或用户资料清理、无push/发布。此任务完成后其余实现仍subagent优先。
