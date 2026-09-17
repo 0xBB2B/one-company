@@ -3,17 +3,22 @@
 import assert from 'node:assert/strict';
 import { EventEmitter, errorMonitor } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Script, createContext } from 'node:vm';
 import { createPrototypeSpawnGuard } from './helpers/pm-sdk-quiescence-adapter.mjs';
 
 const cjsUrl = new URL('./pm-sdk-quiescence-creation-entry.cjs', import.meta.url);
 const esmUrl = new URL('./pm-sdk-quiescence-creation-entry.mjs', import.meta.url);
+const childUrl = new URL('./fixtures/pm-sdk-quiescence-fork-child.cjs', import.meta.url);
 const cjsSource = readFileSync(cjsUrl, 'utf8');
 const esmSource = readFileSync(esmUrl, 'utf8');
+const childSource = readFileSync(childUrl, 'utf8');
 const EXPECTED_VERSION = 'v26.8.2';
 const FIXED_NODE = '/opt/homebrew/Cellar/node/26.8.2/bin/node';
 const AUTHORIZATION = '--authorize=M4-PM-Q2-B2-CREATION-ENTRY';
+const FORK_AUTHORIZATION = '--authorize=M4-PM-Q2-B3-FORK';
+const FIXED_FORK_CHILD = '/virtual/fixtures/pm-sdk-quiescence-fork-child.cjs';
 
 /** @param {() => unknown} operation */
 function capture(operation) {
@@ -144,6 +149,13 @@ class MockOutput extends EventEmitter {
  *   stdinEndError?: unknown,
  *   childFailOn?: string | symbol,
  *   childObserverError?: unknown,
+ *   omitReady?: boolean,
+ *   omitDisconnect?: boolean,
+ *   duplicateReady?: boolean,
+ *   duplicateDisconnect?: boolean,
+ *   disconnectBeforeReady?: boolean,
+ *   ipcMessage?: unknown,
+ *   ipcSendHandle?: unknown,
  * }} WorldBehavior
  */
 
@@ -154,11 +166,14 @@ function createMockWorld(behavior = {}) {
   const children = [];
   /** @type {any[]} */
   const nativeRecords = [];
+  /** @type {any[]} */
+  const forkRecords = [];
   /** @type {{present:boolean, value:unknown}} */
   const publicCaught = { present: false, value: undefined };
   let nextPid = 4100;
   /** @type {MockChildProcess | null} */
   let currentInvocationChild = null;
+  let currentInvocationIsFork = false;
 
   class MockChildProcess extends EventEmitter {
     constructor() {
@@ -213,32 +228,53 @@ function createMockWorld(behavior = {}) {
       }
       const nativeReturn = Object.hasOwn(behavior, 'nativeReturn') ? behavior.nativeReturn : 0;
       const eventTarget = currentInvocationChild ?? this;
-      if (!behavior.noAutomaticEvents) scheduleNatural(eventTarget);
+      if (!behavior.noAutomaticEvents) scheduleNatural(eventTarget, currentInvocationIsFork);
       return nativeReturn;
     }
   }
 
-  /** @param {MockChildProcess} child */
-  function scheduleNatural(child) {
+  /** @param {MockChildProcess} child @param {boolean} isFork */
+  function scheduleNatural(child, isFork) {
     const code = behavior.nonzeroExit ? 7 : 0;
+    const message = Object.hasOwn(behavior, 'ipcMessage')
+      ? behavior.ipcMessage
+      : { type: 'ready', version: 1 };
     clock.setTimeout(() => child.emit('spawn'), 4);
     clock.setTimeout(() => child.stdout.emit('data', `${EXPECTED_VERSION}\n`), 5);
-    clock.setTimeout(() => child.stdout.emit('end'), 6);
-    clock.setTimeout(() => child.stderr.emit('end'), 7);
-    clock.setTimeout(() => child.stdout.emit('close'), 8);
-    clock.setTimeout(() => child.stderr.emit('close'), 9);
-    clock.setTimeout(() => child.emit('exit', code, null), 10);
-    if (!behavior.omitChildClose) clock.setTimeout(() => child.emit('close', code, null), 12);
+    if (isFork) {
+      const emitReady = () => {
+        if (!behavior.omitReady) child.emit('message', message, behavior.ipcSendHandle);
+        if (behavior.duplicateReady) child.emit('message', message, behavior.ipcSendHandle);
+      };
+      const emitDisconnect = () => {
+        if (!behavior.omitDisconnect) child.emit('disconnect');
+        if (behavior.duplicateDisconnect) child.emit('disconnect');
+      };
+      if (behavior.disconnectBeforeReady) {
+        clock.setTimeout(emitDisconnect, 6);
+        clock.setTimeout(emitReady, 7);
+      } else {
+        clock.setTimeout(emitReady, 6);
+        clock.setTimeout(emitDisconnect, 7);
+      }
+    }
+    clock.setTimeout(() => child.stdout.emit('end'), 8);
+    clock.setTimeout(() => child.stderr.emit('end'), 9);
+    clock.setTimeout(() => child.stdout.emit('close'), 10);
+    clock.setTimeout(() => child.stderr.emit('close'), 11);
+    clock.setTimeout(() => child.emit('exit', code, null), 12);
+    if (!behavior.omitChildClose) clock.setTimeout(() => child.emit('close', code, null), 14);
   }
 
-  /** @param {string} file @param {readonly string[]} args @param {any} options */
-  function mockSpawn(file, args, options) {
+  /** @param {string} file @param {readonly string[]} args @param {any} options @param {boolean=} isFork */
+  function mockSpawn(file, args, options, isFork = false) {
     if (file.includes('\0') || args.some((value) => value.includes('\0'))) {
       throw new TypeError('NUL rejected before ChildProcess construction');
     }
     const child = new MockChildProcess();
     children.push(child);
     currentInvocationChild = child;
+    currentInvocationIsFork = isFork;
     try {
       child.spawn({ file, args, options });
     } catch (error) {
@@ -247,8 +283,15 @@ function createMockWorld(behavior = {}) {
       throw error;
     } finally {
       currentInvocationChild = null;
+      currentInvocationIsFork = false;
     }
     return child;
+  }
+
+  /** @param {string} modulePath @param {readonly string[]} args @param {any} options */
+  function mockFork(modulePath, args, options) {
+    forkRecords.push({ modulePath, args, options });
+    return mockSpawn(options.execPath, [modulePath, ...args], options, true);
   }
 
   /**
@@ -294,9 +337,10 @@ function createMockWorld(behavior = {}) {
     clock,
     children,
     nativeRecords,
+    forkRecords,
     publicCaught,
     MockChildProcess,
-    api: { spawn: mockSpawn, execFile: mockExecFile },
+    api: { spawn: mockSpawn, execFile: mockExecFile, fork: mockFork },
   };
 }
 
@@ -338,9 +382,11 @@ function loadCommon(source, world, options = {}) {
     if (specifier === 'node:child_process') return {
       spawn: world.api.spawn,
       execFile: world.api.execFile,
+      fork: world.api.fork,
       ChildProcess: world.MockChildProcess,
     };
     if (specifier === 'node:events') return { errorMonitor };
+    if (specifier === 'node:path') return { resolve };
     if (specifier === 'node:util') return { promisify };
     throw new Error(`unexpected require: ${specifier}`);
   };
@@ -356,6 +402,7 @@ function loadCommon(source, world, options = {}) {
     exports: module.exports,
     require: requireFunction,
     process: processLike,
+    __dirname: '/virtual',
     __guard: { createPrototypeSpawnGuard },
     Buffer,
     Uint8Array,
@@ -388,12 +435,13 @@ function loadCommon(source, world, options = {}) {
 function loadEsm(source, world, common, options = {}) {
   let transformed = source;
   const replacements = [
-    ["import { spawn, execFile, ChildProcess } from 'node:child_process';", 'const { spawn, execFile, ChildProcess } = globalThis.__childProcess;'],
+    ["import { spawn, execFile, fork, ChildProcess } from 'node:child_process';", 'const { spawn, execFile, fork, ChildProcess } = globalThis.__childProcess;'],
     ["import { errorMonitor } from 'node:events';", 'const { errorMonitor } = globalThis.__events;'],
     ["import { fileURLToPath } from 'node:url';", 'const { fileURLToPath } = globalThis.__url;'],
     ["import { promisify } from 'node:util';", 'const { promisify } = globalThis.__util;'],
     ["import { createPrototypeSpawnGuard } from './helpers/pm-sdk-quiescence-adapter.mjs';", 'const { createPrototypeSpawnGuard } = globalThis.__guard;'],
     ["import common from './pm-sdk-quiescence-creation-entry.cjs';", 'const common = globalThis.__common;'],
+    ["const FORK_CHILD_PATH = fileURLToPath(new URL('./fixtures/pm-sdk-quiescence-fork-child.cjs', import.meta.url));", 'const FORK_CHILD_PATH = globalThis.__forkChildPath;'],
     ['export async function runEsmCreationEntry', 'async function runEsmCreationEntry'],
     ['export async function esmMain', 'async function esmMain'],
     ['import.meta.url', "'file:///virtual/entry.mjs'"],
@@ -412,12 +460,18 @@ function loadEsm(source, world, common, options = {}) {
     hrtime: { bigint: world.clock.now },
   };
   const sandbox = {
-    __childProcess: { spawn: world.api.spawn, execFile: world.api.execFile, ChildProcess: world.MockChildProcess },
+    __childProcess: {
+      spawn: world.api.spawn,
+      execFile: world.api.execFile,
+      fork: world.api.fork,
+      ChildProcess: world.MockChildProcess,
+    },
     __events: { errorMonitor },
     __url: { fileURLToPath: () => '/virtual/source-only.mjs' },
     __util: { promisify },
     __guard: { createPrototypeSpawnGuard },
     __common: common,
+    __forkChildPath: FIXED_FORK_CHILD,
     __esmExports: undefined,
     process: processLike,
     Buffer,
@@ -441,7 +495,7 @@ function loadEsm(source, world, common, options = {}) {
   return { esm: /** @type {any} */ (sandbox.__esmExports), processLike, output };
 }
 
-/** @typedef {'spawn'|'execFile'|'promisify-execFile'} CaseName */
+/** @typedef {'spawn'|'execFile'|'promisify-execFile'|'fork'} CaseName */
 
 /**
  * @param {any} runner
@@ -463,6 +517,7 @@ function startFixture(runner, caseName, world, options = {}) {
     clock: world.clock,
     frameSink: options.frameSink ?? completeFrameSink,
     expectedVersion: EXPECTED_VERSION,
+    forkChildPath: FIXED_FORK_CHILD,
     onProgress: options.onProgress ?? ((value) => progress.push(value)),
     subscribeOutputFailure: options.subscribeOutputFailure,
   });
@@ -508,7 +563,8 @@ function jsonLines(text) {
  */
 function startEntry(kind, caseName, behavior = {}, output = new MockOutput(), cjsOverride = cjsSource, esmOverride = esmSource) {
   const world = createMockWorld(behavior);
-  const argv = ['/fixed/node', kind === 'cjs' ? '/virtual/entry.cjs' : '/virtual/entry.mjs', AUTHORIZATION, `--case=${caseName}`];
+  const authorization = caseName === 'fork' ? FORK_AUTHORIZATION : AUTHORIZATION;
+  const argv = ['/fixed/node', kind === 'cjs' ? '/virtual/entry.cjs' : '/virtual/entry.mjs', authorization, `--case=${caseName}`];
   const loadedCommon = loadCommon(cjsOverride, world, { argv, output });
   if (kind === 'cjs') {
     return { world, output, processLike: loadedCommon.processLike, promise: loadedCommon.common.cjsMain(), api: loadedCommon.common };
@@ -524,6 +580,79 @@ async function completeEntry(entry) {
   return jsonLines(entry.output.text).at(-1);
 }
 
+/** @typedef {{missingSend?:boolean, disconnected?:boolean, writeThrow?:boolean, writeError?:unknown, sendThrow?:boolean, sendError?:unknown, disconnectThrow?:boolean, repeatProcessErrors?:boolean, repeatStdoutErrors?:boolean, repeatWriteCallback?:boolean, repeatSendCallback?:boolean}} ForkChildBehavior */
+
+/**
+ * Executes the real fixed child source against an in-memory process/IPC model.
+ * @param {ForkChildBehavior=} behavior
+ * @param {string=} source
+ */
+async function runForkChild(behavior = {}, source = childSource) {
+  const clock = new FakeClock();
+  /** @type {string[]} */
+  const trace = [];
+  /** @type {unknown[]} */
+  const sent = [];
+  let disconnectCalls = 0;
+  /** @type {any} */
+  const stdout = new EventEmitter();
+  stdout.write = (/** @type {string} */ text, /** @type {(error?:unknown)=>void} */ callback) => {
+    trace.push(`write:${text}`);
+    if (behavior.writeThrow) throw new Error('write throw');
+    clock.setTimeout(() => {
+      trace.push('write-callback');
+      callback(behavior.writeError ?? null);
+    }, 1);
+    if (behavior.repeatWriteCallback) clock.setTimeout(() => {
+      trace.push('write-callback-late');
+      callback(null);
+    }, 3);
+    return true;
+  };
+  /** @type {any} */
+  const processLike = new EventEmitter();
+  Object.assign(processLike, {
+    version: EXPECTED_VERSION,
+    stdout,
+    connected: behavior.disconnected !== true,
+    exitCode: undefined,
+    disconnect() {
+      disconnectCalls += 1;
+      trace.push('disconnect');
+      if (behavior.disconnectThrow) throw new Error('disconnect throw');
+      processLike.connected = false;
+    },
+  });
+  if (!behavior.missingSend) {
+    processLike.send = (/** @type {unknown} */ message, /** @type {(error?:unknown)=>void} */ callback) => {
+      trace.push('send');
+      if (behavior.sendThrow) throw new Error('send throw');
+      sent.push(message);
+      clock.setTimeout(() => {
+        trace.push('send-callback');
+        callback(behavior.sendError ?? null);
+      }, 1);
+      if (behavior.repeatSendCallback) clock.setTimeout(() => {
+        trace.push('send-callback-late');
+        callback(null);
+      }, 3);
+      return true;
+    };
+  }
+  const context = createContext({ process: processLike });
+  new Script(source, { filename: 'pm-sdk-quiescence-fork-child.real.cjs' }).runInContext(context);
+  if (behavior.repeatProcessErrors) {
+    clock.setTimeout(() => processLike.emit('error', new Error('process error 1')), 5);
+    clock.setTimeout(() => processLike.emit('error', new Error('process error 2')), 6);
+  }
+  if (behavior.repeatStdoutErrors) {
+    clock.setTimeout(() => stdout.emit('error', new Error('stdout error 1')), 7);
+    clock.setTimeout(() => stdout.emit('error', new Error('stdout error 2')), 8);
+  }
+  await clock.runTo(20);
+  return { processLike, trace, sent, disconnectCalls };
+}
+
 /** @type {{name:string, run:()=>unknown|Promise<unknown>}[]} */
 const tests = [];
 /** @param {string} name @param {()=>unknown|Promise<unknown>} run */
@@ -533,9 +662,9 @@ const baselineWorld = createMockWorld();
 const baselineCommon = loadCommon(cjsSource, baselineWorld).common;
 const cjsRunner = baselineCommon.runCreationCase;
 
-assert.match(esmSource, /import \{ spawn, execFile, ChildProcess \} from 'node:child_process';/u);
-assert.match(esmSource, /api: \{ spawn, execFile \}/u);
-assert.doesNotMatch(esmSource, /common\.(?:spawn|execFile|ChildProcess)/u);
+assert.match(esmSource, /import \{ spawn, execFile, fork, ChildProcess \} from 'node:child_process';/u);
+assert.match(esmSource, /api: \{ spawn, execFile, fork \}/u);
+assert.doesNotMatch(esmSource, /common\.(?:spawn|execFile|fork|ChildProcess)/u);
 assert.match(cjsSource, /if \(require\.main === module\)/u);
 
 test('真实CJS cjsMain与ESM esmMain三种API均走静态入口绑定和完整终态', async () => {
@@ -558,6 +687,170 @@ test('真实CJS cjsMain与ESM esmMain三种API均走静态入口绑定和完整�
       if (caseName === 'promisify-execFile') assert.equal(report.publicApi.promiseChildMatches, true);
       if (caseName === 'execFile') assert.equal(report.publicApi.callbackCalls, 1);
     }
+  }
+});
+
+test('真实CJS与ESM fork入口使用固定参数、原CP身份和完整IPC/stdio终态', async () => {
+  for (const kind of /** @type {const} */ (['cjs', 'esm'])) {
+    const entry = startEntry(kind, 'fork');
+    const report = await completeEntry(entry);
+    assert.equal(report.ok, true, kind);
+    assert.equal(report.original.calls, 1, kind);
+    assert.equal(report.original.thisMatchesPublicChild, true, kind);
+    assert.equal(report.original.thisMatchesOwnedReceiver, true, kind);
+    assert.equal(report.publicApi.childMatchesGuardReceiver, true, kind);
+    assert.equal(report.terminal.resourcesEnded, true, kind);
+    assert.deepEqual(report.ipc, {
+      observers: { message: true, disconnect: true },
+      messageCount: 1,
+      readyMessageValid: true,
+      disconnectCount: 1,
+      orderValid: true,
+    }, kind);
+    assert.equal(entry.world.forkRecords.length, 1, kind);
+    const request = entry.world.forkRecords[0];
+    assert.equal(request.modulePath, FIXED_FORK_CHILD, kind);
+    assert.deepEqual(Array.from(request.args), [], kind);
+    assert.equal(request.options.execPath, FIXED_NODE, kind);
+    assert.deepEqual(Array.from(request.options.execArgv), [], kind);
+    assert.equal(request.options.serialization, 'json', kind);
+    assert.deepEqual(Array.from(request.options.stdio), ['pipe', 'pipe', 'pipe', 'ipc'], kind);
+    assert.deepEqual({ ...request.options.env }, { LANG: 'C', LC_ALL: 'C' }, kind);
+    assert.equal(request.options.shell, false, kind);
+    assert.equal(request.options.detached, false, kind);
+    assert.equal(entry.processLike.exitCode, 0, kind);
+  }
+});
+
+test('固定child源码严格按stdout callback、send callback、disconnect顺序且直接执行拒绝', async () => {
+  const success = await runForkChild();
+  assert.deepEqual(success.trace, [`write:${EXPECTED_VERSION}\n`, 'write-callback', 'send', 'send-callback', 'disconnect']);
+  assert.equal(success.sent.length, 1);
+  assert.deepEqual({ .../** @type {Record<string, unknown>} */ (success.sent[0]) }, { type: 'ready', version: 1 });
+  assert.equal(success.disconnectCalls, 1);
+  assert.equal(success.processLike.exitCode, undefined);
+
+  for (const behavior of [{ missingSend: true }, { disconnected: true }]) {
+    const direct = await runForkChild(behavior);
+    assert.deepEqual(direct.trace, []);
+    assert.deepEqual(direct.sent, []);
+    assert.equal(direct.disconnectCalls, 0);
+    assert.equal(direct.processLike.exitCode, 64);
+  }
+});
+
+test('固定child写入、send和disconnect错误均非零、不重试且不process.exit', async () => {
+  /** @type {Array<{behavior:ForkChildBehavior, sends:number}>} */
+  const rows = [
+    { behavior: { writeThrow: true }, sends: 0 },
+    { behavior: { writeError: false }, sends: 0 },
+    { behavior: { sendThrow: true }, sends: 0 },
+    { behavior: { sendError: false }, sends: 1 },
+    { behavior: { disconnectThrow: true }, sends: 1 },
+  ];
+  for (const { behavior, sends } of rows) {
+    const result = await runForkChild(behavior);
+    assert.equal(result.processLike.exitCode, 1, JSON.stringify(behavior));
+    assert.equal(result.sent.length, sends, JSON.stringify(behavior));
+    assert.equal(result.trace.filter((item) => item === 'send').length <= 1, true, JSON.stringify(behavior));
+    assert.equal(result.disconnectCalls, 1, JSON.stringify(behavior));
+  }
+
+  const repeated = await runForkChild({
+    disconnectThrow: true,
+    repeatProcessErrors: true,
+    repeatStdoutErrors: true,
+    repeatWriteCallback: true,
+    repeatSendCallback: true,
+  });
+  assert.equal(repeated.processLike.exitCode, 1);
+  assert.equal(repeated.trace.filter((item) => item === 'send').length, 1);
+  assert.equal(repeated.sent.length, 1);
+  assert.equal(repeated.disconnectCalls, 1);
+});
+
+test('B2与B3 gate严格隔离，旧授权不能创建fork且fork授权不能创建旧case', async () => {
+  const world = createMockWorld();
+  const common = loadCommon(cjsSource, world).common;
+  assert.equal(common.parseAuthorizedCase([AUTHORIZATION, '--case=fork']), null);
+  assert.equal(common.parseAuthorizedCase([FORK_AUTHORIZATION, '--case=spawn']), null);
+  assert.equal(common.parseAuthorizedCase([FORK_AUTHORIZATION, '--case=fork']), 'fork');
+  for (const [authorization, caseName] of /** @type {Array<[string, string]>} */ ([[AUTHORIZATION, 'fork'], [FORK_AUTHORIZATION, 'spawn']])) {
+    const gatedWorld = createMockWorld();
+    const output = new MockOutput();
+    const loaded = loadCommon(cjsSource, gatedWorld, {
+      argv: ['/fixed/node', '/virtual/entry.cjs', authorization, `--case=${caseName}`],
+      output,
+    });
+    await loaded.common.cjsMain();
+    assert.equal(output.text, 'NOT_AUTHORIZED\n');
+    assert.equal(gatedWorld.children.length, 0);
+    assert.equal(loaded.processLike.exitCode, 64);
+  }
+});
+
+test('fork缺失、重复、错schema、sendHandle及乱序IPC均失败且不保留正文', async () => {
+  /** @type {any} */
+  const getterMessage = {};
+  /** @returns {never} */
+  function opaqueGetter() { throw new Error('opaque getter'); }
+  Object.defineProperty(getterMessage, 'type', { enumerable: true, get: opaqueGetter });
+  Object.defineProperty(getterMessage, 'version', { enumerable: true, value: 1 });
+  /** @type {Array<[string, WorldBehavior]>} */
+  const rows = [
+    ['missing-ready', { omitReady: true }],
+    ['missing-disconnect', { omitDisconnect: true }],
+    ['duplicate-ready', { duplicateReady: true }],
+    ['duplicate-disconnect', { duplicateDisconnect: true }],
+    ['wrong-type', { ipcMessage: { type: 'other', version: 1 } }],
+    ['extra-field', { ipcMessage: { type: 'ready', version: 1, extra: true } }],
+    ['getter', { ipcMessage: getterMessage }],
+    ['send-handle', { ipcSendHandle: {} }],
+    ['disconnect-first', { disconnectBeforeReady: true }],
+  ];
+  for (const [name, behavior] of rows) {
+    const entry = startEntry('cjs', 'fork', behavior);
+    await entry.world.clock.runTo(5000);
+    await entry.promise;
+    const report = jsonLines(entry.output.text).at(-1);
+    assert.equal(report.ok, false, name);
+    assert.equal(JSON.stringify(report).includes('opaque getter'), false, name);
+    assert.equal(report.ipc.messageCount <= 2, true, name);
+    assert.equal(report.ipc.disconnectCount <= 2, true, name);
+  }
+});
+
+test('fork普通函数监听核this，disconnect不能替代原CP close，注册失败保留owner', async () => {
+  const wrongThisWorld = createMockWorld({ noAutomaticEvents: true, omitStdinClose: true });
+  const wrongThis = startFixture(cjsRunner, 'fork', wrongThisWorld);
+  const child = wrongThisWorld.children[0];
+  const messageListener = child.listeners('message')[0];
+  Reflect.apply(messageListener, {}, [{ type: 'ready', version: 1 }, undefined]);
+  child.emit('disconnect');
+  emitManualCompletion(child);
+  await wrongThisWorld.clock.runTo(20);
+  const wrongThisReport = await wrongThis.promise;
+  assert.equal(wrongThisReport.ok, false);
+  assert.ok(wrongThisReport.failures.includes('ipc-message-this'));
+
+  const noCloseWorld = createMockWorld({ omitChildClose: true });
+  const noClose = startFixture(cjsRunner, 'fork', noCloseWorld);
+  let settled = false;
+  noClose.promise.then(() => { settled = true; });
+  await noCloseWorld.clock.runTo(10000);
+  assert.equal(settled, false);
+  assert.equal(noCloseWorld.clock.intervals.size, 1);
+  noCloseWorld.children[0].emit('close', 0, null);
+  assert.equal((await noClose.promise).ok, false);
+
+  for (const eventName of ['message', 'disconnect']) {
+    const failedWorld = createMockWorld({ childFailOn: eventName, childObserverError: new Error('ipc registration') });
+    const started = capture(() => startFixture(cjsRunner, 'fork', failedWorld));
+    assert.equal(started.threw, false, eventName);
+    await failedWorld.clock.runTo(5000);
+    const report = await /** @type {ReturnType<typeof startFixture>} */ (started.value).promise;
+    assert.equal(report.ok, false, eventName);
+    assert.equal(report.terminal.resourcesEnded, true, eventName);
   }
 });
 
@@ -1172,8 +1465,8 @@ mutationTest(
 mutationTest(
   'ESM真实入口错接named spawn',
   esmSource,
-  '    api: { spawn, execFile },',
-  "    api: { spawn: () => { throw new TypeError('mutant'); }, execFile },",
+  '    api: { spawn, execFile, fork },',
+  "    api: { spawn: () => { throw new TypeError('mutant'); }, execFile, fork },",
   async (mutated) => {
     const entry = startEntry('esm', 'spawn', {}, new MockOutput(), cjsSource, mutated ?? esmSource);
     const report = await completeEntry(entry);
@@ -1225,6 +1518,81 @@ mutationTest(
     const started = startFixture(runner, 'spawn', world);
     await world.clock.runTo(100);
     assert.equal((await started.promise).prototype.restored, true);
+  },
+);
+
+mutationTest(
+  'child一次性disconnect门槛被移除',
+  childSource,
+  "  if (disconnectAttempted || process.connected !== true || typeof process.disconnect !== 'function') return;",
+  "  if (process.connected !== true || typeof process.disconnect !== 'function') return;",
+  async (mutated) => {
+    const result = await runForkChild({
+      disconnectThrow: true,
+      repeatProcessErrors: true,
+      repeatStdoutErrors: true,
+      repeatWriteCallback: true,
+      repeatSendCallback: true,
+    }, mutated ?? childSource);
+    assert.equal(result.processLike.exitCode, 1);
+    assert.equal(result.trace.filter((item) => item === 'send').length, 1);
+    assert.equal(result.disconnectCalls, 1);
+  },
+);
+
+mutationTest(
+  'fork disconnect被当作原CP close',
+  cjsSource,
+  '    return childCloseObserverInstalled && childClose !== null &&',
+  '    return childCloseObserverInstalled && disconnectCount > 0 &&',
+  async (mutated) => {
+    const world = createMockWorld({ omitChildClose: true });
+    const runner = loadCommon(mutated ?? cjsSource, world).common.runCreationCase;
+    const started = startFixture(runner, 'fork', world);
+    let settled = false;
+    started.promise.then(() => { settled = true; });
+    await world.clock.runTo(10000);
+    assert.equal(settled, false);
+  },
+);
+
+mutationTest(
+  'fork缺ready仍被判成功',
+  cjsSource,
+  "    return messageObserverInstalled && disconnectObserverInstalled && ipcOrderValid &&\n      messageCount === 1 && readyMessageValid && disconnectCount === 1;",
+  '    return true;',
+  async (mutated) => {
+    const world = createMockWorld({ omitReady: true });
+    const runner = loadCommon(mutated ?? cjsSource, world).common.runCreationCase;
+    const started = startFixture(runner, 'fork', world);
+    await world.clock.runTo(5000);
+    assert.equal((await started.promise).ok, false);
+  },
+);
+
+mutationTest(
+  '旧B2 gate越权授权fork',
+  cjsSource,
+  "  if (argv[0] === FORK_AUTHORIZATION && selected === 'fork') return 'fork';",
+  "  if ((argv[0] === FORK_AUTHORIZATION || argv[0] === AUTHORIZATION) && selected === 'fork') return 'fork';",
+  async (mutated) => {
+    const world = createMockWorld();
+    const common = loadCommon(mutated ?? cjsSource, world).common;
+    assert.equal(common.parseAuthorizedCase([AUTHORIZATION, '--case=fork']), null);
+  },
+);
+
+mutationTest(
+  'fork额外字段被schema放行',
+  cjsSource,
+  "            valid = keys.length === 2 && keys.includes('type') && keys.includes('version') &&",
+  "            valid = keys.length >= 2 && keys.includes('type') && keys.includes('version') &&",
+  async (mutated) => {
+    const world = createMockWorld({ ipcMessage: { type: 'ready', version: 1, extra: true } });
+    const runner = loadCommon(mutated ?? cjsSource, world).common.runCreationCase;
+    const started = startFixture(runner, 'fork', world);
+    await world.clock.runTo(5000);
+    assert.equal((await started.promise).ok, false);
   },
 );
 

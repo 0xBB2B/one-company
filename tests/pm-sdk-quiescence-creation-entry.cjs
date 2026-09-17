@@ -1,13 +1,17 @@
 'use strict';
 // @ts-check
 
-const { spawn, execFile, ChildProcess } = require('node:child_process');
+const { spawn, execFile, fork, ChildProcess } = require('node:child_process');
 const { errorMonitor } = require('node:events');
+const { resolve } = require('node:path');
 const { promisify } = require('node:util');
 
 const AUTHORIZATION = '--authorize=M4-PM-Q2-B2-CREATION-ENTRY';
+const FORK_AUTHORIZATION = '--authorize=M4-PM-Q2-B3-FORK';
 const CASE_PREFIX = '--case=';
 const CASES = new Set(['spawn', 'execFile', 'promisify-execFile']);
+const ALL_CASES = new Set([...CASES, 'fork']);
+const FORK_CHILD_PATH = resolve(__dirname, 'fixtures', 'pm-sdk-quiescence-fork-child.cjs');
 const NODE_BINDINGS = new Map([
   ['/opt/homebrew/Cellar/node/26.8.2/bin/node', 'v26.8.2'],
   [
@@ -18,19 +22,20 @@ const NODE_BINDINGS = new Map([
 const MAX_EVENTS = 128;
 const MAX_STREAM_BYTES = 4096;
 
-/** @typedef {'spawn' | 'execFile' | 'promisify-execFile'} CaseName */
+/** @typedef {'spawn' | 'execFile' | 'promisify-execFile' | 'fork'} CaseName */
 
 /**
  * Exact CLI parser. Arguments may not be reordered, repeated, or extended.
+ * The B2 and B3 authorizations deliberately have disjoint case sets.
  * @param {readonly string[]} argv
  * @returns {CaseName | null}
  */
 function parseAuthorizedCase(argv) {
-  if (argv.length !== 2 || argv[0] !== AUTHORIZATION || !argv[1]?.startsWith(CASE_PREFIX)) {
-    return null;
-  }
+  if (argv.length !== 2 || !argv[1]?.startsWith(CASE_PREFIX)) return null;
   const selected = argv[1].slice(CASE_PREFIX.length);
-  return CASES.has(selected) ? /** @type {CaseName} */ (selected) : null;
+  if (argv[0] === AUTHORIZATION && CASES.has(selected)) return /** @type {CaseName} */ (selected);
+  if (argv[0] === FORK_AUTHORIZATION && selected === 'fork') return 'fork';
+  return null;
 }
 
 /**
@@ -87,13 +92,16 @@ function runCreationCase(dependencies) {
     ? dependencies.subscribeOutputFailure
     : null;
   const expectedVersion = dependencies.expectedVersion;
+  const forkChildPath = dependencies.forkChildPath;
 
-  if (!CASES.has(selectedCase) || typeof api?.spawn !== 'function' || typeof api?.execFile !== 'function' ||
-      typeof ChildProcessClass !== 'function' || typeof createPrototypeSpawnGuard !== 'function' ||
-      typeof promisifyFunction !== 'function' || typeof frameSink !== 'function' ||
-      typeof clock?.now !== 'function' || typeof clock?.setTimeout !== 'function' ||
-      typeof clock?.clearTimeout !== 'function' || typeof clock?.setInterval !== 'function' ||
-      typeof clock?.clearInterval !== 'function' || typeof expectedVersion !== 'string') {
+  if (!ALL_CASES.has(selectedCase) || typeof api?.spawn !== 'function' || typeof api?.execFile !== 'function' ||
+      typeof api?.fork !== 'function' || typeof ChildProcessClass !== 'function' ||
+      typeof createPrototypeSpawnGuard !== 'function' || typeof promisifyFunction !== 'function' ||
+      typeof frameSink !== 'function' || typeof clock?.now !== 'function' ||
+      typeof clock?.setTimeout !== 'function' || typeof clock?.clearTimeout !== 'function' ||
+      typeof clock?.setInterval !== 'function' || typeof clock?.clearInterval !== 'function' ||
+      typeof expectedVersion !== 'string' ||
+      (selectedCase === 'fork' && (typeof forkChildPath !== 'string' || !forkChildPath.startsWith('/')))) {
     return Promise.reject(new TypeError('invalid creation-entry dependencies'));
   }
 
@@ -176,6 +184,12 @@ function runCreationCase(dependencies) {
   let stdinEndCallbackErrorPresent = false;
   let stdinFinish = false;
   let stdinClose = false;
+  let messageObserverInstalled = false;
+  let disconnectObserverInstalled = false;
+  let messageCount = 0;
+  let disconnectCount = 0;
+  let readyMessageValid = false;
+  let ipcOrderValid = true;
   let observationDeadline = false;
   let cleanupDeadline = false;
   let parentOutputFailed = false;
@@ -394,6 +408,40 @@ function runCreationCase(dependencies) {
       maybeFinalize();
     }, 'child-exit-observer-install');
 
+    if (selectedCase === 'fork') {
+      messageObserverInstalled = tryOn(child, 'message', /** @this {any} */ function (/** @type {unknown} */ message, /** @type {unknown} */ sendHandle) {
+        messageCount = Math.min(0xffff_ffff, messageCount + 1);
+        if (messageCount !== 1) fail('ipc-message-count');
+        if (this !== ownedReceiver || publicChild === null || this !== publicChild) fail('ipc-message-this');
+        let valid = false;
+        try {
+          if (typeof message === 'object' && message !== null && sendHandle === undefined) {
+            const keys = Reflect.ownKeys(message);
+            const type = Object.getOwnPropertyDescriptor(message, 'type');
+            const version = Object.getOwnPropertyDescriptor(message, 'version');
+            valid = keys.length === 2 && keys.includes('type') && keys.includes('version') &&
+              type !== undefined && 'value' in type && type.enumerable === true && type.value === 'ready' &&
+              version !== undefined && 'value' in version && version.enumerable === true && version.value === 1;
+          }
+        } catch (error) {
+          rawError(error);
+          fail('ipc-message-inspect');
+        }
+        if (!valid) fail('ipc-message-schema');
+        readyMessageValid = valid;
+        event('ipc-ready', { valid, count: messageCount });
+        maybeFinalize();
+      }, 'ipc-message-observer-install');
+      disconnectObserverInstalled = tryOn(child, 'disconnect', /** @this {any} */ function () {
+        disconnectCount = Math.min(0xffff_ffff, disconnectCount + 1);
+        if (disconnectCount !== 1) fail('ipc-disconnect-count');
+        if (this !== ownedReceiver || publicChild === null || this !== publicChild) fail('ipc-disconnect-this');
+        if (messageCount !== 1 || !readyMessageValid) ipcOrderValid = false;
+        event('ipc-disconnect', { count: disconnectCount });
+        maybeFinalize();
+      }, 'ipc-disconnect-observer-install');
+    }
+
     /** @type {any} */
     let stdout = null;
     /** @type {any} */
@@ -479,14 +527,21 @@ function runCreationCase(dependencies) {
   }
 
   /** @returns {boolean} */
+  function forkIpcFactsPresent() {
+    if (selectedCase !== 'fork') return true;
+    return messageObserverInstalled && disconnectObserverInstalled && ipcOrderValid &&
+      messageCount === 1 && readyMessageValid && disconnectCount === 1;
+  }
+
+  /** @returns {boolean} */
   function terminalFactsPresent() {
-    const completion = selectedCase === 'spawn'
+    const completion = selectedCase === 'spawn' || selectedCase === 'fork'
       ? true
       : selectedCase === 'execFile'
         ? callbackCalls > 0
         : promiseSettled;
     return childClose !== null && childExit !== null && stdoutEnd && stdoutClose && stderrEnd && stderrClose &&
-      stdinEndCalled && stdinEndCallback && stdinFinish && stdinClose && completion;
+      stdinEndCalled && stdinEndCallback && stdinFinish && stdinClose && completion && forkIpcFactsPresent();
   }
 
   /** @returns {boolean} */
@@ -517,6 +572,7 @@ function runCreationCase(dependencies) {
         fail('promisify-result');
       }
     }
+    if (!forkIpcFactsPresent()) fail('fork-ipc-terminal');
     if (!descriptorRestored) fail('prototype-not-restored');
     if (eventOverflow || observationDeadline || cleanupDeadline || childErrorObserved) fail('observed-failure');
     try {
@@ -591,6 +647,13 @@ function runCreationCase(dependencies) {
         stderrOverflow,
         parentFailed: parentOutputFailed,
       },
+      ipc: selectedCase === 'fork' ? {
+        observers: { message: messageObserverInstalled, disconnect: disconnectObserverInstalled },
+        messageCount,
+        readyMessageValid,
+        disconnectCount,
+        orderValid: ipcOrderValid,
+      } : null,
       guard: {
         closed: guard.snapshot().closed,
         failed: guard.snapshot().failed,
@@ -637,6 +700,15 @@ function runCreationCase(dependencies) {
     try {
       if (selectedCase === 'spawn') {
         publicChild = api.spawn(processLike.execPath, args, { ...commonOptions, stdio: ['pipe', 'pipe', 'pipe'] });
+        publicReturned = true;
+      } else if (selectedCase === 'fork') {
+        publicChild = api.fork(forkChildPath, [], {
+          ...commonOptions,
+          execPath: processLike.execPath,
+          execArgv: [],
+          serialization: 'json',
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+        });
         publicReturned = true;
       } else if (selectedCase === 'execFile') {
         publicChild = api.execFile(
@@ -891,7 +963,7 @@ async function cjsMain() {
   if (output.failed()) return;
   const report = await runCreationCase({
     caseName: selectedCase,
-    api: { spawn, execFile },
+    api: { spawn, execFile, fork },
     ChildProcess,
     createPrototypeSpawnGuard,
     errorMonitor,
@@ -900,6 +972,7 @@ async function cjsMain() {
     clock: realClock(),
     frameSink: memoryFrameSink,
     expectedVersion,
+    forkChildPath: FORK_CHILD_PATH,
     onProgress: (/** @type {Record<string, unknown>} */ value) => output.writeJson(value),
     subscribeOutputFailure: output.subscribe,
   });
@@ -910,7 +983,9 @@ async function cjsMain() {
 
 module.exports = {
   AUTHORIZATION,
+  FORK_AUTHORIZATION,
   CASE_PREFIX,
+  FORK_CHILD_PATH,
   parseAuthorizedCase,
   expectedNodeVersion,
   runCreationCase,

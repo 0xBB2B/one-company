@@ -664,3 +664,23 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 原始日志/准确验证/工具回执及主代理结论：`q2-b2/live-natural/`各prefix文件、`main-twelve-case-integration.json`、`final-integration.json`；独立报告和hash：`q2-b2/live-review/{REVIEW.md,checks.json}`。证据根仍`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/`。补核只读日志，无重新运行或清理；主代理一次摘要打印空数组TypeError属于日志显示装置，未改证据，后续结构化断言全通过。
 - 已证实仅本地固定自然API创建/结束及进程内A1 R/B；不是跨进程不可丢记录、任意取消保O、fork/IPC、spawnSync、Jiti/Vite、SDK/ROOT-B或M4验收。主代理接收该限定结果，保留所有已知边界。
 - 本次提交仅本实施记录，实际编号见`q2-b2/live-natural/commit.json`；不夹带后续fork计划或其它未提交成果，未push/发布或回收用户资料。
+
+## M4-PM-Q2-B3-FORK：固定fork/IPC探针代码及VM整合
+
+- 四文件范围：在`tests/pm-sdk-quiescence-creation-entry.cjs/.mjs/.vm.mjs`增加fork，新增`tests/fixtures/pm-sdk-quiescence-fork-child.cjs`；真实A1不改。CJS与ESM各自原fork导入，独立B3 gate不借B2旧授权；固定child绝对路径/空args、原Node execPath、execArgv=[]、json序列化、三stdio pipe+IPC槽3、最小env、不shell/detached，不开放任意程序。
+- child正常stdout version callback→一次固定ready send callback→一次disconnect自然结束；错误收尾共用disconnectAttempted，调用前锁存，不因同步throw/重复error/迟到callback再试，失败保持非零。原生Node先置connected=false的源码/VM与保持true的故障注入分列，不把契约反例称原生漏洞。
+- 父message/disconnect普通函数核原this=owned/publicCP、严格own-data固定schema且无sendHandle、单次计数/顺序，不保正文；ready/disconnect不代原CP close，成功仍需原CP及三stdio完整终态、guard健康/descriptor恢复/精确版本/父输出最终状态。IPC仅本次关联事实，不授关闭/清理权限。
+- 两次实际sol交付：首轮41组/strict通过但“不重试”证据缺口被主代理/独立astra复现，第二轮只child和VM修正，父两文件hash保持；独立review02补齐原审因假时钟不足exit13未完成的范围，原错误不覆盖。主代理核实际差异/脚本/hash/命令后限定接受代码/VM，不计live。
+
+### 验证与边界
+
+证据根`B3=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-b3`。
+
+- 当前SHA：CJSdbb270923c8a0e478ed680faa932d217dbeef2d6a2f9913e1a220ef145e065ef，ESM3c784053f64789f3783f64e4492752abaa5dbfcee91976b712d53bc5c2af9658，VMcf71e7141f604575bd8b8b75c942ce650491b22f0bad1e045e52cf0dc5bda408，child1eee5d05fba390ccb0bc6149e271d4fac85aa3a3f09d06996db8ca91cc59ff4e。
+- Node26四语法检查、显式strict/checkJs、42组VM通过；原31组/15变异语义保留，最终20个变异逐项正常基线先过、mutant实际加载后AssertionError命中。独立review02另完成25条补测输出，覆盖child初错/迟回执、两入口gate、错this/schema、晚IPC、四路缺close、注册失败+未知CP、IPC洪泛；内存重复emit不算真实事件证明。
+- 主代理完整读review02与supplement，最低Node22.19.0实际重跑42组及独立supplement（内含20变异、25补测输出），exit0；两版内嵌fork/IPC及disconnect函数只读/内存执行证据不是原生fork已实跑。前后hash只说明两端相同，不排除未观测外部变化。
+- 保留限制：CP/stdio已结束之后人为emit额外IPC不会追溯撤销已返回报告或改原退出码；实测披露，但未证明固定child原生结束后可达。最终快照不是通用防伪事件认证；不能把此边界扩成任意未受信creator系统。
+- 命令：四文件`node --check`；`node tests/pm-sdk-quiescence-creation-entry.vm.mjs`；`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node tests/pm-sdk-quiescence-creation-entry.cjs tests/pm-sdk-quiescence-creation-entry.mjs tests/pm-sdk-quiescence-creation-entry.vm.mjs tests/fixtures/pm-sdk-quiescence-fork-child.cjs`。补测入口`$B3/review-02/supplement.mjs`；均内存依赖，无授权gate实际运行。
+- 证据：`attempt-01/02/`原类型/锚点/交付/精确diff，`review-01/02/`原失败及完整新结果，`main-check/`两Node验证，`main-integration.json`。目录0700文件0600，必要诊断保留，无被测系统资源待清理。
+- 未覆盖：两Node×两入口真实自然fork四例、spawnSync/Jiti/Vite、跨进程不可丢登记、SDK/ROOT-B/任意取消保O与M4整体。后续须独立单case授权，不能用B1/B2自然证据顶替fork。
+- 本功能提交只上述四文件及本节，实际提交号/树/hash/空暂存区核对见`$B3/commit.json`，其他未提交成果保持，无push/发布或用户数据操作。

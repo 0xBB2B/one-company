@@ -1,11 +1,13 @@
 // @ts-check
 
-import { spawn, execFile, ChildProcess } from 'node:child_process';
+import { spawn, execFile, fork, ChildProcess } from 'node:child_process';
 import { errorMonitor } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createPrototypeSpawnGuard } from './helpers/pm-sdk-quiescence-adapter.mjs';
 import common from './pm-sdk-quiescence-creation-entry.cjs';
+
+const FORK_CHILD_PATH = fileURLToPath(new URL('./fixtures/pm-sdk-quiescence-fork-child.cjs', import.meta.url));
 
 const {
   parseAuthorizedCase,
@@ -33,6 +35,7 @@ export async function runEsmCreationEntry(bindings) {
     clock: bindings.clock,
     frameSink: bindings.frameSink,
     expectedVersion: bindings.expectedVersion,
+    forkChildPath: bindings.forkChildPath,
     onProgress: bindings.onProgress,
     subscribeOutputFailure: bindings.subscribeOutputFailure,
   });
@@ -56,7 +59,7 @@ export async function esmMain() {
   if (output.failed()) return;
   const report = await runEsmCreationEntry({
     caseName: selectedCase,
-    api: { spawn, execFile },
+    api: { spawn, execFile, fork },
     ChildProcess,
     createPrototypeSpawnGuard,
     errorMonitor,
@@ -65,6 +68,7 @@ export async function esmMain() {
     clock: realClock(),
     frameSink: memoryFrameSink,
     expectedVersion,
+    forkChildPath: FORK_CHILD_PATH,
     onProgress: (/** @type {Record<string, unknown>} */ value) => output.writeJson(value),
     subscribeOutputFailure: output.subscribe,
   });
