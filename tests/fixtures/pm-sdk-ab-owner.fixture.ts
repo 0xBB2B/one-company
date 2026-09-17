@@ -3,6 +3,7 @@ import { test } from "vitest";
 import { guardState, PRELOAD_URL, TEST_NAME } from "../helpers/pm-sdk-ab-owner.mjs";
 
 const PARENT_BINDING = "PI_COMPANY_TEST_PARENT_BINDING";
+const DARWIN_USER_TEXT_ENCODING = "0x1F5:0:0";
 
 test(TEST_NAME, () => {
   const state = guardState();
@@ -13,6 +14,11 @@ test(TEST_NAME, () => {
     sealed: true,
     admitted: false,
   });
+
+  const getuid = process.getuid;
+  assert.equal(typeof getuid, "function");
+  assert.equal(getuid?.(), 501);
+  assert.equal(process.env.__CF_USER_TEXT_ENCODING, DARWIN_USER_TEXT_ENCODING);
 
   const descriptor = Object.getOwnPropertyDescriptor(process.env, PARENT_BINDING);
   assert.ok(descriptor && "value" in descriptor && typeof descriptor.value === "string");

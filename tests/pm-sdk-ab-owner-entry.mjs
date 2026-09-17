@@ -17,6 +17,7 @@ import {
 const ENTRY = fileURLToPath(import.meta.url);
 const PROJECT = resolve(dirname(ENTRY), "..");
 const NODE = "/opt/homebrew/Cellar/node/26.8.2/bin/node";
+const DARWIN_USER_TEXT_ENCODING = "0x1F5:0:0";
 const CONFIG_BYTES = 'import { defineConfig } from "vitest/config";\n\nexport default defineConfig({\n  test: {\n    include: ["tests/**/*.test.ts"],\n    environment: "node",\n    pool: "forks",\n    isolate: true,\n    fileParallelism: false,\n    testTimeout: 5_000,\n    setupFiles: ["./tests/helpers/test-environment.ts"],\n  },\n});\n';
 const CONFIG_HASH = hash(Buffer.from(CONFIG_BYTES));
 // Strong retention is deliberate: no resource or directory deletion API exists.
@@ -105,13 +106,16 @@ function environment(c) {
     HOME: p.homeDir, PI_CODING_AGENT_DIR: p.agentDir, XDG_CONFIG_HOME: p.xdgConfigHome,
     XDG_CACHE_HOME: p.xdgCacheHome, TMPDIR: p.tmpDir,
     PI_COMPANY_TEST_PARENT_BINDING: c.parentBinding, NODE_ENV: "test", LANG: "C", LC_ALL: "C",
+    __CF_USER_TEXT_ENCODING: DARWIN_USER_TEXT_ENCODING,
   };
 }
 
 /** Coordinates are validated data, never Scene ownership or deletion authority. @param {Coordinates} c */
 async function verifyCoordinates(c) {
   if (process.version !== "v26.8.2" || process.execPath !== NODE || process.platform !== "darwin" ||
-      process.execArgv.length !== 0 || await realpath(PROJECT) !== PROJECT) throw rejection();
+      process.execArgv.length !== 0 || typeof process.getuid !== "function" || process.getuid() !== 501 ||
+      process.env.__CF_USER_TEXT_ENCODING !== DARWIN_USER_TEXT_ENCODING ||
+      await realpath(PROJECT) !== PROJECT) throw rejection();
   const tmp = await realpath("/tmp");
   if (dirname(c.root) !== tmp || !/^pi-s-[A-Za-z0-9]+$/u.test(c.root.slice(tmp.length + 1))) throw rejection();
   const root = await lstat(c.root, { bigint: true });
@@ -317,8 +321,11 @@ export async function main() {
     guard = installProcessGuard("O", latch, () => {}, () => { throw rejection(); });
     phase = "environment";
     if (process.execPath !== NODE || process.version !== "v26.8.2" || process.execArgv.length !== 0 ||
-        process.platform !== "darwin" || process.env.NODE_OPTIONS !== undefined || process.env.NODE_PATH !== undefined ||
+        process.platform !== "darwin" || typeof process.getuid !== "function" || process.getuid() !== 501 ||
+        process.env.__CF_USER_TEXT_ENCODING !== DARWIN_USER_TEXT_ENCODING ||
+        process.env.NODE_OPTIONS !== undefined || process.env.NODE_PATH !== undefined ||
         process.env.NODE_V8_COVERAGE !== undefined) throw rejection();
+    assertEnvironment({ LANG: "C", LC_ALL: "C", __CF_USER_TEXT_ENCODING: DARWIN_USER_TEXT_ENCODING }, process.env);
     // Fixture existence is checked before allocation; no default-suite fallback.
     phase = "fixture-check";
     if (!(await lstat(join(PROJECT, FIXTURE))).isFile()) throw rejection();

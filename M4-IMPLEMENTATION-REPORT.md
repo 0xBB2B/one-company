@@ -828,3 +828,15 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 命令为固定Node `--check`四源、`--experimental-vm-modules tests/pm-sdk-ab-owner.vm.mjs`及独立脚本；`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --noUnusedLocals --noUnusedParameters --allowImportingTsExtensions --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node`明确entry/helper/fixture/VM。原warning保留，无pnpm/Python/Git测试运行。
 - 未覆盖真实Scene/factory/Vitest/SDK/ChildProcess/网络/信号/目录回收、Root-B与M4整体；保全和后续真实运行仍须另明边界，不据本接口直接live。证据700600保留，无本次真实业务资源待清理。
 - 本功能仅提交entry/VM增量和本节；实际本地提交号、树/hash/空暂存区/原混合报告保全见`$RESULT/commit.json`，无push/发布或其他用户改动夹带。
+
+## M4-PM-DARWIN-ENV-01：固定CoreFoundation测试环境字段
+
+- 一次已明确授权的n26-ab-01在driver runtime前置退出1，未进入core/factory、没有Scene/A/B；原工具命令/真实终态、空stdout/stderr及failure报告已核。纯Node诊断表明env-i仍加入__CF_USER_TEXT_ENCODING，旧两键假设不成立，拒绝行为正确；不把平台假设误差伪计为两次代码失败。
+- 独立astra 2a3e5fbe与主代理直接公开Apple源码核对：字段为UID:默认文字脚本:地区，UID匹配可避该函数的home配置回退。显式选择完整`0x1F5:0:0`并绑定UID501，不复制观察偏好、不剔除后继续；0:0是smRoman/verUS默认，不是UTF8/文化中性，旧公开源不认证当前macOS二进制。单独批准的纯Node三键诊断exit0证实本次启动保留，无业务import/child/信号，未重跑driver。
+- 实际sol 12cea015仅改entry/fixture/VM：O在Scene前核UID501、固定CF及精确LANG/LC/CF三键，原Node注入拒绝保持；A在library前核UID/CF及完整env；A reporter/B最终fork沿environment(c)构造传播；fixture严格核真实UID与固定CF。helper精确键和值算法、Root/原句柄/信号/回收权限不变，不修改系统或用户偏好。
+- 当前entry SHA256 `3c796ea28a8fa97b09ea56dd54cffc6de94d10c5d7a5e468ce0dcd9893f46c88`，fixture `64bca8bb3335de6ed0062db617d6dbc4e792849c3f6efb9cc1a62ff93f95d756`，VM `257ee9ed6bcb6eb674d5e121ea4b5a08fb350d719a4c9948d67850ffdaa7a7f6`；helper仍0ecf1050…。固定Node四语法、显式四源strict/checkJs/noUnused全0，正式151/0、原141及3变异保留。getuid可选类型前两轮诊断保留，getuid?.()缺失仍被严格501断言拒绝，没有弱化。
+- 独立77006a76实际astra有限通过，原151/0及补58/0：O/A敏感额外键/UID缺失类型错误/CF错误及观察值拒绝、前置dynamic import计数0；正向原Scene和最终B精确传播；库进入后改值仍拒；实际fixture错CF/UID断言。主代理完整读diff/报告/补测，核当前hash/退出后整合；已有纯Node诊断不升级成库加载或真实case通过。
+- 证据根`ENV=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/darwin-env-binding`，含PLAN-RETURN/MAIN-DECISION、fixed-cf-node-diagnostic、core-attempt01备份/diff/verify03、core-review01报告/supplemental/audit02及main-integration。主代理一次补测文件扩展名定位ENOENT后按目录清单读取，非被测执行失败。独审audit首次/var与/private别名比较错保留，改realpath对照且字节断言保持。
+- 验证只固定Node直接原VM和已装compiler，明确四文件ignoreConfig/noEmit/strict/allowJs/checkJs/noUnusedLocals/noUnusedParameters/NodeNext/ES2023，实验性warning照留；无pnpm/Python/Git测试运行或真实SDK/Scene/信号。未直接读用户CF配置，不声称系统底层从未读home。
+- 原sdk-ab-live/n26-ab-01失败、manifest与两脚本不覆盖。新版prefix/manifest/driver/verifier仍须精确三键和UID记录验证、另行审批；不自动重试或授Root-B/M4通过。
+- 本功能提交仅三源及本节，实际本地提交号/树/hash/空暂存区/工作报告保全见`$ENV/commit.json`。证据700600保留，无新业务资源需清理、无push/发布或旧资料覆盖。

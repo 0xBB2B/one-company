@@ -23,6 +23,8 @@ const FIXTURE_SOURCE = readFileSync(new URL("./fixtures/pm-sdk-ab-owner.fixture.
 const PACKAGE_BYTES = readFileSync(new URL("../package.json", import.meta.url));
 const NODE = "/opt/homebrew/Cellar/node/26.8.2/bin/node";
 const ROOT = "/tmp/pi-s-contract";
+const DARWIN_USER_TEXT_ENCODING = "0x1F5:0:0";
+const OBSERVED_USER_TEXT_ENCODING = "0x1F5:0x19:0x34";
 const CONFIG_BYTES = 'import { defineConfig } from "vitest/config";\n\nexport default defineConfig({\n  test: {\n    include: ["tests/**/*.test.ts"],\n    environment: "node",\n    pool: "forks",\n    isolate: true,\n    fileParallelism: false,\n    testTimeout: 5_000,\n    setupFiles: ["./tests/helpers/test-environment.ts"],\n  },\n});\n';
 const CONFIG_HASH = `sha256:${createHash("sha256").update(CONFIG_BYTES).digest("hex")}`;
 const VITEST_TARGET = join(PROJECT, "node_modules/vitest");
@@ -399,16 +401,20 @@ function validFrames(helper, nonce) {
   return { latch, reader, owner, stream };
 }
 
+function oEnvironment() {
+  return { LANG: "C", LC_ALL: "C", __CF_USER_TEXT_ENCODING: DARWIN_USER_TEXT_ENCODING };
+}
+
 function aEnvironment() {
   return {
     HOME: `${ROOT}/home`, PI_CODING_AGENT_DIR: `${ROOT}/home/.pi/agent`,
     XDG_CONFIG_HOME: `${ROOT}/home/.config`, XDG_CACHE_HOME: `${ROOT}/home/.cache`,
     TMPDIR: `${ROOT}/tmp`, PI_COMPANY_TEST_PARENT_BINDING: PARENT_BINDING,
-    NODE_ENV: "test", LANG: "C", LC_ALL: "C",
+    NODE_ENV: "test", LANG: "C", LC_ALL: "C", __CF_USER_TEXT_ENCODING: DARWIN_USER_TEXT_ENCODING,
   };
 }
 
-/** @typedef {{unsafeConfig?:boolean, specs?:"one"|"empty"|"many"|"wrong", stop?:"before"|"after", earlyPatch?:(config:any)=>void, resolvedPatch?:(config:any)=>void, specProject?:"wrong", specPool?:string, duplicateStart?:boolean, testName?:string, testCount?:number, testState?:string, moduleState?:string, reason?:string, runErrors?:unknown[], unhandled?:unknown[], hang?:boolean, lateWorkerError?:boolean, childBehavior?:ChildBehavior, sceneFailure?:SceneFailureMode, guardInstallFailure?:unknown}} StartBehavior */
+/** @typedef {{unsafeConfig?:boolean, specs?:"one"|"empty"|"many"|"wrong", stop?:"before"|"after", earlyPatch?:(config:any)=>void, resolvedPatch?:(config:any)=>void, specProject?:"wrong", specPool?:string, duplicateStart?:boolean, testName?:string, testCount?:number, testState?:string, moduleState?:string, reason?:string, runErrors?:unknown[], unhandled?:unknown[], hang?:boolean, lateWorkerError?:boolean, bCf?:string, childBehavior?:ChildBehavior, sceneFailure?:SceneFailureMode, guardInstallFailure?:unknown}} StartBehavior */
 /** @param {StartBehavior} behavior @param {any} cp @param {FakeProcess} processLike */
 function createStartVitest(behavior, cp, processLike) {
   /** @type {any[]} */ const effects = [];
@@ -467,7 +473,8 @@ function createStartVitest(behavior, cp, processLike) {
     worker = cp.fork(join(VITEST_TARGET, "dist/workers/forks.js"), [], {
       stdio: "pipe", serialization: "advanced", execArgv: expectedArgs,
       env: { ...aEnvironment(), TEST: "true", VITEST: "true", VITEST_MODE: "RUN", FORCE_TTY: "",
-        PROD: "", DEV: "1", BASE_URL: "/", MODE: "test", PI_PM_AB_ROLE: "B", PI_PM_AB_PRELOAD: options.execArgv[1] },
+        PROD: "", DEV: "1", BASE_URL: "/", MODE: "test", PI_PM_AB_ROLE: "B", PI_PM_AB_PRELOAD: options.execArgv[1],
+        ...(behavior.bCf === undefined ? {} : { __CF_USER_TEXT_ENCODING: behavior.bCf }) },
     });
     if (behavior.hang) await new Promise((resolveHang) => { releaseHang = () => resolveHang(undefined); });
     const stop = () => {
@@ -673,7 +680,7 @@ async function runOuter(completion, entrySource = ENTRY_SOURCE) {
     onInputEnd(actualChild, handshake) { child = actualChild; reportEndpoint.send(actualChild, handshake, completion); },
   } }, entrySource);
   world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
-  world.process.env = {};
+  world.process.env = oEnvironment();
   if (Object.hasOwn(completion, "ownerOutputThrow")) {
     world.process.stdout.write = () => { throw completion.ownerOutputThrow; };
   }
@@ -740,7 +747,7 @@ await check("O精确gate后使用真实Scene句柄和WeakMap收据完成四流",
   } };
   const world = await createEntryWorld(behavior);
   world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
-  world.process.env = {};
+  world.process.env = oEnvironment();
   const result = await world.entry.main();
   assert.equal(world.process.exitCode, undefined);
   assert.equal(world.sceneCalls(), 1);
@@ -791,6 +798,27 @@ await check("内部A成功仍返回undefined且不登记O结果", async () => {
   assert.equal(world.fd3Closed(), true);
 });
 
+/** @type {Array<[string, (world:any)=>void]>} */
+const aDarwinEnvironmentRejections = [
+  ["错误UID", (world) => { world.process.getuid = () => 502; }],
+  ["缺CF字段", (world) => { delete world.process.env.__CF_USER_TEXT_ENCODING; }],
+  ["畸形CF字段", (world) => { world.process.env.__CF_USER_TEXT_ENCODING = "0x1F5:not-a-script:0"; }],
+  ["观察偏好CF字段", (world) => { world.process.env.__CF_USER_TEXT_ENCODING = OBSERVED_USER_TEXT_ENCODING; }],
+  ["额外环境键", (world) => { world.process.env.UNREVIEWED_EXTRA = "1"; }],
+];
+for (const [name, mutate] of aDarwinEnvironmentRejections) {
+  await check(`A Darwin环境${name}在library前拒绝`, async () => {
+    const world = await createEntryWorld();
+    mutate(world);
+    await world.runA();
+    assert.equal(world.process.exitCode, 1);
+    assert.equal(world.start.entered(), false);
+    assert.equal(world.helperWorld.child.forks.length, 0);
+    assert.equal(world.helperWorld.child.nativeCalls.length, 0);
+    assert.equal(world.fd3Closed(), false);
+  });
+}
+
 await check("O guard安装失败返回原结果身份和固定失败阶段", async () => {
   let opaqueReads = 0;
   const opaque = new Proxy(Object.create(null), {
@@ -800,7 +828,7 @@ await check("O guard安装失败返回原结果身份和固定失败阶段", asy
   });
   const world = await createEntryWorld({ guardInstallFailure: opaque });
   world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
-  world.process.env = {};
+  world.process.env = oEnvironment();
   const result = await world.entry.main();
   assert.ok(result);
   assert.equal(result.scene, null);
@@ -818,7 +846,7 @@ await check("O Scene前置失败不伪造allocation事实", async () => {
   const world = await createEntryWorld();
   world.memoryFs.entries.delete(path.normalize(join(PROJECT, "tests/fixtures/pm-sdk-ab-owner.fixture.ts")));
   world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
-  world.process.env = {};
+  world.process.env = oEnvironment();
   const result = await world.entry.main();
   assert.equal(result.scene, null);
   assert.equal(world.sceneCalls(), 0);
@@ -828,6 +856,29 @@ await check("O Scene前置失败不伪造allocation事实", async () => {
   assert.equal(receipt.allocationFailure, undefined);
 });
 
+/** @type {Array<[string, (world:any)=>void]>} */
+const oDarwinEnvironmentRejections = [
+  ["错误UID", (world) => { world.process.getuid = () => 502; }],
+  ["缺CF字段", (world) => { delete world.process.env.__CF_USER_TEXT_ENCODING; }],
+  ["畸形CF字段", (world) => { world.process.env.__CF_USER_TEXT_ENCODING = "0x1F5:not-a-script:0"; }],
+  ["观察偏好CF字段", (world) => { world.process.env.__CF_USER_TEXT_ENCODING = OBSERVED_USER_TEXT_ENCODING; }],
+];
+for (const [name, mutate] of oDarwinEnvironmentRejections) {
+  await check(`O Darwin环境${name}在Scene前拒绝`, async () => {
+    const world = await createEntryWorld();
+    world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
+    world.process.env = oEnvironment();
+    mutate(world);
+    const result = await world.entry.main();
+    assert.equal(result.scene, null);
+    assert.equal(world.sceneCalls(), 0);
+    assert.equal(world.helperWorld.child.children.length, 0);
+    const receipt = world.entry.ownerRunReceipt(result);
+    assert.deepEqual({ ...receipt.failure }, { failed: true, code: "o-failed", phase: "environment" });
+    assert.equal(receipt.allocationFailure, undefined);
+  });
+}
+
 for (const [mode, expected] of /** @type {const} */ ([
   ["before-allocation", { phase: "package-input", attempted: false, root: null, identity: null }],
   ["attempt-no-path", { phase: "allocate-root", attempted: true, root: null, identity: null }],
@@ -836,7 +887,7 @@ for (const [mode, expected] of /** @type {const} */ ([
   await check(`O Scene factory失败保留安全定位:${mode}`, async () => {
     const world = await createEntryWorld({ sceneFailure: mode });
     world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
-    world.process.env = {};
+    world.process.env = oEnvironment();
     const result = await world.entry.main();
     assert.equal(result.scene, null);
     assert.equal(world.sceneCalls(), 1);
@@ -990,7 +1041,7 @@ await check("O final与EOF后仍等待第四流close", async () => {
     },
   } });
   world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
-  world.process.env = {};
+  world.process.env = oEnvironment();
   let settled = false;
   const pending = world.entry.main().then(() => { settled = true; });
   for (let turn = 0; turn < 1000 && !child; turn += 1) await Promise.resolve();
@@ -1607,6 +1658,15 @@ await check("封口后创建拒绝且不进入native", async () => {
   assert.equal(world.child.nativeCalls.length, 0);
 });
 
+await check("A拒绝向B fork传播非固定CF值", async () => {
+  const world = await createEntryWorld({ bCf: OBSERVED_USER_TEXT_ENCODING });
+  await world.runA();
+  assert.equal(world.process.exitCode, 1);
+  assert.equal(world.start.entered(), true);
+  assert.equal(world.helperWorld.child.forks.length, 0);
+  assert.equal(world.helperWorld.child.nativeCalls.length, 0);
+});
+
 await check("B真实绑定、fixture、重复加载与普通import", async () => {
   const processLike = new FakeProcess({
     connected: true,
@@ -1642,6 +1702,8 @@ await check("B真实绑定、fixture、重复加载与普通import", async () =>
   assert.equal(registered.length, 1);
   assert.equal(registered[0].name, helper.TEST_NAME);
   registered[0].callback();
+  processLike.env.__CF_USER_TEXT_ENCODING = OBSERVED_USER_TEXT_ENCODING;
+  assert.throws(() => registered[0].callback(), AssertionError);
 
   const ordinary = await createHelperWorld();
   const ordinaryHelper = /** @type {any} */ ((await ordinary.loadHelper()).namespace);
