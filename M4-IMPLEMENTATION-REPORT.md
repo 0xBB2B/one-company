@@ -725,3 +725,22 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 独立实际astra `56e244e7`静态核原日志、当前源码/validator及原trace，无重跑；`live-review/{REVIEW.md,checks.json}`无阻塞。首次仅读相关计划的入口缺项已如实保留，后`PLAN-READ-ADDENDUM.md`完整读取当前1—1783行，限定结论不变；这不计B4实施失败。主代理读补记、核实际hash/回执/原日志后在`live-natural/main-integration.json`接受本两例有限证据。
 - 未覆盖：无公共ChildProcess close观测，pid仅元数据；不构造Q1 physicalEnd、证明全树静止/取消保O、生产Git五秒/SIGKILL/native异常释放或SDK/ROOT-B清理。旧CJS引用与lexical路径不受导出拦截，源码研究不认证本机binary编译来源；不以此签M4或M7调度。必要原日志保留，证据700/600，无业务根或用户文件清理。
 - 本次仅提交本节证据记录，未改B4源码、不夹带L1/TaskB/其他既有改动。实际本地提交号及树/暂存/报告保全核对见`$B4/live-natural/commit.json`，无push/发布。
+
+## M4-PM-Q2-L1-JITI：固定Jiti加载接线实施与纯VM整合
+
+- 新增`tests/pm-sdk-quiescence-jiti-entry.mjs`及`tests/fixtures/pm-sdk-quiescence-loader-fixture.ts`；只供新鲜专用CLI进程一次加载，无预载、不重复/并发、父环境白名单。入口严格固定两参数gate与两已绑定Node，仅spawn/execFile，不增加产品工具或通用加载平台。普通import不安装/加载，未授权CLI拒绝。
+- 首次真实`import('jiti')`接线之前安装八处拒绝哨兵：原ChildProcess.prototype.spawn、cp三同步API、fs.mkdirSync/writeFileSync/unlinkSync及fsPromises.unlink；Promise拒绝先同步锁存，库吞拒绝仍失败。完整descriptor保存/逆序恢复、syncBuiltinESMExports及named身份核对，部分安装/加载/恢复失败不进B2。等待import和fixture加载settled再恢复，不假定fsCachefalse意味着任意分支无写。
+- 固定Jiti2.7.0、`createJiti(import.meta.url, options)`与固定fixture.import；选项逐项对齐生产daemon/loader.mjs，包含fsCachefalse/moduleCachetrue/interopDefaultfalse/tryNativefalse等及原五nativeModules。fixture只有TS类型和Node spawn/execFile原身份导出、薄参数转交，无顶层创建；own-data身份正确、零尝试、恢复完整后才调用原B2 common/A1，正确转发progress及持续输出失败订阅。
+- 报告仅固定元数据、hash、加载/恢复/拒绝状态与B2报告，不读opaque原错正文/getter。绝对路径为本地受控输入定位，不冒称完整Jiti/Babel依赖图指纹。成功仍要求外层完整输出/实际exit，不以旧JSONok掩盖迟到输出错误。Worker/native/旧捕获引用不在覆盖内，恢复内建属性不撤销库缓存的哨兵引用，不能扩用为长期宿主加载器。
+
+### 验证、审查与精确返修
+
+证据根`L1=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-l1`。
+
+- 最终入口SHA256 `3a5074e0cc48bb95a5c61dc492146734cae2411f117de5b6fb36be42350cd9f0`，fixture `c9279aaf82ee4c7dc20babf9bdbfd8c9cbd1129c1366b91d997cefa2858cb951`；证据VM `$L1/attempt-01/pm-sdk-quiescence-jiti-entry.vm.mjs`为`49878e6de469f666ba968ce8920c0575b0ab324576c5a755648b179d7682954e`。六个变异在基线通过、mutant实际加载后要求AssertionError；真实新入口/fixture文本映射、原B2源码与真实A1接线，不用理想runner替代，也不把VM模拟Jiti叫实际转换。
+- 实际sol首次实现，astra c0499db2独立完整读源/计划，限定范围未发现阻塞级绕过；要求R1清unused/R2注释边界。第二轮实际sol 08f9d402仅删除两行未用状态、补当前限制注释及变异唯一锚点。主代理比原始副本精确文本等价核验三项差异，无执行逻辑调整；fixture/A1/B2/生产loader hash不变。独立审查意见已按明确方向闭合，不冒称审查者对新版本另跑一遍。
+- 当前Node26语法、原VM、显式strict/checkJs、额外noUnusedLocals/noUnusedParameters与独立supplemental原脚本均exit0；主代理最低Node22.19.0再跑原VM+独立supplemental均0、当前strict+unused复核0。新入口无gate当前Node26实际exit64/NOT_AUTHORIZED，非live成功。命令为`node --check <入口>`、`node <证据VM>`、`node $L1/review-01/supplemental.vm.mjs`及`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --allowImportingTsExtensions --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node <入口> <fixture> <证据VM>`，unused另加上述两旗标。
+- 独立补测经真实main核八吞拒绝/部分安装/恢复失败均阻B2，覆盖未settled第一import、完整八descriptor/named、身份/getter零读取、父环境和创建后输出失败。重复同VM旧哨兵引用反例只说明单次边界必要，不是实际Jiti缓存行为实测。补测初次dataURL装置定位失败保留、修正后0；首次unused失败仍保留，不被常规strict0覆盖。
+- 证据：`attempt-01/02/DELIVERY.md`及各原stdout/stderr/exit、修改前全文与精确diff；`review-01/REVIEW.md`、`supplemental.vm.mjs`及六输入起止hash；`main-check/repair02-*`和`main-integration.json`。代理最后DELIVERY权限收尾由主代理核700/600补齐；回合/句柄收尾不算额外实施失败。
+- 未覆盖：真实Jiti/TS转换和两Node×两API live、完整SDK/daemon、任意旧引用/Worker/native及ROOT-B回收。只计本探针代码和纯VM有限整合，不签M4整体；后续真实单例须另有准确授权。
+- 本功能提交仅两新仓库文件与本节；VM按既定范围作为证据保存在L1，不改A1/B2或生产loader，不夹带原TaskB/legacy等成果。实际提交号、提交树/源码hash/工作报告保全与空暂存区核对见`$L1/commit.json`，无push/发布。
