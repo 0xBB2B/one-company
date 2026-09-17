@@ -582,3 +582,32 @@ Node22使用既有`toolchain/runtime/node-v22.19.0-darwin-arm64/bin/node`，另�
 
 - 验收范围：仅M4-AC8测试装置/证据真实性前置；接受受控原桥前提下的纯A2B，不签A2整体、完整Q2或M4。真实fd/OS EOF、跨进程健康终结、进程退出与收尾、B阶段、SDK/daemon/ROOT-B尚未验证。
 - 本地保存仅两新文件及本实施小节，实际提交号、树/hash与暂存区核验见`$A2B/commit.json`；不夹带其他未提交成果，不push/发布或操作用户数据。所有临时输出为必要诊断证据保留，没有被测资源待清理。
+
+## M4-PM-Q2-B1-FD-MINIMAL：探针实现与纯VM限定整合，live未执行
+
+- 文件：`tests/pm-sdk-quiescence-node-probe.mjs`、`tests/fixtures/pm-sdk-quiescence-child.cjs`。默认无gate只拒绝，不spawn/操作fd3；准确gate和case仅是防误触发开关，不替代运行授权。固定macOS arm64 Node26.8.2/22.19.0及子路径，O→A单一无后代源码、stdio fd3、最小环境；不接Q1/A1/A2或SDK，不实现信号/kill/unref/监督者。**本功能只验收实现和VM，没有真实gate运行。**
+- 当前协议：2字节prefix、整帧≤256、payload≤254，固定META:1枚举/DATA:2:probe/ACK:3:14；normal、partial残帧及closed-fd预期错误分类分开。父原CP exit/close、读端end/close/error分别记录，不以写回执/exit/marker代真实end或close。5/10秒仅锁存期限失败，未close保持原CP、读流和ref keeper，close后清自建timer。
+- 失败安全：129次普通事件即预算失效，停止后续载荷积累仍保留读取和固定终态；原spawn/child/stream错误先私有存在位与原引用保存，公开结果只固定元数据，不读取opaque getter/转换/正文。stdout同步/异步故障非递归锁存、停重试且非零退出，不释放未close owner。最终JSON可能先打印ok再发生stdout错，观察者必须同时核对完整输出与最终退出状态。
+- 首轮实际sol交付经主代理反例和独立astra审查确认R1—R5/V1未通过；第二次由实际`5x/gpt-5.6-sol`限定返修，主代理核diff/脚本/证据后由实际`5x/gpt-6-astra`复审通过。旧失败与事件覆盖错误表述保留，更正以review01/02及本节为准；句柄不可用/回合上限未当作实施失败。
+
+### 验证及证据
+
+`B1=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-b1`。
+
+- 父SHA-256 `b901445c509a587b09b694c066f602a7add6a69da455885cd948e85d689cd1df`；子 `c6096879ee60538e2075219f8614787ea20b32d5719ebb5f00f59b32332ef403`；纯VM验证器 `$B1/attempt-02/vm-validate.mjs` 为 `4e9214d7bfc7925bc9c3873659dea450fc461b4108e4d6de1167eb6357fde0a6`。该验证器在证据目录保留，不是仓库默认测试入口；不得把带gate真实运行当作复现VM的方式。
+- Node26.8.2原VM12个命名组通过，其中含9变异汇总；独立另7个分组覆盖R1—R5和C1观察，九变异逐项正确基线先过、mutant加载后真实AssertionError命中。计数不相加为更多变异。主代理已完整读VM与独立脚本，并在最低Node22.19.0实际重跑同12组/7独立分组/9变异，均exit0；没有真实被测子进程/fd。
+- `node --check`父子、显式strict/checkJs父子及VM均exit0。无gate父精确NOT_AUTHORIZED、父子退出64为预期拒绝，不能称三case真实协议通过；主代理/审查未用gate运行。
+- 必要证据：`attempt-01/`原失败，`attempt-02/DELIVERY.md`及final-*与精确diff，`review-01/REVIEW.md`，`review-02/{REVIEW.md,review-validator.mjs,final-audit.stdout}`及原输出/exit，`main-check/node22-*`与`main-integration.json`。证据权限0700/0600，未覆盖旧错误或原日志。
+
+安全复现命令仅为：
+
+```sh
+node --check tests/pm-sdk-quiescence-node-probe.mjs
+node --check tests/fixtures/pm-sdk-quiescence-child.cjs
+node "$B1/attempt-02/vm-validate.mjs"
+node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node tests/pm-sdk-quiescence-node-probe.mjs tests/fixtures/pm-sdk-quiescence-child.cjs "$B1/attempt-02/vm-validate.mjs"
+```
+
+- 保留限制C1：固定信号枚举遗漏SIGINFO，注入(null,SIGINFO)公开信息折叠但最终失败；不合Node自然终态的(0,unknown signal)合成输入可归一化成通过，不冒称它是真实固定拓扑事件，也不宣传任意信号精确保真。未来增加信号或完整异常终态目标前需另行对齐枚举/null未知分类，不静默扩权。
+- **真实B1仍阻塞**：宿主timeout/cancel是否保留owner未核实，延长timeout不是证明；未执行真实fd类型、字节送达、EOF排序、短写/EAGAIN/EPIPE/背压或资源收尾。未验SDK/ROOT-B/安装/完整Q2或M4，本节只支持M4-AC8测试装置证据真实性前置。
+- 本地提交仅两个probe和本实施小节，实际编号与树/hash/空暂存区核对见`$B1/commit.json`。其他未提交成果保留，不push/发布。必要诊断全部保留，无被测资源待清理。
