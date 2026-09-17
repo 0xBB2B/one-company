@@ -684,3 +684,14 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 证据：`attempt-01/02/`原类型/锚点/交付/精确diff，`review-01/02/`原失败及完整新结果，`main-check/`两Node验证，`main-integration.json`。目录0700文件0600，必要诊断保留，无被测系统资源待清理。
 - 未覆盖：两Node×两入口真实自然fork四例、spawnSync/Jiti/Vite、跨进程不可丢登记、SDK/ROOT-B/任意取消保O与M4整体。后续须独立单case授权，不能用B1/B2自然证据顶替fork。
 - 本功能提交只上述四文件及本节，实际提交号/树/hash/空暂存区核对见`$B3/commit.json`，其他未提交成果保持，无push/发布或用户数据操作。
+
+## M4-PM-B3-NATURAL-VERIFY：四例真实自然fork/IPC证据
+
+- Node26.8.2/Node22.19.0 × CJS/ESM四例，固定同Node无后代child、stdio三pipe+IPC槽3、最小env和独立B3 gate。每例唯一live及准确verify exit0、stderr空；主代理逐例核原日志与实际工具回执，实际astra独立原日志和补充来源审查闭合，未因缺归档重跑。
+- 每例原prototype调用一次，原this/public/owned一致，A1 R/B/健康closed、完整descriptor恢复、精确Node版本；原CP exit/close0/null和三stdio成功终态齐全，message/disconnect恰一次、own-data ready有效且顺序成立，无错误/期限/输出失败。正常ready只为固定载荷，不授stopped或资源清理权限；单独disconnect不算结束。
+- 输入hash：CJSdbb270923c8a0e478ed680faa932d217dbeef2d6a2f9913e1a220ef145e065ef、ESM3c784053f64789f3783f64e4492752abaa5dbfcee91976b712d53bc5c2af9658、VMcf71e7141f604575bd8b8b75c942ce650491b22f0bad1e045e52cf0dc5bda408、child1eee5d05fba390ccb0bc6149e271d4fac85aa3a3f09d06996db8ca91cc59ff4e，已审A1未变。前后相同不证明未观测A→B→A不存在。
+- 原命令/授权/日志根为`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-b3/`，`LIVE-FIRST-DECISION.md`、`live-natural/n26-cjs-fork-command.json`及`remaining-authorization.json`固定逐项运行；每例`env -i LANG=C LC_ALL=C <固定Node> tests/pm-sdk-quiescence-creation-entry.<cjs|mjs> --authorize=M4-PM-Q2-B3-FORK --case=fork`，前项live+verify0才下一，timeout30仅观察窗口，中断失败停批不重试/补杀/回收。
+- 首例live后子代理回合未完成verify，主代理直接functions.bash补读原日志并准确校验，无probe重跑。其verify来源为当前主对话直接工具观察归档，未暴露toolCallId保持null，不冒称独立宿主导出；后三例verify为原子代理toolCall/toolResult。独立`live-review/{REVIEW.md,ADDENDUM.md,checks.json,checks-addendum.json}`明确区别来源，接受限定四例顺序，不证明全会话无其他调用或密码学认证。
+- 主代理结论`live-natural/final-integration.json`，原日志/exit/hash/工具回执及限定时点证据保留，目录0700文件0600；无业务根/网络/SDK/目录删除，未发送信号。固定child自然原close和Oexit记录齐备，不借PID扫描推断结束。
+- 仅证明本地固定fork/IPC自然路径；不签任意IPC来源认证、取消保O、spawnSync/loader、跨进程不可丢登记、SDK/ROOT-B或M4。此后新增能力另需相应验证，不能用这些四例代整体通过。
+- 本次提交仅本实施记录，实际编号/树/空暂存区核对见`q2-b3/live-natural/commit.json`，不夹带在途B4代码或其他未提交成果。
