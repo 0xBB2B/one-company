@@ -794,3 +794,25 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 原attempt01 VM/类型错误、attempt02 Linux/tmp canonical二次realpath被误断言一次、review02跨VM数组比较装置错误都保留，未当作额外源码失败或弱化目录/退出门槛；当前结果用各最终编号。证据包括attempt01/02 DELIVERIES/精确diff/指纹、review01/02报告及补测、main-check/node22-*、helper-delta-check与main-integration.json。
 - 未覆盖真实/tmp分配、POSIX竞争/完整路径别名、真实socket、Vitest bundle、SDK/daemon/停止/回收、全部环境/资源发现/网络隔离。原字节复制不保证任意未来配置语义，后续执行器仍须原project root/私有cacheDir/白名单env及原owner协议。本辅助功能不签ROOT-B、M4或live许可。
 - 本次仅提交两个新文件与本节，不夹带原TaskB/legacy等混合改动；实际本地提交号/树/hash/空暂存区/工作报告保全见`$SCENE/commit.json`。证据700/600保留，未分配需清理的真实scene，无用户资料删除、push或发布。
+
+## M4-PM-SDK-AB-OWNER：真实Vitest两层归属适配器（源码与纯VM）
+
+- 新增entry/helper、固定非.test.ts机制fixture及源映射VM四文件。O仅精确gate后以原Scene factory句柄/WeakMap建立本次记录；不接受外部snapshot授权，重建Scene白名单env，O→A stdin有界握手、A→O原fd3独占writer，B另有advanced IPC，不混传输。当前没有实际启动，只完成源码/内存验证。
+- A使用真实官方startVitest调用形状，第三include替换/固定单spec和root project，第四envDir:false/publicDir:false/middleware/ws/hmr/watch/open/preTransformRequests禁用；早config与configResolved核验，不能拖到configureServer。startVitest自身finally.close期间监视已装，返回后不二次close。固定config/依赖是前提，不把这些开关当任意FS/native网络沙箱。
+- A1保原receiver并仅在核过的公开fork同步窗口允许单B；原Node参数/IPC展开逐项核。B明确preload/B/marker意图默认拒绝，正常B绑定不可改、重复健康原状态可查；无意图普通O/A导入不装B。self signal只转交安装时原数值PID，以原process receiver/完整参数保原return/throw，失败/封口不屏蔽self；foreign/进程组仍拒绝，原B.kill专属通道不变。
+- 原CP exit/close、stdio close、IPC disconnect分别记录，O还等原A fd3 close；SIGTERM/SIGKILL调用或stop返回不代替结束。仅A1原receiver唯一记录nativeEntered=false可释放本地前置监听/keeper，native已进/未知即使throw/报告/后置失败仍保原owner/ref。无PID补杀、无第三监督者、不伪造超时后结束；升级/未知依旧失败保全。
+- 控制协议规范字段/nonce/序号/EOF/late/短写和有限预算；真实reader最多六阶段加一个SIGTERM合法帧，128/32768合法完成不可达，writer独立预算不冒reader全覆盖。失败单元不读取opaque；当前ownerReceipt由原Scene及私有真实latch+冻结历史facts派生，迟到失败让新查询false，旧快照/输出只保历史，aEnded/bEnded/reclaim事实不丢。最终仍须核实际O退出。
+
+### 两轮核心失败、仅R4接手及验证
+
+证据根`AB=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-ab-owner`。
+
+- 复杂核心两文件最初由实际astra a0317221实现，简单fixture/VM由sol 883d6774、ab3b6486配套。第一产物独立3bcb8b75确认R1 self信号全拒绝/R2显式preload静默/R3前置监听与reserve漏keeper；明确修复由sol b35870e7第二轮执行，独立86b9af86局部51+30通过。整体补测127后，独立2f588ad4原17例13/4确认R4当前收据旧true；主代理按两次真实CORE失败只接手R4，依据CORE-MAIN-TAKEOVER，不接手整M4或其他任务。测试正确抓bug、回合/类型/装置错误不额外累计失败。
+- 当前SHA256：entry `33d33901d3cde398edf35d5a93e03ab2968ee1a68d0b3873d30e392f4a55286e`；helper `0ecf1050c6a8d9d99b310c10cfa5e7204c4d966476d884dc26b29556ab0ce33d`；fixture `fd41d778473a080e3c1249c7cf52793a403bd3b1b9bf89b593fd13eb801085e2`；VM `858ae26606944f77971196c0c9a8f1327f33bda5ad5f75e07edc2f031cc52faf`。Scene/A1/Parent/原九例/config未改。
+- 正式VM134/0（保留原127及早先51）；独立e489f87d full-review02复跑134/0、原R4独审脚本未改17/0、新补3/0，四语法和明确四文件strict/checkJs/noUnused全0，起止hash/精确diff和原用例保留核验过。主代理全文读所有当前代码/差异、报告/补测/audit，核实际结果和原模型后接受本源码/纯VM整体，不以自检代独审。
+- VM用实际entry/helper/A1/Scene源码，原空Scene对象和WeakMap经过内存FS真实factory路径；O报告由独立FakeProcess/HelperWorld的实际writer生成bytes，reader和原FakeCP流驱动，不直接设置candidate。A/B是另一个库驱动内存世界，不能与O世界拼成OS成功。包含1MiB/+1、8192/+1、5/15/30假时钟、kill/config/spec/business/reader/late矩阵；具体边界与不完整原生模拟见test-attempt02/COVERAGE及full-review报告。
+- 四种O迟到刺激使新receiptfalse、实际内存exit1/guardfailed，旧冻结快照仍历史true；重置exitCode或伪metadata/Proxy/另一world原句柄不恢复候选；同步throw undefined也保历史并非候选。原两个有效变异与新R4当前性变异均成功加载/前置成立后由AssertionError杀死；不是SyntaxError/exit13。
+- 命令均固定Node26直接`--check`、`--experimental-vm-modules tests/pm-sdk-ab-owner.vm.mjs`及独审脚本；严格检查用`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --noUnusedLocals --noUnusedParameters --allowImportingTsExtensions --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node`明确四文件。实验性warning保留，非默认Vitest/包管理器。
+- 证据包括core/test-attempt各轮全文备份/hash/diff/逐命令结果、core-review01/02、full-review01/02、CORE-MAIN-TAKEOVER、core-main-repair及main-integration.json。O报告端初次手拼JSON已按主代理意见改成实际writer；库替身缺6环境键、跨realm数组、装置时序/类型等原失败照留，不掩成核心失败或反写PASS。旧first-error单元/注册器边界准确沿core-review02，不声称任意on替换都可安全恢复。
+- 明确未验证：实际Node/Vitest hooks/原生stdio/真实计时、真实Scene分配、SDK九例/D/W/Root-B、全部FS与网络隔离、真实信号或回收。当前入口只固定Node26.8.2/darwin；候选输出不能grep当最终PASS，Scene保全且无删除API。M4整体仍未完成，不授live。
+- 本功能仅提交四新文件与本节，原TaskB/legacy等改动保留；实际提交号/树/源码hash/空暂存区/混合工作报告保全见`$AB/commit.json`。证据700600保留，无本次真实业务资源需清理，无push/发布。后续任务恢复subagent优先。

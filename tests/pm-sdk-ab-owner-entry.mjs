@@ -1,0 +1,317 @@
+// @ts-check
+import { createHash, randomBytes } from "node:crypto";
+import { closeSync, fstatSync } from "node:fs";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createSdkTestScene, sdkTestSceneReceipt } from "./helpers/pm-sdk-private-scene.mjs";
+import {
+  FIXTURE, TEST_NAME, PRELOAD_URL, rejection, createFailureLatch,
+  createControlWriter, createControlReader, installProcessGuard, assertEnvironment,
+} from "./helpers/pm-sdk-ab-owner.mjs";
+
+const ENTRY = fileURLToPath(import.meta.url);
+const PROJECT = resolve(dirname(ENTRY), "..");
+const NODE = "/opt/homebrew/Cellar/node/26.8.2/bin/node";
+const CONFIG_BYTES = 'import { defineConfig } from "vitest/config";\n\nexport default defineConfig({\n  test: {\n    include: ["tests/**/*.test.ts"],\n    environment: "node",\n    pool: "forks",\n    isolate: true,\n    fileParallelism: false,\n    testTimeout: 5_000,\n    setupFiles: ["./tests/helpers/test-environment.ts"],\n  },\n});\n';
+const CONFIG_HASH = hash(Buffer.from(CONFIG_BYTES));
+// Strong retention is deliberate: no resource or directory deletion API exists.
+const scenes = new Set();
+const runReceipts = new WeakMap();
+/** @param {Uint8Array} bytes */
+function hash(bytes) { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
+
+/** @param {readonly string[]} args */
+export function authorized(args) {
+  return args.length === 2 && args[0] === "--authorize=M4-PM-SDK-AB-OWNER" && args[1] === "--case=vitest-fork";
+}
+
+/** Only original Scene01 handles resolve; a copied receipt does not. @param {unknown} handle */
+export function ownerReceipt(handle) {
+  if (typeof handle !== "object" || handle === null || !scenes.has(handle)) return undefined;
+  const scene = sdkTestSceneReceipt(handle);
+  const run = runReceipts.get(handle);
+  return scene && run ? Object.freeze({
+    root: scene.root, preserved: true, ...run.facts,
+    executionCandidate: run.facts.executionCandidate === true && !run.latch.snapshot().failed,
+  }) : undefined;
+}
+
+/** @typedef {{root: string, parentBinding: string, configHash: string, vitestTarget: string}} Coordinates */
+/** @param {Coordinates} c */
+function paths(c) {
+  return Object.freeze({
+    projectRoot: PROJECT, root: c.root, configPath: join(c.root, "vitest.config.ts"),
+    cacheDir: join(c.root, "cache"), homeDir: join(c.root, "home"),
+    agentDir: join(c.root, "home/.pi/agent"), xdgConfigHome: join(c.root, "home/.config"),
+    xdgCacheHome: join(c.root, "home/.cache"), tmpDir: join(c.root, "tmp"),
+  });
+}
+/** @param {Coordinates} c @returns {Record<string,string>} */
+function environment(c) {
+  const p = paths(c);
+  return {
+    HOME: p.homeDir, PI_CODING_AGENT_DIR: p.agentDir, XDG_CONFIG_HOME: p.xdgConfigHome,
+    XDG_CACHE_HOME: p.xdgCacheHome, TMPDIR: p.tmpDir,
+    PI_COMPANY_TEST_PARENT_BINDING: c.parentBinding, NODE_ENV: "test", LANG: "C", LC_ALL: "C",
+  };
+}
+
+/** Coordinates are validated data, never Scene ownership or deletion authority. @param {Coordinates} c */
+async function verifyCoordinates(c) {
+  if (process.version !== "v26.8.2" || process.execPath !== NODE || process.platform !== "darwin" ||
+      process.execArgv.length !== 0 || await realpath(PROJECT) !== PROJECT) throw rejection();
+  const tmp = await realpath("/tmp");
+  if (dirname(c.root) !== tmp || !/^pi-s-[A-Za-z0-9]+$/u.test(c.root.slice(tmp.length + 1))) throw rejection();
+  const root = await lstat(c.root, { bigint: true });
+  if (!root.isDirectory() || root.isSymbolicLink() || await realpath(c.root) !== c.root ||
+      (root.mode & 0o7777n) !== 0o700n || typeof process.getuid !== "function" || root.uid !== BigInt(process.getuid())) throw rejection();
+  if (c.parentBinding !== JSON.stringify({ path: c.root, dev: String(root.dev), ino: String(root.ino) })) throw rejection();
+  if (c.configHash !== CONFIG_HASH) throw rejection();
+  for (const file of [join(c.root, "vitest.config.ts"), join(PROJECT, "vitest.config.ts")]) {
+    const stat = await lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || hash(await readFile(file)) !== CONFIG_HASH) throw rejection();
+  }
+  if (c.vitestTarget !== await realpath(join(PROJECT, "node_modules/vitest")) ||
+      !c.vitestTarget.startsWith(join(PROJECT, "node_modules") + "/")) throw rejection();
+  for (const file of [join(PROJECT, FIXTURE), ENTRY, fileURLToPath(PRELOAD_URL)]) {
+    const stat = await lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || await realpath(file) !== file) throw rejection();
+  }
+}
+
+/** @param {unknown} value @param {string} nonce @returns {Coordinates} */
+function handshakeValue(value, nonce) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw rejection();
+  const d = Object.getOwnPropertyDescriptors(value);
+  const names = ["v", "nonce", "root", "parentBinding", "configHash", "vitestTarget"];
+  if (Reflect.ownKeys(value).length !== names.length || names.some((key) => !d[key] || !("value" in d[key]))) throw rejection();
+  if (d.v.value !== 1 || d.nonce.value !== nonce) throw rejection();
+  for (const key of names.slice(2)) if (typeof d[key].value !== "string" || d[key].value.length > 2048) throw rejection();
+  return Object.freeze({ root: d.root.value, parentBinding: d.parentBinding.value, configHash: d.configHash.value, vitestTarget: d.vitestTarget.value });
+}
+
+/** @param {string} nonce */
+async function receiveHandshake(nonce) {
+  if (!/^[a-f0-9]{32}$/u.test(nonce) || !fstatSync(0).isSocket() || !fstatSync(3).isSocket()) throw rejection();
+  return await new Promise((resolveHandshake, reject) => {
+    let bytes = Buffer.alloc(0);
+    const timer = setTimeout(() => reject(rejection()), 5000);
+    process.stdin.on("data", (chunk) => {
+      if (!Buffer.isBuffer(chunk) || bytes.length + chunk.length > 8192) {
+        clearTimeout(timer); process.stdin.pause(); reject(rejection()); return;
+      }
+      bytes = Buffer.concat([bytes, chunk]);
+    });
+    process.stdin.once("error", () => { clearTimeout(timer); reject(rejection()); });
+    process.stdin.once("end", () => {
+      clearTimeout(timer);
+      try { resolveHandshake(handshakeValue(JSON.parse(bytes.toString("utf8")), nonce)); }
+      catch { reject(rejection()); }
+    });
+  });
+}
+
+/**
+ * Early config checks are before loadEnv/server creation. Resolved checks are
+ * a second gate. Only the fixed reviewed config and installed library plugins
+ * are trusted; this is not an arbitrary-file or native-network sandbox.
+ * @param {any} config @param {Coordinates} c @param {boolean} resolved
+ */
+export function assertSafeConfig(config, c, resolved) {
+  const p = paths(c);
+  const s = config.server;
+  if (config.root !== PROJECT || config.cacheDir !== p.cacheDir || config.envDir !== false ||
+      config.publicDir !== (resolved ? "" : false) || !s || s.middlewareMode !== true ||
+      s.ws !== false || s.hmr !== false || s.watch !== null || s.open !== false ||
+      s.preTransformRequests !== false || s.https || config.configFile !== p.configPath) throw rejection();
+  if (resolved) {
+    const t = config._vitest;
+    if (!t || t.include?.length !== 1 || t.include[0] !== FIXTURE || t.run !== true ||
+        t.watch !== false || t.maxWorkers !== 1 || t.ui !== false ||
+        t.api?.middlewareMode !== true || t.coverage?.enabled !== false || t.typecheck?.enabled !== false ||
+        t.pool !== "forks" || t.isolate !== true || t.fileParallelism !== false ||
+        t.environment !== "node" || t.testTimeout !== 5000 || t.projects?.length) throw rejection();
+  }
+}
+
+/** Internal A path: stdin and fd3 are original O-created pipes, not user role claims. @param {string} nonce */
+async function runA(nonce) {
+  const latch = createFailureLatch();
+  /** @type {Coordinates | undefined} */ let coordinates;
+  /** @type {string[] | undefined} */ let expectedArgs;
+  /** @type {Record<string,string> | undefined} */ let expectedEnv;
+  let ready = false;
+  const writer = createControlWriter(nonce, latch);
+  const guard = installProcessGuard("A", latch, (kind) => writer.send(kind), (file, args, options) => {
+    if (!ready || !coordinates || !expectedArgs || !expectedEnv ||
+        file !== join(coordinates.vitestTarget, "dist/workers/forks.js") ||
+        !Array.isArray(args) || args.length !== 0 || !options || typeof options !== "object") throw rejection();
+    const d = Object.getOwnPropertyDescriptors(options);
+    if (Reflect.ownKeys(options).length !== 4 || d.stdio?.value !== "pipe" || d.serialization?.value !== "advanced") throw rejection();
+    const argv = d.execArgv?.value;
+    if (!Array.isArray(argv) || argv.length !== expectedArgs.length || argv.some((value, index) => value !== expectedArgs?.[index])) throw rejection();
+    assertEnvironment(expectedEnv, d.env?.value);
+  });
+  // Monitoring is active throughout startVitest, including its finally.close.
+  const deadline = setTimeout(() => { guard.seal(); latch.fail("vitest-timeout"); }, 30000);
+  try {
+    coordinates = /** @type {Coordinates} */ (await receiveHandshake(nonce));
+    const c = coordinates;
+    await verifyCoordinates(c);
+    assertEnvironment(environment(c), process.env);
+    const p = paths(c);
+    const fixture = join(PROJECT, FIXTURE);
+    const bEnv = { PI_PM_AB_ROLE: "B", PI_PM_AB_PRELOAD: PRELOAD_URL };
+    /** @type {import("vitest/node").Vitest | undefined} */ let ctx;
+    let runStarted = false;
+    let businessPass = false;
+    /** @type {import("vitest/reporters").Reporter} */
+    const reporter = {
+      onInit(value) { ctx = value; },
+      onTestRunStart(specs) {
+        try {
+          guard.assert();
+          if (runStarted || !ctx || specs.length !== 1 || specs[0].moduleId !== fixture ||
+              specs[0].project !== ctx.getRootProject() || specs[0].pool !== "forks") throw rejection();
+          runStarted = true;
+          const project = specs[0].project;
+          const vite = project.vite.config;
+          const conditions = [...new Set(vite.ssr.resolve?.conditions ?? [])]
+            .filter((value) => value !== "production" && (value !== "development" || !vite.isProduction))
+            .map((value) => value === "development|production" ? "development" : value);
+          if (conditions.some((value) => !["node", "module", "development"].includes(value))) throw rejection();
+          expectedArgs = ["--experimental-import-meta-resolve", "--require", join(c.vitestTarget, "suppress-warnings.cjs"),
+            ...conditions.flatMap((value) => ["--conditions", value]), "--import", PRELOAD_URL];
+          expectedEnv = { ...environment(c), TEST: "true", VITEST: "true", VITEST_MODE: "RUN", FORCE_TTY: "",
+            PROD: "", DEV: "1", BASE_URL: "/", MODE: "test", ...bEnv };
+          assertEnvironment({ ...environment(c), TEST: "true", VITEST: "true", PROD: "", DEV: "1", BASE_URL: "/", MODE: "test" }, process.env);
+          ready = true;
+        } catch (error) { latch.fail("spec-or-worker-contract", error); throw rejection(); }
+      },
+      onTestRunEnd(modules, errors, reason) {
+        try {
+          guard.assert();
+          if (!runStarted || businessPass || !ctx || reason !== "passed" || errors.length !== 0 || modules.length !== 1 ||
+              modules[0].moduleId !== fixture || modules[0].project !== ctx.getRootProject() || modules[0].state() !== "passed") throw rejection();
+          const tests = [...modules[0].children.allTests()];
+          if (tests.length !== 1 || tests[0].name !== TEST_NAME || tests[0].result().state !== "passed") throw rejection();
+          businessPass = true;
+          writer.send("business-pass");
+        } catch (error) { latch.fail("business-result", error); throw rejection(); }
+      },
+    };
+    const plugin = {
+      name: "pm-sdk-ab-owner-safety", enforce: /** @type {const} */ ("post"),
+      config: { order: /** @type {const} */ ("post"),
+        /** @param {any} config */
+        handler(config) {
+        try {
+          // This post-order hook must be the last config hook in the fixed set.
+          const plugins = config.plugins.flat(Infinity).filter(Boolean);
+          const later = plugins.slice(plugins.indexOf(plugin) + 1);
+          if (!plugins.includes(plugin) || later.some((/** @type {any} */ item) => item.config)) throw rejection();
+          assertSafeConfig(config, c, false);
+        }
+        catch (error) { latch.fail("early-config", error); throw rejection(); }
+      } },
+      configResolved: { order: /** @type {const} */ ("post"),
+        /** @param {any} config */
+        handler(config) {
+        try { assertSafeConfig(config, c, true); }
+        catch (error) { latch.fail("resolved-config", error); throw rejection(); }
+      } },
+    };
+    writer.send("ready");
+    const { startVitest } = await import("vitest/node");
+    await startVitest("test", [fixture], {
+      root: PROJECT, config: p.configPath, include: [FIXTURE], run: true, watch: false,
+      maxWorkers: 1, ui: false, api: false, coverage: { enabled: false }, typecheck: { enabled: false },
+      reporters: [reporter], execArgv: ["--import", PRELOAD_URL], env: bEnv,
+    }, {
+      root: PROJECT, cacheDir: p.cacheDir, envDir: false, publicDir: false,
+      server: { middlewareMode: true, ws: false, hmr: false, watch: null, open: false, preTransformRequests: false },
+      plugins: [plugin],
+    });
+    guard.seal();
+    const original = guard.original();
+    if (!original || !await original.wait() || !businessPass || ctx?.state.getUnhandledErrors().length) throw rejection();
+    guard.assert();
+    if (process.exitCode !== undefined && process.exitCode !== 0) throw rejection();
+    writer.send("b-ended");
+    await verifyCoordinates(c);
+    writer.send("final");
+    closeSync(3);
+  } catch (error) {
+    latch.fail("a-failed", error);
+  } finally {
+    guard.seal(); clearTimeout(deadline);
+    // No second ctx.close and no synthetic stop on failure.
+  }
+}
+
+/** Exact public gate is checked before filesystem work or guard installation. */
+export async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 2 && args[0] === "--internal-pm-sdk-ab-owner-A") {
+    await runA(args[1]); return;
+  }
+  if (!authorized(args)) { process.exitCode = 64; return; }
+  const latch = createFailureLatch();
+  const guard = installProcessGuard("O", latch, () => {}, () => { throw rejection(); });
+  /** @type {object | undefined} */ let scene;
+  try {
+    if (process.execPath !== NODE || process.version !== "v26.8.2" || process.execArgv.length !== 0 ||
+        process.platform !== "darwin" || process.env.NODE_OPTIONS !== undefined || process.env.NODE_PATH !== undefined ||
+        process.env.NODE_V8_COVERAGE !== undefined) throw rejection();
+    // Fixture existence is checked before allocation; no default-suite fallback.
+    if (!(await lstat(join(PROJECT, FIXTURE))).isFile()) throw rejection();
+    scene = await createSdkTestScene();
+    scenes.add(scene);
+    const receipt = sdkTestSceneReceipt(scene);
+    if (!receipt) throw rejection();
+    const c = { root: receipt.root, configHash: receipt.configHash, parentBinding: receipt.parentBinding, vitestTarget: receipt.vitestTarget };
+    await verifyCoordinates(c);
+    const nonce = randomBytes(16).toString("hex");
+    const child = guard.launch(NODE, [ENTRY, "--internal-pm-sdk-ab-owner-A", nonce], {
+      cwd: PROJECT, env: environment(c), detached: false, stdio: ["pipe", "pipe", "pipe", "pipe"],
+    });
+    guard.seal();
+    const original = guard.original();
+    const stream = child.stdio[3];
+    if (!original || original.child !== child || !stream || !child.stdin || !child.stdout || !child.stderr) throw rejection();
+    const reader = createControlReader(child, stream, nonce, latch);
+    stream.on("data", (chunk) => reader.accept(child, stream, chunk));
+    stream.on("end", () => reader.end(child, stream));
+    stream.on("error", (error) => latch.fail("control-stream", error));
+    let outputBytes = 0;
+    for (const output of [child.stdout, child.stderr]) output.on("data", (chunk) => {
+      outputBytes += Buffer.isBuffer(chunk) ? chunk.length : 1048577;
+      if (outputBytes > 1048576) latch.fail("library-output-budget");
+    });
+    const handshake = Buffer.from(JSON.stringify({ v: 1, nonce, ...c }));
+    if (handshake.length > 8192) throw rejection();
+    child.stdin.end(handshake);
+    const ended = await original.wait();
+    const observed = original.snapshot();
+    await verifyCoordinates(c);
+    const candidate = ended && reader.snapshot().complete && observed.exitCode === 0 && observed.signal === null && !latch.snapshot().failed;
+    guard.assert();
+    if (!scene) throw rejection();
+    runReceipts.set(scene, Object.freeze({ latch, facts: Object.freeze({
+      executionCandidate: candidate, aEnded: observed.ended,
+      bEndedReported: reader.snapshot().complete, reclaim: "not-requested",
+    }) }));
+    if (!candidate) throw rejection();
+    process.stdout.write("PM_SDK_AB_EXECUTION_CANDIDATE_PRESERVED\n");
+  } catch (error) {
+    latch.fail("o-failed", error);
+    if (scene) runReceipts.set(scene, Object.freeze({ latch, facts: Object.freeze({
+      ...runReceipts.get(scene)?.facts, executionCandidate: false, reclaim: "not-requested",
+    }) }));
+  } finally { guard.seal(); }
+}
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  main().catch(() => { process.exitCode = 1; });
+}
