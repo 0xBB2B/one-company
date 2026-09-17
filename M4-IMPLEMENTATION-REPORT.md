@@ -654,3 +654,13 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 证据：`attempt-01/`、`attempt-02/`全部失败与最终日志；`main-check/owner-counterexample.*`和ESM遗漏反例；`main-repair/`当前diff/hash/主代理结果；`review-01/02/03/`及`main-integration.json`。旧开发期日志缺失处由宿主tool回执补档，补档身份和装置错误均如实保留，不追溯重写通过。
 - 未覆盖：B2真实CJS/ESM创建入口、真实child/stdin/stdio终态、fork/IPC、spawnSync、Jiti/Vite、跨进程不可丢记录、SDK/业务资源收尾；不将内存R/B记录或B1六自然fd结果替代这些证据。不签完整Q2/M4、取消保O/删除权限。
 - 本功能提交只三新文件及本节，实际提交号/树/hash/空暂存区核对见`$B2/commit.json`；其余未提交成果保持，不push/发布或回收旧进程/目录。
+
+## M4-PM-B2-NATURAL-VERIFY：十二例真实自然创建入口验证
+
+- 固定Node26.8.2及最低Node22.19.0，各CJS/ESM×spawn/execFile/promisify(execFile)共12例，实际sol按首例及后续条件manifest串行执行，每例live和准确validator均exit0，stderr空。主代理逐例核原stdout/exit及12条唯一正常工具回执，随后实际astra独立190项只读核验通过；唯一性限提供的原回执，不冒称全宿主历史扫描。
+- 每例唯一原prototype调用、原return0、native this=公共CP=A1 owned receiver、R在native前且B对应原pid，guard健康closed、descriptor完整恢复；原child spawn/exit/close 0/null，三stdio end/finish/close按成功条件齐备，精确版本输出及空stderr，无期限/失败/输出错。execFile回调一次null，promisify原Promise.child匹配且fulfilled；跨流实际顺序记录，不以sleep推定。
+- 当前受验三源码SHA为CJS82e14614a462e82d5b3a18e955020b91bf16d072d8b99d754d741cfef31b41d2、ESM70c30364c871ef4b0a4ce37b359b1526f2e88eb10c1757974b125a872eb6fd86、VM90c3c42747fd23ea2c06937a2bd8d3ec1204ca85332f3b21a6c78cd791281b7a，A1cd98fc23…与已审提交一致。全部自然case对应同一B2代码基线；输入前后hash不作不可变文件系统证明。
+- 精确命令与条件授权在`q2-b2/live-natural/n26-cjs-spawn-command.json`、`remaining-authorization.json`：白名单env下固定Node绝对路径执行对应.cjs/.mjs，gate `--authorize=M4-PM-Q2-B2-CREATION-ENTRY`、固定case，单个non-detached无后代Node --version，无业务根/网络/SDK/信号/删除；每例工具30秒仅观察窗口，异常/取消/缺证据停批不重试。主代理原对象结束核验后才允许下一例，不以JSON单独ok代替父实际退出。
+- 原始日志/准确验证/工具回执及主代理结论：`q2-b2/live-natural/`各prefix文件、`main-twelve-case-integration.json`、`final-integration.json`；独立报告和hash：`q2-b2/live-review/{REVIEW.md,checks.json}`。证据根仍`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/`。补核只读日志，无重新运行或清理；主代理一次摘要打印空数组TypeError属于日志显示装置，未改证据，后续结构化断言全通过。
+- 已证实仅本地固定自然API创建/结束及进程内A1 R/B；不是跨进程不可丢记录、任意取消保O、fork/IPC、spawnSync、Jiti/Vite、SDK/ROOT-B或M4验收。主代理接收该限定结果，保留所有已知边界。
+- 本次提交仅本实施记录，实际编号见`q2-b2/live-natural/commit.json`；不夹带后续fork计划或其它未提交成果，未push/发布或回收用户资料。
