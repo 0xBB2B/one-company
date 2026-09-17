@@ -553,3 +553,32 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 主代理Node22使用既有`toolchain/runtime/node-v22.19.0-darwin-arm64/bin/node`执行原VM及`$A2A/review-01/{audit.mjs,mutations.mjs}`，均只操作内存替身和读取源码，不运行默认setup/生产/安装或真实资源。任意恶意Proxy、内建对象篡改、无限阻塞等不在本项保证内。
 
 - 验收归属：仅M4-AC8证据真实性及测试装置前置。主代理只接受A2A；本地提交限两新文件和本小节，实际提交号/树/空暂存区核对在`$A2A/commit.json`。其他未提交成果保持原状，不push或发布。
+
+## M4-PM-Q2-A2B-RECEIVER：纯内存接收器与Q1接线限定整合
+
+- 完成文件：`tests/helpers/pm-sdk-quiescence-receiver.mjs`、`tests/pm-sdk-quiescence-receiver.vm.mjs`。静态复用已提交真实Q1；正向测试使用真实A1/发送桥及内存队列，不改已审依赖、不引入生产/SDK/真实模块回退。来源固定1—2个、单case、显式slotKinds、原owner/readStream本地关联；关联键不是远端ChildProcess或OS身份。
+- 当前行为：严格R/B/C/G/T字节流、wire和Q1事实序号分开，全G和排空请求后关闭Q1并提交浅缓存case；正常end须完整尾部，无marker替代EOF。父层detached组观察独立于子帧；全局成功R顺序关联Q1资源，T后同chunk任意尾字节立即保全。运行失败不可恢复，不重试可能部分生效的Q1调用。
+- conclude为唯一纯诊断出口：先核原桥健康/有界快照，健康inFlight仅允许已登记但尚未R回写的唯一末槽过渡；已报告前缀身份仍对应。双方传输终结就先核q/字节/槽/Q1关联，case或group缺项不掩盖明确矛盾；无矛盾的业务/物理缺项为incomplete。业务结果和物理候选分开，不提供stop/reclaim/cleanupAllowed或Q1凭据。
+- 信任前提：正常夹具现场创建真实原bridge并直接传原对象/方法，这是受控接线前提，不是receiver具备品牌鉴别。schema与有限双轮读取不认证任意恶意checker/closure、Proxy、内建篡改或跨OS来源。成功模型候选不授删除/kill权。
+- 已披露非阻塞限制：C1人为伪checker重复使用前缀receiver作为尾槽可得到incomplete但不能得到候选，不能声称完整状态可达性认证；A1 errorObservations真实可超过32，receiver故障快照schema仍限32，但原桥健康检查先失败、原guard保留首错。本项不宣传完全故障快照诊断或全部恶意快照拒绝。
+
+### 尝试、验证与证据
+
+证据根`A2B=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-a2b`。
+
+- 两次实现均实际`5x/gpt-5.6-sol`。attempt01先经额度中断恢复（不计失败），最终27组/strict通过但主代理发现全局R顺序误拒与T尾字节漏判，实际交付未通过。attempt02修该两项、31组通过后，独立审查复现F1合法R过渡误拒、F2终结矛盾被无关缺项掩盖；第二次交付未通过。依据`MAIN-TAKEOVER.md`，主代理仅接手本A2B剩余F1/F2，未扩大到其他任务。
+- 主代理限定修复后36组VM、strict及原独立24组重放通过。实际`5x/gpt-6-astra` review-02复核F1/F2通过，重跑36组、strict、原24组、14变异；补充7组契约检查及1组C1边界观察，包括136次真实桥过渡、19个固定负向快照及32个缺项/传输错误组合。组内观察数不与测试组数相加，C1仅是无候选观察而不是伪快照被拒证据。
+- 主代理完整核对源码/差异及两份独立脚本，最低Node22.19.0实际重跑原36组、24组原审脚本、8组补充及14变异，全部exit0；Node26.8.2与Node22证据分列。14个mutant均成功加载后由真实AssertionError命中；“第二轮检查”原变异仅次数证据，额外负向迟到错误探针只证明特定场景，不扩为任意checker当前性认证。
+- 当前SHA-256：receiver `2c96278205c5fd68c25f69e03bff2a088413cdf7aaa29024de3c9a5609f4d87a`；VM `d773e84b386ac307de80998610d8da319e0091c5d73c38fc5f1ebcd53b9d0ef6`。真实Q1/A1/bridge字节保持原已审提交内容。证据：`attempt-01/`、`attempt-02/`、`main-check/`、`main-repair/`、`review-01/`、`review-02/`及`main-integration.json`。旧review01 exit1、开发期类型/装置错误、额度恢复和过期验证记录均保留，没有反写历史PASS。
+
+准确验证入口：
+
+```sh
+node tests/pm-sdk-quiescence-receiver.vm.mjs
+node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node tests/helpers/pm-sdk-quiescence-receiver.mjs tests/pm-sdk-quiescence-receiver.vm.mjs
+```
+
+Node22使用既有`toolchain/runtime/node-v22.19.0-darwin-arm64/bin/node`，另执行`$A2B/review-01/independent.mjs`和`$A2B/review-02/{supplement.mjs,mutation-audit.mjs}`；未执行默认setup、整仓/安装/生产、SDK或真实资源。
+
+- 验收范围：仅M4-AC8测试装置/证据真实性前置；接受受控原桥前提下的纯A2B，不签A2整体、完整Q2或M4。真实fd/OS EOF、跨进程健康终结、进程退出与收尾、B阶段、SDK/daemon/ROOT-B尚未验证。
+- 本地保存仅两新文件及本实施小节，实际提交号、树/hash与暂存区核验见`$A2B/commit.json`；不夹带其他未提交成果，不push/发布或操作用户数据。所有临时输出为必要诊断证据保留，没有被测资源待清理。
