@@ -695,3 +695,22 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 主代理结论`live-natural/final-integration.json`，原日志/exit/hash/工具回执及限定时点证据保留，目录0700文件0600；无业务根/网络/SDK/目录删除，未发送信号。固定child自然原close和Oexit记录齐备，不借PID扫描推断结束。
 - 仅证明本地固定fork/IPC自然路径；不签任意IPC来源认证、取消保O、spawnSync/loader、跨进程不可丢登记、SDK/ROOT-B或M4。此后新增能力另需相应验证，不能用这些四例代整体通过。
 - 本次提交仅本实施记录，实际编号/树/空暂存区核对见`q2-b3/live-natural/commit.json`，不夹带在途B4代码或其他未提交成果。
+
+## M4-PM-Q2-B4-SYNC-ENTRY：同步自然入口探针实施/VM整合
+
+- 新增`tests/pm-sdk-quiescence-sync-entry.mjs`和`.vm.mjs`，只验证固定同Node --version、无timeout/killSignal的同步入口。准确gate/平台/两Node canonical路径、固定cwd/env/输入/maxBuffer；导入及无gate零安装/创建。未导入生产Git，不把其5秒/SIGKILL参数或native异常回收并入本功能。
+- 同步guard以own-data捕获original/record/now，依赖getter/继承拒绝；R完整记录后才native，原this/args/resultidentity及unknown throw保留，前置原throw不替换、后置时钟/记录错误不盖原native结果。单attempt与有限诊断，bigint五秒仅返回后的耗时判定，不承诺中断阻塞。记录健康与native成功明确分开，runner不能只看assertHealthy通过。
+- CJS三同步导出完整descriptor安装/恢复并syncBuiltinESMExports；实际只通过静态named spawnSync，其他两新导出拒绝且永久锁存，成功路径只核安装身份、不真实调用禁用API自检。违规即使被吞，安装/取绑定/startClock阶段仍阻后续允许native；native内违规保原返回而总体失败。旧CJS预捕获引用和lexical内部路径不受拦截，未宣称全API权限覆盖。
+- 结果要求error属性自有或继承均完全缺席、不读getter，其余必须own-data/status0/signalnull/精确version/空stderr、R/S/耗时/恢复通过。pid仅元数据，不造ChildProcess/close/physicalEnd或清理权限；CLI不输出opaque原槽/正文，父stdout持续非递归错误锁存，完整输出和O实际exit0仍是最终判断条件。
+- 首轮实际sol交付19组通过但F1—F3未满足；第二轮修复和C1/C2明确后，在暂停恢复中仅补三处VM类型表达，27组/check/strict/no-gate证据齐备。实际astra review02复核无新阻塞，主代理完整核当前源/diff/独立脚本/manifest/hash及原异常身份后接受限定代码/VM；旧失败、暂停和句柄清理不重算实施次数或改写PASS。
+
+### 验证与证据
+
+证据根`B4=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-b4`。
+
+- 当前SHA-256：probe `7a6bc00a530afe10333612928a60ca5a529985a90e90144a1f6c52f0258a14c5`；VM `c4626ed2c154a901f8a22ad26e6c9eb3ae0797621aa71bff58bc8dd68369cb99`。两语法检查、27组VM（含12变异）、显式strict均exit0；无gate实际入口NOT_AUTHORIZED/exit64为预期拒绝，不是live通过。
+- 独立Node26复审另20组，涵盖最后一次取binding时吞拒绝仍阻创建、原值身份/异常叠加/完整恢复、getter零读取/5秒边界/持续stdout；变异正常基线先过、mutant加载后真实AssertionError。主代理最低Node22.19.0实际重跑同27组与独立20组，exit0；该Node22测试host并未创建真实child，不冒称Node22 live已过。
+- 命令：两文件`node --check`；`node tests/pm-sdk-quiescence-sync-entry.vm.mjs`；`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node tests/pm-sdk-quiescence-sync-entry.mjs tests/pm-sdk-quiescence-sync-entry.vm.mjs`；额外pure入口`$B4/review-02/verify.mjs`。类型诊断/旧19组及前置反例原记录保留。
+- 证据：`attempt-01/02/DELIVERY.md`及各逐次stdout/stderr/exit、`review-01/02/REVIEW.md`、`review-02/{end-hash.json,evidence-manifest.json}`、`main-check/node22-*`与`main-integration.json`。实际实现模型5x/gpt-5.6-sol、独立审查5x/gpt-6-astra已核。前后hash不作绝对不可变证明。
+- 未覆盖：真实spawnSync自然case、生产Git timeout/SIGKILL/native异常释放、旧引用/lexical拦截、SDK整树与Q1结束、M4整体。公开库文档/精确tag研究只作契约依据，不代实测；本实现没有timeout选项或任何信号调用。
+- 本功能提交仅两新文件和本节，实际提交号/树/hash/空暂存区核对见`$B4/commit.json`；不夹带并行L1新文件/用户成果，不push/发布或删除资料。
