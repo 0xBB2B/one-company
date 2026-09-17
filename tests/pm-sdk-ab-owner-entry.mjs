@@ -31,6 +31,14 @@ const ownerRunReceipts = new WeakMap();
  *   "candidate-output" | "complete"} OwnerRunPhase
  */
 /** @typedef {Readonly<{scene: object | null}>} OwnerRunResult */
+/** @typedef {ReturnType<typeof createControlReader>} ControlReader */
+/** @typedef {{
+ *   stdoutBytes: number,
+ *   stderrBytes: number,
+ *   totalBytes: number,
+ *   nonBufferObserved: boolean,
+ *   budgetExceeded: boolean,
+ * }} OutputObservation */
 /**
  * @typedef {Readonly<{
  *   status: "preserved",
@@ -72,6 +80,38 @@ function allocationFailureSnapshot(receipt) {
   });
 }
 
+/** @param {any} observer */
+function aObservationSnapshot(observer) {
+  if (!observer) return null;
+  const value = observer.snapshot();
+  return Object.freeze({
+    source: "O-original-A", exit: value.exit, close: value.close,
+    disconnected: value.disconnected, streamsCaptured: value.streamsCaptured,
+    ended: value.ended, exitCode: value.exitCode, signal: value.signal,
+  });
+}
+
+/** @param {ControlReader | undefined} reader */
+function controlObservationSnapshot(reader) {
+  if (!reader) return null;
+  const value = reader.snapshot();
+  return Object.freeze({
+    sequence: value.sequence, acceptedFrames: value.acceptedFrames,
+    successPhase: value.successPhase, bytes: value.bytes,
+    residualBytes: value.residualBytes, endObserved: value.endObserved,
+    eof: value.eof, complete: value.complete,
+  });
+}
+
+/** @param {OutputObservation | undefined} output */
+function outputObservationSnapshot(output) {
+  return output === undefined ? null : Object.freeze({
+    stdoutBytes: output.stdoutBytes, stderrBytes: output.stderrBytes,
+    totalBytes: output.totalBytes, nonBufferObserved: output.nonBufferObserved,
+    budgetExceeded: output.budgetExceeded,
+  });
+}
+
 /**
  * Queries only the original result identity. The phase is the last entry stage
  * reached; it is not a claim about the location of a later asynchronous error.
@@ -82,10 +122,18 @@ export function ownerRunReceipt(originalResult) {
   const run = ownerRunReceipts.get(originalResult);
   if (!run) return undefined;
   const failure = run.latch.snapshot();
+  const control = run.reader?.snapshot();
   return Object.freeze({
     owner: ownerReceipt(run.scene),
     failure: Object.freeze({ failed: failure.failed, code: failure.code, phase: run.phase }),
     allocationFailure: allocationFailureSnapshot(run.allocationFailure),
+    observations: Object.freeze({
+      a: aObservationSnapshot(run.observer),
+      waitResult: run.waitResult(),
+      control: controlObservationSnapshot(run.reader),
+      output: outputObservationSnapshot(run.output),
+      aFailureReported: control?.aFailureReported ?? null,
+    }),
   });
 }
 
@@ -190,30 +238,59 @@ export function assertSafeConfig(config, c, resolved) {
   }
 }
 
+/** @typedef {"handshake" | "coordinates" | "environment" | "import" | "vitest" |
+ *   "early-config" | "resolved-config" | "spec" | "business" | "b-wait" |
+ *   "post-run" | "final"} AFailurePhase */
+
 /** Internal A path: stdin and fd3 are original O-created pipes, not user role claims. @param {string} nonce */
 async function runA(nonce) {
-  const latch = createFailureLatch();
+  const baseLatch = createFailureLatch();
+  /** @type {AFailurePhase} */ let currentPhase = "handshake";
+  /** @type {AFailurePhase | null} */ let failurePhase = null;
+  const latch = Object.freeze({
+    /** @param {string} diagnostic @param {unknown} [error] */
+    fail(diagnostic, error) {
+      if (!baseLatch.snapshot().failed) failurePhase = currentPhase;
+      baseLatch.fail(diagnostic, error);
+    },
+    assert() { baseLatch.assert(); },
+    snapshot() { return baseLatch.snapshot(); },
+  });
   /** @type {Coordinates | undefined} */ let coordinates;
   /** @type {string[] | undefined} */ let expectedArgs;
   /** @type {Record<string,string> | undefined} */ let expectedEnv;
   let ready = false;
   const writer = createControlWriter(nonce, latch);
-  const guard = installProcessGuard("A", latch, (kind) => writer.send(kind), (file, args, options) => {
-    if (!ready || !coordinates || !expectedArgs || !expectedEnv ||
-        file !== join(coordinates.vitestTarget, "dist/workers/forks.js") ||
-        !Array.isArray(args) || args.length !== 0 || !options || typeof options !== "object") throw rejection();
-    const d = Object.getOwnPropertyDescriptors(options);
-    if (Reflect.ownKeys(options).length !== 4 || d.stdio?.value !== "pipe" || d.serialization?.value !== "advanced") throw rejection();
-    const argv = d.execArgv?.value;
-    if (!Array.isArray(argv) || argv.length !== expectedArgs.length || argv.some((value, index) => value !== expectedArgs?.[index])) throw rejection();
-    assertEnvironment(expectedEnv, d.env?.value);
-  });
+  /** @template T @param {AFailurePhase} phase @param {() => T} operation @returns {T} */
+  function atPhase(phase, operation) {
+    const prior = currentPhase;
+    currentPhase = phase;
+    try { return operation(); }
+    finally { currentPhase = prior; }
+  }
+  const guard = installProcessGuard("A", latch, (kind) => writer.send(kind), (file, args, options) => atPhase("spec", () => {
+    try {
+      if (!ready || !coordinates || !expectedArgs || !expectedEnv ||
+          file !== join(coordinates.vitestTarget, "dist/workers/forks.js") ||
+          !Array.isArray(args) || args.length !== 0 || !options || typeof options !== "object") throw rejection();
+      const d = Object.getOwnPropertyDescriptors(options);
+      if (Reflect.ownKeys(options).length !== 4 || d.stdio?.value !== "pipe" || d.serialization?.value !== "advanced") throw rejection();
+      const argv = d.execArgv?.value;
+      if (!Array.isArray(argv) || argv.length !== expectedArgs.length || argv.some((value, index) => value !== expectedArgs?.[index])) throw rejection();
+      assertEnvironment(expectedEnv, d.env?.value);
+    } catch (error) {
+      latch.fail("fork-contract", error);
+      throw error;
+    }
+  }));
   // Monitoring is active throughout startVitest, including its finally.close.
   const deadline = setTimeout(() => { guard.seal(); latch.fail("vitest-timeout"); }, 30000);
   try {
     coordinates = /** @type {Coordinates} */ (await receiveHandshake(nonce));
     const c = coordinates;
+    currentPhase = "coordinates";
     await verifyCoordinates(c);
+    currentPhase = "environment";
     assertEnvironment(environment(c), process.env);
     const p = paths(c);
     const fixture = join(PROJECT, FIXTURE);
@@ -224,7 +301,7 @@ async function runA(nonce) {
     /** @type {import("vitest/reporters").Reporter} */
     const reporter = {
       onInit(value) { ctx = value; },
-      onTestRunStart(specs) {
+      onTestRunStart(specs) { atPhase("spec", () => {
         try {
           guard.assert();
           if (runStarted || !ctx || specs.length !== 1 || specs[0].moduleId !== fixture ||
@@ -243,8 +320,8 @@ async function runA(nonce) {
           assertEnvironment({ ...environment(c), TEST: "true", VITEST: "true", PROD: "", DEV: "1", BASE_URL: "/", MODE: "test" }, process.env);
           ready = true;
         } catch (error) { latch.fail("spec-or-worker-contract", error); throw rejection(); }
-      },
-      onTestRunEnd(modules, errors, reason) {
+      }); },
+      onTestRunEnd(modules, errors, reason) { atPhase("business", () => {
         try {
           guard.assert();
           if (!runStarted || businessPass || !ctx || reason !== "passed" || errors.length !== 0 || modules.length !== 1 ||
@@ -254,31 +331,33 @@ async function runA(nonce) {
           businessPass = true;
           writer.send("business-pass");
         } catch (error) { latch.fail("business-result", error); throw rejection(); }
-      },
+      }); },
     };
     const plugin = {
       name: "pm-sdk-ab-owner-safety", enforce: /** @type {const} */ ("post"),
       config: { order: /** @type {const} */ ("post"),
         /** @param {any} config */
-        handler(config) {
-        try {
-          // This post-order hook must be the last config hook in the fixed set.
-          const plugins = config.plugins.flat(Infinity).filter(Boolean);
-          const later = plugins.slice(plugins.indexOf(plugin) + 1);
-          if (!plugins.includes(plugin) || later.some((/** @type {any} */ item) => item.config)) throw rejection();
-          assertSafeConfig(config, c, false);
-        }
-        catch (error) { latch.fail("early-config", error); throw rejection(); }
-      } },
+        handler(config) { atPhase("early-config", () => {
+          try {
+            // This post-order hook must be the last config hook in the fixed set.
+            const plugins = config.plugins.flat(Infinity).filter(Boolean);
+            const later = plugins.slice(plugins.indexOf(plugin) + 1);
+            if (!plugins.includes(plugin) || later.some((/** @type {any} */ item) => item.config)) throw rejection();
+            assertSafeConfig(config, c, false);
+          }
+          catch (error) { latch.fail("early-config", error); throw rejection(); }
+        }); } },
       configResolved: { order: /** @type {const} */ ("post"),
         /** @param {any} config */
-        handler(config) {
-        try { assertSafeConfig(config, c, true); }
-        catch (error) { latch.fail("resolved-config", error); throw rejection(); }
-      } },
+        handler(config) { atPhase("resolved-config", () => {
+          try { assertSafeConfig(config, c, true); }
+          catch (error) { latch.fail("resolved-config", error); throw rejection(); }
+        }); } },
     };
+    currentPhase = "import";
     writer.send("ready");
     const { startVitest } = await import("vitest/node");
+    currentPhase = "vitest";
     await startVitest("test", [fixture], {
       root: PROJECT, config: p.configPath, include: [FIXTURE], run: true, watch: false,
       maxWorkers: 1, ui: false, api: false, coverage: { enabled: false }, typecheck: { enabled: false },
@@ -288,17 +367,21 @@ async function runA(nonce) {
       server: { middlewareMode: true, ws: false, hmr: false, watch: null, open: false, preTransformRequests: false },
       plugins: [plugin],
     });
+    currentPhase = "b-wait";
     guard.seal();
     const original = guard.original();
     if (!original || !await original.wait() || !businessPass || ctx?.state.getUnhandledErrors().length) throw rejection();
+    currentPhase = "post-run";
     guard.assert();
     if (process.exitCode !== undefined && process.exitCode !== 0) throw rejection();
     writer.send("b-ended");
     await verifyCoordinates(c);
+    currentPhase = "final";
     writer.send("final");
     closeSync(3);
   } catch (error) {
     latch.fail("a-failed", error);
+    if (coordinates && failurePhase) writer.sendFailureOnce(failurePhase, latch.snapshot().code);
   } finally {
     guard.seal(); clearTimeout(deadline);
     // No second ctx.close and no synthetic stop on failure.
@@ -314,9 +397,24 @@ export async function main() {
   if (!authorized(args)) { process.exitCode = 64; return; }
   const latch = createFailureLatch();
   /** @type {ReturnType<typeof installProcessGuard> | undefined} */ let guard;
+  /** @type {ReturnType<ReturnType<typeof installProcessGuard>["original"]> | undefined} */ let observer;
+  /** @type {ControlReader | undefined} */ let reader;
+  /** @type {boolean | null} */ let waitResult = null;
+  /** @type {OutputObservation | undefined} */ let output;
   /** @type {object | undefined} */ let scene;
   /** @type {AllocationFailure | undefined} */ let allocationFailure;
   /** @type {OwnerRunPhase} */ let phase = "guard-install";
+  /** @param {boolean} executionCandidate */
+  function preserveFacts(executionCandidate) {
+    if (!scene) return;
+    const prior = runReceipts.get(scene)?.facts;
+    runReceipts.set(scene, Object.freeze({ latch, facts: Object.freeze({
+      ...prior, executionCandidate,
+      ...(observer ? { aEnded: prior?.aEnded === true || observer.snapshot().ended } : {}),
+      ...(reader ? { bEndedReported: prior?.bEndedReported === true || reader.snapshot().complete } : {}),
+      reclaim: "not-requested",
+    }) }));
+  }
   try {
     guard = installProcessGuard("O", latch, () => {}, () => { throw rejection(); });
     phase = "environment";
@@ -352,41 +450,51 @@ export async function main() {
     const original = guard.original();
     const stream = child.stdio[3];
     if (!original || original.child !== child || !stream || !child.stdin || !child.stdout || !child.stderr) throw rejection();
-    const reader = createControlReader(child, stream, nonce, latch);
-    stream.on("data", (chunk) => reader.accept(child, stream, chunk));
-    stream.on("end", () => reader.end(child, stream));
+    observer = original;
+    reader = createControlReader(child, stream, nonce, latch);
+    stream.on("data", (chunk) => reader?.accept(child, stream, chunk));
+    stream.on("end", () => reader?.end(child, stream));
     stream.on("error", (error) => latch.fail("control-stream", error));
-    let outputBytes = 0;
-    for (const output of [child.stdout, child.stderr]) output.on("data", (chunk) => {
-      outputBytes += Buffer.isBuffer(chunk) ? chunk.length : 1048577;
-      if (outputBytes > 1048576) latch.fail("library-output-budget");
-    });
+    output = { stdoutBytes: 0, stderrBytes: 0, totalBytes: 0, nonBufferObserved: false, budgetExceeded: false };
+    for (const [key, outputStream] of /** @type {const} */ ([["stdoutBytes", child.stdout], ["stderrBytes", child.stderr]])) {
+      outputStream.on("data", (chunk) => {
+        if (!output) return;
+        if (!Buffer.isBuffer(chunk)) {
+          output.nonBufferObserved = true;
+          latch.fail("library-output-non-buffer");
+          return;
+        }
+        const length = chunk.length;
+        output[key] = output[key] > Number.MAX_SAFE_INTEGER - length ? Number.MAX_SAFE_INTEGER : output[key] + length;
+        output.totalBytes = output.totalBytes > Number.MAX_SAFE_INTEGER - length ? Number.MAX_SAFE_INTEGER : output.totalBytes + length;
+        if (output.totalBytes > 1048576 || output.totalBytes === Number.MAX_SAFE_INTEGER) {
+          output.budgetExceeded = true;
+          latch.fail("library-output-budget");
+        }
+      });
+    }
     phase = "handshake";
     const handshake = Buffer.from(JSON.stringify({ v: 1, nonce, ...c }));
     if (handshake.length > 8192) throw rejection();
     child.stdin.end(handshake);
     phase = "child-wait";
-    const ended = await original.wait();
+    waitResult = await original.wait();
     const observed = original.snapshot();
+    preserveFacts(false);
     phase = "post-run-verification";
     await verifyCoordinates(c);
-    const candidate = ended && reader.snapshot().complete && observed.exitCode === 0 && observed.signal === null && !latch.snapshot().failed;
+    const candidate = waitResult === true && reader.snapshot().complete && observed.exitCode === 0 && observed.signal === null && !latch.snapshot().failed;
     guard.assert();
     if (!scene) throw rejection();
     phase = "candidate-record";
-    runReceipts.set(scene, Object.freeze({ latch, facts: Object.freeze({
-      executionCandidate: candidate, aEnded: observed.ended,
-      bEndedReported: reader.snapshot().complete, reclaim: "not-requested",
-    }) }));
+    preserveFacts(candidate);
     if (!candidate) throw rejection();
     phase = "candidate-output";
     process.stdout.write("PM_SDK_AB_EXECUTION_CANDIDATE_PRESERVED\n");
     phase = "complete";
   } catch (error) {
     latch.fail("o-failed", error);
-    if (scene) runReceipts.set(scene, Object.freeze({ latch, facts: Object.freeze({
-      ...runReceipts.get(scene)?.facts, executionCandidate: false, reclaim: "not-requested",
-    }) }));
+    preserveFacts(false);
   } finally {
     try { guard?.seal(); }
     catch (error) { latch.fail("o-guard-seal", error); }
@@ -397,6 +505,10 @@ export async function main() {
     latch,
     phase,
     allocationFailure: allocationFailureSnapshot(allocationFailure),
+    observer,
+    reader,
+    output,
+    waitResult: () => waitResult,
   }));
   return result;
 }

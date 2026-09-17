@@ -840,3 +840,16 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 验证只固定Node直接原VM和已装compiler，明确四文件ignoreConfig/noEmit/strict/allowJs/checkJs/noUnusedLocals/noUnusedParameters/NodeNext/ES2023，实验性warning照留；无pnpm/Python/Git测试运行或真实SDK/Scene/信号。未直接读用户CF配置，不声称系统底层从未读home。
 - 原sdk-ab-live/n26-ab-01失败、manifest与两脚本不覆盖。新版prefix/manifest/driver/verifier仍须精确三键和UID记录验证、另行审批；不自动重试或授Root-B/M4通过。
 - 本功能提交仅三源及本节，实际本地提交号/树/hash/空暂存区/工作报告保全见`$ENV/commit.json`。证据700600保留，无新业务资源需清理、无push/发布或旧资料覆盖。
+
+## M4-PM-AB-FAILURE-EVIDENCE-01：原运行失败事实与有界诊断
+
+- 新前缀AB02使用固定三键环境与UID501，通过入口预核后实际O/tool均exit1，control-eof，最后O阶段post-run-verification、owner投影null；新Scene/private/tmp/pi-s-Yfsgsf保全，未运行verifier/重试/扫描/补杀/删除。主代理原回执与唯一精确command已归档sdk-ab-live-02/failed-live-main-review.json；独立035004f3只读诊断确认现有记录不足归因A，不能从O阶段推断A失败位置或全树终态。
+- 任务仅改tests/pm-sdk-ab-owner-entry.mjs、tests/helpers/pm-sdk-ab-owner.mjs、tests/pm-sdk-ab-owner.vm.mjs。O私有保原A观察器/reader/等待结果，原result WeakMap查询提供冻结安全observations（未观察null）；post-gate前保事实，当前latch仍否决candidate，旧快照仅历史。stdout/stderr只统计各自真实Buffer字节/合计及未知chunk、预算标记，无正文、PID、对象或opaque异常外泄。
+- A沿原fd3最多发一个固定枚举失败终帧，只有握手完整、失败已锁存、writer未终态且写通道健康才一次发送；共享原nonce/sequence/256/32768/128预算，不放宽成功四键/顺序/EOF。reader分别保尝试行数、已验帧、成功前缀、物理end与合法EOF，远端诊断不是本地B句柄或终态。没有增加creator/signal/close/stop/delete/reclaim能力。
+- ae4adbef实际sol首产物163/0、静态0；独立b0f32269原163/0但补9项6过3败：F1普通写throw后仍再写诊断、F2 fork校验阶段丢失、F3同chunk final后failure被接纳。主代理读原反例确认未验收，首产物/测试失败全部保留。旧句柄清理不计失败或接手依据。
+- b9061712实际sol同任务第二产物，仅发送阶段异常永久关闭诊断资格（已有latch未写拒绝不误伤）、spec局部先锁存再恢复、逐字节终态检查；新增回归与3个有效变异。主代理完整读两轮差异、核现源与验证：最终167/0，原独立9/0，四源check/strict/checkJs/noUnused全0；原151/3变异和首产物新增6变异保留。
+- 独立7c8bf52f实际astra复审通过三修及相邻交互：167/0、原9/0、额外4复合边界全0；17项选定输入起止hash一致。主代理读完整报告/独立boundary源、原diff与回执后整合。通过仅代码/纯VM，不恢复AB02根因，不替代真实库/SDK/Root-B/M4验收。
+- 最终SHA256：entry `2ea070a36e82d28498bed5ab2dc41008cf6c45f790b91c8c9f0be83ed32a1b77`，helper `729dcb65ea6a7b5c74d9f65ac1601829876594cd900cd7e1661d97a2821f4441`，VM `b0cfecfc81064326bfbef6ef94d5496ae25fc750a33f03e6e687e3cde6fda71a`；fixture64bca8bb…未改。
+- 验证为固定Node26直接`--experimental-vm-modules tests/pm-sdk-ab-owner.vm.mjs`及review01/independent、review02/boundary；四源`--check`和已装TypeScript compiler显式四源strict/checkJs/noUnused，无包管理器或真实目标加载。精确command/stdout/stderr/exit在证据目录attempt02与review02，实验性警告照留，旧类型/装置/断言失败不覆盖。
+- 限制：MAX_SAFE_INTEGER饱和仅静态核对，实际输出测试到1MiB及+1；未测试全部安装点/任意异步错误/真实进程。预算合成nonce或复合变异与真实最多6/7成功帧分列，不冒128帧合法实跑；fatal/断管/final后迟到失败可缺诊断。新driver严格投影与新case仍待后续，不改旧两套失败证据，不自动给旧Scene删除权。历史Python startup未知影响保持未审计，不因本轮无Python而洗白。
+- 证据根`FE=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-ab-failure-evidence-01`：attempt01/02、review01/02、REPAIR-02-DECISION、模型核验、main-integration与commit。目录700/文件600，无新增真实资源需清理。本地提交仅三源与本节，实际提交号及暂存/工作报告保全核验见`$FE/commit.json`；保留其他未提交成果、无push/发布。

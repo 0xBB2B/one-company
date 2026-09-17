@@ -414,7 +414,7 @@ function aEnvironment() {
   };
 }
 
-/** @typedef {{unsafeConfig?:boolean, specs?:"one"|"empty"|"many"|"wrong", stop?:"before"|"after", earlyPatch?:(config:any)=>void, resolvedPatch?:(config:any)=>void, specProject?:"wrong", specPool?:string, duplicateStart?:boolean, testName?:string, testCount?:number, testState?:string, moduleState?:string, reason?:string, runErrors?:unknown[], unhandled?:unknown[], hang?:boolean, lateWorkerError?:boolean, bCf?:string, childBehavior?:ChildBehavior, sceneFailure?:SceneFailureMode, guardInstallFailure?:unknown}} StartBehavior */
+/** @typedef {{unsafeConfig?:boolean, specs?:"one"|"empty"|"many"|"wrong", stop?:"before"|"after", earlyPatch?:(config:any)=>void, resolvedPatch?:(config:any)=>void, forkPatch?:(request:{file:string,args:string[],options:any})=>void, specProject?:"wrong", specPool?:string, duplicateStart?:boolean, testName?:string, testCount?:number, testState?:string, moduleState?:string, reason?:string, runErrors?:unknown[], unhandled?:unknown[], hang?:boolean, lateWorkerError?:boolean, startThrow?:unknown, controlWriteSync?:(fd:number, frame:Uint8Array)=>number, bCf?:string, childBehavior?:ChildBehavior, sceneFailure?:SceneFailureMode, guardInstallFailure?:unknown}} StartBehavior */
 /** @param {StartBehavior} behavior @param {any} cp @param {FakeProcess} processLike */
 function createStartVitest(behavior, cp, processLike) {
   /** @type {any[]} */ const effects = [];
@@ -425,6 +425,7 @@ function createStartVitest(behavior, cp, processLike) {
   /** @param {string} _mode @param {string[]} _filters @param {any} options @param {any} viteOptions */
   async function startVitest(_mode, _filters, options, viteOptions) {
     entered = true;
+    if (Object.hasOwn(behavior, "startThrow")) throw behavior.startThrow;
     const reporter = options.reporters[0];
     const plugin = viteOptions.plugins[0];
     const early = {
@@ -470,12 +471,17 @@ function createStartVitest(behavior, cp, processLike) {
     effects.push("reporter-start-approved");
     const expectedArgs = ["--experimental-import-meta-resolve", "--require", join(VITEST_TARGET, "suppress-warnings.cjs"),
       "--conditions", "node", "--conditions", "module", "--conditions", "development", "--import", options.execArgv[1]];
-    worker = cp.fork(join(VITEST_TARGET, "dist/workers/forks.js"), [], {
-      stdio: "pipe", serialization: "advanced", execArgv: expectedArgs,
-      env: { ...aEnvironment(), TEST: "true", VITEST: "true", VITEST_MODE: "RUN", FORCE_TTY: "",
-        PROD: "", DEV: "1", BASE_URL: "/", MODE: "test", PI_PM_AB_ROLE: "B", PI_PM_AB_PRELOAD: options.execArgv[1],
-        ...(behavior.bCf === undefined ? {} : { __CF_USER_TEXT_ENCODING: behavior.bCf }) },
-    });
+    const forkRequest = {
+      file: join(VITEST_TARGET, "dist/workers/forks.js"), args: [],
+      options: {
+        stdio: "pipe", serialization: "advanced", execArgv: expectedArgs,
+        env: { ...aEnvironment(), TEST: "true", VITEST: "true", VITEST_MODE: "RUN", FORCE_TTY: "",
+          PROD: "", DEV: "1", BASE_URL: "/", MODE: "test", PI_PM_AB_ROLE: "B", PI_PM_AB_PRELOAD: options.execArgv[1],
+          ...(behavior.bCf === undefined ? {} : { __CF_USER_TEXT_ENCODING: behavior.bCf }) },
+      },
+    };
+    behavior.forkPatch?.(forkRequest);
+    worker = cp.fork(forkRequest.file, forkRequest.args, forkRequest.options);
     if (behavior.hang) await new Promise((resolveHang) => { releaseHang = () => resolveHang(undefined); });
     const stop = () => {
       effects.push(`stop:${returned ? "after-return" : "inside-close"}`);
@@ -512,7 +518,7 @@ async function createEntryWorld(behavior = {}, entrySource = ENTRY_SOURCE) {
   const processLike = new FakeProcess({
     env: aEnvironment(), argv: [NODE, "/virtual/not-direct.mjs", "--internal-pm-sdk-ab-owner-A", "0123456789abcdef0123456789abcdef"],
   });
-  const helperWorld = await createHelperWorld({ process: processLike, childBehavior: behavior.childBehavior });
+  const helperWorld = await createHelperWorld({ process: processLike, childBehavior: behavior.childBehavior, writeSync: behavior.controlWriteSync });
   const helperModule = await helperWorld.loadHelper();
   const start = createStartVitest(behavior, helperWorld.child.cp, processLike);
   const context = helperWorld.context;
@@ -626,7 +632,7 @@ function controlFrames(nonce) {
     .map((kind, index) => JSON.stringify({ v: 1, n: nonce, s: index + 1, k: kind }) + "\n").join("");
 }
 
-/** @typedef {{chunks?:number[], eof?:boolean, closeControl?:boolean, closeDataStreams?:boolean, outputBytes?:number, extraOutputByte?:boolean, outputError?:boolean, ownerOutputThrow?:unknown, exitCode?:number|null, signal?:string|null}} OuterCompletion */
+/** @typedef {{chunks?:number[], eof?:boolean, closeControl?:boolean, closeDataStreams?:boolean, outputBytes?:number, extraOutputByte?:boolean, nonBufferOutput?:unknown, outputError?:boolean, ownerOutputThrow?:unknown, exitCode?:number|null, signal?:string|null, controlPrefix?:number, failure?:{phase:string, code:string}, controlSuffix?:Buffer, advanceWaitTimeout?:boolean, corruptRootConfig?:boolean}} OuterCompletion */
 /** @param {any} child @param {Buffer} reportBytes @param {OuterCompletion} [options] */
 function completeOuterChild(child, reportBytes, options = {}) {
   let offset = 0;
@@ -637,13 +643,15 @@ function completeOuterChild(child, reportBytes, options = {}) {
   if (offset < reportBytes.length) child.control.emit("data", reportBytes.subarray(offset));
   if (options.outputBytes) child.stdout.emit("data", Buffer.alloc(options.outputBytes));
   if (options.extraOutputByte) child.stderr.emit("data", Buffer.alloc(1));
+  if (Object.hasOwn(options, "nonBufferOutput")) child.stdout.emit("data", options.nonBufferOutput);
   if (options.outputError) child.stdout.emit("error", new Error("stdout failed"));
   if (options.eof !== false) child.control.emit("end");
   if (options.closeDataStreams !== false) {
     child.stdin.emit("close"); child.stdout.emit("close"); child.stderr.emit("close");
   }
   if (options.closeControl !== false) child.control.emit("close");
-  child.emit("exit", options.exitCode ?? 0, options.signal ?? null);
+  child.emit("exit", Object.hasOwn(options, "exitCode") ? options.exitCode : 0,
+    Object.hasOwn(options, "signal") ? options.signal : null);
   child.emit("close");
 }
 
@@ -660,12 +668,16 @@ async function createOuterReportEndpoint() {
       const latch = reportHelper.createFailureLatch();
       const writer = reportHelper.createControlWriter(parsed.nonce, latch);
       const start = reportWorld.writes.length;
-      for (const kind of ["ready", "reserve", "bound", "business-pass", "b-ended", "final"]) writer.send(kind);
-      assert.equal(latch.snapshot().failed, false);
+      const kinds = ["ready", "reserve", "bound", "business-pass", "b-ended", "final"];
+      for (const kind of kinds.slice(0, completion.controlPrefix ?? kinds.length)) writer.send(kind);
+      if (completion.failure) {
+        latch.fail(completion.failure.code);
+        assert.equal(writer.sendFailureOnce(completion.failure.phase, completion.failure.code), true);
+      }
+      if (!completion.failure) assert.equal(latch.snapshot().failed, false);
       const frames = reportWorld.writes.slice(start);
-      assert.equal(frames.length, 6);
       reports += 1;
-      completeOuterChild(child, Buffer.concat(frames), completion);
+      completeOuterChild(child, Buffer.concat(completion.controlSuffix ? [...frames, completion.controlSuffix] : frames), completion);
     },
     reports: () => reports,
   };
@@ -677,7 +689,17 @@ async function runOuter(completion, entrySource = ENTRY_SOURCE) {
   const reportEndpoint = await createOuterReportEndpoint();
   const world = await createEntryWorld({ childBehavior: {
     /** @param {any} actualChild @param {Buffer} handshake */
-    onInputEnd(actualChild, handshake) { child = actualChild; reportEndpoint.send(actualChild, handshake, completion); },
+    onInputEnd(actualChild, handshake) {
+      child = actualChild;
+      reportEndpoint.send(actualChild, handshake, completion);
+      if (completion.corruptRootConfig) {
+        const coordinate = JSON.parse(handshake.toString("utf8"));
+        const config = world.memoryFs.entry(join(coordinate.root, "vitest.config.ts"));
+        if (config.kind !== "file") throw new Error("expected config file");
+        config.bytes = Buffer.from("corrupt");
+      }
+      if (completion.advanceWaitTimeout) Promise.resolve().then(() => world.helperWorld.clock.advance(15000));
+    },
   } }, entrySource);
   world.process.argv = [NODE, fileURLToPath(ENTRY_URL), "--authorize=M4-PM-SDK-AB-OWNER", "--case=vitest-fork"];
   world.process.env = oEnvironment();
@@ -686,7 +708,8 @@ async function runOuter(completion, entrySource = ENTRY_SOURCE) {
   }
   const result = await world.entry.main();
   assert.equal(reportEndpoint.reports(), 1);
-  assert.equal(reportEndpoint.reportWorld.writes.length, 6);
+  assert.equal(reportEndpoint.reportWorld.writes.length,
+    (completion.controlPrefix ?? 6) + (completion.failure ? 1 : 0));
   return { world, child, reportEndpoint, result };
 }
 
@@ -1124,6 +1147,67 @@ await check("控制writer规范帧、短写和预算永久失败", async () => {
   assert.equal(latch.snapshot().failed, true);
 });
 
+await check("普通控制写throw短写预算永久关闭native诊断但业务latch仍可诊断", async () => {
+  for (const kind of ["ready", "reserve", "bound"]) {
+    for (const persistent of [false, true]) {
+      const ordinal = kind === "ready" ? 1 : kind === "reserve" ? 2 : 3;
+      let attempts = 0;
+      let opaqueReads = 0;
+      const opaque = new Proxy(Object.create(null), {
+        get() { opaqueReads += 1; throw new Error("opaque write error read"); },
+        ownKeys() { opaqueReads += 1; throw new Error("opaque write error keys"); },
+      });
+      const world = await createHelperWorld({ writeSync: (_fd, frame) => {
+        attempts += 1;
+        if (attempts === ordinal || (persistent && attempts >= ordinal)) throw opaque;
+        return frame.length;
+      } });
+      const helper = /** @type {any} */ ((await world.loadHelper()).namespace);
+      const latch = helper.createFailureLatch();
+      const writer = helper.createControlWriter("n", latch);
+      if (ordinal > 1) writer.send("ready");
+      if (ordinal > 2) writer.send("reserve");
+      assert.throws(() => writer.send(kind));
+      assert.equal(writer.sendFailureOnce("spec", latch.snapshot().code), false);
+      assert.equal(attempts, ordinal, `${kind}:${persistent}`);
+      assert.equal(opaqueReads, 0, `${kind}:${persistent}`);
+      assert.equal(latch.snapshot().code, "control-write");
+    }
+  }
+
+  let shortAttempts = 0;
+  const short = await createHelperWorld({ writeSync: (_fd, frame) => {
+    shortAttempts += 1;
+    return shortAttempts === 1 ? frame.length - 1 : frame.length;
+  } });
+  const shortHelper = /** @type {any} */ ((await short.loadHelper()).namespace);
+  const shortLatch = shortHelper.createFailureLatch();
+  const shortWriter = shortHelper.createControlWriter("n", shortLatch);
+  assert.throws(() => shortWriter.send("ready"));
+  assert.equal(shortWriter.sendFailureOnce("spec", shortLatch.snapshot().code), false);
+  assert.equal(shortAttempts, 1);
+
+  const budget = await createHelperWorld();
+  const budgetHelper = /** @type {any} */ ((await budget.loadHelper()).namespace);
+  const budgetLatch = budgetHelper.createFailureLatch();
+  const budgetWriter = budgetHelper.createControlWriter("n", budgetLatch);
+  for (let index = 0; index < 128; index += 1) budgetWriter.send("x");
+  assert.throws(() => budgetWriter.send("x"));
+  assert.equal(budgetWriter.sendFailureOnce("spec", budgetLatch.snapshot().code), false);
+  assert.equal(budget.writes.length, 128);
+
+  const business = await createHelperWorld();
+  const businessHelper = /** @type {any} */ ((await business.loadHelper()).namespace);
+  const businessLatch = businessHelper.createFailureLatch();
+  const businessWriter = businessHelper.createControlWriter("n", businessLatch);
+  businessWriter.send("ready");
+  businessLatch.fail("business-result");
+  assert.throws(() => businessWriter.send("business-pass"));
+  assert.equal(businessWriter.sendFailureOnce("business", businessLatch.snapshot().code), true);
+  assert.equal(business.writes.length, 2);
+  assert.equal(JSON.parse(business.writes[1].toString()).c, "business-result");
+});
+
 await check("控制reader绑定原owner/stream并严核nonce顺序EOF和迟到", async () => {
   const world = await createHelperWorld();
   const helper = /** @type {any} */ ((await world.loadHelper()).namespace);
@@ -1178,6 +1262,52 @@ await check("reader允许单次规范SIGTERM观察但拒绝重复", async () => 
   const repeatedKinds = ["ready", "reserve", "bound", "sigterm", "sigterm"];
   repeated.accept(owner, stream, Buffer.from(repeatedKinds.map((kind, index) => JSON.stringify({ v: 1, n: "term", s: index + 1, k: kind }) + "\n").join("")));
   assert.equal(repeatedLatch.snapshot().failed, true);
+});
+
+await check("reader逐字节拒绝final后failure且健康前缀仍接受失败终帧", async () => {
+  const world = await createHelperWorld();
+  const helper = /** @type {any} */ ((await world.loadHelper()).namespace);
+  const failure = (/** @type {string} */ nonce, /** @type {number} */ sequence) =>
+    JSON.stringify({ v: 1, n: nonce, s: sequence, k: "a-failure", p: "spec", c: "fork-contract" }) + "\n";
+  const success = controlFrames("n");
+  const variants = [
+    [Buffer.from(success + failure("n", 7))],
+    [Buffer.from(success), Buffer.from(failure("n", 7))],
+    [Buffer.from(success.slice(0, -1)), Buffer.from("\n" + failure("n", 7))],
+    [Buffer.from(success), Buffer.from(failure("n", 7).slice(0, 1)), Buffer.from(failure("n", 7).slice(1))],
+  ];
+  for (const chunks of variants) {
+    const latch = helper.createFailureLatch(); const owner = {}; const stream = {};
+    const reader = helper.createControlReader(owner, stream, "n", latch);
+    for (const chunk of chunks) reader.accept(owner, stream, chunk);
+    reader.end(owner, stream);
+    assert.equal(latch.snapshot().failed, true);
+    assert.equal(reader.snapshot().successPhase, 6);
+    assert.equal(reader.snapshot().acceptedFrames, 6);
+    assert.equal(reader.snapshot().aFailureReported, null);
+    assert.equal(reader.snapshot().complete, false);
+  }
+
+  const termKinds = ["ready", "reserve", "bound", "sigterm", "business-pass", "b-ended", "final"];
+  const termSuccess = termKinds.map((kind, index) => JSON.stringify({ v: 1, n: "t", s: index + 1, k: kind }) + "\n").join("");
+  const termLatch = helper.createFailureLatch(); const termOwner = {}; const termStream = {};
+  const termReader = helper.createControlReader(termOwner, termStream, "t", termLatch);
+  termReader.accept(termOwner, termStream, Buffer.from(termSuccess + failure("t", 8)));
+  assert.equal(termLatch.snapshot().failed, true);
+  assert.equal(termReader.snapshot().successPhase, 6);
+  assert.equal(termReader.snapshot().acceptedFrames, 7);
+  assert.equal(termReader.snapshot().aFailureReported, null);
+
+  const prefixLatch = helper.createFailureLatch(); const prefixOwner = {}; const prefixStream = {};
+  const prefixReader = helper.createControlReader(prefixOwner, prefixStream, "p", prefixLatch);
+  const prefix = ["ready", "reserve", "bound"].map((kind, index) => JSON.stringify({ v: 1, n: "p", s: index + 1, k: kind }) + "\n").join("");
+  prefixReader.accept(prefixOwner, prefixStream, Buffer.from(prefix + failure("p", 4)));
+  prefixReader.end(prefixOwner, prefixStream);
+  assert.equal(prefixLatch.snapshot().failed, true);
+  assert.equal(prefixReader.snapshot().successPhase, 3);
+  assert.equal(prefixReader.snapshot().acceptedFrames, 4);
+  assert.deepEqual({ ...prefixReader.snapshot().aFailureReported }, { phase: "spec", code: "fork-contract" });
+  assert.equal(prefixReader.snapshot().complete, false);
 });
 
 const malformedReaderFrames = [
@@ -1667,6 +1797,43 @@ await check("A拒绝向B fork传播非固定CF值", async () => {
   assert.equal(world.helperWorld.child.nativeCalls.length, 0);
 });
 
+await check("fork同步契约逐项在spec锁存且既有阶段首错不被覆盖", async () => {
+  /** @type {Array<[string, (request:any)=>void]>} */
+  const patches = [
+    ["file", (request) => { request.file = "/wrong-worker.js"; }],
+    ["args", (request) => { request.args.push("unexpected"); }],
+    ["options", (request) => { delete request.options.serialization; }],
+    ["execArgv", (request) => { request.options.execArgv.push("--bad"); }],
+    ["env", (request) => { request.options.env.EXTRA = "1"; }],
+  ];
+  for (const [name, patch] of patches) {
+    const world = await createEntryWorld({ forkPatch: patch });
+    await world.runA();
+    const encoded = world.helperWorld.writes.at(-1);
+    assert.ok(encoded);
+    const frame = JSON.parse(encoded.toString());
+    assert.equal(frame.k, "a-failure", name);
+    assert.equal(frame.p, "spec", name);
+    assert.equal(frame.c, "fork-contract", name);
+    assert.equal(world.helperWorld.child.nativeCalls.length, 0, name);
+  }
+  /** @type {Array<[string, StartBehavior, string, string]>} */
+  const phaseCases = [
+    ["early", { unsafeConfig: true }, "early-config", "early-config"],
+    ["resolved", { resolvedPatch: (/** @type {any} */ config) => { config._vitest.pool = "threads"; } }, "resolved-config", "resolved-config"],
+    ["business", { testName: "wrong" }, "business", "business-result"],
+  ];
+  for (const [name, behavior, phase, code] of phaseCases) {
+    const world = await createEntryWorld(behavior);
+    await world.runA();
+    const encoded = world.helperWorld.writes.at(-1);
+    assert.ok(encoded);
+    const frame = JSON.parse(encoded.toString());
+    assert.equal(frame.p, phase, name);
+    assert.equal(frame.c, code, name);
+  }
+});
+
 await check("B真实绑定、fixture、重复加载与普通import", async () => {
   const processLike = new FakeProcess({
     connected: true,
@@ -1929,6 +2096,299 @@ await check("R3 后置stream观察失败不覆盖native返回或owner", async ()
   assert.equal(latch.snapshot().code, "stdio-observation");
 });
 
+await check("E1/E2 O成功投影仅含原观察器、控制进度与分流字节", async () => {
+  const { world, result } = await runOuter({ outputBytes: 7, extraOutputByte: true });
+  const receipt = world.entry.ownerRunReceipt(result);
+  assert.deepEqual({ ...receipt.observations.a }, {
+    source: "O-original-A", exit: true, close: true, disconnected: true,
+    streamsCaptured: true, ended: true, exitCode: 0, signal: null,
+  });
+  assert.equal(receipt.observations.waitResult, true);
+  assert.deepEqual({ ...receipt.observations.control }, {
+    sequence: 6, acceptedFrames: 6, successPhase: 6, bytes: Buffer.byteLength(controlFrames("01010101010101010101010101010101")),
+    residualBytes: 0, endObserved: true, eof: true, complete: true,
+  });
+  assert.deepEqual({ ...receipt.observations.output }, {
+    stdoutBytes: 7, stderrBytes: 1, totalBytes: 8,
+    nonBufferObserved: false, budgetExceeded: false,
+  });
+  assert.equal(receipt.observations.aFailureReported, null);
+  assert.deepEqual(Reflect.ownKeys(receipt.observations).sort(),
+    ["a", "waitResult", "control", "output", "aFailureReported"].sort());
+  for (const forbidden of ["child", "stream", "pid", "opaque", "latch"]) {
+    assert.equal(Object.hasOwn(receipt.observations, forbidden), false);
+    assert.equal(Object.hasOwn(receipt.observations.a, forbidden), false);
+  }
+  assert.equal(Object.isFrozen(receipt.observations), true);
+  assert.equal(Object.isFrozen(receipt.observations.a), true);
+  assert.equal(Object.isFrozen(receipt.observations.control), true);
+  assert.equal(Object.isFrozen(receipt.observations.output), true);
+});
+
+await check("E1 失败终帧在六个健康前缀保留A与reader事实但永久失败", async () => {
+  for (let prefix = 0; prefix <= 5; prefix += 1) {
+    const { world, result } = await runOuter({ controlPrefix: prefix,
+      failure: { phase: "vitest", code: "a-failed" } });
+    const receipt = world.entry.ownerRunReceipt(result);
+    assert.equal(world.process.exitCode, 1, `prefix=${prefix}`);
+    assert.equal(receipt.owner.aEnded, true, `prefix=${prefix}`);
+    assert.equal(receipt.owner.bEndedReported, false, `prefix=${prefix}`);
+    assert.equal(receipt.owner.executionCandidate, false, `prefix=${prefix}`);
+    assert.equal(receipt.observations.a.ended, true, `prefix=${prefix}`);
+    assert.equal(receipt.observations.waitResult, true, `prefix=${prefix}`);
+    assert.equal(receipt.observations.control.sequence, prefix + 1, `prefix=${prefix}`);
+    assert.equal(receipt.observations.control.acceptedFrames, prefix + 1, `prefix=${prefix}`);
+    assert.equal(receipt.observations.control.successPhase, prefix, `prefix=${prefix}`);
+    assert.equal(receipt.observations.control.endObserved, true, `prefix=${prefix}`);
+    assert.equal(receipt.observations.control.eof, false, `prefix=${prefix}`);
+    assert.equal(receipt.observations.control.complete, false, `prefix=${prefix}`);
+    assert.deepEqual({ ...receipt.observations.aFailureReported }, { phase: "vitest", code: "a-failed" });
+  }
+});
+
+await check("E1 partial与EOF、A非零、signal及wait=false均保留不猜测事实", async () => {
+  const partial = await runOuter({ controlPrefix: 0, controlSuffix: Buffer.from('{"v":1') });
+  const partialReceipt = partial.world.entry.ownerRunReceipt(partial.result);
+  assert.equal(partialReceipt.observations.control.sequence, 0);
+  assert.equal(partialReceipt.observations.control.acceptedFrames, 0);
+  assert.equal(partialReceipt.observations.control.residualBytes, 6);
+  assert.equal(partialReceipt.observations.control.endObserved, true);
+  assert.equal(partialReceipt.observations.control.eof, false);
+  assert.equal(partialReceipt.owner.aEnded, true);
+
+  const nonzero = await runOuter({ exitCode: 9 });
+  const nonzeroReceipt = nonzero.world.entry.ownerRunReceipt(nonzero.result);
+  assert.equal(nonzeroReceipt.observations.a.exitCode, 9);
+  assert.equal(nonzeroReceipt.observations.a.signal, null);
+  assert.equal(nonzeroReceipt.observations.a.ended, true);
+  assert.equal(nonzeroReceipt.owner.bEndedReported, true);
+
+  const signalled = await runOuter({ exitCode: null, signal: "SIGTERM" });
+  const signalReceipt = signalled.world.entry.ownerRunReceipt(signalled.result);
+  assert.equal(signalReceipt.observations.a.exitCode, null);
+  assert.equal(signalReceipt.observations.a.signal, "SIGTERM");
+  assert.equal(signalReceipt.owner.executionCandidate, false);
+
+  const timed = await runOuter({ closeDataStreams: false, advanceWaitTimeout: true });
+  const timedReceipt = timed.world.entry.ownerRunReceipt(timed.result);
+  assert.equal(timedReceipt.observations.waitResult, false);
+  assert.equal(timedReceipt.observations.a.ended, false);
+  assert.equal(timedReceipt.owner.executionCandidate, false);
+  timed.child.stdin.emit("close"); timed.child.stdout.emit("close"); timed.child.stderr.emit("close");
+  assert.equal(timed.world.entry.ownerRunReceipt(timed.result).observations.a.ended, true);
+  assert.equal(timed.world.helperWorld.clock.intervals.size, 0);
+});
+
+await check("E1 post-run坐标gate失败仍保留gate前事实且旧快照冻结", async () => {
+  const { world, result } = await runOuter({ corruptRootConfig: true });
+  const first = world.entry.ownerRunReceipt(result);
+  assert.equal(first.failure.phase, "post-run-verification");
+  assert.equal(first.owner.aEnded, true);
+  assert.equal(first.owner.bEndedReported, true);
+  assert.equal(first.observations.a.ended, true);
+  assert.equal(first.observations.control.successPhase, 6);
+  assert.equal(first.observations.control.endObserved, true);
+  assert.equal(first.observations.control.complete, false);
+  world.process.emit("unhandledRejection", Object.freeze({ later: true }));
+  const current = world.entry.ownerRunReceipt(result);
+  assert.equal(current.failure.failed, true);
+  assert.equal(current.owner.executionCandidate, false);
+  assert.equal(first.owner.executionCandidate, false);
+  assert.notEqual(current, first);
+  assert.equal(Object.isFrozen(first), true);
+});
+
+await check("E1/E4 stdout与stderr独立计数、1MiB边界和未知chunk不强转", async () => {
+  const exact = await runOuter({ outputBytes: 1048575, extraOutputByte: true });
+  const exactOutput = exact.world.entry.ownerRunReceipt(exact.result).observations.output;
+  assert.deepEqual({ ...exactOutput }, { stdoutBytes: 1048575, stderrBytes: 1, totalBytes: 1048576,
+    nonBufferObserved: false, budgetExceeded: false });
+  assert.equal(exact.world.entry.ownerReceipt(exact.world.sceneHandle()).executionCandidate, true);
+
+  const over = await runOuter({ outputBytes: 1048576, extraOutputByte: true });
+  const overOutput = over.world.entry.ownerRunReceipt(over.result).observations.output;
+  assert.equal(overOutput.stdoutBytes, 1048576);
+  assert.equal(overOutput.stderrBytes, 1);
+  assert.equal(overOutput.totalBytes, 1048577);
+  assert.equal(overOutput.budgetExceeded, true);
+  assert.equal(over.world.entry.ownerReceipt(over.world.sceneHandle()).executionCandidate, false);
+
+  let conversions = 0;
+  const unknown = Object.create(null);
+  for (const key of ["toString", "valueOf", Symbol.toPrimitive]) {
+    Object.defineProperty(unknown, key, { get() { conversions += 1; throw new Error("converted"); } });
+  }
+  const nonBuffer = await runOuter({ nonBufferOutput: unknown });
+  const unknownOutput = nonBuffer.world.entry.ownerRunReceipt(nonBuffer.result).observations.output;
+  assert.equal(unknownOutput.stdoutBytes, 0);
+  assert.equal(unknownOutput.stderrBytes, 0);
+  assert.equal(unknownOutput.totalBytes, 0);
+  assert.equal(unknownOutput.nonBufferObserved, true);
+  assert.equal(unknownOutput.budgetExceeded, false);
+  assert.equal(conversions, 0);
+});
+
+await check("E3 writer失败终帧共享序号预算、单次占位、短写不重试", async () => {
+  const world = await createHelperWorld();
+  const helper = /** @type {any} */ ((await world.loadHelper()).namespace);
+  const latch = helper.createFailureLatch();
+  const writer = helper.createControlWriter("n", latch);
+  writer.send("ready");
+  latch.fail("business-result");
+  assert.equal(writer.sendFailureOnce("business", latch.snapshot().code), true);
+  assert.equal(writer.sendFailureOnce("business", latch.snapshot().code), false);
+  assert.throws(() => writer.send("final"));
+  assert.equal(world.writes.length, 2);
+  assert.deepEqual(JSON.parse(world.writes[1].toString()),
+    { v: 1, n: "n", s: 2, k: "a-failure", p: "business", c: "business-result" });
+
+  let attempts = 0;
+  const short = await createHelperWorld({ writeSync: (_fd, frame) => { attempts += 1; return attempts === 1 ? frame.length : frame.length - 1; } });
+  const shortHelper = /** @type {any} */ ((await short.loadHelper()).namespace);
+  const shortLatch = shortHelper.createFailureLatch();
+  const shortWriter = shortHelper.createControlWriter("n", shortLatch);
+  shortWriter.send("ready"); shortLatch.fail("a-failed");
+  assert.equal(shortWriter.sendFailureOnce("vitest", "a-failed"), false);
+  assert.equal(shortWriter.sendFailureOnce("vitest", "a-failed"), false);
+  assert.equal(attempts, 2);
+  assert.equal(short.writes.length, 2);
+
+  const unknownLatch = helper.createFailureLatch();
+  const unknownWriter = helper.createControlWriter("u", unknownLatch);
+  unknownLatch.fail("not-an-allowed-code");
+  assert.equal(unknownWriter.sendFailureOnce("vitest", unknownLatch.snapshot().code), true);
+  const unknownFrame = world.writes.at(-1);
+  assert.ok(unknownFrame);
+  assert.equal(JSON.parse(unknownFrame.toString()).c, "a-failed");
+});
+
+await check("E3 writer第129个共享名额和32768总预算不可由失败诊断绕过", async () => {
+  const world = await createHelperWorld();
+  const helper = /** @type {any} */ ((await world.loadHelper()).namespace);
+  const latch = helper.createFailureLatch();
+  let nonce = "";
+  for (let length = 1; length < 300; length += 1) {
+    const candidate = "n".repeat(length);
+    const empty = Buffer.byteLength(JSON.stringify({ v: 1, n: candidate, s: 1, k: "" }) + "\n");
+    if (256 - empty >= 3 && 256 - empty <= 20) { nonce = candidate; break; }
+  }
+  const writer = helper.createControlWriter(nonce, latch);
+  for (let sequence = 1; sequence <= 128; sequence += 1) {
+    const empty = Buffer.byteLength(JSON.stringify({ v: 1, n: nonce, s: sequence, k: "" }) + "\n");
+    writer.send("x".repeat(256 - empty));
+  }
+  latch.fail("a-failed");
+  assert.equal(writer.sendFailureOnce("final", "a-failed"), false);
+  assert.equal(world.writes.length, 128);
+  assert.equal(world.writes.reduce((sum, frame) => sum + frame.length, 0), 32768);
+});
+
+await check("E3 reader严核失败终帧身份、schema、枚举、顺序与终态", async () => {
+  const world = await createHelperWorld();
+  const helper = /** @type {any} */ ((await world.loadHelper()).namespace);
+  const valid = (/** @type {number} */ sequence, /** @type {string} */ phase = "vitest", /** @type {string} */ code = "a-failed") =>
+    JSON.stringify({ v: 1, n: "n", s: sequence, k: "a-failure", p: phase, c: code }) + "\n";
+  for (const [name, text] of [
+    ["wrong-nonce", JSON.stringify({ v: 1, n: "x", s: 1, k: "a-failure", p: "vitest", c: "a-failed" }) + "\n"],
+    ["wrong-sequence", valid(2)],
+    ["unknown-phase", valid(1, "internal-secret")],
+    ["unknown-code", valid(1, "vitest", "message-text")],
+    ["extra-key", JSON.stringify({ v: 1, n: "n", s: 1, k: "a-failure", p: "vitest", c: "a-failed", x: 1 }) + "\n"],
+    ["noncanonical", '{"n":"n","v":1,"s":1,"k":"a-failure","p":"vitest","c":"a-failed"}\n'],
+  ]) {
+    const latch = helper.createFailureLatch(); const owner = {}; const stream = {};
+    const reader = helper.createControlReader(owner, stream, "n", latch);
+    reader.accept(owner, stream, Buffer.from(text));
+    assert.equal(latch.snapshot().failed, true, name);
+    assert.equal(reader.snapshot().aFailureReported, null, name);
+  }
+  const identityLatch = helper.createFailureLatch(); const owner = {}; const stream = {};
+  const identityReader = helper.createControlReader(owner, stream, "n", identityLatch);
+  identityReader.accept({}, stream, Buffer.from(valid(1)));
+  assert.equal(identityLatch.snapshot().failed, true);
+  assert.equal(identityReader.snapshot().aFailureReported, null);
+
+  const finalLatch = helper.createFailureLatch();
+  const finalReader = helper.createControlReader(owner, stream, "n", finalLatch);
+  finalReader.accept(owner, stream, Buffer.from(controlFrames("n")));
+  finalReader.accept(owner, stream, Buffer.from(valid(7)));
+  assert.equal(finalLatch.snapshot().failed, true);
+  assert.equal(finalReader.snapshot().aFailureReported, null);
+
+  const doubleLatch = helper.createFailureLatch();
+  const doubleReader = helper.createControlReader(owner, stream, "n", doubleLatch);
+  doubleReader.accept(owner, stream, Buffer.from(valid(1) + valid(2)));
+  assert.equal(doubleLatch.snapshot().failed, true);
+  assert.deepEqual({ ...doubleReader.snapshot().aFailureReported }, { phase: "vitest", code: "a-failed" });
+  assert.equal(doubleReader.snapshot().acceptedFrames, 1);
+});
+
+await check("E3 合法失败终帧不推进成功phase且物理end不冒充成功EOF", async () => {
+  const world = await createHelperWorld();
+  const helper = /** @type {any} */ ((await world.loadHelper()).namespace);
+  const latch = helper.createFailureLatch(); const owner = {}; const stream = {};
+  const reader = helper.createControlReader(owner, stream, "n", latch);
+  reader.accept(owner, stream, Buffer.from('{"v":1,"n":"n","s":1,"k":"ready"}\n'));
+  reader.accept(owner, stream, Buffer.from('{"v":1,"n":"n","s":2,"k":"a-failure","p":"early-config","c":"early-config"}\n'));
+  assert.deepEqual({ ...reader.snapshot().aFailureReported }, { phase: "early-config", code: "early-config" });
+  assert.equal(reader.snapshot().successPhase, 1);
+  assert.equal(reader.snapshot().acceptedFrames, 2);
+  assert.equal(reader.snapshot().endObserved, false);
+  assert.equal(reader.snapshot().eof, false);
+  assert.equal(reader.snapshot().complete, false);
+  reader.end(owner, stream);
+  assert.equal(reader.snapshot().endObserved, true);
+  assert.equal(reader.snapshot().eof, false);
+  reader.accept(owner, stream, Buffer.from('{"v":1,"n":"n","s":3,"k":"final"}\n'));
+  assert.equal(reader.snapshot().successPhase, 1);
+});
+
+await check("E4 A固定阶段和错误码不读取opaque且不新增child/kill/close", async () => {
+  let reads = 0;
+  const opaque = new Proxy(Object.create(null), {
+    get() { reads += 1; throw new Error("opaque get"); },
+    ownKeys() { reads += 1; throw new Error("opaque keys"); },
+    getOwnPropertyDescriptor() { reads += 1; throw new Error("opaque descriptor"); },
+  });
+  const world = await createEntryWorld({ startThrow: opaque });
+  await world.runA();
+  assert.equal(world.process.exitCode, 1);
+  assert.equal(world.fd3Closed(), false);
+  assert.equal(world.helperWorld.child.forks.length, 0);
+  assert.deepEqual(world.helperWorld.child.killSignals, []);
+  assert.equal(reads, 0);
+  assert.equal(world.helperWorld.writes.length, 2);
+  const failure = JSON.parse(world.helperWorld.writes[1].toString());
+  assert.deepEqual(failure, { v: 1, n: "0123456789abcdef0123456789abcdef", s: 2,
+    k: "a-failure", p: "vitest", c: "a-failed" });
+
+  const early = await createEntryWorld({ unsafeConfig: true });
+  await early.runA();
+  const earlyFrame = early.helperWorld.writes.at(-1);
+  assert.ok(earlyFrame);
+  const earlyFailure = JSON.parse(earlyFrame.toString());
+  assert.equal(earlyFailure.k, "a-failure");
+  assert.equal(earlyFailure.p, "early-config");
+  assert.equal(earlyFailure.c, "early-config");
+});
+
+await check("E4 握手未完整不发送诊断，原fd3短写只尝试一次且不重发", async () => {
+  const handshake = await createEntryWorld();
+  await handshake.runA([Buffer.from("{")]);
+  assert.equal(handshake.helperWorld.writes.length, 0);
+  assert.equal(handshake.fd3Closed(), false);
+
+  let attempts = 0;
+  const short = await createEntryWorld({ controlWriteSync: (_fd, frame) => { attempts += 1; return frame.length - 1; } });
+  await short.runA();
+  assert.equal(short.process.exitCode, 1);
+  assert.equal(attempts, 1);
+  assert.equal(short.helperWorld.writes.length, 1);
+  assert.equal(short.fd3Closed(), false);
+  assert.equal(short.helperWorld.child.forks.length, 0);
+  assert.deepEqual(short.helperWorld.child.killSignals, []);
+});
+
 await check("关键变异：owner绑定与envDir前置断言能杀死变异", async () => {
   const baseline = await createHelperWorld();
   const baselineHelper = /** @type {any} */ ((await baseline.loadHelper()).namespace);
@@ -1968,6 +2428,121 @@ await check("R4 当前收据失效保护的有效变异", async () => {
   world.process.emit("unhandledRejection", Object.freeze({ late: true }));
   assert.equal(world.process.exitCode, 1);
   assert.throws(() => assert.equal(world.entry.ownerReceipt(handle).executionCandidate, false), AssertionError);
+});
+
+await check("E5 六个新增变异均成功加载后由真实AssertionError杀死", async () => {
+  const gateAnchor = "const observed = original.snapshot();\n    preserveFacts(false);\n    phase = \"post-run-verification\";";
+  assert.equal(ENTRY_SOURCE.split(gateAnchor).length, 2);
+  const gateMutant = ENTRY_SOURCE.replace(gateAnchor,
+    "const observed = original.snapshot();\n    phase = \"post-run-verification\";");
+  const gate = await runOuter({ corruptRootConfig: true }, gateMutant);
+  assert.throws(() => assert.equal(gate.world.entry.ownerRunReceipt(gate.result).owner.bEndedReported, true), AssertionError);
+
+  const completeAnchor = "complete: !latch.snapshot().failed && eof && phase === expected.length,";
+  assert.equal(HELPER_SOURCE.split(completeAnchor).length, 2);
+  const completeMutant = HELPER_SOURCE.replace(completeAnchor,
+    "complete: endObserved || (!latch.snapshot().failed && eof && phase === expected.length),");
+  const completeWorld = await createHelperWorld({ helperSource: completeMutant });
+  const completeHelper = /** @type {any} */ ((await completeWorld.loadHelper()).namespace);
+  const completeLatch = completeHelper.createFailureLatch(); const completeOwner = {}; const completeStream = {};
+  const completeReader = completeHelper.createControlReader(completeOwner, completeStream, "n", completeLatch);
+  completeReader.end(completeOwner, completeStream);
+  assert.throws(() => assert.equal(completeReader.snapshot().complete, false), AssertionError);
+
+  const phaseAnchor = "acceptedFrames++;\n            aFailureReported = Object.freeze({ phase: frame.p, code: frame.c });";
+  assert.equal(HELPER_SOURCE.split(phaseAnchor).length, 2);
+  const phaseMutant = HELPER_SOURCE.replace(phaseAnchor,
+    "acceptedFrames++;\n            phase = expected.length;\n            aFailureReported = Object.freeze({ phase: frame.p, code: frame.c });");
+  const phaseWorld = await createHelperWorld({ helperSource: phaseMutant });
+  const phaseHelper = /** @type {any} */ ((await phaseWorld.loadHelper()).namespace);
+  const phaseLatch = phaseHelper.createFailureLatch(); const phaseOwner = {}; const phaseStream = {};
+  const phaseReader = phaseHelper.createControlReader(phaseOwner, phaseStream, "n", phaseLatch);
+  phaseReader.accept(phaseOwner, phaseStream,
+    Buffer.from('{"v":1,"n":"n","s":1,"k":"a-failure","p":"vitest","c":"a-failed"}\n'));
+  assert.throws(() => assert.equal(phaseReader.snapshot().successPhase, 0), AssertionError);
+
+  const budgetAnchor = "const frame = encode({ v: 1, n: nonce, s: next, k: \"a-failure\", p: phase, c: code });";
+  assert.equal(HELPER_SOURCE.split(budgetAnchor).length, 2);
+  const budgetMutant = HELPER_SOURCE.replace(budgetAnchor,
+    "const frame = Buffer.from(JSON.stringify({ v: 1, n: nonce, s: next, k: \"a-failure\", p: phase, c: code }) + \"\\n\");");
+  const budgetWorld = await createHelperWorld({ helperSource: budgetMutant });
+  const budgetHelper = /** @type {any} */ ((await budgetWorld.loadHelper()).namespace);
+  const budgetLatch = budgetHelper.createFailureLatch();
+  let budgetNonce = "";
+  for (let length = 1; length < 300; length += 1) {
+    const candidate = "n".repeat(length);
+    const empty = Buffer.byteLength(JSON.stringify({ v: 1, n: candidate, s: 1, k: "" }) + "\n");
+    if (256 - empty >= 3 && 256 - empty <= 20) { budgetNonce = candidate; break; }
+  }
+  const budgetWriter = budgetHelper.createControlWriter(budgetNonce, budgetLatch);
+  for (let sequence = 1; sequence <= 128; sequence += 1) {
+    const empty = Buffer.byteLength(JSON.stringify({ v: 1, n: budgetNonce, s: sequence, k: "" }) + "\n");
+    budgetWriter.send("x".repeat(256 - empty));
+  }
+  budgetLatch.fail("a-failed");
+  assert.throws(() => assert.equal(budgetWriter.sendFailureOnce("final", "a-failed"), false), AssertionError);
+
+  const ordinaryAnchor = "send(kind) {\n      try {\n        latch.assert();\n        if (terminal || !writeHealthy || failureReserved || !/^[a-z-]{1,24}$/u.test(kind)) throw rejection();";
+  assert.equal(HELPER_SOURCE.split(ordinaryAnchor).length, 2);
+  const ordinaryMutant = HELPER_SOURCE.replace(ordinaryAnchor,
+    "send(kind) {\n      try {\n        if (!writeHealthy || !/^[a-z-]{1,24}$/u.test(kind)) throw rejection();");
+  const ordinaryWorld = await createHelperWorld({ helperSource: ordinaryMutant });
+  const ordinaryHelper = /** @type {any} */ ((await ordinaryWorld.loadHelper()).namespace);
+  const ordinaryLatch = ordinaryHelper.createFailureLatch();
+  const ordinaryWriter = ordinaryHelper.createControlWriter("n", ordinaryLatch);
+  ordinaryLatch.fail("a-failed"); ordinaryWriter.sendFailureOnce("vitest", "a-failed");
+  assert.throws(() => assert.throws(() => ordinaryWriter.send("ready")), AssertionError);
+
+  const opaqueAnchor = "fail(diagnostic, error) {\n      if (!failed) { failed = true; first = { value: error }; code = diagnostic; }";
+  assert.equal(HELPER_SOURCE.split(opaqueAnchor).length, 2);
+  const opaqueMutant = HELPER_SOURCE.replace(opaqueAnchor,
+    "fail(diagnostic, error) {\n      String(error);\n      if (!failed) { failed = true; first = { value: error }; code = diagnostic; }");
+  const opaqueWorld = await createHelperWorld({ helperSource: opaqueMutant });
+  const opaqueHelper = /** @type {any} */ ((await opaqueWorld.loadHelper()).namespace);
+  let opaqueReads = 0;
+  const opaque = new Proxy(Object.create(null), { get() { opaqueReads += 1; return () => "opaque"; } });
+  const opaqueLatch = opaqueHelper.createFailureLatch();
+  opaqueLatch.fail("a-failed", opaque);
+  assert.throws(() => assert.equal(opaqueReads, 0), AssertionError);
+});
+
+await check("F1/F2/F3新增保护的有效变异", async () => {
+  const writeAnchor = "        } catch (error) {\n          writeHealthy = false;\n          throw error;\n        }";
+  assert.equal(HELPER_SOURCE.split(writeAnchor).length, 2);
+  const writeMutant = HELPER_SOURCE.replace(writeAnchor, "        } catch (error) {\n          throw error;\n        }");
+  let attempts = 0;
+  const writeWorld = await createHelperWorld({ helperSource: writeMutant, writeSync: (_fd, frame) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("first write failed");
+    return frame.length;
+  } });
+  const writeHelper = /** @type {any} */ ((await writeWorld.loadHelper()).namespace);
+  const writeLatch = writeHelper.createFailureLatch();
+  const writeWriter = writeHelper.createControlWriter("n", writeLatch);
+  assert.throws(() => writeWriter.send("ready"));
+  assert.throws(() => assert.equal(writeWriter.sendFailureOnce("spec", writeLatch.snapshot().code), false), AssertionError);
+
+  const forkAnchor = "    } catch (error) {\n      latch.fail(\"fork-contract\", error);\n      throw error;\n    }";
+  assert.equal(ENTRY_SOURCE.split(forkAnchor).length, 2);
+  const forkMutant = ENTRY_SOURCE.replace(forkAnchor, "    } catch (error) {\n      throw error;\n    }");
+  const forkWorld = await createEntryWorld({ bCf: OBSERVED_USER_TEXT_ENCODING }, forkMutant);
+  await forkWorld.runA();
+  const forkEncoded = forkWorld.helperWorld.writes.at(-1);
+  assert.ok(forkEncoded);
+  const forkFrame = JSON.parse(forkEncoded.toString());
+  assert.throws(() => assert.equal(forkFrame.p, "spec"), AssertionError);
+
+  const finalAnchor = "        for (let index = 0; index < chunk.length; index += 1) {\n          if (phase === expected.length) throw rejection();";
+  assert.equal(HELPER_SOURCE.split(finalAnchor).length, 2);
+  const finalMutant = HELPER_SOURCE.replace(finalAnchor,
+    "        for (let index = 0; index < chunk.length; index += 1) {\n          if (false) throw rejection();");
+  const finalWorld = await createHelperWorld({ helperSource: finalMutant });
+  const finalHelper = /** @type {any} */ ((await finalWorld.loadHelper()).namespace);
+  const finalLatch = finalHelper.createFailureLatch(); const finalOwner = {}; const finalStream = {};
+  const finalReader = finalHelper.createControlReader(finalOwner, finalStream, "n", finalLatch);
+  const finalFailure = JSON.stringify({ v: 1, n: "n", s: 7, k: "a-failure", p: "spec", c: "fork-contract" }) + "\n";
+  finalReader.accept(finalOwner, finalStream, Buffer.from(controlFrames("n") + finalFailure));
+  assert.throws(() => assert.equal(finalReader.snapshot().acceptedFrames, 6), AssertionError);
 });
 
 console.log(`SUMMARY total=${total} failed=${failures.length}`);

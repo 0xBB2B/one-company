@@ -36,23 +36,68 @@ export function createFailureLatch() {
 }
 /** @typedef {ReturnType<typeof createFailureLatch>} Latch */
 
+/** @typedef {"handshake" | "coordinates" | "environment" | "import" | "vitest" |
+ *   "early-config" | "resolved-config" | "spec" | "business" | "b-wait" |
+ *   "post-run" | "final"} AFailurePhase */
+const A_FAILURE_PHASES = new Set(["handshake", "coordinates", "environment", "import", "vitest",
+  "early-config", "resolved-config", "spec", "business", "b-wait", "post-run", "final"]);
+const A_FAILURE_CODES = new Set(["a-failed", "vitest-timeout", "spec-or-worker-contract", "business-result",
+  "early-config", "resolved-config", "control-write", "creation-or-signal-rejected", "pre-native-cleanup",
+  "child-error", "stdio-error", "child-close-timeout", "stdio-observation", "native-observation",
+  "stop-report", "sigkill-upgrade", "native-kill-result", "native-kill", "fork-contract",
+  "unexpected-b-exit", "uncaught", "unhandled"]);
+
 /** @param {string} nonce @param {Latch} latch */
 export function createControlWriter(nonce, latch) {
   let sequence = 0;
   let bytes = 0;
   let terminal = false;
+  let writeHealthy = true;
+  let failureReserved = false;
+  /** @param {Readonly<Record<string, unknown>>} value */
+  function encode(value) {
+    const frame = Buffer.from(JSON.stringify(value) + "\n");
+    const nextSequence = sequence + 1;
+    const nextBytes = bytes + frame.length;
+    if (nextSequence > 128 || frame.length > 256 || nextBytes > 32768) throw rejection();
+    sequence = nextSequence;
+    bytes = nextBytes;
+    return frame;
+  }
   return Object.freeze({
     /** @param {string} kind */
     send(kind) {
       try {
         latch.assert();
-        if (terminal || !/^[a-z-]{1,24}$/u.test(kind)) throw rejection();
-        const frame = Buffer.from(JSON.stringify({ v: 1, n: nonce, s: ++sequence, k: kind }) + "\n");
-        bytes += frame.length;
-        if (sequence > 128 || frame.length > 256 || bytes > 32768) throw rejection();
-        if (writeSync(3, frame) !== frame.length) throw rejection();
+        if (terminal || !writeHealthy || failureReserved || !/^[a-z-]{1,24}$/u.test(kind)) throw rejection();
+        try {
+          const next = sequence + 1;
+          const frame = encode({ v: 1, n: nonce, s: next, k: kind });
+          if (writeSync(3, frame) !== frame.length) throw rejection();
+        } catch (error) {
+          writeHealthy = false;
+          throw error;
+        }
         if (kind === "final") terminal = true;
       } catch (error) { latch.fail("control-write", error); throw rejection(); }
+    },
+    /** A single terminal diagnostic shares the original sequence and byte budgets.
+     * @param {AFailurePhase} phase @param {string | null} diagnostic */
+    sendFailureOnce(phase, diagnostic) {
+      if (!latch.snapshot().failed || terminal || !writeHealthy || failureReserved || !A_FAILURE_PHASES.has(phase)) return false;
+      failureReserved = true;
+      const code = diagnostic !== null && A_FAILURE_CODES.has(diagnostic) ? diagnostic : "a-failed";
+      try {
+        const next = sequence + 1;
+        const frame = encode({ v: 1, n: nonce, s: next, k: "a-failure", p: phase, c: code });
+        if (writeSync(3, frame) !== frame.length) { writeHealthy = false; throw rejection(); }
+        terminal = true;
+        return true;
+      } catch (error) {
+        writeHealthy = false;
+        latch.fail("control-write", error);
+        return false;
+      }
     },
   });
 }
@@ -64,11 +109,14 @@ export function createControlWriter(nonce, latch) {
  */
 export function createControlReader(owner, stream, nonce, latch) {
   let sequence = 0;
+  let acceptedFrames = 0;
   let bytes = 0;
   let residual = "";
   let eof = false;
+  let endObserved = false;
   let phase = 0;
   let term = false;
+  /** @type {Readonly<{phase: AFailurePhase, code: string}> | null} */ let aFailureReported = null;
   const expected = ["ready", "reserve", "bound", "business-pass", "b-ended", "final"];
   /** @param {object} actualOwner @param {object} actualStream */
   function identity(actualOwner, actualStream) {
@@ -80,19 +128,32 @@ export function createControlReader(owner, stream, nonce, latch) {
       try {
         latch.assert();
         identity(actualOwner, actualStream);
-        if (!Buffer.isBuffer(chunk) || eof || phase === expected.length) throw rejection();
+        if (!Buffer.isBuffer(chunk) || eof || aFailureReported || phase === expected.length) throw rejection();
         bytes += chunk.length;
         if (bytes > 32768) throw rejection();
-        for (const byte of chunk) {
-          if (byte > 127) throw rejection();
+        for (let index = 0; index < chunk.length; index += 1) {
+          if (phase === expected.length) throw rejection();
+          const byte = chunk[index];
+          if (aFailureReported || byte > 127) throw rejection();
           residual += String.fromCharCode(byte);
           if (residual.length > 256) throw rejection();
           if (byte !== 10) continue;
           if (++sequence > 128) throw rejection();
           const frame = JSON.parse(residual);
-          if (frame === null || typeof frame !== "object" || Array.isArray(frame) ||
-              Object.keys(frame).sort().join(",") !== "k,n,s,v" || frame.v !== 1 ||
-              frame.n !== nonce || frame.s !== sequence ||
+          if (frame === null || typeof frame !== "object" || Array.isArray(frame) || frame.v !== 1 ||
+              frame.n !== nonce || frame.s !== sequence) throw rejection();
+          if (frame.k === "a-failure") {
+            if (Reflect.ownKeys(frame).sort().join(",") !== "c,k,n,p,s,v" ||
+                !A_FAILURE_PHASES.has(frame.p) || !A_FAILURE_CODES.has(frame.c) ||
+                residual !== JSON.stringify({ v: 1, n: nonce, s: sequence, k: "a-failure", p: frame.p, c: frame.c }) + "\n") throw rejection();
+            acceptedFrames++;
+            aFailureReported = Object.freeze({ phase: frame.p, code: frame.c });
+            residual = "";
+            latch.fail("a-reported-failure");
+            if (index !== chunk.length - 1) throw rejection();
+            continue;
+          }
+          if (Reflect.ownKeys(frame).sort().join(",") !== "k,n,s,v" ||
               residual !== JSON.stringify({ v: 1, n: nonce, s: sequence, k: frame.k }) + "\n") throw rejection();
           // Default SIGTERM is an observation, not proof of process termination.
           if (frame.k === "sigterm") {
@@ -102,6 +163,7 @@ export function createControlReader(owner, stream, nonce, latch) {
             if (frame.k !== expected[phase]) throw rejection();
             phase++;
           }
+          acceptedFrames++;
           residual = "";
         }
       } catch (error) { latch.fail("control-read", error); }
@@ -109,13 +171,18 @@ export function createControlReader(owner, stream, nonce, latch) {
     /** @param {object} actualOwner @param {object} actualStream */
     end(actualOwner, actualStream) {
       try {
-        latch.assert();
         identity(actualOwner, actualStream);
+        endObserved = true;
+        latch.assert();
         if (eof || residual.length || phase !== expected.length) throw rejection();
         eof = true;
       } catch (error) { latch.fail("control-eof", error); }
     },
-    snapshot() { return Object.freeze({ eof, complete: !latch.snapshot().failed && eof && phase === expected.length, sequence, bytes }); },
+    snapshot() { return Object.freeze({
+      eof, complete: !latch.snapshot().failed && eof && phase === expected.length,
+      endObserved, sequence, acceptedFrames, successPhase: phase, bytes,
+      residualBytes: Buffer.byteLength(residual), aFailureReported,
+    }); },
   });
 }
 
