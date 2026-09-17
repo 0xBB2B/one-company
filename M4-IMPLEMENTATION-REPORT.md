@@ -634,3 +634,23 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 证据根`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-b1/`；原始结果在live-natural的n26-*、n22-normal-canonical/n22-partial/n22-closed-fd前缀，主代理汇总/真实工具记录及准确verify脚本同目录，全部必要证据保留。未创建业务根、SDK、网络或目录删除；成功各例均有原自然close与父退出，不以PID扫描推断结束。
 - 本结果只证明固定版本/平台/源码下的六个自然机制观察，不证明任意取消保O、有限终止、PIPE_BUF或多writer原子性、背压/短写、独立组收尾、SDK清理/ROOT-B及M4完整验收。B2创建入口、fork/spawnSync/Jiti/Vite等仍按范围继续，不由socket类型推导保证。
 - 本次提交仅本实施记录以保存已核验证据结论；实际提交号见`q2-b1/live-natural/commit.json`，不夹带在途B2代码或其它未提交成果。
+
+## M4-PM-Q2-B2-CREATION-ENTRY：受控创建入口探针实施/VM整合
+
+- 文件：`tests/pm-sdk-quiescence-creation-entry.cjs`、`.mjs`、`.vm.mjs`。CJS共用runner与入口、真实ESM named-import入口、零进程VM验证；复用已审A1，不改其接口。仅精确gate与固定case/runtime可能进入创建，普通导入与无gate零创建；本节尚无任何B2 live证据。
+- 行为：保存/恢复完整ChildProcess.prototype.spawn descriptor，安装值为原A1 guard.spawn，完整原方法this/args/err与公共CP及原Promise.child身份分别记录。pre-native必需errorMonitor/close注册独立尝试后首错原样抛给A1阻创建；post-native各流注册异常仍保留原receiver/keeper，不把公共CP缺失或native throw当未创建。
+- 原CP及三路原流close与验收事实分开：未知任一资源结束只在5/10秒失效保全；全部资源close但验收结果缺失可明确失败完成。child仅errorMonitor保原未处理语义，未加普通error/uncaughtException吞错、kill/detach/unref/监督者。父stdout持续安全通道、两入口progress和失败订阅、stdin callback error/成功存在位、分流4KiB超限后只排空均接线；不读/序列化opaque原错。
+- 两次实际sol交付失败（attempt01 R1—R7、attempt02 F1—F5），主代理仅接手本三文件剩余，依据`q2-b2/MAIN-TAKEOVER.md`；实际`5x/gpt-6-astra` review03复核通过。回合/句柄/装置锚点错误不计实施失败，原日志均保留。主代理检查当前源码、精确diff、独立脚本/结果及实际模型回执后限定接受。
+
+### 验证与证据
+
+证据根`B2=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/q2-b2`。
+
+- 当前SHA：CJS `82e14614a462e82d5b3a18e955020b91bf16d072d8b99d754d741cfef31b41d2`；ESM `70c30364c871ef4b0a4ce37b359b1526f2e88eb10c1757974b125a872eb6fd86`；VM `90c3c42747fd23ea2c06937a2bd8d3ec1204ca85332f3b21a6c78cd791281b7a`。A1与已提交hash完全一致，不包含在本功能提交。
+- Node26.8.2：三项语法、显式strict/checkJs、31组VM（16行为+15变异）通过；每变异正常基线先过、mutant成功加载、实际AssertionError/ERR_ASSERTION命中。独立复审另核F1三API真实ESM入口、F2共21个注册失败/原错组合、post-native资源保全、stdin opaque及progress迟到回执；正常模型依赖真实A1，CP/stream/clock皆内存。
+- 主代理最低Node22.19.0实际重跑同31组/15变异及review03独立脚本，exit0。没有把mock child版本或VM结果说成真实Node22 --version子进程/stdio完成；B2两版本live仍待逐例授权。
+- 保留快照边界：progress失败若发生在runner final生成之后不会回写旧JSON，持续通道仍锁存并保持外层非零；该时序旧报告本已因期限失败、全部资源close，不能用旧快照单独签成功。正式判断必须最终输出回调/通道状态及O实际退出组合，不能声称任意未来错误已包含在旧报告。
+- 命令：三个`node --check`；`node tests/pm-sdk-quiescence-creation-entry.vm.mjs`；`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node tests/pm-sdk-quiescence-creation-entry.cjs tests/pm-sdk-quiescence-creation-entry.mjs tests/pm-sdk-quiescence-creation-entry.vm.mjs`。Node22为既有toolchain canonical绝对入口，仅运行同VM和`$B2/review-03/{independent.mjs,mutation-audit.mjs}`。
+- 证据：`attempt-01/`、`attempt-02/`全部失败与最终日志；`main-check/owner-counterexample.*`和ESM遗漏反例；`main-repair/`当前diff/hash/主代理结果；`review-01/02/03/`及`main-integration.json`。旧开发期日志缺失处由宿主tool回执补档，补档身份和装置错误均如实保留，不追溯重写通过。
+- 未覆盖：B2真实CJS/ESM创建入口、真实child/stdin/stdio终态、fork/IPC、spawnSync、Jiti/Vite、跨进程不可丢记录、SDK/业务资源收尾；不将内存R/B记录或B1六自然fd结果替代这些证据。不签完整Q2/M4、取消保O/删除权限。
+- 本功能提交只三新文件及本节，实际提交号/树/hash/空暂存区核对见`$B2/commit.json`；其余未提交成果保持，不push/发布或回收旧进程/目录。
