@@ -611,3 +611,14 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 保留限制C1：固定信号枚举遗漏SIGINFO，注入(null,SIGINFO)公开信息折叠但最终失败；不合Node自然终态的(0,unknown signal)合成输入可归一化成通过，不冒称它是真实固定拓扑事件，也不宣传任意信号精确保真。未来增加信号或完整异常终态目标前需另行对齐枚举/null未知分类，不静默扩权。
 - **真实B1仍阻塞**：宿主timeout/cancel是否保留owner未核实，延长timeout不是证明；未执行真实fd类型、字节送达、EOF排序、短写/EAGAIN/EPIPE/背压或资源收尾。未验SDK/ROOT-B/安装/完整Q2或M4，本节只支持M4-AC8测试装置证据真实性前置。
 - 本地提交仅两个probe和本实施小节，实际编号与树/hash/空暂存区核对见`$B1/commit.json`。其他未提交成果保留，不push/发布。必要诊断全部保留，无被测资源待清理。
+
+## M4-PM-B1-NODE22-CANONICAL：固定可执行文件路径修复
+
+- 实际自然验证进度：Node26三case分别有父exit0、原CP exit/close及fd end/close、准确帧和无错误/期限证据；normal 39字节/code0，partial18字节/code20、closed-fd15字节/code21为预期故障匹配，fd类型均socket。原路径查验的一次禁止Python使用和normal后处理字段定位错误均保留；主代理另以准确字段独立核验原输出，没有重跑normal。
+- Node22首次normal父exit1，仅configuration-rejected输出，实际process.execPath是/private/var/...而固定白名单是/var/...；源码未进入runProbe，无本例child，批次已停。不是结束未确认或超时，更不是协议通过；原失败位于`q2-b1/live-natural/n22-normal.*`，未覆盖。
+- B1两次实际实现产物缺陷及主代理接手依据见`q2-b1/MAIN-TAKEOVER.md`。此次仅将`tests/pm-sdk-quiescence-node-probe.mjs`中固定Node22路径改为同一已冻结二进制的canonical绝对路径；版本不变，不动态择Node、不新增任意路径fallback，不改协议/预算/其他模块。
+- 主代理Node只读realpath/dev/ino/hash核对后，独立astra窄复核确认父唯一字符串还原后精确等于原已审hash，Node22与原清单同文件、实际版本和execPath吻合。主代理从宿主运行回执核实际`5x/gpt-6-astra`；审查者环境只有model没有provider的限制另列，不以环境缺项否定已核宿主回执或伪造环境字段。
+- 新`canonical-repair/vm-validate.mjs`仅修改原VM的固定Node22正向字面并增加旧/var mock拒绝，12组/9变异及三文件显式strict/checkJs均exit0。原Node26真实三例对应旧父hash；此一行适用性静态确认其Node26路径/行为未变，但未把旧运行改写为新hash实测。真实Node22后续仍须另行授权，不由本窄修签通过。
+- 当前父SHA-256 `be0d218a7d09cb69800fb54c9327d79c6498254128f58ad88cc37d5b711bbed9`，子仍`c6096879ee60538e2075219f8614787ea20b32d5719ebb5f00f59b32332ef403`。证据根为`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/`下`q2-b1/canonical-review/{REVIEW.md,checks.json,start.json,end.json}`和各命令/退出、`canonical-repair/`主代理VM/strict、`live-natural/`原始结果。
+- 验证命令：`node "$B1/canonical-repair/vm-validate.mjs"`；显式`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck --types node tests/pm-sdk-quiescence-node-probe.mjs tests/fixtures/pm-sdk-quiescence-child.cjs "$B1/canonical-repair/vm-validate.mjs"`，其中B1为上述q2-b1证据目录。未运行真实gate做本修复验证。
+- 仅提交该父文件一行与本实施小节，提交树/hash证据见`q2-b1/canonical-repair/commit.json`。主代理原自然路径缩小裁定及中断停批限制继续有效，不签SDK资源收尾、取消保O、真实Node22协议或M4整体完成；其他未提交成果不夹带。

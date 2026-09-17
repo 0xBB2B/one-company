@@ -7,7 +7,7 @@ const CASES = new Set(['normal', 'partial', 'closed-fd']);
 const NODE_BINDINGS = new Map([
   ['/opt/homebrew/Cellar/node/26.8.2/bin/node', 'v26.8.2'],
   [
-    '/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/toolchain/runtime/node-v22.19.0-darwin-arm64/bin/node',
+    '/private/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/toolchain/runtime/node-v22.19.0-darwin-arm64/bin/node',
     'v22.19.0',
   ],
 ]);
