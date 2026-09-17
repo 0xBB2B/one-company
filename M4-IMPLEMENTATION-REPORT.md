@@ -775,3 +775,22 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 首轮实施代理违禁至少五条pnpm exec tsc，触发依赖检查；原回执与未知副作用记录在main-check/pnpm-deviation-original-calls.json/INITIAL-REVIEW。定向package.json/pnpm-lock/.npmrc/workspace无差异不证明缓存/全局/网络零副作用，不读凭据或擅清理。后续返修、主代理与独审都只直接固定Node/已装compiler，没有复用违禁命令，不把历史偏差改写成从未发生。
 - 未覆盖：真实目录/symlink/Unix socket实验、外层O原分配与config/cache/HOME资源发现隔离、跨进程owner/原连接/daemon/Git实际结束、closeWorld→reclaimPending→真实回收、原SDK九例、ROOT-B和M4整体。当前不提供父根回收权限，不授权直接启动旧SDK测试。
 - 本功能提交只三仓库文件与本节，保护其他未提交成果；实际提交号、原两helper基线及提交树/源码hash/空暂存区/工作报告保全核对见`$PARENT/commit.json`。证据700/600保留，无本次真实业务根或用户资料清理、无push/发布。此任务完成后其余实现仍subagent优先。
+
+## M4-PM-SDK-SCENE-01：外层私有现场分配与原对象收据（源码/纯VM）
+
+- 新增`tests/helpers/pm-sdk-private-scene.mjs`与`tests/pm-sdk-private-scene.vm.mjs`。普通import无FS操作，factory无路径/模块参数、只Node内建，从本helper定位当前项目；仅darwin/linux。固定`realpath('/tmp')`后以`pi-s-`分配短父根，不使用环境临时目录。当前仅代码与内存验证，没有实际调用factory。
+- 原config/package先核普通非链接/canonical输入，要求type module，原config字节复制与hash；真私有node_modules仅链接项目内Vitest真实目录并有.vite-temp。准备home/.pi/agent、home/.agents、XDG、tmp/cache等固定目录，目录0700、文件wx0600。后续每写前后查原根/直接父身份与权限，失败顺序停并保全，不rm/重试/扫描。有限检查不是文件系统原子防任意竞争。
+- 空冻结原成功句柄、原包装Error分别绑定私有WeakMap；返回新的冻结快照，clone/Proxy/同形/getter对象不能取得原记录，原unknown/falsy cause以自有只读属性保留。不提供运行/停止/删除API，分配定位数据不授权执行或回收；没有身份时仍null，不凭路径猜可删。
+- 首次实际sol 1a2eda04交付被独立astra 2aa3ed30指出唯一R1：realpath(tmpdir())违反固定/tmp短路径策略；不能把可能压缩预算说成真实socket已失败。第二次实际sol f034cd0e只删os导入、改固定/tmp并补VM；主代理精确文本等价核对。该任务没有两次产物失败，未沿用Parent01接手许可。
+
+### 验证与证据
+
+证据根`SCENE=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-private-scene`。
+
+- 当前helper SHA256 `d8eae37dc9701594a0102248de30d66bff058c4a9e600b03dfa2e849447bf040`；VM `5f44383d2c92fd0fa15574e96038f9469b39881c177a3772ccfb9829b3d45b81`。固定VM输入config `cac2470dd1d116feedbb475331d8d16e25c19cecd5b55dee78c64f6badda76cb`、package `8f5bea539f8eee8ccb18773ef2767969f14c8947e12988ad5934fa437a449dbe`未变。
+- Node26两语法、真实新源映射VM、明确两文件strict/checkJs/noUnused全0。每次VM仍211个I/O故障点、逐点轮换一个cause，不冒211×6。原布局/WeakMap/异常/漂移/no-remove及identity/cause/环境回退三个变异过；mutant加载后由真实AssertionError命中，环境变异确实在错误位置完成内存分配。
+- 独立af9f7bb9实际astra review02确认R1限定闭合、无新阻塞；另74组两平台各37种环境组合及固定/tmp缺失拒绝、6组单键环境回退有效变异。Linux首层16字节、macOS/private/tmp首层24字节，均与同父pi-t-相同六字符后缀相等，只是首层策略。再核六cause自有属性及原引用/getter零读取、撤销Proxy、8漂移及输入失败。主代理读完整报告和补测脚本，在最低Node22重跑当前VM及同一完整补测为0，当前再核四输入/hash和各命令退出后接受有限整合。
+- 命令：固定Node `--check` 两文件；`node --experimental-vm-modules tests/pm-sdk-private-scene.vm.mjs`及`$SCENE/review-02/supplemental.mjs`；`node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs --checkJs --noUnusedLocals --noUnusedParameters --target ES2023 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck tests/helpers/pm-sdk-private-scene.mjs tests/pm-sdk-private-scene.vm.mjs`。始终直接Node/compiler，无本任务pnpm；VM实验性warning保留。
+- 原attempt01 VM/类型错误、attempt02 Linux/tmp canonical二次realpath被误断言一次、review02跨VM数组比较装置错误都保留，未当作额外源码失败或弱化目录/退出门槛；当前结果用各最终编号。证据包括attempt01/02 DELIVERIES/精确diff/指纹、review01/02报告及补测、main-check/node22-*、helper-delta-check与main-integration.json。
+- 未覆盖真实/tmp分配、POSIX竞争/完整路径别名、真实socket、Vitest bundle、SDK/daemon/停止/回收、全部环境/资源发现/网络隔离。原字节复制不保证任意未来配置语义，后续执行器仍须原project root/私有cacheDir/白名单env及原owner协议。本辅助功能不签ROOT-B、M4或live许可。
+- 本次仅提交两个新文件与本节，不夹带原TaskB/legacy等混合改动；实际本地提交号/树/hash/空暂存区/工作报告保全见`$SCENE/commit.json`。证据700/600保留，未分配需清理的真实scene，无用户资料删除、push或发布。
