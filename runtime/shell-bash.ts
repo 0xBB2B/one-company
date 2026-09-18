@@ -275,7 +275,7 @@ export interface UserBashHandled {
 }
 
 export async function handleUserBash(
-  event: Pick<SdkUserBashEvent, "command" | "cwd" | "excludeFromContext">,
+  _event: Pick<SdkUserBashEvent, "command" | "cwd" | "excludeFromContext">,
   input: { registry: ShellRegistry; host: Host; runToken: string; guard?: BashCommandGuard },
 ): Promise<UserBashHandled> {
   return { operations: createManagedBashOperations({ registry: input.registry, host: input.host, runToken: input.runToken, guard: input.guard }) };

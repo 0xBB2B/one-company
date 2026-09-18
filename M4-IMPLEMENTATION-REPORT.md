@@ -877,3 +877,11 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 新Scene/private/tmp/pi-s-F4ofU4（dev16777231/ino107263014）保留，无回收许可。LIVE-RESULT“无SceneIO”已由VERIFY-RESULT及主代理终态文件纠正：实际case分配并写入授权私有Scene/可能库cache，只有额外操作员访问/清理没有发生。不能据坐标恢复原所有权或删除；旧ATHcGZ/Yfsgsf同样不碰。
 - 证据根`AB4=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-ab-live-04`，含source-binding/inputs、两脚本、字面delta/静态160日志、两独立决定command、n26-ab-04全部外部捕获/precheck/schema2报告/verification、主代理原tool投影、live-review01审查9组/43hash和live-main-integration。目录700/文件600保留，本次没有待删除的授权业务产物。
 - 验收只对应当前固定可信库/Node两层机制证据，不认证完整依赖图、原子hash、所有取消路径、native/任意后代全树结束、SDK/daemon/D/W/Root-B或M4完整AC。历史Python未知影响与AB02/03失败原样保留，不用成功洗白或倒填唯一原因。未push/发布，本证据节本地提交号见本目录live-commit.json；其他未提交成果不夹带。
+
+## M4-STRICT-SHELL-PARAM-01：严格检查单行解阻
+
+- 当前SDK装配两源strict检查因既有runtime/shell-bash.ts:handleUserBash的event未使用报TS6133。主代理核函数体只使用input，c9fb79ea实际sol仅将保留形参event改名_event，参数/类型/import/体/调用者不变，未关闭noUnused检查。
+- 固定Node精确before/current唯一替换成立，strip后除参数名等价；同原两TS源ignoreConfig/strict/noUnusedLocals/noUnusedParameters等完整参数检查exit0。初比较器误判类型擦除空白的002失败保留，003真实strict0、004修正比较器0和一行diff均在本目录；没有执行shell模块或真实SDK。
+- a45f3ea1实际astra独立审查单行通过，独立003 compiler0及004 renameOnly成立。ASSEMBLY本体另因主动不可信未锁存被要求返修，不能用本单行通过宣告其完成。
+- 主代理核HEAD的handleUserBash函数尾部只改该形参即等于当前尾部，因此从HEAD构造仅这一行的暂存blob；不暂存shell文件其余既有改动。工作文件before881bd80d…、当前bdb27bca…仅供本次差异证据，不冒称当前全文件均已提交。两SDK测试仍为原TaskB/P1A未tracked成果，不在本提交。
+- 证据根`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-assembly-01/strict-shell-param-01`，及同级review-01报告/003/004。目录700/文件600，保留必要失败与验证材料。commit.json记录实际本地提交号/树/暂存空/完整工作文件和工作报告保全，无push/发布。
