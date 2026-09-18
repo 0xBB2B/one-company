@@ -865,3 +865,15 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - attempt01/005包装提前exit只产diff/stdout，005-exit当时未生成，不补造；006独立diff/hash真实exit0，精确diff与005stdout和独审再生成diff相同。原失败和旧现场保全，不因后续通过改写。
 - 证据根`CD=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-ab-cache-dir-01`，含before、交付/审查、main-integration和commit核验。仅两源码与本节本地提交，实际hash/树/父/暂存空/工作报告保全见commit.json；不夹带AGENTS或其他未提交成果，无push/发布。
 - 未执行新的真实case/SDK/Scene/信号/网络/回收。固定可信源码片段不是通用不可信代码沙箱或完整库重跑；新的真实验证仍需更新绑定及单次决定，旧AB03不得覆盖。M4/Root-B仍未验收，ATHcGZ与Yfsgsf坐标不赋予删除权。
+
+## M4-PM-AB-LIVE04：固定 O→A→B 有限真实机制证据
+
+- cache修复77e644d后，04两驱动及内存装置仅03已审版本的prefix/manifest hash两类字面替换。主代理逐字节证明等价、当前21输入身份/hash及160内存/check/strict0，03逻辑独审与04当前绑定分列，不虚称旧审查者读过04。
+- 主代理明确单次决定后，fc8b0d4c实际sol按command.json原字节唯一运行n26-ab-04，timeout90，无自加前置探针。原工具正常isError=false/(no output)，shell保存并以Node相同码退出，exit文件精确0换行；stdout仅PM_SDK_AB_EXECUTION_CANDIDATE_PRESERVED标记，stderr空。主代理原trace核唯一性/真实返回，不在不存在的原JSON字段里编造exitCode。
+- schema2 failure=false/current candidate=true，固定Node26.8.2/darwinarm64/UID501/空execArgv/CF精确三键。O直接持原A并观察exit/close/原stdio关闭，ended=true/code0/signalnull/waittrue；A无IPC子通道，disconnected=true是无需IPC的初始满足值，不冒观测A的IPC断开。
+- A持原B，对其exit/close/IPC disconnect/原stdio完成检查、唯一fixture业务passed/无unhandled后才通过原fd3报b-ended/final。O保存7已验帧/6阶段/469bytes/0残片/合法EOF及无A失败；由固定语法可知含一次合法sigterm，但不能猜具体位置或补B原始exitCode/signal，也不能称B必定自然exit0。O不持本地B对象，远端证据与本地A观察分开。
+- 主代理确认O已实际退出后，另批verify-command一次文件校验。相同sol原字节执行timeout30，tool正常、verify.exit0、两流空；verification status limited-natural-mechanism-pass/passed=true/failures[]。主代理核完整hash链/21当前输入及case result先于verifier call；文件PASS自身不是实跑认证。
+- 50d78807实际astra独立真实证据审查通过这一有限case，直接投影原trace toolCall/toolResult/model元数据，无思维字段进入上下文；9组只读断言exit0、43证据/输入起止身份/hash一致。主代理读完整报告/audit源与实际结果后整合，不代签全M4或SDK九例。
+- 新Scene/private/tmp/pi-s-F4ofU4（dev16777231/ino107263014）保留，无回收许可。LIVE-RESULT“无SceneIO”已由VERIFY-RESULT及主代理终态文件纠正：实际case分配并写入授权私有Scene/可能库cache，只有额外操作员访问/清理没有发生。不能据坐标恢复原所有权或删除；旧ATHcGZ/Yfsgsf同样不碰。
+- 证据根`AB4=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-ab-live-04`，含source-binding/inputs、两脚本、字面delta/静态160日志、两独立决定command、n26-ab-04全部外部捕获/precheck/schema2报告/verification、主代理原tool投影、live-review01审查9组/43hash和live-main-integration。目录700/文件600保留，本次没有待删除的授权业务产物。
+- 验收只对应当前固定可信库/Node两层机制证据，不认证完整依赖图、原子hash、所有取消路径、native/任意后代全树结束、SDK/daemon/D/W/Root-B或M4完整AC。历史Python未知影响与AB02/03失败原样保留，不用成功洗白或倒填唯一原因。未push/发布，本证据节本地提交号见本目录live-commit.json；其他未提交成果不夹带。
