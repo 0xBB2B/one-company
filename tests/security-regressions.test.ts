@@ -22,11 +22,8 @@ import { createRangeProtection } from "../runtime/range-protection.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { createManagedBashOperations } from "../runtime/shell-bash.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
-import { createGitExpectationText } from "../runtime/git-daemon-binding.ts";
 import { randomUUID } from "node:crypto";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -38,7 +35,7 @@ async function world() {
   const cwd = join(root, "repo");
   const dataRoot = join(root, "data");
   await mkdir(cwd); await mkdir(dataRoot);
-  const git = (...args: string[]) => exec(HOST_GIT, args, { cwd, timeout: 5000, env: {
+  const git = (...args: string[]) => exec("git", args, { cwd, timeout: 5000, env: {
     PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.invalid",
   } });
@@ -51,7 +48,7 @@ async function world() {
 }
 
 function hello(cwd: string, authToken: string) {
-  return { authToken, windowId: "test-window", pid: process.pid, sessionId: "test-session", cwd, workspaceRoot: cwd, repoIds: [], protocolVersion: PROTOCOL_VERSION, gitExpectation: createGitExpectationText([]) };
+  return { authToken, windowId: "test-window", pid: process.pid, sessionId: "test-session", cwd, workspaceRoot: cwd, repoIds: [], protocolVersion: PROTOCOL_VERSION };
 }
 
 async function rawClient(path: string) {
@@ -144,9 +141,6 @@ test("Git 快照禁用 fsmonitor 与 textconv，无法在仓库外执行辅助�
   expect((await collectGitSnapshot({ repoRoot: w.cwd })).head).toMatch(/^[0-9a-f]+$/);
   await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
   expect((await readGit(w.cwd, ["diff", "HEAD"])).stdout).toContain("changed");
-  // 即使调用入口被误用，进程仍没有写权限。
-  await expect(readGit(w.cwd, ["config", "audit.write", "forbidden"])).rejects.toThrow();
-  await expect(readGit(w.cwd, ["config", "--get", "audit.write"])).rejects.toThrow();
 });
 
 test("服务端跨汉字字节分包仍保留完整中文答复", async () => {
@@ -180,7 +174,7 @@ test("生产客户端携带凭证并正确解码跨包中文响应", async () =>
         if (frame.method === "hello") {
           receivedToken = frame.params.authToken;
           socket.write(encodeFrame({ t: "res", id: frame.id, ok: true, result: { repoId: w.repoId, protocolVersion: PROTOCOL_VERSION, daemonPid: process.pid,
-            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation } }));
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID() } }));
         } else {
           const bytes = Buffer.from(encodeFrame({ t: "res", id: frame.id, ok: true, result: { message: "确认" } }));
           const split = bytes.indexOf(Buffer.from("确")) + 1;

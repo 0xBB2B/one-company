@@ -3,8 +3,6 @@ import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { Clock, TimerHandle } from "./clock.ts";
 import { withDatabase } from "./database.ts";
-import { assertExecutionGuardCurrent, guardedOutputLimit } from "./execution-guard.ts";
-import type { ExecutionGuard } from "./execution-guard.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -68,8 +66,6 @@ export interface SpawnInput {
   env?: NodeJS.ProcessEnv;
   inheritEnv?: boolean;
   onOutput?: (chunk: Buffer, stream: "stdout" | "stderr") => void;
-  /** 仅由可信运行时闭包注入，不进入任务记录、环境或持久化数据。 */
-  executionGuard?: ExecutionGuard;
 }
 
 export type SpawnResult = { ok: true; task: TaskRecord } | { ok: false; reason: string };
@@ -101,38 +97,7 @@ interface PersistedTaskRecord {
   command: string;
 }
 
-interface GuardedExecutionState {
-  child: ReturnType<typeof spawn>;
-  task?: TaskRecord;
-  readonly generation: symbol;
-  pid?: number;
-  pgid?: number;
-  startedAt?: number | null;
-  assertCurrent: () => void;
-  maxOutputBytes: number;
-  onOutput?: (chunk: Buffer, stream: "stdout" | "stderr") => void;
-  chunks: Array<{ chunk: Buffer; stream: "stdout" | "stderr" }>;
-  outputBytes: number;
-  error?: Error;
-  exitObserved: boolean;
-  exitCode: number | null;
-  closeObserved: boolean;
-  closePromise: Promise<void>;
-  resolveClose: () => void;
-  registrationComplete: boolean;
-  descendants: number[];
-  stopRequested: boolean;
-  stopPromise?: Promise<StopResult>;
-  terminationProven: boolean;
-  terminalStatus?: "exited" | "failed" | "stopped" | "timed_out";
-  terminalPromise: Promise<void>;
-  resolveTerminal: () => void;
-  consumption: "available" | "consuming" | "delivered" | "failed";
-}
-
 const MONITOR_INTERVAL_MS = 150;
-const GUARDED_WAIT_MS = 5_000;
-const GUARDED_OUTPUT_OVERFLOW = "受保护命令输出超过允许上限";
 const DESCENDANT_SCAN_THROTTLE_MS = 1_000;
 const STOP_POLL_INTERVAL_MS = 150;
 const STOP_QUIET_WAIT_MS = 1_000;
@@ -339,7 +304,6 @@ export class ShellRegistry {
   private readonly timeoutTimers = new Map<string, TimerHandle>();
   private readonly listeners = new Map<string, Set<(task: TaskRecord) => void>>();
   private readonly lastDescendantScanAt = new Map<string, number>();
-  private readonly guardedTasks = new WeakMap<TaskRecord, GuardedExecutionState>();
 
   private readonly pidStartedAt: (pid: number) => Promise<number | null>;
   private readonly database?: string;
@@ -353,14 +317,14 @@ export class ShellRegistry {
     this.clock.startGapWatcher();
   }
 
-  private async writeTaskRecord(task: TaskRecord, token: string, guarded?: GuardedExecutionState): Promise<void> {
+  private async writeTaskRecord(task: TaskRecord, token: string): Promise<void> {
     if (!this.database) return;
     const record: PersistedTaskRecord = {
       cwd: task.cwd,
       taskId: task.taskId,
-      pid: guarded?.pid ?? task.pid,
-      pgid: guarded?.pgid ?? task.pgid,
-      startedAt: (guarded ? guarded.startedAt : task.startedAt) ?? 0,
+      pid: task.pid,
+      pgid: task.pgid,
+      startedAt: task.startedAt ?? 0,
       token,
       host: task.host,
       command: task.command,
@@ -458,12 +422,6 @@ export class ShellRegistry {
   }
 
   private markUncertain(task: TaskRecord, reason: string): void {
-    const guarded = this.guardedTasks.get(task);
-    if (guarded) {
-      guarded.terminationProven = false;
-      delete guarded.terminalStatus;
-      this.discardGuardedOutput(task);
-    }
     task.status = "uncertain";
     task.activity = "uncertain";
     task.reason = reason;
@@ -501,55 +459,6 @@ export class ShellRegistry {
     task.exitCode = code;
   }
 
-  private isCurrentGuardedState(task: TaskRecord, state: GuardedExecutionState): boolean {
-    return state.task === task
-      && this.tasks.get(task.taskId) === task
-      && this.taskGenerations.get(task) === state.generation
-      && this.guardedTasks.get(task) === state
-      && state.pid !== undefined
-      && state.child.pid === state.pid;
-  }
-
-  private assertCurrentGuardedState(task: TaskRecord, state: GuardedExecutionState): void {
-    if (!this.isCurrentGuardedState(task, state)) throw new Error("本次受保护命令的私有结果证明已失效");
-  }
-
-  private lockGuardFailure(state: GuardedExecutionState, error: unknown): void {
-    if (!state.error) state.error = error instanceof Error ? error : new Error(String(error));
-    state.chunks.length = 0;
-    state.outputBytes = 0;
-    state.consumption = "failed";
-  }
-
-  discardGuardedOutput(task: TaskRecord): void {
-    const state = this.guardedTasks.get(task);
-    if (!state || state.task !== task) return;
-    state.chunks.length = 0;
-    state.outputBytes = 0;
-    state.consumption = "failed";
-  }
-
-  private requestGuardedFailure(state: GuardedExecutionState): void {
-    state.stopRequested = true;
-    if (!state.registrationComplete || !state.task || state.stopPromise) return;
-    const task = state.task;
-    const operation = this.stopWithFinalStatus(task.taskId, "failed", task);
-    state.stopPromise = operation;
-    void operation.then(
-      (result) => {
-        if (!this.isCurrentGuardedState(task, state)) return;
-        if (!result.ok || result.task !== task || result.task.activity !== "ended") {
-          this.markUncertain(task, result.ok ? "受保护命令停止未形成可靠结束证明" : result.reason);
-        }
-      },
-      (error) => {
-        if (!this.isCurrentGuardedState(task, state)) return;
-        this.stopMonitor(task.taskId);
-        this.markUncertain(task, `受保护命令停止失败: ${(error as Error).message ?? String(error)}`);
-      },
-    );
-  }
-
   async spawn(input: SpawnInput): Promise<SpawnResult> {
     const taskId = input.taskId;
     if (this.tasks.has(taskId) || this.launching.has(taskId)) {
@@ -570,13 +479,6 @@ export class ShellRegistry {
     const runToken = input.runToken;
     const inheritEnv = input.inheritEnv;
     const env = { ...(inheritEnv === false ? {} : process.env), ...input.env, [TOKEN_ENV_VAR]: `${runToken}:${taskId}` };
-    const guardInput = input.executionGuard;
-    const guard = guardInput ? {
-      assertCurrent: guardInput.assertCurrent,
-      maxOutputBytes: guardedOutputLimit(guardInput.maxOutputBytes),
-    } : undefined;
-
-    if (guard) assertExecutionGuardCurrent(guard.assertCurrent);
     const child = spawn(command, args, {
       cwd,
       detached: true,
@@ -586,73 +488,20 @@ export class ShellRegistry {
 
     let task: TaskRecord | undefined;
     let earlyExitCode: number | null | undefined;
-    let guarded: GuardedExecutionState | undefined;
-    if (guard) {
-      let resolveClose!: () => void;
-      let resolveTerminal!: () => void;
-      const closePromise = new Promise<void>((resolve) => { resolveClose = resolve; });
-      const terminalPromise = new Promise<void>((resolve) => { resolveTerminal = resolve; });
-      guarded = {
-        child,
-        generation,
-        assertCurrent: guard.assertCurrent,
-        maxOutputBytes: guard.maxOutputBytes,
-        onOutput,
-        chunks: [],
-        outputBytes: 0,
-        exitObserved: false,
-        exitCode: null,
-        closeObserved: false,
-        closePromise,
-        resolveClose,
-        registrationComplete: false,
-        descendants: [],
-        stopRequested: false,
-        terminationProven: false,
-        terminalPromise,
-        resolveTerminal,
-        consumption: "available",
-      };
-    }
-
     const collect = (stream: "stdout" | "stderr") => (chunk: Buffer): void => {
-      if (!guarded) {
-        onOutput?.(chunk, stream);
-        return;
-      }
-      if (guarded.error || guarded.consumption === "failed" || guarded.consumption === "delivered") return;
-      guarded.outputBytes += chunk.length;
-      if (guarded.outputBytes > guarded.maxOutputBytes) {
-        this.lockGuardFailure(guarded, new Error(`${GUARDED_OUTPUT_OVERFLOW}: ${guarded.maxOutputBytes} 字节`));
-        this.requestGuardedFailure(guarded);
-        return;
-      }
-      guarded.chunks.push({ chunk: Buffer.from(chunk), stream });
+      onOutput?.(chunk, stream);
     };
     if (mode === "wait") {
       child.stdout?.on("data", collect("stdout"));
       child.stderr?.on("data", collect("stderr"));
     }
     child.on("exit", (code) => {
-      if (guarded) {
-        guarded.exitObserved = true;
-        guarded.exitCode = code;
-      }
       if (task) this.handleExit(task, code);
       else earlyExitCode = code;
     });
     child.on("close", () => {
       child.stdout?.destroy();
       child.stderr?.destroy();
-      if (guarded && !guarded.closeObserved) {
-        guarded.closeObserved = true;
-        try { assertExecutionGuardCurrent(guarded.assertCurrent); }
-        catch (error) {
-          this.lockGuardFailure(guarded, error);
-          this.requestGuardedFailure(guarded);
-        }
-        guarded.resolveClose();
-      }
       if (task) void this.inspect(task.taskId);
     });
 
@@ -663,19 +512,13 @@ export class ShellRegistry {
     if (this.launching.get(taskId) !== generation) return { ok: false, reason: "任务启动代次已失效" };
 
     if (!spawnOutcome.ok) {
-      if (guarded) this.lockGuardFailure(guarded, new Error(`受保护命令启动失败: ${spawnOutcome.reason}`));
       return { ok: false, reason: spawnOutcome.reason };
     }
 
     child.unref();
     const pid = child.pid as number;
     const pgid = pid;
-    if (guarded) {
-      guarded.pid = pid;
-      guarded.pgid = pgid;
-    }
     const startedAt = await this.baselineStartedAt(pid);
-    if (guarded) guarded.startedAt = startedAt;
     if (this.launching.get(taskId) !== generation) return { ok: false, reason: "任务启动代次已失效" };
 
     task = {
@@ -698,31 +541,23 @@ export class ShellRegistry {
     this.tasks.set(taskId, task);
     this.taskGenerations.set(task, generation);
     this.taskTokens.set(taskId, token);
-    if (guarded) {
-      guarded.task = task;
-      this.guardedTasks.set(task, guarded);
-    }
     this.notify(task);
     try {
-      await this.writeTaskRecord(task, token, guarded);
+      await this.writeTaskRecord(task, token);
       if (this.tasks.get(taskId) !== task || this.taskGenerations.get(task) !== generation) {
         throw new Error("任务登记代次已失效");
       }
     }
     catch (error) {
-      if (guarded) this.lockGuardFailure(guarded, new Error("受保护命令登记失败"));
       await this.stop(task.taskId);
       return { ok: false, reason: `Shell 登记失败: ${(error as Error).message}` };
     }
 
     task.status = "running";
     this.notify(task);
-    if (guarded) guarded.registrationComplete = true;
 
     this.startMonitor(task);
     if (timeoutSeconds) this.scheduleTimeout(task, timeoutSeconds);
-    if (guarded?.stopRequested || guarded?.error) this.requestGuardedFailure(guarded);
-    else if (guarded?.closeObserved) void this.inspect(task.taskId);
 
     return { ok: true, task };
     } finally {
@@ -738,10 +573,10 @@ export class ShellRegistry {
     }
   }
 
-  private async checkIdentity(task: TaskRecord, guarded?: GuardedExecutionState): Promise<{ mismatched: boolean; reason?: string; verified: boolean }> {
-    const pid = guarded?.pid ?? task.pid;
-    const startedAt = guarded ? guarded.startedAt : task.startedAt;
-    if (startedAt === null || pid === undefined) return { mismatched: false, verified: false };
+  private async checkIdentity(task: TaskRecord): Promise<{ mismatched: boolean; reason?: string; verified: boolean }> {
+    const pid = task.pid;
+    const startedAt = task.startedAt;
+    if (startedAt === null) return { mismatched: false, verified: false };
     const current = await this.baselineStartedAt(pid);
     if (current === null) return { mismatched: false, verified: false };
     if (current !== startedAt) {
@@ -750,13 +585,12 @@ export class ShellRegistry {
     return { mismatched: false, verified: true };
   }
 
-  private async scanDescendantsInto(task: TaskRecord, guarded?: GuardedExecutionState): Promise<{ descendants: number[]; scanned: boolean }> {
+  private async scanDescendantsInto(task: TaskRecord): Promise<{ descendants: number[]; scanned: boolean }> {
     const token = this.taskTokens.get(task.taskId) ?? "";
-    const pgid = guarded?.pgid ?? task.pgid;
+    const pgid = task.pgid;
     const entries = await this.trySample();
-    if (this.tasks.get(task.taskId) !== task || (guarded && !this.isCurrentGuardedState(task, guarded))) return { descendants: [], scanned: false };
+    if (this.tasks.get(task.taskId) !== task) return { descendants: [], scanned: false };
     const descendants = entries ? scanDescendants(pgid, token, entries) : [];
-    if (guarded && entries) guarded.descendants = [...descendants];
     this.lastDescendantScanAt.set(task.taskId, this.clock.now());
     if (entries) task.descendants = [...descendants];
     task.descendantsScanned = Boolean(entries);
@@ -776,14 +610,13 @@ export class ShellRegistry {
   private async inspectTask(taskId: string): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) return;
-    const guarded = this.guardedTasks.get(task);
-    if (guarded ? guarded.terminalStatus !== undefined : isTerminalStatus(task.status)) {
+    if (isTerminalStatus(task.status)) {
       this.stopMonitor(taskId);
       return;
     }
 
     {
-      const pgid = guarded?.pgid ?? task.pgid;
+      const pgid = task.pgid;
       const probe = probeProcessGroup(pgid, this.kill);
       if (!probe.ok) {
         this.stopMonitor(taskId);
@@ -792,8 +625,7 @@ export class ShellRegistry {
       }
 
       if (probe.state === "alive") {
-        const identity = await this.checkIdentity(task, guarded);
-        if (guarded && !this.isCurrentGuardedState(task, guarded)) return;
+        const identity = await this.checkIdentity(task);
         task.identityVerified = identity.verified;
         if (identity.mismatched) {
           this.stopMonitor(taskId);
@@ -803,18 +635,16 @@ export class ShellRegistry {
 
         const lastScan = this.lastDescendantScanAt.get(taskId);
         if (lastScan === undefined || this.clock.elapsedExcludingSleep(lastScan) >= DESCENDANT_SCAN_THROTTLE_MS) {
-          await this.scanDescendantsInto(task, guarded);
-          if (guarded && !this.isCurrentGuardedState(task, guarded)) return;
+          await this.scanDescendantsInto(task);
         }
 
-        if (guarded || task.status === "starting") task.status = "running";
+        if (task.status === "starting") task.status = "running";
         task.activity = "active";
         this.notify(task);
         return;
       }
 
-      const scan = await this.scanDescendantsInto(task, guarded);
-      if (guarded && !this.isCurrentGuardedState(task, guarded)) return;
+      const scan = await this.scanDescendantsInto(task);
       if (!scan.scanned) {
         this.stopMonitor(taskId);
         this.markUncertain(task, "后代进程扫描未完成");
@@ -835,102 +665,21 @@ export class ShellRegistry {
         return;
       }
 
-      if (guarded) {
-        guarded.terminationProven = true;
-        if (!guarded.closeObserved) {
-          task.status = "running";
-          task.activity = "active";
-          this.notify(task);
-          return;
-        }
-      }
-
       this.stopMonitor(taskId);
-      const terminalStatus = guarded?.error ? "failed" : "exited";
-      if (guarded) {
-        if (!this.isCurrentGuardedState(task, guarded)) return;
-        guarded.terminalStatus = terminalStatus;
-        guarded.resolveTerminal();
-      }
-      task.status = terminalStatus;
-      if (guarded?.error) task.reason = guarded.error.message;
+      task.status = "exited";
       task.activity = "ended";
       this.clearTimeoutTimer(taskId);
       this.notify(task);
-      if (!guarded || (guarded.closeObserved && guarded.terminationProven)) await this.deleteTaskRecord(task);
-    }
-  }
-
-  private async waitForGuardedProof(promise: Promise<void>, label: string): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        promise,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(label)), GUARDED_WAIT_MS);
-          timer.unref?.();
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-
-  async deliverGuardedOutput(task: TaskRecord): Promise<void> {
-    const state = this.guardedTasks.get(task);
-    if (!state) throw new Error("缺少本次受保护命令的私有结果证明");
-    this.assertCurrentGuardedState(task, state);
-    if (state.consumption !== "available") throw new Error("受保护命令结果已消费或已失效");
-    state.consumption = "consuming";
-    try {
-      const assertPermit = () => {
-        this.assertCurrentGuardedState(task, state);
-        if (state.consumption !== "consuming") throw new Error("受保护命令结果已失效");
-      };
-      await this.waitForGuardedProof(state.closePromise, "等待受保护命令 close 超时");
-      assertPermit();
-      await this.waitForGuardedProof(state.terminalPromise, "等待受保护命令真实结束超时");
-      assertPermit();
-      if (!state.registrationComplete || !state.closeObserved || !state.terminationProven
-        || state.terminalStatus !== "exited" || task.stoppedBy || state.error) {
-        throw new Error(state.error?.message ?? task.reason ?? "受保护命令未形成可交付结果");
-      }
-      assertExecutionGuardCurrent(state.assertCurrent);
-      while (state.chunks.length > 0) {
-        assertPermit();
-        assertExecutionGuardCurrent(state.assertCurrent);
-        const item = state.chunks.shift()!;
-        state.outputBytes -= item.chunk.length;
-        state.onOutput?.(item.chunk, item.stream);
-        this.assertCurrentGuardedState(task, state);
-        if (state.consumption !== "consuming") throw new Error("受保护命令结果已失效");
-        assertExecutionGuardCurrent(state.assertCurrent);
-      }
-      state.outputBytes = 0;
-      assertPermit();
-      assertExecutionGuardCurrent(state.assertCurrent);
-      assertPermit();
-      state.consumption = "delivered";
-    } catch (error) {
-      state.chunks.length = 0;
-      state.outputBytes = 0;
-      state.consumption = "failed";
-      throw error;
+      await this.deleteTaskRecord(task);
     }
   }
 
   exitCodeFor(task: TaskRecord): number | null {
-    const guarded = this.guardedTasks.get(task);
-    if (!guarded) return task.exitCode;
-    this.assertCurrentGuardedState(task, guarded);
-    return guarded.exitObserved ? guarded.exitCode : null;
+    return task.exitCode;
   }
 
   isTaskExecutionEnded(task: TaskRecord): boolean {
-    const guarded = this.guardedTasks.get(task);
-    if (!guarded) return this.tasks.get(task.taskId) === task && isTerminalStatus(task.status) && task.activity === "ended";
-    this.assertCurrentGuardedState(task, guarded);
-    return guarded.terminalStatus !== undefined && guarded.closeObserved && guarded.terminationProven;
+    return this.tasks.get(task.taskId) === task && isTerminalStatus(task.status) && task.activity === "ended";
   }
 
   async stop(taskId: string): Promise<StopResult> {
@@ -939,8 +688,6 @@ export class ShellRegistry {
 
   async stopTask(task: TaskRecord): Promise<StopResult> {
     if (this.tasks.get(task.taskId) !== task) return { ok: false, reason: "任务对象已被替代" };
-    const guarded = this.guardedTasks.get(task);
-    if (guarded && !this.isCurrentGuardedState(task, guarded)) return { ok: false, reason: "受保护任务代次已失效" };
     return this.stopWithFinalStatus(task.taskId, "stopped", task);
   }
 
@@ -964,23 +711,20 @@ export class ShellRegistry {
 
   private async performStop(taskId: string, finalStatus: "stopped" | "timed_out" | "failed", task: TaskRecord): Promise<StopResult> {
     if (this.tasks.get(taskId) !== task) return { ok: false, reason: `停止请求的原任务已被替代：${taskId}` };
-    const guarded = this.guardedTasks.get(task);
-    const pid = guarded?.pid ?? task.pid;
-    const pgid = guarded?.pgid ?? task.pgid;
+    const pid = task.pid;
+    const pgid = task.pgid;
     if (!(pgid > 1)) return { ok: false, reason: `任务 pgid 非法：${pgid}` };
-    if (guarded ? guarded.terminalStatus !== undefined : isTerminalStatus(task.status)) {
-      const scan = await this.scanDescendantsInto(task, guarded);
-      if (this.tasks.get(taskId) !== task || (guarded && !this.isCurrentGuardedState(task, guarded))) return { ok: false, reason: "停止请求的原任务已被替代" };
+    if (isTerminalStatus(task.status)) {
+      const scan = await this.scanDescendantsInto(task);
+      if (this.tasks.get(taskId) !== task) return { ok: false, reason: "停止请求的原任务已被替代" };
       const group = probeProcessGroup(pgid, this.kill);
       if (task.stoppedBy !== "user" && scan.scanned && group.ok && group.state === "gone"
-        && scan.descendants.every((pid) => probeSinglePid(pid, this.kill).state === "gone")
-        && (!guarded || (guarded.closeObserved && guarded.terminationProven))) return { ok: true, task };
+        && scan.descendants.every((pid) => probeSinglePid(pid, this.kill).state === "gone")) return { ok: true, task };
       this.markUncertain(task, "结束状态需重新核对进程、close及后代");
       return { ok: true, task };
     }
 
-    const identity = await this.checkIdentity(task, guarded);
-    if (guarded && !this.isCurrentGuardedState(task, guarded)) return { ok: false, reason: "受保护任务已被替代" };
+    const identity = await this.checkIdentity(task);
     const previouslyVerified = task.identityVerified;
     task.identityVerified = identity.verified;
     if (identity.mismatched) {
@@ -1003,25 +747,23 @@ export class ShellRegistry {
 
     const token = this.taskTokens.get(taskId) ?? "";
     const entries = await this.trySample();
-    if (guarded && !this.isCurrentGuardedState(task, guarded)) return { ok: false, reason: "受保护任务已被替代" };
-    let descendants = entries ? scanDescendants(pgid, token, entries) : [...(guarded ? guarded.descendants : task.descendants)];
+    let descendants = entries ? scanDescendants(pgid, token, entries) : [...task.descendants];
     if (entries) {
       task.descendants = [...descendants];
-      if (guarded) guarded.descendants = [...descendants];
       task.descendantsScanned = true;
     } else {
       task.descendantsScanned = false;
     }
 
     const signalAll = (signal: NodeJS.Signals): void => {
-      if (this.tasks.get(taskId) !== task || (guarded && !this.isCurrentGuardedState(task, guarded))) return;
+      if (this.tasks.get(taskId) !== task) return;
       try {
         this.kill(-pgid, signal);
       } catch {
         // 组可能已消失，忽略
       }
       for (const pid of descendants) {
-        if (this.tasks.get(taskId) !== task || (guarded && !this.isCurrentGuardedState(task, guarded))) return;
+        if (this.tasks.get(taskId) !== task) return;
         try {
           this.kill(pid, signal);
         } catch {
@@ -1054,10 +796,6 @@ export class ShellRegistry {
         }).finally(() => { polling = false; });
       }, STOP_POLL_INTERVAL_MS);
       const poll = async () => {
-        if (guarded && !this.isCurrentGuardedState(task, guarded)) {
-          finish({ ok: false, reason: "受保护任务已被替代" });
-          return;
-        }
         if (this.clock.deadline(startWait, STOP_TIMEOUT_MS)) {
           this.markUncertain(task, "停止超时未确认");
           finish({ ok: true, task });
@@ -1084,10 +822,6 @@ export class ShellRegistry {
           // 每次终态确认都重新扫描信号后的成员，不能复用停止前的范围。
           const finalEntries = await this.trySample();
           if (finished) return;
-          if (guarded && !this.isCurrentGuardedState(task, guarded)) {
-            finish({ ok: false, reason: "受保护任务已被替代" });
-            return;
-          }
           if (!finalEntries || this.clock.deadline(startWait, STOP_TIMEOUT_MS)) {
             task.descendantsScanned = false;
             this.markUncertain(task, "主进程组已结束，但后代扫描未完成");
@@ -1096,7 +830,6 @@ export class ShellRegistry {
           }
           descendants = [...new Set([...descendants, ...scanDescendants(pgid, token, finalEntries)])];
           task.descendants = [...descendants];
-          if (guarded) guarded.descendants = [...descendants];
           task.descendantsScanned = true;
           const finalGroup = probeProcessGroup(pgid, this.kill);
           const finalMembers = descendants.map((pid) => probeSinglePid(pid, this.kill));
@@ -1112,23 +845,12 @@ export class ShellRegistry {
           }
           consecutiveGone++;
           if (consecutiveGone >= STOP_CONFIRM_COUNT) {
-            if (guarded) {
-              guarded.terminationProven = true;
-              if (!guarded.closeObserved) return;
-              if (!this.isCurrentGuardedState(task, guarded)) {
-                finish({ ok: false, reason: "受保护任务已被替代" });
-                return;
-              }
-              guarded.terminalStatus = finalStatus;
-              guarded.resolveTerminal();
-            }
             task.status = finalStatus;
             task.stoppedBy = "signal";
             task.activity = "ended";
-            if (finalStatus === "failed") task.reason = guarded?.error?.message ?? "受保护命令执行失败";
             this.clearTimeoutTimer(taskId);
             this.notify(task);
-            if (!guarded || (guarded.closeObserved && guarded.terminationProven)) void this.deleteTaskRecord(task);
+            void this.deleteTaskRecord(task);
             finish({ ok: true, task });
             return;
           }
@@ -1148,9 +870,6 @@ export class ShellRegistry {
     if (!task) return { ok: false, reason: `未知任务：${taskId}` };
     if (task.status !== "uncertain") {
       return { ok: false, reason: `任务当前状态为 ${task.status}，非 uncertain 不可裁定` };
-    }
-    if (this.guardedTasks.has(task)) {
-      return { ok: false, reason: "受保护命令不能用人工裁定生成结果许可" };
     }
     task.status = "stopped";
     task.stoppedBy = "user";
@@ -1257,8 +976,7 @@ export class ShellRegistry {
       }
       task.descendants = scanDescendants(task.pgid, token, entries);
       task.descendantsScanned = true;
-      const guarded = this.guardedTasks.get(task);
-      const ended = guarded ? guarded.terminalStatus !== undefined || guarded.terminationProven : isTerminalStatus(task.status);
+      const ended = isTerminalStatus(task.status);
       if (ended && groups.has(task.taskId)) {
         this.markUncertain(task, "发现同一任务仍有存活进程，结束状态未确认");
       }

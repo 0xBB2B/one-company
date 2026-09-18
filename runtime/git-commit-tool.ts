@@ -2,7 +2,6 @@ import { Type } from "typebox";
 import { resolve } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { projectBaselineForContext } from "./project-baseline-hooks.ts";
-import { currentHostGit } from "./git-runtime.mjs";
 
 const parameters = Type.Object({
   paths: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "本次提交的明确文件路径；重命名须同时列出新旧路径" }),
@@ -18,39 +17,17 @@ export function createGitCommitTool(commit: (cwd: string) => Promise<CommitPaths
     parameters,
     async execute(id, input, signal, _update, ctx) {
       const cwd = ctx.cwd;
-      const fixedGit = currentHostGit([cwd]).executablePath;
-      const assertCurrent = () => {
-        const current = currentHostGit([cwd]);
-        if (current.executablePath !== fixedGit) throw new Error("提交工具的 Git 可执行文件已偏离宿主固定绑定");
-      };
       const hooks = projectBaselineForContext(ctx);
-      if (hooks) {
-        try { await hooks.assertCall(id); }
-        catch (error) { assertCurrent(); throw error; }
-        assertCurrent();
-      }
-      let commitPaths: CommitPaths;
-      try { commitPaths = await commit(cwd); }
-      catch (error) { assertCurrent(); throw error; }
-      assertCurrent();
+      if (hooks) await hooks.assertCall(id);
+      const commitPaths = await commit(cwd);
       const operation = async (baselineSignal?: AbortSignal) => {
         const combined = signal && baselineSignal ? AbortSignal.any([signal, baselineSignal]) : signal ?? baselineSignal;
         combined?.throwIfAborted();
-        try {
-          const output = await commitPaths(input.paths.map((path) => resolve(cwd, path)), input.message, combined);
-          assertCurrent();
-          return output;
-        } catch (error) {
-          assertCurrent();
-          throw error;
-        }
+        return commitPaths(input.paths.map((path) => resolve(cwd, path)), input.message, combined);
       };
       // actual execute 绑定原 callId；commit 仍完整经过既有范围、暂存保护及沙箱。
       // Git 元数据不是 expectedWrites 文件证明，未知副作用不能推进原请求的 executionHead。
-      let output: string;
-      try { output = hooks ? await hooks.withMutation(id, { paths: [] }, operation) : await operation(); }
-      catch (error) { assertCurrent(); throw error; }
-      assertCurrent();
+      const output = hooks ? await hooks.withMutation(id, { paths: [] }, operation) : await operation();
       return { content: [{ type: "text", text: output }], details: {} };
     },
   };

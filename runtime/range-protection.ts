@@ -1,4 +1,4 @@
-import { gitExecutable, readGit as queryGit, readGitBytes } from "./git-read.ts";
+import { readGit as queryGit, readGitBytes } from "./git-read.ts";
 import { commandBoundary, sandboxLaunch } from "./command-boundary.ts";
 import { lstat, realpath, rm, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
@@ -15,9 +15,6 @@ import { parseChangedEntries } from "./git-snapshot.ts";
 import type { Clock } from "./clock.ts";
 import type { ShellRegistry, TaskRecord } from "./shell-registry.ts";
 import type { BashCommandGuard } from "./shell-bash.ts";
-import { currentHostGit } from "./git-runtime.mjs";
-import { assertExecutionGuardCurrent, DEFAULT_GUARDED_OUTPUT_BYTES } from "./execution-guard.ts";
-import type { ExecutionGuard } from "./execution-guard.ts";
 
 export async function createRangeProtection(input: {
   cwd: string; dataRoot: string; holder: Holder; writePaths: string[]; clock: Clock; shells: ShellRegistry;
@@ -76,14 +73,6 @@ export async function createRangeProtection(input: {
   const scratchPaths = new Set<string>();
   let commitsInFlight = 0;
   const gitPaths = [identity.commonDir, gitDir, join(input.cwd, ".git")];
-  const gitExecutionRoots = [input.cwd, input.dataRoot, identity.commonDir, gitDir];
-  const executionGuardFor = (git: string): ExecutionGuard => ({
-    maxOutputBytes: DEFAULT_GUARDED_OUTPUT_BYTES,
-    assertCurrent() {
-      const current = currentHostGit(gitExecutionRoots);
-      if (current.executablePath !== git) throw new Error("受管 Git 可执行文件已偏离宿主固定绑定");
-    },
-  });
   const foreignHosts = () => activeForeignHosts({ runStore: runs, windows, windowId: input.holder.windowId ?? "daemon", runId: input.holder.runId ?? "" });
   async function boundary() {
     const foreignPaths = (await claims.entries()).filter((claim) => claim.holder.runId !== input.holder.runId || claim.holder.windowId !== input.holder.windowId).flatMap((claim) => claim.paths);
@@ -162,9 +151,6 @@ export async function createRangeProtection(input: {
           const checked = await checkWrite(path);
           if (!checked.ok) throw new Error(checked.reason);
         }
-        const git = await gitExecutable();
-        const executionGuard = executionGuardFor(git);
-        assertExecutionGuardCurrent(executionGuard.assertCurrent);
         const host = { kind: input.holder.kind, id: input.holder.runId ?? input.holder.windowId!, runId: input.holder.runId };
         const tracked = new Set((await readGit(["ls-files", "-z"])).toString().split("\0"));
         const stagePaths: string[] = [];
@@ -182,25 +168,13 @@ export async function createRangeProtection(input: {
               return violations;
             },
             async launch() {
-              const limits = await boundary();
-              limits.writeRoots.push(gitDir, ...["objects", "refs", "logs"].map((part) => join(identity.commonDir, part)));
-              return {
-                ...sandboxLaunch("", limits, { path: git, args: ["--literal-pathspecs", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args] }),
-                executionGuard,
-              };
+              return { command: "git", args: ["--literal-pathspecs", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], env: { GIT_OPTIONAL_LOCKS: "0" } };
             },
           } });
           let result: Awaited<ReturnType<typeof operations.exec>>;
-          try {
-            result = await operations.exec("git " + args[0], input.cwd, { signal, timeout: 30, onData: (chunk) => { output += chunk.toString(); } });
-          } catch (error) {
-            assertExecutionGuardCurrent(executionGuard.assertCurrent);
-            throw error;
-          }
-          assertExecutionGuardCurrent(executionGuard.assertCurrent);
+          result = await operations.exec("git " + args[0], input.cwd, { signal, timeout: 30, onData: (chunk) => { output += chunk.toString(); } });
           if (result.exitCode !== 0) throw new Error(`受管提交失败（外部 hook/filter/签名程序不在执行权限内）：${output}`);
         }
-        assertExecutionGuardCurrent(executionGuard.assertCurrent);
         return output;
       } finally { commitsInFlight--; }
     },
