@@ -36,9 +36,7 @@ import { createFakeTimeSource } from "./helpers/fake-clock.ts";
 import { GIT_ENV } from "./helpers/repo-fixture.ts";
 import { cleanupOwnedScope } from "./helpers/m3-cleanup.ts";
 import { createClientSocketProbe, createClientWatcherProbe } from "./helpers/project-sync-client-watchers.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const cleanup: Array<() => Promise<unknown>> = [];
@@ -177,10 +175,10 @@ async function world(options: { holdInit?: ReturnType<typeof gate>; initEntered?
   const repositoryRoot = join(root, "repo");
   const dataRoot = join(root, "data");
   await mkdir(repositoryRoot); await mkdir(dataRoot, { mode: 0o700 });
-  await exec(HOST_GIT, ["init", "-b", "main"], { cwd: repositoryRoot, env: GIT_ENV });
+  await exec("git", ["init", "-b", "main"], { cwd: repositoryRoot, env: GIT_ENV });
   await writeFile(join(repositoryRoot, "source.ts"), "export const initial = 1;\n");
-  await exec(HOST_GIT, ["add", "source.ts"], { cwd: repositoryRoot, env: GIT_ENV });
-  await exec(HOST_GIT, ["commit", "-m", "fixture"], { cwd: repositoryRoot, env: GIT_ENV });
+  await exec("git", ["add", "source.ts"], { cwd: repositoryRoot, env: GIT_ENV });
+  await exec("git", ["commit", "-m", "fixture"], { cwd: repositoryRoot, env: GIT_ENV });
   const { repoId, commonDir } = await repositoryIdentity(repositoryRoot);
   await repoDataDir(dataRoot, repoId, commonDir);
   await mkdir(join(dataRoot, "sock"), { mode: 0o700 });
@@ -335,7 +333,7 @@ test("管理登记真实事务窗口没有文件IO、指纹计算或宿主回调
 test("只读管理与索引查询真实事务窗口没有文件IO或指纹计算", async () => {
   const w = await world(); const a = await w.host(); await a.call("init");
   await a.shutdown(); a.client.close();
-  await exec(HOST_GIT, ["switch", "-c", "probe-other"], { cwd: w.repositoryRoot, env: GIT_ENV });
+  await exec("git", ["switch", "-c", "probe-other"], { cwd: w.repositoryRoot, env: GIT_ENV });
   const b = await w.host("probe-b", "probe-b");
   const probe = transactionWindowProbe();
   expect((await captureProjectFreshBaseline(b.binding)).kind).toBe("unmanaged");
@@ -438,7 +436,7 @@ test.each(["permission", "file-identity", "directory-identity"])("管理登记�
 test.each(["data.db", "index.db"])("只读查询关闭连接后%s身份变化仍拒绝，不把旧元数据当未管理", async (name) => {
   const w = await world(); const a = await w.host(); await a.call("init");
   await a.shutdown(); a.client.close();
-  await exec(HOST_GIT, ["switch", "-c", "readonly-race"], { cwd: w.repositoryRoot, env: GIT_ENV });
+  await exec("git", ["switch", "-c", "readonly-race"], { cwd: w.repositoryRoot, env: GIT_ENV });
   const b = await w.host("readonly-b", "readonly-b");
   const path = join(w.dataRoot, "repos", w.repoId, name);
   const originalExec = DatabaseSync.prototype.exec, originalClose = DatabaseSync.prototype.close;
@@ -806,7 +804,7 @@ test("原unmanaged请求后切到另一未初始化分支也拒绝，不把新�
   cleanup.push(async () => { baseline.dispose(); provider.dispose(); });
   const request = await baseline.beginRequest();
   baseline.bindCalls(["old-branch"], request);
-  await exec(HOST_GIT, ["switch", "-c", "changed-identity"], { cwd: w.repositoryRoot, env: GIT_ENV });
+  await exec("git", ["switch", "-c", "changed-identity"], { cwd: w.repositoryRoot, env: GIT_ENV });
   let ran = false;
   await expect(baseline.withMutation("old-branch", { paths: ["source.ts"] }, async () => { ran = true; })).rejects.toMatchObject({ code: "stale" });
   expect(ran).toBe(false);
@@ -828,7 +826,7 @@ test.each(["worktree", "branch"])("其他%s有持久索引不串身份，当前�
   const w = await world(); const a = await w.host(); await a.call("init");
   await a.shutdown(); a.client.close();
   const root = kind === "worktree" ? join(w.root, "other") : w.repositoryRoot;
-  await exec(HOST_GIT, kind === "worktree" ? ["worktree", "add", "-b", "other", root] : ["switch", "-c", "other"],
+  await exec("git", kind === "worktree" ? ["worktree", "add", "-b", "other", root] : ["switch", "-c", "other"],
     { cwd: w.repositoryRoot, env: GIT_ENV });
   const b = await w.host("b", "b", root);
   const provider = createHostProjectBaselineProvider({ binding: b.binding, dataRoot: w.dataRoot });
@@ -950,7 +948,7 @@ test("同daemon重新连接也重签token；旧连接事件和未授权分支不
   expect(identity.connectionId).not.toBe(oldIdentity.connectionId);
   expect(w.calls.filter((call) => call.action === "init").at(-1)!.grantId).not.toBe(oldToken);
   expect(host.confirmations()).toBe(1);
-  await exec(HOST_GIT, ["switch", "-c", "other"], { cwd: w.repositoryRoot, env: GIT_ENV });
+  await exec("git", ["switch", "-c", "other"], { cwd: w.repositoryRoot, env: GIT_ENV });
   host.approve(false);
   await expect(host.call("init")).rejects.toMatchObject({ code: "scan_declined" });
   await expect(controller.captureFreshBaseline()).rejects.toThrow();
@@ -964,7 +962,7 @@ test("确认后adapter打开前切分支：原批准不能为新workspace签发�
   const w = await world(); const host = await w.host();
   const original = ProjectSyncClientSession.prototype.openService;
   const intercepted = vi.spyOn(ProjectSyncClientSession.prototype, "openService").mockImplementationOnce(async function(input) {
-    await exec(HOST_GIT, ["switch", "-c", "approval-race"], { cwd: w.repositoryRoot, env: GIT_ENV });
+    await exec("git", ["switch", "-c", "approval-race"], { cwd: w.repositoryRoot, env: GIT_ENV });
     return original.call(this, input);
   });
   await expect(host.call("init")).rejects.toThrow();

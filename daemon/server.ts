@@ -12,11 +12,6 @@ import {
   validateParams,
 } from "../runtime/protocol.ts";
 import type { Frame } from "../runtime/protocol.ts";
-import {
-  currentGitBinding,
-  isGitBindingFailure,
-  verifyPeerGitBinding,
-} from "../runtime/git-daemon-binding.ts";
 
 export interface ClientInfo {
   windowId: string;
@@ -50,7 +45,6 @@ export interface DaemonServerOptions {
   hasActiveRuns?: () => Promise<boolean | { active: boolean; reason?: string }> | boolean | { active: boolean; reason?: string };
   isReady?: () => boolean;
   onShutdownRequested?: () => void;
-  gitRoots?: readonly string[];
 }
 
 const HANDLERS_READY_TIMEOUT_MS = 10_000;
@@ -75,7 +69,6 @@ export class DaemonServer {
   private server: Server | null = null;
   private readonly connections = new Set<ClientConnection>();
   private readonly handlers = new Map<string, MethodHandler>();
-  private readonly clientGitRoots = new WeakMap<ClientInfo, readonly string[]>();
   private resolveHandlersReady!: () => void;
   private readonly handlersReady: Promise<void>;
   onHello: ((client: ClientInfo) => Promise<void> | void) | null = null;
@@ -175,12 +168,6 @@ export class DaemonServer {
     if (!this.isClientCurrent(client, info)) {
       throw Object.assign(new Error("连接身份已变化"), { code: "identity_changed" });
     }
-    const roots = this.clientGitRoots.get(info);
-    if (!roots) throw Object.assign(new Error("连接缺少 Git 绑定"), { code: "git_expectation_invalid" });
-    currentGitBinding(roots);
-    if (!this.isClientCurrent(client, info)) {
-      throw Object.assign(new Error("连接身份已变化"), { code: "identity_changed" });
-    }
   }
 
   private retireCurrentIdentity(client: ClientConnection, info: ClientInfo): void {
@@ -188,45 +175,14 @@ export class DaemonServer {
     this.retireIdentity(client);
   }
 
-  private rejectCurrentForGit(
-    client: ClientConnection,
-    info: ClientInfo,
-    requestId: string,
-    error: unknown,
-  ): void {
-    if (!this.isClientCurrent(client, info)) return;
-    const code = isGitBindingFailure(error) ? errorCode(error) : "git_unsafe";
-    client.socket.write(encodeFrame(createErrorResponse(requestId, code, "Git 绑定已失效")));
-    this.retireCurrentIdentity(client, info);
-    client.socket.end();
-  }
-
   private async notifyHelloWhenCurrent(client: ClientConnection, info: ClientInfo): Promise<void> {
     if (!this.isClientCurrent(client, info)) return;
-    try {
-      this.assertClientCurrent(client, info);
-    } catch (error) {
-      if (this.isClientCurrent(client, info) && isGitBindingFailure(error)) {
-        this.retireCurrentIdentity(client, info);
-        client.socket.destroy();
-      }
-      return;
-    }
     const callback = this.onHello;
     if (callback) {
       try {
         await callback(info);
       } catch {
         // 生命周期观察者故障不改变已认证连接。
-      }
-    }
-    if (!this.isClientCurrent(client, info)) return;
-    try {
-      this.assertClientCurrent(client, info);
-    } catch (error) {
-      if (this.isClientCurrent(client, info) && isGitBindingFailure(error)) {
-        this.retireCurrentIdentity(client, info);
-        client.socket.destroy();
       }
     }
   }
@@ -255,26 +211,7 @@ export class DaemonServer {
       client.socket.write(encodeFrame(createResponse(frame.id, result)));
     } catch (error) {
       const expectedInfo = responseInfo ?? requestInfo;
-      if (expectedInfo) {
-        if (!this.isClientCurrent(client, expectedInfo)) return;
-        try {
-          this.assertClientCurrent(client, expectedInfo);
-        } catch (deliveryError) {
-          if (this.isClientCurrent(client, expectedInfo) && isGitBindingFailure(deliveryError)) {
-            this.rejectCurrentForGit(client, expectedInfo, frame.id, deliveryError);
-          }
-          return;
-        }
-        if (isGitBindingFailure(error)) {
-          this.rejectCurrentForGit(client, expectedInfo, frame.id, error);
-          return;
-        }
-      }
-      if (isGitBindingFailure(error)) {
-        client.socket.write(encodeFrame(createErrorResponse(frame.id, errorCode(error), "Git 绑定已失效")));
-        client.socket.end();
-        return;
-      }
+      if (expectedInfo && !this.isClientCurrent(client, expectedInfo)) return;
       client.socket.write(
         encodeFrame(createErrorResponse(frame.id, errorCode(error), (error as Error).message, errorData(error))),
       );
@@ -293,11 +230,6 @@ export class DaemonServer {
     assertProtocolVersion(params.protocolVersion as number);
     const cwd = params.cwd as string;
     const workspaceRoot = params.workspaceRoot as string;
-    const verifiedGit = verifyPeerGitBinding(
-      params.gitExpectation,
-      [...(this.options.gitRoots ?? []), cwd, workspaceRoot],
-      [cwd, workspaceRoot],
-    );
     client.info = {
       windowId: params.windowId as string,
       pid: params.pid as number,
@@ -312,7 +244,6 @@ export class DaemonServer {
       daemonInstanceId: { writable: false, configurable: false },
       connectionId: { writable: false, configurable: false },
     });
-    this.clientGitRoots.set(client.info, verifiedGit.roots);
     // 推送延后到下一轮事件循环：hello 响应帧必须先于任何推送帧写入 socket，
     // 否则客户端可能在收到响应、注册事件监听器之前就已经收到并丢弃了推送；
     // onHello 由 registerProtocolHandlers 在装配完成时才赋值，装配未完工时 hello 也要等，
@@ -334,7 +265,6 @@ export class DaemonServer {
         startedAt: this.options.startedAt,
         daemonInstanceId: info.daemonInstanceId,
         connectionId: info.connectionId,
-        gitExpectation: verifiedGit.mergedText,
       },
     };
   }
@@ -398,10 +328,6 @@ export class DaemonServer {
         if (accepted) client.socket.write(encoded);
       } catch (error) {
         if (!this.isClientCurrent(client, info)) continue;
-        if (isGitBindingFailure(error)) {
-          this.retireCurrentIdentity(client, info);
-          client.socket.destroy();
-        }
         throw error;
       }
     }

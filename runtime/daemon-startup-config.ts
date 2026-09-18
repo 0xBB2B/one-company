@@ -5,7 +5,6 @@ export interface DaemonStartupConfig {
   readonly sdkDir: string;
   readonly repoDir: string;
   readonly dataRoot: string;
-  readonly ownRoots: readonly string[];
 }
 
 function requiredAbsolutePath(name: string, value: string | undefined): string {
@@ -20,6 +19,5 @@ export function parseDaemonStartupConfig(env: Record<string, string | undefined>
   const configuredDataRoot = Object.hasOwn(env, "PI_COMPANY_DATA_ROOT")
     ? requiredAbsolutePath("PI_COMPANY_DATA_ROOT", env.PI_COMPANY_DATA_ROOT)
     : dataRoot(env);
-  const ownRoots = Object.freeze([...new Set([repoDir, configuredDataRoot, sdkDir])]);
-  return Object.freeze({ sdkDir, repoDir, dataRoot: configuredDataRoot, ownRoots });
+  return Object.freeze({ sdkDir, repoDir, dataRoot: configuredDataRoot });
 }

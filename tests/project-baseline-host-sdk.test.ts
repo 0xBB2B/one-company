@@ -31,9 +31,7 @@ import type { WindowContextValue } from "../extensions/lifecycle.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { GIT_ENV } from "./helpers/repo-fixture.ts";
 import { deferred } from "./helpers/project-baseline-fixture.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
@@ -52,10 +50,10 @@ async function world() {
   fixtureRoots.push(root);
   const repo = join(root, "repo"), dataRoot = join(root, "data"), home = join(root, "agent");
   await mkdir(repo); await mkdir(dataRoot, { mode: 0o700 }); await mkdir(home, { mode: 0o700 });
-  await exec(HOST_GIT, ["init", "-b", "main"], { cwd: repo, env: GIT_ENV });
+  await exec("git", ["init", "-b", "main"], { cwd: repo, env: GIT_ENV });
   await writeFile(join(repo, "source.ts"), "export const initial = 1;\n");
-  await exec(HOST_GIT, ["add", "source.ts"], { cwd: repo, env: GIT_ENV });
-  await exec(HOST_GIT, ["commit", "-m", "fixture"], { cwd: repo, env: GIT_ENV });
+  await exec("git", ["add", "source.ts"], { cwd: repo, env: GIT_ENV });
+  await exec("git", ["commit", "-m", "fixture"], { cwd: repo, env: GIT_ENV });
   const { repoId, commonDir } = await repositoryIdentity(repo); await repoDataDir(dataRoot, repoId, commonDir);
   await mkdir(join(dataRoot, "sock"), { mode: 0o700 });
   const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
@@ -317,11 +315,11 @@ test("真实HOST+SDK read返回后watch变化，下一模型请求提醒旧资�
 
 test("真实HOST+SDK commit预检后外改，在实际提交前拒绝且HEAD/index不变", async () => {
   const w = await world(); await w.initialize();
-  const before = (await exec(HOST_GIT, ["rev-parse", "HEAD"], { cwd: w.repo, env: GIT_ENV })).stdout;
+  const before = (await exec("git", ["rev-parse", "HEAD"], { cwd: w.repo, env: GIT_ENV })).stdout;
   await w.run([{ type: "toolCall", id: "stale-commit", name: "pi_company_git_commit", arguments: { paths: ["source.ts"], message: "must not commit" } }], undefined,
     async () => { await writeFile(join(w.repo, "source.ts"), "export const external = 8;\n"); });
-  expect((await exec(HOST_GIT, ["rev-parse", "HEAD"], { cwd: w.repo, env: GIT_ENV })).stdout).toBe(before);
-  expect((await exec(HOST_GIT, ["diff", "--cached", "--name-only"], { cwd: w.repo, env: GIT_ENV })).stdout).toBe("");
+  expect((await exec("git", ["rev-parse", "HEAD"], { cwd: w.repo, env: GIT_ENV })).stdout).toBe(before);
+  expect((await exec("git", ["diff", "--cached", "--name-only"], { cwd: w.repo, env: GIT_ENV })).stdout).toBe("");
   expect(w.session.messages.find((m) => m.role === "toolResult")).toMatchObject({ isError: true });
 }, 30000);
 

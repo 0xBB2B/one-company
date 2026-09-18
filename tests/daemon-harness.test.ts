@@ -23,7 +23,6 @@ import {
 import type { DaemonFixture, DaemonHandle, RawClient } from "./helpers/daemon-harness.ts";
 import { repoFixtureRootReceipt } from "./helpers/repo-fixture.ts";
 import { tempHomeRootReceipt } from "./helpers/temp-home.ts";
-import { initializeTestHostGit } from "./helpers/test-git-binding.ts";
 import { captureFixtureScope, cleanupGitDaemonFixtures, ownedTempRoot, registerOwnedServer, registerOwnedSocket, withGitDaemonFixtures } from "./helpers/git-daemon-fixture.ts";
 
 function scoped(run: () => Promise<void>): () => Promise<void> {
@@ -72,7 +71,6 @@ async function ownedConnection<T extends RawClient>(connect: () => Promise<T>): 
 const connectRawClient = (...args: Parameters<typeof nativeConnectRawClient>) => ownedConnection(() => nativeConnectRawClient(...args));
 const connectTestClient = (...args: Parameters<typeof nativeConnectTestClient>) => ownedConnection(() => nativeConnectTestClient(...args));
 
-beforeEach(() => initializeTestHostGit([]));
 afterEach(() => cleanupGitDaemonFixtures());
 
 function controlledSpawn(source: string): typeof realSpawn {
@@ -136,15 +134,13 @@ function response(request: Record<string, unknown>, result: Record<string, unkno
   return `${JSON.stringify({ t: "res", id: request.id, ok: true, result })}\n`;
 }
 
-function helloResult(request: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
-  const params = request.params as Record<string, unknown>;
+function helloResult(_request: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
   return {
     daemonPid: process.pid,
     repoId: "a".repeat(64),
     protocolVersion: 2,
     daemonInstanceId: randomUUID(),
     connectionId: randomUUID(),
-    gitExpectation: params.gitExpectation,
     ...overrides,
   };
 }
@@ -166,7 +162,7 @@ const server = createServer((socket) => {
     while ((index = buffer.indexOf("\\n")) >= 0) {
       const req = JSON.parse(buffer.slice(0, index)); buffer = buffer.slice(index + 1);
       const result = { daemonPid: ${mode === "wrong-pid" ? "process.pid + 1" : "process.pid"}, repoId: ${JSON.stringify(repoId)}, protocolVersion: 2,
-        daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: req.params.gitExpectation };
+        daemonInstanceId: randomUUID(), connectionId: randomUUID() };
       socket.write(JSON.stringify({ t: "res", id: req.id, ok: true, result }) + "\\n");
     }
   });
@@ -235,7 +231,6 @@ test("创建前完成 Git gate，固定环境拒绝覆盖且最终携带完整 G
   expect(captured?.PI_COMPANY_REPO_DIR).toBe(f.repoDir);
   expect(captured?.PI_COMPANY_DATA_ROOT).toBe(f.dataRoot);
   expect(captured?.PI_COMPANY_SDK_DIR).toBe(join(f.dataRoot, "fault-sdk"));
-  expect(JSON.parse(captured?.PI_COMPANY_EXPECTED_GIT ?? "{}")).toMatchObject({ schemaVersion: 1 });
 });
 
 test("真实 ChildProcess 只接受原 proc/exited 配对，VM 伪句柄与错配句柄均不能发信号", async () => {
@@ -390,25 +385,19 @@ test("RawClient 可在同一数据块解析多个响应且 waitClosed 依赖真�
   await raw.waitClosed(500);
 });
 
-test("authenticate fresh 证明保留 cwd/workspace roots，并核验响应版本、PID、UUID、repoId和返回证明", async () => {
-  let helloParams: Record<string, unknown> | undefined;
+test("authenticate 核验响应版本、PID、UUID 和 repoId", async () => {
   const endpoint = await socketServer((request, socket) => {
-    helloParams = request.params as Record<string, unknown>;
     socket.write(response(request, helloResult(request)));
   });
   const raw = await connectRawClient(endpoint.socketPath, { dataRoot: endpoint.dataRoot }); clients.push(raw);
   const result = await authenticateTestClient(raw, { cwd: endpoint.root, workspaceRoot: endpoint.dataRoot, repoIds: ["a".repeat(64)] },
     { dataRoot: endpoint.dataRoot, expectedDaemonPid: process.pid, expectedRepoId: "a".repeat(64) });
   expect(result.daemonPid).toBe(process.pid);
-  const expectation = JSON.parse(helloParams?.gitExpectation as string) as { excludedRootInputs: string[]; excludedRoots: string[] };
-  expect([...expectation.excludedRootInputs, ...expectation.excludedRoots]).toEqual(expect.arrayContaining([endpoint.root, endpoint.dataRoot]));
 });
 
 test.each([
   ["错误 PID", { daemonPid: process.pid + 1 }],
   ["错误 repoId", { repoId: "b".repeat(64) }],
-  ["缺 Git 证明", { gitExpectation: undefined }],
-  ["坏 Git 证明", { gitExpectation: "{bad" }],
   ["坏 UUID", { connectionId: "not-uuid" }],
   ["错误版本", { protocolVersion: 99 }],
 ])("authenticate 对%s不升级认证", async (_label, overrides) => {

@@ -43,7 +43,6 @@ const server = createServer((socket) => {
                 startedAt: new Date().toISOString(),
                 daemonInstanceId: randomUUID(),
                 connectionId: randomUUID(),
-                gitExpectation: frame.params.gitExpectation,
               }),
             ),
           );

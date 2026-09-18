@@ -4,9 +4,7 @@ import { DaemonServer } from "../../daemon/server.ts";
 import { controlToken } from "../../runtime/daemon-auth.ts";
 import { daemonSocketPath, repositoryIdentity } from "../../runtime/identity.ts";
 import { ProjectSyncGrantVerifier } from "../../runtime/project-sync-grants.ts";
-import { initializeTestHostGit } from "./test-git-binding.ts";
 
-initializeTestHostGit([]);
 
 // 独立 Node 进程使用真实 server/SQLite/verifier；不装配宿主、模型或后台索引。
 const { repositoryRoot, dataRoot } = JSON.parse(process.argv[2]!) as { repositoryRoot: string; dataRoot: string };

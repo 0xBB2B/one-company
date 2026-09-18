@@ -57,8 +57,6 @@ const url = (path) => pathToFileURL(join(project, path)).href;
 const load = mode === "loader"
   ? (await import(url("daemon/loader.mjs"))).daemonLoader.import
   : (path) => import(path);
-const { initializeHostGit } = await load(url("runtime/git-runtime.mjs"));
-initializeHostGit([]);
 const { ProjectIndexService } = await load(url("runtime/project-index-service.ts"));
 const { repositoryIdentity } = await load(url("runtime/identity.ts"));
 const { IndexStore } = await load(url("runtime/index-store.ts"));

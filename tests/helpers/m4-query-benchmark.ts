@@ -5,13 +5,6 @@ import { appendFileSync, chmodSync, lstatSync, realpathSync, writeFileSync } fro
 import type { ProjectIndexCoordinator } from "../../daemon/project-index-coordinator.ts";
 import type { DaemonServer } from "../../daemon/server.ts";
 import type { ProjectSyncGrantIssuer } from "../../runtime/project-sync-grants.ts";
-import {
-  createGitExpectationText,
-  decodeGitExpectation,
-  gitExpectationRoots,
-  verifyPeerGitBinding,
-} from "../../runtime/git-daemon-binding.ts";
-import { currentHostGit, initializeHostGit } from "../../runtime/git-runtime.mjs";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { createConnection } from "node:net";
@@ -281,29 +274,20 @@ interface GitProcessRecord {
 }
 
 class GitRunner {
-  readonly executable: string;
   readonly records: GitProcessRecord[] = [];
   readonly active = new Set<number>();
   private readonly home: string;
   constructor(home: string) {
     this.home = home;
-    this.executable = initializeHostGit([home]).executablePath;
-  }
-
-  private assertCurrent(cwd: string): void {
-    if (currentHostGit([this.home, cwd]).executablePath !== this.executable) {
-      throw Object.assign(new Error("git_executable_binding_mismatch"), { code: "git_expectation_mismatch" });
-    }
   }
 
   async run(cwd: string, args: string[]): Promise<string> {
-    this.assertCurrent(cwd);
     const completeArgs = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-c", "core.fsmonitor=false", ...args];
     const started = performance.now();
-    const child = spawn(this.executable, completeArgs, {
+    const child = spawn("git", completeArgs, {
       cwd,
       env: {
-        PATH: "/usr/bin:/bin",
+        PATH: process.env.PATH ?? "",
         HOME: this.home,
         TMPDIR: this.home,
         GIT_CONFIG_GLOBAL: "/dev/null",
@@ -334,7 +318,6 @@ class GitRunner {
       if (timedOut || result.code !== 0 || result.signal !== null) {
         throw new Error(`git_failed:${args[0] ?? "unknown"}:${Buffer.concat(stderr).toString("utf8").trim()}`);
       }
-      this.assertCurrent(cwd);
       return Buffer.concat(stdout).toString("utf8").trim();
     } finally {
       clearTimeout(timer);
@@ -496,7 +479,6 @@ async function connectPeer(
   token: string,
   repoId: string,
   root: string,
-  roots: readonly string[],
   timeoutMs: number,
   protocol: ProtocolModule,
 ): Promise<Peer> {
@@ -565,9 +547,7 @@ async function connectPeer(
     close() { socket.destroy(); },
   };
   try {
-    const gitExpectation = createGitExpectationText(roots);
-    const requestedRoots = gitExpectationRoots(decodeGitExpectation(gitExpectation));
-    const hello = await peer.call("hello", {
+    await peer.call("hello", {
       authToken: token,
       windowId: "m4-query-benchmark",
       pid: process.pid,
@@ -576,9 +556,7 @@ async function connectPeer(
       workspaceRoot: root,
       repoIds: [repoId],
       protocolVersion: protocol.PROTOCOL_VERSION,
-      gitExpectation,
     });
-    verifyPeerGitBinding(hello.gitExpectation, roots, requestedRoots);
     return peer;
   } catch (error) {
     peer.close();
@@ -642,11 +620,6 @@ async function codeInputs(scriptRoot: string): Promise<Array<{ path: string; sha
     "runtime/index-store.ts",
     "runtime/protocol.ts",
     "runtime/identity.ts",
-    "runtime/git-runtime.mjs",
-    "runtime/git-runtime.d.mts",
-    "runtime/git-prerequisite.mjs",
-    "runtime/git-prerequisite.d.mts",
-    "runtime/git-daemon-binding.ts",
     "runtime/git-read.ts",
     "runtime/command-boundary.ts",
     "runtime/database.ts",
@@ -706,12 +679,10 @@ async function runTier(input: {
     const identity = await repositoryIdentity(fixture.repo);
     await repoDataDir(fixture.dataRoot, identity.repoId, identity.commonDir);
     const token = randomBytes(32).toString("hex");
-    const gitRoots = [fixture.repo, fixture.dataRoot, identity.commonDir];
     const activeServer = new DaemonServer({
       authToken: token,
       repoId: identity.repoId,
       startedAt: "m4-query-benchmark",
-      gitRoots,
     });
     server = activeServer;
     // macOS的Unix socket路径上限较短；单独使用本轮创建的短私有目录，并在finally精确清理。
@@ -744,7 +715,6 @@ async function runTier(input: {
       token,
       identity.repoId,
       fixture.repo,
-      gitRoots,
       input.config.rpcTimeoutMs,
       protocolModule as unknown as ProtocolModule,
     );
@@ -1108,7 +1078,7 @@ export async function runQueryBenchmark(options: { output: string; scenario: "sm
     inputHashAfter: sha256(JSON.stringify(afterInputs)),
     summaries,
     tiers,
-    gitSubprocesses: { executable: git.executable, records: git.records, activeAtEnd: [...git.active], allExited: git.active.size === 0 },
+    gitSubprocesses: { records: git.records, activeAtEnd: [...git.active], allExited: git.active.size === 0 },
     resources: { before: resourcesBefore, after: resourceSnapshot(), cleanupComplete },
     referenceTargetsObserved: formal ? referenceTargetsObserved : null,
     smokeMustNotClaimThreshold: !formal,

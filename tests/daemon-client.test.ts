@@ -43,9 +43,7 @@ import {
 import type { DaemonFixture } from "./helpers/daemon-harness.ts";
 import { addWorktree, createRepoFixture, createWorkspaceFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import type { RepoFixture, WorkspaceFixture } from "./helpers/repo-fixture.ts";
-import { initializeTestHostGit } from "./helpers/test-git-binding.ts";
 
-initializeTestHostGit([]);
 
 const GIT_TEST_ENV = {
   PATH: process.env.PATH ?? "",
@@ -579,7 +577,7 @@ describe("hello 帧", () => {
                     daemonPid: process.pid,
                     repoId: identity.repoId,
                     protocolVersion: PROTOCOL_VERSION,
-                    startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+                    startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
                   }),
                 ),
               );
@@ -768,7 +766,7 @@ describe("事件分发隔离", () => {
             daemonPid: process.pid,
             repoId: identity.repoId,
             protocolVersion: PROTOCOL_VERSION,
-            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
           }),
         ),
       );
@@ -827,7 +825,7 @@ describe("close 语义", () => {
               daemonPid: process.pid,
               repoId: identity.repoId,
               protocolVersion: PROTOCOL_VERSION,
-              startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+              startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
             }),
           ),
         );
@@ -1022,7 +1020,7 @@ describe("hello 阶段失败", () => {
             daemonPid: process.pid,
             repoId: "wrong-repo-id-injected-by-test",
             protocolVersion: PROTOCOL_VERSION,
-            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
           }),
         ),
       );
@@ -1069,7 +1067,7 @@ describe("失败帧转换为 DaemonCallError", () => {
               daemonPid: process.pid,
               repoId: identity.repoId,
               protocolVersion: PROTOCOL_VERSION,
-              startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+              startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
             }),
           ),
         );
@@ -1267,7 +1265,7 @@ describe("重连事件恢复", () => {
             daemonPid: process.pid,
             repoId: identity.repoId,
             protocolVersion: PROTOCOL_VERSION,
-            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
           }),
         ),
       );
@@ -1325,7 +1323,7 @@ describe("hello 前协议事件隔离", () => {
         daemonPid: process.pid,
         repoId: identity.repoId,
         protocolVersion: PROTOCOL_VERSION,
-        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
       }));
       if (connectionIndex === 1) {
         socket.write(response);
@@ -1396,7 +1394,7 @@ describe("hello 前协议事件隔离", () => {
         daemonPid: process.pid,
         repoId,
         protocolVersion: PROTOCOL_VERSION,
-        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
       }));
       if (connectionIndex === 1) {
         socket.write(response);
@@ -1451,7 +1449,7 @@ describe("hello 前协议事件隔离", () => {
         daemonPid: process.pid,
         repoId: identity.repoId,
         protocolVersion: PROTOCOL_VERSION,
-        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
       }));
       if (connectionIndex === 1) {
         socket.write(response);
@@ -1510,7 +1508,7 @@ describe("握手未完成帧总预算", () => {
       if (connections === 1) {
         socket.write(encodeFrame(createResponse(frame.id, {
           daemonPid: process.pid, repoId: identity.repoId,
-          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
         })));
         setTimeout(() => socket.destroy(), 75);
       } else if (connections === 2) {
@@ -1562,7 +1560,7 @@ describe("握手未完成帧总预算", () => {
       if (connections === 1) {
         socket.write(encodeFrame(createResponse(frame.id, {
           daemonPid: process.pid, repoId: identity.repoId,
-          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
         })));
         setTimeout(() => socket.destroy(), 75);
       } else if (connections === 2) {
@@ -1622,7 +1620,7 @@ describe("本地连接生命周期通知", () => {
       hellos += 1;
       accepted.write(encodeFrame(createResponse(frame.id, {
         daemonPid: process.pid, repoId: repository.repoId, protocolVersion: PROTOCOL_VERSION,
-        startedAt: "test", daemonInstanceId, connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+        startedAt: "test", daemonInstanceId, connectionId: randomUUID(),
       })));
     });
     try {
@@ -1674,7 +1672,7 @@ describe("本地连接生命周期通知", () => {
             daemonPid: process.pid,
             repoId: identity.repoId,
             protocolVersion: PROTOCOL_VERSION,
-            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
           }),
         ),
       );
@@ -1764,7 +1762,7 @@ describe("本地连接生命周期通知", () => {
               daemonPid: process.pid,
               repoId: identity.repoId,
               protocolVersion: PROTOCOL_VERSION,
-              startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+              startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
             }),
           ),
         );
@@ -1952,7 +1950,7 @@ describe("工作区内单仓库首连失败自愈", () => {
                   daemonPid: process.pid,
                   repoId,
                   protocolVersion: PROTOCOL_VERSION,
-                  startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
+                  startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
                 }),
               ),
             );

@@ -31,7 +31,6 @@ import {
   TRIGGER_UNCAUGHT_EXCEPTION_ENV_VAR,
   TRIGGER_UNHANDLED_REJECTION_ENV_VAR,
 } from "./helpers/model-provider-module.ts";
-import { createGitExpectationText } from "../runtime/git-daemon-binding.ts";
 
 const modelProviderModulePath = fileURLToPath(new URL("./helpers/model-provider-module.ts", import.meta.url));
 
@@ -822,7 +821,6 @@ describe("协议接线", () => {
         workspaceRoot: process.cwd(),
         repoIds: [],
         protocolVersion: PROTOCOL_VERSION + 1,
-        gitExpectation: createGitExpectationText([]),
       }),
     ).rejects.toThrow(/protocol_version/);
     await raw.waitClosed(5_000);

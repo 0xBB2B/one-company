@@ -9,13 +9,6 @@ import { isAbsolute, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { socketPathByteLimit } from "../../daemon/lifecycle.ts";
 import { controlToken } from "../../runtime/daemon-auth.ts";
-import {
-  createGitExpectationText,
-  currentGitBinding,
-  decodeGitExpectation,
-  gitExpectationRoots,
-  verifyPeerGitBinding,
-} from "../../runtime/git-daemon-binding.ts";
 import { daemonSocketPath, repositoryIdentity } from "../../runtime/identity.ts";
 import { createRequest, decodeFrames, PROTOCOL_VERSION } from "../../runtime/protocol.ts";
 import { temporaryRoot } from "./temporary-root.ts";
@@ -23,7 +16,6 @@ import { createRepoFixture, repoFixtureRootReceipt } from "./repo-fixture.ts";
 import type { RepoFixture } from "./repo-fixture.ts";
 import { createTempHome, tempHomeRootReceipt } from "./temp-home.ts";
 import type { TempHome } from "./temp-home.ts";
-import { initializeTestHostGit } from "./test-git-binding.ts";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const daemonMainEntry = join(packageRoot, "daemon", "bootstrap.mjs");
@@ -57,7 +49,6 @@ interface FixtureRecord {
   readonly socketPath: string;
   readonly repoId: string;
   readonly abort: AbortController;
-  readonly launchRoots: Set<string>;
   fenced: boolean;
   closed: boolean;
   pending: Set<Promise<unknown>>;
@@ -377,7 +368,7 @@ export interface SpawnedDaemon {
 
 const PROTECTED_ENV = new Set([
   "HOME", "PI_CODING_AGENT_DIR", "PI_COMPANY_REPO_DIR", "PI_COMPANY_DATA_ROOT",
-  "PI_COMPANY_SDK_DIR", "PI_COMPANY_EXPECTED_GIT", "PI_COMPANY_CLOCK_SKEW_FILE",
+  "PI_COMPANY_SDK_DIR", "PI_COMPANY_CLOCK_SKEW_FILE",
 ]);
 const ALLOWED_EXTRA_ENV = new Set([
   "NODE_OPTIONS", "PI_COMPANY_MODEL_PROVIDER_MODULE", "PI_COMPANY_CONNECTIVITY_PROBE_MODULE",
@@ -447,7 +438,7 @@ function captureSpawnOptions(options: SpawnDaemonOptions): CapturedSpawnOptions 
   return Object.freeze({ home, fixedHome, repoDir, dataRoot, sdkDir, idleTimeoutMs, clockSkewFile, extraEnv, captureOutput, outputByteLimit, spawnImpl });
 }
 
-function buildDaemonEnv(captured: CapturedSpawnOptions, gitExpectation: string): NodeJS.ProcessEnv {
+function buildDaemonEnv(captured: CapturedSpawnOptions): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...captured.fixedHome.env, ...captured.extraEnv };
   if (captured.idleTimeoutMs !== undefined) env.PI_COMPANY_IDLE_TIMEOUT_MS = String(captured.idleTimeoutMs);
   if (captured.clockSkewFile !== undefined) env.PI_COMPANY_CLOCK_SKEW_FILE = captured.clockSkewFile;
@@ -457,7 +448,6 @@ function buildDaemonEnv(captured: CapturedSpawnOptions, gitExpectation: string):
     PI_COMPANY_REPO_DIR: captured.repoDir,
     PI_COMPANY_DATA_ROOT: captured.dataRoot,
     PI_COMPANY_SDK_DIR: captured.sdkDir,
-    PI_COMPANY_EXPECTED_GIT: gitExpectation,
   });
   return env;
 }
@@ -478,22 +468,15 @@ export function spawnDaemonProcess(options: SpawnDaemonOptions): SpawnedDaemon {
   const captured = captureSpawnOptions(options);
   const owner = ownerForInputs(captured.fixedHome, captured.repoDir, captured.dataRoot, undefined, captured.home);
   assertOwnerRoots(owner);
-  const roots = [captured.repoDir, captured.dataRoot, captured.sdkDir];
-  initializeTestHostGit(roots);
-  let gitExpectation = createGitExpectationText(roots);
-  let env = buildDaemonEnv(captured, gitExpectation);
-  gitExpectation = createGitExpectationText(roots);
-  env = buildDaemonEnv(captured, gitExpectation);
+  const env = buildDaemonEnv(captured);
   assertOwnerActive(owner);
   assertOwnerRoots(owner);
-  currentGitBinding(roots);
   const proc = captured.spawnImpl(resolveNodeExecutable(), [daemonMainEntry], {
     cwd: packageRoot,
     stdio: captured.captureOutput ? ["ignore", "pipe", "pipe"] : "ignore",
     detached: true,
     env,
   });
-  for (const root of roots) owner?.launchRoots.add(root);
 
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -637,7 +620,6 @@ export interface CreateDaemonFixtureOptions {
 export async function createDaemonFixture(options: CreateDaemonFixtureOptions = {}): Promise<DaemonFixture> {
   const captured = { faultAfter: options.faultAfter, signal: options.signal };
   if (captured.signal?.aborted) return Promise.reject(captured.signal.reason ?? new Error("daemon 夹具创建已取消"));
-  initializeTestHostGit([]);
   const abort = new AbortController();
   const linked = linkedSignal(abort.signal, captured.signal);
   let resolve!: (fixture: DaemonFixture) => void, reject!: (error: unknown) => void;
@@ -701,7 +683,6 @@ async function buildDaemonFixture(creation: CreationRecord, options: CreateDaemo
       socketPath,
       repoId: identity.repoId,
       abort: new AbortController(),
-      launchRoots: new Set([identity.commonDir, dataRoot]),
       fenced: false,
       closed: false,
       pending: new Set(),
@@ -939,7 +920,6 @@ export async function startDaemonForTest(
     });
     try {
       await Promise.race([ready, earlyExit]);
-      currentGitBinding([repoDir, dataRoot, fixedOptions.sdkDir ?? resolveSdkDir(), ...(owner?.launchRoots ?? [])]);
       if (linked.signal?.aborted) throw linked.signal.reason ?? new Error("启动已取消");
       assertOwnerActive(owner);
       assertOwnerRoots(owner);
@@ -1244,15 +1224,10 @@ export async function authenticateTestClient(
     assertOwnerRoots(owner);
     const authToken = explicitToken ? explicitAuthToken : controlToken(dataRoot);
     const requiredRepoId = expectedRepoId ?? knownRepoId;
-    const requestedRoots = [...new Set([cwd, workspaceRoot, dataRoot, ...(owner?.launchRoots ?? [])])];
-    // 凭据准备完成后重新导出，实际发送文本中的两类根全集就是回复必须保留的集合。
-    const gitExpectation = createGitExpectationText(requestedRoots);
-    const sentRoots = Object.freeze(gitExpectationRoots(decodeGitExpectation(gitExpectation)));
     const linked = linkedSignal(ownerSignal, optionSignal);
     try {
       if (linked.signal?.aborted) throw linked.signal.reason ?? new Error("认证已取消");
       assertOwnerActive(owner);
-      currentGitBinding(sentRoots);
       const result = await raw.call("hello", {
         authToken,
         windowId,
@@ -1262,7 +1237,6 @@ export async function authenticateTestClient(
         workspaceRoot,
         repoIds,
         protocolVersion,
-        gitExpectation,
       }, { timeoutMs, signal: linked.signal });
       if (result.protocolVersion !== PROTOCOL_VERSION) throw new Error("hello 响应协议版本不匹配");
       if (!Number.isSafeInteger(result.daemonPid) || (result.daemonPid as number) <= 0) throw new Error("hello 响应缺少有效 daemonPid");
@@ -1271,8 +1245,6 @@ export async function authenticateTestClient(
       if (requiredRepoId !== undefined && result.repoId !== requiredRepoId) throw new Error("hello 响应 repoId 不匹配");
       if (typeof result.daemonInstanceId !== "string" || !UUID_PATTERN.test(result.daemonInstanceId)) throw new Error("hello 响应 daemonInstanceId 无效");
       if (typeof result.connectionId !== "string" || !UUID_PATTERN.test(result.connectionId)) throw new Error("hello 响应 connectionId 无效");
-      verifyPeerGitBinding(result.gitExpectation, sentRoots, sentRoots);
-      currentGitBinding(sentRoots);
       assertOwnerActive(owner);
       if (linked.signal?.aborted) throw linked.signal.reason ?? new Error("认证已取消");
       assertAuthenticationRecord(raw, record);

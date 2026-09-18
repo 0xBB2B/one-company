@@ -8,8 +8,7 @@ import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent"
 import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource, TimerHandle } from "../runtime/clock.ts";
 import { daemonSocketPath, listWorktrees, repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
-import { gitExecutable, readGit } from "../runtime/git-read.ts";
-import { currentHostGit } from "../runtime/git-runtime.mjs";
+import { readGit } from "../runtime/git-read.ts";
 import { ProjectSyncGrantVerifier } from "../runtime/project-sync-grants.ts";
 import { ProjectIndexCoordinator } from "./project-index-coordinator.ts";
 import { ProjectIndexRequirements } from "./project-index-requirements.ts";
@@ -421,8 +420,6 @@ async function verifiedRepositoryRoot(commonDir: string, repoId: string): Promis
 
 export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   const capturedOptions = { ...options };
-  const gitRoots = [capturedOptions.repoDir, capturedOptions.dataRoot];
-  currentHostGit(gitRoots);
   const repoId = createHash("sha256").update(capturedOptions.repoDir).digest("hex");
   const socketPath = daemonSocketPath(capturedOptions.dataRoot, repoId);
 
@@ -452,7 +449,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   const server = new DaemonServer({
     authToken: controlToken(capturedOptions.dataRoot),
     repoId,
-    gitRoots,
     startedAt,
     onActivity: () => idleExit?.touch(),
     // 显式 shutdown 是不可逆操作，读不到运行记录时无法确认真的没有活动运行，宁可拒绝也不能误关；
@@ -478,11 +474,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   const acquired = await acquireListener(server, socketPath);
   if (acquired === "existing") return;
   const ownership = acquired;
-  try {
-    currentHostGit(gitRoots);
-  } catch (error) {
-    return failAfterOwnedListener(server, socketPath, ownership.inode, error);
-  }
 
   // 信号处理必须在赢得 socket 归属后立刻装好：hello 不等 ready 就能响应，若信号处理还没
   // 装上就收到 SIGTERM，进程会被系统默认行为直接终止而不会走到下面的优雅关闭与状态标记
@@ -565,22 +556,17 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   // shutdown() 内部会先 await initializedPromise 再动手，所以 ready 可以早于重活配装完成前置位：
   // 一旦成为确认的单实例即可接受 shutdown 请求，不必等 ModelRuntime/角色目录等装配完
   try {
-    currentHostGit(gitRoots);
     ready = true;
     const agentDir = dirname(capturedOptions.dataRoot);
     const repositoryRoot = await verifiedRepositoryRoot(capturedOptions.repoDir, repoId);
-    currentHostGit([...gitRoots, repositoryRoot]);
     const [{ runtime, selectModel }, roleCatalogResult, repoDir] = await Promise.all([
       setupModelRuntime(capturedOptions.modelProviderModulePath),
       loadDaemonRoleCatalog(agentDir, repositoryRoot),
       repoDataDir(capturedOptions.dataRoot, repoId, capturedOptions.repoDir),
     ]);
-    currentHostGit([...gitRoots, repositoryRoot]);
-    const trustedGitExecutable = await gitExecutable();
-    currentHostGit([...gitRoots, repositoryRoot]);
 
     indexRequirements = new ProjectIndexRequirements({
-      repositoryRoot, dataRoot: capturedOptions.dataRoot, repoId, gitExecutable: trustedGitExecutable,
+      repositoryRoot, dataRoot: capturedOptions.dataRoot, repoId,
     });
     indexCoordinator = new ProjectIndexCoordinator({
       repoId, dataRoot: capturedOptions.dataRoot, commonDir: capturedOptions.repoDir, server,
@@ -635,7 +621,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     registerProtocolHandlers({ server, manager: runManager, relayQueue, shellRegistry });
 
     const probeProvider = await buildConnectivityProbeFn(capturedOptions.connectivityProbeModulePath);
-    currentHostGit([...gitRoots, repositoryRoot]);
     // 每轮只探测当前确有 paused_network 运行挂着的 provider，且只续接探测到已恢复的那个 provider——
     // 无遗留暂停运行时完全不发起探测调用；baseUrl 未注册或校验不合法时跳过该 provider 本轮探测
     networkProbe = new ConnectivityProbe({
