@@ -19,7 +19,6 @@ export interface ProjectIndexRequirementsOptions {
   readonly repositoryRoot: string;
   readonly dataRoot: string;
   readonly repoId: string;
-  readonly gitExecutable: string;
   /** 仅可收紧元数据枚举预算，不限制或读取归档正文大小。 */
   readonly maxEntries?: number;
   readonly maxMetadataBytes?: number;
@@ -77,8 +76,7 @@ export class ProjectIndexRequirements {
   private serial: Promise<void> = Promise.resolve();
 
   constructor(options: ProjectIndexRequirementsOptions) {
-    if (!options || !HASH.test(options.repoId) || !absolute(options.repositoryRoot) || !absolute(options.dataRoot) ||
-      !absolute(options.gitExecutable)) throw new ProjectIndexRequirementsError("invalid_binding");
+    if (!options || !HASH.test(options.repoId) || !absolute(options.repositoryRoot) || !absolute(options.dataRoot)) throw new ProjectIndexRequirementsError("invalid_binding");
     this.options = Object.freeze({ ...options });
     this.maxEntries = budget(options.maxEntries, LIMITS.maxEntries);
     this.maxMetadataBytes = budget(options.maxMetadataBytes, LIMITS.maxMetadataBytes);

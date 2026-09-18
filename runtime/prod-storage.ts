@@ -1,12 +1,11 @@
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 
-import { runManagedGit, withGitProcessSession } from "./git-process-session.ts";
-import type { GitProcessObserver } from "./git-process-session.ts";
-import { currentHostGit } from "./git-runtime.mjs";
-import type { HostGitBinding } from "./git-prerequisite.mjs";
+const execFileAsync = promisify(execFile);
 
 const PROD_FILE = "prod.md";
 const GIT_DIR = ".git";
@@ -52,12 +51,10 @@ export interface ProdStorageConfig {
   dataRoot: string;
   repoId: string;
   requirementId: string;
-  gitExecutable: string;
   repositoryRoot?: string;
   worktreeRoots?: string[];
   expectedRepositoryIdentity?: ProdRepositoryIdentity;
   authorize?: ProdStorageAuthorize;
-  processObserver?: GitProcessObserver;
 }
 
 export interface ProdStorageSaveInput extends ProdStorageConfig {
@@ -133,9 +130,6 @@ interface PreparedPaths {
   dataRoot: string;
   requirementRoot: string;
   prodPath: string;
-  gitExecutable: string;
-  gitBinding: HostGitBinding;
-  gitRoots: readonly string[];
 }
 
 interface GitResult {
@@ -344,30 +338,6 @@ async function canonicalCandidate(path: string): Promise<string> {
   return join(realExisting, ...missing);
 }
 
-export async function assertBoundGitExecutable(path: string, roots: readonly string[]): Promise<HostGitBinding> {
-  if (!isAbsolute(path)) fail("invalid_config", "gitExecutable 必须是绝对路径");
-  try { await lstat(path); }
-  catch (error) {
-    if (errno(error) === "ENOENT") fail("git_unavailable", "Git 可执行文件不可用");
-    fail("untrusted_git", "Git 可执行文件无法按宿主绑定核验");
-  }
-  let binding: HostGitBinding;
-  try { binding = currentHostGit(roots); }
-  catch { fail("untrusted_git", "Git 可执行文件未绑定到当前可信宿主"); }
-  if (path !== binding.executablePath) fail("untrusted_git", "gitExecutable 必须严格匹配宿主已绑定的 canonical 路径");
-  return binding;
-}
-
-function assertPreparedGit(paths: PreparedPaths): HostGitBinding {
-  let binding: HostGitBinding;
-  try { binding = currentHostGit(paths.gitRoots); }
-  catch { fail("untrusted_git", "宿主 Git 绑定已失效"); }
-  if (binding !== paths.gitBinding || binding.executablePath !== paths.gitExecutable) {
-    fail("untrusted_git", "正文存储 Git 与宿主固定绑定不一致");
-  }
-  return binding;
-}
-
 async function preparePaths(config: ProdStorageConfig, allowCreateDataRoot: boolean): Promise<PreparedPaths> {
   if (!isAbsolute(config.dataRoot)) fail("invalid_config", "dataRoot 必须是绝对路径");
   assertSafeSegment("repoId", config.repoId);
@@ -376,10 +346,6 @@ async function preparePaths(config: ProdStorageConfig, allowCreateDataRoot: bool
   for (const protectedRoot of protectedRoots) {
     if (!isAbsolute(protectedRoot)) fail("invalid_config", "repositoryRoot/worktreeRoots 必须是绝对路径");
   }
-  const gitRoots = [config.dataRoot, ...protectedRoots];
-  // Git 绑定必须先于任何 mkdir/chmod/数据库副作用完成；显式路径只是对宿主选择结果的严格声明。
-  const gitBinding = await assertBoundGitExecutable(config.gitExecutable, gitRoots);
-  const gitExecutable = gitBinding.executablePath;
   await assertNoUntrustedSymlinkAncestors(config.dataRoot);
 
   const dataCandidate = await canonicalCandidate(config.dataRoot);
@@ -400,7 +366,7 @@ async function preparePaths(config: ProdStorageConfig, allowCreateDataRoot: bool
   const requirementRoot = join(dataRoot, "repos", config.repoId, "requirements", config.requirementId);
   if (!pathInside(dataRoot, requirementRoot)) fail("path_escape", "需求正文路径越过 dataRoot");
   await assertNoUntrustedSymlinkAncestors(requirementRoot);
-  return { dataRoot, requirementRoot, prodPath: join(requirementRoot, PROD_FILE), gitExecutable, gitBinding, gitRoots };
+  return { dataRoot, requirementRoot, prodPath: join(requirementRoot, PROD_FILE) };
 }
 
 async function ensurePrivateDirectoryChain(dataRoot: string, requirementRoot: string): Promise<void> {
@@ -542,7 +508,7 @@ async function assertRepositoryIdentity(config: ProdStorageConfig, requirementRo
 function gitEnvironment(config: ProdStorageConfig, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
   const env: NodeJS.ProcessEnv = {
-    PATH: process.platform === "win32" ? "" : "/usr/bin:/bin",
+    PATH: process.env.PATH ?? "",
     HOME: config.dataRoot,
     XDG_CONFIG_HOME: join(config.dataRoot, ".config-disabled"),
     LC_ALL: "C",
@@ -594,18 +560,24 @@ async function runGit(config: ProdStorageConfig, paths: PreparedPaths, args: str
   maxBuffer?: number;
   repository?: boolean;
 } = {}): Promise<GitResult> {
-  assertPreparedGit(paths);
-  let result: Awaited<ReturnType<typeof runManagedGit>>;
+  const child = execFileAsync("git", fixedGitArgs(paths.requirementRoot, args, options.repository !== false), {
+    cwd: paths.requirementRoot, env: gitEnvironment(config, options.env), encoding: "buffer",
+    timeout: GIT_TIMEOUT_MS, maxBuffer: options.maxBuffer ?? GIT_MAX_BUFFER, killSignal: "SIGKILL",
+  });
+  if (options.input !== undefined) {
+    child.child.stdin?.on("error", () => undefined);
+    child.child.stdin?.end(options.input);
+  } else child.child.stdin?.end();
+  let result: GitResult;
   try {
-    result = await runManagedGit({ executable: paths.gitExecutable, args: fixedGitArgs(paths.requirementRoot, args, options.repository !== false),
-      cwd: paths.requirementRoot, env: gitEnvironment(config, options.env), input: options.input,
-      timeout: GIT_TIMEOUT_MS, maxBuffer: options.maxBuffer ?? GIT_MAX_BUFFER, command: args[0] ?? "",
-      excludedRoots: paths.gitRoots });
-  } finally {
-    assertPreparedGit(paths);
+    const completed = await child;
+    result = { stdout: completed.stdout, stderr: completed.stderr, exitCode: 0 };
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { stdout?: Buffer; stderr?: Buffer; code?: string | number; killed?: boolean; signal?: string | null };
+    if (failure.code === "ENOENT") fail("git_unavailable", "Git 可执行文件不可用");
+    if (typeof failure.code !== "number" || failure.killed || failure.signal) fail("git_failed", "Git 子进程执行失败");
+    result = { stdout: failure.stdout ?? Buffer.alloc(0), stderr: failure.stderr ?? Buffer.alloc(0), exitCode: failure.code };
   }
-  if (result.spawnCode === "ENOENT") fail("git_unavailable", "Git 可执行文件不可用");
-  if (result.spawnCode || result.timedOut || result.overflow) fail("git_failed", "Git 子进程执行失败");
   if (!(options.allowedExitCodes ?? [0]).includes(result.exitCode)) fail("git_failed", "Git 调用失败", { exitCode: result.exitCode });
   return result;
 }
@@ -1002,14 +974,14 @@ async function saveInternal(input: ProdStorageSaveInput, action: ProdStorageActi
 
 export async function create(input: ProdStorageSaveInput): Promise<ProdStorageWriteResult> {
   if (input.expectedParent !== null) fail("invalid_parent", "create 的 expectedParent 必须为 null");
-  const result = await withGitProcessSession(input.processObserver, () => saveInternal(input, "create", "create"));
+  const result = await saveInternal(input, "create", "create");
   requireAuthorized(input, { phase: "beforeReturn", action: "create", operationId: input.operationId, prodHash: result.prodHash });
   return result;
 }
 
 export async function save(input: ProdStorageSaveInput & { action: Exclude<ProdStorageAction, "create"> }): Promise<ProdStorageWriteResult> {
   if (input.action !== "updateDraft" && input.action !== "confirmUpdate") fail("invalid_action", "save action 只能是 updateDraft 或 confirmUpdate");
-  const result = await withGitProcessSession(input.processObserver, () => saveInternal(input, input.action, "save"));
+  const result = await saveInternal(input, input.action, "save");
   requireAuthorized(input, { phase: "beforeReturn", action: "save", operationId: input.operationId, prodHash: result.prodHash });
   return result;
 }
@@ -1070,17 +1042,17 @@ async function diffVersionsInternal(input: ProdStorageDiffInput): Promise<ProdSt
 }
 
 export async function verifyVersion(input: ProdStorageVerifyInput): Promise<ProdStorageVerifyResult> {
-  const result = await withGitProcessSession(input.processObserver, () => verifyVersionInternal(input));
+  const result = await verifyVersionInternal(input);
   requireAuthorized(input, { phase: "beforeReturn", action: "verifyVersion", commit: input.commit, prodHash: result.prodHash });
   return result;
 }
 export async function readVersion(input: ProdStorageReadInput): Promise<ProdStorageReadResult> {
-  const result = await withGitProcessSession(input.processObserver, () => readVersionInternal(input));
+  const result = await readVersionInternal(input);
   requireAuthorized(input, { phase: "beforeReturnBody", action: "readVersion", commit: input.commit, prodHash: result.prodHash });
   return result;
 }
 export async function diffVersions(input: ProdStorageDiffInput): Promise<ProdStorageDiffResult> {
-  const result = await withGitProcessSession(input.processObserver, () => diffVersionsInternal(input));
+  const result = await diffVersionsInternal(input);
   requireAuthorized(input, { phase: "beforeReturnBody", action: "diffVersions", fromCommit: input.fromCommit, toCommit: input.toCommit });
   return result;
 }

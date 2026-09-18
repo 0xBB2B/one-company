@@ -17,7 +17,7 @@ import { PROJECT_INDEX_GRANT_NAMESPACE } from "../../runtime/project-sync-grants
 import type { createProjectManageTool } from "../../runtime/project-manage-tool.ts";
 import { RequirementService } from "../../runtime/requirement-service.ts";
 import { RequirementStateStore } from "../../runtime/requirement-state.ts";
-import { readGit, gitExecutable } from "../../runtime/git-read.ts";
+import { readGit } from "../../runtime/git-read.ts";
 import { repoDataDir } from "../../runtime/identity.ts";
 import { addWorktree } from "../helpers/repo-fixture.ts";
 import { createFakePi } from "../helpers/fake-pi.ts";
@@ -284,7 +284,7 @@ test("真实daemon休眠接线和重连：同mtime改动、自动重连对账、
 test("真实归档通知顺序：旧active先needs_review撤权，才收到普通project.index.changed", async () => {
   const w = await world();
   const options = { repositoryRoot: w.fixture.repo.root, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId,
-    gitExecutable: await gitExecutable(), authorize: () => true };
+    authorize: () => true };
   // 封闭准备夹具创建当前active状态，之后daemon探针禁止读取其本机正文及版本库。
   const service = await RequirementService.open(options); const state = await RequirementStateStore.open(options);
   const created = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "归档装配", body: "PRIVATE-ACTIVE-SENTINEL" });

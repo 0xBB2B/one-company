@@ -2,7 +2,6 @@ import { afterEach, expect, test, vi } from "vitest";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
 const renameRace = vi.hoisted(() => ({
   enabled: false,
@@ -58,7 +57,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const { create, save, ProdStorageError } = await import("../runtime/prod-storage.ts");
 
-const GIT = testHostGitExecutable([]);
+const GIT = "git";
 const REQUIREMENT_ID = "01941f29-7c00-7000-8000-000000000002";
 const roots: string[] = [];
 
@@ -99,7 +98,6 @@ test("rename 后路径被替换成链接时不会沿路径 chmod 外部目标", 
     dataRoot,
     repoId: "repo-1",
     requirementId: REQUIREMENT_ID,
-    gitExecutable: GIT,
     repositoryRoot: business,
     worktreeRoots: [],
     authorize: () => true,
@@ -134,7 +132,6 @@ test(".git/config 在 lstat 后被替换成链接时不会修改外部文件权�
     dataRoot,
     repoId: "repo-1",
     requirementId: REQUIREMENT_ID,
-    gitExecutable: GIT,
     repositoryRoot: business,
     worktreeRoots: [],
     authorize: () => true,
@@ -156,7 +153,6 @@ test(".git/config 在 lstat 后被替换成链接时不会修改外部文件权�
     dataRoot,
     repoId: "repo-1",
     requirementId: REQUIREMENT_ID,
-    gitExecutable: GIT,
     repositoryRoot: business,
     worktreeRoots: [],
     authorize: () => true,
@@ -180,7 +176,7 @@ test("遍历子文件前父目录被替换时不修改替代目录中的文件",
   await mkdir(business, { mode: 0o700 });
   await mkdir(outside, { mode: 0o700 });
   const config = { dataRoot: join(root, "private"), repoId: "repo-1", requirementId: REQUIREMENT_ID,
-    gitExecutable: GIT, repositoryRoot: business, worktreeRoots: [], authorize: () => true };
+    repositoryRoot: business, worktreeRoots: [], authorize: () => true };
   const initial = await create({ ...config, operationId: "parent-create", expectedParent: null, bytes: Buffer.from("第一版") });
   const gitDir = join(initial.repositoryRoot, ".git");
   const original = await readFile(join(gitDir, "config"));
@@ -227,7 +223,6 @@ test("dataRoot 目录在 lstat 后被替换成链接时不会修改外部目录�
     dataRoot,
     repoId: "repo-1",
     requirementId: REQUIREMENT_ID,
-    gitExecutable: GIT,
     repositoryRoot: business,
     worktreeRoots: [],
     authorize: () => true,

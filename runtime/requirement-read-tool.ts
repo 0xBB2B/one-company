@@ -37,7 +37,6 @@ export interface RequirementReadAuthorization {
 export interface RequirementReadToolOptions {
   repositoryRoot: string;
   dataRoot: string;
-  gitExecutable: string;
   binding: RequirementReadBinding;
   /** 必须由宿主核验当前物理角色会话/调用者及动作许可；不能从工具参数或角色文本构造true。 */
   authorize: (request: Readonly<RequirementReadAuthorization>) => boolean;
@@ -77,7 +76,7 @@ export async function createRequirementReadTool(options: RequirementReadToolOpti
 async function openReadTool(options: RequirementReadToolOptions) {
   const binding = freeze(checked(Binding, structuredClone(options.binding)));
   const config = { repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot,
-    repoId: binding.repoId, gitExecutable: options.gitExecutable };
+    repoId: binding.repoId };
   const authorize = options.authorize;
   let disposed = false;
   const cursors = new Map<string, Cursor>();

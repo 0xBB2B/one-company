@@ -1,7 +1,6 @@
 import { expect } from "vitest";
 import type { ExtensionContext, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { uuidv7 } from "../../runtime/database.ts";
-import { currentHostGit } from "../../runtime/git-runtime.mjs";
 import { MainIntakeInteraction } from "../../runtime/main-intake-interaction.ts";
 import type { PmIntakeToolInput } from "../../runtime/main-intake-interaction.ts";
 import type { IntakeRequestView } from "../../runtime/pm-intake-service.ts";
@@ -24,8 +23,7 @@ export function bridgeFor(fixture: PmIntakeFixture, ttl?: number, withProviders 
   const manager = { getSessionId: () => fixture.identity.sessionId };
   const ctx = ctxFor(fixture, signal, manager);
   const path = fixture.state.read(fixture.requirementId).data.workspace!.path, hostState = { healthy: true };
-  const gitExecutable = currentHostGit([fixture.dataRoot, path]).executablePath;
-  const bridge = new MainIntakeInteraction({ dataRoot: fixture.dataRoot, gitExecutable,
+  const bridge = new MainIntakeInteraction({ dataRoot: fixture.dataRoot,
     authorization: fixture.host, callTtlMs: ttl,
     resolveHost: () => {
       if (!hostState.healthy) throw new Error("host_unavailable");

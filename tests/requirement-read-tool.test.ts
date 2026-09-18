@@ -13,9 +13,7 @@ import * as storage from "../runtime/prod-storage.ts";
 import { inspectProdStructure } from "../runtime/prod-view.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture, GIT_ENV } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<void>> = [];
@@ -27,7 +25,7 @@ async function world(body = BODY) {
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
-  const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId, gitExecutable: HOST_GIT };
+  const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId};
   // 测试准备只为确切操作/正文指纹/批准凭据发放许可，不把always-true当作产品身份验证。
   const grants = new Map<string, { action: string; intent: string; receiptId?: string }>();
   const service = await RequirementService.open({ ...options, authorize: (request) => {
@@ -51,7 +49,7 @@ async function world(body = BODY) {
   }
   async function bind(requirementId: string) {
     const worktree = await addWorktree(repo);
-    const baseCommit = (await exec(HOST_GIT, ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
+    const baseCommit = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
     await state.bindWorkspace({ requirementId, version: state.read(requirementId).version, path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
     return worktree;
   }
@@ -319,7 +317,7 @@ test("批准版本变化立即拒绝旧页；真实worktree分支变化拒绝", 
   const probe = vi.spyOn(storage, "readVersion");
   await expect(tool.execute({ action: "read", maxBytes: 32, cursor })).rejects.toMatchObject(denied);
   expect(probe).not.toHaveBeenCalled();
-  await exec(HOST_GIT, ["checkout", "-b", "changed-binding"], { cwd: w.worktree.root, env: GIT_ENV });
+  await exec("git", ["checkout", "-b", "changed-binding"], { cwd: w.worktree.root, env: GIT_ENV });
   await expect(tool.execute({ action: "read" })).rejects.toMatchObject(denied);
   expect(probe).not.toHaveBeenCalled();
 });

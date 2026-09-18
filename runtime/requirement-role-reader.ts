@@ -101,7 +101,7 @@ export async function createRequirementReader(input: RequirementReaderOptions) {
 
 async function openRequirementReader(input: RequirementReaderOptions) {
   const binding = freeze(structuredClone(input.binding));
-  const { repositoryRoot, dataRoot, gitExecutable, modelRuntime, signal, question } = input;
+  const { repositoryRoot, dataRoot, modelRuntime, signal, question } = input;
   const authorize = input.authorize, modelRef = freeze({ ...input.modelRef });
   const timeoutMs = input.timeoutMs ?? 60_000, stopTimeoutMs = input.stopTimeoutMs ?? 2_000;
   function deny(): never { throw new RequirementReaderError("requirement_reader_denied"); }
@@ -135,7 +135,7 @@ async function openRequirementReader(input: RequirementReaderOptions) {
     if (result !== true) { revoke(); deny(); }
   }
   host();
-  const config = { repositoryRoot, dataRoot, repoId: binding.repoId, gitExecutable };
+  const config = { repositoryRoot, dataRoot, repoId: binding.repoId };
   const state = await RequirementStateStore.open({ ...config, authorize: (r) => r.repoId === binding.repoId &&
     ["open", "read", "check-pm"].includes(r.action) && (r.input.requirementId === undefined || r.input.requirementId === binding.requirementId) });
   const selected = modelRuntime.getModel(modelRef.provider, modelRef.id);

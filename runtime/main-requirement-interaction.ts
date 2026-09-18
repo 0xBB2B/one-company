@@ -35,7 +35,7 @@ export interface RequirementManageHostContext {
 export type RequirementServiceHandle = Pick<RequirementService, "create" | "updateDraft" | "confirmUpdate" | "loadConfirmationContext" | "read" | "diff" | "metadata">;
 export type OpenRequirementService = (options: RequirementServiceOptions) => Promise<RequirementServiceHandle>;
 export interface MainRequirementInteractionOptions {
-  dataRoot: string; gitExecutable: string; authorization: HostAuthorizationManager;
+  dataRoot: string; authorization: HostAuthorizationManager;
   /** 同步读取真实lifecycle，不以调用者参数或旧闭包中的cwd/role代替身份。 */
   resolveHost: (ctx: ExtensionContext) => RequirementManageHostContext;
   openService?: OpenRequirementService;
@@ -275,7 +275,7 @@ export class MainRequirementInteraction {
     if (requirementId) this.#authorization.assertRequirement(repoId, requirementId, host.sessionId);
     const repository = host.repositories.get(repoId); if (!repository) return denied("foreign_repo");
     const service = await (this.#options.openService ?? RequirementService.open)({ repositoryRoot: repository.path,
-      dataRoot: this.#options.dataRoot, repoId, gitExecutable: this.#options.gitExecutable, authorizeManifest, localMutationOrigin,
+      dataRoot: this.#options.dataRoot, repoId, authorizeManifest, localMutationOrigin,
       authorize: (request) => {
         try {
           this.#live(ctx, host, generation);

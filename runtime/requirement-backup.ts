@@ -34,7 +34,6 @@ export interface RequirementBackupOptions {
   repoDirectory: string;
   repoId: string;
   operationId: string;
-  gitExecutable: string;
   worktreeRoots: readonly string[];
   /** 可信管理服务同步核验授权及所有相关写入者已经停止；这是内部集成点，不是代理自报凭据。 */
   authorize(context: Readonly<{ operationId: string; repoId: string; stage: RequirementBackupStage }>): DatabaseManagementAuthorization;
@@ -403,7 +402,7 @@ async function verifyReferences(options: RequirementBackupOptions, dataRoot: str
       const identity = identities.get(requirement.requirementId);
       if (!identity) fail("repository_identity_missing");
       await verifyVersion({
-        dataRoot, repoId: options.repoId, requirementId: requirement.requirementId, gitExecutable: options.gitExecutable,
+        dataRoot, repoId: options.repoId, requirementId: requirement.requirementId,
         worktreeRoots: [...options.worktreeRoots], expectedRepositoryIdentity: identity, commit: reference.commit, expectedHash: reference.prodHash,
         authorize: (check) => {
           const checkedHash = check.expectedHash ?? check.prodHash;
@@ -433,7 +432,7 @@ function validateCompleted(log: BackupOperationLog, operationDirectory: string):
  * 返回值和manifest只有hash、大小、状态与提交引用，不包含prod正文或Git对象字节。
  */
 export async function createRequirementBackup(options: RequirementBackupOptions): Promise<RequirementBackupReceipt> {
-  if (!options || typeof options.authorize !== "function" || !UUID_V7_PATTERN.test(options.operationId) || typeof options.gitExecutable !== "string" || !isAbsolute(options.gitExecutable) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");
+  if (!options || typeof options.authorize !== "function" || !UUID_V7_PATTERN.test(options.operationId) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");
   const repo = assertRepoDirectory(options.repoDirectory, options.repoId);
   const initial = authorize(options, "inspect");
   const dataPath = join(repo.path, "data.db");

@@ -9,10 +9,8 @@ import { prodRequirementPath } from "./prod-storage.ts";
 import type { ProdRepositoryIdentity, ProdStorageWriteResult } from "./prod-storage.ts";
 import { archivePathFor } from "./requirement-identity.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
-import { gitProcessGroupAlive } from "./git-process-session.ts";
 import {
   REQUIREMENT_OPERATION_NAMESPACE,
-  REQUIREMENT_WRITE_COORDINATION_NAMESPACE,
   assertRequirementWriteOwnedIn,
   claimRequirementWriteIn,
   readRequirementWriteClaimIn,
@@ -332,41 +330,6 @@ export class RequirementOperations {
         : { id: stored.id, version: db.update(NAMESPACE, operationId, stored.version, updated), data: updated };
       releaseRequirementWriteIn(db, this.repoId, operation.requirementId, operationId, owner);
       return result;
-    }));
-  }
-
-  registerProcessGroup(operationId: string, owner: RequirementWriteOwner, groupId: number): void {
-    if (!Number.isSafeInteger(groupId) || groupId <= 0) throw new RequirementServiceError("invalid_process_group");
-    withDatabase(this.path, (db) => db.transaction(() => {
-      const operation = this.readIn(db, operationId);
-      if (!operation) throw new RequirementServiceError("operation_missing");
-      const requirementId = operation.data.requirementId;
-      assertRequirementWriteOwnedIn(db, this.repoId, requirementId, operationId, owner);
-      const claim = readRequirementWriteClaimIn(db, this.repoId, requirementId)!;
-      if (!claim.data.processGroups.includes(groupId)) db.update(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, requirementId,
-        claim.version, { ...claim.data, processGroups: [...claim.data.processGroups, groupId] });
-    }));
-  }
-
-  markProcessRunning(operationId: string, owner: RequirementWriteOwner, groupId: number, _command: string): void {
-    withDatabase(this.path, (db) => {
-      const operation = this.readIn(db, operationId);
-      if (!operation) throw new RequirementServiceError("operation_missing");
-      const claim = assertRequirementWriteOwnedIn(db, this.repoId, operation.data.requirementId, operationId, owner);
-      if (!claim.processGroups.includes(groupId)) throw new RequirementServiceError("process_group_not_registered");
-    });
-  }
-
-  finishProcessGroup(operationId: string, owner: RequirementWriteOwner, groupId: number): void {
-    if (gitProcessGroupAlive(groupId)) throw new RequirementServiceError("write_processes_active");
-    withDatabase(this.path, (db) => db.transaction(() => {
-      const operation = this.readIn(db, operationId);
-      if (!operation) throw new RequirementServiceError("operation_missing");
-      const requirementId = operation.data.requirementId;
-      assertRequirementWriteOwnedIn(db, this.repoId, requirementId, operationId, owner);
-      const claim = readRequirementWriteClaimIn(db, this.repoId, requirementId)!;
-      if (claim.data.processGroups.includes(groupId)) db.update(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, requirementId,
-        claim.version, { ...claim.data, processGroups: claim.data.processGroups.filter((pid) => pid !== groupId) });
     }));
   }
 

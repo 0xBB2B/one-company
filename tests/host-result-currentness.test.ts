@@ -15,15 +15,13 @@ import { createRequirementManageTool } from "../runtime/requirement-manage-tool.
 import { RequirementService } from "../runtime/requirement-service.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { UserInteractionCore } from "../runtime/user-interaction.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
 async function world(active: boolean) {
   const root = await mkdtemp(join(temporaryRoot(), "hrc-")), repo = join(root, "repo"), dataRoot = join(root, "data");
   await mkdir(repo); await mkdir(dataRoot);
-  const git = async (cwd: string, args: string[]) => (await exec(HOST_GIT, args, { cwd })).stdout.trim();
+  const git = async (cwd: string, args: string[]) => (await exec("git", args, { cwd })).stdout.trim();
   await git(repo, ["init", "--initial-branch=main"]); await writeFile(join(repo, "README.md"), "fixture"); await git(repo, ["add", "README.md"]);
   await git(repo, ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "init"]);
   const { repoId } = await repositoryIdentity(repo), sessionId = uuidv7(), windowId = uuidv7();
@@ -32,7 +30,7 @@ async function world(active: boolean) {
   const provider = registerControlledProvider(runtime, { providerId: uuidv7(), modelId: "fixture" });
   const ctx = { cwd: repo, modelRegistry: new ModelRegistry(runtime), model: runtime.getModels(provider.providerId)[0], sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   let onResolve: (() => void) | undefined, onNow: (() => void) | undefined, now = Date.now();
-  const interaction = new MainRequirementInteraction({ dataRoot, gitExecutable: HOST_GIT, authorization,
+  const interaction = new MainRequirementInteraction({ dataRoot, authorization,
     now: () => { const value = now; onNow?.(); return value; }, resolveHost: () => {
     onResolve?.();
     return { windowId, sessionId, repositories: new Map([[repoId, { path: repo }]]) };
@@ -48,7 +46,7 @@ async function world(active: boolean) {
     await state.bindWorkspace({ requirementId, version: Number(created.version), path, baseCommit: await git(repo, ["rev-parse", "HEAD"]), prepareOperationId: uuidv7() });
   }
   interaction.captureInput({ source: "interactive", text: "分析A目标，不授权其他动作" }, ctx);
-  const service = await RequirementService.open({ dataRoot, repositoryRoot: repo, repoId, gitExecutable: HOST_GIT, authorize: () => true });
+  const service = await RequirementService.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true });
   const params = { action: "confirmUpdate", requirementId, savedOperationId: String(created.operationId), operationId: uuidv7(), version: state.read(requirementId).version };
   const loaded = await service.loadConfirmationContext({ requirementId, savedOperationId: params.savedOperationId, operationId: params.operationId }), c = loaded.candidate.candidateId;
   const entry = (kind: string, text: string) => ({ kind, conclusion: text, scope: "A范围", basis: "explicit", resolution: "direct", candidateId: c, requestId: null, actions: kind === "action" ? ["analyze"] : [], references: [], supersedes: [] });

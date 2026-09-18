@@ -41,7 +41,7 @@ function createState(context: string, suffix = randomUUID()) : DockerFixtureStat
     identity,
     context,
     imageTags: [`${identity}:missing`, `${identity}:valid`],
-    containerNames: [`${identity}-missing`, `${identity}-valid`, `${identity}-runtime`],
+    containerNames: [`${identity}-missing`, `${identity}-valid`],
     imageIds: new Map(),
     containerIds: new Map(),
     buildStateUnknown: false,
@@ -454,54 +454,8 @@ process.exit(result.status === null ? 98 : result.status);
     const valid = runInstall(1, "yes");
     requireSuccess("valid offline installation", valid);
 
-    const runtimeProbe = `
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-const modulePath = "/seed/node_modules/@0xbb2b/pi-company/runtime/git-prerequisite.mjs";
-const { assertGitCurrent, checkGitVersion, resolveHostGit } = await import(modulePath);
-const root = "/root/git-prerequisite-runtime-" + process.pid;
-mkdirSync(root, { recursive: true, mode: 0o755 });
-const realBin = root + "/real-bin";
-mkdirSync(realBin, { mode: 0o755 });
-writeFileSync(realBin + "/git", "#!" + process.execPath + "\\nprocess.stdout.write('git version 9.9.9\\\\n')\\n", { mode: 0o755 });
-const aliasBin = root + "/alias-bin";
-symlinkSync(realBin, aliasBin);
-const aliasBinding = resolveHostGit({ path: aliasBin });
-if (checkGitVersion(aliasBinding).version !== "9.9.9") process.exit(81);
-rmSync(aliasBin);
-symlinkSync(realBin, aliasBin);
-let aliasChanged = false;
-try { assertGitCurrent(aliasBinding); } catch (error) { aliasChanged = error.code === "git_changed"; }
-if (!aliasChanged) process.exit(82);
-const fifoBin = root + "/fifo-bin";
-const entryBin = root + "/entry-bin";
-mkdirSync(fifoBin, { mode: 0o755 });
-mkdirSync(entryBin, { mode: 0o755 });
-const made = spawnSync("/usr/bin/mkfifo", [fifoBin + "/git"]);
-if (made.status !== 0) process.exit(83);
-symlinkSync(fifoBin + "/git", entryBin + "/git");
-const child = spawnSync(process.execPath, ["--input-type=module", "-e", "const {resolveHostGit}=await import(process.argv[1]);try{resolveHostGit({path:process.argv[2]});process.exit(91)}catch(e){process.stdout.write(String(e.code));process.exit(e.code==='git_unsafe'?0:92)}", modulePath, entryBin], { encoding: "utf8", timeout: 2000 });
-if (child.error || child.status !== 0 || child.stdout !== "git_unsafe") process.exit(84);
-const system = checkGitVersion(resolveHostGit({ path: "/usr/bin" }));
-const systemAlias = root + "/system-bin";
-symlinkSync("/usr/bin", systemAlias);
-const systemThroughAlias = checkGitVersion(resolveHostGit({ path: systemAlias }));
-if (systemThroughAlias.version !== system.version) process.exit(85);
-rmSync(root, { recursive: true, force: true });
-process.stdout.write(JSON.stringify({ alias: true, fifo: child.stdout, systemGit: system.executablePath, version: system.version, systemAlias: true }));
-`;
-    const runtimeCidfile = join(context, "runtime.cid");
-    const runtime = trackedDocker(state, systemDocker, "run-runtime-probe", [
-      "run", "--rm", "--network", "none", "--cidfile", runtimeCidfile,
-      "--name", state.containerNames[2], "--label", `${labelKey}=${state.identity}`,
-      state.imageTags[1], "node", "--input-type=module", "-e", runtimeProbe,
-    ], 30_000, { kind: "run", name: state.containerNames[2], cidfile: runtimeCidfile });
-    requireSuccess("Linux runtime Git probe", runtime);
-    const runtimeResult = JSON.parse(String(runtime.stdout));
-    expect(runtimeResult).toMatchObject({ alias: true, fifo: "git_unsafe", systemAlias: true });
     console.log(JSON.stringify({
       linuxInstall: { missingStatus: missing.status, validStatus: valid.status, network: "none" },
-      linuxRuntime: runtimeResult,
     }));
   });
 }, 300_000);

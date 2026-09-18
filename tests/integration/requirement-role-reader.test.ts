@@ -20,7 +20,6 @@ import { createRequirementReadTool } from "../../runtime/requirement-read-tool.t
 import * as requirementReadToolModule from "../../runtime/requirement-read-tool.ts";
 import * as storage from "../../runtime/prod-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "../helpers/repo-fixture.ts";
-import { testHostGitExecutable } from "../helpers/test-git-binding.ts";
 import { temporaryRoot } from "../helpers/temporary-root.ts";
 
 const exec = promisify(execFile);
@@ -30,15 +29,14 @@ const BODY = "# 登录 {#A}\n唯一获准目标MARKER：手机号登录并保留
 const ANSWER = "正常：有效验证码进入首页；异常：错误验证码留在登录页；边界：过期提示重取。限流未决，微信排除。仅待验场景，not_a_formal_verdict，未运行黑盒操作，性能未知。";
 async function world() {
   const root = await mkdtemp(join(temporaryRoot(), "role-reader-")); cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const gitExecutable = testHostGitExecutable([root]);
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
-  const config = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId, gitExecutable };
+  const config = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId };
   const service = await RequirementService.open({ ...config, authorize: (r) => r.repoId === identity.repoId });
   const state = await RequirementStateStore.open({ ...config, authorize: (r) => r.repoId === identity.repoId });
   const saved = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "登录目标", body: BODY });
   const worktree = await addWorktree(repo);
-  const baseCommit = (await exec(gitExecutable, ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
+  const baseCommit = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
   await state.bindWorkspace({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
   const operationId = uuidv7();
@@ -279,7 +277,7 @@ test.each(["close", "revoke", "update", "branch"] as const)("SDK工具结果与�
     if (change === "revoke") w.controller.abort();
     if (change === "update") await w.service.updateDraft({ requirementId: w.saved.requirementId, operationId: uuidv7(),
       version: w.state.read(w.saved.requirementId).version, title: "登录目标", body: BODY + "待核对更新" });
-    if (change === "branch") await exec(w.config.gitExecutable, ["checkout", "-b", "changed"], { cwd: w.worktree.root, env: GIT_ENV });
+    if (change === "branch") await exec("git", ["checkout", "-b", "changed"], { cwd: w.worktree.root, env: GIT_ENV });
     return result;
   });
   const r = await w.reader(); await expect(r.run()).rejects.toMatchObject({ code: "requirement_reader_denied", operationsSettled: true });
@@ -370,12 +368,9 @@ test("最后cleanup await中的微任务撤权仍在公开run返回帧同步复�
 test("跨进程关闭不依赖本进程通知队列，最终答案拒绝且无新模型请求", async () => {
   const w = await world();
   const modulePath = new URL("../../runtime/requirement-state.ts", import.meta.url).href;
-  const gitRuntimeModulePath = new URL("../../runtime/git-runtime.mjs", import.meta.url).href;
   w.setHook(async (_c, turn) => { if (turn !== 2) return;
     const script = `import { RequirementStateStore } from ${JSON.stringify(modulePath)};
-import { initializeHostGit } from ${JSON.stringify(gitRuntimeModulePath)};
 const config = ${JSON.stringify(w.config)};
-initializeHostGit([config.repositoryRoot, config.dataRoot]);
 const s = await RequirementStateStore.open({...config, authorize:r=>r.repoId===config.repoId});
 const id=${JSON.stringify(w.saved.requirementId)}, r=s.read(id);
 s.beginClose({requirementId:id,version:r.version,intent:{operationId:${JSON.stringify(uuidv7())},receiptId:${JSON.stringify(uuidv7())},reason:"cancelled"}});`;

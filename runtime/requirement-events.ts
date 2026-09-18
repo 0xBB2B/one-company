@@ -63,7 +63,6 @@ export interface RequirementEventServiceOptions {
   repositoryRoot: string;
   dataRoot: string;
   repoId: string;
-  gitExecutable: string;
   /** 可信宿主同步核验调用者与PM租约；回调只收到固定元数据，不含prod正文或diff。 */
   authorize?: (request: Readonly<RequirementEventAuthorizationRequest>) => boolean;
   now?: () => number;

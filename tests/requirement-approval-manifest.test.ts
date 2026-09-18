@@ -18,11 +18,9 @@ import { createRequirementReadTool } from "../runtime/requirement-read-tool.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
-const exec = promisify(execFile), GIT = HOST_GIT;
+const exec = promisify(execFile), GIT = "git";
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 async function fixture(ready = true, shared = false) {
@@ -30,7 +28,7 @@ async function fixture(ready = true, shared = false) {
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
-  const options = { repositoryRoot: repo.root, dataRoot: join(root, "data"), repoId: identity.repoId, gitExecutable: GIT };
+  const options = { repositoryRoot: repo.root, dataRoot: join(root, "data"), repoId: identity.repoId};
   // 夹具宿主持有专用service/state句柄。此处仅fixture资源访问许可；真正批准另外核验Core对象能力。
   const access = { live: true };
   const clock = { now: Date.now() };

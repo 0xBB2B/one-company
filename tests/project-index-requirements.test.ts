@@ -15,9 +15,7 @@ import { RequirementService } from "../runtime/requirement-service.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { RequirementEventService } from "../runtime/requirement-events.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -52,7 +50,7 @@ async function world() {
   cleanups.push(() => removeRepoFixture(repo));
   repo.root = await fsp.realpath(repo.root);
   const identity = await repositoryIdentity(repo.root);
-  const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId, gitExecutable: HOST_GIT };
+  const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId};
   const service = await RequirementService.open({ ...options, authorize: () => true });
   const state = await RequirementStateStore.open({ ...options, authorize: () => true });
   const adapter = new ProjectIndexRequirements(options);
@@ -89,7 +87,7 @@ async function changeFixtureWorkspace(w: World, change: "removed" | "branch-chan
   const args = change === "removed"
     ? ["worktree", "remove", "--", w.worktree.root]
     : ["-C", w.worktree.root, "switch", "-c", "archive-terminal-fixture"];
-  await promisify(execFile)(HOST_GIT, args, { cwd: w.repo.root, env: GIT_ENV, timeout: 10_000 });
+  await promisify(execFile)("git", args, { cwd: w.repo.root, env: GIT_ENV, timeout: 10_000 });
   if (change === "removed") expect(fs.existsSync(w.worktree.root)).toBe(false);
 }
 

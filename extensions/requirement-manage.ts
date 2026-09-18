@@ -7,14 +7,12 @@ import { createUserInteractTool } from "../runtime/user-interact-tool.ts";
 import { MainIntakeInteraction } from "../runtime/main-intake-interaction.ts";
 import type { MainIntakeProviders } from "../runtime/main-intake-interaction.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
-import { currentHostGit } from "../runtime/git-runtime.mjs";
 import type { OpenRequirementService, RequirementManageHostContext } from "../runtime/main-requirement-interaction.ts";
 import { registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
 
 export interface RequirementManageExtensionDeps {
   readonly authorization?: HostAuthorizationManager;
   readonly dataRoot?: string;
-  readonly gitExecutable?: string;
   readonly openService?: OpenRequirementService;
   /** 受信宿主或隔离测试注入；缺失时PM接手入口明确拒绝，不装配默认生产者。 */
   readonly pmIntakeProviders?: MainIntakeProviders;
@@ -34,16 +32,9 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     return { windowId: window.windowId, sessionId: window.sessionId,
       repositories: new Map(window.workspace.repos.map((repo) => [repo.repoId, { path: repo.path }])) };
   };
-  const binding = currentHostGit([root]);
-  const gitExecutable = deps.gitExecutable ?? binding.executablePath;
-  if (gitExecutable !== binding.executablePath) {
-    const error = new Error("requirement_manage 的 Git 路径必须匹配宿主固定绑定") as Error & { code: string };
-    error.code = "untrusted_git";
-    throw error;
-  }
-  const interaction = new MainRequirementInteraction({ dataRoot: root, gitExecutable,
+  const interaction = new MainRequirementInteraction({ dataRoot: root,
     authorization, resolveHost, ...(deps.openService ? { openService: deps.openService } : {}) });
-  const intake = new MainIntakeInteraction({ dataRoot: root, gitExecutable, authorization, resolveHost,
+  const intake = new MainIntakeInteraction({ dataRoot: root, authorization, resolveHost,
     ...(deps.pmIntakeProviders ? { providers: deps.pmIntakeProviders } : {}),
     ...(deps.pmIntakeCallTtlMs !== undefined ? { callTtlMs: deps.pmIntakeCallTtlMs } : {}) });
   let unregisterShutdown: (() => void) | undefined;

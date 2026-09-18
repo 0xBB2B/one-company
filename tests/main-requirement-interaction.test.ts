@@ -20,15 +20,13 @@ import { RequirementService } from "../runtime/requirement-service.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { ConfirmationContext } from "../runtime/requirement-manage-contracts.ts";
 import type { InteractionInterpretation } from "../runtime/user-interaction-format.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile), cleanup: Array<() => Promise<void>> = [];
 const PHONE = "我想加手机号登录，原来的邮箱登录保留。微信登录以后可能也要，但这次先不做。短信多久过期你参考常见做法。先帮我看看涉及哪些改动。";
 const BODY = "# 手机号与邮箱 {#A}\n增加手机号登录，保留邮箱登录。\n# 短信方案委托 {#D}\n短信期限参考常见做法提出方案。\n# 短信期限 {#SMS}\n具体数值未决。\n# 微信 {#B}\n本次排除微信登录。\n";
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-async function git(cwd: string, args: string[]) { return (await exec(HOST_GIT, args, { cwd })).stdout.trim(); }
+async function git(cwd: string, args: string[]) { return (await exec("git", args, { cwd })).stdout.trim(); }
 async function world(options: Pick<MainRequirementInteractionOptions, "now" | "inputTtlMs"> = {}) {
   const root = await mkdtemp(join(temporaryRoot(), "host-interaction-")), repositoryRoot = join(root, "repo"), dataRoot = join(root, "data");
   await mkdir(repositoryRoot); await mkdir(dataRoot); await git(repositoryRoot, ["init", "--initial-branch=main"]);
@@ -43,7 +41,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
   const ctx = { cwd: repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
     ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); } },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
-  const interaction = new MainRequirementInteraction({ ...options, dataRoot, gitExecutable: HOST_GIT, authorization,
+  const interaction = new MainRequirementInteraction({ ...options, dataRoot, authorization,
     resolveHost: () => ({ windowId, sessionId, repositories: new Map([[repoId, { path: repositoryRoot }]]) }) });
   cleanup.push(async () => { interaction.dispose(); authorization.shutdown(); await rm(root, { recursive: true, force: true }); });
   const manage = createRequirementManageTool({ interaction }), user = createUserInteractTool({ interaction });
@@ -53,7 +51,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
     interaction.assertDelivery(toolCallId, ctx); return result.details!;
   };
   const capture = (text = PHONE, source = "interactive", rpc = false) => interaction.captureInput({ source, text }, ctx, rpc);
-  const service = await RequirementService.open({ dataRoot, repositoryRoot, repoId, gitExecutable: HOST_GIT, authorize: () => true });
+  const service = await RequirementService.open({ dataRoot, repositoryRoot, repoId, authorize: () => true });
   const create = async (body = BODY) => {
     capture(); scriptReplies(provider, [{ type: "text", text: '{"allow":true}' }]);
     return call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body });
@@ -157,9 +155,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(() => w.interaction.assertDelivery(resultId, w.ctx)).toThrow();
     const otherResultId = uuidv7();
     await w.manage.execute(otherResultId, { action: "read", repoId: w.repoId, requirementId, source: "saved" } as never, undefined, undefined, w.ctx);
-    const script = `import {initializeHostGit} from ${JSON.stringify(new URL("../runtime/git-runtime.mjs", import.meta.url).href)};
-      initializeHostGit([]);
-      import {RequirementStateStore} from ${JSON.stringify(new URL("../runtime/requirement-state.ts", import.meta.url).href)};
+    const script = `import {RequirementStateStore} from ${JSON.stringify(new URL("../runtime/requirement-state.ts", import.meta.url).href)};
       const state=await RequirementStateStore.open({...${JSON.stringify({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId })},authorize:()=>true});
       await state.beginClose(${JSON.stringify({ requirementId, version: Number(created.version), intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } })});`;
     await exec(process.execPath, ["--input-type=module", "-e", script]);

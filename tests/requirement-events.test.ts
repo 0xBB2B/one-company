@@ -15,12 +15,10 @@ import { repositoryIdentity } from "../runtime/identity.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
-const GIT = HOST_GIT;
+const GIT = "git";
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
@@ -30,7 +28,7 @@ async function world(authorize: RequirementEventServiceOptions["authorize"] = ()
   const repo = await createRepoFixture();
   cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
-  const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId, gitExecutable: GIT,
+  const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId,
     ...(now ? { now } : {}) };
   const service = await RequirementService.open({ ...options, authorize: () => true });
   const state = await RequirementStateStore.open({ ...options, authorize: () => true });

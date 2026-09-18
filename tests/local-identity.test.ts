@@ -463,23 +463,6 @@ describe("git 判定不依赖环境", () => {
     }
   });
 
-  test("PATH 无 Git 时仍通过可信 Git 正确发现工作区和判定仓库", async () => {
-    const workspace = await createWorkspaceFixture();
-    repoFixtures.push(workspace);
-    const previous = process.env.PATH;
-    process.env.PATH = join(workspace.root, "empty-bin");
-    try {
-      expect(await isInsideRepository(workspace.repos[0]!)).toBe(true);
-      expect(await isInsideRepository(workspace.root)).toBe(false);
-      const discovered = await discoverWorkspace(workspace.root);
-      expect(discovered.repos.map((repo) => repo.path).sort()).toEqual([...workspace.repos].sort());
-      expect(discovered.skipped).toEqual([]);
-    } finally {
-      if (previous === undefined) delete process.env.PATH;
-      else process.env.PATH = previous;
-    }
-  });
-
   test("父目录扫描与仓库内启动得到的成员 path 完全相同", async () => {
     const workspace = await createWorkspaceFixture();
     repoFixtures.push(workspace);

@@ -12,9 +12,7 @@ import type { ChildJob, Sample } from "./m3-benchmark.ts";
 import type { ProjectIndexSyncManager, ProjectIndexSyncStatus, ProjectIndexWatchFactory } from "../../runtime/project-index-sync.ts";
 import type { ProjectIndexService, ProjectIndexBuildResult } from "../../runtime/project-index-service.ts";
 import type { LocalDatabase } from "../../runtime/database.ts";
-import { initializeTestHostGit } from "./test-git-binding.ts";
 
-initializeTestHostGit([]);
 
 const job = JSON.parse(await readFile(process.argv[2], "utf8")) as ChildJob;
 process.umask(0o077);
@@ -308,7 +306,7 @@ async function events() {
   const { LocalDatabase: DB, repositoryDatabase, uuidv7, withDatabase } = await import("../../runtime/database.ts");
   const { repositoryIdentity } = await import("../../runtime/identity.ts");
   const identity = await repositoryIdentity(job.repo);
-  const options = { repositoryRoot: job.repo, dataRoot: job.dataRoot, repoId: identity.repoId, gitExecutable: job.git, authorize: () => true };
+  const options = { repositoryRoot: job.repo, dataRoot: job.dataRoot, repoId: identity.repoId, authorize: () => true };
   const requirements = await RequirementService.open(options);
   const state = await RequirementStateStore.open(options);
   const eventService = await RequirementEventService.open(options);

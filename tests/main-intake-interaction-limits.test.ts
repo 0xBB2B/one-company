@@ -65,7 +65,7 @@ test("短TTL、真实终态回收和32条活调用上限分离，迟到结果仍
   const controller = new AbortController(), manager = { getSessionId: () => sessionId };
   const ctx = { sessionManager: manager, cwd: "/tmp", mode: "rpc", signal: controller.signal } as unknown as ExtensionContext;
   const create = (ttl?: number) => {
-    const bridge = new MainIntakeInteraction({ dataRoot: "/tmp/pm-intake-memory-only", gitExecutable: "/usr/bin/git",
+    const bridge = new MainIntakeInteraction({ dataRoot: "/tmp/pm-intake-memory-only",
       authorization, callTtlMs: ttl, resolveHost: () => ({ windowId, sessionId,
         repositories: new Map([[repoId, { path: "/tmp" }]]) }) });
     bridge.startSession(ctx);
@@ -111,7 +111,7 @@ test.each([true, false])("逐调用TTL取消内存服务等待，只有实际结
     return {} as IntakeRequestView;
   });
   const check = vi.spyOn(PmIntakeService.prototype, "assertResultCurrent").mockImplementation(() => {});
-  const bridge = new MainIntakeInteraction({ dataRoot: "/tmp/pm-intake-memory-only", gitExecutable: "/usr/bin/git", authorization: host,
+  const bridge = new MainIntakeInteraction({ dataRoot: "/tmp/pm-intake-memory-only", authorization: host,
     callTtlMs: 100, resolveHost: () => ({ windowId, sessionId, repositories: new Map([[repoId, { path: "/tmp" }]]) }),
     providers: { sourceDirectoryProvider: {} as never, submissionProvider: {} as never } });
   const tasks: Array<Promise<unknown>> = [];

@@ -3,8 +3,6 @@ import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import { currentHostGit } from "../../runtime/git-runtime.mjs";
-import { initializeTestHostGit } from "./test-git-binding.ts";
 
 const execFileAsync = promisify(execFile);
 const GIT_SETUP_CONFIG = ["-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "core.hooksPath=/dev/null"];
@@ -75,11 +73,6 @@ function settledCommandFailure(error: unknown): boolean {
   return typeof value.code === "number" && value.killed !== true && value.signal == null;
 }
 
-function checkedHostGit(roots: readonly string[]) {
-  try { return currentHostGit(roots); }
-  catch (error) { throw new PreserveFixtureRootError([error], "Git固定绑定复验失败"); }
-}
-
 async function failCreation(root: OwnedRoot, error: unknown): Promise<never> {
   if (error instanceof PreserveFixtureRootError) {
     reportPreserved(root.path, error.message);
@@ -134,19 +127,13 @@ export const GIT_ENV = {
 };
 
 async function git(args: string[], cwd: string, owned: OwnedRoot): Promise<void> {
-  const roots = [...new Set([cwd, owned.path])];
   await assertOwnedRoot(owned);
-  const executablePath = checkedHostGit(roots).executablePath;
   try {
-    await execFileAsync(executablePath, [...GIT_SETUP_CONFIG, ...args], { cwd, env: GIT_ENV, timeout: 10_000 });
+    await execFileAsync("git", [...GIT_SETUP_CONFIG, ...args], { cwd, env: GIT_ENV, timeout: 10_000 });
   } catch (commandError) {
     try { await assertOwnedRoot(owned); }
     catch (ownershipError) {
       throw new PreserveFixtureRootError([commandError, ownershipError], "Git命令失败且自产根归属复验失败");
-    }
-    try { checkedHostGit(roots); }
-    catch (bindingError) {
-      throw new PreserveFixtureRootError([commandError, bindingError], "Git命令失败且固定绑定复验失败");
     }
     if (!settledCommandFailure(commandError)) {
       throw new PreserveFixtureRootError([commandError], "Git命令结束状态无法安全确认");
@@ -154,7 +141,6 @@ async function git(args: string[], cwd: string, owned: OwnedRoot): Promise<void>
     throw commandError;
   }
   await assertOwnedRoot(owned);
-  checkedHostGit(roots);
 }
 
 async function initRepo(root: string, owned: OwnedRoot): Promise<void> {
@@ -169,11 +155,9 @@ async function initRepo(root: string, owned: OwnedRoot): Promise<void> {
 }
 
 export async function createRepoFixture(): Promise<RepoFixture> {
-  initializeTestHostGit([]);
   const owned = await allocateOwnedRoot("pi-company-repo-", "repo");
   try {
     await assertOwnedRoot(owned);
-    checkedHostGit([owned.path]);
     await initRepo(owned.path, owned);
     await assertOwnedRoot(owned);
     const fixture = { root: owned.path, worktrees: [] };
@@ -205,12 +189,10 @@ async function prepareWorktree(repoRoot: string, branch: string, owned: OwnedRoo
 export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
   const repoRoot = repo.root;
   const worktrees = repo.worktrees;
-  initializeTestHostGit([repoRoot]);
   const owned = await allocateOwnedRoot("pi-company-worktree-", "worktree");
   const branch = `worktree-${basename(owned.path)}`;
   try {
     await assertOwnedRoot(owned);
-    checkedHostGit([repoRoot, owned.path]);
     await prepareWorktree(repoRoot, branch, owned);
     await assertOwnedRoot(owned);
     worktrees.push(owned.path);
@@ -226,13 +208,11 @@ export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
 }
 
 export async function createWorkspaceFixture(): Promise<WorkspaceFixture> {
-  initializeTestHostGit([]);
   const owned = await allocateOwnedRoot("pi-company-workspace-", "repo");
   const repoA = join(owned.path, "repo-a");
   const repoB = join(owned.path, "repo-b");
   try {
     await assertOwnedRoot(owned);
-    checkedHostGit([owned.path]);
     await initRepo(repoA, owned);
     await initRepo(repoB, owned);
     await assertOwnedRoot(owned);

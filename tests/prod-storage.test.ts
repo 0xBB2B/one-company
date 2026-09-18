@@ -17,10 +17,9 @@ import {
   type ProdStorageConfig,
 } from "../runtime/prod-storage.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
 const execFileAsync = promisify(execFile);
-const GIT = testHostGitExecutable([]);
+const GIT = "git";
 const REQUIREMENT_ID = "01941f29-7c00-7000-8000-000000000001";
 const roots: string[] = [];
 
@@ -68,7 +67,6 @@ async function world(authorize: ProdStorageAuthorize = () => true): Promise<{ ro
       dataRoot: join(root, "private"),
       repoId: "repo-1",
       requirementId: REQUIREMENT_ID,
-      gitExecutable: GIT,
       repositoryRoot: business,
       worktreeRoots: [],
       authorize,
@@ -270,20 +268,14 @@ test("恶意本地与全局 Git 配置、hook、filter、textconv、签名和远
   expect(await git(["show", `${saved.commit}:prod.md`], saved.repositoryRoot, w.home)).toBe("正文不经过 filter\n");
 });
 
-test("非系统可写包装程序不会被当作 Git 执行；Git 缺失明确失败", async () => {
-  const wrapperWorld = await world();
-  const wrapperDir = join(wrapperWorld.root, "bin");
-  const wrapper = join(wrapperDir, "git");
-  const sentinel = join(wrapperWorld.root, "wrapper-ran");
-  await mkdir(wrapperDir);
-  await writeFile(wrapper, `#!/bin/sh\nprintf ran > ${JSON.stringify(sentinel)}\n`, { mode: 0o755 });
-  await expectCode(first({ ...wrapperWorld, config: { ...wrapperWorld.config, gitExecutable: wrapper } }), "untrusted_git");
-  await expect(readFile(sentinel)).rejects.toMatchObject({ code: "ENOENT" });
-  await expect(lstat(wrapperWorld.config.dataRoot)).rejects.toMatchObject({ code: "ENOENT" });
-
+test("PATH 上没有 git 时明确失败", async () => {
   const missingWorld = await world();
-  await expectCode(first({ ...missingWorld, config: { ...missingWorld.config, gitExecutable: join(missingWorld.root, "missing", "git") } }), "git_unavailable");
-  await expect(lstat(missingWorld.config.dataRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  const emptyBin = join(missingWorld.root, "empty-bin");
+  await mkdir(emptyBin);
+  const originalPath = process.env.PATH;
+  process.env.PATH = emptyBin;
+  try { await expectCode(first(missingWorld), "git_unavailable"); }
+  finally { process.env.PATH = originalPath; }
 });
 
 test("路径祖先链接、错误 .git 链接和权限拒绝不会被吞掉或写到链接目标", async () => {

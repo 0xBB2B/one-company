@@ -2,7 +2,6 @@ import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
 import { UUID_V7_PATTERN } from "./database.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
-import { gitProcessGroupAlive } from "./git-process-session.ts";
 
 export const REQUIREMENT_WRITE_COORDINATION_NAMESPACE = "requirement_service_write_coordination";
 export const REQUIREMENT_OPERATION_NAMESPACE = "requirement_service_operations";
@@ -13,8 +12,7 @@ export interface RequirementWriteOwner {
 }
 
 export interface RequirementWriteClaim extends RequirementWriteOwner {
-  format: "requirement-service-write-claim/v2";
-  processGroups: number[];
+  format: "requirement-service-write-claim/v3";
   repoId: string;
   requirementId: string;
   operationId: string;
@@ -46,11 +44,9 @@ function checkOwner(owner: RequirementWriteOwner): void {
 
 function checkClaim(value: unknown, requirementId?: string, repoId?: string): RequirementWriteClaim {
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).sort().join(",") !== "acquiredAt,format,operationId,ownerToken,pid,processGroups,repoId,requirementId") throw new RequirementServiceError("write_claim_corrupt");
+    || Object.keys(value).sort().join(",") !== "acquiredAt,format,operationId,ownerToken,pid,repoId,requirementId") throw new RequirementServiceError("write_claim_corrupt");
   const claim = value as Partial<RequirementWriteClaim>;
-  if (claim.format !== "requirement-service-write-claim/v2"
-    || !Array.isArray(claim.processGroups) || claim.processGroups.some((pid) => !Number.isSafeInteger(pid) || pid <= 0)
-    || new Set(claim.processGroups).size !== claim.processGroups.length
+  if (claim.format !== "requirement-service-write-claim/v3"
     || typeof claim.repoId !== "string" || !/^[0-9a-f]{64}$/.test(claim.repoId)
     || !UUID_V7_PATTERN.test(claim.requirementId ?? "")
     || !UUID_V7_PATTERN.test(claim.operationId ?? "")
@@ -99,12 +95,7 @@ export function claimRequirementWriteIn(
   const existing = readRequirementWriteClaimIn(db, input.repoId, input.requirementId);
   if (existing) {
     if (existing.data.operationId !== input.operationId) throw new RequirementServiceError("requirement_write_pending");
-    if (existing.data.processGroups.some(gitProcessGroupAlive)) throw new RequirementServiceError("write_processes_active");
-    if (existing.data.ownerToken === input.ownerToken && existing.data.pid === input.pid) {
-      if (!existing.data.processGroups.length) return existing;
-      const data = { ...existing.data, processGroups: [] };
-      return { id: existing.id, version: db.update(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, input.requirementId, existing.version, data), data };
-    }
+    if (existing.data.ownerToken === input.ownerToken && existing.data.pid === input.pid) return existing;
     if (processIsAlive(existing.data.pid)) throw new RequirementServiceError("requirement_write_busy");
     if (!options.allowDeadOriginalOperationRecovery) throw new RequirementServiceError("write_recovery_required");
     const recovered: RequirementWriteClaim = {
@@ -112,14 +103,12 @@ export function claimRequirementWriteIn(
       ownerToken: input.ownerToken,
       pid: input.pid,
       acquiredAt: input.acquiredAt,
-      processGroups: [],
     };
     const version = db.update(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, input.requirementId, existing.version, recovered);
     return { id: existing.id, version, data: recovered };
   }
   const claim: RequirementWriteClaim = {
-    format: "requirement-service-write-claim/v2",
-    processGroups: [],
+    format: "requirement-service-write-claim/v3",
     repoId: input.repoId,
     requirementId: input.requirementId,
     operationId: input.operationId,
@@ -154,13 +143,12 @@ export function releaseRequirementWriteIn(
 ): void {
   assertRequirementWriteOwnedIn(db, repoId, requirementId, operationId, owner);
   const stored = readRequirementWriteClaimIn(db, repoId, requirementId)!;
-  if (stored.data.processGroups.some(gitProcessGroupAlive)) throw new RequirementServiceError("write_processes_active");
   db.remove(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, requirementId, stored.version);
 }
 
 export function releaseDeadRequirementWriteIn(db: LocalDatabase, repoId: string, requirementId: string): void {
   const stored = readRequirementWriteClaimIn(db, repoId, requirementId);
-  if (!stored || processIsAlive(stored.data.pid) || stored.data.processGroups.some(gitProcessGroupAlive)) return;
+  if (!stored || processIsAlive(stored.data.pid)) return;
   db.remove(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, requirementId, stored.version);
 }
 

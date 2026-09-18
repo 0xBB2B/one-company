@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "vitest";
 import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { changedEntries, collectContentFingerprint, collectGitSnapshot } from "../runtime/git-snapshot.ts";
-import { readGit } from "../runtime/git-read.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
 
@@ -113,15 +112,5 @@ describe("M1-AC4/5：自有快照固定排除 docs/prod 正文", () => {
     const source = join(repo.root, "src", "source.ts");
     await chmod(source, 0o000);
     await expect(collectContentFingerprint(repo.root)).rejects.toThrow("无法读取快照文件: src/source.ts");
-  });
-
-  test("受控 Git 的 deniedReads 在沙箱内拒绝归档工作树正文，不影响普通源码读取", async () => {
-    const repo = await repoWithArchive();
-    const deniedReads = [join(repo.root, "docs", "prod")];
-
-    await expect(readGit(repo.root, ["hash-object", "docs/prod/archive.md"], { deniedReads })).rejects.toThrow();
-    await expect(readGit(repo.root, ["hash-object", "src/source.ts"], { deniedReads })).resolves.toMatchObject({
-      stdout: expect.stringMatching(/^[0-9a-f]{40}\n$/),
-    });
   });
 });

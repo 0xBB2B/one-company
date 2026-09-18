@@ -18,15 +18,13 @@ import { registerControlledProvider, scriptReplies } from "../helpers/controlled
 import { repositoryIdentity, daemonSocketPath } from "../../runtime/identity.ts";
 import { socketPathByteLimit } from "../../daemon/lifecycle.ts";
 import { uuidv7 } from "../../runtime/database.ts";
-import { testHostGitExecutable } from "../helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const productRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  return (await exec(HOST_GIT, args, { cwd, env: { ...process.env, LC_ALL: "C" } })).stdout.trim();
+  return (await exec("git", args, { cwd, env: { ...process.env, LC_ALL: "C" } })).stdout.trim();
 }
 
 async function waitMissing(path: string, timeoutMs = 10_000): Promise<void> {

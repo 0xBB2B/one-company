@@ -12,18 +12,16 @@ import { UserInteractionCore } from "../runtime/user-interaction.ts";
 import type { InteractionContext, InteractionInterpretation } from "../runtime/user-interaction-format.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, loadInteractionContinuity } from "../runtime/interaction-continuity.ts";
 import { ApprovalManifestStore } from "../runtime/approval-manifest-store.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
 async function world() {
   const root = await mkdtemp(join(temporaryRoot(), "ic-")), repo = join(root, "repo"), dataRoot = join(root, "data");
-  await mkdir(repo); await mkdir(dataRoot); await exec(HOST_GIT, ["init", "--initial-branch=main"], { cwd: repo });
-  await writeFile(join(repo, "README.md"), "fixture"); await exec(HOST_GIT, ["add", "README.md"], { cwd: repo });
-  await exec(HOST_GIT, ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "init"], { cwd: repo });
+  await mkdir(repo); await mkdir(dataRoot); await exec("git", ["init", "--initial-branch=main"], { cwd: repo });
+  await writeFile(join(repo, "README.md"), "fixture"); await exec("git", ["add", "README.md"], { cwd: repo });
+  await exec("git", ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "init"], { cwd: repo });
   const { repoId } = await repositoryIdentity(repo), path = repositoryDatabase(dataRoot, repoId);
-  const service = await RequirementService.open({ dataRoot, repositoryRoot: repo, repoId, gitExecutable: HOST_GIT, authorize: () => true });
+  const service = await RequirementService.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true });
   const body = "# A {#A}\nA目标。\n# B {#B}\nB目标。\n";
   let saved = await service.create({ operationId: uuidv7(), requestId: uuidv7(), title: "候选", body });
   let loaded = await service.loadConfirmationContext({ requirementId: saved.requirementId, savedOperationId: saved.operationId, operationId: uuidv7() });
@@ -240,8 +238,7 @@ test.each(["document", "scope", "register", "register-after-core", "cross-proces
       proposal: { conclusion: "B新增未确认前提", scope: "B", references: [], supersedes: [] } });
     if (mode !== "cross-process") { questionId = other.ask(input).requestId; return; }
     const modulePath = fileURLToPath(new URL("../runtime/user-interaction.ts", import.meta.url));
-    const gitRuntimePath = fileURLToPath(new URL("../runtime/git-runtime.mjs", import.meta.url));
-    const source = `import {initializeHostGit} from ${JSON.stringify(gitRuntimePath)}; initializeHostGit([]); import {UserInteractionCore} from ${JSON.stringify(modulePath)}; const c=await UserInteractionCore.open({...${JSON.stringify({ dataRoot: w.dataRoot, repositoryRoot: w.repo, repoId: w.repoId })}, authorize:()=>true,authorizeAction:()=>true,loadContext:async()=>{throw Error('unused')},interpreter:{identity:()=>({provider:'fixture',id:'child',configurationHash:'c'.repeat(64)}),interpret:async()=>{throw Error('unused')}}});try{c.startSession({sessionId:'child',windowId:'child'});console.log(JSON.stringify(c.ask(${JSON.stringify(input)}).requestId));}finally{c.shutdown();}`;
+    const source = `import {UserInteractionCore} from ${JSON.stringify(modulePath)}; const c=await UserInteractionCore.open({...${JSON.stringify({ dataRoot: w.dataRoot, repositoryRoot: w.repo, repoId: w.repoId })}, authorize:()=>true,authorizeAction:()=>true,loadContext:async()=>{throw Error('unused')},interpreter:{identity:()=>({provider:'fixture',id:'child',configurationHash:'c'.repeat(64)}),interpret:async()=>{throw Error('unused')}}});try{c.startSession({sessionId:'child',windowId:'child'});console.log(JSON.stringify(c.ask(${JSON.stringify(input)}).requestId));}finally{c.shutdown();}`;
     questionId = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", source], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }));
   };
   let calls = 0;

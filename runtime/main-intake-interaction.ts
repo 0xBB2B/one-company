@@ -209,7 +209,6 @@ export interface MainIntakeProviders {
 }
 export interface MainIntakeInteractionOptions {
   readonly dataRoot: string;
-  readonly gitExecutable: string;
   readonly authorization: HostAuthorizationManager;
   readonly resolveHost: (ctx: ExtensionContext) => RequirementManageHostContext;
   /** 仅可信宿主或测试装置在构造时注入；缺失时生产路径明确拒绝。 */
@@ -237,7 +236,7 @@ export class MainIntakeInteraction {
   #disposed = false;
 
   constructor(options: MainIntakeInteractionOptions) {
-    if (!options.dataRoot || !options.gitExecutable) deny("invalid_options");
+    if (!options.dataRoot) deny("invalid_options");
     const ttl = options.callTtlMs ?? DEFAULT_TTL_MS;
     if (!Number.isSafeInteger(ttl) || ttl <= 0 || ttl > DEFAULT_TTL_MS) deny("invalid_ttl");
     this.#options = { ...options };
@@ -355,7 +354,7 @@ export class MainIntakeInteraction {
       } });
     guard();
     const requirementService = await RequirementService.open({ dataRoot: this.#options.dataRoot, repositoryRoot,
-      repoId: input.repoId, gitExecutable: this.#options.gitExecutable, authorize: (request) => {
+      repoId: input.repoId, authorize: (request) => {
         try {
           guard();
           if (request.repoId !== input.repoId || !["metadata", "readApproved"].includes(request.action)) return false;

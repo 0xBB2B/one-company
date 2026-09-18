@@ -15,13 +15,10 @@ import { prodRequirementPath } from "../runtime/prod-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { gitProcessGroupAlive } from "../runtime/git-process-session.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
-const GIT = HOST_GIT;
+const GIT = "git";
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -39,7 +36,6 @@ async function world(authorize: RequirementServiceOptions["authorize"] = () => t
     repositoryRoot: repo.root,
     dataRoot: join(root, "private"),
     repoId: identity.repoId,
-    gitExecutable: GIT,
     authorize,
   };
   const service = await RequirementService.open(options);
@@ -68,33 +64,19 @@ async function commitCount(requirementRoot: string): Promise<number> {
 function spawnServiceWrite(
   w: Awaited<ReturnType<typeof world>>,
   input: Parameters<RequirementService["updateDraft"]>[0],
-  hold?: { claimed: string; release: string; gitRunning?: boolean },
+  hold?: { claimed: string; release: string },
 ) {
   const script = join(w.root, `service-child-${uuidv7()}.mjs`);
   const source = `import {existsSync,writeFileSync} from 'node:fs';
-import {initializeHostGit} from ${JSON.stringify(new URL("../runtime/git-runtime.mjs", import.meta.url).href)};
-initializeHostGit([]);
 import {RequirementService} from ${JSON.stringify(new URL("../runtime/requirement-service.ts", import.meta.url).href)};
 import {RequirementWriteCoordinator} from ${JSON.stringify(new URL("../runtime/requirement-coordination.ts", import.meta.url).href)};
-import {RequirementOperations} from ${JSON.stringify(new URL("../runtime/requirement-operations.ts", import.meta.url).href)};
-const options=${JSON.stringify({ repositoryRoot: w.options.repositoryRoot, dataRoot: w.options.dataRoot, repoId: w.options.repoId, gitExecutable: w.options.gitExecutable })};
+const options=${JSON.stringify({ repositoryRoot: w.options.repositoryRoot, dataRoot: w.options.dataRoot, repoId: w.options.repoId})};
 const input=${JSON.stringify(input)};
 const hold=${JSON.stringify(hold ?? null)};
 const coordinator=new RequirementWriteCoordinator(options);
 let announced=false;
-if (hold?.gitRunning) {
-  const original=RequirementOperations.prototype.markProcessRunning;
-  RequirementOperations.prototype.markProcessRunning=function(...args) {
-    original.apply(this,args);
-    if(args[3]==='hash-object' && !announced) {
-      announced=true; writeFileSync(hold.claimed,JSON.stringify({groupId:args[2]}));
-      const wait=new Int32Array(new SharedArrayBuffer(4));
-      while(!existsSync(hold.release)) Atomics.wait(wait,0,0,10);
-    }
-  };
-}
 const service=await RequirementService.open({...options,authorize:(request)=>{
-  if (hold && !hold.gitRunning && request.operationId===input.operationId) {
+  if (hold && request.operationId===input.operationId) {
     const claim=coordinator.inspect(input.requirementId)[0];
     if (claim?.pid===process.pid && !announced) {
       announced=true; writeFileSync(hold.claimed,'claimed');
@@ -267,7 +249,7 @@ test("缺授权、异步授权、伪字段和 closing/closed 正文读取均拒�
   const repo = await createRepoFixture();
   cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
-  const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId, gitExecutable: GIT };
+  const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId};
   await expect(RequirementService.open(options)).rejects.toMatchObject({ code: "authorization_required" });
   await expect(RequirementService.open({ ...options, authorize: (async () => true) as never })).rejects.toMatchObject({ code: "authorization_required" });
 
@@ -580,44 +562,6 @@ test("既有closing现场的写进程死亡后可安全结束，活持有者不�
   expect(w.state.finishClose(finish).data.lifecycle).toBe("closed");
   expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
 }, 15_000);
-
-test("父进程在真实Git运行中死亡时，全部Git进程组结束前不能关闭", async () => {
-  const w = await world();
-  const created = await w.service.create(createInput());
-  const claimed = join(w.root, "git-running"), release = join(w.root, "git-release");
-  const input = { requirementId: created.requirementId, operationId: uuidv7(), version: created.version,
-    title: "需求标题", body: "写入进程的候选正文" };
-  const child = await spawnServiceWrite(w, input, { claimed, release, gitRunning: true });
-  let groupId: number | undefined;
-  try {
-    await waitForFile(claimed, child.stderr);
-    groupId = JSON.parse(await readFile(claimed, "utf8")).groupId;
-    expect(gitProcessGroupAlive(groupId!)).toBe(true);
-    process.kill(groupId!, "SIGSTOP");
-    child.proc.kill("SIGKILL");
-    expect(await child.closed).not.toBe(0);
-    const current = w.state.read(created.requirementId);
-    const close = { requirementId: created.requirementId, version: current.version,
-      intent: { operationId: uuidv7(), reason: "cancelled" as const, receiptId: uuidv7() } };
-    expect(() => w.state.beginClose(close)).toThrow(/requirement_write_busy/);
-    process.kill(-groupId!, "SIGKILL");
-    const deadline = Date.now() + 5_000;
-    while (gitProcessGroupAlive(groupId!) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(gitProcessGroupAlive(groupId!)).toBe(false);
-    const closing = w.state.beginClose(close);
-    const closed = w.state.finishClose({ requirementId: created.requirementId, version: closing.version, operationId: close.intent.operationId });
-    expect(closed.data.lifecycle).toBe("closed");
-    const root = prodRequirementPath({ ...w.options, requirementId: created.requirementId });
-    const body = await readFile(join(root, "prod.md"));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(await readFile(join(root, "prod.md"))).toEqual(body);
-    expect(await commitCount(root)).toBe(1);
-  } finally {
-    child.proc.kill("SIGKILL");
-    if (groupId && gitProcessGroupAlive(groupId)) { try { process.kill(-groupId, "SIGKILL"); } catch {} }
-    await child.closed;
-  }
-}, 20_000);
 
 test("完成 operation 的重复请求会核对当前工作正文，不把外部变化误报成功", async () => {
   const w = await world();

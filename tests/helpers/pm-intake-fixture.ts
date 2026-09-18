@@ -43,7 +43,6 @@ import {
 } from "./repo-fixture.ts";
 import type { RepoFixtureRootReceipt, WorktreeFixtureRootReceipt } from "./repo-fixture.ts";
 import { temporaryRoot } from "./temporary-root.ts";
-import { testHostGitExecutable } from "./test-git-binding.ts";
 
 const exec = promisify(execFile);
 
@@ -207,7 +206,6 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
     throw new Error(`PM夹具根不是自产真实目录；保全路径 ${root}`);
   }
   allocation.pmReceipt = Object.freeze({ path: root, dev: rootInfo.dev, ino: rootInfo.ino });
-  const gitExecutable = testHostGitExecutable([root]);
   const repo = await createRepoFixture();
   const repoReceipt = repoFixtureRootReceipt(repo);
   if (!repoReceipt) throw new Error("PM夹具未取得原repo根收据");
@@ -215,7 +213,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
   if (repo.root !== repoReceipt.path) throw new Error("PM夹具repo公开根与原收据不一致");
   const dataRoot = join(root, "data"), identity = await repositoryIdentity(repo.root);
   let now = Date.now();
-  const config = { repositoryRoot: repo.root, dataRoot, repoId: identity.repoId, gitExecutable };
+  const config = { repositoryRoot: repo.root, dataRoot, repoId: identity.repoId };
   const service = await RequirementService.open({ ...config, authorize: () => true });
   const state = await RequirementStateStore.open({ ...config, authorize: () => true, now: () => now });
   const title = "PM接手", body = "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n";
@@ -225,7 +223,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
   if (!worktreeReceipt) throw new Error("PM夹具未取得原worktree根收据");
   allocation.worktreeReceipt = Object.freeze({ path: worktreeReceipt.path, dev: worktreeReceipt.dev, ino: worktreeReceipt.ino });
   if (worktree.root !== worktreeReceipt.path) throw new Error("PM夹具worktree公开根与原收据不一致");
-  const baseCommit = (await exec(gitExecutable, ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
+  const baseCommit = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
   await state.bindWorkspace({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
   let confirmOperationId = uuidv7(), useRetained = false;

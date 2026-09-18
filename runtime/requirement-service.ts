@@ -8,7 +8,7 @@ import type { RequirementAction, RequirementStoreOptions } from "./requirement-s
 import type { ProdReference, RequirementRecord } from "./requirement-contracts.ts";
 import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { createProdDocument, inspectProdArchives, parseProdDocument } from "./requirement-identity.ts";
-import { assertBoundGitExecutable, create as createStorage, diffVersions, prodRequirementPath, readVersion, save as saveStorage, verifyVersion } from "./prod-storage.ts";
+import { create as createStorage, diffVersions, prodRequirementPath, readVersion, save as saveStorage, verifyVersion } from "./prod-storage.ts";
 import type { ProdRepositoryIdentity, ProdStorageConfig, ProdStorageWriteResult } from "./prod-storage.ts";
 import { RequirementOperations } from "./requirement-operations.ts";
 import type { PrepareRequirementOperation, RequirementOperation, RequirementOperationAction } from "./requirement-operations.ts";
@@ -53,7 +53,6 @@ export interface RequirementServiceOptions {
   repositoryRoot: string;
   dataRoot: string;
   repoId: string;
-  gitExecutable: string;
   /** 可信宿主同步核验已在服务外完成的授权；回调只接收无正文元数据，不执行 UI、模型或文件 I/O。 */
   authorize?: (request: Readonly<ServiceAuthorizationRequest>) => boolean;
   authorizeManifest?: RequirementStoreOptions["authorizeManifest"];
@@ -136,7 +135,6 @@ export class RequirementService {
     const service = new RequirementService(captured);
     const request: ServiceAuthorizationRequest = { action: "metadata", repoId: captured.repoId };
     service.authorize(request);
-    await assertBoundGitExecutable(captured.gitExecutable, [captured.dataRoot, captured.repositoryRoot]);
     await service.state(request);
     service.authorize(request);
     return service;
@@ -190,7 +188,6 @@ export class RequirementService {
       dataRoot: this.options.dataRoot,
       repoId: this.options.repoId,
       requirementId,
-      gitExecutable: this.options.gitExecutable,
       repositoryRoot: this.options.repositoryRoot,
       expectedRepositoryIdentity: expectedRepositoryIdentity ?? undefined,
       authorize: () => {
@@ -453,17 +450,6 @@ export class RequirementService {
       this.operations.assertOwned(operation.operationId, owner);
     };
     const config = this.storageConfig(authorization, operation.requirementId, operation.expectedRepositoryIdentity, validateOwnedActive);
-    config.processObserver = {
-      started: (groupId) => {
-        validateOwnedActive();
-        this.operations.registerProcessGroup(operation.operationId, owner, groupId);
-      },
-      running: (groupId, command) => {
-        validateOwnedActive();
-        this.operations.markProcessRunning(operation.operationId, owner, groupId, command);
-      },
-      finished: (groupId) => this.operations.finishProcessGroup(operation.operationId, owner, groupId),
-    };
     let git: ProdStorageWriteResult;
     if (operation.git) {
       const verified = await verifyVersion({

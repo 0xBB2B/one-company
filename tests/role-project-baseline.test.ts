@@ -35,9 +35,7 @@ import { RunStore } from "../runtime/run-store.ts";
 import type { RunRecord } from "../runtime/run-store.ts";
 import { GIT_ENV } from "./helpers/repo-fixture.ts";
 import { deferred } from "./helpers/project-baseline-fixture.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
@@ -52,10 +50,10 @@ async function world() {
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const repo = join(root, "repo"), dataRoot = join(root, "agent/data");
   await mkdir(repo); await mkdir(dataRoot, { recursive: true, mode: 0o700 });
-  await exec(HOST_GIT, ["init", "-b", "main"], { cwd: repo, env: GIT_ENV });
+  await exec("git", ["init", "-b", "main"], { cwd: repo, env: GIT_ENV });
   await writeFile(join(repo, "source.ts"), "export const value = 1;\n");
-  await exec(HOST_GIT, ["add", "."], { cwd: repo, env: GIT_ENV });
-  await exec(HOST_GIT, ["commit", "-m", "fixture"], { cwd: repo, env: GIT_ENV });
+  await exec("git", ["add", "."], { cwd: repo, env: GIT_ENV });
+  await exec("git", ["commit", "-m", "fixture"], { cwd: repo, env: GIT_ENV });
   const identity = await repositoryIdentity(repo); await repoDataDir(dataRoot, identity.repoId, identity.commonDir);
   await mkdir(join(dataRoot, "sock"), { mode: 0o700 });
   const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());

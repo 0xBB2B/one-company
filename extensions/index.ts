@@ -13,13 +13,10 @@ import relayExtension from "./relay.ts";
 import agentsUiExtension from "./agents-ui.ts";
 import shellUiExtension from "./shell-ui.ts";
 import commandsExtension from "./commands.ts";
-import { initializeHostGit } from "../runtime/git-runtime.mjs";
-import { dataRoot } from "../runtime/identity.ts";
 
 // pi 对目录内每个扩展文件各起一次 jiti 导入、模块实例互不共享；
 // 单一入口用同一个 pi 依次调用各子扩展，才能让 lifecycle 等模块级共享状态在子扩展间保持同一份实例。
 export default function registerExtensions(pi: ExtensionAPI): void {
-  initializeHostGit([process.cwd(), dataRoot(process.env)]);
   lifecycleExtension(pi);
   projectManageExtension(pi);
   projectBaselineExtension(pi);

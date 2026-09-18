@@ -41,7 +41,6 @@ export interface RequirementRestoreOptions {
   repoDirectory: string;
   repoId: string;
   operationId: string;
-  gitExecutable: string;
   worktreeRoots: readonly string[];
   archiveDirectory?: string;
   registeredArchivePaths?: readonly string[];
@@ -308,7 +307,7 @@ async function verifyRestoredRepositories(options: RequirementRestoreOptions, da
     const allowed = new Set(refs.map((ref) => `${ref.commit}:${ref.prodHash}`));
     for (const reference of refs) {
       await verifyVersion({
-        dataRoot, repoId: options.repoId, requirementId: requirement.requirementId, gitExecutable: options.gitExecutable,
+        dataRoot, repoId: options.repoId, requirementId: requirement.requirementId,
         worktreeRoots: [...options.worktreeRoots], commit: reference.commit, expectedHash: reference.prodHash,
         authorize: (check) => {
           const checkedHash = check.expectedHash ?? check.prodHash;
@@ -408,7 +407,7 @@ function completedReceipt(options: RequirementRestoreOptions, repoDirectory: str
  * 不切换活动data.db、不恢复PM、任务或执行授权，也不读取归档正文。
  */
 export async function restoreRequirementBackup(options: RequirementRestoreOptions): Promise<RequirementRestoreReceipt> {
-  if (!options || typeof options.authorize !== "function" || !UUID_V7_PATTERN.test(options.operationId) || !UUID_V7_PATTERN.test(options.backupOperationId) || !HASH.test(options.backupManifestHash) || !isAbsolute(options.gitExecutable) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");
+  if (!options || typeof options.authorize !== "function" || !UUID_V7_PATTERN.test(options.operationId) || !UUID_V7_PATTERN.test(options.backupOperationId) || !HASH.test(options.backupManifestHash) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");
   const backup = readBackup(options);
   const destination = assertRepoDirectory(options.repoDirectory, options.repoId);
   if (contained(destination.path, backup.directory) || contained(backup.directory, destination.path)) fail("backup_overlaps_isolation");

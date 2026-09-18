@@ -19,12 +19,10 @@ import { prodRequirementPath } from "../runtime/prod-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { sealOperationLog } from "../runtime/operation-log.ts";
-import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
-const GIT = HOST_GIT;
+const GIT = "git";
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -49,7 +47,7 @@ async function world() {
   cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
   const local = await privateRepoDirectory(root, identity.repoId);
-  const options = { repositoryRoot: repo.root, dataRoot: local.dataRoot, repoId: identity.repoId, gitExecutable: GIT, authorize: () => true };
+  const options = { repositoryRoot: repo.root, dataRoot: local.dataRoot, repoId: identity.repoId, authorize: () => true };
   const service = await RequirementService.open(options);
   const state = await RequirementStateStore.open({ ...options, authorize: () => true });
   const worktrees: string[] = [repo.root];
@@ -78,7 +76,7 @@ async function populatedWorld() {
 }
 
 function backupOptions(w: Awaited<ReturnType<typeof world>>, operationId = uuidv7(), authorize: RequirementBackupOptions["authorize"] = () => authorization("backup-auth")): RequirementBackupOptions {
-  return { repoDirectory: w.repoDirectory, repoId: w.identity.repoId, operationId, gitExecutable: GIT, worktreeRoots: w.worktrees, authorize };
+  return { repoDirectory: w.repoDirectory, repoId: w.identity.repoId, operationId, worktreeRoots: w.worktrees, authorize };
 }
 
 async function isolation(w: Awaited<ReturnType<typeof world>>) {
@@ -100,7 +98,6 @@ function restoreOptions(
     repoDirectory: target.repoDirectory,
     repoId: w.identity.repoId,
     operationId,
-    gitExecutable: GIT,
     worktreeRoots: w.worktrees,
     authorize,
   };
