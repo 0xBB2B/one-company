@@ -187,24 +187,48 @@ async function launchDaemon(options: DaemonLaunchOptions, identity: RepositoryId
 export async function spawnDaemon(options: SpawnDaemonOptions): Promise<void> {
   const client = await connectDaemon(options);
   client.close();
+  await client.waitClosed();
 }
 
-function rawConnect(socketPath: string): Promise<Socket> {
+function rawConnect(socketPath: string, register: (socket: Socket) => void): Promise<Socket> {
   const length = Buffer.byteLength(socketPath, "utf8");
   const limit = socketPathByteLimit();
   if (length > limit) return Promise.reject(new Error(`socket 路径超限（${length} 字节 > 平台上限 ${limit} 字节）: ${socketPath}`));
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
-    const onError = (error: Error) => {
+    let settled = false;
+    let firstError: Error | undefined;
+    const cleanup = () => {
+      socket.removeListener("error", onError);
       socket.removeListener("connect", onConnect);
+      socket.removeListener("close", onClose);
+    };
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       reject(error);
     };
+    const onError = (error: Error) => {
+      firstError ??= error;
+      rejectOnce(firstError);
+      socket.destroy();
+    };
     const onConnect = () => {
-      socket.removeListener("error", onError);
+      if (settled) return;
+      if (socket.destroyed) {
+        rejectOnce(firstError ?? new Error("连接在完成前已关闭"));
+        return;
+      }
+      settled = true;
+      cleanup();
       resolve(socket);
     };
+    const onClose = () => rejectOnce(firstError ?? new Error("连接在完成前已关闭"));
     socket.once("error", onError);
     socket.once("connect", onConnect);
+    socket.once("close", onClose);
+    register(socket);
   });
 }
 
@@ -220,6 +244,7 @@ interface ResolvedContext {
   ownsClock: boolean;
   helloParams: Record<string, unknown>;
   gitRoots: readonly string[];
+  connectOnly: boolean;
 }
 
 interface PendingCall {
@@ -244,6 +269,9 @@ class SocketLink {
   private closeHandled: boolean;
   private failureMessage: string | undefined;
   private lastErrorMessage: string | undefined;
+  private readonly dataListener: (chunk: string) => void;
+  private readonly errorListener: (error: Error) => void;
+  private readonly closeListener: () => void;
 
   constructor(
     socket: Socket,
@@ -260,12 +288,13 @@ class SocketLink {
     this.bufferedEventBytes = 0;
     this.closeHandled = false;
     this.failureMessage = undefined;
+    this.dataListener = (chunk: string) => this.handleData(chunk);
+    this.errorListener = (error: Error) => { this.lastErrorMessage = error.message; };
+    this.closeListener = () => this.handleClose();
     socket.setEncoding("utf8");
-    socket.on("data", (chunk: string) => this.handleData(chunk));
-    socket.on("error", (error: Error) => {
-      this.lastErrorMessage = error.message;
-    });
-    socket.once("close", () => this.handleClose());
+    socket.on("data", this.dataListener);
+    socket.on("error", this.errorListener);
+    socket.once("close", this.closeListener);
   }
 
   private handleData(chunk: string): void {
@@ -365,7 +394,9 @@ class SocketLink {
     this.discardBufferedEvents();
     for (const waiter of this.pending.values()) waiter.reject(new Error("守护进程不可达: 已关闭"));
     this.pending.clear();
-    this.socket.removeAllListeners();
+    this.socket.removeListener("data", this.dataListener);
+    this.socket.removeListener("error", this.errorListener);
+    this.socket.removeListener("close", this.closeListener);
     this.socket.destroy();
   }
 }
@@ -415,6 +446,8 @@ export interface DaemonClient {
   /** 仅可信宿主控制面使用；旧服务端没有身份字段时返回 null，不能签发索引许可。 */
   connectionIdentity?(): Readonly<DaemonConnectionIdentity> | null;
   close(): void;
+  /** 等待本客户端已开始的连接/握手以及全部原始 socket 实际 close。 */
+  waitClosed(): Promise<void>;
 }
 
 class DaemonClientImpl implements DaemonClient {
@@ -430,6 +463,8 @@ class DaemonClientImpl implements DaemonClient {
   private identity: Readonly<DaemonConnectionIdentity> | null = null;
   private helloResult: Readonly<Record<string, unknown>> | null = null;
   private readonly listeners: Map<string, Set<(data: Record<string, unknown>) => void>>;
+  private readonly connectionOperations = new Set<Promise<void>>();
+  private readonly socketClosures = new Map<Socket, Promise<void>>();
 
   constructor(ctx: ResolvedContext) {
     this.ctx = ctx;
@@ -446,20 +481,46 @@ class DaemonClientImpl implements DaemonClient {
 
   async connectInitial(): Promise<void> {
     try {
-      const socket = await this.attemptConnect();
-      await this.helloOn(socket);
+      await this.startConnectionOperation();
     } catch (error) {
       this.close();
+      await this.waitClosed();
       throw error;
     }
+  }
+
+  private startConnectionOperation(): Promise<void> {
+    const operation = (async () => {
+      const socket = await this.attemptConnect();
+      if (this.closed) {
+        socket.destroy();
+        throw new Error("客户端已关闭");
+      }
+      await this.helloOn(socket);
+    })();
+    this.connectionOperations.add(operation);
+    const settled = () => { this.connectionOperations.delete(operation); };
+    void operation.then(settled, settled);
+    return operation;
+  }
+
+  private registerSocket(socket: Socket): void {
+    if (this.socketClosures.has(socket)) throw new Error("socket 已登记");
+    let settle!: () => void;
+    const closed = new Promise<void>((resolve) => { settle = resolve; });
+    this.socketClosures.set(socket, closed);
+    socket.once("close", () => {
+      this.socketClosures.delete(socket);
+      settle();
+    });
+    if (this.closed) socket.destroy();
   }
 
   // 首连失败时不 reject：调用方（工作区多仓库场景）需要一个即便当下不可达也能持有、
   // 订阅、并在后台自动重连恢复的客户端，而不是让一个仓库的失败拖垮整个工作区连接的建立
   async connectInitialOrDegrade(): Promise<void> {
     try {
-      const socket = await this.attemptConnect();
-      await this.helloOn(socket);
+      await this.startConnectionOperation();
     } catch (error) {
       if (this.isTerminalHandshakeFailure(error)) {
         const terminal = isGitBindingFailure(error) ? this.safeGitBindingError(error) : error as Error;
@@ -477,7 +538,7 @@ class DaemonClientImpl implements DaemonClient {
   private async attemptConnect(): Promise<Socket> {
     currentGitBinding(this.ctx.gitRoots);
     try {
-      const socket = await rawConnect(this.ctx.socketPath);
+      const socket = await rawConnect(this.ctx.socketPath, (created) => this.registerSocket(created));
       try {
         currentGitBinding(this.ctx.gitRoots);
       } catch (error) {
@@ -488,6 +549,7 @@ class DaemonClientImpl implements DaemonClient {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && code !== "ECONNREFUSED" && code !== "ENOTSOCK") throw error;
+      if (this.ctx.connectOnly) throw error;
       const identity: RepositoryIdentity = { repoId: this.ctx.repoId, commonDir: this.ctx.commonDir };
       const spawned = await beginSpawnDaemon(
         {
@@ -502,7 +564,7 @@ class DaemonClientImpl implements DaemonClient {
       );
       await spawned.listening;
       currentGitBinding(this.ctx.gitRoots);
-      const socket = await rawConnect(this.ctx.socketPath);
+      const socket = await rawConnect(this.ctx.socketPath, (created) => this.registerSocket(created));
       try {
         currentGitBinding(this.ctx.gitRoots);
       } catch (error) {
@@ -699,7 +761,7 @@ class DaemonClientImpl implements DaemonClient {
     const delayMs = Math.max(0, Math.round(baseDelay + jitter));
     this.reconnectTimer = this.ctx.clock.setTimeoutExcludingSleep(() => {
       this.reconnectTimer = null;
-      this.tryReconnect();
+      void this.tryReconnect();
     }, delayMs);
   }
 
@@ -707,12 +769,7 @@ class DaemonClientImpl implements DaemonClient {
     if (this.closed || this.bindingTerminal) return;
     this.status = "starting";
     try {
-      const socket = await this.attemptConnect();
-      if (this.closed) {
-        socket.destroy();
-        return;
-      }
-      await this.helloOn(socket);
+      await this.startConnectionOperation();
     } catch (error) {
       if (this.closed || this.bindingTerminal) return;
       if (this.isTerminalHandshakeFailure(error)) {
@@ -808,12 +865,13 @@ class DaemonClientImpl implements DaemonClient {
     this.closed = true;
     this.identity = null;
     this.helloResult = null;
-    this.link?.destroy();
-    this.link = null;
     if (this.reconnectTimer) {
       this.ctx.clock.clearTimer(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.link?.destroy();
+    this.link = null;
+    for (const socket of this.socketClosures.keys()) socket.destroy();
     const reason = "客户端已关闭";
     this.status = "unreachable";
     this.reason = reason;
@@ -826,6 +884,17 @@ class DaemonClientImpl implements DaemonClient {
     }
     this.listeners.clear();
     if (this.ctx.ownsClock) this.ctx.clock.stopGapWatcher();
+  }
+
+  async waitClosed(): Promise<void> {
+    if (!this.closed) throw new Error("必须先关闭客户端再等待连接结束");
+    for (;;) {
+      const operations = [...this.connectionOperations];
+      if (operations.length) await Promise.allSettled(operations);
+      const sockets = [...this.socketClosures.values()];
+      if (sockets.length) await Promise.all(sockets);
+      if (this.connectionOperations.size === 0 && this.socketClosures.size === 0) return;
+    }
   }
 }
 
@@ -845,6 +914,8 @@ export interface ConnectDaemonOptions {
   env?: Record<string, string>;
   clock?: Clock;
   hello: HelloInput;
+  /** 只连接现有 daemon；首连和重连均不会隐式创建进程。 */
+  connectOnly?: boolean;
 }
 
 async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedContext> {
@@ -856,6 +927,7 @@ async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedCo
     env: options.env === undefined ? undefined : { ...options.env },
     clock: options.clock,
     hello: { ...options.hello },
+    connectOnly: options.connectOnly === true,
   };
   const initialRoots = [captured.repoDir, captured.dataRoot, captured.hello.cwd, captured.hello.workspaceRoot];
   currentGitBinding(initialRoots);
@@ -885,6 +957,7 @@ async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedCo
       protocolVersion: PROTOCOL_VERSION,
     },
     gitRoots,
+    connectOnly: captured.connectOnly,
   };
 }
 

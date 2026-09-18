@@ -885,3 +885,12 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - a45f3ea1实际astra独立审查单行通过，独立003 compiler0及004 renameOnly成立。ASSEMBLY本体另因主动不可信未锁存被要求返修，不能用本单行通过宣告其完成。
 - 主代理核HEAD的handleUserBash函数尾部只改该形参即等于当前尾部，因此从HEAD构造仅这一行的暂存blob；不暂存shell文件其余既有改动。工作文件before881bd80d…、当前bdb27bca…仅供本次差异证据，不冒称当前全文件均已提交。两SDK测试仍为原TaskB/P1A未tracked成果，不在本提交。
 - 证据根`/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-assembly-01/strict-shell-param-01`，及同级review-01报告/003/004。目录700/文件600，保留必要失败与验证材料。commit.json记录实际本地提交号/树/暂存空/完整工作文件和工作报告保全，无push/发布。
+
+## M4-PM-CLIENT-CLOSE-01：同连接关闭与禁止隐式启动
+
+- 从原TaskB已独审的候选中分离连接子功能，仅`runtime/daemon-client.ts`与`tests/daemon-client-close.vm.mjs`。首次修改前client字节与HEAD一致，未夹带其它任务改动；这不是重新派工、重置原TaskB尝试链或签整个TaskB通过。
+- 当前功能：可信调用方可选connectOnly，首连与重连均不隐式启动daemon；创建点登记原socket及连接/hello在途操作，close立即撤权并销毁已登记socket，SocketLink只解除自有监听；waitClosed等待原操作及真实close。connect前关闭、晚到connect及首次失败不返回成功client，首个原错误保留，默认模式原启动能力保留。
+- 任务内与独立review-01均以固定Node执行`node --experimental-vm-modules tests/daemon-client-close.vm.mjs`，6组当前源码/内存依赖验证通过；独立hello-pending.vm.mjs另核握手在途关闭及关闭后RPC拒绝。显式7TS strict/noUnused/noEmit包含本生产文件，独立review-01/02均exit0；新MJS的node --check exit0。未把虚拟socket/child称作真实OS资源测试。
+- 主代理核完整累计差异、独审与当前指纹：client SHA256为79f9e0caa9435dbfa25352f9b1176ab0957f83534057b99980b1df1ea1702fc4；VM为5b139758528ebad2484fd6b06bcc0a56f7f5b8d80d0f34cf3cb7739a45af9062。另六份SDK/world/根文件不属于本提交；其中B1/B2的复审结论另记，不通过夹带它们解除提交依赖。
+- 对应M4-AC8与AC12—14真实验证装置的连接前置及§7.7。未覆盖真实socket/daemon/SDK九例、固定进程域/O回收、M4整体及性能实测；不宣称绝对防止任意外部进程行为。原时限/权限保护保持，无性能收益声明。
+- 证据`completion-03/git-prerequisite/task-02e/pm-unit/taskb-closeout-01/{continue-02,review-01,review-02,main-integration-02.json}`。本子功能精确提交范围、实际提交号、树字节和工作区保全核验保存于同级`client-close-commit/commit.json`；其余已有成果继续留存，不push/发布。
