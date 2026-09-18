@@ -1,8 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDecisionRecordTool, describeReceipt } from "../runtime/decision-record-tool.ts";
+export { describeReceipt } from "../runtime/decision-record-tool.ts";
 
-export { describeReceipt };
-
-export default function decisionRecordExtension(pi: ExtensionAPI): void {
-  pi.registerTool(createDecisionRecordTool());
-}
+/** 保留扩展加载入口，不注册自由写决定工具。 */
+export default function decisionRecordExtension(_pi: ExtensionAPI): void {}

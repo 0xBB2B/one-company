@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
 const renameRace = vi.hoisted(() => ({
   enabled: false,
@@ -57,7 +58,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const { create, save, ProdStorageError } = await import("../runtime/prod-storage.ts");
 
-const GIT = "/usr/bin/git";
+const GIT = testHostGitExecutable([]);
 const REQUIREMENT_ID = "01941f29-7c00-7000-8000-000000000002";
 const roots: string[] = [];
 

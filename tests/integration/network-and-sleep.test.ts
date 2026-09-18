@@ -1,473 +1,123 @@
-import { uuidv7 } from "../../runtime/database.ts";
-import { afterEach, describe, expect, test } from "vitest";
-import { randomUUID } from "node:crypto";
+import { afterEach, expect, test } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  connectTestClient,
-  createDaemonFixture,
-  killDaemon,
-  removeDaemonFixture,
-  startDaemonForTest,
-} from "../helpers/daemon-harness.ts";
-import type { DaemonFixture, DaemonHandle, TestClient } from "../helpers/daemon-harness.ts";
-import {
-  connectivityProbeEnv,
-  modelProviderEnv,
-  writeNetworkReachableFile,
-  writeTestModelProviders,
-} from "../helpers/daemon-model-fixture.ts";
-import type { TestProviderScript } from "../helpers/daemon-model-fixture.ts";
-import type { ScriptedReply } from "../helpers/controlled-provider.ts";
-import { createFakeTimeSource, withClockPump } from "../helpers/fake-clock.ts";
-import { appendDecision } from "../../runtime/decisions.ts";
-import { executeWorkflowAction } from "../../runtime/workflow-tool.ts";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { createRoleSession } from "../../daemon/role-session.ts";
+import { RunManager } from "../../daemon/run-manager.ts";
+import { RelayQueue } from "../../daemon/relay-queue.ts";
+import { RunStore } from "../../runtime/run-store.ts";
+import { repositoryIdentity } from "../../runtime/identity.ts";
+import { createRangeProtection } from "../../runtime/range-protection.ts";
 import { createClock } from "../../runtime/clock.ts";
 import { ShellRegistry } from "../../runtime/shell-registry.ts";
+import { uuidv7 } from "../../runtime/database.ts";
+import { ConnectivityProbe, NetworkPauseGate } from "../../runtime/network-pause.ts";
 import { startHeartbeat, WindowRegistry } from "../../runtime/windows.ts";
+import { createFakeTimeSource, withClockPump } from "../helpers/fake-clock.ts";
+import { createDaemonFixture, killDaemon, removeDaemonFixture, startDaemonForTest } from "../helpers/daemon-harness.ts";
+import { createRepoFixture, removeRepoFixture } from "../helpers/repo-fixture.ts";
+import { createTempHome, removeTempHome } from "../helpers/temp-home.ts";
+import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
+import type { ScriptedReply } from "../helpers/controlled-provider.ts";
 
-interface World {
-  fixture: DaemonFixture;
-  handle: DaemonHandle;
-  client: TestClient;
+const cleanup: Array<() => unknown | Promise<unknown>> = [];
+afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+async function until(predicate: () => boolean | Promise<boolean>) {
+  for (let i = 0; i < 200; i++) { if (await predicate()) return; await delay(25); }
+  throw new Error("异步网络操作未收尾");
 }
-
-const activeWorlds: World[] = [];
-const plainTempDirs: string[] = [];
-const spawnedPgids: number[] = [];
-
-afterEach(async () => {
-  for (const world of activeWorlds.splice(0)) {
-    world.client.close();
-    await killDaemon(world.handle).catch(() => undefined);
-    await removeDaemonFixture(world.fixture).catch(() => undefined);
+async function world() {
+  const repo = await createRepoFixture(); cleanup.push(() => removeRepoFixture(repo));
+  const home = await createTempHome(); cleanup.push(() => removeTempHome(home));
+  const { repoId } = await repositoryIdentity(repo.root);
+  const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
+  const shells = new ShellRegistry({ clock });
+  const gate = new NetworkPauseGate();
+  const store = new RunStore({ dataRoot: home.dataRoot, repoId, daemonStartedAt: "network-history" });
+  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(home.home, "models.json"), refreshOnCreate: false });
+  let serial = 0;
+  async function role(replies: ScriptedReply[]) {
+    const provider = registerControlledProvider(runtime, { providerId: `network-fixture-${++serial}`, modelId: "test" }); scriptReplies(provider, replies);
+    const run = await store.create({ kind: "role", standalone: true, role: "pi-company.worker", requirement: "2026-09-10.network", task: `T-${serial}`,
+      cwd: repo.root, readPaths: [repo.root], writePaths: [], model: { provider: provider.providerId, id: "test" }, thinking: "off", mcp: [] });
+    const guards = await createRangeProtection({ cwd: repo.root, dataRoot: home.dataRoot, holder: { kind: "role", runId: run.id, requirement: run.requirement }, writePaths: [], clock, shells });
+    cleanup.push(() => guards.release());
+    const handle = await createRoleSession({ dataRoot: home.dataRoot, repoId, runId: run.id, shellToken: run.shellToken, cwd: repo.root,
+      roleName: "worker", role: { name: "worker", available: true, source: "project", path: "fixture", definition: { name: "worker", kind: "work", description: "fixture", tools: [], skills: false, contextFiles: false, promptMode: "append", body: "fixture" } },
+      task: run.task, readPaths: [repo.root], writePaths: [], runtime, modelRef: run.model, clock, shellRegistry: shells, guards, networkGate: gate,
+      contract: { kind: "plain", completion: "complete-on-idle" } });
+    cleanup.push(async () => { await handle.stop(); handle.dispose(); });
+    return { handle, provider, run };
   }
-  for (const dir of plainTempDirs.splice(0)) {
-    await rm(dir, { recursive: true, force: true });
+  return { repo, home, repoId, clock, shells, gate, store, runtime, role };
+}
+
+test("真实SDK连接故障只暂停受影响角色，同批独立角色正常完成", async () => {
+  const w = await world();
+  const network = await w.role([{ type: "error", message: "fetch failed: connection reset (network)" }]);
+  const normal = await w.role([{ type: "text", text: "独立只读结果" }]);
+  network.handle.prompt("触发连接故障"); normal.handle.prompt("不依赖其他角色");
+  await until(() => network.handle.state() === "paused_network"); await normal.handle.result();
+  expect(normal.handle.state()).toBe("completed"); expect(w.gate.canProceed(network.run.id)).toEqual({ allowed: false, reason: "network" });
+  expect(w.gate.canProceed(normal.run.id)).toEqual({ allowed: true });
+  await delay(100); expect(network.provider.requests).toHaveLength(1); expect(normal.provider.requests).toHaveLength(1);
+}, 20000);
+
+test("真实SDK认证、额度、业务错误均failed且保留真实原因，不误分类为网络暂停", async () => {
+  const w = await world();
+  for (const message of ["unauthorized: invalid api key supplied", "quota exceeded for this billing period", "请求参数不合法，缺少必填字段"]) {
+    const s = await w.role([{ type: "error", message }]); s.handle.prompt("分类测试");
+    await expect(s.handle.result()).rejects.toThrow(message); expect(s.handle.state()).toBe("failed");
+    expect(w.gate.canProceed(s.run.id)).toEqual({ allowed: true }); expect(s.provider.requests).toHaveLength(1);
   }
-  for (const pgid of spawnedPgids.splice(0)) {
-    try {
-      process.kill(-pgid, "SIGKILL");
-    } catch {
-      // 组已消失，无需处理
-    }
-  }
-});
+}, 20000);
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+test("真实网络探测恢复不复活旧暂停运行，手动暂停保持，且不调用模型", async () => {
+  const w = await world();
+  const network = await w.role([{ type: "error", message: "network fetch failed" }]);
+  const manual = await w.role([{ type: "text", text: "不应发出" }]);
+  // 历史状态数据不作为角色恢复授权；此处不启动两个SDK会话。
+  await w.store.update(network.run.id, { state: "running" }); await w.store.update(network.run.id, { state: "paused_network" });
+  await w.store.update(manual.run.id, { state: "running" }); await w.store.update(manual.run.id, { state: "pausing" }); await w.store.update(manual.run.id, { state: "paused" });
+  w.gate.requestPause(network.run.id, "network"); w.gate.requestPause(manual.run.id, "manual");
+  const relay = new RelayQueue({ dataDir: join(w.home.dataRoot, "repos", w.repoId), deliver: async () => [], locateRequirementAgent: () => undefined });
+  const manager = new RunManager({ dataRoot: w.home.dataRoot, repoId: w.repoId, runStore: w.store, shellRegistry: w.shells, networkGate: w.gate, relayQueue: relay,
+    roleCatalog: [], runtime: w.runtime, selectModel: () => { throw new Error("不得选模型"); }, clock: w.clock, workspaceRepoIds: [w.repoId], emit: () => {} });
+  manager.markStarted(); cleanup.push(() => manager.close());
+  const before = await w.store.list({ limit: 100 }); let reachable = false, offlineTicks = 0, onlineTicks = 0;
+  const probe = new ConnectivityProbe({ clock: w.clock, intervalMs: 30, probe: async () => {
+    if (!reachable) { offlineTicks++; return; }
+    await manager.resumeNetworkPaused(network.run.model.provider); onlineTicks++;
+  } }); cleanup.push(() => probe.stop()); probe.start();
+  await until(() => offlineTicks > 0); reachable = true; await until(() => onlineTicks > 1); probe.stop();
+  expect(await w.store.list({ limit: 100 })).toEqual(before);
+  expect(w.gate.canProceed(manual.run.id)).toEqual({ allowed: false, reason: "manual" });
+  expect(w.gate.canProceed(network.run.id)).toEqual({ allowed: false, reason: "network" });
+  expect(network.provider.requests).toEqual([]); expect(manual.provider.requests).toEqual([]);
+}, 20000);
 
-function toolReply(name: string, input: Record<string, unknown>): ScriptedReply {
-  return { type: "toolcall", name, input };
-}
+test("daemon空闲计时不因注入五分钟睡眠时钟跳变提前退出", async () => {
+  const fixture = await createDaemonFixture(); cleanup.push(() => removeDaemonFixture(fixture));
+  const skewFile = join(fixture.home.home, "clock-skew.json"); await writeFile(skewFile, "0");
+  const handle = await startDaemonForTest(fixture, { idleTimeoutMs: 3000, clockSkewFile: skewFile }); cleanup.push(() => killDaemon(handle));
+  await delay(500); await writeFile(skewFile, String(5 * 60 * 1000)); await delay(500);
+  expect(handle.proc.exitCode).toBeNull(); expect(handle.proc.signalCode).toBeNull();
+}, 15000);
 
-function textReply(text: string, chunkDelayMs?: number): ScriptedReply {
-  return { type: "text", text, chunkDelayMs };
-}
-
-function shapeTask(id: string, role: string, writePaths: string[]): Record<string, unknown> {
-  return { id, title: `任务 ${id}`, roles: [role], dependsOn: [], writePaths };
-}
-
-function proposeShapeReply(tasks: Array<Record<string, unknown>>): ScriptedReply {
-  return toolReply("pi_company_propose_shape", {
-    tasks,
-    gates: { whiteboxReview: false, blackboxAcceptance: false },
-    rationale: "network-and-sleep 集成测试固定形状",
-  });
-}
-
-function dispatchRoleReply(role: string, task: string, writePaths: string[]): ScriptedReply {
-  return toolReply("pi_company_agent", { action: "run", role, task, writePaths, readPaths: [] });
-}
-
-function validWorkResult(): Record<string, unknown> {
-  return {
-    phase: "work",
-    verdict: "PASS",
-    summary: "network-and-sleep 集成测试固定完成",
-    issues: [],
-    evidence: ["测试固定证据"],
-    changeKind: "refactor",
-    workState: "green-baseline-no-change",
-    coverage: [{ ref: "rule-1", test: "test-1" }],
-    redCommands: [],
-    greenCommands: [{ command: "true", status: "passed", details: "ok" }],
-    changedFiles: [],
-    productionPath: [],
-    preexistingEvidence: [],
-    fakeRed: false,
-  };
-}
-
-function submitReply(): ScriptedReply {
-  return toolReply("structured_output", validWorkResult());
-}
-
-const REQUIREMENT_PROVIDER = { providerId: "controlled-requirement-agent", modelId: "controlled-model", roleName: "requirement-agent" };
-
-async function startWorld(scripts: TestProviderScript[], extraEnv: Record<string, string> = {}): Promise<World> {
-  const fixture = await createDaemonFixture();
-  const providersPath = await writeTestModelProviders(fixture.dataRoot, scripts);
-  const handle = await startDaemonForTest(fixture, {
-    extraEnv: { ...modelProviderEnv(providersPath), ...extraEnv },
-  });
-  const client = await connectTestClient(fixture.socketPath, {
-    cwd: fixture.repo.root,
-    workspaceRoot: fixture.repo.root,
-    repoIds: [fixture.repoId],
-  });
-  const world: World = { fixture, handle, client };
-  activeWorlds.push(world);
-  return world;
-}
-
-async function confirmRequirement(dataRoot: string, cwd: string, requirement: string): Promise<void> {
-  await executeWorkflowAction({ action: "init", requirement }, { dataRoot, cwd });
-  const decision = await appendDecision(
-    {
-      requirement,
-      actor: "user",
-      source: "test",
-      trigger: "确认需求",
-      decision: "确认进入执行",
-      alternatives: [],
-      effects: ["scope"],
-      impact: "network-and-sleep 集成测试固定路径",
-    },
-    { dataRoot, cwd },
-  );
-  const result = await executeWorkflowAction(
-    { action: "advance", requirement, stage: "confirmed", version: 1, decisionId: decision.decisionId },
-    { dataRoot, cwd },
-  );
-  if (result.details.isError) throw new Error(`测试固件未能确认需求: ${result.text}`);
-}
-
-function autoConfirmShape(client: TestClient): () => void {
-  return client.onEvent("relay.question", (data) => {
-    void client.call("relay.answer", {
-      questionId: data.id as string,
-      answer: "确认",
-      windowId: "test-window",
-    });
-  });
-}
-
-async function dispatchRequirement(client: TestClient, cwd: string, requirement: string): Promise<string> {
-  const result = await client.call("dispatch.requirement", { requirement, cwd });
-  return result.runId as string;
-}
-
-interface RunView {
-  id: string;
-  kind: string;
-  state: string;
-  task: string;
-  role?: string;
-  stateReason?: string;
-}
-
-async function listRuns(client: TestClient): Promise<RunView[]> {
-  const result = await client.call("runs.list", { limit: 200 });
-  return result.items as RunView[];
-}
-
-async function waitForRun(client: TestClient, predicate: (run: RunView) => boolean, timeoutMs = 15_000): Promise<RunView> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const runs = await listRuns(client);
-    const found = runs.find(predicate);
-    if (found) return found;
-    await delay(150);
-  }
-  throw new Error(`等待目标运行超时: ${JSON.stringify((await listRuns(client)).map(({ task, state, stateReason }) => ({ task, state, stateReason })))}`);
-}
-
-describe("pause-control：断网局部暂停", () => {
-  test(
-    "受控 provider 抛连接类故障后只有受影响的运行进入 paused_network，同批次另一角色不受影响",
-    async () => {
-      const requirement = "2026-09-10.network-partial-pause";
-      const reachableDir = await mkdtemp(join(tmpdir(), "network-reachable-"));
-      const reachableFile = join(reachableDir, "reachable.txt");
-      await writeNetworkReachableFile(reachableFile, false);
-
-      const scripts: TestProviderScript[] = [
-        {
-          ...REQUIREMENT_PROVIDER,
-          replies: [
-            proposeShapeReply([shapeTask("T-1", "worker", ["area-a"]), shapeTask("T-2", "worker", ["area-b"])]),
-            dispatchRoleReply("worker", "T-1", ["area-a"]),
-            dispatchRoleReply("worker", "T-2", ["area-b"]),
-            textReply("已派工"),
-          ],
-        },
-        {
-          providerId: "controlled-worker-T-1",
-          modelId: "controlled-model",
-          roleName: "worker",
-          taskId: "T-1",
-          replies: [{ type: "error", message: "fetch failed: 网络连接被重置 (network)" }, toolReply("pi_company_resume_check", {}), textReply("恢复核对完成", 10_000)],
-        },
-        {
-          providerId: "controlled-worker-T-2",
-          modelId: "controlled-model",
-          roleName: "worker",
-          taskId: "T-2",
-          replies: [submitReply(), textReply("完成")],
-        },
-      ];
-      const world = await startWorld(scripts, connectivityProbeEnv(reachableFile, 500));
-      const unsubscribe = autoConfirmShape(world.client);
-      await confirmRequirement(world.fixture.dataRoot, world.fixture.repo.root, requirement);
-      await dispatchRequirement(world.client, world.fixture.repo.root, requirement);
-
-      const pausedT1 = await waitForRun(
-        world.client,
-        (run) => run.kind === "role" && run.task === "T-1" && run.state === "paused_network",
-        15_000,
-      );
-      const completedT2 = await waitForRun(
-        world.client,
-        (run) => run.kind === "role" && run.task === "T-2" && run.state === "completed",
-        15_000,
-      );
-      unsubscribe();
-
-      expect(pausedT1.state).toBe("paused_network");
-      expect(completedT2.state).toBe("completed");
-
-      const stillPaused = (await listRuns(world.client)).find((run) => run.id === pausedT1.id);
-      expect(stillPaused?.state).toBe("paused_network");
-
-      await rm(reachableDir, { recursive: true, force: true });
-    },
-    30_000,
-  );
-});
-
-describe("pause-control：故障分类", () => {
-  test(
-    "认证错误、额度错误、业务错误均直接结算为 failed 且各自保留真实归因，不进入 paused_network",
-    async () => {
-      const requirement = "2026-09-10.failure-classification";
-      const scripts: TestProviderScript[] = [
-        {
-          ...REQUIREMENT_PROVIDER,
-          replies: [
-            proposeShapeReply([
-              shapeTask("T-1", "worker", ["area-a"]),
-              shapeTask("T-2", "worker", ["area-b"]),
-              shapeTask("T-3", "worker", ["area-c"]),
-            ]),
-            dispatchRoleReply("worker", "T-1", ["area-a"]),
-            dispatchRoleReply("worker", "T-2", ["area-b"]),
-            dispatchRoleReply("worker", "T-3", ["area-c"]),
-            textReply("已派工"),
-          ],
-        },
-        {
-          providerId: "controlled-worker-T-1",
-          modelId: "controlled-model",
-          roleName: "worker",
-          taskId: "T-1",
-          replies: [{ type: "error", message: "unauthorized: invalid api key supplied" }],
-        },
-        {
-          providerId: "controlled-worker-T-2",
-          modelId: "controlled-model",
-          roleName: "worker",
-          taskId: "T-2",
-          replies: [{ type: "error", message: "quota exceeded for this billing period" }],
-        },
-        {
-          providerId: "controlled-worker-T-3",
-          modelId: "controlled-model",
-          roleName: "worker",
-          taskId: "T-3",
-          replies: [{ type: "error", message: "请求参数不合法，缺少必填字段" }],
-        },
-      ];
-      const world = await startWorld(scripts);
-      const unsubscribe = autoConfirmShape(world.client);
-      await confirmRequirement(world.fixture.dataRoot, world.fixture.repo.root, requirement);
-      await dispatchRequirement(world.client, world.fixture.repo.root, requirement);
-
-      const failedT1 = await waitForRun(world.client, (run) => run.kind === "role" && run.task === "T-1" && run.state === "failed", 15_000);
-      const failedT2 = await waitForRun(world.client, (run) => run.kind === "role" && run.task === "T-2" && run.state === "failed", 15_000);
-      const failedT3 = await waitForRun(world.client, (run) => run.kind === "role" && run.task === "T-3" && run.state === "failed", 15_000);
-      unsubscribe();
-
-      expect(failedT1.state).toBe("failed");
-      expect(failedT1.stateReason ?? "").toContain("invalid api key");
-      expect(failedT2.state).toBe("failed");
-      expect(failedT2.stateReason ?? "").toContain("quota exceeded");
-      expect(failedT3.state).toBe("failed");
-      expect(failedT3.stateReason ?? "").toContain("请求参数不合法");
-    },
-    30_000,
-  );
-});
-
-describe("pause-control：联网自动续接与手动暂停并存", () => {
-  test(
-    "网络恢复后仅网络暂停的运行核对续接并通知，手动暂停的运行保持不变",
-    async () => {
-      const requirement = "2026-09-10.network-resume-with-manual-pause";
-      const reachableDir = await mkdtemp(join(tmpdir(), "network-reachable-"));
-      const reachableFile = join(reachableDir, "reachable.txt");
-      await writeNetworkReachableFile(reachableFile, false);
-
-      const scripts: TestProviderScript[] = [
-        {
-          ...REQUIREMENT_PROVIDER,
-          replies: [
-            proposeShapeReply([shapeTask("T-1", "worker", ["area-a"]), shapeTask("T-2", "worker", ["area-b"])]),
-            dispatchRoleReply("worker", "T-1", ["area-a"]),
-            dispatchRoleReply("worker", "T-2", ["area-b"]),
-            textReply("已派工"),
-          ],
-        },
-        {
-          providerId: "controlled-worker-T-1",
-          modelId: "controlled-model",
-          roleName: "worker",
-          taskId: "T-1",
-          replies: [{ type: "error", message: "fetch failed: 网络连接被重置 (network)" }, toolReply("pi_company_resume_check", {}), textReply("恢复核对完成", 10_000)],
-        },
-        {
-          providerId: "controlled-worker-T-2",
-          modelId: "controlled-model",
-          roleName: "worker",
-          taskId: "T-2",
-          replies: [toolReply("bash", { command: "sleep 15" })],
-        },
-      ];
-      const world = await startWorld(scripts, connectivityProbeEnv(reachableFile, 500));
-      const unsubscribe = autoConfirmShape(world.client);
-      await confirmRequirement(world.fixture.dataRoot, world.fixture.repo.root, requirement);
-      await dispatchRequirement(world.client, world.fixture.repo.root, requirement);
-
-      const pausedNet = await waitForRun(
-        world.client,
-        (run) => run.kind === "role" && run.task === "T-1" && run.state === "paused_network",
-        15_000,
-      );
-      const t2 = await waitForRun(world.client, (run) => run.kind === "role" && run.task === "T-2");
-      unsubscribe();
-
-      await world.client.call("runs.pause", { runId: t2.id });
-      const pausedManual = await waitForRun(world.client, (run) => run.id === t2.id && run.state === "paused", 8_000);
-      expect(pausedManual.state).toBe("paused");
-
-      let notified = false;
-      const stopNotice = world.client.onEvent("relay.notice", () => {
-        notified = true;
-      });
-      const stopChanged = world.client.onEvent("runs.changed", (data) => {
-        const run = data.run as { id?: string; state?: string } | undefined;
-        if (run?.id === pausedNet.id && run.state === "running") notified = true;
-      });
-
-      // 探测间隔已注入为 500ms：先让至少一轮探测读到"不可达"基线，再写 reachable 触发下一轮探测检出恢复
-      await delay(700);
-      await writeNetworkReachableFile(reachableFile, true);
-
-      const recovered = await waitForRun(world.client, (run) => run.id === pausedNet.id && run.state === "running", 5_000);
-      expect(recovered.state).toBe("running");
-
-      await delay(1_000);
-      stopNotice();
-      stopChanged();
-      expect(notified).toBe(true);
-
-      const stillManualPaused = (await listRuns(world.client)).find((run) => run.id === t2.id);
-      expect(stillManualPaused?.state).toBe("paused");
-
-      await rm(reachableDir, { recursive: true, force: true });
-    },
-    30_000,
-  );
-});
-
-describe("daemon-host：睡眠不计入超时", () => {
-  test(
-    "空闲计时不因注入的 5 分钟时钟跳变判定空闲退出",
-    async () => {
-      const fixture = await createDaemonFixture();
-      const skewFile = join(fixture.home.home, "clock-skew.json");
-      await writeFile(skewFile, "0");
-      const idleTimeoutMs = 3_000;
-      const handle = await startDaemonForTest(fixture, { idleTimeoutMs, clockSkewFile: skewFile });
-      try {
-        await delay(500);
-        await writeFile(skewFile, String(5 * 60 * 1000));
-        await delay(500);
-        expect(handle.proc.exitCode).toBeNull();
-        expect(handle.proc.signalCode).toBeNull();
-      } finally {
-        await killDaemon(handle).catch(() => undefined);
-        await removeDaemonFixture(fixture).catch(() => undefined);
-      }
-    },
-    15_000,
-  );
-
-  test(
-    "共用同一把时钟的 60 秒超时后台 Shell 与窗口心跳，在 5 分钟跳变后均不判定为超时或失联",
-    async () => {
-      const timeSource = createFakeTimeSource();
-      const clock = createClock({ timeSource });
-      const shellRegistry = new ShellRegistry({ clock });
-      const taskId = randomUUID();
-      const spawned = await shellRegistry.spawn({
-        taskId,
-        host: { kind: "main", id: "sleep-test-window" },
-        command: "sh",
-        args: ["-c", "sleep 300"],
-        mode: "background",
-        timeoutSeconds: 60,
-        runToken: randomUUID(),
-      });
-      expect(spawned.ok).toBe(true);
-      if (!spawned.ok) return;
-      spawnedPgids.push(spawned.task.pgid);
-
-      const windowRepoDir = await mkdtemp(join(tmpdir(), "sleep-test-window-repo-"));
-      plainTempDirs.push(windowRepoDir);
-      const windowId = uuidv7();
-      const windowRegistry = new WindowRegistry({
-        repoDir: windowRepoDir,
-        clock,
-        bootId: async () => "boot-fixed",
-        processStartedAt: async (pid: number) => `start-${pid}`,
-      });
-      await windowRegistry.register({
-        windowId,
-        pid: process.pid,
-        sessionId: "sleep-test-session",
-        cwd: process.cwd(),
-        workspaceRoot: process.cwd(),
-      });
-      const stopHeartbeat = startHeartbeat(windowRegistry, windowId);
-
-      try {
-        timeSource.jump(5 * 60_000);
-        await delay(50);
-
-        expect(shellRegistry.get(taskId)?.status).not.toBe("timed_out");
-        expect(await windowRegistry.isAlive(windowId)).toBe(true);
-        const holderGone = await windowRegistry.holderGone(windowId);
-        expect(holderGone.gone).toBe(false);
-      } finally {
-        stopHeartbeat();
-        await withClockPump(timeSource, () => shellRegistry.stop(taskId)).catch(() => {});
-        await windowRegistry.unregister(windowId).catch(() => {});
-      }
-    },
-    15_000,
-  );
-});
+test("同一时钟的60秒后台Shell超时与窗口心跳不因五分钟睡眠跳变失效", async () => {
+  const time = createFakeTimeSource(), clock = createClock({ timeSource: time }); cleanup.push(() => clock.stopGapWatcher());
+  const shells = new ShellRegistry({ clock });
+  const spawned = await shells.spawn({ taskId: uuidv7(), host: { kind: "main", id: "sleep-test" }, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], mode: "background", timeoutSeconds: 60, runToken: uuidv7() });
+  if (!spawned.ok) throw new Error(spawned.reason);
+  cleanup.push(async () => { await withClockPump(time, () => shells.stop(spawned.task.taskId)); expect(() => process.kill(spawned.task.pid, 0)).toThrow(); });
+  const dir = await mkdtemp(join(tmpdir(), "sleep-window-")); cleanup.push(() => rm(dir, { recursive: true, force: true }));
+  const registry = new WindowRegistry({ repoDir: dir, clock, bootId: async () => "boot-fixed", processStartedAt: async (pid) => `start-${pid}` });
+  const id = uuidv7(); await registry.register({ windowId: id, pid: process.pid, sessionId: "sleep", cwd: dir, workspaceRoot: dir });
+  cleanup.push(() => registry.unregister(id)); const heartbeat = startHeartbeat(registry, id); cleanup.push(heartbeat);
+  time.jump(5 * 60000); await delay(50);
+  expect(shells.get(spawned.task.taskId)?.status).not.toBe("timed_out"); expect(await registry.isAlive(id)).toBe(true);
+  expect((await registry.holderGone(id)).gone).toBe(false);
+}, 15000);

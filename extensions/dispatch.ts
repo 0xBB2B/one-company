@@ -1,489 +1,169 @@
 import { basename, isAbsolute } from "node:path";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import { Value } from "typebox/value";
+import { UUID_V7_PATTERN } from "../runtime/database.ts";
+import { LEGACY_METADATA_BYTES, LEGACY_METADATA_LIMIT } from "../runtime/workflow-tool.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DaemonClient, WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
-import { collectGitSnapshot } from "../runtime/git-snapshot.ts";
-import { dataRoot, repositoryIdentity } from "../runtime/identity.ts";
+import { repositoryIdentity } from "../runtime/identity.ts";
 import type { Workspace } from "../runtime/identity.ts";
-import type { RunState } from "../runtime/run-store.ts";
-import { readRequirementState } from "../runtime/workflow-state.ts";
+import { LEGACY_WORKFLOW_RETIRED } from "../runtime/decision-record-tool.ts";
 import { windowContext } from "./lifecycle.ts";
 
-export const DISPATCH_PARAMETERS = Type.Object({
-  requirement: Type.String({ description: "需求目录名 <YYYY-MM-DD>.<slug>" }),
-  cwd: Type.String({ description: "需求所属仓库的工作目录绝对路径" }),
-}, { additionalProperties: false });
-
-export const REPLY_PARAMETERS = Type.Object({
-  questionId: Type.String(),
-  answer: Type.String({ minLength: 1 }),
-}, { additionalProperties: false });
-
-export const FORWARD_PARAMETERS = Type.Object({
-  requirement: Type.String(),
-  cwd: Type.String(),
-  message: Type.String({ minLength: 1 }),
-}, { additionalProperties: false });
-
 export const AGENTS_PARAMETERS = Type.Object({
-  action: Type.Union([
-    Type.Literal("list"), Type.Literal("status"), Type.Literal("pause"), Type.Literal("resume"),
-    Type.Literal("stop"), Type.Literal("pauseAll"), Type.Literal("resumeAll"), Type.Literal("stopAll"),
-    Type.Literal("resumeInterrupted"),
-  ]),
-  runId: Type.Optional(Type.String()),
-  cwd: Type.Optional(Type.String()),
+  action: Type.Union([Type.Literal("list"), Type.Literal("status"), Type.Literal("pause"), Type.Literal("stop"), Type.Literal("pauseAll"), Type.Literal("stopAll")]),
+  runId: Type.Optional(Type.String()), cwd: Type.Optional(Type.String()),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: LEGACY_METADATA_LIMIT })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
 }, { additionalProperties: false });
-
-export const REVIEW_PARAMETERS = Type.Object({
-  requirement: Type.String(),
-  cwd: Type.String(),
-  baseline: Type.String(),
-}, { additionalProperties: false });
-
 export interface DispatchContext {
   execution?: { projectTrusted: boolean; model?: { provider: string; id: string }; thinking?: string };
-  clients: WorkspaceClientsHandle;
-  windowId: string;
-  workspace: Workspace;
-  gitTimeoutMs?: number;
-  gitMaxBuffer?: number;
+  clients: WorkspaceClientsHandle; windowId: string; workspace: Workspace;
+  gitTimeoutMs?: number; gitMaxBuffer?: number;
 }
-
-interface ToolResult {
-  content: Array<{ type: "text"; text: string }>;
-  details: Record<string, unknown>;
-}
-
-function okResult(text: string): ToolResult {
-  return { content: [{ type: "text", text }], details: { isError: false } };
-}
-
-function errorResult(text: string): ToolResult {
-  return { content: [{ type: "text", text }], details: { isError: true } };
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-}
-
-function daemonErrorCode(error: unknown): string | undefined {
-  const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === "string" ? code : undefined;
-}
-
-function daemonErrorData(error: unknown): Record<string, unknown> | undefined {
-  const data = (error as { data?: unknown } | null)?.data;
-  return data && typeof data === "object" ? (data as Record<string, unknown>) : undefined;
-}
-
-// 不可达原因可能带完整 socket 路径与守护进程日志尾（daemon-client.ts 的连接失败文案），
-// 直接透出会把本机绝对路径与大段日志灌进聊天区；只留第一行、抹掉路径段、限长。
-// 路径判定收窄到"至少两级 ASCII 路径段"，且前一字符不能是 `:`、`/` 或字母数字——
-// 排除 URL（"https://" 的双斜杠、"example.com/v1" 的字母数字前缀）与业务文案里的
-// "T-1/T-2"、"读/写"这类非路径斜杠
-const REASON_MAX_LENGTH = 200;
-const ABSOLUTE_PATH_PATTERN = /(?<![:\w/])\/(?:[A-Za-z0-9._~@+-]+\/)+[A-Za-z0-9._~@+-]*/g;
-
-function briefReason(raw: string): string {
-  const firstLine = raw.split("\n")[0] ?? raw;
-  const withoutPaths = firstLine.replace(ABSOLUTE_PATH_PATTERN, "[path]");
-  return withoutPaths.length > REASON_MAX_LENGTH ? `${withoutPaths.slice(0, REASON_MAX_LENGTH)}…` : withoutPaths;
-}
-
-const STATE_LABELS: Record<RunState, string> = {
-  queued: "排队中",
-  running: "运行中",
-  pausing: "暂停中",
-  paused: "已暂停",
-  paused_network: "网络已暂停",
-  waiting_answer: "等待作答中",
-  completed: "已完成",
-  failed: "已失败",
-  stopped: "已停止",
-  interrupted: "已中断",
-};
-
-function stateLabel(state: string): string {
-  return STATE_LABELS[state as RunState] ?? state;
-}
-
-function briefResult(result: Record<string, unknown>): string {
-  const parts: string[] = [];
-  if (typeof result.id === "string") parts.push(result.id);
-  if (result.confirmed === false) parts.push("操作尚未确认完成");
-  else if (typeof result.state === "string") parts.push(stateLabel(result.state));
-  if (typeof result.reason === "string") parts.push(briefReason(result.reason));
-  if (typeof result.stateReason === "string") parts.push(result.stateReason);
-  return parts.join(" ");
-}
-
-// 中止与超时共用同一句回执：调用方（daemon 或 git 子进程）状态在中止那一刻是未知的，
-// 不能宣称"未执行"，只能引导去 agents list 核对真实状态
+function result(text: string, isError = false, coverage?: Record<string, unknown>) { return { content: [{ type: "text" as const, text }], details: { isError, ...(coverage ? { coverage } : {}) } }; }
 const ABORT_RECEIPT = "已停止等待，守护进程可能仍在执行，请用 agents list 核对";
-
-const DAEMON_CALL_TIMEOUT_MS = 30_000;
-
-function callWithAbort(
-  client: DaemonClient,
-  method: string,
-  params: Record<string, unknown>,
-  signal: AbortSignal | undefined,
-): Promise<Record<string, unknown>> {
+function isAbortReceipt(error: unknown): boolean { return error instanceof Error && error.message === ABORT_RECEIPT; }
+function callWithAbort(client: DaemonClient, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      fn();
-    };
+    const finish = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener("abort", onAbort); fn(); };
     const onAbort = () => finish(() => reject(new Error(ABORT_RECEIPT)));
-    const timer = setTimeout(() => finish(() => reject(new Error(ABORT_RECEIPT))), DAEMON_CALL_TIMEOUT_MS);
-
-    if (signal?.aborted) {
-      onAbort();
-      return;
-    }
+    const timer = setTimeout(onAbort, 30_000);
+    if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener("abort", onAbort, { once: true });
-    client.call(method, params).then(
-      (result) => finish(() => resolve(result)),
-      (error) => finish(() => reject(error)),
-    );
+    client.call(method, params).then((value) => finish(() => resolve(value)), () => finish(() => reject(new Error("守护进程调用失败，请查询状态核对"))));
   });
 }
-
-async function locateClient(cwd: string, clients: WorkspaceClientsHandle): Promise<DaemonClient | undefined> {
-  const identity = await repositoryIdentity(cwd);
-  return clients.forRepo(identity.repoId);
-}
-
-const GIT_TIMEOUT_MS = 10_000;
-const GIT_MAX_BUFFER = 64 * 1024 * 1024;
-
-// 与守护进程侧唯一性判定同口径：confirmed 及其后的进行中阶段（含 retreat 回到的 executing）均可再次派出，
-// 唯一性交给守护进程的 already_active 判定
-const DISPATCH_BLOCKED_STAGE_REASONS: Record<string, string> = {
-  draft: "尚未确认",
-  rejected: "已被拒绝",
-  accepted: "已验收",
-};
-
-async function executeDispatch(
-  params: { requirement: string; cwd: string },
-  dctx: DispatchContext,
-  signal: AbortSignal | undefined,
-): Promise<ToolResult> {
-  const { requirement, cwd } = params;
-  if (!isAbsolute(cwd)) return errorResult(`cwd 必须是绝对路径: ${cwd}`);
-  const state = await readRequirementState({ dataRoot: dataRoot(process.env), cwd, requirement });
-  if (!state.exists) return errorResult(`${requirement} 尚未确认，无法派出`);
-  const blockedReason = DISPATCH_BLOCKED_STAGE_REASONS[state.data.stage];
-  if (blockedReason) return errorResult(`${requirement} ${blockedReason}，无法派出`);
-  const client = await locateClient(cwd, dctx.clients);
-  if (!client) return errorResult(`${requirement} 所在仓库不在工作区内`);
-  try {
-    const result = await callWithAbort(client, "dispatch.requirement", { requirement, cwd, ...(dctx.execution ? { context: dctx.execution } : {}) }, signal);
-    return okResult(`${requirement} 已派出：${briefResult(result)}`);
-  } catch (error) {
-    const runId = daemonErrorCode(error) === "already_active" ? daemonErrorData(error)?.runId : undefined;
-    if (typeof runId === "string") return okResult(`${requirement} 已有活动运行：${runId}`);
-    throw error;
+function targets(context: DispatchContext) {
+  const repositories = new Map(context.workspace.repos.map((repo) => [repo.repoId, repo.path]));
+  const seen = new Set<DaemonClient>();
+  const found: Array<{ name: string; client: DaemonClient }> = [];
+  for (const [repoId, path] of repositories) {
+    const client = context.clients.forRepo(repoId);
+    if (client && !seen.has(client)) { seen.add(client); found.push({ name: basename(path), client }); }
   }
+  for (const client of context.clients.all()) if (!seen.has(client)) { seen.add(client); found.push({ name: "未知仓库", client }); }
+  return found;
 }
-
-async function executeReview(
-  params: { requirement: string; cwd: string; baseline: string },
-  dctx: DispatchContext,
-  signal: AbortSignal | undefined,
-): Promise<ToolResult> {
-  const { requirement, cwd, baseline } = params;
-  if (!isAbsolute(cwd)) return errorResult(`cwd 必须是绝对路径: ${cwd}`);
-  const timeoutMs = dctx.gitTimeoutMs ?? GIT_TIMEOUT_MS;
-  const maxBuffer = dctx.gitMaxBuffer ?? GIT_MAX_BUFFER;
-  // 快照计算先于连接定位：定位仓库连接也要经 git 子进程，先出发才能在 PATH 被劫持/git 挂起时被同一个 signal 及时中止
-  let snapshot;
-  try {
-    snapshot = await collectGitSnapshot({ repoRoot: cwd, gitTimeoutMs: timeoutMs, gitMaxBuffer: maxBuffer, signal });
-  } catch (error) {
-    // collectGitSnapshot 对中止只报"已中止"，这里按守护进程调用惯例换成 ABORT_RECEIPT 措辞
-    if (signal?.aborted) throw new Error(ABORT_RECEIPT);
-    throw error;
-  }
-  const client = await locateClient(cwd, dctx.clients);
-  if (!client) return errorResult(`${requirement} 所在仓库不在工作区内`);
-  const result = await callWithAbort(
-    client,
-    "dispatch.review",
-    { requirement, cwd, baseline, ...(dctx.execution ? { context: dctx.execution } : {}), snapshot: { head: snapshot.head, fingerprint: snapshot.fingerprint } },
-    signal,
-  );
-  return okResult(`${requirement} 已派出提交前白盒审查：${briefResult(result)}`);
+function stateLabel(state: unknown): string {
+  const labels: Record<string, string> = { queued: "排队中", running: "运行中", pausing: "暂停中", paused: "已暂停", paused_network: "网络已暂停", waiting_answer: "等待作答中", completed: "已完成", failed: "已失败", stopped: "已停止", interrupted: "已中断" };
+  return typeof state === "string" ? labels[state] ?? "未知状态" : "未知状态";
 }
-
-async function executeReply(
-  params: { questionId: string; answer: string },
-  dctx: DispatchContext,
-  signal: AbortSignal | undefined,
-): Promise<ToolResult> {
-  const targets = dctx.clients.all();
-  if (targets.length === 0) return errorResult("工作区内没有可用的仓库连接");
-  const settled = await Promise.allSettled(
-    targets.map((client) => callWithAbort(client, "relay.answer", { questionId: params.questionId, answer: params.answer, windowId: dctx.windowId }, signal)),
-  );
-  const accepted = settled.some((entry) => entry.status === "fulfilled" && entry.value.accepted === true);
-  if (accepted) return okResult(`问题 ${params.questionId} 作答已采纳`);
-  const rejections = settled.filter((entry): entry is PromiseRejectedResult => entry.status === "rejected");
-  const otherFailures = rejections.filter((entry) => daemonErrorCode(entry.reason) !== "not_found");
-  if (otherFailures.length > 0) {
-    return errorResult(otherFailures.map((entry) => briefReason(errorMessage(entry.reason))).join("; "));
-  }
-  if (rejections.length > 0 && rejections.length === settled.length) {
-    return errorResult(`问题 ${params.questionId} 不存在`);
-  }
-  return errorResult(`问题 ${params.questionId} 已由其他窗口作答`);
-}
-
-const IN_PROGRESS_STAGES = new Set(["confirmed", "planned", "executing", "reviewing", "accepting"]);
-
-async function executeForward(
-  params: { requirement: string; cwd: string; message: string },
-  dctx: DispatchContext,
-  signal: AbortSignal | undefined,
-): Promise<ToolResult> {
-  const { requirement, cwd, message } = params;
-  if (!isAbsolute(cwd)) return errorResult(`cwd 必须是绝对路径: ${cwd}`);
-  const client = await locateClient(cwd, dctx.clients);
-  if (!client) return errorResult(`${requirement} 所在仓库不在工作区内`);
-  const state = await readRequirementState({ dataRoot: dataRoot(process.env), cwd, requirement });
-  if (!state.exists || !IN_PROGRESS_STAGES.has(state.data.stage)) {
-    return errorResult(`${requirement} 尚无进行中状态`);
-  }
-  const result = await callWithAbort(client, "relay.forward", { requirement, message, windowId: dctx.windowId }, signal);
-  return okResult(`${requirement} 转发成功：${briefResult(result)}`);
-}
-
-const SINGLE_RUN_METHODS: Record<string, string> = {
-  status: "runs.get",
-  pause: "runs.pause",
-  resume: "runs.resume",
-  stop: "runs.stop",
-  resumeInterrupted: "runs.resumeInterrupted",
-};
-
-const BROADCAST_ALL_METHODS: Record<string, string> = {
-  pauseAll: "runs.pauseAll",
-  resumeAll: "runs.resumeAll",
-  stopAll: "runs.stopAll",
-};
-
-const BROADCAST_ALL_FIELD: Record<string, string> = {
-  pauseAll: "pausedCount",
-  resumeAll: "resumedCount",
-  stopAll: "stoppedCount",
-};
-
-interface BroadcastTarget {
-  name: string;
-  client: DaemonClient;
-}
-
-// WorkspaceClientsHandle 只能按 repoId 查、不能反查仓库名；名字一律取 workspace.repos 里
-// 已发现的仓库路径（按 repoId 对上 clients 才纳入广播目标），不再靠扫目录反推。
-// 主目录与其 worktree 的 repoId 相同（同一份 commonDir），按 repoId 去重、首条胜出，
-// 与 runtime/daemon-client.ts 的 WorkspaceClients.create 里 uniqueRepos 的去重口径一致，
-// 否则同一个连接会被广播/计数两次
-function broadcastTargets(workspace: Workspace, clients: WorkspaceClientsHandle): BroadcastTarget[] {
-  const uniqueRepos = new Map<string, string>();
-  for (const repo of workspace.repos) {
-    if (!uniqueRepos.has(repo.repoId)) uniqueRepos.set(repo.repoId, repo.path);
-  }
-
-  const targets: BroadcastTarget[] = [];
-  const matchedClients = new Set<DaemonClient>();
-  for (const [repoId, path] of uniqueRepos) {
-    const client = clients.forRepo(repoId);
-    if (client) {
-      targets.push({ name: basename(path), client });
-      matchedClients.add(client);
-    }
-  }
-  for (const client of clients.all()) {
-    if (!matchedClients.has(client)) targets.push({ name: "未知仓库", client });
-  }
-  return targets;
-}
-
-function formatRunList(
-  targets: BroadcastTarget[],
-  settled: PromiseSettledResult<Record<string, unknown>>[],
-): { text: string; allFailed: boolean } {
-  let anyOk = false;
-  const parts = settled.map((entry, index) => {
-    const name = targets[index]?.name ?? "未知仓库";
-    if (entry.status === "fulfilled") {
-      anyOk = true;
-      const items = (entry.value.items as Array<{ id: string; state: string }> | undefined) ?? [];
-      const summary = items.length > 0 ? items.map((item) => `${item.id}(${stateLabel(item.state)})`).join("、") : "无运行中的代理";
-      return `${name}: ${summary}`;
-    }
-    return `${name}: ${briefReason(errorMessage(entry.reason))}`;
-  });
-  return { text: parts.join("；"), allFailed: settled.length > 0 && !anyOk };
-}
-
-function formatBroadcastAll(
-  targets: BroadcastTarget[],
-  settled: PromiseSettledResult<Record<string, unknown>>[],
-  field: string,
-): string {
-  return settled
-    .map((entry, index) => {
-      const name = targets[index]?.name ?? "未知仓库";
-      if (entry.status === "fulfilled") return `${name}: ${field}=${String(entry.value[field] ?? 0)}`;
-      return `${name}: ${briefReason(errorMessage(entry.reason))}`;
-    })
-    .join("；");
-}
-
-async function executeAgents(
-  params: { action: string; runId?: string; cwd?: string },
-  ctx: { cwd: string },
-  dctx: DispatchContext,
-  signal: AbortSignal | undefined,
-): Promise<ToolResult> {
-  if (params.action === "list") {
-    const targets = broadcastTargets(dctx.workspace, dctx.clients);
-    const settled = await Promise.allSettled(targets.map((target) => callWithAbort(target.client, "runs.list", {}, signal)));
-    const { text, allFailed } = formatRunList(targets, settled);
-    return allFailed ? errorResult(text) : okResult(text);
-  }
-
-  const broadcastMethod = BROADCAST_ALL_METHODS[params.action];
-  if (broadcastMethod) {
-    const targets = broadcastTargets(dctx.workspace, dctx.clients);
-    const settled = await Promise.allSettled(targets.map((target) => callWithAbort(target.client, broadcastMethod, {}, signal)));
-    return okResult(formatBroadcastAll(targets, settled, BROADCAST_ALL_FIELD[params.action] as string));
-  }
-
-  const method = SINGLE_RUN_METHODS[params.action];
-  if (!method) return errorResult(`不支持的动作: ${params.action}`);
-  if (!params.runId) return errorResult("缺少 runId");
-  const cwd = params.cwd ?? ctx.cwd;
-  if (!isAbsolute(cwd)) return errorResult(`cwd 必须是绝对路径: ${cwd}`);
-  const client = await locateClient(cwd, dctx.clients);
-  if (!client) return errorResult("仓库不在工作区内");
-  const result = await callWithAbort(client, method, { runId: params.runId }, signal);
-  return okResult(briefResult(result));
-}
-
-function renderSilently(): Component {
-  return {
-    render(): string[] {
-      return [];
-    },
-    invalidate(): void {},
-  };
-}
-
 export function registerDispatchTools(pi: ExtensionAPI, context: () => DispatchContext): void {
   pi.registerTool({
-    name: "pi_company_dispatch",
-    label: "派出需求代理",
-    description: "为已确认的需求派出需求代理",
-    parameters: DISPATCH_PARAMETERS,
-    renderShell: "self",
-    async execute(_toolCallId, params, signal, _onUpdate, _ctx: ExtensionContext) {
+    name: "pi_company_agents", label: "旧运行状态与停止", description: "只查询、暂停或停止旧运行；不提供派工、回复、转发和恢复", parameters: AGENTS_PARAMETERS,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const action: string = params.action;
+      if (!["list", "status", "pause", "stop", "pauseAll", "stopAll"].includes(action)) return result(LEGACY_WORKFLOW_RETIRED, true);
+      if (!Value.Check(AGENTS_PARAMETERS, params)) return result("旧运行查询参数无效", true);
       try {
-        return await executeDispatch(params, { ...context(), execution: { projectTrusted: _ctx?.isProjectTrusted?.() ?? false, model: _ctx?.model && { provider: _ctx.model.provider, id: _ctx.model.id }, thinking: _ctx?.thinkingLevel } }, signal);
-      } catch (error) {
-        return errorResult(briefReason(errorMessage(error)));
-      }
+        const dctx = context();
+        if (["list", "pauseAll", "stopAll"].includes(action)) {
+          const method = action === "list" ? "runs.list" : `runs.${action}`;
+          const selected = targets(dctx);
+          const settled = await Promise.allSettled(selected.map(({ client }) => callWithAbort(client, method, action === "list" ? { limit: params.limit ?? LEGACY_METADATA_LIMIT, offset: 0 } : {}, signal)));
+          if (action === "list") {
+            const offset = params.offset ?? 0;
+            const limit = params.limit ?? LEGACY_METADATA_LIMIT;
+            const pages: Array<{ index: number; total: number; value: Record<string, unknown> }> = [];
+            let unknown = 0;
+            let aborted = false;
+            let total = 0;
+            for (let index = 0; index < settled.length; index++) {
+              const entry = settled[index]!;
+              if (entry.status !== "fulfilled") { unknown++; aborted ||= isAbortReceipt(entry.reason); continue; }
+              if (!Array.isArray(entry.value.items)) { unknown++; continue; }
+              const coverage = entry.value.coverage as Record<string, unknown> | undefined;
+              const outside = coverage?.unconfirmedOutsidePage;
+              if (!Number.isSafeInteger(outside) || Number(outside) < 0) unknown++;
+              const count = entry.value.total ?? coverage?.total ?? (entry.value.items.length + (Number.isSafeInteger(outside) && Number(outside) >= 0 ? Number(outside) : 0));
+              if (!Number.isSafeInteger(count) || Number(count) < entry.value.items.length || !Number.isSafeInteger(total + Number(count))) { unknown++; continue; }
+              pages.push({ index, total: Number(count), value: entry.value });
+              total += Number(count);
+            }
+            const lines: string[] = [];
+            let validated = 0;
+            let consumed = 0;
+            const makeResult = () => {
+              const remaining = Math.max(0, total - offset - consumed);
+              const coverage = { returned: lines.length, validated, remaining, unknown, total, offset,
+                nextOffset: remaining > 0 && consumed > 0 ? offset + consumed : null,
+                unconfirmedOutsidePage: Math.max(0, total - lines.length), repositories: selected.length,
+                truncated: remaining > 0 || unknown > 0, byteLimit: LEGACY_METADATA_BYTES };
+              const notice = `展示=${lines.length}，页外未确认=${coverage.unconfirmedOutsidePage}，未知记录/仓库=${unknown}。状态不证明进程已停；分页不限制stopAll的停止范围。`;
+              return result([...lines, notice, ...(aborted ? [ABORT_RECEIPT] : [])].join("\n"), unknown > 0 || aborted, coverage);
+            };
+            let skip = offset;
+            for (const page of pages) {
+              if (skip >= page.total) { skip -= page.total; continue; }
+              const localOffset = skip; skip = 0;
+              let value = page.value;
+              if (localOffset > 0) {
+                try { value = await callWithAbort(selected[page.index]!.client, "runs.list", { limit, offset: localOffset }, signal); }
+                catch (error) { unknown++; aborted ||= isAbortReceipt(error); break; }
+                if (value.total !== page.total) { unknown++; break; }
+              }
+              if (!Array.isArray(value.items)) { unknown++; break; }
+              const name = selected[page.index]!.name;
+              const label = name.length <= 128 && !/[\u0000-\u001f\u007f]/.test(name) ? name : "仓库";
+              let examined = 0;
+              for (const item of value.items) {
+                const run = item as { id?: unknown; state?: unknown } | null;
+                if (!run || typeof run.id !== "string" || !UUID_V7_PATTERN.test(run.id) || stateLabel(run.state) === "未知状态") { unknown++; consumed++; examined++; continue; }
+                validated++;
+                if (lines.length >= limit) break;
+                lines.push(`${label}: ${run.id}(${stateLabel(run.state)})`);
+                consumed++; examined++;
+                // 核对真正返回的 JSON，包括转义、提示及覆盖字段。
+                if (Buffer.byteLength(JSON.stringify(makeResult())) > LEGACY_METADATA_BYTES - 256) {
+                  lines.pop(); consumed--; examined--; break;
+                }
+              }
+              // 当前仓库未消费完时不能先展示后续仓库，再用一个全局 offset 跳过它。
+              if (localOffset + examined < page.total) break;
+            }
+            return makeResult();
+          }
+          let failed = false;
+          const parts = settled.map((entry, index) => {
+            const name = selected[index]!.name;
+            if (entry.status === "rejected") { failed = true; return `${name}: ${entry.reason instanceof Error ? entry.reason.message : "状态查询失败"}`; }
+            const outcomes = entry.value.results as Array<{ confirmed?: boolean }> | undefined;
+            const coverage = entry.value.coverage as Record<string, unknown> | undefined;
+            const count = (key: string, fallback: number) => coverage && Number.isSafeInteger(coverage[key]) && Number(coverage[key]) >= 0 ? Number(coverage[key]) : fallback;
+            const confirmed = count("confirmed", outcomes?.filter((item) => item.confirmed === true).length ?? 0);
+            const unconfirmed = count("unconfirmed", outcomes?.filter((item) => item.confirmed !== true).length ?? 0) + count("shellUnconfirmed", 0);
+            const unknown = count("unknown", outcomes ? 0 : 1);
+            if (unconfirmed || unknown) failed = true;
+            return `${name.length <= 128 ? name : "仓库"}: 已确认=${confirmed}，未确认=${unconfirmed}，未知=${unknown}`;
+          });
+          const shown: string[] = [];
+          const makeResult = () => {
+            const remaining = parts.length - shown.length;
+            const notice = `仓库=${parts.length}，未展示=${remaining}，存在未确认或失败=${failed ? "是" : "否"}；停止范围不受展示分页限制。`;
+            return result([...shown, notice].join("；"), failed, { remaining, truncated: remaining > 0, hasUnconfirmed: failed, byteLimit: LEGACY_METADATA_BYTES });
+          };
+          for (const part of parts) {
+            if (shown.length >= LEGACY_METADATA_LIMIT) break;
+            shown.push(part);
+            if (Buffer.byteLength(JSON.stringify(makeResult())) > LEGACY_METADATA_BYTES) { shown.pop(); break; }
+          }
+          return makeResult();
+        }
+        if (!params.runId) return result("缺少 runId", true);
+        const cwd = params.cwd ?? ctx.cwd;
+        if (!isAbsolute(cwd)) return result("cwd 必须是绝对路径", true);
+        const client = dctx.clients.forRepo((await repositoryIdentity(cwd)).repoId);
+        if (!client) return result("仓库不在工作区内", true);
+        const response = await callWithAbort(client, action === "status" ? "runs.get" : `runs.${action}`, { runId: params.runId }, signal);
+        const state = action === "status" ? (response.run as { state?: unknown } | undefined)?.state : response.state;
+        if (action === "status") return result(`登记状态：${stateLabel(state)}；旧状态不证明当前验收通过或进程已停止`);
+        return result(response.confirmed === false ? "操作尚未确认完成，请核对真实进程" : stateLabel(state), response.confirmed === false);
+      } catch (error) { return result(isAbortReceipt(error) ? ABORT_RECEIPT : "旧运行状态操作失败", true); }
     },
-    renderCall: () => renderSilently(),
-    renderResult: () => renderSilently(),
-  });
-
-  pi.registerTool({
-    name: "pi_company_review",
-    label: "派出提交前白盒审查",
-    description: "为需求派出提交前白盒审查者",
-    parameters: REVIEW_PARAMETERS,
-    renderShell: "self",
-    async execute(_toolCallId, params, signal, _onUpdate, _ctx: ExtensionContext) {
-      try {
-        return await executeReview(params, { ...context(), execution: { projectTrusted: _ctx?.isProjectTrusted?.() ?? false, model: _ctx?.model && { provider: _ctx.model.provider, id: _ctx.model.id }, thinking: _ctx?.thinkingLevel } }, signal);
-      } catch (error) {
-        return errorResult(briefReason(errorMessage(error)));
-      }
-    },
-    renderCall: () => renderSilently(),
-    renderResult: () => renderSilently(),
-  });
-
-  pi.registerTool({
-    name: "pi_company_reply",
-    label: "回复问题",
-    description: "把用户答复转交给发出提问的窗口",
-    parameters: REPLY_PARAMETERS,
-    renderShell: "self",
-    async execute(_toolCallId, params, signal, _onUpdate, _ctx: ExtensionContext) {
-      try {
-        return await executeReply(params, context(), signal);
-      } catch (error) {
-        return errorResult(briefReason(errorMessage(error)));
-      }
-    },
-    renderCall: () => renderSilently(),
-    renderResult: () => renderSilently(),
-  });
-
-  pi.registerTool({
-    name: "pi_company_forward",
-    label: "转发补充需求",
-    description: "把补充说明转发给进行中需求所在的窗口",
-    parameters: FORWARD_PARAMETERS,
-    renderShell: "self",
-    async execute(_toolCallId, params, signal, _onUpdate, _ctx: ExtensionContext) {
-      try {
-        return await executeForward(params, context(), signal);
-      } catch (error) {
-        return errorResult(briefReason(errorMessage(error)));
-      }
-    },
-    renderCall: () => renderSilently(),
-    renderResult: () => renderSilently(),
-  });
-
-  pi.registerTool({
-    name: "pi_company_agents",
-    label: "查询与控制运行",
-    description: "查询工作区内的代理运行并按需暂停、恢复或停止",
-    parameters: AGENTS_PARAMETERS,
-    renderShell: "self",
-    async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
-      try {
-        return await executeAgents(params, ctx, context(), signal);
-      } catch (error) {
-        return errorResult(briefReason(errorMessage(error)));
-      }
-    },
-    renderCall: () => renderSilently(),
-    renderResult: () => renderSilently(),
   });
 }
-
 export default function dispatchExtension(pi: ExtensionAPI): void {
-  registerDispatchTools(pi, () => {
-    const { clients, windowId, workspace } = windowContext();
-    return { clients, windowId, workspace };
-  });
+  registerDispatchTools(pi, () => { const { clients, windowId, workspace } = windowContext(); return { clients, windowId, workspace }; });
 }

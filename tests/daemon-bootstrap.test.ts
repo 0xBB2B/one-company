@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { connectTestClient, waitForSocketReady } from "./helpers/daemon-harness.ts";
 import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const sourceRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -151,14 +154,14 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
     const scenarioRoot = await mkdtemp(join(root, "s-"));
     const repo = join(scenarioRoot, "repo"), dataRoot = join(scenarioRoot, "d"), home = join(scenarioRoot, "h");
     for (const dir of [repo, home]) await mkdir(dir, { mode: 0o700 });
-    await exec("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "init", "--initial-branch=main"], { cwd: repo, env, timeout: 10_000 });
+    await exec(HOST_GIT, ["-c", "core.hooksPath=/dev/null", "init", "--initial-branch=main"], { cwd: repo, env, timeout: 10_000 });
     const identity = await repositoryIdentity(repo);
     const socket = daemonSocketPath(dataRoot, identity.repoId);
     const extra = { HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_COMPANY_REPO_DIR: identity.commonDir,
       PI_COMPANY_DATA_ROOT: dataRoot, PI_COMPANY_SDK_DIR: sdkRoot, PI_COMPANY_IDLE_TIMEOUT_MS: "30000" };
     const first = child(node, [join(installed, "daemon/bootstrap.mjs")], extra);
     await Promise.race([waitForSocketReady(socket), first.closed.then((exit) => { throw new Error(`bootstrap 在 hello 前退出 ${exit.code}: ${exit.stderr}`); })]);
-    const client = await bounded(connectTestClient(socket, { cwd: repo, workspaceRoot: repo }));
+    const client = await bounded(connectTestClient(socket, { cwd: repo, workspaceRoot: repo }, { dataRoot }));
     try {
       expect(client.helloResult.daemonPid).toBe(first.proc.pid);
       expect(client.helloResult.repoId).toBe(identity.repoId);

@@ -1,6 +1,9 @@
 import { expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { initializeTestHostGit } from "./helpers/test-git-binding.ts";
+
+initializeTestHostGit([]);
 
 for (const mode of ["native", "loader"]) test(`持久管理消费者：真实SQLite/SDK与${mode}加载入口`, async () => {
   const { stdout, stderr } = await promisify(execFile)(process.execPath,

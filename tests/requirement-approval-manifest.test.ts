@@ -18,8 +18,11 @@ import { createRequirementReadTool } from "../runtime/requirement-read-tool.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
-const exec = promisify(execFile), GIT = "/usr/bin/git";
+const HOST_GIT = testHostGitExecutable([]);
+
+const exec = promisify(execFile), GIT = HOST_GIT;
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 async function fixture(ready = true, shared = false) {

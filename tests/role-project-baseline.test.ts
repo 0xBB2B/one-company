@@ -35,6 +35,9 @@ import { RunStore } from "../runtime/run-store.ts";
 import type { RunRecord } from "../runtime/run-store.ts";
 import { GIT_ENV } from "./helpers/repo-fixture.ts";
 import { deferred } from "./helpers/project-baseline-fixture.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
@@ -49,10 +52,10 @@ async function world() {
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const repo = join(root, "repo"), dataRoot = join(root, "agent/data");
   await mkdir(repo); await mkdir(dataRoot, { recursive: true, mode: 0o700 });
-  await exec("/usr/bin/git", ["init", "-b", "main"], { cwd: repo, env: GIT_ENV });
+  await exec(HOST_GIT, ["init", "-b", "main"], { cwd: repo, env: GIT_ENV });
   await writeFile(join(repo, "source.ts"), "export const value = 1;\n");
-  await exec("/usr/bin/git", ["add", "."], { cwd: repo, env: GIT_ENV });
-  await exec("/usr/bin/git", ["commit", "-m", "fixture"], { cwd: repo, env: GIT_ENV });
+  await exec(HOST_GIT, ["add", "."], { cwd: repo, env: GIT_ENV });
+  await exec(HOST_GIT, ["commit", "-m", "fixture"], { cwd: repo, env: GIT_ENV });
   const identity = await repositoryIdentity(repo); await repoDataDir(dataRoot, identity.repoId, identity.commonDir);
   await mkdir(join(dataRoot, "sock"), { mode: 0o700 });
   const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
@@ -82,9 +85,11 @@ async function world() {
 async function role(w: Awaited<ReturnType<typeof world>>, options: { slow?: () => Promise<void>; calls?: ToolCall[]; plain?: boolean; pm?: boolean; runId?: string; extra?: (pi: ExtensionAPI) => void } = {}) {
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(w.root, "models.json"), refreshOnCreate: false });
   let requests = 0;
+  const contexts: string[] = [];
   runtime.registerProvider("role-fixture", { apiKey: "fixture", baseUrl: "http://127.0.0.1:1", api: "anthropic-messages",
     models: [{ id: "slow", name: "slow", reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-    streamSimple(model, _context, transport) {
+    streamSimple(model, context, transport) {
+      contexts.push(JSON.stringify(context));
       const stream = createAssistantMessageEventStream(); const request = ++requests;
       const calls = request === 1 ? options.calls ?? [] : [];
       const content: AssistantMessage["content"] = calls.length ? calls : options.plain || request > 2 ? [{ type: "text", text: "plain original result" }] : [{ type: "toolCall", id: `result-${request}`, name: "structured_output", arguments: workResult() }];
@@ -106,15 +111,14 @@ async function role(w: Awaited<ReturnType<typeof world>>, options: { slow?: () =
       definition: { name: "worker", kind: options.pm ? "manage" : "work", description: "fixture", tools: ["write", "edit", "bash", ...(options.extra ? ["pi_company_agent"] : [])], skills: false, contextFiles: false, promptMode: "append", body: "fixture" } },
     task: "fixture", readPaths: [w.repo], writePaths: [w.repo], runtime, modelRef: { provider: "role-fixture", id: "slow" },
     clock: w.clock, shellRegistry: w.shells, networkGate: new NetworkPauseGate(),
-    guards: { ...protection, baselineProvider: async () => w.provider, checkWrite: (path) => protection.checkWrite(path),
-      fingerprint: async () => ({}), verifyFingerprint: async () => [] },
+    guards: { ...protection, baselineProvider: async () => w.provider },
     extraExtensionFactories: options.extra ? [options.extra] : [],
     contract: options.plain ? { kind: "plain", completion: "complete-on-idle" } : { kind: "structured", expectedPhase: "work", outputSchema: WORK_SCHEMA },
   });
   cleanup.push(async () => { await handle.stop(); handle.dispose(); });
   const toolErrors: unknown[] = [];
   handle.events.on("transcript_message", (event) => { if (event.type === "message_end" && event.message.role === "toolResult" && event.message.isError) toolErrors.push(event.message.content); });
-  return { handle, requests: () => requests, toolErrors };
+  return { handle, requests: () => requests, toolErrors, contexts };
 }
 
 const write = (id: string, content: string): ToolCall => ({ type: "toolCall", id, name: "write", arguments: { path: "source.ts", content } });
@@ -142,7 +146,9 @@ test("持久管理登记后取消：原unmanaged请求、已完成角色结果�
   const baseline = await s.handle.resultBaseline!(); expect(baseline?.kind).toBe("unmanaged");
   await baseline!.assertCurrent();
   const run = { cwd: w.repo, requirement: "2026-09-13.fixture", task: "T-1", phase: "work", state: "completed" } as RunRecord;
-  run.result = await bindRunResult(run, "work", workResult(), baseline);
+  // 结果保存为历史数据，不经已淘汰的定义交付入口制造授权。
+  run.result = { ...workResult(), binding: { projectBaseline: { kind: "unmanaged" } } };
+  await expect(bindRunResult(run, "work", workResult(), baseline)).rejects.toThrow("永久淘汰");
   const original = JSON.stringify(run.result);
   await registerCancelled(w);
   await expect(gate.validateRequest(request)).rejects.toThrow();
@@ -361,44 +367,57 @@ test("真实SDK PM submit：旧请求不能借新建子run换绑，SQLite没有�
   expect((await store.list({ limit: 100 })).items.map((run) => run.id)).toEqual([parent.id]);
 }, 30000);
 
-async function delivery(w: Awaited<ReturnType<typeof world>>) {
-  const requirement = "2026-09-13.fixture";
-  const taskDir = join(w.repo, ".pi-company/requirements", requirement, "tasks"); await mkdir(taskDir, { recursive: true });
-  await mkdir(join(w.repo, ".pi-company/spec/demo"), { recursive: true });
-  await writeFile(join(w.repo, ".pi-company/spec/demo/source.md"), "# AC-1\nfixture\n");
-  await writeFile(join(taskDir, "T-1.md"), "---\nid: T-1\nrefs: [demo/source/AC-1]\nfiles: [source.ts]\nverify: 'true'\n---\n");
-  await exec("/usr/bin/git", ["add", "."], { cwd: w.repo, env: GIT_ENV });
-  await exec("/usr/bin/git", ["commit", "-m", "fixture inputs"], { cwd: w.repo, env: GIT_ENV });
-  await w.initialize();
-  const gate = new RequestBaselineGate(w.provider); cleanup.push(() => gate.dispose());
-  const request = await gate.beginRequest(); gate.bindCalls(["delivery"], request); const seal = await gate.sealResult("delivery");
-  const run = { cwd: w.repo, requirement, task: "T-1", phase: "work", writePaths: ["source.ts"], state: "completed" } as RunRecord;
-  const raw = { ...workResult(), coverage: [{ ref: "demo/source/AC-1", test: "source.ts:1" }] };
-  run.result = await bindRunResult(run, "work", raw, { kind: "managed", seal, assertCurrent: () => gate.assertDelivery(seal) });
-  return { run, seal, gate };
-}
-
-test("真实交付复跑保留原binding，结束角色后仍按coordinator原观察代次核验", async () => {
-  const w = await world(); const d = await delivery(w);
-  const original = (d.run.result as Record<string, unknown>).binding;
-  d.gate.dispose();
-  const verificationProvider = await createDaemonProjectBaselineProvider(w.coordinator, w.repo); cleanup.push(() => verificationProvider.dispose());
-  let executed = 0;
-  const result = await verifyTaskDelivery({ run: d.run, assertBaseline: async (metadata) => verificationProvider.assertCurrent(metadata!.executionHead),
-    execute: async (command) => { executed++; await exec("/bin/sh", ["-c", command], { cwd: w.repo }); } });
-  expect(executed).toBe(1); expect(result.binding).toBe(original);
+test("真实SDK worker未知agent直连被拒，自身仍能封存结果且不向接收角色注入消息", async () => {
+  const w = await world(); await w.initialize();
+  const recipient = await role(w); recipient.handle.prompt("接收角色独立任务"); await recipient.handle.result();
+  const before = [...recipient.contexts];
+  const marker = "未经授权的跨角色直连命令";
+  const sender = await role(w, { calls: [{ type: "toolCall", id: "direct-contact", name: "pi_company_agent", arguments: { action: "run", task: "recipient", instructions: marker } }] });
+  const ends: Array<{ toolCallId: string; isError: boolean }> = []; sender.handle.events.on("tool_end", (event) => ends.push(event));
+  sender.handle.prompt("发送角色独立任务");
+  expect(await sender.handle.result()).toMatchObject({ verdict: "PASS" });
+  expect(ends.find((event) => event.toolCallId === "direct-contact")?.isError).toBe(true);
+  expect(sender.toolErrors.length).toBeGreaterThan(0);
+  const baseline = await sender.handle.resultBaseline!(); expect(baseline?.kind).toBe("managed"); await baseline!.assertCurrent();
+  expect(recipient.contexts).toEqual(before); expect(recipient.contexts.join("\n")).not.toContain(marker);
 }, 30000);
 
-test("真实交付检查期间A→B→A：即使最终字节相同也拒绝且原binding未改", async () => {
+async function delivery(w: Awaited<ReturnType<typeof world>>) {
+  await w.initialize();
+  const s = await role(w);
+  s.handle.prompt("封存真实 SDK 角色结果");
+  const result = await s.handle.result();
+  const baseline = await s.handle.resultBaseline!();
+  if (baseline?.kind !== "managed") throw new Error("缺少真实角色结果 seal");
+  await baseline.assertCurrent();
+  return { handle: s.handle, result, baseline, seal: baseline.seal };
+}
+
+test("真实SDK结果seal：结束角色后仍按coordinator原观察代次核验，不换绑", async () => {
   const w = await world(); const d = await delivery(w);
-  const original = JSON.stringify(d.run.result);
-  await expect(verifyTaskDelivery({ run: d.run, assertBaseline: async (metadata) => w.provider.assertCurrent(metadata!.executionHead), execute: async () => {
-    const previous = await readFile(join(w.repo, "source.ts"), "utf8"), changed = deferred<void>();
-    const unsubscribe = w.provider.subscribeInvalidation(() => changed.resolve());
-    try { await writeFile(join(w.repo, "source.ts"), "export const temporary = 2;\n"); await changed.promise; await writeFile(join(w.repo, "source.ts"), previous); }
-    finally { unsubscribe(); }
-  } })).rejects.toThrow();
-  expect(JSON.stringify(d.run.result)).toBe(original);
+  const original = JSON.stringify(d.seal.metadata);
+  d.handle.dispose();
+  await expect(d.baseline.assertCurrent()).rejects.toThrow();
+  const verificationProvider = await createDaemonProjectBaselineProvider(w.coordinator, w.repo); cleanup.push(() => verificationProvider.dispose());
+  await verificationProvider.assertCurrent(d.seal.metadata.executionHead);
+  const output = await exec("/bin/sh", ["-c", "test -f source.ts"], { cwd: w.repo });
+  expect(output.stderr).toBe("");
+  await verificationProvider.assertCurrent(d.seal.metadata.executionHead);
+  expect(JSON.stringify(d.seal.metadata)).toBe(original);
+  expect(d.result).toMatchObject({ verdict: "PASS" });
+}, 30000);
+
+test("真实SDK结果检查期间A→B→A：最终字节相同仍拒绝且原seal未改", async () => {
+  const w = await world(); const d = await delivery(w);
+  const original = JSON.stringify(d.seal.metadata);
+  const previous = await readFile(join(w.repo, "source.ts"), "utf8"), changed = deferred<void>();
+  const unsubscribe = w.provider.subscribeInvalidation(() => changed.resolve());
+  try { await writeFile(join(w.repo, "source.ts"), "export const temporary = 2;\n"); await changed.promise; await writeFile(join(w.repo, "source.ts"), previous); }
+  finally { unsubscribe(); }
+  await expect(d.baseline.assertCurrent()).rejects.toThrow();
+  await expect(w.provider.assertCurrent(d.seal.metadata.executionHead)).rejects.toThrow();
+  expect(JSON.stringify(d.seal.metadata)).toBe(original);
+  expect(await readFile(join(w.repo, "source.ts"), "utf8")).toBe(previous);
 }, 30000);
 
 test("daemon角色基线与交付检查不打开归档正文，策略排除不是任意路径写权限", async () => {
@@ -417,10 +436,10 @@ test("daemon角色基线与交付检查不打开归档正文，策略排除不�
   await expect(w.provider.checkPath(archive)).rejects.toThrow();
   await expect(w.provider.checkPath(join(w.repo, ".env"))).rejects.toThrow();
   await expect(w.provider.checkPath(join(w.repo, "node_modules/new.ts"))).rejects.toThrow();
-  const gate = new RequestBaselineGate(w.provider); cleanup.push(() => gate.dispose());
-  const request = await gate.beginRequest(); gate.bindCalls(["archive-check"], request); const seal = await gate.sealResult("archive-check");
-  await bindRunResult({ cwd: w.repo, requirement: "2026-09-13.fixture", task: "T-1", phase: "work" } as RunRecord, "work", workResult(),
-    { kind: "managed", seal, assertCurrent: () => gate.assertDelivery(seal) });
+  const s = await role(w);
+  s.handle.prompt("只检查当前源码，不读归档"); await s.handle.result();
+  const baseline = await s.handle.resultBaseline!();
+  expect(baseline?.kind).toBe("managed"); await baseline!.assertCurrent();
   expect(reads).toBe(0); expect(snapshot.snapshot.files.some((file) => file.path.startsWith("docs/prod/"))).toBe(false);
 }, 30000);
 

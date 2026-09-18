@@ -251,6 +251,8 @@ export class InstalledProjectFixture {
       await writeFile(join(path, "source.ts"), "export const initial = 1;\n");
       await this.git(path, ["add", "."]); await this.git(path, ["commit", "-m", "fixture"]);
     }
+    const gitRuntime = await this.product<typeof import("../../runtime/git-runtime.mjs")>("runtime/git-runtime.mjs");
+    gitRuntime.initializeHostGit([]);
     const identity = await this.product<typeof import("../../runtime/identity.ts")>("runtime/identity.ts");
     const { repoId, commonDir } = await identity.repositoryIdentity(path);
     const dataRoot = join(agentDir, "pi-company");

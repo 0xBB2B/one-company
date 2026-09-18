@@ -5,9 +5,6 @@ import { fileURLToPath } from "node:url";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const RULES_DIR = join(PACKAGE_ROOT, "rules");
-const WORKFLOW_STATE = join(PACKAGE_ROOT, "runtime/workflow-state.ts");
-const DISPATCH = join(PACKAGE_ROOT, "extensions/dispatch.ts");
-const REQUIREMENT_AGENT = join(PACKAGE_ROOT, "daemon/requirement-agent.ts");
 
 const FILES = {
   specFlow: join(PACKAGE_ROOT, "skills/spec-flow/SKILL.md"),
@@ -45,26 +42,6 @@ function extractH2Headings(body: string): string[] {
     .map((line) => line.match(/^##\s+(.+)$/))
     .filter((match): match is RegExpMatchArray => match !== null)
     .map((match) => match[1].trim());
-}
-
-function parseRetreatPaths(source: string): Record<string, string> {
-  const match = source.match(/RETREAT_PATHS[^{]*\{([^}]*)\}/s);
-  if (!match) throw new Error("RETREAT_PATHS 未找到");
-  const entries: Record<string, string> = {};
-  for (const pair of match[1].matchAll(/(\w+):\s*"(\w+)"/g)) entries[pair[1]] = pair[2];
-  return entries;
-}
-
-function parseStringSet(source: string, constName: string): Set<string> {
-  const match = source.match(new RegExp(`${constName}[^\\[]*\\[([^\\]]*)\\]`, "s"));
-  if (!match) throw new Error(`${constName} 未找到`);
-  return new Set([...match[1].matchAll(/"(\w+)"/g)].map((entry) => entry[1]));
-}
-
-function parseObjectKeySet(source: string, constName: string): Set<string> {
-  const match = source.match(new RegExp(`${constName}[^{]*\\{([^}]*)\\}`, "s"));
-  if (!match) throw new Error(`${constName} 未找到`);
-  return new Set([...match[1].matchAll(/^\s*(\w+)\s*:/gm)].map((entry) => entry[1]));
 }
 
 function hasAllWords(body: string, words: string[]): boolean {
@@ -218,40 +195,6 @@ describe("spec-revise 归因记录为用户决定", () => {
   });
 });
 
-describe("workflow-state.ts 的 RETREAT_PATHS 与 spec-revise/git-push 的回退路径描述一致", () => {
-  test("RETREAT_PATHS 结构为 planned→confirmed、reviewing/accepting/accepted→executing", async () => {
-    const source = await readDoc(WORKFLOW_STATE);
-    expect(parseRetreatPaths(source)).toEqual({ planned: "confirmed", reviewing: "executing", accepting: "executing", accepted: "executing" });
-  });
-
-  test("spec-revise 按阶段分流：planned 回退到 confirmed", async () => {
-    const body = await readDoc(FILES.specRevise);
-    expect(body).toContain("planned 回退到 confirmed");
-  });
-
-  test("spec-revise 按阶段分流：reviewing/accepting 回退到 executing", async () => {
-    const body = await readDoc(FILES.specRevise);
-    expect(body).toContain("reviewing");
-    expect(body).toContain("accepting");
-    expect(body).toContain("回退到 executing");
-  });
-
-  test("spec-revise 按阶段分流：confirmed 与 executing 同为无需回退直接转发要求重新提议", async () => {
-    const body = await readDoc(FILES.specRevise);
-    expect(body).toContain("confirmed/executing 无需回退");
-  });
-
-  test("spec-revise 含: 该需求下无未停止运行", async () => {
-    const body = await readDoc(FILES.specRevise);
-    expect(body).toContain("该需求下无未停止运行");
-  });
-
-  test("spec-revise retreat 调用写明 stage、version、reason、decisionId 四参数", async () => {
-    const body = await readDoc(FILES.specRevise);
-    expect(hasAllWords(body, ["stage", "version", "reason", "decisionId"])).toBe(true);
-  });
-});
-
 describe("spec-sync 必需句", () => {
   const REQUIRED = ["由需求代理派 acceptance", "只读盘点"];
   for (const phrase of REQUIRED) {
@@ -320,23 +263,6 @@ describe("rules/05-review-failure-handling.md 必需句", () => {
   test("retreat 调用写明 stage、version、reason、decisionId 四参数", async () => {
     const body = await readDoc(FILES.rules05);
     expect(hasAllWords(body, ["stage", "version", "reason", "decisionId"])).toBe(true);
-  });
-});
-
-describe("extensions/dispatch.ts 的阻断阶段集与 daemon/requirement-agent.ts 的 BLOCKED_STAGES 一致", () => {
-  test("dispatch.ts 的 DISPATCH_BLOCKED_STAGE_REASONS 键集等于 requirement-agent.ts 的 BLOCKED_STAGES，且与 IN_PROGRESS_STAGES 互补", async () => {
-    const workflowStateSource = await readDoc(WORKFLOW_STATE);
-    const dispatchSource = await readDoc(DISPATCH);
-    const requirementAgentSource = await readDoc(REQUIREMENT_AGENT);
-
-    const validStages = parseStringSet(workflowStateSource, "VALID_STAGES");
-    const inProgressStages = parseStringSet(dispatchSource, "IN_PROGRESS_STAGES");
-    const dispatchBlocked = parseObjectKeySet(dispatchSource, "DISPATCH_BLOCKED_STAGE_REASONS");
-    const blockedStages = parseStringSet(requirementAgentSource, "BLOCKED_STAGES");
-
-    expect(dispatchBlocked).toEqual(blockedStages);
-    const derivedBlocked = new Set([...validStages].filter((stage) => !inProgressStages.has(stage)));
-    expect(derivedBlocked).toEqual(blockedStages);
   });
 });
 

@@ -5,6 +5,13 @@ import { appendFileSync, chmodSync, lstatSync, realpathSync, writeFileSync } fro
 import type { ProjectIndexCoordinator } from "../../daemon/project-index-coordinator.ts";
 import type { DaemonServer } from "../../daemon/server.ts";
 import type { ProjectSyncGrantIssuer } from "../../runtime/project-sync-grants.ts";
+import {
+  createGitExpectationText,
+  decodeGitExpectation,
+  gitExpectationRoots,
+  verifyPeerGitBinding,
+} from "../../runtime/git-daemon-binding.ts";
+import { currentHostGit, initializeHostGit } from "../../runtime/git-runtime.mjs";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { createConnection } from "node:net";
@@ -274,13 +281,23 @@ interface GitProcessRecord {
 }
 
 class GitRunner {
-  readonly executable = "/usr/bin/git";
+  readonly executable: string;
   readonly records: GitProcessRecord[] = [];
   readonly active = new Set<number>();
   private readonly home: string;
-  constructor(home: string) { this.home = home; }
+  constructor(home: string) {
+    this.home = home;
+    this.executable = initializeHostGit([home]).executablePath;
+  }
+
+  private assertCurrent(cwd: string): void {
+    if (currentHostGit([this.home, cwd]).executablePath !== this.executable) {
+      throw Object.assign(new Error("git_executable_binding_mismatch"), { code: "git_expectation_mismatch" });
+    }
+  }
 
   async run(cwd: string, args: string[]): Promise<string> {
+    this.assertCurrent(cwd);
     const completeArgs = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-c", "core.fsmonitor=false", ...args];
     const started = performance.now();
     const child = spawn(this.executable, completeArgs, {
@@ -317,6 +334,7 @@ class GitRunner {
       if (timedOut || result.code !== 0 || result.signal !== null) {
         throw new Error(`git_failed:${args[0] ?? "unknown"}:${Buffer.concat(stderr).toString("utf8").trim()}`);
       }
+      this.assertCurrent(cwd);
       return Buffer.concat(stdout).toString("utf8").trim();
     } finally {
       clearTimeout(timer);
@@ -473,7 +491,15 @@ interface Peer {
   closed: Promise<void>;
 }
 
-async function connectPeer(path: string, token: string, repoId: string, root: string, timeoutMs: number, protocol: ProtocolModule): Promise<Peer> {
+async function connectPeer(
+  path: string,
+  token: string,
+  repoId: string,
+  root: string,
+  roots: readonly string[],
+  timeoutMs: number,
+  protocol: ProtocolModule,
+): Promise<Peer> {
   const socket: Socket = createConnection(path);
   let buffer = "";
   let closed = false;
@@ -539,7 +565,9 @@ async function connectPeer(path: string, token: string, repoId: string, root: st
     close() { socket.destroy(); },
   };
   try {
-    await peer.call("hello", {
+    const gitExpectation = createGitExpectationText(roots);
+    const requestedRoots = gitExpectationRoots(decodeGitExpectation(gitExpectation));
+    const hello = await peer.call("hello", {
       authToken: token,
       windowId: "m4-query-benchmark",
       pid: process.pid,
@@ -548,7 +576,9 @@ async function connectPeer(path: string, token: string, repoId: string, root: st
       workspaceRoot: root,
       repoIds: [repoId],
       protocolVersion: protocol.PROTOCOL_VERSION,
+      gitExpectation,
     });
+    verifyPeerGitBinding(hello.gitExpectation, roots, requestedRoots);
     return peer;
   } catch (error) {
     peer.close();
@@ -612,6 +642,13 @@ async function codeInputs(scriptRoot: string): Promise<Array<{ path: string; sha
     "runtime/index-store.ts",
     "runtime/protocol.ts",
     "runtime/identity.ts",
+    "runtime/git-runtime.mjs",
+    "runtime/git-runtime.d.mts",
+    "runtime/git-prerequisite.mjs",
+    "runtime/git-prerequisite.d.mts",
+    "runtime/git-daemon-binding.ts",
+    "runtime/git-read.ts",
+    "runtime/command-boundary.ts",
     "runtime/database.ts",
     "resources/spec/schema.json",
     "resources/tree-sitter/manifest.json",
@@ -669,7 +706,13 @@ async function runTier(input: {
     const identity = await repositoryIdentity(fixture.repo);
     await repoDataDir(fixture.dataRoot, identity.repoId, identity.commonDir);
     const token = randomBytes(32).toString("hex");
-    const activeServer = new DaemonServer({ authToken: token, repoId: identity.repoId, startedAt: "m4-query-benchmark" });
+    const gitRoots = [fixture.repo, fixture.dataRoot, identity.commonDir];
+    const activeServer = new DaemonServer({
+      authToken: token,
+      repoId: identity.repoId,
+      startedAt: "m4-query-benchmark",
+      gitRoots,
+    });
     server = activeServer;
     // macOS的Unix socket路径上限较短；单独使用本轮创建的短私有目录，并在finally精确清理。
     const socketPath = join(socketRoot, "q.sock");
@@ -696,7 +739,15 @@ async function runTier(input: {
       repoId: identity.repoId,
       authorize: () => true,
     });
-    peer = await connectPeer(socketPath, token, identity.repoId, fixture.repo, input.config.rpcTimeoutMs, protocolModule as unknown as ProtocolModule);
+    peer = await connectPeer(
+      socketPath,
+      token,
+      identity.repoId,
+      fixture.repo,
+      gitRoots,
+      input.config.rpcTimeoutMs,
+      protocolModule as unknown as ProtocolModule,
+    );
     const activeClient = activeServer.clients()[0];
     if (!activeClient) throw new Error("authenticated_client_missing");
     const hostPrincipal = {};

@@ -7,6 +7,10 @@ import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { DaemonServer } from "../daemon/server.ts";
 import type { ClientInfo } from "../daemon/server.ts";
 import { PROTOCOL_VERSION, createRequest, decodeFrames, encodeFrame } from "../runtime/protocol.ts";
+import { createGitExpectationText } from "../runtime/git-daemon-binding.ts";
+import { initializeTestHostGit } from "./helpers/test-git-binding.ts";
+
+initializeTestHostGit([]);
 
 interface Peer {
   call(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -95,6 +99,7 @@ function hello(windowId: string, authToken = "lifecycle-token"): Record<string, 
     workspaceRoot: "/workspace",
     repoIds: ["repo-lifecycle"],
     protocolVersion: PROTOCOL_VERSION,
+    gitExpectation: createGitExpectationText(["/repo", "/workspace"]),
   };
 }
 
@@ -173,7 +178,7 @@ describe("DaemonServer 已认证连接生命周期", () => {
     {
       name: "malformed 参数",
       params: (() => {
-        const { authToken: _authToken, ...rest } = hello("malformed");
+        const { windowId: _windowId, ...rest } = hello("malformed");
         return rest;
       })(),
       errorCode: "bad_params",

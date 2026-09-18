@@ -7,11 +7,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { RunStore } from "../runtime/run-store.ts";
-import { daemonSocketPath, repoDataDir } from "../runtime/identity.ts";
+import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
+import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { putRecord, repositoryDatabase } from "../runtime/database.ts";
 import { deleteRecord } from "./helpers/database-fixture.ts";
 import { PROTOCOL_VERSION } from "../runtime/protocol.ts";
-import { RelayQueue } from "../daemon/relay-queue.ts";
 import {
   connectRawClient,
   connectTestClient,
@@ -24,12 +24,14 @@ import {
   waitForSocketReady,
 } from "./helpers/daemon-harness.ts";
 import type { DaemonFixture, DaemonHandle, TestClient } from "./helpers/daemon-harness.ts";
+import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import { MODEL_PROVIDER_MODULE_ENV_VAR } from "./helpers/daemon-model-fixture.ts";
 import {
   ASSEMBLY_DELAY_MS_ENV_VAR,
   TRIGGER_UNCAUGHT_EXCEPTION_ENV_VAR,
   TRIGGER_UNHANDLED_REJECTION_ENV_VAR,
 } from "./helpers/model-provider-module.ts";
+import { createGitExpectationText } from "../runtime/git-daemon-binding.ts";
 
 const modelProviderModulePath = fileURLToPath(new URL("./helpers/model-provider-module.ts", import.meta.url));
 
@@ -78,6 +80,8 @@ async function createRunningRecord(store: RunStore, overrides: Record<string, un
 }
 
 const fixtures: DaemonFixture[] = [];
+const homes: Awaited<ReturnType<typeof createTempHome>>[] = [];
+const repos: Awaited<ReturnType<typeof createRepoFixture>>[] = [];
 const procs: ChildProcess[] = [];
 const clients: TestClient[] = [];
 const extraTempDirs: string[] = [];
@@ -101,6 +105,8 @@ afterEach(async () => {
       await Promise.race([new Promise<void>((resolve) => proc.once("exit", () => resolve())), delay(3000)]);
     }
   }
+  for (const home of homes.splice(0)) await removeTempHome(home);
+  for (const repo of repos.splice(0)) await removeRepoFixture(repo);
   for (const fixture of fixtures.splice(0)) {
     await removeDaemonFixture(fixture);
   }
@@ -608,51 +614,6 @@ describe("分发层就绪信号：socket 就绪早于业务方法登记完成", 
     expect(rejected?.message).toMatch(/daemon_starting|启动中|starting/i);
   }, 20_000);
 
-  test("装配窗口内 hello 的中继待办推送在登记完成后仍会送达（不丢失）", async () => {
-    const fixture = await createDaemonFixture();
-    fixtures.push(fixture);
-    const repoDir = await repoDataDir(fixture.dataRoot, fixture.repoId, fixture.repoDir);
-    const seedQueue = new RelayQueue({
-      dataDir: repoDir,
-      deliver: async () => [],
-      locateRequirementAgent: () => undefined,
-    });
-    await seedQueue.ask({
-      requirement: "2026-09-01.assembly-window-relay-seed",
-      repoId: fixture.repoId,
-      runId: randomUUID(),
-      question: "装配窗口测试预置的待办问题",
-      options: [],
-      recommended: "",
-    });
-
-    const handle = trackHandle(
-      await startDaemonForTest(fixture, {
-        extraEnv: {
-          [MODEL_PROVIDER_MODULE_ENV_VAR]: modelProviderModulePath,
-          [ASSEMBLY_DELAY_MS_ENV_VAR]: "1500",
-        },
-      }),
-    );
-    expect(handle.proc.exitCode).toBeNull();
-
-    // hello 本身由 socket 层直接处理，不经过 register() 的 awaitStarted 排队；
-    // 这里紧跟 socket 就绪后立刻 hello，落在装配窗口内
-    const client = await connectTestClient(fixture.socketPath, {
-      cwd: fixture.repoDir,
-      workspaceRoot: fixture.repoDir,
-      repoIds: [fixture.repoId],
-    });
-    clients.push(client);
-
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("装配完成后仍未收到 relay.question 推送，待办丢失")), 8_000);
-      client.onEvent("relay.question", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-  }, 20_000);
 });
 
 describe("uncaughtException 看门狗", () => {
@@ -768,26 +729,32 @@ describe("环境变量校验", () => {
 
 describe("长数据根路径", () => {
   test("数据根路径恰为平台字节上限时仍能创建 socket 并监听", async () => {
-    const fixture = await createDaemonFixture();
-    fixtures.push(fixture);
+    const home = await createTempHome();
+    homes.push(home);
+    const repo = await createRepoFixture();
+    repos.push(repo);
+    const identity = await repositoryIdentity(repo.root);
     const longDataRoot = await exactLengthDataRoot(maxDataRootLength());
-    const socketPath = daemonSocketPath(longDataRoot, fixture.repoId);
+    const socketPath = daemonSocketPath(longDataRoot, identity.repoId);
 
     trackHandle(
-      await startDaemonForTest({ home: fixture.home, repoDir: fixture.repoDir, dataRoot: longDataRoot, socketPath }),
+      await startDaemonForTest({ home, repoDir: identity.commonDir, dataRoot: longDataRoot, socketPath }),
     );
-    const client = await connectTestClient(socketPath);
+    const client = await connectTestClient(socketPath, {}, { dataRoot: longDataRoot });
     clients.push(client);
     expect(typeof client.helloResult.daemonPid).toBe("number");
   }, 15_000);
 
   test("数据根路径超过平台字节上限时守护进程非零退出并在 stderr 说明路径超限", async () => {
-    const fixture = await createDaemonFixture();
-    fixtures.push(fixture);
+    const home = await createTempHome();
+    homes.push(home);
+    const repo = await createRepoFixture();
+    repos.push(repo);
+    const identity = await repositoryIdentity(repo.root);
     const longDataRoot = await exactLengthDataRoot(90);
     const { proc, exited } = spawnDaemonProcess({
-      home: fixture.home,
-      repoDir: fixture.repoDir,
+      home,
+      repoDir: identity.commonDir,
       dataRoot: longDataRoot,
       captureOutput: true,
     });
@@ -855,6 +822,7 @@ describe("协议接线", () => {
         workspaceRoot: process.cwd(),
         repoIds: [],
         protocolVersion: PROTOCOL_VERSION + 1,
+        gitExpectation: createGitExpectationText([]),
       }),
     ).rejects.toThrow(/protocol_version/);
     await raw.waitClosed(5_000);

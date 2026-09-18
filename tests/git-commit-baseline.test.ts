@@ -1,9 +1,13 @@
 import { afterEach, expect, test } from "vitest";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { dirname } from "node:path";
 import { createGitCommitTool } from "../runtime/git-commit-tool.ts";
 import { ProjectBaselineHooks } from "../runtime/project-baseline-hooks.ts";
 import { BaselineFixture, deferred } from "./helpers/project-baseline-fixture.ts";
+import { currentHostGit, initializeHostGit } from "../runtime/git-runtime.mjs";
+
+initializeHostGit([]);
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -53,4 +57,25 @@ test("commit合法unmanaged保留legacy，并保留原SDK取消信号", async ()
   });
   expect((await tool.execute("original-commit", input, controller.signal, undefined, w.ctx)).content).toEqual([{ type: "text", text: "legacy" }]);
   expect(invoked).toBe(1);
+});
+
+test("外层withMutation返回后Git绑定失效阻止最终工具响应且不泄露旧输出", async () => {
+  const w = await bound(true);
+  const target = w.hooks as unknown as { withMutation: (...args: unknown[]) => Promise<unknown> };
+  const original = target.withMutation.bind(target);
+  let wrapperCalls = 0;
+  target.withMutation = async (...args: unknown[]) => {
+    wrapperCalls++;
+    const result = await original(...args);
+    try { currentHostGit([dirname(currentHostGit().executablePath)]); } catch { /* 故意使本测试进程的宿主Git绑定失效。 */ }
+    return result;
+  };
+  const tool = createGitCommitTool(async () => async () => "PRIVATE_OUTPUT");
+
+  let caught: unknown;
+  try { await tool.execute("original-commit", input, undefined, undefined, w.ctx); }
+  catch (error) { caught = error; }
+  expect(wrapperCalls).toBe(1);
+  expect(caught).toMatchObject({ code: "git_runtime_invalid" });
+  expect((caught as Error).message).not.toContain("PRIVATE_OUTPUT");
 });

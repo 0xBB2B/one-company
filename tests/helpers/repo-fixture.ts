@@ -9,7 +9,7 @@ import { initializeTestHostGit } from "./test-git-binding.ts";
 const execFileAsync = promisify(execFile);
 const GIT_SETUP_CONFIG = ["-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "core.hooksPath=/dev/null"];
 
-interface OwnedRoot { path: string; dev: number; ino: number }
+interface OwnedRoot { path: string; dev: number; ino: number; kind: "repo" | "worktree" }
 export interface RepoFixtureRootReceipt {
   readonly path: string;
   readonly dev: number;
@@ -22,6 +22,8 @@ export interface WorktreeFixtureRootReceipt {
 }
 class PreserveFixtureRootError extends AggregateError {}
 const repoRootReceipts = new WeakMap<object, OwnedRoot>();
+const workspaceRootReceipts = new WeakMap<object, OwnedRoot>();
+const repoWorktreeReceipts = new WeakMap<object, OwnedRoot[]>();
 const worktreeRootReceipts = new WeakMap<object, OwnedRoot>();
 
 /** 只向持有原始 createRepoFixture 返回对象的夹具提供主根分配收据。 */
@@ -40,7 +42,7 @@ function reportPreserved(root: string, reason: string): void {
   console.error(JSON.stringify({ status: "repo_fixture_preserved", reason, root }));
 }
 
-async function allocateOwnedRoot(prefix: string): Promise<OwnedRoot> {
+async function allocateOwnedRoot(prefix: string, kind: OwnedRoot["kind"]): Promise<OwnedRoot> {
   const path = await mkdtemp(join(tmpdir(), prefix));
   let info;
   try { info = await lstat(path); }
@@ -52,7 +54,8 @@ async function allocateOwnedRoot(prefix: string): Promise<OwnedRoot> {
     reportPreserved(path, "分配后的根不是自产真实目录");
     throw new PreserveFixtureRootError([], `Repo夹具根不是自产真实目录；保全路径 ${path}`);
   }
-  return { path, dev: info.dev, ino: info.ino };
+  const owned = { path, dev: info.dev, ino: info.ino, kind };
+  return owned;
 }
 
 async function assertOwnedRoot(root: OwnedRoot): Promise<void> {
@@ -167,7 +170,7 @@ async function initRepo(root: string, owned: OwnedRoot): Promise<void> {
 
 export async function createRepoFixture(): Promise<RepoFixture> {
   initializeTestHostGit([]);
-  const owned = await allocateOwnedRoot("pi-company-repo-");
+  const owned = await allocateOwnedRoot("pi-company-repo-", "repo");
   try {
     await assertOwnedRoot(owned);
     checkedHostGit([owned.path]);
@@ -175,6 +178,7 @@ export async function createRepoFixture(): Promise<RepoFixture> {
     await assertOwnedRoot(owned);
     const fixture = { root: owned.path, worktrees: [] };
     repoRootReceipts.set(fixture, Object.freeze({ ...owned }));
+    repoWorktreeReceipts.set(fixture, []);
     return fixture;
   } catch (error) {
     return failCreation(owned, error);
@@ -202,7 +206,7 @@ export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
   const repoRoot = repo.root;
   const worktrees = repo.worktrees;
   initializeTestHostGit([repoRoot]);
-  const owned = await allocateOwnedRoot("pi-company-worktree-");
+  const owned = await allocateOwnedRoot("pi-company-worktree-", "worktree");
   const branch = `worktree-${basename(owned.path)}`;
   try {
     await assertOwnedRoot(owned);
@@ -210,6 +214,9 @@ export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
     await prepareWorktree(repoRoot, branch, owned);
     await assertOwnedRoot(owned);
     worktrees.push(owned.path);
+    const ownedWorktrees = repoWorktreeReceipts.get(repo);
+    if (!ownedWorktrees) throw new Error("Repo夹具缺少原始worktree分配账本");
+    ownedWorktrees.push(Object.freeze({ ...owned }));
     const fixture = { root: owned.path, branch };
     worktreeRootReceipts.set(fixture, Object.freeze({ ...owned }));
     return fixture;
@@ -220,7 +227,7 @@ export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
 
 export async function createWorkspaceFixture(): Promise<WorkspaceFixture> {
   initializeTestHostGit([]);
-  const owned = await allocateOwnedRoot("pi-company-workspace-");
+  const owned = await allocateOwnedRoot("pi-company-workspace-", "repo");
   const repoA = join(owned.path, "repo-a");
   const repoB = join(owned.path, "repo-b");
   try {
@@ -231,7 +238,9 @@ export async function createWorkspaceFixture(): Promise<WorkspaceFixture> {
     await assertOwnedRoot(owned);
     await mkdir(join(owned.path, "node_modules", "decoy-package", ".git"), { recursive: true });
     await assertOwnedRoot(owned);
-    return { root: owned.path, repos: [repoA, repoB] };
+    const fixture = { root: owned.path, repos: [repoA, repoB] };
+    workspaceRootReceipts.set(fixture, Object.freeze({ ...owned }));
+    return fixture;
   } catch (error) {
     return failCreation(owned, error);
   }

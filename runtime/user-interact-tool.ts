@@ -1,30 +1,61 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { HostAuthorizationError } from "./host-authorization.ts";
+import { MainIntakeInteraction } from "./main-intake-interaction.ts";
 import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
 import { ApprovalUnitIds } from "./user-interaction-format.ts";
+
 const id = Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", minLength: 36, maxLength: 36 });
 const base = { repoId: Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 }), requirementId: id,
   savedOperationId: id, operationId: id, version: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) };
 const actions = Type.Array(StringEnum(["analyze", "plan", "implement", "close", "commit", "push"] as const), { uniqueItems: true, maxItems: 6 });
 const question = Type.String({ minLength: 1, maxLength: 400 });
+const confirmationPurpose = Type.Optional(Type.Literal("user-confirmation"));
 const schemas = {
-  ask: Type.Object({ action: Type.Literal("ask"), ...base, question, scope: question, unitIds: ApprovalUnitIds, actions }, { additionalProperties: false }),
-  reply: Type.Object({ action: Type.Literal("reply"), ...base }, { additionalProperties: false }),
-  forward: Type.Object({ action: Type.Literal("forward"), ...base }, { additionalProperties: false }),
-};
-export const USER_INTERACT_PARAMETERS = Type.Object({ action: StringEnum(["ask", "reply", "forward"] as const), ...base,
-  question: Type.Optional(question), scope: Type.Optional(question), unitIds: Type.Optional(ApprovalUnitIds), actions: Type.Optional(actions) }, { additionalProperties: false });
-export function createUserInteractTool(options: { interaction: MainRequirementInteraction }): ToolDefinition<typeof USER_INTERACT_PARAMETERS, Record<string, unknown>> {
-  return { name: "pi_company_user_interact", label: "需求澄清与决定",
-    description: "ask展示有界问题及实际单位/动作范围，仅保存pending元数据。reply/forward只消费当前真实输入，不接受answer/message、主体、receipt或工具转述；加载全部相关问题，不按模型挑选一题批准。目标与动作分开，不启动PM。",
-    promptSnippet: "按实际问题范围澄清并记录当前输入的简短决定", parameters: USER_INTERACT_PARAMETERS, executionMode: "sequential",
+  ask: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("ask"), ...base, question, scope: question, unitIds: ApprovalUnitIds, actions }, { additionalProperties: false }),
+  reply: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("reply"), ...base }, { additionalProperties: false }),
+  forward: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("forward"), ...base }, { additionalProperties: false }),
+} satisfies Record<string, TSchema>;
+
+export const USER_INTERACT_PARAMETERS = Type.Object({
+  purpose: Type.Optional(StringEnum(["user-confirmation", "pm-intake"] as const)),
+  action: StringEnum(["ask", "reply", "forward"] as const),
+  repoId: base.repoId,
+  requirementId: base.requirementId,
+  savedOperationId: Type.Optional(base.savedOperationId),
+  operationId: Type.Optional(base.operationId),
+  version: Type.Optional(base.version),
+  requestId: Type.Optional(id),
+  question: Type.Optional(question),
+  scope: Type.Optional(question),
+  unitIds: Type.Optional(ApprovalUnitIds),
+  actions: Type.Optional(actions),
+  result: Type.Optional(StringEnum(["passed", "pm_correction_required", "prod_revision_required", "clarification_required"] as const)),
+  shortIssues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })),
+}, { additionalProperties: false });
+
+export function createUserInteractTool(options: {
+  interaction: MainRequirementInteraction;
+  intake?: MainIntakeInteraction;
+}): ToolDefinition<typeof USER_INTERACT_PARAMETERS, unknown> {
+  return { name: "pi_company_user_interact", label: "需求澄清、决定与接手复核",
+    description: "默认或purpose=user-confirmation时，ask展示有界用户问题，reply/forward只消费当前真实输入。purpose=pm-intake时，ask创建接手复核请求，forward重取当前请求，reply由真实Main登记四类核对结果；不接受主体、角色、回执、理解正文或绑定字段。",
+    promptSnippet: "按明确purpose处理用户确认或PM接手复核", parameters: USER_INTERACT_PARAMETERS, executionMode: "sequential",
     async execute(toolCallId, raw, signal, _update, ctx) {
-      signal?.throwIfAborted(); const schema = schemas[raw.action];
+      signal?.throwIfAborted();
+      if ((raw as { purpose?: unknown }).purpose === "pm-intake") {
+        if (!options.intake) throw new HostAuthorizationError("pm_intake_unavailable");
+        return options.intake.execute(toolCallId, raw, ctx, signal);
+      }
+      const normalized = structuredClone(raw) as Record<string, unknown>;
+      delete normalized.purpose;
+      const schema = schemas[String(normalized.action) as keyof typeof schemas];
       if (!schema || !Value.Check(schema, raw)) throw new HostAuthorizationError("invalid_shape");
-      const p = structuredClone(raw);
+      const p = normalized as Record<string, unknown> & { action: "ask" | "reply" | "forward"; repoId: string; requirementId: string;
+        operationId: string; savedOperationId: string; version: number; question?: string; scope?: string; unitIds?: string[]; actions?: never[] };
       return options.interaction.execute(toolCallId, ctx, p.repoId, p, async () => {
         signal?.throwIfAborted();
         return p.action === "ask" ? options.interaction.ask(ctx, { ...p, question: p.question!, scope: p.scope!, unitIds: p.unitIds!, actions: p.actions! })

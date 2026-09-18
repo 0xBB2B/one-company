@@ -91,6 +91,7 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
     workspaceRoot: "/workspace",
     repoIds: ["repo-1", "repo-2"],
     protocolVersion: PROTOCOL_VERSION,
+    gitExpectation: "git-expectation",
   },
   ping: {},
   shutdown: {},

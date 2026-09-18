@@ -43,6 +43,9 @@ import {
 import type { DaemonFixture } from "./helpers/daemon-harness.ts";
 import { addWorktree, createRepoFixture, createWorkspaceFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import type { RepoFixture, WorkspaceFixture } from "./helpers/repo-fixture.ts";
+import { initializeTestHostGit } from "./helpers/test-git-binding.ts";
+
+initializeTestHostGit([]);
 
 const GIT_TEST_ENV = {
   PATH: process.env.PATH ?? "",
@@ -97,8 +100,8 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs:
   throw new Error(`等待条件满足超时（${timeoutMs}ms）`);
 }
 
-async function probeDaemonPid(socketPath: string): Promise<number> {
-  const raw = await connectTestClient(socketPath);
+async function probeDaemonPid(socketPath: string, dataRoot?: string): Promise<number> {
+  const raw = await connectTestClient(socketPath, {}, dataRoot === undefined ? {} : { dataRoot });
   const pid = raw.helloResult.daemonPid as number;
   raw.close();
   return pid;
@@ -164,6 +167,7 @@ function createFakeDaemonServer(
   const server = createServer((socket: Socket) => {
     connectionCount += 1;
     let buffer = "";
+    socket.on("error", () => {});
     socket.on("data", (chunk: Buffer) => {
       buffer += chunk.toString("utf8");
       const { frames, rest } = decodeFrames(buffer);
@@ -360,9 +364,9 @@ describe("worktree 与工作区", () => {
     closables.push(clientWorktree);
     expect(clientWorktree.state().status).toBe("connected");
 
-    const pidMain = await probeDaemonPid(expectedSocketPath);
+    const pidMain = await probeDaemonPid(expectedSocketPath, dataRoot);
     daemonPids.push(pidMain);
-    const pidWorktree = await probeDaemonPid(expectedSocketPath);
+    const pidWorktree = await probeDaemonPid(expectedSocketPath, dataRoot);
     expect(pidWorktree).toBe(pidMain);
   }, 30_000);
 
@@ -397,7 +401,7 @@ describe("worktree 与工作区", () => {
     const repoIds = await Promise.all(workspace.repos.map(async (repoPath) => (await repositoryIdentity(repoPath)).repoId));
     for (const repoId of repoIds) {
       expect(workspaceClients.forRepo(repoId)).toBeDefined();
-      daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, repoId)));
+      daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, repoId), dataRoot));
     }
 
     const outsideId = (await repositoryIdentity(outside.root)).repoId;
@@ -439,7 +443,7 @@ describe("worktree 与工作区", () => {
 
     const repoIds = await Promise.all(workspace.repos.map(async (repoPath) => (await repositoryIdentity(repoPath)).repoId));
     for (const repoId of repoIds) {
-      daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, repoId)));
+      daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, repoId), dataRoot));
     }
   }, 40_000);
 });
@@ -575,7 +579,7 @@ describe("hello 帧", () => {
                     daemonPid: process.pid,
                     repoId: identity.repoId,
                     protocolVersion: PROTOCOL_VERSION,
-                    startedAt: new Date().toISOString(),
+                    startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
                   }),
                 ),
               );
@@ -764,7 +768,7 @@ describe("事件分发隔离", () => {
             daemonPid: process.pid,
             repoId: identity.repoId,
             protocolVersion: PROTOCOL_VERSION,
-            startedAt: new Date().toISOString(),
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
           }),
         ),
       );
@@ -823,7 +827,7 @@ describe("close 语义", () => {
               daemonPid: process.pid,
               repoId: identity.repoId,
               protocolVersion: PROTOCOL_VERSION,
-              startedAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
             }),
           ),
         );
@@ -866,7 +870,7 @@ describe("close 语义", () => {
     }
   }, 15_000);
 
-  test("守护进程被强杀后立即 close 不再重连，重新拉起的守护进程随后自行空闲退出", async () => {
+  test("守护进程被强杀后立即 close 不再重连，也不再拉起守护进程", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
     const started = performance.now();
@@ -937,17 +941,10 @@ describe("close 语义", () => {
       expect(spawnsAtClose).toBe(1);
       expect(client.state().status).not.toBe("connected");
       expect(timerSchedules).toBe(1);
-      // starting 后的目录准备仍可在 close 后完成一次 spawn；必须等待这个真实孩子的 close。
-      await waitUntil(() => children.length >= 2 && children.every((child) => child.closed),
-        Math.max(1, 25_000 - (performance.now() - started)), 20);
-      expect(children).toHaveLength(2);
       expect(await children[0]!.exited).toEqual({ code: null, signal: "SIGKILL" });
-      expect(await children[1]!.exited).toEqual({ code: 0, signal: null });
-      expect(children[1]!.proc.pid).not.toBe(pidBefore);
-      // 已确认退出后继续观察2秒，禁止关闭后新排重连或再次派出 daemon。
       await delay(2_000);
       expect(timerSchedules).toBe(1);
-      expect(children).toHaveLength(2);
+      expect(children).toHaveLength(1);
       expect(client.state().status).toBe("unreachable");
       expect(daemonPidsForDataRoot(fixture.dataRoot)).toHaveLength(0);
       trace.push({ event: "verified", spawns: children.length, ms: performance.now() - started });
@@ -1025,7 +1022,7 @@ describe("hello 阶段失败", () => {
             daemonPid: process.pid,
             repoId: "wrong-repo-id-injected-by-test",
             protocolVersion: PROTOCOL_VERSION,
-            startedAt: new Date().toISOString(),
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
           }),
         ),
       );
@@ -1072,7 +1069,7 @@ describe("失败帧转换为 DaemonCallError", () => {
               daemonPid: process.pid,
               repoId: identity.repoId,
               protocolVersion: PROTOCOL_VERSION,
-              startedAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
             }),
           ),
         );
@@ -1144,7 +1141,7 @@ describe("WorkspaceClients 去重与降级", () => {
     expect(workspaceClients.all()).toHaveLength(1);
 
     const identity = await repositoryIdentity(mainDir);
-    daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, identity.repoId)));
+    daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, identity.repoId), dataRoot));
   }, 30_000);
 
   test("某仓库首连失败时其余仓库连接不因整体 reject 而泄漏", async () => {
@@ -1187,7 +1184,7 @@ describe("WorkspaceClients 去重与降级", () => {
       const clientB = workspaceClients.forRepo(identityB.repoId);
       expect(clientB).toBeDefined();
       expect(clientB?.state().status).toBe("connected");
-      daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, identityB.repoId)));
+      daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, identityB.repoId), dataRoot));
 
       const clientA = workspaceClients.forRepo(identityA.repoId);
       if (clientA) expect(clientA.state().status).toBe("unreachable");
@@ -1270,7 +1267,7 @@ describe("重连事件恢复", () => {
             daemonPid: process.pid,
             repoId: identity.repoId,
             protocolVersion: PROTOCOL_VERSION,
-            startedAt: new Date().toISOString(),
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
           }),
         ),
       );
@@ -1328,7 +1325,7 @@ describe("hello 前协议事件隔离", () => {
         daemonPid: process.pid,
         repoId: identity.repoId,
         protocolVersion: PROTOCOL_VERSION,
-        startedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
       }));
       if (connectionIndex === 1) {
         socket.write(response);
@@ -1399,7 +1396,7 @@ describe("hello 前协议事件隔离", () => {
         daemonPid: process.pid,
         repoId,
         protocolVersion: PROTOCOL_VERSION,
-        startedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
       }));
       if (connectionIndex === 1) {
         socket.write(response);
@@ -1429,7 +1426,7 @@ describe("hello 前协议事件隔离", () => {
       client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (data) => connected.push(data));
       client.subscribe("runs.changed", (data) => received.push(data));
 
-      await waitUntil(() => client.state().reason?.includes("repoId 不一致") === true, 5_000);
+      await waitUntil(() => client.state().reason?.includes("身份字段缺失或不一致") === true, 5_000);
       expect(connected).toHaveLength(1);
       expect(received).toEqual([]);
       client.close();
@@ -1454,7 +1451,7 @@ describe("hello 前协议事件隔离", () => {
         daemonPid: process.pid,
         repoId: identity.repoId,
         protocolVersion: PROTOCOL_VERSION,
-        startedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
       }));
       if (connectionIndex === 1) {
         socket.write(response);
@@ -1513,7 +1510,7 @@ describe("握手未完成帧总预算", () => {
       if (connections === 1) {
         socket.write(encodeFrame(createResponse(frame.id, {
           daemonPid: process.pid, repoId: identity.repoId,
-          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(),
+          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
         })));
         setTimeout(() => socket.destroy(), 75);
       } else if (connections === 2) {
@@ -1565,7 +1562,7 @@ describe("握手未完成帧总预算", () => {
       if (connections === 1) {
         socket.write(encodeFrame(createResponse(frame.id, {
           daemonPid: process.pid, repoId: identity.repoId,
-          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(),
+          protocolVersion: PROTOCOL_VERSION, startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
         })));
         setTimeout(() => socket.destroy(), 75);
       } else if (connections === 2) {
@@ -1625,7 +1622,7 @@ describe("本地连接生命周期通知", () => {
       hellos += 1;
       accepted.write(encodeFrame(createResponse(frame.id, {
         daemonPid: process.pid, repoId: repository.repoId, protocolVersion: PROTOCOL_VERSION,
-        startedAt: "test", daemonInstanceId, connectionId: randomUUID(),
+        startedAt: "test", daemonInstanceId, connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
       })));
     });
     try {
@@ -1677,7 +1674,7 @@ describe("本地连接生命周期通知", () => {
             daemonPid: process.pid,
             repoId: identity.repoId,
             protocolVersion: PROTOCOL_VERSION,
-            startedAt: new Date().toISOString(),
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
           }),
         ),
       );
@@ -1706,7 +1703,7 @@ describe("本地连接生命周期通知", () => {
       client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, (data) => disconnected.push(data));
 
       expect(connected).toHaveLength(1);
-      expect(client.connectionIdentity!()).toBeNull(); // 旧服务端缺身份时不开放签发能力。
+      expect(client.connectionIdentity!()).toMatchObject({ connectionSequence: 1 });
       expect(connected[0]).toMatchObject({
         status: "connected",
         repoId: identity.repoId,
@@ -1767,7 +1764,7 @@ describe("本地连接生命周期通知", () => {
               daemonPid: process.pid,
               repoId: identity.repoId,
               protocolVersion: PROTOCOL_VERSION,
-              startedAt: new Date().toISOString(),
+              startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
             }),
           ),
         );
@@ -1947,8 +1944,7 @@ describe("工作区内单仓库首连失败自愈", () => {
             continue;
           }
           if (shouldFail) {
-            socket.write(encodeFrame(createErrorResponse(frame.id, "protocol_version", "协议版本不一致（测试注入）")));
-            socket.end();
+            socket.destroy();
           } else {
             socket.write(
               encodeFrame(
@@ -1956,7 +1952,7 @@ describe("工作区内单仓库首连失败自愈", () => {
                   daemonPid: process.pid,
                   repoId,
                   protocolVersion: PROTOCOL_VERSION,
-                  startedAt: new Date().toISOString(),
+                  startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation,
                 }),
               ),
             );
@@ -2007,7 +2003,7 @@ describe("工作区内单仓库首连失败自愈", () => {
         },
       });
       closables.push(workspaceClients);
-      daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, identityA.repoId)));
+      daemonPids.push(await probeDaemonPid(daemonSocketPath(dataRoot, identityA.repoId), dataRoot));
 
       const clientB = workspaceClients.forRepo(identityB.repoId);
       expect(clientB).toBeDefined();

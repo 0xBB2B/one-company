@@ -13,6 +13,9 @@ import { repositoryIdentity } from "../runtime/identity.ts";
 import { createRequirementReadTool } from "../runtime/requirement-read-tool.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -21,12 +24,12 @@ async function fixture() {
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
-  const options = { repositoryRoot: repo.root, dataRoot: join(root, "data"), repoId: identity.repoId, gitExecutable: "/usr/bin/git" };
+  const options = { repositoryRoot: repo.root, dataRoot: join(root, "data"), repoId: identity.repoId, gitExecutable: HOST_GIT };
   const service = await RequirementService.open({ ...options, authorize: () => true });
   const state = await RequirementStateStore.open({ ...options, authorize: () => true });
   const saved = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "范围返回", body: "# A {#A}\n只分析A。\n" });
   const worktree = await addWorktree(repo);
-  const baseCommit = (await promisify(execFile)("/usr/bin/git", ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
+  const baseCommit = (await promisify(execFile)(HOST_GIT, ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
   const workspace = await state.bindWorkspace({ requirementId: saved.requirementId, version: saved.version, path: worktree.root,
     prepareOperationId: uuidv7(), baseCommit });
   const operationId = uuidv7();

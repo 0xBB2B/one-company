@@ -11,6 +11,9 @@ import type { WindowContextValue } from "../../extensions/lifecycle.ts";
 import { createDaemonFixture, removeDaemonFixture, resolveSdkDir, startDaemonForTest, killDaemon } from "../helpers/daemon-harness.ts";
 import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
 import { join } from "node:path";
+import { testHostGitExecutable } from "../helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -18,7 +21,7 @@ async function world() {
   const fixture = await createDaemonFixture();
   const daemon = await startDaemonForTest(fixture);
   cleanup.push(async () => { await killDaemon(daemon); await removeDaemonFixture(fixture); });
-  const config = { dataRoot: fixture.dataRoot, repositoryRoot: fixture.repo.root, repoId: fixture.repoId, gitExecutable: "/usr/bin/git", authorize: () => true };
+  const config = { dataRoot: fixture.dataRoot, repositoryRoot: fixture.repo.root, repoId: fixture.repoId, gitExecutable: HOST_GIT, authorize: () => true };
   const service = await RequirementService.open(config), state = await RequirementStateStore.open(config);
   async function session(rpcAuthorized = true) {
     const sm = SessionManager.inMemory(fixture.repo.root), windowId = uuidv7(), clock = createClock();

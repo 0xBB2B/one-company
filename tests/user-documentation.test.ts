@@ -193,8 +193,7 @@ describe("README 面板与查看页事实", () => {
     const match = source.match(/BUTTON_LABEL[^{]*\{([^}]*)\}/s);
     expect(match).not.toBeNull();
     const labels = [...match![1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
-    expect(labels).toContain("继续");
-    expect(labels).toContain("续接");
+    expect(labels).toEqual(["暂停", "停止"]);
     const section = extractSection(await readText(README), "面板与查看页");
     for (const label of labels) expect(section).toContain(label);
     expect(section).not.toContain("恢复");

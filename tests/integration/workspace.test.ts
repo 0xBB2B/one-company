@@ -1,479 +1,99 @@
-import { temporaryRoot } from "../helpers/temporary-root.ts";
-import { afterEach, describe, expect, test } from "vitest";
-import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { afterEach, expect, test } from "vitest";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { promisify } from "node:util";
-import { appendDecision } from "../../runtime/decisions.ts";
-import { daemonSocketPath, discoverWorkspace, repositoryIdentity } from "../../runtime/identity.ts";
-import { readRecord, writeRecord } from "../../runtime/database.ts";
-import { requirementStateRef } from "../../runtime/workflow-state.ts";
-import { executeWorkflowAction } from "../../runtime/workflow-tool.ts";
-import { connectTestClient, killDaemon, startDaemonForTest } from "../helpers/daemon-harness.ts";
-import type { DaemonHandle, TestClient } from "../helpers/daemon-harness.ts";
-import {
-  createProviderRequestsLog,
-  modelProviderEnv,
-  waitForProviderLogEntries,
-  writeTestModelProviders,
-} from "../helpers/daemon-model-fixture.ts";
-import type { TestProviderScript } from "../helpers/daemon-model-fixture.ts";
-import type { ScriptedReply } from "../helpers/controlled-provider.ts";
+import { join } from "node:path";
+import { temporaryRoot } from "../helpers/temporary-root.ts";
 import { createWorkspaceFixture, removeRepoFixture } from "../helpers/repo-fixture.ts";
-import type { WorkspaceFixture } from "../helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "../helpers/temp-home.ts";
-import type { TempHome } from "../helpers/temp-home.ts";
+import { connectTestClient, killDaemon, startDaemonForTest } from "../helpers/daemon-harness.ts";
+import { modelProviderEnv, readProviderRequestsLog, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
+import { daemonSocketPath, discoverWorkspace, repositoryIdentity } from "../../runtime/identity.ts";
+import { repositoryDatabase, putRecord, withDatabase } from "../../runtime/database.ts";
+import { requirementStateRef } from "../../runtime/workflow-state.ts";
+import { RunStore } from "../../runtime/run-store.ts";
 
-const execFileAsync = promisify(execFile);
-
-interface RepoDaemon {
-  root: string;
-  repoId: string;
-  commonDir: string;
-  socketPath: string;
-  handle: DaemonHandle;
-  requestsLog: string;
-}
-
-interface World {
-  home: TempHome;
-  workspace: WorkspaceFixture;
-  dataRoot: string;
-  repoA: RepoDaemon;
-  repoB: RepoDaemon;
-}
-
-const worlds: World[] = [];
-const clients: TestClient[] = [];
-const tempDirs: string[] = [];
-
-afterEach(async () => {
-  for (const client of clients.splice(0)) client.close();
-  for (const world of worlds.splice(0)) {
-    const pids = [world.repoA.handle.proc.pid, world.repoB.handle.proc.pid].filter((pid): pid is number => pid !== undefined);
-    await killDaemon(world.repoA.handle).catch(() => undefined);
-    await killDaemon(world.repoB.handle).catch(() => undefined);
-    for (const pid of pids) await waitForProcessGroupGone(pid);
-    await removeRepoFixture(world.workspace).catch(() => undefined);
-    await removeTempHome(world.home).catch(() => undefined);
-    await rm(world.dataRoot, { recursive: true, force: true });
+const cleanup: Array<() => unknown | Promise<unknown>> = [];
+afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+async function world() {
+  const home = await createTempHome(); cleanup.push(() => removeTempHome(home));
+  const workspace = await createWorkspaceFixture(); cleanup.push(() => removeRepoFixture(workspace));
+  const dataRoot = await mkdtemp(join(temporaryRoot(), "d")); cleanup.push(() => rm(dataRoot, { recursive: true, force: true }));
+  const repos = [];
+  for (const [index, root] of workspace.repos.entries()) {
+    const identity = await repositoryIdentity(root), requirement = `2026-09-10.workspace-${index}`;
+    const store = new RunStore({ dataRoot, repoId: identity.repoId, daemonStartedAt: "workspace-history" });
+    const run = await store.create({ kind: "requirement", requirement, task: "历史跨仓目标", cwd: root, readPaths: [], writePaths: [], model: { provider: "workspace-probe", id: "test" }, thinking: "off", mcp: [] });
+    putRecord(requirementStateRef(dataRoot, identity.repoId, requirement), { requirement, stage: "confirmed", tasks: {}, shape: { decisionId: "USER-001" } });
+    const scriptsDir = await mkdtemp(join(tmpdir(), "workspace-provider-")); cleanup.push(() => rm(scriptsDir, { recursive: true, force: true }));
+    const log = join(scriptsDir, "requests.jsonl"); await writeFile(log, "");
+    const scripts = await writeTestModelProviders(scriptsDir, [{ providerId: "workspace-probe", modelId: "test", replies: [{ type: "text", text: "不应读取旧目标" }] }]);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    const handle = await startDaemonForTest({ home, dataRoot, repoDir: identity.commonDir, socketPath }, { extraEnv: modelProviderEnv(scripts, log) }); cleanup.push(() => killDaemon(handle));
+    repos.push({ root, ...identity, requirement, run, store, socketPath, log });
   }
-  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true });
+  async function connect(index: number, windowId: string, ids: string[]) {
+    const repo = repos[index]!;
+    const client = await connectTestClient(repo.socketPath, { windowId, sessionId: windowId, cwd: workspace.root, workspaceRoot: workspace.root, repoIds: ids }, { dataRoot }); cleanup.push(() => client.close());
+    await client.call("runs.list"); return client;
+  }
+  const snapshot = () => repos.map((repo) => withDatabase(repositoryDatabase(dataRoot, repo.repoId), (db) => JSON.stringify({ requirements: db.list("requirements"), runs: db.list("runs"), sessions: db.list("sessions") })));
+  return { home, workspace, dataRoot, repos, connect, snapshot };
+}
+
+test("父目录发现两个仓库并排除node_modules，仓库内只见自己，无关目录不可见", async () => {
+  const workspace = await createWorkspaceFixture(); cleanup.push(() => removeRepoFixture(workspace));
+  const unrelated = await mkdtemp(join(tmpdir(), "workspace-unrelated-")); cleanup.push(() => rm(unrelated, { recursive: true, force: true }));
+  expect((await discoverWorkspace(workspace.root)).repos.map((repo) => repo.path).sort()).toEqual([...workspace.repos].sort());
+  expect((await discoverWorkspace(workspace.repos[0]!)).repos.map((repo) => repo.path)).toEqual([workspace.repos[0]!]);
+  expect((await discoverWorkspace(unrelated)).repos).toEqual([]);
 });
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+test("两仓真实socket的安全停止通知只投递对应repo窗口，工作区外窗口无事件或待办", async () => {
+  const w = await world(); const [a, b] = w.repos; const ids = w.repos.map((repo) => repo.repoId);
+  const parentA = await w.connect(0, "parent", ids), parentB = await w.connect(1, "parent", ids);
+  const insideA = await w.connect(0, "inside-a", [a!.repoId]);
+  const insideAOnB = await w.connect(1, "inside-a", [a!.repoId]);
+  const unrelated = await w.connect(0, "outside", ["0".repeat(64)]);
+  const events = [parentA, parentB, insideA, insideAOnB, unrelated].map((client) => { const values: Record<string, unknown>[] = []; client.onEvent("relay.notice", (value) => values.push(value)); return values; });
+  expect(await parentA.call("runs.stop", { runId: a!.run.id })).toMatchObject({ confirmed: true });
+  expect(await parentB.call("runs.stop", { runId: b!.run.id })).toMatchObject({ confirmed: true });
+  await delay(200);
+  expect(events[0]!.map((event) => event.repoId)).toEqual([a!.repoId]); expect(events[1]!.map((event) => event.repoId)).toEqual([b!.repoId]);
+  expect(events[2]!.map((event) => event.repoId)).toEqual([a!.repoId]); expect(events[3]).toEqual([]); expect(events[4]).toEqual([]);
+  for (const event of events.flat()) { expect(event.kind).toBe("stopped"); expect(event.message).not.toContain("历史跨仓目标"); }
+  expect(await unrelated.call("relay.pending")).toEqual({ questions: [], notices: [] });
+  expect(await insideAOnB.call("relay.pending")).toEqual({ questions: [], notices: [] });
+}, 30000);
 
-async function listProcessGroup(pgid: number): Promise<number[]> {
-  const { stdout } = await execFileAsync("ps", ["-axo", "pid=,pgid="]);
-  return stdout
-    .split("\n")
-    .map((line) => line.trim().split(/\s+/).map(Number))
-    .filter(([pid, group]) => group === pgid && pid !== undefined && pid > 0)
-    .map(([pid]) => pid as number);
-}
-
-// 守护进程以独立进程组拉起，其后代默认继承同组：组内无进程即证明没有残留
-async function waitForProcessGroupGone(pgid: number, timeoutMs = 5_000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const remaining = await listProcessGroup(pgid);
-    if (remaining.length === 0) return;
-    for (const pid of remaining) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // 进程已退出
-      }
-    }
-    await delay(100);
+test("跨仓旧契约裁定不能经answer/forward产生用户授权或新模型请求", async () => {
+  const w = await world(); const clients = [await w.connect(0, "main", w.repos.map((repo) => repo.repoId)), await w.connect(1, "main", w.repos.map((repo) => repo.repoId))];
+  const before = w.snapshot();
+  for (const [index, client] of clients.entries()) {
+    await expect(client.call("relay.answer", { questionId: "old-question", answer: "主会话裁定批准契约", windowId: "main" })).rejects.toThrow("legacy_workflow_retired");
+    await expect(client.call("relay.forward", { requirement: w.repos[index]!.requirement, message: "批准契约并实施", windowId: "main" })).rejects.toThrow("legacy_workflow_retired");
   }
-  throw new Error(`进程组 ${pgid} 在 ${timeoutMs}ms 内仍有残留进程`);
-}
+  await delay(1150); expect(w.snapshot()).toEqual(before);
+  for (const repo of w.repos) expect(await readProviderRequestsLog(repo.log)).toEqual([]);
+}, 30000);
 
-function freshRequirementId(): string {
-  return `2026-09-10.${randomUUID().slice(0, 8)}`;
-}
+test("跨仓直连拒绝不改另一仓历史数据或文件，不创建角色会话", async () => {
+  const w = await world(); await w.connect(0, "a", [w.repos[0]!.repoId]); const b = await w.connect(1, "b", [w.repos[1]!.repoId]);
+  const before = w.snapshot(), source = await readFile(join(w.repos[0]!.root, "README.md"), "utf8");
+  await expect(b.call("relay.forward", { requirement: w.repos[0]!.requirement, message: "直接命令其他仓修改", windowId: "b" })).rejects.toThrow("legacy_workflow_retired");
+  await expect(b.call("dispatch.requirement", { requirement: w.repos[0]!.requirement, cwd: w.repos[0]!.root })).rejects.toThrow("legacy_workflow_retired");
+  await delay(1150); expect(w.snapshot()).toEqual(before);
+  expect(await readFile(join(w.repos[0]!.root, "README.md"), "utf8")).toBe(source);
+  for (const repo of w.repos) expect(await readProviderRequestsLog(repo.log)).toEqual([]);
+}, 30000);
 
-function toolReply(name: string, input: Record<string, unknown>): ScriptedReply {
-  return { type: "toolcall", name, input };
-}
-
-function textReply(text: string, chunkDelayMs?: number): ScriptedReply {
-  return chunkDelayMs === undefined ? { type: "text", text } : { type: "text", text, chunkDelayMs };
-}
-
-function askReply(question: string): ScriptedReply {
-  return toolReply("pi_company_ask", {
-    question,
-    options: [
-      { label: "批准", description: "批准该变更" },
-      { label: "驳回", description: "驳回该变更" },
-    ],
-    recommended: "批准",
-  });
-}
-
-function shapeTask(id: string, role: string, waitFor?: { repo: string; requirement: string; stage: string }): Record<string, unknown> {
-  return { id, title: `任务 ${id}`, roles: [role], dependsOn: [], writePaths: ["area-a"], ...(waitFor ? { waitFor } : {}) };
-}
-
-function proposeShapeReply(tasks: Array<Record<string, unknown>>): ScriptedReply {
-  return toolReply("pi_company_propose_shape", {
-    tasks,
-    gates: { whiteboxReview: false, blackboxAcceptance: false },
-    rationale: "workspace 集成测试固定形状",
-  });
-}
-
-function dispatchRoleReply(task: string): ScriptedReply {
-  return toolReply("pi_company_agent", { action: "run", role: "worker", task, writePaths: ["area-a"], readPaths: [] });
-}
-
-function submitReply(): ScriptedReply {
-  return toolReply("structured_output", {
-    phase: "work",
-    verdict: "PASS",
-    summary: "workspace 集成测试固定完成",
-    issues: [],
-    evidence: ["测试固定证据"],
-    changeKind: "refactor",
-    workState: "green-baseline-no-change",
-    coverage: [{ ref: "rule-1", test: "test-1" }],
-    redCommands: [],
-    greenCommands: [{ command: "true", status: "passed", details: "ok" }],
-    changedFiles: [],
-    productionPath: [],
-    preexistingEvidence: [],
-    fakeRed: false,
-  });
-}
-
-function requirementProvider(replies: ScriptedReply[]): TestProviderScript {
-  return { providerId: "controlled-requirement-agent", modelId: "controlled-model", roleName: "requirement-agent", replies };
-}
-
-function workerProvider(taskId: string, replies: ScriptedReply[]): TestProviderScript {
-  return { providerId: `controlled-worker-${taskId}`, modelId: "controlled-model", roleName: "worker", taskId, replies };
-}
-
-async function startRepoDaemon(home: TempHome, dataRoot: string, root: string, scripts: TestProviderScript[]): Promise<RepoDaemon> {
-  const identity = await repositoryIdentity(root);
-  const scriptsDir = await mkdtemp(join(tmpdir(), "workspace-provider-scripts-"));
-  tempDirs.push(scriptsDir);
-  const providersPath = await writeTestModelProviders(scriptsDir, scripts);
-  const requestsLog = await createProviderRequestsLog();
-  tempDirs.push(dirname(requestsLog));
-  const socketPath = daemonSocketPath(dataRoot, identity.repoId);
-  const handle = await startDaemonForTest(
-    { home, repoDir: identity.commonDir, dataRoot, socketPath },
-    { extraEnv: modelProviderEnv(providersPath, requestsLog) },
-  );
-  return { root, repoId: identity.repoId, commonDir: identity.commonDir, socketPath, handle, requestsLog };
-}
-
-// 同一台机器上多个仓库的守护进程共用一个数据根，跨仓库阶段核对才读得到对方需求状态
-async function startWorld(
-  scripts: (ids: { repoAId: string; repoBId: string }) => { a: TestProviderScript[]; b: TestProviderScript[] },
-): Promise<World> {
-  const home = await createTempHome();
-  const workspace = await createWorkspaceFixture();
-  const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
-  const [rootA, rootB] = workspace.repos as [string, string];
-  const ids = { repoAId: (await repositoryIdentity(rootA)).repoId, repoBId: (await repositoryIdentity(rootB)).repoId };
-  const chosen = scripts(ids);
-  const world: World = {
-    home,
-    workspace,
-    dataRoot,
-    repoA: await startRepoDaemon(home, dataRoot, rootA, chosen.a),
-    repoB: await startRepoDaemon(home, dataRoot, rootB, chosen.b),
-  };
-  worlds.push(world);
-  return world;
-}
-
-async function connectWindow(
-  socketPath: string,
-  window: { windowId: string; cwd: string; workspaceRoot: string; repoIds: string[] },
-): Promise<TestClient> {
-  const client = await connectTestClient(socketPath, { ...window, sessionId: `${window.windowId}-session` });
-  clients.push(client);
-  return client;
-}
-
-async function confirmRequirement(dataRoot: string, cwd: string, requirement: string): Promise<void> {
-  await executeWorkflowAction({ action: "init", requirement }, { dataRoot, cwd });
-  const decision = await appendDecision(
-    {
-      requirement,
-      actor: "user",
-      source: "test",
-      trigger: "确认需求",
-      decision: "确认进入执行",
-      alternatives: [],
-      effects: ["scope"],
-      impact: "workspace 集成测试固定路径",
-    },
-    { dataRoot, cwd },
-  );
-  const result = await executeWorkflowAction(
-    { action: "advance", requirement, stage: "confirmed", version: 1, decisionId: decision.decisionId },
-    { dataRoot, cwd },
-  );
-  if (result.details.isError) throw new Error(`测试固件未能确认需求: ${result.text}`);
-}
-
-async function forceStage(dataRoot: string, repoId: string, requirement: string, stage: string): Promise<void> {
-  const path = requirementStateRef(dataRoot, repoId, requirement);
-  const current = await readRecord(path);
-  if (!current.exists) throw new Error("测试固件失败: 需求状态不存在");
-  await writeRecord(path, { ...(current.data as Record<string, unknown>), stage }, { expectedVersion: current.version });
-}
-
-interface QuestionEvent {
-  id: string;
-  repoId: string;
-  requirement: string;
-  question: string;
-}
-
-function collectQuestions(client: TestClient): QuestionEvent[] {
-  const received: QuestionEvent[] = [];
-  client.onEvent("relay.question", (data) => received.push(data as unknown as QuestionEvent));
-  return received;
-}
-
-async function waitFor<T>(read: () => T | undefined, timeoutMs: number, label: string): Promise<T> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const value = read();
-    if (value !== undefined) return value;
-    await delay(100);
-  }
-  throw new Error(`等待超时（${timeoutMs}ms）: ${label}`);
-}
-
-interface RunView {
-  id: string;
-  kind: string;
-  state: string;
-  task: string;
-  requirement?: string;
-  stateReason?: string;
-}
-
-async function listRuns(client: TestClient): Promise<RunView[]> {
-  const result = await client.call("runs.list", { limit: 200 });
-  return result.items as RunView[];
-}
-
-async function waitForRun(client: TestClient, predicate: (run: RunView) => boolean, timeoutMs: number): Promise<RunView> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const found = (await listRuns(client)).find(predicate);
-    if (found) return found;
-    await delay(150);
-  }
-  throw new Error(`等待目标运行超时（${timeoutMs}ms）`);
-}
-
-describe("workspace-coordination：可见范围", () => {
-  test("父目录发现两个仓库并跳过 node_modules 诱饵，仓库内只见自己，无关目录一个都看不到", async () => {
-    const workspace = await createWorkspaceFixture();
-    const unrelated = await mkdtemp(join(tmpdir(), "workspace-unrelated-"));
-    tempDirs.push(unrelated);
-    try {
-      const parentView = await discoverWorkspace(workspace.root);
-      expect(parentView.repos.map((repo) => repo.path).sort()).toEqual([...workspace.repos].sort());
-      expect(parentView.repos.some((repo) => repo.path.includes("node_modules"))).toBe(false);
-
-      const insideView = await discoverWorkspace(workspace.repos[0]!);
-      expect(insideView.repos.map((repo) => repo.path)).toEqual([workspace.repos[0]!]);
-
-      const unrelatedView = await discoverWorkspace(unrelated);
-      expect(unrelatedView.repos).toEqual([]);
-    } finally {
-      await removeRepoFixture(workspace);
-    }
-  });
-
-  test(
-    "父目录窗口收到两个仓库的提问，仓库内窗口只收本仓库的，无关窗口一条都收不到且待办为空",
-    async () => {
-      const requirementA = freshRequirementId();
-      const requirementB = freshRequirementId();
-      const world = await startWorld(() => ({
-        a: [requirementProvider([askReply("前端仓库的问题"), textReply("前端收到回答", 30_000)])],
-        b: [requirementProvider([askReply("后端仓库的问题"), textReply("后端收到回答", 30_000)])],
-      }));
-      const { repoA, repoB, workspace } = world;
-      const bothRepoIds = [repoA.repoId, repoB.repoId];
-
-      const parentOnA = await connectWindow(repoA.socketPath, { windowId: "parent-window", cwd: workspace.root, workspaceRoot: workspace.root, repoIds: bothRepoIds });
-      const parentOnB = await connectWindow(repoB.socketPath, { windowId: "parent-window", cwd: workspace.root, workspaceRoot: workspace.root, repoIds: bothRepoIds });
-      const insideA = await connectWindow(repoA.socketPath, { windowId: "repo-a-window", cwd: repoA.root, workspaceRoot: repoA.root, repoIds: [repoA.repoId] });
-      const insideAOnB = await connectWindow(repoB.socketPath, { windowId: "repo-a-window", cwd: repoA.root, workspaceRoot: repoA.root, repoIds: [repoA.repoId] });
-      const unrelated = await connectWindow(repoA.socketPath, { windowId: "unrelated-window", cwd: workspace.root, workspaceRoot: workspace.root, repoIds: ["0".repeat(64)] });
-
-      const parentQuestions = collectQuestions(parentOnA);
-      const parentQuestionsB = collectQuestions(parentOnB);
-      const insideAQuestions = collectQuestions(insideA);
-      const insideAOnBQuestions = collectQuestions(insideAOnB);
-      const unrelatedQuestions = collectQuestions(unrelated);
-
-      await confirmRequirement(world.dataRoot, repoA.root, requirementA);
-      await confirmRequirement(world.dataRoot, repoB.root, requirementB);
-      await parentOnA.call("dispatch.requirement", { requirement: requirementA, cwd: repoA.root });
-      await parentOnB.call("dispatch.requirement", { requirement: requirementB, cwd: repoB.root });
-
-      await waitFor(() => (parentQuestions.length >= 1 && parentQuestionsB.length >= 1 ? true : undefined), 15_000, "父目录窗口收到两仓库提问");
-      expect(parentQuestions.map((q) => q.repoId)).toEqual([repoA.repoId]);
-      expect(parentQuestionsB.map((q) => q.repoId)).toEqual([repoB.repoId]);
-
-      await waitFor(() => (insideAQuestions.length >= 1 ? true : undefined), 5_000, "仓库 A 窗口收到本仓库提问");
-      expect(insideAQuestions.map((q) => q.repoId)).toEqual([repoA.repoId]);
-
-      await delay(1_000);
-      expect(insideAOnBQuestions).toEqual([]);
-      expect(unrelatedQuestions).toEqual([]);
-
-      const pendingForUnrelated = await unrelated.call("relay.pending", {});
-      expect(pendingForUnrelated.questions).toEqual([]);
-      expect(pendingForUnrelated.notices).toEqual([]);
-
-      const pendingForInsideAOnB = await insideAOnB.call("relay.pending", {});
-      expect(pendingForInsideAOnB.questions).toEqual([]);
-    },
-    45_000,
-  );
-});
-
-describe("workspace-coordination：契约变更经主会话裁定并转发", () => {
-  test(
-    "后端代理发起契约变更提问，主会话作答后转发给前端代理，前端代理的下一轮上下文含该补充",
-    async () => {
-      const requirementA = freshRequirementId();
-      const requirementB = freshRequirementId();
-      const contractQuestion = "契约变更：错误码结构改为 A-BBB-CCCC，影响前端仓库";
-      const ruling = "主会话裁定：批准错误码结构变更，前端同步调整解析";
-      const world = await startWorld(() => ({
-        a: [requirementProvider([textReply("前端代理待命"), textReply("前端已并入补充"), textReply("前端结束")])],
-        b: [requirementProvider([askReply(contractQuestion), textReply("后端收到裁定"), textReply("后端结束")])],
-      }));
-      const { repoA, repoB, workspace } = world;
-      const bothRepoIds = [repoA.repoId, repoB.repoId];
-      const mainOnA = await connectWindow(repoA.socketPath, { windowId: "main-window", cwd: workspace.root, workspaceRoot: workspace.root, repoIds: bothRepoIds });
-      const mainOnB = await connectWindow(repoB.socketPath, { windowId: "main-window", cwd: workspace.root, workspaceRoot: workspace.root, repoIds: bothRepoIds });
-      const questionsFromB = collectQuestions(mainOnB);
-
-      await confirmRequirement(world.dataRoot, repoA.root, requirementA);
-      await confirmRequirement(world.dataRoot, repoB.root, requirementB);
-      await mainOnA.call("dispatch.requirement", { requirement: requirementA, cwd: repoA.root });
-      await mainOnB.call("dispatch.requirement", { requirement: requirementB, cwd: repoB.root });
-
-      const question = await waitFor(() => questionsFromB.find((q) => q.question.includes("契约变更")), 15_000, "主会话收到后端契约变更提问");
-      expect(question.repoId).toBe(repoB.repoId);
-      expect(question.requirement).toBe(requirementB);
-
-      const answered = await mainOnB.call("relay.answer", { questionId: question.id, answer: ruling, windowId: "main-window" });
-      expect(answered.accepted).toBe(true);
-      await waitForProviderLogEntries(repoB.requestsLog, (entries) => entries.some((entry) => entry.text.includes(ruling)), 10_000);
-
-      await waitForProviderLogEntries(repoA.requestsLog, (entries) => entries.length >= 1, 10_000);
-      const forwarded = await mainOnA.call("relay.forward", { requirement: requirementA, message: ruling, windowId: "main-window" });
-      expect(forwarded.delivered).toBe(true);
-      const frontendEntries = await waitForProviderLogEntries(
-        repoA.requestsLog,
-        (entries) => entries.some((entry) => entry.text.includes(ruling)),
-        10_000,
-      );
-      expect(frontendEntries.some((entry) => entry.text.includes(contractQuestion))).toBe(false);
-    },
-    45_000,
-  );
-
-  test(
-    "跨仓库直连被拒：向后端守护进程转发前端需求不送达，前端代理上下文从未出现该消息",
-    async () => {
-      const requirementA = freshRequirementId();
-      const requirementB = freshRequirementId();
-      const directMessage = "后端代理直接联系前端代理：请立刻改契约";
-      const world = await startWorld(() => ({
-        a: [requirementProvider([textReply("前端代理待命"), textReply("前端结束")])],
-        b: [requirementProvider([textReply("后端代理待命"), textReply("后端结束")])],
-      }));
-      const { repoA, repoB, workspace } = world;
-      const bothRepoIds = [repoA.repoId, repoB.repoId];
-      const mainOnA = await connectWindow(repoA.socketPath, { windowId: "main-window", cwd: workspace.root, workspaceRoot: workspace.root, repoIds: bothRepoIds });
-      const mainOnB = await connectWindow(repoB.socketPath, { windowId: "main-window", cwd: workspace.root, workspaceRoot: workspace.root, repoIds: bothRepoIds });
-
-      await confirmRequirement(world.dataRoot, repoA.root, requirementA);
-      await confirmRequirement(world.dataRoot, repoB.root, requirementB);
-      await mainOnA.call("dispatch.requirement", { requirement: requirementA, cwd: repoA.root });
-      await mainOnB.call("dispatch.requirement", { requirement: requirementB, cwd: repoB.root });
-      await waitForProviderLogEntries(repoA.requestsLog, (entries) => entries.length >= 1, 10_000);
-      await waitForProviderLogEntries(repoB.requestsLog, (entries) => entries.length >= 1, 10_000);
-
-      const rejected = await mainOnB.call("relay.forward", { requirement: requirementA, message: directMessage, windowId: "main-window" });
-      expect(rejected.delivered).toBe(false);
-      expect(typeof rejected.reason).toBe("string");
-
-      await delay(1_000);
-      const frontendEntries = await waitForProviderLogEntries(repoA.requestsLog, () => true, 1_000);
-      expect(frontendEntries.some((entry) => entry.text.includes(directMessage))).toBe(false);
-      const backendEntries = await waitForProviderLogEntries(repoB.requestsLog, () => true, 1_000);
-      expect(backendEntries.some((entry) => entry.text.includes(directMessage))).toBe(false);
-    },
-    45_000,
-  );
-});
-
-describe("workspace-coordination：跨仓库等待", () => {
-  test(
-    "形状声明等待后端需求 accepted：运行排队可查，到达后自动启动同一运行",
-    async () => {
-      const requirementA = freshRequirementId();
-      const requirementB = freshRequirementId();
-      const world = await startWorld(({ repoBId }) => ({
-        a: [
-          requirementProvider([
-            proposeShapeReply([shapeTask("T-1", "worker", { repo: repoBId, requirement: requirementB, stage: "accepted" })]),
-            dispatchRoleReply("T-1"),
-            textReply("任务已排队，等待后端"),
-            textReply("已派工"),
-            textReply("结束"),
-          ]),
-          workerProvider("T-1", [submitReply(), textReply("完成")]),
-        ],
-        b: [requirementProvider([textReply("后端待命")])],
-      }));
-      const { repoA, repoB, workspace, dataRoot } = world;
-      const [rootA, rootB] = workspace.repos as [string, string];
-      const bothRepoIds = [repoA.repoId, repoB.repoId];
-      const mainOnA = await connectWindow(repoA.socketPath, { windowId: "main-window", cwd: workspace.root, workspaceRoot: workspace.root, repoIds: bothRepoIds });
-      const questions = collectQuestions(mainOnA);
-
-      await confirmRequirement(dataRoot, rootA, requirementA);
-      await confirmRequirement(dataRoot, rootB, requirementB);
-      await forceStage(dataRoot, repoB.repoId, requirementB, "executing");
-      await mainOnA.call("dispatch.requirement", { requirement: requirementA, cwd: rootA });
-
-      const shapeQuestion = await waitFor(() => questions.find((q) => q.question.includes("请确认以下工作流形状")), 15_000, "收到形状确认提问");
-      expect(shapeQuestion.question).toContain(requirementB);
-      expect(shapeQuestion.question).toContain("accepted");
-      await mainOnA.call("relay.answer", { questionId: shapeQuestion.id, answer: "确认", windowId: "main-window" });
-
-      const queued = await waitForRun(mainOnA, (run) => run.kind === "role" && run.task === "T-1" && run.state === "queued", 15_000);
-      expect(queued.stateReason).toContain("尚未到达阶段 accepted");
-      expect(queued.stateReason).toContain("当前 executing");
-      await forceStage(dataRoot, repoB.repoId, requirementB, "accepted");
-      const workerRun = await waitForRun(mainOnA, (run) => run.id === queued.id && run.state !== "queued", 15_000);
-      expect(workerRun.task).toBe("T-1");
-    },
-    60_000,
-  );
-});
+test("跨仓旧accepted依赖不启动排队记录，状态变化不会转为执行权限", async () => {
+  const w = await world(); const a = await w.connect(0, "main", w.repos.map((repo) => repo.repoId)); await w.connect(1, "main", w.repos.map((repo) => repo.repoId));
+  const target = w.repos[1]!;
+  putRecord(requirementStateRef(w.dataRoot, target.repoId, target.requirement), { requirement: target.requirement, stage: "accepted", tasks: {} });
+  const before = w.snapshot();
+  await expect(a.call("runs.resumeInterrupted", { runId: w.repos[0]!.run.id })).rejects.toThrow("legacy_workflow_retired");
+  await delay(1150); expect(w.snapshot()).toEqual(before);
+  expect(await a.call("runs.get", { runId: w.repos[0]!.run.id })).toMatchObject({ run: { state: "interrupted" } });
+  for (const repo of w.repos) expect(await readProviderRequestsLog(repo.log)).toEqual([]);
+}, 30000);

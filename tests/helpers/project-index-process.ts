@@ -2,6 +2,9 @@ import { writeSync } from "node:fs";
 import { extractCode, getCodeExtractorVersion } from "../../runtime/code-extractor.ts";
 import { ProjectIndexService } from "../../runtime/project-index-service.ts";
 import type { ProjectIndexExtractor } from "../../runtime/project-index-service.ts";
+import { initializeTestHostGit } from "./test-git-binding.ts";
+
+initializeTestHostGit([]);
 
 interface Input {
   mode: "hang" | "count";

@@ -8,7 +8,7 @@ import type { RequirementAction, RequirementStoreOptions } from "./requirement-s
 import type { ProdReference, RequirementRecord } from "./requirement-contracts.ts";
 import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { createProdDocument, inspectProdArchives, parseProdDocument } from "./requirement-identity.ts";
-import { create as createStorage, diffVersions, prodRequirementPath, readVersion, save as saveStorage, verifyVersion } from "./prod-storage.ts";
+import { assertBoundGitExecutable, create as createStorage, diffVersions, prodRequirementPath, readVersion, save as saveStorage, verifyVersion } from "./prod-storage.ts";
 import type { ProdRepositoryIdentity, ProdStorageConfig, ProdStorageWriteResult } from "./prod-storage.ts";
 import { RequirementOperations } from "./requirement-operations.ts";
 import type { PrepareRequirementOperation, RequirementOperation, RequirementOperationAction } from "./requirement-operations.ts";
@@ -136,6 +136,7 @@ export class RequirementService {
     const service = new RequirementService(captured);
     const request: ServiceAuthorizationRequest = { action: "metadata", repoId: captured.repoId };
     service.authorize(request);
+    await assertBoundGitExecutable(captured.gitExecutable, [captured.dataRoot, captured.repositoryRoot]);
     await service.state(request);
     service.authorize(request);
     return service;

@@ -6,7 +6,8 @@ import { RelayQueue } from "../../daemon/relay-queue.ts";
 import { RunManager } from "../../daemon/run-manager.ts";
 import { createClock } from "../../runtime/clock.ts";
 import { repositoryDatabase } from "../../runtime/database.ts";
-import { collectGitSnapshot } from "../../runtime/git-snapshot.ts";
+import { createRoleSession } from "../../daemon/role-session.ts";
+import { createRangeProtection } from "../../runtime/range-protection.ts";
 import { repositoryIdentity } from "../../runtime/identity.ts";
 import { NetworkPauseGate } from "../../runtime/network-pause.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../../runtime/roles.ts";
@@ -18,13 +19,13 @@ import { createTempHome, removeTempHome } from "../helpers/temp-home.ts";
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { openSettingsPage } from "../../extensions/settings.ts";
-import { loadRoleSettings, saveRoleSettings, settingsPaths } from "../../runtime/settings.ts";
+import { loadRoleSettings, resolveRoleSettings, saveRoleSettings, settingsPaths } from "../../runtime/settings.ts";
 import type { SettingsComponent } from "../../runtime/settings-ui.ts";
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
-test("真实设置页配置作用于 SDK 派工，项目角色按信任装载，缺失 MCP 不阻塞无依赖任务", async () => {
+test("真实设置页与SDK角色：项目配置按信任装载，缺失MCP不阻塞只读任务；设置不复活旧派工", async () => {
   const repo = await createRepoFixture(); cleanup.push(() => removeRepoFixture(repo));
   const home = await createTempHome(); cleanup.push(() => removeTempHome(home));
   const { repoId } = await repositoryIdentity(repo.root);
@@ -76,17 +77,32 @@ test("真实设置页配置作用于 SDK 派工，项目角色按信任装载，
   const settings = await settingsPaths({ agentDir: home.agentDir, repoRoot: repo.root, projectTrusted: false });
   const saved = await loadRoleSettings(settings, { roleNames: catalog.roles.map((role) => role.name) });
   await saveRoleSettings(settings.global, { role: "reviewer", patch: { mcp: ["missing-browser"] }, baseline: saved.global.raw });
-  const snapshot = await collectGitSnapshot({ repoRoot: repo.root });
   for (const [index, provider] of providers.entries()) {
-    scriptReplies(provider, [{ type: "text", text: "等待补充", chunkDelayMs: 200 }]);
-    const next = await manager.dispatchReview({ requirement, cwd: repo.root, baseline: snapshot.head, snapshot, context: { projectTrusted: index === 1, model: { provider: "missing-fallback", id: "test" }, thinking: "off" } });
-    for (let i = 0; i < 200 && provider.requests.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    const projectTrusted = index === 1;
+    const paths = await settingsPaths({ agentDir: home.agentDir, repoRoot: repo.root, projectTrusted });
+    const layers = await loadRoleSettings(paths, { roleNames: catalog.roles.map((role) => role.name) });
+    const resolved = resolveRoleSettings("reviewer", layers, { mainModel: "missing-fallback/test", mainThinking: "off",
+      models: providers.map((entry) => ({ id: `${entry.providerId}/test`, thinkingLevels: ["off"] })), availableMcp: [] });
+    expect(resolved.model).toBe(`${provider.providerId}/test`);
+    expect(resolved.mcp).toMatchObject({ enabled: [], unavailable: ["missing-browser"] });
+    const roles = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(home.agentDir, "agents"), projectDir: join(repo.root, ".pi/agents"), projectTrusted, parseFrontmatter });
+    const selected = roles.roles.find((entry) => entry.name === "reviewer")!;
+    expect(selected.definition?.body.includes("项目角色已受信任标记")).toBe(projectTrusted);
+    const run = await store.create({ kind: "role", standalone: true, role: "pi-company.reviewer", requirement, task: "设置夹具",
+      cwd: repo.root, writePaths: [], readPaths: [repo.root], model: { provider: provider.providerId, id: "test" }, thinking: resolved.thinking, mcp: resolved.mcp.enabled });
+    const protection = await createRangeProtection({ cwd: repo.root, dataRoot: home.dataRoot, holder: { kind: "role", runId: run.id, requirement }, writePaths: [], clock, shells });
+    cleanup.push(() => protection.release());
+    scriptReplies(provider, [{ type: "text", text: "只读设置检查完成" }]);
+    const handle = await createRoleSession({ dataRoot: home.dataRoot, repoId, runId: run.id, shellToken: run.shellToken, cwd: repo.root,
+      roleName: "reviewer", role: selected, task: run.task, readPaths: [repo.root], writePaths: [], runtime,
+      modelRef: run.model, thinking: resolved.thinking, clock, shellRegistry: shells, guards: protection,
+      networkGate: new NetworkPauseGate(), contract: { kind: "plain", completion: "complete-on-idle" } });
+    cleanup.push(async () => { await handle.stop(); handle.dispose(); });
+    handle.prompt("读取设置对应角色"); await handle.result();
     expect(provider.requests).toHaveLength(1);
-    expect(provider.requests[0]!.systemPrompt?.includes("项目角色已受信任标记")).toBe(index === 1);
-    const stored = await store.get(next.runId);
-    expect(stored.ok && stored.run.model.provider).toBe(provider.providerId);
-    expect(stored.ok && stored.run.mcp).toEqual([]);
-    await manager.stop(next.runId);
+    expect(provider.requests[0]!.systemPrompt?.includes("项目角色已受信任标记")).toBe(projectTrusted);
+    await expect(manager.dispatchReview({ requirement, cwd: repo.root, baseline: "old", snapshot: { head: "old", fingerprint: "old" }, context: { projectTrusted } })).rejects.toThrow("永久淘汰");
+    expect(provider.requests).toHaveLength(1);
   }
   expect((await loadRoleSettings(settings, { roleNames: catalog.roles.map((role) => role.name) })).global.roles.reviewer?.mcp).toEqual(["missing-browser"]);
 }, 20000);

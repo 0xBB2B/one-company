@@ -2,13 +2,13 @@ import { afterEach, expect, test } from "vitest";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createClock } from "../runtime/clock.ts";
-import { repositoryDatabase, uuidv7 } from "../runtime/database.ts";
+import { createRecord, readRecord, repositoryDatabase, uuidv7 } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { createRangeProtection } from "../runtime/range-protection.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import { createManagedBashOperations } from "../runtime/shell-bash.ts";
-import { bindEvidence, checkEvidence, initRequirementState } from "../runtime/workflow-state.ts";
+import { listEvidenceStages } from "../runtime/workflow-state.ts";
 import type { WorkflowContext } from "../runtime/workflow-state.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
@@ -22,36 +22,17 @@ function runInput(requirement: string, cwd: string, task: string) {
   return { kind: "role" as const, standalone: true, role: "pi-company.worker", requirement, task, cwd, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] };
 }
 
-async function bindStagesEvidence(
+async function seedStagesEvidence(
   repo: Awaited<ReturnType<typeof createRepoFixture>>,
   home: Awaited<ReturnType<typeof createTempHome>>,
   requirement: string,
   stages: string[],
 ): Promise<WorkflowContext> {
   const identity = await repositoryIdentity(repo.root);
-  const runStore = new RunStore({ dataRoot: home.dataRoot, repoId: identity.repoId, daemonStartedAt: "write-guard-test" });
   const ctx: WorkflowContext = { dataRoot: home.dataRoot, cwd: repo.root, requirement };
-  await initRequirementState(ctx);
-  for (const stage of stages) {
-    const evidenceRun = await runStore.create(runInput(requirement, repo.root, `evidence-${stage}`));
-    await runStore.update(evidenceRun.id, { state: "running" });
-    await runStore.update(evidenceRun.id, {
-      state: "completed",
-      result: {
-        phase: stage,
-        verdict: "PASS",
-        summary: "验证保护夹具", issues: [], evidence: ["own.txt:1"],
-        ...(stage === "work" ? { changeKind: "refactor", workState: "green-baseline-no-change", coverage: [{ ref: "AC-1", test: "own.txt:1" }], redCommands: [], greenCommands: [{ command: "cat own.txt", status: "passed", details: "通过" }], changedFiles: [], productionPath: ["own.txt"], preexistingEvidence: ["own.txt:1"], fakeRed: false } : { reviewedHead: CURRENT_VERSION.codeHead, contentFingerprint: "保护夹具", traceability: [{ ref: "AC-1", test: "own.txt:1", implementation: "own.txt:1" }], findings: [] }),
-        binding: {
-          requirement,
-          definitionFingerprint: CURRENT_VERSION.definitionFingerprint,
-          codeHead: CURRENT_VERSION.codeHead,
-          cwd: repo.root,
-        },
-      },
-    });
-    expect(await bindEvidence({ stage, runId: evidenceRun.id, currentVersion: CURRENT_VERSION }, ctx)).toEqual({ ok: true });
-  }
+  // 直接准备临时库的失效检查输入，不生成批准或当前通过。
+  for (const stage of stages) createRecord({ database: repositoryDatabase(home.dataRoot, identity.repoId), namespace: `evidence:${requirement}`, key: stage }, { stage, ...CURRENT_VERSION, invalid: false });
+  expect((await listEvidenceStages(ctx)).sort()).toEqual([...stages].sort());
   return ctx;
 }
 
@@ -128,8 +109,10 @@ test("真实受管命令阻止他人范围写入，允许本任务写入", async
 
 test.each(["occupied.txt", "shared-dir/new.txt"])("并行执行者修改 %s，使旧证据失效且不误判当前运行违规", async (path) => {
   const w = await world();
-  const ownCtx = await bindStagesEvidence(w.repo, w.home, w.own.requirement, ["work"]);
-  const foreignCtx = await bindStagesEvidence(w.repo, w.home, w.foreign.requirement, ["work", "review"]);
+  const ownCtx = await seedStagesEvidence(w.repo, w.home, w.own.requirement, ["work"]);
+  const foreignCtx = await seedStagesEvidence(w.repo, w.home, w.foreign.requirement, ["work", "review"]);
+  const evidence = (ctx: WorkflowContext, stage: string) => readRecord({ database: repositoryDatabase(w.home.dataRoot, w.repoId), namespace: `evidence:${ctx.requirement}`, key: stage });
+  const ownBefore = evidence(ownCtx, "work");
   const token = await w.guard.commandGuard.before();
   // 用沙箱外的测试写入模拟外部进程改变验证对象。
   await writeFile(join(w.repo.root, path), "external change\n");
@@ -137,8 +120,10 @@ test.each(["occupied.txt", "shared-dir/new.txt"])("并行执行者修改 %s，�
   expect(violations).toEqual([]);
   const run = await w.runs.get(w.own.id);
   expect(run.ok && run.run.state).toBe("running");
-  for (const stage of ["work", "review"]) expect((await checkEvidence({ stage, currentVersion: CURRENT_VERSION }, foreignCtx)).ok).toBe(false);
-  expect((await checkEvidence({ stage: "work", currentVersion: CURRENT_VERSION }, ownCtx)).ok).toBe(true);
+  expect(await readFile(join(w.repo.root, path), "utf8")).toBe("external change\n");
+  for (const stage of ["work", "review"]) expect(evidence(foreignCtx, stage)).toMatchObject({ exists: true, version: 2, data: { stage, invalid: true, invalidatedAt: expect.any(String) } });
+  expect((await listEvidenceStages(foreignCtx)).sort()).toEqual(["review", "work"]);
+  expect(evidence(ownCtx, "work")).toEqual(ownBefore);
   expect(await w.guard.commandGuard.after(token, { exitCode: 0 })).toEqual([]);
 });
 

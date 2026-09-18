@@ -21,6 +21,9 @@ import { createProdDocument } from "../runtime/requirement-identity.ts";
 import { create as createStoredProd } from "../runtime/prod-storage.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const cleanup: Array<() => Promise<unknown> | void> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -645,7 +648,7 @@ async function requestScopeWorld(shared = false, bConfirmed = false) {
   const document = createProdDocument(w.basis.requirementId, title, body);
   const stored = await createStoredProd({ dataRoot: w.options.dataRoot, repoId: w.options.repoId,
     requirementId: w.basis.requirementId, operationId: w.candidate.operationId, expectedParent: null,
-    bytes: document.bytes, gitExecutable: "/usr/bin/git", worktreeRoots: [w.options.repositoryRoot], authorize: () => true });
+    bytes: document.bytes, gitExecutable: HOST_GIT, worktreeRoots: [w.options.repositoryRoot], authorize: () => true });
   w.candidate.to = { commit: stored.commit, hash: stored.prodHash.slice(7) };
   const saved = w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version,
     operationId: w.candidate.operationId, reference: w.candidate.to });

@@ -13,8 +13,7 @@ import { daemonSocketPath, repoDataDir, repositoryIdentity } from "../runtime/id
 import { ProjectIndexService } from "../runtime/project-index-service.ts";
 import { PROJECT_INDEX_GRANT_NAMESPACE, ProjectSyncGrantIssuer } from "../runtime/project-sync-grants.ts";
 import type { IssuedProjectSyncGrant } from "../runtime/project-sync-grants.ts";
-import { PROTOCOL_VERSION } from "../runtime/protocol.ts";
-import { connectTestClient, resolveSdkDir } from "./helpers/daemon-harness.ts";
+import { authenticateTestClient, connectTestClient, resolveSdkDir } from "./helpers/daemon-harness.ts";
 import type { TestClient } from "./helpers/daemon-harness.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import type { RepoFixture } from "./helpers/repo-fixture.ts";
@@ -160,7 +159,7 @@ test("真实两个Node进程经握手身份和共享临时DB签发/验证，伪t
 test("跨进程同socket重hello退役旧token，未带新身份的宿主不能签发", async () => {
   const w = await world();
   await startChild(w.repo.root, w.dataRoot);
-  const raw = await connectTestClient(w.socketPath, { ...w.hello, repoIds: [w.identity.repoId] });
+  const raw = await connectTestClient(w.socketPath, { ...w.hello, repoIds: [w.identity.repoId] }, { dataRoot: w.dataRoot, expectedRepoId: w.identity.repoId });
   clients.push(raw);
   let connection: Readonly<DaemonConnectionIdentity> = {
     daemonInstanceId: raw.helloResult.daemonInstanceId as string, connectionId: raw.helloResult.connectionId as string, connectionSequence: 1,
@@ -169,7 +168,7 @@ test("跨进程同socket重hello退役旧token，未带新身份的宿主不能�
   const originalClient = hostClient(w, connection);
   const grant = await issuer.issue(originalClient, w.workspace);
   expect(await raw.call("index.sync", scope(grant))).toMatchObject({ verified: true });
-  const rehello = await raw.call("hello", { ...w.hello, repoIds: [w.identity.repoId], protocolVersion: PROTOCOL_VERSION });
+  const rehello = await authenticateTestClient(raw, { ...w.hello, repoIds: [w.identity.repoId] }, { dataRoot: w.dataRoot, expectedRepoId: w.identity.repoId });
   connection = { daemonInstanceId: rehello.daemonInstanceId as string, connectionId: rehello.connectionId as string, connectionSequence: 2 };
   expect(connection.connectionId === originalClient.connectionId).toBe(false);
   await expect(raw.call("index.sync", scope(grant))).rejects.toThrow("grant_invalid");

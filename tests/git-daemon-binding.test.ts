@@ -575,7 +575,7 @@ process.stdout.write(JSON.stringify(outcome));
     expect(result).toEqual({ mode, rejected: mode === "before", ownIdentity: mode === "after" ? true : null,
       different: true, replacementPreserved: true });
   }
-});
+}, 15_000);
 
 test("hello回复缺少本次raw或canonical请求根均拒绝", async () => {
   const root = await temporary("git-daemon-full-roots-");

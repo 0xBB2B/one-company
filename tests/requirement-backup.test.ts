@@ -19,9 +19,12 @@ import { prodRequirementPath } from "../runtime/prod-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { sealOperationLog } from "../runtime/operation-log.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
-const GIT = "/usr/bin/git";
+const GIT = HOST_GIT;
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {

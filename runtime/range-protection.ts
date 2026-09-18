@@ -13,12 +13,19 @@ import { createManagedBashOperations } from "./shell-bash.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import { parseChangedEntries } from "./git-snapshot.ts";
 import type { Clock } from "./clock.ts";
-import type { ShellRegistry } from "./shell-registry.ts";
+import type { ShellRegistry, TaskRecord } from "./shell-registry.ts";
 import type { BashCommandGuard } from "./shell-bash.ts";
+import { currentHostGit } from "./git-runtime.mjs";
+import { assertExecutionGuardCurrent, DEFAULT_GUARDED_OUTPUT_BYTES } from "./execution-guard.ts";
+import type { ExecutionGuard } from "./execution-guard.ts";
 
 export async function createRangeProtection(input: {
   cwd: string; dataRoot: string; holder: Holder; writePaths: string[]; clock: Clock; shells: ShellRegistry;
 }) {
+  const executionEnded = (task: TaskRecord) => {
+    try { return input.shells.isTaskExecutionEnded(task); }
+    catch { return false; }
+  };
   const identity = await repositoryIdentity(input.cwd);
   const gitDir = await realpath((await queryGit(input.cwd, ["rev-parse", "--absolute-git-dir"])).stdout.trim());
   const repoDir = await repoDataDir(input.dataRoot, identity.repoId, identity.commonDir);
@@ -28,7 +35,7 @@ export async function createRangeProtection(input: {
     runState: async (id) => { const run = await runs.get(id); if (!run.ok) throw new Error(`范围持有者不可读: ${id}`); return run.run.state; },
     holderGone: (id) => windows.holderGone(id),
     activeShellTasks: async (id) => {
-      const local = input.shells.list().filter((task) => task.host.runId === id && ["starting", "running", "stopping", "uncertain"].includes(task.status));
+      const local = input.shells.list().filter((task) => task.host.runId === id && !executionEnded(task));
       const persisted = withDatabase(repositoryDatabase(input.dataRoot, identity.repoId), (db) => db.list<{ host: { runId?: string } }>("shells").filter((record) => record.data.host.runId === id));
       return new Set([...local.map((task) => task.taskId), ...persisted.map((record) => record.key)]).size;
     },
@@ -69,6 +76,14 @@ export async function createRangeProtection(input: {
   const scratchPaths = new Set<string>();
   let commitsInFlight = 0;
   const gitPaths = [identity.commonDir, gitDir, join(input.cwd, ".git")];
+  const gitExecutionRoots = [input.cwd, input.dataRoot, identity.commonDir, gitDir];
+  const executionGuardFor = (git: string): ExecutionGuard => ({
+    maxOutputBytes: DEFAULT_GUARDED_OUTPUT_BYTES,
+    assertCurrent() {
+      const current = currentHostGit(gitExecutionRoots);
+      if (current.executablePath !== git) throw new Error("受管 Git 可执行文件已偏离宿主固定绑定");
+    },
+  });
   const foreignHosts = () => activeForeignHosts({ runStore: runs, windows, windowId: input.holder.windowId ?? "daemon", runId: input.holder.runId ?? "" });
   async function boundary() {
     const foreignPaths = (await claims.entries()).filter((claim) => claim.holder.runId !== input.holder.runId || claim.holder.windowId !== input.holder.windowId).flatMap((claim) => claim.paths);
@@ -148,6 +163,8 @@ export async function createRangeProtection(input: {
           if (!checked.ok) throw new Error(checked.reason);
         }
         const git = await gitExecutable();
+        const executionGuard = executionGuardFor(git);
+        assertExecutionGuardCurrent(executionGuard.assertCurrent);
         const host = { kind: input.holder.kind, id: input.holder.runId ?? input.holder.windowId!, runId: input.holder.runId };
         const tracked = new Set((await readGit(["ls-files", "-z"])).toString().split("\0"));
         const stagePaths: string[] = [];
@@ -167,12 +184,23 @@ export async function createRangeProtection(input: {
             async launch() {
               const limits = await boundary();
               limits.writeRoots.push(gitDir, ...["objects", "refs", "logs"].map((part) => join(identity.commonDir, part)));
-              return sandboxLaunch("", limits, { path: git, args: ["--literal-pathspecs", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args] });
+              return {
+                ...sandboxLaunch("", limits, { path: git, args: ["--literal-pathspecs", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args] }),
+                executionGuard,
+              };
             },
           } });
-          const result = await operations.exec("git " + args[0], input.cwd, { signal, timeout: 30, onData: (chunk) => { output += chunk.toString(); } });
+          let result: Awaited<ReturnType<typeof operations.exec>>;
+          try {
+            result = await operations.exec("git " + args[0], input.cwd, { signal, timeout: 30, onData: (chunk) => { output += chunk.toString(); } });
+          } catch (error) {
+            assertExecutionGuardCurrent(executionGuard.assertCurrent);
+            throw error;
+          }
+          assertExecutionGuardCurrent(executionGuard.assertCurrent);
           if (result.exitCode !== 0) throw new Error(`受管提交失败（外部 hook/filter/签名程序不在执行权限内）：${output}`);
         }
+        assertExecutionGuardCurrent(executionGuard.assertCurrent);
         return output;
       } finally { commitsInFlight--; }
     },
@@ -180,7 +208,7 @@ export async function createRangeProtection(input: {
     verifyFingerprint: (snapshot: Record<string, string>) => verifyFingerprint(input.cwd, snapshot),
     async release() {
       if (commitsInFlight > 0) return;
-      const active = input.shells.list().some((task) => (input.holder.runId ? task.host.runId === input.holder.runId : task.host.id === input.holder.windowId) && ["starting", "running", "stopping", "uncertain"].includes(task.status));
+      const active = input.shells.list().some((task) => (input.holder.runId ? task.host.runId === input.holder.runId : task.host.id === input.holder.windowId) && !executionEnded(task));
       if (active) return;
       for (const scratch of scratchPaths) await rm(scratch, { recursive: true, force: true });
       scratchPaths.clear();

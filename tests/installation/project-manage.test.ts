@@ -3,6 +3,9 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { InstalledProjectFixture } from "../helpers/project-index-installed-fixture.ts";
+import { initializeTestHostGit } from "../helpers/test-git-binding.ts";
+
+initializeTestHostGit([]);
 
 const TS_SENTINEL = "TS_CURRENT_SOURCE_SENTINEL";
 const GO_SENTINEL = "GO_CURRENT_SOURCE_SENTINEL";

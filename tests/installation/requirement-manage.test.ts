@@ -18,12 +18,15 @@ import { registerControlledProvider, scriptReplies } from "../helpers/controlled
 import { repositoryIdentity, daemonSocketPath } from "../../runtime/identity.ts";
 import { socketPathByteLimit } from "../../daemon/lifecycle.ts";
 import { uuidv7 } from "../../runtime/database.ts";
+import { testHostGitExecutable } from "../helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const productRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  return (await exec("/usr/bin/git", args, { cwd, env: { ...process.env, LC_ALL: "C" } })).stdout.trim();
+  return (await exec(HOST_GIT, args, { cwd, env: { ...process.env, LC_ALL: "C" } })).stdout.trim();
 }
 
 async function waitMissing(path: string, timeoutMs = 10_000): Promise<void> {
@@ -73,7 +76,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const artifact = await packPackage(pnpm, productRoot, packs);
     const runtimeArtifact = await packPackage(pnpm, dirname(fileURLToPath(import.meta.resolve("web-tree-sitter/web-tree-sitter.wasm"))), packs);
     const typeboxArtifact = await packPackage(pnpm, await realpath(join(productRoot, "node_modules", "typebox")), packs);
-    for (const file of ["extensions/index.ts", "extensions/requirement-manage.ts", "runtime/host-authorization.ts", "runtime/requirement-manage-tool.ts", "runtime/requirement-service.ts"]) {
+    for (const file of ["extensions/index.ts", "extensions/requirement-manage.ts", "runtime/host-authorization.ts", "runtime/requirement-manage-tool.ts", "runtime/requirement-service.ts", "runtime/main-requirement-interaction.ts", "runtime/user-interact-tool.ts"]) {
       expect(artifact.files).toContain(file);
     }
 
@@ -130,6 +133,8 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const body = "通过真实 SDK input 进入生产授权路径";
     scriptReplies(provider, [
       { type: "toolcall", name: "pi_company_requirement_manage", input: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } },
+      { type: "text", text: '{"allow":true}' },
+      { type: "toolcall", name: "pi_company_requirement_manage", input: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } },
       { type: "text", text: "done" },
     ]);
 
@@ -160,7 +165,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const defaultUI = session.extensionRunner.getUIContext();
     const testUI: ExtensionUIContext = {
       ...defaultUI,
-      confirm: async () => false,
+      confirm: async () => { throw new Error("UI.confirm forbidden"); },
       select: async () => undefined,
       input: async () => undefined,
       editor: async () => undefined,
@@ -171,11 +176,16 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     await session.bindExtensions({ uiContext: testUI, mode: "rpc" });
     expect(session.extensionRunner.getAllRegisteredTools().map((tool) => tool.definition.name)).toContain("pi_company_requirement_manage");
 
-    await session.prompt("请把这项需求保存为未批准草稿", { source: "interactive" });
+    expect(session.extensionRunner.getAllRegisteredTools().map((tool) => tool.definition.name)).toContain("pi_company_user_interact");
+    await session.prompt("请把安装产物通过真实SDK保存需求的功能整理成未批准草稿，只分析接线", { source: "interactive" });
     await session.waitForIdle();
     const result = session.messages.find((message) => message.role === "toolResult" && message.toolName === "pi_company_requirement_manage");
     expect(result?.isError, JSON.stringify(result?.content)).toBe(false);
-    const details = result?.details as { requirementId: string; commit: string; prodHash: string; lifecycle: string; revision: number };
+    const details = result?.details as { requirementId: string; commit: string; prodHash: string; lifecycle: string; revision: number; version: number };
+    const createResults = session.messages.filter((message) => message.role === "toolResult" && message.toolName === "pi_company_requirement_manage");
+    expect(createResults).toHaveLength(2);
+    expect(createResults[1]?.details).toEqual(details);
+    expect(createResults[1]?.isError).toBe(false);
     expect(details.requirementId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(details.lifecycle).toBe("draft");
     expect(details.revision).toBe(0);
@@ -187,13 +197,26 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     expect(await git(requirementRoot, ["rev-list", "--count", "HEAD"])).toBe("1");
     expect(await git(requirementRoot, ["show", "-s", "--format=%H", "HEAD"])).toBe(details.commit);
 
+    const confirmationOperationId = uuidv7();
+    const entry = (kind: "constraint" | "target" | "action", conclusion: string) => ({ kind, conclusion, scope: "仅分析安装接线，不实施",
+      basis: "explicit", resolution: "direct", candidateId: confirmationOperationId, requestId: null, actions: kind === "action" ? ["analyze"] : [], references: [], supersedes: [] });
+    const interpretation = { format: "interaction-interpretation/v1", referenceResolution: "none",
+      entries: [entry("constraint", "需求身份与标题"), entry("target", "通过真实SDK处理需求保存"), entry("action", "只分析接线")],
+      documentReview: { faithful: true, units: ["metadata", "whole-body"].map((id, i) => ({ id, disposition: "confirmed", globalConstraint: false, appliesTo: [], dependsOn: [], conclusionIndexes: [i] })),
+        actions: [{ action: "analyze", goalIds: ["whole-body"], constraintIds: [], conclusionIndexes: [2], unknown: false }], questions: [] } };
     scriptReplies(provider, [
-      { type: "toolcall", name: "pi_company_requirement_manage", input: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } },
+      { type: "toolcall", name: "pi_company_user_interact", input: { action: "forward", repoId: identity.repoId, requirementId: details.requirementId,
+        savedOperationId: operationId, operationId: confirmationOperationId, version: details.version } },
+      { type: "text", text: JSON.stringify(interpretation) },
       { type: "text", text: "done" },
     ]);
-    await session.prompt("核对上次保存结果", { source: "interactive" });
+    await session.prompt("安装产物需要通过真实SDK处理需求保存，本轮只分析接线，不实施", { source: "interactive" });
     await session.waitForIdle();
     expect(await git(requirementRoot, ["rev-list", "--count", "HEAD"])).toBe("1");
+    const forwarded = session.messages.find((message) => message.role === "toolResult" && message.toolName === "pi_company_user_interact");
+    expect(forwarded?.isError, JSON.stringify(forwarded?.content)).toBe(false);
+    expect(forwarded?.details).toMatchObject({ targetRecorded: true, prodActivated: false, blockedBy: "workspace_not_ready",
+      allowedScopes: [{ action: "analyze", goalIds: ["whole-body"], constraintIds: [] }] });
     expect(notifications.filter((entry) => entry.type === "error")).toEqual([]);
   } finally {
     const cleanupErrors: unknown[] = [];

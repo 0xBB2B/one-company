@@ -256,7 +256,9 @@ test("读取结束前权限撤销不返回结论", async () => {
 
 test("两个真实Node进程竞争相同操作只保存一份决定和事件", async () => {
   const w = await world(), path = join(w.root, "append.mjs");
-  await writeFile(path, `import { ShortDecisionStore } from ${JSON.stringify(new URL("../runtime/short-decisions.ts", import.meta.url).href)};
+  await writeFile(path, `import { initializeHostGit } from ${JSON.stringify(new URL("../runtime/git-runtime.mjs", import.meta.url).href)};
+initializeHostGit([]);
+import { ShortDecisionStore } from ${JSON.stringify(new URL("../runtime/short-decisions.ts", import.meta.url).href)};
 const store = await ShortDecisionStore.open({ ...${JSON.stringify({ dataRoot: w.options.dataRoot, repoId: w.options.repoId, repositoryRoot: w.repo.root })},
   authorize: () => true, admit: ({ requestHash, batch }) => ({ requestHash, subjects: batch.decisions.map(() => (${JSON.stringify(w.subject)})) }) });
 console.log('READY');

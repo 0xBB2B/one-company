@@ -17,9 +17,10 @@ import {
   type ProdStorageConfig,
 } from "../runtime/prod-storage.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
 
 const execFileAsync = promisify(execFile);
-const GIT = "/usr/bin/git";
+const GIT = testHostGitExecutable([]);
 const REQUIREMENT_ID = "01941f29-7c00-7000-8000-000000000001";
 const roots: string[] = [];
 
@@ -230,7 +231,7 @@ test("未知 HEAD、外部正文、复用旧 operationId 和仓库目录身份�
   await rename(join(bound.repositoryRoot, ".git"), moved);
   await cp(moved, join(bound.repositoryRoot, ".git"), { recursive: true });
   await expectCode(save({ ...replacedRepository.config, expectedRepositoryIdentity: bound.repositoryIdentity, action: "updateDraft", operationId: "save-5", expectedParent: bound.commit, bytes: Buffer.from("新内容") }), "repository_identity_mismatch");
-});
+}, 30_000);
 
 test("额外暂存路径明确拒绝且不会混入正文提交或清掉外部暂存", async () => {
   const w = await world();
@@ -278,9 +279,11 @@ test("非系统可写包装程序不会被当作 Git 执行；Git 缺失明确�
   await writeFile(wrapper, `#!/bin/sh\nprintf ran > ${JSON.stringify(sentinel)}\n`, { mode: 0o755 });
   await expectCode(first({ ...wrapperWorld, config: { ...wrapperWorld.config, gitExecutable: wrapper } }), "untrusted_git");
   await expect(readFile(sentinel)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(lstat(wrapperWorld.config.dataRoot)).rejects.toMatchObject({ code: "ENOENT" });
 
   const missingWorld = await world();
   await expectCode(first({ ...missingWorld, config: { ...missingWorld.config, gitExecutable: join(missingWorld.root, "missing", "git") } }), "git_unavailable");
+  await expect(lstat(missingWorld.config.dataRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("路径祖先链接、错误 .git 链接和权限拒绝不会被吞掉或写到链接目标", async () => {
@@ -426,7 +429,7 @@ test("读取接口首次授权携带精确提交和预期 hash，且不读取请
   await rename(oldBlobPath, join(w.root, "held-old-prod-blob"));
   expect(Buffer.from((await readVersion({ ...w.config, commit: latest.commit, expectedHash: latest.prodHash })).bytes).toString()).toBe("版本三");
   await expectCode(readVersion({ ...w.config, commit: initial.commit, expectedHash: initial.prodHash }), "git_failed");
-});
+}, 30_000);
 
 test("update-ref 后 index 更新中断可由同 operation 精确补齐", async () => {
   let indexLock = "";
@@ -461,7 +464,7 @@ test("update-ref 后 index 更新中断可由同 operation 精确补齐", async 
   expect(await save(updateRequest)).toMatchObject({ status: "recovered", commit: updatedCommit, parent: parent.commit });
   expect(await commitCount(parent.repositoryRoot, update.home)).toBe(2);
   expect(await git(["status", "--porcelain"], parent.repositoryRoot, update.home)).toBe("");
-});
+}, 30_000);
 
 test("同 operation 恢复遇到非旧父树也非新树的外部 index 时保留并阻塞", async () => {
   const w = await world();

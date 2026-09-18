@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { isPromise } from "node:util/types";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
@@ -198,6 +199,8 @@ export interface PmIntakeServiceOptions {
   submissionProvider?: PmSubmissionProvider;
   store?: PmIntakeStore;
   now?: () => number;
+  /** 同进程 performance.now() 时间域中的可信绝对截止时间；不进入工具参数、数据库或 provider 查询。 */
+  deadlineMonotonic?: number;
 }
 
 /** M4 需求侧服务：只登记接手元数据和主代理核对，不启动PM、plan、task或调度。 */
@@ -208,8 +211,12 @@ export class PmIntakeService {
     proof: IntakeCurrentProof; bytes: string }>();
   constructor(options: PmIntakeServiceOptions) {
     if (!HASH.test(options.repoId)) deny("invalid_repo");
+    if (options.deadlineMonotonic !== undefined &&
+      (!Number.isFinite(options.deadlineMonotonic) || options.deadlineMonotonic < 0)) deny("invalid_deadline");
+    if (options.store && options.deadlineMonotonic !== undefined) deny("deadline_store_binding_unsupported");
     this.#options = { ...options };
-    this.#store = options.store ?? new PmIntakeStore({ dataRoot: options.dataRoot, repoId: options.repoId, now: options.now });
+    this.#store = options.store ?? new PmIntakeStore({ dataRoot: options.dataRoot, repoId: options.repoId,
+      now: options.now, deadlineMonotonic: options.deadlineMonotonic });
   }
 
   #signal(signal: AbortSignal): void {
@@ -218,10 +225,13 @@ export class PmIntakeService {
     if (aborted) deny("operation_cancelled");
   }
 
-  /** 最后DB检查后仅核对原生取消状态与真实Host代次，不调用resolver/provider。 */
+  /** 最后DB检查后仅核对原生取消状态、固定截止时间与真实Host代次，不调用resolver/provider。 */
   #fixedRuntimeCurrent(prepared: Pick<PreparedContext, "hostGeneration" | "signal">): void {
     this.#signal(prepared.signal);
     if (this.#options.authorization.generation !== prepared.hostGeneration) deny("main_call_changed");
+    if (this.#options.deadlineMonotonic !== undefined && performance.now() >= this.#options.deadlineMonotonic) {
+      deny("main_deadline_elapsed");
+    }
   }
 
   #main(call: MainIntakeCall, expected?: MainIntakeCallIdentity, generation?: number): Readonly<MainIntakeCallIdentity> {

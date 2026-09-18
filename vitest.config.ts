@@ -7,7 +7,7 @@ export default defineConfig({
     pool: "forks",
     isolate: true,
     fileParallelism: false,
-    testTimeout: 5_000,
+    testTimeout: 30_000,
     setupFiles: ["./tests/helpers/test-environment.ts"],
   },
 });

@@ -16,9 +16,12 @@ import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./he
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { gitProcessGroupAlive } from "../runtime/git-process-session.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
-const GIT = "/usr/bin/git";
+const GIT = HOST_GIT;
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -69,6 +72,8 @@ function spawnServiceWrite(
 ) {
   const script = join(w.root, `service-child-${uuidv7()}.mjs`);
   const source = `import {existsSync,writeFileSync} from 'node:fs';
+import {initializeHostGit} from ${JSON.stringify(new URL("../runtime/git-runtime.mjs", import.meta.url).href)};
+initializeHostGit([]);
 import {RequirementService} from ${JSON.stringify(new URL("../runtime/requirement-service.ts", import.meta.url).href)};
 import {RequirementWriteCoordinator} from ${JSON.stringify(new URL("../runtime/requirement-coordination.ts", import.meta.url).href)};
 import {RequirementOperations} from ${JSON.stringify(new URL("../runtime/requirement-operations.ts", import.meta.url).href)};

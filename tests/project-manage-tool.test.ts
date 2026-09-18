@@ -20,12 +20,15 @@ import type { ProjectIndexAuthorizationRequest } from "../runtime/project-index-
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const roots: string[] = [];
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  return (await exec("/usr/bin/git", args, { cwd, env: { ...process.env, LC_ALL: "C" } })).stdout.trim();
+  return (await exec(HOST_GIT, args, { cwd, env: { ...process.env, LC_ALL: "C" } })).stdout.trim();
 }
 
 async function fixture() {

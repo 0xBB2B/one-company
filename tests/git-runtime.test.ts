@@ -164,11 +164,13 @@ process.stdout.write(JSON.stringify({ code }));
     const second = await fakeGit("9.5.3", "root-boundary-second");
     const base = await temporaryRoot("pi-company-runtime-root-boundary-");
     const bounded = child(`
+import { mkdirSync } from "node:fs";
 import { currentHostGit, exportGitExpectation, initializeHostGit } from ${JSON.stringify(runtimeUrl)};
 const binding = initializeHostGit([process.argv[1]]);
 const initial = exportGitExpectation();
 const occupied = new Set([...initial.excludedRootInputs, ...initial.excludedRoots]).size;
 const additions = Array.from({ length: 256 - occupied }, (_, index) => process.argv[1] + "/root-" + index);
+for (const root of [...additions, process.argv[1] + "/overflow"]) mkdirSync(root);
 currentHostGit(additions);
 currentHostGit([additions[0]]);
 const full = exportGitExpectation();

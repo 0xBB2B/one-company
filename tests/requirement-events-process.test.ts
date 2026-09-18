@@ -12,6 +12,9 @@ import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/rep
 import type { RepoFixture } from "./helpers/repo-fixture.ts";
 import type { EventProcessConfig } from "./helpers/requirement-events-process.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const helper = fileURLToPath(new URL("./helpers/requirement-events-process.ts", import.meta.url));
 const evidenceDirectory = process.env.M3_AC_COVERAGE_EVIDENCE;
@@ -101,14 +104,14 @@ async function world() {
   await chmod(repo.root, 0o700);
   const identity = await repositoryIdentity(repo.root);
   const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId,
-    gitExecutable: "/usr/bin/git", authorize: () => true };
+    gitExecutable: HOST_GIT, authorize: () => true };
   const service = await RequirementService.open(options);
   const state = await RequirementStateStore.open(options);
   const created = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "进程事件测试", body: BODY1 });
   const worktree = await addWorktree(repo);
   await chmod(worktree.root, 0o700);
   // 绑定所需的实际Git提交从已创建的测试仓库读取，不使用需求Git的HEAD。
-  const head = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], { cwd: worktree.root, encoding: "utf8" }).trim();
+  const head = execFileSync(HOST_GIT, ["rev-parse", "HEAD"], { cwd: worktree.root, encoding: "utf8" }).trim();
   const bound = await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit: head });
   const approved = await service.confirmUpdate({ requirementId: created.requirementId, operationId: uuidv7(), version: bound.version,

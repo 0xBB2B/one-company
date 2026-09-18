@@ -78,6 +78,7 @@ export async function createTempHome(): Promise<TempHome> {
 export async function removeTempHome(home: TempHome): Promise<void> {
   const receipt = tempHomeReceipts.get(home);
   if (!receipt) throw new Error("拒绝删除没有原始分配收据的临时 HOME");
-  await assertReceipt(receipt, "删除前");
+  try { await assertReceipt(receipt, "删除前"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   await rm(receipt.path, { recursive: true, force: true });
 }

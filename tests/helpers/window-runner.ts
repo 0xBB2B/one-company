@@ -6,6 +6,9 @@ import type { Clock } from "../../runtime/clock.ts";
 import { WorkspaceClients } from "../../runtime/daemon-client.ts";
 import { ShellRegistry } from "../../runtime/shell-registry.ts";
 import { createFakePi } from "./fake-pi.ts";
+import { initializeTestHostGit } from "./test-git-binding.ts";
+
+initializeTestHostGit([]);
 
 interface RunnerConfig {
   cwd: string;

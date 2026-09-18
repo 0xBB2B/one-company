@@ -1,1803 +1,367 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { failDatabaseWrites } from "./helpers/database-fixture.ts";
-import { execFile } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
-import { promisify } from "node:util";
+import { writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
+import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
-import { appendDecision } from "../runtime/decisions.ts";
 import { RunStore } from "../runtime/run-store.ts";
-import { createRecord, readRecord, putRecord, repositoryDatabase } from "../runtime/database.ts";
-import { requirementStateRef } from "../runtime/workflow-state.ts";
+import { createRecord, readRecord, putRecord, writeRecord, repositoryDatabase, withDatabase, LocalDatabase, StaleVersionError, AsyncTransactionError } from "../runtime/database.ts";
+import { decisionStream } from "../runtime/decisions.ts";
+import { checkAcceptanceReport } from "../runtime/delivery.ts";
+import type { AcceptanceResult } from "../runtime/result.ts";
 import {
-  VALID_STAGES,
-  VALID_TASK_PROGRESS,
-  advanceStage,
-  assertValidStage,
-  assertValidTaskProgress,
-  bindEvidence,
-  checkEvidence,
-  checkResume,
-  failTask,
-  finishTask,
-  initRequirementState,
-  invalidateEvidence,
-  listEvidenceStages,
-  recordShape,
-  rejectRequirement,
-  retreatStage,
-  rollbackTask,
-  startTask,
-  updateTaskFields,
+  VALID_STAGES, VALID_TASK_PROGRESS, advanceStage, assertValidStage, assertValidTaskProgress,
+  bindEvidence, checkEvidence, checkResume, failTask, finishTask, initRequirementState,
+  invalidateEvidence, listEvidenceStages, readRequirementState, recordShape, rejectRequirement,
+  requirementStateRef, retreatStage, rollbackTask, skippedGates, startTask, updateTaskFields,
 } from "../runtime/workflow-state.ts";
+import type { RequirementState, RequirementShape } from "../runtime/workflow-state.ts";
 
-const execFileAsync = promisify(execFile);
 const REQUIREMENT = "2026-09-09.workflow-demo";
-
-const repoFixtures: Array<Awaited<ReturnType<typeof createRepoFixture>>> = [];
-const tempHomes: Array<Awaited<ReturnType<typeof createTempHome>>> = [];
-
-afterEach(async () => {
-  for (const fixture of repoFixtures.splice(0)) await removeRepoFixture(fixture);
-  for (const home of tempHomes.splice(0)) await removeTempHome(home);
-});
-
-interface StateDoc {
-  requirement: string;
-  stage: string;
-  shape: Record<string, unknown> | null;
-  tasks: Record<string, { progress: string; runId?: string; repairRound?: number; [key: string]: unknown }>;
-  followUps: unknown[];
-  history: unknown[];
-}
-
-const statePath = requirementStateRef;
-
-async function seedState(dataRoot: string, repoId: string, requirement: string, overrides: Record<string, unknown> = {}) {
-  const initial: StateDoc = {
-    requirement,
-    stage: "draft",
-    shape: null,
-    tasks: {},
-    followUps: [],
-    history: [],
-    ...overrides,
-  };
-  return createRecord(statePath(dataRoot, repoId, requirement), initial);
-}
-
-async function readState(dataRoot: string, repoId: string, requirement: string): Promise<{ version: number; data: StateDoc }> {
-  const result = await readRecord(statePath(dataRoot, repoId, requirement));
-  if (!result.exists) throw new Error("期望状态文档存在");
-  return { version: result.version, data: result.data as StateDoc };
-}
-
-async function repoHeadCommit(repoRoot: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot });
-  return stdout.trim();
-}
-
-let ACCEPTANCE_REPORT: string;
-
-function userDecisionInput(requirement: string, overrides: Record<string, unknown> = {}) {
-  return {
-    requirement,
-    actor: "user" as const,
-    source: "workflow-state-test",
-    trigger: "确认需求范围",
-    decision: "确认按现有范围推进",
-    alternatives: [],
-    effects: ["scope"],
-    impact: "无重大影响",
-    ...overrides,
-  };
-}
-
-function aiDecisionInput(requirement: string, overrides: Record<string, unknown> = {}) {
-  return {
-    requirement,
-    actor: "ai" as const,
-    source: "workflow-state-test",
-    trigger: "AI 判断",
-    decision: "AI 自主决定",
-    alternatives: [],
-    effects: ["scope"],
-    scope: "workflow-state",
-    basis: ["测试固定基准"],
-    action: "记录决定",
-    ...overrides,
-  };
-}
-
-async function appendUserDecisionId(world: World, trigger: string, decision: string): Promise<string> {
-  const receipt = await appendDecision(userDecisionInput(world.requirement, { trigger, decision }), {
-    dataRoot: world.home.dataRoot,
-    cwd: world.repo.root,
-  });
-  return receipt.decisionId;
-}
-
-async function appendAiDecisionId(world: World, trigger: string, decision: string): Promise<string> {
-  const receipt = await appendDecision(aiDecisionInput(world.requirement, { trigger, decision }), {
-    dataRoot: world.home.dataRoot,
-    cwd: world.repo.root,
-  });
-  return receipt.decisionId;
-}
-
-async function interruptedRun(world: World, taskId = "task-a"): Promise<string> {
-  const run = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, taskId));
-  const otherGenerationStore = new RunStore({
-    dataRoot: world.home.dataRoot,
-    repoId: world.identity.repoId,
-    daemonStartedAt: "other-daemon-generation",
-  });
-  await otherGenerationStore.markInterruptedOnStartup();
-  return run.id;
-}
-
-function shapeInput(decisionId: string, overrides: Record<string, unknown> = {}) {
-  return {
-    tasks: [{ id: "task-a", roles: ["impl"] }],
-    gates: { plan: true, whiteboxReview: true, blackboxAcceptance: true },
-    skipped: [],
-    acceptanceReport: ACCEPTANCE_REPORT,
-    decisionId,
-    ...overrides,
-  };
-}
-
-function baseRunInput(requirement: string, cwd: string, task = "") {
-  return {
-    kind: "role" as const,
-    role: "pi-company.worker",
-    standalone: true,
-    requirement,
-    task,
-    cwd,
-    writePaths: [],
-    readPaths: [],
-    model: { provider: "anthropic", id: "claude-test" },
-    thinking: "high",
-    mcp: [],
-  };
-}
-
-async function completedRun(store: RunStore, requirement: string, cwd: string, result: unknown, task = ""): Promise<string> {
-  const run = await store.create(baseRunInput(requirement, cwd, task));
-  await store.update(run.id, { state: "running" });
-  const value = result as Record<string, unknown>;
-  if (value.phase === "acceptance" && value.reportPath === ACCEPTANCE_REPORT) {
-    const content = `---\ndate: 2026-09-10\nresult: ${value.acceptanceResult}\n---\n## 验收结果\n| AC-1 | PASS | 符合预期 | |\n## 所用命令\npnpm test\n`;
-    await writeFile(ACCEPTANCE_REPORT, content);
-    value.reportDigest = createHash("sha256").update(content).digest("hex");
-  }
-  await store.update(run.id, { state: "completed", result });
-  return run.id;
-}
-
-function planResult(
-  requirement: string,
-  currentVersion: { definitionFingerprint: string; codeHead: string },
-  cwd: string,
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    phase: "plan",
-    verdict: "PASS",
-    binding: { requirement, definitionFingerprint: currentVersion.definitionFingerprint, codeHead: currentVersion.codeHead, cwd },
-    ...overrides,
-  };
-}
-
-function reviewResult(
-  requirement: string,
-  currentVersion: { definitionFingerprint: string; codeHead: string },
-  cwd: string,
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    phase: "review",
-    verdict: "PASS",
-    summary: "审查通过", issues: [], evidence: ["真实仓库测试装置"],
-    reviewedHead: currentVersion.codeHead, contentFingerprint: currentVersion.definitionFingerprint,
-    traceability: [{ ref: "demo/AC-1", test: "README.md:1", implementation: "README.md:1" }], findings: [],
-    binding: { requirement, definitionFingerprint: currentVersion.definitionFingerprint, codeHead: currentVersion.codeHead, cwd },
-    ...overrides,
-  };
-}
-
-function acceptanceResult(
-  requirement: string,
-  currentVersion: { definitionFingerprint: string; codeHead: string },
-  cwd: string,
-  reportPath: string,
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    phase: "acceptance",
-    verdict: "PASS",
-    acceptanceResult: "accepted",
-    summary: "验收通过", issues: [], evidence: ["README.md:1"],
-    items: [{ id: "AC-1", result: "PASS", observed: "符合预期", difference: "" }], uncovered: [],
-    reportPath,
-    binding: { requirement, definitionFingerprint: currentVersion.definitionFingerprint, codeHead: currentVersion.codeHead, cwd },
-    ...overrides,
-  };
-}
-
-function workResult(
-  requirement: string,
-  task: string,
-  currentVersion: { definitionFingerprint: string; codeHead: string },
-  cwd: string,
-  commit: string,
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    phase: "work",
-    verdict: "PASS",
-    summary: "实施通过", issues: [], evidence: ["README.md:1"], changeKind: "behavior-change",
-    coverage: [{ ref: "demo/AC-1", test: "README.md:1" }],
-    redCommands: [{ command: "pnpm test", status: "failed", details: "新增断言失败" }],
-    greenCommands: [{ command: "pnpm test", status: "passed", details: "回归通过" }],
-    productionPath: ["a.ts"], fakeRed: false,
-    changedFiles: ["a.ts"],
-    workState: "red-green",
-    preexistingEvidence: [],
-    binding: { requirement, task, definitionFingerprint: currentVersion.definitionFingerprint, codeHead: currentVersion.codeHead, cwd },
-    delivery: { commit, verificationOk: true, fileFingerprints: { "README.md": createHash("sha256").update(readFileSync(`${cwd}/README.md`)).digest("hex") } },
-    ...overrides,
-  };
-}
-
-async function setupWorld() {
-  const home = await createTempHome();
-  tempHomes.push(home);
-  const repo = await createRepoFixture();
-  ACCEPTANCE_REPORT = `${repo.root}/acceptance.md`;
-  repoFixtures.push(repo);
+const cleanup: Array<() => Promise<unknown> | void> = [];
+afterEach(async () => { vi.restoreAllMocks(); for (const fn of cleanup.splice(0).reverse()) await fn(); });
+async function world() {
+  const home = await createTempHome(); cleanup.push(() => removeTempHome(home));
+  const repo = await createRepoFixture(); cleanup.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
-  const requirement = REQUIREMENT;
-  const ctx = { dataRoot: home.dataRoot, cwd: repo.root, requirement };
-  const runStore = new RunStore({ dataRoot: home.dataRoot, repoId: identity.repoId, daemonStartedAt: new Date().toISOString() });
+  const ctx = { dataRoot: home.dataRoot, cwd: repo.root, requirement: REQUIREMENT };
+  const database = repositoryDatabase(ctx.dataRoot, identity.repoId);
+  const ref = requirementStateRef(ctx.dataRoot, identity.repoId, REQUIREMENT);
+  const runStore = new RunStore({ dataRoot: ctx.dataRoot, repoId: identity.repoId, daemonStartedAt: "state-test" });
   const currentVersion = { definitionFingerprint: "fp-1", codeHead: "head-1" };
-  return { home, repo, identity, requirement, ctx, runStore, currentVersion };
-}
-
-type World = Awaited<ReturnType<typeof setupWorld>>;
-
-function currentState(world: World) {
-  return readState(world.home.dataRoot, world.identity.repoId, world.requirement);
-}
-
-async function toConfirmed(world: World): Promise<string> {
-  await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-  const decision = await appendDecision(userDecisionInput(world.requirement), { dataRoot: world.home.dataRoot, cwd: world.repo.root });
-  const state = await currentState(world);
-  const result = await advanceStage(
-    { expectedVersion: state.version, targetStage: "confirmed", decisionId: decision.decisionId },
-    world.ctx,
-  );
-  if (!result.ok) throw new Error("测试装置失败: 无法推进到 confirmed");
-  return decision.decisionId;
-}
-
-async function toPlanned(world: World): Promise<string> {
-  await toConfirmed(world);
-  const runId = await completedRun(world.runStore, world.requirement, world.repo.root, planResult(world.requirement, world.currentVersion, world.repo.root));
-  const state = await currentState(world);
-  const result = await advanceStage(
-    { expectedVersion: state.version, targetStage: "planned", runId, currentVersion: world.currentVersion },
-    world.ctx,
-  );
-  if (!result.ok) throw new Error("测试装置失败: 无法推进到 planned");
-  return runId;
-}
-
-async function toExecuting(world: World, shapeOverrides: Record<string, unknown> = {}): Promise<void> {
-  await toPlanned(world);
-  const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-  let state = await currentState(world);
-  const shapeResult = await recordShape({ expectedVersion: state.version, shape: shapeInput(shapeDecisionId, shapeOverrides) }, world.ctx);
-  if (!shapeResult.ok) throw new Error("测试装置失败: 无法记录形状");
-  state = await currentState(world);
-  const result = await advanceStage({ expectedVersion: state.version, targetStage: "executing" }, world.ctx);
-  if (!result.ok) throw new Error("测试装置失败: 无法推进到 executing");
-}
-
-async function toTaskDone(world: World, taskId = "task-a"): Promise<string> {
-  await toExecuting(world);
-  let state = await currentState(world);
-  const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, taskId));
-  const started = await startTask({ expectedVersion: state.version, taskId, runId: workRun.id }, world.ctx);
-  if (!started.ok) throw new Error("测试装置失败: 无法登记 doing");
-  await world.runStore.update(workRun.id, { state: "running" });
-  const commit = await repoHeadCommit(world.repo.root);
-  await world.runStore.update(workRun.id, {
-    state: "completed",
-    result: workResult(world.requirement, taskId, world.currentVersion, world.repo.root, commit),
-  });
-  state = await currentState(world);
-  const finished = await finishTask({ expectedVersion: state.version, taskId, runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-  if (!finished.ok) throw new Error("测试装置失败: 无法完成任务");
-  return workRun.id;
-}
-
-async function toReviewing(world: World): Promise<void> {
-  await toTaskDone(world);
-  const state = await currentState(world);
-  const result = await advanceStage({ expectedVersion: state.version, targetStage: "reviewing" }, world.ctx);
-  if (!result.ok) throw new Error("测试装置失败: 无法推进到 reviewing");
-}
-
-async function toAccepting(world: World): Promise<string> {
-  await toReviewing(world);
-  const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-  const state = await currentState(world);
-  const result = await advanceStage(
-    { expectedVersion: state.version, targetStage: "accepting", runId, currentVersion: world.currentVersion },
-    world.ctx,
-  );
-  if (!result.ok) throw new Error("测试装置失败: 无法推进到 accepting");
-  return runId;
-}
-
-async function toAccepted(world: World): Promise<void> {
-  await toAccepting(world);
-  const runId = await completedRun(
-    world.runStore,
-    world.requirement,
-    world.repo.root,
-    acceptanceResult(world.requirement, world.currentVersion, world.repo.root, ACCEPTANCE_REPORT),
-  );
-  const state = await currentState(world);
-  const result = await advanceStage(
-    { expectedVersion: state.version, targetStage: "accepted", runId, currentVersion: world.currentVersion },
-    world.ctx,
-  );
-  if (!result.ok) throw new Error("测试装置失败: 无法推进到 accepted");
-}
-
-describe("阶段与任务进度合法值校验", () => {
-  test("assertValidStage 拒绝未知阶段并在错误信息中列出合法集合", () => {
-    let error: Error | undefined;
-    try {
-      assertValidStage("unknown-stage");
-    } catch (err) {
-      error = err as Error;
+  const shape: RequirementShape = { tasks: [{ id: "task-a", roles: ["impl"] }], gates: { plan: false, whiteboxReview: false, blackboxAcceptance: false },
+    skipped: ["plan", "whiteboxReview", "blackboxAcceptance"].map((gate) => ({ gate, decisionId: "USER-001" })), acceptanceReport: "synthetic-report", decisionId: "USER-001" };
+  // 直接准备无授权历史记录；不模拟批准服务，也不调用旧推进链。
+  const seed = (stage = "reviewing", progress = "todo", runId: string | null = null) => createRecord(ref, {
+    requirement: REQUIREMENT, stage, shape, tasks: { "task-a": { progress, runId, description: "历史任务", agent: "", note: "", commit: null, reason: "", repairRound: 0, blockedReason: "", workspaceDir: "" } },
+    followUps: ["历史跟进"], history: [{ stage, at: "2026-09-09T00:00:00.000Z", runId, decisionId: "USER-001", reason: "合成历史" }],
+  } satisfies RequirementState);
+  const snapshot = () => {
+    const db = new DatabaseSync(database, { readOnly: true });
+    try { return JSON.stringify({ records: db.prepare("SELECT * FROM records ORDER BY id").all(), events: db.prepare("SELECT * FROM events ORDER BY id").all() }); }
+    finally { db.close(); }
+  };
+  const run = async (state: "queued" | "running" | "completed" | "failed" | "stopped" | "interrupted" = "completed", result: unknown = reviewResult(), task = "", requirement = REQUIREMENT) => {
+    const created = await runStore.create({ kind: "role", role: "pi-company.worker", standalone: true, requirement, task, cwd: repo.root, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
+    if (state === "interrupted") await runStore.markInterruptedOnStartup();
+    else if (state !== "queued") {
+      await runStore.update(created.id, { state: "running" });
+      if (state !== "running") await runStore.update(created.id, { state, result });
     }
-    expect(error).toBeInstanceOf(Error);
-    for (const stage of VALID_STAGES) expect(error?.message).toContain(stage);
-  });
+    return created.id;
+  };
+  function reviewResult(patch: Record<string, unknown> = {}) {
+    return { phase: "review", verdict: "PASS", summary: "合成结果", issues: [], evidence: ["README.md:1"], reviewedHead: currentVersion.codeHead,
+      contentFingerprint: currentVersion.definitionFingerprint, traceability: [{ ref: "demo/AC-1", test: "README.md:1", implementation: "README.md:1" }], findings: [],
+      binding: { requirement: REQUIREMENT, ...currentVersion, cwd: repo.root }, ...patch };
+  }
+  function workResult(patch: Record<string, unknown> = {}) {
+    return { phase: "work", verdict: "PASS", summary: "合成结果", issues: [], evidence: ["README.md:1"], changeKind: "refactor", coverage: [{ ref: "demo/AC-1", test: "README.md:1" }],
+      redCommands: [], greenCommands: [{ command: "pnpm test", status: "passed", details: "合成结果" }], productionPath: ["README.md"], fakeRed: false,
+      changedFiles: ["README.md"], workState: "red-green", preexistingEvidence: [], binding: { requirement: REQUIREMENT, task: "task-a", ...currentVersion, cwd: repo.root }, ...patch };
+  }
+  return { home, repo, identity, ctx, database, ref, seed, shape, currentVersion, runStore, run, reviewResult, workResult, snapshot };
+}
+type World = Awaited<ReturnType<typeof world>>;
+const state = (w: World) => readRecord<RequirementState>(w.ref);
 
-  test("assertValidStage 接受全部合法阶段值", () => {
-    for (const stage of VALID_STAGES) expect(() => assertValidStage(stage)).not.toThrow();
+const operations = {
+  advanceStage: (w: World) => advanceStage({ expectedVersion: 1, targetStage: "accepted", decisionId: "USER-001", currentVersion: w.currentVersion }, w.ctx),
+  retreatStage: (w: World) => retreatStage({ expectedVersion: 1, targetStage: "executing", reason: "修复", decisionId: "USER-001" }, w.ctx),
+  recordShape: (w: World) => recordShape({ expectedVersion: 1, shape: w.shape }, w.ctx),
+  startTask: (w: World) => startTask({ expectedVersion: 1, taskId: "task-a", runId: "old-run" }, w.ctx),
+  finishTask: (w: World) => finishTask({ expectedVersion: 1, taskId: "task-a", runId: "old-run", currentVersion: w.currentVersion }, w.ctx),
+  rollbackTask: (w: World) => rollbackTask({ expectedVersion: 1, taskId: "task-a", decisionId: "USER-001" }, w.ctx),
+  rejectRequirement: (w: World) => rejectRequirement({ expectedVersion: 1, decisionId: "USER-001" }, w.ctx),
+  updateTaskFields: (w: World) => updateTaskFields({ expectedVersion: 1, taskId: "task-a", fields: { note: "新备注", agent: "impl", commit: "abc1234", description: "新描述", blockedReason: "等待", workspaceDir: "/tmp/fixture" }, followUps: ["新事项"] }, w.ctx),
+  checkResume: (w: World) => checkResume(w.ctx, w.currentVersion),
+};
+describe("旧执行状态永久拒绝", () => {
+  for (const [name, operation] of Object.entries(operations)) {
+    test.each(VALID_STAGES)(`${name}在%s历史阶段拒绝，USER/AI/skipped不能授权且数据不变`, async (stage) => {
+      const w = await world(); w.seed(stage, stage === "accepted" ? "done" : "failed");
+      withDatabase(w.database, (db) => {
+        for (const actor of ["user", "ai"] as const) db.append(decisionStream(REQUIREMENT, actor), { id: actor === "user" ? "USER-001" : "AI-001", actor, requirement: REQUIREMENT, effects: ["scope", "repair:review:4"], decision: "合成历史决定" });
+      });
+      const before = w.snapshot();
+      expect(await operation(w)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
+      expect(skippedGates(w.shape)).toEqual([]); expect(w.snapshot()).toBe(before);
+    });
+  }
+  test.each([undefined, "AI-001", "USER-999", "USER-001"])("缺失、AI、未知或旧USER决定%s均不能授权旧变更", async (decisionId) => {
+    const w = await world(); w.seed("planned"); const before = w.snapshot();
+    expect(await advanceStage({ expectedVersion: 1, targetStage: "confirmed", decisionId }, w.ctx)).toMatchObject({ ok: false });
+    expect(await rollbackTask({ expectedVersion: 1, taskId: "task-a", decisionId }, w.ctx)).toMatchObject({ ok: false });
+    expect(await rejectRequirement({ expectedVersion: 1, decisionId }, w.ctx)).toMatchObject({ ok: false });
+    expect(await retreatStage({ expectedVersion: 1, targetStage: "confirmed", reason: "范围变化", decisionId }, w.ctx)).toMatchObject({ ok: false });
+    expect(w.snapshot()).toBe(before);
   });
+  test.each(["missing-decision", "ai-decision", "empty-tasks", "missing-skip", "ai-skip"])("旧shape缺项或伪授权%s不能写入", async (variant) => {
+    const w = await world(); w.seed("planned"); const shape = structuredClone(w.shape);
+    if (variant === "missing-decision") delete (shape as Partial<RequirementShape>).decisionId;
+    if (variant === "ai-decision") shape.decisionId = "AI-001";
+    if (variant === "empty-tasks") shape.tasks = [];
+    if (variant === "missing-skip") shape.skipped = [];
+    if (variant === "ai-skip") shape.skipped = [{ gate: "blackboxAcceptance", decisionId: "AI-001" }];
+    const before = w.snapshot(); expect(await recordShape({ expectedVersion: 1, shape }, w.ctx)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") }); expect(w.snapshot()).toBe(before);
+  });
+  test("未知阶段拒绝且原阶段版本不变", async () => {
+    const w = await world(); w.seed("draft"); const before = w.snapshot();
+    expect(await advanceStage({ expectedVersion: 1, targetStage: "unknown-stage" }, w.ctx)).toMatchObject({ ok: false }); expect(w.snapshot()).toBe(before);
+  });
+  test.each(["queued", "running", "completed", "failed", "stopped", "interrupted"] as const)("原运行%s不能用作回退或完成权限", async (status) => {
+    const w = await world(); const runId = await w.run(status); w.seed("executing", "doing", runId); const before = w.snapshot();
+    expect(await finishTask({ expectedVersion: 1, taskId: "task-a", runId, currentVersion: w.currentVersion }, w.ctx)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
+    expect(await retreatStage({ expectedVersion: 1, targetStage: "confirmed", runId, reason: "历史回退", decisionId: "USER-001" }, w.ctx)).toMatchObject({ ok: false });
+    expect(await rollbackTask({ expectedVersion: 1, taskId: "task-a", decisionId: "USER-001" }, w.ctx)).toMatchObject({ ok: false });
+    expect(w.snapshot()).toBe(before);
+  });
+  test.each(["HEAD", "main", "zzzzzzz", "abcdef", "0".repeat(40)])("历史交付commit=%s不能完成任务", async (commit) => {
+    const w = await world(); const runId = await w.run("completed", w.workResult({ delivery: { commit, verificationOk: true } }), "task-a");
+    w.seed("executing", "doing", runId); const before = w.snapshot();
+    expect(await finishTask({ expectedVersion: 1, taskId: "task-a", runId, currentVersion: w.currentVersion }, w.ctx)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
+    expect(w.snapshot()).toBe(before);
+  });
+  test.each([
+    { delivery: { verificationOk: false } },
+    { changedFiles: [], workState: "green-baseline-no-change", preexistingEvidence: ["旧证据"] },
+    { changedFiles: [], workState: "green-baseline-no-change", preexistingEvidence: [] },
+    { changedFiles: [], workState: "red-green", preexistingEvidence: ["旧证据"] },
+  ])("历史交付组合不授予done：%j", async (patch) => {
+    const w = await world(); const runId = await w.run("completed", w.workResult(patch), "task-a"); w.seed("executing", "doing", runId); const before = w.snapshot();
+    expect(await finishTask({ expectedVersion: 1, taskId: "task-a", runId, currentVersion: w.currentVersion }, w.ctx)).toMatchObject({ ok: false }); expect(w.snapshot()).toBe(before);
+  });
+  test.each([{ unknownField: "x" }, { stage: "accepted" }, { progress: "done" }])("字段注入被拒绝且历史任务不变：%j", async (fields) => {
+    const w = await world(); w.seed("executing"); const before = w.snapshot();
+    expect(await updateTaskFields({ expectedVersion: 1, taskId: "task-a", fields }, w.ctx)).toMatchObject({ ok: false }); expect(w.snapshot()).toBe(before);
+  });
+  test("缺失或损坏状态不能经旧入口恢复，也不被覆盖成完成", async () => {
+    const w = await world(); expect(await checkResume(w.ctx)).toMatchObject({ ok: false });
+    putRecord(w.ref, "损坏的需求记录"); const before = state(w);
+    for (const operation of Object.values(operations)) expect(await operation(w)).toMatchObject({ ok: false });
+    expect(state(w)).toEqual(before);
+    await expect(readRequirementState(w.ctx)).rejects.toThrow("运行库尚未初始化、不可读或需要维护核对");
+  });
+});
 
-  test("assertValidTaskProgress 拒绝未知任务进度并在错误信息中列出合法集合", () => {
-    let error: Error | undefined;
-    try {
-      assertValidTaskProgress("unknown-progress");
-    } catch (err) {
-      error = err as Error;
+describe("历史状态读取与基础校验", () => {
+  test("缺库只读拒绝且不建库，现存库缺记录明确exists false", async () => {
+    const w = await world();
+    await expect(readRequirementState(w.ctx)).rejects.toThrow("运行库尚未初始化、不可读或需要维护核对");
+    expect(existsSync(w.database)).toBe(false);
+    withDatabase(w.database, () => {}); const before = w.snapshot();
+    expect(await readRequirementState(w.ctx)).toEqual({ exists: false }); expect(w.snapshot()).toBe(before);
+  });
+  test("assertValidStage拒绝未知值并明确指出非法值", () => { expect(() => assertValidStage("unknown-stage")).toThrow("不合法的阶段: unknown-stage"); });
+  test("assertValidStage接受全部合法历史阶段值", () => { for (const stage of VALID_STAGES) expect(() => assertValidStage(stage)).not.toThrow(); });
+  test("assertValidTaskProgress拒绝未知值并明确指出非法值", () => { expect(() => assertValidTaskProgress("unknown-progress")).toThrow("不合法的任务进度: unknown-progress"); });
+  test("assertValidTaskProgress拒绝把paused当作任务进度", () => { expect(() => assertValidTaskProgress("paused")).toThrow(); });
+  test("assertValidTaskProgress接受全部合法任务进度值", () => { for (const progress of VALID_TASK_PROGRESS) expect(() => assertValidTaskProgress(progress)).not.toThrow(); });
+  test("空草稿初始化不产生批准，重复初始化不覆盖原状态", async () => {
+    const w = await world(); expect(await initRequirementState(w.ctx)).toEqual({ ok: true, version: 1 });
+    const before = await readRequirementState(w.ctx); expect(before).toMatchObject({ exists: true, version: 1, data: { stage: "draft", shape: null, tasks: {}, history: [] } });
+    expect(await initRequirementState(w.ctx)).toMatchObject({ ok: false }); expect(await readRequirementState(w.ctx)).toEqual(before);
+    expect(await advanceStage({ expectedVersion: 1, targetStage: "confirmed" }, w.ctx)).toMatchObject({ ok: false });
+  });
+});
+
+async function failureWorld() {
+  const w = await world(); const a = await w.run("failed", { verdict: "FAIL" }, "task-a"); const b = await w.run("failed", { verdict: "FAIL" }, "task-b");
+  w.seed("executing", "doing", a);
+  const initial = state(w); if (!initial.exists) throw new Error("夹具缺失");
+  writeRecord(w.ref, { ...initial.data, tasks: { ...initial.data.tasks, "task-b": { ...initial.data.tasks["task-a"]!, runId: b } } }, { expectedVersion: initial.version });
+  return { ...w, a, b };
+}
+describe("真实失败登记与版本并发", () => {
+  test("failTask不能串用另一真实仓库同名任务的失败运行", async () => {
+    const w = await world(); const other = await world(); const runId = await other.run("failed", {}, "task-a");
+    w.seed("executing", "doing", runId); const before = w.snapshot(), foreignBefore = other.snapshot();
+    expect(await failTask({ expectedVersion: 1, taskId: "task-a", runId, reason: "跨库伪造失败" }, w.ctx)).toEqual({ ok: false, reason: "缺少真实失败运行" });
+    expect(w.snapshot()).toBe(before); expect(other.snapshot()).toBe(foreignBefore);
+  });
+  test("failTask记录failed和原因，累加轮次但不授予重试", async () => {
+    const w = await failureWorld(); const before = state(w); if (!before.exists) throw new Error("夹具缺失"); const runBefore = await w.runStore.get(w.a);
+    expect(await failTask({ expectedVersion: before.version, taskId: "task-a", runId: w.a, reason: "边界断言失败" }, w.ctx)).toEqual({ ok: true, version: before.version + 1 });
+    expect(state(w)).toMatchObject({ data: { tasks: { "task-a": { progress: "failed", reason: "边界断言失败", repairRound: 1 } } } });
+    expect(await w.runStore.get(w.a)).toEqual(runBefore); const frozen = w.snapshot();
+    expect(await startTask({ expectedVersion: before.version + 1, taskId: "task-a", runId: w.a }, w.ctx)).toMatchObject({ ok: false }); expect(w.snapshot()).toBe(frozen);
+  });
+  test("两个调用方同version登记不同失败，后者staleVersion且只陈述事实", async () => {
+    const w = await failureWorld(); const before = state(w); if (!before.exists) throw new Error("夹具缺失");
+    const first = await failTask({ expectedVersion: before.version, taskId: "task-a", runId: w.a, reason: "A失败" }, w.ctx); expect(first.ok).toBe(true);
+    const second = await failTask({ expectedVersion: before.version, taskId: "task-b", runId: w.b, reason: "B失败" }, w.ctx);
+    expect(second).toEqual({ ok: false, staleVersion: true, reason: "版本已变化" });
+    expect(state(w)).toMatchObject({ data: { tasks: { "task-a": { reason: "A失败" }, "task-b": { progress: "doing", reason: "" } } } });
+  });
+  test("同步record原语拒绝过期版本，重新读取后的合法更新保留双方内容", async () => {
+    const w = await world(); const before = w.seed();
+    writeRecord(w.ref, { ...before.data, followUps: ["B"] }, { expectedVersion: before.version });
+    expect(() => writeRecord(w.ref, { ...before.data, followUps: ["A"] }, { expectedVersion: before.version })).toThrow(StaleVersionError);
+    const next = state(w); if (!next.exists) throw new Error("夹具缺失");
+    writeRecord(w.ref, { ...next.data, followUps: [...next.data.followUps, "A"] }, { expectedVersion: next.version });
+    expect(state(w)).toMatchObject({ data: { followUps: ["B", "A"] } });
+  });
+  test.each(["queued", "running", "completed", "stopped", "interrupted"] as const)("failTask拒绝%s运行而非相信模型自报失败", async (status) => {
+    const w = await world(); const runId = await w.run(status, { verdict: "FAIL" }, "task-a"); w.seed("executing", "doing", runId); const before = w.snapshot();
+    expect(await failTask({ expectedVersion: 1, taskId: "task-a", runId, reason: "自报失败" }, w.ctx)).toEqual({ ok: false, reason: "缺少真实失败运行" }); expect(w.snapshot()).toBe(before);
+  });
+  test.each(["requirement", "task", "runId"])("failTask核对%s身份，不串用失败运行", async (mismatch) => {
+    const w = await world(); const runId = await w.run("failed", {}, mismatch === "task" ? "task-b" : "task-a", mismatch === "requirement" ? "2026-09-09.other" : REQUIREMENT);
+    w.seed("executing", "doing", mismatch === "runId" ? "different" : runId); const before = w.snapshot();
+    const result = await failTask({ expectedVersion: 1, taskId: "task-a", runId, reason: "失败" }, w.ctx);
+    expect(result.ok).toBe(false); expect(result).not.toHaveProperty("staleVersion"); expect(w.snapshot()).toBe(before);
+  });
+});
+
+describe("旧证据批准拒绝与真实减权保护", () => {
+  test("bindEvidence与checkEvidence永久拒绝，不输出旧结果或改变数据库", async () => {
+    const w = await world(); w.seed(); const runId = await w.run();
+    createRecord({ database: w.database, namespace: `evidence:${REQUIREMENT}`, key: "review" }, { runId, ...w.currentVersion, summary: "不得返回的旧结果" });
+    const before = w.snapshot();
+    for (const result of [await bindEvidence({ stage: "review", runId, currentVersion: w.currentVersion }, w.ctx), await checkEvidence({ stage: "review", currentVersion: w.currentVersion }, w.ctx)]) {
+      expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") }); expect(JSON.stringify(result)).not.toContain("不得返回的旧结果");
     }
-    expect(error).toBeInstanceOf(Error);
-    for (const progress of VALID_TASK_PROGRESS) expect(error?.message).toContain(progress);
+    expect(w.snapshot()).toBe(before);
   });
-
-  test("assertValidTaskProgress 拒绝把子运行状态 paused 写成任务进度", () => {
-    expect(() => assertValidTaskProgress("paused")).toThrow();
+  test("真实失效写入故障不留半份记录，不改变历史阶段与版本", async () => {
+    const w = await world(); w.seed(); const before = w.snapshot();
+    const restore = failDatabaseWrites(w.database, "records", "namespace", `evidence:${REQUIREMENT}`);
+    try { await expect(invalidateEvidence(w.ctx, "review", "实际变更")).rejects.toThrow(); }
+    finally { restore(); }
+    expect(w.snapshot()).toBe(before); expect(await listEvidenceStages(w.ctx)).not.toContain("review");
   });
-
-  test("assertValidTaskProgress 接受全部合法任务进度值", () => {
-    for (const progress of VALID_TASK_PROGRESS) expect(() => assertValidTaskProgress(progress)).not.toThrow();
+  test("同步事务中状态、事件和证据全部提交或全部回滚", async () => {
+    const w = await world(); const initial = w.seed(); const stream = "test-atomic-events";
+    const apply = () => withDatabase(w.database, (db) => db.transaction(() => {
+      const current = db.read<RequirementState>("requirements", REQUIREMENT)!;
+      db.update("requirements", REQUIREMENT, current.version, { ...current.data, followUps: ["同步元数据"] });
+      db.append(stream, { kind: "test-state-update" }); db.create(`evidence:${REQUIREMENT}`, "atomic", { inputHash: "fixture" });
+    }));
+    const restore = failDatabaseWrites(w.database, "records", "namespace", `evidence:${REQUIREMENT}`);
+    try { expect(apply).toThrow(); } finally { restore(); }
+    expect(state(w)).toMatchObject({ version: initial.version, data: initial.data });
+    expect(withDatabase(w.database, (db) => db.events(stream))).toEqual([]);
+    apply(); expect(state(w)).toMatchObject({ version: initial.version + 1, data: { followUps: ["同步元数据"] } });
+    expect(withDatabase(w.database, (db) => db.events(stream))).toHaveLength(1); expect(await listEvidenceStages(w.ctx)).toContain("atomic");
   });
-
-  test("advanceStage 传入未知阶段被拒绝且原阶段与版本不变", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const before = await currentState(world);
-    const result = await advanceStage({ expectedVersion: before.version, targetStage: "unknown-stage" }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("draft");
-    expect(after.version).toBe(before.version);
+  test("违规异步事务回滚并封禁连接，等待迟到状态和事件写入确实被拒绝", async () => {
+    const w = await world(); w.seed(); const before = state(w); const db = new LocalDatabase(w.database);
+    let continued = false; let delayed = false; let finish!: () => void;
+    const ended = new Promise<void>((resolve) => { finish = resolve; });
+    const invalid = async () => {
+      const r = db.read<RequirementState>("requirements", REQUIREMENT)!;
+      db.update("requirements", REQUIREMENT, r.version, { ...r.data, followUps: ["不允许提交"] });
+      await Promise.resolve(); continued = true;
+      expect(() => db.append("test-late-events", {})).toThrow("失效");
+      setTimeout(() => { try { delayed = true; expect(() => db.create("late", "state", {})).toThrow("失效"); } finally { finish(); } }, 5);
+    };
+    try {
+      expect(() => db.transaction(invalid as unknown as () => void)).toThrow(AsyncTransactionError);
+      await ended; expect(continued).toBe(true); expect(delayed).toBe(true);
+      expect(() => db.transaction(() => db.append("test-late-events", {}))).toThrow("失效");
+      expect(state(w)).toEqual(before); expect(withDatabase(w.database, (other) => other.events("test-late-events"))).toEqual([]);
+      expect(withDatabase(w.database, (other) => other.list("late"))).toEqual([]);
+    } finally { db.close(); }
   });
-});
-
-describe("阶段推进 advanceStage 正常路径", () => {
-  test("从 draft 依次推进到 accepted", async () => {
-    const world = await setupWorld();
-    await toAccepted(world);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("accepted");
+  test("真实失效提高记录版本，迟到条件写入及旧绑定不能覆盖失效标记", async () => {
+    const w = await world(); w.seed(); const runId = await w.run();
+    const ref = { database: w.database, namespace: `evidence:${REQUIREMENT}`, key: "review" };
+    const observed = createRecord(ref, { runId, invalid: false });
+    await invalidateEvidence(w.ctx, "review", "核验期间越界"); const invalidated = readRecord(ref);
+    expect(invalidated).toMatchObject({ exists: true, version: observed.version + 1, data: { invalid: true, reason: "核验期间越界" } });
+    expect(() => writeRecord(ref, observed.data, { expectedVersion: observed.version })).toThrow(StaleVersionError);
+    expect(await bindEvidence({ stage: "review", runId, currentVersion: w.currentVersion }, w.ctx)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
+    expect(readRecord(ref)).toEqual(invalidated);
   });
-
-  test("直接 draft → accepted 被拒绝", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const state = await currentState(world);
-    const result = await advanceStage(
-      { expectedVersion: state.version, targetStage: "accepted", currentVersion: world.currentVersion },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("draft");
-  });
-});
-
-describe("阶段推进的前提核对", () => {
-  test("confirmed 前提: 决定编号不存在于用户决策台账时被拒绝", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const state = await currentState(world);
-    const result = await advanceStage(
-      { expectedVersion: state.version, targetStage: "confirmed", decisionId: "USER-999" },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("draft");
-  });
-
-  test("confirmed 前提: 决定编号为 AI 决策台账编号时被拒绝", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const aiDecisionId = await appendAiDecisionId(world, "AI 判断范围", "AI 自主确认范围");
-    const state = await currentState(world);
-    const result = await advanceStage({ expectedVersion: state.version, targetStage: "confirmed", decisionId: aiDecisionId }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("draft");
-  });
-
-  test("planned 前提: runId 指向的运行未完成时保持原阶段并给出缺失原因", async () => {
-    const world = await setupWorld();
-    await toConfirmed(world);
-    const run = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
-    const state = await currentState(world);
-    const result = await advanceStage(
-      { expectedVersion: state.version, targetStage: "planned", runId: run.id, currentVersion: world.currentVersion },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason.length).toBeGreaterThan(0);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("confirmed");
-  });
-
-  test("planned 前提: 结果绑定另一需求时推进被拒绝并说明不匹配项", async () => {
-    const world = await setupWorld();
-    await toConfirmed(world);
-    const runId = await completedRun(
-      world.runStore,
-      world.requirement,
-      world.repo.root,
-      planResult("2026-09-09.other-requirement", world.currentVersion, world.repo.root),
-    );
-    const state = await currentState(world);
-    const result = await advanceStage(
-      { expectedVersion: state.version, targetStage: "planned", runId, currentVersion: world.currentVersion },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("confirmed");
-  });
-
-  test("planned 前提: 指纹或 HEAD 不一致时推进被拒绝并说明不匹配项", async () => {
-    const world = await setupWorld();
-    await toConfirmed(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, planResult(world.requirement, world.currentVersion, world.repo.root));
-    const state = await currentState(world);
-    const result = await advanceStage(
-      {
-        expectedVersion: state.version,
-        targetStage: "planned",
-        runId,
-        currentVersion: { definitionFingerprint: "fp-mismatch", codeHead: world.currentVersion.codeHead },
-      },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("confirmed");
-  });
-
-  test("executing 前提: 未记录形状时被拒绝", async () => {
-    const world = await setupWorld();
-    await toPlanned(world);
-    const state = await currentState(world);
-    const result = await advanceStage({ expectedVersion: state.version, targetStage: "executing" }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("planned");
-  });
-
-  test("executing 前提: 形状声明的任务未全部登记在任务表中时被拒绝", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "planned",
-      shape: shapeInput("USER-000", {
-        tasks: [
-          { id: "task-a", roles: ["impl"] },
-          { id: "task-b", roles: ["impl"] },
-        ],
-      }),
-      tasks: {
-        "task-a": { progress: "todo", runId: null, description: "", agent: "", note: "", commit: null, reason: "", repairRound: 0 },
-      },
-    });
-    const state = await currentState(world);
-    const result = await advanceStage({ expectedVersion: state.version, targetStage: "executing" }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("planned");
-  });
-
-  test("reviewing 前提: 存在未完成任务时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const state = await currentState(world);
-    const result = await advanceStage({ expectedVersion: state.version, targetStage: "reviewing" }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("executing");
-  });
-
-  test("reviewing 前提: 以形状任务集为准，形状任务未登记（并非仅任务表内未 done）时仍被拒绝", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "executing",
-      shape: shapeInput("USER-000", {
-        tasks: [
-          { id: "task-a", roles: ["impl"] },
-          { id: "task-b", roles: ["impl"] },
-        ],
-      }),
-      tasks: {
-        "task-a": { progress: "done", runId: null, description: "", agent: "", note: "", commit: "abc1234", reason: "", repairRound: 0 },
-      },
-    });
-    const state = await currentState(world);
-    const result = await advanceStage({ expectedVersion: state.version, targetStage: "reviewing" }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("executing");
-  });
-
-  test("accepting 前提: 结果 verdict 为 FAIL 时被拒绝", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(
-      world.runStore,
-      world.requirement,
-      world.repo.root,
-      reviewResult(world.requirement, world.currentVersion, world.repo.root, { verdict: "FAIL" }),
-    );
-    const state = await currentState(world);
-    const result = await advanceStage(
-      { expectedVersion: state.version, targetStage: "accepting", runId, currentVersion: world.currentVersion },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("reviewing");
-  });
-
-  test("accepting 前提: 结果 phase 不是 review 时被拒绝", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, planResult(world.requirement, world.currentVersion, world.repo.root));
-    const state = await currentState(world);
-    const result = await advanceStage(
-      { expectedVersion: state.version, targetStage: "accepting", runId, currentVersion: world.currentVersion },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("reviewing");
-  });
-
-  test("accepted 前提: reportPath 与形状记录的 acceptanceReport 不一致时被拒绝", async () => {
-    const world = await setupWorld();
-    await toAccepting(world);
-    const runId = await completedRun(
-      world.runStore,
-      world.requirement,
-      world.repo.root,
-      acceptanceResult(world.requirement, world.currentVersion, world.repo.root, "/reports/wrong-path.md"),
-    );
-    const state = await currentState(world);
-    const result = await advanceStage(
-      { expectedVersion: state.version, targetStage: "accepted", runId, currentVersion: world.currentVersion },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("accepting");
-  });
-});
-
-describe("recordShape 阶段检查声明", () => {
-  test("阶段检查声明为 false 且未附用户决定编号时记录形状被拒绝", async () => {
-    const world = await setupWorld();
-    await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-    const state = await currentState(world);
-    const result = await recordShape(
-      {
-        expectedVersion: state.version,
-        shape: shapeInput(shapeDecisionId, { gates: { plan: true, whiteboxReview: true, blackboxAcceptance: false }, skipped: [] }),
-      },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.shape).toBeNull();
-  });
-
-  test("阶段检查声明为 false 且附用户决定编号时记录形状成功并记录跳过依据", async () => {
-    const world = await setupWorld();
-    await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-    const skip = await appendDecision(
-      userDecisionInput(world.requirement, { trigger: "跳过黑盒验收", decision: "本需求不做黑盒验收" }),
-      { dataRoot: world.home.dataRoot, cwd: world.repo.root },
-    );
-    const state = await currentState(world);
-    const result = await recordShape(
-      {
-        expectedVersion: state.version,
-        shape: shapeInput(shapeDecisionId, {
-          gates: { plan: true, whiteboxReview: true, blackboxAcceptance: false },
-          skipped: [{ gate: "blackboxAcceptance", decisionId: skip.decisionId }],
-        }),
-      },
-      world.ctx,
-    );
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.shape?.gates).toEqual({ plan: true, whiteboxReview: true, blackboxAcceptance: false });
-    expect(JSON.stringify(after.data)).toContain(skip.decisionId);
-  });
-
-  test("阶段检查跳过使用 AI 决定编号时被拒绝", async () => {
-    const world = await setupWorld();
-    await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-    const aiSkipId = await appendAiDecisionId(world, "AI 判断跳过黑盒验收", "AI 自行决定跳过黑盒验收");
-    const state = await currentState(world);
-    const result = await recordShape(
-      {
-        expectedVersion: state.version,
-        shape: shapeInput(shapeDecisionId, {
-          gates: { plan: true, whiteboxReview: true, blackboxAcceptance: false },
-          skipped: [{ gate: "blackboxAcceptance", decisionId: aiSkipId }],
-        }),
-      },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.shape).toBeNull();
-  });
-
-  test("形状确认决定编号为 AI 编号时记录形状被拒绝", async () => {
-    const world = await setupWorld();
-    await toPlanned(world);
-    const aiDecisionId = await appendAiDecisionId(world, "AI 判断形状", "AI 自行确认任务集");
-    const state = await currentState(world);
-    const result = await recordShape({ expectedVersion: state.version, shape: shapeInput(aiDecisionId) }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.shape).toBeNull();
-  });
-
-  test("缺少形状确认决定编号时记录形状被拒绝", async () => {
-    const world = await setupWorld();
-    await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-    const shape = shapeInput(shapeDecisionId) as Record<string, unknown>;
-    delete shape.decisionId;
-    const state = await currentState(world);
-    const result = await recordShape({ expectedVersion: state.version, shape }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.shape).toBeNull();
-  });
-
-  test("形状任务集为空时记录形状被拒绝", async () => {
-    const world = await setupWorld();
-    await toPlanned(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-    const state = await currentState(world);
-    const result = await recordShape({ expectedVersion: state.version, shape: shapeInput(shapeDecisionId, { tasks: [] }) }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.shape).toBeNull();
-  });
-});
-
-describe("越过黑盒验收检查的推进路径", () => {
-  test("形状声明不含黑盒验收且附决定时经 accepting 越过黑盒阶段检查推进到 accepted 并记录跳过依据", async () => {
-    const world = await setupWorld();
-    const skip = await appendDecision(
-      userDecisionInput(world.requirement, { trigger: "跳过黑盒验收", decision: "本需求不做黑盒验收" }),
-      { dataRoot: world.home.dataRoot, cwd: world.repo.root },
-    );
-    await toReviewing(world);
-    const shapeDecisionId = await appendUserDecisionId(world, "重新确认形状", "跳过黑盒验收后重新确认形状");
-    let state = await currentState(world);
-    const shapeResult = await recordShape(
-      {
-        expectedVersion: state.version,
-        shape: shapeInput(shapeDecisionId, {
-          gates: { plan: true, whiteboxReview: true, blackboxAcceptance: false },
-          skipped: [{ gate: "blackboxAcceptance", decisionId: skip.decisionId }],
-        }),
-      },
-      world.ctx,
-    );
-    expect(shapeResult.ok).toBe(true);
-
-    const reviewRunId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    state = await currentState(world);
-    const toAcceptingResult = await advanceStage(
-      { expectedVersion: state.version, targetStage: "accepting", runId: reviewRunId, currentVersion: world.currentVersion },
-      world.ctx,
-    );
-    expect(toAcceptingResult.ok).toBe(true);
-
-    state = await currentState(world);
-    const toAcceptedResult = await advanceStage({ expectedVersion: state.version, targetStage: "accepted" }, world.ctx);
-    expect(toAcceptedResult.ok).toBe(true);
-
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("accepted");
-    expect(JSON.stringify(after.data)).toContain(skip.decisionId);
-  });
-});
-
-describe("任务生命周期", () => {
-  test("startTask 后任务进度为 doing 并记录 runId", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    const state = await currentState(world);
-    const result = await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-    expect(after.data.tasks["task-a"]?.runId).toBe(workRun.id);
-  });
-
-  test("startTask 对已 failed 的任务允许重新启动为 doing", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const firstRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: firstRun.id }, world.ctx);
-    state = await currentState(world);
-    await failTask({ expectedVersion: state.version, taskId: "task-a", runId: firstRun.id, reason: "首次尝试失败" }, world.ctx);
-    const retryRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    state = await currentState(world);
-    const result = await startTask({ expectedVersion: state.version, taskId: "task-a", runId: retryRun.id }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-    expect(after.data.tasks["task-a"]?.runId).toBe(retryRun.id);
-  });
-
-  test("finishTask 仅有运行启动回执（未完成）时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在 delivery.verificationOk=false 时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    const commit = await repoHeadCommit(world.repo.root);
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, commit, { delivery: { commit, verificationOk: false } }),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在 changedFiles 非空但 commit 在仓库中不存在时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    const missingCommit = "0".repeat(40);
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, missingCommit),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在 changedFiles 非空且 commit 存在于绑定 cwd 仓库时完成任务", async () => {
-    const world = await setupWorld();
-    await toTaskDone(world);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("done");
-  });
-
-  test("finishTask 在 changedFiles 为空且 workState=green-baseline-no-change 且有既有证据时完成任务", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, "", {
-        changedFiles: [],
-        workState: "green-baseline-no-change",
-        preexistingEvidence: ["既有测试 tests/x.test.ts 已覆盖该行为"],
-        delivery: { commit: "", verificationOk: true },
-      }),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("done");
-  });
-
-  test("finishTask 在 changedFiles 为空但缺少既有证据时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, "", {
-        changedFiles: [],
-        workState: "green-baseline-no-change",
-        preexistingEvidence: [],
-        delivery: { commit: "", verificationOk: true },
-      }),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在 changedFiles 为空但 workState 不是 green-baseline-no-change 时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, "", {
-        changedFiles: [],
-        workState: "red-green",
-        preexistingEvidence: ["既有实现已满足"],
-        delivery: { commit: "", verificationOk: true },
-      }),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在结果绑定另一任务时被拒绝并说明不匹配项", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    const commit = await repoHeadCommit(world.repo.root);
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-b", world.currentVersion, world.repo.root, commit),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 结果 verdict 为 FAIL 时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    const commit = await repoHeadCommit(world.repo.root);
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, commit, { verdict: "FAIL" }),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在 commit 为 HEAD 时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, "HEAD"),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在 commit 为分支名时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, "main"),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在 commit 为非十六进制字符串时被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, "zzzzzzz"),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在 commit 不足 7 位十六进制时被拒绝（即便能被 git 解析为缩写）", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    const shortCommit = (await repoHeadCommit(world.repo.root)).slice(0, 6);
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, world.repo.root, shortCommit),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("finishTask 在 binding.cwd 指向本需求仓库之外时被拒绝，即便提交在该仓库中存在", async () => {
-    const world = await setupWorld();
-    const otherRepo = await createRepoFixture();
-    repoFixtures.push(otherRepo);
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    const otherCommit = await repoHeadCommit(otherRepo.root);
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: workResult(world.requirement, "task-a", world.currentVersion, otherRepo.root, otherCommit),
-    });
-    state = await currentState(world);
-    const result = await finishTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, currentVersion: world.currentVersion }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("failTask 记录 failed 与原因并累加返修轮次", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    state = await currentState(world);
-    const result = await failTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, reason: "测试断言未覆盖边界" }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("failed");
-    expect(after.data.tasks["task-a"]?.reason).toBe("测试断言未覆盖边界");
-    expect(after.data.tasks["task-a"]?.repairRound).toBe(1);
-  });
-});
-
-describe("任务进度回滚 rollbackTask", () => {
-  test("failed → todo 回滚在原运行未停止时被拒绝，附决定编号且运行已停止后成功", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    state = await currentState(world);
-    await failTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, reason: "外部检测到失败" }, world.ctx);
-
-    const decision = await appendDecision(userDecisionInput(world.requirement, { trigger: "回滚任务", decision: "允许重试任务 task-a" }), {
-      dataRoot: world.home.dataRoot,
-      cwd: world.repo.root,
-    });
-
-    state = await currentState(world);
-    const withoutDecision = await rollbackTask({ expectedVersion: state.version, taskId: "task-a" }, world.ctx);
-    expect(withoutDecision.ok).toBe(false);
-
-    state = await currentState(world);
-    const whileActive = await rollbackTask({ expectedVersion: state.version, taskId: "task-a", decisionId: decision.decisionId }, world.ctx);
-    expect(whileActive.ok).toBe(false);
-    let after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("failed");
-
-    await world.runStore.update(workRun.id, { state: "stopped" });
-    state = await currentState(world);
-    const afterStopped = await rollbackTask({ expectedVersion: state.version, taskId: "task-a", decisionId: decision.decisionId }, world.ctx);
-    expect(afterStopped.ok).toBe(true);
-    after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("todo");
-  });
-
-  test("accepted 需求禁止 rollbackTask", async () => {
-    const world = await setupWorld();
-    await toAccepted(world);
-    const state = await currentState(world);
-    const result = await rollbackTask({ expectedVersion: state.version, taskId: "task-a", decisionId: "USER-001" }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("accepted");
-  });
-
-  test("rollbackTask 使用 AI 决定编号被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    let state = await currentState(world);
-    await startTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "running" });
-    state = await currentState(world);
-    await failTask({ expectedVersion: state.version, taskId: "task-a", runId: workRun.id, reason: "外部检测到失败" }, world.ctx);
-    await world.runStore.update(workRun.id, { state: "stopped" });
-    const aiDecisionId = await appendAiDecisionId(world, "AI 判断可重试", "AI 自行允许回滚任务 task-a");
-    state = await currentState(world);
-    const result = await rollbackTask({ expectedVersion: state.version, taskId: "task-a", decisionId: aiDecisionId }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("failed");
-  });
-
-  test("rollbackTask 对已中断（interrupted）原运行应允许回滚（done → todo）", async () => {
-    const world = await setupWorld();
-    const runId = await interruptedRun(world);
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "executing",
-      shape: shapeInput("USER-000"),
-      tasks: {
-        "task-a": { progress: "done", runId, description: "", agent: "", note: "", commit: "abc1234", reason: "", repairRound: 0 },
-      },
-    });
-    const decisionId = await appendUserDecisionId(world, "回滚已完成任务", "允许重试任务 task-a");
-    const state = await currentState(world);
-    const result = await rollbackTask({ expectedVersion: state.version, taskId: "task-a", decisionId }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("todo");
-  });
-});
-
-describe("受控回退 retreatStage", () => {
-  test("planned → confirmed 在原 plan 运行终态且附理由与决定编号时成功", async () => {
-    const world = await setupWorld();
-    const planRunId = await toPlanned(world);
-    const decision = await appendDecision(userDecisionInput(world.requirement, { trigger: "范围调整", decision: "退回确认阶段重议范围" }), {
-      dataRoot: world.home.dataRoot,
-      cwd: world.repo.root,
-    });
-    const state = await currentState(world);
-    const result = await retreatStage(
-      { expectedVersion: state.version, targetStage: "confirmed", reason: "范围调整", decisionId: decision.decisionId, runId: planRunId },
-      world.ctx,
-    );
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("confirmed");
-  });
-
-  test("原运行仍处于活动状态时回退被拒绝", async () => {
-    const world = await setupWorld();
-    await toPlanned(world);
-    const activeRun = await world.runStore.create({ ...baseRunInput(world.requirement, world.repo.root), kind: "role", role: "pi-company.worker", standalone: true });
-    await world.runStore.update(activeRun.id, { state: "running" });
-    const decision = await appendDecision(userDecisionInput(world.requirement, { trigger: "范围调整", decision: "退回确认阶段重议范围" }), {
-      dataRoot: world.home.dataRoot,
-      cwd: world.repo.root,
-    });
-    const state = await currentState(world);
-    const result = await retreatStage(
-      { expectedVersion: state.version, targetStage: "confirmed", reason: "范围调整", decisionId: decision.decisionId, runId: activeRun.id },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("planned");
-  });
-
-  test("缺决定编号时回退被拒绝", async () => {
-    const world = await setupWorld();
-    const planRunId = await toPlanned(world);
-    const state = await currentState(world);
-    const result = await retreatStage({ expectedVersion: state.version, targetStage: "confirmed", reason: "范围调整", runId: planRunId }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("planned");
-  });
-
-  test("accepted 需求缺少提交前失败证据时禁止回退", async () => {
-    const world = await setupWorld();
-    await toAccepted(world);
-    const decision = await appendDecision(userDecisionInput(world.requirement, { trigger: "回退请求", decision: "尝试回退已验收需求" }), {
-      dataRoot: world.home.dataRoot,
-      cwd: world.repo.root,
-    });
-    const state = await currentState(world);
-    const result = await retreatStage(
-      { expectedVersion: state.version, targetStage: "executing", reason: "尝试回退", decisionId: decision.decisionId },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("accepted");
-  });
-
-  test("accepted 需求以本需求提交前白盒失败和 AI 归因回退执行", async () => {
-    const world = await setupWorld();
-    await toAccepted(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root,
-      reviewResult(world.requirement, world.currentVersion, world.repo.root, { verdict: "FAIL" }), "submit-review");
-    const decision = await appendDecision(aiDecisionInput(world.requirement, { effects: ["repair:review"], decision: "修复提交前发现的遗漏" }), world.ctx);
-    const state = await currentState(world);
-    const result = await retreatStage({ expectedVersion: state.version, targetStage: "executing", reason: "提交前白盒失败", decisionId: decision.decisionId, runId }, world.ctx);
-    expect(result.ok).toBe(true);
-    expect((await currentState(world)).data.stage).toBe("executing");
-  });
-
-  test("不在允许路径内的回退（executing → planned）被拒绝", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const decision = await appendDecision(userDecisionInput(world.requirement, { trigger: "回退请求", decision: "尝试越级回退" }), {
-      dataRoot: world.home.dataRoot,
-      cwd: world.repo.root,
-    });
-    const state = await currentState(world);
-    const result = await retreatStage(
-      { expectedVersion: state.version, targetStage: "planned", reason: "尝试越级回退", decisionId: decision.decisionId },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("executing");
-  });
-
-  test("retreatStage 使用 AI 决定编号被拒绝", async () => {
-    const world = await setupWorld();
-    const planRunId = await toPlanned(world);
-    const aiDecisionId = await appendAiDecisionId(world, "AI 判断范围调整", "AI 自行决定退回确认阶段");
-    const state = await currentState(world);
-    const result = await retreatStage(
-      { expectedVersion: state.version, targetStage: "confirmed", reason: "范围调整", decisionId: aiDecisionId, runId: planRunId },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("planned");
-  });
-
-  test("存在未停止的运行时回退被拒绝且原因列出该运行标识，调用方另传已停止的 runId 也无效", async () => {
-    const world = await setupWorld();
-    const activeRun = await world.runStore.create({ ...baseRunInput(world.requirement, world.repo.root), kind: "role", role: "pi-company.worker", standalone: true });
-    await world.runStore.update(activeRun.id, { state: "running" });
-    const stoppedRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
-    await world.runStore.update(stoppedRun.id, { state: "running" });
-    await world.runStore.update(stoppedRun.id, { state: "stopped" });
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "planned",
-      shape: null,
-      tasks: {},
-      history: [{ stage: "planned", at: new Date().toISOString(), runId: activeRun.id, decisionId: null, reason: null }],
-    });
-    const decisionId = await appendUserDecisionId(world, "范围调整", "退回确认阶段重议范围");
-    const state = await currentState(world);
-    const result = await retreatStage(
-      { expectedVersion: state.version, targetStage: "confirmed", reason: "范围调整", decisionId, runId: stoppedRun.id },
-      world.ctx,
-    );
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain(activeRun.id);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("planned");
-  });
-
-  test("history 中该阶段登记的原运行为 interrupted 时应允许回退，无需调用方另传 runId", async () => {
-    const world = await setupWorld();
-    const runId = await interruptedRun(world);
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "planned",
-      shape: null,
-      tasks: {},
-      history: [{ stage: "planned", at: new Date().toISOString(), runId, decisionId: null, reason: null }],
-    });
-    const decisionId = await appendUserDecisionId(world, "范围调整", "退回确认阶段重议范围");
-    const state = await currentState(world);
-    const result = await retreatStage({ expectedVersion: state.version, targetStage: "confirmed", reason: "范围调整", decisionId }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("confirmed");
-  });
-
-  test("reviewing → executing 回退在 history 登记的原运行为终态时成功", async () => {
-    const world = await setupWorld();
-    const doneRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
-    await world.runStore.update(doneRun.id, { state: "running" });
-    await world.runStore.update(doneRun.id, { state: "completed", result: { phase: "work", verdict: "PASS" } });
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "reviewing",
-      shape: shapeInput("USER-000"),
-      tasks: {},
-      history: [{ stage: "reviewing", at: new Date().toISOString(), runId: doneRun.id, decisionId: null, reason: null }],
-    });
-    const decisionId = await appendUserDecisionId(world, "reviewing 回退", "退回 executing 补充修复");
-    const state = await currentState(world);
-    const result = await retreatStage({ expectedVersion: state.version, targetStage: "executing", reason: "补充修复", decisionId }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("executing");
-  });
-
-  test("accepting → executing 回退在 history 登记的原运行为终态时成功", async () => {
-    const world = await setupWorld();
-    const doneRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
-    await world.runStore.update(doneRun.id, { state: "running" });
-    await world.runStore.update(doneRun.id, { state: "completed", result: { phase: "review", verdict: "PASS" } });
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "accepting",
-      shape: shapeInput("USER-000"),
-      tasks: {},
-      history: [{ stage: "accepting", at: new Date().toISOString(), runId: doneRun.id, decisionId: null, reason: null }],
-    });
-    const decisionId = await appendUserDecisionId(world, "accepting 回退", "退回 executing 补充修复");
-    const state = await currentState(world);
-    const result = await retreatStage({ expectedVersion: state.version, targetStage: "executing", reason: "补充修复", decisionId }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("executing");
-  });
-});
-
-describe("版本化与并发", () => {
-  test("两个调用方读取同一 version 后先后更新，后者得到版本冲突", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const decision = await appendDecision(userDecisionInput(world.requirement), { dataRoot: world.home.dataRoot, cwd: world.repo.root });
-    const readA = await currentState(world);
-    const readB = await currentState(world);
-
-    const first = await advanceStage({ expectedVersion: readA.version, targetStage: "confirmed", decisionId: decision.decisionId }, world.ctx);
-    expect(first.ok).toBe(true);
-
-    const second = await advanceStage({ expectedVersion: readB.version, targetStage: "confirmed", decisionId: decision.decisionId }, world.ctx);
-    expect(second.ok).toBe(false);
-  });
-
-  test("版本冲突时 updateTaskFields 第二次调用结果携带 staleVersion:true", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const readA = await currentState(world);
-    const readB = await currentState(world);
-
-    const first = await updateTaskFields({ expectedVersion: readA.version, taskId: "task-a", fields: { note: "第一次更新" } }, world.ctx);
-    expect(first.ok).toBe(true);
-
-    const second = await updateTaskFields({ expectedVersion: readB.version, taskId: "task-a", fields: { note: "第二次更新" } }, world.ctx);
-    expect(second.ok).toBe(false);
-    if (!second.ok) expect((second as { staleVersion?: boolean }).staleVersion).toBe(true);
-  });
-
-  test("非版本冲突的失败（缺决定编号）结果不携带 staleVersion", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const state = await currentState(world);
-    const result = await advanceStage({ expectedVersion: state.version, targetStage: "confirmed" }, world.ctx);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect((result as { staleVersion?: boolean }).staleVersion).toBeUndefined();
-  });
-
-  test("版本冲突失败原因只陈述事实，不包含操作提示", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const readA = await currentState(world);
-    const readB = await currentState(world);
-
-    await updateTaskFields({ expectedVersion: readA.version, taskId: "task-a", fields: { note: "第一次更新" } }, world.ctx);
-    const second = await updateTaskFields({ expectedVersion: readB.version, taskId: "task-a", fields: { note: "第二次更新" } }, world.ctx);
-    expect(second.ok).toBe(false);
-    if (!second.ok) {
-      expect(second.reason).toContain("版本已变化");
-      expect(second.reason).not.toContain("请重新读取后重试");
+  test.each(["definitionFingerprint", "codeHead"] as const)("历史%s相同或改变均不能从旧证据核对取得通过", async (field) => {
+    const w = await world(); w.seed();
+    createRecord({ database: w.database, namespace: `evidence:${REQUIREMENT}`, key: "review" }, { ...w.currentVersion, invalid: false }); const before = w.snapshot();
+    for (const currentVersion of [w.currentVersion, { ...w.currentVersion, [field]: "changed" }]) {
+      expect(await checkEvidence({ stage: "review", currentVersion }, w.ctx)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
     }
+    expect(w.snapshot()).toBe(before);
   });
-});
-
-describe("证据绑定与核对", () => {
-  test("证据写入失败时阶段和版本一起回滚", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    const before = await currentState(world);
-    const restore = failDatabaseWrites(repositoryDatabase(world.home.dataRoot, world.identity.repoId), "records", "namespace", `evidence:${world.requirement}`);
-    try {
-      const result = await advanceStage({ expectedVersion: before.version, targetStage: "accepting", runId, currentVersion: world.currentVersion }, world.ctx);
-      expect(result.ok).toBe(false);
-      expect(await currentState(world)).toEqual(before);
-      expect(await listEvidenceStages(world.ctx)).not.toContain("review");
-    } finally { restore(); }
+  test("失效保留阶段记录，旧bind/check/resume均不能恢复通过", async () => {
+    const w = await world(); w.seed(); const runId = await w.run();
+    const ref = { database: w.database, namespace: `evidence:${REQUIREMENT}`, key: "review" };
+    const original = createRecord(ref, { runId, invalid: false }); const stateBefore = state(w);
+    await invalidateEvidence(w.ctx, "review", "越界");
+    expect(await listEvidenceStages(w.ctx)).toContain("review");
+    expect(readRecord(ref)).toMatchObject({ exists: true, version: original.version + 1, data: { stage: "review", invalid: true, reason: "越界", invalidatedAt: expect.any(String) } });
+    const invalidated = w.snapshot();
+    for (const result of [await bindEvidence({ stage: "review", runId, currentVersion: w.currentVersion }, w.ctx), await checkEvidence({ stage: "review", currentVersion: w.currentVersion }, w.ctx), await checkResume(w.ctx, w.currentVersion)]) expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
+    expect(w.snapshot()).toBe(invalidated); expect(state(w)).toEqual(stateBefore);
   });
-
-  test("核验期间发生失效时迟到的绑定不能覆盖失效标记", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    const original = RunStore.prototype.get;
-    let invalidated = false;
-    const intercepted = vi.spyOn(RunStore.prototype, "get").mockImplementation(async function (id) {
-      const found = await original.call(this, id);
-      if (id === runId && !invalidated) {
-        invalidated = true;
-        await invalidateEvidence(world.ctx, "review", "核验期间发现现场越界");
-      }
-      return found;
-    });
-    try {
-      const result = await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
-      expect(result.ok).toBe(false);
-      expect(invalidated).toBe(true);
-      const checked = await checkEvidence({ stage: "review", currentVersion: world.currentVersion }, world.ctx);
-      expect(checked.ok).toBe(false);
-      if (!checked.ok) expect(checked.reason).toContain("失效");
-    } finally { intercepted.mockRestore(); }
+  test("未绑定阶段可真实失效，缺失和损坏旧证据核对固定拒绝且不修复", async () => {
+    const w = await world();
+    expect(await checkEvidence({ stage: "missing", currentVersion: w.currentVersion }, w.ctx)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
+    await invalidateEvidence(w.ctx, "never-bound", "无对应证据");
+    expect(await listEvidenceStages(w.ctx)).toContain("never-bound");
+    expect(readRecord({ database: w.database, namespace: `evidence:${REQUIREMENT}`, key: "never-bound" })).toMatchObject({ data: { invalid: true } });
+    putRecord({ database: w.database, namespace: `evidence:${REQUIREMENT}`, key: "review" }, "损坏记录"); const before = w.snapshot();
+    expect(await checkEvidence({ stage: "review", currentVersion: w.currentVersion }, w.ctx)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") }); expect(w.snapshot()).toBe(before);
   });
-
-  test("bindEvidence 写入证据文件后 checkEvidence 通过", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    const bound = await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
-    expect(bound.ok).toBe(true);
-    const checked = await checkEvidence({ stage: "review", currentVersion: world.currentVersion }, world.ctx);
-    expect(checked.ok).toBe(true);
-  });
-
-  test("绑定后定义指纹变化，checkEvidence 返回待重新核对", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
-    const changedFingerprint = { definitionFingerprint: "fp-2", codeHead: world.currentVersion.codeHead };
-    const checked = await checkEvidence({ stage: "review", currentVersion: changedFingerprint }, world.ctx);
-    expect(checked.ok).toBe(false);
-    if (!checked.ok) expect(checked.reason).toContain("重新核对");
-  });
-});
-
-describe("invalidateEvidence：标记失效而非删除证据文件", () => {
-  test("失效后 checkEvidence 未通过、listEvidenceStages 仍列出该阶段、证据文件仍存在", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
-
-    await invalidateEvidence(world.ctx, "review", "写入越界: occupied.txt");
-
-    const checked = await checkEvidence({ stage: "review", currentVersion: world.currentVersion }, world.ctx);
-    expect(checked.ok).toBe(false);
-    if (!checked.ok) expect(checked.reason).toContain("失效");
-
-    const stages = await listEvidenceStages(world.ctx);
-    expect(stages).toContain("review");
-
-    const evidenceFilePath = { database: repositoryDatabase(world.home.dataRoot, world.identity.repoId), namespace: `evidence:${world.requirement}`, key: "review" };
-    expect(readRecord(evidenceFilePath).exists).toBe(true);
-  });
-
-  test("失效后 checkResume 返回阻塞且原因含失效", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
-    await invalidateEvidence(world.ctx, "review", "写入越界: occupied.txt");
-
-    const result = await checkResume(world.ctx, world.currentVersion);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain("失效");
-  });
-
-  test("错误场景：对未绑定过证据的阶段调用 invalidateEvidence 不抛", async () => {
-    const world = await setupWorld();
-
-    let threw = false;
-    try {
-      await invalidateEvidence(world.ctx, "never-bound", "无对应证据时的失效调用");
-    } catch {
-      threw = true;
+  test.each(["running", "missing-binding", "foreign-requirement", "foreign-cwd", "phase", "verdict", "fingerprint", "head", "run-identity", "task-identity"])("旧证据载荷%s永久拒绝且无写入，不提供旧批准链", async (mismatch) => {
+    const w = await world(); w.seed(); let result: Record<string, unknown> = w.reviewResult();
+    if (mismatch === "missing-binding") delete result.binding;
+    if (mismatch === "phase") result.phase = "plan";
+    if (mismatch === "verdict") { result.verdict = "FAIL"; result.issues = ["实际失败"]; }
+    if (mismatch === "foreign-cwd") {
+      const other = await createRepoFixture(); cleanup.push(() => removeRepoFixture(other));
+      result.binding = { ...result.binding as object, cwd: other.root };
     }
-    expect(threw).toBe(false);
+    const field = { "foreign-requirement": "requirement", fingerprint: "definitionFingerprint", head: "codeHead", "task-identity": "task" }[mismatch];
+    if (field) result.binding = { ...result.binding as object, [field]: "different" };
+    const runId = await w.run(mismatch === "running" ? "running" : "completed", result, "", mismatch === "run-identity" ? "2026-09-09.other" : REQUIREMENT);
+    const before = w.snapshot(); const outcome = await bindEvidence({ stage: "review", runId, currentVersion: w.currentVersion }, w.ctx);
+    expect(outcome).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
+    expect(w.snapshot()).toBe(before);
   });
-
-  test("失效后重新 bindEvidence：checkResume 恢复通过", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
-    await invalidateEvidence(world.ctx, "review", "写入越界: occupied.txt");
-
-    const blocked = await checkResume(world.ctx, world.currentVersion);
-    expect(blocked.ok).toBe(false);
-
-    const rerunId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    await bindEvidence({ stage: "review", runId: rerunId, currentVersion: world.currentVersion }, world.ctx);
-
-    const recovered = await checkResume(world.ctx, world.currentVersion);
-    expect(recovered.ok).toBe(true);
-  });
-});
-
-describe("续接核对 checkResume", () => {
-  test("状态文档缺失时返回明确阻塞", async () => {
-    const world = await setupWorld();
-    const result = await checkResume(world.ctx);
-    expect(result.ok).toBe(false);
-  });
-
-  test("状态文档损坏时返回明确阻塞", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    putRecord(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "损坏的需求记录");
-    const result = await checkResume(world.ctx);
-    expect(result.ok).toBe(false);
-  });
-
-  test("任务处于 doing 但关联运行未停止时返回明确阻塞，不把任务初始化为完成", async () => {
-    const world = await setupWorld();
-    const run = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "task-a"));
-    await world.runStore.update(run.id, { state: "running" });
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "executing",
-      shape: shapeInput("USER-000"),
-      tasks: { "task-a": { progress: "doing", runId: run.id, repairRound: 0 } },
-    });
-    const result = await checkResume(world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("doing");
-  });
-
-  test("无阻塞条件时返回成功", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const result = await checkResume(world.ctx);
-    expect(result.ok).toBe(true);
-  });
-
-  test("成功时返回状态文档当前版本 version", async () => {
-    const world = await setupWorld();
-    const created = await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const result = await checkResume(world.ctx);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect((result as { version?: number }).version).toBe(created.version);
-  });
-
-  test("已绑定证据与传入当前版本不一致时返回阻塞并说明待重新核对", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
-    const changedVersion = { definitionFingerprint: "fp-changed", codeHead: world.currentVersion.codeHead };
-    const result = await checkResume(world.ctx, changedVersion);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain("待重新核对");
-  });
-});
-
-describe("读盘失败时的行为", () => {
-  test("state.json 损坏时 advanceStage 返回 ok:false 而不是抛出", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    putRecord(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "损坏的需求记录");
-    let threw = false;
-    let result: Awaited<ReturnType<typeof advanceStage>> | undefined;
-    try {
-      result = await advanceStage({ expectedVersion: 1, targetStage: "confirmed", decisionId: "USER-001" }, world.ctx);
-    } catch {
-      threw = true;
+  test.each(["FAIL", "other-task", "foreign-cwd"])("旧work载荷%s永久拒绝，不返回或重建旧证据", async (variant) => {
+    const w = await world(); w.seed("executing"); const result = w.workResult(variant === "FAIL" ? { verdict: "FAIL", issues: ["实际失败"] } : {});
+    if (variant === "other-task") result.binding = { ...result.binding, task: "task-b" };
+    if (variant === "foreign-cwd") {
+      const other = await createRepoFixture(); cleanup.push(() => removeRepoFixture(other)); result.binding = { ...result.binding, cwd: other.root };
     }
-    expect(threw).toBe(false);
-    expect(result?.ok).toBe(false);
+    const runId = await w.run("completed", result, "task-a"); const before = w.snapshot();
+    const outcome = await bindEvidence({ stage: "work-task-a", runId, currentVersion: w.currentVersion }, w.ctx);
+    expect(outcome).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") }); expect(w.snapshot()).toBe(before);
   });
-
-  test("state.json 损坏时 finishTask 返回 ok:false 而不是抛出", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    putRecord(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "损坏的需求记录");
-    let threw = false;
-    let result: Awaited<ReturnType<typeof finishTask>> | undefined;
-    try {
-      result = await finishTask(
-        { expectedVersion: 1, taskId: "task-a", runId: "irrelevant", currentVersion: world.currentVersion },
-        world.ctx,
-      );
-    } catch {
-      threw = true;
+  test("旧plan载荷无论需求或phase均拒绝，不重建证据", async () => {
+    const w = await world(); w.seed();
+    for (const patch of [{ phase: "work" }, { binding: { requirement: "2026-09-09.other", ...w.currentVersion, cwd: w.repo.root } }]) {
+      const runId = await w.run("completed", { phase: "plan", verdict: "PASS", binding: { requirement: REQUIREMENT, ...w.currentVersion, cwd: w.repo.root }, ...patch });
+      expect((await bindEvidence({ stage: "plan", runId, currentVersion: w.currentVersion }, w.ctx)).ok).toBe(false);
     }
-    expect(threw).toBe(false);
-    expect(result?.ok).toBe(false);
+    expect(await listEvidenceStages(w.ctx)).toEqual([]);
   });
-
-  test("state.json 损坏时 startTask 返回 ok:false 而不是抛出", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    putRecord(statePath(world.home.dataRoot, world.identity.repoId, world.requirement), "损坏的需求记录");
-    let threw = false;
-    let result: Awaited<ReturnType<typeof startTask>> | undefined;
-    try {
-      result = await startTask({ expectedVersion: 1, taskId: "task-a", runId: "irrelevant" }, world.ctx);
-    } catch {
-      threw = true;
-    }
-    expect(threw).toBe(false);
-    expect(result?.ok).toBe(false);
+  test("真实list/invalidate按任务、需求和仓库隔离，只减权目标阶段", async () => {
+    const w = await world(); w.seed("executing");
+    const other = await createRepoFixture(); cleanup.push(() => removeRepoFixture(other));
+    const contexts = [w.ctx, { ...w.ctx, requirement: "2026-09-09.other" }, { ...w.ctx, cwd: other.root }];
+    const records = await Promise.all(contexts.map(async (ctx) => {
+      const identity = await repositoryIdentity(ctx.cwd); const database = repositoryDatabase(ctx.dataRoot, identity.repoId);
+      for (const stage of ["work-task-a", "work-task-b"]) withDatabase(database, (db) => db.create(`evidence:${ctx.requirement}`, stage, { stage, invalid: false }));
+      return () => withDatabase(database, (db) => db.list(`evidence:${ctx.requirement}`));
+    }));
+    const before = records.map((read) => read());
+    await invalidateEvidence(w.ctx, "work-task-a", "真实文件变化");
+    for (const ctx of contexts) expect((await listEvidenceStages(ctx)).sort()).toEqual(["work-task-a", "work-task-b"]);
+    expect(records[0]!().find((r) => r.key === "work-task-a")).toMatchObject({ version: 2, data: { invalid: true } });
+    expect(records[0]!().find((r) => r.key === "work-task-b")).toEqual(before[0]!.find((r) => r.key === "work-task-b"));
+    expect(records[1]!()).toEqual(before[1]); expect(records[2]!()).toEqual(before[2]);
   });
-
-  test("证据文件损坏时 checkEvidence 返回 ok:false 且 reason 含待重新核对，而不是抛出", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const runId = await completedRun(world.runStore, world.requirement, world.repo.root, reviewResult(world.requirement, world.currentVersion, world.repo.root));
-    await bindEvidence({ stage: "review", runId, currentVersion: world.currentVersion }, world.ctx);
-    const evidenceFilePath = { database: repositoryDatabase(world.home.dataRoot, world.identity.repoId), namespace: `evidence:${world.requirement}`, key: "review" };
-    putRecord(evidenceFilePath, "损坏的证据记录");
-    let threw = false;
-    let result: Awaited<ReturnType<typeof checkEvidence>> | undefined;
-    try {
-      result = await checkEvidence({ stage: "review", currentVersion: world.currentVersion }, world.ctx);
-    } catch {
-      threw = true;
-    }
-    expect(threw).toBe(false);
-    expect(result?.ok).toBe(false);
-    if (result && !result.ok) expect(result.reason).toContain("待重新核对");
-  });
-});
-
-describe("跳过 plan / whiteboxReview 阶段检查的推进路径", () => {
-  test("形状声明跳过 plan 阶段检查且附决定时 confirmed → planned 无需运行证据", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const skipDecisionId = await appendUserDecisionId(world, "跳过 plan 阶段检查", "本需求跳过 plan 审阅");
-    const shapeDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明（跳过 plan）");
-    let state = await currentState(world);
-    const shapeResult = await recordShape(
-      {
-        expectedVersion: state.version,
-        shape: shapeInput(shapeDecisionId, {
-          gates: { plan: false, whiteboxReview: true, blackboxAcceptance: true },
-          skipped: [{ gate: "plan", decisionId: skipDecisionId }],
-        }),
-      },
-      world.ctx,
-    );
-    expect(shapeResult.ok).toBe(true);
-
-    const confirmDecisionId = await appendUserDecisionId(world, "确认范围", "确认按现有范围推进");
-    state = await currentState(world);
-    const confirmed = await advanceStage({ expectedVersion: state.version, targetStage: "confirmed", decisionId: confirmDecisionId }, world.ctx);
-    expect(confirmed.ok).toBe(true);
-
-    state = await currentState(world);
-    const result = await advanceStage({ expectedVersion: state.version, targetStage: "planned" }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("planned");
-  });
-
-  test("形状声明跳过 whiteboxReview 阶段检查且附决定时 reviewing → accepting 无需运行证据", async () => {
-    const world = await setupWorld();
-    await toReviewing(world);
-    const skipDecisionId = await appendUserDecisionId(world, "跳过白盒评审", "本需求跳过白盒评审");
-    const reshapeDecisionId = await appendUserDecisionId(world, "重新确认形状", "跳过白盒评审后重新确认形状");
-    let state = await currentState(world);
-    const shapeResult = await recordShape(
-      {
-        expectedVersion: state.version,
-        shape: shapeInput(reshapeDecisionId, {
-          gates: { plan: true, whiteboxReview: false, blackboxAcceptance: true },
-          skipped: [{ gate: "whiteboxReview", decisionId: skipDecisionId }],
-        }),
-      },
-      world.ctx,
-    );
-    expect(shapeResult.ok).toBe(true);
-
-    state = await currentState(world);
-    const result = await advanceStage({ expectedVersion: state.version, targetStage: "accepting" }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("accepting");
-  });
-});
-
-describe("updateTaskFields", () => {
-  test("拒绝未知字段", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const state = await currentState(world);
-    const result = await updateTaskFields({ expectedVersion: state.version, taskId: "task-a", fields: { unknownField: "x" } }, world.ctx);
-    expect(result.ok).toBe(false);
-  });
-
-  test("拒绝把 stage 或 progress 混入字段更新", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const state = await currentState(world);
-    const result = await updateTaskFields({ expectedVersion: state.version, taskId: "task-a", fields: { progress: "done" } }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.progress).toBe("todo");
-  });
-
-  test("接受 note/agent/commit/description 与 followUps 更新", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const state = await currentState(world);
-    const result = await updateTaskFields(
-      {
-        expectedVersion: state.version,
-        taskId: "task-a",
-        fields: { note: "备注", agent: "impl-engineer", commit: "abc1234", description: "描述" },
-        followUps: ["跟进事项"],
-      },
-      world.ctx,
-    );
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.note).toBe("备注");
-    expect(after.data.followUps).toEqual(["跟进事项"]);
-  });
-
-  test("接受 blockedReason 与 workspaceDir 更新并写入任务记录", async () => {
-    const world = await setupWorld();
-    await toExecuting(world);
-    const state = await currentState(world);
-    const result = await updateTaskFields(
-      {
-        expectedVersion: state.version,
-        taskId: "task-a",
-        fields: { blockedReason: "等待外部审批", workspaceDir: "/tmp/task-a-workspace" },
-      },
-      world.ctx,
-    );
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.tasks["task-a"]?.blockedReason).toBe("等待外部审批");
-    expect(after.data.tasks["task-a"]?.workspaceDir).toBe("/tmp/task-a-workspace");
-  });
-});
-
-describe("initRequirementState", () => {
-  test("需求状态已存在时初始化被拒绝", async () => {
-    const world = await setupWorld();
-    const first = await initRequirementState(world.ctx);
-    expect(first.ok).toBe(true);
-    const second = await initRequirementState(world.ctx);
-    expect(second.ok).toBe(false);
-  });
-});
-
-describe("rejectRequirement", () => {
-  test("无用户决定编号时被拒绝", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const state = await currentState(world);
-    const result = await rejectRequirement({ expectedVersion: state.version }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("draft");
-  });
-
-  test("附用户裁决决定编号时置为 rejected", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const decision = await appendDecision(userDecisionInput(world.requirement, { trigger: "裁决", decision: "拒绝本需求" }), {
-      dataRoot: world.home.dataRoot,
-      cwd: world.repo.root,
-    });
-    const state = await currentState(world);
-    const result = await rejectRequirement({ expectedVersion: state.version, decisionId: decision.decisionId }, world.ctx);
-    expect(result.ok).toBe(true);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("rejected");
-  });
-
-  test("使用 AI 决定编号裁决时被拒绝", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const aiDecisionId = await appendAiDecisionId(world, "AI 裁决", "AI 自行判断拒绝需求");
-    const state = await currentState(world);
-    const result = await rejectRequirement({ expectedVersion: state.version, decisionId: aiDecisionId }, world.ctx);
-    expect(result.ok).toBe(false);
-    const after = await currentState(world);
-    expect(after.data.stage).toBe("draft");
+  test("验收报告路径不匹配通过真实报告primitive拒绝", async () => {
+    const w = await world(); const expected = join(w.repo.root, "expected.md"), other = join(w.repo.root, "other.md");
+    const content = "---\ndate: 2026-09-09\nresult: accepted\n---\n## 验收结果\n| AC-1 | PASS | 符合 | |\n## 所用命令\npnpm test\n";
+    await writeFile(expected, content); await writeFile(other, content);
+    const result: AcceptanceResult = { phase: "acceptance", verdict: "PASS", summary: "合成报告", issues: [], evidence: ["AC-1"], acceptanceResult: "accepted", reportPath: other,
+      items: [{ id: "AC-1", result: "PASS", observed: "符合", difference: "" }], uncovered: [] };
+    await expect(checkAcceptanceReport(result, expected, ["pnpm test"])).rejects.toThrow("位置不一致");
+    expect(await checkAcceptanceReport({ ...result, reportPath: expected }, expected, ["pnpm test"])).toBe(createHash("sha256").update(content).digest("hex"));
   });
 });

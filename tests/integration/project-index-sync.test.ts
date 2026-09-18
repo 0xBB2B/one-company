@@ -289,6 +289,10 @@ test("真实归档通知顺序：旧active先needs_review撤权，才收到普�
   const service = await RequirementService.open(options); const state = await RequirementStateStore.open(options);
   const created = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "归档装配", body: "PRIVATE-ACTIVE-SENTINEL" });
   const worktree = await addWorktree(w.fixture.repo);
+  cleanups.push(async () => {
+    await rm(worktree.root, { recursive: true, force: true });
+    w.fixture.repo.worktrees.splice(w.fixture.repo.worktrees.indexOf(worktree.root), 1);
+  });
   const bound = await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
     path: await realpath(worktree.root), prepareOperationId: uuidv7(), baseCommit: (await readGit(worktree.root, ["rev-parse", "HEAD"])).stdout.trim() });
   const active = await service.confirmUpdate({ requirementId: created.requirementId, version: bound.version,

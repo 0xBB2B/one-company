@@ -1,1162 +1,290 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { Value } from "typebox/value";
-import { rename, rm, chmod, mkdir, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { chmod, mkdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
-import { appendDecision } from "../runtime/decisions.ts";
-import { RunStore } from "../runtime/run-store.ts";
-import { createRecord, readRecord, putRecord, repositoryDatabase } from "../runtime/database.ts";
+import { createRecord, readRecord, repositoryDatabase, withDatabase, uuidv7 } from "../runtime/database.ts";
 import { requirementStateRef } from "../runtime/workflow-state.ts";
+import { collectGitSnapshot, collectContentFingerprint } from "../runtime/git-snapshot.ts";
 import { createWorkflowTool, currentVersion, executeWorkflowAction, retryOnStaleVersion } from "../runtime/workflow-tool.ts";
 import workflowExtension from "../extensions/workflow.ts";
 
-const execFileAsync = promisify(execFile);
+const exec = promisify(execFile);
 const REQUIREMENT = "2026-09-09.workflow-tool-demo";
-
-const repoFixtures: Array<Awaited<ReturnType<typeof createRepoFixture>>> = [];
-const tempHomes: Array<Awaited<ReturnType<typeof createTempHome>>> = [];
-
-afterEach(async () => {
-  for (const fixture of repoFixtures.splice(0)) await removeRepoFixture(fixture);
-  for (const home of tempHomes.splice(0)) await removeTempHome(home);
-});
-
-interface StateDoc {
-  requirement: string;
-  stage: string;
-  shape: Record<string, unknown> | null;
-  tasks: Record<string, { progress: string; runId?: string | null; [key: string]: unknown }>;
-  followUps: unknown[];
-  history: unknown[];
-}
-
-interface World {
-  home: Awaited<ReturnType<typeof createTempHome>>;
-  repo: Awaited<ReturnType<typeof createRepoFixture>>;
-  identity: Awaited<ReturnType<typeof repositoryIdentity>>;
-  requirement: string;
-  tool: ReturnType<typeof createWorkflowTool>;
-  runStore: RunStore;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function containsAbsolutePath(text: string, repoRoot?: string): boolean {
-  if (repoRoot && text.includes(repoRoot)) return true;
-  return /\/(?!\.+\/)[A-Za-z0-9_.-]+\//.test(text);
-}
-
-function expectSuccessText(text: string, requirement: string, action: string): void {
-  const pattern = new RegExp(`^${escapeRegExp(requirement)} ${action} 成功：.+，version \\d+$`);
-  expect(text).toMatch(pattern);
-}
-
-function createFakePi() {
-  const registered: Array<{ name: string; [key: string]: unknown }> = [];
-  const pi = {
-    registerTool(tool: { name: string; [key: string]: unknown }) {
-      registered.push(tool);
-    },
-    on() {},
-  };
-  return { pi, registered };
-}
-
-function fakeCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
-  return {
-    ui: {} as ExtensionContext["ui"],
-    mode: "print",
-    hasUI: false,
-    cwd: "/",
-    sessionManager: {} as ExtensionContext["sessionManager"],
-    modelRegistry: {} as ExtensionContext["modelRegistry"],
-    model: undefined,
-    scopedModels: [],
-    isIdle: () => true,
-    isProjectTrusted: () => true,
-    signal: undefined,
-    abort: () => {},
-    hasPendingMessages: () => false,
-    shutdown: () => {},
-    getContextUsage: () => undefined,
-    compact: () => {},
-    getSystemPrompt: () => "",
-    ...overrides,
-  } as ExtensionContext;
-}
-
-const statePath = requirementStateRef;
-
-async function seedState(dataRoot: string, repoId: string, requirement: string, overrides: Record<string, unknown> = {}) {
-  const initial: StateDoc = { requirement, stage: "draft", shape: null, tasks: {}, followUps: [], history: [], ...overrides };
-  return createRecord(statePath(dataRoot, repoId, requirement), initial);
-}
-
-async function readRawState(dataRoot: string, repoId: string, requirement: string): Promise<{ version: number; data: StateDoc }> {
-  const result = await readRecord(statePath(dataRoot, repoId, requirement));
-  if (!result.exists) throw new Error("测试装置失败: 期望状态文档存在");
-  return { version: result.version, data: result.data as StateDoc };
-}
-
-function userDecisionInput(requirement: string, overrides: Record<string, unknown> = {}) {
-  return {
-    requirement,
-    actor: "user" as const,
-    source: "workflow-tool-test",
-    trigger: "确认",
-    decision: "确认",
-    alternatives: [],
-    effects: ["scope"],
-    impact: "无重大影响",
-    ...overrides,
-  };
-}
-
-async function appendUserDecisionId(world: World, trigger: string, decision: string): Promise<string> {
-  const receipt = await appendDecision(userDecisionInput(world.requirement, { trigger, decision }), {
-    dataRoot: world.home.dataRoot,
-    cwd: world.repo.root,
-  });
-  return receipt.decisionId;
-}
-
-function baseRunInput(requirement: string, cwd: string, task = "") {
-  return {
-    kind: "requirement" as const,
-    requirement,
-    task,
-    cwd,
-    writePaths: [],
-    readPaths: [],
-    model: { provider: "anthropic", id: "claude-test" },
-    thinking: "high",
-    mcp: [],
-  };
-}
-
-async function repoHeadCommit(repoRoot: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot });
-  return stdout.trim();
-}
-
-async function setupWorld(requirement: string = REQUIREMENT): Promise<World> {
-  const home = await createTempHome();
-  tempHomes.push(home);
-  const repo = await createRepoFixture();
-  repoFixtures.push(repo);
+const SECRET = "合成旧目标，仅用于验证元数据过滤";
+const cleanup: Array<() => Promise<unknown>> = [];
+afterEach(async () => { vi.restoreAllMocks(); for (const fn of cleanup.splice(0).reverse()) await fn(); });
+async function world() {
+  const home = await createTempHome(); cleanup.push(() => removeTempHome(home));
+  const repo = await createRepoFixture(); cleanup.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
-  const tool = createWorkflowTool({ dataRoot: home.dataRoot, cwd: repo.root });
-  const runStore = new RunStore({ dataRoot: home.dataRoot, repoId: identity.repoId, daemonStartedAt: new Date().toISOString() });
-  return { home, repo, identity, requirement, tool, runStore };
-}
-
-async function call(world: World, params: Record<string, unknown>): Promise<{ text: string; details: Record<string, unknown> }> {
-  const result = await world.tool.execute("call-1", params, undefined, undefined, fakeCtx({ cwd: world.repo.root }));
-  return {
-    text: (result.content[0] as { text: string }).text,
-    details: result.details as Record<string, unknown>,
+  const ctx = { dataRoot: home.dataRoot, cwd: repo.root };
+  const database = repositoryDatabase(ctx.dataRoot, identity.repoId);
+  const ref = requirementStateRef(ctx.dataRoot, identity.repoId, REQUIREMENT);
+  const tool = createWorkflowTool(ctx);
+  // 历史记录夹具不经过批准服务，不授予执行能力。
+  const seed = (stage = "draft", key = REQUIREMENT) => createRecord({ ...ref, key }, {
+    requirement: key, stage, shape: { decisionId: "USER-001", skipped: ["plan"], description: SECRET },
+    tasks: { "T-1": { progress: "doing", runId: null, note: SECRET, workspaceDir: SECRET, blockedReason: SECRET }, [SECRET]: { progress: "todo" } },
+    history: [SECRET], followUps: [SECRET],
+  });
+  const snapshot = () => {
+    const db = new DatabaseSync(database, { readOnly: true });
+    try { return JSON.stringify({ records: db.prepare("SELECT * FROM records ORDER BY id").all(), events: db.prepare("SELECT * FROM events ORDER BY id").all() }); }
+    finally { db.close(); }
   };
+  const call = (params: Record<string, unknown>, signal?: AbortSignal) => tool.execute("test", params, signal, undefined, ctx);
+  return { home, repo, identity, ctx, database, ref, seed, snapshot, call, tool };
 }
 
-// 业务失败现在以抛出表达（SDK 只把抛出识别为 isError），需要断言失败原因文本时先捕获异常
-async function callExpectingError(world: World, params: Record<string, unknown>): Promise<Error> {
-  try {
-    await call(world, params);
-  } catch (error) {
-    return error as Error;
-  }
-  throw new Error("测试装置失败: 期望抛出但未抛出");
-}
-
-describe("pi_company_workflow 工具", () => {
-  test("createWorkflowTool 返回名为 pi_company_workflow 的工具定义", () => {
-    const tool = createWorkflowTool({ dataRoot: "/tmp/pi-company-schema-only", cwd: "/tmp/pi-company-schema-only" });
-    expect(tool.name).toBe("pi_company_workflow");
+const retiredActions = ["init", "update", "advance", "retreat", "reject", "task-start", "task-finish", "task-fail", "rollback", "shape-confirm", "resume-check", "migrate-preflight", "migrate-apply", "migrate-status"];
+describe("公开旧动作永久拒绝", () => {
+  test.each(retiredActions)("%s 不创建数据库，也不调用状态变更或交付回调", async (action) => {
+    const w = await world(); const beforeTaskFinish = vi.fn(); const onStateChange = vi.fn();
+    const tool = createWorkflowTool({ ...w.ctx, beforeTaskFinish, onStateChange });
+    const params = { action, requirement: REQUIREMENT, version: 1, stage: "accepted", decisionId: "USER-001", runId: uuidv7() };
+    expect(await executeWorkflowAction(params, w.ctx)).toMatchObject({ ok: false, details: { isError: true, code: "legacy_workflow_retired" } });
+    await expect(tool.execute("test", params, undefined, undefined, w.ctx)).rejects.toThrow("永久淘汰");
+    expect(beforeTaskFinish).not.toHaveBeenCalled(); expect(onStateChange).not.toHaveBeenCalled();
+    expect(existsSync(w.database)).toBe(false);
+  });
+  test.each(retiredActions)("%s 即使已有USER、shape、PASS也不改变历史数据库", async (action) => {
+    const w = await world(); w.seed("accepting"); const runId = uuidv7();
+    withDatabase(w.database, (db) => {
+      db.append(`decisions:${REQUIREMENT}:user`, { id: "USER-001", actor: "user", decision: SECRET });
+      db.create("runs", runId, { requirement: REQUIREMENT, state: "completed", result: { phase: "acceptance", verdict: "PASS" } });
+    });
+    const before = w.snapshot();
+    await expect(w.call({ action, requirement: REQUIREMENT, task: "T-1", version: 1, decisionId: "USER-001", runId, stage: "accepted" })).rejects.toThrow("永久淘汰");
+    expect(w.snapshot()).toBe(before);
+  });
+  test.each([
+    { update: { note: "备注A" } }, { update: { note: "备注A", bogusField: "x" } },
+    { update: { note: "备注A", stage: "accepted" } }, { update: { followUpIssues: ["A"] } },
+    { update: { blockedReason: "A", workspaceDir: "/workspace/T-1" } }, {}, { task: "T-1", version: 0 },
+  ])("update任意字段组合均拒绝且版本不变：%j", async (patch) => {
+    const w = await world(); w.seed(); const before = w.snapshot();
+    await expect(w.call({ action: "update", requirement: REQUIREMENT, ...patch })).rejects.toThrow("永久淘汰");
+    expect(w.snapshot()).toBe(before);
+  });
+  test("旧retryOnStaleVersion不执行builder，不重试或写入", async () => {
+    const w = await world(); w.seed(); const before = w.snapshot(); const builder = vi.fn();
+    expect(await retryOnStaleVersion(w.ctx, REQUIREMENT, builder)).toMatchObject({ ok: false, details: { code: "legacy_workflow_retired" } });
+    expect(builder).not.toHaveBeenCalled(); expect(w.snapshot()).toBe(before);
   });
 });
 
 describe("pi_company_workflow 参数 schema", () => {
-  const schemaTool = createWorkflowTool({ dataRoot: "/tmp/pi-company-schema-only", cwd: "/tmp/pi-company-schema-only" });
-
-  function baseParams(overrides: Record<string, unknown> = {}) {
-    return { action: "query", requirement: REQUIREMENT, ...overrides };
-  }
-
-  test("顶层 additionalProperties 为 false", () => {
-    expect((schemaTool.parameters as { additionalProperties?: boolean }).additionalProperties).toBe(false);
+  const schema = createWorkflowTool({ dataRoot: "/missing" }).parameters;
+  test("工具名和additionalProperties不变", () => {
+    expect(createWorkflowTool({ dataRoot: "/missing" }).name).toBe("pi_company_workflow");
+    expect(schema.additionalProperties).toBe(false);
   });
-
-  test("合法 query 参数通过 schema 校验", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams())).toBe(true);
-  });
-
-  test("未知顶层字段的参数被 schema 拒绝", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams({ bogusField: "x" }))).toBe(false);
-  });
-
-  test("不在允许集合中的 action 被 schema 拒绝", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams({ action: "unknown-action" }))).toBe(false);
-  });
-
-  test("task 不匹配 ^T-\\d+$ 时被 schema 拒绝", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams({ task: "bad-task" }))).toBe(false);
-  });
-
-  test("task 匹配 ^T-\\d+$ 时通过 schema 校验", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams({ task: "T-1" }))).toBe(true);
-  });
-
-  test("decisionId 不匹配 ^(AI|USER)-\\d+$ 时被 schema 拒绝", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams({ decisionId: "BAD-1" }))).toBe(false);
-  });
-
-  test("version 小于 1 时被 schema 拒绝", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams({ version: 0 }))).toBe(false);
-  });
-
-  test("update 含未知字段时被 schema 拒绝", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams({ update: { bogusField: "x" } }))).toBe(false);
-  });
-
-  test("含 evidence 未定义字段的参数被 schema 拒绝", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams({ evidence: { verdict: "PASS" } }))).toBe(false);
-  });
-
-  test("含 shape 未定义字段的参数被 schema 拒绝", () => {
-    expect(Value.Check(schemaTool.parameters, baseParams({ shape: { tasks: [] } }))).toBe(false);
-  });
+  test.each([{ action: "query", requirement: REQUIREMENT }, { action: "list" }, { action: "query", fields: ["stage"] }])("白名单查询参数通过：%j", (params) => { expect(Value.Check(schema, params)).toBe(true); });
+  test.each([
+    { bogusField: "x" }, { action: "unknown-action" }, { task: "bad-task" }, { task: "T-1" },
+    { decisionId: "BAD-1" }, { version: 0 }, { version: 1 }, { update: { bogusField: "x" } },
+    { evidence: { verdict: "PASS" } }, { shape: { tasks: [] } }, { fields: ["history"] }, { fields: ["shape"] }, { fields: ["followUps"] },
+  ])("额外字段或旧动作拒绝：%j", (patch) => { expect(Value.Check(schema, { action: "query", requirement: REQUIREMENT, ...patch })).toBe(false); });
 });
 
-describe("init 与 query", () => {
-  test("init 成功后 query 返回 stage draft 与 version 1", async () => {
-    const world = await setupWorld();
-    const initResult = await call(world, { action: "init", requirement: world.requirement });
-    expect(initResult.details.isError).toBeFalsy();
-
-    const queryResult = await call(world, { action: "query", requirement: world.requirement });
-    expect(queryResult.details.isError).toBeFalsy();
-    const data = queryResult.details.data as { stage: string };
-    expect(data.stage).toBe("draft");
-    expect(queryResult.details.version).toBe(1);
+describe("只读元数据和身份隔离", () => {
+  test("主窗口绑定后真实分支或同库worktree改变均拒绝", async () => {
+    const w = await world(); w.seed(); await w.call({ action: "list" }); const before = w.snapshot();
+    const other = await addWorktree(w.repo);
+    await expect(w.tool.execute("test", { action: "list" }, undefined, undefined, { cwd: other.root })).rejects.toThrow("只能查询可信当前仓库及工作区");
+    await exec("git", ["checkout", "-b", "external-switch"], { cwd: w.repo.root });
+    await expect(w.call({ action: "list" })).rejects.toThrow("只能查询可信当前仓库及工作区"); expect(w.snapshot()).toBe(before);
   });
-
-  test('query 指定 fields:["stage"] 时只返回阶段字段', async () => {
-    const world = await setupWorld();
-    await call(world, { action: "init", requirement: world.requirement });
-
-    const queryResult = await call(world, { action: "query", requirement: world.requirement, fields: ["stage"] });
-    expect(queryResult.details.data).toEqual({ stage: "draft" });
+  test("缺库query/list拒绝且不创建主库或目录，现存空库list返回空覆盖", async () => {
+    const w = await world(); const repoDir = join(w.home.dataRoot, "repos", w.identity.repoId);
+    for (const action of ["query", "list"]) expect(await executeWorkflowAction({ action, ...(action === "query" ? { requirement: REQUIREMENT } : {}) }, w.ctx)).toMatchObject({ ok: false, details: { code: "legacy_metadata_unavailable" } });
+    expect(existsSync(w.database)).toBe(false); expect(existsSync(repoDir)).toBe(false);
+    withDatabase(w.database, () => {}); const before = w.snapshot(); const inode = (await stat(w.database)).ino;
+    expect((await w.call({ action: "list" })).details).toMatchObject({ items: [], coverage: { total: 0, returned: 0, unknown: 0, remaining: 0, truncated: false } });
+    expect(await executeWorkflowAction({ action: "query", requirement: REQUIREMENT }, w.ctx)).toMatchObject({ ok: false, details: { code: "legacy_metadata_unavailable" } });
+    expect(w.snapshot()).toBe(before); expect((await stat(w.database)).ino).toBe(inode);
   });
-});
-
-describe("update 字段更新", () => {
-  function seedWithTaskA(world: World) {
-    return seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      tasks: { "T-1": { progress: "todo", runId: null, description: "", agent: "", note: "", commit: null, reason: "", repairRound: 0 } },
-    });
-  }
-
-  test("只提交 note 与正确 version 时更新成功，回执含需求、note 与新版本，不含整份状态", async () => {
-    const world = await setupWorld();
-    await seedWithTaskA(world);
-    const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    const result = await call(world, {
-      action: "update",
-      requirement: world.requirement,
-      task: "T-1",
-      version: before.version,
-      update: { note: "备注A" },
-    });
-
-    expect(result.details.isError).toBeFalsy();
-    expectSuccessText(result.text, world.requirement, "update");
-    expect(result.text).toContain("note");
-    expect(result.text).not.toContain("history");
-    expect(result.text).not.toContain("repairRound");
-
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.tasks["T-1"]?.note).toBe("备注A");
-    expect(after.version).toBe(before.version + 1);
-  });
-
-  test("update 含未知字段时整个请求不生效，note 未写入", async () => {
-    const world = await setupWorld();
-    await seedWithTaskA(world);
-    const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(
-      call(world, {
-        action: "update",
-        requirement: world.requirement,
-        task: "T-1",
-        version: before.version,
-        update: { note: "备注A", bogusField: "x" },
-      }),
-    ).rejects.toThrow(/不允许|参数不合法|additional properties/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.tasks["T-1"]?.note).toBe("");
-  });
-
-  test("update 混入 stage 字段时整个请求不生效，note 未写入", async () => {
-    const world = await setupWorld();
-    await seedWithTaskA(world);
-    const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(
-      call(world, {
-        action: "update",
-        requirement: world.requirement,
-        task: "T-1",
-        version: before.version,
-        update: { note: "备注A", stage: "accepted" },
-      }),
-    ).rejects.toThrow(/不允许|参数不合法|additional properties/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.tasks["T-1"]?.note).toBe("");
-  });
-
-  test("followUpIssues 追加成功且任务表不变", async () => {
-    const world = await setupWorld();
-    await seedWithTaskA(world);
-    const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    const result = await call(world, {
-      action: "update",
-      requirement: world.requirement,
-      version: before.version,
-      update: { followUpIssues: ["跟进事项A"] },
-    });
-
-    expect(result.details.isError).toBeFalsy();
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.followUps).toContain("跟进事项A");
-    expect(after.data.tasks["T-1"]).toEqual(before.data.tasks["T-1"]);
-  });
-});
-
-describe("版本冲突与重试", () => {
-  test("两调用方基于同一 version 先后 update：第二次失败并提示重新查询后重试，第一次内容保留", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      tasks: { "T-1": { progress: "todo", runId: null, description: "", agent: "", note: "", commit: null, reason: "", repairRound: 0 } },
-    });
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const ctx = { dataRoot: world.home.dataRoot, cwd: world.repo.root };
-
-    const first = await executeWorkflowAction(
-      { action: "update", requirement: world.requirement, task: "T-1", version: state.version, update: { note: "A的备注" } },
-      ctx,
-    );
-    expect(first.ok).toBe(true);
-
-    const second = await executeWorkflowAction(
-      { action: "update", requirement: world.requirement, task: "T-1", version: state.version, update: { note: "B的备注" } },
-      ctx,
-    );
-    expect(second.ok).toBe(false);
-    expect(second.text).toContain("请重新查询后重试");
-
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.tasks["T-1"]?.note).toBe("A的备注");
-  });
-
-  test("retryOnStaleVersion 在版本交错下成功，两次调用的跟进事项都保留", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const ctx = { dataRoot: world.home.dataRoot, cwd: world.repo.root };
-
-    let callbackRuns = 0;
-    const result = await retryOnStaleVersion(ctx, world.requirement, async (state: { version: number }) => {
-      callbackRuns++;
-      if (callbackRuns === 1) {
-        const conflicting = await executeWorkflowAction(
-          { action: "update", requirement: world.requirement, version: state.version, update: { followUpIssues: ["调用方B跟进"] } },
-          ctx,
-        );
-        expect(conflicting.ok).toBe(true);
-      }
-      return { followUpIssues: ["调用方A跟进"] };
-    });
-
-    expect(result.ok).toBe(true);
-    expect(callbackRuns).toBe(2);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.followUps).toContain("调用方A跟进");
-    expect(after.data.followUps).toContain("调用方B跟进");
-  });
-});
-
-describe("advance 阶段推进到 accepted", () => {
-  function seedAccepting(world: World) {
-    return seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "accepting",
-      shape: {
-        tasks: [{ id: "T-1", roles: ["impl"] }],
-        gates: { plan: true, whiteboxReview: true, blackboxAcceptance: true },
-        skipped: [],
-        acceptanceReport: "/reports/x.md",
-        decisionId: "USER-000",
-      },
-    });
-  }
-
-  test("runId 指向的运行未完成（无验收结果）时失败", async () => {
-    const world = await setupWorld();
-    await seedAccepting(world);
-    const run = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
-    await world.runStore.update(run.id, { state: "running" });
-
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    await expect(
-      call(world, {
-        action: "advance",
-        requirement: world.requirement,
-        stage: "accepted",
-        runId: run.id,
-        version: state.version,
-      }),
-    ).rejects.toThrow(/运行未完成/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.stage).toBe("accepting");
-  });
-
-  test("runId 指向的运行结果绑定另一需求时失败回执列出不匹配", async () => {
-    const world = await setupWorld();
-    await seedAccepting(world);
-    const run = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
-    await world.runStore.update(run.id, { state: "running" });
-    await world.runStore.update(run.id, {
-      state: "completed",
-      result: {
-        phase: "acceptance",
-        verdict: "PASS",
-        acceptanceResult: "accepted",
-        reportPath: "/reports/x.md",
-        binding: { requirement: "2026-09-09.other-requirement", definitionFingerprint: "fp-x", codeHead: "head-x", cwd: world.repo.root },
-      },
-    });
-
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const error = await callExpectingError(world, {
-      action: "advance",
-      requirement: world.requirement,
-      stage: "accepted",
-      runId: run.id,
-      version: state.version,
-    });
-
-    expect(error.message).toContain("不一致");
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.stage).toBe("accepting");
-  });
-
-  test("runId 指向的运行结果绑定旧版本时失败回执列出不匹配", async () => {
-    const world = await setupWorld();
-    await seedAccepting(world);
-    const run = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
-    await world.runStore.update(run.id, { state: "running" });
-    await world.runStore.update(run.id, {
-      state: "completed",
-      result: {
-        phase: "acceptance",
-        verdict: "PASS",
-        acceptanceResult: "accepted",
-        reportPath: "/reports/x.md",
-        binding: { requirement: world.requirement, definitionFingerprint: "outdated-fingerprint", codeHead: "outdated-head", cwd: world.repo.root },
-      },
-    });
-
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const error = await callExpectingError(world, {
-      action: "advance",
-      requirement: world.requirement,
-      stage: "accepted",
-      runId: run.id,
-      version: state.version,
-    });
-
-    expect(error.message).toContain("不一致");
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.stage).toBe("accepting");
-  });
-});
-
-describe("retreat 受控回退", () => {
-  test("reviewing → executing 附 reason 与 decisionId 成功", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, { stage: "reviewing" });
-    const decisionId = await appendUserDecisionId(world, "reviewing 回退", "退回 executing 补充修复");
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    const result = await call(world, {
-      action: "retreat",
-      requirement: world.requirement,
-      stage: "executing",
-      reason: "补充修复",
-      decisionId,
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBeFalsy();
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.stage).toBe("executing");
-  });
-
-  test("缺 decisionId 时回退失败", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, { stage: "reviewing" });
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(
-      call(world, {
-        action: "retreat",
-        requirement: world.requirement,
-        stage: "executing",
-        reason: "补充修复",
-        version: state.version,
-      }),
-    ).rejects.toThrow(/缺少决定编号/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.stage).toBe("reviewing");
-  });
-
-  test("目标阶段不在允许回退路径内时失败", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, { stage: "executing" });
-    const decisionId = await appendUserDecisionId(world, "越级回退", "尝试越级回退");
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(
-      call(world, {
-        action: "retreat",
-        requirement: world.requirement,
-        stage: "planned",
-        reason: "尝试越级回退",
-        decisionId,
-        version: state.version,
-      }),
-    ).rejects.toThrow(/不允许从/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.stage).toBe("executing");
-  });
-});
-
-describe("reject 裁决", () => {
-  test("无 decisionId 时失败", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(call(world, { action: "reject", requirement: world.requirement, version: state.version })).rejects.toThrow(
-      /缺少用户裁决决定编号/,
-    );
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.stage).toBe("draft");
-  });
-});
-
-describe("task-finish 任务完成", () => {
-  test("runId 指向的运行未完成（缺交付证据）时失败", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "executing",
-      tasks: { "T-1": { progress: "doing", runId: null, description: "", agent: "", note: "", commit: null, reason: "", repairRound: 0 } },
-    });
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "T-1"));
-    await world.runStore.update(workRun.id, { state: "running" });
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(
-      call(world, {
-        action: "task-finish",
-        requirement: world.requirement,
-        task: "T-1",
-        runId: workRun.id,
-        version: state.version,
-      }),
-    ).rejects.toThrow(/运行未完成/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.tasks["T-1"]?.progress).toBe("doing");
-  });
-
-  test("证据齐全时成功，任务变为 done", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      stage: "executing",
-      tasks: { "T-1": { progress: "doing", runId: null, description: "", agent: "", note: "", commit: null, reason: "", repairRound: 0 } },
-    });
-    const commit = await repoHeadCommit(world.repo.root);
-    const version = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-    const workRun = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "T-1"));
-    await world.runStore.update(workRun.id, { state: "running" });
-    await world.runStore.update(workRun.id, {
-      state: "completed",
-      result: {
-        phase: "work",
-        verdict: "PASS",
-        summary: "实施完成", issues: [], evidence: ["测试装置"], changeKind: "refactor",
-        coverage: [{ ref: "demo/AC-1", test: "README.md:1" }], redCommands: [],
-        greenCommands: [{ command: "pnpm test", status: "passed", details: "通过" }], productionPath: ["a.ts"], fakeRed: false,
-        changedFiles: ["a.ts"],
-        workState: "red-green",
-        preexistingEvidence: [],
-        binding: { requirement: world.requirement, task: "T-1", ...version, cwd: world.repo.root },
-        delivery: { commit, verificationOk: true },
-      },
-    });
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    const result = await call(world, {
-      action: "task-finish",
-      requirement: world.requirement,
-      task: "T-1",
-      runId: workRun.id,
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBeFalsy();
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.tasks["T-1"]?.progress).toBe("done");
-  });
-});
-
-describe("shape-confirm 形状确认", () => {
-  async function createPlanRunWithProposedShape(world: World, proposedShape: Record<string, unknown>): Promise<string> {
-    const run = await world.runStore.create(baseRunInput(world.requirement, world.repo.root));
-    await world.runStore.update(run.id, { state: "running" });
-    await world.runStore.update(run.id, {
-      state: "completed",
-      result: {
-        phase: "plan",
-        verdict: "PASS",
-        summary: "计划完成",
-        proposedShape,
-        binding: { requirement: world.requirement, definitionFingerprint: "irrelevant", codeHead: "irrelevant", cwd: world.repo.root },
-      },
-    });
-    return run.id;
-  }
-
-  test("形状不含黑盒验收且无跳过决定时失败", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-    const runId = await createPlanRunWithProposedShape(world, {
-      tasks: [{ id: "T-1", roles: ["impl"] }],
-      gates: { plan: true, whiteboxReview: true, blackboxAcceptance: false },
-      skipped: [],
-      acceptanceReport: "/reports/x.md",
-    });
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(
-      call(world, {
-        action: "shape-confirm",
-        requirement: world.requirement,
-        runId,
-        decisionId: confirmDecisionId,
-        version: state.version,
-      }),
-    ).rejects.toThrow(/声明为跳过但缺少用户决定编号/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.shape).toBeNull();
-  });
-
-  test("附决定时成功", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const skipDecisionId = await appendUserDecisionId(world, "跳过黑盒验收", "本需求不做黑盒验收");
-    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-    const runId = await createPlanRunWithProposedShape(world, {
-      tasks: [{ id: "T-1", roles: ["impl"] }],
-      gates: { plan: true, whiteboxReview: true, blackboxAcceptance: false },
-      skipped: [{ gate: "blackboxAcceptance", decisionId: skipDecisionId }],
-      acceptanceReport: "/reports/x.md",
-    });
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    const result = await call(world, {
-      action: "shape-confirm",
-      requirement: world.requirement,
-      runId,
-      decisionId: confirmDecisionId,
-      version: state.version,
-    });
-
-    expect(result.details.isError).toBeFalsy();
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect((after.data.shape as { gates: { blackboxAcceptance: boolean } } | null)?.gates.blackboxAcceptance).toBe(false);
-  });
-});
-
-describe("resume-check 续接核对", () => {
-  test("对无状态需求返回阻塞而非完成", async () => {
-    const world = await setupWorld();
-    await expect(call(world, { action: "resume-check", requirement: world.requirement })).rejects.toThrow(/需求状态不存在/);
-  });
-
-  test("成功回执的 version 是数字，不出现 version undefined", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const result = await call(world, { action: "resume-check", requirement: world.requirement });
-    expect(result.details.isError).toBeFalsy();
-    expect(result.text).not.toContain("version undefined");
-    expect(result.text).toMatch(/version \d+$/);
-  });
-});
-
-describe("list 需求列表", () => {
-  test("返回进行中的需求，不包含已验收需求", async () => {
-    const world = await setupWorld();
-    const inProgressA = "2026-09-09.workflow-list-a";
-    const inProgressB = "2026-09-09.workflow-list-b";
-    const accepted = "2026-09-09.workflow-list-c";
-    await seedState(world.home.dataRoot, world.identity.repoId, inProgressA, { stage: "draft" });
-    await seedState(world.home.dataRoot, world.identity.repoId, inProgressB, { stage: "executing" });
-    await seedState(world.home.dataRoot, world.identity.repoId, accepted, { stage: "accepted" });
-
-    const result = await call(world, { action: "list" });
-
-    expect(result.details.isError).toBeFalsy();
-    expect(result.text).toContain(inProgressA);
-    expect(result.text).toContain(inProgressB);
-    expect(result.text).not.toContain(accepted);
-  });
-});
-
-describe("工作流仅提供当前动作", () => {
-  test.each(["migrate-preflight", "migrate-apply", "migrate-status"])("未注册的动作 %s 被拒绝", async (action) => {
-    const world = await setupWorld();
-    await expect(call(world, { action, requirement: world.requirement })).rejects.toThrow(/参数不合法/);
-  });
-});
-
-describe("写入失败与异常兜底", () => {
-  test("数据库不可打开时返回失败且原状态未改变", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const dir = repositoryDatabase(world.home.dataRoot, world.identity.repoId);
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await rename(dir, `${dir}.saved`);
-    await mkdir(dir);
+  test("权限不安全的现存库拒绝且不chmod或回显底层数据", async () => {
+    const w = await world(); w.seed(); const before = w.snapshot(); await chmod(w.database, 0o644);
     try {
-      await expect(call(world, {
-          action: "update",
-          requirement: world.requirement,
-          version: state.version,
-          update: { followUpIssues: ["x"] },
-        })).rejects.toThrow("数据库必须是普通文件");
-    } finally {
-      await rm(dir, { recursive: true });
-      await rename(`${dir}.saved`, dir);
-      expect(await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement)).toEqual(state);
+      const result = await executeWorkflowAction({ action: "list" }, w.ctx);
+      expect(result).toMatchObject({ ok: false, details: { code: "legacy_metadata_unavailable" } });
+      expect(JSON.stringify(result)).not.toContain(SECRET); expect(JSON.stringify(result)).not.toContain(w.database);
+      expect((await stat(w.database)).mode & 0o777).toBe(0o644);
+    } finally { await chmod(w.database, 0o600); }
+    expect(w.snapshot()).toBe(before);
+  });
+  test("list分页覆盖保留未知阻塞与精确后续位置，不回显坏key", async () => {
+    const w = await world(); for (let i = 0; i < 6; i++) w.seed("draft", `2026-09-09.page-${i}`);
+    createRecord({ ...w.ref, key: SECRET }, { stage: "accepted" }); const before = w.snapshot();
+    const first = await w.call({ action: "list", limit: 2 }); const second = await w.call({ action: "list", limit: 2, offset: 2 });
+    expect(first.details.coverage).toMatchObject({ total: 7, validated: 6, returned: 2, remaining: 4, unknown: 1, nextOffset: 2, truncated: true });
+    expect(second.details.coverage).toMatchObject({ total: 7, returned: 2, offset: 2, remaining: 2, nextOffset: 4, unknown: 1 });
+    expect(first.details.items).not.toEqual(second.details.items); expect(JSON.stringify([first, second])).not.toContain(SECRET); expect(w.snapshot()).toBe(before);
+  });
+  test("合法task/run正向绑定，错绑和非法任务仅计unknown，字段过滤不隐去未确认覆盖", async () => {
+    const w = await world(); const runId = uuidv7(), foreignId = uuidv7();
+    withDatabase(w.database, (db) => {
+      db.create("runs", runId, { id: runId, requirement: REQUIREMENT, task: "T-1" });
+      db.create("runs", foreignId, { id: foreignId, requirement: "2026-09-09.other", task: "T-2" });
+      db.create("requirements", REQUIREMENT, { requirement: REQUIREMENT, stage: "executing", shape: null, history: [], followUps: [], tasks: {
+        "T-1": { progress: "doing", runId }, "T-2": { progress: "doing", runId: foreignId },
+        "T-3": { progress: "todo", runId: null }, "T-4": { progress: "paused", runId: null },
+        "T-10000000000": { progress: "todo", runId: null }, [SECRET]: { progress: "todo", runId: null },
+      } });
+    });
+    const before = w.snapshot(); const first = await w.call({ action: "query", requirement: REQUIREMENT, limit: 1 });
+    expect(first.details.data).toMatchObject({ tasks: { "T-1": { progress: "doing", runId } } });
+    expect(first.details.coverage).toMatchObject({ total: 6, validated: 2, returned: 1, remaining: 1, unknown: 4, unconfirmed: 6, unconfirmedOutsidePage: 5, nextOffset: 1 });
+    const second = await w.call({ action: "query", requirement: REQUIREMENT, limit: 1, offset: 1 });
+    expect(second.details.data).toMatchObject({ tasks: { "T-3": { progress: "todo", runId: null } } });
+    expect(second.details.coverage).toMatchObject({ returned: 1, remaining: 0, unknown: 4, nextOffset: null });
+    const filtered = await w.call({ action: "query", requirement: REQUIREMENT, fields: ["stage"] });
+    expect(filtered.details.data).toEqual({ stage: "executing" });
+    expect(filtered.details.coverage).toMatchObject({ total: 6, returned: 0, remaining: 2, unconfirmedOutsidePage: 6, unknown: 4, truncated: true });
+    expect(JSON.stringify([first, second, filtered])).not.toContain(SECRET); expect(w.snapshot()).toBe(before);
+  });
+  test("字节预算截断仍报告总数和页外未确认，不隐藏待核对记录", async () => {
+    const w = await world(); w.seed();
+    withDatabase(w.database, (db) => { const r = db.read<{ tasks: Record<string, unknown> }>("requirements", REQUIREMENT)!;
+      db.update("requirements", REQUIREMENT, r.version, { ...r.data, tasks: Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`T-${i}`, { progress: "todo", runId: null }])) }); });
+    const result = await w.call({ action: "query", requirement: REQUIREMENT, byteLimit: 2048, limit: 100 });
+    const coverage = result.details.coverage as { returned: number; remaining: number; unconfirmedOutsidePage: number; nextOffset: number };
+    expect(coverage.returned).toBeGreaterThan(0); expect(coverage.returned).toBeLessThan(100);
+    expect(coverage.remaining).toBe(100 - coverage.returned); expect(coverage.unconfirmedOutsidePage).toBe(100 - coverage.returned); expect(coverage.nextOffset).toBe(coverage.returned);
+    expect(Buffer.byteLength(JSON.stringify(result.details))).toBeLessThanOrEqual(2048);
+  });
+  test.each([{ limit: 0 }, { limit: 101 }, { offset: -1 }, { offset: 0.5 }, { byteLimit: 2047 }, { byteLimit: 16385 }])("非法分页参数不执行查询：%j", async (page) => {
+    const w = await world(); w.seed(); const before = w.snapshot();
+    expect(Value.Check(w.tool.parameters, { action: "list", ...page })).toBe(false);
+    expect(await executeWorkflowAction({ action: "list", ...page }, w.ctx)).toMatchObject({ ok: false }); expect(w.snapshot()).toBe(before);
+  });
+  test("错误记录身份安全拒绝，list只计unknown且原字节不变", async () => {
+    const w = await world(); w.seed();
+    const db = new DatabaseSync(w.database);
+    try { db.prepare("UPDATE records SET data = ? WHERE namespace = 'requirements'").run(JSON.stringify({ requirement: SECRET, stage: "draft", tasks: {}, shape: null, history: [], followUps: [] })); } finally { db.close(); }
+    const before = w.snapshot();
+    const result = await executeWorkflowAction({ action: "query", requirement: REQUIREMENT }, w.ctx);
+    expect(result).toMatchObject({ ok: false, details: { code: "legacy_metadata_unavailable" } });
+    const list = await w.call({ action: "list" }); expect(list.details).toMatchObject({ items: [], coverage: { total: 1, unknown: 1, truncated: true } });
+    expect(JSON.stringify([result, list])).not.toContain(SECRET); expect(w.snapshot()).toBe(before);
+  });
+  test("query历史draft返回stage和version，原记录不变", async () => {
+    const w = await world(); w.seed(); const before = w.snapshot();
+    const result = await w.call({ action: "query", requirement: REQUIREMENT });
+    expect(result.details).toMatchObject({ isError: false, version: 1, data: { requirement: REQUIREMENT, stage: "draft" } });
+    expect(JSON.stringify(result)).not.toContain(SECRET); expect(w.snapshot()).toBe(before);
+  });
+  test('query 指定 fields:["stage"] 时只返回阶段字段', async () => {
+    const w = await world(); w.seed();
+    expect((await w.call({ action: "query", requirement: REQUIREMENT, fields: ["stage"] })).details.data).toEqual({ stage: "draft" });
+  });
+  test("list保留各历史阶段元数据并排除新UUID，不把accepted当当前完成", async () => {
+    const w = await world(); w.seed(); w.seed("executing", "2026-09-09.executing"); w.seed("accepted", "2026-09-09.accepted");
+    const id = uuidv7(); createRecord({ ...w.ref, key: id }, { lifecycle: "active" });
+    const before = w.snapshot(); const result = await w.call({ action: "list" });
+    expect(result.details.items).toEqual(expect.arrayContaining([
+      { requirement: REQUIREMENT, stage: "draft" }, { requirement: "2026-09-09.executing", stage: "executing" }, { requirement: "2026-09-09.accepted", stage: "accepted" },
+    ]));
+    expect(JSON.stringify(result)).not.toContain(id); expect(JSON.stringify(result)).not.toContain(SECRET); expect(w.snapshot()).toBe(before);
+  });
+  test("params.cwd不能切换仓库，另一可信工具仅查询本仓库元数据", async () => {
+    const w = await world(); w.seed(); const other = await createRepoFixture(); cleanup.push(() => removeRepoFixture(other));
+    const identity = await repositoryIdentity(other.root);
+    createRecord(requirementStateRef(w.ctx.dataRoot, identity.repoId, "2026-09-09.other"), { requirement: "2026-09-09.other", stage: "draft", shape: null, tasks: {}, history: [], followUps: [] });
+    const before = w.snapshot();
+    await expect(w.call({ action: "list", cwd: other.root })).rejects.toThrow("只能查询可信当前仓库及工作区");
+    expect(await executeWorkflowAction({ action: "list", cwd: other.root }, w.ctx)).toMatchObject({ ok: false, details: { code: "legacy_metadata_unavailable" } });
+    const ctx = { ...w.ctx, cwd: other.root };
+    const result = await createWorkflowTool(ctx).execute("test", { action: "list" }, undefined, undefined, ctx);
+    expect(result.details.items).toEqual([{ requirement: "2026-09-09.other", stage: "draft" }]); expect(w.snapshot()).toBe(before);
+  });
+  test("绑定工具拒绝跨需求、跨仓库和list，允许绑定需求查询", async () => {
+    const w = await world(); w.seed(); const before = w.snapshot();
+    const tool = createWorkflowTool({ ...w.ctx, boundRequirement: REQUIREMENT });
+    for (const params of [{ action: "list" }, { action: "query", requirement: "2026-09-09.other" }]) {
+      await expect(tool.execute("test", params, undefined, undefined, w.ctx)).rejects.toThrow("只能查询绑定");
     }
+    await expect(tool.execute("test", { action: "query", cwd: w.home.home }, undefined, undefined, w.ctx)).rejects.toThrow("只能查询可信当前仓库及工作区");
+    expect((await tool.execute("test", { action: "query" }, undefined, undefined, w.ctx)).details.version).toBe(1);
+    expect(w.snapshot()).toBe(before);
   });
-
-  test("已中止的 AbortSignal 传入 execute 时返回 isError 且不写入", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    const result = await world.tool.execute(
-      "call-1",
-      { action: "update", requirement: world.requirement, version: state.version, update: { followUpIssues: ["x"] } },
-      AbortSignal.abort(),
-      undefined,
-      fakeCtx({ cwd: world.repo.root }),
-    );
-
-    expect((result as { details: { isError: boolean } }).details.isError).toBe(true);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.followUps).toEqual([]);
-  });
-});
-
-describe("extensions/workflow.ts 注册", () => {
-  test("默认导出对假 pi 调用 registerTool 恰一次且工具名正确", () => {
-    const { pi, registered } = createFakePi();
-    workflowExtension(pi as unknown as ExtensionAPI);
-    expect(registered.length).toBe(1);
-    expect(registered[0]?.name).toBe("pi_company_workflow");
-  });
-});
-
-describe("shape-confirm 与 advance/task-finish 同口径的证据校验", () => {
-  test("对绑定到其他需求的计划运行返回失败回执，形状未写入", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const otherRequirement = "2026-09-09.workflow-tool-other";
-    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-    const run = await world.runStore.create(baseRunInput(otherRequirement, world.repo.root));
-    await world.runStore.update(run.id, { state: "running" });
-    await world.runStore.update(run.id, {
-      state: "completed",
-      result: {
-        phase: "plan",
-        verdict: "PASS",
-        summary: "计划完成",
-        proposedShape: {
-          tasks: [{ id: "T-1", roles: ["impl"] }],
-          gates: { plan: true, whiteboxReview: true, blackboxAcceptance: true },
-          skipped: [],
-          acceptanceReport: "/reports/x.md",
-        },
-        binding: { requirement: otherRequirement, definitionFingerprint: "irrelevant", codeHead: "irrelevant", cwd: world.repo.root },
-      },
-    });
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(
-      call(world, {
-        action: "shape-confirm",
-        requirement: world.requirement,
-        runId: run.id,
-        decisionId: confirmDecisionId,
-        version: state.version,
-      }),
-    ).rejects.toThrow(/不一致/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.shape).toBeNull();
-  });
-
-  test("对 phase 不是 plan 的运行返回失败回执，形状未写入", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const confirmDecisionId = await appendUserDecisionId(world, "确认形状", "确认任务集与阶段检查声明");
-    const run = await world.runStore.create(baseRunInput(world.requirement, world.repo.root, "T-1"));
-    await world.runStore.update(run.id, { state: "running" });
-    await world.runStore.update(run.id, {
-      state: "completed",
-      result: {
-        phase: "work",
-        verdict: "PASS",
-        summary: "实施完成", issues: [], evidence: ["测试装置"], changeKind: "refactor",
-        coverage: [{ ref: "demo/AC-1", test: "README.md:1" }], redCommands: [],
-        greenCommands: [{ command: "pnpm test", status: "passed", details: "通过" }], productionPath: ["a.ts"], fakeRed: false,
-        changedFiles: ["a.ts"],
-        workState: "red-green",
-        preexistingEvidence: [],
-        proposedShape: {
-          tasks: [{ id: "T-1", roles: ["impl"] }],
-          gates: { plan: true, whiteboxReview: true, blackboxAcceptance: true },
-          skipped: [],
-          acceptanceReport: "/reports/x.md",
-        },
-        binding: { requirement: world.requirement, task: "T-1", definitionFingerprint: "irrelevant", codeHead: "irrelevant", cwd: world.repo.root },
-        delivery: { commit: "irrelevant", verificationOk: true },
-      },
-    });
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(
-      call(world, {
-        action: "shape-confirm",
-        requirement: world.requirement,
-        runId: run.id,
-        decisionId: confirmDecisionId,
-        version: state.version,
-      }),
-    ).rejects.toThrow(/phase 期望 plan/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.data.shape).toBeNull();
-  });
-});
-
-describe("requirement 参数在读盘/计算前的校验", () => {
-  test("advance 对格式非法或含路径穿越的 requirement 以抛出表达失败且不泄漏绝对路径", async () => {
-    const world = await setupWorld();
-    for (const requirement of ["bad name", "../../../../etc"]) {
-      const error = await callExpectingError(world, { action: "advance", requirement, stage: "confirmed", version: 1, decisionId: "USER-1" });
-      expect(containsAbsolutePath(error.message)).toBe(false);
+  test.each(["bad name", "../../../../etc", "../../README.md", "legacy", "2026-02-30.invalid", "2026-09-09." + "a".repeat(118), "0197b7b0-6a20-7c51-8a32-b9465fb72d10"])("非法requirement不泄漏路径：%s", async (requirement) => {
+    const w = await world();
+    for (const action of ["query", "advance", "resume-check"]) {
+      const result = await executeWorkflowAction({ action, requirement }, w.ctx);
+      expect(result.ok).toBe(false); expect(result.text).not.toContain(w.repo.root); expect(result.text).not.toContain(requirement);
     }
+    expect(existsSync(w.database)).toBe(false);
   });
-
-  test("resume-check 对格式非法或含路径穿越的 requirement 以抛出表达失败且不泄漏绝对路径", async () => {
-    const world = await setupWorld();
-    for (const requirement of ["bad name", "../../../../etc"]) {
-      const error = await callExpectingError(world, { action: "resume-check", requirement });
-      expect(containsAbsolutePath(error.message)).toBe(false);
-    }
+  test("list不存在cwd的错误不泄漏绝对路径", async () => {
+    const w = await world(); const cwd = join(w.repo.root, "missing");
+    const result = await executeWorkflowAction({ action: "list", cwd }, w.ctx);
+    expect(result.ok).toBe(false); expect(result.text).not.toContain(cwd);
   });
-
-  test("advance 对拼接读盘命中仓库内已存在文件的 requirement 以抛出表达失败且不泄漏仓库绝对路径", async () => {
-    const world = await setupWorld();
-    const requirement = "../../README.md";
-    const error = await callExpectingError(world, { action: "advance", requirement, stage: "confirmed", version: 1, decisionId: "USER-1" });
-    expect(error.message.includes(world.repo.root)).toBe(false);
-    expect(containsAbsolutePath(error.message)).toBe(false);
+  test("query数据库不可打开时失败且原状态未改变", async () => {
+    const w = await world(); w.seed(); const before = readRecord(w.ref);
+    await rename(w.database, `${w.database}.saved`); await mkdir(w.database);
+    try { await expect(w.call({ action: "query", requirement: REQUIREMENT })).rejects.toThrow("不可读"); }
+    finally { await rm(w.database, { recursive: true }); await rename(`${w.database}.saved`, w.database); }
+    expect(readRecord(w.ref)).toEqual(before);
   });
-
-  test("resume-check 对拼接读盘命中仓库内已存在文件的 requirement 以抛出表达失败且不泄漏仓库绝对路径", async () => {
-    const world = await setupWorld();
-    const requirement = "../../README.md";
-    const error = await callExpectingError(world, { action: "resume-check", requirement });
-    expect(error.message.includes(world.repo.root)).toBe(false);
-    expect(containsAbsolutePath(error.message)).toBe(false);
+  test("已中止的AbortSignal抛出失败且不写入", async () => {
+    const w = await world(); w.seed(); const before = w.snapshot();
+    await expect(w.call({ action: "update", requirement: REQUIREMENT }, AbortSignal.abort())).rejects.toThrow("已中止");
+    expect(w.snapshot()).toBe(before);
   });
-
-  test("list 的 cwd 指向不存在目录触发仓库读取错误时以抛出表达失败且不泄漏绝对路径", async () => {
-    const world = await setupWorld();
-    const brokenCwd = join(world.repo.root, "missing-subdir");
-    const error = await callExpectingError(world, { action: "list", cwd: brokenCwd });
-    expect(error.message.includes(brokenCwd)).toBe(false);
-    expect(containsAbsolutePath(error.message)).toBe(false);
+  test("extensions/workflow.ts注册恰一次且工具名正确", () => {
+    const registered: string[] = [];
+    workflowExtension({ registerTool: (tool: { name: string }) => registered.push(tool.name), on() {} } as unknown as ExtensionAPI);
+    expect(registered).toEqual(["pi_company_workflow"]);
   });
 });
 
-describe("update 参数缺失时的校验", () => {
-  test("携带任务字段但未指定 task 时失败，不写入且 version 不变", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(
-      call(world, {
-        action: "update",
-        requirement: world.requirement,
-        version: before.version,
-        update: { note: "备注A" },
-      }),
-    ).rejects.toThrow(/缺少 task/);
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.version).toBe(before.version);
+describe("旧定义入口拒绝与通用当前内容指纹", () => {
+  test("currentVersion不读取旧定义，即使不存在、内容改变、改名或外链也拒绝", async () => {
+    const w = await world(); const ctx = { ...w.ctx, requirement: REQUIREMENT };
+    await expect(currentVersion(ctx)).rejects.toThrow("永久淘汰");
+    const dir = join(w.repo.root, ".pi-company", "requirements", REQUIREMENT); await mkdir(dir, { recursive: true });
+    const file = join(dir, "synthetic.md"); await writeFile(file, SECRET);
+    await expect(currentVersion(ctx)).rejects.toThrow("永久淘汰");
+    await writeFile(file, SECRET + "2"); await rename(file, join(dir, "renamed.md"));
+    await symlink(join(w.home.home, "missing"), join(dir, "outside-link"));
+    await expect(currentVersion(ctx)).rejects.toThrow("永久淘汰");
+    expect(await readFile(join(dir, "renamed.md"), "utf8")).toBe(SECRET + "2"); expect(existsSync(w.database)).toBe(false);
   });
-
-  test("update 与 followUpIssues 均为空时失败，不空转写", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    await expect(call(world, { action: "update", requirement: world.requirement, version: before.version })).rejects.toThrow(
-      /缺少可更新字段/,
-    );
-    const after = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    expect(after.version).toBe(before.version);
+  test("通用指纹稳定，并检测同HEAD的代码、当前spec和暂存内容变化", async () => {
+    const w = await world(); const collect = () => collectGitSnapshot({ repoRoot: w.repo.root });
+    const first = await collect(); expect(await collect()).toEqual(first);
+    await writeFile(join(w.repo.root, "README.md"), "改变代码现场"); const second = await collect();
+    expect(second.head).toBe(first.head); expect(second.fingerprint).not.toBe(first.fingerprint);
+    await mkdir(join(w.repo.root, "docs/spec"), { recursive: true }); await writeFile(join(w.repo.root, "docs/spec/rule.json"), "{}");
+    const third = await collect(); expect(third.fingerprint).not.toBe(second.fingerprint);
+    await exec("git", ["add", "README.md"], { cwd: w.repo.root }); expect((await collect()).fingerprint).not.toBe(third.fingerprint);
   });
-
-  test("缺少 version 时失败原因指向缺参数而非版本已变化", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    const error = await callExpectingError(world, {
-      action: "update",
-      requirement: world.requirement,
-      update: { followUpIssues: ["跟进事项A"] },
-    });
-
-    expect(error.message).not.toContain("版本已变化");
-    expect(error.message).toContain("version");
+  test("通用内容指纹对修改、改名、新增同目标链接敏感且不解引用外链", async () => {
+    const w = await world(); const collect = () => collectContentFingerprint(w.repo.root);
+    const target = join(w.repo.root, "source.txt"); await writeFile(target, "A"); const first = await collect();
+    await writeFile(target, "B"); const second = await collect(); expect(second).not.toBe(first);
+    await rename(target, join(w.repo.root, "renamed.txt")); const third = await collect(); expect(third).not.toBe(second);
+    const outside = join(w.home.home, "outside.txt"); await writeFile(outside, "private-A");
+    await symlink(outside, join(w.repo.root, "link1")); const fourth = await collect();
+    await writeFile(outside, "private-B"); expect(await collect()).toBe(fourth);
+    await symlink(outside, join(w.repo.root, "link2")); expect(await collect()).not.toBe(fourth);
   });
-
-  test("支持更新 blockedReason 与 workspaceDir，更新后 query 该任务可见两字段", async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement, {
-      tasks: { "T-1": { progress: "todo", runId: null, description: "", agent: "", note: "", commit: null, reason: "", repairRound: 0 } },
-    });
-    const before = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    const result = await call(world, {
-      action: "update",
-      requirement: world.requirement,
-      task: "T-1",
-      version: before.version,
-      update: { blockedReason: "等待外部依赖", workspaceDir: "/workspace/T-1" },
-    });
-
-    expect(result.details.isError).toBeFalsy();
-    const query = await call(world, { action: "query", requirement: world.requirement });
-    const tasks = (query.details.data as { tasks: Record<string, { blockedReason?: string; workspaceDir?: string }> }).tasks;
-    expect(tasks["T-1"]?.blockedReason).toBe("等待外部依赖");
-    expect(tasks["T-1"]?.workspaceDir).toBe("/workspace/T-1");
-  });
-});
-
-describe("版本冲突回执格式", () => {
-  test('版本冲突回执中"请重新查询后重试"只出现一次且不含"请重新读取后重试"', async () => {
-    const world = await setupWorld();
-    await seedState(world.home.dataRoot, world.identity.repoId, world.requirement);
-    const ctx = { dataRoot: world.home.dataRoot, cwd: world.repo.root };
-    const state = await readRawState(world.home.dataRoot, world.identity.repoId, world.requirement);
-
-    const first = await executeWorkflowAction(
-      { action: "update", requirement: world.requirement, version: state.version, update: { followUpIssues: ["A"] } },
-      ctx,
-    );
-    expect(first.ok).toBe(true);
-    const second = await executeWorkflowAction(
-      { action: "update", requirement: world.requirement, version: state.version, update: { followUpIssues: ["B"] } },
-      ctx,
-    );
-    expect(second.ok).toBe(false);
-    const occurrences = (second.text.match(/请重新查询后重试/g) ?? []).length;
-    expect(occurrences).toBe(1);
-    expect(second.text).not.toContain("请重新读取后重试");
-  });
-});
-
-describe("currentVersion 定义指纹计算", () => {
-  function definitionDir(world: World): string {
-    return join(world.repo.root, ".pi-company", "requirements", world.requirement);
-  }
-
-  test("需求定义目录缺失时仍保留工作区内容指纹", async () => {
-    const world = await setupWorld();
-    const version = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-    expect(version.definitionFingerprint).toMatch(/^[a-f0-9]{64}$/);
-  });
-
-  test("写入定义文件后指纹在两次计算间保持稳定", async () => {
-    const world = await setupWorld();
-    const dir = definitionDir(world);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "a.md"), "内容A\n");
-    await writeFile(join(dir, "b.md"), "内容B\n");
-
-    const first = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-    const second = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-    expect(first.definitionFingerprint).toBe(second.definitionFingerprint);
-    expect(first.definitionFingerprint).not.toBe("none");
-  });
-
-  test("修改定义文件内容后指纹变化", async () => {
-    const world = await setupWorld();
-    const dir = definitionDir(world);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "a.md"), "内容A\n");
-    const before = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    await writeFile(join(dir, "a.md"), "内容A-已修改\n");
-    const after = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    expect(after.definitionFingerprint).not.toBe(before.definitionFingerprint);
-  });
-
-  test("定义文件改名后指纹变化", async () => {
-    const world = await setupWorld();
-    const dir = definitionDir(world);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "a.md"), "内容A\n");
-    const before = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    await rename(join(dir, "a.md"), join(dir, "a-renamed.md"));
-    const after = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    expect(after.definitionFingerprint).not.toBe(before.definitionFingerprint);
-  });
-
-  test("目录内符号链接指向的文件内容变化后指纹应变化", async () => {
-    const world = await setupWorld();
-    const dir = definitionDir(world);
-    await mkdir(dir, { recursive: true });
-    const target = join(world.repo.root, "linked-source.md");
-    await writeFile(target, "外部内容V1\n");
-    await symlink(target, join(dir, "link.md"));
-    const before = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    await writeFile(target, "外部内容V2\n");
-    const after = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    expect(after.definitionFingerprint).not.toBe(before.definitionFingerprint);
-  });
-
-  test("不同的文件名与内容布局不应产生相同指纹（路径与内容之间需要分隔）", async () => {
-    const worldA = await setupWorld("2026-09-09.fingerprint-collision-a");
-    const dirA = definitionDir(worldA);
-    await mkdir(dirA, { recursive: true });
-    await writeFile(join(dirA, "ab"), "c");
-    const versionA = await currentVersion({ cwd: worldA.repo.root, requirement: worldA.requirement });
-
-    const worldB = await setupWorld("2026-09-09.fingerprint-collision-b");
-    const dirB = definitionDir(worldB);
-    await mkdir(dirB, { recursive: true });
-    await writeFile(join(dirB, "a"), "bc");
-    const versionB = await currentVersion({ cwd: worldB.repo.root, requirement: worldB.requirement });
-
-    expect(versionA.definitionFingerprint).not.toBe(versionB.definitionFingerprint);
-  });
-
-  test("两个文件与一个含 NUL 字节的单文件不应产生相同指纹（记录之间需要框定）", async () => {
-    const worldA = await setupWorld("2026-09-09.fingerprint-frame-a");
-    const dirA = definitionDir(worldA);
-    await mkdir(dirA, { recursive: true });
-    await writeFile(join(dirA, "a"), "b");
-    await writeFile(join(dirA, "c"), "d");
-    const versionA = await currentVersion({ cwd: worldA.repo.root, requirement: worldA.requirement });
-
-    const worldB = await setupWorld("2026-09-09.fingerprint-frame-b");
-    const dirB = definitionDir(worldB);
-    await mkdir(dirB, { recursive: true });
-    await writeFile(join(dirB, "a"), Buffer.from([0x62, 0x63, 0x00, 0x64]));
-    const versionB = await currentVersion({ cwd: worldB.repo.root, requirement: worldB.requirement });
-
-    expect(versionA.definitionFingerprint).not.toBe(versionB.definitionFingerprint);
-  });
-
-  test("已有一个链接指向某文件时新增另一链接指向同一文件后指纹应变化", async () => {
-    const world = await setupWorld();
-    const dir = definitionDir(world);
-    await mkdir(dir, { recursive: true });
-    const target = join(world.repo.root, "shared.md");
-    await writeFile(target, "共享内容\n");
-    await symlink(target, join(dir, "link1.md"));
-    const before = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    await symlink(target, join(dir, "link2.md"));
-    const after = await currentVersion({ cwd: world.repo.root, requirement: world.requirement });
-
-    expect(after.definitionFingerprint).not.toBe(before.definitionFingerprint);
-  });
-
-  test("定义目录内指向仓库外的符号链接被拒绝", async () => {
-    const world = await setupWorld();
-    const dir = definitionDir(world);
-    await mkdir(dir, { recursive: true });
-    const outsideFile = join(world.home.home, "outside.md");
-    await writeFile(outsideFile, "仓库外内容\n");
-    await symlink(outsideFile, join(dir, "escape-link.md"));
-    await expect(currentVersion({ cwd: world.repo.root, requirement: world.requirement })).rejects.toThrow("定义链接越出仓库");
-  });
-});
-
-describe("list 动作的 cwd 覆盖", () => {
-  test("params.cwd 指向另一个仓库时返回该仓库的进行中需求", async () => {
-    const world = await setupWorld();
-    const otherRepo = await createRepoFixture();
-    repoFixtures.push(otherRepo);
-    const otherIdentity = await repositoryIdentity(otherRepo.root);
-    const otherRequirement = "2026-09-09.workflow-list-other-repo";
-    await seedState(world.home.dataRoot, otherIdentity.repoId, otherRequirement, { stage: "draft" });
-
-    const result = await call(world, { action: "list", cwd: otherRepo.root });
-
-    expect(result.details.isError).toBeFalsy();
-    expect(result.text).toContain(otherRequirement);
-  });
-});
-
-
-describe("内容版本覆盖真实工作区", () => {
-  test("同 HEAD 下代码、规则和暂存内容变化均使证据版本失效", async () => {
-    const repo = await createRepoFixture(); repoFixtures.push(repo);
-    const ctx = { cwd: repo.root, requirement: REQUIREMENT };
-    const first = await currentVersion(ctx);
-    await writeFile(join(repo.root, "README.md"), "改变代码现场");
-    const second = await currentVersion(ctx);
-    expect(second.definitionFingerprint).not.toBe(first.definitionFingerprint);
-    await mkdir(join(repo.root, ".pi-company/spec"), { recursive: true });
-    await writeFile(join(repo.root, ".pi-company/spec/rule.md"), "规则一");
-    const third = await currentVersion(ctx);
-    expect(third.definitionFingerprint).not.toBe(second.definitionFingerprint);
-    await execFileAsync("git", ["add", "README.md"], { cwd: repo.root });
-    expect((await currentVersion(ctx)).definitionFingerprint).not.toBe(third.definitionFingerprint);
+  test("通用指纹框定路径与内容，区分拼接碰撞和NUL布局", async () => {
+    const w = await world(); const collect = () => collectContentFingerprint(w.repo.root);
+    await writeFile(join(w.repo.root, "ab"), "c"); const a = await collect();
+    await rm(join(w.repo.root, "ab")); await writeFile(join(w.repo.root, "a"), "bc"); expect(await collect()).not.toBe(a);
+    await writeFile(join(w.repo.root, "a"), "b"); await writeFile(join(w.repo.root, "c"), "d"); const b = await collect();
+    await rm(join(w.repo.root, "c")); await writeFile(join(w.repo.root, "a"), Buffer.from([0x62, 0x63, 0, 0x64])); expect(await collect()).not.toBe(b);
   });
 });

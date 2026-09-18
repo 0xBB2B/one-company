@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import { expect, test } from "vitest";
 import {
   FORMAL_QUERY_BENCHMARK,
@@ -127,6 +130,182 @@ test("相同内容baselineHash下合法generation更新仍接受", () => {
     const page = { baselineHash, generation };
     expect(() => assertQueryPageMetadata(page, 16_384)).not.toThrow();
   }
+});
+
+function sourceSection(source: string, start: string, end: string): string {
+  const from = source.indexOf(start);
+  const to = source.indexOf(end, from);
+  if (from < 0 || to < 0) throw new Error(`benchmark_source_section_missing:${start}`);
+  return source.slice(from, to);
+}
+
+async function helperSource(): Promise<string> {
+  return readFile(new URL("./helpers/m4-query-benchmark.ts", import.meta.url), "utf8");
+}
+
+test("纯VM：GitRunner只用宿主绑定的Git，并在spawn前与真实close后复验同一路径", async () => {
+  const source = await helperSource();
+  const code = stripTypeScriptTypes(sourceSection(source, "class GitRunner {", "\ninterface FixtureManifest"), { mode: "strip" });
+  const events: Array<{ kind: string; value: unknown }> = [];
+  let currentCalls = 0;
+  let rejectPostClose = false;
+  let sawClose = false;
+  class VirtualChild extends EventEmitter {
+    readonly pid = 700101;
+    readonly stdout = new EventEmitter();
+    readonly stderr = new EventEmitter();
+    kill(): boolean { return true; }
+  }
+  const context: Record<string, unknown> = {
+    Buffer,
+    performance: { now: () => 1 },
+    setTimeout,
+    clearTimeout,
+    initializeHostGit: (roots: readonly string[]) => {
+      events.push({ kind: "initialize", value: [...roots] });
+      return { executablePath: "/trusted/host/git" };
+    },
+    currentHostGit: (roots: readonly string[]) => {
+      currentCalls++;
+      events.push({ kind: "current", value: [...roots] });
+      return { executablePath: rejectPostClose && sawClose ? "/changed/git" : "/trusted/host/git" };
+    },
+    spawn: (executable: string, args: readonly string[], options: unknown) => {
+      events.push({ kind: "spawn", value: { executable, args: [...args], options } });
+      const child = new VirtualChild();
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from("bound output\n"));
+        sawClose = true;
+        events.push({ kind: "close", value: null });
+        child.emit("close", 0, null);
+      });
+      return child;
+    },
+  };
+  const GitRunner = runInNewContext(`${code}\nGitRunner`, context) as new (home: string) => {
+    executable: string;
+    run(cwd: string, args: string[]): Promise<string>;
+  };
+  const runner = new GitRunner("/private/home");
+  expect(runner.executable).toBe("/trusted/host/git");
+  await expect(runner.run("/workspace/repo", ["status", "--short"])).resolves.toBe("bound output");
+  expect(currentCalls).toBe(2);
+  expect(events.map((event) => event.kind)).toEqual(["initialize", "current", "spawn", "close", "current"]);
+  expect(events.filter((event) => event.kind === "current").map((event) => event.value))
+    .toEqual([["/private/home", "/workspace/repo"], ["/private/home", "/workspace/repo"]]);
+  const spawned = events.find((event) => event.kind === "spawn")?.value as {
+    executable: string;
+    args: string[];
+    options: { env: Record<string, string> };
+  };
+  expect(spawned.executable).toBe("/trusted/host/git");
+  expect(spawned.args).toEqual(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-c", "core.fsmonitor=false", "status", "--short"]);
+  expect(spawned.options.env).toMatchObject({ PATH: "/usr/bin:/bin", HOME: "/private/home", GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" });
+  rejectPostClose = true;
+  sawClose = false;
+  await expect(runner.run("/workspace/repo", ["status"])).rejects.toMatchObject({ code: "git_expectation_mismatch" });
+  expect(events.slice(-2).map((event) => event.kind)).toEqual(["close", "current"]);
+});
+
+test("纯VM：connectPeer发送Git期望并用原请求根核对hello返回，核对失败会关闭连接", async () => {
+  const source = await helperSource();
+  const code = stripTypeScriptTypes(`${sourceSection(source, "async function settleWithin", "\nfunction percentile")}\n${sourceSection(source, "async function connectPeer", "\nfunction emptySample")}`, { mode: "strip" });
+  const roots = ["/workspace/repo", "/private/data", "/workspace/common"];
+  const writes: Array<Record<string, unknown>> = [];
+  const verifications: unknown[][] = [];
+  let rejectResponse = false;
+  let socketDestroyed = false;
+  class VirtualSocket extends EventEmitter {
+    write(text: string): boolean {
+      const request = JSON.parse(text) as Record<string, unknown>;
+      writes.push(request);
+      queueMicrotask(() => this.emit("data", Buffer.from(`${JSON.stringify({
+        t: "res",
+        id: request.id,
+        ok: true,
+        result: { gitExpectation: "daemon-expectation" },
+      })}\n`)));
+      return true;
+    }
+    destroy(): this {
+      if (!socketDestroyed) {
+        socketDestroyed = true;
+        queueMicrotask(() => this.emit("close"));
+      }
+      return this;
+    }
+  }
+  const protocol = {
+    PROTOCOL_VERSION: 2,
+    createRequest: (method: string, params: Record<string, unknown>) => ({ t: "req", id: "request-1", method, params }),
+    encodeFrame: (frame: Record<string, unknown>) => `${JSON.stringify(frame)}\n`,
+    decodeFrames: (buffer: string) => {
+      const lines = buffer.split("\n");
+      const rest = lines.pop() ?? "";
+      return { frames: lines.filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>), rest };
+    },
+  };
+  const context: Record<string, unknown> = {
+    Buffer,
+    process: { pid: 700102 },
+    setTimeout,
+    clearTimeout,
+    createConnection: () => {
+      const socket = new VirtualSocket();
+      queueMicrotask(() => socket.emit("connect"));
+      return socket;
+    },
+    createGitExpectationText: (actualRoots: readonly string[]) => {
+      expect(actualRoots).toEqual(roots);
+      return "client-expectation";
+    },
+    decodeGitExpectation: (text: string) => ({ text }),
+    gitExpectationRoots: () => ["/captured/request/root", ...roots],
+    verifyPeerGitBinding: (...args: unknown[]) => {
+      verifications.push(args);
+      if (rejectResponse) throw new Error("virtual_git_expectation_mismatch");
+      return {};
+    },
+  };
+  const connectPeer = runInNewContext(`${code}\nconnectPeer`, context) as (
+    path: string,
+    token: string,
+    repoId: string,
+    root: string,
+    gitRoots: readonly string[],
+    timeoutMs: number,
+    protocolValue: typeof protocol,
+  ) => Promise<{ close(): void; closed: Promise<void> }>;
+  const peer = await connectPeer("/private/socket", "token", "repo-id", roots[0]!, roots, 30_000, protocol);
+  const hello = writes[0] as { method: string; params: Record<string, unknown> };
+  expect(hello.method).toBe("hello");
+  expect(hello.params).toMatchObject({ cwd: roots[0], workspaceRoot: roots[0], repoIds: ["repo-id"],
+    protocolVersion: 2, gitExpectation: "client-expectation" });
+  expect(verifications).toEqual([["daemon-expectation", roots, ["/captured/request/root", ...roots]]]);
+  peer.close();
+  await peer.closed;
+
+  socketDestroyed = false;
+  rejectResponse = true;
+  await expect(connectPeer("/private/socket-2", "token", "repo-id", roots[0]!, roots, 30_000, protocol))
+    .rejects.toThrow("virtual_git_expectation_mismatch");
+  expect(socketDestroyed).toBe(true);
+});
+
+test("Git/hello对齐源码明确传递daemon根，输入hash清单覆盖新增绑定边界", async () => {
+  const source = await helperSource();
+  expect(source).toContain("const gitRoots = [fixture.repo, fixture.dataRoot, identity.commonDir];");
+  expect(source).toContain("gitRoots,\n    });");
+  for (const path of [
+    "runtime/git-runtime.mjs",
+    "runtime/git-runtime.d.mts",
+    "runtime/git-prerequisite.mjs",
+    "runtime/git-prerequisite.d.mts",
+    "runtime/git-daemon-binding.ts",
+    "runtime/git-read.ts",
+    "runtime/command-boundary.ts",
+  ]) expect(source).toContain(JSON.stringify(path));
 });
 
 test("smoke通过真实SQLite、认证socket、query及随后check，并清理夹具资源", async () => {

@@ -4,6 +4,9 @@ import { copyFile, mkdir, readFile, rename, rm, stat, utimes, writeFile } from "
 import { join } from "node:path";
 import { contentHash, databaseRows, eventually, fixtureSmoke, InstalledProjectFixture } from "../helpers/project-index-installed-fixture.ts";
 import type { Host, HostReply, InstalledRepository } from "../helpers/project-index-installed-fixture.ts";
+import { testHostGitExecutable } from "../helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 // 正式执行必须在写入冻结后串行运行；fixture-smoke 不打包、不安装、不启动 daemon。
 const worlds: InstalledProjectFixture[] = [];
@@ -149,7 +152,7 @@ installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、
   const { RequirementService } = await w.product<typeof import("../../runtime/requirement-service.ts")>("runtime/requirement-service.ts");
   const { RequirementStateStore } = await w.product<typeof import("../../runtime/requirement-state.ts")>("runtime/requirement-state.ts");
   const { uuidv7 } = await w.product<typeof import("../../runtime/database.ts")>("runtime/database.ts");
-  const options = { repositoryRoot: b.path, dataRoot: b.dataRoot, repoId: b.repoId, gitExecutable: "/usr/bin/git", authorize: () => true };
+  const options = { repositoryRoot: b.path, dataRoot: b.dataRoot, repoId: b.repoId, gitExecutable: HOST_GIT, authorize: () => true };
   // 仅封闭的测试准备调用已安装存储层；它不证明模型拥有批准权限。扫描授权仍走真实UI。
   const service = await RequirementService.open(options), state = await RequirementStateStore.open(options);
   const created = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "归档风险", body: "LOCAL_PRIVATE_M3_INSTALL" });

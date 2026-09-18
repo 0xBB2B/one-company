@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClock } from "../runtime/clock.ts";
-import { ShellRegistry } from "../runtime/shell-registry.ts";
+import { ShellRegistry, probeProcessGroup } from "../runtime/shell-registry.ts";
 import * as ShellRegistryModule from "../runtime/shell-registry.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";
 import { createRecord, readRecord, putRecord } from "../runtime/database.ts";
@@ -660,7 +660,7 @@ describe("停止流程", () => {
     expect(seenKillArgs).not.toContain(1);
   }, LONG_TIMEOUT);
 
-  test("ps 不可用时普通命令 running→stopped，descendantsScanned=false 且不带未追踪后代提示", async () => {
+  test("ps 不可用时主进程组可结束，但后代未核对保持 uncertain", async () => {
     const registry = makeRegistry({
       ps: async () => {
         throw new Error("ps 不可用");
@@ -682,14 +682,17 @@ describe("停止流程", () => {
     const stopped = await registry.stop(taskId);
     expect(stopped.ok).toBe(true);
     if (!stopped.ok) return;
-    expect(stopped.task.status).toBe("stopped");
+    expect(stopped.task.status).toBe("uncertain");
+    expect(stopped.task.activity).toBe("uncertain");
     expect(stopped.task.descendantsScanned).toBe(false);
-    expect(stopped.task.reason ?? "").not.toContain("未追踪后代");
+    expect(stopped.task.reason).toContain("后代扫描未完成");
+    expect(probeProcessGroup(stopped.task.pgid)).toEqual({ ok: true, state: "gone" });
   }, LONG_TIMEOUT);
 
-  test("启动时刻查询失败时不得伪造基线：ps 桩报错后停止仍正常 SIGTERM 并确认 stopped", async () => {
+  test("启动时刻及ps查询失败时不伪造基线或停止确认", async () => {
     let psCallCount = 0;
     const registry = makeRegistry({
+      pidStartedAt: async () => null,
       ps: async (): Promise<PsEntry[]> => {
         psCallCount++;
         throw new Error("ps 暂不可用");
@@ -711,15 +714,19 @@ describe("停止流程", () => {
     const stopped = await registry.stop(taskId);
     expect(stopped.ok).toBe(true);
     if (!stopped.ok) return;
-    expect(stopped.task.status).toBe("stopped");
+    expect(stopped.task.status).toBe("uncertain");
+    expect(stopped.task.identityVerified).toBe(false);
+    expect(stopped.task.startedAt).toBeNull();
+    expect(stopped.task.reason).toContain("后代扫描未完成");
+    expect(probeProcessGroup(stopped.task.pgid)).toEqual({ ok: true, state: "gone" });
     expect(psCallCount).toBeGreaterThan(0);
   }, LONG_TIMEOUT);
 
-  test("已结束任务再次停止返回已结束而非再次 kill", async () => {
+  test("已结束任务再次停止重新探测且不重复发送终止信号", async () => {
     let killCalls = 0;
     const registry = makeRegistry({
       kill: (pid, signal) => {
-        killCalls++;
+        if (signal !== 0) killCalls++;
         process.kill(pid, signal);
       },
     });

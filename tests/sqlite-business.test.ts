@@ -29,16 +29,20 @@ async function fixture() {
   return { repo, home, repoId, repoDir, clock, store, requirement, input };
 }
 
-test("公开工作流和决策入口直接读写 SQLite，两个需求启动只产生一个活动运行", async () => {
+test("旧工作流和决策拒绝写入，通用运行存储仍保证单个活动记录", async () => {
   const w = await fixture();
   const ctx = { dataRoot: w.home.dataRoot, cwd: w.repo.root };
-  expect((await executeWorkflowAction({ action: "init", requirement: w.requirement }, ctx)).details.isError).toBe(false);
-  const decisions = await Promise.all(Array.from({ length: 5 }, (_, i) => appendDecision({ requirement: w.requirement, actor: "user", source: "用户", trigger: "确认", decision: `确认 ${i}`, effects: ["scope"], alternatives: [], impact: "无" }, ctx)));
-  expect(new Set(decisions.map((receipt) => receipt.decisionId)).size).toBe(5);
-  expect(decisions.every((receipt) => UUID_V7_PATTERN.test(receipt.recordId))).toBe(true);
-  expect(await readDecisions({ ...ctx, requirement: w.requirement, actor: "user" })).toHaveLength(5);
+  expect(await executeWorkflowAction({ action: "init", requirement: w.requirement }, ctx)).toMatchObject({ ok: false, details: { code: "legacy_workflow_retired" } });
+  const decisions = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => appendDecision({ requirement: w.requirement, actor: "user", source: "用户", trigger: "确认", decision: `确认 ${i}`, effects: ["scope"], alternatives: [], impact: "无" }, ctx)));
+  expect(decisions.every((result) => result.status === "rejected" && String(result.reason).includes("永久淘汰"))).toBe(true);
+  await expect(readDecisions({ ...ctx, requirement: w.requirement, actor: "user" })).rejects.toThrow("永久淘汰");
+  withDatabase(repositoryDatabase(w.home.dataRoot, w.repoId), (db) => {
+    expect(db.list("requirements")).toEqual([]);
+    expect(db.events(`decisions:${w.requirement}:user`)).toEqual([]);
+  });
   const started = await Promise.all([w.store.createOrReuseRequirement(w.input), w.store.createOrReuseRequirement(w.input)]);
   expect(started[0]!.run.id).toBe(started[1]!.run.id);
+  expect(started[0]!.run.id).toMatch(UUID_V7_PATTERN);
   expect(started.map((result) => result.reused).sort()).toEqual([false, true]);
   expect((await readdir(w.repoDir)).every((name) => name.startsWith("data.db"))).toBe(true);
 });
@@ -77,16 +81,23 @@ test("多个运行存储实例交错登记回合与命令不丢失活动", async
   expect(new Set(found.run.commands).size).toBe(20);
 });
 
-test("两实例中继首答唯一，回执合并且重建实例可查询", async () => {
+test("两实例旧中继答复拒绝且历史不变，固定状态通知回执仍可并发合并", async () => {
   const w = await fixture();
   const options = { dataDir: w.repoDir, deliver: async () => [], locateRequirementAgent: () => undefined };
   const a = new RelayQueue(options); const b = new RelayQueue(options);
   const run = await w.store.create(w.input);
-  const question = await a.ask({ requirement: w.requirement, repoId: w.repoId, runId: run.id, question: "确认？", options: [], recommended: "确认" });
-  const answers = await Promise.all([b.answer(question.id, "确认", uuidv7()), a.answer(question.id, "取消", uuidv7())]);
-  expect(answers.filter((answer) => answer.ok)).toHaveLength(1);
-  expect((await question.answer).answered).toBe(true);
-  const notice = await a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "completed", message: "完成" });
+  const database = repositoryDatabase(w.home.dataRoot, w.repoId);
+  const questionId = uuidv7();
+  // 无授权的合成旧问题，仅核对数据保全，不模拟用户批准。
+  withDatabase(database, (db) => db.create("relay_questions", questionId, { id: questionId, status: "pending", question: "确认？" }));
+  const before = withDatabase(database, (db) => db.list("relay_questions"));
+  await expect(a.ask({ requirement: w.requirement, repoId: w.repoId, runId: run.id, question: "确认？", options: [], recommended: "确认" })).rejects.toThrow("永久淘汰");
+  const answers = await Promise.all([b.answer(questionId, "确认", uuidv7()), a.answer(questionId, "取消", uuidv7())]);
+  expect(answers).toEqual([{ ok: false, reason: "legacy_workflow_retired" }, { ok: false, reason: "legacy_workflow_retired" }]);
+  expect(withDatabase(database, (db) => db.list("relay_questions"))).toEqual(before);
+  await expect(a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "completed", message: "完成" })).rejects.toThrow("永久淘汰");
+  expect(withDatabase(database, (db) => db.list("relay_notices"))).toEqual([]);
+  const notice = await a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "blocked", message: "不得回显的旧正文" });
   await Promise.all([a.markDelivered("窗口甲", notice.id), b.markDelivered("窗口乙", notice.id)]);
   const record = withDatabase(repositoryDatabase(w.home.dataRoot, w.repoId), (db) => db.read<{ deliveredTo: string[] }>("relay_notices", notice.id));
   expect(record?.data.deliveredTo.sort()).toEqual(["窗口乙", "窗口甲"].sort());

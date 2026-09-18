@@ -1,493 +1,381 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, expect, test } from "vitest";
 import type { ChildProcess } from "node:child_process";
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendDecision } from "../../runtime/decisions.ts";
-import { executeWorkflowAction } from "../../runtime/workflow-tool.ts";
-import type { ScriptedReply } from "../helpers/controlled-provider.ts";
-import {
-  connectTestClient,
-  createDaemonFixture,
-  killDaemon,
-  removeDaemonFixture,
-  resolveNodeExecutable,
-  resolveSdkDir,
-  startDaemonForTest,
-} from "../helpers/daemon-harness.ts";
+import { connectTestClient, createDaemonFixture, killDaemon, removeDaemonFixture, resolveNodeExecutable, resolveSdkDir, startDaemonForTest } from "../helpers/daemon-harness.ts";
 import type { DaemonFixture, DaemonHandle, TestClient } from "../helpers/daemon-harness.ts";
-import { modelProviderEnv, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
-import type { TestProviderScript } from "../helpers/daemon-model-fixture.ts";
+import { createClock } from "../../runtime/clock.ts";
+import { RunStore } from "../../runtime/run-store.ts";
+import { repositoryDatabase, uuidv7 } from "../../runtime/database.ts";
+import { ShellRegistry } from "../../runtime/shell-registry.ts";
 
-const windowRunnerEntry = fileURLToPath(new URL("../helpers/window-runner.ts", import.meta.url));
-
-const LONG_TIMEOUT = 40_000;
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs: number, intervalMs = 100): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await delay(intervalMs);
-  }
-  if (!(await predicate())) throw new Error(`waitFor 超时（${timeoutMs}ms）`);
-}
-
-function groupAlive(pgid: number): boolean {
-  try {
-    process.kill(-pgid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ---- 世界与角色调度：真实守护进程子进程 + 受控 provider，驱动出真实的角色宿主后台 Shell ----
-
-interface World {
-  fixture: DaemonFixture;
-  handle: DaemonHandle;
-  client: TestClient;
-}
-
-const activeWorlds: World[] = [];
-const windowProcs: ChildProcess[] = [];
-const windowStateDirs: string[] = [];
-const trackedPgids: number[] = [];
-const extraTempDirs: string[] = [];
-
+const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => {
-  for (const proc of windowProcs.splice(0)) {
-    if (proc.exitCode === null && proc.signalCode === null) {
-      proc.kill("SIGKILL");
-      await Promise.race([new Promise<void>((resolve) => proc.once("exit", () => resolve())), delay(2_000)]);
-    }
+  const errors: unknown[] = [];
+  for (const fn of cleanup.splice(0).reverse()) {
+    try { await fn(); } catch (error) { errors.push(error); }
   }
-  for (const dir of windowStateDirs.splice(0)) {
-    await rm(dir, { recursive: true, force: true });
-  }
-  for (const pgid of trackedPgids.splice(0)) {
-    try {
-      process.kill(-pgid, "SIGKILL");
-    } catch {
-      // 组已消失，无需处理
-    }
-  }
-  for (const world of activeWorlds.splice(0)) {
-    world.client.close();
-    await killDaemon(world.handle).catch(() => undefined);
-    await removeDaemonFixture(world.fixture).catch(() => undefined);
-  }
-  for (const dir of extraTempDirs.splice(0)) {
-    await rm(dir, { recursive: true, force: true });
-  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "host-exit测试清理失败");
 });
-
-function toolReply(name: string, input: Record<string, unknown>): ScriptedReply {
-  return { type: "toolcall", name, input };
+const exec = promisify(execFile);
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const runner = fileURLToPath(new URL("../helpers/window-runner.ts", import.meta.url));
+function alive(pid: number) { try { process.kill(pid, 0); return true; } catch { return false; } }
+async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean, ms = 15000): Promise<T> {
+  const end = Date.now() + ms;
+  do { const value = await read(); if (ready(value)) return value; await delay(50); } while (Date.now() < end);
+  throw new Error("真实生命周期操作未收尾");
+}
+async function exit(child: ChildProcess) {
+  await until(async () => child.exitCode !== null || child.signalCode !== null, Boolean, 10000);
+}
+async function groupPids(pgid: number) {
+  const { stdout } = await exec("ps", ["-axo", "pid=,pgid="]);
+  return stdout.split("\n").map((line) => line.trim().split(/\s+/).map(Number)).filter((row) => row[1] === pgid).map((row) => row[0]!);
 }
 
-function textReply(text: string): ScriptedReply {
-  return { type: "text", text };
+interface ProcessIdentity { pid: number; pgid: number; startedAt: string }
+interface ProcessObservation extends ProcessIdentity {
+  state: "alive" | "gone" | "reused";
+  currentPgid?: number;
+  currentStartedAt?: string;
+  psStatus?: string;
 }
-
-function shapeTask(id: string, role: string, writePaths: string[]): Record<string, unknown> {
-  return { id, title: `任务 ${id}`, roles: [role], dependsOn: [], writePaths };
+interface ExitObservation {
+  observedAt: string;
+  target: { pgid: number; groupAlive: boolean; members: ProcessObservation[] };
+  independent: { pgid: number; groupAlive: boolean; members: ProcessObservation[] };
 }
-
-function proposeShapeReply(tasks: Array<Record<string, unknown>>): ScriptedReply {
-  return toolReply("pi_company_propose_shape", {
-    tasks,
-    gates: { whiteboxReview: false, blackboxAcceptance: false },
-    rationale: "host-exit 测试固定形状",
-  });
-}
-
-function dispatchRoleReply(role: string, task: string, writePaths: string[]): ScriptedReply {
-  return toolReply("pi_company_agent", { action: "run", role, task, writePaths, readPaths: [] });
-}
-
-const REQUIREMENT_PROVIDER = { providerId: "controlled-requirement-agent", modelId: "controlled-model", roleName: "requirement-agent" };
-
-async function startWorld(scripts: TestProviderScript[]): Promise<World> {
-  const fixture = await createDaemonFixture();
-  const providersPath = await writeTestModelProviders(fixture.dataRoot, scripts);
-  const handle = await startDaemonForTest(fixture, { extraEnv: modelProviderEnv(providersPath) });
-  const client = await connectTestClient(fixture.socketPath, {
-    cwd: fixture.repo.root,
-    workspaceRoot: fixture.repo.root,
-    repoIds: [fixture.repoId],
-  });
-  const world: World = { fixture, handle, client };
-  activeWorlds.push(world);
-  return world;
-}
-
-async function confirmRequirement(dataRoot: string, cwd: string, requirement: string): Promise<void> {
-  await executeWorkflowAction({ action: "init", requirement }, { dataRoot, cwd });
-  const decision = await appendDecision(
-    {
-      requirement,
-      actor: "user",
-      source: "test",
-      trigger: "确认需求",
-      decision: "确认进入执行",
-      alternatives: [],
-      effects: ["scope"],
-      impact: "host-exit 测试固定路径",
-    },
-    { dataRoot, cwd },
-  );
-  const result = await executeWorkflowAction(
-    { action: "advance", requirement, stage: "confirmed", version: 1, decisionId: decision.decisionId },
-    { dataRoot, cwd },
-  );
-  if (result.details.isError) throw new Error(`测试固件未能确认需求: ${result.text}`);
-}
-
-function autoConfirmShape(client: TestClient): () => void {
-  return client.onEvent("relay.question", (data) => {
-    void client.call("relay.answer", { questionId: data.id as string, answer: "确认", windowId: "test-window" });
-  });
-}
-
-interface RunView {
-  id: string;
-  kind: string;
-  state: string;
-  task: string;
-  role?: string;
-  parentRunId?: string;
-}
-
-async function listRuns(client: TestClient): Promise<RunView[]> {
-  const result = await client.call("runs.list", { limit: 200 });
-  return result.items as RunView[];
-}
-
-async function waitForRun(client: TestClient, predicate: (run: RunView) => boolean, timeoutMs = 15_000): Promise<RunView> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const found = (await listRuns(client)).find(predicate);
-    if (found) return found;
-    await delay(150);
+async function processRow(pid: number): Promise<{ pid: number; pgid: number; startedAt: string; psStatus: string } | undefined> {
+  let stdout: string;
+  try {
+    ({ stdout } = await exec("ps", ["-p", String(pid), "-o", "pid=", "-o", "pgid=", "-o", "lstart=", "-o", "stat="]));
+  } catch (error) {
+    if (!alive(pid)) return undefined;
+    throw new Error(`无法核对自产PID ${pid} 的进程身份: ${error instanceof Error ? error.message : String(error)}`);
   }
-  throw new Error("等待目标运行超时");
-}
-
-interface ShellTaskView {
-  taskId: string;
-  host: { kind: string; id: string; role?: string; runId?: string };
-  pid: number;
-  pgid: number;
-  status: string;
-  descendants: number[];
-}
-
-async function listShells(client: TestClient): Promise<ShellTaskView[]> {
-  const result = await client.call("shells.list", {});
-  return result.tasks as ShellTaskView[];
-}
-
-async function waitForShell(client: TestClient, predicate: (task: ShellTaskView) => boolean, timeoutMs = 15_000): Promise<ShellTaskView> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const found = (await listShells(client)).find(predicate);
-    if (found) return found;
-    await delay(150);
+  const fields = stdout.trim().split(/\s+/);
+  if (fields.length < 8 || Number(fields[0]) !== pid || !Number.isSafeInteger(Number(fields[1]))) {
+    if (!alive(pid)) return undefined;
+    throw new Error(`无法核对自产PID ${pid} 的ps身份字段`);
   }
-  throw new Error("等待目标 Shell 任务超时");
+  return { pid, pgid: Number(fields[1]), startedAt: fields.slice(2, 7).join(" "), psStatus: fields.slice(7).join(" ") };
+}
+async function captureIdentity(pid: number, pgid: number): Promise<ProcessIdentity> {
+  const row = await processRow(pid);
+  if (!row || row.pgid !== pgid) throw new Error(`自产PID ${pid} 无法绑定到目标PGID ${pgid}`);
+  return { pid, pgid, startedAt: row.startedAt };
+}
+async function observeProcess(identity: ProcessIdentity): Promise<ProcessObservation> {
+  const row = await processRow(identity.pid);
+  if (!row) return { ...identity, state: "gone" };
+  if (row.startedAt !== identity.startedAt) {
+    return { ...identity, state: "reused", currentPgid: row.pgid, currentStartedAt: row.startedAt, psStatus: row.psStatus };
+  }
+  return { ...identity, state: "alive", currentPgid: row.pgid, currentStartedAt: row.startedAt, psStatus: row.psStatus };
+}
+async function groupMembers(pgid: number): Promise<ProcessIdentity[]> {
+  const pids = await until(() => groupPids(pgid), (value) => value.length >= 3);
+  return Promise.all([...pids].sort((a, b) => a - b).map((pid) => captureIdentity(pid, pgid)));
+}
+async function observeGroup(pgid: number, members: ProcessIdentity[]) {
+  return { pgid, groupAlive: alive(-pgid), members: await Promise.all(members.map(observeProcess)) };
+}
+function safeObservation(observation: ExitObservation | undefined) {
+  return observation ?? { observedAt: new Date().toISOString(), observation: "unavailable" };
+}
+async function writeExitEvidence(action: string, evidence: unknown) {
+  const dir = process.env.PI_HOST_EXIT_EVIDENCE_DIR;
+  if (!dir) return;
+  await writeFile(join(dir, `${action.toLowerCase()}.json`), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+}
+function assertIndependentAlive(observation: ExitObservation) {
+  const invalid = !observation.independent.groupAlive || observation.independent.members.some((member) => member.state !== "alive" || member.currentPgid !== member.pgid);
+  if (invalid) throw new Error(`独立role组在窗口退出等待期间被误停或身份无法核对: ${JSON.stringify(observation.independent)}`);
+}
+async function waitForWindowMembersExit(action: string, targetPgid: number, targetMembers: ProcessIdentity[], independentPgid: number, independentMembers: ProcessIdentity[]) {
+  let latest: ExitObservation | undefined;
+  let firstGroupGone: ExitObservation | undefined;
+  try {
+    const completed = await until(async () => {
+      latest = {
+        observedAt: new Date().toISOString(),
+        target: await observeGroup(targetPgid, targetMembers),
+        independent: await observeGroup(independentPgid, independentMembers),
+      };
+      assertIndependentAlive(latest);
+      const reused = latest.target.members.find((member) => member.state === "reused");
+      if (reused) throw new Error(`目标成员PID发生复用，不能冒充原对象已结束: ${JSON.stringify(reused)}`);
+      if (!latest.target.groupAlive && !firstGroupGone) {
+        firstGroupGone = latest;
+        await writeExitEvidence(action, { action, status: "observed-group-gone", firstGroupGone });
+        if (latest.target.members.some((member) => member.state === "alive") && !process.env.PI_HOST_EXIT_EVIDENCE_DIR) {
+          console.warn(`[host-exit-member-observation] ${JSON.stringify(firstGroupGone)}`);
+        }
+      }
+      return latest;
+    }, (observation) => !observation.target.groupAlive && observation.target.members.every((member) => member.state === "gone"));
+    assertIndependentAlive(completed);
+    await writeExitEvidence(action, { action, status: "passed", firstGroupGone, completed });
+    return completed;
+  } catch (error) {
+    const failure = { action, status: "failed", firstGroupGone, latest: safeObservation(latest), reason: error instanceof Error ? error.message : String(error) };
+    await writeExitEvidence(action, failure);
+    throw new Error(`窗口退出未在原15秒预算内完成PGID及全部原成员收尾: ${JSON.stringify(failure)}`, { cause: error });
+  }
+}
+async function trackedGroupObservation(pgid: number, members: ProcessIdentity[]) {
+  const observations = await Promise.all(members.map(observeProcess));
+  const reused = observations.find((member) => member.state === "reused");
+  if (reused) throw new Error(`自产PID身份已变化，拒绝把PID复用当作结束: ${JSON.stringify(reused)}`);
+  return { pgid, groupAlive: alive(-pgid), members: observations };
+}
+async function waitForTrackedMembersGone(pgid: number, members: ProcessIdentity[]) {
+  await until(() => trackedGroupObservation(pgid, members), (observation) =>
+    !observation.groupAlive && observation.members.every((member) => member.state === "gone"));
+  const observation = await trackedGroupObservation(pgid, members);
+  expect(observation.groupAlive).toBe(false);
+  for (const member of observation.members) {
+    expect(member.state).toBe("gone");
+    expect(alive(member.pid)).toBe(false);
+  }
+}
+async function expectTrackedMembersGoneNow(pgid: number, members: ProcessIdentity[]) {
+  const observation = await trackedGroupObservation(pgid, members);
+  expect(observation.groupAlive).toBe(false);
+  for (const member of observation.members) {
+    expect(member.state).toBe("gone");
+    expect(alive(member.pid)).toBe(false);
+  }
+}
+async function assertTrackedMembersGoneNow(pgid: number, members: ProcessIdentity[]) {
+  const observation = await trackedGroupObservation(pgid, members);
+  const aliveMembers = observation.members.filter((member) => member.state !== "gone");
+  if (observation.groupAlive || aliveMembers.length > 0) {
+    throw new Error(`自产进程尚未全部结束: ${JSON.stringify(observation)}`);
+  }
 }
 
-interface RoleBackgroundShell {
-  world: World;
-  requirementRunId: string;
-  roleRunId: string;
-  taskId: string;
-  pgid: number;
-  descendants: number[];
+interface TrackedShellGroup { taskId: string; pgid: number; members?: ProcessIdentity[] }
+interface WorldResources {
+  fixture: DaemonFixture;
+  clock?: ReturnType<typeof createClock>;
+  shells?: ShellRegistry;
+  shell?: TrackedShellGroup;
+  handle?: DaemonHandle;
+  daemonIdentity?: ProcessIdentity;
+  client?: TestClient;
 }
 
-// 派出一个真实需求 -> 确认形状 -> worker 角色在守护进程内起一个带后代的后台 Shell；
-// 这个 Shell 挂在守护进程自身的 ShellRegistry 下，代表"守护进程持有的角色 Shell"，
-// 用来验证窗口退出路径不会波及它、而守护进程自己退出时才会停它
-async function setupRoleBackgroundShell(requirement: string, bashInput: Record<string, unknown>): Promise<RoleBackgroundShell> {
-  const scripts: TestProviderScript[] = [
-    {
-      ...REQUIREMENT_PROVIDER,
-      replies: [proposeShapeReply([shapeTask("T-1", "worker", ["area-a"])]), dispatchRoleReply("worker", "T-1", ["area-a"]), textReply("已派工")],
-    },
-    {
-      providerId: "controlled-worker-T-1",
-      modelId: "controlled-model",
-      roleName: "worker",
-      taskId: "T-1",
-      replies: [toolReply("bash", bashInput), textReply("后台任务已启动，等待后续指示")],
-    },
-  ];
-  const world = await startWorld(scripts);
-  const unsubscribe = autoConfirmShape(world.client);
-  await confirmRequirement(world.fixture.dataRoot, world.fixture.repo.root, requirement);
-  const requirementRunId = (
-    await world.client.call("dispatch.requirement", { requirement, cwd: world.fixture.repo.root })
-  ).runId as string;
-  const roleRun = await waitForRun(world.client, (run) => run.kind === "role" && run.task === "T-1");
-  unsubscribe();
-
-  const shell = await waitForShell(world.client, (t) => t.host.runId === roleRun.id);
-  trackedPgids.push(shell.pgid);
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+function throwCleanupErrors(errors: unknown[], message: string): never {
+  if (errors.length === 1) throw new Error(`${message}: ${errorText(errors[0])}`, { cause: errors[0] });
+  throw new AggregateError(errors, message);
+}
+async function cleanupDaemon(handle: DaemonHandle, identity: ProcessIdentity | undefined) {
+  if (!identity) throw new Error("daemon已启动但缺少本次进程身份，拒绝向未知PID发信号");
+  const observation = await observeProcess(identity);
+  if (observation.state === "reused" || (observation.state === "alive" && observation.currentPgid !== identity.pgid)) {
+    throw new Error(`daemon身份已变化，拒绝向未知PID发信号: ${JSON.stringify(observation)}`);
+  }
+  if (observation.state === "alive") {
+    await killDaemon(handle);
+    await waitForTrackedMembersGone(identity.pgid, [identity]);
+  } else if (alive(-identity.pgid)) {
+    throw new Error(`daemon原PID已结束但PGID仍存活，拒绝清理身份不明的进程组 ${identity.pgid}`);
+  }
+}
+async function cleanupShellRegistry(shells: ShellRegistry, tracked: TrackedShellGroup | undefined) {
+  const tasks = shells.list();
+  if (!tracked) {
+    if (tasks.length > 0) throw new Error(`Shell已创建但缺少本次成员身份，拒绝向未知PID发信号: ${JSON.stringify(tasks.map((task) => ({ taskId: task.taskId, pgid: task.pgid })))}`);
+    return;
+  }
+  if (!tracked.members || tracked.members.length === 0) {
+    throw new Error(`Shell ${tracked.taskId} 缺少本次成员身份，拒绝向未知PID发信号`);
+  }
+  const unrelated = tasks.filter((task) => task.taskId !== tracked.taskId);
+  if (unrelated.length > 0) {
+    throw new Error(`发现未绑定成员身份的Shell，拒绝向未知PID发信号: ${JSON.stringify(unrelated.map((task) => ({ taskId: task.taskId, pgid: task.pgid })))}`);
+  }
+  const task = tasks.find((candidate) => candidate.taskId === tracked.taskId);
+  const before = await trackedGroupObservation(tracked.pgid, tracked.members);
+  const moved = before.members.find((member) => member.state === "alive" && member.currentPgid !== member.pgid);
+  if (moved) throw new Error(`Shell成员已离开原PGID，拒绝向身份不明的进程组发信号: ${JSON.stringify(moved)}`);
+  if (before.groupAlive && before.members.every((member) => member.state === "gone")) {
+    throw new Error(`Shell原成员已结束但PGID仍存活，拒绝清理身份不明的进程组 ${tracked.pgid}`);
+  }
+  if (before.groupAlive) {
+    if (!task) throw new Error(`Shell登记已丢失，拒绝绕过ShellRegistry向PGID ${tracked.pgid} 发信号`);
+    await shells.stop(task.taskId);
+  } else {
+    for (const member of before.members.filter((item) => item.state === "alive")) process.kill(member.pid, "SIGKILL");
+  }
+  await waitForTrackedMembersGone(tracked.pgid, tracked.members);
+}
+async function worldDiagnostic(resources: WorldResources) {
+  const inspect = async (identity: ProcessIdentity | undefined) => identity ? observeProcess(identity).catch((error) => ({ ...identity, state: "identity-check-failed", reason: errorText(error) })) : undefined;
+  const members = resources.shell?.members
+    ? await Promise.all(resources.shell.members.map((identity) => inspect(identity)))
+    : undefined;
   return {
-    world,
-    requirementRunId,
-    roleRunId: roleRun.id,
-    taskId: shell.taskId,
-    pgid: shell.pgid,
-    descendants: shell.descendants,
+    roots: { dataRoot: resources.fixture.dataRoot, repoRoot: resources.fixture.repo.root, homeRoot: resources.fixture.home.home },
+    daemon: await inspect(resources.daemonIdentity),
+    shell: resources.shell ? { taskId: resources.shell.taskId, pgid: resources.shell.pgid, groupAlive: alive(-resources.shell.pgid), members } : undefined,
   };
 }
-
-// ---- 窗口子进程：真实拉起，走生产 lifecycle 扩展的真实 shutdownWindow / installExitSignalHandlers ----
-
-interface WindowState {
-  phase: string;
-  windowId?: string;
-  taskId?: string;
-  pid?: number;
-  pgid?: number;
-  reason?: string;
-  connected?: boolean;
-}
-
-interface WindowHandle {
-  proc: ChildProcess;
-  stateFile: string;
-}
-
-async function spawnWindowHost(world: World, options: { viaPty?: boolean } = {}): Promise<WindowHandle> {
-  const stateDir = await mkdtemp(join(tmpdir(), "host-exit-window-"));
-  windowStateDirs.push(stateDir);
-  const stateFile = join(stateDir, "state.json");
-  const configFile = join(stateDir, "config.json");
-  await writeFile(
-    configFile,
-    JSON.stringify({
-      cwd: world.fixture.repo.root,
-      dataRoot: world.fixture.dataRoot,
-      sdkDir: resolveSdkDir(),
-      stateFile,
-      shellCommand: `: HOSTEXITTEST_WINDOW_${randomUUID()}; sleep 60 & sleep 60 & wait`,
-    }),
-  );
-
-  const proc = options.viaPty
-    ? spawn("python3", ["-c", PTY_HOST, resolveNodeExecutable(), windowRunnerEntry, configFile], { stdio: ["pipe", "pipe", "pipe"] })
-    : spawn(resolveNodeExecutable(), [windowRunnerEntry, configFile], { stdio: ["pipe", "pipe", "pipe"] });
-  windowProcs.push(proc);
-  return { proc, stateFile };
-}
-
-async function waitForWindowState(stateFile: string, predicate: (state: WindowState) => boolean, timeoutMs: number): Promise<WindowState> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const state = JSON.parse(await readFile(stateFile, "utf8")) as WindowState;
-      if (predicate(state)) return state;
-    } catch {
-      // 状态文件尚未写入或写入未完成，继续轮询
-    }
-    await delay(100);
+async function cleanupWorld(resources: WorldResources) {
+  const errors: unknown[] = [];
+  try { resources.client?.close(); } catch (error) { errors.push(error); }
+  if (resources.handle) {
+    try { await cleanupDaemon(resources.handle, resources.daemonIdentity); } catch (error) { errors.push(error); }
   }
-  throw new Error(`等待窗口状态超时（${timeoutMs}ms）：${stateFile}`);
-}
+  if (resources.shells) {
+    try { await cleanupShellRegistry(resources.shells, resources.shell); } catch (error) { errors.push(error); }
+  }
+  try { resources.clock?.stopGapWatcher(); } catch (error) { errors.push(error); }
 
-function waitChildExit(child: ChildProcess, timeoutMs: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      resolve();
-      return;
+  try {
+    if (resources.handle) {
+      if (!resources.daemonIdentity) throw new Error("daemon缺少身份，无法确认world根可删除");
+      await assertTrackedMembersGoneNow(resources.daemonIdentity.pgid, [resources.daemonIdentity]);
     }
-    const timer = setTimeout(() => reject(new Error(`等待窗口进程退出超时（${timeoutMs}ms）`)), timeoutMs);
-    child.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
+    if (resources.shell) {
+      if (!resources.shell.members) throw new Error("Shell缺少成员身份，无法确认world根可删除");
+      await assertTrackedMembersGoneNow(resources.shell.pgid, resources.shell.members);
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+  if (process.env.PI_HOST_EXIT_INJECT_CLEANUP_FAILURE === "1") {
+    errors.push(new Error("注入world清理门槛失败"));
+  }
+  if (errors.length === 0) {
+    await removeDaemonFixture(resources.fixture);
+    return;
+  }
+  const diagnostic = await worldDiagnostic(resources);
+  const evidenceDir = process.env.PI_HOST_EXIT_EVIDENCE_DIR;
+  if (evidenceDir) {
+    await writeFile(join(evidenceDir, `cleanup-retained-${process.pid}.json`), `${JSON.stringify({ status: "retained", errors: errors.map(errorText), ...diagnostic }, null, 2)}\n`, { mode: 0o600 });
+  }
+  throwCleanupErrors(errors, `world清理未满足删除前置，已保留根 ${resources.fixture.dataRoot}`);
 }
 
+async function world() {
+  const fixture = await createDaemonFixture();
+  const resources: WorldResources = { fixture };
+  cleanup.push(() => cleanupWorld(resources));
+  const clock = createClock(); resources.clock = clock;
+  const shells = new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }); resources.shells = shells;
+  const store = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: "host-exit-history" });
+  const run = await store.create({ kind: "role", standalone: true, role: "pi-company.worker", requirement: "2026-09-10.host-exit", task: "测试自建待停止记录",
+    cwd: fixture.repo.root, readPaths: [], writePaths: [], model: { provider: "unused", id: "unused" }, thinking: "off", mcp: [] });
+  await store.update(run.id, { state: "running" });
+  const spawned = await shells.spawn({ taskId: uuidv7(), host: { kind: "role", id: run.id, runId: run.id, role: run.role },
+    command: "/bin/sh", args: ["-c", "sleep 60 & sleep 60 & wait"], mode: "background", runToken: run.shellToken });
+  if (!spawned.ok) throw new Error(spawned.reason);
+  resources.shell = { taskId: spawned.task.taskId, pgid: spawned.task.pgid };
+  const members = await groupMembers(spawned.task.pgid); resources.shell.members = members;
+  const handle = await startDaemonForTest(fixture); resources.handle = handle;
+  if (!handle.proc.pid) throw new Error("daemon未提供PID");
+  resources.daemonIdentity = await captureIdentity(handle.proc.pid, handle.proc.pid);
+  const client = await connectTestClient(fixture.socketPath, { cwd: fixture.repo.root, workspaceRoot: fixture.repo.root, repoIds: [fixture.repoId] }); resources.client = client;
+  await client.call("runs.list");
+  await until(() => client.call("shells.list"), (result) => (result.tasks as Array<{ taskId: string }>).some((task) => task.taskId === spawned.task.taskId));
+  return { fixture, handle, client, task: spawned.task, members };
+}
+
+interface WindowState { phase: string; pgid?: number; connected?: boolean; reason?: string }
 const PTY_HOST = `import os, pty, sys
 pid, master = pty.fork()
 if pid == 0:
     os.execv(sys.argv[1], sys.argv[1:])
 try:
-    while True:
-        data = os.read(master, 65536)
-        if not data:
-            break
+    while os.read(master, 65536):
+        pass
 except OSError:
     pass
 finally:
     os.close(master)
     os.waitpid(pid, 0)
 `;
+async function windowHost(w: Awaited<ReturnType<typeof world>>, pty = false) {
+  const dir = await mkdtemp(join(tmpdir(), "host-exit-window-"));
+  const stateFile = join(dir, "state.json"), config = join(dir, "config.json");
+  await writeFile(config, JSON.stringify({ cwd: w.fixture.repo.root, dataRoot: w.fixture.dataRoot, sdkDir: resolveSdkDir(), stateFile, shellCommand: "sleep 60 & sleep 60 & wait" }));
+  const args = [resolveNodeExecutable(), runner, config];
+  const proc = pty ? spawn("python3", ["-c", PTY_HOST, ...args], { stdio: ["pipe", "pipe", "pipe"], env: w.fixture.home.env })
+    : spawn(args[0]!, args.slice(1), { stdio: ["pipe", "pipe", "pipe"], env: w.fixture.home.env });
+  let stderr = ""; proc.stderr?.on("data", (chunk) => { stderr += String(chunk); }); proc.stdout?.resume();
+  let pgid: number | undefined;
+  let members: ProcessIdentity[] = [];
+  cleanup.push(async () => {
+    if (proc.exitCode === null && proc.signalCode === null) { proc.kill("SIGTERM"); await exit(proc); }
+    if (pgid && members.length > 0) {
+      const observations = await Promise.all(members.map(observeProcess));
+      const reused = observations.find((member) => member.state === "reused");
+      if (reused) throw new Error(`窗口清理拒绝操作已复用PID: ${JSON.stringify(reused)}`);
+      if (alive(-pgid)) process.kill(-pgid, "SIGKILL");
+      else for (const member of observations.filter((item) => item.state === "alive")) process.kill(member.pid, "SIGKILL");
+      await waitForTrackedMembersGone(pgid, members);
+    } else if (pgid && alive(-pgid)) {
+      process.kill(-pgid, "SIGKILL");
+      await until(async () => !alive(-pgid!), Boolean);
+    }
+    await rm(dir, { recursive: true, force: true });
+  });
+  const state = await until(async () => { try { return JSON.parse(await readFile(stateFile, "utf8")) as WindowState; } catch { return { phase: "pending" }; } }, (state) => ["ready", "failed"].includes(state.phase));
+  expect({ phase: state.phase, reason: state.reason, stderr: state.phase === "failed" ? stderr : "" }).toEqual({ phase: "ready", reason: undefined, stderr: "" });
+  if (!state.pgid) throw new Error("窗口未登记真实进程组"); pgid = state.pgid;
+  expect(state.connected).toBe(true); expect(alive(-pgid)).toBe(true);
+  members = await groupMembers(pgid);
+  return { proc, pgid, members };
+}
 
-// ============================================================
-// 用例矩阵
-// ============================================================
+for (const action of ["QUIT", "SIGTERM", "SIGHUP", "PTY"] as const) test(`窗口${action}退出只结束自身Shell及后代，daemon接管的测试角色Shell不受影响`, async () => {
+  const w = await world(); const window = await windowHost(w, action === "PTY");
+  for (const member of [...w.members, ...window.members]) expect(alive(member.pid)).toBe(true);
+  if (action === "QUIT") window.proc.stdin!.write("QUIT\n");
+  else window.proc.kill(action === "PTY" ? "SIGKILL" : action);
+  await exit(window.proc);
+  await waitForWindowMembersExit(action, window.pgid, window.members, w.task.pgid, w.members);
+  for (const member of window.members) expect(alive(member.pid)).toBe(false);
+  expect(alive(-w.task.pgid)).toBe(true);
+  for (const member of w.members) {
+    expect((await observeProcess(member)).state).toBe("alive");
+    expect(alive(member.pid)).toBe(true);
+  }
+  const tasks = (await w.client.call("shells.list")).tasks as Array<{ taskId: string; status: string }>;
+  expect(tasks.find((task) => task.taskId === w.task.taskId)?.status).toBe("running");
+}, 40000);
 
-describe("窗口 /quit 或等价退出路径", () => {
-  test(
-    "窗口触发 session_shutdown（/quit 等价路径）：窗口 Shell 及后代停止，守护进程角色 Shell 继续运行",
-    async () => {
-      const requirement = "2026-09-10.host-exit-quit";
-      const { world, pgid: daemonShellPgid, descendants: daemonDescendants } = await setupRoleBackgroundShell(requirement, {
-        command: `: HOSTEXITTEST_DAEMON_${randomUUID()}; sleep 60 & sleep 60 & wait`,
-        background: true,
-      });
-      for (const pid of daemonDescendants) expect(pidAlive(pid)).toBe(true);
+test("daemon SIGTERM退出必须先清理接管的真实角色Shell及全部组内后代", async () => {
+  const w = await world(); w.client.close(); w.handle.proc.kill("SIGTERM");
+  const result = await w.handle.exited; expect(result.code).toBe(0);
+  await expectTrackedMembersGoneNow(w.task.pgid, w.members);
+}, 40000);
 
-      const window = await spawnWindowHost(world);
-      const ready = await waitForWindowState(window.stateFile, (s) => s.phase === "ready" || s.phase === "failed", 15_000);
-      expect(ready.phase).toBe("ready");
-      if (ready.phase !== "ready" || ready.pgid === undefined) return;
-      trackedPgids.push(ready.pgid);
-      expect(groupAlive(ready.pgid)).toBe(true);
-      // 窗口经真实 socket 向同一守护进程握手成功，证明本用例的窗口/守护进程是两个真实互联的进程，
-      // 而不是两个互不相干、只是恰好都在跑的进程
-      expect(ready.connected).toBe(true);
-
-      window.proc.stdin?.write("QUIT\n");
-      await waitChildExit(window.proc, 10_000);
-
-      expect(groupAlive(ready.pgid)).toBe(false);
-      expect(groupAlive(daemonShellPgid)).toBe(true);
-      for (const pid of daemonDescendants) expect(pidAlive(pid)).toBe(true);
-      const daemonAfter = await listShells(world.client);
-      expect(daemonAfter.find((t) => t.pgid === daemonShellPgid)?.status).toBe("running");
-    },
-    LONG_TIMEOUT,
-  );
-});
-
-describe("可处理信号", () => {
-  test.each(["SIGTERM", "SIGHUP"] as const)(
-    "向窗口发送 %s：效果与 /quit 等价——窗口 Shell 及后代停止，守护进程角色 Shell 继续运行",
-    async (signal) => {
-      const requirement = `2026-09-10.host-exit-signal-${signal.toLowerCase()}`;
-      const { world, pgid: daemonShellPgid } = await setupRoleBackgroundShell(requirement, {
-        command: `: HOSTEXITTEST_DAEMON_${randomUUID()}; sleep 60 & sleep 60 & wait`,
-        background: true,
-      });
-
-      const window = await spawnWindowHost(world);
-      const ready = await waitForWindowState(window.stateFile, (s) => s.phase === "ready" || s.phase === "failed", 15_000);
-      expect(ready.phase).toBe("ready");
-      if (ready.phase !== "ready" || ready.pgid === undefined) return;
-      trackedPgids.push(ready.pgid);
-
-      window.proc.kill(signal);
-      await waitChildExit(window.proc, 10_000);
-
-      expect(groupAlive(ready.pgid)).toBe(false);
-      expect(groupAlive(daemonShellPgid)).toBe(true);
-    },
-    LONG_TIMEOUT,
-  );
-});
-
-describe("真实关闭终端窗口", () => {
-  test(
-    "关闭真实 PTY 主端触发内核挂断，窗口 Shell 及后代停止，守护进程角色 Shell 不受影响",
-    async () => {
-      const requirement = "2026-09-10.host-exit-real-close";
-      const { world, pgid: daemonShellPgid } = await setupRoleBackgroundShell(requirement, {
-        command: `: HOSTEXITTEST_DAEMON_${randomUUID()}; sleep 60 & sleep 60 & wait`,
-        background: true,
-      });
-
-      const window = await spawnWindowHost(world, { viaPty: true });
-      const ready = await waitForWindowState(window.stateFile, (s) => s.phase === "ready" || s.phase === "failed", 15_000);
-      expect(ready.phase).toBe("ready");
-      if (ready.phase !== "ready" || ready.pgid === undefined) return;
-      trackedPgids.push(ready.pgid);
-
-      window.proc.kill("SIGKILL");
-
-      await waitFor(() => !groupAlive(ready.pgid as number), 10_000);
-      expect(groupAlive(daemonShellPgid)).toBe(true);
-    },
-    LONG_TIMEOUT,
-  );
-});
-
-describe("守护进程正常退出", () => {
-  test(
-    "角色后台 Shell 仍在运行时 SIGTERM 守护进程：内部 Shell 全部停止后进程才退出",
-    async () => {
-      const requirement = "2026-09-10.host-exit-daemon-shutdown";
-      const { world, pgid: daemonShellPgid, descendants } = await setupRoleBackgroundShell(requirement, {
-        command: `: HOSTEXITTEST_DAEMON_${randomUUID()}; sleep 60 & sleep 60 & wait`,
-        background: true,
-      });
-      expect(groupAlive(daemonShellPgid)).toBe(true);
-      for (const pid of descendants) expect(pidAlive(pid)).toBe(true);
-
-      world.client.close();
-      world.handle.proc.kill("SIGTERM");
-      const exit = await world.handle.exited;
-
-      expect(exit.code).toBe(0);
-      // 到这里守护进程进程本体已经退出；生产 shutdown() 先 await runManager.close()
-      // 停完全部 Shell 再调用 process.exit，若顺序有误 pgid 在此处应仍存活
-      expect(groupAlive(daemonShellPgid)).toBe(false);
-      for (const pid of descendants) expect(pidAlive(pid)).toBe(false);
-    },
-    LONG_TIMEOUT,
-  );
-});
-
-describe("后台超时", () => {
-  test(
-    "background:true, timeout:1 产生后代：满 1 秒才开始停止流程，报告的超时结果已确认后代清理完成",
-    async () => {
-      const requirement = "2026-09-10.host-exit-background-timeout";
-      const { world, pgid, descendants } = await setupRoleBackgroundShell(requirement, {
-        command: `: HOSTEXITTEST_TIMEOUT_${randomUUID()}; sleep 30 & sleep 30 & wait`,
-        background: true,
-        timeout: 1,
-      });
-      for (const pid of descendants) expect(pidAlive(pid)).toBe(true);
-
-      await delay(400);
-      const early = (await listShells(world.client)).find((t) => t.pgid === pgid);
-      expect(early?.status).not.toBe("timed_out");
-      expect(groupAlive(pgid)).toBe(true);
-
-      const start = Date.now();
-      const timedOut = await waitForShell(world.client, (t) => t.pgid === pgid && t.status === "timed_out", 8_000);
-      const elapsedMs = Date.now() - start;
-
-      // 已过 400ms 观察窗口，这里只需确认收敛没有早于 1 秒预算触发
-      expect(elapsedMs).toBeGreaterThan(300);
-      // shells.list 只有在停止确认（含后代扫描）完成后才会把状态置为 timed_out，
-      // 观察到该状态即意味着后代已清理完成，不是"先报告后清理"
-      expect(groupAlive(pgid)).toBe(false);
-      for (const pid of timedOut.descendants) expect(pidAlive(pid)).toBe(false);
-    },
-    LONG_TIMEOUT,
-  );
-});
+test("后台Shell一秒超时不提前触发，timed_out只在真实后代清理后返回", async () => {
+  const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
+  const shells = new ShellRegistry({ clock });
+  let tracked: TrackedShellGroup | undefined;
+  cleanup.push(() => cleanupShellRegistry(shells, tracked));
+  const start = Date.now();
+  const spawned = await shells.spawn({ taskId: uuidv7(), host: { kind: "role", id: "timeout-fixture" }, command: "/bin/sh", args: ["-c", "sleep 30 & sleep 30 & wait"], mode: "background", timeoutSeconds: 1, runToken: uuidv7() });
+  if (!spawned.ok) throw new Error(spawned.reason);
+  tracked = { taskId: spawned.task.taskId, pgid: spawned.task.pgid };
+  const members = await groupMembers(spawned.task.pgid); tracked.members = members;
+  await delay(400);
+  expect(shells.get(spawned.task.taskId)?.status).not.toBe("timed_out"); expect(alive(-spawned.task.pgid)).toBe(true);
+  await until(async () => shells.get(spawned.task.taskId)?.status, (status) => status === "timed_out");
+  expect(Date.now() - start).toBeGreaterThanOrEqual(1000);
+  await expectTrackedMembersGoneNow(spawned.task.pgid, members);
+}, 20000);

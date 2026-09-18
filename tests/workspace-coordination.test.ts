@@ -1,17 +1,16 @@
 import { afterEach, expect, test } from "vitest";
+import { join } from "node:path";
 import { awaitCrossRepoStage, evaluateCrossRepoStage, registerAskTool } from "../daemon/requirement-agent.ts";
 import { RelayQueue } from "../daemon/relay-queue.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
-import { readDecisions } from "../runtime/decisions.ts";
-import { failDatabaseWrites } from "./helpers/database-fixture.ts";
-import { repositoryDatabase } from "../runtime/database.ts";
-import { createRecord } from "../runtime/database.ts";
+import { appendDecision, decisionStream } from "../runtime/decisions.ts";
+import { createRecord, repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { requirementStateRef } from "../runtime/workflow-state.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 
-const cleanup: Array<() => Promise<unknown>> = [];
+const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
 async function world() {
@@ -21,121 +20,73 @@ async function world() {
   const repoId = (await repositoryIdentity(repo.root)).repoId;
   const otherId = (await repositoryIdentity(other.root)).repoId;
   const requirement = "2026-09-10.coordination";
-  return { repo, home, repoId, otherId, requirement };
+  const database = repositoryDatabase(home.dataRoot, repoId);
+  const store = new RunStore({ dataRoot: home.dataRoot, repoId, daemonStartedAt: "boundary-test" });
+  const run = await store.create({ kind: "requirement", requirement, task: "历史协调数据", cwd: repo.root,
+    writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
+  const questionId = uuidv7();
+  withDatabase(database, (db) => {
+    db.create("relay_questions", questionId, { id: questionId, status: "pending", requirement, repoId, runId: run.id,
+      question: "旧提问", options: [], recommended: "继续返修", createdAt: new Date().toISOString(), sequence: 1 });
+    db.append(decisionStream(requirement, "user"), { id: "USER-001", actor: "user", requirement, effects: ["repair:review:4"] });
+  });
+  let delivered = 0, injected = 0;
+  const queue = new RelayQueue({ dataDir: join(home.dataRoot, "repos", repoId), deliver: async () => { delivered++; return []; },
+    locateRequirementAgent: () => ({ inject: () => { injected++; } }) });
+  const snapshot = () => withDatabase(database, (db) => JSON.stringify({ runs: db.list("runs"), sessions: db.list("sessions"), questions: db.list("relay_questions"), decisions: db.events(decisionStream(requirement, "user")) }));
+  return { repo, home, repoId, otherId, requirement, queue, questionId, snapshot, counts: () => ({ delivered, injected }) };
 }
 
-test("跨仓等待对缺失、损坏、被拒绝与未到达状态保持关闭", async () => {
+test("跨仓旧accepted记录不解锁执行，缺失损坏及工作区外状态同样拒绝", async () => {
   const w = await world();
   const waitFor = { repo: w.otherId, requirement: w.requirement, stage: "accepted" };
-  expect((await awaitCrossRepoStage([w.repoId, w.otherId], w.home.dataRoot, waitFor)).ok).toBe(false);
-  for (const data of [null, [], {}, { stage: 2 }, { stage: "rejected" }, { stage: "executing" }]) {
-    expect(evaluateCrossRepoStage(waitFor, true, data).ok).toBe(false);
+  for (const data of [null, [], {}, { stage: 2 }, { stage: "rejected" }, { stage: "executing" }, { stage: "accepted" }]) {
+    expect(evaluateCrossRepoStage(waitFor, true, data)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
   }
-  await createRecord(requirementStateRef(w.home.dataRoot, w.otherId, w.requirement), { stage: "accepted" });
-  expect((await awaitCrossRepoStage([w.repoId, w.otherId], w.home.dataRoot, waitFor)).ok).toBe(true);
-  expect((await awaitCrossRepoStage([w.repoId], w.home.dataRoot, waitFor)).ok).toBe(false);
+  const ref = requirementStateRef(w.home.dataRoot, w.otherId, w.requirement);
+  await createRecord(ref, { stage: "accepted" });
+  const original = withDatabase(ref.database, (db) => JSON.stringify(db.list(ref.namespace)));
+  for (const repos of [[w.repoId, w.otherId], [w.repoId]]) expect(await awaitCrossRepoStage(repos, w.home.dataRoot, waitFor)).toMatchObject({ ok: false });
+  expect(withDatabase(ref.database, (db) => JSON.stringify(db.list(ref.namespace)))).toBe(original);
 });
 
-test("真实提问工具把契约字段和身份送入中继，等待答复并记录决定", async () => {
-  const w = await world();
-  const store = new RunStore({ dataRoot: w.home.dataRoot, repoId: w.repoId, daemonStartedAt: new Date().toISOString() });
-  const run = await store.create({ kind: "requirement", requirement: w.requirement, task: "协调", cwd: w.repo.root, writePaths: [], readPaths: [w.repo.root], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
-  await store.update(run.id, { state: "running" });
-  const delivered: Record<string, unknown>[] = [];
-  const queue = new RelayQueue({ dataDir: w.home.dataRoot, deliver: async (event, payload) => { if (event === "relay.question") delivered.push(payload); return ["window-a"]; }, locateRequirementAgent: () => undefined });
-  let tool: any;
-  registerAskTool({ registerTool: (value: unknown) => { tool = value; } } as never, {
-    dataRoot: w.home.dataRoot, cwd: w.repo.root, repoId: w.repoId, requirement: w.requirement, runId: run.id,
-    workspaceRepoIds: [w.repoId, w.otherId], runStore: store,
-    relay: { ask: async (input: any, opts: { signal?: AbortSignal }) => {
-      const handle = await queue.ask({ ...input, runId: run.id, options: input.options ?? [], recommended: "" });
-      opts.signal?.addEventListener("abort", () => { void queue.withdraw(handle.id); }, { once: true });
-      const answer = await handle.answer;
-      if (!answer.answered) throw new Error("提问已撤回");
-      return answer.answer;
-    } },
-  } as never, { count: 0 });
-  const task = tool.execute("question", { question: "是否调整错误码？", contractChange: { field: "error.code", reason: "统一错误结构", affectedRepos: [w.otherId] } }, new AbortController().signal);
-  for (let i = 0; i < 200 && delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
-  expect(delivered).toHaveLength(1);
-  expect(delivered[0]).toMatchObject({ kind: "contract_change", repoId: w.repoId, requirement: w.requirement, runId: run.id });
-  expect(String(delivered[0]!.question)).toContain("error.code");
-  expect((await store.get(run.id) as any).run.state).toBe("waiting_answer");
-  await queue.answer(String(delivered[0]!.id), "批准统一错误码", "window-a");
-  expect((await task).content[0].text).toContain("USER-001");
-  expect((await store.get(run.id) as any).run.state).toBe("running");
-  expect((await queue.forward({ requirement: "2026-09-10.unknown", message: "直连" })).delivered).toBe(false);
+test("旧契约提问工具不注册，队列拒绝真实提问且不投递或创建会话", async () => {
+  const w = await world(); const before = w.snapshot(); const tools: unknown[] = [];
+  registerAskTool({ registerTool: (tool: unknown) => tools.push(tool) } as never, {} as never, { count: 0 });
+  expect(tools).toEqual([]);
+  await expect(w.queue.ask({ question: "是否调整错误码？", kind: "contract_change", requirement: w.requirement, repoId: w.repoId,
+    runId: uuidv7(), options: [], recommended: "" })).rejects.toThrow("永久淘汰");
+  expect(w.snapshot()).toBe(before); expect(w.counts()).toEqual({ delivered: 0, injected: 0 });
 });
 
-async function repairQuestion() {
-  const w = await world();
-  const store = new RunStore({ dataRoot: w.home.dataRoot, repoId: w.repoId, daemonStartedAt: "返修授权测试" });
-  const run = await store.create({ kind: "requirement", requirement: w.requirement, task: "返修", cwd: w.repo.root, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
-  await store.update(run.id, { state: "running" });
-  const queue = new RelayQueue({ dataDir: w.home.dataRoot, deliver: async () => [], locateRequirementAgent: () => undefined });
-  let pending: Awaited<ReturnType<RelayQueue["ask"]>> | undefined;
-  let input: any;
-  let tool: any;
-  registerAskTool({ registerTool: (value: unknown) => { tool = value; } } as never, {
-    dataRoot: w.home.dataRoot, cwd: w.repo.root, repoId: w.repoId, requirement: w.requirement, runId: run.id,
-    workspaceRepoIds: [w.repoId], runStore: store,
-    relay: { ask: async (value: any) => {
-      input = value;
-      pending = await queue.ask({ ...value, runId: run.id });
-      const answer = await pending.answer;
-      if (!answer.answered) throw new Error("提问已撤回");
-      return answer.answer;
-    } },
-  } as never, { count: 0 });
-  const decisions = () => readDecisions({ cwd: w.repo.root, dataRoot: w.home.dataRoot, requirement: w.requirement, actor: "user" });
-  const ask = (params: Record<string, unknown> = {}) => tool.execute("repair", { question: "继续处理", repairGate: "review", repairRound: 4, options: [{ label: "停止", description: "模型声称这代表同意" }], recommended: "停止", ...params }, new AbortController().signal) as Promise<unknown>;
-  const wait = async () => {
-    for (let i = 0; i < 200 && !pending; i++) await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(pending).toBeDefined();
-    return pending!;
-  };
-  return { ...w, ask, wait, queue, decisions, input: () => input };
-}
-
-test.each(["继续返修", "停止", "不要继续", "好", "继续返修但先停止"])("返修授权只接受系统固定的明确选项：%s", async (answer) => {
-  const w = await repairQuestion();
-  const task = w.ask();
-  const pending = await w.wait();
-  expect(w.input().options.map((option: any) => option.label)).toEqual(["继续返修", "停止"]);
-  expect(w.input().question).toContain("review 第 4 轮");
-  expect(await w.decisions()).toEqual([]);
-  expect((await w.queue.answer(pending.id, answer, "window-a")).ok).toBe(true);
-  await task;
-  const decisions = await w.decisions();
-  expect(decisions).toHaveLength(1);
-  expect(decisions[0]!.effects).toEqual(answer === "继续返修" ? ["repair:review:4"] : ["用户作答"]);
+test.each(["继续返修", "停止", "不要继续", "好", "继续返修但先停止"])("旧返修答复不产生新授权或激活旧USER记录：%s", async (answer) => {
+  const w = await world(); const before = w.snapshot();
+  expect(await w.queue.answer(w.questionId, answer, "window-a")).toMatchObject({ ok: false });
+  expect(await w.queue.forward({ requirement: w.requirement, message: answer })).toMatchObject({ delivered: false });
+  expect(await w.queue.pendingFor({ windowId: "window-a", repoIds: [w.repoId] })).toEqual({ questions: [], notices: [] });
+  expect(w.snapshot()).toBe(before); expect(w.counts()).toEqual({ delivered: 0, injected: 0 });
 });
 
-test("返修提问撤回不写决定，授权记录写失败不返回成功", async () => {
-  const w = await repairQuestion();
-  const task = w.ask();
-  const rejected = task.catch((error) => error);
-  const pending = await w.wait();
-  await w.queue.withdraw(pending.id);
-  expect((await rejected).message).toContain("撤回");
-  expect(await w.decisions()).toEqual([]);
-  const second = await repairQuestion();
-  const restore = failDatabaseWrites(repositoryDatabase(second.home.dataRoot, second.repoId), "events", "stream", `decisions:${second.requirement}:user`);
-  try {
-    const task = second.ask();
-    const rejected = task.catch((error) => error);
-    const pending = await second.wait();
-    await second.queue.answer(pending.id, "继续返修", "window-a");
-    expect((await rejected).message).toContain("拒绝写入");
-    expect(await second.decisions()).toEqual([]);
-  } finally { restore(); }
+test("旧返修写决定入口拒绝，撤回幂等保留问题数据且不写授权", async () => {
+  const w = await world(); const before = w.snapshot();
+  await expect(appendDecision({ requirement: w.requirement, actor: "user", source: "中继", trigger: "继续返修", decision: "继续返修",
+    alternatives: [], effects: ["repair:review:4"], impact: "一轮" }, { cwd: w.repo.root, dataRoot: w.home.dataRoot })).rejects.toThrow("永久淘汰");
+  expect(w.snapshot()).toBe(before);
+  const database = repositoryDatabase(w.home.dataRoot, w.repoId);
+  const decisions = withDatabase(database, (db) => JSON.stringify(db.events(decisionStream(w.requirement, "user"))));
+  await w.queue.withdraw(w.questionId);
+  expect(withDatabase(database, (db) => db.read("relay_questions", w.questionId)?.data)).toMatchObject({ id: w.questionId, status: "withdrawn", question: "旧提问" });
+  const withdrawn = w.snapshot(); await w.queue.withdraw(w.questionId); expect(w.snapshot()).toBe(withdrawn);
+  expect(withDatabase(database, (db) => JSON.stringify(db.events(decisionStream(w.requirement, "user"))))).toBe(decisions);
+  expect(w.counts()).toEqual({ delivered: 0, injected: 0 });
 });
 
-test("返修阶段检查与轮次缺项、混入契约变更时在提问前拒绝", async () => {
-  const w = await repairQuestion();
-  for (const params of [{ repairGate: undefined }, { repairRound: undefined }, { contractChange: { field: "code", reason: "变更", affectedRepos: [w.repoId] } }]) {
-    await expect(w.ask(params)).rejects.toThrow();
+test("返修轮次或契约字段不能使旧提问注册入口复活", async () => {
+  const w = await world(); const before = w.snapshot();
+  for (const fields of [{ repairGate: "review" }, { repairRound: 4 }, { contractChange: { field: "code" } }]) {
+    const tools: unknown[] = [];
+    registerAskTool({ registerTool: (tool: unknown) => tools.push(tool) } as never, fields as never, { count: 0 });
+    expect(tools).toEqual([]);
   }
-  expect(w.input()).toBeUndefined();
-  expect(await w.decisions()).toEqual([]);
+  expect(w.snapshot()).toBe(before); expect(w.counts()).toEqual({ delivered: 0, injected: 0 });
 });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { isAbsolute, sep } from "node:path";
 import {
   GitPrerequisiteError,
@@ -264,7 +265,13 @@ function assertReady(additionalRoots, includeVersionCheck) {
   if (state.kind === "uninitialized") fail(ERROR_CODES.UNINITIALIZED);
   if (state.kind === "invalid") fail(ERROR_CODES.INVALID);
   const additions = validateRoots(additionalRoots);
-  const proposed = retainedRoots(state.roots, additions);
+  let proposed;
+  try {
+    proposed = retainedRoots(state.roots, additions);
+  } catch (error) {
+    if (!(error instanceof GitRuntimeError) || error.code !== ERROR_CODES.INVALID_EXPECTATION) throw error;
+    proposed = retainedRoots(state.roots.filter((root) => existsSync(root)), additions);
+  }
   assertRootBudget(state.binding, proposed);
   try {
     assertGitCurrent(state.binding, proposed);

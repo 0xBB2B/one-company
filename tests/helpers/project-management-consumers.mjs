@@ -14,6 +14,8 @@ assert.ok(["native", "loader"].includes(mode));
 const source = new URL("../../", import.meta.url);
 const { daemonLoader } = await import(new URL("daemon/loader.mjs", source));
 const load = (path) => mode === "loader" ? daemonLoader.import(new URL(path, source).href) : import(new URL(path, source));
+const { initializeHostGit } = await load("runtime/git-runtime.mjs");
+initializeHostGit([]);
 const { repositoryIdentity, repoDataDir } = await load("runtime/identity.ts");
 const { uuidv7 } = await load("runtime/database.ts");
 const { ProjectSyncClientSession, PROJECT_INDEX_MANAGEMENT_NAMESPACE } = await load("runtime/project-sync-client.ts");

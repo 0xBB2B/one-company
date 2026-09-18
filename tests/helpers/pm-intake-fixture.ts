@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ApprovalManifestStore } from "../../runtime/approval-manifest-store.ts";
@@ -33,10 +33,57 @@ import { UserInteractionCore } from "../../runtime/user-interaction.ts";
 import type { InteractionContext } from "../../runtime/user-interaction-format.ts";
 import { decisionDigest } from "../../runtime/short-decision-format.ts";
 import { repositoryIdentity } from "../../runtime/identity.ts";
-import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./repo-fixture.ts";
+import {
+  addWorktree,
+  createRepoFixture,
+  GIT_ENV,
+  removeRepoFixture,
+  repoFixtureRootReceipt,
+  worktreeFixtureRootReceipt,
+} from "./repo-fixture.ts";
+import type { RepoFixtureRootReceipt, WorktreeFixtureRootReceipt } from "./repo-fixture.ts";
 import { temporaryRoot } from "./temporary-root.ts";
+import { testHostGitExecutable } from "./test-git-binding.ts";
 
 const exec = promisify(execFile);
+
+// PM_FIXTURE_ROOT_RECEIPTS_START
+export interface PmIntakeFixtureRootReceipt {
+  readonly path: string;
+  readonly dev: number;
+  readonly ino: number;
+}
+
+export interface PmIntakeFixtureRootReceipts {
+  readonly format: "pm-intake-fixture-roots/v1";
+  readonly pm: PmIntakeFixtureRootReceipt;
+  readonly repo: RepoFixtureRootReceipt;
+  readonly worktree: WorktreeFixtureRootReceipt;
+}
+
+interface PmFixtureOwnedRoots {
+  readonly pm: PmIntakeFixtureRootReceipt;
+  readonly repo: RepoFixtureRootReceipt;
+  readonly worktree: WorktreeFixtureRootReceipt;
+}
+
+const pmFixtureOwnedRoots = new WeakMap<object, PmFixtureOwnedRoots>();
+
+function copyRootReceipt(receipt: PmIntakeFixtureRootReceipt): PmIntakeFixtureRootReceipt {
+  return Object.freeze({ path: receipt.path, dev: receipt.dev, ino: receipt.ino });
+}
+
+export function pmIntakeFixtureRootReceipts(fixture: PmIntakeFixture): PmIntakeFixtureRootReceipts | undefined {
+  const roots = pmFixtureOwnedRoots.get(fixture);
+  if (!roots) return undefined;
+  return Object.freeze({
+    format: "pm-intake-fixture-roots/v1",
+    pm: copyRootReceipt(roots.pm),
+    repo: copyRootReceipt(roots.repo),
+    worktree: copyRootReceipt(roots.worktree),
+  });
+}
+// PM_FIXTURE_ROOT_RECEIPTS_END
 
 export class FixtureSourceProvider implements PmSourceDirectoryProvider {
   readonly handles = new WeakMap<object, { query: Omit<PmSourceDirectoryQuery, "signal" | "binding">; scenarioIds: string[]; questionIds: string[] }>();
@@ -143,18 +190,42 @@ export interface PmIntakeFixture {
   cleanup(): Promise<void>;
 }
 
+// PM_FIXTURE_FACTORY_START
 export async function createPmIntakeFixture(options: { retained?: boolean } = {}): Promise<PmIntakeFixture> {
+  const allocation: {
+    pmPath?: string;
+    pmReceipt?: PmIntakeFixtureRootReceipt;
+    repoReceipt?: RepoFixtureRootReceipt;
+    worktreeReceipt?: WorktreeFixtureRootReceipt;
+  } = {};
+  let allocatedCore: UserInteractionCore | undefined, allocatedHost: HostAuthorizationManager | undefined;
+  try {
   const root = await mkdtemp(join(temporaryRoot(), "pm-intake-"));
+  allocation.pmPath = root;
+  const rootInfo = await lstat(root);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error(`PM夹具根不是自产真实目录；保全路径 ${root}`);
+  }
+  allocation.pmReceipt = Object.freeze({ path: root, dev: rootInfo.dev, ino: rootInfo.ino });
+  const gitExecutable = testHostGitExecutable([root]);
   const repo = await createRepoFixture();
+  const repoReceipt = repoFixtureRootReceipt(repo);
+  if (!repoReceipt) throw new Error("PM夹具未取得原repo根收据");
+  allocation.repoReceipt = Object.freeze({ path: repoReceipt.path, dev: repoReceipt.dev, ino: repoReceipt.ino });
+  if (repo.root !== repoReceipt.path) throw new Error("PM夹具repo公开根与原收据不一致");
   const dataRoot = join(root, "data"), identity = await repositoryIdentity(repo.root);
   let now = Date.now();
-  const config = { repositoryRoot: repo.root, dataRoot, repoId: identity.repoId, gitExecutable: "/usr/bin/git" };
+  const config = { repositoryRoot: repo.root, dataRoot, repoId: identity.repoId, gitExecutable };
   const service = await RequirementService.open({ ...config, authorize: () => true });
   const state = await RequirementStateStore.open({ ...config, authorize: () => true, now: () => now });
   const title = "PM接手", body = "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n";
   let saved = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title, body });
   const worktree = await addWorktree(repo);
-  const baseCommit = (await exec("/usr/bin/git", ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
+  const worktreeReceipt = worktreeFixtureRootReceipt(worktree);
+  if (!worktreeReceipt) throw new Error("PM夹具未取得原worktree根收据");
+  allocation.worktreeReceipt = Object.freeze({ path: worktreeReceipt.path, dev: worktreeReceipt.dev, ino: worktreeReceipt.ino });
+  if (worktree.root !== worktreeReceipt.path) throw new Error("PM夹具worktree公开根与原收据不一致");
+  const baseCommit = (await exec(gitExecutable, ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
   await state.bindWorkspace({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
   let confirmOperationId = uuidv7(), useRetained = false;
@@ -198,6 +269,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
           questions: [] } });
       },
     } });
+  allocatedCore = core;
   core.startSession({ sessionId: "fixture-core", windowId: "fixture-core" });
   const ticket = core.captureInput({ source: "interactive", text: "批准手机号正常和失败场景，并允许实施。" }, "fixture-core");
   let interpreted = await core.interpret(ticket, saved.requirementId);
@@ -232,6 +304,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
 
   const sessionId = uuidv7(), windowId = uuidv7();
   const host = new HostAuthorizationManager({ dataRoot });
+  allocatedHost = host;
   host.startWindow({ kind: "main", windowId, sessionId, repoIds: [identity.repoId] });
   host.bindRequirement(identity.repoId, saved.requirementId, sessionId);
   const calls = new WeakMap<object, MainIntakeCallIdentity>();
@@ -264,13 +337,39 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
     prodScenarioIds: [...sourceProvider.scenarioIds],
     decisionIds: intakeManifestDecisionIds(authorized.manifest), questionIds: [], requiredScenarioIds: [...sourceProvider.scenarioIds] };
   const dbPath = repositoryDatabase(dataRoot, identity.repoId);
-  return {
+  if (!allocation.pmReceipt || !allocation.repoReceipt || !allocation.worktreeReceipt) {
+    throw new Error("PM夹具三根原收据不完整");
+  }
+  const fixture: PmIntakeFixture = {
     root, dataRoot, repoId: identity.repoId, requirementId: saved.requirementId, service: approver, state, host, intakeStore, intake,
     sourceProvider, submissionProvider, call, identity: callIdentity, lease, manifest: authorized.manifest, basis, sourceDirectory,
     operationId: uuidv7, db: <T>(run: (db: LocalDatabase) => T) => withDatabase(dbPath, run), newCall, makeIntake,
     captureCurrent: () => intakeStore.captureCurrent(basis, sourceDirectory),
     setNow(value: number) { now = value; },
     advanceNow(value: number) { now += value; },
-    async cleanup() { host.shutdown(); core.shutdown(); await removeRepoFixture(repo); await rm(root, { recursive: true, force: true }); },
+    async cleanup() {
+      host.shutdown();
+      core.shutdown();
+      await removeRepoFixture(repo);
+      await rm(root, { recursive: true, force: true });
+    },
   };
+  pmFixtureOwnedRoots.set(fixture, Object.freeze({
+    pm: copyRootReceipt(allocation.pmReceipt),
+    repo: copyRootReceipt(allocation.repoReceipt),
+    worktree: copyRootReceipt(allocation.worktreeReceipt),
+  }));
+  return fixture;
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    try { allocatedHost?.shutdown(); } catch (failure) { cleanupErrors.push(failure); }
+    try { allocatedCore?.shutdown(); } catch (failure) { cleanupErrors.push(failure); }
+    // 未交回完整句柄时只停止已知内存资源；Git子进程结束未核实，不删除已分配根。
+    console.error(JSON.stringify({ status: "pm_intake_fixture_setup_preserved", fixtureRoot: allocation.pmPath ?? null,
+      repoRoot: allocation.repoReceipt?.path ?? null, worktreeRoot: allocation.worktreeReceipt?.path ?? null,
+      processCleanup: "unconfirmed", memoryCleanupFailed: cleanupErrors.length > 0 }));
+    const paths = [allocation.pmPath, allocation.repoReceipt?.path, allocation.worktreeReceipt?.path].filter((path): path is string => Boolean(path));
+    throw new AggregateError([error, ...cleanupErrors], `PM夹具初始化失败${paths.length ? `；保全自有根 ${paths.join(" / ")}` : "；未取得分配路径"}`);
+  }
 }
+// PM_FIXTURE_FACTORY_END

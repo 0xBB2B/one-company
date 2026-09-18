@@ -34,7 +34,9 @@ if (managed) {
 }
 process.env.TMPDIR = verificationRoot;
 process.env.GIT_CEILING_DIRECTORIES = root.replace(/\/$/, "");
-afterAll(() => {
+afterAll(async () => {
+  // The original tests await each world's pending cleanup before this module hook.
+  // A hook rejection fails the module; no root deletion is granted to B.
   if (!managed) {
     try {
       rmdirSync(verificationRoot);

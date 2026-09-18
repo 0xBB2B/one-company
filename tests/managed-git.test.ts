@@ -12,6 +12,9 @@ import { ShellRegistry } from "../runtime/shell-registry.ts";
 import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
+import { initializeHostGit } from "../runtime/git-runtime.mjs";
+
+initializeHostGit([]);
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });

@@ -4,7 +4,10 @@ import { dataRoot } from "../runtime/identity.ts";
 import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../runtime/daemon-client.ts";
 import { createRequirementManageTool } from "../runtime/requirement-manage-tool.ts";
 import { createUserInteractTool } from "../runtime/user-interact-tool.ts";
+import { MainIntakeInteraction } from "../runtime/main-intake-interaction.ts";
+import type { MainIntakeProviders } from "../runtime/main-intake-interaction.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
+import { currentHostGit } from "../runtime/git-runtime.mjs";
 import type { OpenRequirementService, RequirementManageHostContext } from "../runtime/main-requirement-interaction.ts";
 import { registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
 
@@ -13,6 +16,10 @@ export interface RequirementManageExtensionDeps {
   readonly dataRoot?: string;
   readonly gitExecutable?: string;
   readonly openService?: OpenRequirementService;
+  /** 受信宿主或隔离测试注入；缺失时PM接手入口明确拒绝，不装配默认生产者。 */
+  readonly pmIntakeProviders?: MainIntakeProviders;
+  /** 仅隔离测试或可信宿主用于缩短在途调用期限。 */
+  readonly pmIntakeCallTtlMs?: number;
   readonly windowReady?: typeof windowReady;
   readonly windowContext?: typeof windowContext;
 }
@@ -27,15 +34,26 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     return { windowId: window.windowId, sessionId: window.sessionId,
       repositories: new Map(window.workspace.repos.map((repo) => [repo.repoId, { path: repo.path }])) };
   };
-  const interaction = new MainRequirementInteraction({ dataRoot: root, gitExecutable: deps.gitExecutable ?? "/usr/bin/git",
+  const binding = currentHostGit([root]);
+  const gitExecutable = deps.gitExecutable ?? binding.executablePath;
+  if (gitExecutable !== binding.executablePath) {
+    const error = new Error("requirement_manage 的 Git 路径必须匹配宿主固定绑定") as Error & { code: string };
+    error.code = "untrusted_git";
+    throw error;
+  }
+  const interaction = new MainRequirementInteraction({ dataRoot: root, gitExecutable,
     authorization, resolveHost, ...(deps.openService ? { openService: deps.openService } : {}) });
+  const intake = new MainIntakeInteraction({ dataRoot: root, gitExecutable, authorization, resolveHost,
+    ...(deps.pmIntakeProviders ? { providers: deps.pmIntakeProviders } : {}),
+    ...(deps.pmIntakeCallTtlMs !== undefined ? { callTtlMs: deps.pmIntakeCallTtlMs } : {}) });
   let unregisterShutdown: (() => void) | undefined;
   const connections: Array<() => void> = [];
-  const shutdown = () => { for (const stop of connections.splice(0)) stop(); interaction.shutdown(); authorization.shutdown(); };
+  const shutdown = () => { for (const stop of connections.splice(0)) stop(); intake.shutdown(); interaction.shutdown(); authorization.shutdown(); };
   pi.registerFlag("requirement-rpc-input", { type: "boolean", default: false,
     description: "允许当前已接入RPC客户端的真实input用于需求决定；不接受扩展转述" });
   pi.on("session_start", async (_event, ctx) => {
     interaction.shutdown();
+    intake.shutdown();
     const window = await awaitWindow(), sessionId = ctx.sessionManager.getSessionId();
     if (window.sessionId !== sessionId) throw new Error("requirement_host_unavailable");
     authorization.startWindow({ kind: "main", windowId: window.windowId, sessionId, repoIds: window.workspace.repos.map((repo) => repo.repoId) });
@@ -47,6 +65,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
       connections.push(client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => authorization.revoke()));
     }
     unregisterShutdown = registerWindowShutdownHook(window, shutdown);
+    intake.startSession(ctx);
   });
   pi.on("input", (event, ctx) => {
     interaction.captureInput(event, ctx, ctx.mode === "rpc" && pi.getFlag("requirement-rpc-input") === true);
@@ -55,6 +74,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   pi.on("session_before_switch", () => { authorization.revoke(); });
   pi.on("session_before_fork", () => { authorization.revoke(); });
   pi.on("session_before_tree", () => { authorization.revoke(); });
+  pi.on("session_before_compact", (_event, ctx) => { intake.clearForCompaction(ctx); });
   pi.on("model_select", () => { authorization.revoke(); });
   pi.on("session_shutdown", () => { unregisterShutdown?.(); unregisterShutdown = undefined; shutdown(); });
   pi.registerCommand("requirement-revoke", { description: "撤销当前窗口的需求输入与在途能力", handler: async () => { authorization.revoke(); } });
@@ -70,11 +90,18 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
       } catch { ctx.ui.notify("需求身份绑定未完成：缺少可信交互、列表超限，或会话/需求/工作区状态已变化。", "warning"); }
     },
   });
+  pi.on("tool_call", (event, ctx) => { intake.observeToolCall(event, ctx); });
+  pi.on("tool_execution_end", (event) => { intake.completeToolExecution(event); });
   pi.on("tool_result", (event, ctx) => {
     if (!["pi_company_requirement_manage", "pi_company_user_interact"].includes(event.toolName)) return;
+    if (intake.ownsDelivery(event.toolCallId)) {
+      try { intake.assertDelivery(event, ctx); }
+      catch { return { content: [{ type: "text", text: "pm_intake_interaction_denied" }], details: {}, isError: true }; }
+      return;
+    }
     try { if (event.isError) throw new Error("denied"); interaction.assertDelivery(event.toolCallId, ctx); }
     catch { return { content: [{ type: "text", text: "requirement_interaction_denied" }], details: {}, isError: true }; }
   });
   pi.registerTool(createRequirementManageTool({ interaction }));
-  pi.registerTool(createUserInteractTool({ interaction }));
+  pi.registerTool(createUserInteractTool({ interaction, intake }));
 }

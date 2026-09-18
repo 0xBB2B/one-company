@@ -12,6 +12,9 @@ import type { ChildJob, Sample } from "./m3-benchmark.ts";
 import type { ProjectIndexSyncManager, ProjectIndexSyncStatus, ProjectIndexWatchFactory } from "../../runtime/project-index-sync.ts";
 import type { ProjectIndexService, ProjectIndexBuildResult } from "../../runtime/project-index-service.ts";
 import type { LocalDatabase } from "../../runtime/database.ts";
+import { initializeTestHostGit } from "./test-git-binding.ts";
+
+initializeTestHostGit([]);
 
 const job = JSON.parse(await readFile(process.argv[2], "utf8")) as ChildJob;
 process.umask(0o077);

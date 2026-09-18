@@ -5,6 +5,8 @@ import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } fr
 
 import { runManagedGit, withGitProcessSession } from "./git-process-session.ts";
 import type { GitProcessObserver } from "./git-process-session.ts";
+import { currentHostGit } from "./git-runtime.mjs";
+import type { HostGitBinding } from "./git-prerequisite.mjs";
 
 const PROD_FILE = "prod.md";
 const GIT_DIR = ".git";
@@ -132,6 +134,8 @@ interface PreparedPaths {
   requirementRoot: string;
   prodPath: string;
   gitExecutable: string;
+  gitBinding: HostGitBinding;
+  gitRoots: readonly string[];
 }
 
 interface GitResult {
@@ -340,36 +344,46 @@ async function canonicalCandidate(path: string): Promise<string> {
   return join(realExisting, ...missing);
 }
 
-async function assertTrustedGitExecutable(path: string): Promise<string> {
+export async function assertBoundGitExecutable(path: string, roots: readonly string[]): Promise<HostGitBinding> {
   if (!isAbsolute(path)) fail("invalid_config", "gitExecutable 必须是绝对路径");
-  if (!/^git(?:\.exe)?$/i.test(basename(path))) fail("untrusted_git", "Git 可执行文件必须是固定的 git 程序");
-  let stats;
-  try { stats = await lstat(path); }
+  try { await lstat(path); }
   catch (error) {
     if (errno(error) === "ENOENT") fail("git_unavailable", "Git 可执行文件不可用");
-    throw error;
+    fail("untrusted_git", "Git 可执行文件无法按宿主绑定核验");
   }
-  if (stats.isSymbolicLink() || !stats.isFile()) fail("untrusted_git", "Git 可执行文件不能是链接或非普通文件");
-  if (process.platform !== "win32") {
-    if ((stats.mode & 0o111) === 0) fail("git_unavailable", "Git 可执行文件不可执行");
-    if (stats.uid !== 0 || (stats.mode & 0o022) !== 0) fail("untrusted_git", "Git 可执行文件必须由系统管理且不可被普通用户改写");
+  let binding: HostGitBinding;
+  try { binding = currentHostGit(roots); }
+  catch { fail("untrusted_git", "Git 可执行文件未绑定到当前可信宿主"); }
+  if (path !== binding.executablePath) fail("untrusted_git", "gitExecutable 必须严格匹配宿主已绑定的 canonical 路径");
+  return binding;
+}
+
+function assertPreparedGit(paths: PreparedPaths): HostGitBinding {
+  let binding: HostGitBinding;
+  try { binding = currentHostGit(paths.gitRoots); }
+  catch { fail("untrusted_git", "宿主 Git 绑定已失效"); }
+  if (binding !== paths.gitBinding || binding.executablePath !== paths.gitExecutable) {
+    fail("untrusted_git", "正文存储 Git 与宿主固定绑定不一致");
   }
-  const resolved = await realpath(path);
-  if (resolved !== resolve(path)) fail("untrusted_git", "Git 可执行文件路径不能经过链接");
-  return resolved;
+  return binding;
 }
 
 async function preparePaths(config: ProdStorageConfig, allowCreateDataRoot: boolean): Promise<PreparedPaths> {
   if (!isAbsolute(config.dataRoot)) fail("invalid_config", "dataRoot 必须是绝对路径");
   assertSafeSegment("repoId", config.repoId);
   assertRequirementId(config.requirementId);
-  const gitExecutable = await assertTrustedGitExecutable(config.gitExecutable);
-  await assertNoUntrustedSymlinkAncestors(config.dataRoot);
-
-  const dataCandidate = await canonicalCandidate(config.dataRoot);
   const protectedRoots = [config.repositoryRoot, ...(config.worktreeRoots ?? [])].filter((path): path is string => path !== undefined);
   for (const protectedRoot of protectedRoots) {
     if (!isAbsolute(protectedRoot)) fail("invalid_config", "repositoryRoot/worktreeRoots 必须是绝对路径");
+  }
+  const gitRoots = [config.dataRoot, ...protectedRoots];
+  // Git 绑定必须先于任何 mkdir/chmod/数据库副作用完成；显式路径只是对宿主选择结果的严格声明。
+  const gitBinding = await assertBoundGitExecutable(config.gitExecutable, gitRoots);
+  const gitExecutable = gitBinding.executablePath;
+  await assertNoUntrustedSymlinkAncestors(config.dataRoot);
+
+  const dataCandidate = await canonicalCandidate(config.dataRoot);
+  for (const protectedRoot of protectedRoots) {
     await assertNoUntrustedSymlinkAncestors(protectedRoot);
     const protectedCandidate = await canonicalCandidate(protectedRoot);
     if (pathInside(protectedCandidate, dataCandidate) || pathInside(dataCandidate, protectedCandidate)) {
@@ -386,7 +400,7 @@ async function preparePaths(config: ProdStorageConfig, allowCreateDataRoot: bool
   const requirementRoot = join(dataRoot, "repos", config.repoId, "requirements", config.requirementId);
   if (!pathInside(dataRoot, requirementRoot)) fail("path_escape", "需求正文路径越过 dataRoot");
   await assertNoUntrustedSymlinkAncestors(requirementRoot);
-  return { dataRoot, requirementRoot, prodPath: join(requirementRoot, PROD_FILE), gitExecutable };
+  return { dataRoot, requirementRoot, prodPath: join(requirementRoot, PROD_FILE), gitExecutable, gitBinding, gitRoots };
 }
 
 async function ensurePrivateDirectoryChain(dataRoot: string, requirementRoot: string): Promise<void> {
@@ -580,9 +594,16 @@ async function runGit(config: ProdStorageConfig, paths: PreparedPaths, args: str
   maxBuffer?: number;
   repository?: boolean;
 } = {}): Promise<GitResult> {
-  const result = await runManagedGit({ executable: paths.gitExecutable, args: fixedGitArgs(paths.requirementRoot, args, options.repository !== false),
-    cwd: paths.requirementRoot, env: gitEnvironment(config, options.env), input: options.input,
-    timeout: GIT_TIMEOUT_MS, maxBuffer: options.maxBuffer ?? GIT_MAX_BUFFER, command: args[0] ?? "" });
+  assertPreparedGit(paths);
+  let result: Awaited<ReturnType<typeof runManagedGit>>;
+  try {
+    result = await runManagedGit({ executable: paths.gitExecutable, args: fixedGitArgs(paths.requirementRoot, args, options.repository !== false),
+      cwd: paths.requirementRoot, env: gitEnvironment(config, options.env), input: options.input,
+      timeout: GIT_TIMEOUT_MS, maxBuffer: options.maxBuffer ?? GIT_MAX_BUFFER, command: args[0] ?? "",
+      excludedRoots: paths.gitRoots });
+  } finally {
+    assertPreparedGit(paths);
+  }
   if (result.spawnCode === "ENOENT") fail("git_unavailable", "Git 可执行文件不可用");
   if (result.spawnCode || result.timedOut || result.overflow) fail("git_failed", "Git 子进程执行失败");
   if (!(options.allowedExitCodes ?? [0]).includes(result.exitCode)) fail("git_failed", "Git 调用失败", { exitCode: result.exitCode });

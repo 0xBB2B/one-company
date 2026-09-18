@@ -10,6 +10,9 @@ import requirementManageExtension from "../../extensions/requirement-manage.ts";
 import type { WindowContextValue } from "../../extensions/lifecycle.ts";
 import { repositoryIdentity } from "../../runtime/identity.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../../runtime/database.ts";
+import { testHostGitExecutable } from "../helpers/test-git-binding.ts";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题A短答不能授权B，无旧UI或relay", async () => {
@@ -17,9 +20,9 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   try {
     await mkdir(repo); await mkdir(agentDir); await mkdir(dataRoot);
-    await exec("/usr/bin/git", ["init", "--initial-branch=main"], { cwd: repo });
-    await writeFile(join(repo, "README.md"), "fixture"); await exec("/usr/bin/git", ["add", "README.md"], { cwd: repo });
-    await exec("/usr/bin/git", ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "init"], { cwd: repo });
+    await exec(HOST_GIT, ["init", "--initial-branch=main"], { cwd: repo });
+    await writeFile(join(repo, "README.md"), "fixture"); await exec(HOST_GIT, ["add", "README.md"], { cwd: repo });
+    await exec(HOST_GIT, ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "init"], { cwd: repo });
     const identity = await repositoryIdentity(repo), sm = SessionManager.inMemory(repo);
     const window = { windowId: uuidv7(), sessionId: sm.getSessionId(), clients: { forRepo: () => ({ state: () => ({ status: "connected" }), subscribe: () => () => {} }) }, workspace: { repos: [{ ...identity, path: repo }] } } as unknown as WindowContextValue;
     const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });

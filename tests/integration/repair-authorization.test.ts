@@ -6,8 +6,8 @@ import { registerAskTool } from "../../daemon/requirement-agent.ts";
 import { RelayQueue } from "../../daemon/relay-queue.ts";
 import { RunManager } from "../../daemon/run-manager.ts";
 import { createClock } from "../../runtime/clock.ts";
-import { repositoryDatabase } from "../../runtime/database.ts";
-import { appendDecision } from "../../runtime/decisions.ts";
+import { repositoryDatabase, withDatabase } from "../../runtime/database.ts";
+import { appendDecision, decisionStream } from "../../runtime/decisions.ts";
 import { collectGitSnapshot } from "../../runtime/git-snapshot.ts";
 import { repositoryIdentity } from "../../runtime/identity.ts";
 import { NetworkPauseGate } from "../../runtime/network-pause.ts";
@@ -21,7 +21,7 @@ import { createTempHome, removeTempHome } from "../helpers/temp-home.ts";
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
-test.each(["review", "acceptance"] as const)("真实派工：%s 阶段检查三轮后阻塞，拒答不授权，明确授权仅限本项检查本轮", async (gate) => {
+test.each(["review", "acceptance"] as const)("旧%s失败轮次及USER返修记录不再授权派工，历史结果保全", async (gate) => {
   const repo = await createRepoFixture(); cleanup.push(() => removeRepoFixture(repo));
   const home = await createTempHome(); cleanup.push(() => removeTempHome(home));
   const { repoId } = await repositoryIdentity(repo.root);
@@ -45,45 +45,24 @@ test.each(["review", "acceptance"] as const)("真实派工：%s 阶段检查三�
   for (let i = 0; i < 4; i++) await failedAttempt(`T-${i + 1}`);
   const snapshot = await collectGitSnapshot({ repoRoot: repo.root });
   const dispatch = () => manager.dispatchReview({ requirement, cwd: repo.root, baseline: snapshot.head, snapshot });
-  await expect(dispatch()).rejects.toThrow("AI 归因");
-  const attribute = () => appendDecision({ requirement, actor: "ai", source: "需求代理", trigger: "阶段检查失败", decision: "补全输入边界验证", scope: requirement, basis: ["失败用例"], action: "先补测试再修实现", effects: [`repair:${gate}`], alternatives: [] }, ctx);
-  await attribute();
-  await expect(dispatch()).rejects.toThrow("技术阻塞");
-  const user = (effect: string) => appendDecision({ requirement, actor: "user", source: "中继", trigger: "继续返修", decision: "继续返修", effects: [effect], alternatives: [], impact: "新增一轮" }, ctx);
-  await user(`repair:${gate === "review" ? "acceptance" : "review"}:4`);
-  await user(`repair:${gate}:3`);
-  await expect(dispatch()).rejects.toThrow("技术阻塞");
-
-  const parent = await store.create({ ...base, kind: "requirement", task: "返修授权" });
-  await store.update(parent.id, { state: "running" });
-  let tool: any;
-  registerAskTool({ registerTool: (value: unknown) => { tool = value; } } as never, {
-    ...ctx, repoId, runId: parent.id, runStore: store, workspaceRepoIds: [repoId],
-    relay: { ask: async (input: any) => {
-      const question = await relay.ask({ ...input, runId: parent.id });
-      const outcome = await question.answer;
-      if (!outcome.answered) throw new Error("已撤回");
-      return outcome.answer;
-    } },
-  } as never, { count: 0 });
-  async function answer(value: string) {
-    const task = tool.execute("repair", { question: "继续处理该技术阻塞？", repairGate: gate, repairRound: 4 }, new AbortController().signal);
-    let pending = await relay.pendingFor({ windowId: "test", repoIds: [repoId] });
-    for (let i = 0; pending.questions.length === 0 && i < 200; i++) { await new Promise((resolve) => setTimeout(resolve, 5)); pending = await relay.pendingFor({ windowId: "test", repoIds: [repoId] }); }
-    expect(pending.questions).toHaveLength(1);
-    expect((await relay.answer(pending.questions[0]!.id, value, "test")).ok).toBe(true);
-    await task;
+  const database = repositoryDatabase(home.dataRoot, repoId);
+  withDatabase(database, (db) => {
+    for (const effect of [`repair:${gate}:3`, `repair:${gate}:4`, `repair:${gate === "review" ? "acceptance" : "review"}:4`]) {
+      db.append(decisionStream(requirement, "user"), { id: `USER-${effect}`, actor: "user", requirement, effects: [effect] });
+    }
+  });
+  const records = () => withDatabase(database, (db) => JSON.stringify({ runs: db.list("runs"), sessions: db.list("sessions"), decisions: db.events(decisionStream(requirement, "user")) }));
+  const before = records();
+  let registered = 0;
+  registerAskTool({ registerTool: () => { registered++; } } as never, {} as never, { count: 0 });
+  expect(registered).toBe(0);
+  scriptReplies(provider, [{ type: "text", text: "不应启动" }]);
+  for (const answer of ["停止", "继续返修"]) {
+    await expect(appendDecision({ requirement, actor: "user", source: "中继", trigger: "继续返修", decision: answer, effects: [`repair:${gate}:4`], alternatives: [], impact: "一轮" }, ctx)).rejects.toThrow("永久淘汰");
+    await expect(dispatch()).rejects.toThrow("永久淘汰");
   }
-  await answer("停止");
-  await expect(dispatch()).rejects.toThrow("技术阻塞");
+  await new Promise((resolve) => setTimeout(resolve, 1150));
+  expect(provider.requests).toEqual([]);
+  expect(records()).toBe(before);
   expect((await store.list({ requirement, kind: "role", limit: 100 })).items).toHaveLength(4);
-  await answer("继续返修");
-  scriptReplies(provider, [{ type: "text", text: "等待审查资料" }]);
-  const next = await dispatch();
-  expect((await store.get(next.runId)).ok).toBe(true);
-  await manager.stop(next.runId);
-  await failedAttempt("改名重派");
-  await attribute();
-  await expect(dispatch()).rejects.toThrow("第 4 轮返修");
-  expect((await store.list({ requirement, kind: "role", limit: 100 })).items).toHaveLength(6);
 }, 20000);

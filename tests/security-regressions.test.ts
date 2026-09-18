@@ -22,6 +22,11 @@ import { createRangeProtection } from "../runtime/range-protection.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { createManagedBashOperations } from "../runtime/shell-bash.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
+import { testHostGitExecutable } from "./helpers/test-git-binding.ts";
+import { createGitExpectationText } from "../runtime/git-daemon-binding.ts";
+import { randomUUID } from "node:crypto";
+
+const HOST_GIT = testHostGitExecutable([]);
 
 const exec = promisify(execFile);
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -33,7 +38,7 @@ async function world() {
   const cwd = join(root, "repo");
   const dataRoot = join(root, "data");
   await mkdir(cwd); await mkdir(dataRoot);
-  const git = (...args: string[]) => exec("/usr/bin/git", args, { cwd, timeout: 5000, env: {
+  const git = (...args: string[]) => exec(HOST_GIT, args, { cwd, timeout: 5000, env: {
     PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.invalid",
   } });
@@ -46,7 +51,7 @@ async function world() {
 }
 
 function hello(cwd: string, authToken: string) {
-  return { authToken, windowId: "test-window", pid: process.pid, sessionId: "test-session", cwd, workspaceRoot: cwd, repoIds: [], protocolVersion: PROTOCOL_VERSION };
+  return { authToken, windowId: "test-window", pid: process.pid, sessionId: "test-session", cwd, workspaceRoot: cwd, repoIds: [], protocolVersion: PROTOCOL_VERSION, gitExpectation: createGitExpectationText([]) };
 }
 
 async function rawClient(path: string) {
@@ -174,7 +179,8 @@ test("生产客户端携带凭证并正确解码跨包中文响应", async () =>
         if (frame.t !== "req") continue;
         if (frame.method === "hello") {
           receivedToken = frame.params.authToken;
-          socket.write(encodeFrame({ t: "res", id: frame.id, ok: true, result: { repoId: w.repoId } }));
+          socket.write(encodeFrame({ t: "res", id: frame.id, ok: true, result: { repoId: w.repoId, protocolVersion: PROTOCOL_VERSION, daemonPid: process.pid,
+            startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(), gitExpectation: frame.params.gitExpectation } }));
         } else {
           const bytes = Buffer.from(encodeFrame({ t: "res", id: frame.id, ok: true, result: { message: "确认" } }));
           const split = bytes.indexOf(Buffer.from("确")) + 1;
@@ -234,6 +240,18 @@ test("停止回执保留 Shell 不确定状态，重复停止可核验清理且�
   const concurrent = await Promise.all([manager.stop(parent.id), manager.stop(parent.id)]);
   for (const result of concurrent) expect(result).toMatchObject({ state: "stopped", confirmed: false, reason: "子运行尚未确认停止" });
   expect(await manager.stop(child.id)).toMatchObject({ state: "stopped", confirmed: false });
+  const blocked = await manager.stopAll();
+  expect(blocked.coverage).toMatchObject({ total: 2, validated: 2, confirmed: 0, unconfirmed: 2, unknown: 0, shellUnconfirmed: 0 });
+  expect(blocked.coverage.notice).toContain("未知或未确认项仍受阻");
+  expect(blocked.results).toEqual(expect.arrayContaining([
+    expect.objectContaining({ runId: parent.id, state: "stopped", confirmed: false }),
+    expect.objectContaining({ runId: child.id, state: "stopped", confirmed: false }),
+  ]));
   clear = true;
-  expect(await manager.stopAll()).toEqual({ results: [{ runId: parent.id, state: "stopped", confirmed: true }] });
+  const stopped = await manager.stopAll();
+  expect(stopped.coverage).toMatchObject({ total: 2, validated: 2, returned: 2, remaining: 0, confirmed: 2, unconfirmed: 0, unknown: 0, shellUnconfirmed: 0, truncated: false, nextOffset: null });
+  expect(stopped.results).toEqual(expect.arrayContaining([
+    { runId: parent.id, state: "stopped", confirmed: true },
+    { runId: child.id, state: "stopped", confirmed: true },
+  ]));
 });

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { cleanupOwnedScope } from "./helpers/m3-cleanup.ts";
+import { resolveSdkDir } from "./helpers/daemon-harness.ts";
 
 const execute = promisify(execFile);
 
@@ -64,6 +65,7 @@ test("sleep探针只包装实际入口同目录模块，保持原Promise、拒�
   // 包装器单测使用真实产品bootstrap/loader；只有被观察的最小方法是夹具，不替代产品集成验证。
   await copyFile(new URL("../daemon/bootstrap.mjs", import.meta.url), join(daemon, "bootstrap.mjs"));
   await symlink(fileURLToPath(new URL("../daemon/loader.mjs", import.meta.url)), join(daemon, "loader.mjs"));
+  await symlink(fileURLToPath(new URL("../runtime", import.meta.url)), join(root, "runtime"));
   await writeFile(join(daemon, "project-index-coordinator.ts"), `
     export class ProjectIndexCoordinator {
       result: Promise<unknown>;
@@ -93,7 +95,7 @@ test("sleep探针只包装实际入口同目录模块，保持原Promise、拒�
   let closed = false;
   try {
     const child = execute(process.execPath, ["--import", fileURLToPath(new URL("./helpers/project-index-daemon-child.ts", import.meta.url)),
-      join(daemon, "bootstrap.mjs")], { env: { ...process.env, M3_ASSEMBLY_REPOSITORY: root, M3_ASSEMBLY_PROBE: report }, timeout: 10_000 });
+      join(daemon, "bootstrap.mjs")], { env: { ...process.env, PI_COMPANY_SDK_DIR: resolveSdkDir(), PI_COMPANY_REPO_DIR: root, M3_ASSEMBLY_REPOSITORY: root, M3_ASSEMBLY_PROBE: report }, timeout: 10_000 });
     child.child.once("close", () => { closed = true; });
     await child;
     const raw = await readFile(report, "utf8");
@@ -128,7 +130,7 @@ test("真实原生watcher的close调用不能计作close事件，同进程事件
         await done;
         const eventual = JSON.parse(fs.readFileSync(process.env.M3_ASSEMBLY_PROBE, 'utf8'));
         console.log(JSON.stringify({ immediate, eventual, actual }));
-      `], { env: { ...process.env, M3_ASSEMBLY_REPOSITORY: root, M3_ASSEMBLY_PROBE: report }, timeout: 10_000 });
+      `], { env: { ...process.env, PI_COMPANY_SDK_DIR: resolveSdkDir(), PI_COMPANY_REPO_DIR: root, M3_ASSEMBLY_REPOSITORY: root, M3_ASSEMBLY_PROBE: report }, timeout: 10_000 });
     child.child.once("close", () => { closed = true; });
     const { stdout } = await child;
     const data = JSON.parse(stdout);

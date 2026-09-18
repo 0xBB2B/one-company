@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { classifySleep } from "./helpers/project-index-daemon-child.ts";
 import type { SleepEvidence } from "./helpers/project-index-daemon-child.ts";
+import { resolveSdkDir } from "./helpers/daemon-harness.ts";
 
 function revokedSleep(): SleepEvidence {
   return {
@@ -64,6 +65,7 @@ test("真实loader探针：原Promise结束后继承async context的timer拒绝�
   const daemon = join(root, "daemon"); await mkdir(daemon, { mode: 0o700 });
   await copyFile(new URL("../daemon/bootstrap.mjs", import.meta.url), join(daemon, "bootstrap.mjs"));
   await symlink(fileURLToPath(new URL("../daemon/loader.mjs", import.meta.url)), join(daemon, "loader.mjs"));
+  await symlink(fileURLToPath(new URL("../runtime", import.meta.url)), join(root, "runtime"));
   await writeFile(join(daemon, "project-index-coordinator.ts"), `
     export class ProjectIndexCoordinator {
       attachment = { active: true, client: {} };
@@ -91,7 +93,7 @@ test("真实loader探针：原Promise结束后继承async context的timer拒绝�
   let closed = false, passed = false;
   try {
     const child = promisify(execFile)(process.execPath, ["--import", fileURLToPath(new URL("./helpers/project-index-daemon-child.ts", import.meta.url)), join(daemon, "bootstrap.mjs")],
-      { env: { ...process.env, M3_ASSEMBLY_REPOSITORY: root, M3_ASSEMBLY_PROBE: join(root, "probe.json") }, timeout: 10_000 });
+      { env: { ...process.env, PI_COMPANY_SDK_DIR: resolveSdkDir(), PI_COMPANY_REPO_DIR: root, M3_ASSEMBLY_REPOSITORY: root, M3_ASSEMBLY_PROBE: join(root, "probe.json") }, timeout: 10_000 });
     child.child.once("close", () => { closed = true; });
     await child;
     const raw = JSON.parse(await readFile(join(root, "probe.json"), "utf8"));

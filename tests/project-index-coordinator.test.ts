@@ -19,6 +19,7 @@ import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/rep
 import type { RepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { cleanupOwnedScope } from "./helpers/m3-cleanup.ts";
+import { createGitExpectationText } from "../runtime/git-daemon-binding.ts";
 
 interface Peer {
   socket: Socket;
@@ -88,6 +89,7 @@ async function connect(path: string, token: string, windowId: string, repoId: st
     workspaceRoot: root,
     repoIds: [repoId],
     protocolVersion: PROTOCOL_VERSION,
+    gitExpectation: createGitExpectationText([]),
   });
   return peer;
 }

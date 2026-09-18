@@ -30,14 +30,15 @@ async function listTsFiles(dir: string): Promise<string[]> {
 
 const RELATIVE_IMPORT = /(?:import|export)\s+(?:[^"'()]*?\bfrom\s+)?["'](\.\.?\/[^"']+)["']/g;
 const DYNAMIC_RELATIVE_IMPORT = /\bimport\s*\(\s*["'](\.\.?\/[^"']+)["']/g;
+const EXPLICIT_EXTENSION = /\.(?:ts|mts|mjs|cjs)$/;
 
 function findBadRelativeImports(content: string): string[] {
   const bad: string[] = [];
   for (const match of content.matchAll(RELATIVE_IMPORT)) {
-    if (!match[1].endsWith(".ts")) bad.push(match[1]);
+    if (!EXPLICIT_EXTENSION.test(match[1])) bad.push(match[1]);
   }
   for (const match of content.matchAll(DYNAMIC_RELATIVE_IMPORT)) {
-    if (!match[1].endsWith(".ts")) bad.push(match[1]);
+    if (!EXPLICIT_EXTENSION.test(match[1])) bad.push(match[1]);
   }
   return bad;
 }
@@ -68,7 +69,7 @@ async function checkErasableSyntax(dir: string): Promise<{ checked: string[]; vi
   for (const file of files) {
     const content = await readFile(file, "utf8");
     for (const spec of findBadRelativeImports(content)) {
-      violations.push({ file, reason: `relative import 缺少 .ts 后缀: ${spec}` });
+      violations.push({ file, reason: `relative import 缺少显式扩展名: ${spec}` });
     }
     const stripError = checkNodeTypeStripping(file);
     if (stripError) violations.push({ file, reason: /\benum\b/i.test(stripError) ? "enum" : /\bnamespace\b/i.test(stripError) ? "namespace" : `node 类型剥离检查失败: ${stripError}` });

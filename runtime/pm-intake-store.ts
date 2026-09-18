@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { isPromise } from "node:util/types";
 import { Value } from "typebox/value";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
@@ -505,16 +506,20 @@ export class PmIntakeStore {
   readonly #repoId: string;
   readonly #now: () => number;
   readonly #hasInjectedClock: boolean;
+  readonly #deadlineMonotonic: number | undefined;
   readonly #proofs = new WeakMap<object, CurrentClaim>();
   readonly #requests = new WeakMap<object, RequestClaim>();
   readonly #reviews = new WeakMap<object, ReviewClaim>();
 
-  constructor(options: { dataRoot: string; repoId: string; now?: () => number }) {
+  constructor(options: { dataRoot: string; repoId: string; now?: () => number; deadlineMonotonic?: number }) {
     if (!HASH.test(options.repoId)) deny("invalid_repo");
+    if (options.deadlineMonotonic !== undefined &&
+      (!Number.isFinite(options.deadlineMonotonic) || options.deadlineMonotonic < 0)) deny("invalid_deadline");
     this.#dataRoot = options.dataRoot;
     this.#repoId = options.repoId;
     this.#hasInjectedClock = options.now !== undefined;
     this.#now = options.now ?? Date.now;
+    this.#deadlineMonotonic = options.deadlineMonotonic;
   }
 
   #time(): number {
@@ -523,10 +528,16 @@ export class PmIntakeStore {
     return value;
   }
 
+  #mainDeadline(): void {
+    if (this.#deadlineMonotonic !== undefined && performance.now() >= this.#deadlineMonotonic) deny("main_deadline_elapsed");
+  }
+
   #clockAfter(callback?: () => void): { base: number; sampledAt: number } {
     // 单调起点包住时钟采样与最后授权回调；回调之后不再调用注入时钟。
+    this.#mainDeadline();
     const sampledAt = performance.now(), first = this.#time(), second = this.#time();
     callback && syncCallback(callback);
+    this.#mainDeadline();
     return { base: Math.max(first, second), sampledAt };
   }
 
@@ -540,6 +551,7 @@ export class PmIntakeStore {
   /** 扫描、摘要和结果复制完成后只比较数值，不重新调用授权或注入时钟。 */
   #ready<T>(result: T, claim: { leaseExpiresAt: number }, clock: { base: number; sampledAt: number }): T {
     if (claim.leaseExpiresAt <= this.#observedAt(clock)) deny("stale_pm_lease");
+    this.#mainDeadline();
     return result;
   }
 

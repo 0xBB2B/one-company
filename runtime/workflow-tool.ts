@@ -1,441 +1,134 @@
-import { collectGitSnapshot } from "./git-snapshot.ts";
-import { readGit } from "./git-read.ts";
-import { createHash } from "node:crypto";
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { realpath } from "node:fs/promises";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { repositoryIdentity, requirementIdentity } from "./identity.ts";
-import { RunStore } from "./run-store.ts";
-import { StaleVersionError, repositoryDatabase, withDatabase, UUID_V7_PATTERN } from "./database.ts";
-import {
-  advanceStage,
-  checkResume,
-  failTask,
-  finishTask,
-  initRequirementState,
-  readRequirementState,
-  recordShape,
-  rejectRequirement,
-  retreatStage,
-  rollbackTask,
-  startTask,
-  updateTaskFields,
-} from "./workflow-state.ts";
-import type { ActionResult, DefinitionVersion, RequirementShape, RequirementState, WorkflowContext } from "./workflow-state.ts";
+import { repositoryIdentity } from "./identity.ts";
+import { readGit } from "./git-read.ts";
+import { repositoryDatabase, UUID_V7_PATTERN } from "./database.ts";
+import { assertLegacyRequirementId, checkedRequirement, withLegacyReadDatabase, VALID_TASK_PROGRESS } from "./workflow-state.ts";
+import type { DefinitionVersion, RequirementState } from "./workflow-state.ts";
+import { LEGACY_WORKFLOW_RETIRED } from "./decision-record-tool.ts";
 
-const PARAMETERS = Type.Object(
-  {
-    action: Type.Union([
-      Type.Literal("query"), Type.Literal("list"), Type.Literal("init"), Type.Literal("update"),
-      Type.Literal("advance"), Type.Literal("retreat"), Type.Literal("task-start"), Type.Literal("task-finish"),
-      Type.Literal("task-fail"), Type.Literal("rollback"), Type.Literal("reject"), Type.Literal("shape-confirm"),
-      Type.Literal("resume-check"),
-    ]),
-    requirement: Type.Optional(Type.String()),
-    cwd: Type.Optional(Type.String()),
-    task: Type.Optional(Type.String({ pattern: "^T-\\d+$" })),
-    fields: Type.Optional(Type.Array(Type.String())),
-    version: Type.Optional(Type.Integer({ minimum: 1 })),
-    update: Type.Optional(Type.Object({
-      note: Type.Optional(Type.String()), description: Type.Optional(Type.String()),
-      agent: Type.Optional(Type.String()), commit: Type.Optional(Type.String()),
-      blockedReason: Type.Optional(Type.String()), workspaceDir: Type.Optional(Type.String()),
-      followUpIssues: Type.Optional(Type.Array(Type.String())),
-    }, { additionalProperties: false })),
-    stage: Type.Optional(Type.String()),
-    decisionId: Type.Optional(Type.String({ pattern: "^(AI|USER)-\\d+$" })),
-    runId: Type.Optional(Type.String()),
-    reason: Type.Optional(Type.String()),
-  },
-  { additionalProperties: false },
-);
-
-export interface WorkflowActionResult {
-  ok: boolean;
-  text: string;
-  details: Record<string, unknown>;
+const METADATA_FIELDS = ["requirement", "stage", "tasks"] as const;
+export const LEGACY_METADATA_LIMIT = 100;
+export const LEGACY_METADATA_BYTES = 16_384;
+const PARAMETERS = Type.Object({
+  action: Type.Union([Type.Literal("query"), Type.Literal("list")]),
+  requirement: Type.Optional(Type.String({ maxLength: 128 })), cwd: Type.Optional(Type.String({ maxLength: 4096 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: LEGACY_METADATA_LIMIT })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
+  byteLimit: Type.Optional(Type.Integer({ minimum: 2048, maximum: LEGACY_METADATA_BYTES })),
+  fields: Type.Optional(Type.Array(Type.Union(METADATA_FIELDS.map((field) => Type.Literal(field))), { maxItems: METADATA_FIELDS.length })),
+}, { additionalProperties: false });
+export interface MetadataPageOptions { limit?: number; offset?: number; byteLimit?: number }
+export function checkedMetadataPage(options: MetadataPageOptions) {
+  const { limit = LEGACY_METADATA_LIMIT, offset = 0, byteLimit = LEGACY_METADATA_BYTES } = options;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > LEGACY_METADATA_LIMIT || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(byteLimit) || byteLimit < 2048 || byteLimit > LEGACY_METADATA_BYTES) throw new Error("元数据分页参数无效");
+  return { limit, offset, byteLimit };
 }
-
+/** 只控制展示；停止遍历不使用此分页。unknown记录只计数，不回传未验证的键。 */
+export function legacyMetadataPage<T>(items: T[], options: MetadataPageOptions, unknown = 0, unconfirmed = false) {
+  const { limit, offset, byteLimit } = checkedMetadataPage(options);
+  const selected: T[] = []; let bytes = 1024;
+  for (const item of items.slice(offset, offset + limit)) {
+    const size = Buffer.byteLength(JSON.stringify(item)) + 1;
+    if (bytes + size > byteLimit) break;
+    selected.push(item); bytes += size;
+  }
+  const remaining = Math.max(0, items.length - offset - selected.length);
+  return { items: selected, coverage: { total: items.length + unknown, validated: items.length, returned: selected.length, offset,
+    remaining, unknown, truncated: remaining > 0 || offset > 0 || unknown > 0, nextOffset: remaining > 0 ? offset + selected.length : null,
+    byteLimit, ...(unconfirmed ? { unconfirmed: items.length + unknown, unconfirmedOutsidePage: items.length + unknown - selected.length, notice: "状态记录不是进程停止证明；未展示项和未知项仍需核对" } : { notice: "仅旧状态元数据，不证明当前授权或验收；未知项已保全待核对" }) } };
+}
+export interface WorkflowActionResult { ok: boolean; text: string; details: Record<string, unknown> }
 export interface CreateWorkflowToolOptions {
-  dataRoot: string;
-  cwd?: string;
-  boundRequirement?: string;
+  dataRoot: string; cwd?: string; boundRequirement?: string;
   beforeTaskFinish?: (runId: string, signal?: AbortSignal) => Promise<void>;
   onStateChange?: (state: RequirementState) => void;
 }
-
-const STALE_VERSION_MARK = "请重新查询后重试";
-const MAX_RETRY_ATTEMPTS = 5;
-const ABSOLUTE_PATH_PATTERN = /(^|[^\w.\-])(\/[^\s'"）)]+)/g;
-
-function redactAbsolutePaths(message: string): string {
-  return message.replace(ABSOLUTE_PATH_PATTERN, (_match, boundary: string) => `${boundary}[path]`);
-}
-
-function failReceipt(requirement: string, action: string, reason: string, staleVersion = false): WorkflowActionResult {
-  const safeReason = redactAbsolutePaths(reason);
-  const text = `${requirement} ${action} 失败：${safeReason}${staleVersion ? `，${STALE_VERSION_MARK}` : ""}`;
-  return { ok: false, text, details: { isError: true, reason: safeReason, staleVersion } };
-}
-
-function formatReceipt(requirement: string, action: string, result: ActionResult, summary: string): WorkflowActionResult {
-  if (result.ok) {
-    return {
-      ok: true,
-      text: `${requirement} ${action} 成功：${summary}，version ${result.version}`,
-      details: { isError: false, version: result.version },
-    };
+function retired(): WorkflowActionResult { return { ok: false, text: LEGACY_WORKFLOW_RETIRED, details: { isError: true, code: "legacy_workflow_retired" } }; }
+export async function currentVersion(_ctx: { cwd: string; requirement: string }): Promise<DefinitionVersion> { throw new Error(LEGACY_WORKFLOW_RETIRED); }
+async function queryIdentity(cwd: string): Promise<string> {
+  const actual = await realpath(cwd);
+  const repo = await repositoryIdentity(actual);
+  const root = await realpath((await readGit(actual, ["rev-parse", "--show-toplevel"])).stdout.trim());
+  const gitDir = (await readGit(actual, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
+  let branch: string;
+  try { branch = (await readGit(actual, ["symbolic-ref", "-q", "HEAD"])).stdout.trim(); }
+  catch (error) {
+    if ((error as { code?: unknown }).code !== 1) throw error;
+    branch = `detached:${(await readGit(actual, ["rev-parse", "--verify", "HEAD"])).stdout.trim()}`;
   }
-  return failReceipt(requirement, action, result.reason, result.staleVersion === true);
+  return JSON.stringify({ actual, repoId: repo.repoId, root, gitDir, branch });
 }
-
-async function requireRequirement(
-  params: Record<string, unknown>,
-  ctx: { dataRoot: string; cwd: string },
-): Promise<{ ok: true; wctx: WorkflowContext } | { ok: false; receipt: WorkflowActionResult }> {
-  const requirement = params.requirement as string | undefined;
-  const action = params.action as string;
-  if (!requirement) {
-    return { ok: false, receipt: failReceipt("(未知需求)", action, "缺少 requirement") };
-  }
+function validRow(row: Record<string, unknown>): void {
+  if (typeof row.id !== "string" || !UUID_V7_PATTERN.test(row.id) || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.data !== "string") throw new Error("元数据记录无效");
+}
+export async function executeWorkflowAction(params: Record<string, unknown>, ctx: { dataRoot: string; cwd: string }): Promise<WorkflowActionResult> {
+  if (params.action !== "query" && params.action !== "list") return retired();
+  if (!Value.Check(PARAMETERS, params)) return { ok: false, text: "只允许有界的白名单状态元数据查询", details: { isError: true } };
   try {
-    requirementIdentity(requirement);
-  } catch {
-    return { ok: false, receipt: failReceipt(requirement, action, "需求标识格式不合法") };
-  }
-  const cwd = (params.cwd as string | undefined) ?? ctx.cwd;
-  return { ok: true, wctx: { dataRoot: ctx.dataRoot, cwd, requirement } };
-}
-
-function pick(obj: Record<string, unknown>, keys: string[]): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const key of keys) {
-    if (key in obj) result[key] = obj[key];
-  }
-  return result;
-}
-
-function updateSummary(fields: Record<string, unknown> | undefined, followUpIssues: unknown[] | undefined): string {
-  const parts: string[] = [];
-  if (fields) parts.push(...Object.keys(fields));
-  if (followUpIssues) parts.push("followUpIssues");
-  return parts.length > 0 ? parts.join("、") : "更新";
-}
-
-async function listRequirements(
-  ctx: { dataRoot: string; cwd: string },
-): Promise<{ ok: true; items: Array<{ requirement: string; stage: string }> } | { ok: false; reason: string }> {
-  let identity;
-  try {
-    identity = await repositoryIdentity(ctx.cwd);
-  } catch (error) {
-    return { ok: false, reason: (error as Error).message };
-  }
-  try {
-    // 日期型工作流只查询其自身协议，UUID需求由专用状态服务处理。
-    const items = withDatabase(repositoryDatabase(ctx.dataRoot, identity.repoId), (db) => db.list<{ stage: string }>("requirements")
-      .filter((record) => !UUID_V7_PATTERN.test(record.key))
-      .map((record) => ({ requirement: record.key, stage: record.data.stage })));
-    return { ok: true, items: items.filter((item) => item.stage !== "accepted") };
-  } catch (error) { return { ok: false, reason: (error as Error).message }; }
-}
-
-async function gitOutput(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await readGit(cwd, args);
-  return stdout.trim();
-}
-
-const MAX_DEFINITION_DEPTH = 32;
-
-function isWithinRoot(candidate: string, root: string): boolean {
-  const rel = relative(root, candidate);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
-async function listFilesRecursive(dir: string, root: string, depth: number, visitedDirLinks: Set<string>): Promise<string[]> {
-  if (depth > MAX_DEFINITION_DEPTH) throw new Error("定义目录层级过深，无法完整核对");
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  const files: string[] = [];
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isSymbolicLink()) {
-      let real: string;
-      let target;
-      try {
-        real = await realpath(full);
-        target = await stat(full);
-      } catch (error) {
-        throw new Error(`定义链接无法读取: ${full}`, { cause: error });
+    const cwd = await realpath(ctx.cwd);
+    if (params.cwd !== undefined && await realpath(params.cwd as string) !== cwd) throw new Error("查询不能切换现场");
+    const baseline = await queryIdentity(cwd);
+    const identity = await repositoryIdentity(cwd);
+    const details = withLegacyReadDatabase(repositoryDatabase(ctx.dataRoot, identity.repoId), (db) => {
+      if (params.action === "list") {
+        const items: Array<{ requirement: string; stage: string }> = []; let unknown = 0;
+        for (const row of db.prepare("SELECT id, record_key, version, data FROM records WHERE namespace = 'requirements' ORDER BY id").all()) {
+          if (typeof row.record_key === "string" && UUID_V7_PATTERN.test(row.record_key)) continue;
+          try {
+            validRow(row); assertLegacyRequirementId(row.record_key);
+            const state = checkedRequirement(JSON.parse(row.data as string), row.record_key);
+            items.push({ requirement: state.requirement, stage: state.stage });
+          } catch { unknown++; }
+        }
+        return { isError: false, ...legacyMetadataPage(items, params as MetadataPageOptions, unknown) };
       }
-      if (!isWithinRoot(real, root)) throw new Error(`定义链接越出仓库: ${full}`);
-      if (target.isDirectory()) {
-        if (visitedDirLinks.has(real)) continue;
-        visitedDirLinks.add(real);
-        files.push(...(await listFilesRecursive(full, root, depth + 1, visitedDirLinks)));
-      } else if (target.isFile()) {
-        files.push(full);
+      assertLegacyRequirementId(params.requirement);
+      const row = db.prepare("SELECT id, version, data FROM records WHERE namespace = 'requirements' AND record_key = ?").get(params.requirement);
+      if (!row) throw new Error("需求状态不存在"); validRow(row);
+      const state = checkedRequirement(JSON.parse(row.data as string), params.requirement);
+      const tasks: Array<{ id: string; progress: string; runId: string | null }> = []; let unknown = 0;
+      for (const [id, task] of Object.entries(state.tasks)) {
+        if (!/^T-\d{1,10}$/.test(id) || !task || typeof task !== "object" || !(VALID_TASK_PROGRESS as readonly unknown[]).includes(task.progress)
+          || !(task.runId === null || typeof task.runId === "string" && UUID_V7_PATTERN.test(task.runId))) { unknown++; continue; }
+        if (task.runId !== null) {
+          const run = db.prepare("SELECT record_key, json_extract(data, '$.id') AS id, json_extract(data, '$.requirement') AS requirement, json_extract(data, '$.task') AS task FROM records WHERE namespace = 'runs' AND record_key = ?").get(task.runId);
+          if (!run || run.id !== task.runId || run.record_key !== run.id || run.requirement !== state.requirement || run.task !== id) { unknown++; continue; }
+        }
+        tasks.push({ id, progress: task.progress, runId: task.runId });
       }
-    } else if (entry.isDirectory()) {
-      files.push(...(await listFilesRecursive(full, root, depth + 1, visitedDirLinks)));
-    } else if (entry.isFile()) {
-      files.push(full);
-    }
-  }
-  return files;
+      const page = legacyMetadataPage(tasks, params as MetadataPageOptions, unknown, true);
+      const metadata = { requirement: state.requirement, stage: state.stage, tasks: Object.fromEntries(page.items.map(({ id, ...task }) => [id, task])) };
+      const fields = params.fields as Array<keyof typeof metadata> | undefined;
+      const data = fields ? Object.fromEntries(fields.map((field) => [field, metadata[field]])) : metadata;
+      const coverage = fields && !fields.includes("tasks")
+        ? { ...page.coverage, returned: 0, remaining: tasks.length, unconfirmedOutsidePage: tasks.length + unknown, truncated: tasks.length + unknown > 0, nextOffset: tasks.length ? 0 : null }
+        : page.coverage;
+      return { isError: false, data, version: Number(row.version), coverage };
+    });
+    if (baseline !== await queryIdentity(cwd)) throw new Error("现场身份已变化");
+    return { ok: true, text: "旧需求状态元数据（不产生执行权限；覆盖及未确认项见coverage）", details };
+  } catch { return { ok: false, text: "旧需求状态未初始化、不可读或现场身份不符", details: { isError: true, code: "legacy_metadata_unavailable" } }; }
 }
-
-async function definitionFingerprint(root: string, requirement: string): Promise<string> {
-  const dir = join(root, ".pi-company", "requirements", requirement);
-  const files = (await Promise.all([
-    listFilesRecursive(dir, root, 0, new Set()),
-    listFilesRecursive(join(root, ".pi-company", "spec"), root, 0, new Set()),
-  ])).flat().filter((file) => file !== join(dir, "acceptance.md")).sort();
-  if (files.length === 0) return "none";
-  const hash = createHash("sha256");
-  for (const file of files) {
-    const rel = relative(dir, file);
-    const content = await readFile(file);
-    hash.update(`${Buffer.byteLength(rel)}\0${rel}\0${content.length}\0`);
-    hash.update(content);
-  }
-  return hash.digest("hex");
-}
-
-export async function currentVersion(ctx: { cwd: string; requirement: string }): Promise<DefinitionVersion> {
-  const root = await realpath(await gitOutput(["rev-parse", "--show-toplevel"], ctx.cwd));
-  const [fingerprint, snapshot] = await Promise.all([
-    definitionFingerprint(root, ctx.requirement),
-    collectGitSnapshot({ repoRoot: root, excludePaths: [`.pi-company/requirements/${ctx.requirement}/acceptance.md`] }),
-  ]);
-  return {
-    definitionFingerprint: createHash("sha256").update(`${fingerprint}\0${snapshot.fingerprint}`).digest("hex"),
-    codeHead: snapshot.head,
-  };
-}
-
-async function dispatch(
-  params: Record<string, unknown>,
-  ctx: { dataRoot: string; cwd: string },
-): Promise<WorkflowActionResult> {
-  const action = params.action as string;
-
-  if (action === "list") {
-    const cwd = (params.cwd as string | undefined) ?? ctx.cwd;
-    const result = await listRequirements({ dataRoot: ctx.dataRoot, cwd });
-    if (!result.ok) {
-      const safeReason = redactAbsolutePaths(result.reason);
-      return { ok: false, text: `list 失败：${safeReason}`, details: { isError: true, reason: safeReason } };
-    }
-    const summary = result.items.length > 0 ? result.items.map((item) => `${item.requirement}(${item.stage})`).join("、") : "无进行中需求";
-    return { ok: true, text: `list 成功：${summary}`, details: { isError: false, items: result.items } };
-  }
-
-  const req = await requireRequirement(params, ctx);
-  if (!req.ok) return req.receipt;
-  const wctx = req.wctx;
-
-  switch (action) {
-    case "query": {
-      const state = await readRequirementState(wctx);
-      if (!state.exists) return failReceipt(wctx.requirement, action, "需求状态不存在");
-      const fields = params.fields as string[] | undefined;
-      const data = fields ? pick(state.data as unknown as Record<string, unknown>, fields) : state.data;
-      const summary = fields ? fields.join("、") : "全部字段";
-      return {
-        ok: true,
-        text: `${wctx.requirement} ${action} 成功：${summary}，version ${state.version}`,
-        details: { isError: false, data, version: state.version },
-      };
-    }
-    case "init": {
-      const result = await initRequirementState(wctx);
-      return formatReceipt(wctx.requirement, action, result, "初始化");
-    }
-    case "update": {
-      const update = (params.update ?? {}) as Record<string, unknown>;
-      const { followUpIssues, ...rest } = update;
-      const taskId = params.task as string | undefined;
-      const hasFields = Object.keys(rest).length > 0;
-      const hasFollowUps = followUpIssues !== undefined;
-      if (hasFields && taskId === undefined) return failReceipt(wctx.requirement, action, "缺少 task");
-      if (!hasFields && !hasFollowUps) return failReceipt(wctx.requirement, action, "缺少可更新字段");
-      if (params.version === undefined) return failReceipt(wctx.requirement, action, "缺少 version");
-      const fields = hasFields ? rest : undefined;
-      let followUps: unknown[] | undefined;
-      if (hasFollowUps) {
-        const state = await readRequirementState(wctx);
-        if (!state.exists) return failReceipt(wctx.requirement, action, "需求状态不存在");
-        followUps = [...state.data.followUps, ...(followUpIssues as unknown[])];
-      }
-      const result = await updateTaskFields({ expectedVersion: params.version as number, taskId, fields, followUps }, wctx);
-      return formatReceipt(wctx.requirement, action, result, updateSummary(fields, followUpIssues as unknown[] | undefined));
-    }
-    case "advance": {
-      const version = await currentVersion(wctx);
-      const result = await advanceStage(
-        {
-          expectedVersion: params.version as number,
-          targetStage: params.stage as string,
-          decisionId: params.decisionId as string | undefined,
-          runId: params.runId as string | undefined,
-          currentVersion: version,
-        },
-        wctx,
-      );
-      return formatReceipt(wctx.requirement, action, result, params.stage as string);
-    }
-    case "retreat": {
-      const result = await retreatStage(
-        {
-          expectedVersion: params.version as number,
-          targetStage: params.stage as string,
-          reason: params.reason as string,
-          decisionId: params.decisionId as string | undefined,
-          runId: params.runId as string | undefined,
-        },
-        wctx,
-      );
-      return formatReceipt(wctx.requirement, action, result, params.stage as string);
-    }
-    case "task-start": {
-      const result = await startTask({ expectedVersion: params.version as number, taskId: params.task as string, runId: params.runId as string }, wctx);
-      return formatReceipt(wctx.requirement, action, result, params.task as string);
-    }
-    case "task-finish": {
-      const version = await currentVersion(wctx);
-      const result = await finishTask(
-        { expectedVersion: params.version as number, taskId: params.task as string, runId: params.runId as string, currentVersion: version },
-        wctx,
-      );
-      return formatReceipt(wctx.requirement, action, result, params.task as string);
-    }
-    case "task-fail": {
-      const result = await failTask(
-        { expectedVersion: params.version as number, taskId: params.task as string, runId: params.runId as string, reason: params.reason as string },
-        wctx,
-      );
-      return formatReceipt(wctx.requirement, action, result, params.task as string);
-    }
-    case "rollback": {
-      const result = await rollbackTask(
-        { expectedVersion: params.version as number, taskId: params.task as string, decisionId: params.decisionId as string | undefined },
-        wctx,
-      );
-      return formatReceipt(wctx.requirement, action, result, params.task as string);
-    }
-    case "reject": {
-      const result = await rejectRequirement({ expectedVersion: params.version as number, decisionId: params.decisionId as string | undefined }, wctx);
-      return formatReceipt(wctx.requirement, action, result, "拒绝");
-    }
-    case "shape-confirm": {
-      const runId = params.runId as string | undefined;
-      if (!runId) return failReceipt(wctx.requirement, action, "缺少 runId");
-      const identity = await repositoryIdentity(wctx.cwd);
-      const runStore = new RunStore({ dataRoot: wctx.dataRoot, repoId: identity.repoId, daemonStartedAt: "workflow-tool" });
-      const got = await runStore.get(runId);
-      if (!got.ok) return failReceipt(wctx.requirement, action, `运行不存在或不可读: ${runId}`);
-      const run = got.run;
-      if (run.state !== "completed") return failReceipt(wctx.requirement, action, `运行未完成: ${run.state}`);
-      const planResult = run.result as
-        | { phase?: string; verdict?: string; proposedShape?: Omit<RequirementShape, "decisionId">; binding?: { requirement?: string } }
-        | undefined;
-      if (!planResult) return failReceipt(wctx.requirement, action, "运行结果缺失");
-      const mismatches: string[] = [];
-      if (planResult.phase !== "plan") mismatches.push(`phase 期望 plan 实际 ${planResult.phase}`);
-      if (planResult.verdict !== "PASS") mismatches.push(`verdict 期望 PASS 实际 ${planResult.verdict}`);
-      if (run.requirement !== wctx.requirement) mismatches.push("运行需求不一致");
-      if (planResult.binding?.requirement !== wctx.requirement) mismatches.push("绑定需求不一致");
-      if (mismatches.length > 0) return failReceipt(wctx.requirement, action, mismatches.join("; "));
-      const proposedShape = planResult.proposedShape;
-      if (!proposedShape) return failReceipt(wctx.requirement, action, "运行结果缺少 proposedShape");
-      const shape: RequirementShape = { ...proposedShape, decisionId: params.decisionId as string };
-      const result = await recordShape({ expectedVersion: params.version as number, shape }, wctx);
-      return formatReceipt(wctx.requirement, action, result, "形状确认");
-    }
-    case "resume-check": {
-      const version = await currentVersion(wctx);
-      const result = await checkResume(wctx, version);
-      if (!result.ok) return failReceipt(wctx.requirement, action, result.reason);
-      return {
-        ok: true,
-        text: `${wctx.requirement} ${action} 成功：${result.stage}，version ${result.version}`,
-        details: { isError: false, stage: result.stage },
-      };
-    }
-    default:
-      return failReceipt(wctx.requirement, action, "不支持的动作");
-  }
-}
-
-export async function executeWorkflowAction(
-  params: Record<string, unknown>,
-  ctx: { dataRoot: string; cwd: string },
-): Promise<WorkflowActionResult> {
-  const requirement = typeof params.requirement === "string" ? params.requirement : "(未知需求)";
-  const action = typeof params.action === "string" ? params.action : "(未知动作)";
-  if (!Value.Check(PARAMETERS, params)) {
-    const reason = [...Value.Errors(PARAMETERS, params)].map((error) => error.message).join("; ");
-    return failReceipt(requirement, action, `参数不合法: ${reason}`);
-  }
-  try {
-    return await dispatch(params, ctx);
-  } catch (error) {
-    const staleVersion = error instanceof StaleVersionError;
-    return failReceipt(requirement, action, (error as Error).message, staleVersion);
-  }
-}
-
-export async function retryOnStaleVersion(
-  ctx: { dataRoot: string; cwd: string },
-  requirement: string,
-  buildUpdate: (state: { version: number; data: RequirementState }) => Promise<Record<string, unknown>>,
-): Promise<WorkflowActionResult> {
-  for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
-    const state = await readRequirementState({ dataRoot: ctx.dataRoot, cwd: ctx.cwd, requirement });
-    if (!state.exists) return failReceipt(requirement, "update", "需求状态不存在");
-    const update = await buildUpdate({ version: state.version, data: state.data });
-    const result = await executeWorkflowAction({ action: "update", requirement, version: state.version, update }, ctx);
-    if (result.ok || !result.details.staleVersion) return result;
-  }
-  return failReceipt(requirement, "update", `版本冲突重试超限（${MAX_RETRY_ATTEMPTS} 次），${STALE_VERSION_MARK}`);
-}
-
+export async function retryOnStaleVersion(_ctx: { dataRoot: string; cwd: string }, _requirement: string, _buildUpdate: (state: { version: number; data: RequirementState }) => Promise<Record<string, unknown>>): Promise<WorkflowActionResult> { return retired(); }
 export function createWorkflowTool(options: CreateWorkflowToolOptions) {
+  let binding: string | undefined;
   return {
-    name: "pi_company_workflow",
-    label: "需求工作流",
-    description: "驱动需求工作流阶段推进、任务管理与形状确认",
-    parameters: PARAMETERS,
-    async execute(
-      _toolCallId: string,
-      params: Record<string, unknown>,
-      signal: AbortSignal | undefined,
-      _onUpdate: unknown,
-      ctx: { cwd: string },
-    ) {
-      if (signal?.aborted) {
-        return { content: [{ type: "text" as const, text: "操作已中止" }], details: { isError: true } };
-      }
+    name: "pi_company_workflow", label: "旧需求状态", description: "只查询有界的旧需求元数据；不提供变更、授权或恢复能力", parameters: PARAMETERS,
+    async execute(_toolCallId: string, params: Record<string, unknown>, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: { cwd: string }) {
+      if (signal?.aborted) throw new Error("操作已中止");
+      if (params.action !== "query" && params.action !== "list") throw new Error(LEGACY_WORKFLOW_RETIRED);
       const cwd = options.cwd ?? ctx.cwd;
-      if (options.boundRequirement && (
-        (params.requirement !== undefined && params.requirement !== options.boundRequirement) ||
-        (params.cwd !== undefined && await realpath(params.cwd as string) !== await realpath(cwd)) ||
-        params.action === "list"
-      )) throw new Error("需求代理只能操作绑定的仓库与需求");
+      try {
+        const current = await queryIdentity(cwd);
+        if (binding !== undefined && binding !== current || await queryIdentity(ctx.cwd) !== current
+          || params.cwd !== undefined && await realpath(params.cwd as string) !== await realpath(cwd)) throw new Error("现场身份不符");
+        binding = current;
+      } catch { throw new Error("只能查询可信当前仓库及工作区的状态元数据"); }
+      if (options.boundRequirement && (params.action === "list" || params.requirement !== undefined && params.requirement !== options.boundRequirement)) throw new Error("只能查询绑定需求的状态元数据");
       const boundParams = options.boundRequirement ? { ...params, requirement: options.boundRequirement, cwd } : params;
-      if (params.action === "task-finish" && typeof params.runId === "string") await options.beforeTaskFinish?.(params.runId, signal);
       const result = await executeWorkflowAction(boundParams, { dataRoot: options.dataRoot, cwd });
-      if (result.ok && options.boundRequirement && options.onStateChange) {
-        const state = await readRequirementState({ dataRoot: options.dataRoot, cwd, requirement: options.boundRequirement });
-        if (state.exists) options.onStateChange(state.data);
-      }
       if (!result.ok) throw new Error(result.text);
       return { content: [{ type: "text" as const, text: result.text }], details: result.details };
     },

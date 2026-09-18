@@ -440,6 +440,8 @@ test("真实默认解析器的运行时与语法加载瞬时失败后同进程�
   const w = await world();
   await put(w.repo.root, "main.go", "package main\nfunc main() {}\n");
   const script = `
+    import { initializeHostGit } from ${JSON.stringify(new URL("../runtime/git-runtime.mjs", import.meta.url).href)};
+    initializeHostGit([]);
     import { Parser, Language } from 'web-tree-sitter';
     import { ProjectIndexService } from ${JSON.stringify(new URL("../runtime/project-index-service.ts", import.meta.url).href)};
     const init = Parser.init, load = Language.load;

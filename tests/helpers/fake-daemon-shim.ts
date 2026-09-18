@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname } from "node:path";
@@ -41,6 +41,9 @@ const server = createServer((socket) => {
                 repoId,
                 protocolVersion: PROTOCOL_VERSION,
                 startedAt: new Date().toISOString(),
+                daemonInstanceId: randomUUID(),
+                connectionId: randomUUID(),
+                gitExpectation: frame.params.gitExpectation,
               }),
             ),
           );

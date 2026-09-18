@@ -14,6 +14,9 @@ import { executeWorkflowAction } from "../runtime/workflow-tool.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { initializeTestHostGit } from "./helpers/test-git-binding.ts";
+
+initializeTestHostGit([]);
 
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<void>> = [];
@@ -355,7 +358,9 @@ test("核验函数异步返回不算授权，模型不能自报主代理动作",
 test("跨Node进程同时争抢PM只有一个成功，状态与事件只记录一次授予", async () => {
   const w = await world(); const record = await w.activate();
   const script = join(w.root, "claim.mjs");
-  await writeFile(script, `import {RequirementStateStore} from ${JSON.stringify(new URL("../runtime/requirement-state.ts", import.meta.url).href)};
+  await writeFile(script, `import {initializeHostGit} from ${JSON.stringify(new URL("../runtime/git-runtime.mjs", import.meta.url).href)};
+initializeHostGit([]);
+import {RequirementStateStore} from ${JSON.stringify(new URL("../runtime/requirement-state.ts", import.meta.url).href)};
 import {uuidv7} from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).href)};
 const store = await RequirementStateStore.open({...${JSON.stringify({ dataRoot: w.options.dataRoot, repoId: w.identity.repoId, repositoryRoot: w.repo.root })}, authorize:()=>true, now:()=>1000000});
 console.log('READY');

@@ -5,6 +5,9 @@ import { RequirementEventService } from "../../runtime/requirement-events.ts";
 import type { ApprovedBaselineResult, ApprovedContentResult, ApprovedDiffResult, PreparedRequirementDelivery } from "../../runtime/requirement-events.ts";
 import { RequirementService } from "../../runtime/requirement-service.ts";
 import { RequirementStateStore } from "../../runtime/requirement-state.ts";
+import { initializeTestHostGit } from "./test-git-binding.ts";
+
+initializeTestHostGit([]);
 
 export interface EventProcessConfig {
   repositoryRoot: string;
