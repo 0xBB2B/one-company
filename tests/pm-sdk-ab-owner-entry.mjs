@@ -20,6 +20,7 @@ const NODE = "/opt/homebrew/Cellar/node/26.8.2/bin/node";
 const DARWIN_USER_TEXT_ENCODING = "0x1F5:0:0";
 const CONFIG_BYTES = 'import { defineConfig } from "vitest/config";\n\nexport default defineConfig({\n  test: {\n    include: ["tests/**/*.test.ts"],\n    environment: "node",\n    pool: "forks",\n    isolate: true,\n    fileParallelism: false,\n    testTimeout: 5_000,\n    setupFiles: ["./tests/helpers/test-environment.ts"],\n  },\n});\n';
 const CONFIG_HASH = hash(Buffer.from(CONFIG_BYTES));
+const UNNAMED_PROJECT_CACHE_HASH = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
 // Strong retention is deliberate: no resource or directory deletion API exists.
 const scenes = new Set();
 const runReceipts = new WeakMap();
@@ -223,8 +224,9 @@ async function receiveHandshake(nonce) {
  */
 export function assertSafeConfig(config, c, resolved) {
   const p = paths(c);
+  const expectedCacheDir = join(p.cacheDir, "vitest", UNNAMED_PROJECT_CACHE_HASH);
   const s = config.server;
-  if (config.root !== PROJECT || config.cacheDir !== p.cacheDir || config.envDir !== false ||
+  if (config.root !== PROJECT || config.cacheDir !== expectedCacheDir || config.envDir !== false ||
       config.publicDir !== (resolved ? "" : false) || !s || s.middlewareMode !== true ||
       s.ws !== false || s.hmr !== false || s.watch !== null || s.open !== false ||
       s.preTransformRequests !== false || s.https || config.configFile !== p.configPath) throw rejection();

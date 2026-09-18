@@ -7,7 +7,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createContext, SourceTextModule, SyntheticModule } from "node:vm";
+import { createContext, runInNewContext, SourceTextModule, SyntheticModule } from "node:vm";
 
 const TESTS = dirname(fileURLToPath(import.meta.url));
 const PROJECT = resolve(TESTS, "..");
@@ -29,6 +29,46 @@ const CONFIG_BYTES = 'import { defineConfig } from "vitest/config";\n\nexport de
 const CONFIG_HASH = `sha256:${createHash("sha256").update(CONFIG_BYTES).digest("hex")}`;
 const VITEST_TARGET = join(PROJECT, "node_modules/vitest");
 const PARENT_BINDING = JSON.stringify({ path: ROOT, dev: "7", ino: "77" });
+const UNNAMED_PROJECT_CACHE_HASH = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+const NAMED_PROJECT_CACHE_HASH = createHash("sha1").update("named-project").digest("hex");
+const BASE_CACHE_DIR = join(ROOT, "cache");
+const EXPECTED_CACHE_DIR = join(BASE_CACHE_DIR, "vitest", UNNAMED_PROJECT_CACHE_HASH);
+const VITEST_CLI_SOURCE = readFileSync(new URL("../node_modules/vitest/dist/chunks/cli-api.B5majYba.js", import.meta.url), "utf8");
+
+/**
+ * Extracts one reviewed installed-source region. Both anchors must occur once.
+ * @param {string} source @param {string} start @param {string} end
+ */
+function uniqueInstalledSlice(source, start, end) {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  assert.notEqual(startIndex, -1);
+  assert.equal(source.indexOf(start, startIndex + start.length), -1);
+  assert.notEqual(endIndex, -1);
+  assert.equal(source.indexOf(end, endIndex + end.length), -1);
+  return source.slice(startIndex, endIndex);
+}
+
+const cacheMethodStart = "\tstatic resolveCacheDir(root, dir, projectName) {";
+const cacheMethodEnd = "\n\t}\n}\n\nconst debugFs";
+const cacheMethodSource = `${uniqueInstalledSlice(VITEST_CLI_SOURCE, cacheMethodStart, cacheMethodEnd)}\n\t}`;
+const optimizerSource = uniqueInstalledSlice(
+  VITEST_CLI_SOURCE,
+  "function VitestOptimizer() {",
+  "\n\nfunction resolveOptimizerConfig(",
+);
+const optimizerSnippet = `class VitestCache {\n${cacheMethodSource}\n}\n\n${optimizerSource}\nVitestOptimizer;`;
+const INSTALLED_VITEST_OPTIMIZER = /** @type {() => {config:{handler:(config:any)=>void}}} */ (runInNewContext(
+  optimizerSnippet,
+  Object.freeze({
+    resolve: path.posix.resolve,
+    slash: (/** @type {string} */ value) => value.replaceAll("\\", "/"),
+    hash: (/** @type {string} */ algorithm, /** @type {string} */ data, /** @type {import("node:crypto").BinaryToTextEncoding} */ encoding) =>
+      createHash(algorithm).update(data).digest(encoding),
+  }),
+  { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } },
+));
+assert.equal(typeof INSTALLED_VITEST_OPTIMIZER, "function");
 
 /** @param {() => unknown} operation */
 function capture(operation) {
@@ -421,6 +461,9 @@ function createStartVitest(behavior, cp, processLike) {
   /** @type {any} */ let worker;
   let returned = false;
   let entered = false;
+  /** @type {string | undefined} */ let inputCacheDir;
+  /** @type {string | undefined} */ let earlyCacheDir;
+  /** @type {string | undefined} */ let resolvedCacheDir;
   /** @type {(() => void) | undefined} */ let releaseHang;
   /** @param {string} _mode @param {string[]} _filters @param {any} options @param {any} viteOptions */
   async function startVitest(_mode, _filters, options, viteOptions) {
@@ -428,12 +471,16 @@ function createStartVitest(behavior, cp, processLike) {
     if (Object.hasOwn(behavior, "startThrow")) throw behavior.startThrow;
     const reporter = options.reporters[0];
     const plugin = viteOptions.plugins[0];
+    assert.equal(viteOptions.root, PROJECT);
+    inputCacheDir = viteOptions.cacheDir;
     const early = {
       root: viteOptions.root, cacheDir: viteOptions.cacheDir,
       envDir: behavior.unsafeConfig ? ROOT : false,
       publicDir: false, server: viteOptions.server,
       configFile: options.config, plugins: [plugin],
     };
+    INSTALLED_VITEST_OPTIMIZER().config.handler(early);
+    earlyCacheDir = early.cacheDir;
     behavior.earlyPatch?.(early);
     plugin.config.handler(early);
     effects.push("early-config-approved");
@@ -447,6 +494,7 @@ function createStartVitest(behavior, cp, processLike) {
       },
     };
     behavior.resolvedPatch?.(resolved);
+    resolvedCacheDir = resolved.cacheDir;
     plugin.configResolved.handler(resolved);
     effects.push("resolved-config-approved");
     const project = { vite: { config: { isProduction: false, ssr: { resolve: { conditions: ["node", "module", "development"] } } } } };
@@ -509,6 +557,7 @@ function createStartVitest(behavior, cp, processLike) {
   }
   return {
     startVitest, effects, worker: () => worker, entered: () => entered,
+    cacheDirs: () => Object.freeze({ input: inputCacheDir, early: earlyCacheDir, resolved: resolvedCacheDir }),
     release() { const release = releaseHang; releaseHang = undefined; release?.(); },
   };
 }
@@ -819,6 +868,17 @@ await check("内部A成功仍返回undefined且不登记O结果", async () => {
   assert.equal(result, undefined);
   assert.equal(world.entry.ownerRunReceipt(result), undefined);
   assert.equal(world.fd3Closed(), true);
+});
+
+await check("已装Vitest optimizer片段只归一化hook配置一次", async () => {
+  const world = await createEntryWorld();
+  await world.runA();
+  assert.equal(world.process.exitCode, undefined);
+  assert.deepEqual({ ...world.start.cacheDirs() }, {
+    input: BASE_CACHE_DIR,
+    early: EXPECTED_CACHE_DIR,
+    resolved: EXPECTED_CACHE_DIR,
+  });
 });
 
 /** @type {Array<[string, (world:any)=>void]>} */
@@ -1695,7 +1755,12 @@ await check("配置前置、spec空多错路与自动finally.close stop时序", 
 /** @type {Array<[string, (config:any)=>void]>} */
 const unsafeEarlyConfigs = [
   ["root", (config) => { config.root = "/wrong"; }],
-  ["cacheDir", (config) => { config.cacheDir = "/wrong"; }],
+  ["cacheDir错误绝对目录", (config) => { config.cacheDir = "/wrong"; }],
+  ["cacheDir退回输入base", (config) => { config.cacheDir = BASE_CACHE_DIR; }],
+  ["cacheDir兄弟目录", (config) => { config.cacheDir = join(ROOT, "cache-peer"); }],
+  ["cacheDir任意子目录", (config) => { config.cacheDir = join(BASE_CACHE_DIR, "arbitrary-child"); }],
+  ["cacheDir命名项目hash", (config) => { config.cacheDir = join(BASE_CACHE_DIR, "vitest", NAMED_PROJECT_CACHE_HASH); }],
+  ["cacheDir双后缀", (config) => { config.cacheDir = join(EXPECTED_CACHE_DIR, "vitest", UNNAMED_PROJECT_CACHE_HASH); }],
   ["envDir", (config) => { config.envDir = ROOT; }],
   ["publicDir", (config) => { config.publicDir = true; }],
   ["server缺失", (config) => { config.server = undefined; }],
@@ -1721,6 +1786,11 @@ for (const [name, patch] of unsafeEarlyConfigs) {
 
 /** @type {Array<[string, (config:any)=>void]>} */
 const unsafeResolvedConfigs = [
+  ["cacheDir退回输入base", (config) => { config.cacheDir = BASE_CACHE_DIR; }],
+  ["cacheDir兄弟目录", (config) => { config.cacheDir = join(ROOT, "cache-peer"); }],
+  ["cacheDir任意子目录", (config) => { config.cacheDir = join(BASE_CACHE_DIR, "arbitrary-child"); }],
+  ["cacheDir命名项目hash", (config) => { config.cacheDir = join(BASE_CACHE_DIR, "vitest", NAMED_PROJECT_CACHE_HASH); }],
+  ["cacheDir双后缀", (config) => { config.cacheDir = join(EXPECTED_CACHE_DIR, "vitest", UNNAMED_PROJECT_CACHE_HASH); }],
   ["include", (config) => { config._vitest.include = ["wrong.ts"]; }],
   ["run", (config) => { config._vitest.run = false; }],
   ["watch", (config) => { config._vitest.watch = true; }],
@@ -2408,14 +2478,39 @@ await check("关键变异：owner绑定与envDir前置断言能杀死变异", as
   }, AssertionError);
 
   const baselineEntry = await createEntryWorld();
-  const safe = { root: PROJECT, cacheDir: `${ROOT}/cache`, envDir: ROOT, publicDir: false,
+  const safe = { root: PROJECT, cacheDir: EXPECTED_CACHE_DIR, envDir: ROOT, publicDir: false,
     server: { middlewareMode: true, ws: false, hmr: false, watch: null, open: false, preTransformRequests: false },
     configFile: `${ROOT}/vitest.config.ts` };
   assert.throws(() => baselineEntry.entry.assertSafeConfig(safe, { root: ROOT }, false));
-  const configAnchor = "config.cacheDir !== p.cacheDir || config.envDir !== false ||";
+  const configAnchor = "config.cacheDir !== expectedCacheDir || config.envDir !== false ||";
   assert.equal(ENTRY_SOURCE.split(configAnchor).length - 1, 1);
-  const mutantEntry = await createEntryWorld({}, ENTRY_SOURCE.replace(configAnchor, "config.cacheDir !== p.cacheDir || false ||"));
+  const mutantEntry = await createEntryWorld({}, ENTRY_SOURCE.replace(configAnchor, "config.cacheDir !== expectedCacheDir || false ||"));
   assert.throws(() => assert.throws(() => mutantEntry.entry.assertSafeConfig(safe, { root: ROOT }, false)), AssertionError);
+});
+
+await check("cache精确等值退回base与前缀放宽变异均由AssertionError杀死", async () => {
+  const baselineEntry = await createEntryWorld();
+  const safeServer = { middlewareMode: true, ws: false, hmr: false, watch: null, open: false, preTransformRequests: false };
+  const baseConfig = { root: PROJECT, cacheDir: BASE_CACHE_DIR, envDir: false, publicDir: false,
+    server: safeServer, configFile: `${ROOT}/vitest.config.ts` };
+  const childConfig = { ...baseConfig, cacheDir: join(BASE_CACHE_DIR, "arbitrary-child") };
+  assert.throws(() => baselineEntry.entry.assertSafeConfig(baseConfig, { root: ROOT }, false));
+  assert.throws(() => baselineEntry.entry.assertSafeConfig(childConfig, { root: ROOT }, false));
+
+  const exactAnchor = "config.cacheDir !== expectedCacheDir";
+  assert.equal(ENTRY_SOURCE.split(exactAnchor).length - 1, 1);
+  const baseFallbackSource = ENTRY_SOURCE.replace(exactAnchor,
+    "(config.cacheDir !== expectedCacheDir && config.cacheDir !== p.cacheDir)");
+  const baseFallback = await createEntryWorld({}, baseFallbackSource);
+  assert.throws(() => assert.throws(
+    () => baseFallback.entry.assertSafeConfig(baseConfig, { root: ROOT }, false),
+  ), AssertionError);
+
+  const prefixSource = ENTRY_SOURCE.replace(exactAnchor, "!config.cacheDir.startsWith(p.cacheDir)");
+  const prefix = await createEntryWorld({}, prefixSource);
+  assert.throws(() => assert.throws(
+    () => prefix.entry.assertSafeConfig(childConfig, { root: ROOT }, false),
+  ), AssertionError);
 });
 
 await check("R4 当前收据失效保护的有效变异", async () => {

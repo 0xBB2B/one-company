@@ -853,3 +853,15 @@ node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --strict --allowJs 
 - 验证为固定Node26直接`--experimental-vm-modules tests/pm-sdk-ab-owner.vm.mjs`及review01/independent、review02/boundary；四源`--check`和已装TypeScript compiler显式四源strict/checkJs/noUnused，无包管理器或真实目标加载。精确command/stdout/stderr/exit在证据目录attempt02与review02，实验性警告照留，旧类型/装置/断言失败不覆盖。
 - 限制：MAX_SAFE_INTEGER饱和仅静态核对，实际输出测试到1MiB及+1；未测试全部安装点/任意异步错误/真实进程。预算合成nonce或复合变异与真实最多6/7成功帧分列，不冒128帧合法实跑；fatal/断管/final后迟到失败可缺诊断。新driver严格投影与新case仍待后续，不改旧两套失败证据，不自动给旧Scene删除权。历史Python startup未知影响保持未审计，不因本轮无Python而洗白。
 - 证据根`FE=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-ab-failure-evidence-01`：attempt01/02、review01/02、REPAIR-02-DECISION、模型核验、main-integration与commit。目录700/文件600，无新增真实资源需清理。本地提交仅三源与本节，实际提交号及暂存/工作报告保全核验见`$FE/commit.json`；保留其他未提交成果、无push/发布。
+
+## M4-PM-AB-CACHE-DIR-01：固定无名项目缓存坐标
+
+- AB03实际O/tool exit1，原A ended=true/exitCode1/signalnull，安全控制流只到ready后early-config失败；Scene/private/tmp/pi-s-ATHcGZ保全，不重跑/验证/清理。主代理核原唯一回执及schema2观察，未把远端诊断冒本地B终态。此前前置脚本错误execArgv.length!==2被主代理按原回执更正并独立只读核对，正式case仅执行一次，原预核报告不覆盖。
+- 15fc1e71实际astra只读诊断及实际安装源码片段证实：VitestOptimizer在安全hook前将Scene/cache转为Scene/cache/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709；旧early/resolved却比base，VM未模拟归一化。主代理直接核optimizer/cache方法/createVitest与旧VM。这是确定静态不匹配，不倒填AB03当时具体predicate或唯一根因。
+- df3de614实际sol仅改entry与VM：entry增加固定空名称hash及派生目录严格比较，传入startVitest仍是原base；不回写config、不接受base兜底/prefix/任意子目录。Scene/env/root/网络/creator/失败诊断均不变，helper/fixture冻结。raw插件数组的已知泛化限制不混入本修复，不称其支持任意插件链排序。
+- VM唯一锚点截取实际已装VitestOptimizer与静态resolveCacheDir源码，受限内存仅注入POSIX resolve/slash/hash计算；不import完整库、无process/FS/child注入。正常链只归一化一次，early/resolved精确值相同，输入base不变；原167和变异保留，新增后179/0，四源check/strict/checkJs/noUnused全0。
+- 6ed2eab0实际astra独审通过：179/0、相邻诊断9/0+4/0、独立缓存3/0（含20次边界拒绝）。改前备份在同一真实片段基线early-config拒绝、当前通过；base兜底/prefix放宽变异及独立“仅旧base比较”变异分别由真实AssertionError杀死，不混报类型。主代理读报告/独立源码/完整diff、核冻结hash和退出后整合。
+- 最终entry SHA256 `5cf11310c15f655551161088fe5ea2ffff2ea4823bc3545d7357d638ec48d31e`，VM `7375f1c1ea9bb8fe67c4e4f6ed0a1b03eeb99d5ab72c2fa7e5e851ecc888207f`。helper729dcb65…/fixture64bca8bb…未改。验证为固定Node26 `--experimental-vm-modules tests/pm-sdk-ab-owner.vm.mjs`和指定独立VM，四源`--check`及直接已装tsc明确四源ignoreConfig/strict/checkJs/noUnused。精确命令与原stderr/exit在attempt01/review01；实验性警告保留。
+- attempt01/005包装提前exit只产diff/stdout，005-exit当时未生成，不补造；006独立diff/hash真实exit0，精确diff与005stdout和独审再生成diff相同。原失败和旧现场保全，不因后续通过改写。
+- 证据根`CD=/var/folders/rt/s5gnkp6j1nvbty_93wltyk3w0000gn/T/m4-implementation-o_10raez/completion-03/git-prerequisite/task-02e/pm-unit/sdk-ab-cache-dir-01`，含before、交付/审查、main-integration和commit核验。仅两源码与本节本地提交，实际hash/树/父/暂存空/工作报告保全见commit.json；不夹带AGENTS或其他未提交成果，无push/发布。
+- 未执行新的真实case/SDK/Scene/信号/网络/回收。固定可信源码片段不是通用不可信代码沙箱或完整库重跑；新的真实验证仍需更新绑定及单次决定，旧AB03不得覆盖。M4/Root-B仍未验收，ATHcGZ与Yfsgsf坐标不赋予删除权。
