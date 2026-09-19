@@ -247,6 +247,31 @@ test("knowledge RPC来自真实连接grant：中文命中/分页/partial/invalid
   expect(counter.count).toBe(1);
 }, 60_000);
 
+test("一次知识查询只做一次完整重核；回执核对不重建索引但仍能发现内容变化", async () => {
+  let ensureFresh = 0;
+  const w = await world({ archiveHook: () => {}, coordinatorOptions: {
+    createManager(options) {
+      const manager = new ProjectIndexSyncManager({ ...options, lowFrequencyMs: 60_000 });
+      const original = manager.ensureFresh.bind(manager);
+      manager.ensureFresh = () => { ensureFresh++; return original(); };
+      return manager;
+    },
+  } });
+  const peer = await connect(w.socketPath, w.token, "count", w.identity.repoId, w.repo.root);
+  const g = await grant(w, "count");
+  await peer.call("index.sync", { action: "init", ...g.params });
+  ensureFresh = 0;
+  const result = await peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } });
+  expect(ensureFresh).toBe(1);
+  expect(await peer.call("project.index.query", { action: "check", grantId: g.params.grantId, receipt: result.receipt })).toEqual({ current: true });
+  expect(ensureFresh).toBe(1);
+  const before = await stat(join(w.repo.root, "src/index.ts"));
+  await writeFile(join(w.repo.root, "src/index.ts"), "export const coordinatorFixture = false;\n");
+  await utimes(join(w.repo.root, "src/index.ts"), before.atime, before.mtime);
+  await expect(peer.call("project.index.query", { action: "check", grantId: g.params.grantId, receipt: result.receipt }))
+    .rejects.toMatchObject({ code: "index_not_fresh" });
+}, 30_000);
+
 test("knowledge覆盖不足默认无正文阻塞，返回竞争真实修改使旧页失效", async () => {
   let changed = false;
   const w = await world({ archiveHook: () => {}, coordinatorOptions: {

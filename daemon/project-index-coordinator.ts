@@ -605,14 +605,34 @@ export class ProjectIndexCoordinator {
   private async captureQuery(entry: WorkspaceEntry, attachment: Attachment): Promise<KnowledgeQueryCapture> {
     this.queryFence(entry, attachment);
     const epoch = this.baselineAuthority(entry);
-    const first = await entry.manager.ensureFresh();
+    const status = await entry.manager.ensureFresh();
     this.queryFence(entry, attachment);
-    this.freshResult(entry, first);
+    this.freshResult(entry, status);
     const build = entry.manager.latestBuildResult()!;
+    if (build.budget.stoppedReason !== "complete" || build.budget.exhausted.length) {
+      throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询文件覆盖不完整；不提供当前正文", { coverage: "incomplete", bodyAvailable: false });
+    }
+    const files = await this.hashCurrentFiles(entry, attachment);
+    const index = IndexStore.readCurrent(indexDatabase(this.dataRoot, this.repoId), entry.scope, files.map((file) => file.path), true);
+    if (index.status.currentGeneration !== status.generation || index.status.baselineHash !== status.baselineHash
+      || index.snapshot && (index.snapshot.files.length !== files.length
+        || index.snapshot.files.some((file) => !files.some((row) => row.path === file.path && row.hash === file.hash)))) {
+      throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间输入发生变化");
+    }
+    await new Promise<void>((done) => setImmediate(done));
+    this.queryFence(entry, attachment);
+    const end = entry.manager.status();
+    if (this.baselineAuthority(entry) !== epoch || end.dirty || end.eventSequence !== status.eventSequence
+      || end.baselineHash !== status.baselineHash) throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间授权或观察序号变化");
+    return { baseline: this.queryBaseline(entry, status, epoch, files), build: { workspaceId: entry.scope.workspaceId, generation: status.generation,
+      baselineHash: status.baselineHash!, spec: structuredClone(build.spec) } };
+  }
+
+  /** 两次枚举夹一次逐文件哈希：枚举差异或读取失败都判为覆盖不完整，不重建索引。 */
+  private async hashCurrentFiles(entry: WorkspaceEntry, attachment: Attachment): Promise<Array<{ path: string; hash: string }>> {
     const preview = await entry.service.preview();
     this.queryFence(entry, attachment);
-    if (preview.partial || preview.budget.stoppedReason !== "complete" || preview.budget.exhausted.length
-      || build.budget.stoppedReason !== "complete" || build.budget.exhausted.length) {
+    if (preview.partial || preview.budget.stoppedReason !== "complete" || preview.budget.exhausted.length) {
       throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询文件覆盖不完整；不提供当前正文", { coverage: "incomplete", bodyAvailable: false });
     }
     const files: Array<{ path: string; hash: string }> = [];
@@ -627,37 +647,37 @@ export class ProjectIndexCoordinator {
       files.push({ path: file.path, hash: read.sha256 });
     }
     files.sort((a, b) => a.path.localeCompare(b.path));
-    // 包含invalid状态的第二次真实构建/hash核验，确保诊断也不是旧spec留下的缓存。
-    const status = await entry.manager.ensureFresh();
-    this.queryFence(entry, attachment);
-    this.freshResult(entry, status);
-    const currentBuild = entry.manager.latestBuildResult()!;
     const finalPreview = await entry.service.preview();
     this.queryFence(entry, attachment);
-    const index = IndexStore.readCurrent(indexDatabase(this.dataRoot, this.repoId), entry.scope, files.map((file) => file.path), true);
-    if (first.baselineHash !== status.baselineHash || build.spec.status !== currentBuild.spec.status
-      || finalPreview.partial || finalPreview.files.length !== files.length
-      || finalPreview.files.some((file) => !files.some((row) => row.path === file.path))
-      || index.status.currentGeneration !== status.generation || index.status.baselineHash !== status.baselineHash
-      || index.snapshot && (index.snapshot.files.length !== files.length
-        || index.snapshot.files.some((file) => !files.some((row) => row.path === file.path && row.hash === file.hash)))) {
+    if (finalPreview.partial || finalPreview.files.length !== files.length
+      || finalPreview.files.some((file) => !files.some((row) => row.path === file.path))) {
       throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间输入发生变化");
     }
-    await new Promise<void>((done) => setImmediate(done));
-    this.queryFence(entry, attachment);
-    const end = entry.manager.status();
-    if (this.baselineAuthority(entry) !== epoch || end.dirty || end.eventSequence !== status.eventSequence
-      || end.baselineHash !== status.baselineHash) throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间授权或观察序号变化");
-    const baseline: ProjectBaselineSnapshot = { ...entry.scope, generation: status.generation, baselineHash: status.baselineHash!,
+    return files;
+  }
+
+  private queryBaseline(entry: WorkspaceEntry, status: ProjectIndexSyncStatus, epoch: string, files: Array<{ path: string; hash: string }>): ProjectBaselineSnapshot {
+    return { ...entry.scope, generation: status.generation, baselineHash: status.baselineHash!,
       observedSequence: entry.baselineSequence, authorityEpoch: epoch, files,
       coverage: { kind: "allowed-inputs", complete: true, roots: ["."], excludedPaths: ["docs/prod"],
         policyHash: createHash("sha256").update(readFileSync(new URL("../runtime/project-index-policy.ts", import.meta.url))).digest("hex") } };
-    return { baseline, build: { workspaceId: entry.scope.workspaceId, generation: status.generation,
-      baselineHash: status.baselineHash!, spec: structuredClone(currentBuild.spec) } };
   }
 
   private async checkQuery(entry: WorkspaceEntry, attachment: Attachment, expected: ProjectBaselineSnapshot): Promise<void> {
-    const actual = (await this.captureQuery(entry, attachment)).baseline;
+    this.queryFence(entry, attachment);
+    const status = entry.manager.status();
+    let actual: ProjectBaselineSnapshot;
+    if (status.state !== "fresh" || status.dirty) {
+      actual = (await this.captureQuery(entry, attachment)).baseline;
+    } else {
+      const epoch = this.baselineAuthority(entry);
+      const files = await this.hashCurrentFiles(entry, attachment);
+      const end = entry.manager.status();
+      if (end.dirty || end.eventSequence !== status.eventSequence || end.baselineHash !== status.baselineHash) {
+        throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询核对期间观察序号变化");
+      }
+      actual = this.queryBaseline(entry, status, epoch, files);
+    }
     this.queryFence(entry, attachment);
     const normalized = (value: ProjectBaselineSnapshot) => JSON.stringify({ ...value, generation: 0 });
     if (actual.generation < expected.generation || normalized(actual) !== normalized(expected)) {
