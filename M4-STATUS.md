@@ -22,11 +22,13 @@
 | AC14 首次/新 PM/丢基线/连续追加区分 | 通过 | tests/pm-intake-service-currentness.test.ts、tests/pm-intake-contracts.test.ts | 无 |
 | AC15 explore 双父输入输出契约 | 通过 | tests/explore-contracts.test.ts | 无 |
 
-全量回归（2026-09-18）：typecheck 通过；vitest 173 个文件全部通过，4108 个用例通过、1 个跳过，耗时 77 分钟。提交号：d2d1dc4（探针链删除）、ca84d2c（收口的产品与测试改动），文档与纪律条款为其后一次提交。
+全量回归（2026-09-19，Git 子系统减重后）：typecheck 通过；vitest 165 个文件全部通过，3994 个用例通过、1 个跳过，耗时 20 分钟。提交号：daf72e2（正文存储与只读查询直接调 PATH git）、fde4189（删跨进程 gitExpectation 与 Git worker 会话）、875e812（删 ExecutionGuard 与 Git 沙箱包装）。
 
 ## 性能
 
-需求正文每次保存操作执行约 25 条 Git 命令并经独立 worker 进程会话，单次操作 400–700ms；测试默认超时因此从 5 秒放宽到 30 秒。查询正式基准（1000 文件、每档 100 样本、500ms/2000ms 门槛，2026-09-18 运行，输出 .bb-spec/.cache/m4-closeout/bench/formal-01）：未通过。900 个样本中 682 个失败：多数立即返回 index_not_fresh，其余等待约 14 秒后同样返回 index_not_fresh；218 个成功样本的 p95 为 36–40 秒，远超 500ms/2000ms 门槛。查询路径在 1000 文件规模下既慢又长时间判定索引未就绪，属于产品性能缺陷，未在本次收口中修复，待用户决定是否单开任务。
+需求正文保存（updateDraft，同机空闲、30 轮、Node v26.8.2，脚本与结果在 .bb-spec/.cache/git-slimming/save-timing-*.json）：减重前中位 811ms、p95 857ms；减重后中位 212ms、p95 235ms，约 3.8 倍。全量测试从 77 分钟降到 20 分钟。测试默认超时仍为 30 秒，未回调。
+
+查询正式基准（1000 文件、每档 100 样本、500ms/2000ms 门槛，输出 .bb-spec/.cache/git-slimming/bench/formal-02）：未通过。2026-09-19 在提交 875e812 上运行，总耗时 7 小时 57 分。900 个样本中 899 个成功、1 个 index_not_fresh（减重前 682 个失败，多为 index_not_fresh）；成功样本三类查询、三档 closed 元数据规模下 p95 均为 31–33 秒，中位 31.8 秒，远超 500ms/2000ms 门槛。减重消除了索引未就绪失败，但查询本身约 32 秒的耗时与 Git 子系统无关，仍是产品性能缺陷，待用户决定是否单开任务。
 
 ## 当前阻塞
 
@@ -34,8 +36,10 @@
 
 ## 已批准的后续任务
 
-1. Git 子系统减重：删除 PATH 逐段绑定、排除根预算、跨进程 gitExpectation、Git worker 会话、sandbox-exec 与 ExecutionGuard，只保留"安装时缺 Git 非零退出"和"运行时用 PATH 上的 git 执行固定参数"两条验收。预计删约 6000 行，需求保存速度提升 5 倍以上。
+1. 测试入口整理：`pnpm test` 默认只跑单元测试，integration 与 installation 走已有的 `test:integration`、`test:installation` 脚本（已批准）。文件级并行（3–4 worker）须先多轮验证无抖动再单独请用户批准；不稳定则只做入口拆分。
 2. M5 在 1 完成后开始。
+
+已完成：Git 子系统减重（2026-09-19）。验收两条均成立：preinstall 缺 Git 非零退出并提示（tests/git-prerequisite.test.ts、tests/installation/git-prerequisite.test.ts）；运行时直接用 PATH 上的 git 执行固定参数，不做其他核验。角色 bash 命令沙箱保留。净删约 6800 行。
 
 ## 候选清理（未批准，不动）
 
@@ -46,6 +50,6 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M4-STATUS.md，核对 git status 与最近提交。
-本窗口任务：执行 M4-STATUS.md「已批准的后续任务」第 1 项 Git 子系统减重。验收只有两条：安装时缺 Git 非零退出；运行时用 PATH 上的 git 执行固定参数。开工前先列出要删除的文件与要改的测试，给出最小方案和代价，经用户确认后再动。
+本窗口任务：执行 M4-STATUS.md「已批准的后续任务」第 1 项测试入口整理（拆 pnpm test 默认入口；并行只做验证并出证据，不自行批准）。完成后进入 M5，先按计划 §12 M5 列出 AC 与范围/非目标/验证方法，经用户确认后再动。
 任何新增机制、加固或计划正文修改都必须先经用户拍板。
 ```

@@ -39,9 +39,9 @@ pi install git:github.com/0xBB2B/pi-company
 
 本地开发时使用 `pi install /absolute/path/to/pi-company`，并先在该目录执行 `pnpm install --frozen-lockfile` 安装锁定依赖。本框架使用 pnpm 11.7.0，运行及测试均使用 Node；运行 pi 的 Node 版本需 ≥ 22.19。角色代理随包提供，无需另装子代理系统。
 
-Git 是必须由用户预先安装的系统工具，并且需要位于启动 pi 或包管理器时的可信 `PATH` 中。本包不捆绑、下载或自动安装 Git；安装前检查不调用 `xcrun`，也不要求安装完整 Xcode、接受 Xcode 许可或切换系统开发目录。检查会解析并绑定可信 PATH 目录中的链接别名，同时核对目录链接、真实目录祖先、最终可执行文件的身份与权限；别名绕到业务根、包目录或 `node_modules/.bin` 时仍会拒绝。macOS 只允许经过系统组文件严格核对的单条 `admin` 组记录用于目录组写例外，二进制组写及 Linux 目录组写仍拒绝。正常 npm 安装以及由 pi 触发、且允许执行安装脚本的 npm 安装会运行 `preinstall` 检查；Git 缺失、不可执行、不可信或在检查中变化时，安装会以非零状态退出，并提示“必须预先安装Git并确保PATH可用”。
+Git 是必须由用户预先安装的系统工具，并且需要位于 `PATH` 中。本包不捆绑、下载或自动安装 Git。正常 npm 安装以及由 pi 触发、且允许执行安装脚本的 npm 安装会运行 `preinstall` 检查：执行 `git --version` 失败时，安装以非零状态退出，并提示“必须预先安装Git并确保PATH可用”。
 
-`--ignore-scripts`、pnpm 禁用第三方安装脚本，以及 `pi install /absolute/path` 这类仅登记本地路径的方式，可能跳过 `preinstall`，安装 hook 无法强迫这些宿主执行脚本。产品扩展现在会在注册任何工具或事件前，从真实宿主 `PATH` 固定并复验 Git；检查失败时不注册业务能力。只读 Git 查询使用同一绑定，并在执行前后复验，不再调用 `xcrun`。本机正文存储的 root-only 接线、受管 Git runner 以及 daemon 的继承与已有实例一致性仍待后续任务完成，因此安装或登记成功仍不能视为完整流程已经可用。
+`--ignore-scripts`、pnpm 禁用第三方安装脚本，以及 `pi install /absolute/path` 这类仅登记本地路径的方式，可能跳过 `preinstall`。运行时直接调用 `PATH` 上的 `git` 并传固定参数，不再做其他核验；此时缺少 Git 会在首次需要 Git 的操作（读取仓库身份、保存需求正文、受管提交）处报错。
 
 ## 卸载
 
