@@ -230,15 +230,21 @@ test("knowledge RPC来自真实连接grant：中文命中/分页/partial/invalid
   expect(new Set(pages.map((page) => page.generation)).size).toBe(1);
   const old = await request({ action: "facts", pageSize: 1 });
   const before = await stat(join(w.repo.root, "src/index.ts"));
+  const observed = (await a.call("index.sync", { action: "status", ...ga.params }) as { eventSequence: number }).eventSequence;
   await writeFile(join(w.repo.root, "src/index.ts"), 'export const 跳跃 = "角色快跑";\n');
   await utimes(join(w.repo.root, "src/index.ts"), before.atime, before.mtime);
+  await waitForObservedChange(a, ga.params, observed);
   await expect(a.call("project.index.query", { action: "check", grantId: ga.params.grantId, receipt: old.receipt })).rejects.toThrow();
   await expect(request({ action: "facts", pageSize: 1, cursor: (old.page as KnowledgeFactPackage).nextCursor })).rejects.toThrow();
+  const beforeBroken = (await a.call("index.sync", { action: "status", ...ga.params }) as { eventSequence: number }).eventSequence;
   await writeFile(join(w.repo.root, "src/broken.ts"), "export function broken( {\n");
+  await waitForObservedChange(a, ga.params, beforeBroken);
   const partial = (await request({ action: "facts" })).page as KnowledgeFactPackage;
   expect(partial.indexStatus).toBe("partial");
   expect(partial.limitations.diagnosticCounts.syntax_error).toBeGreaterThan(0);
+  const beforeInvalid = (await a.call("index.sync", { action: "status", ...ga.params }) as { eventSequence: number }).eventSequence;
   await writeFile(join(w.repo.root, "docs/spec/jump.rules.json"), "{INVALID}");
+  await waitForObservedChange(a, ga.params, beforeInvalid);
   const invalid = (await request({ action: "facts" })).page as KnowledgeFactPackage;
   expect(invalid).toMatchObject({ indexStatus: "invalid", specStatus: "invalid", facts: [], contractSetHash: null });
   expect(invalid.limitations.diagnosticCounts.invalid_spec).toBeGreaterThan(0);
@@ -247,8 +253,18 @@ test("knowledge RPC来自真实连接grant：中文命中/分页/partial/invalid
   expect(counter.count).toBe(1);
 }, 60_000);
 
-test("一次知识查询只做一次完整重核；回执核对不重建索引但仍能发现内容变化", async () => {
-  let ensureFresh = 0;
+async function waitForObservedChange(peer: Peer, params: Record<string, unknown>, after: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const status = await peer.call("index.sync", { action: "status", ...params }) as { eventSequence: number };
+    if (status.eventSequence > after) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("watcher 未在限时内观察到变化");
+}
+
+test("索引fresh时知识查询与回执核对不重建索引、不读正文；已知文件的大小变化由stat即时发现", async () => {
+  let ensureFresh = 0, previews = 0;
   const w = await world({ archiveHook: () => {}, coordinatorOptions: {
     createManager(options) {
       const manager = new ProjectIndexSyncManager({ ...options, lowFrequencyMs: 60_000 });
@@ -256,21 +272,43 @@ test("一次知识查询只做一次完整重核；回执核对不重建索引�
       manager.ensureFresh = () => { ensureFresh++; return original(); };
       return manager;
     },
+    async openService(options) {
+      const service = await ProjectIndexService.open(options);
+      const preview = service.preview.bind(service);
+      service.preview = (input) => { previews++; return preview(input); };
+      return service;
+    },
   } });
   const peer = await connect(w.socketPath, w.token, "count", w.identity.repoId, w.repo.root);
   const g = await grant(w, "count");
   await peer.call("index.sync", { action: "init", ...g.params });
-  ensureFresh = 0;
-  const result = await peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } });
-  expect(ensureFresh).toBe(1);
-  expect(await peer.call("project.index.query", { action: "check", grantId: g.params.grantId, receipt: result.receipt })).toEqual({ current: true });
-  expect(ensureFresh).toBe(1);
-  const before = await stat(join(w.repo.root, "src/index.ts"));
-  await writeFile(join(w.repo.root, "src/index.ts"), "export const coordinatorFixture = false;\n");
-  await utimes(join(w.repo.root, "src/index.ts"), before.atime, before.mtime);
-  await expect(peer.call("project.index.query", { action: "check", grantId: g.params.grantId, receipt: result.receipt }))
+  const first = await peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } });
+  expect(await peer.call("project.index.query", { action: "check", grantId: g.params.grantId, receipt: first.receipt })).toEqual({ current: true });
+  ensureFresh = 0; previews = 0;
+  const second = await peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } });
+  expect(await peer.call("project.index.query", { action: "check", grantId: g.params.grantId, receipt: second.receipt })).toEqual({ current: true });
+  expect({ ensureFresh, previews }).toEqual({ ensureFresh: 0, previews: 0 });
+  await writeFile(join(w.repo.root, "src/index.ts"), "export const coordinatorFixture = false; // 大小变化\n");
+  await expect(peer.call("project.index.query", { action: "check", grantId: g.params.grantId, receipt: second.receipt }))
     .rejects.toMatchObject({ code: "index_not_fresh" });
 }, 30_000);
+
+test("周期对账与知识查询互斥：慢速refresh期间连续查询不使manager进入error", async () => {
+  const w = await world({ archiveHook: () => {}, coordinatorOptions: {
+    createManager(options) { return new ProjectIndexSyncManager({ ...options, lowFrequencyMs: 3000 }); },
+  } });
+  for (let i = 0; i < 400; i++) await writeFile(join(w.repo.root, "src", `f${i}.ts`), `export function fn${i}(a: number) { return a + ${i}; }\n`);
+  const peer = await connect(w.socketPath, w.token, "exclusive", w.identity.repoId, w.repo.root);
+  const g = await grant(w, "exclusive");
+  await peer.call("index.sync", { action: "init", ...g.params });
+  for (let i = 0; i < 10; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const result = await peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "exact", by: "path", value: "src/index.ts" } });
+    expect(await peer.call("project.index.query", { action: "check", grantId: g.params.grantId, receipt: result.receipt })).toEqual({ current: true });
+  }
+  await waitFor(() => (w.coordinator.status(scopeOf(g), g.client) as { state: string }).state === "fresh");
+  expect(w.coordinator.status(scopeOf(g), g.client)).toMatchObject({ state: "fresh", dirty: false, lastError: null });
+}, 90_000);
 
 test("knowledge覆盖不足默认无正文阻塞，返回竞争真实修改使旧页失效", async () => {
   let changed = false;
@@ -280,7 +318,7 @@ test("knowledge覆盖不足默认无正文阻塞，返回竞争真实修改使�
       const read = service.readCurrentForQuery.bind(service);
       service.readCurrentForQuery = async (input) => {
         const result = await read(input);
-        if (!changed) { changed = true; await writeFile(join(options.repositoryRoot, "new.ts"), "export const 新增 = 1;\n"); }
+        if (!changed) { changed = true; await writeFile(join(options.repositoryRoot, "src/index.ts"), "export const coordinatorFixture = true; // 返回前修改\n"); }
         return result;
       };
       return service;
@@ -291,7 +329,9 @@ test("knowledge覆盖不足默认无正文阻塞，返回竞争真实修改使�
   await peer.call("index.sync", { action: "init", ...g.params });
   await expect(peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } })).rejects.toThrow();
   expect(changed).toBe(true);
+  const observed = (await peer.call("index.sync", { action: "status", ...g.params }) as { eventSequence: number }).eventSequence;
   await writeFile(join(w.repo.root, "huge.txt"), "x".repeat(3 * 1024 * 1024));
+  await waitForObservedChange(peer, g.params, observed);
   await expect(peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } }))
     .rejects.toMatchObject({ code: "index_not_fresh", data: { coverage: "incomplete", bodyAvailable: false } });
 }, 30_000);

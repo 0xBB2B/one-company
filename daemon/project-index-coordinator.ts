@@ -5,8 +5,8 @@ import type { KnowledgeQueryCapture } from "../runtime/knowledge-query.ts";
 import type { ProjectBaselineSnapshot } from "../runtime/project-baseline.ts";
 import { knowledgeContent, parseKnowledgeTransportQuery } from "../runtime/knowledge-query-tool.ts";
 import { readFileSync } from "node:fs";
-import { realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readGit } from "../runtime/git-read.ts";
 import { assertRegularDatabaseFiles, indexDatabase } from "../runtime/database-paths.ts";
 import { IndexStore } from "../runtime/index-store.ts";
@@ -122,6 +122,14 @@ interface WorkspaceEntry {
   readonly baselineEpoch: string;
   baselineSequence: number;
   cleanup: Promise<void> | null;
+  queryStat?: QueryStatSnapshot;
+}
+
+interface QueryStatSnapshot {
+  baselineHash: string;
+  build: ProjectIndexBuildResult;
+  files: Array<{ path: string; hash: string }>;
+  stats: Array<{ path: string; size: bigint; mtimeNs: bigint; ino: bigint }>;
 }
 
 type AuthorizationScope = { readonly attachment: Attachment } | { readonly cleanup: true } | { readonly background: true };
@@ -601,59 +609,147 @@ export class ProjectIndexCoordinator {
     }
   }
 
-  /** 已在workspace队列内执行；不递归调用公开captureBaseline或再次enqueue。 */
+  /** 已在workspace队列内执行；不递归调用公开captureBaseline或再次enqueue。捕获期间观察到变化时最多重试三轮。 */
   private async captureQuery(entry: WorkspaceEntry, attachment: Attachment): Promise<KnowledgeQueryCapture> {
+    for (let attempt = 0; ; attempt++) {
+      const captured = await this.captureQueryOnce(entry, attachment);
+      if (captured) return captured;
+      if (attempt >= 2) throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间输入持续变化");
+      await this.awaitSettled(entry, attachment);
+    }
+  }
+
+  /** 等待进行中的对账发布完成；只观察状态，不发起新的重建。 */
+  private async awaitSettled(entry: WorkspaceEntry, attachment: Attachment): Promise<void> {
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      this.queryFence(entry, attachment);
+      const status = entry.manager.status();
+      if (status.state === "fresh" && !status.dirty && status.queuedEvents === 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  private async captureQueryOnce(entry: WorkspaceEntry, attachment: Attachment): Promise<KnowledgeQueryCapture | null> {
     this.queryFence(entry, attachment);
-    const epoch = this.baselineAuthority(entry);
+    if (this.reconcileInFlight(entry.manager.status())) await this.awaitSettled(entry, attachment);
+    const fast = await entry.manager.runExclusive(async () => {
+      const status = entry.manager.status();
+      const verified = await this.verifiedQueryStat(entry, attachment, status);
+      if (!verified) return undefined;
+      return this.finishCapture(entry, attachment, status, verified.build, verified.files);
+    });
+    if (fast !== undefined) return fast;
     const status = await entry.manager.ensureFresh();
     this.queryFence(entry, attachment);
     this.freshResult(entry, status);
-    const build = entry.manager.latestBuildResult()!;
+    return entry.manager.runExclusive(async () => {
+      const build = entry.manager.latestBuildResult();
+      if (!build) return null;
+      const hashed = await this.hashCurrentFiles(entry, attachment);
+      if (!hashed) return null;
+      entry.queryStat = { baselineHash: status.baselineHash!, build, files: hashed.files, stats: hashed.stats };
+      return this.finishCapture(entry, attachment, status, build, hashed.files);
+    });
+  }
+
+  private async finishCapture(entry: WorkspaceEntry, attachment: Attachment, status: ProjectIndexSyncStatus, build: ProjectIndexBuildResult,
+    files: Array<{ path: string; hash: string }>): Promise<KnowledgeQueryCapture | null> {
+    const epoch = this.baselineAuthority(entry);
     if (build.budget.stoppedReason !== "complete" || build.budget.exhausted.length) {
       throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询文件覆盖不完整；不提供当前正文", { coverage: "incomplete", bodyAvailable: false });
     }
-    const files = await this.hashCurrentFiles(entry, attachment);
-    const index = IndexStore.readCurrent(indexDatabase(this.dataRoot, this.repoId), entry.scope, files.map((file) => file.path), true);
+    let index: ReturnType<typeof IndexStore.readCurrent>;
+    try { index = IndexStore.readCurrent(indexDatabase(this.dataRoot, this.repoId), entry.scope, files.map((file) => file.path), true); }
+    catch { return null; }
     if (index.status.currentGeneration !== status.generation || index.status.baselineHash !== status.baselineHash
       || index.snapshot && (index.snapshot.files.length !== files.length
         || index.snapshot.files.some((file) => !files.some((row) => row.path === file.path && row.hash === file.hash)))) {
-      throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间输入发生变化");
+      return null;
     }
     await new Promise<void>((done) => setImmediate(done));
     this.queryFence(entry, attachment);
-    const end = entry.manager.status();
-    if (this.baselineAuthority(entry) !== epoch || end.dirty || end.eventSequence !== status.eventSequence
-      || end.baselineHash !== status.baselineHash) throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间授权或观察序号变化");
+    if (!this.unchangedSince(entry, status, epoch)) return null;
     return { baseline: this.queryBaseline(entry, status, epoch, files), build: { workspaceId: entry.scope.workspaceId, generation: status.generation,
       baselineHash: status.baselineHash!, spec: structuredClone(build.spec) } };
   }
 
+  /** 等待进行中的对账发布完成；只观察状态，不发起新的重建。 */
+  /** 查询主体撞上对账发布窗口的瞬态失败等发布完成后重试一次；协调器自身的拒绝不重试。 */
+  private async runQuery(entry: WorkspaceEntry, attachment: Attachment, query: ReturnType<typeof parseKnowledgeTransportQuery>) {
+    for (let attempt = 0; ; attempt++) {
+      try { return await attachment.query!.query(query); }
+      catch (error) {
+        const code = (error as { code?: unknown } | null)?.code;
+        if (attempt >= 2 || attachment.queryFailure || (code !== "unavailable" && code !== "stale")) throw error;
+        await this.awaitSettled(entry, attachment);
+        this.queryFence(entry, attachment);
+      }
+    }
+  }
+
+  /** 索引已发布、没有未处理事件；对账进行中索引行已被标 dirty，此时不能读索引。 */
+  private settled(status: ProjectIndexSyncStatus): boolean {
+    return status.watchHealthy && !status.overflowed && status.baselineHash !== null
+      && status.state === "fresh" && !status.dirty && status.queuedEvents === 0;
+  }
+
+  /** 对账正在进行且没有出错时只等它发布，不再额外触发一次完整 refresh。 */
+  private reconcileInFlight(status: ProjectIndexSyncStatus): boolean {
+    return !status.lastError && (status.state === "dirty" || status.state === "reconciling");
+  }
+
+  private unchangedSince(entry: WorkspaceEntry, status: ProjectIndexSyncStatus, epoch: string): boolean {
+    const end = entry.manager.status();
+    return this.baselineAuthority(entry) === epoch && this.settled(end) && end.baselineHash === status.baselineHash;
+  }
+
+  /** 索引已稳定且上次完整核对的文件在磁盘上大小、修改时间与inode都未变时，复用其哈希；任何差异都回到完整核对。 */
+  private async verifiedQueryStat(entry: WorkspaceEntry, attachment: Attachment, status: ProjectIndexSyncStatus): Promise<QueryStatSnapshot | undefined> {
+    const snapshot = entry.queryStat;
+    if (!snapshot || !this.settled(status) || snapshot.baselineHash !== status.baselineHash) return undefined;
+    this.queryFence(entry, attachment);
+    for (const file of snapshot.stats) {
+      let current;
+      try { current = await lstat(join(entry.scope.root, file.path), { bigint: true }); }
+      catch { return undefined; }
+      if (!current.isFile() || current.size !== file.size || current.mtimeNs !== file.mtimeNs || current.ino !== file.ino) return undefined;
+    }
+    this.queryFence(entry, attachment);
+    return snapshot;
+  }
+
   /** 两次枚举夹一次逐文件哈希：枚举差异或读取失败都判为覆盖不完整，不重建索引。 */
-  private async hashCurrentFiles(entry: WorkspaceEntry, attachment: Attachment): Promise<Array<{ path: string; hash: string }>> {
+  private async hashCurrentFiles(entry: WorkspaceEntry, attachment: Attachment): Promise<{ files: Array<{ path: string; hash: string }>; stats: QueryStatSnapshot["stats"] } | null> {
     const preview = await entry.service.preview();
     this.queryFence(entry, attachment);
     if (preview.partial || preview.budget.stoppedReason !== "complete" || preview.budget.exhausted.length) {
       throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询文件覆盖不完整；不提供当前正文", { coverage: "incomplete", bodyAvailable: false });
     }
     const files: Array<{ path: string; hash: string }> = [];
+    const stats: QueryStatSnapshot["stats"] = [];
     let bytes = 0;
     for (const file of preview.files) {
       this.queryFence(entry, attachment);
+      let before;
+      try { before = await lstat(join(entry.scope.root, file.path), { bigint: true }); }
+      catch { throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询文件不可完整核对；不提供当前正文", { coverage: "incomplete", bodyAvailable: false }); }
       const read = await readIndexFile(entry.scope.root, file.path, { readUnsupported: true });
       this.queryFence(entry, attachment);
-      if (read.status !== "success" || (bytes += read.size) > 20 * 1024 * 1024) {
+      if (read.status !== "success" || (bytes += read.size) > 20 * 1024 * 1024 || !before.isFile()) {
         throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询文件不可完整核对；不提供当前正文", { coverage: "incomplete", bodyAvailable: false });
       }
       files.push({ path: file.path, hash: read.sha256 });
+      stats.push({ path: file.path, size: before.size, mtimeNs: before.mtimeNs, ino: before.ino });
     }
     files.sort((a, b) => a.path.localeCompare(b.path));
     const finalPreview = await entry.service.preview();
     this.queryFence(entry, attachment);
     if (finalPreview.partial || finalPreview.files.length !== files.length
       || finalPreview.files.some((file) => !files.some((row) => row.path === file.path))) {
-      throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询捕获期间输入发生变化");
+      return null;
     }
-    return files;
+    return { files, stats };
   }
 
   private queryBaseline(entry: WorkspaceEntry, status: ProjectIndexSyncStatus, epoch: string, files: Array<{ path: string; hash: string }>): ProjectBaselineSnapshot {
@@ -665,21 +761,17 @@ export class ProjectIndexCoordinator {
 
   private async checkQuery(entry: WorkspaceEntry, attachment: Attachment, expected: ProjectBaselineSnapshot): Promise<void> {
     this.queryFence(entry, attachment);
-    const status = entry.manager.status();
-    let actual: ProjectBaselineSnapshot;
-    if (status.state !== "fresh" || status.dirty) {
-      actual = (await this.captureQuery(entry, attachment)).baseline;
-    } else {
+    if (this.reconcileInFlight(entry.manager.status())) await this.awaitSettled(entry, attachment);
+    const fast = await entry.manager.runExclusive(async () => {
+      const status = entry.manager.status();
       const epoch = this.baselineAuthority(entry);
-      const files = await this.hashCurrentFiles(entry, attachment);
-      const end = entry.manager.status();
-      if (end.dirty || end.eventSequence !== status.eventSequence || end.baselineHash !== status.baselineHash) {
-        throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询核对期间观察序号变化");
-      }
-      actual = this.queryBaseline(entry, status, epoch, files);
-    }
+      const verified = await this.verifiedQueryStat(entry, attachment, status);
+      if (!verified || !this.unchangedSince(entry, status, epoch)) return undefined;
+      return this.queryBaseline(entry, status, epoch, verified.files);
+    });
+    const actual = fast ?? (await this.captureQuery(entry, attachment)).baseline;
     this.queryFence(entry, attachment);
-    const normalized = (value: ProjectBaselineSnapshot) => JSON.stringify({ ...value, generation: 0 });
+    const normalized = (value: ProjectBaselineSnapshot) => JSON.stringify({ ...value, generation: 0, observedSequence: 0 });
     if (actual.generation < expected.generation || normalized(actual) !== normalized(expected)) {
       throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询结果属于旧快照");
     }
@@ -706,8 +798,7 @@ export class ProjectIndexCoordinator {
       const bindDelivery = (baseline: ProjectBaselineSnapshot) => {
         assertDelivery = () => {
           this.queryFence(entry, attachment);
-          if (attachment.grantId !== scope.grantId || entry.baselineSequence !== baseline.observedSequence
-            || this.baselineAuthority(entry) !== baseline.authorityEpoch) {
+          if (attachment.grantId !== scope.grantId || this.baselineAuthority(entry) !== baseline.authorityEpoch) {
             throw new ProjectIndexCoordinatorError("index_not_fresh", "知识查询交付期间授权或观察代次已变化");
           }
         };
@@ -737,18 +828,25 @@ export class ProjectIndexCoordinator {
             }
             catch (error) { if (error instanceof ProjectIndexCoordinatorError) attachment.queryFailure = error; throw error; }
           },
-          readCurrent: (paths) => entry.service.readCurrentForQuery({ paths }),
+          readCurrent: async (paths) => {
+            if (this.reconcileInFlight(entry.manager.status())) await this.awaitSettled(entry, attachment);
+            return entry.manager.runExclusive(() => entry.service.readCurrentForQuery({ paths }));
+          },
           assertCurrent: async (baseline) => {
-            await this.checkQuery(entry, attachment, baseline);
-            this.queryFence(entry, attachment);
+            try {
+              await this.checkQuery(entry, attachment, baseline);
+              this.queryFence(entry, attachment);
+            } catch (error) { if (error instanceof ProjectIndexCoordinatorError) attachment.queryFailure = error; throw error; }
             attachment.queryBaseline = baseline;
           },
         });
         attachment.queryFailure = undefined;
         let page;
-        try { page = await attachment.query.query(query); }
-        catch {
-          throw attachment.queryFailure ?? new ProjectIndexCoordinatorError("index_not_fresh", "知识查询或游标不可核对；不提供旧正文");
+        try { page = await this.runQuery(entry, attachment, query); }
+        catch (error) {
+          const reason = (error as { code?: unknown } | null)?.code;
+          throw attachment.queryFailure ?? new ProjectIndexCoordinatorError("index_not_fresh", "知识查询或游标不可核对；不提供旧正文",
+            typeof reason === "string" ? { reason } : {});
         }
         this.queryFence(entry, attachment);
         knowledgeContent(page);

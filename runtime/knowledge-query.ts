@@ -217,7 +217,6 @@ export class KnowledgeQuerySession {
         const fresh = copyCapture(await this.#adapter.captureFresh());
         if (!sameCapture(entry.capture, fresh)) fail("stale");
       } else {
-        if (this.#entries.size >= LIMIT.sessions) fail("resource_limit");
         const capture = copyCapture(await this.#adapter.captureFresh());
         entry = await this.#collect(query, capture, this.#time());
       }
@@ -259,8 +258,13 @@ export class KnowledgeQuerySession {
       if (cursor) this.#entries.delete(cursor);
       if (next) {
         entry.offset = offset; entry.returned += facts.length; entry.omitted = omitted;
-        const used = [...this.#entries.values()].reduce((sum, value) => sum + value.bytes, 0);
-        if (used + entry.bytes > LIMIT.cacheBytes) fail("resource_limit");
+        if (entry.bytes > LIMIT.cacheBytes) fail("resource_limit");
+        // 未消费的旧游标按最早创建顺序淘汰，不让遗留游标拒绝新查询。
+        for (const key of this.#entries.keys()) {
+          const used = [...this.#entries.values()].reduce((sum, value) => sum + value.bytes, 0);
+          if (this.#entries.size < LIMIT.sessions && used + entry.bytes <= LIMIT.cacheBytes) break;
+          this.#entries.delete(key);
+        }
         this.#entries.set(next, entry);
         cursor = next;
       }

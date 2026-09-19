@@ -453,8 +453,10 @@ test("最小输出预算仍保留所有阻塞类别/未覆盖统计，缓存条�
   expect(result.limitations.diagnosticCounts).toEqual({ budget_exceeded: 40, unknown: 1 });
   expect(result.limitations.diagnosticDetailsOmitted).toBe(33); expect(result.coverage.complete).toBe(false);
   for (let i = 1; i < 8; i++) await session.query({ action: "facts", pageSize: 1 });
-  await expect(session.query({ action: "facts", pageSize: 1 })).rejects.toMatchObject({ code: "resource_limit" });
+  const ninth = await session.query({ action: "facts", pageSize: 1 });
+  expect(ninth.nextCursor).toBeTruthy();
   expect(session.diagnostics.sessions).toBe(8); expect(session.diagnostics.bytes).toBeLessThanOrEqual(2 * 1024 * 1024);
+  await expect(session.query({ action: "facts", pageSize: 1, maxBytes: 4096, cursor: result.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
   now += 30001;
   await expect(session.query({ action: "facts", pageSize: 1, maxBytes: 4096, cursor: result.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
   expect(session.diagnostics.sessions).toBe(0); session.close();

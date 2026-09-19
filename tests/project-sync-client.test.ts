@@ -92,7 +92,7 @@ test("knowledge controller沿真实grant查询并复核，断线/异步返回竞
   expect(() => result.assertLive()).not.toThrow();
   expect(result.page.requirement).toBeNull();
   expect(result.page.nextCursor).not.toBeNull();
-  await writeFile(join(w.repositoryRoot, "new-query.ts"), "export const queryAdded = 1;\n");
+  await writeFile(join(w.repositoryRoot, "source.ts"), "export const initial = 1; // 返回后修改\n");
   await expect(result.verify()).rejects.toThrow();
   const original = vi.mocked(a.client.call).getMockImplementation()!;
   let held = false;

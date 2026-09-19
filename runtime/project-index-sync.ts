@@ -21,7 +21,7 @@ const RECOVERY_DELAYS_MS = [100, 200, 400] as const;
 
 type Timer = ReturnType<typeof setTimeout>;
 
-export type ProjectIndexSyncAction = "start" | "stop" | "reconnect" | "reconcile" | "ensureFresh" | "status" | "subscribe" | "latestBuildResult";
+export type ProjectIndexSyncAction = "start" | "stop" | "reconnect" | "reconcile" | "ensureFresh" | "exclusive" | "status" | "subscribe" | "latestBuildResult";
 export type ProjectIndexSyncPhase = "before" | "return";
 export type ProjectIndexSyncReason =
   | "start"
@@ -911,6 +911,16 @@ export class ProjectIndexSyncManager {
         try { await this.service.markDirty(); } catch { /* 返回明确unstable，不把持久化失败说成fresh。 */ }
       }
       return this.result();
+    });
+  }
+
+  /** 在与对账相同的串行队列上执行调用方操作，使其与后台 refresh 互斥；不触发重建。 */
+  runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    this.authorizeAt("exclusive", "before");
+    return this.enqueue(async () => {
+      const result = await operation();
+      this.authorizeAt("exclusive", "return");
+      return result;
     });
   }
 
