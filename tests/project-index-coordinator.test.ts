@@ -293,6 +293,19 @@ test("索引fresh时知识查询与回执核对不重建索引、不读正文；
     .rejects.toMatchObject({ code: "index_not_fresh" });
 }, 30_000);
 
+test("一次知识查询对许可的持久核验次数与文件数无关", async () => {
+  const w = await world({ archiveHook: () => {} });
+  for (let i = 0; i < 300; i++) await writeFile(join(w.repo.root, "src", `g${i}.ts`), `export const g${i} = ${i};\n`);
+  const peer = await connect(w.socketPath, w.token, "grant-count", w.identity.repoId, w.repo.root);
+  const g = await grant(w, "grant-count");
+  await peer.call("index.sync", { action: "init", ...g.params });
+  await peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "exact", by: "path", value: "src/g1.ts" } });
+  const validate = vi.spyOn(w.verifier, "validateForClient");
+  const result = await peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "exact", by: "path", value: "src/g1.ts" } });
+  expect(await peer.call("project.index.query", { action: "check", grantId: g.params.grantId, receipt: result.receipt })).toEqual({ current: true });
+  expect(validate.mock.calls.length).toBeLessThan(60);
+}, 60_000);
+
 test("周期对账与知识查询互斥：慢速refresh期间连续查询不使manager进入error", async () => {
   const w = await world({ archiveHook: () => {}, coordinatorOptions: {
     createManager(options) { return new ProjectIndexSyncManager({ ...options, lowFrequencyMs: 3000 }); },
@@ -326,9 +339,15 @@ test("knowledge覆盖不足默认无正文阻塞，返回竞争真实修改使�
   } });
   const peer = await connect(w.socketPath, w.token, "race", w.identity.repoId, w.repo.root);
   const g = await grant(w, "race");
-  await peer.call("index.sync", { action: "init", ...g.params });
-  await expect(peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } })).rejects.toThrow();
+  const initialized = await peer.call("index.sync", { action: "init", ...g.params }) as { generation: number };
+  // 返回前的真实修改要么使本次查询失败，要么经重试后只返回新内容，不能把旧页当当前。
+  const outcome = await peer.call("project.index.query", { action: "query", grantId: g.params.grantId, query: { action: "facts" } })
+    .then((result) => ({ page: result.page as KnowledgeFactPackage }), (error: unknown) => ({ error }));
   expect(changed).toBe(true);
+  if ("page" in outcome) {
+    expect(outcome.page.generation).toBeGreaterThan(initialized.generation);
+    expect(JSON.stringify(outcome.page)).toContain("返回前修改");
+  }
   const observed = (await peer.call("index.sync", { action: "status", ...g.params }) as { eventSequence: number }).eventSequence;
   await writeFile(join(w.repo.root, "huge.txt"), "x".repeat(3 * 1024 * 1024));
   await waitForObservedChange(peer, g.params, observed);

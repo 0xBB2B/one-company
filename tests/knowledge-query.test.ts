@@ -60,7 +60,7 @@ async function fixture() {
   }
   const adapter: KnowledgeQueryAdapter = {
     captureFresh: capture,
-    readCurrent: (paths) => service.readCurrentForQuery({ paths }),
+    readCurrent: (paths, bodies) => service.readCurrentForQuery({ paths, bodies }),
     async assertCurrent(origin) {
       const fresh = (await capture()).baseline;
       expect(fresh.generation).toBeGreaterThanOrEqual(origin.generation);
@@ -212,12 +212,12 @@ test("返回前真实文件改动/撤权使第一页失败，未提供current ho
   const w = await fixture();
   expect(() => new KnowledgeQuerySession({} as never)).toThrow();
   const readCurrent = w.adapter.readCurrent;
-  const session = new KnowledgeQuerySession({ ...w.adapter, async readCurrent(paths) {
-    const result = await readCurrent(paths); await put(w.repo.root, "src/same.ts", "CHANGED_AFTER_READ"); return result;
+  const session = new KnowledgeQuerySession({ ...w.adapter, async readCurrent(paths, bodies) {
+    const result = await readCurrent(paths, bodies); await put(w.repo.root, "src/same.ts", "CHANGED_AFTER_READ"); return result;
   } });
   await expect(session.query({ action: "facts" })).rejects.toMatchObject({ code: "unavailable" }); session.close();
   await w.refresh();
-  const denied = new KnowledgeQuerySession({ ...w.adapter, async readCurrent(paths) { const result = await readCurrent(paths); w.revoke(); return result; } });
+  const denied = new KnowledgeQuerySession({ ...w.adapter, async readCurrent(paths, bodies) { const result = await readCurrent(paths, bodies); w.revoke(); return result; } });
   await expect(denied.query({ action: "facts" })).rejects.toMatchObject({ code: "unavailable" }); denied.close();
 });
 
@@ -306,8 +306,8 @@ test("真实131072码点边界中文/emoji/CRLF命中一次，不能依据哈希
   const current = await w.service.readCurrentForQuery({ paths });
   expect(current.snapshot!.sourceFragments).toHaveLength(6);
   w.scope(paths);
-  const session = new KnowledgeQuerySession({ ...w.adapter, async readCurrent(paths) {
-    const view = await w.adapter.readCurrent(paths); view.snapshot!.sourceFragments.reverse(); return view;
+  const session = new KnowledgeQuerySession({ ...w.adapter, async readCurrent(paths, bodies) {
+    const view = await w.adapter.readCurrent(paths, bodies); view.snapshot!.sourceFragments.reverse(); return view;
   } });
   for (let i = 0; i < paths.length; i++) {
     const query = queries[i]!;
@@ -395,6 +395,24 @@ test("只读接缝不创建/初始化空库，链接/硬链接/越界/默认未�
   await expect(w.service.readCurrentForQuery({ paths: ["src/same.ts"] })).rejects.toMatchObject({ code: "unstable" });
   await rm(join(w.repo.root, "src/same.ts")); await link(join(w.repo.root, "src/动作😀.ts"), join(w.repo.root, "src/same.ts"));
   await expect(w.service.readCurrentForQuery({ paths: ["src/动作😀.ts"] })).rejects.toMatchObject({ code: "unstable" });
+});
+
+test("查询只对命中的文件读磁盘正文；readCurrentForQuery 按 bodies 子集返回已核对正文", async () => {
+  const w = await fixture();
+  const calls: Array<readonly string[]> = [];
+  const session = new KnowledgeQuerySession({ ...w.adapter, readCurrent: (paths, bodies) => { calls.push([...bodies]); return w.adapter.readCurrent(paths, bodies); } });
+  const page = await session.query({ action: "exact", by: "path", value: "src/same.ts" });
+  expect(page.facts.some((fact) => fact.kind === "source" && fact.source.path === "src/same.ts")).toBe(true);
+  expect(calls).toEqual([[], ["src/same.ts"]]);
+  const entity = (await session.query({ action: "facts", text: "same" })).facts.find((fact) => fact.kind === "file" && fact.source.path !== "src/same.ts");
+  if (entity) expect(entity.source.rangeKind).toBe("file");
+  session.close();
+  const paths = ["src/same.ts", "src/动作😀.ts"];
+  const none = await w.service.readCurrentForQuery({ paths, bodies: [] });
+  expect(none.sourceFiles).toEqual([]);
+  const one = await w.service.readCurrentForQuery({ paths, bodies: ["src/动作😀.ts"] });
+  expect(one.sourceFiles?.map((file) => file.path)).toEqual(["src/动作😀.ts"]);
+  await expect(w.service.readCurrentForQuery({ paths, bodies: ["README.md"] })).rejects.toMatchObject({ code: "authorization_denied" });
 });
 
 test("同代次spec summary/hash不对应时拒绝，不拿baselineHash冒充规则集合", async () => {

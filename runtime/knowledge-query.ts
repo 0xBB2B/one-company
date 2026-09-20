@@ -41,7 +41,8 @@ export interface KnowledgeRequirementMetadata {
  */
 export interface KnowledgeQueryAdapter {
   captureFresh(): Promise<KnowledgeQueryCapture>;
-  readCurrent(paths: readonly string[]): Promise<CurrentQueryIndex>;
+  /** bodies 为需要磁盘正文并核对哈希的路径子集；其余路径只提供索引元数据与片段。 */
+  readCurrent(paths: readonly string[], bodies: readonly string[]): Promise<CurrentQueryIndex>;
   assertCurrent(snapshot: ProjectBaselineSnapshot): Promise<void>;
   evidenceMetadata?(): Promise<readonly KnowledgeEvidenceMetadata[]>;
   requirementMetadata?(): Promise<KnowledgeRequirementMetadata | null>;
@@ -278,7 +279,8 @@ export class KnowledgeQuerySession {
 
   async #collect(query: KnowledgeQuery, capture: KnowledgeQueryCapture, asOf: number): Promise<Entry> {
     const baseline = capture.baseline;
-    const index = await this.#adapter.readCurrent(baseline.files.map((file) => file.path));
+    const paths = baseline.files.map((file) => file.path);
+    const index = await this.#adapter.readCurrent(paths, []);
     if (index.status.workspaceId !== baseline.workspaceId || index.status.repoId !== baseline.repoId || index.status.root !== baseline.root
       || index.status.branch !== baseline.branch || index.status.currentGeneration !== baseline.generation || index.status.baselineHash !== baseline.baselineHash
       || !["ready", "partial", "invalid"].includes(index.status.status)) fail("stale");
@@ -291,18 +293,12 @@ export class KnowledgeQuerySession {
       if (allowedFiles.get(file.path) !== file.hash) fail("stale");
       files.set(file.path, file);
     }
-    // 同路径/hash的已核验完整文件视图避免把哈希ID或相同行号误当片段顺序。
-    const sourceFiles = index.sourceFiles ?? [];
-    if (snapshot && (!index.sourceFiles || sourceFiles.length !== files.size)) fail("unavailable");
-    let sourceBytes = 0;
-    const sourcePaths = new Set<string>();
-    for (const file of sourceFiles) {
-      sourceBytes += Buffer.byteLength(file.body);
-      if (sourceBytes > 20 * 1024 * 1024 || sourcePaths.has(file.path) || file.startLine !== 1
-        || file.endLine !== 1 + (file.body.match(/\n/gu)?.length ?? 0)
-        || files.get(file.path)?.kind !== file.kind || files.get(file.path)?.hash !== file.fileHash
-        || createHash("sha256").update(file.body).digest("hex") !== file.fileHash) fail("unavailable");
-      sourcePaths.add(file.path);
+    if (snapshot && index.sourceFiles?.length) fail("unavailable");
+    // 匹配阶段只用索引片段筛候选，片段顺序不可靠，跨片段命中按任意两片首尾拼接判断；命中文件再读磁盘核对。
+    const indexedFragments = new Map<string, SourceFragment[]>();
+    for (const fragment of snapshot?.sourceFragments ?? []) {
+      if (files.get(fragment.path)?.hash !== fragment.fileHash) fail("stale");
+      indexedFragments.set(fragment.path, [...(indexedFragments.get(fragment.path) ?? []), fragment]);
     }
     const diagnosticCounts: Record<string, number> = {};
     for (const diagnostic of index.status.diagnostics) diagnosticCounts[diagnostic.code] = (diagnosticCounts[diagnostic.code] ?? 0) + 1;
@@ -322,11 +318,7 @@ export class KnowledgeQuerySession {
     let matched = 0, omitted = 0, excerpts = 0, cost = 0;
     const items: KnowledgeFact[] = [];
     const sourceRanges = new Map<string, { startLine: number; endLine: number }>();
-    for (const fragment of sourceFiles) {
-      const previous = sourceRanges.get(fragment.path);
-      sourceRanges.set(fragment.path, { startLine: Math.min(previous?.startLine ?? fragment.startLine, fragment.startLine),
-        endLine: Math.max(previous?.endLine ?? fragment.endLine, fragment.endLine) });
-    }
+    for (const [path, parts] of indexedFragments) sourceRanges.set(path, { startLine: 1, endLine: Math.max(...parts.map((part) => part.endLine)) });
     const source = (path: string, range?: Partial<KnowledgeSource>): KnowledgeSource => {
       const file = files.get(path);
       if (!file) fail("unavailable");
@@ -366,8 +358,34 @@ export class KnowledgeQuerySession {
       add({ kind: "rule_relation", id: edge.id, source: source(rule.path), data: edge, complete: true });
     }
     for (const file of files.values()) if (selected("file", file, [file.path])) add({ kind: "file", id: file.path, source: source(file.path), data: file, complete: true });
+    const spanning = (parts: SourceFragment[]): boolean => {
+      const edge = Array.from(text).length - 1;
+      if (edge < 1 || parts.length < 2) return false;
+      const edges = parts.map((part) => { const points = Array.from(part.body); return { head: points.slice(0, edge).join(""), tail: points.slice(-edge).join("") }; });
+      return edges.some((a, i) => edges.some((b, j) => i !== j && (a.tail + b.head).includes(text)));
+    };
+    const candidates: string[] = [];
+    for (const [path, parts] of indexedFragments) {
+      if (selected("source", { path }, [path, ...parts.map((part) => part.body)]) || (query.action !== "exact" && spanning(parts))) candidates.push(path);
+    }
+    // 超出缓存条数上限的命中不读磁盘，直接按省略计数；字节上限仍在 add 内核对。
+    const wanted = candidates.slice(0, Math.max(0, LIMIT.cachedItems - items.length));
+    for (let index = wanted.length; index < candidates.length; index++) { matched++; omitted++; }
+    const verified = wanted.length ? await this.#adapter.readCurrent(paths, wanted) : null;
+    if (verified && (verified.status.version !== index.status.version || verified.status.currentGeneration !== baseline.generation)) fail("stale");
+    const sourceFiles = verified?.sourceFiles ?? [];
+    if (sourceFiles.length !== wanted.length) fail("unavailable");
+    let sourceBytes = 0;
+    const sourcePaths = new Set<string>();
+    for (const file of sourceFiles) {
+      sourceBytes += Buffer.byteLength(file.body);
+      if (sourceBytes > 20 * 1024 * 1024 || sourcePaths.has(file.path) || !wanted.includes(file.path) || file.startLine !== 1
+        || file.endLine !== 1 + (file.body.match(/\n/gu)?.length ?? 0)
+        || files.get(file.path)?.kind !== file.kind || files.get(file.path)?.hash !== file.fileHash
+        || createHash("sha256").update(file.body).digest("hex") !== file.fileHash) fail("unavailable");
+      sourcePaths.add(file.path);
+    }
     for (const fragment of sourceFiles) {
-      if (fragment.fileHash !== files.get(fragment.path)?.hash) fail("stale");
       if (!selected("source", fragment, [fragment.body, fragment.path, fragment.title ?? ""])) continue;
       const part = excerpt(fragment, text);
       if (!part.complete) excerpts++;

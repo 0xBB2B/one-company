@@ -237,6 +237,7 @@ export class ProjectIndexCoordinator {
   private readonly openService: NonNullable<ProjectIndexCoordinatorOptions["openService"]>;
   private readonly createManager: NonNullable<ProjectIndexCoordinatorOptions["createManager"]>;
   private readonly workspaces = new Map<string, WorkspaceEntry>();
+  private readonly grantChecks = new Map<Attachment, boolean>();
   private readonly operationContext = new AsyncLocalStorage<OperationContext>();
   private readonly workspaceQueues = new Map<string, Promise<void>>();
   private readonly baselineListeners = new Map<string, Set<(event: ProjectBaselineInvalidation) => void>>();
@@ -295,13 +296,23 @@ export class ProjectIndexCoordinator {
       this.closeQuery(attachment);
       return false;
     }
-    try {
-      this.grants.validateForClient(attachment.grantId, attachment.client, entry.scope);
-      return true;
-    } catch {
+    if (!this.grantValid(entry, attachment)) {
       this.closeQuery(attachment);
       return false;
     }
+    return true;
+  }
+
+  /** 许可持久记录在同一同步执行段内不会变化；缓存只活到当前段结束，任何 await 之后都重新核验。 */
+  private grantValid(entry: WorkspaceEntry, attachment: Attachment): boolean {
+    const cached = this.grantChecks.get(attachment);
+    if (cached !== undefined) return cached;
+    let valid = false;
+    try { this.grants.validateForClient(attachment.grantId, attachment.client, entry.scope); valid = true; }
+    catch { valid = false; }
+    if (this.grantChecks.size === 0) queueMicrotask(() => this.grantChecks.clear());
+    this.grantChecks.set(attachment, valid);
+    return valid;
   }
 
   private selectAuthorized(entry: WorkspaceEntry): Attachment | null {
@@ -828,9 +839,9 @@ export class ProjectIndexCoordinator {
             }
             catch (error) { if (error instanceof ProjectIndexCoordinatorError) attachment.queryFailure = error; throw error; }
           },
-          readCurrent: async (paths) => {
+          readCurrent: async (paths, bodies) => {
             if (this.reconcileInFlight(entry.manager.status())) await this.awaitSettled(entry, attachment);
-            return entry.manager.runExclusive(() => entry.service.readCurrentForQuery({ paths }));
+            return entry.manager.runExclusive(() => entry.service.readCurrentForQuery({ paths, bodies }));
           },
           assertCurrent: async (baseline) => {
             try {

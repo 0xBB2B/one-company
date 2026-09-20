@@ -899,13 +899,17 @@ export class ProjectIndexService {
    * sourceFiles来自第一轮实际读取，单文件沿用读取策略上限、整组最多20MiB；持久片段顺序不作为连续性依据。
    * 外层先 captureFresh，再调用本方法，最后联合核对需求/文件/权限；不要在同一 coordinator 队列内嵌套排队。
    */
-  async readCurrentForQuery(options: { paths: readonly string[]; signal?: AbortSignal }): Promise<CurrentQueryIndex> {
+  /** bodies 是需要从磁盘读取并核对哈希的路径子集；省略时读取全部 paths。 */
+  async readCurrentForQuery(options: { paths: readonly string[]; bodies?: readonly string[]; signal?: AbortSignal }): Promise<CurrentQueryIndex> {
     return this.withOperation("query", options?.signal, async (signal) => {
       this.authorizeAt("query", "before");
-      if (!Array.isArray(options?.paths) || options.paths.length > DEFAULT_INDEX_LIMITS.maxEntries) {
+      if (!Array.isArray(options?.paths) || options.paths.length > DEFAULT_INDEX_LIMITS.maxEntries
+        || (options.bodies !== undefined && !Array.isArray(options.bodies))) {
         throw new ProjectIndexServiceError("authorization_denied", "query-scope");
       }
       const paths = [...new Set(options.paths)];
+      const bodies = new Set(options.bodies ?? paths);
+      for (const body of bodies) if (!paths.includes(body as string)) throw new ProjectIndexServiceError("authorization_denied", "query-scope");
       for (const path of paths) {
         try {
           if (typeof path !== "string" || /^[A-Za-z]:/u.test(path) || /[\u0000-\u001f\u007f]/u.test(path)
@@ -923,7 +927,7 @@ export class ProjectIndexService {
         const before = IndexStore.readCurrent(databasePath, this.workspace, paths, true);
         const verifyFiles = async (collectSources = false) => {
           let bytes = 0;
-          for (const file of before.snapshot?.files ?? []) {
+          for (const file of (before.snapshot?.files ?? []).filter((file) => bodies.has(file.path))) {
             if (signal.aborted) throw new ProjectIndexServiceError("unstable", "query-cancelled");
             this.authorizeAt("query", "read", file.path);
             const read = await readIndexFile(this.workspace.root, file.path, { signal, readUnsupported: true });
