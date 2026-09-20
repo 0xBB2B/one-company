@@ -23,7 +23,9 @@ try {
 test("pnpm版本、Node测试入口与Node类型显式声明，Bun配置不作为备用入口", async () => {
   const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
   expect(pkg.packageManager).toBe("pnpm@11.7.0");
-  expect(pkg.scripts.test).toBe("vitest run");
+  expect(pkg.scripts.test).toBe("vitest run --exclude 'tests/integration/**' --exclude 'tests/installation/**'");
+  expect(pkg.scripts["test:integration"]).toBe("vitest run tests/integration");
+  expect(pkg.scripts["test:installation"]).toBe("vitest run tests/installation");
   expect(pkg.devDependencies.vitest).toBe("4.1.6");
   expect(pkg.devDependencies["@types/node"]).toBeDefined();
   expect(pkg.devDependencies["@types/bun"]).toBeUndefined();

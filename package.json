@@ -26,7 +26,7 @@
   ],
   "scripts": {
     "preinstall": "node runtime/git-prerequisite.mjs --check",
-    "test": "vitest run",
+    "test": "vitest run --exclude 'tests/integration/**' --exclude 'tests/installation/**'",
     "test:integration": "vitest run tests/integration",
     "test:installation": "vitest run tests/installation",
     "typecheck": "tsc --noEmit"
