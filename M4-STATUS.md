@@ -45,10 +45,9 @@
 1. M5（计划 §12 M5，AC1–AC10）。开工前先列出验收目标、范围与非目标、验证方法、性能指标，经用户确认后再动。
 
 待用户决定（未批准，不动）：
-- 测试文件级并行：`vitest run --exclude 'tests/integration/**' --exclude 'tests/installation/**' --fileParallelism --maxWorkers=4` 在 2026-09-20 连跑三轮，144 文件 3888 用例全部通过、无抖动，单轮 4 分 19 秒（串行 15 分 30 秒）；证据在 .bb-spec/.cache/git-slimming/test-entry/parallel-*.txt。是否写入 vitest.config 由用户决定。
 - 周期对账改为发布时原子切换（C-3）：消除查询撞上 30 秒周期对账时最长约 4–7 秒的等待。
 
-已完成：测试入口整理（2026-09-20）：`pnpm test` 只跑单元测试（144 文件，15 分 30 秒），`pnpm run test:integration`（16 文件，3 分 23 秒）与 `pnpm run test:installation`（5 文件，1 分 12 秒）分别覆盖其余；三条命令合计覆盖全部 165 个文件。
+已完成：测试入口整理与文件级并行（2026-09-20）：`pnpm test` 只跑单元测试，`pnpm run test:integration` 与 `pnpm run test:installation` 分别覆盖其余，三条命令合计覆盖全部 165 个文件。vitest.config 改为 fileParallelism: true、maxWorkers: 4（用户批准前先以命令行参数连跑三轮单元套件全绿无抖动，证据在 .bb-spec/.cache/git-slimming/test-entry/parallel-*.txt）。并行配置下三条命令耗时：单元 144 文件 4 分 43 秒（串行 15 分 30 秒），integration 16 文件 1 分 2 秒，installation 5 文件 47 秒，全部通过。
 
 已完成：知识查询性能修复（2026-09-20，提交 3362d48、2e11437、9cb6edf）：formal 基准从 p95 32 秒、682 失败到 p95 约 200ms、0 失败，门槛通过；已知限制是每 30 秒周期对账约 7 秒期间查询等待（单样本最大 4.4 秒），是否改为发布时原子切换（C-3）待用户决定。
 
@@ -64,6 +63,6 @@
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M4-STATUS.md，核对 git status 与最近提交。
 本窗口任务：M5（计划 §12 M5，AC1–AC10）。先按计划 §12 M5 列出验收目标、范围与非目标、验证方法、性能指标，经用户确认后再动。
-验证入口：pnpm run typecheck；pnpm test（单元）；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
+验证入口：pnpm run typecheck；pnpm test（单元，约 5 分钟）；pnpm run test:integration（约 1 分钟）；pnpm run test:installation（约 1 分钟）。三条测试命令都绿才算全量绿；vitest 已按 4 worker 并行。
 任何新增机制、加固或计划正文修改都必须先经用户拍板；第一版威胁模型只有两条。
 ```
