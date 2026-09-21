@@ -7,6 +7,7 @@ import type { RequirementRecord } from "./requirement-contracts.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
 import { RequirementService } from "./requirement-service.ts";
 import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
+import { authorizeToolAction } from "./core-permissions.ts";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
 import { assertApprovalScopeReturnIn, registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
@@ -15,7 +16,7 @@ import type { ServiceAuthorizationRequest } from "./requirement-manage-contracts
 import { inspectProdStructure, pageProdResponse, selectProdSection, PROD_MAX_PAGE_BYTES, PROD_PAGE_BYTES,
   PROD_SECTION_ID_PATTERN, PROD_RESPONSE_MAX_BYTES } from "./prod-view.ts";
 
-const Role = Type.Union([Type.Literal("pm"), Type.Literal("planner"), Type.Literal("reviewer"), Type.Literal("qa")]);
+const Role = Type.Union([Type.Literal("pm"), Type.Literal("reviewer"), Type.Literal("qa")]);
 const Binding = object({ role: Role, callerId: id, runId: id, requirementId: id, repoId: hash, workspaceId: hash,
   branch: Type.String({ minLength: 1, maxLength: 4096, pattern: "^refs/heads/" }), lease: PmLease,
   /** 可信宿主已核对的PM理解基线；模型不能自由选择旧版本。 */
@@ -92,7 +93,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
   if (binding.requirementId !== binding.lease.requirementId || binding.workspaceId !== binding.lease.workspaceId ||
     (binding.role === "pm" && binding.runId !== binding.lease.runId)) deny();
   function host(action: RequirementReadAuthorization["action"]) {
-    if (disposed) deny();
+    if (disposed || !authorizeToolAction(binding.role, "requirement_manage", action)) deny();
     let result: unknown;
     try { result = authorize(freeze({ binding, action })); } catch { return deny(); }
     if (isPromise(result)) void Promise.prototype.then.call(result, () => undefined, () => undefined);

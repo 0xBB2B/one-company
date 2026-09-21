@@ -131,7 +131,7 @@ async function world() {
   await runtime.setRuntimeApiKey("reader-fixture", "fixture-only");
   const permits = new Map<string, string>();
   const controller = new AbortController();
-  function options(role: "pm" | "planner" | "reviewer" | "qa" = "qa"): RequirementReaderOptions {
+  function options(role: "pm" | "reviewer" | "qa" = "qa"): RequirementReaderOptions {
     const binding = { role, callerId: uuidv7(), runId: role === "pm" ? lease.runId : uuidv7(), requirementId: saved.requirementId,
       repoId: identity.repoId, workspaceId: workspace.workspaceId, branch: workspace.branch, lease: structuredClone(lease),
       diffBaseline: { revision: 1, reference: { commit: approved.commit, hash: approved.prodHash.slice(7) } } };
@@ -174,7 +174,7 @@ async function decisionSupersede(w: Awaited<ReturnType<typeof world>>) {
   return { inject, verify };
 }
 
-test.each(["pm", "planner", "reviewer", "qa"] as const)("真实SDK %s 仅见获准prod/scope，问答不是正式裁决，正文不入SQLite", async (role) => {
+test.each(["pm", "reviewer", "qa"] as const)("真实SDK %s 仅见获准prod/scope，问答不是正式裁决，正文不入SQLite", async (role) => {
   const w = await world(), r = await w.reader(w.options(role));
   const before = await readFile(repositoryDatabase(w.config.dataRoot, w.config.repoId));
   const result = await r.run();

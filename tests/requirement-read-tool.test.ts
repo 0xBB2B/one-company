@@ -183,10 +183,10 @@ test("整包固定信息超预算时只给安全错误，不把巨额正文藏�
   await expect(tool.execute({ action: "read" })).rejects.toThrow(/^requirement_read_denied$/);
 });
 
-test("PM/planner/reviewer/QA绑定真实SQLite与独立worktree，只读当前批准版本且来源无私有路径", async () => {
+test("PM/reviewer/QA绑定真实SQLite与独立worktree，只读当前批准版本且来源无私有路径", async () => {
   const w = await world();
   await w.save(w.created.requirementId, "绝不能泄漏的当前草稿", false);
-  for (const role of ["pm", "planner", "reviewer", "qa"] as const) {
+  for (const role of ["pm", "reviewer", "qa"] as const) {
     const tool = await w.tool(w.binding(role));
     const result = content(await tool.execute({ action: "read" }));
     expect(result.text).toBe(BODY);
@@ -223,6 +223,7 @@ test("伪角色/身份/path/ref/checkRound参数及worker工厂拒绝，正文�
     await expect(tool.execute({ action: "read", ...extra })).rejects.toMatchObject(denied);
   }
   await expect(w.tool({ ...w.binding(), role: "worker" } as never)).rejects.toMatchObject(denied);
+  await expect(w.tool({ ...w.binding(), role: "planner" } as never)).rejects.toMatchObject(denied);
   expect(probe).not.toHaveBeenCalled();
 });
 

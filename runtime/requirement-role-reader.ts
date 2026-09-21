@@ -147,7 +147,7 @@ async function openRequirementReader(input: RequirementReaderOptions) {
     if (JSON.stringify(modelRuntime.getModel(modelRef.provider, modelRef.id)) !== modelSignature || !modelRuntime.hasConfiguredAuth(modelRef.provider)) deny();
     const record = state.read(binding.requirementId), d = record.data, w = d.workspace;
     const owner = state.pmOwner(binding.requirementId), lease = owner?.lease, expected = binding.lease;
-    if (!["pm", "planner", "reviewer", "qa"].includes(binding.role) || !w || d.lifecycle !== "active" || d.recovery !== "ready" ||
+    if (!["pm", "reviewer", "qa"].includes(binding.role) || !w || d.lifecycle !== "active" || d.recovery !== "ready" ||
       !d.approved || !d.approvalManifest || w.repoId !== binding.repoId || w.workspaceId !== binding.workspaceId || w.branch !== binding.branch ||
       w.requirementId !== binding.requirementId || expected.requirementId !== binding.requirementId || expected.workspaceId !== binding.workspaceId ||
       expected.epoch !== d.epoch || expected.expiresAt <= Date.now() || !lease || owner!.fence !== expected.fence ||
