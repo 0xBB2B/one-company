@@ -5,6 +5,7 @@ import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { snapshotBranchState } from "./branch-guard.ts";
+import { assertModificationAllowedIn, CheckRoundError } from "./check-round.ts";
 import { authorizeToolAction, writePathAllowed } from "./core-permissions.ts";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import { overlaps } from "./ranges.ts";
@@ -49,7 +50,7 @@ const ChangeSet = object({
 });
 export type ChangeSet = Static<typeof ChangeSet>;
 export type ChangeApplyErrorCode = "change_apply_denied" | "invalid_shape" | "forbidden_path" | "path_escape" | "out_of_scope"
-  | "stale_base" | "operation_conflict" | "import_mismatch" | "resource_limit" | "not_found";
+  | "stale_base" | "operation_conflict" | "import_mismatch" | "resource_limit" | "not_found" | "check_phase_active";
 export class ChangeApplyError extends Error {
   readonly code: ChangeApplyErrorCode;
   constructor(code: ChangeApplyErrorCode, detail?: string) {
@@ -172,6 +173,10 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     for (const file of planned) result.push({ path: file.path, currentHash: await currentHash(file.absolute) });
     return result;
   }
+  function modificationAllowed(db: Parameters<typeof assertModificationAllowedIn>[0]): void {
+    try { assertModificationAllowedIn(db, grant.repoId, grant.requirementId); }
+    catch (error) { if (error instanceof CheckRoundError) throw new ChangeApplyError("check_phase_active"); throw error; }
+  }
   function readSet(operationId: string) {
     return withDatabase(database, (db) => {
       const row = db.read<unknown>(CHANGE_SETS, operationId);
@@ -196,6 +201,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     const intentHash = intentHashOf(planned);
     const existing = readSet(params.operationId);
     if (existing && (!ownSet(existing.data) || existing.data.intentHash !== intentHash)) throw new ChangeApplyError("operation_conflict");
+    withDatabase(database, (db) => modificationAllowed(db));
     const head = (await snapshotBranchState({ repoRoot: root })).head;
     const observed = await observe(planned);
     let version: number;
@@ -216,6 +222,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
         status: "applying", files: planned.map((file) => ({ path: file.path, baseHash: file.baseHash, targetHash: file.targetHash, status: "pending" })),
         createdAt: Date.now(), updatedAt: Date.now() });
       version = withDatabase(database, (db) => db.transaction(() => {
+        modificationAllowed(db);
         if (db.read(CHANGE_SETS, set.operationId)) throw new ChangeApplyError("operation_conflict");
         return db.create(CHANGE_SETS, set.operationId, set).version;
       }));

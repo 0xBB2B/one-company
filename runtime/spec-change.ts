@@ -75,7 +75,7 @@ export interface SpecChangeToolOptions {
   /** 必须由宿主核验当前物理角色会话/调用者及动作许可；不能从工具参数或角色文本构造true。 */
   authorize: (request: Readonly<SpecChangeAuthorization>) => boolean;
   /** 检查阶段令牌与正式检查证据只能由可信服务提供；模型参数不能携带这些字段。 */
-  publishGate: (request: Readonly<SpecPublishGateRequest>) => SpecPublishGate;
+  publishGate: (request: Readonly<SpecPublishGateRequest>) => SpecPublishGate | Promise<SpecPublishGate>;
 }
 
 function sha256(text: string): string { return createHash("sha256").update(text, "utf8").digest("hex"); }
@@ -249,7 +249,7 @@ async function openSpecChangeTool(options: SpecChangeToolOptions) {
     } else if (record.approved.hash !== proposal.approvedProdHash) throw new SpecChangeError("prod_changed");
     const head = (await snapshotBranchState({ repoRoot: root })).head;
     let gate: SpecPublishGate;
-    try { gate = options.publishGate(freeze({ grant, proposal: { operationId: proposal.operationId, targetSpecSetHash: proposal.targetSpecSetHash, approvedProdHash: proposal.approvedProdHash } })); }
+    try { gate = await options.publishGate(freeze({ grant, proposal: { operationId: proposal.operationId, targetSpecSetHash: proposal.targetSpecSetHash, approvedProdHash: proposal.approvedProdHash } })); }
     catch { return deny(); }
     if (gate.checkPhaseReleased !== true) throw new SpecChangeError("check_phase_active");
     const evidence = gate.evidence;
