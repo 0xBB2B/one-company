@@ -220,12 +220,12 @@ function hasReservedLocation(parts: readonly string[]): boolean {
   if (parts.some((part) => reservedPathParts.has(part))) return true;
   return parts.some((part, index) => part === "docs" && parts[index + 1] === "prod");
 }
-function isForbiddenFileName(value: string): boolean {
+export function isForbiddenFileName(value: string): boolean {
   const base = path.basename(value).toLowerCase();
   return /(?:^|\.)(?:db|db-wal|db-shm|key|pem|p12)$/u.test(base)
     || ["data.db", "index.db", "global.db"].includes(base);
 }
-function isForbiddenRelativePath(value: string): boolean {
+export function isForbiddenRelativePath(value: string): boolean {
   const parts = value.toLowerCase().split("/").filter(Boolean);
   return hasReservedLocation(parts) || privateTopLevelParts.has(parts[0] ?? "") || isForbiddenFileName(value);
 }
@@ -252,14 +252,14 @@ function checkPathUnderRoot(value: string, root: string): void {
   const relative = path.relative(root, value);
   if (isForbiddenFileName(value) || relative && isForbiddenRelativePath(relative)) fail("out_of_scope");
 }
-function canonicalDomain(value: string): boolean {
+export function canonicalDomain(value: string): boolean {
   if (value !== value.toLowerCase() || value.endsWith(".") || value.includes(":") || value.includes("/") || value.includes("@")) return false;
   try {
     const url = new URL(`https://${value}/`);
     return url.hostname === value && url.host === value && (url.hostname === "localhost" || url.hostname.split(".").every((part) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(part)));
   } catch { return false; }
 }
-function checkedUrl(value: string): URL {
+export function checkedUrl(value: string): URL {
   if (bytes(value) > EXPLORE_CONTRACT_LIMITS.urlBytes) fail("resource_limit");
   const url = (() => {
     try { return new URL(value); } catch { return fail("out_of_scope"); }
