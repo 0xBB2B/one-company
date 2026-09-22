@@ -120,7 +120,9 @@ test("受控写入的资源分类：change_apply 只写代码/测试/配置，sp
   expect(writePathAllowed("change_apply", "src/a.ts")).toBe(true);
   for (const path of ["docs/spec/x.rules.json", "docs/prod/x.md", ".git/config", "../x.ts"]) expect(writePathAllowed("change_apply", path)).toBe(false);
   expect(writePathAllowed("spec_change", "docs/spec/player/jump.rules.json")).toBe(true);
-  for (const path of ["docs/spec/schema.json", "docs/spec/notes.md", "src/a.ts", "docs/prod/x.md", "docs/spec/../../x.rules.json"]) {
+  for (const path of ["docs/spec/schema.json", "docs/spec/notes.md", "src/a.ts", "docs/prod/x.md", "docs/spec/../../x.rules.json",
+    "Docs/Spec/a.rules.json", "DOCS/SPEC/a.rules.json"]) {
     expect(writePathAllowed("spec_change", path)).toBe(false);
   }
+  expect(writePathAllowed("change_apply", "Docs/Spec/a.rules.json")).toBe(false);
 });

@@ -81,5 +81,6 @@ export function classifyManagedWritePath(repoRelativePath: string): ManagedWrite
 export function writePathAllowed(tool: "change_apply" | "spec_change", repoRelativePath: string): boolean {
   const kind = classifyManagedWritePath(repoRelativePath);
   if (tool === "change_apply") return kind === "code";
-  return kind === "spec" && posix.normalize(repoRelativePath).endsWith(".rules.json");
+  const normalized = posix.normalize(repoRelativePath);
+  return kind === "spec" && normalized.startsWith("docs/spec/") && normalized.endsWith(".rules.json");
 }

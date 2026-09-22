@@ -145,6 +145,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     if (!(await lstat(real)).isFile()) throw new ChangeApplyError("import_mismatch", sourcePath);
     const bytes = await readFile(real);
     if (bytes.byteLength > MAX_FILE_BYTES) throw new ChangeApplyError("resource_limit", sourcePath);
+    if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new ChangeApplyError("import_mismatch", `${sourcePath} 不是 UTF-8 文本`);
     return bytes;
   }
   async function plan(root: string, params: Exclude<ChangeApplyParameters, { action: "status" }>): Promise<Planned[]> {
@@ -219,8 +220,9 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
         return db.create(CHANGE_SETS, set.operationId, set).version;
       }));
     }
-    for (let index = 0; index < planned.length; index++) {
-      const file = planned[index]!, entry = set.files[index]!;
+    for (const file of planned) {
+      const entry = set.files.find((candidate) => candidate.path === file.path);
+      if (!entry) throw new ChangeApplyError("operation_conflict");
       if (entry.status === "written") continue;
       host(action);
       const current = await currentHash(file.absolute);
@@ -240,6 +242,13 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
       }
       entry.status = "written"; delete entry.reason;
       version = saveSet(version, set);
+    }
+    for (const file of planned) {
+      if (await currentHash(file.absolute) === file.targetHash) continue;
+      const entry = set.files.find((candidate) => candidate.path === file.path)!;
+      entry.status = "stale"; entry.reason = "目标文件已被外部修改"; set.status = "stale";
+      saveSet(version, set);
+      throw new ChangeApplyError("stale_base", file.path);
     }
     set.status = "applied";
     saveSet(version, set);

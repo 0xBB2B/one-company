@@ -118,9 +118,10 @@ test("M5-AC1/AC8：中途写入失败精确记录已写/失败/未动，同操�
   vi.restoreAllMocks();
   const altered = files.map((file, index) => index === 2 ? { ...file, content: "别的内容" } : file);
   await expect(tool.execute({ action: "apply", operationId, files: altered })).rejects.toMatchObject({ code: "operation_conflict" });
-  const second = await tool.execute({ action: "apply", operationId, files }) as Result;
+  const reordered = [files[2]!, files[0]!, files[1]!];
+  const second = await tool.execute({ action: "apply", operationId, files: reordered }) as Result;
   expect(second.status).toBe("applied");
-  expect(second.files.map((file) => file.status)).toEqual(["written", "written", "written"]);
+  expect(second.files.map((file) => [file.path, file.status])).toEqual([["src/a.ts", "written"], ["src/nested/b.ts", "written"], ["src/c.ts", "written"]]);
   await expect(w.read("src/nested/b.ts")).resolves.toBe("export const b = 2;\n");
   await expect(w.read("src/c.ts")).resolves.toBe("export const c = 3;\n");
   const again = await tool.execute({ action: "apply", operationId, files }) as Result;
@@ -196,6 +197,11 @@ test("M5-AC2：生成器只能从沙箱生成目录按声明指纹导入，越�
   await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "docs/spec/x.rules.json", baseHash: "absent", sourcePath: "gen/out.ts", targetHash }] }))
     .rejects.toMatchObject({ code: "forbidden_path" });
   await expect(w.read("src/out.ts")).rejects.toMatchObject({ code: "ENOENT" });
+  await writeFile(join(scratch, "gen", "blob.bin"), Buffer.from([0xff, 0xfe, 0x00, 0x80]));
+  const blobHash = createHash("sha256").update(Buffer.from([0xff, 0xfe, 0x00, 0x80])).digest("hex");
+  await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/blob.bin", baseHash: "absent", sourcePath: "gen/blob.bin", targetHash: blobHash }] }))
+    .rejects.toMatchObject({ code: "import_mismatch" });
+  await expect(w.read("src/blob.bin")).rejects.toMatchObject({ code: "ENOENT" });
   const result = await tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash }] }) as Result;
   expect(result.status).toBe("applied");
   await expect(w.read("src/out.ts")).resolves.toBe("generated\n");
