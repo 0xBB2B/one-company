@@ -801,7 +801,8 @@ export class RequirementStateStore {
       return this.write(db, record, { ...record.data, pendingRevision: null }, "update.assessed", null, record.data.approved).record;
     });
   }
-  beginClose(input: Static<typeof commands.close>): StoredRecord<RequirementRecord> {
+  /** guard 在同一事务内以同步数据库依据再核对关闭前提并登记关闭意图；任一依据变化则本次关闭不生效。 */
+  beginClose(input: Static<typeof commands.close>, guard?: (db: LocalDatabase) => void): StoredRecord<RequirementRecord> {
     const request = checked(commands.close, input);
     return this.mutate("begin-close", request, (db) => {
       const record = this.get(db, request.requirementId);
@@ -810,6 +811,7 @@ export class RequirementStateStore {
         return record;
       }
       this.active(record.data, true); this.version(record, request.version);
+      guard?.(db);
       if (request.intent.reason === "completed") {
         if (!record.data.approved || record.data.pendingRevision !== null) throw new RequirementStateError("completion_blocked");
         assertNoRequirementWriteClaimIn(db, this.options.repoId, record.id);
