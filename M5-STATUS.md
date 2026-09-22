@@ -19,7 +19,7 @@
 
 已知限制（非首版门槛）：通用 read/Shell/Git 历史/MCP 对 prod 正文的全覆盖防护暂缓；命令沙箱后端仅 darwin；新增工具以工具工厂加夹具宿主验证，尚未注册进会话。
 
-全量回归（2026-09-22，提交 2beacd2 加审查修复）：typecheck 通过；`pnpm test` 148 文件 3915 用例通过、1 跳过、1 失败（tests/project-index-sync.test.ts「归档watch只发无正文metadata」在 4 worker 负载下失败，单独重跑 2/2 通过，本阶段未改该模块，属计时抖动，证据 .bb-spec/.cache/m5/full-regression-01.txt 与 project-index-sync-rerun.txt），耗时 4 分 29 秒；`pnpm run test:integration` 16 文件 97 用例通过，60 秒；`pnpm run test:installation` 5 文件 12 用例通过，85 秒。独立审查（两条威胁模型内）发现 2 条阻塞与 1 条建议修，已修复并补用例：重试按路径配对并在标 applied 前复核指纹；spec 放行判定精确匹配 docs/spec/ 前缀；生成物导入拒绝非 UTF-8 字节。
+全量回归（2026-09-22，提交 2beacd2 加审查修复）：typecheck 通过；`pnpm test` 148 文件 3915 用例通过、1 跳过、1 失败（tests/project-index-sync.test.ts「归档watch只发无正文metadata」在 4 worker 负载下失败，单独重跑 2/2 通过，本阶段未改该模块，属计时抖动，证据 .bb-spec/.cache/m5/full-regression-01.txt 与 project-index-sync-rerun.txt），耗时 4 分 29 秒；`pnpm run test:integration` 16 文件 97 用例通过，60 秒；`pnpm run test:installation` 5 文件 12 用例通过，85 秒。独立审查（两条威胁模型内）发现 2 条阻塞与 1 条建议修，已修复并补用例（提交 7ab3fd4）：重试按路径配对并在标 applied 前复核指纹；spec 放行判定精确匹配 docs/spec/ 前缀；生成物导入拒绝非 UTF-8 字节。修复后基线 7ab3fd4 第二轮回归（.bb-spec/.cache/m5/full-regression-02.txt）：typecheck 通过；installation 全绿；单元 tests/project-index-sync.test.ts「M3-PERF-PERIODIC-01」与 integration tests/integration/project-index-sync.test.ts「启动失败必须非零退出并清理socket」各失败一例，两文件单独重跑均 2/2 通过（project-index-sync-rerun-02.txt），属 4 worker 并行负载下的计时抖动，本阶段未改动该模块；第三轮（同基线 7ab3fd4，full-regression-03.txt）：`pnpm test` 148 文件 3916 用例通过、1 跳过，4 分 21 秒；`pnpm run test:integration` 16 文件 97 用例通过，61 秒；连同第二轮的 installation 全绿，三条命令在基线 7ab3fd4 上均有通过记录。
 
 ## 当前阻塞
 
