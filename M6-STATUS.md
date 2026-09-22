@@ -36,9 +36,11 @@
 
 全量回归：第一轮（2026-09-22，提交 88a1b6d，.bb-spec/.cache/m6/*-01.txt）：typecheck 通过；`pnpm test` 152 文件 3931 用例通过、1 跳过，4 分 29 秒；`pnpm run test:integration` 16 文件 97 用例通过，59 秒；`pnpm run test:installation` 5 文件 12 用例通过，150 秒。第二轮（提交 0bebbc1，*-02.txt）：typecheck 通过；单元 152 文件 3932 通过、1 跳过；integration 全绿；installation 中 tests/installation/git-prerequisite.test.ts「Linux 容器断网运行」一例因 Docker 构建 ETIMEDOUT 失败（同一时段独立审查代理也遇到 API ENOTFOUND，属本机网络中断），本阶段未改动该模块。第三轮（提交 4e78bd0，*-03.txt 与 installation-03-rerun.txt）：typecheck 通过；`pnpm test` 152 文件 3932 用例通过、1 跳过，4 分 34 秒；`pnpm run test:integration` 16 文件 97 用例通过，59 秒；`pnpm run test:installation` 5 文件中 4 文件通过，tests/installation/git-prerequisite.test.ts 的 Docker 用例两次均在镜像构建阶段 ETIMEDOUT（同时段实测 registry.npmjs.org 单次请求 25–30 秒，容器内 npm install 4 个包耗时 121 秒后 apk 阶段超时），该用例与本阶段改动无关且在第一轮（提交 88a1b6d）通过；失败保留的临时现场与带测试标签的 Docker 镜像已清理。
 
+第四轮重跑（提交 7fe35e3，installation-04.txt）：同一 Docker 用例仍在 `valid` 阶段 `apk add git` 超过 180 秒构建上限（每个包约 35 秒）；同时段实测宿主到 dl-cdn.alpinelinux.org 约 10 KB/s、registry.npmjs.org 单次请求 16–26 秒、github.com 60 秒超时，Docker Desktop 经 http.docker.internal:3128 代理出网。属本机出网带宽问题，不改动该测试。遗留镜像与保留现场已再次清理。
+
 ## 当前阻塞
 
-- 最终基线 4e78bd0 上 `pnpm run test:installation` 尚无全绿记录：唯一失败用例依赖 npm 仓库网络，需在网络恢复后重跑一次 `pnpm run test:installation`（约 2.5 分钟）并把结果补入本表；其余两条命令与 typecheck 在 4e78bd0 上已全绿。
+- 最终基线上 `pnpm run test:installation` 尚无全绿记录：唯一失败用例依赖容器内下载 npm 包与 apk 包，需在出网带宽恢复后重跑 `pnpm run test:installation`（约 2.5 分钟）并把结果补入本表；重跑前可用 `curl -o /dev/null -w "%{speed_download}\n" https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/APKINDEX.tar.gz` 确认速度明显高于 10 KB/s。其余两条命令与 typecheck 在 4e78bd0 上已全绿。
 
 ## 下一窗口续接提示
 
