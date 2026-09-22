@@ -59,6 +59,7 @@ export function submitVerdict(binding: VerdictBinding, grant: { role: "worker" |
       if (payload.checkRoundId !== null) throw new VerdictError("out_of_scope", "worker 不能绑定检查轮");
     } else {
       if (payload.checkRoundId === null) throw new VerdictError("out_of_scope", "独立裁决必须绑定检查轮");
+      if (payload.verificationIds.length === 0) throw new VerdictError("out_of_scope", "独立裁决必须引用该轮的正式结果");
       const round = readCheckRoundIn(db, payload.checkRoundId);
       if (!round || round.data.repoId !== binding.repoId || round.data.requirementId !== binding.requirementId || round.data.epoch !== binding.epoch) throw new VerdictError("invalid_binding");
       if (round.data.runId === grant.runId) throw new VerdictError("out_of_scope", "PM 自身不能充当独立裁决");

@@ -10,7 +10,7 @@ import { claimRequirementWriteIn, releaseRequirementWriteIn } from "../runtime/r
 import { RunStore } from "../runtime/run-store.ts";
 import { createChangeApplyTool } from "../runtime/change-apply.ts";
 import { createSpecChangeTool } from "../runtime/spec-change.ts";
-import { CheckRoundService, createSpecPublishGate, formalEvidence, CHECK_ROUNDS, VERIFICATION_RUNS } from "../runtime/check-round.ts";
+import { activeCheckRoundIn, CheckRoundService, createSpecPublishGate, formalEvidence, CHECK_ROUNDS, VERIFICATION_RUNS } from "../runtime/check-round.ts";
 import type { CheckRoundServiceOptions } from "../runtime/check-round.ts";
 import { createVerificationRunTool } from "../runtime/verification-run.ts";
 import type { VerificationRunGrant, VerificationRunToolOptions, VerificationView } from "../runtime/verification-run.ts";
@@ -52,7 +52,7 @@ async function world() {
     return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
   } });
   const state = await RequirementStateStore.open({ ...options, authorize: (request) => request.repoId === options.repoId &&
-    ["open", "read", "bind-workspace", "acquire-pm", "release-pm", "check-pm", "begin-close"].includes(request.action) });
+    ["open", "read", "bind-workspace", "acquire-pm", "release-pm", "check-pm", "begin-close", "block-recovery"].includes(request.action) });
   const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: BODY };
   grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: BODY }) });
   const created = await service.create(create);
@@ -364,6 +364,14 @@ test("M6-AC14：崩溃后重新打开服务把无进程的运行中验证标为�
   expect(published.status).toBe("published");
   await expect(w.read("docs/spec/player/sprint.rules.json")).resolves.toBe(SPRINT);
   expect(await formalEvidence(w, formal.verificationId)).toMatchObject({ applicable: false, reasons: ["input_changed"] });
+});
+
+test("M6-AC9：epoch 递增后遗留的检查轮不再占用检查阶段", async () => {
+  const w = await world();
+  const round = await w.open();
+  expect(withDatabase(w.database, (db) => activeCheckRoundIn(db, w.repoId, w.created.requirementId))?.data.checkRoundId).toBe(round.checkRoundId);
+  w.state.blockForRecovery({ requirementId: w.created.requirementId, version: w.state.read(w.created.requirementId).version, reason: "history_unknown" });
+  expect(withDatabase(w.database, (db) => activeCheckRoundIn(db, w.repoId, w.created.requirementId))).toBeNull();
 });
 
 test("M6-AC1：数据库直写不能为其他调用者创建验证记录；LocalDatabase 事务失败时不留半条记录", async () => {

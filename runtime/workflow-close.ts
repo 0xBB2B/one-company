@@ -26,6 +26,7 @@ export const CLOSE_OPERATIONS = "close_operations";
 export const DELIVERY_RECEIPTS = "delivery_receipts";
 export const COMPLETION_NOTICES = "completion_notices";
 const SPEC_PROPOSALS = "spec_proposals";
+const CHANGE_SETS = "change_sets";
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 const CloseReason = Type.Union([Type.Literal("completed"), Type.Literal("cancelled"), Type.Literal("rejected")]);
 export type CloseReason = Static<typeof CloseReason>;
@@ -113,7 +114,7 @@ function latestRoundIn(db: LocalDatabase, repoId: string, requirementId: string,
 }
 interface DeliveryFacts {
   record: { version: number; data: RequirementRecord }; round: CheckRound | null; verifications: VerificationRun[]; verdicts: ReturnType<typeof readVerdictsIn>;
-  blockers: string[]; suggestions: number;
+  blockers: string[]; suggestions: number; writes: Array<[string, string, number]>;
 }
 /** 同步数据库依据：最新检查轮、其正式结果、独立裁决、待处理更新、未发布候选与未收尾写入。 */
 function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: string): DeliveryFacts {
@@ -145,13 +146,19 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
   try { assertWritersQuiescentIn(db, repoId, requirementId); }
   catch (error) { blockers.push(error instanceof CheckRoundError ? error.code : error instanceof RequirementServiceError ? error.code : "writers_active"); }
   const suggestions = verdicts.reduce((total, verdict) => total + verdict.findings.filter((finding) => finding.kind === "suggestion").length, 0);
-  return { record, round, verifications, verdicts, blockers: [...new Set(blockers)], suggestions };
+  return { record, round, verifications, verdicts, blockers: [...new Set(blockers)], suggestions, writes: managedWritesIn(db, repoId, requirementId) };
+}
+function managedWritesIn(db: LocalDatabase, repoId: string, requirementId: string): Array<[string, string, number]> {
+  return [SPEC_PROPOSALS, CHANGE_SETS].flatMap((namespace) => db.list<{ repoId?: string; requirementId?: string; status?: string; operationId?: string }>(namespace)
+    .filter((row) => row.data.repoId === repoId && row.data.requirementId === requirementId)
+    .map((row): [string, string, number] => [`${namespace}:${row.data.operationId ?? row.key}`, row.data.status ?? "", row.version])).sort();
 }
 function basisOf(facts: DeliveryFacts): CloseBasis {
   const verificationIds = facts.verifications.map((run) => run.verificationId).sort();
   const verdictIds = facts.verdicts.map((verdict) => verdict.verdictId).sort();
   const digest = sha256(JSON.stringify([facts.record.version, facts.record.data.epoch, facts.record.data.revision, facts.record.data.approved, facts.round?.checkRoundId ?? null,
-    facts.round?.status ?? null, facts.round?.invalidation ?? null, facts.verifications.map((run) => [run.verificationId, run.status, run.baseline]), facts.verdicts.map((verdict) => [verdict.verdictId, verdict.conclusion])]));
+    facts.round?.status ?? null, facts.round?.invalidation ?? null, facts.verifications.map((run) => [run.verificationId, run.status, run.baseline]),
+    facts.verdicts.map((verdict) => [verdict.verdictId, verdict.conclusion]), facts.writes]));
   return { version: facts.record.version, epoch: facts.record.data.epoch, revision: facts.record.data.revision, approvedHash: facts.record.data.approved?.hash ?? null,
     checkRoundId: facts.round?.checkRoundId ?? null, verificationIds, verdictIds, digest };
 }

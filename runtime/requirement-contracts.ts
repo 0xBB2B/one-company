@@ -114,7 +114,7 @@ export const commands = {
   acknowledge: object({ lease: PmLease, sequence: counter }),
   assess: object({ lease: PmLease, version: positive, revision: positive, assessmentId: id,
     tasks: Type.Array(object({ taskId: Type.String({ minLength: 1, maxLength: 256 }), impact: Type.Union([Type.Literal("unaffected"), Type.Literal("affected"), Type.Literal("unknown")]),
-      reason: Type.String({ maxLength: 1024 }) }), { maxItems: 512 }) }),
+      reason: Type.String({ maxLength: 1024 }) }), { minItems: 1, maxItems: 512 }) }),
   eventLease: object({ lease: PmLease }),
   rotateContext: object({ lease: PmLease }),
   restoreContext: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: ProdReference }),

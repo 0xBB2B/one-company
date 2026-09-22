@@ -109,7 +109,8 @@ test("M6-AC19：裁决按阻塞/建议/未验证分级并关联目标与证据�
     findings: [finding("suggestion"), finding("unverified"), finding("blocking")] } }) as { conclusion: string };
   const unverified = w.submit("reviewer", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "审查",
     findings: [finding("suggestion"), finding("unverified")] } }) as { conclusion: string };
-  const clear = w.submit("reviewer", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [], summary: "审查", findings: [finding("suggestion")] } }) as { conclusion: string };
+  expect(() => w.submit("reviewer", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [], summary: "无证据", findings: [] } })).toThrow(/out_of_scope/);
+  const clear = w.submit("reviewer", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "审查", findings: [finding("suggestion")] } }) as { conclusion: string };
   expect([blocked.conclusion, unverified.conclusion, clear.conclusion]).toEqual(["blocked", "unverified", "clear"]);
   const stored = withDatabase(w.database, (db) => db.list(VERDICTS)).map((row) => row.data as { role: string; conclusion: string; findings: unknown[] });
   expect(stored).toHaveLength(4);
@@ -125,8 +126,9 @@ test("M6-AC17：已批准更新登记 pendingRevision；逐任务复核仍有 un
   expect(second.pendingRevision).toBe(second.revision);
   await expect(w.rounds.openRound({ lease: w.lease })).rejects.toMatchObject({ code: "pending_update" });
   await expect(w.state.checkScheduling(w.lease)).rejects.toThrow(/pending_update/);
-  await expect(w.assess(second.revision, [], { lease: { ...w.lease, fence: w.lease.fence + 1 } })).rejects.toThrow(/stale_pm_lease/);
-  await expect(w.assess(second.revision - 1, [])).rejects.toThrow(/assessment_conflict/);
+  await expect(w.assess(second.revision, [{ taskId: "move", impact: "unaffected", reason: "x" }], { lease: { ...w.lease, fence: w.lease.fence + 1 } })).rejects.toThrow(/stale_pm_lease/);
+  await expect(w.assess(second.revision - 1, [{ taskId: "move", impact: "unaffected", reason: "x" }])).rejects.toThrow(/assessment_conflict/);
+  await expect(w.assess(second.revision, [])).rejects.toThrow(/invalid_shape/);
   const stillUnknown = await w.assess(second.revision, [{ taskId: "move", impact: "unaffected", reason: "章节未变" }, { taskId: "sprint", impact: "unknown", reason: "待分析" }]);
   expect(stillUnknown.data.pendingRevision).toBe(second.revision);
   await w.approve(BODY_3);
@@ -167,7 +169,7 @@ test("M6-AC16：defer 期间绑定检查轮的读取只取该轮登记的原批�
   w.rounds.release({ lease: w.lease, checkRoundId: round.checkRoundId });
   await expect(bound.execute({ action: "read" })).rejects.toMatchObject({ code: "requirement_read_denied" });
 
-  await w.assess(revision, []);
+  await w.assess(revision, [{ taskId: "move", impact: "unaffected", reason: "章节未变" }]);
   const second = await w.rounds.openRound({ lease: w.lease });
   const reader = await w.reader("reviewer", { checkRoundId: second.checkRoundId });
   await expect(reader.execute({ action: "read" })).resolves.toMatchObject({ source: { commit: latest.approved!.commit } });

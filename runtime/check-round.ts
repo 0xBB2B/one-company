@@ -127,11 +127,12 @@ export function readVerificationIn(db: LocalDatabase, verificationId: string): S
   const row = db.read<unknown>(VERIFICATION_RUNS, verificationId);
   return row ? { ...row, data: checked(VerificationRun, row.data) } : null;
 }
-/** 需求当前生效的检查阶段：轮次未退出，或仍有验证进程未结束。 */
+/** 需求当前生效的检查阶段：本 epoch 的轮次未退出，或仍有验证进程未结束；epoch 已变的轮次随撤权一并失效。 */
 export function activeCheckRoundIn(db: LocalDatabase, repoId: string, requirementId: string): StoredRecord<CheckRound> | null {
+  const epoch = db.read<{ epoch?: number }>("requirements", requirementId)?.data.epoch;
   for (const row of db.list<unknown>(CHECK_ROUNDS)) {
     const round = checked(CheckRound, row.data);
-    if (round.repoId !== repoId || round.requirementId !== requirementId) continue;
+    if (round.repoId !== repoId || round.requirementId !== requirementId || round.epoch !== epoch) continue;
     if (round.status !== "released" || round.active.length > 0) return { id: row.id, version: row.version, data: round };
   }
   return null;

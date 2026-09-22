@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import type { VerificationView } from "../runtime/verification-run.ts";
 import { createResultSubmitTool } from "../runtime/result-submit.ts";
 import { createChangeApplyTool } from "../runtime/change-apply.ts";
 import { createRequirementReadTool } from "../runtime/requirement-read-tool.ts";
+import { createSpecChangeTool } from "../runtime/spec-change.ts";
 import { createWorkflowManageTool } from "../runtime/workflow-manage.ts";
 import type { WorkflowManageGrant, WorkflowManageToolOptions } from "../runtime/workflow-manage.ts";
 import { RequirementCloseService, COMPLETION_NOTICES, DELIVERY_RECEIPTS } from "../runtime/workflow-close.ts";
@@ -184,7 +185,7 @@ test("M6-AC11：预检通过后注入 prod 更新、代码变化、阻塞裁决�
   await w.approve(BODY_2);
   const updated = await pm.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] };
   expect(updated.missing).toEqual(expect.arrayContaining(["pending_update"]));
-  await w.state.assessUpdate({ lease: w.lease, version: w.state.read(w.created.requirementId).version, revision: w.state.read(w.created.requirementId).data.revision, assessmentId: uuidv7(), tasks: [] });
+  await w.state.assessUpdate({ lease: w.lease, version: w.state.read(w.created.requirementId).version, revision: w.state.read(w.created.requirementId).data.revision, assessmentId: uuidv7(), tasks: [{ taskId: "move", impact: "unaffected", reason: "章节未变" }] });
   const stale = await pm.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] };
   expect(stale.missing).toEqual(expect.arrayContaining(["check_round_prod_mismatch"]));
   const { round: round2 } = await w.fullEvidence([finding("blocking")]);
@@ -200,6 +201,23 @@ test("M6-AC11：预检通过后注入 prod 更新、代码变化、阻塞裁决�
   const dirty = await pm.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] };
   expect(dirty.missing).toEqual(expect.arrayContaining(["delivery_content_mismatch"]));
   await rm(join(w.worktree.root, "src", "b.ts"));
+  const spec = await createSpecChangeTool({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, authorize: () => true, publishGate: () => ({ checkPhaseReleased: true, evidence: null }),
+    grant: { role: "pm", callerId: uuidv7(), runId: w.lease.runId, requirementId: w.created.requirementId, repoId: w.repoId, workspaceId: w.workspace.workspaceId, branch: w.workspace.branch, lease: structuredClone(w.lease) } });
+  cleanups.push(async () => spec.dispose());
+  const original = RequirementCloseService.prototype.preflight;
+  const injected = vi.spyOn(RequirementCloseService.prototype, "preflight").mockImplementation(async function (this: RequirementCloseService, input) {
+    const result = await original.call(this, input);
+    injected.mockRestore();
+    const rule = { id: "late.rule", title: "晚到", condition: "c", trigger: "t", expected: "e", reason: "r", dependsOn: [], exceptions: [], acceptance: [{ id: "a", given: "g", when: "w", then: "t" }] };
+    await spec.execute({ action: "propose", operationId: uuidv7(), files: [{ path: "docs/spec/player/late.rules.json", baseHash: "absent",
+      content: JSON.stringify({ $schema: "../schema.json", schemaVersion: 1, feature: { id: "late", title: "晚到", aliases: [] }, rules: [rule] }, null, 2) + "\n" }] });
+    return result;
+  });
+  const raced = await pm.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { status: string; missing: string[] };
+  expect([raced.status, raced.missing]).toEqual(["rejected", ["close_basis_changed"]]);
+  expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("active");
+  expect((await pm.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] }).missing).toEqual(expect.arrayContaining(["spec_candidates_unpublished"]));
+  withDatabase(w.database, (db) => db.transaction(() => { for (const row of db.list("spec_proposals")) db.remove("spec_proposals", row.key, row.version); }));
   const operationId = uuidv7();
   const closed = await pm.execute({ action: "close", reason: "completed", receiptId, operationId }) as CloseResult;
   expect(closed).toMatchObject({ status: "closed", reason: "completed", archive: { status: "archived" } });
