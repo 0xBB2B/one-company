@@ -96,7 +96,7 @@ export const RequestRecord = object({ requirementId: id, intentHash: hash });
 export const RequirementEvent = object({
   requirementId: id, repoId: hash, kind: Type.Union([
     Type.Literal("reserved"), Type.Literal("workspace.bound"), Type.Literal("prod.saved"), Type.Literal("prod.approved"),
-    Type.Literal("pm.acquired"), Type.Literal("pm.released"), Type.Literal("closing"), Type.Literal("closed"), Type.Literal("recovery.blocked"),
+    Type.Literal("pm.acquired"), Type.Literal("pm.released"), Type.Literal("update.assessed"), Type.Literal("closing"), Type.Literal("closed"), Type.Literal("recovery.blocked"),
   ]), version: positive, epoch: positive, revision: counter, from: nullable(ProdReference), to: nullable(ProdReference), receiptId: nullable(id), recoveryReason: nullable(RecoveryReason),
   approvalManifest: Type.Optional(ApprovalSummary),
 });
@@ -112,6 +112,9 @@ export const commands = {
   finish: object({ requirementId: id, version: positive, operationId: id }),
   block: object({ requirementId: id, version: positive, reason: RecoveryReason }),
   acknowledge: object({ lease: PmLease, sequence: counter }),
+  assess: object({ lease: PmLease, version: positive, revision: positive, assessmentId: id,
+    tasks: Type.Array(object({ taskId: Type.String({ minLength: 1, maxLength: 256 }), impact: Type.Union([Type.Literal("unaffected"), Type.Literal("affected"), Type.Literal("unknown")]),
+      reason: Type.String({ maxLength: 1024 }) }), { maxItems: 512 }) }),
   eventLease: object({ lease: PmLease }),
   rotateContext: object({ lease: PmLease }),
   restoreContext: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: ProdReference }),

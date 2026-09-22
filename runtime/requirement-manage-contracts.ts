@@ -57,7 +57,7 @@ export interface ConfirmationContext {
     | { kind: "diff"; from: ProdReference; to: ProdReference; text: string };
 }
 export type RequirementApprovalScope = { status: "available"; summary: ApprovalSummary } | { status: "unavailable" };
-export const ReadRequirementInput = strictObject({ requirementId: id, source: Type.Union([Type.Literal("saved"), Type.Literal("approved")]) });
+export const ReadRequirementInput = strictObject({ requirementId: id, source: Type.Union([Type.Literal("saved"), Type.Literal("approved")]), revision: Type.Optional(revision) });
 export const DiffRequirementInput = strictObject({ requirementId: id, fromRevision: revision, toRevision: Type.Optional(revision) });
 export const MetadataRequirementInput = id;
 

@@ -7,6 +7,8 @@ import { checkExploreInput, checkExploreResult, ExploreContractError } from "./e
 import type { ExploreInput } from "./explore-contracts.ts";
 import { checked, id, object } from "./requirement-contracts.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
+import { submitVerdict, VerdictError } from "./verdicts.ts";
+import type { VerdictBinding } from "./verdicts.ts";
 
 const Grant = object({
   role: Type.Union([Type.Literal("explore"), Type.Literal("worker"), Type.Literal("reviewer"), Type.Literal("qa")]),
@@ -29,6 +31,8 @@ export interface ResultSubmitToolOptions {
   grant: ResultSubmitGrant;
   /** explore 的最小输入由派出它的可信父代理提供；research 结果只能绑定这份输入。 */
   exploreInput?: ExploreInput;
+  /** worker/reviewer/QA 的裁决绑定由可信派工服务提供；缺失时 verdict 动作不可用。 */
+  verdictBinding?: VerdictBinding;
   /** 必须由宿主核验当前物理角色会话/调用者及动作许可；不能从工具参数或角色文本构造true。 */
   authorize: (request: Readonly<ResultSubmitAuthorization>) => boolean;
 }
@@ -55,7 +59,15 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     let params: ResultSubmitParameters;
     try { params = checkServiceInput(RESULT_SUBMIT_PARAMETERS, input); } catch { throw new ResultSubmitError("invalid_shape"); }
     host(params.action);
-    if (params.action === "verdict") throw new ResultSubmitError("verdict_unavailable");
+    if (params.action === "verdict") {
+      if (!options.verdictBinding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
+      let verdict;
+      try { verdict = submitVerdict(options.verdictBinding, { role: grant.role, runId: grant.runId, parentRunId: grant.parentRunId }, params.result); }
+      catch (error) { throw new ResultSubmitError(error instanceof VerdictError ? error.code : "invalid_shape"); }
+      host("verdict");
+      return freeze({ kind: "verdict" as const, accepted: true, isPass: false, verdictId: verdict.verdictId, conclusion: verdict.conclusion,
+        checkRoundId: verdict.checkRoundId, findings: verdict.findings.length, runId: grant.runId });
+    }
     if (!exploreInput) deny();
     let result;
     try { result = checkExploreResult(params.result, exploreInput); }

@@ -5,6 +5,7 @@ import type { Static } from "typebox";
 import { checked, checkRequirement, hash, id, object, PmLease, PmRecord, ProdReference, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
+import { readCheckRoundIn } from "./check-round.ts";
 import { RequirementService } from "./requirement-service.ts";
 import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { authorizeToolAction } from "./core-permissions.ts";
@@ -20,7 +21,9 @@ const Role = Type.Union([Type.Literal("pm"), Type.Literal("reviewer"), Type.Lite
 const Binding = object({ role: Role, callerId: id, runId: id, requirementId: id, repoId: hash, workspaceId: hash,
   branch: Type.String({ minLength: 1, maxLength: 4096, pattern: "^refs/heads/" }), lease: PmLease,
   /** 可信宿主已核对的PM理解基线；模型不能自由选择旧版本。 */
-  diffBaseline: Type.Optional(object({ revision: positive, reference: ProdReference })) });
+  diffBaseline: Type.Optional(object({ revision: positive, reference: ProdReference })),
+  /** 已开始的检查轮：defer 或等待 PM 决策期间只读该轮登记的原批准基线，由服务而非角色选择版本。 */
+  checkRoundId: Type.Optional(id) });
 export type RequirementReadBinding = Static<typeof Binding>;
 const paging = { cursor: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
   maxBytes: Type.Optional(Type.Integer({ minimum: 4, maximum: PROD_MAX_PAGE_BYTES })) };
@@ -129,6 +132,14 @@ async function openReadTool(options: RequirementReadToolOptions) {
       record.data.approved!.commit !== expected.data.approved?.commit || record.data.approved!.hash !== expected.data.approved?.hash)) deny();
     return record;
   }
+  function target(record: { version: number; data: RequirementRecord }, db?: LocalDatabase): { revision: number; reference: ProdReference } {
+    if (!binding.checkRoundId) return { revision: record.data.revision, reference: record.data.approved! };
+    const round = db ? readCheckRoundIn(db, binding.checkRoundId) : withDatabase(repositoryDatabase(config.dataRoot, binding.repoId), (inner) => readCheckRoundIn(inner, binding.checkRoundId!));
+    if (!round || round.data.requirementId !== binding.requirementId || round.data.repoId !== binding.repoId || round.data.epoch !== binding.lease.epoch ||
+      round.data.fence !== binding.lease.fence || round.data.status === "released" || round.data.invalidation !== null || round.data.decision?.kind === "interrupt" ||
+      round.data.baseline.revision > record.data.revision) return deny();
+    return { revision: round.data.baseline.revision, reference: round.data.baseline.approved };
+  }
   async function validate(action: RequirementReadAuthorization["action"], expected?: { version: number; data: RequirementRecord }) {
     host(action);
     activeSync(expected);
@@ -181,14 +192,15 @@ async function openReadTool(options: RequirementReadToolOptions) {
       }
       const sectionId = params.action === "read" ? params.sectionId : undefined;
       const maxBytes = params.maxBytes ?? PROD_PAGE_BYTES;
+      const goal = target(before);
       const cursor = params.cursor ? cursors.get(params.cursor) : undefined;
       if (params.cursor && (!cursor || cursor.action !== params.action || cursor.sectionId !== sectionId || cursor.maxBytes !== maxBytes ||
-        cursor.version !== before.version || cursor.revision !== before.data.revision || cursor.epoch !== before.data.epoch ||
-        cursor.commit !== before.data.approved!.commit || cursor.hash !== before.data.approved!.hash)) deny();
+        cursor.version !== before.version || cursor.revision !== goal.revision || cursor.epoch !== before.data.epoch ||
+        cursor.commit !== goal.reference.commit || cursor.hash !== goal.reference.hash)) deny();
       if (params.cursor) cursors.delete(params.cursor);
       const baseline = binding.diffBaseline;
       if (params.action === "diff") {
-        if (!baseline || baseline.revision > before.data.revision) deny();
+        if (!baseline || binding.checkRoundId || baseline.revision > before.data.revision) deny();
         const from = state.events(binding.requirementId).find((event) => event.data.kind === "prod.approved" && event.data.revision === baseline!.revision);
         if (from?.data.to?.commit !== baseline!.reference.commit || from.data.to.hash !== baseline!.reference.hash) deny();
       }
@@ -197,7 +209,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
           (request.requirementId !== undefined && request.requirementId !== binding.requirementId) ||
           (request.epoch !== undefined && request.epoch !== before.data.epoch) ||
           (request.version !== undefined && request.version !== before.version) ||
-          (request.prodHash !== undefined && request.prodHash !== `sha256:${before.data.approved!.hash}`)) return false;
+          (request.prodHash !== undefined && request.prodHash !== `sha256:${goal.reference.hash}`)) return false;
         host(params.action);
         activeSync(before);
         return true;
@@ -207,8 +219,8 @@ async function openReadTool(options: RequirementReadToolOptions) {
       let structure: ReturnType<typeof inspectProdStructure> | undefined;
       let difference: { fromRevision: number; toRevision: number; fromCommit: string; toCommit: string; fromHash: string; toHash: string } | undefined;
       if (params.action === "read") {
-        const result = await service.read({ requirementId: binding.requirementId, source: "approved" });
-        if (result.commit !== before.data.approved!.commit || result.prodHash !== `sha256:${before.data.approved!.hash}` ||
+        const result = await service.read({ requirementId: binding.requirementId, source: "approved", ...(binding.checkRoundId ? { revision: goal.revision } : {}) });
+        if (result.commit !== goal.reference.commit || result.prodHash !== `sha256:${goal.reference.hash}` ||
           result.version !== before.version || result.epoch !== before.data.epoch) deny();
         title = result.title;
         structure = inspectProdStructure(result.body);
@@ -241,8 +253,8 @@ async function openReadTool(options: RequirementReadToolOptions) {
       if (result.hasMore) {
         while (cursors.size >= 32) cursors.delete(cursors.keys().next().value!);
         cursors.set(nextCursor, { action: params.action, sectionId, maxBytes, offset: result.page.endByte, sectionOffset: result.endSection,
-          version: before.version, revision: before.data.revision, commit: before.data.approved!.commit,
-          hash: before.data.approved!.hash, epoch: before.data.epoch, expiresAt: Math.min(Date.now() + 30_000, binding.lease.expiresAt) });
+          version: before.version, revision: goal.revision, commit: goal.reference.commit,
+          hash: goal.reference.hash, epoch: before.data.epoch, expiresAt: Math.min(Date.now() + 30_000, binding.lease.expiresAt) });
       }
       await validate(params.action, before);
       returns.set(response, { action: params.action, record: before, scope: origin.approvalScope });
@@ -263,6 +275,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
       withDatabase(repositoryDatabase(config.dataRoot, binding.repoId), (db) => db.transaction(() => {
         if (returned.scope) {
           activeSync(returned.record, db);
+          target(returned.record, db);
           assertApprovalScopeReturnIn(db, binding.repoId, { ...returned.record, id: binding.requirementId }, returned.scope);
         } else {
           const actual = current(db);
@@ -278,9 +291,11 @@ async function openReadTool(options: RequirementReadToolOptions) {
         summary: summarizeApprovalManifest(registeredApprovalManifestIn(db, binding.repoId, record.data.approvalManifest!.reference,
           { ...record, id: binding.requirementId })) })))
       : { status: "unavailable" as const };
+    const goal = target(record);
     return { approvalScope, requirementId: binding.requirementId, repoId: binding.repoId, workspaceId: binding.workspaceId, branch: binding.branch,
-      role: binding.role, purpose: binding.role === "qa" ? "black_box_acceptance" : "approved_requirement_read",
-      commit: record.data.approved!.commit, prodHash: `sha256:${record.data.approved!.hash}`, revision: record.data.revision,
+      role: binding.role, purpose: binding.checkRoundId ? "check_round_original_baseline" : binding.role === "qa" ? "black_box_acceptance" : "approved_requirement_read",
+      ...(binding.checkRoundId ? { checkRoundId: binding.checkRoundId } : {}),
+      commit: goal.reference.commit, prodHash: `sha256:${goal.reference.hash}`, revision: goal.revision,
       version: record.version, lifecycleEpoch: record.data.epoch, asOf: Date.now() };
   }
   return Object.freeze({ name: "requirement_manage", parameters: REQUIREMENT_READ_PARAMETERS, execute, assertCurrent, dispose });

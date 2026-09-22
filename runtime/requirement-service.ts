@@ -67,7 +67,7 @@ const STATE_SCOPE: Record<RequirementServiceAction, ReadonlySet<RequirementActio
   updateDraft: new Set(["open", "read", "saved-version", "block-recovery"]),
   confirmUpdate: new Set(["open", "read", "saved-version", "approved-version", "block-recovery"]),
   readSaved: new Set(["open", "read", "block-recovery"]),
-  readApproved: new Set(["open", "read", "block-recovery"]),
+  readApproved: new Set(["open", "read", "events", "block-recovery"]),
   diff: new Set(["open", "read", "events", "block-recovery"]),
   metadata: new Set(["open", "read"]),
 };
@@ -623,8 +623,14 @@ export class RequirementService {
     const before = state.read(request.requirementId);
     available(before.data);
     await this.assertNoObservedArchive(state, request.requirementId);
-    const reference = request.source === "saved" ? before.data.saved : before.data.approved;
+    let reference = request.source === "saved" ? before.data.saved : before.data.approved;
     if (!reference) throw new RequirementServiceError("version_unavailable");
+    if (request.revision !== undefined) {
+      if (request.source !== "approved" || request.revision > before.data.revision) throw new RequirementServiceError("invalid_revision_range");
+      const event = state.events(request.requirementId).find((entry) => entry.data.kind === "prod.approved" && entry.data.revision === request.revision && entry.data.to !== null);
+      if (!event) throw new RequirementServiceError("unknown_revision");
+      reference = event.data.to!;
+    }
     const authorization: ServiceAuthorizationRequest = {
       ...initialAuthorization,
       prodHash: storageHash(reference.hash),
@@ -637,7 +643,7 @@ export class RequirementService {
     const validateCurrent = () => {
       const current = state.read(request.requirementId);
       available(current.data);
-      const selected = request.source === "saved" ? current.data.saved : current.data.approved;
+      const selected = request.revision !== undefined ? reference : request.source === "saved" ? current.data.saved : current.data.approved;
       if (current.version !== before.version || current.data.epoch !== before.data.epoch || !sameReference(selected, reference)) {
         throw new RequirementServiceError("state_changed_during_read");
       }

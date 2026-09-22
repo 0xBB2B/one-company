@@ -18,7 +18,7 @@ import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperation
 import { registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
 
-export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "rotate-pm-context" | "restore-approved-context" | "events" | "acknowledge" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "record-decisions" | "read-decisions";
+export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "rotate-pm-context" | "restore-approved-context" | "events" | "acknowledge" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "assess-update" | "record-decisions" | "read-decisions";
 export interface StateAuthorizationRequest { action: RequirementAction; repoId: string; input: Readonly<Record<string, unknown>> }
 export interface RequirementAccessState { record: StoredRecord<RequirementRecord> | null; pmLeaseHash: string }
 export interface RequirementAccessChange {
@@ -781,6 +781,26 @@ export class RequirementStateStore {
     });
   }
 
+  /** 已确认更新的逐任务影响复核：全部任务不再 unknown 才解除 pendingRevision；记录本身不改写历史验证输入。 */
+  async assessUpdate(input: Static<typeof commands.assess>): Promise<StoredRecord<RequirementRecord>> {
+    const request = checked(commands.assess, input);
+    await this.workspaceForLease("assess-update", request.lease);
+    return this.mutate("assess-update", request, (db) => {
+      const { record } = this.validateOwner(db, request.lease);
+      this.version(record, request.version);
+      if (record.data.pendingRevision !== request.revision || record.data.revision !== request.revision || !record.data.approved) throw new RequirementStateError("assessment_conflict");
+      const existing = db.read<{ requirementId: string; toRevision: number }>("impact_assessments", request.assessmentId);
+      if (existing) {
+        if (existing.data.requirementId !== record.id || existing.data.toRevision !== request.revision) throw new RequirementStateError("assessment_conflict");
+        return record;
+      }
+      const unknown = request.tasks.filter((task) => task.impact === "unknown").length;
+      db.create("impact_assessments", request.assessmentId, { requirementId: record.id, fromRevision: request.revision - 1, toRevision: request.revision,
+        toHash: record.data.approved.hash, tasks: request.tasks, unknown, runId: request.lease.runId, fence: request.lease.fence, at: this.now() });
+      if (unknown > 0) return record;
+      return this.write(db, record, { ...record.data, pendingRevision: null }, "update.assessed", null, record.data.approved).record;
+    });
+  }
   beginClose(input: Static<typeof commands.close>): StoredRecord<RequirementRecord> {
     const request = checked(commands.close, input);
     return this.mutate("begin-close", request, (db) => {
