@@ -14,6 +14,7 @@ const FILES = {
   rules04: join(RULES_DIR, "04-decision-record.md"),
   rules05: join(RULES_DIR, "05-review-failure-handling.md"),
   rules06: join(RULES_DIR, "06-dispatch-boundary.md"),
+  rules07: join(RULES_DIR, "07-archived-requirements.md"),
 } as const;
 
 async function readDoc(path: string): Promise<string> {
@@ -231,6 +232,16 @@ describe("rules/06-dispatch-boundary.md", () => {
   for (const phrase of REQUIRED) {
     test(`含: ${phrase}`, async () => {
       const body = await readDoc(FILES.rules06);
+      expect(body).toContain(phrase);
+    });
+  }
+});
+
+describe("rules/07-archived-requirements.md 必需句", () => {
+  const REQUIRED = ["不主动读取 docs/prod 归档", "不把旧需求当作当前目标", "pi_company_requirement_manage"];
+  for (const phrase of REQUIRED) {
+    test(`含: ${phrase}`, async () => {
+      const body = await readDoc(FILES.rules07);
       expect(body).toContain(phrase);
     });
   }

@@ -224,7 +224,7 @@ describe("四份角色文件正文段落结构", () => {
 });
 
 const REQUIRED_EXPRESSIONS: Array<{ name: ContractRoleName; section: string; phrases: string[] }> = [
-  { name: "requirement-agent", section: "身份与前提", phrases: ["只有一个需求代理", "不处理绑定范围之外"] },
+  { name: "requirement-agent", section: "身份与前提", phrases: ["只有一个需求代理", "不处理绑定范围之外", "不主动读取 docs/prod 归档"] },
   { name: "requirement-agent", section: "规划前检", phrases: ["验证条件", "阻塞", "不派工"] },
   {
     name: "requirement-agent",
@@ -275,7 +275,7 @@ const REQUIRED_EXPRESSIONS: Array<{ name: ContractRoleName; section: string; phr
   },
   { name: "requirement-agent", section: "结束", phrases: ["经中继通知"] },
 
-  { name: "worker", section: "输入", phrases: ["只写任务声明", "不读其他任务"] },
+  { name: "worker", section: "输入", phrases: ["只写任务声明", "不读其他任务", "不主动读取 docs/prod 归档"] },
   { name: "worker", section: "证明力核对", phrases: ["真实入口", "改变完成时机或错误含义", "缺失时测试必须"] },
   { name: "worker", section: "Red", phrases: ["目标行为缺失", "不算可信失败", "green-baseline-no-change"] },
   { name: "worker", section: "Green", phrases: ["不跳过、弱化或替换关键断言", "不修改测试含义"] },
@@ -284,13 +284,13 @@ const REQUIRED_EXPRESSIONS: Array<{ name: ContractRoleName; section: string; phr
   { name: "worker", section: "提交", phrases: ["structured_output", "唯一工作裁决", "coverage", "映射到真实测试位置"] },
   { name: "worker", section: "禁止", phrases: ["不派出角色", "不改写运行信息", "不操作 git 提交"] },
 
-  { name: "reviewer", section: "范围与只读", phrases: ["审查快照", "只读", "命令层判为运行失败"] },
+  { name: "reviewer", section: "范围与只读", phrases: ["审查快照", "只读", "命令层判为运行失败", "不主动读取 docs/prod 归档"] },
   { name: "reviewer", section: "安全优先", phrases: ["攻击者视角", "攻击路径或触发条件"] },
   { name: "reviewer", section: "鲁棒性", phrases: ["真实非恶意故障视角", "只写进 summary", "不进 issues 与 findings"] },
   { name: "reviewer", section: "可追踪关系", phrases: ["TDD 可信度", "Blocker"] },
   { name: "reviewer", section: "提交", phrases: ["reviewedHead", "contentFingerprint", "traceability", "evidence"] },
 
-  { name: "acceptance", section: "输入边界", phrases: ["不读源码", "任务文件或其他仓库文件", "命令层判为运行失败"] },
+  { name: "acceptance", section: "输入边界", phrases: ["不读源码", "任务文件或其他仓库文件", "命令层判为运行失败", "不主动读取 docs/prod 归档"] },
   { name: "acceptance", section: "执行", phrases: ["Given", "When", "Then", "原样观察"] },
   { name: "acceptance", section: "可用性", phrases: ["使用者视角", "不可达", "不可用", "精确输入", "rejected"] },
   { name: "acceptance", section: "报告", phrases: ["result", "date", "结果表", "未覆盖", "命令清单", "结论", "reportPath"] },
