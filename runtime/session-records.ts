@@ -66,7 +66,7 @@ export function createSessionManagerForRun(ctx: CreateRunContext): SessionManage
   return persistManager(manager, ctx, 1);
 }
 
-export type SessionFileFailure = { ok: false; reason: "missing" | "corrupt"; detail: string };
+export type SessionFileFailure = { ok: false; reason: "missing" | "corrupt" | "closed"; detail: string };
 
 interface MinimalEntry {
   type?: string;
@@ -119,9 +119,20 @@ function validateSessionRecord(ref: RunRef): { ok: true; entries: FileEntry[]; l
 
 export type OpenSessionOutcome = { ok: true; manager: SessionManager } | SessionFileFailure;
 
+function requirementClosedFor(ctx: RunRef): boolean {
+  return withDatabase(repositoryDatabase(ctx.dataRoot, ctx.repoId), (db) => {
+    const run = db.read<{ requirement?: unknown }>("runs", ctx.runId)?.data;
+    if (!run || typeof run.requirement !== "string") return false;
+    const requirement = db.read<{ lifecycle?: unknown }>("requirements", run.requirement)?.data;
+    return requirement?.lifecycle === "closing" || requirement?.lifecycle === "closed";
+  });
+}
+
+/** 已关闭需求的 PM/子会话不再续接：它们的消息与摘要不能进入任何新运行。 */
 export function openSessionManagerForRun(ctx: OpenRunContext): OpenSessionOutcome {
   const validated = validateSessionRecord(ctx);
   if (!validated.ok) return validated;
+  if (requirementClosedFor(ctx)) return { ok: false, reason: "closed", detail: `需求已关闭，会话不续接: ${ctx.runId}` };
   try {
     const header = validated.entries[0] as { cwd?: string };
     const manager = SessionManager.inMemory(ctx.cwd ?? header.cwd, undefined, validated.entries);

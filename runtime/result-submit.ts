@@ -7,6 +7,8 @@ import { checkExploreInput, checkExploreResult, ExploreContractError } from "./e
 import type { ExploreInput } from "./explore-contracts.ts";
 import { checked, id, object } from "./requirement-contracts.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
+import { checkExploreSession } from "./explore-session.ts";
+import type { ExploreSessionConfig } from "./explore-session.ts";
 import { submitVerdict, VerdictError } from "./verdicts.ts";
 import type { VerdictBinding } from "./verdicts.ts";
 
@@ -21,7 +23,7 @@ export const RESULT_SUBMIT_PARAMETERS = Type.Union([
 ]);
 export type ResultSubmitParameters = Static<typeof RESULT_SUBMIT_PARAMETERS>;
 export type ResultSubmitAction = ResultSubmitParameters["action"];
-export type ResultSubmitErrorCode = "result_submit_denied" | "invalid_shape" | "invalid_binding" | "out_of_scope" | "resource_limit" | "verdict_unavailable";
+export type ResultSubmitErrorCode = "result_submit_denied" | "invalid_shape" | "invalid_binding" | "out_of_scope" | "resource_limit" | "verdict_unavailable" | "stale_session";
 export class ResultSubmitError extends Error {
   readonly code: ResultSubmitErrorCode;
   constructor(code: ResultSubmitErrorCode) { super(code); this.name = "ResultSubmitError"; this.code = code; }
@@ -33,6 +35,8 @@ export interface ResultSubmitToolOptions {
   exploreInput?: ExploreInput;
   /** worker/reviewer/QA 的裁决绑定由可信派工服务提供；缺失时 verdict 动作不可用。 */
   verdictBinding?: VerdictBinding;
+  /** 已登记的 explore 搜索会话：需求关闭、父撤权、PM 接管或会话回收后 research 一律拒收。 */
+  exploreSession?: ExploreSessionConfig;
   /** 必须由宿主核验当前物理角色会话/调用者及动作许可；不能从工具参数或角色文本构造true。 */
   authorize: (request: Readonly<ResultSubmitAuthorization>) => boolean;
 }
@@ -72,6 +76,10 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     let result;
     try { result = checkExploreResult(params.result, exploreInput); }
     catch (error) { throw new ResultSubmitError(error instanceof ExploreContractError ? error.code : "invalid_shape"); }
+    if (options.exploreSession) {
+      const decision = checkExploreSession(options.exploreSession, grant.runId);
+      if (!decision.current || decision.session.parentRunId !== grant.parentRunId) throw new ResultSubmitError("stale_session");
+    }
     host("research");
     return freeze({ kind: "research" as const, accepted: true, isPass: false, parentRunId: grant.parentRunId, runId: grant.runId,
       sourceKind: result.source.kind, resultHash: createHash("sha256").update(JSON.stringify(result)).digest("hex"),

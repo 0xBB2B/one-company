@@ -20,6 +20,7 @@ import type { RunRecord } from "./run-store.ts";
 import { resolveRealRepoPath } from "./write-guard.ts";
 import { writeFileAtomic } from "./store.ts";
 import { readVerdictsIn } from "./verdicts.ts";
+import { endRequirementExploreSessionsIn } from "./explore-session.ts";
 
 export const CLOSE_OPERATIONS = "close_operations";
 export const DELIVERY_RECEIPTS = "delivery_receipts";
@@ -321,6 +322,7 @@ export class RequirementCloseService {
       const owner = db.read<{ lease?: unknown }>("pm_ownership", requirementId)?.data;
       if (owner?.lease) blockers.push("pm_lease_active");
       if (blockers.length === 0 && !current.data.steps.agentsStopped) {
+        endRequirementExploreSessionsIn(db, this.options.repoId, requirementId, "requirement_closed");
         this.saveOperation(db, current, { ...current.data, steps: { ...current.data.steps, agentsStopped: true, entriesCleared: true } });
       }
       return blockers;
