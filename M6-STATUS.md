@@ -38,9 +38,11 @@
 
 第四轮重跑（提交 7fe35e3，installation-04.txt）：同一 Docker 用例仍在 `valid` 阶段 `apk add git` 超过 180 秒构建上限（每个包约 35 秒）；同时段实测宿主到 dl-cdn.alpinelinux.org 约 10 KB/s、registry.npmjs.org 单次请求 16–26 秒、github.com 60 秒超时，Docker Desktop 经 http.docker.internal:3128 代理出网。属本机出网带宽问题，不改动该测试。遗留镜像与保留现场已再次清理。
 
+第五轮重跑（2026-09-23，提交 55e4f57，installation-05.txt，带宽恢复后容器内 `apk add git` 实测 8 秒）：`pnpm run test:installation` 5 文件 12 用例通过，44 秒。至此 typecheck 与三条测试命令在最终代码基线 4e78bd0（此后仅有状态表提交）上均有通过记录。
+
 ## 当前阻塞
 
-- 最终基线上 `pnpm run test:installation` 尚无全绿记录：唯一失败用例依赖容器内下载 npm 包与 apk 包，需在出网带宽恢复后重跑 `pnpm run test:installation`（约 2.5 分钟）并把结果补入本表；重跑前可用 `curl -o /dev/null -w "%{speed_download}\n" https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/APKINDEX.tar.gz` 确认速度明显高于 10 KB/s。其余两条命令与 typecheck 在 4e78bd0 上已全绿。
+无。
 
 ## 下一窗口续接提示
 
