@@ -213,6 +213,10 @@ export class RequirementCloseService {
 
   /** 交付凭据：当前内容指纹、正式证据、独立裁决与阻塞项，全程无 prod 正文。 */
   async deliveryCheck(requirementId: string): Promise<DeliveryReceipt> {
+    return (await this.deliveryCheckWithBasis(requirementId)).receipt;
+  }
+  /** 凭据、关闭依据与角色运行判断出自同一事务，关闭再核对比对的就是签发凭据时的依据。 */
+  private async deliveryCheckWithBasis(requirementId: string): Promise<{ receipt: DeliveryReceipt; basis: CloseBasis; roleRunsActive: boolean }> {
     checked(id, requirementId);
     this.authorize({ action: "delivery-check", requirementId });
     const first = withDatabase(this.database, (db) => deliveryFactsIn(db, this.options.repoId, requirementId));
@@ -241,7 +245,7 @@ export class RequirementCloseService {
         verificationIds: applicable, verdictIds: facts.verdicts.map((verdict) => verdict.verdictId), pendingRevision: facts.record.data.pendingRevision,
         deliverable: blockers.length === 0, blockers: [...new Set(blockers)], suggestions: facts.suggestions, createdAt: this.now() });
       db.create(DELIVERY_RECEIPTS, receipt.receiptId, receipt, receipt.receiptId);
-      return freeze(receipt);
+      return { receipt: freeze(receipt), basis: basisOf(facts), roleRunsActive: activeRunsIn(db, requirementId, "role").length > 0 };
     }));
   }
 
@@ -264,14 +268,10 @@ export class RequirementCloseService {
       const facts = withDatabase(this.database, (db) => deliveryFactsIn(db, this.options.repoId, request.requirementId));
       return { eligible: missing.length === 0, missing, basis: basisOf(facts) };
     }
-    const receipt = await this.deliveryCheck(request.requirementId);
+    const { receipt, basis, roleRunsActive } = await this.deliveryCheckWithBasis(request.requirementId);
     missing.push(...receipt.blockers);
-    const facts = withDatabase(this.database, (db) => {
-      const current = deliveryFactsIn(db, this.options.repoId, request.requirementId);
-      if (activeRunsIn(db, request.requirementId, "role").length > 0) missing.push("role_agents_running");
-      return current;
-    });
-    return { eligible: missing.length === 0, missing: [...new Set(missing)], basis: basisOf(facts) };
+    if (roleRunsActive) missing.push("role_agents_running");
+    return { eligible: missing.length === 0, missing: [...new Set(missing)], basis };
   }
 
   async close(input: Static<typeof CloseInput>): Promise<CloseResult> {
