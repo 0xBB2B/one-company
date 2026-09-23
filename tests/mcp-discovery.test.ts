@@ -91,13 +91,11 @@ function inferMode(input: Record<string, unknown>): "search" | "describe" | "cal
 
 function wireCheckMcpCall(
   pi: { on: (event: string, handler: (event: FakeToolCallEvent) => { block?: boolean; reason?: string } | void) => void },
-  roleKind: "plan" | "work" | "review" | "acceptance" | "manage",
   allowedServers: string[],
 ) {
   pi.on("tool_call", (event) => {
     if (event.toolName !== "mcp") return;
     const decision = checkMcpCall({
-      roleKind,
       allowedServers,
       request: {
         mode: inferMode(event.input),
@@ -353,7 +351,6 @@ describe("filterMcpConfig", () => {
 describe("checkMcpCall", () => {
   test("请求集合内服务允许通过", () => {
     const result = checkMcpCall({
-      roleKind: "work",
       allowedServers: ["context7"],
       request: { mode: "search", server: "context7" },
     });
@@ -362,7 +359,6 @@ describe("checkMcpCall", () => {
 
   test("请求集合外服务被拒绝", () => {
     const result = checkMcpCall({
-      roleKind: "work",
       allowedServers: ["context7"],
       request: { mode: "call", server: "codegraph", tool: "codegraph_explore" },
     });
@@ -371,7 +367,6 @@ describe("checkMcpCall", () => {
 
   test("未给 server 时按 tool 双下划线前缀推断", () => {
     const result = checkMcpCall({
-      roleKind: "work",
       allowedServers: ["context7"],
       request: { mode: "search", tool: "context7__docs_search" },
     });
@@ -380,7 +375,6 @@ describe("checkMcpCall", () => {
 
   test("未给 server 时按 tool 单下划线前缀推断", () => {
     const result = checkMcpCall({
-      roleKind: "work",
       allowedServers: ["context7"],
       request: { mode: "search", tool: "context7_docs" },
     });
@@ -389,7 +383,6 @@ describe("checkMcpCall", () => {
 
   test("推断不出 server 且 allowedServers 为空时拒绝", () => {
     const result = checkMcpCall({
-      roleKind: "work",
       allowedServers: [],
       request: { mode: "search", tool: "mcp" },
     });
@@ -398,7 +391,6 @@ describe("checkMcpCall", () => {
 
   test("显式 server 与 tool 前缀不一致时拒绝", () => {
     const result = checkMcpCall({
-      roleKind: "work",
       allowedServers: ["context7"],
       request: { mode: "call", server: "context7", tool: "codegraph__explore" },
     });
@@ -406,28 +398,25 @@ describe("checkMcpCall", () => {
     if (!result.allowed) expect(result.reason).toMatch(/不一致|codegraph/);
   });
 
-  test("review 角色对写文件参数的 call 请求拒绝并说明只读角色", () => {
+  test("子代理对写文件参数的 call 请求拒绝并说明只读限制", () => {
     const result = checkMcpCall({
-      roleKind: "review",
       allowedServers: ["context7"],
       request: { mode: "call", server: "context7", tool: "context7_write", args: { path: "/etc/passwd" } },
     });
     expect(result.allowed).toBe(false);
-    if (!result.allowed) expect(result.reason).toContain("只读角色");
+    if (!result.allowed) expect(result.reason).toContain("只读 MCP 工具");
   });
 
-  test("review 角色对写文件参数的 search 请求不受限", () => {
+  test("子代理对写文件参数的 search 请求不受限", () => {
     const result = checkMcpCall({
-      roleKind: "review",
       allowedServers: ["context7"],
       request: { mode: "search", server: "context7", args: { path: "/etc/passwd" } },
     });
     expect(result.allowed).toBe(true);
   });
 
-  test("review 角色对不含敏感键的 call 请求允许通过", () => {
+  test("子代理对不含敏感键的 call 请求允许通过", () => {
     const result = checkMcpCall({
-      roleKind: "review",
       allowedServers: ["context7"],
       readOnlyTools: ["context7_query"],
       request: { mode: "call", server: "context7", tool: "context7_query", args: { query: "x" } },
@@ -435,46 +424,41 @@ describe("checkMcpCall", () => {
     expect(result.allowed).toBe(true);
   });
 
-  test("work 角色对写文件参数的 call 请求不受只读限制", () => {
+  test("worker 同样不能调用未声明为只读的 MCP 工具", () => {
     const result = checkMcpCall({
-      roleKind: "work",
       allowedServers: ["context7"],
       request: { mode: "call", server: "context7", tool: "context7_write", args: { file: "x" } },
     });
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
   });
 
-  test("acceptance 角色对含 output 键的 call 请求拒绝", () => {
+  test("子代理对含 output 键的 call 请求拒绝", () => {
     const result = checkMcpCall({
-      roleKind: "acceptance",
       allowedServers: ["chrome-devtools"],
       request: { mode: "call", server: "chrome-devtools", tool: "chrome-devtools_run", args: { output: "y" } },
     });
     expect(result.allowed).toBe(false);
   });
 
-  test("review 角色对含 content 键的 call 请求拒绝并说明只读角色", () => {
+  test("子代理对含 content 键的 call 请求拒绝并说明只读限制", () => {
     const result = checkMcpCall({
-      roleKind: "review",
       allowedServers: ["context7"],
       request: { mode: "call", server: "context7", tool: "context7_write", args: { content: "x" } },
     });
     expect(result.allowed).toBe(false);
-    if (!result.allowed) expect(result.reason).toContain("只读角色");
+    if (!result.allowed) expect(result.reason).toContain("只读 MCP 工具");
   });
 
-  test("review 角色对同时含 text 与 dest 键的 call 请求拒绝", () => {
+  test("子代理对同时含 text 与 dest 键的 call 请求拒绝", () => {
     const result = checkMcpCall({
-      roleKind: "review",
       allowedServers: ["context7"],
       request: { mode: "call", server: "context7", tool: "context7_write", args: { text: "x", dest: "y" } },
     });
     expect(result.allowed).toBe(false);
   });
 
-  test("review 角色对仅含 profile 键的 call 请求放行", () => {
+  test("子代理对仅含 profile 键的 call 请求放行", () => {
     const result = checkMcpCall({
-      roleKind: "review",
       allowedServers: ["context7"],
       readOnlyTools: ["context7_read"],
       request: { mode: "call", server: "context7", tool: "context7_read", args: { profile: "x" } },
@@ -482,9 +466,8 @@ describe("checkMcpCall", () => {
     expect(result.allowed).toBe(true);
   });
 
-  test("review 角色对仅含 filePattern 键的 call 请求放行", () => {
+  test("子代理对仅含 filePattern 键的 call 请求放行", () => {
     const result = checkMcpCall({
-      roleKind: "review",
       allowedServers: ["context7"],
       readOnlyTools: ["context7_read"],
       request: { mode: "call", server: "context7", tool: "context7_read", args: { filePattern: "*.ts" } },
@@ -492,9 +475,8 @@ describe("checkMcpCall", () => {
     expect(result.allowed).toBe(true);
   });
 
-  test("review 角色对仅含 projectPath 键的 call 请求放行", () => {
+  test("子代理对仅含 projectPath 键的 call 请求放行", () => {
     const result = checkMcpCall({
-      roleKind: "review",
       allowedServers: ["context7"],
       readOnlyTools: ["context7_read"],
       request: { mode: "call", server: "context7", tool: "context7_read", args: { projectPath: "/repo" } },
@@ -676,7 +658,7 @@ describe("按角色装载并通过三类入口拦截", () => {
     const { config } = filterMcpConfig({ mcpServers: baseServers() }, ["context7"]);
     const loadResult = await loadMcpForRole({ pi, entryPath: FAKE_ENTRY, packageDir: FIXTURE_DIR, config });
     expect(loadResult.loaded).toEqual(["context7"]);
-    wireCheckMcpCall(pi, "work", ["context7"]);
+    wireCheckMcpCall(pi, ["context7"]);
 
     const allowed = await simulateToolCall(pi, { tool: "context7_docs", server: "context7", search: "x" });
     expect(allowed.blocked).toBe(false);
@@ -694,12 +676,12 @@ describe("按角色装载并通过三类入口拦截", () => {
     expect(calls).toEqual([{ server: "context7", tool: "context7_docs", mode: "search" }]);
   });
 
-  test("acceptance 只能发现与调用 chrome-devtools", async () => {
+  test("qa 只能发现与调用 chrome-devtools", async () => {
     resetCalls();
     const pi = createFakePi();
     const { config } = filterMcpConfig({ mcpServers: baseServers() }, ["chrome-devtools"]);
     await loadMcpForRole({ pi, entryPath: FAKE_ENTRY, packageDir: FIXTURE_DIR, config });
-    wireCheckMcpCall(pi, "acceptance", ["chrome-devtools"]);
+    wireCheckMcpCall(pi, ["chrome-devtools"]);
 
     const allowed = await simulateToolCall(pi, { tool: "chrome-devtools_run", server: "chrome-devtools", describe: "run" });
     expect(allowed.blocked).toBe(false);
@@ -716,7 +698,7 @@ describe("按角色装载并通过三类入口拦截", () => {
     const { config } = filterMcpConfig({ mcpServers: baseServers() }, []);
     const loadResult = await loadMcpForRole({ pi, entryPath: FAKE_ENTRY, packageDir: FIXTURE_DIR, config });
     expect(loadResult.loaded).toEqual([]);
-    wireCheckMcpCall(pi, "review", []);
+    wireCheckMcpCall(pi, []);
 
     const deniedContext7 = await simulateToolCall(pi, { tool: "context7_docs", server: "context7", search: "x" });
     expect(deniedContext7.blocked).toBe(true);
@@ -762,14 +744,13 @@ async function startSession(extensionFactory: InlineExtension) {
 function buildRoleExtension(options: {
   entryPath: string;
   config: unknown;
-  roleKind: "plan" | "work" | "review" | "acceptance" | "manage";
   allowedServers: string[];
   onLoaded?: (result: { loaded: string[]; missing: string[]; failure?: string }) => void;
 }): InlineExtension {
   return async (pi: ExtensionAPI) => {
     const result = await loadMcpForRole({ pi, entryPath: options.entryPath, packageDir: dirname(options.entryPath), config: options.config as McpConfig });
     options.onLoaded?.(result);
-    wireCheckMcpCall(pi, options.roleKind, options.allowedServers);
+    wireCheckMcpCall(pi, options.allowedServers);
   };
 }
 
@@ -780,7 +761,6 @@ describe("真实 SDK 会话集成", () => {
     const extensionFactory = buildRoleExtension({
       entryPath: FAKE_ENTRY,
       config,
-      roleKind: "work",
       allowedServers: ["context7"],
     });
     const { session, provider } = await startSession(extensionFactory);
@@ -823,7 +803,7 @@ describe("真实 SDK 会话集成", () => {
 });
 
 describe("参数形状、服务推断、入口校验与配置克隆的边界", () => {
-  const base = { roleKind: "review" as const, allowedServers: ["context7", "context7_docs"], readOnlyTools: ["context7__x", "context7_docs__search"] };
+  const base = { allowedServers: ["context7", "context7_docs"], readOnlyTools: ["context7__x", "context7_docs__search"] };
   test("可信只读工具接受其自己的参数格式", () => {
     expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: ["--output", "/etc/x"] } }).allowed).toBe(true);
     expect(checkMcpCall({ ...base, request: { mode: "call", server: "context7", tool: "context7__x", args: "--output /etc/x" } }).allowed).toBe(true);

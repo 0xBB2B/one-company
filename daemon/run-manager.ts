@@ -11,23 +11,20 @@ import { assertLegacyRequirementId, withLegacyReadDatabase } from "../runtime/wo
 import { checkedMetadataPage, legacyMetadataPage } from "../runtime/workflow-tool.ts";
 import type { MetadataPageOptions } from "../runtime/workflow-tool.ts";
 import { LEGACY_WORKFLOW_RETIRED } from "../runtime/decision-record-tool.ts";
-import type { RoleSessionHandle } from "./role-session.ts";
-import type { RequirementAgentHandle } from "./requirement-agent.ts";
+import type { AgentSessionHandle } from "./agent-session.ts";
 import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
-import type { DaemonProjectBaselineProvider } from "./project-baseline-provider.ts";
 
 export interface SelectedModel { provider: string; id: string }
 export type ModelSelector = (input: { roleName: string; taskId?: string }) => SelectedModel;
 export type EmitFn = (event: string, data: Record<string, unknown>, filter?: (windowId: string) => boolean) => void;
 export interface RunManagerOptions {
-  projectBaselineProvider?: (run: RunRecord) => Promise<DaemonProjectBaselineProvider>;
   dataRoot: string; repoId: string; runStore: RunStore; shellRegistry: ShellRegistry;
   networkGate: NetworkPauseGate; relayQueue: RelayQueue; roleCatalog: RoleCatalogEntry[];
   runtime: ModelRuntime; selectModel: ModelSelector; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
 }
 export interface WaitForSpec { repo: string; requirement: string; stage: string }
-interface SessionEntry { kind: RunKind; handle: RoleSessionHandle | RequirementAgentHandle }
+interface SessionEntry { kind: RunKind; handle: AgentSessionHandle }
 export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "parentRunId" | "state" | "startedAt" | "updatedAt" | "endedAt" | "turns"> & { stateReason?: string };
 function runMetadata(run: RunRecord): RunMetadata {
   const timestamp = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;

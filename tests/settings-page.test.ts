@@ -407,7 +407,7 @@ describe("openSettingsPage 补充契约", () => {
     tempRoots.push(home);
     const agentDir = join(home, ".pi", "agent");
     await mkdir(agentDir, { recursive: true });
-    const defaultRoles = ["planner", "worker", "reviewer", "acceptance", "requirement-agent"];
+    const defaultRoles = ["explore", "worker", "reviewer", "qa", "pm"];
     for (const role of defaultRoles) {
       putRecord({ database: globalDatabase(join(agentDir, "pi-company")), namespace: "role_settings", key: `pi-company.${role}` }, { mcp: ["context7"] });
     }

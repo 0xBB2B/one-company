@@ -1,6 +1,5 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, sep } from "node:path";
-import type { RoleKind } from "./roles.ts";
 
 export interface DetectMcpAdapterInput {
   sourcePaths: string[];
@@ -49,7 +48,6 @@ export interface McpCallRequest {
 }
 
 export interface CheckMcpCallInput {
-  roleKind: RoleKind;
   allowedServers: string[];
   readOnlyTools?: string[];
   request: McpCallRequest;
@@ -229,9 +227,8 @@ export function checkMcpCall(input: CheckMcpCallInput): CheckMcpCallResult {
     return { allowed: false, reason: `服务 ${server ?? "未知"} 不在角色可用集合内` };
   }
 
-  const isReadOnlyRole = input.roleKind === "review" || input.roleKind === "acceptance";
-  if (isReadOnlyRole && input.request.mode === "call" && (!input.request.tool || !input.readOnlyTools?.includes(input.request.tool))) {
-    return { allowed: false, reason: "只读角色只能调用可信配置明确声明的只读 MCP 工具" };
+  if (input.request.mode === "call" && (!input.request.tool || !input.readOnlyTools?.includes(input.request.tool))) {
+    return { allowed: false, reason: "子代理只能调用可信配置明确声明的只读 MCP 工具" };
   }
 
   return { allowed: true };

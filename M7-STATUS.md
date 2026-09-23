@@ -12,7 +12,7 @@
 | AC4 未决项只阻塞依赖任务，交付范围内未决项须解决或排除 | 未开始 | | D 片 |
 | AC5 同需求单一有效 holder，旧运行迟到回执拒绝；不同需求不共用分支/worktree | 未开始 | | C 片 |
 | AC6 plan/task 在 data.db，仅存 ID/hash/引用；重启可恢复 | 未开始 | | D 片 |
-| AC7 11 核心工具真实注册、六职责与矩阵一致；无 prompts、planner 及其入口 | 未开始 | | A、G 片 |
+| AC7 11 核心工具真实注册、六职责与矩阵一致；无 prompts、planner 及其入口 | 部分 | A 片：tests/agent-session.test.ts（五职责真实 SDK 会话的模型请求工具集＝宿主表＋矩阵核心工具，无 bash/write/edit/git_commit）、tests/core-permissions.test.ts（已实现工具 schema 与核心表双向一致，workflow_manage 无 init）、tests/role-catalog.test.ts（内置恰为五定义）、tests/legacy-workflow-retired.test.ts（planner/旧 PM 工厂文件不存在） | plan_manage、agent_manage 未实现；project_manage 缺 recovery-check/backup/restore/workspace-prepare/workspace-recycle；主会话仅注册 4 个核心工具；agents/skills/rules 其余重构在 G 片 |
 | AC8 skill 未加载或模型不遵守提示时核心权限/关闭拒读/通知仍生效 | 未开始 | | A、C 片 |
 | AC9 断网/关窗/取消/续接不重复副作用；关闭需求会话不续接 | 未开始 | | C 片 |
 | AC10 仅主代理可 workspace-prepare/recycle；越界拒绝；外部切分支后旧绑定不能写 | 未开始 | | B 片 |
@@ -43,11 +43,14 @@
 
 无。
 
+已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」在 4 worker 负载下失败一次，单独重跑通过（.bb-spec/.cache/m7/a-unit-01.txt）。
+
 ## 下一窗口续接提示
 
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
+A 片已完成（新定义格式、五个内置定义、按职责工具集、daemon/agent-session.ts 取代 role-session.ts 与 requirement-agent.ts）；runtime/delivery.ts、runtime/result.ts 与 run-store 的旧 phase 字段已无生产引用，随 G 片与 workflow-state 一并删除。
 M7 切片顺序：A 工具注册与按职责生成工具集 → B workspace-prepare/recycle → C PM 启动/接手复核门槛 → D plan_manage → E agent_manage 派工与轮限 → F explore 双父与联网 → G 默认团队/专业定义/资源重构 → H 零自定义闭环与全量回归。B、C、E 完成后派独立审查。
 已由用户确认：M7 以真实 SDK 会话加脚本化模型验证链路与门槛，真实模型语义质量在 M9；G 片删除 workflow-state.ts、workflow-tool.ts、pi_company_workflow、pi_company_agents 并替换其依赖；删除设置命令中按角色的 model/thinking/mcp 与旧设置页，设置页只保留复制与查看 agent 定义；删除 /pi-company:new、resume、revise、sync 四个旧命令；A 片原地改写 daemon/role-session.ts，删除 bash/write/edit 只读核验、报告路径写入、structured_output 与 resume_check 等死代码并以新语义用例替换旧测试；C-3 与 M5 两条观察本阶段不处理；prod 事件在 PM 可运行时 95% 两秒内投递需实测一次。其余决定已写入计划 §9.1、§9.2、§9.6、§10.5、§10.6、§13.2 与 M7-AC20/21。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。

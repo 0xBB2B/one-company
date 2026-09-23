@@ -3,16 +3,19 @@ import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type RoleSource = "default" | "user" | "project";
-export type RoleKind = "plan" | "work" | "review" | "acceptance" | "manage";
+export const AGENT_ROLES = ["pm", "explore", "worker", "reviewer", "qa"] as const;
+export type AgentRole = (typeof AGENT_ROLES)[number];
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export interface RoleDefinition {
   name: string;
   description: string;
-  kind: RoleKind;
-  tools: string[];
-  skills: boolean;
-  contextFiles: boolean;
-  promptMode: string;
+  role: AgentRole;
+  model?: string;
+  thinking?: ThinkingLevel;
+  mcp?: string[];
+  skills?: string[];
   body: string;
 }
 
@@ -46,11 +49,9 @@ export interface RoleCatalog {
   problems: RoleCatalogProblem[];
 }
 
-const ROLE_KINDS = new Set<RoleKind>(["plan", "work", "review", "acceptance", "manage"]);
-
-function isRoleKind(value: unknown): value is RoleKind {
-  return typeof value === "string" && ROLE_KINDS.has(value as RoleKind);
-}
+const FIELDS = new Set(["name", "description", "role", "model", "thinking", "mcp", "skills"]);
+const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const MAX_DESCRIPTION_CODEPOINTS = 1024;
 
 // 解析器的错误消息会附带出错处的源文本，只保留首行以免把文件内容带进不可用原因
 function errorText(error: unknown): string {
@@ -71,41 +72,47 @@ export function projectRoleDir(repoRoot: string): string {
   return join(repoRoot, ".pi", "agents");
 }
 
+function stringList(value: unknown, field: string, path: string): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && item.length > 0) || new Set(value).size !== value.length) {
+    throw new Error(`角色定义 ${field} 必须为不重复的非空字符串数组: ${path}`);
+  }
+  return value as string[];
+}
+
 export async function readRoleDefinition(path: string, parseFrontmatter: FrontmatterParser): Promise<RoleDefinition> {
   const content = await readFile(path, "utf8");
   const { frontmatter, body } = parseFrontmatter(content);
-  const { name, description, kind, tools, skills, context_files, prompt_mode } = frontmatter;
+  const unknown = Object.keys(frontmatter).filter((key) => !FIELDS.has(key));
+  if (unknown.length > 0) throw new Error(`角色定义含未知字段 ${unknown.join("、")}: ${path}`);
+  const { name, description, role, model, thinking, mcp, skills } = frontmatter;
 
-  if (typeof name !== "string" || name.length === 0) {
-    throw new Error(`角色定义缺少必需字段 name: ${path}`);
+  if (typeof name !== "string" || !NAME_PATTERN.test(name)) {
+    throw new Error(`角色定义 name 必须为小写字母、数字或连字符（最多 64 字符）: ${path}`);
   }
   if (typeof description !== "string" || description.length === 0) {
     throw new Error(`角色定义缺少必需字段 description: ${path}`);
   }
-  if (typeof kind !== "string" || kind.length === 0) {
-    throw new Error(`角色定义缺少必需字段 kind: ${path}`);
+  if ([...description].length > MAX_DESCRIPTION_CODEPOINTS) {
+    throw new Error(`角色定义 description 超过 ${MAX_DESCRIPTION_CODEPOINTS} 字符: ${path}`);
   }
-  if (!isRoleKind(kind)) {
-    throw new Error(`角色定义 kind 不合法（须为 ${[...ROLE_KINDS].join("/")}）: ${kind}`);
+  if (typeof role !== "string" || !(AGENT_ROLES as readonly string[]).includes(role)) {
+    throw new Error(`角色定义 role 须为 ${AGENT_ROLES.join("/")}: ${path}`);
   }
-  if (!Array.isArray(tools) || !tools.every((tool) => typeof tool === "string")) {
-    throw new Error(`角色定义 tools 字段必须为字符串数组: ${path}`);
+  if (model !== undefined && (typeof model !== "string" || !/^[^/\s]+\/\S+$/.test(model))) {
+    throw new Error(`角色定义 model 须为 provider/id: ${path}`);
   }
-  if (skills !== undefined && typeof skills !== "boolean") {
-    throw new Error(`角色定义 skills 字段必须为布尔值: ${path}`);
-  }
-  if (context_files !== undefined && typeof context_files !== "boolean") {
-    throw new Error(`角色定义 context_files 字段必须为布尔值: ${path}`);
+  if (thinking !== undefined && (typeof thinking !== "string" || !(THINKING_LEVELS as readonly string[]).includes(thinking))) {
+    throw new Error(`角色定义 thinking 须为 ${THINKING_LEVELS.join("/")}: ${path}`);
   }
 
   return {
     name,
     description,
-    kind,
-    tools: tools as string[],
-    skills: skills ?? false,
-    contextFiles: context_files ?? false,
-    promptMode: typeof prompt_mode === "string" ? prompt_mode : "append",
+    role: role as AgentRole,
+    ...(model !== undefined ? { model: model as string } : {}),
+    ...(thinking !== undefined ? { thinking: thinking as ThinkingLevel } : {}),
+    ...(mcp !== undefined ? { mcp: stringList(mcp, "mcp", path) } : {}),
+    ...(skills !== undefined ? { skills: stringList(skills, "skills", path) } : {}),
     body,
   };
 }
@@ -164,8 +171,4 @@ export async function loadRoleCatalog(options: LoadRoleCatalogOptions): Promise<
   }
 
   return { roles: [...merged.values()], problems };
-}
-
-export function roleToolAllowlist(entry: RoleCatalogEntry): string[] {
-  return entry.definition?.tools ?? [];
 }

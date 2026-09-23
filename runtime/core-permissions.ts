@@ -15,7 +15,7 @@ export const CORE_TOOL_ACTIONS = Object.freeze({
   spec_change: Object.freeze(["propose", "validate", "publish"] as const),
   verification_run: Object.freeze(["run", "stop", "status"] as const),
   result_submit: Object.freeze(["research", "verdict"] as const),
-  workflow_manage: Object.freeze(["init", "status", "advance", "finish", "repair", "check-decision", "close", "delivery-check"] as const),
+  workflow_manage: Object.freeze(["status", "advance", "finish", "repair", "check-decision", "close", "delivery-check"] as const),
 });
 export type CoreTool = keyof typeof CORE_TOOL_ACTIONS;
 export type CoreAction<T extends CoreTool> = (typeof CORE_TOOL_ACTIONS)[T][number];
@@ -31,8 +31,7 @@ const MATRIX: Readonly<Record<CoreRole, Grants>> = Object.freeze({
   pm: {
     knowledge_query: all("knowledge_query"), requirement_manage: REQUIREMENT_READ_ONLY, plan_manage: all("plan_manage"),
     agent_manage: all("agent_manage"), user_interact: all("user_interact"), spec_change: all("spec_change"),
-    verification_run: all("verification_run"),
-    workflow_manage: ["status", "advance", "finish", "repair", "check-decision", "close", "delivery-check"],
+    verification_run: all("verification_run"), workflow_manage: all("workflow_manage"),
   },
   explore: { knowledge_query: all("knowledge_query"), result_submit: ["research"] },
   worker: { knowledge_query: all("knowledge_query"), change_apply: all("change_apply"), verification_run: all("verification_run"), result_submit: ["verdict"] },

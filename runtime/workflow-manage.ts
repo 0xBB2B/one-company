@@ -15,7 +15,6 @@ const Grant = object({
 export type WorkflowManageGrant = Static<typeof Grant>;
 const CloseReason = Type.Union([Type.Literal("completed"), Type.Literal("cancelled"), Type.Literal("rejected")]);
 export const WORKFLOW_MANAGE_PARAMETERS = Type.Union([
-  object({ action: Type.Literal("init") }),
   object({ action: Type.Literal("status") }),
   object({ action: Type.Literal("advance"), targetSpecProposal: Type.Optional(id) }),
   object({ action: Type.Literal("finish"), checkRoundId: id }),
@@ -45,7 +44,7 @@ function freeze<T>(value: T): T {
   return value;
 }
 
-/** workflow_manage 的工具工厂：检查阶段进入/退出、PM 中断/等待决策、交付凭据与关闭协议；init/repair 由 M7 接入。 */
+/** workflow_manage 的工具工厂：检查阶段进入/退出、PM 中断/等待决策、交付凭据与关闭协议。 */
 export async function createWorkflowManageTool(options: WorkflowManageToolOptions) {
   try { return await openWorkflowManageTool(options); }
   catch { throw new WorkflowManageError("workflow_denied"); }
@@ -84,7 +83,7 @@ async function openWorkflowManageTool(options: WorkflowManageToolOptions) {
     try { params = checkServiceInput(WORKFLOW_MANAGE_PARAMETERS, input); } catch { throw new WorkflowManageError("invalid_shape"); }
     host(params.action);
     switch (params.action) {
-        case "init": case "repair": deny("unavailable");
+        case "repair": deny("unavailable");
         case "status": return freeze({ close: close.status(grant.requirementId) });
         case "advance": return rounds.openRound({ lease: lease(), ...(params.targetSpecProposal ? { targetSpecProposal: params.targetSpecProposal } : {}) });
         case "finish": return rounds.release({ lease: lease(), checkRoundId: params.checkRoundId });

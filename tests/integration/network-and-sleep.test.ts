@@ -1,15 +1,15 @@
 import { afterEach, expect, test } from "vitest";
+import { Type } from "typebox";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { createRoleSession } from "../../daemon/role-session.ts";
+import { createAgentRoleSession } from "../../daemon/agent-session.ts";
 import { RunManager } from "../../daemon/run-manager.ts";
 import { RelayQueue } from "../../daemon/relay-queue.ts";
 import { RunStore } from "../../runtime/run-store.ts";
 import { repositoryIdentity } from "../../runtime/identity.ts";
-import { createRangeProtection } from "../../runtime/range-protection.ts";
 import { createClock } from "../../runtime/clock.ts";
 import { ShellRegistry } from "../../runtime/shell-registry.ts";
 import { uuidv7 } from "../../runtime/database.ts";
@@ -24,6 +24,10 @@ import type { ScriptedReply } from "../helpers/controlled-provider.ts";
 
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
+function resultTool() {
+  return { name: "pi_company_result_submit", label: "result", description: "fixture", parameters: Type.Object({}),
+    async execute() { return { content: [{ type: "text" as const, text: "accepted" }], details: {} }; } } as any;
+}
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function until(predicate: () => boolean | Promise<boolean>) {
   for (let i = 0; i < 200; i++) { if (await predicate()) return; await delay(25); }
@@ -43,12 +47,9 @@ async function world() {
     const provider = registerControlledProvider(runtime, { providerId: `network-fixture-${++serial}`, modelId: "test" }); scriptReplies(provider, replies);
     const run = await store.create({ kind: "role", standalone: true, role: "pi-company.worker", requirement: "2026-09-10.network", task: `T-${serial}`,
       cwd: repo.root, readPaths: [repo.root], writePaths: [], model: { provider: provider.providerId, id: "test" }, thinking: "off", mcp: [] });
-    const guards = await createRangeProtection({ cwd: repo.root, dataRoot: home.dataRoot, holder: { kind: "role", runId: run.id, requirement: run.requirement }, writePaths: [], clock, shells });
-    cleanup.push(() => guards.release());
-    const handle = await createRoleSession({ dataRoot: home.dataRoot, repoId, runId: run.id, shellToken: run.shellToken, cwd: repo.root,
-      roleName: "worker", role: { name: "worker", available: true, source: "project", path: "fixture", definition: { name: "worker", kind: "work", description: "fixture", tools: [], skills: false, contextFiles: false, promptMode: "append", body: "fixture" } },
-      task: run.task, readPaths: [repo.root], writePaths: [], runtime, modelRef: run.model, clock, shellRegistry: shells, guards, networkGate: gate,
-      contract: { kind: "plain", completion: "complete-on-idle" } });
+    const handle = await createAgentRoleSession({ dataRoot: home.dataRoot, repoId, runId: run.id, cwd: repo.root,
+      definition: { name: "worker", role: "worker", description: "fixture", body: "fixture" }, context: run.task, coreTools: [resultTool()], readRoots: [repo.root],
+      runtime, modelRef: run.model, clock, networkGate: gate, completion: { kind: "on-result", resultTool: "pi_company_result_submit" } });
     cleanup.push(async () => { await handle.stop(); handle.dispose(); });
     return { handle, provider, run };
   }
@@ -58,12 +59,12 @@ async function world() {
 test("真实SDK连接故障只暂停受影响角色，同批独立角色正常完成", async () => {
   const w = await world();
   const network = await w.role([{ type: "error", message: "fetch failed: connection reset (network)" }]);
-  const normal = await w.role([{ type: "text", text: "独立只读结果" }]);
+  const normal = await w.role([{ type: "toolcall", name: "pi_company_result_submit", input: {} }, { type: "text", text: "独立只读结果" }]);
   network.handle.prompt("触发连接故障"); normal.handle.prompt("不依赖其他角色");
   await until(() => network.handle.state() === "paused_network"); await normal.handle.result();
   expect(normal.handle.state()).toBe("completed"); expect(w.gate.canProceed(network.run.id)).toEqual({ allowed: false, reason: "network" });
   expect(w.gate.canProceed(normal.run.id)).toEqual({ allowed: true });
-  await delay(100); expect(network.provider.requests).toHaveLength(1); expect(normal.provider.requests).toHaveLength(1);
+  await delay(100); expect(network.provider.requests).toHaveLength(1); expect(normal.provider.requests).toHaveLength(2);
 }, 20000);
 
 test("真实SDK认证、额度、业务错误均failed且保留真实原因，不误分类为网络暂停", async () => {

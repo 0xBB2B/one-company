@@ -601,10 +601,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       locateRequirementAgent: (requirement) => runManager!.locateRequirementAgent(requirement),
     });
     runManager = new RunManager({
-      projectBaselineProvider: async (run) => {
-        const { createDaemonProjectBaselineProvider } = await import("./project-baseline-provider.ts");
-        return createDaemonProjectBaselineProvider(indexCoordinator!, run.cwd);
-      },
       dataRoot: capturedOptions.dataRoot,
       repoId,
       runStore,

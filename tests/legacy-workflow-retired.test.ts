@@ -3,7 +3,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { RelayQueue } from "../daemon/relay-queue.ts";
-import { assertShapeAllows, awaitCrossRepoStage, buildRequirementAgentPrompt, createRequirementAgentSession, evaluateCrossRepoStage, registerAgentTool, registerAskTool, registerProposeShapeTool, resumeRequirementAgentSession } from "../daemon/requirement-agent.ts";
 import { registerDispatchTools } from "../extensions/dispatch.ts";
 import relayExtension, { registerRelayInbox } from "../extensions/relay.ts";
 import { currentVersion, executeWorkflowAction, createWorkflowTool, retryOnStaleVersion } from "../runtime/workflow-tool.ts";
@@ -93,23 +92,15 @@ describe("M4 旧工作流授权和实际执行拒绝矩阵", () => {
     for (const field of ["shape", "history", "followUps", "description"]) expect(await executeWorkflowAction({ action: "query", requirement: REQUIREMENT, fields: [field] }, w.ctx)).toMatchObject({ ok: false });
     expect(w.snapshot()).toBe(before);
   });
-  test("直接PM工厂与恢复工厂不读取上下文或调用模型", async () => {
-    const poison = new Proxy({}, { get() { throw new Error("不得访问旧目标或配置"); } });
-    expect(await createRequirementAgentSession(poison as any)).toMatchObject({ ok: false });
-    expect(await resumeRequirementAgentSession(poison as any)).toMatchObject({ ok: false });
-    expect(buildRequirementAgentPrompt(poison as any)).toContain("永久淘汰");
-    expect(assertShapeAllows(poison as any, "T-1", "worker")).toMatchObject({ ok: false });
-    expect(evaluateCrossRepoStage({ repo: "x", requirement: REQUIREMENT, stage: "accepted" }, true, { stage: "accepted" })).toMatchObject({ ok: false });
-    expect(await awaitCrossRepoStage(["x"], "/missing", { repo: "x", requirement: REQUIREMENT, stage: "accepted" })).toMatchObject({ ok: false });
+  test("旧PM工厂、恢复工厂与独立planner资源已移除", async () => {
+    const root = join(import.meta.dirname, "..");
+    for (const path of ["daemon/requirement-agent.ts", "daemon/role-session.ts", "agents/planner.md", "agents/requirement-agent.md", "agents/acceptance.md"]) {
+      await expect(readFile(join(root, path), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    }
   });
-  test("旧ask/shape/reply/forward/decision工具不注册；内部agent直调run/submit也拒绝", async () => {
+  test("旧代理管理工具只剩状态、暂停与停止，不提供派工或恢复", async () => {
     const tools: any[] = []; const pi = { registerTool: (tool: any) => tools.push(tool) } as any;
-    const context = new Proxy({}, { get() { throw new Error("不得调用旧分派或relay"); } });
-    registerAskTool(pi, context as any, { count: 0 }); registerProposeShapeTool(pi, context as any);
-    expect(tools).toEqual([]);
-    registerAgentTool(pi, context as any);
-    for (const action of ["run", "submit", "unknown"]) await expect(tools[0].execute("x", { action, actor: "user", result: { verdict: "PASS" } })).rejects.toThrow("永久淘汰");
-    tools.length = 0; registerDispatchTools(pi, () => { throw new Error("不得定位旧连接"); });
+    registerDispatchTools(pi, () => { throw new Error("不得定位旧连接"); });
     expect(tools.map((tool) => tool.name)).toEqual(["pi_company_agents"]);
     for (const action of ["resume", "resumeAll", "resumeInterrupted"]) expect((await tools[0].execute("x", { action })).details.isError).toBe(true);
   });
