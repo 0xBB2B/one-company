@@ -113,6 +113,9 @@ describe("工具调用边界", () => {
     expect(await checkAgentToolCall({ type: "tool_call", toolCallId: "1", toolName: "read", input: { path: "inside.txt" } } as never, ctx)).toBeUndefined();
     expect(await checkAgentToolCall({ type: "tool_call", toolCallId: "2", toolName: "read", input: { path: w.outside } } as never, ctx)).toMatchObject({ block: true });
     expect(await checkAgentToolCall({ type: "tool_call", toolCallId: "3", toolName: "grep", input: {} } as never, { ...ctx, readRoots: [] })).toMatchObject({ block: true });
+    for (const path of ["~/.ssh/id_rsa", "~", "@/etc/passwd", "@inside.txt", "file:///etc/passwd", "FILE:///etc/passwd", "inside\u00A0.txt"]) {
+      expect(await checkAgentToolCall({ type: "tool_call", toolCallId: "4", toolName: "read", input: { path } } as never, ctx)).toMatchObject({ block: true });
+    }
   });
 
   test("MCP 调用只放行可信配置声明为只读的工具与所选服务", async () => {
@@ -123,6 +126,11 @@ describe("工具调用边界", () => {
     expect(await call({ tool: "docs__search", server: "docs", args: {} })).toBeUndefined();
     expect(await call({ tool: "docs__write", server: "docs", args: {} })).toMatchObject({ block: true });
     expect(await call({ tool: "other__search", server: "other", args: {} })).toMatchObject({ block: true });
+    expect(await call({ search: "", tool: "docs__write", args: {} })).toMatchObject({ block: true });
+    expect(await call({ describe: "x", tool: "docs__write", server: "docs" })).toMatchObject({ block: true });
+    for (const action of ["install", "auth-start", "auth-complete"]) expect(await call({ search: "", action, server: "docs", url: "https://x" })).toMatchObject({ block: true });
+    expect(await call({ search: "", connect: "docs" })).toMatchObject({ block: true });
+    expect(await call({ search: "docs", server: "docs" })).toBeUndefined();
   });
 });
 

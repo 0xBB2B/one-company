@@ -12,11 +12,11 @@
 | AC4 未决项只阻塞依赖任务，交付范围内未决项须解决或排除 | 未开始 | | D 片 |
 | AC5 同需求单一有效 holder，旧运行迟到回执拒绝；不同需求不共用分支/worktree | 未开始 | | C 片 |
 | AC6 plan/task 在 data.db，仅存 ID/hash/引用；重启可恢复 | 未开始 | | D 片 |
-| AC7 11 核心工具真实注册、六职责与矩阵一致；无 prompts、planner 及其入口 | 部分 | A 片：tests/agent-session.test.ts（五职责真实 SDK 会话的模型请求工具集＝宿主表＋矩阵核心工具，无 bash/write/edit/git_commit）、tests/core-permissions.test.ts（已实现工具 schema 与核心表双向一致，workflow_manage 无 init）、tests/role-catalog.test.ts（内置恰为五定义）、tests/legacy-workflow-retired.test.ts（planner/旧 PM 工厂文件不存在） | plan_manage、agent_manage 未实现；project_manage 缺 recovery-check/backup/restore/workspace-prepare/workspace-recycle；主会话仅注册 4 个核心工具；agents/skills/rules 其余重构在 G 片 |
+| AC7 11 核心工具真实注册、六职责与矩阵一致；无 prompts、planner 及其入口 | 部分 | A 片：tests/agent-session.test.ts（五职责真实 SDK 会话的模型请求工具集＝宿主表＋矩阵核心工具，无 bash/write/edit/git_commit）、tests/core-permissions.test.ts（已实现工具 schema 与核心表双向一致，workflow_manage 无 init）、tests/role-catalog.test.ts（内置恰为五定义）、tests/legacy-workflow-retired.test.ts（planner/旧 PM 工厂文件不存在） | plan_manage、agent_manage 未实现；project_manage 八个 action 已齐（提交 85f4c4f、70f6dfc，tests/project-maintenance.test.ts 与 core-permissions 双向一致）；主会话仅注册 4 个核心工具；agents/skills/rules 其余重构在 G 片 |
 | AC8 skill 未加载或模型不遵守提示时核心权限/关闭拒读/通知仍生效 | 未开始 | | A、C 片 |
 | AC9 断网/关窗/取消/续接不重复副作用；关闭需求会话不续接 | 未开始 | | C 片 |
-| AC10 仅主代理可 workspace-prepare/recycle；越界拒绝；外部切分支后旧绑定不能写 | 未开始 | | B 片 |
-| AC11 创建/回收中断幂等恢复；有未交付内容默认保留 | 未开始 | | B 片 |
+| AC10 仅主代理可 workspace-prepare/recycle；越界拒绝；外部切分支后旧绑定不能写 | 部分 | 提交 85f4c4f：tests/workspace-manage.test.ts（真实确认、拒绝不留痕、req/<UUID> 分支与固定目录、基线为主仓库 HEAD、外部切分支后 verifyRequirementWorkspace 失败）；tests/project-manage-tool.test.ts（无 UI 拒绝）；project_manage 仅主会话注册且矩阵仅 main 有该工具（tests/core-permissions.test.ts、tests/agent-session.test.ts） | "未 ready 不能派 PM"待 C 片派工门槛验证 |
+| AC11 创建/回收中断幂等恢复；有未交付内容默认保留 | 通过 | 提交 85f4c4f：tests/workspace-manage.test.ts（绑定前中断续办不重复确认/建分支；身份不明目录与指向别处的同名分支阻塞不覆盖；活动需求拒绝回收；未跟踪/未合并内容保留并报告；拒绝确认不删除；回收幂等；只删本需求 worktree 与本地分支） | 无 |
 | AC12 四类任务状态按 unaffected/affected/unknown 正确处理 | 未开始 | | D 片 |
 | AC13 真实链路中接手复核前拒绝正式 plan 与 worker 派工 | 未开始 | | C 片 |
 | AC14 伪通过/伪身份/任一绑定变化不能用旧回执放行 | 未开始 | | C 片 |
@@ -42,6 +42,8 @@
 ## 当前阻塞
 
 无。
+
+独立审查（A、B 片，基线 c241c86..70f6dfc，两条威胁模型内）：2 条阻塞（读取工具路径以 @、~、file: 或特殊空白改写后绕过范围；MCP 请求夹带 search 绕过只读名单或触发 install/auth/connect），已修复并补回归用例，定向复审"全部解决"。
 
 已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」在 4 worker 负载下失败一次，单独重跑通过（.bb-spec/.cache/m7/a-unit-01.txt）。
 

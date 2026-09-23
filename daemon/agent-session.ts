@@ -57,6 +57,8 @@ export interface AgentSessionHandle {
 }
 
 const READ_TOOL_NAMES = new Set(["read", "grep", "find", "ls"]);
+// SDK 读取前会去掉前导 @、展开 ~、解析 file:// 并替换特殊空白；这些写法的真实目标与按字面解析的不同，一律拒绝
+const REWRITTEN_PATH = /^[@~]|^file:|[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/iu;
 const PAUSE_ABORT_TIMEOUT_MS = 5000;
 const MCP_STUB_PARAMS = Type.Object({
   tool: Type.Optional(Type.String()),
@@ -99,16 +101,19 @@ export async function checkAgentToolCall(event: ToolCallEvent, ctx: {
     const input = event.input as Record<string, unknown> | null;
     // grep/find/ls 允许省略 path，此时按会话 cwd 判定，不能因省略而绕过范围
     const path = input && typeof input.path === "string" ? input.path : ctx.cwd;
+    if (REWRITTEN_PATH.test(path)) return { block: true, reason: `不支持的路径写法: ${path}` };
     if (!(await withinRoots(ctx.cwd, path, ctx.readRoots))) return { block: true, reason: `读取路径超出范围: ${path}` };
     return;
   }
   if (event.toolName === "mcp") {
     const input = event.input as Record<string, unknown>;
+    // 适配器先看 action/connect 再看 tool：安装、授权、连接一律拒绝；只要带 tool 就按实际调用核对只读名单
+    if (input.action !== undefined || input.connect !== undefined) return { block: true, reason: "子代理不能执行 MCP 安装、授权或连接操作" };
     const decision = checkMcpCall({
       allowedServers: ctx.mcp?.servers ?? [],
       readOnlyTools: Object.values(ctx.mcp?.config.mcpServers ?? {}).flatMap((server) => server.readOnlyTools ?? []),
       request: {
-        mode: input.search !== undefined ? "search" : input.describe !== undefined ? "describe" : "call",
+        mode: input.tool !== undefined ? "call" : input.describe !== undefined ? "describe" : "search",
         server: input.server as string | undefined,
         tool: input.tool as string | undefined,
         args: input.args,
