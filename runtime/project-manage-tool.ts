@@ -16,6 +16,7 @@ import type {
 import { DEFAULT_INDEX_LIMITS } from "./project-index-policy.ts";
 import { readGit } from "./git-read.ts";
 import { WorkspaceManageError, WorkspaceManageService } from "./workspace-manage.ts";
+import { backup, ProjectMaintenanceError, recoveryCheck, restore } from "./project-maintenance.ts";
 
 const REPO_ID_PATTERN = "^[0-9a-f]{64}$";
 const REQUIREMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -26,11 +27,18 @@ const MAX_PROGRESS_UPDATES = 64;
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const publicParameters = Type.Object({
-  action: StringEnum(["init", "status", "refresh", "workspace-prepare", "workspace-recycle"] as const),
+  action: StringEnum(["init", "status", "refresh", "recovery-check", "backup", "restore", "workspace-prepare", "workspace-recycle"] as const),
   repoId: Type.String({ pattern: REPO_ID_PATTERN }),
   preview: Type.Optional(Type.Boolean()),
   requirementId: Type.Optional(Type.String({ pattern: UUID_V7 })),
   operationId: Type.Optional(Type.String({ pattern: UUID_V7 })),
+  backupOperationId: Type.Optional(Type.String({ pattern: UUID_V7 })),
+  backupManifestHash: Type.Optional(Type.String({ pattern: REPO_ID_PATTERN })),
+}, { additionalProperties: false });
+const maintenanceSchema = (action: "recovery-check" | "backup") => Type.Object({
+  action: Type.Literal(action),
+  repoId: Type.String({ pattern: REPO_ID_PATTERN }),
+  operationId: Type.String({ pattern: UUID_V7 }),
 }, { additionalProperties: false });
 const workspaceSchema = (action: "workspace-prepare" | "workspace-recycle") => Type.Object({
   action: Type.Literal(action),
@@ -55,6 +63,15 @@ const actionSchemas = {
   }, { additionalProperties: false }),
   "workspace-prepare": workspaceSchema("workspace-prepare"),
   "workspace-recycle": workspaceSchema("workspace-recycle"),
+  "recovery-check": maintenanceSchema("recovery-check"),
+  backup: maintenanceSchema("backup"),
+  restore: Type.Object({
+    action: Type.Literal("restore"),
+    repoId: Type.String({ pattern: REPO_ID_PATTERN }),
+    operationId: Type.String({ pattern: UUID_V7 }),
+    backupOperationId: Type.String({ pattern: UUID_V7 }),
+    backupManifestHash: Type.String({ pattern: REPO_ID_PATTERN }),
+  }, { additionalProperties: false }),
 } as const;
 
 export const PROJECT_MANAGE_PARAMETERS = publicParameters;
@@ -69,7 +86,9 @@ export type ProjectManageAction = "init" | "status" | "refresh";
 type WorkspaceAction = "workspace-prepare" | "workspace-recycle";
 type ProjectManageParams =
   | { action: ProjectManageAction; repoId: string; preview?: boolean }
-  | { action: WorkspaceAction; repoId: string; requirementId: string; operationId: string };
+  | { action: WorkspaceAction; repoId: string; requirementId: string; operationId: string }
+  | { action: "recovery-check" | "backup"; repoId: string; operationId: string }
+  | { action: "restore"; repoId: string; operationId: string; backupOperationId: string; backupManifestHash: string };
 
 export interface ProjectManageHostContext {
   readonly windowId: string;
@@ -128,7 +147,8 @@ export class ProjectManageToolError extends Error {
     | "cancelled"
     | "operation_failed"
     | "workspace_confirmation_required"
-    | "workspace_failed";
+    | "workspace_failed"
+    | "maintenance_failed";
 
   constructor(code: ProjectManageToolError["code"], message: string) {
     super(message);
@@ -838,6 +858,30 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
               return textResult({ action: params.action, status: "blocked", code: error.code, blockers: error.blockers });
             }
             throw new ProjectManageToolError("workspace_failed", "工作区操作失败；未返回底层错误详情");
+          }
+        }
+
+        if (params.action === "recovery-check" || params.action === "backup" || params.action === "restore") {
+          if (!ctx.hasUI) throw new ProjectManageToolError("workspace_confirmation_required", "恢复对账、备份与恢复需要当前 session 的真实宿主 UI 确认");
+          const maintenance = { repositoryRoot: root.path, dataRoot: options.dataRoot, repoId: params.repoId,
+            confirm: (title: string, message: string) => ctx.ui.confirm(title, message, { signal: operation.signal }) };
+          try {
+            if (params.action === "recovery-check") {
+              const receipt = await recoveryCheck(maintenance, params);
+              return textResult({ action: params.action, status: receipt.state, requirementsChecked: "requirementsChecked" in receipt ? receipt.requirementsChecked : 0 });
+            }
+            if (params.action === "backup") {
+              const receipt = await backup(maintenance, params);
+              return textResult({ action: params.action, status: receipt.state, operationId: receipt.operationId, manifestHash: receipt.manifestHash,
+                filesCopied: receipt.filesCopied, requirements: receipt.requirements.length });
+            }
+            if (params.action !== "restore") throw new ProjectManageToolError("invalid_action", "未知的维护 action");
+            const receipt = await restore(maintenance, params);
+            return textResult({ action: params.action, status: receipt.restoreStatus, operationId: receipt.operationId, executable: receipt.executable,
+              filesRestored: receipt.filesRestored, requirements: receipt.requirements.map((item) => ({ requirementId: item.requirementId, recoveryReason: item.recoveryReason })) });
+          } catch (error) {
+            if (error instanceof ProjectMaintenanceError) return textResult({ action: params.action, status: "blocked", code: error.code });
+            throw new ProjectManageToolError("maintenance_failed", "维护操作失败；未返回底层错误详情");
           }
         }
 

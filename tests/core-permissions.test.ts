@@ -140,4 +140,5 @@ test("已实现全部 action 的工具，schema 与核心表双向一致", () =>
   exact(VERIFICATION_RUN_PARAMETERS, "verification_run");
   exact(RESULT_SUBMIT_PARAMETERS, "result_submit");
   exact(WORKFLOW_MANAGE_PARAMETERS, "workflow_manage");
+  exact(PROJECT_MANAGE_PARAMETERS, "project_manage");
 });

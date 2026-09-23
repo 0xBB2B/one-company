@@ -137,7 +137,7 @@ describe("project_manage 固定输入与主代理宿主边界", () => {
       { role: "main" }, { actor: "user" }, { approved: true }, { sql: "select *" }, { body: "secret" },
       { command: "git status" }, { gitArgs: ["status"] }, { limits: { maxEntries: 999_999 } },
     ]) expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { ...base, ...forged })).toBe(false);
-    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { action: "recovery-check", repoId: base.repoId })).toBe(false);
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { action: "recovery-check", repoId: base.repoId, snapshotPath: "/tmp/x" })).toBe(false);
   });
 
   test("preview 只能是 init 的 preview=true；未知、未完成 action 和 status/refresh 携带 preview 在执行层默认拒绝", async () => {
