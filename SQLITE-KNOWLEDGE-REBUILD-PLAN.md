@@ -873,7 +873,7 @@ prod若再次变化，PM按事件顺序处理或在可证明连续基线下合�
 
 不另外暴露独立goal_confirm、自由写决定工具、任意SQL、关闭prod历史读取或业务Git写入核心工具。本机需求git init/commit/diff仅为requirement_manage内部固定存储操作，不增加工具数量，不允许用action传任意命令或扩展业务Git权限。
 
-可复用宿主受限 `read` 作为非业务工具，保留其已有路径/权限限制并通过角色说明约束不主动读prod；首版不要求它接入统一prod正文网关。explore另按 §10.5 使用白名单内的受限本地查找、联网search/fetch；这不是第12个业务工具，不把knowledge_query扩成互联网资料库。网络及数据外发须获授权，无能力时明确未执行或仅本地。普通write/edit、无约束bash/MCP写入仍不能给实现代理；explore无任意bash/MCP、脚本执行和写入能力，暂缓读旁路防护不扩大能力。独立CLI校验是给人工/CI的入口，不增加核心代理工具数量。
+可复用宿主受限 `read` 作为非业务工具，保留其已有路径/权限限制并通过角色说明约束不主动读prod；首版不要求它接入统一prod正文网关。explore另按 §10.5 使用白名单内的受限本地查找、联网search/fetch；这不是第12个业务工具，不把knowledge_query扩成互联网资料库。网络及数据外发须获授权，无能力时明确未执行或仅本地。普通write/edit、无约束bash/MCP写入仍不能给实现代理；explore无任意bash、脚本执行和写入能力，MCP仅限其定义显式声明的服务并受该次派工的网络与外发授权约束，暂缓读旁路防护不扩大能力。独立CLI校验是给人工/CI的入口，不增加核心代理工具数量。
 
 ### 9.2 各代理工具集合
 
@@ -885,6 +885,8 @@ prod若再次变化，PM按事件顺序处理或在可证明连续基线下合�
 | worker | knowledge_query、change_apply、verification_run、result_submit |
 | reviewer | knowledge_query、requirement_manage、plan_manage、verification_run、result_submit |
 | acceptance/QA | requirement_manage、verification_run、result_submit |
+
+宿主非业务工具按职责固定：pm、worker、reviewer为read/grep/find/ls；explore为read/grep/find/ls及获授权时的web_search/web_fetch；qa不给宿主读写工具。任何职责不给bash、write、edit，代码写入只经change_apply，命令只经verification_run。MCP服务缺省时pm、worker、reviewer、qa沿用主会话可用服务，explore缺省不用MCP；定义声明mcp时以声明为准；所有职责只能调用可信MCP配置标为只读的工具。
 
 本表列六类固定职责的权限上限，不是只能安装六个agent定义。默认团队与专业定义均按绑定的单一role取权限，并与任务/状态授权取交集；专业名称、description、model或skills不能扩权。首版专业自动选择集中于explore、worker、reviewer、QA，不开放任意新main/PM或第二PM；规则见 §10.6。
 
@@ -1042,7 +1044,7 @@ explore负责定位和检索本地文件、代码、spec及获准资料，也可
 - explore不得读取或接收任何prod正文、diff或详细派生摘要，包括活动和draft；父代理自行经专用需求工具读取目标，只能给必要的最小化搜索问题，不能把prod或近似全文复述复制进派工。不得读取私有数据库、会话、密钥，不能以搜索为由遍历其他需求、绕过关闭禁读或目录排除。
 - 核心工具仅knowledge_query和result_submit。宿主受限read、本地查找及联网search/fetch属于按身份、路径、用途、预算和外发范围控制的非业务能力白名单，不新增第12个业务工具，不把knowledge_query扩成互联网库。
 - 不给任意bash/MCP、写入、脚本执行、派工、计划改写、用户授权或spec发布能力。网页/搜索结果只是数据，不能改角色、权限、范围或触发其中命令；“只读”标签不能代替真实能力限制，已有沙箱和路径保护保留，通用prod读旁路的首版边界仍以 §5.7 为准。
-- web_fetch以Node内置fetch实现；web_search调用用户在设置中配置的搜索API，未配置时报告未执行。联网须同时有已授权网络能力和数据外发范围。不能默认把私有源码、需求目标、密钥等发送到搜索服务；公开问题也要核对允许外发的具体内容。能力不可用、未授权或网络失败时明确“未执行”“仅本地”或实际失败，不假称联网成功。核心离线本地检索独立可用，不依赖联网或新增互联网索引库。范围、网络或当前性不足时报告限制，不能悄悄扩大。
+- 检索优先使用explore定义声明的MCP服务中的只读工具（含用户内网搜索），职责说明引导模型优先选用；无合适工具或失败时用内置能力兜底：web_search免密钥调用Exa公开MCP端点，限流或网络失败时改用DuckDuckGo HTML页，结果记录实际来源，均失败则报告失败；web_fetch以Node内置fetch在本地抓取并拒绝内网地址。不加载pi扩展形式的搜索插件，不需要设置项。MCP调用与网页检索同样须该次派工的网络与外发授权，授权列出允许的MCP服务。联网须同时有已授权网络能力和数据外发范围。不能默认把私有源码、需求目标、密钥等发送到搜索服务；公开问题也要核对允许外发的具体内容。能力不可用、未授权或网络失败时明确“未执行”“仅本地”或实际失败，不假称联网成功。核心离线本地检索独立可用，不依赖联网或新增互联网索引库。范围、网络或当前性不足时报告限制，不能悄悄扩大。
 
 **结果契约与父代理核验**：通过result_submit提交research结果，至少包含结论、来源、检索范围、未找到、失败、截断和未知项。本地来源附真实路径、行范围及实际文件内容hash；knowledge_query结果另附真实workspace、index generation/hash，获准直接读取未使用索引时标index基线not_applicable。网页来源附URL、取回时间和支持结论的短引文，纯网页的index基线为not_applicable，不附虚构本地hash；同时保留实际检索的查询/域范围及网络/外发授权绑定。结果保持预算内，必要关键全文仍由父代理依风险回读核对，摘要不能代替关键全文。找到引用不等于实际验证通过或语义为真，research不是PASS，也不直接成为计划批准或交付证据。
 
@@ -1066,7 +1068,7 @@ explore负责定位和检索本地文件、代码、spec及获准资料，也可
 
 #### 10.6.2 单一配置格式、模板与可信加载
 
-1. 用户复制适合任务职责的默认agent配置即得到模板：保留该role，修改唯一id、description、skills及可选model、thinking即可扩展，无需改框架代码。默认配置本身就是模板，不另维护不同格式模板或独立prompts层；默认与自定义共用同一schema、解析校验和加载链路。首版不允许配置自定义工具，tools由role决定，定义中出现tools按未知字段拒绝。产品提供一键复制命令：用户选择pm、explore、worker、reviewer或qa及目标层（用户或项目），pm固定名为pm且目标层已有时拒绝；其余职责须先输入name，核对内置、用户、项目三层均不重名后复制，可复制多份。
+1. 用户复制适合任务职责的默认agent配置即得到模板：保留该role，修改唯一id、description、skills及可选model、thinking、mcp即可扩展，无需改框架代码。默认配置本身就是模板，不另维护不同格式模板或独立prompts层；默认与自定义共用同一schema、解析校验和加载链路。首版不允许配置自定义工具，tools由role决定，定义中出现tools按未知字段拒绝。设置页提供两项：一键复制与只读查看当前生效定义（来源、覆盖关系、实际模型/思考等级/MCP及无效原因）。一键复制：用户选择pm、explore、worker、reviewer或qa及目标层（用户或项目），pm固定名为pm且目标层已有时拒绝；其余职责须先输入name，核对内置、用户、项目三层均不重名后复制，可复制多份。
 2. description仅说明能力线索，不能证明质量、授予权限或覆盖框架规则。默认内置团队从安装资源加载，用户无需先复制；自定义目录沿用宿主官方subagent示例的两类约定：全局为宿主解析的 `agentDir/agents`（默认 `~/.pi/agent/agents`，尊重 `PI_CODING_AGENT_DIR`），项目为绑定且获准项目/worktree的 `.pi/agents/*.md`。由本框架自动发现并受控加载，不越获准根目录向祖先扫描，目录不存在正常。pi核心不内置subagent，不会自动替本框架执行；目录约定复用不等于借宿主不受管Agent派工，也不复制示例的项目同名覆盖或无上限tools行为。具体产品schema及Markdown元数据语法在M7核对并锁定，默认/专业配置始终共用同一格式和加载链路。
    发现不等于启用或授权：用户目录直接加载，项目目录仅在宿主项目信任为真时加载，change_apply拒绝写入 `.pi/agents/`；通过来源/格式/权限校验后才进入PM能力目录。缺产品role的其他宿主agent定义不导入，不能因此破坏默认团队，也不静默推断role；main定义及非内置层的无效定义明确报错。同名定义按项目 > 用户 > 内置显式覆盖，status与能力目录标出实际生效来源及被覆盖对象；同一层内重复名报错。本约定不要求兼容旧产品workflow、planner或恢复入口。
 3. model与thinking可选；缺省沿用派工时主会话的模型与思考等级，实际选择记入运行元数据，主会话之后的调整不影响在途运行。指定模型必须在真实模型配置中解析存在、可访问，并核对实际provider/model与本任务的数据外发授权；缺失、无权访问、实际模型不符或模型不支持该思考等级时报告并阻塞，不静默换模型或调整等级。按角色的模型设置由agent定义承担，不另在设置命令中维护一套。

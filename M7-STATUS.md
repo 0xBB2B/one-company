@@ -49,6 +49,6 @@
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
 M7 切片顺序：A 工具注册与按职责生成工具集 → B workspace-prepare/recycle → C PM 启动/接手复核门槛 → D plan_manage → E agent_manage 派工与轮限 → F explore 双父与联网 → G 默认团队/专业定义/资源重构 → H 零自定义闭环与全量回归。B、C、E 完成后派独立审查。
-已由用户确认：M7 以真实 SDK 会话加脚本化模型验证链路与门槛，真实模型语义质量在 M9；G 片删除 workflow-state.ts、workflow-tool.ts、pi_company_workflow、pi_company_agents 并替换其依赖；删除设置命令中按角色的 model/thinking/mcp；C-3 与 M5 两条观察本阶段不处理；prod 事件在 PM 可运行时 95% 两秒内投递需实测一次。其余决定已写入计划 §9.1、§9.6、§10.5、§10.6、§13.2 与 M7-AC20/21。
+已由用户确认：M7 以真实 SDK 会话加脚本化模型验证链路与门槛，真实模型语义质量在 M9；G 片删除 workflow-state.ts、workflow-tool.ts、pi_company_workflow、pi_company_agents 并替换其依赖；删除设置命令中按角色的 model/thinking/mcp 与旧设置页，设置页只保留复制与查看 agent 定义；删除 /pi-company:new、resume、revise、sync 四个旧命令；A 片原地改写 daemon/role-session.ts，删除 bash/write/edit 只读核验、报告路径写入、structured_output 与 resume_check 等死代码并以新语义用例替换旧测试；C-3 与 M5 两条观察本阶段不处理；prod 事件在 PM 可运行时 95% 两秒内投递需实测一次。其余决定已写入计划 §9.1、§9.2、§9.6、§10.5、§10.6、§13.2 与 M7-AC20/21。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
 ```
