@@ -15,6 +15,7 @@ import type {
 } from "./project-index-service.ts";
 import { DEFAULT_INDEX_LIMITS } from "./project-index-policy.ts";
 import { readGit } from "./git-read.ts";
+import { WorkspaceManageError, WorkspaceManageService } from "./workspace-manage.ts";
 
 const REPO_ID_PATTERN = "^[0-9a-f]{64}$";
 const REQUIREMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -23,10 +24,19 @@ const MAX_RESULT_ENTRIES = 100;
 const MAX_PATH_LENGTH = 512;
 const MAX_PROGRESS_UPDATES = 64;
 
+const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const publicParameters = Type.Object({
-  action: StringEnum(["init", "status", "refresh"] as const),
+  action: StringEnum(["init", "status", "refresh", "workspace-prepare", "workspace-recycle"] as const),
   repoId: Type.String({ pattern: REPO_ID_PATTERN }),
   preview: Type.Optional(Type.Boolean()),
+  requirementId: Type.Optional(Type.String({ pattern: UUID_V7 })),
+  operationId: Type.Optional(Type.String({ pattern: UUID_V7 })),
+}, { additionalProperties: false });
+const workspaceSchema = (action: "workspace-prepare" | "workspace-recycle") => Type.Object({
+  action: Type.Literal(action),
+  repoId: Type.String({ pattern: REPO_ID_PATTERN }),
+  requirementId: Type.String({ pattern: UUID_V7 }),
+  operationId: Type.String({ pattern: UUID_V7 }),
 }, { additionalProperties: false });
 
 const actionSchemas = {
@@ -43,6 +53,8 @@ const actionSchemas = {
     action: Type.Literal("refresh"),
     repoId: Type.String({ pattern: REPO_ID_PATTERN }),
   }, { additionalProperties: false }),
+  "workspace-prepare": workspaceSchema("workspace-prepare"),
+  "workspace-recycle": workspaceSchema("workspace-recycle"),
 } as const;
 
 export const PROJECT_MANAGE_PARAMETERS = publicParameters;
@@ -54,11 +66,10 @@ export const PROJECT_MANAGE_OUTPUT_LIMITS = Object.freeze({
 
 export type ProjectManageAction = "init" | "status" | "refresh";
 
-interface ProjectManageParams {
-  action: ProjectManageAction;
-  repoId: string;
-  preview?: boolean;
-}
+type WorkspaceAction = "workspace-prepare" | "workspace-recycle";
+type ProjectManageParams =
+  | { action: ProjectManageAction; repoId: string; preview?: boolean }
+  | { action: WorkspaceAction; repoId: string; requirementId: string; operationId: string };
 
 export interface ProjectManageHostContext {
   readonly windowId: string;
@@ -115,7 +126,9 @@ export class ProjectManageToolError extends Error {
     | "scan_confirmation_required"
     | "scan_declined"
     | "cancelled"
-    | "operation_failed";
+    | "operation_failed"
+    | "workspace_confirmation_required"
+    | "workspace_failed";
 
   constructor(code: ProjectManageToolError["code"], message: string) {
     super(message);
@@ -790,7 +803,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
   const tool: ToolDefinition<typeof publicParameters, Record<string, unknown>> = {
     name: "pi_company_project_manage",
     label: "管理项目索引",
-    description: "初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
+    description: "初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
     promptSnippet: "通过受控宿主入口预览、初始化、查看或刷新当前项目索引",
     parameters: publicParameters,
     executionMode: "sequential",
@@ -810,6 +823,23 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
         const repository = host.repositories.get(params.repoId);
         if (!repository) throw new ProjectManageToolError("foreign_repo", "repoId 不属于当前 lifecycle 已接入 workspace");
         let root = await inspectRoot(options.dataRoot, params.repoId, repository.path);
+        if (params.action === "workspace-prepare" || params.action === "workspace-recycle") {
+          if (!ctx.hasUI) throw new ProjectManageToolError("workspace_confirmation_required", "创建或回收工作区需要当前 session 的真实宿主 UI 确认");
+          const workspace = await WorkspaceManageService.open({ repositoryRoot: root.path, dataRoot: options.dataRoot, repoId: params.repoId,
+            confirm: (title, message) => ctx.ui.confirm(title, message, { signal: operation.signal }) });
+          try {
+            const result = params.action === "workspace-prepare"
+              ? await workspace.prepare({ requirementId: params.requirementId, operationId: params.operationId })
+              : await workspace.recycle({ requirementId: params.requirementId, operationId: params.operationId });
+            return textResult({ action: params.action, requirementId: result.requirementId, status: result.status, branch: result.branch,
+              path: result.path, baseCommit: result.baseCommit });
+          } catch (error) {
+            if (error instanceof WorkspaceManageError) {
+              return textResult({ action: params.action, status: "blocked", code: error.code, blockers: error.blockers });
+            }
+            throw new ProjectManageToolError("workspace_failed", "工作区操作失败；未返回底层错误详情");
+          }
+        }
 
         const serviceAction: "preview" | ProjectManageAction = params.action === "init" && params.preview === true ? "preview" : params.action;
         if (serviceAction !== "status") {

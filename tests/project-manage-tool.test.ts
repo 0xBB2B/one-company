@@ -1,3 +1,4 @@
+import { uuidv7 } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -128,7 +129,7 @@ async function call(
 }
 
 describe("project_manage 固定输入与主代理宿主边界", () => {
-  test("公开 schema 仅有 init/status/refresh、repoId 与 init 预览位，不接受路径/身份/正文/SQL/Git 字段", () => {
+  test("公开 schema 仅有固定 action、repoId、init 预览位与工作区需求/操作 ID，不接受路径/身份/正文/SQL/Git 字段", () => {
     const base = { action: "init", repoId: "a".repeat(64), preview: true };
     expect(Value.Check(PROJECT_MANAGE_PARAMETERS, base)).toBe(true);
     for (const forged of [
@@ -145,7 +146,10 @@ describe("project_manage 固定输入与主代理宿主边界", () => {
       preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}),
     }));
     const ctx = context("session-main", async () => true);
-    await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId }, ctx)).rejects.toMatchObject({ code: "invalid_action" });
+    await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId, requirementId: uuidv7(), operationId: uuidv7(), preview: true }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(call(runtime, { action: "workspace-recycle", repoId: world.repoId, requirementId: uuidv7(), operationId: uuidv7() },
+      context("session-main", async () => true, false))).rejects.toMatchObject({ code: "workspace_confirmation_required" });
     await expect(call(runtime, { action: "status", repoId: world.repoId, preview: true }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
     await expect(call(runtime, { action: "refresh", repoId: world.repoId, preview: false }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
     await runtime.shutdown();
