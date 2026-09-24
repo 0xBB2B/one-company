@@ -335,6 +335,11 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const { record, manifest, current: plan } = snapshot();
     if (!plan) deny("plan_missing");
     if (record.data.pendingRevision !== params.revision || record.data.revision !== params.revision) deny("assessment_invalid", ["没有待复核的该批准版本"]);
+    const context = withDatabase(database, (db) => db.read<{ context?: { baseline: { runId: string; fence: number; contextGeneration: number; revision: number } | null } }>(
+      "pm_ownership", grant.requirementId)?.data.context?.baseline);
+    if (context?.revision !== params.revision || context.runId !== current.runId || context.fence !== current.fence || context.contextGeneration !== current.contextGeneration) {
+      deny("assessment_invalid", ["本 PM 会话尚未收到该批准版本的准确差异"]);
+    }
     const live = plan.tasks.filter((task) => task.status !== "cancelled");
     const given = new Map(params.tasks.map((item) => [item.taskId, item]));
     const missing = live.filter((task) => given.get(task.taskId)?.version !== task.version);

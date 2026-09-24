@@ -26,6 +26,7 @@ import type { PmLease, RequirementRecord } from "../runtime/requirement-contract
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { TimerHandle } from "../runtime/clock.ts";
 import { MANAGED_WORKSPACES } from "../runtime/workspace-manage.ts";
+import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
 import { implementAuthorized } from "../runtime/pm-intake-runtime.ts";
 import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
@@ -39,10 +40,11 @@ export interface RunManagerOptions {
   runtime: ModelRuntime; selectModel: ModelSelector; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
 }
 export interface WaitForSpec { repo: string; requirement: string; stage: string }
-interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle };
+interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle };
   subagent?: { parentRunId: string; taskId: string; dispose(): void } }
 export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
 const PM_RENEW_MS = 10_000;
+const PM_EVENT_POLL_MS = 500;
 const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "renew-pm", "release-pm", "check-pm"];
 
 async function taskContext(task: PlanTask, maxTurns: number): Promise<string> {
@@ -67,6 +69,7 @@ function pmContext(record: RequirementRecord, lease: PmLease): string {
     `当前批准版本：revision ${record.revision}，prod hash ${record.approved!.hash}`,
     `PM 运行：${lease.runId}，fence ${lease.fence}`,
     "当前处于受限接手：先用 pi_company_requirement_manage 读取完整批准正文，再提交接手理解等待主代理核对；核对通过前不能正式提出或更新计划，也不能派 worker。",
+    "核对通过后，之后每次已批准更新的准确差异会由宿主按序送达本会话；收到后用 pi_company_plan_manage assess-update 逐任务复核。",
   ].join("\n");
 }
 export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "parentRunId" | "state" | "startedAt" | "updatedAt" | "endedAt" | "turns"> & { stateReason?: string };
@@ -200,7 +203,14 @@ export class RunManager {
     const renewal = this.options.clock.setIntervalExcludingSleep(() => {
       void state.renewPm(lease).catch(() => { void this.stop(run.id).catch(() => {}); });
     }, PM_RENEW_MS);
-    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal } });
+    let delivering = false;
+    const delivery = this.options.clock.setIntervalExcludingSleep(() => {
+      if (delivering || !alive()) return;
+      delivering = true;
+      void deliverApprovedEvents({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease,
+        deliver: (text) => handle.prompt(text) }).catch(() => {}).finally(() => { delivering = false; });
+    }, PM_EVENT_POLL_MS);
+    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery } });
     registered = true;
     handle.events.on("turn", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishPm(run.id, "failed", reason); });
@@ -215,6 +225,7 @@ export class RunManager {
     const entry = this.sessions.get(runId);
     if (!entry?.pm) return;
     this.options.clock.clearTimer(entry.pm.renewal);
+    this.options.clock.clearTimer(entry.pm.delivery);
     entry.pm.tools.dispose();
     try { (await this.pmState()).releasePm(entry.pm.lease); } catch { /* 已被接管或到期的租约无需释放 */ }
     const current = await this.runStore.get(runId);

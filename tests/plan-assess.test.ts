@@ -24,6 +24,7 @@ async function world() {
   clean.push(() => fixture.cleanup());
   const kit = await pmIntakeReviewKit(fixture);
   await kit.pass();
+  await kit.consume();
   const record = fixture.state.read(fixture.requirementId).data;
   const pm = await createPlanManageTool({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, authorize: () => true,
     grant: { role: "pm", callerId: uuidv7(), runId: fixture.lease.runId, requirementId: fixture.requirementId, repoId: fixture.repoId,
@@ -38,10 +39,10 @@ async function world() {
   const setStatus = (taskId: string, status: string) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), (db) => {
     const row = db.read<Record<string, unknown>>(TASKS, taskId)!; db.update(TASKS, taskId, row.version, { ...row.data, status });
   });
-  const assess = (tasks: Array<[Task, string]>, global = "unaffected") => run({ action: "assess-update", revision: revision().revision, assessmentId: uuidv7(),
+  const assess = async (tasks: Array<[Task, string]>, global = "unaffected") => { await kit.consume(); return run({ action: "assess-update", revision: revision().revision, assessmentId: uuidv7(),
     tasks: tasks.map(([task, assessment]) => ({ taskId: task.taskId, version: task.version, assessment, rationale: `${task.key} ${assessment}` })),
-    global: { assessment: global, rationale: "整体判断" } });
-  return { fixture, run, first, byKey, revision, gate, setStatus, assess };
+    global: { assessment: global, rationale: "整体判断" } }); };
+  return { fixture, kit, run, first, byKey, revision, gate, setStatus, assess };
 }
 
 test("M7-AC3/AC4：新增独立功能时原任务经复核保留；复核前门槛阻塞，复核补齐后新任务独立登记", async () => {

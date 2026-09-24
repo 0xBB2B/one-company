@@ -112,7 +112,7 @@ export type IntakeGateResult = { allowed: true } | { allowed: false; reasons: st
 
 /**
  * 正式规划与 worker 派工的强门槛：接手核对须通过、仍对应本 PM 租约与当前批准绑定，且批准清单含实施授权。
- * 批准版本前进时，要求核对后的每个版本都有本 PM 做出、不含 unknown 的影响复核；漏一个版本就须重新接手核对。
+ * 批准版本前进时，要求核对后的每个版本都被本 PM 做出、不含 unknown 的影响复核覆盖；复核须先按序收到差异，较新版本的复核覆盖其前的连续版本。
  * 只读现有记录并调用 M4 连续性判定，不签发任何权限。
  */
 export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }): IntakeGateResult {
@@ -172,7 +172,7 @@ function advancedGate(ref: Ref & { lease: PmLease }, record: RequirementRecord, 
   }));
   if (owner?.lease?.runId !== ref.lease.runId || owner.lease.fence !== ref.lease.fence || owner.lease.expiresAt <= now) reasons.push("lease_not_current");
   for (let revision = binding.approvedRevision + 1; revision <= record.revision; revision++) {
-    const covered = assessments.some((entry) => entry.toRevision === revision && entry.unknown === 0 && entry.runId === ref.lease.runId && entry.fence === ref.lease.fence);
+    const covered = assessments.some((entry) => entry.toRevision! >= revision && entry.unknown === 0 && entry.runId === ref.lease.runId && entry.fence === ref.lease.fence);
     if (!covered) { reasons.push("impact_link_gap"); break; }
   }
   return reasons.length ? { allowed: false, reasons } : { allowed: true };

@@ -6,7 +6,7 @@
 
 | AC | 状态 | 证据 | 剩余缺口 |
 |---|---|---|---|
-| AC1 首次受限读完整基线并经主代理核对，后续 diff 增量；接管/丢基线仅 active 时重核对 | 未开始 | | C 片 |
+| AC1 首次受限读完整基线并经主代理核对，后续 diff 增量；接管/丢基线仅 active 时重核对 | 通过 | C4：tests/pm-event-delivery.test.ts（核对通过前不建立理解基线、不投递；通过后按序投递准确差异，assess-update 须绑定本次收到的理解基线才放行；PM 停止后不再投递，新 PM 须重新核对才建立自己的理解基线，旧租约回执被拒）；实现 runtime/pm-event-delivery.ts、daemon/run-manager.ts 500ms 投递轮询、runtime/plan-manage.ts assess-update 校验、runtime/pm-intake-runtime.ts advancedGate 覆盖语义修正为按序收到差异后 toRevision>=revision | 无 |
 | AC2 连续追加产生解耦规则与任务 | 部分 | D2：tests/plan-assess.test.ts（连续批准快跑、跳跃、跳跃动画，各自成为独立任务，原任务版本不变） | 规则候选拆分依赖 spec_change 大小与单责门槛（M1/M4 既有测试）；真实模型拆分质量在 M9 |
 | AC3 间接影响识别，复核绑定 from/to prodHash 与 plan/task 版本 | 通过 | D2：tests/plan-assess.test.ts（新增独立功能时原任务复核保留；另章节新增全局输入屏蔽时原任务依据闭包变化，判为无关被拒；复核绑定批准版本与任务版本，旧版本复核被拒） | 无 |
 | AC4 未决项只阻塞依赖任务，交付范围内未决项须解决或排除 | 部分 | D1/D2：任务登记 blockedByQuestionIds；unknown 复核只阻塞对应任务并保持待处理更新（tests/plan-assess.test.ts） | 派工时按 blockedByQuestionIds 阻塞在 E 片；交付范围内未决项的关闭拒绝沿用 M6 预检 |
@@ -49,6 +49,8 @@
 
 独立审查（D、E 片，基线 77a9d93..2afbc0b）：3 条（2 阻塞：已有尝试任务的目标可经修改或新增任务揽走以绕过一次重试；新版本收回实施授权后旧冻结任务仍可派出。1 非阻塞：计划提交覆盖并发登记的尝试），经四轮定向复审逐项收紧后"全部解决"：一次重试按目标计（已有尝试的任务不能取消、修改须保留原目标、其目标不能被其他任务覆盖）；复核与派工都核对实施授权范围；计划提交按快照比对，影响复核改为套用到最新任务行；尝试结局只在任务仍为运行中时改状态；同一任务同时只允许一个运行中的尝试。
 
+独立审查（C4，基线 41f2137..工作区）：0 阻塞。核对了理解基线只在本租约核对通过当前批准版本后建立、差异正文只来自服务端计算结果且模型工具面无法影响或跳过、旧租约/旧会话因 fence 递增在写入前被 fail-closed 拒绝、assess-update 的消费校验与门槛覆盖语义（toRevision>=revision）在两条威胁模型内均成立。记录一条非阻塞观察：advancedGate 的覆盖判定未比对 contextGeneration，理论上物理上下文轮换后可能被旧记录覆盖；因 rotateContext/restoreCurrentContext 当前无生产代码路径调用，不可触发，留待接入时复核。
+
 已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」在 4 worker 负载下失败一次，单独重跑通过（.bb-spec/.cache/m7/a-unit-01.txt）。
 
 ## 下一窗口续接提示
@@ -56,8 +58,8 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
-M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计。A–E 各有独立审查且定向复审"全部解决"。
-待做顺序：C4 已批准更新事件投递 PM 与消费确认、主会话注册 workflow_manage（close 需真实用户回执）与完成通知消费；F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML）与 MCP 优先；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts 与旧 skills/rules、重写主会话说明；用户新决定解除 awaiting_user 的入口；H 零自定义闭环与全量回归、收口 M7-STATUS。
+M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计；C4 已批准更新按序投递 PM 并确认消费（runtime/pm-event-delivery.ts，daemon 500ms 轮询），assess-update 绑定本次收到的理解基线，advancedGate 覆盖语义按序收敛。A–E、C4 各有独立审查且定向复审"全部解决"或"无阻塞"。
+待做顺序：主会话注册 workflow_manage（close 需真实用户回执）与完成通知消费；F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML）与 MCP 优先；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts 与旧 skills/rules、重写主会话说明；用户新决定解除 awaiting_user 的入口；H 零自定义闭环与全量回归、收口 M7-STATUS。
 已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§13.2 与 M7-AC20/21；C-3 与 M5 两条观察本阶段不处理。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
 ```

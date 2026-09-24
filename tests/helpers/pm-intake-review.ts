@@ -1,4 +1,5 @@
 import { createSessionManagerForRun } from "../../runtime/session-records.ts";
+import { deliverApprovedEvents } from "../../runtime/pm-event-delivery.ts";
 import { createPmIntakeProviders, PM_INTAKE_TOOL } from "../../runtime/pm-intake-runtime.ts";
 import type { IntakeSubmissionBaseline } from "../../runtime/pm-intake-runtime.ts";
 import type { PmUnderstanding } from "../../runtime/pm-intake-contracts.ts";
@@ -31,5 +32,11 @@ export async function pmIntakeReviewKit(fixture: PmIntakeFixture) {
     const view = await intake.openRequest(fixture.call, fixture.operationId());
     await intake.recordReview(fixture.call, view.requestId, fixture.operationId(), { result: "passed", shortIssues: [] });
   }
-  return { content, submit, intake, current, pass };
+  const delivered: string[] = [];
+  /** 按守护进程同样的路径把已批准差异交给夹具 PM 并确认消费。 */
+  function consume() {
+    return deliverApprovedEvents({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, lease: fixture.lease,
+      deliver: (text) => { delivered.push(text); } });
+  }
+  return { content, submit, intake, current, pass, consume, delivered };
 }
