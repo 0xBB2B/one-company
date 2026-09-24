@@ -57,6 +57,13 @@ const Attempt = object({ runId: id, maxTurns: positive, turnsUsed: Type.Integer(
   outcome: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("incomplete"), Type.Literal("turn_limit_reached"),
     Type.Literal("failed"), Type.Literal("stopped")]) });
 export type TaskAttempt = Static<typeof Attempt>;
+/** 用户对待裁决任务的决定：只由可信登记写入，PM 不能构造；revision/taskVersion 为登记时的批准版本与任务版本。 */
+const UserDecision = object({
+  decisionId: id, choice: Type.Union([Type.Literal("retry"), Type.Literal("adjust"), Type.Literal("terminate")]),
+  maxTurns: Type.Union([positive, Type.Null()]), revision: positive, taskVersion: positive,
+  usedByRunId: Type.Union([id, Type.Null()]), notified: Type.Boolean(),
+});
+export type UserDecision = Static<typeof UserDecision>;
 const TaskRecord = object({
   format: Type.Literal("plan-task/v1"), taskId: id, requirementId: id, version: positive, key, role: DelegatedRole,
   goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0), closure: Type.Array(UnitRef, { maxItems: 20 }),
@@ -65,7 +72,8 @@ const TaskRecord = object({
   detail: object({ path: Type.String({ minLength: 1 }), hash }),
   status: Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed"),
     Type.Literal("needs_update"), Type.Literal("blocked"), Type.Literal("cancelled"), Type.Literal("awaiting_parent"), Type.Literal("awaiting_user")]),
-  attempts: Type.Array(Attempt, { maxItems: 2 }),
+  attempts: Type.Array(Attempt, { maxItems: 16 }),
+  userDecision: Type.Optional(UserDecision),
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
@@ -227,6 +235,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
         goalUnitIds: spec.goalUnitIds, constraintUnitIds: spec.constraintUnitIds, closure: closureOf(manifest, spec.goalUnitIds, spec.constraintUnitIds),
         dependsOn: spec.dependsOn.map((dep) => ids.get(dep)!), writePaths: spec.writePaths, blockedByQuestionIds: spec.blockedByQuestionIds,
         maxTurns: spec.maxTurns, detail: await writeDetail(taskId, version, spec), status: "pending", attempts: previous?.get(taskId)?.attempts ?? [],
+        ...(previous?.get(taskId)?.userDecision ? { userDecision: previous.get(taskId)!.userDecision } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));
     }
     return records;
@@ -281,12 +290,19 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       const task = byId.get(item.taskId);
       if (!task || task.version !== item.version) deny("version_conflict", [`任务 ${item.taskId} 版本已变化`]);
       if (task.status === "awaiting_user") deny("task_not_ready", [`${task.key} 等待用户裁决，不能修改或取消`]);
+      if (task.userDecision?.choice === "terminate") deny("task_not_ready", [`${task.key} 已被用户终止，不能修改或取消`]);
     }
-    // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被其他新增或修改的任务揽走
-    const tried = current.tasks.filter((task) => task.attempts.length > 0 && task.status !== "completed" && task.status !== "cancelled");
+    // 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；只放开该任务修改时保留原目标的要求，且决定用过即失效
+    const readjusted = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null &&
+      record.data.revision > task.userDecision.revision;
+    const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!; return task.userDecision?.choice === "adjust" && !readjusted(task); });
+    if (waiting.length) deny("task_not_ready", waiting.map((item) => `${byId.get(item.taskId)!.key} 等待调整后的新批准版本`));
+    // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被其他新增或修改的任务揽走；用户终止的任务同样占住其目标
+    const tried = current.tasks.filter((task) => task.attempts.length > 0 && task.status !== "completed" &&
+      (task.status !== "cancelled" || task.userDecision?.choice === "terminate"));
     const cancelTried = (params.cancel ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId));
     if (cancelTried.length) deny("task_not_ready", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
-    const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId
+    const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && !readjusted(task)
       && task.goalUnitIds.some((unit) => !item.spec.goalUnitIds.includes(unit))));
     if (shrunk.length) deny("task_not_ready", shrunk.map((item) => `${item.spec.key} 已有尝试，修改须保留原有目标`));
     const heldBy = (unit: string, except?: string) => tried.some((task) => task.taskId !== except && task.goalUnitIds.includes(unit));

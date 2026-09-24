@@ -26,6 +26,7 @@ import type { PmLease, RequirementRecord } from "../runtime/requirement-contract
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { TimerHandle } from "../runtime/clock.ts";
 import { MANAGED_WORKSPACES } from "../runtime/workspace-manage.ts";
+import { takeUnnotifiedDecisions } from "../runtime/adjudication.ts";
 import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
 import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
@@ -43,7 +44,7 @@ export interface RunManagerOptions {
   runtime: ModelRuntime; selectModel: ModelSelector; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
 }
 export interface WaitForSpec { repo: string; requirement: string; stage: string }
-interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle };
+interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void> };
   subagent?: { parentRunId: string; taskId: string; dispose(): void } }
 export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
 const PM_RENEW_MS = 10_000;
@@ -207,14 +208,15 @@ export class RunManager {
     const renewal = this.options.clock.setIntervalExcludingSleep(() => {
       void state.renewPm(lease).catch(() => { void this.stop(run.id).catch(() => {}); });
     }, PM_RENEW_MS);
-    let delivering = false;
+    let delivering: Promise<void> | null = null;
     const delivery = this.options.clock.setIntervalExcludingSleep(() => {
       if (delivering || !alive()) return;
-      delivering = true;
-      void deliverApprovedEvents({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease,
-        deliver: (text) => handle.prompt(text) }).catch(() => {}).then(() => this.refreshOverview(run.id)).catch(() => {}).finally(() => { delivering = false; });
+      delivering = deliverApprovedEvents({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease,
+        deliver: (text) => handle.prompt(text) }).catch(() => {})
+        .then(() => { for (const message of takeUnnotifiedDecisions({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId)) handle.prompt(message); })
+        .catch(() => {}).then(() => this.refreshOverview(run.id)).catch(() => {}).finally(() => { delivering = null; });
     }, PM_EVENT_POLL_MS);
-    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery } });
+    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery, tick: async () => { await delivering; } } });
     registered = true;
     handle.events.on("turn", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     this.trackUsage(run.id, handle);
@@ -231,6 +233,8 @@ export class RunManager {
     if (!entry?.pm) return;
     this.options.clock.clearTimer(entry.pm.renewal);
     this.options.clock.clearTimer(entry.pm.delivery);
+    // 已开始的投递与概览刷新须结束后才释放租约与工具，避免停止后仍有迟到写入
+    await entry.pm.tick();
     if (this.overviewFingerprints.delete(runId)) this.emit("pm.overview.changed", { requirementId: entry.pm.lease.requirementId, pmRunId: runId });
     entry.pm.tools.dispose();
     try { (await this.pmState()).releasePm(entry.pm.lease); } catch { /* 已被接管或到期的租约无需释放 */ }

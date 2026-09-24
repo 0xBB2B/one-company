@@ -194,7 +194,7 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
     const priors = new Map<string, ShortDecisionRecord>(), revisionSources = new Map<string, RevisionSource>();
     for (const source of sources) {
       const current = currentSource(source), d = source.decision;
-      if (current?.value.status !== "superseded" && current && d.kind !== "action" && d.unitIds.some((u) => u.id !== "metadata")) {
+      if (current?.value.status !== "superseded" && current && d.kind !== "action" && d.kind !== "adjudication" && d.unitIds.some((u) => u.id !== "metadata")) {
         priors.set(d.record.id, current.value);
         revisionSources.set(d.record.id, { fact: ref(source.row), decision: ref(current.row), sourceBasis: source.fact.basis, unitIds: d.unitIds, kind: d.kind });
       }

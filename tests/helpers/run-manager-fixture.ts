@@ -69,5 +69,5 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   const plan = await createPlanManageTool({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, authorize: () => true,
     grant: { role: "pm", callerId: uuidv7(), runId: lease.runId, requirementId: fixture.requirementId, repoId: fixture.repoId, workspaceId: lease.workspaceId, lease } });
   cleanups.push(() => plan.dispose());
-  return { fixture, understanding, provider, runStore, manager, emit, pm, lease, owner, review, plan, db };
+  return { fixture, understanding, runtime, provider, runStore, manager, emit, pm, lease, owner, review, plan, db };
 }

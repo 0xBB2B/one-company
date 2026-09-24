@@ -63,13 +63,19 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
     if (openQuestions.length) deny("question_pending", openQuestions);
     if (task.role === "worker" && activeCheckRoundIn(db, request.repoId, requirementId) !== null) deny("check_phase_active");
     if (task.attempts.some((attempt) => attempt.outcome === "running")) deny("task_not_ready", [`${task.key} 仍有运行中的尝试`]);
-    if (task.attempts.length >= 2) deny("retry_exhausted");
+    // 两次尝试之后只有用户的新决定能再开一次：再给一次机会只用于用户裁决时的任务版本并按用户给的上限，调整范围须任务已按新批准版本修改
+    const decision = task.userDecision;
+    const granted = task.attempts.length >= 2 && decision !== undefined && decision.usedByRunId === null &&
+      ((decision.choice === "retry" && task.version === decision.taskVersion) || (decision.choice === "adjust" && task.version > decision.taskVersion));
+    if (task.attempts.length >= 2 && !granted) deny("retry_exhausted");
+    if (granted && request.retry) deny("retry_not_needed");
     if (task.attempts.length === 1 && !request.retry) deny("retry_required");
     if (task.attempts.length === 0 && request.retry) deny("retry_not_needed");
-    const maxTurns = request.retry?.maxTurns ?? task.maxTurns;
-    const attempt: TaskAttempt = { runId: request.runId, maxTurns, turnsUsed: 0, reason: request.retry?.reason ?? null, outcome: "running" };
+    const maxTurns = granted && decision!.choice === "retry" ? decision!.maxTurns! : request.retry?.maxTurns ?? task.maxTurns;
+    const attempt: TaskAttempt = { runId: request.runId, maxTurns, turnsUsed: 0, reason: granted ? "用户决定" : request.retry?.reason ?? null, outcome: "running" };
     const row = db.read<unknown>(TASKS, task.taskId)!;
-    db.update(TASKS, task.taskId, row.version, { ...task, status: "running", attempts: [...task.attempts, attempt], updatedAt: request.now ?? Date.now() });
+    db.update(TASKS, task.taskId, row.version, { ...task, status: "running", attempts: [...task.attempts, attempt],
+      ...(granted ? { userDecision: { ...decision!, usedByRunId: request.runId } } : {}), updatedAt: request.now ?? Date.now() });
     return { task, maxTurns };
   }));
 }

@@ -26,6 +26,8 @@ import type { RequirementRecord } from "./requirement-contracts.ts";
 import type { RequirementApprovalScope } from "./requirement-manage-contracts.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE } from "./interaction-continuity.ts";
 import { approvalManifestReference } from "./approval-manifest.ts";
+import { adjudicationSubject, applyAdjudication } from "./adjudication.ts";
+import type { AdjudicationSubject } from "./user-interaction-format.ts";
 import { inspectProdStructure, pageProdText, selectProdSection, PROD_SECTION_ID_PATTERN } from "./prod-view.ts";
 
 export interface RequirementManageHostContext {
@@ -82,6 +84,7 @@ export class MainRequirementInteraction {
   #capability: InteractionCapability | undefined;
   #interpretation: InteractionInterpretation | undefined;
   #candidate: ConfirmationRequest | undefined;
+  #adjudication: { requirementId: string; subject: AdjudicationSubject } | undefined;
   #resave: PendingResave | undefined;
   #unsubscribeState: (() => void) | undefined;
   readonly #unsubscribeHost: () => void;
@@ -106,7 +109,7 @@ export class MainRequirementInteraction {
     this.#generation++;
     this.#selectionAbort?.abort();
     this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined;
-    this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#candidate = undefined; this.#resave = undefined;
+    this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#candidate = undefined; this.#adjudication = undefined; this.#resave = undefined;
     const input = this.#input; this.#input = undefined;
     if (input) { input.event.text = ""; input.abort.abort(); }
     if (this.#timer) clearTimeout(this.#timer); this.#timer = undefined;
@@ -317,7 +320,16 @@ export class MainRequirementInteraction {
         } catch { return false; }
       },
       loadContext: async (id, signal): Promise<InteractionContext> => {
-        signal.throwIfAborted(); const request = this.#candidate;
+        signal.throwIfAborted();
+        const adjudication = this.#adjudication;
+        if (adjudication) {
+          if (adjudication.requirementId !== id) return denied("adjudication_mismatch");
+          const record = this.#authorization.snapshot(repoId, id, host.sessionId);
+          const records = this.#authorization.interactionRecords(repoId, id, host.sessionId);
+          return { basis: { requirementId: id, version: record.version, epoch: record.data.epoch, prod: record.data.approved },
+            currentGoal: "", candidates: [], ...records, adjudication: adjudication.subject };
+        }
+        const request = this.#candidate;
         if (!request || request.requirementId !== id || !this.#ctx) return denied("candidate_required");
         const loaded = await this.#load(this.#ctx, request);
         const document = { candidate: loaded.candidate, title: loaded.title, body: loaded.body, partition: loaded.partition };
@@ -405,6 +417,35 @@ export class MainRequirementInteraction {
       if (pending) { this.#core?.cancelCandidateResave(pending.permit); this.#resave = undefined; }
       throw error;
     }
+  }
+  /**
+   * 用户对待裁决任务的决定：只解释本窗口宿主截获的当前原话，解释结果须恰有一条引用该事项的裁决条目，
+   * 存为用户短决定后按记录让任务生效；不清楚时不登记。
+   */
+  async adjudicate(ctx: ExtensionContext, request: { repoId: string; requirementId: string; itemId: string }): Promise<Record<string, unknown>> {
+    this.#currentInput(ctx);
+    const host = this.#host(ctx);
+    this.#authorization.assertRequirement(request.repoId, request.requirementId, host.sessionId);
+    const subject = adjudicationSubject({ dataRoot: this.#options.dataRoot, repoId: request.repoId }, request.requirementId, request.itemId);
+    this.#candidate = undefined; this.#capability = undefined; this.#interpretation = undefined;
+    this.#adjudication = { requirementId: request.requirementId, subject };
+    try {
+      const core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
+      if (!this.#ticket) return denied("current_input_required");
+      const { capability, interpretation } = await core.interpret(this.#ticket, request.requirementId);
+      // 只登记这一条裁决：同批其他条目不能借裁决入口成为已确认的用户决定
+      const index = interpretation.entries.length === 1 && interpretation.entries[0]!.kind === "adjudication" ? 0 : -1;
+      const record = this.#snapshot(host, request.repoId, request.requirementId);
+      const base = { requirementId: request.requirementId, version: record.version, epoch: record.data.epoch, itemId: request.itemId };
+      if (index < 0) return this.#prove(ctx, request.repoId, { ...base, status: "unclear", next: "用户未明确选择处理方式或未给出轮数，请向用户确认后重试" });
+      const saved = core.save(capability);
+      const decisionId = saved.decisionIds[index]!;
+      const task = applyAdjudication({ dataRoot: this.#options.dataRoot, repoId: request.repoId }, { requirementId: request.requirementId, decisionId });
+      const proofs = [...this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId),
+        ...withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => [this.#row(db, "tasks", task.taskId)])];
+      return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: task.userDecision!.choice,
+        maxTurns: task.userDecision!.maxTurns, taskStatus: task.status }, undefined, proofs);
+    } finally { this.#adjudication = undefined; }
   }
   async confirm(ctx: ExtensionContext, request: ConfirmationRequest): Promise<Record<string, unknown>> {
     this.#currentInput(ctx); this.#candidate = { ...request };

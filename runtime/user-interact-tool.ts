@@ -19,9 +19,11 @@ const schemas = {
   reply: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("reply"), ...base }, { additionalProperties: false }),
   forward: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("forward"), ...base }, { additionalProperties: false }),
 } satisfies Record<string, TSchema>;
+const ADJUDICATE_PARAMETERS = Type.Object({ purpose: Type.Literal("adjudicate"), action: Type.Literal("reply"), repoId: base.repoId,
+  requirementId: base.requirementId, operationId: base.operationId, itemId: Type.String({ pattern: "^task:[0-9a-f-]{36}$" }) }, { additionalProperties: false });
 
 export const USER_INTERACT_PARAMETERS = Type.Object({
-  purpose: Type.Optional(StringEnum(["user-confirmation", "pm-intake"] as const)),
+  purpose: Type.Optional(StringEnum(["user-confirmation", "pm-intake", "adjudicate"] as const)),
   action: StringEnum(["ask", "reply", "forward"] as const),
   repoId: base.repoId,
   requirementId: base.requirementId,
@@ -29,6 +31,7 @@ export const USER_INTERACT_PARAMETERS = Type.Object({
   operationId: Type.Optional(base.operationId),
   version: Type.Optional(base.version),
   requestId: Type.Optional(id),
+  itemId: Type.Optional(Type.String({ pattern: "^task:[0-9a-f-]{36}$" })),
   question: Type.Optional(question),
   scope: Type.Optional(question),
   unitIds: Type.Optional(ApprovalUnitIds),
@@ -42,13 +45,21 @@ export function createUserInteractTool(options: {
   intake?: MainIntakeInteraction;
 }): ToolDefinition<typeof USER_INTERACT_PARAMETERS, unknown> {
   return { name: "pi_company_user_interact", label: "需求澄清、决定与接手复核",
-    description: "默认或purpose=user-confirmation时，ask展示有界用户问题，reply/forward只消费当前真实输入。purpose=pm-intake时，ask创建接手复核请求，forward重取当前请求，reply由真实Main登记四类核对结果；不接受主体、角色、回执、理解正文或绑定字段。",
+    description: "默认或purpose=user-confirmation时，ask展示有界用户问题，reply/forward只消费当前真实输入。purpose=pm-intake时，ask创建接手复核请求，forward重取当前请求，reply由真实Main登记四类核对结果；purpose=adjudicate时，reply按用户当前原话登记对待裁决任务（itemId）的决定：再给一次机会（须有轮数）、调整目标或范围、终止任务，原话不清楚时不登记；不接受主体、角色、回执、理解正文或绑定字段。",
     promptSnippet: "按明确purpose处理用户确认或PM接手复核", parameters: USER_INTERACT_PARAMETERS, executionMode: "sequential",
     async execute(toolCallId, raw, signal, _update, ctx) {
       signal?.throwIfAborted();
       if ((raw as { purpose?: unknown }).purpose === "pm-intake") {
         if (!options.intake) throw new HostAuthorizationError("pm_intake_unavailable");
         return options.intake.execute(toolCallId, raw, ctx, signal);
+      }
+      if ((raw as { purpose?: unknown }).purpose === "adjudicate") {
+        if (!Value.Check(ADJUDICATE_PARAMETERS, raw)) throw new HostAuthorizationError("invalid_shape");
+        const p = raw as { repoId: string; requirementId: string; itemId: string; operationId: string };
+        return options.interaction.execute(toolCallId, ctx, p.repoId, { ...p }, async () => {
+          signal?.throwIfAborted();
+          return options.interaction.adjudicate(ctx, { repoId: p.repoId, requirementId: p.requirementId, itemId: p.itemId });
+        }, signal ?? ctx.signal);
       }
       const normalized = structuredClone(raw) as Record<string, unknown>;
       delete normalized.purpose;

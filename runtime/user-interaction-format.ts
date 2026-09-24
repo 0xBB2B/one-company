@@ -66,6 +66,15 @@ export const PendingQuestion = object({
   partition: Type.Optional(ApprovalPartition),
 });
 export type PendingQuestion = Static<typeof PendingQuestion>;
+/** 当前待用户裁决的事项：由宿主从持久记录生成，解释器只能引用它，不能改写。 */
+export const AdjudicationSubject = object({
+  itemId: Type.String({ pattern: "^task:[0-9a-f-]{36}$" }), version: Type.String({ pattern: "^task:[0-9a-f-]{36}:[1-9][0-9]{0,15}$" }),
+  summary: Type.String({ minLength: 1, maxLength: 2000 }),
+});
+export type AdjudicationSubject = Static<typeof AdjudicationSubject>;
+export const ADJUDICATION_CHOICES = ["retry", "adjust", "terminate"] as const;
+const ADJUDICATION_PREFIXES = ["item:", "version:", "choice:", "max-turns:"];
+export type AdjudicationChoice = (typeof ADJUDICATION_CHOICES)[number];
 export const InteractionContext = object({
   basis: InteractionBasis, currentGoal: Type.String(),
   candidates: Type.Array(InteractionCandidate, { maxItems: 20 }),
@@ -78,10 +87,11 @@ export const InteractionContext = object({
   retainedEvidence: Type.Optional(Type.Array(RetainedUnitEvidence, { maxItems: 40 })),
   continuityIssues: Type.Optional(Type.Array(ContinuityIssue, { maxItems: 40 })),
   revisionSources: Type.Optional(Type.Array(RevisionSource, { maxItems: 20 })),
+  adjudication: Type.Optional(AdjudicationSubject),
 });
 export type InteractionContext = Static<typeof InteractionContext>;
 export const InteractionEntry = object({
-  kind: enumeration(["target", "constraint", "exclusion", "future", "delegation", "action", "unresolved", "suggestion", "ai-choice"]),
+  kind: enumeration(["target", "constraint", "exclusion", "future", "delegation", "action", "unresolved", "suggestion", "ai-choice", "adjudication"]),
   basis: enumeration(["explicit", "delegated", "proposed", "uncertain"]),
   resolution: enumeration(["direct", "accept", "modify", "defer", "unclear"]),
   candidateId: nullable(id), requestId: nullable(id),
@@ -195,6 +205,30 @@ export function checkInterpretation(source: string, context: InteractionContext)
     if (entry.kind === "ai-choice" && entry.basis !== "delegated" && entry.basis !== "proposed") throw new UserInteractionError("ai_subject_required");
     if (["future", "unresolved", "suggestion"].includes(entry.kind) && !["proposed", "uncertain"].includes(entry.basis)) throw new UserInteractionError("pending_basis_required");
     if (result.referenceResolution === "ambiguous" && entry.requestId !== null && entry.basis === "explicit") throw new UserInteractionError("ambiguous_reference");
+    if (entry.kind === "adjudication") adjudicationOf(entry, context);
+    // 短决定记录不存条目类型，裁决引用前缀只能出现在裁决条目里，否则其他条目可被冒充为裁决
+    else if (entry.references.some((reference) => ADJUDICATION_PREFIXES.some((prefix) => reference.startsWith(prefix)))) throw new UserInteractionError("adjudication_reference_reserved");
   }
+  if (result.entries.filter((entry) => entry.kind === "adjudication").length > 1) throw new UserInteractionError("adjudication_ambiguous");
   return result;
+}
+
+/**
+ * 裁决条目只能引用宿主给出的当前事项，引用恰为 item、version、choice，选"再给一次机会"时另带正整数轮数上限；
+ * 须是当前输入明确直接的表达，不关联候选、问题或动作。
+ */
+export function adjudicationOf(entry: InteractionEntry, context: Pick<InteractionContext, "adjudication" | "document">): { itemId: string; version: string; choice: AdjudicationChoice; maxTurns: number | null } {
+  const subject = context.adjudication;
+  if (!subject || context.document || entry.kind !== "adjudication" || entry.basis !== "explicit" || entry.resolution !== "direct" || entry.candidateId !== null ||
+    entry.requestId !== null || entry.actions.length > 0 || entry.supersedes.length > 0) throw new UserInteractionError("adjudication_invalid");
+  const value = (prefix: string) => {
+    const found = entry.references.filter((reference) => reference.startsWith(`${prefix}:`));
+    return found.length === 1 ? found[0]!.slice(prefix.length + 1) : null;
+  };
+  const choice = value("choice") as AdjudicationChoice | null, turns = value("max-turns");
+  const maxTurns = turns !== null && /^[1-9][0-9]{0,3}$/.test(turns) && Number(turns) <= 1000 ? Number(turns) : null;
+  const expected = 3 + (choice === "retry" ? 1 : 0);
+  if (value("item") !== subject.itemId || value("version") !== subject.version || !choice || !ADJUDICATION_CHOICES.includes(choice) ||
+    (choice === "retry") !== (maxTurns !== null) || (choice !== "retry" && turns !== null) || entry.references.length !== expected) throw new UserInteractionError("adjudication_invalid");
+  return { itemId: subject.itemId, version: subject.version, choice, maxTurns };
 }
