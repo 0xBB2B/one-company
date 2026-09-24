@@ -45,6 +45,8 @@
 
 独立审查（A、B 片，基线 c241c86..70f6dfc，两条威胁模型内）：2 条阻塞（读取工具路径以 @、~、file: 或特殊空白改写后绕过范围；MCP 请求夹带 search 绕过只读名单或触发 install/auth/connect），已修复并补回归用例，定向复审"全部解决"。
 
+独立审查（C 片，基线 460f1db..6cf660a）：0 阻塞、2 非阻塞（PM 旧基线下受理的理解会被套上新绑定；租约过期未续时 PM 的 verification_run 仍可用），已修复：受理时由宿主把批准基线写入工具结果，读取只认与当前绑定一致的提交；PM 工具每次调用核验租约仍属本运行，接管前先停止旧运行；定向复审"全部解决"。C 片遗留：门槛尚未读取影响复核链（首次批准更新后会阻塞，D 片 assess-update 补齐）；PM 实际工具缺 knowledge_query、plan_manage（D 片）与 agent_manage（E 片）；派出时未核验思考等级是否被模型支持（G 片 AC23）。
+
 已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」在 4 worker 负载下失败一次，单独重跑通过（.bb-spec/.cache/m7/a-unit-01.txt）。
 
 ## 下一窗口续接提示

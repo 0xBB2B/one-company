@@ -19,10 +19,11 @@ export const PM_INTAKE_SUBMIT_PARAMETERS = Type.Object({
 }, { additionalProperties: false });
 
 type Ref = { dataRoot: string; repoId: string };
+export interface IntakeSubmissionBaseline { approvedRevision: number; approvedProdHash: string; approvalManifestHash: string }
 type UnderstandingContent = Omit<PmUnderstanding, "format" | "binding">;
 
-/** PM 最近一次被工具成功受理的接手理解；正文只在该运行的私有会话文件里。 */
-export function latestPmSubmission(ref: Ref & { runId: string }): { toolCallId: string; content: UnderstandingContent } | null {
+/** PM 最近一次被工具成功受理、且受理时批准基线与给定基线一致的接手理解；正文只在该运行的私有会话文件里。 */
+export function latestPmSubmission(ref: Ref & { runId: string; baseline: IntakeSubmissionBaseline }): { toolCallId: string; content: UnderstandingContent } | null {
   const read = readSessionEntries(ref);
   if (!read.ok) return null;
   const calls = new Map<string, UnderstandingContent>();
@@ -35,15 +36,22 @@ export function latestPmSubmission(ref: Ref & { runId: string }): { toolCallId: 
         const args = block.type === "toolCall" ? block.arguments as { purpose?: unknown; understanding?: unknown } : undefined;
         if (block.type === "toolCall" && block.name === PM_INTAKE_TOOL && args?.purpose === "pm-intake") calls.set(block.id, args.understanding as UnderstandingContent);
       }
-    } else if (message.role === "toolResult" && !message.isError && calls.has(message.toolCallId)) {
+    } else if (message.role === "toolResult" && !message.isError && calls.has(message.toolCallId)
+      && sameBaseline((message.details as { intakeBaseline?: IntakeSubmissionBaseline } | undefined)?.intakeBaseline, ref.baseline)) {
       latest = { toolCallId: message.toolCallId, content: calls.get(message.toolCallId)! };
     }
   }
   return latest;
 }
 
+function sameBaseline(value: IntakeSubmissionBaseline | undefined, expected: IntakeSubmissionBaseline): boolean {
+  return value?.approvedRevision === expected.approvedRevision && value.approvedProdHash === expected.approvedProdHash
+    && value.approvalManifestHash === expected.approvalManifestHash;
+}
+
 export function pmSubmissionFor(ref: Ref, binding: IntakeBinding): { submissionRef: string; submissionHash: string; understanding: PmUnderstanding } | null {
-  const latest = latestPmSubmission({ ...ref, runId: binding.pmRunId });
+  const latest = latestPmSubmission({ ...ref, runId: binding.pmRunId, baseline: { approvedRevision: binding.approvedRevision,
+    approvedProdHash: binding.approvedProdHash, approvalManifestHash: binding.approvalManifestHash } });
   if (!latest) return null;
   const understanding = { format: "pm-understanding/v1" as const, binding: structuredClone(binding), ...structuredClone(latest.content) };
   return { submissionRef: `pm/${binding.pmRunId}/${latest.toolCallId}`, submissionHash: pmUnderstandingHash(understanding), understanding };

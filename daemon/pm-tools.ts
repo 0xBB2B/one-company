@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import { PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
+import type { IntakeSubmissionBaseline } from "../runtime/pm-intake-runtime.ts";
 import { createSpecPublishGate } from "../runtime/check-round.ts";
 import { uuidv7 } from "../runtime/database.ts";
 import type { PmLease, WorkspaceBinding } from "../runtime/requirement-contracts.ts";
@@ -22,6 +23,8 @@ export interface PmToolsInput {
   alive: () => boolean;
   /** 核验本运行仍持有当前 PM 租约。 */
   checkLease: () => Promise<void>;
+  /** 提交时的批准基线，由宿主读取当前记录，写入工具结果供接手核对比对。 */
+  currentBaseline: () => IntakeSubmissionBaseline;
   stopAgents: (requirementId: string) => Promise<void>;
 }
 
@@ -71,7 +74,8 @@ function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
     async execute(_toolCallId, params) {
       if (!input.alive() || !Value.Check(PM_INTAKE_SUBMIT_PARAMETERS, params)) throw new Error("pm_intake_submit_denied");
       await input.checkLease();
-      return { content: [{ type: "text", text: JSON.stringify({ status: "submitted", next: "等待主代理核对接手理解" }) }], details: {} };
+      return { content: [{ type: "text", text: JSON.stringify({ status: "submitted", next: "等待主代理核对接手理解" }) }],
+        details: { intakeBaseline: input.currentBaseline() } };
     },
   } as ToolDefinition;
 }

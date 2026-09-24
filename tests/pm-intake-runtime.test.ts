@@ -20,18 +20,21 @@ async function world() {
   const { format: _format, binding: _binding, ...content } = material!.understanding;
   const session = createSessionManagerForRun({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, runId: fixture.lease.runId, cwd: fixture.root });
   let serial = 0;
-  function submit(value: Content, isError = false): string {
+  const current = { approvedRevision: captured.binding.approvedRevision, approvedProdHash: captured.binding.approvedProdHash,
+    approvalManifestHash: captured.binding.approvalManifestHash };
+  function submit(value: Content, isError = false, baseline: typeof current = current): string {
     const id = `call-${++serial}`;
     session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name: PM_INTAKE_TOOL, arguments: { action: "ask", purpose: "pm-intake", understanding: value } }],
       api: "test", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: Date.now() });
-    session.appendMessage({ role: "toolResult", toolCallId: id, toolName: PM_INTAKE_TOOL, content: [{ type: "text", text: "ok" }], isError, timestamp: Date.now() });
+    session.appendMessage({ role: "toolResult", toolCallId: id, toolName: PM_INTAKE_TOOL, content: [{ type: "text", text: "ok" }], isError,
+      details: { intakeBaseline: baseline }, timestamp: Date.now() });
     return id;
   }
   const providers = createPmIntakeProviders(fixture.dataRoot);
   const intake = fixture.makeIntake(providers);
   const gate = (action: "plan" | "implement" = "implement") => evaluatePmIntakeGate({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, lease: fixture.lease, action });
-  return { fixture, content, submit, intake, gate };
+  return { fixture, content, submit, intake, gate, current };
 }
 
 test("M7-AC13：主代理经真实提供方读到 PM 会话里的提交，核对通过前门槛拒绝，通过后只放行已授权动作", async () => {
@@ -72,4 +75,13 @@ test("M7-AC14：伪造的提交不能被当作 PM 的理解——只读取当前
   expect(await providers.submissionProvider.loadCurrent({ binding: captured.binding, sourceDirectoryHash: captured.sourceDirectoryHash,
     maxBytes: 49_152, signal: new AbortController().signal })).toBeNull();
   await expect(w.intake.openRequest(w.fixture.call, w.fixture.operationId())).rejects.toThrow();
+});
+
+test("M7-AC14：针对旧批准基线受理的理解不能被当作对当前基线的理解", async () => {
+  const w = await world();
+  w.submit(w.content, false, { ...w.current, approvedRevision: w.current.approvedRevision - 1 });
+  w.submit(w.content, false, { ...w.current, approvedProdHash: "0".repeat(64) });
+  await expect(w.intake.openRequest(w.fixture.call, w.fixture.operationId())).rejects.toThrow();
+  w.submit(w.content);
+  expect((await w.intake.openRequest(w.fixture.call, w.fixture.operationId())).understanding.goals).toEqual(w.content.goals);
 });

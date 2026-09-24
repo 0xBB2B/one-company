@@ -118,7 +118,11 @@ export class RunManager {
       : input.model;
     if (!this.options.runtime.getModels(modelRef.provider).some((model) => model.id === modelRef.id)) throw protocolError("model_unavailable", `模型不可用: ${modelRef.provider}/${modelRef.id}`);
     const thinking = definition.thinking ?? input.thinking;
-    const expectedFence = state.pmOwner(input.requirementId)?.fence ?? 0;
+    const owner = state.pmOwner(input.requirementId);
+    if (owner?.lease && owner.lease.expiresAt > Date.now()) throw protocolError("pm_already_owned", "本需求已有有效 PM");
+    // 旧租约已失效：接管前先停止本需求仍登记在册的旧运行，旧会话不能继续调用工具
+    await this.stopRequirement(input.requirementId);
+    const expectedFence = owner?.fence ?? 0;
     const workspace = record.data.workspace;
     const run = await this.runStore.create({ kind: "requirement", requirement: input.requirementId, task: "pm", cwd: workspace.path,
       readPaths: [workspace.path], writePaths: [], model: modelRef, thinking, mcp: [] });
@@ -129,16 +133,27 @@ export class RunManager {
       throw protocolError((error as { code?: string }).code ?? "acquire_failed", "PM 租约取得失败");
     }
     let registered = false;
-    // 工具在会话创建前就会核验一次；登记前视为启动中，登记后按真实会话状态判断
+    const leaseCurrent = () => withDatabase(this.database, (db) => {
+      const owner = db.read<{ fence?: number; lease?: PmLease | null }>("pm_ownership", input.requirementId)?.data;
+      return owner?.lease?.runId === lease.runId && owner.lease.fence === lease.fence && owner.lease.expiresAt > Date.now();
+    });
+    // 工具在会话创建前就会核验一次；登记前视为启动中，登记后按真实会话状态判断；任何时候都要求租约仍属于本运行
     const alive = () => {
       const current = this.sessions.get(run.id);
-      return current === undefined ? !registered : ["running", "paused", "paused_network"].includes(current.handle.state());
+      const sessionAlive = current === undefined ? !registered : ["running", "paused", "paused_network"].includes(current.handle.state());
+      return sessionAlive && leaseCurrent();
     };
     let tools: PmTools | undefined;
     let handle: AgentSessionHandle;
     try {
       tools = await createPmTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease, workspace,
-        epoch: record.data.epoch, alive, checkLease: () => state.checkPm(lease), stopAgents: (requirementId) => this.stopRequirement(requirementId) });
+        epoch: record.data.epoch, alive, checkLease: () => state.checkPm(lease),
+        currentBaseline: () => {
+          const current = state.read(input.requirementId).data;
+          if (!current.approved || !current.approvalManifest) throw new Error("approval_baseline_missing");
+          return { approvedRevision: current.revision, approvedProdHash: current.approved.hash, approvalManifestHash: current.approvalManifest.reference.manifestHash };
+        },
+        stopAgents: (requirementId) => this.stopRequirement(requirementId) });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         context: pmContext(record.data, lease), coreTools: tools.tools, readRoots: [workspace.path], runtime: this.options.runtime, modelRef, thinking,
         completion: { kind: "idle-only" }, clock: this.options.clock, networkGate: this.options.networkGate });

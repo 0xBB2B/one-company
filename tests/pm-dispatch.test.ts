@@ -8,7 +8,7 @@ import { RelayQueue } from "../daemon/relay-queue.ts";
 import { RunManager } from "../daemon/run-manager.ts";
 import { createPmTools } from "../daemon/pm-tools.ts";
 import { createClock } from "../runtime/clock.ts";
-import { repositoryDatabase, uuidv7 } from "../runtime/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
@@ -121,4 +121,18 @@ test("M7-AC9：按需求停止结束全部运行，关闭协议依赖的运行�
   expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { state: "stopped" } });
   const owner = (await RequirementStateStore.open({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, authorize: () => true })).pmOwner(w.requirementId);
   expect(owner?.lease ?? null).toBeNull();
+}, 30000);
+
+test("M7-AC5：旧 PM 租约过期后再派出即接管，旧会话立即停止且其工具失效", async () => {
+  const w = await world();
+  scriptReplies(w.provider, [{ type: "text", text: "一" }, { type: "text", text: "二" }]);
+  const first = await w.dispatch();
+  withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
+    const row = db.read<{ lease: { expiresAt: number } }>("pm_ownership", w.requirementId)!;
+    db.update("pm_ownership", w.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
+  });
+  const second = await w.dispatch();
+  expect(second.fence).toBeGreaterThan(first.fence);
+  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "stopped" } });
+  expect(await w.runStore.get(second.runId)).toMatchObject({ ok: true, run: { state: "running" } });
 }, 30000);
