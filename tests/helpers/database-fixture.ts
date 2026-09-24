@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { sessionFilePath } from "../../runtime/session-records.ts";
 import { DatabaseSync as Database } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { readRecord, putRecord, uuidv7, withDatabase, repositoryDatabase } from "../../runtime/database.ts";
@@ -28,12 +30,7 @@ export function deleteRecord(ref: RecordRef): void {
 }
 
 export function sessionJson(ref: { dataRoot: string; repoId: string; runId: string }): string {
-  const database = repositoryDatabase(ref.dataRoot, ref.repoId);
-  return withDatabase(database, (db) => {
-    const stored = db.read<{ header: unknown }>("sessions", ref.runId);
-    if (!stored) throw new Error("测试会话不存在");
-    return [stored.data.header, ...db.events(`session:${ref.runId}`).map((event) => event.data)].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
-  });
+  return readFileSync(sessionFilePath(ref), "utf8");
 }
 
 export function failDatabaseWrites(path: string, table: "records" | "events", field: string, value: string): () => void {

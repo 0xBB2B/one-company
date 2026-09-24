@@ -47,7 +47,7 @@ test("旧工作流和决策拒绝写入，通用运行存储仍保证单个活�
   expect((await readdir(w.repoDir)).every((name) => name.startsWith("data.db"))).toBe(true);
 });
 
-test("SDK 会话与原始错误详情从 SQLite 恢复，不生成会话或诊断文件", async () => {
+test("SDK 会话从私有会话文件恢复，原始错误详情从 SQLite 恢复，不生成诊断文件", async () => {
   const w = await fixture();
   const run = await w.store.create(w.input);
   const ref = { dataRoot: w.home.dataRoot, repoId: w.repoId, runId: run.id };
@@ -64,7 +64,7 @@ test("SDK 会话与原始错误详情从 SQLite 恢复，不生成会话或诊�
   expect(saved.saved).toBe(true);
   const details = await readErrorDetails(ref);
   expect(details.readable && details.details.original.message).toBe("原始失败");
-  expect((await readdir(w.repoDir)).every((name) => name.startsWith("data.db"))).toBe(true);
+  expect((await readdir(w.repoDir)).filter((name) => !name.startsWith("data.db"))).toEqual(["sessions"]);
 });
 
 test("多个运行存储实例交错登记回合与命令不丢失活动", async () => {

@@ -1,3 +1,5 @@
+import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync, constants } from "node:fs";
+import { dirname, join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { FileEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { repositoryDatabase, readRecord, withDatabase, UUID_V7_PATTERN, uuidv7, StaleVersionError } from "./database.ts";
@@ -22,16 +24,36 @@ export function sessionRecordRef(ref: RunRef) {
   return { database: repositoryDatabase(ref.dataRoot, ref.repoId), namespace: "sessions", key: ref.runId };
 }
 
+/** 会话条目可能含 prod 正文，只存本机私有文件；data.db 只留 cwd 与当前位置元数据。 */
+export function sessionFilePath(ref: RunRef): string {
+  if (!UUID_V7_PATTERN.test(ref.runId)) throw new Error("运行编号必须是 UUIDv7");
+  return join(dirname(repositoryDatabase(ref.dataRoot, ref.repoId)), "sessions", ref.runId, "session.jsonl");
+}
+
+function appendEntry(path: string, entry: unknown): void {
+  appendFileSync(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+}
+
+function readEntries(path: string): unknown[] {
+  const text = readFileSync(path, "utf8");
+  const lines = text.split("\n");
+  // 每条都以换行结尾，末段要么为空，要么是进程写到一半退出留下的残行，都按未写入处理
+  lines.pop();
+  return lines.map((line) => JSON.parse(line) as unknown);
+}
+
 function persistManager(manager: SessionManager, ref: RunRef, version: number): SessionManager {
   const address = sessionRecordRef(ref);
   let persistError: Error | undefined;
   const saveLeaf = (leafId: string | null, entry?: SessionEntry) => {
     if (persistError) throw persistError;
+    // 先核对版本再追加文件，过期写入者不留下条目；文件追加在数据库事务之外
+    if (withDatabase(address.database, (db) => db.read(address.namespace, address.key)?.version) !== version) throw new StaleVersionError();
+    if (entry) appendEntry(sessionFilePath(ref), entry);
     withDatabase(address.database, (db) => db.transaction(() => {
-      const stored = db.read<{ cwd: string; header: FileEntry; leafId: string | null }>(address.namespace, address.key);
+      const stored = db.read<{ cwd: string; leafId: string | null }>(address.namespace, address.key);
       if (!stored) throw new Error("会话元数据不存在");
       if (stored.version !== version) throw new StaleVersionError();
-      if (entry) db.append(`session:${ref.runId}`, entry);
       version = db.update(address.namespace, address.key, stored.version, { ...stored.data, leafId });
     }));
   };
@@ -62,7 +84,11 @@ function persistManager(manager: SessionManager, ref: RunRef, version: number): 
 export function createSessionManagerForRun(ctx: CreateRunContext): SessionManager {
   const manager = SessionManager.inMemory(ctx.cwd, { id: uuidv7() });
   const ref = sessionRecordRef(ctx);
-  withDatabase(ref.database, (db) => db.create(ref.namespace, ref.key, { cwd: ctx.cwd, header: manager.getHeader(), leafId: null }));
+  const path = sessionFilePath(ctx);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+  try { writeSync(fd, `${JSON.stringify(manager.getHeader())}\n`); fsyncSync(fd); } finally { closeSync(fd); }
+  withDatabase(ref.database, (db) => db.create(ref.namespace, ref.key, { cwd: ctx.cwd, leafId: null }));
   return persistManager(manager, ctx, 1);
 }
 
@@ -80,12 +106,12 @@ function validateSessionRecord(ref: RunRef): { ok: true; entries: FileEntry[]; l
   let version: number;
   try {
     const address = sessionRecordRef(ref);
-    const stored = readRecord<{ cwd: string; header: FileEntry; leafId: string | null }>(address);
+    const stored = readRecord<{ cwd: string; leafId: string | null }>(address);
     if (!stored.exists) return { ok: false, reason: "missing", detail: `会话记录不存在: ${ref.runId}` };
     if (!stored.data || typeof stored.data.cwd !== "string" || !(stored.data.leafId === null || typeof stored.data.leafId === "string")) throw new Error("会话元数据结构无效");
     leafId = stored.data.leafId;
     version = stored.version;
-    rawEntries = withDatabase(address.database, (db) => [stored.data.header, ...db.events<SessionEntry>(`session:${ref.runId}`).map((event) => event.data)]);
+    rawEntries = readEntries(sessionFilePath(ref));
   } catch (error) { return { ok: false, reason: "corrupt", detail: `会话记录无法读取: ${(error as Error).message}` }; }
   const ids = new Set<string>();
 

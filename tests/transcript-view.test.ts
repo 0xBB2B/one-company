@@ -10,7 +10,8 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import { createClock } from "../runtime/clock.ts";
 import type { TimeSource } from "../runtime/clock.ts";
-import { createSessionManagerForRun, readTranscript, sessionRecordRef } from "../runtime/session-records.ts";
+import { createSessionManagerForRun, readTranscript, sessionFilePath, sessionRecordRef } from "../runtime/session-records.ts";
+import { appendFileSync } from "node:fs";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import { closeActiveTranscriptView, openTranscriptView, TranscriptView } from "../runtime/transcript-view.ts";
 
@@ -193,7 +194,7 @@ async function loadThrowingRecord() {
     parentId: null,
     message: { role: "user", content: null, timestamp: Date.now() },
   };
-  withDatabase(repositoryDatabase(ctx.dataRoot, ctx.repoId), (db) => db.append(`session:${ctx.runId}`, malformed));
+  appendFileSync(sessionFilePath(ctx), `${JSON.stringify(malformed)}\n`);
   return ctx;
 }
 

@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdtemp, rm, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { appendFileSync } from "node:fs";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createSessionManagerForRun, openSessionManagerForRun, readTranscript, sessionRecordRef, synthesizeInterruptedResults, transcriptSeq } from "../runtime/session-records.ts";
-import { withDatabase, putRecord, uuidv7, repositoryDatabase } from "../runtime/database.ts";
+import { createSessionManagerForRun, openSessionManagerForRun, readTranscript, sessionFilePath, sessionRecordRef, synthesizeInterruptedResults, transcriptSeq } from "../runtime/session-records.ts";
+import { withDatabase, putRecord, readRecord, uuidv7, repositoryDatabase } from "../runtime/database.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { testRepoId, sessionJson, failDatabaseWrites } from "./helpers/database-fixture.ts";
 
@@ -117,15 +118,22 @@ function writeDoubleDanglingFixture(manager: SessionManager) {
 }
 
 
-test("SDK 会话由 SQLite 保存，重复创建拒绝且不覆盖历史", async () => {
+test("会话条目只存私有文件，data.db 只留元数据；重复创建拒绝且不覆盖历史", async () => {
   const ctx = await makeRunContext();
   const manager = createSessionManagerForRun(ctx);
   writeCompleteFixture(manager);
   const before = sessionJson(ctx);
   expect(() => createSessionManagerForRun(ctx)).toThrow();
   expect(sessionJson(ctx)).toBe(before);
-  expect(manager.getSessionFile()).toBeUndefined();
-  expect((await readdir(join(ctx.dataRoot, "repos", ctx.repoId))).every((name) => name.startsWith("data.db"))).toBe(true);
+  expect(before).toContain("MARKER-XYZ");
+  const file = sessionFilePath(ctx);
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  expect((await stat(dirname(file))).mode & 0o777).toBe(0o700);
+  expect(Object.keys(readRecord<Record<string, unknown>>(sessionRecordRef(ctx)).data).sort()).toEqual(["cwd", "leafId"]);
+  const database = repositoryDatabase(ctx.dataRoot, ctx.repoId);
+  const bytes = (await Promise.all(["", "-wal"].map((suffix) => readFile(database + suffix).catch(() => Buffer.alloc(0))))).map((buffer) => buffer.toString("latin1")).join("");
+  expect(bytes).not.toContain("MARKER-XYZ");
+  expect(withDatabase(database, (db) => db.events(`session:${ctx.runId}`))).toEqual([]);
 });
 
 test("仅切换分支或重置位置后重开仍恢复同一上下文", async () => {
@@ -182,7 +190,7 @@ test("写入失败只通知一次，恢复数据库后也不能保存已污染�
   const errors: Error[] = [];
   const manager = createSessionManagerForRun({ ...ctx, onPersistError: (error) => errors.push(error) });
   const id = manager.appendMessage(userMessage("已保存"));
-  const restore = failDatabaseWrites(repositoryDatabase(ctx.dataRoot, ctx.repoId), "events", "stream", `session:${ctx.runId}`);
+  const restore = failDatabaseWrites(repositoryDatabase(ctx.dataRoot, ctx.repoId), "records", "namespace", "sessions");
   try { manager.appendMessage(userMessage("写入失败")); } finally { restore(); }
   manager.appendMessage(userMessage("失败后追加"));
   expect(errors).toHaveLength(1);
@@ -190,7 +198,8 @@ test("写入失败只通知一次，恢复数据库后也不能保存已污染�
   const reopened = openSessionManagerForRun(ctx);
   if (!reopened.ok) throw new Error(reopened.detail);
   expect(reopened.manager.getLeafId()).toBe(id);
-  expect(reopened.manager.getEntries()).toHaveLength(1);
+  expect(JSON.stringify(reopened.manager.buildSessionContext().messages)).not.toContain("写入失败");
+  expect(sessionJson(ctx)).not.toContain("失败后追加");
 });
 
 test("工具原始结果与结构化提交原样保存，重开条目完全一致", async () => {
@@ -205,7 +214,7 @@ test("工具原始结果与结构化提交原样保存，重开条目完全一�
   expect(sessionJson(ctx)).toContain("MARKER-XYZ");
 });
 
-test("压缩后按 SDK 视图重建上下文，原始完整历史仍保存在 SQLite", async () => {
+test("压缩后按 SDK 视图重建上下文，原始完整历史仍保存在私有会话文件", async () => {
   const ctx = await makeRunContext();
   const manager = createSessionManagerForRun(ctx); const ids = writeCompleteFixture(manager);
   manager.appendCompaction("完成了两次工具调用", ids.textCallId, 999);
@@ -238,7 +247,7 @@ test.each([
   { type: "message", id: "bad", parentId: null, message: { role: "user", content: null } },
 ])("坏消息或悬空父引用被拒绝: %j", async (entry) => {
   const ctx = await makeRunContext(); createSessionManagerForRun(ctx);
-  withDatabase(repositoryDatabase(ctx.dataRoot, ctx.repoId), (db) => db.append(`session:${ctx.runId}`, entry));
+  appendFileSync(sessionFilePath(ctx), `${JSON.stringify(entry)}\n`);
   expect(readTranscript(ctx).ok).toBe(false);
   expect(openSessionManagerForRun(ctx).ok).toBe(false);
 });
