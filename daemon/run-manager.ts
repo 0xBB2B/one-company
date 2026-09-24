@@ -138,7 +138,7 @@ export class RunManager {
     let handle: AgentSessionHandle;
     try {
       tools = await createPmTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease, workspace,
-        epoch: record.data.epoch, alive, stopAgents: (requirementId) => this.stopRequirement(requirementId) });
+        epoch: record.data.epoch, alive, checkLease: () => state.checkPm(lease), stopAgents: (requirementId) => this.stopRequirement(requirementId) });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         context: pmContext(record.data, lease), coreTools: tools.tools, readRoots: [workspace.path], runtime: this.options.runtime, modelRef, thinking,
         completion: { kind: "idle-only" }, clock: this.options.clock, networkGate: this.options.networkGate });

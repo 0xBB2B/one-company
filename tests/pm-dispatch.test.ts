@@ -89,8 +89,8 @@ test("M7-AC13：PM 只在工作区 ready 且需求 active 时派出，受限接�
   expect(request.systemPrompt).toContain(w.requirementId);
   expect(request.systemPrompt).toContain("受限接手");
   expect(JSON.stringify(request)).not.toContain("PROD-BODY-SENTINEL");
-  expect(toolNames(request)).toEqual(["find", "grep", "ls", "pi_company_requirement_manage", "pi_company_spec_change", "pi_company_verification_run",
-    "pi_company_workflow_manage", "read"]);
+  expect(toolNames(request)).toEqual(["find", "grep", "ls", "pi_company_requirement_manage", "pi_company_spec_change", "pi_company_user_interact",
+    "pi_company_verification_run", "pi_company_workflow_manage", "read"]);
   expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { kind: "requirement", state: "running", requirement: w.requirementId } });
 }, 30000);
 

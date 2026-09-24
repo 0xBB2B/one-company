@@ -6,6 +6,7 @@ import { createRequirementManageTool } from "../runtime/requirement-manage-tool.
 import { createUserInteractTool } from "../runtime/user-interact-tool.ts";
 import { MainIntakeInteraction } from "../runtime/main-intake-interaction.ts";
 import type { MainIntakeProviders } from "../runtime/main-intake-interaction.ts";
+import { createPmIntakeProviders } from "../runtime/pm-intake-runtime.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
 import type { OpenRequirementService, RequirementManageHostContext } from "../runtime/main-requirement-interaction.ts";
 import { registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
@@ -14,7 +15,7 @@ export interface RequirementManageExtensionDeps {
   readonly authorization?: HostAuthorizationManager;
   readonly dataRoot?: string;
   readonly openService?: OpenRequirementService;
-  /** 受信宿主或隔离测试注入；缺失时PM接手入口明确拒绝，不装配默认生产者。 */
+  /** 隔离测试注入；缺省使用读取批准清单与 PM 私有会话的真实提供方。 */
   readonly pmIntakeProviders?: MainIntakeProviders;
   /** 仅隔离测试或可信宿主用于缩短在途调用期限。 */
   readonly pmIntakeCallTtlMs?: number;
@@ -35,7 +36,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   const interaction = new MainRequirementInteraction({ dataRoot: root,
     authorization, resolveHost, ...(deps.openService ? { openService: deps.openService } : {}) });
   const intake = new MainIntakeInteraction({ dataRoot: root, authorization, resolveHost,
-    ...(deps.pmIntakeProviders ? { providers: deps.pmIntakeProviders } : {}),
+    providers: deps.pmIntakeProviders ?? createPmIntakeProviders(root),
     ...(deps.pmIntakeCallTtlMs !== undefined ? { callTtlMs: deps.pmIntakeCallTtlMs } : {}) });
   let unregisterShutdown: (() => void) | undefined;
   const connections: Array<() => void> = [];

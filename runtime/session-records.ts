@@ -143,6 +143,12 @@ function validateSessionRecord(ref: RunRef): { ok: true; entries: FileEntry[]; l
   return { ok: true, entries: rawEntries as FileEntry[], leafId, version };
 }
 
+/** 只读已登记运行的会话条目；不打开可写会话，也不据此恢复运行。 */
+export function readSessionEntries(ref: RunRef): { ok: true; entries: FileEntry[] } | SessionFileFailure {
+  const validated = validateSessionRecord(ref);
+  return validated.ok ? { ok: true, entries: validated.entries } : validated;
+}
+
 export type OpenSessionOutcome = { ok: true; manager: SessionManager } | SessionFileFailure;
 
 function requirementClosedFor(ctx: RunRef): boolean {

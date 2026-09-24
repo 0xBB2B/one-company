@@ -752,5 +752,26 @@ export class PmIntakeStore {
     }));
   }
 
+  /** 只读本需求当前接手头及其请求、核对与来源目录，供调度门槛组装连续性事实；不签发凭据或权限。 */
+  readHead(requirementId: string): { request: IntakeRequestRecord; review: IntakeReviewRecord | null; directory: IntakeSourceDirectory } | null {
+    if (!UUID.test(requirementId)) deny("invalid_requirement");
+    const ns = PM_INTAKE_NAMESPACES;
+    return withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() => {
+      const headRow = db.read(ns.heads, requirementId);
+      if (!headRow) return null;
+      const head = checkedHead(headRow.data);
+      const requestRow = db.read(ns.requests, head.requestId);
+      if (!requestRow) deny("stored_record_invalid");
+      const request = checkedRequest(requestRow.data);
+      const directoryRow = db.read(ns.directories, request.sourceDirectoryHash);
+      if (!directoryRow) deny("stored_record_invalid");
+      const directory = checkedDirectoryRecord(directoryRow.data).sourceDirectory;
+      const reviewRow = head.reviewId ? db.read(ns.reviews, head.reviewId) : null;
+      if (head.reviewId && !reviewRow) deny("stored_record_invalid");
+      const review = reviewRow ? clone(reviewRow.data) as IntakeReviewRecord : null;
+      return { request: clone(request), review, directory: clone(directory) };
+    }));
+  }
+
   recordImpact(): never { return deny("impact_provider_unavailable"); }
 }

@@ -1,4 +1,6 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Value } from "typebox/value";
+import { PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import { createSpecPublishGate } from "../runtime/check-round.ts";
 import { uuidv7 } from "../runtime/database.ts";
 import type { PmLease, WorkspaceBinding } from "../runtime/requirement-contracts.ts";
@@ -18,6 +20,8 @@ export interface PmToolsInput {
   epoch: number;
   /** 宿主核验本 PM 物理会话仍存活；模型参数不能让它返回 true。 */
   alive: () => boolean;
+  /** 核验本运行仍持有当前 PM 租约。 */
+  checkLease: () => Promise<void>;
   stopAgents: (requirementId: string) => Promise<void>;
 }
 
@@ -46,6 +50,7 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
         toPiTool("workflow_manage", "查看状态、进入/退出检查阶段、提交中断或等待决策、交付核对与关闭。", WORKFLOW_MANAGE_PARAMETERS, workflow),
         toPiTool("verification_run", "在绑定工作区的受控沙箱里运行正式检查命令，或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, verification),
         toPiTool("spec_change", "提出、校验并在证据满足后发布最小规则候选。", SPEC_CHANGE_PARAMETERS, spec),
+        intakeSubmitTool(input),
       ],
       dispose() { for (const runtime of runtimes) runtime.dispose(); },
     };
@@ -53,4 +58,20 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
     for (const runtime of runtimes) runtime.dispose();
     throw error;
   }
+}
+
+/** PM 提交接手理解：正文随工具调用只落在本运行的私有会话文件，主代理经接手核对读取。 */
+function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
+  return {
+    name: PM_INTAKE_TOOL,
+    label: "user_interact",
+    description: "提交接手理解（purpose=pm-intake）：目标、非目标、约束、允许动作、未决项及影响、场景覆盖，每项附来源 ID。提交后等待主代理核对。",
+    parameters: PM_INTAKE_SUBMIT_PARAMETERS,
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      if (!input.alive() || !Value.Check(PM_INTAKE_SUBMIT_PARAMETERS, params)) throw new Error("pm_intake_submit_denied");
+      await input.checkLease();
+      return { content: [{ type: "text", text: JSON.stringify({ status: "submitted", next: "等待主代理核对接手理解" }) }], details: {} };
+    },
+  } as ToolDefinition;
 }

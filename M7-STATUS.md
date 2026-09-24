@@ -18,8 +18,8 @@
 | AC10 仅主代理可 workspace-prepare/recycle；越界拒绝；外部切分支后旧绑定不能写 | 部分 | 提交 85f4c4f：tests/workspace-manage.test.ts（真实确认、拒绝不留痕、req/<UUID> 分支与固定目录、基线为主仓库 HEAD、外部切分支后 verifyRequirementWorkspace 失败）；tests/project-manage-tool.test.ts（无 UI 拒绝）；project_manage 仅主会话注册且矩阵仅 main 有该工具（tests/core-permissions.test.ts、tests/agent-session.test.ts） | "未 ready 不能派 PM"待 C 片派工门槛验证 |
 | AC11 创建/回收中断幂等恢复；有未交付内容默认保留 | 通过 | 提交 85f4c4f：tests/workspace-manage.test.ts（绑定前中断续办不重复确认/建分支；身份不明目录与指向别处的同名分支阻塞不覆盖；活动需求拒绝回收；未跟踪/未合并内容保留并报告；拒绝确认不删除；回收幂等；只删本需求 worktree 与本地分支） | 无 |
 | AC12 四类任务状态按 unaffected/affected/unknown 正确处理 | 未开始 | | D 片 |
-| AC13 真实链路中接手复核前拒绝正式 plan 与 worker 派工 | 未开始 | | C 片 |
-| AC14 伪通过/伪身份/任一绑定变化不能用旧回执放行 | 未开始 | | C 片 |
+| AC13 真实链路中接手复核前拒绝正式 plan 与 worker 派工 | 部分 | C3：tests/pm-intake-runtime.test.ts（主代理经真实提供方读取 PM 私有会话中的提交；核对前门槛 review_missing，通过后只放行批准清单授权的动作，未授权动作拒绝）；tests/pm-dispatch.test.ts（受限接手上下文、PM 工具含提交入口、上下文不含 prod 正文） | 门槛接入 plan_manage propose/update（D 片）与 worker 派工（E 片） |
+| AC14 伪通过/伪身份/任一绑定变化不能用旧回执放行 | 部分 | C3：tests/pm-intake-runtime.test.ts（未受理提交不计、核对不通过拒绝、PM 改交理解后旧核对失效、非本租约运行的会话不被读取）；主代理身份核验沿用 M4 PmIntakeService（tests/pm-intake-service*.test.ts）；绑定逐项变化判定沿用 tests/pm-intake-contracts.test.ts | 新物理 PM 与普通追加的连续复核在真实入口的用例随 D 片补齐 |
 | AC15 main 与 PM 经 agent_manage 实际派 explore，模型输入探针证明最小上下文 | 未开始 | | F 片 |
 | AC16 三类来源实际运行，未授权网络/无外发授权不发请求 | 未开始 | | F 片 |
 | AC17 research 非 PASS，父代理核验 | 未开始 | | F 片 |
