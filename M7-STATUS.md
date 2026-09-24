@@ -7,9 +7,9 @@
 | AC | 状态 | 证据 | 剩余缺口 |
 |---|---|---|---|
 | AC1 首次受限读完整基线并经主代理核对，后续 diff 增量；接管/丢基线仅 active 时重核对 | 未开始 | | C 片 |
-| AC2 连续追加产生解耦规则与任务 | 未开始 | | D 片 |
-| AC3 间接影响识别，复核绑定 from/to prodHash 与 plan/task 版本 | 未开始 | | D 片 |
-| AC4 未决项只阻塞依赖任务，交付范围内未决项须解决或排除 | 未开始 | | D 片 |
+| AC2 连续追加产生解耦规则与任务 | 部分 | D2：tests/plan-assess.test.ts（连续批准快跑、跳跃、跳跃动画，各自成为独立任务，原任务版本不变） | 规则候选拆分依赖 spec_change 大小与单责门槛（M1/M4 既有测试）；真实模型拆分质量在 M9 |
+| AC3 间接影响识别，复核绑定 from/to prodHash 与 plan/task 版本 | 通过 | D2：tests/plan-assess.test.ts（新增独立功能时原任务复核保留；另章节新增全局输入屏蔽时原任务依据闭包变化，判为无关被拒；复核绑定批准版本与任务版本，旧版本复核被拒） | 无 |
+| AC4 未决项只阻塞依赖任务，交付范围内未决项须解决或排除 | 部分 | D1/D2：任务登记 blockedByQuestionIds；unknown 复核只阻塞对应任务并保持待处理更新（tests/plan-assess.test.ts） | 派工时按 blockedByQuestionIds 阻塞在 E 片；交付范围内未决项的关闭拒绝沿用 M6 预检 |
 | AC5 同需求单一有效 holder，旧运行迟到回执拒绝；不同需求不共用分支/worktree | 部分 | C2：tests/pm-dispatch.test.ts（活着的 PM 再派出被拒；停止后再派出 fence 更高，旧租约的 PM 工具被拒）；不同需求工作区占用登记沿用 M1 managed_workspace_claims 与 tests/workspace-manage.test.ts | 两个 PM 同时竞争派出的并发用例待补 |
 | AC6 plan/task 在 data.db，仅存 ID/hash/引用；重启可恢复 | 部分 | D1：tests/plan-manage.test.ts（计划与任务结构在 data.db，任务说明只在 0600 私有文件，数据库字节不含说明正文，按指纹读取） | 重启后 PM 续接读取计划的用例待补 |
 | AC7 11 核心工具真实注册、六职责与矩阵一致；无 prompts、planner 及其入口 | 部分 | A 片：tests/agent-session.test.ts（五职责真实 SDK 会话的模型请求工具集＝宿主表＋矩阵核心工具，无 bash/write/edit/git_commit）、tests/core-permissions.test.ts（已实现工具 schema 与核心表双向一致，workflow_manage 无 init）、tests/role-catalog.test.ts（内置恰为五定义）、tests/legacy-workflow-retired.test.ts（planner/旧 PM 工厂文件不存在） | plan_manage、agent_manage 未实现；project_manage 八个 action 已齐（提交 85f4c4f、70f6dfc，tests/project-maintenance.test.ts 与 core-permissions 双向一致）；主会话仅注册 4 个核心工具；agents/skills/rules 其余重构在 G 片 |
@@ -17,7 +17,7 @@
 | AC9 断网/关窗/取消/续接不重复副作用；关闭需求会话不续接 | 部分 | C2：tests/pm-dispatch.test.ts（按需求停止后运行终态 stopped、租约释放）；runs.resume 只续接本进程持有的暂停会话，历史运行 not_resumable（tests/run-manager.test.ts、tests/legacy-workflow-retired.test.ts）；网络暂停沿用 tests/integration/network-and-sleep.test.ts | 主会话 workflow_manage 关闭接线待补 |
 | AC10 仅主代理可 workspace-prepare/recycle；越界拒绝；外部切分支后旧绑定不能写 | 部分 | 提交 85f4c4f：tests/workspace-manage.test.ts（真实确认、拒绝不留痕、req/<UUID> 分支与固定目录、基线为主仓库 HEAD、外部切分支后 verifyRequirementWorkspace 失败）；tests/project-manage-tool.test.ts（无 UI 拒绝）；project_manage 仅主会话注册且矩阵仅 main 有该工具（tests/core-permissions.test.ts、tests/agent-session.test.ts） | "未 ready 不能派 PM"待 C 片派工门槛验证 |
 | AC11 创建/回收中断幂等恢复；有未交付内容默认保留 | 通过 | 提交 85f4c4f：tests/workspace-manage.test.ts（绑定前中断续办不重复确认/建分支；身份不明目录与指向别处的同名分支阻塞不覆盖；活动需求拒绝回收；未跟踪/未合并内容保留并报告；拒绝确认不删除；回收幂等；只删本需求 worktree 与本地分支） | 无 |
-| AC12 四类任务状态按 unaffected/affected/unknown 正确处理 | 未开始 | | D 片 |
+| AC12 四类任务状态按 unaffected/affected/unknown 正确处理 | 通过 | D2：tests/plan-assess.test.ts（已完成+无关保持完成；运行中+未知转受阻且待处理更新不解除、门槛阻塞；已完成/失败+受影响转待更新；冻结前须更新；复核只改任务状态，不改验证记录） | 无 |
 | AC13 真实链路中接手复核前拒绝正式 plan 与 worker 派工 | 部分 | D1：tests/plan-manage.test.ts（核对前 propose 被 intake_gate 拒绝，通过后可提出）；tests/pm-dispatch.test.ts（无实施授权不派 PM）；C3：tests/pm-intake-runtime.test.ts（主代理经真实提供方读取 PM 私有会话中的提交；核对前门槛 review_missing，通过后只放行批准清单授权的动作，未授权动作拒绝）；tests/pm-dispatch.test.ts（受限接手上下文、PM 工具含提交入口、上下文不含 prod 正文） | 门槛接入 plan_manage propose/update（D 片）与 worker 派工（E 片） |
 | AC14 伪通过/伪身份/任一绑定变化不能用旧回执放行 | 部分 | C3：tests/pm-intake-runtime.test.ts（未受理提交不计、核对不通过拒绝、PM 改交理解后旧核对失效、非本租约运行的会话不被读取）；主代理身份核验沿用 M4 PmIntakeService（tests/pm-intake-service*.test.ts）；绑定逐项变化判定沿用 tests/pm-intake-contracts.test.ts | 新物理 PM 与普通追加的连续复核在真实入口的用例随 D 片补齐 |
 | AC15 main 与 PM 经 agent_manage 实际派 explore，模型输入探针证明最小上下文 | 未开始 | | F 片 |

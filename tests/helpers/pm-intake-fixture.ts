@@ -1,3 +1,4 @@
+import { approvalDependencyClosure } from "../../runtime/approval-manifest.ts";
 import { execFile } from "node:child_process";
 import { lstat, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -185,6 +186,9 @@ export interface PmIntakeFixture {
     submissionProvider?: PmSubmissionProvider | null;
   }): PmIntakeService;
   captureCurrent(): ReturnType<PmIntakeStore["captureCurrent"]>;
+  /** 按真实交互与清单登记流程批准一个新版本；units 覆盖各章节的全局约束与依赖，implementGoals 为本次实施授权的目标章节。 */
+  approveRevision(input: { body: string; units?: Record<string, { globalConstraint?: boolean; appliesTo?: string[]; dependsOn?: string[] }>;
+    implementGoals: string[] }): Promise<void>;
   setNow(value: number): void;
   advanceNow(value: number): void;
   cleanup(): Promise<void>;
@@ -228,6 +232,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
   await state.bindWorkspace({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
   let confirmOperationId = uuidv7(), useRetained = false;
+  let revisionPlan: { units: Record<string, { globalConstraint?: boolean; appliesTo?: string[]; dependsOn?: string[] }>; implementGoals: string[] } | undefined;
   const load = () => service.loadConfirmationContext({ requirementId: saved.requirementId, savedOperationId: saved.operationId, operationId: confirmOperationId });
   let context = await load();
   const core = await UserInteractionCore.open({ ...config, now: () => now, authorize: () => true, authorizeAction: () => true,
@@ -243,6 +248,20 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
       interpret: async ({ context: current }) => {
         const candidateId = current.document!.candidate.candidateId;
         const common = { basis: "explicit", resolution: "direct", candidateId, requestId: null, actions: [], references: [], supersedes: [], scope: "批准手机号接手范围" };
+        if (revisionPlan) {
+          const plan = revisionPlan;
+          const units = current.document!.partition.units.map((unit) => unit.id);
+          const entries = units.map((unitId) => ({ ...common, kind: unitId === "metadata" || plan.units[unitId]?.globalConstraint ? "constraint" : "target",
+            conclusion: `确认章节 ${unitId}` }));
+          entries.push({ ...common, kind: "action", actions: ["implement"], conclusion: "允许实施本次目标" } as never);
+          return JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries, documentReview: { faithful: true,
+            units: units.map((unitId, index) => ({ id: unitId, disposition: "confirmed", globalConstraint: plan.units[unitId]?.globalConstraint ?? false,
+              appliesTo: plan.units[unitId]?.appliesTo ?? [], dependsOn: plan.units[unitId]?.dependsOn ?? [], conclusionIndexes: [index] })),
+            actions: [{ action: "implement", goalIds: plan.implementGoals, conclusionIndexes: [units.length], unknown: false,
+              constraintIds: approvalDependencyClosure(units.map((unitId) => ({ id: unitId, dependsOn: plan.units[unitId]?.dependsOn ?? [],
+                globalConstraint: plan.units[unitId]?.globalConstraint ?? false, appliesTo: plan.units[unitId]?.appliesTo ?? [] })), plan.implementGoals)
+                .filter((unitId) => !plan.implementGoals.includes(unitId)) }], questions: [] } });
+        }
         if (useRetained) {
           const evidence = current.retainedEvidence?.find((entry) => entry.unitId === "goal.login");
           if (!evidence) throw new Error("fixture retained goal unavailable");
@@ -344,6 +363,21 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
     sourceProvider, submissionProvider, call, identity: callIdentity, lease, manifest: authorized.manifest, basis, sourceDirectory,
     operationId: uuidv7, db: <T>(run: (db: LocalDatabase) => T) => withDatabase(dbPath, run), newCall, makeIntake,
     captureCurrent: () => intakeStore.captureCurrent(basis, sourceDirectory),
+    async approveRevision(input) {
+      saved = await service.updateDraft({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
+        operationId: uuidv7(), title, body: input.body });
+      confirmOperationId = uuidv7(); context = await load();
+      revisionPlan = { units: input.units ?? {}, implementGoals: input.implementGoals };
+      try {
+        interpreted = await core.interpret(core.captureInput({ source: "interactive", text: "确认本次修改并允许实施。" }, "fixture-core"), saved.requirementId);
+        decisions = core.save(interpreted.capability);
+      } finally { revisionPlan = undefined; }
+      const current = document();
+      if (!current) throw new Error("fixture revision approval unavailable");
+      await manifestStore.register(current.manifest);
+      await approver.confirmUpdate({ requirementId: saved.requirementId, operationId: confirmOperationId, version: context.version,
+        title: context.title, body: context.body, receiptId: current.authorization.receiptId, manifest: approvalManifestReference(current.manifest) });
+    },
     setNow(value: number) { now = value; },
     advanceNow(value: number) { now += value; },
     async cleanup() {
