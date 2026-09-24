@@ -1,14 +1,10 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { homedir, userInfo } from "node:os";
-import { promisify } from "node:util";
 import { canonicalDomain } from "./explore-contracts.ts";
-
-const exec = promisify(execFile);
 
 export class WebAccessError extends Error {
   readonly code: string;
@@ -23,8 +19,6 @@ export interface WebDeps {
 export const defaultWebDeps: WebDeps = { fetch: (...args) => fetch(...args), lookup: (hostname) => lookup(hostname, { all: true }) };
 
 export const QUERY_MAX_CHARS = 256;
-const PROD_WINDOW = 12;
-const FILE_WINDOW = 20;
 const SECRET_PATTERNS = [/\bsk-[A-Za-z0-9_-]{16,}/u, /\bgh[pousr]_[A-Za-z0-9]{20,}/u, /\bAKIA[0-9A-Z]{16}\b/u, /-----BEGIN [A-Z ]*KEY-----/u,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/u, /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/u];
 
@@ -34,20 +28,8 @@ function entropy(text: string): number {
   return [...counts.values()].reduce((total, count) => total - (count / text.length) * Math.log2(count / text.length), 0);
 }
 
-function windows(text: string, size: number): string[] {
-  const chars = Array.from(text), result = new Set<string>();
-  for (let index = 0; index + size <= chars.length; index++) {
-    const window = chars.slice(index, index + size).join("");
-    if (window.trim().length === size) result.add(window);
-  }
-  return [...result];
-}
-
-/**
- * 外发核对：查询词由模型拟定，只有逐条通过才签发一次性外发授权。只能挡住原文外发，
- * 挡不住换一种说法描述私有信息。
- */
-export async function checkDisclosure(query: string, context: { roots: string[]; privateTexts: string[] }): Promise<{ contentHash: string } | { rejected: string }> {
+/** 外发核对：查询词由模型拟定，只挡密钥与本机路径等原文外发，不核对需求正文与仓库代码。 */
+export function checkDisclosure(query: string): { contentHash: string } | { rejected: string } {
   if (!query.trim() || /[\p{Cc}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}\u2800]/u.test(query) || Array.from(query).length > QUERY_MAX_CHARS) return { rejected: "查询词须为单行、不含控制或不可见格式字符且不超过 256 字符" };
   if (SECRET_PATTERNS.some((pattern) => pattern.test(query)) || (query.match(/[A-Za-z0-9+/=_-]{32,}/gu) ?? []).some((token) => entropy(token) >= 3.5)) {
     return { rejected: "查询词含疑似密钥" };
@@ -55,19 +37,6 @@ export async function checkDisclosure(query: string, context: { roots: string[];
   const user = (() => { try { return userInfo().username; } catch { return ""; } })();
   if (/(?:^|[\s"'(])(?:\/Users\/|\/home\/|\/root\/|~\/|[A-Za-z]:\\)/u.test(query) || query.includes(homedir()) || (user.length >= 3 && query.includes(user))) {
     return { rejected: "查询词含本机路径或用户目录" };
-  }
-  const prodWindows = windows(query, PROD_WINDOW);
-  if (context.privateTexts.some((text) => prodWindows.some((window) => text.includes(window)))) return { rejected: "查询词含未关闭需求的 prod 正文片段" };
-  const fileWindows = windows(query, FILE_WINDOW);
-  if (fileWindows.length > 0) {
-    for (const root of context.roots) {
-      const args = ["-C", root, "grep", "-F", "-I", "-l", "-q", "--untracked", ...fileWindows.flatMap((window) => ["-e", window]), "--", "."];
-      const found = await exec("git", args, { maxBuffer: 1 << 20 }).then(() => true, (error: { code?: number }) => {
-        if (error.code === 1) return false;
-        throw new WebAccessError("disclosure_check_failed", "无法核对仓库原文");
-      });
-      if (found) return { rejected: "查询词含仓库文件原文" };
-    }
   }
   return { contentHash: createHash("sha256").update(query).digest("hex") };
 }

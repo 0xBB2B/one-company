@@ -1,7 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import type { Context } from "@earendil-works/pi-ai";
 import { checkDisclosure, publicLookup, webFetch, webSearch } from "../runtime/web-access.ts";
 import type { FetchResponse, WebDeps } from "../runtime/web-access.ts";
@@ -30,25 +28,17 @@ function fakeDeps(options: { exa?: "ok" | 429; hits?: Array<{ title: string; url
   return { deps, calls };
 }
 
-test("M7-AC16：外发核对逐条拒绝多行超长、疑似密钥、本机路径、未关闭需求正文片段与仓库文件原文，通过时给出查询词 hash", async () => {
-  const w = await createPmRunWorld(cleanups, { review: false });
-  const root = w.fixture.repositoryRoot;
-  await writeFile(join(root, "private.ts"), "export const internalRetryPolicyName = 'exponential-with-jitter-cap';\n");
-  const context = { roots: [root], privateTexts: ["用户输入正确验证码后成功登录并跳转首页", "# 手机号正常登录 {#goal.login}"] };
-  const reject = async (query: string) => expect(await checkDisclosure(query, context)).toHaveProperty("rejected");
-  await reject("第一行\n第二行");
-  await reject("手\u200b机号正常登录 {#goal.login}");
-  await reject("see /Us\u200bers/x/.ssh/id_rsa");
-  await reject("第一行\u2028第二行");
-  for (const invisible of ["\u034f", "\ufe0f", "\u3164", "\u2800", "\u{e0100}"]) await reject(`手${invisible}机号正常登录 {#goal.login}`);
-  await reject("a".repeat(257));
-  await reject("token sk-abcdefghijklmnopqrstuvwxyz0123");
-  await reject("Zx8Qp2Lm9Vt4Rw7Yk3Hn6Bc1Df5Gj0Ks8Aq");
-  await reject(`读取 ${homedir()}/secret 的方法`);
-  await reject("为什么 /Users/someone/app 报错");
-  await reject("验证码 输入正确验证码后成功登录 的最佳实践");
-  await reject("internalRetryPolicyName = 'exponential-with-jitter-cap' 是什么");
-  expect(await checkDisclosure("vitest 并行 worker 配置方法", context)).toMatchObject({ contentHash: expect.stringMatching(/^[0-9a-f]{64}$/u) });
+test("M7-AC16：外发核对拒绝多行超长、控制与不可见字符、疑似密钥与本机路径，通过时给出查询词 hash", () => {
+  const reject = (query: string) => expect(checkDisclosure(query)).toHaveProperty("rejected");
+  reject("第一行\n第二行");
+  reject("第一行\u2028第二行");
+  reject("a".repeat(257));
+  for (const invisible of ["\u200b", "\u034f", "\ufe0f", "\u3164", "\u2800", "\u{e0100}"]) reject(`gh${invisible}p_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345`);
+  reject("token sk-abcdefghijklmnopqrstuvwxyz0123");
+  reject("Zx8Qp2Lm9Vt4Rw7Yk3Hn6Bc1Df5Gj0Ks8Aq");
+  reject(`读取 ${homedir()}/secret 的方法`);
+  reject("为什么 /Users/someone/app 报错");
+  expect(checkDisclosure("vitest 并行 worker 配置方法")).toMatchObject({ contentHash: expect.stringMatching(/^[0-9a-f]{64}$/u) });
 });
 
 test("M7-AC16：搜索先走 Exa 公开 MCP，限流时改用 DuckDuckGo 并记录实际来源与失败；抓取拒绝内网地址与越界重定向", async () => {
@@ -106,11 +96,11 @@ test("M7-AC15/AC16/AC17：PM 派出联网 explore 自动核对外发后搜索，
   expect(run.ok && run.run).toMatchObject({ role: "pi-company.explore", state: "completed" });
 });
 
-test("M7-AC16：查询词含未关闭需求正文片段或本机路径时派出即被拒，不联网、不创建检索会话", async () => {
+test("M7-AC16：查询词含疑似密钥或本机路径时派出即被拒，不联网、不创建检索会话", async () => {
   const net = fakeDeps();
   const w = await createPmRunWorld(cleanups, { review: false, web: { deps: net.deps, getPage: async () => { throw new Error("不应抓取"); } } });
   const before = w.provider.requests.length;
-  for (const query of ["手机号正常登录 {#goal.login} 怎么实现", `${homedir()}/project 配置`]) {
+  for (const query of ["ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 无效", `${homedir()}/project 配置`]) {
     await expect(w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
       request: { question: "查一下", clues: [], source: { kind: "web", query } }, maxTurns: 3 })).rejects.toMatchObject({ code: "disclosure_rejected" });
   }

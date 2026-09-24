@@ -21,7 +21,7 @@
 | AC13 真实链路中接手复核前拒绝正式 plan 与 worker 派工 | 通过 | C3/D1：核对前 propose 被 intake_gate 拒绝、通过后可提出（tests/plan-manage.test.ts）；无实施授权不派 PM（tests/pm-dispatch.test.ts）；主代理经真实提供方核对 PM 私有会话中的提交（tests/pm-intake-runtime.test.ts）；批准新版本未复核时派工被门槛拒绝（tests/task-dispatch.test.ts「M7-AC4/AC13」） | 无 |
 | AC14 伪通过/伪身份/任一绑定变化不能用旧回执放行 | 通过 | C3：tests/pm-intake-runtime.test.ts（未受理提交不计、核对不通过拒绝、改交理解后旧核对失效、非本租约会话不被读取）；新物理 PM 须重新核对才建立自己的理解基线、旧租约回执被拒（tests/pm-event-delivery.test.ts）；普通追加走影响复核（tests/plan-assess.test.ts）；绑定逐项变化判定沿用 tests/pm-intake-contracts.test.ts | 无 |
 | AC15 main 与 PM 经 agent_manage 实际派 explore，模型输入探针证明最小上下文 | 部分 | F1：tests/explore-dispatch.test.ts（main 与 PM 经 agent_manage 派出 explore；模型输入只含问题、线索与宿主算好 hash 的获准文件，不含 prod 正文与父会话；main 父身份来自已认证连接、不写运行记录、不创建需求现场；PM 父绑定租约 fence/epoch） ；F3：联网来源 explore 只拿到固定查询词与本次搜索结果，工具仅 web_search/web_fetch 与 result_submit，不含 prod 正文（tests/explore-web.test.ts） | knowledge_query 来源的输入绑定（F4） |
-| AC16 三类来源实际运行，未授权网络/无外发授权不发请求 | 部分 | F1：获准直接本地读取按真实路径与宿主计算的文件 hash 绑定，越出工作区、私有位置、符号链接、不存在路径派出即拒，读取授权外文件被拒（tests/explore-dispatch.test.ts）；F3：联网来源派出时自动外发核对（单行≤256 且无控制/不可见格式字符、密钥与高熵串、本机路径、未关闭需求正文 12 字片段、仓库文件 20 字片段），不通过即拒且不发任何网络请求；Exa 公开 MCP 限流时改用 DuckDuckGo 并记录实际来源；web_fetch 只抓本次结果网址、连接时拒内网地址与越界重定向（tests/explore-web.test.ts） | knowledge_query 来源（F4） |
+| AC16 三类来源实际运行，未授权网络/无外发授权不发请求 | 部分 | F1：获准直接本地读取按真实路径与宿主计算的文件 hash 绑定，越出工作区、私有位置、符号链接、不存在路径派出即拒，读取授权外文件被拒（tests/explore-dispatch.test.ts）；F3：联网来源派出时自动外发核对（单行≤256 且无控制/不可见格式字符、密钥与高熵串、本机路径；首版不核对需求正文与仓库代码），不通过即拒且不发任何网络请求；Exa 公开 MCP 限流时改用 DuckDuckGo 并记录实际来源；web_fetch 只抓本次结果网址、连接时拒内网地址与越界重定向（tests/explore-web.test.ts） | knowledge_query 来源（F4） |
 | AC17 research 非 PASS，父代理核验 | 通过 | F1：research 回执 isPass=false，送回派出者的报告标明"research 不是 PASS"、须核对来源与当前性（tests/explore-dispatch.test.ts）；F3：联网 research 按允许域名核验后送回 PM，同样标明不是 PASS（tests/explore-web.test.ts） | 无 |
 | AC18 搜索会话回收；关闭/撤权/接管停止；无关 main 检索不误停 | 部分 | F1：检索结束回收会话；PM 停止、失败或被接管时其 explore 停止且会话失效；main 派出的 explore 绑定发起连接，断开即停止、结果作废，其他连接取不到（tests/explore-dispatch.test.ts） | 无关 main 检索不因需求关闭误停的用例随 F3/F4 补齐 |
 | AC19 内置六职责默认团队零专业定义闭环 | 未开始 | | G、H 片 |
@@ -68,7 +68,7 @@
 
 已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」、tests/project-index-sync.test.ts「归档watch只发无正文metadata」与集成 project-index-sync「新索引对象装配之后的启动失败」在全量负载下偶发超时，单独重跑通过。
 
-独立审查（F3 联网来源）：1 阻塞（查询词插入不可见格式字符可绕过全部文本核对），已改为拒绝控制、可忽略与不可见字符，定向复审"全部解决"；可见字符插入（空格、组合符号）打散片段、git grep 不查被忽略文件两项待用户判断。
+独立审查（F3 联网来源）：1 阻塞（查询词插入不可见格式字符可绕过全部文本核对），已改为拒绝控制、可忽略与不可见字符，定向复审"全部解决"；随后用户决定外发核对只保护密钥与用户目录路径等，去掉需求正文与仓库代码片段比对，不做扫描。
 
 ## 下一窗口续接提示
 

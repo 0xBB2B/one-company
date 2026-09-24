@@ -397,7 +397,7 @@ export class RunManager {
     if (!this.options.runtime.getModels(modelRef.provider).some((model) => model.id === modelRef.id)) throw protocolError("model_unavailable", `模型不可用: ${modelRef.provider}/${modelRef.id}`);
     let source: ExploreInput["source"], search: SearchOutcome | null = null;
     if (input.request.source.kind === "web") {
-      ({ source, search } = await this.webSource(input.request.source.query, requirementId ? [this.options.repositoryRoot, root] : [root]));
+      ({ source, search } = await this.webSource(input.request.source.query));
     } else {
       try { source = await localFileSource(root, input.request.source.paths); }
       catch (error) { if (error instanceof ExploreDispatchError) throw protocolError("invalid_params", error.message); throw error; }
@@ -460,27 +460,10 @@ export class RunManager {
     return { runId, maxTurns: input.maxTurns };
   }
 
-  /**
-   * 联网来源：程序按外发核对规则自动签发一次性外发授权，通过后先完成本次搜索，结果域名即允许抓取的域名。
-   * 核对对照所有未关闭需求的草稿与已批准正文，以及检索根下的仓库文件原文。
-   */
-  private async webSource(query: string, roots: string[]): Promise<{ source: ExploreInput["source"]; search: SearchOutcome }> {
-    const privateTexts: string[] = [];
-    const service = await RequirementService.open({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId,
-      authorize: (request) => request.repoId === this.repoId && ["metadata", "readSaved", "readApproved"].includes(request.action) });
-    const open = withDatabase(this.database, (db) => db.list<RequirementRecord>("requirements").map((row) => row.data)
-      .filter((record) => record.lifecycle !== "closed"));
-    for (const record of open) {
-      for (const source of ["saved", "approved"] as const) {
-        if (!record[source]) continue;
-        try { privateTexts.push((await service.read({ requirementId: record.requirementId, source })).body); }
-        catch { throw protocolError("disclosure_rejected", "无法读取未关闭需求正文进行外发核对，不联网"); }
-      }
-    }
+  /** 联网来源：程序按外发核对规则自动签发一次性外发授权，通过后先完成本次搜索，结果域名即允许抓取的域名。 */
+  private async webSource(query: string): Promise<{ source: ExploreInput["source"]; search: SearchOutcome }> {
     const web = this.options.web ?? { deps: defaultWebDeps, getPage: defaultPageGetter(defaultWebDeps) };
-    let disclosure: Awaited<ReturnType<typeof checkDisclosure>>;
-    try { disclosure = await checkDisclosure(query, { roots, privateTexts }); }
-    catch { throw protocolError("disclosure_rejected", "外发核对失败，不联网"); }
+    const disclosure = checkDisclosure(query);
     if ("rejected" in disclosure) throw protocolError("disclosure_rejected", `未执行：${disclosure.rejected}`);
     let search: SearchOutcome;
     try { search = await webSearch(web.deps, query); }
