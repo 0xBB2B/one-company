@@ -1,14 +1,14 @@
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { activeCheckRoundIn } from "./check-round.ts";
 import type { LocalDatabase } from "./database.ts";
-import { implementScope, readPlanIn } from "./plan-manage.ts";
+import { implementScope, readPlanIn, terminationPending } from "./plan-manage.ts";
 import type { TaskRecord } from "./plan-manage.ts";
 import { latestPmSubmission } from "./pm-intake-runtime.ts";
 import { PmIntakeStore } from "./pm-intake-store.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import type { RunRecord } from "./run-store.ts";
 
-export type PendingItemKind = "adjudicate" | "intake-review" | "question";
+export type PendingItemKind = "adjudicate" | "intake-review" | "question" | "adjust-requirement";
 export interface PendingItem {
   itemId: string;
   kind: PendingItemKind;
@@ -78,9 +78,14 @@ function requirementRow(db: LocalDatabase, requirementId: string) {
   return db.read<RequirementRecord>("requirements", requirementId)!;
 }
 
-/** 待处理事项只取自已有持久记录：待用户裁决的任务、待核对的接手理解、阻塞任务的未决问题。 */
+/** 待处理事项只取自已有持久记录：终止后待调整的需求、待用户裁决的任务、待核对的接手理解、阻塞任务的未决问题。 */
 export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId" | "db" | "record" | "lease">, tasks: TaskRecord[]): PendingItem[] {
   const items: PendingItem[] = [];
+  for (const task of tasks) {
+    if (!terminationPending([task], input.record.revision)) continue;
+    items.push({ itemId: `halt:${task.taskId}`, kind: "adjust-requirement", label: `待你决定：任务 ${task.key} 已终止，请调整需求或取消需求`,
+      version: `halt:${task.taskId}:${input.record.revision}` });
+  }
   for (const task of tasks) {
     if (task.status !== "awaiting_user") continue;
     const row = input.db.read<TaskRecord>("tasks", task.taskId)!;
@@ -108,7 +113,7 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
 
 /** 第二行"在做什么"只按真实状态生成，不采用 PM 模型的自述。 */
 function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<typeof readPlanIn>, status: PmOverviewStatus, items: PendingItem[]): string {
-  if (status === "paused") return "已暂停";
+  if (status === "paused") return terminationPending(tasks, input.record.revision) ? "等待你调整需求" : "已暂停";
   if (status === "pausing") {
     const running = input.children.filter((child) => ACTIVE_CHILD.has(child.state));
     return running.length ? `暂停中：等待 ${running.map((child) => ROLE_LABEL[child.role ?? ""] ?? "子代理").join("、")} 结束` : "暂停中：等待当前工具结束";

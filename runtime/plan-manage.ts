@@ -55,13 +55,19 @@ const UnitRef = object({ unitId, hash });
 export type TaskStatus = "pending" | "running" | "completed" | "failed" | "needs_update" | "blocked" | "cancelled" | "awaiting_parent" | "awaiting_user";
 const Attempt = object({ runId: id, maxTurns: positive, turnsUsed: Type.Integer({ minimum: 0 }), reason: Type.Union([text, Type.Null()]),
   outcome: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("incomplete"), Type.Literal("turn_limit_reached"),
-    Type.Literal("failed"), Type.Literal("stopped")]) });
+    Type.Literal("failed"), Type.Literal("stopped"), Type.Literal("superseded")]) });
 export type TaskAttempt = Static<typeof Attempt>;
+/** 计入"首次加一次重试"的尝试次数：用户终止后因计划变更被统一停止的尝试不计。 */
+export function countedAttempts(task: { attempts: readonly TaskAttempt[] }): number {
+  return task.attempts.filter((attempt) => attempt.outcome !== "superseded").length;
+}
 /** 用户对待裁决任务的决定：只由可信登记写入，PM 不能构造；revision/taskVersion 为登记时的批准版本与任务版本。 */
 const UserDecision = object({
   decisionId: id, choice: Type.Union([Type.Literal("retry"), Type.Literal("adjust"), Type.Literal("terminate")]),
   maxTurns: Type.Union([positive, Type.Null()]), revision: positive, taskVersion: positive,
   usedByRunId: Type.Union([id, Type.Null()]), notified: Type.Boolean(),
+  /** 登记决定那一刻已确认计划的任务清单指纹，终止后据此判断新计划是否有变更。 */
+  confirmedPlan: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })),
 });
 export type UserDecision = Static<typeof UserDecision>;
 const TaskRecord = object({
@@ -80,7 +86,7 @@ export type TaskRecord = Static<typeof TaskRecord>;
 const PlanRecord = object({
   format: Type.Literal("plan/v1"), requirementId: id, planVersion: positive, confirmedVersion: Type.Union([positive, Type.Null()]),
   confirmedTasks: Type.Array(object({ taskId: id, version: positive }), { maxItems: 256 }),
-  taskIds: Type.Array(id, { maxItems: 256 }), knownUnits: Type.Array(UnitRef, { maxItems: 20 }), prodRevision: positive, updatedAt: positive,
+  taskIds: Type.Array(id, { maxItems: 256 }), knownUnits: Type.Array(UnitRef, { maxItems: 20 }), prodRevision: positive, confirmedRevision: Type.Optional(positive), updatedAt: positive,
 });
 export type PlanRecord = Static<typeof PlanRecord>;
 
@@ -135,6 +141,21 @@ export async function readTaskDetail(task: TaskRecord): Promise<Pick<TaskSpec, "
   const content = await readFile(task.detail.path, "utf8");
   if (sha256(content) !== task.detail.hash) throw new PlanManageError("task_not_ready", ["任务说明与登记指纹不符"]);
   return JSON.parse(content) as Pick<TaskSpec, "objective" | "passCriteria" | "scope" | "performance">;
+}
+
+/** 用户终止了某任务且此后尚无新的批准版本：该需求整体暂停，等待用户调整需求或取消需求。 */
+export function terminationPending(tasks: readonly TaskRecord[], revision: number): boolean {
+  return tasks.some((task) => task.userDecision?.choice === "terminate" && task.userDecision.revision >= revision);
+}
+
+/** 用户终止任务后，须确认基于其后批准版本的计划才能派出或恢复子代理。 */
+export function replanPending(plan: Pick<PlanRecord, "confirmedRevision">, tasks: readonly TaskRecord[]): boolean {
+  const last = Math.max(0, ...tasks.filter((task) => task.userDecision?.choice === "terminate").map((task) => task.userDecision!.revision));
+  return last > 0 && (plan.confirmedRevision ?? 0) <= last;
+}
+
+export function confirmedPlanKey(plan: Pick<PlanRecord, "confirmedTasks"> | undefined): string {
+  return sha256(JSON.stringify(plan?.confirmedTasks ?? []));
 }
 
 export function readPlanIn(db: LocalDatabase, requirementId: string): { plan: PlanRecord; tasks: TaskRecord[] } | null {
@@ -297,9 +318,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       record.data.revision > task.userDecision.revision;
     const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!; return task.userDecision?.choice === "adjust" && !readjusted(task); });
     if (waiting.length) deny("task_not_ready", waiting.map((item) => `${byId.get(item.taskId)!.key} 等待调整后的新批准版本`));
-    // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被其他新增或修改的任务揽走；用户终止的任务同样占住其目标
-    const tried = current.tasks.filter((task) => task.attempts.length > 0 && task.status !== "completed" &&
-      (task.status !== "cancelled" || task.userDecision?.choice === "terminate"));
+    // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被其他新增或修改的任务揽走；用户终止的任务在新的批准版本前同样占住其目标
+    const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" &&
+      (task.status !== "cancelled" || terminationPending([task], record.data.revision)));
     const cancelTried = (params.cancel ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId));
     if (cancelTried.length) deny("task_not_ready", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
     const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && !readjusted(task)
@@ -340,7 +361,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const covered = new Set(live.flatMap((task) => task.goalUnitIds));
     const missing = [...implementScope(manifest)].filter((unit) => !covered.has(unit));
     if (missing.length) deny("coverage_incomplete", missing);
-    const plan = checked(PlanRecord, { ...current.plan, confirmedVersion: planVersion,
+    const plan = checked(PlanRecord, { ...current.plan, confirmedVersion: planVersion, confirmedRevision: record.data.revision,
       confirmedTasks: live.map((task) => ({ taskId: task.taskId, version: task.version })), updatedAt: now() });
     return commit({ planVersion, recordVersion: record.version, tasks: new Map() }, plan, []);
   }

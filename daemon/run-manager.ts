@@ -16,7 +16,7 @@ import type { AgentSessionHandle } from "./agent-session.ts";
 import { createPmTools } from "./pm-tools.ts";
 import { createSubagentTools } from "./subagent-tools.ts";
 import { beginTaskAttempt, finishTaskAttempt, TaskDispatchError } from "../runtime/task-dispatch.ts";
-import { readPlanIn, readTaskDetail } from "../runtime/plan-manage.ts";
+import { confirmedPlanKey, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../runtime/plan-manage.ts";
 import type { TaskRecord as PlanTask } from "../runtime/plan-manage.ts";
 import { VERDICTS } from "../runtime/verdicts.ts";
 import { coreToolName } from "../runtime/role-tools.ts";
@@ -44,7 +44,7 @@ export interface RunManagerOptions {
   runtime: ModelRuntime; selectModel: ModelSelector; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
 }
 export interface WaitForSpec { repo: string; requirement: string; stage: string }
-interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void> };
+interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null };
   subagent?: { parentRunId: string; taskId: string; dispose(): void } }
 export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
 const PM_RENEW_MS = 10_000;
@@ -214,9 +214,10 @@ export class RunManager {
       delivering = deliverApprovedEvents({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease,
         deliver: (text) => handle.prompt(text) }).catch(() => {})
         .then(() => { for (const message of takeUnnotifiedDecisions({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId)) handle.prompt(message); })
-        .catch(() => {}).then(() => this.refreshOverview(run.id)).catch(() => {}).finally(() => { delivering = null; });
+        .catch(() => {}).then(() => this.applyHalt(run.id)).catch(() => {})
+        .then(() => this.refreshOverview(run.id)).catch(() => {}).finally(() => { delivering = null; });
     }, PM_EVENT_POLL_MS);
-    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery, tick: async () => { await delivering; } } });
+    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery, tick: async () => { await delivering; }, haltPaused: false, halt: null } });
     registered = true;
     handle.events.on("turn", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     this.trackUsage(run.id, handle);
@@ -306,9 +307,10 @@ export class RunManager {
     return { runId: run.id, maxTurns };
   }
 
-  private async finishSubagent(runId: string, outcome: "completed" | "turn_limit_reached" | "failed" | "stopped"): Promise<void> {
+  private async finishSubagent(runId: string, reported: "completed" | "turn_limit_reached" | "failed" | "stopped"): Promise<void> {
     const entry = this.sessions.get(runId);
     if (!entry?.subagent) return;
+    const outcome = this.supersededRuns.delete(runId) && reported === "stopped" ? "superseded" : reported;
     const { parentRunId, taskId } = entry.subagent;
     entry.subagent.dispose();
     delete entry.subagent;
@@ -340,9 +342,17 @@ export class RunManager {
   async canRunInParallel(_input: { cwd: string; requirement: string; task: string; writePaths: string[] }): Promise<{ ok: true } | { ok: false; reason: string }> { return { ok: false, reason: LEGACY_WORKFLOW_RETIRED }; }
   async verifyDelivery(_runId: string, _requirement: string, _signal?: AbortSignal): Promise<void> { throw retiredError(); }
   /** 只续接本进程内仍持有会话的暂停运行；没有会话不能证明原运行可安全续接。 */
-  async resume(runId: string): Promise<{ state: string }> {
+  async resume(runId: string, options: { children?: boolean } = {}): Promise<{ state: string }> {
     const entry = this.sessions.get(runId);
     if (!entry || entry.handle.state() !== "paused") throw protocolError("not_resumable", "运行没有可续接的暂停会话");
+    const run = await this.runStore.get(runId);
+    if (run.ok && this.halted(run.run.requirement)) throw protocolError("requirement_halted", "任务已被用户终止，须先调整需求或取消需求");
+    if (run.ok && entry.subagent && this.replanPending(run.run.requirement)) throw protocolError("plan_not_confirmed", "须先确认基于调整后批准版本的计划");
+    // 恢复前当场结算终止后的统一停止，不留"先恢复、后停止"的窗口
+    if (entry.subagent) {
+      await this.settleHalt(entry.subagent.parentRunId);
+      if (this.supersededRuns.has(runId) || this.sessions.get(runId)?.handle.state() !== "paused") throw protocolError("not_resumable", "该子代理已因计划变更被停止");
+    }
     await entry.handle.resume();
     await this.runStore.update(runId, { state: "running" });
     const updated = await this.runStore.recordResume(runId, new Date().toISOString());
@@ -350,7 +360,13 @@ export class RunManager {
     // 暂停连带子代理，恢复同样连带；子代理已结束或本就在运行的跳过
     const children = (await this.runStore.list({ requirement: updated.requirement, limit: Number.MAX_SAFE_INTEGER })).items
       .filter((child) => child.parentRunId === runId && this.sessions.get(child.id)?.handle.state() === "paused");
-    for (const child of children) await this.resume(child.id);
+    // 须重新确认计划时子代理保持暂停；已因计划变更待停的子代理不连带恢复，也不因此把已恢复的 PM 报成失败
+    if (options.children !== false && !this.replanPending(updated.requirement)) {
+      if (entry.pm) await this.settleHalt(runId);
+      for (const child of children) {
+        if (!this.supersededRuns.has(child.id) && this.sessions.get(child.id)?.handle.state() === "paused") await this.resume(child.id);
+      }
+    }
     return { state: updated.state };
   }
   async resumeAll(): Promise<{ results: Array<{ runId: string; state: string }> }> { throw retiredError(); }
@@ -399,6 +415,8 @@ export class RunManager {
     return children;
   }
   private readonly overviewFingerprints = new Map<string, string>();
+  /** 因计划变更被统一停止的子代理运行：其尝试记为因重新规划作废。 */
+  private readonly supersededRuns = new Set<string>();
   private readonly headingCache = new Map<string, { hash: string; titles: Map<string, string> }>();
 
   private async headingTitles(record: RequirementRecord): Promise<Map<string, string>> {
@@ -443,6 +461,63 @@ export class RunManager {
     if (this.overviewFingerprints.get(pmRunId) === fingerprint) return;
     this.overviewFingerprints.set(pmRunId, fingerprint);
     this.emit("pm.overview.changed", { requirementId: overview.requirementId, pmRunId });
+  }
+
+  private replanPending(requirementId: string): boolean {
+    return withDatabase(this.database, (db) => {
+      const current = readPlanIn(db, requirementId);
+      return current !== null && replanPending(current.plan, current.tasks);
+    });
+  }
+
+  private halted(requirementId: string): boolean {
+    return withDatabase(this.database, (db) => {
+      const record = db.read<RequirementRecord>("requirements", requirementId)?.data;
+      return record !== undefined && terminationPending(readPlanIn(db, requirementId)?.tasks ?? [], record.revision);
+    });
+  }
+
+  /** 用户终止任务后暂停整个需求；用户批准新的 prod 版本后只恢复 PM，此前暂停的子代理由 PM 决定。 */
+  private async applyHalt(pmRunId: string): Promise<void> {
+    const entry = this.sessions.get(pmRunId);
+    if (!entry?.pm) return;
+    const halted = this.halted(entry.pm.lease.requirementId), state = entry.handle.state();
+    if (halted && !entry.pm.haltPaused) {
+      // 用户先暂停再终止时也记为终止暂停，批准新版本后同样只自动恢复 PM；暂停失败则下一轮重试
+      if (state === "running") await this.pause(pmRunId);
+      entry.pm.haltPaused = true;
+      const children = (await this.runStore.list({ requirement: entry.pm.lease.requirementId, limit: Number.MAX_SAFE_INTEGER })).items
+        .filter((run) => run.parentRunId === pmRunId && ["paused", "paused_network"].includes(this.sessions.get(run.id)?.handle.state() ?? ""))
+        .map((run) => run.id);
+      entry.pm.halt = { children, plan: this.terminationPlanKey(entry.pm.lease.requirementId) };
+    } else if (!halted && entry.pm.haltPaused && state === "paused") {
+      entry.pm.haltPaused = false;
+      await this.resume(pmRunId, { children: false });
+    }
+    await this.settleHalt(pmRunId);
+  }
+
+  /** 新计划确认后与终止时的已确认计划有变更：原暂停子代理统一停止，由 PM 按新计划重新派出；未确认前不结算。 */
+  private async settleHalt(pmRunId: string): Promise<void> {
+    const entry = this.sessions.get(pmRunId), halt = entry?.pm?.halt;
+    if (!entry?.pm || !halt) return;
+    const requirementId = entry.pm.lease.requirementId;
+    if (this.halted(requirementId) || this.replanPending(requirementId)) return;
+    entry.pm.halt = null;
+    if (withDatabase(this.database, (db) => confirmedPlanKey(readPlanIn(db, requirementId)?.plan)) === halt.plan) return;
+    // 先整体标记为待停，再逐个停止：停止期间对名单内任何子代理的恢复都被拒绝
+    for (const child of halt.children) this.supersededRuns.add(child);
+    for (const child of halt.children) await this.stop(child).catch(() => {});
+  }
+
+  /** 最近一次终止决定登记时的已确认计划指纹。 */
+  private terminationPlanKey(requirementId: string): string {
+    return withDatabase(this.database, (db) => {
+      const current = readPlanIn(db, requirementId);
+      const latest = (current?.tasks ?? []).filter((task) => task.userDecision?.choice === "terminate")
+        .sort((a, b) => b.userDecision!.revision - a.userDecision!.revision)[0];
+      return latest?.userDecision?.confirmedPlan ?? confirmedPlanKey(current?.plan);
+    });
   }
 
   /** 本仓库全部运行中/暂停的 PM 概览，供任一主窗口拉取。 */
@@ -655,7 +730,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       catch (error) {
         if (error instanceof Error && ["legacy_workflow_retired", "trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
           "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
-          "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed"].includes((error as { code?: string }).code ?? "")) throw error;
+          "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed", "requirement_halted"].includes((error as { code?: string }).code ?? "")) throw error;
         throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对");
       }
     });

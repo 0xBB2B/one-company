@@ -98,18 +98,55 @@ test("M7-AC35：解释器引用了错误版本、用户没说清或没有当前�
   expect(w.task("login").status).toBe("awaiting_user");
 });
 
-test("M7-AC35：终止任务后任务取消，其目标仍在实施授权内时交付核对阻塞完成关闭", async () => {
+test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不能恢复或派工、不能完成关闭；批准新版本后 PM 自动恢复，确认新计划前不能派工或恢复子代理，新计划有变更时原暂停子代理统一停止且该次尝试不计入重试", async () => {
   const w = await world();
+  w.provider.queue.push({ type: "text", text: "慢慢写失败场景", chunkDelayMs: 3_000 });
+  const failureRun = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.task("failure").taskId, retry: null });
+  await until(async () => (await w.runStore.get(failureRun.runId)).ok && w.provider.queue.length === 0);
   const result = await w.adjudicate("这个任务别做了，终止", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:terminate"])]);
-  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定", chunkDelayMs: 3_000 });
   expect(result).toMatchObject({ status: "recorded", choice: "terminate", taskStatus: "cancelled" });
+  const state = async (id: string) => { const run = await w.runStore.get(id); return run.ok ? run.run.state : "missing"; };
+  await until(async () => await state(w.pm.runId) === "paused" && await state(failureRun.runId) === "paused");
+  const overview = (await w.manager.overviews())[0]!;
+  expect(overview).toMatchObject({ status: "paused", doing: "等待你调整需求" });
+  expect(overview.pendingItems.map((item) => item.label)).toContain("待你决定：任务 login 已终止，请调整需求或取消需求");
+  await expect(w.manager.resume(w.pm.runId)).rejects.toMatchObject({ code: "requirement_halted" });
+  await expect(w.manager.resume(failureRun.runId)).rejects.toMatchObject({ code: "requirement_halted" });
+
   const close = await RequirementCloseService.open({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, authorize: () => true });
   cleanups.push(() => close.dispose());
   expect((await close.deliveryCheck(w.fixture.requirementId)).blockers).toContain("terminated_goal_in_scope");
-  const planVersion = w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
-  await expect(w.plan.execute({ action: "update", planVersion, add: [spec("login-again", "goal.login")] })).rejects.toMatchObject({ code: "task_not_ready" });
-  await expect(w.plan.execute({ action: "update", planVersion, modify: [{ taskId: w.login, version: w.task("login").version, spec: spec("login", "goal.login") }] }))
+  const planVersion = () => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
+  await expect(w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-again", "goal.login")] })).rejects.toMatchObject({ code: "task_not_ready" });
+  await expect(w.plan.execute({ action: "update", planVersion: planVersion(), modify: [{ taskId: w.login, version: w.task("login").version, spec: spec("login", "goal.login") }] }))
     .rejects.toMatchObject({ code: "task_not_ready" });
+
+  w.provider.queue.push({ type: "text", text: "PM 恢复" }, { type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，改用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n",
+    implementGoals: ["goal.login", "scenario.failure"] });
+  await until(async () => await state(w.pm.runId) === "running");
+  expect(await state(failureRun.runId)).toBe("paused");
+  await expect(w.manager.resume(failureRun.runId)).rejects.toMatchObject({ code: "plan_not_confirmed" });
+  expect((await close.deliveryCheck(w.fixture.requirementId)).blockers).not.toContain("terminated_goal_in_scope");
+  await until(() => w.owner().context.baseline?.revision === 2);
+  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
+    global: { assessment: "unaffected", rationale: "只改登录做法" } });
+  await w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-stub", "goal.login", { objective: "用测试桩实现登录" })] });
+  const stub = w.task("login-stub").taskId;
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: stub, retry: null })).rejects.toMatchObject({ code: "plan_not_confirmed" });
+  await w.plan.execute({ action: "confirm", planVersion: planVersion() });
+  await expect(w.manager.resume(failureRun.runId)).rejects.toMatchObject({ code: "not_resumable" });
+  await until(async () => await state(failureRun.runId) === "stopped");
+  await until(() => w.task("failure").status === "pending");
+  expect(w.task("failure").attempts).toMatchObject([{ runId: failureRun.runId, outcome: "superseded" }]);
+  w.provider.queue.push({ type: "text", text: "按测试桩实现", chunkDelayMs: 20_000 });
+  const next = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: stub, retry: null });
+  expect(next.maxTurns).toBe(1);
+  w.provider.queue.push({ type: "text", text: "重新做失败场景", chunkDelayMs: 20_000 });
+  const again = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.task("failure").taskId, retry: null });
+  expect(w.task("failure").attempts.map((attempt) => attempt.runId)).toEqual([failureRun.runId, again.runId]);
 });
 
 test("M7-AC35：调整目标或范围后须等新的批准版本才能按新范围修改任务，修改后可再派出一次", async () => {
@@ -174,3 +211,15 @@ test("M7-AC35：解释结果除裁决外还夹带其他条目时整体不登记"
   expect(w.task("login").status).toBe("awaiting_user");
 });
 
+
+test("M7-AC35：用户先暂停 PM 再终止任务，批准新版本后 PM 同样自动恢复", async () => {
+  const w = await world();
+  expect(await w.manager.pause(w.pm.runId)).toMatchObject({ state: "paused", confirmed: true });
+  await w.adjudicate("这个任务别做了，终止", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:terminate"])]);
+  const state = async () => { const run = await w.runStore.get(w.pm.runId); return run.ok ? run.run.state : "missing"; };
+  await until(async () => (await w.manager.overviews())[0]!.doing === "等待你调整需求");
+  w.provider.queue.push({ type: "text", text: "PM 恢复" }, { type: "text", text: "PM 收到用户决定" }, { type: "text", text: "PM 收到新版本差异" });
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n改用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n",
+    implementGoals: ["goal.login", "scenario.failure"] });
+  await until(async () => await state() === "running");
+});

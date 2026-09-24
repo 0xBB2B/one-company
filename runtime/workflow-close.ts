@@ -21,7 +21,7 @@ import { resolveRealRepoPath } from "./write-guard.ts";
 import { writeFileAtomic } from "./store.ts";
 import { readVerdictsIn } from "./verdicts.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
-import { implementScope, readPlanIn } from "./plan-manage.ts";
+import { implementScope, readPlanIn, terminationPending } from "./plan-manage.ts";
 import { endRequirementExploreSessionsIn } from "./explore-session.ts";
 
 export const CLOSE_OPERATIONS = "close_operations";
@@ -144,10 +144,10 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
     if (verdicts.some((verdict) => verdict.role === "reviewer") && verdicts.some((verdict) => verdict.role === "qa") && independent.size < 2) blockers.push("independent_verdicts_required");
   }
   if (pendingProposalsIn(db, repoId, requirementId).length > 0) blockers.push("spec_candidates_unpublished");
-  // 用户终止的任务：其目标仍在实施授权内时，需求不能以完成关闭，须先从 prod 去掉该目标或取消需求
+  // 用户终止任务后、批准新的 prod 版本前，其目标仍在实施授权内时需求不能以完成关闭
   if (record.data.approvalManifest) {
     const scope = implementScope(registeredApprovalManifestIn(db, repoId, record.data.approvalManifest.reference, record));
-    const terminated = readPlanIn(db, requirementId)?.tasks.filter((task) => task.status === "cancelled" && task.userDecision?.choice === "terminate") ?? [];
+    const terminated = readPlanIn(db, requirementId)?.tasks.filter((task) => terminationPending([task], record.data.revision)) ?? [];
     if (terminated.some((task) => task.goalUnitIds.some((unit) => scope.has(unit)))) blockers.push("terminated_goal_in_scope");
   }
   if (activeCheckRoundIn(db, repoId, requirementId)) blockers.push("check_phase_active");

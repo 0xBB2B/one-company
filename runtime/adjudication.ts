@@ -1,6 +1,6 @@
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
-import { readPlanIn, TASKS } from "./plan-manage.ts";
+import { confirmedPlanKey, readPlanIn, TASKS } from "./plan-manage.ts";
 import type { TaskRecord, UserDecision } from "./plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
@@ -69,7 +69,7 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const task = row.data;
     if (task.requirementId !== input.requirementId || task.status !== "awaiting_user" || parsed.version !== `task:${taskId}:${row.version}`) deny("item_changed");
     const userDecision: UserDecision = { decisionId: input.decisionId, choice: parsed.choice, maxTurns: parsed.maxTurns, revision: record.revision,
-      taskVersion: task.version, usedByRunId: null, notified: false };
+      taskVersion: task.version, usedByRunId: null, notified: false, confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan) };
     const status = parsed.choice === "retry" ? "pending" : parsed.choice === "adjust" ? "needs_update" : "cancelled";
     const next = { ...task, status, userDecision, updatedAt: input.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, taskId!, row.version, next);
@@ -91,7 +91,7 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
         ? `用户决定：任务 ${task.key} 再给一次机会，轮数上限 ${decision.maxTurns}。可用 agent_manage dispatch 直接派出，不带 retry；这次不占你的重试机会。`
         : decision.choice === "adjust"
           ? `用户决定：任务 ${task.key} 调整目标或范围。等用户批准新的 prod 版本后，复核并按新范围修改该任务，修改后可再派出一次。`
-          : `用户决定：终止任务 ${task.key}，任务已取消。在其目标从 prod 去掉之前，需求不能以完成关闭。`);
+          : `用户决定：终止任务 ${task.key}，任务已取消，整个需求暂停，等用户调整需求或取消需求。恢复后先复核新批准版本的差异，确认基于新版本的计划后才能派子代理；此前暂停的子代理由你决定恢复或停止。`);
     }
     return messages;
   }));
