@@ -38,6 +38,9 @@
 | AC30 最多一次父代理批准的重试，之后待用户裁决 | 部分 | E2：tests/task-dispatch.test.ts（未带原因的再派被拒；带原因与新上限重试一次；再未完成进入 awaiting_user，第三次派工、修改该任务、另起覆盖其目标的新任务均被拒；无需重试时带 retry 被拒） | 用户新决定解除待裁决的入口待补 |
 | AC31 正式计划/派工缺目标/通过条件/范围/性能条件拒绝 | 部分 | D1：tests/plan-manage.test.ts（缺目标、通过条件、范围、性能条件或有效轮次上限拒绝登记；冻结前须覆盖全部获准实施章节；版本递增与过期版本拒绝） | 派工侧校验在 E 片 |
 | AC32 非阻塞建议不生成任务，扩范围须用户决定 | 部分 | D1：tests/plan-manage.test.ts（任务只能引用获准实施的章节，越出授权即拒；任务只能由 PM 经 plan_manage 登记，审查结果没有生成任务的入口） | 同一未完成任务的重试限制在 E 片 |
+| AC33 面板只显示运行中/暂停的 PM，字段按 PM+子代理累计，状态由程序生成，⏸ 时停止计时，p 暂停/恢复连带子代理 | 未开始 | | §10.7 |
+| AC34 多窗口：一窗口消费后其他窗口该行消失，旧版本提交被拒；窗口全关后 PM 继续、事项保留 | 未开始 | | §10.7 |
+| AC35 决策只依据决策包持久记录并绑定版本；PM/子代理不能登记用户决定或以取消/拒绝关闭；待裁决任务只能由用户三种决定解除 | 未开始 | | §10.7 |
 
 ## 当前阻塞
 
@@ -59,7 +62,7 @@
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
 M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计；C4 已批准更新按序投递 PM 并确认消费（runtime/pm-event-delivery.ts，daemon 500ms 轮询），assess-update 绑定本次收到的理解基线，advancedGate 覆盖语义按序收敛。A–E、C4 各有独立审查且定向复审"全部解决"或"无阻塞"。
-待做顺序：主会话注册 workflow_manage（close 需真实用户回执）与完成通知消费；F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML）与 MCP 优先；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts 与旧 skills/rules、重写主会话说明；用户新决定解除 awaiting_user 的入口；H 零自定义闭环与全量回归、收口 M7-STATUS。
-已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§13.2 与 M7-AC20/21；C-3 与 M5 两条观察本阶段不处理。
+待做顺序：§10.7 主窗口 PM 面板与待处理事项（M7 要做第 10 项、AC33–35；先后端：运行用量累计与父子汇总、程序生成的"在做什么"、待处理事项查询与广播、按版本核对的消费、决策包、用户三种裁决解除 awaiting_user、PM 禁止以取消/拒绝关闭、主会话注册 workflow_manage；再做面板：替换现有 Agents 面板为 PM 树形视图、↑↓/Enter/p 键）与完成通知按 §10.4 续投；F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML）与 MCP 优先；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts 与旧 skills/rules、重写主会话说明；H 零自定义闭环与全量回归、收口 M7-STATUS。
+已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§10.7、§13.2 与 M7-AC20/21、AC33–35；C-3 与 M5 两条观察本阶段不处理。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
 ```
