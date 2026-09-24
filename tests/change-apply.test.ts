@@ -69,9 +69,9 @@ test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不�
   const w = await world(); const tool = await w.tool();
   const good = { path: "src/b.ts", baseHash: "absent", content: "export const b = 2;\n" };
   const cases: Array<[string, Record<string, unknown>]> = [
-    ["forbidden_path", { path: "docs/spec/x.rules.json", baseHash: "absent", content: "{}" }],
-    ["forbidden_path", { path: "docs/prod/x.md", baseHash: "absent", content: "x" }],
-    ["forbidden_path", { path: ".git/hooks/pre-commit", baseHash: "absent", content: "x" }],
+    ["out_of_scope", { path: "docs/spec/x.rules.json", baseHash: "absent", content: "{}" }],
+    ["out_of_scope", { path: "docs/prod/x.md", baseHash: "absent", content: "x" }],
+    ["out_of_scope", { path: ".git/hooks/pre-commit", baseHash: "absent", content: "x" }],
     ["forbidden_path", { path: "../outside.ts", baseHash: "absent", content: "x" }],
     ["out_of_scope", { path: "lib/c.ts", baseHash: "absent", content: "x" }],
     ["stale_base", { path: "src/a.ts", baseHash: sha("旧内容"), content: "x" }],
@@ -195,7 +195,7 @@ test("M5-AC2：生成器只能从沙箱生成目录按声明指纹导入，越�
   await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "link.ts", targetHash: w.base }] }))
     .rejects.toMatchObject({ code: "path_escape" });
   await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "docs/spec/x.rules.json", baseHash: "absent", sourcePath: "gen/out.ts", targetHash }] }))
-    .rejects.toMatchObject({ code: "forbidden_path" });
+    .rejects.toMatchObject({ code: "out_of_scope" });
   await expect(w.read("src/out.ts")).rejects.toMatchObject({ code: "ENOENT" });
   await writeFile(join(scratch, "gen", "blob.bin"), Buffer.from([0xff, 0xfe, 0x00, 0x80]));
   const blobHash = createHash("sha256").update(Buffer.from([0xff, 0xfe, 0x00, 0x80])).digest("hex");
