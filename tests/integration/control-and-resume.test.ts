@@ -83,7 +83,7 @@ test("跨窗口暂停不虚报确认；安全停止确认对应真实进程退�
   expect(await b.call("runs.stop", { runId: run.id })).toMatchObject({ state: "stopped", confirmed: true });
   expect(alive(task.pid)).toBe(false);
   expect(await a.client.call("runs.get", { runId: run.id })).toMatchObject({ run: { state: "stopped" } });
-  await expect(b.call("runs.resume", { runId: run.id })).rejects.toThrow("legacy_workflow_retired");
+  await expect(b.call("runs.resume", { runId: run.id })).rejects.toThrow("not_resumable");
   await delay(1150); expect(w.sessions()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
 }, 30000);
 

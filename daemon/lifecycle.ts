@@ -601,6 +601,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       locateRequirementAgent: (requirement) => runManager!.locateRequirementAgent(requirement),
     });
     runManager = new RunManager({
+      repositoryRoot,
       dataRoot: capturedOptions.dataRoot,
       repoId,
       runStore,

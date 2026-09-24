@@ -13,7 +13,6 @@ import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
 import { controlToken } from "../runtime/daemon-auth.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { repositoryDatabase, withDatabase, uuidv7 } from "../runtime/database.ts";
-import { registerDispatchTools } from "../extensions/dispatch.ts";
 import { readDecisions, inspectDecision, buildRecord, validateDecisionInput, nextDecisionId } from "../runtime/decisions.ts";
 import { bindEvidence, checkEvidence, withLegacyReadDatabase } from "../runtime/workflow-state.ts";
 import { createWorkflowTool, executeWorkflowAction } from "../runtime/workflow-tool.ts";
@@ -159,29 +158,6 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(withLegacyReadDatabase(w.database, (db) => Number(db.prepare("SELECT 1 AS n").get()!.n))).toBe(1);
   });
 
-  test("R2/R3 真实多仓socket按全局offset续页且最终转义JSON不超预算", async () => {
-    const a = await fixture(undefined, true); const b = await fixture();
-    const first = await a.create(); const second = await b.create();
-    const ca = await socket(a); const cb = await socket(b); const tools: any[] = [];
-    const clients = new Map([[a.repoId, ca], [b.repoId, cb]]);
-    registerDispatchTools({ registerTool: (tool: unknown) => tools.push(tool) } as any, () => ({ clients: { all: () => [...clients.values()], forRepo: (id: string) => clients.get(id) } as any, windowId: "pagination", workspace: { repos: [a, b].map((w) => ({ path: w.repo.root, repoId: w.repoId, commonDir: w.repoDir })), skipped: [] } }));
-    const query = (limit: number, offset: number) => tools[0].execute("x", { action: "list", limit, offset }, undefined, undefined, { cwd: a.repo.root });
-    const page0 = await query(1, 0); const page1 = await query(1, page0.details.coverage.nextOffset);
-    expect(page0.content[0].text).toContain(first.id); expect(page1.content[0].text).toContain(second.id);
-    expect(page1.details.coverage.nextOffset).toBeNull(); expect(page1.details.coverage.remaining).toBe(0);
-    const ids = new Set([first.id, second.id]);
-    withDatabase(a.database, (db) => db.transaction(() => { for (let n = 0; n < 100; n++) { const id = uuidv7(); ids.add(id); db.create("runs", id, { ...first, id }, id); } }));
-    let offset = 0; const found = new Set<string>();
-    for (let n = 0; n < 10; n++) {
-      const page = await query(100, offset);
-      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(16_384);
-      for (const id of ids) if (page.content[0].text.includes(id)) { expect(found.has(id)).toBe(false); found.add(id); }
-      if (page.details.coverage.nextOffset === null) break;
-      expect(page.details.coverage.nextOffset).toBeGreaterThan(offset); offset = page.details.coverage.nextOffset;
-    }
-    expect(found).toEqual(ids);
-  }, 20_000);
-
   test("F1 接管失败后stop/终态pause/stopAll/close均不能把活进程报已停", async () => {
     const w = await fixture({ pidStartedAt: async () => null, ps: async () => { throw new Error("probe ps denied"); } });
     const run = await w.create(); await w.runs.markInterruptedOnStartup();
@@ -274,13 +250,6 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(Buffer.byteLength(JSON.stringify(activity))).toBeLessThanOrEqual(16_384);
     expect((activity.snapshot as unknown[]).length).toBeLessThanOrEqual(100);
     expect(activity.coverage).toMatchObject({ truncated: true, unconfirmed: 2001 });
-    const tools: any[] = [];
-    registerDispatchTools({ registerTool: (tool: unknown) => tools.push(tool) } as any, () => ({ clients: { all: () => [client], forRepo: () => client } as any, windowId: "test", workspace: { repos: [{ path: w.repo.root, repoId: w.repoId, commonDir: w.repoDir }], skipped: [] } }));
-    const output = await tools[0].execute("x", { action: "list", limit: 3 }, undefined, undefined, { cwd: w.repo.root });
-    expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(16_384);
-    expect(output.content[0].text).toContain("页外未确认=1998");
-    expect(output.details.coverage).toMatchObject({ returned: 3, remaining: 1998, truncated: true });
-    expect((await tools[0].execute("x", { action: "list", limit: 0 })).details.isError).toBe(true);
     for (const limit of [0, -1, 1.5, Number.MAX_SAFE_INTEGER]) {
       expect(await executeWorkflowAction({ action: "list", limit }, w.ctx)).toMatchObject({ ok: false });
       await expect(w.manager.list({ limit })).rejects.toThrow();

@@ -901,7 +901,7 @@ describe("集成：旧正文查看与恢复入口退场", () => {
       expect((await renderShell(mounted.harness)).join("\n")).not.toMatch(/查看|继续|续接/);
 
       await expect(world.client.call("subscribe.transcript", { runId, fromSeq: 0 })).rejects.toMatchObject({ code: "legacy_workflow_retired" });
-      await expect(world.client.call("runs.resume", { runId })).rejects.toMatchObject({ code: "legacy_workflow_retired" });
+      await expect(world.client.call("runs.resume", { runId })).rejects.toMatchObject({ code: "not_resumable" });
     } finally {
       await unmountShell(mounted);
     }

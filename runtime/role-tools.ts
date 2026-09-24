@@ -1,3 +1,5 @@
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "typebox";
 import { toolActionsForRole } from "./core-permissions.ts";
 import type { CoreRole, CoreTool } from "./core-permissions.ts";
 import { EXPLORE_HOST_TOOLS } from "./explore-capabilities.ts";
@@ -21,4 +23,24 @@ export function coreToolName(tool: CoreTool): string {
 
 export function coreToolsForRole(role: CoreRole): CoreTool[] {
   return Object.keys(toolActionsForRole(role)) as CoreTool[];
+}
+
+export interface CoreToolRuntime {
+  execute(input: unknown): unknown;
+  dispose(): void;
+}
+
+/** 把核心工具工厂的执行体包装成宿主工具；参数 schema 即工厂导出的固定白名单。 */
+export function toPiTool(tool: CoreTool, description: string, parameters: TSchema, runtime: CoreToolRuntime): ToolDefinition {
+  return {
+    name: coreToolName(tool),
+    label: tool,
+    description,
+    parameters,
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      const result = await runtime.execute(params);
+      return { content: [{ type: "text", text: JSON.stringify(result ?? null) }], details: {} };
+    },
+  } as ToolDefinition;
 }

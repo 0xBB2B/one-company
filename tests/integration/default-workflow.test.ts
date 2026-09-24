@@ -48,7 +48,7 @@ test("旧默认完整工作流永久拒绝：USER/shape/skipped不能派工、�
   manager.markStarted(); cleanup.push(() => manager.close());
   const snapshot = () => withDatabase(database, (db) => JSON.stringify({ requirements: db.list("requirements"), runs: db.list("runs"), sessions: db.list("sessions"), decisions: db.events(decisionStream(requirement, "user")) }));
   const before = snapshot(), source = await readFile(join(repo.root, "README.md"), "utf8");
-  await expect(manager.dispatchRequirement({ requirement, cwd: repo.root })).rejects.toThrow("永久淘汰");
+  expect("dispatchRequirement" in manager).toBe(false);
   for (const action of ["advance", "shape-confirm", "task-start", "task-finish"]) {
     expect(await executeWorkflowAction({ action, requirement, decisionId: "USER-001", version: 1, stage: "accepted", task: "T-1", result: { verdict: "PASS" } }, ctx)).toMatchObject({ ok: false });
   }

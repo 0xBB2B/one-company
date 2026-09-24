@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { RelayQueue } from "../daemon/relay-queue.ts";
-import { registerDispatchTools } from "../extensions/dispatch.ts";
+import { registerAgentManageTool } from "../extensions/agent-manage.ts";
 import relayExtension, { registerRelayInbox } from "../extensions/relay.ts";
 import { currentVersion, executeWorkflowAction, createWorkflowTool, retryOnStaleVersion } from "../runtime/workflow-tool.ts";
 import { advanceStage, checkResume, failTask, finishTask, recordShape, rejectRequirement, requirementStateRef, retreatStage, rollbackTask, skippedGates, startTask, updateTaskFields } from "../runtime/workflow-state.ts";
@@ -98,11 +98,13 @@ describe("M4 旧工作流授权和实际执行拒绝矩阵", () => {
       await expect(readFile(join(root, path), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     }
   });
-  test("旧代理管理工具只剩状态、暂停与停止，不提供派工或恢复", async () => {
+  test("主会话只注册 agent_manage，旧批量列表、批量停止与恢复入口不存在", async () => {
     const tools: any[] = []; const pi = { registerTool: (tool: any) => tools.push(tool) } as any;
-    registerDispatchTools(pi, () => { throw new Error("不得定位旧连接"); });
-    expect(tools.map((tool) => tool.name)).toEqual(["pi_company_agents"]);
-    for (const action of ["resume", "resumeAll", "resumeInterrupted"]) expect((await tools[0].execute("x", { action })).details.isError).toBe(true);
+    registerAgentManageTool(pi, () => { throw new Error("不得定位旧连接"); });
+    expect(tools.map((tool) => tool.name)).toEqual(["pi_company_agent_manage"]);
+    for (const action of ["list", "pauseAll", "stopAll", "resumeAll", "resumeInterrupted"]) {
+      expect((await tools[0].execute("x", { action, repoId: "a".repeat(64) })).details.isError).toBe(true);
+    }
   });
   test("daemon执行器移除子派工/排队/超限返修，并拒绝单个批量中断网络恢复", async () => {
     const w = await world();
@@ -119,10 +121,10 @@ describe("M4 旧工作流授权和实际执行拒绝矩阵", () => {
     }
     const before = w.snapshot();
     for (const method of ["dispatchRoleInternal", "startRoleRun", "scheduleWaitingTasks", "assertRepairAllowed", "resumeInterruptedLocked", "buildRequirementRelay", "buildRequirementDispatch"]) expect((w.manager as any)[method]).toBeUndefined();
-    await expect(w.manager.dispatchRequirement({ requirement: REQUIREMENT, cwd: w.ctx.cwd })).rejects.toThrow("永久淘汰");
+    expect("dispatchRequirement" in w.manager).toBe(false);
     await expect(w.manager.dispatchReview({ requirement: REQUIREMENT, cwd: w.ctx.cwd, baseline: "old", snapshot: { head: "old", fingerprint: "old" } })).rejects.toThrow("永久淘汰");
-    await expect(w.manager.resume(paused.id)).rejects.toThrow("永久淘汰");
-    await expect(w.manager.resume(network.id)).rejects.toThrow("永久淘汰");
+    await expect(w.manager.resume(paused.id)).rejects.toMatchObject({ code: "not_resumable" });
+    await expect(w.manager.resume(network.id)).rejects.toMatchObject({ code: "not_resumable" });
     await expect(w.manager.resumeAll()).rejects.toThrow("永久淘汰");
     for (const run of [queued, failed, paused]) expect(await w.manager.resumeInterrupted(run.id)).toMatchObject({ ok: false, confirmed: false });
     await w.manager.resumeNetworkPaused("retire-model");
@@ -177,11 +179,12 @@ describe("M4 旧工作流授权和实际执行拒绝矩阵", () => {
     for (const [method, params] of [
       ["dispatch.requirement", { requirement: REQUIREMENT, cwd: w.ctx.cwd }],
       ["dispatch.review", { requirement: REQUIREMENT, cwd: w.ctx.cwd, baseline: "HEAD", snapshot: { head: "old", fingerprint: "old" } }],
-      ["runs.resume", { runId: queued.id }], ["runs.resumeAll", {}], ["runs.resumeInterrupted", { runId: queued.id }],
+      ["runs.resumeAll", {}], ["runs.resumeInterrupted", { runId: queued.id }],
       ["relay.answer", { questionId: uuidv7(), answer: "确认", windowId: "main" }],
       ["relay.forward", { requirement: REQUIREMENT, message: SECRET, windowId: "main" }],
       ["subscribe.transcript", { runId: queued.id, fromSeq: 0 }],
     ] as Array<[string, Record<string, unknown>]>) await expect(client.call(method, params)).rejects.toThrow("legacy_workflow_retired");
+    await expect(client.call("runs.resume", { runId: queued.id })).rejects.toThrow("没有可续接");
     await expect(client.call("shells.markStopped", { taskId: "unknown", expectedPid: 99999, expectedStartedAt: "0", decisionId: "USER-001" })).rejects.toThrow("trusted_stop_required");
     expect(await client.call("relay.pending")).toEqual({ questions: [], notices: [] });
     for (const response of [await client.call("runs.list", { limit: 100 }), await client.call("runs.get", { runId: queued.id }), await client.call("subscribe.activity")]) expect(JSON.stringify(response)).not.toContain(SECRET);

@@ -11,7 +11,15 @@ import { assertLegacyRequirementId, withLegacyReadDatabase } from "../runtime/wo
 import { checkedMetadataPage, legacyMetadataPage } from "../runtime/workflow-tool.ts";
 import type { MetadataPageOptions } from "../runtime/workflow-tool.ts";
 import { LEGACY_WORKFLOW_RETIRED } from "../runtime/decision-record-tool.ts";
+import { createAgentRoleSession } from "./agent-session.ts";
 import type { AgentSessionHandle } from "./agent-session.ts";
+import { createPmTools } from "./pm-tools.ts";
+import type { PmTools } from "./pm-tools.ts";
+import { withDatabase } from "../runtime/database.ts";
+import type { PmLease, RequirementRecord } from "../runtime/requirement-contracts.ts";
+import { RequirementStateStore } from "../runtime/requirement-state.ts";
+import type { TimerHandle } from "../runtime/clock.ts";
+import { MANAGED_WORKSPACES } from "../runtime/workspace-manage.ts";
 import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
 
@@ -19,12 +27,26 @@ export interface SelectedModel { provider: string; id: string }
 export type ModelSelector = (input: { roleName: string; taskId?: string }) => SelectedModel;
 export type EmitFn = (event: string, data: Record<string, unknown>, filter?: (windowId: string) => boolean) => void;
 export interface RunManagerOptions {
-  dataRoot: string; repoId: string; runStore: RunStore; shellRegistry: ShellRegistry;
+  repositoryRoot: string; dataRoot: string; repoId: string; runStore: RunStore; shellRegistry: ShellRegistry;
   networkGate: NetworkPauseGate; relayQueue: RelayQueue; roleCatalog: RoleCatalogEntry[];
   runtime: ModelRuntime; selectModel: ModelSelector; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
 }
 export interface WaitForSpec { repo: string; requirement: string; stage: string }
-interface SessionEntry { kind: RunKind; handle: AgentSessionHandle }
+interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle } }
+export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
+const PM_RENEW_MS = 10_000;
+const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "renew-pm", "release-pm", "check-pm"];
+
+function pmContext(record: RequirementRecord, lease: PmLease): string {
+  const workspace = record.workspace!;
+  return [
+    `需求 ID：${record.requirementId}`,
+    `工作区：${workspace.path}（分支 ${workspace.branch}）`,
+    `当前批准版本：revision ${record.revision}，prod hash ${record.approved!.hash}`,
+    `PM 运行：${lease.runId}，fence ${lease.fence}`,
+    "当前处于受限接手：先用 pi_company_requirement_manage 读取完整批准正文，再提交接手理解等待主代理核对；核对通过前不能正式提出或更新计划，也不能派 worker。",
+  ].join("\n");
+}
 export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "parentRunId" | "state" | "startedAt" | "updatedAt" | "endedAt" | "turns"> & { stateReason?: string };
 function runMetadata(run: RunRecord): RunMetadata {
   const timestamp = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
@@ -58,6 +80,7 @@ export class RunManager {
   private readonly shellRegistry: ShellRegistry;
   private readonly relayQueue: RelayQueue;
   private readonly emit: EmitFn;
+  private readonly options: RunManagerOptions;
   private readonly sessions = new Map<string, SessionEntry>();
   private started = false;
   private resolveStarted!: () => void;
@@ -65,6 +88,7 @@ export class RunManager {
 
   constructor(options: RunManagerOptions) {
     this.startedPromise = new Promise((resolve) => { this.resolveStarted = resolve; });
+    this.options = options;
     this.repoId = options.repoId;
     this.database = repositoryDatabase(options.dataRoot, options.repoId);
     this.runStore = options.runStore;
@@ -74,12 +98,100 @@ export class RunManager {
   }
   markStarted(): void { if (!this.started) { this.started = true; this.resolveStarted(); } }
   async awaitStarted(): Promise<void> { if (!this.started) await this.startedPromise; }
-  async dispatchRequirement(_input: { requirement: string; cwd: string; context?: DispatchSettingsContext }): Promise<{ runId: string }> { throw retiredError(); }
+  private async pmState(): Promise<RequirementStateStore> {
+    const { repositoryRoot, dataRoot, repoId } = this.options;
+    return RequirementStateStore.open({ repositoryRoot, dataRoot, repoId, authorize: (request) => request.repoId === repoId && PM_STATE_ACTIONS.includes(request.action) });
+  }
+
+  /** 主代理派出唯一 PM：工作区须已 ready 并绑定，新运行取得更高 fence，旧运行的工具随之失效。 */
+  async dispatchPm(input: DispatchPmInput): Promise<{ runId: string; fence: number }> {
+    const state = await this.pmState();
+    const record = state.read(input.requirementId);
+    if (record.data.lifecycle !== "active") throw protocolError("requirement_not_active", "需求不是活动状态");
+    const managed = withDatabase(this.database, (db) => db.read<{ status?: string }>(MANAGED_WORKSPACES, input.requirementId));
+    if (managed?.data.status !== "ready" || !record.data.workspace || !record.data.approved) throw protocolError("workspace_not_ready", "需求工作区尚未 ready 或尚无批准版本");
+    const entry = this.options.roleCatalog.find((candidate) => candidate.name === "pm");
+    if (!entry?.available || !entry.definition || entry.definition.role !== "pm") throw protocolError("role_unavailable", entry?.reason ?? "PM 定义不可用");
+    const definition = entry.definition;
+    const modelRef = definition.model
+      ? { provider: definition.model.slice(0, definition.model.indexOf("/")), id: definition.model.slice(definition.model.indexOf("/") + 1) }
+      : input.model;
+    if (!this.options.runtime.getModels(modelRef.provider).some((model) => model.id === modelRef.id)) throw protocolError("model_unavailable", `模型不可用: ${modelRef.provider}/${modelRef.id}`);
+    const thinking = definition.thinking ?? input.thinking;
+    const expectedFence = state.pmOwner(input.requirementId)?.fence ?? 0;
+    const workspace = record.data.workspace;
+    const run = await this.runStore.create({ kind: "requirement", requirement: input.requirementId, task: "pm", cwd: workspace.path,
+      readPaths: [workspace.path], writePaths: [], model: modelRef, thinking, mcp: [] });
+    let lease: PmLease;
+    try { lease = await state.acquirePm({ requirementId: input.requirementId, version: record.version, runId: run.id, expectedFence }); }
+    catch (error) {
+      await this.runStore.update(run.id, { state: "failed", stateReason: (error as { code?: string }).code ?? "acquire_failed" });
+      throw protocolError((error as { code?: string }).code ?? "acquire_failed", "PM 租约取得失败");
+    }
+    let registered = false;
+    // 工具在会话创建前就会核验一次；登记前视为启动中，登记后按真实会话状态判断
+    const alive = () => {
+      const current = this.sessions.get(run.id);
+      return current === undefined ? !registered : ["running", "paused", "paused_network"].includes(current.handle.state());
+    };
+    let tools: PmTools | undefined;
+    let handle: AgentSessionHandle;
+    try {
+      tools = await createPmTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease, workspace,
+        epoch: record.data.epoch, alive, stopAgents: (requirementId) => this.stopRequirement(requirementId) });
+      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
+        context: pmContext(record.data, lease), coreTools: tools.tools, readRoots: [workspace.path], runtime: this.options.runtime, modelRef, thinking,
+        completion: { kind: "idle-only" }, clock: this.options.clock, networkGate: this.options.networkGate });
+    } catch (error) {
+      registered = true;
+      tools?.dispose();
+      try { state.releasePm(lease); } catch { /* 租约到期后自然失效 */ }
+      await this.runStore.update(run.id, { state: "failed", stateReason: "pm_session_failed" });
+      throw protocolError("pm_session_failed", (error as Error).message);
+    }
+    const renewal = this.options.clock.setIntervalExcludingSleep(() => {
+      void state.renewPm(lease).catch(() => { void this.stop(run.id).catch(() => {}); });
+    }, PM_RENEW_MS);
+    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal } });
+    registered = true;
+    handle.events.on("turn", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
+    handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishPm(run.id, "failed", reason); });
+    await this.runStore.update(run.id, { state: "running" });
+    const running = await this.runStore.get(run.id);
+    if (running.ok) this.emitRun(running.run);
+    handle.prompt("开始受限接手。");
+    return { runId: run.id, fence: lease.fence };
+  }
+
+  private async finishPm(runId: string, state: "failed" | "stopped", reason?: string): Promise<void> {
+    const entry = this.sessions.get(runId);
+    if (!entry?.pm) return;
+    this.options.clock.clearTimer(entry.pm.renewal);
+    entry.pm.tools.dispose();
+    try { (await this.pmState()).releasePm(entry.pm.lease); } catch { /* 已被接管或到期的租约无需释放 */ }
+    const current = await this.runStore.get(runId);
+    if (current.ok && !isTerminalState(current.run.state)) await this.runStore.update(runId, { state, ...(reason ? { stateReason: reason } : {}) });
+    delete entry.pm;
+  }
+
+  /** 结束绑定该需求的全部运行；关闭协议以运行记录终态为准。 */
+  async stopRequirement(requirementId: string): Promise<void> {
+    const page = await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER });
+    for (const run of page.items) if (!isTerminalState(run.state)) await this.stop(run.id);
+  }
   async dispatchReview(_params: { requirement: string; cwd: string; baseline: string; context?: DispatchSettingsContext; snapshot: { head: string; fingerprint: string } }): Promise<{ runId: string }> { throw retiredError(); }
   locateRequirementAgent(_requirement: string): { inject(message: string): void } | undefined { return undefined; }
   async canRunInParallel(_input: { cwd: string; requirement: string; task: string; writePaths: string[] }): Promise<{ ok: true } | { ok: false; reason: string }> { return { ok: false, reason: LEGACY_WORKFLOW_RETIRED }; }
   async verifyDelivery(_runId: string, _requirement: string, _signal?: AbortSignal): Promise<void> { throw retiredError(); }
-  async resume(_runId: string): Promise<{ state: string }> { throw retiredError(); }
+  /** 只续接本进程内仍持有会话的暂停运行；没有会话不能证明原运行可安全续接。 */
+  async resume(runId: string): Promise<{ state: string }> {
+    const entry = this.sessions.get(runId);
+    if (!entry || entry.handle.state() !== "paused") throw protocolError("not_resumable", "运行没有可续接的暂停会话");
+    await entry.handle.resume();
+    const updated = await this.runStore.update(runId, { state: "running" });
+    this.emitRun(updated);
+    return { state: updated.state };
+  }
   async resumeAll(): Promise<{ results: Array<{ runId: string; state: string }> }> { throw retiredError(); }
   async resumeInterrupted(runId: string): Promise<{ ok: boolean; state: string; confirmed: boolean; reason?: string }> {
     const result = await this.runStore.get(runId);
@@ -179,6 +291,7 @@ export class RunManager {
     if (childrenStop.status === "rejected") reasons.push("子运行停止失败");
     else if (childrenStop.value.some((child) => !child.confirmed)) reasons.push("子运行尚未确认停止");
     const confirmed = reasons.length === 0;
+    if (confirmed && entry?.pm) await this.finishPm(runId, "stopped");
     if (confirmed && this.sessions.get(runId) === entry) { entry?.handle.dispose(); this.sessions.delete(runId); }
     const reason = confirmed ? undefined : reasons.join("；");
     if (run.state === "stopped") await this.runStore.update(runId, { stateReason: reason ?? "" });
@@ -309,13 +422,21 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       await manager.awaitStarted();
       try { return await handler(params, client); }
       catch (error) {
-        if (error instanceof Error && ["legacy_workflow_retired", "trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params"].includes((error as { code?: string }).code ?? "")) throw error;
+        if (error instanceof Error && ["legacy_workflow_retired", "trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
+          "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable"].includes((error as { code?: string }).code ?? "")) throw error;
         throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对");
       }
     });
   };
   // RPC 层与执行器分别拒绝；过期客户端不能靠旧方法名进入执行器。
-  for (const method of ["dispatch.requirement", "dispatch.review", "runs.resume", "runs.resumeAll", "runs.resumeInterrupted", "relay.answer", "relay.forward", "subscribe.transcript"]) {
+  register("agents.dispatchPm", async (params) => {
+    const model = params.model as { provider?: unknown; id?: unknown } | undefined;
+    if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof model?.provider !== "string" || typeof model.id !== "string"
+      || typeof params.thinking !== "string") throw protocolError("invalid_params", "派出 PM 参数无效");
+    return manager.dispatchPm({ requirementId: params.requirementId, model: { provider: model.provider, id: model.id }, thinking: params.thinking });
+  });
+  register("runs.resume", async (params) => manager.resume(params.runId as string));
+  for (const method of ["dispatch.requirement", "dispatch.review", "runs.resumeAll", "runs.resumeInterrupted", "relay.answer", "relay.forward", "subscribe.transcript"]) {
     register(method, async () => { throw retiredError(); });
   }
   register("runs.list", async (params) => manager.list({ kind: params.kind as RunKind | undefined, offset: params.offset as number | undefined, limit: params.limit === undefined ? 100 : params.limit as number }));

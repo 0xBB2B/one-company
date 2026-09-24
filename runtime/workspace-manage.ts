@@ -66,7 +66,11 @@ export function workspaceLocation(repositoryRoot: string, requirementId: string)
 
 export class WorkspaceManageService {
   private readonly database: string;
-  private constructor(private readonly options: WorkspaceManageOptions, private readonly state: RequirementStateStore) {
+  private readonly options: WorkspaceManageOptions;
+  private readonly state: RequirementStateStore;
+  private constructor(options: WorkspaceManageOptions, state: RequirementStateStore) {
+    this.options = options;
+    this.state = state;
     this.database = repositoryDatabase(options.dataRoot, options.repoId);
   }
 

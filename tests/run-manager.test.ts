@@ -50,9 +50,9 @@ function handlers(w: Awaited<ReturnType<typeof world>>) {
 describe("运行执行器永久淘汰", () => {
   test.each(["queued", "running", "pausing", "paused", "paused_network", "waiting_answer", "completed", "failed", "stopped", "interrupted"] as RunState[])("R01 %s 历史运行不能单个、批量、网络恢复，也不新增运行或模型请求", async (state) => {
     const w = await world(); const run = await w.create(state); const before = w.snapshot();
-    await expect(w.manager.dispatchRequirement({ requirement: run.requirement, cwd: w.fixture.repo.root })).rejects.toThrow("永久淘汰");
+    expect("dispatchRequirement" in w.manager).toBe(false);
     await expect(w.manager.dispatchReview({ requirement: run.requirement, cwd: "/other-repo", baseline: "HEAD", snapshot: { head: "old", fingerprint: "old" } })).rejects.toThrow("永久淘汰");
-    await expect(w.manager.resume(run.id)).rejects.toThrow("永久淘汰"); await expect(w.manager.resumeAll()).rejects.toThrow("永久淘汰");
+    await expect(w.manager.resume(run.id)).rejects.toMatchObject({ code: "not_resumable" }); await expect(w.manager.resumeAll()).rejects.toThrow("永久淘汰");
     expect(await w.manager.resumeInterrupted(run.id)).toMatchObject({ ok: false, confirmed: false, state }); await w.manager.resumeNetworkPaused("provider-a");
     expect(await w.manager.canRunInParallel({ cwd: w.fixture.repo.root, requirement: run.requirement, task: "T-2", writePaths: ["other"] })).toMatchObject({ ok: false });
     await expect(w.manager.verifyDelivery(run.id, run.requirement)).rejects.toThrow("永久淘汰");
@@ -305,7 +305,7 @@ describe("网络、版本及重启不能产生旧执行权限", () => {
       await authenticateTestClient(raw, { windowId: "window", pid: process.pid, sessionId: "session", cwd: w.fixture.repo.root, workspaceRoot: w.fixture.repo.root, repoIds: [w.fixture.repoId] }, { dataRoot: w.fixture.dataRoot, expectedRepoId: w.fixture.repoId });
       expect(await raw.call("runs.get", { runId: run.id })).toMatchObject({ run: { state: "interrupted" } }); expect(await raw.call("runs.get", { runId: completed.id })).toMatchObject({ run: { state: "completed" } });
       const before = w.snapshot();
-      for (const [method, params] of [["dispatch.requirement", { requirement: run.requirement, cwd: w.fixture.repo.root }], ["dispatch.review", { requirement: run.requirement, cwd: w.fixture.repo.root, baseline: "HEAD", snapshot: { head: "old", fingerprint: "old" } }], ["runs.resume", { runId: run.id }], ["runs.resumeAll", {}], ["runs.resumeInterrupted", { runId: run.id }], ["relay.answer", { questionId: uuidv7(), answer: "USER-001", windowId: "window" }], ["relay.forward", { requirement: run.requirement, message: SECRET, windowId: "window" }], ["subscribe.transcript", { runId: run.id, fromSeq: 0 }]] as Array<[string, any]>) await expect(raw.call(method, params)).rejects.toThrow("legacy_workflow_retired");
+      for (const [method, params] of [["dispatch.requirement", { requirement: run.requirement, cwd: w.fixture.repo.root }], ["dispatch.review", { requirement: run.requirement, cwd: w.fixture.repo.root, baseline: "HEAD", snapshot: { head: "old", fingerprint: "old" } }], ["runs.resumeAll", {}], ["runs.resumeInterrupted", { runId: run.id }], ["relay.answer", { questionId: uuidv7(), answer: "USER-001", windowId: "window" }], ["relay.forward", { requirement: run.requirement, message: SECRET, windowId: "window" }], ["subscribe.transcript", { runId: run.id, fromSeq: 0 }]] as Array<[string, any]>) await expect(raw.call(method, params)).rejects.toThrow("legacy_workflow_retired");
       expect(await raw.call("relay.pending")).toEqual({ questions: [], notices: [] }); expect(JSON.stringify(await raw.call("runs.list", { limit: 100 }))).not.toContain(SECRET);
       await delay(1150); expect(events).toEqual([]); expect(await readProviderRequestsLog(log)).toEqual([]); expect(w.snapshot()).toBe(before);
       raw.close(); await killDaemon(handle);
