@@ -56,8 +56,8 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
-A 片已完成（新定义格式、五个内置定义、按职责工具集、daemon/agent-session.ts 取代 role-session.ts 与 requirement-agent.ts）；runtime/delivery.ts、runtime/result.ts 与 run-store 的旧 phase 字段已无生产引用，随 G 片与 workflow-state 一并删除。
-M7 切片顺序：A 工具注册与按职责生成工具集 → B workspace-prepare/recycle → C PM 启动/接手复核门槛 → D plan_manage → E agent_manage 派工与轮限 → F explore 双父与联网 → G 默认团队/专业定义/资源重构 → H 零自定义闭环与全量回归。B、C、E 完成后派独立审查。
-已由用户确认：M7 以真实 SDK 会话加脚本化模型验证链路与门槛，真实模型语义质量在 M9；G 片删除 workflow-state.ts、workflow-tool.ts、pi_company_workflow、pi_company_agents 并替换其依赖；删除设置命令中按角色的 model/thinking/mcp 与旧设置页，设置页只保留复制与查看 agent 定义；删除 /pi-company:new、resume、revise、sync 四个旧命令；A 片原地改写 daemon/role-session.ts，删除 bash/write/edit 只读核验、报告路径写入、structured_output 与 resume_check 等死代码并以新语义用例替换旧测试；C-3 与 M5 两条观察本阶段不处理；prod 事件在 PM 可运行时 95% 两秒内投递需实测一次。其余决定已写入计划 §9.1、§9.2、§9.6、§10.5、§10.6、§13.2 与 M7-AC20/21。
+M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计。A–E 各有独立审查且定向复审"全部解决"。
+待做顺序：C4 已批准更新事件投递 PM 与消费确认、主会话注册 workflow_manage（close 需真实用户回执）与完成通知消费；F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML）与 MCP 优先；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts 与旧 skills/rules、重写主会话说明；用户新决定解除 awaiting_user 的入口；H 零自定义闭环与全量回归、收口 M7-STATUS。
+已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§13.2 与 M7-AC20/21；C-3 与 M5 两条观察本阶段不处理。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
 ```
