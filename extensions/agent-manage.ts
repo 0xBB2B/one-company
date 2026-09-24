@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
-import { windowContext } from "./lifecycle.ts";
+import { windowContext, windowReady } from "./lifecycle.ts";
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const repoId = Type.String({ pattern: "^[0-9a-f]{64}$" });
@@ -11,6 +11,10 @@ const runId = Type.String({ pattern: UUID_V7 });
 const strict = { additionalProperties: false } as const;
 export const MAIN_AGENT_MANAGE_PARAMETERS = Type.Union([
   Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("pm"), repoId, requirementId: Type.String({ pattern: UUID_V7 }) }, strict),
+  Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), repoId, question: Type.String({ minLength: 1, maxLength: 1500 }),
+    clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })),
+    paths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 32 }),
+    maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }) }, strict),
   Type.Object({ action: Type.Literal("status"), repoId, runId }, strict),
   Type.Object({ action: Type.Literal("pause"), repoId, runId }, strict),
   Type.Object({ action: Type.Literal("resume"), repoId, runId }, strict),
@@ -29,7 +33,7 @@ export function registerAgentManageTool(pi: ExtensionAPI, context: () => AgentMa
   pi.registerTool({
     name: "pi_company_agent_manage",
     label: "agent_manage",
-    description: "派出本需求唯一 PM（role=pm），或查询、暂停、续接、停止运行。PM 需要需求工作区已 ready 并已有批准版本。",
+    description: "派出本需求唯一 PM（role=pm），或派出只读检索 explore（role=explore：问题、线索、仓库内文件路径与轮次上限，立即返回运行编号，结果到达后以卡片插入本会话，可同时派出多个），或查询、暂停、续接、停止运行。PM 需要需求工作区已 ready 并已有批准版本。",
     parameters: MAIN_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
@@ -41,8 +45,12 @@ export function registerAgentManageTool(pi: ExtensionAPI, context: () => AgentMa
         if (params.action === "dispatch") {
           const model = ctx.model;
           if (!model) return result({ code: "model_unavailable" }, true);
-          return result(await client.call("agents.dispatchPm", { requirementId: params.requirementId,
-            model: { provider: model.provider, id: model.id }, thinking: pi.getThinkingLevel() }));
+          const selected = { provider: model.provider, id: model.id }, thinking = pi.getThinkingLevel();
+          if (params.role === "explore") {
+            return result(await client.call("agents.dispatchExplore", { request: { question: params.question, clues: params.clues ?? [],
+              source: { kind: "local_file", paths: params.paths } }, maxTurns: params.maxTurns, model: selected, thinking }));
+          }
+          return result(await client.call("agents.dispatchPm", { requirementId: params.requirementId, model: selected, thinking }));
         }
         const method = params.action === "status" ? "runs.get" : `runs.${params.action}`;
         return result(await client.call(method, { runId: params.runId }));
@@ -53,6 +61,37 @@ export function registerAgentManageTool(pi: ExtensionAPI, context: () => AgentMa
   });
 }
 
+/** main 派出的 explore 只属于派出它的窗口连接：结果到达时由该连接取回并以卡片插入本会话、由主代理接着处理。 */
+export function registerExploreDelivery(pi: ExtensionAPI, context: () => Promise<{ clients: WorkspaceClientsHandle; repoIds: string[] }>): void {
+  let sessionId: string | undefined;
+  let unsubscribes: Array<() => void> = [];
+  pi.on("session_start", async (_event, ctx) => {
+    const next = ctx.sessionManager.getSessionId();
+    for (const unsubscribe of unsubscribes.splice(0)) unsubscribe();
+    sessionId = next;
+    // 不阻塞会话启动：窗口就绪后再订阅
+    void context().then(({ clients, repoIds }) => {
+      if (sessionId !== next) return;
+      for (const repoId of repoIds) {
+        const client = clients.forRepo(repoId);
+        if (!client) continue;
+        unsubscribes.push(client.subscribe("explore.finished", (data) => {
+          const event = data as { runId?: unknown; parentSessionId?: unknown };
+          if (event.parentSessionId !== sessionId || typeof event.runId !== "string") return;
+          void client.call("explore.result", { runId: event.runId }).then((report) => {
+            pi.sendMessage({ customType: "pi-company.explore-result", content: JSON.stringify(report), display: true }, { triggerTurn: true });
+          }).catch(() => {});
+        }));
+      }
+    }).catch(() => {});
+  });
+  pi.on("session_shutdown", async () => { for (const unsubscribe of unsubscribes.splice(0)) unsubscribe(); });
+}
+
 export default function agentManageExtension(pi: ExtensionAPI): void {
   registerAgentManageTool(pi, () => ({ clients: windowContext().clients }));
+  registerExploreDelivery(pi, async () => {
+    const window = await windowReady();
+    return { clients: window.clients, repoIds: window.workspace.repos.map((repo) => repo.repoId) };
+  });
 }

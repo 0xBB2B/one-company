@@ -20,10 +20,10 @@
 | AC12 四类任务状态按 unaffected/affected/unknown 正确处理 | 通过 | D2：tests/plan-assess.test.ts（已完成+无关保持完成；运行中+未知转受阻且待处理更新不解除、门槛阻塞；已完成/失败+受影响转待更新；冻结前须更新；复核只改任务状态，不改验证记录） | 无 |
 | AC13 真实链路中接手复核前拒绝正式 plan 与 worker 派工 | 通过 | C3/D1：核对前 propose 被 intake_gate 拒绝、通过后可提出（tests/plan-manage.test.ts）；无实施授权不派 PM（tests/pm-dispatch.test.ts）；主代理经真实提供方核对 PM 私有会话中的提交（tests/pm-intake-runtime.test.ts）；批准新版本未复核时派工被门槛拒绝（tests/task-dispatch.test.ts「M7-AC4/AC13」） | 无 |
 | AC14 伪通过/伪身份/任一绑定变化不能用旧回执放行 | 通过 | C3：tests/pm-intake-runtime.test.ts（未受理提交不计、核对不通过拒绝、改交理解后旧核对失效、非本租约会话不被读取）；新物理 PM 须重新核对才建立自己的理解基线、旧租约回执被拒（tests/pm-event-delivery.test.ts）；普通追加走影响复核（tests/plan-assess.test.ts）；绑定逐项变化判定沿用 tests/pm-intake-contracts.test.ts | 无 |
-| AC15 main 与 PM 经 agent_manage 实际派 explore，模型输入探针证明最小上下文 | 未开始 | | F 片 |
-| AC16 三类来源实际运行，未授权网络/无外发授权不发请求 | 未开始 | | F 片 |
-| AC17 research 非 PASS，父代理核验 | 未开始 | | F 片 |
-| AC18 搜索会话回收；关闭/撤权/接管停止；无关 main 检索不误停 | 未开始 | | F 片 |
+| AC15 main 与 PM 经 agent_manage 实际派 explore，模型输入探针证明最小上下文 | 部分 | F1：tests/explore-dispatch.test.ts（main 与 PM 经 agent_manage 派出 explore；模型输入只含问题、线索与宿主算好 hash 的获准文件，不含 prod 正文与父会话；main 父身份来自已认证连接、不写运行记录、不创建需求现场；PM 父绑定租约 fence/epoch） | knowledge_query 与纯网页两种来源的输入绑定（F3/F4） |
+| AC16 三类来源实际运行，未授权网络/无外发授权不发请求 | 部分 | F1：获准直接本地读取按真实路径与宿主计算的文件 hash 绑定，越出工作区、私有位置、符号链接、不存在路径派出即拒，读取授权外文件被拒（tests/explore-dispatch.test.ts） | knowledge_query 来源与联网来源及外发核对（F3/F4） |
+| AC17 research 非 PASS，父代理核验 | 部分 | F1：research 回执 isPass=false，送回派出者的报告标明"research 不是 PASS"、须核对来源与当前性（tests/explore-dispatch.test.ts） | 联网来源的父代理核验随 F3 补充 |
+| AC18 搜索会话回收；关闭/撤权/接管停止；无关 main 检索不误停 | 部分 | F1：检索结束回收会话；PM 停止、失败或被接管时其 explore 停止且会话失效；main 派出的 explore 绑定发起连接，断开即停止、结果作废，其他连接取不到（tests/explore-dispatch.test.ts） | 无关 main 检索不因需求关闭误停的用例随 F3/F4 补齐 |
 | AC19 内置六职责默认团队零专业定义闭环 | 未开始 | | G、H 片 |
 | AC20 复制默认配置即得专业定义；无效定义拒绝 | 未开始 | | G 片 |
 | AC21 两类目录发现、项目信任、显式覆盖、一键复制 | 未开始 | | G 片 |
@@ -34,7 +34,7 @@
 | AC26 专业结果由父代理核验，独立 review/QA，专业实例受互斥与撤权约束 | 未开始 | | E 片 |
 | AC27 受限子代理缺目标或有效 maxTurns 拒绝派工 | 通过 | E：tests/plan-manage.test.ts（任务缺目标或非正整数轮次上限拒绝登记）；tests/agent-session.test.ts（非正整数上限拒绝创建会话）；tests/task-dispatch.test.ts（派工轮次上限取任务登记值，写入子代理上下文） | 无 |
 | AC28 最多 N 轮，不发 N+1 | 通过 | E1：tests/agent-session.test.ts（上限 2 时模型请求恰为 2 次，第 3 次未发出，标 turn_limit_reached；第 N 轮已提交结果按完成处理）；tests/task-dispatch.test.ts（真实派工链路 turnsUsed=2/3） | 无 |
-| AC29 到限自动上报直属父代理 | 部分 | E2：tests/task-dispatch.test.ts（到限后不再调用子代理模型，运行时向直属 PM 会话注入结局、已用轮数、验证引用与处置提示；PM 不在时任务保持 awaiting_parent） | main 直派 explore 的上报在 F 片 |
+| AC29 到限自动上报直属父代理 | 通过 | E2：tests/task-dispatch.test.ts（到限上报直属 PM）；F1：explore 到限自动上报派出它的 PM，main 派出的到限报告只交给派出连接（tests/explore-dispatch.test.ts） | 无 |
 | AC30 最多一次父代理批准的重试，之后待用户裁决 | 通过 | E2：tests/task-dispatch.test.ts（未带原因再派被拒；带原因重试一次；再未完成进入 awaiting_user，第三次派工与绕行被拒）；§10.7：tests/adjudication.test.ts（只有用户三种决定能解除待裁决；再给一次按用户上限且不占 PM 重试、任务被修改即失效；调整须新批准版本；终止整个需求暂停；统一停止的尝试记为 superseded 不计入） | 无 |
 | AC31 正式计划/派工缺目标/通过条件/范围/性能条件拒绝 | 通过 | D1：tests/plan-manage.test.ts（缺目标、通过条件、范围、性能条件或有效轮次上限拒绝登记；冻结前须覆盖全部获准实施章节；版本递增与过期版本拒绝）；E：派工只接受已冻结计划中的任务、轮次上限取任务登记值（tests/task-dispatch.test.ts） | 无 |
 | AC32 非阻塞建议不生成任务，扩范围须用户决定 | 通过 | D1：tests/plan-manage.test.ts（任务只能引用获准实施的章节，越出授权即拒；审查结果没有生成任务的入口）；一次重试按目标计，改名/新增/修改揽目标均被拒（tests/plan-manage.test.ts「M7-AC30」、tests/task-dispatch.test.ts） | 无 |
@@ -74,7 +74,7 @@
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
 M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计；C4 已批准更新按序投递 PM 并确认消费（runtime/pm-event-delivery.ts，daemon 500ms 轮询），assess-update 绑定本次收到的理解基线，advancedGate 覆盖语义按序收敛。A–E、C4 各有独立审查且定向复审"全部解决"或"无阻塞"。
-待做顺序（只剩 AC7、AC8、AC15–AC26、AC29）：F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML，web_fetch 拒内网）与 MCP 优先、research 非 PASS 由父代理核验、搜索会话回收、main 直派 explore 到限上报 main；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、配置变化不静默改在途运行、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts/run-store phase/transcript-view.ts 与旧 skills/rules、重写主会话说明、AC8 提示失效时核心约束仍生效、AC26 专业结果核验与互斥撤权；H 零自定义闭环与三条测试命令全量（含从未跑过的 test:installation）、收口 M7-STATUS。
+待做顺序（只剩 AC7、AC8、AC15–AC26）：F 已完成 F1 explore 双父入口与本地文件来源；待做 F3 守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML，web_fetch 拒内网）与 MCP 优先、research 非 PASS 由父代理核验、搜索会话回收、main 直派 explore 到限上报 main；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、配置变化不静默改在途运行、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts/run-store phase/transcript-view.ts 与旧 skills/rules、重写主会话说明、AC8 提示失效时核心约束仍生效、AC26 专业结果核验与互斥撤权；H 零自定义闭环与三条测试命令全量（含从未跑过的 test:installation）、收口 M7-STATUS。
 已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§10.7、§13.2 与 M7-AC20/21、AC33–35；C-3 与 M5 两条观察本阶段不处理。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
 ```

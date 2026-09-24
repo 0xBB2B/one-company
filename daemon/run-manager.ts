@@ -33,6 +33,12 @@ import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
 import { implementAuthorized } from "../runtime/pm-intake-runtime.ts";
+import { exploreContext, ExploreDispatchError, exploreInput, localFileSource } from "../runtime/explore-dispatch.ts";
+import type { ExploreRequest } from "../runtime/explore-dispatch.ts";
+import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
+import { endExploreSession, registerExploreSession } from "../runtime/explore-session.ts";
+import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
+import { toPiTool } from "../runtime/role-tools.ts";
 import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
 
@@ -46,7 +52,12 @@ export interface RunManagerOptions {
 }
 export interface WaitForSpec { repo: string; requirement: string; stage: string }
 interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null };
-  subagent?: { parentRunId: string; taskId: string; dispose(): void } }
+  subagent?: { parentRunId: string; taskId: string; dispose(): void };
+  explore?: { parentRunId: string; dispose(): void; result(): ExploreResult | null } }
+/** main 派出的 explore 只属于派出它的主窗口会话，不写运行记录；窗口关闭即停止并作废结果。 */
+interface MainExplore { handle: AgentSessionHandle; sessionId: string; connectionId: string; dispose(): void; result(): ExploreResult | null; report: Record<string, unknown> | null }
+/** main 父身份来自守护进程已认证连接：connectionId 由服务端每次认证生成，重连或另开窗口都不同。 */
+export type ExploreParentRequest = { role: "main"; sessionId: string; connectionId: string; model: SelectedModel; thinking: string } | { role: "PM"; pmRunId: string };
 export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
 const PM_RENEW_MS = 10_000;
 const PM_EVENT_POLL_MS = 500;
@@ -89,6 +100,10 @@ function runMetadata(run: RunRecord): RunMetadata {
     state: run.state, startedAt: run.startedAt, updatedAt: run.updatedAt, endedAt: run.endedAt, turns: run.turns,
     ...(run.usage ? { usage: { ...run.usage } } : {}), ...(run.pausedMs ? { pausedMs: run.pausedMs } : {}), ...(run.pausedAt ? { pausedAt: run.pausedAt } : {}),
     ...(run.stateReason ? { stateReason: "运行原因已记录；状态元数据不返回旧正文" } : {}) };
+}
+function exploreReport(runId: string, outcome: string, research: ExploreResult | null, turnsUsed: number): Record<string, unknown> {
+  return { kind: "explore-report", runId, outcome, turnsUsed, research,
+    note: research ? "research 不是 PASS：使用前核对来源、当前性与截断，必要时回读关键全文" : "未提交 research，没有可用结果" };
 }
 function shellMetadata(task: TaskRecord) {
   return { taskId: task.taskId, host: { kind: task.host.kind, id: task.host.id, runId: task.host.runId },
@@ -198,6 +213,8 @@ export class RunManager {
         stopAgents: (requirementId) => this.stopRequirement(requirementId),
         agents: {
           dispatch: (taskId, retry) => this.dispatchTask({ pmRunId: run.id, taskId, retry }),
+          explore: (request, maxTurns) => this.dispatchExplore({ parent: { role: "PM", pmRunId: run.id },
+            request: { question: request.question, clues: request.clues, source: { kind: "local_file", paths: request.paths } }, maxTurns }),
           control: async (action, childId) => {
             const child = await this.runStore.get(childId);
             if (!child.ok || child.run.parentRunId !== run.id) throw protocolError("not_found", "不是本 PM 派出的运行");
@@ -249,6 +266,12 @@ export class RunManager {
     entry.pm.tools.dispose();
     try { (await this.pmState()).releasePm(entry.pm.lease); } catch { /* 已被接管或到期的租约无需释放 */ }
     const current = await this.runStore.get(runId);
+    // PM 结束即撤权：它派出的 explore 随之停止，结果不再有人接收
+    if (current.ok) {
+      for (const child of await this.childrenOf(current.run)) {
+        if (child.role === "pi-company.explore" && !isTerminalState(child.state)) await this.stop(child.id).catch(() => {});
+      }
+    }
     if (current.ok && !isTerminalState(current.run.state)) await this.runStore.update(runId, { state, ...(reason ? { stateReason: reason } : {}) });
     delete entry.pm;
   }
@@ -341,6 +364,139 @@ export class RunManager {
     if (parent?.pm && ["running", "paused", "paused_network"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
   }
 
+  /**
+   * 派出 explore：检索来源、父身份与会话绑定由宿主按可信身份生成，派出立即返回；结果到达后注入派出它的 PM 会话，
+   * 或只交给派出它的主窗口会话。
+   */
+  async dispatchExplore(input: { parent: ExploreParentRequest; request: ExploreRequest; maxTurns: number }): Promise<{ runId: string; maxTurns: number }> {
+    if (!Number.isSafeInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 1000) throw protocolError("invalid_params", "explore 须有正整数轮次上限");
+    const entry = this.options.roleCatalog.find((candidate) => candidate.name === "explore");
+    if (!entry?.available || !entry.definition || entry.definition.role !== "explore") throw protocolError("role_unavailable", entry?.reason ?? "explore 定义不可用");
+    const definition = entry.definition;
+    let parent: ExploreInput["parent"], root: string, modelRef: SelectedModel, thinking: string, requirementId: string | null = null;
+    if (input.parent.role === "PM") {
+      const pm = this.sessions.get(input.parent.pmRunId), pmRun = await this.runStore.get(input.parent.pmRunId);
+      if (!pm?.pm || !pmRun.ok) throw protocolError("pm_not_running", "派出 explore 的 PM 会话不存在");
+      const lease = pm.pm.lease, record = (await this.pmState()).read(lease.requirementId).data;
+      parent = { role: "PM", parentSessionId: pmRun.run.id, parentRunId: pmRun.run.id, contextId: `${lease.fence}:${lease.contextGeneration}`,
+        requirementBinding: { requirementId: lease.requirementId, epoch: record.epoch, pmFence: lease.fence } };
+      root = record.workspace!.path; requirementId = lease.requirementId;
+      modelRef = pmRun.run.model; thinking = pmRun.run.thinking;
+    } else {
+      parent = { role: "main", parentSessionId: input.parent.sessionId, parentRunId: `main:${input.parent.sessionId}`, contextId: input.parent.connectionId, requirementBinding: null };
+      root = this.options.repositoryRoot; modelRef = input.parent.model; thinking = input.parent.thinking;
+    }
+    if (definition.model) modelRef = { provider: definition.model.slice(0, definition.model.indexOf("/")), id: definition.model.slice(definition.model.indexOf("/") + 1) };
+    thinking = definition.thinking ?? thinking;
+    if (!this.options.runtime.getModels(modelRef.provider).some((model) => model.id === modelRef.id)) throw protocolError("model_unavailable", `模型不可用: ${modelRef.provider}/${modelRef.id}`);
+    let source: ExploreInput["source"];
+    try { source = await localFileSource(root, input.request.source.paths); }
+    catch (error) { if (error instanceof ExploreDispatchError) throw protocolError("invalid_params", error.message); throw error; }
+    const runId = requirementId
+      ? (await this.runStore.create({ kind: "role", role: "pi-company.explore", requirement: requirementId, parentRunId: parent.parentRunId, task: "explore",
+        cwd: root, readPaths: source.kind === "local_file" ? source.allowedPaths : [], writePaths: [], model: modelRef, thinking, mcp: [] })).id
+      : uuidv7();
+    let explore: ExploreInput;
+    try {
+      explore = exploreInput(parent, input.request, source);
+      registerExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, explore);
+    } catch (error) {
+      if (requirementId) await this.runStore.update(runId, { state: "failed", stateReason: "explore_rejected" });
+      throw protocolError("invalid_params", (error as Error).message);
+    }
+    let captured: ExploreResult | null = null;
+    let registered = false;
+    const alive = () => {
+      const current = requirementId ? this.sessions.get(runId)?.handle : this.mainExplores.get(runId)?.handle;
+      return current === undefined ? !registered : current.state() === "running";
+    };
+    const result = createResultSubmitTool({ grant: { role: "explore", callerId: uuidv7(), runId, parentRunId: parent.parentRunId }, exploreInput: explore,
+      exploreSession: { dataRoot: this.options.dataRoot, repoId: this.repoId }, authorize: () => alive(), onResearch: (value) => { captured = value; } });
+    let handle: AgentSessionHandle;
+    try {
+      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, context: exploreContext(explore, input.maxTurns),
+        coreTools: [toPiTool("result_submit", "提交 research（action=research）：结论、来源、检索范围、未找到、失败、截断与未知项；research 不是 PASS。", RESULT_SUBMIT_PARAMETERS, result)],
+        readRoots: source.kind === "local_file" ? source.allowedPaths : [], hostTools: source.kind === "local_file" ? ["read", "grep"] : [],
+        runtime: this.options.runtime, modelRef, thinking, maxTurns: input.maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") },
+        clock: this.options.clock, networkGate: this.options.networkGate });
+    } catch (error) {
+      registered = true; result.dispose();
+      endExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, "session_failed");
+      if (requirementId) await this.runStore.update(runId, { state: "failed", stateReason: "explore_session_failed" });
+      throw protocolError("subagent_session_failed", (error as Error).message);
+    }
+    const capture = () => captured;
+    if (requirementId) {
+      this.sessions.set(runId, { kind: "role", handle, explore: { parentRunId: parent.parentRunId, dispose: () => result.dispose(), result: capture } });
+      handle.events.on("turn_counted", () => { void this.runStore.recordTurn(runId).catch(() => {}); });
+      this.trackUsage(runId, handle);
+      await this.runStore.update(runId, { state: "running" });
+    } else {
+      const request = input.parent as Extract<ExploreParentRequest, { role: "main" }>;
+      this.mainExplores.set(runId, { handle, sessionId: request.sessionId, connectionId: request.connectionId, dispose: () => result.dispose(), result: capture, report: null });
+      // 派出途中发起连接已断开：立即停止并作废，不留无人接收的检索
+      if (!this.liveConnections.has(request.connectionId)) {
+        registered = true;
+        await this.abandonMainExplores({ connectionId: request.connectionId });
+        throw protocolError("not_found", "发起派出的窗口连接已断开");
+      }
+    }
+    registered = true;
+    handle.events.on("completed", () => { void this.finishExplore(runId, "completed"); });
+    handle.events.on("turn_limit_reached", () => { void this.finishExplore(runId, "turn_limit_reached"); });
+    handle.events.on("failed", () => { void this.finishExplore(runId, "failed"); });
+    handle.prompt("开始检索。");
+    return { runId, maxTurns: input.maxTurns };
+  }
+
+  /** explore 结束：回收搜索会话，把结果或到限/失败报告交回派出者；research 不是 PASS，须由派出者核对来源后使用。 */
+  private async finishExplore(runId: string, outcome: "completed" | "turn_limit_reached" | "failed" | "stopped"): Promise<void> {
+    endExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, outcome);
+    const main = this.mainExplores.get(runId);
+    if (main) {
+      if (main.report) return;
+      main.dispose();
+      main.report = exploreReport(runId, outcome, main.result(), main.handle.turnsUsed());
+      if (outcome === "stopped") { this.mainExplores.delete(runId); return; }
+      this.emit("explore.finished", { runId, parentSessionId: main.sessionId });
+      return;
+    }
+    const entry = this.sessions.get(runId);
+    if (!entry?.explore) return;
+    const parentRunId = entry.explore.parentRunId, result = entry.explore.result();
+    entry.explore.dispose();
+    delete entry.explore;
+    const current = await this.runStore.get(runId);
+    if (current.ok && !isTerminalState(current.run.state)) {
+      await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcome });
+    }
+    const parent = this.sessions.get(parentRunId);
+    if (outcome !== "stopped" && parent?.pm && ["running", "paused", "paused_network"].includes(parent.handle.state())) {
+      parent.handle.prompt(JSON.stringify(exploreReport(runId, outcome, result, entry.handle.turnsUsed())));
+    }
+  }
+
+  /** 主窗口取回自己派出的 explore 结果；只交给派出它的那条连接，取走即删除。 */
+  takeMainExploreReport(runId: string, connectionId: string | undefined): Record<string, unknown> {
+    const main = this.mainExplores.get(runId);
+    if (!main || connectionId === undefined || main.connectionId !== connectionId || !main.report) throw protocolError("not_found", "没有可取回的 explore 结果");
+    this.mainExplores.delete(runId);
+    return main.report;
+  }
+
+  /** 主窗口连接断开（关闭窗口或切换会话都会断开）：停止由它派出的 explore，已有结果作废。 */
+  async abandonMainExplores(match: { connectionId: string }): Promise<void> {
+    this.liveConnections.delete(match.connectionId);
+    for (const [runId, main] of [...this.mainExplores]) {
+      if (main.connectionId !== match.connectionId) continue;
+      this.mainExplores.delete(runId);
+      if (!main.report) main.dispose();
+      endExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, "parent_window_closed");
+      await main.handle.stop().catch(() => ({ stopped: false }));
+      main.handle.dispose();
+    }
+  }
+
   /** 结束绑定该需求的全部运行；关闭协议以运行记录终态为准。 */
   async stopRequirement(requirementId: string): Promise<void> {
     const page = await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER });
@@ -424,6 +580,9 @@ export class RunManager {
     return children;
   }
   private readonly dispatchingPm = new Set<string>();
+  private readonly mainExplores = new Map<string, MainExplore>();
+  private readonly liveConnections = new Set<string>();
+  connectionOpened(connectionId: string | undefined): void { if (connectionId) this.liveConnections.add(connectionId); }
   private readonly overviewFingerprints = new Map<string, string>();
   /** 因计划变更被统一停止的子代理运行：其尝试记为因重新规划作废。 */
   private readonly supersededRuns = new Set<string>();
@@ -635,6 +794,7 @@ export class RunManager {
     const confirmed = reasons.length === 0;
     if (confirmed && entry?.pm) await this.finishPm(runId, "stopped");
     if (confirmed && entry?.subagent) await this.finishSubagent(runId, "stopped");
+    if (confirmed && entry?.explore) await this.finishExplore(runId, "stopped");
     if (confirmed && this.sessions.get(runId) === entry) { entry?.handle.dispose(); this.sessions.delete(runId); }
     const reason = confirmed ? undefined : reasons.join("；");
     if (run.state === "stopped") await this.runStore.update(runId, { stateReason: reason ?? "" });
@@ -773,6 +933,25 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     });
   };
   // RPC 层与执行器分别拒绝；过期客户端不能靠旧方法名进入执行器。
+  register("agents.dispatchExplore", async (params, client) => {
+    const model = params.model as { provider?: unknown; id?: unknown } | undefined, request = params.request as Record<string, unknown> | undefined;
+    const source = request?.source as { kind?: unknown; paths?: unknown } | undefined;
+    if (typeof model?.provider !== "string" || typeof model.id !== "string" || typeof params.thinking !== "string" || typeof request?.question !== "string"
+      || !Array.isArray(request.clues) || request.clues.some((clue) => typeof clue !== "string") || source?.kind !== "local_file" || !Array.isArray(source.paths)
+      || source.paths.some((path) => typeof path !== "string") || typeof params.maxTurns !== "number") throw protocolError("invalid_params", "派出 explore 参数无效");
+    if (!client.connectionId) throw protocolError("not_found", "连接身份不可用");
+    return manager.dispatchExplore({ parent: { role: "main", sessionId: client.sessionId, connectionId: client.connectionId, model: { provider: model.provider, id: model.id }, thinking: params.thinking },
+      request: { question: request.question, clues: request.clues as string[], source: { kind: "local_file", paths: source.paths as string[] } }, maxTurns: params.maxTurns });
+  });
+  register("explore.result", async (params, client) => {
+    if (typeof params.runId !== "string") throw protocolError("invalid_params", "explore 结果参数无效");
+    return manager.takeMainExploreReport(params.runId, client.connectionId);
+  });
+  const previousDisconnect = server.onDisconnect;
+  server.onDisconnect = async (client) => {
+    await previousDisconnect?.(client);
+    if (client.connectionId) await manager.abandonMainExplores({ connectionId: client.connectionId });
+  };
   register("agents.dispatchPm", async (params) => {
     const model = params.model as { provider?: unknown; id?: unknown } | undefined;
     if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof model?.provider !== "string" || typeof model.id !== "string"
@@ -819,6 +998,6 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     throw protocolError("trusted_stop_required", "缺少可信的人工停止裁定入口；USER 字符串不能证明进程已停止，请使用安全停止并核对真实进程");
   });
   register("unsubscribe", async () => ({}));
-  server.onHello = async () => {};
+  server.onHello = async (client) => { manager.connectionOpened(client.connectionId); };
   server.markHandlersReady();
 }

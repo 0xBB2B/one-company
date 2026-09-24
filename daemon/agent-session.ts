@@ -31,6 +31,8 @@ export interface CreateAgentSessionOptions {
   coreTools: ToolDefinition[];
   /** 宿主只读工具允许访问的根；qa 没有宿主读取工具，传空。 */
   readRoots: string[];
+  /** 覆盖职责默认的宿主工具（如按检索来源只给 explore 部分工具）；不能超出职责默认集合。 */
+  hostTools?: string[];
   mcp?: AgentSessionMcpOptions;
   runtime: ModelRuntime;
   modelRef: { provider: string; id: string };
@@ -238,7 +240,9 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   });
   await resourceLoader.reload();
 
-  const toolNames = [...ROLE_HOST_TOOLS[definition.role], ...options.coreTools.map((tool) => tool.name), ...(options.mcp ? ["mcp"] : [])];
+  const hostTools = options.hostTools ?? ROLE_HOST_TOOLS[definition.role];
+  if (hostTools.some((tool) => !ROLE_HOST_TOOLS[definition.role].includes(tool))) throw new Error("宿主工具超出职责默认集合");
+  const toolNames = [...hostTools, ...options.coreTools.map((tool) => tool.name), ...(options.mcp ? ["mcp"] : [])];
   const sdkSettings = SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });
   // 网络暂停由运行管理器调度，SDK 自身重试会在 abort 后再次发起请求
   const settingsManager = SettingsManager.inMemory({ ...sdkSettings.getGlobalSettings(), retry: { ...sdkSettings.getRetrySettings(), enabled: false } });

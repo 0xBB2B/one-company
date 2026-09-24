@@ -126,7 +126,8 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
   if (running.length) {
     const child = running[0]!, task = tasks.find((candidate) => candidate.taskId === child.task);
     const attempt = task ? task.attempts.findIndex((entry) => entry.runId === child.id) + 1 : 0;
-    const head = `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 执行 ${task?.key ?? "任务"}${attempt > 0 ? `（第 ${attempt} 次尝试）` : ""}`;
+    const head = child.role === "pi-company.explore" ? "派 explore 检索"
+      : `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 执行 ${task?.key ?? "任务"}${attempt > 0 ? `（第 ${attempt} 次尝试）` : ""}`;
     return running.length > 1 ? `${head} 等 ${running.length} 个` : head;
   }
   if (!plan) return "规划中";

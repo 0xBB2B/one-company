@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { authorizeToolAction } from "./core-permissions.ts";
 import { checkExploreInput, checkExploreResult, ExploreContractError } from "./explore-contracts.ts";
-import type { ExploreInput } from "./explore-contracts.ts";
+import type { ExploreInput, ExploreResult } from "./explore-contracts.ts";
 import { checked, id, object } from "./requirement-contracts.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
 import { checkExploreSession } from "./explore-session.ts";
@@ -37,6 +37,8 @@ export interface ResultSubmitToolOptions {
   verdictBinding?: VerdictBinding;
   /** 已登记的 explore 搜索会话：需求关闭、父撤权、PM 接管或会话回收后 research 一律拒收。 */
   exploreSession?: ExploreSessionConfig;
+  /** 宿主收下已通过核验的 research，用于按派出方送回；不经模型转述。 */
+  onResearch?: (result: ExploreResult) => void;
   /** 必须由宿主核验当前物理角色会话/调用者及动作许可；不能从工具参数或角色文本构造true。 */
   authorize: (request: Readonly<ResultSubmitAuthorization>) => boolean;
 }
@@ -74,13 +76,16 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     }
     if (!exploreInput) deny();
     let result;
-    try { result = checkExploreResult(params.result, exploreInput); }
+    // 模型可省略父身份与检索来源，由宿主按派工输入补上；若自行给出则仍须与派工输入一致
+    const submitted = params.result && typeof params.result === "object" && !Array.isArray(params.result) ? params.result : {};
+    try { result = checkExploreResult({ format: "explore-result/v1", kind: "research", parent: exploreInput.parent, source: exploreInput.source, ...submitted }, exploreInput); }
     catch (error) { throw new ResultSubmitError(error instanceof ExploreContractError ? error.code : "invalid_shape"); }
     if (options.exploreSession) {
       const decision = checkExploreSession(options.exploreSession, grant.runId);
       if (!decision.current || decision.session.parentRunId !== grant.parentRunId) throw new ResultSubmitError("stale_session");
     }
     host("research");
+    options.onResearch?.(result);
     return freeze({ kind: "research" as const, accepted: true, isPass: false, parentRunId: grant.parentRunId, runId: grant.runId,
       sourceKind: result.source.kind, resultHash: createHash("sha256").update(JSON.stringify(result)).digest("hex"),
       sources: result.sources.length, truncated: result.truncation.truncated, unknown: result.unknown.length, failures: result.failures.length });
