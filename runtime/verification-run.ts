@@ -1,18 +1,16 @@
 import { spawn } from "node:child_process";
 import { mkdir, open, realpath, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { activeCheckRoundIn, CHECK_ROUNDS, collectInputManifest, manifestMatchesBaseline, readCheckRoundIn, readVerificationIn,
   VerificationPerformance, VerificationRun, VERIFICATION_RUNS } from "./check-round.ts";
 import type { CheckBaseline, CheckInvalidation, CheckRound, InputManifest } from "./check-round.ts";
-import { sandboxLaunch } from "./command-boundary.ts";
-import type { CommandBoundary } from "./command-boundary.ts";
+import { writeGuardLaunch } from "./command-boundary.ts";
 import { authorizeToolAction } from "./core-permissions.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
-import { readGit } from "./git-read.ts";
 import { checked, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
@@ -91,11 +89,6 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     ["open", "read"].includes(request.action) && (request.input.requirementId === undefined || request.input.requirementId === grant.requirementId) });
   const database = repositoryDatabase(options.dataRoot, grant.repoId);
   const repoDir = join(options.dataRoot, "repos", grant.repoId);
-  const privateRoots = [
-    ...["global.db", "global.db-wal", "global.db-shm"].map((name) => join(options.dataRoot, name)),
-    ...["data.db", "data.db-wal", "data.db-shm", "index.db", "index.db-wal", "index.db-shm", "requirements", "sessions", "evidence", "backups"].map((name) => join(repoDir, name)),
-  ];
-
   function activeRecord(): RequirementRecord & { workspace: NonNullable<RequirementRecord["workspace"]>; approved: NonNullable<RequirementRecord["approved"]> } {
     const data = state.read(grant.requirementId).data;
     const workspace = data.workspace, approved = data.approved;
@@ -118,12 +111,10 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     if (!stored) return;
     db.update(CHECK_ROUNDS, checkRoundId, stored.version, { ...mutate(stored.data), updatedAt: Date.now() });
   }
-  async function boundaryFor(root: string, outputRoot: string): Promise<CommandBoundary> {
-    const readRoots = [root, dirname(await realpath(process.execPath)), outputRoot];
-    try { readRoots.push(await realpath(join(root, "node_modules"))); } catch {}
-    try { readRoots.push(await realpath(resolve(root, (await readGit(root, ["rev-parse", "--git-common-dir"])).stdout.trim()))); } catch {}
-    const scratch = join(outputRoot, "tmp");
-    return { readRoots: [...new Set(readRoots)], writeRoots: [join(outputRoot, "outputs"), scratch], deniedReads: privateRoots, deniedWrites: [root, ...privateRoots], scratch };
+  async function launchFor(started: VerificationRun, root: string) {
+    const dataRoot = await realpath(options.dataRoot), outputRoot = await realpath(started.outputRoot), scratch = join(outputRoot, "tmp");
+    return writeGuardLaunch(started.command, { deniedWrites: [dataRoot, ...(started.checkRoundId ? [root] : [])],
+      allowedWrites: [join(outputRoot, "outputs"), scratch], deniedSockets: [dataRoot], scratch });
   }
   async function writeManifest(outputRoot: string, manifest: InputManifest): Promise<void> {
     await writeFileAtomic(join(outputRoot, "manifest.json"), JSON.stringify({ format: "verification-manifest/v1", codeHead: manifest.codeHead,
@@ -185,7 +176,7 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
   async function execute(started: VerificationRun, root: string, timeoutMs: number): Promise<VerificationView> {
     type Outcome = { status: VerificationRun["status"]; exitCode: number | null; signal: string | null; reason: string | null };
     let launch;
-    try { launch = sandboxLaunch(started.command, await boundaryFor(root, started.outputRoot)); }
+    try { launch = await launchFor(started, root); }
     catch (error) { return finalize(started, root, { status: "not_run", exitCode: null, signal: null, reason: (error as Error).message.slice(0, 1024) }); }
     const stdout = await open(join(started.outputRoot, "outputs", "stdout.log"), "w", 0o600);
     const stderr = await open(join(started.outputRoot, "outputs", "stderr.log"), "w", 0o600);

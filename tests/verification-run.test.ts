@@ -157,8 +157,11 @@ test("M6-AC12/AC13：本轮 worker、未完成写入或写占用未收尾不能�
   expect(outputs.status).toBe("passed");
   await expect(readFile(join(outputs.outputRoot, "outputs", "ok.txt"), "utf8")).resolves.toBe("hi");
   await expect(readFile(join(outputs.outputRoot, "outputs", "stdout.log"), "utf8")).resolves.toBe("hi");
-  const denied = await qa.execute({ action: "run", kind: "formal", command: `ls ${JSON.stringify(join(w.dataRoot, "repos", w.repoId, "requirements"))} && cat ${JSON.stringify(join(w.dataRoot, "repos", w.repoId, "data.db"))} > /dev/null`, performance: NA }) as VerificationView;
+  const forged = join(w.dataRoot, "repos", w.repoId, "forged.txt");
+  const denied = await qa.execute({ action: "run", kind: "formal", command: `cat ${JSON.stringify(join(w.dataRoot, "repos", w.repoId, "data.db"))} > /dev/null && echo x > ${JSON.stringify(forged)}`, performance: NA }) as VerificationView;
   expect(denied.status).toBe("failed");
+  await expect(readFile(join(denied.outputRoot, "outputs", "stderr.log"), "utf8")).resolves.toContain("forged.txt");
+  await expect(readFile(forged, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 
   const slow = qa.execute({ action: "run", kind: "formal", command: "sleep 5", performance: NA }) as Promise<VerificationView>;
   await new Promise((resolve) => setTimeout(resolve, 300));
@@ -392,4 +395,20 @@ test("M6-AC1：数据库直写不能为其他调用者创建验证记录；Local
   const stored = withDatabase(w.database, (db) => db.list(CHECK_ROUNDS));
   expect(stored).toHaveLength(1);
   expect((stored[0]!.data as { verifications: string[] }).verifications).toEqual([]);
+});
+
+test("debug 命令可写工作区、继承完整环境变量；数据目录仍不可写", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const worker = await w.tool(w.grant({ role: "worker" }));
+  process.env.PI_COMPANY_VERIFY_MARK = "inherited";
+  const writes = await worker.execute({ action: "run", kind: "debug", command: 'test "$PI_COMPANY_VERIFY_MARK" = inherited && echo gen > src/generated.txt', performance: NA }) as VerificationView;
+  delete process.env.PI_COMPANY_VERIFY_MARK;
+  // 运行中改了受保护输入，本次运行按既有规则标失效；写入本身未被拦
+  expect(writes.status).toBe("invalidated");
+  await expect(w.read("src/generated.txt")).resolves.toBe("gen\n");
+  const forged = join(w.dataRoot, "forged.txt");
+  const denied = await worker.execute({ action: "run", kind: "debug", command: `echo x > ${JSON.stringify(forged)}`, performance: NA }) as VerificationView;
+  expect(denied.status).toBe("failed");
+  await expect(readFile(forged, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 });

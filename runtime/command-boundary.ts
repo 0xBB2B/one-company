@@ -36,6 +36,23 @@ export async function commandBoundary(input: { cwd: string; writePaths: string[]
   };
 }
 
+/**
+ * 验证命令只限两条写入：不得写本机数据目录（可按需放行本次输出目录），检查阶段另禁写工作区；读取、网络与环境变量不限。
+ * 沙箱规则后写者优先，故先禁后放。
+ */
+export function writeGuardLaunch(command: string, guard: { deniedWrites: string[]; allowedWrites: string[]; deniedSockets: string[]; scratch: string }) {
+  if (process.platform !== "darwin") throw new Error("此平台尚无可用的命令文件隔离后端，已拒绝不受保护的执行");
+  const subpaths = (paths: string[]) => paths.map((path) => `(subpath ${JSON.stringify(path)})`).join(" ");
+  const profile = [
+    "(version 1)", "(allow default)",
+    ...guard.deniedSockets.map((path) => `(deny network-outbound (remote unix-socket (subpath ${JSON.stringify(path)})))`),
+    `(deny file-write* ${subpaths(guard.deniedWrites)})`,
+    ...(guard.allowedWrites.length ? [`(allow file-write* ${subpaths(guard.allowedWrites)})`] : []),
+  ].join("\n");
+  const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  return { command: "/usr/bin/sandbox-exec", args: ["-p", profile, "/bin/sh", "-c", command], env: { ...env, TMPDIR: guard.scratch, TMP: guard.scratch, TEMP: guard.scratch } };
+}
+
 export function sandboxLaunch(command: string, boundary: CommandBoundary) {
   if (process.platform !== "darwin") throw new Error("此平台尚无可用的命令文件隔离后端，已拒绝不受保护的执行");
   const subpaths = (paths: string[]) => paths.map((path) => `(subpath ${JSON.stringify(path)})`).join(" ");
