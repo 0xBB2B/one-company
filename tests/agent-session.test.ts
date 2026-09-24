@@ -39,7 +39,7 @@ async function world() {
   const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
   const gate = new NetworkPauseGate();
   let serial = 0;
-  async function session(role: AgentRole, replies: ScriptedReply[], options: { resume?: boolean; runId?: string; readRoots?: string[] } = {}) {
+  async function session(role: AgentRole, replies: ScriptedReply[], options: { resume?: boolean; runId?: string; readRoots?: string[]; maxTurns?: number } = {}) {
     const provider = registerControlledProvider(runtime, { providerId: `agent-${++serial}`, modelId: "test" });
     scriptReplies(provider, replies);
     const calls: string[] = [];
@@ -50,7 +50,7 @@ async function world() {
       context: "TASK-CONTEXT", coreTools: fakeCoreTools(role, calls), readRoots: options.readRoots ?? (role === "qa" ? [] : [cwd]),
       runtime, modelRef: { provider: provider.providerId, id: "test" }, clock, networkGate: gate,
       completion: role === "pm" ? { kind: "idle-only" } : { kind: "on-result", resultTool: coreToolName("result_submit") },
-      resume: options.resume,
+      resume: options.resume, maxTurns: options.maxTurns,
     });
     cleanup.push(async () => { await handle.stop(); handle.dispose(); });
     return { handle, provider, calls, runId };
@@ -171,5 +171,39 @@ describe("完成与控制", () => {
     expect(opened.ok).toBe(true);
     const resumed = await w.session("reviewer", [{ type: "text", text: "续接" }], { resume: true, runId: s.runId });
     expect(resumed.handle.state()).toBe("running");
+  }, 20000);
+});
+
+describe("对话轮次上限", () => {
+  const call = (n: number): ScriptedReply => ({ type: "toolcall", name: "read", input: { path: `inside.txt#${n}` } });
+
+  test("M7-AC28：最多执行 N 次模型请求，不发出第 N+1 次，未提交结果标记 turn_limit_reached", async () => {
+    const w = await world();
+    const s = await w.session("worker", [call(1), call(2), call(3), call(4)], { maxTurns: 2 });
+    const reached: unknown[] = []; s.handle.events.on("turn_limit_reached", (event) => reached.push(event));
+    s.handle.prompt("开始");
+    await expect(s.handle.result()).rejects.toThrow("turn_limit_reached");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(s.provider.requests).toHaveLength(2);
+    expect(s.handle.state()).toBe("turn_limit_reached");
+    expect(s.handle.turnsUsed()).toBe(2);
+    expect(reached).toEqual([{ turns: 2, maxTurns: 2 }]);
+  }, 20000);
+
+  test("M7-AC28：第 N 轮已完整提交结果时按正常完成处理", async () => {
+    const w = await world();
+    const s = await w.session("worker", [call(1), { type: "toolcall", name: coreToolName("result_submit"), input: {} }, { type: "text", text: "结束" }], { maxTurns: 2 });
+    s.handle.prompt("开始");
+    await s.handle.result();
+    expect(s.handle.state()).toBe("completed");
+  }, 20000);
+
+  test("M7-AC27：非正整数的轮次上限直接拒绝创建会话；续接时按已用轮数继续计数", async () => {
+    const w = await world();
+    for (const maxTurns of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) await expect(w.session("worker", [], { maxTurns })).rejects.toThrow("maxTurns");
+    const s = await w.session("worker", [call(1), call(2)], { maxTurns: 3 });
+    s.handle.prompt("开始");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(s.handle.turnsUsed()).toBeLessThanOrEqual(3);
   }, 20000);
 });

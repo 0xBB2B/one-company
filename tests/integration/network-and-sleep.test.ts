@@ -64,7 +64,7 @@ test("真实SDK连接故障只暂停受影响角色，同批独立角色正常�
   await until(() => network.handle.state() === "paused_network"); await normal.handle.result();
   expect(normal.handle.state()).toBe("completed"); expect(w.gate.canProceed(network.run.id)).toEqual({ allowed: false, reason: "network" });
   expect(w.gate.canProceed(normal.run.id)).toEqual({ allowed: true });
-  await delay(100); expect(network.provider.requests).toHaveLength(1); expect(normal.provider.requests).toHaveLength(2);
+  await delay(100); expect(network.provider.requests).toHaveLength(1); expect(normal.provider.requests).toHaveLength(1);
 }, 20000);
 
 test("真实SDK认证、额度、业务错误均failed且保留真实原因，不误分类为网络暂停", async () => {

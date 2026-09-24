@@ -35,6 +35,10 @@ export interface CreateAgentSessionOptions {
   runtime: ModelRuntime;
   modelRef: { provider: string; id: string };
   thinking?: string;
+  /** 受限子代理的对话轮次上限；主代理与 PM 不设。一轮即一次模型生成请求。 */
+  maxTurns?: number;
+  /** 已用轮数（续接时由运行记录提供），计数由运行时维护，不由模型自报。 */
+  turnsUsed?: number;
   /** on-result：结果工具成功提交后本轮结束即完成；idle-only：只交回控制权（PM）。 */
   completion: { kind: "on-result"; resultTool: string } | { kind: "idle-only" };
   clock: Clock;
@@ -43,11 +47,12 @@ export interface CreateAgentSessionOptions {
   resume?: boolean;
 }
 
-export type AgentSessionState = "running" | "paused" | "paused_network" | "completed" | "failed" | "stopped";
+export type AgentSessionState = "running" | "paused" | "paused_network" | "completed" | "failed" | "stopped" | "turn_limit_reached";
 
 export interface AgentSessionHandle {
   events: EventEmitter;
   state(): AgentSessionState;
+  turnsUsed(): number;
   prompt(text: string): void;
   result(): Promise<void>;
   pause(): Promise<{ confirmed: boolean; reason?: string }>;
@@ -144,7 +149,9 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   const resultPromise = new Promise<void>((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
   resultPromise.catch(() => {});
 
-  const isTerminal = () => currentState === "completed" || currentState === "failed" || currentState === "stopped";
+  const isTerminal = () => ["completed", "failed", "stopped", "turn_limit_reached"].includes(currentState);
+  let turns = options.turnsUsed ?? 0;
+  if (options.maxTurns !== undefined && (!Number.isSafeInteger(options.maxTurns) || options.maxTurns < 1)) throw new Error("maxTurns 必须为正整数");
   const isPaused = () => currentState === "paused" || currentState === "paused_network";
 
   function finishFailed(cause: unknown): void {
@@ -159,6 +166,13 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     currentState = "completed";
     events.emit("completed");
     resolveResult();
+  }
+  function reachTurnLimit(): void {
+    if (isTerminal()) return;
+    currentState = "turn_limit_reached";
+    events.emit("turn_limit_reached", { turns, maxTurns: options.maxTurns });
+    rejectResult(new Error("turn_limit_reached"));
+    void session.abort().catch(() => {});
   }
   function onPersistError(error: Error): void {
     finishFailed(new Error(`会话保存失败: ${error.message}`));
@@ -188,6 +202,20 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     }
     const prompt = buildAgentPrompt(definition, options.context, describeMcpStatus(mcpResult));
     pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${prompt}` }));
+    // 模型调用前计数：已用满 N 轮时在第 N+1 次请求发出前中止，不靠提示词或模型自报
+    pi.on("turn_start", () => {
+      if (submitted) {
+        finishCompleted();
+        void session.abort().catch(() => {});
+        return;
+      }
+      if (options.maxTurns !== undefined && turns >= options.maxTurns) {
+        reachTurnLimit();
+        return;
+      }
+      turns++;
+      events.emit("turn_counted", { turns });
+    });
     pi.on("tool_call", (event) => checkAgentToolCall(event, {
       cwd: options.cwd, readRoots: options.readRoots, mcp: options.mcp,
       paused: () => isPaused() || isTerminal(), submitted: () => submitted,
@@ -251,6 +279,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     if (event.type === "agent_end") {
       if (currentState !== "running") return;
       if (submitted) finishCompleted();
+      else if (options.maxTurns !== undefined && turns >= options.maxTurns) reachTurnLimit();
       else events.emit("idle", { submitted: false });
       return;
     }
@@ -333,5 +362,5 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     session.dispose();
   }
 
-  return { events, state: () => currentState, prompt, result: () => resultPromise, pause, resume, stop, dispose };
+  return { events, state: () => currentState, turnsUsed: () => turns, prompt, result: () => resultPromise, pause, resume, stop, dispose };
 }
