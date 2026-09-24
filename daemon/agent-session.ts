@@ -53,6 +53,8 @@ export interface AgentSessionHandle {
   events: EventEmitter;
   state(): AgentSessionState;
   turnsUsed(): number;
+  /** 没有进行中的模型回合、排队消息或执行中的工具。 */
+  idle(): boolean;
   prompt(text: string): void;
   result(): Promise<void>;
   pause(): Promise<{ confirmed: boolean; reason?: string }>;
@@ -364,5 +366,5 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     session.dispose();
   }
 
-  return { events, state: () => currentState, turnsUsed: () => turns, prompt, result: () => resultPromise, pause, resume, stop, dispose };
+  return { events, state: () => currentState, turnsUsed: () => turns, idle: () => !prompting && queuedMessages.length === 0 && activeTools.size === 0, prompt, result: () => resultPromise, pause, resume, stop, dispose };
 }

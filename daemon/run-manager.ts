@@ -27,6 +27,9 @@ import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { TimerHandle } from "../runtime/clock.ts";
 import { MANAGED_WORKSPACES } from "../runtime/workspace-manage.ts";
 import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
+import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
+import type { PmOverview } from "../runtime/pm-overview.ts";
+import { RequirementService } from "../runtime/requirement-service.ts";
 import { implementAuthorized } from "../runtime/pm-intake-runtime.ts";
 import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
@@ -209,7 +212,7 @@ export class RunManager {
       if (delivering || !alive()) return;
       delivering = true;
       void deliverApprovedEvents({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease,
-        deliver: (text) => handle.prompt(text) }).catch(() => {}).finally(() => { delivering = false; });
+        deliver: (text) => handle.prompt(text) }).catch(() => {}).then(() => this.refreshOverview(run.id)).catch(() => {}).finally(() => { delivering = false; });
     }, PM_EVENT_POLL_MS);
     this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery } });
     registered = true;
@@ -228,6 +231,7 @@ export class RunManager {
     if (!entry?.pm) return;
     this.options.clock.clearTimer(entry.pm.renewal);
     this.options.clock.clearTimer(entry.pm.delivery);
+    if (this.overviewFingerprints.delete(runId)) this.emit("pm.overview.changed", { requirementId: entry.pm.lease.requirementId, pmRunId: runId });
     entry.pm.tools.dispose();
     try { (await this.pmState()).releasePm(entry.pm.lease); } catch { /* 已被接管或到期的租约无需释放 */ }
     const current = await this.runStore.get(runId);
@@ -390,6 +394,64 @@ export class RunManager {
     if ((children.length > 0 && run.kind !== "requirement") || children.some((child) => child.id === run.id || child.kind !== "role")) throw protocolError("legacy_metadata_unavailable", "运行关联无效，未知记录已保全待核对");
     return children;
   }
+  private readonly overviewFingerprints = new Map<string, string>();
+  private readonly headingCache = new Map<string, { hash: string; titles: Map<string, string> }>();
+
+  private async headingTitles(record: RequirementRecord): Promise<Map<string, string>> {
+    const hash = record.approved?.hash;
+    const cached = this.headingCache.get(record.requirementId);
+    if (!hash) return new Map();
+    if (cached?.hash === hash) return cached.titles;
+    const service = await RequirementService.open({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId,
+      authorize: (request) => request.repoId === this.repoId && ["metadata", "readApproved"].includes(request.action) &&
+        (request.requirementId === undefined || request.requirementId === record.requirementId) });
+    const read = await service.read({ requirementId: record.requirementId, source: "approved" });
+    const titles = read.prodHash === `sha256:${hash}` ? headingTitlesOf(read.body) : new Map<string, string>();
+    this.headingCache.set(record.requirementId, { hash, titles });
+    return titles;
+  }
+
+  /** 计算 PM 面板概览：只读持久记录与本进程会话状态，不改 PM 行为。 */
+  private async overviewOf(pmRunId: string): Promise<PmOverview | null> {
+    const entry = this.sessions.get(pmRunId);
+    if (!entry?.pm) return null;
+    const pm = await this.runStore.get(pmRunId);
+    if (!pm.ok || isTerminalState(pm.run.state)) return null;
+    const lease = entry.pm.lease;
+    const record = (await this.pmState()).read(lease.requirementId).data;
+    const children = (await this.runStore.list({ requirement: lease.requirementId, limit: Number.MAX_SAFE_INTEGER })).items.filter((run) => run.parentRunId === pmRunId);
+    const headingTitles = await this.headingTitles(record);
+    return withDatabase(this.database, (db) => pmOverview({ dataRoot: this.options.dataRoot, repoId: this.repoId, db, record, lease, pm: pm.run, children,
+      pmIdle: entry.handle.idle(), headingTitles, now: Date.now() }));
+  }
+
+  /** 等待用户决定的时间与暂停一样不计入耗时；概览除耗时外有变化时向所有窗口广播不含正文的变更信号。 */
+  private async refreshOverview(pmRunId: string): Promise<void> {
+    const overview = await this.overviewOf(pmRunId);
+    if (!overview) return;
+    const pm = await this.runStore.get(pmRunId);
+    if (pm.ok && pm.run.state === "running") {
+      if (overview.status === "waiting" && !pm.run.pausedAt) this.emitRun(await this.runStore.recordPause(pmRunId, new Date().toISOString()));
+      if (overview.status !== "waiting" && pm.run.pausedAt) this.emitRun(await this.runStore.recordResume(pmRunId, new Date().toISOString()));
+    }
+    const { elapsedMs: _elapsed, ...stable } = overview;
+    const fingerprint = JSON.stringify(stable);
+    if (this.overviewFingerprints.get(pmRunId) === fingerprint) return;
+    this.overviewFingerprints.set(pmRunId, fingerprint);
+    this.emit("pm.overview.changed", { requirementId: overview.requirementId, pmRunId });
+  }
+
+  /** 本仓库全部运行中/暂停的 PM 概览，供任一主窗口拉取。 */
+  async overviews(): Promise<PmOverview[]> {
+    const result: PmOverview[] = [];
+    for (const [runId, entry] of this.sessions) {
+      if (!entry.pm) continue;
+      const overview = await this.overviewOf(runId);
+      if (overview) result.push(overview);
+    }
+    return result;
+  }
+
   /** 模型每次回复的用量与每次工具结束都累加进本运行记录；PM 与子代理的汇总在读取时按父运行相加。 */
   private trackUsage(runId: string, handle: AgentSessionHandle): void {
     const record = (delta: Parameters<RunStore["recordUsage"]>[1]) => {
@@ -602,6 +664,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     return manager.dispatchPm({ requirementId: params.requirementId, model: { provider: model.provider, id: model.id }, thinking: params.thinking });
   });
   register("runs.resume", async (params) => manager.resume(params.runId as string));
+  register("pm.overview", async () => ({ items: await manager.overviews() }));
   for (const method of ["dispatch.requirement", "dispatch.review", "runs.resumeAll", "runs.resumeInterrupted", "relay.answer", "relay.forward", "subscribe.transcript"]) {
     register(method, async () => { throw retiredError(); });
   }
