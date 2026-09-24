@@ -14,6 +14,12 @@ import { LEGACY_WORKFLOW_RETIRED } from "../runtime/decision-record-tool.ts";
 import { createAgentRoleSession } from "./agent-session.ts";
 import type { AgentSessionHandle } from "./agent-session.ts";
 import { createPmTools } from "./pm-tools.ts";
+import { createSubagentTools } from "./subagent-tools.ts";
+import { beginTaskAttempt, finishTaskAttempt, TaskDispatchError } from "../runtime/task-dispatch.ts";
+import { readPlanIn, readTaskDetail } from "../runtime/plan-manage.ts";
+import type { TaskRecord as PlanTask } from "../runtime/plan-manage.ts";
+import { VERDICTS } from "../runtime/verdicts.ts";
+import { coreToolName } from "../runtime/role-tools.ts";
 import type { PmTools } from "./pm-tools.ts";
 import { withDatabase } from "../runtime/database.ts";
 import type { PmLease, RequirementRecord } from "../runtime/requirement-contracts.ts";
@@ -33,10 +39,25 @@ export interface RunManagerOptions {
   runtime: ModelRuntime; selectModel: ModelSelector; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
 }
 export interface WaitForSpec { repo: string; requirement: string; stage: string }
-interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle } }
+interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle };
+  subagent?: { parentRunId: string; taskId: string; dispose(): void } }
 export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
 const PM_RENEW_MS = 10_000;
 const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "renew-pm", "release-pm", "check-pm"];
+
+async function taskContext(task: PlanTask, maxTurns: number): Promise<string> {
+  const detail = await readTaskDetail(task);
+  return [
+    `任务：${task.key}（${task.taskId}，版本 ${task.version}，职责 ${task.role}）`,
+    `目标：${detail.objective}`,
+    `通过条件：\n${detail.passCriteria.map((item) => `- ${item}`).join("\n")}`,
+    `范围：${detail.scope.in.join("、")}；非目标：${detail.scope.out.join("、") || "无"}`,
+    `性能条件：${detail.performance.applicable ? detail.performance.thresholds : `不适用（${detail.performance.reason}）`}`,
+    `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
+    ...(task.writePaths.length ? [`可写范围：${task.writePaths.join("、")}`] : []),
+    `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交结果。`,
+  ].join("\n");
+}
 
 function pmContext(record: RequirementRecord, lease: PmLease): string {
   const workspace = record.workspace!;
@@ -157,7 +178,15 @@ export class RunManager {
           if (!current.approved || !current.approvalManifest) throw new Error("approval_baseline_missing");
           return { approvedRevision: current.revision, approvedProdHash: current.approved.hash, approvalManifestHash: current.approvalManifest.reference.manifestHash };
         },
-        stopAgents: (requirementId) => this.stopRequirement(requirementId) });
+        stopAgents: (requirementId) => this.stopRequirement(requirementId),
+        agents: {
+          dispatch: (taskId, retry) => this.dispatchTask({ pmRunId: run.id, taskId, retry }),
+          control: async (action, childId) => {
+            const child = await this.runStore.get(childId);
+            if (!child.ok || child.run.parentRunId !== run.id) throw protocolError("not_found", "不是本 PM 派出的运行");
+            return action === "status" ? this.status(childId) : this[action](childId);
+          },
+        } });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         context: pmContext(record.data, lease), coreTools: tools.tools, readRoots: [workspace.path], runtime: this.options.runtime, modelRef, thinking,
         completion: { kind: "idle-only" }, clock: this.options.clock, networkGate: this.options.networkGate });
@@ -191,6 +220,92 @@ export class RunManager {
     const current = await this.runStore.get(runId);
     if (current.ok && !isTerminalState(current.run.state)) await this.runStore.update(runId, { state, ...(reason ? { stateReason: reason } : {}) });
     delete entry.pm;
+  }
+
+  /** PM 按已冻结任务派出受限子代理：门槛与尝试登记在同一事务，子代理带运行时轮次上限，结局自动上报直属 PM。 */
+  async dispatchTask(input: { pmRunId: string; taskId: string; retry: { reason: string; maxTurns: number } | null }): Promise<{ runId: string; maxTurns: number }> {
+    const pm = this.sessions.get(input.pmRunId);
+    if (!pm?.pm) throw protocolError("pm_not_running", "派工的 PM 会话不存在");
+    const lease = pm.pm.lease;
+    const pmRun = await this.runStore.get(input.pmRunId);
+    if (!pmRun.ok) throw protocolError("pm_not_running", "派工的 PM 运行不存在");
+    const state = await this.pmState();
+    const record = state.read(lease.requirementId).data;
+    const task = withDatabase(this.database, (db) => readPlanIn(db, lease.requirementId)?.tasks.find((candidate) => candidate.taskId === input.taskId));
+    if (!task) throw protocolError("task_not_ready", "任务不存在");
+    if (task.role === "explore") throw protocolError("role_unavailable", "explore 派工由检索入口负责");
+    const entry = this.options.roleCatalog.find((candidate) => candidate.name === task.role);
+    if (!entry?.available || !entry.definition || entry.definition.role !== task.role) throw protocolError("role_unavailable", entry?.reason ?? `${task.role} 定义不可用`);
+    const definition = entry.definition;
+    const modelRef = definition.model
+      ? { provider: definition.model.slice(0, definition.model.indexOf("/")), id: definition.model.slice(definition.model.indexOf("/") + 1) }
+      : pmRun.run.model;
+    const thinking = definition.thinking ?? pmRun.run.thinking;
+    const workspace = record.workspace!;
+    const run = await this.runStore.create({ kind: "role", role: `pi-company.${task.role}`, requirement: lease.requirementId, parentRunId: input.pmRunId, task: task.taskId,
+      cwd: workspace.path, readPaths: [workspace.path], writePaths: task.writePaths, model: modelRef, thinking, mcp: [] });
+    let maxTurns: number;
+    try { ({ maxTurns } = beginTaskAttempt({ dataRoot: this.options.dataRoot, repoId: this.repoId, lease, taskId: task.taskId, runId: run.id, retry: input.retry })); }
+    catch (error) {
+      await this.runStore.update(run.id, { state: "failed", stateReason: (error as { code?: string }).code ?? "dispatch_denied" });
+      if (error instanceof TaskDispatchError) throw protocolError(error.code, error.message);
+      throw error;
+    }
+    let registered = false;
+    const alive = () => {
+      const current = this.sessions.get(run.id), parent = this.sessions.get(input.pmRunId);
+      const sessionAlive = current === undefined ? !registered : current.handle.state() === "running" || current.handle.state() === "paused";
+      return sessionAlive && parent?.pm?.lease.fence === lease.fence;
+    };
+    let tools: Awaited<ReturnType<typeof createSubagentTools>> | undefined;
+    let handle: AgentSessionHandle;
+    try {
+      tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
+        pmLease: lease, workspace, epoch: record.epoch, task, alive });
+      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
+        context: await taskContext(task, maxTurns), coreTools: tools.tools, readRoots: task.role === "qa" ? [] : [workspace.path], runtime: this.options.runtime,
+        modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
+    } catch (error) {
+      registered = true;
+      tools?.dispose();
+      finishTaskAttempt({ dataRoot: this.options.dataRoot, repoId: this.repoId, taskId: task.taskId, runId: run.id, turnsUsed: 0, outcome: "failed" });
+      await this.runStore.update(run.id, { state: "failed", stateReason: "subagent_session_failed" });
+      throw protocolError("subagent_session_failed", (error as Error).message);
+    }
+    const toolSet = tools;
+    this.sessions.set(run.id, { kind: "role", handle, subagent: { parentRunId: input.pmRunId, taskId: task.taskId, dispose: () => toolSet.dispose() } });
+    registered = true;
+    handle.events.on("turn_counted", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
+    handle.events.on("completed", () => { void this.finishSubagent(run.id, "completed"); });
+    handle.events.on("turn_limit_reached", () => { void this.finishSubagent(run.id, "turn_limit_reached"); });
+    handle.events.on("failed", () => { void this.finishSubagent(run.id, "failed"); });
+    await this.runStore.update(run.id, { state: "running" });
+    handle.prompt("开始执行任务。");
+    return { runId: run.id, maxTurns };
+  }
+
+  private async finishSubagent(runId: string, outcome: "completed" | "turn_limit_reached" | "failed" | "stopped"): Promise<void> {
+    const entry = this.sessions.get(runId);
+    if (!entry?.subagent) return;
+    const { parentRunId, taskId } = entry.subagent;
+    entry.subagent.dispose();
+    delete entry.subagent;
+    // 结局以本运行提交的分级裁决为准：只有无阻塞、无未验证项才算完成
+    const report = withDatabase(this.database, (db) => db.list<{ runId?: string; conclusion?: string; summary?: string; verificationIds?: string[]; findings?: unknown[] }>(VERDICTS)
+      .map((row) => row.data).find((verdict) => verdict.runId === runId));
+    const effective = outcome === "completed" && report?.conclusion !== "clear" ? "incomplete" : outcome;
+    const task = finishTaskAttempt({ dataRoot: this.options.dataRoot, repoId: this.repoId, taskId, runId, turnsUsed: entry.handle.turnsUsed(), outcome: effective });
+    const current = await this.runStore.get(runId);
+    if (current.ok && !isTerminalState(current.run.state)) {
+      await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcome });
+    }
+    const parent = this.sessions.get(parentRunId);
+    const attempt = task.attempts.find((item) => item.runId === runId);
+    const lines = [`子代理运行 ${runId} 已结束：任务 ${task.key}，结局 ${effective}，已用 ${attempt?.turnsUsed ?? 0}/${attempt?.maxTurns ?? 0} 轮，任务状态 ${task.status}。`,
+      report ? `提交结论 ${report.conclusion}：${report.summary ?? ""}；验证引用 ${report.verificationIds?.join("、") || "无"}；分级问题 ${report.findings?.length ?? 0} 项。` : "没有提交结果。",
+      task.status === "awaiting_parent" ? "请核对已有成果与原因后决定：用 retry 给出原因和新的轮次上限重试一次，或向主代理报告需求/条件不足。"
+        : task.status === "awaiting_user" ? "该任务两次尝试均未完成，已进入等待用户裁决，不能再派工；请向主代理报告。" : "请核对实际证据后再整合结果。"];
+    if (parent?.pm && ["running", "paused", "paused_network"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
   }
 
   /** 结束绑定该需求的全部运行；关闭协议以运行记录终态为准。 */
@@ -311,6 +426,7 @@ export class RunManager {
     else if (childrenStop.value.some((child) => !child.confirmed)) reasons.push("子运行尚未确认停止");
     const confirmed = reasons.length === 0;
     if (confirmed && entry?.pm) await this.finishPm(runId, "stopped");
+    if (confirmed && entry?.subagent) await this.finishSubagent(runId, "stopped");
     if (confirmed && this.sessions.get(runId) === entry) { entry?.handle.dispose(); this.sessions.delete(runId); }
     const reason = confirmed ? undefined : reasons.join("；");
     if (run.state === "stopped") await this.runStore.update(runId, { stateReason: reason ?? "" });
@@ -442,7 +558,8 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       try { return await handler(params, client); }
       catch (error) {
         if (error instanceof Error && ["legacy_workflow_retired", "trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
-          "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized"].includes((error as { code?: string }).code ?? "")) throw error;
+          "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
+          "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed"].includes((error as { code?: string }).code ?? "")) throw error;
         throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对");
       }
     });

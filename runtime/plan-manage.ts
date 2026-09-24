@@ -52,7 +52,11 @@ export type PlanManageParameters = Static<typeof PLAN_MANAGE_PARAMETERS>;
 export type PlanManageAction = PlanManageParameters["action"];
 
 const UnitRef = object({ unitId, hash });
-export type TaskStatus = "pending" | "running" | "completed" | "failed" | "needs_update" | "blocked" | "cancelled";
+export type TaskStatus = "pending" | "running" | "completed" | "failed" | "needs_update" | "blocked" | "cancelled" | "awaiting_parent" | "awaiting_user";
+const Attempt = object({ runId: id, maxTurns: positive, turnsUsed: Type.Integer({ minimum: 0 }), reason: Type.Union([text, Type.Null()]),
+  outcome: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("incomplete"), Type.Literal("turn_limit_reached"),
+    Type.Literal("failed"), Type.Literal("stopped")]) });
+export type TaskAttempt = Static<typeof Attempt>;
 const TaskRecord = object({
   format: Type.Literal("plan-task/v1"), taskId: id, requirementId: id, version: positive, key, role: DelegatedRole,
   goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0), closure: Type.Array(UnitRef, { maxItems: 20 }),
@@ -60,12 +64,14 @@ const TaskRecord = object({
   blockedByQuestionIds: Type.Array(id, { maxItems: 16 }), maxTurns: positive,
   detail: object({ path: Type.String({ minLength: 1 }), hash }),
   status: Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed"),
-    Type.Literal("needs_update"), Type.Literal("blocked"), Type.Literal("cancelled")]),
+    Type.Literal("needs_update"), Type.Literal("blocked"), Type.Literal("cancelled"), Type.Literal("awaiting_parent"), Type.Literal("awaiting_user")]),
+  attempts: Type.Array(Attempt, { maxItems: 2 }),
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
 const PlanRecord = object({
   format: Type.Literal("plan/v1"), requirementId: id, planVersion: positive, confirmedVersion: Type.Union([positive, Type.Null()]),
+  confirmedTasks: Type.Array(object({ taskId: id, version: positive }), { maxItems: 256 }),
   taskIds: Type.Array(id, { maxItems: 256 }), knownUnits: Type.Array(UnitRef, { maxItems: 20 }), prodRevision: positive, updatedAt: positive,
 });
 export type PlanRecord = Static<typeof PlanRecord>;
@@ -184,6 +190,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (unknownUnits.length) deny("unknown_unit", [...new Set(unknownUnits)]);
     const outside = specs.flatMap((spec) => spec.goalUnitIds).filter((unit) => !scope.has(unit));
     if (outside.length) deny("unit_not_authorized", [...new Set(outside)]);
+    const noScope = specs.filter((spec) => spec.role === "worker" && spec.writePaths.length === 0);
+    if (noScope.length) deny("dependency_invalid", noScope.map((spec) => `${spec.key} 是实现任务，须声明可写范围`));
     const keys = specs.map((spec) => spec.key);
     if (new Set(keys).size !== keys.length || keys.some((value) => known.has(value) && !specs.some((spec) => spec.key === value))) deny("dependency_invalid", ["任务 key 重复"]);
     for (const spec of specs) for (const dep of spec.dependsOn) if (!keys.includes(dep) && !known.has(dep)) deny("dependency_invalid", [`${spec.key} 依赖未知任务 ${dep}`]);
@@ -218,7 +226,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       records.push(checked(TaskRecord, { format: "plan-task/v1", taskId, requirementId: grant.requirementId, version, key: spec.key, role: spec.role,
         goalUnitIds: spec.goalUnitIds, constraintUnitIds: spec.constraintUnitIds, closure: closureOf(manifest, spec.goalUnitIds, spec.constraintUnitIds),
         dependsOn: spec.dependsOn.map((dep) => ids.get(dep)!), writePaths: spec.writePaths, blockedByQuestionIds: spec.blockedByQuestionIds,
-        maxTurns: spec.maxTurns, detail: await writeDetail(taskId, version, spec), status: "pending", lastAssessedRevision: revision, updatedAt: now() }));
+        maxTurns: spec.maxTurns, detail: await writeDetail(taskId, version, spec), status: "pending", attempts: previous?.get(taskId)?.attempts ?? [],
+        lastAssessedRevision: revision, updatedAt: now() }));
     }
     return records;
   }
@@ -246,7 +255,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     validateSpecs(manifest, specs, new Map());
     const tasks = await materialize(manifest, specs, new Map(), record.data.revision);
     assertAcyclic(tasks);
-    const plan = checked(PlanRecord, { format: "plan/v1", requirementId: grant.requirementId, planVersion: 1, confirmedVersion: null,
+    const plan = checked(PlanRecord, { format: "plan/v1", requirementId: grant.requirementId, planVersion: 1, confirmedVersion: null, confirmedTasks: [],
       taskIds: tasks.map((task) => task.taskId), knownUnits: manifest.units.map((unit) => ({ unitId: unit.id, hash: unit.hash })),
       prodRevision: record.data.revision, updatedAt: now() });
     return commit({ planVersion: null, recordVersion: record.version }, plan, tasks);
@@ -262,7 +271,12 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     for (const item of [...(params.modify ?? []), ...(params.cancel ?? [])]) {
       const task = byId.get(item.taskId);
       if (!task || task.version !== item.version) deny("version_conflict", [`任务 ${item.taskId} 版本已变化`]);
+      if (task.status === "awaiting_user") deny("task_not_ready", [`${task.key} 等待用户裁决，不能修改或取消`]);
     }
+    // 等待用户裁决的任务所覆盖的目标不能另起新任务绕开一次重试限制
+    const held = new Set(current.tasks.filter((task) => task.status === "awaiting_user").flatMap((task) => task.goalUnitIds));
+    const bypass = (params.add ?? []).filter((spec) => spec.goalUnitIds.some((unit) => held.has(unit)));
+    if (bypass.length) deny("task_not_ready", bypass.map((spec) => `${spec.key} 覆盖等待用户裁决任务的目标`));
     const modifySpecs = (params.modify ?? []).map((item) => {
       if (item.spec.key !== byId.get(item.taskId)!.key) deny("dependency_invalid", ["修改不能改变任务 key"]);
       return item.spec;
@@ -293,7 +307,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const covered = new Set(live.flatMap((task) => task.goalUnitIds));
     const missing = [...implementScope(manifest)].filter((unit) => !covered.has(unit));
     if (missing.length) deny("coverage_incomplete", missing);
-    const plan = checked(PlanRecord, { ...current.plan, confirmedVersion: planVersion, updatedAt: now() });
+    const plan = checked(PlanRecord, { ...current.plan, confirmedVersion: planVersion,
+      confirmedTasks: live.map((task) => ({ taskId: task.taskId, version: task.version })), updatedAt: now() });
     return commit({ planVersion, recordVersion: record.version }, plan, []);
   }
 

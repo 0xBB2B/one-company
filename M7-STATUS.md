@@ -32,10 +32,10 @@
 | AC24 实际模型与加载探针和运行元数据一致 | 未开始 | | G 片 |
 | AC25 配置变化不静默改在途运行，重派重核验 | 未开始 | | G 片 |
 | AC26 专业结果由父代理核验，独立 review/QA，专业实例受互斥与撤权约束 | 未开始 | | E 片 |
-| AC27 受限子代理缺目标或有效 maxTurns 拒绝派工 | 未开始 | | E 片 |
-| AC28 最多 N 轮，不发 N+1 | 未开始 | | E 片 |
-| AC29 到限自动上报直属父代理 | 未开始 | | E 片 |
-| AC30 最多一次父代理批准的重试，之后待用户裁决 | 未开始 | | E 片 |
+| AC27 受限子代理缺目标或有效 maxTurns 拒绝派工 | 通过 | E：tests/plan-manage.test.ts（任务缺目标或非正整数轮次上限拒绝登记）；tests/agent-session.test.ts（非正整数上限拒绝创建会话）；tests/task-dispatch.test.ts（派工轮次上限取任务登记值，写入子代理上下文） | 无 |
+| AC28 最多 N 轮，不发 N+1 | 通过 | E1：tests/agent-session.test.ts（上限 2 时模型请求恰为 2 次，第 3 次未发出，标 turn_limit_reached；第 N 轮已提交结果按完成处理）；tests/task-dispatch.test.ts（真实派工链路 turnsUsed=2/3） | 无 |
+| AC29 到限自动上报直属父代理 | 部分 | E2：tests/task-dispatch.test.ts（到限后不再调用子代理模型，运行时向直属 PM 会话注入结局、已用轮数、验证引用与处置提示；PM 不在时任务保持 awaiting_parent） | main 直派 explore 的上报在 F 片 |
+| AC30 最多一次父代理批准的重试，之后待用户裁决 | 部分 | E2：tests/task-dispatch.test.ts（未带原因的再派被拒；带原因与新上限重试一次；再未完成进入 awaiting_user，第三次派工、修改该任务、另起覆盖其目标的新任务均被拒；无需重试时带 retry 被拒） | 用户新决定解除待裁决的入口待补 |
 | AC31 正式计划/派工缺目标/通过条件/范围/性能条件拒绝 | 部分 | D1：tests/plan-manage.test.ts（缺目标、通过条件、范围、性能条件或有效轮次上限拒绝登记；冻结前须覆盖全部获准实施章节；版本递增与过期版本拒绝） | 派工侧校验在 E 片 |
 | AC32 非阻塞建议不生成任务，扩范围须用户决定 | 部分 | D1：tests/plan-manage.test.ts（任务只能引用获准实施的章节，越出授权即拒；任务只能由 PM 经 plan_manage 登记，审查结果没有生成任务的入口） | 同一未完成任务的重试限制在 E 片 |
 
