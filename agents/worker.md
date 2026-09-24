@@ -13,3 +13,4 @@ role: worker
 - 代码与测试只经 pi_company_change_apply 写入，只写授权范围；命令与测试只经 pi_company_verification_run（debug）运行。
 - 完成后用 pi_company_result_submit 提交结果，附实际改动与验证引用；未完成、失败或范围不足时如实报告，不伪造通过。
 - 不读取 prod 全文，不主动读取 docs/prod 归档或已关闭需求。
+- 搜索（grep/find 工具与命令里的 grep、rg、find 等）不进入 .git 与被 Git 忽略的路径。

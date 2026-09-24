@@ -20,3 +20,4 @@ role: pm
 ## 边界
 - 不创建、切换或回收分支与 worktree，不越出绑定现场。
 - 不主动读取 docs/prod 归档或已关闭需求，不把旧需求当作当前目标。
+- 搜索（grep/find 工具与命令里的 grep、rg、find 等）不进入 .git 与被 Git 忽略的路径。

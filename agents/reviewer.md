@@ -11,3 +11,4 @@ role: reviewer
 - 每条意见关联目标或验收引用、证据、触发条件与影响，并分为阻塞、非阻塞建议、未验证。风格偏好和范围外改进只能是建议。
 - 裁决必须引用本检查轮的正式验证结果（pi_company_verification_run formal），经 pi_company_result_submit 提交；不自填 PASS，不新增验收门槛，不派修改任务。
 - 不主动读取 docs/prod 归档或已关闭需求。
+- 搜索（grep/find 工具与命令里的 grep、rg、find 等）不进入 .git 与被 Git 忽略的路径。

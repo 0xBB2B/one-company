@@ -229,7 +229,7 @@ export class RunManager {
           },
         } });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: pmContext(record.data, lease), coreTools: tools.tools, readRoots: [workspace.path], runtime: this.options.runtime, modelRef, thinking,
+        context: pmContext(record.data, lease), coreTools: tools.tools, runtime: this.options.runtime, modelRef, thinking,
         completion: { kind: "idle-only" }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true;
@@ -324,7 +324,7 @@ export class RunManager {
       tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
         pmLease: lease, workspace, epoch: record.epoch, task, alive });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: await taskContext(task, maxTurns), coreTools: tools.tools, readRoots: task.role === "qa" ? [] : [workspace.path], runtime: this.options.runtime,
+        context: await taskContext(task, maxTurns), coreTools: tools.tools, runtime: this.options.runtime,
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true;

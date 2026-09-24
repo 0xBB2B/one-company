@@ -107,12 +107,13 @@ describe("工具调用边界", () => {
     expect(await import("node:fs/promises").then((fs) => fs.readFile(join(w.cwd, "inside.txt"), "utf8"))).toBe("inside");
   }, 20000);
 
-  test("宿主读取工具只能读授权根内的路径，qa 无读取根", async () => {
+  test("给定读取根（explore）时只能读根内路径；缺省不限读取范围", async () => {
     const w = await world();
     const ctx = { cwd: w.cwd, readRoots: [w.cwd], paused: () => false, submitted: () => false };
     expect(await checkAgentToolCall({ type: "tool_call", toolCallId: "1", toolName: "read", input: { path: "inside.txt" } } as never, ctx)).toBeUndefined();
     expect(await checkAgentToolCall({ type: "tool_call", toolCallId: "2", toolName: "read", input: { path: w.outside } } as never, ctx)).toMatchObject({ block: true });
     expect(await checkAgentToolCall({ type: "tool_call", toolCallId: "3", toolName: "grep", input: {} } as never, { ...ctx, readRoots: [] })).toMatchObject({ block: true });
+    expect(await checkAgentToolCall({ type: "tool_call", toolCallId: "5", toolName: "read", input: { path: w.outside } } as never, { ...ctx, readRoots: undefined })).toBeUndefined();
     for (const path of ["~/.ssh/id_rsa", "~", "@/etc/passwd", "@inside.txt", "file:///etc/passwd", "FILE:///etc/passwd", "inside\u00A0.txt"]) {
       expect(await checkAgentToolCall({ type: "tool_call", toolCallId: "4", toolName: "read", input: { path } } as never, ctx)).toMatchObject({ block: true });
     }

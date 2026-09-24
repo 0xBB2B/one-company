@@ -10,6 +10,7 @@ import type { McpConfig } from "../runtime/mcp.ts";
 import { classifyFailure } from "../runtime/network-pause.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
+import { checkSearchCall, filterSearchResult } from "../runtime/search-exclusion.ts";
 import type { RoleDefinition } from "../runtime/roles.ts";
 import { createSessionManagerForRun, openSessionManagerForRun } from "../runtime/session-records.ts";
 
@@ -29,8 +30,8 @@ export interface CreateAgentSessionOptions {
   /** 程序按当前授权数据组装的任务上下文；不含父会话历史。 */
   context: string;
   coreTools: ToolDefinition[];
-  /** 宿主只读工具允许访问的根；qa 没有宿主读取工具，传空。 */
-  readRoots: string[];
+  /** 宿主只读工具限定的根（explore 限在派出方工作区）；缺省不限读取范围。 */
+  readRoots?: string[];
   /** 覆盖职责默认的宿主工具（如按检索来源只给 explore 部分工具）；不能超出职责默认集合。 */
   hostTools?: string[];
   mcp?: AgentSessionMcpOptions;
@@ -102,7 +103,7 @@ export function buildAgentPrompt(definition: RoleDefinition, context: string, mc
 }
 
 export async function checkAgentToolCall(event: ToolCallEvent, ctx: {
-  cwd: string; readRoots: string[]; mcp?: AgentSessionMcpOptions; paused: () => boolean; submitted: () => boolean;
+  cwd: string; readRoots?: string[]; mcp?: AgentSessionMcpOptions; paused: () => boolean; submitted: () => boolean;
 }): Promise<ToolCallEventResult | void> {
   if (ctx.paused()) return { block: true, reason: "会话已暂停，拒绝新操作" };
   if (ctx.submitted()) return { block: true, reason: "结果已提交，会话即将结束", terminate: true };
@@ -111,8 +112,8 @@ export async function checkAgentToolCall(event: ToolCallEvent, ctx: {
     // grep/find/ls 允许省略 path，此时按会话 cwd 判定，不能因省略而绕过范围
     const path = input && typeof input.path === "string" ? input.path : ctx.cwd;
     if (REWRITTEN_PATH.test(path)) return { block: true, reason: `不支持的路径写法: ${path}` };
-    if (!(await withinRoots(ctx.cwd, path, ctx.readRoots))) return { block: true, reason: `读取路径超出范围: ${path}` };
-    return;
+    if (ctx.readRoots && !(await withinRoots(ctx.cwd, path, ctx.readRoots))) return { block: true, reason: `读取路径超出范围: ${path}` };
+    return checkSearchCall(event, ctx.cwd);
   }
   if (event.toolName === "mcp") {
     const input = event.input as Record<string, unknown>;
@@ -224,6 +225,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
       cwd: options.cwd, readRoots: options.readRoots, mcp: options.mcp,
       paused: () => isPaused() || isTerminal(), submitted: () => submitted,
     }));
+    pi.on("tool_result", (event) => filterSearchResult(event));
     pi.on("tool_execution_start", (event) => {
       activeTools.add(event.toolCallId);
       events.emit("tool_start", { toolCallId: event.toolCallId, toolName: event.toolName });
