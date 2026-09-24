@@ -107,7 +107,7 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "runs.resume": { runId: "run-1" },
   "agents.dispatchPm": { requirementId: "req-1", model: { provider: "p", id: "m" }, thinking: "off" },
   "pm.overview": {},
-  "agents.dispatchExplore": { request: { question: "q", clues: [], source: { kind: "local_file", paths: ["/a"] } }, maxTurns: 3, model: { provider: "p", id: "m" }, thinking: "off" },
+  "agents.dispatchExplore": { request: { question: "q", clues: [], source: { kind: "local_file" } }, maxTurns: 3, model: { provider: "p", id: "m" }, thinking: "off" },
   "explore.result": { runId: "r" },
   "pm.packet": { requirementId: "req-1", itemId: "task:x" },
   "workflow.manage": { requirementId: "req-1", request: { action: "status" } },

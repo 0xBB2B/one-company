@@ -54,7 +54,7 @@ async function world() {
   const workspace = { repoId: options.repoId, workspaceId: sha("workspace"), branch: "refs/heads/test" };
   function input(parent: ExploreInput["parent"]): ExploreInput {
     return { format: "explore-input/v1", parent, question: "定位校验逻辑", clues: [], budget,
-      source: { kind: "knowledge_query", workspace, generation: 4, baselineHash: sha("baseline"), allowedPaths: ["src/a.ts"] } };
+      source: { kind: "knowledge_query", workspace, root: "/safe/project", generation: 4, baselineHash: sha("baseline") } };
   }
   function research(explore: ExploreInput): ExploreResult {
     return { format: "explore-result/v1", kind: "research", parent: explore.parent, source: explore.source, conclusions: ["找到"],

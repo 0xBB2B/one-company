@@ -4,7 +4,7 @@ import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
 import { windowContext, windowReady } from "./lifecycle.ts";
-import { EXPLORE_PATHS, EXPLORE_WEB_QUERY, exploreSource } from "../runtime/explore-dispatch.ts";
+import { EXPLORE_WEB_QUERY, exploreSource } from "../runtime/explore-dispatch.ts";
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const repoId = Type.String({ pattern: "^[0-9a-f]{64}$" });
@@ -15,7 +15,7 @@ const exploreDispatch = <T extends object>(target: T) => Type.Object({ action: T
   maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }), ...target }, strict);
 export const MAIN_AGENT_MANAGE_PARAMETERS = Type.Union([
   Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("pm"), repoId, requirementId: Type.String({ pattern: UUID_V7 }) }, strict),
-  exploreDispatch(EXPLORE_PATHS), exploreDispatch(EXPLORE_WEB_QUERY),
+  exploreDispatch(EXPLORE_WEB_QUERY),
   Type.Object({ action: Type.Literal("status"), repoId, runId }, strict),
   Type.Object({ action: Type.Literal("pause"), repoId, runId }, strict),
   Type.Object({ action: Type.Literal("resume"), repoId, runId }, strict),
@@ -34,7 +34,7 @@ export function registerAgentManageTool(pi: ExtensionAPI, context: () => AgentMa
   pi.registerTool({
     name: "pi_company_agent_manage",
     label: "agent_manage",
-    description: "派出本需求唯一 PM（role=pm），或派出只读检索 explore（role=explore：问题、线索、仓库内文件路径 paths 或联网查询词 webQuery 二选一、轮次上限；联网查询词不得含私有代码、需求正文、密钥或本地路径，立即返回运行编号，结果到达后以卡片插入本会话，可同时派出多个），或查询、暂停、续接、停止运行。PM 需要需求工作区已 ready 并已有批准版本。",
+    description: "派出本需求唯一 PM（role=pm），或派出只读检索 explore（role=explore：问题、线索与轮次上限；不给 webQuery 时在仓库内检索本地文件，给出 webQuery 则联网检索，立即返回运行编号，结果到达后以卡片插入本会话，可同时派出多个），或查询、暂停、续接、停止运行。PM 需要需求工作区已 ready 并已有批准版本。",
     parameters: MAIN_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {

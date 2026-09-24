@@ -37,6 +37,8 @@ export interface ResultSubmitToolOptions {
   verdictBinding?: VerdictBinding;
   /** 已登记的 explore 搜索会话：需求关闭、父撤权、PM 接管或会话回收后 research 一律拒收。 */
   exploreSession?: ExploreSessionConfig;
+  /** 宿主按实际内容核对 research 引用的来源；不一致即拒收。 */
+  verify?: (result: ExploreResult) => boolean;
   /** 宿主收下已通过核验的 research，用于按派出方送回；不经模型转述。 */
   onResearch?: (result: ExploreResult) => void;
   /** 必须由宿主核验当前物理角色会话/调用者及动作许可；不能从工具参数或角色文本构造true。 */
@@ -80,6 +82,7 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     const submitted = params.result && typeof params.result === "object" && !Array.isArray(params.result) ? params.result : {};
     try { result = checkExploreResult({ format: "explore-result/v1", kind: "research", parent: exploreInput.parent, source: exploreInput.source, ...submitted }, exploreInput); }
     catch (error) { throw new ResultSubmitError(error instanceof ExploreContractError ? error.code : "invalid_shape"); }
+    if (options.verify && !options.verify(result)) throw new ResultSubmitError("invalid_binding");
     if (options.exploreSession) {
       const decision = checkExploreSession(options.exploreSession, grant.runId);
       if (!decision.current || decision.session.parentRunId !== grant.parentRunId) throw new ResultSubmitError("stale_session");

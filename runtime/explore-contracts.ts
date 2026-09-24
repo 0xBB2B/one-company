@@ -6,10 +6,8 @@ import { Value } from "typebox/value";
 import { UUID_V7_PATTERN } from "./database.ts";
 
 /**
- * M4 只定义 explore 的有界输入/输出契约。
- * parent、来源基线、路径、文件 hash 及授权引用必须由未来可信宿主填写；
- * 本模块只校验 JSON 形状、固定预算和输入输出的一致性，不签发授权，
- * 也不读取文件、数据库或网络，无法证明文件当前内容、授权真实性或正文语义。
+ * explore 的有界输入/输出契约：parent 与来源基线由宿主填写；本模块只校验 JSON 形状、固定预算和输入输出一致性，
+ * 不读取文件、数据库或网络，无法证明文件当前内容或正文语义。
  */
 export const EXPLORE_CONTRACT_LIMITS = Object.freeze({
   questionCodepoints: 1_500,
@@ -25,7 +23,6 @@ export const EXPLORE_CONTRACT_LIMITS = Object.freeze({
   outputBytes: 32_768,
   pathBytes: 4_096,
   urlBytes: 2_048,
-  domains: 16,
 } as const);
 
 const object = <P extends TProperties>(properties: P) => Type.Object(properties, { additionalProperties: false });
@@ -60,43 +57,19 @@ const parent = Type.Union([mainParent, pmParent]);
 const knowledgeInputSource = object({
   kind: Type.Literal("knowledge_query"),
   workspace,
+  root: Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }),
   generation: positive,
   baselineHash: hash,
-  allowedPaths: Type.Array(Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }), {
-    minItems: 1,
-    maxItems: EXPLORE_CONTRACT_LIMITS.sources,
-    uniqueItems: true,
-  }),
 });
 const localInputSource = object({
   kind: Type.Literal("local_file"),
   indexBaseline: Type.Literal("not_applicable"),
-  allowedRoot: Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }),
-  allowedPaths: Type.Array(Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }), {
-    minItems: 1,
-    maxItems: EXPLORE_CONTRACT_LIMITS.sources,
-    uniqueItems: true,
-  }),
-  expectedFileHashes: Type.Array(object({
-    path: Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }),
-    fileHash: hash,
-  }), { minItems: 1, maxItems: EXPLORE_CONTRACT_LIMITS.sources }),
+  root: Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }),
 });
 const webInputSource = object({
   kind: Type.Literal("web"),
   indexBaseline: Type.Literal("not_applicable"),
   query: boundedText,
-  allowedDomains: Type.Array(Type.String({ minLength: 1, maxLength: 253 }), {
-    minItems: 1,
-    maxItems: EXPLORE_CONTRACT_LIMITS.domains,
-    uniqueItems: true,
-  }),
-  networkAuthorizationRef: identifier,
-  disclosure: object({
-    authorizationRef: identifier,
-    contentScope: boundedText,
-    contentHash: hash,
-  }),
 });
 const inputSource = Type.Union([knowledgeInputSource, localInputSource, webInputSource]);
 
@@ -159,10 +132,6 @@ const localScope = object({
 const webScope = object({
   kind: Type.Literal("web"),
   queries: Type.Array(boundedText, { maxItems: EXPLORE_CONTRACT_LIMITS.statusItems, uniqueItems: true }),
-  domains: Type.Array(Type.String({ minLength: 1, maxLength: 253 }), {
-    maxItems: EXPLORE_CONTRACT_LIMITS.domains,
-    uniqueItems: true,
-  }),
 });
 
 export const ExploreResultSchema = object({
@@ -214,50 +183,18 @@ function checkText(value: string, maximum: number): void {
 function checkTextList(values: readonly string[], maximum: number): void {
   for (const value of values) checkText(value, maximum);
 }
-const reservedPathParts = new Set([".git", ".pi", ".ssh", ".aws"]);
-const privateTopLevelParts = new Set(["session", "sessions", "key", "keys", "secret", "secrets"]);
-function hasReservedLocation(parts: readonly string[]): boolean {
-  if (parts.some((part) => reservedPathParts.has(part))) return true;
-  return parts.some((part, index) => part === "docs" && parts[index + 1] === "prod");
-}
-export function isForbiddenFileName(value: string): boolean {
-  const base = path.basename(value).toLowerCase();
-  return /(?:^|\.)(?:db|db-wal|db-shm|key|pem|p12)$/u.test(base)
-    || ["data.db", "index.db", "global.db"].includes(base);
-}
-export function isForbiddenRelativePath(value: string): boolean {
-  const parts = value.toLowerCase().split("/").filter(Boolean);
-  return hasReservedLocation(parts) || privateTopLevelParts.has(parts[0] ?? "") || isForbiddenFileName(value);
-}
 function checkRelativePath(value: string): void {
   if (bytes(value) > EXPLORE_CONTRACT_LIMITS.pathBytes || value.includes("\\") || /[\u0000-\u001f\u007f]/u.test(value)
     || path.isAbsolute(value) || value === "." || path.normalize(value) !== value
-    || value.split("/").some((part) => part === "" || part === "." || part === "..") || isForbiddenRelativePath(value)) fail("out_of_scope");
+    || value.split("/").some((part) => part === "" || part === "." || part === "..")) fail("out_of_scope");
 }
 function checkAbsolutePath(value: string): void {
   if (bytes(value) > EXPLORE_CONTRACT_LIMITS.pathBytes || value.includes("\\") || /[\u0000-\u001f\u007f]/u.test(value)
     || !path.isAbsolute(value) || path.normalize(value) !== value
     || value.split("/").some((part, index) => index > 0 && (part === "" || part === "." || part === ".."))) fail("out_of_scope");
 }
-function checkAllowedRoot(value: string): void {
-  checkAbsolutePath(value);
-  if (hasReservedLocation(value.toLowerCase().split("/").filter(Boolean))) fail("out_of_scope");
-}
 function isUnder(value: string, root: string): boolean {
   return value === root || value.startsWith(root === "/" ? "/" : `${root}/`);
-}
-function checkPathUnderRoot(value: string, root: string): void {
-  checkAbsolutePath(value);
-  if (!isUnder(value, root)) fail("out_of_scope");
-  const relative = path.relative(root, value);
-  if (isForbiddenFileName(value) || relative && isForbiddenRelativePath(relative)) fail("out_of_scope");
-}
-export function canonicalDomain(value: string): boolean {
-  if (value !== value.toLowerCase() || value.endsWith(".") || value.includes(":") || value.includes("/") || value.includes("@")) return false;
-  try {
-    const url = new URL(`https://${value}/`);
-    return url.hostname === value && url.host === value && (url.hostname === "localhost" || url.hostname.split(".").every((part) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(part)));
-  } catch { return false; }
 }
 export function checkedUrl(value: string): URL {
   if (bytes(value) > EXPLORE_CONTRACT_LIMITS.urlBytes) fail("resource_limit");
@@ -274,22 +211,8 @@ function same(a: unknown, b: unknown): boolean {
 function validateInput(input: ExploreInput): void {
   checkText(input.question, EXPLORE_CONTRACT_LIMITS.questionCodepoints);
   checkTextList(input.clues, EXPLORE_CONTRACT_LIMITS.clueCodepoints);
-  if (input.source.kind === "knowledge_query") {
-    input.source.allowedPaths.forEach(checkRelativePath);
-  } else if ("allowedRoot" in input.source) {
-    const source = input.source;
-    checkAllowedRoot(source.allowedRoot);
-    source.allowedPaths.forEach((value) => checkPathUnderRoot(value, source.allowedRoot));
-    if (source.expectedFileHashes.length !== source.allowedPaths.length) fail("invalid_binding");
-    const expectedPaths = source.expectedFileHashes.map((value) => value.path);
-    if (new Set(expectedPaths).size !== expectedPaths.length) fail("invalid_binding");
-    for (const value of source.expectedFileHashes) checkPathUnderRoot(value.path, source.allowedRoot);
-    if (!same([...expectedPaths].sort(), [...source.allowedPaths].sort())) fail("invalid_binding");
-  } else if ("query" in input.source) {
-    checkText(input.source.query, EXPLORE_CONTRACT_LIMITS.questionCodepoints);
-    checkText(input.source.disclosure.contentScope, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints);
-    if (!input.source.allowedDomains.every(canonicalDomain)) fail("out_of_scope");
-  } else fail("invalid_shape");
+  if (input.source.kind === "web") checkText(input.source.query, EXPLORE_CONTRACT_LIMITS.questionCodepoints);
+  else checkAbsolutePath(input.source.root);
 }
 
 /** 校验并复制最小 explore 输入；不会创建角色、会话、需求、工作区或任何授权。 */
@@ -311,49 +234,38 @@ function validateResult(result: ExploreResult, input: ExploreInput): void {
   if (result.truncation.truncated !== (result.truncation.reasons.length > 0)) fail("invalid_shape");
 
   if (input.source.kind === "knowledge_query" && result.searchedScope.kind === "knowledge_query") {
-    const searched = new Set(result.searchedScope.paths);
-    for (const value of result.searchedScope.paths) {
-      checkRelativePath(value);
-      if (!input.source.allowedPaths.includes(value)) fail("out_of_scope");
-    }
+    const inputSource = input.source;
+    result.searchedScope.paths.forEach(checkRelativePath);
     for (const source of result.sources) {
-      if (!("workspace" in source) || !same(source.workspace, input.source.workspace)
-        || source.generation !== input.source.generation || source.baselineHash !== input.source.baselineHash
-        || !input.source.allowedPaths.includes(source.path) || !searched.has(source.path)) fail("invalid_binding");
+      if (!("workspace" in source) || !same(source.workspace, inputSource.workspace)
+        || source.generation !== inputSource.generation || source.baselineHash !== inputSource.baselineHash) fail("invalid_binding");
       checkRelativePath(source.path);
       if (source.endLine < source.startLine) fail("invalid_shape");
     }
   } else if (input.source.kind === "local_file" && result.searchedScope.kind === "local_file") {
-    const searched = new Set(result.searchedScope.paths);
-    const expected = new Map(input.source.expectedFileHashes.map((value) => [value.path, value.fileHash]));
+    const root = input.source.root;
     for (const value of result.searchedScope.paths) {
       checkAbsolutePath(value);
-      if (!input.source.allowedPaths.includes(value)) fail("out_of_scope");
+      if (!isUnder(value, root)) fail("out_of_scope");
     }
     for (const source of result.sources) {
-      if (!("path" in source) || "workspace" in source || !input.source.allowedPaths.includes(source.path) || !searched.has(source.path)
-        || expected.get(source.path) !== source.fileHash) fail("invalid_binding");
+      if (!("path" in source) || "workspace" in source) fail("invalid_binding");
       checkAbsolutePath(source.path);
+      if (!isUnder(source.path, root)) fail("out_of_scope");
       if (source.endLine < source.startLine) fail("invalid_shape");
     }
-  } else if ("query" in input.source && result.searchedScope.kind === "web") {
-    const inputSource = input.source;
-    if (result.searchedScope.queries.some((query) => query !== inputSource.query)
-      || result.searchedScope.domains.some((domain) => !inputSource.allowedDomains.includes(domain))) fail("out_of_scope");
+  } else if (input.source.kind === "web" && result.searchedScope.kind === "web") {
     result.searchedScope.queries.forEach((query) => checkText(query, EXPLORE_CONTRACT_LIMITS.questionCodepoints));
-    if (!result.searchedScope.domains.every(canonicalDomain)) fail("out_of_scope");
-    const searchedDomains = new Set(result.searchedScope.domains);
     for (const source of result.sources) {
       if (!("url" in source)) fail("invalid_binding");
-      const url = checkedUrl(source.url);
-      if (!inputSource.allowedDomains.includes(url.hostname) || !searchedDomains.has(url.hostname)) fail("out_of_scope");
+      checkedUrl(source.url);
       checkText(source.quote, EXPLORE_CONTRACT_LIMITS.quoteCodepoints);
     }
   } else fail("invalid_binding");
 }
 
 /**
- * 校验 research 结果与原输入的父身份、需求绑定、来源基线、授权范围及预算一致。
+ * 校验 research 结果与原输入的父身份、需求绑定、来源基线、范围及预算一致；本地文件 hash 由宿主按实际内容另行核对。
  * 返回值不是 PASS、批准、授权或正文真实性证明；父代理仍须按风险回读并核验来源。
  */
 export function checkExploreResult(value: unknown, input: ExploreInput): ExploreResult {

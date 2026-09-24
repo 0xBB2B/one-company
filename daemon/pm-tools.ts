@@ -14,7 +14,7 @@ import { createPlanManageTool, PLAN_MANAGE_PARAMETERS } from "../runtime/plan-ma
 import { createSpecChangeTool, SPEC_CHANGE_PARAMETERS } from "../runtime/spec-change.ts";
 import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS } from "../runtime/verification-run.ts";
 import { createWorkflowManageTool, WORKFLOW_MANAGE_PARAMETERS } from "../runtime/workflow-manage.ts";
-import { EXPLORE_PATHS, EXPLORE_WEB_QUERY, exploreSource } from "../runtime/explore-dispatch.ts";
+import { EXPLORE_WEB_QUERY, exploreSource } from "../runtime/explore-dispatch.ts";
 import type { ExploreSourceRequest } from "../runtime/explore-dispatch.ts";
 
 export interface PmToolsInput {
@@ -46,7 +46,7 @@ export const PM_AGENT_MANAGE_PARAMETERS = Type.Union([
   Type.Object({ action: Type.Literal("dispatch"), taskId: Type.String({ pattern: UUID_V7 }),
     retry: Type.Optional(Type.Object({ reason: Type.String({ minLength: 1, maxLength: 1024 }), maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }) },
       { additionalProperties: false })) }, { additionalProperties: false }),
-  ...[EXPLORE_PATHS, EXPLORE_WEB_QUERY].map((target) => Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), question: Type.String({ minLength: 1, maxLength: 1500 }),
+  ...[EXPLORE_WEB_QUERY].map((target) => Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), question: Type.String({ minLength: 1, maxLength: 1500 }),
     clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })), ...target,
     maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }) }, { additionalProperties: false })),
   runControl("status"), runControl("pause"), runControl("resume"), runControl("stop"),
@@ -115,13 +115,13 @@ function agentManageTool(input: PmToolsInput): ToolDefinition {
   return {
     name: "pi_company_agent_manage",
     label: "agent_manage",
-    description: "dispatch 按已冻结计划中的任务派出子代理，轮次上限取任务登记值；任务首次尝试未完成时可带 retry（原因与新的轮次上限）重试一次，再未完成即等待用户裁决。dispatch role=explore 派出只读检索（问题、线索、需求工作区内的文件路径 paths 或联网查询词 webQuery 二选一、轮次上限；联网查询词不得含私有代码、需求正文、密钥或本地路径），立即返回运行编号，结果到达后自动注入本会话，可同时派出多个。status/pause/resume/stop 控制本 PM 派出的运行。",
+    description: "dispatch 按已冻结计划中的任务派出子代理，轮次上限取任务登记值；任务首次尝试未完成时可带 retry（原因与新的轮次上限）重试一次，再未完成即等待用户裁决。dispatch role=explore 派出只读检索（问题、线索与轮次上限；不给 webQuery 时在需求工作区内检索本地文件，给出 webQuery 则联网检索），立即返回运行编号，结果到达后自动注入本会话，可同时派出多个。status/pause/resume/stop 控制本 PM 派出的运行。",
     parameters: PM_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {
       if (!input.alive() || !Value.Check(PM_AGENT_MANAGE_PARAMETERS, rawParams)) throw new Error("agent_manage_denied");
       const params = rawParams as { action: "dispatch" | "status" | "pause" | "resume" | "stop"; taskId?: string; runId?: string;
-        retry?: { reason: string; maxTurns: number }; role?: "explore"; question?: string; clues?: string[]; paths?: string[]; webQuery?: string; maxTurns?: number };
+        retry?: { reason: string; maxTurns: number }; role?: "explore"; question?: string; clues?: string[]; webQuery?: string; maxTurns?: number };
       if (!authorizeToolAction("pm", "agent_manage", params.action)) throw new Error("agent_manage_denied");
       const result = params.action === "dispatch" && params.role === "explore"
         ? await input.agents.explore({ question: params.question!, clues: params.clues ?? [], source: exploreSource(params) }, params.maxTurns!)

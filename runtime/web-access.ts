@@ -1,45 +1,13 @@
-import { createHash } from "node:crypto";
-import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { isIP } from "node:net";
-import { homedir, userInfo } from "node:os";
-import { canonicalDomain } from "./explore-contracts.ts";
 
 export class WebAccessError extends Error {
   readonly code: string;
   constructor(code: string, detail?: string) { super(detail ? `${code}: ${detail}` : code); this.name = "WebAccessError"; this.code = code; }
 }
 
-/** 可注入的网络依赖；缺省为 Node 内置 fetch 与 DNS。 */
-export interface WebDeps {
-  fetch: typeof fetch;
-  lookup: (hostname: string) => Promise<Array<{ address: string }>>;
-}
-export const defaultWebDeps: WebDeps = { fetch: (...args) => fetch(...args), lookup: (hostname) => lookup(hostname, { all: true }) };
-
-export const QUERY_MAX_CHARS = 256;
-const SECRET_PATTERNS = [/\bsk-[A-Za-z0-9_-]{16,}/u, /\bgh[pousr]_[A-Za-z0-9]{20,}/u, /\bAKIA[0-9A-Z]{16}\b/u, /-----BEGIN [A-Z ]*KEY-----/u,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/u, /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/u];
-
-function entropy(text: string): number {
-  const counts = new Map<string, number>();
-  for (const char of text) counts.set(char, (counts.get(char) ?? 0) + 1);
-  return [...counts.values()].reduce((total, count) => total - (count / text.length) * Math.log2(count / text.length), 0);
-}
-
-/** 外发核对：查询词由模型拟定，只挡密钥与本机路径等原文外发，不核对需求正文与仓库代码。 */
-export function checkDisclosure(query: string): { contentHash: string } | { rejected: string } {
-  if (!query.trim() || /[\p{Cc}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}\u2800]/u.test(query) || Array.from(query).length > QUERY_MAX_CHARS) return { rejected: "查询词须为单行、不含控制或不可见格式字符且不超过 256 字符" };
-  if (SECRET_PATTERNS.some((pattern) => pattern.test(query)) || (query.match(/[A-Za-z0-9+/=_-]{32,}/gu) ?? []).some((token) => entropy(token) >= 3.5)) {
-    return { rejected: "查询词含疑似密钥" };
-  }
-  const user = (() => { try { return userInfo().username; } catch { return ""; } })();
-  if (/(?:^|[\s"'(])(?:\/Users\/|\/home\/|\/root\/|~\/|[A-Za-z]:\\)/u.test(query) || query.includes(homedir()) || (user.length >= 3 && query.includes(user))) {
-    return { rejected: "查询词含本机路径或用户目录" };
-  }
-  return { contentHash: createHash("sha256").update(query).digest("hex") };
-}
+export interface WebDeps { fetch: typeof fetch }
+export const defaultWebDeps: WebDeps = { fetch: (...args) => fetch(...args) };
 
 export interface SearchHit { url: string; title: string; snippet: string }
 export interface SearchOutcome { provider: "exa" | "duckduckgo"; hits: SearchHit[]; failures: string[]; retrievedAt: number }
@@ -54,10 +22,10 @@ function cleanText(value: string): string {
   return value.replace(/<[^>]*>/gu, " ").replace(/&amp;/gu, "&").replace(/&lt;/gu, "<").replace(/&gt;/gu, ">").replace(/&quot;/gu, "\"").replace(/&#x27;|&#39;/gu, "'")
     .replace(/\s+/gu, " ").trim();
 }
-function publicUrl(value: string): URL | null {
+function webUrl(value: string): URL | null {
   try {
     const url = new URL(value);
-    return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password && canonicalDomain(url.hostname) ? url : null;
+    return url.protocol === "https:" || url.protocol === "http:" ? url : null;
   } catch { return null; }
 }
 
@@ -89,7 +57,7 @@ async function searchExa(deps: WebDeps, query: string): Promise<SearchHit[]> {
   const hits: SearchHit[] = [];
   for (const block of text.split(/\n(?=Title:)/u)) {
     const url = /URL:\s*(\S+)/u.exec(block)?.[1];
-    if (!url || !publicUrl(url)) continue;
+    if (!url || !webUrl(url)) continue;
     hits.push({ url, title: cleanText(/Title:\s*(.*)/u.exec(block)?.[1] ?? url), snippet: cleanText(block.replace(/^(Title|URL|Published Date|Author):.*$/gmu, "")).slice(0, 400) });
     if (hits.length >= MAX_HITS) break;
   }
@@ -107,9 +75,9 @@ async function searchDuckDuckGo(deps: WebDeps, query: string): Promise<SearchHit
   for (const [index, match] of [...html.matchAll(/<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gu)].entries()) {
     let href = match[1]!.replace(/&amp;/gu, "&");
     if (href.startsWith("//")) href = `https:${href}`;
-    const redirect = publicUrl(href);
+    const redirect = webUrl(href);
     const target = redirect?.searchParams.get("uddg") ?? href;
-    if (!publicUrl(target)) continue;
+    if (!webUrl(target)) continue;
     hits.push({ url: target, title: cleanText(match[2]!), snippet: (snippets[index] ?? "").slice(0, 400) });
     if (hits.length >= MAX_HITS) break;
   }
@@ -127,41 +95,11 @@ export async function webSearch(deps: WebDeps, query: string): Promise<SearchOut
   throw new WebAccessError("search_failed", failures.join("；"));
 }
 
-function privateAddress(address: string): boolean {
-  const version = isIP(address);
-  if (version === 4) {
-    const [a, b] = address.split(".").map(Number) as [number, number];
-    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
-      || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
-  }
-  if (version === 6) {
-    const lower = address.toLowerCase();
-    if (lower.startsWith("::ffff:")) return privateAddress(lower.slice(7));
-    return lower === "::" || lower === "::1" || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe8") || lower.startsWith("fe9")
-      || lower.startsWith("fea") || lower.startsWith("feb") || lower.startsWith("ff");
-  }
-  return true;
-}
-
-/** 连接时才解析并核验地址：解析到内网地址即拒绝连接，避免先查后连之间被改指向。 */
-export function publicLookup(deps: Pick<WebDeps, "lookup">) {
-  return (hostname: string, options: { all?: boolean } | undefined, callback: (error: Error | null, address?: string | Array<{ address: string; family: number }>, family?: number) => void) => {
-    deps.lookup(hostname).then((addresses) => {
-      const first = addresses[0];
-      if (!first || addresses.some((entry) => privateAddress(entry.address))) callback(new WebAccessError("private_address", hostname));
-      else if (options?.all) callback(null, addresses.map((entry) => ({ address: entry.address, family: isIP(entry.address) })));
-      else callback(null, first.address, isIP(first.address));
-    }, () => callback(new WebAccessError("fetch_failed", `无法解析 ${hostname}`)));
-  };
-}
-
 export interface FetchResponse { status: number; headers: Record<string, string | undefined>; body: Buffer }
-/** 抓取实现：缺省走 Node http/https 并在连接时用 publicLookup 核验地址。 */
 export type PageGetter = (url: URL) => Promise<FetchResponse>;
-export function defaultPageGetter(deps: Pick<WebDeps, "lookup">): PageGetter {
-  return (url) => new Promise((resolve, reject) => {
+export const defaultPageGetter: PageGetter = (url) => new Promise((resolve, reject) => {
     const client = url.protocol === "https:" ? httpsRequest : httpRequest;
-    const request = client(url, { method: "GET", lookup: publicLookup(deps) as never, timeout: TIMEOUT_MS,
+    const request = client(url, { method: "GET", timeout: TIMEOUT_MS,
       headers: { "user-agent": "Mozilla/5.0 (compatible; pi-company)" } }, (response) => {
       const chunks: Buffer[] = []; let size = 0;
       response.on("data", (chunk: Buffer) => { size += chunk.length; if (size <= FETCH_MAX_BYTES) chunks.push(chunk); else response.destroy(); });
@@ -172,19 +110,17 @@ export function defaultPageGetter(deps: Pick<WebDeps, "lookup">): PageGetter {
     request.on("timeout", () => request.destroy(new WebAccessError("fetch_failed", "超时")));
     request.on("error", reject);
     request.end();
-  });
-}
+});
 
-/** 抓取已登记的搜索结果网址：连接时核验地址不在内网，逐跳复核重定向，只返回有界纯文本。 */
+/** 抓取网址（含内网），跟随有限次重定向，只返回有界纯文本。 */
 export async function webFetch(get: PageGetter, target: string): Promise<{ url: string; retrievedAt: number; text: string; truncated: boolean }> {
-  let url = publicUrl(target);
+  let url = webUrl(target);
   if (!url) throw new WebAccessError("url_rejected", target);
-  if (isIP(url.hostname) || url.hostname === "localhost") throw new WebAccessError("private_address", url.hostname);
   for (let hop = 0; hop < 4; hop++) {
     const response = await get(url);
     if (response.status >= 300 && response.status < 400) {
-      const next = publicUrl(new URL(response.headers.location ?? "", url).toString());
-      if (!next || isIP(next.hostname) || next.hostname === "localhost") throw new WebAccessError("url_rejected", "重定向目标无效");
+      const next = webUrl(new URL(response.headers.location ?? "", url).toString());
+      if (!next) throw new WebAccessError("url_rejected", "重定向目标无效");
       url = next;
       continue;
     }
