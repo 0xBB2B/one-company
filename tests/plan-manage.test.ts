@@ -105,3 +105,38 @@ test("M7-AC7：reviewer 只能读取计划，不能提出、修改、冻结或�
   }
   expect(await reviewer.execute({ action: "read" })).toEqual({ plan: null });
 }, 30000);
+
+test("M7-AC30：有过尝试且未完成的任务不能取消，其目标不能被新增或修改的任务揽走", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const view = await pm.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"] })] }) as PlanView;
+  const login = view.tasks.find((task) => task.key === "login")!, failure = view.tasks.find((task) => task.key === "failure")!;
+  w.db((db) => {
+    const row = db.read<Record<string, unknown>>(TASKS, login.taskId)!;
+    db.update(TASKS, login.taskId, row.version, { ...row.data, status: "awaiting_parent",
+      attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" }] });
+  });
+  await expect(pm.execute({ action: "update", planVersion: 1, cancel: [{ taskId: login.taskId, version: 1 }] })).rejects.toMatchObject({ code: "task_not_ready" });
+  await expect(pm.execute({ action: "update", planVersion: 1, add: [spec("login-again")] })).rejects.toMatchObject({ code: "task_not_ready" });
+  await expect(pm.execute({ action: "update", planVersion: 1, modify: [{ taskId: failure.taskId, version: 1,
+    spec: spec("failure", { goalUnitIds: ["scenario.failure", "goal.login"] }) }] })).rejects.toMatchObject({ code: "task_not_ready" });
+  const retried = await pm.execute({ action: "update", planVersion: 1, modify: [{ taskId: login.taskId, version: 1, spec: spec("login", { maxTurns: 40 }) }] }) as PlanView;
+  expect(retried.tasks.find((task) => task.key === "login")).toMatchObject({ version: 2 });
+}, 30000);
+
+test("M7-AC30：已有尝试的任务修改时须保留原有目标，不能先改走目标再另起新任务", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const view = await pm.execute({ action: "propose", tasks: [spec("login")] }) as PlanView;
+  const login = view.tasks[0]!;
+  w.db((db) => {
+    const row = db.read<Record<string, unknown>>(TASKS, login.taskId)!;
+    db.update(TASKS, login.taskId, row.version, { ...row.data, status: "awaiting_parent",
+      attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" }] });
+  });
+  await expect(pm.execute({ action: "update", planVersion: 1, modify: [{ taskId: login.taskId, version: 1,
+    spec: spec("login", { goalUnitIds: ["scenario.failure"] }) }] })).rejects.toMatchObject({ code: "task_not_ready" });
+  const widened = await pm.execute({ action: "update", planVersion: 1, modify: [{ taskId: login.taskId, version: 1,
+    spec: spec("login", { goalUnitIds: ["goal.login", "scenario.failure"] }) }] }) as PlanView;
+  expect(widened.tasks[0]).toMatchObject({ version: 2 });
+}, 30000);

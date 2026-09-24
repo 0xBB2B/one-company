@@ -115,3 +115,46 @@ test("M7-AC2：连续加入快跑、跳跃、跳跃动画时各自成为独立�
   expect(view.tasks.map((task) => [task.key, task.version])).toEqual([["login", 1], ["failure", 1], ["goal.sprint", 1], ["goal.jump", 1], ["goal.jump-anim", 1]]);
   expect(w.gate()).toEqual({ allowed: true });
 });
+
+test("M7-AC32：新版本收回某目标的实施授权后，该目标的任务不能判为无关，也不能再派出", async () => {
+  const w = await world();
+  const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
+  await w.fixture.approveRevision({ body: BASE, implementGoals: ["scenario.failure"] });
+  await expect(w.assess([[login, "unaffected"], [failure, "unaffected"]])).rejects.toMatchObject({ code: "assessment_invalid" });
+  const assessed = await w.assess([[login, "affected"], [failure, "unaffected"]]);
+  expect(w.byKey(assessed, "login").status).toBe("needs_update");
+  await expect(w.run({ action: "update", planVersion: assessed.plan.planVersion,
+    modify: [{ taskId: login.taskId, version: login.version, spec: spec("login", "goal.login") }] })).rejects.toMatchObject({ code: "unit_not_authorized" });
+});
+
+test("M7-AC12：运行中任务被判为受影响后，子代理结局只记入尝试，不覆盖待更新状态，也不能按旧版本重派", async () => {
+  const { beginTaskAttempt, finishTaskAttempt } = await import("../runtime/task-dispatch.ts");
+  const w = await world();
+  const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
+  const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
+  const runId = uuidv7();
+  beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId, retry: null });
+  await w.fixture.approveRevision({ body: BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。"), implementGoals: ["goal.login", "scenario.failure"] });
+  const assessed = await w.assess([[{ ...login, version: 1 }, "affected"], [failure, "unaffected"]]);
+  expect(w.byKey(assessed, "login").status).toBe("needs_update");
+  const finished = finishTaskAttempt({ ...ref, taskId: login.taskId, runId, turnsUsed: 2, outcome: "turn_limit_reached" });
+  expect(finished).toMatchObject({ status: "needs_update", attempts: [{ runId, outcome: "turn_limit_reached", turnsUsed: 2 }] });
+  expect(() => beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: { reason: "重试", maxTurns: 3 } }))
+    .toThrow("task_not_ready");
+});
+
+test("M7-AC30：任务仍有运行中的尝试时不能再次派出，旧版本的运行结局不能把新版本标为完成", async () => {
+  const { beginTaskAttempt, finishTaskAttempt } = await import("../runtime/task-dispatch.ts");
+  const w = await world();
+  const login = w.byKey(w.first, "login");
+  const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
+  const oldRun = uuidv7();
+  beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: oldRun, retry: null });
+  const updated = await w.run({ action: "update", planVersion: 1, modify: [{ taskId: login.taskId, version: 1, spec: { ...spec("login", "goal.login"), maxTurns: 40 } }] });
+  await w.run({ action: "confirm", planVersion: updated.plan.planVersion });
+  expect(() => beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: { reason: "改写后重试", maxTurns: 40 } }))
+    .toThrow("task_not_ready");
+  const finished = finishTaskAttempt({ ...ref, taskId: login.taskId, runId: oldRun, turnsUsed: 5, outcome: "completed" });
+  expect(finished).toMatchObject({ version: 2, status: "pending" });
+  expect(() => beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: { reason: "改写后重试", maxTurns: 40 } })).not.toThrow();
+});

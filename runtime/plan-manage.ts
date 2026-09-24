@@ -104,7 +104,7 @@ function sha256(value: string): string { return createHash("sha256").update(valu
 function deny(code: PlanManageErrorCode, detail: string[] = []): never { throw new PlanManageError(code, detail); }
 
 /** 实施授权覆盖的目标章节：未确认、标为未知的实施动作不算授权。 */
-function implementScope(manifest: ApprovalManifest): Set<string> {
+export function implementScope(manifest: ApprovalManifest): Set<string> {
   const confirmed = new Set(manifest.units.filter((unit) => unit.disposition === "confirmed").map((unit) => unit.id));
   return new Set(manifest.actions.filter((action) => action.action === "implement" && !action.unknown)
     .flatMap((action) => action.goalIds).filter((unit) => confirmed.has(unit)));
@@ -232,7 +232,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     return records;
   }
 
-  function commit(expected: { planVersion: number | null; recordVersion: number }, plan: PlanRecord, tasks: TaskRecord[]) {
+  /** 写入前逐任务比对快照时的内容：快照后被派工或结局登记改动过的任务不被覆盖。 */
+  function commit(expected: { planVersion: number | null; recordVersion: number; tasks: ReadonlyMap<string, TaskRecord> }, plan: PlanRecord, tasks: TaskRecord[],
+    merge?: (fresh: TaskRecord) => TaskRecord) {
     return withDatabase(database, (db) => db.transaction(() => {
       const record = state.read(grant.requirementId);
       if (record.version !== expected.recordVersion) deny("version_conflict", ["需求状态已变化"]);
@@ -241,6 +243,13 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       if ((stored?.planVersion ?? null) !== expected.planVersion) deny("version_conflict", ["计划版本已变化"]);
       for (const task of tasks) {
         const existing = db.read<unknown>(TASKS, task.taskId);
+        if (merge) {
+          if (!existing) deny("version_conflict", [`任务 ${task.key} 不存在`]);
+          db.update(TASKS, task.taskId, existing.version, merge(checked(TaskRecord, existing.data)));
+          continue;
+        }
+        const seen = expected.tasks.get(task.taskId);
+        if ((existing === null) !== (seen === undefined) || (existing && JSON.stringify(existing.data) !== JSON.stringify(seen))) deny("version_conflict", [`任务 ${task.key} 已被并发改动`]);
         if (existing) db.update(TASKS, task.taskId, existing.version, task); else db.create(TASKS, task.taskId, task);
       }
       if (row) db.update(PLANS, grant.requirementId, row.version, plan); else db.create(PLANS, grant.requirementId, plan);
@@ -258,7 +267,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const plan = checked(PlanRecord, { format: "plan/v1", requirementId: grant.requirementId, planVersion: 1, confirmedVersion: null, confirmedTasks: [],
       taskIds: tasks.map((task) => task.taskId), knownUnits: manifest.units.map((unit) => ({ unitId: unit.id, hash: unit.hash })),
       prodRevision: record.data.revision, updatedAt: now() });
-    return commit({ planVersion: null, recordVersion: record.version }, plan, tasks);
+    return commit({ planVersion: null, recordVersion: record.version, tasks: new Map() }, plan, tasks);
   }
 
   async function update(params: Extract<PlanManageParameters, { action: "update" }>) {
@@ -273,10 +282,18 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       if (!task || task.version !== item.version) deny("version_conflict", [`任务 ${item.taskId} 版本已变化`]);
       if (task.status === "awaiting_user") deny("task_not_ready", [`${task.key} 等待用户裁决，不能修改或取消`]);
     }
-    // 等待用户裁决的任务所覆盖的目标不能另起新任务绕开一次重试限制
-    const held = new Set(current.tasks.filter((task) => task.status === "awaiting_user").flatMap((task) => task.goalUnitIds));
-    const bypass = (params.add ?? []).filter((spec) => spec.goalUnitIds.some((unit) => held.has(unit)));
-    if (bypass.length) deny("task_not_ready", bypass.map((spec) => `${spec.key} 覆盖等待用户裁决任务的目标`));
+    // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被其他新增或修改的任务揽走
+    const tried = current.tasks.filter((task) => task.attempts.length > 0 && task.status !== "completed" && task.status !== "cancelled");
+    const cancelTried = (params.cancel ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId));
+    if (cancelTried.length) deny("task_not_ready", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
+    const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId
+      && task.goalUnitIds.some((unit) => !item.spec.goalUnitIds.includes(unit))));
+    if (shrunk.length) deny("task_not_ready", shrunk.map((item) => `${item.spec.key} 已有尝试，修改须保留原有目标`));
+    const heldBy = (unit: string, except?: string) => tried.some((task) => task.taskId !== except && task.goalUnitIds.includes(unit));
+    const bypass = [...(params.add ?? []).map((spec) => ({ spec, taskId: undefined as string | undefined })),
+      ...(params.modify ?? []).map((item) => ({ spec: item.spec, taskId: item.taskId }))]
+      .filter(({ spec, taskId }) => spec.goalUnitIds.some((unit) => heldBy(unit, taskId)));
+    if (bypass.length) deny("task_not_ready", bypass.map(({ spec }) => `${spec.key} 覆盖已有尝试任务的目标`));
     const modifySpecs = (params.modify ?? []).map((item) => {
       if (item.spec.key !== byId.get(item.taskId)!.key) deny("dependency_invalid", ["修改不能改变任务 key"]);
       return item.spec;
@@ -291,7 +308,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     for (const task of live) for (const dep of task.dependsOn) if (merged.get(dep)?.status === "cancelled") deny("dependency_invalid", [`${task.key} 依赖已取消的任务`]);
     assertAcyclic(live);
     const plan = checked(PlanRecord, { ...current.plan, planVersion: current.plan.planVersion + 1, taskIds: [...merged.keys()], updatedAt: now() });
-    return commit({ planVersion: current.plan.planVersion, recordVersion: record.version }, plan, [...changed, ...cancelled]);
+    return commit({ planVersion: current.plan.planVersion, recordVersion: record.version, tasks: byId }, plan, [...changed, ...cancelled]);
   }
 
   async function confirm(planVersion: number) {
@@ -309,7 +326,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (missing.length) deny("coverage_incomplete", missing);
     const plan = checked(PlanRecord, { ...current.plan, confirmedVersion: planVersion,
       confirmedTasks: live.map((task) => ({ taskId: task.taskId, version: task.version })), updatedAt: now() });
-    return commit({ planVersion, recordVersion: record.version }, plan, []);
+    return commit({ planVersion, recordVersion: record.version, tasks: new Map() }, plan, []);
   }
 
   /** 逐任务影响复核：依据闭包变化的任务只能判为受影响，结论不全或理由缺失拒绝；unknown 保持阻塞与待处理更新。 */
@@ -327,18 +344,22 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const forced = live.filter((task) => !sameRefs(task.closure, closureOf(manifest, task.goalUnitIds, task.constraintUnitIds)))
       .filter((task) => given.get(task.taskId)!.assessment === "unaffected");
     if (forced.length) deny("assessment_invalid", forced.map((task) => `${task.key} 依据的章节已变化，不能判为无关`));
-    const updated = live.map((task) => {
-      const assessment = given.get(task.taskId)!.assessment;
-      const status: TaskStatus = assessment === "unknown" ? "blocked" : assessment === "affected" ? "needs_update" : task.status;
-      return checked(TaskRecord, { ...task, status, lastAssessedRevision: params.revision, updatedAt: now() });
-    });
+    const scope = implementScope(manifest);
+    const revoked = live.filter((task) => task.goalUnitIds.some((unit) => !scope.has(unit)) && given.get(task.taskId)!.assessment === "unaffected");
+    if (revoked.length) deny("assessment_invalid", revoked.map((task) => `${task.key} 的目标已不在实施授权内，不能判为无关`));
+    // 复核结论套用在提交时的最新任务行上：复核期间子代理结局登记的状态与尝试记录不被覆盖
+    const apply = (fresh: TaskRecord): TaskRecord => {
+      const assessment = given.get(fresh.taskId)!.assessment;
+      const status: TaskStatus = assessment === "unknown" ? "blocked" : assessment === "affected" ? "needs_update" : fresh.status;
+      return checked(TaskRecord, { ...fresh, status, lastAssessedRevision: params.revision, updatedAt: now() });
+    };
     await state.assessUpdate({ lease: current, version: record.version, revision: params.revision, assessmentId: params.assessmentId,
       tasks: [...params.tasks.map((item) => ({ taskId: item.taskId, impact: item.assessment, reason: item.rationale })),
         { taskId: "global", impact: params.global.assessment, reason: params.global.rationale }] });
     const after = state.read(grant.requirementId);
     const next = checked(PlanRecord, { ...plan.plan, planVersion: plan.plan.planVersion + 1,
       knownUnits: manifest.units.map((unit) => ({ unitId: unit.id, hash: unit.hash })), prodRevision: params.revision, updatedAt: now() });
-    return commit({ planVersion: plan.plan.planVersion, recordVersion: after.version }, next, updated);
+    return commit({ planVersion: plan.plan.planVersion, recordVersion: after.version, tasks: new Map() }, next, live, apply);
   }
 
   async function read() {

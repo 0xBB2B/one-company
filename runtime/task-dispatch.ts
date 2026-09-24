@@ -2,7 +2,7 @@ import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { activeCheckRoundIn } from "./check-round.ts";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
-import { PlanManageError, readPlanIn, TASKS } from "./plan-manage.ts";
+import { implementScope, PlanManageError, readPlanIn, TASKS } from "./plan-manage.ts";
 import type { TaskAttempt, TaskRecord } from "./plan-manage.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
@@ -55,9 +55,14 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
     const byId = new Map(current.tasks.map((candidate) => [candidate.taskId, candidate]));
     const pendingDeps = task.dependsOn.filter((dep) => byId.get(dep)?.status !== "completed");
     if (pendingDeps.length) deny("dependency_pending", pendingDeps.map((dep) => byId.get(dep)?.key ?? dep));
+    const manifest = registeredApprovalManifestIn(db, request.repoId, recordRow.data.approvalManifest!.reference, recordRow);
+    const scope = implementScope(manifest);
+    const revoked = task.goalUnitIds.filter((unit) => !scope.has(unit));
+    if (revoked.length) deny("task_not_ready", revoked.map((unit) => `${unit} 已不在实施授权内`));
     const openQuestions = task.blockedByQuestionIds.filter((question) => !questionResolved(db, request.repoId, recordRow, question));
     if (openQuestions.length) deny("question_pending", openQuestions);
     if (task.role === "worker" && activeCheckRoundIn(db, request.repoId, requirementId) !== null) deny("check_phase_active");
+    if (task.attempts.some((attempt) => attempt.outcome === "running")) deny("task_not_ready", [`${task.key} 仍有运行中的尝试`]);
     if (task.attempts.length >= 2) deny("retry_exhausted");
     if (task.attempts.length === 1 && !request.retry) deny("retry_required");
     if (task.attempts.length === 0 && request.retry) deny("retry_not_needed");
@@ -79,7 +84,9 @@ export function finishTaskAttempt(request: { dataRoot: string; repoId: string; t
     const index = task.attempts.findIndex((attempt) => attempt.runId === request.runId);
     if (index < 0 || task.attempts[index]!.outcome !== "running") return task;
     const attempts = task.attempts.map((attempt, i) => i === index ? { ...attempt, outcome: request.outcome, turnsUsed: request.turnsUsed } : attempt);
-    const status = request.outcome === "completed" ? "completed" : attempts.length >= 2 ? "awaiting_user" : "awaiting_parent";
+    // 运行期间影响复核已把任务改为待更新或受阻时，结局只记入尝试，不覆盖复核结论
+    const status = task.status !== "running" ? task.status
+      : request.outcome === "completed" ? "completed" : attempts.length >= 2 ? "awaiting_user" : "awaiting_parent";
     const next = { ...task, status, attempts, updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row.version, next);
     return next;
