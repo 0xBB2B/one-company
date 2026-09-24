@@ -440,9 +440,14 @@ export class MainRequirementInteraction {
       if (index < 0) return this.#prove(ctx, request.repoId, { ...base, status: "unclear", next: "用户未明确选择处理方式或未给出轮数，请向用户确认后重试" });
       const saved = core.save(capability);
       const decisionId = saved.decisionIds[index]!;
-      const task = applyAdjudication({ dataRoot: this.#options.dataRoot, repoId: request.repoId }, { requirementId: request.requirementId, decisionId });
-      const proofs = [...this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId),
-        ...withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => [this.#row(db, "tasks", task.taskId)])];
+      const effect = applyAdjudication({ dataRoot: this.#options.dataRoot, repoId: request.repoId }, { requirementId: request.requirementId, decisionId });
+      const proofs = this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId);
+      if (effect.kind === "requirement") {
+        return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: effect.choice,
+          next: `以 workflow_manage close（reason=${effect.choice === "cancel" ? "cancelled" : "rejected"}，receiptId=${decisionId}）关闭需求` }, undefined, proofs);
+      }
+      const task = effect.task;
+      proofs.push(...withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => [this.#row(db, "tasks", task.taskId)]));
       return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: task.userDecision!.choice,
         maxTurns: task.userDecision!.maxTurns, taskStatus: task.status }, undefined, proofs);
     } finally { this.#adjudication = undefined; }

@@ -1,6 +1,6 @@
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
-import { confirmedPlanKey, readPlanIn, TASKS } from "./plan-manage.ts";
+import { confirmedPlanKey, readPlanIn, TASKS, terminationPending } from "./plan-manage.ts";
 import type { TaskRecord, UserDecision } from "./plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
@@ -23,14 +23,23 @@ function current(db: LocalDatabase, requirementId: string): { record: Requiremen
   return { record: row.data, version: row.version, lease };
 }
 
-/** 给解释器的事项摘要只含程序记录的任务、轮数与结局；PM 与子代理写的文字不进入解释用户原话的上下文。 */
+/**
+ * 给解释器的事项摘要只含程序记录的内容；PM 与子代理写的文字不进入解释用户原话的上下文。
+ * 任务事项须当前正待用户裁决；需求事项绑定当前需求记录版本，可随时取消或拒绝。
+ */
 export function adjudicationSubject(ref: Ref, requirementId: string, itemId: string): AdjudicationSubject {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
-    const { record, lease } = current(db, requirementId);
-    const plan = readPlanIn(db, requirementId) ?? deny("plan_missing");
-    const item = pendingItemsIn({ ...ref, db, record, lease }, plan.tasks).find((candidate) => candidate.itemId === itemId && candidate.kind === "adjudicate")
+    const { record, version, lease } = current(db, requirementId);
+    const plan = readPlanIn(db, requirementId);
+    if (itemId === `requirement:${requirementId}`) {
+      const halted = terminationPending(plan?.tasks ?? [], record.revision);
+      return { itemId, version: `requirement:${requirementId}:${version}`, summary: [`需求 ${requirementId} · 当前批准版本 r${record.revision}`,
+        halted ? "已有任务被用户终止，需求正暂停等待调整或取消" : "需求正在进行", "可选：取消（不再需要）或拒绝（需求本身不成立或做不了）"].join("\n") };
+    }
+    if (!plan) deny("plan_missing");
+    const item = pendingItemsIn({ ...ref, db, record, lease }, plan!.tasks).find((candidate) => candidate.itemId === itemId && candidate.kind === "adjudicate")
       ?? deny("item_not_pending");
-    const task = plan.tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;
+    const task = plan!.tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;
     const lines = [`任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`,
       ...task.attempts.map((attempt, index) => `尝试 ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}`),
       `依据：prod r${record.revision}`];
@@ -51,30 +60,64 @@ function parse(references: readonly string[]): { itemId: string; version: string
   return { itemId: itemId!, version: version!, choice: choice!, maxTurns };
 }
 
+/** 只认可信内核写入、由真实输入回执确认、属于该需求的用户短决定。 */
+function userDecisionIn(db: LocalDatabase, ref: Ref, requirementId: string, decisionId: string) {
+  const stored = db.read<unknown>("short_decisions", decisionId) ?? deny("decision_missing");
+  const decision = checkDecisionRecord(stored.data);
+  if (decision.decisionId !== decisionId || decision.requirementId !== requirementId || decision.repoId !== ref.repoId ||
+    decision.actor !== "user" || decision.status !== "confirmed" || decision.basisReceiptId === null) deny("decision_not_current");
+  return { decision, parsed: parse(decision.references) };
+}
+
+export type AdjudicationEffect = { kind: "task"; task: TaskRecord } | { kind: "requirement"; choice: "cancel" | "reject" };
+
 /**
- * 按已登记的用户短决定让待裁决任务生效。只认可信内核写入、由真实输入回执确认的用户决定，且须绑定当前需求版本与事项版本；
- * 调用方给出的只是决定 ID，选项与轮数一律从持久记录读取。
+ * 按已登记的用户短决定生效。调用方给出的只是决定 ID，选项与轮数一律从持久记录读取，且须绑定当前需求版本与事项版本。
+ * 任务决定改写任务状态；取消/拒绝需求只核对，由主代理随后以该决定关闭需求。
  */
-export function applyAdjudication(ref: Ref, input: { requirementId: string; decisionId: string; now?: number }): TaskRecord {
+export function applyAdjudication(ref: Ref, input: { requirementId: string; decisionId: string; now?: number }): AdjudicationEffect {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => {
     const { record, version } = current(db, input.requirementId);
-    const stored = db.read<unknown>("short_decisions", input.decisionId) ?? deny("decision_missing");
-    const decision = checkDecisionRecord(stored.data);
-    if (decision.decisionId !== input.decisionId || decision.requirementId !== input.requirementId || decision.repoId !== ref.repoId ||
-      decision.actor !== "user" || decision.status !== "confirmed" || decision.basisReceiptId === null ||
-      decision.requirementVersion !== version || decision.epoch !== record.epoch) deny("decision_not_current");
-    const parsed = parse(decision.references);
+    const { decision, parsed } = userDecisionIn(db, ref, input.requirementId, input.decisionId);
+    if (decision.requirementVersion !== version || decision.epoch !== record.epoch) deny("decision_not_current");
+    if (parsed.itemId === `requirement:${input.requirementId}`) {
+      if (parsed.version !== `requirement:${input.requirementId}:${version}` || (parsed.choice !== "cancel" && parsed.choice !== "reject")) deny("item_changed");
+      return { kind: "requirement" as const, choice: parsed.choice as "cancel" | "reject" };
+    }
     const taskId = /^task:([0-9a-f-]{36})$/.exec(parsed.itemId)?.[1] ?? deny("decision_shape");
     const row = db.read<TaskRecord>(TASKS, taskId!) ?? deny("task_missing");
     const task = row.data;
-    if (task.requirementId !== input.requirementId || task.status !== "awaiting_user" || parsed.version !== `task:${taskId}:${row.version}`) deny("item_changed");
-    const userDecision: UserDecision = { decisionId: input.decisionId, choice: parsed.choice, maxTurns: parsed.maxTurns, revision: record.revision,
-      taskVersion: task.version, usedByRunId: null, notified: false, confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan) };
+    if (task.requirementId !== input.requirementId || task.status !== "awaiting_user" || parsed.version !== `task:${taskId}:${row.version}` ||
+      !["retry", "adjust", "terminate"].includes(parsed.choice)) deny("item_changed");
+    const userDecision: UserDecision = { decisionId: input.decisionId, choice: parsed.choice as UserDecision["choice"], maxTurns: parsed.maxTurns,
+      revision: record.revision, taskVersion: task.version, usedByRunId: null, notified: false,
+      confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan) };
     const status = parsed.choice === "retry" ? "pending" : parsed.choice === "adjust" ? "needs_update" : "cancelled";
     const next = { ...task, status, userDecision, updatedAt: input.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, taskId!, row.version, next);
-    return next;
+    return { kind: "task" as const, task: next };
   }));
+}
+
+/**
+ * 以取消或拒绝关闭需求的依据：receiptId 须是用户对该需求做出的对应决定，且决定时的需求版本仍是当前版本，
+ * 或需求已按这一决定进入关闭（关闭本身会改变记录版本）。
+ */
+export function closeDecisionValid(ref: Ref, input: { requirementId: string; receiptId: string; reason: "cancelled" | "rejected" }): boolean {
+  try {
+    return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
+      const row = db.read<RequirementRecord>("requirements", input.requirementId);
+      if (!row) return false;
+      const { decision, parsed } = userDecisionIn(db, ref, input.requirementId, input.receiptId);
+      const expected = input.reason === "cancelled" ? "cancel" : "reject";
+      if (parsed.itemId !== `requirement:${input.requirementId}` || parsed.choice !== expected ||
+        parsed.version !== `requirement:${input.requirementId}:${decision.requirementVersion}`) return false;
+      // 进入关闭会提升 epoch，续办同一关闭时只核对关闭意图绑定的正是这一决定
+      const sameVersion = row.version === decision.requirementVersion && row.data.lifecycle === "active" && decision.epoch === row.data.epoch;
+      const closingByIt = row.data.close?.receiptId === input.receiptId && row.data.close.reason === input.reason;
+      return sameVersion || closingByIt;
+    });
+  } catch { return false; }
 }
 
 /** 取出尚未告知 PM 的用户决定并标记已告知；只返回固定文字，不含正文。 */

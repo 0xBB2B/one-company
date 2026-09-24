@@ -1,0 +1,47 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import type { Static } from "typebox";
+import { Value } from "typebox/value";
+import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
+import { windowContext } from "./lifecycle.ts";
+
+const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
+const target = { repoId: Type.String({ pattern: "^[0-9a-f]{64}$" }), requirementId: Type.String({ pattern: UUID_V7 }) };
+const strict = { additionalProperties: false } as const;
+export const MAIN_WORKFLOW_MANAGE_PARAMETERS = Type.Union([
+  Type.Object({ action: Type.Literal("status"), ...target }, strict),
+  Type.Object({ action: Type.Literal("delivery-check"), ...target }, strict),
+  Type.Object({ action: Type.Literal("repair"), ...target }, strict),
+  Type.Object({ action: Type.Literal("close"), ...target, reason: Type.Union([Type.Literal("completed"), Type.Literal("cancelled"), Type.Literal("rejected")]),
+    receiptId: Type.String({ pattern: UUID_V7 }), operationId: Type.String({ pattern: UUID_V7 }) }, strict),
+]);
+type Params = Static<typeof MAIN_WORKFLOW_MANAGE_PARAMETERS>;
+
+export interface WorkflowManageContext { clients: WorkspaceClientsHandle }
+
+function result(value: Record<string, unknown>, isError = false) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: { isError } };
+}
+
+/** 主会话的 workflow_manage：经守护进程查看状态、交付核对与关闭需求；取消或拒绝须以用户决定的 decisionId 作为 receiptId。 */
+export function registerWorkflowManageTool(pi: ExtensionAPI, context: () => WorkflowManageContext): void {
+  pi.registerTool({
+    name: "pi_company_workflow_manage",
+    label: "workflow_manage",
+    description: "查看需求状态（status）、交付核对（delivery-check）、续办未完成的关闭（repair）或关闭需求（close）。取消（cancelled）或拒绝（rejected）须先用 pi_company_user_interact purpose=adjudicate 按用户原话登记决定，再以返回的 decisionId 作为 receiptId；完成（completed）须交付核对通过。",
+    parameters: MAIN_WORKFLOW_MANAGE_PARAMETERS,
+    executionMode: "sequential",
+    async execute(_toolCallId, rawParams) {
+      if (!Value.Check(MAIN_WORKFLOW_MANAGE_PARAMETERS, rawParams)) return result({ code: "invalid_shape" }, true);
+      const { repoId, requirementId, ...request } = rawParams as Params;
+      const client = context().clients.forRepo(repoId);
+      if (!client) return result({ code: "foreign_repo" }, true);
+      try { return result(await client.call("workflow.manage", { requirementId, request })); }
+      catch (error) { return result({ code: (error as { code?: string }).code ?? "workflow_manage_failed" }, true); }
+    },
+  });
+}
+
+export default function workflowManageExtension(pi: ExtensionAPI): void {
+  registerWorkflowManageTool(pi, () => ({ clients: windowContext().clients }));
+}

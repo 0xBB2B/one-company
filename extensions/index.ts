@@ -9,6 +9,7 @@ import decisionRecordExtension from "./decision-record.ts";
 import workflowExtension from "./workflow.ts";
 import rulesExtension from "./rules.ts";
 import agentManageExtension from "./agent-manage.ts";
+import workflowManageExtension from "./workflow-manage.ts";
 import relayExtension from "./relay.ts";
 import agentsUiExtension from "./agents-ui.ts";
 import shellUiExtension from "./shell-ui.ts";
@@ -26,6 +27,7 @@ export default function registerExtensions(pi: ExtensionAPI): void {
   workflowExtension(pi);
   rulesExtension(pi);
   agentManageExtension(pi);
+  workflowManageExtension(pi);
   relayExtension(pi);
   agentsUiExtension(pi);
   shellUiExtension(pi);

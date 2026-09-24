@@ -68,11 +68,13 @@ export const PendingQuestion = object({
 export type PendingQuestion = Static<typeof PendingQuestion>;
 /** 当前待用户裁决的事项：由宿主从持久记录生成，解释器只能引用它，不能改写。 */
 export const AdjudicationSubject = object({
-  itemId: Type.String({ pattern: "^task:[0-9a-f-]{36}$" }), version: Type.String({ pattern: "^task:[0-9a-f-]{36}:[1-9][0-9]{0,15}$" }),
+  itemId: Type.String({ pattern: "^(task|requirement):[0-9a-f-]{36}$" }), version: Type.String({ pattern: "^(task|requirement):[0-9a-f-]{36}:[1-9][0-9]{0,15}$" }),
   summary: Type.String({ minLength: 1, maxLength: 2000 }),
 });
 export type AdjudicationSubject = Static<typeof AdjudicationSubject>;
-export const ADJUDICATION_CHOICES = ["retry", "adjust", "terminate"] as const;
+export const ADJUDICATION_CHOICES = ["retry", "adjust", "terminate", "cancel", "reject"] as const;
+/** 任务事项只能再给一次机会、调整或终止；需求事项只能取消或拒绝。 */
+const CHOICES_BY_SUBJECT: Readonly<Record<string, readonly string[]>> = { task: ["retry", "adjust", "terminate"], requirement: ["cancel", "reject"] };
 const ADJUDICATION_PREFIXES = ["item:", "version:", "choice:", "max-turns:"];
 export type AdjudicationChoice = (typeof ADJUDICATION_CHOICES)[number];
 export const InteractionContext = object({
@@ -228,7 +230,7 @@ export function adjudicationOf(entry: InteractionEntry, context: Pick<Interactio
   const choice = value("choice") as AdjudicationChoice | null, turns = value("max-turns");
   const maxTurns = turns !== null && /^[1-9][0-9]{0,3}$/.test(turns) && Number(turns) <= 1000 ? Number(turns) : null;
   const expected = 3 + (choice === "retry" ? 1 : 0);
-  if (value("item") !== subject.itemId || value("version") !== subject.version || !choice || !ADJUDICATION_CHOICES.includes(choice) ||
+  if (value("item") !== subject.itemId || value("version") !== subject.version || !choice || !CHOICES_BY_SUBJECT[subject.itemId.split(":")[0]!]?.includes(choice) ||
     (choice === "retry") !== (maxTurns !== null) || (choice !== "retry" && turns !== null) || entry.references.length !== expected) throw new UserInteractionError("adjudication_invalid");
   return { itemId: subject.itemId, version: subject.version, choice, maxTurns };
 }

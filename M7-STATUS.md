@@ -14,7 +14,7 @@
 | AC6 plan/task 在 data.db，仅存 ID/hash/引用；重启可恢复 | 部分 | D1：tests/plan-manage.test.ts（计划与任务结构在 data.db，任务说明只在 0600 私有文件，数据库字节不含说明正文，按指纹读取） | 重启后 PM 续接读取计划的用例待补 |
 | AC7 11 核心工具真实注册、六职责与矩阵一致；无 prompts、planner 及其入口 | 部分 | A 片：tests/agent-session.test.ts（五职责真实 SDK 会话的模型请求工具集＝宿主表＋矩阵核心工具，无 bash/write/edit/git_commit）、tests/core-permissions.test.ts（已实现工具 schema 与核心表双向一致，workflow_manage 无 init）、tests/role-catalog.test.ts（内置恰为五定义）、tests/legacy-workflow-retired.test.ts（planner/旧 PM 工厂文件不存在） | plan_manage、agent_manage 未实现；project_manage 八个 action 已齐（提交 85f4c4f、70f6dfc，tests/project-maintenance.test.ts 与 core-permissions 双向一致）；主会话仅注册 4 个核心工具；agents/skills/rules 其余重构在 G 片 |
 | AC8 skill 未加载或模型不遵守提示时核心权限/关闭拒读/通知仍生效 | 未开始 | | A、C 片 |
-| AC9 断网/关窗/取消/续接不重复副作用；关闭需求会话不续接 | 部分 | C2：tests/pm-dispatch.test.ts（按需求停止后运行终态 stopped、租约释放）；runs.resume 只续接本进程持有的暂停会话，历史运行 not_resumable（tests/run-manager.test.ts、tests/legacy-workflow-retired.test.ts）；网络暂停沿用 tests/integration/network-and-sleep.test.ts | 主会话 workflow_manage 关闭接线待补 |
+| AC9 断网/关窗/取消/续接不重复副作用；关闭需求会话不续接 | 部分 | C2：tests/pm-dispatch.test.ts（按需求停止后运行终态 stopped、租约释放）；runs.resume 只续接本进程持有的暂停会话，历史运行 not_resumable（tests/run-manager.test.ts、tests/legacy-workflow-retired.test.ts）；网络暂停沿用 tests/integration/network-and-sleep.test.ts；§10.7 第 5 步：主会话注册 workflow_manage（daemon RPC workflow.manage，关闭时停止该需求全部运行，tests/adjudication.test.ts） | 无 |
 | AC10 仅主代理可 workspace-prepare/recycle；越界拒绝；外部切分支后旧绑定不能写 | 部分 | 提交 85f4c4f：tests/workspace-manage.test.ts（真实确认、拒绝不留痕、req/<UUID> 分支与固定目录、基线为主仓库 HEAD、外部切分支后 verifyRequirementWorkspace 失败）；tests/project-manage-tool.test.ts（无 UI 拒绝）；project_manage 仅主会话注册且矩阵仅 main 有该工具（tests/core-permissions.test.ts、tests/agent-session.test.ts） | "未 ready 不能派 PM"待 C 片派工门槛验证 |
 | AC11 创建/回收中断幂等恢复；有未交付内容默认保留 | 通过 | 提交 85f4c4f：tests/workspace-manage.test.ts（绑定前中断续办不重复确认/建分支；身份不明目录与指向别处的同名分支阻塞不覆盖；活动需求拒绝回收；未跟踪/未合并内容保留并报告；拒绝确认不删除；回收幂等；只删本需求 worktree 与本地分支） | 无 |
 | AC12 四类任务状态按 unaffected/affected/unknown 正确处理 | 通过 | D2：tests/plan-assess.test.ts（已完成+无关保持完成；运行中+未知转受阻且待处理更新不解除、门槛阻塞；已完成/失败+受影响转待更新；冻结前须更新；复核只改任务状态，不改验证记录） | 无 |
@@ -40,7 +40,7 @@
 | AC32 非阻塞建议不生成任务，扩范围须用户决定 | 部分 | D1：tests/plan-manage.test.ts（任务只能引用获准实施的章节，越出授权即拒；任务只能由 PM 经 plan_manage 登记，审查结果没有生成任务的入口） | 同一未完成任务的重试限制在 E 片 |
 | AC33 面板只显示运行中/暂停的 PM，字段按 PM+子代理累计，状态由程序生成，⏸ 时停止计时，p 暂停/恢复连带子代理 | 部分 | 提交 05977fd、f75d416：tests/run-usage.test.ts、tests/pm-overview.test.ts（用量与工具次数按运行累计并广播；PM 与子代理汇总与缓存命中率；状态行按真实状态生成；等待决定与暂停不计时；暂停/恢复连带子代理） | 主窗口面板渲染与 p 键在第 6 步 |
 | AC34 多窗口：一窗口消费后其他窗口该行消失，旧版本提交被拒；窗口全关后 PM 继续、事项保留 | 部分 | f75d416：概览变化广播不含正文的 pm.overview.changed，窗口经 pm.overview 拉取；第 4 步：登记绑定事项版本，旧版本被拒（tests/adjudication.test.ts） | 两个真实窗口同时消费的端到端用例随面板补 |
-| AC35 决策只依据决策包持久记录并绑定版本；PM/子代理不能登记用户决定或以取消/拒绝关闭；待裁决任务只能由用户三种决定解除 | 部分 | 第 4 步：tests/adjudication.test.ts（只认宿主截获的当前原话；解释须恰为一条引用当前事项的裁决条目；裁决引用前缀只能出现在裁决条目；PM/子代理无登记入口）；终止：整个需求暂停，PM 与子代理暂停，新批准版本前恢复与派工被拒、不能完成关闭，批准后 PM 自动恢复，确认新计划前不能派出或恢复子代理，计划有变更时原暂停子代理统一停止且该次尝试记为 superseded 不计入重试 | PM 以取消/拒绝关闭被拒与主会话 workflow_manage 注册在第 5 步 |
+| AC35 决策只依据决策包持久记录并绑定版本；PM/子代理不能登记用户决定或以取消/拒绝关闭；待裁决任务只能由用户三种决定解除 | 部分 | 第 4 步：tests/adjudication.test.ts（只认宿主截获的当前原话；解释须恰为一条引用当前事项的裁决条目；裁决引用前缀只能出现在裁决条目；PM/子代理无登记入口）；终止：整个需求暂停，PM 与子代理暂停，新批准版本前恢复与派工被拒、不能完成关闭，批准后 PM 自动恢复，确认新计划前不能派出或恢复子代理，计划有变更时原暂停子代理统一停止且该次尝试记为 superseded 不计入重试；第 5 步：取消/拒绝须先按原话登记需求事项决定（requirement:<id>，仅 cancel/reject），主代理以该决定 ID 关闭，无对应决定或原因不符被拒，PM 只能以 completed 关闭（tests/adjudication.test.ts） | 草稿需求由主代理取消暂不支持（待用户确认） |
 
 ## 当前阻塞
 
@@ -58,6 +58,8 @@
 
 独立审查（§10.7 终止暂停整个需求，基线 82c0b49..工作区）：首轮 0 阻塞 3 非阻塞（先暂停后终止不自动恢复、暂停失败不重试、新计划前可恢复旧子代理——后者经用户拍板纳入门槛并追加"计划变更时统一停止、该次尝试不计入重试"）；次轮 1 阻塞 3 非阻塞（新计划确认后轮询前可抢先恢复旧子代理等），逐项修复，三轮定向复审"全部解决"。
 
+独立审查（§10.7 第 5 步取消/拒绝需求，基线 ff6b4a2..工作区）：两条威胁模型内无阻塞；功能缺陷一条（进入关闭提升 epoch 后续办同一关闭被拒、需求卡在关闭中）已修，定向复审"全部解决"。
+
 已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」在 4 worker 负载下失败一次，单独重跑通过（.bb-spec/.cache/m7/a-unit-01.txt）。
 
 ## 下一窗口续接提示
@@ -66,7 +68,7 @@
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
 M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计；C4 已批准更新按序投递 PM 并确认消费（runtime/pm-event-delivery.ts，daemon 500ms 轮询），assess-update 绑定本次收到的理解基线，advancedGate 覆盖语义按序收敛。A–E、C4 各有独立审查且定向复审"全部解决"或"无阻塞"。
-待做顺序：§10.7 剩余（已完成：用量累计 05977fd、PM 概览与广播 f75d416、用户三种裁决登记；待做：PM 禁止以取消/拒绝关闭与主会话注册 workflow_manage、决策包展示、替换现有 Agents 面板为 PM 树形视图与 ↑↓/Enter/p 键；待查：PM 会话失败后 prod 保存报 state_changed_before_storage 的原因）与完成通知按 §10.4 续投；F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML）与 MCP 优先；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts 与旧 skills/rules、重写主会话说明；H 零自定义闭环与全量回归、收口 M7-STATUS。
+待做顺序：§10.7 剩余（已完成：用量累计 05977fd、PM 概览与广播 f75d416、用户三种裁决登记；待做：决策包展示（按回车插入卡片，是否自动回复待拍板）、替换现有 Agents 面板为 PM 树形视图与 ↑↓/Enter/p 键；待查：PM 会话失败后 prod 保存报 state_changed_before_storage 的原因）与完成通知按 §10.4 续投；F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML）与 MCP 优先；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts 与旧 skills/rules、重写主会话说明；H 零自定义闭环与全量回归、收口 M7-STATUS。
 已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§10.7、§13.2 与 M7-AC20/21、AC33–35；C-3 与 M5 两条观察本阶段不处理。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
 ```

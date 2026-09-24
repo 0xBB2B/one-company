@@ -3,7 +3,8 @@ import { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
-import { adjudicationSubject } from "../runtime/adjudication.ts";
+import { adjudicationSubject, closeDecisionValid } from "../runtime/adjudication.ts";
+import { createPmTools } from "../daemon/pm-tools.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
 import { TASKS } from "../runtime/plan-manage.ts";
 import type { TaskRecord, TaskSpec } from "../runtime/plan-manage.ts";
@@ -50,12 +51,12 @@ async function world() {
   const version = () => `task:${login}:${taskRow("login").version}`;
   const entry = (references: string[], patch: Record<string, unknown> = {}) => ({ kind: "adjudication", basis: "explicit", resolution: "direct", candidateId: null,
     requestId: null, actions: [], conclusion: "用户对任务 login 的裁决", scope: "任务 login", references, supersedes: [], ...patch });
-  async function adjudicate(text: string, entries: unknown[] | null) {
+  async function adjudicate(text: string, entries: unknown[] | null, target = itemId) {
     interaction.captureInput({ source: "interactive", text }, ctx);
     if (entries) w.provider.queue.push({ type: "text", text: JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries }) });
     const toolCallId = uuidv7();
     const result = await tool.execute(toolCallId, { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId, requirementId: w.fixture.requirementId,
-      operationId: uuidv7(), itemId } as never, undefined, undefined, ctx);
+      operationId: uuidv7(), itemId: target } as never, undefined, undefined, ctx);
     interaction.assertDelivery(toolCallId, ctx);
     return result.details as Record<string, unknown>;
   }
@@ -223,3 +224,48 @@ test("M7-AC35：用户先暂停 PM 再终止任务，批准新版本后 PM 同�
     implementGoals: ["goal.login", "scenario.failure"] });
   await until(async () => await state() === "running");
 });
+
+test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，PM 与子代理结束；没有对应决定或原因不符时关闭被拒，PM 不能以取消关闭", async () => {
+  const w = await world();
+  const requirementItem = `requirement:${w.fixture.requirementId}`;
+  const recordVersion = () => w.fixture.state.read(w.fixture.requirementId).version;
+  const close = (reason: string, receiptId: string) => w.manager.workflowManage(w.fixture.requirementId, { action: "close", reason, receiptId, operationId: uuidv7() });
+
+  expect(await close("cancelled", uuidv7())).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });
+  const record = w.fixture.state.read(w.fixture.requirementId).data;
+  const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
+    workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
+    currentBaseline: () => ({ approvedRevision: 1, approvedProdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
+    stopAgents: async () => {}, agents: { dispatch: async () => ({}), control: async () => ({}) } });
+  cleanups.push(() => pmTools.dispose());
+  const pmWorkflow = pmTools.tools.find((tool) => tool.name === "pi_company_workflow_manage")!;
+  const pmResult = await pmWorkflow.execute("pm-close", { action: "close", reason: "cancelled", receiptId: uuidv7(), operationId: uuidv7() }, undefined, undefined, undefined as never);
+  expect(JSON.parse((pmResult.content[0] as { text: string }).text)).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });
+
+  const result = await w.adjudicate("这个需求不要了，取消吧", [w.entry([`item:${requirementItem}`, `version:${requirementItem}:${recordVersion()}`, "choice:cancel"])], requirementItem);
+  expect(result).toMatchObject({ status: "recorded", choice: "cancel" });
+  const decisionId = String(result.decisionId);
+  expect(await close("rejected", decisionId)).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });
+  expect(await close("cancelled", decisionId)).toMatchObject({ status: "closed", reason: "cancelled" });
+  expect(w.fixture.state.read(w.fixture.requirementId).data.lifecycle).toBe("closed");
+  const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
+  expect(closeDecisionValid(ref, { requirementId: w.fixture.requirementId, receiptId: decisionId, reason: "cancelled" })).toBe(true);
+  expect(closeDecisionValid(ref, { requirementId: w.fixture.requirementId, receiptId: decisionId, reason: "rejected" })).toBe(false);
+  const pmRun = await w.runStore.get(w.pm.runId);
+  expect(pmRun.ok && pmRun.run.state).toBe("stopped");
+  expect(await w.manager.overviews()).toEqual([]);
+});
+
+test("需求事项只能选择取消或拒绝，任务事项不能选择取消", () => {
+  const context = { basis: { requirementId: uuidv7(), version: 1, epoch: 1, prod: null }, currentGoal: "", candidates: [], questions: [], priorDecisions: [] } as InteractionContext;
+  const requirementId = uuidv7(), taskId = uuidv7();
+  const base = { kind: "adjudication", basis: "explicit", resolution: "direct", candidateId: null, requestId: null, actions: [], conclusion: "裁决", scope: "需求", supersedes: [] };
+  const interpretation = (references: string[]) => JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries: [{ ...base, references }] });
+  const requirementSubject = { itemId: `requirement:${requirementId}`, version: `requirement:${requirementId}:4`, summary: "需求" };
+  const taskSubject = { itemId: `task:${taskId}`, version: `task:${taskId}:2`, summary: "任务" };
+  const refs = (subject: { itemId: string; version: string }, choice: string) => [`item:${subject.itemId}`, `version:${subject.version}`, `choice:${choice}`];
+  expect(() => checkInterpretation(interpretation(refs(requirementSubject, "reject")), { ...context, adjudication: requirementSubject })).not.toThrow();
+  expect(() => checkInterpretation(interpretation(refs(requirementSubject, "terminate")), { ...context, adjudication: requirementSubject })).toThrow(/adjudication_invalid/);
+  expect(() => checkInterpretation(interpretation(refs(taskSubject, "cancel")), { ...context, adjudication: taskSubject })).toThrow(/adjudication_invalid/);
+});
+

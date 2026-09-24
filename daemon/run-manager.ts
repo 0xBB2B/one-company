@@ -6,7 +6,7 @@ import type { RoleCatalogEntry } from "../runtime/roles.ts";
 import type { DispatchSettingsContext, ListRunOptions, RunKind, RunRecord } from "../runtime/run-store.ts";
 import { isTerminalState, RunStore } from "../runtime/run-store.ts";
 import type { Host, ShellRegistry, TaskRecord } from "../runtime/shell-registry.ts";
-import { repositoryDatabase, UUID_V7_PATTERN } from "../runtime/database.ts";
+import { repositoryDatabase, UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
 import { assertLegacyRequirementId, withLegacyReadDatabase } from "../runtime/workflow-state.ts";
 import { checkedMetadataPage, legacyMetadataPage } from "../runtime/workflow-tool.ts";
 import type { MetadataPageOptions } from "../runtime/workflow-tool.ts";
@@ -26,7 +26,8 @@ import type { PmLease, RequirementRecord } from "../runtime/requirement-contract
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { TimerHandle } from "../runtime/clock.ts";
 import { MANAGED_WORKSPACES } from "../runtime/workspace-manage.ts";
-import { takeUnnotifiedDecisions } from "../runtime/adjudication.ts";
+import { closeDecisionValid, takeUnnotifiedDecisions } from "../runtime/adjudication.ts";
+import { createWorkflowManageTool, WorkflowManageError } from "../runtime/workflow-manage.ts";
 import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
 import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
@@ -520,6 +521,29 @@ export class RunManager {
     });
   }
 
+  /**
+   * 主代理的 workflow_manage：查看状态、交付核对与关闭。以取消或拒绝关闭时，receiptId 须是用户对该需求做出的对应决定；
+   * 以完成关闭仍由关闭协议的交付核对把关。关闭时由本进程停止该需求的全部运行。
+   */
+  async workflowManage(requirementId: string, request: Record<string, unknown>): Promise<unknown> {
+    const record = (await this.pmState()).read(requirementId).data;
+    if (!record.workspace) throw protocolError("workspace_not_ready", "需求工作区尚未绑定");
+    const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };
+    let tool: Awaited<ReturnType<typeof createWorkflowManageTool>>;
+    try {
+      tool = await createWorkflowManageTool({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot,
+        stopAgents: (id) => this.stopRequirement(id),
+        grant: { role: "main", callerId: uuidv7(), runId: uuidv7(), requirementId, repoId: this.repoId, workspaceId: record.workspace.workspaceId, branch: record.workspace.branch },
+        authorize: (check) => check.action !== "close" || check.reason === undefined || check.reason === "completed" ||
+          (check.receiptId !== undefined && closeDecisionValid(ref, { requirementId, receiptId: check.receiptId, reason: check.reason as "cancelled" | "rejected" })) });
+    } catch (error) { throw protocolError("workflow_denied", (error as Error).message); }
+    try { return await tool.execute(request); }
+    catch (error) {
+      if (error instanceof WorkflowManageError) throw protocolError(error.code === "invalid_shape" ? "invalid_params" : "workflow_denied", error.message);
+      throw error;
+    } finally { tool.dispose(); }
+  }
+
   /** 本仓库全部运行中/暂停的 PM 概览，供任一主窗口拉取。 */
   async overviews(): Promise<PmOverview[]> {
     const result: PmOverview[] = [];
@@ -730,7 +754,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       catch (error) {
         if (error instanceof Error && ["legacy_workflow_retired", "trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
           "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
-          "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed", "requirement_halted"].includes((error as { code?: string }).code ?? "")) throw error;
+          "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed", "requirement_halted", "workflow_denied"].includes((error as { code?: string }).code ?? "")) throw error;
         throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对");
       }
     });
@@ -744,6 +768,11 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   });
   register("runs.resume", async (params) => manager.resume(params.runId as string));
   register("pm.overview", async () => ({ items: await manager.overviews() }));
+  register("workflow.manage", async (params) => {
+    if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof params.request !== "object" || params.request === null)
+      throw protocolError("invalid_params", "workflow_manage 参数无效");
+    return { result: await manager.workflowManage(params.requirementId, params.request as Record<string, unknown>) };
+  });
   for (const method of ["dispatch.requirement", "dispatch.review", "runs.resumeAll", "runs.resumeInterrupted", "relay.answer", "relay.forward", "subscribe.transcript"]) {
     register(method, async () => { throw retiredError(); });
   }
