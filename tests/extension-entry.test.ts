@@ -65,7 +65,7 @@ describe("extensions/index.ts 唯一扩展入口", () => {
     expect(pkg.pi?.extensions).toEqual(["./extensions/index.ts"]);
   });
 
-  test("session_start 处理器注册顺序中，首位来自 lifecycle（先于 relay/agents-ui/shell-ui）", () => {
+  test("session_start 处理器注册顺序中，首位来自 lifecycle（先于 relay/pm-panel/shell-ui）", () => {
     const fakePi = createFakePi();
 
     registerExtensions(fakePi.pi);

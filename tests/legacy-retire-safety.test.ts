@@ -246,10 +246,10 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(runs.items).toHaveLength(3); expect((runs as any).coverage).toMatchObject({ truncated: true, unconfirmedOutsidePage: 1998 });
     expect(Buffer.byteLength(JSON.stringify(runs))).toBeLessThanOrEqual(16_384);
     const client = await socket(w);
-    const activity = await client.call("subscribe.activity");
-    expect(Buffer.byteLength(JSON.stringify(activity))).toBeLessThanOrEqual(16_384);
-    expect((activity.snapshot as unknown[]).length).toBeLessThanOrEqual(100);
-    expect(activity.coverage).toMatchObject({ truncated: true, unconfirmed: 2001 });
+    const listed = await client.call("runs.list", { limit: 100 });
+    expect(Buffer.byteLength(JSON.stringify(listed))).toBeLessThanOrEqual(16_384);
+    expect((listed.items as unknown[]).length).toBeLessThanOrEqual(100);
+    expect(listed.coverage).toMatchObject({ truncated: true });
     for (const limit of [0, -1, 1.5, Number.MAX_SAFE_INTEGER]) {
       expect(await executeWorkflowAction({ action: "list", limit }, w.ctx)).toMatchObject({ ok: false });
       await expect(w.manager.list({ limit })).rejects.toThrow();

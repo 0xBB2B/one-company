@@ -381,6 +381,11 @@ export function windowReady(): Promise<WindowContextValue> {
   return readyController.promise;
 }
 
+let inputRevoker: (() => void) | undefined;
+/** 需求交互扩展登记：作废当前截获的用户原话票据。 */
+export function registerInputRevoker(revoke: (() => void) | undefined): void { inputRevoker = revoke; }
+export function revokeCapturedInput(): void { inputRevoker?.(); }
+
 export function registerDock(dock: BottomDock | undefined): void {
   sharedDock = dock;
 }

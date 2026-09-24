@@ -20,7 +20,8 @@ const schemas = {
   forward: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("forward"), ...base }, { additionalProperties: false }),
 } satisfies Record<string, TSchema>;
 const ADJUDICATE_PARAMETERS = Type.Object({ purpose: Type.Literal("adjudicate"), action: Type.Literal("reply"), repoId: base.repoId,
-  requirementId: base.requirementId, operationId: base.operationId, itemId: Type.String({ pattern: "^(task|requirement):[0-9a-f-]{36}$" }) }, { additionalProperties: false });
+  requirementId: base.requirementId, operationId: base.operationId, itemId: Type.String({ pattern: "^(task|requirement):[0-9a-f-]{36}$" }),
+  itemVersion: Type.String({ pattern: "^(task|requirement):[0-9a-f-]{36}:[1-9][0-9]{0,15}$" }) }, { additionalProperties: false });
 
 export const USER_INTERACT_PARAMETERS = Type.Object({
   purpose: Type.Optional(StringEnum(["user-confirmation", "pm-intake", "adjudicate"] as const)),
@@ -32,6 +33,7 @@ export const USER_INTERACT_PARAMETERS = Type.Object({
   version: Type.Optional(base.version),
   requestId: Type.Optional(id),
   itemId: Type.Optional(Type.String({ pattern: "^(task|requirement):[0-9a-f-]{36}$" })),
+  itemVersion: Type.Optional(Type.String({ pattern: "^(task|requirement):[0-9a-f-]{36}:[1-9][0-9]{0,15}$" })),
   question: Type.Optional(question),
   scope: Type.Optional(question),
   unitIds: Type.Optional(ApprovalUnitIds),
@@ -45,7 +47,7 @@ export function createUserInteractTool(options: {
   intake?: MainIntakeInteraction;
 }): ToolDefinition<typeof USER_INTERACT_PARAMETERS, unknown> {
   return { name: "pi_company_user_interact", label: "需求澄清、决定与接手复核",
-    description: "默认或purpose=user-confirmation时，ask展示有界用户问题，reply/forward只消费当前真实输入。purpose=pm-intake时，ask创建接手复核请求，forward重取当前请求，reply由真实Main登记四类核对结果；purpose=adjudicate时，reply按用户当前原话登记用户决定：itemId=task:<任务ID>时为待裁决任务的再给一次机会（须有轮数）、调整目标或范围、终止任务；itemId=requirement:<需求ID>时为取消或拒绝整个需求，登记后以返回的decisionId作为workflow_manage close的receiptId；原话不清楚时不登记；不接受主体、角色、回执、理解正文或绑定字段。",
+    description: "默认或purpose=user-confirmation时，ask展示有界用户问题，reply/forward只消费当前真实输入。purpose=pm-intake时，ask创建接手复核请求，forward重取当前请求，reply由真实Main登记四类核对结果；purpose=adjudicate时，reply按用户当前原话登记用户决定（itemVersion取决策包上的版本，事项已变化时被拒）：itemId=task:<任务ID>时为待裁决任务的再给一次机会（须有轮数）、调整目标或范围、终止任务；itemId=requirement:<需求ID>时为取消或拒绝整个需求，登记后以返回的decisionId作为workflow_manage close的receiptId；原话不清楚时不登记；不接受主体、角色、回执、理解正文或绑定字段。",
     promptSnippet: "按明确purpose处理用户确认或PM接手复核", parameters: USER_INTERACT_PARAMETERS, executionMode: "sequential",
     async execute(toolCallId, raw, signal, _update, ctx) {
       signal?.throwIfAborted();
@@ -55,10 +57,10 @@ export function createUserInteractTool(options: {
       }
       if ((raw as { purpose?: unknown }).purpose === "adjudicate") {
         if (!Value.Check(ADJUDICATE_PARAMETERS, raw)) throw new HostAuthorizationError("invalid_shape");
-        const p = raw as { repoId: string; requirementId: string; itemId: string; operationId: string };
+        const p = raw as { repoId: string; requirementId: string; itemId: string; itemVersion: string; operationId: string };
         return options.interaction.execute(toolCallId, ctx, p.repoId, { ...p }, async () => {
           signal?.throwIfAborted();
-          return options.interaction.adjudicate(ctx, { repoId: p.repoId, requirementId: p.requirementId, itemId: p.itemId });
+          return options.interaction.adjudicate(ctx, { repoId: p.repoId, requirementId: p.requirementId, itemId: p.itemId, itemVersion: p.itemVersion });
         }, signal ?? ctx.signal);
       }
       const normalized = structuredClone(raw) as Record<string, unknown>;

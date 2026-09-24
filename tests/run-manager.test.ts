@@ -65,7 +65,7 @@ describe("运行执行器永久淘汰", () => {
   });
   test("R03 status/list/activity 仅元数据，不输出旧任务、模型、命令、结果或错误正文", async () => {
     const w = await world(); const run = await w.create("failed"); const before = w.snapshot(); const map = handlers(w);
-    for (const output of [await w.manager.status(run.id), await w.manager.list(), await map.get("subscribe.activity")!({})]) {
+    for (const output of [await w.manager.status(run.id), await w.manager.list(), await map.get("runs.list")!({ limit: 100 })]) {
       expect(JSON.stringify(output)).not.toContain(SECRET); expect(JSON.stringify(output)).not.toContain("provider-a");
     }
     const status = await w.manager.status(run.id); expect(status).toMatchObject({ ok: true, run: { id: run.id, state: "failed" } });
@@ -187,8 +187,7 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
     const initial = await w.manager.stopAll(); const omitted = ids.find((id) => !initial.results.some((r) => r.runId === id)); expect(omitted).toBeDefined();
     const last = await w.runs.get(omitted!); if (!last.ok) throw new Error("夹具缺失"); const task = await w.spawn(last.run); const before = w.snapshot(); const probe = vi.spyOn(w.shells, "adoptOrphans");
     const page = await w.manager.list({ limit: 3, offset: 1 }); expect(page.items).toHaveLength(3); expect(page.coverage).toMatchObject({ total: 106, returned: 3, offset: 1, remaining: 102, unconfirmed: 106, unconfirmedOutsidePage: 103, truncated: true });
-    const activity = await handlers(w).get("subscribe.activity")!({}); expect(activity.snapshot.length).toBeLessThanOrEqual(100); expect(activity.coverage).toMatchObject({ total: 106, unconfirmed: 106, truncated: true });
-    for (const result of [page, activity]) expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(16384);
+    for (const result of [page]) expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(16384);
     for (const limit of [0, -1, 1.5, 101, Number.MAX_SAFE_INTEGER]) await expect(w.manager.list({ limit })).rejects.toThrow();
     expect(probe).not.toHaveBeenCalled(); expect(w.snapshot()).toBe(before); expect(alive(task.pid)).toBe(true);
     const stopped = await w.manager.stopAll(); expect(stopped.results.length).toBeLessThanOrEqual(100); expect(stopped.results.some((r) => r.runId === last.run.id)).toBe(false);

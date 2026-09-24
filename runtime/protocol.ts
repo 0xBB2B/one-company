@@ -18,12 +18,12 @@ export const METHODS = [
   "runs.stop",
   "agents.dispatchPm",
   "pm.overview",
+  "pm.packet",
   "workflow.manage",
   "runs.resumeInterrupted",
   "runs.pauseAll",
   "runs.resumeAll",
   "runs.stopAll",
-  "subscribe.activity",
   "subscribe.transcript",
   "unsubscribe",
   "relay.pending",
@@ -38,7 +38,6 @@ export const METHODS = [
 ] as const;
 
 export const EVENTS = [
-  "activity",
   "transcript",
   "runs.changed",
   "pm.overview.changed",
@@ -203,13 +202,13 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   "agents.dispatchPm": Type.Object({ requirementId: Type.String(), model: Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false }),
     thinking: Type.String() }, { additionalProperties: false }),
   "pm.overview": Type.Object({}, { additionalProperties: false }),
+  "pm.packet": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),
   "workflow.manage": Type.Object({ requirementId: Type.String(), request: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),
   "runs.stop": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.resumeInterrupted": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.pauseAll": Type.Object({}, { additionalProperties: false }),
   "runs.resumeAll": Type.Object({}, { additionalProperties: false }),
   "runs.stopAll": Type.Object({}, { additionalProperties: false }),
-  "subscribe.activity": Type.Object({}, { additionalProperties: false }),
   "subscribe.transcript": Type.Object(
     {
       runId: Type.String(),

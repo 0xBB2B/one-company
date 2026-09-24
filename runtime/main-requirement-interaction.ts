@@ -105,6 +105,8 @@ export class MainRequirementInteraction {
     this.#unsubscribeHost = this.#authorization.onRevoke(() => this.revoke());
   }
   #now() { return this.#options.now?.() ?? Date.now(); }
+  /** 插入决策包时调用：此前截获的原话不能作为对这张卡片的回答。 */
+  revokeInput(): void { this.revoke(); }
   revoke(): void {
     this.#generation++;
     this.#selectionAbort?.abort();
@@ -422,11 +424,13 @@ export class MainRequirementInteraction {
    * 用户对待裁决任务的决定：只解释本窗口宿主截获的当前原话，解释结果须恰有一条引用该事项的裁决条目，
    * 存为用户短决定后按记录让任务生效；不清楚时不登记。
    */
-  async adjudicate(ctx: ExtensionContext, request: { repoId: string; requirementId: string; itemId: string }): Promise<Record<string, unknown>> {
+  async adjudicate(ctx: ExtensionContext, request: { repoId: string; requirementId: string; itemId: string; itemVersion: string }): Promise<Record<string, unknown>> {
     this.#currentInput(ctx);
     const host = this.#host(ctx);
     this.#authorization.assertRequirement(request.repoId, request.requirementId, host.sessionId);
     const subject = adjudicationSubject({ dataRoot: this.#options.dataRoot, repoId: request.repoId }, request.requirementId, request.itemId);
+    // 用户看到的是决策包生成时的事项；此后事项已变化，须刷新重看，不能按新状态替用户登记
+    if (subject.version !== request.itemVersion) return denied("item_changed");
     this.#candidate = undefined; this.#capability = undefined; this.#interpretation = undefined;
     this.#adjudication = { requirementId: request.requirementId, subject };
     try {

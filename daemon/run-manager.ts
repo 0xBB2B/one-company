@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Clock } from "../runtime/clock.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
@@ -27,6 +26,7 @@ import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { TimerHandle } from "../runtime/clock.ts";
 import { MANAGED_WORKSPACES } from "../runtime/workspace-manage.ts";
 import { closeDecisionValid, takeUnnotifiedDecisions } from "../runtime/adjudication.ts";
+import { decisionPacket, DecisionPacketError } from "../runtime/decision-packet.ts";
 import { createWorkflowManageTool, WorkflowManageError } from "../runtime/workflow-manage.ts";
 import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
 import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
@@ -544,6 +544,10 @@ export class RunManager {
     } finally { tool.dispose(); }
   }
 
+  decisionPacket(requirementId: string, itemId: string): string {
+    return decisionPacket({ dataRoot: this.options.dataRoot, repoId: this.repoId }, requirementId, itemId);
+  }
+
   /** 本仓库全部运行中/暂停的 PM 概览，供任一主窗口拉取。 */
   async overviews(): Promise<PmOverview[]> {
     const result: PmOverview[] = [];
@@ -768,6 +772,12 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   });
   register("runs.resume", async (params) => manager.resume(params.runId as string));
   register("pm.overview", async () => ({ items: await manager.overviews() }));
+  register("pm.packet", async (params) => {
+    if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof params.itemId !== "string")
+      throw protocolError("invalid_params", "决策包参数无效");
+    try { return { text: manager.decisionPacket(params.requirementId, params.itemId) }; }
+    catch (error) { if (error instanceof DecisionPacketError) throw protocolError("not_found", "该事项已处理或不存在"); throw error; }
+  });
   register("workflow.manage", async (params) => {
     if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof params.request !== "object" || params.request === null)
       throw protocolError("invalid_params", "workflow_manage 参数无效");
@@ -798,10 +808,6 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   });
   register("shells.markStopped", async () => {
     throw protocolError("trusted_stop_required", "缺少可信的人工停止裁定入口；USER 字符串不能证明进程已停止，请使用安全停止并核对真实进程");
-  });
-  register("subscribe.activity", async () => {
-    const page = await manager.list({ limit: 100 });
-    return { subscriptionId: randomUUID(), snapshot: page.items, coverage: page.coverage };
   });
   register("unsubscribe", async () => ({}));
   server.onHello = async () => {};

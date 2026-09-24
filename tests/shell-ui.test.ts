@@ -7,8 +7,8 @@ import { ShellRegistry } from "../runtime/shell-registry.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import installShellUi, { openShellUiPage } from "../extensions/shell-ui.ts";
 import type { ShellUiDeps } from "../extensions/shell-ui.ts";
-import agentsUiExtension from "../extensions/agents-ui.ts";
-import type { AgentsUiDeps } from "../extensions/agents-ui.ts";
+import pmPanelExtension from "../extensions/pm-panel.ts";
+import type { PmPanelUiDeps } from "../extensions/pm-panel.ts";
 import { currentDock } from "../extensions/lifecycle.ts";
 
 function shellUiExtension(pi: Parameters<typeof installShellUi>[0], deps: ShellUiDeps = {}) {
@@ -427,18 +427,18 @@ describe("shellUiExtension：user_bash 未就绪时优雅降级", () => {
   });
 });
 
-describe("sharedDock 生命周期：agents-ui teardown 后 lifecycle.currentDock() 应为 undefined", () => {
+describe("sharedDock 生命周期：PM 面板 teardown 后 lifecycle.currentDock() 应为 undefined", () => {
   test("session_shutdown 后 currentDock() 为 undefined；此时 openShellUiPage 报未就绪而非拿到已释放的旧 dock", async () => {
     const fakePi = createFakePi();
     const client = createPollableClient();
     const windowContextValue = createWindowContextValue("window-dock", "repo-dock", client);
     const timeSource = createFakeTimeSource();
 
-    const agentsUiDeps: AgentsUiDeps = {
+    const panelDeps: PmPanelUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => createClock({ timeSource }),
     };
-    agentsUiExtension(fakePi.pi, agentsUiDeps);
+    pmPanelExtension(fakePi.pi, panelDeps);
 
     const shellDeps: ShellUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
@@ -495,13 +495,13 @@ test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实�
       calls.push({ method, params });
       if (method === "shells.list") return { tasks: [task] };
       if (method === "shells.stop") return stopped.promise;
-      if (method === "subscribe.activity") return {};
+      if (method === "pm.overview") return { items: [] };
       throw new Error(`非白名单 RPC：${method}`);
     },
   };
   const window = createWindowContextValue("window-no-user", "repo-no-user", client);
   const deps = { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock({ timeSource: createFakeTimeSource() }) };
-  agentsUiExtension(fakePi.pi, deps);
+  pmPanelExtension(fakePi.pi, deps);
   shellUiExtension(fakePi.pi, deps);
   const ctx = {
     mode: "tui", hasUI: true, cwd: process.cwd(),
@@ -572,7 +572,7 @@ describe("openShellUiPage：保留缺连接仓库并可在连接恢复后查询"
       },
     };
     const deps = { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock({ timeSource: createFakeTimeSource() }) };
-    agentsUiExtension(fakePi.pi, deps);
+    pmPanelExtension(fakePi.pi, deps);
     shellUiExtension(fakePi.pi, deps);
     const ctx = {
       mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: { getSessionId: () => window.sessionId },
@@ -614,11 +614,11 @@ describe("openShellUiPage：透传宿主 ctx.ui.theme 到页面主题", () => {
     const windowContextValue = createWindowContextValue("window-theme", "repo-theme", client);
 
     // openShellUiPage 依赖 lifecycle 的共享 dock：本测试自行经 agents-ui 挂载注册，不依赖其他用例的残留状态
-    const agentsUiDeps: AgentsUiDeps = {
+    const panelDeps: PmPanelUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
     };
-    agentsUiExtension(fakePi.pi, agentsUiDeps);
+    pmPanelExtension(fakePi.pi, panelDeps);
 
     const deps: ShellUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,

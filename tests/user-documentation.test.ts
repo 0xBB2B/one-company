@@ -5,13 +5,12 @@ import { fileURLToPath } from "node:url";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const README = join(PACKAGE_ROOT, "README.md");
-const AGENTS_ACTIVITY = join(PACKAGE_ROOT, "runtime/agents-activity.ts");
 const DAEMON_MAIN = join(PACKAGE_ROOT, "daemon/main.ts");
 const COMMANDS = join(PACKAGE_ROOT, "extensions/commands.ts");
 const PACKAGE_JSON = join(PACKAGE_ROOT, "package.json");
 const SETTINGS_UI = join(PACKAGE_ROOT, "runtime/settings-ui.ts");
 const IDENTITY = join(PACKAGE_ROOT, "runtime/identity.ts");
-const AGENTS_PANEL = join(PACKAGE_ROOT, "runtime/agents-panel.ts");
+const PM_PANEL = join(PACKAGE_ROOT, "runtime/pm-panel.ts");
 
 async function readText(path: string): Promise<string> {
   return readFile(path, "utf8");
@@ -47,7 +46,7 @@ const REQUIRED_SECTION_ORDER = [
   "卸载",
   "快速开始",
   "守护进程",
-  "面板与查看页",
+  "PM 面板",
   "角色与设置",
   "Shell 管理",
   "本机数据",
@@ -85,7 +84,6 @@ describe("README 必需句", () => {
     "空闲后自动退出",
     "标记为中断",
     "合盖睡眠",
-    "20 秒",
     "background: true",
     ".pi-company/",
     "不随 Git 同步",
@@ -115,16 +113,6 @@ describe("README 禁止句", () => {
 });
 
 describe("README 常量与实际代码一致", () => {
-  test("20 秒面板保留期与 runtime/agents-activity.ts 的 RETENTION_MS 一致", async () => {
-    const source = await readText(AGENTS_ACTIVITY);
-    const match = source.match(/RETENTION_MS\s*=\s*([\d_]+)/);
-    expect(match).not.toBeNull();
-    const retentionMs = Number(match![1].replace(/_/g, ""));
-    const retentionSeconds = retentionMs / 1000;
-    const body = await readText(README);
-    expect(body).toContain(`${retentionSeconds} 秒`);
-  });
-
   test("空闲退出时限与守护进程默认空闲常量一致", async () => {
     const source = await readText(DAEMON_MAIN);
     const match = source.match(/Number\(raw \?\? "(\d+)"\)/);
@@ -167,36 +155,22 @@ describe("README 常量与实际代码一致", () => {
   });
 });
 
-describe("README 面板与查看页事实", () => {
-  test("含 ←→ 按钮移动与 Enter 执行当前按钮", async () => {
-    const section = extractSection(await readText(README), "面板与查看页");
-    expect(section).toContain("←→");
-    expect(section).toContain("Enter");
+describe("README PM 面板事实与 runtime/pm-panel.ts 一致", () => {
+  test("面板按键提示中的每个按键都在 README 中说明", async () => {
+    const source = await readText(PM_PANEL);
+    const hint = source.match(/const HINT = "([^"]+)"/)?.[1];
+    expect(hint).toBeDefined();
+    const section = extractSection(await readText(README), "PM 面板");
+    for (const key of ["↑↓", "Enter", "p", "Esc"]) {
+      expect(hint).toContain(key);
+      expect(section).toContain(key);
+    }
   });
 
-  test("「查看」与 Enter 在同一句中共现", async () => {
-    const section = extractSection(await readText(README), "面板与查看页");
-    const sentence = section.split(/[。\n]/).find((candidate) => candidate.includes("Enter"));
-    expect(sentence).toBeDefined();
-    expect(sentence).toContain("「查看」");
-  });
-
-  test("已结束条目灰显与控制动作失败提示均独立说明保留 20 秒", async () => {
-    const section = extractSection(await readText(README), "面板与查看页");
-    expect(section).toContain("灰显");
-    const occurrences = (section.match(/20 秒/g) ?? []).length;
-    expect(occurrences).toBeGreaterThanOrEqual(2);
-  });
-
-  test("按钮名与 agents-panel.ts 的 BUTTON_LABEL 动态一致，且不出现「恢复」", async () => {
-    const source = await readText(AGENTS_PANEL);
-    const match = source.match(/BUTTON_LABEL[^{]*\{([^}]*)\}/s);
-    expect(match).not.toBeNull();
-    const labels = [...match![1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
-    expect(labels).toEqual(["暂停", "停止"]);
-    const section = extractSection(await readText(README), "面板与查看页");
-    for (const label of labels) expect(section).toContain(label);
-    expect(section).not.toContain("恢复");
+  test("说明决策包不是用户决定、只有用户亲手输入的话才算", async () => {
+    const section = extractSection(await readText(README), "PM 面板");
+    expect(section).toContain("决策包");
+    expect(section).toContain("亲手输入");
   });
 });
 

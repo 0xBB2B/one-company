@@ -38,8 +38,8 @@
 | AC30 最多一次父代理批准的重试，之后待用户裁决 | 部分 | E2：tests/task-dispatch.test.ts（重试一次后 awaiting_user，第三次派工与绕行被拒）；§10.7 第 4 步：tests/adjudication.test.ts（用户原话经独立解释登记"再给一次机会/调整/终止"，仅这三种决定解除待裁决；再给一次按用户上限且不占 PM 重试、任务被修改即失效；调整须新批准版本后才能修改并再派一次；终止后目标不能被其他任务接走） | 无 |
 | AC31 正式计划/派工缺目标/通过条件/范围/性能条件拒绝 | 部分 | D1：tests/plan-manage.test.ts（缺目标、通过条件、范围、性能条件或有效轮次上限拒绝登记；冻结前须覆盖全部获准实施章节；版本递增与过期版本拒绝） | 派工侧校验在 E 片 |
 | AC32 非阻塞建议不生成任务，扩范围须用户决定 | 部分 | D1：tests/plan-manage.test.ts（任务只能引用获准实施的章节，越出授权即拒；任务只能由 PM 经 plan_manage 登记，审查结果没有生成任务的入口） | 同一未完成任务的重试限制在 E 片 |
-| AC33 面板只显示运行中/暂停的 PM，字段按 PM+子代理累计，状态由程序生成，⏸ 时停止计时，p 暂停/恢复连带子代理 | 部分 | 提交 05977fd、f75d416：tests/run-usage.test.ts、tests/pm-overview.test.ts（用量与工具次数按运行累计并广播；PM 与子代理汇总与缓存命中率；状态行按真实状态生成；等待决定与暂停不计时；暂停/恢复连带子代理） | 主窗口面板渲染与 p 键在第 6 步 |
-| AC34 多窗口：一窗口消费后其他窗口该行消失，旧版本提交被拒；窗口全关后 PM 继续、事项保留 | 部分 | f75d416：概览变化广播不含正文的 pm.overview.changed，窗口经 pm.overview 拉取；第 4 步：登记绑定事项版本，旧版本被拒（tests/adjudication.test.ts） | 两个真实窗口同时消费的端到端用例随面板补 |
+| AC33 面板只显示运行中/暂停的 PM，字段按 PM+子代理累计，状态由程序生成，⏸ 时停止计时，p 暂停/恢复连带子代理 | 通过 | 提交 05977fd、f75d416：tests/run-usage.test.ts、tests/pm-overview.test.ts（用量与工具次数按运行累计并广播；PM 与子代理汇总与缓存命中率；状态行按真实状态生成；等待决定与暂停不计时；暂停/恢复连带子代理）；第 6 步：tests/pm-panel.test.ts（树形格式、⏸ 与计时、窄屏截断、↑↓/Enter/p 键、扩展接线：拉取概览、Enter 取决策包插入对话并自动回复、变化信号重拉） | 无 |
+| AC34 多窗口：一窗口消费后其他窗口该行消失，旧版本提交被拒；窗口全关后 PM 继续、事项保留 | 部分 | f75d416：概览变化广播不含正文的 pm.overview.changed，窗口经 pm.overview 拉取；第 4 步：登记绑定事项版本，旧版本被拒（tests/adjudication.test.ts）；第 6 步：面板更新投影时已处理事项消失（tests/pm-panel.test.ts），按旧决策包版本登记被拒（tests/adjudication.test.ts） | 两个真实窗口进程同时消费的端到端用例未做（单窗口投影更新与版本拒绝已覆盖） |
 | AC35 决策只依据决策包持久记录并绑定版本；PM/子代理不能登记用户决定或以取消/拒绝关闭；待裁决任务只能由用户三种决定解除 | 部分 | 第 4 步：tests/adjudication.test.ts（只认宿主截获的当前原话；解释须恰为一条引用当前事项的裁决条目；裁决引用前缀只能出现在裁决条目；PM/子代理无登记入口）；终止：整个需求暂停，PM 与子代理暂停，新批准版本前恢复与派工被拒、不能完成关闭，批准后 PM 自动恢复，确认新计划前不能派出或恢复子代理，计划有变更时原暂停子代理统一停止且该次尝试记为 superseded 不计入重试；第 5 步：取消/拒绝须先按原话登记需求事项决定（requirement:<id>，仅 cancel/reject），主代理以该决定 ID 关闭，无对应决定或原因不符被拒，PM 只能以 completed 关闭（tests/adjudication.test.ts） | 草稿需求由主代理取消按用户决定暂不支持，记为待办 |
 
 ## 当前阻塞
@@ -62,7 +62,9 @@
 
 已查明：PM 停止或失败时释放租约会向需求记录写入 pm.released 事件并提升记录版本，恰逢用户保存 prod 时该次保存因乐观并发校验报 state_changed_before_storage，重试即可，不损坏数据。
 
-已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」在 4 worker 负载下失败一次，单独重跑通过（.bb-spec/.cache/m7/a-unit-01.txt）。
+独立审查（§10.7 第 6 步面板与决策包，基线 53f862b..工作区）：1 阻塞（按旧决策包登记不被拒）5 非阻塞（模型文字换行伪造程序行、卡片前的原话仍可用、问题文字未标注、README 残留"续接"、孤立文件），已修复 4 条非阻塞与阻塞，定向复审"全部解决"；transcript-view.ts 在本次改动前已无引用，不属本次范围。
+
+已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」、tests/project-index-sync.test.ts「归档watch只发无正文metadata」与集成 project-index-sync「新索引对象装配之后的启动失败」在全量负载下偶发超时，单独重跑通过。
 
 ## 下一窗口续接提示
 

@@ -30,12 +30,12 @@ const EXPECTED_METHODS = [
   "runs.stop",
   "agents.dispatchPm",
   "pm.overview",
+  "pm.packet",
   "workflow.manage",
   "runs.resumeInterrupted",
   "runs.pauseAll",
   "runs.resumeAll",
   "runs.stopAll",
-  "subscribe.activity",
   "subscribe.transcript",
   "unsubscribe",
   "relay.pending",
@@ -50,7 +50,6 @@ const EXPECTED_METHODS = [
 ];
 
 const EXPECTED_EVENTS = [
-  "activity",
   "transcript",
   "runs.changed",
   "pm.overview.changed",
@@ -105,13 +104,13 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "runs.resume": { runId: "run-1" },
   "agents.dispatchPm": { requirementId: "req-1", model: { provider: "p", id: "m" }, thinking: "off" },
   "pm.overview": {},
+  "pm.packet": { requirementId: "req-1", itemId: "task:x" },
   "workflow.manage": { requirementId: "req-1", request: { action: "status" } },
   "runs.stop": { runId: "run-1" },
   "runs.resumeInterrupted": { runId: "run-1" },
   "runs.pauseAll": {},
   "runs.resumeAll": {},
   "runs.stopAll": {},
-  "subscribe.activity": {},
   "subscribe.transcript": { runId: "run-1" },
   unsubscribe: { subscriptionId: "sub-1" },
   "relay.pending": {},
@@ -185,7 +184,7 @@ describe("协议常量", () => {
 
   test("未知事件名被拒绝", () => {
     expect(catchError(() => createEvent("不存在的事件", {}))?.code).toBe("unknown_event");
-    expect(catchError(() => assertKnownEvent("activity"))).toBeNull();
+    expect(catchError(() => assertKnownEvent("runs.changed"))).toBeNull();
   });
 });
 
@@ -271,7 +270,7 @@ describe("decodeFrames", () => {
   });
 
   test("非法 JSON 行进入 errors，前后帧与残余照常返回", () => {
-    const a = encodeFrame(createEvent("activity", { runId: "r", kind: "turn", at: "t" }));
+    const a = encodeFrame(createEvent("runs.changed", { runId: "r", kind: "turn", at: "t" }));
     const b = encodeFrame(createEvent("daemon.idle", { exitAt: "x" }));
     const result = decodeFrames(`${a}不是合法JSON\n${b}{"t":"evt","event"`);
     expect(result.frames.length).toBe(2);
@@ -354,8 +353,8 @@ describe("createRequest / createResponse / createErrorResponse / createEvent", (
   });
 
   test("createEvent 生成事件帧", () => {
-    const evt = createEvent("activity", { runId: "run-1", tool: "bash" });
-    expect(evt).toEqual({ t: "evt", event: "activity", data: { runId: "run-1", tool: "bash" } });
+    const evt = createEvent("runs.changed", { runId: "run-1", tool: "bash" });
+    expect(evt).toEqual({ t: "evt", event: "runs.changed", data: { runId: "run-1", tool: "bash" } });
   });
 });
 

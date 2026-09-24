@@ -9,7 +9,7 @@ import type { MainIntakeProviders } from "../runtime/main-intake-interaction.ts"
 import { createPmIntakeProviders } from "../runtime/pm-intake-runtime.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
 import type { OpenRequirementService, RequirementManageHostContext } from "../runtime/main-requirement-interaction.ts";
-import { registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
+import { registerInputRevoker, registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
 
 export interface RequirementManageExtensionDeps {
   readonly authorization?: HostAuthorizationManager;
@@ -57,6 +57,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
       connections.push(client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => authorization.revoke()));
     }
     unregisterShutdown = registerWindowShutdownHook(window, shutdown);
+    registerInputRevoker(() => interaction.revokeInput());
     intake.startSession(ctx);
   });
   pi.on("input", (event, ctx) => {

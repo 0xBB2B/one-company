@@ -11,7 +11,7 @@ import rulesExtension from "./rules.ts";
 import agentManageExtension from "./agent-manage.ts";
 import workflowManageExtension from "./workflow-manage.ts";
 import relayExtension from "./relay.ts";
-import agentsUiExtension from "./agents-ui.ts";
+import pmPanelExtension from "./pm-panel.ts";
 import shellUiExtension from "./shell-ui.ts";
 import commandsExtension from "./commands.ts";
 
@@ -29,7 +29,7 @@ export default function registerExtensions(pi: ExtensionAPI): void {
   agentManageExtension(pi);
   workflowManageExtension(pi);
   relayExtension(pi);
-  agentsUiExtension(pi);
+  pmPanelExtension(pi);
   shellUiExtension(pi);
   writeProtectionExtension(pi);
   commandsExtension(pi);
