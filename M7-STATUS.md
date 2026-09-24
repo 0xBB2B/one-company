@@ -11,14 +11,14 @@
 | AC3 间接影响识别，复核绑定 from/to prodHash 与 plan/task 版本 | 未开始 | | D 片 |
 | AC4 未决项只阻塞依赖任务，交付范围内未决项须解决或排除 | 未开始 | | D 片 |
 | AC5 同需求单一有效 holder，旧运行迟到回执拒绝；不同需求不共用分支/worktree | 部分 | C2：tests/pm-dispatch.test.ts（活着的 PM 再派出被拒；停止后再派出 fence 更高，旧租约的 PM 工具被拒）；不同需求工作区占用登记沿用 M1 managed_workspace_claims 与 tests/workspace-manage.test.ts | 两个 PM 同时竞争派出的并发用例待补 |
-| AC6 plan/task 在 data.db，仅存 ID/hash/引用；重启可恢复 | 未开始 | | D 片 |
+| AC6 plan/task 在 data.db，仅存 ID/hash/引用；重启可恢复 | 部分 | D1：tests/plan-manage.test.ts（计划与任务结构在 data.db，任务说明只在 0600 私有文件，数据库字节不含说明正文，按指纹读取） | 重启后 PM 续接读取计划的用例待补 |
 | AC7 11 核心工具真实注册、六职责与矩阵一致；无 prompts、planner 及其入口 | 部分 | A 片：tests/agent-session.test.ts（五职责真实 SDK 会话的模型请求工具集＝宿主表＋矩阵核心工具，无 bash/write/edit/git_commit）、tests/core-permissions.test.ts（已实现工具 schema 与核心表双向一致，workflow_manage 无 init）、tests/role-catalog.test.ts（内置恰为五定义）、tests/legacy-workflow-retired.test.ts（planner/旧 PM 工厂文件不存在） | plan_manage、agent_manage 未实现；project_manage 八个 action 已齐（提交 85f4c4f、70f6dfc，tests/project-maintenance.test.ts 与 core-permissions 双向一致）；主会话仅注册 4 个核心工具；agents/skills/rules 其余重构在 G 片 |
 | AC8 skill 未加载或模型不遵守提示时核心权限/关闭拒读/通知仍生效 | 未开始 | | A、C 片 |
 | AC9 断网/关窗/取消/续接不重复副作用；关闭需求会话不续接 | 部分 | C2：tests/pm-dispatch.test.ts（按需求停止后运行终态 stopped、租约释放）；runs.resume 只续接本进程持有的暂停会话，历史运行 not_resumable（tests/run-manager.test.ts、tests/legacy-workflow-retired.test.ts）；网络暂停沿用 tests/integration/network-and-sleep.test.ts | 主会话 workflow_manage 关闭接线待补 |
 | AC10 仅主代理可 workspace-prepare/recycle；越界拒绝；外部切分支后旧绑定不能写 | 部分 | 提交 85f4c4f：tests/workspace-manage.test.ts（真实确认、拒绝不留痕、req/<UUID> 分支与固定目录、基线为主仓库 HEAD、外部切分支后 verifyRequirementWorkspace 失败）；tests/project-manage-tool.test.ts（无 UI 拒绝）；project_manage 仅主会话注册且矩阵仅 main 有该工具（tests/core-permissions.test.ts、tests/agent-session.test.ts） | "未 ready 不能派 PM"待 C 片派工门槛验证 |
 | AC11 创建/回收中断幂等恢复；有未交付内容默认保留 | 通过 | 提交 85f4c4f：tests/workspace-manage.test.ts（绑定前中断续办不重复确认/建分支；身份不明目录与指向别处的同名分支阻塞不覆盖；活动需求拒绝回收；未跟踪/未合并内容保留并报告；拒绝确认不删除；回收幂等；只删本需求 worktree 与本地分支） | 无 |
 | AC12 四类任务状态按 unaffected/affected/unknown 正确处理 | 未开始 | | D 片 |
-| AC13 真实链路中接手复核前拒绝正式 plan 与 worker 派工 | 部分 | C3：tests/pm-intake-runtime.test.ts（主代理经真实提供方读取 PM 私有会话中的提交；核对前门槛 review_missing，通过后只放行批准清单授权的动作，未授权动作拒绝）；tests/pm-dispatch.test.ts（受限接手上下文、PM 工具含提交入口、上下文不含 prod 正文） | 门槛接入 plan_manage propose/update（D 片）与 worker 派工（E 片） |
+| AC13 真实链路中接手复核前拒绝正式 plan 与 worker 派工 | 部分 | D1：tests/plan-manage.test.ts（核对前 propose 被 intake_gate 拒绝，通过后可提出）；tests/pm-dispatch.test.ts（无实施授权不派 PM）；C3：tests/pm-intake-runtime.test.ts（主代理经真实提供方读取 PM 私有会话中的提交；核对前门槛 review_missing，通过后只放行批准清单授权的动作，未授权动作拒绝）；tests/pm-dispatch.test.ts（受限接手上下文、PM 工具含提交入口、上下文不含 prod 正文） | 门槛接入 plan_manage propose/update（D 片）与 worker 派工（E 片） |
 | AC14 伪通过/伪身份/任一绑定变化不能用旧回执放行 | 部分 | C3：tests/pm-intake-runtime.test.ts（未受理提交不计、核对不通过拒绝、PM 改交理解后旧核对失效、非本租约运行的会话不被读取）；主代理身份核验沿用 M4 PmIntakeService（tests/pm-intake-service*.test.ts）；绑定逐项变化判定沿用 tests/pm-intake-contracts.test.ts | 新物理 PM 与普通追加的连续复核在真实入口的用例随 D 片补齐 |
 | AC15 main 与 PM 经 agent_manage 实际派 explore，模型输入探针证明最小上下文 | 未开始 | | F 片 |
 | AC16 三类来源实际运行，未授权网络/无外发授权不发请求 | 未开始 | | F 片 |
@@ -36,8 +36,8 @@
 | AC28 最多 N 轮，不发 N+1 | 未开始 | | E 片 |
 | AC29 到限自动上报直属父代理 | 未开始 | | E 片 |
 | AC30 最多一次父代理批准的重试，之后待用户裁决 | 未开始 | | E 片 |
-| AC31 正式计划/派工缺目标/通过条件/范围/性能条件拒绝 | 未开始 | | D、E 片 |
-| AC32 非阻塞建议不生成任务，扩范围须用户决定 | 未开始 | | D 片 |
+| AC31 正式计划/派工缺目标/通过条件/范围/性能条件拒绝 | 部分 | D1：tests/plan-manage.test.ts（缺目标、通过条件、范围、性能条件或有效轮次上限拒绝登记；冻结前须覆盖全部获准实施章节；版本递增与过期版本拒绝） | 派工侧校验在 E 片 |
+| AC32 非阻塞建议不生成任务，扩范围须用户决定 | 部分 | D1：tests/plan-manage.test.ts（任务只能引用获准实施的章节，越出授权即拒；任务只能由 PM 经 plan_manage 登记，审查结果没有生成任务的入口） | 同一未完成任务的重试限制在 E 片 |
 
 ## 当前阻塞
 

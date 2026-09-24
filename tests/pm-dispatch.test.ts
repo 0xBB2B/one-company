@@ -20,23 +20,39 @@ import { WorkspaceManageService } from "../runtime/workspace-manage.ts";
 import { registerControlledProvider, scriptReplies } from "./helpers/controlled-provider.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const BODY = "# 目标 {#goals}\nPROD-BODY-SENTINEL 保留移动。\n";
+const BODY = "# 目标 {#goals}\n保留移动。\n";
 
 async function until(check: () => boolean | Promise<boolean>): Promise<void> {
   for (let i = 0; i < 400; i++) { if (await check()) return; await new Promise((resolve) => setTimeout(resolve, 25)); }
   throw new Error("等待超时");
 }
 
-async function world(options: { prepare?: boolean; activate?: boolean } = {}) {
+async function manager(base: { repositoryRoot: string; dataRoot: string; repoId: string }, root: string) {
+  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(root, "models.json"), refreshOnCreate: false });
+  const provider = registerControlledProvider(runtime, { providerId: "pm-model", modelId: "test" });
+  const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
+  const runStore = new RunStore({ dataRoot: base.dataRoot, repoId: base.repoId, daemonStartedAt: new Date().toISOString() });
+  const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(root, "none-u"), projectDir: join(root, "none-p"), parseFrontmatter, projectTrusted: false });
+  const relay = new RelayQueue({ dataDir: join(base.dataRoot, "repos", base.repoId), deliver: async () => [], locateRequirementAgent: () => undefined });
+  const runs = new RunManager({ ...base, runStore, shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(base.dataRoot, base.repoId) }),
+    networkGate: new NetworkPauseGate(), relayQueue: relay, roleCatalog: catalog.roles, runtime, selectModel: () => { throw new Error("不应按旧规则选模型"); },
+    clock, workspaceRepoIds: [base.repoId], emit: vi.fn() });
+  runs.markStarted();
+  cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await runs.stop(run.id).catch(() => {}); });
+  return { provider, runStore, runs };
+}
+
+/** 没有批准清单的需求：用于核验派出前置条件。 */
+async function plainWorld(options: { prepare?: boolean; activate?: boolean } = {}) {
   const root = await mkdtemp(join(temporaryRoot(), "pm-dispatch-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const { repoId } = await repositoryIdentity(repo.root);
-  const dataRoot = join(root, "agent", "pi-company");
-  const base = { repositoryRoot: repo.root, dataRoot, repoId };
+  const base = { repositoryRoot: repo.root, dataRoot: join(root, "agent", "pi-company"), repoId };
   const grants = new Map<string, { action: string; intent: string; receiptId?: string }>();
   const service = await RequirementService.open({ ...base, authorize: (request) => {
     if (request.repoId !== repoId) return false;
@@ -58,38 +74,44 @@ async function world(options: { prepare?: boolean; activate?: boolean } = {}) {
       await service.confirmUpdate(confirm);
     }
   }
-  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(root, "models.json"), refreshOnCreate: false });
-  const provider = registerControlledProvider(runtime, { providerId: "pm-model", modelId: "test" });
-  const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
-  const runStore = new RunStore({ dataRoot, repoId, daemonStartedAt: new Date().toISOString() });
-  const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(root, "none-u"), projectDir: join(root, "none-p"), parseFrontmatter, projectTrusted: false });
-  const relay = new RelayQueue({ dataDir: join(dataRoot, "repos", repoId), deliver: async () => [], locateRequirementAgent: () => undefined });
-  const manager = new RunManager({ ...base, runStore, shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(dataRoot, repoId) }),
-    networkGate: new NetworkPauseGate(), relayQueue: relay, roleCatalog: catalog.roles, runtime, selectModel: () => { throw new Error("不应按旧规则选模型"); },
-    clock, workspaceRepoIds: [repoId], emit: vi.fn() });
-  manager.markStarted();
-  cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await manager.stop(run.id).catch(() => {}); });
-  const dispatch = () => manager.dispatchPm({ requirementId, model: { provider: "pm-model", id: "test" }, thinking: "off" });
-  return { ...base, repo, state, requirementId, provider, runStore, manager, dispatch };
+  const { runs } = await manager(base, root);
+  return { dispatch: () => runs.dispatchPm({ requirementId, model: { provider: "pm-model", id: "test" }, thinking: "off" }) };
+}
+
+/** 带实施授权批准清单的需求：夹具原有的 PM 租约置为过期，工作区登记为 ready。 */
+async function world() {
+  const fixture = await createPmIntakeFixture(); cleanups.push(() => fixture.cleanup());
+  const record = fixture.state.read(fixture.requirementId).data;
+  withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), (db) => {
+    const row = db.read<{ lease: { expiresAt: number } }>("pm_ownership", fixture.requirementId)!;
+    db.update("pm_ownership", fixture.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
+    db.create("managed_workspaces", fixture.requirementId, { format: "managed-workspace/v1", requirementId: fixture.requirementId, operationId: uuidv7(),
+      baseCommit: record.workspace!.baseCommit, branch: record.workspace!.branch, path: record.workspace!.path, status: "ready", recycleOperationId: null });
+  });
+  const base = { repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId };
+  const { provider, runStore, runs } = await manager(base, fixture.root);
+  const dispatch = () => runs.dispatchPm({ requirementId: fixture.requirementId, model: { provider: "pm-model", id: "test" }, thinking: "off" });
+  return { ...base, state: fixture.state, requirementId: fixture.requirementId, provider, runStore, manager: runs, dispatch };
 }
 
 function toolNames(request: Context | undefined): string[] {
   return (request?.tools ?? []).map((tool) => tool.name).sort();
 }
 
-test("M7-AC13：PM 只在工作区 ready 且需求 active 时派出，受限接手上下文不含 prod 正文", async () => {
-  await expect((await world({ prepare: false })).dispatch()).rejects.toMatchObject({ code: "requirement_not_active" });
-  await expect((await world({ activate: false })).dispatch()).rejects.toMatchObject({ code: "requirement_not_active" });
+test("M7-AC13：PM 只在工作区 ready、需求 active 且有实施授权时派出，受限接手上下文不含 prod 正文", async () => {
+  await expect((await plainWorld({ prepare: false })).dispatch()).rejects.toMatchObject({ code: "requirement_not_active" });
+  await expect((await plainWorld({ activate: false })).dispatch()).rejects.toMatchObject({ code: "requirement_not_active" });
+  await expect((await plainWorld()).dispatch()).rejects.toMatchObject({ code: "implement_not_authorized" });
   const w = await world();
   scriptReplies(w.provider, [{ type: "text", text: "等待" }]);
   const { runId, fence } = await w.dispatch();
-  expect(fence).toBe(1);
+  expect(fence).toBe(2);
   await until(() => w.provider.requests.length === 1);
   const request = w.provider.requests[0]!;
   expect(request.systemPrompt).toContain(w.requirementId);
   expect(request.systemPrompt).toContain("受限接手");
-  expect(JSON.stringify(request)).not.toContain("PROD-BODY-SENTINEL");
-  expect(toolNames(request)).toEqual(["find", "grep", "ls", "pi_company_requirement_manage", "pi_company_spec_change", "pi_company_user_interact",
+  expect(JSON.stringify(request)).not.toContain("输入正确验证码后成功");
+  expect(toolNames(request)).toEqual(["find", "grep", "ls", "pi_company_plan_manage", "pi_company_requirement_manage", "pi_company_spec_change", "pi_company_user_interact",
     "pi_company_verification_run", "pi_company_workflow_manage", "read"]);
   expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { kind: "requirement", state: "running", requirement: w.requirementId } });
 }, 30000);

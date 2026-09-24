@@ -3,7 +3,7 @@ import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { StoredRecord } from "./database.ts";
 import { evaluateIntakeContinuity, PmUnderstandingSchema } from "./pm-intake-contracts.ts";
-import type { IntakeBinding, IntakeContinuityEvaluation, IntakeSourceDirectory, PmUnderstanding } from "./pm-intake-contracts.ts";
+import type { IntakeBinding, IntakeReviewRecord, IntakeSourceDirectory, PmUnderstanding } from "./pm-intake-contracts.ts";
 import { pmUnderstandingHash } from "./pm-intake-service.ts";
 import type { PmSourceDirectoryHandle, PmSourceDirectoryProvider, PmSourceDirectoryQuery, PmSubmissionHandle, PmSubmissionProvider,
   PmSubmissionQuery } from "./pm-intake-service.ts";
@@ -108,19 +108,23 @@ export function createPmIntakeProviders(dataRoot: string): { sourceDirectoryProv
   };
 }
 
-export type IntakeGateAction = "plan" | "implement";
-export type IntakeGateResult = { allowed: true; evaluation: IntakeContinuityEvaluation } | { allowed: false; reasons: string[] };
+export type IntakeGateResult = { allowed: true } | { allowed: false; reasons: string[] };
 
 /**
- * 正式规划与 worker 派工的强门槛：接手核对须通过、仍对应本 PM 租约与当前批准绑定，且批准清单授权了该动作。
+ * 正式规划与 worker 派工的强门槛：接手核对须通过、仍对应本 PM 租约与当前批准绑定，且批准清单含实施授权。
+ * 批准版本前进时，要求核对后的每个版本都有本 PM 做出、不含 unknown 的影响复核；漏一个版本就须重新接手核对。
  * 只读现有记录并调用 M4 连续性判定，不签发任何权限。
  */
-export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; action: IntakeGateAction; now?: number }): IntakeGateResult {
+export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }): IntakeGateResult {
+  const now = ref.now ?? Date.now();
   const store = new PmIntakeStore({ dataRoot: ref.dataRoot, repoId: ref.repoId });
   const row = requirementRow(ref, ref.lease.requirementId), record = row.data;
   const head = store.readHead(ref.lease.requirementId);
   if (!head) return { allowed: false, reasons: ["review_missing"] };
   if (!record.approved || !record.workspace || !record.approvalManifest) return { allowed: false, reasons: ["requirement_not_ready"] };
+  if (!implementAuthorized(ref, row)) return { allowed: false, reasons: ["action_authorization_not_reported_current"] };
+  const review = head.review;
+  if (review && record.revision > review.binding.approvedRevision) return advancedGate(ref, record, review, now);
   const basis: IntakeBindingBasis = {
     repoId: ref.repoId, requirementId: record.requirementId, approvedProdCommit: record.approved.commit, approvedRevision: record.revision,
     approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest.reference.manifestHash,
@@ -131,28 +135,51 @@ export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; action: Intake
   try { binding = store.captureCurrent(basis, head.directory).binding; }
   catch (error) { return { allowed: false, reasons: [(error as { code?: string }).code ?? "binding_not_current"] }; }
   const owner = withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.read<{ lease?: PmLease }>("pm_ownership", ref.lease.requirementId)?.data);
-  const actionAuthorized = manifestAuthorizes(ref, row, ref.action);
   const submission = pmSubmissionFor(ref, binding);
-  const reviewBinding = head.review?.binding;
-  const historical: Array<{ binding: IntakeBinding; sourceDirectory: IntakeSourceDirectory }> = reviewBinding && JSON.stringify(reviewBinding) !== JSON.stringify(binding)
-    ? [{ binding: reviewBinding, sourceDirectory: head.directory }] : [];
+  const historical: Array<{ binding: IntakeBinding; sourceDirectory: IntakeSourceDirectory }> = review && JSON.stringify(review.binding) !== JSON.stringify(binding)
+    ? [{ binding: review.binding, sourceDirectory: head.directory }] : [];
   const evaluation = evaluateIntakeContinuity({
     format: "pm-intake-continuity-facts/v1",
     currentBinding: binding,
-    currentState: { lifecycle: record.lifecycle, requirementRecordVersion: row.version, leaseExpiresAt: owner?.lease?.expiresAt ?? 0, observedAt: ref.now ?? Date.now(),
-      actionAuthorizationReportedCurrent: actionAuthorized, sourceDirectoryReportedCurrent: true, pendingApprovedUpdate: record.pendingRevision !== null },
+    currentState: { lifecycle: record.lifecycle, requirementRecordVersion: row.version, leaseExpiresAt: owner?.lease?.expiresAt ?? 0, observedAt: now,
+      actionAuthorizationReportedCurrent: true, sourceDirectoryReportedCurrent: true, pendingApprovedUpdate: record.pendingRevision !== null },
     sourceDirectory: head.directory,
     historicalSourceDirectories: historical,
-    rootReview: head.review,
+    rootReview: review,
     understandingBaseline: submission ? { submissionRef: submission.submissionRef, submissionHash: submission.submissionHash } : null,
     rootEventSequence: 0,
     impactLinks: [],
     completeTaskSets: [],
   });
-  return evaluation.contractReady ? { allowed: true, evaluation } : { allowed: false, reasons: [...evaluation.reasons] };
+  return evaluation.contractReady ? { allowed: true } : { allowed: false, reasons: [...evaluation.reasons] };
 }
 
-function manifestAuthorizes(ref: Ref, row: StoredRecord<RequirementRecord>, action: IntakeGateAction): boolean {
+function advancedGate(ref: Ref & { lease: PmLease }, record: RequirementRecord, review: IntakeReviewRecord, now: number): IntakeGateResult {
+  const reasons: string[] = [];
+  const binding = review.binding;
+  if (review.result !== "passed") reasons.push(review.result);
+  if (record.lifecycle !== "active") reasons.push("requirement_not_active");
+  if (record.pendingRevision !== null) reasons.push("pending_approved_update");
+  if (binding.pmRunId !== ref.lease.runId || binding.pmFence !== ref.lease.fence || binding.contextGeneration !== ref.lease.contextGeneration) reasons.push("new_pm_fence");
+  if (binding.epoch !== record.epoch) reasons.push("epoch_changed");
+  if (binding.workspaceId !== record.workspace!.workspaceId || binding.workspaceRef !== record.workspace!.branch) reasons.push("workspace_changed");
+  const submission = pmSubmissionFor(ref, binding);
+  if (!submission || submission.submissionRef !== review.submissionRef || submission.submissionHash !== review.submissionHash) reasons.push("understanding_baseline_mismatch");
+  const { owner, assessments } = withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => ({
+    owner: db.read<{ lease?: PmLease }>("pm_ownership", ref.lease.requirementId)?.data,
+    assessments: db.list<{ requirementId?: string; toRevision?: number; unknown?: number; runId?: string; fence?: number }>("impact_assessments")
+      .map((entry) => entry.data).filter((entry) => entry.requirementId === ref.lease.requirementId),
+  }));
+  if (owner?.lease?.runId !== ref.lease.runId || owner.lease.fence !== ref.lease.fence || owner.lease.expiresAt <= now) reasons.push("lease_not_current");
+  for (let revision = binding.approvedRevision + 1; revision <= record.revision; revision++) {
+    const covered = assessments.some((entry) => entry.toRevision === revision && entry.unknown === 0 && entry.runId === ref.lease.runId && entry.fence === ref.lease.fence);
+    if (!covered) { reasons.push("impact_link_gap"); break; }
+  }
+  return reasons.length ? { allowed: false, reasons } : { allowed: true };
+}
+
+/** 批准清单是否含已确认的实施授权；派出 PM 与 PM 内的正式规划、派工都以它为准。 */
+export function implementAuthorized(ref: Ref, row: StoredRecord<RequirementRecord>): boolean {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() =>
-    registeredApprovalManifestIn(db, ref.repoId, row.data.approvalManifest!.reference, row).actions.some((entry) => entry.action === action)));
+    registeredApprovalManifestIn(db, ref.repoId, row.data.approvalManifest!.reference, row).actions.some((entry) => entry.action === "implement" && !entry.unknown)));
 }

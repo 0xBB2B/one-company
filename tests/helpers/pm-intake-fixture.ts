@@ -160,6 +160,7 @@ export class FixtureSubmissionProvider implements PmSubmissionProvider {
 
 export interface PmIntakeFixture {
   root: string;
+  repositoryRoot: string;
   dataRoot: string;
   repoId: string;
   requirementId: string;
@@ -339,7 +340,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
     throw new Error("PM夹具三根原收据不完整");
   }
   const fixture: PmIntakeFixture = {
-    root, dataRoot, repoId: identity.repoId, requirementId: saved.requirementId, service: approver, state, host, intakeStore, intake,
+    root, repositoryRoot: repo.root, dataRoot, repoId: identity.repoId, requirementId: saved.requirementId, service: approver, state, host, intakeStore, intake,
     sourceProvider, submissionProvider, call, identity: callIdentity, lease, manifest: authorized.manifest, basis, sourceDirectory,
     operationId: uuidv7, db: <T>(run: (db: LocalDatabase) => T) => withDatabase(dbPath, run), newCall, makeIntake,
     captureCurrent: () => intakeStore.captureCurrent(basis, sourceDirectory),

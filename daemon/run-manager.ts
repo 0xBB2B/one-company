@@ -20,6 +20,7 @@ import type { PmLease, RequirementRecord } from "../runtime/requirement-contract
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { TimerHandle } from "../runtime/clock.ts";
 import { MANAGED_WORKSPACES } from "../runtime/workspace-manage.ts";
+import { implementAuthorized } from "../runtime/pm-intake-runtime.ts";
 import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
 
@@ -110,6 +111,9 @@ export class RunManager {
     if (record.data.lifecycle !== "active") throw protocolError("requirement_not_active", "需求不是活动状态");
     const managed = withDatabase(this.database, (db) => db.read<{ status?: string }>(MANAGED_WORKSPACES, input.requirementId));
     if (managed?.data.status !== "ready" || !record.data.workspace || !record.data.approved) throw protocolError("workspace_not_ready", "需求工作区尚未 ready 或尚无批准版本");
+    if (!record.data.approvalManifest || !implementAuthorized({ dataRoot: this.options.dataRoot, repoId: this.repoId }, record)) {
+      throw protocolError("implement_not_authorized", "批准清单没有实施授权，分析与规划阶段不派 PM");
+    }
     const entry = this.options.roleCatalog.find((candidate) => candidate.name === "pm");
     if (!entry?.available || !entry.definition || entry.definition.role !== "pm") throw protocolError("role_unavailable", entry?.reason ?? "PM 定义不可用");
     const definition = entry.definition;
@@ -438,7 +442,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       try { return await handler(params, client); }
       catch (error) {
         if (error instanceof Error && ["legacy_workflow_retired", "trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
-          "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable"].includes((error as { code?: string }).code ?? "")) throw error;
+          "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized"].includes((error as { code?: string }).code ?? "")) throw error;
         throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对");
       }
     });
