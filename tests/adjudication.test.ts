@@ -3,6 +3,7 @@ import { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
+import { adjudicationSubject } from "../runtime/adjudication.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
 import { TASKS } from "../runtime/plan-manage.ts";
 import type { TaskRecord, TaskSpec } from "../runtime/plan-manage.ts";
@@ -65,6 +66,9 @@ async function world() {
 test("M7-AC35：用户原话选择再给一次机会时登记用户决定，任务回到可派出，事项从概览消失，PM 收到固定告知，按用户上限派出且不能带 retry", async () => {
   const w = await world();
   expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.itemId)).toEqual([w.itemId]);
+  const summary = adjudicationSubject({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, w.itemId).summary;
+  expect(summary).toContain("尝试 2：1/1 轮 · 结局 turn_limit_reached");
+  expect(summary).not.toContain("估计不足");
   const result = await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
   w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
   expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3, taskStatus: "pending" });

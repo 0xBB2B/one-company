@@ -35,12 +35,12 @@
 | AC27 受限子代理缺目标或有效 maxTurns 拒绝派工 | 通过 | E：tests/plan-manage.test.ts（任务缺目标或非正整数轮次上限拒绝登记）；tests/agent-session.test.ts（非正整数上限拒绝创建会话）；tests/task-dispatch.test.ts（派工轮次上限取任务登记值，写入子代理上下文） | 无 |
 | AC28 最多 N 轮，不发 N+1 | 通过 | E1：tests/agent-session.test.ts（上限 2 时模型请求恰为 2 次，第 3 次未发出，标 turn_limit_reached；第 N 轮已提交结果按完成处理）；tests/task-dispatch.test.ts（真实派工链路 turnsUsed=2/3） | 无 |
 | AC29 到限自动上报直属父代理 | 部分 | E2：tests/task-dispatch.test.ts（到限后不再调用子代理模型，运行时向直属 PM 会话注入结局、已用轮数、验证引用与处置提示；PM 不在时任务保持 awaiting_parent） | main 直派 explore 的上报在 F 片 |
-| AC30 最多一次父代理批准的重试，之后待用户裁决 | 部分 | E2：tests/task-dispatch.test.ts（重试一次后 awaiting_user，第三次派工与绕行被拒）；§10.7 第 4 步：tests/adjudication.test.ts（用户原话经独立解释登记"再给一次机会/调整/终止"，仅这三种决定解除待裁决；再给一次按用户上限且不占 PM 重试、任务被修改即失效；调整须新批准版本后才能修改并再派一次；终止后目标不能被其他任务接走） | 决策包对解释器的摘要去除模型文字（待用户拍板非阻塞 3） |
+| AC30 最多一次父代理批准的重试，之后待用户裁决 | 部分 | E2：tests/task-dispatch.test.ts（重试一次后 awaiting_user，第三次派工与绕行被拒）；§10.7 第 4 步：tests/adjudication.test.ts（用户原话经独立解释登记"再给一次机会/调整/终止"，仅这三种决定解除待裁决；再给一次按用户上限且不占 PM 重试、任务被修改即失效；调整须新批准版本后才能修改并再派一次；终止后目标不能被其他任务接走） | 无 |
 | AC31 正式计划/派工缺目标/通过条件/范围/性能条件拒绝 | 部分 | D1：tests/plan-manage.test.ts（缺目标、通过条件、范围、性能条件或有效轮次上限拒绝登记；冻结前须覆盖全部获准实施章节；版本递增与过期版本拒绝） | 派工侧校验在 E 片 |
 | AC32 非阻塞建议不生成任务，扩范围须用户决定 | 部分 | D1：tests/plan-manage.test.ts（任务只能引用获准实施的章节，越出授权即拒；任务只能由 PM 经 plan_manage 登记，审查结果没有生成任务的入口） | 同一未完成任务的重试限制在 E 片 |
 | AC33 面板只显示运行中/暂停的 PM，字段按 PM+子代理累计，状态由程序生成，⏸ 时停止计时，p 暂停/恢复连带子代理 | 部分 | 提交 05977fd、f75d416：tests/run-usage.test.ts、tests/pm-overview.test.ts（用量与工具次数按运行累计并广播；PM 与子代理汇总与缓存命中率；状态行按真实状态生成；等待决定与暂停不计时；暂停/恢复连带子代理） | 主窗口面板渲染与 p 键在第 6 步 |
 | AC34 多窗口：一窗口消费后其他窗口该行消失，旧版本提交被拒；窗口全关后 PM 继续、事项保留 | 部分 | f75d416：概览变化广播不含正文的 pm.overview.changed，窗口经 pm.overview 拉取；第 4 步：登记绑定事项版本，旧版本被拒（tests/adjudication.test.ts） | 两个真实窗口同时消费的端到端用例随面板补 |
-| AC35 决策只依据决策包持久记录并绑定版本；PM/子代理不能登记用户决定或以取消/拒绝关闭；待裁决任务只能由用户三种决定解除 | 部分 | 第 4 步：tests/adjudication.test.ts（只认宿主截获的当前原话；解释须恰为一条引用当前事项的裁决条目，否则不登记；裁决引用前缀只能出现在裁决条目；PM/子代理无登记入口；终止后交付核对阻塞 terminated_goal_in_scope） | PM 以取消/拒绝关闭被拒与主会话 workflow_manage 注册在第 5 步；解释器摘要去模型文字待拍板 |
+| AC35 决策只依据决策包持久记录并绑定版本；PM/子代理不能登记用户决定或以取消/拒绝关闭；待裁决任务只能由用户三种决定解除 | 部分 | 第 4 步：tests/adjudication.test.ts（只认宿主截获的当前原话；解释须恰为一条引用当前事项的裁决条目，否则不登记；裁决引用前缀只能出现在裁决条目；PM/子代理无登记入口；终止后交付核对阻塞 terminated_goal_in_scope） | PM 以取消/拒绝关闭被拒与主会话 workflow_manage 注册在第 5 步 |
 
 ## 当前阻塞
 
@@ -54,7 +54,7 @@
 
 独立审查（C4，基线 41f2137..工作区）：0 阻塞。核对了理解基线只在本租约核对通过当前批准版本后建立、差异正文只来自服务端计算结果且模型工具面无法影响或跳过、旧租约/旧会话因 fence 递增在写入前被 fail-closed 拒绝、assess-update 的消费校验与门槛覆盖语义（toRevision>=revision）在两条威胁模型内均成立。记录一条非阻塞观察：advancedGate 的覆盖判定未比对 contextGeneration，理论上物理上下文轮换后可能被旧记录覆盖；因 rotateContext/restoreCurrentContext 当前无生产代码路径调用，不可触发，留待接入时复核。
 
-独立审查（§10.7 第 4 步用户裁决，基线 f75d416..工作区）：2 阻塞（用户终止后 PM 可另建任务接走目标再得两次尝试；adjust 豁免不看是否已用，可放大尝试次数）、3 非阻塞（解释器摘要含模型文字可诱导轮数；裁决入口会把同批其他条目存为已确认决定；retry 授权不绑任务版本）。已修复阻塞与非阻塞 4、5 并补回归用例，定向复审"全部解决"；非阻塞 3 待用户拍板。另修停止 PM 时未等待进行中的投递/概览刷新导致迟到写入。
+独立审查（§10.7 第 4 步用户裁决，基线 f75d416..工作区）：2 阻塞（用户终止后 PM 可另建任务接走目标再得两次尝试；adjust 豁免不看是否已用，可放大尝试次数）、3 非阻塞（解释器摘要含模型文字可诱导轮数；裁决入口会把同批其他条目存为已确认决定；retry 授权不绑任务版本）。已修复阻塞与非阻塞 4、5 并补回归用例，定向复审"全部解决"；非阻塞 3 按用户选择方案 a 修复：给解释器的事项摘要只含程序记录的轮数与结局。另修停止 PM 时未等待进行中的投递/概览刷新导致迟到写入。
 
 已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」在 4 worker 负载下失败一次，单独重跑通过（.bb-spec/.cache/m7/a-unit-01.txt）。
 
@@ -64,7 +64,7 @@
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
 M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计；C4 已批准更新按序投递 PM 并确认消费（runtime/pm-event-delivery.ts，daemon 500ms 轮询），assess-update 绑定本次收到的理解基线，advancedGate 覆盖语义按序收敛。A–E、C4 各有独立审查且定向复审"全部解决"或"无阻塞"。
-待做顺序：§10.7 剩余（已完成：用量累计 05977fd、PM 概览与广播 f75d416、用户三种裁决登记；待做：解释器摘要去模型文字〔待拍板〕、PM 禁止以取消/拒绝关闭与主会话注册 workflow_manage、决策包展示、替换现有 Agents 面板为 PM 树形视图与 ↑↓/Enter/p 键；待查：PM 会话失败后 prod 保存报 state_changed_before_storage 的原因）与完成通知按 §10.4 续投；F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML）与 MCP 优先；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts 与旧 skills/rules、重写主会话说明；H 零自定义闭环与全量回归、收口 M7-STATUS。
+待做顺序：§10.7 剩余（已完成：用量累计 05977fd、PM 概览与广播 f75d416、用户三种裁决登记；待做：PM 禁止以取消/拒绝关闭与主会话注册 workflow_manage、决策包展示、替换现有 Agents 面板为 PM 树形视图与 ↑↓/Enter/p 键；待查：PM 会话失败后 prod 保存报 state_changed_before_storage 的原因）与完成通知按 §10.4 续投；F explore 双父入口、守护进程侧 knowledge_query（需为需求 worktree 建索引，PM/worker/reviewer 同样缺该工具）、免密钥联网检索（Exa 公开 MCP，失败改 DuckDuckGo HTML）与 MCP 优先；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts 与旧 skills/rules、重写主会话说明；H 零自定义闭环与全量回归、收口 M7-STATUS。
 已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§10.7、§13.2 与 M7-AC20/21、AC33–35；C-3 与 M5 两条观察本阶段不处理。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
 ```

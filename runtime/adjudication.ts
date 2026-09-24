@@ -7,7 +7,6 @@ import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { checkDecisionRecord } from "./short-decision-format.ts";
 import type { AdjudicationChoice, AdjudicationSubject } from "./user-interaction-format.ts";
 import { ADJUDICATION_CHOICES } from "./user-interaction-format.ts";
-import { VERDICTS } from "./verdicts.ts";
 
 export class AdjudicationError extends Error {
   readonly code: string;
@@ -24,7 +23,7 @@ function current(db: LocalDatabase, requirementId: string): { record: Requiremen
   return { record: row.data, version: row.version, lease };
 }
 
-/** 决策包：只由持久记录生成——任务、每次尝试的轮数与结局、PM 给出的重试原因、子代理提交的结论摘要。 */
+/** 给解释器的事项摘要只含程序记录的任务、轮数与结局；PM 与子代理写的文字不进入解释用户原话的上下文。 */
 export function adjudicationSubject(ref: Ref, requirementId: string, itemId: string): AdjudicationSubject {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
     const { record, lease } = current(db, requirementId);
@@ -32,13 +31,8 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
     const item = pendingItemsIn({ ...ref, db, record, lease }, plan.tasks).find((candidate) => candidate.itemId === itemId && candidate.kind === "adjudicate")
       ?? deny("item_not_pending");
     const task = plan.tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;
-    const verdicts = db.list<{ runId?: string; conclusion?: string; summary?: string }>(VERDICTS).map((row) => row.data);
     const lines = [`任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`,
-      ...task.attempts.map((attempt, index) => {
-        const verdict = verdicts.find((entry) => entry.runId === attempt.runId);
-        return `尝试 ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}${attempt.reason ? ` · 派出原因（PM）：${attempt.reason}` : ""}` +
-          (verdict ? ` · 子代理自述结论 ${verdict.conclusion}：${(verdict.summary ?? "").slice(0, 200)}` : " · 无提交结果");
-      }),
+      ...task.attempts.map((attempt, index) => `尝试 ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}`),
       `依据：prod r${record.revision}`];
     return { itemId, version: item.version, summary: lines.join("\n").slice(0, 2000) };
   });
