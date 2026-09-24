@@ -1,7 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import { repositoryDatabase, withDatabase } from "../runtime/database.ts";
-import { TASKS } from "../runtime/plan-manage.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
+import { createPlanManageTool, TASKS } from "../runtime/plan-manage.ts";
+import { PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
@@ -67,4 +68,35 @@ test("M7-AC26/AC31：worker 在额度内提交工作报告即完成；依赖未�
   expect(workerRequest.tools?.map((tool) => tool.name).sort()).toEqual(["find", "grep", "ls", "pi_company_change_apply", "pi_company_result_submit",
     "pi_company_verification_run", "read"]);
   expect(workerRequest.systemPrompt).toContain("对话轮次上限：2");
+});
+
+test("M7-AC4/AC13：只有依赖未决问题的任务被阻塞；批准新版本而未复核时任何派工都被门槛拒绝", async () => {
+  const w = await world();
+  const question = "01900000-0000-7000-8000-0000000000aa";
+  await w.plan.execute({ action: "propose", tasks: [spec("login", { blockedByQuestionIds: [question] }), spec("failure", { goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  await expect(w.dispatch("login")).rejects.toMatchObject({ code: "question_pending" });
+  w.provider.queue.push({ type: "text", text: "做失败场景", chunkDelayMs: 20_000 });
+  await w.dispatch("failure");
+  w.provider.queue.push({ type: "text", text: "PM 收到差异" });
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败，并提示重试。\n",
+    implementGoals: ["goal.login", "scenario.failure"] });
+  await w.manager.stop((await w.runStore.list({ limit: 10 })).items.find((run) => run.task === w.task("failure").taskId)!.id);
+  await expect(w.dispatch("failure", { reason: "中途停止", maxTurns: 2 })).rejects.toMatchObject({ code: "pending_update" });
+});
+
+test("M7-AC6：PM 停止后新派出的 PM 从数据库读回同一份计划与任务说明", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const before = await w.plan.execute({ action: "read" });
+  await w.manager.stop(w.pm.runId);
+  w.provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding: w.understanding } }, { type: "text", text: "等待核对" });
+  const next = await w.manager.dispatchPm({ requirementId: w.fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: "off" });
+  const lease = w.fixture.state.pmOwner(w.fixture.requirementId)!.lease!;
+  expect(lease.runId).toBe(next.runId);
+  const reader = await createPlanManageTool({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, authorize: () => true,
+    grant: { role: "pm", callerId: uuidv7(), runId: lease.runId, requirementId: w.fixture.requirementId, repoId: w.fixture.repoId, workspaceId: lease.workspaceId, lease } });
+  cleanups.push(() => reader.dispose());
+  expect(await reader.execute({ action: "read" })).toEqual(before);
 });

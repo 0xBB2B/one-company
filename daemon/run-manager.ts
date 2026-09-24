@@ -136,6 +136,14 @@ export class RunManager {
 
   /** 主代理派出唯一 PM：工作区须已 ready 并绑定，新运行取得更高 fence，旧运行的工具随之失效。 */
   async dispatchPm(input: DispatchPmInput): Promise<{ runId: string; fence: number }> {
+    // 同一需求的派出在本进程内互斥：并发派出会互相停止对方的运行，结果一个 PM 也没有
+    if (this.dispatchingPm.has(input.requirementId)) throw protocolError("pm_already_owned", "本需求正在派出 PM");
+    this.dispatchingPm.add(input.requirementId);
+    try { return await this.dispatchPmExclusive(input); }
+    finally { this.dispatchingPm.delete(input.requirementId); }
+  }
+
+  private async dispatchPmExclusive(input: DispatchPmInput): Promise<{ runId: string; fence: number }> {
     const state = await this.pmState();
     const record = state.read(input.requirementId);
     if (record.data.lifecycle !== "active") throw protocolError("requirement_not_active", "需求不是活动状态");
@@ -415,6 +423,7 @@ export class RunManager {
     if ((children.length > 0 && run.kind !== "requirement") || children.some((child) => child.id === run.id || child.kind !== "role")) throw protocolError("legacy_metadata_unavailable", "运行关联无效，未知记录已保全待核对");
     return children;
   }
+  private readonly dispatchingPm = new Set<string>();
   private readonly overviewFingerprints = new Map<string, string>();
   /** 因计划变更被统一停止的子代理运行：其尝试记为因重新规划作废。 */
   private readonly supersededRuns = new Set<string>();

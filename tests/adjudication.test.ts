@@ -111,7 +111,7 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   w.provider.queue.push({ type: "text", text: "PM 收到用户决定", chunkDelayMs: 3_000 });
   expect(result).toMatchObject({ status: "recorded", choice: "terminate", taskStatus: "cancelled" });
   const state = async (id: string) => { const run = await w.runStore.get(id); return run.ok ? run.run.state : "missing"; };
-  await until(async () => await state(w.pm.runId) === "paused" && await state(failureRun.runId) === "paused");
+  await until(async () => await state(w.pm.runId) === "paused" && await state(failureRun.runId) === "paused", 3_000);
   const overview = (await w.manager.overviews())[0]!;
   expect(overview).toMatchObject({ status: "paused", doing: "等待你调整需求" });
   expect(overview.pendingItems.map((item) => item.label)).toContain("待你决定：任务 login 已终止，请调整需求或取消需求");
@@ -129,7 +129,7 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   w.provider.queue.push({ type: "text", text: "PM 恢复" }, { type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
   await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，改用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n",
     implementGoals: ["goal.login", "scenario.failure"] });
-  await until(async () => await state(w.pm.runId) === "running");
+  await until(async () => await state(w.pm.runId) === "running", 3_000);
   expect(await state(failureRun.runId)).toBe("paused");
   await expect(w.manager.resume(failureRun.runId)).rejects.toMatchObject({ code: "plan_not_confirmed" });
   expect((await close.deliveryCheck(w.fixture.requirementId)).blockers).not.toContain("terminated_goal_in_scope");
@@ -142,8 +142,8 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: stub, retry: null })).rejects.toMatchObject({ code: "plan_not_confirmed" });
   await w.plan.execute({ action: "confirm", planVersion: planVersion() });
   await expect(w.manager.resume(failureRun.runId)).rejects.toMatchObject({ code: "not_resumable" });
-  await until(async () => await state(failureRun.runId) === "stopped");
-  await until(() => w.task("failure").status === "pending");
+  await until(async () => await state(failureRun.runId) === "stopped", 3_000);
+  await until(() => w.task("failure").status === "pending", 3_000);
   expect(w.task("failure").attempts).toMatchObject([{ runId: failureRun.runId, outcome: "superseded" }]);
   w.provider.queue.push({ type: "text", text: "按测试桩实现", chunkDelayMs: 20_000 });
   const next = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: stub, retry: null });
@@ -294,4 +294,35 @@ test("M7-AC35：决策包只由持久记录生成，模型写的文字标明仅�
   expect(() => w.manager.decisionPacket(w.fixture.requirementId, w.itemId)).toThrow(/item_not_pending/);
   const halt = (await w.manager.overviews())[0]!.pendingItems.find((item) => item.kind === "adjust-requirement")!;
   expect(w.manager.decisionPacket(w.fixture.requirementId, halt.itemId)).toContain(`itemId=requirement:${w.fixture.requirementId}`);
+});
+
+test("M7-AC34：两个主窗口同时打开同一事项，先登记的生效，另一窗口按旧卡片登记被拒；窗口全部关闭后 PM 与剩余事项仍在", async () => {
+  const w = await world();
+  const sessionId = uuidv7(), windowId = uuidv7();
+  const authorization = new HostAuthorizationManager({ dataRoot: w.fixture.dataRoot });
+  authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [w.fixture.repoId] });
+  authorization.bindRequirement(w.fixture.repoId, w.fixture.requirementId, sessionId);
+  const ctxB = { ...w.ctx, sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
+  const windowB = new MainRequirementInteraction({ dataRoot: w.fixture.dataRoot, authorization,
+    resolveHost: () => ({ windowId, sessionId, repositories: new Map([[w.fixture.repoId, { path: w.fixture.repositoryRoot }]]) }) });
+  cleanups.push(() => { windowB.dispose(); authorization.shutdown(); });
+  const staleVersion = w.version();
+
+  expect(await w.adjudicate("终止这个任务", [w.entry([`item:${w.itemId}`, `version:${staleVersion}`, "choice:terminate"])]))
+    .toMatchObject({ status: "recorded", choice: "terminate" });
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定", chunkDelayMs: 3_000 });
+  await until(async () => (await w.manager.overviews())[0]!.pendingItems.every((item) => item.itemId !== w.itemId));
+
+  windowB.captureInput({ source: "interactive", text: "再给一次，3 轮" }, ctxB);
+  const id = uuidv7();
+  await expect(createUserInteractTool({ interaction: windowB }).execute(id, { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId,
+    requirementId: w.fixture.requirementId, operationId: uuidv7(), itemId: w.itemId, itemVersion: staleVersion } as never, undefined, undefined, ctxB)).rejects.toThrow();
+  expect(w.task("login").userDecision?.choice).toBe("terminate");
+
+  w.interaction.dispose(); windowB.dispose();
+  const overview = (await w.manager.overviews())[0]!;
+  expect(overview.pmRunId).toBe(w.pm.runId);
+  expect(overview.pendingItems.map((item) => item.kind)).toEqual(["adjust-requirement"]);
+  const pm = await w.runStore.get(w.pm.runId);
+  expect(pm.ok && pm.run.state).not.toBe("stopped");
 });

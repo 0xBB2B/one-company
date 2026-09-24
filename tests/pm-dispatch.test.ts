@@ -158,3 +158,24 @@ test("M7-AC5：旧 PM 租约过期后再派出即接管，旧会话立即停止�
   expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "stopped" } });
   expect(await w.runStore.get(second.runId)).toMatchObject({ ok: true, run: { state: "running" } });
 }, 30000);
+
+test("M7-AC10：需求已 active 但托管工作区尚未 ready 时不派 PM", async () => {
+  const w = await world();
+  withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
+    const row = db.read<{ status: string }>("managed_workspaces", w.requirementId)!;
+    db.update("managed_workspaces", w.requirementId, row.version, { ...row.data, status: "preparing" });
+  });
+  await expect(w.dispatch()).rejects.toMatchObject({ code: "workspace_not_ready" });
+  expect((await w.runStore.list({ limit: 10 })).items).toHaveLength(0);
+}, 30000);
+
+test("M7-AC5：两个派出请求同时竞争同一需求，只有一个取得租约，另一个被拒且不留下运行中的会话", async () => {
+  const w = await world();
+  scriptReplies(w.provider, [{ type: "text", text: "一" }, { type: "text", text: "二" }]);
+  const results = await Promise.allSettled([w.dispatch(), w.dispatch()]);
+  expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  const running = (await w.runStore.list({ limit: 10 })).items.filter((run) => run.state === "running");
+  expect(running).toHaveLength(1);
+  const owner = (await RequirementStateStore.open({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, authorize: () => true })).pmOwner(w.requirementId);
+  expect(owner?.lease?.runId).toBe(running[0]!.id);
+}, 30000);
