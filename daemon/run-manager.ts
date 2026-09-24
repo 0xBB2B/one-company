@@ -72,7 +72,7 @@ function pmContext(record: RequirementRecord, lease: PmLease): string {
     "核对通过后，之后每次已批准更新的准确差异会由宿主按序送达本会话；收到后用 pi_company_plan_manage assess-update 逐任务复核。",
   ].join("\n");
 }
-export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "parentRunId" | "state" | "startedAt" | "updatedAt" | "endedAt" | "turns"> & { stateReason?: string };
+export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "parentRunId" | "state" | "startedAt" | "updatedAt" | "endedAt" | "turns" | "usage" | "pausedMs" | "pausedAt"> & { stateReason?: string };
 function runMetadata(run: RunRecord): RunMetadata {
   const timestamp = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
   if (!run || !UUID_V7_PATTERN.test(run.id) || !["requirement", "role"].includes(run.kind)
@@ -82,6 +82,7 @@ function runMetadata(run: RunRecord): RunMetadata {
   if (!UUID_V7_PATTERN.test(run.requirement)) assertLegacyRequirementId(run.requirement);
   return { id: run.id, kind: run.kind, requirement: run.requirement, parentRunId: run.parentRunId,
     state: run.state, startedAt: run.startedAt, updatedAt: run.updatedAt, endedAt: run.endedAt, turns: run.turns,
+    ...(run.usage ? { usage: { ...run.usage } } : {}), ...(run.pausedMs ? { pausedMs: run.pausedMs } : {}), ...(run.pausedAt ? { pausedAt: run.pausedAt } : {}),
     ...(run.stateReason ? { stateReason: "运行原因已记录；状态元数据不返回旧正文" } : {}) };
 }
 function shellMetadata(task: TaskRecord) {
@@ -213,6 +214,7 @@ export class RunManager {
     this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery } });
     registered = true;
     handle.events.on("turn", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
+    this.trackUsage(run.id, handle);
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishPm(run.id, "failed", reason); });
     await this.runStore.update(run.id, { state: "running" });
     const running = await this.runStore.get(run.id);
@@ -287,6 +289,7 @@ export class RunManager {
     this.sessions.set(run.id, { kind: "role", handle, subagent: { parentRunId: input.pmRunId, taskId: task.taskId, dispose: () => toolSet.dispose() } });
     registered = true;
     handle.events.on("turn_counted", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
+    this.trackUsage(run.id, handle);
     handle.events.on("completed", () => { void this.finishSubagent(run.id, "completed"); });
     handle.events.on("turn_limit_reached", () => { void this.finishSubagent(run.id, "turn_limit_reached"); });
     handle.events.on("failed", () => { void this.finishSubagent(run.id, "failed"); });
@@ -333,8 +336,13 @@ export class RunManager {
     const entry = this.sessions.get(runId);
     if (!entry || entry.handle.state() !== "paused") throw protocolError("not_resumable", "运行没有可续接的暂停会话");
     await entry.handle.resume();
-    const updated = await this.runStore.update(runId, { state: "running" });
+    await this.runStore.update(runId, { state: "running" });
+    const updated = await this.runStore.recordResume(runId, new Date().toISOString());
     this.emitRun(updated);
+    // 暂停连带子代理，恢复同样连带；子代理已结束或本就在运行的跳过
+    const children = (await this.runStore.list({ requirement: updated.requirement, limit: Number.MAX_SAFE_INTEGER })).items
+      .filter((child) => child.parentRunId === runId && this.sessions.get(child.id)?.handle.state() === "paused");
+    for (const child of children) await this.resume(child.id);
     return { state: updated.state };
   }
   async resumeAll(): Promise<{ results: Array<{ runId: string; state: string }> }> { throw retiredError(); }
@@ -382,6 +390,14 @@ export class RunManager {
     if ((children.length > 0 && run.kind !== "requirement") || children.some((child) => child.id === run.id || child.kind !== "role")) throw protocolError("legacy_metadata_unavailable", "运行关联无效，未知记录已保全待核对");
     return children;
   }
+  /** 模型每次回复的用量与每次工具结束都累加进本运行记录；PM 与子代理的汇总在读取时按父运行相加。 */
+  private trackUsage(runId: string, handle: AgentSessionHandle): void {
+    const record = (delta: Parameters<RunStore["recordUsage"]>[1]) => {
+      void this.runStore.recordUsage(runId, delta).then((run) => this.emitRun(run)).catch(() => {});
+    };
+    handle.events.on("usage", (usage: { input: number; output: number; cacheRead: number; cacheWrite: number }) => record(usage));
+    handle.events.on("tool_end", () => record({ toolUses: 1 }));
+  }
   private emitRun(run: RunRecord): void { this.emit("runs.changed", { run: runMetadata(run) }); }
 
   async pause(runId: string): Promise<{ state: string; confirmed: boolean; reason?: string }> {
@@ -403,7 +419,10 @@ export class RunManager {
     const childResults = await Promise.all(children.map((child) => this.pause(child.id)));
     const outcome = await entry.handle.pause();
     const confirmed = outcome.confirmed && childResults.every((child) => child.confirmed);
-    if (confirmed) await this.runStore.update(runId, { state: "paused" });
+    if (confirmed) {
+      await this.runStore.update(runId, { state: "paused" });
+      await this.runStore.recordPause(runId, new Date().toISOString());
+    }
     const updated = await this.runStore.get(runId);
     if (updated.ok) this.emitRun(updated.run);
     return { state: confirmed ? "paused" : "pausing", confirmed, ...(!confirmed ? { reason: "会话或子运行尚未确认暂停" } : {}) };

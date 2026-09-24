@@ -55,6 +55,9 @@ export interface RunRecord {
   updatedAt: string;
   endedAt?: string;
   turns: number;
+  usage?: RunUsage;
+  pausedMs?: number;
+  pausedAt?: string;
   result?: unknown;
   sourceVersion?: { definitionFingerprint: string; codeHead: string };
   reviewSnapshot?: { head: string; fingerprint: string };
@@ -62,6 +65,8 @@ export interface RunRecord {
   errorDetails: { recordId?: string; status: "none" | "saved" | "incomplete" | "unreadable" | "unavailable" };
   daemonStartedAt: string;
 }
+
+export interface RunUsage { input: number; output: number; cacheRead: number; cacheWrite: number; toolUses: number }
 
 export interface CreateRunInput {
   pendingDispatch?: PendingDispatch;
@@ -101,13 +106,16 @@ export interface ListRunResult {
 }
 
 export type UpdateRunFields = Partial<
-  Pick<RunRecord, "state" | "stateReason" | "turns" | "result" | "errorDetails" | "endedAt" | "commands" | "sourceVersion" | "reviewSnapshot">
+  Pick<RunRecord, "state" | "stateReason" | "turns" | "usage" | "pausedMs" | "pausedAt" | "result" | "errorDetails" | "endedAt" | "commands" | "sourceVersion" | "reviewSnapshot">
 >;
 
 const UPDATE_PATCH_KEYS = [
   "state",
   "stateReason",
   "turns",
+  "usage",
+  "pausedMs",
+  "pausedAt",
   "result",
   "errorDetails",
   "endedAt",
@@ -176,6 +184,10 @@ const RunRecordSchema = Type.Object({
   stateReason: Type.Optional(Type.String()),
   startedAt: Type.String({ minLength: 1 }), updatedAt: Type.String({ minLength: 1 }), endedAt: Type.Optional(Type.String()),
   turns: Type.Integer({ minimum: 0 }),
+  usage: Type.Optional(Type.Object({ input: Type.Integer({ minimum: 0 }), output: Type.Integer({ minimum: 0 }), cacheRead: Type.Integer({ minimum: 0 }),
+    cacheWrite: Type.Integer({ minimum: 0 }), toolUses: Type.Integer({ minimum: 0 }) }, { additionalProperties: false })),
+  pausedMs: Type.Optional(Type.Integer({ minimum: 0 })),
+  pausedAt: Type.Optional(Type.String({ minLength: 1 })),
   errorDetails: Type.Object({
     recordId: Type.Optional(Type.String({ pattern: UUID_PATTERN })),
     status: Type.Union(["none", "saved", "incomplete", "unreadable", "unavailable"].map((status) => Type.Literal(status))),
@@ -304,6 +316,27 @@ export class RunStore {
 
   async recordTurn(id: string): Promise<RunRecord> {
     return this.updateFields(id, (run) => ({ turns: run.turns + 1 }));
+  }
+
+  async recordUsage(id: string, delta: Partial<RunUsage>): Promise<RunRecord> {
+    return this.updateFields(id, (run) => {
+      const base = run.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, toolUses: 0 };
+      const add = (key: keyof RunUsage) => base[key] + Math.max(0, Math.floor(delta[key] ?? 0));
+      return { usage: { input: add("input"), output: add("output"), cacheRead: add("cacheRead"), cacheWrite: add("cacheWrite"), toolUses: add("toolUses") } };
+    });
+  }
+
+  /** 确认暂停时记下起点；恢复时把这段时间累加进 pausedMs，面板计时据此扣除。 */
+  async recordPause(id: string, at: string): Promise<RunRecord> {
+    return this.updateFields(id, (run) => run.pausedAt ? {} : { pausedAt: at });
+  }
+
+  async recordResume(id: string, at: string): Promise<RunRecord> {
+    return this.updateFields(id, (run) => {
+      if (!run.pausedAt) return {};
+      const elapsed = Math.max(0, Date.parse(at) - Date.parse(run.pausedAt));
+      return { pausedMs: (run.pausedMs ?? 0) + (Number.isFinite(elapsed) ? elapsed : 0), pausedAt: undefined };
+    });
   }
 
   private async updateFields(id: string, build: (run: RunRecord) => UpdateRunFields): Promise<RunRecord> {

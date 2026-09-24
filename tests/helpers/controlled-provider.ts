@@ -8,11 +8,12 @@ export interface RegisterControlledProviderOptions {
   baseUrl?: string;
 }
 
-export type ScriptedReply =
+export type ScriptedReply = (
   | { type: "text"; text: string; chunkDelayMs?: number }
   | { type: "thinking"; text: string }
   | { type: "toolcall"; name: string; input: Record<string, unknown> }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+) & { usage?: Partial<Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite">> };
 
 export interface ControlledProvider {
   providerId: string;
@@ -68,7 +69,7 @@ export function registerControlledProvider(
         api: model.api,
         provider: model.provider,
         model: model.id,
-        usage: zeroUsage(),
+        usage: { ...zeroUsage(), ...reply?.usage },
         stopReason: "pending",
         timestamp: Date.now(),
       };

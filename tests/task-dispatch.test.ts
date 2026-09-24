@@ -1,76 +1,27 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { join } from "node:path";
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/pi-ai";
-import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { RelayQueue } from "../daemon/relay-queue.ts";
-import { RunManager } from "../daemon/run-manager.ts";
-import { createClock } from "../runtime/clock.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { NetworkPauseGate } from "../runtime/network-pause.ts";
-import { createPlanManageTool, TASKS } from "../runtime/plan-manage.ts";
+import { repositoryDatabase, withDatabase } from "../runtime/database.ts";
+import { TASKS } from "../runtime/plan-manage.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
-import { createPmIntakeProviders, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
-import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
-import { RunStore } from "../runtime/run-store.ts";
-import { ShellRegistry } from "../runtime/shell-registry.ts";
-import { registerControlledProvider } from "./helpers/controlled-provider.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
-import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
+import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
 const NA = { applicable: false as const, reason: "无性能影响" };
-async function until(check: () => boolean | Promise<boolean>): Promise<void> {
-  for (let i = 0; i < 600; i++) { if (await check()) return; await new Promise((resolve) => setTimeout(resolve, 25)); }
-  throw new Error("等待超时");
-}
 function spec(key: string, patch: Partial<TaskSpec> = {}): TaskSpec {
   return { key, role: "worker", goalUnitIds: ["goal.login"], constraintUnitIds: [], dependsOn: [], writePaths: ["src/"], blockedByQuestionIds: [],
     maxTurns: 2, objective: `实现 ${key}`, passCriteria: ["可观察通过"], scope: { in: [key], out: ["微信登录"] }, performance: NA, ...patch };
 }
 
 async function world() {
-  const fixture = await createPmIntakeFixture(); cleanups.push(() => fixture.cleanup());
-  const record = fixture.state.read(fixture.requirementId).data;
-  withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), (db) => {
-    const row = db.read<{ lease: { expiresAt: number } }>("pm_ownership", fixture.requirementId)!;
-    db.update("pm_ownership", fixture.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
-    db.create("managed_workspaces", fixture.requirementId, { format: "managed-workspace/v1", requirementId: fixture.requirementId, operationId: uuidv7(),
-      baseCommit: record.workspace!.baseCommit, branch: record.workspace!.branch, path: record.workspace!.path, status: "ready", recycleOperationId: null });
-  });
-  const captured = fixture.captureCurrent();
-  const material = await fixture.submissionProvider.loadCurrent({ binding: captured.binding, sourceDirectoryHash: captured.sourceDirectoryHash,
-    maxBytes: 49_152, signal: new AbortController().signal });
-  const { format: _format, binding: _binding, ...understanding } = material!.understanding;
-  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(fixture.root, "models.json"), refreshOnCreate: false });
-  const provider = registerControlledProvider(runtime, { providerId: "team-model", modelId: "test" });
-  const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
-  const runStore = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: new Date().toISOString() });
-  const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(fixture.root, "none-u"), projectDir: join(fixture.root, "none-p"), parseFrontmatter, projectTrusted: false });
-  const manager = new RunManager({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, runStore,
-    shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }), networkGate: new NetworkPauseGate(),
-    relayQueue: new RelayQueue({ dataDir: join(fixture.dataRoot, "repos", fixture.repoId), deliver: async () => [], locateRequirementAgent: () => undefined }),
-    roleCatalog: catalog.roles, runtime, selectModel: () => { throw new Error("不应按旧规则选模型"); }, clock, workspaceRepoIds: [fixture.repoId], emit: vi.fn() });
-  manager.markStarted();
-  cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await manager.stop(run.id).catch(() => {}); });
-
-  provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding } }, { type: "text", text: "等待核对" });
-  const pm = await manager.dispatchPm({ requirementId: fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: "off" });
-  await until(() => provider.requests.length === 2);
-  const intake = fixture.makeIntake(createPmIntakeProviders(fixture.dataRoot));
-  const view = await intake.openRequest(fixture.call, fixture.operationId());
-  await intake.recordReview(fixture.call, view.requestId, fixture.operationId(), { result: "passed", shortIssues: [] });
-  const lease = fixture.state.pmOwner(fixture.requirementId)!.lease!;
-  const plan = await createPlanManageTool({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, authorize: () => true,
-    grant: { role: "pm", callerId: uuidv7(), runId: lease.runId, requirementId: fixture.requirementId, repoId: fixture.repoId, workspaceId: lease.workspaceId, lease } });
-  cleanups.push(() => plan.dispose());
-  const task = (key: string) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), (db) =>
+  const w = await createPmRunWorld(cleanups);
+  const task = (key: string) => withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
     db.list<{ key: string; taskId: string; status: string; attempts: Array<{ outcome: string; turnsUsed: number; maxTurns: number; reason: string | null }> }>(TASKS)
       .map((row) => row.data).find((entry) => entry.key === key)!);
-  const dispatch = (key: string, retry: { reason: string; maxTurns: number } | null = null) => manager.dispatchTask({ pmRunId: pm.runId, taskId: task(key).taskId, retry });
-  return { fixture, provider, runStore, manager, pm, plan, task, dispatch };
+  const dispatch = (key: string, retry: { reason: string; maxTurns: number } | null = null) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry });
+  return { ...w, task, dispatch };
 }
 const read = (n: number): ScriptedReply => ({ type: "toolcall", name: "read", input: { path: `README.md#${n}` } });
 const lastPrompt = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1) ?? "");

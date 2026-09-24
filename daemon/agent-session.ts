@@ -284,6 +284,8 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
       return;
     }
     if (event.type !== "message_end" || event.message.role !== "assistant") return;
+    const usage = event.message.usage;
+    if (usage) events.emit("usage", { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite });
     if (event.message.stopReason !== "error" || currentState !== "running") return;
     const failure = classifyFailure(new Error(event.message.errorMessage ?? "模型请求失败"));
     // cancelled 是本模块发起的中止（暂停、停止、网络空闲）造成的正常收尾，状态已在发起处流转

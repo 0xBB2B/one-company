@@ -1,87 +1,30 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/pi-ai";
-import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { RelayQueue } from "../daemon/relay-queue.ts";
-import { RunManager } from "../daemon/run-manager.ts";
-import { createClock } from "../runtime/clock.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { NetworkPauseGate } from "../runtime/network-pause.ts";
-import { createPlanManageTool } from "../runtime/plan-manage.ts";
+import { uuidv7 } from "../runtime/database.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
-import { createPmIntakeProviders, evaluatePmIntakeGate, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
-import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
-import { RunStore } from "../runtime/run-store.ts";
-import { ShellRegistry } from "../runtime/shell-registry.ts";
-import { registerControlledProvider } from "./helpers/controlled-provider.ts";
-import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
+import { evaluatePmIntakeGate, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
+import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
 const BASE = "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n";
 const NA = { applicable: false as const, reason: "无性能影响" };
-async function until(check: () => boolean | Promise<boolean>, limit = 600): Promise<void> {
-  for (let i = 0; i < limit; i++) { if (await check()) return; await new Promise((resolve) => setTimeout(resolve, 10)); }
-  throw new Error("等待超时");
-}
 const text = (request: Context) => JSON.stringify(request.messages.at(-1) ?? "");
 
 async function world(options: { review?: boolean } = {}) {
-  const fixture = await createPmIntakeFixture(); cleanups.push(() => fixture.cleanup());
-  const record = fixture.state.read(fixture.requirementId).data;
-  const db = <T>(run: Parameters<typeof withDatabase<T>>[1]) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), run);
-  db((d) => {
-    const row = d.read<{ lease: { expiresAt: number } }>("pm_ownership", fixture.requirementId)!;
-    d.update("pm_ownership", fixture.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
-    d.create("managed_workspaces", fixture.requirementId, { format: "managed-workspace/v1", requirementId: fixture.requirementId, operationId: uuidv7(),
-      baseCommit: record.workspace!.baseCommit, branch: record.workspace!.branch, path: record.workspace!.path, status: "ready", recycleOperationId: null });
-  });
-  const captured = fixture.captureCurrent();
-  const material = await fixture.submissionProvider.loadCurrent({ binding: captured.binding, sourceDirectoryHash: captured.sourceDirectoryHash,
-    maxBytes: 49_152, signal: new AbortController().signal });
-  const { format: _format, binding: _binding, ...understanding } = material!.understanding;
-  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(fixture.root, "models.json"), refreshOnCreate: false });
-  const provider = registerControlledProvider(runtime, { providerId: "team-model", modelId: "test" });
-  const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
-  const runStore = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: new Date().toISOString() });
-  const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(fixture.root, "none-u"), projectDir: join(fixture.root, "none-p"), parseFrontmatter, projectTrusted: false });
-  const manager = new RunManager({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, runStore,
-    shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }), networkGate: new NetworkPauseGate(),
-    relayQueue: new RelayQueue({ dataDir: join(fixture.dataRoot, "repos", fixture.repoId), deliver: async () => [], locateRequirementAgent: () => undefined }),
-    roleCatalog: catalog.roles, runtime, selectModel: () => { throw new Error("不应按旧规则选模型"); }, clock, workspaceRepoIds: [fixture.repoId], emit: vi.fn() });
-  manager.markStarted();
-  cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await manager.stop(run.id).catch(() => {}); });
-
-  provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding } }, { type: "text", text: "等待核对" });
-  const pm = await manager.dispatchPm({ requirementId: fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: "off" });
-  await until(() => provider.requests.length === 2);
-  const lease = fixture.state.pmOwner(fixture.requirementId)!.lease!;
-  const owner = () => db((d) => d.read<{ context: { baseline: { revision: number } | null }; prodEvents?: { consumedSequence: number; understoodRevision: number | null } }>(
-    "pm_ownership", fixture.requirementId)!.data);
-  async function review() {
-    const intake = fixture.makeIntake(createPmIntakeProviders(fixture.dataRoot));
-    const view = await intake.openRequest(fixture.call, fixture.operationId());
-    await intake.recordReview(fixture.call, view.requestId, fixture.operationId(), { result: "passed", shortIssues: [] });
-  }
-  if (options.review !== false) {
-    await review();
-    await until(() => owner().context.baseline?.revision === 1);
-  }
-  const plan = await createPlanManageTool({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, authorize: () => true,
-    grant: { role: "pm", callerId: uuidv7(), runId: lease.runId, requirementId: fixture.requirementId, repoId: fixture.repoId, workspaceId: lease.workspaceId, lease } });
-  cleanups.push(() => plan.dispose());
+  const w = await createPmRunWorld(cleanups, options);
   let body = BASE, goals = ["goal.login", "scenario.failure"];
-  async function approve(key: string, options: { replace?: boolean } = {}) {
-    if (options.replace) body = `${BASE}# 附加 {#goal.extra}\n${key} 的行为。\n`, goals = ["goal.login", "scenario.failure", "goal.extra"];
+  async function approve(key: string, approveOptions: { replace?: boolean } = {}) {
+    if (approveOptions.replace) body = `${BASE}# 附加 {#goal.extra}\n${key} 的行为。\n`, goals = ["goal.login", "scenario.failure", "goal.extra"];
     else body += `# ${key} {#goal.${key}}\n${key} 的行为。\n`, goals = [...goals, `goal.${key}`];
-    await fixture.approveRevision({ body, implementGoals: goals });
-    return fixture.state.read(fixture.requirementId).data.revision;
+    await w.fixture.approveRevision({ body, implementGoals: goals });
+    return w.fixture.state.read(w.fixture.requirementId).data.revision;
   }
-  const diffPrompts = () => provider.requests.filter((request) => text(request).includes("已批准更新：revision"));
-  return { fixture, understanding, provider, manager, pm, lease, owner, review, plan, approve, diffPrompts };
+  const diffPrompts = () => w.provider.requests.filter((request) => text(request).includes("已批准更新：revision"));
+  return { ...w, approve, diffPrompts };
 }
 
 function spec(key: string, goal: string): TaskSpec {
