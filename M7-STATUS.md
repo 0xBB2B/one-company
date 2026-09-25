@@ -27,10 +27,10 @@
 | AC19 内置六职责默认团队零专业定义闭环 | 未开始 | | G、H 片 |
 | AC20 复制默认配置即得专业定义；无效定义拒绝 | 通过 | G2：设置页 C 复制默认定义为新名称即得专业定义，复制后 name 改为新名称、与默认共用同一 schema 与加载链路；名称三层不重复、pm 只能同名复制；单一 role、字段、main/planner 职责与第二个 pm 拒绝（tests/agent-catalog-ui.test.ts、tests/role-catalog.test.ts） | 无 |
 | AC21 两类目录发现、项目信任、显式覆盖、一键复制 | 通过 | G2：agentDir/agents（数据根随 PI_CODING_AGENT_DIR）与项目 .pi/agents 自动发现，项目层仅在宿主信任时加载（守护进程读宿主 trust 记录）；同名按项目 > 用户 > 内置覆盖并标出被覆盖来源；缺 role 的其他宿主定义不导入、无效定义不顶掉下层并在问题分类列出；设置页只读查看与一键复制（tests/role-catalog.test.ts「覆盖与导入规则」、tests/agent-catalog-ui.test.ts） | 无 |
-| AC22 有界能力目录、两种默认路径、显式指定失败不静默默认 | 未开始 | | G 片 |
-| AC23 模型/思考等级缺省跟随主会话，指定不可用则阻塞；skill 按需加载 | 未开始 | | G 片 |
-| AC24 实际模型与加载探针和运行元数据一致 | 未开始 | | G 片 |
-| AC25 配置变化不静默改在途运行，重派重核验 | 未开始 | | G 片 |
+| AC22 有界能力目录、两种默认路径、显式指定失败不静默默认 | 通过 | G3：PM 经 agent_manage catalog 取每页至多 20 条目录（名称、职责、描述、来源），不含定义或 skill 正文；任务可用 agent 指定专业定义、agentReason 记依据，未指定用同名默认定义；指定不存在或不可用即 agent_unavailable 拒绝，按用户决定不设替代策略、交用户裁决（tests/agent-selection.test.ts） | 无 |
+| AC23 模型与思考等级核验、skills 按需加载、不静默换模型 | 通过 | G3：派工按当前角色目录解析，指定模型不存在拒绝（model_unavailable）、思考等级不受支持拒绝（thinking_unsupported）、声明的 skill 找不到拒绝（skill_unavailable），skills 按项目、用户、安装资源顺序查找并附在任务上下文；首版不设模型提供方外发授权（用户决定）（tests/agent-selection.test.ts） | 无 |
+| AC24 运行元数据含选择依据、配置来源/hash 与实际加载指纹 | 通过 | G3：运行记录 agent 字段保存定义名称、来源层、文件路径与 hash，以及实际加载的每个 skill 的路径与 hash；任务记录保存 agent 与 agentReason（tests/agent-selection.test.ts） | 无 |
+| AC25 配置变化不静默改在途运行 | 通过 | G3：在途会话沿用派工时解析的定义；暂停后续接前核对定义与 skills 文件 hash，已变即停止该运行并报 config_changed；每次新派工重新读取角色目录（tests/agent-selection.test.ts） | 无 |
 | AC26 专业结果由父代理核验，独立 review/QA，专业实例受互斥与撤权约束 | 未开始 | | E 片 |
 | AC27 受限子代理缺目标或有效 maxTurns 拒绝派工 | 通过 | E：tests/plan-manage.test.ts（任务缺目标或非正整数轮次上限拒绝登记）；tests/agent-session.test.ts（非正整数上限拒绝创建会话）；tests/task-dispatch.test.ts（派工轮次上限取任务登记值，写入子代理上下文） | 无 |
 | AC28 最多 N 轮，不发 N+1 | 通过 | E1：tests/agent-session.test.ts（上限 2 时模型请求恰为 2 次，第 3 次未发出，标 turn_limit_reached；第 N 轮已提交结果按完成处理）；tests/task-dispatch.test.ts（真实派工链路 turnsUsed=2/3） | 无 |
@@ -78,7 +78,7 @@
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
 M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计；C4 已批准更新按序投递 PM 并确认消费（runtime/pm-event-delivery.ts，daemon 500ms 轮询），assess-update 绑定本次收到的理解基线，advancedGate 覆盖语义按序收敛。A–E、C4 各有独立审查且定向复审"全部解决"或"无阻塞"。
-待做顺序（只剩 AC8、AC19、AC22–AC26）：F 已完成 F1 explore 双父入口与本地文件来源；F3、F4 已完成（用户决定首版放开两条威胁模型之外的限制：explore 本地自由读取、联网不核对且允许内网、change_apply 与 verification_run 不得写 docs/spec、docs/prod、.git、.pi/agents 与本机数据目录（复议后恢复），verification_run 检查阶段另禁写工作区、搜索排除 .git 与忽略路径；索引改由守护进程持有、查询前对账，删除窗口许可、持续监听与基线钩子）；F 片已全部完成（含 explore 定义声明 MCP 服务时由守护进程从 agentDir 装载适配器、只放行配置声明的只读工具并优先使用）；G 已完成旧工作流移除、主窗口放开、PM 受控提交、角色目录覆盖规则与只读设置页（AC7、AC20、AC21）；G 剩余：能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、配置变化不静默改在途运行、AC8 提示失效时核心约束仍生效、AC26 专业结果核验与互斥撤权；H 零自定义闭环与三条测试命令全量、收口 M7-STATUS。
+待做顺序（只剩 AC8、AC19、AC26）：F 已完成 F1 explore 双父入口与本地文件来源；F3、F4 已完成（用户决定首版放开两条威胁模型之外的限制：explore 本地自由读取、联网不核对且允许内网、change_apply 与 verification_run 不得写 docs/spec、docs/prod、.git、.pi/agents 与本机数据目录（复议后恢复），verification_run 检查阶段另禁写工作区、搜索排除 .git 与忽略路径；索引改由守护进程持有、查询前对账，删除窗口许可、持续监听与基线钩子）；F 片已全部完成（含 explore 定义声明 MCP 服务时由守护进程从 agentDir 装载适配器、只放行配置声明的只读工具并优先使用）；G 已完成旧工作流移除、主窗口放开、PM 受控提交、角色目录覆盖规则与只读设置页（AC7、AC20、AC21）；G3 已完成能力目录、任务指定专业定义、模型/思考等级/skills 核验与加载指纹、续接核对配置（AC22–AC25）；G 剩余：AC8 提示失效时核心约束仍生效、AC26 专业结果核验与互斥撤权；H 零自定义闭环与三条测试命令全量、收口 M7-STATUS。
 已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§10.7、§13.2 与 M7-AC20/21、AC33–35；C-3 与 M5 两条观察本阶段不处理。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
 ```
