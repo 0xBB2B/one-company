@@ -19,7 +19,12 @@
 
 ## 当前阻塞
 
-无。
+- 最终验证：在 b95143e 上 typecheck 通过，pnpm test 140 个文件 2336 个用例全部通过，test:integration 79 个全部通过；test:installation 中 tests/installation/git-prerequisite.test.ts 的容器用例连续超时（构建镜像时在容器里 apk add git 超过 180 秒时限，容器内下载一个软件源索引约 23 秒），其余 10 个通过。本次未改动该用例覆盖的 Git 安装检查逻辑，同一安装包在前一步容器里 npm install 已成功。网络恢复后重跑 pnpm run test:installation，全绿即 M8 收口。
+
+独立核对（主代理按两条威胁模型逐项核对 8653386..b95143e；当前宿主的子代理工具不能在配置中设置轮限，故未派审查子代理）：
+- 模型输出不可信：交付工具只接受需求身份参数，推送前的确认和合并方式都由界面直接问用户，模型不能代选；推送的提交号与合并时绑定的提交号都是程序核对后的值；归档字节按完成凭据核对，PR 描述不含 prod 正文。PM 的同步工具只能在需求分支、无未提交改动、非检查阶段且无执行中子代理时运行。
+- 旧流程与旧记录不产生授权：交付要求可信关闭记录为 completed 且归档已写入；删除了包内默认 git-commit 技能；交付工具默认关闭，开关只在本机全局设置里。
+- 结论：未发现越出两条威胁模型的问题。
 
 已知限制：仓库没有 origin 且主仓库处于分离 HEAD 时无法确定目标分支，PM 不能开始最终检查，需要先在主仓库检出分支。
 
@@ -28,6 +33,6 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（§11.7 与 M8 章节），再核对 git status 与最近提交。M0–M7、M7A、M7B 已收口不重做。
-下一步：按 M8-STATUS.md 的 AC 表续做 M8。
+M8 代码与用例已全部提交，AC 表全部有证据；只差网络恢复后重跑 pnpm run test:installation。全绿后把“当前阻塞”改为无并收口，下一步 M9。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
