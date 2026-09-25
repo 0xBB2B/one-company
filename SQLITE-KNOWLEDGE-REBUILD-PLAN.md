@@ -862,7 +862,7 @@ prod若再次变化，PM按事件顺序处理或在可证明连续基线下合�
 | 4 | `plan_manage` | propose/read/update/confirm/assess-update、task定义 | PM维护本机计划和逐任务影响复核；正式propose/update需有效接手复核，核对前后prodHash与plan版本，不改历史验证输入；confirm不替代用户授权或主代理接手核对 |
 | 5 | `agent_manage` | dispatch/status/pause/resume/stop；现有入口提供有界能力目录视图 | 一需求一有效PM；按 §10.6 选择默认/专业agent并核验配置、实际模型/skills及权限绑定，不新增核心工具。main/PM均可派explore，worker派工核验接手复核及动作授权；六类职责上限、范围和租约不可由专业名称改变 |
 | 6 | `user_interact` | ask/reply/forward、简短决策与授权记录 | 支持长段输入；按目的区分用户确认与PM接手核对，可信主代理结果不是用户新回执，PM不得自填通过；简短结论入库，不额外存原话，目标确认不等于实施授权 |
-| 7 | `change_apply` | 授权代码/测试/配置批量变更 | 仅限绑定 worktree，首版不按路径分类限制写入（含 docs/spec、docs/prod 与 .git）；不能写本机数据目录 |
+| 7 | `change_apply` | 授权代码/测试/配置批量变更 | 仅限绑定 worktree；不能写 docs/spec、docs/prod、.git、.pi/agents 与本机数据目录。docs/spec 须经 spec_change 发布；.git 可被植入 hook 在用户后续 Git 操作中执行；.pi/agents 决定子代理的工具与权限 |
 | 8 | `spec_change` | propose/validate/publish | PM负责候选提案/检查及增量维护，在批准依据及验证满足后发布；规则必须最小化 |
 | 9 | `verification_run` | 受控测试/黑盒操作/检查停止与结果查询 | formal核验本轮worker结束、检查阶段互斥、实际基线和变化检测；PM可请求停止，程序确认结束后才允许修改 |
 | 10 | `result_submit` | explore research结果、worker/reviewer/QA裁决 | research仅是待父代理核验的证据，不是PASS；结构化事实不以自填PASS作独立证明，旧epoch/父run失效的结果不能当当前 |
@@ -1452,7 +1452,7 @@ M0 → M1 → M2 → M3 → M4；M5基于M1—M4；M6基于M5；M7基于M3—M6�
 
 - M5-AC1：无效批量补丁预检不写；中途部分失败精确记录并阻塞相关交付。
 - M5-AC2：外部编辑/pull后旧基础补丁拒绝；生成器只导入授权差异。
-- M5-AC3：worker经change_apply只能写绑定worktree，不能写本机prod；explore不能提案/改写plan、发布spec或写文件，PM不能改prod正文，各角色不能跨绑定worktree写入。PM候选/发布职责仍受批准、接手复核及相应验证门槛约束。
+- M5-AC3：worker不能经change_apply改docs/spec、docs/prod、.git、.pi/agents或本机prod；explore不能提案/改写plan、发布spec或写文件，PM不能改prod正文，各角色不能跨绑定worktree写入。PM候选/发布职责仍受批准、接手复核及相应验证门槛约束。
 - M5-AC4：spec发布核对批准prod、候选hash、实际实现及有效检查证据；检查阶段尚未释放不能写spec，发布后整体review/QA绑定新基线；不根据错误代码自动生成迎合规则。
 - M5-AC5：需求专用工具拒绝closed正文，自有扫描/知识查询/自动上下文排除docs/prod与本机prod；角色说明禁止主动读归档。通用read/Shell/Git历史/MCP全覆盖防护明确标为暂缓，不用提示词遵守证明程序拦截成功。
 - M5-AC6：管理接口保护与命令执行只保留两条写入限制：不得写本机数据目录；检查阶段不得写工作区保持有效，检查阶段写保护和命令边界按M6-AC13验证；任意prod副本追踪和全部工具流式拦截不作为首版门槛。
