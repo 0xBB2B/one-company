@@ -134,15 +134,13 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
     if (round.baseline.revision !== record.data.revision || round.baseline.approved.hash !== record.data.approved?.hash) blockers.push("check_round_prod_mismatch");
     if (!verifications.some((run) => run.status === "passed")) blockers.push("formal_pass_missing");
     if (verifications.some((run) => run.status === "running")) blockers.push("verification_running");
-    for (const role of ["reviewer", "qa"] as const) {
-      const own = verdicts.filter((verdict) => verdict.role === role);
-      if (own.length === 0) blockers.push(`${role}_verdict_missing`);
-      else if (own.some((verdict) => verdict.conclusion === "blocked")) blockers.push(`${role}_blocking_findings`);
-      else if (own.some((verdict) => verdict.conclusion === "unverified")) blockers.push(`${role}_unverified_findings`);
-    }
-    const independent = new Set(verdicts.filter((verdict) => verdict.role !== "worker").map((verdict) => verdict.runId));
-    if (verdicts.some((verdict) => verdict.role === "reviewer") && verdicts.some((verdict) => verdict.role === "qa") && independent.size < 2) blockers.push("independent_verdicts_required");
+    const qa = verdicts.filter((verdict) => verdict.role === "qa");
+    if (qa.length === 0) blockers.push("qa_verdict_missing");
+    else if (qa.some((verdict) => verdict.conclusion === "blocked")) blockers.push("qa_blocking_findings");
+    else if (qa.some((verdict) => verdict.conclusion === "unverified")) blockers.push("qa_unverified_findings");
   }
+  const reviews = taskReviewsIn(db, repoId, requirementId, record.data.epoch);
+  if (reviews === null) blockers.push("task_review_missing");
   if (pendingProposalsIn(db, repoId, requirementId).length > 0) blockers.push("spec_candidates_unpublished");
   // 用户终止任务后、批准新的 prod 版本前，其目标仍在实施授权内时需求不能以完成关闭
   if (record.data.lifecycle === "active" && record.data.approvalManifest) {
@@ -153,8 +151,22 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
   if (activeCheckRoundIn(db, repoId, requirementId)) blockers.push("check_phase_active");
   try { assertWritersQuiescentIn(db, repoId, requirementId); }
   catch (error) { blockers.push(error instanceof CheckRoundError ? error.code : error instanceof RequirementServiceError ? error.code : "writers_active"); }
-  const suggestions = verdicts.reduce((total, verdict) => total + verdict.findings.filter((finding) => finding.kind === "suggestion").length, 0);
-  return { record, round, verifications, verdicts, blockers: [...new Set(blockers)], suggestions, writes: managedWritesIn(db, repoId, requirementId) };
+  const evidence = [...verdicts, ...(reviews ?? [])];
+  const suggestions = evidence.reduce((total, verdict) => total + verdict.findings.filter((finding) => finding.kind === "suggestion").length, 0);
+  return { record, round, verifications, verdicts: evidence, blockers: [...new Set(blockers)], suggestions, writes: managedWritesIn(db, repoId, requirementId) };
+}
+/** 每个未取消的 worker 任务都须已完成，且有绑定其最后一次完成尝试、无阻塞无未验证项的任务级审查；缺任一项返回 null。 */
+function taskReviewsIn(db: LocalDatabase, repoId: string, requirementId: string, epoch: number): ReturnType<typeof readVerdictsIn> | null {
+  const workers = (readPlanIn(db, requirementId)?.tasks ?? []).filter((task) => task.role === "worker" && task.status !== "cancelled");
+  const verdicts = readVerdictsIn(db, repoId, requirementId).filter((verdict) => verdict.role === "reviewer" && verdict.epoch === epoch && verdict.conclusion === "clear");
+  const found: ReturnType<typeof readVerdictsIn> = [];
+  for (const task of workers) {
+    const attempt = task.attempts.findLast((candidate) => candidate.outcome === "completed");
+    const review = attempt && verdicts.find((verdict) => verdict.review?.taskId === task.taskId && verdict.review.attemptRunId === attempt.runId);
+    if (task.status !== "completed" || !review) return null;
+    found.push(review);
+  }
+  return found;
 }
 function managedWritesIn(db: LocalDatabase, repoId: string, requirementId: string): Array<[string, string, number]> {
   return [SPEC_PROPOSALS, CHANGE_SETS].flatMap((namespace) => db.list<{ repoId?: string; requirementId?: string; status?: string; operationId?: string }>(namespace)

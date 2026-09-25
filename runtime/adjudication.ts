@@ -1,6 +1,6 @@
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
-import { confirmedPlanKey, readPlanIn, TASKS, terminationPending } from "./plan-manage.ts";
+import { confirmedPlanKey, readPlanIn, reviewFailures, reviewRejections, TASKS, terminationPending } from "./plan-manage.ts";
 import type { TaskRecord, UserDecision } from "./plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
@@ -41,7 +41,8 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
       ?? deny("item_not_pending");
     const task = plan!.tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;
     const lines = [`任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`,
-      ...task.attempts.map((attempt, index) => `尝试 ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}`),
+      ...task.attempts.map((attempt, index) => `${attempt.rework ? "返修" : "尝试"} ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}`),
+      ...task.reviews.map((review, index) => `审查 ${index + 1}：${review.turnsUsed}/${review.maxTurns} 轮 · 结局 ${review.outcome}`),
       `依据：prod r${record.revision}`];
     return { itemId, version: item.version, summary: lines.join("\n").slice(0, 2000) };
   });
@@ -92,7 +93,9 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const userDecision: UserDecision = { decisionId: input.decisionId, choice: parsed.choice as UserDecision["choice"], maxTurns: parsed.maxTurns,
       revision: record.revision, taskVersion: task.version, usedByRunId: null, notified: false,
       confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan) };
-    const status = parsed.choice === "retry" ? "pending" : parsed.choice === "adjust" ? "needs_update" : "cancelled";
+    // 再给一次机会回到用完机会的那一环：审查两次打回则返修，审查两次未交出结论则再审，否则重新执行
+    const retryStatus = reviewRejections(task) >= 2 ? "awaiting_rework" : reviewFailures(task) >= 2 ? "awaiting_review" : "pending";
+    const status = parsed.choice === "retry" ? retryStatus : parsed.choice === "adjust" ? "needs_update" : "cancelled";
     const next = { ...task, status, userDecision, updatedAt: input.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, taskId!, row.version, next);
     return { kind: "task" as const, task: next };
@@ -131,7 +134,8 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
       const row = db.read<TaskRecord>(TASKS, task.taskId)!;
       db.update(TASKS, task.taskId, row.version, { ...row.data, userDecision: { ...decision, notified: true } });
       messages.push(decision.choice === "retry"
-        ? `用户决定：任务 ${task.key} 再给一次机会，轮数上限 ${decision.maxTurns}。可用 agent_manage dispatch 直接派出，不带 retry；这次不占你的重试机会。`
+        ? `用户决定：任务 ${task.key} 再给一次机会，轮数上限 ${decision.maxTurns}。${task.status === "awaiting_rework" ? "可用 agent_manage dispatch 直接派 worker 返修，不带 rework"
+          : task.status === "awaiting_review" ? "可用 agent_manage dispatch 带 review 再派审查，轮数按用户决定" : "可用 agent_manage dispatch 直接派出，不带 retry"}；这次不占你的重试机会。`
         : decision.choice === "adjust"
           ? `用户决定：任务 ${task.key} 调整目标或范围。等用户批准新的 prod 版本后，复核并按新范围修改该任务，修改后可再派出一次。`
           : `用户决定：终止任务 ${task.key}，任务已取消，整个需求暂停，等用户调整需求或取消需求。恢复后先复核新批准版本的差异，确认基于新版本的计划后才能派子代理；此前暂停的子代理由你决定恢复或停止。`);

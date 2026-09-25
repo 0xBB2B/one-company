@@ -62,7 +62,8 @@ export const VerificationRun = object({
 export type VerificationRun = Static<typeof VerificationRun>;
 
 export type CheckRoundErrorCode = "check_round_denied" | "invalid_shape" | "pending_update" | "check_round_active" | "workers_active" | "writes_pending"
-  | "spec_invalid" | "proposal_invalid" | "not_found" | "verification_active" | "round_not_open" | "check_phase_active" | "decision_conflict" | "stale_pm_lease";
+  | "spec_invalid" | "proposal_invalid" | "not_found" | "verification_active" | "round_not_open" | "check_phase_active" | "decision_conflict" | "stale_pm_lease"
+  | "tasks_not_reviewed";
 export class CheckRoundError extends Error {
   readonly code: CheckRoundErrorCode;
   constructor(code: CheckRoundErrorCode, detail?: string) {
@@ -148,6 +149,12 @@ function pendingChangeSets(db: LocalDatabase, repoId: string, requirementId: str
   return db.list<{ repoId?: string; requirementId?: string; status?: string; operationId?: string }>(CHANGE_SETS).map((row) => row.data)
     .filter((set) => set.repoId === repoId && set.requirementId === requirementId && (set.status === "applying" || set.status === "partial_failure"))
     .map((set) => set.operationId ?? "");
+}
+/** 计划中尚未通过任务级审查的 worker 任务：最终检查只做全量测试与 QA，须在全部任务审查通过后进行。 */
+export function unreviewedWorkerTasksIn(db: LocalDatabase, requirementId: string): string[] {
+  const taskIds = db.read<{ taskIds?: string[] }>("plans", requirementId)?.data.taskIds ?? [];
+  return taskIds.map((taskId) => db.read<{ key: string; role: string; status: string }>("tasks", taskId)?.data)
+    .filter((task) => task !== undefined && task.role === "worker" && task.status !== "completed" && task.status !== "cancelled").map((task) => task!.key);
 }
 /** 本轮修改是否已全部收尾：无运行中的角色会话、无未完成的受控写入、无需求写占用。 */
 export function assertWritersQuiescentIn(db: LocalDatabase, repoId: string, requirementId: string): void {
@@ -258,6 +265,8 @@ export class CheckRoundService {
       if (current.pendingRevision !== null) throw new CheckRoundError("pending_update");
       if (activeCheckRoundIn(db, this.options.repoId, lease.requirementId)) throw new CheckRoundError("check_round_active");
       assertWritersQuiescentIn(db, this.options.repoId, lease.requirementId);
+      const unreviewed = unreviewedWorkerTasksIn(db, lease.requirementId);
+      if (unreviewed.length) throw new CheckRoundError("tasks_not_reviewed", unreviewed.join(","));
       let targetSpecSetHash: string | null = null;
       if (request.targetSpecProposal) {
         const proposal = db.read<{ requirementId?: string; repoId?: string; status?: string; approvedProdHash?: string; targetSpecSetHash?: string; epoch?: number }>(SPEC_PROPOSALS, request.targetSpecProposal)?.data;

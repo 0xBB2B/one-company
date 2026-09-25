@@ -27,7 +27,7 @@ const unitIds = (min: number) => Type.Array(unitId, { minItems: min, maxItems: 2
 const key = Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9._-]+$" });
 /** 执行该任务的角色定义名称；缺省用与职责同名的默认定义。 */
 const agentName = Type.String({ pattern: "^[a-z0-9][a-z0-9-]{0,63}$" });
-const DelegatedRole = Type.Union([Type.Literal("explore"), Type.Literal("worker"), Type.Literal("reviewer"), Type.Literal("qa")]);
+const DelegatedRole = Type.Union([Type.Literal("explore"), Type.Literal("worker"), Type.Literal("qa")]);
 export const TaskSpec = object({
   key, role: DelegatedRole, goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0),
   dependsOn: Type.Array(key, { maxItems: 32, uniqueItems: true }),
@@ -36,6 +36,8 @@ export const TaskSpec = object({
   maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }),
   objective: text, passCriteria: texts(1), scope: object({ in: texts(1), out: texts(0) }), performance: VerificationPerformance,
   agent: Type.Optional(agentName), agentReason: Type.Optional(text),
+  /** 审查该 worker 任务的角色定义名称；缺省用默认 reviewer。 */
+  reviewAgent: Type.Optional(agentName),
 });
 export type TaskSpec = Static<typeof TaskSpec>;
 const Assessment = Type.Union([Type.Literal("unaffected"), Type.Literal("affected"), Type.Literal("unknown")]);
@@ -55,14 +57,29 @@ export type PlanManageParameters = Static<typeof PLAN_MANAGE_PARAMETERS>;
 export type PlanManageAction = PlanManageParameters["action"];
 
 const UnitRef = object({ unitId, hash });
-export type TaskStatus = "pending" | "running" | "completed" | "failed" | "needs_update" | "blocked" | "cancelled" | "awaiting_parent" | "awaiting_user";
+export type TaskStatus = "pending" | "running" | "completed" | "failed" | "needs_update" | "blocked" | "cancelled" | "awaiting_parent" | "awaiting_user"
+  | "awaiting_review" | "reviewing" | "awaiting_rework";
 const Attempt = object({ runId: id, maxTurns: positive, turnsUsed: Type.Integer({ minimum: 0 }), reason: Type.Union([text, Type.Null()]),
   outcome: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("incomplete"), Type.Literal("turn_limit_reached"),
-    Type.Literal("failed"), Type.Literal("stopped"), Type.Literal("superseded")]) });
+    Type.Literal("failed"), Type.Literal("stopped"), Type.Literal("superseded")]),
+  rework: Type.Optional(Type.Literal(true)) });
 export type TaskAttempt = Static<typeof Attempt>;
-/** 计入"首次加一次重试"的尝试次数：用户终止后因计划变更被统一停止的尝试不计。 */
+/** 任务级审查的一次运行；attemptRunId 是被审的 worker 尝试。 */
+const Review = object({ runId: id, attemptRunId: id, maxTurns: positive, turnsUsed: Type.Integer({ minimum: 0 }),
+  outcome: Type.Union([Type.Literal("running"), Type.Literal("clear"), Type.Literal("blocked"), Type.Literal("unverified"), Type.Literal("turn_limit_reached"),
+    Type.Literal("failed"), Type.Literal("stopped"), Type.Literal("superseded")]) });
+export type TaskReview = Static<typeof Review>;
+/** 计入"首次加一次重试"的尝试次数：审查返修与用户终止后因计划变更被统一停止的尝试不计。 */
 export function countedAttempts(task: { attempts: readonly TaskAttempt[] }): number {
-  return task.attempts.filter((attempt) => attempt.outcome !== "superseded").length;
+  return task.attempts.filter((attempt) => attempt.outcome !== "superseded" && !attempt.rework).length;
+}
+/** 审查打回次数：返修机会按此单独计数。 */
+export function reviewRejections(task: { reviews: readonly TaskReview[] }): number {
+  return task.reviews.filter((review) => review.outcome === "blocked" || review.outcome === "unverified").length;
+}
+/** 审查运行未交出结论的次数：与执行尝试同样允许一次再派。 */
+export function reviewFailures(task: { reviews: readonly TaskReview[] }): number {
+  return task.reviews.filter((review) => review.outcome === "failed" || review.outcome === "turn_limit_reached" || review.outcome === "stopped").length;
 }
 /** 用户对待裁决任务的决定：只由可信登记写入，PM 不能构造；revision/taskVersion 为登记时的批准版本与任务版本。 */
 const UserDecision = object({
@@ -78,11 +95,13 @@ const TaskRecord = object({
   goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0), closure: Type.Array(UnitRef, { maxItems: 20 }),
   dependsOn: Type.Array(id, { maxItems: 32 }), writePaths: Type.Array(Type.String(), { maxItems: 64 }),
   blockedByQuestionIds: Type.Array(id, { maxItems: 16 }), maxTurns: positive,
-  agent: Type.Optional(agentName), agentReason: Type.Optional(text),
+  agent: Type.Optional(agentName), agentReason: Type.Optional(text), reviewAgent: Type.Optional(agentName),
   detail: object({ path: Type.String({ minLength: 1 }), hash }),
   status: Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed"),
-    Type.Literal("needs_update"), Type.Literal("blocked"), Type.Literal("cancelled"), Type.Literal("awaiting_parent"), Type.Literal("awaiting_user")]),
+    Type.Literal("needs_update"), Type.Literal("blocked"), Type.Literal("cancelled"), Type.Literal("awaiting_parent"), Type.Literal("awaiting_user"),
+    Type.Literal("awaiting_review"), Type.Literal("reviewing"), Type.Literal("awaiting_rework")]),
   attempts: Type.Array(Attempt, { maxItems: 16 }),
+  reviews: Type.Array(Review, { maxItems: 16 }),
   userDecision: Type.Optional(UserDecision),
   lastAssessedRevision: positive, updatedAt: positive,
 });
@@ -225,6 +244,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (outside.length) deny("unit_not_authorized", [...new Set(outside)]);
     const noScope = specs.filter((spec) => spec.role === "worker" && spec.writePaths.length === 0);
     if (noScope.length) deny("dependency_invalid", noScope.map((spec) => `${spec.key} 是实现任务，须声明可写范围`));
+    const strayReview = specs.filter((spec) => spec.role !== "worker" && spec.reviewAgent !== undefined);
+    if (strayReview.length) deny("dependency_invalid", strayReview.map((spec) => `${spec.key} 不是实现任务，不能指定审查定义`));
     const keys = specs.map((spec) => spec.key);
     if (new Set(keys).size !== keys.length || keys.some((value) => known.has(value) && !specs.some((spec) => spec.key === value))) deny("dependency_invalid", ["任务 key 重复"]);
     for (const spec of specs) for (const dep of spec.dependsOn) if (!keys.includes(dep) && !known.has(dep)) deny("dependency_invalid", [`${spec.key} 依赖未知任务 ${dep}`]);
@@ -260,7 +281,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
         goalUnitIds: spec.goalUnitIds, constraintUnitIds: spec.constraintUnitIds, closure: closureOf(manifest, spec.goalUnitIds, spec.constraintUnitIds),
         dependsOn: spec.dependsOn.map((dep) => ids.get(dep)!), writePaths: spec.writePaths, blockedByQuestionIds: spec.blockedByQuestionIds,
         maxTurns: spec.maxTurns, ...(spec.agent ? { agent: spec.agent } : {}), ...(spec.agentReason ? { agentReason: spec.agentReason } : {}),
-        detail: await writeDetail(taskId, version, spec), status: "pending", attempts: previous?.get(taskId)?.attempts ?? [],
+        ...(spec.reviewAgent ? { reviewAgent: spec.reviewAgent } : {}),
+        detail: await writeDetail(taskId, version, spec), status: "pending", attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: previous.get(taskId)!.userDecision } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));
     }

@@ -89,12 +89,12 @@ async function world() {
     const instance = await createWorkflowManageTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, grant, authorize, stopAgents });
     cleanups.push(async () => instance.dispose()); return instance;
   }
-  async function verification(role: "qa" | "reviewer" | "worker", runId = uuidv7()) {
+  async function verification(role: "qa" | "worker", runId = uuidv7()) {
     const instance = await createVerificationRunTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, authorize: () => true,
       grant: { role, callerId: uuidv7(), runId, requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, branch: workspace.branch, epoch: record.epoch } });
     cleanups.push(() => instance.dispose()); return { instance, runId };
   }
-  function verdict(role: "reviewer" | "qa", runId: string, checkRoundId: string, verificationIds: string[], findings: ReturnType<typeof finding>[] = []) {
+  function verdict(role: "qa", runId: string, checkRoundId: string, verificationIds: string[], findings: ReturnType<typeof finding>[] = []) {
     return createResultSubmitTool({ grant: { role, callerId: uuidv7(), runId, parentRunId: lease.runId }, authorize: () => true,
       verdictBinding: { dataRoot: options.dataRoot, requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, epoch: record.epoch } })
       .execute({ action: "verdict", result: { checkRoundId, verificationIds, summary: "结论", findings } }) as { verdictId: string; conclusion: string };
@@ -109,18 +109,15 @@ async function world() {
       grant: { role: "worker", callerId: uuidv7(), runId: uuidv7(), requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, branch: workspace.branch, epoch: record.epoch, writePaths: ["src/"] } });
     cleanups.push(async () => instance.dispose()); return instance;
   }
-  /** 完整走一轮：进入检查、QA/reviewer 正式检查并给出独立裁决、退出检查。 */
+  /** 完整走一轮：进入检查、QA 正式检查并给出裁决、退出检查。 */
   async function fullEvidence(findings: ReturnType<typeof finding>[] = []) {
     const pm = await tool();
     const round = await pm.execute({ action: "advance" }) as { checkRoundId: string };
     const qa = await verification("qa");
     const formal = await qa.instance.execute({ action: "run", kind: "formal", command: "true", performance: NA }) as VerificationView;
-    const reviewer = await verification("reviewer");
-    const review = await reviewer.instance.execute({ action: "run", kind: "formal", command: "true", performance: NA }) as VerificationView;
-    verdict("qa", qa.runId, round.checkRoundId, [formal.verificationId], findings);
-    verdict("reviewer", reviewer.runId, round.checkRoundId, [review.verificationId], [finding("suggestion")]);
+    verdict("qa", qa.runId, round.checkRoundId, [formal.verificationId], [...findings, finding("suggestion")]);
     await pm.execute({ action: "finish", checkRoundId: round.checkRoundId });
-    return { pm, round, formal, review };
+    return { pm, round, formal };
   }
   const receipt = () => { const value = uuidv7(); receipts.add(value); return value; };
   const closeService = await RequirementCloseService.open({ ...options, stopAgents,

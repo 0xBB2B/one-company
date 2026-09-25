@@ -54,14 +54,19 @@ for (const closer of ["main", "pm"] as const) test.skipIf(process.platform !== "
 
   const pmActions: string[] = [];
   const once = (action: string, reply: ScriptedReply) => { pmActions.push(action); return reply; };
-  let closeIssuedAt = 0;
+  let closeIssuedAt = 0, earlyAdvance = "";
   const script = routeReplies(w.provider, (request) => {
+    if (pmActions.at(-1) === "early-advance" && !earlyAdvance) earlyAdvance = lastResult(request);
+    if (task("impl")?.status === "awaiting_review" && !pmActions.includes("early-advance")) return once("early-advance", call("workflow_manage", { action: "advance" }));
+    if (task("impl")?.status === "awaiting_review" && !pmActions.includes("review")) {
+      return once("review", call("agent_manage", { action: "dispatch", taskId: task("impl").taskId, review: { maxTurns: 4 } }));
+    }
     if (task("impl")?.status === "completed" && rounds().length === 0 && !pmActions.includes("advance")) return once("advance", call("workflow_manage", { action: "advance" }));
     const round = openRound();
-    for (const key of ["review", "acceptance"]) {
-      if (round && task(key).status === "pending" && !pmActions.includes(key)) return once(key, call("agent_manage", { action: "dispatch", taskId: task(key).taskId }));
+    if (round && task("acceptance").status === "pending" && !pmActions.includes("acceptance")) {
+      return once("acceptance", call("agent_manage", { action: "dispatch", taskId: task("acceptance").taskId }));
     }
-    if (round && task("review").status === "completed" && task("acceptance").status === "completed" && !pmActions.includes("finish")) {
+    if (round && task("acceptance").status === "completed" && !pmActions.includes("finish")) {
       return once("finish", call("workflow_manage", { action: "finish", checkRoundId: round }));
     }
     if (closer === "pm" && pmActions.at(-1) === "finish") return once("delivery", call("workflow_manage", { action: "delivery-check" }));
@@ -77,28 +82,32 @@ for (const closer of ["main", "pm"] as const) test.skipIf(process.platform !== "
 
   await w.plan.execute({ action: "propose", tasks: [
     spec("impl", "worker", { writePaths: ["src/"], objective: "实现手机号验证码登录：正确验证码成功，错误验证码失败" }),
-    spec("review", "reviewer", { dependsOn: ["impl"], objective: "独立审查登录实现是否满足已批准目标" }),
     spec("acceptance", "qa", { dependsOn: ["impl"], objective: "黑盒验收正常登录与验证码失败场景" }),
   ] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
-  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("review").taskId, retry: null })).rejects.toMatchObject({ code: "dependency_pending" });
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("acceptance").taskId, retry: null })).rejects.toMatchObject({ code: "dependency_pending" });
 
+  const suggestion = { kind: "suggestion", targetRef: "prod:goal.login", evidenceRef: null, trigger: "输入验证码", impact: "可补充更多用例" };
+  // 同一脚本先后服务 worker 与审查它的 reviewer：两者的任务说明都以该任务 key 标识
   script("impl",
     call("change_apply", { action: "apply", operationId: uuidv7(), files: [{ path: "src/login.ts", baseHash: "absent", content: LOGIN }] }),
-    call("result_submit", { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary: "新增 src/login.ts 实现验证码登录", findings: [] } }));
+    call("result_submit", { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary: "新增 src/login.ts 实现验证码登录", findings: [] } }),
+    call("verification_run", { action: "run", kind: "debug", command: "test -f src/login.ts", performance: NA }),
+    (request) => call("result_submit", { action: "verdict", result: { checkRoundId: null, verificationIds: [field(lastResult(request), "verificationId")],
+      summary: "实现符合已批准目标", findings: [suggestion] } }));
   const formalThenVerdict = (command: string, summary: string): Step[] => [
     call("verification_run", { action: "run", kind: "formal", command, performance: NA }),
     (request) => {
       const result = lastResult(request);
       return call("result_submit", { action: "verdict", result: { checkRoundId: field(result, "checkRoundId"), verificationIds: [field(result, "verificationId")], summary,
-        findings: [{ kind: "suggestion", targetRef: "prod:goal.login", evidenceRef: null, trigger: "输入验证码", impact: "可补充更多用例" }] } });
+        findings: [suggestion] } });
     },
   ];
-  script("review", ...formalThenVerdict("test -f src/login.ts", "实现符合已批准目标"));
   script("acceptance", ...formalThenVerdict("grep -q 失败 src/login.ts", "正常登录与验证码失败场景均可观察"));
 
   const worker = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("impl").taskId, retry: null });
   await until(() => task("impl").status === "completed");
+  expect(earlyAdvance).toContain("tasks_not_reviewed");
   await expect(readFile(join(w.fixture.state.read(requirementId).data.workspace!.path, "src", "login.ts"), "utf8")).resolves.toBe(LOGIN);
 
   await until(() => pmActions.includes("finish") && rounds()[0]?.status === "released", 3_000);
@@ -115,25 +124,27 @@ for (const closer of ["main", "pm"] as const) test.skipIf(process.platform !== "
   expect(w.fixture.state.read(requirementId).data).toMatchObject({ lifecycle: "closed", close: { reason: "completed" } });
   expect(await w.manager.workflowManage(requirementId, { action: "delivery-check" })).toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["requirement_not_active"]) });
 
-  expect(pmActions).toEqual(closer === "main" ? ["advance", "review", "acceptance", "finish"] : ["advance", "review", "acceptance", "finish", "delivery", "close"]);
+  expect(pmActions).toEqual(closer === "main" ? ["early-advance", "review", "advance", "acceptance", "finish"]
+    : ["early-advance", "review", "advance", "acceptance", "finish", "delivery", "close"]);
   const runs = (await w.runStore.list({ requirement: requirementId, limit: 100 })).items;
   const all = await Promise.all(runs.map(async (run) => { const got = await w.runStore.get(run.id); if (!got.ok) throw new Error(got.reason); return got.run; }));
   expect(all.every((run) => run.agent?.source === "default")).toBe(true);
   expect(all.filter((run) => run.state === "failed")).toEqual([]);
   const full = all;
-  const byTask = (key: string) => full.find((run) => run.task === task(key).taskId)!;
+  const byRole = (role: string) => full.find((run) => run.role === `pi-company.${role}`)!;
   expect(full.map((run) => [run.role ?? run.kind, run.agent?.name, run.agent?.source]).sort()).toEqual([
     ["pi-company.qa", "qa", "default"], ["pi-company.reviewer", "reviewer", "default"], ["pi-company.worker", "worker", "default"], ["requirement", "pm", "default"]]);
   expect(full.every((run) => run.state === "completed" || run.state === "stopped")).toBe(true);
-  const [implRun, reviewRun, qaRun] = [byTask("impl"), byTask("review"), byTask("acceptance")];
+  const [implRun, reviewRun, qaRun] = [byRole("worker"), byRole("reviewer"), byRole("qa")];
+  expect([implRun.task, reviewRun.task, qaRun.task]).toEqual([task("impl").taskId, task("impl").taskId, task("acceptance").taskId]);
   expect(implRun.id).toBe(worker.runId);
   expect(new Set([w.pm.runId, implRun.id, reviewRun.id, qaRun.id]).size).toBe(4);
   expect([implRun, reviewRun, qaRun].map((run) => run.parentRunId)).toEqual([w.pm.runId, w.pm.runId, w.pm.runId]);
   const verdicts = w.db((db) => db.list<Verdict>(VERDICTS).map((row) => row.data));
   expect(verdicts.map((verdict) => [verdict.role, verdict.runId, verdict.conclusion]).sort()).toEqual([
     ["qa", qaRun.id, "clear"], ["reviewer", reviewRun.id, "clear"], ["worker", implRun.id, "clear"]].sort());
-  expect(tasks().map((entry) => [entry.key, entry.role, entry.status]).sort()).toEqual([
-    ["acceptance", "qa", "completed"], ["impl", "worker", "completed"], ["review", "reviewer", "completed"]]);
+  expect(tasks().map((entry) => [entry.key, entry.role, entry.status]).sort()).toEqual([["acceptance", "qa", "completed"], ["impl", "worker", "completed"]]);
+  expect(verdicts.find((verdict) => verdict.role === "reviewer")).toMatchObject({ checkRoundId: null, review: { taskId: task("impl").taskId, attemptRunId: implRun.id } });
   expect(full.some((run) => run.role === "pi-company.explore")).toBe(false);
   const systemPrompts = w.provider.requests.map((request) => request.systemPrompt ?? "");
   for (const persona of ["你是一个活动需求的唯一 PM", "你是实现代理", "你是独立审查代理", "你是黑盒验收代理"]) expect(systemPrompts.some((prompt) => prompt.includes(persona))).toBe(true);

@@ -137,7 +137,7 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
     global: { assessment: "unaffected", rationale: "只改登录做法" } });
-  await w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-stub", "goal.login", { objective: "用测试桩实现登录" })] });
+  await w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-stub", "goal.login", { objective: "用测试桩实现登录", writePaths: ["lib/"] })] });
   const stub = w.task("login-stub").taskId;
   await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: stub, retry: null })).rejects.toMatchObject({ code: "plan_not_confirmed" });
   await w.plan.execute({ action: "confirm", planVersion: planVersion() });

@@ -136,7 +136,7 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
       await realpath(dirname(defaultRoleDir()))];
     // 受保护路径若是指向别处的链接，写入会落到链接目标，故一并禁写其真实路径
     const targets = await Promise.all(protectedPaths.map((path) => resolvedTarget(path)));
-    return writeGuardLaunch(started.command, { deniedWrites: [dataRoot, ...new Set([...protectedPaths, ...targets]), ...(started.checkRoundId ? [root] : [])],
+    return writeGuardLaunch(started.command, { deniedWrites: [dataRoot, ...new Set([...protectedPaths, ...targets]), ...(started.checkRoundId || started.role !== "worker" ? [root] : [])],
       allowedWrites: [join(outputRoot, "outputs"), scratch], deniedSockets: [dataRoot], scratch });
   }
   async function writeManifest(outputRoot: string, manifest: InputManifest): Promise<void> {
@@ -146,7 +146,7 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
 
   async function run(params: Extract<VerificationRunParameters, { action: "run" }>): Promise<VerificationView> {
     host("run");
-    if ((grant.role === "worker") !== (params.kind === "debug")) deny("kind_forbidden");
+    if ((grant.role === "worker" || grant.role === "reviewer") !== (params.kind === "debug")) deny("kind_forbidden");
     const record = activeRecord();
     await verifyRequirementWorkspace(options.dataRoot, record.workspace);
     const root = await realpath(record.workspace.path);

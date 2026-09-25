@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
@@ -64,9 +64,10 @@ async function world() {
       grant: { role, callerId: uuidv7(), runId, requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, branch: workspace.branch, epoch: record.epoch } });
     cleanups.push(() => instance.dispose()); return { instance, runId };
   }
-  function submit(role: "worker" | "reviewer" | "qa", runId: string, bound = true) {
+  function submit(role: "worker" | "reviewer" | "qa", runId: string, bound = true, review?: { taskId: string; attemptRunId: string }) {
     return createResultSubmitTool({ grant: { role, callerId: uuidv7(), runId, parentRunId: lease.runId }, authorize: () => true,
-      ...(bound ? { verdictBinding: { dataRoot: options.dataRoot, requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, epoch: record.epoch } } : {}) });
+      ...(bound ? { verdictBinding: { dataRoot: options.dataRoot, requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, epoch: record.epoch,
+        ...(review ? { review } : {}) } } : {}) });
   }
   async function reader(role: RequirementReadBinding["role"], extra: Partial<RequirementReadBinding> = {}) {
     const binding: RequirementReadBinding = { role, callerId: uuidv7(), runId: role === "pm" ? lease.runId : uuidv7(), requirementId: created.requirementId, repoId: options.repoId,
@@ -80,7 +81,7 @@ async function world() {
 }
 const finding = (kind: "blocking" | "suggestion" | "unverified") => ({ kind, targetRef: "prod:goals", evidenceRef: null, trigger: "按方向键", impact: "无法移动" });
 
-test("M6-AC19：裁决按阻塞/建议/未验证分级并关联目标与证据；worker 只能提交自己的 debug 裁决，reviewer/QA 必须绑定检查轮且不能是 PM 自身", async () => {
+test("M6-AC19/M7A-AC2：裁决按阻塞/建议/未验证分级并关联目标与证据；worker 与 reviewer 只能引用自己的 debug 结果，reviewer 裁决绑定被审任务尝试；QA 必须绑定检查轮且不能是 PM 自身", async () => {
   const w = await world();
   if (!darwin) return;
   const worker = await w.verification("worker");
@@ -96,7 +97,20 @@ test("M6-AC19：裁决按阻塞/建议/未验证分级并关联目标与证据�
   expect([own.conclusion, own.isPass]).toEqual(["clear", false]);
   const stranger = w.submit("worker", uuidv7());
   expect(() => stranger.execute({ action: "verdict", result: { checkRoundId: null, verificationIds: [debug.verificationId], summary: "偷用", findings: [] } })).toThrow(/out_of_scope/);
-  expect(() => w.submit("reviewer", uuidv7()).execute({ action: "verdict", result: { checkRoundId: null, verificationIds: [], summary: "无轮", findings: [] } })).toThrow(/out_of_scope/);
+  expect(() => w.submit("reviewer", uuidv7()).execute({ action: "verdict", result: { checkRoundId: null, verificationIds: [], summary: "未绑定被审任务", findings: [] } })).toThrow(/invalid_binding/);
+  const reviewed = { taskId: uuidv7(), attemptRunId: worker.runId };
+  const reviewer = await w.verification("reviewer");
+  await expect(reviewer.instance.execute({ action: "run", kind: "formal", command: "true", performance: NA })).rejects.toMatchObject({ code: "kind_forbidden" });
+  const reviewTest = await reviewer.instance.execute({ action: "run", kind: "debug", command: "touch src/review-wrote.ts", performance: NA }) as VerificationView;
+  expect(reviewTest.status).toBe("failed");
+  await expect(stat(join(w.workspace.path, "src", "review-wrote.ts"))).rejects.toMatchObject({ code: "ENOENT" });
+  const reviewerSubmit = w.submit("reviewer", reviewer.runId, true, reviewed);
+  expect(() => reviewerSubmit.execute({ action: "verdict", result: { checkRoundId: null, verificationIds: [debug.verificationId], summary: "借 worker 自测", findings: [] } })).toThrow(/out_of_scope/);
+  const rejected = reviewerSubmit.execute({ action: "verdict", result: { checkRoundId: null, verificationIds: [reviewTest.verificationId], summary: "任务级审查",
+    findings: [finding("suggestion"), finding("blocking")] } }) as { conclusion: string; verdictId: string };
+  expect(rejected.conclusion).toBe("blocked");
+  const taskReview = withDatabase(w.database, (db) => db.read<{ review: unknown; checkRoundId: unknown }>(VERDICTS, rejected.verdictId)!.data);
+  expect(taskReview).toMatchObject({ review: reviewed, checkRoundId: null });
 
   const round = await w.rounds.openRound({ lease: w.lease });
   const qa = await w.verification("qa");
@@ -107,13 +121,15 @@ test("M6-AC19：裁决按阻塞/建议/未验证分级并关联目标与证据�
   expect(() => w.submit("qa", qa.runId).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [debug.verificationId], summary: "借 debug", findings: [] } })).toThrow(/out_of_scope/);
   const blocked = w.submit("qa", qa.runId).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "黑盒验收",
     findings: [finding("suggestion"), finding("unverified"), finding("blocking")] } }) as { conclusion: string };
-  const unverified = w.submit("reviewer", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "审查",
+  expect(() => w.submit("reviewer", uuidv7(), true, reviewed).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId],
+    summary: "检查轮里审查", findings: [] } })).toThrow(/out_of_scope/);
+  expect(() => w.submit("qa", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [], summary: "无证据", findings: [] } })).toThrow(/out_of_scope/);
+  const unverified = w.submit("qa", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "验收",
     findings: [finding("suggestion"), finding("unverified")] } }) as { conclusion: string };
-  expect(() => w.submit("reviewer", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [], summary: "无证据", findings: [] } })).toThrow(/out_of_scope/);
-  const clear = w.submit("reviewer", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "审查", findings: [finding("suggestion")] } }) as { conclusion: string };
+  const clear = w.submit("qa", uuidv7()).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "验收", findings: [finding("suggestion")] } }) as { conclusion: string };
   expect([blocked.conclusion, unverified.conclusion, clear.conclusion]).toEqual(["blocked", "unverified", "clear"]);
   const stored = withDatabase(w.database, (db) => db.list(VERDICTS)).map((row) => row.data as { role: string; conclusion: string; findings: unknown[] });
-  expect(stored).toHaveLength(4);
+  expect(stored).toHaveLength(5);
   expect(stored.every((verdict) => !("verdict" in verdict) && !("status" in verdict))).toBe(true);
   w.rounds.release({ lease: w.lease, checkRoundId: round.checkRoundId });
   expect(() => w.submit("qa", qa.runId).execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "迟到", findings: [] } })).not.toThrow();

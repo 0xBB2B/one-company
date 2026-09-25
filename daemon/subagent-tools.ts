@@ -19,13 +19,15 @@ export interface SubagentToolsInput {
   workspace: WorkspaceBinding;
   epoch: number;
   task: TaskRecord;
+  /** 任务级审查时绑定被审的 worker 尝试，工具按 reviewer 职责组装；缺省按任务职责。 */
+  review?: { attemptRunId: string };
   /** 宿主核验本子代理会话与其父 PM 租约仍有效；模型参数不能让它返回 true。 */
   alive: () => boolean;
 }
 
-/** 按任务职责为 worker、reviewer、qa 组装核心工具；每个工具内部仍按职责矩阵与绑定逐次核验。 */
+/** 按职责为 worker、reviewer、qa 组装核心工具；每个工具内部仍按职责矩阵与绑定逐次核验。 */
 export async function createSubagentTools(input: SubagentToolsInput): Promise<{ tools: ToolDefinition[]; dispose(): void }> {
-  const role = input.task.role;
+  const role = input.review ? "reviewer" : input.task.role;
   if (role !== "worker" && role !== "reviewer" && role !== "qa") throw new Error(`子代理工具不支持职责 ${role}`);
   const shared = { repositoryRoot: input.repositoryRoot, dataRoot: input.dataRoot };
   const scope = { requirementId: input.task.requirementId, repoId: input.repoId, workspaceId: input.workspace.workspaceId };
@@ -37,7 +39,8 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
   try {
     const verification = track(await createVerificationRunTool({ ...shared, authorize, grant: { ...identity, role, epoch: input.epoch } }));
     tools.push(toPiTool("verification_run", role === "worker" ? "在绑定工作区的受控沙箱里运行调试命令（debug），或查询、停止运行。"
-      : "在检查阶段运行正式检查（formal），或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, verification));
+      : role === "reviewer" ? "在绑定工作区的只读沙箱里运行被审任务范围的测试（debug），或查询、停止运行。"
+        : "在检查阶段运行正式检查（formal），或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, verification));
     if (role === "worker") {
       const change = track(await createChangeApplyTool({ ...shared, authorize, grant: { ...identity, role, epoch: input.epoch, writePaths: input.task.writePaths } }));
       tools.push(toPiTool("change_apply", `只在授权范围 ${input.task.writePaths.join("、")} 内预检、写入或导入代码与测试。`, CHANGE_APPLY_PARAMETERS, change));
@@ -51,10 +54,12 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
       tools.push(toPiTool("plan_manage", "只读当前计划与任务说明。", PLAN_MANAGE_PARAMETERS, plan));
     }
     const result = createResultSubmitTool({ authorize, grant: { role, callerId: identity.callerId, runId: input.runId, parentRunId: input.pmLease.runId },
-      verdictBinding: { dataRoot: input.dataRoot, ...scope, epoch: input.epoch } });
+      verdictBinding: { dataRoot: input.dataRoot, ...scope, epoch: input.epoch,
+        ...(input.review ? { review: { taskId: input.task.taskId, attemptRunId: input.review.attemptRunId } } : {}) } });
     runtimes.push(result);
     tools.push(toPiTool("result_submit", role === "worker" ? "提交本任务结果（action=verdict）：只能引用本运行的调试验证，未完成或有问题时按阻塞、未验证分级列出；结果不是通过证明。"
-      : "提交引用本检查轮正式验证结果的裁决（action=verdict），按阻塞、建议、未验证分级。", RESULT_SUBMIT_PARAMETERS, result));
+      : role === "reviewer" ? "提交对被审任务改动的审查裁决（action=verdict，checkRoundId 为 null）：只能引用本运行的测试，按阻塞、建议、未验证分级。"
+        : "提交引用本检查轮正式验证结果的裁决（action=verdict），按阻塞、建议、未验证分级。", RESULT_SUBMIT_PARAMETERS, result));
     return { tools, dispose() { for (const runtime of runtimes) runtime.dispose(); } };
   } catch (error) {
     for (const runtime of runtimes) runtime.dispose();

@@ -19,10 +19,13 @@ function spec(key: string, patch: Partial<TaskSpec> = {}): TaskSpec {
 async function world() {
   const w = await createPmRunWorld(cleanups);
   const task = (key: string) => withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
-    db.list<{ key: string; taskId: string; status: string; attempts: Array<{ outcome: string; turnsUsed: number; maxTurns: number; reason: string | null }> }>(TASKS)
+    db.list<{ key: string; taskId: string; status: string; attempts: Array<{ runId: string; outcome: string; turnsUsed: number; maxTurns: number; reason: string | null; rework?: true }>;
+      reviews: Array<{ runId: string; attemptRunId: string; outcome: string }> }>(TASKS)
       .map((row) => row.data).find((entry) => entry.key === key)!);
   const dispatch = (key: string, retry: { reason: string; maxTurns: number } | null = null) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry });
-  return { ...w, task, dispatch };
+  const review = (key: string, maxTurns = 2) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry: null, review: { maxTurns } });
+  const rework = (key: string, reason = "按审查意见返修", maxTurns = 2) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry: null, rework: { reason, maxTurns } });
+  return { ...w, task, dispatch, review, rework };
 }
 const read = (n: number): ScriptedReply => ({ type: "toolcall", name: "read", input: { path: `README.md#${n}` } });
 const lastPrompt = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1) ?? "");
@@ -52,7 +55,7 @@ test("M7-AC27/28/29/30：到限自动上报 PM；重试须带原因且只有一�
   await expect(w.dispatch("failure", { reason: "无需重试", maxTurns: 2 })).rejects.toMatchObject({ code: "retry_not_needed" });
 });
 
-test("M7-AC26/AC31：worker 在额度内提交工作报告即完成；依赖未完成、计划未冻结时拒绝派工", async () => {
+test("M7-AC26/AC31：worker 在额度内提交工作报告即进入待审查；依赖未完成、计划未冻结时拒绝派工", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"], dependsOn: ["login"] })] });
   await expect(w.dispatch("login")).rejects.toMatchObject({ code: "plan_not_confirmed" });
@@ -63,7 +66,7 @@ test("M7-AC26/AC31：worker 在额度内提交工作报告即完成；依赖未�
   w.provider.queue.push({ type: "toolcall", name: "pi_company_result_submit", input: { action: "verdict", result: { checkRoundId: null, verificationIds: [],
     summary: `完成 ${login.key}`, findings: [] } } }, { type: "text", text: "PM 收到完成结果" });
   const run = await w.dispatch("login");
-  await until(() => w.task("login").status === "completed");
+  await until(() => w.task("login").status === "awaiting_review");
   expect(await w.runStore.get(run.runId)).toMatchObject({ ok: true, run: { state: "completed" } });
   const workerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("任务：login"))!;
   expect(workerRequest.tools?.map((tool) => tool.name).sort()).toEqual(["find", "grep", "ls", "pi_company_change_apply", "pi_company_result_submit",
@@ -100,4 +103,73 @@ test("M7-AC6：PM 停止后新派出的 PM 从数据库读回同一份计划与�
     grant: { role: "pm", callerId: uuidv7(), runId: lease.runId, requirementId: w.fixture.requirementId, repoId: w.fixture.repoId, workspaceId: lease.workspaceId, lease } });
   cleanups.push(() => reader.dispose());
   expect(await reader.execute({ action: "read" })).toEqual(before);
+});
+
+const submit = (summary: string, findings: Array<{ kind: "blocking" | "suggestion" | "unverified" }> = []): ScriptedReply => ({ type: "toolcall", name: "pi_company_result_submit",
+  input: { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary,
+    findings: findings.map((finding) => ({ ...finding, targetRef: "prod:goal.login", evidenceRef: null, trigger: "输入错误验证码", impact: "没有失败提示" })) } } });
+const pmAck: ScriptedReply = { type: "text", text: "PM 收到" };
+
+test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审查 A 时 C 照常写入；A 审查通过前依赖它的任务不能派出；有任务未审查时不能交付", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("a", { writePaths: ["src/a/"] }), spec("b", { writePaths: ["src/a/x.ts"], goalUnitIds: ["scenario.failure"] }),
+    spec("c", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] }), spec("d", { writePaths: ["web/"], dependsOn: ["a"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push(submit("完成 a"), pmAck);
+  const a = await w.dispatch("a");
+  await until(() => w.task("a").status === "awaiting_review");
+  await expect(w.dispatch("b")).rejects.toMatchObject({ code: "write_scope_busy" });
+  await expect(w.dispatch("d")).rejects.toMatchObject({ code: "dependency_pending" });
+
+  w.provider.queue.push({ type: "text", text: "慢慢写 c", chunkDelayMs: 20_000 });
+  const c = await w.dispatch("c");
+  await until(async () => { const current = await w.runStore.get(c.runId); return current.ok && current.run.state === "running"; });
+  w.provider.queue.push(submit("a 符合目标", [{ kind: "suggestion" }]), pmAck);
+  const reviewer = await w.review("a");
+  await until(() => w.task("a").status === "completed");
+  expect(w.task("a").reviews).toEqual([expect.objectContaining({ runId: reviewer.runId, attemptRunId: a.runId, outcome: "clear" })]);
+  expect(await w.runStore.get(c.runId)).toMatchObject({ ok: true, run: { state: "running" } });
+  expect(await w.runStore.get(reviewer.runId)).toMatchObject({ ok: true, run: { role: "pi-company.reviewer", writePaths: [], task: w.task("a").taskId } });
+  const reviewerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!;
+  expect(reviewerRequest.tools?.map((tool) => tool.name)).not.toContain("pi_company_change_apply");
+
+  w.provider.queue.push(submit("完成 d"), pmAck);
+  await w.dispatch("d");
+  await until(() => w.task("d").status === "awaiting_review");
+  await w.manager.stop(c.runId);
+  expect(await w.manager.workflowManage(w.fixture.requirementId, { action: "delivery-check" }))
+    .toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["task_review_missing"]) });
+});
+
+test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因且不占执行重试；再次打回进入待用户裁决，拆分或改名不能重置", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push(submit("完成 login"), pmAck);
+  const first = await w.dispatch("login");
+  await until(() => w.task("login").status === "awaiting_review");
+  await expect(w.dispatch("login")).rejects.toMatchObject({ code: "task_not_ready" });
+
+  w.provider.queue.push(submit("缺失败提示", [{ kind: "blocking" }]), pmAck);
+  const rejected = await w.review("login");
+  await until(() => w.task("login").status === "awaiting_rework");
+  expect(await w.runStore.get(rejected.runId)).toMatchObject({ ok: true, run: { state: "completed" } });
+  expect(w.task("login").reviews[0]).toMatchObject({ attemptRunId: first.runId, outcome: "blocked" });
+  await expect(w.dispatch("login")).rejects.toMatchObject({ code: "rework_required" });
+  await expect(w.dispatch("login", { reason: "重试", maxTurns: 2 })).rejects.toMatchObject({ code: "retry_not_needed" });
+  await expect(w.review("login")).rejects.toMatchObject({ code: "task_not_ready" });
+
+  w.provider.queue.push(submit("补上失败提示"), pmAck);
+  const fix = await w.rework("login", "补失败提示", 3);
+  await until(() => w.task("login").status === "awaiting_review");
+  expect(w.task("login").attempts[1]).toMatchObject({ runId: fix.runId, maxTurns: 3, reason: "补失败提示", rework: true, outcome: "completed" });
+  const fixRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("审查打回后的返修"))!;
+  expect(fixRequest.systemPrompt).toContain("输入错误验证码");
+
+  w.provider.queue.push(submit("仍缺失败提示", [{ kind: "unverified" }]), pmAck);
+  const second = await w.review("login");
+  await until(() => w.task("login").status === "awaiting_user");
+  expect(w.task("login").reviews[1]).toMatchObject({ runId: second.runId, attemptRunId: fix.runId, outcome: "unverified" });
+  await expect(w.rework("login")).rejects.toMatchObject({ code: "task_not_ready" });
+  await expect(w.plan.execute({ action: "update", planVersion: 1, add: [spec("login-fix")] })).rejects.toMatchObject({ code: "task_not_ready" });
 });
