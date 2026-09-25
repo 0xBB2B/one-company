@@ -1,7 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { writeGuardLaunch } from "../runtime/command-boundary.ts";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { defaultRoleDir } from "../runtime/roles.ts";
 import { join } from "node:path";
 import { LocalDatabase, repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
@@ -413,6 +414,29 @@ test("debug 命令可写工作区、继承完整环境变量；数据目录、Gi
     expect(run.status).toBe("failed");
     await expect(w.read(target)).rejects.toMatchObject({ code: "ENOENT" });
   }
+  const agentDir = join(w.dataRoot, "..");
+  for (const target of [join(agentDir, "agents", "pm.md"), join(agentDir, "skills", "x", "SKILL.md"), join(agentDir, "trust.json"), join(w.repositoryRoot, ".pi", "agents", "pm.md")]) {
+    const run = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(target, ".."))}; echo x > ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
+    expect(run.status).toBe("failed");
+    await expect(readFile(target, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  const linkedTarget = join(w.dataRoot, "..", "dotfiles-skills");
+  await mkdir(linkedTarget, { recursive: true });
+  await symlink(linkedTarget, join(agentDir, "skills"));
+  const viaLink = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(agentDir, "skills", "y"))} && echo x > ${JSON.stringify(join(agentDir, "skills", "y", "SKILL.md"))}`, performance: NA }) as VerificationView;
+  expect(viaLink.status).toBe("failed");
+  await expect(readFile(join(linkedTarget, "y", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  const dotfiles = join(w.dataRoot, "..", "dotfiles-pi");
+  await mkdir(dotfiles, { recursive: true });
+  await symlink(dotfiles, join(w.repositoryRoot, ".pi"));
+  const viaParent = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(w.repositoryRoot, ".pi", "agents"))} && echo x > ${JSON.stringify(join(w.repositoryRoot, ".pi", "agents", "pm.md"))}`, performance: NA }) as VerificationView;
+  expect(viaParent.status).toBe("failed");
+  await expect(readFile(join(dotfiles, "agents", "pm.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  const packageFile = join(defaultRoleDir(), "..", "agents", "pm.md");
+  const packageBefore = await readFile(packageFile, "utf8");
+  const tampered = await worker.execute({ action: "run", kind: "debug", command: `echo x >> ${JSON.stringify(packageFile)}`, performance: NA }) as VerificationView;
+  expect(tampered.status).toBe("failed");
+  expect(await readFile(packageFile, "utf8")).toBe(packageBefore);
   const hook = join((await repositoryIdentity(w.repositoryRoot)).commonDir, "hooks", "pre-commit");
   const git = await worker.execute({ action: "run", kind: "debug", command: `echo x > "$(git rev-parse --git-common-dir)/hooks/pre-commit"`, performance: NA }) as VerificationView;
   expect(git.status).toBe("failed");

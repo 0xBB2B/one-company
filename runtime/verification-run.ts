@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir, open, realpath, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, open, readlink, realpath, rm } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
@@ -9,6 +9,7 @@ import { activeCheckRoundIn, CHECK_ROUNDS, collectInputManifest, manifestMatches
 import type { CheckBaseline, CheckInvalidation, CheckRound, InputManifest } from "./check-round.ts";
 import { writeGuardLaunch } from "./command-boundary.ts";
 import { repositoryIdentity } from "./identity.ts";
+import { defaultRoleDir } from "./roles.ts";
 import { authorizeToolAction } from "./core-permissions.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
@@ -66,6 +67,17 @@ function viewOf(run: VerificationRun): VerificationView {
     outputRoot: run.outputRoot, startedAt: run.startedAt, finishedAt: run.finishedAt });
 }
 
+/** 路径尚不存在时按最近的已存在上级解析，悬空链接跟到其目标，得到写入实际会落到的位置。 */
+async function resolvedTarget(path: string, depth = 0): Promise<string> {
+  try { return await realpath(path); } catch { /* 不存在或悬空链接 */ }
+  if (depth < 16) {
+    const link = await readlink(path).catch(() => null);
+    if (link !== null) return resolvedTarget(resolve(await resolvedTarget(dirname(path), depth + 1), link), depth + 1);
+  }
+  const parent = dirname(path);
+  return parent === path ? path : join(await resolvedTarget(parent, depth + 1), basename(path));
+}
+
 export async function createVerificationRunTool(options: VerificationRunToolOptions) {
   try { return await openVerificationRunTool(options); }
   catch { throw new VerificationRunError("verification_denied"); }
@@ -114,9 +126,17 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
   }
   async function launchFor(started: VerificationRun, root: string) {
     const dataRoot = await realpath(options.dataRoot), outputRoot = await realpath(started.outputRoot), scratch = join(outputRoot, "tmp");
-    // 与 change_apply 同样不得改写 Git 元数据（hook 会在用户后续 Git 操作中执行）、规则、归档与角色定义
-    const protectedPaths = [(await repositoryIdentity(root)).commonDir, ...[".git", "docs/spec", "docs/prod", ".pi/agents"].map((path) => join(root, path))];
-    return writeGuardLaunch(started.command, { deniedWrites: [dataRoot, ...protectedPaths, ...(started.checkRoundId ? [root] : [])],
+    // 不得改写 Git 元数据（hook 会在用户后续 Git 操作中执行）、规则、归档与角色定义
+    const agentDir = dirname(dataRoot), repositoryRoot = await realpath(options.repositoryRoot);
+    const protectedPaths = [(await repositoryIdentity(root)).commonDir, ...[".git", "docs/spec", "docs/prod", ".pi/agents", ".pi/skills"].map((path) => join(root, path)),
+      // 角色定义、skills 与项目信任在每次派工时重新读取，写入即可改变后续运行的说明、模型与能力
+      ...["agents", "skills", "trust.json"].map((path) => join(agentDir, path)),
+      ...[".pi/agents", ".pi/skills"].map((path) => join(repositoryRoot, path)),
+      // 安装包含内置角色定义、skills 与守护进程自身代码
+      await realpath(dirname(defaultRoleDir()))];
+    // 受保护路径若是指向别处的链接，写入会落到链接目标，故一并禁写其真实路径
+    const targets = await Promise.all(protectedPaths.map((path) => resolvedTarget(path)));
+    return writeGuardLaunch(started.command, { deniedWrites: [dataRoot, ...new Set([...protectedPaths, ...targets]), ...(started.checkRoundId ? [root] : [])],
       allowedWrites: [join(outputRoot, "outputs"), scratch], deniedSockets: [dataRoot], scratch });
   }
   async function writeManifest(outputRoot: string, manifest: InputManifest): Promise<void> {
