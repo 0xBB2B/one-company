@@ -30,9 +30,9 @@ describe("package.json 声明契约", () => {
     expect(pkg.pi?.prompts).toEqual([]);
   });
 
-  test("files 含 agents、daemon、extensions、runtime、rules、skills", async () => {
+  test("files 含 agents、daemon、extensions、runtime、rules", async () => {
     const pkg = await readPackageJson();
-    for (const entry of ["agents", "daemon", "extensions", "runtime", "rules", "skills"]) {
+    for (const entry of ["agents", "daemon", "extensions", "runtime", "rules"]) {
       expect(pkg.files).toContain(entry);
     }
   });
@@ -93,6 +93,7 @@ describe("被替代文件不存在", () => {
     "skills/spec-sync",
     "skills/spec-docs",
     "skills/git-push",
+    "skills/git-commit",
   ];
 
   for (const relativePath of removedFiles) {

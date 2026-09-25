@@ -20,7 +20,6 @@
     "resources/spec",
     "runtime",
     "rules",
-    "skills",
     "README.md",
     "LICENSE"
   ],
@@ -34,9 +33,6 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts"
-    ],
-    "skills": [
-      "./skills"
     ],
     "prompts": []
   },
