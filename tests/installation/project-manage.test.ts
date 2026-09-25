@@ -69,7 +69,6 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     await host.call("approve", { value: true });
     const preview = await invoke({ action: "init", preview: true });
     expect(existsSync(databasePath)).toBe(false);
-    expect((await daemon.probe()).watchers).toBe(0);
     expect(preview.details).toMatchObject({ action: "preview", partial: false, databaseCreated: false });
     expect(preview.text).toContain("src/main.ts");
     expect(preview.confirmations).toHaveLength(1);
@@ -86,8 +85,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     expect(Number(initialized.details.parsedFiles) + Number(initialized.details.reusedFiles)).toBe(2);
     expect(initialized.confirmations).toHaveLength(2);
     expect(initialized.confirmations[0]!.message).toContain("不能用于批准后续 init/refresh");
-    expect(initialized.confirmations[1]!.message).toContain("当前 session");
-    expect(initialized.confirmations[1]!.message).toContain("断线重连");
+    expect(initialized.confirmations[1]!.message).toContain("窗口关闭后 PM 与子代理仍可查询");
     const workspace = initialized.details.workspace as { workspaceId: string; repoId: string };
     expect(workspace).toEqual({ workspaceId: expect.stringMatching(/^[0-9a-f]{64}$/), repoId: identity.repoId });
     const options = { workspaceId: workspace.workspaceId, repoId: identity.repoId, root: repositoryRoot, branch: "refs/heads/main" };
@@ -125,7 +123,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     await host.close();
     expect(await daemon.stop()).toMatchObject({ code: 0, signal: null });
     const probe = await daemon.probe();
-    expect(probe).toMatchObject({ watchers: 0, forbiddenReads: 0, exited: true });
+    expect(probe).toMatchObject({ forbiddenReads: 0, exited: true });
     expect(probe.closedWatchers).toBe(probe.createdWatchers); expect(existsSync(daemon.socket)).toBe(false);
   } catch (error) { failed = true; throw error; }
   finally { await world.close(failed); }

@@ -106,13 +106,8 @@ export interface Host extends OwnedProcess {
   call(action: string, input?: Record<string, unknown>): Promise<HostReply>;
   close(): Promise<void>;
 }
-export interface Grant {
-  grantHash: string; status: string; sessionId: string; windowId: string;
-  connectionId: string; daemonInstanceId: string; workspaceId: string;
-}
 export interface Probe {
-  pid: number; node: string; nodeVersion: string; watchers: number; createdWatchers: number;
-  closedWatchers: number; forbiddenReads: number; exited: boolean;
+  pid: number; node: string; nodeVersion: string; forbiddenReads: number; exited: boolean;
 }
 export interface InstalledRepository {
   path: string; home: string; agentDir: string; dataRoot: string; repoId: string; commonDir: string;
@@ -340,7 +335,6 @@ export class InstalledProjectFixture {
     return host;
   }
 
-  grants(repo: InstalledRepository): Grant[] { return databaseRows<Grant>(repo.databasePath, "project_index_grants"); }
   async snapshot(repo: InstalledRepository): Promise<IndexSnapshot> {
     // getSnapshot 是只读已发布结果；只有 index.db 存在才允许实例化，避免观察建立新库。
     assert.ok(existsSync(repo.indexPath), "尚未发布index.db");
@@ -411,11 +405,10 @@ async function runHost(): Promise<void> {
   const sdkVersion = JSON.parse(await readFile(join(process.env.M3_INSTALLED_SDK!, "package.json"), "utf8")).version as string;
   assert.equal(sdkVersion, "0.85.1");
   const runtime = await sdk.ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, modelsStorePath: join(agentDir, "models-store.json"), refreshOnCreate: false });
-  type Reply = { calls?: ToolCall[]; text?: string; slow?: boolean };
+  type Reply = { calls?: ToolCall[]; text?: string };
   const queue: Reply[] = [], approvals: boolean[] = [];
   const requests: string[] = [], confirmations: HostReply["confirmations"] = [], notifications: unknown[] = [];
-  let payloadEvents = 0, onPayloadCalls = 0, timestamp = 0, release: (() => void) | undefined, entered = false;
-  let running: Promise<void> | undefined;
+  let payloadEvents = 0, onPayloadCalls = 0, timestamp = 0;
   runtime.registerProvider("installed-controlled", { apiKey: "fixture", baseUrl: "http://127.0.0.1:1", api: "anthropic-messages",
     models: [{ id: "controlled", name: "controlled", reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     streamSimple(model, context, options) {
@@ -429,7 +422,6 @@ async function runHost(): Promise<void> {
         assert.equal(typeof options?.onPayload, "function", "必须执行真实SDK payload接线");
         await options!.onPayload!({ fixture: "installed-controlled", messages: context.messages }, model); onPayloadCalls++;
         stream.push({ type: "start", partial: { ...message, content: [], stopReason: "pending" } });
-        if (reply.slow) { entered = true; await new Promise<void>((done) => { release = done; }); release = undefined; }
         stream.push({ type: "done", reason: reply.calls?.length ? "toolUse" : "stop", message });
       })().catch((error) => stream.push({ type: "error", reason: "error", error: { ...message, stopReason: "error", errorMessage: String(error) } }));
       return stream;
@@ -453,7 +445,7 @@ async function runHost(): Promise<void> {
     if (session) {
       try {
         const abort = !session.isIdle ? session.abort() : Promise.resolve();
-        release?.(); await abort; await session.waitForIdle(); await running;
+        await abort; await session.waitForIdle();
       } catch (error) { errors.push(error); }
       try { if (bound) await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); }
       catch (error) { errors.push(error); }
@@ -465,7 +457,7 @@ async function runHost(): Promise<void> {
   try {
     ({ session } = await sdk.createAgentSession({ cwd, agentDir, resourceLoader: loader, settingsManager: settings,
       modelRuntime: runtime, model: runtime.getModels("installed-controlled")[0], sessionManager: sdk.SessionManager.inMemory(cwd),
-      tools: ["pi_company_project_manage", "read", "write", "edit", "bash", "pi_company_git_commit"],
+      tools: ["pi_company_project_manage", "pi_company_knowledge_query", "read", "write", "edit", "bash", "pi_company_git_commit"],
     }));
     const ui: ExtensionUIContext = { ...session.extensionRunner.getUIContext(),
       confirm: async (title, message) => {
@@ -489,19 +481,13 @@ async function runHost(): Promise<void> {
       void (async () => {
         if (action === "close") { await close(); process.send?.({ id, value: get() }, () => { process.disconnect?.(); }); return; }
         if (action === "approve") approvals.push(input.value === true);
-        else if (action === "release") { release?.(); await running; running = undefined; }
-        else if (action === "slowState") { process.send?.({ id, value: { ...get(), entered } }); return; }
-        else if (action === "project" || action === "tool" || action === "text" || action === "slow") {
-          assert.ok(!running, "不允许重叠模型请求");
+        else if (action === "project" || action === "tool" || action === "text") {
           const name = action === "project" ? "pi_company_project_manage" : String(input.name ?? "write");
           const calls: ToolCall[] = action === "text" || input.textOnly === true ? [] : [{ type: "toolCall", id: `installed-${timestamp + 1}`, name,
             arguments: action === "project" ? { ...input, repoId: process.env.M3_INSTALLED_REPO } : input.args as Record<string, unknown> }];
-          queue.push({ calls, text: "controlled answer", slow: action === "slow" });
+          queue.push({ calls, text: "controlled answer" });
           if (calls.length) queue.push({ text: "controlled follow-up" });
-          entered = false;
-          const operation = session!.prompt("测试前端发起当前项目操作", { source: "interactive" }).then(() => session!.waitForIdle()).finally(() => { queue.length = 0; });
-          if (action === "slow") { running = operation; void operation.catch(() => {}); }
-          else await operation;
+          await session!.prompt("测试前端发起当前项目操作", { source: "interactive" }).then(() => session!.waitForIdle()).finally(() => { queue.length = 0; });
         } else if (action !== "get") throw new Error(`未知夹具动作 ${action}`);
         process.send?.({ id, value: get() });
       })().catch((error) => process.send?.({ id, error: error instanceof Error ? error.stack : String(error) }));

@@ -2,9 +2,8 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { appendFileSync, chmodSync, lstatSync, realpathSync, writeFileSync } from "node:fs";
-import type { ProjectIndexCoordinator } from "../../daemon/project-index-coordinator.ts";
+import type { ProjectIndexHost } from "../../daemon/project-index-host.ts";
 import type { DaemonServer } from "../../daemon/server.ts";
-import type { ProjectSyncGrantIssuer } from "../../runtime/project-sync-grants.ts";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { createConnection } from "node:net";
@@ -37,15 +36,11 @@ export interface QuerySample {
   index: number;
   ok: boolean;
   queryMs: number | null;
-  checkMs: number | null;
   combinedMs: number | null;
   responseBytes: number | null;
   pageBytes: number | null;
   generation: number | null;
   baselineHash: string | null;
-  receiptChecked: boolean;
-  authorizationValidatedBefore: boolean;
-  authorizationValidatedAfter: boolean;
   requirement: unknown;
   hitCount: number | null;
   hitIdentifiers: string[];
@@ -176,7 +171,7 @@ export function summarizeQueryHits(queryId: QueryCase["id"], facts: unknown): Qu
   };
 }
 
-/** 页面预算只约束page，不包含receipt外壳；索引代次允许在内容基线不变时前进。 */
+/** 页面预算只约束page，不包含RPC外壳；索引代次允许在内容基线不变时前进。 */
 export function assertQueryPageMetadata(page: { generation?: unknown }, maxBytes: number): void {
   if (byteLength(page) > maxBytes) throw Object.assign(new Error("query_page_budget_exceeded"), { code: "query_page_budget_exceeded" });
   if (!Number.isSafeInteger(page.generation) || Number(page.generation) < 1) {
@@ -576,15 +571,11 @@ function emptySample(archiveCount: number, queryId: QueryCase["id"], index: numb
     index,
     ok: false,
     queryMs: null,
-    checkMs: null,
     combinedMs: null,
     responseBytes: null,
     pageBytes: null,
     generation: null,
     baselineHash: null,
-    receiptChecked: false,
-    authorizationValidatedBefore: false,
-    authorizationValidatedAfter: false,
     requirement: null,
     hitCount: null,
     hitIdentifiers: [],
@@ -609,14 +600,12 @@ function resourceSnapshot() {
 async function codeInputs(scriptRoot: string): Promise<Array<{ path: string; sha256: string }>> {
   const paths = [
     "tests/helpers/m4-query-benchmark.ts",
-    "daemon/project-index-coordinator.ts",
+    "daemon/project-index-host.ts",
     "daemon/server.ts",
     "runtime/knowledge-query.ts",
     "runtime/knowledge-query-contracts.ts",
     "runtime/project-index-service.ts",
-    "runtime/project-index-sync.ts",
     "runtime/project-index-policy.ts",
-    "runtime/project-sync-grants.ts",
     "runtime/index-store.ts",
     "runtime/protocol.ts",
     "runtime/identity.ts",
@@ -638,7 +627,7 @@ async function runTier(input: {
   archiveCount: number;
   git: GitRunner;
   interrupted: () => boolean;
-  faultInjection: "coordinator_close_after_success" | null;
+  faultInjection: "host_close_after_success" | null;
 }): Promise<{ samples: QuerySample[]; setup: Record<string, unknown>; cleanup: Record<string, unknown> }> {
   const tierOutput = join(input.output, `closed-metadata-${input.archiveCount}`);
   await mkdir(tierOutput, { mode: 0o700 });
@@ -649,13 +638,11 @@ async function runTier(input: {
   const samples: QuerySample[] = [];
   const cleanupErrors: string[] = [];
   let peer: Peer | undefined;
-  let coordinator: ProjectIndexCoordinator | undefined;
-  let issuer: ProjectSyncGrantIssuer | undefined;
+  let host: ProjectIndexHost | undefined;
   let server: DaemonServer | undefined;
   let probeControl: ReturnType<typeof installArchiveReadProbe> | undefined;
   let manifest: FixtureManifest | undefined;
   let setup: Record<string, unknown> = { ok: false };
-  let scope: Record<string, unknown> | undefined;
   let preHandoffPeerCleanupFailed = false;
   const started = performance.now();
   try {
@@ -668,11 +655,10 @@ async function runTier(input: {
     await fs.promises.readFile(positivePath);
     if (probeControl.probe.positiveControlReads < 1) throw new Error("archive_read_probe_positive_control_failed");
 
-    const [{ DaemonServer }, { ProjectIndexCoordinator }, { repoDataDir, repositoryIdentity }, grantsModule, { ProjectIndexService }, protocolModule] = await Promise.all([
+    const [{ DaemonServer }, { ProjectIndexHost: Host, registerIndexHandlers }, { repoDataDir, repositoryIdentity }, { ProjectIndexService }, protocolModule] = await Promise.all([
       import("../../daemon/server.ts"),
-      import("../../daemon/project-index-coordinator.ts"),
+      import("../../daemon/project-index-host.ts"),
       import("../../runtime/identity.ts"),
-      import("../../runtime/project-sync-grants.ts"),
       import("../../runtime/project-index-service.ts"),
       import("../../runtime/protocol.ts"),
     ]);
@@ -688,21 +674,14 @@ async function runTier(input: {
     // macOS的Unix socket路径上限较短；单独使用本轮创建的短私有目录，并在finally精确清理。
     const socketPath = join(socketRoot, "q.sock");
     await activeServer.listen(socketPath);
-    const verifier = new grantsModule.ProjectSyncGrantVerifier({
-      dataRoot: fixture.dataRoot,
-      repoId: identity.repoId,
-      commonDir: identity.commonDir,
-      daemonInstanceId: activeServer.daemonInstanceId,
-    });
     let archiveRiskHooks = 0;
-    coordinator = new ProjectIndexCoordinator({
+    host = new Host({
       repoId: identity.repoId,
       dataRoot: fixture.dataRoot,
-      commonDir: identity.commonDir,
-      server: activeServer,
-      grants: verifier,
-      beforeArchiveRisk: () => { archiveRiskHooks++; },
+      repositoryRoot: fixture.repo,
+      beforeArchiveRisk: async () => { archiveRiskHooks++; },
     });
+    registerIndexHandlers(activeServer, host);
     activeServer.markHandlersReady();
     const service = await ProjectIndexService.open({
       repositoryRoot: fixture.repo,
@@ -718,33 +697,13 @@ async function runTier(input: {
       input.config.rpcTimeoutMs,
       protocolModule as unknown as ProtocolModule,
     );
-    const activeClient = activeServer.clients()[0];
-    if (!activeClient) throw new Error("authenticated_client_missing");
-    const hostPrincipal = {};
-    const activeIssuer = new grantsModule.ProjectSyncGrantIssuer({
-      dataRoot: fixture.dataRoot,
-      repoId: identity.repoId,
-      commonDir: identity.commonDir,
-      hostPrincipal,
-      currentHostPrincipal: () => hostPrincipal,
-      currentConnectionIdentity: () => activeServer.clients().includes(activeClient) && activeClient.daemonInstanceId && activeClient.connectionId
-        ? { daemonInstanceId: activeClient.daemonInstanceId, connectionId: activeClient.connectionId, connectionSequence: 1 }
-        : null,
-      authorize: () => true,
-    });
-    issuer = activeIssuer;
-    const issued = await activeIssuer.issue(activeClient, service.workspace);
-    scope = {
-      grantId: issued.grantId,
-      repoId: identity.repoId,
-      workspaceId: service.workspace.workspaceId,
-      repositoryRoot: fixture.repo,
-      branch: service.workspace.branch,
-    };
-    verifier.validateForClient(issued.grantId, activeClient, service.workspace);
     const initStarted = performance.now();
-    const initialized = await peer.call("index.sync", { action: "init", ...scope });
+    const initialized = (await peer.call("index.manage", { action: "init" })).result as Record<string, unknown>;
     const initMs = performance.now() - initStarted;
+    // init后首次查询要做一次完整对账重建；预热一次，计时样本只测指纹未变时的查询。
+    const warmupStarted = performance.now();
+    await peer.call("knowledge.query", { query: QUERY_CASES[0]!.request });
+    const warmupMs = performance.now() - warmupStarted;
     const archives = initialized.archives as { metadata?: unknown[]; issues?: unknown[] };
     if (initialized.status !== "ready" || initialized.files !== input.config.files
       || archives?.metadata?.length !== input.archiveCount || archives?.issues?.length !== 0
@@ -754,13 +713,14 @@ async function runTier(input: {
     setup = {
       ok: true,
       initMs,
+      warmupMs,
       status: initialized.status,
       generation: initialized.generation,
       baselineHash: initialized.baselineHash,
       indexedFiles: initialized.files,
       archiveMetadataCount: archives.metadata.length,
       archiveIssues: archives.issues.length,
-      authorization: "real ProjectSyncGrantIssuer persistence + ProjectSyncGrantVerifier + authenticated DaemonServer ClientInfo",
+      daemon: "authenticated DaemonServer + ProjectIndexHost via registerIndexHandlers",
       archiveRiskHooks,
     };
     createJson(join(tierOutput, "setup.json"), setup);
@@ -774,9 +734,7 @@ async function runTier(input: {
         const sample = emptySample(input.archiveCount, query.id, index, new Error("sample_not_completed"));
         const queryStarted = performance.now();
         try {
-          verifier.validateForClient(issued.grantId, activeClient, service.workspace);
-          sample.authorizationValidatedBefore = true;
-          const result = await peer.call("project.index.query", { action: "query", grantId: issued.grantId, query: query.request });
+          const result = await peer.call("knowledge.query", { query: query.request });
           const queryFinished = performance.now();
           sample.queryMs = queryFinished - queryStarted;
           sample.responseBytes = byteLength(result);
@@ -831,15 +789,6 @@ async function runTier(input: {
             || sample.coverage.sourceExcerptsTruncated !== 0 || sample.coverage.nextCursor) {
             throw new Error("finite_query_was_truncated");
           }
-          if (typeof result.receipt !== "string") throw new Error("query_receipt_missing");
-          const checkStarted = performance.now();
-          const checked = await peer.call("project.index.query", { action: "check", grantId: issued.grantId, receipt: result.receipt });
-          const checkedAt = performance.now();
-          sample.checkMs = checkedAt - checkStarted;
-          if (checked.current !== true) throw new Error("query_check_not_current");
-          sample.receiptChecked = true;
-          verifier.validateForClient(issued.grantId, activeClient, service.workspace);
-          sample.authorizationValidatedAfter = true;
           sample.combinedMs = performance.now() - queryStarted;
           sample.ok = true;
           delete sample.error;
@@ -868,24 +817,19 @@ async function runTier(input: {
     setup = { ok: false, error: errorRecord(error), elapsedMs: performance.now() - started };
   } finally {
     let peerClosed: boolean | null = peer || preHandoffPeerCleanupFailed ? false : null;
-    let coordinatorClosed: boolean | null = coordinator ? false : null;
-    let issuerClosed: boolean | null = issuer ? false : null;
+    let hostClosed: boolean | null = host ? false : null;
     let serverClosed: boolean | null = server ? false : null;
     let probeRestored: boolean | null = probeControl ? false : null;
     if (peer) {
       try { peer.close(); await settleWithin(peer.closed, 5_000, "peer_close_timeout"); peerClosed = true; }
       catch (error) { cleanupErrors.push(`peer:${String(error)}`); }
     }
-    if (coordinator) {
+    if (host) {
       try {
-        await coordinator.close();
-        if (input.faultInjection === "coordinator_close_after_success") throw new Error("injected_coordinator_close_failure");
-        coordinatorClosed = true;
-      } catch (error) { cleanupErrors.push(`coordinator:${String(error)}`); }
-    }
-    if (issuer) {
-      try { await issuer.close(); issuerClosed = true; }
-      catch (error) { cleanupErrors.push(`issuer:${String(error)}`); }
+        await host.close();
+        if (input.faultInjection === "host_close_after_success") throw new Error("injected_host_close_failure");
+        hostClosed = true;
+      } catch (error) { cleanupErrors.push(`host:${String(error)}`); }
     }
     if (server) {
       try { await server.close(); serverClosed = true; }
@@ -897,7 +841,7 @@ async function runTier(input: {
       catch (error) { cleanupErrors.push(`probe:${String(error)}`); }
     }
     let removed = false, socketRootRemoved = false;
-    const resourcesClosed = peerClosed !== false && coordinatorClosed !== false && issuerClosed !== false
+    const resourcesClosed = peerClosed !== false && hostClosed !== false
       && serverClosed !== false && probeRestored !== false;
     const rootsSafeToRemove = resourcesClosed && input.git.active.size === 0;
     if (rootsSafeToRemove) {
@@ -913,8 +857,7 @@ async function runTier(input: {
       socketRootRemoved,
       rootsPreservedForDiagnostics: !rootsSafeToRemove,
       peerClosed,
-      coordinatorClosed,
-      issuerClosed,
+      hostClosed,
       serverClosed,
       probeRestored,
       activeGitChildren: [...input.git.active],
@@ -941,7 +884,7 @@ function help(): string {
     `smoke固定参数：${JSON.stringify(SMOKE_QUERY_BENCHMARK)}`,
     `固定查询：${JSON.stringify(QUERY_CASES)}`,
     "smoke仅验证装置，formal=false，不构成性能过门槛证据。",
-    "formal也只测认证daemon RPC query及随后check，不是SDK、云模型或M4阶段正式验收。",
+    "formal也只测认证daemon上knowledge.query RPC（含查询前对账），不是SDK、云模型或M4阶段正式验收。",
   ].join("\n");
 }
 
@@ -963,8 +906,8 @@ export async function runQueryBenchmark(options: { output: string; scenario: "sm
   const config = options.scenario === "formal" ? FORMAL_QUERY_BENCHMARK : SMOKE_QUERY_BENCHMARK;
   const formal = options.scenario === "formal";
   const requestedFault = process.env.M4_QUERY_BENCHMARK_FAULT ?? "";
-  if (requestedFault && (formal || requestedFault !== "coordinator_close_after_success")) throw new Error("invalid_fault_injection");
-  const faultInjection = requestedFault === "coordinator_close_after_success" ? requestedFault : null;
+  if (requestedFault && (formal || requestedFault !== "host_close_after_success")) throw new Error("invalid_fault_injection");
+  const faultInjection = requestedFault === "host_close_after_success" ? requestedFault : null;
   const beforeInputs = await codeInputs(scriptRoot);
   const git = new GitRunner(output);
   const beforeHead = await git.run(scriptRoot, ["rev-parse", "HEAD"]);
@@ -978,11 +921,10 @@ export async function runQueryBenchmark(options: { output: string; scenario: "sm
     scenario: options.scenario,
     evidenceClass: formal ? "measurement-not-stage-acceptance" : "development-smoke-not-performance-evidence",
     performanceClaimAllowed: false,
-    timingLayer: "authenticated DaemonServer project.index.query RPC query plus a subsequent receipt check, including client pre/post authorization and page validation",
+    timingLayer: "authenticated DaemonServer knowledge.query RPC including pre-query fingerprint reconciliation, plus client page validation",
     timingSegments: {
-      queryMs: "client pre-authorization plus query RPC request/response decoding; not pure SQL or RPC time",
-      checkMs: "receipt check RPC request through response decoding",
-      combinedMs: "pre-authorization, query RPC, client page checks, receipt check RPC, post-authorization; excludes sample log writes and cleanup",
+      queryMs: "knowledge.query RPC request/response decoding, including daemon-side fingerprint reconciliation; not pure SQL or RPC time",
+      combinedMs: "knowledge.query RPC plus client page checks; excludes one post-init warm-up query, sample log writes and cleanup",
     },
     excludedTimingLayers: ["pi SDK tool lifecycle", "host/UI approval", "cloud/model request", "network service", "M4 formal check-round freeze"],
     config,
@@ -1084,7 +1026,7 @@ export async function runQueryBenchmark(options: { output: string; scenario: "sm
     smokeMustNotClaimThreshold: !formal,
     stageAcceptance: "not_issued",
     resultScope: formal
-      ? "formal fixture shape measured at authenticated daemon RPC query+check layer; SDK/cloud end-to-end remains required before acceptance"
+      ? "formal fixture shape measured at authenticated daemon knowledge.query RPC layer; SDK/cloud end-to-end remains required before acceptance"
       : "smoke harness self-check only; fixture and sample counts are intentionally reduced",
     unmeasured: ["pi SDK end-to-end", "host/UI", "cloud/model", "formal frozen check round", "concurrent production workload"],
     inputsAfter: afterInputs,

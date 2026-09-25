@@ -1,6 +1,4 @@
 import { uuidv7 } from "./database.ts";
-import { projectBaselineForContext, UnsettledProjectMutationError } from "./project-baseline-hooks.ts";
-import type { ProjectBaselineHooks } from "./project-baseline-hooks.ts";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BashOperations, BashToolDetails, ToolDefinition, UserBashEvent as SdkUserBashEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -52,13 +50,13 @@ export interface BashCommandGuard {
   after(token: unknown, outcome: unknown): Promise<string[]>;
 }
 
+export class UnsettledShellError extends Error {}
+
 export function createManagedBashOperations(input: {
   registry: ShellRegistry;
   host: Host;
   runToken: string;
   guard?: BashCommandGuard;
-  /** 可信执行闭包，不进入模型 schema 或持久任务记录。 */
-  mutation?: <T>(operation: () => Promise<T>) => Promise<T>;
 }): BashOperations {
   const { registry, host, runToken, guard } = input;
   return {
@@ -122,12 +120,12 @@ export function createManagedBashOperations(input: {
               if (stopping) {
                 const stopped = await stopping;
                 if (!stopped.ok || stopped.task !== spawnedTask || stopped.task.activity !== "ended") {
-                  throw new UnsettledProjectMutationError(stopped.ok ? "Shell 停止尚未确认" : stopped.reason);
+                  throw new UnsettledShellError(stopped.ok ? "Shell 停止尚未确认" : stopped.reason);
                 }
               }
               if (signal?.aborted) throw new Error("aborted");
               const task = await waitForOutcome(registry, taskId);
-              if (task !== spawnedTask) throw new UnsettledProjectMutationError("Shell 结果对象已被替代");
+              if (task !== spawnedTask) throw new UnsettledShellError("Shell 结果对象已被替代");
               outcome = task;
               if (signal?.aborted) throw new Error("aborted");
               switch (task.status) {
@@ -135,7 +133,7 @@ export function createManagedBashOperations(input: {
                 case "failed": throw new Error(task.reason ?? "Command failed");
                 case "stopped": throw new Error(userAborted ? "aborted" : "Command stopped");
                 case "timed_out": throw new Error(`Command timed out after ${timeout} seconds`);
-                default: throw new UnsettledProjectMutationError(`无法确认命令是否已结束：${task.reason ?? ""}`);
+                default: throw new UnsettledShellError(`无法确认命令是否已结束：${task.reason ?? ""}`);
               }
             } catch (error) {
               const taskToStop = spawnedTask;
@@ -150,7 +148,7 @@ export function createManagedBashOperations(input: {
               throw error;
             }
           };
-          completed = await (input.mutation ? input.mutation(execute) : execute());
+          completed = await execute();
         } catch (error) {
           executionFailed = true;
           executionError = error;
@@ -180,7 +178,6 @@ async function runBackground(
   params: BashToolParams,
   guard?: BashCommandGuard,
   signal?: AbortSignal,
-  mutation?: <T>(operation: () => Promise<T>) => Promise<T>,
 ): Promise<ToolResult> {
   if (signal?.aborted) throw new Error("aborted");
   const taskId = uuidv7();
@@ -224,7 +221,7 @@ async function runBackground(
       const stopped = await registry.stop(taskId);
       if (!stopped.ok || stopped.task.activity !== "ended") {
         try { await finishGuard(stopped); }
-        finally { throw new UnsettledProjectMutationError("后台 Shell 停止尚未确认"); }
+        finally { throw new UnsettledShellError("后台 Shell 停止尚未确认"); }
       }
       await finishGuard(stopped);
       throw new Error("aborted");
@@ -238,12 +235,12 @@ async function runBackground(
     const outcome = await waitForOutcome(registry, taskId);
     if (outcome.status === "uncertain") {
       try { await finishGuard(outcome); }
-      finally { throw new UnsettledProjectMutationError("后台 Shell 真实结束尚不可核对"); }
+      finally { throw new UnsettledShellError("后台 Shell 真实结束尚不可核对"); }
     }
     await finishGuard(outcome);
   };
-  // 回执与真实写入寿命分开：新请求不能中止用户已授权的后台任务，也不能提前签发 seal。
-  void (mutation ? mutation(execute) : execute()).catch(async (error) => {
+  // 回执与真实写入寿命分开：新请求不能中止用户已授权的后台任务。
+  void execute().catch(async (error) => {
     try { await finishGuard({ status: "execution_failed" }); }
     finally { rejectReceipt(error); }
   }).catch(rejectReceipt);
@@ -262,7 +259,7 @@ function appendGuardViolations(result: ToolResult, violations: string[]): ToolRe
 }
 
 export function createManagedBashTool(
-  input: { registry: ShellRegistry; host: Host; cwd: string; runToken: string; guard?: BashCommandGuard; baseline?: ProjectBaselineHooks },
+  input: { registry: ShellRegistry; host: Host; cwd: string; runToken: string; guard?: BashCommandGuard },
 ): ToolDefinition<typeof BASH_PARAMETERS, BashToolDetails | undefined> {
   const { registry, host, cwd, runToken, guard } = input;
   // 仅用于取 name/description 等静态元数据，不用于实际执行——真正执行走每次调用各自的 operations
@@ -275,10 +272,8 @@ export function createManagedBashTool(
     ...base,
     parameters: BASH_PARAMETERS,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const baseline = input.baseline ?? projectBaselineForContext(ctx);
       const callCwd = ctx?.cwd || cwd;
-      const mutation = baseline ? <T>(operation: () => Promise<T>) => baseline.runShell(toolCallId, callCwd, operation) : undefined;
-      if (params.background) return runBackground(registry, host, callCwd, runToken, params, guard, signal, mutation);
+      if (params.background) return runBackground(registry, host, callCwd, runToken, params, guard, signal);
 
       // 违规结果绑定到本次调用自己的闭包变量：多次 execute 并发交错时互不覆盖
       let violations: string[] = [];
@@ -286,7 +281,6 @@ export function createManagedBashTool(
         registry,
         host,
         runToken,
-        mutation,
         guard: guard && {
           launch: guard.launch,
           before: () => guard.before(),

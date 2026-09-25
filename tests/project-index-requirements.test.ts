@@ -7,7 +7,7 @@ import fsp from "node:fs/promises";
 import { join } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { ProjectIndexRequirements } from "../daemon/project-index-requirements.ts";
-import type { ProjectIndexArchiveRiskHookEvent } from "../daemon/project-index-coordinator.ts";
+import type { ProjectIndexArchiveRiskHookEvent } from "../daemon/project-index-host.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { readGit } from "../runtime/git-read.ts";

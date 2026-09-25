@@ -9,7 +9,6 @@ import { getHeapStatistics } from "node:v8";
 import { setTimeout as delay } from "node:timers/promises";
 import { appendSample, gitRun, jsonFile, sha, specText, summarize } from "./m3-benchmark.ts";
 import type { ChildJob, Sample } from "./m3-benchmark.ts";
-import type { ProjectIndexSyncManager, ProjectIndexSyncStatus, ProjectIndexWatchFactory } from "../../runtime/project-index-sync.ts";
 import type { ProjectIndexService, ProjectIndexBuildResult } from "../../runtime/project-index-service.ts";
 import type { LocalDatabase } from "../../runtime/database.ts";
 
@@ -20,7 +19,6 @@ const jobCategory = job.mode === "cold" && job.index < 0 ? "restart-warmup" : jo
 const samples: Sample[] = [];
 const failures: string[] = [];
 let aborted = false;
-let manager: ProjectIndexSyncManager | undefined;
 let service: ProjectIndexService | undefined;
 let disposeEvents: (() => void) | undefined;
 const onSignal = () => { aborted = true; service?.cancel(); };
@@ -64,19 +62,8 @@ await writeFile(positivePath, "probe control\n", { mode: 0o600 });
 await fs.promises.readFile(positivePath);
 assert.ok(probe.positiveControlReads > 0);
 
-const counters = { watchersCreated: 0, watcherCloseCalls: 0, watchersClosed: 0, watchersActive: 0,
-  watcherPeak: 0, watcherErrors: 0, parseCalls: 0, parsersObserved: 0, parserDeleteCalls: 0,
+const counters = { parseCalls: 0, parsersObserved: 0, parserDeleteCalls: 0,
   treesCreated: 0, treeDeleteCalls: 0, grammarLoads: 0 };
-const watchFactory: ProjectIndexWatchFactory = (path, listener) => {
-  const watcher = fs.watch(path, { persistent: false, encoding: "utf8" }, listener);
-  counters.watchersCreated++; counters.watchersActive++;
-  counters.watcherPeak = Math.max(counters.watcherPeak, counters.watchersActive);
-  watcher.once("close", () => { counters.watchersClosed++; counters.watchersActive--; });
-  watcher.on("error", () => { counters.watcherErrors++; });
-  const close = watcher.close.bind(watcher);
-  watcher.close = () => { counters.watcherCloseCalls++; return close(); };
-  return watcher;
-};
 function resourceSnapshot(phase: string) {
   const handles = (process as unknown as { _getActiveHandles?: () => object[] })._getActiveHandles?.() ?? [];
   const activeHandles: Record<string, number> = {};
@@ -92,16 +79,11 @@ function resourceSnapshot(phase: string) {
 }
 type Resources = ReturnType<typeof resourceSnapshot>;
 const resources: Resources[] = [];
-const emptyPeak = () => ({ rss: 0, heapUsed: 0, external: 0, arrayBuffers: 0, activeHandleCount: 0, watchers: 0 });
-const peak = emptyPeak();
-let roundPeak: ReturnType<typeof emptyPeak> | undefined;
+const peak = { rss: 0, heapUsed: 0, external: 0, arrayBuffers: 0, activeHandleCount: 0 };
 function capture(phase: string, save = true) {
   const value = resourceSnapshot(phase);
-  for (const target of roundPeak ? [peak, roundPeak] : [peak]) {
-    for (const key of ["rss", "heapUsed", "external", "arrayBuffers"] as const) target[key] = Math.max(target[key], value.memory[key]);
-    target.activeHandleCount = Math.max(target.activeHandleCount, Object.values(value.activeHandles).reduce((a, b) => a + b, 0));
-    target.watchers = Math.max(target.watchers, counters.watchersActive);
-  }
+  for (const key of ["rss", "heapUsed", "external", "arrayBuffers"] as const) peak[key] = Math.max(peak[key], value.memory[key]);
+  peak.activeHandleCount = Math.max(peak.activeHandleCount, Object.values(value.activeHandles).reduce((a, b) => a + b, 0));
   if (save) {
     resources.push(value);
     appendFileSync(join(job.output, "resources.jsonl"), `${JSON.stringify(value)}\n`, { mode: 0o600 });
@@ -171,134 +153,6 @@ async function indexBoot() {
     timingScope: job.mode === "cold" ? "Node process start through complete publication, includes observer setup; parent spawn-to-exit wall time separate"
       : "service import/open + persisted status + complete reconciliation; parser observer import and process start separate" });
 }
-async function waitPublished(previous: ProjectIndexSyncStatus, requireWatch: boolean): Promise<{ status: ProjectIndexSyncStatus; dirtyObserved: boolean }> {
-  const start = performance.now();
-  let dirtyObserved = false;
-  while (performance.now() - start <= job.config.updateTimeoutMs) {
-    guard();
-    const status = manager!.status(); // 只读观察，不调用ensureFresh/reconcile促发更新。
-    dirtyObserved ||= status.dirty;
-    if (status.state === "error") throw new Error(`index_sync_error:${JSON.stringify(status.lastError)}`);
-    if (status.state === "fresh" && !status.dirty && status.generation > previous.generation && status.baselineHash !== previous.baselineHash) {
-      if (requireWatch) assert.equal(status.lastReason, "watch", "非watch发布不能算监听延迟");
-      return { status, dirtyObserved };
-    }
-    await delay(job.config.pollIntervalMs);
-  }
-  throw new Error(`publication_timeout:${JSON.stringify(manager!.status())}`);
-}
-async function assertFiles(expectations: Map<string, string | null>) {
-  const { IndexStore } = await import("../../runtime/index-store.ts");
-  const { indexDatabase } = await import("../../runtime/database-paths.ts");
-  const store = new IndexStore(indexDatabase(job.dataRoot, service!.workspace.repoId), service!.workspace);
-  try {
-    const snapshot = store.getSnapshot();
-    for (const [path, hash] of expectations) {
-      const file = snapshot.files.find((item) => item.path === path);
-      if (hash === null) assert.equal(file, undefined, `删除文件仍被发布：${path}`);
-      else assert.equal(file?.hash, hash, `发布内容不匹配：${path}`);
-    }
-    assert.equal(snapshot.files.some((item) => item.path.startsWith("docs/prod/")), false);
-    assert.equal(JSON.stringify(snapshot).includes("M3_ARCHIVE_BODY_CANARY_"), false);
-  } finally { store.close(); }
-}
-async function live() {
-  const instance = await openIndex();
-  const { ProjectIndexSyncManager: Manager } = await import("../../runtime/project-index-sync.ts");
-  manager = new Manager({ service: instance, authorize: () => true, watchFactory });
-  const warmupStart = performance.now();
-  assert.equal((await manager.start()).state, "fresh");
-  record({ category: "live-warmup", index: 0, ok: true, durationMs: performance.now() - warmupStart,
-    parseCalls: counters.parseCalls, build: buildMetadata(manager.latestBuildResult()!) });
-  capture("after-warmup");
-  const subscribers: Array<() => void> = [];
-  for (let i = 0; i < 3; i++) subscribers.push(manager.subscribe({ id: `benchmark-consumer-${i}`, authorize: () => true,
-    onBaselineChange: () => {} }));
-  capture("three-kernel-subscribers-not-host-windows");
-  const expectations = new Map<string, string | null>();
-  for (let i = 0; i < job.config.updateSamples; i++) {
-    const slot = i % 10, round = Math.floor(i / 10), isSpec = slot >= 5, action = slot % 5;
-    const base = isSpec ? "docs/spec/rule0000.rules.json" : "src/file0000.ts";
-    const temporary = isSpec ? "docs/spec/added.rules.json" : "src/added.ts";
-    const renamed = isSpec ? "docs/spec/renamed.rules.json" : "src/renamed.ts";
-    const path = action === 0 || action === 4 ? base : action === 3 ? renamed : temporary;
-    let writeFinishedAt: number | undefined;
-    const beganAt = performance.now();
-    try {
-      guard();
-      const previous = manager.status();
-      const parseBefore = counters.parseCalls;
-      if (action === 2) {
-        await rename(join(job.repo, temporary), join(job.repo, renamed));
-        expectations.set(renamed, expectations.get(temporary)!); expectations.set(temporary, null);
-      } else if (action === 3) {
-        await rm(join(job.repo, renamed)); expectations.set(renamed, null);
-      } else {
-        const text = isSpec ? specText(action === 1 ? 9999 : 0, round * 2 + (action === 4 ? 2 : 1))
-          : `export function ${action === 1 ? "added" : "value0"}() { return ${String(round * 2 + (action === 4 ? 2 : 1)).padStart(4, "0")}; }\n`;
-        // 十进制字符串避免带前导零的数字触发语言语法降级。
-        const content = isSpec ? text : text.replace(/return (\d+);/, "return '$1';");
-        const before = action === 4 ? await stat(join(job.repo, path)) : null;
-        await writeFile(join(job.repo, path), content, { mode: 0o600 });
-        if (before) { assert.equal(Buffer.byteLength(content), before.size); await utimes(join(job.repo, path), before.atime, before.mtime); }
-        expectations.set(path, sha(content));
-      }
-      writeFinishedAt = performance.now();
-      const observed = await waitPublished(previous, true);
-      const publishedAt = performance.now();
-      await assertFiles(expectations);
-      const built: ProjectIndexBuildResult | null = manager.latestBuildResult(); assert.ok(built); assert.equal(built.status, "ready");
-      record({ category: "watch-update", index: i, ok: true, durationMs: publishedAt - writeFinishedAt,
-        operation: ["modify", "add", "rename", "delete", "same-size-mtime"][action], language: isSpec ? "spec" : "ts",
-        path, writeOperationMs: writeFinishedAt - beganAt, parseCalls: counters.parseCalls - parseBefore,
-        dirtyObserved: observed.dirtyObserved, reason: observed.status.lastReason,
-        generation: observed.status.generation, build: buildMetadata(built), contentVerified: true,
-        expectedFileHashes: [...expectations].map(([filePath, hash]) => ({ path: filePath, hash })) });
-    } catch (error) {
-      record({ category: "watch-update", index: i, ok: false, durationMs: writeFinishedAt === undefined ? null : performance.now() - writeFinishedAt,
-        operation: ["modify", "add", "rename", "delete", "same-size-mtime"][action], path, error: String(error) });
-    }
-  }
-  for (const unsubscribe of subscribers) unsubscribe();
-  for (let round = 0; round < job.config.resourceRounds; round++) {
-    const start = performance.now();
-    const parseBefore = counters.parseCalls;
-    roundPeak = emptyPeak();
-    try {
-      guard();
-      capture(`round-${round}-before-stop`);
-      const stopStart = performance.now();
-      const stopped: ProjectIndexSyncStatus = await manager.stop();
-      const stopMs = performance.now() - stopStart;
-      assert.equal(stopped.watchers, 0); assert.equal(stopped.activeCallbacks, 0);
-      await delay(job.config.settleMs);
-      const settled = capture(`round-${round}-stopped-settled`);
-      assert.equal(counters.watchersActive, 0, "真实watcher close事件未收敛");
-      assert.equal(counters.watchersCreated, counters.watchersClosed);
-      assert.equal(counters.parsersObserved, counters.parserDeleteCalls);
-      assert.equal(counters.treesCreated, counters.treeDeleteCalls);
-      const offlinePath = join(job.repo, "src/file0000.ts");
-      const beforeOffline = await stat(offlinePath);
-      const priorText = await readFile(offlinePath, "utf8");
-      const offlineText = priorText.replace(/'([^']*)'/, (_match, value: string) => `'${value.slice(0, -1)}${value.endsWith("0") ? "1" : "0"}'`);
-      assert.notEqual(offlineText, priorText);
-      assert.equal(Buffer.byteLength(offlineText), beforeOffline.size);
-      await writeFile(offlinePath, offlineText, { mode: 0o600 });
-      await utimes(offlinePath, beforeOffline.atime, beforeOffline.mtime);
-      const startAt = performance.now();
-      assert.equal((await manager.start()).state, "fresh");
-      const startMs = performance.now() - startAt;
-      await assertFiles(new Map([["src/file0000.ts", sha(offlineText)]]));
-      capture(`round-${round}-restarted`);
-      record({ category: "resource-round", index: round, ok: true, durationMs: performance.now() - start,
-        stopMs, startAndOfflineReconcileMs: startMs, settled, peak: { ...roundPeak }, parseCalls: counters.parseCalls - parseBefore,
-        parsedFiles: manager.latestBuildResult()?.parsedFiles, offlineChangeVerified: true,
-        sameSizeMtimeOfflineReconcile: true, fileHash: sha(offlineText) });
-    } catch (error) { record({ category: "resource-round", index: round, ok: false, durationMs: performance.now() - start, peak: { ...roundPeak }, error: String(error) }); }
-    finally { roundPeak = undefined; }
-  }
-}
-
 async function events() {
   const { RequirementService } = await import("../../runtime/requirement-service.ts");
   const { RequirementStateStore } = await import("../../runtime/requirement-state.ts");
@@ -411,29 +265,25 @@ try {
   capture("parser-observers-installed");
   jsonFile(join(job.output, "instrumentation.json"), { parserObserverImportMs: performance.now() - importStart,
     node: { version: process.version, executable: process.execPath, arch: process.arch, execArgv: process.execArgv, pid: process.pid },
-    sqlite: "real node:sqlite, pass-through commit observation only", filesystem: "real fs.watch, read/open observation",
+    sqlite: "real node:sqlite, pass-through commit observation only", filesystem: "read/open observation",
     authorization: "kernel fixture trusted adapter; no user approval/host authorization end-to-end claim",
     archiveProbe: "Node fs/promises open/readFile and fs open/readFile/readFileSync/openSync/createReadStream; no arbitrary external-tool coverage",
     wasmMetrics: "actual Parser setLanguage/parse/delete, Tree delete, Language.load counts; process external/arrayBuffers not WASM-only bytes",
     unavailable: ["binding internal WASM heap capacity", "complete language object unload", "OS-wide handles"] });
   if (job.mode === "cold" || job.mode === "restart") await indexBoot();
-  else if (job.mode === "live") await live();
   else if (job.mode === "events") await events();
   else throw new Error("未知场景");
 } catch (error) {
   failures.push(String(error));
   record({ category: jobCategory, index: job.index, ok: false, durationMs: null, error: String(error) });
 } finally {
-  try { if (manager) await manager.stop(); } catch (error) { failures.push(`stop:${String(error)}`); }
   try { disposeEvents?.(); } catch (error) { failures.push(`dispose:${String(error)}`); }
   clearInterval(interval);
   await delay(job.config.settleMs);
   const final = capture("final-same-process-settled");
   if (probe.archiveReadAttempts !== 0) failures.push("archive_read_probe_nonzero");
-  if (counters.watchersActive !== 0 || counters.watchersCreated !== counters.watchersClosed) failures.push("watcher_not_closed");
   if (counters.parsersObserved !== counters.parserDeleteCalls || counters.treesCreated !== counters.treeDeleteCalls) failures.push("parser_tree_count_not_converged");
-  const expected = job.mode === "live" ? [["watch-update", job.config.updateSamples], ["resource-round", job.config.resourceRounds]]
-    : job.mode === "events" ? [["approved-event", job.config.eventSamples]] : [[jobCategory, 1]];
+  const expected = job.mode === "events" ? [["approved-event", job.config.eventSamples]] : [[jobCategory, 1]];
   for (const [category, count] of expected) {
     const actual = samples.filter((sample) => sample.category === category).length;
     if (actual !== count) {
@@ -445,11 +295,8 @@ try {
     failures, aborted, probe, counters, peak, final, resourcePoints: resources.length,
     samples: samples.length, summaries: summarize(samples),
     resourceConclusion: "counts_checked; inspect same-process memory trend; no threshold invented; exit is not leak-freedom proof",
-    settledMemoryTrend: resources.filter((point) => point.phase.endsWith("stopped-settled")).map((point) => ({ phase: point.phase, memory: point.memory,
-      activeHandles: point.activeHandles, watchers: point.counters.watchersActive })),
     smokeReferenceComparisonsNotEvidence: job.smoke,
-    unmeasured: ["real daemon multi-window", "physical sleep", "native watcher failure/overflow", "directory deletion resource stress",
-      "repeated requirement close cycles", "cancellation latency", "PM backlog performance", "model time", "knowledge_query"],
+    unmeasured: ["real daemon query-time reconciliation", "repeated requirement close cycles", "cancellation latency", "PM backlog performance", "model time", "knowledge_query"],
     ok: !aborted && failures.length === 0 && samples.every((sample) => sample.ok) });
   for (const restore of restores.reverse()) restore();
   syncBuiltinESMExports();

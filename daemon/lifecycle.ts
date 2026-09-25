@@ -9,8 +9,7 @@ import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource, TimerHandle } from "../runtime/clock.ts";
 import { daemonSocketPath, listWorktrees, repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
 import { readGit } from "../runtime/git-read.ts";
-import { ProjectSyncGrantVerifier } from "../runtime/project-sync-grants.ts";
-import { ProjectIndexCoordinator } from "./project-index-coordinator.ts";
+import { ProjectIndexHost, registerIndexHandlers } from "./project-index-host.ts";
 import { ProjectIndexRequirements } from "./project-index-requirements.ts";
 import { ConnectivityProbe, NetworkPauseGate, toValidHostUrl } from "../runtime/network-pause.ts";
 import { createRequest, decodeFrames } from "../runtime/protocol.ts";
@@ -483,9 +482,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   });
   let shuttingDown = false;
   let startupFailed = false;
-  let indexCoordinator: ProjectIndexCoordinator | undefined;
+  let indexHost: ProjectIndexHost | undefined;
   let indexRequirements: ProjectIndexRequirements | undefined;
-  let unsubscribeSleep: (() => void) | undefined;
   let runManager: RunManager | undefined;
   let networkProbe: ConnectivityProbe | undefined;
   let idleTimer: TimerHandle | undefined;
@@ -494,11 +492,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     ready = false;
-    unsubscribeSleep?.();
     // close同步拒绝新索引操作；装配或在途请求的清理随后必须确实完成。
-    const stoppingIndex = indexCoordinator?.close().then(() => null, (error: unknown) => error);
+    const stoppingIndex = indexHost?.close().then(() => null, (error: unknown) => error);
     await initializedPromise;
-    unsubscribeSleep?.();
     if (idleTimer) clock.clearTimer(idleTimer);
     if (ownershipTimer) clock.clearTimer(ownershipTimer);
     networkProbe?.stop();
@@ -508,7 +504,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       if (stoppingIndex) {
         const error = await stoppingIndex;
         if (error !== null) throw error;
-      } else await indexCoordinator?.close();
+      } else await indexHost?.close();
     } catch (error) {
       exitCode = 1;
       process.stderr.write(`停止项目索引失败: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -568,19 +564,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     indexRequirements = new ProjectIndexRequirements({
       repositoryRoot, dataRoot: capturedOptions.dataRoot, repoId,
     });
-    indexCoordinator = new ProjectIndexCoordinator({
-      repoId, dataRoot: capturedOptions.dataRoot, commonDir: capturedOptions.repoDir, server,
-      grants: new ProjectSyncGrantVerifier({
-        dataRoot: capturedOptions.dataRoot, repoId, commonDir: capturedOptions.repoDir, daemonInstanceId: server.daemonInstanceId,
-      }),
-      beforeArchiveRisk: indexRequirements.beforeArchiveRisk,
-    });
-    if (shuttingDown) await indexCoordinator.close();
-    else unsubscribeSleep = clock.onSleepGap(() => {
-      indexCoordinator!.onSleepGap().catch((error: unknown) => {
-        process.stderr.write(`休眠后项目索引对账失败: ${error instanceof Error ? error.message : String(error)}\n`);
-      });
-    });
+    indexHost = new ProjectIndexHost({ repoId, dataRoot: capturedOptions.dataRoot, repositoryRoot, beforeArchiveRisk: indexRequirements.beforeArchiveRisk });
+    if (shuttingDown) await indexHost.close();
+    else registerIndexHandlers(server, indexHost);
 
     const shellRegistry = new ShellRegistry({
       clock,
@@ -614,6 +600,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       clock,
       workspaceRepoIds: [repoId],
       emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
+      index: indexHost,
     });
     registerProtocolHandlers({ server, manager: runManager, relayQueue, shellRegistry });
 

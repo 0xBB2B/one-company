@@ -117,3 +117,17 @@ test("M7-AC18：main 派出途中发起连接已断开时立即作废；PM 因�
   const run = await w.runStore.get(explore.runId);
   expect(run.ok && run.run.state).toBe("stopped");
 });
+
+test("M7-AC16：PM 与 explore 都可调用 knowledge_query 查询主仓库索引，窗口不在线也可用；结果标注索引代次", async () => {
+  const w = await createPmRunWorld(cleanups, { index: true });
+  const pmTools = w.provider.requests.find((request) => request.tools?.some((tool) => tool.name === "pi_company_workflow_manage"))!.tools!.map((tool) => tool.name);
+  expect(pmTools).toContain("pi_company_knowledge_query");
+  w.provider.queue.push({ type: "toolcall", name: "pi_company_knowledge_query", input: { query: { action: "facts" } } }, { type: "text", text: "查完" },
+    { type: "text", text: "PM 收到" });
+  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId }, request: { question: "项目有哪些文件", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
+  await until(() => w.provider.requests.some((request) => text(request).includes("knowledge-facts/v1")));
+  const explore = w.provider.requests.find((request) => request.systemPrompt?.includes("检索来源：直接读取本地文件"))!;
+  expect(explore.tools?.map((tool) => tool.name).sort()).toEqual(["grep", "pi_company_knowledge_query", "pi_company_result_submit", "read"]);
+  const reply = w.provider.requests.find((request) => text(request).includes("knowledge-facts/v1"))!;
+  expect(text(reply)).toMatch(/\\"generation\\":[1-9]/u);
+});

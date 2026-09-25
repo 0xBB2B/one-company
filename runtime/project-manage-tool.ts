@@ -111,9 +111,6 @@ export type OpenProjectIndexServiceInput = Readonly<
     authorize: NonNullable<ProjectIndexServiceOptions["authorize"]>;
     action: "preview" | ProjectManageAction;
     host: ProjectManageHostContext;
-    readonly authorizedBranch: string;
-    /** 只由真实确认后的会话闭包提供；不随单次工具完成撤销。 */
-    authorizeContinuous: () => boolean;
   }
 >;
 
@@ -453,17 +450,24 @@ function beginOperation(externalSignal: AbortSignal | undefined): ActiveOperatio
   };
 }
 
+/** 索引由守护进程持有、只针对主工作区；在链接 worktree 中执行时，确认框须显示实际被索引的主工作区。 */
+async function indexedWorkspace(path: string): Promise<{ root: string; branch: string }> {
+  const [main] = await listWorktrees((await repositoryIdentity(path)).commonDir);
+  const root = await realpath(main ?? path);
+  return { root, branch: (await readGit(root, ["symbolic-ref", "--quiet", "HEAD"])).stdout.trim() };
+}
+
 function scanConfirmationMessage(repositoryRoot: string, dataRoot: string, repoId: string, preview: boolean, branch: string): string {
   return [
     `仓库根：${repositoryRoot}`,
     `当前分支：${branch}`,
     "允许读取：该仓库内通过安全边界核对的当前代码、配置、测试与 docs/spec。",
-    "固定排除：.git、依赖、构建/缓存/日志、数据库、敏感凭据、符号/硬链接、嵌套仓库；docs/prod 只枚举有限路径元数据，不读取正文。",
-    `允许写入：仅仓库外本机目录 ${resolve(dataRoot, "repos", repoId)} 中的 index.db、data.db 的扫描授权元数据及 SQLite 必要附属文件。`,
-    "不运行仓库脚本，不创建需求、规则、PM、业务提交或其他共享文件。init 的 preview=true 仅枚举路径，不创建 index.db 或共享输出；确认与撤销在外部 data.db 登记授权元数据。",
+    "固定排除：.git、被 Git 忽略的路径、依赖、构建/缓存/日志、数据库、敏感凭据、符号/硬链接、嵌套仓库；docs/prod 只枚举有限路径元数据，不读取正文。",
+    `允许写入：仅仓库外本机目录 ${resolve(dataRoot, "repos", repoId)} 中的 index.db、data.db 的初始化登记及 SQLite 必要附属文件。`,
+    "不运行仓库脚本，不创建需求、规则、PM、业务提交或其他共享文件。init 的 preview=true 仅枚举路径，不创建 index.db 或共享输出。",
     preview
-      ? "本次仅允许一次路径枚举预览；不会创建持续监听，不能用于批准后续 init/refresh。"
-      : "本次允许仅在当前 session 和当前 lifecycle 窗口内持续扫描当前仓库/worktree/分支；工具结束后继续监听。同一存活会话断线重连时重新签发连接许可并对账；关闭会话、切换身份或宿主重启后必须重新确认。",
+      ? "本次仅允许一次路径枚举预览，不能用于批准后续 init/refresh。"
+      : "初始化后由仓库守护进程持有索引，不监听文件；每次知识查询前自动对账当前文件，窗口关闭后 PM 与子代理仍可查询。",
   ].join("\n");
 }
 
@@ -901,7 +905,8 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
             }
             const approved = await ctx.ui.confirm(
               serviceAction === "preview" ? "确认预览项目索引范围" : "确认项目索引范围",
-              scanConfirmationMessage(root.path, options.dataRoot, params.repoId, serviceAction === "preview", root.branch),
+              await indexedWorkspace(root.path).then((indexed) =>
+                scanConfirmationMessage(indexed.root, options.dataRoot, params.repoId, serviceAction === "preview", indexed.branch)),
               { signal: operation.signal },
             );
             if (!approved) throw new ProjectManageToolError("scan_declined", "用户取消或拒绝项目索引扫描授权");
@@ -960,10 +965,6 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
         })) {
           throw new ProjectManageToolError("stale_window", "项目索引操作授权在启动前已失效");
         }
-        const continuousGrant = grants.get(params.repoId);
-        const authorizeContinuous = (): boolean => serviceAction !== "preview" && !!continuousGrant
-          && grants.get(params.repoId) === continuousGrant && continuousGrant.branch === root.branch && !disposed
-          && currentHostMatches(options, activeHost, host, ctx) && rootStillMatches(options.dataRoot, root);
         const service = await (options.openService ?? defaultOpenService)(Object.freeze({
           repositoryRoot: root.path,
           dataRoot: options.dataRoot,
@@ -971,8 +972,6 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
           authorize,
           action: serviceAction,
           host: snapshotHost(host),
-          authorizedBranch: root.branch,
-          authorizeContinuous,
         }));
         operation.service = service;
         let rawResult: unknown;

@@ -1,7 +1,7 @@
 import { uuidv7 } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -242,8 +242,7 @@ describe("扫描确认、service 授权与有限输出", () => {
     expect(confirmation).toContain(`仓库根：${world.repositoryRoot}`);
     expect(confirmation).toContain("docs/prod 只枚举有限路径元数据，不读取正文");
     expect(confirmation).toContain(join(world.dataRoot, "repos", world.repoId));
-    expect(confirmation).toContain("仅在当前 session 和当前 lifecycle 窗口内持续扫描");
-    expect(confirmation).toContain("断线重连");
+    expect(confirmation).toContain("窗口关闭后 PM 与子代理仍可查询");
     for (const options of receivedOptions as Array<{ limits: Record<string, number> }>) {
       expect(options.limits).toEqual({ maxFileBytes: 2 * 1024 * 1024, maxTotalTextBytes: 20 * 1024 * 1024, maxEntries: 20_000, maxDepth: 64 });
     }
@@ -412,27 +411,24 @@ describe("扫描确认、service 授权与有限输出", () => {
     await runtime.shutdown();
   });
 
-  test("真实确认后切换HEAD分支，持续许可和单次publish/return同步核验同时拒绝", async () => {
+  test("真实确认后切换HEAD分支，单次publish/return同步核验拒绝", async () => {
     const world = await fixture();
     const checks: boolean[] = [];
     const runtime = runtimeFor(world, async (input) => ({
       preview: async () => ({}), refresh: async () => ({}), status: async () => ({}),
       async init() {
-        expect(input.authorizedBranch).toBe("refs/heads/main");
-        checks.push(input.authorizeContinuous());
         await git(world.repositoryRoot, ["switch", "-c", "late-branch"]);
-        checks.push(input.authorizeContinuous());
         checks.push(input.authorize(authorizationRequest("init", "publish", world.repoId, world.repositoryRoot, "e".repeat(64))));
         checks.push(input.authorize(authorizationRequest("init", "return", world.repoId, world.repositoryRoot, "e".repeat(64))));
         return { action: "init", status: "ready", generation: 1 };
       },
     }));
     await expect(call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true))).rejects.toMatchObject({ code: "repository_changed" });
-    expect(checks).toEqual([true, false, false, false]);
+    expect(checks).toEqual([false, false]);
     await runtime.shutdown();
   });
 
-  test("关联worktree的真实.git指针和HEAD可正常核验，不把合法文件式gitdir误判为目录", async () => {
+  test("关联worktree的真实.git指针和HEAD可正常核验；确认框显示实际被索引的主工作区", async () => {
     const original = await fixture();
     const repositoryRoot = join(original.root, "linked-worktree");
     await git(original.repositoryRoot, ["worktree", "add", "-b", "linked", repositoryRoot]);
@@ -441,12 +437,13 @@ describe("扫描确认、service 授权与有限输出", () => {
     const runtime = runtimeFor(world, async (input) => ({
       preview: async () => ({}), refresh: async () => ({}), status: async () => ({}),
       async init() {
-        expect(input.authorizedBranch).toBe("refs/heads/linked");
-        expect(input.authorizeContinuous()).toBe(true);
         return { action: "init", status: "ready", generation: 1 };
       },
     }));
-    expect((await call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true))).details).toMatchObject({ status: "ready" });
+    let message = "";
+    expect((await call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async (_title, text) => { message = text; return true; }))).details).toMatchObject({ status: "ready" });
+    expect(message).toContain(`仓库根：${await realpath(original.repositoryRoot)}`);
+    expect(message).toContain("当前分支：refs/heads/main");
     await runtime.shutdown();
   });
 

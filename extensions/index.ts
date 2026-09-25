@@ -3,7 +3,6 @@ import writeProtectionExtension from "./write-protection.ts";
 import lifecycleExtension from "./lifecycle.ts";
 import projectManageExtension from "./project-manage.ts";
 import knowledgeQueryExtension from "./knowledge-query.ts";
-import projectBaselineExtension from "./project-baseline.ts";
 import requirementManageExtension from "./requirement-manage.ts";
 import decisionRecordExtension from "./decision-record.ts";
 import workflowExtension from "./workflow.ts";
@@ -21,7 +20,6 @@ import searchExclusionExtension from "./search-exclusion.ts";
 export default function registerExtensions(pi: ExtensionAPI): void {
   lifecycleExtension(pi);
   projectManageExtension(pi);
-  projectBaselineExtension(pi);
   knowledgeQueryExtension(pi);
   requirementManageExtension(pi);
   decisionRecordExtension(pi);

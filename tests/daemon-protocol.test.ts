@@ -47,8 +47,8 @@ const EXPECTED_METHODS = [
   "shells.stop",
   "shells.markStopped",
   "mcp.register",
-  "index.sync",
-  "project.index.query",
+  "index.manage",
+  "knowledge.query",
 ];
 
 const EXPECTED_EVENTS = [
@@ -61,7 +61,6 @@ const EXPECTED_EVENTS = [
   "relay.withdraw",
   "shells.changed",
   "daemon.idle",
-  "project.index.changed",
 ];
 
 const EXPECTED_ERROR_CODES = [
@@ -77,13 +76,9 @@ const EXPECTED_ERROR_CODES = [
   "daemon_busy",
   "daemon_starting",
   "authorization_denied",
-  "grant_invalid",
-  "invalid_scope",
-  "identity_changed",
   "resource_limit",
-  "not_attached",
-  "index_not_fresh",
-  "coordinator_closed",
+  "not_initialized",
+  "index_unavailable",
   "internal",
 ];
 
@@ -130,15 +125,8 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
     decisionId: "decision-1",
   },
   "mcp.register": { adapterEntry: "./adapter.ts", configPath: "/config.json" },
-  "project.index.query": { action: "query", grantId: "12345678-1234-4123-8123-123456789abc", query: { action: "search", text: "中文😀" } },
-  "index.sync": {
-    action: "ensureFresh",
-    grantId: "12345678-1234-4123-8123-123456789abc",
-    repoId: "a".repeat(64),
-    workspaceId: "b".repeat(64),
-    repositoryRoot: "/repo",
-    branch: "refs/heads/main",
-  },
+  "index.manage": { action: "status" },
+  "knowledge.query": { query: { action: "search", text: "x" } },
   "dispatch.review": {
     requirement: "实现登录页",
     cwd: "/repo",
@@ -156,18 +144,17 @@ function catchError(fn: () => unknown): { code?: string; message?: string } | nu
   }
 }
 
-test("知识RPC严格拒绝模型身份/SQL/超限及非授权路径，仅接受有界query或内部回执", () => {
-  const base = VALID_EXAMPLES["project.index.query"]!;
-  for (const key of ["role", "windowId", "sessionId", "workspaceId", "repositoryRoot", "repoId", "caller", "sql"]) {
-    expect(catchError(() => validateParams("project.index.query", { ...base, [key]: "main" }))?.code).toBe("bad_params");
-    expect(catchError(() => validateParams("project.index.query", { ...base, query: { action: "facts", [key]: "main" } }))?.code).toBe("bad_params");
+test("知识RPC严格拒绝模型身份/SQL/超限及非授权路径，仅接受有界query", () => {
+  const base = VALID_EXAMPLES["knowledge.query"]!;
+  for (const key of ["role", "windowId", "sessionId", "workspaceId", "repositoryRoot", "repoId", "caller", "sql", "grantId"]) {
+    expect(catchError(() => validateParams("knowledge.query", { ...base, [key]: "main" }))?.code).toBe("bad_params");
+    expect(catchError(() => validateParams("knowledge.query", { ...base, query: { action: "facts", [key]: "main" } }))?.code).toBe("bad_params");
   }
   for (const query of [{ action: "facts", maxBytes: 24577 }, { action: "facts", pageSize: 21 },
     { action: "exact", by: "path", value: "docs/prod/secret.md" }, { action: "search", text: " " }, { action: "search", text: "中".repeat(257) }]) {
-    expect(catchError(() => validateParams("project.index.query", { ...base, query }))?.code).toBe("bad_params");
+    expect(catchError(() => validateParams("knowledge.query", { ...base, query }))?.code).toBe("bad_params");
   }
-  expect(() => validateParams("project.index.query", base)).not.toThrow();
-  expect(() => validateParams("project.index.query", { action: "check", grantId: base.grantId, receipt: "a".repeat(43) })).not.toThrow();
+  expect(() => validateParams("knowledge.query", base)).not.toThrow();
 });
 
 describe("协议常量", () => {
@@ -422,14 +409,10 @@ describe("validateParams — 方法目录合法示例", () => {
     expect(() => validateParams("dispatch.review", params)).not.toThrow();
   });
 
-  test("index.sync严格接受六种固定action，只有status可省略grantId", () => {
-    const base = VALID_EXAMPLES["index.sync"]!;
-    for (const action of ["init", "preview", "refresh", "ensureFresh", "detach"]) {
-      expect(() => validateParams("index.sync", { ...base, action })).not.toThrow();
+  test("index.manage只接受四种固定action", () => {
+    for (const action of ["init", "preview", "refresh", "status"]) {
+      expect(() => validateParams("index.manage", { action })).not.toThrow();
     }
-    const { grantId: _grantId, ...status } = { ...base, action: "status" };
-    expect(() => validateParams("index.sync", status)).not.toThrow();
-    expect(catchError(() => validateParams("index.sync", { ...status, action: "init" }))?.code).toBe("bad_params");
   });
 });
 
@@ -532,13 +515,13 @@ describe("validateParams — 多余字段被拒绝", () => {
     expect(error?.code).toBe("bad_params");
   });
 
-  test("index.sync拒绝role/approved/SQL/Git命令和未知action", () => {
-    const base = VALID_EXAMPLES["index.sync"]!;
-    for (const field of ["role", "approved", "sql", "gitCommand", "pathCommand"]) {
-      expect(catchError(() => validateParams("index.sync", { ...base, [field]: "forged" }))?.code).toBe("bad_params");
+  test("index.manage拒绝role/approved/grantId/SQL/Git命令和未知action", () => {
+    const base = VALID_EXAMPLES["index.manage"]!;
+    for (const field of ["role", "approved", "grantId", "sql", "gitCommand", "pathCommand", "repositoryRoot"]) {
+      expect(catchError(() => validateParams("index.manage", { ...base, [field]: "forged" }))?.code).toBe("bad_params");
     }
-    expect(catchError(() => validateParams("index.sync", { ...base, action: "restartDaemon" }))?.code).toBe("bad_params");
-    expect(catchError(() => validateParams("index.sync", { ...base, repositoryRoot: "relative/repo" }))?.code).toBe("bad_params");
+    expect(catchError(() => validateParams("index.manage", { ...base, action: "ensureFresh" }))?.code).toBe("bad_params");
+    expect(catchError(() => validateParams("index.manage", { ...base, action: "restartDaemon" }))?.code).toBe("bad_params");
   });
 });
 

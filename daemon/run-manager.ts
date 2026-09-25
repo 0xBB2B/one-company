@@ -44,6 +44,8 @@ import { toPiTool } from "../runtime/role-tools.ts";
 import { defaultPageGetter, defaultWebDeps, webFetch, webSearch, WebAccessError } from "../runtime/web-access.ts";
 import type { PageGetter, WebDeps } from "../runtime/web-access.ts";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { KnowledgeTransportQuerySchema } from "../runtime/knowledge-query-tool.ts";
+import type { ProjectIndexHost } from "./project-index-host.ts";
 import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
 
@@ -56,6 +58,8 @@ export interface RunManagerOptions {
   runtime: ModelRuntime; selectModel: ModelSelector; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
   /** 联网检索的网络依赖；缺省为 Node 内置实现，测试可注入。 */
   web?: { deps: WebDeps; getPage: PageGetter };
+  /** 守护进程持有的主仓库索引；缺省时角色没有 knowledge_query。 */
+  index?: ProjectIndexHost;
 }
 export interface WaitForSpec { repo: string; requirement: string; stage: string }
 interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null };
@@ -229,7 +233,7 @@ export class RunManager {
           },
         } });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: pmContext(record.data, lease), coreTools: tools.tools, runtime: this.options.runtime, modelRef, thinking,
+        context: pmContext(record.data, lease), coreTools: [...tools.tools, ...this.knowledgeTool(run.id)], runtime: this.options.runtime, modelRef, thinking,
         completion: { kind: "idle-only" }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true;
@@ -324,7 +328,7 @@ export class RunManager {
       tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
         pmLease: lease, workspace, epoch: record.epoch, task, alive });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: await taskContext(task, maxTurns), coreTools: tools.tools, runtime: this.options.runtime,
+        context: await taskContext(task, maxTurns), coreTools: [...tools.tools, ...(task.role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true;
@@ -423,7 +427,7 @@ export class RunManager {
     try {
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, context: exploreContext(explore, input.maxTurns),
         coreTools: [toPiTool("result_submit", "提交 research（action=research）：结论、来源、检索范围、未找到、失败、截断与未知项；research 不是 PASS。", RESULT_SUBMIT_PARAMETERS, result),
-          ...(source.kind === "web" ? this.webTools(alive) : [])],
+          ...(source.kind === "web" ? this.webTools(alive) : this.knowledgeTool(runId))],
         readRoots: source.kind === "local_file" ? [source.root] : [], hostTools: source.kind === "local_file" ? ["read", "grep"] : [],
         runtime: this.options.runtime, modelRef, thinking, maxTurns: input.maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") },
         clock: this.options.clock, networkGate: this.options.networkGate });
@@ -455,6 +459,15 @@ export class RunManager {
     handle.events.on("failed", () => { void this.finishExplore(runId, "failed"); });
     handle.prompt("开始检索。");
     return { runId, maxTurns: input.maxTurns };
+  }
+
+  /** 角色查询主仓库索引：每次查询前对账，按运行分开分页游标。 */
+  private knowledgeTool(caller: string): ToolDefinition[] {
+    const index = this.options.index;
+    if (!index) return [];
+    return [toPiTool("knowledge_query", "查询主仓库索引中的当前代码与 spec（不含 prod）。query.action：exact（by 为 path/id/symbol）、search（文字检索）或 facts；每页最多 20 项，结果标注索引代次与来源。",
+      Type.Object({ query: KnowledgeTransportQuerySchema }, { additionalProperties: false }),
+      { execute: (input) => index.query(`run:${caller}`, (input as { query: unknown }).query), dispose: () => index.endCaller(`run:${caller}`) })];
   }
 
   /** explore 的联网工具：搜索与抓取均不限查询词和网址（含内网）；网页内容只是数据。 */

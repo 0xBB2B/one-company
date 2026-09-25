@@ -24,15 +24,11 @@ function sample(index: number, durationMs: number | null, ok = true): QuerySampl
     index,
     ok,
     queryMs: durationMs,
-    checkMs: durationMs,
     combinedMs: durationMs,
     responseBytes: 100 + index,
     pageBytes: 80 + index,
     generation: 1,
     baselineHash: "a".repeat(64),
-    receiptChecked: ok,
-    authorizationValidatedBefore: ok,
-    authorizationValidatedAfter: ok,
     requirement: null,
     hitCount: ok ? 1 : null,
     hitIdentifiers: ok ? ["file:src/file0000.ts"] : [],
@@ -108,14 +104,14 @@ test("命中摘要拒绝空结果和错误来源，只保存有界标识而不�
   expect(JSON.stringify(summary)).not.toContain("不应进入摘要");
 });
 
-test("页面实际UTF-8预算独立于receipt外壳，精确上限接受、超一字节拒绝", () => {
+test("页面实际UTF-8预算独立于RPC外壳，精确上限接受、超一字节拒绝", () => {
   const limit = 16_384;
   const page = { generation: 1, text: "中文\\\"" };
   const used = Buffer.byteLength(JSON.stringify(page));
   page.text += "x".repeat(limit - used);
   expect(Buffer.byteLength(JSON.stringify(page))).toBe(limit);
   expect(() => assertQueryPageMetadata(page, limit)).not.toThrow();
-  expect(Buffer.byteLength(JSON.stringify({ page, receipt: "a".repeat(43) }))).toBeGreaterThan(limit);
+  expect(Buffer.byteLength(JSON.stringify({ page }))).toBeGreaterThan(limit);
   page.text += "x";
   expect(() => assertQueryPageMetadata(page, limit)).toThrow(/query_page_budget_exceeded/);
 });
@@ -143,7 +139,7 @@ async function helperSource(): Promise<string> {
   return readFile(new URL("./helpers/m4-query-benchmark.ts", import.meta.url), "utf8");
 }
 
-test("smoke通过真实SQLite、认证socket、query及随后check，并清理夹具资源", async () => {
+test("smoke通过真实SQLite、认证socket上的knowledge.query，并清理夹具资源", async () => {
   const parent = process.env.M4_QUERY_BENCHMARK_TEST_EVIDENCE_ROOT ?? tmpdir();
   const root = await mkdtemp(join(parent, "m4-query-benchmark-test-"));
   const output = join(root, "evidence");
@@ -160,15 +156,15 @@ test("smoke通过真实SQLite、认证socket、query及随后check，并清理�
     const samples = (await readFile(join(output, "samples.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     expect(run).toMatchObject({ formal: false, scenario: "smoke", performanceClaimAllowed: false,
       node: { execPath: process.execPath, version: process.version }, config: { samplesPerQuery: 2, archiveCounts: [2] } });
-    expect(run.timingLayer).toContain("project.index.query");
+    expect(run.timingLayer).toContain("knowledge.query");
     expect(run.excludedTimingLayers).toEqual(expect.arrayContaining(["pi SDK tool lifecycle", "cloud/model request"]));
     expect(manifest).toMatchObject({ sourceFiles: 12, distinctContentHashes: 12, scripts: 7, go: 3,
       specsIncludingSchema: 2, archiveMetadataCount: 2 });
     expect(manifest.textBytes).toBeLessThanOrEqual(20 * 1024 * 1024);
     expect(setup).toMatchObject({ ok: true, status: "ready", indexedFiles: 12, archiveMetadataCount: 2, archiveIssues: 0 });
     expect(samples).toHaveLength(QUERY_CASES.length * 2);
-    expect(samples.every((value) => value.ok && value.queryMs >= 0 && value.checkMs >= 0 && value.combinedMs >= value.queryMs + value.checkMs
-      && value.responseBytes > 0 && value.receiptChecked && value.authorizationValidatedBefore && value.authorizationValidatedAfter
+    expect(samples.every((value) => value.ok && value.queryMs >= 0 && value.combinedMs >= value.queryMs
+      && value.responseBytes > 0
       && value.requirement === null && value.hitCount > 0 && value.expectedHitObserved
       && Number.isSafeInteger(value.generation) && value.generation >= 1
       && value.pageBytes <= Number(QUERY_CASES.find((query) => query.id === value.queryId)!.request.maxBytes)
@@ -179,7 +175,7 @@ test("smoke通过真实SQLite、认证socket、query及随后check，并清理�
     expect(JSON.stringify(samples)).not.toContain("export function");
     expect(new Set(samples.map((value) => value.queryId))).toEqual(new Set(QUERY_CASES.map((query) => query.id)));
     expect(cleanup).toMatchObject({ fixtureRemoved: true, socketRootRemoved: true, rootsPreservedForDiagnostics: false,
-      peerClosed: true, coordinatorClosed: true, issuerClosed: true, serverClosed: true, probeRestored: true, activeGitChildren: [],
+      peerClosed: true, hostClosed: true, serverClosed: true, probeRestored: true, activeGitChildren: [],
       archiveReadProbe: { positiveControlReads: expect.any(Number), archiveBodyReadAttempts: 0, attemptedArchivePaths: [] }, errors: [], ok: true });
     expect(cleanup.archiveReadProbe.positiveControlReads).toBeGreaterThan(0);
     expect(summary).toMatchObject({ formal: false, scenario: "smoke", ok: true, sampleCount: 6, expectedSamples: 6,
@@ -197,15 +193,15 @@ test("关闭失败时非零退出、关闭字段如实且保留证据根，子�
   const parent = process.env.M4_QUERY_BENCHMARK_TEST_EVIDENCE_ROOT ?? tmpdir();
   const root = await mkdtemp(join(parent, "m4-query-benchmark-fault-"));
   const output = join(root, "evidence");
-  const exit = await runSmoke(output, { M4_QUERY_BENCHMARK_FAULT: "coordinator_close_after_success" });
+  const exit = await runSmoke(output, { M4_QUERY_BENCHMARK_FAULT: "host_close_after_success" });
   await writeFile(join(root, "failure-child.json"), `${JSON.stringify(exit, null, 2)}\n`, { mode: 0o600 });
   expect(exit).toMatchObject({ code: 1, signal: null });
   const cleanup = JSON.parse(await readFile(join(output, "closed-metadata-2/cleanup.json"), "utf8"));
   const summary = JSON.parse(await readFile(join(output, "summary.json"), "utf8"));
   expect(cleanup).toMatchObject({ fixtureRemoved: false, socketRootRemoved: false, rootsPreservedForDiagnostics: true,
-    peerClosed: true, coordinatorClosed: false, issuerClosed: true, serverClosed: true, probeRestored: true,
+    peerClosed: true, hostClosed: false, serverClosed: true, probeRestored: true,
     activeGitChildren: [], ok: false });
-  expect(cleanup.errors).toEqual(expect.arrayContaining([expect.stringContaining("injected_coordinator_close_failure")]));
+  expect(cleanup.errors).toEqual(expect.arrayContaining([expect.stringContaining("injected_host_close_failure")]));
   expect(summary).toMatchObject({ ok: false, failures: 0, gitSubprocesses: { activeAtEnd: [], allExited: true },
     resources: { cleanupComplete: false } });
   expect((await lstat(root)).isDirectory()).toBe(true);

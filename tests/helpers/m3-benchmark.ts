@@ -9,15 +9,15 @@ import { setTimeout as delay } from "node:timers/promises";
 
 /** 内核层测量；不启动daemon/宿主/模型，不签发M3阶段验收。 */
 export const FROZEN = Object.freeze({ files: 1000, scriptFiles: 600, goFiles: 300, specFiles: 100,
-  archiveCounts: [0, 1000, 10000], coldSamples: 5, restartSamples: 10, updateSamples: 100,
-  eventSamples: 100, resourceRounds: 10, maxTextBytes: 20 * 1024 * 1024,
-  updateTimeoutMs: 10_000, pollIntervalMs: 10, resourceIntervalMs: 25, settleMs: 250 });
+  archiveCounts: [0, 1000, 10000], coldSamples: 5, restartSamples: 10,
+  eventSamples: 100, maxTextBytes: 20 * 1024 * 1024,
+  resourceIntervalMs: 25, settleMs: 250 });
 export const SMOKE = Object.freeze({ ...FROZEN, files: 7, scriptFiles: 4, goFiles: 1, specFiles: 2,
-  archiveCounts: [1], coldSamples: 1, restartSamples: 1, updateSamples: 2, eventSamples: 1, resourceRounds: 2 });
+  archiveCounts: [1], coldSamples: 1, restartSamples: 1, eventSamples: 1 });
 export type BenchmarkConfig = { [K in keyof typeof FROZEN]: typeof FROZEN[K] extends number ? number : number[] };
 export type Sample = { category: string; index: number; ok: boolean; durationMs: number | null;
   error?: string; [key: string]: unknown };
-export type ChildJob = { mode: "cold" | "restart" | "live" | "events"; index: number; repo: string; dataRoot: string;
+export type ChildJob = { mode: "cold" | "restart" | "events"; index: number; repo: string; dataRoot: string;
   fixtureRoot: string; output: string; git: string; config: BenchmarkConfig; smoke: boolean; archives: number };
 export const sha = (value: string | Uint8Array): string => createHash("sha256").update(value).digest("hex");
 export function jsonFile(path: string, value: unknown): void {
@@ -33,7 +33,7 @@ export function summarize(samples: Sample[]) {
     const ordered = all.map((item) => item.ok && item.durationMs !== null ? item.durationMs : Infinity).sort((a, b) => a - b);
     const rank = Math.ceil(0.95 * ordered.length);
     const p95 = ordered[rank - 1];
-    const threshold = category === "cold" ? 60_000 : category === "watch-update" || category === "approved-event" ? 2_000 : null;
+    const threshold = category === "cold" ? 60_000 : category === "approved-event" ? 2_000 : null;
     return { category, count: all.length, failures: all.filter((item) => !item.ok).length, rank,
       p95Ms: Number.isFinite(p95) ? p95 : null, p95IncludesFailure: !Number.isFinite(p95), thresholdMs: threshold,
       withinThresholdCount: threshold === null ? null : all.filter((item) => item.ok && item.durationMs !== null && item.durationMs <= threshold).length,
@@ -102,10 +102,10 @@ async function fixture(root: string, config: BenchmarkConfig, archives: number, 
 }
 function help(): string {
   return `内核层M3基准（无daemon/宿主/模型；不测knowledge_query）\n` +
-    `用法：node --experimental-strip-types tests/helpers/m3-benchmark.ts --output <新绝对目录> [--scenario all|cold|restart|live|events] [--git /usr/bin/git] [--smoke]\n` +
+    `用法：node --experimental-strip-types tests/helpers/m3-benchmark.ts --output <新绝对目录> [--scenario all|cold|restart|events] [--git /usr/bin/git] [--smoke]\n` +
     `正式参数固定：${JSON.stringify(FROZEN)}\n` +
     `--smoke仅开发冒烟：${JSON.stringify(SMOKE)}；不计为性能证据。\n` +
-    `cold=新进程/新库；restart=先独立建库后新进程复用；live=真实watch更新及同进程多轮启停；events=真实批准提交/租约/投递。\n` +
+    `cold=新进程/新库；restart=先独立建库后新进程复用；events=真实批准提交/租约/投递。\n` +
     `每个归档规模单独串行执行；失败保留，不清OS缓存、不强制GC。输出目录须全新，0700；报告0600。\n`;
 }
 async function launch(job: ChildJob, nodeArgs: string[]): Promise<{ ok: boolean; wallMs: number; code: number | null; signal: string | null; processGroupClean: boolean }> {
@@ -172,7 +172,7 @@ async function main(): Promise<void> {
       if (arg === "--output") output = value; else if (arg === "--scenario") scenario = value; else git = value;
     } else throw new Error(`未知参数：${arg}`);
   }
-  if (!output || !isAbsolute(output) || !isAbsolute(git) || !["all", "cold", "restart", "live", "events"].includes(scenario)) throw new Error(help());
+  if (!output || !isAbsolute(output) || !isAbsolute(git) || !["all", "cold", "restart", "events"].includes(scenario)) throw new Error(help());
   if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("进程组清理仅支持POSIX平台，拒绝无保护降级");
   if (!["v22.19.0", "v26.8.2"].includes(process.version)) throw new Error(`未锁定的Node版本：${process.version}；拒绝静默换版本`);
   output = resolve(output);
@@ -185,7 +185,7 @@ async function main(): Promise<void> {
   const scriptRoot = fileURLToPath(new URL("../../", import.meta.url));
   const inputPaths = ["tests/helpers/m3-benchmark.ts", "tests/helpers/m3-benchmark-child.ts", "pnpm-lock.yaml", "package.json",
     "SQLITE-KNOWLEDGE-REBUILD-PLAN.md", "resources/tree-sitter/manifest.json",
-    "runtime/project-index-sync.ts", "runtime/project-index-service.ts", "runtime/project-index-policy.ts", "runtime/index-store.ts",
+    "runtime/project-index-service.ts", "runtime/project-index-policy.ts", "runtime/index-store.ts",
     "runtime/code-extractor.ts", "runtime/syntax-parser.ts", "runtime/database.ts", "runtime/requirement-events.ts",
     "runtime/requirement-service.ts", "runtime/requirement-state.ts", "runtime/prod-storage.ts"];
   const hashes = async () => Promise.all(inputPaths.map(async (path) => ({ path, sha256: sha(await readFile(join(scriptRoot, path))) })));
@@ -235,7 +235,6 @@ async function main(): Promise<void> {
         if (["all", "restart"].includes(scenario)) {
           for (let i = 0; i < config.restartSamples; i++) await run("restart", i, reuseRoot);
         }
-        if (["all", "live"].includes(scenario)) await run("live", 0, join(fixtureRoot, "live-data"));
         if (["all", "events"].includes(scenario)) await run("events", 0, join(fixtureRoot, "event-data"));
       } catch (error) {
         failures++;
@@ -261,8 +260,7 @@ async function main(): Promise<void> {
             catch { failures++; }
           }
         } catch { failures++; }
-        const expected: Array<[string, number]> = processResult.mode === "live" ? [["watch-update", config.updateSamples], ["resource-round", config.resourceRounds]]
-          : processResult.mode === "events" ? [["approved-event", config.eventSamples]] : [[processResult.mode === "cold" && processResult.index < 0 ? "restart-warmup" : processResult.mode, 1]];
+        const expected: Array<[string, number]> = processResult.mode === "events" ? [["approved-event", config.eventSamples]] : [[processResult.mode === "cold" && processResult.index < 0 ? "restart-warmup" : processResult.mode, 1]];
         for (const [category, count] of expected) {
           const actual = childSamples.filter((item) => item.category === category).length;
           if (actual !== count) failures++;

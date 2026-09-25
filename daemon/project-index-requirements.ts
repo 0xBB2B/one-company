@@ -9,7 +9,7 @@ import { RequirementStateError } from "../runtime/requirement-contracts.ts";
 import { RequirementEventService } from "../runtime/requirement-events.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { verifyRequirementWorkspace } from "../runtime/requirement-workspace.ts";
-import type { ProjectIndexArchiveRiskHookEvent } from "./project-index-coordinator.ts";
+import type { ProjectIndexArchiveRiskHookEvent } from "./project-index-host.ts";
 
 const HASH = /^[0-9a-f]{64}$/u;
 const ARCHIVE_NAME = /^([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.(.+)\.md$/u;

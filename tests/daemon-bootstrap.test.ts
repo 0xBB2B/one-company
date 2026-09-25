@@ -130,7 +130,7 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
       const { daemonLoader } = await import(pathToFileURL(root + '/daemon/loader.mjs'));
       assert.equal(daemonLoader.options.fsCache, false);
       assert.equal(daemonLoader.options.tryNative, false);
-      const coordinator = pathToFileURL(root + '/daemon/project-index-coordinator.ts').href;
+      const coordinator = pathToFileURL(root + '/daemon/project-index-host.ts').href;
       assert.strictEqual(await daemonLoader.import(coordinator), await daemonLoader.import(coordinator));
       const { loadSdk, loadSdkModule } = await daemonLoader.import(pathToFileURL(root + '/daemon/sdk.ts').href);
       assert.strictEqual(await loadSdk(sdkDir), nativeSdk);

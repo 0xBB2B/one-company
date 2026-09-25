@@ -35,8 +35,8 @@ export const METHODS = [
   "shells.stop",
   "shells.markStopped",
   "mcp.register",
-  "index.sync",
-  "project.index.query",
+  "index.manage",
+  "knowledge.query",
 ] as const;
 
 export const EVENTS = [
@@ -49,7 +49,6 @@ export const EVENTS = [
   "relay.withdraw",
   "shells.changed",
   "daemon.idle",
-  "project.index.changed",
 ] as const;
 
 export const ERROR_CODES = [
@@ -65,13 +64,9 @@ export const ERROR_CODES = [
   "daemon_busy",
   "daemon_starting",
   "authorization_denied",
-  "grant_invalid",
-  "invalid_scope",
-  "identity_changed",
   "resource_limit",
-  "not_attached",
-  "index_not_fresh",
-  "coordinator_closed",
+  "not_initialized",
+  "index_unavailable",
   "internal",
 ] as const;
 
@@ -128,29 +123,6 @@ const DispatchContextSchema = Type.Object({
   model: Type.Optional(Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false })),
   thinking: Type.Optional(Type.String()),
 }, { additionalProperties: false });
-
-const IndexSyncScopeSchema = {
-  grantId: Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }),
-  repoId: Type.String({ pattern: "^[0-9a-f]{64}$" }),
-  workspaceId: Type.String({ pattern: "^[0-9a-f]{64}$" }),
-  repositoryRoot: Type.String({ pattern: "^/", minLength: 1, maxLength: 4096 }),
-  branch: Type.String({ pattern: "^refs/heads/[^\\u0000-\\u001f\\u007f]{1,512}$" }),
-} as const;
-
-const IndexSyncSchema = Type.Union([
-  ...(["init", "preview", "refresh", "ensureFresh", "detach"] as const).map((action) => Type.Object(
-    { action: Type.Literal(action), ...IndexSyncScopeSchema },
-    { additionalProperties: false },
-  )),
-  Type.Object({
-    action: Type.Literal("status"),
-    grantId: Type.Optional(IndexSyncScopeSchema.grantId),
-    repoId: IndexSyncScopeSchema.repoId,
-    workspaceId: IndexSyncScopeSchema.workspaceId,
-    repositoryRoot: IndexSyncScopeSchema.repositoryRoot,
-    branch: IndexSyncScopeSchema.branch,
-  }, { additionalProperties: false }),
-]);
 
 const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   hello: Type.Object(
@@ -262,12 +234,9 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
     { additionalProperties: false },
   ),
   "mcp.register": McpConfigSchema,
-  "index.sync": IndexSyncSchema,
-  "project.index.query": Type.Union([
-    Type.Object({ action: Type.Literal("query"), grantId: IndexSyncScopeSchema.grantId, query: KnowledgeTransportQuerySchema }, { additionalProperties: false }),
-    Type.Object({ action: Type.Literal("check"), grantId: IndexSyncScopeSchema.grantId,
-      receipt: Type.String({ pattern: "^[A-Za-z0-9_-]{43}$" }) }, { additionalProperties: false }),
-  ]),
+  "index.manage": Type.Object({ action: Type.Union(["init", "preview", "refresh", "status"].map((action) => Type.Literal(action))) },
+    { additionalProperties: false }),
+  "knowledge.query": Type.Object({ query: KnowledgeTransportQuerySchema }, { additionalProperties: false }),
 };
 
 export function encodeFrame(frame: Frame): string {
@@ -342,7 +311,7 @@ export function validateParams(method: string, params: unknown): void {
   assertKnownMethod(method);
   const schema = PARAM_SCHEMAS[method as (typeof METHODS)[number]];
   if (Value.Check(schema, params)) {
-    if (method === "project.index.query" && (params as Record<string, unknown>).action === "query") {
+    if (method === "knowledge.query") {
       try { parseKnowledgeTransportQuery((params as Record<string, unknown>).query); }
       catch { throw protocolError("bad_params", "知识查询参数无效"); }
     }

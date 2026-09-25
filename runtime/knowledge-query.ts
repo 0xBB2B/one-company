@@ -1,11 +1,30 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { CurrentQueryIndex, IndexedFile, IndexedSymbol, IndexedRule, IndexedFeature, SourceFragment } from "./index-store.ts";
-import type { ProjectBaselineSnapshot } from "./project-baseline.ts";
 import type { ProjectIndexSpecSummary } from "./project-index-service.ts";
 import { isKnowledgePath, KNOWLEDGE_QUERY_LIMITS as LIMIT, KnowledgeQueryError, parseKnowledgeQuery } from "./knowledge-query-contracts.ts";
 import type { KnowledgeQuery } from "./knowledge-query-contracts.ts";
 
 /** 由 ensureFresh 后的同代次 build result 提供，禁止将 baselineHash 当作 contractSetHash。 */
+/** 查询所用索引快照：工作区、代次、覆盖范围与文件 hash。 */
+export interface ProjectBaselineSnapshot {
+  readonly repoId: string;
+  readonly workspaceId: string;
+  readonly root: string;
+  readonly branch: string;
+  readonly generation: number;
+  readonly baselineHash: string;
+  readonly observedSequence: number;
+  readonly authorityEpoch: string;
+  readonly coverage: {
+    readonly kind: "allowed-inputs";
+    readonly complete: true;
+    readonly roots: readonly string[];
+    readonly excludedPaths: readonly string[];
+    readonly policyHash: string;
+  };
+  readonly files: ReadonlyArray<{ readonly path: string; readonly hash: string }>;
+}
+
 export interface KnowledgeQueryCapture {
   baseline: ProjectBaselineSnapshot;
   build: { workspaceId: string; generation: number; baselineHash: string; spec: ProjectIndexSpecSummary };
