@@ -1,25 +1,11 @@
+import { isAbsolute, join } from "node:path";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readGit } from "../runtime/git-read.ts";
-import { dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { detectMcpAdapter, listMcpServers } from "../runtime/mcp.ts";
+import { AgentCatalogView } from "../runtime/agent-catalog-ui.ts";
+import type { AgentCatalogTheme } from "../runtime/agent-catalog-ui.ts";
+import { AgentCopyError, copyAgentDefinition } from "../runtime/agent-copy.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
-import {
-  clearRoleField,
-  loadRoleSettings,
-  saveRoleSettings,
-  settingsPaths,
-} from "../runtime/settings.ts";
-import { createSettingsComponent, createSettingsSession } from "../runtime/settings-ui.ts";
-import type { FrontmatterParser } from "../runtime/roles.ts";
-import type {
-  SettingsComponent,
-  SettingsField,
-  SettingsModelsContext,
-  SettingsScope,
-  SettingsTheme,
-} from "../runtime/settings-ui.ts";
-
-const THINKING_LEVEL_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+import type { FrontmatterParser, RoleCatalogEntry } from "../runtime/roles.ts";
 
 function parseFrontmatterValue(raw: string): unknown {
   if (raw === "true") return true;
@@ -68,140 +54,33 @@ async function resolveRepoRoot(cwd: string): Promise<string> {
   }
 }
 
-function deriveThinkingLevels(model: { reasoning: boolean; thinkingLevelMap?: Record<string, unknown> }): string[] {
-  if (!model.reasoning) return ["off"];
-  const map = model.thinkingLevelMap ?? {};
-  return THINKING_LEVEL_ORDER.filter((level) => map[level] !== null);
-}
+export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui"> & { mode?: string; isProjectTrusted?: () => boolean };
 
-interface ModelLike {
-  provider: string;
-  id: string;
-  reasoning: boolean;
-  thinkingLevelMap?: Record<string, unknown>;
-}
-
-function buildModelsContext(ctx: {
-  modelRegistry?: { getAvailable(): ModelLike[] };
-  model?: { provider: string; id: string };
-  thinkingLevel?: string;
-  scopedModels?: readonly { model: ModelLike }[];
-}): SettingsModelsContext {
-  const registry = ctx.modelRegistry;
-  if (!registry) return { available: [], sessionModel: "", sessionThinking: "off" };
-  let models = registry.getAvailable();
-  if (ctx.scopedModels && ctx.scopedModels.length > 0) {
-    const allowed = new Set(ctx.scopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`));
-    models = models.filter((model) => allowed.has(`${model.provider}/${model.id}`));
-  }
-  const available = models.map((model) => ({
-    provider: model.provider,
-    id: model.id,
-    thinkingLevels: deriveThinkingLevels(model),
-  }));
-  return {
-    available,
-    sessionModel: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "",
-    sessionThinking: ctx.thinkingLevel ?? "off",
-  };
-}
-
-function detectMcpServers(agentDir: string): string[] {
-  try {
-    const result = detectMcpAdapter({
-      sourcePaths: [dirname(fileURLToPath(import.meta.url))],
-      argv: process.argv,
-      agentDir,
-    });
-    if (!result.installed) return [];
-    const listed = listMcpServers(result.configPath);
-    return listed.ok ? listed.servers.filter((server) => !server.disabled).map((server) => server.name) : [];
-  } catch {
-    return [];
-  }
-}
-
-function buildTheme(ctx: { ui: { theme?: { fg(kind: string, text: string): string; bg(kind: string, text: string): string } } }): SettingsTheme | undefined {
-  const hostTheme = ctx.ui.theme;
-  if (!hostTheme) return undefined;
-  return {
-    fg: (kind: string, text: string) => hostTheme.fg(kind, text),
-    bg: (kind: string, text: string) => hostTheme.bg(kind, text),
-  };
-}
-
-export interface SettingsExtensionContext {
-  hasUI: boolean;
-  mode?: string;
-  cwd: string;
-  isProjectTrusted?: () => boolean;
-  modelRegistry?: { getAvailable(): ModelLike[] };
-  model?: { provider: string; id: string };
-  thinkingLevel?: string;
-  scopedModels?: readonly { model: ModelLike }[];
-  ui: {
-    notify(message: string, level?: string): void;
-    setEditorComponent(factory: unknown): void;
-    theme?: { fg(kind: string, text: string): string; bg(kind: string, text: string): string };
-  };
-}
-
+/** /pi-company:setting：只读查看内置、用户、项目三层的角色定义；C 复制为新定义，编辑请直接改对应目录下的 md。 */
 export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<void> {
   const projectTrusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true;
   const agentDir = resolveAgentDir(process.env);
-  const repoRoot = await resolveRepoRoot(ctx.cwd);
-
-  const catalog = await loadRoleCatalog({
-    defaultDir: defaultRoleDir(),
-    userDir: userRoleDir(agentDir),
-    projectDir: projectRoleDir(repoRoot),
-    parseFrontmatter,
-    projectTrusted,
-  });
-
-  const paths = await settingsPaths({ agentDir, repoRoot, projectTrusted });
-  const loaded = await loadRoleSettings(paths, { roleNames: catalog.roles.map((role) => role.name) });
-
-  const models = buildModelsContext(ctx);
-  const detected = detectMcpServers(agentDir);
-
-  const baselines: { global: string | null; project: string | null } = {
-    global: loaded.global.raw,
-    project: loaded.project?.raw ?? null,
-  };
-
-  const save = async (scope: SettingsScope, role: string, field: SettingsField, value: unknown): Promise<void> => {
-    const path = scope === "project" ? paths.project : paths.global;
-    if (!path) throw new Error("项目层设置不可写入：项目未受信任");
-    const isDefaultValue = field !== "mcp" && value === "inherit";
-    const raw = isDefaultValue
-      ? await clearRoleField(path, { role, field, baseline: baselines[scope] })
-      : await saveRoleSettings(path, { role, patch: { [field]: value }, baseline: baselines[scope] });
-    baselines[scope] = raw;
-  };
-
-  const session = createSettingsSession({
-    catalog: { roles: catalog.roles.map((role) => ({ name: role.name })) },
-    settings: {
-      global: { roles: loaded.global.roles },
-      project: loaded.project ? { roles: loaded.project.roles } : null,
-    },
-    scope: "global",
-    models,
-    mcp: { detected },
-    save,
-  });
-
-  let component: SettingsComponent | undefined;
-  ctx.ui.setEditorComponent((tui: { terminal: { rows: number }; requestRender?: () => void }) => {
-    if (!component) {
-      component = createSettingsComponent(session, {
-        theme: buildTheme(ctx),
-        onClose: () => ctx.ui.setEditorComponent(undefined),
-        rows: () => tui.terminal.rows,
-        requestRender: () => tui.requestRender?.(),
-      });
+  const dirs = { defaultDir: defaultRoleDir(), userDir: userRoleDir(agentDir), projectDir: projectRoleDir(await resolveRepoRoot(ctx.cwd)) };
+  for (;;) {
+    const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted });
+    const picked = await ctx.ui.custom<RoleCatalogEntry | undefined>((tui, theme, _keybindings, done) => {
+      const view = new AgentCatalogView({ catalog, theme: theme as unknown as AgentCatalogTheme, onCopy: (entry) => done(entry), onClose: () => done(undefined) });
+      return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
+        handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); } };
+    });
+    if (!picked) return;
+    const newName = (await ctx.ui.input(`复制 ${picked.name} 为新定义：输入名称`, picked.definition?.role === "pm" ? "pm" : `${picked.name}-copy`))?.trim();
+    if (!newName) continue;
+    const layers = [`用户层 ${dirs.userDir}`, ...(projectTrusted ? [`项目层 ${dirs.projectDir}`] : [])];
+    const layer = await ctx.ui.select("复制到", layers);
+    if (!layer) continue;
+    try {
+      const target = await copyAgentDefinition({ entry: picked, newName, targetDir: layer === layers[0] ? dirs.userDir : dirs.projectDir,
+        layerDirs: [dirs.defaultDir, dirs.userDir, dirs.projectDir] });
+      ctx.ui.notify(`已复制到 ${target}，请直接编辑该文件`);
+    } catch (error) {
+      if (!(error instanceof AgentCopyError)) throw error;
+      ctx.ui.notify(error.message, "error");
     }
-    return component;
-  });
+  }
 }

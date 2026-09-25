@@ -8,7 +8,6 @@ const README = join(PACKAGE_ROOT, "README.md");
 const DAEMON_MAIN = join(PACKAGE_ROOT, "daemon/main.ts");
 const COMMANDS = join(PACKAGE_ROOT, "extensions/commands.ts");
 const PACKAGE_JSON = join(PACKAGE_ROOT, "package.json");
-const SETTINGS_UI = join(PACKAGE_ROOT, "runtime/settings-ui.ts");
 const IDENTITY = join(PACKAGE_ROOT, "runtime/identity.ts");
 const PM_PANEL = join(PACKAGE_ROOT, "runtime/pm-panel.ts");
 
@@ -173,27 +172,10 @@ describe("README PM 面板事实与 runtime/pm-panel.ts 一致", () => {
   });
 });
 
-describe("README 角色与设置事实与 runtime/settings-ui.ts 一致", () => {
-  test("含 settings-ui 字段表的全部可设字段标签", async () => {
-    const source = await readText(SETTINGS_UI);
-    const match = source.match(/FIELD_LABEL[^{]*\{([^}]*)\}/);
-    expect(match).not.toBeNull();
-    const labels = [...match![1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
-    expect(labels.length).toBeGreaterThan(0);
+describe("README 角色与设置", () => {
+  test("说明只读查看、按职责分类、复制与三层覆盖及项目信任", async () => {
     const section = extractSection(await readText(README), "角色与设置");
-    for (const label of labels) expect(section).toContain(label);
-  });
-
-  test("含来源只读说明与全局/项目范围切换", async () => {
-    const section = extractSection(await readText(README), "角色与设置");
-    expect(section).toContain("只读");
-    expect(section).toContain("全局");
-    expect(section).toContain("项目");
-  });
-
-  test("含: 受信任（项目级定义须项目受宿主信任才生效）", async () => {
-    const section = extractSection(await readText(README), "角色与设置");
-    expect(section).toContain("受信任");
+    for (const phrase of ["只读", "C 复制", "用户层", "项目层", "受信任", "不提供编辑"]) expect(section).toContain(phrase);
   });
 });
 
