@@ -397,7 +397,7 @@ test("M6-AC1：数据库直写不能为其他调用者创建验证记录；Local
   expect((stored[0]!.data as { verifications: string[] }).verifications).toEqual([]);
 });
 
-test("debug 命令可写工作区、继承完整环境变量；数据目录仍不可写", async () => {
+test("debug 命令可写工作区、继承完整环境变量；数据目录、Git 元数据、规则、归档与角色定义不可写", async () => {
   if (!darwin) return;
   const w = await world();
   const worker = await w.tool(w.grant({ role: "worker" }));
@@ -407,6 +407,15 @@ test("debug 命令可写工作区、继承完整环境变量；数据目录仍�
   // 运行中改了受保护输入，本次运行按既有规则标失效；写入本身未被拦
   expect(writes.status).toBe("invalidated");
   await expect(w.read("src/generated.txt")).resolves.toBe("gen\n");
+  for (const target of ["docs/spec/x.rules.json", "docs/prod/x.md", ".pi/agents/worker.md"]) {
+    const run = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(target, ".."))} && echo x > ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
+    expect(run.status).toBe("failed");
+    await expect(w.read(target)).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  const hook = join((await repositoryIdentity(w.repositoryRoot)).commonDir, "hooks", "pre-commit");
+  const git = await worker.execute({ action: "run", kind: "debug", command: `echo x > "$(git rev-parse --git-common-dir)/hooks/pre-commit"`, performance: NA }) as VerificationView;
+  expect(git.status).toBe("failed");
+  await expect(readFile(hook, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   const forged = join(w.dataRoot, "forged.txt");
   const denied = await worker.execute({ action: "run", kind: "debug", command: `echo x > ${JSON.stringify(forged)}`, performance: NA }) as VerificationView;
   expect(denied.status).toBe("failed");

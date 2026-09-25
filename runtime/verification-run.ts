@@ -8,6 +8,7 @@ import { activeCheckRoundIn, CHECK_ROUNDS, collectInputManifest, manifestMatches
   VerificationPerformance, VerificationRun, VERIFICATION_RUNS } from "./check-round.ts";
 import type { CheckBaseline, CheckInvalidation, CheckRound, InputManifest } from "./check-round.ts";
 import { writeGuardLaunch } from "./command-boundary.ts";
+import { repositoryIdentity } from "./identity.ts";
 import { authorizeToolAction } from "./core-permissions.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
@@ -113,7 +114,9 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
   }
   async function launchFor(started: VerificationRun, root: string) {
     const dataRoot = await realpath(options.dataRoot), outputRoot = await realpath(started.outputRoot), scratch = join(outputRoot, "tmp");
-    return writeGuardLaunch(started.command, { deniedWrites: [dataRoot, ...(started.checkRoundId ? [root] : [])],
+    // 与 change_apply 同样不得改写 Git 元数据（hook 会在用户后续 Git 操作中执行）、规则、归档与角色定义
+    const protectedPaths = [(await repositoryIdentity(root)).commonDir, ...[".git", "docs/spec", "docs/prod", ".pi/agents"].map((path) => join(root, path))];
+    return writeGuardLaunch(started.command, { deniedWrites: [dataRoot, ...protectedPaths, ...(started.checkRoundId ? [root] : [])],
       allowedWrites: [join(outputRoot, "outputs"), scratch], deniedSockets: [dataRoot], scratch });
   }
   async function writeManifest(outputRoot: string, manifest: InputManifest): Promise<void> {

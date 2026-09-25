@@ -37,7 +37,7 @@ export async function commandBoundary(input: { cwd: string; writePaths: string[]
 }
 
 /**
- * 验证命令只限两条写入：不得写本机数据目录（可按需放行本次输出目录），检查阶段另禁写工作区；读取、网络与环境变量不限。
+ * 验证命令只限写入：禁写路径由调用方给出，可按需放行本次输出目录；读取、网络与环境变量不限。
  * 沙箱规则后写者优先，故先禁后放。
  */
 export function writeGuardLaunch(command: string, guard: { deniedWrites: string[]; allowedWrites: string[]; deniedSockets: string[]; scratch: string }) {
@@ -56,7 +56,7 @@ export function writeGuardLaunch(command: string, guard: { deniedWrites: string[
     ...(guard.allowedWrites.length ? [`(allow file-write* ${subpaths(guard.allowedWrites)})`] : []),
   ].join("\n");
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
-  return { command: "/usr/bin/sandbox-exec", args: ["-p", profile, "/bin/sh", "-c", command], env: { ...env, TMPDIR: guard.scratch, TMP: guard.scratch, TEMP: guard.scratch } };
+  return { command: "/usr/bin/sandbox-exec", args: ["-p", profile, "/bin/sh", "-c", command], env: { ...env, GIT_OPTIONAL_LOCKS: "0", TMPDIR: guard.scratch, TMP: guard.scratch, TEMP: guard.scratch } };
 }
 
 export function sandboxLaunch(command: string, boundary: CommandBoundary) {
