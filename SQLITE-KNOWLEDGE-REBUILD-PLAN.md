@@ -53,9 +53,9 @@
 6. **核心工具读写边界由程序控制**：可以读写、只读、完全不可读，按角色、需求身份、状态和操作核验。普通工具的读取、网络与写入路径首版不设限制，命令执行只保留写入限制：不得写本机数据目录，不得写 Git 元数据、docs/spec、docs/prod、.pi/agents；检查阶段不得写工作区；角色说明要求不主动读归档；首版不新增覆盖所有工具的 prod 授权网关，具体范围见 §5.7。
 7. **状态和简短决策结论统一由本机 SQLite 管理**：data.db保存需求生命周期、用户/AI决策结论、主体、范围、时间、批准、PM、plan/task、授权及证据元数据。prod全文、版本基线、diff或详细副本不入库，正文版本由本机Git保存；独立的简短决策结论按 §5.3、§6.1 允许入库，不额外保存用户原话或决策解释文件。index.db保存允许的代码/spec索引，global.db保存全局设置；Git与prod文件不负责运行调度。
 8. **Tree-sitter 随产品安装**，允许必要第三方组件，不要求另装 CodeGraph、数据库服务或解析 CLI。
-9. **业务项目Git只承载已完成需求的最终产物**。未完成代码可存在于主代理创建的开发worktree，但受管业务提交/推送只接受完成最终产物；活动prod不进入业务工作区或远端，允许独立本机需求Git保存草稿及活动正文版本，但不配置远端或推送。本机状态、授权和会话不随业务Git共享，取消/拒绝/失败不等于完成。不安装产品的人仍可使用业务项目最终文件。
+9. **业务项目Git只承载已完成需求的最终产物**。未完成代码可存在于主代理创建的开发worktree，PM可在该worktree分支内按任务做本地提交；推送与合并回主分支只接受完成最终产物，由用户在外部操作；活动prod不进入业务工作区或远端，允许独立本机需求Git保存草稿及活动正文版本，但不配置远端或推送。本机状态、授权和会话不随业务Git共享，取消/拒绝/失败不等于完成。不安装产品的人仍可使用业务项目最终文件。
 10. **取消独立 prompts 模板层**，保留由程序生成的运行时上下文；agents/skills/rules 分工明确，不复制多套业务约束。
-11. **业务项目的 Git commit/push/PR 解耦为可选外部集成**。核心负责交付条件和可核对凭据；prod工具内部的本机版本提交属于正文存储步骤，不是业务Git提交入口，不授予代理任意Git写入或远端能力。主代理专用的分支/worktree准备和回收属于受控工作区管理，不因此开放通用Git写入或远端权限。
+11. **业务项目的 Git push/PR 与合并回主分支解耦为可选外部集成**。核心负责交付条件和可核对凭据；prod工具内部的本机版本提交属于正文存储步骤，不是业务Git提交入口。PM 在所绑定需求 worktree 分支内经受控提交工具做本地提交：明确列出文件、保留他人暂存内容、不能切换分支或推送、检查阶段禁止，提交时机由 PM 按任务完成情况决定。主窗口不设文件与命令层面的限制，由用户直接监督；主窗口工具中落实两条威胁模型的检查（如用户决定只认宿主抓取的原话）保留。
 12. **最终检查由PM决定时机，程序保证互斥**。本轮worker及其写入全部结束后才进入最终review/验收；检查中收到已批准更新，由PM选择中断后修改或检查结束再修改。任何待处理更新都阻止完成关闭，检查基线不得中途偷换；首版不强制固定输入副本，外部改动采用检测后失效。
 13. **每份prod使用全局UUIDv7作为唯一需求身份**。由可信需求服务创建一次并固定为requirementId，写入正文元数据，用于本机目录、PM/任务/事件绑定。完成归档文件名固定为 `<UUIDv7>.<需求描述>.md`，UUID负责唯一身份与大致时间排序，描述便于人工辨认；不以日期、标题或顺序号作为唯一键。UUID降低身份和路径碰撞风险，不证明需求完成、内容可信或规则无语义冲突。
 14. **产品固定六类职责及权限上限：main、PM（requirement-agent）、explore、worker、reviewer、acceptance/QA；不限制agent实例或专业定义总数**。产品随安装提供六类职责对应的完整通用团队、必要通用skills和配置；没有专业agent也能在有效模型、工具及授权下走完需求、接手、规划、实现、独立review、QA和关闭。用户可复制默认agent配置，按同一格式扩展单一职责的专业agent，PM在授权内自动选择；默认worker也可承担领域设计与实现，explore仍只读搜索。PM负责plan/task拆分、依赖、覆盖映射、spec候选及增量维护，不默认编码或自行批准目标；永久移除独立planner及派工、恢复和别名兼容，不删除用户既有数据。主代理核对业务理解与授权，不逐项审批全部技术计划；接手复核见 §10.1.1，explore边界见 §10.5，默认团队、模板和专业选择协议见 §10.6。
@@ -877,7 +877,7 @@ prod若再次变化，PM按事件顺序处理或在可证明连续基线下合�
 | 角色 | 核心工具 |
 |---|---|
 | 主代理 | project_manage、knowledge_query、requirement_manage、user_interact、agent_manage、workflow_manage |
-| PM | knowledge_query、requirement_manage、plan_manage、agent_manage、user_interact、spec_change、verification_run、workflow_manage |
+| PM | knowledge_query、requirement_manage、plan_manage、agent_manage、user_interact、spec_change、verification_run、workflow_manage；另有宿主受控提交工具（非核心业务工具），只在所绑定 worktree 分支内本地提交 |
 | explore | knowledge_query、result_submit；宿主只读/网络非业务能力另按 §10.5 白名单 |
 | worker | knowledge_query、change_apply、verification_run、result_submit |
 | reviewer | knowledge_query、requirement_manage、plan_manage、verification_run、result_submit |
