@@ -107,3 +107,21 @@ export function checkSpecSet(sources: SpecSource[]): CheckedSpecSet {
   return { fileHashes, rules, schemaHash, contractSetHash: hash(canonicalJson({ schemaHash, rules: rules.map((entry) => [entry.rule.id, entry.contractHash]) })),
     semanticReview: { required: true, ruleIds: rules.map((entry) => entry.rule.id), conflictCandidates } };
 }
+
+export interface MechanicalConflict { kind: "duplicate" | "conflict"; left: string; right: string }
+/** 机械冲突：正文完全相同的重复规则，以及同一特性下条件、触发相同而期望不同、又未互相声明例外的规则对。 */
+export function mechanicalConflicts(set: CheckedSpecSet): MechanicalConflict[] {
+  const byId = new Map(set.rules.map((entry) => [entry.rule.id, entry.rule]));
+  const excepted = (left: string, right: string) => byId.get(left)!.exceptions.includes(right) || byId.get(right)!.exceptions.includes(left);
+  const found: MechanicalConflict[] = set.semanticReview.conflictCandidates.filter((pair) => !excepted(pair.left, pair.right))
+    .map((pair) => ({ kind: "conflict" as const, ...pair }));
+  const bodies = new Map<string, string>();
+  for (const { rule } of set.rules) {
+    const { id: _id, ...body } = rule;
+    const key = canonicalJson(jsonValue(body as SpecRule));
+    const first = bodies.get(key);
+    if (first === undefined) bodies.set(key, rule.id);
+    else found.push({ kind: "duplicate", left: first, right: rule.id });
+  }
+  return found;
+}

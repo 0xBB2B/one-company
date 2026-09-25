@@ -12,8 +12,12 @@
     "workflow",
     "subagents"
   ],
+  "bin": {
+    "pi-company-spec-check": "./bin/spec-check.mjs"
+  },
   "files": [
     "agents",
+    "bin",
     "daemon",
     "extensions",
     "resources/tree-sitter",
