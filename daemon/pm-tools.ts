@@ -36,6 +36,8 @@ export interface PmToolsInput {
     dispatch(taskId: string, retry: { reason: string; maxTurns: number } | null): Promise<unknown>;
     explore(request: { question: string; clues: string[]; source: ExploreSourceRequest }, maxTurns: number): Promise<unknown>;
     control(action: "status" | "pause" | "resume" | "stop", runId: string): Promise<unknown>;
+    /** 有界能力目录：只含名称、职责、描述与来源，不含定义正文或 skill 正文。 */
+    catalog(role: string | undefined, cursor: number): Promise<unknown>;
   };
 }
 
@@ -50,6 +52,8 @@ export const PM_AGENT_MANAGE_PARAMETERS = Type.Union([
     clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })), ...target,
     maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }) }, { additionalProperties: false })),
   runControl("status"), runControl("pause"), runControl("resume"), runControl("stop"),
+  Type.Object({ action: Type.Literal("catalog"), role: Type.Optional(Type.Union(["worker", "reviewer", "qa", "explore"].map((role) => Type.Literal(role)))),
+    cursor: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000 })) }, { additionalProperties: false }),
 ]);
 
 export interface PmTools {
@@ -115,19 +119,21 @@ function agentManageTool(input: PmToolsInput): ToolDefinition {
   return {
     name: "pi_company_agent_manage",
     label: "agent_manage",
-    description: "dispatch 按已冻结计划中的任务派出子代理，轮次上限取任务登记值；任务首次尝试未完成时可带 retry（原因与新的轮次上限）重试一次，再未完成即等待用户裁决。dispatch role=explore 派出只读检索（问题、线索与轮次上限；不给 webQuery 时在需求工作区内检索本地文件，给出 webQuery 则联网检索），立即返回运行编号，结果到达后自动注入本会话，可同时派出多个。status/pause/resume/stop 控制本 PM 派出的运行。",
+    description: "dispatch 按已冻结计划中的任务派出子代理，轮次上限取任务登记值；任务首次尝试未完成时可带 retry（原因与新的轮次上限）重试一次，再未完成即等待用户裁决。dispatch role=explore 派出只读检索（问题、线索与轮次上限；不给 webQuery 时在需求工作区内检索本地文件，给出 webQuery 则联网检索），立即返回运行编号，结果到达后自动注入本会话，可同时派出多个。status/pause/resume/stop 控制本 PM 派出的运行。catalog 按职责分页列出可用角色定义（名称、描述、来源），供在计划任务里用 agent 指定专业定义；用户明确指定的定义不可用时，不自行改用其他定义，向用户提问。",
     parameters: PM_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {
       if (!input.alive() || !Value.Check(PM_AGENT_MANAGE_PARAMETERS, rawParams)) throw new Error("agent_manage_denied");
-      const params = rawParams as { action: "dispatch" | "status" | "pause" | "resume" | "stop"; taskId?: string; runId?: string;
-        retry?: { reason: string; maxTurns: number }; role?: "explore"; question?: string; clues?: string[]; webQuery?: string; maxTurns?: number };
+      const params = rawParams as { action: "dispatch" | "status" | "pause" | "resume" | "stop" | "catalog"; taskId?: string; runId?: string;
+        retry?: { reason: string; maxTurns: number }; role?: string; question?: string; clues?: string[]; webQuery?: string; maxTurns?: number; cursor?: number };
       if (!authorizeToolAction("pm", "agent_manage", params.action)) throw new Error("agent_manage_denied");
-      const result = params.action === "dispatch" && params.role === "explore"
+      const result = params.action === "catalog"
+        ? await input.agents.catalog(params.role, params.cursor ?? 0)
+        : params.action === "dispatch" && params.role === "explore"
         ? await input.agents.explore({ question: params.question!, clues: params.clues ?? [], source: exploreSource(params) }, params.maxTurns!)
         : params.action === "dispatch"
         ? await input.agents.dispatch(params.taskId!, params.retry ?? null)
-        : await input.agents.control(params.action, params.runId!);
+        : await input.agents.control(params.action as "status" | "pause" | "resume" | "stop", params.runId!);
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
     },
   } as ToolDefinition;

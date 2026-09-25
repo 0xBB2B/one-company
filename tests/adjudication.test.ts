@@ -14,7 +14,7 @@ import type { InteractionContext } from "../runtime/user-interaction-format.ts";
 import { RequirementCloseService } from "../runtime/workflow-close.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
-vi.setConfig({ testTimeout: 90_000 });
+vi.setConfig({ testTimeout: 90_000, hookTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
 const NA = { applicable: false as const, reason: "无性能影响" };

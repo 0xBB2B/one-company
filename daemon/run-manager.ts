@@ -48,6 +48,9 @@ import type { PageGetter, WebDeps } from "../runtime/web-access.ts";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { KnowledgeTransportQuerySchema } from "../runtime/knowledge-query-tool.ts";
 import { createPmCommitTool } from "../runtime/pm-commit.ts";
+import { AgentResolveError, definitionHash, resolveAgent } from "../runtime/agent-resolve.ts";
+import type { AgentFingerprint, ResolvedAgent } from "../runtime/agent-resolve.ts";
+import type { AgentRole } from "../runtime/roles.ts";
 import { activeCheckRoundIn } from "../runtime/check-round.ts";
 import type { ProjectIndexHost } from "./project-index-host.ts";
 import type { RelayQueue } from "./relay-queue.ts";
@@ -64,6 +67,10 @@ export interface RunManagerOptions {
   web?: { deps: WebDeps; getPage: PageGetter };
   /** 宿主 agentDir：explore 定义声明 MCP 服务时，从这里的 npm/node_modules/pi-mcp-adapter 与 mcp.json 装载。 */
   agentDir?: string;
+  /** 每次派出时重新读取角色目录；缺省用启动时的 roleCatalog。 */
+  loadRoleCatalog?: () => Promise<RoleCatalogEntry[]>;
+  /** 按顺序查找 skill 的目录（项目、用户、安装资源）。 */
+  skillDirs?: string[];
   /** 守护进程持有的主仓库索引；缺省时角色没有 knowledge_query。 */
   index?: ProjectIndexHost;
 }
@@ -117,6 +124,18 @@ function runMetadata(run: RunRecord): RunMetadata {
     ...(run.usage ? { usage: { ...run.usage } } : {}), ...(run.pausedMs ? { pausedMs: run.pausedMs } : {}), ...(run.pausedAt ? { pausedAt: run.pausedAt } : {}),
     ...(run.stateReason ? { stateReason: "运行原因已记录；状态元数据不返回旧正文" } : {}) };
 }
+/** 续接前核对原绑定的角色定义与 skills 文件未变；读不到也视为已变。 */
+async function agentUnchanged(agent: AgentFingerprint): Promise<boolean> {
+  const same = async (path: string, hash: string) => (await definitionHash(path).catch(() => null)) === hash;
+  if (!(await same(agent.path, agent.hash))) return false;
+  for (const skill of agent.skills) if (!(await same(skill.path, skill.hash))) return false;
+  return true;
+}
+
+function withSkills(context: string, skills: string): string {
+  return skills ? `${context}\n\n# 本任务加载的 skills\n${skills}` : context;
+}
+
 function exploreReport(runId: string, outcome: string, research: ExploreResult | null, turnsUsed: number): Record<string, unknown> {
   return { kind: "explore-report", runId, outcome, turnsUsed, research,
     note: research ? "research 不是 PASS：使用前核对来源、当前性与截断，必要时回读关键全文" : "未提交 research，没有可用结果" };
@@ -182,14 +201,8 @@ export class RunManager {
     if (!record.data.approvalManifest || !implementAuthorized({ dataRoot: this.options.dataRoot, repoId: this.repoId }, record)) {
       throw protocolError("implement_not_authorized", "批准清单没有实施授权，分析与规划阶段不派 PM");
     }
-    const entry = this.options.roleCatalog.find((candidate) => candidate.name === "pm");
-    if (!entry?.available || !entry.definition || entry.definition.role !== "pm") throw protocolError("role_unavailable", entry?.reason ?? "PM 定义不可用");
-    const definition = entry.definition;
-    const modelRef = definition.model
-      ? { provider: definition.model.slice(0, definition.model.indexOf("/")), id: definition.model.slice(definition.model.indexOf("/") + 1) }
-      : input.model;
-    if (!this.options.runtime.getModels(modelRef.provider).some((model) => model.id === modelRef.id)) throw protocolError("model_unavailable", `模型不可用: ${modelRef.provider}/${modelRef.id}`);
-    const thinking = definition.thinking ?? input.thinking;
+    const resolved = await this.resolveAgent("pm", "pm", { model: input.model, thinking: input.thinking });
+    const { definition, model: modelRef, thinking } = resolved;
     const owner = state.pmOwner(input.requirementId);
     if (owner?.lease && owner.lease.expiresAt > Date.now()) throw protocolError("pm_already_owned", "本需求已有有效 PM");
     // 旧租约已失效：接管前先停止本需求仍登记在册的旧运行，旧会话不能继续调用工具
@@ -197,7 +210,7 @@ export class RunManager {
     const expectedFence = owner?.fence ?? 0;
     const workspace = record.data.workspace;
     const run = await this.runStore.create({ kind: "requirement", requirement: input.requirementId, task: "pm", cwd: workspace.path,
-      readPaths: [workspace.path], writePaths: [], model: modelRef, thinking, mcp: [] });
+      readPaths: [workspace.path], writePaths: [], model: modelRef, thinking, mcp: [], agent: resolved.fingerprint });
     let lease: PmLease;
     try { lease = await state.acquirePm({ requirementId: input.requirementId, version: record.version, runId: run.id, expectedFence }); }
     catch (error) {
@@ -235,9 +248,10 @@ export class RunManager {
             if (!child.ok || child.run.parentRunId !== run.id) throw protocolError("not_found", "不是本 PM 派出的运行");
             return action === "status" ? this.status(childId) : this[action](childId);
           },
+          catalog: (role, cursor) => this.agentCatalog(role, cursor),
         } });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: pmContext(record.data, lease), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ worktree: workspace.path, branch: workspace.branch, alive,
+        context: withSkills(pmContext(record.data, lease), resolved.skillsContext), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ worktree: workspace.path, branch: workspace.branch, alive,
           checkPhaseActive: () => withDatabase(this.database, (db) => activeCheckRoundIn(db, this.repoId, input.requirementId) !== null) })], runtime: this.options.runtime, modelRef, thinking,
         completion: { kind: "idle-only" }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
@@ -304,16 +318,11 @@ export class RunManager {
     const task = withDatabase(this.database, (db) => readPlanIn(db, lease.requirementId)?.tasks.find((candidate) => candidate.taskId === input.taskId));
     if (!task) throw protocolError("task_not_ready", "任务不存在");
     if (task.role === "explore") throw protocolError("role_unavailable", "explore 派工由检索入口负责");
-    const entry = this.options.roleCatalog.find((candidate) => candidate.name === task.role);
-    if (!entry?.available || !entry.definition || entry.definition.role !== task.role) throw protocolError("role_unavailable", entry?.reason ?? `${task.role} 定义不可用`);
-    const definition = entry.definition;
-    const modelRef = definition.model
-      ? { provider: definition.model.slice(0, definition.model.indexOf("/")), id: definition.model.slice(definition.model.indexOf("/") + 1) }
-      : pmRun.run.model;
-    const thinking = definition.thinking ?? pmRun.run.thinking;
+    const resolved = await this.resolveAgent(task.agent ?? task.role, task.role, { model: pmRun.run.model, thinking: pmRun.run.thinking });
+    const { definition, model: modelRef, thinking } = resolved;
     const workspace = record.workspace!;
     const run = await this.runStore.create({ kind: "role", role: `pi-company.${task.role}`, requirement: lease.requirementId, parentRunId: input.pmRunId, task: task.taskId,
-      cwd: workspace.path, readPaths: [workspace.path], writePaths: task.writePaths, model: modelRef, thinking, mcp: [] });
+      cwd: workspace.path, readPaths: [workspace.path], writePaths: task.writePaths, model: modelRef, thinking, mcp: [], agent: resolved.fingerprint });
     let maxTurns: number;
     try { ({ maxTurns } = beginTaskAttempt({ dataRoot: this.options.dataRoot, repoId: this.repoId, lease, taskId: task.taskId, runId: run.id, retry: input.retry })); }
     catch (error) {
@@ -333,7 +342,7 @@ export class RunManager {
       tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
         pmLease: lease, workspace, epoch: record.epoch, task, alive });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: await taskContext(task, maxTurns), coreTools: [...tools.tools, ...(task.role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
+        context: withSkills(await taskContext(task, maxTurns), resolved.skillsContext), coreTools: [...tools.tools, ...(task.role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true;
@@ -386,9 +395,6 @@ export class RunManager {
    */
   async dispatchExplore(input: { parent: ExploreParentRequest; request: ExploreRequest; maxTurns: number }): Promise<{ runId: string; maxTurns: number }> {
     if (!Number.isSafeInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 1000) throw protocolError("invalid_params", "explore 须有正整数轮次上限");
-    const entry = this.options.roleCatalog.find((candidate) => candidate.name === "explore");
-    if (!entry?.available || !entry.definition || entry.definition.role !== "explore") throw protocolError("role_unavailable", entry?.reason ?? "explore 定义不可用");
-    const definition = entry.definition;
     let parent: ExploreInput["parent"], root: string, modelRef: SelectedModel, thinking: string, requirementId: string | null = null;
     if (input.parent.role === "PM") {
       const pm = this.sessions.get(input.parent.pmRunId), pmRun = await this.runStore.get(input.parent.pmRunId);
@@ -402,15 +408,15 @@ export class RunManager {
       parent = { role: "main", parentSessionId: input.parent.sessionId, parentRunId: `main:${input.parent.sessionId}`, contextId: input.parent.connectionId, requirementBinding: null };
       root = this.options.repositoryRoot; modelRef = input.parent.model; thinking = input.parent.thinking;
     }
-    if (definition.model) modelRef = { provider: definition.model.slice(0, definition.model.indexOf("/")), id: definition.model.slice(definition.model.indexOf("/") + 1) };
-    thinking = definition.thinking ?? thinking;
-    if (!this.options.runtime.getModels(modelRef.provider).some((model) => model.id === modelRef.id)) throw protocolError("model_unavailable", `模型不可用: ${modelRef.provider}/${modelRef.id}`);
+    const resolved = await this.resolveAgent("explore", "explore", { model: modelRef, thinking });
+    const definition = resolved.definition;
+    modelRef = resolved.model; thinking = resolved.thinking;
     const source: ExploreInput["source"] = input.request.source.kind === "web"
       ? { kind: "web", indexBaseline: "not_applicable", query: input.request.source.query }
       : { kind: "local_file", indexBaseline: "not_applicable", root: await realpath(root) };
     const runId = requirementId
       ? (await this.runStore.create({ kind: "role", role: "pi-company.explore", requirement: requirementId, parentRunId: parent.parentRunId, task: "explore",
-        cwd: root, readPaths: source.kind === "local_file" ? [source.root] : [], writePaths: [], model: modelRef, thinking, mcp: definition.mcp ?? [] })).id
+        cwd: root, readPaths: source.kind === "local_file" ? [source.root] : [], writePaths: [], model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint })).id
       : uuidv7();
     let explore: ExploreInput;
     try {
@@ -430,7 +436,7 @@ export class RunManager {
       exploreSession: { dataRoot: this.options.dataRoot, repoId: this.repoId }, authorize: () => alive(), verify: sourceHashesMatch, onResearch: (value) => { captured = value; } });
     let handle: AgentSessionHandle;
     try {
-      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, context: exploreContext(explore, input.maxTurns),
+      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, context: withSkills(exploreContext(explore, input.maxTurns), resolved.skillsContext),
         coreTools: [toPiTool("result_submit", "提交 research（action=research）：结论、来源、检索范围、未找到、失败、截断与未知项；research 不是 PASS。", RESULT_SUBMIT_PARAMETERS, result),
           ...(source.kind === "web" ? this.webTools(alive) : this.knowledgeTool(runId))],
         readRoots: source.kind === "local_file" ? [source.root] : [], mcp: this.mcpFor(definition.mcp), hostTools: source.kind === "local_file" ? ["read", "grep"] : [],
@@ -475,6 +481,28 @@ export class RunManager {
     let config: McpConfig;
     try { config = JSON.parse(readFileSync(adapter.configPath, "utf8")) as McpConfig; } catch { return undefined; }
     return { servers, entryPath: adapter.entryPath, packageDir: adapter.packageDir, config };
+  }
+
+  /** PM 的有界能力目录：每页最多 20 条，只含名称、职责、描述与来源。 */
+  async agentCatalog(role: string | undefined, cursor: number) {
+    const entries = (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
+      .filter((entry) => entry.available && entry.definition && entry.definition.role !== "pm" && (!role || entry.definition.role === role))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const items = entries.slice(cursor, cursor + 20).map((entry) => ({ name: entry.name, role: entry.definition!.role,
+      description: entry.definition!.description, source: entry.source }));
+    return { items, total: entries.length, nextCursor: cursor + 20 < entries.length ? cursor + 20 : null };
+  }
+
+  /** 每次派出按当前角色目录解析定义并核验模型、思考等级与 skills；不可用即报错，不静默换定义或模型。 */
+  private async resolveAgent(name: string, role: AgentRole, fallback: { model: SelectedModel; thinking: string }): Promise<ResolvedAgent> {
+    const catalog = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
+    try {
+      return await resolveAgent({ catalog, name, role, fallback, skillDirs: this.options.skillDirs ?? [],
+        models: (provider) => this.options.runtime.getModels(provider) as readonly { provider: string; id: string; reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> }[] });
+    } catch (error) {
+      if (error instanceof AgentResolveError) throw protocolError(error.code, error.message);
+      throw error;
+    }
   }
 
   /** 角色查询主仓库索引：每次查询前对账，按运行分开分页游标。 */
@@ -567,6 +595,10 @@ export class RunManager {
     if (!entry || entry.handle.state() !== "paused") throw protocolError("not_resumable", "运行没有可续接的暂停会话");
     const run = await this.runStore.get(runId);
     if (run.ok && this.halted(run.run.requirement)) throw protocolError("requirement_halted", "任务已被用户终止，须先调整需求或取消需求");
+    if (run.ok && run.run.agent && !(await agentUnchanged(run.run.agent))) {
+      await this.stop(runId);
+      throw protocolError("config_changed", "角色定义或 skills 在暂停期间已变化，已停止该运行；请按当前配置重新派工");
+    }
     if (run.ok && entry.subagent && this.replanPending(run.run.requirement)) throw protocolError("plan_not_confirmed", "须先确认基于调整后批准版本的计划");
     // 恢复前当场结算终止后的统一停止，不留"先恢复、后停止"的窗口
     if (entry.subagent) {
@@ -974,7 +1006,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       try { return await handler(params, client); }
       catch (error) {
         if (error instanceof Error && ["trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
-          "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
+          "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "agent_unavailable", "thinking_unsupported", "skill_unavailable", "config_changed", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
           "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed", "requirement_halted", "workflow_denied"].includes((error as { code?: string }).code ?? "")) throw error;
         throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对");
       }

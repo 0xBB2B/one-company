@@ -1,3 +1,4 @@
+import type { AgentFingerprint } from "./agent-resolve.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { Type } from "typebox";
@@ -32,6 +33,8 @@ export interface RunRecord {
   model: { provider: string; id: string };
   thinking: string;
   mcp: string[];
+  /** 实际运行所用角色定义与 skills 的来源和 hash。 */
+  agent?: AgentFingerprint;
   state: RunState;
   stateReason?: string;
   startedAt: string;
@@ -60,6 +63,7 @@ export interface CreateRunInput {
   model: { provider: string; id: string };
   thinking: string;
   mcp: string[];
+  agent?: AgentFingerprint;
 }
 
 export type GetRunResult = { ok: true; run: RunRecord } | { ok: false; reason: "not_found" | "unreadable" };
@@ -142,6 +146,8 @@ const RunRecordSchema = Type.Object({
   writePaths: Type.Array(Type.String()), readPaths: Type.Array(Type.String()),
   model: Type.Object({ provider: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }) }),
   thinking: Type.String(), mcp: Type.Array(Type.String()),
+  agent: Type.Optional(Type.Object({ name: Type.String(), source: Type.String(), path: Type.String(), hash: Type.String(),
+    skills: Type.Array(Type.Object({ name: Type.String(), path: Type.String(), hash: Type.String() })) })),
   state: Type.Union([...Object.keys(TRANSITIONS), ...TERMINAL_STATES].map((state) => Type.Literal(state))),
   stateReason: Type.Optional(Type.String()),
   startedAt: Type.String({ minLength: 1 }), updatedAt: Type.String({ minLength: 1 }), endedAt: Type.Optional(Type.String()),
@@ -204,6 +210,7 @@ export class RunStore {
       model: input.model,
       thinking: input.thinking,
       mcp: input.mcp,
+      ...(input.agent ? { agent: input.agent } : {}),
       state: "queued",
       startedAt: now,
       updatedAt: now,

@@ -25,6 +25,8 @@ const texts = (min: number) => Type.Array(text, { minItems: min, maxItems: 16 })
 const unitId = Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}$" });
 const unitIds = (min: number) => Type.Array(unitId, { minItems: min, maxItems: 20, uniqueItems: true });
 const key = Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9._-]+$" });
+/** 执行该任务的角色定义名称；缺省用与职责同名的默认定义。 */
+const agentName = Type.String({ pattern: "^[a-z0-9][a-z0-9-]{0,63}$" });
 const DelegatedRole = Type.Union([Type.Literal("explore"), Type.Literal("worker"), Type.Literal("reviewer"), Type.Literal("qa")]);
 export const TaskSpec = object({
   key, role: DelegatedRole, goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0),
@@ -33,6 +35,7 @@ export const TaskSpec = object({
   blockedByQuestionIds: Type.Array(id, { maxItems: 16, uniqueItems: true }),
   maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }),
   objective: text, passCriteria: texts(1), scope: object({ in: texts(1), out: texts(0) }), performance: VerificationPerformance,
+  agent: Type.Optional(agentName), agentReason: Type.Optional(text),
 });
 export type TaskSpec = Static<typeof TaskSpec>;
 const Assessment = Type.Union([Type.Literal("unaffected"), Type.Literal("affected"), Type.Literal("unknown")]);
@@ -75,6 +78,7 @@ const TaskRecord = object({
   goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0), closure: Type.Array(UnitRef, { maxItems: 20 }),
   dependsOn: Type.Array(id, { maxItems: 32 }), writePaths: Type.Array(Type.String(), { maxItems: 64 }),
   blockedByQuestionIds: Type.Array(id, { maxItems: 16 }), maxTurns: positive,
+  agent: Type.Optional(agentName), agentReason: Type.Optional(text),
   detail: object({ path: Type.String({ minLength: 1 }), hash }),
   status: Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed"),
     Type.Literal("needs_update"), Type.Literal("blocked"), Type.Literal("cancelled"), Type.Literal("awaiting_parent"), Type.Literal("awaiting_user")]),
@@ -255,7 +259,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       records.push(checked(TaskRecord, { format: "plan-task/v1", taskId, requirementId: grant.requirementId, version, key: spec.key, role: spec.role,
         goalUnitIds: spec.goalUnitIds, constraintUnitIds: spec.constraintUnitIds, closure: closureOf(manifest, spec.goalUnitIds, spec.constraintUnitIds),
         dependsOn: spec.dependsOn.map((dep) => ids.get(dep)!), writePaths: spec.writePaths, blockedByQuestionIds: spec.blockedByQuestionIds,
-        maxTurns: spec.maxTurns, detail: await writeDetail(taskId, version, spec), status: "pending", attempts: previous?.get(taskId)?.attempts ?? [],
+        maxTurns: spec.maxTurns, ...(spec.agent ? { agent: spec.agent } : {}), ...(spec.agentReason ? { agentReason: spec.agentReason } : {}),
+        detail: await writeDetail(taskId, version, spec), status: "pending", attempts: previous?.get(taskId)?.attempts ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: previous.get(taskId)!.userDecision } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));
     }
