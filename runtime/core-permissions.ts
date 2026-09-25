@@ -62,7 +62,7 @@ export function toolActionsForRole(role: CoreRole): { [T in CoreTool]?: string[]
   return result;
 }
 
-export type ManagedWritePathClass = "code" | "spec" | "prod_archive" | "git_metadata" | "outside";
+export type ManagedWritePathClass = "code" | "spec" | "prod_archive" | "git_metadata" | "agent_definition" | "outside";
 
 export function classifyManagedWritePath(repoRelativePath: string): ManagedWritePathClass {
   if (repoRelativePath === "" || repoRelativePath.includes("\\") || repoRelativePath.includes("\u0000") || posix.isAbsolute(repoRelativePath)) return "outside";
@@ -74,12 +74,13 @@ export function classifyManagedWritePath(repoRelativePath: string): ManagedWrite
   const [archiveFirst, archiveSecond] = PROD_ARCHIVE_DIRECTORY.split("/");
   if (first === archiveFirst && second === archiveSecond) return "prod_archive";
   if (first === "docs" && second === "spec") return "spec";
+  if (first === ".pi" && second === "agents") return "agent_definition";
   return "code";
 }
 
 export function writePathAllowed(tool: "change_apply" | "spec_change", repoRelativePath: string): boolean {
   const kind = classifyManagedWritePath(repoRelativePath);
-  if (tool === "change_apply") return kind !== "outside";
+  if (tool === "change_apply") return kind === "code";
   const normalized = posix.normalize(repoRelativePath);
   return kind === "spec" && normalized.startsWith("docs/spec/") && normalized.endsWith(".rules.json");
 }

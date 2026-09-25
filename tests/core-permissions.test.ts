@@ -108,7 +108,7 @@ test("已注册工具的 action 枚举都落在核心表内", () => {
   within(PROJECT_MANAGE_PARAMETERS, "project_manage");
 });
 
-test("受控写入的资源分类：change_apply 可写工作区内任意路径，spec_change 只写 docs/spec 规则文件", () => {
+test("受控写入的资源分类：change_apply 只写代码/测试/配置（不写 docs/spec、docs/prod、.git、.pi/agents），spec_change 只写 docs/spec 规则文件", () => {
   expect(classifyManagedWritePath("src/a.ts")).toBe("code");
   expect(classifyManagedWritePath("docs/specs/a.rules.json")).toBe("code");
   expect(classifyManagedWritePath("docs/spec/player/jump.rules.json")).toBe("spec");
@@ -122,8 +122,12 @@ test("受控写入的资源分类：change_apply 可写工作区内任意路径�
   expect(classifyManagedWritePath("./docs/spec/x.rules.json")).toBe("spec");
   for (const outside of ["../x.ts", "/abs/x.ts", "", "a\\b.ts", "a\u0000b"]) expect(classifyManagedWritePath(outside)).toBe("outside");
   expect(writePathAllowed("change_apply", "src/a.ts")).toBe(true);
-  for (const path of ["docs/spec/x.rules.json", "docs/prod/x.md", ".git/config", "Docs/Spec/a.rules.json"]) expect(writePathAllowed("change_apply", path)).toBe(true);
-  for (const path of ["../x.ts", "/abs/x.ts"]) expect(writePathAllowed("change_apply", path)).toBe(false);
+  expect(classifyManagedWritePath(".pi/agents/worker.md")).toBe("agent_definition");
+  expect(classifyManagedWritePath(".PI/Agents/x.md")).toBe("agent_definition");
+  for (const path of ["docs/spec/x.rules.json", "docs/prod/x.md", ".git/config", "Docs/Spec/a.rules.json", ".pi/agents/worker.md", "../x.ts", "/abs/x.ts"]) {
+    expect(writePathAllowed("change_apply", path)).toBe(false);
+  }
+  expect(writePathAllowed("change_apply", ".pi/settings.json")).toBe(true);
   expect(writePathAllowed("spec_change", "docs/spec/player/jump.rules.json")).toBe(true);
   for (const path of ["docs/spec/schema.json", "docs/spec/notes.md", "src/a.ts", "docs/prod/x.md", "docs/spec/../../x.rules.json",
     "Docs/Spec/a.rules.json", "DOCS/SPEC/a.rules.json"]) {
