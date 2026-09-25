@@ -109,7 +109,7 @@ describe("旧工作流永久移除，旧记录不产生授权", () => {
     ] as Array<[string, Record<string, unknown>]>) await expect(client.call(method, params)).rejects.toThrow("unknown_method");
     await expect(client.call("runs.resume", { runId: queued.id })).rejects.toThrow("没有可续接");
     await expect(client.call("shells.markStopped", { taskId: "unknown", expectedPid: 99999, expectedStartedAt: "0", decisionId: "USER-001" })).rejects.toThrow("trusted_stop_required");
-    expect(await client.call("relay.pending")).toEqual({ questions: [], notices: [] });
+    await expect(client.call("relay.pending")).rejects.toThrow("unknown_method");
     for (const response of [await client.call("runs.list", { limit: 100 }), await client.call("runs.get", { runId: queued.id })]) expect(JSON.stringify(response)).not.toContain(SECRET);
     // 超过已删除队列调度器的一轮间隔；既有 queued 在启动时只登记中断，不续跑。
     await new Promise((resolve) => setTimeout(resolve, 1150));

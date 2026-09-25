@@ -22,7 +22,6 @@ export const METHODS = [
   "workflow.manage",
   "runs.pauseAll",
   "runs.stopAll",
-  "relay.pending",
   "shells.list",
   "shells.stop",
   "shells.markStopped",
@@ -148,7 +147,6 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   "runs.stop": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.pauseAll": Type.Object({}, { additionalProperties: false }),
   "runs.stopAll": Type.Object({}, { additionalProperties: false }),
-  "relay.pending": Type.Object({}, { additionalProperties: false }),
   "shells.list": Type.Object({}, { additionalProperties: false }),
   "shells.stop": Type.Object(
     {

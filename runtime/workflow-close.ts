@@ -27,7 +27,6 @@ import { readGit } from "./git-read.ts";
 
 export const CLOSE_OPERATIONS = "close_operations";
 export const DELIVERY_RECEIPTS = "delivery_receipts";
-export const COMPLETION_NOTICES = "completion_notices";
 export const COMPLETION_REPORTS = "completion_reports";
 const SPEC_PROPOSALS = "spec_proposals";
 const CHANGE_SETS = "change_sets";
@@ -44,16 +43,10 @@ const Archive = object({ path: Type.String({ minLength: 1, maxLength: 1024 }), p
 export const CloseOperation = object({
   format: Type.Literal("close-operation/v1"), requirementId: id, repoId: hash, operationId: id, receiptId: id, reason: CloseReason, basis: Basis,
   status: Type.Union([Type.Literal("closing"), Type.Literal("closed")]),
-  steps: object({ agentsStopped: Type.Boolean(), entriesCleared: Type.Boolean(), closed: Type.Boolean(), noticeQueued: Type.Boolean() }),
+  steps: object({ agentsStopped: Type.Boolean(), entriesCleared: Type.Boolean(), closed: Type.Boolean() }),
   archive: nullable(Archive), createdAt: counter, updatedAt: counter,
 });
 export type CloseOperation = Static<typeof CloseOperation>;
-export const CompletionNotice = object({
-  format: Type.Literal("completion-notice/v1"), requirementId: id, repoId: hash, reason: CloseReason, closeEventSequence: positive,
-  message: Type.String({ minLength: 1, maxLength: 512 }), agentsEnded: Type.Literal(true),
-  status: Type.Union([Type.Literal("pending"), Type.Literal("delivered")]), attempts: counter, deliveredAt: nullable(counter), createdAt: counter,
-});
-export type CompletionNotice = Static<typeof CompletionNotice>;
 export const DeliveryReceipt = object({
   format: Type.Literal("delivery-receipt/v1"), receiptId: id, requirementId: id, repoId: hash, workspaceId: hash, branch: Type.String({ minLength: 1 }), epoch: positive,
   revision: counter, approvedProdHash: nullable(hash), codeHead: Type.String({ minLength: 1 }), specSetHash: Type.String({ minLength: 1 }), inputHash: hash,
@@ -71,7 +64,7 @@ export const CompletionReport = object({
 });
 export type CompletionReport = Static<typeof CompletionReport>;
 
-export type CloseAction = "preflight" | "close" | "archive" | "notify" | "delivery-check" | "status" | "report";
+export type CloseAction = "preflight" | "close" | "archive" | "delivery-check" | "status" | "report";
 export interface CloseAuthorization { readonly action: CloseAction; readonly requirementId: string; readonly reason?: CloseReason; readonly receiptId?: string; readonly operationId?: string }
 export interface RequirementCloseServiceOptions {
   repositoryRoot: string;
@@ -83,7 +76,7 @@ export interface RequirementCloseServiceOptions {
   stopAgents?: (requirementId: string) => Promise<void>;
   now?: () => number;
 }
-export type CloseErrorCode = "close_denied" | "invalid_shape" | "not_found" | "not_closed" | "archive_conflict" | "archive_unavailable" | "notice_missing";
+export type CloseErrorCode = "close_denied" | "invalid_shape" | "not_found" | "not_closed" | "archive_conflict" | "archive_unavailable";
 export class CloseError extends Error {
   readonly code: CloseErrorCode;
   constructor(code: CloseErrorCode, detail?: string) { super(detail ? `${code}: ${detail}` : code); this.name = "CloseError"; this.code = code; }
@@ -227,10 +220,10 @@ export interface ClosePreflight { eligible: boolean; missing: string[]; basis: C
 export type CloseResult =
   | { status: "rejected"; missing: string[] }
   | { status: "closing"; operationId: string; pending: string[] }
-  | { status: "closed"; operationId: string; reason: CloseReason; archive: { path: string; status: string } | null; notice: "pending" | "delivered" };
+  | { status: "closed"; operationId: string; reason: CloseReason; archive: { path: string; status: string } | null; message: string };
 
 /**
- * 关闭协议：资格预检不改状态 → 事务内再核对并原子进入 closing → 结束相关代理 → 登记 closed 与无正文完成通知 → 受限归档。
+ * 关闭协议：资格预检不改状态 → 事务内再核对并原子进入 closing → 结束相关代理 → 登记 closed 并向调用方返回无正文的结果与清空上下文建议 → 受限归档。
  * 文件读取与代理停止在事务外执行；预检通过后任何依据变化都使本次关闭不生效。
  */
 export class RequirementCloseService {
@@ -247,7 +240,7 @@ export class RequirementCloseService {
     checked(hash, options.repoId);
     const life = { disposed: false };
     const state = await RequirementStateStore.open({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, repoId: options.repoId,
-      authorize: (request) => !life.disposed && request.repoId === options.repoId && ["open", "read", "begin-close", "finish-close", "events"].includes(request.action) });
+      authorize: (request) => !life.disposed && request.repoId === options.repoId && ["open", "read", "begin-close", "finish-close"].includes(request.action) });
     return new RequirementCloseService(options, state, life);
   }
   dispose(): void { this.life.disposed = true; }
@@ -394,7 +387,7 @@ export class RequirementCloseService {
           const now = this.now();
           this.saveOperation(db, this.operation(db, request.requirementId), { format: "close-operation/v1", requirementId: request.requirementId, repoId: this.options.repoId,
             operationId: request.operationId, receiptId: request.receiptId, reason: request.reason, basis, status: "closing",
-            steps: { agentsStopped: false, entriesCleared: false, closed: false, noticeQueued: false },
+            steps: { agentsStopped: false, entriesCleared: false, closed: false },
             archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, status: "pending", attempts: 0, lastError: null } : null,
             createdAt: now, updatedAt: now });
         });
@@ -435,24 +428,14 @@ export class RequirementCloseService {
       try { this.state.finishClose({ requirementId, version: record.version, operationId: operation.data.operationId }); }
       catch (error: unknown) { if (error instanceof RequirementStateError) return freeze({ status: "closing" as const, operationId: operation.data.operationId, pending: [error.code] }); throw error; }
     }
-    const closeSequence = this.state.events(requirementId).find((event) => event.data.kind === "closed")?.sequence;
-    if (!closeSequence) return freeze({ status: "closing" as const, operationId: operation.data.operationId, pending: ["closed_event_missing"] });
-    const notice = withDatabase(this.database, (db) => db.transaction(() => {
+    withDatabase(this.database, (db) => db.transaction(() => {
       const current = this.operation(db, requirementId)!;
-      const existing = db.read<unknown>(COMPLETION_NOTICES, requirementId);
-      const stored = existing ? checked(CompletionNotice, existing.data) : null;
-      if (!stored) {
-        const reason = current.data.reason;
-        db.create(COMPLETION_NOTICES, requirementId, checked(CompletionNotice, { format: "completion-notice/v1", requirementId, repoId: this.options.repoId, reason,
-          closeEventSequence: closeSequence, message: reason === "completed" ? COMPLETION_MESSAGE(requirementId) : TERMINATION_MESSAGE(requirementId, reason),
-          agentsEnded: true, status: "pending", attempts: 0, deliveredAt: null, createdAt: this.now() }));
-      }
-      if (current.data.status !== "closed") this.saveOperation(db, current, { ...current.data, status: "closed", steps: { ...current.data.steps, closed: true, noticeQueued: true } });
-      return stored?.status ?? "pending";
+      if (current.data.status !== "closed") this.saveOperation(db, current, { ...current.data, status: "closed", steps: { ...current.data.steps, closed: true } });
     }));
     const final = withDatabase(this.database, (db) => this.operation(db, requirementId)!.data);
     return freeze({ status: "closed" as const, operationId: final.operationId, reason: final.reason,
-      archive: final.archive ? { path: final.archive.path, status: final.archive.status } : null, notice });
+      archive: final.archive ? { path: final.archive.path, status: final.archive.status } : null,
+      message: final.reason === "completed" ? COMPLETION_MESSAGE(requirementId) : TERMINATION_MESSAGE(requirementId, final.reason) });
   }
 
   status(requirementId: string) {
@@ -460,32 +443,8 @@ export class RequirementCloseService {
     this.authorize({ action: "status", requirementId });
     const operation = withDatabase(this.database, (db) => this.operation(db, requirementId));
     if (!operation) return freeze({ status: "none" as const });
-    const notice = withDatabase(this.database, (db) => db.read<unknown>(COMPLETION_NOTICES, requirementId)?.data);
     const { data } = operation;
-    return freeze({ status: data.status, operationId: data.operationId, reason: data.reason, steps: { ...data.steps }, archive: data.archive ? { ...data.archive } : null,
-      notice: notice ? checked(CompletionNotice, notice).status : null });
-  }
-
-  /** 完成通知投递：只重试元数据通知，不重开需求、不重启 PM。 */
-  notify(requirementId: string, deliver: (notice: Readonly<{ requirementId: string; reason: CloseReason; message: string; agentsEnded: true }>) => boolean): CompletionNotice {
-    checked(id, requirementId);
-    this.authorize({ action: "notify", requirementId });
-    const stored = withDatabase(this.database, (db) => {
-      const row = db.read<unknown>(COMPLETION_NOTICES, requirementId);
-      return row ? { version: row.version, data: checked(CompletionNotice, row.data) } : null;
-    });
-    if (!stored) throw new CloseError("notice_missing");
-    if (stored.data.status === "delivered") return freeze(structuredClone(stored.data));
-    let delivered = false;
-    try { delivered = deliver(freeze({ requirementId, reason: stored.data.reason, message: stored.data.message, agentsEnded: true as const })) === true; } catch { delivered = false; }
-    return freeze(withDatabase(this.database, (db) => db.transaction(() => {
-      const row = db.read<unknown>(COMPLETION_NOTICES, requirementId)!;
-      const current = checked(CompletionNotice, row.data);
-      if (current.status === "delivered") return current;
-      const next = checked(CompletionNotice, { ...current, attempts: current.attempts + 1, ...(delivered ? { status: "delivered", deliveredAt: this.now() } : {}) });
-      db.update(COMPLETION_NOTICES, requirementId, row.version, next);
-      return next;
-    })));
+    return freeze({ status: data.status, operationId: data.operationId, reason: data.reason, steps: { ...data.steps }, archive: data.archive ? { ...data.archive } : null });
   }
 
   /** 受限归档：只把关闭前固化的最终 prod.md 字节复制到登记路径；同 hash 幂等，不同内容阻塞，不向调用方返回正文。 */

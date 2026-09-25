@@ -61,8 +61,6 @@ test("两仓真实socket的安全停止通知只投递对应repo窗口，工作�
   expect(events[0]!.map((event) => event.repoId)).toEqual([a!.repoId]); expect(events[1]!.map((event) => event.repoId)).toEqual([b!.repoId]);
   expect(events[2]!.map((event) => event.repoId)).toEqual([a!.repoId]); expect(events[3]).toEqual([]); expect(events[4]).toEqual([]);
   for (const event of events.flat()) { expect(event.kind).toBe("stopped"); expect(event.message).not.toContain("历史跨仓目标"); }
-  expect(await unrelated.call("relay.pending")).toEqual({ questions: [], notices: [] });
-  expect(await insideAOnB.call("relay.pending")).toEqual({ questions: [], notices: [] });
 }, 30000);
 
 test("跨仓旧契约裁定不能经answer/forward产生用户授权或新模型请求", async () => {

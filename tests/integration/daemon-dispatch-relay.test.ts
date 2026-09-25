@@ -73,7 +73,7 @@ test("两窗口及工作区外窗口均收不到旧问题；首答与迟到答�
   const before = w.snapshot();
   for (const client of clients) {
     await expect(client.call("relay.answer", { questionId: w.questionId, answer: "确认", windowId: "forged-main" })).rejects.toThrow("unknown_method");
-    expect(await client.call("relay.pending")).toEqual({ questions: [], notices: [] });
+    await expect(client.call("relay.pending")).rejects.toThrow("unknown_method");
   }
   await delay(1150); expect(events).toEqual([]); expect(w.snapshot()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
 }, 20000);

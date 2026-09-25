@@ -120,7 +120,7 @@ test("M6-AC18：绑定需求的 explore 在关闭、父撤权或 PM 接管后停
   function submit(runId: string, explore: ExploreInput) { return w.submit(runId, explore); }
 });
 
-test("M6-AC5/AC7：已关闭需求的 PM/子会话不续接，新运行的会话不带旧内容；未关闭或 PM 崩溃不产生完成通知", async () => {
+test("M6-AC5/AC7：已关闭需求的 PM/子会话不续接，新运行的会话不带旧内容；PM 崩溃不产生关闭记录", async () => {
   const w = await world();
   const requirement = await w.requirement("需求");
   const pmRun = await w.runs.create({ kind: "requirement", requirement: requirement.id, task: "PM", cwd: requirement.worktree.root, writePaths: [], readPaths: [], model: { provider: "t", id: "t" }, thinking: "off", mcp: [] });
@@ -130,7 +130,6 @@ test("M6-AC5/AC7：已关闭需求的 PM/子会话不续接，新运行的会话
   expect(openSessionManagerForRun(ref).ok).toBe(true);
   await w.runs.update(pmRun.id, { state: "running" });
   await w.runs.update(pmRun.id, { state: "failed", stateReason: "崩溃" });
-  expect(() => w.close.notify(requirement.id, () => true)).toThrow(/notice_missing/);
   expect(w.close.status(requirement.id)).toEqual({ status: "none" });
   const closing = w.state.beginClose({ requirementId: requirement.id, version: w.state.read(requirement.id).version, intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
   expect(openSessionManagerForRun(ref)).toMatchObject({ ok: false, reason: "closed" });

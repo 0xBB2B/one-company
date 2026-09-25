@@ -34,7 +34,6 @@ const EXPECTED_METHODS = [
   "workflow.manage",
   "runs.pauseAll",
   "runs.stopAll",
-  "relay.pending",
   "shells.list",
   "shells.stop",
   "shells.markStopped",
@@ -97,7 +96,6 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "runs.stop": { runId: "run-1" },
   "runs.pauseAll": {},
   "runs.stopAll": {},
-  "relay.pending": {},
   "shells.list": {},
   "shells.stop": { taskId: "task-1", expectedPid: 123, expectedStartedAt: "2026-09-09T00:00:00.000Z" },
   "shells.markStopped": {

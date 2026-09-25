@@ -1120,7 +1120,6 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   register("runs.stop", async (params) => manager.stop(params.runId as string));
   register("runs.pauseAll", async () => manager.pauseAll());
   register("runs.stopAll", async () => manager.stopAll());
-  register("relay.pending", async () => ({ questions: [], notices: [] }));
   register("shells.list", async () => ({ tasks: shellRegistry.list().map(shellMetadata) }));
   register("shells.stop", async (params) => {
     const taskId = params.taskId as string;

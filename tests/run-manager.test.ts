@@ -301,7 +301,7 @@ describe("网络、版本及重启不能产生旧执行权限", () => {
       expect(await raw.call("runs.get", { runId: run.id })).toMatchObject({ run: { state: "interrupted" } }); expect(await raw.call("runs.get", { runId: completed.id })).toMatchObject({ run: { state: "completed" } });
       const before = w.snapshot();
       for (const [method, params] of [["dispatch.requirement", { requirement: run.requirement, cwd: w.fixture.repo.root }], ["dispatch.review", { requirement: run.requirement, cwd: w.fixture.repo.root, baseline: "HEAD", snapshot: { head: "old", fingerprint: "old" } }], ["runs.resumeAll", {}], ["runs.resumeInterrupted", { runId: run.id }], ["relay.answer", { questionId: uuidv7(), answer: "USER-001", windowId: "window" }], ["relay.forward", { requirement: run.requirement, message: SECRET, windowId: "window" }], ["subscribe.transcript", { runId: run.id, fromSeq: 0 }]] as Array<[string, any]>) await expect(raw.call(method, params)).rejects.toThrow("unknown_method");
-      expect(await raw.call("relay.pending")).toEqual({ questions: [], notices: [] }); expect(JSON.stringify(await raw.call("runs.list", { limit: 100 }))).not.toContain(SECRET);
+      await expect(raw.call("relay.pending")).rejects.toThrow("unknown_method"); expect(JSON.stringify(await raw.call("runs.list", { limit: 100 }))).not.toContain(SECRET);
       await delay(1150); expect(events).toEqual([]); expect(await readProviderRequestsLog(log)).toEqual([]); expect(w.snapshot()).toBe(before);
       raw.close(); await killDaemon(handle);
     }
