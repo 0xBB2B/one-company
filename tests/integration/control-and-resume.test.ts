@@ -9,7 +9,6 @@ import { repositoryDatabase, uuidv7, withDatabase } from "../../runtime/database
 import { createSessionManagerForRun } from "../../runtime/session-records.ts";
 import { createClock } from "../../runtime/clock.ts";
 import { ShellRegistry } from "../../runtime/shell-registry.ts";
-import { createRangeProtection } from "../../runtime/range-protection.ts";
 
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -66,7 +65,7 @@ test("真实强杀后旧排队记录保持同一编号且拒绝重复续接，�
   first.client.close(); await killDaemon(first.handle);
   const second = await w.start(); const before = await w.store.get(run.id);
   const attempts = await Promise.allSettled([second.client.call("runs.resumeInterrupted", { runId: run.id }), second.client.call("runs.resumeInterrupted", { runId: run.id })]);
-  expect(attempts.every((outcome) => outcome.status === "rejected" && String(outcome.reason).includes("legacy_workflow_retired"))).toBe(true);
+  expect(attempts.every((outcome) => outcome.status === "rejected" && String(outcome.reason).includes("unknown_method"))).toBe(true);
   await delay(1150);
   expect(await w.store.get(run.id)).toEqual(before);
   expect((await w.store.list({ limit: 100 })).items.map((item) => item.id)).toEqual([run.id]);
@@ -114,35 +113,25 @@ test("真实重启接管本测试遗留Shell：身份不符不停止，正确停
   expect(list.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ taskId: task.taskId, identityVerified: true })]));
   const params = { taskId: task.taskId, expectedPid: task.pid, expectedStartedAt: String(task.startedAt) };
   expect(await second.client.call("shells.stop", { ...params, expectedPid: task.pid + 1 })).toMatchObject({ status: "mismatch" }); expect(alive(task.pid)).toBe(true);
-  await expect(second.client.call("runs.resumeInterrupted", { runId: run.id })).rejects.toThrow("legacy_workflow_retired");
+  await expect(second.client.call("runs.resumeInterrupted", { runId: run.id })).rejects.toThrow("unknown_method");
   expect(await second.client.call("shells.stop", params)).toMatchObject({ status: "stopped" }); expect(alive(task.pid)).toBe(false);
-  await expect(second.client.call("runs.resumeInterrupted", { runId: run.id })).rejects.toThrow("legacy_workflow_retired");
+  await expect(second.client.call("runs.resumeInterrupted", { runId: run.id })).rejects.toThrow("unknown_method");
   await delay(1150); expect(w.sessions()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
 }, 30000);
 
-test("停止系统调用失败保持真实Shell uncertain与租约；实际停止后才允许重叠写入", async () => {
+test("停止系统调用失败保持真实Shell uncertain；实际停止后才确认结束", async () => {
   const blockedStop = { value: false };
-  const w = await world(blockedStop); const first = await w.run(); const second = await w.run();
-  await w.store.update(first.id, { state: "running" }); await w.store.update(second.id, { state: "running" });
-  const protection = await createRangeProtection({ cwd: w.fixture.repo.root, dataRoot: w.fixture.dataRoot,
-    holder: { kind: "role", runId: first.id, requirement: first.requirement }, writePaths: ["README.md"], clock: w.clock, shells: w.shells });
-  const next = await createRangeProtection({ cwd: w.fixture.repo.root, dataRoot: w.fixture.dataRoot,
-    holder: { kind: "role", runId: second.id, requirement: second.requirement }, writePaths: ["README.md"], clock: w.clock, shells: w.shells });
-  cleanup.push(async () => { await w.store.update(second.id, { state: "stopped" }); await next.release(); await protection.release(); });
-  expect(await protection.checkWrite("README.md")).toEqual({ ok: true });
+  const w = await world(blockedStop); const first = await w.run();
+  await w.store.update(first.id, { state: "running" });
   const task = await w.spawn(first);
   await w.store.update(first.id, { state: "stopped", stateReason: "停止请求不证明进程结束" });
-  await protection.release(); expect(alive(task.pid)).toBe(true);
-  expect((await next.checkWrite("README.md")).ok).toBe(false);
-  expect((await protection.claims.entries()).length).toBeGreaterThan(0);
+  expect(alive(task.pid)).toBe(true);
   blockedStop.value = true;
   const uncertain = await w.shells.stop(task.taskId);
   expect(uncertain).toMatchObject({ ok: true, task: { status: "uncertain", reason: "停止超时未确认" } });
   expect(alive(task.pid)).toBe(true);
-  await protection.release(); expect((await next.checkWrite("README.md")).ok).toBe(false);
   blockedStop.value = false;
   const stopped = await w.shells.stop(task.taskId); expect(stopped).toMatchObject({ ok: true, task: { status: "stopped" } });
   expect(alive(task.pid)).toBe(false);
-  await protection.release(); expect(await next.checkWrite("README.md")).toEqual({ ok: true });
   expect((await w.store.list({ limit: 100 })).items.some((run) => String(run.state) === "uncertain")).toBe(false);
 }, 20000);

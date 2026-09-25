@@ -9,8 +9,6 @@ export const METHODS = [
   "hello",
   "ping",
   "shutdown",
-  "dispatch.requirement",
-  "dispatch.review",
   "runs.list",
   "runs.get",
   "runs.pause",
@@ -22,15 +20,9 @@ export const METHODS = [
   "pm.overview",
   "pm.packet",
   "workflow.manage",
-  "runs.resumeInterrupted",
   "runs.pauseAll",
-  "runs.resumeAll",
   "runs.stopAll",
-  "subscribe.transcript",
-  "unsubscribe",
   "relay.pending",
-  "relay.answer",
-  "relay.forward",
   "shells.list",
   "shells.stop",
   "shells.markStopped",
@@ -40,13 +32,10 @@ export const METHODS = [
 ] as const;
 
 export const EVENTS = [
-  "transcript",
   "runs.changed",
   "pm.overview.changed",
   "explore.finished",
-  "relay.question",
   "relay.notice",
-  "relay.withdraw",
   "shells.changed",
   "daemon.idle",
 ] as const;
@@ -118,12 +107,6 @@ const McpConfigSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const DispatchContextSchema = Type.Object({
-  projectTrusted: Type.Boolean(),
-  model: Type.Optional(Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false })),
-  thinking: Type.Optional(Type.String()),
-}, { additionalProperties: false });
-
 const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   hello: Type.Object(
     {
@@ -140,29 +123,6 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   ),
   ping: Type.Object({}, { additionalProperties: false }),
   shutdown: Type.Object({}, { additionalProperties: false }),
-  "dispatch.requirement": Type.Object(
-    {
-      requirement: Type.String(),
-      cwd: Type.String(),
-      mcp: Type.Optional(McpConfigSchema),
-      context: Type.Optional(DispatchContextSchema),
-    },
-    { additionalProperties: false },
-  ),
-  "dispatch.review": Type.Object(
-    {
-      requirement: Type.String(),
-      cwd: Type.String(),
-      baseline: Type.String(),
-      snapshot: Type.Object(
-        { head: Type.String(), fingerprint: Type.String() },
-        { additionalProperties: false },
-      ),
-      mcp: Type.Optional(McpConfigSchema),
-      context: Type.Optional(DispatchContextSchema),
-    },
-    { additionalProperties: false },
-  ),
   "runs.list": Type.Object(
     {
       kind: Type.Optional(Type.String()),
@@ -186,35 +146,9 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   "pm.packet": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),
   "workflow.manage": Type.Object({ requirementId: Type.String(), request: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),
   "runs.stop": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
-  "runs.resumeInterrupted": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.pauseAll": Type.Object({}, { additionalProperties: false }),
-  "runs.resumeAll": Type.Object({}, { additionalProperties: false }),
   "runs.stopAll": Type.Object({}, { additionalProperties: false }),
-  "subscribe.transcript": Type.Object(
-    {
-      runId: Type.String(),
-      fromSeq: Type.Optional(Type.Number()),
-    },
-    { additionalProperties: false },
-  ),
-  unsubscribe: Type.Object({ subscriptionId: Type.String() }, { additionalProperties: false }),
   "relay.pending": Type.Object({}, { additionalProperties: false }),
-  "relay.answer": Type.Object(
-    {
-      questionId: Type.String(),
-      answer: Type.String(),
-      windowId: Type.String(),
-    },
-    { additionalProperties: false },
-  ),
-  "relay.forward": Type.Object(
-    {
-      requirement: Type.String(),
-      message: Type.String(),
-      windowId: Type.String(),
-    },
-    { additionalProperties: false },
-  ),
   "shells.list": Type.Object({}, { additionalProperties: false }),
   "shells.stop": Type.Object(
     {

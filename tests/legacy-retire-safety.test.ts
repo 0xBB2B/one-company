@@ -13,9 +13,7 @@ import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
 import { controlToken } from "../runtime/daemon-auth.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { repositoryDatabase, withDatabase, uuidv7 } from "../runtime/database.ts";
-import { readDecisions, inspectDecision, buildRecord, validateDecisionInput, nextDecisionId } from "../runtime/decisions.ts";
-import { bindEvidence, checkEvidence, withLegacyReadDatabase } from "../runtime/workflow-state.ts";
-import { createWorkflowTool, executeWorkflowAction } from "../runtime/workflow-tool.ts";
+import { withReadOnlyDatabase } from "../runtime/run-metadata.ts";
 import { createDaemonFixture, removeDaemonFixture, connectTestClient } from "./helpers/daemon-harness.ts";
 
 const REQ = "2026-09-08.safety";
@@ -40,7 +38,7 @@ async function fixture(probes?: ShellRegistryProbes, quotedName = false) {
   const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
   const shells = new ShellRegistry({ database, clock, probes });
   const runs = new RunStore({ dataRoot: f.dataRoot, repoId: f.repoId, daemonStartedAt: "new" });
-  const relay = new RelayQueue({ dataDir: join(f.dataRoot, "repos", f.repoId), deliver: async () => [], locateRequirementAgent: () => undefined });
+  const relay = new RelayQueue({ dataDir: join(f.dataRoot, "repos", f.repoId), deliver: async () => [] });
   const manager = new RunManager({ dataRoot: f.dataRoot, repoId: f.repoId, runStore: runs, shellRegistry: shells, clock, relayQueue: relay,
     networkGate: new NetworkPauseGate(), roleCatalog: [], runtime: {} as any, selectModel: () => { throw new Error("不得选择模型"); }, workspaceRepoIds: [f.repoId], emit: () => {} });
   manager.markStarted();
@@ -65,7 +63,6 @@ async function ownProcess() {
   expect(Number.isFinite(startedAt)).toBe(true);
   return { pid, startedAt };
 }
-function state(requirement: string, stage = "draft", tasks = {}) { return { requirement, stage, tasks, history: [], followUps: [], shape: null }; }
 
 describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
   test.each([
@@ -138,7 +135,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     let raw: any; let delayedReadRejected = false; let delayedWriteRejected = false;
     let finished!: () => void;
     const done = new Promise<void>((resolve) => { finished = resolve; });
-    expect(() => withLegacyReadDatabase(w.database, ((db: any) => {
+    expect(() => withReadOnlyDatabase(w.database, ((db: any) => {
       raw = db;
       return (async () => {
         await gate;
@@ -151,11 +148,11 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     release(); await done;
     expect(delayedReadRejected).toBe(true); expect(delayedWriteRejected).toBe(true);
     let thenCalled = false;
-    expect(() => withLegacyReadDatabase(w.database, (() => ({ then(_resolve: unknown, reject: (error: Error) => void) { thenCalled = true; reject(new Error("thenable rejection")); } })) as any)).toThrow();
+    expect(() => withReadOnlyDatabase(w.database, (() => ({ then(_resolve: unknown, reject: (error: Error) => void) { thenCalled = true; reject(new Error("thenable rejection")); } })) as any)).toThrow();
     expect(thenCalled).toBe(true);
     expect(withDatabase(w.database, (db) => db.read("probe", "late"))).toBeNull();
-    expect(() => withLegacyReadDatabase(w.database, () => { throw new Error("sync failure"); })).toThrow();
-    expect(withLegacyReadDatabase(w.database, (db) => Number(db.prepare("SELECT 1 AS n").get()!.n))).toBe(1);
+    expect(() => withReadOnlyDatabase(w.database, () => { throw new Error("sync failure"); })).toThrow();
+    expect(withReadOnlyDatabase(w.database, (db) => Number(db.prepare("SELECT 1 AS n").get()!.n))).toBe(1);
   });
 
   test("F1 接管失败后stop/终态pause/stopAll/close均不能把活进程报已停", async () => {
@@ -184,42 +181,26 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(w.shells.get(taskId)?.status).toBe("uncertain"); expect(alive(pid)).toBe(true);
     denied = false; await w.manager.close(); expect(alive(pid)).toBe(false);
   }, 15_000);
-  test("F3 主窗口及直接动作不能以params.cwd切换到另一真实仓库", async () => {
-    const a = await fixture(); const b = await fixture();
-    for (const [w, stage] of [[a, "draft"], [b, "rejected"]] as const) withDatabase(w.database, (db) => db.create("requirements", REQ, state(REQ, stage)));
-    const tool = createWorkflowTool({ dataRoot: b.dataRoot, cwd: a.repo.root });
-    await expect(tool.execute("x", { action: "query", cwd: b.repo.root, requirement: REQ }, undefined, undefined, { cwd: a.repo.root })).rejects.toThrow();
-    expect(await executeWorkflowAction({ action: "query", cwd: b.repo.root, requirement: REQ }, { dataRoot: b.dataRoot, cwd: a.repo.root })).toMatchObject({ ok: false });
-    expect(await executeWorkflowAction({ action: "query", requirement: REQ }, a.ctx)).toMatchObject({ ok: true, details: { data: { stage: "draft" } } });
-    const bound = createWorkflowTool({ ...a.ctx });
-    await bound.execute("x", { action: "query", requirement: REQ }, undefined, undefined, a.ctx);
-    execFileSync("git", ["checkout", "-b", "safety-branch"], { cwd: a.repo.root, stdio: "ignore" });
-    await expect(bound.execute("x", { action: "query", requirement: REQ }, undefined, undefined, a.ctx)).rejects.toThrow("可信当前");
-    const empty = join(a.repo.root, "empty-repo"); mkdirSync(empty, { mode: 0o700 });
-    execFileSync("git", ["init", empty], { stdio: "ignore" });
-    const identity = await repositoryIdentity(empty);
-    withDatabase(repositoryDatabase(a.dataRoot, identity.repoId), (db) => db.create("requirements", REQ, state(REQ)));
-    expect(await executeWorkflowAction({ action: "query", requirement: REQ }, { dataRoot: a.dataRoot, cwd: empty })).toMatchObject({ ok: true });
-  });
-  test("F4 缺库list/query不初始化；不chmod不安全库", async () => {
+  test("F4 只读元数据连接缺库不初始化；不chmod不安全库", async () => {
     const f = await createDaemonFixture(); cleanup.push(() => removeDaemonFixture(f));
-    const database = repositoryDatabase(f.dataRoot, f.repoId); const ctx = { dataRoot: f.dataRoot, cwd: f.repo.root };
-    for (const action of ["list", "query"]) { expect(await executeWorkflowAction({ action, requirement: REQ }, ctx)).toMatchObject({ ok: false }); expect(existsSync(database)).toBe(false); }
-    withDatabase(database, (db) => db.create("requirements", REQ, state(REQ)));
+    const database = repositoryDatabase(f.dataRoot, f.repoId);
+    const readable = () => { try { withReadOnlyDatabase(database, (db) => db.prepare("SELECT count(*) AS n FROM records").get()); return true; } catch { return false; } };
+    expect(readable()).toBe(false); expect(existsSync(database)).toBe(false);
+    withDatabase(database, (db) => db.create("requirements", REQ, { requirement: REQ }));
     chmodSync(database, 0o644);
-    expect(await executeWorkflowAction({ action: "list" }, ctx)).toMatchObject({ ok: false });
+    expect(readable()).toBe(false);
     expect(statSync(database).mode & 0o777).toBe(0o644);
     chmodSync(database, 0o600);
     const inode = statSync(database).ino;
     for (const marker of [".database-maintenance.json", ".database-recovery-required.json", ".database-snapshot.json"]) {
       const path = join(f.dataRoot, "repos", f.repoId, marker);
       writeFileSync(path, "{}", { mode: 0o600 });
-      expect(await executeWorkflowAction({ action: "list" }, ctx)).toMatchObject({ ok: false });
+      expect(readable()).toBe(false);
       expect(statSync(database).ino).toBe(inode); unlinkSync(path);
     }
     const linked = join(f.dataRoot, "own-hardlink"); linkSync(database, linked);
-    expect(await executeWorkflowAction({ action: "list" }, ctx)).toMatchObject({ ok: false }); unlinkSync(linked);
-    expect(await executeWorkflowAction({ action: "list" }, ctx)).toMatchObject({ ok: true });
+    expect(readable()).toBe(false); unlinkSync(linked);
+    expect(readable()).toBe(true);
     expect(statSync(database).ino).toBe(inode);
   });
   test("F5 坏metadata key经真实socket只返回固定安全错误", async () => {
@@ -229,19 +210,14 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     let error: unknown; try { await client.call("runs.list", { limit: 10 }); } catch (e) { error = e; }
     expect(error).toBeDefined(); expect(String(error)).not.toContain(secret);
   });
-  test("F5/F6 2000合法元数据与未知记录；小预算必须说明遗漏和未确认", async () => {
+  test("F5/F6 2000条运行元数据；小预算必须说明遗漏和未确认", async () => {
     const w = await fixture(); const template = await w.create();
     withDatabase(w.database, (db) => db.transaction(() => {
       for (let i = 0; i < 2000; i++) {
-        const requirement = `2026-09-08.item-${i}`; db.create("requirements", requirement, state(requirement));
+        const requirement = `2026-09-08.item-${i}`;
         const id = uuidv7(); db.create("runs", id, { ...template, id, requirement, state: i === 1999 ? "interrupted" : "stopped" }, id);
       }
-      db.create("requirements", "UNCLASSIFIED_OLD_DETAIL_正文", state("UNCLASSIFIED_OLD_DETAIL_正文"));
     }));
-    const list = await executeWorkflowAction({ action: "list", limit: 3 }, w.ctx);
-    expect(list.ok).toBe(true); expect((list.details.items as unknown[]).length).toBeLessThanOrEqual(3);
-    expect(JSON.stringify(list)).not.toContain("UNCLASSIFIED");
-    expect(list.details.coverage).toMatchObject({ unknown: 1, truncated: true });
     const runs = await w.manager.list({ limit: 3 });
     expect(runs.items).toHaveLength(3); expect((runs as any).coverage).toMatchObject({ truncated: true, unconfirmedOutsidePage: 1998 });
     expect(Buffer.byteLength(JSON.stringify(runs))).toBeLessThanOrEqual(16_384);
@@ -251,7 +227,6 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect((listed.items as unknown[]).length).toBeLessThanOrEqual(100);
     expect(listed.coverage).toMatchObject({ truncated: true });
     for (const limit of [0, -1, 1.5, Number.MAX_SAFE_INTEGER]) {
-      expect(await executeWorkflowAction({ action: "list", limit }, w.ctx)).toMatchObject({ ok: false });
       await expect(w.manager.list({ limit })).rejects.toThrow();
     }
   });
@@ -297,6 +272,23 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(stopped.results.length).toBeLessThanOrEqual(100);
     expect(Buffer.byteLength(JSON.stringify(stopped))).toBeLessThanOrEqual(16_384);
   }, 30_000);
+  test("带旧字段的历史运行记录原样保留，仍可只读列出并参与停止枚举", async () => {
+    const w = await fixture({ ps: async () => [] }); const run = await w.create(); const id = uuidv7();
+    const legacy = { ...run, id, shellToken: id, requirement: REQ, state: "stopped", phase: "review", pendingDispatch: { instructions: "OLD_DISPATCH_正文" },
+      dispatchContext: { projectTrusted: true }, sourceVersion: { definitionFingerprint: "old", codeHead: "old" }, reviewSnapshot: { head: "old", fingerprint: "old" },
+      reportPath: "old/report.md", commands: ["old command"], result: { verdict: "PASS", details: "OLD_RESULT_正文" } };
+    withDatabase(w.database, (db) => db.create("runs", id, legacy, id));
+    const stored = await w.runs.get(id);
+    expect(stored).toMatchObject({ ok: true, run: { id, phase: "review", pendingDispatch: { instructions: "OLD_DISPATCH_正文" }, result: { verdict: "PASS" } } });
+    expect(await w.manager.status(id)).toMatchObject({ ok: true, run: { id, state: "stopped" } });
+    const listed = await w.manager.list({ limit: 100 });
+    expect(listed.items.map((item) => item.id)).toContain(id);
+    expect(JSON.stringify(listed)).not.toContain("OLD_DISPATCH"); expect(JSON.stringify(listed)).not.toContain("OLD_RESULT");
+    const stopped = await w.manager.stopAll();
+    expect(stopped.results.map((item) => item.runId)).toContain(id);
+    expect(stopped.coverage).toMatchObject({ unknown: 0 });
+    expect(withDatabase(w.database, (db) => db.read<any>("runs", id)!.data)).toMatchObject({ phase: "review", commands: ["old command"], reportPath: "old/report.md" });
+  }, 15_000);
   test("F2/F5 损坏run记录不能遮蔽其他持久Shell停止，但关闭仍报告未知", async () => {
     const w = await fixture({ ps: async () => [] }); const run = await w.create(); const child = await ownProcess(); const taskId = uuidv7();
     withDatabase(w.database, (db) => {
@@ -307,20 +299,8 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(withDatabase(w.database, (db) => db.read("runs", "UNVERIFIED_BODY"))).not.toBeNull();
     expect((await w.manager.stopAll()).coverage.unknown).toBeGreaterThan(0);
   }, 15_000);
-  test("F5/F6 task展开验证关联且限额；旧读取和证据构建桩不访问载荷", async () => {
-    const w = await fixture(); const run = await w.create(); const tasks: Record<string, unknown> = {};
-    for (let n = 0; n < 2000; n++) tasks[`T-${n}`] = { progress: "todo", runId: null };
-    tasks["T-2001"] = { progress: "doing", runId: run.id }; // 真实运行只绑定T-1。
-    tasks["BAD_旧正文"] = { progress: "unknown", runId: "old" };
-    withDatabase(w.database, (db) => db.create("requirements", REQ, state(REQ, "executing", tasks)));
-    const query = await executeWorkflowAction({ action: "query", requirement: REQ, limit: 3, byteLimit: 2048 }, w.ctx);
-    expect(query.ok).toBe(true); expect(JSON.stringify(query)).not.toContain("BAD_");
-    expect(query.details.coverage).toMatchObject({ returned: 3, unknown: 2, truncated: true });
-    expect(Buffer.byteLength(JSON.stringify(query))).toBeLessThanOrEqual(2048);
-    const poison = new Proxy({}, { get() { throw new Error("不得读取正文"); } });
-    for (const method of [readDecisions, inspectDecision]) await expect((method as any)(poison)).rejects.toThrow("永久淘汰");
-    for (const method of [validateDecisionInput, nextDecisionId, buildRecord]) expect(() => (method as any)(poison, poison)).toThrow("永久淘汰");
-    for (const method of [bindEvidence, checkEvidence]) expect(await (method as any)(poison, poison)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
+  test("F5 运行元数据不合法时状态查询只返回固定错误", async () => {
+    const w = await fixture(); const run = await w.create();
     withDatabase(w.database, (db) => { const stored = db.read<any>("runs", run.id)!; db.update("runs", run.id, stored.version, { ...stored.data, startedAt: "UNVERIFIED_旧正文" }); });
     await expect(w.manager.status(run.id)).rejects.toThrow("运行元数据不可读");
   });

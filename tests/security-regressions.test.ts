@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
@@ -8,19 +8,15 @@ import { promisify } from "node:util";
 import { DaemonServer } from "../daemon/server.ts";
 import { RunManager } from "../daemon/run-manager.ts";
 import { RelayQueue } from "../daemon/relay-queue.ts";
-import { commandBoundary, sandboxLaunch } from "../runtime/command-boundary.ts";
 import { controlToken } from "../runtime/daemon-auth.ts";
 import { connectDaemon } from "../runtime/daemon-client.ts";
 import { createClock } from "../runtime/clock.ts";
-import { repositoryDatabase } from "../runtime/database.ts";
 import { collectGitSnapshot } from "../runtime/git-snapshot.ts";
 import { readGit } from "../runtime/git-read.ts";
 import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { decodeFrames, encodeFrame, PROTOCOL_VERSION } from "../runtime/protocol.ts";
-import { createRangeProtection } from "../runtime/range-protection.ts";
 import { RunStore } from "../runtime/run-store.ts";
-import { createManagedBashOperations } from "../runtime/shell-bash.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import { randomUUID } from "node:crypto";
 
@@ -104,31 +100,6 @@ test("控制连接拒绝伪造身份和错误凭证，真实凭证允许调用�
   expect(calls).toBe(1);
 });
 
-test("受管命令不能连接控制目录 socket 或读取控制凭证，获准目录 socket 可用", async () => {
-  const w = await world();
-  controlToken(w.dataRoot);
-  const deniedPath = join(w.dataRoot, "control.sock");
-  const allowedPath = join(w.cwd, "test.sock");
-  for (const path of [deniedPath, allowedPath]) {
-    const server = createServer((socket) => socket.end("connected"));
-    await new Promise<void>((resolve) => server.listen(path, resolve));
-    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
-  }
-  const boundary = await commandBoundary({ cwd: w.cwd, dataRoot: w.dataRoot, writePaths: [], foreignPaths: [] });
-  const node = await realpath(process.execPath);
-  boundary.readRoots.push(dirname(node));
-  const run = (source: string) => {
-    // 普通 Shell 允许启动子进程，但仍受文件与控制 socket 边界约束。
-    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-    const launch = sandboxLaunch(`${quote(node)} -e ${quote(source)}`, boundary);
-    return exec(launch.command, launch.args, { cwd: w.cwd, env: launch.env, timeout: 3000 });
-  };
-  const connect = (path: string) => `const s=require('node:net').createConnection(${JSON.stringify(path)});s.on('data',b=>process.stdout.write(b));s.on('error',()=>process.exitCode=1);`;
-  await expect(run(connect(deniedPath))).rejects.toThrow();
-  expect((await run(connect(allowedPath))).stdout).toBe("connected");
-  await expect(run(`require('node:fs').readFileSync(${JSON.stringify(join(w.dataRoot, "global.db"))})`)).rejects.toThrow();
-});
-
 test("Git 快照禁用 fsmonitor 与 textconv，无法在仓库外执行辅助程序", async () => {
   const w = await world();
   const marker = join(w.root, "outside-marker");
@@ -148,12 +119,12 @@ test("服务端跨汉字字节分包仍保留完整中文答复", async () => {
   const token = controlToken(w.dataRoot);
   const server = new DaemonServer({ repoId: w.repoId, startedAt: "test", authToken: token });
   server.onHello = () => {};
-  server.registerHandler("relay.forward", (params) => ({ message: params.message })); server.markHandlersReady();
+  server.registerHandler("runs.get", (params) => ({ message: params.runId })); server.markHandlersReady();
   const path = join(w.root, "server.sock");
   await server.listen(path); cleanups.push(() => server.close());
   const client = await rawClient(path);
   await client.call("hello", hello(w.cwd, token));
-  const result = await client.call("relay.forward", { requirement: "test", message: "确认", windowId: "test-window" }, "确");
+  const result = await client.call("runs.get", { runId: "确认" }, "确");
   expect(result.result.message).toBe("确认");
 });
 
@@ -191,32 +162,6 @@ test("生产客户端携带凭证并正确解码跨包中文响应", async () =>
   expect(await client.call("ping")).toEqual({ message: "确认" });
 });
 
-test("两个真实受管命令并行修改各自文件时不误报，越界写仍被阻止", async () => {
-  const w = await world();
-  const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
-  const shells = new ShellRegistry({ clock, database: repositoryDatabase(w.dataRoot, w.repoId) });
-  const store = new RunStore({ dataRoot: w.dataRoot, repoId: w.repoId, daemonStartedAt: "test" });
-  const runs = await Promise.all(["a", "b"].map((name) => store.create({ kind: "role", standalone: true, role: "pi-company.worker", requirement: `2026-09-10.${name}`, task: name,
-    cwd: w.cwd, writePaths: [`${name}.ts`], readPaths: [w.cwd], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] })));
-  for (const run of runs) await store.update(run.id, { state: "running" });
-  const guards = await Promise.all(runs.map((run) => createRangeProtection({ cwd: w.cwd, dataRoot: w.dataRoot, holder: { kind: "role", runId: run.id, requirement: run.requirement }, writePaths: run.writePaths, clock, shells })));
-  cleanups.push(async () => { for (let i = 0; i < runs.length; i++) { await shells.stopHost({ kind: "role", id: runs[i]!.id, runId: runs[i]!.id }); await store.update(runs[i]!.id, { state: "stopped" }); await guards[i]!.release(); } });
-  const violations: string[] = [];
-  const operations = runs.map((run, i) => createManagedBashOperations({ registry: shells, host: { kind: "role", id: run.id, runId: run.id }, runToken: run.shellToken,
-    guard: { ...guards[i]!.commandGuard, after: async (token, outcome) => { const found = await guards[i]!.commandGuard.after(token, outcome); violations.push(...found); return found; } } }));
-  for (let i = 0; i < guards.length; i++) expect((await guards[i]!.checkWrite(runs[i]!.writePaths[0]!)).ok).toBe(true);
-  let begin!: () => void;
-  const begun = new Promise<void>((resolve) => { begin = resolve; });
-  const a = operations[0]!.exec(`printf ready; while [ "$(cat b.ts)" != B ]; do sleep 0.01; done; printf A > a.ts`, w.cwd, { timeout: 3, onData: () => begin() });
-  await begun;
-  const b = operations[1]!.exec("printf B > b.ts", w.cwd, { timeout: 3, onData: () => {} });
-  expect((await Promise.all([a, b])).map((result) => result.exitCode)).toEqual([0, 0]);
-  expect(violations).toEqual([]);
-  for (const run of runs) { const saved = await store.get(run.id); expect(saved.ok && saved.run.state).toBe("running"); }
-  const bad = await operations[0]!.exec("printf forbidden > b.ts", w.cwd, { timeout: 3, onData: () => {} });
-  expect(bad.exitCode).not.toBe(0); expect(await readFile(join(w.cwd, "b.ts"), "utf8")).toBe("B");
-});
-
 test("停止回执保留 Shell 不确定状态，重复停止可核验清理且级联报告失败", async () => {
   const w = await world();
   const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
@@ -229,7 +174,7 @@ test("停止回执保留 Shell 不确定状态，重复停止可核验清理且�
   let clear = false;
   shells.stopHost = async (host) => host.runId === child.id && !clear ? [{ taskId: "uncertain", result: { ok: false, reason: "无法确认进程身份" } }] : [];
   const manager = new RunManager({ dataRoot: w.dataRoot, repoId: w.repoId, runStore: store, shellRegistry: shells,
-    networkGate: new NetworkPauseGate(), relayQueue: new RelayQueue({ dataDir: join(w.dataRoot, "repos", w.repoId), deliver: async () => [], locateRequirementAgent: () => undefined }),
+    networkGate: new NetworkPauseGate(), relayQueue: new RelayQueue({ dataDir: join(w.dataRoot, "repos", w.repoId), deliver: async () => [] }),
     roleCatalog: [], runtime: {} as any, selectModel: () => ({ provider: "test", id: "test" }), clock, workspaceRepoIds: [w.repoId], emit: () => {} });
   const concurrent = await Promise.all([manager.stop(parent.id), manager.stop(parent.id)]);
   for (const result of concurrent) expect(result).toMatchObject({ state: "stopped", confirmed: false, reason: "子运行尚未确认停止" });

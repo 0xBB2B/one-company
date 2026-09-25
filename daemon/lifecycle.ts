@@ -584,7 +584,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
         }
         return targets.map((info) => info.windowId);
       },
-      locateRequirementAgent: (requirement) => runManager!.locateRequirementAgent(requirement),
     });
     runManager = new RunManager({
       repositoryRoot,

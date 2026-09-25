@@ -457,7 +457,7 @@ async function runHost(): Promise<void> {
   try {
     ({ session } = await sdk.createAgentSession({ cwd, agentDir, resourceLoader: loader, settingsManager: settings,
       modelRuntime: runtime, model: runtime.getModels("installed-controlled")[0], sessionManager: sdk.SessionManager.inMemory(cwd),
-      tools: ["pi_company_project_manage", "pi_company_knowledge_query", "read", "write", "edit", "bash", "pi_company_git_commit"],
+      tools: ["pi_company_project_manage", "pi_company_knowledge_query", "read", "write", "edit", "bash"],
     }));
     const ui: ExtensionUIContext = { ...session.extensionRunner.getUIContext(),
       confirm: async (title, message) => {

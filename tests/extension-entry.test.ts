@@ -9,10 +9,6 @@ import { createFakePi } from "./helpers/fake-pi.ts";
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const REQUIRED_COMMAND_NAMES = [
-  "pi-company:new",
-  "pi-company:resume",
-  "pi-company:revise",
-  "pi-company:sync",
   "pi-company:setting",
   "pi-company:ps",
 ];
@@ -33,7 +29,7 @@ function makeShellUiCtx() {
 }
 
 describe("extensions/index.ts 唯一扩展入口", () => {
-  test("registerCommand 收到的命令名无重复，包含六个带 pi-company: 前缀的命令，不含 spec-* 别名", () => {
+  test("registerCommand 收到的命令名无重复，包含两个带 pi-company: 前缀的命令，不含 spec-* 别名", () => {
     const fakePi = createFakePi();
 
     registerExtensions(fakePi.pi);
@@ -65,7 +61,7 @@ describe("extensions/index.ts 唯一扩展入口", () => {
     expect(pkg.pi?.extensions).toEqual(["./extensions/index.ts"]);
   });
 
-  test("session_start 处理器注册顺序中，首位来自 lifecycle（先于 relay/pm-panel/shell-ui）", () => {
+  test("session_start 处理器注册顺序中，首位来自 lifecycle（先于 pm-panel/shell-ui）", () => {
     const fakePi = createFakePi();
 
     registerExtensions(fakePi.pi);

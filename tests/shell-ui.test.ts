@@ -1,5 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
-import * as decisions from "../runtime/decisions.ts";
+import { describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";
@@ -12,7 +11,7 @@ import type { PmPanelUiDeps } from "../extensions/pm-panel.ts";
 import { currentDock } from "../extensions/lifecycle.ts";
 
 function shellUiExtension(pi: Parameters<typeof installShellUi>[0], deps: ShellUiDeps = {}) {
-  installShellUi(pi, { commandGuard: async () => ({ before: async () => undefined, after: async () => [] }), ...deps });
+  installShellUi(pi, deps);
 }
 
 interface FakeTimeSource extends TimeSource {
@@ -485,7 +484,6 @@ describe("sharedDock 生命周期：PM 面板 teardown 后 lifecycle.currentDock
 
 test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实际停止", async () => {
   const fakePi = createFakePi();
-  const append = vi.spyOn(decisions, "appendDecision");
   const calls: { method: string; params?: Record<string, unknown> }[] = [];
   const task = { taskId: "ui-uncertain", host: { kind: "requirement", id: "req-ui" }, command: "", cwd: "", pid: 10, startedAt: new Date(0).toISOString(), status: "uncertain", activity: "uncertain", inWorkspace: true };
   const stopped = createDeferred<Record<string, unknown>>();
@@ -531,7 +529,6 @@ test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实�
     await flushMicrotasks();
     expect(page!.render(100).join("\n")).toContain("不确定");
     expect(page!.render(100).join("\n")).not.toContain("已停止");
-    expect(append).not.toHaveBeenCalled();
     expect(calls.some((call) => call.method === "shells.markStopped")).toBe(false);
     expect(JSON.stringify(calls)).not.toContain("USER");
   } finally {
@@ -540,7 +537,6 @@ test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实�
     page?.handleInput("\x1b");
     await opened;
     await fakePi.trigger("session_shutdown", { reason: "quit" }, ctx);
-    append.mockRestore();
   }
 });
 

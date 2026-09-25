@@ -10,7 +10,6 @@ import type { RequirementStoreOptions } from "../runtime/requirement-state.ts";
 import { repositoryDatabase, uuidv7, UUID_V7_PATTERN, withDatabase } from "../runtime/database.ts";
 import * as databaseModule from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
-import { executeWorkflowAction } from "../runtime/workflow-tool.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -285,16 +284,11 @@ test("仅归档线索或未知历史只阻塞，不猜测completed或恢复执�
   expect(reopened.read(record.id).data.recovery).toBe("needs_review");
 });
 
-test("旧日期需求不导入新状态；旧工作流列表不接管新UUID记录", async () => {
+test("旧日期需求不导入新状态，新UUID记录不受旧记录影响", async () => {
   const w = await world(); const record = w.reserve();
   const path = repositoryDatabase(w.options.dataRoot, w.identity.repoId);
   withDatabase(path, (db) => db.create("requirements", "2026-09-11.legacy", { requirement: "2026-09-11.legacy", stage: "draft", shape: null, tasks: {}, history: [], followUps: [] }));
   expect(() => w.store.read("2026-09-11.legacy")).toThrow(/invalid_shape/);
-  const result = await executeWorkflowAction({ action: "list" }, { dataRoot: w.options.dataRoot, cwd: w.repo.root });
-  expect(result.ok).toBe(true);
-  expect(result.details.items).toEqual([{ requirement: "2026-09-11.legacy", stage: "draft" }]);
-  expect(result.details.coverage).toMatchObject({ total: 1, validated: 1, returned: 1, unknown: 0, truncated: false });
-  expect(JSON.stringify(result)).not.toContain(record.id);
   expect(w.store.read(record.id)).toEqual(record);
   withDatabase(path, (db) => { const r = db.read("requirements", record.id)!; db.update("requirements", record.id, r.version, { ...r.data as object, transcript: "hidden body" }); });
   expect(() => w.store.read(record.id)).toThrow(/invalid_shape/);

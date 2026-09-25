@@ -6,12 +6,9 @@ import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { repositoryDatabase, withDatabase, UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
 import { RunStore } from "../runtime/run-store.ts";
-import { appendDecision, readDecisions } from "../runtime/decisions.ts";
-import { executeWorkflowAction } from "../runtime/workflow-tool.ts";
 import { createSessionManagerForRun, openSessionManagerForRun, readTranscript } from "../runtime/session-records.ts";
 import { RelayQueue } from "../daemon/relay-queue.ts";
 import { createClock } from "../runtime/clock.ts";
-import { RangeClaims } from "../runtime/ranges.ts";
 import { WindowRegistry } from "../runtime/windows.ts";
 import { writeErrorDetails, readErrorDetails } from "../runtime/error-details.ts";
 
@@ -29,17 +26,8 @@ async function fixture() {
   return { repo, home, repoId, repoDir, clock, store, requirement, input };
 }
 
-test("旧工作流和决策拒绝写入，通用运行存储仍保证单个活动记录", async () => {
+test("通用运行存储保证单个活动记录", async () => {
   const w = await fixture();
-  const ctx = { dataRoot: w.home.dataRoot, cwd: w.repo.root };
-  expect(await executeWorkflowAction({ action: "init", requirement: w.requirement }, ctx)).toMatchObject({ ok: false, details: { code: "legacy_workflow_retired" } });
-  const decisions = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => appendDecision({ requirement: w.requirement, actor: "user", source: "用户", trigger: "确认", decision: `确认 ${i}`, effects: ["scope"], alternatives: [], impact: "无" }, ctx)));
-  expect(decisions.every((result) => result.status === "rejected" && String(result.reason).includes("永久淘汰"))).toBe(true);
-  await expect(readDecisions({ ...ctx, requirement: w.requirement, actor: "user" })).rejects.toThrow("永久淘汰");
-  withDatabase(repositoryDatabase(w.home.dataRoot, w.repoId), (db) => {
-    expect(db.list("requirements")).toEqual([]);
-    expect(db.events(`decisions:${w.requirement}:user`)).toEqual([]);
-  });
   const started = await Promise.all([w.store.createOrReuseRequirement(w.input), w.store.createOrReuseRequirement(w.input)]);
   expect(started[0]!.run.id).toBe(started[1]!.run.id);
   expect(started[0]!.run.id).toMatch(UUID_V7_PATTERN);
@@ -67,50 +55,40 @@ test("SDK 会话从私有会话文件恢复，原始错误详情从 SQLite 恢�
   expect((await readdir(w.repoDir)).filter((name) => !name.startsWith("data.db"))).toEqual(["sessions"]);
 });
 
-test("多个运行存储实例交错登记回合与命令不丢失活动", async () => {
+test("多个运行存储实例交错登记回合与用量不丢失活动", async () => {
   const w = await fixture();
   const run = await w.store.create(w.input);
   const other = new RunStore({ dataRoot: w.home.dataRoot, repoId: w.repoId, daemonStartedAt: "other" });
   await Promise.all(Array.from({ length: 20 }, (_, index) => {
     const store = index % 2 ? w.store : other;
-    return Promise.all([store.recordTurn(run.id), store.recordCommand(run.id, `command-${index}`)]);
+    return Promise.all([store.recordTurn(run.id), store.recordUsage(run.id, { toolUses: 1 })]);
   }));
   const found = await w.store.get(run.id);
   if (!found.ok) throw new Error(found.reason);
   expect(found.run.turns).toBe(20);
-  expect(new Set(found.run.commands).size).toBe(20);
+  expect(found.run.usage?.toolUses).toBe(20);
 });
 
-test("两实例旧中继答复拒绝且历史不变，固定状态通知回执仍可并发合并", async () => {
+test("两实例固定状态通知回执可并发合并，旧问答记录原样保留", async () => {
   const w = await fixture();
-  const options = { dataDir: w.repoDir, deliver: async () => [], locateRequirementAgent: () => undefined };
+  const options = { dataDir: w.repoDir, deliver: async () => [] };
   const a = new RelayQueue(options); const b = new RelayQueue(options);
   const run = await w.store.create(w.input);
   const database = repositoryDatabase(w.home.dataRoot, w.repoId);
   const questionId = uuidv7();
-  // 无授权的合成旧问题，仅核对数据保全，不模拟用户批准。
   withDatabase(database, (db) => db.create("relay_questions", questionId, { id: questionId, status: "pending", question: "确认？" }));
   const before = withDatabase(database, (db) => db.list("relay_questions"));
-  await expect(a.ask({ requirement: w.requirement, repoId: w.repoId, runId: run.id, question: "确认？", options: [], recommended: "确认" })).rejects.toThrow("永久淘汰");
-  const answers = await Promise.all([b.answer(questionId, "确认", uuidv7()), a.answer(questionId, "取消", uuidv7())]);
-  expect(answers).toEqual([{ ok: false, reason: "legacy_workflow_retired" }, { ok: false, reason: "legacy_workflow_retired" }]);
-  expect(withDatabase(database, (db) => db.list("relay_questions"))).toEqual(before);
-  await expect(a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "completed", message: "完成" })).rejects.toThrow("永久淘汰");
+  await expect(a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "completed" as never, message: "完成" })).rejects.toThrow("只支持");
   expect(withDatabase(database, (db) => db.list("relay_notices"))).toEqual([]);
   const notice = await a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "blocked", message: "不得回显的旧正文" });
   await Promise.all([a.markDelivered("窗口甲", notice.id), b.markDelivered("窗口乙", notice.id)]);
   const record = withDatabase(repositoryDatabase(w.home.dataRoot, w.repoId), (db) => db.read<{ deliveredTo: string[] }>("relay_notices", notice.id));
   expect(record?.data.deliveredTo.sort()).toEqual(["窗口乙", "窗口甲"].sort());
-  expect(await b.pendingFor({ windowId: "新窗口", repoIds: [w.repoId] })).toEqual({ questions: [], notices: [] });
+  expect(withDatabase(database, (db) => db.list("relay_questions"))).toEqual(before);
 });
 
-test("跨实例占用互斥，注销后的迟到心跳不能复活窗口", async () => {
+test("注销后的迟到心跳不能复活窗口", async () => {
   const w = await fixture();
-  const options = { repoRoot: w.repo.root, repoDir: w.repoDir, clock: w.clock, runState: async () => "running", holderGone: async () => ({ gone: false as const, reason: "存活" }), activeShellTasks: async () => 0 };
-  const a = new RangeClaims(options); const b = new RangeClaims(options);
-  const first = await a.claim({ kind: "role", runId: uuidv7(), requirement: w.requirement }, ["README.md"]);
-  const second = await b.claim({ kind: "role", runId: uuidv7(), requirement: w.requirement }, ["README.md"]);
-  expect(first.granted).toBe(true); expect(second.granted).toBe(false);
   const windows = new WindowRegistry({ repoDir: w.repoDir, clock: w.clock, bootId: async () => "boot", processStartedAt: async () => "start" });
   const windowId = uuidv7();
   await windows.register({ windowId, pid: process.pid, sessionId: "sdk-session", cwd: w.repo.root, workspaceRoot: w.repo.root });

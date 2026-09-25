@@ -11,12 +11,6 @@ export interface RepositoryIdentity {
   commonDir: string;
 }
 
-export interface RequirementIdentity {
-  reqId: string;
-  date: string;
-  slug: string;
-}
-
 export interface WorkspaceRepo {
   path: string;
   repoId: string;
@@ -72,24 +66,6 @@ export async function repositoryIdentity(dir: string): Promise<RepositoryIdentit
   const commonDir = await realpath(rawCommonDir);
   const repoId = createHash("sha256").update(commonDir).digest("hex");
   return { repoId, commonDir };
-}
-
-const REQUIREMENT_ID_PATTERN = /^(\d{4}-\d{2}-\d{2})\.([a-zA-Z0-9][a-zA-Z0-9-]*)$/;
-
-function isValidCalendarDate(date: string): boolean {
-  const [year, month, day] = date.split("-").map(Number);
-  const parsed = new Date(Date.UTC(year as number, (month as number) - 1, day));
-  return (
-    parsed.getUTCFullYear() === year && parsed.getUTCMonth() === (month as number) - 1 && parsed.getUTCDate() === day
-  );
-}
-
-export function requirementIdentity(name: string): RequirementIdentity {
-  const match = REQUIREMENT_ID_PATTERN.exec(name);
-  if (!match) throw new Error(`不合法的需求目录名: ${name}`);
-  const date = match[1] as string;
-  if (!isValidCalendarDate(date)) throw new Error(`不合法的需求目录名: ${name}`);
-  return { reqId: name, date, slug: match[2] as string };
 }
 
 export async function isInsideRepository(dir: string): Promise<boolean> {

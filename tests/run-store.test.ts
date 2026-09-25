@@ -149,20 +149,6 @@ describe("RunStore.create", () => {
     expect(run.parentRunId).toBeUndefined();
   });
 
-  test("acceptance 角色运行携带 reportPath 时被持久化，读回后原样可得", async () => {
-    const { store } = await makeStore();
-    const parent = await store.create(requirementInput());
-    const input = roleInput(parent.id, {
-      role: "pi-company.acceptance",
-      reportPath: "/repo/evidence/acceptance-report.md",
-    });
-    const run = await store.create(input);
-    expect(run.reportPath).toBe("/repo/evidence/acceptance-report.md");
-
-    const reread = await store.get(run.id);
-    expect(reread.ok).toBe(true);
-    if (reread.ok) expect(reread.run.reportPath).toBe("/repo/evidence/acceptance-report.md");
-  });
 });
 
 describe("RunStore.get", () => {
@@ -309,16 +295,13 @@ describe("RunStore.update", () => {
     expect(secondUpdate.stateReason).toBe("补记说明");
   });
 
-  test("用户停止后补写说明与结果不改变 stopped 状态与 endedAt", async () => {
+  test("用户停止后补写说明不改变 stopped 状态与 endedAt", async () => {
     const { store } = await makeStore();
     const created = await store.create(requirementInput());
     await store.update(created.id, { state: "running" });
     const stopped = await store.update(created.id, { state: "stopped", stateReason: "用户停止" });
 
-    const after = await store.update(created.id, {
-      stateReason: "后代进程清理未确认",
-      result: { phase: "work", verdict: "FAIL" },
-    });
+    const after = await store.update(created.id, { stateReason: "后代进程清理未确认" });
 
     expect(after.state).toBe("stopped");
     expect(after.endedAt).toBe(stopped.endedAt);
@@ -360,19 +343,19 @@ describe("RunStore.update", () => {
     const created = await store.create(requirementInput());
 
     const reasons = Array.from({ length: 10 }, (_, i) => `原因-${i}`);
-    const results = Array.from({ length: 5 }, (_, i) => ({ index: i }));
+    const pauses = Array.from({ length: 5 }, (_, i) => i + 1);
 
     await Promise.all([
       ...reasons.map((reason) => store.update(created.id, { stateReason: reason })),
       ...Array.from({ length: 5 }, () => store.update(created.id, { errorDetails: { status: "saved", recordId: "01991910-0000-7000-8000-000000000001" } })),
-      ...results.map((result) => store.update(created.id, { result })),
+      ...pauses.map((pausedMs) => store.update(created.id, { pausedMs })),
     ]);
 
     const after = await store.get(created.id);
     expect(after.ok).toBe(true);
     if (after.ok) {
       expect(after.run.errorDetails).toEqual({ status: "saved", recordId: "01991910-0000-7000-8000-000000000001" });
-      expect(after.run.result).toBeDefined();
+      expect(pauses).toContain(after.run.pausedMs);
       expect(reasons).toContain(after.run.stateReason);
       expect(after.run.turns).toBe(created.turns);
     }

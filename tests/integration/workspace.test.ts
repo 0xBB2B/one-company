@@ -9,7 +9,6 @@ import { connectTestClient, killDaemon, startDaemonForTest } from "../helpers/da
 import { modelProviderEnv, readProviderRequestsLog, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
 import { daemonSocketPath, discoverWorkspace, repositoryIdentity } from "../../runtime/identity.ts";
 import { repositoryDatabase, putRecord, withDatabase } from "../../runtime/database.ts";
-import { requirementStateRef } from "../../runtime/workflow-state.ts";
 import { RunStore } from "../../runtime/run-store.ts";
 
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
@@ -24,7 +23,7 @@ async function world() {
     const identity = await repositoryIdentity(root), requirement = `2026-09-10.workspace-${index}`;
     const store = new RunStore({ dataRoot, repoId: identity.repoId, daemonStartedAt: "workspace-history" });
     const run = await store.create({ kind: "requirement", requirement, task: "历史跨仓目标", cwd: root, readPaths: [], writePaths: [], model: { provider: "workspace-probe", id: "test" }, thinking: "off", mcp: [] });
-    putRecord(requirementStateRef(dataRoot, identity.repoId, requirement), { requirement, stage: "confirmed", tasks: {}, shape: { decisionId: "USER-001" } });
+    putRecord({ database: repositoryDatabase(dataRoot, identity.repoId), namespace: "requirements", key: requirement }, { requirement, stage: "confirmed", tasks: {}, shape: { decisionId: "USER-001" } });
     const scriptsDir = await mkdtemp(join(tmpdir(), "workspace-provider-")); cleanup.push(() => rm(scriptsDir, { recursive: true, force: true }));
     const log = join(scriptsDir, "requests.jsonl"); await writeFile(log, "");
     const scripts = await writeTestModelProviders(scriptsDir, [{ providerId: "workspace-probe", modelId: "test", replies: [{ type: "text", text: "不应读取旧目标" }] }]);
@@ -70,8 +69,8 @@ test("跨仓旧契约裁定不能经answer/forward产生用户授权或新模型
   const w = await world(); const clients = [await w.connect(0, "main", w.repos.map((repo) => repo.repoId)), await w.connect(1, "main", w.repos.map((repo) => repo.repoId))];
   const before = w.snapshot();
   for (const [index, client] of clients.entries()) {
-    await expect(client.call("relay.answer", { questionId: "old-question", answer: "主会话裁定批准契约", windowId: "main" })).rejects.toThrow("legacy_workflow_retired");
-    await expect(client.call("relay.forward", { requirement: w.repos[index]!.requirement, message: "批准契约并实施", windowId: "main" })).rejects.toThrow("legacy_workflow_retired");
+    await expect(client.call("relay.answer", { questionId: "old-question", answer: "主会话裁定批准契约", windowId: "main" })).rejects.toThrow("unknown_method");
+    await expect(client.call("relay.forward", { requirement: w.repos[index]!.requirement, message: "批准契约并实施", windowId: "main" })).rejects.toThrow("unknown_method");
   }
   await delay(1150); expect(w.snapshot()).toEqual(before);
   for (const repo of w.repos) expect(await readProviderRequestsLog(repo.log)).toEqual([]);
@@ -80,8 +79,8 @@ test("跨仓旧契约裁定不能经answer/forward产生用户授权或新模型
 test("跨仓直连拒绝不改另一仓历史数据或文件，不创建角色会话", async () => {
   const w = await world(); await w.connect(0, "a", [w.repos[0]!.repoId]); const b = await w.connect(1, "b", [w.repos[1]!.repoId]);
   const before = w.snapshot(), source = await readFile(join(w.repos[0]!.root, "README.md"), "utf8");
-  await expect(b.call("relay.forward", { requirement: w.repos[0]!.requirement, message: "直接命令其他仓修改", windowId: "b" })).rejects.toThrow("legacy_workflow_retired");
-  await expect(b.call("dispatch.requirement", { requirement: w.repos[0]!.requirement, cwd: w.repos[0]!.root })).rejects.toThrow("legacy_workflow_retired");
+  await expect(b.call("relay.forward", { requirement: w.repos[0]!.requirement, message: "直接命令其他仓修改", windowId: "b" })).rejects.toThrow("unknown_method");
+  await expect(b.call("dispatch.requirement", { requirement: w.repos[0]!.requirement, cwd: w.repos[0]!.root })).rejects.toThrow("unknown_method");
   await delay(1150); expect(w.snapshot()).toEqual(before);
   expect(await readFile(join(w.repos[0]!.root, "README.md"), "utf8")).toBe(source);
   for (const repo of w.repos) expect(await readProviderRequestsLog(repo.log)).toEqual([]);
@@ -90,9 +89,9 @@ test("跨仓直连拒绝不改另一仓历史数据或文件，不创建角色�
 test("跨仓旧accepted依赖不启动排队记录，状态变化不会转为执行权限", async () => {
   const w = await world(); const a = await w.connect(0, "main", w.repos.map((repo) => repo.repoId)); await w.connect(1, "main", w.repos.map((repo) => repo.repoId));
   const target = w.repos[1]!;
-  putRecord(requirementStateRef(w.dataRoot, target.repoId, target.requirement), { requirement: target.requirement, stage: "accepted", tasks: {} });
+  putRecord({ database: repositoryDatabase(w.dataRoot, target.repoId), namespace: "requirements", key: target.requirement }, { requirement: target.requirement, stage: "accepted", tasks: {} });
   const before = w.snapshot();
-  await expect(a.call("runs.resumeInterrupted", { runId: w.repos[0]!.run.id })).rejects.toThrow("legacy_workflow_retired");
+  await expect(a.call("runs.resumeInterrupted", { runId: w.repos[0]!.run.id })).rejects.toThrow("unknown_method");
   await delay(1150); expect(w.snapshot()).toEqual(before);
   expect(await a.call("runs.get", { runId: w.repos[0]!.run.id })).toMatchObject({ run: { state: "interrupted" } });
   for (const repo of w.repos) expect(await readProviderRequestsLog(repo.log)).toEqual([]);

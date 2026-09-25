@@ -21,7 +21,6 @@ import {
   listWorktrees,
   repoDataDir,
   repositoryIdentity,
-  requirementIdentity,
 } from "../runtime/identity.ts";
 
 const execFileAsync = promisify(execFile);
@@ -137,26 +136,6 @@ describe("repositoryIdentity", () => {
     }
     expect(caught?.message).toContain(missing);
     expect(caught?.message).not.toContain("不是 Git 仓库");
-  });
-});
-
-describe("requirementIdentity", () => {
-  test("接受合法格式并解析出 date 与 slug", () => {
-    const identity = requirementIdentity("2026-09-08.order-export");
-    expect(identity.date).toBe("2026-09-08");
-    expect(identity.slug).toBe("order-export");
-  });
-
-  test("拒绝缺少日期前缀的名称", () => {
-    expect(() => requirementIdentity("order-export")).toThrow();
-  });
-
-  test("拒绝日期未补零的名称", () => {
-    expect(() => requirementIdentity("2026-9-8.x")).toThrow();
-  });
-
-  test("拒绝非法月份的日期", () => {
-    expect(() => requirementIdentity("2026-13-45.x")).toThrow();
   });
 });
 

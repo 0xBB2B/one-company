@@ -37,7 +37,7 @@ async function manager(base: { repositoryRoot: string; dataRoot: string; repoId:
   const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
   const runStore = new RunStore({ dataRoot: base.dataRoot, repoId: base.repoId, daemonStartedAt: new Date().toISOString() });
   const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(root, "none-u"), projectDir: join(root, "none-p"), parseFrontmatter, projectTrusted: false });
-  const relay = new RelayQueue({ dataDir: join(base.dataRoot, "repos", base.repoId), deliver: async () => [], locateRequirementAgent: () => undefined });
+  const relay = new RelayQueue({ dataDir: join(base.dataRoot, "repos", base.repoId), deliver: async () => [] });
   const runs = new RunManager({ ...base, runStore, shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(base.dataRoot, base.repoId) }),
     networkGate: new NetworkPauseGate(), relayQueue: relay, roleCatalog: catalog.roles, runtime, selectModel: () => { throw new Error("不应按旧规则选模型"); },
     clock, workspaceRepoIds: [base.repoId], emit: vi.fn() });

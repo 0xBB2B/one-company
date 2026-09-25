@@ -50,7 +50,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   if (index) { cleanups.push(() => index.close()); await index.init(); }
   const manager = new RunManager({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, runStore,
     shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }), networkGate: new NetworkPauseGate(),
-    relayQueue: new RelayQueue({ dataDir: join(fixture.dataRoot, "repos", fixture.repoId), deliver: async () => [], locateRequirementAgent: () => undefined }),
+    relayQueue: new RelayQueue({ dataDir: join(fixture.dataRoot, "repos", fixture.repoId), deliver: async () => [] }),
     roleCatalog: catalog.roles, runtime, selectModel: () => { throw new Error("不应按旧规则选模型"); }, clock, workspaceRepoIds: [fixture.repoId], emit, web: options.web, index, agentDir: options.agentDir });
   manager.markStarted();
   cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await manager.stop(run.id).catch(() => {}); });

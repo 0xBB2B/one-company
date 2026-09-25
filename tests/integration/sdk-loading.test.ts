@@ -19,7 +19,8 @@ test("真实 SDK 从单一扩展入口加载全部命令、工具与生命周期
     expect(loaded.extensions).toHaveLength(1);
     const extension = loaded.extensions[0]!;
     const tools = [...extension.tools.keys()];
-    for (const name of ["pi_company_requirement_manage", "pi_company_workflow", "pi_company_git_commit", "pi_company_knowledge_query", "pi_company_project_manage", "pi_company_agent_manage", "bash"]) expect(tools).toContain(name);
+    for (const name of ["pi_company_requirement_manage", "pi_company_knowledge_query", "pi_company_project_manage", "pi_company_agent_manage", "bash"]) expect(tools).toContain(name);
+    for (const name of ["pi_company_workflow", "pi_company_git_commit", "write", "edit"]) expect(tools).not.toContain(name);
     expect([...extension.commands.keys()]).toContain("pi-company:ps");
     for (const name of ["session_start", "session_shutdown", "tool_call", "user_bash"]) expect(extension.handlers.has(name)).toBe(true);
   } finally { await rm(root, { recursive: true, force: true }); }

@@ -1095,7 +1095,7 @@ describe("失败帧转换为 DaemonCallError", () => {
 
       let caught: unknown;
       try {
-        await client.call("dispatch.requirement", { requirement: "2026-09-09.demo", cwd: repo.root });
+        await client.call("runs.get", { runId: "run-1" });
       } catch (error) {
         caught = error;
       }

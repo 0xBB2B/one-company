@@ -1,4 +1,3 @@
-import { mainWriteProtection } from "./write-protection.ts";
 import { randomUUID } from "node:crypto";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -25,7 +24,6 @@ const REFRESH_INTERVAL_MS = 1_000;
 
 export interface ShellUiDeps {
   windowReady?: () => Promise<WindowContextValue>;
-  commandGuard?: (cwd: string) => Promise<import("../runtime/shell-bash.ts").BashCommandGuard>;
   createClock?: () => Clock;
   createShellRegistry?: (clock: Clock) => ShellRegistry;
 }
@@ -67,7 +65,6 @@ function metadataBashOperations() {
 }
 
 export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {}): void {
-  const resolveCommandGuard = deps.commandGuard ?? (async (cwd) => (await mainWriteProtection(cwd)).commandGuard);
   const resolveWindowReady = deps.windowReady ?? defaultWindowReady;
   const resolveClock = deps.createClock ?? (() => createClock());
   const resolveShellRegistry = deps.createShellRegistry ?? ((clock) => new ShellRegistry({ clock }));
@@ -87,7 +84,6 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
         host: current.host,
         cwd: execCtx?.cwd ?? process.cwd(),
         runToken: current.runToken,
-        guard: await resolveCommandGuard(execCtx?.cwd ?? process.cwd()),
       });
       return routed.execute(toolCallId, params, signal, onUpdate, execCtx);
     },
@@ -104,7 +100,6 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
       registry: current.registry,
       host: current.host,
       runToken: current.runToken,
-      guard: await resolveCommandGuard((event as { cwd?: string }).cwd ?? process.cwd()),
     });
   });
 

@@ -6,14 +6,12 @@ import { Type } from "typebox";
 import type { Clock } from "../runtime/clock.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import type { RoleCatalogEntry } from "../runtime/roles.ts";
-import type { DispatchSettingsContext, ListRunOptions, RunKind, RunRecord } from "../runtime/run-store.ts";
+import type { ListRunOptions, RunKind, RunRecord } from "../runtime/run-store.ts";
 import { isTerminalState, RunStore } from "../runtime/run-store.ts";
 import type { Host, ShellRegistry, TaskRecord } from "../runtime/shell-registry.ts";
 import { repositoryDatabase, UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
-import { assertLegacyRequirementId, withLegacyReadDatabase } from "../runtime/workflow-state.ts";
-import { checkedMetadataPage, legacyMetadataPage } from "../runtime/workflow-tool.ts";
-import type { MetadataPageOptions } from "../runtime/workflow-tool.ts";
-import { LEGACY_WORKFLOW_RETIRED } from "../runtime/decision-record-tool.ts";
+import { assertRecordRequirementId, checkedMetadataPage, metadataPage, withReadOnlyDatabase } from "../runtime/run-metadata.ts";
+import type { MetadataPageOptions } from "../runtime/run-metadata.ts";
 import { createAgentRoleSession } from "./agent-session.ts";
 import type { AgentSessionHandle, AgentSessionMcpOptions } from "./agent-session.ts";
 import { detectMcpAdapter } from "../runtime/mcp.ts";
@@ -69,7 +67,6 @@ export interface RunManagerOptions {
   /** 守护进程持有的主仓库索引；缺省时角色没有 knowledge_query。 */
   index?: ProjectIndexHost;
 }
-export interface WaitForSpec { repo: string; requirement: string; stage: string }
 interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null };
   subagent?: { parentRunId: string; taskId: string; dispose(): void };
   explore?: { parentRunId: string; dispose(): void; result(): ExploreResult | null } }
@@ -114,7 +111,7 @@ function runMetadata(run: RunRecord): RunMetadata {
     || !["queued", "running", "pausing", "paused", "paused_network", "waiting_answer", "completed", "failed", "stopped", "interrupted"].includes(run.state)
     || !timestamp(run.startedAt) || !timestamp(run.updatedAt) || run.endedAt !== undefined && !timestamp(run.endedAt)
     || !Number.isSafeInteger(run.turns) || run.turns < 0 || run.parentRunId !== undefined && (!UUID_V7_PATTERN.test(run.parentRunId) || run.parentRunId === run.id || run.kind !== "role")) throw protocolError("legacy_metadata_unavailable", "运行元数据不可读，未知记录已保全待核对");
-  if (!UUID_V7_PATTERN.test(run.requirement)) assertLegacyRequirementId(run.requirement);
+  if (!UUID_V7_PATTERN.test(run.requirement)) assertRecordRequirementId(run.requirement);
   return { id: run.id, kind: run.kind, requirement: run.requirement, parentRunId: run.parentRunId,
     state: run.state, startedAt: run.startedAt, updatedAt: run.updatedAt, endedAt: run.endedAt, turns: run.turns,
     ...(run.usage ? { usage: { ...run.usage } } : {}), ...(run.pausedMs ? { pausedMs: run.pausedMs } : {}), ...(run.pausedAt ? { pausedAt: run.pausedAt } : {}),
@@ -133,7 +130,6 @@ function shellMetadata(task: TaskRecord) {
 }
 function taskHost(run: RunRecord): Host { return { kind: "role", id: run.id, role: run.role, runId: run.id }; }
 function protocolError(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }
-function retiredError(): Error & { code: string } { return protocolError("legacy_workflow_retired", LEGACY_WORKFLOW_RETIRED); }
 const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 
 /** 旧运行只保留元数据、暂停与安全停止；不存在派工、队列执行和恢复器。 */
@@ -565,10 +561,6 @@ export class RunManager {
     const page = await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER });
     for (const run of page.items) if (!isTerminalState(run.state)) await this.stop(run.id);
   }
-  async dispatchReview(_params: { requirement: string; cwd: string; baseline: string; context?: DispatchSettingsContext; snapshot: { head: string; fingerprint: string } }): Promise<{ runId: string }> { throw retiredError(); }
-  locateRequirementAgent(_requirement: string): { inject(message: string): void } | undefined { return undefined; }
-  async canRunInParallel(_input: { cwd: string; requirement: string; task: string; writePaths: string[] }): Promise<{ ok: true } | { ok: false; reason: string }> { return { ok: false, reason: LEGACY_WORKFLOW_RETIRED }; }
-  async verifyDelivery(_runId: string, _requirement: string, _signal?: AbortSignal): Promise<void> { throw retiredError(); }
   /** 只续接本进程内仍持有会话的暂停运行；没有会话不能证明原运行可安全续接。 */
   async resume(runId: string, options: { children?: boolean } = {}): Promise<{ state: string }> {
     const entry = this.sessions.get(runId);
@@ -597,18 +589,11 @@ export class RunManager {
     }
     return { state: updated.state };
   }
-  async resumeAll(): Promise<{ results: Array<{ runId: string; state: string }> }> { throw retiredError(); }
-  async resumeInterrupted(runId: string): Promise<{ ok: boolean; state: string; confirmed: boolean; reason?: string }> {
-    const result = await this.runStore.get(runId);
-    return { ok: false, state: result.ok ? result.run.state : "unknown", confirmed: false, reason: LEGACY_WORKFLOW_RETIRED };
-  }
   /** 网络探测恢复只更新网络自身状态，不恢复任何旧运行。 */
   async resumeNetworkPaused(_providerId: string): Promise<void> {}
-  async subscribeTranscript(_runId: string, _fromSeq: number, _windowId: string, _connected: () => boolean): Promise<Record<string, unknown>> { throw retiredError(); }
-  unsubscribeTranscript(_subscriptionId: string, _windowId: string): void {}
   private metadataRows(): RunMetadata[] {
     try {
-      return withLegacyReadDatabase(this.database, (db) => {
+      return withReadOnlyDatabase(this.database, (db) => {
         const rows = db.prepare("SELECT id, record_key, version, data FROM records WHERE namespace = 'runs'").all();
         const items = rows.map((row) => {
           if (typeof row.record_key !== "string" || !UUID_V7_PATTERN.test(row.record_key) || row.id !== row.record_key || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.data !== "string") throw new Error("invalid");
@@ -630,10 +615,10 @@ export class RunManager {
   async list(options: ListRunOptions & MetadataPageOptions = { limit: 100 }) {
     checkedMetadataPage(options);
     if (options.kind !== undefined && !["requirement", "role"].includes(options.kind)) throw protocolError("invalid_params", "运行查询参数无效");
-    if (options.requirement !== undefined && !UUID_V7_PATTERN.test(options.requirement)) assertLegacyRequirementId(options.requirement);
+    if (options.requirement !== undefined && !UUID_V7_PATTERN.test(options.requirement)) assertRecordRequirementId(options.requirement);
     if (options.states !== undefined && (!Array.isArray(options.states) || options.states.length > 10 || options.states.some((state) => !["queued", "running", "pausing", "paused", "paused_network", "waiting_answer", "completed", "failed", "stopped", "interrupted"].includes(state)))) throw protocolError("invalid_params", "运行查询状态无效");
     const rows = this.metadataRows().filter((run) => (options.kind === undefined || run.kind === options.kind) && (options.requirement === undefined || run.requirement === options.requirement) && (options.states === undefined || options.states.includes(run.state)));
-    return { ...legacyMetadataPage(rows, options, 0, true), total: rows.length, runningCount: rows.filter((run) => ["running", "pausing", "waiting_answer"].includes(run.state)).length };
+    return { ...metadataPage(rows, options, 0, true), total: rows.length, runningCount: rows.filter((run) => ["running", "pausing", "waiting_answer"].includes(run.state)).length };
   }
   private async childrenOf(run: RunRecord): Promise<RunRecord[]> {
     const page = await this.runStore.list({ kind: "role", requirement: run.requirement, limit: Number.MAX_SAFE_INTEGER });
@@ -874,7 +859,7 @@ export class RunManager {
     return { results };
   }
   private async runsForStop(): Promise<{ runs: RunRecord[]; unknown: number }> {
-    const rows = withLegacyReadDatabase(this.database, (db) => db.prepare("SELECT id, record_key FROM records WHERE namespace = 'runs'").all());
+    const rows = withReadOnlyDatabase(this.database, (db) => db.prepare("SELECT id, record_key FROM records WHERE namespace = 'runs'").all());
     const runs: RunRecord[] = []; let unknown = 0;
     for (const row of rows) {
       if (typeof row.record_key !== "string" || !UUID_V7_PATTERN.test(row.record_key) || row.id !== row.record_key) { unknown++; continue; }
@@ -903,7 +888,7 @@ export class RunManager {
     }
     try { unknown += this.persistedShells().filter((row) => { const task = this.shellRegistry.get(row.taskId as string); return !task || !this.verifiedEnd(task) || task.pid !== row.pid || task.startedAt !== row.startedAt; }).length; }
     catch { unknown++; }
-    const page = legacyMetadataPage(results, { limit: 100 }, unknown);
+    const page = metadataPage(results, { limit: 100 }, unknown);
     return { results: page.items, coverage: { ...page.coverage, confirmed: results.filter((item) => item.confirmed).length,
       unconfirmed: results.filter((item) => !item.confirmed).length, shellUnconfirmed, notice: "停止已遍历全部可读运行及已知Shell；未知或未确认项仍受阻，展示可能分页" } };
   }
@@ -911,7 +896,7 @@ export class RunManager {
     return ["exited", "stopped", "timed_out"].includes(task.status) && task.activity === "ended" && task.stoppedBy !== "user" && task.identityVerified && task.descendantsScanned;
   }
   private persistedShells() {
-    return withLegacyReadDatabase(this.database, (db) => db.prepare("SELECT record_key, json_extract(data, '$.taskId') AS taskId, json_extract(data, '$.token') AS token, json_extract(data, '$.pid') AS pid, json_extract(data, '$.pgid') AS pgid, json_extract(data, '$.startedAt') AS startedAt, json_extract(data, '$.host.id') AS hostId, json_extract(data, '$.host.runId') AS runId FROM records WHERE namespace = 'shells'").all().map((row) => {
+    return withReadOnlyDatabase(this.database, (db) => db.prepare("SELECT record_key, json_extract(data, '$.taskId') AS taskId, json_extract(data, '$.token') AS token, json_extract(data, '$.pid') AS pid, json_extract(data, '$.pgid') AS pgid, json_extract(data, '$.startedAt') AS startedAt, json_extract(data, '$.host.id') AS hostId, json_extract(data, '$.host.runId') AS runId FROM records WHERE namespace = 'shells'").all().map((row) => {
       if (typeof row.taskId !== "string" || row.taskId.length > 128 || row.taskId !== row.record_key || typeof row.token !== "string" || row.token.length > 256 || !Number.isSafeInteger(row.pid) || Number(row.pid) <= 1 || !Number.isSafeInteger(row.pgid) || Number(row.pgid) <= 1 || row.startedAt !== null && !Number.isSafeInteger(row.startedAt)) throw new Error("Shell 持久身份不可读");
       return row;
     }));
@@ -988,14 +973,13 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       await manager.awaitStarted();
       try { return await handler(params, client); }
       catch (error) {
-        if (error instanceof Error && ["legacy_workflow_retired", "trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
+        if (error instanceof Error && ["trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
           "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
           "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed", "requirement_halted", "workflow_denied"].includes((error as { code?: string }).code ?? "")) throw error;
         throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对");
       }
     });
   };
-  // RPC 层与执行器分别拒绝；过期客户端不能靠旧方法名进入执行器。
   register("agents.dispatchExplore", async (params, client) => {
     const model = params.model as { provider?: unknown; id?: unknown } | undefined, request = params.request as Record<string, unknown> | undefined;
     const source = request?.source as { kind?: unknown; query?: unknown } | undefined;
@@ -1036,9 +1020,6 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       throw protocolError("invalid_params", "workflow_manage 参数无效");
     return { result: await manager.workflowManage(params.requirementId, params.request as Record<string, unknown>) };
   });
-  for (const method of ["dispatch.requirement", "dispatch.review", "runs.resumeAll", "runs.resumeInterrupted", "relay.answer", "relay.forward", "subscribe.transcript"]) {
-    register(method, async () => { throw retiredError(); });
-  }
   register("runs.list", async (params) => manager.list({ kind: params.kind as RunKind | undefined, offset: params.offset as number | undefined, limit: params.limit === undefined ? 100 : params.limit as number }));
   register("runs.get", async (params) => {
     const result = await manager.status(params.runId as string);
@@ -1062,7 +1043,6 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   register("shells.markStopped", async () => {
     throw protocolError("trusted_stop_required", "缺少可信的人工停止裁定入口；USER 字符串不能证明进程已停止，请使用安全停止并核对真实进程");
   });
-  register("unsubscribe", async () => ({}));
   server.onHello = async (client) => { manager.connectionOpened(client.connectionId); };
   server.markHandlersReady();
 }

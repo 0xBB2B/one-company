@@ -76,7 +76,6 @@ describe("README 二级标题", () => {
 
 describe("README 必需句", () => {
   const REQUIRED = [
-    "/pi-company:new",
     "/pi-company:setting",
     "/pi-company:ps",
     "每个仓库一个守护进程",
@@ -137,7 +136,7 @@ describe("README 常量与实际代码一致", () => {
   test("命令表覆盖 extensions/commands.ts 注册的全部入口名，且不出现未注册的入口", async () => {
     const source = await readText(COMMANDS);
     const registered = [...source.matchAll(/registerCommand\(\s*"([^"]+)"/g)].map((match) => match[1]).sort();
-    expect(registered).toEqual(["pi-company:new", "pi-company:resume", "pi-company:revise", "pi-company:setting", "pi-company:sync", "pi-company:ps"].sort());
+    expect(registered).toEqual(["pi-company:setting", "pi-company:ps"].sort());
 
     const body = await readText(README);
     for (const name of registered) {

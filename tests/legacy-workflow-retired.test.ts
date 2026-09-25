@@ -3,16 +3,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { RelayQueue } from "../daemon/relay-queue.ts";
+import registerExtensions from "../extensions/index.ts";
 import { registerAgentManageTool } from "../extensions/agent-manage.ts";
-import relayExtension, { registerRelayInbox } from "../extensions/relay.ts";
-import { currentVersion, executeWorkflowAction, createWorkflowTool, retryOnStaleVersion } from "../runtime/workflow-tool.ts";
-import { advanceStage, checkResume, failTask, finishTask, recordShape, rejectRequirement, requirementStateRef, retreatStage, rollbackTask, skippedGates, startTask, updateTaskFields } from "../runtime/workflow-state.ts";
 import { repositoryDatabase, putRecord, withDatabase, uuidv7 } from "../runtime/database.ts";
-import { decisionStream } from "../runtime/decisions.ts";
 import { createClock } from "../runtime/clock.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
+import { createFakePi } from "./helpers/fake-pi.ts";
 import { connectTestClient, createDaemonFixture, killDaemon, removeDaemonFixture, startDaemonForTest } from "./helpers/daemon-harness.ts";
 import { modelProviderEnv, readProviderRequestsLog, writeTestModelProviders } from "./helpers/daemon-model-fixture.ts";
 
@@ -31,67 +29,34 @@ async function world() {
   cleanup.push(async () => { for (const task of shells.list()) await shells.stop(task.taskId); });
   const runs = new RunStore({ dataRoot: ctx.dataRoot, repoId: fixture.repoId, daemonStartedAt: "retire-test" });
   const deliver = vi.fn(async () => []);
-  const inject = vi.fn();
-  const relay = new RelayQueue({ dataDir: join(ctx.dataRoot, "repos", fixture.repoId), deliver, locateRequirementAgent: () => ({ inject }) });
+  const relay = new RelayQueue({ dataDir: join(ctx.dataRoot, "repos", fixture.repoId), deliver });
   const selectModel = vi.fn(() => { throw new Error("不得选择模型"); });
   const runtime = new Proxy({}, { get() { throw new Error("不得读取模型运行时"); } });
   const manager = new RunManager({ ...ctx, repoId: fixture.repoId, runStore: runs, shellRegistry: shells,
     networkGate: new NetworkPauseGate(), relayQueue: relay, clock, emit: vi.fn(), roleCatalog: [], workspaceRepoIds: [fixture.repoId], selectModel, runtime: runtime as any });
   manager.markStarted();
-  const shape = { tasks: [{ id: "T-1", title: SECRET, roles: ["worker"], writePaths: ["."], dependsOn: [] }], gates: { plan: false, whiteboxReview: false, blackboxAcceptance: false }, skipped: ["plan", "whiteboxReview", "blackboxAcceptance"].map((gate) => ({ gate, decisionId: "USER-001" })), acceptanceReport: SECRET, decisionId: "USER-001" };
-  putRecord(requirementStateRef(ctx.dataRoot, fixture.repoId, REQUIREMENT), { requirement: REQUIREMENT, stage: "executing", shape,
-    tasks: { "T-1": { progress: "doing", runId: null, description: SECRET, note: SECRET, reason: SECRET, repairRound: 4 } },
-    history: [{ stage: "confirmed", decisionId: "USER-001", reason: SECRET }], followUps: [SECRET] });
+  putRecord({ database, namespace: "requirements", key: REQUIREMENT }, { requirement: REQUIREMENT, stage: "executing", shape: { decisionId: "USER-001", acceptanceReport: SECRET },
+    tasks: { "T-1": { progress: "doing", runId: null, description: SECRET } }, history: [{ stage: "confirmed", decisionId: "USER-001", reason: SECRET }], followUps: [SECRET] });
   withDatabase(database, (db) => {
-    db.append(decisionStream(REQUIREMENT, "user"), { id: "USER-001", actor: "user", requirement: REQUIREMENT, source: "model", trigger: SECRET, decision: SECRET, effects: ["scope", "repair:review:4", "repair:acceptance:4"], recordedAt: new Date().toISOString() });
+    db.append(`decisions:${REQUIREMENT}:user`, { id: "USER-001", actor: "user", requirement: REQUIREMENT, source: "model", trigger: SECRET, decision: SECRET, recordedAt: new Date().toISOString() });
     const id = uuidv7();
     db.create("relay_questions", id, { id, status: "pending", question: SECRET, options: [{ label: "确认", description: SECRET }], recommended: "确认", requirement: REQUIREMENT, repoId: fixture.repoId, runId: uuidv7(), createdAt: new Date().toISOString(), sequence: 1 });
   });
-  const snapshot = () => withDatabase(database, (db) => JSON.stringify({ requirements: db.list("requirements"), user: db.events(decisionStream(REQUIREMENT, "user")), ai: db.events(decisionStream(REQUIREMENT, "ai")), relay: db.list("relay_questions"), runs: db.list("runs"), sessions: db.list("sessions") }));
-  const createRun = async (state: "queued" | "paused" | "paused_network" | "interrupted" | "failed" = "queued") => {
-    const run = await runs.create({ kind: "role", standalone: true, role: "pi-company.worker", phase: "work", requirement: REQUIREMENT, task: SECRET, cwd,
-      writePaths: [cwd], readPaths: [cwd], model: { provider: "retire-model", id: "test" }, thinking: "off", mcp: [], pendingDispatch: { instructions: SECRET } });
-    if (state === "interrupted") await runs.markInterruptedOnStartup();
-    else if (state !== "queued") {
+  const snapshot = () => withDatabase(database, (db) => JSON.stringify({ requirements: db.list("requirements"), user: db.events(`decisions:${REQUIREMENT}:user`), relay: db.list("relay_questions"), runs: db.list("runs"), sessions: db.list("sessions") }));
+  const createRun = async (state: "queued" | "paused" | "paused_network" | "failed" = "queued") => {
+    const run = await runs.create({ kind: "role", standalone: true, role: "pi-company.worker", requirement: REQUIREMENT, task: SECRET, cwd,
+      writePaths: [cwd], readPaths: [cwd], model: { provider: "retire-model", id: "test" }, thinking: "off", mcp: [] });
+    if (state !== "queued") {
       await runs.update(run.id, { state: "running" });
       if (state === "paused") await runs.update(run.id, { state: "pausing" });
-      await runs.update(run.id, { state, stateReason: SECRET, ...(state === "failed" ? { result: { verdict: "FAIL", details: SECRET } } : {}) });
+      await runs.update(run.id, { state, stateReason: SECRET });
     }
     return run;
   };
-  return { fixture, ctx, database, manager, runs, shells, relay, shape, snapshot, createRun, selectModel, deliver, inject };
+  return { fixture, ctx, database, manager, runs, shells, relay, snapshot, createRun, selectModel, deliver };
 }
 
-const ACTIONS = ["init", "update", "advance", "retreat", "task-start", "task-finish", "task-fail", "rollback", "reject", "shape-confirm", "resume-check"];
-describe("M4 旧工作流授权和实际执行拒绝矩阵", () => {
-  test.each(ACTIONS)("公开 workflow %s 在任何数据库/旧授权读取之前拒绝", async (action) => {
-    const ctx = { cwd: "/missing", dataRoot: "/missing" };
-    const params = { action, requirement: REQUIREMENT, actor: "user", role: "main", decisionId: "USER-001", runId: uuidv7(), version: 1 };
-    expect(await executeWorkflowAction(params, ctx)).toMatchObject({ ok: false, details: { code: "legacy_workflow_retired" } });
-    const beforeTaskFinish = vi.fn(); const onStateChange = vi.fn();
-    await expect(createWorkflowTool({ ...ctx, beforeTaskFinish, onStateChange }).execute("x", params, undefined, undefined, ctx)).rejects.toThrow("永久淘汰");
-    expect(beforeTaskFinish).not.toHaveBeenCalled(); expect(onStateChange).not.toHaveBeenCalled();
-  });
-  test("预存confirmed/shape/skipped/USER记录不能推进、返修、完成或恢复，原数据不变", async () => {
-    const w = await world(); const before = w.snapshot();
-    const input = { expectedVersion: 1, targetStage: "accepted", decisionId: "USER-001", runId: uuidv7(), taskId: "T-1", reason: "用户说批准", shape: w.shape, currentVersion: { codeHead: "old", definitionFingerprint: "old" } };
-    for (const operation of [advanceStage, retreatStage, recordShape, startTask, finishTask, rollbackTask, rejectRequirement, updateTaskFields]) {
-      expect(await (operation as any)(input, w.ctx)).toMatchObject({ ok: false, reason: expect.stringContaining("永久淘汰") });
-    }
-    expect(await checkResume(w.ctx, input.currentVersion)).toMatchObject({ ok: false });
-    expect(skippedGates(w.shape)).toEqual([]);
-    const build = vi.fn(); expect(await retryOnStaleVersion(w.ctx, REQUIREMENT, build)).toMatchObject({ ok: false }); expect(build).not.toHaveBeenCalled();
-    await expect(currentVersion(w.ctx)).rejects.toThrow("永久淘汰");
-    expect(w.snapshot()).toBe(before);
-  });
-  test("workflow查询仅元数据，不返回shape、正文、历史、说明或按fields索取正文", async () => {
-    const w = await world(); const before = w.snapshot();
-    const query = await executeWorkflowAction({ action: "query", requirement: REQUIREMENT }, w.ctx);
-    expect(query.ok).toBe(true); expect(query.details.data).toEqual({ requirement: REQUIREMENT, stage: "executing", tasks: { "T-1": { progress: "doing", runId: null } } });
-    expect(JSON.stringify(query)).not.toContain(SECRET);
-    for (const field of ["shape", "history", "followUps", "description"]) expect(await executeWorkflowAction({ action: "query", requirement: REQUIREMENT, fields: [field] }, w.ctx)).toMatchObject({ ok: false });
-    expect(w.snapshot()).toBe(before);
-  });
+describe("旧工作流永久移除，旧记录不产生授权", () => {
   test("旧PM工厂、恢复工厂与独立planner资源已移除", async () => {
     const root = join(import.meta.dirname, "..");
     for (const path of ["daemon/requirement-agent.ts", "daemon/role-session.ts", "agents/planner.md", "agents/requirement-agent.md", "agents/acceptance.md"]) {
@@ -106,64 +71,22 @@ describe("M4 旧工作流授权和实际执行拒绝矩阵", () => {
       expect((await tools[0].execute("x", { action, repoId: "a".repeat(64) })).details.isError).toBe(true);
     }
   });
-  test("daemon执行器移除子派工/排队/超限返修，并拒绝单个批量中断网络恢复", async () => {
-    const w = await world();
-    const paused = await w.createRun("paused"); const network = await w.createRun("paused_network");
-    const queued = await w.createRun(); const failed = await w.createRun("failed");
-    for (const phase of ["review", "acceptance"]) {
-      for (let round = 0; round < 5; round++) {
-        const attempt = await w.createRun("failed");
-        withDatabase(w.database, (db) => {
-          const stored = db.read<any>("runs", attempt.id)!;
-          db.update("runs", attempt.id, stored.version, { ...stored.data, phase, result: { phase, verdict: "FAIL", summary: SECRET } });
-        });
-      }
-    }
+  test("主会话只有核心工具：没有旧工作流、旧决定和主窗口提交工具，也不覆盖宿主 write/edit（tool_call 只有搜索排除与需求观察两处）", () => {
+    const fakePi = createFakePi();
+    registerExtensions(fakePi.pi);
+    const names = fakePi.registeredTools().map((tool) => tool.name);
+    for (const retired of ["pi_company_workflow", "pi_company_git_commit", "decision_record", "write", "edit"]) expect(names).not.toContain(retired);
+    expect(fakePi.handlersFor("tool_call")).toHaveLength(2);
+  });
+  test("RunManager 不再提供旧派工、恢复、转录与并行判定入口", async () => {
+    const w = await world(); const paused = await w.createRun("paused"); const failed = await w.createRun("failed");
     const before = w.snapshot();
-    for (const method of ["dispatchRoleInternal", "startRoleRun", "scheduleWaitingTasks", "assertRepairAllowed", "resumeInterruptedLocked", "buildRequirementRelay", "buildRequirementDispatch"]) expect((w.manager as any)[method]).toBeUndefined();
-    expect("dispatchRequirement" in w.manager).toBe(false);
-    await expect(w.manager.dispatchReview({ requirement: REQUIREMENT, cwd: w.ctx.cwd, baseline: "old", snapshot: { head: "old", fingerprint: "old" } })).rejects.toThrow("永久淘汰");
+    for (const method of ["dispatchReview", "canRunInParallel", "verifyDelivery", "resumeAll", "resumeInterrupted", "subscribeTranscript", "unsubscribeTranscript", "locateRequirementAgent"]) expect((w.manager as any)[method]).toBeUndefined();
     await expect(w.manager.resume(paused.id)).rejects.toMatchObject({ code: "not_resumable" });
-    await expect(w.manager.resume(network.id)).rejects.toMatchObject({ code: "not_resumable" });
-    await expect(w.manager.resumeAll()).rejects.toThrow("永久淘汰");
-    for (const run of [queued, failed, paused]) expect(await w.manager.resumeInterrupted(run.id)).toMatchObject({ ok: false, confirmed: false });
-    await w.manager.resumeNetworkPaused("retire-model");
-    expect(await w.manager.canRunInParallel({ ...w.ctx, task: "T-1", writePaths: [] })).toMatchObject({ ok: false });
-    await expect(w.manager.verifyDelivery(failed.id, REQUIREMENT)).rejects.toThrow("永久淘汰");
-    expect(w.manager.locateRequirementAgent(REQUIREMENT)).toBeUndefined();
     expect(w.selectModel).not.toHaveBeenCalled(); expect(w.snapshot()).toBe(before);
     for (const output of [await w.manager.status(failed.id), await w.manager.list()]) expect(JSON.stringify(output)).not.toContain(SECRET);
-    await expect(w.manager.subscribeTranscript(failed.id, 0, "window", () => true)).rejects.toThrow("永久淘汰");
   });
-  test("仅有真实失败运行可登记失败，不改写原运行结果或授予重试", async () => {
-    const w = await world(); const run = await w.createRun();
-    const ref = requirementStateRef(w.ctx.dataRoot, w.fixture.repoId, REQUIREMENT);
-    withDatabase(w.database, (db) => {
-      const record = db.read<any>(ref.namespace, ref.key)!;
-      db.update(ref.namespace, ref.key, record.version, { ...record.data, tasks: { "T-1": { ...record.data.tasks["T-1"], runId: run.id } } });
-      const stored = db.read<any>("runs", run.id)!;
-      db.update("runs", run.id, stored.version, { ...stored.data, task: "T-1" });
-    });
-    const input = { expectedVersion: 2, taskId: "T-1", runId: run.id, reason: "实际执行失败" };
-    expect(await failTask(input, w.ctx)).toMatchObject({ ok: false });
-    await w.runs.update(run.id, { state: "failed", stateReason: SECRET, result: { verdict: "FAIL", details: SECRET } });
-    const failure = await w.runs.get(run.id);
-    expect(await failTask({ ...input, runId: uuidv7() }, w.ctx)).toMatchObject({ ok: false });
-    expect(await failTask(input, w.ctx)).toMatchObject({ ok: true, version: 3 });
-    expect(await w.runs.get(run.id)).toEqual(failure);
-    expect(await startTask({ expectedVersion: 3, taskId: "T-1", runId: run.id }, w.ctx)).toMatchObject({ ok: false });
-  });
-  test("旧relay原语及积压读取不写答复、不拼旧目标、不注入任何模型", async () => {
-    const w = await world(); const before = w.snapshot();
-    await expect(w.relay.ask({ question: SECRET, requirement: REQUIREMENT, repoId: w.fixture.repoId, runId: uuidv7(), options: [], recommended: "确认" })).rejects.toThrow("永久淘汰");
-    expect(await w.relay.answer(uuidv7(), "确认", "main")).toMatchObject({ ok: false });
-    expect(await w.relay.forward({ requirement: REQUIREMENT, message: SECRET })).toMatchObject({ delivered: false });
-    expect(await w.relay.pendingFor({ windowId: "main", repoIds: [w.fixture.repoId] })).toEqual({ questions: [], notices: [] });
-    const pi = new Proxy({}, { get() { throw new Error("不得注册或注入旧正文"); } });
-    relayExtension(pi as any); (await registerRelayInbox(pi as any, pi as any, "main"))();
-    expect(w.inject).not.toHaveBeenCalled(); expect(w.deliver).not.toHaveBeenCalled(); expect(w.snapshot()).toBe(before);
-  });
-  test("真实Socket daemon拒绝旧RPC，重启有积压运行不发模型请求且不读旧会话", async () => {
+  test("真实Socket daemon对旧RPC返回unknown_method，重启有积压运行不发模型请求且不读旧会话", async () => {
     const w = await world();
     const queued = await w.createRun();
     // 只有测试新建的旧格式资料；真实项目历史资料不读取。
@@ -183,7 +106,7 @@ describe("M4 旧工作流授权和实际执行拒绝矩阵", () => {
       ["relay.answer", { questionId: uuidv7(), answer: "确认", windowId: "main" }],
       ["relay.forward", { requirement: REQUIREMENT, message: SECRET, windowId: "main" }],
       ["subscribe.transcript", { runId: queued.id, fromSeq: 0 }],
-    ] as Array<[string, Record<string, unknown>]>) await expect(client.call(method, params)).rejects.toThrow("legacy_workflow_retired");
+    ] as Array<[string, Record<string, unknown>]>) await expect(client.call(method, params)).rejects.toThrow("unknown_method");
     await expect(client.call("runs.resume", { runId: queued.id })).rejects.toThrow("没有可续接");
     await expect(client.call("shells.markStopped", { taskId: "unknown", expectedPid: 99999, expectedStartedAt: "0", decisionId: "USER-001" })).rejects.toThrow("trusted_stop_required");
     expect(await client.call("relay.pending")).toEqual({ questions: [], notices: [] });

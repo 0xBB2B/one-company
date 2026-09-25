@@ -1,15 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import writeProtectionExtension from "./write-protection.ts";
 import lifecycleExtension from "./lifecycle.ts";
 import projectManageExtension from "./project-manage.ts";
 import knowledgeQueryExtension from "./knowledge-query.ts";
 import requirementManageExtension from "./requirement-manage.ts";
-import decisionRecordExtension from "./decision-record.ts";
-import workflowExtension from "./workflow.ts";
 import rulesExtension from "./rules.ts";
 import agentManageExtension from "./agent-manage.ts";
 import workflowManageExtension from "./workflow-manage.ts";
-import relayExtension from "./relay.ts";
 import pmPanelExtension from "./pm-panel.ts";
 import shellUiExtension from "./shell-ui.ts";
 import commandsExtension from "./commands.ts";
@@ -22,15 +18,11 @@ export default function registerExtensions(pi: ExtensionAPI): void {
   projectManageExtension(pi);
   knowledgeQueryExtension(pi);
   requirementManageExtension(pi);
-  decisionRecordExtension(pi);
-  workflowExtension(pi);
   rulesExtension(pi);
   agentManageExtension(pi);
   workflowManageExtension(pi);
-  relayExtension(pi);
   pmPanelExtension(pi);
   shellUiExtension(pi);
-  writeProtectionExtension(pi);
   searchExclusionExtension(pi);
   commandsExtension(pi);
 }

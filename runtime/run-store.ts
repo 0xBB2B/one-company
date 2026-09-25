@@ -18,23 +18,7 @@ export type RunState =
   | "stopped"
   | "interrupted";
 
-export interface DispatchSettingsContext {
-  workspaceRepoIds?: string[];
-  projectTrusted: boolean;
-  model?: { provider: string; id: string };
-  thinking?: string;
-  mcp?: { adapterEntry: string; configPath: string };
-}
-
-export interface PendingDispatch {
-  instructions?: string;
-  waitFor?: { repo: string; requirement: string; stage: string };
-}
-
 export interface RunRecord {
-  pendingDispatch?: PendingDispatch;
-  phase?: "plan" | "work" | "review" | "acceptance";
-  dispatchContext?: DispatchSettingsContext;
   id: string;
   shellToken: string;
   kind: RunKind;
@@ -45,7 +29,6 @@ export interface RunRecord {
   cwd: string;
   writePaths: string[];
   readPaths: string[];
-  reportPath?: string;
   model: { provider: string; id: string };
   thinking: string;
   mcp: string[];
@@ -58,10 +41,6 @@ export interface RunRecord {
   usage?: RunUsage;
   pausedMs?: number;
   pausedAt?: string;
-  result?: unknown;
-  sourceVersion?: { definitionFingerprint: string; codeHead: string };
-  reviewSnapshot?: { head: string; fingerprint: string };
-  commands?: string[];
   errorDetails: { recordId?: string; status: "none" | "saved" | "incomplete" | "unreadable" | "unavailable" };
   daemonStartedAt: string;
 }
@@ -69,11 +48,6 @@ export interface RunRecord {
 export interface RunUsage { input: number; output: number; cacheRead: number; cacheWrite: number; toolUses: number }
 
 export interface CreateRunInput {
-  pendingDispatch?: PendingDispatch;
-  phase?: "plan" | "work" | "review" | "acceptance";
-  dispatchContext?: DispatchSettingsContext;
-  sourceVersion?: { definitionFingerprint: string; codeHead: string };
-  reviewSnapshot?: { head: string; fingerprint: string };
   kind: RunKind;
   role?: string;
   requirement: string;
@@ -83,7 +57,6 @@ export interface CreateRunInput {
   cwd: string;
   writePaths: string[];
   readPaths: string[];
-  reportPath?: string;
   model: { provider: string; id: string };
   thinking: string;
   mcp: string[];
@@ -106,7 +79,7 @@ export interface ListRunResult {
 }
 
 export type UpdateRunFields = Partial<
-  Pick<RunRecord, "state" | "stateReason" | "turns" | "usage" | "pausedMs" | "pausedAt" | "result" | "errorDetails" | "endedAt" | "commands" | "sourceVersion" | "reviewSnapshot">
+  Pick<RunRecord, "state" | "stateReason" | "turns" | "usage" | "pausedMs" | "pausedAt" | "errorDetails" | "endedAt">
 >;
 
 const UPDATE_PATCH_KEYS = [
@@ -116,12 +89,8 @@ const UPDATE_PATCH_KEYS = [
   "usage",
   "pausedMs",
   "pausedAt",
-  "result",
   "errorDetails",
   "endedAt",
-  "commands",
-  "sourceVersion",
-  "reviewSnapshot",
 ] as const satisfies readonly (keyof UpdateRunFields)[];
 
 const TERMINAL_STATES = new Set<RunState>(["completed", "failed", "stopped"]);
@@ -136,7 +105,7 @@ const TRANSITIONS: Partial<Record<RunState, Set<RunState>>> = {
   interrupted: new Set(["queued", "running"]),
 };
 
-export const RUNNING_LIKE_STATES = new Set<RunState>(["running", "pausing", "waiting_answer"]);
+const RUNNING_LIKE_STATES = new Set<RunState>(["running", "pausing", "waiting_answer"]);
 
 export function isTerminalState(state: RunState): boolean {
   return TERMINAL_STATES.has(state);
@@ -163,21 +132,14 @@ function pickUpdatePatch(fields: Record<string, unknown>): UpdateRunFields {
 
 const UUID_PATTERN = UUID_V7_PATTERN.source;
 const RunRecordSchema = Type.Object({
-  pendingDispatch: Type.Optional(Type.Object({ instructions: Type.Optional(Type.String()), waitFor: Type.Optional(Type.Object({ repo: Type.String(), requirement: Type.String(), stage: Type.String() })) })),
-  dispatchContext: Type.Optional(Type.Object({ workspaceRepoIds: Type.Optional(Type.Array(Type.String())), projectTrusted: Type.Boolean(), model: Type.Optional(Type.Object({ provider: Type.String(), id: Type.String() })), thinking: Type.Optional(Type.String()), mcp: Type.Optional(Type.Object({ adapterEntry: Type.String(), configPath: Type.String() })) })),
-  sourceVersion: Type.Optional(Type.Object({ definitionFingerprint: Type.String(), codeHead: Type.String() })),
-  reviewSnapshot: Type.Optional(Type.Object({ head: Type.String(), fingerprint: Type.String() })),
-  commands: Type.Optional(Type.Array(Type.String())),
   id: Type.String({ pattern: UUID_PATTERN }),
   shellToken: Type.String({ minLength: 32 }),
   kind: Type.Union([Type.Literal("requirement"), Type.Literal("role")]),
   role: Type.Optional(Type.String({ pattern: "^pi-company\\." })),
   requirement: Type.String({ minLength: 1 }),
   parentRunId: Type.Optional(Type.String({ pattern: UUID_PATTERN })),
-  phase: Type.Optional(Type.Union(["plan", "work", "review", "acceptance"].map((phase) => Type.Literal(phase)))),
   task: Type.String(), cwd: Type.String({ minLength: 1 }),
   writePaths: Type.Array(Type.String()), readPaths: Type.Array(Type.String()),
-  reportPath: Type.Optional(Type.String()),
   model: Type.Object({ provider: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }) }),
   thinking: Type.String(), mcp: Type.Array(Type.String()),
   state: Type.Union([...Object.keys(TRANSITIONS), ...TERMINAL_STATES].map((state) => Type.Literal(state))),
@@ -230,12 +192,6 @@ export class RunStore {
     const now = new Date().toISOString();
     const run: RunRecord = {
       id,
-      pendingDispatch: input.pendingDispatch,
-      phase: input.phase,
-      dispatchContext: input.dispatchContext,
-      sourceVersion: input.sourceVersion,
-      reviewSnapshot: input.reviewSnapshot,
-      commands: [],
       shellToken: randomUUID(),
       kind: input.kind,
       role: input.kind === "role" ? input.role : undefined,
@@ -245,7 +201,6 @@ export class RunStore {
       cwd: input.cwd,
       writePaths: input.writePaths,
       readPaths: input.readPaths,
-      reportPath: input.reportPath,
       model: input.model,
       thinking: input.thinking,
       mcp: input.mcp,
@@ -310,10 +265,6 @@ export class RunStore {
     return this.updateFields(id, () => fields);
   }
 
-  async recordCommand(id: string, command: string): Promise<RunRecord> {
-    return this.updateFields(id, (run) => ({ commands: [...(run.commands ?? []), command] }));
-  }
-
   async recordTurn(id: string): Promise<RunRecord> {
     return this.updateFields(id, (run) => ({ turns: run.turns + 1 }));
   }
@@ -346,7 +297,6 @@ export class RunStore {
       if (!current) throw new Error(`运行不存在: ${id}`);
       const run = checkedRun(current.data, id);
       const fields = build(run);
-      if (("sourceVersion" in fields || "reviewSnapshot" in fields) && !(run.state === "queued" && fields.state === "running")) throw new Error("执行快照只能在排队运行启动时更新");
       if (fields.state !== undefined) assertTransition(run.state, fields.state);
       const patch = pickUpdatePatch(fields);
       const merged: RunRecord = { ...run, ...patch };

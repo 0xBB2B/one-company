@@ -84,7 +84,7 @@ test("真实网络探测恢复不复活旧暂停运行，手动暂停保持，�
   await w.store.update(network.run.id, { state: "running" }); await w.store.update(network.run.id, { state: "paused_network" });
   await w.store.update(manual.run.id, { state: "running" }); await w.store.update(manual.run.id, { state: "pausing" }); await w.store.update(manual.run.id, { state: "paused" });
   w.gate.requestPause(network.run.id, "network"); w.gate.requestPause(manual.run.id, "manual");
-  const relay = new RelayQueue({ dataDir: join(w.home.dataRoot, "repos", w.repoId), deliver: async () => [], locateRequirementAgent: () => undefined });
+  const relay = new RelayQueue({ dataDir: join(w.home.dataRoot, "repos", w.repoId), deliver: async () => [] });
   const manager = new RunManager({ dataRoot: w.home.dataRoot, repoId: w.repoId, runStore: w.store, shellRegistry: w.shells, networkGate: w.gate, relayQueue: relay,
     roleCatalog: [], runtime: w.runtime, selectModel: () => { throw new Error("不得选模型"); }, clock: w.clock, workspaceRepoIds: [w.repoId], emit: () => {} });
   manager.markStarted(); cleanup.push(() => manager.close());

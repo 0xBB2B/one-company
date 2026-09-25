@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { changedEntries, collectContentFingerprint, collectGitSnapshot } from "../runtime/git-snapshot.ts";
+import { collectGitSnapshot } from "../runtime/git-snapshot.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
 
@@ -29,52 +29,41 @@ describe("M1-AC4/5：自有快照固定排除 docs/prod 正文", () => {
     await expect(stat(join(repo.root, ".pi-company"))).rejects.toMatchObject({ code: "ENOENT" });
 
     const cleanGit = await collectGitSnapshot({ repoRoot: repo.root });
-    const cleanContent = await collectContentFingerprint(repo.root);
 
     await mkdir(join(repo.root, "docs", "prod", "nested"), { recursive: true });
     await writeFile(join(repo.root, "docs", "prod", "nested", "untracked.md"), "UNTRACKED-SECRET-v1\n");
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(cleanGit.fingerprint);
-    expect(await collectContentFingerprint(repo.root)).toBe(cleanContent);
 
     await writeFile(join(repo.root, "docs", "prod", "archive.md"), "ARCHIVE-SECRET-v2\n");
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(cleanGit.fingerprint);
-    expect(await collectContentFingerprint(repo.root)).toBe(cleanContent);
-    expect((await changedEntries(repo.root)).flatMap((entry) => entry.paths)).toContain("docs/prod/archive.md");
 
     await runGit(["add", "docs/prod/archive.md", "docs/prod/nested/untracked.md"], repo.root);
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(cleanGit.fingerprint);
-    expect(await collectContentFingerprint(repo.root)).toBe(cleanContent);
 
     await runGit(["commit", "-m", "archive only"], repo.root);
     const committed = await collectGitSnapshot({ repoRoot: repo.root });
     expect(committed.head).not.toBe(cleanGit.head);
     expect(committed.fingerprint).toBe(cleanGit.fingerprint);
-    expect(await collectContentFingerprint(repo.root)).toBe(cleanContent);
 
     await runGit(["rm", "docs/prod/archive.md"], repo.root);
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(cleanGit.fingerprint);
-    expect(await collectContentFingerprint(repo.root)).toBe(cleanContent);
   });
 
-  test("普通源码变化仍进入 Git 和全内容指纹，近似目录不会被误排除", async () => {
+  test("普通源码变化仍进入 Git 快照，近似目录不会被误排除", async () => {
     const repo = await repoWithArchive();
     const cleanGit = await collectGitSnapshot({ repoRoot: repo.root });
-    const cleanContent = await collectContentFingerprint(repo.root);
 
     await writeFile(join(repo.root, "src", "source.ts"), "export const source = 'v2';\n");
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).not.toBe(cleanGit.fingerprint);
-    expect(await collectContentFingerprint(repo.root)).not.toBe(cleanContent);
 
     await runGit(["checkout", "--", "src/source.ts"], repo.root);
     await runGit(["rm", "src/source.ts"], repo.root);
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).not.toBe(cleanGit.fingerprint);
-    expect(await collectContentFingerprint(repo.root)).not.toBe(cleanContent);
 
     await runGit(["reset", "--hard", "HEAD"], repo.root);
     await mkdir(join(repo.root, "docs", "product"), { recursive: true });
     await writeFile(join(repo.root, "docs", "product", "ordinary.ts"), "export const ordinary = true;\n");
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).not.toBe(cleanGit.fingerprint);
-    expect(await collectContentFingerprint(repo.root)).not.toBe(cleanContent);
   });
 
   test("跨归档边界改名按源码范围记为删除或新增，归档内部改名不影响快照", async () => {
@@ -107,10 +96,8 @@ describe("M1-AC4/5：自有快照固定排除 docs/prod 正文", () => {
     const repo = await repoWithArchive();
     const archive = join(repo.root, "docs", "prod", "archive.md");
     await chmod(archive, 0o000);
-    await expect(collectContentFingerprint(repo.root)).resolves.toMatch(/^[0-9a-f]{64}$/);
 
     const source = join(repo.root, "src", "source.ts");
     await chmod(source, 0o000);
-    await expect(collectContentFingerprint(repo.root)).rejects.toThrow("无法读取快照文件: src/source.ts");
   });
 });

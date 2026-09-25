@@ -44,28 +44,18 @@ function waitForOutcome(registry: ShellRegistry, taskId: string): Promise<TaskRe
   });
 }
 
-export interface BashCommandGuard {
-  launch?(command: string, cwd: string): Promise<{ command: string; args: string[]; env?: NodeJS.ProcessEnv; inheritEnv?: boolean }>;
-  before(): Promise<unknown>;
-  after(token: unknown, outcome: unknown): Promise<string[]>;
-}
-
 export class UnsettledShellError extends Error {}
 
 export function createManagedBashOperations(input: {
   registry: ShellRegistry;
   host: Host;
   runToken: string;
-  guard?: BashCommandGuard;
 }): BashOperations {
-  const { registry, host, runToken, guard } = input;
+  const { registry, host, runToken } = input;
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (signal?.aborted) throw new Error("aborted");
 
-      let outcome: unknown;
-      let launch: Awaited<ReturnType<NonNullable<BashCommandGuard["launch"]>>> | undefined;
-      let completed: { exitCode: number | null; task: TaskRecord } | undefined;
       let spawnedTask: TaskRecord | undefined;
       let userAborted = false;
       let stopping: Promise<Awaited<ReturnType<ShellRegistry["stopTask"]>>> | undefined;
@@ -85,84 +75,54 @@ export function createManagedBashOperations(input: {
       signal?.addEventListener("abort", onAbort, { once: true });
 
       try {
-        const guardToken = await guard?.before();
-        if (signal?.aborted) throw new Error("aborted");
-        let executionFailed = false;
-        let executionError: unknown;
+        const taskId = uuidv7();
         try {
-          launch = await guard?.launch?.(command, cwd);
           if (signal?.aborted) throw new Error("aborted");
-          const capturedLaunch = launch;
-          const execute = async (): Promise<{ exitCode: number | null; task: TaskRecord }> => {
-            const taskId = uuidv7();
-            try {
-              if (signal?.aborted) throw new Error("aborted");
-              const spawnResult = await registry.spawn({
-                taskId,
-                host,
-                command: capturedLaunch?.command ?? "sh",
-                args: capturedLaunch?.args ?? ["-c", command],
-                cwd,
-                mode: "wait",
-                timeoutSeconds: timeout,
-                runToken,
-                env: capturedLaunch?.inheritEnv === false ? capturedLaunch.env : { ...env, ...capturedLaunch?.env },
-                inheritEnv: capturedLaunch?.inheritEnv,
-                onOutput: (chunk) => onData(chunk),
-              });
-              if (!spawnResult.ok) {
-                outcome = { status: "spawn_failed", reason: spawnResult.reason };
-                throw new Error(spawnResult.reason);
-              }
+          const spawnResult = await registry.spawn({
+            taskId,
+            host,
+            command: "sh",
+            args: ["-c", command],
+            cwd,
+            mode: "wait",
+            timeoutSeconds: timeout,
+            runToken,
+            env: { ...env },
+            onOutput: (chunk) => onData(chunk),
+          });
+          if (!spawnResult.ok) throw new Error(spawnResult.reason);
 
-              spawnedTask = spawnResult.task;
-              if (signal?.aborted) onAbort();
-              if (stopping) {
-                const stopped = await stopping;
-                if (!stopped.ok || stopped.task !== spawnedTask || stopped.task.activity !== "ended") {
-                  throw new UnsettledShellError(stopped.ok ? "Shell 停止尚未确认" : stopped.reason);
-                }
-              }
-              if (signal?.aborted) throw new Error("aborted");
-              const task = await waitForOutcome(registry, taskId);
-              if (task !== spawnedTask) throw new UnsettledShellError("Shell 结果对象已被替代");
-              outcome = task;
-              if (signal?.aborted) throw new Error("aborted");
-              switch (task.status) {
-                case "exited": return { exitCode: registry.exitCodeFor(task), task };
-                case "failed": throw new Error(task.reason ?? "Command failed");
-                case "stopped": throw new Error(userAborted ? "aborted" : "Command stopped");
-                case "timed_out": throw new Error(`Command timed out after ${timeout} seconds`);
-                default: throw new UnsettledShellError(`无法确认命令是否已结束：${task.reason ?? ""}`);
-              }
-            } catch (error) {
-              const taskToStop = spawnedTask;
-              if (taskToStop && shouldStopSpawnedTask() && !stopping) {
-                stopping = registry.stopTask(taskToStop);
-                void stopping.catch(() => undefined);
-              }
-              if (stopping) {
-                try { await stopping; }
-                catch { /* 原始执行错误优先，停止失败已被持有并处理。 */ }
-              }
-              throw error;
+          spawnedTask = spawnResult.task;
+          if (signal?.aborted) onAbort();
+          if (stopping) {
+            const stopped = await stopping;
+            if (!stopped.ok || stopped.task !== spawnedTask || stopped.task.activity !== "ended") {
+              throw new UnsettledShellError(stopped.ok ? "Shell 停止尚未确认" : stopped.reason);
             }
-          };
-          completed = await execute();
+          }
+          if (signal?.aborted) throw new Error("aborted");
+          const task = await waitForOutcome(registry, taskId);
+          if (task !== spawnedTask) throw new UnsettledShellError("Shell 结果对象已被替代");
+          if (signal?.aborted) throw new Error("aborted");
+          switch (task.status) {
+            case "exited": return { exitCode: registry.exitCodeFor(task) };
+            case "failed": throw new Error(task.reason ?? "Command failed");
+            case "stopped": throw new Error(userAborted ? "aborted" : "Command stopped");
+            case "timed_out": throw new Error(`Command timed out after ${timeout} seconds`);
+            default: throw new UnsettledShellError(`无法确认命令是否已结束：${task.reason ?? ""}`);
+          }
         } catch (error) {
-          executionFailed = true;
-          executionError = error;
+          const taskToStop = spawnedTask;
+          if (taskToStop && shouldStopSpawnedTask() && !stopping) {
+            stopping = registry.stopTask(taskToStop);
+            void stopping.catch(() => undefined);
+          }
+          if (stopping) {
+            try { await stopping; }
+            catch { /* 原始执行错误优先，停止失败已被持有并处理。 */ }
+          }
+          throw error;
         }
-
-        let afterFailed = false;
-        let afterError: unknown;
-        try { await guard?.after(guardToken, outcome); }
-        catch (error) { afterFailed = true; afterError = error; }
-
-        if (afterFailed) throw afterError;
-        if (executionFailed) throw executionError;
-        if (!completed) throw new Error("Shell 命令没有形成结果");
-        return { exitCode: completed.exitCode };
       } finally {
         signal?.removeEventListener("abort", onAbort);
       }
@@ -176,93 +136,43 @@ async function runBackground(
   cwd: string,
   runToken: string,
   params: BashToolParams,
-  guard?: BashCommandGuard,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
   if (signal?.aborted) throw new Error("aborted");
   const taskId = uuidv7();
-  const guardToken = await guard?.before();
-  let guardFinished = false;
-  let launch: Awaited<ReturnType<NonNullable<BashCommandGuard["launch"]>>> | undefined;
-  const finishGuard = async (outcome: unknown) => {
-    if (guardFinished) return;
-    guardFinished = true;
-    await guard?.after(guardToken, outcome);
-  };
-  try { launch = await guard?.launch?.(params.command, cwd); }
-  catch (error) { await finishGuard({ status: "launch_failed" }); throw error; }
+  const spawnResult = await registry.spawn({
+    taskId,
+    host,
+    command: "sh",
+    args: ["-c", params.command],
+    cwd,
+    mode: "background",
+    timeoutSeconds: params.timeout,
+    runToken,
+  });
+  if (!spawnResult.ok) throw new Error(spawnResult.reason);
+
   if (signal?.aborted) {
-    await finishGuard({ status: "aborted" });
+    const stopped = await registry.stop(taskId);
+    if (!stopped.ok || stopped.task.activity !== "ended") throw new UnsettledShellError("后台 Shell 停止尚未确认");
     throw new Error("aborted");
   }
-  let receipt!: (result: ToolResult) => void;
-  let rejectReceipt!: (error: unknown) => void;
-  const ready = new Promise<ToolResult>((resolve, reject) => { receipt = resolve; rejectReceipt = reject; });
-  const execute = async () => {
-    if (signal?.aborted) throw new Error("aborted");
-    const spawnResult = await registry.spawn({
-      taskId,
-      host,
-      command: launch?.command ?? "sh",
-      args: launch?.args ?? ["-c", params.command],
-      env: launch?.env,
-      inheritEnv: launch?.inheritEnv,
-      cwd,
-      mode: "background",
-      timeoutSeconds: params.timeout,
-      runToken,
-    });
-    if (!spawnResult.ok) {
-      await finishGuard({ status: "spawn_failed", reason: spawnResult.reason });
-      throw new Error(spawnResult.reason);
-    }
 
-    if (signal?.aborted) {
-      const stopped = await registry.stop(taskId);
-      if (!stopped.ok || stopped.task.activity !== "ended") {
-        try { await finishGuard(stopped); }
-        finally { throw new UnsettledShellError("后台 Shell 停止尚未确认"); }
-      }
-      await finishGuard(stopped);
-      throw new Error("aborted");
-    }
-
-    const task = spawnResult.task;
-    receipt({
-      content: [{ type: "text", text: formatBackgroundReceipt(task) }],
-      details: { taskId: task.taskId, host: task.host, status: task.status, startedAt: task.startedAt },
-    });
-    const outcome = await waitForOutcome(registry, taskId);
-    if (outcome.status === "uncertain") {
-      try { await finishGuard(outcome); }
-      finally { throw new UnsettledShellError("后台 Shell 真实结束尚不可核对"); }
-    }
-    await finishGuard(outcome);
+  const task = spawnResult.task;
+  return {
+    content: [{ type: "text", text: formatBackgroundReceipt(task) }],
+    details: { taskId: task.taskId, host: task.host, status: task.status, startedAt: task.startedAt },
   };
-  // 回执与真实写入寿命分开：新请求不能中止用户已授权的后台任务。
-  void execute().catch(async (error) => {
-    try { await finishGuard({ status: "execution_failed" }); }
-    finally { rejectReceipt(error); }
-  }).catch(rejectReceipt);
-  return ready;
 }
 
 export function formatBackgroundReceipt(task: { taskId: string; host: Host; status: string; startedAt: number | null }): string {
   return `Background shell task ${task.taskId} (${task.host.kind}:${task.host.id}) is ${task.status}.`;
 }
 
-function appendGuardViolations(result: ToolResult, violations: string[]): ToolResult {
-  if (violations.length === 0) return result;
-  const [first, ...rest] = result.content;
-  const text = `${first?.text ?? ""}\n\n${violations.join("\n")}`;
-  return { ...result, content: [{ type: "text", text }, ...rest] };
-}
-
 export function createManagedBashTool(
-  input: { registry: ShellRegistry; host: Host; cwd: string; runToken: string; guard?: BashCommandGuard },
+  input: { registry: ShellRegistry; host: Host; cwd: string; runToken: string },
 ): ToolDefinition<typeof BASH_PARAMETERS, BashToolDetails | undefined> {
-  const { registry, host, cwd, runToken, guard } = input;
-  // 仅用于取 name/description 等静态元数据，不用于实际执行——真正执行走每次调用各自的 operations
+  const { registry, host, cwd, runToken } = input;
   const base = createBashToolDefinition(cwd, {
     operations: createManagedBashOperations({ registry, host, runToken }),
     exposeSessionEnvironment: false,
@@ -272,47 +182,8 @@ export function createManagedBashTool(
     ...base,
     parameters: BASH_PARAMETERS,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const callCwd = ctx?.cwd || cwd;
-      if (params.background) return runBackground(registry, host, callCwd, runToken, params, guard, signal);
-
-      // 违规结果绑定到本次调用自己的闭包变量：多次 execute 并发交错时互不覆盖
-      let violations: string[] = [];
-      const callOperations = createManagedBashOperations({
-        registry,
-        host,
-        runToken,
-        guard: guard && {
-          launch: guard.launch,
-          before: () => guard.before(),
-          after: async (token, outcome) => {
-            violations = await guard.after(token, outcome);
-            return violations;
-          },
-        },
-      });
-      // SDK 在 aborted/超时等场景会把 operations.exec 抛出的错误重新包一层新 Error（原始错误就此丢失），
-      // 这里先在到达 SDK 之前截下原始错误，好在最终抛出时把它原样接到 cause 上
-      let rawError: unknown;
-      const tappedOperations: BashOperations = {
-        async exec(command, cwd2, options) {
-          try {
-            return await callOperations.exec(command, cwd2, options);
-          } catch (error) {
-            rawError = error;
-            throw error;
-          }
-        },
-      };
-      const callBase = createBashToolDefinition(cwd, { operations: tappedOperations, exposeSessionEnvironment: false });
-      try {
-        const result = (await callBase.execute(toolCallId, params, signal, onUpdate, ctx)) as ToolResult;
-        return appendGuardViolations(result, violations);
-      } catch (error) {
-        if (violations.length === 0) throw error;
-        const message = error instanceof Error ? error.message : String(error);
-        const cause = rawError instanceof Error ? rawError : error;
-        throw new Error(`${message}\n\n${violations.join("\n")}`, { cause });
-      }
+      if (params.background) return runBackground(registry, host, ctx?.cwd || cwd, runToken, params, signal);
+      return base.execute(toolCallId, params, signal, onUpdate, ctx);
     },
   };
 }
@@ -323,7 +194,7 @@ export interface UserBashHandled {
 
 export async function handleUserBash(
   _event: Pick<SdkUserBashEvent, "command" | "cwd" | "excludeFromContext">,
-  input: { registry: ShellRegistry; host: Host; runToken: string; guard?: BashCommandGuard },
+  input: { registry: ShellRegistry; host: Host; runToken: string },
 ): Promise<UserBashHandled> {
-  return { operations: createManagedBashOperations({ registry: input.registry, host: input.host, runToken: input.runToken, guard: input.guard }) };
+  return { operations: createManagedBashOperations({ registry: input.registry, host: input.host, runToken: input.runToken }) };
 }

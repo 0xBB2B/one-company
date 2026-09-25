@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { writeGuardLaunch } from "../runtime/command-boundary.ts";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -425,4 +426,12 @@ test("debug 命令可写工作区、继承完整环境变量；数据目录、Gi
     command: `mv ${JSON.stringify(w.dataRoot)} ${JSON.stringify(renamed)} && echo x > ${JSON.stringify(join(renamed, "forged.txt"))}; mv ${JSON.stringify(renamed)} ${JSON.stringify(w.dataRoot)}`, performance: NA }) as VerificationView;
   expect(bypass.status).toBe("failed");
   await expect(readFile(forged, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("没有隔离后端的平台在启动前明确拒绝", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    expect(() => writeGuardLaunch("touch forbidden", { deniedWrites: [], allowedWrites: [], deniedSockets: [], scratch: "/unused" })).toThrow("隔离后端");
+  } finally { Object.defineProperty(process, "platform", descriptor); }
 });

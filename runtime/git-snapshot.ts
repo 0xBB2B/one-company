@@ -104,41 +104,6 @@ async function untrackedEntrySegment(cwd: string, relPath: string): Promise<Buff
   return Buffer.from(`type:${statsTypeLabel(stats)}`);
 }
 
-export interface ChangedEntry {
-  paths: string[];
-}
-
-// 重命名条目在 -z 输出里是"新路径"与"不带前缀的旧路径"两个连续段：两者算一次改动，
-// 旧路径若命中获准范围就得带着新路径一起放行，否则改名后的文件反而没法提交
-export function parseChangedEntries(status: Buffer): ChangedEntry[] {
-  const raw = status.toString("utf8").split("\0").filter((entry) => entry.length > 0);
-  const entries: ChangedEntry[] = [];
-  for (let i = 0; i < raw.length; i++) {
-    const entry = raw[i] as string;
-    const code = entry.slice(0, 2);
-    const path = entry.slice(3);
-    if (code[0] === "R") {
-      const orig = raw[++i];
-      entries.push({ paths: orig !== undefined ? [path, orig] : [path] });
-    } else if (code[0] === "C") {
-      i++;
-      entries.push({ paths: [path] });
-    } else {
-      entries.push({ paths: [path] });
-    }
-  }
-  return entries;
-}
-
-export async function changedEntries(repoRoot: string): Promise<ChangedEntry[]> {
-  const status = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "-uall"], undefined, GIT_TIMEOUT_MS, GIT_MAX_BUFFER);
-  return parseChangedEntries(status);
-}
-
-export async function changedPaths(repoRoot: string): Promise<string[]> {
-  return (await changedEntries(repoRoot)).flatMap((entry) => entry.paths);
-}
-
 export async function collectGitSnapshot(input: CollectGitSnapshotInput): Promise<GitSnapshot> {
   const { repoRoot, signal } = input;
   const timeoutMs = input.gitTimeoutMs ?? GIT_TIMEOUT_MS;
@@ -168,24 +133,4 @@ export async function collectGitSnapshot(input: CollectGitSnapshotInput): Promis
     hashSegment(hash, await untrackedEntrySegment(repoRoot, relPath));
   }
   return { head, branch: rawBranch === "HEAD" ? null : rawBranch, fingerprint: hash.digest("hex") };
-}
-
-
-export async function collectContentFingerprint(repoRoot: string, excludePaths: string[] = []): Promise<string> {
-  const paths = (await runGit(
-    repoRoot,
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ".", ...PROD_ARCHIVE_GIT_PATHSPECS],
-    undefined,
-    GIT_TIMEOUT_MS,
-    GIT_MAX_BUFFER,
-  )).toString("utf8").split("\0").filter(Boolean);
-  const hash = createHash("sha256");
-  for (const path of [...new Set(paths)].sort()) {
-    if (isProdArchivePath(path) || excludePaths.includes(path)) continue;
-    try { await lstat(join(repoRoot, path)); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-    hashSegment(hash, Buffer.from(path));
-    hashSegment(hash, await untrackedEntrySegment(repoRoot, path));
-  }
-  return hash.digest("hex");
 }
