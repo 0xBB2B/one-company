@@ -411,4 +411,9 @@ test("debug 命令可写工作区、继承完整环境变量；数据目录仍�
   const denied = await worker.execute({ action: "run", kind: "debug", command: `echo x > ${JSON.stringify(forged)}`, performance: NA }) as VerificationView;
   expect(denied.status).toBe("failed");
   await expect(readFile(forged, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  const renamed = `${w.dataRoot}-moved`;
+  const bypass = await worker.execute({ action: "run", kind: "debug",
+    command: `mv ${JSON.stringify(w.dataRoot)} ${JSON.stringify(renamed)} && echo x > ${JSON.stringify(join(renamed, "forged.txt"))}; mv ${JSON.stringify(renamed)} ${JSON.stringify(w.dataRoot)}`, performance: NA }) as VerificationView;
+  expect(bypass.status).toBe("failed");
+  await expect(readFile(forged, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 });
