@@ -13,6 +13,11 @@
 | AC5 返工作废报告、意见交回 PM、须重新审查与检查 | 通过 | tests/zero-custom-loop.test.ts：返工后报告为 rework，PM 收到含用户意见的消息，立即重交被拒（rework_not_addressed）；追加 fix 与 recheck 任务，fix 经任务级审查、新检查轮后新报告受理并验收通过。tests/workflow-close.test.ts「M7B-AC1/AC5」：依据未变拒绝、新检查轮后可重交。判定口径：返工后关闭依据（检查轮、正式验证、裁决、受管写入）必须变化才受理新报告 | 无 |
 | AC6 批准清单不再接受 close，旧预授权不产生关闭权限 | 通过 | tests/zero-custom-loop.test.ts「M7B-AC3/AC6」：InteractionAction 不接受 close；按批准清单授权关闭的 closeAuthorized 已删除；原有关闭、撤权、互斥测试全部通过；typecheck、pnpm test（2317）、test:integration（79）、test:installation（11）在最终代码上全部通过。已知：含 close 动作的旧批准清单不能再通过校验、相关需求无法读取（不做兼容） | 无 |
 
+独立核对（主代理按两条威胁模型逐项核对 55be767..3c25f30；当前宿主的子代理工具不能在配置中设置轮限，故未派审查子代理）：
+- 模型输出不可信：PM 的 workflow_manage 已无 close 权限；completed 关闭只认主代理经宿主截获用户原话登记的 accept 决定，且须对应状态为 accepted、decisionId 相同的报告；报告绑定的交付依据在预检与进入 closing 的事务内各核对一次。PM 的说明与提交说明只出现在决策包，加引号并标为模型输出，不进入解释用户原话的上下文。登记报告决定只经 applyAdjudication，事项版本不符即拒。
+- 旧流程与旧记录不产生授权：按批准清单授权关闭的 closeAuthorized 已删除，InteractionAction 不再接受 close；返工或已作废报告的决定不能作为关闭回执；PM 自关闭时不等待自身停止的分支已删除。
+- 结论：未发现越出两条威胁模型的问题。
+
 ## 当前阻塞
 
 无。
