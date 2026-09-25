@@ -20,10 +20,10 @@
 | AC12 四类任务状态按 unaffected/affected/unknown 正确处理 | 通过 | D2：tests/plan-assess.test.ts（已完成+无关保持完成；运行中+未知转受阻且待处理更新不解除、门槛阻塞；已完成/失败+受影响转待更新；冻结前须更新；复核只改任务状态，不改验证记录） | 无 |
 | AC13 真实链路中接手复核前拒绝正式 plan 与 worker 派工 | 通过 | C3/D1：核对前 propose 被 intake_gate 拒绝、通过后可提出（tests/plan-manage.test.ts）；无实施授权不派 PM（tests/pm-dispatch.test.ts）；主代理经真实提供方核对 PM 私有会话中的提交（tests/pm-intake-runtime.test.ts）；批准新版本未复核时派工被门槛拒绝（tests/task-dispatch.test.ts「M7-AC4/AC13」） | 无 |
 | AC14 伪通过/伪身份/任一绑定变化不能用旧回执放行 | 通过 | C3：tests/pm-intake-runtime.test.ts（未受理提交不计、核对不通过拒绝、改交理解后旧核对失效、非本租约会话不被读取）；新物理 PM 须重新核对才建立自己的理解基线、旧租约回执被拒（tests/pm-event-delivery.test.ts）；普通追加走影响复核（tests/plan-assess.test.ts）；绑定逐项变化判定沿用 tests/pm-intake-contracts.test.ts | 无 |
-| AC15 main 与 PM 经 agent_manage 实际派 explore，模型输入探针证明最小上下文 | 部分 | F1：tests/explore-dispatch.test.ts（main 与 PM 经 agent_manage 派出 explore；模型输入只含问题、线索与宿主算好 hash 的获准文件，不含 prod 正文与父会话；main 父身份来自已认证连接、不写运行记录、不创建需求现场；PM 父绑定租约 fence/epoch） ；F3：联网来源 explore 只拿到固定查询词与本次搜索结果，工具仅 web_search/web_fetch 与 result_submit，不含 prod 正文（tests/explore-web.test.ts） | knowledge_query 来源的输入绑定（F4） |
-| AC16 三类来源实际运行，未授权网络/无外发授权不发请求 | 部分 | F1：获准直接本地读取按真实路径与宿主计算的文件 hash 绑定，越出工作区、私有位置、符号链接、不存在路径派出即拒，读取授权外文件被拒（tests/explore-dispatch.test.ts）；F3：联网来源派出时自动外发核对（单行≤256 且无控制/不可见格式字符、密钥与高熵串、本机路径；首版不核对需求正文与仓库代码），不通过即拒且不发任何网络请求；Exa 公开 MCP 限流时改用 DuckDuckGo 并记录实际来源；web_fetch 只抓本次结果网址、连接时拒内网地址与越界重定向（tests/explore-web.test.ts） | knowledge_query 来源（F4） |
+| AC15 main 与 PM 经 agent_manage 实际派 explore，模型输入探针证明最小上下文 | 通过 | F1/F4a：tests/explore-dispatch.test.ts（main 与 PM 经 agent_manage 派出 explore；模型输入只含问题、线索与检索范围，不含 prod 正文与父会话；main 父身份来自已认证连接、不写运行记录、不创建需求现场；PM 父绑定租约 fence/epoch）；联网来源工具仅 web_search/web_fetch 与 result_submit（tests/explore-web.test.ts）；本地来源另有 knowledge_query（tests/explore-dispatch.test.ts「M7-AC16：PM 与 explore 都可调用 knowledge_query」） | 无 |
+| AC16 三类来源实际运行 | 通过 | F4a：本地在派出方工作区内自由 read/grep，引用文件 hash 由宿主按实际内容核对、不符拒收（tests/explore-dispatch.test.ts）；联网不核对查询词、可抓任意网址含内网，Exa 限流改用 DuckDuckGo 并记录实际来源（tests/explore-web.test.ts）；F4f：守护进程持有主仓库索引，每次查询前按 mtime/大小/ctime 对账，PM/worker/reviewer/explore 与主窗口均可 knowledge_query，窗口关闭后仍可查、结果标注索引代次（tests/project-index-host.test.ts、tests/integration/project-index-sync.test.ts、tests/explore-dispatch.test.ts）；索引与 grep/find/ls 排除 .git 与被 Git 忽略的路径（tests/project-index-policy.test.ts、tests/search-exclusion.test.ts） | 无 |
 | AC17 research 非 PASS，父代理核验 | 通过 | F1：research 回执 isPass=false，送回派出者的报告标明"research 不是 PASS"、须核对来源与当前性（tests/explore-dispatch.test.ts）；F3：联网 research 按允许域名核验后送回 PM，同样标明不是 PASS（tests/explore-web.test.ts） | 无 |
-| AC18 搜索会话回收；关闭/撤权/接管停止；无关 main 检索不误停 | 部分 | F1：检索结束回收会话；PM 停止、失败或被接管时其 explore 停止且会话失效；main 派出的 explore 绑定发起连接，断开即停止、结果作废，其他连接取不到（tests/explore-dispatch.test.ts） | 无关 main 检索不因需求关闭误停的用例随 F3/F4 补齐 |
+| AC18 搜索会话回收；关闭/撤权/接管停止；无关 main 检索不误停 | 通过 | F1：检索结束回收会话；PM 停止、失败或被接管时其 explore 停止且会话失效；main 派出的 explore 绑定发起连接，断开即停止、结果作废（tests/explore-dispatch.test.ts）；F4：需求关闭停止其 PM 与绑定检索，无关 main 检索照常完成（tests/explore-dispatch.test.ts「M7-AC18：需求关闭…」） | 无 |
 | AC19 内置六职责默认团队零专业定义闭环 | 未开始 | | G、H 片 |
 | AC20 复制默认配置即得专业定义；无效定义拒绝 | 未开始 | | G 片 |
 | AC21 两类目录发现、项目信任、显式覆盖、一键复制 | 未开始 | | G 片 |
@@ -70,13 +70,15 @@
 
 独立审查（F3 联网来源）：1 阻塞（查询词插入不可见格式字符可绕过全部文本核对），已改为拒绝控制、可忽略与不可见字符，定向复审"全部解决"；随后用户决定外发核对只保护密钥与用户目录路径等，去掉需求正文与仓库代码片段比对，不做扫描。
 
+独立审查（F4 放开与索引重写）：verification_run 写入限制 1 阻塞（改名上级目录绕过禁写与套接字限制），已禁改各级上级目录，复审"全部解决"；守护进程持有索引 0 阻塞，确认框根与实际索引主工作区不一致已改为显示主工作区，复审"全部解决"。
+
 ## 下一窗口续接提示
 
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
 M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计；C4 已批准更新按序投递 PM 并确认消费（runtime/pm-event-delivery.ts，daemon 500ms 轮询），assess-update 绑定本次收到的理解基线，advancedGate 覆盖语义按序收敛。A–E、C4 各有独立审查且定向复审"全部解决"或"无阻塞"。
-待做顺序（只剩 AC7、AC8、AC15–AC26）：F 已完成 F1 explore 双父入口与本地文件来源；F3 已完成免密钥联网检索（自动外发核对、Exa 公开 MCP 失败改 DuckDuckGo、web_fetch 只抓结果网址并拒内网）；待做 F4 守护进程侧 knowledge_query（查询主仓库索引，PM/worker/reviewer/explore 同样缺该工具）与 MCP 优先、无关 main 检索不因需求关闭误停用例、main 直派 explore 到限上报 main；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、配置变化不静默改在途运行、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts/run-store phase/transcript-view.ts 与旧 skills/rules、重写主会话说明、AC8 提示失效时核心约束仍生效、AC26 专业结果核验与互斥撤权；H 零自定义闭环与三条测试命令全量（含从未跑过的 test:installation）、收口 M7-STATUS。
+待做顺序（只剩 AC7、AC8、AC19–AC26）：F 已完成 F1 explore 双父入口与本地文件来源；F3、F4 已完成（用户决定首版放开两条威胁模型之外的限制：explore 本地自由读取、联网不核对且允许内网、change_apply 不分路径类、verification_run 只保留两条写入限制、搜索排除 .git 与忽略路径；索引改由守护进程持有、查询前对账，删除窗口许可、持续监听与基线钩子）；F 片剩余：explore 定义声明 MCP 时优先用 MCP 只读工具；G 同名覆盖标注、一键复制命令与新设置页、删除设置页旧按角色 model/thinking/mcp 与四个旧命令、能力目录与 PM 自动选择、模型与思考等级核验及加载指纹、配置变化不静默改在途运行、change_apply 拒写 .pi/agents/、删除 workflow-state.ts/workflow-tool.ts/pi_company_workflow/delivery.ts/result.ts/run-store phase/transcript-view.ts 与旧 skills/rules、重写主会话说明、AC8 提示失效时核心约束仍生效、AC26 专业结果核验与互斥撤权；H 零自定义闭环与三条测试命令全量、收口 M7-STATUS。
 已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§10.7、§13.2 与 M7-AC20/21、AC33–35；C-3 与 M5 两条观察本阶段不处理。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
 ```

@@ -131,3 +131,17 @@ test("M7-AC16：PM 与 explore 都可调用 knowledge_query 查询主仓库索�
   const reply = w.provider.requests.find((request) => text(request).includes("knowledge-facts/v1"))!;
   expect(text(reply)).toMatch(/\\"generation\\":[1-9]/u);
 });
+
+test("M7-AC18：需求关闭停止其 PM 与绑定检索，但不误停无关的 main 无需求检索", async () => {
+  const w = await world();
+  const readme = join(await realpath(w.fixture.repositoryRoot), "README.md");
+  const parent = { role: "main" as const, sessionId: "session-a", connectionId: "connection-a", model: { provider: "team-model", id: "test" }, thinking: "off" };
+  w.manager.connectionOpened("connection-a");
+  w.provider.queue.push(w.submit(readme, await w.hashOf(readme)));
+  const main = await w.manager.dispatchExplore({ parent, request: { question: "仓库说明写了什么", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
+  await w.manager.stopRequirement(w.fixture.requirementId);
+  const pm = await w.runStore.get(w.pm.runId);
+  expect(pm.ok && pm.run.state).toBe("stopped");
+  await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === main.runId));
+  expect(w.manager.takeMainExploreReport(main.runId, "connection-a")).toMatchObject({ outcome: "completed", research: { conclusions: ["登录模块在 src/auth"] } });
+});
