@@ -24,7 +24,7 @@
 | AC16 三类来源实际运行 | 通过 | F4a：本地在派出方工作区内自由 read/grep，引用文件 hash 由宿主按实际内容核对、不符拒收（tests/explore-dispatch.test.ts）；联网不核对查询词、可抓任意网址含内网，Exa 限流改用 DuckDuckGo 并记录实际来源（tests/explore-web.test.ts）；F4f：守护进程持有主仓库索引，每次查询前按 mtime/大小/ctime 对账，PM/worker/reviewer/explore 与主窗口均可 knowledge_query，窗口关闭后仍可查、结果标注索引代次（tests/project-index-host.test.ts、tests/integration/project-index-sync.test.ts、tests/explore-dispatch.test.ts）；索引与 grep/find/ls 排除 .git 与被 Git 忽略的路径（tests/project-index-policy.test.ts、tests/search-exclusion.test.ts） | 无 |
 | AC17 research 非 PASS，父代理核验 | 通过 | F1：research 回执 isPass=false，送回派出者的报告标明"research 不是 PASS"、须核对来源与当前性（tests/explore-dispatch.test.ts）；F3：联网 research 按允许域名核验后送回 PM，同样标明不是 PASS（tests/explore-web.test.ts） | 无 |
 | AC18 搜索会话回收；关闭/撤权/接管停止；无关 main 检索不误停 | 通过 | F1：检索结束回收会话；PM 停止、失败或被接管时其 explore 停止且会话失效；main 派出的 explore 绑定发起连接，断开即停止、结果作废（tests/explore-dispatch.test.ts）；F4：需求关闭停止其 PM 与绑定检索，无关 main 检索照常完成（tests/explore-dispatch.test.ts「M7-AC18：需求关闭…」） | 无 |
-| AC19 内置六职责默认团队零专业定义闭环 | 未开始 | | G、H 片 |
+| AC19 内置六职责默认团队零专业定义闭环 | 通过 | H：只用内置默认定义（用户层、项目层为空，无 skill），真实 RunManager 与脚本化模型走完接手复核、计划（worker/reviewer/qa 三任务）、worker 经 change_apply 实现、PM 进入检查并派出独立 reviewer 与 qa（各自正式验证与 verdict）、退出检查、主代理 delivery-check 与 completed 关闭并归档；运行记录定义来源均为内置，全程无 explore 规划；批准时未授权关闭则 completed 关闭被拒（tests/zero-custom-loop.test.ts） | 无 |
 | AC20 复制默认配置即得专业定义；无效定义拒绝 | 通过 | G2：设置页 C 复制默认定义为新名称即得专业定义，复制后 name 改为新名称、与默认共用同一 schema 与加载链路；名称三层不重复、pm 只能同名复制；单一 role、字段、main/planner 职责与第二个 pm 拒绝（tests/agent-catalog-ui.test.ts、tests/role-catalog.test.ts） | 无 |
 | AC21 两类目录发现、项目信任、显式覆盖、一键复制 | 通过 | G2：agentDir/agents（数据根随 PI_CODING_AGENT_DIR）与项目 .pi/agents 自动发现，项目层仅在宿主信任时加载（守护进程读宿主 trust 记录）；同名按项目 > 用户 > 内置覆盖并标出被覆盖来源；缺 role 的其他宿主定义不导入、无效定义不顶掉下层并在问题分类列出；设置页只读查看与一键复制（tests/role-catalog.test.ts「覆盖与导入规则」、tests/agent-catalog-ui.test.ts） | 无 |
 | AC22 有界能力目录、两种默认路径、显式指定失败不静默默认 | 通过 | G3：PM 经 agent_manage catalog 取每页至多 20 条目录（名称、职责、描述、来源），不含定义或 skill 正文；任务可用 agent 指定专业定义、agentReason 记依据，未指定用同名默认定义；指定不存在或不可用即 agent_unavailable 拒绝，按用户决定不设替代策略、交用户裁决（tests/agent-selection.test.ts） | 无 |
@@ -44,41 +44,15 @@
 
 ## 当前阻塞
 
-无。
-
-独立审查（A、B 片，基线 c241c86..70f6dfc，两条威胁模型内）：2 条阻塞（读取工具路径以 @、~、file: 或特殊空白改写后绕过范围；MCP 请求夹带 search 绕过只读名单或触发 install/auth/connect），已修复并补回归用例，定向复审"全部解决"。
-
-独立审查（C 片，基线 460f1db..6cf660a）：0 阻塞、2 非阻塞（PM 旧基线下受理的理解会被套上新绑定；租约过期未续时 PM 的 verification_run 仍可用），已修复：受理时由宿主把批准基线写入工具结果，读取只认与当前绑定一致的提交；PM 工具每次调用核验租约仍属本运行，接管前先停止旧运行；定向复审"全部解决"。C 片遗留：门槛尚未读取影响复核链（首次批准更新后会阻塞，D 片 assess-update 补齐）；PM 实际工具缺 knowledge_query、plan_manage（D 片）与 agent_manage（E 片）；派出时未核验思考等级是否被模型支持（G 片 AC23）。
-
-独立审查（D、E 片，基线 77a9d93..2afbc0b）：3 条（2 阻塞：已有尝试任务的目标可经修改或新增任务揽走以绕过一次重试；新版本收回实施授权后旧冻结任务仍可派出。1 非阻塞：计划提交覆盖并发登记的尝试），经四轮定向复审逐项收紧后"全部解决"：一次重试按目标计（已有尝试的任务不能取消、修改须保留原目标、其目标不能被其他任务覆盖）；复核与派工都核对实施授权范围；计划提交按快照比对，影响复核改为套用到最新任务行；尝试结局只在任务仍为运行中时改状态；同一任务同时只允许一个运行中的尝试。
-
-独立审查（C4，基线 41f2137..工作区）：0 阻塞。核对了理解基线只在本租约核对通过当前批准版本后建立、差异正文只来自服务端计算结果且模型工具面无法影响或跳过、旧租约/旧会话因 fence 递增在写入前被 fail-closed 拒绝、assess-update 的消费校验与门槛覆盖语义（toRevision>=revision）在两条威胁模型内均成立。记录一条非阻塞观察：advancedGate 的覆盖判定未比对 contextGeneration，理论上物理上下文轮换后可能被旧记录覆盖；因 rotateContext/restoreCurrentContext 当前无生产代码路径调用，不可触发，留待接入时复核。
-
-独立审查（§10.7 第 4 步用户裁决，基线 f75d416..工作区）：2 阻塞（用户终止后 PM 可另建任务接走目标再得两次尝试；adjust 豁免不看是否已用，可放大尝试次数）、3 非阻塞（解释器摘要含模型文字可诱导轮数；裁决入口会把同批其他条目存为已确认决定；retry 授权不绑任务版本）。已修复阻塞与非阻塞 4、5 并补回归用例，定向复审"全部解决"；非阻塞 3 按用户选择方案 a 修复：给解释器的事项摘要只含程序记录的轮数与结局。另修停止 PM 时未等待进行中的投递/概览刷新导致迟到写入。
-
-独立审查（§10.7 终止暂停整个需求，基线 82c0b49..工作区）：首轮 0 阻塞 3 非阻塞（先暂停后终止不自动恢复、暂停失败不重试、新计划前可恢复旧子代理——后者经用户拍板纳入门槛并追加"计划变更时统一停止、该次尝试不计入重试"）；次轮 1 阻塞 3 非阻塞（新计划确认后轮询前可抢先恢复旧子代理等），逐项修复，三轮定向复审"全部解决"。
-
-独立审查（§10.7 第 5 步取消/拒绝需求，基线 ff6b4a2..工作区）：两条威胁模型内无阻塞；功能缺陷一条（进入关闭提升 epoch 后续办同一关闭被拒、需求卡在关闭中）已修，定向复审"全部解决"。
-
-已查明：PM 停止或失败时释放租约会向需求记录写入 pm.released 事件并提升记录版本，恰逢用户保存 prod 时该次保存因乐观并发校验报 state_changed_before_storage，重试即可，不损坏数据。
-
-独立审查（§10.7 第 6 步面板与决策包，基线 53f862b..工作区）：1 阻塞（按旧决策包登记不被拒）5 非阻塞（模型文字换行伪造程序行、卡片前的原话仍可用、问题文字未标注、README 残留"续接"、孤立文件），已修复 4 条非阻塞与阻塞，定向复审"全部解决"；transcript-view.ts 在本次改动前已无引用，不属本次范围。
-
-待办（不属 M7 验收）：草稿需求由主代理取消暂不支持（用户决定）；runtime/transcript-view.ts 在本阶段之前已无产品引用，随 G 片旧工作流清理一并删除。
-
-已知抖动：tests/project-baseline.test.ts「真实fs.watch：自动watch对账只暂存」、tests/project-index-sync.test.ts「归档watch只发无正文metadata」与集成 project-index-sync「新索引对象装配之后的启动失败」在全量负载下偶发超时，单独重跑通过。
-
-独立审查（F3 联网来源）：1 阻塞（查询词插入不可见格式字符可绕过全部文本核对），已改为拒绝控制、可忽略与不可见字符，定向复审"全部解决"；随后用户决定外发核对只保护密钥与用户目录路径等，去掉需求正文与仓库代码片段比对，不做扫描。
-
-独立审查（F4 放开与索引重写）：verification_run 写入限制 1 阻塞（改名上级目录绕过禁写与套接字限制），已禁改各级上级目录，复审"全部解决"；守护进程持有索引 0 阻塞，确认框根与实际索引主工作区不一致已改为显示主工作区，复审"全部解决"。
+无。三条测试命令全量通过（单元 2312、集成 79、安装 11）。
 
 ## 下一窗口续接提示
 
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
-先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读 M7-STATUS.md，核对 git status 与最近提交。M0–M6 已收口不重做。
-M7 已完成：A 定义格式/五个内置定义/按职责工具集/daemon/agent-session.ts；B workspace-prepare/recycle 与 recovery-check/backup/restore；C 会话改存私有文件、dispatchPm/续租/接管/停止、PM 接手提交与主代理核对（runtime/pm-intake-runtime.ts）；D plan_manage（runtime/plan-manage.ts，任务说明存 plans/ 私有文件，影响复核与全局约束闭包）；E 轮次上限（turn_start 计数）、PM agent_manage 按冻结任务派 worker/reviewer/qa（runtime/task-dispatch.ts、daemon/subagent-tools.ts），结果复用 M6 verdict，一次重试按目标计；C4 已批准更新按序投递 PM 并确认消费（runtime/pm-event-delivery.ts，daemon 500ms 轮询），assess-update 绑定本次收到的理解基线，advancedGate 覆盖语义按序收敛。A–E、C4 各有独立审查且定向复审"全部解决"或"无阻塞"。
-待做顺序（只剩 AC19）：F 已完成 F1 explore 双父入口与本地文件来源；F3、F4 已完成（用户决定首版放开两条威胁模型之外的限制：explore 本地自由读取、联网不核对且允许内网、change_apply 与 verification_run 不得写 docs/spec、docs/prod、.git、.pi/agents 与本机数据目录（复议后恢复），verification_run 检查阶段另禁写工作区、搜索排除 .git 与忽略路径；索引改由守护进程持有、查询前对账，删除窗口许可、持续监听与基线钩子）；F 片已全部完成（含 explore 定义声明 MCP 服务时由守护进程从 agentDir 装载适配器、只放行配置声明的只读工具并优先使用）；G 已完成旧工作流移除、主窗口放开、PM 受控提交、角色目录覆盖规则与只读设置页（AC7、AC20、AC21）；G3 已完成能力目录、任务指定专业定义、模型/思考等级/skills 核验与加载指纹、续接核对配置（AC22–AC25）；G 片已全部完成（含 AC8、AC26）；H 零自定义闭环与三条测试命令全量、收口 M7-STATUS。
-已由用户确认的决定已写入计划 §2.2、§8.3、§9.1、§9.2、§9.6、§10.5、§10.6、§10.7、§13.2 与 M7-AC20/21、AC33–35；C-3 与 M5 两条观察本阶段不处理。
-验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。三条测试命令都绿才算全量绿。
+先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md，再读当前阶段状态表，核对 git status 与最近提交。M0–M7 已收口不重做。
+M7 已完成：PM 接手复核与增量调度、plan/task、六职责默认团队与轮次上限、explore（本地、联网、索引、MCP 优先）、守护进程持有索引并查询前对账、旧工作流移除、主窗口不设文件与命令限制、PM 受控提交、角色目录三层覆盖与只读设置页、能力目录与专业定义选择、模型/思考等级/skills 核验与配置指纹、completed 关闭须关闭授权。
+首版取舍（用户已确认并写入计划）：两条威胁模型之外的限制放开；change_apply 与 verification_run 仍不得写 .git、docs/spec、docs/prod、角色定义与 skills 来源、项目信任文件、安装包与本机数据目录；主窗口完全不限制并接受其模型绕开工具改库的残余风险；不设模型外发授权与替代策略。
+下一步：按计划开始 M8，先读计划 M8 章节并建立 M8-STATUS.md。
+验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
