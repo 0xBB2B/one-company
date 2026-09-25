@@ -17,6 +17,8 @@ import { isTerminalState } from "./run-store.ts";
 import type { RunRecord } from "./run-store.ts";
 import { checkSpecSet, SpecFormatError } from "./spec-format.ts";
 import type { SpecSource } from "./spec-format.ts";
+import { mechanicalConflictsIn } from "./spec-check.ts";
+import { includesCommit, localTargetBranch } from "./target-branch.ts";
 
 export const CHECK_ROUNDS = "check_rounds";
 export const VERIFICATION_RUNS = "verification_runs";
@@ -63,7 +65,7 @@ export type VerificationRun = Static<typeof VerificationRun>;
 
 export type CheckRoundErrorCode = "check_round_denied" | "invalid_shape" | "pending_update" | "check_round_active" | "workers_active" | "writes_pending"
   | "spec_invalid" | "proposal_invalid" | "not_found" | "verification_active" | "round_not_open" | "check_phase_active" | "decision_conflict" | "stale_pm_lease"
-  | "tasks_not_reviewed";
+  | "tasks_not_reviewed" | "sync_required" | "spec_conflict";
 export class CheckRoundError extends Error {
   readonly code: CheckRoundErrorCode;
   constructor(code: CheckRoundErrorCode, detail?: string) {
@@ -256,6 +258,10 @@ export class CheckRoundService {
     await this.state.checkPm(lease);
     const manifest = await collectInputManifest(record.workspace.path);
     if (manifest.specSetHash === "invalid") throw new CheckRoundError("spec_invalid");
+    const target = await localTargetBranch(this.options.repositoryRoot, record.workspace.path).catch(() => null);
+    if (!target || !(await includesCommit(record.workspace.path, target.sha))) throw new CheckRoundError("sync_required", target?.ref ?? "目标分支未拉取");
+    const conflicts = await mechanicalConflictsIn(record.workspace.path);
+    if (conflicts.length) throw new CheckRoundError("spec_conflict", conflicts.map((entry) => `${entry.kind}:${entry.left}/${entry.right}`).join(","));
     const workspace = record.workspace, approved = record.approved, revision = record.revision;
     this.authorize({ action: "open", requirementId: lease.requirementId, lease });
     const round = withDatabase(this.database, (db) => db.transaction(() => {

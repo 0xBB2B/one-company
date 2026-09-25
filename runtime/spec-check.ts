@@ -1,7 +1,7 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join, posix, sep } from "node:path";
 import { checkSpecSet, mechanicalConflicts, SpecFormatError } from "./spec-format.ts";
-import type { SpecSource } from "./spec-format.ts";
+import type { MechanicalConflict, SpecSource } from "./spec-format.ts";
 
 const SPEC_DIRECTORY = "docs/spec";
 
@@ -18,6 +18,12 @@ async function specSources(root: string): Promise<SpecSource[]> {
     sources.push({ path: posix.join(SPEC_DIRECTORY, name), content: await readFile(absolute, "utf8") });
   }
   return sources;
+}
+
+/** 当前 docs/spec 的机械冲突；格式错误由调用方另行按格式检查处理，这里视为无可比较的规则。 */
+export async function mechanicalConflictsIn(root: string): Promise<MechanicalConflict[]> {
+  try { return mechanicalConflicts(checkSpecSet(await specSources(root))); }
+  catch (error) { if (error instanceof SpecFormatError) return []; throw error; }
 }
 
 /** 供 CI 使用：只检查当前 docs/spec 的格式与机械冲突，不启动守护进程、模型或数据库，不读 docs/prod。 */

@@ -19,6 +19,7 @@ import type { WorkflowManageGrant, WorkflowManageToolOptions } from "../runtime/
 import { RequirementCloseService, COMPLETION_REPORTS, DELIVERY_RECEIPTS, decideReportIn } from "../runtime/workflow-close.ts";
 import type { CloseResult, DeliveryReceipt } from "../runtime/workflow-close.ts";
 import { prodRequirementPath } from "../runtime/prod-storage.ts";
+import { syncTargetBranch } from "../runtime/pm-sync.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -334,4 +335,24 @@ test("M7B-AC1/AC5：完成报告绑定交付依据，新报告作废旧报告；
   const accepted = await w.accept();
   const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId: accepted, operationId: uuidv7() });
   expect(closed).toMatchObject({ status: "closed", reason: "completed" });
+});
+
+test("M8-AC9：需求分支未包含目标分支当前提交时不能开启检查轮，同步后可以；同步后的机械规则冲突阻止开启检查", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await writeFile(join(w.repositoryRoot, "main-only.ts"), "export const m = 1;\n");
+  await runGit(["add", "."], w.repositoryRoot); await runGit(["commit", "-qm", "别的需求合入"], w.repositoryRoot);
+  const pm = await w.tool();
+  await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "sync_required" });
+  expect(await syncTargetBranch({ repositoryRoot: w.repositoryRoot, worktree: w.worktree.root, branch: w.workspace.branch })).toMatchObject({ status: "rebased" });
+  const rule = (id: string, expected: string) => ({ id, title: id, condition: "角色在地面", trigger: "按下跳跃", expected, reason: "r", dependsOn: [], exceptions: [],
+    acceptance: [{ id: "a", given: "g", when: "w", then: "t" }] });
+  const spec = (rules: unknown[]) => JSON.stringify({ schemaVersion: 1, feature: { id: "jump", title: "跳跃", aliases: [] }, rules }, null, 2) + "\n";
+  await mkdir(join(w.worktree.root, "docs", "spec", "player"), { recursive: true });
+  await writeFile(join(w.worktree.root, "docs", "spec", "player", "a.rules.json"), spec([rule("jump.up", "起跳")]));
+  await writeFile(join(w.worktree.root, "docs", "spec", "player", "b.rules.json"), JSON.stringify({ schemaVersion: 1, feature: { id: "jump", title: "跳跃", aliases: [] },
+    rules: [rule("jump.down", "下蹲")] }, null, 2) + "\n");
+  await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "spec_conflict" });
+  await rm(join(w.worktree.root, "docs", "spec", "player", "b.rules.json"));
+  expect(await pm.execute({ action: "advance" })).toMatchObject({ status: "open" });
 });
