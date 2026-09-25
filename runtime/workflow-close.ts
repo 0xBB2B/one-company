@@ -444,7 +444,12 @@ export class RequirementCloseService {
     const operation = withDatabase(this.database, (db) => this.operation(db, requirementId));
     if (!operation) return freeze({ status: "none" as const });
     const { data } = operation;
-    return freeze({ status: data.status, operationId: data.operationId, reason: data.reason, steps: { ...data.steps }, archive: data.archive ? { ...data.archive } : null });
+    const delivery = data.status === "closed" && data.reason === "completed" && data.basis.checkRoundId ? withDatabase(this.database, (db) => {
+      const workspace = requirementIn(db, this.options.repoId, requirementId).data.workspace;
+      const round = db.read<unknown>(CHECK_ROUNDS, data.basis.checkRoundId!);
+      return workspace && round ? { worktree: workspace.path, branch: workspace.branch, codeHead: checked(CheckRound, round.data).baseline.codeHead } : null;
+    }) : null;
+    return freeze({ status: data.status, operationId: data.operationId, reason: data.reason, steps: { ...data.steps }, archive: data.archive ? { ...data.archive } : null, delivery });
   }
 
   /** 受限归档：只把关闭前固化的最终 prod.md 字节复制到登记路径；同 hash 幂等，不同内容阻塞，不向调用方返回正文。 */

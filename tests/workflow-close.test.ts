@@ -335,6 +335,10 @@ test("M7B-AC1/AC5：完成报告绑定交付依据，新报告作废旧报告；
   const accepted = await w.accept();
   const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId: accepted, operationId: uuidv7() });
   expect(closed).toMatchObject({ status: "closed", reason: "completed" });
+  const closeStatus = w.closeService.status(w.created.requirementId);
+  expect(closeStatus).toMatchObject({ archive: { status: "archived" }, delivery: { worktree: w.worktree.root, branch: w.workspace.branch,
+    codeHead: (await runGit(["rev-parse", "HEAD"], w.worktree.root)).trim() } });
+  expect(JSON.stringify(closeStatus)).not.toContain("保留移动");
 });
 
 test("M8-AC9：需求分支未包含目标分支当前提交时不能开启检查轮，同步后可以；同步后的机械规则冲突阻止开启检查", async () => {

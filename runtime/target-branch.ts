@@ -19,16 +19,18 @@ async function hasOrigin(worktree: string): Promise<boolean> {
 
 /** 目标分支：有 origin 时取远端默认分支并拉取最新提交，没有时取主仓库当前检出的分支。 */
 export async function fetchTargetBranch(repositoryRoot: string, worktree: string): Promise<TargetBranch> {
-  if (await hasOrigin(worktree)) {
-    const symref = (await gitIn(worktree, ["ls-remote", "--symref", "origin", "HEAD"])).stdout;
-    const name = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(symref)?.[1];
-    if (!name) throw new Error("target_unknown: 无法确定远端默认分支");
-    const ref = `refs/remotes/origin/${name}`;
-    await gitIn(worktree, ["fetch", "--no-tags", "origin", `+refs/heads/${name}:${ref}`]);
-    await gitIn(worktree, ["symbolic-ref", "refs/remotes/origin/HEAD", ref]);
-    return { name, ref, remote: "origin", sha: (await gitIn(worktree, ["rev-parse", ref])).stdout.trim() };
-  }
-  return localTargetBranch(repositoryRoot, worktree);
+  return await hasOrigin(worktree) ? fetchRemoteTarget(worktree) : localTargetBranch(repositoryRoot, worktree);
+}
+
+/** 拉取 origin 的默认分支并记下它，供不联网的检查门槛使用。 */
+export async function fetchRemoteTarget(worktree: string): Promise<TargetBranch> {
+  const symref = (await gitIn(worktree, ["ls-remote", "--symref", "origin", "HEAD"])).stdout;
+  const name = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(symref)?.[1];
+  if (!name) throw new Error("target_unknown: 无法确定远端默认分支");
+  const ref = `refs/remotes/origin/${name}`;
+  await gitIn(worktree, ["fetch", "--no-tags", "origin", `+refs/heads/${name}:${ref}`]);
+  await gitIn(worktree, ["symbolic-ref", "refs/remotes/origin/HEAD", ref]);
+  return { name, ref, remote: "origin", sha: (await gitIn(worktree, ["rev-parse", ref])).stdout.trim() };
 }
 
 /** 不联网的目标分支：有 origin 时取上次拉取记下的远端默认分支，从未拉取过则报需要同步。 */

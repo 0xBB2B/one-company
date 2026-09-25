@@ -10,8 +10,8 @@
 | AC2 活动 prod 与本机 .git 在工作区外；提交推送拒绝未完成正文、私有版本库与伪装归档 | 未开始 | — | 全部 |
 | AC3 未安装产品也能读文件、跑业务；安装不要求额外 Git 扩展 | 未开始 | — | 全部 |
 | AC4 关闭可选 Git 集成后核心仍能完成、关闭、归档 | 未开始 | — | 全部 |
-| AC5 适配器只拿无正文凭据；暂存归档字节须匹配凭据，工作区与暂存区不一致不漏检 | 未开始 | — | 全部 |
-| AC6 本地远端与 gh/glab 替身：准确 SHA、无授权停止、非快进拒绝、结果不明先查询、PR 复用、自动合并由用户选 | 未开始 | — | 全部 |
+| AC5 适配器只拿无正文凭据；暂存归档字节须匹配凭据，工作区与暂存区不一致不漏检 | 通过 | tests/workflow-close.test.ts「M7B-AC1/AC5」：关闭状态给出工作区、分支、最终检查代码提交与归档 hash，不含 prod 正文；tests/git-delivery.test.ts「M8-AC2/AC5」：归档字节与凭据不符拒绝且撤回暂存，交付时先按工作区内容暂存再核对暂存字节与工作区一致；「M8-AC5/AC6」：PR 描述与全部 gh 调用不含 prod 正文。实现 runtime/git-delivery.ts | 无 |
+| AC6 本地远端与 gh/glab 替身：准确 SHA、无授权停止、非快进拒绝、结果不明先查询、PR 复用、自动合并由用户选 | 通过 | tests/git-delivery.test.ts：推送的正是核对后的提交号、只多一个归档提交；用户不确认不提交不推送；远端非快进拒绝且不强推；创建结果不明先查询后复用、重跑不重复创建；选自动合并时 gh 用 --auto --squash --match-head-commit，仓库不允许 squash 时按允许方式，glab 不允许 squash 时退为普通合并；选自己 review 不触发合并。tests/git-delivery-extension.test.ts：工具默认隐藏、命令开关、参数不接受合并方式 | 无 |
 | AC7 独立 CI 检查只查当前 spec，不启动 PM/模型/数据库，不读关闭 prod | 通过 | tests/spec-check.test.ts：`pi-company-spec-check`（bin/spec-check.mjs → runtime/spec-check.ts）只读 docs/spec，通过退出 0；格式错误、机械冲突、重复规则退出 1 并列出规则；docs/prod 下的损坏文件不影响结果；空 HOME 运行后不产生任何文件 | 无 |
 | AC8 关闭后新反馈建新需求，不重开或复制旧 prod | 未开始 | — | 全部 |
 | AC9 两个 PM 分别发布同规则候选互不串用；未同步不能开检查，同步冲突交 PM，机械规则冲突阻止检查，交付时目标前进须重新同步 | 进行中 | tests/pm-sync.test.ts：能 rebase 就 rebase、已包含不动、有未提交改动拒绝、冲突时改动合成一份重新应用且冲突文件带标记、分支不脱离、原提交可找回、有 origin 时拉取远端默认分支、工具在失效/检查/子代理执行时拒绝；tests/workflow-close.test.ts「M8-AC9」：未同步开检查被拒（sync_required），同步后机械规则冲突被拒（spec_conflict），消除后可开 | 交付工具在目标前进时重新同步；两个 PM 各自发布同规则候选互不串用的用例 |
