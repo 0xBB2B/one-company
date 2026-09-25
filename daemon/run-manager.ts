@@ -238,7 +238,7 @@ export class RunManager {
           if (!current.approved || !current.approvalManifest) throw new Error("approval_baseline_missing");
           return { approvedRevision: current.revision, approvedProdHash: current.approved.hash, approvalManifestHash: current.approvalManifest.reference.manifestHash };
         },
-        stopAgents: (requirementId) => this.stopRequirement(requirementId),
+        stopAgents: (requirementId) => this.stopRequirement(requirementId, run.id),
         agents: {
           dispatch: (taskId, retry) => this.dispatchTask({ pmRunId: run.id, taskId, retry }),
           explore: (request, maxTurns) => this.dispatchExplore({ parent: { role: "PM", pmRunId: run.id },
@@ -592,9 +592,10 @@ export class RunManager {
   }
 
   /** 结束绑定该需求的全部运行；关闭协议以运行记录终态为准。 */
-  async stopRequirement(requirementId: string): Promise<void> {
+  /** callerRunId 是在自己的工具调用里发起停止的运行：只发出停止、不等它当前的工具调用结束（否则互相等待到超时），该调用仍须能完成，故不视为已确认停止。 */
+  async stopRequirement(requirementId: string, callerRunId?: string): Promise<void> {
     const page = await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER });
-    for (const run of page.items) if (!isTerminalState(run.state)) await this.stop(run.id);
+    for (const run of page.items) if (!isTerminalState(run.state)) await this.stop(run.id, { detachSession: run.id === callerRunId });
   }
   /** 只续接本进程内仍持有会话的暂停运行；没有会话不能证明原运行可安全续接。 */
   async resume(runId: string, options: { children?: boolean } = {}): Promise<{ state: string }> {
@@ -851,7 +852,7 @@ export class RunManager {
     if (updated.ok) this.emitRun(updated.run);
     return { state: confirmed ? "paused" : "pausing", confirmed, ...(!confirmed ? { reason: "会话或子运行尚未确认暂停" } : {}) };
   }
-  async stop(runId: string): Promise<{ state: string; confirmed: boolean; reason?: string }> {
+  async stop(runId: string, options: { detachSession?: boolean } = {}): Promise<{ state: string; confirmed: boolean; reason?: string }> {
     const result = await this.runStore.get(runId);
     if (!result.ok) throw protocolError("not_found", "运行不存在");
     let run = result.run;
@@ -867,7 +868,9 @@ export class RunManager {
     if (requested) this.emitRun(run);
     const entry = this.sessions.get(runId);
     const [sessionStop, shellStop, childrenStop] = await Promise.allSettled([
-      entry ? entry.handle.stop() : Promise.resolve({ stopped: true }),
+      !entry ? Promise.resolve({ stopped: true })
+        : options.detachSession ? (void entry.handle.stop().catch(() => {}), Promise.resolve({ stopped: false }))
+        : entry.handle.stop(),
       this.verifyRunShells(run, true),
       this.childrenOf(run).then((children) => Promise.all(children.map((child) => this.stop(child.id)))),
     ]);

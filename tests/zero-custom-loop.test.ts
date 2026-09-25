@@ -43,7 +43,7 @@ function routeReplies(provider: { queue: ScriptedReply[]; requests: Context[] },
   return (key: string, ...steps: Step[]) => scripts.set(key, steps);
 }
 
-test.skipIf(process.platform !== "darwin")("M7-AC19：零自定义下默认六职责团队完成接手、规划、实现、独立审查、QA 与完成关闭，全程不用 explore 规划", async () => {
+for (const closer of ["main", "pm"] as const) test.skipIf(process.platform !== "darwin")(`M7-AC19：零自定义下默认六职责团队完成接手、规划、实现、独立审查、QA 与完成关闭（${closer === "main" ? "主代理" : "PM 自己"}关闭），全程不用 explore 规划`, async () => {
   const w = await createPmRunWorld(cleanups, { review: false, authorizeClose: true });
   const requirementId = w.fixture.requirementId;
   const tasks = () => w.db((db) => db.list<TaskRecord>(TASKS).map((row) => row.data));
@@ -54,7 +54,8 @@ test.skipIf(process.platform !== "darwin")("M7-AC19：零自定义下默认六�
 
   const pmActions: string[] = [];
   const once = (action: string, reply: ScriptedReply) => { pmActions.push(action); return reply; };
-  const script = routeReplies(w.provider, () => {
+  let closeIssuedAt = 0;
+  const script = routeReplies(w.provider, (request) => {
     if (task("impl")?.status === "completed" && rounds().length === 0 && !pmActions.includes("advance")) return once("advance", call("workflow_manage", { action: "advance" }));
     const round = openRound();
     for (const key of ["review", "acceptance"]) {
@@ -62,6 +63,11 @@ test.skipIf(process.platform !== "darwin")("M7-AC19：零自定义下默认六�
     }
     if (round && task("review").status === "completed" && task("acceptance").status === "completed" && !pmActions.includes("finish")) {
       return once("finish", call("workflow_manage", { action: "finish", checkRoundId: round }));
+    }
+    if (closer === "pm" && pmActions.at(-1) === "finish") return once("delivery", call("workflow_manage", { action: "delivery-check" }));
+    if (closer === "pm" && pmActions.at(-1) === "delivery") {
+      closeIssuedAt = Date.now();
+      return once("close", call("workflow_manage", { action: "close", reason: "completed", receiptId: field(lastResult(request), "receiptId"), operationId: uuidv7() }));
     }
     return { type: "text", text: "PM 已核对" };
   });
@@ -96,14 +102,20 @@ test.skipIf(process.platform !== "darwin")("M7-AC19：零自定义下默认六�
   await expect(readFile(join(w.fixture.state.read(requirementId).data.workspace!.path, "src", "login.ts"), "utf8")).resolves.toBe(LOGIN);
 
   await until(() => pmActions.includes("finish") && rounds()[0]?.status === "released", 3_000);
-  const receipt = await w.manager.workflowManage(requirementId, { action: "delivery-check" }) as DeliveryReceipt;
-  expect(receipt).toMatchObject({ deliverable: true, blockers: [], suggestions: 2 });
-  const closed = await w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId: receipt.receiptId, operationId: uuidv7() });
-  expect(closed).toMatchObject({ status: "closed", reason: "completed", archive: { status: "archived" } });
+  if (closer === "main") {
+    const receipt = await w.manager.workflowManage(requirementId, { action: "delivery-check" }) as DeliveryReceipt;
+    expect(receipt).toMatchObject({ deliverable: true, blockers: [], suggestions: 2 });
+    const closed = await w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId: receipt.receiptId, operationId: uuidv7() });
+    expect(closed).toMatchObject({ status: "closed", reason: "completed", archive: { status: "archived" } });
+  } else {
+    // PM 在自己的工具里关闭时会停止自己；不能等自己当前的工具调用结束，否则要卡到 5 秒的中断超时
+    await until(() => w.fixture.state.read(requirementId).data.lifecycle === "closed", 1_000);
+    expect(Date.now() - closeIssuedAt).toBeLessThan(4_500);
+  }
   expect(w.fixture.state.read(requirementId).data).toMatchObject({ lifecycle: "closed", close: { reason: "completed" } });
   expect(await w.manager.workflowManage(requirementId, { action: "delivery-check" })).toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["requirement_not_active"]) });
 
-  expect(pmActions).toEqual(["advance", "review", "acceptance", "finish"]);
+  expect(pmActions).toEqual(closer === "main" ? ["advance", "review", "acceptance", "finish"] : ["advance", "review", "acceptance", "finish", "delivery", "close"]);
   const runs = (await w.runStore.list({ requirement: requirementId, limit: 100 })).items;
   const all = await Promise.all(runs.map(async (run) => { const got = await w.runStore.get(run.id); if (!got.ok) throw new Error(got.reason); return got.run; }));
   expect(all.every((run) => run.agent?.source === "default")).toBe(true);
