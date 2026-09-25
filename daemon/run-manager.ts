@@ -321,13 +321,20 @@ export class RunManager {
     const resolved = await this.resolveAgent(task.agent ?? task.role, task.role, { model: pmRun.run.model, thinking: pmRun.run.thinking });
     const { definition, model: modelRef, thinking } = resolved;
     const workspace = record.workspace!;
-    const run = await this.runStore.create({ kind: "role", role: `pi-company.${task.role}`, requirement: lease.requirementId, parentRunId: input.pmRunId, task: task.taskId,
-      cwd: workspace.path, readPaths: [workspace.path], writePaths: task.writePaths, model: modelRef, thinking, mcp: [], agent: resolved.fingerprint });
+    // 先过派工门槛再建运行记录：被门槛拒绝的派工不留下失败运行
+    const runId = uuidv7();
     let maxTurns: number;
-    try { ({ maxTurns } = beginTaskAttempt({ dataRoot: this.options.dataRoot, repoId: this.repoId, lease, taskId: task.taskId, runId: run.id, retry: input.retry })); }
+    try { ({ maxTurns } = beginTaskAttempt({ dataRoot: this.options.dataRoot, repoId: this.repoId, lease, taskId: task.taskId, runId, retry: input.retry })); }
     catch (error) {
-      await this.runStore.update(run.id, { state: "failed", stateReason: (error as { code?: string }).code ?? "dispatch_denied" });
       if (error instanceof TaskDispatchError) throw protocolError(error.code, error.message);
+      throw error;
+    }
+    let run: RunRecord;
+    try {
+      run = await this.runStore.create({ id: runId, kind: "role", role: `pi-company.${task.role}`, requirement: lease.requirementId, parentRunId: input.pmRunId, task: task.taskId,
+        cwd: workspace.path, readPaths: [workspace.path], writePaths: task.writePaths, model: modelRef, thinking, mcp: [], agent: resolved.fingerprint });
+    } catch (error) {
+      finishTaskAttempt({ dataRoot: this.options.dataRoot, repoId: this.repoId, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" });
       throw error;
     }
     let registered = false;

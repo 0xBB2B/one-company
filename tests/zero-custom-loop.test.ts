@@ -106,9 +106,8 @@ test.skipIf(process.platform !== "darwin")("M7-AC19：零自定义下默认六�
   const runs = (await w.runStore.list({ requirement: requirementId, limit: 100 })).items;
   const all = await Promise.all(runs.map(async (run) => { const got = await w.runStore.get(run.id); if (!got.ok) throw new Error(got.reason); return got.run; }));
   expect(all.every((run) => run.agent?.source === "default")).toBe(true);
-  const rejected = all.filter((run) => run.state === "failed");
-  expect(rejected.map((run) => [run.task, run.stateReason])).toEqual([[task("review").taskId, "dependency_pending"]]);
-  const full = all.filter((run) => run.state !== "failed");
+  expect(all.filter((run) => run.state === "failed")).toEqual([]);
+  const full = all;
   const byTask = (key: string) => full.find((run) => run.task === task(key).taskId)!;
   expect(full.map((run) => [run.role ?? run.kind, run.agent?.name, run.agent?.source]).sort()).toEqual([
     ["pi-company.qa", "qa", "default"], ["pi-company.reviewer", "reviewer", "default"], ["pi-company.worker", "worker", "default"], ["requirement", "pm", "default"]]);

@@ -58,6 +58,7 @@ test("M7-AC26/AC31：worker 在额度内提交工作报告即完成；依赖未�
   await expect(w.dispatch("login")).rejects.toMatchObject({ code: "plan_not_confirmed" });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   await expect(w.dispatch("failure")).rejects.toMatchObject({ code: "dependency_pending" });
+  expect((await w.runStore.list({ limit: 100 })).items.filter((run) => run.task === w.task("failure").taskId)).toEqual([]);
   const login = w.task("login");
   w.provider.queue.push({ type: "toolcall", name: "pi_company_result_submit", input: { action: "verdict", result: { checkRoundId: null, verificationIds: [],
     summary: `完成 ${login.key}`, findings: [] } } }, { type: "text", text: "PM 收到完成结果" });

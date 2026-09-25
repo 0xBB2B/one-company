@@ -51,6 +51,8 @@ export interface RunRecord {
 export interface RunUsage { input: number; output: number; cacheRead: number; cacheWrite: number; toolUses: number }
 
 export interface CreateRunInput {
+  /** 缺省生成；派工须先占用尝试再建记录时由调用方给出。 */
+  id?: string;
   kind: RunKind;
   role?: string;
   requirement: string;
@@ -194,7 +196,7 @@ export class RunStore {
       }
     }
 
-    const id = uuidv7();
+    const id = input.id ?? uuidv7();
     const now = new Date().toISOString();
     const run: RunRecord = {
       id,
