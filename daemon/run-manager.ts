@@ -36,7 +36,7 @@ import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
 import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
-import { implementAuthorized } from "../runtime/pm-intake-runtime.ts";
+import { closeAuthorized, implementAuthorized } from "../runtime/pm-intake-runtime.ts";
 import { exploreContext, exploreInput, sourceHashesMatch } from "../runtime/explore-dispatch.ts";
 import type { ExploreRequest } from "../runtime/explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
@@ -782,7 +782,7 @@ export class RunManager {
       tool = await createWorkflowManageTool({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot,
         stopAgents: (id) => this.stopRequirement(id),
         grant: { role: "main", callerId: uuidv7(), runId: uuidv7(), requirementId, repoId: this.repoId, workspaceId: record.workspace.workspaceId, branch: record.workspace.branch },
-        authorize: (check) => check.action !== "close" || check.reason === undefined || check.reason === "completed" ||
+        authorize: (check) => check.action !== "close" || check.reason === undefined || (check.reason === "completed" && closeAuthorized(ref, requirementId)) ||
           (check.receiptId !== undefined && closeDecisionValid(ref, { requirementId, receiptId: check.receiptId, reason: check.reason as "cancelled" | "rejected" })) });
     } catch (error) { throw protocolError("workflow_denied", (error as Error).message); }
     try { return await tool.execute(request); }

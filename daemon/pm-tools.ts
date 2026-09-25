@@ -2,7 +2,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { authorizeToolAction } from "../runtime/core-permissions.ts";
-import { PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
+import { closeAuthorized, PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import type { IntakeSubmissionBaseline } from "../runtime/pm-intake-runtime.ts";
 import { createSpecPublishGate } from "../runtime/check-round.ts";
 import { uuidv7 } from "../runtime/database.ts";
@@ -73,7 +73,8 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
     const read = track(await createRequirementReadTool({ ...shared, authorize, binding: { ...identity(), lease: input.lease } }));
     // 取消与拒绝是用户决定，只能由主代理发起；PM 只能在交付核对通过后以完成关闭
     const workflow = track(await createWorkflowManageTool({ ...shared, stopAgents: input.stopAgents, grant: { ...identity(), lease: input.lease },
-      authorize: (request) => input.alive() && !(request.action === "close" && request.reason !== undefined && request.reason !== "completed") }));
+      authorize: (request) => input.alive() && !(request.action === "close" && request.reason !== undefined &&
+        (request.reason !== "completed" || !closeAuthorized({ dataRoot: input.dataRoot, repoId: input.repoId }, input.lease.requirementId))) }));
     const verification = track(await createVerificationRunTool({ ...shared, authorize, grant: { ...identity(), epoch: input.epoch } }));
     const { branch: _branch, ...planIdentity } = identity();
     const plan = track(await createPlanManageTool({ ...shared, authorize, grant: { ...planIdentity, lease: input.lease } }));
