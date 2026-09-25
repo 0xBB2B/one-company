@@ -43,6 +43,8 @@ async function world() {
   } });
   const state = await RequirementStateStore.open({ ...options, authorize: (request) => request.repoId === options.repoId &&
     ["open", "read", "bind-workspace", "acquire-pm", "release-pm", "check-pm", "begin-close"].includes(request.action) });
+  /** 同一仓库里再建一个已批准需求：独立 worktree、租约与规则发布工具。 */
+  async function requirement(seed = "export const a = 1;\n") {
   const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: BODY };
   grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: BODY }) });
   const created = await service.create(create);
@@ -58,7 +60,7 @@ async function world() {
   await mkdir(join(worktree.root, "docs", "spec", "player"), { recursive: true });
   await writeFile(join(worktree.root, "docs", "spec", "player", "move.rules.json"), MOVE);
   await mkdir(join(worktree.root, "src"), { recursive: true });
-  await writeFile(join(worktree.root, "src", "a.ts"), "export const a = 1;\n");
+  await writeFile(join(worktree.root, "src", "a.ts"), seed);
   await runGit(["add", "."], worktree.root); await runGit(["commit", "-qm", "seed"], worktree.root);
   const head = (await runGit(["rev-parse", "HEAD"], worktree.root)).trim();
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: state.read(created.requirementId).version, runId: uuidv7(), expectedFence: 0 });
@@ -80,7 +82,9 @@ async function world() {
   const target = () => checkSpecSet([{ path: "docs/spec/player/move.rules.json", content: MOVE }, { path: "docs/spec/player/sprint.rules.json", content: SPRINT }]).contractSetHash;
   const evidence = (extra: Partial<SpecPublishGate["evidence"] & object> = {}) => ({ verificationId: uuidv7(), status: "passed" as const,
     targetSpecSetHash: target(), approvedProdHash: state.read(created.requirementId).data.approved!.hash, codeHead: head, ...extra });
-  return { ...options, root, state, created, lease, workspace, worktree, head, grant, tool, read, approve, target, evidence, setGate: (next: SpecPublishGate) => { gate = next; } };
+  return { created, lease, workspace, worktree, head, grant, tool, read, approve, target, evidence, setGate: (next: SpecPublishGate) => { gate = next; } };
+  }
+  return { ...options, root, state, ...await requirement(), requirement };
 }
 const denied = { code: "spec_change_denied" };
 const sprintFile = { path: "docs/spec/player/sprint.rules.json", baseHash: "absent", content: SPRINT };
@@ -178,4 +182,26 @@ test("M5-AC7：旧 fence、旧 epoch、他人 run 与宿主撤权不能提案或
   await expect(current.execute({ action: "validate", operationId })).rejects.toMatchObject(denied);
   await expect(current.execute({ action: "publish", operationId })).rejects.toMatchObject(denied);
   await expect(w.read("docs/spec/player/sprint.rules.json")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("M8-AC9：两个 PM 在各自绑定的 worktree 为同一规则发布不同候选，互不覆盖，证据不能串用", async () => {
+  const w = await world();
+  const other = await w.requirement("export const a = 2;\n");
+  expect(other.workspace.workspaceId).not.toBe(w.workspace.workspaceId);
+  const mine = { path: "docs/spec/player/sprint.rules.json", baseHash: "absent", content: SPRINT };
+  const theirs = { ...mine, content: document("player.sprint", [rule("player.sprint", "角色冲刺")]) };
+  const [toolA, toolB] = [await w.tool(), await other.tool()];
+  const [opA, opB] = [uuidv7(), uuidv7()];
+  await toolA.execute({ action: "propose", operationId: opA, files: [mine] }); await toolA.execute({ action: "validate", operationId: opA });
+  const proposedB = await toolB.execute({ action: "propose", operationId: opB, files: [theirs] }) as Summary; await toolB.execute({ action: "validate", operationId: opB });
+  const evidenceB = other.evidence({ targetSpecSetHash: proposedB.targetSpecSetHash });
+  w.setGate({ checkPhaseReleased: true, evidence: evidenceB });
+  await expect(toolA.execute({ action: "publish", operationId: opA })).rejects.toMatchObject({ code: "evidence_required" });
+  await expect(toolA.execute({ action: "publish", operationId: opB })).rejects.toMatchObject({ code: "not_found" });
+  w.setGate({ checkPhaseReleased: true, evidence: w.evidence() });
+  expect((await toolA.execute({ action: "publish", operationId: opA }) as Summary).status).toBe("published");
+  other.setGate({ checkPhaseReleased: true, evidence: evidenceB });
+  expect((await toolB.execute({ action: "publish", operationId: opB }) as Summary).status).toBe("published");
+  await expect(w.read(mine.path)).resolves.toBe(SPRINT);
+  await expect(other.read(mine.path)).resolves.toBe(theirs.content);
 });
