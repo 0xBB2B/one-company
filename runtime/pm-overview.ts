@@ -1,7 +1,7 @@
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { activeCheckRoundIn } from "./check-round.ts";
 import type { LocalDatabase } from "./database.ts";
-import { implementScope, readPlanIn, reviewFailures, reviewRejections, terminationPending } from "./plan-manage.ts";
+import { implementScope, readPlanIn, stalledStage, terminationPending } from "./plan-manage.ts";
 import type { TaskRecord } from "./plan-manage.ts";
 import { latestPmSubmission } from "./pm-intake-runtime.ts";
 import { PmIntakeStore } from "./pm-intake-store.ts";
@@ -89,7 +89,7 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
   for (const task of tasks) {
     if (task.status !== "awaiting_user") continue;
     const row = input.db.read<TaskRecord>("tasks", task.taskId)!;
-    const cause = reviewRejections(task) >= 2 ? "两次未通过审查" : reviewFailures(task) >= 2 ? "两次审查未完成" : "两次未完成";
+    const cause = ({ execute: "两次未完成", review: "两次审查未完成", rework: "两次未通过审查" } as const)[stalledStage(task)];
     items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label: `待你裁决：任务 ${task.key} ${cause}`, version: `task:${task.taskId}:${row.version}` });
   }
   if (input.record.approved && input.record.approvalManifest && !reviewPassedFor(input.dataRoot, input.repoId, input.lease)) {

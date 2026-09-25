@@ -9,9 +9,9 @@
 | AC1 所在目录重叠的无依赖任务不能同时运行，待审查/待返修继续占用目录 | 通过 | tests/task-dispatch.test.ts「M7A-AC1/AC2/AC3/AC6」：a 待审查时与其目录重叠的 b 派工被拒（write_scope_busy），不重叠的 c 可同时运行；实现 runtime/task-dispatch.ts assertDirectoriesFree | 无 |
 | AC2 reviewer 审 A 期间 B 继续写，结论绑定 A 的尝试，不需检查阶段令牌 | 通过 | 同上：c 运行中派 reviewer 审 a，审查记录绑定 a 的尝试，reviewer 无 change_apply、运行不带可写范围；tests/pending-update.test.ts「M6-AC19/M7A-AC2」：reviewer 只能跑 debug 且写工作区被沙箱拒绝，裁决绑定被审任务尝试、不能绑定检查轮 | 无 |
 | AC3 A 审查通过前依赖 A 的任务不能派出 | 通过 | tests/task-dispatch.test.ts「M7A-AC1/AC2/AC3/AC6」：a 待审查时 d 派工被拒（dependency_pending），审查通过后 d 可派出 | 无 |
-| AC4 打回时 reviewer 任务仍完成；返修单独计数，再次打回待用户裁决 | 通过 | tests/task-dispatch.test.ts「M7A-AC4」：打回后 reviewer 运行为 completed、任务待返修；不带 rework 或带 retry 被拒；返修尝试带原因、标记 rework、上下文含打回问题；再次打回进入待用户裁决，再派与新增同目标任务均被拒；用户"再给一次机会"按原因回到返修或再审（runtime/adjudication.ts） | 无 |
+| AC4 打回时 reviewer 任务仍完成；返修单独计数，再次打回待用户裁决 | 通过 | tests/task-dispatch.test.ts「M7A-AC4」：打回后 reviewer 运行为 completed、任务待返修；不带 rework 或带 retry 被拒；返修尝试带原因、标记 rework、上下文含打回问题；再次打回进入待用户裁决，再派与新增同目标任务均被拒；用户"再给一次机会"按停在哪一环回到返修或再审（runtime/adjudication.ts）；「M7A-AC4：审查未交出结论按被审尝试计数」覆盖两次审查未交结论→用户再给机会→打回→返修→新尝试仍可再审直至完成 | 无 |
 | AC5 任务未全部审查通过不能开检查轮；检查轮只收 QA 结论 | 通过 | tests/zero-custom-loop.test.ts「M7-AC19」：impl 待审查时 PM 进入检查被拒（tasks_not_reviewed），审查通过后才进入检查、只派 QA；tests/pending-update.test.ts：reviewer 在检查轮提交裁决被拒 | 无 |
-| AC6 关闭要求最新检查轮全量测试与 QA 通过且全部 worker 任务审查通过 | 通过 | tests/task-dispatch.test.ts「M7A-AC1/AC2/AC3/AC6」：有任务未审查时交付核对报 task_review_missing；tests/workflow-close.test.ts（QA 阻塞/未验证分别拒绝、只有 QA 的检查轮可关闭）；tests/zero-custom-loop.test.ts 完整闭环关闭；typecheck、pnpm test、test:integration（79）、test:installation（11）全部通过 | 无 |
+| AC6 关闭要求最新检查轮全量测试与 QA 通过且全部 worker 任务审查通过 | 通过 | tests/task-dispatch.test.ts「M7A-AC1/AC2/AC3/AC6」：有任务未审查时交付核对报 task_review_missing；tests/workflow-close.test.ts（QA 阻塞/未验证分别拒绝、只有 QA 的检查轮可关闭）；tests/zero-custom-loop.test.ts 完整闭环关闭；typecheck、pnpm test（2317）、test:integration（79）、test:installation（11）在最终代码上全部通过 | 无 |
 
 ## 当前阻塞
 

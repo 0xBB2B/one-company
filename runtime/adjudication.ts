@@ -1,6 +1,6 @@
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
-import { confirmedPlanKey, readPlanIn, reviewFailures, reviewRejections, TASKS, terminationPending } from "./plan-manage.ts";
+import { confirmedPlanKey, readPlanIn, stalledStage, TASKS, terminationPending } from "./plan-manage.ts";
 import type { TaskRecord, UserDecision } from "./plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
@@ -93,8 +93,8 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const userDecision: UserDecision = { decisionId: input.decisionId, choice: parsed.choice as UserDecision["choice"], maxTurns: parsed.maxTurns,
       revision: record.revision, taskVersion: task.version, usedByRunId: null, notified: false,
       confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan) };
-    // 再给一次机会回到用完机会的那一环：审查两次打回则返修，审查两次未交出结论则再审，否则重新执行
-    const retryStatus = reviewRejections(task) >= 2 ? "awaiting_rework" : reviewFailures(task) >= 2 ? "awaiting_review" : "pending";
+    // 再给一次机会回到用完机会的那一环
+    const retryStatus = ({ execute: "pending", review: "awaiting_review", rework: "awaiting_rework" } as const)[stalledStage(task)];
     const status = parsed.choice === "retry" ? retryStatus : parsed.choice === "adjust" ? "needs_update" : "cancelled";
     const next = { ...task, status, userDecision, updatedAt: input.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, taskId!, row.version, next);

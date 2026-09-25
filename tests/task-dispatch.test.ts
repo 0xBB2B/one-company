@@ -1,7 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { createPlanManageTool, TASKS } from "../runtime/plan-manage.ts";
+import { createPlanManageTool, stalledStage, TASKS } from "../runtime/plan-manage.ts";
+import type { TaskRecord } from "../runtime/plan-manage.ts";
 import { PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
@@ -172,4 +173,37 @@ test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因
   expect(w.task("login").reviews[1]).toMatchObject({ runId: second.runId, attemptRunId: fix.runId, outcome: "unverified" });
   await expect(w.rework("login")).rejects.toMatchObject({ code: "task_not_ready" });
   await expect(w.plan.execute({ action: "update", planVersion: 1, add: [spec("login-fix")] })).rejects.toMatchObject({ code: "task_not_ready" });
+});
+
+test("M7A-AC4：审查未交出结论按被审尝试计数；用户再给一次机会后经打回、返修，新尝试的审查仍可派出", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push(submit("完成 login"), pmAck);
+  const first = await w.dispatch("login");
+  await until(() => w.task("login").status === "awaiting_review");
+  for (const expected of ["awaiting_review", "awaiting_user"]) {
+    w.provider.queue.push(read(1), pmAck);
+    await w.review("login", 1);
+    await until(() => w.task("login").status === expected);
+  }
+  expect(w.task("login").reviews.map((review) => [review.attemptRunId, review.outcome])).toEqual([[first.runId, "turn_limit_reached"], [first.runId, "turn_limit_reached"]]);
+  const stuck = withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => db.read<TaskRecord>(TASKS, w.task("login").taskId)!);
+  expect(stalledStage(stuck.data)).toBe("review");
+  await expect(w.review("login")).rejects.toMatchObject({ code: "task_not_ready" });
+
+  // 模拟可信登记的用户决定"再给一次机会"：回到再审
+  withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => db.update(TASKS, stuck.data.taskId, stuck.version, { ...stuck.data, status: "awaiting_review",
+    userDecision: { decisionId: uuidv7(), choice: "retry", maxTurns: 2, revision: 1, taskVersion: stuck.data.version, usedByRunId: null, notified: true } }));
+  w.provider.queue.push(submit("缺失败提示", [{ kind: "blocking" }]), pmAck);
+  const granted = await w.review("login", 5);
+  expect(granted.maxTurns).toBe(2);
+  await until(() => w.task("login").status === "awaiting_rework");
+  w.provider.queue.push(submit("补上失败提示"), pmAck);
+  const fix = await w.rework("login");
+  await until(() => w.task("login").status === "awaiting_review");
+  w.provider.queue.push(submit("符合目标"), pmAck);
+  await w.review("login");
+  await until(() => w.task("login").status === "completed");
+  expect(w.task("login").reviews.at(-1)).toMatchObject({ attemptRunId: fix.runId, outcome: "clear" });
 });

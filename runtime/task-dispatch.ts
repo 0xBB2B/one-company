@@ -153,8 +153,9 @@ export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "re
     if (activeCheckRoundIn(db, request.repoId, request.lease.requirementId) !== null) deny("check_phase_active");
     const attempt = task.attempts.findLast((candidate) => candidate.outcome === "completed");
     if (!attempt) deny("task_not_ready", [`${task.key} 没有完成的尝试`]);
-    const granted = reviewFailures(task) >= 2 && userRetryGranted(task);
-    if (reviewFailures(task) >= 2 && !granted) deny("retry_exhausted");
+    const failures = reviewFailures(task.reviews, attempt!.runId);
+    const granted = failures >= 2 && userRetryGranted(task);
+    if (failures >= 2 && !granted) deny("retry_exhausted");
     const maxTurns = granted ? task.userDecision!.maxTurns! : request.maxTurns;
     const review: TaskReview = { runId: request.runId, attemptRunId: attempt!.runId, maxTurns, turnsUsed: 0, outcome: "running" };
     const row = db.read<unknown>(TASKS, task.taskId)!;
@@ -203,7 +204,7 @@ export function finishTaskReview(request: { dataRoot: string; repoId: string; ta
       : outcome === "clear" ? "completed"
         : outcome === "blocked" || outcome === "unverified" ? (reviewRejections({ reviews }) >= 2 ? "awaiting_user" : "awaiting_rework")
           : outcome === "superseded" ? "awaiting_review"
-            : reviewFailures({ reviews }) >= 2 ? "awaiting_user" : "awaiting_review";
+            : reviewFailures(reviews, reviews[index]!.attemptRunId) >= 2 ? "awaiting_user" : "awaiting_review";
     const next = { ...task, status, reviews, updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row.version, next);
     return next;

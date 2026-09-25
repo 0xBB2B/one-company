@@ -77,9 +77,16 @@ export function countedAttempts(task: { attempts: readonly TaskAttempt[] }): num
 export function reviewRejections(task: { reviews: readonly TaskReview[] }): number {
   return task.reviews.filter((review) => review.outcome === "blocked" || review.outcome === "unverified").length;
 }
-/** 审查运行未交出结论的次数：与执行尝试同样允许一次再派。 */
-export function reviewFailures(task: { reviews: readonly TaskReview[] }): number {
-  return task.reviews.filter((review) => review.outcome === "failed" || review.outcome === "turn_limit_reached" || review.outcome === "stopped").length;
+/** 审查同一次 worker 尝试时未交出结论的次数：与执行尝试同样允许一次再派，换了被审尝试重新计数。 */
+export function reviewFailures(reviews: readonly TaskReview[], attemptRunId: string): number {
+  return reviews.filter((review) => review.attemptRunId === attemptRunId &&
+    (review.outcome === "failed" || review.outcome === "turn_limit_reached" || review.outcome === "stopped")).length;
+}
+/** 任务停在哪一环：最近完成的尝试已被审查时看最近一次审查，打回即返修、未交出结论即再审；否则是执行。 */
+export function stalledStage(task: Pick<TaskRecord, "attempts" | "reviews">): "execute" | "review" | "rework" {
+  const attempt = task.attempts.at(-1), review = task.reviews.at(-1);
+  if (attempt?.outcome !== "completed" || review?.attemptRunId !== attempt.runId) return "execute";
+  return review.outcome === "blocked" || review.outcome === "unverified" ? "rework" : "review";
 }
 /** 用户对待裁决任务的决定：只由可信登记写入，PM 不能构造；revision/taskVersion 为登记时的批准版本与任务版本。 */
 const UserDecision = object({
