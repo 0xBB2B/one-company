@@ -49,6 +49,8 @@ import { defaultPageGetter, defaultWebDeps, webFetch, webSearch, WebAccessError 
 import type { PageGetter, WebDeps } from "../runtime/web-access.ts";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { KnowledgeTransportQuerySchema } from "../runtime/knowledge-query-tool.ts";
+import { createPmCommitTool } from "../runtime/pm-commit.ts";
+import { activeCheckRoundIn } from "../runtime/check-round.ts";
 import type { ProjectIndexHost } from "./project-index-host.ts";
 import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
@@ -239,7 +241,8 @@ export class RunManager {
           },
         } });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: pmContext(record.data, lease), coreTools: [...tools.tools, ...this.knowledgeTool(run.id)], runtime: this.options.runtime, modelRef, thinking,
+        context: pmContext(record.data, lease), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ worktree: workspace.path, branch: workspace.branch, alive,
+          checkPhaseActive: () => withDatabase(this.database, (db) => activeCheckRoundIn(db, this.repoId, input.requirementId) !== null) })], runtime: this.options.runtime, modelRef, thinking,
         completion: { kind: "idle-only" }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true;
