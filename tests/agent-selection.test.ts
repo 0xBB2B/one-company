@@ -7,6 +7,7 @@ import type { Context } from "@earendil-works/pi-ai";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { repositoryDatabase, withDatabase } from "../runtime/database.ts";
 import { TASKS } from "../runtime/plan-manage.ts";
+import { CheckRoundService } from "../runtime/check-round.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
@@ -90,4 +91,44 @@ test("M7-AC25：运行中改了定义文件，暂停后续接时发现配置已�
   await expect(w.manager.resume(run.runId)).rejects.toMatchObject({ code: "config_changed" });
   const stopped = await w.runStore.get(run.runId);
   expect(stopped.ok && stopped.run.state).toBe("stopped");
+});
+
+test("M7-AC26：专业 worker 运行中不能开启正式检查；换专业名称不能改变职责（worker 定义不能执行 reviewer 任务）；需求停止时专业实例一并停止", async () => {
+  const w = await world();
+  await w.define("ui-dev", "");
+  await w.define("code-reviewer", "");
+  await w.plan.execute({ action: "propose", tasks: [spec("ui", { agent: "ui-dev" }), spec("rest", { goalUnitIds: ["scenario.failure"] }),
+    spec("review", { role: "reviewer", agent: "code-reviewer", writePaths: [], dependsOn: [] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  await expect(w.dispatch("review")).rejects.toMatchObject({ code: "agent_unavailable" });
+  w.provider.queue.push({ type: "text", text: "慢慢做", chunkDelayMs: 3_000 });
+  const run = await w.dispatch("ui");
+  await until(async () => { const current = await w.runStore.get(run.runId); return current.ok && current.run.state === "running"; });
+  const rounds = await CheckRoundService.open({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, authorize: () => true });
+  cleanups.push(() => rounds.dispose());
+  await expect(rounds.openRound({ lease: w.lease })).rejects.toMatchObject({ code: "workers_active" });
+  await w.manager.stopRequirement(w.fixture.requirementId);
+  const stopped = await w.runStore.get(run.runId);
+  expect(stopped.ok && stopped.run.state).toBe("stopped");
+});
+
+test("M7-AC8：定义正文不含任何职责说明、模型也不遵守提示时，工具集合与写入限制仍由程序执行", async () => {
+  const w = await world();
+  await w.define("bare", "", "（无说明）");
+  await w.plan.execute({ action: "propose", tasks: [spec("ui", { agent: "bare" }), spec("rest", { goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push(
+    { type: "toolcall", name: "pi_company_plan_manage", input: { action: "confirm", planVersion: 1 } },
+    { type: "toolcall", name: "pi_company_change_apply", input: { action: "apply", operationId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10",
+      files: [{ path: "docs/spec/x.rules.json", baseHash: "absent", content: "{}" }] } },
+    { type: "toolcall", name: "bash", input: { command: "echo hacked > src/x.ts" } },
+    { type: "text", text: "结束" }, { type: "text", text: "PM 收到" });
+  await w.dispatch("ui");
+  await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("forbidden_path")));
+  const tools = w.provider.requests.find((request) => prompt(request).includes("（无说明）"))!.tools!.map((tool) => tool.name);
+  expect(tools).not.toContain("pi_company_plan_manage");
+  expect(tools).not.toContain("bash");
+  const all = JSON.stringify(w.provider.requests);
+  expect(all).toContain("Tool pi_company_plan_manage not found");
+  expect(all).toContain("forbidden_path");
 });
