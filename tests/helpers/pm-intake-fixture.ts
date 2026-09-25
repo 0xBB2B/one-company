@@ -195,7 +195,7 @@ export interface PmIntakeFixture {
 }
 
 // PM_FIXTURE_FACTORY_START
-export async function createPmIntakeFixture(options: { retained?: boolean } = {}): Promise<PmIntakeFixture> {
+export async function createPmIntakeFixture(options: { retained?: boolean; authorizeClose?: boolean } = {}): Promise<PmIntakeFixture> {
   const allocation: {
     pmPath?: string;
     pmReceipt?: PmIntakeFixtureRootReceipt;
@@ -279,11 +279,12 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
           { ...common, kind: "constraint", conclusion: "需求身份元数据" },
           { ...common, kind: "target", conclusion: "手机号正常登录" },
           { ...common, kind: "target", conclusion: "验证码失败有可观察结果" },
-          { ...common, kind: "action", actions: ["implement"], conclusion: "允许实施手机号登录" },
+          { ...common, kind: "action", actions: options.authorizeClose ? ["implement", "close"] : ["implement"], conclusion: "允许实施手机号登录" },
         ], documentReview: { faithful: true,
           units: current.document!.partition.units.map((unit) => ({ id: unit.id, disposition: "confirmed", globalConstraint: false,
             appliesTo: [], dependsOn: [], conclusionIndexes: [unit.id === "metadata" ? 0 : unit.id === "goal.login" ? 1 : 2] })),
-          actions: [{ action: "implement", goalIds: ["goal.login", "scenario.failure"], constraintIds: [], conclusionIndexes: [3], unknown: false }],
+          actions: [{ action: "implement", goalIds: ["goal.login", "scenario.failure"], constraintIds: [], conclusionIndexes: [3], unknown: false },
+            ...(options.authorizeClose ? [{ action: "close", goalIds: ["goal.login", "scenario.failure"], constraintIds: [], conclusionIndexes: [3], unknown: false }] : [])],
           questions: [] } });
       },
     } });
