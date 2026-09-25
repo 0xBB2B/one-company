@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:net";
 import {
   chmod,
@@ -293,6 +294,22 @@ test("M2-AC5：没有 docs/spec、本机需求记录或数据库时仍可只建�
   expect(await readdir(dataRoot)).toEqual([]);
   expect(result.partial).toBe(false);
   expect(result.budget.stoppedReason).toBe("complete");
+});
+
+test("被 Git 忽略的文件与目录不进入索引，标 git_ignored；不在仓库内时照常扫描", async () => {
+  const { root, dataRoot } = await fixture();
+  await put(root, "main.ts", "export {};\n");
+  await put(root, ".gitignore", "generated/\n*.local.ts\n");
+  await put(root, "generated/out.ts", "export {};\n");
+  await put(root, "secret.local.ts", "export {};\n");
+  expect((await scanIndexWorkspace({ root, dataRoot })).files.map((file) => file.path)).toContain("generated/out.ts");
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  const result = await scanIndexWorkspace({ root, dataRoot });
+  expect(result.files.map((file) => file.path)).not.toContain("generated/out.ts");
+  expect(result.files.map((file) => file.path)).not.toContain("secret.local.ts");
+  expect(result.files.map((file) => file.path)).toContain("main.ts");
+  expect(skippedReason(result, "generated")).toBe("git_ignored");
+  expect(skippedReason(result, "secret.local.ts")).toBe("git_ignored");
 });
 
 test("M2-AC1：链接、硬链接、特殊文件和嵌套仓库不被跟随或读取", async () => {

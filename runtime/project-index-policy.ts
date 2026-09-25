@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, lstatSync, realpathSync } from "node:fs";
 import type { BigIntStats, Dirent, Stats } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import { assertDataRootOutsideWorktrees } from "./database-paths.ts";
 
 export const DEFAULT_INDEX_LIMITS = Object.freeze({
@@ -26,6 +28,7 @@ export type IndexSkipReason =
   | "unreadable"
   | "outside_root"
   | "nested_repository"
+  | "git_ignored"
   | "file_too_large"
   | "total_text_limit"
   | "entry_limit"
@@ -411,10 +414,20 @@ function numericSize(size: bigint): number | undefined {
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
+/** 被 Git 忽略的路径（整目录被忽略时以 `/` 结尾）；不在 Git 仓库内时视为无忽略。 */
+async function gitIgnoredPaths(root: string): Promise<Set<string>> {
+  try {
+    const { stdout } = await promisify(execFile)("git", ["-C", root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+      { maxBuffer: 64 << 20 });
+    return new Set(stdout.split("\0").filter(Boolean));
+  } catch { return new Set(); }
+}
+
 export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promise<IndexWorkspaceScan> {
   const limits = normalizedLimits(input.limits);
   const workspace = await safeWorkspaceRoot(input.root);
   assertExternalDataRoot(input.dataRoot, workspace.root);
+  const ignored = await gitIgnoredPaths(workspace.root);
 
   const files: IndexFile[] = [];
   const skipped: IndexSkippedPath[] = [];
@@ -567,6 +580,10 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
       if (prodArchivePath(parts)) {
         if (stats.isDirectory()) await enumerateArchives(fullPath, rel, stats);
         else addSkip(rel, "prod_archive");
+        continue;
+      }
+      if (ignored.has(stats.isDirectory() ? `${rel}/` : rel)) {
+        addSkip(rel, "git_ignored");
         continue;
       }
       if (stats.isDirectory()) {

@@ -208,7 +208,7 @@ const SAFE_ENUM_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.f
   mode: new Set(["preview", "init", "status", "refresh"]),
   reason: new Set([
     "prod_archive", "excluded_directory", "excluded_file", "sensitive", "database", "symbolic_link", "hard_link",
-    "special_file", "unreadable", "outside_root", "nested_repository", "file_too_large", "total_text_limit", "entry_limit",
+    "special_file", "unreadable", "outside_root", "nested_repository", "git_ignored", "file_too_large", "total_text_limit", "entry_limit",
     "depth_limit", "unstable", "cancelled", "binary", "invalid_utf8", "unsupported", "invalid_archive_name",
     "duplicate_requirement_id",
   ]),
