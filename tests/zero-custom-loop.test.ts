@@ -101,6 +101,7 @@ test.skipIf(process.platform !== "darwin")("M7-AC19：零自定义下默认六�
   const closed = await w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId: receipt.receiptId, operationId: uuidv7() });
   expect(closed).toMatchObject({ status: "closed", reason: "completed", archive: { status: "archived" } });
   expect(w.fixture.state.read(requirementId).data).toMatchObject({ lifecycle: "closed", close: { reason: "completed" } });
+  expect(await w.manager.workflowManage(requirementId, { action: "delivery-check" })).toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["requirement_not_active"]) });
 
   expect(pmActions).toEqual(["advance", "review", "acceptance", "finish"]);
   const runs = (await w.runStore.list({ requirement: requirementId, limit: 100 })).items;

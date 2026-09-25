@@ -145,7 +145,7 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
   }
   if (pendingProposalsIn(db, repoId, requirementId).length > 0) blockers.push("spec_candidates_unpublished");
   // 用户终止任务后、批准新的 prod 版本前，其目标仍在实施授权内时需求不能以完成关闭
-  if (record.data.approvalManifest) {
+  if (record.data.lifecycle === "active" && record.data.approvalManifest) {
     const scope = implementScope(registeredApprovalManifestIn(db, repoId, record.data.approvalManifest.reference, record));
     const terminated = readPlanIn(db, requirementId)?.tasks.filter((task) => terminationPending([task], record.data.revision)) ?? [];
     if (terminated.some((task) => task.goalUnitIds.some((unit) => scope.has(unit)))) blockers.push("terminated_goal_in_scope");
