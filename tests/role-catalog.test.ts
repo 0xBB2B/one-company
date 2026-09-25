@@ -115,3 +115,38 @@ describe("按职责生成的工具集", () => {
     for (const role of ["pm", "worker", "reviewer"] as const) expect([...ROLE_HOST_TOOLS[role]]).toEqual(["read", "grep", "find", "ls"]);
   });
 });
+
+describe("覆盖与导入规则", () => {
+  const load = (userDir: string, projectDir: string, projectTrusted = true) =>
+    loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir, projectDir, parseFrontmatter, projectTrusted });
+
+  test("同名按项目 > 用户 > 内置覆盖，并标出被覆盖的来源", async () => {
+    const root = await tempDir();
+    await writeRole(join(root, "u"), "worker", "name: worker\ndescription: 用户 worker\nrole: worker");
+    await writeRole(join(root, "p"), "worker", "name: worker\ndescription: 项目 worker\nrole: worker");
+    const worker = (await load(join(root, "u"), join(root, "p"))).roles.find((role) => role.name === "worker")!;
+    expect(worker).toMatchObject({ source: "project", overrides: ["default", "user"], definition: { description: "项目 worker" } });
+    const untrusted = (await load(join(root, "u"), join(root, "p"), false)).roles.find((role) => role.name === "worker")!;
+    expect(untrusted).toMatchObject({ source: "user", overrides: ["default"] });
+  });
+
+  test("缺 role 的其他宿主定义不导入也不破坏默认团队；无效定义不顶掉下层有效定义", async () => {
+    const root = await tempDir();
+    await writeRole(join(root, "u"), "worker", "name: worker\ndescription: 其他宿主的 worker");
+    await writeRole(join(root, "u"), "helper", "name: helper\ndescription: 其他宿主的 helper");
+    await writeRole(join(root, "p"), "reviewer", "name: reviewer\ndescription: 坏定义\nrole: reviewer\nthinking: extreme");
+    const catalog = await load(join(root, "u"), join(root, "p"));
+    expect(catalog.roles.find((role) => role.name === "worker")).toMatchObject({ source: "default", available: true });
+    expect(catalog.roles.find((role) => role.name === "helper")).toBeUndefined();
+    expect(catalog.roles.find((role) => role.name === "reviewer")).toMatchObject({ source: "default", available: true });
+    expect(catalog.problems.map((problem) => problem.reason).join("\n")).toMatch(/缺少 role[\s\S]*未覆盖default层的 reviewer/u);
+  });
+
+  test("pm 职责唯一：其他名字声明 role: pm 被拒", async () => {
+    const root = await tempDir();
+    await writeRole(join(root, "u"), "boss", "name: boss\ndescription: 第二个 PM\nrole: pm");
+    const boss = (await load(join(root, "u"), join(root, "p"))).roles.find((role) => role.name === "boss")!;
+    expect(boss).toMatchObject({ available: false });
+    expect(boss.reason).toContain("pm 职责只能由名为 pm 的定义承担");
+  });
+});

@@ -26,6 +26,8 @@ export interface RoleCatalogEntry {
   available: boolean;
   reason?: string;
   definition?: RoleDefinition;
+  /** 被本定义同名覆盖的下层来源。 */
+  overrides?: RoleSource[];
 }
 
 export type FrontmatterParser = (content: string) => { frontmatter: Record<string, unknown>; body: string };
@@ -98,6 +100,7 @@ export async function readRoleDefinition(path: string, parseFrontmatter: Frontma
   if (typeof role !== "string" || !(AGENT_ROLES as readonly string[]).includes(role)) {
     throw new Error(`角色定义 role 须为 ${AGENT_ROLES.join("/")}: ${path}`);
   }
+  if (role === "pm" && name !== "pm") throw new Error(`pm 职责只能由名为 pm 的定义承担: ${path}`);
   if (model !== undefined && (typeof model !== "string" || !/^[^/\s]+\/\S+$/.test(model))) {
     throw new Error(`角色定义 model 须为 provider/id: ${path}`);
   }
@@ -141,6 +144,11 @@ async function loadLayerEntries(
     const name = basename(dirent.name, extension);
     const path = join(dir, dirent.name);
     try {
+      // 缺 role 的是其他宿主的 agent 定义：不导入、不推断职责，也不影响默认团队
+      if (parseFrontmatter(await readFile(path, "utf8")).frontmatter.role === undefined) {
+        problems.push({ source, dir: path, reason: "缺少 role，视为其他宿主定义，未导入" });
+        continue;
+      }
       const definition = await readRoleDefinition(path, parseFrontmatter);
       if (definition.name !== name) {
         throw new Error(`角色定义 name（${definition.name}）与文件名（${name}）不一致: ${path}`);
@@ -164,7 +172,15 @@ export async function loadRoleCatalog(options: LoadRoleCatalogOptions): Promise<
   const problems: RoleCatalogProblem[] = [];
   for (const layer of layers) {
     const entries = await loadLayerEntries(layer.dir, layer.source, options.parseFrontmatter, problems);
-    for (const entry of entries) merged.set(entry.name, entry);
+    for (const entry of entries) {
+      const lower = merged.get(entry.name);
+      // 无效定义不隐式顶掉下层有效定义；明确报错并保留下层
+      if (!entry.available && lower?.available) {
+        problems.push({ source: entry.source, dir: entry.path, reason: `${entry.reason}；未覆盖${lower.source}层的 ${entry.name}` });
+        continue;
+      }
+      merged.set(entry.name, lower ? { ...entry, overrides: [...(lower.overrides ?? []), lower.source] } : entry);
+    }
   }
   if (!options.projectTrusted) {
     problems.push({ source: "project", dir: options.projectDir, reason: "项目未受宿主信任，项目层角色定义未生效" });

@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { link, mkdir, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
-import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock, TimeSource, TimerHandle } from "../runtime/clock.ts";
 import { daemonSocketPath, listWorktrees, repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
@@ -28,7 +28,7 @@ function loadDaemonRoleCatalog(agentDir: string, repoRoot: string) {
     userDir: userRoleDir(agentDir),
     projectDir: projectRoleDir(repoRoot),
     parseFrontmatter,
-    projectTrusted: false,
+    projectTrusted: new ProjectTrustStore(agentDir).get(repoRoot) === true,
   });
 }
 
