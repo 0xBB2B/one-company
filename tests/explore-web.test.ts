@@ -79,3 +79,29 @@ test("M7-AC15/AC16/AC17：PM 派出联网 explore，会话可按需搜索与抓�
   const run = await w.runStore.get(dispatched.runId);
   expect(run.ok && run.run).toMatchObject({ role: "pi-company.explore", state: "completed" });
 });
+
+test("M7-AC16：main 在无需求、索引未初始化时派出纯网页检索成功，index 基线 not_applicable；结果只交给派出连接，不创建需求、运行记录或工作区", async () => {
+  const net = fakeDeps({ hits: [{ title: "Node 文档", url: "https://nodejs.org/api/" }] });
+  const w = await createPmRunWorld(cleanups, { review: false, web: { deps: net.deps, getPage: async () =>
+    ({ status: 200, headers: { "content-type": "text/plain" }, body: Buffer.from("fs.promises 提供异步接口") }) } });
+  const runsBefore = (await w.runStore.list({ limit: 100 })).items.length;
+  const requirements = () => w.db((d) => d.list("requirements").length);
+  const requirementsBefore = requirements();
+  expect(requirementsBefore).toBeGreaterThan(0);
+  const research = { conclusions: ["用 fs.promises"], sources: [{ kind: "web", indexBaseline: "not_applicable", url: "https://nodejs.org/api/", retrievedAt: Date.now(), quote: "fs.promises 提供异步接口" }],
+    searchedScope: { kind: "web", queries: ["node 异步文件"] }, notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] };
+  w.provider.queue.push(
+    { type: "toolcall", name: "web_search", input: { query: "node 异步文件" } },
+    { type: "toolcall", name: "web_fetch", input: { url: "https://nodejs.org/api/" } },
+    { type: "toolcall", name: "pi_company_result_submit", input: { action: "research", result: research } });
+  w.manager.connectionOpened("conn-main");
+  const parent = { role: "main" as const, sessionId: "session-main", connectionId: "conn-main", model: { provider: "team-model", id: "test" }, thinking: "off" };
+  const dispatched = await w.manager.dispatchExplore({ parent, request: { question: "node 如何异步读文件", clues: [], source: { kind: "web", query: "node 异步文件" } }, maxTurns: 5 });
+  await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === dispatched.runId));
+  expect(() => w.manager.takeMainExploreReport(dispatched.runId, "conn-other")).toThrow();
+  const report = w.manager.takeMainExploreReport(dispatched.runId, "conn-main") as { outcome: string; research: { source: { kind: string; indexBaseline: string }; parent: { requirementBinding: unknown } } };
+  expect(report).toMatchObject({ outcome: "completed", research: { source: { kind: "web", indexBaseline: "not_applicable" }, parent: { role: "main", requirementBinding: null } } });
+  expect(JSON.stringify(report)).not.toMatch(/generation|baselineHash|requirementId/u);
+  expect((await w.runStore.list({ limit: 100 })).items.length).toBe(runsBefore);
+  expect(requirements()).toBe(requirementsBefore);
+});
