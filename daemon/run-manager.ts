@@ -1,5 +1,7 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { realpath } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Type } from "typebox";
 import type { Clock } from "../runtime/clock.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
@@ -13,7 +15,9 @@ import { checkedMetadataPage, legacyMetadataPage } from "../runtime/workflow-too
 import type { MetadataPageOptions } from "../runtime/workflow-tool.ts";
 import { LEGACY_WORKFLOW_RETIRED } from "../runtime/decision-record-tool.ts";
 import { createAgentRoleSession } from "./agent-session.ts";
-import type { AgentSessionHandle } from "./agent-session.ts";
+import type { AgentSessionHandle, AgentSessionMcpOptions } from "./agent-session.ts";
+import { detectMcpAdapter } from "../runtime/mcp.ts";
+import type { McpConfig } from "../runtime/mcp.ts";
 import { createPmTools } from "./pm-tools.ts";
 import { createSubagentTools } from "./subagent-tools.ts";
 import { beginTaskAttempt, finishTaskAttempt, TaskDispatchError } from "../runtime/task-dispatch.ts";
@@ -58,6 +62,8 @@ export interface RunManagerOptions {
   runtime: ModelRuntime; selectModel: ModelSelector; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
   /** 联网检索的网络依赖；缺省为 Node 内置实现，测试可注入。 */
   web?: { deps: WebDeps; getPage: PageGetter };
+  /** 宿主 agentDir：explore 定义声明 MCP 服务时，从这里的 npm/node_modules/pi-mcp-adapter 与 mcp.json 装载。 */
+  agentDir?: string;
   /** 守护进程持有的主仓库索引；缺省时角色没有 knowledge_query。 */
   index?: ProjectIndexHost;
 }
@@ -405,7 +411,7 @@ export class RunManager {
       : { kind: "local_file", indexBaseline: "not_applicable", root: await realpath(root) };
     const runId = requirementId
       ? (await this.runStore.create({ kind: "role", role: "pi-company.explore", requirement: requirementId, parentRunId: parent.parentRunId, task: "explore",
-        cwd: root, readPaths: source.kind === "local_file" ? [source.root] : [], writePaths: [], model: modelRef, thinking, mcp: [] })).id
+        cwd: root, readPaths: source.kind === "local_file" ? [source.root] : [], writePaths: [], model: modelRef, thinking, mcp: definition.mcp ?? [] })).id
       : uuidv7();
     let explore: ExploreInput;
     try {
@@ -428,7 +434,7 @@ export class RunManager {
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, context: exploreContext(explore, input.maxTurns),
         coreTools: [toPiTool("result_submit", "提交 research（action=research）：结论、来源、检索范围、未找到、失败、截断与未知项；research 不是 PASS。", RESULT_SUBMIT_PARAMETERS, result),
           ...(source.kind === "web" ? this.webTools(alive) : this.knowledgeTool(runId))],
-        readRoots: source.kind === "local_file" ? [source.root] : [], hostTools: source.kind === "local_file" ? ["read", "grep"] : [],
+        readRoots: source.kind === "local_file" ? [source.root] : [], mcp: this.mcpFor(definition.mcp), hostTools: source.kind === "local_file" ? ["read", "grep"] : [],
         runtime: this.options.runtime, modelRef, thinking, maxTurns: input.maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") },
         clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
@@ -459,6 +465,17 @@ export class RunManager {
     handle.events.on("failed", () => { void this.finishExplore(runId, "failed"); });
     handle.prompt("开始检索。");
     return { runId, maxTurns: input.maxTurns };
+  }
+
+  /** explore 定义声明的 MCP 服务：适配器或配置缺失时不装载，模型只能用内置检索。 */
+  private mcpFor(servers: string[] | undefined): AgentSessionMcpOptions | undefined {
+    const agentDir = this.options.agentDir;
+    if (!servers?.length || !agentDir) return undefined;
+    const adapter = detectMcpAdapter({ sourcePaths: [join(agentDir, "npm", "node_modules", "pi-mcp-adapter")], argv: [], agentDir });
+    if (!adapter.installed) return undefined;
+    let config: McpConfig;
+    try { config = JSON.parse(readFileSync(adapter.configPath, "utf8")) as McpConfig; } catch { return undefined; }
+    return { servers, entryPath: adapter.entryPath, packageDir: adapter.packageDir, config };
   }
 
   /** 角色查询主仓库索引：每次查询前对账，按运行分开分页游标。 */

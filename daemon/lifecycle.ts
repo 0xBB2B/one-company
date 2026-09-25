@@ -601,6 +601,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       workspaceRepoIds: [repoId],
       emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
       index: indexHost,
+      agentDir,
     });
     registerProtocolHandlers({ server, manager: runManager, relayQueue, shellRegistry });
 

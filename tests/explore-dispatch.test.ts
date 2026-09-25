@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/pi-ai";
 import { checkExploreSession } from "../runtime/explore-session.ts";
@@ -10,8 +11,8 @@ vi.setConfig({ testTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
 
-async function world() {
-  const w = await createPmRunWorld(cleanups);
+async function world(agentDir?: string) {
+  const w = await createPmRunWorld(cleanups, { agentDir });
   const workspace = await realpath(w.fixture.state.read(w.fixture.requirementId).data.workspace!.path);
   const readme = join(workspace, "README.md");
   await writeFile(readme, "pi-company 检索夹具：登录模块在 src/auth。\n");
@@ -144,4 +145,31 @@ test("M7-AC18：需求关闭停止其 PM 与绑定检索，但不误停无关的
   expect(pm.ok && pm.run.state).toBe("stopped");
   await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === main.runId));
   expect(w.manager.takeMainExploreReport(main.runId, "connection-a")).toMatchObject({ outcome: "completed", research: { conclusions: ["登录模块在 src/auth"] } });
+});
+
+test("explore 定义声明 MCP 服务时装载其只读工具并优先使用；未声明为只读的工具调用被拒", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-agent-mcp-"));
+  cleanups.push(() => rm(agentDir, { recursive: true, force: true }));
+  const adapter = join(agentDir, "npm", "node_modules", "pi-mcp-adapter");
+  await mkdir(adapter, { recursive: true });
+  await writeFile(join(adapter, "package.json"), JSON.stringify({ name: "pi-mcp-adapter", main: "index.mjs" }));
+  await writeFile(join(adapter, "index.mjs"), `export function createMcpAdapter({ config }) {
+  return (pi) => pi.registerTool({ name: "mcp", label: "MCP", description: "MCP 网关", parameters: { type: "object" },
+    async execute(_id, params) { return { content: [{ type: "text", text: "内网文档：" + params.tool + " " + Object.keys(config.mcpServers).join(",") }], details: {} }; } });
+}`);
+  await writeFile(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: { docs: { command: "x", readOnlyTools: ["docs__search"] } } }));
+  const w = await world(agentDir);
+  const entry = (w.manager as unknown as { options: { roleCatalog: Array<{ name: string; definition?: { mcp?: string[] } }> } }).options.roleCatalog.find((role) => role.name === "explore")!;
+  entry.definition!.mcp = ["docs"];
+  w.provider.queue.push(
+    { type: "toolcall", name: "mcp", input: { tool: "docs__search", server: "docs", args: { q: "登录" } } },
+    { type: "toolcall", name: "mcp", input: { tool: "docs__delete", server: "docs", args: {} } },
+    w.submit(w.readme, await w.hashOf(w.readme)), { type: "text", text: "PM 收到" });
+  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId }, request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 5 });
+  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  const all = JSON.stringify(w.provider.requests);
+  expect(w.exploreRequest(w.provider.requests)!.tools?.map((tool) => tool.name)).toContain("mcp");
+  expect(all).toContain("内网文档：docs__search docs");
+  expect(all).not.toContain("内网文档：docs__delete");
+  expect(all).toContain("只读 MCP 工具");
 });
