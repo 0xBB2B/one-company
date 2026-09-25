@@ -2,7 +2,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { authorizeToolAction } from "../runtime/core-permissions.ts";
-import { closeAuthorized, PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
+import { PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import type { IntakeSubmissionBaseline } from "../runtime/pm-intake-runtime.ts";
 import { createSpecPublishGate } from "../runtime/check-round.ts";
 import { uuidv7 } from "../runtime/database.ts";
@@ -30,7 +30,6 @@ export interface PmToolsInput {
   checkLease: () => Promise<void>;
   /** 提交时的批准基线，由宿主读取当前记录，写入工具结果供接手核对比对。 */
   currentBaseline: () => IntakeSubmissionBaseline;
-  stopAgents: (requirementId: string) => Promise<void>;
   /** 由运行管理器执行的子代理派工与控制；只作用于本 PM 派出的运行。 */
   agents: {
     dispatch(taskId: string, mode: { retry: { reason: string; maxTurns: number } | null; rework: { reason: string; maxTurns: number } | null;
@@ -74,10 +73,7 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
   const track = <T extends CoreToolRuntime>(runtime: T): T => { runtimes.push(runtime); return runtime; };
   try {
     const read = track(await createRequirementReadTool({ ...shared, authorize, binding: { ...identity(), lease: input.lease } }));
-    // 取消与拒绝是用户决定，只能由主代理发起；PM 只能在交付核对通过后以完成关闭
-    const workflow = track(await createWorkflowManageTool({ ...shared, stopAgents: input.stopAgents, grant: { ...identity(), lease: input.lease },
-      authorize: (request) => input.alive() && !(request.action === "close" && request.reason !== undefined &&
-        (request.reason !== "completed" || !closeAuthorized({ dataRoot: input.dataRoot, repoId: input.repoId }, input.lease.requirementId))) }));
+    const workflow = track(await createWorkflowManageTool({ ...shared, authorize, grant: { ...identity(), lease: input.lease } }));
     const verification = track(await createVerificationRunTool({ ...shared, authorize, grant: { ...identity(), epoch: input.epoch } }));
     const { branch: _branch, ...planIdentity } = identity();
     const plan = track(await createPlanManageTool({ ...shared, authorize, grant: { ...planIdentity, lease: input.lease } }));
@@ -86,7 +82,7 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
     return {
       tools: [
         toPiTool("requirement_manage", "读取本需求已批准的 prod 正文、章节或准确版本差异（read/diff/metadata）；不能读取草稿、其他需求或已关闭需求。", REQUIREMENT_READ_PARAMETERS, read),
-        toPiTool("workflow_manage", "查看状态、进入/退出检查阶段、提交中断或等待决策、交付核对，交付核对通过后以 completed 关闭；取消或拒绝只能由用户经主代理决定。", WORKFLOW_MANAGE_PARAMETERS, workflow),
+        toPiTool("workflow_manage", "查看状态、进入/退出检查阶段、提交中断或等待决策、交付核对；交付核对通过后以 report 提交完成报告（note 写给用户的说明）等待用户验收。关闭需求只能由用户经主代理决定。", WORKFLOW_MANAGE_PARAMETERS, workflow),
         toPiTool("verification_run", "在绑定工作区的受控沙箱里运行正式检查命令，或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, verification),
         toPiTool("plan_manage", "维护本需求计划：propose 提出、update 修改、confirm 冻结为可执行基线（AI 决策，不是用户授权）、read 读取、assess-update 逐任务影响复核。接手核对通过且有实施授权才能提出或修改。", PLAN_MANAGE_PARAMETERS, plan),
         toPiTool("spec_change", "提出、校验并在证据满足后发布最小规则候选。", SPEC_CHANGE_PARAMETERS, spec),

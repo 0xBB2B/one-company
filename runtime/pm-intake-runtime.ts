@@ -178,19 +178,6 @@ function advancedGate(ref: Ref & { lease: PmLease }, record: RequirementRecord, 
   return reasons.length ? { allowed: false, reasons } : { allowed: true };
 }
 
-/** 以 completed 关闭须批准清单含已确认的关闭授权；已按 completed 进入关闭的续办沿用当时的核对。 */
-export function closeAuthorized(ref: Ref, requirementId: string): boolean {
-  try {
-    return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => {
-      const row = db.read<RequirementRecord>("requirements", requirementId);
-      if (!row) return false;
-      if (row.data.close?.reason === "completed") return true;
-      return !!row.data.approvalManifest && registeredApprovalManifestIn(db, ref.repoId, row.data.approvalManifest.reference, row)
-        .actions.some((entry) => entry.action === "close" && !entry.unknown);
-    }));
-  } catch { return false; }
-}
-
 /** 批准清单是否含已确认的实施授权；派出 PM 与 PM 内的正式规划、派工都以它为准。 */
 export function implementAuthorized(ref: Ref, row: StoredRecord<RequirementRecord>): boolean {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() =>

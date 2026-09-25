@@ -23,12 +23,12 @@ function result(value: Record<string, unknown>, isError = false) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: { isError } };
 }
 
-/** 主会话的 workflow_manage：经守护进程查看状态、交付核对与关闭需求；取消或拒绝须以用户决定的 decisionId 作为 receiptId。 */
+/** 主会话的 workflow_manage：经守护进程查看状态、交付核对与关闭需求；关闭须以用户决定的 decisionId 作为 receiptId。 */
 export function registerWorkflowManageTool(pi: ExtensionAPI, context: () => WorkflowManageContext): void {
   pi.registerTool({
     name: "pi_company_workflow_manage",
     label: "workflow_manage",
-    description: "查看需求状态（status）、交付核对（delivery-check）、续办未完成的关闭（repair）或关闭需求（close）。取消（cancelled）或拒绝（rejected）须先用 pi_company_user_interact purpose=adjudicate 按用户原话登记决定，再以返回的 decisionId 作为 receiptId；完成（completed）须交付核对通过。",
+    description: "查看需求状态（status）、交付核对（delivery-check）、续办未完成的关闭（repair）或关闭需求（close）。完成（completed）、取消（cancelled）或拒绝（rejected）都须先用 pi_company_user_interact purpose=adjudicate 按用户原话登记决定（完成即用户验收通过 PM 的完成报告），再以返回的 decisionId 作为 receiptId。",
     parameters: MAIN_WORKFLOW_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {

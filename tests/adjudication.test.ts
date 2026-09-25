@@ -1,5 +1,4 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
@@ -12,6 +11,7 @@ import { createUserInteractTool } from "../runtime/user-interact-tool.ts";
 import { checkInterpretation } from "../runtime/user-interaction-format.ts";
 import type { InteractionContext } from "../runtime/user-interaction-format.ts";
 import { RequirementCloseService } from "../runtime/workflow-close.ts";
+import { mainAdjudication } from "./helpers/main-adjudication.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 60_000 });
@@ -36,31 +36,13 @@ async function world() {
   await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: { reason: "估计不足", maxTurns: 1 } });
   await until(() => task("login").status === "awaiting_user" && w.provider.queue.length === 0);
 
-  const sessionId = uuidv7(), windowId = uuidv7();
-  const authorization = new HostAuthorizationManager({ dataRoot: w.fixture.dataRoot });
-  authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [w.fixture.repoId] });
-  authorization.bindRequirement(w.fixture.repoId, w.fixture.requirementId, sessionId);
-  const registry = new ModelRegistry(w.runtime), model = w.runtime.getModels("team-model")[0]!;
-  const ctx = { cwd: w.fixture.repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
-    ui: { notify: () => {}, confirm: () => { throw new Error("UI.confirm forbidden"); } }, sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
-  const interaction = new MainRequirementInteraction({ dataRoot: w.fixture.dataRoot, authorization,
-    resolveHost: () => ({ windowId, sessionId, repositories: new Map([[w.fixture.repoId, { path: w.fixture.repositoryRoot }]]) }) });
-  cleanups.push(() => { interaction.dispose(); authorization.shutdown(); });
-  const tool = createUserInteractTool({ interaction });
   const itemId = `task:${login}`;
   const version = () => `task:${login}:${taskRow("login").version}`;
-  const entry = (references: string[], patch: Record<string, unknown> = {}) => ({ kind: "adjudication", basis: "explicit", resolution: "direct", candidateId: null,
-    requestId: null, actions: [], conclusion: "用户对任务 login 的裁决", scope: "任务 login", references, supersedes: [], ...patch });
-  async function adjudicate(text: string, entries: unknown[] | null, target = itemId, itemVersion?: string) {
-    interaction.captureInput({ source: "interactive", text }, ctx);
-    if (entries) w.provider.queue.push({ type: "text", text: JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries }) });
-    const toolCallId = uuidv7();
-    const result = await tool.execute(toolCallId, { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId, requirementId: w.fixture.requirementId,
-      operationId: uuidv7(), itemId: target, itemVersion: itemVersion ?? (target === itemId ? version()
-        : `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`) } as never, undefined, undefined, ctx);
-    interaction.assertDelivery(toolCallId, ctx);
-    return result.details as Record<string, unknown>;
-  }
+  const main = mainAdjudication(w, cleanups);
+  const entry = (references: string[], patch: Record<string, unknown> = {}) => main.entry(references, { conclusion: "用户对任务 login 的裁决", scope: "任务 login", ...patch });
+  const adjudicate = (text: string, entries: unknown[] | null, target = itemId, itemVersion?: string) =>
+    main.adjudicate(text, entries, target, itemVersion ?? (target === itemId ? version() : `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`));
+  const { interaction, ctx } = main;
   const decisions = () => w.db((db) => db.list("short_decisions")).length;
   return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx };
 }
@@ -239,11 +221,11 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
   const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
     workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
     currentBaseline: () => ({ approvedRevision: 1, approvedProdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
-    stopAgents: async () => {}, agents: { dispatch: async () => ({}), control: async () => ({}) } });
+    agents: { dispatch: async () => ({}), control: async () => ({}) } });
   cleanups.push(() => pmTools.dispose());
   const pmWorkflow = pmTools.tools.find((tool) => tool.name === "pi_company_workflow_manage")!;
-  const pmResult = await pmWorkflow.execute("pm-close", { action: "close", reason: "cancelled", receiptId: uuidv7(), operationId: uuidv7() }, undefined, undefined, undefined as never);
-  expect(JSON.parse((pmResult.content[0] as { text: string }).text)).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });
+  await expect(pmWorkflow.execute("pm-close", { action: "close", reason: "cancelled", receiptId: uuidv7(), operationId: uuidv7() }, undefined, undefined, undefined as never))
+    .rejects.toMatchObject({ code: "workflow_denied" });
 
   const result = await w.adjudicate("这个需求不要了，取消吧", [w.entry([`item:${requirementItem}`, `version:${requirementItem}:${recordVersion()}`, "choice:cancel"])], requirementItem);
   expect(result).toMatchObject({ status: "recorded", choice: "cancel" });
@@ -259,7 +241,7 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
   expect(await w.manager.overviews()).toEqual([]);
 });
 
-test("需求事项只能选择取消或拒绝，任务事项不能选择取消", () => {
+test("需求事项只能选择取消或拒绝，任务事项不能选择取消，完成报告只能通过或返工", () => {
   const context = { basis: { requirementId: uuidv7(), version: 1, epoch: 1, prod: null }, currentGoal: "", candidates: [], questions: [], priorDecisions: [] } as InteractionContext;
   const requirementId = uuidv7(), taskId = uuidv7();
   const base = { kind: "adjudication", basis: "explicit", resolution: "direct", candidateId: null, requestId: null, actions: [], conclusion: "裁决", scope: "需求", supersedes: [] };
@@ -270,6 +252,11 @@ test("需求事项只能选择取消或拒绝，任务事项不能选择取消",
   expect(() => checkInterpretation(interpretation(refs(requirementSubject, "reject")), { ...context, adjudication: requirementSubject })).not.toThrow();
   expect(() => checkInterpretation(interpretation(refs(requirementSubject, "terminate")), { ...context, adjudication: requirementSubject })).toThrow(/adjudication_invalid/);
   expect(() => checkInterpretation(interpretation(refs(taskSubject, "cancel")), { ...context, adjudication: taskSubject })).toThrow(/adjudication_invalid/);
+  const reportId = uuidv7();
+  const reportSubject = { itemId: `report:${reportId}`, version: `report:${reportId}:1`, summary: "完成报告" };
+  for (const choice of ["accept", "rework"]) expect(() => checkInterpretation(interpretation(refs(reportSubject, choice)), { ...context, adjudication: reportSubject })).not.toThrow();
+  for (const choice of ["cancel", "retry", "terminate"]) expect(() => checkInterpretation(interpretation(refs(reportSubject, choice)), { ...context, adjudication: reportSubject })).toThrow(/adjudication_invalid/);
+  expect(() => checkInterpretation(interpretation(refs(taskSubject, "accept")), { ...context, adjudication: taskSubject })).toThrow(/adjudication_invalid/);
 });
 
 

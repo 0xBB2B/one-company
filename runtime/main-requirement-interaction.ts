@@ -421,7 +421,7 @@ export class MainRequirementInteraction {
     }
   }
   /**
-   * 用户对待裁决任务的决定：只解释本窗口宿主截获的当前原话，解释结果须恰有一条引用该事项的裁决条目，
+   * 用户对待裁决事项的决定：只解释本窗口宿主截获的当前原话，解释结果须恰有一条引用该事项的裁决条目，
    * 存为用户短决定后按记录让任务生效；不清楚时不登记。
    */
   async adjudicate(ctx: ExtensionContext, request: { repoId: string; requirementId: string; itemId: string; itemVersion: string }): Promise<Record<string, unknown>> {
@@ -450,6 +450,10 @@ export class MainRequirementInteraction {
         return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: effect.choice,
           next: `以 workflow_manage close（reason=${effect.choice === "cancel" ? "cancelled" : "rejected"}，receiptId=${decisionId}）关闭需求` }, undefined, proofs);
       }
+      if (effect.kind === "report") {
+        return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: effect.choice,
+          next: effect.choice === "accept" ? `以 workflow_manage close（reason=completed，receiptId=${decisionId}）关闭需求` : "返工意见已交回 PM，等待 PM 返修后重新提交完成报告" }, undefined, proofs);
+      }
       const task = effect.task;
       proofs.push(...withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => [this.#row(db, "tasks", task.taskId)]));
       return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: task.userDecision!.choice,
@@ -475,7 +479,7 @@ export class MainRequirementInteraction {
       Boolean(document?.manifest.retainedSources?.some((source) => source.kind === "target"));
     const base = { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
       version: loaded.version, epoch: loaded.epoch, targetRecorded, prodActivated: false, decisionIds: saved.decisionIds,
-      unimplemented: ["pm_scheduling", "worker_dispatch", "close", "business_commit", "push"] };
+      unimplemented: ["pm_scheduling", "worker_dispatch", "business_commit", "push"] };
     if (!document) return this.#prove(ctx, request.repoId, { ...base, blockedBy: "candidate_requires_revision_or_clarification", allowedScopes: [] }, undefined, decisionProofs);
     const reference = approvalManifestReference(document.manifest);
     const authorizeManifest: NonNullable<RequirementServiceOptions["authorizeManifest"]> = (r) => {

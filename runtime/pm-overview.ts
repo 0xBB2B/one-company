@@ -7,8 +7,9 @@ import { latestPmSubmission } from "./pm-intake-runtime.ts";
 import { PmIntakeStore } from "./pm-intake-store.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import type { RunRecord } from "./run-store.ts";
+import { pendingReportIn } from "./workflow-close.ts";
 
-export type PendingItemKind = "adjudicate" | "intake-review" | "question" | "adjust-requirement";
+export type PendingItemKind = "adjudicate" | "intake-review" | "question" | "adjust-requirement" | "acceptance";
 export interface PendingItem {
   itemId: string;
   kind: PendingItemKind;
@@ -109,6 +110,8 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
         version: `question:${questionId}:${input.record.approvalManifest?.reference.manifestHash ?? "none"}` });
     }
   }
+  const report = input.record.lifecycle === "active" ? pendingReportIn(input.db, input.repoId, input.lease.requirementId) : null;
+  if (report) items.push({ itemId: `report:${report.data.reportId}`, kind: "acceptance", label: "待你验收：PM 完成报告", version: `report:${report.data.reportId}:${report.version}` });
   return items;
 }
 
@@ -119,7 +122,7 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
     const running = input.children.filter((child) => ACTIVE_CHILD.has(child.state));
     return running.length ? `暂停中：等待 ${running.map((child) => ROLE_LABEL[child.role ?? ""] ?? "子代理").join("、")} 结束` : "暂停中：等待当前工具结束";
   }
-  if (status === "waiting") return "等待你的决定";
+  if (status === "waiting") return items.some((item) => item.kind === "acceptance") ? "等待你验收完成报告" : "等待你的决定";
   if (!reviewPassedFor(input.dataRoot, input.repoId, input.lease)) return items.some((item) => item.kind === "intake-review") ? "等待核对接手理解" : "接手中";
   if (input.record.pendingRevision !== null) return `复核批准更新 r${input.record.pendingRevision}`;
   if (activeCheckRoundIn(input.db, input.repoId, input.lease.requirementId)) return "检查中";

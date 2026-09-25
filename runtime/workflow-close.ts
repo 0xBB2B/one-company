@@ -23,10 +23,12 @@ import { readVerdictsIn } from "./verdicts.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { implementScope, readPlanIn, terminationPending } from "./plan-manage.ts";
 import { endRequirementExploreSessionsIn } from "./explore-session.ts";
+import { readGit } from "./git-read.ts";
 
 export const CLOSE_OPERATIONS = "close_operations";
 export const DELIVERY_RECEIPTS = "delivery_receipts";
 export const COMPLETION_NOTICES = "completion_notices";
+export const COMPLETION_REPORTS = "completion_reports";
 const SPEC_PROPOSALS = "spec_proposals";
 const CHANGE_SETS = "change_sets";
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
@@ -59,8 +61,17 @@ export const DeliveryReceipt = object({
   deliverable: Type.Boolean(), blockers: Type.Array(Type.String({ maxLength: 256 })), suggestions: counter, createdAt: counter,
 });
 export type DeliveryReceipt = Static<typeof DeliveryReceipt>;
+export const REPORT_COMMIT_LIMIT = 50;
+export const CompletionReport = object({
+  format: Type.Literal("completion-report/v1"), reportId: id, requirementId: id, repoId: hash, pmRunId: id, deliveryReceiptId: id, basis: Basis,
+  commits: Type.Array(object({ sha: Type.String({ pattern: "^[0-9a-f]{40,64}$" }), subject: Type.String({ maxLength: 512 }) }), { maxItems: REPORT_COMMIT_LIMIT }),
+  commitsTruncated: Type.Boolean(), note: Type.String({ minLength: 1, maxLength: 4000 }),
+  status: Type.Union([Type.Literal("pending"), Type.Literal("superseded"), Type.Literal("accepted"), Type.Literal("rework")]),
+  decisionId: nullable(id), notified: Type.Boolean(), createdAt: counter, decidedAt: nullable(counter),
+});
+export type CompletionReport = Static<typeof CompletionReport>;
 
-export type CloseAction = "preflight" | "close" | "archive" | "notify" | "delivery-check" | "status";
+export type CloseAction = "preflight" | "close" | "archive" | "notify" | "delivery-check" | "status" | "report";
 export interface CloseAuthorization { readonly action: CloseAction; readonly requirementId: string; readonly reason?: CloseReason; readonly receiptId?: string; readonly operationId?: string }
 export interface RequirementCloseServiceOptions {
   repositoryRoot: string;
@@ -183,6 +194,33 @@ function basisOf(facts: DeliveryFacts): CloseBasis {
     checkRoundId: facts.round?.checkRoundId ?? null, verificationIds, verdictIds, digest };
 }
 
+/** 当前关闭依据；完成报告绑定它，依据变化即报告失效。 */
+export function currentCloseBasisIn(db: LocalDatabase, repoId: string, requirementId: string): CloseBasis {
+  return basisOf(deliveryFactsIn(db, repoId, requirementId));
+}
+export function reportsIn(db: LocalDatabase, repoId: string, requirementId: string): Array<{ version: number; data: CompletionReport }> {
+  return db.list<unknown>(COMPLETION_REPORTS).map((row) => ({ version: row.version, data: checked(CompletionReport, row.data) }))
+    .filter((row) => row.data.repoId === repoId && row.data.requirementId === requirementId).sort((a, b) => a.data.createdAt - b.data.createdAt);
+}
+/** 待用户验收的报告：最新一份仍为 pending 且绑定的依据仍是当前依据。 */
+export function pendingReportIn(db: LocalDatabase, repoId: string, requirementId: string): { version: number; data: CompletionReport } | null {
+  const latest = reportsIn(db, repoId, requirementId).at(-1);
+  if (!latest || latest.data.status !== "pending") return null;
+  return latest.data.basis.digest === currentCloseBasisIn(db, repoId, requirementId).digest ? latest : null;
+}
+export function acceptedReportIn(db: LocalDatabase, repoId: string, requirementId: string, decisionId: string): CompletionReport | null {
+  return reportsIn(db, repoId, requirementId).find((row) => row.data.status === "accepted" && row.data.decisionId === decisionId)?.data ?? null;
+}
+/** 登记用户对待验收报告的决定；调用方须已核对事项版本与用户决定。 */
+export function decideReportIn(db: LocalDatabase, reportId: string, decision: { decisionId: string; choice: "accept" | "rework"; now: number }): CompletionReport {
+  const row = db.read<unknown>(COMPLETION_REPORTS, reportId);
+  const current = row ? checked(CompletionReport, row.data) : null;
+  if (!row || !current || current.status !== "pending") throw new CloseError("not_found", "报告不在待验收状态");
+  const next = checked(CompletionReport, { ...current, status: decision.choice === "accept" ? "accepted" : "rework", decisionId: decision.decisionId, decidedAt: decision.now });
+  db.update(COMPLETION_REPORTS, reportId, row.version, next);
+  return next;
+}
+
 const PreflightInput = object({ requirementId: id, reason: CloseReason, receiptId: id });
 const CloseInput = object({ requirementId: id, reason: CloseReason, receiptId: id, operationId: id });
 export interface ClosePreflight { eligible: boolean; missing: string[]; basis: CloseBasis | null }
@@ -269,6 +307,39 @@ export class RequirementCloseService {
     }));
   }
 
+  /**
+   * PM 的完成报告：交付核对无阻塞且无执行中的子代理才受理；事实部分由程序取自交付凭据与需求分支提交，PM 的说明只作参考。
+   * 用户要求返工后，关闭依据未变（没有新的审查、检查轮或改动）时不受理新报告。
+   */
+  async report(input: { requirementId: string; pmRunId: string; note: string }): Promise<{ status: "submitted"; reportId: string } | { status: "rejected"; missing: string[] }> {
+    checked(id, input.requirementId); checked(id, input.pmRunId);
+    this.authorize({ action: "report", requirementId: input.requirementId });
+    const { receipt, basis, roleRunsActive } = await this.deliveryCheckWithBasis(input.requirementId);
+    const missing = [...receipt.blockers];
+    if (roleRunsActive) missing.push("role_agents_running");
+    const previous = withDatabase(this.database, (db) => reportsIn(db, this.options.repoId, input.requirementId).at(-1)?.data);
+    if (previous?.status === "rework" && previous.basis.digest === basis.digest) missing.push("rework_not_addressed");
+    if (missing.length > 0) return freeze({ status: "rejected" as const, missing: [...new Set(missing)] });
+    const workspace = withDatabase(this.database, (db) => requirementIn(db, this.options.repoId, input.requirementId)).data.workspace!;
+    let log: string;
+    try { log = (await readGit(workspace.path, ["log", "--no-color", "--format=%H%x09%s", "-n", String(REPORT_COMMIT_LIMIT + 1), `${workspace.baseCommit}..HEAD`])).stdout; }
+    catch { return freeze({ status: "rejected" as const, missing: ["workspace_unavailable"] }); }
+    const lines = log.split("\n").filter(Boolean);
+    const commits = lines.slice(0, REPORT_COMMIT_LIMIT).map((line) => { const tab = line.indexOf("\t"); return { sha: line.slice(0, tab), subject: line.slice(tab + 1).slice(0, 512) }; });
+    this.authorize({ action: "report", requirementId: input.requirementId });
+    return withDatabase(this.database, (db) => db.transaction(() => {
+      if (currentCloseBasisIn(db, this.options.repoId, input.requirementId).digest !== basis.digest) return freeze({ status: "rejected" as const, missing: ["basis_changed"] });
+      for (const row of reportsIn(db, this.options.repoId, input.requirementId)) {
+        if (row.data.status === "pending") db.update(COMPLETION_REPORTS, row.data.reportId, row.version, checked(CompletionReport, { ...row.data, status: "superseded" }));
+      }
+      const report = checked(CompletionReport, { format: "completion-report/v1", reportId: uuidv7(), requirementId: input.requirementId, repoId: this.options.repoId,
+        pmRunId: input.pmRunId, deliveryReceiptId: receipt.receiptId, basis, commits, commitsTruncated: lines.length > REPORT_COMMIT_LIMIT, note: input.note,
+        status: "pending", decisionId: null, notified: false, createdAt: this.now(), decidedAt: null });
+      db.create(COMPLETION_REPORTS, report.reportId, report, report.reportId);
+      return freeze({ status: "submitted" as const, reportId: report.reportId });
+    }));
+  }
+
   /** 资格预检只报告缺项，不改状态、不提升 epoch、不撤权。 */
   async preflight(input: Static<typeof PreflightInput>): Promise<ClosePreflight> {
     let request: Static<typeof PreflightInput>;
@@ -291,6 +362,9 @@ export class RequirementCloseService {
     const { receipt, basis, roleRunsActive } = await this.deliveryCheckWithBasis(request.requirementId);
     missing.push(...receipt.blockers);
     if (roleRunsActive) missing.push("role_agents_running");
+    const accepted = withDatabase(this.database, (db) => acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId));
+    if (!accepted) missing.push("completion_report_not_accepted");
+    else if (accepted.basis.digest !== basis.digest) missing.push("completion_report_stale");
     return { eligible: missing.length === 0, missing: [...new Set(missing)], basis };
   }
 
@@ -313,6 +387,7 @@ export class RequirementCloseService {
           if (basisOf(facts).digest !== basis.digest) throw new RequirementStateError("close_basis_changed");
           if (activeCheckRoundIn(db, this.options.repoId, request.requirementId)) throw new RequirementStateError("check_phase_active");
           if (request.reason === "completed" && (facts.blockers.length > 0 || activeRunsIn(db, request.requirementId, "role").length > 0)) throw new RequirementStateError("completion_blocked");
+          if (request.reason === "completed" && acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId)?.basis.digest !== basis.digest) throw new RequirementStateError("completion_report_stale");
           const workspace = facts.record.data.workspace;
           const archivePath = request.reason === "completed" && workspace && facts.record.data.approved ? this.operations.archivePath(request.requirementId, facts.record.data.approved) : null;
           if (request.reason === "completed" && !archivePath) throw new RequirementStateError("archive_path_missing");

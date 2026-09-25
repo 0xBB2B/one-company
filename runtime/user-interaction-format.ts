@@ -12,7 +12,7 @@ const hash = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 
 const ProdReference = object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])" }), hash });
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 const enumeration = <T extends string>(values: [T, ...T[]]) => Type.Union([Type.Literal(values[0]), ...values.slice(1).map((value) => Type.Literal(value))]);
-export const InteractionAction = enumeration(["analyze", "plan", "implement", "close", "commit", "push"]);
+export const InteractionAction = enumeration(["analyze", "plan", "implement", "commit", "push"]);
 export type InteractionAction = Static<typeof InteractionAction>;
 export const InteractionBasis = object({ requirementId: id, version: positive, epoch: positive, prod: nullable(ProdReference) });
 export type InteractionBasis = Static<typeof InteractionBasis>;
@@ -68,13 +68,13 @@ export const PendingQuestion = object({
 export type PendingQuestion = Static<typeof PendingQuestion>;
 /** 当前待用户裁决的事项：由宿主从持久记录生成，解释器只能引用它，不能改写。 */
 export const AdjudicationSubject = object({
-  itemId: Type.String({ pattern: "^(task|requirement):[0-9a-f-]{36}$" }), version: Type.String({ pattern: "^(task|requirement):[0-9a-f-]{36}:[1-9][0-9]{0,15}$" }),
+  itemId: Type.String({ pattern: "^(task|requirement|report):[0-9a-f-]{36}$" }), version: Type.String({ pattern: "^(task|requirement|report):[0-9a-f-]{36}:[1-9][0-9]{0,15}$" }),
   summary: Type.String({ minLength: 1, maxLength: 2000 }),
 });
 export type AdjudicationSubject = Static<typeof AdjudicationSubject>;
-export const ADJUDICATION_CHOICES = ["retry", "adjust", "terminate", "cancel", "reject"] as const;
-/** 任务事项只能再给一次机会、调整或终止；需求事项只能取消或拒绝。 */
-const CHOICES_BY_SUBJECT: Readonly<Record<string, readonly string[]>> = { task: ["retry", "adjust", "terminate"], requirement: ["cancel", "reject"] };
+export const ADJUDICATION_CHOICES = ["retry", "adjust", "terminate", "cancel", "reject", "accept", "rework"] as const;
+/** 任务事项只能再给一次机会、调整或终止；需求事项只能取消或拒绝；完成报告只能通过或返工。 */
+const CHOICES_BY_SUBJECT: Readonly<Record<string, readonly string[]>> = { task: ["retry", "adjust", "terminate"], requirement: ["cancel", "reject"], report: ["accept", "rework"] };
 const ADJUDICATION_PREFIXES = ["item:", "version:", "choice:", "max-turns:"];
 export type AdjudicationChoice = (typeof ADJUDICATION_CHOICES)[number];
 export const InteractionContext = object({

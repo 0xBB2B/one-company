@@ -37,7 +37,7 @@ import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
 import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
-import { closeAuthorized, implementAuthorized } from "../runtime/pm-intake-runtime.ts";
+import { implementAuthorized } from "../runtime/pm-intake-runtime.ts";
 import { exploreContext, exploreInput, sourceHashesMatch } from "../runtime/explore-dispatch.ts";
 import type { ExploreRequest } from "../runtime/explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
@@ -254,7 +254,6 @@ export class RunManager {
           if (!current.approved || !current.approvalManifest) throw new Error("approval_baseline_missing");
           return { approvedRevision: current.revision, approvedProdHash: current.approved.hash, approvalManifestHash: current.approvalManifest.reference.manifestHash };
         },
-        stopAgents: (requirementId) => this.stopRequirement(requirementId, run.id),
         agents: {
           dispatch: (taskId, mode) => this.dispatchTask({ pmRunId: run.id, taskId, ...mode }),
           explore: (request, maxTurns) => this.dispatchExplore({ parent: { role: "PM", pmRunId: run.id },
@@ -644,10 +643,9 @@ export class RunManager {
   }
 
   /** 结束绑定该需求的全部运行；关闭协议以运行记录终态为准。 */
-  /** callerRunId 是在自己的工具调用里发起停止的运行：只发出停止、不等它当前的工具调用结束（否则互相等待到超时），该调用仍须能完成，故不视为已确认停止。 */
-  async stopRequirement(requirementId: string, callerRunId?: string): Promise<void> {
+  async stopRequirement(requirementId: string): Promise<void> {
     const page = await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER });
-    for (const run of page.items) if (!isTerminalState(run.state)) await this.stop(run.id, { detachSession: run.id === callerRunId });
+    for (const run of page.items) if (!isTerminalState(run.state)) await this.stop(run.id);
   }
   /** 只续接本进程内仍持有会话的暂停运行；没有会话不能证明原运行可安全续接。 */
   async resume(runId: string, options: { children?: boolean } = {}): Promise<{ state: string }> {
@@ -830,8 +828,8 @@ export class RunManager {
   }
 
   /**
-   * 主代理的 workflow_manage：查看状态、交付核对与关闭。以取消或拒绝关闭时，receiptId 须是用户对该需求做出的对应决定；
-   * 以完成关闭仍由关闭协议的交付核对把关。关闭时由本进程停止该需求的全部运行。
+   * 主代理的 workflow_manage：查看状态、交付核对与关闭。receiptId 须是用户对该需求做出的对应决定：取消、拒绝，或验收通过完成报告；
+   * 完成报告绑定的交付依据由关闭协议再核对。关闭时由本进程停止该需求的全部运行。
    */
   async workflowManage(requirementId: string, request: Record<string, unknown>): Promise<unknown> {
     const record = (await this.pmState()).read(requirementId).data;
@@ -842,8 +840,8 @@ export class RunManager {
       tool = await createWorkflowManageTool({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot,
         stopAgents: (id) => this.stopRequirement(id),
         grant: { role: "main", callerId: uuidv7(), runId: uuidv7(), requirementId, repoId: this.repoId, workspaceId: record.workspace.workspaceId, branch: record.workspace.branch },
-        authorize: (check) => check.action !== "close" || check.reason === undefined || (check.reason === "completed" && closeAuthorized(ref, requirementId)) ||
-          (check.receiptId !== undefined && closeDecisionValid(ref, { requirementId, receiptId: check.receiptId, reason: check.reason as "cancelled" | "rejected" })) });
+        authorize: (check) => check.action !== "close" || check.reason === undefined ||
+          (check.receiptId !== undefined && closeDecisionValid(ref, { requirementId, receiptId: check.receiptId, reason: check.reason as "completed" | "cancelled" | "rejected" })) });
     } catch (error) { throw protocolError("workflow_denied", (error as Error).message); }
     try { return await tool.execute(request); }
     catch (error) {
@@ -904,7 +902,7 @@ export class RunManager {
     if (updated.ok) this.emitRun(updated.run);
     return { state: confirmed ? "paused" : "pausing", confirmed, ...(!confirmed ? { reason: "会话或子运行尚未确认暂停" } : {}) };
   }
-  async stop(runId: string, options: { detachSession?: boolean } = {}): Promise<{ state: string; confirmed: boolean; reason?: string }> {
+  async stop(runId: string): Promise<{ state: string; confirmed: boolean; reason?: string }> {
     const result = await this.runStore.get(runId);
     if (!result.ok) throw protocolError("not_found", "运行不存在");
     let run = result.run;
@@ -920,9 +918,7 @@ export class RunManager {
     if (requested) this.emitRun(run);
     const entry = this.sessions.get(runId);
     const [sessionStop, shellStop, childrenStop] = await Promise.allSettled([
-      !entry ? Promise.resolve({ stopped: true })
-        : options.detachSession ? (void entry.handle.stop().catch(() => {}), Promise.resolve({ stopped: false }))
-        : entry.handle.stop(),
+      entry ? entry.handle.stop() : Promise.resolve({ stopped: true }),
       this.verifyRunShells(run, true),
       this.childrenOf(run).then((children) => Promise.all(children.map((child) => this.stop(child.id)))),
     ]);

@@ -3,10 +3,12 @@ import type { LocalDatabase } from "./database.ts";
 import { confirmedPlanKey, readPlanIn, stalledStage, TASKS, terminationPending } from "./plan-manage.ts";
 import type { TaskRecord, UserDecision } from "./plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
+import { checked } from "./requirement-contracts.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { checkDecisionRecord } from "./short-decision-format.ts";
 import type { AdjudicationChoice, AdjudicationSubject } from "./user-interaction-format.ts";
 import { ADJUDICATION_CHOICES } from "./user-interaction-format.ts";
+import { COMPLETION_REPORTS, CompletionReport, decideReportIn, pendingReportIn, reportsIn } from "./workflow-close.ts";
 
 export class AdjudicationError extends Error {
   readonly code: string;
@@ -25,7 +27,7 @@ function current(db: LocalDatabase, requirementId: string): { record: Requiremen
 
 /**
  * 给解释器的事项摘要只含程序记录的内容；PM 与子代理写的文字不进入解释用户原话的上下文。
- * 任务事项须当前正待用户裁决；需求事项绑定当前需求记录版本，可随时取消或拒绝。
+ * 任务事项须当前正待用户裁决；需求事项绑定当前需求记录版本，可随时取消或拒绝；报告事项须仍待验收。
  */
 export function adjudicationSubject(ref: Ref, requirementId: string, itemId: string): AdjudicationSubject {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
@@ -35,6 +37,14 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
       const halted = terminationPending(plan?.tasks ?? [], record.revision);
       return { itemId, version: `requirement:${requirementId}:${version}`, summary: [`需求 ${requirementId} · 当前批准版本 r${record.revision}`,
         halted ? "已有任务被用户终止，需求正暂停等待调整或取消" : "需求正在进行", "可选：取消（不再需要）或拒绝（需求本身不成立或做不了）"].join("\n") };
+    }
+    if (itemId.startsWith("report:")) {
+      const item = pendingItemsIn({ ...ref, db, record, lease }, plan?.tasks ?? []).find((candidate) => candidate.itemId === itemId && candidate.kind === "acceptance")
+        ?? deny("item_not_pending");
+      const report = checked(CompletionReport, db.read<unknown>(COMPLETION_REPORTS, itemId.slice("report:".length))!.data);
+      return { itemId, version: item.version, summary: [`需求 ${requirementId} · 当前批准版本 r${record.revision}`, "PM 提交了完成报告，等待用户验收",
+        `检查轮 ${report.basis.checkRoundId ?? "无"} · 正式验证 ${report.basis.verificationIds.length} 项 · 裁决 ${report.basis.verdictIds.length} 项 · 分支提交 ${report.commits.length} 个`,
+        "可选：accept 验收通过（随后以完成关闭需求）；rework 返工（意见交回 PM）"].join("\n") };
     }
     if (!plan) deny("plan_missing");
     const item = pendingItemsIn({ ...ref, db, record, lease }, plan!.tasks).find((candidate) => candidate.itemId === itemId && candidate.kind === "adjudicate")
@@ -70,11 +80,11 @@ function userDecisionIn(db: LocalDatabase, ref: Ref, requirementId: string, deci
   return { decision, parsed: parse(decision.references) };
 }
 
-export type AdjudicationEffect = { kind: "task"; task: TaskRecord } | { kind: "requirement"; choice: "cancel" | "reject" };
+export type AdjudicationEffect = { kind: "task"; task: TaskRecord } | { kind: "requirement"; choice: "cancel" | "reject" } | { kind: "report"; choice: "accept" | "rework" };
 
 /**
  * 按已登记的用户短决定生效。调用方给出的只是决定 ID，选项与轮数一律从持久记录读取，且须绑定当前需求版本与事项版本。
- * 任务决定改写任务状态；取消/拒绝需求只核对，由主代理随后以该决定关闭需求。
+ * 任务决定改写任务状态；取消/拒绝需求只核对，由主代理随后以该决定关闭需求；报告决定改写报告状态，通过后由主代理以该决定完成关闭。
  */
 export function applyAdjudication(ref: Ref, input: { requirementId: string; decisionId: string; now?: number }): AdjudicationEffect {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => {
@@ -84,6 +94,13 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     if (parsed.itemId === `requirement:${input.requirementId}`) {
       if (parsed.version !== `requirement:${input.requirementId}:${version}` || (parsed.choice !== "cancel" && parsed.choice !== "reject")) deny("item_changed");
       return { kind: "requirement" as const, choice: parsed.choice as "cancel" | "reject" };
+    }
+    if (parsed.itemId.startsWith("report:")) {
+      const pending = pendingReportIn(db, ref.repoId, input.requirementId);
+      if (!pending || `report:${pending.data.reportId}` !== parsed.itemId || `report:${pending.data.reportId}:${pending.version}` !== parsed.version ||
+        (parsed.choice !== "accept" && parsed.choice !== "rework")) deny("item_changed");
+      decideReportIn(db, parsed.itemId.slice("report:".length), { decisionId: input.decisionId, choice: parsed.choice as "accept" | "rework", now: input.now ?? Date.now() });
+      return { kind: "report" as const, choice: parsed.choice as "accept" | "rework" };
     }
     const taskId = /^task:([0-9a-f-]{36})$/.exec(parsed.itemId)?.[1] ?? deny("decision_shape");
     const row = db.read<TaskRecord>(TASKS, taskId!) ?? deny("task_missing");
@@ -103,17 +120,19 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
 }
 
 /**
- * 以取消或拒绝关闭需求的依据：receiptId 须是用户对该需求做出的对应决定，且决定时的需求版本仍是当前版本，
- * 或需求已按这一决定进入关闭（关闭本身会改变记录版本）。
+ * 关闭需求的依据：receiptId 须是用户对该需求做出的对应决定——取消或拒绝需求，或验收通过完成报告——且决定时的需求版本仍是当前版本，
+ * 或需求已按这一决定进入关闭（关闭本身会改变记录版本）。完成报告绑定的交付依据是否仍当前由关闭协议核对。
  */
-export function closeDecisionValid(ref: Ref, input: { requirementId: string; receiptId: string; reason: "cancelled" | "rejected" }): boolean {
+export function closeDecisionValid(ref: Ref, input: { requirementId: string; receiptId: string; reason: "completed" | "cancelled" | "rejected" }): boolean {
   try {
     return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
       const row = db.read<RequirementRecord>("requirements", input.requirementId);
       if (!row) return false;
       const { decision, parsed } = userDecisionIn(db, ref, input.requirementId, input.receiptId);
-      const expected = input.reason === "cancelled" ? "cancel" : "reject";
-      if (parsed.itemId !== `requirement:${input.requirementId}` || parsed.choice !== expected ||
+      if (input.reason === "completed") {
+        const report = reportsIn(db, ref.repoId, input.requirementId).find((entry) => `report:${entry.data.reportId}` === parsed.itemId)?.data;
+        if (parsed.choice !== "accept" || report?.status !== "accepted" || report.decisionId !== input.receiptId) return false;
+      } else if (parsed.itemId !== `requirement:${input.requirementId}` || parsed.choice !== (input.reason === "cancelled" ? "cancel" : "reject") ||
         parsed.version !== `requirement:${input.requirementId}:${decision.requirementVersion}`) return false;
       // 进入关闭会提升 epoch，续办同一关闭时只核对关闭意图绑定的正是这一决定
       const sameVersion = row.version === decision.requirementVersion && row.data.lifecycle === "active" && decision.epoch === row.data.epoch;
@@ -123,11 +142,17 @@ export function closeDecisionValid(ref: Ref, input: { requirementId: string; rec
   } catch { return false; }
 }
 
-/** 取出尚未告知 PM 的用户决定并标记已告知；只返回固定文字，不含正文。 */
+/** 取出尚未告知 PM 的用户决定并标记已告知；只含固定文字与用户返工意见，不含正文。 */
 export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string[] {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => {
     const plan = readPlanIn(db, requirementId);
     const messages: string[] = [];
+    for (const row of reportsIn(db, ref.repoId, requirementId)) {
+      if (row.data.status !== "rework" || row.data.notified) continue;
+      db.update(COMPLETION_REPORTS, row.data.reportId, row.version, checked(CompletionReport, { ...row.data, notified: true }));
+      const opinion = db.read<{ conclusion?: string }>("short_decisions", row.data.decisionId!)?.data.conclusion ?? "";
+      messages.push(`用户未通过完成报告，要求返工。用户意见：「${opinion}」\n原报告已作废。在本需求内按意见追加返修任务，经任务级审查与新的检查轮后重新提交完成报告；意见超出已批准范围时，说明情况等待用户调整需求。`);
+    }
     for (const task of plan?.tasks ?? []) {
       const decision = task.userDecision;
       if (!decision || decision.notified) continue;

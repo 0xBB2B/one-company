@@ -22,6 +22,7 @@ export const WORKFLOW_MANAGE_PARAMETERS = Type.Union([
   object({ action: Type.Literal("check-decision"), checkRoundId: id, kind: Type.Union([Type.Literal("interrupt"), Type.Literal("defer")]), revision: positive }),
   object({ action: Type.Literal("close"), reason: CloseReason, receiptId: id, operationId: id }),
   object({ action: Type.Literal("delivery-check") }),
+  object({ action: Type.Literal("report"), note: Type.String({ minLength: 1, maxLength: 4000 }) }),
 ]);
 export type WorkflowManageParameters = Static<typeof WORKFLOW_MANAGE_PARAMETERS>;
 export type WorkflowManageAction = WorkflowManageParameters["action"];
@@ -44,7 +45,7 @@ function freeze<T>(value: T): T {
   return value;
 }
 
-/** workflow_manage 的工具工厂：检查阶段进入/退出、PM 中断/等待决策、交付凭据与关闭协议。 */
+/** workflow_manage 的工具工厂：检查阶段进入/退出、PM 中断/等待决策、交付凭据、完成报告与关闭协议。 */
 export async function createWorkflowManageTool(options: WorkflowManageToolOptions) {
   try { return await openWorkflowManageTool(options); }
   catch { throw new WorkflowManageError("workflow_denied"); }
@@ -72,6 +73,7 @@ async function openWorkflowManageTool(options: WorkflowManageToolOptions) {
     if (request.action === "close" || request.action === "archive") { host("close", { receiptId: request.receiptId, reason: request.reason }); return true; }
     if (request.action === "delivery-check") { host("delivery-check"); return true; }
     if (request.action === "status") { host("status"); return true; }
+    if (request.action === "report") { host("report"); return true; }
     return false;
   } });
   function lease(): PmLease {
@@ -89,6 +91,7 @@ async function openWorkflowManageTool(options: WorkflowManageToolOptions) {
         case "finish": return rounds.release({ lease: lease(), checkRoundId: params.checkRoundId });
         case "check-decision": return rounds.decide({ lease: lease(), checkRoundId: params.checkRoundId, kind: params.kind, revision: params.revision });
         case "delivery-check": return close.deliveryCheck(grant.requirementId);
+        case "report": return close.report({ requirementId: grant.requirementId, pmRunId: lease().runId, note: params.note });
         case "close": {
           const result = await close.close({ requirementId: grant.requirementId, reason: params.reason, receiptId: params.receiptId, operationId: params.operationId });
           if (result.status !== "closed" || !result.archive || result.archive.status === "archived") return result;

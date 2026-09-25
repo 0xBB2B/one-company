@@ -2,7 +2,9 @@ import { repositoryDatabase, withDatabase } from "./database.ts";
 import { readPlanIn } from "./plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
+import { checked } from "./requirement-contracts.ts";
 import { readVerdictsIn } from "./verdicts.ts";
+import { COMPLETION_REPORTS, CompletionReport, DELIVERY_RECEIPTS, DeliveryReceipt } from "./workflow-close.ts";
 
 export class DecisionPacketError extends Error {
   readonly code: string;
@@ -45,6 +47,30 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
       return [...head, "有任务已被用户终止，需求整体暂停。",
         "可选：1 调整需求：修改 prod 并经用户批准新版本，PM 随后自动恢复并重新规划；2 取消或拒绝整个需求。",
         `请向用户说明并询问；取消或拒绝须以 pi_company_user_interact purpose=adjudicate itemId=requirement:${requirementId} itemVersion=requirement:${requirementId}:${requirementVersion} 按用户原话登记，再以返回的 decisionId 调用 workflow_manage close。`].join("\n");
+    }
+    if (item.kind === "acceptance") {
+      const report = checked(CompletionReport, db.read<unknown>(COMPLETION_REPORTS, itemId.slice("report:".length))!.data);
+      const receipt = checked(DeliveryReceipt, db.read<unknown>(DELIVERY_RECEIPTS, report.deliveryReceiptId)!.data);
+      const verdicts = readVerdictsIn(db, ref.repoId, requirementId).filter((verdict) => report.basis.verdictIds.includes(verdict.verdictId));
+      const workers = tasks.filter((task) => task.role === "worker");
+      const specs = db.list<{ repoId?: string; requirementId?: string; status?: string; files?: Array<{ path: string }> }>("spec_proposals").map((row) => row.data)
+        .filter((proposal) => proposal.repoId === ref.repoId && proposal.requirementId === requirementId && proposal.status === "published")
+        .flatMap((proposal) => proposal.files?.map((file) => file.path) ?? []);
+      return [...head, "以下事实由程序从持久记录生成：",
+        `交付凭据 ${receipt.receiptId} · 代码 ${receipt.codeHead} · 规则集合 ${receipt.specSetHash} · 阻塞 ${receipt.blockers.length} 项 · 非阻塞建议 ${receipt.suggestions} 条`,
+        `检查轮 ${receipt.checkRoundId ?? "无"} · 适用的正式验证 ${receipt.verificationIds.length} 项`,
+        ...verdicts.filter((verdict) => verdict.role === "qa").map((verdict) => `QA 结论：${verdict.conclusion}`),
+        ...workers.map((task) => {
+          const review = verdicts.find((verdict) => verdict.review?.taskId === task.taskId);
+          return `worker 任务 ${task.key}：${task.status} · 任务级审查 ${review?.conclusion ?? "无"}`;
+        }),
+        ...tasks.filter((task) => task.role !== "worker").map((task) => `${task.role} 任务 ${task.key}：${task.status}`),
+        `已发布规则文件：${specs.length ? [...new Set(specs)].join("、") : "无"}`,
+        `需求分支本地提交 ${report.commits.length} 个${report.commitsTruncated ? `（仅列最近 ${report.commits.length} 个）` : ""}，提交说明由 PM 撰写${MODEL_NOTE}：`,
+        ...report.commits.map((commit) => `  ${commit.sha.slice(0, 12)} ${quoted(commit.subject, 200)}`),
+        `PM 的说明${MODEL_NOTE}：${quoted(report.note, 4000)}`,
+        "可选：1 验收通过（随后以完成关闭需求）；2 返工（请用户说明要改什么，意见交回 PM）。",
+        `请把报告交给用户阅读并询问选择；用户回答后以 pi_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 按其原话登记。`].join("\n");
     }
     if (item.kind === "intake-review") {
       return [...head, "PM 已提交接手理解，等待主代理核对。", "请用 pi_company_user_interact purpose=pm-intake 开始接手核对。"].join("\n");
