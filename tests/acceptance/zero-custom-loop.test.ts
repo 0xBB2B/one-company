@@ -40,6 +40,14 @@ function mainSessionFacts(host: InstalledHost) {
     models: [...new Set(assistant.map((message) => `${message.provider}/${message.model}`))] };
 }
 
+async function killUnder(root: string): Promise<void> {
+  const listed = (await exec("ps", ["-axo", "pid=,command="])).stdout.split("\n");
+  const pids = listed.flatMap((line) => { const match = /^\s*(\d+)\s+(.*)$/.exec(line); return match && match[2]!.includes(root) && Number(match[1]) !== process.pid ? [Number(match[1])] : []; });
+  for (const pid of pids) { try { process.kill(pid, "SIGTERM"); } catch { /* 已退出 */ } }
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* 已退出 */ } }
+}
+
 async function waitMissing(path: string, timeoutMs: number): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -105,7 +113,9 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     if (host) await writeFile(join(evidence, "model-events.json"), JSON.stringify(host.modelEvents, null, 2), { mode: 0o600 }).catch(() => undefined);
     if (host) await writeFile(join(evidence, "main-session.json"), JSON.stringify(host.session.messages, null, 2), { mode: 0o600 }).catch(() => undefined);
     if (host) await host.close().catch((error: unknown) => record({ type: "stop", reason: `关闭宿主失败：${String(error)}`, at: Date.now() }));
-    const daemonGone = socketPath ? await waitMissing(socketPath, 30_000) : true;
+    let daemonGone = socketPath ? await waitMissing(socketPath, 30_000) : true;
+    // PM 仍在运行时守护进程不会空闲退出；只结束命令行里带本轮临时根目录的进程
+    if (!daemonGone && socketPath) { await killUnder(root); daemonGone = await waitMissing(socketPath, 10_000); }
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
