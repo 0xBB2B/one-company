@@ -44,6 +44,10 @@
 
 用户已决定（2026-09-26，A 加 B 一起做）：主会话的 project_manage、requirement_manage、user_interact 是"所有字段可选"的平铺参数，说明里没写每个动作要哪些字段；gpt-6-luna 把所有字段都填上假值，被字段白名单拒绝；拒绝信息不说多了哪些字段（requirement_manage 更是把一切错误都换成 requirement_interaction_denied），模型无法自行改正，草稿始终保存不下来。修法：① 三个工具发给模型的参数改为 { request: 各动作格式的联合 }，执行时取出 request 交原逻辑；② 字段不合格时返回多余字段、缺少字段与本动作允许字段（只含字段名）；③ requirement_manage/user_interact 的错误改为返回具体错误代码，仍不回显值或正文。
 
+已完成（0d73114）：上条三个工具改为按动作嵌套并放行错误代码；第 6 轮实跑确认参数格式已用对。
+
+待用户拍板（新增机制）：主代理无从得知当前仓库的 repoId，只能自行猜测（第 6 轮对路径算 sha256），被判为"不属于当前已接入的工作区"，草稿仍保存不下来；此前脚本化闭环能通过是因为脚本写死了 repoId。
+
 已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。
 
 ## 下一窗口续接提示
@@ -51,6 +55,6 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（M9 章节与 §13），再读 M9-STATUS.md，核对 git status 与最近提交。M0–M8 已收口不重做。
-M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），验证方式分工、AC2 问题集与 AC13 UI 样例任务也已确认（见"当前阻塞"）。test:acceptance 驱动已写好并实跑 5 轮；当前按用户决定改主会话 3 个工具的参数格式与报错（见"当前阻塞"），改完重跑 AC12。
+M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），验证方式分工、AC2 问题集与 AC13 UI 样例任务也已确认（见"当前阻塞"）。test:acceptance 驱动已写好并实跑 5 轮；主会话 3 个工具的参数格式与报错已改好（0d73114）；第 6 轮卡在主代理拿不到 repoId，补法待用户拍板（见"当前阻塞"）。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
