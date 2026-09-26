@@ -17,6 +17,7 @@ import type { MainRequirementInteractionOptions } from "../runtime/main-requirem
 import { createRequirementManageTool } from "../runtime/requirement-manage-tool.ts";
 import { createUserInteractTool } from "../runtime/user-interact-tool.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
+import { RequirementServiceError } from "../runtime/requirement-manage-contracts.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { ConfirmationContext } from "../runtime/requirement-manage-contracts.ts";
 import type { InteractionInterpretation } from "../runtime/user-interaction-format.ts";
@@ -258,6 +259,19 @@ describe("主窗口共享控制器的真实服务路径", () => {
     if (change === "resave") await w.service.updateDraft({ requirementId: next.input.requirementId, version: next.input.version, operationId: uuidv7(), title: "登录", body: BODY + "外部更新。\n" });
     await rejected; await new Promise((r) => setTimeout(r, 510));
     expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"))).toEqual(before);
+  });
+  test("服务层带错误代码的失败原样返回该代码，普通异常仍只报 interaction_denied", async () => {
+    for (const [thrown, code] of [[new RequirementServiceError("stale_version", "详细说明不回显"), "stale_version"], [new Error("fixture_plain_failure"), "interaction_denied"]] as const) {
+      const w = await world(), created = await w.create();
+      const fail = vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementation(() => { throw thrown; });
+      try {
+        w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+        const error = await w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
+          title: "登录", body: BODY + "补充。\n" }).catch((caught: unknown) => caught);
+        expect(error).toMatchObject({ code });
+        expect(String((error as Error).message)).not.toContain("详细说明");
+      } finally { fail.mockRestore(); }
+    }
   });
   test("受控重存finalize失败保留实际数据但取消重解释permit", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created), review = phoneReview(loaded);

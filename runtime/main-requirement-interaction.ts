@@ -613,7 +613,9 @@ export class MainRequirementInteraction {
       this.#cursors.clear(); this.#deliveries.delete(toolCallId);
       if (typeof params.operationId === "string" && this.#completed.has(params.operationId)) this.#invalidateOperation(params.operationId);
       if (error instanceof HostAuthorizationError) throw error;
-      throw new HostAuthorizationError("interaction_denied");
+      // 只回传错误代码，不回传可能带细节的错误消息
+      const code = (error as { code?: unknown } | null)?.code;
+      throw new HostAuthorizationError(typeof code === "string" && /^[a-z][a-z_]{0,63}$/.test(code) ? code : "interaction_denied");
     } finally { signal?.removeEventListener("abort", abort); this.#busy = false; }
   }
   #invalidateOperation(key: string): void {
