@@ -94,6 +94,12 @@ QA按prod列出正常、异常、边界的前置条件、操作与可观察结�
 回答标明not_a_formal_verdict，不是正式QA/审查/交付凭据。性能未知就是未知，历史测试不代表当前通过，问答会话结束不代表需求完成。`;
 
 /** Trusted-host API: no dispatcher, lease creation, worktree preparation, persistence or resume. */
+/** 守护进程启动时不刷新模型状态（刷新会碰凭据文件锁，进程被强杀后留下的锁会让下次启动失败），这里按需对该提供方做一次不联网刷新。 */
+export async function ensureConfiguredAuth(runtime: Pick<ModelRuntime, "hasConfiguredAuth" | "refresh">, provider: string): Promise<boolean> {
+  if (runtime.hasConfiguredAuth(provider)) return true;
+  await runtime.refresh({ providers: [provider], allowNetwork: false }).catch(() => undefined);
+  return runtime.hasConfiguredAuth(provider);
+}
 export async function createRequirementReader(input: RequirementReaderOptions) {
   try { return await openRequirementReader(input); }
   catch (error) { throw error instanceof RequirementReaderError ? error : new RequirementReaderError("requirement_reader_denied"); }
@@ -139,7 +145,7 @@ async function openRequirementReader(input: RequirementReaderOptions) {
   const state = await RequirementStateStore.open({ ...config, authorize: (r) => r.repoId === binding.repoId &&
     ["open", "read", "check-pm"].includes(r.action) && (r.input.requirementId === undefined || r.input.requirementId === binding.requirementId) });
   const selected = modelRuntime.getModel(modelRef.provider, modelRef.id);
-  if (!selected || !modelRuntime.hasConfiguredAuth(modelRef.provider)) deny();
+  if (!selected || !(await ensureConfiguredAuth(modelRuntime, modelRef.provider))) deny();
   const model = structuredClone(selected), modelSignature = JSON.stringify(model);
   let baseline: string | undefined;
   function checkCurrent() {

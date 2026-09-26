@@ -41,8 +41,8 @@ function defaultSelectModel(runtime: ModelRuntime): ModelSelector {
   };
 }
 
-export async function setupModelRuntime(modulePath: string | undefined): Promise<{ runtime: ModelRuntime; selectModel: ModelSelector }> {
-  const runtime = await ModelRuntime.create();
+async function setupModelRuntime(modulePath: string | undefined): Promise<{ runtime: ModelRuntime; selectModel: ModelSelector }> {
+  const runtime = await ModelRuntime.create({ refreshOnCreate: false });
   if (!modulePath) return { runtime, selectModel: defaultSelectModel(runtime) };
 
   const providerModule = (await import(modulePath)) as {
