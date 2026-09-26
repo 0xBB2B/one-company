@@ -109,7 +109,8 @@ export interface InstalledHost {
  */
 export async function startInstalledHost(options: { installed: string; repo: string; agentDir: string; config: AcceptanceConfig }): Promise<InstalledHost> {
   const { installed, repo, agentDir, config } = options;
-  const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), refreshOnCreate: false });
+  // 与真实宿主一致：启动时刷新提供方状态，否则"已配置凭据"的快照为空
+  const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
   const model = runtime.getModel(config.provider, config.modelId);
   if (!model) throw new Error(`模型配置里找不到 ${config.provider}/${config.modelId}`);
   const loader = new DefaultResourceLoader({
