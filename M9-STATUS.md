@@ -29,14 +29,17 @@
 
 ## 当前阻塞
 
-开工前以下事项须用户拍板，未确认前不写验收驱动代码：
+用户已决定（2026-09-26）：
 
-1. 真实模型：用哪个提供方与模型（宿主默认 5x / gpt-6-astra / 思考等级 high）、是否给费用上限，是否先跑一轮最小闭环记下实际 token 再定规模。
-2. 凭据：隔离的 agent 目录要调用真实模型，需要把 models.json 与 auth.json 复制进临时目录，用完删除。
-3. 驱动入口：真实模型与联网验收不能放进 pnpm test。是新增一条单独脚本入口，还是只在 .bb-spec/.cache/m9/ 放一次性驱动脚本。
-4. pi 版本：开发依赖锁定 0.85.1，本机宿主是 0.87.1。M9 用哪个版本做安装验收，是否升级开发依赖。
-5. 验证方式分工：哪些 AC 必须用真实模型，哪些只验程序门槛、可用受控模型在安装产物中跑。
-6. AC2 的预登记问题集与 AC13 的 UI 夹具需用户批准。
+1. 真实模型验收全部用 5x / gpt-6-luna。
+2. 隔离的临时 agent 目录临时复制 models.json 与 auth.json（权限 0600），每轮结束即删，不动 ~/.pi/agent。
+3. 新增 `pnpm run test:acceptance` 承载真实模型与联网验收，`pnpm test` 默认不跑。
+4. pi 开发依赖从 0.85.1 升到 0.87.1，与本机宿主一致。已完成（1fa0d35）：产品代码无需改动；0.86.0 起提供方收到的请求格式变了，只调整了测试里的模型替身。升级后 typecheck 通过，pnpm test 2336、test:integration 79、test:installation 11 全部通过（输出在 .bb-spec/.cache/m9/sdk-0871-*.txt）。
+
+仍待用户确认：
+
+5. 验证方式分工：建议 AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
+6. AC2 的预登记问题集与 AC13 的 UI 夹具。
 
 已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。
 
@@ -45,6 +48,6 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（M9 章节与 §13），再读 M9-STATUS.md，核对 git status 与最近提交。M0–M8 已收口不重做。
-M9 刚开工：已建状态表，开工前 6 项待用户拍板（见"当前阻塞"）。用户答复前不写验收驱动代码。
+M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），后 2 项（验证方式分工、AC2 问题集与 AC13 UI 夹具）待用户确认，确认前不写验收驱动代码。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
