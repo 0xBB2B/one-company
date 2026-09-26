@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { InstalledHost } from "./installed-host.ts";
 
 const DOWN = "\x1b[B", UP = "\x1b[A", ENTER = "\r", ESCAPE = "\x1b";
@@ -15,7 +16,7 @@ export interface UserScript {
   close: string;
 }
 
-export interface DriverLimits { userTurns: number; wallMs: number; sameMessage: number }
+export interface DriverLimits { userTurns: number; wallMs: number; sameMessage: number; /** 存在即按正常流程停止，便于人工中止且照常收尾。 */ stopFile?: string }
 
 export type DriverEvent =
   | { type: "user"; text: string; at: number }
@@ -77,6 +78,7 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
   if (result) return result;
   for (;;) {
     if (Date.now() - started > limits.wallMs) return stop(`总时长超过 ${Math.round(limits.wallMs / 60_000)} 分钟`);
+    if (limits.stopFile && existsSync(limits.stopFile)) return stop("发现停止文件，人工中止");
     await host.session.waitForIdle();
     const state = progress(host);
     if (state.closed) return { status: "closed", reason: "需求已以完成关闭" };

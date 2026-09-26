@@ -74,7 +74,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     socketPath = daemonSocketPath(join(agentDir, "pi-company"), repoId);
 
     host = await startInstalledHost({ installed, repo, agentDir, config: cfg });
-    outcome = await driveUser(host, SCRIPT, { userTurns: 15, wallMs: 90 * 60_000, sameMessage: 3 }, record);
+    outcome = await driveUser(host, SCRIPT, { userTurns: 15, wallMs: 90 * 60_000, sameMessage: 3, stopFile: join(evidence, "STOP") }, record);
 
     const runStore = new RunStore({ dataRoot: join(agentDir, "pi-company"), repoId, daemonStartedAt: new Date().toISOString() });
     const listed = (await runStore.list({ limit: 500 })).items;
