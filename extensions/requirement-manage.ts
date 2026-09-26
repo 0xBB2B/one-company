@@ -23,11 +23,12 @@ export interface RequirementManageExtensionDeps {
   readonly windowContext?: typeof windowContext;
 }
 // 错误只放行固定格式的错误代码与只含字段名的改正提示，其余内容一律不回显，避免把值或正文带回模型
-const SAFE_DENIAL = /^requirement_host_denied:([a-z_]{1,64})(（[\p{Script=Han}A-Za-z0-9_:：、；，. -]{0,2000}）)?$/u;
-function deniedText(event: { isError: boolean; content: ReadonlyArray<{ type: string; text?: string }> }): string {
+const SAFE_DENIAL = /^(?:requirement_host_denied|pm_intake_interaction_denied):([a-z_]{1,64})(（[\p{Script=Han}A-Za-z0-9_:：、；，. -]{0,2000}）)?$/u;
+export function deniedText(event: { isError: boolean; content: ReadonlyArray<{ type: string; text?: string }> },
+  prefix: "requirement_interaction_denied" | "pm_intake_interaction_denied"): string {
   const text = event.isError && event.content.length === 1 && event.content[0]!.type === "text" ? event.content[0]!.text ?? "" : "";
   const match = SAFE_DENIAL.exec(text);
-  return match ? `requirement_interaction_denied:${match[1]}${match[2] ?? ""}` : "requirement_interaction_denied";
+  return match ? `${prefix}:${match[1]}${match[2] ?? ""}` : prefix;
 }
 export default function requirementManageExtension(pi: ExtensionAPI, deps: RequirementManageExtensionDeps = {}): void {
   const root = deps.dataRoot ?? dataRoot(process.env);
@@ -96,11 +97,11 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     if (!["pi_company_requirement_manage", "pi_company_user_interact"].includes(event.toolName)) return;
     if (intake.ownsDelivery(event.toolCallId)) {
       try { intake.assertDelivery(event, ctx); }
-      catch { return { content: [{ type: "text", text: "pm_intake_interaction_denied" }], details: {}, isError: true }; }
+      catch { return { content: [{ type: "text", text: deniedText(event, "pm_intake_interaction_denied") }], details: {}, isError: true }; }
       return;
     }
     try { if (event.isError) throw new Error("denied"); interaction.assertDelivery(event.toolCallId, ctx); }
-    catch { return { content: [{ type: "text", text: deniedText(event) }], details: {}, isError: true }; }
+    catch { return { content: [{ type: "text", text: deniedText(event, "requirement_interaction_denied") }], details: {}, isError: true }; }
   });
   pi.registerTool(createRequirementManageTool({ interaction }));
   pi.registerTool(createUserInteractTool({ interaction, intake }));
