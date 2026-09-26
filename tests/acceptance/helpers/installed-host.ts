@@ -96,6 +96,8 @@ export interface InstalledHost {
   notifications: Array<{ message: string; type?: string; at: number }>;
   /** 主会话的模型回合结束、出错与自动重试，失败的尝试可能不留在会话消息里。 */
   modelEvents: Array<{ type: string; detail: string; at: number }>;
+  /** 扩展在主会话里另行发起的无工具模型调用（如需求解释器）的请求开头与模型原始回答，供排查校验失败。 */
+  sideCalls: Array<{ systemPrompt: string; input: string; stopReason: string; output: string; at: number }>;
   /** 按用户在终端里看到的样子渲染 PM 面板。 */
   panelLines(width?: number): string[];
   /** 模拟用户在终端按键（输入框为空时）。 */
@@ -111,6 +113,15 @@ export async function startInstalledHost(options: { installed: string; repo: str
   const { installed, repo, agentDir, config } = options;
   // 与真实宿主一致：启动时刷新提供方状态，否则"已配置凭据"的快照为空
   const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
+  const sideCalls: InstalledHost["sideCalls"] = [];
+  const complete = runtime.complete.bind(runtime);
+  runtime.complete = (async (...args: Parameters<typeof runtime.complete>) => {
+    const [, context] = args, response = await complete(...args);
+    const text = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value);
+    sideCalls.push({ systemPrompt: text(context.systemPrompt ?? "").slice(0, 200), input: context.messages.map((m) => text(m.content)).join("\n").slice(0, 20_000),
+      stopReason: response.stopReason, output: response.content.map((b) => b.type === "text" ? b.text : `[${b.type}]`).join("").slice(0, 60_000), at: Date.now() });
+    return response;
+  }) as typeof runtime.complete;
   const model = runtime.getModel(config.provider, config.modelId);
   if (!model) throw new Error(`模型配置里找不到 ${config.provider}/${config.modelId}`);
   const loader = new DefaultResourceLoader({
@@ -157,7 +168,7 @@ export async function startInstalledHost(options: { installed: string; repo: str
   });
 
   return {
-    session, dialogs, notifications, modelEvents,
+    session, dialogs, notifications, modelEvents, sideCalls,
     panelLines: (width = 160) => panel?.render(width) ?? [],
     press: (data) => { for (const handler of inputHandlers) handler(data); },
     close: async () => {

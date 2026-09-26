@@ -101,6 +101,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     for (const role of ["pi-company.worker", "pi-company.reviewer", "pi-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
     expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
   } finally {
+    if (host) await writeFile(join(evidence, "side-calls.json"), JSON.stringify(host.sideCalls, null, 2), { mode: 0o600 }).catch(() => undefined);
     if (host) await writeFile(join(evidence, "model-events.json"), JSON.stringify(host.modelEvents, null, 2), { mode: 0o600 }).catch(() => undefined);
     if (host) await writeFile(join(evidence, "main-session.json"), JSON.stringify(host.session.messages, null, 2), { mode: 0o600 }).catch(() => undefined);
     if (host) await host.close().catch((error: unknown) => record({ type: "stop", reason: `关闭宿主失败：${String(error)}`, at: Date.now() }));
