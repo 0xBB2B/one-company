@@ -54,6 +54,15 @@ describe("extensions/index.ts 唯一扩展入口", () => {
     expect(names.filter((name) => name === "bash").length).toBe(1);
   });
 
+  test("工具参数的正则不用 \\p{..} 与前后顾：部分提供方（如 OpenAI Responses 接口）会整条请求拒绝", () => {
+    const fakePi = createFakePi();
+
+    registerExtensions(fakePi.pi);
+
+    const offenders = fakePi.registeredTools().filter((tool) => /\\\\p\{|\(\?<?[=!]/.test(JSON.stringify(tool.parameters)));
+    expect(offenders.map((tool) => tool.name)).toEqual([]);
+  });
+
   test("package.json 的 pi.extensions 恰为 index.ts 单一入口", async () => {
     const raw = await readFile(join(PACKAGE_ROOT, "package.json"), "utf8");
     const pkg = JSON.parse(raw) as { pi?: { extensions?: unknown } };

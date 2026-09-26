@@ -81,6 +81,8 @@ describe("工具集与模型请求一致", () => {
     for (const forbidden of ["bash", "write", "edit", "pi_company_git_commit", "structured_output", "pi_company_resume_check"]) {
       expect(toolNames(s.provider.requests[0])).not.toContain(forbidden);
     }
+    // 部分提供方（如 OpenAI Responses 接口）拒绝含 \p{..} 或前后顾的正则，整条请求失败
+    expect((s.provider.requests[0]?.tools ?? []).filter((tool) => /\\\\p\{|\(\?<?[=!]/.test(JSON.stringify(tool.parameters))).map((tool) => tool.name)).toEqual([]);
   }, 20000);
 
   test("系统提示含定义正文与程序组装的任务上下文", async () => {

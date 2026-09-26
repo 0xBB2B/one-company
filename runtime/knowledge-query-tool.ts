@@ -7,7 +7,9 @@ import type { KnowledgeFactPackage } from "./knowledge-query.ts";
 /** JSON正文再嵌入text字符串最多翻倍；为50KiB宿主content包装预留空间。 */
 export const KNOWLEDGE_TOOL_MAX_BYTES = 24_576;
 export const KNOWLEDGE_TOOL_CONTENT_BYTES = 50 * 1024;
-const text = (maxLength: number) => Type.String({ minLength: 1, maxLength, pattern: "^(?!.*[\\u0000-\\u001f\\u007f\\ud800-\\udfff])(?=.*\\S).+$" });
+// 部分提供方拒绝含 \p{..} 或前后顾的正则；这里只用字符类，完整校验仍由 parseKnowledgeQuery 执行
+const excluded = "\\u0000-\\u001f\\u007f\\u2028\\u2029\\ud800-\\udfff";
+const text = (maxLength: number) => Type.String({ minLength: 1, maxLength, pattern: `^[^${excluded}]*[^\\s${excluded}][^${excluded}]*$` });
 const paging = {
   pageSize: Type.Optional(Type.Integer({ minimum: 1, maximum: KNOWLEDGE_QUERY_LIMITS.pageSize })),
   maxBytes: Type.Optional(Type.Integer({ minimum: KNOWLEDGE_QUERY_LIMITS.minimumPageBytes, maximum: KNOWLEDGE_TOOL_MAX_BYTES })),
@@ -15,7 +17,7 @@ const paging = {
 };
 const variants = [
   ...(["path", "id", "symbol"] as const).map((by) => ({ action: StringEnum(["exact"]), by: StringEnum([by]),
-    value: by === "id" ? Type.String({ pattern: "^[\\p{L}\\p{N}][\\p{L}\\p{N}._:/#@+-]{0,255}$", maxLength: 256 }) : text(by === "path" ? 4096 : 512), ...paging })),
+    value: by === "id" ? Type.String({ minLength: 1, maxLength: 256 }) : text(by === "path" ? 4096 : 512), ...paging })),
   { action: StringEnum(["search"]), text: text(256), ...paging },
   { action: StringEnum(["facts"]), text: Type.Optional(text(256)), ...paging },
 ];

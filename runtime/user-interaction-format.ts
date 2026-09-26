@@ -19,7 +19,7 @@ export type InteractionBasis = Static<typeof InteractionBasis>;
 export const CandidateBinding = object({ candidateId: id, operationId: id, intentHash: hash, from: nullable(ProdReference), to: ProdReference });
 export type CandidateBinding = Static<typeof CandidateBinding>;
 export const InteractionCandidate = object({ ...CandidateBinding.properties, diff: Type.String({ minLength: 1 }) });
-export const ApprovalUnitId = Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}(?![\\s\\S])", maxLength: 96 });
+export const ApprovalUnitId = Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}$", maxLength: 96 });
 export const ApprovalUnitIds = Type.Array(ApprovalUnitId, { maxItems: 16, uniqueItems: true });
 export const ApprovalPartition = object({ prodHash: hash, totalBytes: positive,
   units: Type.Array(object({ id: ApprovalUnitId, hash, startByte: counter, endByte: positive }), { minItems: 1, maxItems: 20 }) });
