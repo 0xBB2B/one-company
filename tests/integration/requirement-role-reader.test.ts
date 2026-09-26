@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { createAssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createRequirementReader, REQUIREMENT_READER_TOOL } from "../../runtime/requirement-role-reader.ts";
@@ -113,7 +113,7 @@ async function world() {
           stopReason: "stop", timestamp: Date.now() };
         try {
           await opts?.onPayload?.({ messages: c.messages, tools: c.tools }, model);
-          opts?.signal?.throwIfAborted(); contexts.push(JSON.parse(JSON.stringify(c)));
+          opts?.signal?.throwIfAborted(); contexts.push(JSON.parse(JSON.stringify({ systemPrompt: getCurrentSystemPrompt(c.messages), tools: getCurrentTools(c.messages), messages: c.messages.filter((m) => m.role !== "system") })));
           await providerHook?.(c, contexts.length);
           opts?.signal?.throwIfAborted();
           const args = steps[contexts.length - 1];

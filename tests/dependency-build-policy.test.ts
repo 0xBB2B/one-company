@@ -7,8 +7,8 @@ import { expect, test } from "vitest";
 
 const root = new URL("../", import.meta.url);
 const expectedPolicy = {
-  "@google/genai@1.52.0": false,
-  "esbuild@0.28.1": false,
+  "@google/genai@2.21.0": false,
+  "esbuild@0.28.2": false,
   "protobufjs@7.6.6": false,
 };
 

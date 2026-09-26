@@ -1,5 +1,5 @@
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessage, Context, Model, Usage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Context, Model, TranscriptContext, Usage } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 export interface RegisterControlledProviderOptions {
@@ -59,8 +59,13 @@ export function registerControlledProvider(
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       },
     ],
-    streamSimple(model: Model<Api>, context: Context, options) {
-      handle.requests.push(context);
+    streamSimple(model: Model<Api>, context: TranscriptContext, options) {
+      // 提供方收到的是系统消息内嵌的规范化请求；还原成断言所用的提示词、工具与对话三部分
+      handle.requests.push({
+        systemPrompt: getCurrentSystemPrompt(context.messages),
+        tools: getCurrentTools(context.messages),
+        messages: context.messages.filter((message) => message.role !== "system"),
+      });
       const reply = handle.queue.shift();
       const stream = createAssistantMessageEventStream();
       const base: AssistantMessage = {

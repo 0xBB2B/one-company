@@ -101,13 +101,18 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await expect(w.call({ ...p, operationId: uuidv7(), requestId: uuidv7(), title: "无关付款" })).rejects.toThrow(/requirement_already_bound/);
   });
   test("手机号原句仅分析，无ready仍记短决定与完整scope，不激活不弹审批；清会话不生成原话表/文件", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    const w = await world(), sent: Array<{ messages: unknown[] }> = [];
+    const original = w.ctx.modelRegistry.complete.bind(w.ctx.modelRegistry);
+    vi.spyOn(w.ctx.modelRegistry, "complete").mockImplementation((model, context, options) => { sent.push(context); return original(model, context, options); });
+    const created = await w.create(), { input, loaded } = await w.request(created);
     scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
     const result = await w.call({ action: "confirmUpdate", ...input });
     expect(result).toMatchObject({ targetRecorded: true, prodActivated: false, blockedBy: "workspace_not_ready", allowedScopes: [{ action: "analyze", goalIds: ["A"], constraintIds: [] }] });
     expect(result.approvalScope).toMatchObject({ summary: { confirmed: ["metadata", "A", "D"], pending: ["SMS"], excluded: ["B"] } });
     expect(w.provider.requests).toHaveLength(2);
-    expect(w.provider.requests.every((r) => r.tools?.length === 0 && r.messages.length === 0)).toBe(true);
+    expect(w.provider.requests.every((r) => r.tools?.length === 0)).toBe(true);
+    expect(sent).toHaveLength(2);
+    expect(sent.every((context) => context.messages.length === 0)).toBe(true);
     const rows = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"));
     expect(rows).toHaveLength(7); expect(rows.map((r) => (r.data as { actor: string }).actor)).toEqual(Array(7).fill("user"));
     expect(rows.some((r) => (r.data as { conclusion: string }).conclusion.includes("委托"))).toBe(true);
