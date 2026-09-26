@@ -42,7 +42,7 @@
 
 真实模型实跑发现并已修复（d181df1、e953f68）：工具参数正则含 \p{..}、前后顾或 \ud800-\udfff 代理项范围时，5x 网关整条请求失败（400 或零 token 的 length），主会话一句话都答不了；已改为等价写法，代码层校验不变，并加回归检查。
 
-待用户拍板（停止规则：跨多个工具的接口修改）：主会话的 project_manage、requirement_manage、user_interact 是"所有字段可选"的平铺参数，说明里没写每个动作要哪些字段；gpt-6-luna 把所有字段都填上假值，被字段白名单拒绝；拒绝信息不说多了哪些字段（requirement_manage 更是把一切错误都换成 requirement_interaction_denied），模型无法自行改正，草稿始终保存不下来。
+用户已决定（2026-09-26，A 加 B 一起做）：主会话的 project_manage、requirement_manage、user_interact 是"所有字段可选"的平铺参数，说明里没写每个动作要哪些字段；gpt-6-luna 把所有字段都填上假值，被字段白名单拒绝；拒绝信息不说多了哪些字段（requirement_manage 更是把一切错误都换成 requirement_interaction_denied），模型无法自行改正，草稿始终保存不下来。修法：① 三个工具发给模型的参数改为 { request: 各动作格式的联合 }，执行时取出 request 交原逻辑；② 字段不合格时返回多余字段、缺少字段与本动作允许字段（只含字段名）；③ requirement_manage/user_interact 的错误改为返回具体错误代码，仍不回显值或正文。
 
 已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。
 
@@ -51,6 +51,6 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（M9 章节与 §13），再读 M9-STATUS.md，核对 git status 与最近提交。M0–M8 已收口不重做。
-M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），验证方式分工、AC2 问题集与 AC13 UI 样例任务也已确认（见"当前阻塞"）。test:acceptance 驱动已写好并实跑 5 轮；当前卡在主会话 3 个工具的参数用法问题，修法待用户拍板（见"当前阻塞"）。
+M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），验证方式分工、AC2 问题集与 AC13 UI 样例任务也已确认（见"当前阻塞"）。test:acceptance 驱动已写好并实跑 5 轮；当前按用户决定改主会话 3 个工具的参数格式与报错（见"当前阻塞"），改完重跑 AC12。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
