@@ -19,7 +19,7 @@
 | AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 未开始 | 可复用：tests/pm-intake-runtime.test.ts、tests/pm-dispatch.test.ts、tests/pm-event-delivery.test.ts | 需在安装产物中实跑 |
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 未开始 | 可复用：tests/explore-dispatch.test.ts、tests/explore-web.test.ts | 需真实模型与真实联网；本机出网慢，联网失败时该项标未完成，不以降级路径冒充 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
-| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 进行中 | 驱动：tests/acceptance/zero-custom-loop.test.ts（pnpm run test:acceptance）；5 轮实跑证据在 .bb-spec/.cache/m9/acceptance/ | 主会话 3 个工具模型用不对，草稿保存不下来（见"当前阻塞"），尚未走到 PM |
+| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 进行中 | 驱动：tests/acceptance/zero-custom-loop.test.ts（pnpm run test:acceptance）；13 轮实跑证据在 .bb-spec/.cache/m9/acceptance/ | 第 13 轮已走到：草稿保存、批准生效、工作区创建、PM 派出并提交接手理解；卡在主代理未完成接手核对，原因待该轮记录 |
 | AC13 复制默认 worker 为专业定义，PM 自动选中完成 UI 设计与实现，独立 review/QA | 未开始 | 可复用：tests/agent-catalog-ui.test.ts、tests/agent-selection.test.ts | 需真实模型与 UI 样例任务 |
 | AC14 安装产物中两类目录发现、环境变量覆盖、项目信任、同名冲突、不越根 | 未开始 | 可复用：tests/role-catalog.test.ts | 需在安装产物中实跑 |
 | AC15 两种默认路径；显式指定不可用明确失败交用户裁决 | 未开始 | 可复用：tests/agent-selection.test.ts | 需在安装产物中实跑 |
@@ -46,7 +46,9 @@
 
 已完成（0d73114）：上条三个工具改为按动作嵌套并放行错误代码；第 6 轮实跑确认参数格式已用对。
 
-待用户拍板（新增机制）：主代理无从得知当前仓库的 repoId，只能自行猜测（第 6 轮对路径算 sha256），被判为"不属于当前已接入的工作区"，草稿仍保存不下来；此前脚本化闭环能通过是因为脚本写死了 repoId。
+已按用户决定修复（8afc3f6，系统提示附仓库清单）：主代理无从得知当前仓库的 repoId，只能自行猜测（第 6 轮对路径算 sha256），被判为"不属于当前已接入的工作区"，草稿仍保存不下来；此前脚本化闭环能通过是因为脚本写死了 repoId。
+
+之后实跑又修复（均为鲁棒性修复或已批准的 A 方案范围）：守护进程按宿主默认方式创建模型运行时，PM 等读需求前的凭据检查不再误判（7e990b8）；需求交互把服务层错误代码原样交给模型（116813b）；需求解释器说明补一句"没有待答问题时对草稿的批准用 direct"（0a0b175）。驱动侧对齐宿主（96b6ce8）、样例带 schema（6d740fe）。
 
 已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。
 
