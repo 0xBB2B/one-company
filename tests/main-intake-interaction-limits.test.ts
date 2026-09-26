@@ -78,7 +78,7 @@ test("短TTL、真实终态回收和32条活调用上限分离，迟到结果仍
     await new Promise((resolve) => setTimeout(resolve, 12));
     expect(short.ownsDelivery("ttl")).toBe(true);
     await expect(short.execute("ttl", expired, ctx, controller.signal)).rejects.toMatchObject({ code: "unobserved_tool_call" });
-    expect(() => short.assertDelivery({ toolCallId: "ttl", input: expired, content: [], details: {}, isError: true } as unknown as ToolResultEvent, ctx))
+    expect(() => short.assertDelivery({ toolCallId: "ttl", input: { request: expired }, content: [], details: {}, isError: true } as unknown as ToolResultEvent, ctx))
       .toThrow(/delivery_unavailable/);
     short.dispose();
 
@@ -88,7 +88,7 @@ test("短TTL、真实终态回收和32条活调用上限分离，迟到结果仍
     inputs.forEach((_value, index) => limited.completeToolExecution({ toolName: "pi_company_user_interact", toolCallId: `limit-${index}` }));
     expect(() => observe(limited, ctx, "recovered", input())).not.toThrow();
     expect(limited.ownsDelivery("limit-0")).toBe(true);
-    expect(() => limited.assertDelivery({ toolCallId: "limit-0", input: inputs[0]!, content: [], details: {}, isError: true } as unknown as ToolResultEvent, ctx))
+    expect(() => limited.assertDelivery({ toolCallId: "limit-0", input: { request: inputs[0]! }, content: [], details: {}, isError: true } as unknown as ToolResultEvent, ctx))
       .toThrow(/delivery_unavailable/);
     limited.dispose();
   } finally { authorization.shutdown(); }

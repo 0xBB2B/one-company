@@ -114,9 +114,9 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
     };
     expect((await run(queryName, { repoId: f.repoId, query: { action: "facts" } })).isError).toBe(true);
     allow = false;
-    expect((await run("pi_company_project_manage", { repoId: f.repoId, action: "init" }, "先不要批准扫描")).isError).toBe(true);
+    expect((await run("pi_company_project_manage", { request: { repoId: f.repoId, action: "init" } }, "先不要批准扫描")).isError).toBe(true);
     allow = true;
-    expect((await run("pi_company_project_manage", { repoId: f.repoId, action: "init" }, "批准本窗口扫描当前仓库")).isError).toBe(false);
+    expect((await run("pi_company_project_manage", { request: { repoId: f.repoId, action: "init" } }, "批准本窗口扫描当前仓库")).isError).toBe(false);
     const pages: KnowledgeFactPackage[] = [];
     let cursor: string | undefined;
     do {

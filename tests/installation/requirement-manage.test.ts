@@ -130,9 +130,9 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const title = "安装产物需求";
     const body = "通过真实 SDK input 进入生产授权路径";
     scriptReplies(provider, [
-      { type: "toolcall", name: "pi_company_requirement_manage", input: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } },
+      { type: "toolcall", name: "pi_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } } },
       { type: "text", text: '{"allow":true}' },
-      { type: "toolcall", name: "pi_company_requirement_manage", input: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } },
+      { type: "toolcall", name: "pi_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } } },
       { type: "text", text: "done" },
     ]);
 
@@ -203,8 +203,8 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
       documentReview: { faithful: true, units: ["metadata", "whole-body"].map((id, i) => ({ id, disposition: "confirmed", globalConstraint: false, appliesTo: [], dependsOn: [], conclusionIndexes: [i] })),
         actions: [{ action: "analyze", goalIds: ["whole-body"], constraintIds: [], conclusionIndexes: [2], unknown: false }], questions: [] } };
     scriptReplies(provider, [
-      { type: "toolcall", name: "pi_company_user_interact", input: { action: "forward", repoId: identity.repoId, requirementId: details.requirementId,
-        savedOperationId: operationId, operationId: confirmationOperationId, version: details.version } },
+      { type: "toolcall", name: "pi_company_user_interact", input: { request: { action: "forward", repoId: identity.repoId, requirementId: details.requirementId,
+        savedOperationId: operationId, operationId: confirmationOperationId, version: details.version } } },
       { type: "text", text: JSON.stringify(interpretation) },
       { type: "text", text: "done" },
     ]);

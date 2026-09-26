@@ -37,7 +37,7 @@ async function world(active: boolean) {
   } });
   clean.push(async () => { interaction.dispose(); authorization.shutdown(); await rm(root, { recursive: true, force: true }); });
   const tool = createRequirementManageTool({ interaction });
-  const call = (params: Record<string, unknown>, id = uuidv7()) => tool.execute(id, { repoId, ...params } as never, undefined, undefined, ctx);
+  const call = (params: Record<string, unknown>, id = uuidv7()) => tool.execute(id, { request: { repoId, ...params } } as never, undefined, undefined, ctx);
   interaction.captureInput({ source: "interactive", text: "整理并分析A目标" }, ctx); scriptReplies(provider, [{ type: "text", text: '{"allow":true}' }]);
   const created = (await call({ action: "create", operationId: uuidv7(), requestId: uuidv7(), title: "A需求", body: "# A {#A}\n实施A。\n" })).details!;
   const requirementId = String(created.requirementId), state = await RequirementStateStore.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true });

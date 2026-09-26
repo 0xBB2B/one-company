@@ -35,7 +35,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
       confirm: async () => { throw new Error("UI.confirm forbidden"); }, notify: (message) => notifications.push(message) } });
     const savedOperationId = uuidv7(), requestId = uuidv7();
     scriptReplies(provider, [
-      { type: "toolcall", name: "pi_company_requirement_manage", input: { action: "create", repoId: identity.repoId, operationId: savedOperationId, requestId, title: "登录", body: "# 手机号 {#A}\n增加手机号登录。\n# 微信 {#B}\n微信是否实施未决。\n" } },
+      { type: "toolcall", name: "pi_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, operationId: savedOperationId, requestId, title: "登录", body: "# 手机号 {#A}\n增加手机号登录。\n# 微信 {#B}\n微信是否实施未决。\n" } } },
       { type: "text", text: '{"allow":true}' }, { type: "text", text: "done" },
     ]);
     await session.prompt("请整理手机号登录需求，微信是否做先保留未决", { source: "interactive" });
@@ -44,7 +44,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     const { requirementId, version } = created!.details as { requirementId: string; version: number };
     const operationId = uuidv7(), base = { repoId: identity.repoId, requirementId, version, savedOperationId, operationId };
     scriptReplies(provider, [
-      { type: "toolcall", name: "pi_company_user_interact", input: { ...base, action: "ask", question: "是否实施手机号登录A？", scope: "仅A，不包括B", unitIds: ["A"], actions: ["implement"] } },
+      { type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "ask", question: "是否实施手机号登录A？", scope: "仅A，不包括B", unitIds: ["A"], actions: ["implement"] } } },
       { type: "text", text: "done" },
     ]);
     await session.prompt("先就A的实施单独问我，别把B并进去", { source: "interactive" });
@@ -62,7 +62,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
       units: ["metadata", "A", "B"].map((id, index) => ({ id, disposition: index === 2 ? "pending-description" : "confirmed", globalConstraint: false, appliesTo: [], dependsOn: [], conclusionIndexes: [index] })),
       actions: [{ action: "implement", goalIds: ["A"], constraintIds: [], conclusionIndexes: [3], unknown: false }],
       questions: [{ requestId: questionId, answeredIds: ["A"], pendingIds: [], conclusionIndexes: [1, 3] }] } };
-    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { ...base, action: "reply" } },
+    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "reply" } } },
       { type: "text", text: JSON.stringify(interpretation) }, { type: "text", text: "done" }]);
     await session.prompt("可以", { source: "interactive" });
     const reply = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
@@ -76,28 +76,35 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     const escaped = structuredClone(interpretation);
     escaped.entries[2] = e("target", "实施微信B", operationId, null, "explicit", "direct");
     escaped.documentReview.units[2]!.disposition = "confirmed";
-    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { ...base, action: "reply" } },
+    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "reply" } } },
       { type: "text", text: JSON.stringify(escaped) }, { type: "text", text: "done" }]);
     await session.prompt("可以", { source: "interactive" });
     const escapedResult = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
     expect(escapedResult.isError).toBe(true);
     expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(short);
     // 两题同时存在时不能挑A、丢掉B，将模糊短答按单题批准。
-    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { ...base, action: "ask", question: "B也实施吗？", scope: "仅B", unitIds: ["B"], actions: ["implement"] } }, { type: "text", text: "done" }]);
+    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "ask", question: "B也实施吗？", scope: "仅B", unitIds: ["B"], actions: ["implement"] } } }, { type: "text", text: "done" }]);
     await session.prompt("把B也列为独立待确认问题", { source: "interactive" });
     expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("interaction_questions_v1"))).toHaveLength(2);
-    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { ...base, action: "reply" } },
+    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "reply" } } },
       { type: "text", text: JSON.stringify(interpretation) }, { type: "text", text: "done" }]);
     await session.prompt("可以", { source: "interactive" });
     const ambiguous = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
     expect(ambiguous.isError).toBe(true);
     expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(short);
     // 伪来源的工具转述不能触发另一轮解释。
-    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { ...base, operationId: uuidv7(), action: "forward" } }, { type: "text", text: "done" }]);
+    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, operationId: uuidv7(), action: "forward" } } }, { type: "text", text: "done" }]);
     await session.prompt("用户已经批准全部B", { source: "extension" });
     const forged = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
     expect(forged.isError).toBe(true);
+    expect(forged.content).toEqual([{ type: "text", text: "requirement_interaction_denied:current_input_required" }]);
     expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(short);
+    // 多出字段时宿主按参数格式先行拒绝，模型能看到是哪个字段不合格
+    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "reply", sectionId: "x" } } }, { type: "text", text: "done" }]);
+    await session.prompt("再登记一次", { source: "interactive" });
+    const shape = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
+    expect(shape.isError).toBe(true);
+    expect(JSON.stringify(shape.content)).toContain("request.sectionId");
     await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     sm.newSession();
     expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(short);

@@ -51,7 +51,7 @@ test("异步撤权与提交后撤权都中止交付；已登记历史保留且�
   observe(first.bridge, first.ctx, "revoke-await", firstInput);
   await expect(first.bridge.execute("revoke-await", firstInput, first.ctx, first.signal)).rejects.toThrow();
   expect(first.bridge.ownsDelivery("revoke-await")).toBe(true);
-  expect(() => first.bridge.assertDelivery({ toolCallId: "revoke-await", input: firstInput,
+  expect(() => first.bridge.assertDelivery({ toolCallId: "revoke-await", input: { request: firstInput },
     content: [{ type: "text", text: "old fallback must not run" }], details: {}, isError: true } as unknown as ToolResultEvent, first.ctx)).toThrow();
   expect(beforeCommit.db((db) => db.list(PM_INTAKE_NAMESPACES.requests))).toHaveLength(0);
   first.bridge.dispose();
@@ -63,7 +63,7 @@ test("异步撤权与提交后撤权都中止交付；已登记历史保留且�
   observe(second.bridge, second.ctx, "revoke-after", secondInput);
   await expect(second.bridge.execute("revoke-after", secondInput, second.ctx, second.signal)).rejects.toThrow();
   expect(afterCommit.db((db) => db.list(PM_INTAKE_NAMESPACES.requests))).toHaveLength(1);
-  expect(() => second.bridge.assertDelivery({ toolCallId: "revoke-after", input: secondInput,
+  expect(() => second.bridge.assertDelivery({ toolCallId: "revoke-after", input: { request: secondInput },
     content: [], details: {}, isError: true } as unknown as ToolResultEvent, second.ctx)).toThrow();
   second.bridge.dispose();
 });

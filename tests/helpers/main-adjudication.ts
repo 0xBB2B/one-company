@@ -30,8 +30,8 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     interaction.captureInput({ source: "interactive", text }, ctx);
     if (entries) interpret(JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries }));
     const toolCallId = uuidv7();
-    const result = await tool.execute(toolCallId, { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId, requirementId: w.fixture.requirementId,
-      operationId: uuidv7(), itemId, itemVersion } as never, undefined, undefined, ctx);
+    const result = await tool.execute(toolCallId, { request: { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId, requirementId: w.fixture.requirementId,
+      operationId: uuidv7(), itemId, itemVersion } } as never, undefined, undefined, ctx);
     interaction.assertDelivery(toolCallId, ctx);
     return result.details as Record<string, unknown>;
   }

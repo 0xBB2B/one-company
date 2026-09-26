@@ -76,8 +76,8 @@ test("M7-AC35：解释器引用了错误版本、用户没说清或没有当前�
   expect(unclear).toMatchObject({ status: "unclear" });
   w.interaction.revoke();
   const toolCallId = uuidv7();
-  await expect(createUserInteractTool({ interaction: w.interaction }).execute(toolCallId, { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId,
-    requirementId: w.fixture.requirementId, operationId: uuidv7(), itemId: w.itemId, itemVersion: w.version() } as never, undefined, undefined, w.ctx)).rejects.toThrow();
+  await expect(createUserInteractTool({ interaction: w.interaction }).execute(toolCallId, { request: { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId,
+    requirementId: w.fixture.requirementId, operationId: uuidv7(), itemId: w.itemId, itemVersion: w.version() } } as never, undefined, undefined, w.ctx)).rejects.toThrow();
   await expect(w.adjudicate("再给一次，3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])], w.itemId, `${w.itemId}:999`))
     .rejects.toThrow(/item_changed/);
   expect(w.decisions()).toBe(before);
@@ -302,8 +302,8 @@ test("M7-AC34：两个主窗口同时打开同一事项，先登记的生效，�
 
   windowB.captureInput({ source: "interactive", text: "再给一次，3 轮" }, ctxB);
   const id = uuidv7();
-  await expect(createUserInteractTool({ interaction: windowB }).execute(id, { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId,
-    requirementId: w.fixture.requirementId, operationId: uuidv7(), itemId: w.itemId, itemVersion: staleVersion } as never, undefined, undefined, ctxB)).rejects.toThrow();
+  await expect(createUserInteractTool({ interaction: windowB }).execute(id, { request: { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId,
+    requirementId: w.fixture.requirementId, operationId: uuidv7(), itemId: w.itemId, itemVersion: staleVersion } } as never, undefined, undefined, ctxB)).rejects.toThrow();
   expect(w.task("login").userDecision?.choice).toBe("terminate");
 
   w.interaction.dispose(); windowB.dispose();

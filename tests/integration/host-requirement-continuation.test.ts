@@ -46,7 +46,7 @@ async function world() {
     const close = async () => { if (closed) return; closed = true; await session.abort(); await session.waitForIdle(); await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); client.close(); clock.stopGapWatcher(); };
     cleanup.push(close);
     const call = async (params: Record<string, unknown>, source: "rpc" | "extension" = "rpc", draft = false) => {
-      scriptReplies(provider, [{ type: "toolcall", name: "pi_company_requirement_manage", input: { repoId: fixture.repoId, ...params } },
+      scriptReplies(provider, [{ type: "toolcall", name: "pi_company_requirement_manage", input: { request: { repoId: fixture.repoId, ...params } } },
         ...(draft ? [{ type: "text" as const, text: '{"allow":true}' }] : []), { type: "text", text: "done" }]);
       await session.prompt(draft ? "请整理并保存A需求；首次输入标记不应进入新会话" : "执行本次需求工具操作", { source });
       const result = session.messages.filter((message) => message.role === "toolResult" && message.toolName === "pi_company_requirement_manage").at(-1)!;

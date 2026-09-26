@@ -125,19 +125,20 @@ async function call(
   signal?: AbortSignal,
   onUpdate?: (result: unknown) => void,
 ) {
-  return runtime.tool.execute("tool-call", params as never, signal, onUpdate as never, ctx);
+  return runtime.tool.execute("tool-call", { request: params } as never, signal, onUpdate as never, ctx);
 }
 
 describe("project_manage 固定输入与主代理宿主边界", () => {
   test("公开 schema 仅有固定 action、repoId、init 预览位与工作区需求/操作 ID，不接受路径/身份/正文/SQL/Git 字段", () => {
     const base = { action: "init", repoId: "a".repeat(64), preview: true };
-    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, base)).toBe(true);
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: base })).toBe(true);
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, base)).toBe(false);
     for (const forged of [
       { path: "/tmp/repo" }, { root: "/tmp/repo" }, { dataRoot: "/tmp/data" }, { cwd: "/tmp/repo" },
       { role: "main" }, { actor: "user" }, { approved: true }, { sql: "select *" }, { body: "secret" },
       { command: "git status" }, { gitArgs: ["status"] }, { limits: { maxEntries: 999_999 } },
-    ]) expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { ...base, ...forged })).toBe(false);
-    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { action: "recovery-check", repoId: base.repoId, snapshotPath: "/tmp/x" })).toBe(false);
+    ]) expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { ...base, ...forged } })).toBe(false);
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { action: "recovery-check", repoId: base.repoId, snapshotPath: "/tmp/x" } })).toBe(false);
   });
 
   test("preview 只能是 init 的 preview=true；未知、未完成 action 和 status/refresh 携带 preview 在执行层默认拒绝", async () => {
@@ -147,6 +148,9 @@ describe("project_manage 固定输入与主代理宿主边界", () => {
     }));
     const ctx = context("session-main", async () => true);
     await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(call(runtime, { action: "init", repoId: world.repoId, preview: true, requirementId: uuidv7() }, ctx))
+      .rejects.toThrow("多余字段：requirementId；本动作允许字段：action、repoId、preview");
+    await expect(runtime.tool.execute("flat", { action: "status", repoId: world.repoId } as never, undefined, undefined, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
     await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId, requirementId: uuidv7(), operationId: uuidv7(), preview: true }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
     await expect(call(runtime, { action: "workspace-recycle", repoId: world.repoId, requirementId: uuidv7(), operationId: uuidv7() },
       context("session-main", async () => true, false))).rejects.toMatchObject({ code: "workspace_confirmation_required" });
@@ -593,7 +597,7 @@ describe("取消、session_shutdown 与扩展接线", () => {
     await handlers.get("session_shutdown")![0]!({ type: "session_shutdown", reason: "quit" }, ctx);
     resolveWindow(window);
     await startPromise;
-    await expect(registeredTool!.execute("call", { action: "status", repoId: world.repoId } as never, undefined, undefined, ctx)).rejects.toMatchObject({ code: "host_unavailable" });
+    await expect(registeredTool!.execute("call", { request: { action: "status", repoId: world.repoId } } as never, undefined, undefined, ctx)).rejects.toMatchObject({ code: "host_unavailable" });
   });
 
   test("扩展只登记一个 project_manage，并注册 session_start/session_shutdown 以绑定和清理 lifecycle", async () => {

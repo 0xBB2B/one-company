@@ -17,6 +17,7 @@ import { DEFAULT_INDEX_LIMITS } from "./project-index-policy.ts";
 import { readGit } from "./git-read.ts";
 import { WorkspaceManageError, WorkspaceManageService } from "./workspace-manage.ts";
 import { backup, ProjectMaintenanceError, recoveryCheck, restore } from "./project-maintenance.ts";
+import { requestParameters, shapeIssue, unwrapRequest } from "./tool-request.ts";
 
 const REPO_ID_PATTERN = "^[0-9a-f]{64}$";
 const REQUIREMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -26,15 +27,6 @@ const MAX_PATH_LENGTH = 512;
 const MAX_PROGRESS_UPDATES = 64;
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
-const publicParameters = Type.Object({
-  action: StringEnum(["init", "status", "refresh", "recovery-check", "backup", "restore", "workspace-prepare", "workspace-recycle"] as const),
-  repoId: Type.String({ pattern: REPO_ID_PATTERN }),
-  preview: Type.Optional(Type.Boolean()),
-  requirementId: Type.Optional(Type.String({ pattern: UUID_V7 })),
-  operationId: Type.Optional(Type.String({ pattern: UUID_V7 })),
-  backupOperationId: Type.Optional(Type.String({ pattern: UUID_V7 })),
-  backupManifestHash: Type.Optional(Type.String({ pattern: REPO_ID_PATTERN })),
-}, { additionalProperties: false });
 const maintenanceSchema = (action: "recovery-check" | "backup") => Type.Object({
   action: Type.Literal(action),
   repoId: Type.String({ pattern: REPO_ID_PATTERN }),
@@ -74,6 +66,7 @@ const actionSchemas = {
   }, { additionalProperties: false }),
 } as const;
 
+const publicParameters = requestParameters(Object.values(actionSchemas));
 export const PROJECT_MANAGE_PARAMETERS = publicParameters;
 export const PROJECT_MANAGE_OUTPUT_LIMITS = Object.freeze({
   maxBytes: MAX_RESULT_BYTES,
@@ -242,16 +235,18 @@ const PRIORITY_KEYS = [
   "warnings", "skipped", "budget", "counts", "archives", "issues", "metadata", "files", "paths", "items",
 ];
 
-function checkedParams(value: unknown): ProjectManageParams {
+function checkedParams(raw: unknown): ProjectManageParams {
+  const value = unwrapRequest(raw);
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ProjectManageToolError("invalid_shape", "project_manage 参数不符合固定字段白名单");
+    throw new ProjectManageToolError("invalid_shape", "project_manage 参数须为 { request: { action, repoId, ... } }");
   }
   const action = (value as { action?: unknown }).action;
-  if (typeof action !== "string" || !(action in actionSchemas)) {
-    throw new ProjectManageToolError("invalid_action", "未知或尚未开放的 project_manage action");
+  if (typeof action !== "string" || !Object.hasOwn(actionSchemas, action)) {
+    throw new ProjectManageToolError("invalid_action", `未知或尚未开放的 project_manage action；可用 action：${Object.keys(actionSchemas).join("、")}`);
   }
-  if (!Value.Check(actionSchemas[action as keyof typeof actionSchemas], value)) {
-    throw new ProjectManageToolError("invalid_shape", "project_manage 参数不符合该 action 的固定字段白名单");
+  const schema = actionSchemas[action as keyof typeof actionSchemas];
+  if (!Value.Check(schema, value)) {
+    throw new ProjectManageToolError("invalid_shape", `project_manage 参数不符合该 action 的固定字段白名单：${shapeIssue(schema, value)}`);
   }
   return structuredClone(value) as ProjectManageParams;
 }
@@ -827,7 +822,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
   const tool: ToolDefinition<typeof publicParameters, Record<string, unknown>> = {
     name: "pi_company_project_manage",
     label: "管理项目索引",
-    description: "初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
+    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；operationId 每次新生成 UUIDv7，requirementId 取自需求工具结果，不要自编。初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
     promptSnippet: "通过受控宿主入口预览、初始化、查看或刷新当前项目索引",
     parameters: publicParameters,
     executionMode: "sequential",

@@ -25,7 +25,7 @@ interface SelectionClaim {
 }
 export class HostAuthorizationError extends Error {
   readonly code: string;
-  constructor(code: string) { super(`requirement_host_denied:${code}`); this.name = "HostAuthorizationError"; this.code = code; }
+  constructor(code: string, hint?: string) { super(`requirement_host_denied:${code}${hint ? `（${hint}）` : ""}`); this.name = "HostAuthorizationError"; this.code = code; }
 }
 /** 宿主身份与资源门槛；不签发目标批准，不读取聊天历史，不持久化用户输入。 */
 export class HostAuthorizationManager {

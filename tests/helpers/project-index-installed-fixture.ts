@@ -484,7 +484,7 @@ async function runHost(): Promise<void> {
         else if (action === "project" || action === "tool" || action === "text") {
           const name = action === "project" ? "pi_company_project_manage" : String(input.name ?? "write");
           const calls: ToolCall[] = action === "text" || input.textOnly === true ? [] : [{ type: "toolCall", id: `installed-${timestamp + 1}`, name,
-            arguments: action === "project" ? { ...input, repoId: process.env.M3_INSTALLED_REPO } : input.args as Record<string, unknown> }];
+            arguments: action === "project" ? { request: { ...input, repoId: process.env.M3_INSTALLED_REPO } } : input.args as Record<string, unknown> }];
           queue.push({ calls, text: "controlled answer" });
           if (calls.length) queue.push({ text: "controlled follow-up" });
           await session!.prompt("测试前端发起当前项目操作", { source: "interactive" }).then(() => session!.waitForIdle()).finally(() => { queue.length = 0; });

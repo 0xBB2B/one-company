@@ -24,6 +24,7 @@ import {
 import { RequirementService } from "./requirement-service.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
 import { decisionDigest } from "./short-decision-format.ts";
+import { unwrapRequest } from "./tool-request.ts";
 
 const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -310,11 +311,12 @@ export class MainIntakeInteraction {
   }
 
   observeToolCall(event: Pick<ToolCallEvent, "toolName" | "toolCallId" | "input">, ctx: ExtensionContext): void {
-    if (event.toolName !== "pi_company_user_interact" || (event.input as { purpose?: unknown }).purpose !== "pm-intake") return;
+    const request = unwrapRequest(event.input) as { purpose?: unknown } | undefined;
+    if (event.toolName !== "pi_company_user_interact" || request?.purpose !== "pm-intake") return;
     this.#sweep();
     if (this.#owned.has(event.toolCallId) || this.#executing.has(event.toolCallId) || this.#retired.has(event.toolCallId)) deny("duplicate_tool_call");
     if (new Set([...this.#owned.keys(), ...this.#executing.keys()]).size >= MAX_PENDING) deny("tool_call_limit");
-    const params = checkPmIntakeToolInput(event.input), current = this.#context(ctx);
+    const params = checkPmIntakeToolInput(request), current = this.#context(ctx);
     this.#assertInputContext(params, current);
     const expiresAt = performance.now() + (this.#options.callTtlMs ?? DEFAULT_TTL_MS);
     this.#observed.set(event.toolCallId, { params, inputHash: decisionDigest(params), session: current.session,
@@ -458,7 +460,7 @@ export class MainIntakeInteraction {
 
   #assertDeliveryCurrent(event: Pick<ToolResultEvent, "toolCallId" | "input" | "content" | "details" | "isError">,
     ctx: ExtensionContext, delivery: Delivery): void {
-    const input = checkPmIntakeToolInput(event.input);
+    const input = checkPmIntakeToolInput(unwrapRequest(event.input));
     const current = this.#context(ctx);
     this.#assertInputContext(input, current);
     const actualBytes = json({ content: event.content, details: event.details });

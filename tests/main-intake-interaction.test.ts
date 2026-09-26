@@ -110,7 +110,7 @@ test("需求未选、伪Main字段、PM自填passed和缺省provider都拒绝", 
   for (const patch of [{ role: "main" }, { actor: "user" }, { trusted: true }, { receipt: uuidv7() },
     { reviewer: { windowId: fixture.identity.windowId } }]) {
     expect(() => current.bridge.observeToolCall({ toolName: "pi_company_user_interact", toolCallId: uuidv7(),
-      input: { ...valid, ...patch } } as unknown as ToolCallEvent, current.ctx)).toThrow(/invalid_shape/);
+      input: { request: { ...valid, ...patch } } } as unknown as ToolCallEvent, current.ctx)).toThrow(/invalid_shape/);
   }
   current.bridge.dispose();
 

@@ -26,6 +26,7 @@ function actionLiterals(schema: TSchema): string[] {
       if (Array.isArray(action.enum)) for (const item of action.enum) found.add(String(item));
     }
     if (properties?.query) visit(properties.query);
+    if (properties?.request) visit(properties.request);
   };
   visit(schema);
   return [...found].sort();

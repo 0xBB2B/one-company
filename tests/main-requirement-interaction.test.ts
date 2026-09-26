@@ -47,7 +47,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
   const manage = createRequirementManageTool({ interaction }), user = createUserInteractTool({ interaction });
   const call = async (params: Record<string, unknown>, userTool = false) => {
     const toolCallId = uuidv7();
-    const result = await (userTool ? user : manage).execute(toolCallId, { repoId, ...params } as never, undefined, undefined, ctx);
+    const result = await (userTool ? user : manage).execute(toolCallId, { request: { repoId, ...params } } as never, undefined, undefined, ctx);
     interaction.assertDelivery(toolCallId, ctx); return result.details!;
   };
   const capture = (text = PHONE, source = "interactive", rpc = false) => interaction.captureInput({ source, text }, ctx, rpc);
@@ -155,11 +155,11 @@ describe("主窗口共享控制器的真实服务路径", () => {
   test("SDK返回前微任务撤权与跨连接关闭，旧正文不得交付；关闭metadata最小化", async () => {
     const w = await world(), created = await w.create(), requirementId = String(created.requirementId);
     const resultId = uuidv7();
-    await w.manage.execute(resultId, { action: "read", repoId: w.repoId, requirementId, source: "saved" } as never, undefined, undefined, w.ctx);
+    await w.manage.execute(resultId, { request: { action: "read", repoId: w.repoId, requirementId, source: "saved" } } as never, undefined, undefined, w.ctx);
     await Promise.resolve().then(() => w.authorization.revoke());
     expect(() => w.interaction.assertDelivery(resultId, w.ctx)).toThrow();
     const otherResultId = uuidv7();
-    await w.manage.execute(otherResultId, { action: "read", repoId: w.repoId, requirementId, source: "saved" } as never, undefined, undefined, w.ctx);
+    await w.manage.execute(otherResultId, { request: { action: "read", repoId: w.repoId, requirementId, source: "saved" } } as never, undefined, undefined, w.ctx);
     const script = `import {RequirementStateStore} from ${JSON.stringify(new URL("../runtime/requirement-state.ts", import.meta.url).href)};
       const state=await RequirementStateStore.open({...${JSON.stringify({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId })},authorize:()=>true});
       await state.beginClose(${JSON.stringify({ requirementId, version: Number(created.version), intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } })});`;
