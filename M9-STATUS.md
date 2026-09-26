@@ -19,7 +19,7 @@
 | AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 未开始 | 可复用：tests/pm-intake-runtime.test.ts、tests/pm-dispatch.test.ts、tests/pm-event-delivery.test.ts | 需在安装产物中实跑 |
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 未开始 | 可复用：tests/explore-dispatch.test.ts、tests/explore-web.test.ts | 需真实模型与真实联网；本机出网慢，联网失败时该项标未完成，不以降级路径冒充 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
-| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 未开始 | 可复用：tests/zero-custom-loop.test.ts（脚本化模型，不算本项） | 需真实模型 |
+| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 进行中 | 驱动：tests/acceptance/zero-custom-loop.test.ts（pnpm run test:acceptance）；5 轮实跑证据在 .bb-spec/.cache/m9/acceptance/ | 主会话 3 个工具模型用不对，草稿保存不下来（见"当前阻塞"），尚未走到 PM |
 | AC13 复制默认 worker 为专业定义，PM 自动选中完成 UI 设计与实现，独立 review/QA | 未开始 | 可复用：tests/agent-catalog-ui.test.ts、tests/agent-selection.test.ts | 需真实模型与 UI 样例任务 |
 | AC14 安装产物中两类目录发现、环境变量覆盖、项目信任、同名冲突、不越根 | 未开始 | 可复用：tests/role-catalog.test.ts | 需在安装产物中实跑 |
 | AC15 两种默认路径；显式指定不可用明确失败交用户裁决 | 未开始 | 可复用：tests/agent-selection.test.ts | 需在安装产物中实跑 |
@@ -40,7 +40,9 @@
 6. AC2 预登记问题集（11 题）：先用真实模型把"角色快跑"跑到关闭并归档，再开进行中的"跳跃动画"，然后提问：①水平移动速度怎么算、在哪个文件；②Go 服务里 Greet 做什么、谁调用；③空中能否再次起跳、依据哪条规则；④进行中的跳跃动画要求哪些姿态；⑤不指定需求，列出所有进行中需求的内容；⑥最新批准版比上一版改了什么；⑦已完成的快跑当时的验收标准；⑧sprint 与 jump-motion 规则有无冲突；⑨快跑的测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 里的旧需求写新需求。每题出处须可核对；⑤⑦⑪必须拒绝给正文，模型若用普通 read 读了归档，该题判未通过并记为旁路案例；⑨⑩没有记录时须答"未知"。
 7. AC13 UI 样例任务：给角色加 HUD 状态面板（速度、是否在空中、是否快跑），TS 函数输出 HTML 字符串加一份 CSS，node 单元测试即可验证，不用浏览器；专业定义由默认 worker 复制为 ui-worker，挂样例项目自带的 skill ui-basics 以验证 skill 实际加载。
 
-待解决：无需用户拍板的阻塞。
+真实模型实跑发现并已修复（d181df1、e953f68）：工具参数正则含 \p{..}、前后顾或 \ud800-\udfff 代理项范围时，5x 网关整条请求失败（400 或零 token 的 length），主会话一句话都答不了；已改为等价写法，代码层校验不变，并加回归检查。
+
+待用户拍板（停止规则：跨多个工具的接口修改）：主会话的 project_manage、requirement_manage、user_interact 是"所有字段可选"的平铺参数，说明里没写每个动作要哪些字段；gpt-6-luna 把所有字段都填上假值，被字段白名单拒绝；拒绝信息不说多了哪些字段（requirement_manage 更是把一切错误都换成 requirement_interaction_denied），模型无法自行改正，草稿始终保存不下来。
 
 已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。
 
@@ -49,6 +51,6 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（M9 章节与 §13），再读 M9-STATUS.md，核对 git status 与最近提交。M0–M8 已收口不重做。
-M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），验证方式分工、AC2 问题集与 AC13 UI 样例任务也已确认（见"当前阻塞"）。下一步写 test:acceptance 驱动，先跑一轮真实模型的零自定义最小闭环（AC12）并记录实际 token。
+M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），验证方式分工、AC2 问题集与 AC13 UI 样例任务也已确认（见"当前阻塞"）。test:acceptance 驱动已写好并实跑 5 轮；当前卡在主会话 3 个工具的参数用法问题，修法待用户拍板（见"当前阻塞"）。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
