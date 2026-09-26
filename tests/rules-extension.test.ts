@@ -1,0 +1,23 @@
+import { expect, test } from "vitest";
+import rulesExtension from "../extensions/rules.ts";
+import { createFakePi } from "./helpers/fake-pi.ts";
+
+const start = async (pi: ReturnType<typeof createFakePi>) =>
+  (await pi.handlersFor("before_agent_start")[0]!({ type: "before_agent_start", systemPrompt: "BASE" }, {} as never)) as { systemPrompt: string };
+
+test("主会话系统提示附上当前窗口已接入仓库的路径与 repoId，主代理不必自行计算", async () => {
+  const pi = createFakePi();
+  const repoId = "a".repeat(64);
+  rulesExtension(pi.pi, { windowContext: () => ({ workspace: { repos: [{ path: "/work/game", repoId, commonDir: "/work/game/.git" }], skipped: [] } }) });
+  const { systemPrompt } = await start(pi);
+  expect(systemPrompt.startsWith("BASE\n\n## 主会话职责")).toBe(true);
+  expect(systemPrompt).toContain(`## 当前窗口已接入的仓库\n调用需要 repoId 的工具时使用下列编号，不要自行计算：\n- /work/game → repoId ${repoId}`);
+});
+
+test("窗口尚未启动时只附规则，不编造仓库", async () => {
+  const pi = createFakePi();
+  rulesExtension(pi.pi, { windowContext: () => { throw new Error("窗口未启动"); } });
+  const { systemPrompt } = await start(pi);
+  expect(systemPrompt).toContain("## 主会话职责");
+  expect(systemPrompt).not.toContain("当前窗口已接入的仓库");
+});
