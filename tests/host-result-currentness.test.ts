@@ -50,9 +50,9 @@ async function world(active: boolean) {
   const params = { action: "confirmUpdate", requirementId, savedOperationId: String(created.operationId), operationId: uuidv7(), version: state.read(requirementId).version };
   const loaded = await service.loadConfirmationContext({ requirementId, savedOperationId: params.savedOperationId, operationId: params.operationId }), c = loaded.candidate.candidateId;
   const entry = (kind: string, text: string) => ({ kind, conclusion: text, scope: "A范围", basis: "explicit", resolution: "direct", candidateId: c, requestId: null, actions: kind === "action" ? ["analyze"] : [], references: [], supersedes: [] });
-  scriptReplies(provider, [{ type: "text", text: JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries: [entry("constraint", "文档身份"), entry("target", "实施A"), entry("action", "只分析A")], documentReview: { faithful: true,
-    units: loaded.partition.units.map((u, i) => ({ id: u.id, disposition: "confirmed", globalConstraint: false, appliesTo: [], dependsOn: [], conclusionIndexes: [i] })),
-    actions: [{ action: "analyze", goalIds: ["A"], constraintIds: [], conclusionIndexes: [2], unknown: false }], questions: [] } }) }]);
+  const units = loaded.partition.units.map((u) => u.id);
+  scriptReplies(provider, [{ type: "text", text: JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true,
+    entries: [{ ...entry("constraint", "文档身份"), unitIds: [units[0]] }, { ...entry("target", "实施A"), unitIds: units.slice(1) }, { ...entry("action", "只分析A"), unitIds: ["A"] }] }) }]);
   const id = uuidv7(), response = await call(params, id), targetId = (response.details!.decisionIds as string[])[1]!;
   const supersede = async () => {
     const before = state.read(requirementId);

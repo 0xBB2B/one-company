@@ -55,13 +55,10 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     expect(notifications.some((text) => text.includes(questionId) && text.includes("动作：implement") && text.includes("仅A，不包括B"))).toBe(true);
     const e = (kind: string, conclusion: string, candidate: string, request: string | null, basis = "explicit", resolution = "accept") => ({ kind, conclusion, candidateId: candidate, requestId: request,
       basis, resolution, scope: "仅A，不包括B", actions: kind === "action" ? ["implement"] : [], references: [], supersedes: [] });
-    const interpretation = { format: "interaction-interpretation/v1", referenceResolution: "single-question", entries: [
-      e("constraint", "需求身份", operationId, null, "explicit", "direct"), e("target", "增加手机号登录", operationId, questionId),
-      e("unresolved", "微信未决", operationId, null, "uncertain", "unclear"), e("action", "实施手机号登录", operationId, questionId),
-    ], documentReview: { faithful: true,
-      units: ["metadata", "A", "B"].map((id, index) => ({ id, disposition: index === 2 ? "pending-description" : "confirmed", globalConstraint: false, appliesTo: [], dependsOn: [], conclusionIndexes: [index] })),
-      actions: [{ action: "implement", goalIds: ["A"], constraintIds: [], conclusionIndexes: [3], unknown: false }],
-      questions: [{ requestId: questionId, answeredIds: ["A"], pendingIds: [], conclusionIndexes: [1, 3] }] } };
+    const interpretation = { format: "interaction-interpretation/v1", referenceResolution: "single-question", faithful: true, entries: [
+      { ...e("constraint", "需求身份", operationId, null, "explicit", "direct"), unitIds: ["metadata"] }, { ...e("target", "增加手机号登录", operationId, questionId), unitIds: ["A"] },
+      { ...e("unresolved", "微信未决", operationId, null, "uncertain", "unclear"), unitIds: ["B"] }, { ...e("action", "实施手机号登录", operationId, questionId), unitIds: ["A"] },
+    ] };
     scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "reply" } } },
       { type: "text", text: JSON.stringify(interpretation) }, { type: "text", text: "done" }]);
     await session.prompt("可以", { source: "interactive" });
@@ -74,8 +71,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     expect(short.some((r) => JSON.stringify(r.data).includes(questionId))).toBe(true);
     // 受控provider故意把同一短答扩成B目标，生产适配器与Core必须拒绝。
     const escaped = structuredClone(interpretation);
-    escaped.entries[2] = e("target", "实施微信B", operationId, null, "explicit", "direct");
-    escaped.documentReview.units[2]!.disposition = "confirmed";
+    escaped.entries[2] = { ...e("target", "实施微信B", operationId, null, "explicit", "direct"), unitIds: ["B"] };
     scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "reply" } } },
       { type: "text", text: JSON.stringify(escaped) }, { type: "text", text: "done" }]);
     await session.prompt("可以", { source: "interactive" });

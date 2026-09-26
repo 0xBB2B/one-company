@@ -20,7 +20,8 @@ import { RequirementService } from "../runtime/requirement-service.ts";
 import { RequirementServiceError } from "../runtime/requirement-manage-contracts.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { ConfirmationContext } from "../runtime/requirement-manage-contracts.ts";
-import type { InteractionInterpretation } from "../runtime/user-interaction-format.ts";
+import type { Static } from "typebox";
+import { ModelInterpretation } from "../runtime/interaction-derivation.ts";
 
 
 const exec = promisify(execFile), cleanup: Array<() => Promise<void>> = [];
@@ -64,14 +65,15 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
   return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage };
 }
 /** 明确fixture语义输出；调用仍经过真实ModelRegistry/provider与生产解释适配器。 */
-function phoneReview(c: Pick<ConfirmationContext, "candidate" | "partition">, action: "analyze" | "implement" = "analyze"): InteractionInterpretation {
+function phoneReview(c: Pick<ConfirmationContext, "candidate" | "partition">, action: "analyze" | "implement" = "analyze"): Static<typeof ModelInterpretation> {
   const entry = (kind: "constraint" | "target" | "delegation" | "future" | "unresolved" | "exclusion" | "action", conclusion: string, basis: "explicit" | "uncertain" = "explicit") => ({
     kind, conclusion, scope: kind === "action" ? (action === "analyze" ? "只分析，不修改代码" : "实施手机号登录，保留邮箱，不做微信") : "当前登录需求", basis,
     resolution: "direct" as const, candidateId: c.candidate.candidateId, requestId: null, actions: kind === "action" ? [action] : [], references: [], supersedes: [] });
-  return { format: "interaction-interpretation/v1", referenceResolution: "none", entries: [entry("constraint", "需求身份与标题"), entry("target", "增加手机号登录并保留邮箱登录"), entry("delegation", "短信期限委托参考常见做法提出方案"), entry("unresolved", "短信期限待提出方案", "uncertain"), entry("exclusion", "本次排除微信登录"), entry("action", "本轮授权动作"), { ...entry("future", "微信仅为未来想法", "uncertain"), candidateId: null }],
-    documentReview: { faithful: true, units: c.partition.units.map((u, i) => ({ id: u.id, disposition: i === 3 ? "pending-description" : i === 4 ? "excluded" : "confirmed",
-      globalConstraint: false, appliesTo: [], dependsOn: [], conclusionIndexes: [i] })),
-      actions: [{ action, goalIds: ["A"], constraintIds: [], conclusionIndexes: [5], unknown: false }], questions: [] } };
+  const unit = (i: number) => [c.partition.units[i]!.id];
+  return { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true, entries: [{ ...entry("constraint", "需求身份与标题"), unitIds: unit(0) },
+    { ...entry("target", "增加手机号登录并保留邮箱登录"), unitIds: unit(1) }, { ...entry("delegation", "短信期限委托参考常见做法提出方案"), unitIds: unit(2) },
+    { ...entry("unresolved", "短信期限待提出方案", "uncertain"), unitIds: unit(3) }, { ...entry("exclusion", "本次排除微信登录"), unitIds: unit(4) },
+    { ...entry("action", "本轮授权动作"), unitIds: ["A"] }, { ...entry("future", "微信仅为未来想法", "uncertain"), candidateId: null }] };
 }
 
 describe("主窗口共享控制器的真实服务路径", () => {
@@ -173,9 +175,9 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
   test("修改建议不批准旧hash，外部服务重新保存不能重放旧ticket", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
-    const review = phoneReview(loaded); review.documentReview!.faithful = false;
+    const review = phoneReview(loaded); review.faithful = false;
     review.entries[1]!.resolution = "modify"; review.entries[1]!.conclusion = "手机号登录需修改后保留邮箱";
-    review.entries.splice(5, 1); review.documentReview!.actions = [];
+    review.entries.splice(5, 1);
     scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }]);
     const result = await w.call({ action: "confirmUpdate", ...input });
     expect(result).toMatchObject({ targetRecorded: true, prodActivated: false, blockedBy: "candidate_requires_revision_or_clarification", allowedScopes: [] });
@@ -201,8 +203,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
           // 固定模型答复使用生产解释器实际提供的候选与分区，不另行读取一次prod。
           expect(payload.context.basis).toMatchObject({ requirementId: expectedInput.requirementId, version: expectedInput.version });
           const review = phoneReview(payload.context.document);
-          review.documentReview!.faithful = false; review.entries[1]!.resolution = "modify";
-          review.entries.splice(5, 1); review.documentReview!.actions = [];
+          review.faithful = false; review.entries[1]!.resolution = "modify";
+          review.entries.splice(5, 1);
           scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }]);
           reviewedDocuments++;
         }
@@ -243,7 +245,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
   for (const change of ["revoke", "expiry", "input", "resave"] as const) test(`受控重解释在模型等待期间${change}拒绝迟到结果`, async () => {
     let now = 1000;
     const w = await world({ now: () => now, inputTtlMs: 100_000 }), created = await w.create(), first = await w.request(created), review = phoneReview(first.loaded);
-    review.documentReview!.faithful = false; review.entries[1]!.resolution = "modify"; review.entries.splice(5, 1); review.documentReview!.actions = [];
+    review.faithful = false; review.entries[1]!.resolution = "modify"; review.entries.splice(5, 1);
     scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }]); await w.call({ action: "confirmUpdate", ...first.input });
     scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
     const updated = await w.call({ action: "updateDraft", requirementId: first.input.requirementId, version: first.input.version, operationId: uuidv7(), title: "登录", body: BODY + "补充邮箱约束。\n" });
@@ -275,8 +277,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
   test("受控重存finalize失败保留实际数据但取消重解释permit", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created), review = phoneReview(loaded);
-    review.documentReview!.faithful = false; review.entries[1]!.resolution = "modify";
-    review.entries.splice(5, 1); review.documentReview!.actions = [];
+    review.faithful = false; review.entries[1]!.resolution = "modify";
+    review.entries.splice(5, 1);
     scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }]); await w.call({ action: "confirmUpdate", ...input });
     const fail = vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementation(() => { throw new Error("fixture_finalize_failure"); });
     const operationId = uuidv7();

@@ -794,16 +794,28 @@ test("真实pi-ai适配路径使用选定模型、单条当前输入、固定指
   expect(spy.mock.calls[0]![2]).toMatchObject({ cacheRetention: "none" });
   expect(spy.mock.calls[0]![1].messages).toEqual([]); // finally释放适配器持有的原文
 });
-test("pi-ai完整文档review走真实同一API路径，原文只在调用载荷中且响应固定schema", async () => {
+/** 把标准解释结果倒推成解释器模型的回答：每条决定写明涉及的段，逐段审阅交给程序生成。 */
+function modelAnswer(output: InteractionInterpretation) {
+  const { documentReview: review, ...rest } = output;
+  if (!review) return output;
+  return { ...rest, faithful: review.faithful,
+    unitHints: review.units.filter((u) => u.dependsOn.length || u.globalConstraint || u.retainedFactIds?.length)
+      .map((u) => ({ id: u.id, globalConstraint: u.globalConstraint, appliesTo: u.appliesTo, dependsOn: u.dependsOn, ...(u.retainedFactIds ? { retainedFactIds: u.retainedFactIds } : {}) })),
+    entries: output.entries.map((e, i) => ({ ...e, unitIds: e.kind === "action"
+      ? [...new Set(review.actions.filter((a) => a.conclusionIndexes.includes(i)).flatMap((a) => a.goalIds))]
+      : review.units.filter((u) => u.conclusionIndexes.includes(i)).map((u) => u.id) })) };
+}
+test("pi-ai完整文档review走真实同一API路径，原文只在调用载荷中，模型只写涉及段，逐段审阅由程序生成", async () => {
   const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
   let payload: { context: InteractionContext } | undefined;
   const spy = vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => {
     payload = JSON.parse(String((c.messages[0] as { content: string }).content)); return complete(m, c, o);
   });
-  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(w.output()))])]);
-  await a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal });
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(modelAnswer(w.output())))])]);
+  const output = await a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal });
+  expect(JSON.parse(output).documentReview.units.map((u: { id: string }) => u.id)).toEqual(w.context.document!.partition.units.map((u) => u.id));
   expect(payload!.context.document!.body).toBe(w.context.document!.body);
-  expect(spy.mock.calls[0]![1].systemPrompt).toContain("pending-description");
+  expect(spy.mock.calls[0]![1].systemPrompt).toContain("unitIds");
   expect(spy.mock.calls[0]![1].messages).toEqual([]);
 });
 test("pi-ai调用期间切换宿主模型，旧结果拒绝而不偷换模型", async () => {

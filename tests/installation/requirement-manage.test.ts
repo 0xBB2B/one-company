@@ -198,10 +198,9 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const confirmationOperationId = uuidv7();
     const entry = (kind: "constraint" | "target" | "action", conclusion: string) => ({ kind, conclusion, scope: "仅分析安装接线，不实施",
       basis: "explicit", resolution: "direct", candidateId: confirmationOperationId, requestId: null, actions: kind === "action" ? ["analyze"] : [], references: [], supersedes: [] });
-    const interpretation = { format: "interaction-interpretation/v1", referenceResolution: "none",
-      entries: [entry("constraint", "需求身份与标题"), entry("target", "通过真实SDK处理需求保存"), entry("action", "只分析接线")],
-      documentReview: { faithful: true, units: ["metadata", "whole-body"].map((id, i) => ({ id, disposition: "confirmed", globalConstraint: false, appliesTo: [], dependsOn: [], conclusionIndexes: [i] })),
-        actions: [{ action: "analyze", goalIds: ["whole-body"], constraintIds: [], conclusionIndexes: [2], unknown: false }], questions: [] } };
+    const interpretation = { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true,
+      entries: [{ ...entry("constraint", "需求身份与标题"), unitIds: ["metadata"] }, { ...entry("target", "通过真实SDK处理需求保存"), unitIds: ["whole-body"] },
+        { ...entry("action", "只分析接线"), unitIds: ["whole-body"] }] };
     scriptReplies(provider, [
       { type: "toolcall", name: "pi_company_user_interact", input: { request: { action: "forward", repoId: identity.repoId, requirementId: details.requirementId,
         savedOperationId: operationId, operationId: confirmationOperationId, version: details.version } } },
