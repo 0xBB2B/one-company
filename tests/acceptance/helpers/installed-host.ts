@@ -94,6 +94,8 @@ export interface InstalledHost {
   session: Awaited<ReturnType<typeof createAgentSession>>["session"];
   dialogs: DialogRecord[];
   notifications: Array<{ message: string; type?: string; at: number }>;
+  /** 主会话的模型回合结束、出错与自动重试，失败的尝试可能不留在会话消息里。 */
+  modelEvents: Array<{ type: string; detail: string; at: number }>;
   /** 按用户在终端里看到的样子渲染 PM 面板。 */
   panelLines(width?: number): string[];
   /** 模拟用户在终端按键（输入框为空时）。 */
@@ -142,9 +144,19 @@ export async function startInstalledHost(options: { installed: string; repo: str
     }) as ExtensionUIContext["setWidget"],
   };
   await session.bindExtensions({ uiContext: ui, mode: "tui" });
+  const modelEvents: InstalledHost["modelEvents"] = [];
+  session.subscribe((event) => {
+    const at = Date.now();
+    if (event.type === "message_end" && event.message.role === "assistant") {
+      const { usage, stopReason, errorMessage, content } = event.message;
+      modelEvents.push({ type: "assistant", detail: `${stopReason} in=${usage.input} out=${usage.output} cacheRead=${usage.cacheRead} blocks=${content.map((b) => b.type).join(",")}${errorMessage ? ` ${errorMessage.slice(0, 500)}` : ""}`, at });
+    } else if (event.type === "auto_retry_start") modelEvents.push({ type: event.type, detail: `${event.attempt}/${event.maxAttempts} ${event.errorMessage.slice(0, 500)}`, at });
+    else if (event.type === "auto_retry_end") modelEvents.push({ type: event.type, detail: `${event.success} ${event.finalError?.slice(0, 500) ?? ""}`, at });
+    else if (event.type === "agent_end") modelEvents.push({ type: event.type, detail: `willRetry=${event.willRetry}`, at });
+  });
 
   return {
-    session, dialogs, notifications,
+    session, dialogs, notifications, modelEvents,
     panelLines: (width = 160) => panel?.render(width) ?? [],
     press: (data) => { for (const handler of inputHandlers) handler(data); },
     close: async () => {
