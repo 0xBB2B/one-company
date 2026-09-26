@@ -19,7 +19,7 @@
 | AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 未开始 | 可复用：tests/pm-intake-runtime.test.ts、tests/pm-dispatch.test.ts、tests/pm-event-delivery.test.ts | 需在安装产物中实跑 |
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 未开始 | 可复用：tests/explore-dispatch.test.ts、tests/explore-web.test.ts | 需真实模型与真实联网；本机出网慢，联网失败时该项标未完成，不以降级路径冒充 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
-| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 进行中 | 驱动：tests/acceptance/zero-custom-loop.test.ts（pnpm run test:acceptance）；13 轮实跑证据在 .bb-spec/.cache/m9/acceptance/ | 第 13 轮已走到：草稿保存、批准生效、工作区创建、PM 派出并提交接手理解；卡在主代理未完成接手核对，原因待该轮记录 |
+| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 进行中 | 驱动：tests/acceptance/zero-custom-loop.test.ts（pnpm run test:acceptance）；17 轮实跑证据在 .bb-spec/.cache/m9/acceptance/ | 最远走到 PM 提交接手理解；接手核对被拒已修（999ec59），尚未实跑验证；批准一步仍不稳定，待用户拍板（见"当前阻塞"） |
 | AC13 复制默认 worker 为专业定义，PM 自动选中完成 UI 设计与实现，独立 review/QA | 未开始 | 可复用：tests/agent-catalog-ui.test.ts、tests/agent-selection.test.ts | 需真实模型与 UI 样例任务 |
 | AC14 安装产物中两类目录发现、环境变量覆盖、项目信任、同名冲突、不越根 | 未开始 | 可复用：tests/role-catalog.test.ts | 需在安装产物中实跑 |
 | AC15 两种默认路径；显式指定不可用明确失败交用户裁决 | 未开始 | 可复用：tests/agent-selection.test.ts | 需在安装产物中实跑 |
@@ -54,6 +54,13 @@
 
 守护进程修正（67188f1）：7e990b8 让守护进程启动时刷新模型状态，进程被强杀后留下的凭据文件锁会让下次启动失败；已恢复启动不刷新，改为角色读需求前按需刷新该提供方。
 
+PM 接手复核修复（999ec59）：OpenAI Responses 类提供方的工具调用编号形如 call_x|fc_y，接手服务、存储与契约的编号格式不含竖线，主代理调用一律被判 untrusted_main_call；三处各加 |。
+
+待用户拍板（停止规则：连续局部修复后前置仍在增加）：
+1. 激活顺序：第一次确认只登记批准清单（返回 workspace_not_ready），工作区建好后须再确认一次才激活，且第二次确认要用户再说一次原话；主代理不知道这一步，先派 PM 被拒（requirement_not_active）。
+2. 第二次确认时上下文带先前决定，解释器把 metadata 约束的 candidateId 写成 null，被核对拒绝（review_entry_mismatch）；属模型分类错误，重建救不了。
+3. 次要：主代理调用 ask 时 unitIds 常填错（question_scope_mismatch），ask 可选，暂不处理。
+
 已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。
 
 ## 下一窗口续接提示
@@ -61,6 +68,6 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（M9 章节与 §13），再读 M9-STATUS.md，核对 git status 与最近提交。M0–M8 已收口不重做。
-M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），验证方式分工、AC2 问题集与 AC13 UI 样例任务也已确认（见"当前阻塞"）。test:acceptance 驱动已写好并实跑 5 轮；主会话 3 个工具的参数格式与报错已改好（0d73114）；第 6 轮卡在主代理拿不到 repoId，补法待用户拍板（见"当前阻塞"）。
+M9 进行中：用户决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、pnpm run test:acceptance、pi 升 0.87.1、验证方式分工、AC2 问题集、AC13 UI 样例任务）。test:acceptance 驱动实跑 17 轮，已修复多项真实模型才暴露的产品问题（见"当前阻塞"前的记录）。当前停在"当前阻塞"里待用户拍板的批准流程两项；拍板后按决定修复，再重跑 AC12（运行命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance；卡住时在证据目录放 STOP 文件即可正常收尾）。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
