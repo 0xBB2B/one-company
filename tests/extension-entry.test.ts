@@ -54,12 +54,12 @@ describe("extensions/index.ts 唯一扩展入口", () => {
     expect(names.filter((name) => name === "bash").length).toBe(1);
   });
 
-  test("工具参数的正则不用 \\p{..} 与前后顾：部分提供方（如 OpenAI Responses 接口）会整条请求拒绝", () => {
+  test("工具参数的正则不用 \\p{..}、前后顾与代理项范围：部分提供方（如 OpenAI Responses 接口）会整条请求失败", () => {
     const fakePi = createFakePi();
 
     registerExtensions(fakePi.pi);
 
-    const offenders = fakePi.registeredTools().filter((tool) => /\\\\p\{|\(\?<?[=!]/.test(JSON.stringify(tool.parameters)));
+    const offenders = fakePi.registeredTools().filter((tool) => /\\\\p\{|\(\?<?[=!]|\\\\ud[89a-f]/i.test(JSON.stringify(tool.parameters)));
     expect(offenders.map((tool) => tool.name)).toEqual([]);
   });
 

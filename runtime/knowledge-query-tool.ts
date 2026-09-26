@@ -7,8 +7,8 @@ import type { KnowledgeFactPackage } from "./knowledge-query.ts";
 /** JSON正文再嵌入text字符串最多翻倍；为50KiB宿主content包装预留空间。 */
 export const KNOWLEDGE_TOOL_MAX_BYTES = 24_576;
 export const KNOWLEDGE_TOOL_CONTENT_BYTES = 50 * 1024;
-// 部分提供方拒绝含 \p{..} 或前后顾的正则；这里只用字符类，完整校验仍由 parseKnowledgeQuery 执行
-const excluded = "\\u0000-\\u001f\\u007f\\u2028\\u2029\\ud800-\\udfff";
+// 部分提供方遇到 \p{..}、前后顾或 \ud800-\udfff 代理项范围会整条请求失败；这里只用普通字符类，完整校验仍由 parseKnowledgeQuery 执行
+const excluded = "\\u0000-\\u001f\\u007f\\u2028\\u2029";
 const text = (maxLength: number) => Type.String({ minLength: 1, maxLength, pattern: `^[^${excluded}]*[^\\s${excluded}][^${excluded}]*$` });
 const paging = {
   pageSize: Type.Optional(Type.Integer({ minimum: 1, maximum: KNOWLEDGE_QUERY_LIMITS.pageSize })),
