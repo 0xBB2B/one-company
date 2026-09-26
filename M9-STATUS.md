@@ -36,10 +36,11 @@
 3. 新增 `pnpm run test:acceptance` 承载真实模型与联网验收，`pnpm test` 默认不跑。
 4. pi 开发依赖从 0.85.1 升到 0.87.1，与本机宿主一致。已完成（1fa0d35）：产品代码无需改动；0.86.0 起提供方收到的请求格式变了，只调整了测试里的模型替身。升级后 typecheck 通过，pnpm test 2336、test:integration 79、test:installation 11 全部通过（输出在 .bb-spec/.cache/m9/sdk-0871-*.txt）。
 
-仍待用户确认：
+5. 验证方式分工：AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
+6. AC2 预登记问题集（11 题）：先用真实模型把"角色快跑"跑到关闭并归档，再开进行中的"跳跃动画"，然后提问：①水平移动速度怎么算、在哪个文件；②Go 服务里 Greet 做什么、谁调用；③空中能否再次起跳、依据哪条规则；④进行中的跳跃动画要求哪些姿态；⑤不指定需求，列出所有进行中需求的内容；⑥最新批准版比上一版改了什么；⑦已完成的快跑当时的验收标准；⑧sprint 与 jump-motion 规则有无冲突；⑨快跑的测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 里的旧需求写新需求。每题出处须可核对；⑤⑦⑪必须拒绝给正文，模型若用普通 read 读了归档，该题判未通过并记为旁路案例；⑨⑩没有记录时须答"未知"。
+7. AC13 UI 夹具：给角色加 HUD 状态面板（速度、是否在空中、是否快跑），TS 函数输出 HTML 字符串加一份 CSS，node 单元测试即可验证，不用浏览器；专业定义由默认 worker 复制为 ui-worker，挂夹具自带 skill ui-basics 以验证 skill 实际加载。
 
-5. 验证方式分工：建议 AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
-6. AC2 的预登记问题集与 AC13 的 UI 夹具。
+待解决：无需用户拍板的阻塞。
 
 已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。
 
@@ -48,6 +49,6 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（M9 章节与 §13），再读 M9-STATUS.md，核对 git status 与最近提交。M0–M8 已收口不重做。
-M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），后 2 项（验证方式分工、AC2 问题集与 AC13 UI 夹具）待用户确认，确认前不写验收驱动代码。
+M9 已开工：前 4 项决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、新增 test:acceptance、pi 升 0.87.1），验证方式分工、AC2 问题集与 AC13 UI 夹具也已确认（见"当前阻塞"）。下一步写 test:acceptance 驱动，先跑一轮真实模型的零自定义最小闭环（AC12）并记录实际 token。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
