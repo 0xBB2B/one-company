@@ -39,7 +39,6 @@ const has = (results: ToolResultView[], tool: string, pattern: RegExp) =>
 function progress(host: InstalledHost) {
   const results = toolResults(host);
   return {
-    created: has(results, "pi_company_requirement_manage", /"requirementId"/),
     approved: has(results, "pi_company_user_interact", /"prodActivated":true/) || has(results, "pi_company_requirement_manage", /"lifecycle":"active"/),
     closed: has(results, "pi_company_workflow_manage", /"status":"closed"/),
     accepted: has(results, "pi_company_user_interact", /"choice":"accept"/),
@@ -111,7 +110,8 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
     }
     if (lines.length > 0) { await sleep(5_000); continue; }
 
-    const next = !state.created ? script.requirement : !state.approved ? script.approve : state.accepted ? script.close : script.proceed;
+    // 需求原文只发一次；之后主代理停下等用户时，按真人会做的回答：未批准就确认草稿
+    const next = !state.approved ? script.approve : state.accepted ? script.close : script.proceed;
     result = await say(next);
     if (result) return result;
   }
