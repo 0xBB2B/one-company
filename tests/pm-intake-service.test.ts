@@ -32,6 +32,22 @@ test.each([123, true, ["reference"], null, "reference\n"])("公开service拒绝�
   expect(persisted(fixture)).toEqual(before);
 });
 
+test("OpenAI Responses 类提供方的工具调用编号带竖线（call_x|fc_y），主代理调用与 PM 提交仍可登记与核对", async () => {
+  const fixture = await world(), pipe = (id: string) => `call_${id}|fc_06f0ef2dbf4c99ab016ab79d6ffbe487d0be4e78c4bbf775dc`;
+  const provider: PmSubmissionProvider = {
+    loadCurrent: async (query) => {
+      const material = await fixture.submissionProvider.loadCurrent(query);
+      return material && { ...material, submissionRef: pipe("pm") };
+    },
+    assertCurrent: (handle, query) => fixture.submissionProvider.assertCurrent(handle, query),
+  };
+  const intake = fixture.makeIntake({ submissionProvider: provider });
+  const request = await intake.openRequest(fixture.newCall({ toolCallId: pipe("main1") }), fixture.operationId());
+  expect(await intake.readRequest(fixture.newCall({ toolCallId: pipe("main2") }), request.requestId)).toEqual(request);
+  const review = await intake.recordReview(fixture.newCall({ toolCallId: pipe("main3") }), request.requestId, fixture.operationId(), { result: "passed", shortIssues: [] });
+  expect(review).toMatchObject({ record: { result: "passed" } });
+});
+
 test.each(["submissionRef", "creator"] as const)("已存request的%s类型损坏，fresh读取及幂等均拒绝", async (field) => {
   const fixture = await world(), operationId = fixture.operationId();
   const view = await fixture.intake.openRequest(fixture.call, operationId);

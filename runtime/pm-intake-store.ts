@@ -121,7 +121,7 @@ function stringPattern(pattern: RegExp) {
 }
 const UUID = stringPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 const HASH = stringPattern(/^[0-9a-f]{64}$/);
-const OPAQUE = stringPattern(/^[A-Za-z0-9][A-Za-z0-9._:/#@+-]{0,255}$/);
+const OPAQUE = stringPattern(/^[A-Za-z0-9][A-Za-z0-9._:/#@+|-]{0,255}$/);
 const exactKeys = (value: unknown, keys: readonly string[]) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) deny("invalid_shape");
   const actual = Object.keys(value).sort();
