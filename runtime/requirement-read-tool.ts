@@ -121,7 +121,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
   function activeSync(expected?: { version: number; data: RequirementRecord }, db?: LocalDatabase) {
     const record = current(db);
     if (record.data.lifecycle !== "active" || record.data.recovery !== "ready" || !record.data.approved ||
-      record.data.epoch !== binding.lease.epoch || binding.lease.expiresAt <= Date.now()) deny();
+      record.data.epoch !== binding.lease.epoch) deny();
     const ownerRow = db?.read("pm_ownership", binding.requirementId);
     const owner = db ? ownerRow && checked(PmRecord, ownerRow.data) : state.pmOwner(binding.requirementId);
     const lease = owner?.lease;
@@ -254,7 +254,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
         while (cursors.size >= 32) cursors.delete(cursors.keys().next().value!);
         cursors.set(nextCursor, { action: params.action, sectionId, maxBytes, offset: result.page.endByte, sectionOffset: result.endSection,
           version: before.version, revision: goal.revision, commit: goal.reference.commit,
-          hash: goal.reference.hash, epoch: before.data.epoch, expiresAt: Math.min(Date.now() + 30_000, binding.lease.expiresAt) });
+          hash: goal.reference.hash, epoch: before.data.epoch, expiresAt: Date.now() + 30_000 });
       }
       await validate(params.action, before);
       returns.set(response, { action: params.action, record: before, scope: origin.approvalScope });

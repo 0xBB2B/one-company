@@ -238,7 +238,7 @@ test("draft、其他需求、伪宿主身份、过期epoch/fence/run/workspace�
   await expect(draftTool.execute({ action: "metadata" })).rejects.toMatchObject(denied);
   for (const change of [{ lease: { ...w.lease, fence: w.lease.fence + 1 } },
     { lease: { ...w.lease, epoch: w.lease.epoch + 1 } },
-    { lease: { ...w.lease, expiresAt: 0 } }, { workspaceId: "f".repeat(64) },
+    { workspaceId: "f".repeat(64) },
     { branch: "refs/heads/not-bound" },
     { requirementId: draft.requirementId, lease: { ...w.lease, requirementId: draft.requirementId } }]) {
     try { const tool = await w.tool({ ...w.binding(), ...change }); await expect(tool.execute({ action: "read" })).rejects.toMatchObject(denied); }
@@ -248,6 +248,15 @@ test("draft、其他需求、伪宿主身份、过期epoch/fence/run/workspace�
   w.sessions.set(bound.callerId, JSON.stringify({ ...bound, runId: uuidv7() }));
   await expect(tool.execute({ action: "read" })).rejects.toMatchObject(denied);
   expect(probe).not.toHaveBeenCalled();
+});
+
+test("绑定时的租约快照过期但 PM 当前租约仍有效时照常读取；当前租约过期才拒绝", async () => {
+  const w = await world();
+  const tool = await w.tool({ ...w.binding(), lease: { ...w.lease, expiresAt: 1 } });
+  await expect(tool.execute({ action: "metadata" })).resolves.toBeTruthy();
+  const now = vi.spyOn(Date, "now").mockReturnValue(w.lease.expiresAt + 1);
+  try { await expect(tool.execute({ action: "metadata" })).rejects.toMatchObject(denied); }
+  finally { now.mockRestore(); }
 });
 
 test("游标不能篡改/跨角色工厂/页范围/需求复用，dispose废止能力", async () => {
