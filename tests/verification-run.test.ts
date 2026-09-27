@@ -399,6 +399,24 @@ test("M6-AC1：数据库直写不能为其他调用者创建验证记录；Local
   expect((stored[0]!.data as { verifications: string[] }).verifications).toEqual([]);
 });
 
+test("结束后的结果带回 stdout、stderr 末尾并标明截断；日志被换成链接时不跟随读取", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const worker = await w.tool(w.grant({ role: "worker" }));
+  const short = await worker.execute({ action: "run", kind: "debug", command: "echo 地面快跑 ok; echo warn >&2", performance: NA }) as VerificationView;
+  expect(short.output).toEqual({ stdout: { text: "地面快跑 ok\n", truncated: false }, stderr: { text: "warn\n", truncated: false } });
+  const long = await worker.execute({ action: "run", kind: "debug", command: "for i in $(seq 1 3000); do echo line-$i; done", performance: NA }) as VerificationView;
+  expect(long.output!.stdout.truncated).toBe(true);
+  expect(Buffer.byteLength(long.output!.stdout.text)).toBeLessThanOrEqual(8192);
+  expect(long.output!.stdout.text.endsWith("line-3000\n")).toBe(true);
+  const secret = join(w.dataRoot, "secret.txt");
+  await writeFile(secret, "SECRET-VALUE\n");
+  await rm(join(short.outputRoot, "outputs", "stdout.log"));
+  await symlink(secret, join(short.outputRoot, "outputs", "stdout.log"));
+  const linked = await worker.execute({ action: "status", verificationId: short.verificationId }) as VerificationView;
+  expect(linked.output!.stdout).toEqual({ text: "", truncated: false });
+});
+
 test("debug 命令可写工作区、继承完整环境变量；数据目录、Git 元数据、规则、归档与角色定义不可写", async () => {
   if (!darwin) return;
   const w = await world();

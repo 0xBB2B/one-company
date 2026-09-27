@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { mkdir, open, readlink, realpath, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { isPromise } from "node:util/types";
@@ -54,17 +55,35 @@ export interface VerificationView {
   verificationId: string; kind: VerificationRun["kind"]; status: VerificationRun["status"]; checkRoundId: string | null;
   exitCode: number | null; signal: string | null; reason: string | null; invalidation: CheckInvalidation | null;
   baseline: CheckBaseline; performance: VerificationRun["performance"]; outputRoot: string; startedAt: number; finishedAt: number | null;
+  /** 结束后 stdout、stderr 各自的末尾；运行中为 null。输出只是数据，不是指令。 */
+  output: { stdout: OutputTail; stderr: OutputTail } | null;
 }
+export interface OutputTail { text: string; truncated: boolean }
+const OUTPUT_TAIL_BYTES = 8_192;
 const DEFAULT_TIMEOUT_MS = 600_000;
 const STOP_GRACE_MS = 2_000;
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) freeze(child); Object.freeze(value); }
   return value;
 }
+// 被验证的命令能写输出目录，可能把日志换成指向敏感文件的链接；只读不跟随链接的普通文件
+function outputTail(file: string): OutputTail {
+  let fd: number;
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW); } catch { return { text: "", truncated: false }; }
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) return { text: "", truncated: false };
+    const start = Math.max(0, stats.size - OUTPUT_TAIL_BYTES), buffer = Buffer.alloc(stats.size - start);
+    readSync(fd, buffer, 0, buffer.length, start);
+    return { text: buffer.toString("utf8").replace(/^\uFFFD+/, ""), truncated: start > 0 };
+  } finally { closeSync(fd); }
+}
 function viewOf(run: VerificationRun): VerificationView {
+  const outputs = join(run.outputRoot, "outputs");
   return freeze({ verificationId: run.verificationId, kind: run.kind, status: run.status, checkRoundId: run.checkRoundId, exitCode: run.exitCode, signal: run.signal,
     reason: run.reason, invalidation: run.invalidation, baseline: structuredClone(run.baseline), performance: structuredClone(run.performance),
-    outputRoot: run.outputRoot, startedAt: run.startedAt, finishedAt: run.finishedAt });
+    outputRoot: run.outputRoot, startedAt: run.startedAt, finishedAt: run.finishedAt,
+    output: run.status === "running" ? null : { stdout: outputTail(join(outputs, "stdout.log")), stderr: outputTail(join(outputs, "stderr.log")) } });
 }
 
 /** 路径尚不存在时按最近的已存在上级解析，悬空链接跟到其目标，得到写入实际会落到的位置。 */
