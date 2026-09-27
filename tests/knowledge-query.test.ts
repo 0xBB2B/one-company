@@ -176,6 +176,7 @@ test("游标绑定caller/查询/预算，返回对象修改不能污染缓存，
   const w = await fixture(), a = new KnowledgeQuerySession(w.adapter), b = new KnowledgeQuerySession(w.adapter);
   const first = await a.query({ action: "facts", pageSize: 1 }); expect(first.nextCursor).toBeTruthy();
   await expect(b.query({ action: "facts", pageSize: 1, cursor: first.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
+  await expect(b.query({ action: "facts", pageSize: 1, cursor: first.nextCursor })).rejects.toThrow("第一次查询不带 cursor");
   const altered = await a.query({ action: "facts", pageSize: 1 });
   await expect(a.query({ action: "facts", pageSize: 2, cursor: altered.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
   first.facts[0]!.source.fileHash = "forged";

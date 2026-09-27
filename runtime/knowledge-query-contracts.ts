@@ -15,7 +15,7 @@ export type KnowledgeQuery = (
 export class KnowledgeQueryError extends Error {
   readonly code: "invalid_query" | "unavailable" | "stale" | "invalid_cursor" | "resource_limit" | "busy";
   constructor(code: KnowledgeQueryError["code"]) {
-    super(`知识查询被拒绝：${code}`);
+    super(code === "invalid_cursor" ? `知识查询被拒绝：${code}（cursor 只能填上一页结果给出的值，第一次查询不带 cursor）` : `知识查询被拒绝：${code}`);
     this.name = "KnowledgeQueryError";
     this.code = code;
   }

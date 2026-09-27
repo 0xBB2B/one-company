@@ -29,10 +29,13 @@ const Grant = object({
   scratchRoot: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 });
 export type ChangeApplyGrant = Static<typeof Grant>;
-const inlineFile = object({ path: relativePath, baseHash: fileHash, content: Type.Union([Type.String({ maxLength: MAX_FILE_BYTES }), Type.Null()]) });
+const content = Type.Union([Type.String({ maxLength: MAX_FILE_BYTES }), Type.Null()]);
+const inlineFile = object({ path: relativePath, baseHash: fileHash, content });
+// 预检只读不写，可省略 baseHash，结果给出当前值供 apply 使用
+const prepareFile = object({ path: relativePath, baseHash: Type.Optional(fileHash), content });
 const scratchFile = object({ path: relativePath, baseHash: fileHash, sourcePath: relativePath, targetHash: hash });
 export const CHANGE_APPLY_PARAMETERS = Type.Union([
-  object({ action: Type.Literal("prepare"), files: Type.Array(inlineFile, { minItems: 1, maxItems: 64 }) }),
+  object({ action: Type.Literal("prepare"), files: Type.Array(prepareFile, { minItems: 1, maxItems: 64 }) }),
   object({ action: Type.Literal("apply"), operationId: id, files: Type.Array(inlineFile, { minItems: 1, maxItems: 64 }) }),
   object({ action: Type.Literal("import"), operationId: id, files: Type.Array(scratchFile, { minItems: 1, maxItems: 64 }) }),
   object({ action: Type.Literal("status"), operationId: id }),
@@ -149,7 +152,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new ChangeApplyError("import_mismatch", `${sourcePath} 不是 UTF-8 文本`);
     return bytes;
   }
-  async function plan(root: string, params: Exclude<ChangeApplyParameters, { action: "status" }>): Promise<Planned[]> {
+  async function plan(root: string, params: { files: ReadonlyArray<Static<typeof inlineFile> | Static<typeof scratchFile>> }): Promise<Planned[]> {
     const seen = new Set<string>();
     const planned: Planned[] = [];
     for (const file of params.files) {
@@ -275,7 +278,9 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     }
     if (params.action === "prepare") {
       const { root } = await bindWorkspace("prepare");
-      const planned = await plan(root, params);
+      const files = [];
+      for (const file of params.files) files.push({ ...file, baseHash: file.baseHash ?? await currentHash(await locate(root, file.path)) });
+      const planned = await plan(root, { files });
       const observed = await observe(planned);
       const stale = planned.flatMap((file, index) => observed[index]!.currentHash === file.baseHash ? [] : [`${file.path} 当前 baseHash=${observed[index]!.currentHash}`]);
       if (stale.length > 0) throw new ChangeApplyError("stale_base", stale.join(","));

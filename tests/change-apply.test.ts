@@ -88,6 +88,9 @@ test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不�
   await expect(w.read("src/a.ts")).resolves.toBe("export const a = 1;\n");
   await expect(tool.execute({ action: "prepare", files: [{ path: "src/a.ts", baseHash: "absent", content: "x" }] }))
     .rejects.toThrow(`stale_base: src/a.ts 当前 baseHash=${w.base}`);
+  const filled = await tool.execute({ action: "prepare", files: [{ path: "src/a.ts", content: "x" }, { path: "src/new.ts", content: "y" }] }) as Result;
+  expect(filled.files.map((file: { baseHash: string }) => file.baseHash)).toEqual([w.base, "absent"]);
+  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/a.ts", content: "x" }] })).rejects.toMatchObject({ code: "invalid_shape" });
   for (const extra of [{ role: "worker" }, { requirementId: uuidv7() }, { writePaths: ["/"] }, { actor: "user" }]) {
     await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [good], ...extra })).rejects.toMatchObject({ code: "invalid_shape" });
   }
