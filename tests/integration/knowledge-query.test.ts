@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, realpath, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -38,13 +38,9 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
   const f = await createDaemonFixture();
   f.repo.root = await realpath(f.repo.root); f.dataRoot = await realpath(f.dataRoot);
   await repoDataDir(f.dataRoot, f.repoId, f.repoDir);
-  await mkdir(join(f.repo.root, "docs/spec"), { recursive: true });
   await mkdir(join(f.repo.root, "docs/prod"), { recursive: true });
-  await copyFile(new URL("../../resources/spec/schema.json", import.meta.url), join(f.repo.root, "docs/spec/schema.json"));
   await writeFile(join(f.repo.root, "动作.ts"), 'export const 跳跃 = "角色跳跃\\\"\\n";\n');
-  await writeFile(join(f.repo.root, "docs/spec/jump.rules.json"), JSON.stringify({ $schema: "schema.json", schemaVersion: 1,
-    feature: { id: "jump", title: "角色跳跃", aliases: [] }, rules: Array.from({ length: 8 }, (_, index) => ({ id: `jump.once${index}`, title: "角色跳跃", condition: "在地面",
-      trigger: "输入", expected: `角色跳跃${'"\\\t中文😀'.repeat(140)}`, reason: "只执行一次", dependsOn: [], exceptions: [], acceptance: [{ id: "once", given: "在地面", when: "输入", then: "角色跳跃" }] })) }));
+  for (let index = 0; index < 12; index++) await writeFile(join(f.repo.root, `说明${index}.md`), `角色跳跃${'"\\\t中文😀'.repeat(140)}\n`);
   await writeFile(join(f.repo.root, "docs/prod/0197b7b0-6a20-7c51-8a32-b9465fb72d10.完成.md"), "角色跳跃SECRET_ARCHIVE_BODY", { mode: 0o000 });
   const probePath = join(f.home.home, "query-probe.json"), providerLog = join(f.home.home, "provider-log.jsonl");
   await writeFile(providerLog, "", { mode: 0o600 });
@@ -128,9 +124,8 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
       const page = JSON.parse(first.text) as KnowledgeFactPackage; pages.push(page); cursor = page.nextCursor ?? undefined;
       expect(result.details).toEqual({});
     } while (cursor);
-    const rules = pages.flatMap((page) => page.facts).filter((fact) => fact.kind === "rule");
-    expect(rules).toHaveLength(8);
-    expect(rules.every((fact) => fact.complete && (fact.data as { expected: string }).expected === `角色跳跃${'"\\\t中文😀'.repeat(140)}`)).toBe(true);
+    const notes = pages.flatMap((page) => page.facts).filter((fact) => fact.kind === "source" && fact.source.path.startsWith("说明"));
+    expect(new Set(notes.map((fact) => fact.source.path)).size).toBe(12);
     expect(pages.length).toBeGreaterThan(1);
     expect(pages.flatMap((page) => page.facts).some((fact) => fact.kind === "source" && fact.source.path === "动作.ts")).toBe(true);
     expect(pages[0]).toMatchObject({ requirement: null, limitations: { performanceImprovement: "unknown", formalVerification: "not_available" } });

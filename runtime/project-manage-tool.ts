@@ -202,15 +202,15 @@ const SAFE_ENUM_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.f
     "depth_limit", "unstable", "cancelled", "binary", "invalid_utf8", "unsupported", "invalid_archive_name",
     "duplicate_requirement_id",
   ]),
-  code: new Set(["syntax_error", "invalid_spec", "unsupported_language", "unreadable", "budget_exceeded", "parser_unavailable", "unknown"]),
-  kind: new Set(["code", "spec", "schema", "document", "config", "unsupported"]),
+  code: new Set(["syntax_error", "unsupported_language", "unreadable", "budget_exceeded", "parser_unavailable", "unknown"]),
+  kind: new Set(["code", "document", "config", "unsupported"]),
   language: new Set(["ts", "tsx", "js", "jsx", "go", "json"]),
   stoppedReason: new Set(["complete", "cancelled", "entry_limit"]),
   source: new Set(["archive", "local"]),
   lifecycle: new Set(["unknown"]),
 });
 const SAFE_VERSION_KEYS = new Set(["parserVersion", "policyVersion", "schemaVersion"]);
-const SAFE_HASH_KEYS = new Set(["workspaceId", "head", "hash", "contractSetHash", "schemaHash"]);
+const SAFE_HASH_KEYS = new Set(["workspaceId", "head", "hash"]);
 const SAFE_BOOLEAN_KEYS = new Set([
   "initialized", "reused", "changed", "published", "complete", "cancelled", "partial", "invalid", "databaseCreated",
   "cacheVerified",
@@ -219,12 +219,12 @@ const SAFE_NUMBER_KEYS = new Set([
   "generation", "previousGeneration", "currentGeneration", "targetGeneration", "version", "fence", "updatedAt", "count", "total",
   "completed", "size", "entries", "maxFileBytes", "maxTotalTextBytes", "maxEntries", "maxDepth", "files", "parsedFiles",
   "reusedFiles", "readBytes", "sourceCodepoints",
-  "symbols", "codeEdges", "edges", "rules", "features", "fragments", "archives", "skipped", "errors", "warnings",
+  "symbols", "codeEdges", "edges", "fragments", "archives", "skipped", "errors", "warnings",
   "textBytes", "valid", "unsupported",
 ]);
 const SAFE_OBJECT_KEYS = new Set([
   "metadata", "counts", "budget", "limits", "used", "preview", "result", "summary", "truncation", "workspace", "index",
-  "archives", "spec",
+  "archives",
 ]);
 const SAFE_ARRAY_KEYS = new Set([
   "files", "paths", "items", "skipped", "invalid", "errors", "warnings", "archives", "exhausted", "languages", "metadata",
@@ -456,7 +456,7 @@ function scanConfirmationMessage(repositoryRoot: string, dataRoot: string, repoI
   return [
     `仓库根：${repositoryRoot}`,
     `当前分支：${branch}`,
-    "允许读取：该仓库内通过安全边界核对的当前代码、配置、测试与 docs/spec。",
+    "允许读取：该仓库内通过安全边界核对的当前代码、配置、测试与文档。",
     "固定排除：.git、被 Git 忽略的路径、依赖、构建/缓存/日志、数据库、敏感凭据、符号/硬链接、嵌套仓库；docs/prod 只枚举有限路径元数据，不读取正文。",
     `允许写入：仅仓库外本机目录 ${resolve(dataRoot, "repos", repoId)} 中的 index.db、data.db 的初始化登记及 SQLite 必要附属文件。`,
     "不运行仓库脚本，不创建需求、规则、PM、业务提交或其他共享文件。init 的 preview=true 仅枚举路径，不创建 index.db 或共享输出。",
@@ -701,14 +701,12 @@ function shapeServiceResult(action: "preview" | ProjectManageAction, value: unkn
   }
   if (!["ready", "partial", "invalid", "cancelled"].includes(String(raw.status))
     || typeof raw.generation !== "number") return invalidServiceResult();
-  const spec = publicRecord(raw.spec);
-  if (spec && !["absent", "valid", "invalid"].includes(String(spec.status))) return invalidServiceResult();
   return {
     ...common,
     status: raw.status,
     generation: raw.generation,
     partial: raw.status === "partial",
-    invalid: raw.status === "invalid" || spec?.status === "invalid",
+    invalid: raw.status === "invalid",
     parsedFiles: raw.parsedFiles,
     reusedFiles: raw.reusedFiles,
     readBytes: raw.readBytes,
@@ -720,7 +718,6 @@ function shapeServiceResult(action: "preview" | ProjectManageAction, value: unkn
     skipped: shapeSkipped(raw.skipped),
     archives: shapeArchives(raw.archives),
     budget: shapeBudget(raw.budget),
-    spec: spec ? { status: spec.status, contractSetHash: spec.contractSetHash, schemaHash: spec.schemaHash } : undefined,
   };
 }
 

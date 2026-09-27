@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { InstalledProjectFixture } from "../helpers/project-index-installed-fixture.ts";
 
@@ -46,7 +46,6 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     await world.git(repositoryRoot, ["rm", "source.ts"]);
     await writeFile(join(repositoryRoot, "src/main.ts"), `export function currentTs() { return "${TS_SENTINEL}"; }\n`);
     await writeFile(join(repositoryRoot, "cmd/main.go"), `package main\nconst currentGo = "${GO_SENTINEL}"\nfunc main() {}\n`);
-    await copyFile(join(world.installed, "resources/spec/schema.json"), join(repositoryRoot, "docs/spec/schema.json"));
     await writeFile(join(repositoryRoot, "docs/spec/current.rules.json"), JSON.stringify(validSpec()));
     const archiveId = uuidv7();
     await writeFile(join(repositoryRoot, "docs/prod", `${archiveId}.已完成需求.md`), `${PROD_SENTINEL}\n不允许进入FTS或工具输出。\n`);
@@ -92,8 +91,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     const store = new IndexStore(databasePath, options);
     try {
       const snapshot = store.getSnapshot();
-      expect(snapshot.files.map((item) => item.path)).toEqual(expect.arrayContaining(["src/main.ts", "cmd/main.go", "docs/spec/current.rules.json", "docs/spec/schema.json"]));
-      expect(snapshot.rules.map((item) => item.id)).toContain("install.current.visible");
+      expect(snapshot.files.map((item) => item.path)).toEqual(expect.arrayContaining(["src/main.ts", "cmd/main.go", "docs/spec/current.rules.json"]));
       expect(store.search(TS_SENTINEL).results.length).toBeGreaterThan(0);
       expect(store.search(GO_SENTINEL).results.length).toBeGreaterThan(0);
       expect(store.search(SPEC_SENTINEL).results.length).toBeGreaterThan(0);

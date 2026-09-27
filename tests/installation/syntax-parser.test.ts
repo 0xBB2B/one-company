@@ -55,7 +55,7 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     const jitiRoot = await realpath(join(productRoot, "node_modules/jiti"));
     expect(JSON.parse(await readFile(join(jitiRoot, "package.json"), "utf8")).version).toBe("2.7.0");
     const jiti = await pack(jitiRoot);
-    for (const entry of ["runtime/short-decision-format.ts", "runtime/short-decisions.ts", "runtime/requirement-state.ts", "runtime/requirement-contracts.ts", "runtime/requirement-workspace.ts", "runtime/database-paths.ts", "runtime/database-maintenance.ts", "runtime/spec-format.ts", "runtime/strict-json.ts", "resources/spec/schema.json", "runtime/syntax-parser.ts", "resources/tree-sitter/manifest.json", "resources/tree-sitter/tree-sitter-go.wasm", "resources/tree-sitter/tree-sitter-tsx.wasm", "resources/tree-sitter/tree-sitter-typescript.wasm", "resources/tree-sitter/tree-sitter-javascript.wasm"]) {
+    for (const entry of ["runtime/short-decision-format.ts", "runtime/short-decisions.ts", "runtime/requirement-state.ts", "runtime/requirement-contracts.ts", "runtime/requirement-workspace.ts", "runtime/database-paths.ts", "runtime/database-maintenance.ts", "runtime/strict-json.ts", "runtime/syntax-parser.ts", "resources/tree-sitter/manifest.json", "resources/tree-sitter/tree-sitter-go.wasm", "resources/tree-sitter/tree-sitter-tsx.wasm", "resources/tree-sitter/tree-sitter-typescript.wasm", "resources/tree-sitter/tree-sitter-javascript.wasm"]) {
       expect(artifact.files).toContain(entry);
     }
     expect(artifact.files.some((file) => /(?:^|\/)(?:data|index|global)\.(?:db|sqlite)(?:-|$)/.test(file))).toBe(false);

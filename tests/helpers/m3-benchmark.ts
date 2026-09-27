@@ -77,8 +77,7 @@ async function fixture(root: string, config: BenchmarkConfig, archives: number, 
   }
   for (let i = 0; i < config.goFiles; i++) await put(`go/file${String(i).padStart(4, "0")}.go`,
     `package bench\nfunc Value${i}() int { return ${i} }\n`, "go");
-  const schema = await readFile(new URL("../../resources/spec/schema.json", import.meta.url), "utf8");
-  await put("docs/spec/schema.json", schema, "schema");
+  await put("docs/spec/schema.json", `${JSON.stringify({ note: "遗留规则目录里的普通文件" })}\n`, "schema");
   for (let i = 0; i < config.specFiles - 1; i++) await put(`docs/spec/rule${String(i).padStart(4, "0")}.rules.json`, specText(i), "spec");
   const sourceFiles = manifest.length;
   const textBytes = manifest.reduce((sum, item) => sum + item.bytes, 0);

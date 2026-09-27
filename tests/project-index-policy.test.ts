@@ -230,8 +230,8 @@ test("M2-AC1/5/7：混合文件确定分类，大小写 prod 只列直接路径�
   expect(result.files).toEqual([
     { path: "README.md", kind: "document", language: null, size: Buffer.byteLength("项目说明\n") },
     { path: "cmd/main.go", kind: "code", language: "go", size: Buffer.byteLength("package main\nfunc main() {}\n") },
-    { path: "docs/spec/player.rules.json", kind: "spec", language: null, size: 4 },
-    { path: "docs/spec/schema.json", kind: "schema", language: null, size: Buffer.byteLength("{ invalid schema is still a current source") },
+    { path: "docs/spec/player.rules.json", kind: "config", language: null, size: 4 },
+    { path: "docs/spec/schema.json", kind: "config", language: null, size: Buffer.byteLength("{ invalid schema is still a current source") },
     { path: "package.json", kind: "config", language: null, size: 3 },
     { path: "src/view.tsx", kind: "code", language: "tsx", size: Buffer.byteLength("export const View = () => <main />;\n") },
     { path: "src/主程序.ts", kind: "code", language: "ts", size: Buffer.byteLength("export const answer = 42;\r\n") },

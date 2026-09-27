@@ -34,7 +34,7 @@ interface Connection {
 export interface IndexFtsHit {
   fragmentId: string;
   path: string;
-  kind: "code" | "spec" | "document" | "config";
+  kind: "code" | "document" | "config";
   snippet: string;
   rank: number;
 }
@@ -79,7 +79,7 @@ const RECORD_SQL = Object.freeze({
   list: "SELECT id, record_key, version, data FROM records WHERE namespace = ? ORDER BY id",
 });
 
-const INDEX_NAMESPACES = new Set(["workspaces", "index_generations", "files", "symbols", "code_edges", "features_current", "rules_current", "rule_edges_current", "code_bindings", "source_fragments", "prod_metadata"]);
+const INDEX_NAMESPACES = new Set(["workspaces", "index_generations", "files", "symbols", "code_edges", "code_bindings", "source_fragments", "prod_metadata"]);
 
 export interface StoredRecord<T = unknown> {
   id: string;
@@ -284,7 +284,7 @@ export class LocalDatabase {
             OR json_extract(new.data, '$.path') LIKE '../%'
             OR json_extract(new.data, '$.path') LIKE '%/../%'
             OR json_extract(new.data, '$.path') LIKE '%/..'
-            OR json_extract(new.data, '$.kind') NOT IN ('code','spec','document','config')
+            OR json_extract(new.data, '$.kind') NOT IN ('code','document','config')
             OR coalesce(json_type(new.data, '$.body'), '') != 'text'
             OR length(json_extract(new.data, '$.body')) > 131072
             OR coalesce(json_type(new.data, '$.startLine'), '') != 'integer'
@@ -323,7 +323,7 @@ export class LocalDatabase {
             OR json_extract(new.data, '$.path') LIKE '../%'
             OR json_extract(new.data, '$.path') LIKE '%/../%'
             OR json_extract(new.data, '$.path') LIKE '%/..'
-            OR json_extract(new.data, '$.kind') NOT IN ('code','spec','document','config')
+            OR json_extract(new.data, '$.kind') NOT IN ('code','document','config')
             OR coalesce(json_type(new.data, '$.body'), '') != 'text'
             OR length(json_extract(new.data, '$.body')) > 131072
             OR coalesce(json_type(new.data, '$.startLine'), '') != 'integer'

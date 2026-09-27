@@ -1,10 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { CurrentQueryIndex, IndexedFile, IndexedSymbol, IndexedRule, IndexedFeature, SourceFragment } from "./index-store.ts";
-import type { ProjectIndexSpecSummary } from "./project-index-service.ts";
+import type { CurrentQueryIndex, IndexedFile, IndexedSymbol, SourceFragment } from "./index-store.ts";
 import { isKnowledgePath, KNOWLEDGE_QUERY_LIMITS as LIMIT, KnowledgeQueryError, parseKnowledgeQuery } from "./knowledge-query-contracts.ts";
 import type { KnowledgeQuery } from "./knowledge-query-contracts.ts";
 
-/** 由 ensureFresh 后的同代次 build result 提供，禁止将 baselineHash 当作 contractSetHash。 */
 /** 查询所用索引快照：工作区、代次、覆盖范围与文件 hash。 */
 export interface ProjectBaselineSnapshot {
   readonly repoId: string;
@@ -27,7 +25,7 @@ export interface ProjectBaselineSnapshot {
 
 export interface KnowledgeQueryCapture {
   baseline: ProjectBaselineSnapshot;
-  build: { workspaceId: string; generation: number; baselineHash: string; spec: ProjectIndexSpecSummary };
+  build: { workspaceId: string; generation: number; baselineHash: string };
 }
 
 /** 只接受可信服务的固定无正文记录；本内核不读取报告、命令或会话，也不签发 formal 通过。 */
@@ -45,7 +43,6 @@ export interface KnowledgeRequirementMetadata {
   lifecycle: "active" | "closing" | "closed";
   approvedProdHash?: string;
   lifecycleEpoch?: number;
-  targetSpecSetHash?: string;
 }
 
 /**
@@ -77,7 +74,7 @@ export interface KnowledgeSource {
   rangeKind: "symbol" | "excerpt" | "file" | "unavailable";
 }
 export interface KnowledgeFact {
-  kind: "file" | "symbol" | "feature" | "rule" | "source" | "code_relation" | "rule_relation";
+  kind: "file" | "symbol" | "source" | "code_relation";
   id: string;
   source: KnowledgeSource;
   data: unknown;
@@ -91,9 +88,6 @@ export interface KnowledgeFactPackage {
   asOf: number;
   baselineHash: string;
   schemaVersion: 1;
-  schemaHash: string | null;
-  contractSetHash: string | null;
-  specStatus: ProjectIndexSpecSummary["status"];
   indexStatus: "ready" | "partial" | "invalid";
   limitations: {
     diagnosticCounts: Record<string, number>;
@@ -101,14 +95,13 @@ export interface KnowledgeFactPackage {
     diagnosticDetailsOmitted: number;
     unknownCodeRelations: number | null;
     unindexedFiles: number | null;
-    codeRuleBindings: "not_available";
     performanceImprovement: "unknown";
     formalVerification: "not_available";
     scope: "caller_allowed_files_only";
   };
   coverage: { matched: number; returned: number; omitted: number; remaining: number; sourceExcerptsTruncated: number; complete: boolean };
   evidence: { status: "not_available" | "metadata_only"; records: Array<KnowledgeEvidenceMetadata & { applicability: "unknown"; currentPass: false }>; omitted: number };
-  requirement: { requirementId: string; lifecycle: "active" | "closing" | "closed"; approvedProdHash?: string; lifecycleEpoch?: number; targetSpecSetHash?: string } | null;
+  requirement: { requirementId: string; lifecycle: "active" | "closing" | "closed"; approvedProdHash?: string; lifecycleEpoch?: number } | null;
   facts: KnowledgeFact[];
   nextCursor: string | null;
 }
@@ -134,8 +127,8 @@ const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value
 function fail(code: KnowledgeQueryError["code"]): never { throw new KnowledgeQueryError(code); }
 const under = (path: string, root: string): boolean => root === "." || path === root || path.startsWith(`${root}/`);
 function copyCapture(input: KnowledgeQueryCapture): KnowledgeQueryCapture {
-  const copy = structuredClone(input), b = copy?.baseline, spec = copy?.build?.spec;
-  if (!b || !spec || !HASH.test(b.repoId) || !HASH.test(b.workspaceId) || !HASH.test(b.baselineHash)
+  const copy = structuredClone(input), b = copy?.baseline;
+  if (!b || !HASH.test(b.repoId) || !HASH.test(b.workspaceId) || !HASH.test(b.baselineHash)
     || !Number.isSafeInteger(b.generation) || b.generation < 1 || !Number.isSafeInteger(b.observedSequence) || b.observedSequence < 0
     || typeof b.authorityEpoch !== "string" || b.authorityEpoch.length < 1 || b.authorityEpoch.length > 4096
     || typeof b.root !== "string" || !b.root.startsWith("/") || typeof b.branch !== "string" || b.branch.length > 255
@@ -148,18 +141,12 @@ function copyCapture(input: KnowledgeQueryCapture): KnowledgeQueryCapture {
     || b.files.some((file) => !isKnowledgePath(file.path) || !HASH.test(file.hash)
       || !b.coverage.roots.some((root) => under(file.path, root)) || b.coverage.excludedPaths.some((path) => under(file.path, path)))
     || new Set(b.files.map((file) => file.path)).size !== b.files.length
-    || copy.build.workspaceId !== b.workspaceId || copy.build.generation !== b.generation || copy.build.baselineHash !== b.baselineHash
-    || !["valid", "absent", "invalid"].includes(spec.status)
-    || (spec.schemaHash !== null && !HASH.test(spec.schemaHash)) || (spec.contractSetHash !== null && !HASH.test(spec.contractSetHash))
-    || (spec.status === "valid" && (!spec.schemaHash || !spec.contractSetHash))
-    || (spec.status !== "valid" && spec.contractSetHash !== null)
-    || (spec.status === "absent" && spec.schemaHash !== null)) fail("unavailable");
+    || copy.build.workspaceId !== b.workspaceId || copy.build.generation !== b.generation || copy.build.baselineHash !== b.baselineHash) fail("unavailable");
   return copy;
 }
 function sameCapture(a: KnowledgeQueryCapture, b: KnowledgeQueryCapture): boolean {
   const normalized = (value: KnowledgeQueryCapture) => ({ ...value.baseline, generation: 0,
-    files: [...value.baseline.files].sort((a, b) => a.path.localeCompare(b.path)),
-    spec: value.build.spec });
+    files: [...value.baseline.files].sort((a, b) => a.path.localeCompare(b.path)) });
   return b.baseline.generation >= a.baseline.generation && JSON.stringify(normalized(a)) === JSON.stringify(normalized(b));
 }
 function queryKey(query: KnowledgeQuery): string {
@@ -194,14 +181,12 @@ function fixedEvidence(values: readonly KnowledgeEvidenceMetadata[]): Header["ev
 }
 function fixedRequirement(value: KnowledgeRequirementMetadata | null, baseline: ProjectBaselineSnapshot): Header["requirement"] {
   if (value === null) return null;
-  if (!value || Object.keys(value).some((key) => !["requirementId", "workspaceId", "branch", "lifecycle", "approvedProdHash", "lifecycleEpoch", "targetSpecSetHash"].includes(key))
+  if (!value || Object.keys(value).some((key) => !["requirementId", "workspaceId", "branch", "lifecycle", "approvedProdHash", "lifecycleEpoch"].includes(key))
     || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value.requirementId)
     || value.workspaceId !== baseline.workspaceId || value.branch !== baseline.branch || !["active", "closing", "closed"].includes(value.lifecycle)) fail("unavailable");
   if (value.lifecycle !== "active") return { requirementId: value.requirementId, lifecycle: value.lifecycle };
-  if (!value.approvedProdHash || !HASH.test(value.approvedProdHash) || !Number.isSafeInteger(value.lifecycleEpoch) || value.lifecycleEpoch! < 1
-    || (value.targetSpecSetHash !== undefined && !HASH.test(value.targetSpecSetHash))) fail("unavailable");
-  return { requirementId: value.requirementId, lifecycle: value.lifecycle, approvedProdHash: value.approvedProdHash,
-    lifecycleEpoch: value.lifecycleEpoch, ...(value.targetSpecSetHash ? { targetSpecSetHash: value.targetSpecSetHash } : {}) };
+  if (!value.approvedProdHash || !HASH.test(value.approvedProdHash) || !Number.isSafeInteger(value.lifecycleEpoch) || value.lifecycleEpoch! < 1) fail("unavailable");
+  return { requirementId: value.requirementId, lifecycle: value.lifecycle, approvedProdHash: value.approvedProdHash, lifecycleEpoch: value.lifecycleEpoch };
 }
 
 /** 有界、短时、caller/连接独占的分页缓存；close 后所有游标立即失效。 */
@@ -304,7 +289,7 @@ export class KnowledgeQuerySession {
       || index.status.branch !== baseline.branch || index.status.currentGeneration !== baseline.generation || index.status.baselineHash !== baseline.baselineHash
       || !["ready", "partial", "invalid"].includes(index.status.status)) fail("stale");
     const snapshot = index.snapshot;
-    if ((index.status.status === "invalid") !== (snapshot === null) || (capture.build.spec.status === "invalid") !== (index.status.status === "invalid")) fail("unavailable");
+    if ((index.status.status === "invalid") !== (snapshot === null)) fail("unavailable");
     if (snapshot && (snapshot.generation !== baseline.generation || snapshot.workspaceId !== baseline.workspaceId || snapshot.files.length !== baseline.files.length)) fail("stale");
     const allowedFiles = new Map(baseline.files.map((file) => [file.path, file.hash]));
     const files = new Map<string, IndexedFile>();
@@ -326,12 +311,11 @@ export class KnowledgeQuerySession {
     const header: Header = {
       format: "knowledge-facts/v1", trust: "untrusted_project_data_not_instructions_or_authorization",
       workspace: { repoId: baseline.repoId, workspaceId: baseline.workspaceId, branch: baseline.branch }, generation: baseline.generation, asOf,
-      baselineHash: baseline.baselineHash, schemaVersion: 1, schemaHash: capture.build.spec.schemaHash, contractSetHash: capture.build.spec.contractSetHash,
-      specStatus: capture.build.spec.status, indexStatus: index.status.status as Header["indexStatus"],
+      baselineHash: baseline.baselineHash, schemaVersion: 1, indexStatus: index.status.status as Header["indexStatus"],
       limitations: { diagnosticCounts, diagnostics, diagnosticDetailsOmitted: index.status.diagnostics.length - diagnostics.length,
         unknownCodeRelations: snapshot?.codeEdges.filter((edge) => edge.certainty === "unknown").length ?? null,
         unindexedFiles: snapshot?.files.filter((file) => file.status !== "indexed").length ?? null,
-        codeRuleBindings: "not_available", performanceImprovement: "unknown", formalVerification: "not_available", scope: "caller_allowed_files_only" },
+        performanceImprovement: "unknown", formalVerification: "not_available", scope: "caller_allowed_files_only" },
       evidence: { status: "not_available", records: [], omitted: 0 }, requirement: null,
     };
     let matched = 0, omitted = 0, excerpts = 0, cost = 0;
@@ -356,25 +340,13 @@ export class KnowledgeQuerySession {
     const literal = (values: string[]) => !text || values.some((value) => value.includes(text));
     const selected = (kind: string, item: { id?: string; path: string; name?: string }, values: string[]) => query.action !== "exact" ? literal(values)
       : query.by === "path" ? item.path === query.value : query.by === "id" ? item.id === query.value : kind === "symbol" && item.name === query.value;
-    const featureMatch = new Set<string>();
-    for (const feature of snapshot?.features ?? []) if (selected("feature", feature, [feature.id, feature.title, ...feature.aliases])) featureMatch.add(feature.id);
-    const addEntity = (kind: "symbol" | "rule" | "feature", item: IndexedSymbol | IndexedRule | IndexedFeature) => {
-      const range = kind === "symbol" ? { startLine: (item as IndexedSymbol).startLine, endLine: (item as IndexedSymbol).endLine, rangeKind: "symbol" as const } : undefined;
-      add({ kind, id: item.id, source: source(item.path, range), data: item, complete: true });
-    };
-    for (const rule of snapshot?.rules ?? []) if (selected("rule", rule, [rule.id, rule.title, rule.condition, rule.trigger, rule.expected, rule.reason, ...rule.acceptance.flatMap((value) => [value.given, value.when, value.then])])
-      || (query.action !== "exact" && featureMatch.has(rule.featureId))) addEntity("rule", rule);
-    for (const feature of snapshot?.features ?? []) if (featureMatch.has(feature.id)) addEntity("feature", feature);
-    for (const symbol of snapshot?.symbols ?? []) if (selected("symbol", symbol, [symbol.id, symbol.name, symbol.path])) addEntity("symbol", symbol);
+    const addSymbol = (item: IndexedSymbol) =>
+      add({ kind: "symbol", id: item.id, source: source(item.path, { startLine: item.startLine, endLine: item.endLine, rangeKind: "symbol" }), data: item, complete: true });
+    for (const symbol of snapshot?.symbols ?? []) if (selected("symbol", symbol, [symbol.id, symbol.name, symbol.path])) addSymbol(symbol);
     const chosenSymbols = new Set(items.filter((item) => item.kind === "symbol").map((item) => item.id));
-    const chosenRules = new Set(items.filter((item) => item.kind === "rule").map((item) => item.id));
     for (const edge of snapshot?.codeEdges ?? []) if (edge.path && (selected("code_relation", edge as { id: string; path: string }, [edge.name ?? "", edge.path])
       || chosenSymbols.has(edge.fromSymbolId ?? "") || chosenSymbols.has(edge.toSymbolId ?? ""))) {
       add({ kind: "code_relation", id: edge.id, source: source(edge.path, { startLine: edge.startLine ?? null, endLine: edge.endLine ?? null, rangeKind: edge.startLine ? "symbol" : "unavailable" }), data: edge, complete: true });
-    }
-    for (const edge of snapshot?.ruleEdges ?? []) if (chosenRules.has(edge.fromRuleId) || chosenRules.has(edge.toRuleId)) {
-      const rule = snapshot!.rules.find((rule) => rule.id === edge.fromRuleId)!;
-      add({ kind: "rule_relation", id: edge.id, source: source(rule.path), data: edge, complete: true });
     }
     for (const file of files.values()) if (selected("file", file, [file.path])) add({ kind: "file", id: file.path, source: source(file.path), data: file, complete: true });
     const spanning = (parts: SourceFragment[]): boolean => {

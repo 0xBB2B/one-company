@@ -158,8 +158,7 @@ export function summarizeQueryHits(queryId: QueryCase["id"], facts: unknown): Qu
   }).filter((fact): fact is { kind: string; id: string; path: string } => fact !== null);
   const expectedHitObserved = queryId === "exact-path"
     ? normalized.some((fact) => fact.path === "src/file0000.ts")
-    : normalized.some((fact) => fact.kind === "rule" && fact.id === "benchmark.rule0"
-      && fact.path === "docs/spec/rule0000.rules.json");
+    : normalized.some((fact) => fact.kind === "source" && fact.path === "docs/spec/rule0000.rules.json");
   if (!normalized.length || !expectedHitObserved) {
     throw Object.assign(new Error(`query_expected_hit_missing:${queryId}`), { code: "query_expected_hit_missing" });
   }
@@ -366,8 +365,7 @@ async function createFixture(
   for (let index = 0; index < config.goFiles; index++) {
     await put(`go/file${String(index).padStart(4, "0")}.go`, `package benchmark\nfunc Value${index}() string { return "唯一Go内容${index}" }\n`, "go");
   }
-  const schema = await readFile(join(scriptRoot, "resources/spec/schema.json"), "utf8");
-  await put("docs/spec/schema.json", schema, "schema");
+  await put("docs/spec/schema.json", `${JSON.stringify({ note: "遗留规则目录里的普通文件" })}\n`, "schema");
   for (let index = 0; index < config.specFiles - 1; index++) {
     await put(`docs/spec/rule${String(index).padStart(4, "0")}.rules.json`, specText(index), "spec");
   }
@@ -612,7 +610,6 @@ async function codeInputs(scriptRoot: string): Promise<Array<{ path: string; sha
     "runtime/git-read.ts",
     "runtime/command-boundary.ts",
     "runtime/database.ts",
-    "resources/spec/schema.json",
     "resources/tree-sitter/manifest.json",
     "package.json",
     "pnpm-lock.yaml",
@@ -933,7 +930,7 @@ export async function runQueryBenchmark(options: { output: string; scenario: "sm
     faultInjection,
     expectedHits: {
       exactPath: { path: "src/file0000.ts" },
-      chineseSearchAndFiniteFacts: { kind: "rule", id: "benchmark.rule0", path: "docs/spec/rule0000.rules.json" },
+      chineseSearchAndFiniteFacts: { kind: "source", path: "docs/spec/rule0000.rules.json" },
       codeStringHitRequired: false,
     },
     cwd: process.cwd(),

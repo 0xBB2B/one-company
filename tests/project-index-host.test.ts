@@ -64,13 +64,3 @@ test("被 Git 忽略的文件不进入索引；切换分支后查询自动按当
   expect(page.workspace.branch).toBe("refs/heads/feature-x");
   expect(JSON.stringify(page)).toContain("feature.ts");
 });
-
-test("spec 文件无效时查询照常返回一页，以 specStatus/indexStatus 标出无效，不报整体不可用", async () => {
-  const w = await world();
-  await writeFile(join(w.root, "a.ts"), "export const 标记 = 1;\n");
-  await mkdir(join(w.root, "docs", "spec"), { recursive: true });
-  await writeFile(join(w.root, "docs", "spec", "bad.rules.json"), "{ not json");
-  await w.host.init();
-  const page = await w.host.query("c", { action: "search", text: "标记" });
-  expect(page).toMatchObject({ specStatus: "invalid", indexStatus: "invalid" });
-});

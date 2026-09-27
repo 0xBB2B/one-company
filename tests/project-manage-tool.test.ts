@@ -292,7 +292,7 @@ describe("扫描确认、service 授权与有限输出", () => {
     expect(authorize?.(valid)).toBe(false);
   });
 
-  test("真实公开形状保留 building、spec valid、完整预算、代次/hash/计数及必要 index 状态", async () => {
+  test("真实公开形状保留 building、完整预算、代次/hash/计数及必要 index 状态", async () => {
     const world = await fixture();
     const workspace = { workspaceId: "d".repeat(64), repoId: world.repoId, root: world.repositoryRoot, branch: "refs/heads/main" };
     let confirms = 0;
@@ -336,7 +336,6 @@ describe("扫描确认、service 授权与有限输出", () => {
           skipped: [{ path: ".env", reason: "sensitive", body: "SKIP_BODY_SENTINEL" }],
           archives: { metadata: [], issues: [] },
           budget: budgetResult(),
-          spec: { status: "valid", contractSetHash: "e".repeat(64), schemaHash: "f".repeat(64), body: "SPEC_BODY_SENTINEL" },
           body: "BUILD_BODY_SENTINEL",
         };
       },
@@ -354,11 +353,10 @@ describe("扫描确认、service 授权与有限输出", () => {
           files: 5,
           symbols: 0,
           codeEdges: 0,
-          diagnostics: [{ code: "invalid_spec", path: "docs/spec/bad.rules.json" }],
+          diagnostics: [{ code: "unknown", path: "docs/bad.json" }],
           skipped: [],
           archives: { metadata: [], issues: [] },
           budget: budgetResult(),
-          spec: { status: "invalid", contractSetHash: null, schemaHash: "f".repeat(64) },
         };
       },
     }));
@@ -398,7 +396,6 @@ describe("扫描确认、service 授权与有限输出", () => {
       symbols: 8,
       codeEdges: 2,
       budget: budgetResult(),
-      spec: { status: "valid", contractSetHash: "e".repeat(64), schemaHash: "f".repeat(64) },
     });
     const refreshed = await call(runtime, { action: "refresh", repoId: world.repoId }, ctx);
     expect(refreshed.details).toMatchObject({
@@ -407,8 +404,7 @@ describe("扫描确认、service 授权与有限输出", () => {
       generation: 5,
       partial: false,
       invalid: true,
-      diagnostics: [{ code: "invalid_spec", path: "docs/spec/bad.rules.json" }],
-      spec: { status: "invalid", contractSetHash: null, schemaHash: "f".repeat(64) },
+      diagnostics: [{ code: "unknown", path: "docs/bad.json" }],
     });
     expect(confirms).toBe(1);
     expect(JSON.stringify([status, initialized, refreshed])).not.toContain("BODY_SENTINEL");
@@ -480,7 +476,7 @@ describe("扫描确认、service 授权与有限输出", () => {
           action: "preview",
           partial: true,
           databaseCreated: false,
-          invalid: [{ code: "invalid_spec", path: "docs/spec/bad.rules.json", body: "SPEC_SENTINEL" }],
+          invalid: [{ code: "unknown", path: "docs/bad.json", body: "SPEC_SENTINEL" }],
           skipped: [{ path: ".env", reason: "sensitive", body: "PROD_SENTINEL" }],
           archives: { issues: [{ path: "docs/prod/bad", reason: "invalid_archive_name" }], metadata: [] },
           files,

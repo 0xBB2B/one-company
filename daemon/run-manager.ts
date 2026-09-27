@@ -607,7 +607,7 @@ export class RunManager {
   private knowledgeTool(caller: string): ToolDefinition[] {
     const index = this.options.index;
     if (!index) return [];
-    return [toPiTool("knowledge_query", "查询主仓库索引中的当前代码与 spec（不含 prod）。query.action：exact（by 为 path/id/symbol）、search（文字检索）或 facts；每页最多 20 项，结果标注索引代次与来源。",
+    return [toPiTool("knowledge_query", "查询主仓库索引中的当前代码（不含 prod）。query.action：exact（by 为 path/id/symbol）、search（文字检索）或 facts；每页最多 20 项，结果标注索引代次与来源。",
       Type.Object({ query: KnowledgeTransportQuerySchema }, { additionalProperties: false }),
       { execute: (input) => index.query(`run:${caller}`, (input as { query: unknown }).query), dispose: () => index.endCaller(`run:${caller}`) })];
   }

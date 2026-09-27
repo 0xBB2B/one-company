@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { copyFile, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { IndexStore } from "../runtime/index-store.ts";
@@ -38,7 +38,6 @@ async function fixture() {
     rules: [{ id: "player.jump.once", title: "一次起跳", condition: "在地面", trigger: "起跳输入", expected: "角色跳跃", reason: "禁止二次跳跃",
       dependsOn: [], exceptions: [], acceptance: [{ id: "once", given: "在地面", when: "起跳", then: "仅一次" }] }],
   }, null, 2));
-  await copyFile(new URL("../resources/spec/schema.json", import.meta.url), join(repo.root, "docs/spec/schema.json"));
   await put(repo.root, `docs/prod/${prodId}.完成.md`, "角色跳跃 PROD_NEVER_RETURN");
   await put(repo.root, ".env", "角色跳跃 SECRET_NEVER_RETURN");
   let authorized = true, observedSequence = 0, authorityEpoch = "epoch-1", connected = true;
@@ -56,7 +55,7 @@ async function fixture() {
     }
     return { baseline: { ...service.workspace, generation: build.generation, baselineHash: build.baselineHash!, observedSequence, authorityEpoch,
       coverage: { kind: "allowed-inputs", complete: true, roots: scope, excludedPaths: ["docs/prod"], policyHash: sha(JSON.stringify(scope)) }, files },
-      build: { workspaceId: service.workspace.workspaceId, generation: build.generation, baselineHash: build.baselineHash!, spec: build.spec } };
+      build: { workspaceId: service.workspace.workspaceId, generation: build.generation, baselineHash: build.baselineHash! } };
   }
   const adapter: KnowledgeQueryAdapter = {
     captureFresh: capture,
@@ -105,28 +104,22 @@ test("strict exact/search/facts 拒绝权限、SQL/regex扩展、本机路径和
   }
 });
 
-test("中文词内子串命中当前代码/spec，别名命中关联规则，不触发FTS语法或prod搜索", async () => {
+test("中文词内子串命中当前代码与普通文件，不触发FTS语法或prod搜索", async () => {
   const w = await fixture(), session = new KnowledgeQuerySession(w.adapter);
   const fts = vi.spyOn(LocalDatabase.prototype, "searchIndexFragments");
   const pages = await all(session, { action: "search", text: "角色跳跃" });
   const output = JSON.stringify(pages);
-  expect(pages.flatMap((page) => page.facts).some((item) => item.kind === "rule")).toBe(true);
+  expect(pages.flatMap((page) => page.facts).some((item) => item.kind === "source" && item.source.path === "docs/spec/jump.rules.json")).toBe(true);
   expect(pages.flatMap((page) => page.facts).some((item) => item.kind === "source" && item.source.path.startsWith("src/"))).toBe(true);
   expect(output).not.toMatch(/PROD_NEVER_RETURN|SECRET_NEVER_RETURN|docs\/prod|prod_metadata/);
-  expect(pages[0]).toMatchObject({ generation: w.build.generation, baselineHash: w.build.baselineHash, contractSetHash: w.build.spec.contractSetHash,
-    schemaHash: w.build.spec.schemaHash, trust: "untrusted_project_data_not_instructions_or_authorization" });
-  expect(pages[0]!.contractSetHash).not.toBe(pages[0]!.baselineHash);
-  const alias = await session.query({ action: "search", text: "离地腾空" });
-  expect(alias.facts.map((item) => item.kind)).toEqual(expect.arrayContaining(["rule", "feature"]));
+  expect(pages[0]).toMatchObject({ generation: w.build.generation, baselineHash: w.build.baselineHash, trust: "untrusted_project_data_not_instructions_or_authorization" });
+  expect(pages[0]).not.toHaveProperty("contractSetHash");
   expect((await session.query({ action: "search", text: '" OR * NEAR(' })).facts).toEqual([]);
   expect(fts).not.toHaveBeenCalled(); session.close();
 });
 
-test("精确ID/相对路径/同名符号保留真实行/hash/parser依据，不制造code-spec绑定或跨文件同名调用", async () => {
+test("相对路径/同名符号保留真实行/hash/parser依据，不制造跨文件同名调用", async () => {
   const w = await fixture(), session = new KnowledgeQuerySession(w.adapter);
-  const rule = await session.query({ action: "exact", by: "id", value: "player.jump.once" });
-  expect(rule.facts).toHaveLength(1);
-  expect(rule.facts[0]).toMatchObject({ kind: "rule", complete: true, source: { path: "docs/spec/jump.rules.json", rangeKind: "file" }, data: { contractHash: expect.stringMatching(/^[a-f0-9]{64}$/) } });
   const named = await session.query({ action: "exact", by: "symbol", value: "jump" });
   const symbols = named.facts.filter((item) => item.kind === "symbol");
   expect(symbols).toHaveLength(2);
@@ -135,31 +128,25 @@ test("精确ID/相对路径/同名符号保留真实行/hash/parser依据，不�
   const edges = named.facts.filter((item) => item.kind === "code_relation");
   expect(edges).toHaveLength(1);
   expect(edges[0]!.data).toMatchObject({ certainty: "certain", toSymbolId: local.id, evidence: "call_expression" });
-  expect(named.limitations.codeRuleBindings).toBe("not_available");
   const path = await session.query({ action: "exact", by: "path", value: "src/动作😀.ts", pageSize: 20 });
   expect(path.facts.every((item) => item.source.path === "src/动作😀.ts")).toBe(true);
   expect(path.facts.some((item) => item.kind === "source")).toBe(true); session.close();
 });
 
-test("partial查询保留未知/语法诊断，invalid仅诊断，dirty严禁重建快照兜底", async () => {
+test("partial查询保留未知/语法诊断，dirty严禁重建快照兜底", async () => {
   const w = await fixture();
   await put(w.repo.root, "broken.ts", "function broken( {\n"); await w.refresh();
   const session = new KnowledgeQuerySession(w.adapter);
   const partial = await session.query({ action: "facts", pageSize: 1 });
   expect(partial.indexStatus).toBe("partial"); expect(partial.limitations.diagnosticCounts.syntax_error).toBeGreaterThan(0);
   expect(partial.limitations.unknownCodeRelations).toBeGreaterThan(0); expect(partial.coverage.complete).toBe(false);
-  await put(w.repo.root, "docs/spec/jump.rules.json", "{BROKEN_SECRET}"); await w.refresh();
   const rebuild = vi.spyOn(IndexStore.prototype, "getRebuildSnapshot");
-  const invalid = await session.query({ action: "facts" });
-  expect(invalid).toMatchObject({ indexStatus: "invalid", specStatus: "invalid", contractSetHash: null, facts: [], nextCursor: null });
-  expect(invalid.limitations.diagnosticCounts.invalid_spec).toBeGreaterThan(0);
-  expect(JSON.stringify(invalid)).not.toContain("BROKEN_SECRET");
   await w.service.markDirty();
   await expect(session.query({ action: "facts" })).rejects.toBeDefined();
   expect(rebuild).not.toHaveBeenCalled(); session.close();
 });
 
-test("有界UTF8/码点片段含emoji与CRLF，长行后部命中不会被切丢，截断不声称规则完整", async () => {
+test("有界UTF8/码点片段含emoji与CRLF，长行后部命中不会被切丢，截断不声称完整", async () => {
   const w = await fixture();
   await put(w.repo.root, "src/long.ts", `// first\r\n// ${"😀".repeat(1500)}命中位置${"😀".repeat(1500)}\r\n`); await w.refresh();
   const session = new KnowledgeQuerySession(w.adapter);
@@ -194,7 +181,7 @@ test("同hash机械generation增加可继续，原generation/asOf不改写", asy
   expect(next).toMatchObject({ generation: first.generation, asOf: first.asOf, baselineHash: first.baselineHash }); session.close();
 });
 
-test.each(["file", "new-file", "observation", "epoch", "scope", "disconnect", "revoke", "schema"])("分页%s变化拒绝原游标，不换绑", async (change) => {
+test.each(["file", "new-file", "observation", "epoch", "scope", "disconnect", "revoke"])("分页%s变化拒绝原游标，不换绑", async (change) => {
   const w = await fixture(), session = new KnowledgeQuerySession(w.adapter);
   const first = await session.query({ action: "facts", pageSize: 1 });
   if (change === "file") await put(w.repo.root, "src/same.ts", "export const changed = true;\n");
@@ -204,7 +191,6 @@ test.each(["file", "new-file", "observation", "epoch", "scope", "disconnect", "r
   if (change === "scope") w.scope(["src"]);
   if (change === "disconnect") w.disconnect();
   if (change === "revoke") w.revoke();
-  if (change === "schema") await put(w.repo.root, "docs/spec/schema.json", "{}");
   await expect(session.query({ action: "facts", pageSize: 1, cursor: first.nextCursor })).rejects.toBeDefined();
   expect(session.diagnostics.sessions).toBe(0); session.close();
 });
@@ -239,7 +225,7 @@ test("历史PASS和伪formal不构成当前通过，性能始终unknown，正文
 test("关闭/未绑定不提供目标，活动元数据需可信绑定；分页中关闭不能继续旧目标", async () => {
   const w = await fixture();
   let value: KnowledgeRequirementMetadata = { requirementId: prodId, workspaceId: w.service.workspace.workspaceId, branch: w.service.workspace.branch,
-    lifecycle: "active", approvedProdHash: sha("approved"), lifecycleEpoch: 1, targetSpecSetHash: sha("candidate") };
+    lifecycle: "active", approvedProdHash: sha("approved"), lifecycleEpoch: 1 };
   const session = new KnowledgeQuerySession(w.withRequirement(() => value));
   const first = await session.query({ action: "facts", pageSize: 1 }); expect(first.requirement).toHaveProperty("approvedProdHash");
   value = { ...value, lifecycle: "closed" };
@@ -328,15 +314,11 @@ test("真实131072码点边界中文/emoji/CRLF命中一次，不能依据哈希
   await expect(missingView.query({ action: "search", text: queries[0] })).rejects.toMatchObject({ code: "unavailable" }); missingView.close();
 });
 
-test("16条合法长中文/转义规则按最终JSON整包48KiB分页，必要正文与限制字段无损", async () => {
+test("32个长中文/转义文件按最终JSON整包48KiB分页，限制字段无损", async () => {
   const w = await fixture();
   const expected = "中".repeat(1150) + '\\"\n\t😀'.repeat(10);
-  for (let i = 0; i < 16; i++) await put(w.repo.root, `docs/spec/bulk-${i}.rules.json`, JSON.stringify({
-    $schema: "schema.json", schemaVersion: 1, feature: { id: `bulk${i}`, title: "批量", aliases: [] },
-    rules: [{ id: `bulk${i}.rule`, title: "批量", condition: `条件${i}`, trigger: "触发", expected, reason: "原因",
-      dependsOn: [], exceptions: [], acceptance: [{ id: "case", given: "条件", when: "触发", then: "结果" }] }],
-  }));
-  expect((await w.refresh()).spec.status).toBe("valid");
+  for (let i = 0; i < 32; i++) await put(w.repo.root, `docs/bulk-${i}.json`, JSON.stringify({ title: "批量", expected }));
+  await w.refresh();
   expect(KNOWLEDGE_QUERY_LIMITS.pageBytes).toBe(49152);
   for (const variant of KnowledgeQuerySchema.oneOf) expect(variant.properties.maxBytes.maximum).toBe(49152);
   for (const maxBytes of [49153, 65536]) expect(() => parseKnowledgeQuery({ action: "facts", maxBytes })).toThrow();
@@ -348,11 +330,10 @@ test("16条合法长中文/转义规则按最终JSON整包48KiB分页，必要�
     expect(Buffer.byteLength(json)).toBeLessThanOrEqual(49152); expect(JSON.parse(json)).toEqual(page);
     expect(page.limitations).toMatchObject({ diagnosticCounts: {}, formalVerification: "not_available", performanceImprovement: "unknown", scope: "caller_allowed_files_only" });
     expect(page.coverage.omitted).toBe(0);
-    expect(page).toHaveProperty("nextCursor"); expect(page).toHaveProperty("schemaHash"); expect(page).toHaveProperty("contractSetHash");
+    expect(page).toHaveProperty("nextCursor");
   }
-  const rules = pages.flatMap((page) => page.facts).filter((fact) => fact.kind === "rule");
-  expect(rules).toHaveLength(16); expect(new Set(rules.map((rule) => rule.id)).size).toBe(16);
-  for (const rule of rules) expect(rule).toMatchObject({ complete: true, data: { expected }, source: { fileHash: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+  const sources = pages.flatMap((page) => page.facts).filter((fact) => fact.kind === "source" && fact.source.path.startsWith("docs/bulk-"));
+  expect(new Set(sources.map((fact) => fact.source.path)).size).toBe(32);
   expect(pages.at(-1)!.nextCursor).toBeNull(); expect(pages.at(-1)!.coverage.remaining).toBe(0); session.close();
 });
 
@@ -416,28 +397,12 @@ test("查询只对命中的文件读磁盘正文；readCurrentForQuery 按 bodie
   await expect(w.service.readCurrentForQuery({ paths, bodies: ["README.md"] })).rejects.toMatchObject({ code: "authorization_denied" });
 });
 
-test("同代次spec summary/hash不对应时拒绝，不拿baselineHash冒充规则集合", async () => {
+test("同代次build与baseline的代次或hash不对应时拒绝", async () => {
   const w = await fixture();
   const session = new KnowledgeQuerySession({ ...w.adapter, async captureFresh() { const capture = await w.capture(); capture.build.generation++; return capture; } });
   await expect(session.query({ action: "facts" })).rejects.toMatchObject({ code: "unavailable" }); session.close();
   const wrong = new KnowledgeQuerySession({ ...w.adapter, async captureFresh() { const capture = await w.capture(); capture.build.baselineHash = sha("wrong"); return capture; } });
   await expect(wrong.query({ action: "facts" })).rejects.toMatchObject({ code: "unavailable" }); wrong.close();
-});
-
-test("有效大规则在小预算下整项省略，在充足预算下完整返回且规则hash不变", async () => {
-  const w = await fixture();
-  const path = join(w.repo.root, "docs/spec/jump.rules.json");
-  const doc = JSON.parse(await readFile(path, "utf8"));
-  doc.rules[0].expected = "中".repeat(1200);
-  await writeFile(path, JSON.stringify(doc));
-  expect((await w.refresh()).spec.status).toBe("valid");
-  const session = new KnowledgeQuerySession(w.adapter);
-  const small = await session.query({ action: "exact", by: "id", value: "player.jump.once", maxBytes: 4096 });
-  expect(small.facts).toEqual([]); expect(small.coverage).toMatchObject({ matched: 1, omitted: 1, complete: false });
-  const large = await session.query({ action: "exact", by: "id", value: "player.jump.once", maxBytes: 16384 });
-  expect(large.facts).toHaveLength(1);
-  expect(large.facts[0]).toMatchObject({ complete: true, data: { expected: "中".repeat(1200) } });
-  expect(small.contractSetHash).toBe(large.contractSetHash); session.close();
 });
 
 test("大量匹配只缓存固定500项，其余计入遗漏而不是假报全覆盖", async () => {

@@ -15,7 +15,7 @@ export const DEFAULT_INDEX_LIMITS = Object.freeze({
 });
 
 export type IndexLanguage = "ts" | "tsx" | "js" | "jsx" | "go" | null;
-export type IndexFileKind = "code" | "spec" | "schema" | "document" | "config" | "unsupported";
+export type IndexFileKind = "code" | "document" | "config" | "unsupported";
 export type IndexSkipReason =
   | "prod_archive"
   | "excluded_directory"
@@ -288,9 +288,6 @@ export function classifyIndexWatchEvent(path: string): IndexWatchEventKind {
 function classifyFile(parts: string[]): Pick<IndexFile, "kind" | "language"> {
   const name = (parts.at(-1) ?? "").toLowerCase();
   const extension = extname(name);
-  if (parts.length >= 2 && parts[0]?.toLowerCase() === "docs" && parts[1]?.toLowerCase() === "spec") {
-    return { kind: name === "schema.json" || name.endsWith(".schema.json") ? "schema" : "spec", language: null };
-  }
   const languages: Readonly<Record<string, Exclude<IndexLanguage, null>>> = {
     ".ts": "ts",
     ".tsx": "tsx",

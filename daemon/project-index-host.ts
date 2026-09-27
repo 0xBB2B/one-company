@@ -152,7 +152,6 @@ export class ProjectIndexHost {
     if (this.current?.workspaceId === service.workspace.workspaceId && this.current.fingerprint === fingerprint) return this.current;
     const build = await service.refresh({ limits: { ...DEFAULT_INDEX_LIMITS } });
     await this.archiveRisk(service);
-    // spec 无效时索引照常发布，查询结果以 specStatus/indexStatus 标出，不让整个查询不可用
     if (build.status === "cancelled" || !build.baselineHash) {
       throw new ProjectIndexHostError("index_unavailable", `项目索引重建未完成：${build.status}`);
     }
@@ -167,7 +166,7 @@ export class ProjectIndexHost {
       baseline: { repoId: workspace.repoId, workspaceId: workspace.workspaceId, root: workspace.root, branch: workspace.branch,
         generation: build.generation, baselineHash: build.baselineHash, observedSequence: 0, authorityEpoch: "daemon",
         coverage: { kind: "allowed-inputs", complete: true, roots: ["."], excludedPaths: ["docs/prod"], policyHash }, files },
-      build: { workspaceId: workspace.workspaceId, generation: build.generation, baselineHash: build.baselineHash, spec: structuredClone(build.spec) },
+      build: { workspaceId: workspace.workspaceId, generation: build.generation, baselineHash: build.baselineHash },
     };
     for (const session of this.sessions.values()) session.close();
     this.sessions.clear();

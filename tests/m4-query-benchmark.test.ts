@@ -92,9 +92,9 @@ test("命中摘要拒绝空结果和错误来源，只保存有界标识而不�
     .toThrow(/query_expected_hit_missing/);
   expect(() => summarizeQueryHits("chinese-search", [{ kind: "source", id: "fragment", source: { path: "src/file0000.ts" } }]))
     .toThrow(/query_expected_hit_missing/);
-  expect(() => summarizeQueryHits("finite-facts", [{ kind: "rule", id: "benchmark.rule0", source: { path: "docs/spec/wrong.rules.json" } }]))
+  expect(() => summarizeQueryHits("finite-facts", [{ kind: "source", id: "fragment", source: { path: "docs/spec/wrong.rules.json" } }]))
     .toThrow(/query_expected_hit_missing/);
-  const facts = Array.from({ length: 40 }, (_, index) => ({ kind: "rule", id: index === 0 ? "benchmark.rule0" : `rule${index}`,
+  const facts = Array.from({ length: 40 }, (_, index) => ({ kind: "source", id: `fragment${index}`,
     source: { path: index === 0 ? "docs/spec/rule0000.rules.json" : `docs/spec/rule${index}.rules.json` },
     data: { body: `不应进入摘要${index}` } }));
   const summary = summarizeQueryHits("chinese-search", facts);
@@ -170,8 +170,7 @@ test("smoke通过真实SQLite、认证socket上的knowledge.query，并清理夹
       && value.pageBytes <= Number(QUERY_CASES.find((query) => query.id === value.queryId)!.request.maxBytes)
       && value.coverage.complete && !value.coverage.nextCursor)).toBe(true);
     expect(samples.filter((value) => value.queryId === "exact-path").every((value) => value.hitPaths.includes("src/file0000.ts"))).toBe(true);
-    expect(samples.filter((value) => value.queryId !== "exact-path").every((value) => value.hitIdentifiers.includes("rule:benchmark.rule0")
-      && value.hitPaths.includes("docs/spec/rule0000.rules.json"))).toBe(true);
+    expect(samples.filter((value) => value.queryId !== "exact-path").every((value) => value.hitPaths.includes("docs/spec/rule0000.rules.json"))).toBe(true);
     expect(JSON.stringify(samples)).not.toContain("export function");
     expect(new Set(samples.map((value) => value.queryId))).toEqual(new Set(QUERY_CASES.map((query) => query.id)));
     expect(cleanup).toMatchObject({ fixtureRemoved: true, socketRootRemoved: true, rootsPreservedForDiagnostics: false,

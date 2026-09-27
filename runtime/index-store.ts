@@ -27,14 +27,13 @@ const MAX_SEARCH_SNIPPET_CODEPOINTS = 800;
 const MAX_SEARCH_OUTPUT_CODEPOINTS = 24_000;
 
 const ENTITY_NAMESPACES = [
-  "files", "symbols", "code_edges", "features_current", "rules_current",
-  "rule_edges_current", "source_fragments", "prod_metadata",
+  "files", "symbols", "code_edges", "source_fragments", "prod_metadata",
 ] as const;
 
 type EntityNamespace = typeof ENTITY_NAMESPACES[number];
 export type IndexState = "building" | "dirty" | "cancelled" | "interrupted" | "ready" | "partial" | "invalid";
 export type PublishedIndexState = Extract<IndexState, "ready" | "partial" | "invalid">;
-export type IndexedFileKind = "code" | "spec" | "document" | "config";
+export type IndexedFileKind = "code" | "document" | "config";
 
 export interface WorkspaceIdentity {
   workspaceId: string;
@@ -44,7 +43,7 @@ export interface WorkspaceIdentity {
 }
 
 export interface IndexDiagnostic {
-  code: "syntax_error" | "invalid_spec" | "unsupported_language" | "unreadable" | "budget_exceeded" | "parser_unavailable" | "unknown";
+  code: "syntax_error" | "unsupported_language" | "unreadable" | "budget_exceeded" | "parser_unavailable" | "unknown";
   path: string | null;
 }
 
@@ -90,44 +89,6 @@ export interface IndexedCodeEdge {
   endColumn?: number;
 }
 
-export interface IndexedFeature {
-  id: string;
-  path: string;
-  title: string;
-  aliases: string[];
-  contractHash: string;
-}
-
-export interface IndexedAcceptance {
-  id: string;
-  given: string;
-  when: string;
-  then: string;
-}
-
-export interface IndexedRule {
-  id: string;
-  featureId: string;
-  path: string;
-  title: string;
-  condition: string;
-  trigger: string;
-  expected: string;
-  reason: string;
-  dependsOn: string[];
-  exceptions: string[];
-  acceptance: IndexedAcceptance[];
-  contractHash: string;
-  codePointCount: number;
-}
-
-export interface IndexedRuleEdge {
-  id: string;
-  fromRuleId: string;
-  toRuleId: string;
-  kind: "depends_on" | "references";
-}
-
 export interface SourceFragment {
   id: string;
   path: string;
@@ -168,9 +129,6 @@ export interface IndexPublication {
   files: IndexedFile[];
   symbols: IndexedSymbol[];
   codeEdges: IndexedCodeEdge[];
-  features: IndexedFeature[];
-  rules: IndexedRule[];
-  ruleEdges: IndexedRuleEdge[];
   sourceFragments: SourceFragment[];
   prodMetadata: ProdMetadata[];
 }
@@ -202,9 +160,6 @@ export interface IndexSnapshot extends WorkspaceIdentity {
   files: IndexedFile[];
   symbols: IndexedSymbol[];
   codeEdges: IndexedCodeEdge[];
-  features: IndexedFeature[];
-  rules: IndexedRule[];
-  ruleEdges: IndexedRuleEdge[];
   sourceFragments: SourceFragment[];
   prodMetadata: ProdMetadata[];
 }
@@ -371,7 +326,7 @@ function validateIdentity(databasePath: string, input: WorkspaceIdentity): Works
 function validateDiagnostic(input: unknown): IndexDiagnostic {
   const value = exact(input, ["code", "path"]);
   return {
-    code: oneOf(value.code, ["syntax_error", "invalid_spec", "unsupported_language", "unreadable", "budget_exceeded", "parser_unavailable", "unknown"] as const),
+    code: oneOf(value.code, ["syntax_error", "unsupported_language", "unreadable", "budget_exceeded", "parser_unavailable", "unknown"] as const),
     path: value.path === null ? null : normalizedRelativePath(value.path),
   };
 }
@@ -380,7 +335,7 @@ function validateFile(input: unknown): IndexedFile {
   return {
     path: normalizedRelativePath(value.path), hash: digest(value.hash), parserVersion: text(value.parserVersion, 128),
     status: oneOf(value.status, ["indexed", "unsupported", "parse_error", "invalid", "skipped"] as const),
-    kind: oneOf(value.kind, ["code", "spec", "document", "config"] as const),
+    kind: oneOf(value.kind, ["code", "document", "config"] as const),
     language: value.language === null ? null : text(value.language, 64), symbolIds: uniqueStrings(value.symbolIds, 20_000),
   };
 }
@@ -420,33 +375,10 @@ function validateCodeEdge(input: unknown): IndexedCodeEdge {
   }
   return result;
 }
-function validateFeature(input: unknown): IndexedFeature {
-  const value = exact(input, ["id", "path", "title", "aliases", "contractHash"]);
-  return { id: entityId(value.id), path: normalizedRelativePath(value.path), title: boundedText(value.title, 512), aliases: uniqueStrings(value.aliases, 64, (item) => boundedText(item, 256)), contractHash: digest(value.contractHash) };
-}
-function validateAcceptance(input: unknown): IndexedAcceptance {
-  const value = exact(input, ["id", "given", "when", "then"]);
-  return { id: entityId(value.id), given: boundedText(value.given), when: boundedText(value.when), then: boundedText(value.then) };
-}
-function validateRule(input: unknown): IndexedRule {
-  const value = exact(input, ["id", "featureId", "path", "title", "condition", "trigger", "expected", "reason", "dependsOn", "exceptions", "acceptance", "contractHash", "codePointCount"]);
-  const acceptance = array(value.acceptance, 6).map(validateAcceptance);
-  if (new Set(acceptance.map((item) => item.id)).size !== acceptance.length) fail();
-  return {
-    id: entityId(value.id), featureId: entityId(value.featureId), path: normalizedRelativePath(value.path), title: boundedText(value.title),
-    condition: boundedText(value.condition), trigger: boundedText(value.trigger), expected: boundedText(value.expected), reason: boundedText(value.reason),
-    dependsOn: uniqueStrings(value.dependsOn, 256), exceptions: uniqueStrings(value.exceptions, 256, (item) => boundedText(item)), acceptance,
-    contractHash: digest(value.contractHash), codePointCount: integer(value.codePointCount),
-  };
-}
-function validateRuleEdge(input: unknown): IndexedRuleEdge {
-  const value = exact(input, ["id", "fromRuleId", "toRuleId", "kind"]);
-  return { id: entityId(value.id), fromRuleId: entityId(value.fromRuleId), toRuleId: entityId(value.toRuleId), kind: oneOf(value.kind, ["depends_on", "references"] as const) };
-}
 function validateFragment(input: unknown): SourceFragment {
   const value = exact(input, ["id", "path", "kind", "language", "title", "body", "startLine", "endLine", "fileHash"]);
   const result: SourceFragment = {
-    id: entityId(value.id), path: normalizedRelativePath(value.path), kind: oneOf(value.kind, ["code", "spec", "document", "config"] as const),
+    id: entityId(value.id), path: normalizedRelativePath(value.path), kind: oneOf(value.kind, ["code", "document", "config"] as const),
     language: nullableText(value.language, 64), title: nullableText(value.title, 512), body: boundedText(value.body, MAX_FRAGMENT_CODEPOINTS),
     startLine: integer(value.startLine, 1), endLine: integer(value.endLine, 1), fileHash: digest(value.fileHash),
   };
@@ -472,7 +404,7 @@ function uniqueBy<T>(values: T[], key: (value: T) => string): void {
 }
 
 function validatePublication(input: IndexPublication): IndexPublication {
-  const value = exact(input, ["status", "diagnostics", "files", "symbols", "codeEdges", "features", "rules", "ruleEdges", "sourceFragments", "prodMetadata"]);
+  const value = exact(input, ["status", "diagnostics", "files", "symbols", "codeEdges", "sourceFragments", "prodMetadata"]);
   let bodyPoints = 0;
   const sourceFragments = array(value.sourceFragments, MAX_FRAGMENTS).map((item) => {
     const fragment = validateFragment(item);
@@ -484,29 +416,19 @@ function validatePublication(input: IndexPublication): IndexPublication {
     status: oneOf(value.status, ["ready", "partial", "invalid"] as const),
     diagnostics: array(value.diagnostics, 1_000).map(validateDiagnostic),
     files: array(value.files, MAX_FILES).map(validateFile), symbols: array(value.symbols, MAX_SYMBOLS).map(validateSymbol),
-    codeEdges: array(value.codeEdges, MAX_EDGES).map(validateCodeEdge), features: array(value.features, MAX_FILES).map(validateFeature),
-    rules: array(value.rules, MAX_SYMBOLS).map(validateRule), ruleEdges: array(value.ruleEdges, MAX_EDGES).map(validateRuleEdge),
-    sourceFragments, prodMetadata: array(value.prodMetadata, MAX_FILES).map(validateProdMetadata),
+    codeEdges: array(value.codeEdges, MAX_EDGES).map(validateCodeEdge), sourceFragments, prodMetadata: array(value.prodMetadata, MAX_FILES).map(validateProdMetadata),
   };
   uniqueBy(publication.files, (item) => item.path); uniqueBy(publication.symbols, (item) => item.id); uniqueBy(publication.codeEdges, (item) => item.id);
-  uniqueBy(publication.features, (item) => item.id); uniqueBy(publication.rules, (item) => item.id); uniqueBy(publication.ruleEdges, (item) => item.id);
   uniqueBy(publication.sourceFragments, (item) => item.id); uniqueBy(publication.prodMetadata, (item) => `${item.source}:${item.path}`);
   const files = new Map(publication.files.map((item) => [item.path, item]));
   const symbols = new Map(publication.symbols.map((item) => [item.id, item]));
   for (const file of publication.files) for (const id of file.symbolIds) if (symbols.get(id)?.path !== file.path) fail();
   for (const symbol of publication.symbols) if (!files.get(symbol.path)?.symbolIds.includes(symbol.id)) fail();
   for (const edge of publication.codeEdges) if ((edge.fromSymbolId !== null && !symbols.has(edge.fromSymbolId)) || (edge.toSymbolId !== null && !symbols.has(edge.toSymbolId)) || (edge.path !== undefined && !files.has(edge.path))) fail();
-  const features = new Set(publication.features.map((item) => item.id)), rules = new Set(publication.rules.map((item) => item.id));
-  for (const feature of publication.features) if (files.get(feature.path)?.kind !== "spec") fail();
-  for (const rule of publication.rules) {
-    if (!features.has(rule.featureId) || files.get(rule.path)?.kind !== "spec" || rule.dependsOn.some((id) => !rules.has(id))) fail();
-  }
-  for (const edge of publication.ruleEdges) if (!rules.has(edge.fromRuleId) || !rules.has(edge.toRuleId)) fail();
   for (const fragment of publication.sourceFragments) {
     const file = files.get(fragment.path);
     if (!file || file.kind !== fragment.kind || file.hash !== fragment.fileHash) fail();
   }
-  if (publication.status === "invalid" && (publication.features.length || publication.rules.length || publication.ruleEdges.length || publication.sourceFragments.some((fragment) => fragment.kind === "spec"))) fail();
   return publication;
 }
 
@@ -547,9 +469,6 @@ function publicationBaselineHash(identity: WorkspaceIdentity, publication: Index
     workspace: identity,
     status: publication.status,
     files: sorted(publication.files, (item) => item.path).map(({ path, hash, parserVersion, status, kind, language }) => ({ path, hash, parserVersion, status, kind, language })),
-    features: sorted(publication.features, (item) => item.id).map(({ id, path, contractHash }) => ({ id, path, contractHash })),
-    rules: sorted(publication.rules, (item) => item.id).map(({ id, featureId, path, contractHash, dependsOn, exceptions }) => ({ id, featureId, path, contractHash, dependsOn, exceptions })),
-    ruleEdges: sorted(publication.ruleEdges, (item) => item.id),
     diagnostics: sorted(publication.diagnostics, (item) => `${item.path ?? ""}:${item.code}`),
     prodMetadata: sorted(publication.prodMetadata, (item) => `${item.source}:${item.path}`),
   };
@@ -688,9 +607,6 @@ export class IndexStore {
       reconcile("files", publication.files, (item) => item.path);
       reconcile("symbols", publication.symbols, (item) => item.id);
       reconcile("code_edges", publication.codeEdges, (item) => item.id);
-      reconcile("features_current", publication.features, (item) => item.id);
-      reconcile("rules_current", publication.rules, (item) => item.id);
-      reconcile("rule_edges_current", publication.ruleEdges, (item) => item.id);
       reconcile("source_fragments", publication.sourceFragments, (item) => item.id);
       reconcile("prod_metadata", publication.prodMetadata, (item) => `${item.source}:${item.path}`);
       const updatedAt = this.time();
@@ -732,8 +648,7 @@ export class IndexStore {
         generation,
         diagnostics: workspace.data.diagnostics,
         files: by(rows<IndexedFile>("files"), (item) => item.path), symbols: by(rows<IndexedSymbol>("symbols"), (item) => item.id),
-        codeEdges: by(rows<IndexedCodeEdge>("code_edges"), (item) => item.id), features: by(rows<IndexedFeature>("features_current"), (item) => item.id),
-        rules: by(rows<IndexedRule>("rules_current"), (item) => item.id), ruleEdges: by(rows<IndexedRuleEdge>("rule_edges_current"), (item) => item.id),
+        codeEdges: by(rows<IndexedCodeEdge>("code_edges"), (item) => item.id),
         sourceFragments: by(rows<SourceFragment>("source_fragments"), (item) => item.id), prodMetadata: by(rows<ProdMetadata>("prod_metadata"), (item) => `${item.source}:${item.path}`),
       };
     });
@@ -825,12 +740,10 @@ export class IndexStore {
       const snapshot: NonNullable<CurrentQueryIndex["snapshot"]> = {
         ...workspaceIdentity, status: status.status as "ready" | "partial", generation: status.currentGeneration,
         diagnostics: status.diagnostics.map((item) => ({ code: item.code, path: item.path && permitted.has(item.path) ? item.path : null })),
-        files, symbols: [], codeEdges: [], features: [], rules: [], ruleEdges: [], sourceFragments: [],
+        files, symbols: [], codeEdges: [], sourceFragments: [],
       };
       if (metadataOnly) return finish(snapshot);
       snapshot.symbols = read("symbols", validateSymbol);
-      snapshot.features = read("features_current", validateFeature);
-      snapshot.rules = read("rules_current", validateRule);
       snapshot.sourceFragments = read("source_fragments", validateFragment);
       const symbolIds = new Set(snapshot.symbols.map((symbol) => symbol.id));
       snapshot.codeEdges = read("code_edges", validateCodeEdge).map((edge) => ({ ...edge,
@@ -840,10 +753,6 @@ export class IndexStore {
         sourceCertainty: edge.certainty,
         targetOutsideScope: edge.toSymbolId !== null && !symbolIds.has(edge.toSymbolId),
       }));
-      const ruleIds = snapshot.rules.map((rule) => rule.id);
-      snapshot.ruleEdges = db.prepare("SELECT data FROM records WHERE namespace = 'rule_edges_current' AND json_extract(data, '$.workspaceId') = ? AND json_extract(data, '$.generation') = ? AND json_extract(data, '$.fromRuleId') IN (SELECT value FROM json_each(?)) AND json_extract(data, '$.toRuleId') IN (SELECT value FROM json_each(?)) ORDER BY record_key")
-        .all(identity.workspaceId, status.currentGeneration, JSON.stringify(ruleIds), JSON.stringify(ruleIds))
-        .map((item) => validateRuleEdge(withoutScope(JSON.parse(String(item.data)))));
       return finish(snapshot);
     } catch (error) {
       if (error instanceof IndexStoreError) throw error;

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { databaseRows, fixtureSmoke, InstalledProjectFixture } from "../helpers/project-index-installed-fixture.ts";
 import type { Host, HostReply, InstalledRepository } from "../helpers/project-index-installed-fixture.ts";
@@ -55,10 +55,9 @@ installedTest("M3-AC1/3/9 安装：preview不升级、查询前对账读到增�
   const w = await world(), repo = await w.repository("r");
   for (const file of ["extensions/index.ts", "extensions/project-manage.ts", "extensions/knowledge-query.ts", "runtime/project-manage-tool.ts",
     "runtime/knowledge-query-tool.ts", "daemon/project-index-host.ts", "daemon/project-index-requirements.ts",
-    "daemon/bootstrap.mjs", "daemon/loader.mjs", "resources/spec/schema.json", "resources/tree-sitter/manifest.json", "LICENSE"]) expect(w.artifactFiles).toContain(file);
+    "daemon/bootstrap.mjs", "daemon/loader.mjs", "resources/tree-sitter/manifest.json", "LICENSE"]) expect(w.artifactFiles).toContain(file);
   expect(w.artifactHash).toMatch(/^[0-9a-f]{64}$/);
   await mkdir(join(repo.path, "docs/spec"), { recursive: true });
-  await copyFile(join(w.installed, "resources/spec/schema.json"), join(repo.path, "docs/spec/schema.json"));
   await writeFile(join(repo.path, "docs/spec/current.rules.json"), spec("原始行为"));
   const first = await w.daemon(repo), a = await w.host(repo);
   expect((await first.probe()).pid).toBe(first.proc.pid);

@@ -16,11 +16,8 @@ import type {
   CodeEdgeEvidence,
   IndexDiagnostic,
   IndexedCodeEdge,
-  IndexedFeature,
   IndexedFile,
   IndexedFileKind,
-  IndexedRule,
-  IndexedRuleEdge,
   IndexedSymbol,
   IndexPublication,
   IndexSnapshot,
@@ -43,9 +40,7 @@ import type {
   IndexWorkspaceScan,
   ReadIndexFileResult,
 } from "./project-index-policy.ts";
-import { checkSpecSet, SpecFormatError } from "./spec-format.ts";
-import type { CheckedSpecSet, SpecDocument, SpecSource } from "./spec-format.ts";
-import { canonicalJson, parseStrictJson } from "./strict-json.ts";
+import { canonicalJson } from "./strict-json.ts";
 import { verifySyntaxResources } from "./syntax-parser.ts";
 import type { SyntaxLanguage } from "./syntax-parser.ts";
 
@@ -122,19 +117,13 @@ export interface ProjectIndexStatus {
   index: IndexWorkspaceStatus | null;
 }
 
-export interface ProjectIndexSpecSummary {
-  status: "absent" | "valid" | "invalid";
-  contractSetHash: string | null;
-  schemaHash: string | null;
-}
-
 export interface ProjectIndexBuildResult {
   action: "init" | "refresh";
   workspace: WorkspaceIdentity;
   head: string | null;
   status: "ready" | "partial" | "invalid" | "cancelled";
   generation: number;
-  /** 工作区身份与当前允许文件/规则/配置/归档元数据的稳定内容指纹；不包含generation。 */
+  /** 工作区身份与当前允许文件/配置/归档元数据的稳定内容指纹；不包含generation。 */
   baselineHash: string | null;
   parsedFiles: number;
   reusedFiles: number;
@@ -148,7 +137,6 @@ export interface ProjectIndexBuildResult {
   skipped: IndexSkippedPath[];
   archives: ProjectIndexArchiveSummary;
   budget: IndexBudgetResult;
-  spec: ProjectIndexSpecSummary;
   watchPlan: {
     directories: string[];
     archiveDirectories: string[];
@@ -298,15 +286,6 @@ interface PreparedRead {
   result: ReadIndexFileResult;
 }
 
-interface SpecBuild {
-  summary: ProjectIndexSpecSummary;
-  diagnostics: IndexDiagnostic[];
-  features: IndexedFeature[];
-  rules: IndexedRule[];
-  ruleEdges: IndexedRuleEdge[];
-  invalid: boolean;
-}
-
 interface CodeBuild {
   file: IndexedFile;
   symbols: IndexedSymbol[];
@@ -387,7 +366,6 @@ function archiveSummary(entries: IndexArchiveMetadata[]): ProjectIndexArchiveSum
 
 function mappedKind(file: IndexFile): IndexedFileKind {
   if (file.kind === "unsupported") return "code";
-  if (file.kind === "schema") return "config";
   return file.kind;
 }
 
@@ -497,7 +475,6 @@ function contentBaselineHash(
   scan: IndexWorkspaceScan,
   prepared: PreparedRead[],
   publication: IndexPublication,
-  spec: ProjectIndexSpecSummary,
 ): string {
   const payload = {
     format: "project-index-baseline/v1",
@@ -511,7 +488,6 @@ function contentBaselineHash(
     parsedFiles: [...publication.files]
       .sort((left, right) => left.path.localeCompare(right.path))
       .map(({ path, hash, parserVersion, status, kind, language }) => ({ path, hash, parserVersion, status, kind, language })),
-    spec,
     skipped: scan.skipped,
     archives: scan.archives,
   };
@@ -537,104 +513,6 @@ function cacheForFile(snapshot: IndexSnapshot | null, path: string, hash: string
     reused: true,
     parsed: false,
   };
-}
-
-function parseSpecDocuments(sources: SpecSource[]): Map<string, SpecDocument> {
-  return new Map(sources.map((source) => [source.path, parseStrictJson(source.content) as unknown as SpecDocument]));
-}
-
-function buildValidSpec(checked: CheckedSpecSet, documents: Map<string, SpecDocument>): SpecBuild {
-  const features = new Map<string, IndexedFeature>();
-  let conflict = false;
-  for (const [path, document] of [...documents].sort(([a], [b]) => a.localeCompare(b))) {
-    const featureHash = createHash("sha256").update(canonicalJson(document.feature as never)).digest("hex");
-    const candidate: IndexedFeature = {
-      id: document.feature.id,
-      path,
-      title: document.feature.title,
-      aliases: [...document.feature.aliases],
-      contractHash: featureHash,
-    };
-    const existing = features.get(candidate.id);
-    if (!existing) features.set(candidate.id, candidate);
-    else if (existing.contractHash !== candidate.contractHash) conflict = true;
-  }
-  if (checked.semanticReview.conflictCandidates.length || conflict) {
-    return {
-      summary: { status: "invalid", contractSetHash: null, schemaHash: checked.schemaHash },
-      diagnostics: [{ code: "invalid_spec", path: checked.rules[0]?.path ?? "docs/spec/schema.json" }],
-      features: [], rules: [], ruleEdges: [], invalid: true,
-    };
-  }
-  const rules: IndexedRule[] = checked.rules.map((entry) => {
-    const document = documents.get(entry.path)!;
-    return {
-      id: entry.rule.id,
-      featureId: document.feature.id,
-      path: entry.path,
-      title: entry.rule.title,
-      condition: entry.rule.condition,
-      trigger: entry.rule.trigger,
-      expected: entry.rule.expected,
-      reason: entry.rule.reason,
-      dependsOn: [...entry.rule.dependsOn],
-      exceptions: [...entry.rule.exceptions],
-      acceptance: entry.rule.acceptance.map((item) => ({ ...item })),
-      contractHash: entry.contractHash,
-      codePointCount: entry.codepoints,
-    };
-  });
-  const ruleEdges: IndexedRuleEdge[] = [];
-  for (const rule of rules) {
-    for (const target of rule.dependsOn) ruleEdges.push({ id: `rule_edge_${hashParts(rule.id, "depends_on", target)}`, fromRuleId: rule.id, toRuleId: target, kind: "depends_on" });
-    for (const target of rule.exceptions) ruleEdges.push({ id: `rule_edge_${hashParts(rule.id, "references", target)}`, fromRuleId: rule.id, toRuleId: target, kind: "references" });
-  }
-  return {
-    summary: { status: "valid", contractSetHash: checked.contractSetHash, schemaHash: checked.schemaHash },
-    diagnostics: [], features: [...features.values()], rules, ruleEdges, invalid: false,
-  };
-}
-
-function validateSpecs(prepared: PreparedRead[], scan: IndexWorkspaceScan): SpecBuild {
-  const specFiles = prepared.filter((item) => item.file.kind === "spec" || item.file.kind === "schema");
-  const hiddenSpecPath = scan.skipped.find((item) => {
-    const path = item.path.toLowerCase();
-    return path === "docs" || path === "docs/spec" || path.startsWith("docs/spec/")
-      || (path === "." && item.reason === "entry_limit");
-  });
-  if (hiddenSpecPath) {
-    return {
-      summary: { status: "invalid", contractSetHash: null, schemaHash: null },
-      diagnostics: [{ code: "invalid_spec", path: hiddenSpecPath.path === "." ? null : hiddenSpecPath.path }],
-      features: [], rules: [], ruleEdges: [], invalid: true,
-    };
-  }
-  if (!specFiles.length) {
-    return { summary: { status: "absent", contractSetHash: null, schemaHash: null }, diagnostics: [], features: [], rules: [], ruleEdges: [], invalid: false };
-  }
-  const successful = specFiles.filter((item): item is PreparedRead & { result: Extract<ReadIndexFileResult, { status: "success" }> } => item.result.status === "success");
-  const schemaFiles = successful.filter((item) => item.file.path === "docs/spec/schema.json");
-  const rules = successful.filter((item) => item.file.path.endsWith(".rules.json") && item.file.kind === "spec");
-  const unknown = specFiles.filter((item) => item.file.path !== "docs/spec/schema.json" && !item.file.path.endsWith(".rules.json"));
-  const failed = specFiles.filter((item) => item.result.status !== "success");
-  let actualSchemaHash: string | null = null;
-  try {
-    const supported = checkSpecSet([]);
-    if (schemaFiles.length !== 1 || unknown.length || failed.length) throw new SpecFormatError("invalid_schema", "当前spec集合不完整");
-    const diskSchema = parseStrictJson(schemaFiles[0]!.result.content);
-    actualSchemaHash = createHash("sha256").update(canonicalJson(diskSchema)).digest("hex");
-    if (actualSchemaHash !== supported.schemaHash) throw new SpecFormatError("invalid_schema", "当前schema与已支持格式不一致");
-    const sources = rules.map((item) => ({ path: item.file.path, content: item.result.content }));
-    const checked = checkSpecSet(sources);
-    return buildValidSpec(checked, parseSpecDocuments(sources));
-  } catch {
-    const first = failed[0]?.file.path ?? unknown[0]?.file.path ?? schemaFiles[0]?.file.path ?? specFiles[0]?.file.path ?? "docs/spec/schema.json";
-    return {
-      summary: { status: "invalid", contractSetHash: null, schemaHash: actualSchemaHash },
-      diagnostics: [{ code: "invalid_spec", path: first }],
-      features: [], rules: [], ruleEdges: [], invalid: true,
-    };
-  }
 }
 
 async function readBranch(root: string, signal?: AbortSignal): Promise<string> {
@@ -1104,12 +982,10 @@ export class ProjectIndexService {
           }
         }
 
-        const spec = validateSpecs(prepared, scan);
         const publication: IndexPublication = {
           status: "ready",
-          diagnostics: [...spec.diagnostics],
+          diagnostics: [],
           files: [], symbols: [], codeEdges: [],
-          features: spec.features, rules: spec.rules, ruleEdges: spec.ruleEdges,
           sourceFragments: [], prodMetadata: archiveSummary(scan.archives).metadata,
         };
         for (let index = 0; index < prepared.length; index++) {
@@ -1120,8 +996,7 @@ export class ProjectIndexService {
             return this.cancelledResult(action, cancelled, scan, metrics);
           }
           if (item.result.status !== "success") {
-            if (item.file.kind === "spec" || item.file.kind === "schema") diagnosticPush(publication.diagnostics, { code: "invalid_spec", path: item.file.path });
-            else diagnosticPush(publication.diagnostics, { code: item.result.reason === "unreadable" ? "unreadable" : "unknown", path: item.file.path });
+            diagnosticPush(publication.diagnostics, { code: item.result.reason === "unreadable" ? "unreadable" : "unknown", path: item.file.path });
             continue;
           }
           const fileHash = item.result.sha256;
@@ -1155,24 +1030,20 @@ export class ProjectIndexService {
             indexed = { path: item.file.path, hash: fileHash, parserVersion: UNSUPPORTED_PARSER_VERSION, status: "unsupported", kind: "code", language: null, symbolIds: [] };
             diagnosticPush(publication.diagnostics, { code: "unsupported_language", path: item.file.path });
           } else {
-            const specInvalid = spec.invalid && (item.file.kind === "spec" || item.file.kind === "schema");
             indexed = {
               path: item.file.path,
               hash: fileHash,
-              parserVersion: item.file.kind === "schema" ? `spec-schema@${spec.summary.schemaHash ?? "invalid"}` : item.file.kind === "spec" ? `spec-format@${spec.summary.schemaHash ?? "invalid"}` : TEXT_PARSER_VERSION,
-              status: specInvalid ? "invalid" : "indexed",
+              parserVersion: TEXT_PARSER_VERSION,
+              status: "indexed",
               kind: mappedKind(item.file),
-              language: item.file.kind === "spec" || item.file.kind === "schema" ? "json" : null,
+              language: null,
               symbolIds: [],
             };
           }
           publication.files.push(indexed);
-          const includeBody = !spec.invalid || (item.file.kind !== "spec" && item.file.kind !== "schema");
-          if (includeBody) {
-            const next = fragments(item.file, item.result.content, fileHash);
-            publication.sourceFragments.push(...next);
-            metrics.sourceCodepoints += next.reduce((sum, fragment) => sum + codepoints(fragment.body), 0);
-          }
+          const next = fragments(item.file, item.result.content, fileHash);
+          publication.sourceFragments.push(...next);
+          metrics.sourceCodepoints += next.reduce((sum, fragment) => sum + codepoints(fragment.body), 0);
         }
 
         if (scan.partial || publication.files.some((file) => file.status === "parse_error" || file.status === "unsupported")
@@ -1181,7 +1052,6 @@ export class ProjectIndexService {
           publication.status = "partial";
         }
         if (scan.budget.exhausted.length) diagnosticPush(publication.diagnostics, { code: "budget_exceeded", path: null });
-        if (spec.invalid) publication.status = "invalid";
 
         options.onProgress?.({ phase: "verify", path: ".", completed: 0, total: scan.files.length });
         this.authorizeAt(action, "publish");
@@ -1208,7 +1078,7 @@ export class ProjectIndexService {
           if (readSignature(current) !== readSignature(item.result)) throw new ProjectIndexServiceError("unstable", "verify-hash", true);
         }
         await this.identity(signal);
-        const baselineHash = contentBaselineHash(this.workspace, scan, prepared, publication, spec.summary);
+        const baselineHash = contentBaselineHash(this.workspace, scan, prepared, publication);
         await verifyDirectories(database.snapshots, "build-before-publish");
         this.authorizeAt(action, "publish");
         const status = store.publish(token, publication, baselineHash);
@@ -1235,7 +1105,6 @@ export class ProjectIndexService {
           skipped: [...scan.skipped, ...readSkipped].sort((a, b) => a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason)),
           archives,
           budget: scan.budget,
-          spec: spec.summary,
           watchPlan: {
             directories: [...scan.watchDirectories],
             archiveDirectories: [...scan.archiveWatchDirectories],
@@ -1346,7 +1215,6 @@ export class ProjectIndexService {
       skipped: scan?.skipped ?? [],
       archives: archiveSummary(scan?.archives ?? []),
       budget: scan ? { ...scan.budget, stoppedReason: "cancelled" } : emptyBudget,
-      spec: { status: "absent", contractSetHash: null, schemaHash: null },
       watchPlan: {
         directories: [...(scan?.watchDirectories ?? [])],
         archiveDirectories: [...(scan?.archiveWatchDirectories ?? [])],

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -74,8 +74,6 @@ export async function createSampleProject(root: string): Promise<string> {
     await mkdir(dirname(join(repo, path)), { recursive: true });
     await writeFile(join(repo, path), content);
   }
-  // 产品发布首条规则时会写入自带的 schema；样例直接放入，索引才认为当前 spec 完整
-  await copyFile(new URL("../../../resources/spec/schema.json", import.meta.url), join(repo, "docs", "spec", "schema.json"));
   const git = (...args: string[]) => exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", ...args], { cwd: repo });
   await git("init", "-q", "--initial-branch=main");
   await git("add", ".");

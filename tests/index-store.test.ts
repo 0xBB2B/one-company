@@ -32,38 +32,32 @@ function codePublication(path: string, word: string, fileHash = hash("a"), statu
     diagnostics: status === "partial" ? [{ code: "syntax_error", path }] : [],
     files: [{ path, hash: fileHash, parserVersion: "tree-sitter-typescript@fixture", status: status === "partial" ? "parse_error" : "indexed", kind: "code", language: "typescript", symbolIds: [symbolId] }],
     symbols: [{ id: symbolId, path, name: "main", kind: "function", startLine: 1, startColumn: 0, endLine: 1, endColumn: 20 }],
-    codeEdges: [], features: [], rules: [], ruleEdges: [],
+    codeEdges: [],
     sourceFragments: [{ id: fragmentId, path, kind: "code", language: "typescript", title: "main", body: `export function main() { return '${word}' }`, startLine: 1, endLine: 1, fileHash }],
     prodMetadata: [],
   };
 }
 
-function specPublication(word: string): IndexPublication {
+function docPublication(word: string): IndexPublication {
   const path = "docs/spec/player/jump.rules.json", fileHash = hash("b");
   return {
     status: "ready", diagnostics: [],
-    files: [{ path, hash: fileHash, parserVersion: "spec-schema@1", status: "indexed", kind: "spec", language: "json", symbolIds: [] }],
+    files: [{ path, hash: fileHash, parserVersion: "text@fixture", status: "indexed", kind: "config", language: null, symbolIds: [] }],
     symbols: [], codeEdges: [],
-    features: [{ id: "player.jump", path, title: "跳跃", aliases: ["起跳"], contractHash: hash("c") }],
-    rules: [{ id: "player.jump.once", featureId: "player.jump", path, title: "一次跳跃", condition: "角色在地面", trigger: "收到起跳输入", expected: word, reason: "避免重复起跳", dependsOn: [], exceptions: [], acceptance: [{ id: "jump-once", given: "角色在地面", when: "触发起跳", then: "只起跳一次" }], contractHash: hash("d"), codePointCount: 40 }],
-    ruleEdges: [],
-    sourceFragments: [{ id: "player.jump.once#source", path, kind: "spec", language: "json", title: "一次跳跃", body: word, startLine: 1, endLine: 12, fileHash }],
+    sourceFragments: [{ id: `${path}#source`, path, kind: "config", language: null, title: "jump.rules.json", body: word, startLine: 1, endLine: 12, fileHash }],
     prodMetadata: [],
   };
 }
 
 function emptyPublication(status: "ready" | "partial" | "invalid" = "ready"): IndexPublication {
-  return { status, diagnostics: status === "invalid" ? [{ code: "invalid_spec", path: "docs/spec/broken.json" }] : [], files: [], symbols: [], codeEdges: [], features: [], rules: [], ruleEdges: [], sourceFragments: [], prodMetadata: [] };
+  return { status, diagnostics: status === "invalid" ? [{ code: "unknown", path: null }] : [], files: [], symbols: [], codeEdges: [], sourceFragments: [], prodMetadata: [] };
 }
 
-const entityNamespaces = ["files", "symbols", "code_edges", "features_current", "rules_current", "rule_edges_current", "source_fragments", "prod_metadata"] as const;
+const entityNamespaces = ["files", "symbols", "code_edges", "source_fragments", "prod_metadata"] as const;
 
 function fullPublication(word: string): IndexPublication {
-  const publication = codePublication("src/main.ts", word), spec = specPublication(word);
-  publication.files.push(...spec.files); publication.sourceFragments.push(...spec.sourceFragments);
-  publication.features = spec.features; publication.rules = spec.rules;
-  publication.rules.push({ ...spec.rules[0]!, id: "player.jump.land", dependsOn: ["player.jump.once"] });
-  publication.ruleEdges.push({ id: "jump-land-dependency", fromRuleId: "player.jump.land", toRuleId: "player.jump.once", kind: "depends_on" });
+  const publication = codePublication("src/main.ts", word), doc = docPublication(word);
+  publication.files.push(...doc.files); publication.sourceFragments.push(...doc.sourceFragments);
   publication.codeEdges.push({ id: "main-reference", fromSymbolId: null, toSymbolId: publication.symbols[0]!.id, kind: "references", certainty: "certain" });
   const requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
   publication.prodMetadata.push({ requirementId, source: "archive", path: `docs/prod/${requirementId}.完成.md`, fileName: `${requirementId}.完成.md`, lifecycle: "unknown", epoch: null, hash: null });
@@ -100,7 +94,7 @@ test("所有同键实体即使字节未变也更新代次和版本，保持内�
         else expect(current).toEqual({ ...previous, version: previous.version + 1, data: { ...previous.data, generation: token.targetGeneration } });
       }
     }
-    expect(a.getSnapshot()).toMatchObject({ generation: 2, symbols: publication.symbols, rules: [...publication.rules].sort((a, b) => a.id.localeCompare(b.id)) });
+    expect(a.getSnapshot()).toMatchObject({ generation: 2, symbols: publication.symbols });
     expect(a.search("same_generation_word").results).toHaveLength(2);
     expect(a.search("foreign_workspace_word").results).toEqual([]);
     expect(b.search("foreign_workspace_word").results).toHaveLength(2);
@@ -108,7 +102,7 @@ test("所有同键实体即使字节未变也更新代次和版本，保持内�
   } finally { db.close(); a.close(); b.close(); }
 });
 
-test("混合同键正文替换、新增、删除与重命名清除旧行和FTS，规则公开ID不变", async () => {
+test("混合同键正文替换、新增、删除与重命名清除旧行和FTS", async () => {
   const w = await fixture(), identity = w.identity(hash("3"), w.workspaceA, "refs/heads/reconcile");
   const store = new IndexStore(w.databasePath, identity), db = new LocalDatabase(w.databasePath);
   try {
@@ -120,21 +114,18 @@ test("混合同键正文替换、新增、删除与重命名清除旧行和FTS�
     const added = codePublication("src/added.ts", "added_body_word", hash("e"));
     next.files.push(...added.files); next.symbols.push(...added.symbols); next.sourceFragments.push(...added.sourceFragments);
     const specPath = "docs/spec/player/renamed.rules.json";
-    next.files.find((file) => file.kind === "spec")!.path = specPath;
-    next.features[0]!.path = specPath;
-    next.rules.forEach((rule) => { rule.path = specPath; });
-    next.sourceFragments.find((fragment) => fragment.kind === "spec")!.path = specPath;
+    next.files.find((file) => file.kind === "config")!.path = specPath;
+    next.sourceFragments.find((fragment) => fragment.kind === "config")!.path = specPath;
     const archive = next.prodMetadata[0]!;
     archive.path = archive.path.replace("完成.md", "改名.md"); archive.fileName = archive.fileName.replace("完成.md", "改名.md");
-    next.codeEdges = []; next.ruleEdges = []; next.rules = next.rules.slice(0, 1);
+    next.codeEdges = [];
     store.publish(store.begin(), next);
     const snapshot = store.getSnapshot(), after = entityRows(db);
     expect(snapshot.symbols.find((symbol) => symbol.id === "src/main.ts#main")).not.toHaveProperty("startOffset");
     expect(snapshot.files.map((file) => file.path)).toEqual([specPath, "src/added.ts", "src/main.ts"]);
-    expect(snapshot.rules).toEqual(next.rules); expect(snapshot.features).toEqual(next.features);
     expect(snapshot.prodMetadata).toEqual(next.prodMetadata);
-    expect(snapshot.codeEdges).toEqual([]); expect(snapshot.ruleEdges).toEqual([]);
-    for (const namespace of ["features_current", "rules_current", "source_fragments", "symbols"] as const) {
+    expect(snapshot.codeEdges).toEqual([]);
+    for (const namespace of ["source_fragments", "symbols"] as const) {
       const retained = before[namespace]!.find((row) => after[namespace]!.some((current) => current.key === row.key))!;
       expect(after[namespace]!.find((row) => row.key === retained.key)).toMatchObject({ id: retained.id, version: retained.version + 1, data: { generation: 2 } });
     }
@@ -236,16 +227,14 @@ test("按worktree隔离持久当前代次，FTS更新和删除会清除旧词", 
   b.close(); reopened.close();
 });
 
-test("invalid spec发布删除旧规则正文并拒绝返回未核对current", async () => {
-  const w = await fixture(), identity = w.identity(hash("3"), w.workspaceA, "refs/heads/spec");
+test("invalid 发布删除旧正文并拒绝返回未核对current", async () => {
+  const w = await fixture(), identity = w.identity(hash("3"), w.workspaceA, "refs/heads/invalid");
   const store = new IndexStore(w.databasePath, identity);
-  store.publish(store.begin(), specPublication("legacy_rule_secret"));
+  store.publish(store.begin(), docPublication("legacy_rule_secret"));
   expect(store.search("legacy_rule_secret").results).toHaveLength(1);
 
   const build = store.begin(store.status().version);
-  const invalid = emptyPublication("invalid");
-  invalid.files.push({ path: "docs/spec/broken.json", hash: hash("9"), parserVersion: "spec-schema@1", status: "invalid", kind: "spec", language: "json", symbolIds: [] });
-  const state = store.publish(build, invalid);
+  const state = store.publish(build, emptyPublication("invalid"));
   expect(state.status).toBe("invalid");
   expect(() => store.getSnapshot()).toThrowError(expect.objectContaining({ code: "index_not_ready" }));
   expect(() => store.search("legacy_rule_secret")).toThrowError(expect.objectContaining({ code: "index_not_ready" }));
@@ -253,7 +242,6 @@ test("invalid spec发布删除旧规则正文并拒绝返回未核对current", a
 
   const raw = new LocalDatabase(w.databasePath);
   try {
-    expect(raw.list<Record<string, unknown>>("rules_current").filter((row) => row.data.workspaceId === identity.workspaceId)).toEqual([]);
     expect(raw.list<Record<string, unknown>>("source_fragments").filter((row) => row.data.workspaceId === identity.workspaceId)).toEqual([]);
     expect(ftsRows(w.databasePath, identity.workspaceId, "legacy_rule_secret")).toEqual([]);
   } finally { raw.close(); }
@@ -490,10 +478,9 @@ test("只读current按文件范围先过滤正文，metadataOnly不载入正文�
     const publication = fullPublication("VISIBLE_BODY");
     store.publish(store.begin(), publication);
     const metadata = IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"], true);
-    expect(metadata.snapshot).toMatchObject({ files: [{ path: "src/main.ts" }], sourceFragments: [], rules: [] });
+    expect(metadata.snapshot).toMatchObject({ files: [{ path: "src/main.ts" }], sourceFragments: [] });
     const current = IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"]);
     expect(current.snapshot?.sourceFragments).toHaveLength(1);
-    expect(current.snapshot?.rules).toEqual([]);
     expect(current.snapshot).not.toHaveProperty("prodMetadata");
     store.markDirty();
     expect(() => IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"])).toThrowError(expect.objectContaining({ code: "index_not_ready" }));

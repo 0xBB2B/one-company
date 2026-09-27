@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -63,7 +63,6 @@ function specDocument(expected = "SPEC_SENTINEL") {
 
 async function putValidSpec(root: string): Promise<void> {
   await mkdir(join(root, "docs/spec"), { recursive: true });
-  await copyFile(new URL("../resources/spec/schema.json", import.meta.url), join(root, "docs/spec/schema.json"));
   await writeFile(join(root, "docs/spec/jump.rules.json"), JSON.stringify(specDocument()));
 }
 
@@ -128,7 +127,7 @@ test("dataRoot仓库目录链接到worktree时在chmod和开库前拒绝，且�
   expect((await stat(w.repo.root)).mode & 0o777).toBe(targetMode);
 });
 
-test("init接通真实Tree-sitter、spec、未知语言、FTS与1基行/UTF-16 offset", async () => {
+test("init接通真实Tree-sitter、遗留规则文件、未知语言、FTS与1基行/UTF-16 offset", async () => {
   const w = await world();
   const source = [
     "import { remote } from 'pkg';",
@@ -152,7 +151,7 @@ test("init接通真实Tree-sitter、spec、未知语言、FTS与1基行/UTF-16 o
   expect(await readdir(join(w.dataRoot, "repos", w.repoId))).toEqual(["index.db"]);
   await expect(stat(join(w.dataRoot, "repos", w.repoId, "data.db"))).rejects.toMatchObject({ code: "ENOENT" });
   await expect(stat(join(w.dataRoot, "global.db"))).rejects.toMatchObject({ code: "ENOENT" });
-  expect(result.spec).toMatchObject({ status: "valid", contractSetHash: expect.stringMatching(/^[0-9a-f]{64}$/), schemaHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  expect(result).not.toHaveProperty("spec");
   const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), index.workspace);
   try {
     const snapshot = store.getSnapshot();
@@ -169,8 +168,7 @@ test("init接通真实Tree-sitter、spec、未知语言、FTS与1基行/UTF-16 o
     expect(snapshot.files.find((item) => item.path === "tools/check.py")).toMatchObject({ kind: "code", status: "unsupported", hash: sha("print('UNSUPPORTED_SENTINEL')\n") });
     expect(store.search("UNSUPPORTED_SENTINEL").results).toHaveLength(1);
     expect(store.search("SPEC_SENTINEL").results).toHaveLength(1);
-    expect(snapshot.features.filter((item) => item.id === "player.jump")).toHaveLength(1);
-    expect(snapshot.rules.map((item) => item.id)).toEqual(["player.jump.land", "player.jump.once"]);
+    expect(snapshot.files.find((item) => item.path === "docs/spec/jump.rules.json")).toMatchObject({ kind: "config", status: "indexed" });
   } finally { store.close(); }
 });
 
@@ -260,67 +258,6 @@ test("parser_unavailable缓存不会永久复用，资源恢复后相同hash和�
   expect(attempts).toBe(3);
   expect(await index.refresh()).toMatchObject({ status: "partial", parsedFiles: 0, reusedFiles: 1 });
   expect(attempts).toBe(3);
-});
-
-test("当前spec失败发布invalid并删除旧规则与spec FTS，不回退上次有效正文", async () => {
-  const w = await world();
-  await put(w.repo.root, "src/main.ts", "export function main() {}\n");
-  await putValidSpec(w.repo.root);
-  const index = await service(w);
-  expect((await index.init()).spec.status).toBe("valid");
-  const databasePath = indexDatabase(w.dataRoot, w.repoId);
-  const before = new IndexStore(databasePath, index.workspace);
-  expect(before.search("SPEC_SENTINEL").results).toHaveLength(1);
-  before.close();
-
-  await writeFile(join(w.repo.root, "docs/spec/jump.rules.json"), "{ invalid SPEC_SENTINEL");
-  const result = await index.refresh();
-  expect(result).toMatchObject({ status: "invalid", spec: { status: "invalid", contractSetHash: null } });
-  const store = new IndexStore(databasePath, index.workspace);
-  expect(() => store.getSnapshot()).toThrowError(expect.objectContaining({ code: "index_not_ready" }));
-  store.close();
-  const raw = new LocalDatabase(databasePath);
-  try {
-    expect(raw.list<Record<string, unknown>>("rules_current").filter((row) => row.data.workspaceId === index.workspace.workspaceId)).toEqual([]);
-    const bodies = raw.list<{ workspaceId: string; body: string }>("source_fragments")
-      .filter((row) => row.data.workspaceId === index.workspace.workspaceId).map((row) => row.data.body).join("\n");
-    expect(bodies).not.toContain("SPEC_SENTINEL");
-    const file = raw.list<{ workspaceId: string; path: string; hash: string; status: string }>("files")
-      .find((row) => row.data.workspaceId === index.workspace.workspaceId && row.data.path === "docs/spec/jump.rules.json");
-    expect(file?.data).toMatchObject({ hash: sha("{ invalid SPEC_SENTINEL"), status: "invalid" });
-  } finally { raw.close(); }
-});
-
-test("已有有效spec的schema或规则被预算/链接跳过时发布invalid并清除旧当前规则", async () => {
-  const w = await world();
-  await put(w.repo.root, "src/main.ts", "export {}\n");
-  await putValidSpec(w.repo.root);
-  const index = await service(w);
-  expect((await index.init()).spec.status).toBe("valid");
-
-  const budgeted = await index.refresh({ limits: { maxFileBytes: 16 } });
-  expect(budgeted).toMatchObject({ status: "invalid", spec: { status: "invalid", contractSetHash: null } });
-  expect(budgeted.diagnostics).toContainEqual(expect.objectContaining({ code: "invalid_spec", path: expect.stringMatching(/^docs\/spec\//) }));
-  let raw = new LocalDatabase(indexDatabase(w.dataRoot, w.repoId));
-  expect(raw.list<{ workspaceId: string }>("rules_current").filter((row) => row.data.workspaceId === index.workspace.workspaceId)).toEqual([]);
-  raw.close();
-
-  expect((await index.refresh()).spec.status).toBe("valid");
-  const rulePath = join(w.repo.root, "docs/spec/jump.rules.json");
-  const outsideRule = join(w.dataRoot, "outside.rules.json");
-  await writeFile(outsideRule, JSON.stringify(specDocument("LINKED_SPEC_MUST_NOT_LOAD")));
-  await rm(rulePath);
-  await symlink(outsideRule, rulePath);
-  const linked = await index.refresh();
-  expect(linked).toMatchObject({ status: "invalid", spec: { status: "invalid" } });
-  expect(linked.skipped).toContainEqual({ path: "docs/spec/jump.rules.json", reason: "symbolic_link" });
-  raw = new LocalDatabase(indexDatabase(w.dataRoot, w.repoId));
-  try {
-    expect(raw.list<{ workspaceId: string }>("rules_current").filter((row) => row.data.workspaceId === index.workspace.workspaceId)).toEqual([]);
-    expect(raw.list<{ workspaceId: string; body: string }>("source_fragments")
-      .filter((row) => row.data.workspaceId === index.workspace.workspaceId).map((row) => row.data.body).join("\n"))
-      .not.toContain("SPEC_SENTINEL");
-  } finally { raw.close(); }
 });
 
 test("代码语法错误发布partial并替换旧文件正文，不让旧FTS冒充当前实现", async () => {
