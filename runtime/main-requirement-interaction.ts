@@ -478,8 +478,7 @@ export class MainRequirementInteraction {
     const targetRecorded = interpretation.entries.some((e) => e.kind === "target" && e.basis === "explicit" && !["defer", "unclear"].includes(e.resolution)) ||
       Boolean(document?.manifest.retainedSources?.some((source) => source.kind === "target"));
     const base = { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
-      version: loaded.version, epoch: loaded.epoch, targetRecorded, prodActivated: false, decisionIds: saved.decisionIds,
-      unimplemented: ["pm_scheduling", "worker_dispatch", "business_commit", "push"] };
+      version: loaded.version, epoch: loaded.epoch, targetRecorded, prodActivated: false, decisionIds: saved.decisionIds };
     if (!document) return this.#prove(ctx, request.repoId, { ...base, blockedBy: "candidate_requires_revision_or_clarification", allowedScopes: [] }, undefined, decisionProofs);
     const reference = approvalManifestReference(document.manifest);
     const authorizeManifest: NonNullable<RequirementServiceOptions["authorizeManifest"]> = (r) => {
@@ -510,7 +509,7 @@ export class MainRequirementInteraction {
     const receipt = await service.confirmUpdate({ requirementId: request.requirementId, operationId: request.operationId, version: loaded.version,
       title: loaded.title, body: loaded.body, receiptId, manifest: reference });
     // 这些只是该次决定的元数据，不是可转交worker的能力；激活不启动PM。
-    return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prodActivated: true, allowedScopes, blockedBy: "pm_scheduling_unimplemented" },
+    return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prodActivated: true, allowedScopes },
       { kind: "approved", scope: { status: "available", summary } }, decisionProofs);
   }
   async ask(ctx: ExtensionContext, request: ConfirmationRequest & { question: string; scope: string; unitIds: string[]; actions: InteractionAction[] }) {

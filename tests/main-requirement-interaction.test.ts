@@ -137,6 +137,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
     scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded, "implement")) }]);
     const params = { action: "confirmUpdate", ...input }, result = await w.call(params);
     expect(result).toMatchObject({ targetRecorded: true, prodActivated: true, lifecycle: "active", allowedScopes: [{ action: "implement", goalIds: ["A"], constraintIds: [] }] });
+    expect(result).not.toHaveProperty("blockedBy");
+    expect(result).not.toHaveProperty("unimplemented");
     expect(await w.call(params)).toEqual(result);
     expect(state.events(String(created.requirementId)).filter((e) => e.data.kind === "prod.approved")).toHaveLength(1);
     expect(await git(join(w.dataRoot, "repos", w.repoId, "requirements", String(created.requirementId)), ["rev-list", "--count", "HEAD"])).toBe("1");
