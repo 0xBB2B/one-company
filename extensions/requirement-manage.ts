@@ -23,7 +23,7 @@ export interface RequirementManageExtensionDeps {
   readonly windowContext?: typeof windowContext;
 }
 // 错误只放行固定格式的错误代码与只含字段名的改正提示，其余内容一律不回显，避免把值或正文带回模型
-const SAFE_DENIAL = /^(?:requirement_host_denied|pm_intake_interaction_denied):([a-z_]{1,64})(（[\p{Script=Han}A-Za-z0-9_:：、；，. -]{0,2000}）)?$/u;
+const SAFE_DENIAL = /^(?:requirement_host_denied:|pm_intake_interaction_denied:|PM 接手(?:服务被拒绝|契约拒绝|存储被拒绝)：)([a-z_]{1,64})(（[\p{Script=Han}A-Za-z0-9_:：、；，. -]{0,2000}）)?$/u;
 export function deniedText(event: { isError: boolean; content: ReadonlyArray<{ type: string; text?: string }> },
   prefix: "requirement_interaction_denied" | "pm_intake_interaction_denied"): string {
   const text = event.isError && event.content.length === 1 && event.content[0]!.type === "text" ? event.content[0]!.text ?? "" : "";

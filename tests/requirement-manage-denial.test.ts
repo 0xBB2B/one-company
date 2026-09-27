@@ -9,6 +9,9 @@ test("需求与接手交互的错误只放行固定格式的错误代码与字�
     .toBe("requirement_interaction_denied:invalid_shape（多余字段：sectionId；本动作允许字段：action、repoId）");
   expect(deniedText(error("pm_intake_interaction_denied:stale_context"), "pm_intake_interaction_denied")).toBe("pm_intake_interaction_denied:stale_context");
   expect(deniedText(error("requirement_host_denied:invalid_shape"), "pm_intake_interaction_denied")).toBe("pm_intake_interaction_denied:invalid_shape");
+  for (const text of ["PM 接手服务被拒绝：untrusted_main_call", "PM 接手契约拒绝：invalid_shape", "PM 接手存储被拒绝：question_changed"]) {
+    expect(deniedText(error(text), "pm_intake_interaction_denied")).toBe(`pm_intake_interaction_denied:${text.split("：")[1]}`);
+  }
 });
 
 test("其他错误内容、非错误结果和多段内容都只给笼统拒绝，不回显正文", () => {
