@@ -126,6 +126,21 @@ test("M7-AC30：有过尝试且未完成的任务不能取消，其目标不能�
   expect(retried.tasks.find((task) => task.key === "login")).toMatchObject({ version: 2 });
 }, 30000);
 
+test("M7-AC30：未完成的 QA 任务只占住 QA 的目标，QA 报问题后仍可追加同目标的 worker 返修任务", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const view = await pm.execute({ action: "propose", tasks: [spec("login"), spec("qa", { role: "qa", writePaths: [], dependsOn: ["login"] })] }) as PlanView;
+  const qa = view.tasks.find((task) => task.key === "qa")!;
+  w.db((db) => {
+    const row = db.read<Record<string, unknown>>(TASKS, qa.taskId)!;
+    db.update(TASKS, qa.taskId, row.version, { ...row.data, status: "awaiting_parent",
+      attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 3, reason: null, outcome: "incomplete" }] });
+  });
+  await expect(pm.execute({ action: "update", planVersion: 1, add: [spec("qa-again", { role: "qa", writePaths: [] })] })).rejects.toMatchObject({ code: "task_not_ready" });
+  const repaired = await pm.execute({ action: "update", planVersion: 1, add: [spec("login-fix", { dependsOn: ["login"] })] }) as PlanView;
+  expect(repaired.tasks.map((task) => task.key)).toContain("login-fix");
+}, 30000);
+
 test("M7-AC30：已有尝试的任务修改时须保留原有目标，不能先改走目标再另起新任务", async () => {
   const w = await world();
   const pm = await w.tool();
