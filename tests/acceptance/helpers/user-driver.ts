@@ -108,6 +108,11 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
         else if (!label.includes("接手")) return stop(`出现台词未覆盖的事项：${label}`);
         continue;
       }
+      // 待验收事项仍在、主代理已答完等用户（例如登记失败请用户再说一次），像真人一样再回一次验收
+      if (label.includes("待你验收") && host.session.messages.at(-1)?.role === "assistant") {
+        result = await say(script.accept); if (result) return result;
+        continue;
+      }
       await sleep(5_000);
       continue;
     }
