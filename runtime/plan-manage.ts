@@ -8,7 +8,7 @@ import { approvalDependencyClosure } from "./approval-manifest.ts";
 import type { ApprovalManifest } from "./approval-manifest.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { VerificationPerformance } from "./check-round.ts";
-import { authorizeToolAction } from "./core-permissions.ts";
+import { authorizeToolAction, writePathAllowed } from "./core-permissions.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
@@ -251,6 +251,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (outside.length) deny("unit_not_authorized", [...new Set(outside)]);
     const noScope = specs.filter((spec) => spec.role === "worker" && spec.writePaths.length === 0);
     if (noScope.length) deny("dependency_invalid", noScope.map((spec) => `${spec.key} 是实现任务，须声明可写范围`));
+    const unwritable = specs.filter((spec) => spec.role === "worker")
+      .flatMap((spec) => spec.writePaths.filter((path) => !writePathAllowed("change_apply", path)).map((path) => `${spec.key} 的 ${path} 不能由 worker 写入`));
+    if (unwritable.length) deny("dependency_invalid", [...unwritable, "worker 只写代码与测试；规则候选由 PM 用 pi_company_spec_change 维护"]);
     const strayReview = specs.filter((spec) => spec.role !== "worker" && spec.reviewAgent !== undefined);
     if (strayReview.length) deny("dependency_invalid", strayReview.map((spec) => `${spec.key} 不是实现任务，不能指定审查定义`));
     const keys = specs.map((spec) => spec.key);

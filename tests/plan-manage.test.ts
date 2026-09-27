@@ -64,6 +64,8 @@ test("M7-AC32：任务只能引用获准实施的需求章节，依赖须存在�
   await expect(pm.execute({ action: "propose", tasks: [spec("x", { goalUnitIds: ["goal.unknown"] })] })).rejects.toMatchObject({ code: "unknown_unit" });
   await expect(pm.execute({ action: "propose", tasks: [spec("a", { dependsOn: ["b"] }), spec("b", { dependsOn: ["a"] })] })).rejects.toMatchObject({ code: "dependency_invalid" });
   await expect(pm.execute({ action: "propose", tasks: [spec("a", { dependsOn: ["missing"] })] })).rejects.toMatchObject({ code: "dependency_invalid" });
+  await expect(pm.execute({ action: "propose", tasks: [spec("a", { writePaths: ["docs/spec/player/move.rules.json"] })] }))
+    .rejects.toThrow("a 的 docs/spec/player/move.rules.json 不能由 worker 写入");
 }, 30000);
 
 test("M7-AC6：计划与任务结构在 data.db，任务说明只在私有文件，数据库只留引用与指纹", async () => {
