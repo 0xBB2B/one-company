@@ -37,7 +37,7 @@ import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
 import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
-import { implementAuthorized, pmDecisionNotes, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
+import { implementAuthorized, pmDecisionNotes, pmIntakeReviewNotice, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
 import type { PmDecisionNote } from "../runtime/pm-intake-runtime.ts";
 import type { IntakeSourceDirectory } from "../runtime/pm-intake-contracts.ts";
 import { exploreContext, exploreInput, sourceHashesMatch } from "../runtime/explore-dispatch.ts";
@@ -293,12 +293,16 @@ export class RunManager {
     const renewal = this.options.clock.setIntervalExcludingSleep(() => {
       void state.renewPm(lease).catch(() => { void this.stop(run.id).catch(() => {}); });
     }, PM_RENEW_MS);
-    let delivering: Promise<void> | null = null;
+    let delivering: Promise<void> | null = null, notifiedReviewId: string | null = null;
     const delivery = this.options.clock.setIntervalExcludingSleep(() => {
       if (delivering || !alive()) return;
       delivering = deliverApprovedEvents({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease,
         deliver: (text) => handle.prompt(text) }).catch(() => {})
         .then(() => { for (const message of takeUnnotifiedDecisions({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId)) handle.prompt(message); })
+        .then(() => {
+          const notice = pmIntakeReviewNotice({ dataRoot: this.options.dataRoot, repoId: this.repoId, lease });
+          if (notice && notice.reviewId !== notifiedReviewId) { notifiedReviewId = notice.reviewId; handle.prompt(notice.text); }
+        })
         .catch(() => {}).then(() => this.applyHalt(run.id)).catch(() => {})
         .then(() => this.refreshOverview(run.id)).catch(() => {}).finally(() => { delivering = null; });
     }, PM_EVENT_POLL_MS);

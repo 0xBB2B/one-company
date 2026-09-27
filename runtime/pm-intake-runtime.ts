@@ -109,6 +109,15 @@ export function pmDecisionNotes(ref: Ref, requirementId: string): PmDecisionNote
   });
 }
 
+/** 本 PM 租约下最新一次主代理接手核对的结论，转成告知 PM 的消息；只作通知，不参与授权。 */
+export function pmIntakeReviewNotice(ref: Ref & { lease: PmLease }): { reviewId: string; text: string } | null {
+  const review = new PmIntakeStore({ dataRoot: ref.dataRoot, repoId: ref.repoId }).readHead(ref.lease.requirementId)?.review;
+  if (!review || review.binding.pmRunId !== ref.lease.runId || review.binding.pmFence !== ref.lease.fence) return null;
+  return { reviewId: review.reviewId, text: review.result === "passed"
+    ? "主代理已核对通过你的接手理解，现在可以正式提出计划，并按授权派工。"
+    : `主代理核对你的接手理解未通过（${review.result}）：${review.shortIssues.join("；")}。核对通过前不能正式规划或派工；能由你改正的，改好后重新提交接手理解。` };
+}
+
 /** 主代理接手核对的两个数据提供方：场景清单取批准清单的已确认条目，理解取 PM 私有会话里最近一次受理的提交。 */
 export function createPmIntakeProviders(dataRoot: string): { sourceDirectoryProvider: PmSourceDirectoryProvider; submissionProvider: PmSubmissionProvider } {
   const sources = new WeakMap<object, string>();

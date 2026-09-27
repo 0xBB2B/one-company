@@ -11,6 +11,7 @@ import { repositoryDatabase, uuidv7, withDatabase } from "../../runtime/database
 import { NetworkPauseGate } from "../../runtime/network-pause.ts";
 import { createPlanManageTool } from "../../runtime/plan-manage.ts";
 import { createPmIntakeProviders, PM_INTAKE_TOOL } from "../../runtime/pm-intake-runtime.ts";
+import type { IntakeReviewDecision } from "../../runtime/pm-intake-service.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../../runtime/roles.ts";
 import { RunStore } from "../../runtime/run-store.ts";
 import { ShellRegistry } from "../../runtime/shell-registry.ts";
@@ -61,10 +62,14 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   const lease = fixture.state.pmOwner(fixture.requirementId)!.lease!;
   const owner = () => db((d) => d.read<{ context: { baseline: { revision: number } | null }; prodEvents?: { consumedSequence: number; understoodRevision: number | null } }>(
     "pm_ownership", fixture.requirementId)!.data);
-  async function review() {
+  async function review(decision: IntakeReviewDecision = { result: "passed", shortIssues: [] }) {
     const intake = fixture.makeIntake(createPmIntakeProviders(fixture.dataRoot));
     const view = await intake.openRequest(fixture.call, fixture.operationId());
-    await intake.recordReview(fixture.call, view.requestId, fixture.operationId(), { result: "passed", shortIssues: [] });
+    const notices = () => provider.requests.filter((request) => /主代理(?:已核对通过|核对)你的接手理解/.test(JSON.stringify(request.messages.at(-1) ?? ""))).length;
+    const before = notices();
+    provider.queue.push({ type: "text", text: "收到核对结论" });
+    await intake.recordReview(fixture.call, view.requestId, fixture.operationId(), decision);
+    await until(() => notices() > before);
   }
   if (options.review !== false) {
     await review();

@@ -65,6 +65,19 @@ test("M7-AC1：主代理核对通过前不建立理解基线也不投递差异�
   expect(w.diffPrompts()).toHaveLength(2);
 });
 
+test("主代理登记接手核对结论后，定时投递把结论告知 PM，每条结论只告知一次：未通过时转述问题，通过后告知可以正式规划", async () => {
+  const w = await world({ review: false });
+  const notices = () => w.provider.requests.map(text).filter((t) => t.includes("主代理核对你的接手理解未通过") || t.includes("主代理已核对通过你的接手理解"));
+  await w.review({ result: "clarification_required", shortIssues: ["验收是否包含左向输入"] });
+  await until(() => notices().length === 1);
+  expect(notices()[0]).toContain("未通过（clarification_required）：验收是否包含左向输入");
+  await w.review();
+  await until(() => notices().length === 2);
+  expect(notices()[1]).toContain("可以正式提出计划");
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  expect(notices()).toHaveLength(2);
+});
+
 test("M7-AC1/AC5：PM 停止后不再向它投递；新 PM 须重新核对才建立自己的理解基线，之后差异只送达新会话，旧租约的复核被拒", async () => {
   const w = await world();
   expect(await w.manager.stop(w.pm.runId)).toMatchObject({ confirmed: true });
