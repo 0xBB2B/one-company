@@ -19,7 +19,7 @@
 | AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 未开始 | 可复用：tests/pm-intake-runtime.test.ts、tests/pm-dispatch.test.ts、tests/pm-event-delivery.test.ts | 需在安装产物中实跑 |
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 未开始 | 可复用：tests/explore-dispatch.test.ts、tests/explore-web.test.ts | 需真实模型与真实联网；本机出网慢，联网失败时该项标未完成，不以降级路径冒充 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
-| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 进行中 | 驱动：tests/acceptance/zero-custom-loop.test.ts（pnpm run test:acceptance）；17 轮实跑证据在 .bb-spec/.cache/m9/acceptance/ | 最远走到 PM 提交接手理解；接手核对被拒已修（999ec59），尚未实跑验证；批准一步仍不稳定，待用户拍板（见"当前阻塞"） |
+| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 进行中 | 驱动：tests/acceptance/zero-custom-loop.test.ts（pnpm run test:acceptance）；每轮证据（事件、主会话、解释器调用、各运行会话 runs/）在 .bb-spec/.cache/m9/acceptance/ | 第 27 轮已走到 PM 规划、worker 实现、reviewer 审查；尚未走到 QA、完成报告、用户验收与关闭。第 27 轮暴露的问题已修（99bb123、61dd861），待第 28 轮实跑验证 |
 | AC13 复制默认 worker 为专业定义，PM 自动选中完成 UI 设计与实现，独立 review/QA | 未开始 | 可复用：tests/agent-catalog-ui.test.ts、tests/agent-selection.test.ts | 需真实模型与 UI 样例任务 |
 | AC14 安装产物中两类目录发现、环境变量覆盖、项目信任、同名冲突、不越根 | 未开始 | 可复用：tests/role-catalog.test.ts | 需在安装产物中实跑 |
 | AC15 两种默认路径；显式指定不可用明确失败交用户裁决 | 未开始 | 可复用：tests/agent-selection.test.ts | 需在安装产物中实跑 |
@@ -29,45 +29,21 @@
 
 ## 当前阻塞
 
-用户已决定（2026-09-26）：
+无待用户拍板事项。AC12 按"跑一轮 → 查卡点 → 修 → 再跑"推进：小的格式与说明修正直接做；涉及机制、授权或规则设计的先问用户。
 
-1. 真实模型验收全部用 5x / gpt-6-luna。
-2. 隔离的临时 agent 目录临时复制 models.json 与 auth.json（权限 0600），每轮结束即删，不动 ~/.pi/agent。
-3. 新增 `pnpm run test:acceptance` 承载真实模型与联网验收，`pnpm test` 默认不跑。
-4. pi 开发依赖从 0.85.1 升到 0.87.1，与本机宿主一致。已完成（1fa0d35）：产品代码无需改动；0.86.0 起提供方收到的请求格式变了，只调整了测试里的模型替身。升级后 typecheck 通过，pnpm test 2336、test:integration 79、test:installation 11 全部通过（输出在 .bb-spec/.cache/m9/sdk-0871-*.txt）。
-
-5. 验证方式分工：AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
-6. AC2 预登记问题集（11 题）：先用真实模型把"角色快跑"跑到关闭并归档，再开进行中的"跳跃动画"，然后提问：①水平移动速度怎么算、在哪个文件；②Go 服务里 Greet 做什么、谁调用；③空中能否再次起跳、依据哪条规则；④进行中的跳跃动画要求哪些姿态；⑤不指定需求，列出所有进行中需求的内容；⑥最新批准版比上一版改了什么；⑦已完成的快跑当时的验收标准；⑧sprint 与 jump-motion 规则有无冲突；⑨快跑的测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 里的旧需求写新需求。每题出处须可核对；⑤⑦⑪必须拒绝给正文，模型若用普通 read 读了归档，该题判未通过并记为旁路案例；⑨⑩没有记录时须答"未知"。
-7. AC13 UI 样例任务：给角色加 HUD 状态面板（速度、是否在空中、是否快跑），TS 函数输出 HTML 字符串加一份 CSS，node 单元测试即可验证，不用浏览器；专业定义由默认 worker 复制为 ui-worker，挂样例项目自带的 skill ui-basics 以验证 skill 实际加载。
-
-真实模型实跑发现并已修复（d181df1、e953f68）：工具参数正则含 \p{..}、前后顾或 \ud800-\udfff 代理项范围时，5x 网关整条请求失败（400 或零 token 的 length），主会话一句话都答不了；已改为等价写法，代码层校验不变，并加回归检查。
-
-用户已决定（2026-09-26，A 加 B 一起做）：主会话的 project_manage、requirement_manage、user_interact 是"所有字段可选"的平铺参数，说明里没写每个动作要哪些字段；gpt-6-luna 把所有字段都填上假值，被字段白名单拒绝；拒绝信息不说多了哪些字段（requirement_manage 更是把一切错误都换成 requirement_interaction_denied），模型无法自行改正，草稿始终保存不下来。修法：① 三个工具发给模型的参数改为 { request: 各动作格式的联合 }，执行时取出 request 交原逻辑；② 字段不合格时返回多余字段、缺少字段与本动作允许字段（只含字段名）；③ requirement_manage/user_interact 的错误改为返回具体错误代码，仍不回显值或正文。
-
-已完成（0d73114）：上条三个工具改为按动作嵌套并放行错误代码；第 6 轮实跑确认参数格式已用对。
-
-已按用户决定修复（8afc3f6，系统提示附仓库清单）：主代理无从得知当前仓库的 repoId，只能自行猜测（第 6 轮对路径算 sha256），被判为"不属于当前已接入的工作区"，草稿仍保存不下来；此前脚本化闭环能通过是因为脚本写死了 repoId。
-
-之后实跑又修复（均为鲁棒性修复或已批准的 A 方案范围）：守护进程按宿主默认方式创建模型运行时，PM 等读需求前的凭据检查不再误判（7e990b8）；需求交互把服务层错误代码原样交给模型（116813b）；需求解释器说明补一句"没有待答问题时对草稿的批准用 direct"（0a0b175）。驱动侧对齐宿主（96b6ce8）、样例带 schema（6d740fe）。
-
-用户已决定并完成（方案 C，bfc1742）：真实模型写批准解读时逐段审阅的交叉编号常对不上，批准时好时坏。改为解释器只写每条决定涉及的段（unitIds）、是否忠实原文与少量依赖提示，逐段审阅由程序生成；metadata 段无结论时跟随同一候选里明确且不挂在提问下的目标决定（用户决定）。两道核对规则不变。离线对 3 份真实草稿上下文各重放 4 次真实解释器：12/12 通过（改前同类回答约三成通过）。
-
-守护进程修正（67188f1）：7e990b8 让守护进程启动时刷新模型状态，进程被强杀后留下的凭据文件锁会让下次启动失败；已恢复启动不刷新，改为角色读需求前按需刷新该提供方。
-
-PM 接手复核修复（999ec59）：OpenAI Responses 类提供方的工具调用编号形如 call_x|fc_y，接手服务、存储与契约的编号格式不含竖线，主代理调用一律被判 untrusted_main_call；三处各加 |。
-
-待用户拍板（停止规则：连续局部修复后前置仍在增加）：
-1. 激活顺序：第一次确认只登记批准清单（返回 workspace_not_ready），工作区建好后须再确认一次才激活，且第二次确认要用户再说一次原话；主代理不知道这一步，先派 PM 被拒（requirement_not_active）。
-2. 第二次确认时上下文带先前决定，解释器把 metadata 约束的 candidateId 写成 null，被核对拒绝（review_entry_mismatch）；属模型分类错误，重建救不了。
-3. 次要：主代理调用 ask 时 unitIds 常填错（question_scope_mismatch），ask 可选，暂不处理。
-
-已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。
+已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。已知偶发：tests/daemon-client.test.ts 全量并行时偶发抢锁失败，单独重跑通过。
 
 ## 下一窗口续接提示
 
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（M9 章节与 §13），再读 M9-STATUS.md，核对 git status 与最近提交。M0–M8 已收口不重做。
-M9 进行中：用户决定已落实（真实模型 5x / gpt-6-luna、凭据临时复制、pnpm run test:acceptance、pi 升 0.87.1、验证方式分工、AC2 问题集、AC13 UI 样例任务）。test:acceptance 驱动实跑 17 轮，已修复多项真实模型才暴露的产品问题（见"当前阻塞"前的记录）。当前停在"当前阻塞"里待用户拍板的批准流程两项；拍板后按决定修复，再重跑 AC12（运行命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance；卡住时在证据目录放 STOP 文件即可正常收尾）。
+用户已定的 M9 前提：
+- 真实模型全部用 5x / gpt-6-luna，thinking high；隔离 agent 目录临时复制 models.json 与 auth.json（0600），每轮结束即删，不动 ~/.pi/agent。
+- 真实模型与联网验收走 pnpm run test:acceptance（pnpm test 默认不跑）；pi 开发依赖为 0.87.1。
+- 验证分工：AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
+- AC2 问题集 11 题（快跑跑到关闭并归档、跳跃动画进行中之后提问：①水平速度怎么算在哪；②Go 的 Greet 做什么谁调用；③空中能否再跳依据哪条规则；④进行中的跳跃动画要求哪些姿态；⑤不指定需求列出所有进行中需求内容；⑥最新批准版比上一版改了什么；⑦已完成快跑当时的验收标准；⑧sprint 与 jump-motion 规则有无冲突；⑨快跑测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 旧需求写新需求）。⑤⑦⑪须拒给正文，模型用普通 read 读归档即判未通过并记为旁路案例；⑨⑩无记录须答"未知"。
+- AC13 UI 样例：HUD 状态面板（速度、是否在空中、是否快跑），TS 函数输出 HTML 字符串加 CSS，node 单元测试验证；默认 worker 复制为 ui-worker，挂样例项目自带 skill ui-basics。
+当前：AC12 实跑到第 27 轮，已到 reviewer 审查；下一步跑第 28 轮（命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件）。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
