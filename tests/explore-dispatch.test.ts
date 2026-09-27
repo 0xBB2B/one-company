@@ -92,6 +92,21 @@ test("M7-AC16：research 引用的本地文件 hash 由宿主按实际内容核�
     request: { question: "看看", clues: [], source: { kind: "local_file" } }, maxTurns: 0 })).rejects.toMatchObject({ code: "invalid_params" });
 });
 
+test("research 本地来源只写相对路径与行范围时，宿主补成绝对路径并按实际内容填上哈希；根目录外的路径不读取、仍被拒收", async () => {
+  const w = await world();
+  const minimal = (path: string) => ({ type: "toolcall" as const, name: "pi_company_result_submit", input: { action: "research", result: {
+    conclusions: ["登录模块在 src/auth"], sources: [{ path, startLine: 1, endLine: 1 }], searchedScope: { paths: [path] },
+    notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] } } });
+  w.provider.queue.push(minimal("../OTHER.md"), minimal("README.md"), { type: "text", text: "PM 收到检索结果" });
+  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
+  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  expect(w.provider.requests.some((request) => text(request).includes("invalid_shape：字段值格式不符：sources"))).toBe(true);
+  const report = text(w.provider.requests.find((entry) => text(entry).includes("explore-report")));
+  expect(report).toContain(await w.hashOf(w.readme));
+  expect(report).toContain(w.readme);
+});
+
 test("M7-AC18：PM 停止（撤权或被接管）时它派出的 explore 随之停止，检索会话失效，迟到结果不能提交", async () => {
   const w = await world();
   w.provider.queue.push({ type: "text", text: "慢慢查", chunkDelayMs: 3_000 });

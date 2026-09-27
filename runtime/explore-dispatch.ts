@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import { Type } from "typebox";
 import { checkExploreInput } from "./explore-contracts.ts";
 import type { ExploreInput, ExploreResult } from "./explore-contracts.ts";
@@ -33,6 +33,33 @@ export function sourceHashesMatch(result: ExploreResult): boolean {
   return true;
 }
 
+/**
+ * 模型只写来源路径与行范围：本地相对路径按检索根目录补成绝对路径，绑定字段取派工输入，内容哈希由宿主读文件算出。
+ * 模型自己给出的字段原样保留，仍由契约核对与 sourceHashesMatch 逐项核对；根目录外的路径不读取，留给契约拒绝。
+ */
+export function fillResearchSources(submitted: Record<string, unknown>, input: ExploreInput): Record<string, unknown> {
+  const source = input.source;
+  if (source.kind === "web") return submitted;
+  const root = source.root;
+  const local = (path: string) => source.kind === "local_file" && !isAbsolute(path) ? join(root, path) : path;
+  const inside = (file: string) => normalize(file) === file && file.startsWith(`${root}/`);
+  const binding = source.kind === "knowledge_query"
+    ? { kind: source.kind, workspace: source.workspace, generation: source.generation, baselineHash: source.baselineHash }
+    : { kind: source.kind, indexBaseline: "not_applicable" };
+  const sources = Array.isArray(submitted.sources) ? submitted.sources.map((item: unknown) => {
+    if (!item || typeof item !== "object" || Array.isArray(item) || typeof (item as { path?: unknown }).path !== "string") return item;
+    const row: Record<string, unknown> = { ...binding, ...(item as Record<string, unknown>) }, path = local(row.path as string);
+    const file = source.kind === "knowledge_query" ? join(root, path) : path;
+    if (row.fileHash !== undefined || !inside(file)) return { ...row, path };
+    try { return { ...row, path, fileHash: createHash("sha256").update(readFileSync(file)).digest("hex") }; } catch { return { ...row, path }; }
+  }) : submitted.sources;
+  const scope = submitted.searchedScope && typeof submitted.searchedScope === "object" && !Array.isArray(submitted.searchedScope)
+    ? submitted.searchedScope as Record<string, unknown> : null;
+  const searchedScope = scope ? { kind: source.kind, ...scope, ...(Array.isArray(scope.paths)
+    ? { paths: scope.paths.map((path: unknown) => typeof path === "string" ? local(path) : path) } : {}) } : submitted.searchedScope;
+  return { ...submitted, sources, searchedScope };
+}
+
 export function exploreInput(parent: ExploreInput["parent"], request: ExploreRequest, source: ExploreInput["source"]): ExploreInput {
   return checkExploreInput({ format: "explore-input/v1", parent, question: request.question, clues: request.clues,
     budget: { maxSources: request.maxSources ?? 8, maxResultBytes: request.maxResultBytes ?? 16_384 }, source });
@@ -48,6 +75,6 @@ export function exploreContext(input: ExploreInput, maxTurns: number): string {
   return [`问题：${input.question}`, ...(input.clues.length ? ["线索：", ...input.clues.map((clue) => `- ${clue}`)] : []), ...scope,
     `预算：来源最多 ${input.budget.maxSources} 条，结果不超过 ${input.budget.maxResultBytes} 字节；对话轮次上限：${maxTurns}。`,
     "完成后调用 pi_company_result_submit（action=research），result 含 conclusions、sources、searchedScope、notFound、failures、truncation{truncated,reasons}、unknown；parent 与 source 由宿主填写，可省略。",
-    "本地来源的 sources 条目为 {kind, indexBaseline:\"not_applicable\", path（绝对路径）, fileHash（文件内容 sha256，宿主按实际内容核对）, startLine, endLine}；网页来源为 {kind:\"web\", indexBaseline:\"not_applicable\", url, retrievedAt, quote}。",
+    "本地来源的 sources 条目写 {path, startLine, endLine}，path 可写相对检索根目录的路径；来源种类、索引绑定与文件哈希由宿主补上。网页来源为 {kind:\"web\", indexBaseline:\"not_applicable\", url, retrievedAt, quote}。searchedScope 写 {paths}（网页写 {queries}）。",
   ].join("\n");
 }

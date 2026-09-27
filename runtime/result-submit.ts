@@ -3,7 +3,8 @@ import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { authorizeToolAction } from "./core-permissions.ts";
-import { checkExploreInput, checkExploreResult, ExploreContractError } from "./explore-contracts.ts";
+import { checkExploreInput, checkExploreResult, ExploreContractError, ExploreResultSchema } from "./explore-contracts.ts";
+import { fillResearchSources } from "./explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "./explore-contracts.ts";
 import { checked, id, object } from "./requirement-contracts.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
@@ -86,8 +87,13 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     let result;
     // 模型可省略父身份与检索来源，由宿主按派工输入补上；若自行给出则仍须与派工输入一致
     const submitted = params.result && typeof params.result === "object" && !Array.isArray(params.result) ? params.result : {};
-    try { result = checkExploreResult({ format: "explore-result/v1", kind: "research", parent: exploreInput.parent, source: exploreInput.source, ...submitted }, exploreInput); }
-    catch (error) { throw new ResultSubmitError(error instanceof ExploreContractError ? error.code : "invalid_shape"); }
+    const candidate = { format: "explore-result/v1", kind: "research", parent: exploreInput.parent, source: exploreInput.source,
+      ...fillResearchSources(submitted as Record<string, unknown>, exploreInput) };
+    try { result = checkExploreResult(candidate, exploreInput); }
+    catch (error) {
+      const code = error instanceof ExploreContractError ? error.code : "invalid_shape";
+      throw new ResultSubmitError(code, code === "invalid_shape" ? shapeIssue(ExploreResultSchema, candidate) : undefined);
+    }
     if (options.verify && !options.verify(result)) throw new ResultSubmitError("invalid_binding");
     if (options.exploreSession) {
       const decision = checkExploreSession(options.exploreSession, grant.runId);
