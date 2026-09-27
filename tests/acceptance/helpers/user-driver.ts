@@ -26,15 +26,16 @@ export type DriverEvent =
 
 export type DriverOutcome = { status: "closed" | "stopped"; reason: string };
 
-interface ToolResultView { toolName: string; isError: boolean; details: unknown }
+interface ToolResultView { toolName: string; isError: boolean; details: unknown; text: string }
 
 function toolResults(host: InstalledHost): ToolResultView[] {
   return host.session.messages.flatMap((message) => message.role === "toolResult"
-    ? [{ toolName: message.toolName, isError: message.isError === true, details: message.details }] : []);
+    ? [{ toolName: message.toolName, isError: message.isError === true, details: message.details,
+      text: message.content.map((block) => block.type === "text" ? block.text : "").join("") }] : []);
 }
 
 const has = (results: ToolResultView[], tool: string, pattern: RegExp) =>
-  results.some((result) => result.toolName === tool && !result.isError && pattern.test(JSON.stringify(result.details ?? null)));
+  results.some((result) => result.toolName === tool && !result.isError && (pattern.test(JSON.stringify(result.details ?? null)) || pattern.test(result.text)));
 
 /** 只依据用户看得到的东西（工具结果摘要、PM 面板）判断进展。 */
 function progress(host: InstalledHost) {
