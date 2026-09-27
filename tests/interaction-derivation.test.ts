@@ -79,4 +79,8 @@ test("模型自己写逐段审阅、缺少 faithful、或在没有草稿时给�
   const plain = { format: "interaction-interpretation/v1", referenceResolution: "none", entries: [{ ...noDocument.output.entries[0]!, unitIds: undefined }] };
   delete plain.entries[0]!.unitIds;
   expect(deriveInterpretation(JSON.stringify(plain), noDocument.context)).toEqual(plain);
+  expect(deriveInterpretation(JSON.stringify({ ...plain, faithful: true, unitHints: [] }), noDocument.context)).toEqual(plain);
+  expect(() => deriveInterpretation(JSON.stringify({ ...plain, faithful: false }), noDocument.context)).toThrow(/invalid_shape/);
+  expect(() => deriveInterpretation(JSON.stringify({ ...plain, unitHints: [{ id: "A", globalConstraint: false, appliesTo: [], dependsOn: [] }] }), noDocument.context))
+    .toThrow(/invalid_shape/);
 });

@@ -34,7 +34,8 @@ export function deriveInterpretation(source: string, context: InteractionContext
   const { faithful, unitHints, ...rest } = model;
   const document = context.document;
   if (!document) {
-    if (faithful !== undefined || unitHints !== undefined || unitIds.some((ids) => ids.length)) invalid();
+    // 没有正文时 faithful: true 与空 unitHints 不带信息，照忽略；带了单位或表示不忠实的仍拒绝
+    if (faithful === false || unitHints?.length || unitIds.some((ids) => ids.length)) invalid();
     return { ...rest, entries };
   }
   if (faithful === undefined) return invalid();
