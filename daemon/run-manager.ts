@@ -408,6 +408,7 @@ export class RunManager {
     this.trackUsage(run.id, handle);
     handle.events.on("completed", () => { void this.finishSubagent(run.id, "completed"); });
     handle.events.on("turn_limit_reached", () => { void this.finishSubagent(run.id, "turn_limit_reached"); });
+    handle.events.on("ended_without_result", () => { void this.finishSubagent(run.id, "ended_without_result"); });
     handle.events.on("failed", () => { void this.finishSubagent(run.id, "failed"); });
     await this.runStore.update(run.id, { state: "running" });
     handle.prompt(review ? "开始审查。" : "开始执行任务。");
@@ -423,7 +424,7 @@ export class RunManager {
       .filter((finding) => finding.kind !== "suggestion");
   }
 
-  private async finishSubagent(runId: string, reported: "completed" | "turn_limit_reached" | "failed" | "stopped"): Promise<void> {
+  private async finishSubagent(runId: string, reported: "completed" | "turn_limit_reached" | "ended_without_result" | "failed" | "stopped"): Promise<void> {
     const entry = this.sessions.get(runId);
     if (!entry?.subagent) return;
     const outcome = this.supersededRuns.delete(runId) && reported === "stopped" ? "superseded" : reported;
@@ -437,13 +438,14 @@ export class RunManager {
     if (review) {
       // 审查结局以提交的裁决为准：打回也是审查完成；没有裁决才算审查运行未完成
       const reviewOutcome: Exclude<TaskReview["outcome"], "running"> = outcome === "superseded" || outcome === "stopped" ? outcome
-        : report ? report.conclusion : outcome === "completed" ? "failed" : outcome;
+        : report ? report.conclusion : outcome === "completed" || outcome === "ended_without_result" ? "failed" : outcome;
       effective = reviewOutcome;
       task = finishTaskReview({ ...ref, taskId, runId, turnsUsed, outcome: reviewOutcome });
       used = task.reviews.find((item) => item.runId === runId);
     } else {
       // 结局以本运行提交的分级裁决为准：只有无阻塞、无未验证项才算完成
-      const attemptOutcome: Exclude<TaskAttempt["outcome"], "running"> = outcome === "completed" && report?.conclusion !== "clear" ? "incomplete" : outcome;
+      const attemptOutcome: Exclude<TaskAttempt["outcome"], "running"> = outcome === "ended_without_result" ? "incomplete"
+        : outcome === "completed" && report?.conclusion !== "clear" ? "incomplete" : outcome;
       effective = attemptOutcome;
       task = finishTaskAttempt({ ...ref, taskId, runId, turnsUsed, outcome: attemptOutcome });
       used = task.attempts.find((item) => item.runId === runId);
@@ -460,7 +462,8 @@ export class RunManager {
       awaiting_user: "该任务已用完机会，进入等待用户裁决，不能再派工；请向主代理报告。",
     };
     const lines = [`${review ? "审查" : "子代理"}运行 ${runId} 已结束：任务 ${task.key}，结局 ${effective}，已用 ${used?.turnsUsed ?? 0}/${used?.maxTurns ?? 0} 轮，任务状态 ${task.status}。`,
-      report ? `提交结论 ${report.conclusion}：${report.summary}；验证引用 ${report.verificationIds.join("、") || "无"}；分级问题 ${report.findings.length} 项。` : "没有提交结果。",
+      report ? `提交结论 ${report.conclusion}：${report.summary}；验证引用 ${report.verificationIds.join("、") || "无"}；分级问题 ${report.findings.length} 项。`
+        : outcome === "ended_without_result" ? "没有提交结果就结束了本轮。" : "没有提交结果。",
       next[task.status] ?? "请核对实际证据后再整合结果。"];
     if (parent?.pm && ["running", "paused", "paused_network"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
   }
@@ -543,6 +546,7 @@ export class RunManager {
     registered = true;
     handle.events.on("completed", () => { void this.finishExplore(runId, "completed"); });
     handle.events.on("turn_limit_reached", () => { void this.finishExplore(runId, "turn_limit_reached"); });
+    handle.events.on("ended_without_result", () => { void this.finishExplore(runId, "ended_without_result"); });
     handle.events.on("failed", () => { void this.finishExplore(runId, "failed"); });
     handle.prompt("开始检索。");
     return { runId, maxTurns: input.maxTurns };
@@ -613,7 +617,7 @@ export class RunManager {
   }
 
   /** explore 结束：回收搜索会话，把结果或到限/失败报告交回派出者；research 不是 PASS，须由派出者核对来源后使用。 */
-  private async finishExplore(runId: string, outcome: "completed" | "turn_limit_reached" | "failed" | "stopped"): Promise<void> {
+  private async finishExplore(runId: string, outcome: "completed" | "turn_limit_reached" | "ended_without_result" | "failed" | "stopped"): Promise<void> {
     endExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, outcome);
     const main = this.mainExplores.get(runId);
     if (main) {

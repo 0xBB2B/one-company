@@ -150,20 +150,18 @@ describe("完成与控制", () => {
     expect(s.calls).toEqual(["result_submit"]);
   }, 20000);
 
-  test("未提交结果的回合只交回控制权，不算完成；PM 同样只交回控制权", async () => {
+  test("PM 的回合结束只交回控制权，仍在运行", async () => {
     const w = await world();
-    for (const role of ["worker", "pm"] as const) {
-      const s = await w.session(role, [{ type: "text", text: "未提交" }]);
-      const idle: unknown[] = []; s.handle.events.on("idle", (event) => idle.push(event));
-      s.handle.prompt("开始");
-      await until(() => idle.length === 1);
-      expect(s.handle.state()).toBe("running");
-    }
+    const s = await w.session("pm", [{ type: "text", text: "未提交" }]);
+    const idle: unknown[] = []; s.handle.events.on("idle", (event) => idle.push(event));
+    s.handle.prompt("开始");
+    await until(() => idle.length === 1);
+    expect(s.handle.state()).toBe("running");
   }, 20000);
 
   test("停止后状态为 stopped，结果以停止拒绝，会话记录可按运行续接", async () => {
     const w = await world();
-    const s = await w.session("reviewer", [{ type: "text", text: "第一轮" }]);
+    const s = await w.session("pm", [{ type: "text", text: "第一轮" }]);
     const idle: unknown[] = []; s.handle.events.on("idle", (event) => idle.push(event));
     s.handle.prompt("开始");
     await until(() => idle.length === 1);
@@ -172,7 +170,7 @@ describe("完成与控制", () => {
     await expect(s.handle.result()).rejects.toThrow("停止");
     const opened = openSessionManagerForRun({ dataRoot: w.dataRoot, repoId: "a".repeat(64), runId: s.runId });
     expect(opened.ok).toBe(true);
-    const resumed = await w.session("reviewer", [{ type: "text", text: "续接" }], { resume: true, runId: s.runId });
+    const resumed = await w.session("pm", [{ type: "text", text: "续接" }], { resume: true, runId: s.runId });
     expect(resumed.handle.state()).toBe("running");
   }, 20000);
 });
@@ -191,6 +189,16 @@ describe("对话轮次上限", () => {
     expect(s.handle.state()).toBe("turn_limit_reached");
     expect(s.handle.turnsUsed()).toBe(2);
     expect(reached).toEqual([{ turns: 2, maxTurns: 2 }]);
+  }, 20000);
+
+  test("子代理没提交结果就结束本轮时，会话进入 ended_without_result 终态，不再停在运行中", async () => {
+    const w = await world();
+    const s = await w.session("worker", [call(1), { type: "text", text: "做完了" }], { maxTurns: 5 });
+    const ended: unknown[] = []; s.handle.events.on("ended_without_result", (event) => ended.push(event));
+    s.handle.prompt("开始");
+    await expect(s.handle.result()).rejects.toThrow("ended_without_result");
+    expect(s.handle.state()).toBe("ended_without_result");
+    expect(ended).toEqual([{ turns: 2 }]);
   }, 20000);
 
   test("M7-AC28：第 N 轮已完整提交结果时按正常完成处理", async () => {

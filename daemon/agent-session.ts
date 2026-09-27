@@ -50,7 +50,7 @@ export interface CreateAgentSessionOptions {
   resume?: boolean;
 }
 
-export type AgentSessionState = "running" | "paused" | "paused_network" | "completed" | "failed" | "stopped" | "turn_limit_reached";
+export type AgentSessionState = "running" | "paused" | "paused_network" | "completed" | "failed" | "stopped" | "turn_limit_reached" | "ended_without_result";
 
 export interface AgentSessionHandle {
   events: EventEmitter;
@@ -154,7 +154,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   const resultPromise = new Promise<void>((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
   resultPromise.catch(() => {});
 
-  const isTerminal = () => ["completed", "failed", "stopped", "turn_limit_reached"].includes(currentState);
+  const isTerminal = () => ["completed", "failed", "stopped", "turn_limit_reached", "ended_without_result"].includes(currentState);
   let turns = options.turnsUsed ?? 0;
   if (options.maxTurns !== undefined && (!Number.isSafeInteger(options.maxTurns) || options.maxTurns < 1)) throw new Error("maxTurns 必须为正整数");
   const isPaused = () => currentState === "paused" || currentState === "paused_network";
@@ -178,6 +178,12 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     events.emit("turn_limit_reached", { turns, maxTurns: options.maxTurns });
     rejectResult(new Error("turn_limit_reached"));
     void session.abort().catch(() => {});
+  }
+  function endWithoutResult(): void {
+    if (isTerminal()) return;
+    currentState = "ended_without_result";
+    events.emit("ended_without_result", { turns });
+    rejectResult(new Error("ended_without_result"));
   }
   function onPersistError(error: Error): void {
     finishFailed(new Error(`会话保存失败: ${error.message}`));
@@ -288,6 +294,8 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
       if (currentState !== "running") return;
       if (submitted) finishCompleted();
       else if (options.maxTurns !== undefined && turns >= options.maxTurns) reachTurnLimit();
+      // 子代理没提交结果就停下时不会再有人唤醒它，按本次尝试结束交父代理处理
+      else if (options.completion.kind === "on-result") endWithoutResult();
       else events.emit("idle", { submitted: false });
       return;
     }

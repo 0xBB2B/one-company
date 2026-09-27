@@ -31,6 +31,20 @@ async function world() {
 const read = (n: number): ScriptedReply => ({ type: "toolcall", name: "read", input: { path: `README.md#${n}` } });
 const lastPrompt = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1) ?? "");
 
+test("worker 没提交结果就结束本轮时，本次尝试记为 incomplete 并上报 PM，由 PM 决定重试", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login", { maxTurns: 5 }), spec("failure", { goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const before = w.provider.requests.length;
+  w.provider.queue.push(read(1), { type: "text", text: "做完了" }, { type: "text", text: "PM 收到" });
+  const first = await w.dispatch("login");
+  await until(() => w.task("login").status === "awaiting_parent");
+  await until(() => w.provider.requests.length === before + 3);
+  expect(w.task("login").attempts).toEqual([{ runId: first.runId, maxTurns: 5, turnsUsed: 2, reason: null, outcome: "incomplete" }]);
+  expect(lastPrompt(w.provider.requests.at(-1))).toContain("没有提交结果就结束了本轮");
+  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "failed", stateReason: "ended_without_result" } });
+});
+
 test("M7-AC27/28/29/30：到限自动上报 PM；重试须带原因且只有一次，再未完成即等待用户裁决", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"] })] });
