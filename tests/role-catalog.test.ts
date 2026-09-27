@@ -38,6 +38,15 @@ describe("内置默认团队", () => {
       expect(entry?.definition?.body.trim().length).toBeGreaterThan(0);
     }
   });
+
+  test("默认 worker 按 Go 官方库写法给新增或修改的定义写说明注释，reviewer 把缺失或不符列为阻塞；角色定义不再提 spec", async () => {
+    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
+    const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
+    expect(body("worker")).toMatch(/新增或修改的每个函数、方法、类、类型\/接口与导出常量写说明注释[\s\S]*参照 Go 官方库[\s\S]*参数[\s\S]*返回值/);
+    expect(body("worker")).not.toContain("注释默认不写");
+    expect(body("reviewer")).toMatch(/核对说明注释[\s\S]*缺失或不符列为阻塞/);
+    for (const role of AGENT_ROLES) expect(body(role)).not.toMatch(/\bspec\b|spec_change|规则候选/);
+  });
 });
 
 describe("定义格式", () => {
