@@ -11,6 +11,8 @@ import { Value } from "typebox/value";
 import { UUID_V7_PATTERN } from "./database.ts";
 import { HostAuthorizationManager } from "./host-authorization.ts";
 import type { RequirementManageHostContext } from "./main-requirement-interaction.ts";
+import { pmDecisionNotes } from "./pm-intake-runtime.ts";
+import type { PmDecisionNote } from "./pm-intake-runtime.ts";
 import {
   PmIntakeService,
   type IntakeRequestView,
@@ -136,11 +138,12 @@ function json(value: unknown): string {
 export function createPmIntakeToolResponse(
   action: PmIntakeToolInput["action"],
   view: IntakeRequestView | IntakeReviewView,
+  decisions?: PmDecisionNote[],
 ): {
   response: { content: [{ type: "text"; text: string }]; details: { format: "pm-intake-transport/v1"; action: PmIntakeToolInput["action"] } };
   responseBytes: string;
 } {
-  const viewText = json(view);
+  const viewText = json(decisions ? { ...view, decisions } : view);
   if (Buffer.byteLength(viewText, "utf8") > INNER_BYTES) deny("response_budget_exceeded");
   const response = {
     content: [{ type: "text" as const, text: viewText }] as [{ type: "text"; text: string }],
@@ -424,7 +427,8 @@ export class MainIntakeInteraction {
       }
       default: return deny("invalid_shape");
     }
-    const built = createPmIntakeToolResponse(input.action, view), response = built.response;
+    const decisions = input.action === "reply" ? undefined : pmDecisionNotes({ dataRoot: this.#options.dataRoot, repoId: input.repoId }, input.requirementId);
+    const built = createPmIntakeToolResponse(input.action, view, decisions), response = built.response;
     const delivery: Delivery = { inputHash: observed.inputHash, responseBytes: built.responseBytes, session: observed.session,
       manager: observed.manager, signal: observed.signal, operationSignal, hostGeneration: observed.hostGeneration,
       expiresAt: observed.expiresAt, service, call, view };

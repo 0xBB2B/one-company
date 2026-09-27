@@ -51,6 +51,9 @@ test("原始SDK上下文完成ask、forward、reply，完整理解只在模型�
     scheduling: "not_implemented", userAuthorizationCreated: false });
   expect(opened.response.details).toEqual({ format: "pm-intake-transport/v1", action: "ask" });
   expect(opened.response.content[0]!.text).toContain("实现手机号登录");
+  const notes = (openedView as IntakeRequestView & { decisions: Array<{ id: string; status: string; unitIds: string[]; conclusion: string }> }).decisions;
+  expect(notes.map((note) => note.id)).toEqual(openedView.sourceDirectory.decisionIds);
+  expect(notes.length > 0 && notes.every((note) => note.status === "confirmed" && note.unitIds.length > 0 && note.conclusion.length > 0)).toBe(true);
   expect(JSON.stringify(opened.response.details)).not.toContain("实现手机号登录");
   bridge.assertDelivery(resultEvent(opened.id, askInput, opened.response), ctx);
   expect(bridge.ownsDelivery(opened.id)).toBe(true);

@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { createPmIntakeProviders, evaluatePmIntakeGate, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
+import { createPmIntakeProviders, evaluatePmIntakeGate, pmDecisionNotes, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
 import { unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
@@ -23,6 +23,9 @@ test("PM 接手可引用的出处清单与主代理核对时构造的清单一�
   const view = await kit.intake.openRequest(fixture.call, fixture.operationId());
   const directory = pmSourceDirectory({ dataRoot: fixture.dataRoot, repoId: fixture.repoId }, fixture.requirementId);
   expect(directory).toEqual(view.sourceDirectory);
+  const notes = pmDecisionNotes({ dataRoot: fixture.dataRoot, repoId: fixture.repoId }, fixture.requirementId);
+  expect(notes.map((note) => note.id)).toEqual(directory!.decisionIds);
+  expect(notes.length > 0 && notes.every((note) => note.status === "confirmed" && note.unitIds.every((id) => directory!.prodUnitIds.includes(id)) && note.conclusion.length > 0)).toBe(true);
   expect(unknownIntakeSourceRefs(kit.content, directory!)).toEqual([]);
   const forged = structuredClone(kit.content);
   forged.goals[0]!.sourceRefs.push({ kind: "decision", id: "guessed-decision" });

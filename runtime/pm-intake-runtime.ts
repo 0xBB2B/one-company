@@ -11,6 +11,7 @@ import { intakeManifestDecisionIds, PmIntakeStore } from "./pm-intake-store.ts";
 import type { IntakeBindingBasis } from "./pm-intake-store.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { readSessionEntries } from "./session-records.ts";
+import { checkDecisionRecord } from "./short-decision-format.ts";
 
 export const PM_INTAKE_TOOL = "pi_company_user_interact";
 export const PM_UNDERSTANDING_CONTENT = Type.Omit(PmUnderstandingSchema, ["format", "binding"]);
@@ -87,6 +88,24 @@ export function pmSourceDirectory(ref: Ref, requirementId: string): IntakeSource
     const questionIds = db.list("interaction_questions_v1")
       .filter((q) => (q.data as { basis?: { requirementId?: unknown } } | null)?.basis?.requirementId === requirementId).map((q) => q.id).sort();
     return { prodUnitIds: unitIds, prodScenarioIds: scenarioIds, decisionIds: intakeManifestDecisionIds(manifest), questionIds, requiredScenarioIds: scenarioIds };
+  });
+}
+
+export interface PmDecisionNote { id: string; status: string; unitIds: string[]; conclusion: string }
+
+/** 出处清单里每个决定的状态、涉及单位与结论原文；只供 PM 与主代理核对决定内容，不参与授权。 */
+export function pmDecisionNotes(ref: Ref, requirementId: string): PmDecisionNote[] {
+  return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
+    const row = db.read<RequirementRecord>("requirements", requirementId);
+    if (!row?.data.approvalManifest) return [];
+    const manifest = registeredApprovalManifestIn(db, ref.repoId, row.data.approvalManifest.reference, row);
+    return intakeManifestDecisionIds(manifest).map((id) => {
+      const decision = checkDecisionRecord(db.read("short_decisions", id)?.data);
+      const unitIds = [...manifest.units.filter((unit) => unit.decisionIds.includes(id)).map((unit) => unit.id),
+        ...manifest.actions.filter((action) => action.decisionIds.includes(id)).flatMap((action) => action.goalIds),
+        ...(manifest.retainedSources ?? []).filter((source) => source.decision.id === id).map((source) => source.unitId)];
+      return { id, status: decision.status, unitIds: [...new Set(unitIds)], conclusion: decision.conclusion };
+    });
   });
 }
 
