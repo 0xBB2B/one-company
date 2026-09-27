@@ -31,6 +31,15 @@ async function world() {
 const read = (n: number): ScriptedReply => ({ type: "toolcall", name: "read", input: { path: `README.md#${n}` } });
 const lastPrompt = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1) ?? "");
 
+test("没有开启的检查轮时派 QA 当场拒绝，并提示先开检查轮", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"] }),
+    spec("qa", { role: "qa", writePaths: [], objective: "黑盒验收登录" })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  await expect(w.dispatch("qa")).rejects.toMatchObject({ code: "round_not_open" });
+  expect(w.task("qa").attempts).toEqual([]);
+});
+
 test("worker 没提交结果就结束本轮时，本次尝试记为 incomplete 并上报 PM，由 PM 决定重试", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login", { maxTurns: 5 }), spec("failure", { goalUnitIds: ["scenario.failure"] })] });

@@ -10,7 +10,7 @@ import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 
 export type TaskDispatchErrorCode = "intake_gate" | "pending_update" | "plan_not_confirmed" | "task_not_ready" | "dependency_pending"
   | "question_pending" | "check_phase_active" | "retry_required" | "retry_exhausted" | "retry_not_needed" | "requirement_halted"
-  | "write_scope_busy" | "rework_required" | "rework_exhausted" | "rework_not_needed";
+  | "write_scope_busy" | "rework_required" | "rework_exhausted" | "rework_not_needed" | "round_not_open";
 export class TaskDispatchError extends Error {
   readonly code: TaskDispatchErrorCode;
   readonly detail: string[];
@@ -65,7 +65,11 @@ function schedulingGateIn(db: LocalDatabase, request: { repoId: string; lease: P
   if (revoked.length) deny("task_not_ready", revoked.map((unit) => `${unit} 已不在实施授权内`));
   const openQuestions = task.blockedByQuestionIds.filter((question) => !questionResolved(db, request.repoId, recordRow, question));
   if (openQuestions.length) deny("question_pending", openQuestions);
-  if (activeCheckRoundIn(db, request.repoId, requirementId) !== null && task.role === "worker") deny("check_phase_active");
+  const round = activeCheckRoundIn(db, request.repoId, requirementId);
+  if (round !== null && task.role === "worker") deny("check_phase_active");
+  if (task.role === "qa" && round?.data.status !== "open") {
+    deny("round_not_open", ["QA 只能在检查轮内派出：先提交全部改动并用 pi_company_git_sync 同步，再用 pi_company_workflow_manage action=advance 开检查轮"]);
+  }
   if (task.attempts.some((attempt) => attempt.outcome === "running") || task.reviews.some((review) => review.outcome === "running")) {
     deny("task_not_ready", [`${task.key} 仍有运行中的子代理`]);
   }
