@@ -106,7 +106,7 @@ async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly 
   ].join("\n");
 }
 
-async function reviewContext(task: PlanTask, attemptRunId: string, cited: readonly string[], maxTurns: number): Promise<string> {
+async function reviewContext(task: PlanTask, attemptRunId: string, report: Pick<Verdict, "summary" | "verificationIds"> | undefined, maxTurns: number): Promise<string> {
   const detail = await readTaskDetail(task);
   return [
     `审查任务：${task.key}（${task.taskId}，版本 ${task.version}）的 worker 尝试 ${attemptRunId}`,
@@ -116,7 +116,8 @@ async function reviewContext(task: PlanTask, attemptRunId: string, cited: readon
     `性能条件：${detail.performance.applicable ? detail.performance.thresholds : `不适用（${detail.performance.reason}）`}`,
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     `只审可写范围内的改动：${task.writePaths.join("、")}`,
-    `worker 提交引用的验证记录：${cited.join("、") || "无"}（用 verification_run action=status 逐条查看）`,
+    `worker 提交说明：${report?.summary ?? "无"}`,
+    `worker 提交引用的验证记录：${report?.verificationIds.join("、") || "无"}（用 verification_run action=status 逐条查看）`,
     `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交裁决。`,
   ].join("\n");
 }
@@ -392,7 +393,7 @@ export class RunManager {
     try {
       tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
         pmLease: lease, workspace, epoch: record.epoch, task, alive, ...(review ? { review: { attemptRunId: attemptRunId! } } : {}) });
-      const context = review ? await reviewContext(task, attemptRunId!, this.citedVerifications(attemptRunId!), maxTurns)
+      const context = review ? await reviewContext(task, attemptRunId!, this.workerReport(attemptRunId!), maxTurns)
         : await taskContext(task, maxTurns, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         context: withSkills(context, resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
@@ -419,9 +420,9 @@ export class RunManager {
   }
 
   /** 最近一次审查打回的阻塞与未验证问题，交给返修的 worker；只取程序登记的裁决字段。 */
-  private citedVerifications(attemptRunId: string): string[] {
+  private workerReport(attemptRunId: string): Verdict | undefined {
     return withDatabase(this.database, (db) => db.list<Verdict>(VERDICTS).map((row) => row.data)
-      .find((verdict) => verdict.role === "worker" && verdict.runId === attemptRunId)?.verificationIds ?? []);
+      .find((verdict) => verdict.role === "worker" && verdict.runId === attemptRunId));
   }
 
   private rejectedFindings(task: PlanTask): Finding[] {
