@@ -2,7 +2,8 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { authorizeToolAction } from "../runtime/core-permissions.ts";
-import { PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
+import { PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
+import { unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
 import type { IntakeSubmissionBaseline } from "../runtime/pm-intake-runtime.ts";
 import { createSpecPublishGate } from "../runtime/check-round.ts";
 import { uuidv7 } from "../runtime/database.ts";
@@ -108,6 +109,10 @@ function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
     async execute(_toolCallId, params) {
       if (!input.alive() || !Value.Check(PM_INTAKE_SUBMIT_PARAMETERS, params)) throw new Error("pm_intake_submit_denied");
       await input.checkLease();
+      const directory = pmSourceDirectory({ dataRoot: input.dataRoot, repoId: input.repoId }, input.lease.requirementId);
+      if (!directory) throw new Error("pm_intake_source_directory_unavailable");
+      const unknown = unknownIntakeSourceRefs((params as { understanding: Parameters<typeof unknownIntakeSourceRefs>[0] }).understanding, directory);
+      if (unknown.length) throw new Error(`pm_intake_unknown_source：${unknown.join("、")}。只能引用任务上下文列出的出处编号`);
       return { content: [{ type: "text", text: JSON.stringify({ status: "submitted", next: "等待主代理核对接手理解" }) }],
         details: { intakeBaseline: input.currentBaseline() } };
     },

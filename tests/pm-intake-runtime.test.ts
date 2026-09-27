@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { createPmIntakeProviders, evaluatePmIntakeGate } from "../runtime/pm-intake-runtime.ts";
+import { createPmIntakeProviders, evaluatePmIntakeGate, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
+import { unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
@@ -15,6 +16,19 @@ async function world() {
   const gate = () => evaluatePmIntakeGate({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, lease: fixture.lease });
   return { fixture, ...kit, gate };
 }
+
+test("PM 接手可引用的出处清单与主代理核对时构造的清单一致；提交内容里清单外的出处被逐个指出", async () => {
+  const kit = await world(), fixture = kit.fixture;
+  kit.submit(kit.content);
+  const view = await kit.intake.openRequest(fixture.call, fixture.operationId());
+  const directory = pmSourceDirectory({ dataRoot: fixture.dataRoot, repoId: fixture.repoId }, fixture.requirementId);
+  expect(directory).toEqual(view.sourceDirectory);
+  expect(unknownIntakeSourceRefs(kit.content, directory!)).toEqual([]);
+  const forged = structuredClone(kit.content);
+  forged.goals[0]!.sourceRefs.push({ kind: "decision", id: "guessed-decision" });
+  forged.scenarioCoverage[0]!.scenarioId = "guessed-scenario";
+  expect(unknownIntakeSourceRefs(forged, directory!)).toEqual(["decision:guessed-decision", "prod-scenario:guessed-scenario"]);
+});
 
 test("M7-AC13：主代理经真实提供方读到 PM 会话里的提交，核对通过前门槛拒绝，通过后放行", async () => {
   const w = await world();

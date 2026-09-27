@@ -277,6 +277,13 @@ function knownSource(ref: IntakeSourceRef, directory: IntakeSourceDirectory): bo
   return ids.includes(ref.id);
 }
 
+/** 接手理解里不在出处清单中的引用（kind:id），供 PM 提交时当场改正。 */
+export function unknownIntakeSourceRefs(value: Omit<PmUnderstanding, "format" | "binding">, directory: IntakeSourceDirectory): string[] {
+  const refs = understandingRefs(value as PmUnderstanding).flat().filter((ref) => !knownSource(ref, directory)).map((ref) => `${ref.kind}:${ref.id}`);
+  const scenarios = value.scenarioCoverage.filter((item) => !directory.prodScenarioIds.includes(item.scenarioId)).map((item) => `prod-scenario:${item.scenarioId}`);
+  return [...new Set([...refs, ...scenarios])];
+}
+
 function checkRefs(refs: readonly IntakeSourceRef[], directory: IntakeSourceDirectory): void {
   checkUnique(refs.map(sourceKey), "duplicate_source");
   if (refs.some((ref) => !knownSource(ref, directory))) fail("unknown_source");

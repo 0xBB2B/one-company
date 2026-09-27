@@ -37,7 +37,8 @@ import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
 import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
-import { implementAuthorized } from "../runtime/pm-intake-runtime.ts";
+import { implementAuthorized, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
+import type { IntakeSourceDirectory } from "../runtime/pm-intake-contracts.ts";
 import { exploreContext, exploreInput, sourceHashesMatch } from "../runtime/explore-dispatch.ts";
 import type { ExploreRequest } from "../runtime/explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
@@ -117,14 +118,18 @@ async function reviewContext(task: PlanTask, attemptRunId: string, maxTurns: num
   ].join("\n");
 }
 
-function pmContext(record: RequirementRecord, lease: PmLease): string {
+function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSourceDirectory | null): string {
   const workspace = record.workspace!;
+  const list = (ids: readonly string[]) => ids.length ? ids.join("、") : "无";
   return [
     `需求 ID：${record.requirementId}`,
     `工作区：${workspace.path}（分支 ${workspace.branch}）`,
     `当前批准版本：revision ${record.revision}，prod hash ${record.approved!.hash}`,
     `PM 运行：${lease.runId}，fence ${lease.fence}`,
     "当前处于受限接手：先用 pi_company_requirement_manage 读取完整批准正文，再提交接手理解等待主代理核对；核对通过前不能正式提出或更新计划，也不能派 worker。",
+    ...(sources ? ["接手理解每项的出处只能引用下列编号（kind 与 id），scenarioCoverage 要逐个覆盖必需场景：",
+      `- prod-unit：${list(sources.prodUnitIds)}`, `- prod-scenario（必需场景）：${list(sources.prodScenarioIds)}`,
+      `- decision：${list(sources.decisionIds)}`, `- question：${list(sources.questionIds)}`] : ["出处清单暂不可用，接手理解提交会被拒绝。"]),
     "核对通过后，之后每次已批准更新的准确差异会由宿主按序送达本会话；收到后用 pi_company_plan_manage assess-update 逐任务复核。",
   ].join("\n");
 }
@@ -268,7 +273,7 @@ export class RunManager {
           catalog: (role, cursor) => this.agentCatalog(role, cursor),
         } });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: withSkills(pmContext(record.data, lease), resolved.skillsContext), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ worktree: workspace.path, branch: workspace.branch, alive,
+        context: withSkills(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId)), resolved.skillsContext), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ worktree: workspace.path, branch: workspace.branch, alive,
           checkPhaseActive }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, alive, checkPhaseActive,
           quiescent: () => this.metadataRows().every((row) => row.requirement !== input.requirementId || row.kind !== "role" || isTerminalState(row.state)) &&
             withDatabase(this.database, (db) => { try { assertWritersQuiescentIn(db, this.repoId, input.requirementId); return true; } catch { return false; } }) })],

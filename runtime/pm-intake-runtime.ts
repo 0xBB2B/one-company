@@ -7,7 +7,7 @@ import type { IntakeBinding, IntakeReviewRecord, IntakeSourceDirectory, PmUnders
 import { pmUnderstandingHash } from "./pm-intake-service.ts";
 import type { PmSourceDirectoryHandle, PmSourceDirectoryProvider, PmSourceDirectoryQuery, PmSubmissionHandle, PmSubmissionProvider,
   PmSubmissionQuery } from "./pm-intake-service.ts";
-import { PmIntakeStore } from "./pm-intake-store.ts";
+import { intakeManifestDecisionIds, PmIntakeStore } from "./pm-intake-store.ts";
 import type { IntakeBindingBasis } from "./pm-intake-store.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { readSessionEntries } from "./session-records.ts";
@@ -71,6 +71,23 @@ function scenarioIdsFor(ref: Ref, query: Pick<PmSourceDirectoryQuery, "baseline"
 function questionIdsFor(ref: Ref, requirementId: string): string[] {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.list("interaction_questions_v1")
     .filter((row) => (row.data as { basis?: { requirementId?: unknown } } | null)?.basis?.requirementId === requirementId).map((row) => row.id)).sort();
+}
+
+/**
+ * PM 接手可引用的出处清单，与主代理核对时的清单同源：场景取批准清单中已确认、带稳定编号的单位
+ * （全部标题都带编号时分区单位即稳定编号，metadata/preamble/whole-body 不是场景）。
+ */
+export function pmSourceDirectory(ref: Ref, requirementId: string): IntakeSourceDirectory | null {
+  return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
+    const row = db.read<RequirementRecord>("requirements", requirementId);
+    if (!row?.data.approvalManifest) return null;
+    const manifest = registeredApprovalManifestIn(db, ref.repoId, row.data.approvalManifest.reference, row);
+    const unitIds = manifest.units.map((unit) => unit.id);
+    const scenarioIds = (row.data.approvalManifest.confirmed ?? []).filter((id) => unitIds.includes(id) && !["metadata", "preamble", "whole-body"].includes(id));
+    const questionIds = db.list("interaction_questions_v1")
+      .filter((q) => (q.data as { basis?: { requirementId?: unknown } } | null)?.basis?.requirementId === requirementId).map((q) => q.id).sort();
+    return { prodUnitIds: unitIds, prodScenarioIds: scenarioIds, decisionIds: intakeManifestDecisionIds(manifest), questionIds, requiredScenarioIds: scenarioIds };
+  });
 }
 
 /** 主代理接手核对的两个数据提供方：场景清单取批准清单的已确认条目，理解取 PM 私有会话里最近一次受理的提交。 */
