@@ -24,7 +24,7 @@ export const REQUIREMENT_MANAGE_PARAMETERS = requestParameters(Object.values(act
 export function createRequirementManageTool(options: { interaction: MainRequirementInteraction }): ToolDefinition<typeof REQUIREMENT_MANAGE_PARAMETERS, Record<string, unknown>> {
   const interaction = options.interaction;
   return { name: "pi_company_requirement_manage", label: "管理活动需求",
-    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requestId、operationId 每次新生成 UUIDv7，requirementId、version、savedOperationId 取自此前工具结果，不要自编。保存需求草稿；正文按场景分节，每个标题末尾写稳定编号如「## 地面快跑 {#sprint}」（字母开头，只含字母数字._-，不重复）；confirmUpdate只接真实saved操作ID，不接正文或批准声明。只消费当前真实用户输入。read默认当前approved，草稿可指定saved，章节及UTF8分页逐次核权，完整封装不超过50KiB。无当前输入或模型不可用明确拒绝，不弹全量审批。",
+    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requestId、operationId 每次新生成 UUIDv7，requirementId、version、savedOperationId 取自此前工具结果，不要自编。保存需求草稿；正文按场景分节，每个标题（含各级小节标题）末尾都写稳定编号如「## 地面快跑 {#sprint}」「### 验收 {#sprint.acceptance}」（字母开头，只含字母数字._-，不重复），缺一个编号整篇只能作一段批准；confirmUpdate只接真实saved操作ID，不接正文或批准声明。只消费当前真实用户输入。read默认当前approved，草稿可指定saved，章节及UTF8分页逐次核权，完整封装不超过50KiB。无当前输入或模型不可用明确拒绝，不弹全量审批。",
     promptSnippet: "整理当前需求、按范围记录决定，读取当前获准目标", parameters: REQUIREMENT_MANAGE_PARAMETERS, executionMode: "sequential",
     async execute(toolCallId, raw, signal, _update, ctx) {
       signal?.throwIfAborted();
