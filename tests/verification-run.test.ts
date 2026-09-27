@@ -14,6 +14,7 @@ import { createChangeApplyTool } from "../runtime/change-apply.ts";
 import { activeCheckRoundIn, CheckRoundService, formalEvidence, CHECK_ROUNDS, VERIFICATION_RUNS } from "../runtime/check-round.ts";
 import type { CheckRoundServiceOptions } from "../runtime/check-round.ts";
 import { createVerificationRunTool } from "../runtime/verification-run.ts";
+import { submitVerdict } from "../runtime/verdicts.ts";
 import type { VerificationRunGrant, VerificationRunToolOptions, VerificationView } from "../runtime/verification-run.ts";
 import * as store from "../runtime/store.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -77,9 +78,10 @@ async function world() {
       workspaceId: workspace.workspaceId, branch: workspace.branch, epoch: record.epoch, ...extra };
   }
   const host: VerificationRunToolOptions["authorize"] = (request) => permits.get(request.grant.callerId) === JSON.stringify(request.grant);
-  async function tool(bound = grant(), authorize = host) {
+  async function tool(bound = grant(), authorize = host, reviewedAttemptRunId?: string) {
     permits.set(bound.callerId, JSON.stringify(bound));
-    const instance = await createVerificationRunTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, grant: bound, authorize });
+    const instance = await createVerificationRunTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, grant: bound, authorize,
+      ...(reviewedAttemptRunId ? { reviewedAttemptRunId } : {}) });
     cleanups.push(() => instance.dispose()); return instance;
   }
   async function changeApply(runId = uuidv7()) {
@@ -377,6 +379,28 @@ test("结束后的结果带回 stdout、stderr 末尾并标明截断；日志被
   await symlink(secret, join(short.outputRoot, "outputs", "stdout.log"));
   const linked = await worker.execute({ action: "status", verificationId: short.verificationId }) as VerificationView;
   expect(linked.output!.stdout).toEqual({ text: "", truncated: false });
+});
+
+test("reviewer 只读查看被审 worker 尝试在提交里引用的验证记录（含先红后绿），查不到未引用的、别的尝试的，也不能停止它们", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const workerGrant = w.grant({ role: "worker" });
+  const worker = await w.tool(workerGrant);
+  const red = await worker.execute({ action: "run", kind: "debug", command: "echo 'sprint.acceptance 失败'; exit 1", performance: NA }) as VerificationView;
+  const green = await worker.execute({ action: "run", kind: "debug", command: "echo 'sprint.acceptance 通过'", performance: NA }) as VerificationView;
+  const uncited = await worker.execute({ action: "run", kind: "debug", command: "echo 其他", performance: NA }) as VerificationView;
+  submitVerdict({ dataRoot: w.dataRoot, requirementId: w.created.requirementId, repoId: w.repoId, workspaceId: w.workspace.workspaceId, epoch: workerGrant.epoch },
+    { role: "worker", runId: workerGrant.runId, parentRunId: w.lease.runId },
+    { checkRoundId: null, verificationIds: [red.verificationId, green.verificationId], summary: "先红后绿", findings: [] });
+  const reviewer = await w.tool(w.grant({ role: "reviewer" }), undefined, workerGrant.runId);
+  expect(await reviewer.execute({ action: "status", verificationId: red.verificationId })).toMatchObject({ status: "failed", output: { stdout: { text: "sprint.acceptance 失败\n" } } });
+  expect(await reviewer.execute({ action: "status", verificationId: green.verificationId })).toMatchObject({ status: "passed" });
+  await expect(reviewer.execute({ action: "status", verificationId: uncited.verificationId })).rejects.toMatchObject({ code: "not_found" });
+  await expect(reviewer.execute({ action: "stop", verificationId: red.verificationId })).rejects.toMatchObject({ code: "not_found" });
+  const otherAttempt = await w.tool(w.grant({ role: "reviewer" }), undefined, uuidv7());
+  await expect(otherAttempt.execute({ action: "status", verificationId: red.verificationId })).rejects.toMatchObject({ code: "not_found" });
+  const qa = await w.tool(w.grant({ role: "qa" }), undefined, workerGrant.runId);
+  await expect(qa.execute({ action: "status", verificationId: red.verificationId })).rejects.toMatchObject({ code: "not_found" });
 });
 
 test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承完整环境变量；数据目录、Git 元数据、归档与角色定义不可写", async () => {

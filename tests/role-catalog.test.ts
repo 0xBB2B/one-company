@@ -47,6 +47,14 @@ describe("内置默认团队", () => {
     expect(body("reviewer")).toMatch(/核对说明注释[\s\S]*有副作用的写明副作用[\s\S]*没有副作用的不要求注明，未改动的旧定义不要求补写；缺失或不符列为阻塞。结论 summary 写明说明注释的核对结果/);
     for (const role of AGENT_ROLES) expect(body(role)).not.toMatch(/\bspec\b|spec_change|规则候选/);
   });
+
+  test("默认 worker 按 TDD 先红后绿并提交两次运行，PM 不把测试拆成单独任务，reviewer 查看引用记录核对红绿", async () => {
+    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
+    const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
+    expect(body("worker")).toMatch(/先写测试[\s\S]*确认新测试失败（红）[\s\S]*再写实现[\s\S]*全部通过（绿）[\s\S]*同时列出红、绿两次运行/);
+    expect(body("pm")).toContain("实现任务的 writePaths 同时包含覆盖它的测试文件，由同一个 worker 先写测试再实现，不把测试单独拆成任务");
+    expect(body("reviewer")).toMatch(/核对先红后绿[\s\S]*action=status 查看 worker 提交引用的验证记录[\s\S]*没有红的记录[\s\S]*列为阻塞/);
+  });
 });
 
 describe("定义格式", () => {
