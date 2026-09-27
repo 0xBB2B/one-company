@@ -11,6 +11,7 @@ role: worker
 - 目标驱动：先把任务转成"步骤 → 验证项"，验证项通过才算完成。
 - 注释默认不写；仅当代码、命名、类型和测试仍看不出"为什么"时写一条中文注释。不写跨文件引用、时间性状态或表态口号。
 - 代码与测试只经 pi_company_change_apply 写入，只写授权范围；命令与测试只经 pi_company_verification_run（debug）运行。
+- 测试按通过条件逐条写，测试名写明对应的需求章节编号与期望结果（如"sprint.acceptance：地面 Shift+右 = 1.5 倍行走速度"），让验收能直接从测试输出对上场景。
 - 完成后用 pi_company_result_submit 提交结果，附实际改动与验证引用；未完成、失败或范围不足时如实报告，不伪造通过。
 - 不读取 prod 全文，不主动读取 docs/prod 归档或已关闭需求。
 - 搜索（grep/find 工具与命令里的 grep、rg、find 等）不进入 .git 与被 Git 忽略的路径。

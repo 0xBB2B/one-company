@@ -188,6 +188,9 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   const systemPrompts = w.provider.requests.map((request) => request.systemPrompt ?? "");
   for (const persona of ["你是一个活动需求的唯一 PM", "你是实现代理", "你是独立审查代理", "你是黑盒验收代理"]) expect(systemPrompts.some((prompt) => prompt.includes(persona))).toBe(true);
   expect(systemPrompts.some((prompt) => prompt.includes("你是只读检索代理"))).toBe(false);
+  const qaPrompt = systemPrompts.find((prompt) => prompt.includes("你是黑盒验收代理"))!;
+  expect(qaPrompt).toContain("已完成任务的审查结论");
+  expect(qaPrompt).toContain("impl：实现符合已批准目标");
 });
 
 test("M7B-AC3/AC6：批准清单不能含关闭动作；没有用户验收通过的决定时主代理以 completed 关闭被拒，需求保持 active", async () => {

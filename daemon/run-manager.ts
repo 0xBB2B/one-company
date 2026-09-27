@@ -90,7 +90,7 @@ const PM_RENEW_MS = 10_000;
 const PM_EVENT_POLL_MS = 500;
 const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "renew-pm", "release-pm", "check-pm"];
 
-async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly Finding[] = []): Promise<string> {
+async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly Finding[] = [], reviews: readonly string[] = []): Promise<string> {
   const detail = await readTaskDetail(task);
   return [
     `任务：${task.key}（${task.taskId}，版本 ${task.version}，职责 ${task.role}）`,
@@ -101,6 +101,7 @@ async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly 
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     ...(task.writePaths.length ? [`可写范围：${task.writePaths.join("、")}`] : []),
     ...(rejected.length ? [`本次是审查打回后的返修，须解决：\n${rejected.map((finding) => `- [${finding.kind}] ${finding.targetRef}：${finding.trigger} → ${finding.impact}`).join("\n")}`] : []),
+    ...(reviews.length ? [`已完成任务的审查结论（审查已核对各任务的改动范围）：\n${reviews.map((line) => `- ${line}`).join("\n")}`] : []),
     `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交结果。`,
   ].join("\n");
 }
@@ -390,7 +391,8 @@ export class RunManager {
     try {
       tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
         pmLease: lease, workspace, epoch: record.epoch, task, alive, ...(review ? { review: { attemptRunId: attemptRunId! } } : {}) });
-      const context = review ? await reviewContext(task, attemptRunId!, maxTurns) : await taskContext(task, maxTurns, this.rejectedFindings(task));
+      const context = review ? await reviewContext(task, attemptRunId!, maxTurns)
+        : await taskContext(task, maxTurns, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         context: withSkills(context, resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
@@ -422,6 +424,18 @@ export class RunManager {
     if (!last) return [];
     return withDatabase(this.database, (db) => db.list<Verdict>(VERDICTS).map((row) => row.data).find((verdict) => verdict.runId === last.runId)?.findings ?? [])
       .filter((finding) => finding.kind !== "suggestion");
+  }
+
+  /** QA 用于核对"不做某事"类边界：各已完成 worker 任务最近一次通过审查的裁决摘要。 */
+  private reviewConclusions(requirementId: string): string[] {
+    return withDatabase(this.database, (db) => {
+      const verdicts = db.list<Verdict>(VERDICTS).map((row) => row.data);
+      return (readPlanIn(db, requirementId)?.tasks ?? []).filter((task) => task.role === "worker" && task.status === "completed").flatMap((task) => {
+        const clear = task.reviews.findLast((review) => review.outcome === "clear");
+        const verdict = clear && verdicts.find((item) => item.runId === clear.runId);
+        return verdict ? [`${task.key}：${verdict.summary}`] : [];
+      });
+    });
   }
 
   private async finishSubagent(runId: string, reported: "completed" | "turn_limit_reached" | "ended_without_result" | "failed" | "stopped"): Promise<void> {
