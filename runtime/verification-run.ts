@@ -147,7 +147,7 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     const dataRoot = await realpath(options.dataRoot), outputRoot = await realpath(started.outputRoot), scratch = join(outputRoot, "tmp");
     // 不得改写 Git 元数据（hook 会在用户后续 Git 操作中执行）、规则、归档与角色定义
     const agentDir = dirname(dataRoot), repositoryRoot = await realpath(options.repositoryRoot);
-    const protectedPaths = [(await repositoryIdentity(root)).commonDir, ...[".git", "docs/spec", "docs/prod", ".pi/agents", ".pi/skills"].map((path) => join(root, path)),
+    const protectedPaths = [(await repositoryIdentity(root)).commonDir, ...[".git", "docs/prod", ".pi/agents", ".pi/skills"].map((path) => join(root, path)),
       // 角色定义、skills 与项目信任在每次派工时重新读取，写入即可改变后续运行的说明、模型与能力
       ...["agents", "skills", "trust.json"].map((path) => join(agentDir, path)),
       ...[".pi/agents", ".pi/skills"].map((path) => join(repositoryRoot, path)),
@@ -160,7 +160,7 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
   }
   async function writeManifest(outputRoot: string, manifest: InputManifest): Promise<void> {
     await writeFileAtomic(join(outputRoot, "manifest.json"), JSON.stringify({ format: "verification-manifest/v1", codeHead: manifest.codeHead,
-      specSetHash: manifest.specSetHash, inputHash: manifest.inputHash, environment: manifest.environment, files: manifest.files }, null, 2) + "\n");
+      inputHash: manifest.inputHash, environment: manifest.environment, files: manifest.files }, null, 2) + "\n");
   }
 
   async function run(params: Extract<VerificationRunParameters, { action: "run" }>): Promise<VerificationView> {
@@ -196,8 +196,8 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
         baseline = round.data.baseline; checkRoundId = round.data.checkRoundId;
       } else {
         if (round) deny("check_phase_active");
-        baseline = { revision: record.revision, approved: record.approved, codeHead: manifest.codeHead, specSetHash: manifest.specSetHash as CheckBaseline["specSetHash"],
-          targetSpecSetHash: null, inputHash: manifest.inputHash, inputCount: manifest.files.length, environment: manifest.environment };
+        baseline = { revision: record.revision, approved: record.approved, codeHead: manifest.codeHead,
+          inputHash: manifest.inputHash, inputCount: manifest.files.length, environment: manifest.environment };
       }
       const data = checked(VerificationRun, { format: "verification-run/v1", verificationId, kind: params.kind, requirementId: grant.requirementId, repoId: grant.repoId,
         workspaceId: grant.workspaceId, branch: grant.branch, epoch: grant.epoch, runId: grant.runId, role: grant.role, checkRoundId, command: params.command,

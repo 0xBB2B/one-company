@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, readlink } from "node:fs/promises";
-import { join, posix } from "node:path";
+import { join } from "node:path";
 import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static, TSchema } from "typebox";
@@ -15,23 +15,16 @@ import { RequirementStateStore } from "./requirement-state.ts";
 import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { isTerminalState } from "./run-store.ts";
 import type { RunRecord } from "./run-store.ts";
-import { checkSpecSet, SpecFormatError } from "./spec-format.ts";
-import type { SpecSource } from "./spec-format.ts";
-import { mechanicalConflictsIn } from "./spec-check.ts";
 import { includesCommit, localTargetBranch } from "./target-branch.ts";
 
 export const CHECK_ROUNDS = "check_rounds";
 export const VERIFICATION_RUNS = "verification_runs";
 const CHANGE_SETS = "change_sets";
-const SPEC_PROPOSALS = "spec_proposals";
-const SPEC_DIRECTORY = "docs/spec";
 
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
-const specSetHash = Type.Union([hash, Type.Literal("absent"), Type.Literal("invalid")]);
 export const InputEnvironment = object({ node: Type.String({ maxLength: 64 }), platform: Type.String({ maxLength: 32 }), arch: Type.String({ maxLength: 32 }) });
 export const CheckBaseline = object({
-  revision: positive, approved: ProdReference, codeHead: commit, specSetHash, targetSpecSetHash: nullable(hash),
-  inputHash: hash, inputCount: counter, environment: InputEnvironment,
+  revision: positive, approved: ProdReference, codeHead: commit, inputHash: hash, inputCount: counter, environment: InputEnvironment,
 });
 export type CheckBaseline = Static<typeof CheckBaseline>;
 const Invalidation = object({ reason: Type.Union([Type.Literal("input_changed"), Type.Literal("observed_change"), Type.Literal("interrupted"), Type.Literal("revoked")]),
@@ -64,8 +57,8 @@ export const VerificationRun = object({
 export type VerificationRun = Static<typeof VerificationRun>;
 
 export type CheckRoundErrorCode = "check_round_denied" | "invalid_shape" | "pending_update" | "check_round_active" | "workers_active" | "writes_pending"
-  | "spec_invalid" | "proposal_invalid" | "not_found" | "verification_active" | "round_not_open" | "check_phase_active" | "decision_conflict" | "stale_pm_lease"
-  | "tasks_not_reviewed" | "sync_required" | "spec_conflict";
+  | "not_found" | "verification_active" | "round_not_open" | "check_phase_active" | "decision_conflict" | "stale_pm_lease"
+  | "tasks_not_reviewed" | "sync_required";
 export class CheckRoundError extends Error {
   readonly code: CheckRoundErrorCode;
   constructor(code: CheckRoundErrorCode, detail?: string) {
@@ -74,7 +67,7 @@ export class CheckRoundError extends Error {
 }
 
 export interface InputManifest {
-  codeHead: string; specSetHash: string; inputHash: string; environment: Static<typeof InputEnvironment>;
+  codeHead: string; inputHash: string; environment: Static<typeof InputEnvironment>;
   files: Array<{ path: string; hash: string }>;
 }
 function sha256(value: string | Buffer): string { return createHash("sha256").update(value).digest("hex"); }
@@ -94,7 +87,6 @@ export async function collectInputManifest(root: string): Promise<InputManifest>
   const paths = [...new Set(listing.stdout.toString("utf8").split("\u0000").filter((entry) => entry.length > 0))]
     .filter((path) => !isProdArchivePath(path)).sort();
   const files: Array<{ path: string; hash: string }> = [];
-  const specs: SpecSource[] = [];
   for (const path of paths) {
     const absolute = join(root, ...path.split("/"));
     let stats;
@@ -104,21 +96,15 @@ export async function collectInputManifest(root: string): Promise<InputManifest>
     if (!stats.isFile()) continue;
     const bytes = await readFile(absolute);
     files.push({ path, hash: sha256(bytes) });
-    if (path.startsWith(`${SPEC_DIRECTORY}/`) && path.endsWith(".rules.json")) specs.push({ path: posix.normalize(path), content: bytes.toString("utf8") });
-  }
-  let specSetHash = "absent";
-  if (specs.length > 0) {
-    try { specSetHash = checkSpecSet(specs).contractSetHash; }
-    catch (error) { if (!(error instanceof SpecFormatError)) throw error; specSetHash = "invalid"; }
   }
   const { head } = await snapshotBranchState({ repoRoot: root });
   const environment = { node: process.version, platform: process.platform, arch: process.arch };
-  const inputHash = sha256(JSON.stringify([head, specSetHash, environment, files]));
-  return { codeHead: head, specSetHash, inputHash, environment, files };
+  const inputHash = sha256(JSON.stringify([head, environment, files]));
+  return { codeHead: head, inputHash, environment, files };
 }
 
 export function manifestMatchesBaseline(manifest: InputManifest, baseline: CheckBaseline): boolean {
-  return manifest.inputHash === baseline.inputHash && manifest.codeHead === baseline.codeHead && manifest.specSetHash === baseline.specSetHash &&
+  return manifest.inputHash === baseline.inputHash && manifest.codeHead === baseline.codeHead &&
     JSON.stringify(manifest.environment) === JSON.stringify(baseline.environment);
 }
 
@@ -178,7 +164,7 @@ export interface CheckRoundServiceOptions {
   authorize: (request: Readonly<CheckRoundAuthorization>) => boolean;
   now?: () => number;
 }
-const OpenInput = object({ lease: PmLease, targetSpecProposal: Type.Optional(id) });
+const OpenInput = object({ lease: PmLease });
 const RoundInput = object({ lease: PmLease, checkRoundId: id });
 const DecideInput = object({ lease: PmLease, checkRoundId: id, kind: Type.Union([Type.Literal("interrupt"), Type.Literal("defer")]), revision: positive });
 const ObserveInput = object({ checkRoundId: id, paths: Type.Array(Type.String({ minLength: 1, maxLength: 1024 }), { minItems: 1, maxItems: 1024 }) });
@@ -193,7 +179,7 @@ function view(round: CheckRound): CheckRoundView {
 }
 
 /**
- * 检查轮次的可信服务：进入检查前核验本轮写入已收尾并登记基线；轮次生效期间 change_apply/spec_change/新验证以外的写入被拒绝。
+ * 检查轮次的可信服务：进入检查前核验本轮写入已收尾并登记基线；轮次生效期间 change_apply/新验证以外的写入被拒绝。
  * 文件指纹与 Git 读取在事务外完成，事务内只比对同步数据库依据。
  */
 export class CheckRoundService {
@@ -257,11 +243,8 @@ export class CheckRoundService {
     await verifyRequirementWorkspace(this.options.dataRoot, record.workspace);
     await this.state.checkPm(lease);
     const manifest = await collectInputManifest(record.workspace.path);
-    if (manifest.specSetHash === "invalid") throw new CheckRoundError("spec_invalid");
     const target = await localTargetBranch(this.options.repositoryRoot, record.workspace.path).catch(() => null);
     if (!target || !(await includesCommit(record.workspace.path, target.sha))) throw new CheckRoundError("sync_required", target?.ref ?? "目标分支未拉取");
-    const conflicts = await mechanicalConflictsIn(record.workspace.path);
-    if (conflicts.length) throw new CheckRoundError("spec_conflict", conflicts.map((entry) => `${entry.kind}:${entry.left}/${entry.right}`).join(","));
     const workspace = record.workspace, approved = record.approved, revision = record.revision;
     this.authorize({ action: "open", requirementId: lease.requirementId, lease });
     const round = withDatabase(this.database, (db) => db.transaction(() => {
@@ -273,17 +256,10 @@ export class CheckRoundService {
       assertWritersQuiescentIn(db, this.options.repoId, lease.requirementId);
       const unreviewed = unreviewedWorkerTasksIn(db, lease.requirementId);
       if (unreviewed.length) throw new CheckRoundError("tasks_not_reviewed", unreviewed.join(","));
-      let targetSpecSetHash: string | null = null;
-      if (request.targetSpecProposal) {
-        const proposal = db.read<{ requirementId?: string; repoId?: string; status?: string; approvedProdHash?: string; targetSpecSetHash?: string; epoch?: number }>(SPEC_PROPOSALS, request.targetSpecProposal)?.data;
-        if (!proposal || proposal.requirementId !== lease.requirementId || proposal.repoId !== this.options.repoId || proposal.status !== "validated" ||
-          proposal.approvedProdHash !== approved.hash || proposal.epoch !== lease.epoch || typeof proposal.targetSpecSetHash !== "string") throw new CheckRoundError("proposal_invalid");
-        targetSpecSetHash = proposal.targetSpecSetHash;
-      }
       const now = this.now();
       const data = checked(CheckRound, { format: "check-round/v1", checkRoundId: uuidv7(), requirementId: lease.requirementId, repoId: this.options.repoId,
         workspaceId: workspace.workspaceId, branch: workspace.branch, epoch: lease.epoch, fence: lease.fence, runId: lease.runId,
-        baseline: { revision, approved, codeHead: manifest.codeHead, specSetHash: manifest.specSetHash, targetSpecSetHash, inputHash: manifest.inputHash,
+        baseline: { revision, approved, codeHead: manifest.codeHead, inputHash: manifest.inputHash,
           inputCount: manifest.files.length, environment: manifest.environment },
         status: "open", invalidation: null, decision: null, verifications: [], active: [], createdAt: now, updatedAt: now });
       db.create(CHECK_ROUNDS, data.checkRoundId, data, data.checkRoundId);
@@ -384,11 +360,11 @@ export class CheckRoundService {
 
 export interface FormalEvidence {
   verificationId: string; kind: VerificationRun["kind"]; status: "passed" | "failed" | "unknown"; applicable: boolean; reasons: string[];
-  checkRoundId: string | null; approvedProdHash: string; revision: number; codeHead: string; specSetHash: string; targetSpecSetHash: string | null;
+  checkRoundId: string | null; approvedProdHash: string; revision: number; codeHead: string;
   inputHash: string; performance: Static<typeof VerificationPerformance>;
 }
 /**
- * 证据适用性按当前实际内容重算：正文批准版本、代码/spec/环境指纹任一变化即不适用；
+ * 证据适用性按当前实际内容重算：正文批准版本、代码/环境指纹任一变化即不适用；
  * 记录本身不改写，重填 hash 或刷新索引都不能恢复通过。
  */
 export async function formalEvidence(config: { dataRoot: string; repoId: string }, verificationId: string): Promise<FormalEvidence | null> {
@@ -418,30 +394,6 @@ export async function formalEvidence(config: { dataRoot: string; repoId: string 
   } else reasons.push("workspace_unavailable");
   const status = run.status === "passed" ? "passed" : run.status === "running" ? "unknown" : "failed";
   return freeze({ verificationId: run.verificationId, kind: run.kind, status, applicable: reasons.length === 0, reasons, checkRoundId: run.checkRoundId,
-    approvedProdHash: run.baseline.approved.hash, revision: run.baseline.revision, codeHead: run.baseline.codeHead, specSetHash: run.baseline.specSetHash,
-    targetSpecSetHash: run.baseline.targetSpecSetHash, inputHash: run.baseline.inputHash, performance: structuredClone(run.performance) });
-}
-
-/** spec_change 发布门槛：检查阶段已释放，且存在与候选集合/批准 prod 绑定、仍适用的正式通过证据。 */
-export function createSpecPublishGate(config: { dataRoot: string; repoId: string }) {
-  return async (request: { readonly grant: { readonly requirementId: string; readonly repoId: string }; readonly proposal: { readonly targetSpecSetHash: string; readonly approvedProdHash: string } }) => {
-    if (request.grant.repoId !== config.repoId) return { checkPhaseReleased: false, evidence: null };
-    const database = repositoryDatabase(config.dataRoot, config.repoId);
-    const { active, candidates } = withDatabase(database, (db) => ({
-      active: activeCheckRoundIn(db, config.repoId, request.grant.requirementId) !== null,
-      candidates: db.list<unknown>(VERIFICATION_RUNS).map((row) => checked(VerificationRun, row.data))
-        .filter((run) => run.repoId === config.repoId && run.requirementId === request.grant.requirementId && run.kind === "formal" && run.status === "passed" &&
-          run.baseline.targetSpecSetHash === request.proposal.targetSpecSetHash && run.baseline.approved.hash === request.proposal.approvedProdHash)
-        .map((run) => run.verificationId),
-    }));
-    if (active) return { checkPhaseReleased: false, evidence: null };
-    for (const verificationId of candidates.reverse()) {
-      const evidence = await formalEvidence(config, verificationId);
-      if (evidence && evidence.applicable && evidence.status === "passed") {
-        return { checkPhaseReleased: true, evidence: { verificationId, status: "passed" as const, targetSpecSetHash: evidence.targetSpecSetHash!,
-          approvedProdHash: evidence.approvedProdHash, codeHead: evidence.codeHead } };
-      }
-    }
-    return { checkPhaseReleased: true, evidence: null };
-  };
+    approvedProdHash: run.baseline.approved.hash, revision: run.baseline.revision, codeHead: run.baseline.codeHead,
+    inputHash: run.baseline.inputHash, performance: structuredClone(run.performance) });
 }

@@ -93,14 +93,14 @@ test("用途不符或未知旧布局的.db不被当成缓存重建", async () =>
 
 test("未知版本或带对象的零版本在切换WAL前拒绝，源库字节不变", async () => {
   const w = await world();
-  for (const version of [0, 99]) {
+  for (const version of [0, 1, 99]) {
     const directory = join(w.directory, `v${version}`); await mkdir(directory, { mode: 0o700 });
     const path = databaseFile(directory, "data");
     const raw = new DatabaseSync(path);
     raw.exec(`PRAGMA application_id=${DATABASE_APPLICATION_IDS.data}; PRAGMA user_version=${version}; CREATE TABLE sentinel(value TEXT);`);
     raw.close();
     const before = await fileHash(path);
-    expect(() => new LocalDatabase(path)).toThrow(version === 0 ? /wrong_database_kind/ : /不支持的数据库版本/);
+    expect(() => new LocalDatabase(path)).toThrow(version === 0 ? /wrong_database_kind/ : version === 1 ? /outdated_database.*删除本机数据目录/ : /不支持的数据库版本/);
     expect(await fileHash(path)).toBe(before);
     expect(existsSync(path + "-wal")).toBe(false);
   }

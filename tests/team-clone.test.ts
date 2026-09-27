@@ -11,9 +11,6 @@ const exec = promisify(execFile);
 const cleanups: string[] = [];
 afterEach(async () => { for (const dir of cleanups.splice(0)) await rm(dir, { recursive: true, force: true }); });
 
-const SPEC = JSON.stringify({ schemaVersion: 1, feature: { id: "jump", title: "跳跃", aliases: [] }, rules: [{ id: "jump.basic", title: "起跳", condition: "角色在地面",
-  trigger: "按下跳跃", expected: "角色起跳", reason: "基本操作", dependsOn: [], exceptions: [], acceptance: [{ id: "a", given: "在地面", when: "按跳跃", then: "起跳" }] }] }, null, 2) + "\n";
-
 async function repos() {
   const base = await realpath(await mkdtemp(join(tmpdir(), "team-clone-")));
   cleanups.push(base);
@@ -25,21 +22,18 @@ async function repos() {
   return { base, git, a, b, home };
 }
 
-test("M8-AC1/AC3/AC7：B 克隆 A 的仓库后，没有 A 的数据库也能用普通工具读当前 spec 和已完成归档、运行示例业务与 CI 规则检查，且不产生本产品数据", async () => {
+test("M8-AC1/AC3：B 克隆 A 的仓库后，没有 A 的数据库也能用普通工具读代码和已完成归档、运行示例业务，且不产生本产品数据", async () => {
   const r = await repos();
   const archive = archivePathFor(uuidv7(), "角色跳跃");
-  await mkdir(join(r.a, "docs", "spec", "player"), { recursive: true }); await mkdir(join(r.a, "docs", "prod"), { recursive: true });
-  await writeFile(join(r.a, "docs", "spec", "player", "jump.rules.json"), SPEC);
+  await mkdir(join(r.a, "docs", "prod"), { recursive: true });
   await writeFile(join(r.a, archive), "# 角色跳跃\n已完成的最终需求\n");
   await writeFile(join(r.a, "app.mjs"), "console.log('跳跃', 1 + 1);\n");
   r.git(r.a, "add", "."); r.git(r.a, "commit", "-qm", "交付跳跃");
   r.git(r.base, "clone", "-q", r.a, r.b);
-  expect(JSON.parse(await readFile(join(r.b, "docs", "spec", "player", "jump.rules.json"), "utf8")).rules[0].id).toBe("jump.basic");
+  expect(await readFile(join(r.b, "app.mjs"), "utf8")).toContain("跳跃");
   expect(await readFile(join(r.b, archive), "utf8")).toContain("已完成的最终需求");
   const env = { PATH: process.env.PATH, HOME: r.home };
   expect((await exec(process.execPath, [join(r.b, "app.mjs")], { cwd: r.b, env })).stdout).toBe("跳跃 2\n");
-  const check = await exec(process.execPath, [new URL("../bin/spec-check.mjs", import.meta.url).pathname, r.b], { env });
-  expect(check.stdout).toBe("规则检查通过：1 个文件，1 条规则\n");
   expect(await readdir(r.home)).toEqual([]);
   expect(r.git(r.b, "ls-files")).not.toMatch(/pi-company|\.db|requirements\//);
 });

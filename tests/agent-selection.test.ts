@@ -120,7 +120,7 @@ test("M7-AC8：定义正文不含任何职责说明、模型也不遵守提示�
   w.provider.queue.push(
     { type: "toolcall", name: "pi_company_plan_manage", input: { action: "confirm", planVersion: 1 } },
     { type: "toolcall", name: "pi_company_change_apply", input: { action: "apply", operationId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10",
-      files: [{ path: "docs/spec/x.rules.json", baseHash: "absent", content: "{}" }] } },
+      files: [{ path: "docs/prod/x.md", baseHash: "absent", content: "x" }] } },
     { type: "toolcall", name: "bash", input: { command: "echo hacked > src/x.ts" } },
     { type: "text", text: "结束" }, { type: "text", text: "PM 收到" });
   await w.dispatch("ui");

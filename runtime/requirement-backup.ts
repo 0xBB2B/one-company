@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openS
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { UUID_V7_PATTERN } from "./database.ts";
-import { DATABASE_APPLICATION_IDS, pathExists } from "./database-paths.ts";
+import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, pathExists } from "./database-paths.ts";
 import { createDatabaseSnapshot, databaseMaintenanceDirectory, withDatabaseMaintenance } from "./database-maintenance.ts";
 import type { DatabaseManagementAuthorization } from "./database-maintenance.ts";
 import { checkRequirement } from "./requirement-contracts.ts";
@@ -253,7 +253,7 @@ function inspectState(path: string, repoId: string): StateInspection {
   const db = new DatabaseSync(path, { readOnly: true, allowExtension: false });
   try {
     db.exec("PRAGMA trusted_schema=OFF; PRAGMA busy_timeout=5000;");
-    if (db.prepare("PRAGMA quick_check").get()?.quick_check !== "ok" || Number(db.prepare("PRAGMA user_version").get()?.user_version) !== 1 || Number(db.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS.data) fail("invalid_data_database");
+    if (db.prepare("PRAGMA quick_check").get()?.quick_check !== "ok" || Number(db.prepare("PRAGMA user_version").get()?.user_version) !== DATABASE_SCHEMA_VERSIONS.data || Number(db.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS.data) fail("invalid_data_database");
     if (db.prepare("SELECT 1 AS occupied FROM records WHERE namespace=? LIMIT 1").get(REQUIREMENT_WRITE_COORDINATION_NAMESPACE)) fail("requirement_write_busy");
     const operations = db.prepare("SELECT record_key,data FROM records WHERE namespace='requirement_service_operations' ORDER BY record_key").all().map((row) => parseOperationMetadata(row, repoId));
     if (operations.some((operation) => operation.finalVersion === null)) fail("unfinished_requirement_operation");

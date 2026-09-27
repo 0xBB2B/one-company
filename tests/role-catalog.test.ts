@@ -103,7 +103,7 @@ describe("分层加载", () => {
 describe("按职责生成的工具集", () => {
   test("核心工具集合由权限矩阵生成并统一加前缀", () => {
     expect(coreToolsForRole("pm").map(coreToolName).sort()).toEqual(["pi_company_agent_manage", "pi_company_knowledge_query", "pi_company_plan_manage",
-      "pi_company_requirement_manage", "pi_company_spec_change", "pi_company_user_interact", "pi_company_verification_run", "pi_company_workflow_manage"]);
+      "pi_company_requirement_manage", "pi_company_user_interact", "pi_company_verification_run", "pi_company_workflow_manage"]);
     expect(coreToolsForRole("explore").sort()).toEqual(["knowledge_query", "result_submit"]);
     expect(coreToolsForRole("qa").sort()).toEqual(["requirement_manage", "result_submit", "verification_run"]);
   });

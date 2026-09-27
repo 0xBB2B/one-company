@@ -11,13 +11,10 @@ import { RequirementService, requirementIntentHash } from "../runtime/requiremen
 import { claimRequirementWriteIn, releaseRequirementWriteIn } from "../runtime/requirement-coordination.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { createChangeApplyTool } from "../runtime/change-apply.ts";
-import { createSpecChangeTool } from "../runtime/spec-change.ts";
-import { activeCheckRoundIn, CheckRoundService, createSpecPublishGate, formalEvidence, CHECK_ROUNDS, VERIFICATION_RUNS } from "../runtime/check-round.ts";
+import { activeCheckRoundIn, CheckRoundService, formalEvidence, CHECK_ROUNDS, VERIFICATION_RUNS } from "../runtime/check-round.ts";
 import type { CheckRoundServiceOptions } from "../runtime/check-round.ts";
 import { createVerificationRunTool } from "../runtime/verification-run.ts";
 import type { VerificationRunGrant, VerificationRunToolOptions, VerificationView } from "../runtime/verification-run.ts";
-import { checkSpecSet } from "../runtime/spec-format.ts";
-import type { SpecRule } from "../runtime/spec-format.ts";
 import * as store from "../runtime/store.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
@@ -29,15 +26,8 @@ const BODY = "# 目标 {#goals}\n保留移动。\n";
 const BODY_2 = "# 目标 {#goals}\n保留移动并增加快跑。\n";
 const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const darwin = process.platform === "darwin";
-function rule(id: string, expected = "角色按输入方向移动"): SpecRule {
-  return { id, title: "移动", condition: "角色在地面", trigger: "收到方向输入", expected, reason: "基础移动", dependsOn: [], exceptions: [],
-    acceptance: [{ id: "move", given: "地面", when: "按方向", then: expected }] };
-}
-function document(featureId: string, rules: SpecRule[]) {
-  return JSON.stringify({ $schema: "../schema.json", schemaVersion: 1, feature: { id: featureId, title: "玩家", aliases: [] }, rules }, null, 2) + "\n";
-}
-const MOVE = document("player", [rule("player.move")]);
-const SPRINT = document("player.sprint", [rule("player.sprint", "角色进入快跑")]);
+// 项目里遗留的规则文件只是普通输入文件，不参与任何校验
+const MOVE = JSON.stringify({ feature: "player", note: "移动" }, null, 2) + "\n";
 const NA = { applicable: false as const, reason: "纯逻辑改动，无性能影响" };
 
 async function world() {
@@ -98,13 +88,6 @@ async function world() {
     const instance = await createChangeApplyTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, grant: bound, authorize: () => true });
     cleanups.push(async () => instance.dispose()); return instance;
   }
-  async function specChange() {
-    const bound = { role: "pm" as const, callerId: uuidv7(), runId: lease.runId, requirementId: created.requirementId, repoId: options.repoId,
-      workspaceId: workspace.workspaceId, branch: workspace.branch, lease: structuredClone(lease) };
-    const instance = await createSpecChangeTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, grant: bound, authorize: () => true,
-      publishGate: createSpecPublishGate(options) });
-    cleanups.push(async () => instance.dispose()); return instance;
-  }
   const runs = new RunStore({ dataRoot: options.dataRoot, repoId: options.repoId, daemonStartedAt: new Date().toISOString() });
   async function workerRun() {
     const run = await runs.create({ kind: "role", role: "pi-company.worker", requirement: created.requirementId, parentRunId: lease.runId, task: "实现", cwd: worktree.root,
@@ -114,9 +97,8 @@ async function world() {
   }
   const read = (path: string) => readFile(join(worktree.root, path), "utf8");
   const write = (path: string, content: string) => writeFile(join(worktree.root, path), content);
-  const open = (extra: { targetSpecProposal?: string } = {}) => rounds.openRound({ lease: structuredClone(lease), ...extra });
-  const target = () => checkSpecSet([{ path: "docs/spec/player/move.rules.json", content: MOVE }, { path: "docs/spec/player/sprint.rules.json", content: SPRINT }]).contractSetHash;
-  return { ...options, root, state, created, lease, workspace, worktree, database, rounds, grant, tool, changeApply, specChange, runs, workerRun, read, write, open, approve, target };
+  const open = () => rounds.openRound({ lease: structuredClone(lease) });
+  return { ...options, root, state, created, lease, workspace, worktree, database, rounds, grant, tool, changeApply, runs, workerRun, read, write, open, approve };
 }
 const base = sha("export const a = 1;\n");
 
@@ -221,9 +203,6 @@ test("M6-AC1/AC20：记录真实退出码、超时、取消，性能条件在运
     db.update(VERIFICATION_RUNS, passed.verificationId, run.version, { ...run.data, baseline: round.baseline });
   }));
   expect((await formalEvidence(w, passed.verificationId))!.reasons).toEqual(["round_binding_invalid", "round_not_released"]);
-  const gate = createSpecPublishGate(w);
-  await expect(gate({ grant: { requirementId: w.created.requirementId, repoId: w.repoId }, proposal: { targetSpecSetHash: w.target(), approvedProdHash: w.state.read(w.created.requirementId).data.approved!.hash } }))
-    .resolves.toEqual({ checkPhaseReleased: false, evidence: null });
 });
 
 test("M6-AC2/AC14：证据适用性按实际内容重算；检查期间外部改动或观察到 A→B→A 使本轮失效；prod 变化后旧结果原样保留但不再适用", async () => {
@@ -240,7 +219,7 @@ test("M6-AC2/AC14：证据适用性按实际内容重算；检查期间外部改
   expect((await formalEvidence(w, passed.verificationId))!.reasons).toEqual(["input_changed"]);
   await w.write("src/a.ts", "export const a = 1;\n");
   expect((await formalEvidence(w, passed.verificationId))!.applicable).toBe(true);
-  await w.write("docs/spec/player/move.rules.json", document("player", [rule("player.move", "改了")]));
+  await w.write("docs/spec/player/move.rules.json", "{}\n");
   expect((await formalEvidence(w, passed.verificationId))!.reasons).toEqual(["input_changed"]);
   await w.write("docs/spec/player/move.rules.json", MOVE);
   withDatabase(w.database, (db) => db.transaction(() => {
@@ -334,7 +313,7 @@ test("M6-AC16：检查中收到已批准更新只能由有效 PM 记录 interrup
   expect([released.status, released.invalidation?.reason]).toEqual(["released", "interrupted"]);
 });
 
-test("M6-AC14：崩溃后重新打开服务把无进程的运行中验证标为中断并释放阶段占用；spec 发布门槛只接受已释放轮次中仍适用的正式通过证据", async () => {
+test("M6-AC14：崩溃后重新打开服务把无进程的运行中验证标为中断并释放阶段占用", async () => {
   const w = await world();
   if (!darwin) return;
   const qa = await w.tool();
@@ -352,23 +331,6 @@ test("M6-AC14：崩溃后重新打开服务把无进程的运行中验证标为�
   expect(reopened.status(round.checkRoundId).active).toEqual([]);
   expect((await qa.execute({ action: "status", verificationId: passed.verificationId }) as VerificationView).status).toBe("interrupted");
   reopened.release({ lease: w.lease, checkRoundId: round.checkRoundId });
-
-  const spec = await w.specChange();
-  const operationId = uuidv7();
-  await spec.execute({ action: "propose", operationId, files: [{ path: "docs/spec/player/sprint.rules.json", baseHash: "absent", content: SPRINT }] });
-  await spec.execute({ action: "validate", operationId });
-  await expect(spec.execute({ action: "publish", operationId })).rejects.toMatchObject({ code: "evidence_required" });
-  await expect(w.open({ targetSpecProposal: uuidv7() })).rejects.toMatchObject({ code: "proposal_invalid" });
-  const bound = await w.open({ targetSpecProposal: operationId });
-  expect(bound.baseline.targetSpecSetHash).toBe(w.target());
-  await expect(spec.execute({ action: "publish", operationId })).rejects.toMatchObject({ code: "check_phase_active" });
-  const formal = await qa.execute({ action: "run", kind: "formal", command: "true", performance: NA }) as VerificationView;
-  expect(formal.status).toBe("passed");
-  w.rounds.release({ lease: w.lease, checkRoundId: bound.checkRoundId });
-  const published = await spec.execute({ action: "publish", operationId }) as { status: string };
-  expect(published.status).toBe("published");
-  await expect(w.read("docs/spec/player/sprint.rules.json")).resolves.toBe(SPRINT);
-  expect(await formalEvidence(w, formal.verificationId)).toMatchObject({ applicable: false, reasons: ["input_changed"] });
 });
 
 test("M6-AC9：epoch 递增后遗留的检查轮不再占用检查阶段", async () => {
@@ -417,7 +379,7 @@ test("结束后的结果带回 stdout、stderr 末尾并标明截断；日志被
   expect(linked.output!.stdout).toEqual({ text: "", truncated: false });
 });
 
-test("debug 命令可写工作区、继承完整环境变量；数据目录、Git 元数据、规则、归档与角色定义不可写", async () => {
+test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承完整环境变量；数据目录、Git 元数据、归档与角色定义不可写", async () => {
   if (!darwin) return;
   const w = await world();
   const worker = await w.tool(w.grant({ role: "worker" }));
@@ -427,7 +389,9 @@ test("debug 命令可写工作区、继承完整环境变量；数据目录、Gi
   // 运行中改了受保护输入，本次运行按既有规则标失效；写入本身未被拦
   expect(writes.status).toBe("invalidated");
   await expect(w.read("src/generated.txt")).resolves.toBe("gen\n");
-  for (const target of ["docs/spec/x.rules.json", "docs/prod/x.md", ".pi/agents/worker.md"]) {
+  await worker.execute({ action: "run", kind: "debug", command: "mkdir -p docs/spec && echo x > docs/spec/x.rules.json", performance: NA });
+  await expect(w.read("docs/spec/x.rules.json")).resolves.toBe("x\n");
+  for (const target of ["docs/prod/x.md", ".pi/agents/worker.md"]) {
     const run = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(target, ".."))} && echo x > ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
     expect(run.status).toBe("failed");
     await expect(w.read(target)).rejects.toMatchObject({ code: "ENOENT" });

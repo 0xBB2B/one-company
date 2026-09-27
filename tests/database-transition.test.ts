@@ -110,6 +110,15 @@ async function runChild(script: string): Promise<{ code: number | null; stdout: 
   return { code, stdout, stderr };
 }
 
+// 旧文件名迁移来的 data.db 仍是版本 1，按不迁移旧库的决定打开即被拒绝；迁移结果只按原始记录核对
+function migratedRequirement(path: string, id: string): Record<string, unknown> | null {
+  const raw = new DatabaseSync(path, { readOnly: true });
+  try {
+    const row = raw.prepare("SELECT data FROM records WHERE namespace = 'requirements' AND record_key = ?").get(id);
+    return row ? JSON.parse(String(row.data)) as Record<string, unknown> : null;
+  } finally { raw.close(); }
+}
+
 test("合法data.sqlite切换保留WAL记录、用途标签和原始文件", async () => {
   const w = await world(), id = uuidv7(), legacy = join(w.directory, "data.sqlite");
   const reader = await makeWalLegacy(legacy, id);
@@ -117,8 +126,8 @@ test("合法data.sqlite切换保留WAL记录、用途标签和原始文件", asy
     const receipt = await withDatabaseMaintenance(w.scope, (permit) => migrateLegacyDatabase(permit, { operationId: uuidv7(), kind: "data", authorize: managementAuthorization() }));
     expect(receipt.state).toBe("completed"); expect(receipt.archivedFiles.map((file) => file.name)).toContain("data.sqlite-wal");
     expect(fs.existsSync(legacy)).toBe(false); expect(fs.existsSync(join(receipt.backupDirectory, "legacy", "data.sqlite"))).toBe(true);
-    const db = new LocalDatabase(join(w.directory, "data.db"));
-    try { expect(db.read("requirements", id)?.data).toMatchObject({ lifecycle: "active" }); } finally { db.close(); }
+    expect(migratedRequirement(join(w.directory, "data.db"), id)).toMatchObject({ lifecycle: "active" });
+    expect(() => new LocalDatabase(join(w.directory, "data.db"))).toThrow(/outdated_database/);
     const raw = new DatabaseSync(join(w.directory, "data.db"), { readOnly: true });
     try { expect(raw.prepare("PRAGMA application_id").get()?.application_id).toBe(DATABASE_APPLICATION_IDS.data); } finally { raw.close(); }
   } finally { reader.close(); }
@@ -171,7 +180,7 @@ test("VACUUM复制完成后进程异常，同operationId重试保留未确认副
   expect(injected).toBe(true); expect(receipt.state).toBe("completed");
   const candidates = (await readdir(receipt.backupDirectory)).filter((name) => name.startsWith("data.converted-"));
   expect(candidates).toHaveLength(2);
-  const db = new LocalDatabase(join(w.directory, "data.db")); try { expect(db.read("requirements", id)).not.toBeNull(); } finally { db.close(); }
+  expect(migratedRequirement(join(w.directory, "data.db"), id)).not.toBeNull();
 });
 
 test("copying阶段未登记hash的合法异内容候选不会被误认成源库副本", async () => {
@@ -199,8 +208,8 @@ test("copying阶段未登记hash的合法异内容候选不会被误认成源库
   const completed = JSON.parse(await readFile(manifestPath, "utf8"));
   expect(completed.abandonedCandidates).toContain(interrupted.candidateName);
   expect(completed.candidateName).not.toBe(interrupted.candidateName);
-  const db = new LocalDatabase(join(w.directory, "data.db"));
-  try { expect(db.read("requirements", sourceId)).not.toBeNull(); expect(db.read("requirements", replacementId)).toBeNull(); } finally { db.close(); }
+  expect(migratedRequirement(join(w.directory, "data.db"), sourceId)).not.toBeNull();
+  expect(migratedRequirement(join(w.directory, "data.db"), replacementId)).toBeNull();
   expect(receipt.state).toBe("completed");
 });
 
@@ -240,7 +249,7 @@ for (const interruptedAt of ["archive", "complete"] as const) {
     expect(repeated).toEqual(receipt);
     expect((await readdir(join(w.directory, "backups"))).filter((name) => name === operationId)).toHaveLength(1);
     expect(receipt.archivedFiles.filter((file) => file.name === "data.sqlite")).toHaveLength(1);
-    const db = new LocalDatabase(join(w.directory, "data.db")); try { expect(db.read("requirements", requirementId)).not.toBeNull(); } finally { db.close(); }
+    expect(migratedRequirement(join(w.directory, "data.db"), requirementId)).not.toBeNull();
   });
 }
 

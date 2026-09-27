@@ -28,7 +28,6 @@ import { readGit } from "./git-read.ts";
 export const CLOSE_OPERATIONS = "close_operations";
 export const DELIVERY_RECEIPTS = "delivery_receipts";
 export const COMPLETION_REPORTS = "completion_reports";
-const SPEC_PROPOSALS = "spec_proposals";
 const CHANGE_SETS = "change_sets";
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 const CloseReason = Type.Union([Type.Literal("completed"), Type.Literal("cancelled"), Type.Literal("rejected")]);
@@ -49,7 +48,7 @@ export const CloseOperation = object({
 export type CloseOperation = Static<typeof CloseOperation>;
 export const DeliveryReceipt = object({
   format: Type.Literal("delivery-receipt/v1"), receiptId: id, requirementId: id, repoId: hash, workspaceId: hash, branch: Type.String({ minLength: 1 }), epoch: positive,
-  revision: counter, approvedProdHash: nullable(hash), codeHead: Type.String({ minLength: 1 }), specSetHash: Type.String({ minLength: 1 }), inputHash: hash,
+  revision: counter, approvedProdHash: nullable(hash), codeHead: Type.String({ minLength: 1 }), inputHash: hash,
   checkRoundId: nullable(id), verificationIds: Type.Array(id), verdictIds: Type.Array(id), pendingRevision: nullable(positive),
   deliverable: Type.Boolean(), blockers: Type.Array(Type.String({ maxLength: 256 })), suggestions: counter, createdAt: counter,
 });
@@ -108,11 +107,6 @@ function runningVerificationsIn(db: LocalDatabase, repoId: string, requirementId
   return db.list<unknown>(VERIFICATION_RUNS).map((row) => checked(VerificationRun, row.data))
     .filter((run) => run.repoId === repoId && run.requirementId === requirementId && run.status === "running" && run.pid !== null && processIsAlive(run.pid));
 }
-function pendingProposalsIn(db: LocalDatabase, repoId: string, requirementId: string): string[] {
-  return db.list<{ repoId?: string; requirementId?: string; status?: string; operationId?: string }>(SPEC_PROPOSALS).map((row) => row.data)
-    .filter((proposal) => proposal.repoId === repoId && proposal.requirementId === requirementId && ["proposed", "validated", "partial_failure"].includes(proposal.status ?? ""))
-    .map((proposal) => proposal.operationId ?? "");
-}
 function latestRoundIn(db: LocalDatabase, repoId: string, requirementId: string, epoch: number): CheckRound | null {
   const rounds = db.list<unknown>(CHECK_ROUNDS).map((row) => checked(CheckRound, row.data))
     .filter((round) => round.repoId === repoId && round.requirementId === requirementId && round.epoch === epoch).sort((a, b) => a.createdAt - b.createdAt);
@@ -145,7 +139,6 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
   }
   const reviews = taskReviewsIn(db, repoId, requirementId, record.data.epoch);
   if (reviews === null) blockers.push("task_review_missing");
-  if (pendingProposalsIn(db, repoId, requirementId).length > 0) blockers.push("spec_candidates_unpublished");
   // 用户终止任务后、批准新的 prod 版本前，其目标仍在实施授权内时需求不能以完成关闭
   if (record.data.lifecycle === "active" && record.data.approvalManifest) {
     const scope = implementScope(registeredApprovalManifestIn(db, repoId, record.data.approvalManifest.reference, record));
@@ -173,9 +166,9 @@ function taskReviewsIn(db: LocalDatabase, repoId: string, requirementId: string,
   return found;
 }
 function managedWritesIn(db: LocalDatabase, repoId: string, requirementId: string): Array<[string, string, number]> {
-  return [SPEC_PROPOSALS, CHANGE_SETS].flatMap((namespace) => db.list<{ repoId?: string; requirementId?: string; status?: string; operationId?: string }>(namespace)
+  return db.list<{ repoId?: string; requirementId?: string; status?: string; operationId?: string }>(CHANGE_SETS)
     .filter((row) => row.data.repoId === repoId && row.data.requirementId === requirementId)
-    .map((row): [string, string, number] => [`${namespace}:${row.data.operationId ?? row.key}`, row.data.status ?? "", row.version])).sort();
+    .map((row): [string, string, number] => [`${CHANGE_SETS}:${row.data.operationId ?? row.key}`, row.data.status ?? "", row.version]).sort();
 }
 function basisOf(facts: DeliveryFacts): CloseBasis {
   const verificationIds = facts.verifications.map((run) => run.verificationId).sort();
@@ -292,7 +285,7 @@ export class RequirementCloseService {
       const receipt = checked(DeliveryReceipt, { format: "delivery-receipt/v1", receiptId: uuidv7(), requirementId, repoId: this.options.repoId,
         workspaceId: facts.record.data.workspace?.workspaceId ?? "0".repeat(64), branch: facts.record.data.workspace?.branch ?? "refs/heads/unbound", epoch: facts.record.data.epoch,
         revision: facts.record.data.revision, approvedProdHash: facts.record.data.approved?.hash ?? null, codeHead: manifest?.codeHead ?? "unknown",
-        specSetHash: manifest?.specSetHash ?? "unknown", inputHash: manifest?.inputHash ?? "0".repeat(64), checkRoundId: facts.round?.checkRoundId ?? null,
+        inputHash: manifest?.inputHash ?? "0".repeat(64), checkRoundId: facts.round?.checkRoundId ?? null,
         verificationIds: applicable, verdictIds: facts.verdicts.map((verdict) => verdict.verdictId), pendingRevision: facts.record.data.pendingRevision,
         deliverable: blockers.length === 0, blockers: [...new Set(blockers)], suggestions: facts.suggestions, createdAt: this.now() });
       db.create(DELIVERY_RECEIPTS, receipt.receiptId, receipt, receipt.receiptId);

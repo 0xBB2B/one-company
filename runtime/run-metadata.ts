@@ -2,7 +2,7 @@ import { lstatSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isPromise } from "node:util/types";
-import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS } from "./database-paths.ts";
+import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "./database-paths.ts";
 import { createTransactionOrigin, finishTransactionOrigin, hasInvalidTransactionOrigin, invalidateTransactionOrigin, observeRejectedPromise, runOutsideTransactionOrigin, runWithTransactionOrigin, transactionOriginHasAsyncWork } from "./transaction-context.ts";
 import type { SyncResult } from "./database.ts";
 
@@ -35,7 +35,7 @@ export function withReadOnlyDatabase<T>(path: string, read: (db: DatabaseSync) =
     const origin = createTransactionOrigin();
     try {
       db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000; BEGIN");
-      if (Number(db.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS.data || Number(db.prepare("PRAGMA user_version").get()?.user_version) !== 1) throw new Error("运行库身份无效");
+      if (Number(db.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS.data || Number(db.prepare("PRAGMA user_version").get()?.user_version) !== DATABASE_SCHEMA_VERSIONS.data) throw new Error("运行库身份无效");
       let result!: T;
       let nativePromise = false;
       let then: unknown;

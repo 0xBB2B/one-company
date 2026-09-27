@@ -2,6 +2,8 @@ import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export type DatabaseKind = "data" | "global" | "index";
+// data.db 的记录结构升到版本 2 且不迁移旧库；索引库可重建、全局库结构未变，仍为版本 1
+export const DATABASE_SCHEMA_VERSIONS: Readonly<Record<DatabaseKind, number>> = Object.freeze({ data: 2, global: 1, index: 1 });
 export const DATABASE_APPLICATION_IDS: Readonly<Record<DatabaseKind, number>> = Object.freeze({
   data: 0x50494441,
   global: 0x5049474c,
@@ -12,7 +14,7 @@ export const DATABASE_RECOVERY_FILE = ".database-recovery-required.json";
 export const DATABASE_SNAPSHOT_FILE = ".database-snapshot.json";
 
 export class DatabaseStorageError extends Error {
-  readonly code: "upgrade_required" | "maintenance_required" | "recovery_required" | "snapshot_only" | "invalid_database_file" | "wrong_database_kind";
+  readonly code: "upgrade_required" | "outdated_database" | "maintenance_required" | "recovery_required" | "snapshot_only" | "invalid_database_file" | "wrong_database_kind";
   constructor(code: DatabaseStorageError["code"], detail: string) {
     super(`本机数据库访问被阻止：${code}，${detail}`);
     this.name = "DatabaseStorageError"; this.code = code;

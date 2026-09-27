@@ -12,7 +12,6 @@ export const CORE_TOOL_ACTIONS = Object.freeze({
   agent_manage: Object.freeze(["dispatch", "status", "pause", "resume", "stop", "catalog"] as const),
   user_interact: Object.freeze(["ask", "reply", "forward"] as const),
   change_apply: Object.freeze(["prepare", "apply", "import", "status"] as const),
-  spec_change: Object.freeze(["propose", "validate", "publish"] as const),
   verification_run: Object.freeze(["run", "stop", "status"] as const),
   result_submit: Object.freeze(["research", "verdict"] as const),
   workflow_manage: Object.freeze(["status", "advance", "finish", "repair", "check-decision", "report", "close", "delivery-check"] as const),
@@ -30,7 +29,7 @@ const MATRIX: Readonly<Record<CoreRole, Grants>> = Object.freeze({
   },
   pm: {
     knowledge_query: all("knowledge_query"), requirement_manage: REQUIREMENT_READ_ONLY, plan_manage: all("plan_manage"),
-    agent_manage: all("agent_manage"), user_interact: all("user_interact"), spec_change: all("spec_change"),
+    agent_manage: all("agent_manage"), user_interact: all("user_interact"),
     verification_run: all("verification_run"), workflow_manage: all("workflow_manage").filter((action) => action !== "close"),
   },
   explore: { knowledge_query: all("knowledge_query"), result_submit: ["research"] },
@@ -62,7 +61,7 @@ export function toolActionsForRole(role: CoreRole): { [T in CoreTool]?: string[]
   return result;
 }
 
-export type ManagedWritePathClass = "code" | "spec" | "prod_archive" | "git_metadata" | "agent_definition" | "outside";
+export type ManagedWritePathClass = "code" | "prod_archive" | "git_metadata" | "agent_definition" | "outside";
 
 export function classifyManagedWritePath(repoRelativePath: string): ManagedWritePathClass {
   if (repoRelativePath === "" || repoRelativePath.includes("\\") || repoRelativePath.includes("\u0000") || posix.isAbsolute(repoRelativePath)) return "outside";
@@ -73,14 +72,10 @@ export function classifyManagedWritePath(repoRelativePath: string): ManagedWrite
   const [first, second] = parts.map((part) => part.toLowerCase());
   const [archiveFirst, archiveSecond] = PROD_ARCHIVE_DIRECTORY.split("/");
   if (first === archiveFirst && second === archiveSecond) return "prod_archive";
-  if (first === "docs" && second === "spec") return "spec";
   if (first === ".pi" && second === "agents") return "agent_definition";
   return "code";
 }
 
-export function writePathAllowed(tool: "change_apply" | "spec_change", repoRelativePath: string): boolean {
-  const kind = classifyManagedWritePath(repoRelativePath);
-  if (tool === "change_apply") return kind === "code";
-  const normalized = posix.normalize(repoRelativePath);
-  return kind === "spec" && normalized.startsWith("docs/spec/") && normalized.endsWith(".rules.json");
+export function writePathAllowed(repoRelativePath: string): boolean {
+  return classifyManagedWritePath(repoRelativePath) === "code";
 }

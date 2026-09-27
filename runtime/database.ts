@@ -3,7 +3,8 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { isPromise } from "node:util/types";
-import { assertDatabasePathReady, assertRegularDatabaseFiles, databaseKind, DATABASE_APPLICATION_IDS, DatabaseStorageError } from "./database-paths.ts";
+import { assertDatabasePathReady, assertRegularDatabaseFiles, databaseKind, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, DatabaseStorageError } from "./database-paths.ts";
+import type { DatabaseKind } from "./database-paths.ts";
 import { createTransactionOrigin, finishTransactionOrigin, hasInvalidTransactionOrigin, invalidateTransactionOrigin, observeRejectedPromise, runOutsideTransactionOrigin, runWithTransactionOrigin, transactionOriginHasAsyncWork } from "./transaction-context.ts";
 export { repositoryDatabase, globalDatabase, indexDatabase, databaseFile } from "./database-paths.ts";
 
@@ -117,6 +118,15 @@ export class TransactionCleanupError extends AggregateError {
 
 export type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
 
+function schemaVersion(kind: DatabaseKind | undefined): number { return kind ? DATABASE_SCHEMA_VERSIONS[kind] : 1; }
+function assertSupportedVersion(kind: DatabaseKind | undefined, version: number): void {
+  if (version === 0 || version === schemaVersion(kind)) return;
+  if (kind === "data" && version === 1) {
+    throw new DatabaseStorageError("outdated_database", "data.db 来自移除 spec 之前的版本，不再兼容；请备份后删除本机数据目录并重新初始化");
+  }
+  throw new Error(`不支持的数据库版本: ${version}`);
+}
+
 export class LocalDatabase {
   private readonly connection: Connection;
   private readonly path: string;
@@ -163,25 +173,25 @@ export class LocalDatabase {
             version: Number(this.connection.prepare("PRAGMA user_version").get()?.user_version),
             objects: Number(this.connection.prepare("SELECT count(*) AS n FROM sqlite_master").get()?.n) };
         } finally { this.connection.exec("ROLLBACK"); }
-        if (identity.version !== 0 && identity.version !== 1) throw new Error(`不支持的数据库版本: ${identity.version}`);
         if ((identity.version === 0 && identity.objects !== 0) || (identity.id !== DATABASE_APPLICATION_IDS[kind] && (identity.id !== 0 || identity.version !== 0 || identity.objects !== 0))) {
           throw new DatabaseStorageError("wrong_database_kind", "数据库用途或版本来源不明，不自动接管或重建");
         }
+        assertSupportedVersion(kind, identity.version);
       }
       chmodSync(this.path, 0o600);
       this.connection.exec(`PRAGMA busy_timeout = ${DATABASE_BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`);
       enableWal(this.connection);
       this.connection.exec("PRAGMA synchronous = FULL;");
       const version = Number(this.connection.prepare("PRAGMA user_version").get()?.user_version);
-      if (version !== 0 && version !== 1) throw new Error(`不支持的数据库版本: ${version}`);
+      assertSupportedVersion(kind, version);
       if (version === 0) this.transaction(() => {
         // 取得写锁后复核版本，不能用等待锁之前的旧版本覆盖其他进程的初始化。
         const lockedVersion = Number(this.connection.prepare("PRAGMA user_version").get()?.user_version);
-        if (lockedVersion === 1) {
+        if (lockedVersion === schemaVersion(kind)) {
           if (kind && Number(this.connection.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS[kind]) throw new DatabaseStorageError("wrong_database_kind", "数据库身份已变化");
           return;
         }
-        if (lockedVersion !== 0) throw new Error(`不支持的数据库版本: ${lockedVersion}`);
+        if (lockedVersion !== 0) assertSupportedVersion(kind, lockedVersion);
         this.connection.exec(`
           CREATE TABLE IF NOT EXISTS records (
             id TEXT PRIMARY KEY NOT NULL CHECK (${ID_CONSTRAINT}),
@@ -202,7 +212,7 @@ export class LocalDatabase {
             UNIQUE (stream, sequence)
           ) STRICT;
           PRAGMA application_id = ${kind ? DATABASE_APPLICATION_IDS[kind] : 0};
-          PRAGMA user_version = 1;
+          PRAGMA user_version = ${schemaVersion(kind)};
         `);
       });
       if (kind && Number(this.connection.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS[kind]) throw new DatabaseStorageError("wrong_database_kind", "数据库身份已变化");

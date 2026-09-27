@@ -13,7 +13,6 @@ import type { VerificationView } from "../runtime/verification-run.ts";
 import { createResultSubmitTool } from "../runtime/result-submit.ts";
 import { createChangeApplyTool } from "../runtime/change-apply.ts";
 import { createRequirementReadTool } from "../runtime/requirement-read-tool.ts";
-import { createSpecChangeTool } from "../runtime/spec-change.ts";
 import { createWorkflowManageTool } from "../runtime/workflow-manage.ts";
 import type { WorkflowManageGrant, WorkflowManageToolOptions } from "../runtime/workflow-manage.ts";
 import { RequirementCloseService, COMPLETION_REPORTS, DELIVERY_RECEIPTS, decideReportIn } from "../runtime/workflow-close.ts";
@@ -225,23 +224,17 @@ test("M6-AC11：预检通过后注入 prod 更新、代码变化、阻塞裁决�
   await rm(join(w.worktree.root, "src", "b.ts"));
   expect((await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] }).missing).toEqual(["completion_report_stale"]);
   receiptId = await w.accept();
-  const spec = await createSpecChangeTool({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, authorize: () => true, publishGate: () => ({ checkPhaseReleased: true, evidence: null }),
-    grant: { role: "pm", callerId: uuidv7(), runId: w.lease.runId, requirementId: w.created.requirementId, repoId: w.repoId, workspaceId: w.workspace.workspaceId, branch: w.workspace.branch, lease: structuredClone(w.lease) } });
-  cleanups.push(async () => spec.dispose());
   const original = RequirementCloseService.prototype.preflight;
   const injected = vi.spyOn(RequirementCloseService.prototype, "preflight").mockImplementation(async function (this: RequirementCloseService, input) {
     const result = await original.call(this, input);
     injected.mockRestore();
-    const rule = { id: "late.rule", title: "晚到", condition: "c", trigger: "t", expected: "e", reason: "r", dependsOn: [], exceptions: [], acceptance: [{ id: "a", given: "g", when: "w", then: "t" }] };
-    await spec.execute({ action: "propose", operationId: uuidv7(), files: [{ path: "docs/spec/player/late.rules.json", baseHash: "absent",
-      content: JSON.stringify({ $schema: "../schema.json", schemaVersion: 1, feature: { id: "late", title: "晚到", aliases: [] }, rules: [rule] }, null, 2) + "\n" }] });
+    await applier.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/late.ts", baseHash: "absent", content: "late\n" }] });
     return result;
   });
   const raced = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { status: string; missing: string[] };
   expect([raced.status, raced.missing]).toEqual(["rejected", ["close_basis_changed"]]);
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("active");
-  expect((await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] }).missing).toEqual(expect.arrayContaining(["spec_candidates_unpublished"]));
-  withDatabase(w.database, (db) => db.transaction(() => { for (const row of db.list("spec_proposals")) db.remove("spec_proposals", row.key, row.version); }));
+  await rm(join(w.worktree.root, "src", "late.ts"));
   receiptId = await w.accept();
   const operationId = uuidv7();
   const closed = await main.execute({ action: "close", reason: "completed", receiptId, operationId }) as CloseResult;
@@ -341,7 +334,7 @@ test("M7B-AC1/AC5：完成报告绑定交付依据，新报告作废旧报告；
   expect(JSON.stringify(closeStatus)).not.toContain("保留移动");
 });
 
-test("M8-AC9：需求分支未包含目标分支当前提交时不能开启检查轮，同步后可以；同步后的机械规则冲突阻止开启检查", async () => {
+test("M8-AC9：需求分支未包含目标分支当前提交时不能开启检查轮，同步后可以", async () => {
   const w = await world();
   if (!darwin) return;
   await writeFile(join(w.repositoryRoot, "main-only.ts"), "export const m = 1;\n");
@@ -349,14 +342,5 @@ test("M8-AC9：需求分支未包含目标分支当前提交时不能开启检�
   const pm = await w.tool();
   await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "sync_required" });
   expect(await syncTargetBranch({ repositoryRoot: w.repositoryRoot, worktree: w.worktree.root, branch: w.workspace.branch })).toMatchObject({ status: "rebased" });
-  const rule = (id: string, expected: string) => ({ id, title: id, condition: "角色在地面", trigger: "按下跳跃", expected, reason: "r", dependsOn: [], exceptions: [],
-    acceptance: [{ id: "a", given: "g", when: "w", then: "t" }] });
-  const spec = (rules: unknown[]) => JSON.stringify({ schemaVersion: 1, feature: { id: "jump", title: "跳跃", aliases: [] }, rules }, null, 2) + "\n";
-  await mkdir(join(w.worktree.root, "docs", "spec", "player"), { recursive: true });
-  await writeFile(join(w.worktree.root, "docs", "spec", "player", "a.rules.json"), spec([rule("jump.up", "起跳")]));
-  await writeFile(join(w.worktree.root, "docs", "spec", "player", "b.rules.json"), JSON.stringify({ schemaVersion: 1, feature: { id: "jump", title: "跳跃", aliases: [] },
-    rules: [rule("jump.down", "下蹲")] }, null, 2) + "\n");
-  await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "spec_conflict" });
-  await rm(join(w.worktree.root, "docs", "spec", "player", "b.rules.json"));
   expect(await pm.execute({ action: "advance" })).toMatchObject({ status: "open" });
 });

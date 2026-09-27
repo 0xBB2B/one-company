@@ -125,7 +125,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     return { root: await realpath(workspace.path), workspace };
   }
   async function locate(root: string, path: string): Promise<string> {
-    if (!writePathAllowed("change_apply", path)) throw new ChangeApplyError("forbidden_path", path);
+    if (!writePathAllowed(path)) throw new ChangeApplyError("forbidden_path", path);
     const normalized = posix.normalize(path);
     if (!grant.writePaths.some((allowed) => overlaps(allowed, normalized))) throw new ChangeApplyError("out_of_scope", path);
     let real: string;

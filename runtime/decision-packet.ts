@@ -53,11 +53,8 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
       const receipt = checked(DeliveryReceipt, db.read<unknown>(DELIVERY_RECEIPTS, report.deliveryReceiptId)!.data);
       const verdicts = readVerdictsIn(db, ref.repoId, requirementId).filter((verdict) => report.basis.verdictIds.includes(verdict.verdictId));
       const workers = tasks.filter((task) => task.role === "worker");
-      const specs = db.list<{ repoId?: string; requirementId?: string; status?: string; files?: Array<{ path: string }> }>("spec_proposals").map((row) => row.data)
-        .filter((proposal) => proposal.repoId === ref.repoId && proposal.requirementId === requirementId && proposal.status === "published")
-        .flatMap((proposal) => proposal.files?.map((file) => file.path) ?? []);
       return [...head, "以下事实由程序从持久记录生成：",
-        `交付凭据 ${receipt.receiptId} · 代码 ${receipt.codeHead} · 规则集合 ${receipt.specSetHash} · 阻塞 ${receipt.blockers.length} 项 · 非阻塞建议 ${receipt.suggestions} 条`,
+        `交付凭据 ${receipt.receiptId} · 代码 ${receipt.codeHead} · 阻塞 ${receipt.blockers.length} 项 · 非阻塞建议 ${receipt.suggestions} 条`,
         `检查轮 ${receipt.checkRoundId ?? "无"} · 适用的正式验证 ${receipt.verificationIds.length} 项`,
         ...verdicts.filter((verdict) => verdict.role === "qa").map((verdict) => `QA 结论：${verdict.conclusion}`),
         ...workers.map((task) => {
@@ -65,7 +62,6 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
           return `worker 任务 ${task.key}：${task.status} · 任务级审查 ${review?.conclusion ?? "无"}`;
         }),
         ...tasks.filter((task) => task.role !== "worker").map((task) => `${task.role} 任务 ${task.key}：${task.status}`),
-        `已发布规则文件：${specs.length ? [...new Set(specs)].join("、") : "无"}`,
         `需求分支本地提交 ${report.commits.length} 个${report.commitsTruncated ? `（仅列最近 ${report.commits.length} 个）` : ""}，提交说明由 PM 撰写${MODEL_NOTE}：`,
         ...report.commits.map((commit) => `  ${commit.sha.slice(0, 12)} ${quoted(commit.subject, 200)}`),
         `PM 的说明${MODEL_NOTE}：${quoted(report.note, 4000)}`,

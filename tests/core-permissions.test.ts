@@ -8,7 +8,6 @@ import { KnowledgeToolSchema } from "../runtime/knowledge-query-tool.ts";
 import { PROJECT_MANAGE_PARAMETERS } from "../runtime/project-manage-tool.ts";
 import { REQUIREMENT_READ_PARAMETERS } from "../runtime/requirement-read-tool.ts";
 import { CHANGE_APPLY_PARAMETERS } from "../runtime/change-apply.ts";
-import { SPEC_CHANGE_PARAMETERS } from "../runtime/spec-change.ts";
 import { VERIFICATION_RUN_PARAMETERS } from "../runtime/verification-run.ts";
 import { RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { WORKFLOW_MANAGE_PARAMETERS } from "../runtime/workflow-manage.ts";
@@ -35,12 +34,11 @@ function actionLiterals(schema: TSchema): string[] {
 test("固定六类职责与11个核心工具，action 枚举与计划 §9.1 一致", () => {
   expect([...CORE_ROLES]).toEqual(["main", "pm", "explore", "worker", "reviewer", "qa"]);
   expect(Object.keys(CORE_TOOL_ACTIONS)).toEqual(["project_manage", "knowledge_query", "requirement_manage", "plan_manage",
-    "agent_manage", "user_interact", "change_apply", "spec_change", "verification_run", "result_submit", "workflow_manage"]);
+    "agent_manage", "user_interact", "change_apply", "verification_run", "result_submit", "workflow_manage"]);
   expect(CORE_TOOL_ACTIONS.project_manage).toEqual(["init", "status", "refresh", "recovery-check", "backup", "restore",
     "workspace-prepare", "workspace-recycle"]);
   expect(CORE_TOOL_ACTIONS.requirement_manage).toEqual(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata"]);
   expect(CORE_TOOL_ACTIONS.plan_manage).toEqual(["propose", "read", "update", "confirm", "assess-update"]);
-  expect(CORE_TOOL_ACTIONS.spec_change).toEqual(["propose", "validate", "publish"]);
   expect(CORE_TOOL_ACTIONS.workflow_manage).toEqual(["status", "advance", "finish", "repair", "check-decision", "report", "close", "delivery-check"]);
   expect(Object.isFrozen(CORE_TOOL_ACTIONS)).toBe(true);
 });
@@ -48,7 +46,7 @@ test("固定六类职责与11个核心工具，action 枚举与计划 §9.1 一�
 test("六角色工具集合与计划 §9.2 逐项相等", () => {
   const tools = (role: (typeof CORE_ROLES)[number]) => Object.keys(toolActionsForRole(role)).sort();
   expect(tools("main")).toEqual(["agent_manage", "knowledge_query", "project_manage", "requirement_manage", "user_interact", "workflow_manage"]);
-  expect(tools("pm")).toEqual(["agent_manage", "knowledge_query", "plan_manage", "requirement_manage", "spec_change", "user_interact",
+  expect(tools("pm")).toEqual(["agent_manage", "knowledge_query", "plan_manage", "requirement_manage", "user_interact",
     "verification_run", "workflow_manage"]);
   expect(tools("explore")).toEqual(["knowledge_query", "result_submit"]);
   expect(tools("worker")).toEqual(["change_apply", "knowledge_query", "result_submit", "verification_run"]);
@@ -77,7 +75,6 @@ test("action 级上限按计划 §9.1/§9.3 收窄：分支工作区只归 main�
   expect(toolActionsForRole("main").workflow_manage).toEqual(["status", "advance", "finish", "repair", "check-decision", "close", "delivery-check"]);
   for (const role of CORE_ROLES) expect(authorizeToolAction(role, "workflow_manage", "init")).toBe(false);
   for (const role of CORE_ROLES) if (role !== "worker") expect(authorizeToolAction(role, "change_apply", "apply")).toBe(false);
-  for (const role of CORE_ROLES) if (role !== "pm") expect(authorizeToolAction(role, "spec_change", "publish")).toBe(false);
   for (const role of CORE_ROLES) if (role !== "main" && role !== "pm") expect(authorizeToolAction(role, "agent_manage", "dispatch")).toBe(false);
 });
 
@@ -110,31 +107,22 @@ test("已注册工具的 action 枚举都落在核心表内", () => {
   within(PROJECT_MANAGE_PARAMETERS, "project_manage");
 });
 
-test("受控写入的资源分类：change_apply 只写代码/测试/配置（不写 docs/spec、docs/prod、.git、.pi/agents），spec_change 只写 docs/spec 规则文件", () => {
+test("受控写入的资源分类：change_apply 可写代码、测试、配置与 docs/spec 等普通文件，不写 docs/prod、.git、.pi/agents", () => {
   expect(classifyManagedWritePath("src/a.ts")).toBe("code");
   expect(classifyManagedWritePath("docs/specs/a.rules.json")).toBe("code");
-  expect(classifyManagedWritePath("docs/spec/player/jump.rules.json")).toBe("spec");
-  expect(classifyManagedWritePath("docs/spec/schema.json")).toBe("spec");
-  expect(classifyManagedWritePath("Docs/Spec/a.rules.json")).toBe("spec");
+  expect(classifyManagedWritePath("docs/spec/player/jump.rules.json")).toBe("code");
   expect(classifyManagedWritePath("docs/prod/0197b7b0-6a20-7c51-8a32-b9465fb72d10.需求.md")).toBe("prod_archive");
   expect(classifyManagedWritePath("DOCS/PROD/x.md")).toBe("prod_archive");
   expect(classifyManagedWritePath(".git/HEAD")).toBe("git_metadata");
   expect(classifyManagedWritePath("sub/.git")).toBe("git_metadata");
   expect(classifyManagedWritePath("src/../docs/prod/x.md")).toBe("prod_archive");
-  expect(classifyManagedWritePath("./docs/spec/x.rules.json")).toBe("spec");
   for (const outside of ["../x.ts", "/abs/x.ts", "", "a\\b.ts", "a\u0000b"]) expect(classifyManagedWritePath(outside)).toBe("outside");
-  expect(writePathAllowed("change_apply", "src/a.ts")).toBe(true);
+  expect(writePathAllowed("src/a.ts")).toBe(true);
+  expect(writePathAllowed("docs/spec/player/jump.rules.json")).toBe(true);
   expect(classifyManagedWritePath(".pi/agents/worker.md")).toBe("agent_definition");
   expect(classifyManagedWritePath(".PI/Agents/x.md")).toBe("agent_definition");
-  for (const path of ["docs/spec/x.rules.json", "docs/prod/x.md", ".git/config", "Docs/Spec/a.rules.json", ".pi/agents/worker.md", "../x.ts", "/abs/x.ts"]) {
-    expect(writePathAllowed("change_apply", path)).toBe(false);
-  }
-  expect(writePathAllowed("change_apply", ".pi/settings.json")).toBe(true);
-  expect(writePathAllowed("spec_change", "docs/spec/player/jump.rules.json")).toBe(true);
-  for (const path of ["docs/spec/schema.json", "docs/spec/notes.md", "src/a.ts", "docs/prod/x.md", "docs/spec/../../x.rules.json",
-    "Docs/Spec/a.rules.json", "DOCS/SPEC/a.rules.json"]) {
-    expect(writePathAllowed("spec_change", path)).toBe(false);
-  }
+  for (const path of ["docs/prod/x.md", ".git/config", ".pi/agents/worker.md", "../x.ts", "/abs/x.ts"]) expect(writePathAllowed(path)).toBe(false);
+  expect(writePathAllowed(".pi/settings.json")).toBe(true);
 });
 
 test("已实现全部 action 的工具，schema 与核心表双向一致", () => {
@@ -142,7 +130,6 @@ test("已实现全部 action 的工具，schema 与核心表双向一致", () =>
   exact(REQUIREMENT_MANAGE_PARAMETERS, "requirement_manage");
   exact(USER_INTERACT_PARAMETERS, "user_interact");
   exact(CHANGE_APPLY_PARAMETERS, "change_apply");
-  exact(SPEC_CHANGE_PARAMETERS, "spec_change");
   exact(VERIFICATION_RUN_PARAMETERS, "verification_run");
   exact(RESULT_SUBMIT_PARAMETERS, "result_submit");
   exact(WORKFLOW_MANAGE_PARAMETERS, "workflow_manage");

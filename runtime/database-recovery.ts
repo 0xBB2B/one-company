@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { LocalDatabase, UUID_V7_PATTERN, uuidv7 } from "./database.ts";
 import { databaseMaintenanceDirectory } from "./database-maintenance.ts";
 import type { DatabaseMaintenancePermit, DatabaseManagementAuthorization } from "./database-maintenance.ts";
-import { assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_RECOVERY_FILE, DATABASE_SNAPSHOT_FILE, pathExists } from "./database-paths.ts";
+import { assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_RECOVERY_FILE, DATABASE_SCHEMA_VERSIONS, DATABASE_SNAPSHOT_FILE, pathExists } from "./database-paths.ts";
 
 export class DatabaseRecoveryError extends Error {
   readonly code: string;
@@ -174,7 +174,7 @@ function validateDatabase(path: string, applicationId: number, acceptedLegacy = 
   try {
     const version = Number(db.prepare("PRAGMA user_version").get()?.user_version);
     const identity = Number(db.prepare("PRAGMA application_id").get()?.application_id);
-    if (db.prepare("PRAGMA quick_check").get()?.quick_check !== "ok" || version !== 1 || (identity !== applicationId && !(acceptedLegacy && identity === 0))) throw new DatabaseRecoveryError("unrecognized_database");
+    if (db.prepare("PRAGMA quick_check").get()?.quick_check !== "ok" || (version !== 1 && version !== DATABASE_SCHEMA_VERSIONS.data) || (identity !== applicationId && !(acceptedLegacy && identity === 0))) throw new DatabaseRecoveryError("unrecognized_database");
     const table = Number(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='records'").get()?.n);
     if (table !== 1) throw new DatabaseRecoveryError("unrecognized_database");
     const requirements = db.prepare("SELECT id, record_key, version, data FROM records WHERE namespace='requirements'").all().map((row) => {

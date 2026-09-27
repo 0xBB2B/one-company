@@ -4,7 +4,7 @@ import { closeSync, constants, copyFileSync, fsyncSync, fstatSync, linkSync, lst
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { UUID_V7_PATTERN, uuidv7 } from "./database.ts";
-import { assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_MAINTENANCE_FILE, DATABASE_RECOVERY_FILE, DATABASE_SNAPSHOT_FILE, pathExists } from "./database-paths.ts";
+import { assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_MAINTENANCE_FILE, DATABASE_RECOVERY_FILE, DATABASE_SCHEMA_VERSIONS, DATABASE_SNAPSHOT_FILE, pathExists } from "./database-paths.ts";
 import type { DatabaseKind } from "./database-paths.ts";
 
 export class DatabaseMaintenanceError extends Error {
@@ -257,7 +257,7 @@ export function createDatabaseSnapshot(permit: DatabaseMaintenancePermit, kind: 
     sourceDb.exec("PRAGMA trusted_schema = OFF; PRAGMA busy_timeout = 5000;");
     const userVersion = Number(sourceDb.prepare("PRAGMA user_version").get()?.user_version);
     const applicationId = Number(sourceDb.prepare("PRAGMA application_id").get()?.application_id);
-    if (userVersion !== 1 || applicationId !== (sourceFormat === "legacy" ? 0 : DATABASE_APPLICATION_IDS[kind])) throw new DatabaseMaintenanceError("unrecognized_source_layout");
+    if (userVersion !== (sourceFormat === "legacy" ? 1 : DATABASE_SCHEMA_VERSIONS[kind]) || applicationId !== (sourceFormat === "legacy" ? 0 : DATABASE_APPLICATION_IDS[kind])) throw new DatabaseMaintenanceError("unrecognized_source_layout");
     const fd = openSync(snapshotPath, "wx", 0o600); closeSync(fd);
     // VACUUM INTO由SQLite取得一致读视图，不是只复制WAL主文件；所有文件步骤位于受控业务事务之外。
     sourceDb.prepare("VACUUM main INTO ?").run(snapshotPath);

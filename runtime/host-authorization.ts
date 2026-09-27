@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { repositoryDatabase, UUID_V7_PATTERN, withDatabase } from "./database.ts";
-import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS } from "./database-paths.ts";
+import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "./database-paths.ts";
 import { checkRequirement } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { checkInteraction, PendingQuestion } from "./user-interaction-format.ts";
@@ -127,7 +127,7 @@ export class HostAuthorizationManager {
     const db = new DatabaseSync(path, { readOnly: true });
     try {
       if (Number(db.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS.data ||
-        Number(db.prepare("PRAGMA user_version").get()?.user_version) !== 1) throw new HostAuthorizationError("database_identity");
+        Number(db.prepare("PRAGMA user_version").get()?.user_version) !== DATABASE_SCHEMA_VERSIONS.data) throw new HostAuthorizationError("database_identity");
       const result = run(db);
       this.assertRepository(repoId, sessionId);
       const after = lstatSync(path);

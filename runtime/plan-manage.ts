@@ -252,8 +252,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const noScope = specs.filter((spec) => spec.role === "worker" && spec.writePaths.length === 0);
     if (noScope.length) deny("dependency_invalid", noScope.map((spec) => `${spec.key} 是实现任务，须声明可写范围`));
     const unwritable = specs.filter((spec) => spec.role === "worker")
-      .flatMap((spec) => spec.writePaths.filter((path) => !writePathAllowed("change_apply", path)).map((path) => `${spec.key} 的 ${path} 不能由 worker 写入`));
-    if (unwritable.length) deny("dependency_invalid", [...unwritable, "worker 只写代码与测试；规则候选由 PM 用 pi_company_spec_change 维护"]);
+      .flatMap((spec) => spec.writePaths.filter((path) => !writePathAllowed(path)).map((path) => `${spec.key} 的 ${path} 不能由 worker 写入`));
+    if (unwritable.length) deny("dependency_invalid", unwritable);
     const strayReview = specs.filter((spec) => spec.role !== "worker" && spec.reviewAgent !== undefined);
     if (strayReview.length) deny("dependency_invalid", strayReview.map((spec) => `${spec.key} 不是实现任务，不能指定审查定义`));
     const keys = specs.map((spec) => spec.key);

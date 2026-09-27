@@ -16,7 +16,7 @@ export type WorkflowManageGrant = Static<typeof Grant>;
 const CloseReason = Type.Union([Type.Literal("completed"), Type.Literal("cancelled"), Type.Literal("rejected")]);
 export const WORKFLOW_MANAGE_PARAMETERS = Type.Union([
   object({ action: Type.Literal("status") }),
-  object({ action: Type.Literal("advance"), targetSpecProposal: Type.Optional(id) }),
+  object({ action: Type.Literal("advance") }),
   object({ action: Type.Literal("finish"), checkRoundId: id }),
   object({ action: Type.Literal("repair") }),
   object({ action: Type.Literal("check-decision"), checkRoundId: id, kind: Type.Union([Type.Literal("interrupt"), Type.Literal("defer")]), revision: positive }),
@@ -87,7 +87,7 @@ async function openWorkflowManageTool(options: WorkflowManageToolOptions) {
     switch (params.action) {
         case "repair": deny("unavailable");
         case "status": return freeze({ close: close.status(grant.requirementId) });
-        case "advance": return rounds.openRound({ lease: lease(), ...(params.targetSpecProposal ? { targetSpecProposal: params.targetSpecProposal } : {}) });
+        case "advance": return rounds.openRound({ lease: lease() });
         case "finish": return rounds.release({ lease: lease(), checkRoundId: params.checkRoundId });
         case "check-decision": return rounds.decide({ lease: lease(), checkRoundId: params.checkRoundId, kind: params.kind, revision: params.revision });
         case "delivery-check": return close.deliveryCheck(grant.requirementId);
