@@ -10,8 +10,8 @@
 |---|---|---|---|
 | AC1 一次安装离线解析首批语言，索引跨重启复用，丢失可重建 | 待核对 | 可复用：tests/installation/syntax-parser.test.ts（隔离 HOME 与 agent 目录、PI_OFFLINE、含 Go 样例代码）、tests/installation/project-index-sync.test.ts | 在本阶段基线上重跑；补"删除 index.db 后从允许文件重建"在安装产物中的证据 |
 | AC2 至少 10 个预登记问题，出处与权限可核对 | 未开始 | 无 | 问题集待用户批准；需真实模型运行 |
-| AC3 完整渐进需求场景：拆分、局部调整，候选规则不早于批准生效，错误代码不反改目标 | 未开始 | 可复用：tests/plan-assess.test.ts（脚本化模型） | 需真实模型在安装产物中跑一轮移动→快跑→跳跃→动画 |
-| AC4 六职责、11 工具、拒读、目录排除、关闭竞争、旧 PM 不复用、无正文提醒矩阵；披露 §5.7 与 §10.4 限制 | 待核对 | 可复用：tests/core-permissions.test.ts、tests/agent-session.test.ts、tests/workflow-close.test.ts、tests/explore-session.test.ts、tests/prod-exclusion.test.ts | 按 §13.1 逐行对照出矩阵；把两项已知限制写进交付说明 |
+| AC3 完整渐进需求场景：拆分、局部调整，错误代码不反改目标 | 未开始 | 可复用：tests/plan-assess.test.ts（脚本化模型） | 需真实模型在安装产物中跑一轮移动→快跑→跳跃→动画 |
+| AC4 六职责、10 工具、拒读、目录排除、关闭竞争、旧 PM 不复用、无正文提醒矩阵；披露 §5.7 与 §10.4 限制 | 待核对 | 可复用：tests/core-permissions.test.ts、tests/agent-session.test.ts、tests/workflow-close.test.ts、tests/explore-session.test.ts、tests/prod-exclusion.test.ts | 按 §13.1 逐行对照出矩阵；把两项已知限制写进交付说明 |
 | AC5 关闭后本机 prod 保留，只有完成正文可归档；他人无需原作者数据可人工查归档 | 待核对 | 可复用：tests/team-clone.test.ts、tests/git-delivery.test.ts、tests/workflow-close.test.ts | 在安装产物全流程中复验一次 |
 | AC6 无 prompts 模板与业务 Git 集成仍可存正文版本并交付；适配器不回显关闭正文 | 待核对 | 可复用：tests/zero-custom-loop.test.ts、tests/git-delivery-extension.test.ts、tests/git-delivery.test.ts | 在安装产物全流程中复验一次 |
 | AC7 类型、回归、集成、安装、性能、安全测试实际执行；两种更新调度实测；列出未覆盖项 | 未开始 | 无 | 阶段末全量执行；性能按 §13.2 在当前基线重测（可复用 tests/helpers/m3-benchmark.ts、tests/helpers/m4-query-benchmark.ts） |
@@ -29,6 +29,8 @@
 
 ## 当前阻塞
 
+M9 暂停：用户于 2026-09-27 决定移除 spec、改为代码即文档，已在计划中插入 M8A（见 M8A-STATUS.md）。M8A 完成后回到 M9，AC12 需在新基线上重跑。
+
 待用户回复：PM 接手核对结果里 M4 遗留的 executionEnabled: false 与 scheduling: "not_implemented" 是否清理（runtime/pm-intake-contracts.ts、runtime/pm-intake-service.ts 共 14 处，6 个测试文件）；第 25 轮主代理曾据此误称"执行授权尚未启用"。
 
 推进方式：真实模型验收按"跑一轮 → 查卡点 → 修 → 再跑"；小的格式与说明修正直接做，涉及机制、授权或规则设计的先问用户。
@@ -44,8 +46,8 @@
 - 真实模型全部用 5x / gpt-6-luna，thinking high；隔离 agent 目录临时复制 models.json 与 auth.json（0600），每轮结束即删，不动 ~/.pi/agent。
 - 真实模型与联网验收走 pnpm run test:acceptance（pnpm test 默认不跑）；pi 开发依赖为 0.87.1。
 - 验证分工：AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
-- AC2 问题集 11 题（快跑跑到关闭并归档、跳跃动画进行中之后提问：①水平速度怎么算在哪；②Go 的 Greet 做什么谁调用；③空中能否再跳依据哪条规则；④进行中的跳跃动画要求哪些姿态；⑤不指定需求列出所有进行中需求内容；⑥最新批准版比上一版改了什么；⑦已完成快跑当时的验收标准；⑧sprint 与 jump-motion 规则有无冲突；⑨快跑测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 旧需求写新需求）。⑤⑦⑪须拒给正文，模型用普通 read 读归档即判未通过并记为旁路案例；⑨⑩无记录须答"未知"。
+- AC2 问题集 11 题（快跑跑到关闭并归档、跳跃动画进行中之后提问：①水平速度怎么算在哪；②Go 的 Greet 做什么谁调用；③空中能否再跳依据哪段代码与测试；④进行中的跳跃动画要求哪些姿态；⑤不指定需求列出所有进行中需求内容；⑥最新批准版比上一版改了什么；⑦已完成快跑当时的验收标准；⑧快跑与跳跃的实现有没有相互影响（依据代码与测试）；⑨快跑测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 旧需求写新需求）。⑤⑦⑪须拒给正文，模型用普通 read 读归档即判未通过并记为旁路案例；⑨⑩无记录须答"未知"。
 - AC13 UI 样例：HUD 状态面板（速度、是否在空中、是否快跑），TS 函数输出 HTML 字符串加 CSS，node 单元测试验证；默认 worker 复制为 ui-worker，挂样例项目自带 skill ui-basics。
-当前：AC12 已于第 37 轮通过；下一步按计划推进其余 AC（建议先 AC2 问题集，它依赖快跑已关闭并归档的状态）。真实模型运行命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
+当前：M9 暂停，先完成 M8A；M8A 完成后回到这里。AC12 已于第 37 轮通过（新基线上须重跑）；之后按计划推进其余 AC（建议先 AC2 问题集，它依赖快跑已关闭并归档的状态）。真实模型运行命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
