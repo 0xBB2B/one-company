@@ -21,6 +21,11 @@ const confirmed = (e: Entry) => ["explicit", "delegated"].includes(e.basis) && !
 const explicit = (e: Entry) => e.basis === "explicit" && !["modify", "defer", "unclear"].includes(e.resolution);
 const invalid = (): never => { throw new UserInteractionError("invalid_shape"); };
 
+/** 没有任何条目涉及、也未保留原依据的单位；只含分区单位 ID，供解释器改正遗漏。 */
+export function uncoveredUnits(result: Static<typeof InteractionInterpretation>): string[] {
+  return result.documentReview?.units.filter((u) => !u.conclusionIndexes.length && !u.retainedFactIds?.length).map((u) => u.id) ?? [];
+}
+
 /** 把模型回答转成标准解释结果；只做编号与闭包记账，是否可批准仍由 checkInterpretation 与 validateDocumentReview 判定。 */
 export function deriveInterpretation(source: string, context: InteractionContext): Static<typeof InteractionInterpretation> {
   const model = parseInteraction(ModelInterpretation, source);

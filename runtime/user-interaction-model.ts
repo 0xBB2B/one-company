@@ -2,7 +2,8 @@ import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { decisionDigest } from "./short-decision-format.ts";
 import { checkContext, checkInterpretation, UserInteractionError } from "./user-interaction-format.ts";
-import { deriveInterpretation, ModelInterpretation } from "./interaction-derivation.ts";
+import type { InteractionInterpretation } from "./user-interaction-format.ts";
+import { deriveInterpretation, ModelInterpretation, uncoveredUnits } from "./interaction-derivation.ts";
 import type { InteractionInterpreter, InteractionModelIdentity } from "./user-interaction.ts";
 import { validateDocumentReview } from "./approval-manifest.ts";
 
@@ -68,18 +69,29 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
           controller.signal.addEventListener("abort", rejectAborted, { once: true });
           if (controller.signal.aborted) rejectAborted();
         });
-        const response = await Promise.race([registry.complete(model, context, {
-          signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384),
-        }), aborted]);
-        controller.signal.throwIfAborted();
-        if (response.stopReason !== "stop" || response.provider !== model.provider || response.model !== model.id ||
-          response.content.some((block) => block.type !== "text" && block.type !== "thinking")) throw new UserInteractionError("model_response_denied");
-        if (decisionDigest(modelIdentity(current())) !== decisionDigest(input.model)) throw new UserInteractionError("model_changed");
-        const source = response.content.filter((block) => block.type === "text").map((block) => block.text).join("");
-        const derived = JSON.stringify(deriveInterpretation(source, checkedContext));
-        const result = checkInterpretation(derived, checkedContext);
-        if (checkedContext.document) validateDocumentReview(checkedContext, result);
-        return derived;
+        // 核对不过时允许按错误代码重答一次：真实模型偶尔漏覆盖单位或写错结构提示，核对规则本身不放宽
+        for (let attempt = 0; ; attempt++) {
+          const response = await Promise.race([registry.complete(model, context, {
+            signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384),
+          }), aborted]);
+          controller.signal.throwIfAborted();
+          if (response.stopReason !== "stop" || response.provider !== model.provider || response.model !== model.id ||
+            response.content.some((block) => block.type !== "text" && block.type !== "thinking")) throw new UserInteractionError("model_response_denied");
+          if (decisionDigest(modelIdentity(current())) !== decisionDigest(input.model)) throw new UserInteractionError("model_changed");
+          const source = response.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+          let derived: InteractionInterpretation | undefined;
+          try {
+            derived = deriveInterpretation(source, checkedContext);
+            const result = checkInterpretation(JSON.stringify(derived), checkedContext);
+            if (checkedContext.document) validateDocumentReview(checkedContext, result);
+            return JSON.stringify(derived);
+          } catch (error) {
+            if (attempt > 0 || !(error instanceof UserInteractionError)) throw error;
+            const missing = derived ? uncoveredUnits(derived) : [];
+            context.messages.push(response, { role: "user", timestamp: Date.now(), content: `上次回答未通过宿主核对：${error.code}。` +
+              `${missing.length ? `没有任何条目涉及的单位：${missing.join("、")}。` : ""}请按说明修正后重新输出完整JSON。` });
+          }
+        }
       } catch {
         throw new UserInteractionError("model_interpretation_denied");
       } finally {

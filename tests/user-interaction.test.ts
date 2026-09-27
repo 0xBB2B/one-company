@@ -818,6 +818,29 @@ test("pi-ai完整文档review走真实同一API路径，原文只在调用载荷
   expect(spy.mock.calls[0]![1].systemPrompt).toContain("unitIds");
   expect(spy.mock.calls[0]![1].messages).toEqual([]);
 });
+test("解释结果未通过核对时，带错误代码与未覆盖单位让解释器重答一次；第二次通过即采用", async () => {
+  const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
+  const good = modelAnswer(w.output()), missing = { ...good, entries: good.entries.map((e) => ({ ...e, unitIds: (e as { unitIds?: string[] }).unitIds?.filter((id) => id !== "B") })) };
+  const calls: Array<{ messages: unknown[] }> = [];
+  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => { calls.push({ messages: structuredClone(c.messages) }); return complete(m, c, o); });
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(missing))]), fauxAssistantMessage([fauxText(JSON.stringify(good))])]);
+  const output = await a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal });
+  expect(JSON.parse(output).documentReview.units.find((u: { id: string }) => u.id === "B").conclusionIndexes.length).toBeGreaterThan(0);
+  expect(calls).toHaveLength(2);
+  const feedback = JSON.stringify(calls[1]!.messages.at(-1));
+  expect(feedback).toContain("未通过宿主核对：review_entry_mismatch");
+  expect(feedback).toContain("没有任何条目涉及的单位：B");
+  expect(feedback).not.toContain("实施手机号");
+});
+test("重答仍未通过核对时拒绝，最多只调用两次模型", async () => {
+  const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
+  const good = modelAnswer(w.output()), missing = { ...good, entries: good.entries.map((e) => ({ ...e, unitIds: (e as { unitIds?: string[] }).unitIds?.filter((id) => id !== "B") })) };
+  const spy = vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => complete(m, c, o));
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(missing))]), fauxAssistantMessage([fauxText(JSON.stringify(missing))]), fauxAssistantMessage([fauxText(JSON.stringify(good))])]);
+  await expect(a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal }))
+    .rejects.toThrow(/model_interpretation_denied/);
+  expect(spy).toHaveBeenCalledTimes(2);
+});
 test("pi-ai调用期间切换宿主模型，旧结果拒绝而不偷换模型", async () => {
   const w = await world(), a = await adapterWorld();
   const complete = a.registry.complete; let proceed!: () => void, entered!: () => void;
