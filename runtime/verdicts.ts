@@ -34,7 +34,8 @@ export interface VerdictBinding {
 export type VerdictErrorCode = "invalid_shape" | "invalid_binding" | "out_of_scope";
 export class VerdictError extends Error {
   readonly code: VerdictErrorCode;
-  constructor(code: VerdictErrorCode, detail?: string) { super(detail ? `${code}: ${detail}` : code); this.name = "VerdictError"; this.code = code; }
+  readonly detail: string | undefined;
+  constructor(code: VerdictErrorCode, detail?: string) { super(detail ? `${code}: ${detail}` : code); this.name = "VerdictError"; this.code = code; this.detail = detail; }
 }
 
 /** 结论只由程序按分级计算：任一阻塞项即 blocked，仅有未验证项即 unverified，其余为 clear；建议项不影响结论。 */

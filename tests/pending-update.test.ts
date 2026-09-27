@@ -93,6 +93,10 @@ test("M6-AC19/M7A-AC2：裁决按阻塞/建议/未验证分级并关联目标与
     { checkRoundId: null, verificationIds: [debug.verificationId, debug.verificationId], summary: "x", findings: [] }]) {
     expect(() => workerSubmit.execute({ action: "verdict", result: bad })).toThrow(/invalid_shape/);
   }
+  expect(() => workerSubmit.execute({ action: "verdict", result: { summary: "完成", status: "completed", changed_files: ["src/a.ts"], verificationIds: "x" } }))
+    .toThrow("invalid_shape：多余字段：status、changed_files；缺少字段：checkRoundId、findings；字段值格式不符：verificationIds；本动作允许字段：checkRoundId、verificationIds、summary、findings");
+  expect(() => workerSubmit.execute({ action: "verdict", result: { checkRoundId: null, verificationIds: [debug.verificationId, debug.verificationId], summary: "x", findings: [] } }))
+    .toThrow("invalid_shape：重复的验证引用");
   const own = workerSubmit.execute({ action: "verdict", result: { checkRoundId: null, verificationIds: [debug.verificationId], summary: "自测通过", findings: [finding("suggestion")] } }) as { conclusion: string; isPass: boolean };
   expect([own.conclusion, own.isPass]).toEqual(["clear", false]);
   const stranger = w.submit("worker", uuidv7());

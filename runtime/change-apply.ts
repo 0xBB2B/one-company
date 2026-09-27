@@ -214,7 +214,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
         throw new ChangeApplyError("stale_base", "分支提交已变化");
       }
     } else {
-      const stale = planned.filter((file, index) => observed[index]!.currentHash !== file.baseHash).map((file) => file.path);
+      const stale = planned.flatMap((file, index) => observed[index]!.currentHash === file.baseHash ? [] : [`${file.path} 当前 baseHash=${observed[index]!.currentHash}`]);
       if (stale.length > 0) throw new ChangeApplyError("stale_base", stale.join(","));
       host(action);
       set = checked(ChangeSet, { format: "change-set/v1", operationId: params.operationId, runId: grant.runId, requirementId: grant.requirementId,
@@ -277,7 +277,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
       const { root } = await bindWorkspace("prepare");
       const planned = await plan(root, params);
       const observed = await observe(planned);
-      const stale = planned.filter((file, index) => observed[index]!.currentHash !== file.baseHash).map((file) => file.path);
+      const stale = planned.flatMap((file, index) => observed[index]!.currentHash === file.baseHash ? [] : [`${file.path} 当前 baseHash=${observed[index]!.currentHash}`]);
       if (stale.length > 0) throw new ChangeApplyError("stale_base", stale.join(","));
       const head = (await snapshotBranchState({ repoRoot: root })).head;
       host("prepare");

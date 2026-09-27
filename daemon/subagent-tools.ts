@@ -5,7 +5,7 @@ import { createPlanManageTool, PLAN_MANAGE_PARAMETERS } from "../runtime/plan-ma
 import type { TaskRecord } from "../runtime/plan-manage.ts";
 import type { PmLease, WorkspaceBinding } from "../runtime/requirement-contracts.ts";
 import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS } from "../runtime/requirement-read-tool.ts";
-import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
+import { createResultSubmitTool, VERDICT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
 import type { CoreToolRuntime } from "../runtime/role-tools.ts";
 import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS } from "../runtime/verification-run.ts";
@@ -43,7 +43,7 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
         : "在检查阶段运行正式检查（formal），或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, verification));
     if (role === "worker") {
       const change = track(await createChangeApplyTool({ ...shared, authorize, grant: { ...identity, role, epoch: input.epoch, writePaths: input.task.writePaths } }));
-      tools.push(toPiTool("change_apply", `只在授权范围 ${input.task.writePaths.join("、")} 内预检、写入或导入代码与测试。`, CHANGE_APPLY_PARAMETERS, change));
+      tools.push(toPiTool("change_apply", `只在授权范围 ${input.task.writePaths.join("、")} 内预检、写入或导入代码与测试。baseHash 是文件当前内容的 sha256，新建文件填 absent；不确定时先 prepare，被拒时的提示会给出当前值。operationId 每次新生成 UUIDv7。`, CHANGE_APPLY_PARAMETERS, change));
     } else {
       const read = track(await createRequirementReadTool({ ...shared, authorize, binding: { ...identity, role, lease: input.pmLease } }));
       tools.push(toPiTool("requirement_manage", role === "qa" ? "读取已批准的目标与验收场景（黑盒验收）。" : "读取已批准的需求正文、章节或差异。",
@@ -57,9 +57,9 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
       verdictBinding: { dataRoot: input.dataRoot, ...scope, epoch: input.epoch,
         ...(input.review ? { review: { taskId: input.task.taskId, attemptRunId: input.review.attemptRunId } } : {}) } });
     runtimes.push(result);
-    tools.push(toPiTool("result_submit", role === "worker" ? "提交本任务结果（action=verdict）：只能引用本运行的调试验证，未完成或有问题时按阻塞、未验证分级列出；结果不是通过证明。"
+    tools.push(toPiTool("result_submit", role === "worker" ? "提交本任务结果（action=verdict）：summary 写做了什么，verificationIds 列本运行的调试验证编号，checkRoundId 填 null；未完成或有问题时在 findings 按阻塞、未验证分级列出，没有就给空数组；结果不是通过证明。"
       : role === "reviewer" ? "提交对被审任务改动的审查裁决（action=verdict，checkRoundId 为 null）：只能引用本运行的测试，按阻塞、建议、未验证分级。"
-        : "提交引用本检查轮正式验证结果的裁决（action=verdict），按阻塞、建议、未验证分级。", RESULT_SUBMIT_PARAMETERS, result));
+        : "提交引用本检查轮正式验证结果的裁决（action=verdict），按阻塞、建议、未验证分级。", VERDICT_SUBMIT_PARAMETERS, result));
     return { tools, dispose() { for (const runtime of runtimes) runtime.dispose(); } };
   } catch (error) {
     for (const runtime of runtimes) runtime.dispose();

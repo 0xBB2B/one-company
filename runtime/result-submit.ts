@@ -9,7 +9,8 @@ import { checked, id, object } from "./requirement-contracts.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
 import { checkExploreSession } from "./explore-session.ts";
 import type { ExploreSessionConfig } from "./explore-session.ts";
-import { submitVerdict, VerdictError } from "./verdicts.ts";
+import { shapeIssue } from "./tool-request.ts";
+import { submitVerdict, VERDICT_PAYLOAD, VerdictError } from "./verdicts.ts";
 import type { VerdictBinding } from "./verdicts.ts";
 
 const Grant = object({
@@ -17,16 +18,18 @@ const Grant = object({
   callerId: id, runId: id, parentRunId: Type.String({ minLength: 1, maxLength: 256 }),
 });
 export type ResultSubmitGrant = Static<typeof Grant>;
+/** worker、reviewer、QA 看到的参数：result 直接给出裁决格式，模型不必猜字段。 */
+export const VERDICT_SUBMIT_PARAMETERS = object({ action: Type.Literal("verdict"), result: VERDICT_PAYLOAD });
 export const RESULT_SUBMIT_PARAMETERS = Type.Union([
   object({ action: Type.Literal("research"), result: Type.Unknown() }),
-  object({ action: Type.Literal("verdict"), result: Type.Unknown() }),
+  VERDICT_SUBMIT_PARAMETERS,
 ]);
 export type ResultSubmitParameters = Static<typeof RESULT_SUBMIT_PARAMETERS>;
 export type ResultSubmitAction = ResultSubmitParameters["action"];
 export type ResultSubmitErrorCode = "result_submit_denied" | "invalid_shape" | "invalid_binding" | "out_of_scope" | "resource_limit" | "verdict_unavailable" | "stale_session";
 export class ResultSubmitError extends Error {
   readonly code: ResultSubmitErrorCode;
-  constructor(code: ResultSubmitErrorCode) { super(code); this.name = "ResultSubmitError"; this.code = code; }
+  constructor(code: ResultSubmitErrorCode, hint?: string) { super(hint ? `${code}：${hint}` : code); this.name = "ResultSubmitError"; this.code = code; }
 }
 export interface ResultSubmitAuthorization { readonly grant: Readonly<ResultSubmitGrant>; readonly action: ResultSubmitAction }
 export interface ResultSubmitToolOptions {
@@ -65,13 +68,16 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
   }
   function execute(input: unknown) {
     let params: ResultSubmitParameters;
-    try { params = checkServiceInput(RESULT_SUBMIT_PARAMETERS, input); } catch { throw new ResultSubmitError("invalid_shape"); }
+    try { params = checkServiceInput(RESULT_SUBMIT_PARAMETERS, input); } catch {
+      const raw = input && typeof input === "object" ? input as { action?: unknown; result?: unknown } : {};
+      throw new ResultSubmitError("invalid_shape", raw.action === "verdict" ? shapeIssue(VERDICT_PAYLOAD, raw.result) : undefined);
+    }
     host(params.action);
     if (params.action === "verdict") {
       if (!options.verdictBinding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
       let verdict;
       try { verdict = submitVerdict(options.verdictBinding, { role: grant.role, runId: grant.runId, parentRunId: grant.parentRunId }, params.result); }
-      catch (error) { throw new ResultSubmitError(error instanceof VerdictError ? error.code : "invalid_shape"); }
+      catch (error) { throw error instanceof VerdictError ? new ResultSubmitError(error.code, error.detail) : new ResultSubmitError("invalid_shape"); }
       host("verdict");
       return freeze({ kind: "verdict" as const, accepted: true, isPass: false, verdictId: verdict.verdictId, conclusion: verdict.conclusion,
         checkRoundId: verdict.checkRoundId, findings: verdict.findings.length, runId: grant.runId });
