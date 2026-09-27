@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
 import { repositoryIdentity, daemonSocketPath } from "../../runtime/identity.ts";
@@ -118,6 +118,11 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     if (!daemonGone && socketPath) { await killUnder(root); daemonGone = await waitMissing(socketPath, 10_000); }
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    const sessions = await readdir(join(agentDir, "pi-company"), { recursive: true }).catch(() => [] as string[]);
+    for (const path of sessions.filter((name) => name.endsWith("session.jsonl"))) {
+      await mkdir(join(evidence, "runs"), { recursive: true });
+      await copyFile(join(agentDir, "pi-company", path), join(evidence, "runs", `${basename(dirname(path))}.jsonl`)).catch(() => undefined);
     }
     // 凭据无论成败都删；其余现场仅在守护进程已退出时整体删除，否则保留供排查
     await rm(join(agentDir, "auth.json"), { force: true });
