@@ -822,7 +822,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
   const tool: ToolDefinition<typeof publicParameters, Record<string, unknown>> = {
     name: "pi_company_project_manage",
     label: "管理项目索引",
-    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；operationId 每次新生成 UUIDv7，requirementId 取自需求工具结果，不要自编。初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
+    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；operationId 每次新生成 UUIDv7，requirementId 取自需求工具结果，不要自编。初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认；结果里的 version 是需求的新版本号，后续需求操作要用它。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
     promptSnippet: "通过受控宿主入口预览、初始化、查看或刷新当前项目索引",
     parameters: publicParameters,
     executionMode: "sequential",
@@ -851,7 +851,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
               ? await workspace.prepare({ requirementId: params.requirementId, operationId: params.operationId })
               : await workspace.recycle({ requirementId: params.requirementId, operationId: params.operationId });
             return textResult({ action: params.action, requirementId: result.requirementId, status: result.status, branch: result.branch,
-              path: result.path, baseCommit: result.baseCommit });
+              path: result.path, baseCommit: result.baseCommit, version: workspace.requirementVersion(result.requirementId) });
           } catch (error) {
             if (error instanceof WorkspaceManageError) {
               return textResult({ action: params.action, status: "blocked", code: error.code, blockers: error.blockers });

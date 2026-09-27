@@ -67,7 +67,7 @@ test("M7-AC10：创建按 UUID 分支与固定目录建立 worktree 并绑定需
   const w = await world();
   const head = (await runGit(["rev-parse", "HEAD"], w.repo.root)).trim();
   await writeFile(join(w.repo.root, "未提交.txt"), "主仓库改动");
-  const operationId = uuidv7();
+  const operationId = uuidv7(), before = w.state.read(w.requirementId).version;
   const ready = await w.workspace.prepare({ requirementId: w.requirementId, operationId });
   expect(ready).toMatchObject({ status: "ready", branch: `refs/heads/req/${w.requirementId}`, baseCommit: head, path: w.location.path });
   expect(w.location.path).toBe(join(dirname(w.repo.root), ".pi-company-worktrees", basename(w.repo.root), w.requirementId));
@@ -77,6 +77,7 @@ test("M7-AC10：创建按 UUID 分支与固定目录建立 worktree 并绑定需
   expect(await exists(join(ready.path, "未提交.txt"))).toBe(false);
   const binding = w.state.read(w.requirementId).data.workspace!;
   expect(binding).toMatchObject({ branch: ready.branch, baseCommit: head, prepareOperationId: operationId });
+  expect(w.workspace.requirementVersion(w.requirementId)).toBe(before + 1);
   expect(await w.workspace.prepare({ requirementId: w.requirementId, operationId })).toMatchObject({ status: "ready" });
   expect(await w.workspace.prepare({ requirementId: w.requirementId, operationId: uuidv7() })).toMatchObject({ status: "ready", path: ready.path });
   expect(w.prompts).toHaveLength(1);

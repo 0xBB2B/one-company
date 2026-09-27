@@ -94,6 +94,11 @@ export class WorkspaceManageService {
     }));
   }
 
+  /** 绑定或解绑工作区会让需求版本加一，调用方后续的需求操作要用这个新版本。 */
+  requirementVersion(requirementId: string): number {
+    return this.state.read(checked(id, requirementId)).version;
+  }
+
   async prepare(input: { requirementId: string; operationId: string }): Promise<ManagedWorkspace> {
     checked(id, input.requirementId); checked(id, input.operationId);
     const record = this.state.read(input.requirementId);
