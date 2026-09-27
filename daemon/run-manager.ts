@@ -475,6 +475,10 @@ export class RunManager {
       awaiting_rework: `审查打回：核对问题后用 agent_manage dispatch taskId=${taskId} 并带 rework（原因与新的轮次上限）派 worker 返修一次。`,
       awaiting_user: "该任务已用完机会，进入等待用户裁决，不能再派工；请向主代理报告。",
     };
+    const qaFindings = !review && task.role === "qa" && report !== undefined && report.findings.some((finding) => finding.kind !== "suggestion");
+    if (qaFindings && task.status === "awaiting_parent") {
+      next.awaiting_parent = "QA 发现问题：不要原样重派 QA。先用 workflow_manage finish 结束本检查轮，按问题追加返修任务并经任务级审查，再开新检查轮后用 retry 重派 QA。";
+    }
     const lines = [`${review ? "审查" : "子代理"}运行 ${runId} 已结束：任务 ${task.key}，结局 ${effective}，已用 ${used?.turnsUsed ?? 0}/${used?.maxTurns ?? 0} 轮，任务状态 ${task.status}。`,
       report ? `提交结论 ${report.conclusion}：${report.summary}；验证引用 ${report.verificationIds.join("、") || "无"}；分级问题 ${report.findings.length} 项。`
         : outcome === "ended_without_result" ? "没有提交结果就结束了本轮。" : "没有提交结果。",
