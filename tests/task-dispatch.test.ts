@@ -2,6 +2,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { createPlanManageTool, stalledStage, TASKS } from "../runtime/plan-manage.ts";
+import { VERDICTS } from "../runtime/verdicts.ts";
+import type { Verdict } from "../runtime/verdicts.ts";
 import type { TaskRecord } from "../runtime/plan-manage.ts";
 import { PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
@@ -148,6 +150,11 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   w.provider.queue.push({ type: "text", text: "慢慢写 c", chunkDelayMs: 20_000 });
   const c = await w.dispatch("c");
   await until(async () => { const current = await w.runStore.get(c.runId); return current.ok && current.run.state === "running"; });
+  const redGreen = [uuidv7(), uuidv7()];
+  withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => {
+    const row = db.list<Verdict>(VERDICTS).find((item) => item.data.runId === a.runId)!;
+    db.update(VERDICTS, row.id, row.version, { ...row.data, verificationIds: redGreen });
+  });
   w.provider.queue.push(submit("a 符合目标", [{ kind: "suggestion" }]), pmAck);
   const reviewer = await w.review("a");
   await until(() => w.task("a").status === "completed");
@@ -156,6 +163,7 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   expect(await w.runStore.get(reviewer.runId)).toMatchObject({ ok: true, run: { role: "pi-company.reviewer", writePaths: [], task: w.task("a").taskId } });
   const reviewerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!;
   expect(reviewerRequest.tools?.map((tool) => tool.name)).not.toContain("pi_company_change_apply");
+  expect(reviewerRequest.systemPrompt).toContain(`worker 提交引用的验证记录：${redGreen.join("、")}`);
 
   w.provider.queue.push(submit("完成 d"), pmAck);
   await w.dispatch("d");

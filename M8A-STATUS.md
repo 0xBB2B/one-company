@@ -10,7 +10,7 @@
 | AC2 检查轮、正式验证、审查、QA、完成报告、关闭与交付在无规则集指纹时按原门槛工作；四套测试全绿 | 通过 | typecheck 通过；全部测试 158 个文件、2397 通过 1 跳过（.bb-spec/.cache/m8a/step2-final.txt）；旧 data.db 被拒用例在 tests/database-storage.test.ts | 无 |
 | AC3 worker/reviewer 定义含说明注释规则；新基线上真实模型零自定义闭环通过，新定义带说明，审查覆盖此项 | 进行中 | 定义与测试：4ad1fc5、463c818、18abe67（tests/role-catalog.test.ts）；第 39—41 轮 worker 均按 Go 写法写了说明注释，第 40、41 轮审查结论写明注释核对结果（证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-27T14-52-57-273Z、…T15-02-12-337Z）；第 41 轮因 PM 把测试拆成单独任务卡住，已按 AC5 修 | 待先红后绿落地后重跑闭环通过 |
 | AC4 计划正文与 M9 验收项去除 spec 内容 | 通过 | 1ea1a60 | 无 |
-| AC5 worker/PM/reviewer 定义含先红后绿规则；reviewer 只读被审尝试引用的验证记录 | 通过 | 本次提交；tests/role-catalog.test.ts（三处规则）、tests/verification-run.test.ts（reviewer 读引用记录、读不到未引用和别的尝试、不能停止、QA 不能读） | 无 |
+| AC5 worker/PM/reviewer 定义含先红后绿规则；reviewer 只读被审尝试引用的验证记录 | 通过 | 37f3e1b 及本次（reviewer 任务说明列出 worker 引用的验证编号，tests/task-dispatch.test.ts）；tests/role-catalog.test.ts（三处规则）、tests/verification-run.test.ts（reviewer 读引用记录、读不到未引用和别的尝试、不能停止、QA 不能读） | 无 |
 
 ## 当前阻塞
 

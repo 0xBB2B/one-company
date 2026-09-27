@@ -44,7 +44,7 @@ describe("内置默认团队", () => {
     const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
     expect(body("worker")).toMatch(/新增或修改的每个函数、方法、类、类型\/接口与导出常量写说明注释[\s\S]*参照 Go 官方库[\s\S]*参数[\s\S]*返回值/);
     expect(body("worker")).not.toContain("注释默认不写");
-    expect(body("reviewer")).toMatch(/核对说明注释[\s\S]*有副作用的写明副作用[\s\S]*没有副作用的不要求注明，未改动的旧定义不要求补写；缺失或不符列为阻塞。结论 summary 写明说明注释的核对结果/);
+    expect(body("reviewer")).toMatch(/核对说明注释[\s\S]*有副作用的写明副作用[\s\S]*没有副作用的不要求注明，未改动的旧定义不要求补写，只按上述要点核对，不追加其他写法要求（如函数返回值的单位、示例）；缺失或不符列为阻塞。结论 summary 写明说明注释的核对结果/);
     for (const role of AGENT_ROLES) expect(body(role)).not.toMatch(/\bspec\b|spec_change|规则候选/);
   });
 
