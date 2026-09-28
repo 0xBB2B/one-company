@@ -17,20 +17,20 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 const BODY = "# 目标 {#goals}\n保留移动。\n";
 const exists = (path: string) => lstat(path).then(() => true, () => false);
 
-async function world() {
+async function world(options: { draft?: boolean } = {}) {
   const root = await mkdtemp(join(temporaryRoot(), "workspace-manage-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
-  const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId };
+  const paths = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId };
   const grants = new Map<string, { action: string; intent: string; receiptId?: string }>();
-  const service = await RequirementService.open({ ...options, authorize: (request) => {
-    if (request.repoId !== options.repoId) return false;
+  const service = await RequirementService.open({ ...paths, authorize: (request) => {
+    if (request.repoId !== paths.repoId) return false;
     if (request.action === "metadata") return true;
     const grant = request.operationId ? grants.get(request.operationId) : undefined;
     return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
   } });
-  const state = await RequirementStateStore.open({ ...options, authorize: (request) => request.repoId === options.repoId && ["open", "read"].includes(request.action) });
+  const state = await RequirementStateStore.open({ ...paths, authorize: (request) => request.repoId === paths.repoId && ["open", "read"].includes(request.action) });
   const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: BODY };
   grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: BODY }) });
   const { requirementId } = await service.create(create);
@@ -43,16 +43,32 @@ async function world() {
   cleanups.push(() => rm(join(location.path, "..", ".."), { recursive: true, force: true }));
   const prompts: string[] = [];
   let answer = true;
-  const workspace = await WorkspaceManageService.open({ ...options, confirm: async (title, message) => { prompts.push(`${title}\n${message}`); return answer; } });
+  const workspace = await WorkspaceManageService.open({ ...paths, confirm: async (title, message) => { prompts.push(`${title}\n${message}`); return answer; } });
   const setAnswer = (value: boolean) => { answer = value; };
   async function close() {
     const receipt = uuidv7();
-    const closer = await RequirementCloseService.open({ ...options, stopAgents: async () => {}, authorize: (request) => request.action !== "close" || request.receiptId === receipt });
+    const closer = await RequirementCloseService.open({ ...paths, stopAgents: async () => {}, authorize: (request) => request.action !== "close" || request.receiptId === receipt });
     cleanups.push(async () => closer.dispose());
     return closer.close({ requirementId, reason: "cancelled", receiptId: receipt, operationId: uuidv7() });
   }
-  return { ...options, repo, state, requirementId, location, workspace, prompts, setAnswer, close, activate };
+  if (!options.draft) await activate();
+  return { ...paths, repo, state, requirementId, location, workspace, prompts, setAnswer, close };
 }
+
+test("M8A-AC7：草稿阶段创建工作区被拒，不弹确认、不建目录或记录", async () => {
+  const w = await world({ draft: true });
+  await expect(w.workspace.prepare({ requirementId: w.requirementId, operationId: uuidv7() })).rejects.toMatchObject({ code: "requirement_not_active" });
+  expect(w.prompts).toHaveLength(0);
+  expect(await exists(w.location.path)).toBe(false);
+  expect(w.workspace.read(w.requirementId)).toBeNull();
+}, 30000);
+
+test("M8A-AC7：已生效但没有工作区的需求可以取消", async () => {
+  const w = await world();
+  expect(w.state.read(w.requirementId).data).toMatchObject({ lifecycle: "active", workspace: null });
+  await w.close();
+  expect(w.state.read(w.requirementId).data.lifecycle).toBe("closed");
+}, 30000);
 
 test("M7-AC10：创建须真实确认；拒绝则不建分支、目录或记录", async () => {
   const w = await world();
@@ -121,7 +137,6 @@ test("M7-AC10：外部切换 worktree 分支后旧绑定核验失败", async () 
 test("M7-AC11：活动需求不能回收；关闭后有未交付内容默认保留并报告，清理后才回收且幂等", async () => {
   const w = await world();
   const ready = await w.workspace.prepare({ requirementId: w.requirementId, operationId: uuidv7() });
-  await w.activate();
   await expect(w.workspace.recycle({ requirementId: w.requirementId, operationId: uuidv7() })).rejects.toMatchObject({ code: "requirement_not_closed" });
   await w.close();
   expect(w.state.read(w.requirementId).data.lifecycle).toBe("closed");

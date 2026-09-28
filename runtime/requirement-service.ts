@@ -342,8 +342,7 @@ export class RequirementService {
       }
     }
     if (action === "confirmUpdate") {
-      if (!before.data.workspace) throw new RequirementServiceError("workspace_not_ready");
-      await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
+      if (before.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
       this.authorize(authorization);
     }
     return this.write(action, input, before, document, authorization);

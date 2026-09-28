@@ -217,13 +217,11 @@ test("真实saved候选→Core部分批准→元数据清单→prod批准/read/�
   expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(49_152);
 });
 
-test("未ready可记录明确范围但不激活；服务和状态双重门槛保留", async () => {
+test("M8A-AC7：没有绑定工作区也按批准清单激活", async () => {
   const f = await fixture(false); await f.store.register(f.document()!.manifest);
-  await expect(f.approver.confirmUpdate(f.confirm())).rejects.toMatchObject({ code: "workspace_not_ready" });
-  await expect(f.state.recordApprovedVersion({ requirementId: f.saved.requirementId, version: f.context.version,
-    receiptId: f.confirm().receiptId, reference: f.context.saved, manifest: f.confirm().manifest })).rejects.toMatchObject({ code: "workspace_not_ready" });
-  expect(f.state.read(f.saved.requirementId).data.lifecycle).toBe("draft");
-  expect(f.state.events(f.saved.requirementId).filter((e) => e.data.kind === "prod.approved")).toEqual([]);
+  await f.approver.confirmUpdate(f.confirm());
+  expect(f.state.read(f.saved.requirementId).data).toMatchObject({ lifecycle: "active", workspace: null });
+  expect(f.state.events(f.saved.requirementId).filter((e) => e.data.kind === "prod.approved")).toHaveLength(1);
 });
 
 test("新批准接缝拒绝缺manifest、假ref、不同正文、跨需求与漏hash", async () => {

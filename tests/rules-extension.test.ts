@@ -21,3 +21,14 @@ test("窗口尚未启动时只附规则，不编造仓库", async () => {
   expect(systemPrompt).toContain("## 主会话职责");
   expect(systemPrompt).not.toContain("当前窗口已接入的仓库");
 });
+
+test("M8A-AC7：主会话规则要求先请用户批准草稿，需求生效后再建工作区、派 PM", async () => {
+  const pi = createFakePi();
+  rulesExtension(pi.pi, { windowContext: () => { throw new Error("窗口未启动"); } });
+  const { systemPrompt } = await start(pi);
+  const approve = systemPrompt.indexOf("confirmUpdate 登记"), prepare = systemPrompt.indexOf("workspace-prepare"), dispatch = systemPrompt.indexOf("role=pm");
+  expect(approve).toBeGreaterThan(0);
+  expect(prepare).toBeGreaterThan(approve);
+  expect(dispatch).toBeGreaterThan(prepare);
+  expect(systemPrompt).not.toContain("在请用户批准之前");
+});

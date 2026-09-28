@@ -177,7 +177,7 @@ test("无变化 draft 不空提交；首次确认引用已有提交但仍激活�
   expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
 });
 
-test("确认必须同时具备可信 receipt 授权与 ready 独立 worktree 绑定", async () => {
+test("M8A-AC7：确认须有可信 receipt 授权，不要求已绑定 worktree", async () => {
   let allowConfirmation = true;
   const w = await world((request) => request.action !== "confirmUpdate" || allowConfirmation);
   const created = await w.service.create(createInput());
@@ -189,14 +189,14 @@ test("确认必须同时具备可信 receipt 授权与 ready 独立 worktree 绑
     body: "初始正文",
   };
   await expect(w.service.confirmUpdate(base as never)).rejects.toMatchObject({ code: "invalid_shape" });
-  await expect(w.service.confirmUpdate({ ...base, receiptId: uuidv7() })).rejects.toMatchObject({ code: "workspace_not_ready" });
-
-  const bound = await w.bind(created.requirementId);
   allowConfirmation = false;
-  await expect(w.service.confirmUpdate({ ...base, operationId: uuidv7(), version: bound.version, receiptId: uuidv7() }))
+  await expect(w.service.confirmUpdate({ ...base, operationId: uuidv7(), receiptId: uuidv7() }))
     .rejects.toMatchObject({ code: "authorization_required" });
   expect(w.state.read(created.requirementId).data.lifecycle).toBe("draft");
   expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
+  allowConfirmation = true;
+  await w.service.confirmUpdate({ ...base, operationId: uuidv7(), receiptId: uuidv7() });
+  expect(w.state.read(created.requirementId).data).toMatchObject({ lifecycle: "active", workspace: null });
 });
 
 test("diff 使用登记的跨版本 approved 事件，正确跨过中间 draft", async () => {

@@ -500,8 +500,8 @@ export class MainRequirementInteraction {
     const summary = summarizeApprovalManifest(document.manifest);
     await store.register(document.manifest);
     const registered: ResultScope = { kind: "registered", proof: { reference, admission: { receiptId: document.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: document.authorization.inputProof }, summary, allowedScopes } };
-    if (!targetRecorded || !loaded.workspace) return this.#prove(ctx, request.repoId, { ...base, allowedScopes,
-      scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: !targetRecorded ? "explicit_target_required" : "workspace_not_ready" }, registered, decisionProofs);
+    if (!targetRecorded) return this.#prove(ctx, request.repoId, { ...base, allowedScopes,
+      scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "explicit_target_required" }, registered, decisionProofs);
     const receiptId = document.authorization.receiptId;
     const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "confirmUpdate" &&
       r.operationId === request.operationId && r.version === loaded.version && r.intentHash === loaded.candidate.intentHash &&

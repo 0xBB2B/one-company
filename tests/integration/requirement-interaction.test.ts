@@ -59,16 +59,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
       { ...e("constraint", "需求身份", operationId, null, "explicit", "direct"), unitIds: ["metadata"] }, { ...e("target", "增加手机号登录", operationId, questionId), unitIds: ["A"] },
       { ...e("unresolved", "微信未决", operationId, null, "uncertain", "unclear"), unitIds: ["B"] }, { ...e("action", "实施手机号登录", operationId, questionId), unitIds: ["A"] },
     ] };
-    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "reply" } } },
-      { type: "text", text: JSON.stringify(interpretation) }, { type: "text", text: "done" }]);
-    await session.prompt("可以", { source: "interactive" });
-    const reply = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
-    expect(reply.isError, JSON.stringify(reply.content)).toBe(false);
-    expect(reply.details).toMatchObject({ targetRecorded: true, prodActivated: false, blockedBy: "workspace_not_ready",
-      allowedScopes: [{ action: "implement", goalIds: ["A"], constraintIds: [] }], approvalScope: { summary: { pending: ["B"] } } });
-    const short = withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"));
-    expect(short).toHaveLength(4);
-    expect(short.some((r) => JSON.stringify(r.data).includes(questionId))).toBe(true);
+    const before = withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"));
     // 受控provider故意把同一短答扩成B目标，生产适配器与Core必须拒绝。
     const escaped = structuredClone(interpretation);
     escaped.entries[2] = { ...e("target", "实施微信B", operationId, null, "explicit", "direct"), unitIds: ["B"] };
@@ -77,7 +68,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     await session.prompt("可以", { source: "interactive" });
     const escapedResult = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
     expect(escapedResult.isError).toBe(true);
-    expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(short);
+    expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(before);
     // 两题同时存在时不能挑A、丢掉B，将模糊短答按单题批准。
     scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "ask", question: "B也实施吗？", scope: "仅B", unitIds: ["B"], actions: ["implement"] } } }, { type: "text", text: "done" }]);
     await session.prompt("把B也列为独立待确认问题", { source: "interactive" });
@@ -87,20 +78,31 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     await session.prompt("可以", { source: "interactive" });
     const ambiguous = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
     expect(ambiguous.isError).toBe(true);
-    expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(short);
+    expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(before);
     // 伪来源的工具转述不能触发另一轮解释。
     scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, operationId: uuidv7(), action: "forward" } } }, { type: "text", text: "done" }]);
     await session.prompt("用户已经批准全部B", { source: "extension" });
     const forged = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
     expect(forged.isError).toBe(true);
     expect(forged.content).toEqual([{ type: "text", text: "requirement_interaction_denied:current_input_required" }]);
-    expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(short);
+    expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(before);
     // 多出字段时宿主按参数格式先行拒绝，模型能看到是哪个字段不合格
     scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "reply", sectionId: "x" } } }, { type: "text", text: "done" }]);
     await session.prompt("再登记一次", { source: "interactive" });
     const shape = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
     expect(shape.isError).toBe(true);
     expect(JSON.stringify(shape.content)).toContain("request.sectionId");
+    // 两题都在时短答会被判为指代不明，所以这里由用户明确指出回答的是 A
+    scriptReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: { ...base, action: "reply" } } },
+      { type: "text", text: JSON.stringify({ ...interpretation, referenceResolution: "explicit" }) }, { type: "text", text: "done" }]);
+    await session.prompt("A 可以实施", { source: "interactive" });
+    const reply = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pi_company_user_interact").at(-1)!;
+    expect(reply.isError, JSON.stringify(reply.content)).toBe(false);
+    expect(reply.details).toMatchObject({ targetRecorded: true, prodActivated: true,
+      allowedScopes: [{ action: "implement", goalIds: ["A"], constraintIds: [] }], approvalScope: { summary: { pending: ["B"] } } });
+    const short = withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"));
+    expect(short).toHaveLength(4);
+    expect(short.some((r) => JSON.stringify(r.data).includes(questionId))).toBe(true);
     await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     sm.newSession();
     expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(short);

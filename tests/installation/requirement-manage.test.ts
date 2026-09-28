@@ -212,7 +212,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     expect(await git(requirementRoot, ["rev-list", "--count", "HEAD"])).toBe("1");
     const forwarded = session.messages.find((message) => message.role === "toolResult" && message.toolName === "pi_company_user_interact");
     expect(forwarded?.isError, JSON.stringify(forwarded?.content)).toBe(false);
-    expect(forwarded?.details).toMatchObject({ targetRecorded: true, prodActivated: false, blockedBy: "workspace_not_ready",
+    expect(forwarded?.details).toMatchObject({ targetRecorded: true, prodActivated: true,
       allowedScopes: [{ action: "analyze", goalIds: ["whole-body"], constraintIds: [] }] });
     expect(notifications.filter((entry) => entry.type === "error")).toEqual([]);
   } finally {

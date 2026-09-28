@@ -23,7 +23,7 @@ const ManagedWorkspace = object({
 });
 export type ManagedWorkspace = Static<typeof ManagedWorkspace>;
 
-export type WorkspaceManageErrorCode = "requirement_not_open" | "requirement_not_closed" | "declined" | "path_conflict" | "branch_conflict"
+export type WorkspaceManageErrorCode = "requirement_not_active" | "requirement_not_closed" | "declined" | "path_conflict" | "branch_conflict"
   | "operation_conflict" | "not_prepared" | "recycle_blocked" | "git_failed";
 export class WorkspaceManageError extends Error {
   readonly code: WorkspaceManageErrorCode;
@@ -102,7 +102,7 @@ export class WorkspaceManageService {
   async prepare(input: { requirementId: string; operationId: string }): Promise<ManagedWorkspace> {
     checked(id, input.requirementId); checked(id, input.operationId);
     const record = this.state.read(input.requirementId);
-    if (record.data.lifecycle !== "draft" && record.data.lifecycle !== "active") throw new WorkspaceManageError("requirement_not_open");
+    if (record.data.lifecycle !== "active") throw new WorkspaceManageError("requirement_not_active", ["需求批准生效后才能创建工作区"]);
     const existing = this.read(input.requirementId);
     if (existing && existing.operationId !== input.operationId) {
       if (existing.status === "ready") return existing;

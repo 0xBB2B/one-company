@@ -146,7 +146,7 @@ export function checkRequirement(value: unknown, requirementId: string, repoId: 
     (record.lifecycle === "draft" && record.approved !== null) ||
     ((record.recovery === "ready") !== (record.recoveryReason === null)) ||
     (record.close?.reason === "completed" && (record.approved === null || record.workspace === null || record.pendingRevision !== null)) ||
-    (record.lifecycle === "active" && (record.approved === null || record.workspace === null)) ||
+    (record.lifecycle === "active" && record.approved === null) ||
     ((record.lifecycle === "closing" || record.lifecycle === "closed") !== (record.close !== null)) ||
     (record.pendingRevision !== null && record.pendingRevision !== record.revision) ||
     (record.workspace !== null && (record.workspace.requirementId !== requirementId || record.workspace.repoId !== repoId))) throw new RequirementStateError("invalid_state");

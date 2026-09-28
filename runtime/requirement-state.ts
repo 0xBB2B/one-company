@@ -388,8 +388,7 @@ export class RequirementStateStore {
     const request = checked(commands.approve, input); this.authorize("approved-version", request);
     if (this.options.authorizeManifest && !request.manifest) throw new RequirementStateError("manifest_required");
     const previous = this.read(request.requirementId);
-    if (!previous.data.workspace) throw new RequirementStateError("workspace_not_ready");
-    await verifyRequirementWorkspace(this.options.dataRoot, previous.data.workspace);
+    if (previous.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, previous.data.workspace);
     // Core使用独立SQLite核验快照；作为写事务前最后一次授权，事务内不再调用宿主。
     const authorizeManifest = request.manifest ? () => {
       if (previous.data.approvalReceiptId === request.receiptId &&
@@ -402,8 +401,8 @@ export class RequirementStateStore {
     const approvalTime = this.now();
     return this.mutate("approved-version", request, (db) => {
       const record = this.get(db, request.requirementId); this.active(record.data, true);
-      if (!record.data.workspace || !equal(record.data.workspace, previous.data.workspace)) throw new RequirementStateError("workspace_binding_changed");
-      this.checkClaims(db, record.data.workspace);
+      if (!equal(record.data.workspace, previous.data.workspace)) throw new RequirementStateError("workspace_binding_changed");
+      if (record.data.workspace) this.checkClaims(db, record.data.workspace);
       if (!equal(record.data.saved, request.reference)) throw new RequirementStateError("saved_version_mismatch");
       const digest = createHash("sha256").update(canonicalJson(request)).digest("hex");
       const consumed = db.read("requirement_approval_uses", request.receiptId);

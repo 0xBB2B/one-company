@@ -228,7 +228,6 @@ export class RequirementOperations {
       if (requirement.epoch !== input.epoch) throw new RequirementServiceError("epoch_changed");
       const parent = requirement.saved?.commit ?? null;
       if (parent !== input.expectedParent) throw new RequirementServiceError("saved_version_changed");
-      if (input.action === "confirmUpdate" && !requirement.workspace) throw new RequirementServiceError("workspace_not_ready");
       const now = this.checkedNow();
       const data: RequirementOperation = {
         format: "requirement-service-operation/v1",

@@ -64,14 +64,14 @@ async function plainWorld(options: { prepare?: boolean; activate?: boolean } = {
   const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: BODY };
   grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: BODY }) });
   const { requirementId } = await service.create(create);
-  if (options.prepare !== false) {
-    const workspace = await WorkspaceManageService.open({ ...base, confirm: async () => true });
-    const ready = await workspace.prepare({ requirementId, operationId: uuidv7() });
-    cleanups.push(() => rm(join(ready.path, "..", ".."), { recursive: true, force: true }));
-    if (options.activate !== false) {
-      const confirm = { requirementId, operationId: uuidv7(), version: state.read(requirementId).version, title: "角色跳跃", body: BODY, receiptId: uuidv7() };
-      grants.set(confirm.operationId, { action: "confirmUpdate", intent: requirementIntentHash({ title: confirm.title, body: BODY }), receiptId: confirm.receiptId });
-      await service.confirmUpdate(confirm);
+  if (options.activate !== false) {
+    const confirm = { requirementId, operationId: uuidv7(), version: state.read(requirementId).version, title: "角色跳跃", body: BODY, receiptId: uuidv7() };
+    grants.set(confirm.operationId, { action: "confirmUpdate", intent: requirementIntentHash({ title: confirm.title, body: BODY }), receiptId: confirm.receiptId });
+    await service.confirmUpdate(confirm);
+    if (options.prepare !== false) {
+      const workspace = await WorkspaceManageService.open({ ...base, confirm: async () => true });
+      const ready = await workspace.prepare({ requirementId, operationId: uuidv7() });
+      cleanups.push(() => rm(join(ready.path, "..", ".."), { recursive: true, force: true }));
     }
   }
   const { runs } = await manager(base, root);
@@ -98,8 +98,8 @@ function toolNames(request: Context | undefined): string[] {
   return (request?.tools ?? []).map((tool) => tool.name).sort();
 }
 
-test("M7-AC13：PM 只在工作区 ready、需求 active 且有实施授权时派出，受限接手上下文不含 prod 正文", async () => {
-  await expect((await plainWorld({ prepare: false })).dispatch()).rejects.toMatchObject({ code: "requirement_not_active" });
+test("M7-AC13、M8A-AC7：PM 只在工作区 ready、需求 active 且有实施授权时派出，已生效但没有工作区时被拒，受限接手上下文不含 prod 正文", async () => {
+  await expect((await plainWorld({ prepare: false })).dispatch()).rejects.toMatchObject({ code: "workspace_not_ready" });
   await expect((await plainWorld({ activate: false })).dispatch()).rejects.toMatchObject({ code: "requirement_not_active" });
   await expect((await plainWorld()).dispatch()).rejects.toMatchObject({ code: "implement_not_authorized" });
   const w = await world();

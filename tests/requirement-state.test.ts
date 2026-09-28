@@ -113,7 +113,7 @@ test("主工作目录不能绑定，工作区和分支占用不可串给其他�
   expect(other.data.workspace!.branch).not.toBe(bound.data.workspace!.branch);
 });
 
-test("绑定前没有现场不能激活，保存版本不等于批准；操作重试不重复事件", async () => {
+test("M8A-AC7：没有现场也能批准生效，保存版本不等于批准；没有现场不能取得 PM 租约，绑定后可以；操作重试不重复事件", async () => {
   const w = await world(); const first = w.reserve();
   const save = { requirementId: first.id, version: first.version, operationId: uuidv7(), reference: reference() };
   const saved = w.store.recordSavedVersion(save);
@@ -122,13 +122,15 @@ test("绑定前没有现场不能激活，保存版本不等于批准；操作�
   expect(w.store.recordSavedVersion({ ...save, version: saved.version, operationId: uuidv7() })).toEqual(saved);
   expect(w.store.events(first.id)).toHaveLength(2);
   expect(() => w.store.recordSavedVersion({ ...save, reference: reference("changed") })).toThrow(/operation_conflict/);
-  await expect(w.store.recordApprovedVersion({ requirementId: first.id, version: saved.version, receiptId: uuidv7(), reference: reference() })).rejects.toThrow(/workspace_not_ready/);
-  const bound = await w.bind(first.id);
-  await expect(w.store.recordApprovedVersion({ requirementId: first.id, version: bound.version, receiptId: uuidv7(), reference: reference("wrong") })).rejects.toThrow(/saved_version_mismatch/);
+  await expect(w.store.recordApprovedVersion({ requirementId: first.id, version: saved.version, receiptId: uuidv7(), reference: reference("wrong") })).rejects.toThrow(/saved_version_mismatch/);
   const receiptId = uuidv7();
-  const approved = await w.store.recordApprovedVersion({ requirementId: first.id, version: bound.version, receiptId, reference: reference() });
-  expect(approved.data.lifecycle).toBe("active"); expect(approved.data.revision).toBe(1);
-  expect((await w.store.recordApprovedVersion({ requirementId: first.id, version: bound.version, receiptId, reference: reference() })).version).toBe(approved.version);
+  const approved = await w.store.recordApprovedVersion({ requirementId: first.id, version: saved.version, receiptId, reference: reference() });
+  expect(approved.data.lifecycle).toBe("active"); expect(approved.data.revision).toBe(1); expect(approved.data.workspace).toBeNull();
+  expect((await w.store.recordApprovedVersion({ requirementId: first.id, version: saved.version, receiptId, reference: reference() })).version).toBe(approved.version);
+  await expect(w.store.acquirePm({ requirementId: first.id, version: approved.version, runId: uuidv7(), expectedFence: 0 })).rejects.toThrow(/workspace_not_ready/);
+  const bound = await w.bind(first.id);
+  expect(bound.data.lifecycle).toBe("active");
+  await expect(w.store.acquirePm({ requirementId: first.id, version: bound.version, runId: uuidv7(), expectedFence: 0 })).resolves.toMatchObject({ requirementId: first.id });
 });
 
 test("一个有效PM：租约更新、到期接管及旧fence拒绝", async () => {
