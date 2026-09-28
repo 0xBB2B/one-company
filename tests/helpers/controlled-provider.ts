@@ -21,6 +21,8 @@ export interface ControlledProvider {
   baseUrl: string;
   queue: ScriptedReply[];
   requests: Context[];
+  /** 队列为空时改为等待这里给出的回复；不设时空队列立即报错。 */
+  awaitReply?: () => Promise<ScriptedReply | undefined>;
 }
 
 function zeroUsage(): Usage {
@@ -66,7 +68,7 @@ export function registerControlledProvider(
         tools: getCurrentTools(context.messages),
         messages: context.messages.filter((message) => message.role !== "system"),
       });
-      const reply = handle.queue.shift();
+      const queued = handle.queue.shift();
       const stream = createAssistantMessageEventStream();
       const base: AssistantMessage = {
         role: "assistant",
@@ -74,13 +76,15 @@ export function registerControlledProvider(
         api: model.api,
         provider: model.provider,
         model: model.id,
-        usage: { ...zeroUsage(), ...reply?.usage },
+        usage: zeroUsage(),
         stopReason: "pending",
         timestamp: Date.now(),
       };
 
       queueMicrotask(() => { void (async () => {
         await options?.onPayload?.({ fixture: "controlled-provider" }, model);
+        const reply = queued ?? await handle.awaitReply?.();
+        base.usage = { ...zeroUsage(), ...reply?.usage };
         if (!reply) {
           stream.push({
             type: "error",

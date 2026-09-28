@@ -9,6 +9,8 @@ export const PROVIDER_REQUESTS_LOG_ENV_VAR = "PI_COMPANY_TEST_PROVIDER_REQUESTS_
 export const TRIGGER_UNHANDLED_REJECTION_ENV_VAR = "PI_COMPANY_TEST_TRIGGER_UNHANDLED_REJECTION";
 export const TRIGGER_UNCAUGHT_EXCEPTION_ENV_VAR = "PI_COMPANY_TEST_TRIGGER_UNCAUGHT_EXCEPTION";
 export const ASSEMBLY_DELAY_MS_ENV_VAR = "PI_COMPANY_TEST_ASSEMBLY_DELAY_MS";
+/** 测试运行中追加回复的 JSONL 文件，每行 {providerId, reply}；队列空时 provider 最多等 30 秒读到新行。 */
+export const PROVIDER_APPEND_ENV_VAR = "PI_COMPANY_TEST_PROVIDER_APPEND";
 
 export interface ProviderScript {
   providerId: string;
@@ -55,7 +57,23 @@ export async function registerProviders(runtime: ModelRuntime): Promise<void> {
     });
     scriptReplies(provider, script.replies);
     if (logPath) watchRequests(provider, logPath);
+    const appendPath = process.env[PROVIDER_APPEND_ENV_VAR];
+    if (appendPath) provider.awaitReply = () => awaitAppended(appendPath, provider.providerId);
   }
+}
+
+const consumedAppends = new Map<string, number>();
+async function awaitAppended(path: string, providerId: string): Promise<ScriptedReply | undefined> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    let lines: string[] = [];
+    try { lines = readFileSync(path, "utf8").split("\n").filter(Boolean); } catch { /* 文件尚未创建 */ }
+    const mine = lines.map((line) => JSON.parse(line) as { providerId: string; reply: ScriptedReply }).filter((entry) => entry.providerId === providerId);
+    const used = consumedAppends.get(providerId) ?? 0;
+    if (mine.length > used) { consumedAppends.set(providerId, used + 1); return mine[used]!.reply; }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return undefined;
 }
 
 // requests 是测试进程读不到的子进程内数组；重写这个具体数组实例的 push，
@@ -65,14 +83,15 @@ function watchRequests(provider: ControlledProvider, logPath: string): void {
   const originalPush = requests.push.bind(requests);
   requests.push = (...items: unknown[]): number => {
     for (const context of items) {
-      let text = "";
+      let text = "", last = "";
       try {
         text = JSON.stringify(context).slice(0, 20_000);
+        last = JSON.stringify((context as { messages?: unknown[] }).messages?.at(-1) ?? null).slice(0, 20_000);
       } catch {
         text = "";
       }
       try {
-        appendFileSync(logPath, `${JSON.stringify({ providerId: provider.providerId, at: Date.now(), text })}\n`);
+        appendFileSync(logPath, `${JSON.stringify({ providerId: provider.providerId, at: Date.now(), text, last })}\n`);
       } catch {
         // 日志文件写入失败不影响受控 provider 正常应答
       }
