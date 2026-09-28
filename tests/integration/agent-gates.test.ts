@@ -13,7 +13,7 @@ import type { TaskSpec } from "../../runtime/plan-manage.ts";
 import { createPmIntakeProviders, PM_INTAKE_TOOL } from "../../runtime/pm-intake-runtime.ts";
 import { RunStore } from "../../runtime/run-store.ts";
 import type { ScriptedReply } from "../helpers/controlled-provider.ts";
-import { killDaemon, resolveSdkDir, spawnDaemonProcess, waitForSocketReady } from "../helpers/daemon-harness.ts";
+import { connectRawClient, killDaemon, resolveSdkDir, spawnDaemonProcess, waitForSocketReady } from "../helpers/daemon-harness.ts";
 import type { SpawnedDaemon } from "../helpers/daemon-harness.ts";
 import { PROVIDER_APPEND_ENV_VAR, PROVIDER_REQUESTS_LOG_ENV_VAR, PROVIDER_SCRIPTS_ENV_VAR } from "../helpers/model-provider-module.ts";
 import { createPmIntakeFixture } from "../helpers/pm-intake-fixture.ts";
@@ -96,7 +96,7 @@ async function world() {
     await plan.execute({ action: "confirm", planVersion: 1 });
     return pm;
   }
-  return { fixture, userAgents, projectAgents, agentDir, reply, toolResult, pmRequests, runs, task, readyPm, start, requests };
+  return { fixture, userAgents, projectAgents, agentDir, reply, toolResult, pmRequests, runs, task, readyPm, start, requests, client: () => client! };
 }
 
 test("M9-AC14：daemon 从 dirname(dataRoot)/agents 与受信任项目的 .pi/agents 发现定义；缺 role、同层重名与仓库外祖先目录不进入能力目录，项目未受信任时不加载", async () => {
@@ -149,4 +149,25 @@ test("M9-AC15/AC16：零匹配走默认 worker、指定专业定义按定义派�
   for (const key of ["a", "b", "c", "d"]) expect(w.task(key).status).toBe("pending");
   const specRequests = (await w.requests()).filter((entry) => entry.providerId === "spec-model");
   expect(specRequests[0]?.text).toContain("按钮统一用主色");
+}, 120_000);
+
+test("M9-AC9/AC16：未认证连接与已有有效 PM 时再派 PM 均被拒；专业 worker 暂停期间改了定义，续接被拒并以 config_changed 停止", async () => {
+  const w = await world();
+  await mkdir(w.userAgents, { recursive: true });
+  await writeFile(join(w.userAgents, "ui-dev.md"), definition("ui-dev", "model: spec-model/test\n"));
+  await w.readyPm([spec("ui", { agent: "ui-dev" }), spec("cover", { goalUnitIds: ["scenario.failure"] })]);
+  const raw = await connectRawClient(daemonSocketPath(w.fixture.dataRoot, w.fixture.repoId)); cleanups.push(() => raw.close());
+  await expect(raw.call("agents.dispatchPm", { requirementId: w.fixture.requirementId, model: { provider: "gate-model", id: "test" }, thinking: "off" })).rejects.toThrow();
+  const client = w.client();
+  await expect(client.call("agents.dispatchPm", { requirementId: w.fixture.requirementId, model: { provider: "gate-model", id: "test" }, thinking: "off" }))
+    .rejects.toMatchObject({ code: "pm_already_owned" });
+  await w.reply("spec-model", { type: "text", text: "慢慢做", chunkDelayMs: 3_000 });
+  await w.reply("gate-model", { type: "toolcall", name: "pi_company_agent_manage", input: { action: "dispatch", taskId: w.task("ui").taskId } }, { type: "text", text: "等待" });
+  let runId = "";
+  await until(async () => { runId = (await w.runs().list({ limit: 50 })).items.find((run) => run.kind === "role" && run.state === "running")?.id ?? ""; return runId !== ""; });
+  // 受控模型的延迟回复不响应中止，暂停要等这段回复结束才能确认
+  await until(async () => (await client.call("runs.pause", { runId }) as { confirmed: boolean }).confirmed);
+  await writeFile(join(w.userAgents, "ui-dev.md"), definition("ui-dev", "model: spec-model/test\n").replace("你是 ui-dev。", "你是改过的 ui-dev。"));
+  await expect(client.call("runs.resume", { runId })).rejects.toMatchObject({ code: "config_changed" });
+  expect(await w.runs().get(runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "config_changed" } } });
 }, 120_000);
