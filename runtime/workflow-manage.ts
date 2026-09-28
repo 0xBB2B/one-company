@@ -5,6 +5,7 @@ import { CheckRoundService } from "./check-round.ts";
 import { authorizeToolAction } from "./core-permissions.ts";
 import { checked, hash, id, object, PmLease, positive } from "./requirement-contracts.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
+import { escalateTask, TaskDispatchError } from "./task-dispatch.ts";
 import { CloseError, RequirementCloseService } from "./workflow-close.ts";
 import type { RequirementCloseServiceOptions } from "./workflow-close.ts";
 
@@ -23,10 +24,11 @@ export const WORKFLOW_MANAGE_PARAMETERS = Type.Union([
   object({ action: Type.Literal("close"), reason: CloseReason, receiptId: id, operationId: id }),
   object({ action: Type.Literal("delivery-check") }),
   object({ action: Type.Literal("report"), note: Type.String({ minLength: 1, maxLength: 4000 }) }),
+  object({ action: Type.Literal("escalate"), taskId: id, note: Type.String({ minLength: 1, maxLength: 1024 }) }),
 ]);
 export type WorkflowManageParameters = Static<typeof WORKFLOW_MANAGE_PARAMETERS>;
 export type WorkflowManageAction = WorkflowManageParameters["action"];
-export type WorkflowManageErrorCode = "workflow_denied" | "invalid_shape" | "lease_required" | "unavailable";
+export type WorkflowManageErrorCode = "workflow_denied" | "invalid_shape" | "lease_required" | "unavailable" | "task_not_ready";
 export class WorkflowManageError extends Error {
   readonly code: WorkflowManageErrorCode;
   constructor(code: WorkflowManageErrorCode, detail?: string) { super(detail ? `${code}: ${detail}` : code); this.name = "WorkflowManageError"; this.code = code; }
@@ -92,6 +94,15 @@ async function openWorkflowManageTool(options: WorkflowManageToolOptions) {
         case "check-decision": return rounds.decide({ lease: lease(), checkRoundId: params.checkRoundId, kind: params.kind, revision: params.revision });
         case "delivery-check": return close.deliveryCheck(grant.requirementId);
         case "report": return close.report({ requirementId: grant.requirementId, pmRunId: lease().runId, note: params.note });
+        case "escalate": {
+          try {
+            const task = escalateTask({ dataRoot: options.dataRoot, repoId: grant.repoId, lease: lease(), taskId: params.taskId, note: params.note });
+            return freeze({ taskId: task.taskId, key: task.key, status: task.status, next: "已交用户裁决；在用户决定前不能再派这个任务" });
+          } catch (error) {
+            if (error instanceof TaskDispatchError) throw new WorkflowManageError(error.code === "task_not_ready" ? "task_not_ready" : "workflow_denied", error.detail.join("；"));
+            throw error;
+          }
+        }
         case "close": {
           const result = await close.close({ requirementId: grant.requirementId, reason: params.reason, receiptId: params.receiptId, operationId: params.operationId });
           if (result.status !== "closed" || !result.archive || result.archive.status === "archived") return result;

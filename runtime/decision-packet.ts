@@ -37,6 +37,7 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
         const verdict = verdicts.find((entry) => entry.runId === attempt.runId);
         return [`尝试 ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}`,
           ...(attempt.reason ? [`  PM 的说法${MODEL_NOTE}：${quoted(attempt.reason, 400)}`] : []),
+          ...(attempt.escalation ? [`  PM 上报${MODEL_NOTE}：${quoted(attempt.escalation, 1024)}`] : []),
           ...(verdict ? [`  子代理自述${MODEL_NOTE}：${verdict.conclusion} · ${quoted(verdict.summary, 400)}`] : [])];
       });
       return [...head, `任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`, ...attempts,

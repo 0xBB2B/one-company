@@ -62,7 +62,9 @@ export type TaskStatus = "pending" | "running" | "completed" | "failed" | "needs
 const Attempt = object({ runId: id, maxTurns: positive, turnsUsed: Type.Integer({ minimum: 0 }), reason: Type.Union([text, Type.Null()]),
   outcome: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("incomplete"), Type.Literal("turn_limit_reached"),
     Type.Literal("failed"), Type.Literal("stopped"), Type.Literal("superseded")]),
-  rework: Type.Optional(Type.Literal(true)) });
+  rework: Type.Optional(Type.Literal(true)),
+  /** PM 放弃自行处置、交用户裁决时写的说明；是模型说法，只作展示。 */
+  escalation: Type.Optional(text) });
 export type TaskAttempt = Static<typeof Attempt>;
 /** 任务级审查的一次运行；attemptRunId 是被审的 worker 尝试。 */
 const Review = object({ runId: id, attemptRunId: id, maxTurns: positive, turnsUsed: Type.Integer({ minimum: 0 }),

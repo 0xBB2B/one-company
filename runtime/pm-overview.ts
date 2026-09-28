@@ -90,7 +90,8 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
   for (const task of tasks) {
     if (task.status !== "awaiting_user") continue;
     const row = input.db.read<TaskRecord>("tasks", task.taskId)!;
-    const cause = ({ execute: "两次未完成", review: "两次审查未完成", rework: "两次未通过审查" } as const)[stalledStage(task)];
+    const cause = task.attempts.at(-1)?.escalation !== undefined ? "PM 上报需要你决定"
+      : ({ execute: "两次未完成", review: "两次审查未完成", rework: "两次未通过审查" } as const)[stalledStage(task)];
     items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label: `待你裁决：任务 ${task.key} ${cause}`, version: `task:${task.taskId}:${row.version}` });
   }
   if (input.record.approved && input.record.approvalManifest && !reviewPassedFor(input.dataRoot, input.repoId, input.lease)) {

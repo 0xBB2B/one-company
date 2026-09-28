@@ -51,7 +51,7 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
       ?? deny("item_not_pending");
     const task = plan!.tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;
     const lines = [`任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`,
-      ...task.attempts.map((attempt, index) => `${attempt.rework ? "返修" : "尝试"} ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}`),
+      ...task.attempts.map((attempt, index) => `${attempt.rework ? "返修" : "尝试"} ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}${attempt.escalation ? " · PM 已上报" : ""}`),
       ...task.reviews.map((review, index) => `审查 ${index + 1}：${review.turnsUsed}/${review.maxTurns} 轮 · 结局 ${review.outcome}`),
       `依据：prod r${record.revision}`];
     return { itemId, version: item.version, summary: lines.join("\n").slice(0, 2000) };

@@ -126,11 +126,12 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
       // 两次尝试之后只有用户的新决定能再开一次：再给一次机会只用于用户裁决时的任务版本并按用户给的上限，调整范围须任务已按新批准版本修改
       const decision = task.userDecision;
       const counted = countedAttempts(task);
-      grantedDecision = counted >= 2 && decision !== undefined && decision.usedByRunId === null &&
+      // PM 上报的任务可能只尝试过一次，用户的新决定同样生效
+      grantedDecision = decision !== undefined && decision.usedByRunId === null &&
         ((decision.choice === "retry" && task.version === decision.taskVersion) || (decision.choice === "adjust" && task.version > decision.taskVersion));
       if (counted >= 2 && !grantedDecision) deny("retry_exhausted");
       if (grantedDecision && request.retry) deny("retry_not_needed");
-      if (counted === 1 && !request.retry) deny("retry_required");
+      if (counted === 1 && !request.retry && !grantedDecision) deny("retry_required");
       if (counted === 0 && request.retry) deny("retry_not_needed");
       maxTurns = grantedDecision && decision!.choice === "retry" ? decision!.maxTurns! : request.retry?.maxTurns ?? task.maxTurns;
       reason = grantedDecision ? "用户决定" : request.retry?.reason ?? null;
@@ -166,6 +167,25 @@ export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "re
     db.update(TASKS, task.taskId, row.version, { ...task, status: "reviewing", reviews: [...task.reviews, review],
       ...(granted ? { userDecision: { ...task.userDecision!, usedByRunId: request.runId } } : {}), updatedAt: request.now ?? Date.now() });
     return { task, maxTurns, attemptRunId: attempt!.runId };
+  }));
+}
+
+/**
+ * PM 对等待其处置的任务放弃自行处理：转为等待用户裁决，说明记在最近一次尝试上。PM 因此不多任何权限，
+ * 之后只有用户的决定能让任务继续。
+ */
+export function escalateTask(request: { dataRoot: string; repoId: string; lease: PmLease; taskId: string; note: string; now?: number }): TaskRecord {
+  return withDatabase(repositoryDatabase(request.dataRoot, request.repoId), (db) => db.transaction(() => {
+    const owner = db.read<{ lease?: PmLease | null }>("pm_ownership", request.lease.requirementId)?.data.lease;
+    if (!owner || owner.runId !== request.lease.runId || owner.fence !== request.lease.fence) deny("intake_gate", ["PM 租约已失效"]);
+    const row = db.read<TaskRecord>(TASKS, request.taskId);
+    if (!row || row.data.requirementId !== request.lease.requirementId) deny("task_not_ready", ["任务不属于本需求"]);
+    const task = row!.data;
+    if (task.status !== "awaiting_parent") deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置`]);
+    const attempts = task.attempts.map((attempt, index) => index === task.attempts.length - 1 ? { ...attempt, escalation: request.note } : attempt);
+    const next = { ...task, status: "awaiting_user", attempts, updatedAt: request.now ?? Date.now() } as TaskRecord;
+    db.update(TASKS, task.taskId, row!.version, next);
+    return next;
   }));
 }
 

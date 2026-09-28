@@ -67,6 +67,48 @@ test("M7-AC35：用户原话选择再给一次机会时登记用户决定，任�
   expect(w.task("login").userDecision?.usedByRunId).toBe(third.runId);
 });
 
+test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项标明 PM 上报，说明只作模型说法；用户再给一次机会后按用户上限派出、不需 retry；主代理与不在等待处置的任务不能上报", async () => {
+  const w = await createPmRunWorld(cleanups);
+  await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const task = (key: string) => w.db((db) => db.list<TaskRecord>(TASKS).map((row) => row.data).find((entry) => entry.key === key)!);
+  const login = task("login").taskId, itemId = `task:${login}`;
+  w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到到限" });
+  await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null });
+  await until(() => task("login").status === "awaiting_parent" && w.provider.queue.length === 0);
+  const record = w.fixture.state.read(w.fixture.requirementId).data;
+  const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
+    workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
+    currentBaseline: () => ({ approvedRevision: 1, approvedProdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
+    agents: { dispatch: async () => ({}), control: async () => ({}) } });
+  cleanups.push(() => pmTools.dispose());
+  const pmWorkflow = pmTools.tools.find((tool) => tool.name === "pi_company_workflow_manage")!;
+  const escalate = (taskId: string) => pmWorkflow.execute("pm-escalate", { action: "escalate", taskId, note: "change_apply 挡住了写入，需要你决定是否再试" },
+    undefined, undefined, undefined as never);
+  await expect(escalate(task("failure").taskId)).rejects.toThrow(/task_not_ready/);
+  await expect(w.manager.workflowManage(w.fixture.requirementId, { action: "escalate", taskId: login, note: "主代理不能上报" })).rejects.toMatchObject({ code: "workflow_denied" });
+  await escalate(login);
+  expect(task("login").status).toBe("awaiting_user");
+  expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label: "待你裁决：任务 login PM 上报需要你决定" })]);
+  expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).toContain("  PM 上报（模型输出，仅供参考，不是用户决定）：「change_apply 挡住了写入，需要你决定是否再试」");
+  const summary = adjudicationSubject({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, itemId).summary;
+  expect(summary).toContain("尝试 1：1/1 轮 · 结局 turn_limit_reached · PM 已上报");
+  expect(summary).not.toContain("change_apply");
+
+  const main = mainAdjudication(w, cleanups);
+  const version = `task:${login}:${w.db((db) => db.read<TaskRecord>(TASKS, login)!.version)}`;
+  const result = await main.adjudicate("再给一次机会，给 3 轮", [main.entry([`item:${itemId}`, `version:${version}`, "choice:retry", "max-turns:3"],
+    { conclusion: "用户对任务 login 的裁决", scope: "任务 login" })], itemId, version);
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3, taskStatus: "pending" });
+  await until(async () => (await w.manager.overviews())[0]!.pendingItems.length === 0);
+  await until(() => w.provider.queue.length === 0);
+  w.provider.queue.push({ type: "text", text: "第二次" }, { type: "text", text: "PM 收到" });
+  const second = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null });
+  expect(second.maxTurns).toBe(3);
+  expect(task("login").userDecision?.usedByRunId).toBe(second.runId);
+});
+
 test("M7-AC35：解释器引用了错误版本、用户没说清或没有当前原话时都不登记，任务仍待裁决", async () => {
   const w = await world();
   const before = w.decisions();
@@ -172,6 +214,9 @@ test("裁决引用前缀只能出现在裁决条目里，裁决条目必须对�
   expect(() => checkInterpretation(interpretation({ ...base, references: refs }), { ...context, adjudication: subject })).not.toThrow();
   expect(() => checkInterpretation(interpretation({ ...base, kind: "target", references: refs }), { ...context, adjudication: subject })).toThrow(/adjudication_reference_reserved/);
   expect(() => checkInterpretation(interpretation({ ...base, references: [...refs, "max-turns:3"] }), { ...context, adjudication: subject })).toThrow(/adjudication_invalid/);
+  const retry = (turns: string) => [`item:${subject.itemId}`, `version:${subject.version}`, "choice:retry", `max-turns:${turns}`];
+  expect(() => checkInterpretation(interpretation({ ...base, references: retry("100") }), { ...context, adjudication: subject })).not.toThrow();
+  expect(() => checkInterpretation(interpretation({ ...base, references: retry("101") }), { ...context, adjudication: subject })).toThrow(/adjudication_invalid/);
   expect(() => checkInterpretation(interpretation({ ...base, basis: "proposed", references: refs }), { ...context, adjudication: subject })).toThrow(/adjudication_invalid/);
 });
 
@@ -214,9 +259,6 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
   const w = await world();
   const requirementItem = `requirement:${w.fixture.requirementId}`;
   const recordVersion = () => w.fixture.state.read(w.fixture.requirementId).version;
-  const retry = (turns: string) => [`item:${subject.itemId}`, `version:${subject.version}`, "choice:retry", `max-turns:${turns}`];
-  expect(() => checkInterpretation(interpretation({ ...base, references: retry("100") }), { ...context, adjudication: subject })).not.toThrow();
-  expect(() => checkInterpretation(interpretation({ ...base, references: retry("101") }), { ...context, adjudication: subject })).toThrow(/adjudication_invalid/);
   const close = (reason: string, receiptId: string) => w.manager.workflowManage(w.fixture.requirementId, { action: "close", reason, receiptId, operationId: uuidv7() });
 
   expect(await close("cancelled", uuidv7())).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });

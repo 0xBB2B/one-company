@@ -8,9 +8,10 @@
 |---|---|---|---|
 | AC1 产品中无 spec 工具、模块、表、指纹字段与流程；核心工具 10 个；角色与主会话规则不提 spec；已有 docs/spec 文件按普通文件对待 | 通过 | a86df70（工具与流程层）、8a63e09（索引层）；tests/core-permissions.test.ts（10 个工具、schema 与权限表双向一致、docs/spec 可写）、tests/role-catalog.test.ts（定义不提 spec）、tests/verification-run.test.ts（调试命令可写 docs/spec）、tests/project-index-policy.test.ts 与 tests/project-index-service.test.ts（docs/spec 按 config 建索引）；产品代码中已无 spec 相关引用 | 无 |
 | AC2 检查轮、正式验证、审查、QA、完成报告、关闭与交付在无规则集指纹时按原门槛工作；四套测试全绿 | 通过 | typecheck 通过；全部测试 158 个文件、2397 通过 1 跳过（.bb-spec/.cache/m8a/step2-final.txt）；旧 data.db 被拒用例在 tests/database-storage.test.ts | 无 |
-| AC3 worker/reviewer 定义含说明注释规则；新基线上真实模型零自定义闭环通过，新定义带说明，审查覆盖此项 | 进行中 | 定义与测试：4ad1fc5、463c818、18abe67（tests/role-catalog.test.ts）；第 39—41 轮 worker 均按 Go 写法写了说明注释，第 40、41 轮审查结论写明注释核对结果（证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-27T14-52-57-273Z、…T15-02-12-337Z）；第 41 轮因 PM 把测试拆成单独任务卡住，已按 AC5 修 | 待先红后绿落地后重跑闭环通过 |
+| AC3 worker/reviewer 定义含说明注释规则；新基线上真实模型零自定义闭环通过，新定义带说明，审查覆盖此项 | 进行中 | 定义与测试：4ad1fc5、463c818、18abe67、32ac879（tests/role-catalog.test.ts）；第 39—44 轮 worker 均写了 Go 写法说明注释，第 40—44 轮审查结论写明注释核对结果，第 43、44 轮 reviewer 已按引用编号核验先红后绿（证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-27T16-03-28-490Z、…T16-20-26-245Z）；第 44 轮卡在 worker 抄错文件指纹、reviewer 看不到改动范围、PM 无法上报，已由 c650d55、978b454 与 AC6 修复 | 待重跑闭环通过 |
 | AC4 计划正文与 M9 验收项去除 spec 内容 | 通过 | 1ea1a60 | 无 |
 | AC5 worker/PM/reviewer 定义含先红后绿规则；reviewer 只读被审尝试引用的验证记录 | 通过 | 37f3e1b 及本次（reviewer 任务说明列出 worker 引用的验证编号，tests/task-dispatch.test.ts）；tests/role-catalog.test.ts（三处规则）、tests/verification-run.test.ts（reviewer 读引用记录、读不到未引用和别的尝试、不能停止、QA 不能读） | 无 |
+| AC6 PM 用 escalate 把等待其处置的任务交用户裁决；主代理与不在等待处置的任务不能上报 | 通过 | 本次提交；tests/adjudication.test.ts（escalate 端到端：转待裁决、事项标明 PM 上报、说明标为模型说法、用户再给机会按用户轮数派出、主代理与非等待任务被拒）、tests/core-permissions.test.ts、tests/role-catalog.test.ts | 无 |
 
 ## 当前阻塞
 
@@ -21,6 +22,6 @@
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（§4 与 §12 的 M8A、M9），再读 M8A-STATUS.md 与 M9-STATUS.md，核对 git status 与最近提交。M0–M8 已收口；M9 暂停，当前执行 M8A。
-M8A 用户已定：worker 按 TDD 先红后绿，测试与实现同一任务，reviewer 只读被审尝试引用的验证记录核对红绿（§8.9 第 8 条）；spec 整个拆掉（工具、模块、规则表、规则集指纹、候选与发布、初始化校验、知识查询规则事实、开检查轮的机械冲突检查、独立校验脚本与 resources/spec）；已有 docs/spec 文件按普通文件；注释规则只管产品托管项目，覆盖函数、方法、类、类型/接口、导出常量，Go 官方库写法；注释不入库，靠 grep；审查把关，程序不设注释门槛。
+M8A 用户已定：PM 用 workflow_manage escalate 把等待其处置的任务交用户裁决（§10.2.1 第 4 条）；change_apply 的 apply 可省略 baseHash；reviewer 任务说明给出基线提交与 git diff 命令；worker 按 TDD 先红后绿，测试与实现同一任务，reviewer 只读被审尝试引用的验证记录核对红绿（§8.9 第 8 条）；spec 整个拆掉（工具、模块、规则表、规则集指纹、候选与发布、初始化校验、知识查询规则事实、开检查轮的机械冲突检查、独立校验脚本与 resources/spec）；已有 docs/spec 文件按普通文件；注释规则只管产品托管项目，覆盖函数、方法、类、类型/接口、导出常量，Go 官方库写法；注释不入库，靠 grep；审查把关，程序不设注释门槛。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation；真实模型闭环 pnpm run test:acceptance（见 M9-STATUS.md 的运行方式）。
 ```

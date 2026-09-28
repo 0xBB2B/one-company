@@ -478,7 +478,7 @@ export class RunManager {
     }
     const parent = this.sessions.get(parentRunId);
     const next: Partial<Record<PlanTask["status"], string>> = {
-      awaiting_parent: "请核对已有成果与原因后决定：用 retry 给出原因和新的轮次上限重试一次，或向主代理报告需求/条件不足。",
+      awaiting_parent: `请核对已有成果与原因后决定：用 retry 给出原因和新的轮次上限重试一次；自己处理不了时用 workflow_manage action=escalate taskId=${taskId} 写明卡在哪、需要用户决定什么，交用户裁决。`,
       awaiting_review: `任务待审查：用 agent_manage dispatch taskId=${taskId} 并带 review（轮次上限）派出 reviewer。`,
       awaiting_rework: `审查打回：核对问题后用 agent_manage dispatch taskId=${taskId} 并带 rework（原因与新的轮次上限）派 worker 返修一次。`,
       awaiting_user: "该任务已用完机会，进入等待用户裁决，不能再派工；请向主代理报告。",
