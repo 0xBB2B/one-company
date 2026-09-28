@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { repositoryDatabase, withDatabase } from "../../runtime/database.ts";
+import type { RequirementRecord } from "../../runtime/requirement-contracts.ts";
 import { repositoryIdentity, daemonSocketPath } from "../../runtime/identity.ts";
 import { readApprovedConventions } from "../../runtime/project-conventions.ts";
 import { RunStore } from "../../runtime/run-store.ts";
@@ -59,9 +62,12 @@ async function waitMissing(path: string, timeoutMs: number): Promise<boolean> {
   return false;
 }
 
-test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、全新数据根、零自定义定义，真实模型从需求草稿走到用户验收与完成关闭", async () => {
+interface LoopResult { outcome: DriverOutcome | undefined; runs: RunRecord[]; archive: string | null; archives: string[]; host: InstalledHost; agentDir: string; repoId: string; repo: string }
+
+/** 一轮真实模型闭环：装产品、建样例项目、按脚本驱动用户，把证据写进输出目录，再交给 verify 断言；现场与凭据在结束时清理。 */
+async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: string, agentDir: string) => Promise<void>, verify: (result: LoopResult) => void | Promise<void>) {
   const cfg = config!;
-  const evidence = join(cfg.output, `zero-custom-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+  const evidence = join(cfg.output, `${name}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   await mkdir(evidence, { recursive: true, mode: 0o700 });
   const events = join(evidence, "events.jsonl");
   const record = (event: DriverEvent) => { void appendFile(events, `${JSON.stringify(event)}\n`, { mode: 0o600 }); };
@@ -77,6 +83,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     const { repoId } = await repositoryIdentity(repo);
     await mkdir(home, { recursive: true });
     await copyCredentials(cfg.credentialsDir, agentDir);
+    await prepare(repo, agentDir);
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.HOME = home;
     process.env.PI_TELEMETRY = "0";
@@ -84,7 +91,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     socketPath = daemonSocketPath(join(agentDir, "pi-company"), repoId);
 
     host = await startInstalledHost({ installed, repo, agentDir, config: cfg });
-    outcome = await driveUser(host, SCRIPT, { userTurns: 15, wallMs: 90 * 60_000, sameMessage: 3, stopFile: join(evidence, "STOP") }, record);
+    outcome = await driveUser(host, script, { userTurns: 15, wallMs: 90 * 60_000, sameMessage: 3, stopFile: join(evidence, "STOP") }, record);
 
     const runStore = new RunStore({ dataRoot: join(agentDir, "pi-company"), repoId, daemonStartedAt: new Date().toISOString() });
     const listed = (await runStore.list({ limit: 500 })).items;
@@ -95,32 +102,18 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     const archive = worktree && archives[0] ? await readFile(join(worktree, "docs", "prod", archives[0]), "utf8") : null;
     if (archive !== null) await writeFile(join(evidence, "archive.md"), archive, { mode: 0o600 });
     const conventions = readApprovedConventions(join(agentDir, "pi-company"), repoId);
-    const conventionsFile = await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null);
     const report = {
       config: { model: `${cfg.provider}/${cfg.modelId}`, thinking: cfg.thinking },
       outcome, elapsedMs: Date.now() - started,
       main: mainSessionFacts(host),
-      runs: runs.map((run) => ({ id: run.id, kind: run.kind, role: run.role, state: run.state, stateReason: run.stateReason, turns: run.turns,
+      runs: runs.map((run) => ({ id: run.id, kind: run.kind, role: run.role, state: run.state, stateReason: run.stateReason, stopCause: run.stopCause, turns: run.turns,
         usage: run.usage, model: run.model, thinking: run.thinking, agentSource: run.agent?.source, parentRunId: run.parentRunId })),
       runUsage: sumUsage(runs.map((run) => run.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })),
       dialogs: host.dialogs, notifications: host.notifications, modelEvents: host.modelEvents, worktree: worktree ?? null, archives, conventions,
       worktreeLog: worktree ? (await exec("git", ["log", "--oneline", "-20"], { cwd: worktree })).stdout : null,
     };
     await writeFile(join(evidence, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
-
-    expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
-    expect(runs.length).toBeGreaterThan(0);
-    expect(runs.every((run) => run.agent?.source === "default")).toBe(true);
-    expect(runs.map((run) => run.kind)).toContain("requirement");
-    for (const role of ["pi-company.worker", "pi-company.reviewer", "pi-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
-    expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
-    const sections = ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "\n### 实现记录（关闭时由程序生成）\n", "{#acceptance}", "\n### 验收记录（关闭时由程序生成）\n"]
-      .map((marker) => archive?.indexOf(marker) ?? -1);
-    expect(sections.every((position) => position > 0), JSON.stringify(sections)).toBe(true);
-    expect(sections).toEqual([...sections].sort((a, b) => a - b));
-    expect(host.dialogs.some((dialog) => dialog.title === "确认更新项目规范 AGENTS.md")).toBe(true);
-    expect(conventions?.content).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
-    expect(conventionsFile).toBe(conventions?.content);
+    await verify({ outcome, runs, archive, archives, host, agentDir, repoId, repo });
   } finally {
     if (host) await writeFile(join(evidence, "side-calls.json"), JSON.stringify(host.sideCalls, null, 2), { mode: 0o600 }).catch(() => undefined);
     if (host) await writeFile(join(evidence, "model-events.json"), JSON.stringify(host.modelEvents, null, 2), { mode: 0o600 }).catch(() => undefined);
@@ -143,4 +136,62 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     if (daemonGone) await rm(root, { recursive: true, force: true });
     else record({ type: "stop", reason: `守护进程未退出，保留现场：${root}`, at: Date.now() });
   }
+}
+
+/** 记录插入位置按 markers 顺序出现在归档里。 */
+function expectInOrder(archive: string | null, markers: string[]) {
+  const positions = markers.map((marker) => archive?.indexOf(marker) ?? -1);
+  expect(positions.every((position) => position > 0), JSON.stringify(positions)).toBe(true);
+  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+}
+
+test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、全新数据根、零自定义定义，真实模型从需求草稿走到用户验收与完成关闭", async () => {
+  await runLoop("zero-custom", SCRIPT, async () => {}, async ({ outcome, runs, archive, archives, host, agentDir, repoId, repo }) => {
+    expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs.every((run) => run.agent?.source === "default")).toBe(true);
+    expect(runs.map((run) => run.kind)).toContain("requirement");
+    for (const role of ["pi-company.worker", "pi-company.reviewer", "pi-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
+    expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
+    expectInOrder(archive, ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "\n### 实现记录（关闭时由程序生成）\n", "{#acceptance}", "\n### 验收记录（关闭时由程序生成）\n"]);
+    const conventions = readApprovedConventions(join(agentDir, "pi-company"), repoId);
+    expect(host.dialogs.some((dialog) => dialog.title === "确认更新项目规范 AGENTS.md")).toBe(true);
+    expect(conventions?.content).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
+    expect(await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null)).toBe(conventions?.content);
+  });
+}, 100 * 60_000);
+
+const CUSTOM_DOC = `---
+name: requirement-doc
+description: 本项目的需求文档规范。主会话写需求草稿时由框架自动注入。
+disable-model-invocation: true
+sections:
+  - { id: goal, title: 目标 }
+  - { id: scenarios, title: 场景 }
+  - { id: check, title: 检验, record: acceptance }
+  - { id: approach, title: 做法, record: implementation }
+---
+- 目标：一两句话写清楚要让谁得到什么，以及这次不做什么。
+- 场景：按场景分三级小节写行为，编号以 scenarios. 开头，如 \`### 地面快跑 {#scenarios.sprint}\`，写正常、边界和不变的行为。
+- 检验：按场景分三级小节写前置条件、操作、可观察结果，编号以 check. 开头，如 \`### 地面快跑 {#check.sprint}\`。
+- 做法：只写用户明确提出的实现要求，没有就写"由 PM 规划"。
+
+每个板块标题下先写一句概述再接小节，每个小节标题下都要有正文。
+`;
+
+test.skipIf(!config || process.platform !== "darwin")("M8C-AC7：受信任项目的自定义需求文档规范（检验板块在做法之前），真实模型从草稿走到完成关闭，归档按规范插入两段记录", async () => {
+  const script = { ...SCRIPT, requirement: SCRIPT.requirement.replace("另外定一条项目规范：以后导出的常量一律用大写字母加下划线命名。", "") };
+  await runLoop("custom-doc", script, async (repo, agentDir) => {
+    await mkdir(join(repo, ".pi", "skills", "requirement-doc"), { recursive: true });
+    await writeFile(join(repo, ".pi", "skills", "requirement-doc", "SKILL.md"), CUSTOM_DOC);
+    await exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", "add", ".pi"], { cwd: repo });
+    await exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", "commit", "-qm", "项目需求文档规范"], { cwd: repo });
+    new ProjectTrustStore(agentDir).set(repo, true);
+  }, async ({ outcome, archive, agentDir, repoId }) => {
+    expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
+    expectInOrder(archive, ["{#goal}", "{#scenarios}", "{#check}", "\n### 验收记录（关闭时由程序生成）\n", "{#approach}", "\n### 实现记录（关闭时由程序生成）\n"]);
+    expect(archive).not.toContain("{#background}");
+    const records = withDatabase(repositoryDatabase(join(agentDir, "pi-company"), repoId), (db) => db.list<RequirementRecord>("requirements"));
+    expect(records.map((row) => row.data.docSpec?.sections.map((section) => section.id))).toEqual([["goal", "scenarios", "check", "approach"]]);
+  });
 }, 100 * 60_000);
