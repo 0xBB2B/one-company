@@ -26,7 +26,10 @@ import { ModelInterpretation } from "../runtime/interaction-derivation.ts";
 
 const exec = promisify(execFile), cleanup: Array<() => Promise<void>> = [];
 const PHONE = "我想加手机号登录，原来的邮箱登录保留。微信登录以后可能也要，但这次先不做。短信多久过期你参考常见做法。先帮我看看涉及哪些改动。";
-const BODY = "# 手机号与邮箱 {#A}\n增加手机号登录，保留邮箱登录。\n# 短信方案委托 {#D}\n短信期限参考常见做法提出方案。\n# 短信期限 {#SMS}\n具体数值未决。\n# 微信 {#B}\n本次排除微信登录。\n";
+const BODY = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n登录需求如下。\n### 手机号与邮箱 {#A}\n增加手机号登录，保留邮箱登录。\n" +
+  "### 短信方案委托 {#D}\n短信期限参考常见做法提出方案。\n### 短信期限 {#SMS}\n具体数值未决。\n### 微信 {#B}\n本次排除微信登录。\n" +
+  "## 功能 {#features}\n用手机号和验证码登录。\n## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n手机号能登录，邮箱仍能登录。\n";
+const FRAME = ["metadata", "background", "requirements", "features", "implementation", "acceptance"];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function git(cwd: string, args: string[]) { return (await exec("git", args, { cwd })).stdout.trim(); }
 async function world(options: Pick<MainRequirementInteractionOptions, "now" | "inputTtlMs"> = {}) {
@@ -69,10 +72,11 @@ function phoneReview(c: Pick<ConfirmationContext, "candidate" | "partition">, ac
   const entry = (kind: "constraint" | "target" | "delegation" | "future" | "unresolved" | "exclusion" | "action", conclusion: string, basis: "explicit" | "uncertain" = "explicit") => ({
     kind, conclusion, scope: kind === "action" ? (action === "analyze" ? "只分析，不修改代码" : "实施手机号登录，保留邮箱，不做微信") : "当前登录需求", basis,
     resolution: "direct" as const, candidateId: c.candidate.candidateId, requestId: null, actions: kind === "action" ? [action] : [], references: [], supersedes: [] });
-  const unit = (i: number) => [c.partition.units[i]!.id];
-  return { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true, entries: [{ ...entry("constraint", "需求身份与标题"), unitIds: unit(0) },
-    { ...entry("target", "增加手机号登录并保留邮箱登录"), unitIds: unit(1) }, { ...entry("delegation", "短信期限委托参考常见做法提出方案"), unitIds: unit(2) },
-    { ...entry("unresolved", "短信期限待提出方案", "uncertain"), unitIds: unit(3) }, { ...entry("exclusion", "本次排除微信登录"), unitIds: unit(4) },
+  const ids = new Set(c.partition.units.map((unit) => unit.id));
+  const unit = (...wanted: string[]) => wanted.filter((id) => ids.has(id));
+  return { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true, entries: [{ ...entry("constraint", "需求身份、标题与格式板块"), unitIds: unit(...FRAME) },
+    { ...entry("target", "增加手机号登录并保留邮箱登录"), unitIds: unit("A") }, { ...entry("delegation", "短信期限委托参考常见做法提出方案"), unitIds: unit("D") },
+    { ...entry("unresolved", "短信期限待提出方案", "uncertain"), unitIds: unit("SMS") }, { ...entry("exclusion", "本次排除微信登录"), unitIds: unit("B") },
     { ...entry("action", "本轮授权动作"), unitIds: ["A"] }, { ...entry("future", "微信仅为未来想法", "uncertain"), candidateId: null }] };
 }
 
@@ -110,6 +114,16 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(await git(directory, ["show", "-s", "--format=%an <%ae>", "HEAD"])).toBe("pi prod storage <pi-prod-storage@localhost>");
     await expect(w.call({ ...p, operationId: uuidv7(), requestId: uuidv7(), title: "无关付款" })).rejects.toThrow(/requirement_already_bound/);
   });
+  test("M8A-AC9：正文不是五大板块时批准被拒，不调用模型、不激活，并写明期望与实际", async () => {
+    const w = await world();
+    const created = await w.create("## 手机号登录 {#A}\n增加手机号登录。\n"), { input } = await w.request(created);
+    const before = w.provider.requests.length;
+    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toThrow(
+      "requirement_host_denied:prod_sections_required（顶层须为二级标题且依次为 background、requirements、features、implementation、acceptance，当前为 A）");
+    expect(w.provider.requests).toHaveLength(before);
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
+  });
   test("手机号原句仅分析：未建工作区也激活并记短决定与完整scope，不弹审批；清会话不生成原话表/文件", async () => {
     const w = await world(), sent: Array<{ messages: unknown[] }> = [];
     const original = w.ctx.modelRegistry.complete.bind(w.ctx.modelRegistry);
@@ -119,7 +133,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const result = await w.call({ action: "confirmUpdate", ...input });
     expect(result).toMatchObject({ targetRecorded: true, prodActivated: true, allowedScopes: [{ action: "analyze", goalIds: ["A"], constraintIds: [] }] });
     expect(result).not.toHaveProperty("blockedBy");
-    expect(result.approvalScope).toMatchObject({ summary: { confirmed: ["metadata", "A", "D"], pending: ["SMS"], excluded: ["B"] } });
+    expect(result.approvalScope).toMatchObject({ summary: { confirmed: ["metadata", "background", "requirements", "A", "D", "features", "implementation", "acceptance"], pending: ["SMS"], excluded: ["B"] } });
     expect(w.provider.requests).toHaveLength(2);
     expect(w.provider.requests.every((r) => r.tools?.length === 0)).toBe(true);
     expect(sent).toHaveLength(2);

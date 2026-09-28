@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { inspectProdStructure, pageProdText, pageProdResponse, selectProdSection, PROD_RESPONSE_MAX_BYTES, partitionProdDocument } from "../runtime/prod-view.ts";
+import { inspectProdStructure, prodSectionsProblem, pageProdText, pageProdResponse, selectProdSection, PROD_RESPONSE_MAX_BYTES, partitionProdDocument } from "../runtime/prod-view.ts";
 import { createProdDocument } from "../runtime/requirement-identity.ts";
 import { createHash } from "node:crypto";
 
@@ -121,4 +121,16 @@ test("无ID或混合标题只使用whole-body，空正文只有metadata；重复
     expect(() => partitionProdDocument(approvalId, "标题", body)).toThrow(/invalid_approval_unit_id/);
   }
   expect(() => partitionProdDocument(approvalId, "标题", Array.from({ length: 20 }, (_, i) => `# A {#s${i}}\n`).join(""))).toThrow(/approval_unit_limit/);
+});
+
+test("M8A-AC9：顶层须依次是背景、需求、功能、实现、验收五个带固定编号的二级标题", () => {
+  const five = "## 背景 {#background}\n玩家想跑得更快。\n## 需求 {#requirements}\n增加快跑。\n## 功能 {#features}\n### 地面快跑 {#features.sprint}\n按住 Shift 快跑。\n" +
+    "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n### 地面快跑 {#acceptance.sprint}\n速度为 1.5 倍。\n";
+  expect(prodSectionsProblem(five)).toBeNull();
+  expect(prodSectionsProblem("```\n# 围栏里的标题 {#x}\n```\n" + five)).toBeNull();
+  expect(prodSectionsProblem(MOVEMENT_PROD)).toContain("当前为 movement、scope、constraints");
+  expect(prodSectionsProblem(five.replace("## 实现 {#implementation}\n由 PM 规划。\n", ""))).toBe(
+    "顶层须为二级标题且依次为 background、requirements、features、implementation、acceptance，当前为 background、requirements、features、acceptance");
+  expect(prodSectionsProblem(five.replace("## 背景 {#background}", "## 背景"))).toContain("当前为 无编号、requirements");
+  expect(prodSectionsProblem("# 总标题 {#top}\n" + five)).toContain("当前为 top");
 });

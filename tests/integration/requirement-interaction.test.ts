@@ -35,7 +35,8 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
       confirm: async () => { throw new Error("UI.confirm forbidden"); }, notify: (message) => notifications.push(message) } });
     const savedOperationId = uuidv7(), requestId = uuidv7();
     scriptReplies(provider, [
-      { type: "toolcall", name: "pi_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, operationId: savedOperationId, requestId, title: "登录", body: "# 手机号 {#A}\n增加手机号登录。\n# 微信 {#B}\n微信是否实施未决。\n" } } },
+      { type: "toolcall", name: "pi_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, operationId: savedOperationId, requestId, title: "登录", body: "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n登录需求如下。\n### 手机号 {#A}\n增加手机号登录。\n### 微信 {#B}\n微信是否实施未决。\n" +
+        "## 功能 {#features}\n用手机号登录。\n## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n手机号能登录。\n" } } },
       { type: "text", text: '{"allow":true}' }, { type: "text", text: "done" },
     ]);
     await session.prompt("请整理手机号登录需求，微信是否做先保留未决", { source: "interactive" });
@@ -56,7 +57,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     const e = (kind: string, conclusion: string, candidate: string, request: string | null, basis = "explicit", resolution = "accept") => ({ kind, conclusion, candidateId: candidate, requestId: request,
       basis, resolution, scope: "仅A，不包括B", actions: kind === "action" ? ["implement"] : [], references: [], supersedes: [] });
     const interpretation = { format: "interaction-interpretation/v1", referenceResolution: "single-question", faithful: true, entries: [
-      { ...e("constraint", "需求身份", operationId, null, "explicit", "direct"), unitIds: ["metadata"] }, { ...e("target", "增加手机号登录", operationId, questionId), unitIds: ["A"] },
+      { ...e("constraint", "需求身份与格式板块", operationId, null, "explicit", "direct"), unitIds: ["metadata", "background", "requirements", "features", "implementation", "acceptance"] }, { ...e("target", "增加手机号登录", operationId, questionId), unitIds: ["A"] },
       { ...e("unresolved", "微信未决", operationId, null, "uncertain", "unclear"), unitIds: ["B"] }, { ...e("action", "实施手机号登录", operationId, questionId), unitIds: ["A"] },
     ] };
     const before = withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"));

@@ -19,7 +19,7 @@
 | AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 未开始 | 可复用：tests/pm-intake-runtime.test.ts、tests/pm-dispatch.test.ts、tests/pm-event-delivery.test.ts | 需在安装产物中实跑 |
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 未开始 | 可复用：tests/explore-dispatch.test.ts、tests/explore-web.test.ts | 需真实模型与真实联网；本机出网慢，联网失败时该项标未完成，不以降级路径冒充 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
-| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 待核对 | 上一次通过：基线 5c99c68 第 53 轮：pnpm run test:acceptance 通过（1/1），证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T08-06-40-015Z/（report.json：outcome closed、13.4 分钟、全为默认定义、归档已写入；首条消息含一条项目规范，已分流进 AGENTS.md）；驱动 tests/acceptance/zero-custom-loop.test.ts | M8A-AC8 改了归档内容（正文后追加验收记录），须在新基线上重跑；真实模型有波动，单轮通过不代表每轮必过 |
+| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 待核对 | 上一次通过：基线 5c99c68 第 53 轮：pnpm run test:acceptance 通过（1/1），证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T08-06-40-015Z/（report.json：outcome closed、13.4 分钟、全为默认定义、归档已写入；首条消息含一条项目规范，已分流进 AGENTS.md）；驱动 tests/acceptance/zero-custom-loop.test.ts | M8A-AC8、AC9 改了归档内容与需求正文格式，须在新基线上重跑；第 54 轮卡在返修后的任务级审查看不到首次尝试的红记录（见 M8A-STATUS 当前阻塞）；真实模型有波动，单轮通过不代表每轮必过 |
 | AC13 复制默认 worker 为专业定义，PM 自动选中完成 UI 设计与实现，独立 review/QA | 未开始 | 可复用：tests/agent-catalog-ui.test.ts、tests/agent-selection.test.ts | 需真实模型与 UI 样例任务 |
 | AC14 安装产物中两类目录发现、环境变量覆盖、项目信任、同名冲突、不越根 | 未开始 | 可复用：tests/role-catalog.test.ts | 需在安装产物中实跑 |
 | AC15 两种默认路径；显式指定不可用明确失败交用户裁决 | 未开始 | 可复用：tests/agent-selection.test.ts | 需在安装产物中实跑 |

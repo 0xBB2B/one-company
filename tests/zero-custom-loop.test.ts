@@ -162,6 +162,16 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   const closed = await close(String(accepted.decisionId));
   expect(closed).toMatchObject({ status: "closed", reason: "completed", archive: { status: "archived" } });
   expect(w.fixture.state.read(requirementId).data).toMatchObject({ lifecycle: "closed", close: { reason: "completed" } });
+  // M8A-AC9：归档在验收记录之前带程序生成的实现记录
+  const archive = await readFile(join(w.fixture.state.read(requirementId).data.workspace!.path, ...(closed as { archive: { path: string } }).archive.path.split("/")), "utf8");
+  const implementation = archive.indexOf("\n## 实现记录（关闭时由程序生成）\n"), acceptance = archive.indexOf("\n## 验收记录（关闭时由程序生成）\n");
+  expect(implementation).toBeGreaterThan(0);
+  expect(acceptance).toBeGreaterThan(implementation);
+  const record = archive.slice(implementation, acceptance);
+  expect(record).toContain("- 任务 impl：完成；需求章节：goal.login、scenario.failure；");
+  expect(record).toContain("- 任务 fix：完成；需求章节：goal.login、scenario.failure；可写范围：`lib/`");
+  expect(record).not.toContain("任务 acceptance");
+  expect(record).toContain("### PM 说明（模型撰写，仅供参考）\n\n> 交付手机号验证码登录（recheck）");
   expect(await w.manager.workflowManage(requirementId, { action: "delivery-check" })).toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["requirement_not_active"]) });
 
   expect(pmActions).toEqual(["early-advance", "review:impl", "advance:acceptance", "acceptance", "finish:acceptance", "report:acceptance", "rereport",

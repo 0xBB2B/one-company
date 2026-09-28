@@ -92,6 +92,8 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     const worktrees = (await exec("git", ["worktree", "list", "--porcelain"], { cwd: repo })).stdout;
     const worktree = /^worktree (.+)$/gm.exec(worktrees.split("\n\n").slice(1).join("\n\n"))?.[1];
     const archives = worktree ? await readdir(join(worktree, "docs", "prod")).catch(() => []) : [];
+    const archive = worktree && archives[0] ? await readFile(join(worktree, "docs", "prod", archives[0]), "utf8") : null;
+    if (archive !== null) await writeFile(join(evidence, "archive.md"), archive, { mode: 0o600 });
     const conventions = readApprovedConventions(join(agentDir, "pi-company"), repoId);
     const conventionsFile = await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null);
     const report = {
@@ -112,6 +114,10 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     expect(runs.map((run) => run.kind)).toContain("requirement");
     for (const role of ["pi-company.worker", "pi-company.reviewer", "pi-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
     expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
+    const sections = ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "{#acceptance}", "## 实现记录（关闭时由程序生成）", "## 验收记录（关闭时由程序生成）"]
+      .map((marker) => archive?.indexOf(marker) ?? -1);
+    expect(sections.every((position) => position > 0), JSON.stringify(sections)).toBe(true);
+    expect(sections).toEqual([...sections].sort((a, b) => a - b));
     expect(host.dialogs.some((dialog) => dialog.title === "确认更新项目规范 AGENTS.md")).toBe(true);
     expect(conventions?.content).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
     expect(conventionsFile).toBe(conventions?.content);

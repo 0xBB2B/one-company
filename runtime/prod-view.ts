@@ -22,8 +22,36 @@ export interface ProdStructure {
   businessCompleteness: "not_mechanically_proven";
 }
 
+export const PROD_SECTIONS = ["background", "requirements", "features", "implementation", "acceptance"] as const;
+
+/** 批准前核对五大板块：一、二级标题必须恰好是这五个固定编号的二级标题且按此顺序；符合返回 null，否则返回期望与实际。 */
+export function prodSectionsProblem(body: string): string | null {
+  const top = headingsOf(body).filter((heading) => heading.level <= 2);
+  const actual = top.map((heading) => heading.id ?? "无编号");
+  if (top.every((heading) => heading.level === 2) && actual.join() === PROD_SECTIONS.join()) return null;
+  return `顶层须为二级标题且依次为 ${PROD_SECTIONS.join("、")}，当前为 ${actual.length ? actual.join("、") : "无标题"}`;
+}
+
 /** 只识别代码围栏外的ATX标题末尾显式{#id}；不把自然语言标题变成永久身份。 */
 export function inspectProdStructure(body: string): ProdStructure {
+  const headings = headingsOf(body);
+  const identified = headings.filter((heading) => heading.id !== undefined);
+  const unavailable = (reason: ProdStructure["reason"]): ProdStructure => ({ status: "section_structure_unavailable", reason,
+    sections: [], businessCompleteness: "not_mechanically_proven" });
+  if (!identified.length) return unavailable("no_explicit_ids");
+  if (identified.length > 256) return unavailable("too_many_sections");
+  if (new Set(identified.map((heading) => heading.id)).size !== identified.length) return unavailable("duplicate_ids");
+  const bytes = Buffer.from(body);
+  return { status: "available", reason: "explicit_ids", businessCompleteness: "not_mechanically_proven",
+    sections: identified.map((heading) => {
+      const index = headings.indexOf(heading);
+      const endByte = headings.slice(index + 1).find((next) => next.level <= heading.level)?.offset ?? bytes.length;
+      return { id: heading.id!, startByte: heading.offset, endByte,
+        hash: `sha256:${createHash("sha256").update(bytes.subarray(heading.offset, endByte)).digest("hex")}` };
+    }) };
+}
+
+function headingsOf(body: string): Array<{ level: number; id?: string; offset: number }> {
   const headings: Array<{ level: number; id?: string; offset: number }> = [];
   let offset = 0;
   let fence: { char: string; length: number } | null = null;
@@ -44,20 +72,7 @@ export function inspectProdStructure(body: string): ProdStructure {
     }
     offset += Buffer.byteLength(line);
   }
-  const identified = headings.filter((heading) => heading.id !== undefined);
-  const unavailable = (reason: ProdStructure["reason"]): ProdStructure => ({ status: "section_structure_unavailable", reason,
-    sections: [], businessCompleteness: "not_mechanically_proven" });
-  if (!identified.length) return unavailable("no_explicit_ids");
-  if (identified.length > 256) return unavailable("too_many_sections");
-  if (new Set(identified.map((heading) => heading.id)).size !== identified.length) return unavailable("duplicate_ids");
-  const bytes = Buffer.from(body);
-  return { status: "available", reason: "explicit_ids", businessCompleteness: "not_mechanically_proven",
-    sections: identified.map((heading) => {
-      const index = headings.indexOf(heading);
-      const endByte = headings.slice(index + 1).find((next) => next.level <= heading.level)?.offset ?? bytes.length;
-      return { id: heading.id!, startByte: heading.offset, endByte,
-        hash: `sha256:${createHash("sha256").update(bytes.subarray(heading.offset, endByte)).digest("hex")}` };
-    }) };
+  return headings;
 }
 
 export interface ProdApprovalPartition {

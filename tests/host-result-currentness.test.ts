@@ -18,6 +18,8 @@ import { UserInteractionCore } from "../runtime/user-interaction.ts";
 
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
+const FIVE_SECTIONS = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n实施A。\n## 功能 {#features}\n### A {#A}\n实施A。\n" +
+  "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\nA 可以使用。\n";
 async function world(active: boolean) {
   const root = await mkdtemp(join(temporaryRoot(), "hrc-")), repo = join(root, "repo"), dataRoot = join(root, "data");
   await mkdir(repo); await mkdir(dataRoot);
@@ -39,7 +41,7 @@ async function world(active: boolean) {
   const tool = createRequirementManageTool({ interaction });
   const call = (params: Record<string, unknown>, id = uuidv7()) => tool.execute(id, { request: { repoId, ...params } } as never, undefined, undefined, ctx);
   interaction.captureInput({ source: "interactive", text: "整理并分析A目标" }, ctx); scriptReplies(provider, [{ type: "text", text: '{"allow":true}' }]);
-  const created = (await call({ action: "create", operationId: uuidv7(), requestId: uuidv7(), title: "A需求", body: "# A {#A}\n实施A。\n" })).details!;
+  const created = (await call({ action: "create", operationId: uuidv7(), requestId: uuidv7(), title: "A需求", body: FIVE_SECTIONS })).details!;
   const requirementId = String(created.requirementId), state = await RequirementStateStore.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true });
   interaction.captureInput({ source: "interactive", text: "分析A目标，不授权其他动作" }, ctx);
   const service = await RequirementService.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true });

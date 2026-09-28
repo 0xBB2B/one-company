@@ -128,7 +128,8 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const requestId = uuidv7();
     const operationId = uuidv7();
     const title = "安装产物需求";
-    const body = "通过真实 SDK input 进入生产授权路径";
+    const body = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n通过真实 SDK input 进入生产授权路径。\n## 功能 {#features}\n保存需求草稿。\n" +
+      "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n草稿能保存并批准。\n";
     scriptReplies(provider, [
       { type: "toolcall", name: "pi_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } } },
       { type: "text", text: '{"allow":true}' },
@@ -199,8 +200,8 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const entry = (kind: "constraint" | "target" | "action", conclusion: string) => ({ kind, conclusion, scope: "仅分析安装接线，不实施",
       basis: "explicit", resolution: "direct", candidateId: confirmationOperationId, requestId: null, actions: kind === "action" ? ["analyze"] : [], references: [], supersedes: [] });
     const interpretation = { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true,
-      entries: [{ ...entry("constraint", "需求身份与标题"), unitIds: ["metadata"] }, { ...entry("target", "通过真实SDK处理需求保存"), unitIds: ["whole-body"] },
-        { ...entry("action", "只分析接线"), unitIds: ["whole-body"] }] };
+      entries: [{ ...entry("constraint", "需求身份、标题与格式板块"), unitIds: ["metadata", "background", "implementation", "acceptance"] },
+        { ...entry("target", "通过真实SDK处理需求保存"), unitIds: ["requirements", "features"] }, { ...entry("action", "只分析接线"), unitIds: ["requirements", "features"] }] };
     scriptReplies(provider, [
       { type: "toolcall", name: "pi_company_user_interact", input: { request: { action: "forward", repoId: identity.repoId, requirementId: details.requirementId,
         savedOperationId: operationId, operationId: confirmationOperationId, version: details.version } } },
@@ -213,7 +214,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const forwarded = session.messages.find((message) => message.role === "toolResult" && message.toolName === "pi_company_user_interact");
     expect(forwarded?.isError, JSON.stringify(forwarded?.content)).toBe(false);
     expect(forwarded?.details).toMatchObject({ targetRecorded: true, prodActivated: true,
-      allowedScopes: [{ action: "analyze", goalIds: ["whole-body"], constraintIds: [] }] });
+      allowedScopes: [{ action: "analyze", goalIds: ["features", "requirements"], constraintIds: [] }] });
     expect(notifications.filter((entry) => entry.type === "error")).toEqual([]);
   } finally {
     const cleanupErrors: unknown[] = [];

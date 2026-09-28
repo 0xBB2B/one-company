@@ -32,3 +32,14 @@ test("M8A-AC7：主会话规则要求先请用户批准草稿，需求生效后�
   expect(dispatch).toBeGreaterThan(prepare);
   expect(systemPrompt).not.toContain("在请用户批准之前");
 });
+
+test("M8A-AC9：主会话规则写明草稿五大板块及固定编号，按背景、需求、功能、实现、验收的顺序", async () => {
+  const pi = createFakePi();
+  rulesExtension(pi.pi, { windowContext: () => { throw new Error("窗口未启动"); } });
+  const { systemPrompt } = await start(pi);
+  const positions = ["## 背景 {#background}", "## 需求 {#requirements}", "## 功能 {#features}", "## 实现 {#implementation}", "## 验收 {#acceptance}"]
+    .map((heading) => systemPrompt.indexOf(heading));
+  expect(positions.every((position) => position > 0)).toBe(true);
+  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  expect(systemPrompt).toContain("由 PM 规划");
+});
