@@ -91,6 +91,13 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await expect(w.call({ action: "metadata", requirementId: w.authorization.binding(w.sessionId)!.requirementId })).rejects.toThrow(/database_missing/);
     await expect(stat(repositoryDatabase(w.dataRoot, w.repoId))).rejects.toMatchObject({ code: "ENOENT" });
   });
+  test("M8B：草稿核验器知道项目规范另经规范流程处理，草稿不含规范不影响放行", async () => {
+    const w = await world();
+    await w.create();
+    expect(w.provider.requests.find((request) => request.systemPrompt?.includes("草拟意图核验器"))!.systemPrompt)
+      .toContain("长期遵守的项目规范另经项目规范流程处理，不写进需求草稿；草稿不含这部分不影响放行");
+  });
+
   test("create自动真实Git首提、UUID/hash一致、同operation幂等；新增无关需求不复用输入", async () => {
     const w = await world(); w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
     const p = { action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body: BODY };

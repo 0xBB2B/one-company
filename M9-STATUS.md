@@ -35,7 +35,7 @@ M8A（移除 spec、代码即文档、TDD 先红后绿、PM 上报、批准之�
 
 推进方式：真实模型验收按"跑一轮 → 查卡点 → 修 → 再跑"；小的格式与说明修正直接做，涉及机制、授权或规则设计的先问用户。
 
-已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。已知偶发：tests/daemon-client.test.ts 全量并行时偶发抢锁失败；tests/integration/network-and-sleep.test.ts 的计时用例全量并行时偶发失败；两者单独重跑均通过。
+已知风险：本机出网慢（M6 实测约 10 KB/s），AC10 的纯网页成功路径与 Docker 安装用例可能因网络失败，失败时如实标未完成。模型服务商中途断流（"stream ended before a terminal response event"）时 PM 或子代理直接停止且不能续接，主会话可重新派 PM 恢复；子代理会话为配合网络暂停关闭了 SDK 自带重试，运行管理器也没有另做传输错误重试。截至第 49 轮只在第 47 轮出现过，用户决定重复出现再设计有限次重试。已知偶发：tests/daemon-client.test.ts 全量并行时偶发抢锁失败；tests/integration/network-and-sleep.test.ts 的计时用例全量并行时偶发失败；两者单独重跑均通过。
 
 ## 下一窗口续接提示
 
