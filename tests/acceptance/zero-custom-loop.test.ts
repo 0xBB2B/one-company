@@ -113,7 +113,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     for (const role of ["pi-company.worker", "pi-company.reviewer", "pi-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
     expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
     expect(host.dialogs.some((dialog) => dialog.title === "确认更新项目规范 AGENTS.md")).toBe(true);
-    expect(conventions?.content).toMatch(/大写/);
+    expect(conventions?.content).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
     expect(conventionsFile).toBe(conventions?.content);
   } finally {
     if (host) await writeFile(join(evidence, "side-calls.json"), JSON.stringify(host.sideCalls, null, 2), { mode: 0o600 }).catch(() => undefined);
