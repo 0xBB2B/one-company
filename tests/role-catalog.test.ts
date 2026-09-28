@@ -53,6 +53,7 @@ describe("内置默认团队", () => {
     const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
     expect(body("worker")).toMatch(/先写测试[\s\S]*确认新测试失败（红）[\s\S]*再写实现[\s\S]*全部通过（绿）[\s\S]*同时列出红、绿两次运行/);
     expect(body("pm")).toContain("实现任务的 writePaths 同时包含覆盖它的测试文件，由同一个 worker 先写测试再实现，不把测试单独拆成任务");
+    expect(body("reviewer")).toContain("先按任务说明里的 git diff 命令查看本次改动，分清哪些定义是本次新增或修改的");
     expect(body("reviewer")).toMatch(/核对先红后绿[\s\S]*action=status 查看 worker 提交引用的验证记录[\s\S]*没有红的记录[\s\S]*列为阻塞/);
   });
 });

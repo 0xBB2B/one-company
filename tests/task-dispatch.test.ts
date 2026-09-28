@@ -164,6 +164,7 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   const reviewerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!;
   expect(reviewerRequest.tools?.map((tool) => tool.name)).not.toContain("pi_company_change_apply");
   expect(reviewerRequest.systemPrompt).toContain(`worker 提交说明：完成 a\nworker 提交引用的验证记录：${redGreen.join("、")}`);
+  expect(reviewerRequest.systemPrompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff [0-9a-f]{40} -- src\/a\//);
 
   w.provider.queue.push(submit("完成 d"), pmAck);
   await w.dispatch("d");

@@ -401,6 +401,10 @@ test("reviewer 只读查看被审 worker 尝试在提交里引用的验证记录
   await expect(otherAttempt.execute({ action: "status", verificationId: red.verificationId })).rejects.toMatchObject({ code: "not_found" });
   const qa = await w.tool(w.grant({ role: "qa" }), undefined, workerGrant.runId);
   await expect(qa.execute({ action: "status", verificationId: red.verificationId })).rejects.toMatchObject({ code: "not_found" });
+  await w.write("src/a.ts", "export const a = 2;\n");
+  const diff = await reviewer.execute({ action: "run", kind: "debug", command: "git --no-optional-locks diff HEAD -- src/", performance: NA }) as VerificationView;
+  expect(diff).toMatchObject({ status: "passed" });
+  expect(diff.output!.stdout.text).toContain("+export const a = 2;");
 });
 
 test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承完整环境变量；数据目录、Git 元数据、归档与角色定义不可写", async () => {
