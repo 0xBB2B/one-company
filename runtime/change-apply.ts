@@ -33,10 +33,12 @@ const content = Type.Union([Type.String({ maxLength: MAX_FILE_BYTES }), Type.Nul
 const inlineFile = object({ path: relativePath, baseHash: fileHash, content });
 // 预检只读不写，可省略 baseHash，结果给出当前值供 apply 使用
 const prepareFile = object({ path: relativePath, baseHash: Type.Optional(fileHash), content });
+// 模型抄写 64 位指纹常出错；apply 省略时用本会话对同一文件最近一次预检的值，预检后文件被改仍判 stale_base
+const applyFile = object({ path: relativePath, baseHash: Type.Optional(fileHash), content });
 const scratchFile = object({ path: relativePath, baseHash: fileHash, sourcePath: relativePath, targetHash: hash });
 export const CHANGE_APPLY_PARAMETERS = Type.Union([
   object({ action: Type.Literal("prepare"), files: Type.Array(prepareFile, { minItems: 1, maxItems: 64 }) }),
-  object({ action: Type.Literal("apply"), operationId: id, files: Type.Array(inlineFile, { minItems: 1, maxItems: 64 }) }),
+  object({ action: Type.Literal("apply"), operationId: id, files: Type.Array(applyFile, { minItems: 1, maxItems: 64 }) }),
   object({ action: Type.Literal("import"), operationId: id, files: Type.Array(scratchFile, { minItems: 1, maxItems: 64 }) }),
   object({ action: Type.Literal("status"), operationId: id }),
 ]);
@@ -96,6 +98,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
   const grant = freeze(checked(Grant, structuredClone(options.grant)));
   const deny: () => never = () => { throw new ChangeApplyError("change_apply_denied"); };
   let disposed = false;
+  const prepared = new Map<string, string>();
   function host(action: ChangeApplyAction) {
     if (disposed || !authorizeToolAction(grant.role, "change_apply", action)) deny();
     let result: unknown;
@@ -198,7 +201,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     await mkdir(dirname(file.absolute), { recursive: true });
     await writeFileAtomic(file.absolute, file.content.toString("utf8"));
   }
-  async function run(action: "apply" | "import", params: Extract<ChangeApplyParameters, { action: "apply" | "import" }>) {
+  async function run(action: "apply" | "import", params: { operationId: string; files: ReadonlyArray<Static<typeof inlineFile> | Static<typeof scratchFile>> }) {
     const { root } = await bindWorkspace(action);
     const planned = await plan(root, params);
     const intentHash = intentHashOf(planned);
@@ -286,9 +289,16 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
       if (stale.length > 0) throw new ChangeApplyError("stale_base", stale.join(","));
       const head = (await snapshotBranchState({ repoRoot: root })).head;
       host("prepare");
+      for (const file of planned) prepared.set(file.path, file.baseHash);
       return freeze({ status: "ready" as const, baseHead: head, files: planned.map((file) => ({ path: file.path, baseHash: file.baseHash, targetHash: file.targetHash })) });
     }
-    return run(params.action, params);
+    if (params.action === "import") return run("import", params);
+    const files = params.files.map((file) => {
+      const baseHash = file.baseHash ?? prepared.get(posix.normalize(file.path));
+      if (baseHash === undefined) throw new ChangeApplyError("invalid_shape", `${file.path} 没有预检过，先 prepare 或填 baseHash`);
+      return { ...file, baseHash };
+    });
+    return run("apply", { operationId: params.operationId, files });
   }
   return { execute, dispose() { disposed = true; } };
 }

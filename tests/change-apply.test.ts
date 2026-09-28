@@ -89,7 +89,8 @@ test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不�
     .rejects.toThrow(`stale_base: src/a.ts 当前 baseHash=${w.base}`);
   const filled = await tool.execute({ action: "prepare", files: [{ path: "src/a.ts", content: "x" }, { path: "src/new.ts", content: "y" }] }) as Result;
   expect(filled.files.map((file: { baseHash: string }) => file.baseHash)).toEqual([w.base, "absent"]);
-  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/a.ts", content: "x" }] })).rejects.toMatchObject({ code: "invalid_shape" });
+  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/unprepared.ts", content: "x" }] }))
+    .rejects.toThrow("invalid_shape: src/unprepared.ts 没有预检过，先 prepare 或填 baseHash");
   for (const extra of [{ role: "worker" }, { requirementId: uuidv7() }, { writePaths: ["/"] }, { actor: "user" }]) {
     await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [good], ...extra })).rejects.toMatchObject({ code: "invalid_shape" });
   }
@@ -183,6 +184,23 @@ test("M5-AC2：外部编辑或 pull 之后旧基础补丁拒绝，不覆盖用�
   await expect(tool.execute({ action: "apply", operationId: pulled, files: pulledFiles })).rejects.toMatchObject({ code: "stale_base" });
   expect(((await tool.execute({ action: "status", operationId: pulled })) as Result).status).toBe("stale");
   await expect(w.read("src/i.ts")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("M5-AC2：apply 省略 baseHash 时用本会话最近一次 prepare 的值；预检后文件被改仍拒绝，不覆盖新内容", async () => {
+  const w = await world(); const tool = await w.tool();
+  await tool.execute({ action: "prepare", files: [{ path: "src/a.ts", content: "export const a = 2;\n" }, { path: "src/new.ts", content: "n\n" }] });
+  const applied = await tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/a.ts", content: "export const a = 2;\n" }, { path: "src/new.ts", content: "n\n" }] }) as Result;
+  expect(applied.status).toBe("applied");
+  await expect(w.read("src/a.ts")).resolves.toBe("export const a = 2;\n");
+  await expect(w.read("src/new.ts")).resolves.toBe("n\n");
+
+  await tool.execute({ action: "prepare", files: [{ path: "src/a.ts", content: "export const a = 3;\n" }] });
+  await writeFile(join(w.worktree.root, "src", "a.ts"), "用户手改\n");
+  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/a.ts", content: "export const a = 3;\n" }] }))
+    .rejects.toMatchObject({ code: "stale_base" });
+  await expect(w.read("src/a.ts")).resolves.toBe("用户手改\n");
+  const other = await w.tool();
+  await expect(other.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/a.ts", content: "x" }] })).rejects.toMatchObject({ code: "invalid_shape" });
 });
 
 test("M5-AC2：生成器只能从沙箱生成目录按声明指纹导入，越界或指纹不符不落盘", async () => {
