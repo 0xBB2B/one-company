@@ -8,8 +8,8 @@
 
 | AC | 状态 | 证据 | 剩余缺口 |
 |---|---|---|---|
-| AC1 一次安装离线解析首批语言，索引跨重启复用，丢失可重建 | 待核对 | 可复用：tests/installation/syntax-parser.test.ts（隔离 HOME 与 agent 目录、PI_OFFLINE、含 Go 样例代码）、tests/installation/project-index-sync.test.ts | 在本阶段基线上重跑；补"删除 index.db 后从允许文件重建"在安装产物中的证据 |
-| AC2 至少 10 个预登记问题，出处与权限可核对 | 未开始 | 无 | 问题集待用户批准；需真实模型运行 |
+| AC1 一次安装离线解析首批语言，索引跨重启复用，丢失可重建 | 通过 | 本阶段基线上重跑：tests/installation/syntax-parser.test.ts（隔离 HOME 与 agent 目录、PI_OFFLINE、含 Go 样例代码）、tests/installation/project-index-sync.test.ts（daemon 重启后复用、同 mtime 离线改动；8020b19 新增：删除 index.db 后重启，下一次查询从允许文件自动重建并读到当前内容、不再弹确认、归档仍排除）；安装测试全部通过 | 无 |
+| AC2 至少 10 个预登记问题，出处与权限可核对 | 未开始 | 无 | 问题集已由用户定为 11 题（见续接提示）；多段长跑用例 tests/acceptance/progressive-loop.test.ts（c8e75ac）运行中 |
 | AC3 完整渐进需求场景：拆分、局部调整，错误代码不反改目标 | 未开始 | 可复用：tests/plan-assess.test.ts（脚本化模型） | 需真实模型在安装产物中跑一轮移动→快跑→跳跃→动画 |
 | AC4 六职责、10 工具、拒读、目录排除、关闭竞争、旧 PM 不复用、无正文提醒矩阵；披露 §5.7 与 §10.4 限制 | 待核对 | 可复用：tests/core-permissions.test.ts、tests/agent-session.test.ts、tests/workflow-close.test.ts、tests/explore-session.test.ts、tests/prod-exclusion.test.ts | 按 §13.1 逐行对照出矩阵；把两项已知限制写进交付说明 |
 | AC5 关闭后本机 prod 保留，只有完成正文可归档；他人无需原作者数据可人工查归档 | 待核对 | 可复用：tests/team-clone.test.ts、tests/git-delivery.test.ts、tests/workflow-close.test.ts | 在安装产物全流程中复验一次；M8A-AC8 起归档带验收记录，复验时核对他人能在归档里看到 QA 结果 |
@@ -19,7 +19,7 @@
 | AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 未开始 | 可复用：tests/pm-intake-runtime.test.ts、tests/pm-dispatch.test.ts、tests/pm-event-delivery.test.ts | 需在安装产物中实跑 |
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 未开始 | 可复用：tests/explore-dispatch.test.ts、tests/explore-web.test.ts | 需真实模型与真实联网；本机出网慢，联网失败时该项标未完成，不以降级路径冒充 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
-| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 待核对 | 上一次通过：第 55 轮（M8A-AC10 修复后的工作区，内容即其提交）：pnpm run test:acceptance 通过（1/1），证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T10-17-43-278Z/（report.json：outcome closed、13.3 分钟、全为默认定义；archive.md 含五大板块、实现记录与验收记录）；驱动 tests/acceptance/zero-custom-loop.test.ts | 归档记录改为插入所属板块后须在新基线上重跑；第 56 轮（913482d）中批准、建工作区、派 PM 与接手核对均正常，但两次 PM 运行和一次 explore 都被宿主主动中止（stopReason=aborted；pi-ai openai-responses.js:153 只有请求已被中止时才标 aborted，报错文字"stream ended before a terminal response event"只是结果），第一个 PM 与其 explore 同时停止，疑似 run-manager.ts:307 续租失败触发 stop；停止路径不记原因，stateReason 为空，暂无法确认，未走到关闭（证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T10-58-05-159Z）；真实模型有波动，单轮通过不代表每轮必过（第 54 轮卡在返修审查，已由 M8A-AC10 修复） |
+| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 通过 | 第 57 轮（M8C 收口后基线 f46ae8c）：pnpm run test:acceptance -t "M9-AC12" 通过（1/1），9.7 分钟以完成关闭，全为默认定义，归档五大板块、实现记录在实现板块末尾、验收记录在验收板块末尾，项目规范经确认写入 AGENTS.md；PM 在关闭时停止（stopCause=requirement_closing）（证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T13-35-04-858Z）；该轮一个 explore 因 searchedScope 写 src/ 被误拒两次、未交结果，已由 6747b50 修复；真实模型有波动，单轮通过不代表每轮必过 | 无 |
 | AC13 复制默认 worker 为专业定义，PM 自动选中完成 UI 设计与实现，独立 review/QA | 未开始 | 可复用：tests/agent-catalog-ui.test.ts、tests/agent-selection.test.ts | 需真实模型与 UI 样例任务 |
 | AC14 安装产物中两类目录发现、环境变量覆盖、项目信任、同名冲突、不越根 | 未开始 | 可复用：tests/role-catalog.test.ts | 需在安装产物中实跑 |
 | AC15 两种默认路径；显式指定不可用明确失败交用户裁决 | 未开始 | 可复用：tests/agent-selection.test.ts | 需在安装产物中实跑 |
