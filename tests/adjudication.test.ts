@@ -214,6 +214,9 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
   const w = await world();
   const requirementItem = `requirement:${w.fixture.requirementId}`;
   const recordVersion = () => w.fixture.state.read(w.fixture.requirementId).version;
+  const retry = (turns: string) => [`item:${subject.itemId}`, `version:${subject.version}`, "choice:retry", `max-turns:${turns}`];
+  expect(() => checkInterpretation(interpretation({ ...base, references: retry("100") }), { ...context, adjudication: subject })).not.toThrow();
+  expect(() => checkInterpretation(interpretation({ ...base, references: retry("101") }), { ...context, adjudication: subject })).toThrow(/adjudication_invalid/);
   const close = (reason: string, receiptId: string) => w.manager.workflowManage(w.fixture.requirementId, { action: "close", reason, receiptId, operationId: uuidv7() });
 
   expect(await close("cancelled", uuidv7())).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });

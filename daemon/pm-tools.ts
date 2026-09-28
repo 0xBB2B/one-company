@@ -45,13 +45,13 @@ const runControl = (action: "status" | "pause" | "resume" | "stop") =>
   Type.Object({ action: Type.Literal(action), runId: Type.String({ pattern: UUID_V7 }) }, { additionalProperties: false });
 export const PM_AGENT_MANAGE_PARAMETERS = Type.Union([
   ...(["retry", "rework"] as const).map((kind) => Type.Object({ action: Type.Literal("dispatch"), taskId: Type.String({ pattern: UUID_V7 }),
-    [kind]: Type.Optional(Type.Object({ reason: Type.String({ minLength: 1, maxLength: 1024 }), maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }) },
+    [kind]: Type.Optional(Type.Object({ reason: Type.String({ minLength: 1, maxLength: 1024 }), maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) },
       { additionalProperties: false })) }, { additionalProperties: false })),
   Type.Object({ action: Type.Literal("dispatch"), taskId: Type.String({ pattern: UUID_V7 }),
-    review: Type.Object({ maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }) }, { additionalProperties: false }) }, { additionalProperties: false }),
+    review: Type.Object({ maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) }, { additionalProperties: false }) }, { additionalProperties: false }),
   ...[EXPLORE_WEB_QUERY].map((target) => Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), question: Type.String({ minLength: 1, maxLength: 1500 }),
     clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })), ...target,
-    maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }) }, { additionalProperties: false })),
+    maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) }, { additionalProperties: false })),
   runControl("status"), runControl("pause"), runControl("resume"), runControl("stop"),
   Type.Object({ action: Type.Literal("catalog"), role: Type.Optional(Type.Union(["worker", "reviewer", "qa", "explore"].map((role) => Type.Literal(role)))),
     cursor: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000 })) }, { additionalProperties: false }),

@@ -48,7 +48,7 @@ test("M7-AC13：接手核对通过前正式提出计划被拒，通过后可以�
 test("M7-AC31：任务缺目标、通过条件、范围、性能条件或有效轮次上限时拒绝登记", async () => {
   const w = await world();
   const pm = await w.tool();
-  for (const bad of [{ maxTurns: 0 }, { maxTurns: 1.5 }, { passCriteria: [] }, { scope: { in: [], out: [] } }, { objective: "" }, { goalUnitIds: [] }]) {
+  for (const bad of [{ maxTurns: 0 }, { maxTurns: 1.5 }, { maxTurns: 101 }, { passCriteria: [] }, { scope: { in: [], out: [] } }, { objective: "" }, { goalUnitIds: [] }]) {
     await expect(pm.execute({ action: "propose", tasks: [spec("login", bad as Partial<TaskSpec>)] })).rejects.toMatchObject({ code: "invalid_shape" });
   }
   const { performance: _performance, ...withoutPerformance } = spec("login");

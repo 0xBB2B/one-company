@@ -66,7 +66,7 @@ function parse(references: readonly string[]): { itemId: string; version: string
   const choice = value("choice") as AdjudicationChoice | null, turns = value("max-turns");
   const itemId = value("item"), version = value("version");
   if (!itemId || !version || !choice || !ADJUDICATION_CHOICES.includes(choice)) deny("decision_shape");
-  const maxTurns = turns === null ? null : /^[1-9][0-9]{0,3}$/.test(turns) && Number(turns) <= 1000 ? Number(turns) : deny("decision_shape");
+  const maxTurns = turns === null ? null : /^[1-9][0-9]{0,2}$/.test(turns) && Number(turns) <= 100 ? Number(turns) : deny("decision_shape");
   if ((choice === "retry") !== (maxTurns !== null)) deny("decision_shape");
   return { itemId: itemId!, version: version!, choice: choice!, maxTurns };
 }

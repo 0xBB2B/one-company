@@ -499,7 +499,7 @@ export class RunManager {
    * 或只交给派出它的主窗口会话。
    */
   async dispatchExplore(input: { parent: ExploreParentRequest; request: ExploreRequest; maxTurns: number }): Promise<{ runId: string; maxTurns: number }> {
-    if (!Number.isSafeInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 1000) throw protocolError("invalid_params", "explore 须有正整数轮次上限");
+    if (!Number.isSafeInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 100) throw protocolError("invalid_params", "explore 须有正整数轮次上限");
     let parent: ExploreInput["parent"], root: string, modelRef: SelectedModel, thinking: string, requirementId: string | null = null;
     if (input.parent.role === "PM") {
       const pm = this.sessions.get(input.parent.pmRunId), pmRun = await this.runStore.get(input.parent.pmRunId);

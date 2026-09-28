@@ -12,7 +12,7 @@ const runId = Type.String({ pattern: UUID_V7 });
 const strict = { additionalProperties: false } as const;
 const exploreDispatch = <T extends object>(target: T) => Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), repoId,
   question: Type.String({ minLength: 1, maxLength: 1500 }), clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })),
-  maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }), ...target }, strict);
+  maxTurns: Type.Integer({ minimum: 1, maximum: 100 }), ...target }, strict);
 export const MAIN_AGENT_MANAGE_PARAMETERS = Type.Union([
   Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("pm"), repoId, requirementId: Type.String({ pattern: UUID_V7 }) }, strict),
   exploreDispatch(EXPLORE_WEB_QUERY),

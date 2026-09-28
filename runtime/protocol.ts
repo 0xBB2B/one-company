@@ -139,7 +139,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   "agents.dispatchExplore": Type.Object({ request: Type.Object({ question: Type.String(), clues: Type.Array(Type.String()),
     source: Type.Union([Type.Object({ kind: Type.Literal("local_file") }, { additionalProperties: false }),
       Type.Object({ kind: Type.Literal("web"), query: Type.String() }, { additionalProperties: false })]) }, { additionalProperties: false }),
-    maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }), model: Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false }),
+    maxTurns: Type.Integer({ minimum: 1, maximum: 100 }), model: Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false }),
     thinking: Type.String() }, { additionalProperties: false }),
   "explore.result": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "pm.packet": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),

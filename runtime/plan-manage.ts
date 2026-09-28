@@ -33,7 +33,7 @@ export const TaskSpec = object({
   dependsOn: Type.Array(key, { maxItems: 32, uniqueItems: true }),
   writePaths: Type.Array(Type.String({ minLength: 1, maxLength: 1024 }), { maxItems: 64, uniqueItems: true }),
   blockedByQuestionIds: Type.Array(id, { maxItems: 16, uniqueItems: true }),
-  maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }),
+  maxTurns: Type.Integer({ minimum: 1, maximum: 100 }),
   objective: text, passCriteria: texts(1), scope: object({ in: texts(1), out: texts(0) }), performance: VerificationPerformance,
   agent: Type.Optional(agentName), agentReason: Type.Optional(text),
   /** 审查该 worker 任务的角色定义名称；缺省用默认 reviewer。 */
