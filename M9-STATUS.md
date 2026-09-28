@@ -11,19 +11,19 @@
 | AC1 一次安装离线解析首批语言，索引跨重启复用，丢失可重建 | 通过 | 本阶段基线上重跑：tests/installation/syntax-parser.test.ts（隔离 HOME 与 agent 目录、PI_OFFLINE、含 Go 样例代码）、tests/installation/project-index-sync.test.ts（daemon 重启后复用、同 mtime 离线改动；8020b19 新增：删除 index.db 后重启，下一次查询从允许文件自动重建并读到当前内容、不再弹确认、归档仍排除）；安装测试全部通过 | 无 |
 | AC2 至少 10 个预登记问题，出处与权限可核对 | 未开始 | 无 | 问题集已由用户定为 11 题（见续接提示）；多段长跑用例 tests/acceptance/progressive-loop.test.ts（c8e75ac）运行中 |
 | AC3 完整渐进需求场景：拆分、局部调整，错误代码不反改目标 | 未开始 | 可复用：tests/plan-assess.test.ts（脚本化模型） | 需真实模型在安装产物中跑一轮移动→快跑→跳跃→动画 |
-| AC4 六职责、10 工具、拒读、目录排除、关闭竞争、旧 PM 不复用、无正文提醒矩阵；披露 §5.7 与 §10.4 限制 | 待核对 | 可复用：tests/core-permissions.test.ts、tests/agent-session.test.ts、tests/workflow-close.test.ts、tests/explore-session.test.ts、tests/prod-exclusion.test.ts | 按 §13.1 逐行对照出矩阵；把两项已知限制写进交付说明 |
+| AC4 六职责、10 工具、拒读、目录排除、关闭竞争、旧 PM 不复用、无正文提醒矩阵；披露 §5.7 与 §10.4 限制 | 通过 | 矩阵逐行对照 .bb-spec/.cache/m9/matrix-13.1.md（38 行：完整 22、部分 15、无 1；无的「大小」行为 M8A 漏删的 spec 遗留，经用户同意已由 16a1621 删除）；本项所列权限、活动访问、关闭、正常正文入口、explore 结束与撤权、旧 PM 不复用各行均为完整覆盖，本基线单元 2341、安装产物集成 80 条通过；两项已知限制写入 README「已知限制」（2520a02）；会话与提醒行只断言关闭结果为无正文建议，未断言主会话不被清空（属已知限制，不作门槛） | 无 |
 | AC5 关闭后本机 prod 保留，只有完成正文可归档；他人无需原作者数据可人工查归档 | 待核对 | 可复用：tests/team-clone.test.ts、tests/git-delivery.test.ts、tests/workflow-close.test.ts | 在安装产物全流程中复验一次；M8A-AC8 起归档带验收记录，复验时核对他人能在归档里看到 QA 结果 |
 | AC6 无 prompts 模板与业务 Git 集成仍可存正文版本并交付；适配器不回显关闭正文 | 待核对 | 可复用：tests/zero-custom-loop.test.ts、tests/git-delivery-extension.test.ts、tests/git-delivery.test.ts | 在安装产物全流程中复验一次；M8A-AC8 起 Git 交付按归档整体 hash 核对 |
 | AC7 类型、回归、集成、安装、性能、安全测试实际执行；两种更新调度实测；列出未覆盖项 | 未开始 | 无 | 阶段末全量执行；性能按 §13.2 在当前基线重测（可复用 tests/helpers/m3-benchmark.ts、tests/helpers/m4-query-benchmark.ts） |
 | AC8 临时安装、克隆、需求 Git、数据库、WASM 验证文件、日志、进程清理 | 未开始 | 无 | 阶段末执行 |
-| AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 未开始 | 可复用：tests/pm-intake-runtime.test.ts、tests/pm-dispatch.test.ts、tests/pm-event-delivery.test.ts | 需在安装产物中实跑 |
+| AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 部分 | 安装产物真实模型：第 57 轮（AC12）与长跑第 1—3 轮的快跑、跳跃段均走通受限接手、主代理核对、PM 规划与派 worker/reviewer/QA；tests/integration/agent-gates.test.ts（36dd9d4，安装产物上通过）：未认证连接派 PM 被拒、已有有效 PM 时再派被拒 | 增量复核（长跑追加动画段）第 4 轮运行中；新物理 PM 重核对只有进程内测试（tests/pm-dispatch.test.ts 接管用例），未在安装产物上实测 |
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 未开始 | 可复用：tests/explore-dispatch.test.ts、tests/explore-web.test.ts | 需真实模型与真实联网；本机出网慢，联网失败时该项标未完成，不以降级路径冒充 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
 | AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 通过 | 第 57 轮（M8C 收口后基线 f46ae8c）：pnpm run test:acceptance -t "M9-AC12" 通过（1/1），9.7 分钟以完成关闭，全为默认定义，归档五大板块、实现记录在实现板块末尾、验收记录在验收板块末尾，项目规范经确认写入 AGENTS.md；PM 在关闭时停止（stopCause=requirement_closing）（证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T13-35-04-858Z）；该轮一个 explore 因 searchedScope 写 src/ 被误拒两次、未交结果，已由 6747b50 修复；真实模型有波动，单轮通过不代表每轮必过 | 无 |
 | AC13 复制默认 worker 为专业定义，PM 自动选中完成 UI 设计与实现，独立 review/QA | 未开始 | 可复用：tests/agent-catalog-ui.test.ts、tests/agent-selection.test.ts | 需真实模型与 UI 样例任务 |
-| AC14 安装产物中两类目录发现、环境变量覆盖、项目信任、同名冲突、不越根 | 未开始 | 可复用：tests/role-catalog.test.ts | 需在安装产物中实跑 |
-| AC15 两种默认路径；显式指定不可用明确失败交用户裁决 | 未开始 | 可复用：tests/agent-selection.test.ts | 需在安装产物中实跑 |
-| AC16 注入缺模型、缺 skill、冲突、越权、断网、运行中改配置，均明确阻塞 | 未开始 | 可复用：tests/agent-selection.test.ts、tests/integration/network-and-sleep.test.ts | 需在安装产物中实跑 |
+| AC14 安装产物中两类目录发现、环境变量覆盖、项目信任、同名冲突、不越根 | 部分 | tests/integration/agent-gates.test.ts M9-AC14 用例（1bec8fb，安装产物上通过）：daemon 从 dirname(dataRoot)/agents 与受信任项目的 .pi/agents 发现定义，项目未受信任时不加载，缺 role、同层重名、仓库外祖先目录不进能力目录，重名定义派工被拒；同名跨层按项目 > 用户 > 内置显式覆盖（计划已由 16a1621 统一表述，覆盖本身见 tests/role-catalog.test.ts） | PI_CODING_AGENT_DIR 覆盖下的发现待 AC13 真实模型运行取证（验收宿主经该变量设定 agentDir） |
+| AC15 两种默认路径；显式指定不可用明确失败交用户裁决 | 部分 | 零专业定义全用默认：第 57 轮（AC12）全部运行 source=default；有专业定义但任务无匹配走默认 worker、指定不可用明确拒绝不静默改默认：tests/integration/agent-gates.test.ts M9-AC15/AC16 用例（安装产物上通过） | 「交用户裁决」目前靠 PM 按 agent_manage 说明去问用户，程序不自动生成待裁决事项（M7 既有设计）；授权内自动选择不逐次确认待 AC13 真实模型运行 |
+| AC16 注入缺模型、缺 skill、冲突、越权、断网、运行中改配置，均明确阻塞 | 部分 | tests/integration/agent-gates.test.ts（安装产物上通过）：指定定义不存在、缺 skill、缺模型、思考等级不支持、越权声明工具均明确拒绝且不建运行；专业 worker 暂停期间改定义，续接被拒并以 config_changed 停止；断网：tests/integration/network-and-sleep.test.ts 在安装产物上通过（0515db3 起可用 pnpm run test:integration:installed） | 「模型已配置但不可访问（无凭据）」未注入 |
 | AC17 真实模型请求、能力目录、skill 加载探针与运行元数据逐项对应 | 未开始 | 无 | 需真实模型 |
 | AC18 默认与专业路径的目录、加载、输入输出、回读、重派、耗时实测 | 未开始 | 无 | 依赖 AC11 同一测量方法 |
 
