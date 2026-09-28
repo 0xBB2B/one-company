@@ -67,15 +67,17 @@ test("真实批准prod、独立worktree、PM lease和可信provider可登记请�
   const beforeRequirement = fixture.state.read(fixture.requirementId);
   const beforeOwner = fixture.db((db) => db.read("pm_ownership", fixture.requirementId));
   const request = await fixture.intake.openRequest(fixture.call, fixture.operationId());
-  expect(request).toMatchObject({ understandingStatus: "accepted", uncoveredScenarioIds: [], executionEnabled: false,
-    scheduling: "not_implemented", userAuthorizationCreated: false });
+  expect(request).toMatchObject({ understandingStatus: "accepted", uncoveredScenarioIds: [], userAuthorizationCreated: false });
+  expect(request).not.toHaveProperty("executionEnabled");
+  expect(request).not.toHaveProperty("scheduling");
   expect(request.binding).toMatchObject(fixture.basis);
   expect(request.sourceDirectory).toEqual(fixture.sourceDirectory);
   expect(await fixture.intake.readRequest(fixture.newCall(), request.requestId)).toEqual(request);
 
   const review = await fixture.intake.recordReview(fixture.newCall(), request.requestId, fixture.operationId(), { result: "passed", shortIssues: [] });
-  expect(review).toMatchObject({ record: { requestId: request.requestId, result: "passed" }, executionEnabled: false,
-    scheduling: "not_implemented", userAuthorizationCreated: false });
+  expect(review).toMatchObject({ record: { requestId: request.requestId, result: "passed" }, userAuthorizationCreated: false });
+  expect(review).not.toHaveProperty("executionEnabled");
+  expect(review).not.toHaveProperty("scheduling");
   expect(fixture.state.read(fixture.requirementId)).toEqual(beforeRequirement);
   expect(fixture.db((db) => db.read("pm_ownership", fixture.requirementId))).toEqual(beforeOwner);
   const all = persisted(fixture);

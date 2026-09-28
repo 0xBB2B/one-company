@@ -226,7 +226,6 @@ export class IntakeContractError extends Error {
   }
 }
 
-const disabled = Object.freeze({ executionEnabled: false as const, scheduling: "not_implemented" as const });
 const fail = (code: IntakeContractErrorCode): never => { throw new IntakeContractError(code); };
 const codepoints = (value: string): number => Array.from(value).length;
 const bytes = (value: string): number => Buffer.byteLength(value, "utf8");
@@ -304,8 +303,6 @@ export interface PmUnderstandingCheck {
   status: "accepted" | "uncovered";
   understanding: PmUnderstanding;
   uncoveredScenarioIds: string[];
-  executionEnabled: false;
-  scheduling: "not_implemented";
 }
 
 /** 校验并复制 PM 业务理解；不要求 task 方案，也不读取或保存用户原话。 */
@@ -332,15 +329,12 @@ export function checkPmUnderstanding(value: unknown, sourceDirectory: unknown): 
     status: uncoveredScenarioIds.length ? "uncovered" : "accepted",
     understanding,
     uncoveredScenarioIds,
-    ...disabled,
   };
 }
 
 export interface IntakeReviewRecordCheck {
   status: "accepted";
   record: IntakeReviewRecord;
-  executionEnabled: false;
-  scheduling: "not_implemented";
 }
 
 /**
@@ -355,7 +349,7 @@ export function checkIntakeReviewRecord(value: unknown, sourceDirectory: unknown
   checkRefs(record.sourceRefs, directory);
   record.shortIssues.forEach(checkText);
   if ((record.result === "passed") !== (record.shortIssues.length === 0)) fail("invalid_shape");
-  return { status: "accepted", record, ...disabled };
+  return { status: "accepted", record };
 }
 
 export type IntakeContinuityReason =
@@ -402,8 +396,6 @@ export interface IntakeContinuityEvaluation {
   impact: "not_applicable" | "unaffected" | "affected" | "unknown";
   affectedTasks: Array<{ taskId: string; version: number }>;
   unknownTasks: Array<{ taskId: string; version: number }>;
-  executionEnabled: false;
-  scheduling: "not_implemented";
 }
 
 const bindingKeys = Object.keys(IntakeBindingSchema.properties) as Array<keyof IntakeBinding>;
@@ -607,19 +599,14 @@ export function evaluateIntakeContinuity(value: unknown): IntakeContinuityEvalua
     impact,
     affectedTasks,
     unknownTasks,
-    ...disabled,
   };
   if (bytes(JSON.stringify(result)) > PM_INTAKE_LIMITS.jsonBytes) fail("resource_limit");
   return result;
 }
 
 /** 对象键顺序不参与契约等值判断；数组顺序仍保留协议语义。 */
-export function intakeBindingsEqual(left: unknown, right: unknown): {
-  equal: boolean;
-  executionEnabled: false;
-  scheduling: "not_implemented";
-} {
+export function intakeBindingsEqual(left: unknown, right: unknown): { equal: boolean } {
   const a = cloneChecked<IntakeBinding>(IntakeBindingSchema, left).value;
   const b = cloneChecked<IntakeBinding>(IntakeBindingSchema, right).value;
-  return { equal: isDeepStrictEqual(a, b), ...disabled };
+  return { equal: isDeepStrictEqual(a, b) };
 }

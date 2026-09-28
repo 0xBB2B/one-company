@@ -83,14 +83,10 @@ export interface IntakeRequestView {
   understandingStatus: "accepted" | "uncovered";
   uncoveredScenarioIds: string[];
   createdAt: number;
-  executionEnabled: false;
-  scheduling: "not_implemented";
   userAuthorizationCreated: false;
 }
 export interface IntakeReviewView {
   record: IntakeReviewRecord;
-  executionEnabled: false;
-  scheduling: "not_implemented";
   userAuthorizationCreated: false;
 }
 
@@ -111,7 +107,7 @@ const HASH = stringPattern(/^[0-9a-f]{64}$/);
 const OPAQUE = stringPattern(/^[A-Za-z0-9][A-Za-z0-9._:/#@+|-]{0,255}$/);
 const MAX_INNER_BYTES = 49_152;
 const signalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")!.get!;
-const disabled = Object.freeze({ executionEnabled: false as const, scheduling: "not_implemented" as const, userAuthorizationCreated: false as const });
+const noUserAuthorization = Object.freeze({ userAuthorizationCreated: false as const });
 function deny(code: string): never { throw new PmIntakeServiceError(code); }
 const same = (left: unknown, right: unknown): boolean => decisionDigest(left) === decisionDigest(right);
 const stableDigest = (value: unknown): string => createHash("sha256").update(canonicalJson(value as Parameters<typeof canonicalJson>[0])).digest("hex");
@@ -411,7 +407,7 @@ export class PmIntakeService {
       submissionRef: stored.record.submissionRef, submissionHash: stored.record.submissionHash,
       sourceDirectoryHash: stored.record.sourceDirectoryHash, sourceDirectory: structuredClone(stored.sourceDirectory),
       understanding: structuredClone(submission.understanding), understandingStatus: submission.status,
-      uncoveredScenarioIds: [...submission.uncoveredScenarioIds], createdAt: stored.record.createdAt, ...disabled };
+      uncoveredScenarioIds: [...submission.uncoveredScenarioIds], createdAt: stored.record.createdAt, ...noUserAuthorization };
     bounded({ ...view, understanding: undefined });
     return bounded(view);
   }
@@ -477,11 +473,11 @@ export class PmIntakeService {
       reviewer: { windowId: prepared.identity.windowId, sessionId: prepared.identity.sessionId, toolCallId: prepared.identity.toolCallId },
       result: decision.result, sourceRefs: sourceRefs(submission.understanding), shortIssues: [...decision.shortIssues],
     };
-    bounded({ record, ...disabled });
+    bounded({ record, ...noUserAuthorization });
     const review = this.#store.prepareReview({ operationId, proof: existing.currentProof, record });
     const stored = this.#store.commitReview(review, this.#finalCallback(call, prepared, submission));
     this.#runtimeCurrent(call, prepared);
-    return this.#deliver(call, prepared, submission, stored.currentProof, bounded({ record: structuredClone(stored.record), ...disabled }));
+    return this.#deliver(call, prepared, submission, stored.currentProof, bounded({ record: structuredClone(stored.record), ...noUserAuthorization }));
   }
 
   recordImpact(): never { return deny("impact_provider_unavailable"); }

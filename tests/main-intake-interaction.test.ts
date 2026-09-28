@@ -47,8 +47,9 @@ test("原始SDK上下文完成ask、forward、reply，完整理解只在模型�
   const fixture = await world(), { bridge, ctx, signal } = bridgeFor(fixture);
   const askInput = ask(fixture), opened = await executeObserved(bridge, ctx, signal, askInput, "call-ask");
   const openedView = contentView(opened.response) as IntakeRequestView;
-  expect(openedView).toMatchObject({ understandingStatus: "accepted", executionEnabled: false,
-    scheduling: "not_implemented", userAuthorizationCreated: false });
+  expect(openedView).toMatchObject({ understandingStatus: "accepted", userAuthorizationCreated: false });
+  expect(openedView).not.toHaveProperty("executionEnabled");
+  expect(openedView).not.toHaveProperty("scheduling");
   expect(opened.response.details).toEqual({ format: "pm-intake-transport/v1", action: "ask" });
   expect(opened.response.content[0]!.text).toContain("实现手机号登录");
   const notes = (openedView as IntakeRequestView & { decisions: Array<{ id: string; status: string; unitIds: string[]; conclusion: string }> }).decisions;
@@ -65,7 +66,7 @@ test("原始SDK上下文完成ask、forward、reply，完整理解只在模型�
 
   const replyInput = reply(fixture, requestId), reviewed = await executeObserved(bridge, ctx, signal, replyInput, "call-reply");
   expect(contentView(reviewed.response)).toMatchObject({ record: { requestId, result: "passed" },
-    userAuthorizationCreated: false, executionEnabled: false });
+    userAuthorizationCreated: false });
   expect(reviewed.response.details).toEqual({ format: "pm-intake-transport/v1", action: "reply" });
   bridge.assertDelivery(resultEvent(reviewed.id, replyInput, reviewed.response), ctx);
   expect(fixture.db((db) => db.list(PM_INTAKE_NAMESPACES.requests))).toHaveLength(1);

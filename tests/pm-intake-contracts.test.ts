@@ -172,7 +172,9 @@ test("理解契约覆盖目标、边界、动作、未决影响、必要场景�
   const input = understanding();
   input.goals[0]!.text = " 增加手机号登录 ";
   const result = checkPmUnderstanding(input, directory);
-  expect(result).toMatchObject({ status: "accepted", uncoveredScenarioIds: [], executionEnabled: false, scheduling: "not_implemented" });
+  expect(result).toMatchObject({ status: "accepted", uncoveredScenarioIds: [] });
+  expect(result).not.toHaveProperty("executionEnabled");
+  expect(result).not.toHaveProperty("scheduling");
   expect(result.understanding).toEqual(input);
   expect(result.understanding).not.toBe(input);
   expect(result.understanding.goals[0]!.text).toBe(" 增加手机号登录 ");
@@ -183,7 +185,7 @@ test("必要场景缺项或明确未覆盖返回uncovered，未知来源则明�
   const missing = understanding();
   missing.scenarioCoverage.pop();
   expect(checkPmUnderstanding(missing, directory)).toMatchObject({
-    status: "uncovered", uncoveredScenarioIds: ["scenario.failure"], executionEnabled: false,
+    status: "uncovered", uncoveredScenarioIds: ["scenario.failure"],
   });
 
   const uncovered = understanding();
@@ -227,7 +229,7 @@ test("来源目录和每项引用拒绝重复，要求的场景必须属于当�
 
 test("核对记录只有受控元数据形状，passed与短问题保持一致", () => {
   const result = checkIntakeReviewRecord(review(), directory);
-  expect(result).toMatchObject({ status: "accepted", executionEnabled: false, scheduling: "not_implemented" });
+  expect(result).toEqual({ status: "accepted", record: expect.anything() });
   expect(result.record).toEqual(review());
 
   expectCode(() => checkIntakeReviewRecord({ ...review(), shortIssues: ["不能一边passed一边留问题"] }, directory), "invalid_shape");
@@ -267,12 +269,12 @@ test("首次无passed记录、理解基线丢失和新物理PM都要求重新核
   }
 });
 
-test("准确同一binding与外部当前事实齐备时只得到contractReady，执行和调度仍关闭", () => {
+test("准确同一binding与外部当前事实齐备时只得到contractReady", () => {
   const value = facts();
   const result = evaluateIntakeContinuity(value);
   expect(result).toEqual({
     status: "contract_ready", reasons: [], contractReady: true, reviewRequired: false, impact: "not_applicable",
-    affectedTasks: [], unknownTasks: [], executionEnabled: false, scheduling: "not_implemented",
+    affectedTasks: [], unknownTasks: [],
   });
   expect(value).toEqual(facts());
 
@@ -310,7 +312,7 @@ test("binding逐项变化都不能直接沿用旧记录", () => {
 
 test("对象键重排不影响binding比较，字段变化仍可见", () => {
   const reordered = Object.fromEntries(Object.entries(binding()).reverse());
-  expect(intakeBindingsEqual(binding(), reordered)).toEqual({ equal: true, executionEnabled: false, scheduling: "not_implemented" });
+  expect(intakeBindingsEqual(binding(), reordered)).toEqual({ equal: true });
   expect(intakeBindingsEqual(binding(), { ...binding(), epoch: 4 }).equal).toBe(false);
 });
 
@@ -321,7 +323,7 @@ test("R1→R2→R3逐次完整unaffected影响链可保持契约就绪且不改�
   expect(value).toEqual(before);
   expect(result).toEqual({
     status: "contract_ready", reasons: [], contractReady: true, reviewRequired: false, impact: "unaffected",
-    affectedTasks: [], unknownTasks: [], executionEnabled: false, scheduling: "not_implemented",
+    affectedTasks: [], unknownTasks: [],
   });
 });
 
@@ -539,11 +541,11 @@ test("影响链引用总量受128限制", () => {
 test("affected要求更新/验证，unknown继续阻塞，不误报交付完成", () => {
   const affected = evaluateIntakeContinuity(chained("affected"));
   expect(affected).toMatchObject({ status: "impact_action_required", contractReady: false, impact: "affected",
-    affectedTasks: [{ taskId: "task.login", version: 2 }], executionEnabled: false });
+    affectedTasks: [{ taskId: "task.login", version: 2 }] });
 
   const unknown = evaluateIntakeContinuity(chained("unknown"));
   expect(unknown).toMatchObject({ status: "impact_action_required", contractReady: false, impact: "unknown",
-    unknownTasks: [{ taskId: "task.login", version: 2 }], executionEnabled: false });
+    unknownTasks: [{ taskId: "task.login", version: 2 }] });
 });
 
 test("新批准更新、非活动、租约过期及外部当前性声明缺失都默认阻塞", () => {

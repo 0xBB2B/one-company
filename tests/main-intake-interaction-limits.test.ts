@@ -316,8 +316,7 @@ test("合法view含Unicode与转义时transport精确接受51,200字节并拒绝
       summary: "失败时显示错误", sourceRefs: [{ kind: "prod-scenario", id: "scenario.failure" }] }] };
   const view: IntakeRequestView = { requestId: uuidv7(), binding, submissionRef: "pm/submission/current",
     submissionHash: "2".repeat(64), sourceDirectoryHash: "3".repeat(64), sourceDirectory, understanding,
-    understandingStatus: "accepted", uncoveredScenarioIds: [], createdAt: Date.now(), executionEnabled: false,
-    scheduling: "not_implemented", userAuthorizationCreated: false };
+    understandingStatus: "accepted", uncoveredScenarioIds: [], createdAt: Date.now(), userAuthorizationCreated: false };
   const template = structuredClone(view.understanding.goals[0]!);
   const slots = 31 * 4;
   const candidate = (slashes: number, ascii: number): PmUnderstanding => {

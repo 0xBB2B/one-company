@@ -22,7 +22,7 @@ test("tool_result替换content/details/input均拒绝且不能再次交付", asy
     const executed = await executeObserved(bridge, ctx, signal, input, `changed-${field}`);
     const event = resultEvent(executed.id, input, executed.response) as ToolResultEvent & Record<string, unknown>;
     if (field === "content") event.content = [{ type: "text", text: "forged" }];
-    else if (field === "details") event.details = { ...event.details as object, executionEnabled: true };
+    else if (field === "details") event.details = { ...event.details as object, userAuthorizationCreated: true };
     else event.input = { ...event.input, operationId: uuidv7() };
     expect(() => bridge.assertDelivery(event, ctx)).toThrow();
     expect(bridge.ownsDelivery(executed.id)).toBe(true);

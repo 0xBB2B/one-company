@@ -31,7 +31,7 @@
 
 M9 暂停到 M8C 完成（用户 2026-09-28 决定，见 M8C-STATUS.md）。
 
-待用户回复：PM 接手核对结果里 M4 遗留的 executionEnabled: false 与 scheduling: "not_implemented" 是否清理（runtime/pm-intake-contracts.ts、runtime/pm-intake-service.ts 共 14 处，6 个测试文件）；第 25 轮主代理曾据此误称"执行授权尚未启用"。
+PM 接手核对结果里 M4 遗留的 executionEnabled 与 scheduling 字段已按用户 2026-09-28 决定清理（第 25 轮主代理曾据此误称"执行授权尚未启用"）。
 
 推进方式：真实模型验收按"跑一轮 → 查卡点 → 修 → 再跑"；小的格式与说明修正直接做，涉及机制、授权或规则设计的先问用户。
 
