@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { appendFile, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -14,6 +14,7 @@ import type { RunRecord } from "../../runtime/run-store.ts";
 import { acceptanceConfig, copyCredentials, installProduct, startInstalledHost } from "./helpers/installed-host.ts";
 import type { InstalledHost } from "./helpers/installed-host.ts";
 import { createSampleProject } from "./helpers/sample-project.ts";
+import { killUnder, mainSessionFacts, sumUsage, waitMissing } from "./helpers/evidence.ts";
 import { driveUser } from "./helpers/user-driver.ts";
 import type { DriverEvent, DriverOutcome } from "./helpers/user-driver.ts";
 
@@ -29,38 +30,6 @@ const SCRIPT = {
   accept: "完成报告我看过了，验收通过。",
   close: "验收已通过，请以完成关闭这个需求。",
 };
-
-function sumUsage(items: Array<{ input: number; output: number; cacheRead: number; cacheWrite: number }>) {
-  return items.reduce((total, usage) => ({ input: total.input + usage.input, output: total.output + usage.output,
-    cacheRead: total.cacheRead + usage.cacheRead, cacheWrite: total.cacheWrite + usage.cacheWrite }), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-}
-
-function mainSessionFacts(host: InstalledHost) {
-  const assistant = host.session.messages.flatMap((message) => message.role === "assistant" ? [message] : []);
-  const toolCalls = assistant.flatMap((message) => message.content.flatMap((block) => block.type === "toolCall"
-    ? [`${block.name}${typeof (block.arguments as { action?: unknown }).action === "string" ? `:${(block.arguments as { action: string }).action}` : ""}`] : []));
-  const errors = host.session.messages.flatMap((message) => message.role === "toolResult" && message.isError
-    ? [{ tool: message.toolName, text: JSON.stringify(message.content).slice(0, 500) }] : []);
-  return { turns: assistant.length, usage: sumUsage(assistant.map((message) => message.usage)), toolCalls, toolErrors: errors,
-    models: [...new Set(assistant.map((message) => `${message.provider}/${message.model}`))] };
-}
-
-async function killUnder(root: string): Promise<void> {
-  const listed = (await exec("ps", ["-axo", "pid=,command="])).stdout.split("\n");
-  const pids = listed.flatMap((line) => { const match = /^\s*(\d+)\s+(.*)$/.exec(line); return match && match[2]!.includes(root) && Number(match[1]) !== process.pid ? [Number(match[1])] : []; });
-  for (const pid of pids) { try { process.kill(pid, "SIGTERM"); } catch { /* 已退出 */ } }
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
-  for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* 已退出 */ } }
-}
-
-async function waitMissing(path: string, timeoutMs: number): Promise<boolean> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    try { await stat(path); } catch { return true; }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  return false;
-}
 
 interface LoopResult { outcome: DriverOutcome | undefined; runs: RunRecord[]; archive: string | null; archives: string[]; host: InstalledHost; agentDir: string; repoId: string; repo: string }
 

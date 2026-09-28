@@ -24,12 +24,15 @@ export type DriverEvent =
   | { type: "panel"; lines: string[]; at: number }
   | { type: "stop"; reason: string; at: number };
 
-export type DriverOutcome = { status: "closed" | "stopped"; reason: string };
+export type DriverOutcome = { status: "closed" | "stopped" | "reached"; reason: string };
+
+/** 同一现场分段驱动：since 之前的消息属于前一段，不参与进展判断；until 为真即结束本段。 */
+export interface DriveOptions { since?: number; until?: () => boolean | Promise<boolean> }
 
 interface ToolResultView { toolName: string; isError: boolean; details: unknown; text: string }
 
-function toolResults(host: InstalledHost): ToolResultView[] {
-  return host.session.messages.flatMap((message) => message.role === "toolResult"
+function toolResults(host: InstalledHost, since: number): ToolResultView[] {
+  return host.session.messages.slice(since).flatMap((message) => message.role === "toolResult"
     ? [{ toolName: message.toolName, isError: message.isError === true, details: message.details,
       text: message.content.map((block) => block.type === "text" ? block.text : "").join("") }] : []);
 }
@@ -38,8 +41,8 @@ const has = (results: ToolResultView[], tool: string, pattern: RegExp) =>
   results.some((result) => result.toolName === tool && !result.isError && (pattern.test(JSON.stringify(result.details ?? null)) || pattern.test(result.text)));
 
 /** 只依据用户看得到的东西（工具结果摘要、PM 面板）判断进展。 */
-function progress(host: InstalledHost) {
-  const results = toolResults(host);
+function progress(host: InstalledHost, since: number) {
+  const results = toolResults(host, since);
   return {
     approved: has(results, "pi_company_user_interact", /"prodActivated":true/) || has(results, "pi_company_requirement_manage", /"lifecycle":"active"/),
     closed: has(results, "pi_company_workflow_manage", /"status":"closed"/),
@@ -60,7 +63,8 @@ async function waitTurn(host: InstalledHost, startedCount: number, timeoutMs: nu
  * 扮演用户：按固定台词和可见进展回应主代理，面板出现事项时像用户一样按 ↓ 和回车打开。
  * 碰到台词覆盖不到的事项、同一句话重复过多或超出轮数与时长即停止，并如实给出原因。
  */
-export async function driveUser(host: InstalledHost, script: UserScript, limits: DriverLimits, record: (event: DriverEvent) => void): Promise<DriverOutcome> {
+export async function driveUser(host: InstalledHost, script: UserScript, limits: DriverLimits, record: (event: DriverEvent) => void, options: DriveOptions = {}): Promise<DriverOutcome> {
+  const since = options.since ?? host.session.messages.length;
   const started = Date.now(), sent = new Map<string, number>(), opened = new Set<string>();
   let userTurns = 0, lastPanel = "";
   const stop = (reason: string): DriverOutcome => { record({ type: "stop", reason, at: Date.now() }); return { status: "stopped", reason }; };
@@ -81,7 +85,8 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
     if (Date.now() - started > limits.wallMs) return stop(`总时长超过 ${Math.round(limits.wallMs / 60_000)} 分钟`);
     if (limits.stopFile && existsSync(limits.stopFile)) return stop("发现停止文件，人工中止");
     await host.session.waitForIdle();
-    const state = progress(host);
+    if (options.until && await options.until()) return { status: "reached", reason: "已到达本段目标" };
+    const state = progress(host, since);
     if (state.closed) return { status: "closed", reason: "需求已以完成关闭" };
 
     const lines = host.panelLines();
