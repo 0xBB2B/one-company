@@ -211,7 +211,7 @@
 
 本机 `requirements/<requirementId>/prod.md` 面向用户和获授权的QA，不要求读源码才理解本次目标。正文位于 `<dataRoot>/repos/<repoId>/` 下的独立本机需求Git中，不能放入业务项目工作区；首次初始化及保存提交按 §5.9 执行。建议固定内容：
 
-正文固定五大板块，依次为二级标题 `背景 {#background}`、`需求 {#requirements}`、`功能 {#features}`、`实现 {#implementation}`、`验收 {#acceptance}`，批准时由程序核对（M8A-AC9）：
+正文顶层板块由 requirement-doc 规范定义（M8C），批准时程序按批准时保存的规范快照核对。包内默认为五大板块，依次为二级标题 `背景 {#background}`、`需求 {#requirements}`、`功能 {#features}`、`实现 {#implementation}`、`验收 {#acceptance}`：
 
 1. 背景：为什么做、目标用户、现状问题。
 2. 需求：已确认交付目标、非目标、约束，以及未决问题及其影响范围。
