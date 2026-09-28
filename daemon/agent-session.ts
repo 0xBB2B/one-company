@@ -149,6 +149,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   let disposed = false;
   let prompting = false;
   let pendingNetworkAbort: Promise<void> | undefined;
+  let failedMessage: { errorMessage?: string } | null = null;
   let resolveResult!: () => void;
   let rejectResult!: (error: Error) => void;
   const resultPromise = new Promise<void>((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
@@ -252,8 +253,9 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   if (hostTools.some((tool) => !ROLE_HOST_TOOLS[definition.role].includes(tool))) throw new Error("宿主工具超出职责默认集合");
   const toolNames = [...hostTools, ...options.coreTools.map((tool) => tool.name), ...(options.mcp ? ["mcp"] : [])];
   const sdkSettings = SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });
-  // 网络暂停由运行管理器调度，SDK 自身重试会在 abort 后再次发起请求
-  const settingsManager = SettingsManager.inMemory({ ...sdkSettings.getGlobalSettings(), retry: { ...sdkSettings.getRetrySettings(), enabled: false } });
+  // 服务商断流等瞬时错误交 SDK 有限次重试；SDK 不重试被中止的请求，网络暂停发起的中止不会被重发
+  const settingsManager = SettingsManager.inMemory({ ...sdkSettings.getGlobalSettings(),
+    retry: { ...sdkSettings.getRetrySettings(), enabled: true, maxRetries: 3, baseDelayMs: 2_000 } });
   const created = await createAgentSession({
     settingsManager,
     cwd: options.cwd,
@@ -292,6 +294,15 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     if (event.type === "message_start" || event.type === "message_update" || event.type === "message_end") events.emit("transcript_message", event);
     if (event.type === "agent_end") {
       if (currentState !== "running") return;
+      const failed = failedMessage;
+      failedMessage = null;
+      // 服务商断流等瞬时错误由 SDK 在回合结束后重试；只有它不再重试时才按失败处理
+      if (failed) {
+        if (event.willRetry) return;
+        // cancelled 是本模块发起的中止（暂停、停止、网络空闲）造成的正常收尾，状态已在发起处流转
+        if (classifyFailure(new Error(failed.errorMessage ?? "模型请求失败")) !== "cancelled") finishFailed(failed.errorMessage ?? "模型请求失败");
+        return;
+      }
       if (submitted) finishCompleted();
       else if (options.maxTurns !== undefined && turns >= options.maxTurns) reachTurnLimit();
       // 子代理没提交结果就停下时不会再有人唤醒它，按本次尝试结束交父代理处理
@@ -302,11 +313,11 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     if (event.type !== "message_end" || event.message.role !== "assistant") return;
     const usage = event.message.usage;
     if (usage) events.emit("usage", { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite });
+    failedMessage = null;
     if (event.message.stopReason !== "error" || currentState !== "running") return;
-    const failure = classifyFailure(new Error(event.message.errorMessage ?? "模型请求失败"));
-    // cancelled 是本模块发起的中止（暂停、停止、网络空闲）造成的正常收尾，状态已在发起处流转
-    if (failure === "connection") requestNetworkPause();
-    else if (failure !== "cancelled") finishFailed(event.message.errorMessage ?? "模型请求失败");
+    // 断网交网络暂停等恢复后续接；中止后的请求 SDK 不会重试
+    if (classifyFailure(new Error(event.message.errorMessage ?? "模型请求失败")) === "connection") requestNetworkPause();
+    else failedMessage = event.message;
   });
 
   function drainPrompts(): void {

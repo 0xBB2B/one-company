@@ -67,6 +67,17 @@ test("真实SDK连接故障只暂停受影响角色，同批独立角色正常�
   await delay(100); expect(network.provider.requests).toHaveLength(1); expect(normal.provider.requests).toHaveLength(1);
 }, 20000);
 
+test("服务商断流、连接被中断等瞬时错误由 SDK 有限次重试后继续，不判失败也不转网络暂停", async () => {
+  const w = await world();
+  const flaky = await w.role([{ type: "error", message: "OpenAI Responses stream ended before a terminal response event" }, { type: "error", message: "terminated" },
+    { type: "toolcall", name: "pi_company_result_submit", input: {} }, { type: "text", text: "重试后完成" }]);
+  flaky.handle.prompt("遇到断流");
+  await flaky.handle.result();
+  expect(flaky.handle.state()).toBe("completed");
+  expect(flaky.provider.requests).toHaveLength(3);
+  expect(w.gate.canProceed(flaky.run.id)).toEqual({ allowed: true });
+}, 30000);
+
 test("真实SDK认证、额度、业务错误均failed且保留真实原因，不误分类为网络暂停", async () => {
   const w = await world();
   for (const message of ["unauthorized: invalid api key supplied", "quota exceeded for this billing period", "请求参数不合法，缺少必填字段"]) {
