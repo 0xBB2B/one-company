@@ -107,6 +107,18 @@ test("research 本地来源只写相对路径与行范围时，宿主补成绝�
   expect(report).toContain(w.readme);
 });
 
+test("research 的检索范围写带结尾斜杠的目录（如 src/）时，宿主补成绝对路径后能通过核对，不被当成超出范围", async () => {
+  const w = await world();
+  w.provider.queue.push({ type: "toolcall", name: "pi_company_result_submit", input: { action: "research", result: {
+    conclusions: ["说明在 README.md"], sources: [{ path: "README.md", startLine: 1, endLine: 1 }], searchedScope: { paths: ["src/", "README.md"] },
+    notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] } } }, { type: "text", text: "PM 收到检索结果" });
+  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "说明在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
+  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  expect(w.provider.requests.some((request) => text(request).includes("out_of_scope"))).toBe(false);
+  expect(text(w.provider.requests.find((entry) => text(entry).includes("explore-report")))).toContain(`${w.workspace}/src`);
+});
+
 test("M7-AC18：PM 停止（撤权或被接管）时它派出的 explore 随之停止，检索会话失效，迟到结果不能提交", async () => {
   const w = await world();
   w.provider.queue.push({ type: "text", text: "慢慢查", chunkDelayMs: 3_000 });

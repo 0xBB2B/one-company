@@ -56,7 +56,7 @@ export function fillResearchSources(submitted: Record<string, unknown>, input: E
   const scope = submitted.searchedScope && typeof submitted.searchedScope === "object" && !Array.isArray(submitted.searchedScope)
     ? submitted.searchedScope as Record<string, unknown> : null;
   const searchedScope = scope ? { kind: source.kind, ...scope, ...(Array.isArray(scope.paths)
-    ? { paths: scope.paths.map((path: unknown) => typeof path === "string" ? local(path) : path) } : {}) } : submitted.searchedScope;
+    ? { paths: scope.paths.map((path: unknown) => typeof path === "string" ? local(path).replace(/(.)\/+$/u, "$1") : path) } : {}) } : submitted.searchedScope;
   return { ...submitted, sources, searchedScope };
 }
 
