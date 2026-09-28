@@ -13,16 +13,17 @@
 | AC5 worker/PM/reviewer 定义含先红后绿规则；reviewer 只读被审尝试引用的验证记录 | 通过 | 37f3e1b 及本次（reviewer 任务说明列出 worker 引用的验证编号，tests/task-dispatch.test.ts）；tests/role-catalog.test.ts（三处规则）、tests/verification-run.test.ts（reviewer 读引用记录、读不到未引用和别的尝试、不能停止、QA 不能读） | 无 |
 | AC6 PM 用 escalate 把等待其处置的任务交用户裁决；主代理与不在等待处置的任务不能上报 | 通过 | 55515aa；tests/adjudication.test.ts（escalate 端到端：转待裁决、事项标明 PM 上报、说明标为模型说法、用户再给机会按用户轮数派出、主代理与非等待任务被拒）、tests/core-permissions.test.ts、tests/role-catalog.test.ts | 无 |
 | AC7 无工作区的草稿可批准生效；草稿阶段建工作区被拒；已生效无工作区派 PM 被拒、建好后可派；已生效无工作区可取消；主会话规则先批准再建工作区 | 通过 | 本次提交；tests/requirement-state.test.ts、tests/requirement-service.test.ts、tests/requirement-approval-manifest.test.ts（无工作区批准生效，无工作区取不到 PM 租约）、tests/workspace-manage.test.ts（草稿建工作区被拒且不弹确认；无工作区取消）、tests/pm-dispatch.test.ts（已生效无工作区派 PM 被拒）、tests/rules-extension.test.ts（规则顺序）；typecheck、单元 2317、集成 79、安装 11 全部通过（.bb-spec/.cache/m8a-ac7/final.txt；集成里 network-and-sleep 计时用例并行时偶发失败，单独重跑通过，见同目录 nas.txt） | 无 |
+| AC8 completed 归档为批准版正文原样加程序生成的验收记录（检查轮、代码提交、正式测试命令/结果/退出码/用时/性能说明、QA 结论、标明模型撰写的 QA 说明与问题）；模型文字不能冒充程序内容；归档与 Git 交付按归档整体 hash 核对 | 通过 | 本次提交；tests/workflow-close.test.ts（M8A-AC8 用例：正文原样开头、验收记录各项、QA 说明里伪造的标题与条目只出现在引用块内、状态里的 archiveHash 等于归档文件 hash 且不回显 QA 说明；M6-AC10 用例：幂等与内容不同阻塞）、tests/git-delivery.test.ts（按 archiveHash 核对暂存归档）；typecheck、单元 2325、集成 80、安装 11 全部通过（.bb-spec/.cache/m8a-ac7/final-ac8.txt） | 无 |
 
 ## 当前阻塞
 
-无。M8A 全部 AC（含 2026-09-28 用户追加的 AC7：批准之后再建工作区）已通过，阶段收口；下一步回到 M9，AC12 须在新基线上重跑。范围外待用户回复一项：PM 接手核对结果里 M4 遗留的 executionEnabled 与 scheduling 字段是否清理（记录在 M9-STATUS.md）。
+无。M8A 全部 AC（含 2026-09-28 用户追加的 AC7：批准之后再建工作区；AC8：归档带验收记录）已通过，阶段收口；下一步回到 M9，AC5、AC6、AC12 须在新基线上重新取证。范围外待用户回复一项：PM 接手核对结果里 M4 遗留的 executionEnabled 与 scheduling 字段是否清理（记录在 M9-STATUS.md）。
 
 ## 下一窗口续接提示
 
 ```
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（§4 与 §12 的 M8A、M9），再读 M8A-STATUS.md 与 M9-STATUS.md，核对 git status 与最近提交。M0–M8 与 M8A 已收口；当前执行 M9（读 M9-STATUS.md 续接）。
-M8A 用户已定：需求工作区在用户批准之后建立，草稿阶段程序拒绝建工作区（§12 M8A 要做第 6 条）；PM 用 workflow_manage escalate 把等待其处置的任务交用户裁决（§10.2.1 第 4 条）；change_apply 的 apply 可省略 baseHash；reviewer 任务说明给出基线提交与 git diff 命令；worker 按 TDD 先红后绿，测试与实现同一任务，reviewer 只读被审尝试引用的验证记录核对红绿（§8.9 第 8 条）；spec 整个拆掉（工具、模块、规则表、规则集指纹、候选与发布、初始化校验、知识查询规则事实、开检查轮的机械冲突检查、独立校验脚本与 resources/spec）；已有 docs/spec 文件按普通文件；注释规则只管产品托管项目，覆盖函数、方法、类、类型/接口、导出常量，Go 官方库写法；注释不入库，靠 grep；审查把关，程序不设注释门槛。
+M8A 用户已定：需求工作区在用户批准之后建立，草稿阶段程序拒绝建工作区（§12 M8A 要做第 6 条）；completed 归档为批准版正文加程序生成的验收记录，模型文字进引用块（要做第 7 条）；PM 用 workflow_manage escalate 把等待其处置的任务交用户裁决（§10.2.1 第 4 条）；change_apply 的 apply 可省略 baseHash；reviewer 任务说明给出基线提交与 git diff 命令；worker 按 TDD 先红后绿，测试与实现同一任务，reviewer 只读被审尝试引用的验证记录核对红绿（§8.9 第 8 条）；spec 整个拆掉（工具、模块、规则表、规则集指纹、候选与发布、初始化校验、知识查询规则事实、开检查轮的机械冲突检查、独立校验脚本与 resources/spec）；已有 docs/spec 文件按普通文件；注释规则只管产品托管项目，覆盖函数、方法、类、类型/接口、导出常量，Go 官方库写法；注释不入库，靠 grep；审查把关，程序不设注释门槛。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation；真实模型闭环 pnpm run test:acceptance（见 M9-STATUS.md 的运行方式）。
 ```

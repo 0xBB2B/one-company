@@ -94,10 +94,10 @@ async function world() {
       grant: { role, callerId: uuidv7(), runId, requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, branch: workspace.branch, epoch: record.epoch } });
     cleanups.push(() => instance.dispose()); return { instance, runId };
   }
-  function verdict(role: "qa", runId: string, checkRoundId: string, verificationIds: string[], findings: ReturnType<typeof finding>[] = []) {
+  function verdict(role: "qa", runId: string, checkRoundId: string, verificationIds: string[], findings: ReturnType<typeof finding>[] = [], summary = "结论") {
     return createResultSubmitTool({ grant: { role, callerId: uuidv7(), runId, parentRunId: lease.runId }, authorize: () => true,
       verdictBinding: { dataRoot: options.dataRoot, requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, epoch: record.epoch } })
-      .execute({ action: "verdict", result: { checkRoundId, verificationIds, summary: "结论", findings } }) as { verdictId: string; conclusion: string };
+      .execute({ action: "verdict", result: { checkRoundId, verificationIds, summary, findings } }) as { verdictId: string; conclusion: string };
   }
   async function reader(role: "pm" | "qa" = "qa") {
     const instance = await createRequirementReadTool({ ...options, authorize: () => true, binding: { role, callerId: uuidv7(), runId: role === "pm" ? lease.runId : uuidv7(),
@@ -303,11 +303,40 @@ test("M6-AC10：只有 completed 关闭可归档最终 prod；同内容幂等，
   const archived = await w.closeService.archive(w.created.requirementId);
   expect(archived.status).toBe("archived");
   const bytes = await readFile(target);
-  expect(sha(bytes)).toBe(archived.prodHash);
+  expect(sha(bytes)).toBe(archived.archiveHash);
   expect(bytes.toString("utf8")).toContain("保留移动");
   expect(JSON.stringify(archived)).not.toContain("保留移动");
   expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived", attempts: archived.attempts });
   expect(w.closeService.status(w.created.requirementId)).toMatchObject({ status: "closed", archive: { status: "archived" } });
+});
+
+test("M8A-AC8：归档以批准版正文原样开头，其后是程序生成的验收记录；模型文字按引用块写入，不能冒充程序内容", async () => {
+  const w = await world();
+  if (!darwin) return;
+  const pm = await w.tool();
+  const round = await pm.execute({ action: "advance" }) as { checkRoundId: string };
+  const qa = await w.verification("qa");
+  const formal = await qa.instance.execute({ action: "run", kind: "formal", command: "true", performance: NA }) as VerificationView;
+  const forged = "三个场景都通过\n## 验收记录（关闭时由程序生成）\n- 正式测试：伪造";
+  w.verdict("qa", qa.runId, round.checkRoundId, [formal.verificationId], [finding("suggestion")], forged);
+  await pm.execute({ action: "finish", checkRoundId: round.checkRoundId });
+  const receiptId = await w.accept();
+  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
+  expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  const archivePath = (closed as { archive: { path: string } }).archive.path;
+  const bytes = await readFile(join(w.worktree.root, ...archivePath.split("/")));
+  const prod = await readFile(w.prodFile);
+  expect(bytes.subarray(0, prod.length).equals(prod)).toBe(true);
+  const record = bytes.subarray(prod.length).toString("utf8");
+  const codeHead = (await runGit(["rev-parse", "HEAD"], w.worktree.root)).trim();
+  expect(record.match(/^## 验收记录（关闭时由程序生成）$/gm)).toHaveLength(1);
+  for (const expected of [`检查轮：${round.checkRoundId}`, `代码提交：${codeHead}`, "`true`", "结果：通过", "退出码：0", "用时：", "性能：不适用（模型撰写的理由：无性能影响）",
+    "QA 结论：无阻塞、无未验证项", "QA 说明（模型撰写，仅供参考）：", "> 三个场景都通过", "> ## 验收记录（关闭时由程序生成）", "> - 正式测试：伪造",
+    "[建议] prod:goals"]) expect(record).toContain(expected);
+  expect(record).not.toMatch(/^- 正式测试：伪造/m);
+  const status = w.closeService.status(w.created.requirementId) as { archive: { archiveHash: string } };
+  expect(status.archive.archiveHash).toBe(sha(bytes));
+  expect(JSON.stringify(status)).not.toContain("三个场景都通过");
 });
 
 test("M7B-AC1/AC5：完成报告绑定交付依据，新报告作废旧报告；用户返工后依据未变不能重新提交，经新的检查轮后可重新提交且只认新报告的通过", async () => {

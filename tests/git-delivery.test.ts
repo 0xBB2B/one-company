@@ -58,7 +58,7 @@ async function world(host: "github" | "gitlab" = "github") {
   process.env.PATH = `${bin}:${originalPath}`;
   process.env.FAKE_STATE = state;
   delete process.env.FAKE_CREATE_FAILS; delete process.env.FAKE_SQUASH;
-  const facts: DeliveryFacts = { requirementId: REQUIREMENT, closed: true, reason: "completed", archive: { path: ARCHIVE, prodHash: sha256(PROD), status: "archived" },
+  const facts: DeliveryFacts = { requirementId: REQUIREMENT, closed: true, reason: "completed", archive: { path: ARCHIVE, archiveHash: sha256(PROD), status: "archived" },
     worktree, branch: "refs/heads/req/login", codeHead: git(worktree, "rev-parse", "HEAD") };
   const prompts: string[] = [];
   const ui = (confirm = true, choice = REVIEW_CHOICE): DeliveryUi => ({

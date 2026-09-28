@@ -38,6 +38,7 @@ const Basis = object({
 });
 export type CloseBasis = Static<typeof Basis>;
 const Archive = object({ path: Type.String({ minLength: 1, maxLength: 1024 }), prodHash: hash, commit: Type.String({ minLength: 1 }),
+  record: Type.String({ minLength: 1 }), archiveHash: nullable(hash),
   status: Type.Union([Type.Literal("pending"), Type.Literal("archived"), Type.Literal("blocked")]), attempts: counter, lastError: nullable(Type.String({ maxLength: 1024 })) });
 export const CloseOperation = object({
   format: Type.Literal("close-operation/v1"), requirementId: id, repoId: hash, operationId: id, receiptId: id, reason: CloseReason, basis: Basis,
@@ -170,6 +171,46 @@ function managedWritesIn(db: LocalDatabase, repoId: string, requirementId: strin
     .filter((row) => row.data.repoId === repoId && row.data.requirementId === requirementId)
     .map((row): [string, string, number] => [`${CHANGE_SETS}:${row.data.operationId ?? row.key}`, row.data.status ?? "", row.version]).sort();
 }
+const RUN_STATUS: Record<VerificationRun["status"], string> = { running: "运行中", passed: "通过", failed: "失败", timeout: "超时", cancelled: "已取消",
+  not_run: "未运行", interrupted: "中断", invalidated: "作废" };
+const CONCLUSION = { clear: "无阻塞、无未验证项", blocked: "有阻塞问题", unverified: "有未验证项" } as const;
+const FINDING_KIND = { blocking: "阻塞", suggestion: "建议", unverified: "未验证" } as const;
+const inlineCode = (text: string) => {
+  const fence = "`".repeat(Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length)) + 1);
+  const flat = text.replace(/\s+/g, " "), pad = /^`|`$/.test(flat) ? " " : "";
+  return `${fence}${pad}${flat}${pad}${fence}`;
+};
+const quoted = (text: string) => text.split(/\r\n|\r|\n/).map((line) => `> ${line}`).join("\n");
+
+/** 归档正文后追加的验收记录：只取最新检查轮的程序记录；模型撰写的文字一律进引用块，不能伪造程序生成的行。 */
+function acceptanceRecord(facts: DeliveryFacts): string {
+  const round = facts.round!;
+  const lines = ["", "## 验收记录（关闭时由程序生成）", "", `- 检查轮：${round.checkRoundId}`, `- 代码提交：${round.baseline.codeHead}`,
+    `- 批准版正文 hash：sha256:${round.baseline.approved.hash}`, "", "### 正式测试", ""];
+  for (const run of facts.verifications) {
+    const elapsed = run.finishedAt === null ? null : run.finishedAt - run.startedAt;
+    const seconds = elapsed === null ? "未结束" : elapsed < 1000 ? `${elapsed} 毫秒` : `${(elapsed / 1000).toFixed(1)} 秒`;
+    const performance = run.performance.applicable ? "性能阈值（模型撰写）：" : `性能：不适用（模型撰写的理由：${run.performance.reason.replace(/\s+/g, " ")}）`;
+    lines.push(`- 命令（模型撰写）：${inlineCode(run.command)}`, `  - 结果：${RUN_STATUS[run.status]}；退出码：${run.exitCode ?? "无"}；用时：${seconds}；开始：${new Date(run.startedAt).toISOString()}`,
+      `  - ${performance}`);
+    if (run.performance.applicable) lines.push(quoted(run.performance.thresholds).replace(/^/gm, "    "));
+  }
+  const qa = facts.verdicts.filter((verdict) => verdict.role === "qa");
+  lines.push("", "### QA 验收", "");
+  for (const verdict of qa) {
+    lines.push(`- QA 结论：${CONCLUSION[verdict.conclusion]}（${new Date(verdict.createdAt).toISOString()}）`, "", "QA 说明（模型撰写，仅供参考）：", "", quoted(verdict.summary), "",
+      verdict.findings.length ? "QA 列出的问题（模型撰写）：" : "QA 列出的问题：无", "");
+    for (const finding of verdict.findings) {
+      lines.push(quoted(`[${FINDING_KIND[finding.kind]}] ${finding.targetRef}：${finding.trigger}；影响：${finding.impact}${finding.evidenceRef ? `；证据：${finding.evidenceRef}` : ""}`), "");
+    }
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+const archiveBytes = (prod: Uint8Array, record: string) => {
+  const body = Buffer.from(prod);
+  return Buffer.concat([body, Buffer.from(body.length === 0 || body.at(-1) === 0x0a ? record : `\n${record}`)]);
+};
+
 function basisOf(facts: DeliveryFacts): CloseBasis {
   const verificationIds = facts.verifications.map((run) => run.verificationId).sort();
   const verdictIds = facts.verdicts.map((verdict) => verdict.verdictId).sort();
@@ -381,7 +422,8 @@ export class RequirementCloseService {
           this.saveOperation(db, this.operation(db, request.requirementId), { format: "close-operation/v1", requirementId: request.requirementId, repoId: this.options.repoId,
             operationId: request.operationId, receiptId: request.receiptId, reason: request.reason, basis, status: "closing",
             steps: { agentsStopped: false, entriesCleared: false, closed: false },
-            archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, status: "pending", attempts: 0, lastError: null } : null,
+            archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, record: acceptanceRecord(facts),
+              archiveHash: null, status: "pending", attempts: 0, lastError: null } : null,
             createdAt: now, updatedAt: now });
         });
       } catch (error: unknown) {
@@ -442,11 +484,13 @@ export class RequirementCloseService {
       const round = db.read<unknown>(CHECK_ROUNDS, data.basis.checkRoundId!);
       return workspace && round ? { worktree: workspace.path, branch: workspace.branch, codeHead: checked(CheckRound, round.data).baseline.codeHead } : null;
     }) : null;
-    return freeze({ status: data.status, operationId: data.operationId, reason: data.reason, steps: { ...data.steps }, archive: data.archive ? { ...data.archive } : null, delivery });
+    const archive = data.archive ? { path: data.archive.path, prodHash: data.archive.prodHash, archiveHash: data.archive.archiveHash, status: data.archive.status,
+      attempts: data.archive.attempts, lastError: data.archive.lastError } : null;
+    return freeze({ status: data.status, operationId: data.operationId, reason: data.reason, steps: { ...data.steps }, archive, delivery });
   }
 
-  /** 受限归档：只把关闭前固化的最终 prod.md 字节复制到登记路径；同 hash 幂等，不同内容阻塞，不向调用方返回正文。 */
-  async archive(requirementId: string): Promise<{ status: "archived" | "blocked" | "pending"; path: string; prodHash: string; attempts: number; lastError: string | null }> {
+  /** 受限归档：把关闭前固化的最终 prod.md 字节原样写入登记路径，其后接关闭时登记的验收记录；同 hash 幂等，不同内容阻塞，不向调用方返回正文。 */
+  async archive(requirementId: string): Promise<{ status: "archived" | "blocked" | "pending"; path: string; prodHash: string; archiveHash: string | null; attempts: number; lastError: string | null }> {
     checked(id, requirementId);
     this.authorize({ action: "archive", requirementId });
     const loaded = withDatabase(this.database, (db) => ({ operation: this.operation(db, requirementId), record: requirementIn(db, this.options.repoId, requirementId) }));
@@ -454,7 +498,7 @@ export class RequirementCloseService {
     if (!operation || !operation.data.archive) throw new CloseError("archive_unavailable", "非完成关闭无归档资格");
     if (record.data.lifecycle !== "closed" || operation.data.status !== "closed" || record.data.close?.reason !== "completed" || operation.data.reason !== "completed") throw new CloseError("not_closed");
     const archive = operation.data.archive;
-    const view = () => freeze({ status: archive.status, path: archive.path, prodHash: archive.prodHash, attempts: archive.attempts, lastError: archive.lastError });
+    const view = () => freeze({ status: archive.status, path: archive.path, prodHash: archive.prodHash, archiveHash: archive.archiveHash, attempts: archive.attempts, lastError: archive.lastError });
     if (archive.status === "archived") return view();
     const save = (next: Partial<NonNullable<CloseOperation["archive"]>>) => withDatabase(this.database, (db) => db.transaction(() => {
       const current = this.operation(db, requirementId)!;
@@ -469,6 +513,7 @@ export class RequirementCloseService {
         expectedRepositoryIdentity: identity, commit: archive.commit, expectedHash: `sha256:${archive.prodHash}`,
         authorize: (check) => check.requirementId === requirementId && check.action === "readVersion" && (check.prodHash === undefined || check.prodHash === `sha256:${archive.prodHash}`) })).bytes;
       if (sha256(Buffer.from(bytes)) !== archive.prodHash) throw new Error("final_prod_hash_mismatch");
+      const content = archiveBytes(bytes, archive.record), archiveHash = sha256(content);
       const root = await realpath(workspace.path);
       const target = join(root, ...archive.path.split("/"));
       await mkdir(dirname(target), { recursive: true });
@@ -477,18 +522,18 @@ export class RequirementCloseService {
       let existing: Buffer | null = null;
       try { const stats = await lstat(target); if (!stats.isFile()) throw new Error("archive_target_not_file"); existing = await readFile(target); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      if (existing && sha256(existing) !== archive.prodHash) { save({ status: "blocked", attempts: archive.attempts + 1, lastError: "archive_conflict" }); throw new CloseError("archive_conflict"); }
+      if (existing && sha256(existing) !== archiveHash) { save({ status: "blocked", attempts: archive.attempts + 1, lastError: "archive_conflict" }); throw new CloseError("archive_conflict"); }
       if (!existing) {
-        await writeFileAtomic(target, Buffer.from(bytes).toString("utf8"));
-        if (sha256(await readFile(target)) !== archive.prodHash) throw new Error("archive_write_mismatch");
+        await writeFileAtomic(target, content.toString("utf8"));
+        if (sha256(await readFile(target)) !== archiveHash) throw new Error("archive_write_mismatch");
       }
-      save({ status: "archived", attempts: archive.attempts + 1, lastError: null });
-      return freeze({ status: "archived" as const, path: archive.path, prodHash: archive.prodHash, attempts: archive.attempts + 1, lastError: null });
+      save({ status: "archived", archiveHash, attempts: archive.attempts + 1, lastError: null });
+      return freeze({ status: "archived" as const, path: archive.path, prodHash: archive.prodHash, archiveHash, attempts: archive.attempts + 1, lastError: null });
     } catch (error) {
       if (error instanceof CloseError) throw error;
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 1024);
       save({ status: "pending", attempts: archive.attempts + 1, lastError: message });
-      return freeze({ status: "pending" as const, path: archive.path, prodHash: archive.prodHash, attempts: archive.attempts + 1, lastError: message });
+      return freeze({ status: "pending" as const, path: archive.path, prodHash: archive.prodHash, archiveHash: archive.archiveHash, attempts: archive.attempts + 1, lastError: message });
     }
   }
 }

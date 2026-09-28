@@ -25,7 +25,7 @@ export interface DeliveryFacts {
   requirementId: string;
   closed: boolean;
   reason: string;
-  archive: { path: string; prodHash: string; status: string } | null;
+  archive: { path: string; archiveHash: string | null; status: string } | null;
   worktree: string;
   branch: string;
   /** 最终检查轮核对过的代码提交。 */
@@ -122,7 +122,7 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   const staged = /^\d+ ([0-9a-f]+) 0\t/.exec((await git(["ls-files", "-s", "--", archive.path])).stdout)?.[1];
   const stagedBytes = staged ? (await exec("git", ["cat-file", "blob", staged], { cwd: facts.worktree, encoding: "buffer", maxBuffer: 1 << 26 })).stdout : null;
   const worktreeMatchesIndex = await git(["diff", "--quiet", "--", archive.path]).then(() => true, () => false);
-  if (!stagedBytes || sha256(stagedBytes) !== archive.prodHash || !worktreeMatchesIndex) {
+  if (!stagedBytes || sha256(stagedBytes) !== archive.archiveHash || !worktreeMatchesIndex) {
     await git(["reset", "--quiet", "--", archive.path]);
     return reject("archive_mismatch");
   }
