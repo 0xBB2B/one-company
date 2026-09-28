@@ -50,7 +50,9 @@ function routeReplies(provider: { queue: ScriptedReply[]; requests: Context[] },
 }
 
 test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认六职责团队完成接手、规划、实现、独立审查、QA，PM 提交完成报告，用户返工后再验收通过，主代理以完成关闭；全程不用 explore 规划", async () => {
-  const w = await createPmRunWorld(cleanups, { review: false });
+  const w = await createPmRunWorld(cleanups, { review: false, body: "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n增加手机号验证码登录。\n" +
+    "## 功能 {#features}\n登录行为如下。\n### 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n### 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" +
+    "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n正确验证码登录成功，错误验证码显示失败。\n" });
   const requirementId = w.fixture.requirementId;
   const tasks = () => w.db((db) => db.list<TaskRecord>(TASKS).map((row) => row.data));
   const task = (key: string) => tasks().find((entry) => entry.key === key);
@@ -162,16 +164,17 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   const closed = await close(String(accepted.decisionId));
   expect(closed).toMatchObject({ status: "closed", reason: "completed", archive: { status: "archived" } });
   expect(w.fixture.state.read(requirementId).data).toMatchObject({ lifecycle: "closed", close: { reason: "completed" } });
-  // M8A-AC9：归档在验收记录之前带程序生成的实现记录
+  // M8A-AC8/AC9：实现记录插在实现板块末尾，验收记录插在验收板块末尾
   const archive = await readFile(join(w.fixture.state.read(requirementId).data.workspace!.path, ...(closed as { archive: { path: string } }).archive.path.split("/")), "utf8");
-  const implementation = archive.indexOf("\n## 实现记录（关闭时由程序生成）\n"), acceptance = archive.indexOf("\n## 验收记录（关闭时由程序生成）\n");
-  expect(implementation).toBeGreaterThan(0);
-  expect(acceptance).toBeGreaterThan(implementation);
-  const record = archive.slice(implementation, acceptance);
+  const positions = ["\n## 实现 {#implementation}\n由 PM 规划。\n", "\n### 实现记录（关闭时由程序生成）\n", "\n## 验收 {#acceptance}\n", "\n### 验收记录（关闭时由程序生成）\n"]
+    .map((marker) => archive.indexOf(marker));
+  expect(positions.every((position) => position > 0), JSON.stringify(positions)).toBe(true);
+  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  const record = archive.slice(positions[1], positions[2]);
   expect(record).toContain("- 任务 impl：完成；需求章节：goal.login、scenario.failure；");
   expect(record).toContain("- 任务 fix：完成；需求章节：goal.login、scenario.failure；可写范围：`lib/`");
   expect(record).not.toContain("任务 acceptance");
-  expect(record).toContain("### PM 说明（模型撰写，仅供参考）\n\n> 交付手机号验证码登录（recheck）");
+  expect(record).toContain("#### PM 说明（模型撰写，仅供参考）\n\n> 交付手机号验证码登录（recheck）");
   expect(await w.manager.workflowManage(requirementId, { action: "delivery-check" })).toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["requirement_not_active"]) });
 
   expect(pmActions).toEqual(["early-advance", "review:impl", "advance:acceptance", "acceptance", "finish:acceptance", "report:acceptance", "rereport",

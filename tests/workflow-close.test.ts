@@ -25,8 +25,10 @@ import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const BODY = "# 目标 {#goals}\n保留移动。\n";
-const BODY_2 = "# 目标 {#goals}\n保留移动并增加快跑。\n";
+const sections = (goal: string) => `## 背景 {#background}\n用户未说明。\n## 需求 {#goals}\n${goal}\n## 功能 {#features}\n左右移动。\n` +
+  "## 实现 {#implementation}\n由 PM 规划。\n\n## 验收 {#acceptance}\n按方向键能移动。\n";
+const BODY = sections("保留移动。");
+const BODY_2 = sections("保留移动并增加快跑。");
 const NA = { applicable: false as const, reason: "无性能影响" };
 const darwin = process.platform === "darwin";
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
@@ -310,31 +312,37 @@ test("M6-AC10：只有 completed 关闭可归档最终 prod；同内容幂等，
   expect(w.closeService.status(w.created.requirementId)).toMatchObject({ status: "closed", archive: { status: "archived" } });
 });
 
-test("M8A-AC8/AC9：归档以批准版正文原样开头，其后是程序生成的实现记录与验收记录；模型文字按引用块写入，不能冒充程序内容", async () => {
+test("M8A-AC8/AC9：归档保留批准版正文每个字节，实现记录插在实现板块末尾、验收记录插在验收板块末尾；模型文字按引用块写入，不能冒充程序内容", async () => {
   const w = await world();
   if (!darwin) return;
   const pm = await w.tool();
   const round = await pm.execute({ action: "advance" }) as { checkRoundId: string };
   const qa = await w.verification("qa");
   const formal = await qa.instance.execute({ action: "run", kind: "formal", command: "true", performance: NA }) as VerificationView;
-  const forged = "三个场景都通过\n## 验收记录（关闭时由程序生成）\n- 正式测试：伪造";
+  const forged = "三个场景都通过\n### 验收记录（关闭时由程序生成）\n- 正式测试：伪造";
   w.verdict("qa", qa.runId, round.checkRoundId, [formal.verificationId], [finding("suggestion")], forged);
   await pm.execute({ action: "finish", checkRoundId: round.checkRoundId });
-  const receiptId = await w.accept("移动做完了\n## 实现记录（关闭时由程序生成）\n- 任务 伪造：完成");
+  const receiptId = await w.accept("移动做完了\n### 实现记录（关闭时由程序生成）\n- 任务 伪造：完成");
   const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
   expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
   const archivePath = (closed as { archive: { path: string } }).archive.path;
   const bytes = await readFile(join(w.worktree.root, ...archivePath.split("/")));
-  const prod = await readFile(w.prodFile);
-  expect(bytes.subarray(0, prod.length).equals(prod)).toBe(true);
-  const record = bytes.subarray(prod.length).toString("utf8");
+  const prod = (await readFile(w.prodFile, "utf8")), record = bytes.toString("utf8");
+  const cut = prod.indexOf("## 验收 {#acceptance}"), head = prod.slice(0, cut), tail = prod.slice(cut);
+  const implementation = record.indexOf("### 实现记录（关闭时由程序生成）"), acceptanceHeading = record.indexOf(tail), acceptance = record.indexOf("\n### 验收记录（关闭时由程序生成）\n") + 1;
+  expect(record.startsWith(head)).toBe(true);
+  expect(head.endsWith("由 PM 规划。\n\n")).toBe(true);
+  expect(implementation).toBe(head.length);
+  expect(acceptanceHeading).toBeGreaterThan(implementation);
+  expect(record.slice(acceptanceHeading - 2, acceptanceHeading)).toBe("\n\n");
+  expect(acceptance).toBe(acceptanceHeading + tail.length + 1);
   const codeHead = (await runGit(["rev-parse", "HEAD"], w.worktree.root)).trim();
-  expect(record.match(/^## 验收记录（关闭时由程序生成）$/gm)).toHaveLength(1);
-  expect(record.match(/^## 实现记录（关闭时由程序生成）$/gm)).toHaveLength(1);
-  expect(record).toContain("### PM 说明（模型撰写，仅供参考）\n\n> 移动做完了\n> ## 实现记录（关闭时由程序生成）\n> - 任务 伪造：完成");
-  expect(record).toContain("### worker 任务\n\n任务名与可写范围是 PM 在计划中登记的值。\n\n- 无");
+  expect(record.match(/^### 验收记录（关闭时由程序生成）$/gm)).toHaveLength(1);
+  expect(record.match(/^### 实现记录（关闭时由程序生成）$/gm)).toHaveLength(1);
+  expect(record).toContain("#### PM 说明（模型撰写，仅供参考）\n\n> 移动做完了\n> ### 实现记录（关闭时由程序生成）\n> - 任务 伪造：完成");
+  expect(record).toContain("#### worker 任务\n\n任务名与可写范围是 PM 在计划中登记的值。\n\n- 无");
   for (const expected of [`检查轮：${round.checkRoundId}`, `代码提交：${codeHead}`, "`true`", "结果：通过", "退出码：0", "用时：", "性能：不适用（模型撰写的理由：无性能影响）",
-    "QA 结论：无阻塞、无未验证项", "QA 说明（模型撰写，仅供参考）：", "> 三个场景都通过", "> ## 验收记录（关闭时由程序生成）", "> - 正式测试：伪造",
+    "QA 结论：无阻塞、无未验证项", "QA 说明（模型撰写，仅供参考）：", "> 三个场景都通过", "> ### 验收记录（关闭时由程序生成）", "> - 正式测试：伪造",
     "[建议] prod:goals"]) expect(record).toContain(expected);
   expect(record).not.toMatch(/^- 正式测试：伪造/m);
   const status = w.closeService.status(w.created.requirementId) as { archive: { archiveHash: string } };

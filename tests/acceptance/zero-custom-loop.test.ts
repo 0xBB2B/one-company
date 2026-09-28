@@ -114,7 +114,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     expect(runs.map((run) => run.kind)).toContain("requirement");
     for (const role of ["pi-company.worker", "pi-company.reviewer", "pi-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
     expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
-    const sections = ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "{#acceptance}", "## 实现记录（关闭时由程序生成）", "## 验收记录（关闭时由程序生成）"]
+    const sections = ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "\n### 实现记录（关闭时由程序生成）\n", "{#acceptance}", "\n### 验收记录（关闭时由程序生成）\n"]
       .map((marker) => archive?.indexOf(marker) ?? -1);
     expect(sections.every((position) => position > 0), JSON.stringify(sections)).toBe(true);
     expect(sections).toEqual([...sections].sort((a, b) => a - b));

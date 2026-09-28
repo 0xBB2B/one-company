@@ -195,7 +195,7 @@ export interface PmIntakeFixture {
 }
 
 // PM_FIXTURE_FACTORY_START
-export async function createPmIntakeFixture(options: { retained?: boolean } = {}): Promise<PmIntakeFixture> {
+export async function createPmIntakeFixture(options: { retained?: boolean; body?: string } = {}): Promise<PmIntakeFixture> {
   const allocation: {
     pmPath?: string;
     pmReceipt?: PmIntakeFixtureRootReceipt;
@@ -221,7 +221,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
   const config = { repositoryRoot: repo.root, dataRoot, repoId: identity.repoId };
   const service = await RequirementService.open({ ...config, authorize: () => true });
   const state = await RequirementStateStore.open({ ...config, authorize: () => true, now: () => now });
-  const title = "PM接手", body = "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n";
+  const title = "PM接手", body = options.body ?? "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n";
   let saved = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title, body });
   const worktree = await addWorktree(repo);
   const worktreeReceipt = worktreeFixtureRootReceipt(worktree);
@@ -282,7 +282,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
           { ...common, kind: "action", actions: ["implement"], conclusion: "允许实施手机号登录" },
         ], documentReview: { faithful: true,
           units: current.document!.partition.units.map((unit) => ({ id: unit.id, disposition: "confirmed", globalConstraint: false,
-            appliesTo: [], dependsOn: [], conclusionIndexes: [unit.id === "metadata" ? 0 : unit.id === "goal.login" ? 1 : 2] })),
+            appliesTo: [], dependsOn: [], conclusionIndexes: [unit.id === "goal.login" ? 1 : unit.id === "scenario.failure" ? 2 : 0] })),
           actions: [{ action: "implement", goalIds: ["goal.login", "scenario.failure"], constraintIds: [], conclusionIndexes: [3], unknown: false }],
           questions: [] } });
       },
@@ -336,6 +336,11 @@ export async function createPmIntakeFixture(options: { retained?: boolean } = {}
   const sourceProvider = new FixtureSourceProvider();
   const actionDecisionId = authorized.manifest.actions[0]!.decisionIds.find((id) => decisions.decisionIds.includes(id))!;
   const submissionProvider = new FixtureSubmissionProvider(actionDecisionId, options.retained ? "仅实施验证码失败场景" : "允许实施手机号目标");
+  // 自定义正文多出的章节同样要在 PM 理解里标为已覆盖，接手核对才会通过
+  const extraSections = [...body.matchAll(/\{#([^{}]+)\}/g)].map((match) => match[1]!).filter((id) => id !== "goal.login" && id !== "scenario.failure");
+  if (extraSections.length) submissionProvider.mutate = (understanding) => {
+    understanding.scenarioCoverage.push(...extraSections.map((id) => ({ scenarioId: id, status: "covered" as const, summary: `覆盖 ${id}`, sourceRefs: [{ kind: "prod-scenario" as const, id }] })));
+  };
   const intakeStore = new PmIntakeStore({ dataRoot, repoId: identity.repoId, now: () => now });
   const resolver = { resolve: (candidate: MainIntakeCall) => calls.get(candidate as object) ?? null };
   const makeIntake = (options: Partial<Pick<PmIntakeServiceOptions, "requirementService" | "store" | "now">> & {

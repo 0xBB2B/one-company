@@ -8,6 +8,7 @@ import { activeCheckRoundIn, assertWritersQuiescentIn, CheckRound, CheckRoundErr
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
 import { readVersion } from "./prod-storage.ts";
+import { sectionEndByte } from "./prod-view.ts";
 import { checked, counter, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
@@ -39,7 +40,7 @@ const Basis = object({
 });
 export type CloseBasis = Static<typeof Basis>;
 const Archive = object({ path: Type.String({ minLength: 1, maxLength: 1024 }), prodHash: hash, commit: Type.String({ minLength: 1 }),
-  record: Type.String({ minLength: 1 }), archiveHash: nullable(hash),
+  records: object({ implementation: Type.String({ minLength: 1 }), acceptance: Type.String({ minLength: 1 }) }), archiveHash: nullable(hash),
   status: Type.Union([Type.Literal("pending"), Type.Literal("archived"), Type.Literal("blocked")]), attempts: counter, lastError: nullable(Type.String({ maxLength: 1024 })) });
 export const CloseOperation = object({
   format: Type.Literal("close-operation/v1"), requirementId: id, repoId: hash, operationId: id, receiptId: id, reason: CloseReason, basis: Basis,
@@ -183,11 +184,11 @@ const inlineCode = (text: string) => {
 };
 const quoted = (text: string) => text.split(/\r\n|\r|\n/).map((line) => `> ${line}`).join("\n");
 
-/** 归档正文后追加的验收记录：只取最新检查轮的程序记录；模型撰写的文字一律进引用块，不能伪造程序生成的行。 */
+/** 插在验收板块末尾的验收记录：只取最新检查轮的程序记录；模型撰写的文字一律进引用块，不能伪造程序生成的行。 */
 function acceptanceRecord(facts: DeliveryFacts): string {
   const round = facts.round!;
-  const lines = ["", "## 验收记录（关闭时由程序生成）", "", `- 检查轮：${round.checkRoundId}`, `- 代码提交：${round.baseline.codeHead}`,
-    `- 批准版正文 hash：sha256:${round.baseline.approved.hash}`, "", "### 正式测试", ""];
+  const lines = ["### 验收记录（关闭时由程序生成）", "", `- 检查轮：${round.checkRoundId}`, `- 代码提交：${round.baseline.codeHead}`,
+    `- 批准版正文 hash：sha256:${round.baseline.approved.hash}`, "", "#### 正式测试", ""];
   for (const run of facts.verifications) {
     const elapsed = run.finishedAt === null ? null : run.finishedAt - run.startedAt;
     const seconds = elapsed === null ? "未结束" : elapsed < 1000 ? `${elapsed} 毫秒` : `${(elapsed / 1000).toFixed(1)} 秒`;
@@ -197,7 +198,7 @@ function acceptanceRecord(facts: DeliveryFacts): string {
     if (run.performance.applicable) lines.push(quoted(run.performance.thresholds).replace(/^/gm, "    "));
   }
   const qa = facts.verdicts.filter((verdict) => verdict.role === "qa");
-  lines.push("", "### QA 验收", "");
+  lines.push("", "#### QA 验收", "");
   for (const verdict of qa) {
     lines.push(`- QA 结论：${CONCLUSION[verdict.conclusion]}（${new Date(verdict.createdAt).toISOString()}）`, "", "QA 说明（模型撰写，仅供参考）：", "", quoted(verdict.summary), "",
       verdict.findings.length ? "QA 列出的问题（模型撰写）：" : "QA 列出的问题：无", "");
@@ -210,26 +211,34 @@ function acceptanceRecord(facts: DeliveryFacts): string {
 const TASK_STATUS: Record<TaskStatus, string> = { pending: "待派出", running: "执行中", completed: "完成", failed: "失败", needs_update: "待更新", blocked: "受阻",
   cancelled: "已取消", awaiting_parent: "等待 PM 处置", awaiting_user: "等待用户裁决", awaiting_review: "待审查", reviewing: "审查中", awaiting_rework: "待返修" };
 
-/** 归档正文后追加的实现记录：worker 任务取计划登记值，提交与说明取用户验收通过的完成报告；提交说明与 PM 说明是模型文字，进引用块或行内代码。 */
+/** 插在实现板块末尾的实现记录：worker 任务取计划登记值，提交与说明取用户验收通过的完成报告；提交说明与 PM 说明是模型文字，进引用块或行内代码。 */
 function implementationRecord(tasks: readonly TaskRecord[], report: CompletionReport): string {
-  const lines = ["", "## 实现记录（关闭时由程序生成）", "", "### worker 任务", "", "任务名与可写范围是 PM 在计划中登记的值。", ""];
+  const lines = ["### 实现记录（关闭时由程序生成）", "", "#### worker 任务", "", "任务名与可写范围是 PM 在计划中登记的值。", ""];
   const workers = tasks.filter((task) => task.role === "worker");
   if (!workers.length) lines.push("- 无");
   for (const task of workers) {
     lines.push(`- 任务 ${task.key}：${TASK_STATUS[task.status]}；需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}；` +
       `可写范围：${task.writePaths.length ? task.writePaths.map(inlineCode).join("、") : "无"}`);
   }
-  lines.push("", "### 提交", "");
+  lines.push("", "#### 提交", "");
   if (!report.commits.length) lines.push("- 无");
   for (const commit of report.commits) lines.push(`- ${commit.sha}：${inlineCode(commit.subject)}（提交说明由模型撰写）`);
   if (report.commitsTruncated) lines.push(`- 只列出前 ${REPORT_COMMIT_LIMIT} 个提交`);
-  lines.push("", "### PM 说明（模型撰写，仅供参考）", "", quoted(report.note));
+  lines.push("", "#### PM 说明（模型撰写，仅供参考）", "", quoted(report.note));
   return `${lines.join("\n").trimEnd()}\n`;
 }
-const archiveBytes = (prod: Uint8Array, record: string) => {
-  const body = Buffer.from(prod);
-  return Buffer.concat([body, Buffer.from(body.length === 0 || body.at(-1) === 0x0a ? record : `\n${record}`)]);
-};
+/** 批准版正文每个字节原样保留，只在实现、验收两个板块末尾各插入一段程序记录，前后补足空行；板块缺失返回 null。 */
+function archiveBytes(prod: Uint8Array, records: { implementation: string; acceptance: string }): Buffer | null {
+  const bytes = Buffer.from(prod), text = bytes.toString("utf8");
+  const implementationEnd = sectionEndByte(text, "implementation"), acceptanceEnd = sectionEndByte(text, "acceptance");
+  if (implementationEnd === null || acceptanceEnd === null || implementationEnd > acceptanceEnd) return null;
+  const insert = (before: Buffer, record: string, after: Buffer) => {
+    const lead = before.subarray(-2).toString() === "\n\n" ? "" : before.at(-1) === 0x0a ? "\n" : "\n\n";
+    return Buffer.from(`${lead}${record}${after.length ? "\n" : ""}`);
+  };
+  const head = bytes.subarray(0, implementationEnd), middle = bytes.subarray(implementationEnd, acceptanceEnd), tail = bytes.subarray(acceptanceEnd);
+  return Buffer.concat([head, insert(head, records.implementation, middle), middle, insert(middle, records.acceptance, tail), tail]);
+}
 
 function basisOf(facts: DeliveryFacts): CloseBasis {
   const verificationIds = facts.verifications.map((run) => run.verificationId).sort();
@@ -442,7 +451,8 @@ export class RequirementCloseService {
           this.saveOperation(db, this.operation(db, request.requirementId), { format: "close-operation/v1", requirementId: request.requirementId, repoId: this.options.repoId,
             operationId: request.operationId, receiptId: request.receiptId, reason: request.reason, basis, status: "closing",
             steps: { agentsStopped: false, entriesCleared: false, closed: false },
-            archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, record: implementationRecord(readPlanIn(db, request.requirementId)?.tasks ?? [], acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId)!) + acceptanceRecord(facts),
+            archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, records: { implementation: implementationRecord(readPlanIn(db, request.requirementId)?.tasks ?? [], acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId)!),
+              acceptance: acceptanceRecord(facts) },
               archiveHash: null, status: "pending", attempts: 0, lastError: null } : null,
             createdAt: now, updatedAt: now });
         });
@@ -533,7 +543,9 @@ export class RequirementCloseService {
         expectedRepositoryIdentity: identity, commit: archive.commit, expectedHash: `sha256:${archive.prodHash}`,
         authorize: (check) => check.requirementId === requirementId && check.action === "readVersion" && (check.prodHash === undefined || check.prodHash === `sha256:${archive.prodHash}`) })).bytes;
       if (sha256(Buffer.from(bytes)) !== archive.prodHash) throw new Error("final_prod_hash_mismatch");
-      const content = archiveBytes(bytes, archive.record), archiveHash = sha256(content);
+      const content = archiveBytes(bytes, archive.records);
+      if (!content) throw new Error("archive_sections_missing");
+      const archiveHash = sha256(content);
       const root = await realpath(workspace.path);
       const target = join(root, ...archive.path.split("/"));
       await mkdir(dirname(target), { recursive: true });

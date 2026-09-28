@@ -32,6 +32,13 @@ export function prodSectionsProblem(body: string): string | null {
   return `顶层须为二级标题且依次为 ${PROD_SECTIONS.join("、")}，当前为 ${actual.length ? actual.join("、") : "无标题"}`;
 }
 
+/** 编号为 id 的标题所在章节的结束字节位置（下一个同级或更高级标题处，或全文末尾）；找不到返回 null。 */
+export function sectionEndByte(text: string, id: string): number | null {
+  const headings = headingsOf(text), index = headings.findIndex((heading) => heading.id === id);
+  if (index < 0) return null;
+  return headings.slice(index + 1).find((next) => next.level <= headings[index]!.level)?.offset ?? Buffer.byteLength(text);
+}
+
 /** 只识别代码围栏外的ATX标题末尾显式{#id}；不把自然语言标题变成永久身份。 */
 export function inspectProdStructure(body: string): ProdStructure {
   const headings = headingsOf(body);
