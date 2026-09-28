@@ -49,6 +49,8 @@ describe("内置默认团队", () => {
   });
 
   test("M9：reviewer 逐条核对需求里「不做、不改」的边界并在结论里写明，QA 凭审查结论判断这类边界", async () => {
+    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
+    const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
     expect(body("reviewer")).toMatch(/核对需求边界[\s\S]*「不做、不改」[\s\S]*违反列为阻塞[\s\S]*summary 逐条写明这些边界的核对结果/);
     expect(body("qa")).toContain("审查已覆盖的不标未验证，审查没提到的才标未验证");
   });
