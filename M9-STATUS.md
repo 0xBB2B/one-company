@@ -16,7 +16,7 @@
 | AC6 无 prompts 模板与业务 Git 集成仍可存正文版本并交付；适配器不回显关闭正文 | 待核对 | 可复用：tests/zero-custom-loop.test.ts、tests/git-delivery-extension.test.ts、tests/git-delivery.test.ts | 在安装产物全流程中复验一次；M8A-AC8 起 Git 交付按归档整体 hash 核对 |
 | AC7 类型、回归、集成、安装、性能、安全测试实际执行；两种更新调度实测；列出未覆盖项 | 未开始 | 无 | 阶段末全量执行；性能按 §13.2 在当前基线重测（可复用 tests/helpers/m3-benchmark.ts、tests/helpers/m4-query-benchmark.ts） |
 | AC8 临时安装、克隆、需求 Git、数据库、WASM 验证文件、日志、进程清理 | 未开始 | 无 | 阶段末执行 |
-| AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 部分 | 安装产物真实模型：第 57 轮（AC12）与长跑第 1—3 轮的快跑、跳跃段均走通受限接手、主代理核对、PM 规划与派 worker/reviewer/QA；tests/integration/agent-gates.test.ts（36dd9d4，安装产物上通过）：未认证连接派 PM 被拒、已有有效 PM 时再派被拒 | 增量复核（长跑追加动画段）第 4 轮运行中；新物理 PM 重核对只有进程内测试（tests/pm-dispatch.test.ts 接管用例），未在安装产物上实测 |
+| AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 部分 | 安装产物真实模型：第 57 轮（AC12）与长跑第 1—3 轮的快跑、跳跃段均走通受限接手、主代理核对、PM 规划与派 worker/reviewer/QA；tests/integration/agent-gates.test.ts（36dd9d4，安装产物上通过）：未认证连接派 PM 被拒、已有有效 PM 时再派被拒 | 增量复核（长跑追加动画段）第 4 轮运行中；新物理 PM 重核对已在安装产物上实测（agent-gates M9-AC9 用例：停止后重派，核对前派 worker 以 intake_gate 被拒）|
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 未开始 | 可复用：tests/explore-dispatch.test.ts、tests/explore-web.test.ts | 需真实模型与真实联网；本机出网慢，联网失败时该项标未完成，不以降级路径冒充 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
 | AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 通过 | 第 57 轮（M8C 收口后基线 f46ae8c）：pnpm run test:acceptance -t "M9-AC12" 通过（1/1），9.7 分钟以完成关闭，全为默认定义，归档五大板块、实现记录在实现板块末尾、验收记录在验收板块末尾，项目规范经确认写入 AGENTS.md；PM 在关闭时停止（stopCause=requirement_closing）（证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T13-35-04-858Z）；该轮一个 explore 因 searchedScope 写 src/ 被误拒两次、未交结果，已由 6747b50 修复；真实模型有波动，单轮通过不代表每轮必过 | 无 |
