@@ -304,7 +304,8 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
   const sourceDirectoryHash = digest({ format: "pm-intake-source-directory/v1", binding, sourceDirectory: directory });
   const fingerprint = digest({
     requirement: { id: record.id, version: record.version, hash: decisionDigest(record.data) },
-    owner: { id: ownerRow.id, version: ownerRow.version, hash: decisionDigest(ownerRow.data) },
+    // PM 租约每 10 秒续期，只改到期时间与记录版本；续期不改变 PM 身份与权限，不能算作依据变化
+    owner: { id: ownerRow.id, hash: decisionDigest({ ...owner, lease: { ...lease, expiresAt: 0 } }) },
     approvalUse: { id: approvalUse.id, version: approvalUse.version, hash: decisionDigest(approvalUse.data) },
     manifest: { id: manifestRow.id, version: manifestRow.version, hash: decisionDigest(manifestRow.data) },
     decisions: scopes.decisions,
@@ -635,10 +636,9 @@ export class PmIntakeStore {
     if (!claim) deny("untrusted_proof");
     const current = currentSnapshot(db, this.#repoId, claim.basis, claim.sourceDirectory, observedAt);
     if (!same(current.binding, claim.binding) || current.sourceDirectoryHash !== claim.sourceDirectoryHash ||
-      current.continuityInputProof !== claim.continuityInputProof || current.fingerprint !== claim.fingerprint ||
-      current.leaseExpiresAt !== claim.leaseExpiresAt) deny("current_proof_changed");
+      current.continuityInputProof !== claim.continuityInputProof || current.fingerprint !== claim.fingerprint) deny("current_proof_changed");
     if (checkFrame && claim.frame && !same(captureFrameIn(db, claim.frame.selector, claim.frame), claim.frame)) deny("intake_records_changed");
-    return claim;
+    return { ...claim, leaseExpiresAt: current.leaseExpiresAt };
   }
 
   assertReturnCurrent(proof: IntakeCurrentProof, beforeTransaction: () => void): void {
