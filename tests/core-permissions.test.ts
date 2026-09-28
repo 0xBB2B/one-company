@@ -36,7 +36,7 @@ test("固定六类职责与10个核心工具，action 枚举与计划 §9.1 一�
   expect(Object.keys(CORE_TOOL_ACTIONS)).toEqual(["project_manage", "knowledge_query", "requirement_manage", "plan_manage",
     "agent_manage", "user_interact", "change_apply", "verification_run", "result_submit", "workflow_manage"]);
   expect(CORE_TOOL_ACTIONS.project_manage).toEqual(["init", "status", "refresh", "recovery-check", "backup", "restore",
-    "workspace-prepare", "workspace-recycle"]);
+    "workspace-prepare", "workspace-recycle", "conventions-status", "conventions-update"]);
   expect(CORE_TOOL_ACTIONS.requirement_manage).toEqual(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata"]);
   expect(CORE_TOOL_ACTIONS.plan_manage).toEqual(["propose", "read", "update", "confirm", "assess-update"]);
   expect(CORE_TOOL_ACTIONS.workflow_manage).toEqual(["status", "advance", "finish", "repair", "check-decision", "report", "escalate", "close", "delivery-check"]);
@@ -120,6 +120,9 @@ test("受控写入的资源分类：change_apply 可写代码、测试、配置�
   expect(writePathAllowed("src/a.ts")).toBe(true);
   expect(writePathAllowed("docs/spec/player/jump.rules.json")).toBe(true);
   expect(classifyManagedWritePath(".pi/agents/worker.md")).toBe("agent_definition");
+  for (const conventions of ["AGENTS.md", "agents.md", "./AGENTS.md"]) expect(classifyManagedWritePath(conventions)).toBe("project_conventions");
+  expect(writePathAllowed("AGENTS.md")).toBe(false);
+  expect(classifyManagedWritePath("docs/AGENTS.md")).toBe("code");
   expect(classifyManagedWritePath(".PI/Agents/x.md")).toBe("agent_definition");
   for (const path of ["docs/prod/x.md", ".git/config", ".pi/agents/worker.md", "../x.ts", "/abs/x.ts"]) expect(writePathAllowed(path)).toBe(false);
   expect(writePathAllowed(".pi/settings.json")).toBe(true);

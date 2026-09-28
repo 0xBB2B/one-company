@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -46,6 +46,18 @@ describe("内置默认团队", () => {
     expect(body("worker")).not.toContain("注释默认不写");
     expect(body("reviewer")).toMatch(/核对说明注释[\s\S]*有副作用的写明副作用[\s\S]*没有副作用的不要求注明，未改动的旧定义不要求补写，只按上述要点核对，不追加其他写法要求（如函数返回值的单位、示例）；缺失或不符列为阻塞。结论 summary 写明说明注释的核对结果/);
     for (const role of AGENT_ROLES) expect(body(role)).not.toMatch(/\bspec\b|spec_change|规则候选/);
+  });
+
+  test("M8B-AC4：主会话规则含规范与需求的分流，worker 遵守、reviewer 按项目规范把关、PM 不与之冲突，都不能改 AGENTS.md", async () => {
+    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
+    const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
+    const main = await readFile(join(defaultRoleDir(), "..", "rules", "01-main-session.md"), "utf8");
+    expect(main).toMatch(/规范与需求分流[\s\S]*长期遵守的约定[\s\S]*conventions-update[\s\S]*用户确认[\s\S]*这次要做成的行为或功能写进需求草稿[\s\S]*两样都有就拆开/);
+    expect(main).toContain("不要用 write、edit 或命令直接改 AGENTS.md");
+    expect(main).toContain("conventionsNotice");
+    expect(body("worker")).toMatch(/任务说明里有项目规范时，改动必须遵守[\s\S]*AGENTS\.md 不能改/);
+    expect(body("reviewer")).toMatch(/核对项目规范[\s\S]*违反其中任何一条都列为阻塞[\s\S]*summary 写明规范的核对结果/);
+    expect(body("pm")).toContain("任务说明里有项目规范时，计划与各任务的目标、通过条件不得与之冲突");
   });
 
   test("默认 worker 按 TDD 先红后绿并提交两次运行，PM 不把测试拆成单独任务，reviewer 查看引用记录核对红绿", async () => {

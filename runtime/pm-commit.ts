@@ -34,7 +34,7 @@ export function createPmCommitTool(options: PmCommitOptions): ToolDefinition {
       if (options.checkPhaseActive()) throw new Error("check_phase_active: 检查阶段不能提交");
       for (const path of params.paths) {
         const kind = classifyManagedWritePath(path);
-        if (kind === "outside" || kind === "git_metadata" || kind === "prod_archive") throw new Error(`forbidden_path: ${path}`);
+        if (kind === "outside" || kind === "git_metadata" || kind === "prod_archive" || kind === "project_conventions") throw new Error(`forbidden_path: ${path}`);
       }
       const head = (await git(["symbolic-ref", "--quiet", "HEAD"])).stdout.trim();
       if (head !== options.branch) throw new Error(`branch_changed: 当前分支 ${head} 不是需求分支 ${options.branch}`);

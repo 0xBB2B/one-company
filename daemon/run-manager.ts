@@ -59,6 +59,7 @@ import { activeCheckRoundIn, assertWritersQuiescentIn } from "../runtime/check-r
 import type { ProjectIndexHost } from "./project-index-host.ts";
 import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
+import { conventionsContext, conventionsStatus, readApprovedConventions } from "../runtime/project-conventions.ts";
 
 export interface SelectedModel { provider: string; id: string }
 export type ModelSelector = (input: { roleName: string; taskId?: string }) => SelectedModel;
@@ -213,12 +214,15 @@ export class RunManager {
   }
 
   /** 主代理派出唯一 PM：工作区须已 ready 并绑定，新运行取得更高 fence，旧运行的工具随之失效。 */
-  async dispatchPm(input: DispatchPmInput): Promise<{ runId: string; fence: number }> {
+  async dispatchPm(input: DispatchPmInput): Promise<{ runId: string; fence: number; conventionsNotice?: string }> {
     // 同一需求的派出在本进程内互斥：并发派出会互相停止对方的运行，结果一个 PM 也没有
     if (this.dispatchingPm.has(input.requirementId)) throw protocolError("pm_already_owned", "本需求正在派出 PM");
     this.dispatchingPm.add(input.requirementId);
-    try { return await this.dispatchPmExclusive(input); }
+    let result: { runId: string; fence: number };
+    try { result = await this.dispatchPmExclusive(input); }
     finally { this.dispatchingPm.delete(input.requirementId); }
+    const status = await conventionsStatus({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId });
+    return status.differs ? { ...result, conventionsNotice: `仓库根目录 AGENTS.md 与用户批准的项目规范版本不一致，PM 与子代理只按批准版本工作；请向用户说明，用户要采用磁盘上的内容时，以 pi_company_project_manage conventions-update 提交并请用户在界面确认。` } : result;
   }
 
   private async dispatchPmExclusive(input: DispatchPmInput): Promise<{ runId: string; fence: number }> {
@@ -280,8 +284,8 @@ export class RunManager {
           catalog: (role, cursor) => this.agentCatalog(role, cursor),
         } });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: withSkills(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
-          pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId)), resolved.skillsContext), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ worktree: workspace.path, branch: workspace.branch, alive,
+        context: withSkills(this.withConventions(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
+          pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId))), resolved.skillsContext), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ worktree: workspace.path, branch: workspace.branch, alive,
           checkPhaseActive }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, alive, checkPhaseActive,
           quiescent: () => this.metadataRows().every((row) => row.requirement !== input.requirementId || row.kind !== "role" || isTerminalState(row.state)) &&
             withDatabase(this.database, (db) => { try { assertWritersQuiescentIn(db, this.repoId, input.requirementId); return true; } catch { return false; } }) })],
@@ -397,7 +401,7 @@ export class RunManager {
       const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, this.workerReport(attemptRunId!), maxTurns)
         : await taskContext(task, maxTurns, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        context: withSkills(context, resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
+        context: withSkills(role === "qa" ? context : this.withConventions(context), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true;
@@ -421,6 +425,12 @@ export class RunManager {
   }
 
   /** 最近一次审查打回的阻塞与未验证问题，交给返修的 worker；只取程序登记的裁决字段。 */
+  // 只送用户在界面确认过的版本，不读磁盘文件：磁盘上的 AGENTS.md 可能被绕过确认改过
+  private withConventions(context: string): string {
+    const conventions = conventionsContext(readApprovedConventions(this.options.dataRoot, this.repoId));
+    return conventions ? `${context}\n\n${conventions}` : context;
+  }
+
   private workerReport(attemptRunId: string): Verdict | undefined {
     return withDatabase(this.database, (db) => db.list<Verdict>(VERDICTS).map((row) => row.data)
       .find((verdict) => verdict.role === "worker" && verdict.runId === attemptRunId));

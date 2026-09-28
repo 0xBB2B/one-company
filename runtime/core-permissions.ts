@@ -5,7 +5,7 @@ export const CORE_ROLES = Object.freeze(["main", "pm", "explore", "worker", "rev
 export type CoreRole = (typeof CORE_ROLES)[number];
 
 export const CORE_TOOL_ACTIONS = Object.freeze({
-  project_manage: Object.freeze(["init", "status", "refresh", "recovery-check", "backup", "restore", "workspace-prepare", "workspace-recycle"] as const),
+  project_manage: Object.freeze(["init", "status", "refresh", "recovery-check", "backup", "restore", "workspace-prepare", "workspace-recycle", "conventions-status", "conventions-update"] as const),
   knowledge_query: Object.freeze(["exact", "search", "facts"] as const),
   requirement_manage: Object.freeze(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata"] as const),
   plan_manage: Object.freeze(["propose", "read", "update", "confirm", "assess-update"] as const),
@@ -61,7 +61,7 @@ export function toolActionsForRole(role: CoreRole): { [T in CoreTool]?: string[]
   return result;
 }
 
-export type ManagedWritePathClass = "code" | "prod_archive" | "git_metadata" | "agent_definition" | "outside";
+export type ManagedWritePathClass = "code" | "prod_archive" | "git_metadata" | "agent_definition" | "project_conventions" | "outside";
 
 export function classifyManagedWritePath(repoRelativePath: string): ManagedWritePathClass {
   if (repoRelativePath === "" || repoRelativePath.includes("\\") || repoRelativePath.includes("\u0000") || posix.isAbsolute(repoRelativePath)) return "outside";
@@ -73,6 +73,8 @@ export function classifyManagedWritePath(repoRelativePath: string): ManagedWrite
   const [archiveFirst, archiveSecond] = PROD_ARCHIVE_DIRECTORY.split("/");
   if (first === archiveFirst && second === archiveSecond) return "prod_archive";
   if (first === ".pi" && second === "agents") return "agent_definition";
+  // 项目规范只能经用户在界面确认后由主会话改；文件系统可能不区分大小写，按小写比较
+  if (parts.length === 1 && first === "agents.md") return "project_conventions";
   return "code";
 }
 

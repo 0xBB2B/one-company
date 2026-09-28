@@ -9,6 +9,7 @@ import { PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
+import { updateConventions } from "../runtime/project-conventions.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -172,6 +173,25 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   await w.manager.stop(c.runId);
   expect(await w.manager.workflowManage(w.fixture.requirementId, { action: "delivery-check" }))
     .toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["task_review_missing"]) });
+});
+
+test("M8B-AC2：worker 与 reviewer 的上下文含用户批准的项目规范", async () => {
+  const w = await world();
+  await updateConventions({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId,
+    content: "# 项目规范\n- 不使用泛型。\n", confirm: async () => true });
+  await w.plan.execute({ action: "propose", tasks: [spec("a", { writePaths: ["src/a/"] }), spec("b", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push(submit("完成 a"), pmAck);
+  await w.dispatch("a");
+  await until(() => w.task("a").status === "awaiting_review");
+  w.provider.queue.push(submit("a 符合目标"), pmAck);
+  await w.review("a");
+  await until(() => w.task("a").status === "completed");
+  for (const marker of ["任务：a（", "审查任务：a（"]) {
+    const prompt = w.provider.requests.find((request) => request.systemPrompt?.includes(marker))!.systemPrompt!;
+    expect(prompt).toContain("项目规范（来源：用户在界面确认过的 AGENTS.md");
+    expect(prompt).toContain("- 不使用泛型。");
+  }
 });
 
 test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因且不占执行重试；再次打回进入待用户裁决，拆分或改名不能重置", async () => {

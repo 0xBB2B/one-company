@@ -41,7 +41,7 @@ test("PM 只提交列出的文件（含删除），保留其他已暂存内容�
 test("拒绝 .git、归档与越界路径；分支被切换或会话失效时拒绝", async () => {
   const r = await repo();
   const tool = createPmCommitTool({ worktree: r.root, branch: "refs/heads/req-branch", alive: () => true, checkPhaseActive: () => false });
-  for (const path of [".git/config", "docs/prod/x.md", "../x.ts", "/abs.ts"]) {
+  for (const path of [".git/config", "docs/prod/x.md", "AGENTS.md", "../x.ts", "/abs.ts"]) {
     await expect(run(tool, { paths: [path], message: "x" })).rejects.toThrow("forbidden_path");
   }
   r.git("checkout", "-q", "-b", "other");

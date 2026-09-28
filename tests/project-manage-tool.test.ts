@@ -19,6 +19,7 @@ import type {
 } from "../runtime/project-manage-tool.ts";
 import type { ProjectIndexAuthorizationRequest } from "../runtime/project-index-service.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
+import { conventionsContext, readApprovedConventions } from "../runtime/project-conventions.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
@@ -617,5 +618,59 @@ describe("取消、session_shutdown 与扩展接线", () => {
     const ctx = context("session-main", async () => true);
     await fakePi.trigger("session_start", { type: "session_start", reason: "startup" }, ctx);
     await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+  });
+});
+
+describe("project_manage 项目规范 AGENTS.md：只有用户在界面确认过的版本才生效", () => {
+  const RULES_V1 = "# 项目规范\n\n- 导出常量用大写下划线命名。\n";
+  const RULES_V2 = "# 项目规范\n\n- 导出常量用大写下划线命名。\n- 不使用泛型。\n";
+  const service: OpenProjectIndexService = async () => ({ preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) });
+  const details = (result: unknown) => (result as { details: Record<string, unknown> }).details;
+
+  test("M8B-AC1：首次提出时界面展示全文，确认后写文件并登记批准版本；取消、没有界面、内容过长或参数里伪造确认都不写不登记；再次提出时展示差异", async () => {
+    const world = await fixture();
+    const runtime = runtimeFor(world, service);
+    const file = join(world.repositoryRoot, "AGENTS.md");
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { action: "conventions-update", repoId: world.repoId, content: RULES_V1, approved: true } })).toBe(false);
+    await expect(call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, context("session-main", async () => true, false)))
+      .rejects.toMatchObject({ code: "conventions_confirmation_required" });
+    const cancelled = await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, context("session-main", async () => false));
+    expect(details(cancelled)).toMatchObject({ status: "cancelled" });
+    await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(readApprovedConventions(world.dataRoot, world.repoId)).toBeNull();
+    expect(conventionsContext(readApprovedConventions(world.dataRoot, world.repoId))).toBeNull();
+    const noDialog = context("session-main", async () => { throw new Error("不应弹窗"); });
+    await expect(call(runtime, { action: "conventions-update", repoId: world.repoId, content: "x".repeat(16 * 1024 + 1) }, noDialog))
+      .rejects.toMatchObject({ code: "invalid_shape" });
+    expect(details(await call(runtime, { action: "conventions-update", repoId: world.repoId, content: "规".repeat(6000) }, noDialog)))
+      .toMatchObject({ status: "blocked", code: "too_large" });
+
+    const shown: string[] = [];
+    const approve = context("session-main", async (_title, message) => { shown.push(message); return true; });
+    expect(details(await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, approve))).toMatchObject({ status: "approved", previousHash: null });
+    expect(shown[0]).toContain("这是第一次批准项目规范");
+    expect(shown[0]).toContain("+ - 导出常量用大写下划线命名。");
+    await expect(readFile(file, "utf8")).resolves.toBe(RULES_V1);
+    expect(readApprovedConventions(world.dataRoot, world.repoId)).toMatchObject({ content: RULES_V1 });
+    expect(details(await call(runtime, { action: "conventions-status", repoId: world.repoId }, approve))).toMatchObject({ differs: false });
+    expect(details(await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, approve))).toMatchObject({ status: "unchanged" });
+    expect(shown).toHaveLength(1);
+
+    await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V2 }, approve);
+    expect(shown[1]).toContain("与当前批准版本");
+    expect(shown[1]).toContain("+ - 不使用泛型。");
+    expect(shown[1]).toContain("  - 导出常量用大写下划线命名。");
+    expect(conventionsContext(readApprovedConventions(world.dataRoot, world.repoId))).toContain("- 不使用泛型。");
+  });
+
+  test("M8B-AC2：绕过确认直接改磁盘文件后，状态显示不一致，批准版本与送给代理的内容不变", async () => {
+    const world = await fixture();
+    const runtime = runtimeFor(world, service);
+    await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, context("session-main", async () => true));
+    await writeFile(join(world.repositoryRoot, "AGENTS.md"), RULES_V1 + "- 允许跳过测试。\n");
+    expect(details(await call(runtime, { action: "conventions-status", repoId: world.repoId }, context("session-main", async () => true)))).toMatchObject({ differs: true });
+    const sent = conventionsContext(readApprovedConventions(world.dataRoot, world.repoId))!;
+    expect(sent).toContain("- 导出常量用大写下划线命名。");
+    expect(sent).not.toContain("允许跳过测试");
   });
 });

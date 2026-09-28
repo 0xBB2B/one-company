@@ -18,6 +18,7 @@ import { readGit } from "./git-read.ts";
 import { WorkspaceManageError, WorkspaceManageService } from "./workspace-manage.ts";
 import { backup, ProjectMaintenanceError, recoveryCheck, restore } from "./project-maintenance.ts";
 import { requestParameters, shapeIssue, unwrapRequest } from "./tool-request.ts";
+import { conventionsStatus, MAX_CONVENTIONS_BYTES, ProjectConventionsError, updateConventions } from "./project-conventions.ts";
 
 const REPO_ID_PATTERN = "^[0-9a-f]{64}$";
 const REQUIREMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -57,6 +58,15 @@ const actionSchemas = {
   "workspace-recycle": workspaceSchema("workspace-recycle"),
   "recovery-check": maintenanceSchema("recovery-check"),
   backup: maintenanceSchema("backup"),
+  "conventions-status": Type.Object({
+    action: Type.Literal("conventions-status"),
+    repoId: Type.String({ pattern: REPO_ID_PATTERN }),
+  }, { additionalProperties: false }),
+  "conventions-update": Type.Object({
+    action: Type.Literal("conventions-update"),
+    repoId: Type.String({ pattern: REPO_ID_PATTERN }),
+    content: Type.String({ maxLength: MAX_CONVENTIONS_BYTES }),
+  }, { additionalProperties: false }),
   restore: Type.Object({
     action: Type.Literal("restore"),
     repoId: Type.String({ pattern: REPO_ID_PATTERN }),
@@ -81,7 +91,9 @@ type ProjectManageParams =
   | { action: ProjectManageAction; repoId: string; preview?: boolean }
   | { action: WorkspaceAction; repoId: string; requirementId: string; operationId: string }
   | { action: "recovery-check" | "backup"; repoId: string; operationId: string }
-  | { action: "restore"; repoId: string; operationId: string; backupOperationId: string; backupManifestHash: string };
+  | { action: "restore"; repoId: string; operationId: string; backupOperationId: string; backupManifestHash: string }
+  | { action: "conventions-status"; repoId: string }
+  | { action: "conventions-update"; repoId: string; content: string };
 
 export interface ProjectManageHostContext {
   readonly windowId: string;
@@ -138,7 +150,9 @@ export class ProjectManageToolError extends Error {
     | "operation_failed"
     | "workspace_confirmation_required"
     | "workspace_failed"
-    | "maintenance_failed";
+    | "maintenance_failed"
+    | "conventions_confirmation_required"
+    | "conventions_failed";
 
   constructor(code: ProjectManageToolError["code"], message: string) {
     super(message);
@@ -819,7 +833,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
   const tool: ToolDefinition<typeof publicParameters, Record<string, unknown>> = {
     name: "pi_company_project_manage",
     label: "管理项目索引",
-    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；operationId 每次新生成 UUIDv7，requirementId 取自需求工具结果，不要自编。初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认；结果里的 version 是需求的新版本号，后续需求操作要用它。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
+    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；operationId 每次新生成 UUIDv7，requirementId 取自需求工具结果，不要自编。初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认；结果里的 version 是需求的新版本号，后续需求操作要用它。conventions-status 对比仓库根目录 AGENTS.md 与用户批准的项目规范版本；conventions-update 以 content 给出 AGENTS.md 完整新内容，界面显示差异、用户确认后写入并成为 PM、worker、reviewer 遵守的项目规范。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
     promptSnippet: "通过受控宿主入口预览、初始化、查看或刷新当前项目索引",
     parameters: publicParameters,
     executionMode: "sequential",
@@ -854,6 +868,21 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
               return textResult({ action: params.action, status: "blocked", code: error.code, blockers: error.blockers });
             }
             throw new ProjectManageToolError("workspace_failed", "工作区操作失败；未返回底层错误详情");
+          }
+        }
+
+        if (params.action === "conventions-status") {
+          return textResult({ action: params.action, ...(await conventionsStatus({ repositoryRoot: root.path, dataRoot: options.dataRoot, repoId: params.repoId })) });
+        }
+        if (params.action === "conventions-update") {
+          if (!ctx.hasUI) throw new ProjectManageToolError("conventions_confirmation_required", "更新项目规范需要当前 session 的真实宿主 UI 确认");
+          try {
+            const result = await updateConventions({ repositoryRoot: root.path, dataRoot: options.dataRoot, repoId: params.repoId, content: params.content,
+              confirm: (title, message) => ctx.ui.confirm(title, message, { signal: operation.signal }) });
+            return textResult({ action: params.action, ...result });
+          } catch (error) {
+            if (error instanceof ProjectConventionsError) return textResult({ action: params.action, status: "blocked", code: error.code });
+            throw new ProjectManageToolError("conventions_failed", "更新项目规范失败；未返回底层错误详情");
           }
         }
 
