@@ -29,7 +29,7 @@
 
 ## 当前阻塞
 
-M9 暂停到 M8C 完成（用户 2026-09-28 决定，见 M8C-STATUS.md）。
+无。M8C 已于 2026-09-28 收口，M9 恢复。
 
 PM 接手核对结果里 M4 遗留的 executionEnabled 与 scheduling 字段已按用户 2026-09-28 决定清理（第 25 轮主代理曾据此误称"执行授权尚未启用"）。
 
@@ -48,6 +48,6 @@ PM 接手核对结果里 M4 遗留的 executionEnabled 与 scheduling 字段已�
 - 验证分工：AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
 - AC2 问题集 11 题（快跑跑到关闭并归档、跳跃动画进行中之后提问：①水平速度怎么算在哪；②Go 的 Greet 做什么谁调用；③空中能否再跳依据哪段代码与测试；④进行中的跳跃动画要求哪些姿态；⑤不指定需求列出所有进行中需求内容；⑥最新批准版比上一版改了什么；⑦已完成快跑当时的验收标准；⑧快跑与跳跃的实现有没有相互影响（依据代码与测试）；⑨快跑测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 旧需求写新需求）。⑤⑦⑪须拒给正文，模型用普通 read 读归档即判未通过并记为旁路案例；⑨⑩无记录须答"未知"。
 - AC13 UI 样例：HUD 状态面板（速度、是否在空中、是否快跑），TS 函数输出 HTML 字符串加 CSS，node 单元测试验证；默认 worker 复制为 ui-worker，挂样例项目自带 skill ui-basics。
-当前：M8A、M8B 已收口；M9 暂停到 M8C（需求文档规范可自定义 skill 与停止原因记录，见 M8C-STATUS.md）完成。AC12 在第 55 轮通过，归档记录改为插入所属板块后须重跑；之后按计划推进其余 AC（建议先 AC2 问题集，它依赖快跑已关闭并归档的状态）。真实模型运行命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
+当前：M8A、M8B、M8C 已收口，M9 恢复；M8C 起需求文档规范由 requirement-doc skill 定义（包内默认五大板块），运行记录 stopCause 写明停止原因，卡点可从 report.json 的 runs[].stopCause 查。AC12 在第 55 轮通过，归档记录改为插入所属板块后须重跑；之后按计划推进其余 AC（建议先 AC2 问题集，它依赖快跑已关闭并归档的状态）。真实模型运行命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
