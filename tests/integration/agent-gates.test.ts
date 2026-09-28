@@ -124,29 +124,31 @@ test("M9-AC14：daemon 从 dirname(dataRoot)/agents 与受信任项目的 .pi/ag
   expect((await w.runs().list({ limit: 50 })).items.filter((run) => run.kind === "role")).toEqual([]);
 }, 120_000);
 
-test("M9-AC15/AC16：零匹配走默认 worker、指定专业定义按定义派出并加载 skill；指定不存在、缺 skill、缺模型或思考等级不受支持时明确拒绝、不静默改默认、不建运行", async () => {
+test("M9-AC15/AC16：零匹配走默认 worker、指定专业定义按定义派出并加载 skill；指定不存在、缺 skill、缺模型、思考等级不受支持或越权声明工具时明确拒绝、不静默改默认、不建运行", async () => {
   const w = await world();
   await mkdir(w.userAgents, { recursive: true });
   await writeFile(join(w.userAgents, "ui-dev.md"), definition("ui-dev", "model: spec-model/test\nskills: [ui-kit]\n"));
   await writeFile(join(w.userAgents, "ghost-skill.md"), definition("ghost-skill", "skills: [missing]\n"));
   await writeFile(join(w.userAgents, "bad-model.md"), definition("bad-model", "model: nowhere/none\n"));
   await writeFile(join(w.userAgents, "deep-think.md"), definition("deep-think", "model: spec-model/test\nthinking: xhigh\n"));
-  await w.readyPm([spec("a", { agent: "nobody" }), spec("b", { agent: "ghost-skill" }), spec("c", { agent: "bad-model" }), spec("d", { agent: "deep-think" }),
+  await writeFile(join(w.userAgents, "tool-grab.md"), definition("tool-grab", "tools: [bash, write]\n"));
+  await w.readyPm([spec("a", { agent: "nobody" }), spec("b", { agent: "ghost-skill" }), spec("c", { agent: "bad-model" }), spec("d", { agent: "deep-think" }), spec("e", { agent: "tool-grab" }),
     spec("ui", { agent: "ui-dev", agentReason: "界面任务" }), spec("plain", { goalUnitIds: ["scenario.failure"] })]);
   const dispatch = (key: string): ScriptedReply => ({ type: "toolcall", name: "pi_company_agent_manage", input: { action: "dispatch", taskId: w.task(key).taskId } });
   await w.reply("spec-model", { type: "text", text: "按 UI 规范开工" });
-  await w.reply("gate-model", dispatch("a"), dispatch("b"), dispatch("c"), dispatch("d"), dispatch("ui"), dispatch("plain"), { type: "text", text: "完成" }, { type: "text", text: "开工" });
+  await w.reply("gate-model", dispatch("a"), dispatch("b"), dispatch("c"), dispatch("d"), dispatch("e"), dispatch("ui"), dispatch("plain"), { type: "text", text: "完成" }, { type: "text", text: "开工" });
   expect(await w.toolResult(4)).toContain("未找到角色定义 nobody");
   expect(await w.toolResult(5)).toContain("找不到 skill missing（ghost-skill 声明）");
   expect(await w.toolResult(6)).toContain("模型不可用：nowhere/none");
   expect(await w.toolResult(7)).toContain("不支持思考等级 xhigh");
-  await w.toolResult(9);
+  expect(await w.toolResult(8)).toContain("tool-grab 定义不可用");
+  await w.toolResult(10);
   const roles = (await w.runs().list({ limit: 50 })).items.filter((run) => run.kind === "role");
   const detail = await Promise.all(roles.map(async (run) => { const got = await w.runs().get(run.id); return got.ok ? got.run : null; }));
   expect(detail.map((run) => [run?.task, run?.agent?.name, run?.agent?.source, run?.model.provider]).sort()).toEqual([
     [w.task("plain").taskId, "worker", "default", "gate-model"], [w.task("ui").taskId, "ui-dev", "user", "spec-model"]].sort());
   expect(detail.find((run) => run?.agent?.name === "ui-dev")?.agent?.skills.map((skill) => skill.name)).toEqual(["ui-kit"]);
-  for (const key of ["a", "b", "c", "d"]) expect(w.task(key).status).toBe("pending");
+  for (const key of ["a", "b", "c", "d", "e"]) expect(w.task(key).status).toBe("pending");
   const specRequests = (await w.requests()).filter((entry) => entry.providerId === "spec-model");
   expect(specRequests[0]?.text).toContain("按钮统一用主色");
 }, 120_000);
