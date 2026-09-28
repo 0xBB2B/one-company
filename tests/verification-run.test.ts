@@ -425,13 +425,14 @@ test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承
   await expect(w.read("src/generated.txt")).resolves.toBe("gen\n");
   await worker.execute({ action: "run", kind: "debug", command: "mkdir -p docs/spec && echo x > docs/spec/x.rules.json", performance: NA });
   await expect(w.read("docs/spec/x.rules.json")).resolves.toBe("x\n");
-  for (const target of ["docs/prod/x.md", ".pi/agents/worker.md", "AGENTS.md"]) {
+  for (const target of ["docs/prod/x.md", ".pi/agents/worker.md", ".pi/skills/requirement-doc/SKILL.md", "AGENTS.md"]) {
     const run = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(target, ".."))} && echo x > ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
     expect(run.status).toBe("failed");
     await expect(w.read(target)).rejects.toMatchObject({ code: "ENOENT" });
   }
   const agentDir = join(w.dataRoot, "..");
-  for (const target of [join(agentDir, "agents", "pm.md"), join(agentDir, "skills", "x", "SKILL.md"), join(agentDir, "trust.json"), join(w.repositoryRoot, ".pi", "agents", "pm.md")]) {
+  for (const target of [join(agentDir, "agents", "pm.md"), join(agentDir, "skills", "x", "SKILL.md"), join(agentDir, "trust.json"), join(w.repositoryRoot, ".pi", "agents", "pm.md"),
+    join(w.repositoryRoot, ".pi", "skills", "requirement-doc", "SKILL.md")]) {
     const run = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(target, ".."))}; echo x > ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
     expect(run.status).toBe("failed");
     await expect(readFile(target, "utf8")).rejects.toMatchObject({ code: "ENOENT" });

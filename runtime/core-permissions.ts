@@ -72,7 +72,7 @@ export function classifyManagedWritePath(repoRelativePath: string): ManagedWrite
   const [first, second] = parts.map((part) => part.toLowerCase());
   const [archiveFirst, archiveSecond] = PROD_ARCHIVE_DIRECTORY.split("/");
   if (first === archiveFirst && second === archiveSecond) return "prod_archive";
-  if (first === ".pi" && second === "agents") return "agent_definition";
+  if (first === ".pi" && (second === "agents" || second === "skills")) return "agent_definition";
   // 项目规范只能经用户在界面确认后由主会话改；文件系统可能不区分大小写，按小写比较
   if (parts.length === 1 && first === "agents.md") return "project_conventions";
   return "code";

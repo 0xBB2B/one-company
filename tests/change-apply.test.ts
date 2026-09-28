@@ -72,6 +72,7 @@ test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不�
     ["forbidden_path", { path: "docs/prod/x.md", baseHash: "absent", content: "x" }],
     ["forbidden_path", { path: ".git/hooks/pre-commit", baseHash: "absent", content: "x" }],
     ["forbidden_path", { path: ".pi/agents/worker.md", baseHash: "absent", content: "x" }],
+    ["forbidden_path", { path: ".pi/skills/requirement-doc/SKILL.md", baseHash: "absent", content: "x" }],
     ["forbidden_path", { path: "AGENTS.md", baseHash: "absent", content: "x" }],
     ["forbidden_path", { path: "../outside.ts", baseHash: "absent", content: "x" }],
     ["out_of_scope", { path: "lib/c.ts", baseHash: "absent", content: "x" }],
