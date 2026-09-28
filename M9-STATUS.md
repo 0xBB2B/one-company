@@ -19,7 +19,7 @@
 | AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 未开始 | 可复用：tests/pm-intake-runtime.test.ts、tests/pm-dispatch.test.ts、tests/pm-event-delivery.test.ts | 需在安装产物中实跑 |
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 未开始 | 可复用：tests/explore-dispatch.test.ts、tests/explore-web.test.ts | 需真实模型与真实联网；本机出网慢，联网失败时该项标未完成，不以降级路径冒充 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
-| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 通过 | 第 37 轮：pnpm run test:acceptance 通过（1/1），证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-27T10-48-30-645Z/（report.json：outcome closed、9.3 分钟、PM/worker/reviewer/QA 全为默认定义、归档已写入；各运行会话在 runs/）；驱动 tests/acceptance/zero-custom-loop.test.ts；最后一处产品修复 c669d5f | 无；真实模型有波动，单轮通过不代表每轮必过（第 34、36 轮分别卡在驱动判定与验收登记，均已修） |
+| AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 通过 | 当前基线 1dcdcee 第 46 轮：pnpm run test:acceptance 通过（1/1），证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T03-07-09-586Z/（report.json：outcome closed、8.3 分钟、PM/worker/reviewer/QA/explore 全为默认定义；各运行会话在 runs/）；驱动 tests/acceptance/zero-custom-loop.test.ts | 无；真实模型有波动，单轮通过不代表每轮必过（第 34、36 轮分别卡在驱动判定与验收登记，均已修） |
 | AC13 复制默认 worker 为专业定义，PM 自动选中完成 UI 设计与实现，独立 review/QA | 未开始 | 可复用：tests/agent-catalog-ui.test.ts、tests/agent-selection.test.ts | 需真实模型与 UI 样例任务 |
 | AC14 安装产物中两类目录发现、环境变量覆盖、项目信任、同名冲突、不越根 | 未开始 | 可复用：tests/role-catalog.test.ts | 需在安装产物中实跑 |
 | AC15 两种默认路径；显式指定不可用明确失败交用户裁决 | 未开始 | 可复用：tests/agent-selection.test.ts | 需在安装产物中实跑 |
@@ -29,7 +29,7 @@
 
 ## 当前阻塞
 
-M9 暂停：用户于 2026-09-27 决定移除 spec、改为代码即文档，已在计划中插入 M8A（见 M8A-STATUS.md）。M8A 完成后回到 M9，AC12 需在新基线上重跑。
+M8A（移除 spec、代码即文档、TDD 先红后绿、PM 上报等）已于 2026-09-28 收口，M9 恢复。
 
 待用户回复：PM 接手核对结果里 M4 遗留的 executionEnabled: false 与 scheduling: "not_implemented" 是否清理（runtime/pm-intake-contracts.ts、runtime/pm-intake-service.ts 共 14 处，6 个测试文件）；第 25 轮主代理曾据此误称"执行授权尚未启用"。
 
@@ -48,6 +48,6 @@ M9 暂停：用户于 2026-09-27 决定移除 spec、改为代码即文档，已
 - 验证分工：AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
 - AC2 问题集 11 题（快跑跑到关闭并归档、跳跃动画进行中之后提问：①水平速度怎么算在哪；②Go 的 Greet 做什么谁调用；③空中能否再跳依据哪段代码与测试；④进行中的跳跃动画要求哪些姿态；⑤不指定需求列出所有进行中需求内容；⑥最新批准版比上一版改了什么；⑦已完成快跑当时的验收标准；⑧快跑与跳跃的实现有没有相互影响（依据代码与测试）；⑨快跑测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 旧需求写新需求）。⑤⑦⑪须拒给正文，模型用普通 read 读归档即判未通过并记为旁路案例；⑨⑩无记录须答"未知"。
 - AC13 UI 样例：HUD 状态面板（速度、是否在空中、是否快跑），TS 函数输出 HTML 字符串加 CSS，node 单元测试验证；默认 worker 复制为 ui-worker，挂样例项目自带 skill ui-basics。
-当前：M9 暂停，先完成 M8A；M8A 完成后回到这里。AC12 已于第 37 轮通过（新基线上须重跑）；之后按计划推进其余 AC（建议先 AC2 问题集，它依赖快跑已关闭并归档的状态）。真实模型运行命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
+当前：M8A 已收口，M9 恢复执行。AC12 在 M8A 最终基线 1dcdcee 上第 46 轮通过（证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T03-07-09-586Z），此后基线再变须重跑；之后按计划推进其余 AC（建议先 AC2 问题集，它依赖快跑已关闭并归档的状态）。真实模型运行命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
