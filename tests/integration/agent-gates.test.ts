@@ -96,7 +96,7 @@ async function world() {
     await plan.execute({ action: "confirm", planVersion: 1 });
     return pm;
   }
-  return { fixture, userAgents, projectAgents, agentDir, reply, toolResult, pmRequests, runs, task, readyPm, start, requests, client: () => client! };
+  return { fixture, userAgents, projectAgents, agentDir, reply, toolResult, pmRequests, runs, task, readyPm, start, requests, client: () => client!, scripts: files.scripts };
 }
 
 test("M9-AC14：daemon 从 dirname(dataRoot)/agents 与受信任项目的 .pi/agents 发现定义；缺 role、同层重名与仓库外祖先目录不进入能力目录，项目未受信任时不加载", async () => {
@@ -172,4 +172,21 @@ test("M9-AC9/AC16：未认证连接与已有有效 PM 时再派 PM 均被拒；�
   await writeFile(join(w.userAgents, "ui-dev.md"), definition("ui-dev", "model: spec-model/test\n").replace("你是 ui-dev。", "你是改过的 ui-dev。"));
   await expect(client.call("runs.resume", { runId })).rejects.toMatchObject({ code: "config_changed" });
   expect(await w.runs().get(runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "config_changed" } } });
+}, 120_000);
+
+test("M9-AC9：已通过接手的 PM 被停止后重新派出，新 PM 须重新接手，主代理核对通过前派 worker 被拒", async () => {
+  const w = await world();
+  const first = await w.readyPm([spec("login"), spec("cover", { goalUnitIds: ["scenario.failure"] })]);
+  const client = w.client();
+  await w.reply("gate-model", { type: "text", text: "收到核对结论" });
+  await until(async () => (await client.call("runs.stop", { runId: first.runId }) as { confirmed: boolean }).confirmed);
+  const intakeAsk = JSON.parse(await readFile(w.scripts, "utf8"))[0].replies[0] as ScriptedReply;
+  await w.reply("gate-model", { type: "toolcall", name: "pi_company_agent_manage", input: { action: "dispatch", taskId: w.task("login").taskId } }, intakeAsk, { type: "text", text: "等待核对" });
+  const second = await client.call("agents.dispatchPm", { requirementId: w.fixture.requirementId, model: { provider: "gate-model", id: "test" }, thinking: "off" }) as { runId: string; fence: number };
+  expect(second.runId).not.toBe(first.runId);
+  expect(await w.toolResult(4)).toContain("开始受限接手");
+  const denied = await w.toolResult(5);
+  for (const reason of ["intake_gate", "understanding_baseline_missing", "new_pm_run", "new_pm_fence"]) expect(denied).toContain(reason);
+  expect((await w.runs().list({ limit: 50 })).items.filter((run) => run.kind === "role")).toEqual([]);
+  expect(w.task("login").status).toBe("pending");
 }, 120_000);
