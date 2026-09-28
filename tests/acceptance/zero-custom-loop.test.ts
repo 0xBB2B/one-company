@@ -34,7 +34,7 @@ const SCRIPT = {
 interface LoopResult { outcome: DriverOutcome | undefined; runs: RunRecord[]; archive: string | null; archives: string[]; host: InstalledHost; agentDir: string; repoId: string; repo: string }
 
 /** 一轮真实模型闭环：装产品、建样例项目、按脚本驱动用户，把证据写进输出目录，再交给 verify 断言；现场与凭据在结束时清理。 */
-async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: string, agentDir: string) => Promise<void>, verify: (result: LoopResult) => void | Promise<void>) {
+async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: string, agentDir: string, installed: string) => Promise<void>, verify: (result: LoopResult) => void | Promise<void>) {
   const cfg = config!;
   const evidence = join(cfg.output, `${name}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   await mkdir(evidence, { recursive: true, mode: 0o700 });
@@ -52,7 +52,7 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
     const { repoId } = await repositoryIdentity(repo);
     await mkdir(home, { recursive: true });
     await copyCredentials(cfg.credentialsDir, agentDir);
-    await prepare(repo, agentDir);
+    await prepare(repo, agentDir, installed);
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.HOME = home;
     process.env.PI_TELEMETRY = "0";
@@ -76,7 +76,7 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
       outcome, elapsedMs: Date.now() - started,
       main: mainSessionFacts(host),
       runs: runs.map((run) => ({ id: run.id, kind: run.kind, role: run.role, state: run.state, stateReason: run.stateReason, stopCause: run.stopCause, turns: run.turns,
-        usage: run.usage, model: run.model, thinking: run.thinking, agentSource: run.agent?.source, parentRunId: run.parentRunId })),
+        usage: run.usage, model: run.model, thinking: run.thinking, agentSource: run.agent?.source, agentName: run.agent?.name, agentSkills: run.agent?.skills.map((skill) => skill.name), task: run.task, parentRunId: run.parentRunId })),
       runUsage: sumUsage(runs.map((run) => run.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })),
       dialogs: host.dialogs, notifications: host.notifications, modelEvents: host.modelEvents, worktree: worktree ?? null, archives, conventions,
       worktreeLog: worktree ? (await exec("git", ["log", "--oneline", "-20"], { cwd: worktree })).stdout : null,
@@ -162,5 +162,42 @@ test.skipIf(!config || process.platform !== "darwin")("M8C-AC7：受信任项目
     expect(archive).not.toContain("{#background}");
     const records = withDatabase(repositoryDatabase(join(agentDir, "pi-company"), repoId), (db) => db.list<RequirementRecord>("requirements"));
     expect(records.map((row) => row.data.docSpec?.sections.map((section) => section.id))).toEqual([["goal", "scenarios", "check", "approach"]]);
+  });
+}, 100 * 60_000);
+
+const UI_BASICS = `---
+name: ui-basics
+description: 本项目的界面写法：HUD 与面板的 HTML 结构、类名与配色约定。做界面相关任务时使用。
+---
+- 面板根元素用 \`<section class="hud">\`，每一项用 \`<div class="hud-item" data-key="...">\`，标签与数值分别放在 \`<span class="label">\` 与 \`<span class="value">\`。
+- 布尔状态显示「是」或「否」，不用 true/false。
+- 样式写在导出的 CSS 字符串常量里，主色 #2f6fed，字号 14px，不引入第三方库。
+`;
+
+test.skipIf(!config || process.platform !== "darwin")("M9-AC13：复制默认 worker 为 ui-worker 并挂项目 skill ui-basics，PM 自动选中它完成 HUD 面板的设计与实现，reviewer 与 QA 独立检查", async () => {
+  const script = {
+    requirement: "我要给游戏加一个 HUD 状态面板：显示角色当前水平速度、是否在空中、是否在快跑。用 TypeScript 写一个函数，输入这三个状态，输出面板的 HTML 字符串，再导出面板的 CSS；用 node 单元测试验证输出。界面怎么设计你们按项目的界面约定来。" +
+      "请整理成需求草稿给我确认。确认后授权你直接实施：创建独立工作区、派 PM 按计划实现、测试和验收，完成后由我验收报告。",
+    approve: "需求草稿我看过了，内容正确，批准这一版，按上面的授权直接实施。", proceed: "继续：创建工作区并派出 PM 开始实施。",
+    accept: "完成报告我看过了，验收通过。", close: "验收已通过，请以完成关闭这个需求。",
+  };
+  await runLoop("ui-worker", script, async (repo, agentDir, installed) => {
+    const worker = await readFile(join(installed, "agents", "worker.md"), "utf8");
+    await mkdir(join(agentDir, "agents"), { recursive: true });
+    await writeFile(join(agentDir, "agents", "ui-worker.md"), worker.replace("name: worker\n", "name: ui-worker\n")
+      .replace(/description: .*\n/u, "description: 界面专业 worker：负责 HUD、面板等界面的设计与实现，按项目界面约定写 HTML 与 CSS\nskills: [ui-basics]\n"));
+    await mkdir(join(repo, ".pi", "skills", "ui-basics"), { recursive: true });
+    await writeFile(join(repo, ".pi", "skills", "ui-basics", "SKILL.md"), UI_BASICS);
+    const user = ["-c", "user.name=sample", "-c", "user.email=sample@localhost"];
+    await exec("git", ["add", ".pi"], { cwd: repo });
+    await exec("git", [...user, "commit", "-qm", "项目界面约定"], { cwd: repo });
+    new ProjectTrustStore(agentDir).set(repo, true);
+  }, async ({ outcome, runs }) => {
+    expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
+    const ui = runs.filter((run) => run.agent?.name === "ui-worker");
+    expect(ui.length).toBeGreaterThan(0);
+    expect(ui.every((run) => run.role === "pi-company.worker" && run.agent?.source === "user" && run.agent.skills.some((skill) => skill.name === "ui-basics"))).toBe(true);
+    for (const role of ["pi-company.reviewer", "pi-company.qa"]) expect(runs.some((run) => run.role === role && run.state === "completed")).toBe(true);
+    expect(runs.filter((run) => run.role === "pi-company.explore").every((run) => run.writePaths.length === 0)).toBe(true);
   });
 }, 100 * 60_000);
