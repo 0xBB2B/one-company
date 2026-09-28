@@ -33,13 +33,20 @@ export const TaskSpec = object({
   dependsOn: Type.Array(key, { maxItems: 32, uniqueItems: true }),
   writePaths: Type.Array(Type.String({ minLength: 1, maxLength: 1024 }), { maxItems: 64, uniqueItems: true }),
   blockedByQuestionIds: Type.Array(id, { maxItems: 16, uniqueItems: true }),
-  maxTurns: Type.Integer({ minimum: 1, maximum: 100 }),
+  maxTurns: Type.Integer({ minimum: 1, maximum: 1000 }),
   objective: text, passCriteria: texts(1), scope: object({ in: texts(1), out: texts(0) }), performance: VerificationPerformance,
   agent: Type.Optional(agentName), agentReason: Type.Optional(text),
   /** 审查该 worker 任务的角色定义名称；缺省用默认 reviewer。 */
   reviewAgent: Type.Optional(agentName),
 });
 export type TaskSpec = Static<typeof TaskSpec>;
+const MAX_PASS_CRITERIA = 8;
+const MAX_PM_TURNS = 100;
+/** 任务超出拆分上限的原因；有原因的任务登记后停在待用户裁决，由用户决定照做、让 PM 调整或终止。 */
+function sizeHoldOf(spec: Pick<TaskSpec, "passCriteria" | "maxTurns">): string[] {
+  return [...(spec.passCriteria.length > MAX_PASS_CRITERIA ? [`通过条件 ${spec.passCriteria.length} 条，超过 ${MAX_PASS_CRITERIA} 条`] : []),
+    ...(spec.maxTurns > MAX_PM_TURNS ? [`申请 ${spec.maxTurns} 轮，超过 ${MAX_PM_TURNS} 轮`] : [])];
+}
 const Assessment = Type.Union([Type.Literal("unaffected"), Type.Literal("affected"), Type.Literal("unknown")]);
 export const PLAN_MANAGE_PARAMETERS = Type.Union([
   object({ action: Type.Literal("propose"), tasks: Type.Array(TaskSpec, { minItems: 1, maxItems: 64 }) }),
@@ -112,6 +119,7 @@ const TaskRecord = object({
   attempts: Type.Array(Attempt, { maxItems: 16 }),
   reviews: Type.Array(Review, { maxItems: 16 }),
   userDecision: Type.Optional(UserDecision),
+  sizeHold: Type.Optional(Type.Array(text, { minItems: 1, maxItems: 2 })),
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
@@ -289,12 +297,13 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     for (const spec of specs) {
       const taskId = ids.get(spec.key)!;
       const version = (previous?.get(taskId)?.version ?? 0) + 1;
+      const hold = sizeHoldOf(spec);
       records.push(checked(TaskRecord, { format: "plan-task/v1", taskId, requirementId: grant.requirementId, version, key: spec.key, role: spec.role,
         goalUnitIds: spec.goalUnitIds, constraintUnitIds: spec.constraintUnitIds, closure: closureOf(manifest, spec.goalUnitIds, spec.constraintUnitIds),
         dependsOn: spec.dependsOn.map((dep) => ids.get(dep)!), writePaths: spec.writePaths, blockedByQuestionIds: spec.blockedByQuestionIds,
         maxTurns: spec.maxTurns, ...(spec.agent ? { agent: spec.agent } : {}), ...(spec.agentReason ? { agentReason: spec.agentReason } : {}),
         ...(spec.reviewAgent ? { reviewAgent: spec.reviewAgent } : {}),
-        detail: await writeDetail(taskId, version, spec), status: "pending", attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
+        detail: await writeDetail(taskId, version, spec), status: hold.length ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: previous.get(taskId)!.userDecision } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));
     }
@@ -355,7 +364,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     // 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；只放开该任务修改时保留原目标的要求，且决定用过即失效
     const readjusted = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null &&
       record.data.revision > task.userDecision.revision;
-    const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!; return task.userDecision?.choice === "adjust" && !readjusted(task); });
+    // 因超出拆分上限被用户要求调整的任务还没派出过，PM 直接拆分或精简，不等新的批准版本
+    const resized = (task: TaskRecord) => task.sizeHold !== undefined && task.attempts.length === 0;
+    const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!; return task.userDecision?.choice === "adjust" && !readjusted(task) && !resized(task); });
     if (waiting.length) deny("task_not_ready", waiting.map((item) => `${byId.get(item.taskId)!.key} 等待调整后的新批准版本`));
     // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被同角色的其他新增或修改任务揽走；用户终止的任务在新的批准版本前同样占住其目标。
     // 只占同角色：QA 的目标本就覆盖验收单元，若跨角色占用，QA 一报问题就再也追加不了 worker 返修任务

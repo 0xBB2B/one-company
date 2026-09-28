@@ -51,6 +51,7 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
       ?? deny("item_not_pending");
     const task = plan!.tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;
     const lines = [`任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`,
+      ...(task.sizeHold && task.attempts.length === 0 ? [`拆分上限：${task.sizeHold.join("；")}`] : []),
       ...task.attempts.map((attempt, index) => `${attempt.rework ? "返修" : "尝试"} ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}${attempt.escalation ? " · PM 已上报" : ""}`),
       ...task.reviews.map((review, index) => `审查 ${index + 1}：${review.turnsUsed}/${review.maxTurns} 轮 · 结局 ${review.outcome}`),
       `依据：prod r${record.revision}`];
@@ -66,7 +67,7 @@ function parse(references: readonly string[]): { itemId: string; version: string
   const choice = value("choice") as AdjudicationChoice | null, turns = value("max-turns");
   const itemId = value("item"), version = value("version");
   if (!itemId || !version || !choice || !ADJUDICATION_CHOICES.includes(choice)) deny("decision_shape");
-  const maxTurns = turns === null ? null : /^[1-9][0-9]{0,2}$/.test(turns) && Number(turns) <= 100 ? Number(turns) : deny("decision_shape");
+  const maxTurns = turns === null ? null : /^[1-9][0-9]{0,3}$/.test(turns) && Number(turns) <= 1000 ? Number(turns) : deny("decision_shape");
   if ((choice === "retry") !== (maxTurns !== null)) deny("decision_shape");
   return { itemId: itemId!, version: version!, choice: choice!, maxTurns };
 }
@@ -161,6 +162,8 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
       messages.push(decision.choice === "retry"
         ? `用户决定：任务 ${task.key} 再给一次机会，轮数上限 ${decision.maxTurns}。${task.status === "awaiting_rework" ? "可用 agent_manage dispatch 直接派 worker 返修，不带 rework"
           : task.status === "awaiting_review" ? "可用 agent_manage dispatch 带 review 再派审查，轮数按用户决定" : "可用 agent_manage dispatch 直接派出，不带 retry"}；这次不占你的重试机会。`
+        : decision.choice === "adjust" && task.sizeHold && task.attempts.length === 0
+          ? `用户决定：任务 ${task.key} 由你拆分或精简（${task.sizeHold.join("；")}）。用 plan_manage update 修改该任务，或取消后另加任务，不需要等新的批准版本；改完仍超出上限会再次交用户裁决。`
         : decision.choice === "adjust"
           ? `用户决定：任务 ${task.key} 调整目标或范围。等用户批准新的 prod 版本后，复核并按新范围修改该任务，修改后可再派出一次。`
           : `用户决定：终止任务 ${task.key}，任务已取消，整个需求暂停，等用户调整需求或取消需求。恢复后先复核新批准版本的差异，确认基于新版本的计划后才能派子代理；此前暂停的子代理由你决定恢复或停止。`);

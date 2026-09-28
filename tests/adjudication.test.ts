@@ -215,9 +215,47 @@ test("裁决引用前缀只能出现在裁决条目里，裁决条目必须对�
   expect(() => checkInterpretation(interpretation({ ...base, kind: "target", references: refs }), { ...context, adjudication: subject })).toThrow(/adjudication_reference_reserved/);
   expect(() => checkInterpretation(interpretation({ ...base, references: [...refs, "max-turns:3"] }), { ...context, adjudication: subject })).toThrow(/adjudication_invalid/);
   const retry = (turns: string) => [`item:${subject.itemId}`, `version:${subject.version}`, "choice:retry", `max-turns:${turns}`];
-  expect(() => checkInterpretation(interpretation({ ...base, references: retry("100") }), { ...context, adjudication: subject })).not.toThrow();
-  expect(() => checkInterpretation(interpretation({ ...base, references: retry("101") }), { ...context, adjudication: subject })).toThrow(/adjudication_invalid/);
+  expect(() => checkInterpretation(interpretation({ ...base, references: retry("1000") }), { ...context, adjudication: subject })).not.toThrow();
+  expect(() => checkInterpretation(interpretation({ ...base, references: retry("1001") }), { ...context, adjudication: subject })).toThrow(/adjudication_invalid/);
   expect(() => checkInterpretation(interpretation({ ...base, basis: "proposed", references: refs }), { ...context, adjudication: subject })).toThrow(/adjudication_invalid/);
+});
+
+test("任务通过条件超过 8 条或轮数超过 100 时登记后停在待用户裁决：事项写明原因；用户照做按用户给的轮数派出且可超过 100，让 PM 调整后不必等新批准版本即可修改，改到上限内即可派出", async () => {
+  const w = await createPmRunWorld(cleanups);
+  const nine = Array.from({ length: 9 }, (_, index) => `条件 ${index + 1}`);
+  await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login", { passCriteria: nine }), spec("failure", "scenario.failure", { maxTurns: 150 })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const task = (key: string) => w.db((db) => db.list<TaskRecord>(TASKS).map((row) => row.data).find((entry) => entry.key === key)!);
+  const version = (key: string) => `task:${task(key).taskId}:${w.db((db) => db.read<TaskRecord>(TASKS, task(key).taskId)!.version)}`;
+  const login = task("login").taskId, failure = task("failure").taskId;
+  expect([task("login").status, task("failure").status]).toEqual(["awaiting_user", "awaiting_user"]);
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null })).rejects.toMatchObject({ code: "task_not_ready" });
+  expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.label)).toEqual(expect.arrayContaining([
+    "待你裁决：任务 login 通过条件 9 条，超过 8 条", "待你裁决：任务 failure 申请 150 轮，超过 100 轮"]));
+  const packet = w.manager.decisionPacket(w.fixture.requirementId, `task:${login}`);
+  expect(packet).toContain("拆分上限：通过条件 9 条，超过 8 条");
+  expect(packet).toContain("可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 prod）；3 终止这个任务");
+  expect(adjudicationSubject({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, `task:${failure}`).summary)
+    .toContain("拆分上限：申请 150 轮，超过 100 轮");
+
+  const main = mainAdjudication(w, cleanups);
+  const decide = (key: string, text: string, references: string[]) => main.adjudicate(text,
+    [main.entry([`item:task:${task(key).taskId}`, `version:${version(key)}`, ...references], { conclusion: `用户对任务 ${key} 的裁决`, scope: `任务 ${key}` })],
+    `task:${task(key).taskId}`, version(key));
+  expect(await decide("failure", "照做，给 150 轮", ["choice:retry", "max-turns:150"])).toMatchObject({ status: "recorded", taskStatus: "pending" });
+  w.provider.queue.push({ type: "text", text: "PM 收到照做" });
+  await until(() => w.provider.queue.length === 0);
+  w.provider.queue.push({ type: "text", text: "failure 完成" }, { type: "text", text: "PM 收到" });
+  const run = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: failure, retry: null });
+  expect(run.maxTurns).toBe(150);
+  await until(() => w.provider.queue.length === 0);
+
+  expect(await decide("login", "让 PM 拆开", ["choice:adjust"])).toMatchObject({ status: "recorded", taskStatus: "needs_update" });
+  w.provider.queue.push({ type: "text", text: "PM 收到调整" });
+  await until(() => w.provider.queue.length === 0);
+  const planVersion = w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
+  await w.plan.execute({ action: "update", planVersion, modify: [{ taskId: login, version: task("login").version, spec: spec("login", "goal.login", { passCriteria: nine.slice(0, 8) }) }] });
+  expect(task("login").status).toBe("pending");
 });
 
 test("M7-AC35：用户给了再一次机会后 PM 修改任务，用户的机会随之失效，不能用在改过的任务上", async () => {

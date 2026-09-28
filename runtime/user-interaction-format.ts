@@ -228,7 +228,7 @@ export function adjudicationOf(entry: InteractionEntry, context: Pick<Interactio
     return found.length === 1 ? found[0]!.slice(prefix.length + 1) : null;
   };
   const choice = value("choice") as AdjudicationChoice | null, turns = value("max-turns");
-  const maxTurns = turns !== null && /^[1-9][0-9]{0,2}$/.test(turns) && Number(turns) <= 100 ? Number(turns) : null;
+  const maxTurns = turns !== null && /^[1-9][0-9]{0,3}$/.test(turns) && Number(turns) <= 1000 ? Number(turns) : null;
   const expected = 3 + (choice === "retry" ? 1 : 0);
   if (value("item") !== subject.itemId || value("version") !== subject.version || !choice || !CHOICES_BY_SUBJECT[subject.itemId.split(":")[0]!]?.includes(choice) ||
     (choice === "retry") !== (maxTurns !== null) || (choice !== "retry" && turns !== null) || entry.references.length !== expected) throw new UserInteractionError("adjudication_invalid");
