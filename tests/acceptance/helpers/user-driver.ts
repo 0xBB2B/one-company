@@ -48,7 +48,8 @@ const has = (results: ToolResultView[], tool: string, pattern: RegExp) =>
 function progress(host: InstalledHost, since: number) {
   const results = toolResults(host, since);
   return {
-    approved: has(results, "pi_company_user_interact", /"prodActivated":true/) || has(results, "pi_company_requirement_manage", /"lifecycle":"active"/),
+    // 只认批准登记成功的回执；查询已生效需求的元数据也带 lifecycle=active，不能当作本段已批准
+    approved: has(results, "pi_company_user_interact", /"prodActivated":true/) || has(results, "pi_company_requirement_manage", /"prodActivated":true/),
     closed: has(results, "pi_company_workflow_manage", /"status":"closed"/),
     accepted: has(results, "pi_company_user_interact", /"choice":"accept"/),
   };
