@@ -176,3 +176,29 @@ installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、
   expect((await da.probe()).forbiddenReads).toBe(0); expect((await db.probe()).forbiddenReads).toBe(0);
   await ha.close(); await hb.close(); await cleanDaemon(da); await cleanDaemon(db);
 }, 180_000);
+
+installedTest("M9-AC1 安装：删除 index.db 后重启，下一次查询从允许文件自动重建并读到当前内容，不再弹确认，归档仍排除", async () => {
+  const w = await world(), repo = await w.repository("rebuild");
+  const secret = "ARCHIVE_PRIVATE_M9_REBUILD_DO_NOT_READ";
+  await mkdir(join(repo.path, "docs/prod"), { recursive: true });
+  await writeFile(join(repo.path, "docs/prod/0197b7b0-6a20-7c51-8a32-b9465fb72d10.旧需求.md"), `${secret}\n`);
+  const first = await w.daemon(repo), a = await w.host(repo);
+  await initialize(a);
+  expect(await query(a, repo, exact("source.ts"))).toContain("initial = 1");
+  await a.close(); await cleanDaemon(first);
+
+  for (const suffix of ["", "-wal", "-shm"]) await rm(`${repo.indexPath}${suffix}`, { force: true });
+  await writeFile(join(repo.path, "source.ts"), "export const rebuilt = 7;\n");
+  const second = await w.daemon(repo), b = await w.host(repo);
+  const rebuilt = await b.call("tool", { name: "pi_company_knowledge_query", args: { repoId: repo.repoId, query: exact("source.ts") } });
+  expect(result(rebuilt, "pi_company_knowledge_query").isError).toBe(false);
+  expect(rebuilt.confirmations).toHaveLength(0);
+  expect(JSON.stringify(result(rebuilt, "pi_company_knowledge_query").content)).toContain("rebuilt = 7");
+  expect(existsSync(repo.indexPath)).toBe(true);
+  const snapshot = await w.snapshot(repo);
+  expect(snapshot.files.some((file) => file.path.startsWith("docs/prod/"))).toBe(false);
+  expect(JSON.stringify(snapshot)).not.toContain(secret);
+  expect(JSON.stringify(databaseRows(repo.indexPath, "source_fragments"))).not.toContain(secret);
+  expect((await second.probe()).forbiddenReads).toBe(0);
+  await b.close(); await cleanDaemon(second);
+}, 180_000);
