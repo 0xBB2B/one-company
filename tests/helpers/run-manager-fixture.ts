@@ -54,7 +54,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
     relayQueue: new RelayQueue({ dataDir: join(fixture.dataRoot, "repos", fixture.repoId), deliver: async () => [] }),
     roleCatalog: catalog.roles, runtime, selectModel: () => { throw new Error("不应按旧规则选模型"); }, clock, workspaceRepoIds: [fixture.repoId], emit, web: options.web, index, agentDir: options.agentDir });
   manager.markStarted();
-  cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await manager.stop(run.id).catch(() => {}); });
+  cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await manager.stop(run.id, { reason: "main_agent" }).catch(() => {}); });
 
   provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding } }, { type: "text", text: "等待核对" });
   const pm = await manager.dispatchPm({ requirementId: fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: "off" });

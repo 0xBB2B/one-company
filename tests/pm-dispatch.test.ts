@@ -21,6 +21,7 @@ import { registerControlledProvider, scriptReplies } from "./helpers/controlled-
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
+import { createFakeTimeSource } from "./helpers/fake-clock.ts";
 import { updateConventions } from "../runtime/project-conventions.ts";
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -32,10 +33,10 @@ async function until(check: () => boolean | Promise<boolean>): Promise<void> {
   throw new Error("等待超时");
 }
 
-async function manager(base: { repositoryRoot: string; dataRoot: string; repoId: string }, root: string) {
+async function manager(base: { repositoryRoot: string; dataRoot: string; repoId: string }, root: string, clock = createClock()) {
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(root, "models.json"), refreshOnCreate: false });
   const provider = registerControlledProvider(runtime, { providerId: "pm-model", modelId: "test" });
-  const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
+  cleanups.push(() => clock.stopGapWatcher());
   const runStore = new RunStore({ dataRoot: base.dataRoot, repoId: base.repoId, daemonStartedAt: new Date().toISOString() });
   const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(root, "none-u"), projectDir: join(root, "none-p"), parseFrontmatter, projectTrusted: false });
   const relay = new RelayQueue({ dataDir: join(base.dataRoot, "repos", base.repoId), deliver: async () => [] });
@@ -43,7 +44,7 @@ async function manager(base: { repositoryRoot: string; dataRoot: string; repoId:
     networkGate: new NetworkPauseGate(), relayQueue: relay, roleCatalog: catalog.roles, runtime, selectModel: () => { throw new Error("不应按旧规则选模型"); },
     clock, workspaceRepoIds: [base.repoId], emit: vi.fn() });
   runs.markStarted();
-  cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await runs.stop(run.id).catch(() => {}); });
+  cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await runs.stop(run.id, { reason: "main_agent" }).catch(() => {}); });
   return { provider, runStore, runs };
 }
 
@@ -80,7 +81,7 @@ async function plainWorld(options: { prepare?: boolean; activate?: boolean } = {
 }
 
 /** 带实施授权批准清单的需求：夹具原有的 PM 租约置为过期，工作区登记为 ready。 */
-async function world() {
+async function world(clock?: ReturnType<typeof createClock>) {
   const fixture = await createPmIntakeFixture(); cleanups.push(() => fixture.cleanup());
   const record = fixture.state.read(fixture.requirementId).data;
   withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), (db) => {
@@ -90,7 +91,7 @@ async function world() {
       baseCommit: record.workspace!.baseCommit, branch: record.workspace!.branch, path: record.workspace!.path, status: "ready", recycleOperationId: null });
   });
   const base = { repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId };
-  const { provider, runStore, runs } = await manager(base, fixture.root);
+  const { provider, runStore, runs } = await manager(base, fixture.root, clock);
   const dispatch = () => runs.dispatchPm({ requirementId: fixture.requirementId, model: { provider: "pm-model", id: "test" }, thinking: "off" });
   return { ...base, state: fixture.state, requirementId: fixture.requirementId, provider, runStore, manager: runs, dispatch };
 }
@@ -152,8 +153,8 @@ test("M7-AC5：同一需求只有一个有效 PM；停止后再派出取得更�
   const stale = await createPmTools({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, lease: firstLease, workspace: record.workspace!,
     epoch: record.epoch, alive: () => true, stopAgents: async () => {} });
   cleanups.push(() => stale.dispose());
-  expect(await w.manager.stop(first.runId)).toMatchObject({ confirmed: true });
-  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "stopped" } });
+  expect(await w.manager.stop(first.runId, { reason: "main_agent" })).toMatchObject({ confirmed: true });
+  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "main_agent" } } });
   const second = await w.dispatch();
   expect(second.fence).toBeGreaterThan(first.fence);
   const read = stale.tools.find((tool) => tool.name === "pi_company_requirement_manage")!;
@@ -164,8 +165,8 @@ test("M7-AC9：按需求停止结束全部运行，关闭协议依赖的运行�
   const w = await world();
   scriptReplies(w.provider, [{ type: "text", text: "一" }]);
   const { runId } = await w.dispatch();
-  await w.manager.stopRequirement(w.requirementId);
-  expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { state: "stopped" } });
+  await w.manager.stopRequirement(w.requirementId, { reason: "requirement_closing" });
+  expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "requirement_closing" } } });
   const owner = (await RequirementStateStore.open({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, authorize: () => true })).pmOwner(w.requirementId);
   expect(owner?.lease ?? null).toBeNull();
 }, 30000);
@@ -180,8 +181,20 @@ test("M7-AC5：旧 PM 租约过期后再派出即接管，旧会话立即停止�
   });
   const second = await w.dispatch();
   expect(second.fence).toBeGreaterThan(first.fence);
-  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "stopped" } });
+  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "superseded_by_new_pm" } } });
   expect(await w.runStore.get(second.runId)).toMatchObject({ ok: true, run: { state: "running" } });
+}, 30000);
+
+test("M8C-AC8：PM 续租失败时停止并记下原因与错误码；停止行为不变，租约已失效的旧运行照常停止", async () => {
+  const time = createFakeTimeSource();
+  const w = await world(createClock({ timeSource: time, sleepGapThresholdMs: Number.MAX_SAFE_INTEGER }));
+  scriptReplies(w.provider, [{ type: "text", text: "一" }]);
+  const renew = vi.spyOn(RequirementStateStore.prototype, "renewPm").mockRejectedValue(Object.assign(new Error("租约已被接管"), { code: "lease_superseded" }));
+  cleanups.push(() => renew.mockRestore());
+  const { runId } = await w.dispatch();
+  time.advance(10_000);
+  await until(async () => { const run = await w.runStore.get(runId); return run.ok && run.run.state === "stopped"; });
+  expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "lease_renewal_failed", code: "lease_superseded" } } });
 }, 30000);
 
 test("M7-AC10：需求已 active 但托管工作区尚未 ready 时不派 PM", async () => {

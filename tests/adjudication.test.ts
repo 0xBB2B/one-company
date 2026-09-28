@@ -169,6 +169,7 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   await until(async () => await state(failureRun.runId) === "stopped", 3_000);
   await until(() => w.task("failure").status === "pending", 3_000);
   expect(w.task("failure").attempts).toMatchObject([{ runId: failureRun.runId, outcome: "superseded" }]);
+  expect(await w.runStore.get(failureRun.runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "replanned" } } });
   w.provider.queue.push({ type: "text", text: "按测试桩实现", chunkDelayMs: 20_000 });
   const next = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: stub, retry: null });
   expect(next.maxTurns).toBe(1);

@@ -177,9 +177,9 @@ test("停止回执保留 Shell 不确定状态，重复停止可核验清理且�
   const manager = new RunManager({ dataRoot: w.dataRoot, repoId: w.repoId, runStore: store, shellRegistry: shells,
     networkGate: new NetworkPauseGate(), relayQueue: new RelayQueue({ dataDir: join(w.dataRoot, "repos", w.repoId), deliver: async () => [] }),
     roleCatalog: [], runtime: {} as any, selectModel: () => ({ provider: "test", id: "test" }), clock, workspaceRepoIds: [w.repoId], emit: () => {} });
-  const concurrent = await Promise.all([manager.stop(parent.id), manager.stop(parent.id)]);
+  const concurrent = await Promise.all([manager.stop(parent.id, { reason: "main_agent" }), manager.stop(parent.id, { reason: "main_agent" })]);
   for (const result of concurrent) expect(result).toMatchObject({ state: "stopped", confirmed: false, reason: "子运行尚未确认停止" });
-  expect(await manager.stop(child.id)).toMatchObject({ state: "stopped", confirmed: false });
+  expect(await manager.stop(child.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false });
   const blocked = await manager.stopAll();
   expect(blocked.coverage).toMatchObject({ total: 2, validated: 2, confirmed: 0, unconfirmed: 2, unknown: 0, shellUnconfirmed: 0 });
   expect(blocked.coverage.notice).toContain("未知或未确认项仍受阻");

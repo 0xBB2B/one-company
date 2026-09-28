@@ -106,7 +106,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     const startedAt = Date.parse(execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim());
     withDatabase(w.database, (db) => db.create("shells", taskId, { taskId, pid, pgid: pid, startedAt, token, host: { kind: "role", id: run.id, runId: run.id, role: run.role }, command: "test leader", cwd: w.repo.root }));
     if (late && !finalScanFailure) {
-      if (action === "stop") expect(await w.manager.stop(run.id)).toMatchObject({ confirmed: true });
+      if (action === "stop") expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true });
       else await w.manager.close();
       descendant = Number(readFileSync(pidFile, "utf8"));
       expect(descendant).toBeGreaterThan(1);
@@ -114,7 +114,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
       expect(withDatabase(w.database, (db) => db.read("shells", taskId))).toBeNull();
       return;
     }
-    if (action === "stop") expect(await w.manager.stop(run.id)).toMatchObject({ confirmed: false });
+    if (action === "stop") expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: false });
     else await expect(w.manager.close()).rejects.toThrow("关闭未完成");
     expect(alive(descendant)).toBe(true);
     expect(withDatabase(w.database, (db) => db.read("shells", taskId))).not.toBeNull();
@@ -123,7 +123,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     unavailable = false; failAfterSignal = false;
     expect(await w.manager.pause(run.id)).toMatchObject({ confirmed: false });
     expect(alive(descendant)).toBe(true);
-    expect(await w.manager.stop(run.id)).toMatchObject({ confirmed: true });
+    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true });
     expect(alive(descendant)).toBe(false);
     await w.manager.close();
   }, 20_000);
@@ -162,7 +162,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     const process = await ownProcess(); const taskId = uuidv7();
     withDatabase(w.database, (db) => db.create("shells", taskId, { taskId, ...process, pgid: process.pid, token: `${run.shellToken}:${taskId}`, host: { kind: "role", id: run.id, role: run.role, runId: run.id }, command: "test-node", cwd: w.repo.root }));
     await w.manager.adoptInterruptedShells(); expect(w.shells.list()).toHaveLength(0);
-    expect(await w.manager.stop(run.id)).toMatchObject({ confirmed: false });
+    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: false });
     expect(await w.manager.pause(run.id)).toMatchObject({ confirmed: false });
     expect((await w.manager.stopAll()).results).toContainEqual(expect.objectContaining({ runId: run.id, confirmed: false }));
     await expect(w.manager.close()).rejects.toThrow();
@@ -237,9 +237,9 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     const run = await w.create(); const child = await ownProcess(); starts.set(child.pid, child.startedAt);
     const taskId = uuidv7();
     withDatabase(w.database, (db) => db.create("shells", taskId, { taskId, ...child, pgid: child.pid, token: `${run.shellToken}:${taskId}`, host: { kind: "role", id: run.id, role: run.role, runId: run.id }, command: "test-node", cwd: w.repo.root }));
-    expect(await w.manager.stop(run.id)).toMatchObject({ confirmed: false }); expect(alive(child.pid)).toBe(true);
+    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: false }); expect(alive(child.pid)).toBe(true);
     unavailable = false;
-    expect(await w.manager.stop(run.id)).toMatchObject({ confirmed: true }); expect(alive(child.pid)).toBe(false);
+    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true }); expect(alive(child.pid)).toBe(false);
     await w.manager.close();
   }, 15_000);
   test("F1/F2 内存USER终态不是证明；close不把已停止其他进程一并否认", async () => {

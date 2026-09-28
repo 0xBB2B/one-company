@@ -94,21 +94,24 @@ describe("真实 Shell 停止、级联和身份", () => {
     const w = await world(); const parent = await w.create("running"); const child = await w.create("running", parent); const pidFile = join(w.fixture.dataRoot, "child.pid");
     const p = await w.spawn(parent); const c = await w.spawn(child, `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setInterval(()=>{},1000);`);
     await until(async () => { try { return Number(await readFile(pidFile, "utf8")) > 1; } catch { return false; } }); const descendant = Number(await readFile(pidFile, "utf8")); expect(alive(descendant)).toBe(true);
-    const result = await w.manager.stop(parent.id); expect(result).toMatchObject({ state: "stopped", confirmed: true });
+    const result = await w.manager.stop(parent.id, { reason: "main_agent" }); expect(result).toMatchObject({ state: "stopped", confirmed: true });
     for (const pid of [p.pid, c.pid, descendant, -p.pgid, -c.pgid]) expect(alive(pid)).toBe(false);
-    expect(await w.runs.get(child.id)).toMatchObject({ ok: true, run: { state: "stopped" } }); expect(w.modelAccess).not.toHaveBeenCalled();
+    expect(await w.runs.get(child.id)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "parent_stopped" } } }); expect(w.modelAccess).not.toHaveBeenCalled();
+    expect(await w.runs.get(parent.id)).toMatchObject({ ok: true, run: { stopCause: { reason: "main_agent" } } });
+    const other = await w.create("running"); await w.manager.stopAll();
+    expect(await w.runs.get(other.id)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "stop_all" } } });
     expect(JSON.stringify(w.emit.mock.calls)).not.toContain(SECRET); expect(JSON.stringify(w.deliver.mock.calls)).not.toContain(SECRET);
   }, 15_000);
   test("R08 真实EPERM不报告确认，stopAll重试实际结束进程；并发终态不能换成completed", async () => {
     let denied = false;
     const w = await world({ kill(pid, signal) { if (denied) throw Object.assign(new Error(SECRET), { code: "EPERM" }); process.kill(pid, signal); } });
     const run = await w.create("running"); const task = await w.spawn(run); cleanup.push(() => { denied = false; }); denied = true;
-    const first = await w.manager.stop(run.id);
+    const first = await w.manager.stop(run.id, { reason: "main_agent" });
     expect(first.confirmed).toBe(false); expect(alive(task.pid)).toBe(true); expect(first.reason).not.toContain(SECRET); expect(w.shells.get(task.taskId)?.status).toBe("uncertain");
     const blocked = await w.manager.stopAll(); expect(blocked.coverage).toMatchObject({ confirmed: 0, unconfirmed: 1 }); expect(blocked.coverage.shellUnconfirmed).toBeGreaterThan(0); expect(alive(task.pid)).toBe(true);
     denied = false;
     const retry = await w.manager.stopAll(); expect(retry.results).toContainEqual({ runId: run.id, state: "stopped", confirmed: true }); expect(retry.coverage).toMatchObject({ confirmed: 1, unconfirmed: 0, unknown: 0, shellUnconfirmed: 0 }); expect(alive(task.pid)).toBe(false);
-    await expect(w.runs.update(run.id, { state: "completed" })).rejects.toThrow("状态转换"); expect(await w.manager.stop(run.id)).toMatchObject({ confirmed: true, state: "stopped" });
+    await expect(w.runs.update(run.id, { state: "completed" })).rejects.toThrow("状态转换"); expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true, state: "stopped" });
   }, 15_000);
   test("R09 Shell PID/startedAt 不匹配不发送停止，USER字符串裁定不能代替真实停止", async () => {
     const w = await world(); const run = await w.create("running"); const task = await w.spawn(run); const map = handlers(w); const stop = vi.spyOn(w.shells, "stop"); const mark = vi.spyOn(w.shells, "markStoppedByUser");
@@ -122,18 +125,18 @@ describe("真实 Shell 停止、级联和身份", () => {
   test("R10 真 PID 的身份核验失败保持 uncertain/未确认，修复探针后才可真实停止", async () => {
     const w = await world(); const run = await w.create("running"); const task = await w.spawn(run); const startedAt = task.startedAt!;
     const identity = vi.spyOn(w.shells as any, "baselineStartedAt").mockResolvedValue(startedAt + 1000);
-    try { const result = await w.manager.stop(run.id); expect(result.confirmed).toBe(false); expect(w.shells.get(task.taskId)?.status).toBe("uncertain"); expect(alive(task.pid)).toBe(true); expect((await w.manager.list()).items.every((r) => r.state !== ("uncertain" as any))).toBe(true); }
+    try { const result = await w.manager.stop(run.id, { reason: "main_agent" }); expect(result.confirmed).toBe(false); expect(w.shells.get(task.taskId)?.status).toBe("uncertain"); expect(alive(task.pid)).toBe(true); expect((await w.manager.list()).items.every((r) => r.state !== ("uncertain" as any))).toBe(true); }
     finally { identity.mockRestore(); }
-    expect(await w.manager.stop(run.id)).toMatchObject({ confirmed: true }); expect(alive(task.pid)).toBe(false);
+    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true }); expect(alive(task.pid)).toBe(false);
   }, 15_000);
   test("R11 stop Promise 在真实延迟退出前不确认，忽略TERM也能核实强杀结束", async () => {
     const w = await world(); const run = await w.create("running"); const ready = join(w.fixture.dataRoot, "ready");
     const task = await w.spawn(run, `process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),400));require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`);
     await until(async () => { try { return await readFile(ready, "utf8") === "ready"; } catch { return false; } });
-    let settled = false; const pending = w.manager.stop(run.id).then((r) => { settled = true; return r; }); await delay(100); expect(settled).toBe(false); expect(alive(task.pid)).toBe(true);
+    let settled = false; const pending = w.manager.stop(run.id, { reason: "main_agent" }).then((r) => { settled = true; return r; }); await delay(100); expect(settled).toBe(false); expect(alive(task.pid)).toBe(true);
     expect(await pending).toMatchObject({ confirmed: true }); expect(alive(task.pid)).toBe(false);
     const other = await w.create("running"); const ready2 = join(w.fixture.dataRoot, "ready2"); const hard = await w.spawn(other, `process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(${JSON.stringify(ready2)},'ready');setInterval(()=>{},1000);`);
-    await until(async () => { try { return await readFile(ready2, "utf8") === "ready"; } catch { return false; } }); expect(await w.manager.stop(other.id)).toMatchObject({ confirmed: true }); expect(alive(hard.pid)).toBe(false);
+    await until(async () => { try { return await readFile(ready2, "utf8") === "ready"; } catch { return false; } }); expect(await w.manager.stop(other.id, { reason: "main_agent" })).toMatchObject({ confirmed: true }); expect(alive(hard.pid)).toBe(false);
   }, 15_000);
   test("R12 close 清理无会话登记的真实 Shell，不以停止状态字段代替 PID 确认", async () => {
     const w = await world(); const a = await w.create("interrupted"); const task = await w.spawn(a); await w.manager.close(); expect(alive(task.pid)).toBe(false); expect(alive(-task.pgid)).toBe(false);
@@ -199,10 +202,10 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
     } } });
     const manager = new RunManager({ ...w.options, shellRegistry: adopted }); manager.markStarted();
     const before = withDatabase(w.database, (db) => db.list("shells"));
-    expect(await manager.pause(run.id)).toMatchObject({ state: "stopped", confirmed: false }); expect(await manager.stop(run.id)).toMatchObject({ state: "stopped", confirmed: false });
+    expect(await manager.pause(run.id)).toMatchObject({ state: "stopped", confirmed: false }); expect(await manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false });
     expect(adopted.list()).toHaveLength(0); expect((await manager.stopAll()).coverage).toMatchObject({ confirmed: 0, unconfirmed: 1 }); await expect(manager.close()).rejects.toThrow("关闭未完成"); expect(alive(task.pid)).toBe(true); expect(withDatabase(w.database, (db) => db.list("shells"))).toEqual(before);
     unavailable = false;
-    expect(await manager.stop(run.id)).toMatchObject({ confirmed: true }); expect(alive(task.pid)).toBe(false); expect(adopted.get(task.taskId)).toMatchObject({ pid: task.pid, startedAt: task.startedAt, identityVerified: true, activity: "ended" }); await manager.close();
+    expect(await manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true }); expect(alive(task.pid)).toBe(false); expect(adopted.get(task.taskId)).toMatchObject({ pid: task.pid, startedAt: task.startedAt, identityVerified: true, activity: "ended" }); await manager.close();
   }, 15_000);
   test("R22 close EPERM失败不吞且继续停止其他进程，解除故障可重试", async () => {
     let deniedPid = 0; const w = await world({ kill(pid, signal) { if (Math.abs(pid) === deniedPid) throw Object.assign(new Error(SECRET), { code: "EPERM" }); process.kill(pid, signal); } });
@@ -227,12 +230,12 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
       await until(() => !alive(task.pid) && !alive(-task.pgid));
     });
     deniedPid = task.pid;
-    expect(await w.manager.stop(run.id)).toMatchObject({ state: "stopped", confirmed: false });
+    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false });
     expect(w.shells.get(task.taskId)).toMatchObject({ status: "uncertain", identityVerified: true, descendantsScanned: true });
     deniedPid = 0;
     expect(w.shells.markStoppedByUser(task.taskId, { decisionId: "USER-001" })).toMatchObject({ ok: true });
     const attemptsBeforeUserChecks = attempts.length;
-    expect(await w.manager.stop(run.id)).toMatchObject({ state: "stopped", confirmed: false });
+    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false });
     expect(await w.manager.pause(run.id)).toMatchObject({ state: "stopped", confirmed: false });
     expect(attempts).toHaveLength(attemptsBeforeUserChecks); expect(alive(task.pid)).toBe(true); expect(alive(-task.pgid)).toBe(true);
 

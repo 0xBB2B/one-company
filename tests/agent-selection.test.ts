@@ -91,6 +91,7 @@ test("M7-AC25：运行中改了定义文件，暂停后续接时发现配置已�
   await expect(w.manager.resume(run.runId)).rejects.toMatchObject({ code: "config_changed" });
   const stopped = await w.runStore.get(run.runId);
   expect(stopped.ok && stopped.run.state).toBe("stopped");
+  expect(stopped.ok && stopped.run.stopCause).toEqual({ reason: "config_changed" });
 });
 
 test("M7-AC26：专业 worker 运行中不能开启正式检查；换专业名称不能改变职责（worker 定义不能执行审查）；需求停止时专业实例一并停止", async () => {
@@ -107,7 +108,7 @@ test("M7-AC26：专业 worker 运行中不能开启正式检查；换专业名�
   const rounds = await CheckRoundService.open({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, authorize: () => true });
   cleanups.push(() => rounds.dispose());
   await expect(rounds.openRound({ lease: w.lease })).rejects.toMatchObject({ code: "workers_active" });
-  await w.manager.stopRequirement(w.fixture.requirementId);
+  await w.manager.stopRequirement(w.fixture.requirementId, { reason: "requirement_closing" });
   const stopped = await w.runStore.get(run.runId);
   expect(stopped.ok && stopped.run.state).toBe("stopped");
 });

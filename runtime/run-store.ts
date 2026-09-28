@@ -19,6 +19,13 @@ export type RunState =
   | "stopped"
   | "interrupted";
 
+/** 运行被停止的原因，只作记录，不影响停止行为。 */
+export type StopReason = "main_agent" | "stopped_by_pm" | "parent_stopped" | "superseded_by_new_pm" | "requirement_closing" | "lease_renewal_failed"
+  | "config_changed" | "replanned" | "stop_all";
+export interface StopCause { reason: StopReason; code?: string }
+const STOP_REASONS: readonly StopReason[] = ["main_agent", "stopped_by_pm", "parent_stopped", "superseded_by_new_pm", "requirement_closing", "lease_renewal_failed",
+  "config_changed", "replanned", "stop_all"];
+
 export interface RunRecord {
   id: string;
   shellToken: string;
@@ -37,6 +44,7 @@ export interface RunRecord {
   agent?: AgentFingerprint;
   state: RunState;
   stateReason?: string;
+  stopCause?: StopCause;
   startedAt: string;
   updatedAt: string;
   endedAt?: string;
@@ -85,12 +93,13 @@ export interface ListRunResult {
 }
 
 export type UpdateRunFields = Partial<
-  Pick<RunRecord, "state" | "stateReason" | "turns" | "usage" | "pausedMs" | "pausedAt" | "errorDetails" | "endedAt">
+  Pick<RunRecord, "state" | "stateReason" | "stopCause" | "turns" | "usage" | "pausedMs" | "pausedAt" | "errorDetails" | "endedAt">
 >;
 
 const UPDATE_PATCH_KEYS = [
   "state",
   "stateReason",
+  "stopCause",
   "turns",
   "usage",
   "pausedMs",
@@ -152,6 +161,8 @@ const RunRecordSchema = Type.Object({
     skills: Type.Array(Type.Object({ name: Type.String(), path: Type.String(), hash: Type.String() })) })),
   state: Type.Union([...Object.keys(TRANSITIONS), ...TERMINAL_STATES].map((state) => Type.Literal(state))),
   stateReason: Type.Optional(Type.String()),
+  stopCause: Type.Optional(Type.Object({ reason: Type.Union(STOP_REASONS.map((reason) => Type.Literal(reason))), code: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })) },
+    { additionalProperties: false })),
   startedAt: Type.String({ minLength: 1 }), updatedAt: Type.String({ minLength: 1 }), endedAt: Type.Optional(Type.String()),
   turns: Type.Integer({ minimum: 0 }),
   usage: Type.Optional(Type.Object({ input: Type.Integer({ minimum: 0 }), output: Type.Integer({ minimum: 0 }), cacheRead: Type.Integer({ minimum: 0 }),

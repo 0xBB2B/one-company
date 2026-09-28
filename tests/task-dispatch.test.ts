@@ -112,7 +112,7 @@ test("M7-AC4/AC13：只有依赖未决问题的任务被阻塞；批准新版本
   w.provider.queue.push({ type: "text", text: "PM 收到差异" });
   await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败，并提示重试。\n",
     implementGoals: ["goal.login", "scenario.failure"] });
-  await w.manager.stop((await w.runStore.list({ limit: 10 })).items.find((run) => run.task === w.task("failure").taskId)!.id);
+  await w.manager.stop((await w.runStore.list({ limit: 10 })).items.find((run) => run.task === w.task("failure").taskId)!.id, { reason: "main_agent" });
   await expect(w.dispatch("failure", { reason: "中途停止", maxTurns: 2 })).rejects.toMatchObject({ code: "pending_update" });
 });
 
@@ -121,7 +121,7 @@ test("M7-AC6：PM 停止后新派出的 PM 从数据库读回同一份计划与�
   await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   const before = await w.plan.execute({ action: "read" });
-  await w.manager.stop(w.pm.runId);
+  await w.manager.stop(w.pm.runId, { reason: "main_agent" });
   w.provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding: w.understanding } }, { type: "text", text: "等待核对" });
   const next = await w.manager.dispatchPm({ requirementId: w.fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: "off" });
   const lease = w.fixture.state.pmOwner(w.fixture.requirementId)!.lease!;
@@ -170,7 +170,7 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   w.provider.queue.push(submit("完成 d"), pmAck);
   await w.dispatch("d");
   await until(() => w.task("d").status === "awaiting_review");
-  await w.manager.stop(c.runId);
+  await w.manager.stop(c.runId, { reason: "main_agent" });
   expect(await w.manager.workflowManage(w.fixture.requirementId, { action: "delivery-check" }))
     .toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["task_review_missing"]) });
 });

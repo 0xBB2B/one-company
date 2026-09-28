@@ -113,10 +113,25 @@ test("M7-AC18：PM 停止（撤权或被接管）时它派出的 explore 随之�
   const explore = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
   await until(async () => { const run = await w.runStore.get(explore.runId); return run.ok && run.run.state === "running"; });
-  await w.manager.stop(w.pm.runId);
+  await w.manager.stop(w.pm.runId, { reason: "main_agent" });
   const run = await w.runStore.get(explore.runId);
   expect(run.ok && run.run.state).toBe("stopped");
+  expect(run.ok && run.run.stopCause).toEqual({ reason: "parent_stopped" });
   expect(checkExploreSession({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, explore.runId)).toMatchObject({ current: false });
+});
+
+test("M8C-AC8：PM 用 agent_manage 停止自己派出的 explore，运行记录写明由 PM 停止", async () => {
+  const w = await world();
+  w.provider.queue.push({ type: "text", text: "慢慢查", chunkDelayMs: 3_000 });
+  const slow = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
+  await until(async () => { const run = await w.runStore.get(slow.runId); return run.ok && run.run.state === "running"; });
+  w.provider.queue.push(w.submit(w.readme, await w.hashOf(w.readme)),
+    { type: "toolcall", name: "pi_company_agent_manage", input: { action: "stop", runId: slow.runId } }, { type: "text", text: "已停止慢检索" });
+  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "README 写了什么", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
+  await until(async () => { const run = await w.runStore.get(slow.runId); return run.ok && run.run.state === "stopped"; });
+  expect(await w.runStore.get(slow.runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "stopped_by_pm" } } });
 });
 
 test("M7-AC18：main 派出途中发起连接已断开时立即作废；PM 因失败结束时它派出的 explore 随之停止", async () => {
@@ -155,7 +170,7 @@ test("M7-AC18：需求关闭停止其 PM 与绑定检索，但不误停无关的
   w.manager.connectionOpened("connection-a");
   w.provider.queue.push(w.submit(readme, await w.hashOf(readme)));
   const main = await w.manager.dispatchExplore({ parent, request: { question: "仓库说明写了什么", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
-  await w.manager.stopRequirement(w.fixture.requirementId);
+  await w.manager.stopRequirement(w.fixture.requirementId, { reason: "requirement_closing" });
   const pm = await w.runStore.get(w.pm.runId);
   expect(pm.ok && pm.run.state).toBe("stopped");
   await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === main.runId));

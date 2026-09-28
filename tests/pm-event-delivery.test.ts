@@ -80,7 +80,7 @@ test("主代理登记接手核对结论后，定时投递把结论告知 PM，�
 
 test("M7-AC1/AC5：PM 停止后不再向它投递；新 PM 须重新核对才建立自己的理解基线，之后差异只送达新会话，旧租约的复核被拒", async () => {
   const w = await world();
-  expect(await w.manager.stop(w.pm.runId)).toMatchObject({ confirmed: true });
+  expect(await w.manager.stop(w.pm.runId, { reason: "main_agent" })).toMatchObject({ confirmed: true });
   w.provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding: w.understanding } }, { type: "text", text: "等待核对" });
   const before = w.provider.requests.length;
   const next = await w.manager.dispatchPm({ requirementId: w.fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: "off" });

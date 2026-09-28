@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import type { Clock } from "../runtime/clock.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import type { RoleCatalogEntry } from "../runtime/roles.ts";
-import type { ListRunOptions, RunKind, RunRecord } from "../runtime/run-store.ts";
+import type { ListRunOptions, RunKind, RunRecord, StopCause } from "../runtime/run-store.ts";
 import { isTerminalState, RunStore } from "../runtime/run-store.ts";
 import type { Host, ShellRegistry, TaskRecord } from "../runtime/shell-registry.ts";
 import { repositoryDatabase, UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
@@ -88,6 +88,11 @@ interface MainExplore { handle: AgentSessionHandle; sessionId: string; connectio
 export type ExploreParentRequest = { role: "main"; sessionId: string; connectionId: string; model: SelectedModel; thinking: string } | { role: "PM"; pmRunId: string };
 export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
 const PM_RENEW_MS = 10_000;
+/** 续租失败的错误码：优先取错误自带的 code，没有时取错误类名。 */
+function errorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return (typeof code === "string" && code ? code : error instanceof Error ? error.name : "unknown").slice(0, 128);
+}
 const PM_EVENT_POLL_MS = 500;
 const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "renew-pm", "release-pm", "check-pm"];
 
@@ -244,7 +249,7 @@ export class RunManager {
     const owner = state.pmOwner(input.requirementId);
     if (owner?.lease && owner.lease.expiresAt > Date.now()) throw protocolError("pm_already_owned", "本需求已有有效 PM");
     // 旧租约已失效：接管前先停止本需求仍登记在册的旧运行，旧会话不能继续调用工具
-    await this.stopRequirement(input.requirementId);
+    await this.stopRequirement(input.requirementId, { reason: "superseded_by_new_pm" });
     const expectedFence = owner?.fence ?? 0;
     const workspace = record.data.workspace;
     const run = await this.runStore.create({ kind: "requirement", requirement: input.requirementId, task: "pm", cwd: workspace.path,
@@ -284,7 +289,7 @@ export class RunManager {
           control: async (action, childId) => {
             const child = await this.runStore.get(childId);
             if (!child.ok || child.run.parentRunId !== run.id) throw protocolError("not_found", "不是本 PM 派出的运行");
-            return action === "status" ? this.status(childId) : this[action](childId);
+            return action === "status" ? this.status(childId) : action === "stop" ? this.stop(childId, { reason: "stopped_by_pm" }) : this[action](childId);
           },
           catalog: (role, cursor) => this.agentCatalog(role, cursor),
         } });
@@ -304,7 +309,7 @@ export class RunManager {
       throw protocolError("pm_session_failed", (error as Error).message);
     }
     const renewal = this.options.clock.setIntervalExcludingSleep(() => {
-      void state.renewPm(lease).catch(() => { void this.stop(run.id).catch(() => {}); });
+      void state.renewPm(lease).catch((error: unknown) => { void this.stop(run.id, { reason: "lease_renewal_failed", code: errorCode(error) }).catch(() => {}); });
     }, PM_RENEW_MS);
     let delivering: Promise<void> | null = null, notifiedReviewId: string | null = null;
     const delivery = this.options.clock.setIntervalExcludingSleep(() => {
@@ -345,7 +350,7 @@ export class RunManager {
     // PM 结束即撤权：它派出的 explore 随之停止，结果不再有人接收
     if (current.ok) {
       for (const child of await this.childrenOf(current.run)) {
-        if (child.role === "pi-company.explore" && !isTerminalState(child.state)) await this.stop(child.id).catch(() => {});
+        if (child.role === "pi-company.explore" && !isTerminalState(child.state)) await this.stop(child.id, { reason: "parent_stopped" }).catch(() => {});
       }
     }
     if (current.ok && !isTerminalState(current.run.state)) await this.runStore.update(runId, { state, ...(reason ? { stateReason: reason } : {}) });
@@ -706,9 +711,9 @@ export class RunManager {
   }
 
   /** 结束绑定该需求的全部运行；关闭协议以运行记录终态为准。 */
-  async stopRequirement(requirementId: string): Promise<void> {
+  async stopRequirement(requirementId: string, cause: StopCause): Promise<void> {
     const page = await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER });
-    for (const run of page.items) if (!isTerminalState(run.state)) await this.stop(run.id);
+    for (const run of page.items) if (!isTerminalState(run.state)) await this.stop(run.id, cause);
   }
   /** 只续接本进程内仍持有会话的暂停运行；没有会话不能证明原运行可安全续接。 */
   async resume(runId: string, options: { children?: boolean } = {}): Promise<{ state: string }> {
@@ -717,7 +722,7 @@ export class RunManager {
     const run = await this.runStore.get(runId);
     if (run.ok && this.halted(run.run.requirement)) throw protocolError("requirement_halted", "任务已被用户终止，须先调整需求或取消需求");
     if (run.ok && run.run.agent && !(await agentUnchanged(run.run.agent))) {
-      await this.stop(runId);
+      await this.stop(runId, { reason: "config_changed" });
       throw protocolError("config_changed", "角色定义或 skills 在暂停期间已变化，已停止该运行；请按当前配置重新派工");
     }
     if (run.ok && entry.subagent && this.replanPending(run.run.requirement)) throw protocolError("plan_not_confirmed", "须先确认基于调整后批准版本的计划");
@@ -877,7 +882,7 @@ export class RunManager {
     if (withDatabase(this.database, (db) => confirmedPlanKey(readPlanIn(db, requirementId)?.plan)) === halt.plan) return;
     // 先整体标记为待停，再逐个停止：停止期间对名单内任何子代理的恢复都被拒绝
     for (const child of halt.children) this.supersededRuns.add(child);
-    for (const child of halt.children) await this.stop(child).catch(() => {});
+    for (const child of halt.children) await this.stop(child, { reason: "replanned" }).catch(() => {});
   }
 
   /** 最近一次终止决定登记时的已确认计划指纹。 */
@@ -901,7 +906,7 @@ export class RunManager {
     let tool: Awaited<ReturnType<typeof createWorkflowManageTool>>;
     try {
       tool = await createWorkflowManageTool({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot,
-        stopAgents: (id) => this.stopRequirement(id),
+        stopAgents: (id) => this.stopRequirement(id, { reason: "requirement_closing" }),
         grant: { role: "main", callerId: uuidv7(), runId: uuidv7(), requirementId, repoId: this.repoId, workspaceId: record.workspace.workspaceId, branch: record.workspace.branch },
         authorize: (check) => check.action !== "close" || check.reason === undefined ||
           (check.receiptId !== undefined && closeDecisionValid(ref, { requirementId, receiptId: check.receiptId, reason: check.reason as "completed" | "cancelled" | "rejected" })) });
@@ -965,13 +970,14 @@ export class RunManager {
     if (updated.ok) this.emitRun(updated.run);
     return { state: confirmed ? "paused" : "pausing", confirmed, ...(!confirmed ? { reason: "会话或子运行尚未确认暂停" } : {}) };
   }
-  async stop(runId: string): Promise<{ state: string; confirmed: boolean; reason?: string }> {
+  /** 停止运行及其子运行；cause 在首次转为 stopped 时记入运行记录，只作记录。 */
+  async stop(runId: string, cause: StopCause): Promise<{ state: string; confirmed: boolean; reason?: string }> {
     const result = await this.runStore.get(runId);
     if (!result.ok) throw protocolError("not_found", "运行不存在");
     let run = result.run;
     let requested = false;
     if (!isTerminalState(run.state)) {
-      try { run = await this.runStore.update(runId, { state: "stopped" }); requested = true; }
+      try { run = await this.runStore.update(runId, { state: "stopped", stopCause: cause }); requested = true; }
       catch (error) {
         const latest = await this.runStore.get(runId);
         if (!latest.ok || !isTerminalState(latest.run.state)) throw error;
@@ -983,7 +989,7 @@ export class RunManager {
     const [sessionStop, shellStop, childrenStop] = await Promise.allSettled([
       entry ? entry.handle.stop() : Promise.resolve({ stopped: true }),
       this.verifyRunShells(run, true),
-      this.childrenOf(run).then((children) => Promise.all(children.map((child) => this.stop(child.id)))),
+      this.childrenOf(run).then((children) => Promise.all(children.map((child) => this.stop(child.id, { reason: "parent_stopped" })))),
     ]);
     const reasons: string[] = [];
     if (sessionStop.status === "rejected") reasons.push("会话停止失败");
@@ -1028,7 +1034,7 @@ export class RunManager {
       const page = await this.runsForStop(); unknown += page.unknown;
       // 展示分页及旧终态不决定停止范围；一个坏记录不遮蔽其他可定位运行。
       for (const run of page.runs) {
-        try { runMetadata(run); results.push({ runId: run.id, ...(await this.stop(run.id)) }); }
+        try { runMetadata(run); results.push({ runId: run.id, ...(await this.stop(run.id, { reason: "stop_all" })) }); }
         catch { unknown++; await this.verifyRunShells(run, true); }
       }
     } catch { unknown++; }
@@ -1180,7 +1186,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     return { run: result.run };
   });
   register("runs.pause", async (params) => manager.pause(params.runId as string));
-  register("runs.stop", async (params) => manager.stop(params.runId as string));
+  register("runs.stop", async (params) => manager.stop(params.runId as string, { reason: "main_agent" }));
   register("runs.pauseAll", async () => manager.pauseAll());
   register("runs.stopAll", async () => manager.stopAll());
   register("shells.list", async () => ({ tasks: shellRegistry.list().map(shellMetadata) }));
