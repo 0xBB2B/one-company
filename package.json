@@ -27,6 +27,7 @@
     "preinstall": "node runtime/git-prerequisite.mjs --check",
     "test": "vitest run --exclude 'tests/integration/**' --exclude 'tests/installation/**' --exclude 'tests/acceptance/**'",
     "test:integration": "vitest run tests/integration",
+    "test:integration:installed": "PI_COMPANY_TEST_INSTALLED=1 vitest run tests/integration",
     "test:installation": "vitest run tests/installation",
     "test:acceptance": "vitest run tests/acceptance",
     "typecheck": "tsc --noEmit"

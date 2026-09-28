@@ -18,7 +18,9 @@ import { createTempHome, tempHomeRootReceipt } from "./temp-home.ts";
 import type { TempHome } from "./temp-home.ts";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const daemonMainEntry = join(packageRoot, "daemon", "bootstrap.mjs");
+/** 设了 PI_COMPANY_TEST_PRODUCT_ROOT 时 daemon 从该安装产物启动，用于在安装产物上重跑集成场景。 */
+const daemonRoot = process.env.PI_COMPANY_TEST_PRODUCT_ROOT ?? packageRoot;
+const daemonMainEntry = join(daemonRoot, "daemon", "bootstrap.mjs");
 const DEFAULT_CONNECT_TIMEOUT_MS = 2_000;
 const DEFAULT_RPC_TIMEOUT_MS = 15_000;
 const DEFAULT_START_TIMEOUT_MS = 10_000;
@@ -472,7 +474,7 @@ export function spawnDaemonProcess(options: SpawnDaemonOptions): SpawnedDaemon {
   assertOwnerActive(owner);
   assertOwnerRoots(owner);
   const proc = captured.spawnImpl(resolveNodeExecutable(), [daemonMainEntry], {
-    cwd: packageRoot,
+    cwd: daemonRoot,
     stdio: captured.captureOutput ? ["ignore", "pipe", "pipe"] : "ignore",
     detached: true,
     env,
