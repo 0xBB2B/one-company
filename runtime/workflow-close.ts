@@ -9,6 +9,7 @@ import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
 import { readVersion } from "./prod-storage.ts";
 import { sectionEndByte } from "./prod-view.ts";
+import { DEFAULT_DOC_SECTIONS, recordSectionIds } from "./requirement-doc.ts";
 import { checked, counter, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
@@ -227,17 +228,21 @@ function implementationRecord(tasks: readonly TaskRecord[], report: CompletionRe
   lines.push("", "#### PM 说明（模型撰写，仅供参考）", "", quoted(report.note));
   return `${lines.join("\n").trimEnd()}\n`;
 }
-/** 批准版正文每个字节原样保留，只在实现、验收两个板块末尾各插入一段程序记录，前后补足空行；板块缺失返回 null。 */
-function archiveBytes(prod: Uint8Array, records: { implementation: string; acceptance: string }): Buffer | null {
+/** 批准版正文每个字节原样保留，只在规范快照标出的两个板块末尾各插入一段程序记录，前后补足空行；板块缺失返回 null。 */
+function archiveBytes(prod: Uint8Array, records: { implementation: string; acceptance: string }, sectionIds: { implementation: string; acceptance: string }): Buffer | null {
   const bytes = Buffer.from(prod), text = bytes.toString("utf8");
-  const implementationEnd = sectionEndByte(text, "implementation"), acceptanceEnd = sectionEndByte(text, "acceptance");
-  if (implementationEnd === null || acceptanceEnd === null || implementationEnd > acceptanceEnd) return null;
-  const insert = (before: Buffer, record: string, after: Buffer) => {
+  const inserts = (["implementation", "acceptance"] as const).map((kind) => ({ at: sectionEndByte(text, sectionIds[kind]), record: records[kind] }));
+  if (inserts.some((insert) => insert.at === null)) return null;
+  inserts.sort((a, b) => a.at! - b.at!);
+  const parts: Buffer[] = [];
+  let from = 0;
+  for (const [index, insert] of inserts.entries()) {
+    const before = bytes.subarray(from, insert.at!), after = bytes.subarray(insert.at!, inserts[index + 1]?.at ?? bytes.length);
     const lead = before.subarray(-2).toString() === "\n\n" ? "" : before.at(-1) === 0x0a ? "\n" : "\n\n";
-    return Buffer.from(`${lead}${record}${after.length ? "\n" : ""}`);
-  };
-  const head = bytes.subarray(0, implementationEnd), middle = bytes.subarray(implementationEnd, acceptanceEnd), tail = bytes.subarray(acceptanceEnd);
-  return Buffer.concat([head, insert(head, records.implementation, middle), middle, insert(middle, records.acceptance, tail), tail]);
+    parts.push(before, Buffer.from(`${lead}${insert.record}${after.length ? "\n" : ""}`));
+    from = insert.at!;
+  }
+  return Buffer.concat([...parts, bytes.subarray(from)]);
 }
 
 function basisOf(facts: DeliveryFacts): CloseBasis {
@@ -543,7 +548,7 @@ export class RequirementCloseService {
         expectedRepositoryIdentity: identity, commit: archive.commit, expectedHash: `sha256:${archive.prodHash}`,
         authorize: (check) => check.requirementId === requirementId && check.action === "readVersion" && (check.prodHash === undefined || check.prodHash === `sha256:${archive.prodHash}`) })).bytes;
       if (sha256(Buffer.from(bytes)) !== archive.prodHash) throw new Error("final_prod_hash_mismatch");
-      const content = archiveBytes(bytes, archive.records);
+      const content = archiveBytes(bytes, archive.records, recordSectionIds(record.data.docSpec?.sections ?? DEFAULT_DOC_SECTIONS));
       if (!content) throw new Error("archive_sections_missing");
       const archiveHash = sha256(content);
       const root = await realpath(workspace.path);

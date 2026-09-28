@@ -4,7 +4,7 @@ import type { Static, TProperties, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { UUID_V7_PATTERN } from "./database.ts";
 import { canonicalJson } from "./strict-json.ts";
-import { ApprovalManifestReferenceSchema } from "./requirement-contracts.ts";
+import { ApprovalManifestReferenceSchema, RequirementDocSpecSchema } from "./requirement-contracts.ts";
 import type { ApprovalSummary, ProdReference, WorkspaceBinding } from "./requirement-contracts.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
 import type { CandidateBinding, InteractionBasis } from "./user-interaction-format.ts";
@@ -44,7 +44,7 @@ export interface ServiceAuthorizationRequest {
 export const CreateRequirementInput = strictObject({ requestId: id, operationId: id, title: text, body: text });
 export const UpdateDraftInput = strictObject({ requirementId: id, operationId: id, version, title: text, body: text });
 export const ConfirmUpdateInput = strictObject({ requirementId: id, operationId: id, version, title: text, body: text, receiptId: id,
-  manifest: Type.Optional(ApprovalManifestReferenceSchema) });
+  manifest: Type.Optional(ApprovalManifestReferenceSchema), docSpec: Type.Optional(RequirementDocSpecSchema) });
 const confirmationId = ApprovalManifestReferenceSchema.properties.requirementId;
 export const LoadConfirmationInput = strictObject({ requirementId: confirmationId, savedOperationId: confirmationId, operationId: confirmationId });
 export type LoadConfirmationInput = Static<typeof LoadConfirmationInput>;

@@ -74,7 +74,8 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const artifact = await packPackage(pnpm, productRoot, packs);
     const runtimeArtifact = await packPackage(pnpm, dirname(fileURLToPath(import.meta.resolve("web-tree-sitter/web-tree-sitter.wasm"))), packs);
     const typeboxArtifact = await packPackage(pnpm, await realpath(join(productRoot, "node_modules", "typebox")), packs);
-    for (const file of ["extensions/index.ts", "extensions/requirement-manage.ts", "runtime/host-authorization.ts", "runtime/requirement-manage-tool.ts", "runtime/requirement-service.ts", "runtime/main-requirement-interaction.ts", "runtime/user-interact-tool.ts"]) {
+    for (const file of ["extensions/index.ts", "extensions/requirement-manage.ts", "runtime/host-authorization.ts", "runtime/requirement-manage-tool.ts", "runtime/requirement-service.ts", "runtime/main-requirement-interaction.ts", "runtime/user-interact-tool.ts",
+      "runtime/requirement-doc.ts", "skills/requirement-doc/SKILL.md"]) {
       expect(artifact.files).toContain(file);
     }
 

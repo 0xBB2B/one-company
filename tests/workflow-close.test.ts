@@ -17,6 +17,7 @@ import { createWorkflowManageTool } from "../runtime/workflow-manage.ts";
 import type { WorkflowManageGrant, WorkflowManageToolOptions } from "../runtime/workflow-manage.ts";
 import { RequirementCloseService, COMPLETION_REPORTS, DELIVERY_RECEIPTS, decideReportIn } from "../runtime/workflow-close.ts";
 import type { CloseResult, DeliveryReceipt } from "../runtime/workflow-close.ts";
+import type { RequirementDocSpec } from "../runtime/requirement-doc.ts";
 import { prodRequirementPath } from "../runtime/prod-storage.ts";
 import { syncTargetBranch } from "../runtime/pm-sync.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -34,7 +35,7 @@ const darwin = process.platform === "darwin";
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const finding = (kind: "blocking" | "suggestion" | "unverified") => ({ kind, targetRef: "prod:goals", evidenceRef: null, trigger: "按方向键", impact: "无法移动" });
 
-async function world() {
+async function world(custom: { body: string; docSpec: RequirementDocSpec } | null = null) {
   const root = await mkdtemp(join(temporaryRoot(), "close-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
@@ -49,8 +50,8 @@ async function world() {
   } });
   const state = await RequirementStateStore.open({ ...options, authorize: (request) => request.repoId === options.repoId &&
     ["open", "read", "bind-workspace", "acquire-pm", "check-pm", "assess-update", "events"].includes(request.action) });
-  const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: BODY };
-  grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: BODY }) });
+  const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: custom?.body ?? BODY };
+  grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: create.body }) });
   const created = await service.create(create);
   const worktree = await addWorktree(repo);
   const baseCommit = (await runGit(["rev-parse", "HEAD"], worktree.root)).trim();
@@ -58,9 +59,9 @@ async function world() {
   async function approve(body: string) {
     const confirm = { requirementId: created.requirementId, operationId: uuidv7(), version: state.read(created.requirementId).version, title: "角色跳跃", body, receiptId: uuidv7() };
     grants.set(confirm.operationId, { action: "confirmUpdate", intent: requirementIntentHash({ title: confirm.title, body }), receiptId: confirm.receiptId });
-    return service.confirmUpdate(confirm);
+    return service.confirmUpdate({ ...confirm, ...(custom ? { docSpec: custom.docSpec } : {}) });
   }
-  await approve(BODY);
+  await approve(custom?.body ?? BODY);
   await mkdir(join(worktree.root, "src"), { recursive: true });
   await writeFile(join(worktree.root, "src", "a.ts"), "export const a = 1;\n");
   await runGit(["add", "."], worktree.root); await runGit(["commit", "-qm", "seed"], worktree.root);
@@ -348,6 +349,33 @@ test("M8A-AC8/AC9：归档保留批准版正文每个字节，实现记录插在
   const status = w.closeService.status(w.created.requirementId) as { archive: { archiveHash: string } };
   expect(status.archive.archiveHash).toBe(sha(bytes));
   expect(JSON.stringify(status)).not.toContain("三个场景都通过");
+});
+
+test("M8C-AC3/AC5：归档按批准时的规范快照插入两段记录，验收记录板块在前、另有额外板块时也插在所属板块末尾", async () => {
+  const docSpec: RequirementDocSpec = { skillHash: `sha256:${"a".repeat(64)}`, sections: [{ id: "goal", title: "目标" }, { id: "check", title: "验收", record: "acceptance" },
+    { id: "build", title: "实现", record: "implementation" }, { id: "risk", title: "风险" }] };
+  const body = "## 目标 {#goal}\n保留移动。\n## 验收 {#check}\n按方向键能移动。\n## 实现 {#build}\n由 PM 规划。\n## 风险 {#risk}\n无。\n";
+  const w = await world({ body, docSpec });
+  if (!darwin) return;
+  expect(w.state.read(w.created.requirementId).data.docSpec).toEqual(docSpec);
+  const pm = await w.tool();
+  const round = await pm.execute({ action: "advance" }) as { checkRoundId: string };
+  const qa = await w.verification("qa");
+  const formal = await qa.instance.execute({ action: "run", kind: "formal", command: "true", performance: NA }) as VerificationView;
+  w.verdict("qa", qa.runId, round.checkRoundId, [formal.verificationId], [], "通过");
+  await pm.execute({ action: "finish", checkRoundId: round.checkRoundId });
+  const receiptId = await w.accept("做完了");
+  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
+  expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  const record = (await readFile(join(w.worktree.root, ...(closed as { archive: { path: string } }).archive.path.split("/")), "utf8"));
+  const at = (text: string) => record.indexOf(text);
+  expect(at("按方向键能移动。\n")).toBeLessThan(at("### 验收记录（关闭时由程序生成）"));
+  expect(at("### 验收记录（关闭时由程序生成）")).toBeLessThan(at("## 实现 {#build}"));
+  expect(at("由 PM 规划。\n")).toBeLessThan(at("### 实现记录（关闭时由程序生成）"));
+  expect(at("### 实现记录（关闭时由程序生成）")).toBeLessThan(at("## 风险 {#risk}"));
+  const prod = await readFile(w.prodFile, "utf8"), checkEnd = prod.indexOf("## 实现 {#build}");
+  expect(record.startsWith(prod.slice(0, checkEnd))).toBe(true);
+  expect(record.endsWith(prod.slice(prod.indexOf("## 风险 {#risk}")))).toBe(true);
 });
 
 test("M7B-AC1/AC5：完成报告绑定交付依据，新报告作废旧报告；用户返工后依据未变不能重新提交，经新的检查轮后可重新提交且只认新报告的通过", async () => {

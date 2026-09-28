@@ -22,14 +22,18 @@ export interface ProdStructure {
   businessCompleteness: "not_mechanically_proven";
 }
 
-export const PROD_SECTIONS = ["background", "requirements", "features", "implementation", "acceptance"] as const;
-
-/** 批准前核对五大板块：一、二级标题必须恰好是这五个固定编号的二级标题且按此顺序；符合返回 null，否则返回期望与实际。 */
-export function prodSectionsProblem(body: string): string | null {
-  const top = headingsOf(body).filter((heading) => heading.level <= 2);
-  const actual = top.map((heading) => heading.id ?? "无编号");
-  if (top.every((heading) => heading.level === 2) && actual.join() === PROD_SECTIONS.join()) return null;
-  return `顶层须为二级标题且依次为 ${PROD_SECTIONS.join("、")}，当前为 ${actual.length ? actual.join("、") : "无标题"}`;
+/** 批准前核对：每个标题都有唯一编号，顶层恰好是规范板块清单里的二级标题且按清单顺序；符合返回 null，否则返回期望与实际。 */
+export function prodSectionsProblem(body: string, sections: readonly { id: string }[]): string | null {
+  const headings = headingsOf(body), seen = new Set<string>();
+  for (const heading of headings) {
+    if (heading.id === undefined) return `每个标题都须以唯一编号结尾：「${heading.text}」没有编号`;
+    if (seen.has(heading.id)) return `每个标题都须以唯一编号结尾：编号 ${heading.id} 重复`;
+    seen.add(heading.id);
+  }
+  const top = headings.filter((heading) => heading.level <= 2), expected = sections.map((section) => section.id);
+  const actual = top.map((heading) => heading.id!);
+  if (top.every((heading) => heading.level === 2) && actual.join() === expected.join()) return null;
+  return `顶层须为二级标题且依次为 ${expected.join("、")}，当前为 ${actual.length ? actual.join("、") : "无标题"}`;
 }
 
 /** 编号为 id 的标题所在章节的结束字节位置（下一个同级或更高级标题处，或全文末尾）；找不到返回 null。 */
@@ -58,8 +62,8 @@ export function inspectProdStructure(body: string): ProdStructure {
     }) };
 }
 
-function headingsOf(body: string): Array<{ level: number; id?: string; offset: number }> {
-  const headings: Array<{ level: number; id?: string; offset: number }> = [];
+function headingsOf(body: string): Array<{ level: number; id?: string; offset: number; text: string }> {
+  const headings: Array<{ level: number; id?: string; offset: number; text: string }> = [];
   let offset = 0;
   let fence: { char: string; length: number } | null = null;
   for (const line of body.match(/[^\n]*\n|[^\n]+$/gu) ?? []) {
@@ -73,7 +77,7 @@ function headingsOf(body: string): Array<{ level: number; id?: string; offset: n
       const heading = /^ {0,3}(#{1,6})[\t ]+(.+)$/u.exec(text);
       if (heading) {
         const explicit = /\{#([^{}]+)\}[\t ]*(?:#+[\t ]*)?$/u.exec(heading[2]!);
-        headings.push({ level: heading[1]!.length, offset,
+        headings.push({ level: heading[1]!.length, offset, text: text.trim(),
           ...(explicit && sectionId.test(explicit[1]!) ? { id: explicit[1]! } : {}) });
       }
     }

@@ -400,7 +400,8 @@ export class RequirementService {
         receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
         archivePath: document.archivePath,
       };
-      if (decisionDigest(operation.manifest ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).manifest ?? null : null)) {
+      if (decisionDigest(operation.manifest ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).manifest ?? null : null) ||
+        decisionDigest(operation.docSpec ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).docSpec ?? null : null)) {
         throw new RequirementServiceError("operation_conflict");
       }
       for (const [key, value] of Object.entries(expected)) {
@@ -425,6 +426,7 @@ export class RequirementService {
         epoch: before.data.epoch,
         receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
         ...((input as ConfirmInput).manifest ? { manifest: (input as ConfirmInput).manifest } : {}),
+        ...((input as ConfirmInput).docSpec ? { docSpec: (input as ConfirmInput).docSpec } : {}),
         archivePath: document.archivePath,
         repositoryRoot: prodRequirementPath({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId: before.id }),
         expectedRepositoryIdentity,
@@ -552,6 +554,7 @@ export class RequirementService {
         receiptId: operation.receiptId!,
         reference,
         ...(operation.manifest ? { manifest: operation.manifest } : {}),
+        ...(operation.docSpec ? { docSpec: operation.docSpec } : {}),
       });
     }
     this.authorize(authorization);

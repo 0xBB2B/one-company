@@ -2,8 +2,9 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
-import { ApprovalManifestReferenceSchema, checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
+import { ApprovalManifestReferenceSchema, RequirementDocSpecSchema, checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
+import type { RequirementDocSpec } from "./requirement-doc.ts";
 import type { ProdReference, RequirementRecord } from "./requirement-contracts.ts";
 import { prodRequirementPath } from "./prod-storage.ts";
 import type { ProdRepositoryIdentity, ProdStorageWriteResult } from "./prod-storage.ts";
@@ -44,6 +45,7 @@ const operationSchema = object({
   epoch: positive,
   receiptId: nullable(id),
   manifest: Type.Optional(ApprovalManifestReferenceSchema),
+  docSpec: Type.Optional(RequirementDocSpecSchema),
   archivePath: Type.String({ minLength: 1, maxLength: 1024 }),
   repositoryRoot: Type.String({ minLength: 1, maxLength: 4096 }),
   expectedRepositoryIdentity: nullable(identity),
@@ -70,6 +72,7 @@ export interface RequirementOperation {
   epoch: number;
   receiptId: string | null;
   manifest?: ApprovalManifestReference;
+  docSpec?: RequirementDocSpec;
   archivePath: string;
   repositoryRoot: string;
   expectedRepositoryIdentity: ProdRepositoryIdentity | null;
@@ -102,6 +105,7 @@ export interface PrepareRequirementOperation {
   epoch: number;
   receiptId: string | null;
   manifest?: ApprovalManifestReference;
+  docSpec?: RequirementDocSpec;
   archivePath: string;
   repositoryRoot: string;
   expectedRepositoryIdentity: ProdRepositoryIdentity | null;
@@ -135,6 +139,7 @@ function checkOperation(value: unknown): RequirementOperation {
     || (operation.action === "create") !== (operation.requestId !== null)
     || (operation.action === "confirmUpdate") !== (operation.receiptId !== null)
     || operation.updatedAt < operation.createdAt
+    || (operation.docSpec !== undefined && operation.action !== "confirmUpdate")
     || (operation.manifest !== undefined && (operation.action !== "confirmUpdate" || operation.manifest.requirementId !== operation.requirementId ||
       operation.manifest.candidate.operationId !== operation.operationId || operation.manifest.candidate.intentHash !== operation.intentHash ||
       operation.manifest.candidate.to.hash !== operation.targetHash || operation.manifest.candidate.to.commit !== operation.expectedParent))
@@ -161,6 +166,7 @@ function mutableFields(input: PrepareRequirementOperation) {
     epoch: input.epoch,
     receiptId: input.receiptId,
     ...(input.manifest ? { manifest: input.manifest } : {}),
+    ...(input.docSpec ? { docSpec: input.docSpec } : {}),
     archivePath: input.archivePath,
     repositoryRoot: input.repositoryRoot,
     expectedRepositoryIdentity: input.expectedRepositoryIdentity,

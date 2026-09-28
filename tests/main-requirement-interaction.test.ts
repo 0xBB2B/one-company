@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { registerControlledProvider, scriptReplies } from "./helpers/controlled-provider.ts";
@@ -19,6 +19,7 @@ import { createUserInteractTool } from "../runtime/user-interact-tool.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
 import { RequirementServiceError } from "../runtime/requirement-manage-contracts.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
+import { resolveRepositoryRequirementDoc } from "../runtime/requirement-doc.ts";
 import type { ConfirmationContext } from "../runtime/requirement-manage-contracts.ts";
 import type { Static } from "typebox";
 import { ModelInterpretation } from "../runtime/interaction-derivation.ts";
@@ -80,6 +81,15 @@ function phoneReview(c: Pick<ConfirmationContext, "candidate" | "partition">, ac
     { ...entry("action", "本轮授权动作"), unitIds: ["A"] }, { ...entry("future", "微信仅为未来想法", "uncertain"), candidateId: null }] };
 }
 
+/** 任意正文的整份确认：targetId 是目标，其余单位按格式与约束确认，授权只分析。 */
+function wholeReview(c: Pick<ConfirmationContext, "candidate" | "partition">, targetId = "A"): Static<typeof ModelInterpretation> {
+  const base = (kind: "constraint" | "target" | "action", conclusion: string, unitIds: string[]) => ({ kind, conclusion, scope: kind === "action" ? "只分析，不修改代码" : "当前登录需求",
+    basis: "explicit" as const, resolution: "direct" as const, candidateId: c.candidate.candidateId, requestId: null, actions: kind === "action" ? ["analyze" as const] : [], references: [], supersedes: [], unitIds });
+  const others = c.partition.units.map((unit) => unit.id).filter((id) => id !== targetId);
+  return { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true,
+    entries: [base("constraint", "需求身份、标题与格式板块", others), base("target", "增加手机号登录", [targetId]), base("action", "本轮授权动作", [targetId])] };
+}
+
 describe("主窗口共享控制器的真实服务路径", () => {
   test("普通问答、未来闲聊、伪来源、无输入、无模型均不能create；只读metadata不建空库", async () => {
     const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body: BODY };
@@ -100,6 +110,18 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await w.create();
     expect(w.provider.requests.find((request) => request.systemPrompt?.includes("草拟意图核验器"))!.systemPrompt)
       .toContain("长期遵守的项目规范另经项目规范流程处理，不写进需求草稿；草稿不含这部分不影响放行");
+  });
+
+  test("M8C：草稿核验器与解释器的提示词不写死五大板块，改说需求文档规范规定的板块与格式占位内容", async () => {
+    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    await w.call({ action: "confirmUpdate", ...input });
+    const prompts = w.provider.requests.map((request) => request.systemPrompt ?? "");
+    const verifier = prompts.find((prompt) => prompt.includes("草拟意图核验器"))!, interpreter = prompts.find((prompt) => prompt.includes("需求解释器"))!;
+    for (const prompt of [verifier, interpreter]) {
+      expect(prompt).toContain("需求文档规范规定的板块与格式占位内容");
+      expect(prompt).not.toMatch(/背景、需求、功能、实现、验收|五个板块/u);
+    }
   });
 
   test("create自动真实Git首提、UUID/hash一致、同operation幂等；新增无关需求不复用输入", async () => {
@@ -123,6 +145,41 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(w.provider.requests).toHaveLength(before);
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
     expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
+  });
+  test("M8C-AC2/AC3/AC5：项目受信任后按它的规范核对并存快照；之后改 skill，已生效需求再批准仍按快照", async () => {
+    const w = await world(), dir = join(w.repositoryRoot, ".pi", "skills", "requirement-doc");
+    const skillFile = (ids: [string, string, string]) => `---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: ${ids[0]}, title: 目标 }\n` +
+      `  - { id: ${ids[1]}, title: 实现, record: implementation }\n  - { id: ${ids[2]}, title: 验收, record: acceptance }\n---\n三板块写法。\n`;
+    await mkdir(dir, { recursive: true }); await writeFile(join(dir, "SKILL.md"), skillFile(["goal", "build", "check"]));
+    const body = "## 目标 {#goal}\n登录需求。\n### 手机号 {#A}\n增加手机号登录。\n## 实现 {#build}\n由 PM 规划。\n## 验收 {#check}\n手机号能登录。\n";
+    const created = await w.create(body), first = await w.request(created), before = w.provider.requests.length;
+    await expect(w.call({ action: "confirmUpdate", ...first.input })).rejects.toThrow("当前为 goal、build、check");
+    expect(w.provider.requests).toHaveLength(before);
+    new ProjectTrustStore(w.root).set(w.repositoryRoot, true);
+    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(wholeReview(first.loaded)) }]);
+    expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prodActivated: true });
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    const snapshot = (await resolveRepositoryRequirementDoc(w.dataRoot, w.repositoryRoot)).spec;
+    expect(snapshot.sections.map((section) => section.id)).toEqual(["goal", "build", "check"]);
+    expect(state.read(first.input.requirementId).data.docSpec).toEqual(snapshot);
+    await writeFile(join(dir, "SKILL.md"), skillFile(["aim", "make", "verify"]));
+    expect((await resolveRepositoryRequirementDoc(w.dataRoot, w.repositoryRoot)).spec.sections.map((section) => section.id)).toEqual(["aim", "make", "verify"]);
+    const updated = await w.service.updateDraft({ requirementId: first.input.requirementId, version: state.read(first.input.requirementId).version, operationId: uuidv7(), title: "登录", body: body + "补充邮箱约束。\n" });
+    const next = await w.request(updated);
+    w.capture("批准这版。"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(wholeReview(next.loaded)) }]);
+    expect(await w.call({ action: "confirmUpdate", ...next.input })).toMatchObject({ prodActivated: true });
+    expect(state.read(first.input.requirementId).data.docSpec).toEqual(snapshot);
+  });
+  test("M8C-AC4：需求所在仓库的规范无效时批准直接报错写明原因，不调用模型、不激活、不退回默认", async () => {
+    const w = await world(), dir = join(w.root, "skills", "requirement-doc");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "SKILL.md"), "---\nname: requirement-doc\nsections:\n  - { id: a, title: 甲, record: implementation }\n  - { id: a, title: 乙, record: acceptance }\n---\n");
+    const created = await w.create(), { input } = await w.request(created), before = w.provider.requests.length;
+    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toThrow(`requirement_doc_invalid（需求文档规范 ${join(dir, "SKILL.md")} 无效：板块编号 a 重复）`);
+    expect(w.provider.requests).toHaveLength(before);
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    expect(state.read(input.requirementId).data).toMatchObject({ lifecycle: "draft" });
+    expect(state.read(input.requirementId).data.docSpec).toBeUndefined();
   });
   test("手机号原句仅分析：未建工作区也激活并记短决定与完整scope，不弹审批；清会话不生成原话表/文件", async () => {
     const w = await world(), sent: Array<{ messages: unknown[] }> = [];

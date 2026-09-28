@@ -12,6 +12,11 @@ export const positive = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTE
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 export const RecoveryReason = Type.Union([Type.Literal("archive_found"), Type.Literal("history_unknown"), Type.Literal("identity_conflict")]);
 export const ProdReference = object({ commit, hash });
+export const RequirementDocSpecSchema = object({
+  sections: Type.Array(object({ id: Type.String({ pattern: "^[a-zA-Z][a-zA-Z0-9._-]{0,95}$" }), title: Type.String({ minLength: 1, maxLength: 200 }),
+    record: Type.Optional(Type.Union([Type.Literal("implementation"), Type.Literal("acceptance")])) }), { minItems: 1, maxItems: 64 }),
+  skillHash: Type.String({ pattern: "^sha256:[0-9a-f]{64}$" }),
+});
 const manifestId = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });
 const manifestHash = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 });
 const manifestProd = object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])" }), hash: manifestHash });
@@ -37,7 +42,7 @@ export const RequirementRecord = object({
   lifecycle: Type.Union([Type.Literal("draft"), Type.Literal("active"), Type.Literal("closing"), Type.Literal("closed")]),
   revision: counter, epoch: positive, saved: nullable(ProdReference), approved: nullable(ProdReference), approvalReceiptId: nullable(id),
   workspace: nullable(WorkspaceBinding), pendingRevision: nullable(positive), close: nullable(CloseIntent),
-  approvalManifest: Type.Optional(ApprovalSummary),
+  approvalManifest: Type.Optional(ApprovalSummary), docSpec: Type.Optional(RequirementDocSpecSchema),
   recovery: Type.Union([Type.Literal("ready"), Type.Literal("needs_review")]), recoveryReason: nullable(RecoveryReason), createdAt: counter, updatedAt: counter,
 });
 export type RequirementRecord = Static<typeof RequirementRecord>;
@@ -105,7 +110,7 @@ export const commands = {
   reserve: object({ requestId: id, intentHash: hash }),
   save: object({ requirementId: id, version: positive, operationId: id, reference: ProdReference }),
   approve: object({ requirementId: id, version: positive, receiptId: id, reference: ProdReference,
-    manifest: Type.Optional(ApprovalManifestReferenceSchema) }),
+    manifest: Type.Optional(ApprovalManifestReferenceSchema), docSpec: Type.Optional(RequirementDocSpecSchema) }),
   bind: object({ requirementId: id, version: positive, path: Type.String({ minLength: 1, maxLength: 4096 }), prepareOperationId: id, baseCommit: commit }),
   acquire: object({ requirementId: id, version: positive, runId: id, expectedFence: counter }),
   close: object({ requirementId: id, version: positive, intent: CloseIntent }),

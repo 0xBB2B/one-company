@@ -421,7 +421,8 @@ export class RequirementStateStore {
       }
       const revision = increment(record.data.revision);
       const { approvalManifest: _previousManifest, ...baseline } = record.data;
-      const result = this.write(db, record, { ...baseline, ...(approvalManifest ? { approvalManifest } : {}), lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
+      const result = this.write(db, record, { ...baseline, ...(approvalManifest ? { approvalManifest } : {}),
+        ...(!baseline.docSpec && request.docSpec ? { docSpec: request.docSpec } : {}), lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
         pendingRevision: record.data.lifecycle === "active" ? revision : null }, "prod.approved", record.data.approved, request.reference, request.receiptId, approvalTime);
       db.create("requirement_approval_uses", request.receiptId, { requirementId: record.id, digest, sequence: result.event.sequence });
       return result.record;
