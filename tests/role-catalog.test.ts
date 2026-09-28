@@ -64,6 +64,7 @@ describe("内置默认团队", () => {
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
     const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
     expect(body("worker")).toMatch(/先写测试[\s\S]*确认新测试失败（红）[\s\S]*再写实现[\s\S]*全部通过（绿）[\s\S]*同时列出红、绿两次运行/);
+    expect(body("worker")).toContain("只为本来就正确的已有行为补回归测试（测试写好即通过，没有红阶段），在 summary 写明不适用及理由，不列为未验证问题");
     expect(body("pm")).toContain("实现任务的 writePaths 同时包含覆盖它的测试文件，由同一个 worker 先写测试再实现，不把测试单独拆成任务");
     expect(body("pm")).toMatch(/自己处理不了[\s\S]*action=escalate 带 taskId 与 note[\s\S]*交用户裁决/);
     expect(body("pm")).toContain("每个任务的通过条件不超过 8 条、每次派工的轮数不超过 100；超过的任务登记后停在待用户裁决");
