@@ -32,8 +32,10 @@ const JUMP: UserScript = {
   approve: "需求草稿我看过了，内容正确，批准这一版，按上面的授权直接实施。", proceed: "继续：创建工作区并派出 PM 开始实施。", ...ACCEPT,
 };
 const ANIMATION: UserScript = {
-  requirement: "给当前的跳跃需求追加跳跃动画：按角色状态显示起跳、上升、下落、落地四个姿态，由一个函数根据竖直速度和是否着地返回当前姿态名。其余要求不变。请更新需求草稿给我确认，确认后继续按原授权实施。",
-  approve: "更新后的需求草稿我看过了，批准这一版，继续实施。", proceed: "继续按批准的新版本实施。", ...ACCEPT,
+  requirement: "给当前的跳跃需求追加跳跃动画：一个函数根据竖直速度、是否着地和着地后经过的帧数返回姿态名。规则：在空中且竖直速度不小于起跳速度的 0.8 倍为「起跳」，" +
+    "在空中其余向上为「上升」，在空中竖直速度不大于 0 为「下落」，着地且着地后不到 6 帧为「落地」，着地且满 6 帧返回「站立」。其余要求不变。请更新需求草稿给我确认，确认后继续按原授权实施。",
+  approve: "更新后的需求草稿我看过了，批准这一版，继续实施。", proceed: "继续按批准的新版本实施。",
+  accept: "先不验收：我刚追加了跳跃动画，请按追加批准后的版本继续做完再交报告。", close: ACCEPT.close,
 };
 /** 需要读活动需求正文的题放在绑定了跳跃需求的会话里问。 */
 const BOUND_QUESTIONS = ["正在进行的跳跃动画需求要求哪些姿态？", "当前需求最新批准的版本比上一版改了什么？"];
@@ -128,7 +130,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
     const jumpId = active()!.requirementId, jumpRevision = active()!.revision;
 
     record({ type: "phase", phase: "animation", at: Date.now() });
-    const animation = await driveUser(b, ANIMATION, limits(45), record, { until: () => {
+    const animation = await driveUser(b, ANIMATION, limits(45), record, { approveWhileRunning: true, until: () => {
       const current = requirements().find((item) => item.requirementId === jumpId)!;
       return current.revision > jumpRevision && (plan(jumpId)?.plan.confirmedRevision ?? 0) >= current.revision;
     } });

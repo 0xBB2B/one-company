@@ -27,7 +27,11 @@ export type DriverEvent =
 export type DriverOutcome = { status: "closed" | "stopped" | "reached"; reason: string };
 
 /** 同一现场分段驱动：since 之前的消息属于前一段，不参与进展判断；until 为真即结束本段。 */
-export interface DriveOptions { since?: number; until?: () => boolean | Promise<boolean> }
+export interface DriveOptions {
+  since?: number; until?: () => boolean | Promise<boolean>;
+  /** PM 仍在运行时，主代理停下等用户而本段需求还没批准，就回批准台词（用于实施中追加需求）。 */
+  approveWhileRunning?: boolean;
+}
 
 interface ToolResultView { toolName: string; isError: boolean; details: unknown; text: string }
 
@@ -121,7 +125,10 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
       await sleep(5_000);
       continue;
     }
-    if (lines.length > 0) { await sleep(5_000); continue; }
+    if (lines.length > 0) {
+      if (options.approveWhileRunning && !state.approved && host.session.messages.at(-1)?.role === "assistant") { result = await say(script.approve); if (result) return result; continue; }
+      await sleep(5_000); continue;
+    }
 
     // 需求原文只发一次；之后主代理停下等用户时，按真人会做的回答：未批准就确认草稿
     const next = !state.approved ? script.approve : state.accepted ? script.close : script.proceed;
