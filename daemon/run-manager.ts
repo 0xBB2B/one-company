@@ -107,7 +107,8 @@ async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly 
   ].join("\n");
 }
 
-async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: string, report: Pick<Verdict, "summary" | "verificationIds"> | undefined, maxTurns: number): Promise<string> {
+async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: string, reportOf: (runId: string) => Pick<Verdict, "summary" | "verificationIds"> | undefined,
+  maxTurns: number): Promise<string> {
   const detail = await readTaskDetail(task);
   return [
     `审查任务：${task.key}（${task.taskId}，版本 ${task.version}）的 worker 尝试 ${attemptRunId}`,
@@ -118,8 +119,12 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     `只审可写范围内的改动：${task.writePaths.join("、")}`,
     `查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff ${baseCommit} -- ${task.writePaths.join(" ")}（${baseCommit} 是本需求工作区的基线提交）`,
-    `worker 提交说明：${report?.summary ?? "无"}`,
-    `worker 提交引用的验证记录：${report?.verificationIds.join("、") || "无"}（用 verification_run action=status 逐条查看）`,
+    "worker 各次尝试（先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红；引用的验证记录用 verification_run action=status 逐条查看）：",
+    ...task.attempts.map((attempt, index) => {
+      const report = reportOf(attempt.runId);
+      return `- 第 ${index + 1} 次尝试${attempt.rework ? "（返修）" : ""} ${attempt.runId}${attempt.runId === attemptRunId ? "（本次被审）" : ""}：` +
+        `提交说明：${report?.summary ?? "无"}；引用的验证记录：${report?.verificationIds.join("、") || "无"}`;
+    }),
     `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交裁决。`,
   ].join("\n");
 }
@@ -398,7 +403,7 @@ export class RunManager {
     try {
       tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
         pmLease: lease, workspace, epoch: record.epoch, task, alive, ...(review ? { review: { attemptRunId: attemptRunId! } } : {}) });
-      const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, this.workerReport(attemptRunId!), maxTurns)
+      const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns)
         : await taskContext(task, maxTurns, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         context: withSkills(role === "qa" ? context : this.withConventions(context), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,

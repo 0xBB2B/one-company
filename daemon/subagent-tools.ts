@@ -38,9 +38,9 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
   const tools: ToolDefinition[] = [];
   try {
     const verification = track(await createVerificationRunTool({ ...shared, authorize, grant: { ...identity, role, epoch: input.epoch },
-      ...(input.review ? { reviewedAttemptRunId: input.review.attemptRunId } : {}) }));
+      ...(input.review ? { reviewedAttemptRunIds: input.task.attempts.map((attempt) => attempt.runId) } : {}) }));
     tools.push(toPiTool("verification_run", role === "worker" ? "在绑定工作区的受控沙箱里运行调试命令（debug），或查询、停止运行。"
-      : role === "reviewer" ? "在绑定工作区的只读沙箱里运行被审任务范围的测试（debug），或查询、停止运行；status 也能查看被审 worker 提交里引用的验证记录（含先红后绿的记录）。"
+      : role === "reviewer" ? "在绑定工作区的只读沙箱里运行被审任务范围的测试（debug），或查询、停止运行；status 也能查看被审任务各次 worker 尝试提交里引用的验证记录（含先红后绿的记录）。"
         : "在检查阶段运行正式检查（formal），或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, verification));
     if (role === "worker") {
       const change = track(await createChangeApplyTool({ ...shared, authorize, grant: { ...identity, role, epoch: input.epoch, writePaths: input.task.writePaths } }));

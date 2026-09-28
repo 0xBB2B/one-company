@@ -70,6 +70,7 @@ describe("内置默认团队", () => {
     expect(body("pm")).toContain("每个任务的通过条件不超过 8 条、每次派工的轮数不超过 100；超过的任务登记后停在待用户裁决");
     expect(body("reviewer")).toContain("先按任务说明里的 git diff 命令查看本次改动，分清哪些定义是本次新增或修改的");
     expect(body("reviewer")).toMatch(/核对先红后绿[\s\S]*action=status 查看 worker 提交引用的验证记录[\s\S]*没有红的记录[\s\S]*列为阻塞/);
+    expect(body("reviewer")).toContain("红绿可以出现在同一任务的任意一次尝试里；返修改动了可测行为时，这次返修须有新的红");
   });
 });
 

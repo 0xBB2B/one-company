@@ -51,8 +51,8 @@ export interface VerificationRunToolOptions {
   grant: VerificationRunGrant;
   /** 必须由宿主核验当前物理角色会话/调用者及动作许可；不能从工具参数或角色文本构造true。 */
   authorize: (request: Readonly<VerificationRunAuthorization>) => boolean;
-  /** 任务级审查时由宿主填入被审的 worker 尝试；reviewer 可据此只读查看该尝试提交里引用的验证记录。 */
-  reviewedAttemptRunId?: string;
+  /** 任务级审查时由宿主填入被审任务的全部 worker 尝试（含返修）；reviewer 可据此只读查看这些尝试提交里引用的验证记录。 */
+  reviewedAttemptRunIds?: readonly string[];
 }
 export interface VerificationView {
   verificationId: string; kind: VerificationRun["kind"]; status: VerificationRun["status"]; checkRoundId: string | null;
@@ -288,13 +288,14 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     if (!run || !own(run.data)) throw new VerificationRunError("not_found");
     return viewOf(run.data);
   }
-  // reviewer 要亲眼核对 worker 先红后绿的记录，不能只信 worker 自述；只放开被审尝试在提交里引用的那几条
+  // reviewer 要亲眼核对 worker 先红后绿的记录，不能只信 worker 自述；红绿可能分在同一任务的不同尝试里（如只改注释的返修），
+  // 所以放开被审任务各次尝试在提交里引用的那几条
   function status(verificationId: string): VerificationView {
-    const attempt = grant.role === "reviewer" ? options.reviewedAttemptRunId : undefined;
-    const cited = attempt === undefined ? null : withDatabase(database, (db) => {
+    const attempts = grant.role === "reviewer" ? options.reviewedAttemptRunIds : undefined;
+    const cited = attempts === undefined ? null : withDatabase(database, (db) => {
       const run = readVerificationIn(db, verificationId)?.data;
-      if (!run || run.runId !== attempt || run.requirementId !== grant.requirementId || run.repoId !== grant.repoId || run.workspaceId !== grant.workspaceId) return null;
-      return readVerdictsIn(db, grant.repoId, grant.requirementId).some((verdict) => verdict.role === "worker" && verdict.runId === attempt &&
+      if (!run || !attempts.includes(run.runId) || run.requirementId !== grant.requirementId || run.repoId !== grant.repoId || run.workspaceId !== grant.workspaceId) return null;
+      return readVerdictsIn(db, grant.repoId, grant.requirementId).some((verdict) => verdict.role === "worker" && verdict.runId === run.runId &&
         verdict.verificationIds.includes(verificationId)) ? run : null;
     });
     return cited ? viewOf(cited) : ownStatus(verificationId);

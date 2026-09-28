@@ -78,10 +78,10 @@ async function world() {
       workspaceId: workspace.workspaceId, branch: workspace.branch, epoch: record.epoch, ...extra };
   }
   const host: VerificationRunToolOptions["authorize"] = (request) => permits.get(request.grant.callerId) === JSON.stringify(request.grant);
-  async function tool(bound = grant(), authorize = host, reviewedAttemptRunId?: string) {
+  async function tool(bound = grant(), authorize = host, reviewedAttemptRunIds?: string[]) {
     permits.set(bound.callerId, JSON.stringify(bound));
     const instance = await createVerificationRunTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, grant: bound, authorize,
-      ...(reviewedAttemptRunId ? { reviewedAttemptRunId } : {}) });
+      ...(reviewedAttemptRunIds ? { reviewedAttemptRunIds } : {}) });
     cleanups.push(() => instance.dispose()); return instance;
   }
   async function changeApply(runId = uuidv7()) {
@@ -381,7 +381,7 @@ test("结束后的结果带回 stdout、stderr 末尾并标明截断；日志被
   expect(linked.output!.stdout).toEqual({ text: "", truncated: false });
 });
 
-test("reviewer 只读查看被审 worker 尝试在提交里引用的验证记录（含先红后绿），查不到未引用的、别的尝试的，也不能停止它们", async () => {
+test("M8A-AC10：reviewer 只读查看被审任务各次 worker 尝试在提交里引用的验证记录（含先红后绿与返修），查不到未引用的、别的任务的，也不能停止它们", async () => {
   if (!darwin) return;
   const w = await world();
   const workerGrant = w.grant({ role: "worker" });
@@ -392,14 +392,20 @@ test("reviewer 只读查看被审 worker 尝试在提交里引用的验证记录
   submitVerdict({ dataRoot: w.dataRoot, requirementId: w.created.requirementId, repoId: w.repoId, workspaceId: w.workspace.workspaceId, epoch: workerGrant.epoch },
     { role: "worker", runId: workerGrant.runId, parentRunId: w.lease.runId },
     { checkRoundId: null, verificationIds: [red.verificationId, green.verificationId], summary: "先红后绿", findings: [] });
-  const reviewer = await w.tool(w.grant({ role: "reviewer" }), undefined, workerGrant.runId);
+  const reworkGrant = w.grant({ role: "worker" });
+  const reworkGreen = await (await w.tool(reworkGrant)).execute({ action: "run", kind: "debug", command: "echo '返修后通过'", performance: NA }) as VerificationView;
+  submitVerdict({ dataRoot: w.dataRoot, requirementId: w.created.requirementId, repoId: w.repoId, workspaceId: w.workspace.workspaceId, epoch: reworkGrant.epoch },
+    { role: "worker", runId: reworkGrant.runId, parentRunId: w.lease.runId },
+    { checkRoundId: null, verificationIds: [reworkGreen.verificationId], summary: "只改注释", findings: [] });
+  const reviewer = await w.tool(w.grant({ role: "reviewer" }), undefined, [workerGrant.runId, reworkGrant.runId]);
+  expect(await reviewer.execute({ action: "status", verificationId: reworkGreen.verificationId })).toMatchObject({ status: "passed" });
   expect(await reviewer.execute({ action: "status", verificationId: red.verificationId })).toMatchObject({ status: "failed", output: { stdout: { text: "sprint.acceptance 失败\n" } } });
   expect(await reviewer.execute({ action: "status", verificationId: green.verificationId })).toMatchObject({ status: "passed" });
   await expect(reviewer.execute({ action: "status", verificationId: uncited.verificationId })).rejects.toMatchObject({ code: "not_found" });
   await expect(reviewer.execute({ action: "stop", verificationId: red.verificationId })).rejects.toMatchObject({ code: "not_found" });
-  const otherAttempt = await w.tool(w.grant({ role: "reviewer" }), undefined, uuidv7());
-  await expect(otherAttempt.execute({ action: "status", verificationId: red.verificationId })).rejects.toMatchObject({ code: "not_found" });
-  const qa = await w.tool(w.grant({ role: "qa" }), undefined, workerGrant.runId);
+  const otherTask = await w.tool(w.grant({ role: "reviewer" }), undefined, [uuidv7()]);
+  await expect(otherTask.execute({ action: "status", verificationId: red.verificationId })).rejects.toMatchObject({ code: "not_found" });
+  const qa = await w.tool(w.grant({ role: "qa" }), undefined, [workerGrant.runId]);
   await expect(qa.execute({ action: "status", verificationId: red.verificationId })).rejects.toMatchObject({ code: "not_found" });
   await w.write("src/a.ts", "export const a = 2;\n");
   const diff = await reviewer.execute({ action: "run", kind: "debug", command: "git --no-optional-locks diff HEAD -- src/", performance: NA }) as VerificationView;

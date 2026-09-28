@@ -164,7 +164,7 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   expect(await w.runStore.get(reviewer.runId)).toMatchObject({ ok: true, run: { role: "pi-company.reviewer", writePaths: [], task: w.task("a").taskId } });
   const reviewerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!;
   expect(reviewerRequest.tools?.map((tool) => tool.name)).not.toContain("pi_company_change_apply");
-  expect(reviewerRequest.systemPrompt).toContain(`worker 提交说明：完成 a\nworker 提交引用的验证记录：${redGreen.join("、")}`);
+  expect(reviewerRequest.systemPrompt).toContain(`- 第 1 次尝试 ${a.runId}（本次被审）：提交说明：完成 a；引用的验证记录：${redGreen.join("、")}`);
   expect(reviewerRequest.systemPrompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff [0-9a-f]{40} -- src\/a\//);
 
   w.provider.queue.push(submit("完成 d"), pmAck);
@@ -222,6 +222,10 @@ test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因
   w.provider.queue.push(submit("仍缺失败提示", [{ kind: "unverified" }]), pmAck);
   const second = await w.review("login");
   await until(() => w.task("login").status === "awaiting_user");
+  // M8A-AC10：返修后的审查按每次尝试列出提交说明与引用，能看到第一次尝试的记录
+  const secondRequest = w.provider.requests.find((request) => request.systemPrompt?.includes(`worker 尝试 ${fix.runId}`))!;
+  expect(secondRequest.systemPrompt).toContain(`- 第 1 次尝试 ${first.runId}：提交说明：完成 login；引用的验证记录：无\n- 第 2 次尝试（返修） ${fix.runId}（本次被审）：提交说明：补上失败提示；引用的验证记录：无`);
+  expect(secondRequest.systemPrompt).toContain("先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红");
   expect(w.task("login").reviews[1]).toMatchObject({ runId: second.runId, attemptRunId: fix.runId, outcome: "unverified" });
   await expect(w.rework("login")).rejects.toMatchObject({ code: "task_not_ready" });
   await expect(w.plan.execute({ action: "update", planVersion: 1, add: [spec("login-fix")] })).rejects.toMatchObject({ code: "task_not_ready" });
