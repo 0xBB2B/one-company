@@ -1,4 +1,6 @@
 import { Type } from "typebox";
+import { adviceIn } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { object, positive, counter } from "./requirement-contracts.ts";
@@ -109,9 +111,85 @@ export const InteractionInterpretation = object({
 });
 export type InteractionInterpretation = Static<typeof InteractionInterpretation>;
 
+const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
+  action_candidate_required: { why: "用户原话的解读把它当成授权动作，但没有对应的待批准版本", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  action_kind_required: { why: "用户原话的解读带了授权动作，但没有标成授权类决定", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  adjudication_ambiguous: { why: "一句话里解读出多个裁决，无法确定用户要处理哪一个", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  adjudication_invalid: { why: "裁决类决定的解读内容不合规", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  adjudication_reference_reserved: { why: "非裁决的决定引用了裁决事项", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  ai_subject_required: { why: "交给 AI 选择的决定缺少\"提议\"或\"委托\"依据", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  ambiguous_reference: { why: "用户原话指向\"这个问题\"，但当前待回答的问题不止一个", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  authorization_required: { why: "宿主没有授权这次用户交互操作", next: "停止操作，不要重试；把这段原因告诉用户" },
+  basis_changed: { why: "解读期间需求被改动", next: "重新读取需求后按最新版本再试" },
+  candidate_baseline_mismatch: { why: "待批准版本不是基于当前批准版本", next: "重新读取需求后按最新版本再试" },
+  candidate_not_resaved: { why: "需要先按用户的修改重新保存草稿", next: "先按用户的修改重新保存草稿，再确认" },
+  candidate_not_saved: { why: "待确认的版本不是当前保存的版本", next: "重新读取需求后按最新版本再试" },
+  changed_question_requires_review: { why: "问题在提出后已变化，不能直接按原问题同意", next: "把变化后的问题重新展示给用户确认" },
+  continuity_changed: { why: "确认期间用户又有新的输入", next: "按用户最新的原话重新确认" },
+  continuity_fact_changed: { why: "确认依据的事实记录已变化", next: "重新读取需求后按最新版本再试" },
+  continuity_issue_mismatch: { why: "连续性问题引用的章节不在待确认版本里", next: "重新读取需求后按最新版本再试" },
+  decision_changed: { why: "此前的决定在处理期间被改动", next: "重新读取需求后按最新版本再试" },
+  delegation_kind_required: { why: "委托给 AI 的决定必须标成 AI 选择类", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  delegation_required: { why: "用户没有明确把这件事委托给 AI 决定", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  document_candidate_mismatch: { why: "文档复核对应的不是唯一的待批准版本", next: "重新读取需求后按最新版本再试" },
+  document_partition_mismatch: { why: "文档复核的章节划分与待批准版本不一致", next: "重新读取需求后按最新版本再试" },
+  document_review_required: { why: "有待批准版本时必须同时给出文档复核结论，没有时不能给", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  duplicate_document_candidate: { why: "同一待批准版本出现了多次", next: "重新读取需求后按最新版本再试" },
+  duplicate_reference: { why: "同一个问题被重复引用", next: "重新读取需求后按最新版本再试" },
+  empty_input: { why: "用户原话是空的", next: "等用户在主窗口说出新的一句话后再操作" },
+  foreign_decision: { why: "引用了别的需求的决定", next: "重新读取需求后按最新版本再试" },
+  foreign_requirement: { why: "上下文属于别的需求", next: "重新读取需求后按最新版本再试" },
+  input_changed: { why: "处理期间用户又说了新的话", next: "按用户最新的原话重新处理" },
+  input_expired: { why: "用户原话已过期", next: "等用户在主窗口说出新的一句话后再操作" },
+  input_reentry: { why: "同一句用户原话被重复使用", next: "等用户在主窗口说出新的一句话后再操作" },
+  interpretation_denied: { why: "用户原话的解读不能作为这次决定的依据", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  invalid_capability: { why: "确认能力无效或已用过", next: "重新读取需求后按最新版本再试" },
+  invalid_input_ticket: { why: "用户原话的凭据无效或已用过", next: "等用户在主窗口说出新的一句话后再操作" },
+  invalid_model_timeout: { why: "解读模型的超时设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  invalid_shape: { why: "参数或解读结果的格式不合规", next: "按原因改正后重试" },
+  invalid_ttl: { why: "有效期设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  lifecycle_denied: { why: "需求不在草稿或活动状态，或需要先恢复核对", next: "重新读取需求后按最新版本再试" },
+  model_auth_unavailable: { why: "解读用的模型没有配置凭据", next: "请用户检查模型配置或改选模型" },
+  model_cancelled: { why: "解读被取消", next: "需要时重新发起" },
+  model_changed: { why: "解读期间模型被切换", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  model_configuration_changed: { why: "解读用的模型配置已变化", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  model_interpretation_denied: { why: "解读模型没有给出可用的解读", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  model_response_denied: { why: "解读模型的回答格式不对或没有正常结束", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  model_unavailable: { why: "解读用的模型不可用", next: "请用户检查模型配置或改选模型" },
+  pending_basis_required: { why: "未来项、未决项或建议必须标成提议或不确定", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  question_action_mismatch: { why: "决定里的授权动作不在问题允许的范围内", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  question_baseline_mismatch: { why: "问题基于的需求版本已不是当前版本", next: "重新读取需求后按最新版本再试" },
+  question_candidate_mismatch: { why: "问题对应的待批准版本已变化", next: "重新读取需求后按最新版本再试" },
+  question_changed: { why: "问题记录已被改动", next: "重新读取需求后按最新版本再试" },
+  question_identity_mismatch: { why: "问题编号与记录不一致", next: "重新读取需求后按最新版本再试" },
+  question_partition_mismatch: { why: "问题引用的章节不在待批准版本里", next: "只引用待批准版本里的章节编号" },
+  question_required: { why: "同意类决定必须针对一个已提出的问题", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  question_unit_mismatch: { why: "问题引用的章节不在待批准版本里", next: "重新读取需求后按最新版本再试" },
+  question_view_mismatch: { why: "问题剩余的章节与原问题不一致", next: "重新读取需求后按最新版本再试" },
+  reconsideration_denied: { why: "不能再次复核：文档复核已判定一致、复核次数已用完（最多 3 次），或正在保存", next: "按当前复核结果继续，不要再次复核" },
+  reference_limit: { why: "引用的问题、决定或章节太多（最多 16 个），或引用章节时没有待批准版本", next: "减少引用数量后重试" },
+  request_limit: { why: "请求内容超出大小上限", next: "精简内容后重试" },
+  resave_not_finalized: { why: "重新保存还没完成", next: "用原来的操作编号重试，让它续完" },
+  resave_origin_mismatch: { why: "重新保存的起点与原复核不一致", next: "重新读取需求后按最新版本再试" },
+  resave_state_mismatch: { why: "重新保存前后需求状态不一致", next: "重新读取需求后按最新版本再试" },
+  retained_source_mismatch: { why: "保留的来源章节在待批准版本里不存在", next: "重新读取需求后按最新版本再试" },
+  revision_link_mismatch: { why: "修订的决定与被取代的决定对应不上", next: "重新读取需求后按最新版本再试" },
+  revision_scope_mismatch: { why: "修订范围超出了原决定涉及的章节", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  revision_source_changed: { why: "被修订的原决定已变化", next: "重新读取需求后按最新版本再试" },
+  revision_source_reused: { why: "被修订的原决定又被当成新约束引用", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  save_reentry: { why: "上一次保存还没结束", next: "等上一次保存结束后再试" },
+  saved_decision_changed: { why: "已保存的决定与预期不一致", next: "重新读取需求后按最新版本再试" },
+  saved_decision_missing: { why: "找不到已保存的决定", next: "重新读取需求后按最新版本再试" },
+  single_question_scope_escape: { why: "针对单个问题的回答超出了这个问题的范围", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  unknown_question: { why: "找不到这个问题", next: "核对问题编号" },
+  unknown_reference: { why: "引用了不存在的问题或待批准版本", next: "只引用此前工具结果给出的编号" },
+  unknown_supersedes: { why: "要取代的决定不存在或已被取代", next: "重新读取需求后按最新版本再试" },
+  untrusted_session: { why: "当前会话不是登记的会话", next: "在当前主窗口会话里重新发起" },
+};
 export class UserInteractionError extends Error {
   readonly code: string;
-  constructor(code: string) { super(`用户交互被拒绝：${code}`); this.name = "UserInteractionError"; this.code = code; }
+  readonly advice: FailureAdvice;
+  constructor(code: string) { super(`用户交互被拒绝：${code}`); this.name = "UserInteractionError"; this.code = code; this.advice = adviceIn(USER_INTERACTION_ADVICE, code); }
 }
 export function parseInteraction<T extends TSchema>(schema: T, source: string): Static<T> {
   if (typeof source !== "string" || Buffer.byteLength(source) > SHORT_DECISION_LIMITS.requestBytes) throw new UserInteractionError("request_limit");

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
+import { HostAuthorizationError, HostAuthorizationManager } from "../runtime/host-authorization.ts";
 import { dataRoot } from "../runtime/identity.ts";
 import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../runtime/daemon-client.ts";
 import { createRequirementManageTool } from "../runtime/requirement-manage-tool.ts";
@@ -9,6 +9,7 @@ import type { MainIntakeProviders } from "../runtime/main-intake-interaction.ts"
 import { createPmIntakeProviders } from "../runtime/pm-intake-runtime.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
 import type { OpenRequirementService, RequirementManageHostContext } from "../runtime/main-requirement-interaction.ts";
+import { failureText, toolStep } from "../runtime/tool-failure.ts";
 import { registerInputRevoker, registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
 
 export interface RequirementManageExtensionDeps {
@@ -22,14 +23,6 @@ export interface RequirementManageExtensionDeps {
   readonly windowReady?: typeof windowReady;
   readonly windowContext?: typeof windowContext;
 }
-// 错误只放行固定格式的错误代码与只含字段名的改正提示，其余内容一律不回显，避免把值或正文带回模型
-const SAFE_DENIAL = /^(?:requirement_host_denied:|pm_intake_interaction_denied:|PM 接手(?:服务被拒绝|契约拒绝|存储被拒绝)：)([a-z_]{1,64})(（[\p{Script=Han}A-Za-z0-9_:：、；，. -]{0,2000}）)?$/u;
-export function deniedText(event: { isError: boolean; content: ReadonlyArray<{ type: string; text?: string }> },
-  prefix: "requirement_interaction_denied" | "pm_intake_interaction_denied"): string {
-  const text = event.isError && event.content.length === 1 && event.content[0]!.type === "text" ? event.content[0]!.text ?? "" : "";
-  const match = SAFE_DENIAL.exec(text);
-  return match ? `${prefix}:${match[1]}${match[2] ?? ""}` : prefix;
-}
 export default function requirementManageExtension(pi: ExtensionAPI, deps: RequirementManageExtensionDeps = {}): void {
   const root = deps.dataRoot ?? dataRoot(process.env);
   const authorization = deps.authorization ?? new HostAuthorizationManager({ dataRoot: root });
@@ -37,7 +30,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   const resolveHost = (ctx: ExtensionContext): RequirementManageHostContext => {
     const window = currentWindow();
     if (window.sessionId !== ctx.sessionManager.getSessionId() || window.heartbeatError ||
-      window.workspace.repos.some((repo) => window.clients.forRepo(repo.repoId)?.state().status !== "connected")) throw new Error("requirement_host_unavailable");
+      window.workspace.repos.some((repo) => window.clients.forRepo(repo.repoId)?.state().status !== "connected")) throw new HostAuthorizationError("host_unavailable");
     return { windowId: window.windowId, sessionId: window.sessionId,
       repositories: new Map(window.workspace.repos.map((repo) => [repo.repoId, { path: repo.path }])) };
   };
@@ -55,13 +48,13 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     interaction.shutdown();
     intake.shutdown();
     const window = await awaitWindow(), sessionId = ctx.sessionManager.getSessionId();
-    if (window.sessionId !== sessionId) throw new Error("requirement_host_unavailable");
+    if (window.sessionId !== sessionId) throw new HostAuthorizationError("host_unavailable");
     authorization.startWindow({ kind: "main", windowId: window.windowId, sessionId, repoIds: window.workspace.repos.map((repo) => repo.repoId) });
     unregisterShutdown?.();
     for (const stop of connections.splice(0)) stop();
     for (const repo of window.workspace.repos) {
       const client = window.clients.forRepo(repo.repoId);
-      if (!client || client.state().status !== "connected") { shutdown(); throw new Error("requirement_host_unavailable"); }
+      if (!client || client.state().status !== "connected") { shutdown(); throw new HostAuthorizationError("host_unavailable"); }
       connections.push(client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => authorization.revoke()));
     }
     unregisterShutdown = registerWindowShutdownHook(window, shutdown);
@@ -95,13 +88,14 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   pi.on("tool_execution_end", (event) => { intake.completeToolExecution(event); });
   pi.on("tool_result", (event, ctx) => {
     if (!["one_company_requirement_manage", "one_company_user_interact"].includes(event.toolName)) return;
-    if (intake.ownsDelivery(event.toolCallId)) {
-      try { intake.assertDelivery(event, ctx); }
-      catch { return { content: [{ type: "text", text: deniedText(event, "pm_intake_interaction_denied") }], details: {}, isError: true }; }
-      return;
+    // 出错结果已由工具写成三段原因，原样交给模型；成功结果送达前再核对一次仍是当前结果
+    if (event.isError) return;
+    try {
+      if (intake.ownsDelivery(event.toolCallId)) intake.assertDelivery(event, ctx);
+      else interaction.assertDelivery(event.toolCallId, ctx);
+    } catch (error) {
+      return { content: [{ type: "text", text: failureText(`${toolStep(event.toolName, event.input)}的结果送达前核对`, error) }], details: {}, isError: true };
     }
-    try { if (event.isError) throw new Error("denied"); interaction.assertDelivery(event.toolCallId, ctx); }
-    catch { return { content: [{ type: "text", text: deniedText(event, "requirement_interaction_denied") }], details: {}, isError: true }; }
   });
   pi.registerTool(createRequirementManageTool({ interaction }));
   pi.registerTool(createUserInteractTool({ interaction, intake }));

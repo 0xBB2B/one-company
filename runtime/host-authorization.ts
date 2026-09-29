@@ -1,4 +1,6 @@
 import { lstatSync } from "node:fs";
+import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { DatabaseSync } from "node:sqlite";
 import { repositoryDatabase, UUID_V7_PATTERN, withDatabase } from "./database.ts";
 import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "./database-paths.ts";
@@ -23,9 +25,82 @@ interface SelectionClaim {
   repoId: string; requirementId: string; version: number; hash: string; databaseIdentity: string;
   sessionId: string; windowId: string; generation: number; expiresAt: number;
 }
+const WAIT_USER = "等用户在主窗口说出新的一句话后再操作";
+const REREAD = "重新读取需求后按最新版本再试";
+const STOP = "停止操作，不要重试；把这段原因告诉用户";
+const HOST_ADVICE: Record<string, FailureAdvice> = {
+  invalid_shape: COMMON_ADVICE.invalid_shape,
+  invalid_principal: { why: "主窗口身份不合规", next: STOP },
+  host_unavailable: { why: "主窗口与守护进程的连接不可用，可能未连接、心跳失败或会话已切换", next: "稍等几秒重试；仍不可用就请用户重开窗口" },
+  untrusted_host: { why: "当前会话不是这个窗口登记的会话", next: "在当前主窗口会话里重新发起" },
+  foreign_repo: { why: "repoId 不是当前窗口工作区里的仓库", next: "改用当前工作区列出的仓库编号" },
+  invalid_requirement: { why: "需求编号格式不对", next: "改用此前工具结果给出的需求编号" },
+  selection_limit: { why: "可选择的需求太多，超出一次能列出的上限", next: "请用户先关闭或取消不再需要的需求" },
+  selection_metadata_invalid: { why: "需求列表里有记录不合规", next: STOP },
+  stale_host: { why: "窗口或会话已切换，本次操作作废", next: "在当前窗口里重新发起" },
+  selection_expired: { why: "需求选择已过期", next: "请用户用 /one:requirement-select 重新选择需求" },
+  selection_changed: { why: "选择后需求已被改动", next: "请用户用 /one:requirement-select 重新选择需求" },
+  requirement_not_bound: { why: "当前窗口没有绑定这个需求", next: "请用户用 /one:requirement-select 选择需求，或用当前绑定的需求编号" },
+  listener_limit: { why: "监听数量超出上限", next: STOP },
+  database_missing: { why: "找不到本机需求数据库", next: "请用户确认已初始化项目并在主窗口重试" },
+  database_identity: { why: "本机需求数据库文件不安全（经过链接或有多个硬链接）", next: "请用户检查本机数据目录" },
+  database_changed: { why: "读取期间本机需求数据库被替换", next: "重试一次；反复出现就请用户检查本机数据目录" },
+  unknown_requirement: { why: "找不到这个需求", next: "核对需求编号" },
+  lifecycle_denied: { why: "需求不在草稿或活动状态，或需要先恢复核对", next: REREAD },
+  state_changed: { why: "处理期间需求被改动", next: REREAD },
+  interaction_context_limit: { why: "待处理的问题或决定太多，超出上限", next: "先处理已有的问题和决定，再继续" },
+  decision_identity: { why: "决定记录与编号不一致", next: STOP },
+  question_identity: { why: "问题记录与编号不一致", next: STOP },
+  invalid_ttl: { why: "有效期设置不合规", next: STOP },
+  selection_busy: { why: "上一个选择或操作还没结束", next: "等上一个操作结束后再试" },
+  selection_ui_unavailable: { why: "选择需求要在交互界面里由用户操作，当前会话没有界面", next: "请用户在有界面的主窗口里选择" },
+  selection_unrecognized: { why: "用户的选择无法识别", next: "请用户重新选择" },
+  current_input_required: { why: "这个操作要基于用户当前说的话，但现在没有可用的用户原话（可能已过期或已被用过）", next: WAIT_USER },
+  result_record_missing: { why: "结果依据的记录已不存在", next: REREAD },
+  result_decision_superseded: { why: "结果依据的用户决定已被新的决定取代", next: "重新读取需求，按用户最新的决定处理" },
+  stale_result: { why: "返回结果前需求已被改动，这次结果作废", next: REREAD },
+  result_records_changed: { why: "返回结果前依据的记录已被改动", next: REREAD },
+  result_scope_changed: { why: "返回结果前批准范围已变化", next: REREAD },
+  manifest_unregistered: { why: "批准清单没有登记", next: "先按用户原话确认批准范围" },
+  unproven_result: { why: "结果不是本工具刚生成的", next: STOP },
+  stale_candidate: { why: "待确认的版本已不是最新", next: REREAD },
+  adjudication_mismatch: { why: "决定针对的不是这个需求", next: "核对需求编号与事项" },
+  candidate_required: { why: "没有待确认的需求版本", next: "先保存需求草稿" },
+  input_changed: { why: "处理期间用户又说了新的话", next: "按用户最新的原话重新处理" },
+  model_unavailable: { why: "当前模型不可用或没有配置凭据，无法核验草稿", next: "请用户检查模型配置或改选模型" },
+  draft_input_limit: { why: "草稿与用户原话合计超出 64 KiB", next: "精简草稿后重试" },
+  draft_cancelled: { why: "草稿核验被取消", next: "需要时重新保存" },
+  draft_not_requested: { why: "核验模型的回答格式不对，无法判断用户是否要求这份草稿", next: "重试一次；仍然失败就请用户换一个模型" },
+  draft_check_failed: { why: "调用核验模型失败，没有得到核验结果（不是核验不通过）", next: "稍后重试；反复失败就请用户检查模型或网络" },
+  draft_interpretation_denied: { why: "核验器认为草稿与用户原话不符", next: "按核验器说明改正草稿中与用户原话不符的部分后重试" },
+  requirement_already_bound: { why: "当前窗口已绑定了一个需求，不能再创建新需求", next: "继续处理已绑定的需求，或请用户先切换需求" },
+  resave_state_mismatch: { why: "重新保存的状态已变化", next: REREAD },
+  item_changed: { why: "事项在用户做决定后已变化", next: "重新读取待裁决事项，请用户按当前情况重新决定" },
+  prod_sections_required: { why: "需求正文不符合需求文档规范", next: "按需求文档规范改正正文后重新保存" },
+  requirement_doc_invalid: { why: "读取需求文档规范失败", next: "请用户检查需求文档规范文件" },
+  resave_request_mismatch: { why: "确认的保存操作与待确认的不是同一次", next: "用最近一次保存结果里的 savedOperationId 确认" },
+  manifest_mismatch: { why: "批准清单与待确认版本不一致", next: REREAD },
+  question_scope_mismatch: { why: "问题引用了待确认版本里不存在的章节", next: "只引用待确认版本里的章节编号" },
+  question_limit: { why: "待回答的问题已达上限", next: "先请用户回答已有的问题" },
+  question_display_unavailable: { why: "向用户提问要在交互界面里显示，当前会话没有界面", next: "请用户在有界面的主窗口里继续" },
+  cursor_expired: { why: "翻页游标已过期或与本次请求不一致", next: "不带 cursor 从第一页重新读取" },
+  invalid_section: { why: "章节编号格式不对", next: "按读取结果里列出的章节编号填写" },
+  response_limit: { why: "maxBytes 太小，放不下任何内容", next: "调大 maxBytes 后重试" },
+  interaction_busy: { why: "上一个需求操作还没结束", next: "等上一个操作结束后再试" },
+  stale_operation_result: { why: "这个操作编号之前已失败过，不能再用", next: "换一个新生成的操作编号重试" },
+  operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "换一个新生成的操作编号重试" },
+  delivery_expired: { why: "结果送达前已过期", next: "重新发起一次" },
+  pm_intake_unavailable: { why: "当前窗口没有接手复核能力", next: STOP },
+  interaction_denied: { why: "需求操作被拒绝，底层没有给出可说明的原因", next: "重试一次；仍然失败就把这段原因告诉用户" },
+};
 export class HostAuthorizationError extends Error {
   readonly code: string;
-  constructor(code: string, hint?: string) { super(`requirement_host_denied:${code}${hint ? `（${hint}）` : ""}`); this.name = "HostAuthorizationError"; this.code = code; }
+  readonly advice: FailureAdvice;
+  constructor(code: string, hint?: string) {
+    super(`requirement_host_denied:${code}${hint ? `（${hint}）` : ""}`); this.name = "HostAuthorizationError"; this.code = code;
+    const base = HOST_ADVICE[code];
+    this.advice = base ? withDetail(base, hint) : { why: hint ?? `需求操作被拒绝（${code}）`, next: "按原因改正后重试；仍然失败就把这段原因告诉用户" };
+  }
 }
 /** 宿主身份与资源门槛；不签发目标批准，不读取聊天历史，不持久化用户输入。 */
 export class HostAuthorizationManager {

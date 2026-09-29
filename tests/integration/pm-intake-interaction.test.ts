@@ -440,7 +440,8 @@ test("真实SDK的后置block、preflight abort与execute failure各超过32次�
           expect(hookCounts.block).toBe(0);
           const late = await session.extensionRunner.emitToolResult({ type: "tool_result", toolName: "one_company_user_interact",
             toolCallId: lastId, input: { request: ask(fixture) }, content: [{ type: "text", text: "late" }], details: {}, isError: true });
-          expect(late).toMatchObject({ content: [{ type: "text", text: "pm_intake_interaction_denied" }], isError: true });
+          // 出错结果由工具自己写好原因，扩展原样交出，不再改写
+          expect(late).toBeUndefined();
         }
       }
       expect(terminal.filter((event) => event.phase === "block")).toHaveLength(33);

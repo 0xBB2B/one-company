@@ -297,7 +297,7 @@ test("32KiB understanding预算先独立拒绝，不冒充51,200字节transport�
     value.allowedActions = Array.from({ length: 32 }, () => ({ ...structuredClone(item), text: "\\".repeat(400) }));
   };
   observe(bridge, ctx, "budget", input);
-  await expect(bridge.execute("budget", input, ctx, signal)).rejects.toThrow(/resource_limit/);
+  await expect(bridge.execute("budget", input, ctx, signal)).rejects.toMatchObject({ code: "resource_limit" });
   expect(fixture.db((db) => db.list(PM_INTAKE_NAMESPACES.requests))).toHaveLength(0);
   bridge.dispose();
 });

@@ -121,7 +121,7 @@ test("M7-AC35：解释器引用了错误版本、用户没说清或没有当前�
   await expect(createUserInteractTool({ interaction: w.interaction }).execute(toolCallId, { request: { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId,
     requirementId: w.fixture.requirementId, operationId: uuidv7(), itemId: w.itemId, itemVersion: w.version() } } as never, undefined, undefined, w.ctx)).rejects.toThrow();
   await expect(w.adjudicate("再给一次，3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])], w.itemId, `${w.itemId}:999`))
-    .rejects.toThrow(/item_changed/);
+    .rejects.toMatchObject({ code: "item_changed" });
   expect(w.decisions()).toBe(before);
   expect(w.task("login").status).toBe("awaiting_user");
 });

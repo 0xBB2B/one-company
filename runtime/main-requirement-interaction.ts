@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { adviceOf } from "./tool-failure.ts";
 import { performance } from "node:perf_hooks";
 import type { Context } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -376,18 +377,26 @@ export class MainRequirementInteraction {
     const timeout = AbortSignal.timeout(60_000), signal = AbortSignal.any([captured.abort.signal, timeout, ...(ctx.signal ? [ctx.signal] : [])]);
     let abortHandler: (() => void) | undefined, refusal: string | undefined;
     try {
-      const aborted = new Promise<never>((_, reject) => { abortHandler = () => reject(new HostAuthorizationError("draft_cancelled")); signal.addEventListener("abort", abortHandler, { once: true }); if (signal.aborted) abortHandler(); });
+      const aborted = new Promise<never>((_, reject) => { abortHandler = () => reject(new Error("aborted")); signal.addEventListener("abort", abortHandler, { once: true }); if (signal.aborted) abortHandler(); });
       const response = await Promise.race([ctx.modelRegistry.complete(model, context, { signal, maxTokens: 512, cacheRetention: "none" }), aborted]);
       this.#live(ctx, host, generation); signal.throwIfAborted();
-      if (this.#currentInput(ctx) !== captured || !same(model, ctx.model) || !same(model, ctx.modelRegistry.find(model.provider, model.id)) ||
-        response.provider !== model.provider || response.model !== model.id || response.stopReason !== "stop" || response.content.some((b) => b.type !== "text" && b.type !== "thinking")) denied("draft_interpretation_denied");
+      if (this.#currentInput(ctx) !== captured) denied("input_changed");
+      if (!same(model, ctx.model) || !same(model, ctx.modelRegistry.find(model.provider, model.id)) || response.provider !== model.provider || response.model !== model.id)
+        throw new HostAuthorizationError("draft_check_failed", "核验期间模型被切换");
+      if (response.stopReason !== "stop") throw new HostAuthorizationError("draft_check_failed",
+        `模型回答没有正常结束（${response.stopReason}${response.errorMessage ? `：${response.errorMessage}` : ""}）`);
+      if (response.content.some((b) => b.type !== "text" && b.type !== "thinking")) denied("draft_not_requested");
       const result = parseStrictJson(response.content.filter((b) => b.type === "text").map((b) => b.text).join(""));
       if (!result || typeof result !== "object" || Array.isArray(result) || Object.keys(result).some((key) => key !== "allow" && key !== "reason") ||
         typeof result.allow !== "boolean" || (result.reason !== undefined && typeof result.reason !== "string")) denied("draft_not_requested");
-      // 扩展只把限定字符集的提示回显给模型，其余字符换成空格，免得整条原因被过滤掉
-      if (result.allow !== true) refusal = typeof result.reason === "string"
-        ? result.reason.replace(/[^\p{Script=Han}A-Za-z0-9_:：、；，. -]+/gu, " ").replace(/ +/gu, " ").trim().slice(0, 200) : "";
-    } catch { return denied("draft_interpretation_denied"); }
+      if (result.allow !== true) refusal = typeof result.reason === "string" ? result.reason.replace(/\s+/gu, " ").trim().slice(0, 200) : "";
+    } catch (error) {
+      if (error instanceof HostAuthorizationError) throw error;
+      if (timeout.aborted) throw new HostAuthorizationError("draft_check_failed", "核验模型 60 秒内没有回答");
+      if (captured.abort.signal.aborted) denied("input_changed");
+      if (signal.aborted) denied("draft_cancelled");
+      throw new HostAuthorizationError("draft_check_failed", (error as Error).message);
+    }
     finally { context.messages.length = 0; if (abortHandler) signal.removeEventListener("abort", abortHandler); }
     // 原因是模型说法，只帮主代理改草稿，不改变拒绝本身
     if (refusal !== undefined) throw new HostAuthorizationError("draft_interpretation_denied", refusal ? `核验器说明，模型撰写，仅供参考：${refusal}` : undefined);
@@ -624,8 +633,8 @@ export class MainRequirementInteraction {
     } catch (error) {
       this.#cursors.clear(); this.#deliveries.delete(toolCallId);
       if (typeof params.operationId === "string" && this.#completed.has(params.operationId)) this.#invalidateOperation(params.operationId);
-      if (error instanceof HostAuthorizationError) throw error;
-      // 只回传错误代码，不回传可能带细节的错误消息
+      if (error instanceof HostAuthorizationError || adviceOf(error)) throw error;
+      // 没有原因说明的下层错误只回传错误代码，不回传可能带正文的错误消息
       const code = (error as { code?: unknown } | null)?.code;
       throw new HostAuthorizationError(typeof code === "string" && /^[a-z][a-z_]{0,63}$/.test(code) ? code : "interaction_denied");
     } finally { signal?.removeEventListener("abort", abort); this.#busy = false; }

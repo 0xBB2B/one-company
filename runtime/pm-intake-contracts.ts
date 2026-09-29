@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { adviceIn } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { Type } from "typebox";
 import type { Static, TProperties, TSchema } from "typebox";
 import { Value } from "typebox/value";
@@ -217,12 +219,21 @@ export type IntakeContractErrorCode =
   | "unknown_source"
   | "invalid_source_directory";
 
+const INTAKE_CONTRACT_ADVICE: Record<string, FailureAdvice> = {
+  duplicate_source: { why: "同一个出处被重复引用", next: "去掉重复的出处后重交" },
+  invalid_shape: { why: "接手理解的字段不符合格式", next: "按工具说明补齐字段后重交" },
+  invalid_source_directory: { why: "接手出处目录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  resource_limit: { why: "接手理解内容超出上限", next: "精简内容后重交" },
+  unknown_source: { why: "引用了任务上下文里没有的出处编号", next: "只引用任务上下文列出的出处编号" },
+};
 export class IntakeContractError extends Error {
   readonly code: IntakeContractErrorCode;
+  readonly advice: FailureAdvice;
   constructor(code: IntakeContractErrorCode) {
     super(`PM 接手契约拒绝：${code}`);
     this.name = "IntakeContractError";
     this.code = code;
+    this.advice = adviceIn(INTAKE_CONTRACT_ADVICE, code);
   }
 }
 

@@ -11,7 +11,6 @@ import { repositoryIdentity } from "../runtime/identity.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
 import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
-import { deniedText } from "../extensions/requirement-manage.ts";
 import { UserInteractionCore } from "../runtime/user-interaction.ts";
 import { RequirementOperations } from "../runtime/requirement-operations.ts";
 import type { MainRequirementInteractionOptions } from "../runtime/main-requirement-interaction.ts";
@@ -94,16 +93,16 @@ function wholeReview(c: Pick<ConfirmationContext, "candidate" | "partition">, ta
 describe("主窗口共享控制器的真实服务路径", () => {
   test("普通问答、未来闲聊、伪来源、无输入、无模型均不能create；只读metadata不建空库", async () => {
     const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body: BODY };
-    await expect(w.call(input)).rejects.toThrow(/current_input_required/);
-    for (const source of ["extension", "tool", "user", "rpc"]) { w.capture("想做登录", source); await expect(w.call(input)).rejects.toThrow(/current_input_required/); }
+    await expect(w.call(input)).rejects.toMatchObject({ code: "current_input_required" });
+    for (const source of ["extension", "tool", "user", "rpc"]) { w.capture("想做登录", source); await expect(w.call(input)).rejects.toMatchObject({ code: "current_input_required" }); }
     for (const text of ["这个函数为什么这样写？", "也许明年做个登录吧"]) {
       w.capture(text); scriptReplies(w.provider, [{ type: "text", text: '{"allow":false}' }]);
-      await expect(w.call(input)).rejects.toThrow(/draft_interpretation_denied/);
+      await expect(w.call(input)).rejects.toMatchObject({ code: "draft_interpretation_denied" });
     }
     w.capture(); const selected = w.ctx.model; Object.defineProperty(w.ctx, "model", { value: undefined, configurable: true });
-    await expect(w.call(input)).rejects.toThrow(/model_unavailable/); Object.defineProperty(w.ctx, "model", { value: selected });
+    await expect(w.call(input)).rejects.toMatchObject({ code: "model_unavailable" }); Object.defineProperty(w.ctx, "model", { value: selected });
     w.authorization.bindRequirement(w.repoId, uuidv7(), w.sessionId);
-    await expect(w.call({ action: "metadata", requirementId: w.authorization.binding(w.sessionId)!.requirementId })).rejects.toThrow(/database_missing/);
+    await expect(w.call({ action: "metadata", requirementId: w.authorization.binding(w.sessionId)!.requirementId })).rejects.toMatchObject({ code: "database_missing" });
     await expect(stat(repositoryDatabase(w.dataRoot, w.repoId))).rejects.toMatchObject({ code: "ENOENT" });
   });
   test("M8B：草稿核验器知道项目规范另经规范流程处理，草稿不含规范不影响放行", async () => {
@@ -129,15 +128,13 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body: BODY };
     w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":false,"reason":"需求里「不接入渲染循环」是用户没说过的限制"}' }]);
     const error = await w.call(input).catch((caught: Error) => caught);
-    expect(String(error)).toContain("draft_interpretation_denied（核验器说明，模型撰写，仅供参考：需求里 不接入渲染循环 是用户没说过的限制）");
-    // 经扩展的错误过滤后原因仍能送到主代理
-    expect(deniedText({ isError: true, content: [{ type: "text", text: (error as Error).message }] }, "requirement_interaction_denied"))
-      .toBe("requirement_interaction_denied:draft_interpretation_denied（核验器说明，模型撰写，仅供参考：需求里 不接入渲染循环 是用户没说过的限制）");
+    expect(error).toMatchObject({ code: "draft_interpretation_denied" });
+    expect((error as Error).message).toBe("one_company_requirement_manage 的 create 动作失败。\n原因：核验器认为草稿与用户原话不符：核验器说明，模型撰写，仅供参考：需求里「不接入渲染循环」是用户没说过的限制\n建议：按核验器说明改正草稿中与用户原话不符的部分后重试");
     for (const reply of ['{"allow":false,"reason":1}', '{"allow":false,"why":"x"}', '{"allow":"false"}']) {
       w.capture(); scriptReplies(w.provider, [{ type: "text", text: reply }]);
       const error = await w.call(input).catch((caught: Error) => caught);
-      expect(String(error)).toContain("draft_interpretation_denied");
-      expect(String(error)).not.toContain("核验器说明");
+      expect(error).toMatchObject({ code: "draft_not_requested" });
+      expect(String(error)).toContain("原因：核验模型的回答格式不对");
     }
     expect(w.provider.requests.find((request) => request.systemPrompt?.includes("草拟意图核验器"))!.systemPrompt).toContain('{"allow":boolean,"reason":string}');
     w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true,"reason":"用户要求整理登录需求"}' }]);
@@ -154,14 +151,14 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(await git(directory, ["rev-list", "--count", "HEAD"])).toBe("1");
     expect(await git(directory, ["show", "--pretty=format:", "--name-only", "HEAD"])).toBe("prod.md");
     expect(await git(directory, ["show", "-s", "--format=%an <%ae>", "HEAD"])).toBe("pi prod storage <pi-prod-storage@localhost>");
-    await expect(w.call({ ...p, operationId: uuidv7(), requestId: uuidv7(), title: "无关付款" })).rejects.toThrow(/requirement_already_bound/);
+    await expect(w.call({ ...p, operationId: uuidv7(), requestId: uuidv7(), title: "无关付款" })).rejects.toMatchObject({ code: "requirement_already_bound" });
   });
   test("M8A-AC9：正文不是五大板块时批准被拒，不调用模型、不激活，并写明期望与实际", async () => {
     const w = await world();
     const created = await w.create("## 手机号登录 {#A}\n增加手机号登录。\n"), { input } = await w.request(created);
     const before = w.provider.requests.length;
     await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toThrow(
-      "requirement_host_denied:prod_sections_required（顶层须为二级标题且依次为 background、requirements、features、implementation、acceptance，当前为 A）");
+      "原因：需求正文不符合需求文档规范：顶层须为二级标题且依次为 background、requirements、features、implementation、acceptance，当前为 A");
     expect(w.provider.requests).toHaveLength(before);
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
     expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
@@ -195,7 +192,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "SKILL.md"), "---\nname: requirement-doc\nsections:\n  - { id: a, title: 甲, record: implementation }\n  - { id: a, title: 乙, record: acceptance }\n---\n");
     const created = await w.create(), { input } = await w.request(created), before = w.provider.requests.length;
-    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toThrow(`requirement_doc_invalid（需求文档规范 ${join(dir, "SKILL.md")} 无效：板块编号 a 重复）`);
+    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toThrow(`原因：读取需求文档规范失败：需求文档规范 ${join(dir, "SKILL.md")} 无效：板块编号 a 重复`);
     expect(w.provider.requests).toHaveLength(before);
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
     expect(state.read(input.requirementId).data).toMatchObject({ lifecycle: "draft" });
@@ -269,7 +266,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
       await state.beginClose(${JSON.stringify({ requirementId, version: Number(created.version), intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } })});`;
     await exec(process.execPath, ["--input-type=module", "-e", script]);
     expect(() => w.interaction.assertDelivery(otherResultId, w.ctx)).toThrow(/stale_result/);
-    await expect(w.call({ action: "read", requirementId, source: "saved" })).rejects.toThrow(/lifecycle_denied/);
+    await expect(w.call({ action: "read", requirementId, source: "saved" })).rejects.toMatchObject({ code: "lifecycle_denied" });
     const metadata = await w.call({ action: "metadata", requirementId });
     expect(Object.keys(metadata).sort()).toEqual(["epoch", "lifecycle", "requirementId", "version"]);
     expect(metadata.lifecycle).toBe("closing");
@@ -340,7 +337,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
       expect(texts.every((text) => text === PHONE)).toBe(true);
       const directory = join(w.dataRoot, "repos", w.repoId, "requirements", String(created.requirementId));
       expect(await git(directory, ["rev-list", "--count", "HEAD"])).toBe("4");
-      now = 101000; await expect(w.call({ action: "confirmUpdate", ...inputFor(saved) })).rejects.toThrow(/current_input_required/);
+      now = 101000; await expect(w.call({ action: "confirmUpdate", ...inputFor(saved) })).rejects.toMatchObject({ code: "current_input_required" });
     } finally { capture.mockRestore(); complete.mockRestore(); prepare.mockRestore(); interpreted.mockRestore(); }
   });
   for (const change of ["revoke", "expiry", "input", "resave"] as const) test(`受控重解释在模型等待期间${change}拒绝迟到结果`, async () => {
@@ -363,8 +360,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await rejected; await new Promise((r) => setTimeout(r, 510));
     expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"))).toEqual(before);
   });
-  test("服务层带错误代码的失败原样返回该代码，普通异常仍只报 interaction_denied", async () => {
-    for (const [thrown, code] of [[new RequirementServiceError("stale_version", "详细说明不回显"), "stale_version"], [new Error("fixture_plain_failure"), "interaction_denied"]] as const) {
+  test("服务层带原因的失败原样交出原因，普通异常只说被拒、不回显原始消息", async () => {
+    for (const [thrown, code] of [[new RequirementServiceError("stale_version", "详细说明"), "stale_version"], [new Error("fixture_plain_failure"), "interaction_denied"]] as const) {
       const w = await world(), created = await w.create();
       const fail = vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementation(() => { throw thrown; });
       try {
@@ -372,7 +369,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
         const error = await w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
           title: "登录", body: BODY + "补充。\n" }).catch((caught: unknown) => caught);
         expect(error).toMatchObject({ code });
-        expect(String((error as Error).message)).not.toContain("详细说明");
+        expect((error as Error).message).toContain(code === "stale_version" ? "原因：需求在读取后已被改动，提交用的版本号过期了：详细说明" : "原因：需求操作被拒绝，底层没有给出可说明的原因");
+        expect((error as Error).message).not.toContain("fixture_plain_failure");
       } finally { fail.mockRestore(); }
     }
   });
@@ -398,6 +396,6 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(first.text).not.toContain("�"); expect(first.coverage).toMatchObject({ complete: false, blocking: ["incomplete_prod_read", "global_constraints_and_unresolved_may_be_outside_page"] });
     const cursor = (first.coverage as { nextCursor: string }).nextCursor;
     expect(await w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor })).toHaveProperty("text");
-    w.capture("新输入"); await expect(w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor })).rejects.toThrow(/cursor_expired/);
+    w.capture("新输入"); await expect(w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor })).rejects.toMatchObject({ code: "cursor_expired" });
   });
 });

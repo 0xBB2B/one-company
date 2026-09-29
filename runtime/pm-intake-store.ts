@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { adviceIn } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { performance } from "node:perf_hooks";
 import { isPromise } from "node:util/types";
 import { Value } from "typebox/value";
@@ -26,12 +28,54 @@ export const PM_INTAKE_NAMESPACES = Object.freeze({
 } as const);
 export const PM_INTAKE_ENVELOPE_BYTES = 49_152;
 
+const PM_INTAKE_STORE_ADVICE: Record<string, FailureAdvice> = {
+  approval_record_missing: { why: "找不到批准记录", next: "停止操作，不要重试；把这段原因告诉用户" },
+  async_callback: { why: "回调不能是异步的", next: "停止操作，不要重试；把这段原因告诉用户" },
+  binding_changed: { why: "PM 与需求、工作区的绑定已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
+  current_proof_changed: { why: "当前的核对依据已变化", next: "重新发起一次" },
+  decision_changed: { why: "相关决定已被改动", next: "重新读取需求后按最新版本再试" },
+  directory_conflict: { why: "接手出处目录冲突", next: "停止操作，不要重试；把这段原因告诉用户" },
+  foreign_repo: { why: "仓库不属于当前需求", next: "改用当前工作区列出的仓库编号" },
+  impact_provider_unavailable: { why: "读不到接手影响分析", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  incomplete_scenario_directory: { why: "接手出处目录缺少必需场景", next: "停止操作，不要重试；把这段原因告诉用户" },
+  intake_frame_limit: { why: "接手复核记录数量超出上限", next: "停止操作，不要重试；把这段原因告诉用户" },
+  intake_records_changed: { why: "接手复核记录在处理期间被改动", next: "重新发起一次" },
+  invalid_binding: { why: "PM 绑定记录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  invalid_deadline: { why: "复核期限设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  invalid_repo: { why: "仓库编号不合规", next: "改用当前工作区列出的仓库编号" },
+  invalid_request: { why: "复核请求不合规", next: "用 forward 重新取当前的复核请求" },
+  invalid_requirement: { why: "需求编号不合规", next: "核对需求编号" },
+  invalid_shape: { why: "接手复核记录格式不合规", next: "按原因改正后重试" },
+  invalid_source_directory: { why: "接手出处目录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  invalid_time: { why: "系统时间不可用", next: "停止操作，不要重试；把这段原因告诉用户" },
+  main_deadline_elapsed: { why: "复核已超过期限", next: "用 forward 重新取当前的复核请求" },
+  manifest_binding_changed: { why: "批准清单绑定已变化", next: "重新读取需求后按最新版本再试" },
+  operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "换一个新生成的操作编号重试" },
+  pm_missing: { why: "这个需求当前没有 PM", next: "先派出 PM" },
+  pm_run_claim_changed: { why: "PM 运行的绑定已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
+  question_changed: { why: "相关问题记录已被改动", next: "重新读取需求后按最新版本再试" },
+  request_already_reviewed: { why: "这个复核请求已经复核过", next: "用 forward 取当前的复核请求" },
+  request_changed: { why: "复核请求在处理期间被改动", next: "用 forward 重新取当前的复核请求" },
+  request_missing: { why: "找不到这个复核请求", next: "用 forward 取当前的复核请求" },
+  request_not_current: { why: "这个复核请求已不是当前的请求", next: "用 forward 重新取当前的复核请求" },
+  resource_limit: { why: "内容超出上限", next: "精简内容后重试" },
+  source_directory_limit: { why: "接手出处数量超出上限", next: "停止操作，不要重试；把这段原因告诉用户" },
+  source_directory_mismatch: { why: "接手出处目录与需求当前版本不一致", next: "请 PM 按当前版本重新提交接手理解" },
+  stale_pm_lease: { why: "PM 的租约已失效，可能已过期或被新 PM 接管", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
+  stored_record_invalid: { why: "已存的接手复核记录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  unknown_requirement: { why: "找不到这个需求", next: "核对需求编号" },
+  untrusted_prepared: { why: "准备好的复核记录不是宿主生成的", next: "停止操作，不要重试；把这段原因告诉用户" },
+  untrusted_proof: { why: "核对依据不是宿主生成的", next: "停止操作，不要重试；把这段原因告诉用户" },
+  workspace_claim_changed: { why: "需求工作区的占用已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
+};
 export class PmIntakeStoreError extends Error {
   readonly code: string;
+  readonly advice: FailureAdvice;
   constructor(code: string) {
     super(`PM 接手存储被拒绝：${code}`);
     this.name = "PmIntakeStoreError";
     this.code = code;
+    this.advice = adviceIn(PM_INTAKE_STORE_ADVICE, code);
   }
 }
 

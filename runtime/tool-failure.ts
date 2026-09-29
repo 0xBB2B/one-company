@@ -76,3 +76,9 @@ export function commandOutputTail(error: unknown, lines = 3, limit = 300): strin
   const tail = raw.split("\n").map((line) => line.trim()).filter(Boolean).slice(-lines).join(" / ");
   return tail.length > limit ? `…${tail.slice(-limit)}` : tail;
 }
+
+/** 按码查原因与建议；码不在表里时说明是未归类的拒绝，仍给出下一步。 */
+export function adviceIn(table: Readonly<Record<string, FailureAdvice>>, code: string, detail?: string): FailureAdvice {
+  const base = Object.hasOwn(table, code) ? table[code]! : { why: `未归类的拒绝（${code}）`, next: "重试一次；仍然失败就把这段原因告诉用户" };
+  return withDetail(base, detail);
+}

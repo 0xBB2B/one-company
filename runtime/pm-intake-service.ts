@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { adviceIn } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { performance } from "node:perf_hooks";
 import { isPromise } from "node:util/types";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
@@ -90,12 +92,48 @@ export interface IntakeReviewView {
   userAuthorizationCreated: false;
 }
 
+const PM_INTAKE_SERVICE_ADVICE: Record<string, FailureAdvice> = {
+  approval_manifest_unavailable: { why: "读不到批准清单", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  approved_partition_changed: { why: "批准版本的章节划分已变化，接手理解需要按新版本重做", next: "请 PM 按新的批准版本重新提交接手理解" },
+  approved_prod_changed: { why: "批准版本已变化，接手理解需要按新版本重做", next: "请 PM 按新的批准版本重新提交接手理解" },
+  binding_changed: { why: "PM 与需求、工作区的绑定已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
+  deadline_store_binding_unsupported: { why: "接手复核的期限配置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  foreign_request: { why: "这个复核请求不属于当前需求或 PM", next: "用 forward 重新取当前的复核请求" },
+  impact_provider_unavailable: { why: "读不到接手影响分析", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  intake_not_ready: { why: "PM 还没提交接手理解", next: "等 PM 提交接手理解后再复核" },
+  invalid_deadline: { why: "复核期限设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  invalid_operation: { why: "操作编号不合规", next: "换一个新生成的操作编号重试" },
+  invalid_repo: { why: "仓库编号不合规", next: "改用当前工作区列出的仓库编号" },
+  invalid_review_decision: { why: "复核结论不合规，四类核对结果必须齐全且格式正确", next: "按原因改正后重试" },
+  invalid_shape: { why: "接手复核参数不合规", next: "按原因改正后重试" },
+  invalid_signal: { why: "取消信号不可用", next: "停止操作，不要重试；把这段原因告诉用户" },
+  main_call_changed: { why: "主代理的复核调用在处理期间被改动", next: "重新发起一次" },
+  main_call_provider_unavailable: { why: "读不到主代理的复核调用", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  main_deadline_elapsed: { why: "复核已超过期限", next: "用 forward 重新取当前的复核请求" },
+  operation_cancelled: { why: "操作被取消", next: "需要时重新发起" },
+  pm_not_ready: { why: "PM 还没准备好接手", next: "等 PM 读完批准正文并提交接手理解" },
+  request_not_current: { why: "这个复核请求已不是当前的请求", next: "用 forward 重新取当前的复核请求" },
+  result_changed: { why: "返回结果前复核记录被改动", next: "重新发起一次" },
+  scenario_coverage_incomplete: { why: "接手理解没有覆盖所有必需场景", next: "请 PM 补齐场景覆盖后重新提交" },
+  source_directory_mismatch: { why: "接手出处目录与需求当前版本不一致", next: "请 PM 按当前版本重新提交接手理解" },
+  source_directory_provider_unavailable: { why: "读不到接手出处目录", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  source_directory_unavailable: { why: "接手出处目录不可用", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  submission_binding_mismatch: { why: "PM 提交的接手理解与当前 PM 不对应", next: "停止操作，不要重试；把这段原因告诉用户" },
+  submission_changed: { why: "PM 提交的接手理解在复核期间被改动", next: "用 forward 重新取当前的复核请求" },
+  submission_hash_mismatch: { why: "PM 提交的接手理解内容与登记不一致", next: "停止操作，不要重试；把这段原因告诉用户" },
+  submission_provider_unavailable: { why: "读不到 PM 提交的接手理解", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  submission_unavailable: { why: "PM 还没有可复核的接手理解", next: "等 PM 提交接手理解后再复核" },
+  unproven_result: { why: "结果不是本工具刚生成的", next: "停止操作，不要重试；把这段原因告诉用户" },
+  untrusted_main_call: { why: "复核调用不是宿主看到的真实主代理调用", next: "重新发起一次" },
+};
 export class PmIntakeServiceError extends Error {
   readonly code: string;
+  readonly advice: FailureAdvice;
   constructor(code: string) {
     super(`PM 接手服务被拒绝：${code}`);
     this.name = "PmIntakeServiceError";
     this.code = code;
+    this.advice = adviceIn(PM_INTAKE_SERVICE_ADVICE, code);
   }
 }
 

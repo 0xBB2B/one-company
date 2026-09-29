@@ -1,4 +1,6 @@
 import { performance } from "node:perf_hooks";
+import { adviceIn } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import type {
   ExtensionContext,
   ToolCallEvent,
@@ -82,12 +84,37 @@ const MAX_PENDING = 32;
 const DEFAULT_TTL_MS = 30_000;
 const signalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")!.get!;
 
+const MAIN_INTAKE_ADVICE: Record<string, FailureAdvice> = {
+  delivery_changed: { why: "结果送达前内容或上下文被改动", next: "重新发起一次" },
+  delivery_unavailable: { why: "结果已过期或不属于本次调用", next: "重新发起一次" },
+  disposed: { why: "接手复核已关闭，所在会话已结束", next: "停止操作，不要重试；把这段原因告诉用户" },
+  duplicate_tool_call: { why: "同一个工具调用编号被重复使用", next: "重新发起一次" },
+  foreign_repo: { why: "repoId 不是当前窗口工作区里的仓库", next: "改用当前工作区列出的仓库编号" },
+  invalid_options: { why: "接手复核配置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  invalid_shape: { why: "接手复核参数不合规", next: "按原因改正后重试" },
+  invalid_signal: { why: "取消信号不可用", next: "停止操作，不要重试；把这段原因告诉用户" },
+  invalid_ttl: { why: "有效期设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
+  operation_cancelled: { why: "操作被取消", next: "需要时重新发起" },
+  requirement_not_bound: { why: "当前窗口没有绑定这个需求", next: "请用户用 /one:requirement-select 选择需求，或用当前绑定的需求编号" },
+  response_budget_exceeded: { why: "返回内容超出上限", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  session_not_started: { why: "会话还没准备好", next: "稍等几秒再试" },
+  source_directory_provider_unavailable: { why: "读不到接手出处目录", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  stale_context: { why: "会话或窗口已切换，本次操作作废", next: "在当前窗口里重新发起" },
+  stale_delivery: { why: "结果送达前已过期或被取消", next: "重新发起一次" },
+  stale_host: { why: "窗口或会话已切换，本次操作作废", next: "在当前窗口里重新发起" },
+  stale_tool_call: { why: "工具调用已过期", next: "重新发起一次" },
+  submission_provider_unavailable: { why: "读不到 PM 提交的接手理解", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  tool_call_limit: { why: "进行中的工具调用太多", next: "等已有调用结束后再试" },
+  unobserved_tool_call: { why: "宿主没有看到这次工具调用的发起", next: "重新发起一次" },
+};
 export class MainIntakeInteractionError extends Error {
   readonly code: string;
+  readonly advice: FailureAdvice;
   constructor(code: string) {
     super(`pm_intake_interaction_denied:${code}`);
     this.name = "MainIntakeInteractionError";
     this.code = code;
+    this.advice = adviceIn(MAIN_INTAKE_ADVICE, code);
   }
 }
 
