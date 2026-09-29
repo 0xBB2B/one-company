@@ -1,4 +1,6 @@
 import { posix } from "node:path";
+import { withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { activeCheckRoundIn } from "./check-round.ts";
 import { repositoryDatabase, withDatabase } from "./database.ts";
@@ -8,14 +10,32 @@ import type { TaskAttempt, TaskRecord, TaskReview } from "./plan-manage.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 
-export type TaskDispatchErrorCode = "intake_gate" | "pending_update" | "plan_not_confirmed" | "task_not_ready" | "dependency_pending"
-  | "question_pending" | "check_phase_active" | "retry_required" | "retry_exhausted" | "retry_not_needed" | "requirement_halted"
-  | "write_scope_busy" | "rework_required" | "rework_exhausted" | "rework_not_needed" | "round_not_open";
+const TASK_DISPATCH_ADVICE = {
+  intake_gate: { why: "接手核对还没通过，或 PM 租约已失效", next: "先完成接手核对；租约已失效时停止操作，由主代理决定是否重新派出 PM" },
+  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 plan_manage assess-update 逐任务复核新版本，再派工" },
+  plan_not_confirmed: { why: "任务不在已冻结的计划里", next: "先用 plan_manage confirm 冻结计划，再按冻结后的任务派工" },
+  task_not_ready: { why: "任务当前状态不允许这个操作", next: "用 plan_manage read 查看任务状态，按原因处理后再试" },
+  dependency_pending: { why: "任务依赖的任务还没完成", next: "先完成这些依赖任务再派" },
+  question_pending: { why: "还有未决问题等用户回答", next: "先请用户回答这些问题再派" },
+  check_phase_active: { why: "检查阶段进行中，不能派 worker", next: "等检查轮结束后再派" },
+  retry_required: { why: "任务上次尝试没完成，再派必须带 retry（原因与新的轮次上限）", next: "核对上次的原因后带 retry 重派" },
+  retry_exhausted: { why: "任务已用完重试机会", next: "用 workflow_manage escalate 把任务交用户裁决" },
+  retry_not_needed: { why: "这次派工不需要 retry", next: "去掉 retry 后再派" },
+  requirement_halted: { why: "有任务被用户终止，需求整体暂停", next: "等用户调整需求或取消需求，不要再派工" },
+  write_scope_busy: { why: "任务的写入范围与正在执行、待审查或待返修的任务重叠", next: "等这些任务结束后再派" },
+  rework_required: { why: "审查打回后再派必须带 rework（原因与新的轮次上限）", next: "核对审查意见后带 rework 派 worker 返修" },
+  rework_exhausted: { why: "任务已用完返修机会", next: "用 workflow_manage escalate 把任务交用户裁决" },
+  rework_not_needed: { why: "这次派工不需要 rework", next: "去掉 rework 后再派" },
+  round_not_open: { why: "没有开放中的检查轮", next: "按原因开检查轮后再派 QA" },
+} as const satisfies Record<string, FailureAdvice>;
+export type TaskDispatchErrorCode = keyof typeof TASK_DISPATCH_ADVICE;
 export class TaskDispatchError extends Error {
   readonly code: TaskDispatchErrorCode;
   readonly detail: string[];
+  readonly advice: FailureAdvice;
   constructor(code: TaskDispatchErrorCode, detail: string[] = []) {
     super(detail.length ? `${code}: ${detail.join("；")}` : code); this.name = "TaskDispatchError"; this.code = code; this.detail = detail;
+    this.advice = withDetail(TASK_DISPATCH_ADVICE[code], detail.join("；"));
   }
 }
 function deny(code: TaskDispatchErrorCode, detail: string[] = []): never { throw new TaskDispatchError(code, detail); }

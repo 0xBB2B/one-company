@@ -191,7 +191,7 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   await until(() => w.task("d").status === "awaiting_review");
   await w.manager.stop(c.runId, { reason: "main_agent" });
   expect(await w.manager.workflowManage(w.fixture.requirementId, { action: "delivery-check" }))
-    .toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["task_review_missing"]) });
+    .toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["有任务还没经过审查"]) });
 });
 
 test("M8B-AC2：worker 与 reviewer 的上下文含用户批准的项目规范", async () => {

@@ -18,7 +18,7 @@ import { detectMcpAdapter } from "../runtime/mcp.ts";
 import type { McpConfig } from "../runtime/mcp.ts";
 import { createPmTools } from "./pm-tools.ts";
 import { createSubagentTools } from "./subagent-tools.ts";
-import { beginTaskAttempt, beginTaskReview, finishTaskAttempt, finishTaskReview, TaskDispatchError } from "../runtime/task-dispatch.ts";
+import { beginTaskAttempt, beginTaskReview, finishTaskAttempt, finishTaskReview } from "../runtime/task-dispatch.ts";
 import { confirmedPlanKey, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../runtime/plan-manage.ts";
 import type { TaskAttempt, TaskRecord as PlanTask, TaskReview } from "../runtime/plan-manage.ts";
 import { VERDICTS } from "../runtime/verdicts.ts";
@@ -414,14 +414,9 @@ export class RunManager {
     // 先过派工门槛再建运行记录：被门槛拒绝的派工不留下失败运行
     const runId = uuidv7();
     let maxTurns: number, attemptRunId: string | undefined;
-    try {
-      ({ maxTurns, attemptRunId } = review
-        ? beginTaskReview({ ...ref, lease, taskId: task.taskId, runId, maxTurns: input.review!.maxTurns })
-        : { ...beginTaskAttempt({ ...ref, lease, taskId: task.taskId, runId, retry: input.retry, rework: input.rework ?? null }), attemptRunId: undefined });
-    } catch (error) {
-      if (error instanceof TaskDispatchError) throw protocolError(error.code, error.message);
-      throw error;
-    }
+    ({ maxTurns, attemptRunId } = review
+      ? beginTaskReview({ ...ref, lease, taskId: task.taskId, runId, maxTurns: input.review!.maxTurns })
+      : { ...beginTaskAttempt({ ...ref, lease, taskId: task.taskId, runId, retry: input.retry, rework: input.rework ?? null }), attemptRunId: undefined });
     const fail = () => review ? finishTaskReview({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" })
       : finishTaskAttempt({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" });
     let run: RunRecord;

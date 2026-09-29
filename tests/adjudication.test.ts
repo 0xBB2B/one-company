@@ -85,7 +85,7 @@ test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项�
   const pmWorkflow = pmTools.tools.find((tool) => tool.name === "one_company_workflow_manage")!;
   const escalate = (taskId: string) => pmWorkflow.execute("pm-escalate", { action: "escalate", taskId, note: "change_apply 挡住了写入，需要你决定是否再试" },
     undefined, undefined, undefined as never);
-  await expect(escalate(task("failure").taskId)).rejects.toThrow(/task_not_ready/);
+  await expect(escalate(task("failure").taskId)).rejects.toThrow("原因：任务当前状态不允许这个操作：failure:pending 不在等待 PM 处置");
   await expect(w.manager.workflowManage(w.fixture.requirementId, { action: "escalate", taskId: login, note: "主代理不能上报" })).rejects.toMatchObject({ code: "action_not_allowed", advice: { why: "当前角色的职责不允许这个动作：主代理 不能做 escalate" } });
   await escalate(login);
   expect(task("login").status).toBe("awaiting_user");
