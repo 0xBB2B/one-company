@@ -54,3 +54,17 @@ export class ToolFailure extends Error {
 export function toolFailure(step: string, error: unknown): ToolFailure {
   return error instanceof ToolFailure ? error : new ToolFailure(step, error);
 }
+
+export function withDetail(base: FailureAdvice, detail?: string): FailureAdvice {
+  return detail ? { why: `${base.why}：${detail}`, next: base.next } : base;
+}
+
+const STOP = "停止操作，不要重试；在回复里说明，由上级处理";
+export const COMMON_ADVICE = {
+  tool_closed: { why: "本工具已关闭，所在会话已结束或已被撤权", next: STOP },
+  action_not_allowed: { why: "当前角色的职责不允许这个动作", next: "改用职责内的动作；确实需要时在回复里说明，由上级处理" },
+  session_inactive: { why: "宿主确认本会话已不再有效，可能已结束、被停止或被取代", next: STOP },
+  open_failed: { why: "工具初始化失败", next: "重试一次；仍然失败就在回复里说明原因，由上级处理" },
+  invalid_shape: { why: "参数不符合该动作的格式", next: "按工具说明改正字段后重试" },
+  internal_state: { why: "本机记录与预期不一致", next: "停止操作，把这段原因告诉用户" },
+} as const satisfies Record<string, FailureAdvice>;

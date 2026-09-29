@@ -146,7 +146,8 @@ test("M6-AC17：已批准更新登记 pendingRevision；逐任务复核仍有 un
   expect(second.pendingRevision).toBe(second.revision);
   await expect(w.rounds.openRound({ lease: w.lease })).rejects.toMatchObject({ code: "pending_update" });
   await expect(w.state.checkScheduling(w.lease)).rejects.toThrow(/pending_update/);
-  await expect(w.assess(second.revision, [{ taskId: "move", impact: "unaffected", reason: "x" }], { lease: { ...w.lease, fence: w.lease.fence + 1 } })).rejects.toThrow(/stale_pm_lease/);
+  await expect(w.assess(second.revision, [{ taskId: "move", impact: "unaffected", reason: "x" }], { lease: { ...w.lease, fence: w.lease.fence + 1 } })).rejects.toMatchObject({ code: "stale_pm_lease",
+    advice: { why: "本 PM 的租约已失效，可能已过期或被新 PM 接管", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" } });
   await expect(w.assess(second.revision - 1, [{ taskId: "move", impact: "unaffected", reason: "x" }])).rejects.toThrow(/assessment_conflict/);
   await expect(w.assess(second.revision, [])).rejects.toThrow(/invalid_shape/);
   const stillUnknown = await w.assess(second.revision, [{ taskId: "move", impact: "unaffected", reason: "章节未变" }, { taskId: "sprint", impact: "unknown", reason: "待分析" }]);

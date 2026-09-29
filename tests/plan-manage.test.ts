@@ -103,7 +103,8 @@ test("M7-AC7：reviewer 只能读取计划，不能提出、修改、冻结或�
   const reviewer = await w.tool("reviewer");
   for (const params of [{ action: "propose", tasks: [spec("x")] }, { action: "confirm", planVersion: 1 },
     { action: "update", planVersion: 1, add: [spec("x")] }, { action: "assess-update", revision: 1, assessmentId: uuidv7(), tasks: [], global: { assessment: "unaffected", rationale: "无" } }]) {
-    await expect(reviewer.execute(params)).rejects.toMatchObject({ code: "plan_denied" });
+    await expect(reviewer.execute(params)).rejects.toMatchObject({ code: "action_not_allowed",
+      advice: { why: `当前角色的职责不允许这个动作：reviewer 不能做 ${params.action}` } });
   }
   expect(await reviewer.execute({ action: "read" })).toEqual({ plan: null });
 }, 30000);

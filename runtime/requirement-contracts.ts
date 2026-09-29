@@ -1,4 +1,6 @@
 import { Type } from "typebox";
+import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import type { Static, TProperties, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { UUID_V7_PATTERN } from "./database.ts";
@@ -129,9 +131,74 @@ export const commands = {
   acknowledgeApproved: object({ lease: PmLease, eventId: id, sequence: positive, revision: positive, reference: ProdReference }),
 };
 
+const REREAD = "重新读取需求状态后再决定下一步";
+const STOP = "停止操作，不要重试；在回复里说明，由上级处理";
+const REQUIREMENT_STATE_ADVICE = {
+  invalid_shape: COMMON_ADVICE.invalid_shape,
+  invalid_state: { why: "需求记录与工作区绑定不一致", next: COMMON_ADVICE.internal_state.next },
+  state_changed_during_read: { why: "读取期间需求状态被并发改动", next: "重新读取一次" },
+  counter_exhausted: { why: "需求的内部计数已到上限", next: COMMON_ADVICE.internal_state.next },
+  foreign_repository: { why: "请求的仓库不是当前需求所在的仓库", next: "改用当前工作区的仓库" },
+  authorization_required: { why: "宿主没有授权这次需求状态操作", next: STOP },
+  unknown_requirement: { why: "找不到这个需求", next: "核对需求编号；需求可能尚未创建或已被清理" },
+  identity_conflict: { why: "需求编号与记录不一致", next: COMMON_ADVICE.internal_state.next },
+  approval_record_missing: { why: "找不到这个需求的批准操作记录", next: COMMON_ADVICE.internal_state.next },
+  recovery_required: { why: "需求记录需要先恢复核对才能继续", next: "停止操作，请用户在主窗口完成恢复核对" },
+  lifecycle_denied: { why: "需求当前的阶段不允许这个操作，可能是草稿、正在关闭或已关闭", next: REREAD },
+  invalid_pm_owner: { why: "PM 租约记录不一致", next: STOP },
+  invalid_pm_event_cursor: { why: "PM 已收到的批准事件位置记录不一致", next: STOP },
+  event_identity_conflict: { why: "批准事件不属于这个需求或与登记不符", next: COMMON_ADVICE.internal_state.next },
+  approved_event_invalid: { why: "批准事件记录不完整", next: COMMON_ADVICE.internal_state.next },
+  invalid_pm_context: { why: "PM 会话的接手上下文已换代", next: STOP },
+  request_conflict: { why: "同一操作编号已用于内容不同的请求", next: "换一个新生成的操作编号重试" },
+  identity_collision: { why: "需求编号已被占用", next: "换一个新生成的编号重试" },
+  base_commit_changed: { why: "工作区的基线提交已变化", next: "重新准备需求工作区" },
+  workspace_already_bound: { why: "需求已绑定了另一个工作区", next: "沿用已绑定的工作区，或先回收再重新准备" },
+  workspace_occupied: { why: "这个工作区已被别的需求占用", next: "为本需求准备新的工作区" },
+  workspace_claim_missing: { why: "找不到工作区的占用登记", next: COMMON_ADVICE.internal_state.next },
+  operation_conflict: { why: "同一操作编号已用于不同的需求或内容", next: "换一个新生成的操作编号重试" },
+  saved_event_missing: { why: "找不到已保存版本的事件记录", next: COMMON_ADVICE.internal_state.next },
+  manifest_required: { why: "批准需要附带批准清单", next: "先生成批准清单再批准" },
+  manifest_authorization_required: { why: "宿主没有授权这份批准清单", next: "请用户在主窗口重新确认批准" },
+  workspace_binding_changed: { why: "需求的工作区绑定已变化", next: STOP },
+  saved_version_mismatch: { why: "要批准的版本不是当前保存的版本", next: "重新读取当前保存版本，按它重新确认" },
+  approval_conflict: { why: "这个版本已按另一份批准清单批准过", next: REREAD },
+  manifest_stale: { why: "批准期间需求记录被并发改动", next: "重新读取后再批准" },
+  workspace_not_ready: { why: "需求还没有准备好工作区", next: "先用项目管理工具准备需求工作区" },
+  pm_already_owned: { why: "这个需求已有一个有效的 PM", next: "查询现有 PM 的运行状态，不要重复派出" },
+  stale_fence: { why: "PM 租约代次已变化，可能刚有新 PM 接手", next: REREAD },
+  pm_run_already_bound: { why: "这个 PM 运行已绑定到别的需求或工作区", next: STOP },
+  stale_pm_lease: { why: "本 PM 的租约已失效，可能已过期或被新 PM 接管", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
+  pm_run_binding_changed: { why: "本 PM 运行与需求的绑定已变化", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
+  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 plan_manage assess-update 逐任务复核新版本，再继续" },
+  baseline_changed: { why: "接手时的批准基线已变化", next: "重新读取批准正文后再提交接手理解" },
+  event_gap: { why: "批准事件没有按顺序送达", next: STOP },
+  approved_version_missing: { why: "需求还没有批准版本", next: "等用户批准需求后再继续" },
+  baseline_not_required: { why: "当前不需要再送接手基线", next: REREAD },
+  stale_baseline_delivery: { why: "接手基线的送达记录已过时", next: STOP },
+  stale_event_delivery: { why: "批准事件的送达记录已过时", next: STOP },
+  assessment_conflict: { why: "复核针对的不是当前待复核的批准版本", next: REREAD },
+  close_intent_conflict: { why: "需求已有另一个关闭请求在办理", next: "用 repair 续办已有的关闭，或按已有请求的原因处理" },
+  completion_blocked: { why: "还有未完成的事项，不能以完成关闭：可能有待复核的新版本、阻塞项或仍在运行的子代理", next: "先用 status 查看阻塞项并处理完再关闭" },
+  pm_not_revoked: { why: "PM 仍持有租约，不能完成关闭", next: "等 PM 停止后用 repair 续办关闭" },
+  invalid_git_ref_output: { why: "Git 返回的分支名无法识别", next: COMMON_ADVICE.internal_state.next },
+  absolute_workspace_required: { why: "工作区路径必须是绝对路径", next: COMMON_ADVICE.internal_state.next },
+  independent_worktree_required: { why: "需求工作区必须是独立的 Git worktree，不能是主仓库本身", next: "重新准备需求工作区" },
+  branch_required: { why: "需求工作区必须在一个分支上，不能处于分离状态", next: "请用户把工作区切回需求分支" },
+  close_basis_changed: { why: "关闭依据在确认后又发生了变化", next: "重新做交付核对，按新结果请用户决定" },
+  check_phase_active: { why: "检查阶段还没结束", next: "先结束检查轮再继续" },
+  completion_report_stale: { why: "用户验收的完成报告已不是最新依据", next: "请 PM 重新提交完成报告，用户验收后再关闭" },
+  archive_path_missing: { why: "找不到需求的归档位置", next: COMMON_ADVICE.internal_state.next },
+} as const satisfies Record<string, FailureAdvice>;
+export type RequirementStateErrorCode = keyof typeof REQUIREMENT_STATE_ADVICE;
+
 export class RequirementStateError extends Error {
-  readonly code: string;
-  constructor(code: string) { super(`需求状态操作被拒绝：${code}`); this.name = "RequirementStateError"; this.code = code; }
+  readonly code: RequirementStateErrorCode;
+  readonly advice: FailureAdvice;
+  constructor(code: RequirementStateErrorCode, detail?: string) {
+    super(`需求状态操作被拒绝：${code}`); this.name = "RequirementStateError"; this.code = code;
+    this.advice = withDetail(REQUIREMENT_STATE_ADVICE[code], detail);
+  }
 }
 
 export function checked<T extends TSchema>(schema: T, input: unknown): Static<T> {

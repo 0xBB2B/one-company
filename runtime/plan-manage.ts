@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isPromise } from "node:util/types";
@@ -130,14 +132,35 @@ const PlanRecord = object({
 });
 export type PlanRecord = Static<typeof PlanRecord>;
 
-export type PlanManageErrorCode = "plan_denied" | "invalid_shape" | "intake_gate" | "pending_update" | "plan_exists" | "plan_missing"
-  | "version_conflict" | "unknown_unit" | "unit_not_authorized" | "dependency_invalid" | "coverage_incomplete" | "task_not_ready"
-  | "assessment_incomplete" | "assessment_invalid";
+const PLAN_ADVICE = {
+  tool_closed: COMMON_ADVICE.tool_closed,
+  action_not_allowed: COMMON_ADVICE.action_not_allowed,
+  session_inactive: COMMON_ADVICE.session_inactive,
+  open_failed: COMMON_ADVICE.open_failed,
+  grant_invalid: { why: "派工身份与 PM 租约不一致", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
+  lease_required: { why: "这个动作只有持有租约的 PM 能做", next: "改用职责内的动作" },
+  invalid_shape: COMMON_ADVICE.invalid_shape,
+  intake_gate: { why: "接手核对还没通过，不能正式提出或修改计划", next: "先读完批准正文并提交接手理解，等主代理核对通过" },
+  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 assess-update 逐任务复核新版本，再提出或修改计划" },
+  plan_exists: { why: "本需求已有计划，不能再次提出", next: "用 read 读取现有计划，需要调整时用 update" },
+  plan_missing: { why: "本需求还没有计划", next: "先用 propose 提出计划" },
+  version_conflict: { why: "计划或需求在读取后已被改动", next: "用 read 读取最新计划，按最新版本号重新提交" },
+  unknown_unit: { why: "任务引用了批准正文里不存在的章节", next: "只引用批准正文里的章节编号" },
+  unit_not_authorized: { why: "任务目标不在用户批准的实施范围内", next: "把目标限定在实施授权覆盖的章节；需要扩大范围时请用户调整需求" },
+  dependency_invalid: { why: "任务的依赖、写入范围或审查设置不合规", next: "按原因改正任务后重新提交" },
+  coverage_incomplete: { why: "计划没有覆盖所有实施授权的目标章节", next: "为缺少的章节补任务后再确认" },
+  task_not_ready: { why: "任务当前状态不允许这个操作", next: "用 read 查看任务状态，按原因处理后再试" },
+  assessment_incomplete: { why: "复核没有覆盖所有受影响的任务", next: "为缺少的任务补上复核结论后重交" },
+  assessment_invalid: { why: "复核结论不成立", next: "按原因改正复核结论后重交" },
+} as const satisfies Record<string, FailureAdvice>;
+export type PlanManageErrorCode = keyof typeof PLAN_ADVICE;
 export class PlanManageError extends Error {
   readonly code: PlanManageErrorCode;
   readonly detail: string[];
+  readonly advice: FailureAdvice;
   constructor(code: PlanManageErrorCode, detail: string[] = []) {
     super(detail.length ? `${code}: ${detail.join("；")}` : code); this.name = "PlanManageError"; this.code = code; this.detail = detail;
+    this.advice = withDetail(PLAN_ADVICE[code], detail.join("；"));
   }
 }
 
@@ -207,20 +230,21 @@ export function readPlanIn(db: LocalDatabase, requirementId: string): { plan: Pl
 
 export async function createPlanManageTool(options: PlanManageToolOptions) {
   try { return await openPlanManageTool(options); }
-  catch { throw new PlanManageError("plan_denied"); }
+  catch (error) { throw error instanceof PlanManageError ? error : new PlanManageError("open_failed", [(error as Error).message]); }
 }
 
 async function openPlanManageTool(options: PlanManageToolOptions) {
   const grant = Object.freeze(checked(Grant, structuredClone(options.grant)));
-  if ((grant.role === "pm") !== (grant.lease !== undefined)) deny("plan_denied");
-  if (grant.lease && (grant.lease.requirementId !== grant.requirementId || grant.lease.runId !== grant.runId || grant.lease.workspaceId !== grant.workspaceId)) deny("plan_denied");
+  if ((grant.role === "pm") !== (grant.lease !== undefined)) deny("grant_invalid");
+  if (grant.lease && (grant.lease.requirementId !== grant.requirementId || grant.lease.runId !== grant.runId || grant.lease.workspaceId !== grant.workspaceId)) deny("grant_invalid");
   let disposed = false;
   function host(action: PlanManageAction) {
-    if (disposed || !authorizeToolAction(grant.role, "plan_manage", action)) deny("plan_denied");
+    if (disposed) deny("tool_closed");
+    if (!authorizeToolAction(grant.role, "plan_manage", action)) deny("action_not_allowed", [`${grant.role} 不能做 ${action}`]);
     let result: unknown;
-    try { result = options.authorize(Object.freeze({ grant, action })); } catch { return deny("plan_denied"); }
+    try { result = options.authorize(Object.freeze({ grant, action })); } catch (error) { return deny("session_inactive", [(error as Error).message]); }
     if (isPromise(result)) void Promise.prototype.then.call(result, () => undefined, () => undefined);
-    if (result !== true) deny("plan_denied");
+    if (result !== true) deny("session_inactive");
   }
   host("read");
   const config = { repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, repoId: grant.repoId };
@@ -233,14 +257,14 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (!record.data.approvalManifest) deny("task_not_ready", ["需求没有批准清单"]);
     return registeredApprovalManifestIn(db, grant.repoId, record.data.approvalManifest.reference, record);
   }
-  function lease() { if (!grant.lease) deny("plan_denied"); return structuredClone(grant.lease); }
+  function lease() { if (!grant.lease) deny("lease_required"); return structuredClone(grant.lease); }
 
   async function formalGate(): Promise<void> {
     const current = lease();
     const verdict = evaluatePmIntakeGate({ dataRoot: options.dataRoot, repoId: grant.repoId, lease: current });
     if (!verdict.allowed) deny("intake_gate", verdict.reasons);
     try { await state.checkScheduling(current); }
-    catch (error) { deny((error as { code?: string }).code === "pending_update" ? "pending_update" : "plan_denied"); }
+    catch (error) { if ((error as { code?: string }).code === "pending_update") deny("pending_update"); throw error; }
   }
 
   /** 事务外写入不可变的任务说明文件，登记时只存路径与指纹。 */
@@ -464,7 +488,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
 
   async function execute(input: unknown) {
     let params: PlanManageParameters;
-    try { params = checkServiceInput(PLAN_MANAGE_PARAMETERS, input); } catch { throw new PlanManageError("invalid_shape"); }
+    try { params = checkServiceInput(PLAN_MANAGE_PARAMETERS, input); } catch (error) { throw new PlanManageError("invalid_shape", [(error as Error).message]); }
     host(params.action);
     switch (params.action) {
       case "read": return read();
