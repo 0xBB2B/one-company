@@ -88,6 +88,7 @@ export interface StoredRecord<T = unknown> {
 }
 
 export class StaleVersionError extends Error {
+  readonly advice = { why: "记录在读取后被并发改动", next: "重新读取后再试" };
   constructor() { super("版本已变化，请重新读取后重试"); this.name = "StaleVersionError"; }
 }
 
@@ -101,6 +102,7 @@ export class AsyncTransactionError extends Error {
 }
 
 export class DatabaseUnavailableError extends Error {
+  readonly advice = { why: "本机数据库连接已关闭或失效", next: "稍后重试；反复出现就请用户重开窗口" };
   constructor() { super("数据库连接已关闭或失效，禁止继续使用"); this.name = "DatabaseUnavailableError"; }
 }
 

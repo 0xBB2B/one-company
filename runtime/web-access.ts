@@ -1,9 +1,20 @@
 import { request as httpRequest } from "node:http";
+import { adviceIn } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { request as httpsRequest } from "node:https";
 
+const WEB_ADVICE: Record<string, FailureAdvice> = {
+  fetch_failed: { why: "抓取网页失败", next: "换一个来源或稍后重试；仍然失败就在 research 的失败项里记下" },
+  rate_limited: { why: "搜索服务限流", next: "等一会再搜，或改用 web_fetch 直接读已知网址" },
+  search_failed: { why: "联网搜索失败", next: "换个关键词或稍后重试；仍然失败就在 research 的失败项里记下" },
+  url_rejected: { why: "这个网址不允许抓取", next: "改用公开的 http 或 https 网址" },
+};
 export class WebAccessError extends Error {
   readonly code: string;
-  constructor(code: string, detail?: string) { super(detail ? `${code}: ${detail}` : code); this.name = "WebAccessError"; this.code = code; }
+  readonly advice: FailureAdvice;
+  constructor(code: string, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code); this.name = "WebAccessError"; this.code = code; this.advice = adviceIn(WEB_ADVICE, code, detail);
+  }
 }
 
 export interface WebDeps { fetch: typeof fetch }

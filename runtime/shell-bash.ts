@@ -1,4 +1,5 @@
 import { uuidv7 } from "./database.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BashOperations, BashToolDetails, ToolDefinition, UserBashEvent as SdkUserBashEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -44,7 +45,9 @@ function waitForOutcome(registry: ShellRegistry, taskId: string): Promise<TaskRe
   });
 }
 
-export class UnsettledShellError extends Error {}
+export class UnsettledShellError extends Error {
+  get advice(): FailureAdvice { return { why: this.message, next: "不要重复执行同一命令；请用户用 /one:ps 查看它是否还在运行，确认结束后再继续" }; }
+}
 
 export function createManagedBashOperations(input: {
   registry: ShellRegistry;

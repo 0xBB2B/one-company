@@ -13,7 +13,7 @@ import type {
 } from "../runtime/shell-page.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import { sanitizeText } from "../runtime/text-sanitize.ts";
-import { AdvisedError, toolFailure } from "../runtime/tool-failure.ts";
+import { AdvisedError, adviceOf, toolFailure } from "../runtime/tool-failure.ts";
 import type { Host } from "../runtime/shell-registry.ts";
 import { startShellStatusRefresh } from "../runtime/shell-summary.ts";
 import type { ShellSummaryRepo } from "../runtime/shell-summary.ts";
@@ -89,7 +89,9 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
         cwd: execCtx?.cwd ?? process.cwd(),
         runToken: current.runToken,
       });
-      return routed.execute(toolCallId, params, signal, onUpdate, execCtx);
+      // 命令本身的失败原样交出；只有宿主写了原因的错误（如停止尚未确认）换成三段说明
+      try { return await routed.execute(toolCallId, params, signal, onUpdate, execCtx); }
+      catch (error) { throw adviceOf(error) ? toolFailure("bash", error) : error; }
     },
   });
 

@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { createProdDocument } from "./requirement-identity.ts";
 
+export class ProdViewError extends Error {
+  readonly code: string;
+  constructor(code: string) { super(code); this.name = "ProdViewError"; this.code = code; }
+}
+
 export const PROD_PAGE_BYTES = 16_384;
 export const PROD_MAX_PAGE_BYTES = 32_768;
 /** 紧凑JSON整包上限，另留2KiB供50KiB宿主的外层封装。maxBytes仍是原始text上限。 */
@@ -108,7 +113,7 @@ export function partitionProdDocument(requirementId: string, title: string, body
     else if (/^ {0,3}#{1,6}(?:[\t ]|$)/u.test(text)) {
       const explicit = /\{#([^{}]+)\}[\t ]*(?:#+[\t ]*)?$/u.exec(text);
       const id = explicit?.[1];
-      if (id && (!sectionId.test(id) || id.length > 96 || reserved.has(id) || seen.has(id))) throw new Error("invalid_approval_unit_id");
+      if (id && (!sectionId.test(id) || id.length > 96 || reserved.has(id) || seen.has(id))) throw new ProdViewError("invalid_approval_unit_id");
       if (id) seen.add(id);
       headings.push({ id, offset });
     }
@@ -122,7 +127,7 @@ export function partitionProdDocument(requirementId: string, title: string, body
       starts.push(...headings.map((h) => ({ id: h.id!, offset: h.offset })));
     }
   }
-  if (starts.length > 20) throw new Error("approval_unit_limit");
+  if (starts.length > 20) throw new ProdViewError("approval_unit_limit");
   return { prodHash: document.prodHash, totalBytes: bytes.length,
     units: starts.map((start, index) => {
       const endByte = starts[index + 1]?.offset ?? bytes.length;
@@ -142,9 +147,9 @@ export interface ProdTextPage {
 /** 字节预算内按Unicode码点切页，不拆开中文或emoji的UTF-8编码。 */
 export function pageProdText(text: string, startByte = 0, maxBytes = PROD_PAGE_BYTES): ProdTextPage {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 4 || maxBytes > PROD_MAX_PAGE_BYTES ||
-    !Number.isSafeInteger(startByte) || startByte < 0) throw new Error("invalid_page_range");
+    !Number.isSafeInteger(startByte) || startByte < 0) throw new ProdViewError("invalid_page_range");
   const bytes = Buffer.from(text);
-  if (startByte > bytes.length || (startByte < bytes.length && (bytes[startByte]! & 0xc0) === 0x80)) throw new Error("invalid_page_range");
+  if (startByte > bytes.length || (startByte < bytes.length && (bytes[startByte]! & 0xc0) === 0x80)) throw new ProdViewError("invalid_page_range");
   let endByte = Math.min(startByte + maxBytes, bytes.length);
   while (endByte < bytes.length && (bytes[endByte]! & 0xc0) === 0x80) endByte--;
   return { text: bytes.subarray(startByte, endByte).toString("utf8"), startByte, endByte, totalBytes: bytes.length,
@@ -167,7 +172,7 @@ export function pageProdResponse<T>(options: {
 }): { response: T; page: ProdTextPage; endSection: number; hasMore: boolean } {
   const { text, startByte, maxBytes, structure, startSection } = options;
   const totalSections = structure?.sections.length ?? 0;
-  if (!Number.isSafeInteger(startSection) || startSection < 0 || startSection > totalSections) throw new Error("invalid_page_range");
+  if (!Number.isSafeInteger(startSection) || startSection < 0 || startSection > totalSections) throw new ProdViewError("invalid_page_range");
   function candidate(page: ProdTextPage, endSection: number) {
     const structurePage: ProdStructurePage | undefined = structure ? { ...structure,
       sections: structure.sections.slice(startSection, endSection), totalSections, startSection, endSection,
@@ -181,7 +186,7 @@ export function pageProdResponse<T>(options: {
     // 至少可送一个Unicode码点；固定来源/覆盖包不能容纳最小正文时安全失败。
     let low = 4, high = maxBytes;
     page = pageProdText(text, startByte, low);
-    if (!fits(candidate(page, startSection))) throw new Error("prod_response_budget_exceeded");
+    if (!fits(candidate(page, startSection))) throw new ProdViewError("prod_response_budget_exceeded");
     while (low < high) {
       const middle = Math.ceil((low + high) / 2);
       const trial = pageProdText(text, startByte, middle);
@@ -195,15 +200,15 @@ export function pageProdResponse<T>(options: {
   }
   const result = candidate(page, low);
   if (!fits(result) || (result.hasMore && page.endByte === startByte && low === startSection)) {
-    throw new Error("prod_response_budget_exceeded");
+    throw new ProdViewError("prod_response_budget_exceeded");
   }
   return result;
 }
 
 export function selectProdSection(body: string, structure: ProdStructure, id?: string): string {
   if (id === undefined) return body;
-  if (structure.status !== "available") throw new Error("section_structure_unavailable");
+  if (structure.status !== "available") throw new ProdViewError("section_structure_unavailable");
   const section = structure.sections.find((item) => item.id === id);
-  if (!section) throw new Error("unknown_section");
+  if (!section) throw new ProdViewError("unknown_section");
   return Buffer.from(body).subarray(section.startByte, section.endByte).toString("utf8");
 }

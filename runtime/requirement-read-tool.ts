@@ -17,7 +17,7 @@ import { assertApprovalScopeReturnIn, registeredApprovalManifestIn, summarizeApp
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
 import type { ServiceAuthorizationRequest } from "./requirement-manage-contracts.ts";
 import { inspectProdStructure, pageProdResponse, selectProdSection, PROD_MAX_PAGE_BYTES, PROD_PAGE_BYTES,
-  PROD_SECTION_ID_PATTERN, PROD_RESPONSE_MAX_BYTES } from "./prod-view.ts";
+  PROD_SECTION_ID_PATTERN, PROD_RESPONSE_MAX_BYTES, ProdViewError } from "./prod-view.ts";
 
 const Role = Type.Union([Type.Literal("pm"), Type.Literal("reviewer"), Type.Literal("qa")]);
 const Binding = object({ role: Role, callerId: id, runId: id, requirementId: id, repoId: hash, workspaceId: hash,
@@ -86,7 +86,7 @@ const PROD_VIEW_FAILURES: Record<string, RequirementReadErrorCode> = {
 /** 下层带原因的错误原样交出；分页与章节的固定错误换成对应原因；其余只说读取出错，不回显可能含路径或受限文本的原始消息。 */
 function readFailure(error: unknown): Error {
   if (error instanceof RequirementReadError || adviceOf(error)) return error as Error;
-  const mapped = error instanceof Error ? PROD_VIEW_FAILURES[error.message] : undefined;
+  const mapped = error instanceof ProdViewError ? PROD_VIEW_FAILURES[error.code] : undefined;
   return new RequirementReadError(mapped ?? "read_failed");
 }
 interface Cursor {

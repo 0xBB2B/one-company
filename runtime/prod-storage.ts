@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
@@ -114,10 +115,19 @@ export interface ProdStorageVerifyResult {
   repositoryIdentity: ProdRepositoryIdentity;
 }
 
+function prodStorageNext(code: string): string {
+  if (code === "operation_conflict") return "换一个新生成的操作编号重试";
+  if (code === "recovery_required") return "停止操作，请用户在主窗口完成恢复核对";
+  if (code === "unknown_version") return "核对版本号，按需求当前的版本重新指定";
+  if (/^git_|^data_root_|^unsafe_|permission_denied|invalid_config|path_escape|external_/u.test(code)) return "请用户检查本机 Git 与数据目录的安装、权限和链接";
+  if (/_mismatch$|_changed$/u.test(code)) return "需求版本库与记录不一致：停止操作，把这段原因告诉用户";
+  return "按原因改正后重试；仍然失败就把这段原因告诉用户";
+}
 export class ProdStorageError extends Error {
   readonly code: string;
   readonly metadata: Record<string, string | number | boolean | null>;
 
+  get advice(): FailureAdvice { return { why: this.message, next: prodStorageNext(this.code) }; }
   constructor(code: string, message: string, metadata: Record<string, string | number | boolean | null> = {}) {
     super(message);
     this.name = "ProdStorageError";
