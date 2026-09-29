@@ -24,7 +24,7 @@ export const ApprovalScope = object({ action: InteractionAction, goalIds: Approv
 export type ApprovalScope = Static<typeof ApprovalScope>;
 export interface ApprovalManifestReference { requirementId: string; candidate: CandidateBinding; manifestHash: string }
 export interface ApprovalManifestExpected { requirementId: string; candidate: CandidateBinding; partition: ProdApprovalPartition }
-function deny(code: string): never { throw new UserInteractionError(code); }
+function deny(code: string, detail?: string): never { throw new UserInteractionError(code, detail); }
 function sameSet(a: readonly string[], b: readonly string[]): boolean { return a.length === b.length && a.every((v) => b.includes(v)); }
 function explicit(e: InteractionEntry): boolean { return e.basis === "explicit" && !["modify", "defer", "unclear"].includes(e.resolution); }
 function confirmed(e: InteractionEntry): boolean { return ["explicit", "delegated"].includes(e.basis) && !["modify", "defer", "unclear"].includes(e.resolution); }
@@ -141,7 +141,7 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
       if (u.disposition === "confirmed" && (retained.some((e) => e.kind === "exclusion") || related.some((e) => !confirmed(e)) ||
         !related.some((e) => ["target", "constraint", "delegation", "ai-choice"].includes(e.kind)) && !retained.some((e) => ["target", "constraint"].includes(e.kind)))) deny("unit_not_confirmed");
       if (u.disposition === "excluded" && (!related.every((e) => e.kind === "exclusion" && explicit(e)) || !retained.every((e) => e.kind === "exclusion"))) deny("unit_not_excluded");
-      if (u.disposition === "pending-description" && !related.every((e) => !confirmed(e))) deny("pending_description_mismatch");
+      if (u.disposition === "pending-description" && !related.every((e) => !confirmed(e))) deny("pending_description_mismatch", `段落 ${u.id}`);
     }
   }
   if (review.faithful) for (const issue of context.continuityIssues ?? []) {

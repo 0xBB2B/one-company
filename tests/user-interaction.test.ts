@@ -13,7 +13,7 @@ import { ShortDecisionStore } from "../runtime/short-decisions.ts";
 import { decisionDigest } from "../runtime/short-decision-format.ts";
 import { UserInteractionCore } from "../runtime/user-interaction.ts";
 import type { InteractionInterpreter, InteractionAuthorization } from "../runtime/user-interaction.ts";
-import { candidateBinding, checkInterpretation, checkContext } from "../runtime/user-interaction-format.ts";
+import { candidateBinding, checkInterpretation, checkContext, UserInteractionError } from "../runtime/user-interaction-format.ts";
 import type { InteractionContext, InteractionEntry, InteractionInterpretation } from "../runtime/user-interaction-format.ts";
 import { createPiInteractionInterpreter } from "../runtime/user-interaction-model.ts";
 import { partitionProdDocument } from "../runtime/prod-view.ts";
@@ -840,7 +840,7 @@ test("重答仍未通过核对时拒绝，最多只调用两次模型", async ()
   const spy = vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => complete(m, c, o));
   a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(missing))]), fauxAssistantMessage([fauxText(JSON.stringify(missing))]), fauxAssistantMessage([fauxText(JSON.stringify(good))])]);
   await expect(a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal }))
-    .rejects.toThrow(/model_interpretation_denied/);
+    .rejects.toThrow(/review_entry_mismatch/);
   expect(spy).toHaveBeenCalledTimes(2);
 });
 test("pi-ai调用期间切换宿主模型，旧结果拒绝而不偷换模型", async () => {
@@ -852,7 +852,7 @@ test("pi-ai调用期间切换宿主模型，旧结果拒绝而不偷换模型", 
   a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(w.output()))])]);
   const pending = a.interpreter.interpret({ text: PHONE, context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal });
   await ready; a.setSelected({ ...a.faux.getModel(), id: "different-selection" }); proceed();
-  await expect(pending).rejects.toThrow(/model_interpretation_denied/);
+  await expect(pending).rejects.toThrow(/model_configuration_changed/);
 });
 for (const failure of ["auth", "tool", "length", "invalid", "wrong-model", "timeout"] as const) test(`pi-ai适配器${failure}失败默认拒绝，不降级模型或回显载荷`, async () => {
   const w = await world(), a = await adapterWorld(); const actualModel = a.interpreter.identity();
@@ -864,5 +864,21 @@ for (const failure of ["auth", "tool", "length", "invalid", "wrong-model", "time
   else a.registry.complete = async () => new Promise(() => {});
   const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel(), timeoutMs: 10 });
   await expect(interpreter.interpret({ text: PHONE, context: w.context,
-    model: actualModel, signal: new AbortController().signal })).rejects.toThrow(/model_interpretation_denied/);
+    model: actualModel, signal: new AbortController().signal })).rejects.toThrow(SPECIFIC_DENIAL);
+});
+test("M9：同一段落既有已确认又有未决条目时，重答反馈与最终拒绝都写明是哪一段、为什么、怎么改", async () => {
+  const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete, calls: Context[] = [];
+  const mixed = modelAnswer(w.output()) as { entries: Array<{ unitIds?: string[] }> };
+  mixed.entries[2]!.unitIds = [...(mixed.entries[2]!.unitIds ?? []), "A"];
+  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => { calls.push(structuredClone(c)); return complete(m, c, o); });
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(mixed))]), fauxAssistantMessage([fauxText(JSON.stringify(mixed))])]);
+  const error = await a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal })
+    .catch((caught: unknown) => caught) as UserInteractionError;
+  const feedback = JSON.stringify(calls[1]!.messages.at(-1));
+  expect(feedback).toContain("pending_description_mismatch");
+  expect(feedback).toContain("段落 A");
+  expect(feedback).toContain("整段确认或整段待定");
+  expect(error).toBeInstanceOf(UserInteractionError);
+  expect(error.code).toBe("pending_description_mismatch");
+  expect(error.advice.why).toContain("段落 A");
 });

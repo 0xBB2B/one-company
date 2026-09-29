@@ -156,6 +156,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   model_interpretation_denied: { why: "解读模型没有给出可用的解读", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
   model_response_denied: { why: "解读模型的回答格式不对或没有正常结束", next: "重试一次；仍然失败就把这段原因告诉用户" },
   model_unavailable: { why: "解读用的模型不可用", next: "请用户检查模型配置或改选模型" },
+  pending_description_mismatch: { why: "同一段落里既有已确认的条目，又有未决、暂缓或不清楚的条目；每个段落只能整段确认或整段待定", next: "把这段里的未决事项拆到单独小节后重存草稿；或本次只确认其他段落，这一段的条目都标成未生效" },
   pending_basis_required: { why: "未来项、未决项或建议必须标成提议或不确定", next: "重试一次；仍然失败就把这段原因告诉用户" },
   question_action_mismatch: { why: "决定里的授权动作不在问题允许的范围内", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
   question_baseline_mismatch: { why: "问题基于的需求版本已不是当前版本", next: "重新读取需求后按最新版本再试" },
@@ -189,7 +190,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
 export class UserInteractionError extends Error {
   readonly code: string;
   readonly advice: FailureAdvice;
-  constructor(code: string) { super(`用户交互被拒绝：${code}`); this.name = "UserInteractionError"; this.code = code; this.advice = adviceIn(USER_INTERACTION_ADVICE, code); }
+  constructor(code: string, detail?: string) { super(`用户交互被拒绝：${code}`); this.name = "UserInteractionError"; this.code = code; this.advice = adviceIn(USER_INTERACTION_ADVICE, code, detail); }
 }
 export function parseInteraction<T extends TSchema>(schema: T, source: string): Static<T> {
   if (typeof source !== "string" || Buffer.byteLength(source) > SHORT_DECISION_LIMITS.requestBytes) throw new UserInteractionError("request_limit");

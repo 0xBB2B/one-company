@@ -88,11 +88,13 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
           } catch (error) {
             if (attempt > 0 || !(error instanceof UserInteractionError)) throw error;
             const missing = derived ? uncoveredUnits(derived) : [];
-            context.messages.push(response, { role: "user", timestamp: Date.now(), content: `上次回答未通过宿主核对：${error.code}。` +
+            context.messages.push(response, { role: "user", timestamp: Date.now(), content: `上次回答未通过宿主核对：${error.code}。原因：${error.advice.why}。建议：${error.advice.next}。` +
               `${missing.length ? `没有任何条目涉及的单位：${missing.join("、")}。` : ""}请按说明修正后重新输出完整JSON。` });
           }
         }
-      } catch {
+      } catch (error) {
+        // 核对与模型调用前后的检查都是程序生成的原因，原样交出；模型接口的其他错误可能带供应商正文，只报笼统原因
+        if (error instanceof UserInteractionError) throw error;
         throw new UserInteractionError("model_interpretation_denied");
       } finally {
         context.messages.length = 0;
