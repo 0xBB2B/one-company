@@ -384,11 +384,13 @@ export class MainRequirementInteraction {
       const result = parseStrictJson(response.content.filter((b) => b.type === "text").map((b) => b.text).join(""));
       if (!result || typeof result !== "object" || Array.isArray(result) || Object.keys(result).some((key) => key !== "allow" && key !== "reason") ||
         typeof result.allow !== "boolean" || (result.reason !== undefined && typeof result.reason !== "string")) denied("draft_not_requested");
-      if (result.allow !== true) refusal = typeof result.reason === "string" ? result.reason.replace(/\s+/gu, " ").trim().slice(0, 200) : "";
+      // 扩展只把限定字符集的提示回显给模型，其余字符换成空格，免得整条原因被过滤掉
+      if (result.allow !== true) refusal = typeof result.reason === "string"
+        ? result.reason.replace(/[^\p{Script=Han}A-Za-z0-9_:：、；，. -]+/gu, " ").replace(/ +/gu, " ").trim().slice(0, 200) : "";
     } catch { return denied("draft_interpretation_denied"); }
     finally { context.messages.length = 0; if (abortHandler) signal.removeEventListener("abort", abortHandler); }
     // 原因是模型说法，只帮主代理改草稿，不改变拒绝本身
-    if (refusal !== undefined) throw new HostAuthorizationError("draft_interpretation_denied", refusal ? `核验器说明（模型撰写，仅供参考）：${refusal}` : undefined);
+    if (refusal !== undefined) throw new HostAuthorizationError("draft_interpretation_denied", refusal ? `核验器说明，模型撰写，仅供参考：${refusal}` : undefined);
   }
   async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput) {
     const host = this.#host(ctx), generation = this.#generation;

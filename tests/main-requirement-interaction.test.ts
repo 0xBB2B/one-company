@@ -11,6 +11,7 @@ import { repositoryIdentity } from "../runtime/identity.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
 import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
+import { deniedText } from "../extensions/requirement-manage.ts";
 import { UserInteractionCore } from "../runtime/user-interaction.ts";
 import { RequirementOperations } from "../runtime/requirement-operations.ts";
 import type { MainRequirementInteractionOptions } from "../runtime/main-requirement-interaction.ts";
@@ -127,7 +128,11 @@ describe("主窗口共享控制器的真实服务路径", () => {
   test("M9：草稿核验器拒绝时带回一句原因，标明是模型说法；原因只作参考，未知字段或类型不对仍按格式错误拒绝", async () => {
     const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body: BODY };
     w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":false,"reason":"需求里「不接入渲染循环」是用户没说过的限制"}' }]);
-    await expect(w.call(input)).rejects.toThrow("draft_interpretation_denied（核验器说明（模型撰写，仅供参考）：需求里「不接入渲染循环」是用户没说过的限制）");
+    const error = await w.call(input).catch((caught: Error) => caught);
+    expect(String(error)).toContain("draft_interpretation_denied（核验器说明，模型撰写，仅供参考：需求里 不接入渲染循环 是用户没说过的限制）");
+    // 经扩展的错误过滤后原因仍能送到主代理
+    expect(deniedText({ isError: true, content: [{ type: "text", text: (error as Error).message }] }, "requirement_interaction_denied"))
+      .toBe("requirement_interaction_denied:draft_interpretation_denied（核验器说明，模型撰写，仅供参考：需求里 不接入渲染循环 是用户没说过的限制）");
     for (const reply of ['{"allow":false,"reason":1}', '{"allow":false,"why":"x"}', '{"allow":"false"}']) {
       w.capture(); scriptReplies(w.provider, [{ type: "text", text: reply }]);
       const error = await w.call(input).catch((caught: Error) => caught);
