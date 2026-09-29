@@ -366,7 +366,6 @@ test("事件服务授权仅允许open/精确repo、UUID及归档路径，正文G
     expect(authorize({ ...valid, requirementId: uuidv7() })).toBe(false);
     expect(authorize({ ...valid, archivePaths: [join(w.root, "wrong.md")] })).toBe(false);
     expect(authorize({ ...valid, action: "prepare-baseline" })).toBe(false);
-    expect(authorize({ ...valid, action: "prepare-diff" })).toBe(false);
     expect(authorize({ ...valid, action: "consume" })).toBe(false);
     checked = true;
     return original(options);

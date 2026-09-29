@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
 import { uuidv7 } from "../../runtime/database.ts";
 import { RequirementEventService } from "../../runtime/requirement-events.ts";
-import type { ApprovedBaselineResult, ApprovedContentResult, ApprovedDiffResult, PreparedRequirementDelivery } from "../../runtime/requirement-events.ts";
+import type { ApprovedBaselineResult, ApprovedContentResult, PreparedRequirementDelivery } from "../../runtime/requirement-events.ts";
 import { RequirementService } from "../../runtime/requirement-service.ts";
 import { RequirementStateStore } from "../../runtime/requirement-state.ts";
 
@@ -69,23 +69,13 @@ async function run(command: string, input: any): Promise<unknown> {
     assert.equal(repeated.status, "event");
     assert.equal((repeated as typeof event).eventId, event.eventId);
     assert.equal((repeated as typeof event).redelivery, true);
-    const prepared = await events.prepareDiff({ lease, eventId: event.eventId, sequence: event.sequence });
-    let sinkCalls = 0;
-    events.consumePreparedDelivery({ lease, handle: prepared.handle, contextGeneration: lease.contextGeneration,
-      version: prepared.version }, (value) => {
-      const difference = value as ApprovedDiffResult;
-      assert.ok(difference.diff.includes(`-${input.fromBody}`));
-      assert.ok(difference.diff.includes(`+${input.toBody}`));
-      if (input.excludedBody) assert.ok(!difference.diff.includes(input.excludedBody));
-      // 副作用账本只存事件ID，正文与patch不落盘。
-      appendFileSync(config.effectsPath, `${event.eventId}\n`, { mode: 0o600 });
-      sinkCalls++;
-    });
+    // 向 PM 发版本通知是这一步的副作用；账本只存事件ID，正文与patch不落盘。
+    appendFileSync(config.effectsPath, `${event.eventId}\n`, { mode: 0o600 });
     const ack = { lease, eventId: event.eventId, sequence: event.sequence,
       toRevision: event.toRevision, toCommit: event.toCommit, toHash: event.toHash };
     await events.acknowledgeEvent(ack);
     await events.acknowledgeEvent(ack);
-    return { event, sinkCalls, cursor: await events.status({ lease }), next: await events.poll({ lease }) };
+    return { event, cursor: await events.status({ lease }), next: await events.poll({ lease }) };
   }
   if (command === "old-lease") {
     await assert.rejects(events.poll({ lease: input }), /stale_pm_lease/);

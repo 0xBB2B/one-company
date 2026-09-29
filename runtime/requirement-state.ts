@@ -47,12 +47,6 @@ const Operation = object({ requirementId: id, digest: hash, sequence: positive }
 const BaselineReturn = object({
   lease: PmLease, deliveryId: id, version: positive, epoch: positive, revision: positive, reference: object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }), hash }),
 });
-const EventReturn = object({
-  lease: PmLease, eventId: id, sequence: positive, version: positive, epoch: positive,
-  fromRevision: positive, toRevision: positive,
-  from: object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }), hash }),
-  to: object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }), hash }),
-});
 const eventStream = (requirementId: string) => `requirement_events:${requirementId}`;
 const equal = (a: unknown, b: unknown) => canonicalJson(a as JsonValue) === canonicalJson(b as JsonValue);
 function increment(value: number): number {
@@ -721,31 +715,6 @@ export class RequirementStateStore {
       const updated = { ...owner.data, context: { ...context, baseline }, prodEvents: updatedCursor };
       if (!equal(updated, owner.data)) db.update("pm_ownership", request.lease.requirementId, owner.version, updated);
       // 上下文基线确认与持久消费位置分开；context_refresh不会倒退或跳过逻辑事件。
-      return true;
-    });
-    if (!valid) throw new RequirementStateError("recovery_required");
-  }
-
-  checkApprovedEventReturnSync(input: Static<typeof EventReturn>): void {
-    const request = checked(EventReturn, input);
-    const valid = this.finalCheck("check-approved-return", request, (db, now) => {
-      const { record, owner } = this.validateOwner(db, request.lease, now);
-      const cursor = this.eventCursor(owner);
-      const events = this.approvedEvents(db, record.id);
-      if (this.historyUnknown(record, cursor, events)) {
-        this.blockUnknownHistory(db, record, now);
-        return false;
-      }
-      const event = events.find((candidate) => candidate.sequence === request.sequence);
-      const nextSequence = events.find((candidate) => candidate.sequence > cursor.consumedSequence)?.sequence;
-      if (record.version !== request.version || record.data.epoch !== request.epoch ||
-        cursor.consumedSequence >= request.sequence || cursor.deliveredSequence < request.sequence ||
-        request.sequence !== nextSequence || !event || event.id !== request.eventId ||
-        event.data.fromRevision !== request.fromRevision || event.data.toRevision !== request.toRevision ||
-        !equal(event.data.from, request.from) || !equal(event.data.to, request.to) ||
-        !this.contextHasUsableBaseline(record, owner, cursor)) {
-        throw new RequirementStateError("stale_event_delivery");
-      }
       return true;
     });
     if (!valid) throw new RequirementStateError("recovery_required");

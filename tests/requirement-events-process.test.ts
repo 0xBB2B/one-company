@@ -195,8 +195,8 @@ test("M3-AC6/5：A独立Node消费ack并退出，B新Node有效lease恢复cursor
   expect(first.notice).toMatchObject({ status: "baseline_required", reason: "baseline_missing", revision: 1 });
   await a.call("baseline", { expectedBody: BODY1 });
   const second = await w.approve(BODY2, DRAFT);
-  const consumed = await a.call("event", { fromBody: BODY1, toBody: BODY2, excludedBody: DRAFT });
-  expect(consumed).toMatchObject({ sinkCalls: 1, cursor: { understoodRevision: 2, understoodCommit: second.commit }, next: { status: "caught_up" } });
+  const consumed = await a.call("event");
+  expect(consumed).toMatchObject({ cursor: { understoodRevision: 2, understoodCommit: second.commit }, next: { status: "caught_up" } });
   await a.stop();
   expect(a.isClosed()).toBe(true);
   // A已经真实退出但未主动release租约；可信时钟只推进到旧租约到期后。
@@ -212,8 +212,8 @@ test("M3-AC6/5：A独立Node消费ack并退出，B新Node有效lease恢复cursor
   const baseline = await b.call("baseline", { expectedBody: BODY3 });
   expect(baseline).toMatchObject({ bodyMatched: true, revision: 3, commit: third.commit,
     cursor: { consumedSequence: consumed.cursor.consumedSequence, understoodRevision: 2 } });
-  const resumed = await b.call("event", { fromBody: BODY2, toBody: BODY3 });
-  expect(resumed).toMatchObject({ sinkCalls: 1, event: { fromRevision: 2, toRevision: 3, fromCommit: second.commit, toCommit: third.commit },
+  const resumed = await b.call("event");
+  expect(resumed).toMatchObject({ event: { fromRevision: 2, toRevision: 3, fromCommit: second.commit, toCommit: third.commit },
     cursor: { understoodRevision: 3 }, next: { status: "caught_up" } });
   expect((await readFile(w.effectsPath, "utf8")).trim().split("\n")).toEqual([consumed.event.eventId, resumed.event.eventId]);
   await w.assertNoBodyInDatabase();

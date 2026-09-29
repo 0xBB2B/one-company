@@ -178,7 +178,6 @@ const REQUIREMENT_STATE_ADVICE = {
   approved_version_missing: { why: "需求还没有批准版本", next: "等用户批准需求后再继续" },
   baseline_not_required: { why: "当前不需要再送接手基线", next: REREAD },
   stale_baseline_delivery: { why: "接手基线的送达记录已过时", next: STOP },
-  stale_event_delivery: { why: "批准事件的送达记录已过时", next: STOP },
   assessment_conflict: { why: "复核针对的不是当前待复核的批准版本", next: REREAD },
   close_intent_conflict: { why: "需求已有另一个关闭请求在办理", next: "用 repair 续办已有的关闭，或按已有请求的原因处理" },
   completion_blocked: { why: "还有未完成的事项，不能以完成关闭：可能有待复核的新版本、阻塞项或仍在运行的子代理", next: "先用 status 查看阻塞项并处理完再关闭" },

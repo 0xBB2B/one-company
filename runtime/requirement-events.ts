@@ -17,7 +17,6 @@ const ArchiveRiskInput = object({
   paths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 8 }),
 });
 const BaselineReadInput = object({ lease: PmLease });
-const EventReadInput = object({ lease: PmLease, eventId: id, sequence: positive });
 const AcknowledgeEventInput = object({
   lease: PmLease, eventId: id, sequence: positive, toRevision: positive, toCommit: commit,
   toHash: Type.String({ pattern: "^sha256:[0-9a-f]{64}$" }),
@@ -32,14 +31,13 @@ const RestoreContextInput = object({
 });
 export type PollRequirementEventInput = Static<typeof commands.eventLease>;
 export type PrepareApprovedBaselineInput = Static<typeof BaselineReadInput>;
-export type PrepareApprovedDiffInput = Static<typeof EventReadInput>;
 export type AcknowledgeApprovedEventInput = Static<typeof AcknowledgeEventInput>;
 export type AcknowledgeApprovedBaselineInput = Static<typeof AcknowledgeBaselineInput>;
 export type ConsumePreparedDeliveryInput = Static<typeof ConsumeDeliveryInput>;
 export type RestoreApprovedContextInput = Static<typeof RestoreContextInput>;
 export type ReconcileArchiveRiskInput = Static<typeof ArchiveRiskInput>;
 
-export type RequirementEventAction = "open" | "poll" | "prepare-baseline" | "prepare-diff" | "consume" |
+export type RequirementEventAction = "open" | "poll" | "prepare-baseline" | "consume" |
   "cancel-delivery" | "rotate-context" | "restore-context" | "acknowledge" | "status" | "archive-risk";
 export interface RequirementEventAuthorizationRequest {
   readonly action: RequirementEventAction;
@@ -140,25 +138,7 @@ export interface PreparedBaselineDelivery {
   expiresAt: number;
 }
 
-export interface PreparedDiffDelivery {
-  kind: "diff";
-  handle: OpaqueDeliveryHandle;
-  requirementId: string;
-  eventId: string;
-  sequence: number;
-  fromRevision: number;
-  toRevision: number;
-  fromCommit: string;
-  toCommit: string;
-  fromHash: `sha256:${string}`;
-  toHash: `sha256:${string}`;
-  version: number;
-  epoch: number;
-  contextGeneration: number;
-  expiresAt: number;
-}
-
-export type PreparedRequirementDelivery = PreparedBaselineDelivery | PreparedDiffDelivery;
+export type PreparedRequirementDelivery = PreparedBaselineDelivery;
 
 export interface ApprovedBaselineResult extends Omit<PreparedBaselineDelivery, "handle" | "expiresAt" | "contextGeneration" | "kind"> {
   kind: "baseline";
@@ -166,12 +146,7 @@ export interface ApprovedBaselineResult extends Omit<PreparedBaselineDelivery, "
   body: string;
 }
 
-export interface ApprovedDiffResult extends Omit<PreparedDiffDelivery, "handle" | "expiresAt" | "contextGeneration" | "kind"> {
-  kind: "diff";
-  diff: string;
-}
-
-export type ApprovedContentResult = ApprovedBaselineResult | ApprovedDiffResult;
+export type ApprovedContentResult = ApprovedBaselineResult;
 export type ApprovedContentSink = (delivery: Readonly<ApprovedContentResult>) => void;
 
 export interface ArchiveRiskResult {
@@ -203,14 +178,12 @@ const REQUIREMENT_EVENT_ADVICE: Readonly<Record<string, FailureAdvice>> = {
   baseline_event_not_incremental: { why: "首次批准没有上一版，不能按差异投递", next: "等下一次自动投递，不用处理" },
   context_changed: { why: "PM 会话的上下文已换代，旧的投递作废", next: "等主代理重新核对接手理解后再继续" },
   delivery_binding_changed: { why: "投递期间 PM 租约或需求版本发生了变化", next: "等下一次自动投递，不用处理" },
-  diff_reference_mismatch: { why: "算出的差异与批准记录里的版本对不上", next: "停止规划与派工，把这段原因告诉主代理，由用户处理" },
   disposed: { why: "需求事件服务已关闭", next: "等下一次自动投递，不用处理" },
   duplicate_archive_path: { why: "有重复的归档路径", next: "停止操作，把这段原因告诉用户" },
   epoch_changed: { why: "需求在投递期间被关闭或重新开启", next: "停止操作，把这段原因告诉主代理" },
   expired_delivery_handle: { why: "投递凭据已过期", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
   invalid_prod_hash: { why: "需求正文的指纹格式不对", next: "停止操作，把这段原因告诉用户" },
   recovery_required: { why: "需求记录需要恢复核对", next: "停止正式规划与派工，把这段原因告诉主代理，由用户处理" },
-  stale_event_delivery: { why: "准备投递期间事件已变化或已被消费", next: "等下一次自动投递，不用处理" },
   synchronous_sink_required: { why: "投递接收方不是同步函数，属于程序内部错误", next: "停止操作，把这段原因告诉用户" },
   unknown_delivery_handle: { why: "投递凭据不存在或已过期被清除", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
 };
@@ -333,7 +306,7 @@ export class RequirementEventService {
 
   private async requirementService(
     request: RequirementEventAuthorizationRequest,
-    expectedAction: "readApproved" | "diff",
+    expectedAction: "readApproved",
   ): Promise<RequirementService> {
     const options: RequirementServiceOptions = {
       ...this.options,
@@ -363,8 +336,7 @@ export class RequirementEventService {
   }
 
   private checkDelivery(delivery: PendingDelivery): void {
-    if (delivery.prepared.kind === "baseline") delivery.state.checkApprovedBaselineReturnSync(delivery.finalCheck as never);
-    else delivery.state.checkApprovedEventReturnSync(delivery.finalCheck as never);
+    delivery.state.checkApprovedBaselineReturnSync(delivery.finalCheck as never);
   }
 
   private purgeExpired(): void {
@@ -515,46 +487,6 @@ export class RequirementEventService {
     const finalCheck = { lease: request.lease, deliveryId: delivery.deliveryId, version: content.version,
       epoch: content.epoch, revision: delivery.revision, reference: delivery.reference };
     return this.retain({ prepared, lease: request.lease, authorization, state, content: body, finalCheck }) as PreparedBaselineDelivery;
-  }
-
-  async prepareDiff(input: PrepareApprovedDiffInput): Promise<PreparedDiffDelivery> {
-    const request = checked(EventReadInput, input);
-    const authorization = { ...leaseAuthorization("prepare-diff", this.options.repoId, request.lease),
-      eventId: request.eventId, sequence: request.sequence };
-    this.authorize(authorization);
-    const state = await this.state(authorization, new Set(["open", "read", "deliver-approved-event", "check-approved-return"]));
-    const polled = await state.nextApprovedEvent({ lease: request.lease });
-    if (polled.status !== "event" || polled.eventId !== request.eventId || polled.sequence !== request.sequence ||
-      polled.event.fromRevision === null || polled.event.from === null) throw new RequirementEventServiceError("stale_event_delivery");
-    const event = polled.event;
-    const fromRevision = event.fromRevision as number;
-    const from = event.from as ProdReferenceData;
-    const eventAuthorization = { ...authorization, revision: event.toRevision, commit: event.to.commit, prodHash: sha256(event.to.hash) };
-    this.authorize(eventAuthorization);
-    const service = await this.requirementService(eventAuthorization, "diff");
-    const result = await service.diff({ requirementId: request.lease.requirementId, fromRevision, toRevision: event.toRevision });
-    if (result.fromCommit !== from.commit || result.toCommit !== event.to.commit ||
-      result.fromHash !== sha256(from.hash) || result.toHash !== sha256(event.to.hash)) {
-      throw new RequirementEventServiceError("diff_reference_mismatch");
-    }
-    const checkedEvent = await state.nextApprovedEvent({ lease: request.lease });
-    if (checkedEvent.status !== "event" || checkedEvent.eventId !== request.eventId || checkedEvent.sequence !== request.sequence) {
-      throw new RequirementEventServiceError("stale_event_delivery");
-    }
-    const handle = uuidHandle();
-    const prepared = freeze({ kind: "diff" as const, handle, requirementId: result.requirementId,
-      eventId: request.eventId, sequence: request.sequence, fromRevision: result.fromRevision, toRevision: result.toRevision,
-      fromCommit: result.fromCommit, toCommit: result.toCommit, fromHash: result.fromHash, toHash: result.toHash,
-      version: result.version, epoch: result.epoch, contextGeneration: request.lease.contextGeneration,
-      expiresAt: request.lease.expiresAt });
-    const body = freeze({ kind: "diff" as const, requirementId: prepared.requirementId, eventId: prepared.eventId,
-      sequence: prepared.sequence, fromRevision: prepared.fromRevision, toRevision: prepared.toRevision,
-      fromCommit: prepared.fromCommit, toCommit: prepared.toCommit, fromHash: prepared.fromHash, toHash: prepared.toHash,
-      version: prepared.version, epoch: prepared.epoch, diff: result.diff });
-    const finalCheck = { lease: request.lease, eventId: request.eventId, sequence: request.sequence,
-      version: result.version, epoch: result.epoch, fromRevision, toRevision: event.toRevision, from, to: event.to };
-    return this.retain({ prepared, lease: request.lease, authorization: eventAuthorization, state,
-      content: body, finalCheck }) as PreparedDiffDelivery;
   }
 
   consumePreparedDelivery(input: ConsumePreparedDeliveryInput, sink: ApprovedContentSink): void {

@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { RequirementEventService, RequirementEventServiceError } from "../runtime/requirement-events.ts";
-import type { ApprovedBaselineResult, ApprovedChangeDelivery, ApprovedContentResult, ApprovedDiffResult,
+import type { ApprovedBaselineResult, ApprovedChangeDelivery, ApprovedContentResult,
   PreparedRequirementDelivery, RequirementEventAuthorizationRequest, RequirementEventServiceOptions } from "../runtime/requirement-events.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
 import { RequirementOperations } from "../runtime/requirement-operations.ts";
@@ -161,7 +161,7 @@ test("批准落库后响应丢失，原操作重试不重复持久事件", async
   expect(queue.filter((event) => (event.data as { revision?: number }).revision === 2)).toHaveLength(1);
 });
 
-test("跨过草稿的连续批准事件按准确提交对diff，投递不等于消费也不解除pending", async () => {
+test("跨过草稿的连续批准事件带准确提交对，投递不等于消费也不解除pending", async () => {
   const w = await world();
   const baseline = await understandBaseline(w);
   const second = await approve(w, "批准版本二", "不得进入事件的草稿");
@@ -176,15 +176,6 @@ test("跨过草稿的连续批准事件按准确提交对diff，投递不等于�
 
   const statusBefore = await w.events.status({ lease: w.lease });
   expect(statusBefore).toMatchObject({ deliveredSequence: delivery.sequence, consumedSequence: baseline.throughSequence, understoodRevision: 1 });
-  const prepared = await w.events.prepareDiff({ lease: w.lease, eventId: delivery.eventId, sequence: delivery.sequence });
-  expect(JSON.stringify(prepared)).not.toContain("批准版本二");
-  const difference = consumePrepared(w.events, w.lease, prepared) as ApprovedDiffResult;
-  expect(difference).toMatchObject({ fromCommit: w.approved.commit, toCommit: second.commit,
-    fromHash: w.approved.prodHash, toHash: second.prodHash });
-  expect(difference.diff).toContain("-批准基线");
-  expect(difference.diff).toContain("+批准版本二");
-  expect(difference.diff).not.toContain("不得进入事件的草稿");
-
   await w.events.acknowledgeEvent({ lease: w.lease, eventId: delivery.eventId, sequence: delivery.sequence,
     toRevision: delivery.toRevision, toCommit: delivery.toCommit, toHash: delivery.toHash });
   await w.events.acknowledgeEvent({ lease: w.lease, eventId: delivery.eventId, sequence: delivery.sequence,
@@ -260,8 +251,6 @@ test("cursor超过剩余批准尾部时进入受控恢复，保留cursor、pendi
   await understandBaseline(w);
   await approve(w, "批准版本二");
   const delivery = asEvent(await w.events.poll({ lease: w.lease }));
-  const prepared = await w.events.prepareDiff({ lease: w.lease, eventId: delivery.eventId, sequence: delivery.sequence });
-  consumePrepared(w.events, w.lease, prepared);
   await w.events.acknowledgeEvent({ lease: w.lease, eventId: delivery.eventId, sequence: delivery.sequence,
     toRevision: delivery.toRevision, toCommit: delivery.toCommit, toHash: delivery.toHash });
   const before = await w.events.status({ lease: w.lease });
@@ -315,24 +304,6 @@ test("异步正文准备完成后closing，最终同步consume拒绝且不调用
   expect(sink).not.toHaveBeenCalled();
   expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
     contextGeneration: w.lease.contextGeneration, version: prepared.version }, sink)).toThrow(/unknown_delivery_handle/);
-});
-
-test("diff异步准备完成后closing，最终同步consume不交付旧epoch差异正文", async () => {
-  const w = await world();
-  await understandBaseline(w);
-  await approve(w, "批准版本二");
-  const delivery = asEvent(await w.events.poll({ lease: w.lease }));
-  const prepared = await w.events.prepareDiff({ lease: w.lease, eventId: delivery.eventId, sequence: delivery.sequence });
-  expect(JSON.stringify(prepared)).not.toContain("批准版本二");
-  const current = w.state.read(w.created.requirementId);
-  w.state.beginClose({ requirementId: w.created.requirementId, version: current.version,
-    intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
-  const sink = vi.fn();
-  expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
-    contextGeneration: w.lease.contextGeneration, version: prepared.version }, sink)).toThrow(/unknown_delivery_handle/);
-  expect((w.events as unknown as { pending: Map<string, unknown> }).pending.size).toBe(0);
-  expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closing");
-  expect(sink).not.toHaveBeenCalled();
 });
 
 test("过期或消费边界撤权的句柄被丢弃，不向sink提供正文", async () => {

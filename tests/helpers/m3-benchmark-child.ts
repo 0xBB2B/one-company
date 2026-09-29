@@ -7,7 +7,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getHeapStatistics } from "node:v8";
 import { setTimeout as delay } from "node:timers/promises";
-import { appendSample, gitRun, jsonFile, sha, specText, summarize } from "./m3-benchmark.ts";
+import { appendSample, gitRun, jsonFile, specText, summarize } from "./m3-benchmark.ts";
 import type { ChildJob, Sample } from "./m3-benchmark.ts";
 import type { ProjectIndexService, ProjectIndexBuildResult } from "../../runtime/project-index-service.ts";
 import type { LocalDatabase } from "../../runtime/database.ts";
@@ -224,25 +224,15 @@ async function events() {
         assert.equal(delivery.eventId, persisted.eventId);
         assert.equal(delivery.fromCommit, previous.commit); assert.equal(delivery.toCommit, approved.commit);
         assert.equal(delivery.fromHash, previous.prodHash); assert.equal(delivery.toHash, approved.prodHash);
-        const prepared = await eventService.prepareDiff({ lease, eventId: delivery.eventId, sequence: delivery.sequence });
-        let diffHash: string | undefined;
-        eventService.consumePreparedDelivery({ lease, handle: prepared.handle, contextGeneration: lease.contextGeneration, version: prepared.version },
-          (content) => {
-            assert.equal(content.kind, "diff");
-            if (content.kind !== "diff") throw new Error("diff_required");
-            assert.equal(content.fromCommit, previous.commit); assert.equal(content.toCommit, approved.commit);
-            assert.equal(content.diff.includes("DRAFT_NOT_APPROVED_"), false);
-            diffHash = sha(content.diff);
-          });
         await eventService.acknowledgeEvent({ lease, eventId: delivery.eventId, sequence: delivery.sequence,
           toRevision: delivery.toRevision, toCommit: delivery.toCommit, toHash: delivery.toHash });
         const metadata = withDatabase(repositoryDatabase(job.dataRoot, identity.repoId), (db) => JSON.stringify(db.events(`requirement_events:${created.requirementId}`)));
         assert.equal(/DRAFT_NOT_APPROVED_|APPROVED_|BASELINE_0|"(?:body|patch|diff|prodBody)"/.test(metadata), false);
         record({ category: "approved-event", index: i, ok: true, durationMs: deliverableAt - persisted.at,
           commitToServiceReturnMs: saveReturnedAt - persisted.at, saveWithGitMs: saveReturnedAt - saveStarted,
-          preparationAndAckMs: performance.now() - deliverableAt, noBacklog: true, modelMs: null,
+          ackMs: performance.now() - deliverableAt, noBacklog: true, modelMs: null,
           fromCommit: delivery.fromCommit, toCommit: delivery.toCommit, fromHash: delivery.fromHash, toHash: delivery.toHash,
-          draftCommit: draft.commit, eventId: delivery.eventId, sequence: delivery.sequence, diffHash,
+          draftCommit: draft.commit, eventId: delivery.eventId, sequence: delivery.sequence,
           timingScope: "real SQLite COMMIT return to RequirementEventService.poll event return; not host/PM model delivery" });
         previous = approved;
       } catch (error) {
