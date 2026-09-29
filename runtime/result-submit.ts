@@ -92,7 +92,7 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     try { result = checkExploreResult(candidate, exploreInput); }
     catch (error) {
       const code = error instanceof ExploreContractError ? error.code : "invalid_shape";
-      throw new ResultSubmitError(code, code === "invalid_shape" ? shapeIssue(ExploreResultSchema, candidate) : undefined);
+      throw new ResultSubmitError(code, code === "invalid_shape" ? shapeIssue(ExploreResultSchema, candidate) : error instanceof ExploreContractError ? error.detail : undefined);
     }
     if (options.verify && !options.verify(result)) throw new ResultSubmitError("invalid_binding");
     if (options.exploreSession) {

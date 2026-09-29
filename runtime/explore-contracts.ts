@@ -152,14 +152,17 @@ export type ExploreResult = Static<typeof ExploreResultSchema>;
 export type ExploreContractErrorCode = "invalid_shape" | "invalid_binding" | "out_of_scope" | "resource_limit";
 export class ExploreContractError extends Error {
   readonly code: ExploreContractErrorCode;
-  constructor(code: ExploreContractErrorCode) {
-    super(`explore 契约拒绝：${code}`);
+  /** 程序生成的改正提示，只含字段位置与检索根，不含模型提交的值。 */
+  readonly detail: string | undefined;
+  constructor(code: ExploreContractErrorCode, detail?: string) {
+    super(`explore 契约拒绝：${code}${detail ? `（${detail}）` : ""}`);
     this.name = "ExploreContractError";
     this.code = code;
+    this.detail = detail;
   }
 }
 
-function fail(code: ExploreContractErrorCode): never { throw new ExploreContractError(code); }
+function fail(code: ExploreContractErrorCode, detail?: string): never { throw new ExploreContractError(code, detail); }
 const codepoints = (value: string): number => Array.from(value).length;
 const bytes = (value: string): number => Buffer.byteLength(value, "utf8");
 
@@ -225,7 +228,8 @@ export function checkExploreInput(value: unknown): ExploreInput {
 
 function validateResult(result: ExploreResult, input: ExploreInput): void {
   if (!same(result.parent, input.parent) || !same(result.source, input.source)) fail("invalid_binding");
-  if (result.sources.length > input.budget.maxSources || result.searchedScope.kind !== input.source.kind) fail("out_of_scope");
+  if (result.sources.length > input.budget.maxSources) fail("out_of_scope", `来源 ${result.sources.length} 条，超过预算 ${input.budget.maxSources} 条`);
+  if (result.searchedScope.kind !== input.source.kind) fail("out_of_scope", `searchedScope 的种类须为 ${input.source.kind}`);
   checkTextList(result.conclusions, EXPLORE_CONTRACT_LIMITS.conclusionCodepoints);
   checkTextList(result.notFound, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints);
   checkTextList(result.failures, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints);
@@ -244,14 +248,15 @@ function validateResult(result: ExploreResult, input: ExploreInput): void {
     }
   } else if (input.source.kind === "local_file" && result.searchedScope.kind === "local_file") {
     const root = input.source.root;
-    for (const value of result.searchedScope.paths) {
-      checkAbsolutePath(value);
-      if (!isUnder(value, root)) fail("out_of_scope");
-    }
-    for (const source of result.sources) {
+    const outside = (field: string, index: number, extra = "") => fail("out_of_scope", `${field} 第 ${index + 1} 项不是检索根 ${root} 下的路径${extra}`);
+    result.searchedScope.paths.forEach((value, index) => {
+      try { checkAbsolutePath(value); } catch { outside("searchedScope.paths", index, "；每项只写一个路径，说明写进 notFound 或 unknown"); }
+      if (!isUnder(value, root)) outside("searchedScope.paths", index, "；每项只写一个路径，说明写进 notFound 或 unknown");
+    });
+    for (const [index, source] of result.sources.entries()) {
       if (!("path" in source) || "workspace" in source) fail("invalid_binding");
-      checkAbsolutePath(source.path);
-      if (!isUnder(source.path, root)) fail("out_of_scope");
+      try { checkAbsolutePath(source.path); } catch { outside("sources", index); }
+      if (!isUnder(source.path, root)) outside("sources", index);
       if (source.endLine < source.startLine) fail("invalid_shape");
     }
   } else if (input.source.kind === "web" && result.searchedScope.kind === "web") {

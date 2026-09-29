@@ -39,7 +39,10 @@ export function sourceHashesMatch(result: ExploreResult): boolean {
  */
 export function fillResearchSources(submitted: Record<string, unknown>, input: ExploreInput): Record<string, unknown> {
   const source = input.source;
-  if (source.kind === "web") return submitted;
+  if (source.kind === "web") {
+    const scope = submitted.searchedScope;
+    return scope && typeof scope === "object" && !Array.isArray(scope) ? { ...submitted, searchedScope: { kind: "web", ...scope } } : submitted;
+  }
   const root = source.root;
   const local = (path: string) => source.kind === "local_file" && !isAbsolute(path) ? join(root, path) : path;
   const inside = (file: string) => normalize(file) === file && file.startsWith(`${root}/`);

@@ -6,6 +6,7 @@ import {
   checkExploreResult,
 } from "../runtime/explore-contracts.ts";
 import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
+import { fillResearchSources } from "../runtime/explore-dispatch.ts";
 
 const requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
 const hashes = {
@@ -367,4 +368,24 @@ test("调用者声明更低maxResultBytes时使用更低限制且不截断", () 
   expect(() => checkExploreResult(result, { ...input, budget: { ...input.budget, maxResultBytes: exact } })).not.toThrow();
   expectCode(() => checkExploreResult(result, { ...input, budget: { ...input.budget, maxResultBytes: exact - 1 } }), "resource_limit");
   expect(result.conclusions).toEqual(["找到一个有界来源"]);
+});
+
+test("M9：网页检索的 research 只写 {queries} 时宿主补上种类后通过核对", () => {
+  const input = webInput(), full = resultFor(input);
+  const submitted = { conclusions: full.conclusions, sources: full.sources, searchedScope: { queries: [input.source.kind === "web" ? input.source.query : ""] },
+    notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] };
+  expect(checkExploreResult({ format: "explore-result/v1", kind: "research", parent: input.parent, source: input.source, ...fillResearchSources(submitted, input) }, input)
+    .searchedScope).toEqual({ kind: "web", queries: ["公开 API 文档"] });
+});
+
+test("M9：超出范围的拒绝写明是哪一项、检索根是什么，便于模型改正", () => {
+  const input = localInput(), base = resultFor(input);
+  const message = (result: ExploreResult) => { try { checkExploreResult(result, input); } catch (error) { return (error as Error).message; } return ""; };
+  expect(message({ ...base, searchedScope: { kind: "local_file", paths: ["/safe/project（grep x，再读 a.ts）"] } }))
+    .toBe("explore 契约拒绝：out_of_scope（searchedScope.paths 第 1 项不是检索根 /safe/project 下的路径；每项只写一个路径，说明写进 notFound 或 unknown）");
+  expect(message({ ...base, sources: [{ ...base.sources[0]!, path: "/other/a.ts" } as ExploreResult["sources"][number]] }))
+    .toBe("explore 契约拒绝：out_of_scope（sources 第 1 项不是检索根 /safe/project 下的路径）");
+  const many = { ...input, budget: { ...input.budget, maxSources: 1 } };
+  expect((() => { try { checkExploreResult({ ...base, sources: [base.sources[0]!, base.sources[0]!] }, many); } catch (error) { return (error as Error).message; } return ""; })())
+    .toBe("explore 契约拒绝：out_of_scope（来源 2 条，超过预算 1 条）");
 });
