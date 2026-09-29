@@ -295,3 +295,15 @@ test("来源事实登记失败以固定operation补登，短决定不重复且�
   expect(JSON.stringify(facts)).not.toContain("真实输入不应复制"); expect(JSON.stringify(facts)).not.toContain(w.loaded.body);
   expect(JSON.stringify(facts)).not.toContain("conclusion"); expect(JSON.stringify(facts)).not.toContain("scope");
 });
+test("M9：草稿按答复改写后重存，所涉段落已变或删除的待答问题作废，段落未变的问题照常待答", async () => {
+  const w = await world(), c = w.loaded;
+  const ask = (id: string) => w.core.ask(JSON.stringify({ basis: c.basis, candidate: c.candidate, partition: c.partition, unitIds: [id], actions: ["analyze"],
+    proposal: { conclusion: `确认${id}`, scope: id, references: [], supersedes: [] } }));
+  const a = ask("A"), b = ask("B");
+  expect(w.context().questions.map((q) => q.requestId)).toEqual([a.requestId, b.requestId]);
+  await w.resave();
+  expect(w.context().questions.map((q) => q.requestId)).toEqual([a.requestId]);
+  await w.resave("# B {#B}\nB修改后目标。\n");
+  expect(w.context()).toMatchObject({ questions: [], effectiveQuestions: [] });
+  expect(withDatabase(w.path, (db) => db.list("interaction_questions_v1"))).toHaveLength(2);
+});

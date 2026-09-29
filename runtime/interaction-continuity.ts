@@ -261,8 +261,10 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
       const unitMappings = q.unitIds.map((id) => ({ id, sourceHash: q.partition?.units.find((u) => u.id === id)?.hash ?? q.candidate?.to.hash ?? "0".repeat(64),
         targetHash: doc.partition.units.find((u) => u.id === id)?.hash ?? null }));
       const unchanged = q.partition ? unitMappings.every((u) => u.sourceHash === u.targetHash) : same(q.candidate?.to, doc.candidate.to);
+      // 草稿按答复改写后重存，所涉段落已变或删除的待答问题作废：用户批准新草稿即覆盖它，作废不产生任何授权
+      if (!unchanged) continue;
       questions.push(q); effectiveQuestions.push({ requestId: q.requestId, originalHash: decisionDigest(q), remainingUnitIds: remaining,
-        currentBinding: doc.candidate, mode: unchanged ? "unchanged" : "requires-explicit-review", resolutions, unitMappings });
+        currentBinding: doc.candidate, resolutions, unitMappings });
     }
     for (const [id, decision] of priors) if (decision.status === "pending" && !continuityIssues.some((issue) => issue.decision.id === id || issue.originDecision.id === id)) {
       priors.delete(id); revisionSources.delete(id);

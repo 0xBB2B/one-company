@@ -43,7 +43,7 @@ export const RevisionSource = object({ fact: ContinuityRecordRef, decision: Cont
   kind: enumeration(["target", "constraint", "exclusion", "future", "delegation", "action", "unresolved", "suggestion", "ai-choice"]) });
 export type RevisionSource = Static<typeof RevisionSource>;
 export const EffectiveQuestion = object({ requestId: id, originalHash: hash, remainingUnitIds: ApprovalUnitIds,
-  currentBinding: CandidateBinding, mode: enumeration(["unchanged", "requires-explicit-review"]),
+  currentBinding: CandidateBinding,
   resolutions: Type.Array(ContinuityRecordRef, { maxItems: 128 }),
   unitMappings: Type.Array(object({ id: ApprovalUnitId, sourceHash: hash, targetHash: nullable(hash) }), { maxItems: 16 }) });
 export type EffectiveQuestion = Static<typeof EffectiveQuestion>;
@@ -124,7 +124,6 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   candidate_baseline_mismatch: { why: "待批准版本不是基于当前批准版本", next: "重新读取需求后按最新版本再试" },
   candidate_not_resaved: { why: "需要先按用户的修改重新保存草稿", next: "先按用户的修改重新保存草稿，再确认" },
   candidate_not_saved: { why: "待确认的版本不是当前保存的版本", next: "重新读取需求后按最新版本再试" },
-  changed_question_requires_review: { why: "问题在提出后已变化，不能直接按原问题同意", next: "把变化后的问题重新展示给用户确认" },
   continuity_changed: { why: "确认期间用户又有新的输入", next: "按用户最新的原话重新确认" },
   continuity_fact_changed: { why: "确认依据的事实记录已变化", next: "重新读取需求后按最新版本再试" },
   continuity_issue_mismatch: { why: "连续性问题引用的章节不在待确认版本里", next: "重新读取需求后按最新版本再试" },
@@ -285,7 +284,7 @@ export function resolvesContinuityIssue(context: InteractionContext, result: Int
     const view = context.effectiveQuestions?.find((q) => q.requestId === ref.requestId);
     const answer = review.questions.find((q) => q.requestId === ref.requestId);
     return question && decisionDigest(question) === ref.hash && question.unitIds?.includes(issue.unitId) &&
-      (view ? view.mode === "unchanged" : decisionDigest(question.candidate) === decisionDigest(doc.candidate)) && answer?.answeredIds.includes(issue.unitId) &&
+      (view !== undefined || decisionDigest(question.candidate) === decisionDigest(doc.candidate)) && answer?.answeredIds.includes(issue.unitId) &&
       unit.conclusionIndexes.some((index) => result.entries[index]?.requestId === ref.requestId && result.entries[index]!.kind !== "action" && explicit(result.entries[index]!));
   });
 }
@@ -306,7 +305,6 @@ export function checkInterpretation(source: string, context: InteractionContext)
     if (entry.candidateId !== null && !candidate || entry.requestId !== null && !question) throw new UserInteractionError("unknown_reference");
     const view = context.effectiveQuestions?.find((v) => v.requestId === question?.requestId);
     if (question?.candidate && (!candidate || decisionDigest(view?.currentBinding ?? question.candidate) !== decisionDigest(candidateBinding(candidate)))) throw new UserInteractionError("question_candidate_mismatch");
-    if (view?.mode === "requires-explicit-review" && entry.resolution === "accept") throw new UserInteractionError("changed_question_requires_review");
     if (entry.resolution === "accept" && !question) throw new UserInteractionError("question_required");
     if (question && entry.actions.some((action) => !question.actions.includes(action))) throw new UserInteractionError("question_action_mismatch");
     if (!context.document && result.referenceResolution === "single-question" && ["explicit", "delegated"].includes(entry.basis) &&
