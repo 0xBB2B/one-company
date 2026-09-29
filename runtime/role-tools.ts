@@ -3,6 +3,7 @@ import type { TSchema } from "typebox";
 import { toolActionsForRole } from "./core-permissions.ts";
 import type { CoreRole, CoreTool } from "./core-permissions.ts";
 import type { AgentRole } from "./roles.ts";
+import { toolFailure, toolStep } from "./tool-failure.ts";
 
 export const CORE_TOOL_PREFIX = "pi_company_";
 
@@ -38,7 +39,9 @@ export function toPiTool(tool: CoreTool, description: string, parameters: TSchem
     parameters,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
-      const result = await runtime.execute(params);
+      let result: unknown;
+      try { result = await runtime.execute(params); }
+      catch (error) { throw toolFailure(toolStep(coreToolName(tool), params), error); }
       return { content: [{ type: "text", text: JSON.stringify(result ?? null) }], details: {} };
     },
   } as ToolDefinition;

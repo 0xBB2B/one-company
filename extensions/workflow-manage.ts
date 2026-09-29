@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
+import { AdvisedError, toolFailure, toolStep } from "../runtime/tool-failure.ts";
 import { windowContext } from "./lifecycle.ts";
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
@@ -19,8 +20,8 @@ type Params = Static<typeof MAIN_WORKFLOW_MANAGE_PARAMETERS>;
 
 export interface WorkflowManageContext { clients: WorkspaceClientsHandle }
 
-function result(value: Record<string, unknown>, isError = false) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: { isError } };
+function result(value: Record<string, unknown>) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
 }
 
 /** 主会话的 workflow_manage：经守护进程查看状态、交付核对与关闭需求；关闭须以用户决定的 decisionId 作为 receiptId。 */
@@ -32,12 +33,14 @@ export function registerWorkflowManageTool(pi: ExtensionAPI, context: () => Work
     parameters: MAIN_WORKFLOW_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {
-      if (!Value.Check(MAIN_WORKFLOW_MANAGE_PARAMETERS, rawParams)) return result({ code: "invalid_shape" }, true);
+      const step = toolStep("pi_company_workflow_manage", rawParams);
+      if (!Value.Check(MAIN_WORKFLOW_MANAGE_PARAMETERS, rawParams)) throw toolFailure(step, new AdvisedError("invalid_shape",
+        { why: "参数不符合该动作的格式", next: "按工具说明改正该动作的字段后重试" }));
       const { repoId, requirementId, ...request } = rawParams as Params;
       const client = context().clients.forRepo(repoId);
-      if (!client) return result({ code: "foreign_repo" }, true);
+      if (!client) throw toolFailure(step, new AdvisedError("foreign_repo", { why: "repoId 不是当前窗口工作区里的仓库", next: "改用当前工作区列出的仓库编号" }));
       try { return result(await client.call("workflow.manage", { requirementId, request })); }
-      catch (error) { return result({ code: (error as { code?: string }).code ?? "workflow_manage_failed" }, true); }
+      catch (error) { throw toolFailure(step, error); }
     },
   });
 }

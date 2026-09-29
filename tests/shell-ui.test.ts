@@ -202,6 +202,23 @@ describe("shellUiExtension：注册与生命周期解耦——工厂返回时已
   });
 });
 
+describe("shellUiExtension：会话未就绪时 bash 说清原因", () => {
+  test("还在启动时说稍等；启动失败时带上失败原因", async () => {
+    const run = async (windowReady: ShellUiDeps["windowReady"]) => {
+      const fakePi = createFakePi();
+      shellUiExtension(fakePi.pi, { windowReady, createClock: () => createClock({ timeSource: createFakeTimeSource() }),
+        createShellRegistry: (clock) => new ShellRegistry({ clock }) });
+      await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, createFakeCtx(createFakeUi()));
+      await delay(0);
+      const bash = fakePi.registeredTools()[0] as unknown as { execute: (...args: unknown[]) => Promise<unknown> };
+      return bash.execute("t", { command: "ls" }, undefined, undefined, undefined);
+    };
+    await expect(run(() => new Promise(() => {}))).rejects.toThrow("bash失败。\n原因：Shell 会话还在启动中\n建议：稍等几秒再执行命令");
+    await expect(run(() => Promise.reject(new Error("守护进程不可达")) as never))
+      .rejects.toThrow("bash失败。\n原因：Shell 会话启动失败：守护进程不可达\n建议：命令不会执行；请用户重开窗口，仍失败就检查守护进程");
+  });
+});
+
 describe("shellUiExtension：无交互 UI 时 bash 能力仍可用", () => {
   test("ctx.hasUI=false 的会话下，user_bash 仍能登记并真实执行命令", async () => {
     const fakePi = createFakePi();

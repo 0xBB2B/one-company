@@ -12,6 +12,7 @@ import {
   validateParams,
 } from "../runtime/protocol.ts";
 import type { Frame } from "../runtime/protocol.ts";
+import { adviceOf } from "../runtime/tool-failure.ts";
 
 export interface ClientInfo {
   windowId: string;
@@ -58,9 +59,11 @@ function errorCode(error: unknown): string {
   return typeof code === "string" ? code : "internal";
 }
 
-function errorData(error: unknown): Record<string, unknown> | undefined {
-  const data = (error as { data?: unknown }).data;
-  return data !== null && typeof data === "object" ? (data as Record<string, unknown>) : undefined;
+export function errorData(error: unknown): Record<string, unknown> | undefined {
+  const raw = (error as { data?: unknown }).data;
+  const data = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined;
+  const advice = adviceOf(error);
+  return advice ? { ...data, advice: { why: advice.why, next: advice.next } } : data;
 }
 
 export class DaemonServer {

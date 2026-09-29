@@ -6,6 +6,8 @@ import { dataRoot } from "../runtime/data-root.ts";
 import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
 import { deliverRequirement, gitDeliveryEnabled, setGitDeliveryEnabled } from "../runtime/git-delivery.ts";
 import type { DeliveryFacts } from "../runtime/git-delivery.ts";
+import { AdvisedError, toolFailure } from "../runtime/tool-failure.ts";
+import { shapeIssue } from "../runtime/tool-request.ts";
 import { windowContext } from "./lifecycle.ts";
 
 export const GIT_DELIVER_TOOL = "pi_company_git_deliver";
@@ -20,8 +22,8 @@ interface CloseStatus {
 }
 export interface GitDeliveryDeps { dataRoot: string; clients: () => WorkspaceClientsHandle }
 
-function result(value: Record<string, unknown>, isError = false) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: { isError } };
+function result(value: Record<string, unknown>) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
 }
 function showTool(pi: Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">, enabled: boolean): void {
   const others = pi.getActiveTools().filter((name) => name !== GIT_DELIVER_TOOL);
@@ -37,19 +39,21 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
     parameters: PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, _signal, _update, ctx: ExtensionContext) {
-      if (!gitDeliveryEnabled(deps().dataRoot)) return result({ code: "git_delivery_disabled" }, true);
-      if (!Value.Check(PARAMETERS, rawParams)) return result({ code: "invalid_shape" }, true);
-      if (!ctx.hasUI) return result({ code: "ui_required" }, true);
+      const fail: (why: string, next: string) => never = (why, next) => { throw toolFailure(GIT_DELIVER_TOOL, new AdvisedError("git_deliver_failed", { why, next })); };
+      if (!gitDeliveryEnabled(deps().dataRoot)) fail("Git 交付工具已关闭", "请用户用 /pi-company:git-delivery 命令开启后再交付");
+      if (!Value.Check(PARAMETERS, rawParams)) fail(`参数不符合本工具的格式（${shapeIssue(PARAMETERS, rawParams)}）`, "按字段要求改正参数后重试");
+      if (!ctx.hasUI) fail("推送前和选择合并方式都要在界面上直接问用户，当前会话没有界面", "在有界面的主窗口里再交付");
       const { repoId, requirementId } = rawParams as Static<typeof PARAMETERS>;
       const client = deps().clients().forRepo(repoId);
-      if (!client) return result({ code: "foreign_repo" }, true);
+      if (!client) fail("repoId 不是当前窗口工作区里的仓库", "改用当前工作区列出的仓库编号");
       let close: CloseStatus;
       try { close = ((await client.call("workflow.manage", { requirementId, request: { action: "status" } })) as { result: { close: CloseStatus } }).result.close; }
-      catch (error) { return result({ code: (error as { code?: string }).code ?? "status_unavailable" }, true); }
-      if (!close.delivery) return result({ status: "rejected", reason: "requirement_not_completed" }, true);
+      catch (error) { throw toolFailure(`${GIT_DELIVER_TOOL} 查询需求关闭状态这一步`, error); }
+      if (!close.delivery) fail(`需求没有以完成（completed）关闭并归档，当前状态 ${close.status}，关闭原因 ${close.reason ?? "无"}`,
+        "只有用户验收通过并以完成关闭的需求才能交付；需求已取消或拒绝时不要交付");
       const facts: DeliveryFacts = { requirementId, closed: close.status === "closed", reason: close.reason ?? "", archive: close.archive ?? null, ...close.delivery };
       try { return result(await deliverRequirement(facts, { confirm: (title, message) => ctx.ui.confirm(title, message), select: (title, options) => ctx.ui.select(title, options) })); }
-      catch (error) { return result({ code: "git_delivery_failed", message: (error as Error).message }, true); }
+      catch (error) { throw toolFailure(GIT_DELIVER_TOOL, error); }
     },
   });
   pi.registerCommand("pi-company:git-delivery", {

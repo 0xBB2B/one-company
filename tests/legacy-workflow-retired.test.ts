@@ -68,7 +68,7 @@ describe("旧工作流永久移除，旧记录不产生授权", () => {
     registerAgentManageTool(pi, () => { throw new Error("不得定位旧连接"); });
     expect(tools.map((tool) => tool.name)).toEqual(["pi_company_agent_manage"]);
     for (const action of ["list", "pauseAll", "stopAll", "resumeAll", "resumeInterrupted"]) {
-      expect((await tools[0].execute("x", { action, repoId: "a".repeat(64) })).details.isError).toBe(true);
+      await expect(tools[0].execute("x", { action, repoId: "a".repeat(64) })).rejects.toThrow(`pi_company_agent_manage 的 ${action} 动作失败。\n原因：参数不符合该动作的格式`);
     }
   });
   test("主会话只有核心工具：没有旧工作流、旧决定和主窗口提交工具，也不覆盖宿主 write/edit（tool_call 只有搜索排除与需求观察两处）", () => {

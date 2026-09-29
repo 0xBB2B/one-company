@@ -13,6 +13,7 @@ import type {
 } from "../runtime/shell-page.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import { sanitizeText } from "../runtime/text-sanitize.ts";
+import { AdvisedError, toolFailure } from "../runtime/tool-failure.ts";
 import type { Host } from "../runtime/shell-registry.ts";
 import { startShellStatusRefresh } from "../runtime/shell-summary.ts";
 import type { ShellSummaryRepo } from "../runtime/shell-summary.ts";
@@ -37,6 +38,7 @@ interface CurrentSession {
 }
 
 let current: CurrentSession | undefined;
+let startupFailure: string | undefined;
 
 function buildTheme(ctx: OpenShellPageCtx): ShellPageTheme | undefined {
   const hostTheme = ctx.ui.theme;
@@ -78,7 +80,9 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
     ...metadataBase,
     parameters: BASH_PARAMETERS,
     async execute(toolCallId, params, signal, onUpdate, execCtx) {
-      if (!current) throw new Error("Shell 会话尚未就绪");
+      if (!current) throw toolFailure("bash", new AdvisedError("shell_not_ready", startupFailure
+        ? { why: `Shell 会话启动失败：${startupFailure}`, next: "命令不会执行；请用户重开窗口，仍失败就检查守护进程" }
+        : { why: "Shell 会话还在启动中", next: "稍等几秒再执行命令" }));
       const routed = createManagedBashTool({
         registry: current.registry,
         host: current.host,
@@ -111,6 +115,7 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
     teardown = undefined;
     current = undefined;
     const myGeneration = ++generation;
+    startupFailure = undefined;
 
     const clock = resolveClock();
     let registry = resolveShellRegistry(clock);
@@ -190,6 +195,7 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
           const value = typeof error === "string" ? error : error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "message")?.value : undefined;
           if (typeof value === "string") message = sanitizeText(value, 200).replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
         } catch { /* 保留固定错误，不执行外部对象转换。 */ }
+        startupFailure = message;
         ctx.ui.notify?.(message, "error");
       });
   });

@@ -5,6 +5,7 @@ import { Value } from "typebox/value";
 import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
 import { windowContext, windowReady } from "./lifecycle.ts";
 import { EXPLORE_WEB_QUERY, exploreSource } from "../runtime/explore-dispatch.ts";
+import { AdvisedError, toolFailure, toolStep } from "../runtime/tool-failure.ts";
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const repoId = Type.String({ pattern: "^[0-9a-f]{64}$" });
@@ -25,8 +26,8 @@ type Params = Static<typeof MAIN_AGENT_MANAGE_PARAMETERS>;
 
 export interface AgentManageContext { clients: WorkspaceClientsHandle }
 
-function result(value: Record<string, unknown>, isError = false) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: { isError } };
+function result(value: Record<string, unknown>) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
 }
 
 /** 主会话的 agent_manage：经守护进程派出唯一 PM、查询或控制运行；模型与思考等级取派工时主会话的当前值。 */
@@ -38,15 +39,17 @@ export function registerAgentManageTool(pi: ExtensionAPI, context: () => AgentMa
     parameters: MAIN_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
-      if (!Value.Check(MAIN_AGENT_MANAGE_PARAMETERS, rawParams)) return result({ code: "invalid_shape" }, true);
+      const step = toolStep("pi_company_agent_manage", rawParams);
+      const fail: (code: string, why: string, next: string) => never = (code, why, next) => { throw toolFailure(step, new AdvisedError(code, { why, next })); };
+      if (!Value.Check(MAIN_AGENT_MANAGE_PARAMETERS, rawParams)) fail("invalid_shape", "参数不符合该动作的格式", "按工具说明改正该动作的字段后重试");
       const params = rawParams as Params;
       const client = context().clients.forRepo(params.repoId);
-      if (!client) return result({ code: "foreign_repo" }, true);
+      if (!client) fail("foreign_repo", "repoId 不是当前窗口工作区里的仓库", "改用当前工作区列出的仓库编号");
+      const model = ctx.model;
+      if (params.action === "dispatch" && !model) fail("model_unavailable", "主会话当前没有选定模型，派出的运行要沿用主会话的模型", "请用户先选定模型再派");
       try {
         if (params.action === "dispatch") {
-          const model = ctx.model;
-          if (!model) return result({ code: "model_unavailable" }, true);
-          const selected = { provider: model.provider, id: model.id }, thinking = pi.getThinkingLevel();
+          const selected = { provider: model!.provider, id: model!.id }, thinking = pi.getThinkingLevel();
           if (params.role === "explore") {
             return result(await client.call("agents.dispatchExplore", { request: { question: params.question, clues: params.clues ?? [],
               source: exploreSource(params) }, maxTurns: params.maxTurns, model: selected, thinking }));
@@ -55,9 +58,7 @@ export function registerAgentManageTool(pi: ExtensionAPI, context: () => AgentMa
         }
         const method = params.action === "status" ? "runs.get" : `runs.${params.action}`;
         return result(await client.call(method, { runId: params.runId }));
-      } catch (error) {
-        return result({ code: (error as { code?: string }).code ?? "agent_manage_failed" }, true);
-      }
+      } catch (error) { throw toolFailure(step, error); }
     },
   });
 }

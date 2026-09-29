@@ -18,6 +18,7 @@ import { readGit } from "./git-read.ts";
 import { WorkspaceManageError, WorkspaceManageService } from "./workspace-manage.ts";
 import { backup, ProjectMaintenanceError, recoveryCheck, restore } from "./project-maintenance.ts";
 import { requestParameters, shapeIssue, unwrapRequest } from "./tool-request.ts";
+import { toolFailure, toolStep } from "./tool-failure.ts";
 import { conventionsStatus, MAX_CONVENTIONS_BYTES, ProjectConventionsError, updateConventions } from "./project-conventions.ts";
 
 const REPO_ID_PATTERN = "^[0-9a-f]{64}$";
@@ -1022,10 +1023,10 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
         return textResult(sanitizeResult(shapeServiceResult(serviceAction, rawResult)));
       } catch (error) {
         if (isCancellation(error, operation.signal)) {
-          throw new ProjectManageToolError("cancelled", "项目索引操作已取消");
+          throw toolFailure(toolStep("pi_company_project_manage", rawParams), new ProjectManageToolError("cancelled", "项目索引操作已取消"));
         }
-        if (error instanceof ProjectManageToolError) throw error;
-        throw new ProjectManageToolError("operation_failed", "项目索引操作失败；未返回底层正文或错误详情");
+        throw toolFailure(toolStep("pi_company_project_manage", rawParams),
+          error instanceof ProjectManageToolError ? error : new ProjectManageToolError("operation_failed", "项目索引操作失败；未返回底层正文或错误详情"));
       } finally {
         operations.delete(operation);
         operation.finish();

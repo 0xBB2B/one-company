@@ -9,6 +9,7 @@ import { uuidv7 } from "../runtime/database.ts";
 import type { PmLease, WorkspaceBinding } from "../runtime/requirement-contracts.ts";
 import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS } from "../runtime/requirement-read-tool.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
+import { AdvisedError, toolFailure, toolStep } from "../runtime/tool-failure.ts";
 import type { CoreToolRuntime } from "../runtime/role-tools.ts";
 import { createPlanManageTool, PLAN_MANAGE_PARAMETERS } from "../runtime/plan-manage.ts";
 import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS } from "../runtime/verification-run.ts";
@@ -57,6 +58,9 @@ export const PM_AGENT_MANAGE_PARAMETERS = Type.Union([
     cursor: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000 })) }, { additionalProperties: false }),
 ]);
 
+const PM_GONE = () => new AdvisedError("pm_session_gone",
+  { why: "本 PM 会话已结束、被停止或已被新 PM 取代", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" });
+
 export interface PmTools {
   tools: ToolDefinition[];
   dispose(): void;
@@ -94,7 +98,7 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
 }
 
 /** PM 提交接手理解：正文随工具调用只落在本运行的私有会话文件，主代理经接手核对读取。 */
-function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
+export function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
   return {
     name: PM_INTAKE_TOOL,
     label: "user_interact",
@@ -102,20 +106,28 @@ function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
     parameters: PM_INTAKE_SUBMIT_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
-      if (!input.alive() || !Value.Check(PM_INTAKE_SUBMIT_PARAMETERS, params)) throw new Error("pm_intake_submit_denied");
-      await input.checkLease();
-      const directory = pmSourceDirectory({ dataRoot: input.dataRoot, repoId: input.repoId }, input.lease.requirementId);
-      if (!directory) throw new Error("pm_intake_source_directory_unavailable");
-      const unknown = unknownIntakeSourceRefs((params as { understanding: Parameters<typeof unknownIntakeSourceRefs>[0] }).understanding, directory);
-      if (unknown.length) throw new Error(`pm_intake_unknown_source：${unknown.join("、")}。只能引用任务上下文列出的出处编号`);
-      return { content: [{ type: "text", text: JSON.stringify({ status: "submitted", next: "等待主代理核对接手理解" }) }],
-        details: { intakeBaseline: input.currentBaseline() } };
+      try { return await submit(params); }
+      catch (error) { throw toolFailure(PM_INTAKE_TOOL, error); }
     },
   } as ToolDefinition;
+  async function submit(params: unknown) {
+    if (!input.alive()) throw PM_GONE();
+    if (!Value.Check(PM_INTAKE_SUBMIT_PARAMETERS, params)) throw new AdvisedError("invalid_shape",
+      { why: "接手理解的字段不符合格式", next: "按工具说明补齐目标、非目标、约束、允许动作、未决项与场景覆盖，每项附出处编号后重交" });
+    await input.checkLease();
+    const directory = pmSourceDirectory({ dataRoot: input.dataRoot, repoId: input.repoId }, input.lease.requirementId);
+    if (!directory) throw new AdvisedError("pm_intake_source_directory_unavailable",
+      { why: "读不到本需求的接手出处目录，无法核对引用的出处编号", next: "停止提交，在回复里说明，由主代理处理" });
+    const unknown = unknownIntakeSourceRefs((params as { understanding: Parameters<typeof unknownIntakeSourceRefs>[0] }).understanding, directory);
+    if (unknown.length) throw new AdvisedError("pm_intake_unknown_source",
+      { why: `引用了任务上下文里没有的出处编号：${unknown.join("、")}`, next: "只引用任务上下文列出的出处编号，改正后重交" });
+    return { content: [{ type: "text", text: JSON.stringify({ status: "submitted", next: "等待主代理核对接手理解" }) }],
+      details: { intakeBaseline: input.currentBaseline() } };
+  }
 }
 
 /** PM 的 agent_manage：按已冻结任务派出子代理（首次或一次带原因的重试），控制本 PM 派出的运行。 */
-function agentManageTool(input: PmToolsInput): ToolDefinition {
+export function agentManageTool(input: PmToolsInput): ToolDefinition {
   return {
     name: "pi_company_agent_manage",
     label: "agent_manage",
@@ -123,18 +135,25 @@ function agentManageTool(input: PmToolsInput): ToolDefinition {
     parameters: PM_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {
-      if (!input.alive() || !Value.Check(PM_AGENT_MANAGE_PARAMETERS, rawParams)) throw new Error("agent_manage_denied");
-      const params = rawParams as { action: "dispatch" | "status" | "pause" | "resume" | "stop" | "catalog"; taskId?: string; runId?: string;
-        retry?: { reason: string; maxTurns: number }; rework?: { reason: string; maxTurns: number }; review?: { maxTurns: number }; role?: string; question?: string; clues?: string[]; webQuery?: string; maxTurns?: number; cursor?: number };
-      if (!authorizeToolAction("pm", "agent_manage", params.action)) throw new Error("agent_manage_denied");
-      const result = params.action === "catalog"
-        ? await input.agents.catalog(params.role, params.cursor ?? 0)
-        : params.action === "dispatch" && params.role === "explore"
-        ? await input.agents.explore({ question: params.question!, clues: params.clues ?? [], source: exploreSource(params) }, params.maxTurns!)
-        : params.action === "dispatch"
-        ? await input.agents.dispatch(params.taskId!, { retry: params.retry ?? null, rework: params.rework ?? null, review: params.review })
-        : await input.agents.control(params.action as "status" | "pause" | "resume" | "stop", params.runId!);
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
+      try { return await manage(rawParams); }
+      catch (error) { throw toolFailure(toolStep("pi_company_agent_manage", rawParams), error); }
     },
   } as ToolDefinition;
+  async function manage(rawParams: unknown) {
+    if (!input.alive()) throw PM_GONE();
+    if (!Value.Check(PM_AGENT_MANAGE_PARAMETERS, rawParams)) throw new AdvisedError("invalid_shape",
+      { why: "参数不符合该动作的格式（retry、rework、review 三者最多给一个；轮次上限是 1 到 100 的整数）", next: "按工具说明改正字段后重试" });
+    const params = rawParams as { action: "dispatch" | "status" | "pause" | "resume" | "stop" | "catalog"; taskId?: string; runId?: string;
+      retry?: { reason: string; maxTurns: number }; rework?: { reason: string; maxTurns: number }; review?: { maxTurns: number }; role?: string; question?: string; clues?: string[]; webQuery?: string; maxTurns?: number; cursor?: number };
+    if (!authorizeToolAction("pm", "agent_manage", params.action)) throw new AdvisedError("action_not_allowed",
+      { why: `PM 的职责不允许 agent_manage 的 ${params.action} 动作`, next: "改用 PM 职责内的动作" });
+    const result = params.action === "catalog"
+      ? await input.agents.catalog(params.role, params.cursor ?? 0)
+      : params.action === "dispatch" && params.role === "explore"
+      ? await input.agents.explore({ question: params.question!, clues: params.clues ?? [], source: exploreSource(params) }, params.maxTurns!)
+      : params.action === "dispatch"
+      ? await input.agents.dispatch(params.taskId!, { retry: params.retry ?? null, rework: params.rework ?? null, review: params.review })
+      : await input.agents.control(params.action as "status" | "pause" | "resume" | "stop", params.runId!);
+    return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
+  }
 }

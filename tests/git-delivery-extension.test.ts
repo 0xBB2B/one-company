@@ -35,7 +35,7 @@ test("M8-AC4/AC6：交付工具默认关闭且不出现在主窗口工具里；�
   const w = await world();
   w.handlers.get("session_start")!();
   expect(w.active()).toEqual(["read"]);
-  expect(await w.run(PARAMS)).toEqual({ code: "git_delivery_disabled" });
+  await expect(w.run(PARAMS)).rejects.toThrow("pi_company_git_deliver失败。\n原因：Git 交付工具已关闭\n建议：请用户用 /pi-company:git-delivery 命令开启后再交付");
   w.answers.push("开启"); await w.commands.get("pi-company:git-delivery")!("", w.ctx);
   expect(w.active()).toEqual(["read", GIT_DELIVER_TOOL]);
   w.answers.push("关闭"); await w.commands.get("pi-company:git-delivery")!("", w.ctx);
@@ -45,7 +45,7 @@ test("M8-AC4/AC6：交付工具默认关闭且不出现在主窗口工具里；�
 test("M8-AC6：模型不能在参数里代选合并方式；需求未以完成关闭时拒绝交付", async () => {
   const w = await world({ status: "closed", reason: "cancelled", archive: null, delivery: null });
   w.answers.push("开启"); await w.commands.get("pi-company:git-delivery")!("", w.ctx);
-  expect(await w.run({ ...PARAMS, merge: "auto" })).toEqual({ code: "invalid_shape" });
-  expect(await w.run(PARAMS)).toEqual({ status: "rejected", reason: "requirement_not_completed" });
+  await expect(w.run({ ...PARAMS, merge: "auto" })).rejects.toThrow("原因：参数不符合本工具的格式（多余字段：merge；本动作允许字段：repoId、requirementId）");
+  await expect(w.run(PARAMS)).rejects.toThrow("原因：需求没有以完成（completed）关闭并归档，当前状态 closed，关闭原因 cancelled\n建议：只有用户验收通过并以完成关闭的需求才能交付；需求已取消或拒绝时不要交付");
   expect(w.calls).toEqual([["workflow.manage", { requirementId: PARAMS.requirementId, request: { action: "status" } }]]);
 });
