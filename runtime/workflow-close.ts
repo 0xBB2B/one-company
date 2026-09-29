@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { adviceOf, COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isPromise } from "node:util/types";
@@ -10,7 +12,7 @@ import type { LocalDatabase } from "./database.ts";
 import { readVersion } from "./prod-storage.ts";
 import { sectionEndByte } from "./prod-view.ts";
 import { DEFAULT_DOC_SECTIONS, recordSectionIds } from "./requirement-doc.ts";
-import { checked, counter, hash, id, object, positive } from "./requirement-contracts.ts";
+import { checked, counter, hash, id, object, positive, requirementStateWhy } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
 import { RequirementOperations } from "./requirement-operations.ts";
@@ -79,10 +81,56 @@ export interface RequirementCloseServiceOptions {
   stopAgents?: (requirementId: string) => Promise<void>;
   now?: () => number;
 }
-export type CloseErrorCode = "close_denied" | "invalid_shape" | "not_found" | "not_closed" | "archive_conflict" | "archive_unavailable";
+const CLOSE_ADVICE = {
+  tool_closed: COMMON_ADVICE.tool_closed,
+  not_authorized: { why: "宿主没有授权这次关闭相关操作", next: "停止操作，不要重试；在回复里说明，由上级处理" },
+  invalid_shape: COMMON_ADVICE.invalid_shape,
+  not_found: { why: "找不到对应的关闭记录或待验收报告", next: "用 status 查看需求当前的关闭与报告状态" },
+  not_closed: { why: "需求还没有以完成关闭，不能归档", next: "先以完成关闭需求，再归档" },
+  archive_conflict: { why: "归档位置已有内容不同的文件", next: "请用户检查归档目录里的同名文件，处理后用 repair 续办" },
+  archive_unavailable: { why: "这个需求没有归档资格或归档内容不可用", next: "只有以完成关闭的需求才会归档；其他情况不需要归档" },
+} as const satisfies Record<string, FailureAdvice>;
+export type CloseErrorCode = keyof typeof CLOSE_ADVICE;
 export class CloseError extends Error {
   readonly code: CloseErrorCode;
-  constructor(code: CloseErrorCode, detail?: string) { super(detail ? `${code}: ${detail}` : code); this.name = "CloseError"; this.code = code; }
+  readonly advice: FailureAdvice;
+  constructor(code: CloseErrorCode, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code); this.name = "CloseError"; this.code = code; this.advice = withDetail(CLOSE_ADVICE[code], detail);
+  }
+}
+
+const CLOSE_ITEM_TEXT: Record<string, string> = {
+  requirement_not_active: "需求不在活动状态，或缺少批准版本、工作区",
+  pending_update: "有新批准的需求版本还没复核",
+  formal_check_missing: "还没有做过正式检查轮",
+  check_round_not_released: "检查轮还没结束，或还有检查在运行",
+  check_round_input_changed: "检查轮开始后受保护的输入已变化，检查轮已失效",
+  check_round_prod_mismatch: "检查轮依据的批准版本不是当前版本",
+  formal_pass_missing: "检查轮里没有通过的正式检查",
+  verification_running: "还有检查在运行",
+  qa_verdict_missing: "还没有 QA 裁决",
+  qa_blocking_findings: "QA 发现了阻塞问题",
+  qa_unverified_findings: "QA 还有未验证的项",
+  task_review_missing: "有任务还没经过审查",
+  terminated_goal_in_scope: "被用户终止的任务，其目标仍在实施范围内",
+  check_phase_active: "检查阶段还没结束",
+  workers_active: "还有 worker 或 reviewer 运行未结束",
+  writes_pending: "还有未完成的代码写入",
+  writers_active: "还有子代理或代码写入在进行",
+  basis_changed: "核对期间交付依据发生了变化",
+  workspace_unavailable: "读不到需求工作区",
+  delivery_content_mismatch: "工作区内容与正式检查时不一致",
+  formal_evidence_not_applicable: "正式检查结果不适用于当前内容",
+  role_agents_running: "还有子代理在运行",
+  rework_not_addressed: "用户要求返工后交付依据没有变化",
+  completion_report_not_accepted: "用户还没有验收通过完成报告",
+  agents_running: "还有运行没停止",
+  pm_lease_active: "PM 仍持有租约",
+};
+/** 关闭、交付核对与完成报告里的缺项说明；授权问题带上具体原因。 */
+export function closeItemText(code: string, authorization?: string): string {
+  if (code === "close_authorization_invalid") return `关闭依据的用户决定无效${authorization ? `：${authorization}` : ""}`;
+  return CLOSE_ITEM_TEXT[code] ?? requirementStateWhy(code) ?? `未归类的阻塞项（${code}）`;
 }
 export const COMPLETION_MESSAGE = (requirementId: string) => `需求 ${requirementId} 已完成，PM 及相关子代理已结束。建议清空上下文后再开始新的需求，避免旧需求影响后续判断。`;
 export const TERMINATION_MESSAGE = (requirementId: string, reason: "cancelled" | "rejected") =>
@@ -284,9 +332,9 @@ export function decideReportIn(db: LocalDatabase, reportId: string, decision: { 
 
 const PreflightInput = object({ requirementId: id, reason: CloseReason, receiptId: id });
 const CloseInput = object({ requirementId: id, reason: CloseReason, receiptId: id, operationId: id });
-export interface ClosePreflight { eligible: boolean; missing: string[]; basis: CloseBasis | null }
+export interface ClosePreflight { eligible: boolean; missing: string[]; basis: CloseBasis | null; authorization?: string }
 export type CloseResult =
-  | { status: "rejected"; missing: string[] }
+  | { status: "rejected"; missing: string[]; authorization?: string }
   | { status: "closing"; operationId: string; pending: string[] }
   | { status: "closed"; operationId: string; reason: CloseReason; archive: { path: string; status: string } | null; message: string };
 
@@ -314,11 +362,12 @@ export class RequirementCloseService {
   dispose(): void { this.life.disposed = true; }
   private now(): number { return checked(counter, this.options.now?.() ?? Date.now()); }
   private authorize(request: CloseAuthorization): void {
-    if (this.life.disposed) throw new CloseError("close_denied");
+    if (this.life.disposed) throw new CloseError("tool_closed");
     let result: unknown;
-    try { result = this.options.authorize(freeze(structuredClone(request))); } catch { throw new CloseError("close_denied"); }
+    try { result = this.options.authorize(freeze(structuredClone(request))); }
+    catch (error) { if (adviceOf(error)) throw error; throw new CloseError("not_authorized", (error as Error).message); }
     if (isPromise(result)) void Promise.prototype.then.call(result, () => undefined, () => undefined);
-    if (result !== true) throw new CloseError("close_denied");
+    if (result !== true) throw new CloseError("not_authorized");
   }
   private operation(db: LocalDatabase, requirementId: string) {
     const row = db.read<unknown>(CLOSE_OPERATIONS, requirementId);
@@ -404,21 +453,21 @@ export class RequirementCloseService {
   /** 资格预检只报告缺项，不改状态、不提升 epoch、不撤权。 */
   async preflight(input: Static<typeof PreflightInput>): Promise<ClosePreflight> {
     let request: Static<typeof PreflightInput>;
-    try { request = checked(PreflightInput, input); } catch { throw new CloseError("invalid_shape"); }
+    try { request = checked(PreflightInput, input); } catch (error) { throw new CloseError("invalid_shape", (error as Error).message); }
     const missing: string[] = [];
-    let authorized = true;
+    let authorized = true, authorization: string | undefined;
     try { this.authorize({ action: "close", requirementId: request.requirementId, reason: request.reason, receiptId: request.receiptId }); }
-    catch { authorized = false; missing.push("close_authorization_invalid"); }
+    catch (error) { authorized = false; authorization = adviceOf(error)?.why ?? (error as Error).message; missing.push("close_authorization_invalid"); }
     const record = withDatabase(this.database, (db) => requirementIn(db, this.options.repoId, request.requirementId));
     if (record.data.close) {
       if (record.data.close.receiptId !== request.receiptId || record.data.close.reason !== request.reason) missing.push("close_intent_conflict");
-      return { eligible: authorized && missing.length === 0, missing, basis: null };
+      return { eligible: authorized && missing.length === 0, missing, basis: null, ...(authorization ? { authorization } : {}) };
     }
     if (record.data.recovery !== "ready") missing.push("recovery_required");
     if (record.data.lifecycle !== "active" && !(record.data.lifecycle === "draft" && request.reason !== "completed")) missing.push("lifecycle_denied");
     if (request.reason !== "completed") {
       const facts = withDatabase(this.database, (db) => deliveryFactsIn(db, this.options.repoId, request.requirementId));
-      return { eligible: missing.length === 0, missing, basis: basisOf(facts) };
+      return { eligible: missing.length === 0, missing, basis: basisOf(facts), ...(authorization ? { authorization } : {}) };
     }
     const { receipt, basis, roleRunsActive } = await this.deliveryCheckWithBasis(request.requirementId);
     missing.push(...receipt.blockers);
@@ -426,20 +475,20 @@ export class RequirementCloseService {
     const accepted = withDatabase(this.database, (db) => acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId));
     if (!accepted) missing.push("completion_report_not_accepted");
     else if (accepted.basis.digest !== basis.digest) missing.push("completion_report_stale");
-    return { eligible: missing.length === 0, missing: [...new Set(missing)], basis };
+    return { eligible: missing.length === 0, missing: [...new Set(missing)], basis, ...(authorization ? { authorization } : {}) };
   }
 
   async close(input: Static<typeof CloseInput>): Promise<CloseResult> {
     let request: Static<typeof CloseInput>;
-    try { request = checked(CloseInput, input); } catch { throw new CloseError("invalid_shape"); }
-    let authorized = true;
+    try { request = checked(CloseInput, input); } catch (error) { throw new CloseError("invalid_shape", (error as Error).message); }
+    let authorization: string | undefined;
     try { this.authorize({ action: "close", requirementId: request.requirementId, reason: request.reason, receiptId: request.receiptId, operationId: request.operationId }); }
-    catch { authorized = false; }
+    catch (error) { authorization = adviceOf(error)?.why ?? (error as Error).message; }
     const existing = withDatabase(this.database, (db) => ({ operation: this.operation(db, request.requirementId), record: requirementIn(db, this.options.repoId, request.requirementId) }));
-    if (!authorized) return freeze({ status: "rejected" as const, missing: ["close_authorization_invalid"] });
+    if (authorization !== undefined) return freeze({ status: "rejected" as const, missing: ["close_authorization_invalid"], authorization });
     if (!existing.record.data.close) {
       const preflight = await this.preflight({ requirementId: request.requirementId, reason: request.reason, receiptId: request.receiptId });
-      if (!preflight.eligible || !preflight.basis) return freeze({ status: "rejected" as const, missing: preflight.missing });
+      if (!preflight.eligible || !preflight.basis) return freeze({ status: "rejected" as const, missing: preflight.missing, ...(preflight.authorization ? { authorization: preflight.authorization } : {}) });
       const basis = preflight.basis;
       const intent = { operationId: request.operationId, reason: request.reason, receiptId: request.receiptId };
       try {

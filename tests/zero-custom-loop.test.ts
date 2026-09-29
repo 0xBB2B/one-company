@@ -131,7 +131,7 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
 
   // 没有用户通过决定时主窗口不能以完成关闭
   const close = (receiptId: string) => w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId, operationId: uuidv7() });
-  expect(await close(uuidv7())).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });
+  expect(await close(uuidv7())).toMatchObject({ status: "rejected", missing: ["关闭依据的用户决定无效：找不到这个决定编号对应的用户决定"] });
 
   // 用户返工：报告作废，意见交回 PM；没有新证据时 PM 重新提交被拒
   const main = mainAdjudication(w, cleanups, interpret);
@@ -141,8 +141,8 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   expect(reports()[0]).toMatchObject({ status: "rework", decisionId: rework.decisionId });
   await until(() => rereport !== "", 3_000);
   expect(w.provider.requests.some((request) => lastResult(request).includes("错误验证码时提示剩余尝试次数"))).toBe(true);
-  expect(rereport).toContain("rework_not_addressed");
-  expect(await close(String(rework.decisionId))).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });
+  expect(rereport).toContain("用户要求返工后交付依据没有变化");
+  expect(await close(String(rework.decisionId))).toMatchObject({ status: "rejected", missing: ["关闭依据的用户决定无效：这个决定不是验收通过完成报告"] });
 
   // PM 追加返修与复验任务，返修经任务级审查、新的检查轮后重新提交报告
   await w.plan.execute({ action: "update", planVersion: 1, add: [
@@ -175,7 +175,7 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   expect(record).toContain("- 任务 fix：完成；需求章节：goal.login、scenario.failure；可写范围：`lib/`");
   expect(record).not.toContain("任务 acceptance");
   expect(record).toContain("#### PM 说明（模型撰写，仅供参考）\n\n> 交付手机号验证码登录（recheck）");
-  expect(await w.manager.workflowManage(requirementId, { action: "delivery-check" })).toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["requirement_not_active"]) });
+  expect(await w.manager.workflowManage(requirementId, { action: "delivery-check" })).toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["需求不在活动状态，或缺少批准版本、工作区"]) });
 
   expect(pmActions).toEqual(["early-advance", "review:impl", "advance:acceptance", "acceptance", "finish:acceptance", "report:acceptance", "rereport",
     "review:fix", "advance:recheck", "recheck", "finish:recheck", "report:recheck"]);
@@ -211,6 +211,6 @@ test("M7B-AC3/AC6：批准清单不能含关闭动作；没有用户验收通过
   const w = await createPmRunWorld(cleanups, { review: false });
   const requirementId = w.fixture.requirementId;
   const result = await w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId: uuidv7(), operationId: uuidv7() });
-  expect(result).toMatchObject({ status: "rejected", missing: expect.arrayContaining(["close_authorization_invalid"]) });
+  expect(result).toMatchObject({ status: "rejected", missing: expect.arrayContaining(["关闭依据的用户决定无效：找不到这个决定编号对应的用户决定"]) });
   expect(w.fixture.state.read(requirementId).data.lifecycle).toBe("active");
 });

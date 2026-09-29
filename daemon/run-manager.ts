@@ -30,9 +30,9 @@ import type { PmLease, RequirementRecord } from "../runtime/requirement-contract
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import type { TimerHandle } from "../runtime/clock.ts";
 import { MANAGED_WORKSPACES } from "../runtime/workspace-manage.ts";
-import { closeDecisionValid, takeUnnotifiedDecisions } from "../runtime/adjudication.ts";
+import { closeDecisionProblem, takeUnnotifiedDecisions } from "../runtime/adjudication.ts";
 import { decisionPacket, DecisionPacketError } from "../runtime/decision-packet.ts";
-import { createWorkflowManageTool, WorkflowManageError } from "../runtime/workflow-manage.ts";
+import { createWorkflowManageTool } from "../runtime/workflow-manage.ts";
 import { deliverApprovedEvents } from "../runtime/pm-event-delivery.ts";
 import { headingTitlesOf, pmOverview } from "../runtime/pm-overview.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
@@ -954,14 +954,16 @@ export class RunManager {
       tool = await createWorkflowManageTool({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot,
         stopAgents: (id) => this.stopRequirement(id, { reason: "requirement_closing" }),
         grant: { role: "main", callerId: uuidv7(), runId: uuidv7(), requirementId, repoId: this.repoId, workspaceId: record.workspace.workspaceId, branch: record.workspace.branch },
-        authorize: (check) => check.action !== "close" || check.reason === undefined ||
-          (check.receiptId !== undefined && closeDecisionValid(ref, { requirementId, receiptId: check.receiptId, reason: check.reason as "completed" | "cancelled" | "rejected" })) });
-    } catch (error) { throw protocolError("workflow_denied", (error as Error).message); }
+        authorize: (check) => {
+          if (check.action !== "close" || check.reason === undefined) return true;
+          const problem = check.receiptId === undefined ? "没有给出用户决定编号"
+            : closeDecisionProblem(ref, { requirementId, receiptId: check.receiptId, reason: check.reason as "completed" | "cancelled" | "rejected" });
+          if (problem) throw new AdvisedError("close_decision_invalid", { why: problem, next: "按用户最新原话用 user_interact 登记决定，再以返回的 decisionId 关闭" });
+          return true;
+        } });
+    } catch (error) { throw adviceOf(error) ? error : protocolError("open_failed", `流程管理打开失败：${(error as Error).message}`, "重试一次；仍然失败就把这段原因告诉用户"); }
     try { return await tool.execute(request); }
-    catch (error) {
-      if (error instanceof WorkflowManageError) throw protocolError(error.code === "invalid_shape" ? "invalid_params" : "workflow_denied", error.message);
-      throw error;
-    } finally { tool.dispose(); }
+    finally { tool.dispose(); }
   }
 
   decisionPacket(requirementId: string, itemId: string): string {
@@ -1184,8 +1186,8 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       catch (error) {
         if (error instanceof Error && ["trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
           "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "agent_unavailable", "thinking_unsupported", "skill_unavailable", "config_changed", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
-          "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed", "requirement_halted", "workflow_denied"].includes((error as { code?: string }).code ?? "")) throw error;
-        throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对");
+          "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed", "requirement_halted"].includes((error as { code?: string }).code ?? "") || adviceOf(error)) throw error;
+        throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对", "用 status 或 list 重新查看运行状态；反复出现就把这段原因告诉用户");
       }
     });
   };

@@ -191,6 +191,9 @@ const REQUIREMENT_STATE_ADVICE = {
   archive_path_missing: { why: "找不到需求的归档位置", next: COMMON_ADVICE.internal_state.next },
 } as const satisfies Record<string, FailureAdvice>;
 export type RequirementStateErrorCode = keyof typeof REQUIREMENT_STATE_ADVICE;
+export function requirementStateWhy(code: string): string | undefined {
+  return Object.hasOwn(REQUIREMENT_STATE_ADVICE, code) ? REQUIREMENT_STATE_ADVICE[code as RequirementStateErrorCode].why : undefined;
+}
 
 export class RequirementStateError extends Error {
   readonly code: RequirementStateErrorCode;

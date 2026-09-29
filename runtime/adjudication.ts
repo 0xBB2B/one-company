@@ -1,4 +1,5 @@
 import { repositoryDatabase, withDatabase } from "./database.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import type { LocalDatabase } from "./database.ts";
 import { confirmedPlanKey, readPlanIn, stalledStage, TASKS, terminationPending } from "./plan-manage.ts";
 import type { TaskRecord, UserDecision } from "./plan-manage.ts";
@@ -10,11 +11,25 @@ import type { AdjudicationChoice, AdjudicationSubject } from "./user-interaction
 import { ADJUDICATION_CHOICES } from "./user-interaction-format.ts";
 import { COMPLETION_REPORTS, CompletionReport, decideReportIn, pendingReportIn, reportsIn } from "./workflow-close.ts";
 
+const ADJUDICATION_ADVICE = {
+  unknown_requirement: { why: "找不到这个需求", next: "核对需求编号" },
+  pm_missing: { why: "这个需求当前没有 PM，待裁决事项无从交回", next: "先派出 PM，再登记用户决定" },
+  requirement_not_active: { why: "需求不在活动状态", next: "重新读取需求状态后再决定" },
+  item_not_pending: { why: "这个事项已不在待裁决列表里", next: "重新读取待裁决事项，按当前列表登记" },
+  plan_missing: { why: "需求还没有计划", next: "等 PM 提出计划后再登记任务决定" },
+  decision_shape: { why: "决定的引用格式不对，事项、版本或选项无法识别", next: "按待裁决事项给出的引用原样登记" },
+  decision_missing: { why: "找不到这个决定编号对应的用户决定", next: "核对决定编号，或先按用户原话登记决定" },
+  decision_not_current: { why: "这个决定不是用户对本需求当前版本确认过的有效决定", next: "按用户最新原话重新登记决定" },
+  item_changed: { why: "事项在用户做决定后已变化，或选项与事项不符", next: "重新读取待裁决事项，请用户按当前情况重新决定" },
+  task_missing: { why: "找不到决定所指的任务", next: "重新读取待裁决事项" },
+} as const satisfies Record<string, FailureAdvice>;
+type AdjudicationErrorCode = keyof typeof ADJUDICATION_ADVICE;
 export class AdjudicationError extends Error {
-  readonly code: string;
-  constructor(code: string) { super(`adjudication_denied:${code}`); this.name = "AdjudicationError"; this.code = code; }
+  readonly code: AdjudicationErrorCode;
+  readonly advice: FailureAdvice;
+  constructor(code: AdjudicationErrorCode) { super(`adjudication_denied:${code}`); this.name = "AdjudicationError"; this.code = code; this.advice = ADJUDICATION_ADVICE[code]; }
 }
-const deny = (code: string): never => { throw new AdjudicationError(code); };
+const deny = (code: AdjudicationErrorCode): never => { throw new AdjudicationError(code); };
 
 type Ref = { dataRoot: string; repoId: string };
 
@@ -124,23 +139,28 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
  * 关闭需求的依据：receiptId 须是用户对该需求做出的对应决定——取消或拒绝需求，或验收通过完成报告——且决定时的需求版本仍是当前版本，
  * 或需求已按这一决定进入关闭（关闭本身会改变记录版本）。完成报告绑定的交付依据是否仍当前由关闭协议核对。
  */
-export function closeDecisionValid(ref: Ref, input: { requirementId: string; receiptId: string; reason: "completed" | "cancelled" | "rejected" }): boolean {
+/** 关闭依据不成立时返回具体原因，成立时返回 null。 */
+export function closeDecisionProblem(ref: Ref, input: { requirementId: string; receiptId: string; reason: "completed" | "cancelled" | "rejected" }): string | null {
   try {
     return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
       const row = db.read<RequirementRecord>("requirements", input.requirementId);
-      if (!row) return false;
+      if (!row) return "找不到这个需求";
       const { decision, parsed } = userDecisionIn(db, ref, input.requirementId, input.receiptId);
       if (input.reason === "completed") {
         const report = reportsIn(db, ref.repoId, input.requirementId).find((entry) => `report:${entry.data.reportId}` === parsed.itemId)?.data;
-        if (parsed.choice !== "accept" || report?.status !== "accepted" || report.decisionId !== input.receiptId) return false;
-      } else if (parsed.itemId !== `requirement:${input.requirementId}` || parsed.choice !== (input.reason === "cancelled" ? "cancel" : "reject") ||
-        parsed.version !== `requirement:${input.requirementId}:${decision.requirementVersion}`) return false;
+        if (parsed.choice !== "accept") return "这个决定不是验收通过完成报告";
+        if (report?.status !== "accepted" || report.decisionId !== input.receiptId) return "完成报告没有按这个决定验收通过";
+      } else {
+        if (parsed.itemId !== `requirement:${input.requirementId}`) return "这个决定不是针对需求本身的取消或拒绝";
+        if (parsed.choice !== (input.reason === "cancelled" ? "cancel" : "reject")) return `这个决定的选项与关闭原因 ${input.reason} 不符`;
+        if (parsed.version !== `requirement:${input.requirementId}:${decision.requirementVersion}`) return "这个决定针对的不是做决定时的需求版本";
+      }
       // 进入关闭会提升 epoch，续办同一关闭时只核对关闭意图绑定的正是这一决定
       const sameVersion = row.version === decision.requirementVersion && row.data.lifecycle === "active" && decision.epoch === row.data.epoch;
       const closingByIt = row.data.close?.receiptId === input.receiptId && row.data.close.reason === input.reason;
-      return sameVersion || closingByIt;
+      return sameVersion || closingByIt ? null : "用户做出决定后需求已被改动，这个决定已过期";
     });
-  } catch { return false; }
+  } catch (error) { return error instanceof AdjudicationError ? error.advice.why : `读取用户决定失败：${(error as Error).message}`; }
 }
 
 /** 取出尚未告知 PM 的用户决定并标记已告知；只含固定文字与用户返工意见，不含正文。 */

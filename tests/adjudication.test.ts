@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
-import { adjudicationSubject, closeDecisionValid } from "../runtime/adjudication.ts";
+import { adjudicationSubject, closeDecisionProblem } from "../runtime/adjudication.ts";
 import { createPmTools } from "../daemon/pm-tools.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
 import { TASKS } from "../runtime/plan-manage.ts";
@@ -86,7 +86,7 @@ test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项�
   const escalate = (taskId: string) => pmWorkflow.execute("pm-escalate", { action: "escalate", taskId, note: "change_apply 挡住了写入，需要你决定是否再试" },
     undefined, undefined, undefined as never);
   await expect(escalate(task("failure").taskId)).rejects.toThrow(/task_not_ready/);
-  await expect(w.manager.workflowManage(w.fixture.requirementId, { action: "escalate", taskId: login, note: "主代理不能上报" })).rejects.toMatchObject({ code: "workflow_denied" });
+  await expect(w.manager.workflowManage(w.fixture.requirementId, { action: "escalate", taskId: login, note: "主代理不能上报" })).rejects.toMatchObject({ code: "action_not_allowed", advice: { why: "当前角色的职责不允许这个动作：主代理 不能做 escalate" } });
   await escalate(login);
   expect(task("login").status).toBe("awaiting_user");
   expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label: "待你裁决：任务 login PM 上报需要你决定" })]);
@@ -300,7 +300,7 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
   const recordVersion = () => w.fixture.state.read(w.fixture.requirementId).version;
   const close = (reason: string, receiptId: string) => w.manager.workflowManage(w.fixture.requirementId, { action: "close", reason, receiptId, operationId: uuidv7() });
 
-  expect(await close("cancelled", uuidv7())).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });
+  expect(await close("cancelled", uuidv7())).toMatchObject({ status: "rejected", missing: ["关闭依据的用户决定无效：找不到这个决定编号对应的用户决定"] });
   const record = w.fixture.state.read(w.fixture.requirementId).data;
   const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
     workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
@@ -309,17 +309,17 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
   cleanups.push(() => pmTools.dispose());
   const pmWorkflow = pmTools.tools.find((tool) => tool.name === "one_company_workflow_manage")!;
   await expect(pmWorkflow.execute("pm-close", { action: "close", reason: "cancelled", receiptId: uuidv7(), operationId: uuidv7() }, undefined, undefined, undefined as never))
-    .rejects.toMatchObject({ code: "workflow_denied" });
+    .rejects.toMatchObject({ code: "action_not_allowed" });
 
   const result = await w.adjudicate("这个需求不要了，取消吧", [w.entry([`item:${requirementItem}`, `version:${requirementItem}:${recordVersion()}`, "choice:cancel"])], requirementItem);
   expect(result).toMatchObject({ status: "recorded", choice: "cancel" });
   const decisionId = String(result.decisionId);
-  expect(await close("rejected", decisionId)).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });
+  expect(await close("rejected", decisionId)).toMatchObject({ status: "rejected", missing: ["关闭依据的用户决定无效：这个决定的选项与关闭原因 rejected 不符"] });
   expect(await close("cancelled", decisionId)).toMatchObject({ status: "closed", reason: "cancelled" });
   expect(w.fixture.state.read(w.fixture.requirementId).data.lifecycle).toBe("closed");
   const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
-  expect(closeDecisionValid(ref, { requirementId: w.fixture.requirementId, receiptId: decisionId, reason: "cancelled" })).toBe(true);
-  expect(closeDecisionValid(ref, { requirementId: w.fixture.requirementId, receiptId: decisionId, reason: "rejected" })).toBe(false);
+  expect(closeDecisionProblem(ref, { requirementId: w.fixture.requirementId, receiptId: decisionId, reason: "cancelled" })).toBeNull();
+  expect(closeDecisionProblem(ref, { requirementId: w.fixture.requirementId, receiptId: decisionId, reason: "rejected" })).toBe("这个决定的选项与关闭原因 rejected 不符");
   const pmRun = await w.runStore.get(w.pm.runId);
   expect(pmRun.ok && pmRun.run.state).toBe("stopped");
   expect(await w.manager.overviews()).toEqual([]);
