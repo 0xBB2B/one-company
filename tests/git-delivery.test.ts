@@ -104,26 +104,26 @@ test("M8-AC6：用户不确认时不提交不推送；远端分支非快进时�
   w.git(w.other, "checkout", "-q", "-b", "req/login"); await writeFile(join(w.other, "x.ts"), "x\n");
   w.git(w.other, "add", "."); w.git(w.other, "commit", "-qm", "别人的提交"); w.git(w.other, "push", "-q", "origin", "req/login");
   const foreign = w.remoteBranch();
-  expect(await deliverRequirement(w.facts, w.ui())).toEqual({ status: "rejected", reason: "push_rejected" });
+  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^推送被远端拒绝：.+/), next: expect.any(String) });
   expect(w.remoteBranch()).toBe(foreign);
   expect((await w.calls()).some((call) => call[2] === "create")).toBe(false);
 });
 
 test("M8-AC2/AC5：未完成、归档未写入、归档字节与凭据不符、工作区有其他改动、分支带入别的 prod 归档或嵌套仓库时拒绝交付", async () => {
   const w = await world();
-  expect(await deliverRequirement({ ...w.facts, reason: "cancelled" }, w.ui())).toEqual({ status: "rejected", reason: "requirement_not_completed" });
-  expect(await deliverRequirement({ ...w.facts, archive: { ...w.facts.archive!, status: "pending" } }, w.ui())).toEqual({ status: "rejected", reason: "archive_not_written" });
+  expect(await deliverRequirement({ ...w.facts, reason: "cancelled" }, w.ui())).toMatchObject({ status: "rejected", reason: "需求没有以完成关闭" });
+  expect(await deliverRequirement({ ...w.facts, archive: { ...w.facts.archive!, status: "pending" } }, w.ui())).toMatchObject({ status: "rejected", reason: "需求归档还没写好" });
   await writeFile(join(w.worktree, ARCHIVE), PROD + "被改过\n");
-  expect(await deliverRequirement(w.facts, w.ui())).toEqual({ status: "rejected", reason: "archive_mismatch" });
+  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: "归档文件与关闭时登记的内容不一致" });
   expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
   await writeFile(join(w.worktree, ARCHIVE), PROD);
   await writeFile(join(w.worktree, "extra.ts"), "x\n");
-  expect(await deliverRequirement(w.facts, w.ui())).toEqual({ status: "rejected", reason: "worktree_dirty" });
+  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: "需求工作区里有归档以外的未提交改动" });
   await rm(join(w.worktree, "extra.ts"));
   const fake = `docs/prod/0197b7b0-6a20-7c51-8a32-b9465fb72d11.伪装.md`;
   await writeFile(join(w.worktree, fake), "伪装的归档\n"); w.git(w.worktree, "add", fake); w.git(w.worktree, "commit", "-qm", "夹带");
   const withFake = { ...w.facts, codeHead: w.git(w.worktree, "rev-parse", "HEAD") };
-  expect(await deliverRequirement(withFake, w.ui())).toEqual({ status: "rejected", reason: "foreign_prod_archive" });
+  expect(await deliverRequirement(withFake, w.ui())).toMatchObject({ status: "rejected", reason: "分支里带了别的需求的归档文件" });
   expect(w.remoteBranch()).toBeNull();
 });
 
@@ -137,7 +137,7 @@ test("M8-AC9：验收后目标分支前进能干净 rebase 时继续并在 PR �
 
   const c = await world();
   await writeFile(join(c.other, "login.ts"), "export const login = 2;\n"); c.git(c.other, "add", "."); c.git(c.other, "commit", "-qm", "冲突"); c.git(c.other, "push", "-q", "origin", "main");
-  expect(await deliverRequirement(c.facts, c.ui())).toEqual({ status: "conflict", target: "refs/remotes/origin/main" });
+  expect(await deliverRequirement(c.facts, c.ui())).toMatchObject({ status: "conflict", target: "refs/remotes/origin/main", reason: expect.stringMatching(/^目标分支在验收后前进，自动 rebase 有冲突：/) });
   expect(c.remoteBranch()).toBeNull();
   expect(c.git(c.worktree, "rev-parse", "HEAD")).toBe(c.facts.codeHead);
 });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { commandOutputTail } from "./tool-failure.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { globalDatabase, withDatabase } from "./database.ts";
@@ -36,10 +37,28 @@ export interface DeliveryUi {
   select(title: string, options: string[]): Promise<string | undefined>;
 }
 export type DeliveryResult =
-  | { status: "rejected"; reason: string }
-  | { status: "conflict"; target: string }
+  | { status: "rejected"; reason: string; next: string }
+  | { status: "conflict"; target: string; reason: string; next: string }
   | { status: "cancelled"; head: string }
   | { status: "delivered"; head: string; provider: "gh" | "glab"; url: string; reused: boolean; rebasedAfterAcceptance: boolean; merge: "review" | "auto" };
+
+const REJECT_ADVICE = {
+  requirement_not_completed: { why: "需求没有以完成关闭", next: "只有用户验收通过并以完成关闭的需求才能交付" },
+  archive_not_written: { why: "需求归档还没写好", next: "用 workflow_manage 的 status 查看归档状态，归档完成后再交付" },
+  branch_changed: { why: "需求工作区当前不在需求分支上", next: "请用户把需求工作区切回需求分支后再交付" },
+  worktree_dirty: { why: "需求工作区里有归档以外的未提交改动", next: "请用户处理这些改动后再交付" },
+  no_remote: { why: "仓库没有名为 origin 的远端", next: "请用户配置 origin 远端后再交付" },
+  unknown_host: { why: "origin 远端不是 GitHub 或 GitLab，无法开 PR 或 MR", next: "请用户确认远端地址；其他平台需要手动交付" },
+  head_changed: { why: "需求分支在最终检查后又有代码改动", next: "重新做交付核对和验收后再交付" },
+  foreign_prod_archive: { why: "分支里带了别的需求的归档文件", next: "请用户移除这些文件后再交付" },
+  nested_repository: { why: "分支里有嵌套仓库（子模块）改动", next: "请用户处理子模块改动后再交付" },
+  archive_mismatch: { why: "归档文件与关闭时登记的内容不一致", next: "请用户确认归档文件没有被手动改动" },
+  unexpected_staged: { why: "暂存区里有归档以外的文件", next: "请用户清理暂存区后再交付" },
+  unexpected_commit_content: { why: "交付提交里出现了归档以外的改动", next: "请用户检查分支后再交付" },
+  push_rejected: { why: "推送被远端拒绝", next: "按 Git 的报错处理：没登录请用户登录，不能快进就先同步目标分支，受保护分支请用户调整权限" },
+  pull_request_unknown: { why: "PR 或 MR 没能建立", next: "按报错处理：gh 或 glab 没装或没登录时请用户处理，也可以请用户手动开 PR" },
+} as const;
+type RejectCode = keyof typeof REJECT_ADVICE;
 
 export const REVIEW_CHOICE = "自己 review";
 export const AUTO_MERGE_CHOICE = "自动合并（等检查通过，优先 squash）";
@@ -86,7 +105,8 @@ async function enableAutoMerge(provider: Provider, cwd: string, number: string, 
  * 验收后目标分支前进时能干净 rebase 才继续，并在描述中注明未重新验证；合并方式由用户在界面选择。
  */
 export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): Promise<DeliveryResult> {
-  const reject = (reason: string) => ({ status: "rejected" as const, reason });
+  const reject = (code: RejectCode, detail?: string) =>
+    ({ status: "rejected" as const, reason: detail ? `${REJECT_ADVICE[code].why}：${detail}` : REJECT_ADVICE[code].why, next: REJECT_ADVICE[code].next });
   if (!facts.closed || facts.reason !== "completed") return reject("requirement_not_completed");
   if (!facts.archive || facts.archive.status !== "archived") return reject("archive_not_written");
   const archive = facts.archive;
@@ -95,9 +115,10 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   if ((await git(["symbolic-ref", "--quiet", "HEAD"])).stdout.trim() !== facts.branch) return reject("branch_changed");
   const dirty = entries((await git(["status", "--porcelain", "-z", "--untracked-files=all"])).stdout).map((entry) => entry.slice(3));
   if (dirty.some((path) => path !== archive.path)) return reject("worktree_dirty");
-  const remoteUrl = (await git(["remote", "get-url", "origin"]).catch(() => ({ stdout: "" }))).stdout.trim();
+  let remoteError = "";
+  const remoteUrl = (await git(["remote", "get-url", "origin"]).catch((error: unknown) => { remoteError = commandOutputTail(error); return { stdout: "" }; })).stdout.trim();
   const provider = providerFor(remoteUrl);
-  if (!remoteUrl) return reject("no_remote");
+  if (!remoteUrl) return reject("no_remote", remoteError || undefined);
   if (!provider) return reject("unknown_host");
 
   const target = await fetchRemoteTarget(facts.worktree);
@@ -113,8 +134,15 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   if ((await git(["diff", "--raw", `${target.sha}...HEAD`])).stdout.split("\n").some((line) => /^:\d+ 160000 /.test(line))) return reject("nested_repository");
   let rebasedAfterAcceptance = false;
   if (!(await includesCommit(facts.worktree, target.sha))) {
-    const rebased = await git(["rebase", "--no-autosquash", "--no-autostash", target.sha]).then(() => true, () => false);
-    if (!rebased) { await git(["rebase", "--abort"]); return { status: "conflict", target: target.ref }; }
+    const failure = await git(["rebase", "--no-autosquash", "--no-autostash", target.sha]).then(() => null, (error: unknown) => error);
+    if (failure) {
+      await git(["rebase", "--abort"]).catch(() => undefined);
+      const output = commandOutputTail(failure);
+      const conflicted = /CONFLICT|could not apply/iu.test(String((failure as { stdout?: unknown }).stdout ?? "") + output);
+      return { status: "conflict", target: target.ref,
+        reason: `${conflicted ? "目标分支在验收后前进，自动 rebase 有冲突" : "自动 rebase 失败"}：${output}`,
+        next: conflicted ? "请用户手动解决冲突，重新检查和验收后再交付" : "按 Git 的报错处理后再交付" };
+    }
     rebasedAfterAcceptance = true;
   }
 
@@ -138,7 +166,7 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   const archiveOnly = entries((await git(["diff", "-z", "--name-only", head, delivered])).stdout);
   if (archiveOnly.some((path) => path !== archive.path)) return reject("unexpected_commit_content");
   try { await git(["push", "--quiet", "origin", `${delivered}:refs/heads/${branch}`]); }
-  catch { return reject("push_rejected"); }
+  catch (error) { return reject("push_rejected", commandOutputTail(error)); }
 
   let request = await existingRequest(provider, facts.worktree, branch);
   const reused = request !== null;
@@ -146,9 +174,10 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
     const title = archive.path.slice(archive.path.lastIndexOf("/") + 1).replace(/^[0-9a-f-]{36}\./, "").replace(/\.md$/, "");
     const body = [`需求 ${facts.requirementId}`, `交付提交 ${delivered}`, `最终检查代码 ${facts.codeHead}`,
       ...(rebasedAfterAcceptance ? ["验收后已自动 rebase，这部分未重新验证。"] : [])].join("\n");
-    await createRequest(provider, facts.worktree, { branch, base: target.name, title, body }).catch(() => undefined);
+    let createError = "";
+    await createRequest(provider, facts.worktree, { branch, base: target.name, title, body }).catch((error: unknown) => { createError = commandOutputTail(error); });
     request = await existingRequest(provider, facts.worktree, branch);
-    if (!request) return reject("pull_request_unknown");
+    if (!request) return reject("pull_request_unknown", createError || undefined);
   }
   const choice = await ui.select(`PR 已就绪：${request.url}`, [REVIEW_CHOICE, AUTO_MERGE_CHOICE]);
   const merge = choice === AUTO_MERGE_CHOICE ? "auto" as const : "review" as const;
