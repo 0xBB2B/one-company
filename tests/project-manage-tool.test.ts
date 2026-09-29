@@ -515,7 +515,7 @@ describe("扫描确认、service 授权与有限输出", () => {
     await expect(call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => false))).rejects.toMatchObject({ code: "scan_declined" });
     expect(opens).toBe(0);
     const error = await call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true)).then(() => undefined, (value) => value as Error);
-    expect(error?.message).toBe("one_company_project_manage 的 init 动作失败。\n原因：未归类的错误（项目索引操作失败；未返回底层正文或错误详情）\n建议：可以重试一次；仍然失败就把这段原因告诉用户");
+    expect(error?.message).toBe("one_company_project_manage 的 init 动作失败。\n原因：项目索引操作失败；底层错误可能含正文，不回显\n建议：重试一次；仍然失败就把原因告诉用户");
     expect(error?.message).not.toContain("SENTINEL");
     await runtime.shutdown();
   });
@@ -643,7 +643,7 @@ describe("project_manage 项目规范 AGENTS.md：只有用户在界面确认过
     await expect(call(runtime, { action: "conventions-update", repoId: world.repoId, content: "x".repeat(16 * 1024 + 1) }, noDialog))
       .rejects.toMatchObject({ code: "invalid_shape" });
     expect(details(await call(runtime, { action: "conventions-update", repoId: world.repoId, content: "规".repeat(6000) }, noDialog)))
-      .toMatchObject({ status: "blocked", code: "too_large" });
+      .toMatchObject({ status: "blocked", reason: "项目规范内容超出大小上限", next: "精简 AGENTS.md 内容后再提交" });
 
     const shown: string[] = [];
     const approve = context("session-main", async (_title, message) => { shown.push(message); return true; });

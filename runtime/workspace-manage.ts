@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { commandOutputTail, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -23,14 +25,26 @@ const ManagedWorkspace = object({
 });
 export type ManagedWorkspace = Static<typeof ManagedWorkspace>;
 
-export type WorkspaceManageErrorCode = "requirement_not_active" | "requirement_not_closed" | "declined" | "path_conflict" | "branch_conflict"
-  | "operation_conflict" | "not_prepared" | "recycle_blocked" | "git_failed";
+const WORKSPACE_ADVICE = {
+  requirement_not_active: { why: "需求不在可准备工作区的状态", next: "重新读取需求状态后再操作" },
+  requirement_not_closed: { why: "需求还没关闭，不能回收工作区", next: "等需求关闭并归档后再回收" },
+  declined: { why: "用户在界面上拒绝了这次操作", next: "不要重试；确实需要时先向用户说明原因再问" },
+  path_conflict: { why: "工作区目标路径已被占用", next: "请用户处理该路径后重试" },
+  branch_conflict: { why: "需求分支名已被占用且不属于本需求", next: "请用户处理同名分支后重试" },
+  operation_conflict: { why: "同一操作编号已用于别的工作区操作", next: "换一个新生成的操作编号重试" },
+  not_prepared: { why: "需求还没有准备工作区", next: "先用 workspace-prepare 准备工作区" },
+  recycle_blocked: { why: "工作区还不能回收", next: "按原因逐项处理后再回收" },
+  git_failed: { why: "Git 命令执行失败", next: "按 Git 的报错处理；需要改动仓库时请用户介入" },
+} as const satisfies Record<string, FailureAdvice>;
+export type WorkspaceManageErrorCode = keyof typeof WORKSPACE_ADVICE;
 export class WorkspaceManageError extends Error {
   readonly code: WorkspaceManageErrorCode;
   readonly blockers: string[];
+  readonly advice: FailureAdvice;
   constructor(code: WorkspaceManageErrorCode, blockers: string[] = []) {
     super(blockers.length > 0 ? `${code}: ${blockers.join("；")}` : code);
     this.name = "WorkspaceManageError"; this.code = code; this.blockers = blockers;
+    this.advice = withDetail(WORKSPACE_ADVICE[code], blockers.join("；"));
   }
 }
 
@@ -49,8 +63,8 @@ async function writeGit(cwd: string, args: string[]): Promise<void> {
     await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], {
       cwd, env: { ...process.env, LC_ALL: "C" }, timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
     });
-  } catch {
-    throw new WorkspaceManageError("git_failed", [args.slice(0, 2).join(" ")]);
+  } catch (error) {
+    throw new WorkspaceManageError("git_failed", [`git ${args.slice(0, 2).join(" ")}：${commandOutputTail(error)}`]);
   }
 }
 async function gitOutput(cwd: string, args: string[]): Promise<string | null> {

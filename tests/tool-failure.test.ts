@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { Type } from "typebox";
-import { AdvisedError, failureText, toolStep } from "../runtime/tool-failure.ts";
+import { AdvisedError, commandOutputTail, failureText, toolStep } from "../runtime/tool-failure.ts";
 import { DaemonCallError } from "../runtime/daemon-client.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
 import { errorData } from "../daemon/server.ts";
@@ -40,4 +40,11 @@ test("守护进程回错时把原因与建议放进 data.advice，客户端据�
   const data = errorData(new AdvisedError("stale_pm_lease", advice));
   expect(data).toEqual({ advice });
   expect(failureText("派出 PM", new DaemonCallError("stale_pm_lease", "x", data))).toContain("原因：PM 租约已被新 PM 接管");
+});
+
+test("外部命令失败只取报错最后几行，没有 stderr 时取消息", () => {
+  const error = Object.assign(new Error("Command failed: git worktree add"), { stderr: "hint: a\nfatal: 'x' already exists\n\nerror: could not add\n" });
+  expect(commandOutputTail(error, 2)).toBe("fatal: 'x' already exists / error: could not add");
+  expect(commandOutputTail(new Error("spawn git ENOENT"))).toBe("spawn git ENOENT");
+  expect(commandOutputTail(Object.assign(new Error("x"), { stderr: "e".repeat(400) }))).toHaveLength(301);
 });

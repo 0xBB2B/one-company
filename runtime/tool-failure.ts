@@ -68,3 +68,11 @@ export const COMMON_ADVICE = {
   invalid_shape: { why: "参数不符合该动作的格式", next: "按工具说明改正字段后重试" },
   internal_state: { why: "本机记录与预期不一致", next: "停止操作，把这段原因告诉用户" },
 } as const satisfies Record<string, FailureAdvice>;
+
+/** 外部命令失败时的原文摘要：取 stderr（没有就取消息）最后几行，限长。 */
+export function commandOutputTail(error: unknown, lines = 3, limit = 300): string {
+  const record = error !== null && typeof error === "object" ? error as { stderr?: unknown; message?: unknown } : {};
+  const raw = typeof record.stderr === "string" && record.stderr.trim() ? record.stderr : typeof record.message === "string" ? record.message : String(error);
+  const tail = raw.split("\n").map((line) => line.trim()).filter(Boolean).slice(-lines).join(" / ");
+  return tail.length > limit ? `…${tail.slice(-limit)}` : tail;
+}

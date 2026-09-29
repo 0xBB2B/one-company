@@ -18,7 +18,8 @@ import { readGit } from "./git-read.ts";
 import { WorkspaceManageError, WorkspaceManageService } from "./workspace-manage.ts";
 import { backup, ProjectMaintenanceError, recoveryCheck, restore } from "./project-maintenance.ts";
 import { requestParameters, shapeIssue, unwrapRequest } from "./tool-request.ts";
-import { toolFailure, toolStep } from "./tool-failure.ts";
+import { adviceOf, commandOutputTail, toolFailure, toolStep } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { conventionsStatus, MAX_CONVENTIONS_BYTES, ProjectConventionsError, updateConventions } from "./project-conventions.ts";
 
 const REPO_ID_PATTERN = "^[0-9a-f]{64}$";
@@ -135,6 +136,26 @@ export interface ProjectManageToolRuntime {
   shutdown(): Promise<void>;
 }
 
+const CHANGED = "重新发起一次操作；反复出现就请用户确认仓库和窗口没有被切换";
+const PROJECT_MANAGE_NEXT: Record<ProjectManageToolError["code"], string> = {
+  invalid_action: "改用可用的 action",
+  invalid_shape: "按字段要求改正参数后重试",
+  host_unavailable: "稍后重试；窗口仍未就绪就请用户重开窗口",
+  stale_session: "会话已切换，在当前会话里重新发起",
+  stale_window: CHANGED,
+  foreign_repo: "改用当前工作区列出的仓库编号",
+  repository_changed: CHANGED,
+  unsafe_data_root: "请用户检查本机数据目录的位置、权限和链接",
+  scan_confirmation_required: "在有界面的主窗口里再做，扫描前要用户确认",
+  scan_declined: "不要重试；确实需要时先向用户说明原因再问",
+  cancelled: "操作已取消；需要时重新发起",
+  operation_failed: "重试一次；仍然失败就把原因告诉用户",
+  workspace_confirmation_required: "在有界面的主窗口里再做，这个操作要用户确认",
+  workspace_failed: "按原因处理；需要改动仓库时请用户介入",
+  maintenance_failed: "按原因处理；仍然失败就把原因告诉用户",
+  conventions_confirmation_required: "在有界面的主窗口里再做，更新项目规范要用户确认",
+  conventions_failed: "按原因处理；仍然失败就把原因告诉用户",
+};
 export class ProjectManageToolError extends Error {
   readonly code:
     | "invalid_action"
@@ -155,10 +176,12 @@ export class ProjectManageToolError extends Error {
     | "conventions_confirmation_required"
     | "conventions_failed";
 
+  readonly advice: FailureAdvice;
   constructor(code: ProjectManageToolError["code"], message: string) {
     super(message);
     this.name = "ProjectManageToolError";
     this.code = code;
+    this.advice = { why: message, next: PROJECT_MANAGE_NEXT[code] };
   }
 }
 
@@ -665,7 +688,7 @@ function shapePreviewFiles(value: unknown): unknown[] {
 }
 
 function invalidServiceResult(): never {
-  throw new ProjectManageToolError("operation_failed", "项目索引操作失败；未返回底层正文或错误详情");
+  throw new ProjectManageToolError("operation_failed", "项目索引服务返回的结果格式不对");
 }
 
 function shapeServiceResult(action: "preview" | ProjectManageAction, value: unknown): Record<string, unknown> {
@@ -866,9 +889,10 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
               path: result.path, baseCommit: result.baseCommit, version: workspace.requirementVersion(result.requirementId) });
           } catch (error) {
             if (error instanceof WorkspaceManageError) {
-              return textResult({ action: params.action, status: "blocked", code: error.code, blockers: error.blockers });
+              return textResult({ action: params.action, status: "blocked", reason: error.advice.why, next: error.advice.next });
             }
-            throw new ProjectManageToolError("workspace_failed", "工作区操作失败；未返回底层错误详情");
+            if (adviceOf(error)) throw error;
+            throw new ProjectManageToolError("workspace_failed", `工作区操作失败：${commandOutputTail(error)}`);
           }
         }
 
@@ -882,8 +906,9 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
               confirm: (title, message) => ctx.ui.confirm(title, message, { signal: operation.signal }) });
             return textResult({ action: params.action, ...result });
           } catch (error) {
-            if (error instanceof ProjectConventionsError) return textResult({ action: params.action, status: "blocked", code: error.code });
-            throw new ProjectManageToolError("conventions_failed", "更新项目规范失败；未返回底层错误详情");
+            if (error instanceof ProjectConventionsError) return textResult({ action: params.action, status: "blocked", reason: error.advice.why, next: error.advice.next });
+            if (adviceOf(error)) throw error;
+            throw new ProjectManageToolError("conventions_failed", `更新项目规范失败：${commandOutputTail(error)}`);
           }
         }
 
@@ -906,8 +931,9 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
             return textResult({ action: params.action, status: receipt.restoreStatus, operationId: receipt.operationId, executable: receipt.executable,
               filesRestored: receipt.filesRestored, requirements: receipt.requirements.map((item) => ({ requirementId: item.requirementId, recoveryReason: item.recoveryReason })) });
           } catch (error) {
-            if (error instanceof ProjectMaintenanceError) return textResult({ action: params.action, status: "blocked", code: error.code });
-            throw new ProjectManageToolError("maintenance_failed", "维护操作失败；未返回底层错误详情");
+            if (error instanceof ProjectMaintenanceError) return textResult({ action: params.action, status: "blocked", reason: error.advice.why, next: error.advice.next });
+            if (adviceOf(error)) throw error;
+            throw new ProjectManageToolError("maintenance_failed", `维护操作失败：${commandOutputTail(error)}`);
           }
         }
 
@@ -1026,7 +1052,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
           throw toolFailure(toolStep("one_company_project_manage", rawParams), new ProjectManageToolError("cancelled", "项目索引操作已取消"));
         }
         throw toolFailure(toolStep("one_company_project_manage", rawParams),
-          error instanceof ProjectManageToolError ? error : new ProjectManageToolError("operation_failed", "项目索引操作失败；未返回底层正文或错误详情"));
+          error instanceof ProjectManageToolError || adviceOf(error) ? error : new ProjectManageToolError("operation_failed", "项目索引操作失败；底层错误可能含正文，不回显"));
       } finally {
         operations.delete(operation);
         operation.finish();

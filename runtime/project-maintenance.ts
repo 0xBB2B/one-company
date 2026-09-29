@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { join } from "node:path";
 import { withDatabaseMaintenance } from "./database-maintenance.ts";
 import type { DatabaseManagementAuthorization } from "./database-maintenance.ts";
@@ -8,10 +9,15 @@ import { createRequirementBackup } from "./requirement-backup.ts";
 import { restoreRequirementBackup } from "./requirement-recovery.ts";
 import { isTerminalState, RunStore } from "./run-store.ts";
 
-export type ProjectMaintenanceErrorCode = "declined" | "agents_running";
+const MAINTENANCE_ADVICE = {
+  declined: { why: "用户在界面上拒绝了这次操作", next: "不要重试；确实需要时先向用户说明原因再问" },
+  agents_running: { why: "还有子代理在运行，不能做恢复对账、备份或恢复", next: "先停止相关运行，再做维护" },
+} as const satisfies Record<string, FailureAdvice>;
+export type ProjectMaintenanceErrorCode = keyof typeof MAINTENANCE_ADVICE;
 export class ProjectMaintenanceError extends Error {
   readonly code: ProjectMaintenanceErrorCode;
-  constructor(code: ProjectMaintenanceErrorCode) { super(code); this.name = "ProjectMaintenanceError"; this.code = code; }
+  readonly advice: FailureAdvice;
+  constructor(code: ProjectMaintenanceErrorCode) { super(code); this.name = "ProjectMaintenanceError"; this.code = code; this.advice = MAINTENANCE_ADVICE[code]; }
 }
 
 export interface ProjectMaintenanceOptions {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -19,9 +20,14 @@ const ApprovedConventions = object({
 });
 export type ApprovedConventions = Static<typeof ApprovedConventions>;
 
+const CONVENTIONS_ADVICE = {
+  too_large: { why: "项目规范内容超出大小上限", next: "精简 AGENTS.md 内容后再提交" },
+  changed_concurrently: { why: "确认期间 AGENTS.md 被别处改动", next: "先用 conventions-status 读取最新内容，再重新提交" },
+} as const satisfies Record<string, FailureAdvice>;
 export class ProjectConventionsError extends Error {
-  readonly code: "too_large" | "changed_concurrently";
-  constructor(code: ProjectConventionsError["code"]) { super(code); this.name = "ProjectConventionsError"; this.code = code; }
+  readonly code: keyof typeof CONVENTIONS_ADVICE;
+  readonly advice: FailureAdvice;
+  constructor(code: ProjectConventionsError["code"]) { super(code); this.name = "ProjectConventionsError"; this.code = code; this.advice = CONVENTIONS_ADVICE[code]; }
 }
 
 function sha256(text: string): string { return createHash("sha256").update(text, "utf8").digest("hex"); }
