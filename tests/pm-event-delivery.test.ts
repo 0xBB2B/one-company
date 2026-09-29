@@ -180,3 +180,16 @@ test("M9：批准差异投递出错时，PM 收到哪一步失败、原因与建
   await until(() => w.diffPrompts().length === 1, 1_000);
   await until(async () => (await reason()) === "", 1_000);
 }, 120_000);
+
+test("M9：PM 运行超过一个租约时长（其间已续租）后批准的新版本，照样送达准确差异", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 35_000));
+  w.provider.queue.push({ type: "text", text: "收到差异" }, { type: "text", text: "继续" });
+  const revision = await w.approve("animation");
+  await until(() => w.diffPrompts().length === 1, 1_000);
+  expect(text(w.diffPrompts()[0]!)).toContain(`revision 1 → ${revision}`);
+  const reason = await w.runStore.get(w.pm.runId);
+  expect(reason.ok && reason.run.stateReason).toBeFalsy();
+}, 120_000);

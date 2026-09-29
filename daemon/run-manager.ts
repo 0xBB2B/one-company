@@ -365,7 +365,12 @@ export class RunManager {
       throw protocolError("pm_session_failed", why, "按原因处理后重新派出 PM；原因涉及模型或凭据时请用户检查模型配置");
     }
     const renewal = this.options.clock.setIntervalExcludingSleep(() => {
-      void state.renewPm(lease).catch((error: unknown) => { void this.stop(run.id, { reason: "lease_renewal_failed", code: errorCode(error) }).catch(() => {}); });
+      // 续租拿到的新到期时间要接回来：投递凭据按租约到期时间失效，沿用派出时的租约会让它一生成就过期
+      void state.renewPm(lease).then((renewed) => {
+        lease = renewed;
+        const current = this.sessions.get(run.id);
+        if (current?.pm) current.pm.lease = renewed;
+      }, (error: unknown) => { void this.stop(run.id, { reason: "lease_renewal_failed", code: errorCode(error) }).catch(() => {}); });
     }, PM_RENEW_MS);
     let delivering: Promise<void> | null = null, notifiedReviewId: string | null = null;
     // 投递出错或需要恢复时把原因交给 PM 并写进运行记录，同一原因只报一次，恢复后清掉
