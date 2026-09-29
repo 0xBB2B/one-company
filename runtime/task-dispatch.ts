@@ -61,6 +61,12 @@ function questionResolved(db: LocalDatabase, repoId: string, record: StoredRecor
 
 type SchedulingGate = { task: TaskRecord; tasks: TaskRecord[] };
 
+function revokedGoalsIn(db: LocalDatabase, repoId: string, task: TaskRecord): string[] {
+  const record = db.read<RequirementRecord>("requirements", task.requirementId)!;
+  const scope = implementScope(registeredApprovalManifestIn(db, repoId, record.data.approvalManifest!.reference, record));
+  return task.goalUnitIds.filter((unit) => !scope.has(unit));
+}
+
 /**
  * 派子代理前共用的程序门槛：接手核对通过且有实施授权、无待处理更新、任务在已冻结版本中、依赖已完成、未决问题已解决、
  * 目标仍在实施授权内、没有运行中的同任务子代理。
@@ -80,9 +86,7 @@ function schedulingGateIn(db: LocalDatabase, request: { repoId: string; lease: P
   const byId = new Map(current.tasks.map((candidate) => [candidate.taskId, candidate]));
   const pendingDeps = task.dependsOn.filter((dep) => byId.get(dep)?.status !== "completed");
   if (pendingDeps.length) deny("dependency_pending", pendingDeps.map((dep) => byId.get(dep)?.key ?? dep));
-  const manifest = registeredApprovalManifestIn(db, request.repoId, recordRow.data.approvalManifest!.reference, recordRow);
-  const scope = implementScope(manifest);
-  const revoked = task.goalUnitIds.filter((unit) => !scope.has(unit));
+  const revoked = revokedGoalsIn(db, request.repoId, task);
   if (revoked.length) deny("task_not_ready", revoked.map((unit) => `${unit} 已不在实施授权内`));
   const openQuestions = task.blockedByQuestionIds.filter((question) => !questionResolved(db, request.repoId, recordRow, question));
   if (openQuestions.length) deny("question_pending", openQuestions);
@@ -192,8 +196,8 @@ export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "re
 }
 
 /**
- * PM 对等待其处置的任务放弃自行处理：转为等待用户裁决，说明记在最近一次尝试上。PM 因此不多任何权限，
- * 之后只有用户的决定能让任务继续。
+ * PM 对等待其处置、或目标已被新批准版本收回实施授权的待更新任务放弃自行处理：转为等待用户裁决，说明记在最近一次尝试上。
+ * PM 因此不多任何权限，之后只有用户的决定能让任务继续。
  */
 export function escalateTask(request: { dataRoot: string; repoId: string; lease: PmLease; taskId: string; note: string; now?: number }): TaskRecord {
   return withDatabase(repositoryDatabase(request.dataRoot, request.repoId), (db) => db.transaction(() => {
@@ -202,7 +206,9 @@ export function escalateTask(request: { dataRoot: string; repoId: string; lease:
     const row = db.read<TaskRecord>(TASKS, request.taskId);
     if (!row || row.data.requirementId !== request.lease.requirementId) deny("task_not_ready", ["任务不属于本需求"]);
     const task = row!.data;
-    if (task.status !== "awaiting_parent") deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置`]);
+    if (task.status !== "awaiting_parent" && !(task.status === "needs_update" && revokedGoalsIn(db, request.repoId, task).length)) {
+      deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置，目标也没有被新版本收回实施授权`]);
+    }
     const attempts = task.attempts.map((attempt, index) => index === task.attempts.length - 1 ? { ...attempt, escalation: request.note } : attempt);
     const next = { ...task, status: "awaiting_user", attempts, updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row!.version, next);
