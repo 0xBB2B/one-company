@@ -55,7 +55,7 @@ export const SAMPLE_FILES: Record<string, string> = {
   "go/main.go": "package main\n\nimport (\n\t\"fmt\"\n\n\t\"sample-game/go/greet\"\n)\n\nfunc main() {\n\tfmt.Println(greet.Greet(\"玩家\"))\n}\n",
   "go/go.mod": "module sample-game/go\n\ngo 1.22\n",
   "docs/spec/player/horizontal-movement.rules.json": rules({ id: "player.horizontal-movement", title: "水平移动" }, {
-    id: "player.horizontal-movement.walk", title: "方向键控制水平行走", condition: "角色在地面或空中", trigger: "只按下左键或右键",
+    id: "player.horizontal-movement.walk", title: "方向键控制水平行走", condition: "角色在地面或空中", trigger: "只按下左键或右键（不按 Shift）",
     expected: "角色以行走速度朝按下的方向水平移动；同时按两个方向键或都不按时水平速度为零", reason: "玩家用方向键控制角色左右移动",
     acceptance: [{ id: "walk-right", given: "角色静止", when: "只按右键", then: "水平速度为正的行走速度" },
       { id: "both-keys", given: "角色静止", when: "同时按左键和右键", then: "水平速度为零" }],
