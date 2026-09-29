@@ -105,7 +105,7 @@ test("tool_call后置改成原型action仍invalid_shape且不调用业务provide
   await expect(current.bridge.execute("mutated-action", { ...valid, action: "toString" }, current.ctx, current.signal))
     .rejects.toMatchObject({ code: "invalid_shape" });
   expect(serviceCalls).toBe(0);
-  current.bridge.completeToolExecution({ toolName: "pi_company_user_interact", toolCallId: "mutated-action" });
+  current.bridge.completeToolExecution({ toolName: "one_company_user_interact", toolCallId: "mutated-action" });
   current.bridge.dispose();
 });
 
@@ -113,7 +113,7 @@ test("需求未选、伪Main字段、PM自填passed和缺省provider都拒绝", 
   const fixture = await world(), current = bridgeFor(fixture), valid = ask(fixture);
   for (const patch of [{ role: "main" }, { actor: "user" }, { trusted: true }, { receipt: uuidv7() },
     { reviewer: { windowId: fixture.identity.windowId } }]) {
-    expect(() => current.bridge.observeToolCall({ toolName: "pi_company_user_interact", toolCallId: uuidv7(),
+    expect(() => current.bridge.observeToolCall({ toolName: "one_company_user_interact", toolCallId: uuidv7(),
       input: { request: { ...valid, ...patch } } } as unknown as ToolCallEvent, current.ctx)).toThrow(/invalid_shape/);
   }
   current.bridge.dispose();

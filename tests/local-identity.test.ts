@@ -32,10 +32,10 @@ const GIT_ENV = {
   GIT_CONFIG_SYSTEM: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_TERMINAL_PROMPT: "0",
-  GIT_AUTHOR_NAME: "pi-company-test",
-  GIT_AUTHOR_EMAIL: "pi-company-test@example.com",
-  GIT_COMMITTER_NAME: "pi-company-test",
-  GIT_COMMITTER_EMAIL: "pi-company-test@example.com",
+  GIT_AUTHOR_NAME: "one-company-test",
+  GIT_AUTHOR_EMAIL: "one-company-test@example.com",
+  GIT_COMMITTER_NAME: "one-company-test",
+  GIT_COMMITTER_EMAIL: "one-company-test@example.com",
 };
 
 async function git(args: string[], cwd: string): Promise<void> {
@@ -45,7 +45,7 @@ async function git(args: string[], cwd: string): Promise<void> {
 async function initGitRepoAt(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   await git(["init", "-b", "main"], dir);
-  await writeFile(join(dir, "README.md"), "pi-company depth fixture\n");
+  await writeFile(join(dir, "README.md"), "one-company depth fixture\n");
   await git(["add", "README.md"], dir);
   await git(["commit", "-m", "initial commit"], dir);
 }
@@ -78,11 +78,11 @@ describe("repositoryIdentity", () => {
   });
 
   test("不同仓库即使同名也身份不同", async () => {
-    const parentA = await mkdtemp(join(tmpdir(), "pi-company-namesake-"));
+    const parentA = await mkdtemp(join(tmpdir(), "one-company-namesake-"));
     tempRoots.push(parentA);
     const repoAPath = join(parentA, "same-name");
     await initGitRepoAt(repoAPath);
-    const parentB = await mkdtemp(join(tmpdir(), "pi-company-namesake-"));
+    const parentB = await mkdtemp(join(tmpdir(), "one-company-namesake-"));
     tempRoots.push(parentB);
     const repoBPath = join(parentB, "same-name");
     await initGitRepoAt(repoBPath);
@@ -119,13 +119,13 @@ describe("repositoryIdentity", () => {
   });
 
   test("非 Git 目录抛出不是 Git 仓库的错误", async () => {
-    const plainDir = await mkdtemp(join(tmpdir(), "pi-company-plain-"));
+    const plainDir = await mkdtemp(join(tmpdir(), "one-company-plain-"));
     tempRoots.push(plainDir);
     await expect(repositoryIdentity(plainDir)).rejects.toThrow("不是 Git 仓库");
   });
 
   test("目录不存在时抛出的错误消息含路径且不含不是 Git 仓库", async () => {
-    const parent = await mkdtemp(join(tmpdir(), "pi-company-missing-"));
+    const parent = await mkdtemp(join(tmpdir(), "one-company-missing-"));
     tempRoots.push(parent);
     const missing = join(parent, "does-not-exist");
     let caught: Error | undefined;
@@ -152,7 +152,7 @@ describe("discoverWorkspace", () => {
   });
 
   test("深度 4 层的仓库可被发现", async () => {
-    const parent = await mkdtemp(join(tmpdir(), "pi-company-depth-"));
+    const parent = await mkdtemp(join(tmpdir(), "one-company-depth-"));
     tempRoots.push(parent);
     const repoAtDepth4 = join(parent, "l1", "l2", "l3", "l4");
     await initGitRepoAt(repoAtDepth4);
@@ -161,7 +161,7 @@ describe("discoverWorkspace", () => {
   });
 
   test("深度 5 层的仓库同样被递归发现", async () => {
-    const parent = await mkdtemp(join(tmpdir(), "pi-company-depth-"));
+    const parent = await mkdtemp(join(tmpdir(), "one-company-depth-"));
     tempRoots.push(parent);
     const repoAtDepth5 = join(parent, "m1", "m2", "m3", "m4", "m5");
     await initGitRepoAt(repoAtDepth5);
@@ -209,7 +209,7 @@ describe("discoverWorkspace", () => {
   });
 
   test("含不可读子目录时仍发现其余仓库并记录 skipped", async () => {
-    const parent = await mkdtemp(join(tmpdir(), "pi-company-skip-"));
+    const parent = await mkdtemp(join(tmpdir(), "one-company-skip-"));
     tempRoots.push(parent);
     const repoA = join(parent, "repo-a");
     await initGitRepoAt(repoA);
@@ -250,7 +250,7 @@ describe("isInsideRepository", () => {
   });
 
   test("非 Git 目录返回 false", async () => {
-    const plainDir = await mkdtemp(join(tmpdir(), "pi-company-plain-"));
+    const plainDir = await mkdtemp(join(tmpdir(), "one-company-plain-"));
     tempRoots.push(plainDir);
     expect(await isInsideRepository(plainDir)).toBe(false);
   });
@@ -278,7 +278,7 @@ describe("listWorktrees", () => {
   });
 
   test("对非 Git 目录调用抛出不是 Git 仓库的错误", async () => {
-    const plainDir = await mkdtemp(join(tmpdir(), "pi-company-plain-"));
+    const plainDir = await mkdtemp(join(tmpdir(), "one-company-plain-"));
     tempRoots.push(plainDir);
     await expect(listWorktrees(plainDir)).rejects.toThrow("不是 Git 仓库");
   });
@@ -290,7 +290,7 @@ describe("dataRoot", () => {
     tempHomes.push(home);
     const customAgentDir = join(home.home, "custom-agent-dir");
     const env = { ...home.env, PI_CODING_AGENT_DIR: customAgentDir };
-    expect(dataRoot(env)).toBe(join(customAgentDir, "pi-company"));
+    expect(dataRoot(env)).toBe(join(customAgentDir, "one-company"));
   });
 
   test("未设置 PI_CODING_AGENT_DIR 时回退到 HOME/.pi/agent", async () => {
@@ -298,7 +298,7 @@ describe("dataRoot", () => {
     tempHomes.push(home);
     const env = { ...home.env };
     delete env.PI_CODING_AGENT_DIR;
-    expect(dataRoot(env)).toBe(join(home.home, ".pi", "agent", "pi-company"));
+    expect(dataRoot(env)).toBe(join(home.home, ".pi", "agent", "one-company"));
   });
 
   test("HOME 与 PI_CODING_AGENT_DIR 都缺失时抛出含 HOME 的错误", () => {
@@ -306,7 +306,7 @@ describe("dataRoot", () => {
   });
 
   test("PI_CODING_AGENT_DIR 非绝对路径时抛出错误", () => {
-    expect(() => dataRoot({ HOME: "/tmp/pi-company-home", PI_CODING_AGENT_DIR: "relative/dir" })).toThrow();
+    expect(() => dataRoot({ HOME: "/tmp/one-company-home", PI_CODING_AGENT_DIR: "relative/dir" })).toThrow();
   });
 
   test("HOME 非绝对路径时抛出错误", () => {
@@ -429,7 +429,7 @@ describe("daemonSocketPath", () => {
 
 describe("git 判定不依赖环境", () => {
   test("中文 locale 下非 Git 目录仍抛出不是 Git 仓库", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-nongit-"));
+    const dir = await mkdtemp(join(tmpdir(), "one-company-nongit-"));
     tempRoots.push(dir);
     const previous = process.env.LC_ALL;
     process.env.LC_ALL = "zh_CN.UTF-8";

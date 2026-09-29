@@ -13,7 +13,7 @@ import { RequirementCloseService } from "./workflow-close.ts";
 
 const execFileAsync = promisify(execFile);
 export const MANAGED_WORKSPACES = "managed_workspaces";
-export const WORKTREE_CONTAINER = ".pi-company-worktrees";
+export const WORKTREE_CONTAINER = ".one-company-worktrees";
 
 const ManagedWorkspace = object({
   format: Type.Literal("managed-workspace/v1"), requirementId: id, operationId: id, baseCommit: commit,

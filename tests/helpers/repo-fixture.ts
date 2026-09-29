@@ -120,10 +120,10 @@ export const GIT_ENV = {
   GIT_CONFIG_SYSTEM: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_TERMINAL_PROMPT: "0",
-  GIT_AUTHOR_NAME: "pi-company-test",
-  GIT_AUTHOR_EMAIL: "pi-company-test@example.com",
-  GIT_COMMITTER_NAME: "pi-company-test",
-  GIT_COMMITTER_EMAIL: "pi-company-test@example.com",
+  GIT_AUTHOR_NAME: "one-company-test",
+  GIT_AUTHOR_EMAIL: "one-company-test@example.com",
+  GIT_COMMITTER_NAME: "one-company-test",
+  GIT_COMMITTER_EMAIL: "one-company-test@example.com",
 };
 
 async function git(args: string[], cwd: string, owned: OwnedRoot): Promise<void> {
@@ -148,14 +148,14 @@ async function initRepo(root: string, owned: OwnedRoot): Promise<void> {
   await mkdir(root, { recursive: true });
   await git(["init", "-b", "main"], root, owned);
   await assertOwnedRoot(owned);
-  await writeFile(join(root, "README.md"), "pi-company test fixture\n");
+  await writeFile(join(root, "README.md"), "one-company test fixture\n");
   await git(["add", "README.md"], root, owned);
   await git(["commit", "-m", "initial commit"], root, owned);
   await assertOwnedRoot(owned);
 }
 
 export async function createRepoFixture(): Promise<RepoFixture> {
-  const owned = await allocateOwnedRoot("pi-company-repo-", "repo");
+  const owned = await allocateOwnedRoot("one-company-repo-", "repo");
   try {
     await assertOwnedRoot(owned);
     await initRepo(owned.path, owned);
@@ -189,7 +189,7 @@ async function prepareWorktree(repoRoot: string, branch: string, owned: OwnedRoo
 export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
   const repoRoot = repo.root;
   const worktrees = repo.worktrees;
-  const owned = await allocateOwnedRoot("pi-company-worktree-", "worktree");
+  const owned = await allocateOwnedRoot("one-company-worktree-", "worktree");
   const branch = `worktree-${basename(owned.path)}`;
   try {
     await assertOwnedRoot(owned);
@@ -208,7 +208,7 @@ export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
 }
 
 export async function createWorkspaceFixture(): Promise<WorkspaceFixture> {
-  const owned = await allocateOwnedRoot("pi-company-workspace-", "repo");
+  const owned = await allocateOwnedRoot("one-company-workspace-", "repo");
   const repoA = join(owned.path, "repo-a");
   const repoB = join(owned.path, "repo-b");
   try {

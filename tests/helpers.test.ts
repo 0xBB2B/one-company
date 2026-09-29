@@ -35,7 +35,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 async function createRuntime(): Promise<ModelRuntime> {
-  const modelsDir = await mkdtemp(join(tmpdir(), "pi-company-models-"));
+  const modelsDir = await mkdtemp(join(tmpdir(), "one-company-models-"));
   tempRoots.push(modelsDir);
   return ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
@@ -82,7 +82,7 @@ describe("temp-home", () => {
     const home = await createTempHome();
     tempRoots.push(home.home);
     expect(home.agentDir.startsWith(home.home)).toBe(true);
-    expect(home.dataRoot).toBe(join(home.agentDir, "pi-company"));
+    expect(home.dataRoot).toBe(join(home.agentDir, "one-company"));
     expect(home.env.HOME).toBe(home.home);
     const raw = await readFile(join(home.agentDir, "settings.json"), "utf8");
     expect(JSON.parse(raw)).toEqual({});
@@ -95,7 +95,7 @@ describe("temp-home", () => {
   });
 
   test("env 不携带调用方进程环境中与 HOME 隔离无关的变量", async () => {
-    const sentinelKey = "PI_COMPANY_TEST_SECRET";
+    const sentinelKey = "ONE_COMPANY_TEST_SECRET";
     process.env[sentinelKey] = "真实凭据泄漏探针";
     try {
       const home = await createTempHome();
@@ -247,7 +247,7 @@ describe("repo-fixture", () => {
   });
 
   test("在全局开启 commit.gpgsign 的环境下仍能创建夹具", async () => {
-    const configDir = await mkdtemp(join(tmpdir(), "pi-company-gitconfig-"));
+    const configDir = await mkdtemp(join(tmpdir(), "one-company-gitconfig-"));
     tempRoots.push(configDir);
     const configPath = join(configDir, "gitconfig");
     await writeFile(configPath, "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /nonexistent/gpg\n");

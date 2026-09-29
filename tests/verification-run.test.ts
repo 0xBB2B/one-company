@@ -92,7 +92,7 @@ async function world() {
   }
   const runs = new RunStore({ dataRoot: options.dataRoot, repoId: options.repoId, daemonStartedAt: new Date().toISOString() });
   async function workerRun() {
-    const run = await runs.create({ kind: "role", role: "pi-company.worker", requirement: created.requirementId, parentRunId: lease.runId, task: "实现", cwd: worktree.root,
+    const run = await runs.create({ kind: "role", role: "one-company.worker", requirement: created.requirementId, parentRunId: lease.runId, task: "实现", cwd: worktree.root,
       writePaths: ["src/"], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
     await runs.update(run.id, { state: "running" });
     return run.id;
@@ -417,9 +417,9 @@ test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承
   if (!darwin) return;
   const w = await world();
   const worker = await w.tool(w.grant({ role: "worker" }));
-  process.env.PI_COMPANY_VERIFY_MARK = "inherited";
-  const writes = await worker.execute({ action: "run", kind: "debug", command: 'test "$PI_COMPANY_VERIFY_MARK" = inherited && echo gen > src/generated.txt', performance: NA }) as VerificationView;
-  delete process.env.PI_COMPANY_VERIFY_MARK;
+  process.env.ONE_COMPANY_VERIFY_MARK = "inherited";
+  const writes = await worker.execute({ action: "run", kind: "debug", command: 'test "$ONE_COMPANY_VERIFY_MARK" = inherited && echo gen > src/generated.txt', performance: NA }) as VerificationView;
+  delete process.env.ONE_COMPANY_VERIFY_MARK;
   // 运行中改了受保护输入，本次运行按既有规则标失效；写入本身未被拦
   expect(writes.status).toBe("invalidated");
   await expect(w.read("src/generated.txt")).resolves.toBe("gen\n");

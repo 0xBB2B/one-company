@@ -20,9 +20,9 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 describe("package.json 声明契约", () => {
-  test("包名为 @0xbb2b/pi-company", async () => {
+  test("包名为 @0xbb2b/one-company", async () => {
     const pkg = await readPackageJson();
-    expect(pkg.name).toBe("@0xbb2b/pi-company");
+    expect(pkg.name).toBe("@0xbb2b/one-company");
   });
 
   test("pi.prompts 为空数组", async () => {

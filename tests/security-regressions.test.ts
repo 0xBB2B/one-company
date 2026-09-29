@@ -170,7 +170,7 @@ test("停止回执保留 Shell 不确定状态，重复停止可核验清理且�
   const parent = await store.create({ kind: "requirement", requirement: "2026-09-10.stop", task: "parent", cwd: w.cwd, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
   await store.update(parent.id, { state: "running" });
   const { id: _parentId, ...base } = parent;
-  const child = await store.create({ ...base, kind: "role", role: "pi-company.worker", parentRunId: parent.id });
+  const child = await store.create({ ...base, kind: "role", role: "one-company.worker", parentRunId: parent.id });
   await store.update(child.id, { state: "running" });
   let clear = false;
   shells.stopHost = async (host) => host.runId === child.id && !clear ? [{ taskId: "uncertain", result: { ok: false, reason: "无法确认进程身份" } }] : [];

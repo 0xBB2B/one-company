@@ -6,8 +6,8 @@ import { dirname } from "node:path";
 import { daemonSocketPath } from "../../runtime/identity.ts";
 import { PROTOCOL_VERSION, createErrorResponse, createResponse, decodeFrames, encodeFrame } from "../../runtime/protocol.ts";
 
-const repoDir = process.env.PI_COMPANY_REPO_DIR ?? "";
-const dataRootPath = process.env.PI_COMPANY_DATA_ROOT ?? "";
+const repoDir = process.env.ONE_COMPANY_REPO_DIR ?? "";
+const dataRootPath = process.env.ONE_COMPANY_DATA_ROOT ?? "";
 const repoId = createHash("sha256").update(repoDir).digest("hex");
 const socketPath = daemonSocketPath(dataRootPath, repoId);
 await mkdir(dirname(socketPath), { recursive: true, mode: 0o700 });

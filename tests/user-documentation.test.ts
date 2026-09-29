@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const README = join(PACKAGE_ROOT, "README.md");
 const DAEMON_MAIN = join(PACKAGE_ROOT, "daemon/main.ts");
-const COMMAND_SOURCES = [join(PACKAGE_ROOT, "extensions/commands.ts"), join(PACKAGE_ROOT, "extensions/git-delivery.ts")];
+const COMMAND_SOURCES = [join(PACKAGE_ROOT, "extensions/commands.ts"), join(PACKAGE_ROOT, "extensions/git-delivery.ts"), join(PACKAGE_ROOT, "extensions/requirement-manage.ts")];
 const readCommandSources = async () => (await Promise.all(COMMAND_SOURCES.map(readText))).join("\n");
 const PACKAGE_JSON = join(PACKAGE_ROOT, "package.json");
 const IDENTITY = join(PACKAGE_ROOT, "runtime/identity.ts");
@@ -76,8 +76,8 @@ describe("README 二级标题", () => {
 
 describe("README 必需句", () => {
   const REQUIRED = [
-    "/pi-company:setting",
-    "/pi-company:ps",
+    "/one:agents",
+    "/one:ps",
     "每个仓库一个守护进程",
     "自动启动",
     "空闲后自动退出",
@@ -87,7 +87,7 @@ describe("README 必需句", () => {
     ".pi-company/",
     "不随 Git 同步",
     "按启动目录",
-    "pi install git:github.com/0xBB2B/pi-company",
+    "pi install git:github.com/0xBB2B/one-company",
     "pi remove",
     "Node",
     "pnpm test",
@@ -136,7 +136,7 @@ describe("README 常量与实际代码一致", () => {
   test("命令表覆盖扩展注册的全部入口名，且不出现未注册的入口", async () => {
     const source = await readCommandSources();
     const registered = [...source.matchAll(/registerCommand\(\s*"([^"]+)"/g)].map((match) => match[1]).sort();
-    expect(registered).toEqual(["pi-company:setting", "pi-company:ps", "pi-company:git-delivery"].sort());
+    expect(registered).toEqual(["one:agents", "one:ps", "one:git-delivery", "one:requirement-select", "one:requirement-revoke"].sort());
 
     const body = await readText(README);
     for (const name of registered) {
@@ -145,11 +145,11 @@ describe("README 常量与实际代码一致", () => {
     }
   });
 
-  test("README 中出现的全部 /pi-company: 命令都在已注册命令集合内", async () => {
+  test("README 中出现的全部 /one: 命令都在已注册命令集合内", async () => {
     const source = await readCommandSources();
     const registered = new Set([...source.matchAll(/registerCommand\(\s*"([^"]+)"/g)].map((match) => match[1]));
     const body = await readText(README);
-    const mentioned = new Set([...body.matchAll(/\/pi-company:([a-zA-Z-]+)/g)].map((match) => `pi-company:${match[1]}`));
+    const mentioned = new Set([...body.matchAll(/\/one:([a-zA-Z-]+)/g)].map((match) => `one:${match[1]}`));
     for (const name of mentioned) expect(registered.has(name)).toBe(true);
   });
 });

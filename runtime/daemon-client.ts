@@ -67,9 +67,9 @@ function buildDaemonEnv(params: {
   return {
     ...process.env,
     ...params.env,
-    PI_COMPANY_SDK_DIR: params.sdkDir,
-    PI_COMPANY_REPO_DIR: params.repoDir,
-    PI_COMPANY_DATA_ROOT: params.dataRoot,
+    ONE_COMPANY_SDK_DIR: params.sdkDir,
+    ONE_COMPANY_REPO_DIR: params.repoDir,
+    ONE_COMPANY_DATA_ROOT: params.dataRoot,
   };
 }
 

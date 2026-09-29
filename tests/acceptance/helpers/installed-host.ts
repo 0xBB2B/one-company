@@ -28,16 +28,16 @@ export interface AcceptanceConfig {
 
 /** 只有显式给出模型与证据目录时才跑真实模型验收；缺任一项返回 null，由用例跳过。 */
 export function acceptanceConfig(): AcceptanceConfig | null {
-  const model = process.env.PI_COMPANY_ACCEPTANCE_MODEL, output = process.env.PI_COMPANY_ACCEPTANCE_OUTPUT;
+  const model = process.env.ONE_COMPANY_ACCEPTANCE_MODEL, output = process.env.ONE_COMPANY_ACCEPTANCE_OUTPUT;
   if (!model || !output) return null;
   const slash = model.indexOf("/");
-  if (slash <= 0 || slash === model.length - 1) throw new Error("PI_COMPANY_ACCEPTANCE_MODEL 须写成 <provider>/<model>");
-  if (!isAbsolute(output)) throw new Error("PI_COMPANY_ACCEPTANCE_OUTPUT 须是绝对路径");
-  const thinking = (process.env.PI_COMPANY_ACCEPTANCE_THINKING ?? "high") as Thinking;
+  if (slash <= 0 || slash === model.length - 1) throw new Error("ONE_COMPANY_ACCEPTANCE_MODEL 须写成 <provider>/<model>");
+  if (!isAbsolute(output)) throw new Error("ONE_COMPANY_ACCEPTANCE_OUTPUT 须是绝对路径");
+  const thinking = (process.env.ONE_COMPANY_ACCEPTANCE_THINKING ?? "high") as Thinking;
   if (!THINKING_LEVELS.includes(thinking)) throw new Error(`不支持的思考等级：${thinking}`);
   return {
     provider: model.slice(0, slash), modelId: model.slice(slash + 1), thinking, output,
-    credentialsDir: process.env.PI_COMPANY_ACCEPTANCE_CREDENTIALS ?? join(homedir(), ".pi", "agent"),
+    credentialsDir: process.env.ONE_COMPANY_ACCEPTANCE_CREDENTIALS ?? join(homedir(), ".pi", "agent"),
   };
 }
 
@@ -63,7 +63,7 @@ export async function installProduct(root: string): Promise<string> {
   await writeFile(join(consumer, "package.json"), JSON.stringify({
     name: "acceptance-consumer", version: "1.0.0", private: true, packageManager: "pnpm@11.7.0",
     dependencies: {
-      "@0xbb2b/pi-company": `file:${artifact}`,
+      "@0xbb2b/one-company": `file:${artifact}`,
       "@earendil-works/pi-ai": `link:${installedPackageRoot("@earendil-works/pi-ai")}`,
       "@earendil-works/pi-coding-agent": `link:${installedPackageRoot("@earendil-works/pi-coding-agent")}`,
       "@earendil-works/pi-tui": `link:${installedPackageRoot("@earendil-works/pi-tui")}`,
@@ -74,7 +74,7 @@ export async function installProduct(root: string): Promise<string> {
   const env = { ...process.env, npm_config_ignore_scripts: "true", npm_config_update_notifier: "false" };
   await exec(process.execPath, [pnpm, "install", "--offline", "--ignore-scripts", "--lockfile-only"], { cwd: consumer, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
   await exec(process.execPath, [pnpm, "install", "--offline", "--frozen-lockfile", "--ignore-scripts"], { cwd: consumer, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
-  const installed = await realpath(join(consumer, "node_modules", "@0xbb2b", "pi-company"));
+  const installed = await realpath(join(consumer, "node_modules", "@0xbb2b", "one-company"));
   if (installed === productRoot) throw new Error("安装产物解析回了源码目录");
   return installed;
 }

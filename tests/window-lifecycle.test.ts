@@ -155,7 +155,7 @@ function trackPgid(pgid: number | undefined): void {
 }
 
 // 任何走真实默认路径的用例都可能落到 dataRoot() 解析出的真实 HOME 目录下；全文件统一钉在临时目录，
-// 避免污染运行本测试的开发者机器上的真实 ~/.pi/agent/pi-company
+// 避免污染运行本测试的开发者机器上的真实 ~/.pi/agent/one-company
 let previousGlobalAgentDir: string | undefined;
 let globalAgentDir: string | undefined;
 

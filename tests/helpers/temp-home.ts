@@ -36,14 +36,14 @@ export function tempHomeRootReceipt(home: TempHome): TempHomeRootReceipt | undef
 }
 
 export async function createTempHome(): Promise<TempHome> {
-  const home = await mkdtemp(join(tmpdir(), "pi-company-home-"));
+  const home = await mkdtemp(join(tmpdir(), "one-company-home-"));
   let receipt: TempHomeRootReceipt | undefined;
   try {
     const info = await lstat(home);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`临时 HOME 不是自产普通目录: ${home}`);
     receipt = frozenReceipt(home, info.dev, info.ino);
     const agentDir = join(home, ".pi", "agent");
-    const dataRoot = join(agentDir, "pi-company");
+    const dataRoot = join(agentDir, "one-company");
     await assertReceipt(receipt, "创建 agent 目录前");
     await mkdir(agentDir, { recursive: true });
     await assertReceipt(receipt, "创建 agent 目录后");

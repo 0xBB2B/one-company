@@ -82,7 +82,7 @@ test("自报或伪造的职责、工具与 action 一律拒绝，不因大小写
   for (const role of ["planner", "PM", "Main", " main", "worker\n", "security-expert", "", undefined, null, 1, {}, ["main"]]) {
     expect(authorizeToolAction(role, "knowledge_query", "search")).toBe(false);
   }
-  for (const tool of ["bash", "write", "edit", "mcp", "pi_company_git_commit", "knowledge_query ", "", undefined]) {
+  for (const tool of ["bash", "write", "edit", "mcp", "one_company_git_commit", "knowledge_query ", "", undefined]) {
     expect(authorizeToolAction("main", tool, "search")).toBe(false);
   }
   for (const action of ["run", "preview", "search ", "", undefined, null, ["search"]]) {

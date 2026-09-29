@@ -4,13 +4,13 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { registerControlledProvider, scriptReplies } from "./controlled-provider.ts";
 import type { ControlledProvider, ScriptedReply } from "./controlled-provider.ts";
 
-export const PROVIDER_SCRIPTS_ENV_VAR = "PI_COMPANY_TEST_PROVIDER_SCRIPTS";
-export const PROVIDER_REQUESTS_LOG_ENV_VAR = "PI_COMPANY_TEST_PROVIDER_REQUESTS_LOG";
-export const TRIGGER_UNHANDLED_REJECTION_ENV_VAR = "PI_COMPANY_TEST_TRIGGER_UNHANDLED_REJECTION";
-export const TRIGGER_UNCAUGHT_EXCEPTION_ENV_VAR = "PI_COMPANY_TEST_TRIGGER_UNCAUGHT_EXCEPTION";
-export const ASSEMBLY_DELAY_MS_ENV_VAR = "PI_COMPANY_TEST_ASSEMBLY_DELAY_MS";
+export const PROVIDER_SCRIPTS_ENV_VAR = "ONE_COMPANY_TEST_PROVIDER_SCRIPTS";
+export const PROVIDER_REQUESTS_LOG_ENV_VAR = "ONE_COMPANY_TEST_PROVIDER_REQUESTS_LOG";
+export const TRIGGER_UNHANDLED_REJECTION_ENV_VAR = "ONE_COMPANY_TEST_TRIGGER_UNHANDLED_REJECTION";
+export const TRIGGER_UNCAUGHT_EXCEPTION_ENV_VAR = "ONE_COMPANY_TEST_TRIGGER_UNCAUGHT_EXCEPTION";
+export const ASSEMBLY_DELAY_MS_ENV_VAR = "ONE_COMPANY_TEST_ASSEMBLY_DELAY_MS";
 /** 测试运行中追加回复的 JSONL 文件，每行 {providerId, reply}；队列空时 provider 最多等 30 秒读到新行。 */
-export const PROVIDER_APPEND_ENV_VAR = "PI_COMPANY_TEST_PROVIDER_APPEND";
+export const PROVIDER_APPEND_ENV_VAR = "ONE_COMPANY_TEST_PROVIDER_APPEND";
 
 export interface ProviderScript {
   providerId: string;
@@ -23,7 +23,7 @@ export interface ProviderScript {
 
 export type SelectModel = (input: { roleName: string; taskId?: string }) => { provider: string; id: string };
 
-// 生产代码经 PI_COMPANY_MODEL_PROVIDER_MODULE 动态导入本模块，只调用 registerProviders(runtime)；
+// 生产代码经 ONE_COMPANY_MODEL_PROVIDER_MODULE 动态导入本模块，只调用 registerProviders(runtime)；
 // 角色/任务到 provider 的路由脚本与匹配逻辑留在测试目录内，不进入生产路径
 export async function registerProviders(runtime: ModelRuntime): Promise<void> {
   // 用于验证守护进程的进程级兜底：一次孤立的未处理拒绝不该把整个进程拖垮
@@ -102,7 +102,7 @@ function watchRequests(provider: ControlledProvider, logPath: string): void {
 
 export function selectModel({ roleName, taskId }: { roleName: string; taskId?: string }): { provider: string; id: string } {
   const scriptsPath = process.env[PROVIDER_SCRIPTS_ENV_VAR];
-  if (!scriptsPath) throw new Error("未设置 PI_COMPANY_TEST_PROVIDER_SCRIPTS，无法解析测试模型");
+  if (!scriptsPath) throw new Error("未设置 ONE_COMPANY_TEST_PROVIDER_SCRIPTS，无法解析测试模型");
   const raw = readFileSync(scriptsPath, "utf8");
   const scripts = JSON.parse(raw) as ProviderScript[];
   const exact = scripts.find((script) => script.roleName === roleName && script.taskId === taskId);

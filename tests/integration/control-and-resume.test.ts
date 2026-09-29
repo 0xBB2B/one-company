@@ -35,7 +35,7 @@ async function world(blockedStop?: { value: boolean }) {
   const log = join(fixture.dataRoot, "requests.jsonl"); await writeFile(log, "");
   const scripts = await writeTestModelProviders(fixture.dataRoot, [{ providerId: "control-fixture", modelId: "test", replies: [{ type: "text", text: "不应恢复旧运行" }] }]);
   async function run(kind: "requirement" | "role" = "role", parentRunId?: string) {
-    return store.create({ kind, standalone: true, role: "pi-company.worker", parentRunId, requirement: "2026-09-10.control",
+    return store.create({ kind, standalone: true, role: "one-company.worker", parentRunId, requirement: "2026-09-10.control",
       task: "历史记录", cwd: fixture.repo.root, writePaths: ["README.md"], readPaths: [fixture.repo.root], model: { provider: "control-fixture", id: "test" }, thinking: "off", mcp: [],
       pendingDispatch: { instructions: "历史说明不能重新发给模型" } });
   }

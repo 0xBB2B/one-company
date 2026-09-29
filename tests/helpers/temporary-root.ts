@@ -2,10 +2,10 @@ import { chmodSync, lstatSync, mkdtempSync, realpathSync, rmdirSync } from "node
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
-const PARENT_BINDING_ENV = "PI_COMPANY_TEST_PARENT_BINDING";
-const ROOT_PROPERTY = "__piCompanyTestTemporaryRoot";
-const STATE_PROPERTY = "__piCompanyTestTemporaryRootState";
-const NON_OWNER_PROPERTY = "__piCompanyTestTemporaryRootNonOwner";
+const PARENT_BINDING_ENV = "ONE_COMPANY_TEST_PARENT_BINDING";
+const ROOT_PROPERTY = "__oneCompanyTestTemporaryRoot";
+const STATE_PROPERTY = "__oneCompanyTestTemporaryRootState";
+const NON_OWNER_PROPERTY = "__oneCompanyTestTemporaryRootNonOwner";
 
 type ParentBinding = { path: string; dev: bigint; ino: bigint };
 type TemporaryRootState =

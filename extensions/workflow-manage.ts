@@ -27,13 +27,13 @@ function result(value: Record<string, unknown>) {
 /** 主会话的 workflow_manage：经守护进程查看状态、交付核对与关闭需求；关闭须以用户决定的 decisionId 作为 receiptId。 */
 export function registerWorkflowManageTool(pi: ExtensionAPI, context: () => WorkflowManageContext): void {
   pi.registerTool({
-    name: "pi_company_workflow_manage",
+    name: "one_company_workflow_manage",
     label: "workflow_manage",
-    description: "查看需求状态（status）、交付核对（delivery-check）、续办未完成的关闭（repair）或关闭需求（close）。完成（completed）、取消（cancelled）或拒绝（rejected）都须先用 pi_company_user_interact purpose=adjudicate 按用户原话登记决定（完成即用户验收通过 PM 的完成报告），再以返回的 decisionId 作为 receiptId。",
+    description: "查看需求状态（status）、交付核对（delivery-check）、续办未完成的关闭（repair）或关闭需求（close）。完成（completed）、取消（cancelled）或拒绝（rejected）都须先用 one_company_user_interact purpose=adjudicate 按用户原话登记决定（完成即用户验收通过 PM 的完成报告），再以返回的 decisionId 作为 receiptId。",
     parameters: MAIN_WORKFLOW_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {
-      const step = toolStep("pi_company_workflow_manage", rawParams);
+      const step = toolStep("one_company_workflow_manage", rawParams);
       if (!Value.Check(MAIN_WORKFLOW_MANAGE_PARAMETERS, rawParams)) throw toolFailure(step, new AdvisedError("invalid_shape",
         { why: "参数不符合该动作的格式", next: "按工具说明改正该动作的字段后重试" }));
       const { repoId, requirementId, ...request } = rawParams as Params;

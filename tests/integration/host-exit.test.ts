@@ -276,7 +276,7 @@ async function world() {
   const clock = createClock(); resources.clock = clock;
   const shells = new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }); resources.shells = shells;
   const store = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: "host-exit-history" });
-  const run = await store.create({ kind: "role", standalone: true, role: "pi-company.worker", requirement: "2026-09-10.host-exit", task: "测试自建待停止记录",
+  const run = await store.create({ kind: "role", standalone: true, role: "one-company.worker", requirement: "2026-09-10.host-exit", task: "测试自建待停止记录",
     cwd: fixture.repo.root, readPaths: [], writePaths: [], model: { provider: "unused", id: "unused" }, thinking: "off", mcp: [] });
   await store.update(run.id, { state: "running" });
   const spawned = await shells.spawn({ taskId: uuidv7(), host: { kind: "role", id: run.id, runId: run.id, role: run.role },

@@ -35,7 +35,7 @@ test("M8-AC1/AC3：B 克隆 A 的仓库后，没有 A 的数据库也能用普�
   const env = { PATH: process.env.PATH, HOME: r.home };
   expect((await exec(process.execPath, [join(r.b, "app.mjs")], { cwd: r.b, env })).stdout).toBe("跳跃 2\n");
   expect(await readdir(r.home)).toEqual([]);
-  expect(r.git(r.b, "ls-files")).not.toMatch(/pi-company|\.db|requirements\//);
+  expect(r.git(r.b, "ls-files")).not.toMatch(/one-company|\.db|requirements\//);
 });
 
 test("M8-AC10：两个隔离克隆各自完成同标题需求，归档用不同 UUID 加相同描述，合并不因标题碰撞冲突", async () => {

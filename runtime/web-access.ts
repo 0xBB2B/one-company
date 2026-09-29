@@ -49,7 +49,7 @@ function mcpResult(text: string): { content?: Array<{ type: string; text?: strin
 /** 免密钥调用 Exa 公开 MCP 端点的 web_search_exa。 */
 async function searchExa(deps: WebDeps, query: string): Promise<SearchHit[]> {
   const init = await mcpCall(deps, { jsonrpc: "2.0", id: 1, method: "initialize",
-    params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "pi-company", version: "1" } } });
+    params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "one-company", version: "1" } } });
   const session = init.session ?? undefined;
   await mcpCall(deps, { jsonrpc: "2.0", method: "notifications/initialized" }, session).catch(() => undefined);
   const call = await mcpCall(deps, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "web_search_exa", arguments: { query, numResults: MAX_HITS } } }, session);
@@ -68,7 +68,7 @@ async function searchExa(deps: WebDeps, query: string): Promise<SearchHit[]> {
 /** DuckDuckGo HTML 页兜底。 */
 async function searchDuckDuckGo(deps: WebDeps, query: string): Promise<SearchHit[]> {
   const response = await deps.fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, { signal: withTimeout(TIMEOUT_MS),
-    headers: { "user-agent": "Mozilla/5.0 (compatible; pi-company)", accept: "text/html" } });
+    headers: { "user-agent": "Mozilla/5.0 (compatible; one-company)", accept: "text/html" } });
   if (!response.ok) throw new WebAccessError("search_failed", `duckduckgo ${response.status}`);
   const html = await response.text(), hits: SearchHit[] = [];
   const snippets = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gu)].map((match) => cleanText(match[1]!));
@@ -100,7 +100,7 @@ export type PageGetter = (url: URL) => Promise<FetchResponse>;
 export const defaultPageGetter: PageGetter = (url) => new Promise((resolve, reject) => {
     const client = url.protocol === "https:" ? httpsRequest : httpRequest;
     const request = client(url, { method: "GET", timeout: TIMEOUT_MS,
-      headers: { "user-agent": "Mozilla/5.0 (compatible; pi-company)" } }, (response) => {
+      headers: { "user-agent": "Mozilla/5.0 (compatible; one-company)" } }, (response) => {
       const chunks: Buffer[] = []; let size = 0;
       response.on("data", (chunk: Buffer) => { size += chunk.length; if (size <= FETCH_MAX_BYTES) chunks.push(chunk); else response.destroy(); });
       response.on("end", () => resolve({ status: response.statusCode ?? 0, headers: { location: response.headers.location, "content-type": response.headers["content-type"] }, body: Buffer.concat(chunks) }));

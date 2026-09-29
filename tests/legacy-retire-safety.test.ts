@@ -42,7 +42,7 @@ async function fixture(probes?: ShellRegistryProbes, quotedName = false) {
   const manager = new RunManager({ dataRoot: f.dataRoot, repoId: f.repoId, runStore: runs, shellRegistry: shells, clock, relayQueue: relay,
     networkGate: new NetworkPauseGate(), roleCatalog: [], runtime: {} as any, selectModel: () => { throw new Error("不得选择模型"); }, workspaceRepoIds: [f.repoId], emit: () => {} });
   manager.markStarted();
-  const create = () => new RunStore({ dataRoot: f.dataRoot, repoId: f.repoId, daemonStartedAt: "old" }).create({ kind: "role", standalone: true, role: "pi-company.worker", task: "T-1", requirement: REQ, cwd: f.repo.root, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
+  const create = () => new RunStore({ dataRoot: f.dataRoot, repoId: f.repoId, daemonStartedAt: "old" }).create({ kind: "role", standalone: true, role: "one-company.worker", task: "T-1", requirement: REQ, cwd: f.repo.root, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
   return { ...f, database, clock, shells, runs, manager, relay, create, ctx: { dataRoot: f.dataRoot, cwd: f.repo.root } };
 }
 async function socket(w: Awaited<ReturnType<typeof fixture>>) {
@@ -88,7 +88,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     const readyFile = join(w.home.home, `ready-${taskId}`);
     const createDescendant = `const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore',env:process.env});child.unref();fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));`;
     const script = `const {spawn}=require('node:child_process');const fs=require('node:fs');${late ? `process.on('SIGTERM',()=>{${createDescendant}process.exit(0)});` : createDescendant}fs.writeFileSync(${JSON.stringify(readyFile)},'ready');setInterval(()=>{},1000);`;
-    const leader = spawn(process.execPath, ["-e", script], { detached: true, stdio: "ignore", env: { ...process.env, PI_COMPANY_SHELL_TOKEN: token } });
+    const leader = spawn(process.execPath, ["-e", script], { detached: true, stdio: "ignore", env: { ...process.env, ONE_COMPANY_SHELL_TOKEN: token } });
     const exited = new Promise<void>((resolve) => leader.once("exit", () => resolve()));
     cleanup.push(async () => {
       if (existsSync(pidFile)) descendant = Number(readFileSync(pidFile, "utf8"));
@@ -262,7 +262,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     const template = await w.create(); const ids: string[] = [];
     withDatabase(w.database, (db) => db.transaction(() => { for (let i = 0; i < 105; i++) { const id = uuidv7(); ids.push(id); db.create("runs", id, { ...template, id, shellToken: id, state: "stopped" }, id); } }));
     const id = ids[104]!;
-    const result = await w.shells.spawn({ taskId: uuidv7(), host: { kind: "role", id, runId: id, role: "pi-company.worker" }, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], cwd: w.repo.root, mode: "background", runToken: id });
+    const result = await w.shells.spawn({ taskId: uuidv7(), host: { kind: "role", id, runId: id, role: "one-company.worker" }, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], cwd: w.repo.root, mode: "background", runToken: id });
     const main = await w.shells.spawn({ taskId: uuidv7(), host: { kind: "main", id: "extra" }, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], cwd: w.repo.root, mode: "background", runToken: uuidv7() });
     if (!result.ok || !main.ok) throw new Error("spawn failed");
     cleanup.push(async () => { for (const task of [result.task, main.task]) { await w.shells.stop(task.taskId); expect(alive(task.pid)).toBe(false); } });

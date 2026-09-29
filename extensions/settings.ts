@@ -56,7 +56,7 @@ async function resolveRepoRoot(cwd: string): Promise<string> {
 
 export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui"> & { mode?: string; isProjectTrusted?: () => boolean };
 
-/** /pi-company:setting：只读查看内置、用户、项目三层的角色定义；C 复制为新定义，编辑请直接改对应目录下的 md。 */
+/** /one:agents：只读查看内置、用户、项目三层的角色定义；C 复制为新定义，编辑请直接改对应目录下的 md。 */
 export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<void> {
   const projectTrusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true;
   const agentDir = resolveAgentDir(process.env);

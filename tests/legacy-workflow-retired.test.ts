@@ -44,7 +44,7 @@ async function world() {
   });
   const snapshot = () => withDatabase(database, (db) => JSON.stringify({ requirements: db.list("requirements"), user: db.events(`decisions:${REQUIREMENT}:user`), relay: db.list("relay_questions"), runs: db.list("runs"), sessions: db.list("sessions") }));
   const createRun = async (state: "queued" | "paused" | "paused_network" | "failed" = "queued") => {
-    const run = await runs.create({ kind: "role", standalone: true, role: "pi-company.worker", requirement: REQUIREMENT, task: SECRET, cwd,
+    const run = await runs.create({ kind: "role", standalone: true, role: "one-company.worker", requirement: REQUIREMENT, task: SECRET, cwd,
       writePaths: [cwd], readPaths: [cwd], model: { provider: "retire-model", id: "test" }, thinking: "off", mcp: [] });
     if (state !== "queued") {
       await runs.update(run.id, { state: "running" });
@@ -66,16 +66,16 @@ describe("旧工作流永久移除，旧记录不产生授权", () => {
   test("主会话只注册 agent_manage，旧批量列表、批量停止与恢复入口不存在", async () => {
     const tools: any[] = []; const pi = { registerTool: (tool: any) => tools.push(tool) } as any;
     registerAgentManageTool(pi, () => { throw new Error("不得定位旧连接"); });
-    expect(tools.map((tool) => tool.name)).toEqual(["pi_company_agent_manage"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["one_company_agent_manage"]);
     for (const action of ["list", "pauseAll", "stopAll", "resumeAll", "resumeInterrupted"]) {
-      await expect(tools[0].execute("x", { action, repoId: "a".repeat(64) })).rejects.toThrow(`pi_company_agent_manage 的 ${action} 动作失败。\n原因：参数不符合该动作的格式`);
+      await expect(tools[0].execute("x", { action, repoId: "a".repeat(64) })).rejects.toThrow(`one_company_agent_manage 的 ${action} 动作失败。\n原因：参数不符合该动作的格式`);
     }
   });
   test("主会话只有核心工具：没有旧工作流、旧决定和主窗口提交工具，也不覆盖宿主 write/edit（tool_call 只有搜索排除与需求观察两处）", () => {
     const fakePi = createFakePi();
     registerExtensions(fakePi.pi);
     const names = fakePi.registeredTools().map((tool) => tool.name);
-    for (const retired of ["pi_company_workflow", "pi_company_git_commit", "decision_record", "write", "edit"]) expect(names).not.toContain(retired);
+    for (const retired of ["one_company_workflow", "one_company_git_commit", "decision_record", "write", "edit"]) expect(names).not.toContain(retired);
     expect(fakePi.handlersFor("tool_call")).toHaveLength(2);
   });
   test("RunManager 不再提供旧派工、恢复、转录与并行判定入口", async () => {

@@ -110,7 +110,7 @@ test("M7-AC33/AC35：主窗口面板拉取概览，↓ 进入面板、选中事�
   await vi.waitFor(() => expect(calls).toContain("pm.overview"));
   await new Promise((resolve) => setTimeout(resolve, 0));
   input!("\x1b[B"); input!("\x1b[B"); input!("\r");
-  await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ customType: "pi-company.decision-packet", content: "决策包正文", display: true }, { triggerTurn: true }), { timeout: 5_000 });
+  await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ customType: "one-company.decision-packet", content: "决策包正文", display: true }, { triggerTurn: true }), { timeout: 5_000 });
   expect(revoke).toHaveBeenCalledTimes(1);
   registerInputRevoker(undefined);
   const before = calls.filter((method) => method === "pm.overview").length;

@@ -32,7 +32,7 @@ async function world() {
 test("M7-AC7：恢复对账、备份须真实确认；仍有代理运行时不进入维护", async () => {
   const w = await world();
   const runs = new RunStore({ dataRoot: w.dataRoot, repoId: w.repoId, daemonStartedAt: new Date().toISOString() });
-  const run = await runs.create({ kind: "role", standalone: true, role: "pi-company.worker", requirement: uuidv7(), task: "t", cwd: w.repositoryRoot,
+  const run = await runs.create({ kind: "role", standalone: true, role: "one-company.worker", requirement: uuidv7(), task: "t", cwd: w.repositoryRoot,
     readPaths: [], writePaths: [], model: { provider: "p", id: "m" }, thinking: "off", mcp: [] });
   await runs.update(run.id, { state: "running" });
   await expect(backup(w.maintenance, { operationId: uuidv7() })).rejects.toMatchObject({ code: "agents_running" });

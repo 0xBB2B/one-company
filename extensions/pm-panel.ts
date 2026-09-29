@@ -48,7 +48,7 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
             if (myGeneration !== generation || typeof result.text !== "string") return;
             // 只有用户看完卡片后亲手输入的原话才作为决定依据
             revokeCapturedInput();
-            pi.sendMessage({ customType: "pi-company.decision-packet", content: result.text, display: true }, { triggerTurn: true });
+            pi.sendMessage({ customType: "one-company.decision-packet", content: result.text, display: true }, { triggerTurn: true });
           }).catch((error: unknown) => ctx.ui.notify(`该事项无法打开：${message(error)}`, "warning"));
         },
         togglePause: (entry) => {

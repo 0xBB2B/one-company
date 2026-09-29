@@ -89,7 +89,7 @@ describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
   });
 
   test("空临时目录以零文件通过", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-erasable-"));
+    const dir = await mkdtemp(join(tmpdir(), "one-company-erasable-"));
     try {
       const result = await checkErasableSyntax(dir);
       expect(result.checked.length).toBe(0);
@@ -100,7 +100,7 @@ describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
   });
 
   test("合法文件通过检查（无 enum/namespace，相对 import 带 .ts 后缀）", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-erasable-"));
+    const dir = await mkdtemp(join(tmpdir(), "one-company-erasable-"));
     try {
       await writeFile(join(dir, "dep.ts"), "export const value = 1;\n");
       await writeFile(
@@ -116,7 +116,7 @@ describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
   });
 
   test("含 enum 关键字的文件被判定为违规", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-erasable-"));
+    const dir = await mkdtemp(join(tmpdir(), "one-company-erasable-"));
     try {
       await writeFile(join(dir, "bad-enum.ts"), "enum Color { Red, Green }\n");
       const result = await checkErasableSyntax(dir);
@@ -127,7 +127,7 @@ describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
   });
 
   test("含 namespace 关键字的文件被判定为违规", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-erasable-"));
+    const dir = await mkdtemp(join(tmpdir(), "one-company-erasable-"));
     try {
       await writeFile(join(dir, "bad-namespace.ts"), "namespace Foo { export const x = 1; }\n");
       const result = await checkErasableSyntax(dir);
@@ -138,7 +138,7 @@ describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
   });
 
   test("无 .ts 后缀的相对 import 被判定为违规", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-erasable-"));
+    const dir = await mkdtemp(join(tmpdir(), "one-company-erasable-"));
     try {
       await writeFile(join(dir, "dep.ts"), "export const value = 1;\n");
       const badImportFile = join(dir, "bad-import.ts");
@@ -151,7 +151,7 @@ describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
   });
 
   test("类型剥离时语法错误的文件被判定为违规", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-erasable-"));
+    const dir = await mkdtemp(join(tmpdir(), "one-company-erasable-"));
     try {
       await writeFile(join(dir, "bad-syntax.ts"), "export const value: = ;\n");
       const result = await checkErasableSyntax(dir);
@@ -162,7 +162,7 @@ describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
   });
 
   test("Node 类型剥离不支持的构造函数参数属性语法被判定为违规", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-erasable-"));
+    const dir = await mkdtemp(join(tmpdir(), "one-company-erasable-"));
     try {
       await writeFile(
         join(dir, "param-property.ts"),
@@ -176,7 +176,7 @@ describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
   });
 
   test("无 .ts 后缀的动态相对 import 被判定为违规", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-company-erasable-"));
+    const dir = await mkdtemp(join(tmpdir(), "one-company-erasable-"));
     try {
       await writeFile(join(dir, "dep.ts"), "export const value = 1;\n");
       const badImportFile = join(dir, "bad-dynamic-import.ts");

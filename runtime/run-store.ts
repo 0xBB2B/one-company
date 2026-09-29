@@ -150,7 +150,7 @@ const RunRecordSchema = Type.Object({
   id: Type.String({ pattern: UUID_PATTERN }),
   shellToken: Type.String({ minLength: 32 }),
   kind: Type.Union([Type.Literal("requirement"), Type.Literal("role")]),
-  role: Type.Optional(Type.String({ pattern: "^pi-company\\." })),
+  role: Type.Optional(Type.String({ pattern: "^one-company\\." })),
   requirement: Type.String({ minLength: 1 }),
   parentRunId: Type.Optional(Type.String({ pattern: UUID_PATTERN })),
   task: Type.String(), cwd: Type.String({ minLength: 1 }),
@@ -202,8 +202,8 @@ export class RunStore {
       if (!input.standalone && (typeof input.parentRunId !== "string" || input.parentRunId.length === 0)) {
         throw new Error("kind 为 role 时必须提供 parentRunId");
       }
-      if (typeof input.role !== "string" || !input.role.startsWith("pi-company.")) {
-        throw new Error(`role 必须以 pi-company. 开头: ${input.role}`);
+      if (typeof input.role !== "string" || !input.role.startsWith("one-company.")) {
+        throw new Error(`role 必须以 one-company. 开头: ${input.role}`);
       }
     }
 

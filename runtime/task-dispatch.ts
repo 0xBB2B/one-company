@@ -68,7 +68,7 @@ function schedulingGateIn(db: LocalDatabase, request: { repoId: string; lease: P
   const round = activeCheckRoundIn(db, request.repoId, requirementId);
   if (round !== null && task.role === "worker") deny("check_phase_active");
   if (task.role === "qa" && round?.data.status !== "open") {
-    deny("round_not_open", ["QA 只能在检查轮内派出：先提交全部改动并用 pi_company_git_sync 同步，再用 pi_company_workflow_manage action=advance 开检查轮"]);
+    deny("round_not_open", ["QA 只能在检查轮内派出：先提交全部改动并用 one_company_git_sync 同步，再用 one_company_workflow_manage action=advance 开检查轮"]);
   }
   if (task.attempts.some((attempt) => attempt.outcome === "running") || task.reviews.some((review) => review.outcome === "running")) {
     deny("task_not_ready", [`${task.key} 仍有运行中的子代理`]);

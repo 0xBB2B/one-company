@@ -129,14 +129,14 @@ export function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
 /** PM 的 agent_manage：按已冻结任务派出子代理（首次或一次带原因的重试），控制本 PM 派出的运行。 */
 export function agentManageTool(input: PmToolsInput): ToolDefinition {
   return {
-    name: "pi_company_agent_manage",
+    name: "one_company_agent_manage",
     label: "agent_manage",
     description: "dispatch 按已冻结计划中的任务派出子代理，轮次上限取任务登记值；任务首次尝试未完成时可带 retry（原因与新的轮次上限）重试一次，再未完成即等待用户裁决。worker 任务完成后进入待审查，带 review（轮次上限）派 reviewer 审查该任务；审查打回后带 rework（原因与新的轮次上限）派 worker 返修一次，再次打回即等待用户裁决。所在目录与执行中、待审查、待返修任务重叠的 worker 任务不能同时派出。dispatch role=explore 派出只读检索（问题、线索与轮次上限；不给 webQuery 时在需求工作区内检索本地文件，给出 webQuery 则联网检索），立即返回运行编号，结果到达后自动注入本会话，可同时派出多个。status/pause/resume/stop 控制本 PM 派出的运行。catalog 按职责分页列出可用角色定义（名称、描述、来源），供在计划任务里用 agent 指定专业定义；用户明确指定的定义不可用时，不自行改用其他定义，向用户提问。",
     parameters: PM_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {
       try { return await manage(rawParams); }
-      catch (error) { throw toolFailure(toolStep("pi_company_agent_manage", rawParams), error); }
+      catch (error) { throw toolFailure(toolStep("one_company_agent_manage", rawParams), error); }
     },
   } as ToolDefinition;
   async function manage(rawParams: unknown) {

@@ -51,7 +51,7 @@ export async function deliverApprovedEvents(input: PmEventDeliveryInput): Promis
         input.deliver([
           `已批准更新：revision ${content.fromRevision} → ${content.toRevision}（事件 ${content.sequence}，prod hash ${content.toHash}）。`,
           "准确差异如下：", content.diff,
-          `请据此分析对规则、代码与各任务的影响，用 pi_company_plan_manage assess-update（revision ${content.toRevision}）逐任务复核，再按需局部调整计划。`,
+          `请据此分析对规则、代码与各任务的影响，用 one_company_plan_manage assess-update（revision ${content.toRevision}）逐任务复核，再按需局部调整计划。`,
         ].join("\n"));
       });
       await service.acknowledgeEvent({ lease, eventId: prepared.eventId, sequence: prepared.sequence, toRevision: prepared.toRevision,

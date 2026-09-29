@@ -144,13 +144,13 @@ function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSou
     `工作区：${workspace.path}（分支 ${workspace.branch}）`,
     `当前批准版本：revision ${record.revision}，prod hash ${record.approved!.hash}`,
     `PM 运行：${lease.runId}，fence ${lease.fence}`,
-    "当前处于受限接手：先用 pi_company_requirement_manage 读取完整批准正文，再提交接手理解等待主代理核对；核对通过前不能正式提出或更新计划，也不能派 worker。",
+    "当前处于受限接手：先用 one_company_requirement_manage 读取完整批准正文，再提交接手理解等待主代理核对；核对通过前不能正式提出或更新计划，也不能派 worker。",
     ...(sources ? ["接手理解每项的出处只能引用下列编号（kind 与 id），scenarioCoverage 要逐个覆盖必需场景：",
       `- prod-unit：${list(sources.prodUnitIds)}`, `- prod-scenario（必需场景）：${list(sources.prodScenarioIds)}`,
       `- decision：${list(sources.decisionIds)}`,
       ...decisions.map((d) => `  - ${d.id}（${d.status}，涉及 ${list(d.unitIds)}）：${d.conclusion}`),
       `- question：${list(sources.questionIds)}`] : ["出处清单暂不可用，接手理解提交会被拒绝。"]),
-    "核对通过后，之后每次已批准更新的准确差异会由宿主按序送达本会话；收到后用 pi_company_plan_manage assess-update 逐任务复核。",
+    "核对通过后，之后每次已批准更新的准确差异会由宿主按序送达本会话；收到后用 one_company_plan_manage assess-update 逐任务复核。",
   ].join("\n");
 }
 export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "parentRunId" | "state" | "startedAt" | "updatedAt" | "endedAt" | "turns" | "usage" | "pausedMs" | "pausedAt" | "stateReason" | "stopCause"> & { log: string };
@@ -266,7 +266,7 @@ export class RunManager {
     try { result = await this.dispatchPmExclusive(input); }
     finally { this.dispatchingPm.delete(input.requirementId); }
     const status = await conventionsStatus({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId });
-    return status.differs ? { ...result, conventionsNotice: `仓库根目录 AGENTS.md 与用户批准的项目规范版本不一致，PM 与子代理只按批准版本工作；请向用户说明，用户要采用磁盘上的内容时，以 pi_company_project_manage conventions-update 提交并请用户在界面确认。` } : result;
+    return status.differs ? { ...result, conventionsNotice: `仓库根目录 AGENTS.md 与用户批准的项目规范版本不一致，PM 与子代理只按批准版本工作；请向用户说明，用户要采用磁盘上的内容时，以 one_company_project_manage conventions-update 提交并请用户在界面确认。` } : result;
   }
 
   private async dispatchPmExclusive(input: DispatchPmInput): Promise<{ runId: string; fence: number }> {
@@ -385,7 +385,7 @@ export class RunManager {
     // PM 结束即撤权：它派出的 explore 随之停止，结果不再有人接收
     if (current.ok) {
       for (const child of await this.childrenOf(current.run)) {
-        if (child.role === "pi-company.explore" && !isTerminalState(child.state)) await this.stop(child.id, { reason: "parent_stopped" }).catch(() => {});
+        if (child.role === "one-company.explore" && !isTerminalState(child.state)) await this.stop(child.id, { reason: "parent_stopped" }).catch(() => {});
       }
     }
     if (current.ok && !isTerminalState(current.run.state)) await this.runStore.update(runId, { state, ...(state === "failed" ? { stateReason: outcomeReason("failed", reason) } : {}) });
@@ -426,7 +426,7 @@ export class RunManager {
       : finishTaskAttempt({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" });
     let run: RunRecord;
     try {
-      run = await this.runStore.create({ id: runId, kind: "role", role: `pi-company.${role}`, requirement: lease.requirementId, parentRunId: input.pmRunId, task: task.taskId,
+      run = await this.runStore.create({ id: runId, kind: "role", role: `one-company.${role}`, requirement: lease.requirementId, parentRunId: input.pmRunId, task: task.taskId,
         cwd: workspace.path, readPaths: [workspace.path], writePaths: review ? [] : task.writePaths, model: modelRef, thinking, mcp: [], agent: resolved.fingerprint });
     } catch (error) {
       fail();
@@ -577,7 +577,7 @@ export class RunManager {
       ? { kind: "web", indexBaseline: "not_applicable", query: input.request.source.query }
       : { kind: "local_file", indexBaseline: "not_applicable", root: await realpath(root) };
     const runId = requirementId
-      ? (await this.runStore.create({ kind: "role", role: "pi-company.explore", requirement: requirementId, parentRunId: parent.parentRunId, task: "explore",
+      ? (await this.runStore.create({ kind: "role", role: "one-company.explore", requirement: requirementId, parentRunId: parent.parentRunId, task: "explore",
         cwd: root, readPaths: source.kind === "local_file" ? [source.root] : [], writePaths: [], model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint })).id
       : uuidv7();
     let explore: ExploreInput;

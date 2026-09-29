@@ -247,7 +247,7 @@ describe("按宿主过滤任务列表", () => {
 });
 
 describe("detached 启动与 token 注入", () => {
-  test("子进程环境含 PI_COMPANY_SHELL_TOKEN=<runToken>:<taskId>", async () => {
+  test("子进程环境含 ONE_COMPANY_SHELL_TOKEN=<runToken>:<taskId>", async () => {
     const registry = makeRegistry();
     const taskId = randomUUID();
     const runToken = randomUUID();
@@ -257,7 +257,7 @@ describe("detached 启动与 token 注入", () => {
       taskId,
       host: HOST_MAIN,
       command: "sh",
-      args: ["-c", `printenv PI_COMPANY_SHELL_TOKEN > "${outFile}"`],
+      args: ["-c", `printenv ONE_COMPANY_SHELL_TOKEN > "${outFile}"`],
       mode: "background",
       runToken,
     });
@@ -615,7 +615,7 @@ describe("停止流程", () => {
         pgid: fakePid,
         ppid: started.task.pid,
         startedAt: Date.now(),
-        command: `sh -c echo PI_COMPANY_SHELL_TOKEN=${runToken}:${taskId}`,
+        command: `sh -c echo ONE_COMPANY_SHELL_TOKEN=${runToken}:${taskId}`,
         token: null,
       },
     ];
@@ -1395,7 +1395,7 @@ describe("守护进程重启后接管", () => {
           pgid: 4_242,
           ppid: 1,
           startedAt: Date.now(),
-          command: `sh -c echo PI_COMPANY_SHELL_TOKEN=${runToken}:${taskId}`,
+          command: `sh -c echo ONE_COMPANY_SHELL_TOKEN=${runToken}:${taskId}`,
           token: null,
         },
       ],
@@ -1674,7 +1674,7 @@ describe("等待模式管道输出", () => {
       taskId: envTaskId,
       host: HOST_MAIN,
       command: "sh",
-      args: ["-c", "echo $FOO; echo $PI_COMPANY_SHELL_TOKEN"],
+      args: ["-c", "echo $FOO; echo $ONE_COMPANY_SHELL_TOKEN"],
       mode: "wait",
       runToken,
       env: { FOO: "bar" },

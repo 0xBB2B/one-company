@@ -18,7 +18,7 @@ import { createDaemonFixture, removeDaemonFixture, resolveSdkDir, spawnDaemonPro
 import { modelProviderEnv, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
 import { within } from "../helpers/m3-cleanup.ts";
 
-const queryName = "pi_company_knowledge_query";
+const queryName = "one_company_knowledge_query";
 
 test("真实SDK单一主入口注册knowledge工具且公开schema不含宿主能力", async () => {
   const fixture = await createDaemonFixture();
@@ -94,7 +94,7 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
     await loader.reload(); expect(loader.getExtensions().errors).toEqual([]);
     const { session } = await createAgentSession({ cwd: f.repo.root, agentDir: f.home.agentDir, modelRuntime: runtime,
       model: runtime.getModels("query-sdk")[0], resourceLoader: loader, sessionManager: sm,
-      settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }), tools: ["pi_company_project_manage", queryName] });
+      settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }), tools: ["one_company_project_manage", queryName] });
     await session.bindExtensions({ mode: "rpc", uiContext: { confirm: async () => { approvals++; return allow; }, notify: () => {}, setStatus: () => {}, setWidget: () => {} } as unknown as ExtensionUIContext,
       onError: (event) => { extensionErrors.push(event.error); } });
     shutdownHost = async () => { live = false; await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); };
@@ -110,9 +110,9 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
     };
     expect((await run(queryName, { repoId: f.repoId, query: { action: "facts" } })).isError).toBe(true);
     allow = false;
-    expect((await run("pi_company_project_manage", { request: { repoId: f.repoId, action: "init" } }, "先不要批准扫描")).isError).toBe(true);
+    expect((await run("one_company_project_manage", { request: { repoId: f.repoId, action: "init" } }, "先不要批准扫描")).isError).toBe(true);
     allow = true;
-    expect((await run("pi_company_project_manage", { request: { repoId: f.repoId, action: "init" } }, "批准本窗口扫描当前仓库")).isError).toBe(false);
+    expect((await run("one_company_project_manage", { request: { repoId: f.repoId, action: "init" } }, "批准本窗口扫描当前仓库")).isError).toBe(false);
     const pages: KnowledgeFactPackage[] = [];
     let cursor: string | undefined;
     do {

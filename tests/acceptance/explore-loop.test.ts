@@ -10,7 +10,7 @@ import type { InstalledHost } from "./helpers/installed-host.ts";
 import { createSampleProject } from "./helpers/sample-project.ts";
 
 const config = acceptanceConfig();
-const CARD = "pi-company.explore-result";
+const CARD = "one-company.explore-result";
 const ASKS = [
   { name: "web", text: "不用建需求。请派一个 explore 联网检索：Node.js 内置测试模块 node:test 怎么跳过单个测试？要官方文档链接和原文短引文。拿到结果后核对来源再告诉我。" },
   { name: "local", text: "不用建需求。请派一个 explore 在本仓库里检索：go 目录下 Greet 函数定义在哪、谁调用它，要文件路径和行号。拿到结果后核对来源再告诉我。" },
@@ -29,8 +29,8 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC10：安装产物中
   const evidence = join(cfg.output, `explore-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   await mkdir(evidence, { recursive: true, mode: 0o700 });
   const root = await mkdtemp(join(tmpdir(), "m9-"));
-  const agentDir = join(root, "agent"), home = join(root, "home"), dataRoot = join(agentDir, "pi-company");
-  const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HOME", "PI_TELEMETRY", "PI_COMPANY_IDLE_TIMEOUT_MS"].map((key) => [key, process.env[key]]));
+  const agentDir = join(root, "agent"), home = join(root, "home"), dataRoot = join(agentDir, "one-company");
+  const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HOME", "PI_TELEMETRY", "ONE_COMPANY_IDLE_TIMEOUT_MS"].map((key) => [key, process.env[key]]));
   let host: InstalledHost | undefined, socketPath: string | undefined;
   const results: Array<{ name: string; elapsedMs: number; card: Record<string, unknown> | null; answer: string }> = [];
   try {
@@ -39,7 +39,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC10：安装产物中
     const { repoId } = await repositoryIdentity(repo);
     await mkdir(home, { recursive: true });
     await copyCredentials(cfg.credentialsDir, agentDir);
-    process.env.PI_CODING_AGENT_DIR = agentDir; process.env.HOME = home; process.env.PI_TELEMETRY = "0"; process.env.PI_COMPANY_IDLE_TIMEOUT_MS = "2000";
+    process.env.PI_CODING_AGENT_DIR = agentDir; process.env.HOME = home; process.env.PI_TELEMETRY = "0"; process.env.ONE_COMPANY_IDLE_TIMEOUT_MS = "2000";
     socketPath = daemonSocketPath(dataRoot, repoId);
     host = await startInstalledHost({ installed, repo, agentDir, config: cfg });
     for (const ask of ASKS) {

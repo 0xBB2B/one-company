@@ -86,7 +86,7 @@ test("M7-AC10：创建按 UUID 分支与固定目录建立 worktree 并绑定需
   const operationId = uuidv7(), before = w.state.read(w.requirementId).version;
   const ready = await w.workspace.prepare({ requirementId: w.requirementId, operationId });
   expect(ready).toMatchObject({ status: "ready", branch: `refs/heads/req/${w.requirementId}`, baseCommit: head, path: w.location.path });
-  expect(w.location.path).toBe(join(dirname(w.repo.root), ".pi-company-worktrees", basename(w.repo.root), w.requirementId));
+  expect(w.location.path).toBe(join(dirname(w.repo.root), ".one-company-worktrees", basename(w.repo.root), w.requirementId));
   expect(w.prompts).toHaveLength(1);
   expect(w.prompts[0]).toContain(head);
   expect((await runGit(["symbolic-ref", "HEAD"], ready.path)).trim()).toBe(ready.branch);

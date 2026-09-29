@@ -12,7 +12,7 @@ const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function agentRoot() {
   const agentDir = await mkdtemp(join(temporaryRoot(), "rules-")); roots.push(agentDir);
-  return { agentDir, dataRoot: join(agentDir, "pi-company") };
+  return { agentDir, dataRoot: join(agentDir, "one-company") };
 }
 const noWindow = () => { throw new Error("窗口未启动"); };
 async function start(windowContext: () => Pick<WindowContextValue, "workspace">, dataRoot?: string) {

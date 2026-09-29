@@ -44,12 +44,12 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
       return [...head, `任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`, ...(resize ? [`拆分上限：${task.sizeHold!.join("；")}`] : []), ...attempts,
         resize ? "可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 prod）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
           : "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（经 prod 修改与批准后生效）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。",
-        `请向用户说明情况并询问选择；用户回答后以 pi_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 按其原话登记。`].join("\n");
+        `请向用户说明情况并询问选择；用户回答后以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 按其原话登记。`].join("\n");
     }
     if (item.kind === "adjust-requirement") {
       return [...head, "有任务已被用户终止，需求整体暂停。",
         "可选：1 调整需求：修改 prod 并经用户批准新版本，PM 随后自动恢复并重新规划；2 取消或拒绝整个需求。",
-        `请向用户说明并询问；取消或拒绝须以 pi_company_user_interact purpose=adjudicate itemId=requirement:${requirementId} itemVersion=requirement:${requirementId}:${requirementVersion} 按用户原话登记，再以返回的 decisionId 调用 workflow_manage close。`].join("\n");
+        `请向用户说明并询问；取消或拒绝须以 one_company_user_interact purpose=adjudicate itemId=requirement:${requirementId} itemVersion=requirement:${requirementId}:${requirementVersion} 按用户原话登记，再以返回的 decisionId 调用 workflow_manage close。`].join("\n");
     }
     if (item.kind === "acceptance") {
       const report = checked(CompletionReport, db.read<unknown>(COMPLETION_REPORTS, itemId.slice("report:".length))!.data);
@@ -69,10 +69,10 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
         ...report.commits.map((commit) => `  ${commit.sha.slice(0, 12)} ${quoted(commit.subject, 200)}`),
         `PM 的说明${MODEL_NOTE}：${quoted(report.note, 4000)}`,
         "可选：1 验收通过（随后以完成关闭需求）；2 返工（请用户说明要改什么，意见交回 PM）。",
-        `请把报告交给用户阅读并询问选择；用户回答后以 pi_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 按其原话登记。`].join("\n");
+        `请把报告交给用户阅读并询问选择；用户回答后以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 按其原话登记。`].join("\n");
     }
     if (item.kind === "intake-review") {
-      return [...head, "PM 已提交接手理解，等待主代理核对。", "请用 pi_company_user_interact purpose=pm-intake 开始接手核对。"].join("\n");
+      return [...head, "PM 已提交接手理解，等待主代理核对。", "请用 one_company_user_interact purpose=pm-intake 开始接手核对。"].join("\n");
     }
     const questionId = itemId.slice("question:".length);
     const question = db.read<{ proposal?: { conclusion?: string } }>("interaction_questions_v1", questionId)?.data;

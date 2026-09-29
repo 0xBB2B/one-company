@@ -14,10 +14,10 @@ function requiredAbsolutePath(name: string, value: string | undefined): string {
 }
 
 export function parseDaemonStartupConfig(env: Record<string, string | undefined>): DaemonStartupConfig {
-  const sdkDir = requiredAbsolutePath("PI_COMPANY_SDK_DIR", env.PI_COMPANY_SDK_DIR);
-  const repoDir = requiredAbsolutePath("PI_COMPANY_REPO_DIR", env.PI_COMPANY_REPO_DIR);
-  const configuredDataRoot = Object.hasOwn(env, "PI_COMPANY_DATA_ROOT")
-    ? requiredAbsolutePath("PI_COMPANY_DATA_ROOT", env.PI_COMPANY_DATA_ROOT)
+  const sdkDir = requiredAbsolutePath("ONE_COMPANY_SDK_DIR", env.ONE_COMPANY_SDK_DIR);
+  const repoDir = requiredAbsolutePath("ONE_COMPANY_REPO_DIR", env.ONE_COMPANY_REPO_DIR);
+  const configuredDataRoot = Object.hasOwn(env, "ONE_COMPANY_DATA_ROOT")
+    ? requiredAbsolutePath("ONE_COMPANY_DATA_ROOT", env.ONE_COMPANY_DATA_ROOT)
     : dataRoot(env);
   return Object.freeze({ sdkDir, repoDir, dataRoot: configuredDataRoot });
 }

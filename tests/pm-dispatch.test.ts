@@ -54,7 +54,7 @@ async function plainWorld(options: { prepare?: boolean; activate?: boolean } = {
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const { repoId } = await repositoryIdentity(repo.root);
-  const base = { repositoryRoot: repo.root, dataRoot: join(root, "agent", "pi-company"), repoId };
+  const base = { repositoryRoot: repo.root, dataRoot: join(root, "agent", "one-company"), repoId };
   const grants = new Map<string, { action: string; intent: string; receiptId?: string }>();
   const service = await RequirementService.open({ ...base, authorize: (request) => {
     if (request.repoId !== repoId) return false;
@@ -117,8 +117,8 @@ test("M7-AC13、M8A-AC7：PM 只在工作区 ready、需求 active 且有实施�
   expect(request.systemPrompt).toContain("- decision：");
   expect(request.systemPrompt).toMatch(/\n  - [0-9a-f-]{36}（confirmed，涉及 [^）]+）：\S/);
   expect(JSON.stringify(request)).not.toContain("输入正确验证码后成功");
-  expect(toolNames(request)).toEqual(["find", "grep", "ls", "pi_company_agent_manage", "pi_company_git_commit", "pi_company_git_sync", "pi_company_plan_manage", "pi_company_requirement_manage", "pi_company_user_interact",
-    "pi_company_verification_run", "pi_company_workflow_manage", "read"]);
+  expect(toolNames(request)).toEqual(["find", "grep", "ls", "one_company_agent_manage", "one_company_git_commit", "one_company_git_sync", "one_company_plan_manage", "one_company_requirement_manage", "one_company_user_interact",
+    "one_company_verification_run", "one_company_workflow_manage", "read"]);
   expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { kind: "requirement", state: "running", requirement: w.requirementId } });
 }, 30000);
 
@@ -157,7 +157,7 @@ test("M7-AC5：同一需求只有一个有效 PM；停止后再派出取得更�
   expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "main_agent" } } });
   const second = await w.dispatch();
   expect(second.fence).toBeGreaterThan(first.fence);
-  const read = stale.tools.find((tool) => tool.name === "pi_company_requirement_manage")!;
+  const read = stale.tools.find((tool) => tool.name === "one_company_requirement_manage")!;
   await expect(read.execute("late", { action: "metadata" }, undefined, undefined, undefined as never)).rejects.toThrow();
 }, 30000);
 

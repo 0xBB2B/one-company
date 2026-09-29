@@ -77,7 +77,7 @@ export function exploreContext(input: ExploreInput, maxTurns: number): string {
       : [`检索来源：主仓库索引（knowledge_query），工作区 ${source.root}。`];
   return [`问题：${input.question}`, ...(input.clues.length ? ["线索：", ...input.clues.map((clue) => `- ${clue}`)] : []), ...scope,
     `预算：来源最多 ${input.budget.maxSources} 条，结果不超过 ${input.budget.maxResultBytes} 字节；对话轮次上限：${maxTurns}。`,
-    "完成后调用 pi_company_result_submit（action=research），result 含 conclusions、sources、searchedScope、notFound、failures、truncation{truncated,reasons}、unknown；parent 与 source 由宿主填写，可省略。",
+    "完成后调用 one_company_result_submit（action=research），result 含 conclusions、sources、searchedScope、notFound、failures、truncation{truncated,reasons}、unknown；parent 与 source 由宿主填写，可省略。",
     "本地来源的 sources 条目写 {path, startLine, endLine}，path 可写相对检索根目录的路径；来源种类、索引绑定与文件哈希由宿主补上。网页来源为 {kind:\"web\", indexBaseline:\"not_applicable\", url, retrievedAt, quote}。searchedScope 写 {paths}（网页写 {queries}）。",
   ].join("\n");
 }

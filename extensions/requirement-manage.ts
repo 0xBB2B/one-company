@@ -78,8 +78,8 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   pi.on("session_before_compact", (_event, ctx) => { intake.clearForCompaction(ctx); });
   pi.on("model_select", () => { authorization.revoke(); });
   pi.on("session_shutdown", () => { unregisterShutdown?.(); unregisterShutdown = undefined; shutdown(); });
-  pi.registerCommand("requirement-revoke", { description: "撤销当前窗口的需求输入与在途能力", handler: async () => { authorization.revoke(); } });
-  pi.registerCommand("requirement-select", {
+  pi.registerCommand("one:requirement-revoke", { description: "撤销当前窗口的需求输入与在途能力", handler: async () => { authorization.revoke(); } });
+  pi.registerCommand("one:requirement-select", {
     description: "通过真实交互选择已有需求身份，不恢复旧输入、授权或执行",
     handler: async (args, ctx) => {
       if (args.trim()) { ctx.ui.notify("请从当前需求列表选择；命令参数不能直接绑定需求。", "warning"); return; }
@@ -94,7 +94,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   pi.on("tool_call", (event, ctx) => { intake.observeToolCall(event, ctx); });
   pi.on("tool_execution_end", (event) => { intake.completeToolExecution(event); });
   pi.on("tool_result", (event, ctx) => {
-    if (!["pi_company_requirement_manage", "pi_company_user_interact"].includes(event.toolName)) return;
+    if (!["one_company_requirement_manage", "one_company_user_interact"].includes(event.toolName)) return;
     if (intake.ownsDelivery(event.toolCallId)) {
       try { intake.assertDelivery(event, ctx); }
       catch { return { content: [{ type: "text", text: deniedText(event, "pm_intake_interaction_denied") }], details: {}, isError: true }; }

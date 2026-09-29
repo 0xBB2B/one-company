@@ -26,7 +26,7 @@ test("M7-AC33：每次模型回复的输入、输出、缓存读写与每次工�
   expect((await w.run(w.pm.runId)).usage).toMatchObject({ input: 0, output: 0, toolUses: 1 });
   w.provider.queue.push(
     { type: "toolcall", name: "read", input: { path: "README.md" }, usage: { input: 100, output: 20, cacheRead: 300, cacheWrite: 50 } },
-    { type: "toolcall", name: "pi_company_result_submit", input: { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary: "完成", findings: [] } },
+    { type: "toolcall", name: "one_company_result_submit", input: { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary: "完成", findings: [] } },
       usage: { input: 10, output: 5, cacheRead: 400, cacheWrite: 0 } },
     { type: "text", text: "PM 收到", usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0 } },
   );

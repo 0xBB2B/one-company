@@ -46,10 +46,10 @@ async function world() {
     const close = async () => { if (closed) return; closed = true; await session.abort(); await session.waitForIdle(); await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); client.close(); clock.stopGapWatcher(); };
     cleanup.push(close);
     const call = async (params: Record<string, unknown>, source: "rpc" | "extension" = "rpc", draft = false) => {
-      scriptReplies(provider, [{ type: "toolcall", name: "pi_company_requirement_manage", input: { request: { repoId: fixture.repoId, ...params } } },
+      scriptReplies(provider, [{ type: "toolcall", name: "one_company_requirement_manage", input: { request: { repoId: fixture.repoId, ...params } } },
         ...(draft ? [{ type: "text" as const, text: '{"allow":true}' }] : []), { type: "text", text: "done" }]);
       await session.prompt(draft ? "请整理并保存A需求；首次输入标记不应进入新会话" : "执行本次需求工具操作", { source });
-      const result = session.messages.filter((message) => message.role === "toolResult" && message.toolName === "pi_company_requirement_manage").at(-1)!;
+      const result = session.messages.filter((message) => message.role === "toolResult" && message.toolName === "one_company_requirement_manage").at(-1)!;
       expect(result).toBeDefined(); return result;
     };
     return { session, sm, client, authorization, notifications, prompts, call, close,
@@ -66,10 +66,10 @@ test("真实SDK命令/UI选择和认证daemon：新会话只绑定已有身份�
   await first.close();
   const next = await w.session();
   expect((await next.call({ action: "metadata", requirementId })).isError).toBe(true);
-  await next.session.prompt(`/requirement-select ${requirementId}`, { source: "rpc" });
+  await next.session.prompt(`/one:requirement-select ${requirementId}`, { source: "rpc" });
   expect(next.prompts).toHaveLength(0); expect(next.authorization.binding(next.sm.getSessionId())).toBeUndefined();
   next.choose(async (options) => options.find((option) => option.includes(requirementId)));
-  await next.session.prompt("/requirement-select", { source: "rpc" });
+  await next.session.prompt("/one:requirement-select", { source: "rpc" });
   expect(next.prompts).toHaveLength(1); expect(next.prompts[0]!.options.some((option) => option.includes(requirementId))).toBe(true);
   expect(next.authorization.binding(next.sm.getSessionId())).toEqual({ repoId: w.fixture.repoId, requirementId });
   expect(next.notifications.at(-1)).toContain("未恢复旧输入");
@@ -87,16 +87,16 @@ test("选择取消、伪返回、未授权RPC和真正断连不能产生需求�
   const saved = await w.service.create({ operationId: uuidv7(), requestId: uuidv7(), title: "候选", body: "候选目标" });
   const denied = await w.session(false);
   denied.choose(async (options) => options[0]);
-  await denied.session.prompt("/requirement-select", { source: "rpc" });
+  await denied.session.prompt("/one:requirement-select", { source: "rpc" });
   expect(denied.prompts).toHaveLength(0); expect(denied.authorization.binding(denied.sm.getSessionId())).toBeUndefined();
   const host = await w.session();
-  await host.session.prompt("/requirement-select", { source: "rpc" });
+  await host.session.prompt("/one:requirement-select", { source: "rpc" });
   expect(host.authorization.binding(host.sm.getSessionId())).toBeUndefined();
   host.choose(async () => saved.requirementId);
-  await host.session.prompt("/requirement-select", { source: "rpc" });
+  await host.session.prompt("/one:requirement-select", { source: "rpc" });
   expect(host.authorization.binding(host.sm.getSessionId())).toBeUndefined();
   host.choose(async (options) => { host.client.close(); return options[0]; });
-  await host.session.prompt("/requirement-select", { source: "rpc" });
+  await host.session.prompt("/one:requirement-select", { source: "rpc" });
   expect(host.client.state().status).not.toBe("connected");
   expect(host.authorization.binding(host.sm.getSessionId())).toBeUndefined();
 }, 40_000);
@@ -111,14 +111,14 @@ test("选择等待期间实际版本变化及closing被拒绝，JSON副本不是
     await w.service.updateDraft({ requirementId: saved.requirementId, version: w.state.read(saved.requirementId).version, operationId: uuidv7(), title: "候选", body: "外部保存后的新字节" });
     return options[0];
   });
-  await host.session.prompt("/requirement-select", { source: "rpc" });
+  await host.session.prompt("/one:requirement-select", { source: "rpc" });
   expect(host.authorization.binding(host.sm.getSessionId())).toBeUndefined();
   host.choose(async (options) => {
     w.state.beginClose({ requirementId: saved.requirementId, version: w.state.read(saved.requirementId).version,
       intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
     return options[0];
   });
-  await host.session.prompt("/requirement-select", { source: "rpc" });
+  await host.session.prompt("/one:requirement-select", { source: "rpc" });
   expect(host.authorization.binding(host.sm.getSessionId())).toBeUndefined();
   expect(host.authorization.prepareSelections(host.sm.getSessionId()).items).toEqual([]);
 }, 40_000);

@@ -164,7 +164,7 @@ test("新索引对象装配之后的启动失败必须非零退出并清理socke
   const w = await world();
   const fixture = w.fixture;
   const child = spawnDaemonProcess({ home: fixture.home, repoDir: fixture.repoDir, dataRoot: fixture.dataRoot, idleTimeoutMs: 60_000, captureOutput: true,
-    extraEnv: { PI_COMPANY_CONNECTIVITY_PROBE_MODULE: new URL("file:///nonexistent-m3-assembly-probe.ts").href } });
+    extraEnv: { ONE_COMPANY_CONNECTIVITY_PROBE_MODULE: new URL("file:///nonexistent-m3-assembly-probe.ts").href } });
   const result = await within(() => child.exited, "装配失败退出", 10_000);
   expect(result.code).toBe(1);
   expect(result.stderr).toContain("daemon 装配失败");

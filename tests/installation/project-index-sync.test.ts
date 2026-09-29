@@ -15,7 +15,7 @@ afterEach(async (context) => {
 });
 const installedTest = test.skipIf(process.platform !== "darwin");
 async function world() { const result = await InstalledProjectFixture.create(); worlds.push(result); return result; }
-function result(reply: HostReply, name = "pi_company_project_manage") {
+function result(reply: HostReply, name = "one_company_project_manage") {
   const value = reply.messages.filter((message) => message.role === "toolResult" && message.toolName === name).at(-1);
   expect(value, `缺少真实SDK ${name}结果`).toBeDefined();
   return value!;
@@ -35,8 +35,8 @@ function spec(expected: string) {
       reason: "核对当前项目", dependsOn: [], exceptions: [], acceptance: [{ id: "current", given: "已初始化", when: "外部修改", then: expected }] }] });
 }
 async function query(host: Host, repo: InstalledRepository, request: Record<string, unknown>): Promise<string> {
-  const reply = await host.call("tool", { name: "pi_company_knowledge_query", args: { repoId: repo.repoId, query: request } });
-  const value = result(reply, "pi_company_knowledge_query");
+  const reply = await host.call("tool", { name: "one_company_knowledge_query", args: { repoId: repo.repoId, query: request } });
+  const value = result(reply, "one_company_knowledge_query");
   expect(value.isError, JSON.stringify(value)).toBe(false);
   return JSON.stringify(value.content);
 }
@@ -61,8 +61,8 @@ installedTest("M3-AC1/3/9 安装：preview不升级、查询前对账读到增�
   await writeFile(join(repo.path, "docs/spec/current.rules.json"), spec("原始行为"));
   const first = await w.daemon(repo), a = await w.host(repo);
   expect((await first.probe()).pid).toBe(first.proc.pid);
-  const uninitialized = await a.call("tool", { name: "pi_company_knowledge_query", args: { repoId: repo.repoId, query: exact("source.ts") } });
-  expect(result(uninitialized, "pi_company_knowledge_query").isError).toBe(true);
+  const uninitialized = await a.call("tool", { name: "one_company_knowledge_query", args: { repoId: repo.repoId, query: exact("source.ts") } });
+  expect(result(uninitialized, "one_company_knowledge_query").isError).toBe(true);
   await a.call("approve", { value: true });
   const preview = await a.call("project", { action: "init", preview: true });
   expect(result(preview).isError).toBe(false); expect(result(preview).details).toMatchObject({ action: "preview", databaseCreated: false });
@@ -113,8 +113,8 @@ installedTest("M3-AC1/3/9 安装：preview不升级、查询前对账读到增�
   const second = await w.daemon(repo), c = await w.host(repo);
   const status = await c.call("project", { action: "status" });
   expect(result(status).isError).toBe(false); expect(status.confirmations).toHaveLength(0);
-  const offline = await c.call("tool", { name: "pi_company_knowledge_query", args: { repoId: repo.repoId, query: exact("source.ts") } });
-  expect(JSON.stringify(result(offline, "pi_company_knowledge_query").content)).toContain("external = 9");
+  const offline = await c.call("tool", { name: "one_company_knowledge_query", args: { repoId: repo.repoId, query: exact("source.ts") } });
+  expect(JSON.stringify(result(offline, "one_company_knowledge_query").content)).toContain("external = 9");
   expect(offline.confirmations).toHaveLength(0);
   await c.close(); await cleanDaemon(second);
 }, 180_000);
@@ -190,10 +190,10 @@ installedTest("M9-AC1 安装：删除 index.db 后重启，下一次查询从允
   for (const suffix of ["", "-wal", "-shm"]) await rm(`${repo.indexPath}${suffix}`, { force: true });
   await writeFile(join(repo.path, "source.ts"), "export const rebuilt = 7;\n");
   const second = await w.daemon(repo), b = await w.host(repo);
-  const rebuilt = await b.call("tool", { name: "pi_company_knowledge_query", args: { repoId: repo.repoId, query: exact("source.ts") } });
-  expect(result(rebuilt, "pi_company_knowledge_query").isError).toBe(false);
+  const rebuilt = await b.call("tool", { name: "one_company_knowledge_query", args: { repoId: repo.repoId, query: exact("source.ts") } });
+  expect(result(rebuilt, "one_company_knowledge_query").isError).toBe(false);
   expect(rebuilt.confirmations).toHaveLength(0);
-  expect(JSON.stringify(result(rebuilt, "pi_company_knowledge_query").content)).toContain("rebuilt = 7");
+  expect(JSON.stringify(result(rebuilt, "one_company_knowledge_query").content)).toContain("rebuilt = 7");
   expect(existsSync(repo.indexPath)).toBe(true);
   const snapshot = await w.snapshot(repo);
   expect(snapshot.files.some((file) => file.path.startsWith("docs/prod/"))).toBe(false);

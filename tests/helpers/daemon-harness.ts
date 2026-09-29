@@ -18,8 +18,8 @@ import { createTempHome, tempHomeRootReceipt } from "./temp-home.ts";
 import type { TempHome } from "./temp-home.ts";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-/** 设了 PI_COMPANY_TEST_PRODUCT_ROOT 时 daemon 从该安装产物启动，用于在安装产物上重跑集成场景。 */
-const daemonRoot = process.env.PI_COMPANY_TEST_PRODUCT_ROOT ?? packageRoot;
+/** 设了 ONE_COMPANY_TEST_PRODUCT_ROOT 时 daemon 从该安装产物启动，用于在安装产物上重跑集成场景。 */
+const daemonRoot = process.env.ONE_COMPANY_TEST_PRODUCT_ROOT ?? packageRoot;
 const daemonMainEntry = join(daemonRoot, "daemon", "bootstrap.mjs");
 const DEFAULT_CONNECT_TIMEOUT_MS = 2_000;
 const DEFAULT_RPC_TIMEOUT_MS = 15_000;
@@ -369,19 +369,19 @@ export interface SpawnedDaemon {
 }
 
 const PROTECTED_ENV = new Set([
-  "HOME", "PI_CODING_AGENT_DIR", "PI_COMPANY_REPO_DIR", "PI_COMPANY_DATA_ROOT",
-  "PI_COMPANY_SDK_DIR", "PI_COMPANY_CLOCK_SKEW_FILE",
+  "HOME", "PI_CODING_AGENT_DIR", "ONE_COMPANY_REPO_DIR", "ONE_COMPANY_DATA_ROOT",
+  "ONE_COMPANY_SDK_DIR", "ONE_COMPANY_CLOCK_SKEW_FILE",
 ]);
 const ALLOWED_EXTRA_ENV = new Set([
-  "NODE_OPTIONS", "PI_COMPANY_MODEL_PROVIDER_MODULE", "PI_COMPANY_CONNECTIVITY_PROBE_MODULE",
-  "PI_COMPANY_NETWORK_PROBE_INTERVAL_MS", "M3_ASSEMBLY_PROBE", "M3_ASSEMBLY_REPOSITORY", "M3_SLEEP_GATE", "PI_COMPANY_IDLE_TIMEOUT_MS",
+  "NODE_OPTIONS", "ONE_COMPANY_MODEL_PROVIDER_MODULE", "ONE_COMPANY_CONNECTIVITY_PROBE_MODULE",
+  "ONE_COMPANY_NETWORK_PROBE_INTERVAL_MS", "M3_ASSEMBLY_PROBE", "M3_ASSEMBLY_REPOSITORY", "M3_SLEEP_GATE", "ONE_COMPANY_IDLE_TIMEOUT_MS",
 ]);
 
 function validateExtraEnv(extra: Readonly<Record<string, string>>): void {
   for (const [key, value] of Object.entries(extra)) {
     if (typeof value !== "string") throw new Error(`daemon 夹具环境变量必须是字符串: ${key}`);
     if (PROTECTED_ENV.has(key)) throw new Error(`daemon 夹具保护环境变量禁止覆盖: ${key}`);
-    if (!ALLOWED_EXTRA_ENV.has(key) && !key.startsWith("PI_COMPANY_TEST_")) {
+    if (!ALLOWED_EXTRA_ENV.has(key) && !key.startsWith("ONE_COMPANY_TEST_")) {
       throw new Error(`daemon 夹具未允许的测试环境变量: ${key}`);
     }
   }
@@ -442,14 +442,14 @@ function captureSpawnOptions(options: SpawnDaemonOptions): CapturedSpawnOptions 
 
 function buildDaemonEnv(captured: CapturedSpawnOptions): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...captured.fixedHome.env, ...captured.extraEnv };
-  if (captured.idleTimeoutMs !== undefined) env.PI_COMPANY_IDLE_TIMEOUT_MS = String(captured.idleTimeoutMs);
-  if (captured.clockSkewFile !== undefined) env.PI_COMPANY_CLOCK_SKEW_FILE = captured.clockSkewFile;
+  if (captured.idleTimeoutMs !== undefined) env.ONE_COMPANY_IDLE_TIMEOUT_MS = String(captured.idleTimeoutMs);
+  if (captured.clockSkewFile !== undefined) env.ONE_COMPANY_CLOCK_SKEW_FILE = captured.clockSkewFile;
   Object.assign(env, {
     HOME: captured.fixedHome.home,
     PI_CODING_AGENT_DIR: captured.fixedHome.agentDir,
-    PI_COMPANY_REPO_DIR: captured.repoDir,
-    PI_COMPANY_DATA_ROOT: captured.dataRoot,
-    PI_COMPANY_SDK_DIR: captured.sdkDir,
+    ONE_COMPANY_REPO_DIR: captured.repoDir,
+    ONE_COMPANY_DATA_ROOT: captured.dataRoot,
+    ONE_COMPANY_SDK_DIR: captured.sdkDir,
   });
   return env;
 }

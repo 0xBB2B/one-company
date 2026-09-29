@@ -25,6 +25,6 @@
 项目：/Users/bb/.bb-spec/worktrees/pi-spec-bb-spec-rebuild（分支 bb-spec-rebuild，不推送）。
 先完整读 AGENTS.md 与 SQLITE-KNOWLEDGE-REBUILD-PLAN.md（M9 章节与 §13），再读 M9-STATUS.md 与 M8C-STATUS.md，核对 git status 与最近提交。M0–M8、M8A、M8B、M8C 已收口不重做，恢复执行 M9。
 M8C 带给 M9 的变化：需求文档规范由 requirement-doc skill 定义（包内默认五大板块，项目 .pi/skills 受信任时优先），批准时存规范快照，归档按快照插入两段记录；运行记录 stopCause 写明停止原因，真实模型卡点可从 report.json 的 runs[].stopCause 查。
-真实模型运行命令：PI_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna PI_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance（-t 选用例；后台运行，证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件）。
+真实模型运行命令：ONE_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-luna ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance（-t 选用例；后台运行，证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件）。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```

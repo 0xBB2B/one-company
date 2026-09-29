@@ -175,7 +175,7 @@ export function isolatedGitEnvironment(home: string, extra: NodeJS.ProcessEnv = 
     GIT_COMMITTER_NAME: "git-daemon-fixture", GIT_COMMITTER_EMAIL: "git-daemon-fixture@example.invalid",
   };
   for (const [name, value] of Object.entries(extra)) {
-    if (!["PATH", "HOME", "TMPDIR", "PI_CODING_AGENT_DIR"].includes(name) && !name.startsWith("PI_COMPANY_")) {
+    if (!["PATH", "HOME", "TMPDIR", "PI_CODING_AGENT_DIR"].includes(name) && !name.startsWith("ONE_COMPANY_")) {
       throw new Error(`夹具未允许的环境覆盖: ${name}`);
     }
     env[name] = value;

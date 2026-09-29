@@ -33,7 +33,7 @@ const until = async (check: () => boolean | Promise<boolean>, ms = 30_000) => {
 };
 
 /**
- * 经真实 daemon（设了 PI_COMPANY_TEST_PRODUCT_ROOT 时为安装产物）派出受控模型 PM：
+ * 经真实 daemon（设了 ONE_COMPANY_TEST_PRODUCT_ROOT 时为安装产物）派出受控模型 PM：
  * 角色定义放在 daemon 实际使用的用户层 dirname(dataRoot)/agents 与项目层 .pi/agents，派工与目录查询都由 PM 的工具调用发起。
  */
 async function world() {
@@ -60,7 +60,7 @@ async function world() {
   let daemon: SpawnedDaemon | undefined, client: DaemonClient | undefined;
   const start = async () => {
     const { commonDir } = await repositoryIdentity(fixture.repositoryRoot);
-    daemon = spawnDaemonProcess({ home, repoDir: commonDir, dataRoot: fixture.dataRoot, extraEnv: { PI_COMPANY_MODEL_PROVIDER_MODULE: providerModule,
+    daemon = spawnDaemonProcess({ home, repoDir: commonDir, dataRoot: fixture.dataRoot, extraEnv: { ONE_COMPANY_MODEL_PROVIDER_MODULE: providerModule,
       [PROVIDER_SCRIPTS_ENV_VAR]: files.scripts, [PROVIDER_REQUESTS_LOG_ENV_VAR]: files.log, [PROVIDER_APPEND_ENV_VAR]: files.append } });
     const current = daemon;
     cleanups.push(async () => { await client?.close?.(); await killDaemon(current).catch(() => undefined); });
@@ -110,13 +110,13 @@ test("M9-AC14：daemon 从 dirname(dataRoot)/agents 与受信任项目的 .pi/ag
   await mkdir(join(dirname(w.fixture.repositoryRoot), ".pi", "agents"), { recursive: true });
   await writeFile(join(dirname(w.fixture.repositoryRoot), ".pi", "agents", "ancestor-dev.md"), definition("ancestor-dev"));
   await w.readyPm([spec("dup-task", { agent: "dup" }), spec("cover", { goalUnitIds: ["scenario.failure"] })]);
-  await w.reply("gate-model", { type: "toolcall", name: "pi_company_agent_manage", input: { action: "catalog", role: "worker" } });
+  await w.reply("gate-model", { type: "toolcall", name: "one_company_agent_manage", input: { action: "catalog", role: "worker" } });
   const untrusted = await w.toolResult(4);
   expect(untrusted).toContain("ui-dev");
   for (const hidden of ["proj-dev", "helper", "\\\"dup\\\"", "ancestor-dev"]) expect(untrusted).not.toContain(hidden);
   new ProjectTrustStore(w.agentDir).set(w.fixture.repositoryRoot, true);
-  await w.reply("gate-model", { type: "toolcall", name: "pi_company_agent_manage", input: { action: "catalog", role: "worker" } },
-    { type: "toolcall", name: "pi_company_agent_manage", input: { action: "dispatch", taskId: w.task("dup-task").taskId } }, { type: "text", text: "完成" });
+  await w.reply("gate-model", { type: "toolcall", name: "one_company_agent_manage", input: { action: "catalog", role: "worker" } },
+    { type: "toolcall", name: "one_company_agent_manage", input: { action: "dispatch", taskId: w.task("dup-task").taskId } }, { type: "text", text: "完成" });
   const trusted = await w.toolResult(5);
   expect(trusted).toContain("proj-dev");
   expect(trusted).not.toContain("ancestor-dev");
@@ -134,7 +134,7 @@ test("M9-AC15/AC16：零匹配走默认 worker、指定专业定义按定义派�
   await writeFile(join(w.userAgents, "tool-grab.md"), definition("tool-grab", "tools: [bash, write]\n"));
   await w.readyPm([spec("a", { agent: "nobody" }), spec("b", { agent: "ghost-skill" }), spec("c", { agent: "bad-model" }), spec("d", { agent: "deep-think" }), spec("e", { agent: "tool-grab" }),
     spec("ui", { agent: "ui-dev", agentReason: "界面任务" }), spec("plain", { goalUnitIds: ["scenario.failure"] })]);
-  const dispatch = (key: string): ScriptedReply => ({ type: "toolcall", name: "pi_company_agent_manage", input: { action: "dispatch", taskId: w.task(key).taskId } });
+  const dispatch = (key: string): ScriptedReply => ({ type: "toolcall", name: "one_company_agent_manage", input: { action: "dispatch", taskId: w.task(key).taskId } });
   await w.reply("spec-model", { type: "text", text: "按 UI 规范开工" });
   await w.reply("gate-model", dispatch("a"), dispatch("b"), dispatch("c"), dispatch("d"), dispatch("e"), dispatch("ui"), dispatch("plain"), { type: "text", text: "完成" }, { type: "text", text: "开工" });
   expect(await w.toolResult(4)).toContain("未找到角色定义 nobody");
@@ -164,7 +164,7 @@ test("M9-AC9/AC16：未认证连接与已有有效 PM 时再派 PM 均被拒；�
   await expect(client.call("agents.dispatchPm", { requirementId: w.fixture.requirementId, model: { provider: "gate-model", id: "test" }, thinking: "off" }))
     .rejects.toMatchObject({ code: "pm_already_owned" });
   await w.reply("spec-model", { type: "text", text: "慢慢做", chunkDelayMs: 3_000 });
-  await w.reply("gate-model", { type: "toolcall", name: "pi_company_agent_manage", input: { action: "dispatch", taskId: w.task("ui").taskId } }, { type: "text", text: "等待" });
+  await w.reply("gate-model", { type: "toolcall", name: "one_company_agent_manage", input: { action: "dispatch", taskId: w.task("ui").taskId } }, { type: "text", text: "等待" });
   let runId = "";
   await until(async () => { runId = (await w.runs().list({ limit: 50 })).items.find((run) => run.kind === "role" && run.state === "running")?.id ?? ""; return runId !== ""; });
   // 受控模型的延迟回复不响应中止，暂停要等这段回复结束才能确认
@@ -181,7 +181,7 @@ test("M9-AC9：已通过接手的 PM 被停止后重新派出，新 PM 须重新
   await w.reply("gate-model", { type: "text", text: "收到核对结论" });
   await until(async () => (await client.call("runs.stop", { runId: first.runId }) as { confirmed: boolean }).confirmed);
   const intakeAsk = JSON.parse(await readFile(w.scripts, "utf8"))[0].replies[0] as ScriptedReply;
-  await w.reply("gate-model", { type: "toolcall", name: "pi_company_agent_manage", input: { action: "dispatch", taskId: w.task("login").taskId } }, intakeAsk, { type: "text", text: "等待核对" });
+  await w.reply("gate-model", { type: "toolcall", name: "one_company_agent_manage", input: { action: "dispatch", taskId: w.task("login").taskId } }, intakeAsk, { type: "text", text: "等待核对" });
   const second = await client.call("agents.dispatchPm", { requirementId: w.fixture.requirementId, model: { provider: "gate-model", id: "test" }, thinking: "off" }) as { runId: string; fence: number };
   expect(second.runId).not.toBe(first.runId);
   expect(await w.toolResult(4)).toContain("开始受限接手");

@@ -26,7 +26,7 @@ export function createPmCommitTool(options: PmCommitOptions): ToolDefinition {
   const git = (args: string[]) => exec("git", ["--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
     "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], { cwd: options.worktree, maxBuffer: 1 << 20 });
   return {
-    name: "pi_company_git_commit", label: "git_commit",
+    name: "one_company_git_commit", label: "git_commit",
     description: "在本需求 worktree 分支内提交明确列出的文件（按任务完成情况提交），保留其他已暂存内容；不能切换分支或推送，检查阶段不可用。",
     parameters: PARAMETERS, executionMode: "sequential",
     async execute(_id: string, params: { paths: string[]; message: string }) {

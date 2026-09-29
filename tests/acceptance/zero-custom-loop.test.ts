@@ -43,7 +43,7 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
 
   const root = await mkdtemp(join(tmpdir(), "m9-"));
   const agentDir = join(root, "agent"), home = join(root, "home");
-  const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HOME", "PI_TELEMETRY", "PI_COMPANY_IDLE_TIMEOUT_MS"].map((key) => [key, process.env[key]]));
+  const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HOME", "PI_TELEMETRY", "ONE_COMPANY_IDLE_TIMEOUT_MS"].map((key) => [key, process.env[key]]));
   let host: InstalledHost | undefined, outcome: DriverOutcome | undefined, socketPath: string | undefined;
   const started = Date.now();
   try {
@@ -56,13 +56,13 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.HOME = home;
     process.env.PI_TELEMETRY = "0";
-    process.env.PI_COMPANY_IDLE_TIMEOUT_MS = "2000";
-    socketPath = daemonSocketPath(join(agentDir, "pi-company"), repoId);
+    process.env.ONE_COMPANY_IDLE_TIMEOUT_MS = "2000";
+    socketPath = daemonSocketPath(join(agentDir, "one-company"), repoId);
 
     host = await startInstalledHost({ installed, repo, agentDir, config: cfg });
     outcome = await driveUser(host, script, { userTurns: 15, wallMs: 90 * 60_000, sameMessage: 3, stopFile: join(evidence, "STOP") }, record);
 
-    const runStore = new RunStore({ dataRoot: join(agentDir, "pi-company"), repoId, daemonStartedAt: new Date().toISOString() });
+    const runStore = new RunStore({ dataRoot: join(agentDir, "one-company"), repoId, daemonStartedAt: new Date().toISOString() });
     const listed = (await runStore.list({ limit: 500 })).items;
     const runs = (await Promise.all(listed.map(async (item) => { const got = await runStore.get(item.id); return got.ok ? [got.run] : []; }))).flat() as RunRecord[];
     const worktrees = (await exec("git", ["worktree", "list", "--porcelain"], { cwd: repo })).stdout;
@@ -70,7 +70,7 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
     const archives = worktree ? await readdir(join(worktree, "docs", "prod")).catch(() => []) : [];
     const archive = worktree && archives[0] ? await readFile(join(worktree, "docs", "prod", archives[0]), "utf8") : null;
     if (archive !== null) await writeFile(join(evidence, "archive.md"), archive, { mode: 0o600 });
-    const conventions = readApprovedConventions(join(agentDir, "pi-company"), repoId);
+    const conventions = readApprovedConventions(join(agentDir, "one-company"), repoId);
     const report = {
       config: { model: `${cfg.provider}/${cfg.modelId}`, thinking: cfg.thinking },
       outcome, elapsedMs: Date.now() - started,
@@ -94,10 +94,10 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
-    const sessions = await readdir(join(agentDir, "pi-company"), { recursive: true }).catch(() => [] as string[]);
+    const sessions = await readdir(join(agentDir, "one-company"), { recursive: true }).catch(() => [] as string[]);
     for (const path of sessions.filter((name) => name.endsWith("session.jsonl"))) {
       await mkdir(join(evidence, "runs"), { recursive: true });
-      await copyFile(join(agentDir, "pi-company", path), join(evidence, "runs", `${basename(dirname(path))}.jsonl`)).catch(() => undefined);
+      await copyFile(join(agentDir, "one-company", path), join(evidence, "runs", `${basename(dirname(path))}.jsonl`)).catch(() => undefined);
     }
     // 凭据无论成败都删；其余现场仅在守护进程已退出时整体删除，否则保留供排查
     await rm(join(agentDir, "auth.json"), { force: true });
@@ -120,10 +120,10 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     expect(runs.length).toBeGreaterThan(0);
     expect(runs.every((run) => run.agent?.source === "default")).toBe(true);
     expect(runs.map((run) => run.kind)).toContain("requirement");
-    for (const role of ["pi-company.worker", "pi-company.reviewer", "pi-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
+    for (const role of ["one-company.worker", "one-company.reviewer", "one-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
     expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
     expectInOrder(archive, ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "\n### 实现记录（关闭时由程序生成）\n", "{#acceptance}", "\n### 验收记录（关闭时由程序生成）\n"]);
-    const conventions = readApprovedConventions(join(agentDir, "pi-company"), repoId);
+    const conventions = readApprovedConventions(join(agentDir, "one-company"), repoId);
     expect(host.dialogs.some((dialog) => dialog.title === "确认更新项目规范 AGENTS.md")).toBe(true);
     expect(conventions?.content).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
     expect(await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null)).toBe(conventions?.content);
@@ -160,7 +160,7 @@ test.skipIf(!config || process.platform !== "darwin")("M8C-AC7：受信任项目
     expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
     expectInOrder(archive, ["{#goal}", "{#scenarios}", "{#check}", "\n### 验收记录（关闭时由程序生成）\n", "{#approach}", "\n### 实现记录（关闭时由程序生成）\n"]);
     expect(archive).not.toContain("{#background}");
-    const records = withDatabase(repositoryDatabase(join(agentDir, "pi-company"), repoId), (db) => db.list<RequirementRecord>("requirements"));
+    const records = withDatabase(repositoryDatabase(join(agentDir, "one-company"), repoId), (db) => db.list<RequirementRecord>("requirements"));
     expect(records.map((row) => row.data.docSpec?.sections.map((section) => section.id))).toEqual([["goal", "scenarios", "check", "approach"]]);
   });
 }, 100 * 60_000);
@@ -196,8 +196,8 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC13：复制默认 wo
     expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
     const ui = runs.filter((run) => run.agent?.name === "ui-worker");
     expect(ui.length).toBeGreaterThan(0);
-    expect(ui.every((run) => run.role === "pi-company.worker" && run.agent?.source === "user" && run.agent.skills.some((skill) => skill.name === "ui-basics"))).toBe(true);
-    for (const role of ["pi-company.reviewer", "pi-company.qa"]) expect(runs.some((run) => run.role === role && run.state === "completed")).toBe(true);
-    expect(runs.filter((run) => run.role === "pi-company.explore").every((run) => run.writePaths.length === 0)).toBe(true);
+    expect(ui.every((run) => run.role === "one-company.worker" && run.agent?.source === "user" && run.agent.skills.some((skill) => skill.name === "ui-basics"))).toBe(true);
+    for (const role of ["one-company.reviewer", "one-company.qa"]) expect(runs.some((run) => run.role === role && run.state === "completed")).toBe(true);
+    expect(runs.filter((run) => run.role === "one-company.explore").every((run) => run.writePaths.length === 0)).toBe(true);
   });
 }, 100 * 60_000);

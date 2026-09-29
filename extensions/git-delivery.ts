@@ -10,7 +10,7 @@ import { AdvisedError, toolFailure } from "../runtime/tool-failure.ts";
 import { shapeIssue } from "../runtime/tool-request.ts";
 import { windowContext } from "./lifecycle.ts";
 
-export const GIT_DELIVER_TOOL = "pi_company_git_deliver";
+export const GIT_DELIVER_TOOL = "one_company_git_deliver";
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const PARAMETERS = Type.Object({ repoId: Type.String({ pattern: "^[0-9a-f]{64}$" }), requirementId: Type.String({ pattern: UUID_V7 }) }, { additionalProperties: false });
 const ENABLE = "开启", DISABLE = "关闭";
@@ -30,7 +30,7 @@ function showTool(pi: Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">, e
   pi.setActiveTools(enabled ? [...others, GIT_DELIVER_TOOL] : others);
 }
 
-/** 可选业务 Git 交付：默认关闭，/pi-company:git-delivery 开启后主窗口才出现交付工具；确认与合并方式都由界面直接问用户。 */
+/** 可选业务 Git 交付：默认关闭，/one:git-delivery 开启后主窗口才出现交付工具；确认与合并方式都由界面直接问用户。 */
 export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDeps): void {
   pi.registerTool({
     name: GIT_DELIVER_TOOL,
@@ -40,7 +40,7 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, _signal, _update, ctx: ExtensionContext) {
       const fail: (why: string, next: string) => never = (why, next) => { throw toolFailure(GIT_DELIVER_TOOL, new AdvisedError("git_deliver_failed", { why, next })); };
-      if (!gitDeliveryEnabled(deps().dataRoot)) fail("Git 交付工具已关闭", "请用户用 /pi-company:git-delivery 命令开启后再交付");
+      if (!gitDeliveryEnabled(deps().dataRoot)) fail("Git 交付工具已关闭", "请用户用 /one:git-delivery 命令开启后再交付");
       if (!Value.Check(PARAMETERS, rawParams)) fail(`参数不符合本工具的格式（${shapeIssue(PARAMETERS, rawParams)}）`, "按字段要求改正参数后重试");
       if (!ctx.hasUI) fail("推送前和选择合并方式都要在界面上直接问用户，当前会话没有界面", "在有界面的主窗口里再交付");
       const { repoId, requirementId } = rawParams as Static<typeof PARAMETERS>;
@@ -56,7 +56,7 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
       catch (error) { throw toolFailure(GIT_DELIVER_TOOL, error); }
     },
   });
-  pi.registerCommand("pi-company:git-delivery", {
+  pi.registerCommand("one:git-delivery", {
     description: "开启或关闭可选的 Git 交付工具",
     handler: async (_args, ctx) => {
       const root = deps().dataRoot;

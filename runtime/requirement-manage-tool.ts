@@ -23,7 +23,7 @@ const actions = {
 export const REQUIREMENT_MANAGE_PARAMETERS = requestParameters(Object.values(actions));
 export function createRequirementManageTool(options: { interaction: MainRequirementInteraction }): ToolDefinition<typeof REQUIREMENT_MANAGE_PARAMETERS, Record<string, unknown>> {
   const interaction = options.interaction;
-  return { name: "pi_company_requirement_manage", label: "管理活动需求",
+  return { name: "one_company_requirement_manage", label: "管理活动需求",
     description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requestId、operationId 每次新生成 UUIDv7，requirementId、version、savedOperationId 取自此前工具结果，不要自编。保存需求草稿；正文板块按系统提示里的需求文档规范写，每个标题（含各级小节标题）末尾都写唯一编号（字母开头，只含字母数字._-，不重复），缺编号或重复时批准被拒；confirmUpdate只接真实saved操作ID，不接正文或批准声明。只消费当前真实用户输入。read默认当前approved，草稿可指定saved，章节及UTF8分页逐次核权，完整封装不超过50KiB。无当前输入或模型不可用明确拒绝，不弹全量审批。",
     promptSnippet: "整理当前需求、按范围记录决定，读取当前获准目标", parameters: REQUIREMENT_MANAGE_PARAMETERS, executionMode: "sequential",
     async execute(toolCallId, raw, signal, _update, ctx) {

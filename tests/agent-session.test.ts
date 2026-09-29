@@ -31,7 +31,7 @@ function fakeCoreTools(role: AgentRole, calls: string[]): ToolDefinition[] {
 
 async function world() {
   const root = await mkdtemp(join(tmpdir(), "agent-session-")); cleanup.push(() => rm(root, { recursive: true, force: true }));
-  const dataRoot = join(root, "agent", "pi-company"), cwd = join(root, "repo"), outside = join(root, "outside.txt");
+  const dataRoot = join(root, "agent", "one-company"), cwd = join(root, "repo"), outside = join(root, "outside.txt");
   await import("node:fs/promises").then((fs) => Promise.all([fs.mkdir(dataRoot, { recursive: true }), fs.mkdir(cwd, { recursive: true })]));
   await writeFile(join(cwd, "inside.txt"), "inside");
   await writeFile(outside, "outside");
@@ -78,7 +78,7 @@ describe("工具集与模型请求一致", () => {
     await until(() => s.provider.requests.length === 1);
     const expected = [...ROLE_HOST_TOOLS[role], ...coreToolsForRole(role).map(coreToolName)].sort();
     expect(toolNames(s.provider.requests[0])).toEqual(expected);
-    for (const forbidden of ["bash", "write", "edit", "pi_company_git_commit", "structured_output", "pi_company_resume_check"]) {
+    for (const forbidden of ["bash", "write", "edit", "one_company_git_commit", "structured_output", "one_company_resume_check"]) {
       expect(toolNames(s.provider.requests[0])).not.toContain(forbidden);
     }
     // 部分提供方（如 OpenAI Responses 接口）遇到含 \p{..}、前后顾或代理项范围的正则，整条请求失败

@@ -8,7 +8,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const productRoot = fileURLToPath(new URL("../../", import.meta.url));
-const labelKey = "pi-company.git-prerequisite-task";
+const labelKey = "one-company.git-prerequisite-task";
 
 type DockerResult = ReturnType<typeof spawnSync>;
 type DockerRunner = (args: string[], timeout?: number) => DockerResult;
@@ -36,7 +36,7 @@ function systemDocker(args: string[], timeout = 180_000) {
 const dockerAvailable = systemDocker(["info", "--format", "{{.ServerVersion}}"], 10_000).status === 0;
 
 function createState(context: string, suffix = randomUUID()) : DockerFixtureState {
-  const identity = `pi-company-git-prerequisite-${process.pid}-${suffix}`;
+  const identity = `one-company-git-prerequisite-${process.pid}-${suffix}`;
   return {
     identity,
     context,
@@ -265,7 +265,7 @@ function timedOut(): DockerResult {
 describe("Git 安装 Docker 夹具收尾", () => {
   test("build/run 超时及安装失败保留现场并传播错误", async () => {
     for (const mode of ["build-timeout", "run-timeout", "install-failure"] as const) {
-      const context = await mkdtemp(join(tmpdir(), `pi-company-git-cleanup-${mode}-`));
+      const context = await mkdtemp(join(tmpdir(), `one-company-git-cleanup-${mode}-`));
       const state = createState(context, `${mode}-${randomUUID()}`);
       let contextRemoved = false;
       const calls: string[][] = [];
@@ -305,7 +305,7 @@ describe("Git 安装 Docker 夹具收尾", () => {
 
   test("build异常先保留unknown，日志失败不能改变安全状态或遮蔽原错误", async () => {
     for (const mode of ["timeout-log", "enobufs", "signal", "throw", "cleanup-log"] as const) {
-      const context = await mkdtemp(join(tmpdir(), "pi-company-git-build-state-")), state = createState(context);
+      const context = await mkdtemp(join(tmpdir(), "one-company-git-build-state-")), state = createState(context);
       const calls: string[][] = [];
       let removed = false, imageExists = mode !== "cleanup-log";
       const id = "owned-image-id";
@@ -349,7 +349,7 @@ describe("Git 安装 Docker 夹具收尾", () => {
 
   test("rm 超时或非零都显式失败、保留现场并完成归属核验", async () => {
     for (const mode of ["timeout", "nonzero"] as const) {
-      const context = await mkdtemp(join(tmpdir(), `pi-company-git-cleanup-rm-${mode}-`));
+      const context = await mkdtemp(join(tmpdir(), `one-company-git-cleanup-rm-${mode}-`));
       const state = createState(context, `rm-${mode}-${randomUUID()}`);
       const name = state.containerNames[0];
       const id = `container-${mode}`;
@@ -377,7 +377,7 @@ describe("Git 安装 Docker 夹具收尾", () => {
 });
 
 test.skipIf(!dockerAvailable)("Git 安装 hook 在 Linux 容器断网运行时真实拒绝缺失并接受预装 Git", async () => {
-  const context = await mkdtemp(join(tmpdir(), "pi-company-git-hook-docker-"));
+  const context = await mkdtemp(join(tmpdir(), "one-company-git-hook-docker-"));
   const state = createState(context);
   await withManagedDockerFixture(state, systemDocker, async () => {
     const packed = spawnSync("pnpm", ["--config.ignore-scripts=true", "pack", "--json", "--pack-destination", context], {
@@ -399,10 +399,10 @@ test.skipIf(!dockerAvailable)("Git 安装 hook 在 Linux 容器断网运行时�
 FROM node:22-alpine AS cached
 ARG TASK_LABEL
 LABEL ${labelKey}=$TASK_LABEL
-COPY ${artifactName} /opt/pi-company.tgz
+COPY ${artifactName} /opt/one-company.tgz
 RUN mkdir -p /seed /work /tmp/test-home \\
  && cd /seed \\
- && npm install --ignore-scripts --omit=peer --legacy-peer-deps --no-audit --no-fund /opt/pi-company.tgz
+ && npm install --ignore-scripts --omit=peer --legacy-peer-deps --no-audit --no-fund /opt/one-company.tgz
 WORKDIR /work
 
 FROM cached AS missing
@@ -426,7 +426,7 @@ const { existsSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const expectGit = process.argv[1] === "yes";
 if (existsSync("/usr/bin/git") !== expectGit) process.exit(97);
-const result = spawnSync("/usr/local/bin/npm", ["install", "--offline", "--omit=peer", "--legacy-peer-deps", "--no-audit", "--no-fund", "/opt/pi-company.tgz"], {
+const result = spawnSync("/usr/local/bin/npm", ["install", "--offline", "--omit=peer", "--legacy-peer-deps", "--no-audit", "--no-fund", "/opt/one-company.tgz"], {
   cwd: "/work",
   env: { ...process.env, HOME: "/tmp/test-home", npm_config_cache: "/root/.npm", npm_config_update_notifier: "false" },
   encoding: "utf8",

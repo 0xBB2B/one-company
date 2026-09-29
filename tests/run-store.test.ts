@@ -55,7 +55,7 @@ function requirementInput(overrides: Record<string, unknown> = {}) {
 function roleInput(parentRunId: string, overrides: Record<string, unknown> = {}) {
   return requirementInput({
     kind: "role",
-    role: "pi-company.worker",
+    role: "one-company.worker",
     parentRunId,
     ...overrides,
   });
@@ -88,7 +88,7 @@ describe("RunStore.create", () => {
     const child = await store.create(roleInput(parent.id));
 
     expect(child.kind).toBe("role");
-    expect(child.role).toBe("pi-company.worker");
+    expect(child.role).toBe("one-company.worker");
     expect(child.parentRunId).toBe(parent.id);
   });
 
@@ -125,26 +125,26 @@ describe("RunStore.create", () => {
 
   test("kind 为 role 但缺 parentRunId 时抛错", async () => {
     const { store } = await makeStore();
-    const input = requirementInput({ kind: "role", role: "pi-company.worker" });
+    const input = requirementInput({ kind: "role", role: "one-company.worker" });
     await expect(store.create(input)).rejects.toThrow();
   });
 
-  test("role 不以 pi-company. 开头时抛错", async () => {
+  test("role 不以 one-company. 开头时抛错", async () => {
     const { store } = await makeStore();
     const parent = await store.create(requirementInput());
     const input = requirementInput({ kind: "role", role: "worker", parentRunId: parent.id });
     await expect(store.create(input)).rejects.toThrow();
   });
 
-  test("role 为 pi-company.reviewer 但缺 parentRunId 且未声明 standalone 时仍抛错（不再按角色名特判）", async () => {
+  test("role 为 one-company.reviewer 但缺 parentRunId 且未声明 standalone 时仍抛错（不再按角色名特判）", async () => {
     const { store } = await makeStore();
-    const input = requirementInput({ kind: "role", role: "pi-company.reviewer" });
+    const input = requirementInput({ kind: "role", role: "one-company.reviewer" });
     await expect(store.create(input)).rejects.toThrow();
   });
 
   test("standalone: true 时允许缺少 parentRunId，不限角色名", async () => {
     const { store } = await makeStore();
-    const input = requirementInput({ kind: "role", role: "pi-company.worker", standalone: true });
+    const input = requirementInput({ kind: "role", role: "one-company.worker", standalone: true });
     const run = await store.create(input);
     expect(run.parentRunId).toBeUndefined();
   });

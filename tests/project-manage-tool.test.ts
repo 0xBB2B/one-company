@@ -515,7 +515,7 @@ describe("扫描确认、service 授权与有限输出", () => {
     await expect(call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => false))).rejects.toMatchObject({ code: "scan_declined" });
     expect(opens).toBe(0);
     const error = await call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true)).then(() => undefined, (value) => value as Error);
-    expect(error?.message).toBe("pi_company_project_manage 的 init 动作失败。\n原因：未归类的错误（项目索引操作失败；未返回底层正文或错误详情）\n建议：可以重试一次；仍然失败就把这段原因告诉用户");
+    expect(error?.message).toBe("one_company_project_manage 的 init 动作失败。\n原因：未归类的错误（项目索引操作失败；未返回底层正文或错误详情）\n建议：可以重试一次；仍然失败就把这段原因告诉用户");
     expect(error?.message).not.toContain("SENTINEL");
     await runtime.shutdown();
   });
@@ -612,7 +612,7 @@ describe("取消、session_shutdown 与扩展接线", () => {
       windowContext: () => window,
       openService: async () => ({ preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) }),
     });
-    expect(fakePi.registeredTools().map((tool) => tool.name)).toEqual(["pi_company_project_manage"]);
+    expect(fakePi.registeredTools().map((tool) => tool.name)).toEqual(["one_company_project_manage"]);
     expect(fakePi.handlerCount("session_start")).toBe(1);
     expect(fakePi.handlerCount("session_shutdown")).toBe(1);
     const ctx = context("session-main", async () => true);

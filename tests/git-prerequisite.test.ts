@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const script = fileURLToPath(new URL("../runtime/git-prerequisite.mjs", import.meta.url));
 
 test("preinstall 检查：PATH 上没有 git 时非零退出并提示，有 git 时通过", async () => {
-  const emptyBin = await mkdtemp(join(tmpdir(), "pi-company-no-git-"));
+  const emptyBin = await mkdtemp(join(tmpdir(), "one-company-no-git-"));
   try {
     const missing = spawnSync(process.execPath, [script, "--check"], { encoding: "utf8", env: { PATH: emptyBin } });
     expect(missing.status).toBe(1);

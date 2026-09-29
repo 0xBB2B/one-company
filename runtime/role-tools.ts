@@ -5,7 +5,7 @@ import type { CoreRole, CoreTool } from "./core-permissions.ts";
 import type { AgentRole } from "./roles.ts";
 import { toolFailure, toolStep } from "./tool-failure.ts";
 
-export const CORE_TOOL_PREFIX = "pi_company_";
+export const CORE_TOOL_PREFIX = "one_company_";
 
 const READ_TOOLS = ["read", "grep", "find", "ls"] as const;
 

@@ -62,8 +62,8 @@ describe("命令注册集合", () => {
   test("恰好注册两个命令，且不含任何 spec-* 别名", () => {
     const { registrations } = setup();
     const names = Object.keys(registrations).sort();
-    expect(names).toEqual(["pi-company:ps", "pi-company:setting"]);
-    expect(names.every((name) => name.startsWith("pi-company:"))).toBe(true);
+    expect(names).toEqual(["one:agents", "one:ps"]);
+    expect(names.every((name) => name.startsWith("one:"))).toBe(true);
   });
 
   test("每个命令的描述非空", () => {
@@ -74,14 +74,14 @@ describe("命令注册集合", () => {
   });
 });
 
-describe("/pi-company:setting", () => {
+describe("/one:agents", () => {
   test("交互终端下调用打开设置页回调", async () => {
     const { pi, registrations } = makeFakePi();
     const { options, settingsCalls } = makeOptions();
     registerCommands(pi, options);
     const { ctx } = makeFakeCtx({ hasUI: true, mode: "tui" });
 
-    await registrations["pi-company:setting"]!.handler("", ctx);
+    await registrations["one:agents"]!.handler("", ctx);
 
     expect(settingsCalls.length).toBe(1);
   });
@@ -96,7 +96,7 @@ describe("/pi-company:setting", () => {
     registerCommands(pi, options);
     const { ctx, notifications } = makeFakeCtx({ hasUI: true, mode: "tui" });
 
-    await registrations["pi-company:setting"]!.handler("", ctx);
+    await registrations["one:agents"]!.handler("", ctx);
 
     expect(shellCalls.length).toBe(0);
     expect(notifications.length).toBeGreaterThan(0);
@@ -109,7 +109,7 @@ describe("/pi-company:setting", () => {
     registerCommands(pi, options);
     const { ctx, notifications } = makeFakeCtx({ hasUI: false, mode: "tui" });
 
-    await registrations["pi-company:setting"]!.handler("", ctx);
+    await registrations["one:agents"]!.handler("", ctx);
 
     expect(settingsCalls.length).toBe(0);
     expect(notifications.length).toBeGreaterThan(0);
@@ -121,21 +121,21 @@ describe("/pi-company:setting", () => {
     registerCommands(pi, options);
     const { ctx, notifications } = makeFakeCtx({ hasUI: true, mode: "other" });
 
-    await registrations["pi-company:setting"]!.handler("", ctx);
+    await registrations["one:agents"]!.handler("", ctx);
 
     expect(settingsCalls.length).toBe(0);
     expect(notifications.length).toBeGreaterThan(0);
   });
 });
 
-describe("/pi-company:ps", () => {
+describe("/one:ps", () => {
   test("调用打开 Shell 管理页回调", async () => {
     const { pi, registrations } = makeFakePi();
     const { options, shellCalls } = makeOptions();
     registerCommands(pi, options);
     const { ctx } = makeFakeCtx();
 
-    await registrations["pi-company:ps"]!.handler("", ctx);
+    await registrations["one:ps"]!.handler("", ctx);
 
     expect(shellCalls.length).toBe(1);
   });
@@ -150,7 +150,7 @@ describe("/pi-company:ps", () => {
     registerCommands(pi, options);
     const { ctx, notifications } = makeFakeCtx();
 
-    await registrations["pi-company:ps"]!.handler("", ctx);
+    await registrations["one:ps"]!.handler("", ctx);
 
     expect(settingsCalls.length).toBe(0);
     expect(notifications.length).toBeGreaterThan(0);

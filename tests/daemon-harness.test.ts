@@ -173,9 +173,9 @@ setInterval(() => {}, 1000);
 }
 
 test.each(["home", "repo", "dataRoot"] as const)("初始化 %s 阶段失败只回收已经确认的自产根", async (faultAfter) => {
-  const before = new Set((await readdir(tmpdir())).filter((name) => name.startsWith("pi-company-home-") || name.startsWith("pi-company-repo-")));
+  const before = new Set((await readdir(tmpdir())).filter((name) => name.startsWith("one-company-home-") || name.startsWith("one-company-repo-")));
   await expect(createDaemonFixture({ faultAfter })).rejects.toThrow(/专测/);
-  const after = (await readdir(tmpdir())).filter((name) => name.startsWith("pi-company-home-") || name.startsWith("pi-company-repo-"));
+  const after = (await readdir(tmpdir())).filter((name) => name.startsWith("one-company-home-") || name.startsWith("one-company-repo-"));
   expect(after.filter((name) => !before.has(name))).toEqual([]);
 });
 
@@ -196,7 +196,7 @@ test("创建前完成 Git gate，固定环境拒绝覆盖且最终携带完整 G
   let called = false;
   expect(() => spawnDaemonProcess({
     home: f.home, repoDir: f.repoDir, dataRoot: f.dataRoot,
-    extraEnv: { PI_COMPANY_DATA_ROOT: "/tmp/attacker" },
+    extraEnv: { ONE_COMPANY_DATA_ROOT: "/tmp/attacker" },
     spawnImpl: ((..._args: unknown[]) => { called = true; throw new Error("不应调用"); }) as typeof realSpawn,
   })).toThrow(/保护环境变量/);
   expect(called).toBe(false);
@@ -220,7 +220,7 @@ test("创建前完成 Git gate，固定环境拒绝覆盖且最终携带完整 G
   let captured: NodeJS.ProcessEnv | undefined;
   const spawned = spawnDaemonProcess({
     home: f.home, repoDir: f.repoDir, dataRoot: f.dataRoot, sdkDir: join(f.dataRoot, "fault-sdk"), captureOutput: true,
-    extraEnv: { NODE_OPTIONS: "", PI_COMPANY_TEST_PROVIDER_SCRIPTS: join(f.dataRoot, "providers.json") },
+    extraEnv: { NODE_OPTIONS: "", ONE_COMPANY_TEST_PROVIDER_SCRIPTS: join(f.dataRoot, "providers.json") },
     spawnImpl: ((_exec: string, _args: readonly string[], options: SpawnOptions) => {
       captured = options.env as NodeJS.ProcessEnv;
       return realSpawn(process.execPath, ["-e", "process.exit(0)"], options);
@@ -228,9 +228,9 @@ test("创建前完成 Git gate，固定环境拒绝覆盖且最终携带完整 G
   });
   await spawned.exited;
   expect(captured?.HOME).toBe(f.home.home);
-  expect(captured?.PI_COMPANY_REPO_DIR).toBe(f.repoDir);
-  expect(captured?.PI_COMPANY_DATA_ROOT).toBe(f.dataRoot);
-  expect(captured?.PI_COMPANY_SDK_DIR).toBe(join(f.dataRoot, "fault-sdk"));
+  expect(captured?.ONE_COMPANY_REPO_DIR).toBe(f.repoDir);
+  expect(captured?.ONE_COMPANY_DATA_ROOT).toBe(f.dataRoot);
+  expect(captured?.ONE_COMPANY_SDK_DIR).toBe(join(f.dataRoot, "fault-sdk"));
 });
 
 test("真实 ChildProcess 只接受原 proc/exited 配对，VM 伪句柄与错配句柄均不能发信号", async () => {

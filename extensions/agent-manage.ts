@@ -33,13 +33,13 @@ function result(value: Record<string, unknown>) {
 /** 主会话的 agent_manage：经守护进程派出唯一 PM、查询或控制运行；模型与思考等级取派工时主会话的当前值。 */
 export function registerAgentManageTool(pi: ExtensionAPI, context: () => AgentManageContext): void {
   pi.registerTool({
-    name: "pi_company_agent_manage",
+    name: "one_company_agent_manage",
     label: "agent_manage",
     description: "派出本需求唯一 PM（role=pm），或派出只读检索 explore（role=explore：问题、线索与轮次上限；不给 webQuery 时在仓库内检索本地文件，给出 webQuery 则联网检索，立即返回运行编号，结果到达后以卡片插入本会话，可同时派出多个），或查询、暂停、续接、停止运行。PM 需要需求工作区已 ready 并已有批准版本。",
     parameters: MAIN_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
-      const step = toolStep("pi_company_agent_manage", rawParams);
+      const step = toolStep("one_company_agent_manage", rawParams);
       const fail: (code: string, why: string, next: string) => never = (code, why, next) => { throw toolFailure(step, new AdvisedError(code, { why, next })); };
       if (!Value.Check(MAIN_AGENT_MANAGE_PARAMETERS, rawParams)) fail("invalid_shape", "参数不符合该动作的格式", "按工具说明改正该动作的字段后重试");
       const params = rawParams as Params;
@@ -81,7 +81,7 @@ export function registerExploreDelivery(pi: ExtensionAPI, context: () => Promise
           const event = data as { runId?: unknown; parentSessionId?: unknown };
           if (event.parentSessionId !== sessionId || typeof event.runId !== "string") return;
           void client.call("explore.result", { runId: event.runId }).then((report) => {
-            pi.sendMessage({ customType: "pi-company.explore-result", content: JSON.stringify(report), display: true }, { triggerTurn: true });
+            pi.sendMessage({ customType: "one-company.explore-result", content: JSON.stringify(report), display: true }, { triggerTurn: true });
           }).catch(() => {});
         }));
       }

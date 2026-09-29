@@ -25,7 +25,7 @@ import type { ScriptedReply } from "../helpers/controlled-provider.ts";
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 function resultTool() {
-  return { name: "pi_company_result_submit", label: "result", description: "fixture", parameters: Type.Object({}),
+  return { name: "one_company_result_submit", label: "result", description: "fixture", parameters: Type.Object({}),
     async execute() { return { content: [{ type: "text" as const, text: "accepted" }], details: {} }; } } as any;
 }
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -45,11 +45,11 @@ async function world() {
   let serial = 0;
   async function role(replies: ScriptedReply[]) {
     const provider = registerControlledProvider(runtime, { providerId: `network-fixture-${++serial}`, modelId: "test" }); scriptReplies(provider, replies);
-    const run = await store.create({ kind: "role", standalone: true, role: "pi-company.worker", requirement: "2026-09-10.network", task: `T-${serial}`,
+    const run = await store.create({ kind: "role", standalone: true, role: "one-company.worker", requirement: "2026-09-10.network", task: `T-${serial}`,
       cwd: repo.root, readPaths: [repo.root], writePaths: [], model: { provider: provider.providerId, id: "test" }, thinking: "off", mcp: [] });
     const handle = await createAgentRoleSession({ dataRoot: home.dataRoot, repoId, runId: run.id, cwd: repo.root,
       definition: { name: "worker", role: "worker", description: "fixture", body: "fixture" }, context: run.task, coreTools: [resultTool()], readRoots: [repo.root],
-      runtime, modelRef: run.model, clock, networkGate: gate, completion: { kind: "on-result", resultTool: "pi_company_result_submit" } });
+      runtime, modelRef: run.model, clock, networkGate: gate, completion: { kind: "on-result", resultTool: "one_company_result_submit" } });
     cleanup.push(async () => { await handle.stop(); handle.dispose(); });
     return { handle, provider, run };
   }
@@ -59,7 +59,7 @@ async function world() {
 test("真实SDK连接故障只暂停受影响角色，同批独立角色正常完成", async () => {
   const w = await world();
   const network = await w.role([{ type: "error", message: "fetch failed: connection reset (network)" }]);
-  const normal = await w.role([{ type: "toolcall", name: "pi_company_result_submit", input: {} }, { type: "text", text: "独立只读结果" }]);
+  const normal = await w.role([{ type: "toolcall", name: "one_company_result_submit", input: {} }, { type: "text", text: "独立只读结果" }]);
   network.handle.prompt("触发连接故障"); normal.handle.prompt("不依赖其他角色");
   await until(() => network.handle.state() === "paused_network"); await normal.handle.result();
   expect(normal.handle.state()).toBe("completed"); expect(w.gate.canProceed(network.run.id)).toEqual({ allowed: false, reason: "network" });
@@ -70,7 +70,7 @@ test("真实SDK连接故障只暂停受影响角色，同批独立角色正常�
 test("服务商断流、连接被中断等瞬时错误由 SDK 有限次重试后继续，不判失败也不转网络暂停", async () => {
   const w = await world();
   const flaky = await w.role([{ type: "error", message: "OpenAI Responses stream ended before a terminal response event" }, { type: "error", message: "terminated" },
-    { type: "toolcall", name: "pi_company_result_submit", input: {} }, { type: "text", text: "重试后完成" }]);
+    { type: "toolcall", name: "one_company_result_submit", input: {} }, { type: "text", text: "重试后完成" }]);
   flaky.handle.prompt("遇到断流");
   await flaky.handle.result();
   expect(flaky.handle.state()).toBe("completed");

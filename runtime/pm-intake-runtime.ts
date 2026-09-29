@@ -13,7 +13,7 @@ import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { readSessionEntries } from "./session-records.ts";
 import { checkDecisionRecord } from "./short-decision-format.ts";
 
-export const PM_INTAKE_TOOL = "pi_company_user_interact";
+export const PM_INTAKE_TOOL = "one_company_user_interact";
 export const PM_UNDERSTANDING_CONTENT = Type.Omit(PmUnderstandingSchema, ["format", "binding"]);
 export const PM_INTAKE_SUBMIT_PARAMETERS = Type.Object({
   action: Type.Literal("ask"), purpose: Type.Literal("pm-intake"), understanding: PM_UNDERSTANDING_CONTENT,

@@ -209,7 +209,7 @@ export class InstalledProjectFixture {
     this.sdkRoot = sdk("@earendil-works/pi-coding-agent");
     assert.equal(JSON.parse(await readFile(join(this.sdkRoot, "package.json"), "utf8")).version, "0.87.1");
     await writeFile(join(consumer, "package.json"), JSON.stringify({ name: "m3-installed-consumer", version: "1.0.0", private: true, type: "module", packageManager: "pnpm@11.7.0", dependencies: {
-      "@0xbb2b/pi-company": `file:${artifact.path}`,
+      "@0xbb2b/one-company": `file:${artifact.path}`,
       "@earendil-works/pi-coding-agent": `link:${this.sdkRoot}`,
       "@earendil-works/pi-ai": `link:${sdk("@earendil-works/pi-ai")}`,
       "@earendil-works/pi-tui": `link:${sdk("@earendil-works/pi-tui")}`,
@@ -218,7 +218,7 @@ export class InstalledProjectFixture {
     for (const flags of [["--lockfile-only"], ["--frozen-lockfile"]]) {
       await exec(process.execPath, [pnpm, "install", "--offline", "--ignore-scripts", ...flags], { cwd: consumer, env, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
     }
-    this.installed = await realpath(join(consumer, "node_modules/@0xbb2b/pi-company"));
+    this.installed = await realpath(join(consumer, "node_modules/@0xbb2b/one-company"));
     assert.notEqual(this.installed, await realpath(sourceRoot));
     assert.ok(this.installed.startsWith(`${consumer}/`));
     // 子进程测试装置本身从 consumer 启动；仅动态导入已安装产品，绝不导入源码版产品。
@@ -248,7 +248,7 @@ export class InstalledProjectFixture {
     }
     const identity = await this.product<typeof import("../../runtime/identity.ts")>("runtime/identity.ts");
     const { repoId, commonDir } = await identity.repositoryIdentity(path);
-    const dataRoot = join(agentDir, "pi-company");
+    const dataRoot = join(agentDir, "one-company");
     await identity.repoDataDir(dataRoot, repoId, commonDir);
     const env = isolatedEnvironment(home, agentDir, join(this.root, "t"));
     const repository = { path, home, agentDir, dataRoot, repoId, commonDir, env,
@@ -278,8 +278,8 @@ export class InstalledProjectFixture {
     const probePath = join(this.root, `probe-${this.probes.length}.json`);
     this.probes.push(probePath);
     const owned = child(["--import", join(this.root, "c/probe.ts"), join(this.installed, "daemon/bootstrap.mjs")], repo.path, {
-      ...repo.env, PI_COMPANY_SDK_DIR: this.sdkRoot, PI_COMPANY_REPO_DIR: repo.commonDir,
-      PI_COMPANY_DATA_ROOT: repo.dataRoot, PI_COMPANY_IDLE_TIMEOUT_MS: "60000",
+      ...repo.env, ONE_COMPANY_SDK_DIR: this.sdkRoot, ONE_COMPANY_REPO_DIR: repo.commonDir,
+      ONE_COMPANY_DATA_ROOT: repo.dataRoot, ONE_COMPANY_IDLE_TIMEOUT_MS: "60000",
       M3_ASSEMBLY_PROBE: probePath, M3_ASSEMBLY_REPOSITORY: repo.path,
     });
     this.processes.push(owned);
@@ -293,7 +293,7 @@ export class InstalledProjectFixture {
   async host(repo: InstalledRepository): Promise<Host> {
     const owned = child([join(this.root, "c/host.ts"), "--host"], repo.path, {
       ...repo.env, M3_INSTALLED_PRODUCT: this.installed, M3_INSTALLED_SDK: this.sdkRoot,
-      M3_INSTALLED_REPO: repo.repoId, PI_COMPANY_IDLE_TIMEOUT_MS: "60000",
+      M3_INSTALLED_REPO: repo.repoId, ONE_COMPANY_IDLE_TIMEOUT_MS: "60000",
     }, true);
     this.processes.push(owned);
     let next = 0;
@@ -457,7 +457,7 @@ async function runHost(): Promise<void> {
   try {
     ({ session } = await sdk.createAgentSession({ cwd, agentDir, resourceLoader: loader, settingsManager: settings,
       modelRuntime: runtime, model: runtime.getModels("installed-controlled")[0], sessionManager: sdk.SessionManager.inMemory(cwd),
-      tools: ["pi_company_project_manage", "pi_company_knowledge_query", "read", "write", "edit", "bash"],
+      tools: ["one_company_project_manage", "one_company_knowledge_query", "read", "write", "edit", "bash"],
     }));
     const ui: ExtensionUIContext = { ...session.extensionRunner.getUIContext(),
       confirm: async (title, message) => {
@@ -482,7 +482,7 @@ async function runHost(): Promise<void> {
         if (action === "close") { await close(); process.send?.({ id, value: get() }, () => { process.disconnect?.(); }); return; }
         if (action === "approve") approvals.push(input.value === true);
         else if (action === "project" || action === "tool" || action === "text") {
-          const name = action === "project" ? "pi_company_project_manage" : String(input.name ?? "write");
+          const name = action === "project" ? "one_company_project_manage" : String(input.name ?? "write");
           const calls: ToolCall[] = action === "text" || input.textOnly === true ? [] : [{ type: "toolCall", id: `installed-${timestamp + 1}`, name,
             arguments: action === "project" ? { request: { ...input, repoId: process.env.M3_INSTALLED_REPO } } : input.args as Record<string, unknown> }];
           queue.push({ calls, text: "controlled answer" });

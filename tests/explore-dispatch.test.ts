@@ -15,13 +15,13 @@ async function world(agentDir?: string) {
   const w = await createPmRunWorld(cleanups, { agentDir });
   const workspace = await realpath(w.fixture.state.read(w.fixture.requirementId).data.workspace!.path);
   const readme = join(workspace, "README.md");
-  await writeFile(readme, "pi-company 检索夹具：登录模块在 src/auth。\n");
+  await writeFile(readme, "one-company 检索夹具：登录模块在 src/auth。\n");
   const other = join(w.fixture.root, "OTHER.md");
   await writeFile(other, "工作区以外的文件\n");
   const hashOf = async (path: string) => createHash("sha256").update(await readFile(path)).digest("hex");
   const research = (path: string, fileHash: string) => ({ conclusions: ["登录模块在 src/auth"], sources: [{ kind: "local_file", indexBaseline: "not_applicable", path, fileHash,
     startLine: 1, endLine: 1 }], searchedScope: { kind: "local_file", paths: [path] }, notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] });
-  const submit = (path: string, fileHash: string) => ({ type: "toolcall" as const, name: "pi_company_result_submit", input: { action: "research", result: research(path, fileHash) } });
+  const submit = (path: string, fileHash: string) => ({ type: "toolcall" as const, name: "one_company_result_submit", input: { action: "research", result: research(path, fileHash) } });
   const exploreRequest = (requests: Context[]) => requests.find((request) => request.systemPrompt?.includes("检索来源：直接读取本地文件"));
   return { ...w, workspace, readme, other, hashOf, submit, exploreRequest };
 }
@@ -40,12 +40,12 @@ test("M7-AC15/AC17：PM 派出 explore 只拿到问题、线索与工作区范�
   expect(request.systemPrompt).toContain(`在 ${w.workspace} 内查看`);
   expect(JSON.stringify(request)).not.toContain("输入正确验证码后成功");
   expect(JSON.stringify(request)).not.toContain("等待核对");
-  expect(request.tools?.map((tool) => tool.name).sort()).toEqual(["grep", "pi_company_result_submit", "read"]);
+  expect(request.tools?.map((tool) => tool.name).sort()).toEqual(["grep", "one_company_result_submit", "read"]);
   const report = w.provider.requests.find((entry) => text(entry).includes("explore-report"))!;
   expect(text(report)).toContain("research 不是 PASS");
   expect(text(report)).toContain("登录模块在 src/auth");
   const run = await w.runStore.get(dispatched.runId);
-  expect(run.ok && run.run).toMatchObject({ role: "pi-company.explore", parentRunId: w.pm.runId, state: "completed" });
+  expect(run.ok && run.run).toMatchObject({ role: "one-company.explore", parentRunId: w.pm.runId, state: "completed" });
   expect(checkExploreSession({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, dispatched.runId)).toMatchObject({ current: false, reason: "session_ended" });
 });
 
@@ -94,7 +94,7 @@ test("M7-AC16：research 引用的本地文件 hash 由宿主按实际内容核�
 
 test("research 本地来源只写相对路径与行范围时，宿主补成绝对路径并按实际内容填上哈希；根目录外的路径不读取、仍被拒收", async () => {
   const w = await world();
-  const minimal = (path: string) => ({ type: "toolcall" as const, name: "pi_company_result_submit", input: { action: "research", result: {
+  const minimal = (path: string) => ({ type: "toolcall" as const, name: "one_company_result_submit", input: { action: "research", result: {
     conclusions: ["登录模块在 src/auth"], sources: [{ path, startLine: 1, endLine: 1 }], searchedScope: { paths: [path] },
     notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] } } });
   w.provider.queue.push(minimal("../OTHER.md"), minimal("README.md"), { type: "text", text: "PM 收到检索结果" });
@@ -109,7 +109,7 @@ test("research 本地来源只写相对路径与行范围时，宿主补成绝�
 
 test("research 的检索范围写带结尾斜杠的目录（如 src/）时，宿主补成绝对路径后能通过核对，不被当成超出范围", async () => {
   const w = await world();
-  w.provider.queue.push({ type: "toolcall", name: "pi_company_result_submit", input: { action: "research", result: {
+  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "research", result: {
     conclusions: ["说明在 README.md"], sources: [{ path: "README.md", startLine: 1, endLine: 1 }], searchedScope: { paths: ["src/", "README.md"] },
     notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] } } }, { type: "text", text: "PM 收到检索结果" });
   await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
@@ -139,7 +139,7 @@ test("M8C-AC8：PM 用 agent_manage 停止自己派出的 explore，运行记录
     request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
   await until(async () => { const run = await w.runStore.get(slow.runId); return run.ok && run.run.state === "running"; });
   w.provider.queue.push(w.submit(w.readme, await w.hashOf(w.readme)),
-    { type: "toolcall", name: "pi_company_agent_manage", input: { action: "stop", runId: slow.runId } }, { type: "text", text: "已停止慢检索" });
+    { type: "toolcall", name: "one_company_agent_manage", input: { action: "stop", runId: slow.runId } }, { type: "text", text: "已停止慢检索" });
   await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "README 写了什么", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
   await until(async () => { const run = await w.runStore.get(slow.runId); return run.ok && run.run.state === "stopped"; });
@@ -163,14 +163,14 @@ test("M7-AC18：main 派出途中发起连接已断开时立即作废；PM 因�
 
 test("M7-AC16：PM 与 explore 都可调用 knowledge_query 查询主仓库索引，窗口不在线也可用；结果标注索引代次", async () => {
   const w = await createPmRunWorld(cleanups, { index: true });
-  const pmTools = w.provider.requests.find((request) => request.tools?.some((tool) => tool.name === "pi_company_workflow_manage"))!.tools!.map((tool) => tool.name);
-  expect(pmTools).toContain("pi_company_knowledge_query");
-  w.provider.queue.push({ type: "toolcall", name: "pi_company_knowledge_query", input: { query: { action: "facts" } } }, { type: "text", text: "查完" },
+  const pmTools = w.provider.requests.find((request) => request.tools?.some((tool) => tool.name === "one_company_workflow_manage"))!.tools!.map((tool) => tool.name);
+  expect(pmTools).toContain("one_company_knowledge_query");
+  w.provider.queue.push({ type: "toolcall", name: "one_company_knowledge_query", input: { query: { action: "facts" } } }, { type: "text", text: "查完" },
     { type: "text", text: "PM 收到" });
   await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId }, request: { question: "项目有哪些文件", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
   await until(() => w.provider.requests.some((request) => text(request).includes("knowledge-facts/v1")));
   const explore = w.provider.requests.find((request) => request.systemPrompt?.includes("检索来源：直接读取本地文件"))!;
-  expect(explore.tools?.map((tool) => tool.name).sort()).toEqual(["grep", "pi_company_knowledge_query", "pi_company_result_submit", "read"]);
+  expect(explore.tools?.map((tool) => tool.name).sort()).toEqual(["grep", "one_company_knowledge_query", "one_company_result_submit", "read"]);
   const reply = w.provider.requests.find((request) => text(request).includes("knowledge-facts/v1"))!;
   expect(text(reply)).toMatch(/\\"generation\\":[1-9]/u);
 });

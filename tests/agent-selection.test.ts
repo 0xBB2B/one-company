@@ -119,17 +119,17 @@ test("M7-AC8：定义正文不含任何职责说明、模型也不遵守提示�
   await w.plan.execute({ action: "propose", tasks: [spec("ui", { agent: "bare" }), spec("rest", { goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   w.provider.queue.push(
-    { type: "toolcall", name: "pi_company_plan_manage", input: { action: "confirm", planVersion: 1 } },
-    { type: "toolcall", name: "pi_company_change_apply", input: { action: "apply", operationId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10",
+    { type: "toolcall", name: "one_company_plan_manage", input: { action: "confirm", planVersion: 1 } },
+    { type: "toolcall", name: "one_company_change_apply", input: { action: "apply", operationId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10",
       files: [{ path: "docs/prod/x.md", baseHash: "absent", content: "x" }] } },
     { type: "toolcall", name: "bash", input: { command: "echo hacked > src/x.ts" } },
     { type: "text", text: "结束" }, { type: "text", text: "PM 收到" });
   await w.dispatch("ui");
   await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("forbidden_path")));
   const tools = w.provider.requests.find((request) => prompt(request).includes("（无说明）"))!.tools!.map((tool) => tool.name);
-  expect(tools).not.toContain("pi_company_plan_manage");
+  expect(tools).not.toContain("one_company_plan_manage");
   expect(tools).not.toContain("bash");
   const all = JSON.stringify(w.provider.requests);
-  expect(all).toContain("Tool pi_company_plan_manage not found");
+  expect(all).toContain("Tool one_company_plan_manage not found");
   expect(all).toContain("forbidden_path");
 });

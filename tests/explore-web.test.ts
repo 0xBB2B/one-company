@@ -63,13 +63,13 @@ test("M7-AC15/AC16/AC17：PM 派出联网 explore，会话可按需搜索与抓�
   w.provider.queue.push(
     { type: "toolcall", name: "web_search", input: { query: "vitest pool" } },
     { type: "toolcall", name: "web_fetch", input: { url: "http://wiki.intranet.local/vitest" } },
-    { type: "toolcall", name: "pi_company_result_submit", input: { action: "research", result: research } },
+    { type: "toolcall", name: "one_company_result_submit", input: { action: "research", result: research } },
     { type: "text", text: "PM 收到联网检索结果" });
   const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "vitest 如何并行", clues: [], source: { kind: "web", query } }, maxTurns: 6 });
   await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
   const system = systemOf(w.provider.requests)!;
-  expect(system.tools?.map((tool) => tool.name).sort()).toEqual(["pi_company_result_submit", "web_fetch", "web_search"]);
+  expect(system.tools?.map((tool) => tool.name).sort()).toEqual(["one_company_result_submit", "web_fetch", "web_search"]);
   expect(JSON.stringify(system)).not.toContain("输入正确验证码后成功");
   expect(net.calls.filter((url) => url.startsWith("https://mcp.exa.ai/")).length).toBe(3);
   expect(fetched).toEqual(["http://wiki.intranet.local/vitest"]);
@@ -77,7 +77,7 @@ test("M7-AC15/AC16/AC17：PM 派出联网 explore，会话可按需搜索与抓�
   expect(text(report)).toContain("用 pool 配置并行");
   expect(text(report)).toContain("research 不是 PASS");
   const run = await w.runStore.get(dispatched.runId);
-  expect(run.ok && run.run).toMatchObject({ role: "pi-company.explore", state: "completed" });
+  expect(run.ok && run.run).toMatchObject({ role: "one-company.explore", state: "completed" });
 });
 
 test("M7-AC16：main 在无需求、索引未初始化时派出纯网页检索成功，index 基线 not_applicable；结果只交给派出连接，不创建需求、运行记录或工作区", async () => {
@@ -93,7 +93,7 @@ test("M7-AC16：main 在无需求、索引未初始化时派出纯网页检索�
   w.provider.queue.push(
     { type: "toolcall", name: "web_search", input: { query: "node 异步文件" } },
     { type: "toolcall", name: "web_fetch", input: { url: "https://nodejs.org/api/" } },
-    { type: "toolcall", name: "pi_company_result_submit", input: { action: "research", result: research } });
+    { type: "toolcall", name: "one_company_result_submit", input: { action: "research", result: research } });
   w.manager.connectionOpened("conn-main");
   const parent = { role: "main" as const, sessionId: "session-main", connectionId: "conn-main", model: { provider: "team-model", id: "test" }, thinking: "off" };
   const dispatched = await w.manager.dispatchExplore({ parent, request: { question: "node 如何异步读文件", clues: [], source: { kind: "web", query: "node 异步文件" } }, maxTurns: 5 });

@@ -43,7 +43,7 @@ async function openShellPageOrReport(
 }
 
 export function registerCommands(pi: CommandsPi, options: RegisterCommandsOptions): void {
-  pi.registerCommand("pi-company:setting", {
+  pi.registerCommand("one:agents", {
     description: "打开角色设置页",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI || ctx.mode !== "tui") {
@@ -54,7 +54,7 @@ export function registerCommands(pi: CommandsPi, options: RegisterCommandsOption
     },
   });
 
-  pi.registerCommand("pi-company:ps", {
+  pi.registerCommand("one:ps", {
     description: "打开 Shell 管理页",
     handler: async (_args, ctx) => {
       await openShellPageOrReport(options, ctx);

@@ -27,7 +27,7 @@ const spec = (key: string, role: TaskSpec["role"], patch: Partial<TaskSpec> = {}
 const LOGIN = "export function login(code: string): string {\n  return code === \"1234\" ? \"成功\" : \"失败\";\n}\n";
 
 type Step = ScriptedReply | ((request: Context) => ScriptedReply);
-const call = (name: string, input: Record<string, unknown>): ScriptedReply => ({ type: "toolcall", name: `pi_company_${name}`, input });
+const call = (name: string, input: Record<string, unknown>): ScriptedReply => ({ type: "toolcall", name: `one_company_${name}`, input });
 const lastResult = (request: Context) => JSON.stringify(request.messages.at(-1) ?? "");
 const field = (text: string, name: string) => new RegExp(`\\\\"${name}\\\\":\\\\"([0-9a-f-]{36})\\\\"`).exec(text)?.[1];
 
@@ -185,9 +185,9 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   expect(all.filter((run) => run.state === "failed")).toEqual([]);
   expect(all.every((run) => run.state === "completed" || run.state === "stopped")).toBe(true);
   expect(all.find((run) => run.kind === "requirement")?.state).toBe("stopped");
-  expect(all.map((run) => run.role ?? run.kind).sort()).toEqual(["pi-company.qa", "pi-company.qa", "pi-company.reviewer", "pi-company.reviewer",
-    "pi-company.worker", "pi-company.worker", "requirement"]);
-  const implRun = all.find((run) => run.role === "pi-company.worker" && run.task === task("impl")!.taskId)!;
+  expect(all.map((run) => run.role ?? run.kind).sort()).toEqual(["one-company.qa", "one-company.qa", "one-company.reviewer", "one-company.reviewer",
+    "one-company.worker", "one-company.worker", "requirement"]);
+  const implRun = all.find((run) => run.role === "one-company.worker" && run.task === task("impl")!.taskId)!;
   expect(implRun.id).toBe(worker.runId);
   expect(all.filter((run) => run.kind !== "requirement").every((run) => run.parentRunId === w.pm.runId)).toBe(true);
   const verdicts = w.db((db) => db.list<Verdict>(VERDICTS).map((row) => row.data));
@@ -197,7 +197,7 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
     ["acceptance", "qa", "completed"], ["fix", "worker", "completed"], ["impl", "worker", "completed"], ["recheck", "qa", "completed"]]);
   expect(verdicts.find((verdict) => verdict.role === "reviewer" && verdict.review?.taskId === task("impl")!.taskId))
     .toMatchObject({ checkRoundId: null, review: { attemptRunId: implRun.id } });
-  expect(all.some((run) => run.role === "pi-company.explore")).toBe(false);
+  expect(all.some((run) => run.role === "one-company.explore")).toBe(false);
   const systemPrompts = w.provider.requests.map((request) => request.systemPrompt ?? "");
   for (const persona of ["你是一个活动需求的唯一 PM", "你是实现代理", "你是独立审查代理", "你是黑盒验收代理"]) expect(systemPrompts.some((prompt) => prompt.includes(persona))).toBe(true);
   expect(systemPrompts.some((prompt) => prompt.includes("你是只读检索代理"))).toBe(false);

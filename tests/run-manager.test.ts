@@ -32,7 +32,7 @@ async function world(probes?: ShellRegistryProbes) {
   const manager = new RunManager(options); manager.markStarted();
   const snapshot = () => withDatabase(database, (db) => JSON.stringify({ runs: db.list("runs"), sessions: db.list("sessions"), questions: db.list("relay_questions") }));
   async function create(state: RunState = "queued", parent?: RunRecord, provider = "provider-a") {
-    const run = await runs.create({ kind: parent ? "role" : "requirement", role: parent ? "pi-company.worker" : undefined, parentRunId: parent?.id, requirement: parent?.requirement ?? `${REQUIREMENT}-${uuidv7()}`, task: SECRET, cwd: fixture.repo.root, writePaths: ["src"], readPaths: [], model: { provider, id: "test" }, thinking: "off", mcp: [], pendingDispatch: { instructions: SECRET }, reportPath: join(fixture.repo.root, "must-not-create.md") });
+    const run = await runs.create({ kind: parent ? "role" : "requirement", role: parent ? "one-company.worker" : undefined, parentRunId: parent?.id, requirement: parent?.requirement ?? `${REQUIREMENT}-${uuidv7()}`, task: SECRET, cwd: fixture.repo.root, writePaths: ["src"], readPaths: [], model: { provider, id: "test" }, thinking: "off", mcp: [], pendingDispatch: { instructions: SECRET }, reportPath: join(fixture.repo.root, "must-not-create.md") });
     // 无授权的历史记录夹具，不经过会话工厂或重新启动入口。
     withDatabase(database, (db) => { const r = db.read<any>("runs", run.id)!; db.update("runs", run.id, r.version, { ...r.data, state, stateReason: SECRET, result: { verdict: "PASS", body: SECRET }, commands: [SECRET] }); });
     const result = await runs.get(run.id); if (!result.ok) throw new Error("夹具记录损坏"); return result.run;
@@ -290,7 +290,7 @@ describe("网络、版本及重启不能产生旧执行权限", () => {
     // 测试自产的无授权旧会话，含待结算工具调用；重启不得补写结果或读取它续跑。
     const sessionId = uuidv7(); const entryId = uuidv7();
     putRecord({ database: w.database, namespace: "sessions", key: run.id }, { cwd: w.fixture.repo.root, header: { type: "session", version: 3, id: sessionId, timestamp: "2026-01-01T00:00:00Z", cwd: w.fixture.repo.root }, leafId: entryId });
-    withDatabase(w.database, (db) => db.append(`session:${run.id}`, { type: "message", id: entryId, parentId: sessionId, message: { role: "assistant", content: [{ type: "text", text: SECRET }, { type: "toolCall", id: "old-call", name: "pi_company_agent", arguments: { action: "run", instructions: SECRET } }] } }));
+    withDatabase(w.database, (db) => db.append(`session:${run.id}`, { type: "message", id: entryId, parentId: sessionId, message: { role: "assistant", content: [{ type: "text", text: SECRET }, { type: "toolCall", id: "old-call", name: "one_company_agent", arguments: { action: "run", instructions: SECRET } }] } }));
     const sessionEvents = () => withDatabase(w.database, (db) => db.events(`session:${run.id}`)); const eventsBefore = sessionEvents();
     const legacyDir = join(w.fixture.repo.root, ".pi-company", "requirements", run.requirement); await mkdir(legacyDir, { recursive: true }); await writeFile(join(legacyDir, "spec.md"), SECRET, { mode: 0o600 });
     putRecord({ database: w.database, namespace: "relay_questions", key: uuidv7() }, { ...{ id: uuidv7(), requirement: run.requirement, repoId: w.fixture.repoId, runId: run.id, status: "pending", question: SECRET, options: [], recommended: "确认", createdAt: "old" } });

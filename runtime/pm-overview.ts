@@ -50,7 +50,7 @@ export interface PmOverviewInput {
 }
 
 const ACTIVE_CHILD = new Set(["queued", "running", "pausing", "waiting_answer", "paused_network"]);
-const ROLE_LABEL: Record<string, string> = { "pi-company.worker": "worker", "pi-company.reviewer": "reviewer", "pi-company.qa": "qa", "pi-company.explore": "explore" };
+const ROLE_LABEL: Record<string, string> = { "one-company.worker": "worker", "one-company.reviewer": "reviewer", "one-company.qa": "qa", "one-company.explore": "explore" };
 
 /** 已批准正文里带显式 ID 的标题：`# 标题 {#id}`。 */
 export function headingTitlesOf(body: string): Map<string, string> {
@@ -133,7 +133,7 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
     const child = running[0]!, task = tasks.find((candidate) => candidate.taskId === child.task);
     const attempt = task ? task.attempts.findIndex((entry) => entry.runId === child.id) + 1 : 0;
     const review = task ? task.reviews.findIndex((entry) => entry.runId === child.id) + 1 : 0;
-    const head = child.role === "pi-company.explore" ? "派 explore 检索"
+    const head = child.role === "one-company.explore" ? "派 explore 检索"
       : review > 0 ? `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 审查 ${task!.key}（第 ${review} 次审查）`
         : `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 执行 ${task?.key ?? "任务"}${attempt > 0 ? `（第 ${attempt} 次尝试）` : ""}`;
     return running.length > 1 ? `${head} 等 ${running.length} 个` : head;

@@ -82,7 +82,7 @@ test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项�
     currentBaseline: () => ({ approvedRevision: 1, approvedProdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
     agents: { dispatch: async () => ({}), control: async () => ({}) } });
   cleanups.push(() => pmTools.dispose());
-  const pmWorkflow = pmTools.tools.find((tool) => tool.name === "pi_company_workflow_manage")!;
+  const pmWorkflow = pmTools.tools.find((tool) => tool.name === "one_company_workflow_manage")!;
   const escalate = (taskId: string) => pmWorkflow.execute("pm-escalate", { action: "escalate", taskId, note: "change_apply 挡住了写入，需要你决定是否再试" },
     undefined, undefined, undefined as never);
   await expect(escalate(task("failure").taskId)).rejects.toThrow(/task_not_ready/);
@@ -307,7 +307,7 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
     currentBaseline: () => ({ approvedRevision: 1, approvedProdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
     agents: { dispatch: async () => ({}), control: async () => ({}) } });
   cleanups.push(() => pmTools.dispose());
-  const pmWorkflow = pmTools.tools.find((tool) => tool.name === "pi_company_workflow_manage")!;
+  const pmWorkflow = pmTools.tools.find((tool) => tool.name === "one_company_workflow_manage")!;
   await expect(pmWorkflow.execute("pm-close", { action: "close", reason: "cancelled", receiptId: uuidv7(), operationId: uuidv7() }, undefined, undefined, undefined as never))
     .rejects.toMatchObject({ code: "workflow_denied" });
 

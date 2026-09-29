@@ -18,7 +18,7 @@ const fixtures = fileURLToPath(new URL("../fixtures/syntax-cases.json", import.m
 test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物在任意 cwd 离线解析，缺失/损坏/版本不符不降级", async () => {
   const node = process.execPath;
   const pnpm = await realpath((await exec("/usr/bin/which", ["pnpm"])).stdout.trim());
-  const root = await mkdtemp(join(tmpdir(), "pi-company-parser-install-"));
+  const root = await mkdtemp(join(tmpdir(), "one-company-parser-install-"));
   const env = {
     PATH: process.env.PATH!, HOME: join(root, "home"), TMPDIR: join(root, "tmp"),
     NODE_COMPILE_CACHE: join(root, "node-cache"), JITI_FS_CACHE: "false",
@@ -61,12 +61,12 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     expect(artifact.files.some((file) => /(?:^|\/)(?:data|index|global)\.(?:db|sqlite)(?:-|$)/.test(file))).toBe(false);
     expect(artifact.files.some((file) => file.startsWith("tests/") || file.startsWith("node_modules/") || file.startsWith(".git/"))).toBe(false);
     await writeFile(join(root, "consumer/package.json"), JSON.stringify({ name: "parser-install-consumer", version: "1.0.0", private: true,
-      packageManager: "pnpm@11.7.0", dependencies: { "@0xbb2b/pi-company": `file:${artifact.path}` } }));
+      packageManager: "pnpm@11.7.0", dependencies: { "@0xbb2b/one-company": `file:${artifact.path}` } }));
     // 宿主提供 peer 包；运行依赖固定为本机 tarball，仍使用 pnpm 的隔离链接布局。
     await writeFile(join(root, "consumer/pnpm-workspace.yaml"), `autoInstallPeers: false\noverrides:\n  typebox: ${JSON.stringify(`file:${typebox.path}`)}\n  web-tree-sitter: ${JSON.stringify(`file:${runtime.path}`)}\n  jiti: ${JSON.stringify(`file:${jiti.path}`)}\n`);
     await run(node, [pnpm, "install", "--offline", "--ignore-scripts", "--lockfile-only"], join(root, "consumer"));
     await run(node, [pnpm, "install", "--offline", "--frozen-lockfile", "--ignore-scripts"], join(root, "consumer"));
-    const installed = await realpath(join(root, "consumer/node_modules/@0xbb2b/pi-company"));
+    const installed = await realpath(join(root, "consumer/node_modules/@0xbb2b/one-company"));
     expect(installed).not.toBe(await realpath(productRoot));
     const installedRequire = createRequire(join(installed, "package.json"));
     const installedRuntime = dirname(installedRequire.resolve("web-tree-sitter/web-tree-sitter.wasm"));

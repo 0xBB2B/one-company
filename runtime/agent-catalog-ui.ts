@@ -81,7 +81,7 @@ export class AgentCatalogView {
       return index === this.cursor && this.options.theme?.bg ? this.options.theme.bg("selectedBg", text) : text;
     });
     const problems = this.tabs()[this.tab] === PROBLEMS ? this.options.catalog.problems.map((problem) => clip(`⚠ ${problem.dir}：${problem.reason}`)) : [];
-    return [clip(`pi-company 角色定义  ${tabs}`), ...(rows.length ? rows : [muted("（没有定义）")]), ...problems, "",
+    return [clip(`one-company 角色定义  ${tabs}`), ...(rows.length ? rows : [muted("（没有定义）")]), ...problems, "",
       clip(muted("←→ 分类  ↑↓ 选择  回车 详情  C 复制  Esc 退出"))];
   }
 

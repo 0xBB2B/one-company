@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 async function createRunDir(): Promise<ErrorDetailsRef> {
-  const dir = await mkdtemp(join(tmpdir(), "pi-company-error-details-"));
+  const dir = await mkdtemp(join(tmpdir(), "one-company-error-details-"));
   tempRoots.push(dir);
   return { dataRoot: dir, repoId: testRepoId(), runId: uuidv7() };
 }
@@ -394,7 +394,7 @@ describe("writeErrorDetails / readErrorDetails", () => {
   });
 
   test("runDir 为普通文件时返回带原因的失败状态且不抛出", async () => {
-    const parent = await mkdtemp(join(tmpdir(), "pi-company-error-details-file-"));
+    const parent = await mkdtemp(join(tmpdir(), "one-company-error-details-file-"));
     tempRoots.push(parent);
     const notADir = join(parent, "not-a-dir");
     await writeFile(notADir, "占位文件");
@@ -669,7 +669,7 @@ describe("错误值与合并的边界", () => {
   });
 
   test("自建运行目录权限为 0700", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pi-company-error-details-"));
+    const root = await mkdtemp(join(tmpdir(), "one-company-error-details-"));
     tempRoots.push(root);
     const runDir = { dataRoot: root, repoId: testRepoId(), runId: uuidv7() };
     await writeErrorDetails(runDir, baseInput(runDir, { error: new Error("失败") }));

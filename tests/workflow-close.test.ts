@@ -162,7 +162,7 @@ test("M6-AC3/AC21：completed 预检列出缺项且不改状态、不撤权；�
   expect(w.state.pmOwner(w.created.requirementId)?.lease).toBeTruthy();
   await expect((await w.reader()).execute({ action: "metadata" })).resolves.toMatchObject({ lifecycle: "active" });
   const { pm: pm2 } = await w.fullEvidence();
-  const worker = await w.run("role", "pi-company.worker");
+  const worker = await w.run("role", "one-company.worker");
   expect((await w.closeService.preflight({ requirementId: w.created.requirementId, reason: "completed", receiptId })).missing).toEqual(expect.arrayContaining(["role_agents_running"]));
   expect(await pm2.execute({ action: "report", note: "说明" })).toMatchObject({ status: "rejected", missing: expect.arrayContaining(["role_agents_running"]) });
   await w.runs.update(worker, { state: "stopped" });
@@ -183,7 +183,7 @@ test("M6-AC3/AC21：completed 预检列出缺项且不改状态、不撤权；�
 
   const other = await world();
   const otherMain = await other.main();
-  const worker2 = await other.run("role", "pi-company.worker");
+  const worker2 = await other.run("role", "one-company.worker");
   expect(await otherMain.execute({ action: "close", reason: "cancelled", receiptId: uuidv7(), operationId: uuidv7() })).toMatchObject({ status: "rejected", missing: ["close_authorization_invalid"] });
   await expect((await other.tool()).execute({ action: "close", reason: "cancelled", receiptId: other.receipt(), operationId: uuidv7() })).rejects.toMatchObject({ code: "workflow_denied" });
   const cancelled = await otherMain.execute({ action: "close", reason: "cancelled", receiptId: other.receipt(), operationId: uuidv7() }) as CloseResult;

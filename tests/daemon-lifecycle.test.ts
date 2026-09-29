@@ -709,14 +709,14 @@ describe("SDK 加载失败", () => {
 });
 
 describe("环境变量校验", () => {
-  test("PI_COMPANY_IDLE_TIMEOUT_MS 非有限正数时子进程以非零退出码退出并在 stderr 给出原因", async () => {
+  test("ONE_COMPANY_IDLE_TIMEOUT_MS 非有限正数时子进程以非零退出码退出并在 stderr 给出原因", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
     const { proc, exited } = spawnDaemonProcess({
       home: fixture.home,
       repoDir: fixture.repoDir,
       dataRoot: fixture.dataRoot,
-      extraEnv: { PI_COMPANY_IDLE_TIMEOUT_MS: "10m" },
+      extraEnv: { ONE_COMPANY_IDLE_TIMEOUT_MS: "10m" },
       captureOutput: true,
     });
     procs.push(proc);

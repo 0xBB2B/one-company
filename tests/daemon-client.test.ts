@@ -127,7 +127,7 @@ function daemonPidsForDataRoot(dataRoot: string): number[] {
   const table = execFileSync("ps", args, { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, maxBuffer: 32 * 1024 * 1024 });
   const pids: number[] = [];
   for (const line of table.split("\n")) {
-    if (!line.includes("daemon/bootstrap.mjs") || !line.includes(`PI_COMPANY_DATA_ROOT=${dataRoot}`)) continue;
+    if (!line.includes("daemon/bootstrap.mjs") || !line.includes(`ONE_COMPANY_DATA_ROOT=${dataRoot}`)) continue;
     const pid = Number.parseInt(line.trim().split(/\s+/)[0] ?? "", 10);
     if (Number.isFinite(pid) && pid > 1) pids.push(pid);
   }
@@ -886,7 +886,7 @@ describe("close 语义", () => {
     const realSpawn = childProcess.spawn;
     const spawnObserver = vi.spyOn(childProcess, "spawn").mockImplementation(((...args: Parameters<typeof spawn>) => {
       const proc = realSpawn(...args);
-      if (args[2]?.env?.PI_COMPANY_DATA_ROOT === fixture.dataRoot) {
+      if (args[2]?.env?.ONE_COMPANY_DATA_ROOT === fixture.dataRoot) {
         trace.push({ event: "spawn", pid: proc.pid, ms: performance.now() - started });
         const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done, fail) => {
           proc.once("error", fail);
@@ -910,7 +910,7 @@ describe("close 语义", () => {
         dataRoot: fixture.dataRoot,
         sdkDir: resolveSdkDir(),
         execPath: resolveNodeExecutable(),
-        env: { PI_COMPANY_IDLE_TIMEOUT_MS: "1000" },
+        env: { ONE_COMPANY_IDLE_TIMEOUT_MS: "1000" },
         hello: {
           windowId: "window-close-race",
           pid: process.pid,
@@ -1219,7 +1219,7 @@ describe("socket 残留文件", () => {
 });
 
 describe("env 透传", () => {
-  test("connectDaemon 的 env 选项透传给守护进程，PI_COMPANY_IDLE_TIMEOUT_MS 生效后空闲自动退出", async () => {
+  test("connectDaemon 的 env 选项透传给守护进程，ONE_COMPANY_IDLE_TIMEOUT_MS 生效后空闲自动退出", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
 
@@ -1228,7 +1228,7 @@ describe("env 透传", () => {
       dataRoot: fixture.dataRoot,
       sdkDir: resolveSdkDir(),
       execPath: resolveNodeExecutable(),
-      env: { PI_COMPANY_IDLE_TIMEOUT_MS: "1000" },
+      env: { ONE_COMPANY_IDLE_TIMEOUT_MS: "1000" },
       hello: {
         windowId: "window-idle",
         pid: process.pid,
@@ -1817,7 +1817,7 @@ describe("窗口退出不影响守护进程存活", () => {
       dataRoot: fixture.dataRoot,
       sdkDir: resolveSdkDir(),
       execPath: resolveNodeExecutable(),
-      env: { PI_COMPANY_IDLE_TIMEOUT_MS: "500" },
+      env: { ONE_COMPANY_IDLE_TIMEOUT_MS: "500" },
       hello: {
         windowId: "window-exiting",
         pid: process.pid,
@@ -1991,7 +1991,7 @@ describe("工作区内单仓库首连失败自愈", () => {
         dataRoot,
         sdkDir: resolveSdkDir(),
         execPath: resolveNodeExecutable(),
-        env: { PI_COMPANY_IDLE_TIMEOUT_MS: "1000" },
+        env: { ONE_COMPANY_IDLE_TIMEOUT_MS: "1000" },
         hello: {
           windowId: "window-workspace-repair",
           pid: process.pid,

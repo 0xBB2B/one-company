@@ -89,7 +89,7 @@ test("M7-AC27/28/29/30：到限自动上报 PM；重试须带原因且只有一�
   await until(() => w.provider.requests.length === before + 3);
   expect(w.task("login").attempts).toEqual([{ runId: first.runId, maxTurns: 2, turnsUsed: 2, reason: null, outcome: "turn_limit_reached" }]);
   expect(lastPrompt(w.provider.requests.at(-1))).toContain("turn_limit_reached");
-  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "failed", parentRunId: w.pm.runId, role: "pi-company.worker" } });
+  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "failed", parentRunId: w.pm.runId, role: "one-company.worker" } });
 
   await expect(w.dispatch("login")).rejects.toMatchObject({ code: "retry_required" });
   w.provider.queue.push(read(4), read(5), read(6), { type: "text", text: "PM 收到第二次到限" });
@@ -109,14 +109,14 @@ test("M7-AC26/AC31：worker 在额度内提交工作报告即进入待审查；�
   await expect(w.dispatch("failure")).rejects.toMatchObject({ code: "dependency_pending" });
   expect((await w.runStore.list({ limit: 100 })).items.filter((run) => run.task === w.task("failure").taskId)).toEqual([]);
   const login = w.task("login");
-  w.provider.queue.push({ type: "toolcall", name: "pi_company_result_submit", input: { action: "verdict", result: { checkRoundId: null, verificationIds: [],
+  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "verdict", result: { checkRoundId: null, verificationIds: [],
     summary: `完成 ${login.key}`, findings: [] } } }, { type: "text", text: "PM 收到完成结果" });
   const run = await w.dispatch("login");
   await until(() => w.task("login").status === "awaiting_review");
   expect(await w.runStore.get(run.runId)).toMatchObject({ ok: true, run: { state: "completed" } });
   const workerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("任务：login"))!;
-  expect(workerRequest.tools?.map((tool) => tool.name).sort()).toEqual(["find", "grep", "ls", "pi_company_change_apply", "pi_company_result_submit",
-    "pi_company_verification_run", "read"]);
+  expect(workerRequest.tools?.map((tool) => tool.name).sort()).toEqual(["find", "grep", "ls", "one_company_change_apply", "one_company_result_submit",
+    "one_company_verification_run", "read"]);
   expect(workerRequest.systemPrompt).toContain("对话轮次上限：2");
 });
 
@@ -151,7 +151,7 @@ test("M7-AC6：PM 停止后新派出的 PM 从数据库读回同一份计划与�
   expect(await reader.execute({ action: "read" })).toEqual(before);
 });
 
-const submit = (summary: string, findings: Array<{ kind: "blocking" | "suggestion" | "unverified" }> = []): ScriptedReply => ({ type: "toolcall", name: "pi_company_result_submit",
+const submit = (summary: string, findings: Array<{ kind: "blocking" | "suggestion" | "unverified" }> = []): ScriptedReply => ({ type: "toolcall", name: "one_company_result_submit",
   input: { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary,
     findings: findings.map((finding) => ({ ...finding, targetRef: "prod:goal.login", evidenceRef: null, trigger: "输入错误验证码", impact: "没有失败提示" })) } } });
 const pmAck: ScriptedReply = { type: "text", text: "PM 收到" };
@@ -180,9 +180,9 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   await until(() => w.task("a").status === "completed");
   expect(w.task("a").reviews).toEqual([expect.objectContaining({ runId: reviewer.runId, attemptRunId: a.runId, outcome: "clear" })]);
   expect(await w.runStore.get(c.runId)).toMatchObject({ ok: true, run: { state: "running" } });
-  expect(await w.runStore.get(reviewer.runId)).toMatchObject({ ok: true, run: { role: "pi-company.reviewer", writePaths: [], task: w.task("a").taskId } });
+  expect(await w.runStore.get(reviewer.runId)).toMatchObject({ ok: true, run: { role: "one-company.reviewer", writePaths: [], task: w.task("a").taskId } });
   const reviewerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!;
-  expect(reviewerRequest.tools?.map((tool) => tool.name)).not.toContain("pi_company_change_apply");
+  expect(reviewerRequest.tools?.map((tool) => tool.name)).not.toContain("one_company_change_apply");
   expect(reviewerRequest.systemPrompt).toContain(`- 第 1 次尝试 ${a.runId}（本次被审）：提交说明：完成 a；引用的验证记录：${redGreen.join("、")}`);
   expect(reviewerRequest.systemPrompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff [0-9a-f]{40} -- src\/a\//);
 

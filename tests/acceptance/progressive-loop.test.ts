@@ -64,8 +64,8 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
   const save = (name: string, value: unknown) => writeFile(join(evidence, name), typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 
   const root = await mkdtemp(join(tmpdir(), "m9-"));
-  const agentDir = join(root, "agent"), home = join(root, "home"), dataRoot = join(agentDir, "pi-company");
-  const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HOME", "PI_TELEMETRY", "PI_COMPANY_IDLE_TIMEOUT_MS"].map((key) => [key, process.env[key]]));
+  const agentDir = join(root, "agent"), home = join(root, "home"), dataRoot = join(agentDir, "one-company");
+  const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HOME", "PI_TELEMETRY", "ONE_COMPANY_IDLE_TIMEOUT_MS"].map((key) => [key, process.env[key]]));
   const hosts: InstalledHost[] = [];
   let socketPath: string | undefined;
   const started = Date.now();
@@ -78,7 +78,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.HOME = home;
     process.env.PI_TELEMETRY = "0";
-    process.env.PI_COMPANY_IDLE_TIMEOUT_MS = "2000";
+    process.env.ONE_COMPANY_IDLE_TIMEOUT_MS = "2000";
     socketPath = daemonSocketPath(dataRoot, repoId);
     const open = async () => { const host = await startInstalledHost({ installed, repo, agentDir, config: cfg }); hosts.push(host); return host; };
     const requirements = () => withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.list<RequirementRecord>("requirements").map((row) => row.data));

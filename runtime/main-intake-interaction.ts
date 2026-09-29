@@ -315,7 +315,7 @@ export class MainIntakeInteraction {
 
   observeToolCall(event: Pick<ToolCallEvent, "toolName" | "toolCallId" | "input">, ctx: ExtensionContext): void {
     const request = unwrapRequest(event.input) as { purpose?: unknown } | undefined;
-    if (event.toolName !== "pi_company_user_interact" || request?.purpose !== "pm-intake") return;
+    if (event.toolName !== "one_company_user_interact" || request?.purpose !== "pm-intake") return;
     this.#sweep();
     if (this.#owned.has(event.toolCallId) || this.#executing.has(event.toolCallId) || this.#retired.has(event.toolCallId)) deny("duplicate_tool_call");
     if (new Set([...this.#owned.keys(), ...this.#executing.keys()]).size >= MAX_PENDING) deny("tool_call_limit");
@@ -449,7 +449,7 @@ export class MainIntakeInteraction {
   }
 
   completeToolExecution(event: Pick<ToolExecutionEndEvent, "toolName" | "toolCallId">): void {
-    if (event.toolName !== "pi_company_user_interact") return;
+    if (event.toolName !== "one_company_user_interact") return;
     if (this.#owned.has(event.toolCallId)) this.#retire(event.toolCallId);
   }
 

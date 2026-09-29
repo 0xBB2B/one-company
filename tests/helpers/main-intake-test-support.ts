@@ -50,11 +50,11 @@ export function reply(fixture: PmIntakeFixture, requestId: string, result: "pass
     shortIssues: result === "passed" ? [] : ["目标A理解有偏差"] };
 }
 export function observe(bridge: MainIntakeInteraction, ctx: ExtensionContext, id: string, input: PmIntakeToolInput) {
-  bridge.observeToolCall({ toolName: "pi_company_user_interact", toolCallId: id,
+  bridge.observeToolCall({ toolName: "one_company_user_interact", toolCallId: id,
     input: { request: input } } as ToolCallEvent, ctx);
 }
 export function resultEvent(id: string, input: PmIntakeToolInput, response: Awaited<ReturnType<MainIntakeInteraction["execute"]>>): ToolResultEvent {
-  return { type: "tool_result", toolName: "pi_company_user_interact", toolCallId: id,
+  return { type: "tool_result", toolName: "one_company_user_interact", toolCallId: id,
     input: { request: input }, content: response.content, details: response.details,
     isError: false } as ToolResultEvent;
 }

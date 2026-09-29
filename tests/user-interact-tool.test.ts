@@ -57,7 +57,7 @@ test("pm-intake schema按400个Unicode码点和8条问题限制", () => {
 test("真实Anthropic序列化在onPayload前让content中的中文理解和requestId各可见一次且零网络", async () => {
   const requestId = uuidv7(), marker = "实现手机号登录-模型可见标记";
   const viewText = JSON.stringify({ requestId, understanding: { goals: [{ text: marker }] } });
-  const messages = convertToLlm([{ role: "toolResult", toolCallId: "call-visible", toolName: "pi_company_user_interact",
+  const messages = convertToLlm([{ role: "toolResult", toolCallId: "call-visible", toolName: "one_company_user_interact",
     content: [{ type: "text", text: viewText }], details: { format: "pm-intake-transport/v1", action: "ask", hidden: marker },
     isError: false, timestamp: Date.now() }]);
   const model: Model<Api> = { id: "payload-probe", name: "payload-probe", api: "anthropic-messages", provider: "payload-probe",

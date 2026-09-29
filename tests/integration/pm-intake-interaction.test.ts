@@ -33,11 +33,11 @@ interface SdkWorld {
 }
 
 function intakeResults(session: Session) {
-  return session.messages.filter((message): message is Extract<typeof message, { role: "toolResult" }> => message.role === "toolResult" && message.toolName === "pi_company_user_interact");
+  return session.messages.filter((message): message is Extract<typeof message, { role: "toolResult" }> => message.role === "toolResult" && message.toolName === "one_company_user_interact");
 }
 
 function visibleView(context: ControlledProvider["requests"][number]): Record<string, unknown> {
-  const result = context.messages.filter((message): message is Extract<typeof message, { role: "toolResult" }> => message.role === "toolResult" && message.toolName === "pi_company_user_interact").at(-1);
+  const result = context.messages.filter((message): message is Extract<typeof message, { role: "toolResult" }> => message.role === "toolResult" && message.toolName === "one_company_user_interact").at(-1);
   if (!result) throw new Error("model_visible_tool_result_missing");
   const text = result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
   return JSON.parse(text) as Record<string, unknown>;
@@ -371,19 +371,19 @@ test("真实SDK下一次模型请求只从tool content解析requestId并完成as
     let step = 0, modelRequestId: string | undefined;
     provider.queue.shift = (() => {
       const context = provider.requests.at(-1);
-      if (step++ === 0) return { type: "toolcall", name: "pi_company_user_interact", input: { request: initialAsk } } satisfies ScriptedReply;
+      if (step++ === 0) return { type: "toolcall", name: "one_company_user_interact", input: { request: initialAsk } } satisfies ScriptedReply;
       if (!context) throw new Error("controlled_context_missing");
       const view = visibleView(context);
       if (step === 2) {
         modelRequestId = String(view.requestId);
         expect(modelRequestId).toMatch(/^[0-9a-f-]{36}$/);
         expect(JSON.stringify(view)).toContain("实现手机号登录");
-        return { type: "toolcall", name: "pi_company_user_interact", input: { request: { purpose: "pm-intake", action: "forward",
+        return { type: "toolcall", name: "one_company_user_interact", input: { request: { purpose: "pm-intake", action: "forward",
           repoId: fixture.repoId, requirementId: fixture.requirementId, requestId: modelRequestId } } } satisfies ScriptedReply;
       }
       if (step === 3) {
         expect(view.requestId).toBe(modelRequestId);
-        return { type: "toolcall", name: "pi_company_user_interact", input: { request: { purpose: "pm-intake", action: "reply",
+        return { type: "toolcall", name: "one_company_user_interact", input: { request: { purpose: "pm-intake", action: "reply",
           repoId: fixture.repoId, requirementId: fixture.requirementId, requestId: modelRequestId,
           operationId: uuidv7(), result: "passed", shortIssues: [] } } } satisfies ScriptedReply;
       }
@@ -420,7 +420,7 @@ test("真实SDK的后置block、preflight abort与execute failure各超过32次�
   await withSdkWorld(async ({ fixture, session, provider }) => {
     const terminal: Array<{ toolCallId: string; phase: typeof phase; isError: boolean }> = [];
     const unsubscribe = session.subscribe((event) => {
-      if (event.type === "tool_execution_end" && event.toolName === "pi_company_user_interact") {
+      if (event.type === "tool_execution_end" && event.toolName === "one_company_user_interact") {
         terminal.push({ toolCallId: event.toolCallId, phase, isError: event.isError });
       }
     });
@@ -429,7 +429,7 @@ test("真实SDK的后置block、preflight abort与execute failure各超过32次�
         let lastId = "";
         for (let index = 0; index < 33; index++) {
           const input = ask(fixture);
-          setReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: input } }, { type: "text", text: "next" }]);
+          setReplies(provider, [{ type: "toolcall", name: "one_company_user_interact", input: { request: input } }, { type: "text", text: "next" }]);
           await session.prompt(`${phase}-${index}`, { source: "rpc" });
           const result = intakeResults(session).at(-1)!;
           lastId = result.toolCallId;
@@ -438,7 +438,7 @@ test("真实SDK的后置block、preflight abort与execute failure各超过32次�
         }
         if (phase === "block") {
           expect(hookCounts.block).toBe(0);
-          const late = await session.extensionRunner.emitToolResult({ type: "tool_result", toolName: "pi_company_user_interact",
+          const late = await session.extensionRunner.emitToolResult({ type: "tool_result", toolName: "one_company_user_interact",
             toolCallId: lastId, input: { request: ask(fixture) }, content: [{ type: "text", text: "late" }], details: {}, isError: true });
           expect(late).toMatchObject({ content: [{ type: "text", text: "pm_intake_interaction_denied" }], isError: true });
         }
@@ -450,7 +450,7 @@ test("真实SDK的后置block、preflight abort与execute failure各超过32次�
 
       phase = "legal";
       const legal = ask(fixture);
-      setReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: legal } }, { type: "text", text: "done" }]);
+      setReplies(provider, [{ type: "toolcall", name: "one_company_user_interact", input: { request: legal } }, { type: "text", text: "done" }]);
       await session.prompt("legal-after-terminal-recovery", { source: "rpc" });
       const result = intakeResults(session).at(-1)!;
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
@@ -458,13 +458,13 @@ test("真实SDK的后置block、preflight abort与execute failure各超过32次�
     } finally { unsubscribe(); }
   }, { extraExtension: (pi) => {
     pi.on("tool_call", (event, ctx) => {
-      if (event.toolName !== "pi_company_user_interact" || event.input.request?.purpose !== "pm-intake") return;
+      if (event.toolName !== "one_company_user_interact" || event.input.request?.purpose !== "pm-intake") return;
       if (phase === "block") return { block: true, reason: "blocked-after-intake" };
       if (phase === "abort") { ctx.abort(); return; }
       if (phase === "mutate") event.input.request.action = "toString";
     });
     pi.on("tool_result", (event) => {
-      if (event.toolName === "pi_company_user_interact" && event.input.request?.purpose === "pm-intake") hookCounts[phase]++;
+      if (event.toolName === "one_company_user_interact" && event.input.request?.purpose === "pm-intake") hookCounts[phase]++;
     });
   } });
 }, 60_000);
@@ -472,13 +472,13 @@ test("真实SDK的后置block、preflight abort与execute failure各超过32次�
 test("真实SDK后置block等待过期超过32次时timer与终态均回收详细材料", async () => {
   await withSdkWorld(async ({ fixture, session, provider }) => {
     for (let index = 0; index < 33; index++) {
-      setReplies(provider, [{ type: "toolcall", name: "pi_company_user_interact", input: { request: ask(fixture) } }, { type: "text", text: "next" }]);
+      setReplies(provider, [{ type: "toolcall", name: "one_company_user_interact", input: { request: ask(fixture) } }, { type: "text", text: "next" }]);
       await session.prompt(`expired-${index}`, { source: "rpc" });
       expect(JSON.stringify(intakeResults(session).at(-1)!.content)).not.toContain("tool_call_limit");
     }
   }, { callTtlMs: 5, extraExtension: (pi) => {
     pi.on("tool_call", async (event) => {
-      if (event.toolName === "pi_company_user_interact" && event.input.request?.purpose === "pm-intake") {
+      if (event.toolName === "one_company_user_interact" && event.input.request?.purpose === "pm-intake") {
         await new Promise((resolve) => setTimeout(resolve, 12));
         return { block: true, reason: "expired-after-intake" };
       }

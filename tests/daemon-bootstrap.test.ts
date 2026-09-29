@@ -67,7 +67,7 @@ beforeAll(async () => {
   expect(artifact.files).toContain("daemon/loader.mjs");
   const dependencyPacks: Record<string, string> = {};
   for (const name of ["jiti", "typebox", "web-tree-sitter"]) dependencyPacks[name] = `file:${(await pack(await realpath(join(sourceRoot, "node_modules", name)))).path}`;
-  const dependencies: Record<string, string> = { "@0xbb2b/pi-company": `file:${artifact.path}` };
+  const dependencies: Record<string, string> = { "@0xbb2b/one-company": `file:${artifact.path}` };
   for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
     const path = await realpath(join(sourceRoot, "node_modules", name));
     dependencies[name] = `link:${path}`;
@@ -77,7 +77,7 @@ beforeAll(async () => {
   await writeFile(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module", packageManager: "pnpm@11.7.0", dependencies }), { mode: 0o600 });
   await writeFile(join(consumer, "pnpm-workspace.yaml"), `autoInstallPeers: false\noverrides:\n${Object.entries(dependencyPacks).map(([name, value]) => `  ${name}: ${JSON.stringify(value)}`).join("\n")}\n`, { mode: 0o600 });
   for (const flag of ["--lockfile-only", "--frozen-lockfile"]) await exec(process.execPath, [pnpm, "install", "--offline", "--ignore-scripts", flag], { cwd: consumer, env, timeout: 30_000 });
-  installed = await realpath(join(consumer, "node_modules/@0xbb2b/pi-company"));
+  installed = await realpath(join(consumer, "node_modules/@0xbb2b/one-company"));
   expect(installed.startsWith(`${consumer}/node_modules/`)).toBe(true);
   expect(installed).not.toBe(await realpath(sourceRoot));
   for (const file of ["daemon/bootstrap.mjs", "daemon/loader.mjs", "daemon/main.ts", "daemon/sdk.ts", "runtime/daemon-client.ts", "package.json"]) {
@@ -155,8 +155,8 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
     await exec("git", ["-c", "core.hooksPath=/dev/null", "init", "--initial-branch=main"], { cwd: repo, env, timeout: 10_000 });
     const identity = await repositoryIdentity(repo);
     const socket = daemonSocketPath(dataRoot, identity.repoId);
-    const extra = { HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_COMPANY_REPO_DIR: identity.commonDir,
-      PI_COMPANY_DATA_ROOT: dataRoot, PI_COMPANY_SDK_DIR: sdkRoot, PI_COMPANY_IDLE_TIMEOUT_MS: "30000" };
+    const extra = { HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), ONE_COMPANY_REPO_DIR: identity.commonDir,
+      ONE_COMPANY_DATA_ROOT: dataRoot, ONE_COMPANY_SDK_DIR: sdkRoot, ONE_COMPANY_IDLE_TIMEOUT_MS: "30000" };
     const first = child(node, [join(installed, "daemon/bootstrap.mjs")], extra);
     await Promise.race([waitForSocketReady(socket), first.closed.then((exit) => { throw new Error(`bootstrap 在 hello 前退出 ${exit.code}: ${exit.stderr}`); })]);
     const client = await bounded(connectTestClient(socket, { cwd: repo, workspaceRoot: repo }, { dataRoot }));
@@ -180,14 +180,14 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
   }, 40_000);
 
   test.each(["missing-sdk-env", "missing-sdk-dir", "old-sdk", "missing-main", "missing-jiti"])("%s 明确非零退出，不降级", async (scenario) => {
-    const extra: NodeJS.ProcessEnv = { PI_COMPANY_REPO_DIR: join(root, "cwd"), PI_COMPANY_DATA_ROOT: join(root, "error-data"), PI_COMPANY_SDK_DIR: sdkRoot };
+    const extra: NodeJS.ProcessEnv = { ONE_COMPANY_REPO_DIR: join(root, "cwd"), ONE_COMPANY_DATA_ROOT: join(root, "error-data"), ONE_COMPANY_SDK_DIR: sdkRoot };
     let moved: string | undefined;
     let expected: string;
-    if (scenario === "missing-sdk-env") { delete extra.PI_COMPANY_SDK_DIR; expected = "缺少环境变量: PI_COMPANY_SDK_DIR"; }
-    else if (scenario === "missing-sdk-dir") { extra.PI_COMPANY_SDK_DIR = join(root, "missing-sdk"); expected = "SDK 目录缺失"; }
+    if (scenario === "missing-sdk-env") { delete extra.ONE_COMPANY_SDK_DIR; expected = "缺少环境变量: ONE_COMPANY_SDK_DIR"; }
+    else if (scenario === "missing-sdk-dir") { extra.ONE_COMPANY_SDK_DIR = join(root, "missing-sdk"); expected = "SDK 目录缺失"; }
     else if (scenario === "old-sdk") {
-      extra.PI_COMPANY_SDK_DIR = join(root, "old-sdk"); await mkdir(extra.PI_COMPANY_SDK_DIR, { recursive: true, mode: 0o700 });
-      await writeFile(join(extra.PI_COMPANY_SDK_DIR, "package.json"), '{"version":"0.84.0"}', { mode: 0o600 }); expected = "SDK 版本过低";
+      extra.ONE_COMPANY_SDK_DIR = join(root, "old-sdk"); await mkdir(extra.ONE_COMPANY_SDK_DIR, { recursive: true, mode: 0o700 });
+      await writeFile(join(extra.ONE_COMPANY_SDK_DIR, "package.json"), '{"version":"0.84.0"}', { mode: 0o600 }); expected = "SDK 版本过低";
     } else if (scenario === "missing-main") { moved = join(installed, "daemon/main.ts"); expected = "main.ts"; }
     else {
       const require = createRequire(join(installed, "package.json"));

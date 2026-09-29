@@ -85,7 +85,7 @@ test("短TTL、真实终态回收和32条活调用上限分离，迟到结果仍
     const limited = create(), inputs = Array.from({ length: 32 }, input);
     inputs.forEach((value, index) => observe(limited, ctx, `limit-${index}`, value));
     expect(() => observe(limited, ctx, "limit-32", input())).toThrow(/tool_call_limit/);
-    inputs.forEach((_value, index) => limited.completeToolExecution({ toolName: "pi_company_user_interact", toolCallId: `limit-${index}` }));
+    inputs.forEach((_value, index) => limited.completeToolExecution({ toolName: "one_company_user_interact", toolCallId: `limit-${index}` }));
     expect(() => observe(limited, ctx, "recovered", input())).not.toThrow();
     expect(limited.ownsDelivery("limit-0")).toBe(true);
     expect(() => limited.assertDelivery({ toolCallId: "limit-0", input: { request: inputs[0]! }, content: [], details: {}, isError: true } as unknown as ToolResultEvent, ctx))
