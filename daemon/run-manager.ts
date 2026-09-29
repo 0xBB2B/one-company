@@ -46,7 +46,7 @@ import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.t
 import { endExploreSession, registerExploreSession } from "../runtime/explore-session.ts";
 import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
-import { AdvisedError, adviceOf, toolFailure } from "../runtime/tool-failure.ts";
+import { AdvisedError, adviceOf, failureText, toolFailure } from "../runtime/tool-failure.ts";
 import { sessionFilePath } from "../runtime/session-records.ts";
 import { defaultPageGetter, defaultWebDeps, webFetch, webSearch } from "../runtime/web-access.ts";
 import type { PageGetter, WebDeps } from "../runtime/web-access.ts";
@@ -368,10 +368,21 @@ export class RunManager {
       void state.renewPm(lease).catch((error: unknown) => { void this.stop(run.id, { reason: "lease_renewal_failed", code: errorCode(error) }).catch(() => {}); });
     }, PM_RENEW_MS);
     let delivering: Promise<void> | null = null, notifiedReviewId: string | null = null;
+    // 投递出错或需要恢复时把原因交给 PM 并写进运行记录，同一原因只报一次，恢复后清掉
+    let deliveryIssue: string | null = null;
+    const reportDelivery = (issue: string | null) => {
+      if (issue === deliveryIssue) return;
+      deliveryIssue = issue;
+      void this.runStore.update(run.id, { stateReason: issue ?? "" }).catch(() => {});
+      if (issue) handle.prompt(issue);
+    };
     const delivery = this.options.clock.setIntervalExcludingSleep(() => {
       if (delivering || !alive()) return;
       delivering = deliverApprovedEvents({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease,
-        deliver: (text) => handle.prompt(text) }).catch(() => {})
+        deliver: (text) => handle.prompt(text) })
+        .then((result) => reportDelivery(result === "recovery_required" ? failureText("投递已批准的需求更新", new AdvisedError("recovery_required",
+          { why: "需求记录需要恢复核对，批准差异暂停投递", next: "停止正式规划与派工，把这段原因告诉主代理，由用户处理" })) : null),
+          (error: unknown) => reportDelivery(failureText("投递已批准的需求更新", error)))
         .then(() => { for (const message of takeUnnotifiedDecisions({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId)) handle.prompt(message); })
         .then(() => {
           const notice = pmIntakeReviewNotice({ dataRoot: this.options.dataRoot, repoId: this.repoId, lease });

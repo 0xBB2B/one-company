@@ -6,6 +6,7 @@ import { uuidv7 } from "../runtime/database.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import { evaluatePmIntakeGate, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
+import { RequirementEventService } from "../runtime/requirement-events.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -129,3 +130,53 @@ test("M7 性能：已批准更新持久化后 95% 在 2 秒内投递到可运行
   expect(samples).toHaveLength(20);
   expect(p95).toBeLessThanOrEqual(2_000);
 });
+
+test("M9：PM 暂停期间批准的新版本，恢复后照样送达准确差异并确认消费，PM 可据此复核", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  await until(async () => (await w.manager.pause(w.pm.runId)).confirmed);
+  const revision = await w.approve("animation");
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  w.provider.queue.push({ type: "text", text: "收到恢复与差异" });
+  await w.manager.resume(w.pm.runId);
+  await until(() => w.diffPrompts().length === 1, 1_000);
+  expect(text(w.diffPrompts()[0]!)).toContain(`revision 1 → ${revision}`);
+  await until(() => w.owner().prodEvents?.understoodRevision === revision, 1_000);
+}, 120_000);
+
+test("M9：PM 带着运行中的 worker 被暂停，期间批准新版本，恢复后照样送达准确差异", async () => {
+  const w = await world();
+  const view = await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] }) as { tasks: Array<{ taskId: string; key: string }> };
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push({ type: "text", text: "慢慢做", chunkDelayMs: 3_000 });
+  const worker = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: view.tasks.find((task) => task.key === "login")!.taskId, retry: null });
+  await until(async () => { const run = await w.runStore.get(worker.runId); return run.ok && run.run.state === "running"; }, 1_000);
+  await until(async () => (await w.manager.pause(w.pm.runId)).confirmed, 1_000);
+  const revision = await w.approve("animation");
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  w.provider.queue.push({ type: "text", text: "收到恢复与差异" }, { type: "text", text: "继续" }, { type: "text", text: "继续" });
+  await w.manager.resume(w.pm.runId);
+  await until(() => w.diffPrompts().length === 1, 1_000);
+  expect(text(w.diffPrompts()[0]!)).toContain(`revision 1 → ${revision}`);
+}, 120_000);
+
+test("M9：批准差异投递出错时，PM 收到哪一步失败、原因与建议，运行记录里也能查到；同一原因只报一次，恢复后照常送达并清掉原因", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const failing = vi.spyOn(RequirementEventService.prototype, "prepareDiff").mockRejectedValue(new Error("git diff 退出码 128"));
+  w.provider.queue.push({ type: "text", text: "收到投递失败" }, { type: "text", text: "收到差异" });
+  await w.approve("animation");
+  const failures = () => w.provider.requests.map(text).filter((t) => t.includes("投递已批准的需求更新失败"));
+  await until(() => failures().length === 1, 1_000);
+  expect(failures()[0]).toContain("git diff 退出码 128");
+  expect(failures()[0]).toContain("建议");
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  expect(failures()).toHaveLength(1);
+  const reason = async () => { const run = await w.runStore.get(w.pm.runId); return run.ok ? run.run.stateReason ?? "" : ""; };
+  expect(await reason()).toContain("git diff 退出码 128");
+  failing.mockRestore();
+  await until(() => w.diffPrompts().length === 1, 1_000);
+  await until(async () => (await reason()) === "", 1_000);
+}, 120_000);
