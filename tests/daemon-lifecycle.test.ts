@@ -523,6 +523,8 @@ describe("RunStore 读失败不影响存活", () => {
     clients.push(client);
     const pong = await client.call("ping");
     expect(typeof pong.now).toBe("number");
+    // socket 可连早于启动收尾；runs.list 经 awaitStarted() 排队，返回（此处因记录损坏而报错）即说明已过"正在启动"阶段
+    await client.call("runs.list", {}).catch(() => undefined);
 
     const rejected = await client.call("shutdown");
     expect(rejected.accepted).toBe(false);
