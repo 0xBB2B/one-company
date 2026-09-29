@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { lstat, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { isPromise } from "node:util/types";
@@ -56,13 +58,30 @@ export const VerificationRun = object({
 });
 export type VerificationRun = Static<typeof VerificationRun>;
 
-export type CheckRoundErrorCode = "check_round_denied" | "invalid_shape" | "pending_update" | "check_round_active" | "workers_active" | "writes_pending"
-  | "not_found" | "verification_active" | "round_not_open" | "check_phase_active" | "decision_conflict" | "stale_pm_lease"
-  | "tasks_not_reviewed" | "sync_required";
+const CHECK_ROUND_ADVICE = {
+  tool_closed: COMMON_ADVICE.tool_closed,
+  session_inactive: COMMON_ADVICE.session_inactive,
+  requirement_changed: { why: "需求已不是 PM 接手时的状态", next: "重新读取需求状态后再决定是否开检查轮" },
+  invalid_shape: COMMON_ADVICE.invalid_shape,
+  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 plan_manage assess-update 逐任务复核新版本，再开检查轮" },
+  check_round_active: { why: "已有一个检查轮在进行", next: "用 status 查看现有检查轮，先结束它再开新的" },
+  workers_active: { why: "还有 worker 或 reviewer 运行未结束", next: "等这些运行结束或停止后再开检查轮" },
+  writes_pending: { why: "还有未完成的代码写入", next: "等写入完成后再开检查轮" },
+  not_found: { why: "找不到这个检查轮，或它不属于本需求", next: "用 status 查看当前检查轮编号" },
+  verification_active: { why: "检查轮里还有检查在运行", next: "等检查结束或停止后再结束检查轮" },
+  round_not_open: { why: "检查轮已不是开放状态", next: "用 status 查看检查轮状态" },
+  check_phase_active: { why: "检查阶段进行中，不能做这个操作", next: "等检查轮结束后再做" },
+  decision_conflict: { why: "检查轮已登记了不同的中断或继续决定，或没有对应的待处理更新", next: "用 status 查看检查轮现有的决定" },
+  stale_pm_lease: { why: "本 PM 的租约已失效，可能已过期或被新 PM 接管，或需求已换代", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
+  tasks_not_reviewed: { why: "还有完成的 worker 任务没经过审查", next: "先派 reviewer 审查这些任务，再开检查轮" },
+  sync_required: { why: "需求分支没有包含目标分支的最新提交", next: "请用户把目标分支合入需求分支后再开检查轮" },
+} as const satisfies Record<string, FailureAdvice>;
+export type CheckRoundErrorCode = keyof typeof CHECK_ROUND_ADVICE;
 export class CheckRoundError extends Error {
   readonly code: CheckRoundErrorCode;
+  readonly advice: FailureAdvice;
   constructor(code: CheckRoundErrorCode, detail?: string) {
-    super(detail ? `${code}: ${detail}` : code); this.name = "CheckRoundError"; this.code = code;
+    super(detail ? `${code}: ${detail}` : code); this.name = "CheckRoundError"; this.code = code; this.advice = withDetail(CHECK_ROUND_ADVICE[code], detail);
   }
 }
 
@@ -202,11 +221,11 @@ export class CheckRoundService {
   dispose(): void { this.life.disposed = true; }
   private now(): number { return checked(counter, this.options.now?.() ?? Date.now()); }
   private authorize(request: CheckRoundAuthorization): void {
-    if (this.life.disposed) throw new CheckRoundError("check_round_denied");
+    if (this.life.disposed) throw new CheckRoundError("tool_closed");
     let result: unknown;
-    try { result = this.options.authorize(freeze(structuredClone(request))); } catch { throw new CheckRoundError("check_round_denied"); }
+    try { result = this.options.authorize(freeze(structuredClone(request))); } catch (error) { throw new CheckRoundError("session_inactive", (error as Error).message); }
     if (isPromise(result)) void Promise.prototype.then.call(result, () => undefined, () => undefined);
-    if (result !== true) throw new CheckRoundError("check_round_denied");
+    if (result !== true) throw new CheckRoundError("session_inactive");
   }
   private validateLeaseIn(db: LocalDatabase, lease: PmLease): void {
     const owner = db.read<{ fence?: number; lease?: PmLease | null }>("pm_ownership", lease.requirementId)?.data;
@@ -233,12 +252,14 @@ export class CheckRoundService {
 
   async openRound(input: Static<typeof OpenInput>): Promise<CheckRoundView> {
     let request: Static<typeof OpenInput>;
-    try { request = checked(OpenInput, input); } catch { throw new CheckRoundError("invalid_shape"); }
+    try { request = checked(OpenInput, input); } catch (error) { throw new CheckRoundError("invalid_shape", (error as Error).message); }
     const { lease } = request;
     this.authorize({ action: "open", requirementId: lease.requirementId, lease });
     const record = this.state.read(lease.requirementId).data;
-    if (record.lifecycle !== "active" || record.recovery !== "ready" || !record.workspace || !record.approved || record.epoch !== lease.epoch ||
-      record.workspace.workspaceId !== lease.workspaceId) throw new CheckRoundError("check_round_denied");
+    if (record.lifecycle !== "active" || record.recovery !== "ready") throw new CheckRoundError("requirement_changed", "需求不在活动状态");
+    if (!record.approved) throw new CheckRoundError("requirement_changed", "需求没有批准版本");
+    if (record.epoch !== lease.epoch) throw new CheckRoundError("requirement_changed", "需求已换代（epoch 变化）");
+    if (!record.workspace || record.workspace.workspaceId !== lease.workspaceId) throw new CheckRoundError("requirement_changed", "需求工作区绑定已变化");
     if (record.pendingRevision !== null) throw new CheckRoundError("pending_update");
     await verifyRequirementWorkspace(this.options.dataRoot, record.workspace);
     await this.state.checkPm(lease);
@@ -250,7 +271,7 @@ export class CheckRoundService {
     const round = withDatabase(this.database, (db) => db.transaction(() => {
       this.validateLeaseIn(db, lease);
       const current = db.read<{ revision?: number; approved?: unknown; pendingRevision?: unknown }>("requirements", lease.requirementId)?.data;
-      if (!current || current.revision !== revision || JSON.stringify(current.approved) !== JSON.stringify(approved)) throw new CheckRoundError("check_round_denied");
+      if (!current || current.revision !== revision || JSON.stringify(current.approved) !== JSON.stringify(approved)) throw new CheckRoundError("requirement_changed", "开检查轮期间批准版本已变化");
       if (current.pendingRevision !== null) throw new CheckRoundError("pending_update");
       if (activeCheckRoundIn(db, this.options.repoId, lease.requirementId)) throw new CheckRoundError("check_round_active");
       assertWritersQuiescentIn(db, this.options.repoId, lease.requirementId);
@@ -284,7 +305,7 @@ export class CheckRoundService {
     return round;
   }
   private roundInput(input: unknown): Static<typeof RoundInput> {
-    try { return checked(RoundInput, input); } catch { throw new CheckRoundError("invalid_shape"); }
+    try { return checked(RoundInput, input); } catch (error) { throw new CheckRoundError("invalid_shape", (error as Error).message); }
   }
   /** 请求停止：轮次进入 stopping，不再接受新的验证；已开始的验证由其执行方收尾。 */
   requestStop(input: Static<typeof RoundInput>): CheckRoundView {
@@ -315,7 +336,7 @@ export class CheckRoundService {
   /** 检查中收到已批准更新：有效 PM 记录 interrupt/defer；interrupt 同时请求停止。 */
   decide(input: Static<typeof DecideInput>): CheckRoundView {
     let request: Static<typeof DecideInput>;
-    try { request = checked(DecideInput, input); } catch { throw new CheckRoundError("invalid_shape"); }
+    try { request = checked(DecideInput, input); } catch (error) { throw new CheckRoundError("invalid_shape", (error as Error).message); }
     this.authorize({ action: "decide", requirementId: request.lease.requirementId, lease: request.lease, checkRoundId: request.checkRoundId });
     return view(withDatabase(this.database, (db) => db.transaction(() => {
       const round = this.load(db, request.checkRoundId, request.lease);
@@ -335,7 +356,7 @@ export class CheckRoundService {
   /** 监听到受保护输入变化（即使内容又恢复）：本轮及其运行中的验证失效，阶段保护保持到进程结束。 */
   observeInputChange(input: Static<typeof ObserveInput>): CheckRoundView {
     let request: Static<typeof ObserveInput>;
-    try { request = checked(ObserveInput, input); } catch { throw new CheckRoundError("invalid_shape"); }
+    try { request = checked(ObserveInput, input); } catch (error) { throw new CheckRoundError("invalid_shape", (error as Error).message); }
     const known = withDatabase(this.database, (db) => readCheckRoundIn(db, request.checkRoundId));
     if (!known || known.data.repoId !== this.options.repoId) throw new CheckRoundError("not_found");
     this.authorize({ action: "observe", requirementId: known.data.requirementId, checkRoundId: request.checkRoundId });
