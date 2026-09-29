@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { isPromise } from "node:util/types";
@@ -54,12 +56,30 @@ const ChangeSet = object({
   files: Type.Array(FileState), createdAt: positive, updatedAt: positive,
 });
 export type ChangeSet = Static<typeof ChangeSet>;
-export type ChangeApplyErrorCode = "change_apply_denied" | "invalid_shape" | "forbidden_path" | "path_escape" | "out_of_scope"
-  | "stale_base" | "operation_conflict" | "import_mismatch" | "resource_limit" | "not_found" | "check_phase_active";
+const CHANGE_APPLY_ADVICE = {
+  tool_closed: COMMON_ADVICE.tool_closed,
+  action_not_allowed: COMMON_ADVICE.action_not_allowed,
+  session_inactive: COMMON_ADVICE.session_inactive,
+  open_failed: COMMON_ADVICE.open_failed,
+  grant_invalid: { why: "派工身份记录不合规，角色、写入范围或需求绑定无法识别", next: "停止操作，不要重试；在回复里说明，由上级处理" },
+  requirement_changed: { why: "需求已不是派工时的状态", next: "停止操作，不要重试；在回复里说明，由上级按新状态重新安排" },
+  invalid_shape: COMMON_ADVICE.invalid_shape,
+  forbidden_path: { why: "这个路径不允许写入", next: "只写授权范围内的普通文件" },
+  path_escape: { why: "路径经过链接或 .. 指到了工作区以外", next: "改用工作区内的真实路径" },
+  out_of_scope: { why: "路径不在本任务的授权写入范围内", next: "只改授权范围内的文件；确实需要时在结果里说明，由 PM 调整任务" },
+  stale_base: { why: "文件或分支在预检后已被改动", next: "重新 prepare 取得最新 baseHash 后再写入" },
+  operation_conflict: { why: "这个操作编号已用于别的写入", next: "换一个新生成的操作编号重试" },
+  import_mismatch: { why: "要导入的生成文件与声明不一致，或不是 UTF-8 文本文件", next: "重新生成文件并按实际内容填写 targetHash" },
+  resource_limit: { why: "请求或文件超出大小上限", next: "拆成更小的改动后分次写入" },
+  not_found: { why: "找不到这次写入记录，或它不属于本运行", next: "核对操作编号" },
+  check_phase_active: { why: "检查阶段进行中，不能修改代码", next: "等检查轮结束后再修改" },
+} as const satisfies Record<string, FailureAdvice>;
+export type ChangeApplyErrorCode = keyof typeof CHANGE_APPLY_ADVICE;
 export class ChangeApplyError extends Error {
   readonly code: ChangeApplyErrorCode;
+  readonly advice: FailureAdvice;
   constructor(code: ChangeApplyErrorCode, detail?: string) {
-    super(detail ? `${code}: ${detail}` : code); this.name = "ChangeApplyError"; this.code = code;
+    super(detail ? `${code}: ${detail}` : code); this.name = "ChangeApplyError"; this.code = code; this.advice = withDetail(CHANGE_APPLY_ADVICE[code], detail);
   }
 }
 export interface ChangeApplyAuthorization { readonly grant: Readonly<ChangeApplyGrant>; readonly action: ChangeApplyAction }
@@ -91,20 +111,22 @@ function intentHashOf(files: ReadonlyArray<{ path: string; baseHash: string; tar
 
 export async function createChangeApplyTool(options: ChangeApplyToolOptions) {
   try { return await openChangeApplyTool(options); }
-  catch { throw new ChangeApplyError("change_apply_denied"); }
+  catch (error) { throw error instanceof ChangeApplyError ? error : new ChangeApplyError("open_failed", (error as Error).message); }
 }
 
 async function openChangeApplyTool(options: ChangeApplyToolOptions) {
-  const grant = freeze(checked(Grant, structuredClone(options.grant)));
-  const deny: () => never = () => { throw new ChangeApplyError("change_apply_denied"); };
+  let grant: ChangeApplyGrant;
+  try { grant = freeze(checked(Grant, structuredClone(options.grant))); } catch { throw new ChangeApplyError("grant_invalid"); }
+  const deny: (code: ChangeApplyErrorCode, detail?: string) => never = (code, detail) => { throw new ChangeApplyError(code, detail); };
   let disposed = false;
   const prepared = new Map<string, string>();
   function host(action: ChangeApplyAction) {
-    if (disposed || !authorizeToolAction(grant.role, "change_apply", action)) deny();
+    if (disposed) deny("tool_closed");
+    if (!authorizeToolAction(grant.role, "change_apply", action)) deny("action_not_allowed", `${grant.role} 不能做 ${action}`);
     let result: unknown;
-    try { result = options.authorize(freeze({ grant, action })); } catch { return deny(); }
+    try { result = options.authorize(freeze({ grant, action })); } catch (error) { return deny("session_inactive", (error as Error).message); }
     if (isPromise(result)) void Promise.prototype.then.call(result, () => undefined, () => undefined);
-    if (result !== true) deny();
+    if (result !== true) deny("session_inactive");
   }
   host("status");
   const config = { repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, repoId: grant.repoId };
@@ -115,9 +137,10 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
   function activeWorkspace(): NonNullable<RequirementRecord["workspace"]> {
     const record = state.read(grant.requirementId);
     const workspace = record.data.workspace;
-    if (record.data.lifecycle !== "active" || record.data.recovery !== "ready" || record.data.epoch !== grant.epoch || !workspace ||
-      workspace.repoId !== grant.repoId || workspace.workspaceId !== grant.workspaceId || workspace.branch !== grant.branch ||
-      workspace.requirementId !== grant.requirementId) deny();
+    if (record.data.lifecycle !== "active" || record.data.recovery !== "ready") deny("requirement_changed", "需求不在活动状态");
+    if (record.data.epoch !== grant.epoch) deny("requirement_changed", "需求已换代（epoch 变化）");
+    if (!workspace || workspace.repoId !== grant.repoId || workspace.workspaceId !== grant.workspaceId || workspace.branch !== grant.branch ||
+      workspace.requirementId !== grant.requirementId) deny("requirement_changed", "需求工作区绑定已变化");
     return workspace;
   }
   async function bindWorkspace(action: ChangeApplyAction) {
@@ -272,7 +295,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
   async function execute(input: unknown) {
     if (Buffer.byteLength(JSON.stringify(input ?? null)) > MAX_REQUEST_BYTES) throw new ChangeApplyError("resource_limit");
     let params: ChangeApplyParameters;
-    try { params = checkServiceInput(CHANGE_APPLY_PARAMETERS, input); } catch { throw new ChangeApplyError("invalid_shape"); }
+    try { params = checkServiceInput(CHANGE_APPLY_PARAMETERS, input); } catch (error) { throw new ChangeApplyError("invalid_shape", (error as Error).message); }
     host(params.action);
     if (params.action === "status") {
       const set = readSet(params.operationId);

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { mkdir, open, readlink, realpath, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -36,12 +38,27 @@ export const VERIFICATION_RUN_PARAMETERS = Type.Union([
 ]);
 export type VerificationRunParameters = Static<typeof VERIFICATION_RUN_PARAMETERS>;
 export type VerificationRunAction = VerificationRunParameters["action"];
-export type VerificationRunErrorCode = "verification_denied" | "invalid_shape" | "kind_forbidden" | "check_phase_active" | "round_not_open"
-  | "input_changed" | "not_found" | "resource_limit";
+const VERIFICATION_ADVICE = {
+  tool_closed: COMMON_ADVICE.tool_closed,
+  action_not_allowed: COMMON_ADVICE.action_not_allowed,
+  session_inactive: COMMON_ADVICE.session_inactive,
+  open_failed: COMMON_ADVICE.open_failed,
+  grant_invalid: { why: "派工身份记录不合规，角色或需求绑定无法识别", next: "停止操作，不要重试；在回复里说明，由上级处理" },
+  requirement_changed: { why: "需求已不是派工时的状态", next: "停止操作，不要重试；在回复里说明，由上级按新状态重新安排" },
+  invalid_shape: COMMON_ADVICE.invalid_shape,
+  kind_forbidden: { why: "worker 与 reviewer 只能运行调试检查（debug），PM 只能运行正式检查（formal）", next: "改用本角色允许的检查种类" },
+  check_phase_active: { why: "检查阶段进行中，不能运行调试检查", next: "等检查轮结束后再运行" },
+  round_not_open: { why: "没有开放中的检查轮，或检查轮已失效", next: "先用 workflow_manage 开启检查轮，再运行正式检查" },
+  input_changed: { why: "检查开始前受保护的输入已变化，本检查轮已失效", next: "结束本检查轮，重新开检查轮后再运行" },
+  not_found: { why: "找不到这次检查运行，或它不属于本运行", next: "核对验证编号，只查询本运行发起的检查" },
+  resource_limit: { why: "请求内容超出 64 KiB", next: "精简命令或参数后重试" },
+} as const satisfies Record<string, FailureAdvice>;
+export type VerificationRunErrorCode = keyof typeof VERIFICATION_ADVICE;
 export class VerificationRunError extends Error {
   readonly code: VerificationRunErrorCode;
+  readonly advice: FailureAdvice;
   constructor(code: VerificationRunErrorCode, detail?: string) {
-    super(detail ? `${code}: ${detail}` : code); this.name = "VerificationRunError"; this.code = code;
+    super(detail ? `${code}: ${detail}` : code); this.name = "VerificationRunError"; this.code = code; this.advice = withDetail(VERIFICATION_ADVICE[code], detail);
   }
 }
 export interface VerificationRunAuthorization { readonly grant: Readonly<VerificationRunGrant>; readonly action: VerificationRunAction }
@@ -102,21 +119,23 @@ async function resolvedTarget(path: string, depth = 0): Promise<string> {
 
 export async function createVerificationRunTool(options: VerificationRunToolOptions) {
   try { return await openVerificationRunTool(options); }
-  catch { throw new VerificationRunError("verification_denied"); }
+  catch (error) { throw error instanceof VerificationRunError ? error : new VerificationRunError("open_failed", (error as Error).message); }
 }
 
 async function openVerificationRunTool(options: VerificationRunToolOptions) {
-  const grant = freeze(checked(Grant, structuredClone(options.grant)));
-  const deny: (code?: VerificationRunErrorCode, detail?: string) => never = (code = "verification_denied", detail) => { throw new VerificationRunError(code, detail); };
+  let grant: VerificationRunGrant;
+  try { grant = freeze(checked(Grant, structuredClone(options.grant))); } catch { throw new VerificationRunError("grant_invalid"); }
+  const deny: (code: VerificationRunErrorCode, detail?: string) => never = (code, detail) => { throw new VerificationRunError(code, detail); };
   let disposed = false;
   const ownerToken = uuidv7();
   const running = new Map<string, { child: ReturnType<typeof spawn>; cancel: () => void; done: Promise<void> }>();
   function host(action: VerificationRunAction) {
-    if (disposed || !authorizeToolAction(grant.role, "verification_run", action)) deny();
+    if (disposed) deny("tool_closed");
+    if (!authorizeToolAction(grant.role, "verification_run", action)) deny("action_not_allowed", `${grant.role} 不能做 ${action}`);
     let result: unknown;
-    try { result = options.authorize(freeze({ grant, action })); } catch { return deny(); }
+    try { result = options.authorize(freeze({ grant, action })); } catch (error) { return deny("session_inactive", (error as Error).message); }
     if (isPromise(result)) void Promise.prototype.then.call(result, () => undefined, () => undefined);
-    if (result !== true) deny();
+    if (result !== true) deny("session_inactive");
   }
   host("status");
   const config = { repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, repoId: grant.repoId };
@@ -127,8 +146,11 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
   function activeRecord(): RequirementRecord & { workspace: NonNullable<RequirementRecord["workspace"]>; approved: NonNullable<RequirementRecord["approved"]> } {
     const data = state.read(grant.requirementId).data;
     const workspace = data.workspace, approved = data.approved;
-    if (data.lifecycle !== "active" || data.recovery !== "ready" || !workspace || !approved || data.epoch !== grant.epoch || workspace.repoId !== grant.repoId ||
-      workspace.workspaceId !== grant.workspaceId || workspace.branch !== grant.branch || workspace.requirementId !== grant.requirementId) deny();
+    if (data.lifecycle !== "active" || data.recovery !== "ready") deny("requirement_changed", "需求不在活动状态");
+    if (!approved) deny("requirement_changed", "需求没有批准版本");
+    if (data.epoch !== grant.epoch) deny("requirement_changed", "需求已换代（epoch 变化）");
+    if (!workspace || workspace.repoId !== grant.repoId || workspace.workspaceId !== grant.workspaceId || workspace.branch !== grant.branch ||
+      workspace.requirementId !== grant.requirementId) deny("requirement_changed", "需求工作区绑定已变化");
     return { ...data, workspace, approved };
   }
   function own(run: VerificationRun): boolean {
@@ -183,14 +205,14 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     try {
       started = withDatabase(database, (db) => db.transaction(() => {
       const current = db.read<RequirementRecord>("requirements", grant.requirementId)?.data;
-      if (!current || current.epoch !== grant.epoch || current.lifecycle !== "active" || current.revision !== record.revision ||
-        JSON.stringify(current.approved) !== JSON.stringify(record.approved)) deny();
+      if (!current || current.epoch !== grant.epoch || current.lifecycle !== "active") deny("requirement_changed", "需求已关闭或已换代");
+      if (current.revision !== record.revision || JSON.stringify(current.approved) !== JSON.stringify(record.approved)) deny("requirement_changed", "运行期间批准版本已变化");
       const round = activeCheckRoundIn(db, grant.repoId, grant.requirementId);
       let baseline: CheckBaseline;
       let checkRoundId: string | null = null;
       if (params.kind === "formal") {
         if (!round || round.data.status !== "open" || round.data.invalidation) deny("round_not_open");
-        if (round.data.epoch !== grant.epoch) deny();
+        if (round.data.epoch !== grant.epoch) deny("requirement_changed", "检查轮属于需求的旧代次");
         if (!manifestMatchesBaseline(manifest, round.data.baseline)) {
           // 失效登记必须随本事务提交，因此不能在此抛错；调用方据 null 拒绝本次运行。
           db.update(CHECK_ROUNDS, round.id, round.version, { ...round.data, invalidation: { reason: "input_changed", detail: "检查开始前受保护输入已变化" }, updatedAt: Date.now() });
@@ -309,7 +331,7 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
   async function executeAction(input: unknown) {
     if (Buffer.byteLength(JSON.stringify(input ?? null)) > 64 * 1024) throw new VerificationRunError("resource_limit");
     let params: VerificationRunParameters;
-    try { params = checkServiceInput(VERIFICATION_RUN_PARAMETERS, input); } catch { throw new VerificationRunError("invalid_shape"); }
+    try { params = checkServiceInput(VERIFICATION_RUN_PARAMETERS, input); } catch (error) { throw new VerificationRunError("invalid_shape", (error as Error).message); }
     host(params.action);
     switch (params.action) {
       case "run": return run(params);

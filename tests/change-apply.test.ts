@@ -62,7 +62,6 @@ async function world() {
   const base = sha("export const a = 1;\n");
   return { ...options, root, repo, state, created, workspace, worktree, grant, tool, read, base };
 }
-const denied = { code: "change_apply_denied" };
 type Result = { status: string; baseHead: string; files: Array<{ path: string; status: string; reason?: string; targetHash: string }> };
 
 test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不留操作记录", async () => {
@@ -239,25 +238,25 @@ test("M5-AC3/AC7：非 worker 职责、伪造绑定、旧 epoch、宿主撤权�
   const w = await world();
   const good = { path: "src/z.ts", baseHash: "absent", content: "z\n" };
   for (const role of ["main", "pm", "explore", "reviewer", "qa", "planner"]) {
-    await expect(w.tool({ ...w.grant(), role } as never)).rejects.toMatchObject(denied);
+    await expect(w.tool({ ...w.grant(), role } as never)).rejects.toMatchObject({ code: "grant_invalid" });
   }
   await expect(w.tool(w.grant({ epoch: w.grant().epoch + 1 }))).resolves.toBeDefined();
   const staleEpoch = await w.tool(w.grant({ epoch: w.grant().epoch + 1 }));
-  await expect(staleEpoch.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject(denied);
+  await expect(staleEpoch.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求已换代（epoch 变化）" } });
   const otherWorkspace = await w.tool(w.grant({ workspaceId: "f".repeat(64) }));
-  await expect(otherWorkspace.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject(denied);
+  await expect(otherWorkspace.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求工作区绑定已变化" } });
   const otherBranch = await w.tool(w.grant({ branch: "refs/heads/elsewhere" }));
-  await expect(otherBranch.execute({ action: "prepare", files: [good] })).rejects.toMatchObject(denied);
-  await expect(w.tool(w.grant(), () => false)).rejects.toMatchObject(denied);
+  await expect(otherBranch.execute({ action: "prepare", files: [good] })).rejects.toMatchObject({ code: "requirement_changed" });
+  await expect(w.tool(w.grant(), () => false)).rejects.toMatchObject({ code: "session_inactive" });
   const bound = w.grant();
   const permits = new Map([[bound.callerId, true]]);
   const flip = await w.tool(bound, (request) => permits.get(request.grant.callerId) === true);
   permits.set(bound.callerId, false);
-  await expect(flip.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject(denied);
+  await expect(flip.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject({ code: "session_inactive" });
   await expect(w.read("src/z.ts")).rejects.toMatchObject({ code: "ENOENT" });
   const closingTool = await w.tool();
   w.state.beginClose({ requirementId: w.created.requirementId, version: w.state.read(w.created.requirementId).version,
     intent: { operationId: uuidv7(), receiptId: uuidv7(), reason: "cancelled" } });
-  await expect(closingTool.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject(denied);
+  await expect(closingTool.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求不在活动状态" } });
   await expect(w.read("src/z.ts")).rejects.toMatchObject({ code: "ENOENT" });
 });

@@ -176,10 +176,10 @@ test("M6-AC1/AC20：记录真实退出码、超时、取消，性能条件在运
   }
   await expect((await w.tool()).execute({ action: "run", kind: "formal", command: "true" })).rejects.toMatchObject({ code: "invalid_shape" });
   await expect((await w.tool()).execute({ action: "run", kind: "formal", command: "true", performance: { applicable: true } })).rejects.toMatchObject({ code: "invalid_shape" });
-  for (const role of ["main", "explore", "planner"]) await expect(w.tool(w.grant({ role } as never))).rejects.toMatchObject({ code: "verification_denied" });
-  await expect(w.tool(w.grant(), () => false)).rejects.toMatchObject({ code: "verification_denied" });
+  for (const role of ["main", "explore", "planner"]) await expect(w.tool(w.grant({ role } as never))).rejects.toMatchObject({ code: "grant_invalid" });
+  await expect(w.tool(w.grant(), () => false)).rejects.toMatchObject({ code: "session_inactive" });
   await expect(w.tool(w.grant({ epoch: 9 }))).resolves.toBeTruthy();
-  await expect((await w.tool(w.grant({ epoch: 9 }))).execute({ action: "run", kind: "formal", command: "true", performance: NA })).rejects.toMatchObject({ code: "verification_denied" });
+  await expect((await w.tool(w.grant({ epoch: 9 }))).execute({ action: "run", kind: "formal", command: "true", performance: NA })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求已换代（epoch 变化）" } });
   if (!darwin) return;
   const worker = await w.tool(w.grant({ role: "worker" }));
   const passed = await worker.execute({ action: "run", kind: "debug", command: "exit 0", performance: { applicable: true, thresholds: "p95 < 500ms，1000 文件，热态" } }) as VerificationView;

@@ -268,8 +268,8 @@ test("M6-AC6/AC4/AC15：closing 生效即撤权，代理未停止或收尾失败
   expect(w.state.pmOwner(w.created.requirementId)?.lease).toBeNull();
   await expect((await w.reader()).execute({ action: "read" })).rejects.toMatchObject({ code: "requirement_read_denied" });
   await expect((await w.reader("pm")).execute({ action: "metadata" })).resolves.toMatchObject({ lifecycle: "closing" });
-  await expect((await w.changeApply()).execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "change_apply_denied" });
-  await expect((await w.verification("qa")).instance.execute({ action: "run", kind: "formal", command: "true", performance: NA })).rejects.toMatchObject({ code: "verification_denied" });
+  await expect((await w.changeApply()).execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求不在活动状态" } });
+  await expect((await w.verification("qa")).instance.execute({ action: "run", kind: "formal", command: "true", performance: NA })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求不在活动状态" } });
   await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "check_round_denied" });
   await expect(w.service.metadata(w.created.requirementId)).resolves.toMatchObject({ lifecycle: "closing", approved: null, archivePath: null });
   w.setStop("leave");
