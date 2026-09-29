@@ -832,7 +832,18 @@ test("解释结果未通过核对时，带错误代码与未覆盖单位让解�
   const feedback = JSON.stringify(calls[1]!.messages.at(-1));
   expect(feedback).toContain("未通过宿主核对：review_entry_mismatch");
   expect(feedback).toContain("没有任何条目涉及的单位：B");
-  expect(feedback).not.toContain("实施手机号");
+  const retry = JSON.parse(String((calls[1]!.messages.at(-1) as { content: string }).content));
+  expect(retry).toMatchObject({ text: "A实施，B未决", context: { document: { body: w.context.document!.body } } });
+  expect(retry.feedback).toContain("review_entry_mismatch");
+});
+test("M9：重答换了另一种错误仍不过时，最终报错同时带上首次被拒的原因", async () => {
+  const w = await documentWorld(), a = await adapterWorld();
+  const good = modelAnswer(w.output()), missing = { ...good, entries: good.entries.map((e) => ({ ...e, unitIds: (e as { unitIds?: string[] }).unitIds?.filter((id) => id !== "B") })) };
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(missing))]), fauxAssistantMessage([fauxText('{"actor":"user"}')])]);
+  const error = await a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal })
+    .catch((caught: unknown) => caught) as UserInteractionError;
+  expect(error.code).toBe("invalid_shape");
+  expect(error.advice.why).toContain("首次回答被拒的原因：逐段复核里有段落没有被任何条目涉及");
 });
 test("重答仍未通过核对时拒绝，最多只调用两次模型", async () => {
   const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;

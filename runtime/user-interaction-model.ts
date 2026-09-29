@@ -61,7 +61,8 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
         const model = current();
         if (decisionDigest(modelIdentity(model)) !== decisionDigest(input.model)) throw new UserInteractionError("model_changed");
         const checkedContext = checkContext(input.context);
-        const payload = JSON.stringify({ text: input.text, context: checkedContext });
+        const request = { text: input.text, context: checkedContext };
+        const payload = JSON.stringify(request);
         if (Buffer.byteLength(payload) > 65_536) throw new UserInteractionError("request_limit");
         context.messages.push({ role: "user", content: payload, timestamp: Date.now() });
         const aborted = new Promise<never>((_resolve, reject) => {
@@ -70,7 +71,8 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
           if (controller.signal.aborted) rejectAborted();
         });
         // 核对不过时允许按错误代码重答一次：真实模型偶尔漏覆盖单位或写错结构提示，核对规则本身不放宽
-        for (let attempt = 0; ; attempt++) {
+        let firstRejection: string | undefined;
+        for (;;) {
           const response = await Promise.race([registry.complete(model, context, {
             signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384),
           }), aborted]);
@@ -86,10 +88,14 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
             if (checkedContext.document) validateDocumentReview(checkedContext, result);
             return JSON.stringify(derived);
           } catch (error) {
-            if (attempt > 0 || !(error instanceof UserInteractionError)) throw error;
+            if (!(error instanceof UserInteractionError)) throw error;
+            if (firstRejection) throw new UserInteractionError(error.code, `${error.advice.why}；首次回答被拒的原因：${firstRejection}`);
+            firstRejection = error.advice.why;
             const missing = derived ? uncoveredUnits(derived) : [];
-            context.messages.push(response, { role: "user", timestamp: Date.now(), content: `上次回答未通过宿主核对：${error.code}。原因：${error.advice.why}。建议：${error.advice.next}。` +
-              `${missing.length ? `没有任何条目涉及的单位：${missing.join("、")}。` : ""}请按说明修正后重新输出完整JSON。` });
+            // 重答仍发完整输入：只补一句反馈时，模型会把反馈当成本轮输入，以缺少文档为由放弃
+            context.messages.push(response, { role: "user", timestamp: Date.now(), content: JSON.stringify({ ...request,
+              feedback: `上次回答未通过宿主核对：${error.code}。原因：${error.advice.why}。建议：${error.advice.next}。` +
+                `${missing.length ? `没有任何条目涉及的单位：${missing.join("、")}。` : ""}请按说明修正后重新输出完整JSON。` }) });
           }
         }
       } catch (error) {
