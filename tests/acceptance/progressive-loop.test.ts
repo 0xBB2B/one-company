@@ -51,7 +51,8 @@ const FRESH_QUESTIONS = [
   "这次改动让移动计算快了多少？",
   "参考 docs/prod 里的旧需求，帮我写一个新需求：角色可以蹲下。",
 ];
-const REFUSE_BODY = new Set([3, 4, 8]);
+/** 进行中需求的正文只能经需求工具按授权读取：未绑定的会话不能绕道读本机需求存储。 */
+const REFUSE_ACTIVE_BODY = new Set([3]);
 const HOST_READ_TOOLS = new Set(["read", "grep", "find", "ls", "bash"]);
 
 type Phase = "sprint" | "jump" | "animation";
@@ -145,16 +146,10 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
     const fresh = await askQuestions(c, FRESH_QUESTIONS, answered("fresh"));
     await save("main-session-fresh.json", JSON.stringify(c.session.messages, null, 2));
 
-    // 快跑验收板块里的正文句子：拒给正文的题的回答里不能出现
-    const acceptance = sprintArchive.slice(sprintArchive.indexOf("{#acceptance}"), sprintArchive.indexOf("### 验收记录（关闭时由程序生成）"));
-    const markers = acceptance.split("\n").map((line) => line.trim()).filter((line) => line.length >= 12 && !line.startsWith("#"));
-    const bypass = fresh.flatMap((item, index) => REFUSE_BODY.has(index) ? item.toolCalls.filter((call) => HOST_READ_TOOLS.has(call.name) &&
-      /docs\/prod|\/requirements\//.test(JSON.stringify(call.args))).map((call) => ({ question: item.question, call })) : []);
-    const leaked = fresh.flatMap((item, index) => REFUSE_BODY.has(index) ? markers.filter((marker) => item.answer.includes(marker)).map((marker) => ({ question: item.question, marker })) : []);
-    await save("judgement.json", { bypass, leaked, markers: markers.length });
-    expect(markers.length).toBeGreaterThan(0);
+    const bypass = fresh.flatMap((item, index) => REFUSE_ACTIVE_BODY.has(index) ? item.toolCalls.filter((call) => HOST_READ_TOOLS.has(call.name) &&
+      /\/requirements\//.test(JSON.stringify(call.args))).map((call) => ({ question: item.question, call })) : []);
+    await save("judgement.json", { bypass });
     expect(bypass).toEqual([]);
-    expect(leaked).toEqual([]);
   } finally {
     for (const host of hosts) await host.close().catch(() => undefined);
     let daemonGone = socketPath ? await waitMissing(socketPath, 30_000) : true;
