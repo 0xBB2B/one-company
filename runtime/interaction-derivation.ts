@@ -55,10 +55,13 @@ export function deriveInterpretation(source: string, context: InteractionContext
       conclusionIndexes: indexes, ...(h?.retainedFactIds?.length ? { retainedFactIds: h.retainedFactIds } : {}) };
   });
   const goalUnits = new Set(units.filter((u) => u.id !== "metadata" && u.conclusionIndexes.some((i) => entries[i]!.kind === "target" && explicit(entries[i]!))).map((u) => u.id));
+  const targetGroups = entries.flatMap((e, i) => e.kind === "target" && explicit(e) ? [unitIds[i]!.filter((id) => goalUnits.has(id))] : []);
   const scopes = new Map<string, DocumentReview["actions"][number]>();
   entries.forEach((e, i) => {
     if (e.kind !== "action") return;
-    const goalIds = unitIds[i]!.filter((id) => goalUnits.has(id)).sort();
+    // 用户确认的一条目标是整体：动作列了其中一段就覆盖整条，模型漏列同条目标里的其他段（如对应验收小节）不收窄授权
+    const listed = unitIds[i]!.filter((id) => goalUnits.has(id));
+    const goalIds = [...new Set([...listed, ...targetGroups.filter((group) => group.some((id) => listed.includes(id))).flat()])].sort();
     if (!goalIds.length) return;
     const constraintIds = approvalDependencyClosure(units, goalIds).filter((id) => !goalIds.includes(id));
     for (const action of e.actions as InteractionAction[]) {

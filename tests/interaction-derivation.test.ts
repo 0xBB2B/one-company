@@ -84,3 +84,16 @@ test("模型自己写逐段审阅、缺少 faithful、或在没有草稿时给�
   expect(() => deriveInterpretation(JSON.stringify({ ...plain, unitHints: [{ id: "A", globalConstraint: false, appliesTo: [], dependsOn: [] }] }), noDocument.context))
     .toThrow(/invalid_shape/);
 });
+
+test("M9：动作列了一条目标里的某段就覆盖整条目标，漏列同条目标的其他段不收窄授权；分开确认的另一条目标不被带入", () => {
+  const whole = fixture();
+  whole.output.entries[0]!.unitIds = ["A", "B"];
+  whole.output.entries[2] = { ...whole.output.entries[0]!, kind: "constraint", conclusion: "保留邮箱", unitIds: ["preamble"] };
+  const result = whole.derive();
+  expect(result.documentReview!.actions).toMatchObject([{ action: "implement", goalIds: ["A", "B"], conclusionIndexes: [3] }]);
+  expect(() => validateDocumentReview(whole.context, result)).not.toThrow();
+
+  const separate = fixture();
+  separate.output.entries[2] = { ...separate.output.entries[0]!, conclusion: "微信也要", unitIds: ["B"] };
+  expect(separate.derive().documentReview!.actions).toMatchObject([{ action: "implement", goalIds: ["A"] }]);
+});
