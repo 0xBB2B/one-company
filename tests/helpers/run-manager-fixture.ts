@@ -9,6 +9,7 @@ import { ProjectIndexHost } from "../../daemon/project-index-host.ts";
 import { createClock } from "../../runtime/clock.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../runtime/database.ts";
 import { NetworkPauseGate } from "../../runtime/network-pause.ts";
+import { readNoticedDiffs } from "./pm-diff-read.ts";
 import { createPlanManageTool } from "../../runtime/plan-manage.ts";
 import { createPmIntakeProviders, PM_INTAKE_TOOL } from "../../runtime/pm-intake-runtime.ts";
 import type { IntakeReviewDecision } from "../../runtime/pm-intake-service.ts";
@@ -78,5 +79,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   const plan = await createPlanManageTool({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, authorize: () => true,
     grant: { role: "pm", callerId: uuidv7(), runId: lease.runId, requirementId: fixture.requirementId, repoId: fixture.repoId, workspaceId: lease.workspaceId, lease } });
   cleanups.push(() => plan.dispose());
-  return { fixture, understanding, runtime, provider, runStore, manager, emit, pm, lease, owner, review, plan, db };
+  /** 像 PM 那样按更新通知用 diff 读完差异；和生产一样用派出 PM 时绑定的租约。 */
+  const readDiffs = (notices: string[]) => readNoticedDiffs({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, lease }, notices);
+  return { fixture, understanding, runtime, provider, runStore, manager, emit, pm, lease, owner, review, plan, db, readDiffs };
 }

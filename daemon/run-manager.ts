@@ -150,7 +150,7 @@ function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSou
       `- decision：${list(sources.decisionIds)}`,
       ...decisions.map((d) => `  - ${d.id}（${d.status}，涉及 ${list(d.unitIds)}）：${d.conclusion}`),
       `- question：${list(sources.questionIds)}`] : ["出处清单暂不可用，接手理解提交会被拒绝。"]),
-    "核对通过后，之后每次已批准更新的准确差异会由宿主按序送达本会话；收到后用 one_company_plan_manage assess-update 逐任务复核。",
+    "核对通过后，之后每次已批准更新会由宿主按序通知本会话「revision X → Y」；收到后用 one_company_requirement_manage diff 查 X 到 Y 的差异（上下文压缩后可再查），读完再用 one_company_plan_manage assess-update 逐任务复核。",
   ].join("\n");
 }
 export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "parentRunId" | "state" | "startedAt" | "updatedAt" | "endedAt" | "turns" | "usage" | "pausedMs" | "pausedAt" | "stateReason" | "stopCause"> & { log: string };

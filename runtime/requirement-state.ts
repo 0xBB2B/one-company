@@ -18,7 +18,7 @@ import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperation
 import { registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
 
-export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "rotate-pm-context" | "restore-approved-context" | "events" | "acknowledge" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "assess-update" | "record-decisions" | "read-decisions";
+export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "rotate-pm-context" | "record-pm-diff" | "restore-approved-context" | "events" | "acknowledge" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "assess-update" | "record-decisions" | "read-decisions";
 export interface StateAuthorizationRequest { action: RequirementAction; repoId: string; input: Readonly<Record<string, unknown>> }
 export interface RequirementAccessState { record: StoredRecord<RequirementRecord> | null; pmLeaseHash: string }
 export interface RequirementAccessChange {
@@ -516,6 +516,18 @@ export class RequirementStateStore {
       db.update("pm_ownership", lease.requirementId, owner.version, { ...owner.data, lease, context,
         prodEvents: { ...cursor, baselineDelivery: null } });
       return lease;
+    });
+  }
+
+  /** 本 PM 物理上下文已完整读过到该批准版本的差异；复核门槛据此判断，换代后随上下文一起清空。 */
+  async recordPmDiff(input: Static<typeof commands.recordPmDiff>): Promise<void> {
+    const request = checked(commands.recordPmDiff, input);
+    await this.workspaceForLease("record-pm-diff", request.lease);
+    this.mutate("record-pm-diff", request, (db) => {
+      const { owner } = this.validateOwner(db, request.lease);
+      const context = this.context(owner);
+      if ((context.diffRevision ?? 0) >= request.revision) return;
+      db.update("pm_ownership", request.lease.requirementId, owner.version, { ...owner.data, context: { ...context, diffRevision: request.revision } });
     });
   }
 

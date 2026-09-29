@@ -22,8 +22,6 @@ import { inspectProdStructure, pageProdResponse, selectProdSection, PROD_MAX_PAG
 const Role = Type.Union([Type.Literal("pm"), Type.Literal("reviewer"), Type.Literal("qa")]);
 const Binding = object({ role: Role, callerId: id, runId: id, requirementId: id, repoId: hash, workspaceId: hash,
   branch: Type.String({ minLength: 1, maxLength: 4096, pattern: "^refs/heads/" }), lease: PmLease,
-  /** 可信宿主已核对的PM理解基线；模型不能自由选择旧版本。 */
-  diffBaseline: Type.Optional(object({ revision: positive, reference: ProdReference })),
   /** 已开始的检查轮：defer 或等待 PM 决策期间只读该轮登记的原批准基线，由服务而非角色选择版本。 */
   checkRoundId: Type.Optional(id) });
 export type RequirementReadBinding = Static<typeof Binding>;
@@ -32,7 +30,7 @@ const paging = { cursor: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" }
 export const REQUIREMENT_READ_PARAMETERS = Type.Union([
   object({ action: Type.Literal("read"), ...paging,
     sectionId: Type.Optional(Type.String({ pattern: PROD_SECTION_ID_PATTERN })) }),
-  object({ action: Type.Literal("diff"), ...paging }),
+  object({ action: Type.Literal("diff"), fromRevision: positive, toRevision: Type.Optional(positive), ...paging }),
   object({ action: Type.Literal("metadata") }),
 ]);
 export type RequirementReadParameters = Static<typeof REQUIREMENT_READ_PARAMETERS>;
@@ -63,7 +61,8 @@ const READ_ADVICE = {
   check_round_invalid: { why: "绑定的检查轮已结束、失效或被中断", next: STALE },
   closed_metadata_only: { why: "需求正在关闭或已关闭，只能读取 metadata", next: "改用 metadata；不要再读正文" },
   cursor_invalid: { why: "翻页游标已过期、已用过，或与本次的动作、章节、maxBytes 不一致", next: "不带 cursor 从第一页重新读取，翻页时原样沿用上一页给出的 cursor 与参数" },
-  diff_unavailable: { why: "本运行没有可用的差异基线，不能读取 diff", next: "改用 read 读取批准正文" },
+  diff_unavailable: { why: "检查轮只读该轮登记的原批准基线，不能读取 diff", next: "改用 read 读取批准正文" },
+  diff_range_invalid: { why: "diff 的版本范围不对，要求 1 ≤ fromRevision ≤ toRevision ≤ 当前批准版本", next: "按更新通知里的版本号重填 fromRevision 与 toRevision；toRevision 可省略，默认取当前批准版本" },
   response_too_large: { why: "这一页的结果超出了返回上限", next: "调小 maxBytes，或用 sectionId 只读一个章节" },
   section_not_found: { why: "批准正文里没有这个章节编号", next: "先不带 sectionId 读取，按结果里 structure 列出的章节编号再读" },
   structure_unavailable: { why: "批准正文没有可识别的章节结构，不能按章节读取", next: "不带 sectionId 读取全文" },
@@ -95,6 +94,8 @@ interface Cursor {
   maxBytes: number;
   offset: number;
   sectionOffset: number;
+  fromRevision?: number;
+  toRevision?: number;
   version: number;
   revision: number;
   commit: string;
@@ -147,7 +148,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
   host("metadata");
   const state = await RequirementStateStore.open({ ...config, authorize: (request) => {
     // 私有状态句柄只有固定只读动作；真实宿主授权由host核验，PM有效性由checkPm核验。
-    if (disposed || request.repoId !== binding.repoId || !["open", "read", "events", "check-pm"].includes(request.action)) return false;
+    if (disposed || request.repoId !== binding.repoId || !["open", "read", "events", "check-pm", "record-pm-diff"].includes(request.action)) return false;
     const requirementId = request.input.requirementId;
     return requirementId === undefined || requirementId === binding.requirementId;
   } });
@@ -239,22 +240,26 @@ async function openReadTool(options: RequirementReadToolOptions) {
       const maxBytes = params.maxBytes ?? PROD_PAGE_BYTES;
       const goal = target(before);
       const cursor = params.cursor ? cursors.get(params.cursor) : undefined;
-      if (params.cursor && (!cursor || cursor.action !== params.action || cursor.sectionId !== sectionId || cursor.maxBytes !== maxBytes)) deny("cursor_invalid");
+      const range = params.action === "diff" ? { fromRevision: params.fromRevision, toRevision: params.toRevision ?? before.data.revision } : undefined;
+      if (params.cursor && (!cursor || cursor.action !== params.action || cursor.sectionId !== sectionId || cursor.maxBytes !== maxBytes ||
+        cursor.fromRevision !== range?.fromRevision || cursor.toRevision !== range?.toRevision)) deny("cursor_invalid");
       if (cursor && (cursor.version !== before.version || cursor.revision !== goal.revision || cursor.epoch !== before.data.epoch ||
         cursor.commit !== goal.reference.commit || cursor.hash !== goal.reference.hash)) deny("version_changed");
       if (params.cursor) cursors.delete(params.cursor);
-      const baseline = binding.diffBaseline;
-      if (params.action === "diff") {
-        if (!baseline || binding.checkRoundId || baseline.revision > before.data.revision) deny("diff_unavailable");
-        const from = state.events(binding.requirementId).find((event) => event.data.kind === "prod.approved" && event.data.revision === baseline!.revision);
-        if (from?.data.to?.commit !== baseline!.reference.commit || from.data.to.hash !== baseline!.reference.hash) deny("diff_unavailable", "差异基线与批准记录不符");
+      let rangeEnd: ProdReference | undefined;
+      if (range) {
+        if (binding.checkRoundId) deny("diff_unavailable");
+        rangeEnd = state.events(binding.requirementId).find((event) => event.data.kind === "prod.approved" && event.data.revision === range.toRevision)?.data.to ?? undefined;
+        if (range.fromRevision > range.toRevision || range.toRevision > before.data.revision || !rangeEnd) {
+          deny("diff_range_invalid", `收到 ${range.fromRevision} → ${range.toRevision}，当前批准版本是 ${before.data.revision}`);
+        }
       }
       const service = await RequirementService.open({ ...config, authorize: (request: Readonly<ServiceAuthorizationRequest>) => {
         if (request.repoId !== binding.repoId || !["metadata", params.action === "read" ? "readApproved" : "diff"].includes(request.action) ||
           (request.requirementId !== undefined && request.requirementId !== binding.requirementId) ||
           (request.epoch !== undefined && request.epoch !== before.data.epoch) ||
           (request.version !== undefined && request.version !== before.version) ||
-          (request.prodHash !== undefined && request.prodHash !== `sha256:${goal.reference.hash}`)) return false;
+          (request.prodHash !== undefined && request.prodHash !== `sha256:${(rangeEnd ?? goal.reference).hash}`)) return false;
         host(params.action);
         activeSync(before);
         return true;
@@ -271,10 +276,8 @@ async function openReadTool(options: RequirementReadToolOptions) {
         structure = inspectProdStructure(result.body);
         text = selectProdSection(result.body, structure, sectionId);
       } else {
-        const result = await service.diff({ requirementId: binding.requirementId, fromRevision: baseline!.revision,
-          toRevision: before.data.revision });
-        if (result.fromCommit !== baseline!.reference.commit || result.fromHash !== `sha256:${baseline!.reference.hash}` ||
-          result.toCommit !== before.data.approved!.commit || result.toHash !== `sha256:${before.data.approved!.hash}` ||
+        const result = await service.diff({ requirementId: binding.requirementId, ...range! });
+        if (result.fromRevision !== range!.fromRevision || result.toRevision !== range!.toRevision ||
           result.version !== before.version || result.epoch !== before.data.epoch) deny("version_changed");
         text = result.diff;
         difference = { fromRevision: result.fromRevision, toRevision: result.toRevision, fromCommit: result.fromCommit,
@@ -297,11 +300,12 @@ async function openReadTool(options: RequirementReadToolOptions) {
       const response = bounded(result.response);
       if (result.hasMore) {
         while (cursors.size >= 32) cursors.delete(cursors.keys().next().value!);
-        cursors.set(nextCursor, { action: params.action, sectionId, maxBytes, offset: result.page.endByte, sectionOffset: result.endSection,
+        cursors.set(nextCursor, { action: params.action, sectionId, maxBytes, offset: result.page.endByte, sectionOffset: result.endSection, ...range,
           version: before.version, revision: goal.revision, commit: goal.reference.commit,
           hash: goal.reference.hash, epoch: before.data.epoch, expiresAt: Date.now() + 30_000 });
       }
       await validate(params.action, before);
+      if (range && range.fromRevision < range.toRevision && binding.role === "pm" && !result.hasMore) await state.recordPmDiff({ lease: binding.lease, revision: range.toRevision });
       returns.set(response, { action: params.action, record: before, scope: origin.approvalScope });
       assertCurrent(response);
       return response;

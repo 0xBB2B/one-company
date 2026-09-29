@@ -142,7 +142,7 @@ const PLAN_ADVICE = {
   lease_required: { why: "这个动作只有持有租约的 PM 能做", next: "改用职责内的动作" },
   invalid_shape: COMMON_ADVICE.invalid_shape,
   intake_gate: { why: "接手核对还没通过，不能正式提出或修改计划", next: "先读完批准正文并提交接手理解，等主代理核对通过" },
-  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 assess-update 逐任务复核新版本，再提出或修改计划" },
+  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 requirement_manage diff 读完新版本与上一版的差异（上下文压缩后可再查），再用 plan_manage assess-update 逐任务复核，再提出或修改计划" },
   plan_exists: { why: "本需求已有计划，不能再次提出", next: "用 read 读取现有计划，需要调整时用 update" },
   plan_missing: { why: "本需求还没有计划", next: "先用 propose 提出计划" },
   version_conflict: { why: "计划或需求在读取后已被改动", next: "用 read 读取最新计划，按最新版本号重新提交" },
@@ -448,10 +448,14 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const { record, manifest, current: plan } = snapshot();
     if (!plan) deny("plan_missing");
     if (record.data.pendingRevision !== params.revision || record.data.revision !== params.revision) deny("assessment_invalid", ["没有待复核的该批准版本"]);
-    const context = withDatabase(database, (db) => db.read<{ context?: { baseline: { runId: string; fence: number; contextGeneration: number; revision: number } | null } }>(
-      "pm_ownership", grant.requirementId)?.data.context?.baseline);
+    const pmContext = withDatabase(database, (db) => db.read<{ context?: { diffRevision?: number; baseline: { runId: string; fence: number; contextGeneration: number; revision: number } | null } }>(
+      "pm_ownership", grant.requirementId)?.data.context);
+    const context = pmContext?.baseline;
     if (context?.revision !== params.revision || context.runId !== current.runId || context.fence !== current.fence || context.contextGeneration !== current.contextGeneration) {
-      deny("assessment_invalid", ["本 PM 会话尚未收到该批准版本的准确差异"]);
+      deny("assessment_invalid", [`本 PM 会话尚未收到 revision ${params.revision} 的更新通知`]);
+    }
+    if ((pmContext!.diffRevision ?? 0) < params.revision) {
+      deny("assessment_invalid", [`本 PM 会话还没有完整读过到 revision ${params.revision} 的差异：先用 one_company_requirement_manage diff（fromRevision 取更新通知里的起点，toRevision ${params.revision}）读完全部分页，再复核`]);
     }
     const live = plan.tasks.filter((task) => task.status !== "cancelled");
     const given = new Map(params.tasks.map((item) => [item.taskId, item]));

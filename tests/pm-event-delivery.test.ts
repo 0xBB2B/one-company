@@ -33,7 +33,7 @@ function spec(key: string, goal: string): TaskSpec {
     maxTurns: 5, objective: `实现 ${goal}`, passCriteria: [`${goal} 可观察通过`], scope: { in: [goal], out: ["微信登录"] }, performance: NA };
 }
 
-test("M7-AC1：主代理核对通过前不建立理解基线也不投递差异；通过后按序送达准确差异并确认消费，PM 据此复核", async () => {
+test("M7-AC1：主代理核对通过前不建立理解基线也不投递通知；通过后按序送达版本通知并确认消费，PM 按通知用 diff 读完差异后才能复核", async () => {
   const w = await world({ review: false });
   await new Promise((resolve) => setTimeout(resolve, 1_200));
   expect(w.owner().context.baseline).toBeNull();
@@ -50,15 +50,22 @@ test("M7-AC1：主代理核对通过前不建立理解基线也不投递差异�
   await until(() => w.diffPrompts().length === 2);
   const [first, second] = w.diffPrompts().map(text);
   expect(first).toContain("revision 1 → 2");
-  expect(first).toContain("sprint 的行为");
+  expect(first).toContain("fromRevision 1，toRevision 2");
+  expect(first).not.toContain("sprint 的行为");
   expect(second).toContain("revision 2 → 3");
-  expect(second).toContain("jump 的行为");
+  expect(second).not.toContain("jump 的行为");
   await until(() => w.owner().context.baseline?.revision === 3);
   expect(w.owner().prodEvents?.understoodRevision).toBe(3);
 
   const assess = (revision: number) => w.plan.execute({ action: "assess-update", revision, assessmentId: uuidv7(),
     tasks: view.tasks.map((task) => ({ taskId: task.taskId, version: task.version, assessment: "unaffected", rationale: "未涉及登录" })),
     global: { assessment: "unaffected", rationale: "新增独立功能" } });
+  const unread = await assess(3).catch((caught: unknown) => caught) as Error;
+  expect(unread).toMatchObject({ code: "assessment_invalid" });
+  expect(String(unread)).toContain("还没有完整读过到 revision 3 的差异");
+  const [firstDiff, secondDiff] = await w.readDiffs([first!, second!]);
+  expect(firstDiff).toContain("sprint 的行为");
+  expect(secondDiff).toContain("jump 的行为");
   await expect(assess(2)).rejects.toMatchObject({ code: "assessment_invalid" });
   await assess(3);
   expect(evaluatePmIntakeGate({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease })).toEqual({ allowed: true });
@@ -115,9 +122,10 @@ test("M7 性能：已批准更新持久化后 95% 在 2 秒内投递到可运行
       w.provider.queue.push({ type: "text", text: `收到 ${i}` });
       const revision = await w.approve(`f${i}`, { replace: true });
       const start = performance.now();
-      await until(() => w.diffPrompts().some((request) => text(request).includes(`→ ${revision}（`)), 1_000);
+      await until(() => w.diffPrompts().some((request) => text(request).includes(`→ ${revision}。`)), 1_000);
       samples.push(performance.now() - start);
       await until(() => w.owner().context.baseline?.revision === revision);
+      await w.readDiffs([`revision ${revision - 1} → ${revision}`]);
       await w.plan.execute({ action: "assess-update", revision, assessmentId: uuidv7(),
         tasks: view.tasks.map((task) => ({ taskId: task.taskId, version: task.version, assessment: "unaffected", rationale: "附加章节不涉及登录" })),
         global: { assessment: "unaffected", rationale: "附加章节" } });
@@ -165,7 +173,7 @@ test("M9：批准差异投递出错时，PM 收到哪一步失败、原因与建
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
-  const failing = vi.spyOn(RequirementEventService.prototype, "prepareDiff").mockRejectedValue(new Error("git diff 退出码 128"));
+  const failing = vi.spyOn(RequirementEventService.prototype, "poll").mockRejectedValue(new Error("git diff 退出码 128"));
   w.provider.queue.push({ type: "text", text: "收到投递失败" }, { type: "text", text: "收到差异" });
   await w.approve("animation");
   const failures = () => w.provider.requests.map(text).filter((t) => t.includes("投递已批准的需求更新失败"));
@@ -181,7 +189,7 @@ test("M9：批准差异投递出错时，PM 收到哪一步失败、原因与建
   await until(async () => (await reason()) === "", 1_000);
 }, 120_000);
 
-test("M9：PM 运行超过一个租约时长（其间已续租）后批准的新版本，照样送达准确差异", async () => {
+test("M9：PM 运行超过一个租约时长（其间已续租）后批准的新版本，照样送达通知，PM 用派出时绑定的工具照样能读差异并复核", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
@@ -192,4 +200,6 @@ test("M9：PM 运行超过一个租约时长（其间已续租）后批准的新
   expect(text(w.diffPrompts()[0]!)).toContain(`revision 1 → ${revision}`);
   const reason = await w.runStore.get(w.pm.runId);
   expect(reason.ok && reason.run.stateReason).toBeFalsy();
+  expect((await w.readDiffs([text(w.diffPrompts()[0]!)]))[0]).toContain("animation 的行为");
+  expect(w.owner().context).toMatchObject({ diffRevision: revision });
 }, 120_000);

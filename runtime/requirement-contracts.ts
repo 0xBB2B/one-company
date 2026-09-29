@@ -69,6 +69,7 @@ export type PmContextBaseline = Static<typeof PmContextBaseline>;
 export const PmContext = object({
   format: Type.Literal("pm-physical-context/v1"), runId: id, fence: positive,
   generation: positive, baseline: nullable(PmContextBaseline),
+  diffRevision: Type.Optional(positive),
 });
 export type PmContext = Static<typeof PmContext>;
 export const ApprovedProdChange = object({
@@ -124,6 +125,7 @@ export const commands = {
       reason: Type.String({ maxLength: 1024 }) }), { minItems: 1, maxItems: 512 }) }),
   eventLease: object({ lease: PmLease }),
   rotateContext: object({ lease: PmLease }),
+  recordPmDiff: object({ lease: PmLease, revision: positive }),
   restoreContext: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: ProdReference }),
   issueBaseline: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: ProdReference }),
   acknowledgeBaseline: object({ lease: PmLease, deliveryId: id }),
@@ -170,7 +172,7 @@ const REQUIREMENT_STATE_ADVICE = {
   pm_run_already_bound: { why: "这个 PM 运行已绑定到别的需求或工作区", next: STOP },
   stale_pm_lease: { why: "本 PM 的租约已失效，可能已过期或被新 PM 接管", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
   pm_run_binding_changed: { why: "本 PM 运行与需求的绑定已变化", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
-  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 plan_manage assess-update 逐任务复核新版本，再继续" },
+  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 requirement_manage diff 读完新版本与上一版的差异（上下文压缩后可再查），再用 plan_manage assess-update 逐任务复核，再继续" },
   baseline_changed: { why: "接手时的批准基线已变化", next: "重新读取批准正文后再提交接手理解" },
   event_gap: { why: "批准事件没有按顺序送达", next: STOP },
   approved_version_missing: { why: "需求还没有批准版本", next: "等用户批准需求后再继续" },

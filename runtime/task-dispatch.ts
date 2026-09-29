@@ -13,7 +13,7 @@ import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 
 const TASK_DISPATCH_ADVICE = {
   intake_gate: { why: "接手核对还没通过，或 PM 租约已失效", next: "先完成接手核对；租约已失效时停止操作，由主代理决定是否重新派出 PM" },
-  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 plan_manage assess-update 逐任务复核新版本，再派工" },
+  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 requirement_manage diff 读完新版本与上一版的差异（上下文压缩后可再查），再用 plan_manage assess-update 逐任务复核，再派工" },
   plan_not_confirmed: { why: "任务不在已冻结的计划里", next: "先用 plan_manage confirm 冻结计划，再按冻结后的任务派工" },
   task_not_ready: { why: "任务当前状态不允许这个操作", next: "用 plan_manage read 查看任务状态，按原因处理后再试" },
   dependency_pending: { why: "任务依赖的任务还没完成", next: "先完成这些依赖任务再派" },

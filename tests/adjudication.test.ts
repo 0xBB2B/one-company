@@ -158,6 +158,7 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   await expect(w.manager.resume(failureRun.runId)).rejects.toMatchObject({ code: "plan_not_confirmed" });
   expect((await close.deliveryCheck(w.fixture.requirementId)).blockers).not.toContain("terminated_goal_in_scope");
   await until(() => w.owner().context.baseline?.revision === 2);
+  await w.readDiffs(["revision 1 → 2"]);
   await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
     global: { assessment: "unaffected", rationale: "只改登录做法" } });
@@ -192,6 +193,7 @@ test("M7-AC35：调整目标或范围后须等新的批准版本才能按新范�
   await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 测试桩登录 {#goal.stub}\n短信用测试桩。\n",
     implementGoals: ["goal.stub", "scenario.failure"] });
   await until(() => w.owner().context.baseline?.revision === 2);
+  await w.readDiffs(["revision 1 → 2"]);
   await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
     { taskId: w.login, version: w.task("login").version, assessment: "affected", rationale: "登录目标改为测试桩" },
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],

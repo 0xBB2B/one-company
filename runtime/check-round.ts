@@ -63,7 +63,7 @@ const CHECK_ROUND_ADVICE = {
   session_inactive: COMMON_ADVICE.session_inactive,
   requirement_changed: { why: "需求已不是 PM 接手时的状态", next: "重新读取需求状态后再决定是否开检查轮" },
   invalid_shape: COMMON_ADVICE.invalid_shape,
-  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 plan_manage assess-update 逐任务复核新版本，再开检查轮" },
+  pending_update: { why: "有新批准的需求版本还没复核", next: "先用 requirement_manage diff 读完新版本与上一版的差异（上下文压缩后可再查），再用 plan_manage assess-update 逐任务复核，再开检查轮" },
   check_round_active: { why: "已有一个检查轮在进行", next: "用 status 查看现有检查轮，先结束它再开新的" },
   workers_active: { why: "还有 worker 或 reviewer 运行未结束", next: "等这些运行结束或停止后再开检查轮" },
   writes_pending: { why: "还有未完成的代码写入", next: "等写入完成后再开检查轮" },

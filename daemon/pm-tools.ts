@@ -82,7 +82,7 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
     const plan = track(await createPlanManageTool({ ...shared, authorize, grant: { ...planIdentity, lease: input.lease } }));
     return {
       tools: [
-        toPiTool("requirement_manage", "读取本需求已批准的 prod 正文、章节或准确版本差异（read/diff/metadata）；不能读取草稿、其他需求或已关闭需求。", REQUIREMENT_READ_PARAMETERS, read),
+        toPiTool("requirement_manage", "读取本需求已批准的 prod 正文、章节（read）或两个批准版本之间的准确差异（diff，按 fromRevision/toRevision 查，可重复查）；metadata 看状态；不能读取草稿、其他需求或已关闭需求。", REQUIREMENT_READ_PARAMETERS, read),
         toPiTool("workflow_manage", "查看状态、进入/退出检查阶段、提交中断或等待决策、交付核对；交付核对通过后以 report 提交完成报告（note 写给用户的说明）等待用户验收；等待你处置的任务自己处理不了时，以 escalate（taskId 与 note：卡在哪、需要用户决定什么）交用户裁决。关闭需求只能由用户经主代理决定。", WORKFLOW_MANAGE_PARAMETERS, workflow),
         toPiTool("verification_run", "在绑定工作区的受控沙箱里运行正式检查命令，或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, verification),
         toPiTool("plan_manage", "维护本需求计划：propose 提出、update 修改、confirm 冻结为可执行基线（AI 决策，不是用户授权）、read 读取、assess-update 逐任务影响复核。接手核对通过且有实施授权才能提出或修改。", PLAN_MANAGE_PARAMETERS, plan),

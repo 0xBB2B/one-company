@@ -8,7 +8,7 @@ export interface PmEventDeliveryInput {
   dataRoot: string;
   repoId: string;
   lease: PmLease;
-  /** 同步把差异交给本 PM 物理会话；返回后即视为已进入该会话上下文。 */
+  /** 同步把更新通知交给本 PM 物理会话；返回后即视为已进入该会话上下文。 */
   deliver: (text: string) => void;
 }
 
@@ -24,8 +24,8 @@ function reviewedCurrent(input: PmEventDeliveryInput): boolean {
 }
 
 /**
- * 把已批准更新按序投递给持有租约的 PM：理解基线只在主代理核对通过当前批准版本后建立；
- * 之后每个事件的准确差异交给 PM 会话再确认消费，缺口、乱序与旧租约由需求状态服务拒绝。
+ * 把已批准更新按序通知持有租约的 PM：理解基线只在主代理核对通过当前批准版本后建立；
+ * 之后每个事件只发一句版本通知再确认消费，差异由 PM 按需用 diff 查，缺口、乱序与旧租约由需求状态服务拒绝。
  */
 export async function deliverApprovedEvents(input: PmEventDeliveryInput): Promise<PmEventDeliveryResult> {
   const { lease } = input;
@@ -45,17 +45,13 @@ export async function deliverApprovedEvents(input: PmEventDeliveryInput): Promis
         await service.acknowledgeBaseline({ lease, deliveryId: prepared.deliveryId });
         continue;
       }
-      const prepared = await service.prepareDiff({ lease, eventId: polled.eventId, sequence: polled.sequence });
-      service.consumePreparedDelivery({ lease, handle: prepared.handle, contextGeneration: prepared.contextGeneration, version: prepared.version }, (content) => {
-        if (content.kind !== "diff") return;
-        input.deliver([
-          `已批准更新：revision ${content.fromRevision} → ${content.toRevision}（事件 ${content.sequence}，prod hash ${content.toHash}）。`,
-          "准确差异如下：", content.diff,
-          `请据此分析对规则、代码与各任务的影响，用 one_company_plan_manage assess-update（revision ${content.toRevision}）逐任务复核，再按需局部调整计划。`,
-        ].join("\n"));
-      });
-      await service.acknowledgeEvent({ lease, eventId: prepared.eventId, sequence: prepared.sequence, toRevision: prepared.toRevision,
-        toCommit: prepared.toCommit, toHash: prepared.toHash });
+      input.deliver([
+        `已批准更新：revision ${polled.fromRevision} → ${polled.toRevision}。`,
+        `先用 one_company_requirement_manage diff（fromRevision ${polled.fromRevision}，toRevision ${polled.toRevision}）读完全部分页，分析对规则、代码与各任务的影响；` +
+        `再用 one_company_plan_manage assess-update（revision ${polled.toRevision}）逐任务复核，按需局部调整计划。上下文被压缩后差异丢了，可以再用 diff 查。`,
+      ].join("\n"));
+      await service.acknowledgeEvent({ lease, eventId: polled.eventId, sequence: polled.sequence, toRevision: polled.toRevision,
+        toCommit: polled.toCommit, toHash: polled.toHash });
     }
   } finally { service.dispose(); }
 }

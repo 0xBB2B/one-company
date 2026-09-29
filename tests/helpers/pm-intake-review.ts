@@ -1,5 +1,6 @@
 import { createSessionManagerForRun } from "../../runtime/session-records.ts";
 import { deliverApprovedEvents } from "../../runtime/pm-event-delivery.ts";
+import { readNoticedDiffs } from "./pm-diff-read.ts";
 import { createPmIntakeProviders, PM_INTAKE_TOOL } from "../../runtime/pm-intake-runtime.ts";
 import type { IntakeSubmissionBaseline } from "../../runtime/pm-intake-runtime.ts";
 import type { PmUnderstanding } from "../../runtime/pm-intake-contracts.ts";
@@ -33,10 +34,13 @@ export async function pmIntakeReviewKit(fixture: PmIntakeFixture) {
     await intake.recordReview(fixture.call, view.requestId, fixture.operationId(), { result: "passed", shortIssues: [] });
   }
   const delivered: string[] = [];
-  /** 按守护进程同样的路径把已批准差异交给夹具 PM 并确认消费。 */
-  function consume() {
-    return deliverApprovedEvents({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, lease: fixture.lease,
+  /** 按守护进程同样的路径把已批准更新通知交给测试用 PM 并确认消费，再像 PM 那样按通知用 diff 读完差异。 */
+  async function consume() {
+    const before = delivered.length;
+    const result = await deliverApprovedEvents({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, lease: fixture.lease,
       deliver: (text) => { delivered.push(text); } });
+    await readNoticedDiffs({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, lease: fixture.lease }, delivered.slice(before));
+    return result;
   }
   return { content, submit, intake, current, pass, consume, delivered };
 }

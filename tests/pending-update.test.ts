@@ -182,7 +182,7 @@ test("M6-AC16：defer 期间绑定检查轮的读取只取该轮登记的原批�
   const unbound = await w.reader("qa");
   const current = await unbound.execute({ action: "read" }) as { text: string; source: { commit: string; purpose: string } };
   expect(current.text).toContain("快跑"); expect(current.source).toMatchObject({ commit: latest.approved!.commit, purpose: "black_box_acceptance" });
-  await expect(bound.execute({ action: "diff" })).rejects.toMatchObject({ code: "diff_unavailable" });
+  await expect(bound.execute({ action: "diff", fromRevision: 1 })).rejects.toMatchObject({ code: "diff_unavailable" });
   await expect(w.reader("qa", { checkRoundId: uuidv7() }).then((tool) => tool.execute({ action: "read" }))).rejects.toMatchObject({ code: "check_round_invalid" });
   await expect(w.reader("qa", { checkRoundId: round.checkRoundId, lease: { ...w.lease, fence: w.lease.fence + 1 } }).then((tool) => tool.execute({ action: "read" }))).rejects.toMatchObject({ code: "lease_stale" });
   const metadata = await bound.execute({ action: "metadata" }) as { source: { revision: number } };

@@ -7,7 +7,7 @@ import { uuidv7 } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
-import { createRequirementReadTool } from "../runtime/requirement-read-tool.ts";
+import { createRequirementReadTool, RequirementReadError } from "../runtime/requirement-read-tool.ts";
 import type { RequirementReadBinding, RequirementReadToolOptions } from "../runtime/requirement-read-tool.ts";
 import * as storage from "../runtime/prod-storage.ts";
 import { inspectProdStructure } from "../runtime/prod-view.ts";
@@ -62,7 +62,7 @@ async function world(body = BODY) {
   function binding(role: RequirementReadBinding["role"] = "pm"): RequirementReadBinding {
     return { callerId: uuidv7(), runId: role === "pm" ? lease.runId : uuidv7(), role,
       requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, branch: workspace.branch,
-      lease: structuredClone(lease), diffBaseline: { revision: 1, reference: { commit: approved.commit, hash: approved.prodHash.slice(7) } } };
+      lease: structuredClone(lease) };
   }
   const host: RequirementReadToolOptions["authorize"] = (request) => sessions.get(request.binding.callerId) === JSON.stringify(request.binding);
   async function tool(bound = binding(), authorize = host) {
@@ -159,7 +159,7 @@ test("大转义diff按整包预算续读，来源仍是准确批准提交对", a
   let cursor: string | undefined, combined = "", pages = 0;
   do {
     expect(++pages).toBeLessThan(16);
-    const result = await tool.execute({ action: "diff", maxBytes: 32_768, ...(cursor ? { cursor } : {}) });
+    const result = await tool.execute({ action: "diff", fromRevision: 1, maxBytes: 32_768, ...(cursor ? { cursor } : {}) });
     const page = bounded(result);
     expect(result).toMatchObject({ difference: { fromCommit: w.approved.commit, toCommit: approved.commit, fromRevision: 1, toRevision: 2 } });
     expect(page.coverage.startByte).toBe(Buffer.byteLength(combined));
@@ -272,23 +272,38 @@ test("游标不能篡改/跨角色工厂/页范围/需求复用，dispose废止�
   tool.dispose(); await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "tool_closed" });
 });
 
-test("批准diff使用绑定旧批准到当前批准，不用HEAD或中间草稿，模型不能指定from/to", async () => {
+test("PM 按版本号查两个批准版本之间的 diff，不用 HEAD 或中间草稿；新版本批准后旧区间仍可重查；范围不对说明原因；读完登记已查到的版本", async () => {
   const w = await world(); const tool = await w.tool();
   await w.save(w.created.requirementId, "草稿中间态", false);
   const second = await w.save(w.created.requirementId, BODY + "新增批准目标\n");
   await w.save(w.created.requirementId, "HEAD未批准秘密", false);
-  const result = await tool.execute({ action: "diff" });
+  const result = await tool.execute({ action: "diff", fromRevision: 1 });
   expect(result).toMatchObject({ kind: "diff", difference: { fromCommit: w.approved.commit, toCommit: second.commit, fromRevision: 1, toRevision: 2 } });
   expect(content(result).text).toContain("+新增批准目标");
   expect(content(result).text).not.toMatch(/草稿中间态|HEAD未批准秘密/);
-  await expect(tool.execute({ action: "diff", fromRevision: 1, toRevision: 1 })).rejects.toMatchObject({ code: "invalid_shape" });
+  expect(w.state.pmOwner(w.created.requirementId)!.context!.diffRevision).toBe(2);
+
+  await w.save(w.created.requirementId, BODY + "新增批准目标\n第三版目标\n");
+  const again = await tool.execute({ action: "diff", fromRevision: 1, toRevision: 2 });
+  expect(again).toMatchObject({ difference: { fromRevision: 1, toRevision: 2, toCommit: second.commit } });
+  expect(content(again).text).not.toContain("第三版目标");
+  expect(w.state.pmOwner(w.created.requirementId)!.context!.diffRevision).toBe(2);
+  for (const range of [{ fromRevision: 3, toRevision: 2 }, { fromRevision: 1, toRevision: 9 }]) {
+    const error = await tool.execute({ action: "diff", ...range }).catch((caught: unknown) => caught) as RequirementReadError;
+    expect(error.code).toBe("diff_range_invalid");
+    expect(error.advice.why).toContain(`收到 ${range.fromRevision} → ${range.toRevision}，当前批准版本是 3`);
+  }
+  await tool.execute({ action: "diff", fromRevision: 3, toRevision: 3 });
+  expect(w.state.pmOwner(w.created.requirementId)!.context!.diffRevision).toBe(2);
+  await tool.execute({ action: "diff", fromRevision: 2 });
+  expect(w.state.pmOwner(w.created.requirementId)!.context!.diffRevision).toBe(3);
 });
 
 test("closing/closed不提供正文/diff或旧页，只返回固定最少metadata，拒绝前不读正文", async () => {
   const w = await world(); const tool = await w.tool();
   const cursor = content(await tool.execute({ action: "read", maxBytes: 32 })).coverage.nextCursor;
   w.close(); const probe = vi.spyOn(storage, "readVersion"); const diffProbe = vi.spyOn(storage, "diffVersions");
-  for (const input of [{ action: "read" }, { action: "read", maxBytes: 32, cursor }, { action: "diff" }]) {
+  for (const input of [{ action: "read" }, { action: "read", maxBytes: 32, cursor }, { action: "diff", fromRevision: 1 }]) {
     await expect(tool.execute(input)).rejects.toMatchObject({ code: "closed_metadata_only" });
   }
   expect(await tool.execute({ action: "metadata" })).toEqual({ kind: "metadata", requirementId: w.created.requirementId, lifecycle: "closing" });

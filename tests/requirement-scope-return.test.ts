@@ -78,8 +78,7 @@ async function fixture() {
   };
   const tool = async (authorize: () => boolean = () => true) => {
     const t = await createRequirementReadTool({ ...options, binding: { role: "qa", callerId: uuidv7(), runId: uuidv7(), requirementId: saved.requirementId,
-      repoId: options.repoId, workspaceId: lease.workspaceId, branch: workspace.data.workspace!.branch, lease,
-      diffBaseline: { revision: 1, reference: baseline.data.approved! } }, authorize });
+      repoId: options.repoId, workspaceId: lease.workspaceId, branch: workspace.data.workspace!.branch, lease }, authorize });
     cleanups.push(() => t.dispose()); return t;
   };
   return { tool, supersede, verifyRevision, state, baseline };
@@ -109,7 +108,7 @@ for (const action of ["read", "diff"] as const) for (const boundary of ["service
         const value = await check.call(this, lease); if (pageBuilt) inject(); return value;
       });
     }
-    await expect(tool.execute({ action, maxBytes: 4 })).rejects.toMatchObject({ code: expect.stringMatching(/^manifest_decision/) });
+    await expect(tool.execute({ action, maxBytes: 4, ...(action === "diff" ? { fromRevision: 1 } : {}) })).rejects.toMatchObject({ code: expect.stringMatching(/^manifest_decision/) });
     expect(injected).toBe(true); f.verifyRevision();
     if (boundary === "last-host") expect(hostAfterPage).toBe(3);
   });
