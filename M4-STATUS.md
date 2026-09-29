@@ -7,7 +7,7 @@
 | AC | 状态 | 证据 | 剩余缺口 |
 |---|---|---|---|
 | AC1 prod 自包含可理解 | 通过 | tests/main-requirement-interaction.test.ts、tests/prod-view.test.ts；真实模型语义试用 S1–S7（.bb-spec/.cache/m4-closeout/semantic-trial-01） | 语义证据为一次真实模型试用，不是生产 Interpreter 请求路径 |
-| AC2 draft 仅主代理读写、受限 PM 只读已批准基线 | 通过 | tests/requirement-read-tool.test.ts、tests/requirement-role-reader.test.ts、tests/integration/requirement-role-reader.test.ts | 无 |
+| AC2 draft 仅主代理读写、受限 PM 只读已批准基线 | 通过 | tests/requirement-read-tool.test.ts | 无 |
 | AC3 长段输入区分目标/约束/排除/未来/委托/动作 | 通过 | tests/user-interaction.test.ts、tests/host-result-currentness.test.ts；语义试用 S1–S3 | 语义证据有限，同 AC1 |
 | AC4 伪主体、伪 role、旧 hash 不产生授权 | 通过 | tests/main-requirement-interaction.test.ts、tests/security-regressions.test.ts、tests/legacy-retire-safety.test.ts、tests/legacy-workflow-retired.test.ts | 无 |
 | AC5 中文查询命中代码/spec、不命中 prod、closed 拒绝 | 通过 | tests/knowledge-query.test.ts、tests/knowledge-query-tool.test.ts、tests/prod-exclusion.test.ts | 无 |
