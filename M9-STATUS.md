@@ -9,14 +9,14 @@
 | AC | 状态 | 证据 | 剩余缺口 |
 |---|---|---|---|
 | AC1 一次安装离线解析首批语言，索引跨重启复用，丢失可重建 | 通过 | 本阶段基线上重跑：tests/installation/syntax-parser.test.ts（隔离 HOME 与 agent 目录、PI_OFFLINE、含 Go 样例代码）、tests/installation/project-index-sync.test.ts（daemon 重启后复用、同 mtime 离线改动；8020b19 新增：删除 index.db 后重启，下一次查询从允许文件自动重建并读到当前内容、不再弹确认、归档仍排除）；安装测试全部通过 | 无 |
-| AC2 至少 10 个预登记问题，出处与权限可核对 | 未开始 | 无 | 多段长跑在新基线 e59d62d 上用 sol 已走到追加动画批准之后，卡在产品缺陷：批准 revision 2 后 PM 收不到差异、影响复核被拒（证据 .bb-spec/.cache/m9/acceptance-sol/progressive-2026-09-29T05-51-56-151Z）；修复后重跑，提问段尚未走到 |
-| AC3 完整渐进需求场景：拆分、局部调整，错误代码不反改目标 | 未开始 | 可复用：tests/plan-assess.test.ts（脚本化模型） | 需真实模型在安装产物中跑一轮移动→快跑→跳跃→动画 |
+| AC2 至少 10 个预登记问题，出处与权限可核对 | 部分 | 2026-09-30 基线 26ae997 上 sol 多段长跑通过（1/1，29 分钟）：快跑关闭并归档、跳跃动画进行中之后，绑定会话 2 题、未绑定会话 9 题共 11 题全部作答；未绑定会话列进行中需求内容时未绕读本机需求存储（judgement.json bypass 为空）（证据 .bb-spec/.cache/m9/acceptance-sol-r11/progressive-2026-09-29T17-05-06-474Z/questions.json） | 11 题回答的出处与权限尚未逐题核对；⑨⑩无记录须答「未知」未核对 |
+| AC3 完整渐进需求场景：拆分、局部调整，错误代码不反改目标 | 部分 | 同一轮长跑：快跑完成关闭并合并；跳跃批准后实施，追加动画批准后 PM 收到版本通知、用 diff 按需读完差异、逐任务复核并局部调整计划（证据 .bb-spec/.cache/m9/acceptance-sol-r11/progressive-2026-09-29T17-05-06-474Z/runs、report-animation.json） | 「代码错误不能反向改目标」未在真实模型中单独注入取证 |
 | AC4 六职责、10 工具、拒读、目录排除、关闭竞争、旧 PM 不复用、无正文提醒矩阵；披露 §5.7 与 §10.4 限制 | 通过 | 矩阵逐行对照 .bb-spec/.cache/m9/matrix-13.1.md（38 行：完整 22、部分 15、无 1；无的「大小」行为 M8A 漏删的 spec 遗留，经用户同意已由 16a1621 删除）；本项所列权限、活动访问、关闭、正常正文入口、explore 结束与撤权、旧 PM 不复用各行均为完整覆盖，本基线单元 2341、安装产物集成 80 条通过；两项已知限制写入 README「已知限制」（2520a02）；会话与提醒行只断言关闭结果为无正文建议，未断言主会话不被清空（属已知限制，不作门槛） | 无 |
 | AC5 关闭后本机 prod 保留，只有完成正文可归档；他人无需原作者数据可人工查归档 | 待核对 | 可复用：tests/team-clone.test.ts、tests/git-delivery.test.ts、tests/workflow-close.test.ts | 在安装产物全流程中复验一次；M8A-AC8 起归档带验收记录，复验时核对他人能在归档里看到 QA 结果 |
 | AC6 无 prompts 模板与业务 Git 集成仍可存正文版本并交付；适配器不回显关闭正文 | 待核对 | 可复用：tests/zero-custom-loop.test.ts、tests/git-delivery-extension.test.ts、tests/git-delivery.test.ts | 在安装产物全流程中复验一次；M8A-AC8 起 Git 交付按归档整体 hash 核对 |
 | AC7 类型、回归、集成、安装、性能、安全测试实际执行；两种更新调度实测；列出未覆盖项 | 未开始 | 无 | 阶段末全量执行；性能按 §13.2 在当前基线重测（可复用 tests/helpers/m3-benchmark.ts、tests/helpers/m4-query-benchmark.ts） |
 | AC8 临时安装、克隆、需求 Git、数据库、WASM 验证文件、日志、进程清理 | 未开始 | 无 | 阶段末执行 |
-| AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 部分 | 安装产物真实模型：第 57 轮（AC12）与长跑第 1—3 轮的快跑、跳跃段均走通受限接手、主代理核对、PM 规划与派 worker/reviewer/QA；tests/integration/agent-gates.test.ts（36dd9d4，安装产物上通过）：未认证连接派 PM 被拒、已有有效 PM 时再派被拒 | 增量复核（长跑追加动画段）第 4 轮运行中；新物理 PM 重核对已在安装产物上实测（agent-gates M9-AC9 用例：停止后重派，核对前派 worker 以 intake_gate 被拒）|
+| AC9 安装产物跑通受限接手、主代理核对、PM 规划与派工、增量复核、新 PM 重核对；伪身份在真实入口被拒 | 通过 | 真实模型：r11 长跑三段均走通受限接手、主代理核对、PM 规划与派 worker/reviewer/QA，追加动画段走通增量复核（.bb-spec/.cache/m9/acceptance-sol-r11/progressive-2026-09-29T17-05-06-474Z）；tests/integration/agent-gates.test.ts（安装产物上通过）：未认证连接派 PM 被拒、已有有效 PM 时再派被拒、停止后重派的新 PM 核对前派 worker 以 intake_gate 被拒 | 无 |
 | AC10 安装产物中 main 无需求与 PM 有需求的 explore，三种来源；main 未初始化纯网页成功单独实测 | 部分 | 2026-09-29 新基线 e59d62d 上 sol 运行 tests/acceptance/explore-loop.test.ts 通过：main 在无需求、未初始化时派 explore 纯网页检索成功（7 轮）、本地文件检索成功（3 轮），初始化索引后检索成功（5 轮），全程未建需求，explore 会话父为 main、requirementId 为空（证据 .bb-spec/.cache/m9/acceptance-sol/explore-2026-09-29T06-59-50-272Z）；PM 父 explore 见各长跑与 AC12 运行 | PM 父 explore 的撤权、接管失效在安装产物真实模型中未单独取证；网络失败降级未单列 |
 | AC11 接手与 explore 的上下文、工具结果、回读、重试、耗时实测 | 未开始 | 无 | 依赖 AC2 问题集与模型选定 |
 | AC12 全新数据根、零自定义，真实模型走完需求到关闭 | 通过 | 第 57 轮（M8C 收口后基线 f46ae8c）：pnpm run test:acceptance -t "M9-AC12" 通过（1/1），9.7 分钟以完成关闭，全为默认定义，归档五大板块、实现记录在实现板块末尾、验收记录在验收板块末尾，项目规范经确认写入 AGENTS.md；PM 在关闭时停止（stopCause=requirement_closing）（证据 .bb-spec/.cache/m9/acceptance/zero-custom-2026-09-28T13-35-04-858Z）；该轮一个 explore 因 searchedScope 写 src/ 被误拒两次、未交结果，已由 6747b50 修复；真实模型有波动，单轮通过不代表每轮必过 | 无（2026-09-29 改用 sol 后重跑也通过：.bb-spec/.cache/m9/acceptance-sol/zero-custom-2026-09-28T16-09-14-871Z） |
@@ -29,9 +29,7 @@
 
 ## 当前阻塞
 
-2026-09-29 下午修复，等 sol 多段长跑复验（证据 .bb-spec/.cache/m9/acceptance-sol-r6/）：①追加需求批准后 PM 收不到差异——投递凭据沿用派出时租约，已改为续租后接回；随后按用户决定改为投递只发版本通知，PM 用 diff 按版本号按需查（压缩后可重查），读完才能复核，计划 §5.4 已补。②跳跃段批准卡住（r5）——解释器重答只补一句反馈，sol 当成本轮输入放弃，已改为重发完整输入加反馈；草稿核验器看不到主代理的提问，已按用户决定把本需求的提问交给核验器，用户明确采纳的推荐项算用户决定。③事件服务与存储层报错补上原因。
-
-2026-09-29 新基线 e59d62d（改名 one-company、报错改造之后）sol 全量重跑：AC12、M8C-AC7、AC13、AC10 通过，多段长跑卡在上述缺陷（.bb-spec/.cache/m9/acceptance-sol/，汇总见 .bb-spec/.cache/m9/acceptance-sol-r4.txt）。
+无。2026-09-29 至 30 为跑通多段长跑修了九处（均经用户决定）：续租后接回租约；差异改为 PM 按需用 diff 查且读完才能复核；解释器重答发完整输入；草稿核验器能看到主代理提问；授权按整条目标补齐；待更新任务目标被收回可升级给用户；QA 只验实施授权内验收；草稿重存作废段落已变的旧提问；主代理可读 docs/prod 归档。另改样例规范触发条件补「不按 Shift」。
 
 ## 下一窗口续接提示
 
@@ -42,7 +40,7 @@
 - 真实模型全部用 5x / gpt-6-sol（2026-09-29 由 luna 改），thinking high；隔离 agent 目录临时复制 models.json 与 auth.json（0600），每轮结束即删，不动 ~/.pi/agent。
 - 真实模型与联网验收走 pnpm run test:acceptance（pnpm test 默认不跑）；pi 开发依赖为 0.87.1。
 - 验证分工：AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
-- AC2 问题集 11 题（快跑跑到关闭并归档、跳跃动画进行中之后提问：①水平速度怎么算在哪；②Go 的 Greet 做什么谁调用；③空中能否再跳依据哪段代码与测试；④进行中的跳跃动画要求哪些姿态；⑤不指定需求列出所有进行中需求内容；⑥最新批准版比上一版改了什么；⑦已完成快跑当时的验收标准；⑧快跑与跳跃的实现有没有相互影响（依据代码与测试）；⑨快跑测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 旧需求写新需求）。⑤⑦⑪须拒给正文，模型用普通 read 读归档即判未通过并记为旁路案例；⑨⑩无记录须答"未知"。
+- AC2 问题集 11 题（快跑跑到关闭并归档、跳跃动画进行中之后提问：①水平速度怎么算在哪；②Go 的 Greet 做什么谁调用；③空中能否再跳依据哪段代码与测试；④进行中的跳跃动画要求哪些姿态；⑤不指定需求列出所有进行中需求内容；⑥最新批准版比上一版改了什么；⑦已完成快跑当时的验收标准；⑧快跑与跳跃的实现有没有相互影响（依据代码与测试）；⑨快跑测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 旧需求写新需求）。⑤须拒给正文（未绑定会话不得绕读本机需求存储）；⑦⑪主代理可直接读 docs/prod 归档（2026-09-30 用户决定）；⑨⑩无记录须答"未知"。
 - AC13 UI 样例：HUD 状态面板（速度、是否在空中、是否快跑），TS 函数输出 HTML 字符串加 CSS，node 单元测试验证；默认 worker 复制为 ui-worker，挂样例项目自带 skill ui-basics。
 当前：M8A、M8B、M8C 已收口，M9 恢复；M8C 起需求文档规范由 requirement-doc skill 定义（包内默认五大板块），运行记录 stopCause 写明停止原因，卡点可从 report.json 的 runs[].stopCause 查。AC12 在第 55 轮通过，归档记录改为插入所属板块后须重跑；之后按计划推进其余 AC（建议先 AC2 问题集，它依赖快跑已关闭并归档的状态）。真实模型运行命令：ONE_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6-sol ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
