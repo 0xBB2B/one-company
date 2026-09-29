@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import type { Clock } from "../runtime/clock.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import type { RoleCatalogEntry } from "../runtime/roles.ts";
-import type { ListRunOptions, RunKind, RunRecord, StopCause } from "../runtime/run-store.ts";
+import type { ListRunOptions, RunKind, RunRecord, StopCause, StopReason } from "../runtime/run-store.ts";
 import { isTerminalState, RunStore } from "../runtime/run-store.ts";
 import type { Host, ShellRegistry, TaskRecord } from "../runtime/shell-registry.ts";
 import { repositoryDatabase, UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
@@ -47,6 +47,7 @@ import { endExploreSession, registerExploreSession } from "../runtime/explore-se
 import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
 import { AdvisedError, toolFailure } from "../runtime/tool-failure.ts";
+import { sessionFilePath } from "../runtime/session-records.ts";
 import { defaultPageGetter, defaultWebDeps, webFetch, webSearch } from "../runtime/web-access.ts";
 import type { PageGetter, WebDeps } from "../runtime/web-access.ts";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -152,18 +153,20 @@ function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSou
     "核对通过后，之后每次已批准更新的准确差异会由宿主按序送达本会话；收到后用 pi_company_plan_manage assess-update 逐任务复核。",
   ].join("\n");
 }
-export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "parentRunId" | "state" | "startedAt" | "updatedAt" | "endedAt" | "turns" | "usage" | "pausedMs" | "pausedAt"> & { stateReason?: string };
-function runMetadata(run: RunRecord): RunMetadata {
+export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "parentRunId" | "state" | "startedAt" | "updatedAt" | "endedAt" | "turns" | "usage" | "pausedMs" | "pausedAt" | "stateReason" | "stopCause"> & { log: string };
+function runMetadata(run: RunRecord, logOf: (runId: string) => string): RunMetadata {
   const timestamp = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
   if (!run || !UUID_V7_PATTERN.test(run.id) || !["requirement", "role"].includes(run.kind)
     || !["queued", "running", "pausing", "paused", "paused_network", "waiting_answer", "completed", "failed", "stopped", "interrupted"].includes(run.state)
     || !timestamp(run.startedAt) || !timestamp(run.updatedAt) || run.endedAt !== undefined && !timestamp(run.endedAt)
-    || !Number.isSafeInteger(run.turns) || run.turns < 0 || run.parentRunId !== undefined && (!UUID_V7_PATTERN.test(run.parentRunId) || run.parentRunId === run.id || run.kind !== "role")) throw protocolError("legacy_metadata_unavailable", "运行元数据不可读，未知记录已保全待核对");
+    || !Number.isSafeInteger(run.turns) || run.turns < 0 || run.parentRunId !== undefined && (!UUID_V7_PATTERN.test(run.parentRunId) || run.parentRunId === run.id || run.kind !== "role")) throw protocolError("legacy_metadata_unavailable", `运行记录 ${String(run?.id)} 的类型、状态、时间或轮次字段不合规`);
   if (!UUID_V7_PATTERN.test(run.requirement)) assertRecordRequirementId(run.requirement);
   return { id: run.id, kind: run.kind, requirement: run.requirement, parentRunId: run.parentRunId,
     state: run.state, startedAt: run.startedAt, updatedAt: run.updatedAt, endedAt: run.endedAt, turns: run.turns,
     ...(run.usage ? { usage: { ...run.usage } } : {}), ...(run.pausedMs ? { pausedMs: run.pausedMs } : {}), ...(run.pausedAt ? { pausedAt: run.pausedAt } : {}),
-    ...(run.stateReason ? { stateReason: "运行原因已记录；状态元数据不返回旧正文" } : {}) };
+    // 旧流程的运行记录可能在原因里存了旧目标正文，只有新需求（UUIDv7 编号）的运行才照实返回原因
+    ...(run.stateReason ? { stateReason: UUID_V7_PATTERN.test(run.requirement) ? run.stateReason : "旧流程运行，原因不返回" } : {}),
+    ...(run.stopCause ? { stopCause: { ...run.stopCause } } : {}), log: logOf(run.id) };
 }
 /** 续接前核对原绑定的角色定义与 skills 文件未变；读不到也视为已变。 */
 async function agentUnchanged(agent: AgentFingerprint): Promise<boolean> {
@@ -177,9 +180,37 @@ function withSkills(context: string, skills: string): string {
   return skills ? `${context}\n\n# 本任务加载的 skills\n${skills}` : context;
 }
 
-function exploreReport(runId: string, outcome: string, research: ExploreResult | null, turnsUsed: number): Record<string, unknown> {
+const STOP_REASON_TEXT: Record<StopReason, string> = {
+  main_agent: "主代理停止了该运行",
+  stopped_by_pm: "PM 停止了该运行",
+  parent_stopped: "派出它的上级运行已停止",
+  superseded_by_new_pm: "新派出的 PM 接管了该需求",
+  requirement_closing: "需求正在关闭",
+  lease_renewal_failed: "PM 租约续期失败",
+  config_changed: "角色定义或技能在暂停期间被修改，不能按原定义续接",
+  replanned: "计划已修改，该任务被重新规划",
+  stop_all: "用户停止了全部运行",
+};
+function stopReasonText(cause: StopCause): string {
+  return cause.code ? `${STOP_REASON_TEXT[cause.reason]}（${cause.code}）` : STOP_REASON_TEXT[cause.reason];
+}
+const errorMessage = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
+type SessionOutcome = "completed" | "turn_limit_reached" | "ended_without_result" | "failed" | "stopped" | "superseded";
+function outcomeReason(outcome: SessionOutcome, failure?: string): string {
+  switch (outcome) {
+    case "completed": return "按时提交了结果";
+    case "turn_limit_reached": return "用完轮次上限仍没有提交结果";
+    case "ended_without_result": return "模型停止回复，但没有提交结果";
+    case "failed": return `会话出错：${failure ?? "没有收到错误说明"}`;
+    case "stopped": return "运行被停止";
+    case "superseded": return "被新派出的运行取代";
+  }
+}
+function exploreReport(runId: string, outcome: SessionOutcome, research: ExploreResult | null, turnsUsed: number, log: string, failure?: string): Record<string, unknown> {
   return { kind: "explore-report", runId, outcome, turnsUsed, research,
-    note: research ? "research 不是 PASS：使用前核对来源、当前性与截断，必要时回读关键全文" : "未提交 research，没有可用结果" };
+    ...(research ? { note: "research 不是 PASS：使用前核对来源、当前性与截断，必要时回读关键全文" }
+      : { reason: `未提交 research，没有可用结果：${outcomeReason(outcome, failure)}`,
+        next: "按原因决定是否调整问题、线索或轮次上限后重派；原因不够判断时读运行日志", log }) };
 }
 function shellMetadata(task: TaskRecord) {
   return { taskId: task.taskId, host: { kind: task.host.kind, id: task.host.id, runId: task.host.runId },
@@ -189,7 +220,9 @@ function shellMetadata(task: TaskRecord) {
     identityVerified: task.identityVerified, stoppedBy: task.stoppedBy };
 }
 function taskHost(run: RunRecord): Host { return { kind: "role", id: run.id, role: run.role, runId: run.id }; }
-function protocolError(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }
+function protocolError(code: string, message: string, next?: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code }, next ? { advice: { why: message, next } } : {});
+}
 const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 
 /** 旧运行只保留元数据、暂停与安全停止；不存在派工、队列执行和恢复器。 */
@@ -306,8 +339,9 @@ export class RunManager {
       registered = true;
       tools?.dispose();
       try { state.releasePm(lease); } catch { /* 租约到期后自然失效 */ }
-      await this.runStore.update(run.id, { state: "failed", stateReason: "pm_session_failed" });
-      throw protocolError("pm_session_failed", (error as Error).message);
+      const why = `PM 会话创建失败：${(error as Error).message}`;
+      await this.runStore.update(run.id, { state: "failed", stateReason: why });
+      throw protocolError("pm_session_failed", why, "按原因处理后重新派出 PM；原因涉及模型或凭据时请用户检查模型配置");
     }
     const renewal = this.options.clock.setIntervalExcludingSleep(() => {
       void state.renewPm(lease).catch((error: unknown) => { void this.stop(run.id, { reason: "lease_renewal_failed", code: errorCode(error) }).catch(() => {}); });
@@ -354,7 +388,7 @@ export class RunManager {
         if (child.role === "pi-company.explore" && !isTerminalState(child.state)) await this.stop(child.id, { reason: "parent_stopped" }).catch(() => {});
       }
     }
-    if (current.ok && !isTerminalState(current.run.state)) await this.runStore.update(runId, { state, ...(reason ? { stateReason: reason } : {}) });
+    if (current.ok && !isTerminalState(current.run.state)) await this.runStore.update(runId, { state, ...(state === "failed" ? { stateReason: outcomeReason("failed", reason) } : {}) });
     delete entry.pm;
   }
 
@@ -418,8 +452,9 @@ export class RunManager {
       registered = true;
       tools?.dispose();
       fail();
-      await this.runStore.update(run.id, { state: "failed", stateReason: "subagent_session_failed" });
-      throw protocolError("subagent_session_failed", (error as Error).message);
+      const why = `子代理会话创建失败：${(error as Error).message}`;
+      await this.runStore.update(run.id, { state: "failed", stateReason: why });
+      throw protocolError("subagent_session_failed", why, "按原因处理后重新派工；原因涉及模型、技能或定义配置时交用户处理");
     }
     const toolSet = tools;
     this.sessions.set(run.id, { kind: "role", handle, subagent: { parentRunId: input.pmRunId, taskId: task.taskId, review, dispose: () => toolSet.dispose() } });
@@ -429,7 +464,7 @@ export class RunManager {
     handle.events.on("completed", () => { void this.finishSubagent(run.id, "completed"); });
     handle.events.on("turn_limit_reached", () => { void this.finishSubagent(run.id, "turn_limit_reached"); });
     handle.events.on("ended_without_result", () => { void this.finishSubagent(run.id, "ended_without_result"); });
-    handle.events.on("failed", () => { void this.finishSubagent(run.id, "failed"); });
+    handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishSubagent(run.id, "failed", reason); });
     await this.runStore.update(run.id, { state: "running" });
     handle.prompt(review ? "开始审查。" : "开始执行任务。");
     return { runId: run.id, maxTurns };
@@ -467,7 +502,7 @@ export class RunManager {
     });
   }
 
-  private async finishSubagent(runId: string, reported: "completed" | "turn_limit_reached" | "ended_without_result" | "failed" | "stopped"): Promise<void> {
+  private async finishSubagent(runId: string, reported: Exclude<SessionOutcome, "superseded">, failure?: string): Promise<void> {
     const entry = this.sessions.get(runId);
     if (!entry?.subagent) return;
     const outcome = this.supersededRuns.delete(runId) && reported === "stopped" ? "superseded" : reported;
@@ -495,7 +530,7 @@ export class RunManager {
     }
     const current = await this.runStore.get(runId);
     if (current.ok && !isTerminalState(current.run.state)) {
-      await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcome });
+      await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcomeReason(outcome, failure) });
     }
     const parent = this.sessions.get(parentRunId);
     const next: Partial<Record<PlanTask["status"], string>> = {
@@ -510,8 +545,9 @@ export class RunManager {
     }
     const lines = [`${review ? "审查" : "子代理"}运行 ${runId} 已结束：任务 ${task.key}，结局 ${effective}，已用 ${used?.turnsUsed ?? 0}/${used?.maxTurns ?? 0} 轮，任务状态 ${task.status}。`,
       report ? `提交结论 ${report.conclusion}：${report.summary}；验证引用 ${report.verificationIds.join("、") || "无"}；分级问题 ${report.findings.length} 项。`
-        : outcome === "ended_without_result" ? "没有提交结果就结束了本轮。" : "没有提交结果。",
-      next[task.status] ?? "请核对实际证据后再整合结果。"];
+        : `原因：${outcomeReason(outcome, failure)}。`,
+      `建议：${next[task.status] ?? "请核对实际证据后再整合结果。"}`,
+      `运行日志：${this.runLog(runId)}（证据不够判断时，读这份会话记录查看子代理的思考与工具调用）`];
     if (parent?.pm && ["running", "paused", "paused_network"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
   }
 
@@ -549,8 +585,9 @@ export class RunManager {
       explore = exploreInput(parent, input.request, source);
       registerExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, explore);
     } catch (error) {
-      if (requirementId) await this.runStore.update(runId, { state: "failed", stateReason: "explore_rejected" });
-      throw protocolError("invalid_params", (error as Error).message);
+      const why = `检索请求不合规：${(error as Error).message}`;
+      if (requirementId) await this.runStore.update(runId, { state: "failed", stateReason: why });
+      throw protocolError("invalid_params", why, "按原因改正问题、线索或检索来源后重派");
     }
     let captured: ExploreResult | null = null;
     let registered = false;
@@ -571,8 +608,9 @@ export class RunManager {
     } catch (error) {
       registered = true; result.dispose();
       endExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, "session_failed");
-      if (requirementId) await this.runStore.update(runId, { state: "failed", stateReason: "explore_session_failed" });
-      throw protocolError("subagent_session_failed", (error as Error).message);
+      const why = `检索会话创建失败：${(error as Error).message}`;
+      if (requirementId) await this.runStore.update(runId, { state: "failed", stateReason: why });
+      throw protocolError("subagent_session_failed", why, "按原因处理后重派；原因涉及模型或联网配置时交用户处理");
     }
     const capture = () => captured;
     if (requirementId) {
@@ -594,7 +632,7 @@ export class RunManager {
     handle.events.on("completed", () => { void this.finishExplore(runId, "completed"); });
     handle.events.on("turn_limit_reached", () => { void this.finishExplore(runId, "turn_limit_reached"); });
     handle.events.on("ended_without_result", () => { void this.finishExplore(runId, "ended_without_result"); });
-    handle.events.on("failed", () => { void this.finishExplore(runId, "failed"); });
+    handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishExplore(runId, "failed", reason); });
     handle.prompt("开始检索。");
     return { runId, maxTurns: input.maxTurns };
   }
@@ -668,13 +706,13 @@ export class RunManager {
   }
 
   /** explore 结束：回收搜索会话，把结果或到限/失败报告交回派出者；research 不是 PASS，须由派出者核对来源后使用。 */
-  private async finishExplore(runId: string, outcome: "completed" | "turn_limit_reached" | "ended_without_result" | "failed" | "stopped"): Promise<void> {
+  private async finishExplore(runId: string, outcome: Exclude<SessionOutcome, "superseded">, failure?: string): Promise<void> {
     endExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, outcome);
     const main = this.mainExplores.get(runId);
     if (main) {
       if (main.report) return;
       main.dispose();
-      main.report = exploreReport(runId, outcome, main.result(), main.handle.turnsUsed());
+      main.report = exploreReport(runId, outcome, main.result(), main.handle.turnsUsed(), this.runLog(runId), failure);
       if (outcome === "stopped") { this.mainExplores.delete(runId); return; }
       this.emit("explore.finished", { runId, parentSessionId: main.sessionId });
       return;
@@ -686,11 +724,11 @@ export class RunManager {
     delete entry.explore;
     const current = await this.runStore.get(runId);
     if (current.ok && !isTerminalState(current.run.state)) {
-      await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcome });
+      await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcomeReason(outcome, failure) });
     }
     const parent = this.sessions.get(parentRunId);
     if (outcome !== "stopped" && parent?.pm && ["running", "paused", "paused_network"].includes(parent.handle.state())) {
-      parent.handle.prompt(JSON.stringify(exploreReport(runId, outcome, result, entry.handle.turnsUsed())));
+      parent.handle.prompt(JSON.stringify(exploreReport(runId, outcome, result, entry.handle.turnsUsed(), this.runLog(runId), failure)));
     }
   }
 
@@ -759,16 +797,19 @@ export class RunManager {
       return withReadOnlyDatabase(this.database, (db) => {
         const rows = db.prepare("SELECT id, record_key, version, data FROM records WHERE namespace = 'runs'").all();
         const items = rows.map((row) => {
-          if (typeof row.record_key !== "string" || !UUID_V7_PATTERN.test(row.record_key) || row.id !== row.record_key || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.data !== "string") throw new Error("invalid");
+          if (typeof row.record_key !== "string" || !UUID_V7_PATTERN.test(row.record_key) || row.id !== row.record_key || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.data !== "string") throw new Error("有一条运行记录的编号或版本不合规");
           const run = JSON.parse(row.data) as RunRecord;
-          if (run.id !== row.record_key) throw new Error("invalid");
-          return runMetadata(run);
+          if (run.id !== row.record_key) throw new Error(`运行记录 ${row.record_key} 内外编号不一致`);
+          return runMetadata(run, this.runLog);
         });
         const byId = new Map(items.map((run) => [run.id, run]));
-        for (const run of items) if (run.parentRunId && (byId.get(run.parentRunId)?.kind !== "requirement" || byId.get(run.parentRunId)?.requirement !== run.requirement)) throw new Error("invalid");
+        for (const run of items) if (run.parentRunId && (byId.get(run.parentRunId)?.kind !== "requirement" || byId.get(run.parentRunId)?.requirement !== run.requirement)) throw new Error(`运行记录 ${run.id} 的父运行不存在或不属于同一需求`);
         return items.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || a.id.localeCompare(b.id));
       });
-    } catch { throw protocolError("legacy_metadata_unavailable", "运行元数据不可读，未知记录已保全待核对"); }
+    } catch (error) {
+      throw protocolError("legacy_metadata_unavailable", `运行记录读取失败：${(error as Error).message}；记录已原样保留`,
+        "数据库忙时稍后重试；记录不合规时停止依赖运行列表，把这段原因告诉用户");
+    }
   }
   async status(runId: string): Promise<{ ok: true; run: RunMetadata } | { ok: false; reason: string }> {
     if (typeof runId !== "string" || !UUID_V7_PATTERN.test(runId)) return { ok: false, reason: "not_found" };
@@ -946,7 +987,8 @@ export class RunManager {
     handle.events.on("usage", (usage: { input: number; output: number; cacheRead: number; cacheWrite: number }) => record(usage));
     handle.events.on("tool_end", () => record({ toolUses: 1 }));
   }
-  private emitRun(run: RunRecord): void { this.emit("runs.changed", { run: runMetadata(run) }); }
+  private emitRun(run: RunRecord): void { this.emit("runs.changed", { run: runMetadata(run, this.runLog) }); }
+  private readonly runLog = (runId: string): string => sessionFilePath({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId });
 
   async pause(runId: string): Promise<{ state: string; confirmed: boolean; reason?: string }> {
     const result = await this.runStore.get(runId);
@@ -973,7 +1015,9 @@ export class RunManager {
     }
     const updated = await this.runStore.get(runId);
     if (updated.ok) this.emitRun(updated.run);
-    return { state: confirmed ? "paused" : "pausing", confirmed, ...(!confirmed ? { reason: "会话或子运行尚未确认暂停" } : {}) };
+    const pending = [...(!outcome.confirmed ? [`会话尚未确认暂停${outcome.reason ? `：${outcome.reason}` : ""}`] : []),
+      ...childResults.flatMap((child, index) => child.confirmed ? [] : [`子运行 ${children[index]!.id} 尚未确认暂停${child.reason ? `：${child.reason}` : ""}`])];
+    return { state: confirmed ? "paused" : "pausing", confirmed, ...(!confirmed ? { reason: pending.join("；") } : {}) };
   }
   /** 停止运行及其子运行；cause 在首次转为 stopped 时记入运行记录，只作记录。 */
   async stop(runId: string, cause: StopCause): Promise<{ state: string; confirmed: boolean; reason?: string }> {
@@ -997,11 +1041,11 @@ export class RunManager {
       this.childrenOf(run).then((children) => Promise.all(children.map((child) => this.stop(child.id, { reason: "parent_stopped" })))),
     ]);
     const reasons: string[] = [];
-    if (sessionStop.status === "rejected") reasons.push("会话停止失败");
+    if (sessionStop.status === "rejected") reasons.push(`会话停止失败：${errorMessage(sessionStop.reason)}`);
     else if (!sessionStop.value.stopped) reasons.push("会话操作尚未确认停止");
-    if (shellStop.status === "rejected") reasons.push("Shell 停止失败");
+    if (shellStop.status === "rejected") reasons.push(`Shell 停止失败：${errorMessage(shellStop.reason)}`);
     else if (!shellStop.value) reasons.push("Shell 接管或进程结束尚未确认");
-    if (childrenStop.status === "rejected") reasons.push("子运行停止失败");
+    if (childrenStop.status === "rejected") reasons.push(`子运行停止失败：${errorMessage(childrenStop.reason)}`);
     else if (childrenStop.value.some((child) => !child.confirmed)) reasons.push("子运行尚未确认停止");
     const confirmed = reasons.length === 0;
     if (confirmed && entry?.pm) await this.finishPm(runId, "stopped");
@@ -1009,7 +1053,8 @@ export class RunManager {
     if (confirmed && entry?.explore) await this.finishExplore(runId, "stopped");
     if (confirmed && this.sessions.get(runId) === entry) { entry?.handle.dispose(); this.sessions.delete(runId); }
     const reason = confirmed ? undefined : reasons.join("；");
-    if (run.state === "stopped") await this.runStore.update(runId, { stateReason: reason ?? "" });
+    const stopText = run.stopCause ? stopReasonText(run.stopCause) : "运行被停止";
+    if (run.state === "stopped") await this.runStore.update(runId, { stateReason: reason ? `${stopText}；${reason}` : stopText });
     const updated = await this.runStore.get(runId);
     if (updated.ok) this.emitRun(updated.run);
     if (requested) await this.relayQueue.notify({ requirement: run.requirement, repoId: this.repoId, runId, kind: "stopped", message: confirmed ? `运行 ${runId} 已确认停止` : `运行 ${runId} 已接受停止请求；${reason}` }).catch(() => {});
@@ -1039,7 +1084,7 @@ export class RunManager {
       const page = await this.runsForStop(); unknown += page.unknown;
       // 展示分页及旧终态不决定停止范围；一个坏记录不遮蔽其他可定位运行。
       for (const run of page.runs) {
-        try { runMetadata(run); results.push({ runId: run.id, ...(await this.stop(run.id, { reason: "stop_all" })) }); }
+        try { runMetadata(run, this.runLog); results.push({ runId: run.id, ...(await this.stop(run.id, { reason: "stop_all" })) }); }
         catch { unknown++; await this.verifyRunShells(run, true); }
       }
     } catch { unknown++; }

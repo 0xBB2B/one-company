@@ -299,9 +299,10 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(withDatabase(w.database, (db) => db.read("runs", "UNVERIFIED_BODY"))).not.toBeNull();
     expect((await w.manager.stopAll()).coverage.unknown).toBeGreaterThan(0);
   }, 15_000);
-  test("F5 运行元数据不合法时状态查询只返回固定错误", async () => {
+  test("F5 运行元数据不合法时状态查询说明读取失败，不回显字段内容", async () => {
     const w = await fixture(); const run = await w.create();
     withDatabase(w.database, (db) => { const stored = db.read<any>("runs", run.id)!; db.update("runs", run.id, stored.version, { ...stored.data, startedAt: "UNVERIFIED_旧正文" }); });
-    await expect(w.manager.status(run.id)).rejects.toThrow("运行元数据不可读");
+    await expect(w.manager.status(run.id)).rejects.toThrow("运行记录读取失败");
+    await expect(w.manager.status(run.id)).rejects.not.toThrow("UNVERIFIED_旧正文");
   });
 });

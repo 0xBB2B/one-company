@@ -53,8 +53,27 @@ test("worker 没提交结果就结束本轮时，本次尝试记为 incomplete �
   await until(() => w.task("login").status === "awaiting_parent");
   await until(() => w.provider.requests.length === before + 3);
   expect(w.task("login").attempts).toEqual([{ runId: first.runId, maxTurns: 5, turnsUsed: 2, reason: null, outcome: "incomplete" }]);
-  expect(lastPrompt(w.provider.requests.at(-1))).toContain("没有提交结果就结束了本轮");
-  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "failed", stateReason: "ended_without_result" } });
+  const notice = lastPrompt(w.provider.requests.at(-1));
+  expect(notice).toContain("原因：模型停止回复，但没有提交结果。");
+  expect(notice).toContain("建议：请核对已有成果与原因后决定");
+  expect(notice).toMatch(new RegExp(`运行日志：.*sessions/${first.runId}/session\\.jsonl（证据不够判断时，读这份会话记录查看子代理的思考与工具调用）`));
+  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "failed", stateReason: "模型停止回复，但没有提交结果" } });
+});
+
+test("worker 会话出错时，PM 收到的通知带真实错误原因与运行日志位置", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login", { maxTurns: 5 }), spec("failure", { goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const before = w.provider.requests.length;
+  w.provider.queue.push({ type: "error", message: "401 invalid api key" }, { type: "text", text: "PM 收到" });
+  const first = await w.dispatch("login");
+  await until(() => w.task("login").status === "awaiting_parent");
+  await until(() => w.provider.requests.length === before + 2);
+  const notice = lastPrompt(w.provider.requests.at(-1));
+  expect(notice).toContain("原因：会话出错：401 invalid api key。");
+  expect(notice).toContain(`sessions/${first.runId}/session.jsonl`);
+  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "failed", stateReason: "会话出错：401 invalid api key" } });
+  expect(await w.manager.status(first.runId)).toMatchObject({ ok: true, run: { stateReason: "会话出错：401 invalid api key", log: expect.stringContaining(first.runId) } });
 });
 
 test("M7-AC27/28/29/30：到限自动上报 PM；重试须带原因且只有一次，再未完成即等待用户裁决", async () => {

@@ -59,12 +59,13 @@ describe("运行执行器永久淘汰", () => {
     const w = await world();
     for (const key of ["registerSession", "dispatchRoleInternal", "startRoleRun", "scheduleWaitingTasks", "assertRepairAllowed", "resumeInterruptedLocked", "buildRequirementDispatch", "buildRequirementRelay"]) expect((w.manager as any)[key]).toBeUndefined();
   });
-  test("R03 status/list/activity 仅元数据，不输出旧任务、模型、命令、结果或错误正文", async () => {
+  test("R03 旧流程运行的 status/list/activity 只给元数据与运行日志位置，不输出旧任务、模型、命令、结果或原因正文", async () => {
     const w = await world(); const run = await w.create("failed"); const before = w.snapshot(); const map = handlers(w);
     for (const output of [await w.manager.status(run.id), await w.manager.list(), await map.get("runs.list")!({ limit: 100 })]) {
       expect(JSON.stringify(output)).not.toContain(SECRET); expect(JSON.stringify(output)).not.toContain("provider-a");
     }
-    const status = await w.manager.status(run.id); expect(status).toMatchObject({ ok: true, run: { id: run.id, state: "failed" } });
+    const status = await w.manager.status(run.id);
+    expect(status).toMatchObject({ ok: true, run: { id: run.id, state: "failed", stateReason: "旧流程运行，原因不返回", log: expect.stringMatching(new RegExp(`sessions/${run.id}/session\\.jsonl$`)) } });
     if (status.ok) for (const key of ["task", "result", "commands", "cwd", "shellToken", "pendingDispatch", "errorDetails"]) expect(status.run).not.toHaveProperty(key);
     expect(w.snapshot()).toBe(before);
   });
@@ -154,14 +155,14 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
   test("R18 缺库list/status不创建库或目录，非法root/权限拒绝且不修改原库", async () => {
     const w = await world(); const dir = join(w.fixture.dataRoot, "repos", w.fixture.repoId);
     expect(existsSync(dir)).toBe(false);
-    await expect(w.manager.list()).rejects.toThrow("运行元数据不可读"); await expect(w.manager.status(uuidv7())).rejects.toThrow("运行元数据不可读"); expect(existsSync(dir)).toBe(false);
+    await expect(w.manager.list()).rejects.toThrow("运行记录读取失败"); await expect(w.manager.status(uuidv7())).rejects.toThrow("运行记录读取失败"); expect(existsSync(dir)).toBe(false);
     const run = await w.create("failed"); const before = w.snapshot(); const inode = (await stat(w.database)).ino;
     await chmod(w.database, 0o644);
-    try { await expect(w.manager.list()).rejects.toThrow("运行元数据不可读"); expect((await stat(w.database)).mode & 0o777).toBe(0o644); } finally { await chmod(w.database, 0o600); }
+    try { await expect(w.manager.list()).rejects.toThrow("运行记录读取失败"); expect((await stat(w.database)).mode & 0o777).toBe(0o644); } finally { await chmod(w.database, 0o600); }
     expect(() => new RunManager({ ...w.options, dataRoot: "relative-root" })).toThrow("绝对路径");
     const alias = join(w.fixture.dataRoot, "alias-root"); await mkdir(join(alias, "repos"), { recursive: true, mode: 0o700 }); await symlink(dir, join(alias, "repos", w.fixture.repoId));
     const invalid = new RunManager({ ...w.options, dataRoot: alias }); invalid.markStarted();
-    await expect(invalid.list()).rejects.toThrow("运行元数据不可读"); expect((await stat(w.database)).ino).toBe(inode); expect(w.snapshot()).toBe(before);
+    await expect(invalid.list()).rejects.toThrow("运行记录读取失败"); expect((await stat(w.database)).ino).toBe(inode); expect(w.snapshot()).toBe(before);
     expect(await w.manager.status(run.id)).toMatchObject({ ok: true, run: { id: run.id, state: "failed" } });
   });
   test("R19 合法身份/时间/父子metadata正例；坏key、时间及跨需求关联拒绝且保全", async () => {
@@ -172,11 +173,11 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
     for (const fields of [{ startedAt: SECRET }, { updatedAt: "2026-02-30T00:00:00.000Z" }, { endedAt: SECRET }, { turns: Number.MAX_SAFE_INTEGER + 1 }, { requirement: "2026-13-45.invalid" }, { parentRunId: child.id }, { parentRunId: uuidv7() }, { requirement: uuidv7() }]) {
       withDatabase(w.database, (db) => { const r = db.read<any>("runs", child.id)!; db.update("runs", child.id, r.version, { ...child, ...fields }); });
       const bad = w.snapshot();
-      await expect(w.manager.list()).rejects.toThrow("运行元数据不可读"); await expect(w.manager.status(child.id)).rejects.toThrow("运行元数据不可读"); expect(w.snapshot()).toBe(bad);
+      await expect(w.manager.list()).rejects.toThrow("运行记录读取失败"); await expect(w.manager.status(child.id)).rejects.toThrow("运行记录读取失败"); expect(w.snapshot()).toBe(bad);
     }
     withDatabase(w.database, (db) => { const r = db.read<any>("runs", child.id)!; db.update("runs", child.id, r.version, child); db.create("runs", SECRET, { body: SECRET }); });
     const corrupted = w.snapshot(); const map = handlers(w);
-    await expect(map.get("runs.list")!({ limit: 1 })).rejects.toThrow("运行元数据不可读");
+    await expect(map.get("runs.list")!({ limit: 1 })).rejects.toThrow("运行记录读取失败");
     try { await w.manager.list(); } catch (error) { expect(String(error)).not.toContain(SECRET); }
     expect(await w.manager.status(SECRET)).toEqual({ ok: false, reason: "not_found" }); expect(w.snapshot()).toBe(corrupted); expect(probe).not.toHaveBeenCalled();
   });
@@ -244,7 +245,7 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
     if (!release) deniedPid = task.pid;
     const result = await w.manager.stopAll();
     expect(result.coverage.unknown).toBeGreaterThan(0); expect(result.coverage.unconfirmed).toBeGreaterThan(0);
-    expect(result.results).toContainEqual({ runId: other.id, state: "stopped", confirmed: false, reason: "子运行停止失败" });
+    expect(result.results).toContainEqual({ runId: other.id, state: "stopped", confirmed: false, reason: expect.stringMatching(/^子运行停止失败：.+/) });
     expect(alive(healthy.pid)).toBe(false); expect(alive(-healthy.pgid)).toBe(false);
     expect(w.shells.get(healthy.taskId)).toMatchObject({ status: "stopped", stoppedBy: "signal", identityVerified: true, descendantsScanned: true, activity: "ended" });
     expect(attempts).toContainEqual({ pid: -healthy.pgid, signal: "SIGTERM" }); expect(JSON.stringify(result)).not.toContain(SECRET);

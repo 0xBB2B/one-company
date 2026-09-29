@@ -261,7 +261,7 @@ export class RunStore {
     const database = this.databasePath();
     const records = existsSync(database) ? withDatabase(database, (db) => db.list("runs").map((record) => {
       try { return checkedRun(record.data, record.key); }
-      catch { throw new Error(`运行记录不可读: ${record.key}（unreadable）`); }
+      catch { throw new Error(`运行记录${UUID_V7_PATTERN.test(record.key) ? ` ${record.key} ` : "（编号不合规）"}字段不合规，无法读取`); }
     })) : [];
     const filtered = records.filter(
       (run) =>
