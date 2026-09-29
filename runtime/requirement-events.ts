@@ -9,6 +9,8 @@ import { RequirementStateStore } from "./requirement-state.ts";
 import type { RequirementAction, RequirementStoreOptions } from "./requirement-state.ts";
 import { RequirementService } from "./requirement-service.ts";
 import type { RequirementServiceOptions, ServiceAuthorizationRequest } from "./requirement-service.ts";
+import { adviceIn } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 
 const ArchiveRiskInput = object({
   requirementId: id,
@@ -192,12 +194,34 @@ interface PendingDelivery {
   finalCheck: Record<string, unknown>;
 }
 
+const REQUIREMENT_EVENT_ADVICE: Readonly<Record<string, FailureAdvice>> = {
+  archive_identity_conflict: { why: "同一需求编号对应了不同的归档文件", next: "停止操作，把这段原因告诉用户" },
+  archive_path_not_allowed: { why: "归档路径不在允许的目录内", next: "停止操作，把这段原因告诉用户" },
+  archive_paths_too_large: { why: "需要核对的归档路径太多", next: "停止操作，把这段原因告诉用户" },
+  authorization_required: { why: "宿主没有授权这次需求事件操作", next: "停止操作，把这段原因告诉主代理" },
+  baseline_changed: { why: "理解基线在投递期间发生了变化", next: "等下一次自动投递，不用处理" },
+  baseline_event_not_incremental: { why: "首次批准没有上一版，不能按差异投递", next: "等下一次自动投递，不用处理" },
+  context_changed: { why: "PM 会话的上下文已换代，旧的投递作废", next: "等主代理重新核对接手理解后再继续" },
+  delivery_binding_changed: { why: "投递期间 PM 租约或需求版本发生了变化", next: "等下一次自动投递，不用处理" },
+  diff_reference_mismatch: { why: "算出的差异与批准记录里的版本对不上", next: "停止规划与派工，把这段原因告诉主代理，由用户处理" },
+  disposed: { why: "需求事件服务已关闭", next: "等下一次自动投递，不用处理" },
+  duplicate_archive_path: { why: "有重复的归档路径", next: "停止操作，把这段原因告诉用户" },
+  epoch_changed: { why: "需求在投递期间被关闭或重新开启", next: "停止操作，把这段原因告诉主代理" },
+  expired_delivery_handle: { why: "投递凭据已过期", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
+  invalid_prod_hash: { why: "需求正文的指纹格式不对", next: "停止操作，把这段原因告诉用户" },
+  recovery_required: { why: "需求记录需要恢复核对", next: "停止正式规划与派工，把这段原因告诉主代理，由用户处理" },
+  stale_event_delivery: { why: "准备投递期间事件已变化或已被消费", next: "等下一次自动投递，不用处理" },
+  synchronous_sink_required: { why: "投递接收方不是同步函数，属于程序内部错误", next: "停止操作，把这段原因告诉用户" },
+  unknown_delivery_handle: { why: "投递凭据不存在或已过期被清除", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
+};
 export class RequirementEventServiceError extends Error {
   readonly code: string;
+  readonly advice: FailureAdvice;
   constructor(code: string) {
     super(`需求事件操作被拒绝：${code}`);
     this.name = "RequirementEventServiceError";
     this.code = code;
+    this.advice = adviceIn(REQUIREMENT_EVENT_ADVICE, code);
   }
 }
 

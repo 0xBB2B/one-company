@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { RequirementEventService } from "../runtime/requirement-events.ts";
+import { RequirementEventService, RequirementEventServiceError } from "../runtime/requirement-events.ts";
 import type { ApprovedBaselineResult, ApprovedChangeDelivery, ApprovedContentResult, ApprovedDiffResult,
   PreparedRequirementDelivery, RequirementEventAuthorizationRequest, RequirementEventServiceOptions } from "../runtime/requirement-events.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
@@ -625,4 +625,12 @@ test("最终检查回归：宿主clock只在最终SQL事务外调用", async () 
   expect(sink).toHaveBeenCalledOnce();
   expect(locks.length).toBeGreaterThanOrEqual(3);
   expect(locks.every(Boolean)).toBe(true);
+});
+
+test("M9：事件服务用到的每个拒绝码都配了原因与建议，不会显示成未归类的拒绝", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../runtime/requirement-events.ts", import.meta.url), "utf8");
+  const codes = new Set([...source.matchAll(/RequirementEventServiceError\("([a-z_]+)"/gu)].map((match) => match[1]!));
+  expect(codes.size).toBeGreaterThan(15);
+  for (const code of codes) expect(new RequirementEventServiceError(code).advice.why, code).not.toMatch(/^未归类/u);
 });

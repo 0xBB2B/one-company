@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { adviceOf } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { constants, type Stats } from "node:fs";
@@ -198,8 +199,10 @@ function requireAuthorized(config: ProdStorageConfig, check: Omit<ProdStoragePer
   let result: unknown;
   try {
     result = config.authorize({ ...check, repoId: config.repoId, requirementId: config.requirementId });
-  } catch {
-    fail("permission_denied", "正文存储权限核验失败");
+  } catch (error) {
+    // 授权回调抛出的是调用方程序生成的拒绝，带上它的原因，免得只剩「核验失败」
+    const why = adviceOf(error)?.why;
+    fail("permission_denied", why ? `正文存储权限核验失败：${why}` : "正文存储权限核验失败");
   }
   if ((typeof result === "object" && result !== null) || typeof result === "function") {
     let then: unknown;

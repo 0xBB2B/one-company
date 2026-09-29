@@ -509,3 +509,10 @@ test("固定接口错误使用不会初始化仓库，也不会把 commit messag
   expect(await lstat(w.config.dataRoot).then(() => true, (error: NodeJS.ErrnoException) => error.code !== "ENOENT")).toBe(false);
   expect(ProdStorageError).toBeTypeOf("function");
 });
+
+test("M9：授权回调抛出带原因的拒绝时，存储层的报错带上这个原因", async () => {
+  const w = await world(() => { throw Object.assign(new Error("拒绝"), { advice: { why: "投递凭据已过期", next: "等下一次自动投递" } }); });
+  const rejected = await first(w).catch((error: unknown) => error);
+  expect(rejected).toMatchObject({ name: "ProdStorageError", code: "permission_denied" });
+  expect((rejected as Error).message).toContain("投递凭据已过期");
+});
