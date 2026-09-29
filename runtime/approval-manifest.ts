@@ -34,11 +34,11 @@ function graph(units: Unit[]): void {
   if (ids.size !== units.length) deny("duplicate_unit");
   const done = new Set<string>(), visiting = new Set<string>();
   function visit(id: string): void {
-    if (visiting.has(id)) deny("unit_dependency_cycle");
+    if (visiting.has(id)) deny("unit_dependency_cycle", `段落 ${id}`);
     if (done.has(id)) return;
     const unit = units.find((u) => u.id === id);
-    if (!unit) deny("unknown_unit");
-    if ((!unit.globalConstraint && unit.appliesTo.length) || unit.appliesTo.some((v) => !ids.has(v) || v === id)) deny("invalid_global_scope");
+    if (!unit) deny("unknown_unit", `编号 ${id}`);
+    if ((!unit.globalConstraint && unit.appliesTo.length) || unit.appliesTo.some((v) => !ids.has(v) || v === id)) deny("invalid_global_scope", `段落 ${id}`);
     visiting.add(id); unit.dependsOn.forEach(visit); visiting.delete(id); done.add(id);
   }
   units.forEach((u) => visit(u.id));
@@ -48,7 +48,7 @@ export function approvalDependencyClosure(units: Unit[], goalIds: string[]): str
   graph(units);
   const found = new Set<string>();
   function add(id: string): void {
-    const unit = units.find((u) => u.id === id); if (!unit) deny("unknown_unit");
+    const unit = units.find((u) => u.id === id); if (!unit) deny("unknown_unit", `编号 ${id}`);
     if (found.has(id)) return; found.add(id); unit.dependsOn.forEach(add);
   }
   goalIds.forEach(add);
@@ -133,14 +133,14 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
       const evidence = retainedEvidence.find((e) => e.fact.id === id && e.unitId === u.id);
       if (!evidence) return deny("retained_source_missing"); return evidence;
     });
-    if (!related.length && !retained.length || retained.length && u.disposition === "pending-description") deny("review_entry_mismatch");
+    if (!related.length && !retained.length || retained.length && u.disposition === "pending-description") deny("review_entry_mismatch", `段落 ${u.id}`);
     if (u.dependsOn.length + u.appliesTo.length + u.conclusionIndexes.length > 16) deny("reference_limit");
-    if (u.globalConstraint && (!related.every((e) => ["constraint", "unresolved", "suggestion"].includes(e.kind)) || !retained.every((e) => e.kind === "constraint"))) deny("global_constraint_kind");
+    if (u.globalConstraint && (!related.every((e) => ["constraint", "unresolved", "suggestion"].includes(e.kind)) || !retained.every((e) => e.kind === "constraint"))) deny("global_constraint_kind", `段落 ${u.id}`);
     if (review.faithful) {
-      if (related.some((e) => e.resolution === "modify")) deny("document_needs_resave");
+      if (related.some((e) => e.resolution === "modify")) deny("document_needs_resave", `段落 ${u.id}`);
       if (u.disposition === "confirmed" && (retained.some((e) => e.kind === "exclusion") || related.some((e) => !confirmed(e)) ||
-        !related.some((e) => ["target", "constraint", "delegation", "ai-choice"].includes(e.kind)) && !retained.some((e) => ["target", "constraint"].includes(e.kind)))) deny("unit_not_confirmed");
-      if (u.disposition === "excluded" && (!related.every((e) => e.kind === "exclusion" && explicit(e)) || !retained.every((e) => e.kind === "exclusion"))) deny("unit_not_excluded");
+        !related.some((e) => ["target", "constraint", "delegation", "ai-choice"].includes(e.kind)) && !retained.some((e) => ["target", "constraint"].includes(e.kind)))) deny("unit_not_confirmed", `段落 ${u.id}`);
+      if (u.disposition === "excluded" && (!related.every((e) => e.kind === "exclusion" && explicit(e)) || !retained.every((e) => e.kind === "exclusion"))) deny("unit_not_excluded", `段落 ${u.id}`);
       if (u.disposition === "pending-description" && !related.every((e) => !confirmed(e))) deny("pending_description_mismatch", `段落 ${u.id}`);
     }
   }
@@ -155,11 +155,11 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
     a.conclusionIndexes.forEach((i) => actionUsed.add(i));
     const related = entries(a.conclusionIndexes);
     if (a.goalIds.length + a.constraintIds.length + a.conclusionIndexes.length > 16) deny("reference_limit");
-    if (!related.every((e) => e.kind === "action" && explicit(e) && e.actions.includes(a.action))) deny("action_not_explicit");
+    if (!related.every((e) => e.kind === "action" && explicit(e) && e.actions.includes(a.action))) deny("action_not_explicit", `动作 ${a.action}`);
     for (const goalId of a.goalIds) {
       const u = review.units.find((u) => u.id === goalId)!;
       if (!entries(u.conclusionIndexes).some((e) => e.kind === "target" && explicit(e)) && !(u.retainedFactIds ?? []).some((id) =>
-        retainedEvidence.some((e) => e.fact.id === id && e.unitId === u.id && e.kind === "target"))) deny("goal_not_explicit");
+        retainedEvidence.some((e) => e.fact.id === id && e.unitId === u.id && e.kind === "target"))) deny("goal_not_explicit", `段落 ${goalId}`);
     }
   }
   if (review.questions.length !== context.questions.length || new Set(review.questions.map((q) => q.requestId)).size !== review.questions.length) deny("incomplete_question_review");

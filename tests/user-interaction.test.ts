@@ -882,3 +882,13 @@ test("M9：同一段落既有已确认又有未决条目时，重答反馈与最
   expect(error.code).toBe("pending_description_mismatch");
   expect(error.advice.why).toContain("段落 A");
 });
+test("M9：批准核验与交互核验用到的每个拒绝码都配了原因与建议，不会显示成未归类的拒绝", async () => {
+  const { readFileSync } = await import("node:fs");
+  const codes = new Set<string>();
+  for (const file of ["../runtime/approval-manifest.ts", "../runtime/user-interaction-format.ts", "../runtime/user-interaction.ts", "../runtime/user-interaction-model.ts"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    for (const match of source.matchAll(/(?:deny|UserInteractionError)\("([a-z_]+)"/gu)) codes.add(match[1]!);
+  }
+  expect(codes.size).toBeGreaterThan(30);
+  for (const code of codes) expect(new UserInteractionError(code).advice.why, code).not.toMatch(/^未归类/u);
+});
