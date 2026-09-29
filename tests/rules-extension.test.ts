@@ -70,3 +70,9 @@ test("M8C-AC2/AC4：受信任项目的规范取代默认注入主会话，项目
   await writeFile(join(dir, "SKILL.md"), "---\nname: requirement-doc\nsections: []\n---\n");
   expect(await start(window, dataRoot)).toContain(`## 需求文档规范\n规范无效，批准会被拒绝：需求文档规范 ${join(dir, "SKILL.md")} 无效`);
 });
+
+test("M9：主会话规则要求收到需求的那一轮就保存草稿，待澄清的写成未决问题，不先在对话里问完再保存", async () => {
+  const systemPrompt = await start(noWindow);
+  expect(systemPrompt).toContain("收到需求的那一轮就用 create 保存草稿");
+  expect(systemPrompt).toMatch(/要澄清的写进需求板块的未决问题[\s\S]*不要先在对话里问完再保存/);
+});

@@ -124,6 +124,21 @@ describe("主窗口共享控制器的真实服务路径", () => {
     }
   });
 
+  test("M9：草稿核验器拒绝时带回一句原因，标明是模型说法；原因只作参考，未知字段或类型不对仍按格式错误拒绝", async () => {
+    const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body: BODY };
+    w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":false,"reason":"需求里「不接入渲染循环」是用户没说过的限制"}' }]);
+    await expect(w.call(input)).rejects.toThrow("draft_interpretation_denied（核验器说明（模型撰写，仅供参考）：需求里「不接入渲染循环」是用户没说过的限制）");
+    for (const reply of ['{"allow":false,"reason":1}', '{"allow":false,"why":"x"}', '{"allow":"false"}']) {
+      w.capture(); scriptReplies(w.provider, [{ type: "text", text: reply }]);
+      const error = await w.call(input).catch((caught: Error) => caught);
+      expect(String(error)).toContain("draft_interpretation_denied");
+      expect(String(error)).not.toContain("核验器说明");
+    }
+    expect(w.provider.requests.find((request) => request.systemPrompt?.includes("草拟意图核验器"))!.systemPrompt).toContain('{"allow":boolean,"reason":string}');
+    w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true,"reason":"用户要求整理登录需求"}' }]);
+    expect(await w.call(input)).toMatchObject({ action: "create" });
+  });
+
   test("create自动真实Git首提、UUID/hash一致、同operation幂等；新增无关需求不复用输入", async () => {
     const w = await world(); w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
     const p = { action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body: BODY };
