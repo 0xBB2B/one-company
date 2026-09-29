@@ -55,6 +55,16 @@ function progress(host: InstalledHost, since: number) {
   };
 }
 
+/** 主代理提问并给出推荐项时，像真实用户一样按推荐定下来。 */
+export const CHOOSE_RECOMMENDED = "按你推荐的选项定，写进草稿后给我确认；其余不变。";
+
+function asksToChoose(host: InstalledHost): boolean {
+  const last = host.session.messages.at(-1);
+  if (last?.role !== "assistant") return false;
+  const text = last.content.map((block) => block.type === "text" ? block.text : "").join("");
+  return /推荐/u.test(text) && /[？?]|请(?:回复|选|确认|决定)/u.test(text);
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function waitTurn(host: InstalledHost, startedCount: number, timeoutMs: number): Promise<void> {
@@ -127,12 +137,14 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
       continue;
     }
     if (lines.length > 0) {
-      if (options.approveWhileRunning && !state.approved && host.session.messages.at(-1)?.role === "assistant") { result = await say(script.approve); if (result) return result; continue; }
+      if (options.approveWhileRunning && !state.approved && host.session.messages.at(-1)?.role === "assistant") {
+        result = await say(asksToChoose(host) ? CHOOSE_RECOMMENDED : script.approve); if (result) return result; continue;
+      }
       await sleep(5_000); continue;
     }
 
     // 需求原文只发一次；之后主代理停下等用户时，按真人会做的回答：未批准就确认草稿
-    const next = !state.approved ? script.approve : state.accepted ? script.close : script.proceed;
+    const next = !state.approved ? (asksToChoose(host) ? CHOOSE_RECOMMENDED : script.approve) : state.accepted ? script.close : script.proceed;
     result = await say(next);
     if (result) return result;
   }
