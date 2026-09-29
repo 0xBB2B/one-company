@@ -163,3 +163,30 @@ test("M7-AC30：任务仍有运行中的尝试时不能再次派出，旧版本�
   expect(finished).toMatchObject({ version: 2, status: "pending" });
   expect(() => beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: { reason: "改写后重试", maxTurns: 40 } })).not.toThrow();
 });
+
+test("M9：QA 只验实施授权覆盖的验收小节，未验证项指向授权外的章节时拒收并说明原因；授权内章节与非章节引用照常收下", async () => {
+  const { CheckRoundService } = await import("../runtime/check-round.ts");
+  const { createVerificationRunTool } = await import("../runtime/verification-run.ts");
+  const { createResultSubmitTool } = await import("../runtime/result-submit.ts");
+  const w = await world();
+  await w.fixture.approveRevision({ body: BASE, implementGoals: ["goal.login"] });
+  await w.assess([[w.byKey(w.first, "login"), "unaffected"], [w.byKey(w.first, "failure"), "affected"]]);
+  for (const task of w.first.tasks) w.setStatus(task.taskId, "completed");
+  const { fixture } = w, record = w.revision();
+  const rounds = await CheckRoundService.open({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, authorize: () => true });
+  clean.push(() => rounds.dispose());
+  const round = await rounds.openRound({ lease: fixture.lease });
+  const qaRunId = uuidv7();
+  const qa = await createVerificationRunTool({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, authorize: () => true,
+    grant: { role: "qa", callerId: uuidv7(), runId: qaRunId, requirementId: fixture.requirementId, repoId: fixture.repoId,
+      workspaceId: record.workspace!.workspaceId, branch: record.workspace!.branch, epoch: record.epoch } });
+  clean.push(() => qa.dispose());
+  const formal = await qa.execute({ action: "run", kind: "formal", command: "true", performance: NA }) as { verificationId: string };
+  const submit = (targetRef: string) => createResultSubmitTool({ grant: { role: "qa", callerId: uuidv7(), runId: qaRunId, parentRunId: fixture.lease.runId }, authorize: () => true,
+    verdictBinding: { dataRoot: fixture.dataRoot, requirementId: fixture.requirementId, repoId: fixture.repoId, workspaceId: record.workspace!.workspaceId, epoch: record.epoch } })
+    .execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "验收",
+      findings: [{ kind: "unverified", targetRef, evidenceRef: null, trigger: "没有对应测试", impact: "无法确认" }] } }) as { conclusion: string };
+  expect(() => submit("scenario.failure（待定场景）")).toThrow("scenario.failure 不在实施授权内（待定场景或交付流程要求），本轮不验");
+  expect(submit("goal.login").conclusion).toBe("unverified");
+  expect(submit("整体交互").conclusion).toBe("unverified");
+});
