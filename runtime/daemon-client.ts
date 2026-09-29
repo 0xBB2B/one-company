@@ -1,4 +1,5 @@
 import { controlToken } from "./daemon-auth.ts";
+import { AdvisedError } from "./tool-failure.ts";
 import { closeSync, openSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -29,6 +30,10 @@ const PRE_HANDSHAKE_EVENT_MAX_BYTES = 1024 * 1024;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function unreachable(reason: string): AdvisedError {
+  return new AdvisedError("daemon_unreachable", { why: `守护进程不可达: ${reason}`, next: "稍等几秒重试；反复出现就请用户重开窗口" });
 }
 
 export class DaemonCallError extends Error {
@@ -356,7 +361,7 @@ class SocketLink {
     this.closeHandled = true;
     this.discardBufferedEvents();
     const reason = this.lastErrorMessage ?? "连接已关闭";
-    for (const waiter of this.pending.values()) waiter.reject(new Error(`守护进程不可达: ${reason}`));
+    for (const waiter of this.pending.values()) waiter.reject(unreachable(reason));
     this.pending.clear();
     this.onClose(reason);
   }
@@ -371,7 +376,7 @@ class SocketLink {
 
   destroy(): void {
     this.discardBufferedEvents();
-    for (const waiter of this.pending.values()) waiter.reject(new Error("守护进程不可达: 已关闭"));
+    for (const waiter of this.pending.values()) waiter.reject(unreachable("已关闭"));
     this.pending.clear();
     this.socket.removeListener("data", this.dataListener);
     this.socket.removeListener("error", this.errorListener);
@@ -698,7 +703,7 @@ class DaemonClientImpl implements DaemonClient {
 
   async call(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     if (this.status !== "connected" || !this.link || this.link.handshakeFailure()) {
-      throw new Error(`守护进程不可达: ${this.reason ?? "尚未连接"}`);
+      throw unreachable(this.reason ?? "尚未连接");
     }
     // 查询当前握手结果不再次发送 hello，避免查询 PID 时退役已绑定的连接能力。
     if (method === "hello") {
@@ -711,12 +716,12 @@ class DaemonClientImpl implements DaemonClient {
       result = await link.call(method, params);
     } catch (error) {
       if (this.closed || this.handshakeTerminal || this.link !== link) {
-        throw new Error(`守护进程不可达: ${this.reason ?? "连接已变化"}`);
+        throw unreachable(this.reason ?? "连接已变化");
       }
       throw error;
     }
     if (this.closed || this.handshakeTerminal || this.status !== "connected" || this.link !== link || link.handshakeFailure()) {
-      throw new Error(`守护进程不可达: ${this.reason ?? "连接已变化"}`);
+      throw unreachable(this.reason ?? "连接已变化");
     }
     return result;
   }

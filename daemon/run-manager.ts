@@ -220,8 +220,29 @@ function shellMetadata(task: TaskRecord) {
     identityVerified: task.identityVerified, stoppedBy: task.stoppedBy };
 }
 function taskHost(run: RunRecord): Host { return { kind: "role", id: run.id, role: run.role, runId: run.id }; }
+const PROTOCOL_NEXT: Record<string, string> = {
+  pm_already_owned: "查询现有 PM 的运行状态，不要重复派出",
+  requirement_not_active: "重新读取需求状态；只有活动需求才能派出",
+  workspace_not_ready: "先用项目管理工具准备需求工作区，并等用户批准需求",
+  implement_not_authorized: "请用户在批准需求时授权实施，再派出 PM",
+  not_found: "核对运行编号；运行可能已结束或不属于你",
+  pm_not_running: "PM 已不在运行，停止操作，由主代理决定是否重新派出 PM",
+  task_not_ready: "用 plan_manage read 查看任务状态，按原因处理后再派",
+  role_unavailable: "改用对应的入口派出",
+  invalid_params: "按工具说明改正参数后重试",
+  not_resumable: "这个运行不能续接，按需要重新派出",
+  requirement_halted: "等用户调整需求或取消需求，不要再派工",
+  config_changed: "按当前配置重新派工",
+  plan_not_confirmed: "先用 plan_manage confirm 冻结计划，再按冻结后的任务派工",
+  agent_unavailable: "指定的角色定义不可用：向用户说明并请用户决定，不要自行改用别的定义",
+  model_unavailable: "指定的模型不可用：请用户检查模型配置或改选模型",
+  thinking_unsupported: "改用该模型支持的思考等级，或请用户改选模型",
+  skill_unavailable: "指定的技能不可用：请用户检查技能安装，或调整角色定义",
+  stop_unconfirmed: "稍后重试停止，并核对进程是否已结束",
+  trusted_stop_required: "改用安全停止并核对真实进程",
+};
 function protocolError(code: string, message: string, next?: string): Error & { code: string } {
-  return Object.assign(new Error(message), { code }, next ? { advice: { why: message, next } } : {});
+  return Object.assign(new Error(message), { code, advice: { why: message, next: next ?? PROTOCOL_NEXT[code] ?? "按原因处理后重试；仍然失败就把原因告诉用户" } });
 }
 const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 
