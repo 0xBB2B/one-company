@@ -21,6 +21,8 @@ import { createProdDocument } from "../runtime/requirement-identity.ts";
 import { create as createStoredProd } from "../runtime/prod-storage.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+/** 核验不过时报出具体原因，而不是笼统的"解读不能作为依据"。 */
+const SPECIFIC_DENIAL = /^用户交互被拒绝：(?!interpretation_denied$)[a-z_]+$/u;
 
 
 const cleanup: Array<() => Promise<unknown> | void> = [];
@@ -146,7 +148,7 @@ test("单请求短答关联实际请求，多个请求的可以不擅自选一�
   const first = await w.interpret("可以"); const saved = w.core.save(first.capability);
   expect(w.core.readDecision(w.basis.requirementId, saved.decisionIds[0]!).references).toContain(q.requestId);
   await question(w);
-  await expect(w.interpret("可以")).rejects.toThrow(/interpretation_denied/);
+  await expect(w.interpret("可以")).rejects.toThrow(/ambiguous_reference/);
   w.setOutput(result([entry({ kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "请明确确认哪一个请求", scope: "两个请求均未确认" })], "ambiguous"));
   const ambiguous = await w.interpret("可以"); w.core.save(ambiguous.capability);
   expect(w.core.authorization(ambiguous.capability, w.binding, "analyze")).toBeNull();
@@ -223,7 +225,7 @@ for (const race of ["input", "session", "closing", "version", "revoke", "model"]
   if (race === "model") w.setModel({ ...model, configurationHash: "b".repeat(64) });
   if (race === "version") w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version, operationId: uuidv7(), reference: w.candidate.to });
   if (race === "closing") w.state.beginClose({ requirementId: w.basis.requirementId, version: w.basis.version, intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
-  settle(JSON.stringify(w.output())); await expect(pending).rejects.toThrow(/interpretation_denied/); expect(w.records()).toEqual([]);
+  settle(JSON.stringify(w.output())); await expect(pending).rejects.toThrow(SPECIFIC_DENIAL); expect(w.records()).toEqual([]);
 });
 test("解释异常不回显原话/模型错误，后续新输入可正常解释", async () => {
   const w = await world(); w.setImplementation(async () => { throw new Error(PHONE); });
@@ -540,7 +542,7 @@ for (const attack of ["not-saved", "overlap", "hash", "omission", "same-hash-can
   if (attack === "missing-review") delete w.output().documentReview;
   if (attack === "modify") w.output().entries[0]!.resolution = "modify";
   if (attack === "stale-decision") w.output().entries[0]!.supersedes = [uuidv7()];
-  await expect(w.interpret()).rejects.toThrow(/interpretation_denied/); expect(w.records()).toEqual([]);
+  await expect(w.interpret()).rejects.toThrow(SPECIFIC_DENIAL); expect(w.records()).toEqual([]);
 });
 test("范围动作包含全局未决依赖则拒绝，但全局条件明确不作用于A时A保留", async () => {
   const w = await documentWorld(), review = w.output().documentReview!;
@@ -695,7 +697,7 @@ for (const attack of ["original-F1", "hidden-unit", "hidden-action", "reused-ent
     if (attack === "metadata-goal") { w.output().entries[3]!.kind = "target"; r.actions[0]!.goalIds = ["metadata"]; }
     if (attack === "metadata-reused") { r.units[2]!.conclusionIndexes = [3]; r.units[2]!.disposition = "confirmed"; r.units[1]!.conclusionIndexes.push(1); r.faithful = false; }
     if (attack === "outside-constraint") { w.output().entries[1] = w.e({ kind: "constraint", conclusion: "B约束" }); r.units[2]!.disposition = "confirmed"; }
-    await expect(w.interpret("可以")).rejects.toThrow(/interpretation_denied/);
+    await expect(w.interpret("可以")).rejects.toThrow(SPECIFIC_DENIAL);
     expect(w.records()).toEqual([]);
   });
 }
@@ -703,7 +705,7 @@ test("完整候选单题短答也不能通过direct或清空requestId扩大动�
   const w = await world(), q = await question(w);
   w.setOutput(result(w.output().entries.map(e => ({ ...e, requestId: q.requestId, resolution: "accept" })), "single-question"));
   Object.assign(w.output().entries[1]!, { requestId: null, resolution: "direct", actions: ["implement"] });
-  await expect(w.interpret("可以")).rejects.toThrow(/interpretation_denied/); expect(w.records()).toEqual([]);
+  await expect(w.interpret("可以")).rejects.toThrow(SPECIFIC_DENIAL); expect(w.records()).toEqual([]);
 });
 for (const attack of ["missing-source", "changed-conclusion", "changed-scope", "wrong-source", "pending-source", "constraint-as-goal"] as const) {
   test(`独立共享约束${attack}不构成短答的新授权依据`, async () => {
@@ -720,7 +722,7 @@ for (const attack of ["missing-source", "changed-conclusion", "changed-scope", "
       w.output().documentReview!.units[3]!.appliesTo = []; w.output().documentReview!.actions[0]!.goalIds = ["C"];
       w.output().documentReview!.actions[0]!.constraintIds = [];
     }
-    const before = w.records(); await expect(w.interpret("可以")).rejects.toThrow(/interpretation_denied/); expect(w.records()).toEqual(before);
+    const before = w.records(); await expect(w.interpret("可以")).rejects.toThrow(SPECIFIC_DENIAL); expect(w.records()).toEqual(before);
   });
 }
 test("单题只答A可实施A但不能实施B；全部pending只允许阅读清单", async () => {

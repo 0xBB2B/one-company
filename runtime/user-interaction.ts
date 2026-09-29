@@ -235,9 +235,10 @@ export class UserInteractionCore {
         document: { ...context.document, title: "", body: "" } }) : context;
       this.#verified = { capability, input, context: retained, model, result, batch: frozen(batch), admission: frozen(admission), receiptId, inputProof };
       return { interpretation: structuredClone(result), capability };
-    } catch {
+    } catch (error) {
       if (this.#input === input) this.clearInput();
-      // 不传播可能包含原文、prod片段或供应商响应的错误正文。
+      // 本模块的核验错误只含程序生成的原因，原样交给主代理；其余可能带原文、prod片段或供应商响应正文，只报笼统原因
+      if (error instanceof UserInteractionError) throw error;
       throw new UserInteractionError("interpretation_denied");
     }
   }
