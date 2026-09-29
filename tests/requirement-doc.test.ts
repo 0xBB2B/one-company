@@ -33,6 +33,7 @@ test("M8C-AC1：零自定义时用包内默认 skill，板块清单就是 M8A �
   expect(DEFAULT_DOC_SECTIONS.map((s) => s.id)).toEqual(["background", "requirements", "features", "implementation", "acceptance"]);
   expect(recordSectionIds(doc.spec.sections)).toEqual({ implementation: "implementation", acceptance: "acceptance" });
   expect(doc.body).toContain("由 PM 规划");
+  expect(doc.body).toMatch(/未决问题写成本板块下单独的三级小节[\s\S]*\{#requirements\.open\}[\s\S]*不和已确定的要求写在同一段/u);
   expect(doc.body).not.toMatch(/^---/u);
 });
 
