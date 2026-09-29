@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import { repositoryDatabase, withDatabase } from "../../runtime/database.ts";
 import { daemonSocketPath, repositoryIdentity } from "../../runtime/identity.ts";
@@ -67,6 +67,11 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC10：安装产物中
     let daemonGone = socketPath ? await waitMissing(socketPath, 30_000) : true;
     if (!daemonGone && socketPath) { await killUnder(root); daemonGone = await waitMissing(socketPath, 10_000); }
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    const sessions = await readdir(dataRoot, { recursive: true }).catch(() => [] as string[]);
+    for (const path of sessions.filter((name) => name.endsWith("session.jsonl"))) {
+      await mkdir(join(evidence, "runs"), { recursive: true });
+      await copyFile(join(dataRoot, path), join(evidence, "runs", `${basename(dirname(path))}.jsonl`)).catch(() => undefined);
+    }
     await rm(join(agentDir, "auth.json"), { force: true });
     await rm(join(agentDir, "models.json"), { force: true });
     if (daemonGone) await rm(root, { recursive: true, force: true });
