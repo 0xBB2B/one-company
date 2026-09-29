@@ -109,7 +109,7 @@ for (const action of ["read", "diff"] as const) for (const boundary of ["service
         const value = await check.call(this, lease); if (pageBuilt) inject(); return value;
       });
     }
-    await expect(tool.execute({ action, maxBytes: 4 })).rejects.toMatchObject({ code: "requirement_read_denied" });
+    await expect(tool.execute({ action, maxBytes: 4 })).rejects.toMatchObject({ code: expect.stringMatching(/^manifest_decision/) });
     expect(injected).toBe(true); f.verifyRevision();
     if (boundary === "last-host") expect(hostAfterPage).toBe(3);
   });
@@ -118,6 +118,6 @@ for (const action of ["read", "diff"] as const) for (const boundary of ["service
 test("同步外层guard只认原返回对象，宿主末尾修订后旧JSON与原对象都不能继续返回", async () => {
   const f = await fixture(); const tool = await f.tool(); const page = await tool.execute({ action: "read", maxBytes: 4 });
   expect(() => tool.assertCurrent(page)).not.toThrow();
-  expect(() => tool.assertCurrent(JSON.parse(JSON.stringify(page)))).toThrow(/requirement_read_denied/);
-  f.supersede(); expect(() => tool.assertCurrent(page)).toThrow(/requirement_read_denied/); f.verifyRevision();
+  expect((() => { try { tool.assertCurrent(JSON.parse(JSON.stringify(page))); } catch (error) { return error; } })()).toMatchObject({ code: "read_failed" });
+  f.supersede(); expect((() => { try { tool.assertCurrent(page); } catch (error) { return error; } })()).toMatchObject({ code: "manifest_decision_mismatch" }); f.verifyRevision();
 });

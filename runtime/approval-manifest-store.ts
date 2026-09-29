@@ -9,6 +9,7 @@ import type { ApprovalManifestExpected, ApprovalManifestReference } from "./appr
 import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
 import { ApprovalPartition } from "./user-interaction-format.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
+import type { RequirementServiceErrorCode } from "./requirement-manage-contracts.ts";
 import { assertRetainedEvidenceIn, continuityInputProofIn } from "./interaction-continuity.ts";
 
 export const APPROVAL_MANIFEST_NAMESPACE = "approval_manifests_v1";
@@ -32,7 +33,7 @@ interface StoredManifest {
   partition: ApprovalManifestExpected["partition"]; manifest: ApprovalManifest;
   decisionRecords: Array<{ id: string; version: number; hash: string }>;
 }
-function deny(code: string): never { throw new RequirementServiceError(code); }
+function deny(code: RequirementServiceErrorCode): never { throw new RequirementServiceError(code); }
 function same(a: unknown, b: unknown): boolean { return decisionDigest(a) === decisionDigest(b); }
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); }

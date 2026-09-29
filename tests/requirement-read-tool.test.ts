@@ -78,7 +78,6 @@ async function world(body = BODY) {
   }
   return { ...options, root, repo, service, state, created, approved, lease, workspace, worktree, binding, sessions, host, tool, create, save, bind, close };
 }
-const denied = { code: "requirement_read_denied" };
 function content(result: unknown) { return result as { text: string; source: { commit: string; revision: number; role: string };
   structure: ReturnType<typeof inspectProdStructure> & { totalSections: number; startSection: number; endSection: number;
     remainingSections: number; complete: boolean };
@@ -149,7 +148,7 @@ test.each(["close", "update"] as const)("结构专用续页仍重验当前权限
   expect(first.coverage.nextCursor).not.toBeNull();
   if (change === "close") w.close(); else await w.save(w.created.requirementId, LONG_STRUCTURE_BODY + "更新\n");
   const probe = vi.spyOn(storage, "readVersion");
-  await expect(tool.execute({ action: "read", maxBytes: 32_768, cursor: first.coverage.nextCursor })).rejects.toMatchObject(denied);
+  await expect(tool.execute({ action: "read", maxBytes: 32_768, cursor: first.coverage.nextCursor })).rejects.toMatchObject({ code: change === "close" ? "closed_metadata_only" : "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
 });
 
@@ -180,7 +179,7 @@ test("整包固定信息超预算时只给安全错误，不把巨额正文藏�
     const result = await original.call(this, input);
     return { ...result, title: "秘密".repeat(49_152) };
   });
-  await expect(tool.execute({ action: "read" })).rejects.toThrow(/^requirement_read_denied$/);
+  await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "response_too_large" });
 });
 
 test("PM/reviewer/QA绑定真实SQLite与独立worktree，只读当前批准版本且来源无私有路径", async () => {
@@ -220,10 +219,10 @@ test("伪角色/身份/path/ref/checkRound参数及worker工厂拒绝，正文�
   const probe = vi.spyOn(storage, "readVersion");
   for (const extra of [{ role: "main" }, { actor: "user" }, { requirementId: uuidv7() }, { source: "saved" },
     { path: "prod.md" }, { ref: "HEAD" }, { checkRoundId: uuidv7() }, { toRevision: 1 }]) {
-    await expect(tool.execute({ action: "read", ...extra })).rejects.toMatchObject(denied);
+    await expect(tool.execute({ action: "read", ...extra })).rejects.toMatchObject({ code: "invalid_shape" });
   }
-  await expect(w.tool({ ...w.binding(), role: "worker" } as never)).rejects.toMatchObject(denied);
-  await expect(w.tool({ ...w.binding(), role: "planner" } as never)).rejects.toMatchObject(denied);
+  await expect(w.tool({ ...w.binding(), role: "worker" } as never)).rejects.toMatchObject({ code: "binding_invalid" });
+  await expect(w.tool({ ...w.binding(), role: "planner" } as never)).rejects.toMatchObject({ code: "binding_invalid" });
   expect(probe).not.toHaveBeenCalled();
 });
 
@@ -234,19 +233,18 @@ test("draft、其他需求、伪宿主身份、过期epoch/fence/run/workspace�
   const draftWorkspace = w.state.read(draft.requirementId).data.workspace!;
   const draftTool = await w.tool({ ...w.binding(), requirementId: draft.requirementId, workspaceId: draftWorkspace.workspaceId,
     branch: draftWorkspace.branch, lease: { ...w.lease, requirementId: draft.requirementId, workspaceId: draftWorkspace.workspaceId } });
-  await expect(draftTool.execute({ action: "read" })).rejects.toMatchObject(denied);
-  await expect(draftTool.execute({ action: "metadata" })).rejects.toMatchObject(denied);
-  for (const change of [{ lease: { ...w.lease, fence: w.lease.fence + 1 } },
-    { lease: { ...w.lease, epoch: w.lease.epoch + 1 } },
-    { workspaceId: "f".repeat(64) },
-    { branch: "refs/heads/not-bound" },
-    { requirementId: draft.requirementId, lease: { ...w.lease, requirementId: draft.requirementId } }]) {
-    try { const tool = await w.tool({ ...w.binding(), ...change }); await expect(tool.execute({ action: "read" })).rejects.toMatchObject(denied); }
-    catch (error) { expect(error).toMatchObject(denied); }
+  await expect(draftTool.execute({ action: "read" })).rejects.toMatchObject({ code: "requirement_inactive" });
+  await expect(draftTool.execute({ action: "metadata" })).rejects.toMatchObject({ code: "requirement_inactive" });
+  for (const [change, code] of [[{ lease: { ...w.lease, fence: w.lease.fence + 1 } }, "lease_stale"],
+    [{ lease: { ...w.lease, epoch: w.lease.epoch + 1 } }, "requirement_inactive"],
+    [{ workspaceId: "f".repeat(64) }, "binding_invalid"],
+    [{ branch: "refs/heads/not-bound" }, "workspace_changed"],
+    [{ requirementId: draft.requirementId, lease: { ...w.lease, requirementId: draft.requirementId } }, "workspace_changed"]] as const) {
+    await expect(w.tool({ ...w.binding(), ...change }).then((tool) => tool.execute({ action: "read" }))).rejects.toMatchObject({ code });
   }
   const bound = w.binding(); const tool = await w.tool(bound);
   w.sessions.set(bound.callerId, JSON.stringify({ ...bound, runId: uuidv7() }));
-  await expect(tool.execute({ action: "read" })).rejects.toMatchObject(denied);
+  await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "session_inactive" });
   expect(probe).not.toHaveBeenCalled();
 });
 
@@ -255,7 +253,7 @@ test("绑定时的租约快照过期但 PM 当前租约仍有效时照常读取�
   const tool = await w.tool({ ...w.binding(), lease: { ...w.lease, expiresAt: 1 } });
   await expect(tool.execute({ action: "metadata" })).resolves.toBeTruthy();
   const now = vi.spyOn(Date, "now").mockReturnValue(w.lease.expiresAt + 1);
-  try { await expect(tool.execute({ action: "metadata" })).rejects.toMatchObject(denied); }
+  try { await expect(tool.execute({ action: "metadata" })).rejects.toMatchObject({ code: "lease_stale" }); }
   finally { now.mockRestore(); }
 });
 
@@ -264,14 +262,14 @@ test("游标不能篡改/跨角色工厂/页范围/需求复用，dispose废止�
   const first = content(await tool.execute({ action: "read", maxBytes: 32 }));
   const cursor = first.coverage.nextCursor!;
   const probe = vi.spyOn(storage, "readVersion");
-  await expect(other.execute({ action: "read", maxBytes: 32, cursor })).rejects.toMatchObject(denied);
-  await expect(tool.execute({ action: "read", maxBytes: 32, cursor: "a".repeat(64) })).rejects.toMatchObject(denied);
+  await expect(other.execute({ action: "read", maxBytes: 32, cursor })).rejects.toMatchObject({ code: "cursor_invalid" });
+  await expect(tool.execute({ action: "read", maxBytes: 32, cursor: "a".repeat(64) })).rejects.toMatchObject({ code: "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
   const next = content(await tool.execute({ action: "read", maxBytes: 32 }));
   probe.mockClear();
-  await expect(tool.execute({ action: "read", maxBytes: 33, cursor: next.coverage.nextCursor })).rejects.toMatchObject(denied);
+  await expect(tool.execute({ action: "read", maxBytes: 33, cursor: next.coverage.nextCursor })).rejects.toMatchObject({ code: "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
-  tool.dispose(); await expect(tool.execute({ action: "read" })).rejects.toMatchObject(denied);
+  tool.dispose(); await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "tool_closed" });
 });
 
 test("批准diff使用绑定旧批准到当前批准，不用HEAD或中间草稿，模型不能指定from/to", async () => {
@@ -283,7 +281,7 @@ test("批准diff使用绑定旧批准到当前批准，不用HEAD或中间草稿
   expect(result).toMatchObject({ kind: "diff", difference: { fromCommit: w.approved.commit, toCommit: second.commit, fromRevision: 1, toRevision: 2 } });
   expect(content(result).text).toContain("+新增批准目标");
   expect(content(result).text).not.toMatch(/草稿中间态|HEAD未批准秘密/);
-  await expect(tool.execute({ action: "diff", fromRevision: 1, toRevision: 1 })).rejects.toMatchObject(denied);
+  await expect(tool.execute({ action: "diff", fromRevision: 1, toRevision: 1 })).rejects.toMatchObject({ code: "invalid_shape" });
 });
 
 test("closing/closed不提供正文/diff或旧页，只返回固定最少metadata，拒绝前不读正文", async () => {
@@ -291,7 +289,7 @@ test("closing/closed不提供正文/diff或旧页，只返回固定最少metadat
   const cursor = content(await tool.execute({ action: "read", maxBytes: 32 })).coverage.nextCursor;
   w.close(); const probe = vi.spyOn(storage, "readVersion"); const diffProbe = vi.spyOn(storage, "diffVersions");
   for (const input of [{ action: "read" }, { action: "read", maxBytes: 32, cursor }, { action: "diff" }]) {
-    await expect(tool.execute(input)).rejects.toMatchObject(denied);
+    await expect(tool.execute(input)).rejects.toMatchObject({ code: "closed_metadata_only" });
   }
   expect(await tool.execute({ action: "metadata" })).toEqual({ kind: "metadata", requirementId: w.created.requirementId, lifecycle: "closing" });
   const current = w.state.read(w.created.requirementId);
@@ -306,18 +304,18 @@ test("service读取后关闭/宿主返回前撤权都拒绝，不回显下层受
   vi.spyOn(RequirementService.prototype, "read").mockImplementationOnce(async function (input) {
     const result = await original.call(this, input); w.close(); return result;
   });
-  await expect(tool.execute({ action: "read" })).rejects.toMatchObject(denied);
+  await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "requirement_inactive" });
   vi.restoreAllMocks();
   const second = await world(); const bound = second.binding(); let readFinished = false;
   const next = await second.tool(bound, (request) => second.host(request) && !readFinished);
   vi.spyOn(RequirementService.prototype, "read").mockImplementationOnce(async function (input) {
     const result = await original.call(this, input); readFinished = true; return result;
   });
-  await expect(next.execute({ action: "read" })).rejects.toMatchObject(denied);
+  await expect(next.execute({ action: "read" })).rejects.toMatchObject({ code: "session_inactive" });
   vi.restoreAllMocks();
   const third = await world(); const failing = await third.tool();
   vi.spyOn(RequirementService.prototype, "read").mockRejectedValueOnce(new Error("秘密受限正文 /private/dataRoot/prod.md"));
-  await expect(failing.execute({ action: "read" })).rejects.toThrow(/^requirement_read_denied$/);
+  await expect(failing.execute({ action: "read" })).rejects.toMatchObject({ code: "read_failed" });
 });
 
 test("批准版本变化立即拒绝旧页；真实worktree分支变化拒绝", async () => {
@@ -325,10 +323,10 @@ test("批准版本变化立即拒绝旧页；真实worktree分支变化拒绝", 
   const cursor = content(await tool.execute({ action: "read", maxBytes: 32 })).coverage.nextCursor;
   await w.save(w.created.requirementId, BODY + "追加\n");
   const probe = vi.spyOn(storage, "readVersion");
-  await expect(tool.execute({ action: "read", maxBytes: 32, cursor })).rejects.toMatchObject(denied);
+  await expect(tool.execute({ action: "read", maxBytes: 32, cursor })).rejects.toMatchObject({ code: "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
   await exec("git", ["checkout", "-b", "changed-binding"], { cwd: w.worktree.root, env: GIT_ENV });
-  await expect(tool.execute({ action: "read" })).rejects.toMatchObject(denied);
+  await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "workspace_binding_changed" });
   expect(probe).not.toHaveBeenCalled();
 });
 
@@ -336,10 +334,16 @@ test("无稳定ID可完整读取但明确structure unavailable；旧PM fence不�
   const w = await world(); const tool = await w.tool(w.binding("qa"));
   await w.save(w.created.requirementId, "# 自然标题\n中文😀且无稳定ID");
   expect(await tool.execute({ action: "read" })).toMatchObject({ text: "# 自然标题\n中文😀且无稳定ID", structure: { status: "section_structure_unavailable" } });
-  await expect(tool.execute({ action: "read", sectionId: "guessed" })).rejects.toMatchObject(denied);
+  await expect(tool.execute({ action: "read", sectionId: "guessed" })).rejects.toMatchObject({ code: "structure_unavailable" });
   w.state.releasePm(w.lease);
   await w.state.acquirePm({ requirementId: w.created.requirementId, version: w.state.read(w.created.requirementId).version,
     runId: uuidv7(), expectedFence: w.lease.fence + 1 });
   const probe = vi.spyOn(storage, "readVersion");
-  await expect(tool.execute({ action: "read" })).rejects.toMatchObject(denied); expect(probe).not.toHaveBeenCalled();
+  await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "lease_stale" }); expect(probe).not.toHaveBeenCalled();
+});
+
+test("有章节结构时读不存在的章节，说明没有这个章节并建议先看章节列表", async () => {
+  const w = await world(LONG_STRUCTURE_BODY); const tool = await w.tool();
+  await expect(tool.execute({ action: "read", sectionId: "not-a-section" })).rejects.toMatchObject({ code: "section_not_found",
+    advice: { why: "批准正文里没有这个章节编号", next: "先不带 sectionId 读取，按结果里 structure 列出的章节编号再读" } });
 });

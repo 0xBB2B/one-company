@@ -218,7 +218,7 @@ test("read/diff/metadata完成JSON包装后都以原结果对象调用guard，�
     const inner = await originalFactory(options);
     return Object.freeze({ ...inner, assertCurrent(result: unknown) {
       guarded.push(result);
-      expect(() => inner.assertCurrent(JSON.parse(JSON.stringify(result)))).toThrow(/requirement_read_denied/);
+      expect((() => { try { inner.assertCurrent(JSON.parse(JSON.stringify(result))); } catch (error) { return error; } })()).toMatchObject({ code: "read_failed", advice: { why: "读取批准正文时出错：结果不是本工具刚返回的对象" } });
       inner.assertCurrent(result);
     } });
   });

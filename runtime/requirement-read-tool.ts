@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import { adviceOf, COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
@@ -45,9 +47,47 @@ export interface RequirementReadToolOptions {
   /** 必须由宿主核验当前物理角色会话/调用者及动作许可；不能从工具参数或角色文本构造true。 */
   authorize: (request: Readonly<RequirementReadAuthorization>) => boolean;
 }
+const STALE = "停止操作，不要重试；在回复里说明，由上级按新状态重新安排";
+const READ_ADVICE = {
+  tool_closed: COMMON_ADVICE.tool_closed,
+  action_not_allowed: COMMON_ADVICE.action_not_allowed,
+  session_inactive: COMMON_ADVICE.session_inactive,
+  open_failed: COMMON_ADVICE.open_failed,
+  invalid_shape: COMMON_ADVICE.invalid_shape,
+  binding_invalid: { why: "读取身份与需求、工作区或 PM 租约的绑定不一致", next: STALE },
+  requirement_missing: { why: "找不到这个需求", next: STALE },
+  workspace_changed: { why: "需求工作区绑定已变化", next: STALE },
+  requirement_inactive: { why: "需求已不是可读取批准正文的状态", next: STALE },
+  lease_stale: { why: "派出本运行的 PM 租约已失效，可能已过期或被新 PM 接管", next: STALE },
+  version_changed: { why: "读取期间批准版本已变化", next: "从第一页重新读取（不带 cursor）" },
+  check_round_invalid: { why: "绑定的检查轮已结束、失效或被中断", next: STALE },
+  closed_metadata_only: { why: "需求正在关闭或已关闭，只能读取 metadata", next: "改用 metadata；不要再读正文" },
+  cursor_invalid: { why: "翻页游标已过期、已用过，或与本次的动作、章节、maxBytes 不一致", next: "不带 cursor 从第一页重新读取，翻页时原样沿用上一页给出的 cursor 与参数" },
+  diff_unavailable: { why: "本运行没有可用的差异基线，不能读取 diff", next: "改用 read 读取批准正文" },
+  response_too_large: { why: "这一页的结果超出了返回上限", next: "调小 maxBytes，或用 sectionId 只读一个章节" },
+  section_not_found: { why: "批准正文里没有这个章节编号", next: "先不带 sectionId 读取，按结果里 structure 列出的章节编号再读" },
+  structure_unavailable: { why: "批准正文没有可识别的章节结构，不能按章节读取", next: "不带 sectionId 读取全文" },
+  read_failed: { why: "读取批准正文时出错", next: "重试一次；仍然失败就在回复里说明，由上级处理" },
+} as const satisfies Record<string, FailureAdvice>;
+export type RequirementReadErrorCode = keyof typeof READ_ADVICE;
 export class RequirementReadError extends Error {
-  readonly code: "requirement_read_denied";
-  constructor() { super("requirement_read_denied"); this.name = "RequirementReadError"; this.code = "requirement_read_denied"; }
+  readonly code: RequirementReadErrorCode;
+  readonly advice: FailureAdvice;
+  constructor(code: RequirementReadErrorCode, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code); this.name = "RequirementReadError"; this.code = code; this.advice = withDetail(READ_ADVICE[code], detail);
+  }
+}
+const PROD_VIEW_FAILURES: Record<string, RequirementReadErrorCode> = {
+  prod_response_budget_exceeded: "response_too_large",
+  unknown_section: "section_not_found",
+  section_structure_unavailable: "structure_unavailable",
+  invalid_page_range: "cursor_invalid",
+};
+/** 下层带原因的错误原样交出；分页与章节的固定错误换成对应原因；其余只说读取出错，不回显可能含路径或受限文本的原始消息。 */
+function readFailure(error: unknown): Error {
+  if (error instanceof RequirementReadError || adviceOf(error)) return error as Error;
+  const mapped = error instanceof Error ? PROD_VIEW_FAILURES[error.message] : undefined;
+  return new RequirementReadError(mapped ?? "read_failed");
 }
 interface Cursor {
   action: "read" | "diff";
@@ -74,11 +114,12 @@ function freeze<T>(value: T): T {
  */
 export async function createRequirementReadTool(options: RequirementReadToolOptions) {
   try { return await openReadTool(options); }
-  catch { throw new RequirementReadError(); }
+  catch (error) { throw error instanceof RequirementReadError || adviceOf(error) ? error : new RequirementReadError("open_failed"); }
 }
 
 async function openReadTool(options: RequirementReadToolOptions) {
-  const binding = freeze(checked(Binding, structuredClone(options.binding)));
+  let binding: RequirementReadBinding;
+  try { binding = freeze(checked(Binding, structuredClone(options.binding))); } catch { throw new RequirementReadError("binding_invalid"); }
   const config = { repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot,
     repoId: binding.repoId };
   const authorize = options.authorize;
@@ -88,19 +129,20 @@ async function openReadTool(options: RequirementReadToolOptions) {
     scope?: ReturnType<typeof source>["approvalScope"] }>();
   let unsubscribe: (() => void) | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
-  const deny = (): never => { throw new RequirementReadError(); };
+  const deny = (code: RequirementReadErrorCode, detail?: string): never => { throw new RequirementReadError(code, detail); };
   function bounded<T>(response: T): T {
-    if (Buffer.byteLength(JSON.stringify(response)) > PROD_RESPONSE_MAX_BYTES) deny();
+    if (Buffer.byteLength(JSON.stringify(response)) > PROD_RESPONSE_MAX_BYTES) deny("response_too_large");
     return freeze(response);
   }
   if (binding.requirementId !== binding.lease.requirementId || binding.workspaceId !== binding.lease.workspaceId ||
-    (binding.role === "pm" && binding.runId !== binding.lease.runId)) deny();
+    (binding.role === "pm" && binding.runId !== binding.lease.runId)) deny("binding_invalid");
   function host(action: RequirementReadAuthorization["action"]) {
-    if (disposed || !authorizeToolAction(binding.role, "requirement_manage", action)) deny();
+    if (disposed) deny("tool_closed");
+    if (!authorizeToolAction(binding.role, "requirement_manage", action)) deny("action_not_allowed", `${binding.role} 不能做 ${action}`);
     let result: unknown;
-    try { result = authorize(freeze({ binding, action })); } catch { return deny(); }
+    try { result = authorize(freeze({ binding, action })); } catch (error) { return deny("session_inactive", (error as Error).message); }
     if (isPromise(result)) void Promise.prototype.then.call(result, () => undefined, () => undefined);
-    if (result !== true) deny();
+    if (result !== true) deny("session_inactive");
   }
   host("metadata");
   const state = await RequirementStateStore.open({ ...config, authorize: (request) => {
@@ -112,24 +154,25 @@ async function openReadTool(options: RequirementReadToolOptions) {
   function current(db?: LocalDatabase) {
     const row = db?.read("requirements", binding.requirementId);
     const record = db ? row && { ...row, data: checkRequirement(row.data, binding.requirementId, binding.repoId) } : state.read(binding.requirementId);
-    if (!record) return deny();
+    if (!record) return deny("requirement_missing");
     const workspace = record.data.workspace;
     if (!workspace || workspace.repoId !== binding.repoId || workspace.requirementId !== binding.requirementId ||
-      workspace.workspaceId !== binding.workspaceId || workspace.branch !== binding.branch) deny();
+      workspace.workspaceId !== binding.workspaceId || workspace.branch !== binding.branch) deny("workspace_changed");
     return record;
   }
   function activeSync(expected?: { version: number; data: RequirementRecord }, db?: LocalDatabase) {
     const record = current(db);
-    if (record.data.lifecycle !== "active" || record.data.recovery !== "ready" || !record.data.approved ||
-      record.data.epoch !== binding.lease.epoch) deny();
+    if (record.data.lifecycle !== "active" || record.data.recovery !== "ready") deny("requirement_inactive", "需求不在活动状态");
+    if (!record.data.approved) deny("requirement_inactive", "需求没有批准版本");
+    if (record.data.epoch !== binding.lease.epoch) deny("requirement_inactive", "需求已换代（epoch 变化）");
     const ownerRow = db?.read("pm_ownership", binding.requirementId);
     const owner = db ? ownerRow && checked(PmRecord, ownerRow.data) : state.pmOwner(binding.requirementId);
     const lease = owner?.lease;
     if (!lease || owner!.requirementId !== binding.requirementId || lease.requirementId !== binding.requirementId || owner!.fence !== binding.lease.fence || lease.fence !== binding.lease.fence ||
       lease.runId !== binding.lease.runId || lease.workspaceId !== binding.workspaceId || lease.epoch !== binding.lease.epoch ||
-      lease.contextGeneration !== binding.lease.contextGeneration || lease.expiresAt <= Date.now()) deny();
+      lease.contextGeneration !== binding.lease.contextGeneration || lease.expiresAt <= Date.now()) deny("lease_stale");
     if (expected && (record.version !== expected.version || record.data.revision !== expected.data.revision ||
-      record.data.approved!.commit !== expected.data.approved?.commit || record.data.approved!.hash !== expected.data.approved?.hash)) deny();
+      record.data.approved!.commit !== expected.data.approved?.commit || record.data.approved!.hash !== expected.data.approved?.hash)) deny("version_changed");
     return record;
   }
   function target(record: { version: number; data: RequirementRecord }, db?: LocalDatabase): { revision: number; reference: ProdReference } {
@@ -137,7 +180,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
     const round = db ? readCheckRoundIn(db, binding.checkRoundId) : withDatabase(repositoryDatabase(config.dataRoot, binding.repoId), (inner) => readCheckRoundIn(inner, binding.checkRoundId!));
     if (!round || round.data.requirementId !== binding.requirementId || round.data.repoId !== binding.repoId || round.data.epoch !== binding.lease.epoch ||
       round.data.fence !== binding.lease.fence || round.data.status === "released" || round.data.invalidation !== null || round.data.decision?.kind === "interrupt" ||
-      round.data.baseline.revision > record.data.revision) return deny();
+      round.data.baseline.revision > record.data.revision) return deny("check_round_invalid");
     return { revision: round.data.baseline.revision, reference: round.data.baseline.approved };
   }
   async function validate(action: RequirementReadAuthorization["action"], expected?: { version: number; data: RequirementRecord }) {
@@ -158,22 +201,24 @@ async function openReadTool(options: RequirementReadToolOptions) {
     current();
     unsubscribe = state.onAccessInvalidated(binding.requirementId, () => cursors.clear());
     timer = setInterval(purge, 1_000); timer.unref();
-  } catch { dispose(); return deny(); }
+  } catch (error) { dispose(); throw readFailure(error); }
 
   async function execute(input: unknown) {
+    let params: ReturnType<typeof checkServiceInput<typeof REQUIREMENT_READ_PARAMETERS>>;
+    try { params = checkServiceInput(REQUIREMENT_READ_PARAMETERS, input); }
+    catch (error) { throw new RequirementReadError("invalid_shape", (error as Error).message); }
     try {
-      const params = checkServiceInput(REQUIREMENT_READ_PARAMETERS, input);
       host(params.action);
       purge();
       const status = current();
       if (status.data.lifecycle === "closing" || status.data.lifecycle === "closed") {
         cursors.clear();
-        if (params.action !== "metadata") deny();
+        if (params.action !== "metadata") deny("closed_metadata_only");
         // 关闭后只允许固定身份/状态；无标题、路径、提交、hash、决定或目标摘要。
         await verifyRequirementWorkspace(config.dataRoot, status.data.workspace!);
         host("metadata");
         const final = current();
-        if (final.data.lifecycle !== "closing" && final.data.lifecycle !== "closed") deny();
+        if (final.data.lifecycle !== "closing" && final.data.lifecycle !== "closed") deny("version_changed");
         const response = bounded({ kind: "metadata" as const, requirementId: binding.requirementId, lifecycle: final.data.lifecycle });
         returns.set(response, { action: "metadata", record: final });
         assertCurrent(response);
@@ -194,15 +239,15 @@ async function openReadTool(options: RequirementReadToolOptions) {
       const maxBytes = params.maxBytes ?? PROD_PAGE_BYTES;
       const goal = target(before);
       const cursor = params.cursor ? cursors.get(params.cursor) : undefined;
-      if (params.cursor && (!cursor || cursor.action !== params.action || cursor.sectionId !== sectionId || cursor.maxBytes !== maxBytes ||
-        cursor.version !== before.version || cursor.revision !== goal.revision || cursor.epoch !== before.data.epoch ||
-        cursor.commit !== goal.reference.commit || cursor.hash !== goal.reference.hash)) deny();
+      if (params.cursor && (!cursor || cursor.action !== params.action || cursor.sectionId !== sectionId || cursor.maxBytes !== maxBytes)) deny("cursor_invalid");
+      if (cursor && (cursor.version !== before.version || cursor.revision !== goal.revision || cursor.epoch !== before.data.epoch ||
+        cursor.commit !== goal.reference.commit || cursor.hash !== goal.reference.hash)) deny("version_changed");
       if (params.cursor) cursors.delete(params.cursor);
       const baseline = binding.diffBaseline;
       if (params.action === "diff") {
-        if (!baseline || binding.checkRoundId || baseline.revision > before.data.revision) deny();
+        if (!baseline || binding.checkRoundId || baseline.revision > before.data.revision) deny("diff_unavailable");
         const from = state.events(binding.requirementId).find((event) => event.data.kind === "prod.approved" && event.data.revision === baseline!.revision);
-        if (from?.data.to?.commit !== baseline!.reference.commit || from.data.to.hash !== baseline!.reference.hash) deny();
+        if (from?.data.to?.commit !== baseline!.reference.commit || from.data.to.hash !== baseline!.reference.hash) deny("diff_unavailable", "差异基线与批准记录不符");
       }
       const service = await RequirementService.open({ ...config, authorize: (request: Readonly<ServiceAuthorizationRequest>) => {
         if (request.repoId !== binding.repoId || !["metadata", params.action === "read" ? "readApproved" : "diff"].includes(request.action) ||
@@ -221,7 +266,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
       if (params.action === "read") {
         const result = await service.read({ requirementId: binding.requirementId, source: "approved", ...(binding.checkRoundId ? { revision: goal.revision } : {}) });
         if (result.commit !== goal.reference.commit || result.prodHash !== `sha256:${goal.reference.hash}` ||
-          result.version !== before.version || result.epoch !== before.data.epoch) deny();
+          result.version !== before.version || result.epoch !== before.data.epoch) deny("version_changed");
         title = result.title;
         structure = inspectProdStructure(result.body);
         text = selectProdSection(result.body, structure, sectionId);
@@ -230,7 +275,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
           toRevision: before.data.revision });
         if (result.fromCommit !== baseline!.reference.commit || result.fromHash !== `sha256:${baseline!.reference.hash}` ||
           result.toCommit !== before.data.approved!.commit || result.toHash !== `sha256:${before.data.approved!.hash}` ||
-          result.version !== before.version || result.epoch !== before.data.epoch) deny();
+          result.version !== before.version || result.epoch !== before.data.epoch) deny("version_changed");
         text = result.diff;
         difference = { fromRevision: result.fromRevision, toRevision: result.toRevision, fromCommit: result.fromCommit,
           toCommit: result.toCommit, fromHash: result.fromHash, toHash: result.toHash };
@@ -260,17 +305,16 @@ async function openReadTool(options: RequirementReadToolOptions) {
       returns.set(response, { action: params.action, record: before, scope: origin.approvalScope });
       assertCurrent(response);
       return response;
-    } catch {
+    } catch (error) {
       cursors.clear();
-      // 任意下层错误可能含Git/文件路径或受限文本，只返回固定安全错误码。
-      return deny();
+      throw readFailure(error);
     }
   }
   /** 外层须在自身最后一次await/宿主回调之后调用；只认本工具原对象，不接受JSON副本作许可。 */
   function assertCurrent(result: unknown): void {
     try {
       const returned = result && typeof result === "object" ? returns.get(result) : undefined;
-      if (!returned) return deny();
+      if (!returned) return deny("read_failed", "结果不是本工具刚返回的对象");
       host(returned.action);
       withDatabase(repositoryDatabase(config.dataRoot, binding.repoId), (db) => db.transaction(() => {
         if (returned.scope) {
@@ -280,10 +324,10 @@ async function openReadTool(options: RequirementReadToolOptions) {
         } else {
           const actual = current(db);
           if (!["closing", "closed"].includes(actual.data.lifecycle) || actual.version !== returned.record.version ||
-            actual.data.lifecycle !== returned.record.data.lifecycle || actual.data.epoch !== returned.record.data.epoch) deny();
+            actual.data.lifecycle !== returned.record.data.lifecycle || actual.data.epoch !== returned.record.data.epoch) deny("version_changed");
         }
       }));
-    } catch { cursors.clear(); return deny(); }
+    } catch (error) { cursors.clear(); throw readFailure(error); }
   }
   function source(record: { version: number; data: RequirementRecord }) {
     const approvalScope = record.data.approvalManifest
