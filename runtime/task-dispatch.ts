@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import { intakeReasonText } from "./pm-intake-contracts.ts";
 import { withDetail } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
@@ -126,7 +127,7 @@ function userRetryGranted(task: TaskRecord): boolean {
  */
 export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string; now?: number }): { task: TaskRecord; maxTurns: number } {
   const gate = evaluatePmIntakeGate({ dataRoot: request.dataRoot, repoId: request.repoId, lease: request.lease });
-  if (!gate.allowed) deny(gate.reasons.includes("pending_approved_update") ? "pending_update" : "intake_gate", gate.reasons);
+  if (!gate.allowed) deny(gate.reasons.includes("pending_approved_update") ? "pending_update" : "intake_gate", gate.reasons.map(intakeReasonText));
   return withDatabase(repositoryDatabase(request.dataRoot, request.repoId), (db) => db.transaction(() => {
     const { task, tasks } = schedulingGateIn(db, request);
     if (!["pending", "awaiting_parent", "awaiting_rework"].includes(task.status)) deny("task_not_ready", [`${task.key}:${task.status}`]);
@@ -171,7 +172,7 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
 export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "rework"> & { runId: string; maxTurns: number; now?: number }):
   { task: TaskRecord; maxTurns: number; attemptRunId: string } {
   const gate = evaluatePmIntakeGate({ dataRoot: request.dataRoot, repoId: request.repoId, lease: request.lease });
-  if (!gate.allowed) deny(gate.reasons.includes("pending_approved_update") ? "pending_update" : "intake_gate", gate.reasons);
+  if (!gate.allowed) deny(gate.reasons.includes("pending_approved_update") ? "pending_update" : "intake_gate", gate.reasons.map(intakeReasonText));
   return withDatabase(repositoryDatabase(request.dataRoot, request.repoId), (db) => db.transaction(() => {
     const { task } = schedulingGateIn(db, request);
     if (task.role !== "worker" || task.status !== "awaiting_review") deny("task_not_ready", [`${task.key}:${task.status} 不在待审查`]);

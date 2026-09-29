@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { intakeReasonText } from "./pm-intake-contracts.ts";
 import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 import { mkdir, readFile } from "node:fs/promises";
@@ -262,7 +263,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
   async function formalGate(): Promise<void> {
     const current = lease();
     const verdict = evaluatePmIntakeGate({ dataRoot: options.dataRoot, repoId: grant.repoId, lease: current });
-    if (!verdict.allowed) deny("intake_gate", verdict.reasons);
+    if (!verdict.allowed) deny("intake_gate", verdict.reasons.map(intakeReasonText));
     try { await state.checkScheduling(current); }
     catch (error) { if ((error as { code?: string }).code === "pending_update") deny("pending_update"); throw error; }
   }

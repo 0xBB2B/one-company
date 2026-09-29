@@ -39,7 +39,7 @@ type PlanView = { plan: { planVersion: number; confirmedVersion: number | null }
 test("M7-AC13：接手核对通过前正式提出计划被拒，通过后可以提出", async () => {
   const w = await world({ review: false });
   const pm = await w.tool();
-  await expect(pm.execute({ action: "propose", tasks: [spec("login")] })).rejects.toMatchObject({ code: "intake_gate", detail: ["review_missing"] });
+  await expect(pm.execute({ action: "propose", tasks: [spec("login")] })).rejects.toMatchObject({ code: "intake_gate", detail: ["主代理还没有核对 PM 的接手理解"] });
   await w.kit.pass();
   const view = await pm.execute({ action: "propose", tasks: [spec("login")] }) as PlanView;
   expect(view.plan).toMatchObject({ planVersion: 1, confirmedVersion: null });

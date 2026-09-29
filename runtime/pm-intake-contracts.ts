@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { requirementStateWhy } from "./requirement-contracts.ts";
 import { adviceIn } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 import { Type } from "typebox";
@@ -398,6 +399,47 @@ export type IntakeContinuityReason =
   | "impact_link_terminal_not_current"
   | "impact_affected"
   | "impact_unknown";
+const INTAKE_REASON_TEXT: Record<IntakeContinuityReason | "requirement_not_ready", string> = {
+  review_missing: "主代理还没有核对 PM 的接手理解",
+  pm_correction_required: "主代理核对后要求 PM 改正接手理解",
+  prod_revision_required: "主代理核对后认为需要先修订需求",
+  clarification_required: "主代理核对后认为需要先向用户澄清",
+  understanding_baseline_missing: "当前 PM 还没有提交接手理解",
+  understanding_baseline_mismatch: "核对过的接手理解不是 PM 最新提交的那份",
+  requirement_binding_changed: "需求绑定已变化",
+  workspace_changed: "需求工作区已变化",
+  epoch_changed: "需求已换代（epoch 变化）",
+  new_pm_run: "现在是新派出的 PM，需要重新接手",
+  new_pm_fence: "PM 已换代，需要重新接手",
+  context_changed: "PM 会话上下文已换代，需要重新接手",
+  action_scope_changed: "授权动作范围已变化",
+  approved_revision_regressed: "批准版本号倒退",
+  approved_binding_changed_without_revision: "批准内容变了但版本号没变",
+  requirement_not_active: "需求不在活动状态",
+  requirement_not_ready: "需求还没有批准版本、工作区或批准清单",
+  lease_not_current: "PM 租约已失效",
+  action_authorization_not_reported_current: "接手理解里的授权动作与当前批准不一致",
+  source_directory_not_reported_current: "接手理解引用的出处目录不是当前的",
+  pending_approved_update: "有新批准的需求版本还没复核",
+  unexpected_impact_links: "出现了不该有的影响复核记录",
+  impact_link_duplicate: "影响复核记录重复",
+  impact_link_conflict: "影响复核记录互相冲突",
+  impact_link_out_of_order: "影响复核记录顺序不对",
+  impact_link_gap: "有批准更新还没做影响复核",
+  impact_link_event_mismatch: "影响复核与批准事件对不上",
+  impact_link_root_mismatch: "影响复核的起点与接手核对不一致",
+  impact_link_task_set_missing: "影响复核缺少任务集合",
+  impact_link_task_set_conflict: "影响复核的任务集合与计划冲突",
+  impact_link_unknown_task: "影响复核引用了计划里没有的任务",
+  impact_link_missing_task: "影响复核漏了计划里的任务",
+  impact_link_terminal_not_current: "最后一次影响复核不是当前的",
+  impact_affected: "有任务受批准更新影响，需要先处理",
+  impact_unknown: "有任务受批准更新的影响未知，需要先查清",
+};
+/** 接手核对未通过的缺项说明；租约等状态类原因取需求状态的说明。 */
+export function intakeReasonText(code: string): string {
+  return Object.hasOwn(INTAKE_REASON_TEXT, code) ? INTAKE_REASON_TEXT[code as keyof typeof INTAKE_REASON_TEXT] : requirementStateWhy(code) ?? `未归类（${code}）`;
+}
 
 export interface IntakeContinuityEvaluation {
   status: "contract_ready" | "review_required" | "impact_action_required" | "blocked";

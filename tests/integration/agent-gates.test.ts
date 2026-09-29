@@ -186,7 +186,8 @@ test("M9-AC9：已通过接手的 PM 被停止后重新派出，新 PM 须重新
   expect(second.runId).not.toBe(first.runId);
   expect(await w.toolResult(4)).toContain("开始受限接手");
   const denied = await w.toolResult(5);
-  for (const reason of ["intake_gate", "understanding_baseline_missing", "new_pm_run", "new_pm_fence"]) expect(denied).toContain(reason);
+  for (const reason of ["原因：接手核对还没通过，或 PM 租约已失效", "当前 PM 还没有提交接手理解", "现在是新派出的 PM，需要重新接手", "PM 已换代，需要重新接手"]) expect(denied).toContain(reason);
+  expect(denied).not.toMatch(/understanding_baseline_missing|new_pm_run|intake_gate/);
   expect((await w.runs().list({ limit: 50 })).items.filter((run) => run.kind === "role")).toEqual([]);
   expect(w.task("login").status).toBe("pending");
 }, 120_000);
