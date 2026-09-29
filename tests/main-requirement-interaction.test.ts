@@ -124,6 +124,19 @@ describe("主窗口共享控制器的真实服务路径", () => {
     }
   });
 
+  test("M9：用户按主代理的推荐作答后更新草稿，草稿核验器能看到本需求上提过的问题，提示词说明被采纳的那项才算用户决定", async () => {
+    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    w.capture();
+    await w.call({ action: "ask", ...input, operationId: uuidv7(), question: "短信验证码有效期选哪种：5 分钟（推荐）还是 10 分钟？", scope: "仅短信验证码期限",
+      unitIds: [loaded.partition.units[1]!.id], actions: ["analyze"] }, true);
+    w.capture("按你推荐的定，写进草稿"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
+    const verifier = w.provider.requests.filter((request) => request.systemPrompt?.includes("草拟意图核验器")).at(-1)!;
+    const payload = JSON.parse(String((verifier.messages[0] as { content: string }).content));
+    expect(payload.questions).toEqual([{ question: "短信验证码有效期选哪种：5 分钟（推荐）还是 10 分钟？", scope: "仅短信验证码期限" }]);
+    expect(verifier.systemPrompt).toContain("被采纳的那一项算用户决定");
+  });
+
   test("M9：草稿核验器拒绝时带回一句原因，标明是模型说法；原因只作参考，未知字段或类型不对仍按格式错误拒绝", async () => {
     const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body: BODY };
     w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":false,"reason":"需求里「不接入渲染循环」是用户没说过的限制"}' }]);
