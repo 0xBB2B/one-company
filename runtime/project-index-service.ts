@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { lstatSync, realpathSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, realpath } from "node:fs/promises";
@@ -153,9 +154,20 @@ export type ProjectIndexServiceErrorCode =
   | "unstable"
   | "index_failure";
 
+const INDEX_NEXT: Record<ProjectIndexServiceErrorCode, string> = {
+  authorization_denied: "停止操作，不要重试；在回复里说明，由上级处理",
+  invalid_identity: "请用户确认当前目录是一个正常的 Git 仓库",
+  identity_changed: "仓库在操作期间被替换或移动，请用户确认后重新初始化索引",
+  invalid_data_root: "请用户检查本机数据目录的权限和链接",
+  invalid_database: "请用户检查本机数据目录；数据库损坏时删除索引库后重新初始化",
+  operation_in_progress: "等正在进行的索引操作结束后再试",
+  unstable: "等文件改动停下来后重试",
+  index_failure: "重试一次；仍然失败就把原因告诉用户",
+};
 export class ProjectIndexServiceError extends Error {
   readonly code: ProjectIndexServiceErrorCode;
   readonly metadata: Readonly<{ stage: string; retryable: boolean }>;
+  get advice(): FailureAdvice { return { why: `${this.message}（阶段：${this.metadata.stage}）`, next: INDEX_NEXT[this.code] }; }
 
   constructor(code: ProjectIndexServiceErrorCode, stage: string, retryable = false) {
     const messages: Record<ProjectIndexServiceErrorCode, string> = {

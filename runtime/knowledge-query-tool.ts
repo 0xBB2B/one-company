@@ -60,7 +60,7 @@ export function createKnowledgeQueryTool(options: { client(repoId: string): Know
     if (Object.keys(row).length !== 2 || typeof row.repoId !== "string" || !/^[0-9a-f]{64}$/u.test(row.repoId)) throw new KnowledgeQueryError("invalid_query");
     const query = parseKnowledgeTransportQuery(row.query);
     const client = options.client(row.repoId);
-    if (!client) throw new KnowledgeQueryError("unavailable");
+    if (!client) throw new KnowledgeQueryError("unavailable", "repoId 不是当前窗口已接入的仓库，或守护进程没有连接");
     const result = await client.call("knowledge.query", { query });
     return { content: knowledgeContent(result.page as KnowledgeFactPackage), details: {} };
   }

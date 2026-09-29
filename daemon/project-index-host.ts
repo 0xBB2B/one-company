@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { adviceOf } from "../runtime/tool-failure.ts";
+import type { FailureAdvice } from "../runtime/tool-failure.ts";
 import { readFileSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
@@ -24,9 +26,18 @@ export interface ProjectIndexArchiveRiskHookEvent {
   readonly event: Readonly<{ eventSequence: number; path: string | null; eventType: "rename" | "change" | null; overflowed: boolean }>;
 }
 
+const HOST_NEXT = {
+  not_initialized: "请用户同意后用 one_company_project_manage 的 init 初始化索引",
+  index_unavailable: "用 one_company_project_manage 的 status 查看索引状态，必要时 refresh 后重试",
+  host_closed: "守护进程正在关闭，稍后重试",
+} as const;
 export class ProjectIndexHostError extends Error {
   readonly code: "not_initialized" | "index_unavailable" | "host_closed";
-  constructor(code: ProjectIndexHostError["code"], message: string) { super(message); this.name = "ProjectIndexHostError"; this.code = code; }
+  readonly advice: FailureAdvice;
+  constructor(code: ProjectIndexHostError["code"], message: string) {
+    super(message); this.name = "ProjectIndexHostError"; this.code = code;
+    this.advice = { why: message, next: HOST_NEXT[code] };
+  }
 }
 
 export interface ProjectIndexHostOptions {
@@ -191,8 +202,9 @@ export class ProjectIndexHost {
 export function registerIndexHandlers(server: DaemonServer, host: ProjectIndexHost): void {
   const fail = (error: unknown): never => {
     const code = (error as { code?: unknown }).code;
+    const advice = adviceOf(error);
     throw Object.assign(new Error(error instanceof Error ? error.message : "项目索引操作失败"),
-      { code: typeof code === "string" ? code : "index_unavailable" });
+      { code: typeof code === "string" ? code : "index_unavailable" }, advice ? { advice } : {});
   };
   server.registerHandler("index.manage", async (params) => {
     try {

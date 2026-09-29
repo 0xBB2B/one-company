@@ -1,4 +1,6 @@
 import { classifyIndexWatchEvent } from "./project-index-policy.ts";
+import { withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 
 export const KNOWLEDGE_QUERY_LIMITS = Object.freeze({
   queryCodepoints: 256, pageSize: 20, pageBytes: 49_152, minimumPageBytes: 4_096,
@@ -12,12 +14,22 @@ export type KnowledgeQuery = (
   | { action: "facts"; text?: string }
 ) & { pageSize?: number; maxBytes?: number; cursor?: string };
 
+const KNOWLEDGE_ADVICE = {
+  invalid_query: { why: "查询参数不合规", next: "exact 填 by（path、id 或 symbol）与 value；search 与 facts 填 text；第一次查询不带 cursor" },
+  unavailable: { why: "本机索引暂时不可用", next: "用 one_company_project_manage 的 refresh 刷新索引后重试；仍然失败就把原因告诉用户" },
+  stale: { why: "查询期间索引或文件已变化，这一页的结果作废", next: "不带 cursor 重新查询" },
+  invalid_cursor: { why: "cursor 不是上一页结果给出的值，或查询条件变了", next: "第一次查询不带 cursor；翻页时原样填上一页给出的 cursor，其他条件不变" },
+  resource_limit: { why: "结果超出了页大小上限", next: "调小 pageSize 或 maxBytes，或把查询条件写得更具体" },
+  busy: { why: "上一个查询还没结束", next: "等上一个查询结束后再查" },
+} as const satisfies Record<string, FailureAdvice>;
 export class KnowledgeQueryError extends Error {
-  readonly code: "invalid_query" | "unavailable" | "stale" | "invalid_cursor" | "resource_limit" | "busy";
-  constructor(code: KnowledgeQueryError["code"]) {
-    super(code === "invalid_cursor" ? `知识查询被拒绝：${code}（cursor 只能填上一页结果给出的值，第一次查询不带 cursor）` : `知识查询被拒绝：${code}`);
+  readonly code: keyof typeof KNOWLEDGE_ADVICE;
+  readonly advice: FailureAdvice;
+  constructor(code: KnowledgeQueryError["code"], detail?: string) {
+    super(detail ? `知识查询被拒绝：${code}：${detail}` : `知识查询被拒绝：${code}`);
     this.name = "KnowledgeQueryError";
     this.code = code;
+    this.advice = withDetail(KNOWLEDGE_ADVICE[code], detail);
   }
 }
 

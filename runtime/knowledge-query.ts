@@ -124,7 +124,7 @@ interface Entry {
 const HASH = /^[0-9a-f]{64}$/u;
 const idText = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256 && /^[\p{L}\p{N}._:/#@+-]+$/u.test(value);
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
-function fail(code: KnowledgeQueryError["code"]): never { throw new KnowledgeQueryError(code); }
+function fail(code: KnowledgeQueryError["code"], detail?: string): never { throw new KnowledgeQueryError(code, detail); }
 const under = (path: string, root: string): boolean => root === "." || path === root || path.startsWith(`${root}/`);
 function copyCapture(input: KnowledgeQueryCapture): KnowledgeQueryCapture {
   const copy = structuredClone(input), b = copy?.baseline;
@@ -277,7 +277,7 @@ export class KnowledgeQuerySession {
     } catch (error) {
       if (cursor) this.#entries.delete(cursor);
       if (error instanceof KnowledgeQueryError) throw error;
-      fail("unavailable");
+      fail("unavailable", (error as Error).message);
     } finally { this.#busy = false; }
   }
 
