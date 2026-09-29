@@ -1,4 +1,6 @@
 import { posix as path } from "node:path";
+import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import type { Static, TProperties, TSchema } from "typebox";
@@ -149,9 +151,16 @@ export const ExploreResultSchema = object({
 });
 export type ExploreResult = Static<typeof ExploreResultSchema>;
 
-export type ExploreContractErrorCode = "invalid_shape" | "invalid_binding" | "out_of_scope" | "resource_limit";
+const EXPLORE_CONTRACT_ADVICE = {
+  invalid_shape: { why: "检索请求或 research 的字段不符合格式", next: "按原因改正字段后重交" },
+  invalid_binding: { why: "research 与派工时给定的父身份、检索来源或问题不一致", next: "按派工给定的问题与来源提交，不要自行改写这些字段" },
+  out_of_scope: { why: "引用了检索范围以外的来源", next: "只引用本次允许的检索范围内的来源" },
+  resource_limit: { why: "内容超出了允许的数量或长度", next: "精简内容后重交" },
+} as const satisfies Record<string, FailureAdvice>;
+export type ExploreContractErrorCode = keyof typeof EXPLORE_CONTRACT_ADVICE;
 export class ExploreContractError extends Error {
   readonly code: ExploreContractErrorCode;
+  get advice(): FailureAdvice { return withDetail(EXPLORE_CONTRACT_ADVICE[this.code], this.detail); }
   /** 程序生成的改正提示，只含字段位置与检索根，不含模型提交的值。 */
   readonly detail: string | undefined;
   constructor(code: ExploreContractErrorCode, detail?: string) {

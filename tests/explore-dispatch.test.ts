@@ -87,7 +87,7 @@ test("M7-AC16：research 引用的本地文件 hash 由宿主按实际内容核�
   w.provider.queue.push(w.submit(w.readme, "0".repeat(64)), { type: "text", text: "hash 被拒" }, { type: "text", text: "PM 收到" });
   await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
-  await until(() => w.provider.requests.some((request) => text(request).includes("invalid_binding")));
+  await until(() => w.provider.requests.some((request) => text(request).includes("原因：提交内容与派工绑定不一致：research 引用的来源与实际内容不一致")));
   await expect(w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "看看", clues: [], source: { kind: "local_file" } }, maxTurns: 0 })).rejects.toMatchObject({ code: "invalid_params" });
 });
@@ -101,7 +101,7 @@ test("research 本地来源只写相对路径与行范围时，宿主补成绝�
   await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
   await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
-  expect(w.provider.requests.some((request) => text(request).includes("invalid_shape：字段值格式不符：sources"))).toBe(true);
+  expect(w.provider.requests.some((request) => text(request).includes("原因：提交内容的字段不符合格式：字段值格式不符：sources"))).toBe(true);
   const report = text(w.provider.requests.find((entry) => text(entry).includes("explore-report")));
   expect(report).toContain(await w.hashOf(w.readme));
   expect(report).toContain(w.readme);

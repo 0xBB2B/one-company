@@ -8,7 +8,9 @@ import { fillResearchSources } from "./explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "./explore-contracts.ts";
 import { checked, id, object } from "./requirement-contracts.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
-import { checkExploreSession } from "./explore-session.ts";
+import { checkExploreSession, EXPLORE_STALE_TEXT } from "./explore-session.ts";
+import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import type { ExploreSessionConfig } from "./explore-session.ts";
 import { shapeIssue } from "./tool-request.ts";
 import { submitVerdict, VERDICT_PAYLOAD, VerdictError } from "./verdicts.ts";
@@ -27,10 +29,27 @@ export const RESULT_SUBMIT_PARAMETERS = Type.Union([
 ]);
 export type ResultSubmitParameters = Static<typeof RESULT_SUBMIT_PARAMETERS>;
 export type ResultSubmitAction = ResultSubmitParameters["action"];
-export type ResultSubmitErrorCode = "result_submit_denied" | "invalid_shape" | "invalid_binding" | "out_of_scope" | "resource_limit" | "verdict_unavailable" | "stale_session";
+const RESULT_SUBMIT_ADVICE = {
+  tool_closed: COMMON_ADVICE.tool_closed,
+  action_not_allowed: COMMON_ADVICE.action_not_allowed,
+  session_inactive: COMMON_ADVICE.session_inactive,
+  grant_invalid: { why: "派工身份记录不合规或与派出它的上级不一致", next: "停止操作，不要重试；在回复里说明，由上级处理" },
+  research_unavailable: { why: "本运行不是检索运行，没有可绑定的检索任务", next: "改用 verdict 提交本任务结果" },
+  invalid_shape: { why: "提交内容的字段不符合格式", next: "按原因改正字段后重交" },
+  invalid_binding: { why: "提交内容与派工绑定不一致", next: "按派工给定的任务、检查轮和验证编号提交" },
+  out_of_scope: { why: "提交内容超出了本运行允许的范围", next: "按原因改正后重交" },
+  resource_limit: { why: "提交内容超出了允许的数量或长度", next: "精简内容后重交" },
+  verdict_unavailable: { why: "本运行没有可提交裁决的任务绑定", next: "检索运行改用 research 提交" },
+  stale_session: { why: "本次检索已不是当前有效的检索，结果不会再被收下", next: "停止操作，不要重试" },
+  submit_failed: { why: "保存提交内容时出错", next: "重试一次；仍然失败就在回复里说明原因，由上级处理" },
+} as const satisfies Record<string, FailureAdvice>;
+export type ResultSubmitErrorCode = keyof typeof RESULT_SUBMIT_ADVICE;
 export class ResultSubmitError extends Error {
   readonly code: ResultSubmitErrorCode;
-  constructor(code: ResultSubmitErrorCode, hint?: string) { super(hint ? `${code}：${hint}` : code); this.name = "ResultSubmitError"; this.code = code; }
+  readonly advice: FailureAdvice;
+  constructor(code: ResultSubmitErrorCode, hint?: string) {
+    super(hint ? `${code}：${hint}` : code); this.name = "ResultSubmitError"; this.code = code; this.advice = withDetail(RESULT_SUBMIT_ADVICE[code], hint);
+  }
 }
 export interface ResultSubmitAuthorization { readonly grant: Readonly<ResultSubmitGrant>; readonly action: ResultSubmitAction }
 export interface ResultSubmitToolOptions {
@@ -54,18 +73,19 @@ function freeze<T>(value: T): T {
 }
 
 export function createResultSubmitTool(options: ResultSubmitToolOptions) {
-  const deny: () => never = () => { throw new ResultSubmitError("result_submit_denied"); };
+  const deny: (code: ResultSubmitErrorCode, hint?: string) => never = (code, hint) => { throw new ResultSubmitError(code, hint); };
   let grant: ResultSubmitGrant;
-  try { grant = freeze(checked(Grant, structuredClone(options.grant))); } catch { return deny(); }
+  try { grant = freeze(checked(Grant, structuredClone(options.grant))); } catch { return deny("grant_invalid"); }
   const exploreInput = options.exploreInput === undefined ? undefined : checkExploreInput(options.exploreInput);
-  if (exploreInput && exploreInput.parent.parentRunId !== grant.parentRunId) deny();
+  if (exploreInput && exploreInput.parent.parentRunId !== grant.parentRunId) deny("grant_invalid");
   let disposed = false;
   function host(action: ResultSubmitAction) {
-    if (disposed || !authorizeToolAction(grant.role, "result_submit", action)) deny();
+    if (disposed) deny("tool_closed");
+    if (!authorizeToolAction(grant.role, "result_submit", action)) deny("action_not_allowed", `${grant.role} 不能提交 ${action}`);
     let result: unknown;
-    try { result = options.authorize(freeze({ grant, action })); } catch { return deny(); }
+    try { result = options.authorize(freeze({ grant, action })); } catch (error) { return deny("session_inactive", (error as Error).message); }
     if (isPromise(result)) void Promise.prototype.then.call(result, () => undefined, () => undefined);
-    if (result !== true) deny();
+    if (result !== true) deny("session_inactive");
   }
   function execute(input: unknown) {
     let params: ResultSubmitParameters;
@@ -78,12 +98,12 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
       if (!options.verdictBinding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
       let verdict;
       try { verdict = submitVerdict(options.verdictBinding, { role: grant.role, runId: grant.runId, parentRunId: grant.parentRunId }, params.result); }
-      catch (error) { throw error instanceof VerdictError ? new ResultSubmitError(error.code, error.detail) : new ResultSubmitError("invalid_shape"); }
+      catch (error) { throw error instanceof VerdictError ? new ResultSubmitError(error.code, error.detail) : new ResultSubmitError("submit_failed", (error as Error).message); }
       host("verdict");
       return freeze({ kind: "verdict" as const, accepted: true, isPass: false, verdictId: verdict.verdictId, conclusion: verdict.conclusion,
         checkRoundId: verdict.checkRoundId, findings: verdict.findings.length, runId: grant.runId });
     }
-    if (!exploreInput) deny();
+    if (!exploreInput) deny("research_unavailable");
     let result;
     // 模型可省略父身份与检索来源，由宿主按派工输入补上；若自行给出则仍须与派工输入一致
     const submitted = params.result && typeof params.result === "object" && !Array.isArray(params.result) ? params.result : {};
@@ -94,10 +114,11 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
       const code = error instanceof ExploreContractError ? error.code : "invalid_shape";
       throw new ResultSubmitError(code, code === "invalid_shape" ? shapeIssue(ExploreResultSchema, candidate) : error instanceof ExploreContractError ? error.detail : undefined);
     }
-    if (options.verify && !options.verify(result)) throw new ResultSubmitError("invalid_binding");
+    if (options.verify && !options.verify(result)) throw new ResultSubmitError("invalid_binding", "research 引用的来源与实际内容不一致");
     if (options.exploreSession) {
       const decision = checkExploreSession(options.exploreSession, grant.runId);
-      if (!decision.current || decision.session.parentRunId !== grant.parentRunId) throw new ResultSubmitError("stale_session");
+      if (!decision.current) throw new ResultSubmitError("stale_session", EXPLORE_STALE_TEXT[decision.reason]);
+      if (decision.session.parentRunId !== grant.parentRunId) throw new ResultSubmitError("stale_session", "派出检索的上级已不是本运行登记的上级");
     }
     host("research");
     options.onResearch?.(result);

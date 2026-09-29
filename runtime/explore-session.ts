@@ -1,4 +1,6 @@
 import { Type } from "typebox";
+import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import type { FailureAdvice } from "./tool-failure.ts";
 import type { Static, TSchema } from "typebox";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
@@ -19,11 +21,26 @@ export const ExploreSession = object({
 export type ExploreSession = Static<typeof ExploreSession>;
 export type ExploreStaleReason = "session_missing" | "session_ended" | "requirement_closed" | "epoch_changed" | "pm_taken_over" | "parent_revoked";
 export type ExploreSessionDecision = { current: true; session: ExploreSession } | { current: false; reason: ExploreStaleReason };
-export type ExploreSessionErrorCode = "invalid_shape" | "session_reused" | "requirement_inactive" | "pm_binding_invalid";
+const EXPLORE_SESSION_ADVICE = {
+  invalid_shape: COMMON_ADVICE.invalid_shape,
+  session_reused: { why: "这个运行编号已登记过检索会话", next: "重新派出一次检索" },
+  requirement_inactive: { why: "需求不在活动状态，或需求已换代（epoch 变化）", next: "重新读取需求状态后再决定是否派出检索" },
+  pm_binding_invalid: { why: "派出检索的 PM 已不是这个需求当前的 PM", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
+} as const satisfies Record<string, FailureAdvice>;
+export type ExploreSessionErrorCode = keyof typeof EXPLORE_SESSION_ADVICE;
 export class ExploreSessionError extends Error {
   readonly code: ExploreSessionErrorCode;
-  constructor(code: ExploreSessionErrorCode) { super(code); this.name = "ExploreSessionError"; this.code = code; }
+  readonly advice: FailureAdvice;
+  constructor(code: ExploreSessionErrorCode) { super(code); this.name = "ExploreSessionError"; this.code = code; this.advice = EXPLORE_SESSION_ADVICE[code]; }
 }
+export const EXPLORE_STALE_TEXT: Record<ExploreStaleReason, string> = {
+  session_missing: "找不到本次检索会话的登记",
+  session_ended: "本次检索会话已结束",
+  requirement_closed: "需求已关闭或不在活动状态",
+  epoch_changed: "需求已换代（epoch 变化）",
+  pm_taken_over: "派出检索的 PM 已被新 PM 接管",
+  parent_revoked: "派出检索的上级运行已结束",
+};
 export interface ExploreSessionConfig { dataRoot: string; repoId: string }
 
 function readSessionIn(db: LocalDatabase, runId: string) {

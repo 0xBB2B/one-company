@@ -87,13 +87,13 @@ test("M6-AC18：绑定需求的 explore 在关闭、父撤权或 PM 接管后停
   expect(() => registerExploreSession(w, pmId, pmInput)).toThrow(/session_reused/);
   expect(() => registerExploreSession(w, uuidv7(), { ...pmInput, parent: { ...pmInput.parent, requirementBinding: { requirementId: first.id, epoch: first.lease.epoch + 1, pmFence: first.lease.fence } } } as ExploreInput)).toThrow(/requirement_inactive/);
   expect(() => registerExploreSession(w, uuidv7(), { ...pmInput, parent: { ...pmInput.parent, requirementBinding: { requirementId: first.id, epoch: first.lease.epoch, pmFence: first.lease.fence + 1 } } } as ExploreInput)).toThrow(/pm_binding_invalid/);
-  expect(() => submit(uuidv7(), mainInput)).toThrow(/stale_session/);
+  expect(() => submit(uuidv7(), mainInput)).toThrow("stale_session：找不到本次检索会话的登记");
   expect(w.submit(mainId, mainInput)).toMatchObject({ kind: "research", accepted: true, isPass: false });
   expect(w.submit(pmId, pmInput)).toMatchObject({ kind: "research", accepted: true });
 
   const closing = w.state.beginClose({ requirementId: first.id, version: w.state.read(first.id).version, intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
   expect(checkExploreSession(w, pmId)).toMatchObject({ current: false, reason: "requirement_closed" });
-  expect(() => w.submit(pmId, pmInput)).toThrow(/stale_session/);
+  expect(() => w.submit(pmId, pmInput)).toThrow("stale_session：需求已关闭或不在活动状态");
   expect(checkExploreSession(w, mainId)).toMatchObject({ current: true });
   expect(checkExploreSession(w, secondId)).toMatchObject({ current: true });
   w.state.finishClose({ requirementId: first.id, version: closing.version, operationId: closing.data.close!.operationId });
@@ -106,12 +106,12 @@ test("M6-AC18：绑定需求的 explore 在关闭、父撤权或 PM 接管后停
   const takeover = await w.state.acquirePm({ requirementId: second.id, version: w.state.read(second.id).version, runId: uuidv7(), expectedFence: second.lease.fence + 1 });
   expect(takeover.fence).toBe(second.lease.fence + 2);
   expect(checkExploreSession(w, secondId)).toMatchObject({ current: false, reason: "pm_taken_over" });
-  expect(() => w.submit(secondId, secondPm)).toThrow(/stale_session/);
+  expect(() => w.submit(secondId, secondPm)).toThrow("stale_session：派出检索的 PM 已被新 PM 接管");
   expect(() => registerExploreSession(w, secondId, secondPm)).toThrow(/session_reused/);
 
   await w.runs.update(mainRun.id, { state: "stopped" });
   expect(checkExploreSession(w, mainId)).toMatchObject({ current: false, reason: "parent_revoked" });
-  expect(() => w.submit(mainId, mainInput)).toThrow(/stale_session/);
+  expect(() => w.submit(mainId, mainInput)).toThrow("stale_session：派出检索的上级运行已结束");
   const lateMain = uuidv7();
   registerExploreSession(w, lateMain, { ...mainInput, parent: { ...mainInput.parent, parentRunId: "main-live" } });
   expect(w.submit(lateMain, { ...mainInput, parent: { ...mainInput.parent, parentRunId: "main-live" } })).toMatchObject({ accepted: true });

@@ -46,7 +46,7 @@ import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.t
 import { endExploreSession, registerExploreSession } from "../runtime/explore-session.ts";
 import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
-import { AdvisedError, toolFailure } from "../runtime/tool-failure.ts";
+import { AdvisedError, adviceOf, toolFailure } from "../runtime/tool-failure.ts";
 import { sessionFilePath } from "../runtime/session-records.ts";
 import { defaultPageGetter, defaultWebDeps, webFetch, webSearch } from "../runtime/web-access.ts";
 import type { PageGetter, WebDeps } from "../runtime/web-access.ts";
@@ -585,7 +585,7 @@ export class RunManager {
       explore = exploreInput(parent, input.request, source);
       registerExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, explore);
     } catch (error) {
-      const why = `检索请求不合规：${(error as Error).message}`;
+      const why = `检索请求不合规：${adviceOf(error)?.why ?? (error as Error).message}`;
       if (requirementId) await this.runStore.update(runId, { state: "failed", stateReason: why });
       throw protocolError("invalid_params", why, "按原因改正问题、线索或检索来源后重派");
     }
