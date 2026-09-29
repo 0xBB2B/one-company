@@ -168,6 +168,10 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
       await mkdir(join(evidence, "runs"), { recursive: true });
       await copyFile(join(dataRoot, path), join(evidence, "runs", `${basename(dirname(path))}.jsonl`)).catch(() => undefined);
     }
+    // 需求状态、事件与计划的本机库随证据保留，现场删除后仍能查投递、复核卡在哪一步；库里不存需求正文
+    for (const file of await readdir(join(dataRoot, "repos"), { recursive: true }).catch(() => [] as string[])) {
+      if (/(^|\/)data\.db(-wal)?$/u.test(file)) await copyFile(join(dataRoot, "repos", file), join(evidence, basename(file))).catch(() => undefined);
+    }
     // 凭据无论成败都删；其余现场仅在守护进程已退出时整体删除，否则保留供排查
     await rm(join(agentDir, "auth.json"), { force: true });
     await rm(join(agentDir, "models.json"), { force: true });
