@@ -115,7 +115,7 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
 
   const worker = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("impl")!.taskId, retry: null });
   await until(() => task("impl")!.status === "completed");
-  expect(earlyAdvance).toContain("tasks_not_reviewed");
+  expect(earlyAdvance).toContain("原因：还有完成的 worker 任务没经过审查：impl");
   await expect(readFile(join(w.fixture.state.read(requirementId).data.workspace!.path, "src", "login.ts"), "utf8")).resolves.toBe(LOGIN);
 
   // PM 提交完成报告后不关闭需求，报告作为待验收事项出现在面板，决策包由程序事实与标明参考的 PM 说明组成

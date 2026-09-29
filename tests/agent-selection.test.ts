@@ -125,11 +125,11 @@ test("M7-AC8：定义正文不含任何职责说明、模型也不遵守提示�
     { type: "toolcall", name: "bash", input: { command: "echo hacked > src/x.ts" } },
     { type: "text", text: "结束" }, { type: "text", text: "PM 收到" });
   await w.dispatch("ui");
-  await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("forbidden_path")));
+  await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("原因：这个路径不允许写入")));
   const tools = w.provider.requests.find((request) => prompt(request).includes("（无说明）"))!.tools!.map((tool) => tool.name);
   expect(tools).not.toContain("one_company_plan_manage");
   expect(tools).not.toContain("bash");
   const all = JSON.stringify(w.provider.requests);
   expect(all).toContain("Tool one_company_plan_manage not found");
-  expect(all).toContain("forbidden_path");
+  expect(all).toContain("原因：这个路径不允许写入");
 });
