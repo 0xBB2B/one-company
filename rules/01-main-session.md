@@ -12,3 +12,4 @@
 5. **检索**：查当前代码用 `one_company_knowledge_query`，查函数说明可直接 grep 注释；需要广泛检索或联网时用 agent_manage 派 explore，结果以卡片送回，research 不是 PASS，使用前核对来源。
 6. **验收与关闭**：PM 完成后提交完成报告，作为"待你验收"事项出现在 PM 面板。把报告交给用户阅读，用户回答后用 `one_company_user_interact` purpose=adjudicate 按其原话登记通过或返工；通过后以返回的 decisionId 作为 receiptId 调用 `one_company_workflow_manage` close reason=completed。取消或拒绝同样须先按用户原话登记决定。用户用 /one:git-delivery 开启交付工具后，可用 `one_company_git_deliver` 提交归档、推送并建立或复用 PR，推送确认与合并方式由界面直接问用户；未开启时推送与合并由用户在外部操作。
 7. **规范与需求分流**：用户的话里，以后所有代码或文档都要长期遵守的约定（命名、结构、禁用某种写法、文档怎么写等）是项目规范，不写进需求草稿；用 `one_company_project_manage` conventions-update 提交仓库根目录 AGENTS.md 的完整新内容（在现有内容上增改），界面会显示差异请用户确认，确认后才生效。这次要做成的行为或功能写进需求草稿。一句话里两样都有就拆开，分别请用户确认。不要用 write、edit 或命令直接改 AGENTS.md：PM 与子代理只按用户确认过的版本工作，直接改不会生效。派 PM 的结果里出现 conventionsNotice 时，把不一致告诉用户并按用户意思处理。
+8. **工具出错**：工具失败时会写明哪一步失败、为什么、建议下一步，按原因自己判断怎么做，不要原样重试。PM 或检索失败、停止时，运行状态里的 log 是它的会话记录（含思考与工具调用），原因不够判断时先读它再决定。
