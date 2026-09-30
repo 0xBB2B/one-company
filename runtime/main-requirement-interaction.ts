@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { basename, dirname } from "node:path";
+import { resolveInternalModel } from "./internal-model.ts";
 import { randomBytes } from "node:crypto";
 import { adviceOf } from "./tool-failure.ts";
 import { performance } from "node:perf_hooks";
@@ -167,6 +168,12 @@ export class MainRequirementInteraction {
     }
     return result;
   }
+  #internalModel(ctx: ExtensionContext, role: "interpreter" | "draft-verifier", repoId: string) {
+    const repository = this.#host(ctx).repositories.get(repoId);
+    if (!repository) return denied("foreign_repo");
+    return resolveInternalModel({ role, agentDir: dirname(this.#options.dataRoot), repositoryRoot: repository.path,
+      projectTrusted: typeof ctx.isProjectTrusted === "function" && ctx.isProjectTrusted(), registry: ctx.modelRegistry, mainModel: ctx.model });
+  }
   async #requirementTitle(host: RequirementManageHostContext, repoId: string, requirementId: string): Promise<string | undefined> {
     const hash = this.#authorization.snapshot(repoId, requirementId, host.sessionId).data.saved?.hash;
     const repository = host.repositories.get(repoId);
@@ -318,7 +325,8 @@ export class MainRequirementInteraction {
     const host = this.#host(ctx), generation = this.#generation, input = this.#input;
     const repository = host.repositories.get(repoId); if (!repository) return denied("foreign_repo");
     this.#snapshot(host, repoId, requirementId);
-    const interpreter = createPiInteractionInterpreter({ registry: ctx.modelRegistry, selectedModel: () => this.#ctx?.model });
+    const { model, thinking } = await this.#internalModel(ctx, "interpreter", repoId);
+    const interpreter = createPiInteractionInterpreter({ registry: ctx.modelRegistry, selectedModel: () => model, ...(thinking ? { thinking } : {}) });
     const authorize = (request: { action: string; repoId: string; input: Readonly<Record<string, unknown>> }) => {
       try {
         this.#live(ctx, host, generation);
@@ -376,10 +384,10 @@ export class MainRequirementInteraction {
       this.#core = core; this.#coreRepo = repoId; return core;
     } catch (error) { core.shutdown(); throw error; }
   }
-  async #draftIntent(ctx: ExtensionContext, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput, questions: Array<{ question: string; scope: string }>): Promise<void> {
-    const captured = this.#currentInput(ctx), model = ctx.model;
-    if (!model || !ctx.modelRegistry.hasConfiguredAuth(model) || !same(model, ctx.modelRegistry.find(model.provider, model.id))) denied("model_unavailable");
-    const generation = this.#generation, host = this.#host(ctx);
+  async #draftIntent(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput, questions: Array<{ question: string; scope: string }>): Promise<void> {
+    const captured = this.#currentInput(ctx), generation = this.#generation, host = this.#host(ctx);
+    const { model, thinking } = await this.#internalModel(ctx, "draft-verifier", repoId), followsMain = model === ctx.model;
+    if (!ctx.modelRegistry.hasConfiguredAuth(model) || !same(model, ctx.modelRegistry.find(model.provider, model.id))) denied("model_unavailable");
     const payload = JSON.stringify({ text: captured.event.text, action, candidate: { title: input.title, body: input.body },
       requirementId: "requirementId" in input ? input.requirementId : null, ...(questions.length ? { questions } : {}) });
     if (Buffer.byteLength(payload) > 65_536) denied("draft_input_limit");
@@ -389,10 +397,12 @@ export class MainRequirementInteraction {
     let abortHandler: (() => void) | undefined, refusal: string | undefined;
     try {
       const aborted = new Promise<never>((_, reject) => { abortHandler = () => reject(new Error("aborted")); signal.addEventListener("abort", abortHandler, { once: true }); if (signal.aborted) abortHandler(); });
-      const response = await Promise.race([ctx.modelRegistry.complete(model, context, { signal, maxTokens: 512, cacheRetention: "none" }), aborted]);
+      const response = await Promise.race([thinking
+        ? ctx.modelRegistry.streamSimple(model, context, { signal, maxTokens: 8192, cacheRetention: "none", reasoning: thinking }).result()
+        : ctx.modelRegistry.complete(model, context, { signal, maxTokens: 512, cacheRetention: "none" }), aborted]);
       this.#live(ctx, host, generation); signal.throwIfAborted();
       if (this.#currentInput(ctx) !== captured) denied("input_changed");
-      if (!same(model, ctx.model) || !same(model, ctx.modelRegistry.find(model.provider, model.id)) || response.provider !== model.provider || response.model !== model.id)
+      if ((followsMain && !same(model, ctx.model)) || !same(model, ctx.modelRegistry.find(model.provider, model.id)) || response.provider !== model.provider || response.model !== model.id)
         throw new HostAuthorizationError("draft_check_failed", "核验期间模型被切换");
       if (response.stopReason !== "stop") throw new HostAuthorizationError("draft_check_failed",
         `模型回答没有正常结束（${response.stopReason}${response.errorMessage ? `：${response.errorMessage}` : ""}）`);
@@ -417,7 +427,7 @@ export class MainRequirementInteraction {
     const questions = action === "updateDraft" ? (this.#snapshot(host, repoId, (input as UpdateDraftInput).requirementId),
       this.#authorization.interactionRecords(repoId, (input as UpdateDraftInput).requirementId, host.sessionId).questions
         .map((q) => ({ question: q.proposal.conclusion, scope: q.proposal.scope }))) : [];
-    await this.#draftIntent(ctx, action, input, questions);
+    await this.#draftIntent(ctx, repoId, action, input, questions);
     const captured = this.#currentInput(ctx), intentHash = requirementIntentHash({ title: input.title, body: input.body });
     let pending: PendingResave | undefined;
     if (action === "updateDraft" && this.#core && this.#ticket && this.#interpretation?.documentReview?.faithful === false) {

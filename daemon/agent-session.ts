@@ -12,6 +12,7 @@ import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
 import { checkSearchCall, filterSearchResult } from "../runtime/search-exclusion.ts";
 import type { RoleDefinition } from "../runtime/roles.ts";
+import { isAgentRole } from "../runtime/roles.ts";
 import { createSessionManagerForRun, openSessionManagerForRun } from "../runtime/session-records.ts";
 
 export interface AgentSessionMcpOptions {
@@ -249,8 +250,10 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   });
   await resourceLoader.reload();
 
-  const hostTools = options.hostTools ?? ROLE_HOST_TOOLS[definition.role];
-  if (hostTools.some((tool) => !ROLE_HOST_TOOLS[definition.role].includes(tool))) throw new Error("宿主工具超出职责默认集合");
+  const role = definition.role;
+  if (!isAgentRole(role)) throw new Error(`内部定义 ${role} 不能开代理会话`);
+  const hostTools = options.hostTools ?? ROLE_HOST_TOOLS[role];
+  if (hostTools.some((tool) => !ROLE_HOST_TOOLS[role].includes(tool))) throw new Error("宿主工具超出职责默认集合");
   const toolNames = [...hostTools, ...options.coreTools.map((tool) => tool.name), ...(options.mcp ? ["mcp"] : [])];
   const sdkSettings = SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });
   // 服务商断流等瞬时错误交 SDK 有限次重试；SDK 不重试被中止的请求，网络暂停发起的中止不会被重发

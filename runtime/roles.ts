@@ -5,13 +5,18 @@ import { fileURLToPath } from "node:url";
 export type RoleSource = "default" | "user" | "project";
 export const AGENT_ROLES = ["pm", "explore", "worker", "reviewer", "qa"] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
+/** 程序内部的单次模型调用：不是能派工的职责，定义里只有 model 与 thinking 生效。 */
+export const INTERNAL_ROLES = ["interpreter", "draft-verifier"] as const;
+export type InternalRole = (typeof INTERNAL_ROLES)[number];
+export type DefinitionRole = AgentRole | InternalRole;
+export function isAgentRole(role: DefinitionRole): role is AgentRole { return (AGENT_ROLES as readonly string[]).includes(role); }
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export interface RoleDefinition {
   name: string;
   description: string;
-  role: AgentRole;
+  role: DefinitionRole;
   model?: string;
   thinking?: ThinkingLevel;
   mcp?: string[];
@@ -97,10 +102,14 @@ export async function readRoleDefinition(path: string, parseFrontmatter: Frontma
   if ([...description].length > MAX_DESCRIPTION_CODEPOINTS) {
     throw new Error(`角色定义 description 超过 ${MAX_DESCRIPTION_CODEPOINTS} 字符: ${path}`);
   }
-  if (typeof role !== "string" || !(AGENT_ROLES as readonly string[]).includes(role)) {
-    throw new Error(`角色定义 role 须为 ${AGENT_ROLES.join("/")}: ${path}`);
+  if (typeof role !== "string" || ![...AGENT_ROLES, ...INTERNAL_ROLES].includes(role as DefinitionRole)) {
+    throw new Error(`角色定义 role 须为 ${[...AGENT_ROLES, ...INTERNAL_ROLES].join("/")}: ${path}`);
   }
   if (role === "pm" && name !== "pm") throw new Error(`pm 职责只能由名为 pm 的定义承担: ${path}`);
+  if ((INTERNAL_ROLES as readonly string[]).includes(role)) {
+    if (name !== role) throw new Error(`内部定义 ${role} 只能由名为 ${role} 的定义承担: ${path}`);
+    if (mcp !== undefined || skills !== undefined) throw new Error(`内部定义 ${role} 不接受 mcp 与 skills: ${path}`);
+  }
   if (model !== undefined && (typeof model !== "string" || !/^[^/\s]+\/\S+$/.test(model))) {
     throw new Error(`角色定义 model 须为 provider/id: ${path}`);
   }
@@ -111,7 +120,7 @@ export async function readRoleDefinition(path: string, parseFrontmatter: Frontma
   return {
     name,
     description,
-    role: role as AgentRole,
+    role: role as DefinitionRole,
     ...(model !== undefined ? { model: model as string } : {}),
     ...(thinking !== undefined ? { thinking: thinking as ThinkingLevel } : {}),
     ...(mcp !== undefined ? { mcp: stringList(mcp, "mcp", path) } : {}),

@@ -1,4 +1,4 @@
-import type { Api, Context, Model } from "@earendil-works/pi-ai";
+import type { Api, Context, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { decisionDigest } from "./short-decision-format.ts";
 import { checkContext, checkInterpretation, UserInteractionError } from "./user-interaction-format.ts";
@@ -27,8 +27,10 @@ ${JSON.stringify(ModelInterpretation)}`;
 
 export interface PiInteractionInterpreterOptions {
   /** 来自当前真实ExtensionContext的registry；不新建runtime或读取/改写模型配置。 */
-  registry: Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "complete">;
+  registry: Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "complete" | "streamSimple">;
   selectedModel: () => Model<Api> | undefined;
+  /** 内部定义设了思考等级时传入；不传即不思考。 */
+  thinking?: ThinkingLevel;
   timeoutMs?: number;
 }
 function modelIdentity(model: Model<Api>): InteractionModelIdentity {
@@ -73,9 +75,9 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
         // 核对不过时允许按错误代码重答一次：真实模型偶尔漏覆盖单位或写错结构提示，核对规则本身不放宽
         let firstRejection: string | undefined;
         for (;;) {
-          const response = await Promise.race([registry.complete(model, context, {
-            signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384),
-          }), aborted]);
+          const response = await Promise.race([options.thinking
+            ? registry.streamSimple(model, context, { signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384), reasoning: options.thinking }).result()
+            : registry.complete(model, context, { signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384) }), aborted]);
           controller.signal.throwIfAborted();
           if (response.stopReason !== "stop" || response.provider !== model.provider || response.model !== model.id ||
             response.content.some((block) => block.type !== "text" && block.type !== "thinking")) throw new UserInteractionError("model_response_denied");

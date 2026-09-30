@@ -50,6 +50,7 @@ test("M7-AC22/AC23/AC24：能力目录有界；任务指定专业定义时按定
   expect(catalog.items.map((item) => item.name).sort()).toEqual(["ui-dev", "worker"]);
   expect(JSON.stringify(catalog)).not.toContain("你是 ui-dev");
   expect(JSON.stringify(await w.manager.agentCatalog(undefined, 0))).not.toContain("\"pm\"");
+  for (const internal of ["interpreter", "draft-verifier"]) expect(JSON.stringify(await w.manager.agentCatalog(undefined, 0))).not.toContain(`"${internal}"`);
 
   await w.plan.execute({ action: "propose", tasks: [spec("ui", { agent: "ui-dev", agentReason: "界面任务" }), spec("plain", { goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });

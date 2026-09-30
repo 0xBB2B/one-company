@@ -118,6 +118,22 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(w.windows).toHaveLength(1);
   });
 
+  test("M8D-AC8：解释器按用户层内部定义的思考等级调用；草稿核验器配置的模型不存在时写明原因，不改用主会话模型", async () => {
+    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    const agents = join(w.root, "agents");
+    await mkdir(agents, { recursive: true });
+    await writeFile(join(agents, "interpreter.md"), `---\nname: interpreter\ndescription: d\nrole: interpreter\nmodel: ${w.provider.providerId}/${w.provider.modelId}\nthinking: low\n---\n`);
+    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    const before = w.provider.reasoning.length;
+    await w.call({ action: "confirmUpdate", ...input });
+    expect(w.provider.reasoning.slice(before)).toEqual(["low"]);
+    await writeFile(join(agents, "draft-verifier.md"), "---\nname: draft-verifier\ndescription: d\nrole: draft-verifier\nmodel: nowhere/missing\n---\n");
+    w.capture("再建一个需求"); const calls = w.provider.requests.length;
+    await expect(w.call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "简介", title: "另一个", body: BODY }))
+      .rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("草稿核验器配置的模型 nowhere/missing 在本机的模型配置里找不到") });
+    expect(w.provider.requests.length).toBe(calls);
+  });
+
   test("M8D-AC2：同一窗口可以处理多个需求，不需要绑定就能读取和修改其中任何一个的草稿", async () => {
     const w = await world(), first = await w.create(), second = await w.create();
     for (const created of [first, second]) {

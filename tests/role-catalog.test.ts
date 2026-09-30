@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { AGENT_ROLES, defaultRoleDir, loadRoleCatalog, readRoleDefinition } from "../runtime/roles.ts";
+import { AGENT_ROLES, defaultRoleDir, INTERNAL_ROLES, loadRoleCatalog, readRoleDefinition } from "../runtime/roles.ts";
 import { coreToolName, coreToolsForRole, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
 
 const tempRoots: string[] = [];
@@ -25,9 +25,9 @@ async function writeRole(dir: string, name: string, frontmatter: string, body = 
 }
 
 describe("内置默认团队", () => {
-  test("安装资源恰好提供 pm、explore、worker、reviewer、qa 五个定义，不含 planner", async () => {
+  test("安装资源恰好提供 pm、explore、worker、reviewer、qa 五个职责定义与解释器、草稿核验器两个内部定义，不含 planner", async () => {
     const files = (await readdir(defaultRoleDir())).filter((name) => name.endsWith(".md")).sort();
-    expect(files).toEqual(["explore.md", "pm.md", "qa.md", "reviewer.md", "worker.md"]);
+    expect(files).toEqual(["draft-verifier.md", "explore.md", "interpreter.md", "pm.md", "qa.md", "reviewer.md", "worker.md"]);
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
     for (const role of AGENT_ROLES) {
       const entry = roles.find((candidate) => candidate.name === role);
@@ -36,6 +36,17 @@ describe("内置默认团队", () => {
       expect(entry?.definition?.model).toBeUndefined();
       expect(entry?.definition?.thinking).toBeUndefined();
       expect(entry?.definition?.body.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  test("M8D-AC8：内置的两个内部定义默认沿用主会话模型、不设思考等级", async () => {
+    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
+    for (const role of INTERNAL_ROLES) {
+      const entry = roles.find((candidate) => candidate.name === role);
+      expect(entry?.available, entry?.reason).toBe(true);
+      expect(entry?.definition).toMatchObject({ role });
+      expect(entry?.definition?.model).toBeUndefined();
+      expect(entry?.definition?.thinking).toBeUndefined();
     }
   });
 
@@ -105,6 +116,16 @@ describe("定义格式", () => {
   ])("拒绝%s", async (_label, frontmatter) => {
     const dir = await tempDir();
     await expect(readRoleDefinition(await writeRole(dir, "w", frontmatter), parseFrontmatter)).rejects.toThrow();
+  });
+
+  test("M8D-AC8：内部定义只能同名，可以设置 model 与 thinking，不接受 mcp 与 skills", async () => {
+    const dir = await tempDir();
+    const ok = await writeRole(dir, "interpreter", "name: interpreter\ndescription: 解释器\nrole: interpreter\nmodel: 5x/gpt-6-luna\nthinking: off");
+    expect(await readRoleDefinition(ok, parseFrontmatter)).toMatchObject({ name: "interpreter", role: "interpreter", model: "5x/gpt-6-luna", thinking: "off" });
+    await expect(readRoleDefinition(await writeRole(dir, "fast-interpreter", "name: fast-interpreter\ndescription: d\nrole: interpreter"), parseFrontmatter))
+      .rejects.toThrow("只能由名为 interpreter 的定义承担");
+    await expect(readRoleDefinition(await writeRole(dir, "draft-verifier", "name: draft-verifier\ndescription: d\nrole: draft-verifier\nskills: [x]"), parseFrontmatter))
+      .rejects.toThrow("不接受 mcp 与 skills");
   });
 
   test("description 以码点计，1024 通过、1025 拒绝", async () => {

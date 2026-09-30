@@ -58,6 +58,7 @@ import { createPmSyncTool } from "../runtime/pm-sync.ts";
 import { AgentResolveError, definitionHash, resolveAgent } from "../runtime/agent-resolve.ts";
 import type { AgentFingerprint, ResolvedAgent } from "../runtime/agent-resolve.ts";
 import type { AgentRole } from "../runtime/roles.ts";
+import { isAgentRole } from "../runtime/roles.ts";
 import { activeCheckRoundIn, assertWritersQuiescentIn } from "../runtime/check-round.ts";
 import type { ProjectIndexHost } from "./project-index-host.ts";
 import type { RelayQueue } from "./relay-queue.ts";
@@ -685,7 +686,7 @@ export class RunManager {
   /** PM 的有界能力目录：每页最多 20 条，只含名称、职责、描述与来源。 */
   async agentCatalog(role: string | undefined, cursor: number) {
     const entries = (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
-      .filter((entry) => entry.available && entry.definition && entry.definition.role !== "pm" && (!role || entry.definition.role === role))
+      .filter((entry) => entry.available && entry.definition && isAgentRole(entry.definition.role) && entry.definition.role !== "pm" && (!role || entry.definition.role === role))
       .sort((a, b) => a.name.localeCompare(b.name));
     const items = entries.slice(cursor, cursor + 20).map((entry) => ({ name: entry.name, role: entry.definition!.role,
       description: entry.definition!.description, source: entry.source }));
