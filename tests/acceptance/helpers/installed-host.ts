@@ -25,19 +25,26 @@ export interface AcceptanceConfig {
   thinking: Thinking;
   credentialsDir: string;
   output: string;
+  /** 扮演用户回答主代理提问的模型，默认与主会话相同。 */
+  userModel: { provider: string; modelId: string };
 }
 
 /** 只有显式给出模型与证据目录时才跑真实模型验收；缺任一项返回 null，由用例跳过。 */
 export function acceptanceConfig(): AcceptanceConfig | null {
   const model = process.env.ONE_COMPANY_ACCEPTANCE_MODEL, output = process.env.ONE_COMPANY_ACCEPTANCE_OUTPUT;
   if (!model || !output) return null;
-  const slash = model.indexOf("/");
-  if (slash <= 0 || slash === model.length - 1) throw new Error("ONE_COMPANY_ACCEPTANCE_MODEL 须写成 <provider>/<model>");
+  const split = (name: string, value: string) => {
+    const slash = value.indexOf("/");
+    if (slash <= 0 || slash === value.length - 1) throw new Error(`${name} 须写成 <provider>/<model>`);
+    return { provider: value.slice(0, slash), modelId: value.slice(slash + 1) };
+  };
+  const main = split("ONE_COMPANY_ACCEPTANCE_MODEL", model);
+  const userModel = split("ONE_COMPANY_ACCEPTANCE_USER_MODEL", process.env.ONE_COMPANY_ACCEPTANCE_USER_MODEL ?? model);
   if (!isAbsolute(output)) throw new Error("ONE_COMPANY_ACCEPTANCE_OUTPUT 须是绝对路径");
   const thinking = (process.env.ONE_COMPANY_ACCEPTANCE_THINKING ?? "high") as Thinking;
   if (!THINKING_LEVELS.includes(thinking)) throw new Error(`不支持的思考等级：${thinking}`);
   return {
-    provider: model.slice(0, slash), modelId: model.slice(slash + 1), thinking, output,
+    ...main, userModel, thinking, output,
     credentialsDir: process.env.ONE_COMPANY_ACCEPTANCE_CREDENTIALS ?? join(homedir(), ".pi", "agent"),
   };
 }
@@ -99,6 +106,8 @@ export interface InstalledHost {
   modelEvents: Array<{ type: string; detail: string; at: number }>;
   /** 扩展在主会话里另行发起的无工具模型调用（如需求解释器）的请求开头与模型原始回答，供排查校验失败。 */
   sideCalls: Array<{ systemPrompt: string; input: string; stopReason: string; output: string; at: number }>;
+  /** 驱动方扮演用户时调用的模型，不经过被测产品、不计入 sideCalls。 */
+  userModel(systemPrompt: string, text: string): Promise<string>;
   /** 按用户在终端里看到的样子渲染 PM 面板。 */
   panelLines(width?: number): string[];
   /** 模拟用户在终端按键（输入框为空时）。 */
@@ -125,6 +134,8 @@ export async function startInstalledHost(options: { installed: string; repo: str
   }) as typeof runtime.complete;
   const model = runtime.getModel(config.provider, config.modelId);
   if (!model) throw new Error(`模型配置里找不到 ${config.provider}/${config.modelId}`);
+  const userModel = runtime.getModel(config.userModel.provider, config.userModel.modelId);
+  if (!userModel) throw new Error(`模型配置里找不到扮演用户的 ${config.userModel.provider}/${config.userModel.modelId}`);
   const loader = new DefaultResourceLoader({
     cwd: repo, agentDir, settingsManager: SettingsManager.inMemory(),
     additionalExtensionPaths: [join(installed, "extensions", "index.ts")], noContextFiles: true, noThemes: true,
@@ -172,6 +183,11 @@ export async function startInstalledHost(options: { installed: string; repo: str
 
   return {
     session, dialogs, notifications, modelEvents, sideCalls,
+    userModel: async (systemPrompt, text) => {
+      const response = await complete(userModel, { systemPrompt, messages: [{ role: "user", content: text, timestamp: Date.now() }] });
+      if (response.stopReason !== "stop") throw new Error(`扮演用户的模型没有正常作答：${response.stopReason} ${response.errorMessage ?? ""}`);
+      return response.content.map((block) => block.type === "text" ? block.text : "").join("").trim();
+    },
     panelLines: (width = 160) => panel?.render(width) ?? [],
     press: (data) => { for (const handler of inputHandlers) handler(data); },
     close: async () => {

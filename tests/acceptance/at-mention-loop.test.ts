@@ -12,7 +12,7 @@ import { killUnder, mainSessionFacts, sumUsage, waitMissing } from "./helpers/ev
 import { acceptanceConfig, copyCredentials, installProduct, startInstalledHost } from "./helpers/installed-host.ts";
 import type { InstalledHost } from "./helpers/installed-host.ts";
 import { createSampleProject } from "./helpers/sample-project.ts";
-import { asksToChoose, CHOOSE_RECOMMENDED, driveUser } from "./helpers/user-driver.ts";
+import { answerAsUser, driveUser } from "./helpers/user-driver.ts";
 import type { DriverEvent, UserScript } from "./helpers/user-driver.ts";
 
 const config = acceptanceConfig();
@@ -95,8 +95,10 @@ test.skipIf(!config || process.platform !== "darwin")("M8D-AC6：@需求追加�
       await h.session.prompt(text, { source: "interactive" });
       await h.session.waitForIdle();
     };
-    /** 主代理在草稿里留了带推荐的问题时，像用户一样先按推荐定下来，最多两次。 */
-    const settle = async (prefix = "") => { for (let i = 0; i < 2 && asksToChoose(h); i++) await say(`${prefix}${CHOOSE_RECOMMENDED}`); };
+    /** 主代理还在等用户回答问题时，由扮演用户的模型先按推荐作答，最多两次。 */
+    const settle = async (prefix = "") => {
+      for (let i = 0; i < 2; i++) { const answer = await answerAsUser(h); if (!answer) return; await say(`${prefix}${answer}`); }
+    };
     /** 主代理没做到时，先回答它留下的问题，再像用户一样说一次，最多两次。 */
     const until = async (condition: () => boolean | Promise<boolean>, followUp: string, prefix = "") => {
       for (let i = 0; i < 2 && !(await condition()); i++) { await settle(prefix); if (!(await condition())) await say(followUp); }
