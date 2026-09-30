@@ -36,7 +36,7 @@ export interface DeliveryFacts {
 }
 export interface DeliveryUi {
   confirm(window: ProgramWindow): Promise<boolean>;
-  choose(window: ProgramWindow & { choices: WindowChoice[] }): Promise<string | undefined>;
+  choose(window: ProgramWindow & { choices: WindowChoice[]; cancelNote?: string }): Promise<string | undefined>;
 }
 export type DeliveryResult =
   | { status: "rejected"; reason: string; next: string }
@@ -183,7 +183,7 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   }
   const choice = await ui.choose({ title: "PR 已就绪，怎么合并？", lines: [{ text: `需求：${title}` }, { text: `PR：${request.url}`, tone: "muted" }],
     choices: [{ label: REVIEW_CHOICE, description: "PR 留着等你看，合并由你在网页上操作" },
-      { label: AUTO_MERGE_CHOICE, description: "等仓库要求的检查通过后自动合并，优先 squash" }] });
+      { label: AUTO_MERGE_CHOICE, description: "等仓库要求的检查通过后自动合并，优先 squash" }], cancelNote: "取消等于自己 review" });
   const merge = choice === AUTO_MERGE_CHOICE ? "auto" as const : "review" as const;
   if (merge === "auto") await enableAutoMerge(provider, facts.worktree, request.number, delivered);
   return { status: "delivered", head: delivered, provider, url: request.url, reused, rebasedAfterAcceptance, merge };

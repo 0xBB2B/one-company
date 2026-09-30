@@ -44,6 +44,8 @@ test("程序选择窗口：选项说明和选项写在同一行并用灰色", ()
     choices: [{ label: "自己 review", description: "PR 留着等你看" }, { label: "自动合并", description: "等检查通过后合并" }] }] });
   expect(text()).toMatch(/<warning>→ 自己 review<\/> +<muted>PR 留着等你看<\/>/u);
   expect(text()).toMatch(/^ {3}自动合并 +<muted>等检查通过后合并<\/>$/mu);
+  const withNote = view({ tone: "warning", questions: [{ question: "PR 已就绪，怎么合并？", cancelNote: "取消等于自己 review", choices: [{ label: "自己 review" }] }] });
+  expect(withNote.text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 取消（取消等于自己 review）</>");
 });
 
 test("通用问答窗口：多个问题用顶部标签切换，选项编号、推荐标记与下一行灰色说明，单选回车后跳到下一题", () => {

@@ -11,6 +11,8 @@ export interface WindowQuestion {
   choices: WindowChoice[];
   multiSelect?: boolean;
   allowOther?: boolean;
+  /** 按 Esc 取消时实际发生什么，写在提示行末尾的括号里。 */
+  cancelNote?: string;
 }
 export interface WindowAnswer { choices: string[]; other?: string }
 export interface WindowTheme { fg(kind: string, text: string): string; bold(text: string): string }
@@ -155,7 +157,7 @@ export class QuestionWindowView {
           "↑↓ 选择",
           ...(question.multiSelect ? ["空格勾选", this.multi ? "回车下一题" : "回车确认"] : ["回车确认"]),
           ...(this.multi ? ["←→ 切换问题"] : []),
-          "Esc 取消",
+          `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
         ].join(" · ");
     lines.push("", ` ${muted(hint)}`, border);
     return lines;
@@ -194,8 +196,8 @@ export async function confirmWindow(host: WindowHost, window: ProgramWindow, sig
 }
 
 /** 程序选择窗口：返回用户选中的选项名，取消时为 undefined。 */
-export async function chooseWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[] }, signal?: AbortSignal): Promise<string | undefined> {
-  const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices }], "warning", signal);
+export async function chooseWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; cancelNote?: string }, signal?: AbortSignal): Promise<string | undefined> {
+  const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}) }], "warning", signal);
   return answers?.[0]?.choices[0];
 }
 

@@ -63,7 +63,7 @@ async function world(host: "github" | "gitlab" = "github") {
   const prompts: string[] = [];
   const ui = (confirm = true, choice = REVIEW_CHOICE): DeliveryUi => ({
     confirm: async (window) => { prompts.push(window.lines.map((line) => line.text).join("\n")); return confirm; },
-    choose: async (window) => { prompts.push(window.title); return choice; },
+    choose: async (window) => { prompts.push(`${window.title}（${window.cancelNote}）`); return choice; },
   });
   const calls = async () => (await readFile(join(state, "calls.log"), "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]);
   const remoteBranch = () => { try { return git(remote, "rev-parse", "refs/heads/req/login"); } catch { return null; } };
@@ -133,6 +133,7 @@ test("M8-AC9：验收后目标分支前进能干净 rebase 时继续并在 PR �
   const result = await deliverRequirement(w.facts, w.ui());
   expect(result).toMatchObject({ status: "delivered", rebasedAfterAcceptance: true });
   expect(w.prompts[0]).toContain("已自动 rebase，这部分未重新验证");
+  expect(w.prompts).toContain("PR 已就绪，怎么合并？（取消等于自己 review）");
   expect((await w.calls()).find((call) => call[2] === "create")!.join("\n")).toContain("验收后已自动 rebase，这部分未重新验证。");
 
   const c = await world();
