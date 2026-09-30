@@ -7,6 +7,9 @@ import { createUserInteractTool } from "../runtime/user-interact-tool.ts";
 import { MainIntakeInteraction } from "../runtime/main-intake-interaction.ts";
 import type { MainIntakeProviders } from "../runtime/main-intake-interaction.ts";
 import type { MentionTarget } from "../runtime/main-requirement-interaction.ts";
+import { requirementMentionProvider } from "../runtime/mention-completion.ts";
+import type { MentionCandidate } from "../runtime/mention-completion.ts";
+import { basename } from "node:path";
 import { createPmIntakeProviders } from "../runtime/pm-intake-runtime.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
 import type { OpenRequirementService, RequirementManageHostContext } from "../runtime/main-requirement-interaction.ts";
@@ -30,6 +33,8 @@ export function mentionNote(targets: readonly MentionTarget[], repos: ReadonlyAr
   return ["## 这句话 @ 到的需求", "用户在这句话里用 @ 指明了下列需求；这句话里的批准只对这些需求有效：",
     ...targets.map((target) => `- ${target.title}（仓库 ${repos.find((repo) => repo.repoId === target.repoId)?.path ?? target.repoId}，repoId ${target.repoId}，requirementId ${target.requirementId}）`)].join("\n");
 }
+let mention: { multiRepo: boolean; candidates(): Promise<MentionCandidate[]> } | undefined;
+const mentionUis = new WeakSet<object>();
 export default function requirementManageExtension(pi: ExtensionAPI, deps: RequirementManageExtensionDeps = {}): void {
   const root = deps.dataRoot ?? dataRoot(process.env);
   const authorization = deps.authorization ?? new HostAuthorizationManager({ dataRoot: root });
@@ -48,7 +53,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     ...(deps.pmIntakeCallTtlMs !== undefined ? { callTtlMs: deps.pmIntakeCallTtlMs } : {}) });
   let unregisterShutdown: (() => void) | undefined;
   const connections: Array<() => void> = [];
-  const shutdown = () => { for (const stop of connections.splice(0)) stop(); intake.shutdown(); interaction.shutdown(); authorization.shutdown(); };
+  const shutdown = () => { mention = undefined; for (const stop of connections.splice(0)) stop(); intake.shutdown(); interaction.shutdown(); authorization.shutdown(); };
   pi.registerFlag("requirement-rpc-input", { type: "boolean", default: false,
     description: "允许当前已接入RPC客户端的真实input用于需求决定；不接受扩展转述" });
   pi.on("session_start", async (_event, ctx) => {
@@ -67,6 +72,20 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     unregisterShutdown = registerWindowShutdownHook(window, shutdown);
     registerRequirementInput({ revoke: () => interaction.revokeInput(), noteOpenedItem: (item) => interaction.noteOpenedItem(item),
       mentionNote: () => mentionNote(interaction.inputTargets(), window.workspace.repos) });
+    mention = { multiRepo: window.workspace.repos.length > 1, candidates: async () => {
+      const running = new Set<string>();
+      for (const repo of window.workspace.repos) {
+        const result = await window.clients.forRepo(repo.repoId)?.call("pm.overview", {}).catch(() => undefined);
+        for (const item of (result?.items ?? []) as Array<{ requirementId: string; status: string }>) if (item.status === "running") running.add(item.requirementId);
+      }
+      return (await interaction.mentionCandidates(ctx)).map((item) => ({ requirementId: item.requirementId, title: item.title, lifecycle: item.lifecycle,
+        pmRunning: running.has(item.requirementId), repoName: basename(window.workspace.repos.find((repo) => repo.repoId === item.repoId)?.path ?? "") }));
+    } };
+    if (ctx.mode === "tui" && ctx.hasUI && !mentionUis.has(ctx.ui)) {
+      mentionUis.add(ctx.ui);
+      ctx.ui.addAutocompleteProvider((current) => requirementMentionProvider(current,
+        () => (mention?.candidates() ?? Promise.resolve([])).catch(() => []), () => mention?.multiRepo ?? false));
+    }
     intake.startSession(ctx);
   });
   pi.on("input", (event, ctx) => {

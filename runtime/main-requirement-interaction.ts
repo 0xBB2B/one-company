@@ -102,6 +102,7 @@ export class MainRequirementInteraction {
   #busy = false;
   #inputTargets: readonly MentionTarget[] = [];
   #openedItem: { repoId: string; requirementId: string; itemId: string } | undefined;
+  readonly #titles = new Map<string, { hash: string; title: string }>();
   #generation = 0;
   #ctx: ExtensionContext | undefined;
   readonly #deliveries = new Map<string, Delivery>();
@@ -156,6 +157,25 @@ export class MainRequirementInteraction {
   }
   /** 这句原话里 @ 到的有效需求，供系统提示附注；随下一句输入清空。 */
   inputTargets(): readonly MentionTarget[] { return this.#inputTargets; }
+  /** @ 补全列表的数据：本窗口各仓库状态正常的草稿与进行中需求及其当前草稿标题；标题按草稿版本指纹缓存。 */
+  async mentionCandidates(ctx: ExtensionContext): Promise<Array<{ repoId: string; requirementId: string; title: string; lifecycle: "draft" | "active" }>> {
+    const host = this.#host(ctx), result: Array<{ repoId: string; requirementId: string; title: string; lifecycle: "draft" | "active" }> = [];
+    for (const item of this.#authorization.listRequirements(host.sessionId)) {
+      const hash = this.#authorization.snapshot(item.repoId, item.requirementId, host.sessionId).data.saved?.hash;
+      const repository = host.repositories.get(item.repoId);
+      if (!hash || !repository) continue;
+      let cached = this.#titles.get(item.requirementId);
+      if (cached?.hash !== hash) {
+        const service = await (this.#options.openService ?? RequirementService.open)({ repositoryRoot: repository.path, dataRoot: this.#options.dataRoot, repoId: item.repoId,
+          authorize: (request) => request.repoId === item.repoId && ["metadata", "readSaved"].includes(request.action)
+            && (request.requirementId === undefined || request.requirementId === item.requirementId) });
+        cached = { hash, title: (await service.read({ requirementId: item.requirementId, source: "saved" })).title };
+        this.#titles.set(item.requirementId, cached);
+      }
+      result.push({ repoId: item.repoId, requirementId: item.requirementId, title: cached.title, lifecycle: item.lifecycle });
+    }
+    return result;
+  }
   /** 面板打开事项时由宿主记下；用户随后的回答就是对这个事项的裁决。 */
   noteOpenedItem(item: { repoId: string; requirementId: string; itemId: string }): void { this.#openedItem = Object.freeze({ ...item }); }
   #host(ctx: ExtensionContext): RequirementManageHostContext {

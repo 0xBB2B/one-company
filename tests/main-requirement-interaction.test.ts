@@ -128,6 +128,15 @@ describe("主窗口共享控制器的真实服务路径", () => {
     }
   });
 
+  test("M8D-AC1：@ 补全列出本窗口状态正常的草稿与进行中需求及当前草稿标题，改标题后列表跟着变", async () => {
+    const w = await world(), created = await w.create();
+    expect(await w.interaction.mentionCandidates(w.ctx)).toEqual([{ repoId: w.repoId, requirementId: created.requirementId, title: "登录", lifecycle: "draft" }]);
+    w.capture("标题改一下"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version, operationId: uuidv7(),
+      summary: "手机号登录，保留邮箱登录", title: "手机号登录", body: BODY });
+    expect((await w.interaction.mentionCandidates(w.ctx)).map((item) => item.title)).toEqual(["手机号登录"]);
+  });
+
   test("M8D-AC1：原话里的 @ 按编号尾巴认出需求，同一需求只算一次，无效的 @ 单独报出原因", async () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
     const result = w.interaction.captureInput({ source: "interactive", text: `@[登录#${id.slice(-4)}] @[登录#${id.slice(-6)}] @[别的#ffff] 改一下` }, w.ctx);
