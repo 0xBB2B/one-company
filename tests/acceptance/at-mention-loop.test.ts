@@ -21,7 +21,9 @@ const AUTHORIZE = "请整理成需求草稿给我确认。确认后授权你直�
 const APPROVE = { approve: "需求草稿我看过了，内容正确，批准这一版，按上面的授权直接实施。", proceed: "继续：创建工作区并派出 PM 开始实施。",
   accept: "先不验收。", close: "先不关闭。" };
 const SPRINT: UserScript = { requirement: "我要给角色加快跑：按住 Shift 并按方向键时，水平速度变为行走速度的 1.5 倍；松开 Shift 立即恢复行走速度；角色在空中时按下或松开 Shift 都不改变水平速度，起跳后保持起跳那一刻的水平速度直到落地。左右键冲突等其他情况沿用现有移动逻辑。不做体力值，不改跳跃。" + AUTHORIZE, ...APPROVE };
-const JUMP: UserScript = { requirement: "我要调整跳跃：短按空格保持现有的起跳初速度；按住空格越久跳得越高，按满 0.3 秒时起跳初速度是现有值的 1.5 倍，中间按按住时长线性增加，超过 0.3 秒按 0.3 秒算；空中仍然不能再次起跳。不改快跑和水平移动。" + AUTHORIZE, ...APPROVE };
+const JUMP: UserScript = { requirement: "我要调整跳跃：短按空格保持现有的起跳初速度；按住空格越久跳得越高，按满 0.3 秒时起跳初速度是现有值的 1.5 倍，中间按按住时长线性增加，超过 0.3 秒按 0.3 秒算；空中仍然不能再次起跳。不改快跑和水平移动。" + AUTHORIZE, ...APPROVE,
+  // 此时对话里已有快跑与跳跃两个需求，只说"这一版"时解释器可能认为指代不明
+  approve: "跳跃这个需求的草稿我看过了，内容正确，批准这一版，按上面的授权直接实施。" };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** 像用户一样在 PM 面板里逐个按 p：暂停或恢复全部 PM，直到面板显示的状态一致。 */
