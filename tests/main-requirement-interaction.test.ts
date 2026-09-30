@@ -215,13 +215,14 @@ describe("主窗口共享控制器的真实服务路径", () => {
   test("M9：用户按主代理的推荐作答后更新草稿，草稿核验器能看到本需求上提过的问题，提示词说明被采纳的那项才算用户决定", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
     w.capture();
-    await w.call({ action: "ask", ...input, operationId: uuidv7(), question: "短信验证码有效期选哪种：5 分钟（推荐）还是 10 分钟？", scope: "仅短信验证码期限",
+    await w.call({ action: "ask", ...input, operationId: uuidv7(), question: "短信验证码有效期选哪种？", rootCheck: "要定的是验证码多久失效，而不是另加重发限制",
+      choices: [{ label: "5 分钟", reason: "更安全", recommended: true, recommendedReason: "常见做法，够用户收短信" }, { label: "10 分钟", reason: "信号差也来得及，但更容易被盗用" }], scope: "仅短信验证码期限",
       unitIds: [loaded.partition.units[1]!.id], actions: ["analyze"] }, true);
     w.capture("按你推荐的定，写进草稿"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
     await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
     const verifier = w.provider.requests.filter((request) => request.systemPrompt?.includes("草拟意图核验器")).at(-1)!;
     const payload = JSON.parse(String((verifier.messages[0] as { content: string }).content));
-    expect(payload.questions).toEqual([{ question: "短信验证码有效期选哪种：5 分钟（推荐）还是 10 分钟？", scope: "仅短信验证码期限" }]);
+    expect(payload.questions).toEqual([{ question: "短信验证码有效期选哪种？\n选项：1. 5 分钟（推荐）；2. 10 分钟", scope: "仅短信验证码期限" }]);
     expect(verifier.systemPrompt).toContain("被采纳的那一项算用户决定");
   });
 

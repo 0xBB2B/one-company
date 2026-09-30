@@ -24,8 +24,9 @@ test("user_interact不接受转述、请求选择、角色或回执", async () =
   const extra = await tool.execute("call", { request: { ...base, sectionId: "x" } } as never, undefined, undefined, {} as never).catch((error: unknown) => error);
   expect((extra as Error).message).toContain("多余字段：sectionId");
 });
+const CHOICES = [{ label: "实施 A", reason: "马上能用", recommended: true, recommendedReason: "A 已写清楚" }, { label: "先不实施", reason: "等 B 一起做" }];
 test("ask问题、范围、action、unit限额严格且不接正文附件", async () => {
-  const ask = { ...base, action: "ask", question: "A可以实施吗？", scope: "仅A", actions: ["implement"], unitIds: ["A"] };
+  const ask = { ...base, action: "ask", question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES, scope: "仅A", actions: ["implement"], unitIds: ["A"] };
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: ask })).toBe(true);
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...ask, purpose: "user-confirmation" } })).toBe(true);
   for (const patch of [{ question: "甲".repeat(401) }, { scope: "乙".repeat(401) }, { unitIds: Array.from({ length: 17 }, (_, i) => `A${i}`) }, { actions: ["arbitrary-shell"] }, { attachment: "body" }]) {
@@ -97,4 +98,28 @@ test("pm-intake严格分支只转给intake，默认及显式user-confirmation保
   await tool.execute("implicit", { request: base }, undefined, undefined, {} as never);
   await tool.execute("explicit", { request: { ...base, purpose: "user-confirmation" } }, undefined, undefined, {} as never);
   expect(routed).toEqual(["intake", "confirmation", "confirmation"]);
+});
+
+test("M8D-AC9：登记问题缺根源自检、选项数量不对、没有推荐或推荐了多个、推荐项缺理由、拼起来超长，都被拒绝并写明缺了什么", async () => {
+  const tool = createUserInteractTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
+  const ask = { ...base, action: "ask", question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES, scope: "仅A", actions: ["implement"], unitIds: ["A"] };
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ rootCheck: undefined }, "缺少根源自检（rootCheck）"],
+    [{ rootCheck: " " }, "缺少根源自检（rootCheck）"],
+    [{ choices: undefined }, "缺少选项（choices）：要给 2 到 4 个选项"],
+    [{ choices: [CHOICES[0]] }, "选项要 2 到 4 个，现在是 1 个"],
+    [{ choices: [...CHOICES, ...CHOICES.slice(1), ...CHOICES.slice(1), ...CHOICES.slice(1)] }, "选项要 2 到 4 个，现在是 5 个"],
+    [{ choices: [{ ...CHOICES[0], recommended: undefined, recommendedReason: undefined }, CHOICES[1]] }, "没有标出推荐项：要恰好推荐一个选项"],
+    [{ choices: [CHOICES[0], { ...CHOICES[1], recommended: true, recommendedReason: "也行" }] }, "推荐了 2 个选项，只能推荐一个"],
+    [{ choices: [{ ...CHOICES[0], recommendedReason: undefined }, CHOICES[1]] }, "推荐项缺少推荐理由（recommendedReason）"],
+    [{ choices: [CHOICES[0], { ...CHOICES[1], reason: "" }] }, "第 2 个选项缺少理由（reason）"],
+    [{ choices: [CHOICES[0], { ...CHOICES[1], recommendedReason: "x" }] }, "第 2 个选项不是推荐项，不能写推荐理由"],
+    [{ question: "问".repeat(380) }, "个字，超过 400 个字，请精简"],
+  ];
+  for (const [patch, text] of cases) {
+    const error = await tool.execute("call", { request: { ...ask, ...patch } } as never, undefined, undefined, {} as never).catch((caught: unknown) => caught);
+    expect(error, text).toMatchObject({ code: "question_format" });
+    expect((error as Error).message, text).toContain("原因：问题没有按要求写全：");
+    expect((error as Error).message, text).toContain(text);
+  }
 });

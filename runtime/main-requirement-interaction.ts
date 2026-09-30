@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { resolveInternalModel } from "./internal-model.ts";
+import { askRecordText } from "./ask-question.ts";
+import type { AskQuestion } from "./ask-question.ts";
 import { randomBytes } from "node:crypto";
 import { adviceOf } from "./tool-failure.ts";
 import { performance } from "node:perf_hooks";
@@ -588,7 +590,7 @@ export class MainRequirementInteraction {
     return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prodActivated: true, allowedScopes },
       { kind: "approved", scope: { status: "available", summary } }, decisionProofs);
   }
-  async ask(ctx: ExtensionContext, request: ConfirmationRequest & { question: string; scope: string; unitIds: string[]; actions: InteractionAction[] }) {
+  async ask(ctx: ExtensionContext, request: ConfirmationRequest & AskQuestion & { scope: string; unitIds: string[]; actions: InteractionAction[] }) {
     const loaded = await this.#load(ctx, request);
     if (!request.unitIds.length || request.unitIds.some((id) => !loaded.partition.units.some((u) => u.id === id))) denied("question_scope_mismatch");
     const records = this.#authorization.interactionRecords(request.repoId, request.requirementId, this.#host(ctx).sessionId,
@@ -597,7 +599,7 @@ export class MainRequirementInteraction {
     const core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
     if (!ctx.hasUI) denied("question_display_unavailable");
     const question = core.ask(JSON.stringify({ basis: loaded.basis, candidate: loaded.candidate,
-      proposal: { conclusion: request.question, scope: request.scope, references: [], supersedes: [] }, unitIds: request.unitIds, actions: request.actions, partition: loaded.partition }));
+      proposal: { conclusion: askRecordText(request), scope: request.scope, references: [], supersedes: [] }, unitIds: request.unitIds, actions: request.actions, partition: loaded.partition }));
     // 新问题改变解释范围；只能由之后真实收到的输入回答，不能沿用提问前能力。
     core.revoke(); this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
     ctx.ui.notify(`问题 ${question.requestId}\n${request.question}\n申请范围：${request.scope}\n需求：${request.requirementId}\n版本：${loaded.version}\n单位：${request.unitIds.join(", ")}\n动作：${request.actions.join(", ") || "无"}\n候选指纹：${loaded.candidate.to.hash}\n问题本身不授予许可。`, "info");

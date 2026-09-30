@@ -46,7 +46,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     const { requirementId, version } = created!.details as { requirementId: string; version: number };
     const operationId = uuidv7(), base = { repoId: identity.repoId, requirementId, version, savedOperationId, operationId };
     scriptReplies(provider, [
-      { type: "toolcall", name: "one_company_user_interact", input: { request: { ...base, action: "ask", question: "是否实施手机号登录A？", scope: "仅A，不包括B", unitIds: ["A"], actions: ["implement"] } } },
+      { type: "toolcall", name: "one_company_user_interact", input: { request: { ...base, action: "ask", question: "是否实施手机号登录A？", rootCheck: "要定的是 A 是否单独实施", choices: [{ label: "实施 A", reason: "马上能用", recommended: true, recommendedReason: "A 已写清楚" }, { label: "先不实施", reason: "等 B 定了一起做" }], scope: "仅A，不包括B", unitIds: ["A"], actions: ["implement"] } } },
       { type: "text", text: "done" },
     ]);
     await session.prompt("先就A的实施单独问我，别把B并进去", { source: "interactive" });
@@ -72,7 +72,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     expect(escapedResult.isError).toBe(true);
     expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(before);
     // 两题同时存在时不能挑A、丢掉B，将模糊短答按单题批准。
-    scriptReplies(provider, [{ type: "toolcall", name: "one_company_user_interact", input: { request: { ...base, action: "ask", question: "B也实施吗？", scope: "仅B", unitIds: ["B"], actions: ["implement"] } } }, { type: "text", text: "done" }]);
+    scriptReplies(provider, [{ type: "toolcall", name: "one_company_user_interact", input: { request: { ...base, action: "ask", question: "B也实施吗？", rootCheck: "要定的是 B 是否也实施", choices: [{ label: "也实施 B", reason: "一起交付", recommended: true, recommendedReason: "和 A 同一批改动" }, { label: "B 先不做", reason: "微信仍未决" }], scope: "仅B", unitIds: ["B"], actions: ["implement"] } } }, { type: "text", text: "done" }]);
     await session.prompt("把B也列为独立待确认问题", { source: "interactive" });
     expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("interaction_questions_v1"))).toHaveLength(2);
     scriptReplies(provider, [{ type: "toolcall", name: "one_company_user_interact", input: { request: { ...base, action: "reply" } } },

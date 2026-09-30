@@ -9,6 +9,8 @@ import { requestParameters, shapeIssue, unwrapRequest } from "./tool-request.ts"
 import { adviceOf, toolFailure, toolStep } from "./tool-failure.ts";
 import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
 import { ApprovalUnitIds } from "./user-interaction-format.ts";
+import { ASK_CHOICES, ASK_ROOT_CHECK, askQuestionIssues } from "./ask-question.ts";
+import type { AskChoice } from "./ask-question.ts";
 
 const id = Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", minLength: 36, maxLength: 36 });
 const base = { repoId: Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 }), requirementId: id,
@@ -17,7 +19,7 @@ const actions = Type.Array(StringEnum(["analyze", "plan", "implement", "commit",
 const question = Type.String({ minLength: 1, maxLength: 400 });
 const confirmationPurpose = Type.Optional(Type.Literal("user-confirmation"));
 const schemas = {
-  ask: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("ask"), ...base, question, scope: question, unitIds: ApprovalUnitIds, actions }, { additionalProperties: false }),
+  ask: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("ask"), ...base, question, rootCheck: ASK_ROOT_CHECK, choices: ASK_CHOICES, scope: question, unitIds: ApprovalUnitIds, actions }, { additionalProperties: false }),
   reply: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("reply"), ...base }, { additionalProperties: false }),
   forward: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("forward"), ...base }, { additionalProperties: false }),
 } satisfies Record<string, TSchema>;
@@ -37,7 +39,7 @@ export function createUserInteractTool(options: {
   intake?: MainIntakeInteraction;
 }): ToolDefinition<typeof USER_INTERACT_PARAMETERS, unknown> {
   return { name: "one_company_user_interact", label: "需求澄清、决定与接手复核",
-    description: "参数写成 {request:{purpose,action,...}}，只填该 purpose 与 action 格式里的字段；operationId 每次新生成 UUIDv7，其余 ID、版本取自此前工具结果或决策包，不要自编。默认或purpose=user-confirmation时，ask展示有界用户问题，reply/forward只消费当前真实输入。purpose=pm-intake时，ask创建接手复核请求，forward重取当前请求，reply由真实Main登记四类核对结果；purpose=adjudicate时，reply按用户当前原话登记用户决定（itemVersion取决策包上的版本，事项已变化时被拒）：itemId=task:<任务ID>时为待裁决任务的再给一次机会（须有轮数）、调整目标或范围、终止任务；itemId=requirement:<需求ID>时为取消或拒绝整个需求；itemId=report:<报告ID>时为验收通过或返工PM的完成报告；取消、拒绝或通过登记后以返回的decisionId作为workflow_manage close的receiptId；原话不清楚时不登记；不接受主体、角色、回执、理解正文或绑定字段。",
+    description: "参数写成 {request:{purpose,action,...}}，只填该 purpose 与 action 格式里的字段；operationId 每次新生成 UUIDv7，其余 ID、版本取自此前工具结果或决策包，不要自编。默认或purpose=user-confirmation时，ask向用户提问：写明问题本身（question）、根源自检（rootCheck，一两句话说明这个问题针对的根源，以及为什么这些选项是从根源解决而不是临时修补）、2 到 4 个选项（choices，每个写 label 选什么与 reason 一句理由），并恰好把一个选项标为 recommended 且写 recommendedReason；开放式问题也要给出至少 2 个候选答案；reply/forward只消费当前真实输入。purpose=pm-intake时，ask创建接手复核请求，forward重取当前请求，reply由真实Main登记四类核对结果；purpose=adjudicate时，reply按用户当前原话登记用户决定（itemVersion取决策包上的版本，事项已变化时被拒）：itemId=task:<任务ID>时为待裁决任务的再给一次机会（须有轮数）、调整目标或范围、终止任务；itemId=requirement:<需求ID>时为取消或拒绝整个需求；itemId=report:<报告ID>时为验收通过或返工PM的完成报告；取消、拒绝或通过登记后以返回的decisionId作为workflow_manage close的receiptId；原话不清楚时不登记；不接受主体、角色、回执、理解正文或绑定字段。",
     promptSnippet: "按明确purpose处理用户确认或PM接手复核", parameters: USER_INTERACT_PARAMETERS, executionMode: "sequential",
     async execute(toolCallId, wrapped, signal, _update, ctx) {
       try { return await run(toolCallId, wrapped, signal, ctx); }
@@ -50,6 +52,10 @@ export function createUserInteractTool(options: {
     const key = `${raw.purpose ?? "user-confirmation"}:${String(raw.action)}`;
     if (!Object.hasOwn(variants, key)) throw new HostAuthorizationError("invalid_shape", `可用 purpose:action：${Object.keys(variants).join("、")}`);
     const variant = variants[key as keyof typeof variants];
+    if (key === "user-confirmation:ask") {
+      const issues = askQuestionIssues(raw as { question?: unknown; rootCheck?: unknown; choices?: unknown });
+      if (issues.length) throw new HostAuthorizationError("question_format", issues.join("；"));
+    }
     if (!Value.Check(variant, raw)) throw new HostAuthorizationError("invalid_shape", shapeIssue(variant, raw));
     if (raw.purpose === "pm-intake") {
       if (!options.intake) throw new HostAuthorizationError("pm_intake_unavailable");
@@ -67,10 +73,10 @@ export function createUserInteractTool(options: {
     const normalized = structuredClone(raw) as Record<string, unknown>;
     delete normalized.purpose;
     const p = normalized as Record<string, unknown> & { action: "ask" | "reply" | "forward"; repoId: string; requirementId: string;
-      operationId: string; savedOperationId: string; version: number; question?: string; scope?: string; unitIds?: string[]; actions?: never[] };
+      operationId: string; savedOperationId: string; version: number; question?: string; rootCheck?: string; choices?: AskChoice[]; scope?: string; unitIds?: string[]; actions?: never[] };
     return options.interaction.execute(toolCallId, ctx, p.repoId, p, async () => {
       signal?.throwIfAborted();
-      return p.action === "ask" ? options.interaction.ask(ctx, { ...p, question: p.question!, scope: p.scope!, unitIds: p.unitIds!, actions: p.actions! })
+      return p.action === "ask" ? options.interaction.ask(ctx, { ...p, question: p.question!, rootCheck: p.rootCheck!, choices: p.choices!, scope: p.scope!, unitIds: p.unitIds!, actions: p.actions! })
         : options.interaction.confirm(ctx, p);
     }, signal ?? ctx.signal);
   }
