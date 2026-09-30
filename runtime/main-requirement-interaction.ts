@@ -607,7 +607,8 @@ export class MainRequirementInteraction {
     // 新问题改变解释范围；只能由之后真实收到的输入回答，不能沿用提问前能力。
     core.revoke(); this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
     const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
-    const picked = await askWindow(ctx, { caption: `提问 · ${loaded.title}（第 ${record.data.revision + 1} 版）`, question: request.question, rootCheck: request.rootCheck,
+    const caption = `${loaded.title}（第 ${record.data.revision + 1} 版）`;
+    const picked = await askWindow(ctx, { caption: `提问 · ${caption}`, question: request.question, rootCheck: request.rootCheck,
       allowOther: true, escapeHint: "Esc 暂不回答（问题保留，之后在对话里回答也行）",
       choices: request.choices.map((choice) => ({ label: choice.label, description: choice.reason, recommended: choice.recommended === true,
         ...(choice.recommendedReason ? { recommendedReason: choice.recommendedReason } : {}) })) }, signal);
@@ -616,7 +617,7 @@ export class MainRequirementInteraction {
       : index >= 0 ? { text: `选第 ${index + 1} 项：${request.choices[index]!.label}${request.choices[index]!.recommended ? "（推荐）" : ""}`, choice: index + 1 } : null;
     if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx);
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: loaded.version, epoch: loaded.epoch, requestId: question.requestId,
-      question: request.question, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false });
+      caption, question: request.question, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false });
   }
   /** 窗口里的回答记成用户这一轮的原话；不走 captureInput，免得本次工具调用的代次失效、结果被当成过期。 */
   #adoptQuestionAnswer(text: string, host: RequirementManageHostContext, ctx: ExtensionContext): void {

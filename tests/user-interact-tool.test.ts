@@ -123,3 +123,37 @@ test("M8D-AC9：登记问题缺根源自检、选项数量不对、没有推荐�
     expect((error as Error).message, text).toContain(text);
   }
 });
+
+const renderTheme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bold: (text: string) => `<b>${text}</b>` };
+function rendered(result: { details?: unknown; content?: Array<{ type: "text"; text: string }> } | undefined, isError = false) {
+  const tool = createUserInteractTool({ interaction: {} as never });
+  const args = { request: { ...base, action: "ask", question: "起跳时机怎么定？", rootCheck: "根源", choices: [
+    { label: "松开空格时起跳", reason: "符合描述", recommended: true, recommendedReason: "初速度才由按住时长决定" }, { label: "按下立即起跳", reason: "手感即时" }], scope: "仅起跳", actions: [], unitIds: ["A"] } };
+  const state: Record<string, unknown> = {};
+  const context = { args, state, isError, invalidate: () => {} } as never;
+  const lines = () => [
+    ...tool.renderCall!(args as never, renderTheme as never, context).render(80),
+    ...(result ? tool.renderResult!({ content: result.content ?? [], details: result.details } as never, { expanded: false, isPartial: false }, renderTheme as never, context).render(80) : []),
+  ].map((line) => line.trimEnd());
+  lines();
+  return lines();
+}
+
+test("M8D-AC9：对话里的提问记录块：登记中显示问题；回答后显示需求名、问题与回答，推荐项标绿色推荐，自己输入与暂不回答分别写明", () => {
+  expect(rendered(undefined)).toEqual(["<b>提问</b>  <muted>起跳时机怎么定？</>"]);
+  const caption = "按住空格时长控制跳跃高度（第 2 版）";
+  expect(rendered({ details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "选第 1 项：松开空格时起跳（推荐）", choice: 1 } } })).toEqual([
+    `<b>提问</b>  <muted>${caption}</>`, "", "起跳时机怎么定？", "<muted>你的回答  </>1. 松开空格时起跳<success>（推荐）</>"]);
+  expect(rendered({ details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "按下立即起跳", other: true } } }).at(-1))
+    .toBe("<muted>你的回答  </>按下立即起跳<muted>（自己输入）</>");
+  expect(rendered({ details: { caption, question: "起跳时机怎么定？", status: "pending", answer: null } }).at(-1)).toBe("<muted>你暂不回答，问题保留。</>");
+  expect(rendered({ content: [{ type: "text", text: "one_company_user_interact 的 ask 动作失败。\n原因：问题没有按要求写全：没有标出推荐项\n建议：按原因补全后重新登记问题" }] }, true).at(-1))
+    .toBe("<error>没有登记：问题没有按要求写全：没有标出推荐项</>");
+});
+
+test("M8D-AC9：提问以外的动作不改显示，交给 pi 的默认样式", () => {
+  const tool = createUserInteractTool({ interaction: {} as never });
+  const context = { args: { request: base }, state: {}, isError: false, invalidate: () => {} } as never;
+  expect(() => tool.renderCall!({ request: base } as never, renderTheme as never, context)).toThrow();
+  expect(() => tool.renderResult!({ content: [], details: {} } as never, { expanded: false, isPartial: false }, renderTheme as never, context)).toThrow();
+});
