@@ -196,3 +196,16 @@ test("M8D-AC8：44、56、80 列下每个分类的列表、详情与命名画面
     }
   }
 });
+
+test("M8D-AC8：窄终端展开详情时放不下的内容换行，续行对齐，文件路径只在“/”后断开", async () => {
+  const p = await page();
+  for (let i = 0; i < 5; i++) p.press(RIGHT);
+  p.press(ENTER);
+  const lines = p.lines(44).map(plain);
+  const start = lines.findIndex((line) => line.includes("┊ 文件"));
+  const pieces = [lines[start]!.replace(/^ +┊ 文件 +/u, "")];
+  for (let i = start + 1; /^ +┊ {9}\S/u.test(lines[i]!); i++) pieces.push(lines[i]!.replace(/^ +┊ +/u, ""));
+  expect(pieces.length).toBeGreaterThan(1);
+  for (const piece of pieces.slice(0, -1)) expect(piece.endsWith("/"), piece).toBe(true);
+  expect(pieces.join("")).toMatch(/\/u\/interpreter\.md$/u);
+});

@@ -20,6 +20,7 @@ const INTERNAL_TAB = "内部", PROBLEMS_TAB = "问题";
 const SOURCE_LABEL: Record<RoleSource, string> = { default: "内置", user: "用户", project: "项目" };
 export const INTERNAL_LABEL: Record<string, string> = { interpreter: "解释器", "draft-verifier": "草稿核验器" };
 const MARKER = 2, SOURCE = 7, THINKING = 8, NAME = 15, MODEL = 19, MIN_COLUMN = 8, KEY = 8;
+const WORD_CHAR = /[\w.~-]/u;
 const NAME_RULE = "小写字母、数字、连字符，最多 64 个字符；三层里不能重名";
 
 interface ProblemRow { file: string; source: RoleSource; short: string; tone: "error" | "info"; detail: Array<{ key: string; value: string; error?: boolean }>; footer: string }
@@ -252,8 +253,12 @@ export class AgentCatalogView {
     const indent = 5 + (key ? KEY : 0), room = Math.max(MIN_COLUMN, this.width - indent);
     const chunks: string[] = [""];
     for (const char of value) {
-      if (visibleWidth(chunks.at(-1)! + char) > room) chunks.push("");
-      chunks[chunks.length - 1] += char;
+      const line = chunks.at(-1)!;
+      if (visibleWidth(line + char) <= room) { chunks[chunks.length - 1] = line + char; continue; }
+      let cut = -1;
+      if (WORD_CHAR.test(char)) for (let i = line.length - 1; i >= 0 && cut < 0; i--) if (!WORD_CHAR.test(line[i]!)) cut = i;
+      if (cut > 0 && cut < line.length - 1) { chunks[chunks.length - 1] = line.slice(0, cut + 1).trimEnd(); chunks.push(line.slice(cut + 1) + char); }
+      else chunks.push(char === " " ? "" : char);
     }
     return chunks.map((chunk, index) => {
       const head = key ? (index === 0 ? theme.fg("muted", pad(key, KEY)) : " ".repeat(KEY)) : "";
