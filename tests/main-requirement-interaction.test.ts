@@ -526,3 +526,17 @@ describe("主窗口共享控制器的真实服务路径", () => {
     w.capture("新输入"); await expect(w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor })).rejects.toMatchObject({ code: "cursor_expired" });
   });
 });
+test("别的进程短暂占住数据库时，宿主读取需求记录等锁释放后照常完成，不立刻报数据库忙", async () => {
+  const w = await world(), created = await w.create();
+  const holder = execFile(process.execPath, ["-e", `
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(${JSON.stringify(repositoryDatabase(w.dataRoot, w.repoId))});
+    db.exec("PRAGMA busy_timeout = 5000; PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS lock_probe (a);");
+    process.stdout.write("held");
+    setTimeout(() => { db.exec("ROLLBACK"); db.close(); }, 500);`]);
+  await new Promise((resolve) => holder.stdout!.once("data", resolve));
+  const started = performance.now();
+  expect(w.authorization.snapshot(w.repoId, String(created.requirementId), w.sessionId).id).toBe(String(created.requirementId));
+  expect(performance.now() - started).toBeGreaterThan(300);
+  await new Promise((resolve) => holder.once("exit", resolve));
+});

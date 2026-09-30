@@ -307,3 +307,17 @@ test("M9：草稿按答复改写后重存，所涉段落已变或删除的待答
   expect(w.context()).toMatchObject({ questions: [], effectiveQuestions: [] });
   expect(withDatabase(w.path, (db) => db.list("interaction_questions_v1"))).toHaveLength(2);
 });
+test("别的进程短暂占住数据库时，读取交互连续性等锁释放后照常完成，不立刻报数据库忙", async () => {
+  const w = await world();
+  const holder = execFile(process.execPath, ["-e", `
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(${JSON.stringify(w.path)});
+    db.exec("PRAGMA busy_timeout = 5000; PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS lock_probe (a);");
+    process.stdout.write("held");
+    setTimeout(() => { db.exec("ROLLBACK"); db.close(); }, 500);`]);
+  await new Promise((resolve) => holder.stdout!.once("data", resolve));
+  const started = performance.now();
+  expect(() => w.context()).not.toThrow();
+  expect(performance.now() - started).toBeGreaterThan(300);
+  await new Promise((resolve) => holder.once("exit", resolve));
+});

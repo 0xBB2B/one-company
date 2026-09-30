@@ -150,7 +150,7 @@ export class HostAuthorizationManager {
     let info;
     try { info = lstatSync(path); } catch { throw new HostAuthorizationError("database_missing"); }
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new HostAuthorizationError("database_identity");
-    const db = new DatabaseSync(path, { readOnly: true });
+    const db = new DatabaseSync(path, { readOnly: true, timeout: 5_000 });
     try {
       if (Number(db.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS.data ||
         Number(db.prepare("PRAGMA user_version").get()?.user_version) !== DATABASE_SCHEMA_VERSIONS.data) throw new HostAuthorizationError("database_identity");

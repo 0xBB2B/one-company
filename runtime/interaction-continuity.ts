@@ -125,7 +125,7 @@ export function continuityInputProofIn(db: LocalDatabase, requirementId: string,
 export function loadInteractionContinuity(dataRoot: string, repoId: string, basis: InteractionBasis, doc: DocumentAnalysis,
   inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>>;
     replacements: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> }) {
-  const db = new DatabaseSync(repositoryDatabase(dataRoot, repoId), { readOnly: true });
+  const db = new DatabaseSync(repositoryDatabase(dataRoot, repoId), { readOnly: true, timeout: 5_000 });
   try {
     db.exec("BEGIN");
     const actualRead = <T = unknown>(namespace: string, key: string): StoredRecord<T> | null => {
