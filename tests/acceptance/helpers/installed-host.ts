@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { answeringUi } from "../../helpers/window-host.ts";
+import type { ShownWindow, WindowDecision } from "../../helpers/window-host.ts";
 import { chmod, copyFile, mkdir, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -115,6 +116,9 @@ export interface InstalledHost {
   close(): Promise<void>;
 }
 
+const QUESTION_PROMPT = `你在验收测试里扮演一个真实用户。下面是 AI 主代理弹给你的提问窗口。按窗口里标"推荐"的选项作答，除非它和你之前说过的需求明显矛盾。
+只输出你选的那个选项的原文（不带编号），或者以"其他："开头写你自己的一句回答。不要解释。`;
+
 /**
  * 用真实 SDK 加载安装产物，模式为 tui：驱动方接管界面，确认框一律回答"是"并记录，
  * PM 面板经 setWidget 挂载后可按用户所见渲染，按键经 onTerminalInput 送入。
@@ -136,6 +140,19 @@ export async function startInstalledHost(options: { installed: string; repo: str
   if (!model) throw new Error(`模型配置里找不到 ${config.provider}/${config.modelId}`);
   const userModel = runtime.getModel(config.userModel.provider, config.userModel.modelId);
   if (!userModel) throw new Error(`模型配置里找不到扮演用户的 ${config.userModel.provider}/${config.userModel.modelId}`);
+  const askUserModel = async (systemPrompt: string, text: string) => {
+    const response = await complete(userModel, { systemPrompt, messages: [{ role: "user", content: text, timestamp: Date.now() }] });
+    if (response.stopReason !== "stop") throw new Error(`扮演用户的模型没有正常作答：${response.stopReason} ${response.errorMessage ?? ""}`);
+    return response.content.map((block) => block.type === "text" ? block.text : "").join("").trim();
+  };
+  /** 主代理的提问窗口由扮演用户的模型作答：按推荐选，输出对不上任何选项时退回推荐项。 */
+  const answerQuestion = async (window: ShownWindow): Promise<WindowDecision> => {
+    const labels = window.choices.filter((choice) => choice !== "其他（自己输入）");
+    const recommended = window.text.match(/^ (?:→ | {2})\d+\. (.+?) {2}推荐$/mu)?.[1] ?? labels[0]!;
+    const reply = await askUserModel(QUESTION_PROMPT, window.text);
+    const other = reply.match(/^其他[:：]\s*(.+)$/su)?.[1]?.trim();
+    return labels.find((label) => reply === label) ?? (other ? { other } : recommended);
+  };
   const loader = new DefaultResourceLoader({
     cwd: repo, agentDir, settingsManager: SettingsManager.inMemory(),
     additionalExtensionPaths: [join(installed, "extensions", "index.ts")], noContextFiles: true, noThemes: true,
@@ -156,7 +173,12 @@ export async function startInstalledHost(options: { installed: string; repo: str
     ...defaultUI,
     input: async (title) => { dialogs.push({ kind: "input", title, answer: undefined, at: Date.now() }); return undefined; },
     editor: async () => undefined,
-    custom: answeringUi((window) => {
+    custom: answeringUi(async (window) => {
+      if (window.title.startsWith("提问 · ")) {
+        const decision = await answerQuestion(window);
+        dialogs.push({ kind: "select", title: window.title, message: window.text, options: window.choices, answer: decision, at: Date.now() });
+        return decision;
+      }
       const confirm = window.choices.includes("确认");
       dialogs.push({ kind: confirm ? "confirm" : "select", title: window.title, message: window.text, options: window.choices, answer: confirm, at: Date.now() });
       return confirm;
@@ -183,11 +205,7 @@ export async function startInstalledHost(options: { installed: string; repo: str
 
   return {
     session, dialogs, notifications, modelEvents, sideCalls,
-    userModel: async (systemPrompt, text) => {
-      const response = await complete(userModel, { systemPrompt, messages: [{ role: "user", content: text, timestamp: Date.now() }] });
-      if (response.stopReason !== "stop") throw new Error(`扮演用户的模型没有正常作答：${response.stopReason} ${response.errorMessage ?? ""}`);
-      return response.content.map((block) => block.type === "text" ? block.text : "").join("").trim();
-    },
+    userModel: askUserModel,
     panelLines: (width = 160) => panel?.render(width) ?? [],
     press: (data) => { for (const handler of inputHandlers) handler(data); },
     close: async () => {

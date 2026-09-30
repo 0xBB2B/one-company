@@ -164,6 +164,10 @@ test.skipIf(!config || process.platform !== "darwin")("M8D-AC6：@需求追加�
     await say("我还有一个新需求：角色可以蹲下，按住 S 键时身高减半、水平速度减半，松开恢复。先整理成草稿给我看，暂时不批准。");
     check("不带 @ 说新需求时主代理新建草稿", await until(() => requirements().length > count && requirements().some((item) => item.lifecycle === "draft"), "请把蹲下这个新需求整理成草稿。"));
 
+    const asks = toolResults(0).filter((r) => r.tool === "one_company_user_interact" && !r.isError && r.text.includes('"requestId"') && r.text.includes('"caption"')).length;
+    const questionWindows = h.dialogs.filter((dialog) => dialog.title.startsWith("提问 · ")).length;
+    check("主代理的提问都经提问窗口（登记成功即带根源自检与推荐项）", asks > 0 && questionWindows === asks, { asks, questionWindows });
+
     record({ type: "phase", phase: "pm-receives", at: Date.now() });
     await togglePms(h, false);
     const pm = (await pmOf(a))!;
