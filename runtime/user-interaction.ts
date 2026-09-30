@@ -19,6 +19,7 @@ import {
 } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
 import { ApprovalUnitIds, ApprovalPartition } from "./user-interaction-format.ts";
+import { adviceOf } from "./tool-failure.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, recordInteractionResolutionIn, loadInteractionContinuity, assertRetainedEvidenceIn, continuityInputProofIn } from "./interaction-continuity.ts";
 import { validateDocumentReview, createApprovalManifest, checkApprovalManifest, approvedManifestScope, approvalManifestReference } from "./approval-manifest.ts";
 import type { ApprovalManifest, ApprovalManifestReference, ApprovalScope } from "./approval-manifest.ts";
@@ -519,8 +520,11 @@ export class UserInteractionCore {
         });
       }));
       return unchanged && this.#verified === v && this.#input === v.input && this.#session && !v.input.controller.signal.aborted ? request : null;
-    } catch { return null; }
-    finally { this.#authorizing = false; }
+    } catch (error) {
+      // 带原因的核对失败按设计表示这次不放行；数据库或程序出错要如实上报，不能说成草稿需要修改或澄清
+      if (adviceOf(error)) return null;
+      throw error;
+    } finally { this.#authorizing = false; }
   }
   #path(): string { return repositoryDatabase(this.#options.dataRoot, this.#options.repoId); }
   #now(): number { return checked(counter, this.#options.now?.() ?? Date.now()); }

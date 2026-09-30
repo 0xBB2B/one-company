@@ -540,3 +540,14 @@ test("别的进程短暂占住数据库时，宿主读取需求记录等锁释�
   expect(performance.now() - started).toBeGreaterThan(300);
   await new Promise((resolve) => holder.once("exit", resolve));
 });
+test("批准时生成批准范围这一步出错，如实报错，不说成草稿要修改或澄清", async () => {
+  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+  const busy = Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+  const read = vi.spyOn(UserInteractionCore.prototype, "readDecision").mockImplementation(() => { throw busy; });
+  try {
+    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    const outcome = await w.call({ action: "confirmUpdate", ...input }).then((result) => result, (error: unknown) => error);
+    expect(outcome).not.toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
+    expect(outcome).toMatchObject({ code: "interaction_denied" });
+  } finally { read.mockRestore(); }
+});
