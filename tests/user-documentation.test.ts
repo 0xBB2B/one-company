@@ -173,6 +173,15 @@ describe("README PM 面板事实与 runtime/pm-panel.ts 一致", () => {
   });
 });
 
+describe("README 主代理提问", () => {
+  test("M8D-AC9：说明提问窗口的内容、回车按推荐、Esc 暂不回答、窗口回答不能批准或裁决", async () => {
+    const section = extractSection(await readText(README), "主代理提问");
+    for (const phrase of ["提问窗口", "根源自检", "2 到 4 个选项", "推荐理由", "其他（自己输入）", "直接按回车就是\"按推荐的来\"", "Esc 表示暂不回答", "不能用来批准需求或裁决事项"]) {
+      expect(section, phrase).toContain(phrase);
+    }
+  });
+});
+
 describe("README 角色与设置", () => {
   test("说明只读查看、按职责分类、复制与三层覆盖及项目信任", async () => {
     const section = extractSection(await readText(README), "角色与设置");

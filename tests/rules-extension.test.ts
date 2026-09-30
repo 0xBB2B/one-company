@@ -79,6 +79,15 @@ test("M9：主会话规则要求收到需求的那一轮就保存草稿，待澄
   expect(systemPrompt).toMatch(/要澄清的写进需求板块的未决问题[\s\S]*不要先在对话里问完再保存/);
 });
 
+test("M8D-AC9：主会话规则要求需要用户决定的问题都用 ask 登记，先做根源自检、给 2 到 4 个选项并恰好推荐一个，窗口回答只算回答", async () => {
+  const systemPrompt = await start(noWindow);
+  expect(systemPrompt).toMatch(/需要用户做决定的问题都用 `one_company_user_interact` ask 登记，不在对话里直接问/);
+  expect(systemPrompt).toMatch(/根源自检（rootCheck）[\s\S]*2 到 4 个选项[\s\S]*恰好推荐一个（recommended）并写推荐理由（recommendedReason）/);
+  expect(systemPrompt).toContain("登记后不要在对话里再列一遍选项");
+  expect(systemPrompt).toMatch(/status=answered[\s\S]*reply 登记[\s\S]*status=pending/);
+  expect(systemPrompt).toContain("blockedBy=window_answer_not_decision");
+});
+
 test("M8D-AC1：这句话 @ 到的需求由程序写进本轮系统提示，写明仓库、repoId 与 requirementId；没有 @ 时不附", async () => {
   const repoId = "a".repeat(64), requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
   const window = () => ({ workspace: { repos: [{ path: "/work/game", repoId, commonDir: "/work/game/.git" }], skipped: [] } });
