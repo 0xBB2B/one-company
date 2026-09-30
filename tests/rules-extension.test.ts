@@ -4,6 +4,8 @@ import { afterEach, expect, test } from "vitest";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import rulesExtension from "../extensions/rules.ts";
 import type { WindowContextValue } from "../extensions/lifecycle.ts";
+import { registerRequirementInput } from "../extensions/lifecycle.ts";
+import { mentionNote } from "../extensions/requirement-manage.ts";
 import { packageSkillsDir } from "../runtime/requirement-doc.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -75,4 +77,16 @@ test("M9：主会话规则要求收到需求的那一轮就保存草稿，待澄
   const systemPrompt = await start(noWindow);
   expect(systemPrompt).toContain("收到需求的那一轮就用 create 保存草稿");
   expect(systemPrompt).toMatch(/要澄清的写进需求板块的未决问题[\s\S]*不要先在对话里问完再保存/);
+});
+
+test("M8D-AC1：这句话 @ 到的需求由程序写进本轮系统提示，写明仓库、repoId 与 requirementId；没有 @ 时不附", async () => {
+  const repoId = "a".repeat(64), requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
+  const window = () => ({ workspace: { repos: [{ path: "/work/game", repoId, commonDir: "/work/game/.git" }], skipped: [] } });
+  registerRequirementInput({ revoke() {}, noteOpenedItem() {},
+    mentionNote: () => mentionNote([{ repoId, requirementId, title: "角色跳跃" }], window().workspace.repos) });
+  try {
+    expect(await start(window)).toContain(`## 这句话 @ 到的需求\n用户在这句话里用 @ 指明了下列需求；这句话里的批准只对这些需求有效：\n- 角色跳跃（仓库 /work/game，repoId ${repoId}，requirementId ${requirementId}）`);
+    registerRequirementInput({ revoke() {}, noteOpenedItem() {}, mentionNote: () => mentionNote([], []) });
+    expect(await start(window)).not.toContain("## 这句话 @ 到的需求");
+  } finally { registerRequirementInput(undefined); }
 });

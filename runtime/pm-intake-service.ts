@@ -279,7 +279,7 @@ export class PmIntakeService {
     try {
       const principal = this.#options.authorization.assertCurrentSession(identity.sessionId);
       if (principal.windowId !== identity.windowId) deny("untrusted_main_call");
-      this.#options.authorization.assertRequirement(identity.repoId, identity.requirementId, identity.sessionId);
+      this.#options.authorization.assertRepository(identity.repoId, identity.sessionId);
       if (generation !== undefined && this.#options.authorization.generation !== generation) deny("main_call_changed");
     } catch (error) {
       if (error instanceof PmIntakeServiceError) throw error;

@@ -43,7 +43,7 @@ async function world(active: boolean) {
   interaction.captureInput({ source: "interactive", text: "整理并分析A目标" }, ctx); scriptReplies(provider, [{ type: "text", text: '{"allow":true}' }]);
   const created = (await call({ action: "create", operationId: uuidv7(), requestId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "A需求", body: FIVE_SECTIONS })).details!;
   const requirementId = String(created.requirementId), state = await RequirementStateStore.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true });
-  interaction.captureInput({ source: "interactive", text: "分析A目标，不授权其他动作" }, ctx);
+  interaction.captureInput({ source: "interactive", text: `@[A需求#${requirementId.slice(-4)}] 分析A目标，不授权其他动作` }, ctx);
   const service = await RequirementService.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true });
   const params = { action: "confirmUpdate", requirementId, savedOperationId: String(created.operationId), operationId: uuidv7(), version: state.read(requirementId).version };
   const loaded = await service.loadConfirmationContext({ requirementId, savedOperationId: params.savedOperationId, operationId: params.operationId }), c = loaded.candidate.candidateId;

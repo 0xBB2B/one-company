@@ -7,7 +7,7 @@ import type { PmOverview } from "../runtime/pm-overview.ts";
 import { mountPmPanel } from "../runtime/pm-panel.ts";
 import type { PmPanelEntry } from "../runtime/pm-panel.ts";
 import { sanitizeText } from "../runtime/text-sanitize.ts";
-import { registerDock, revokeCapturedInput, windowReady as defaultWindowReady } from "./lifecycle.ts";
+import { noteOpenedPanelItem, registerDock, revokeCapturedInput, windowReady as defaultWindowReady } from "./lifecycle.ts";
 import type { WindowContextValue } from "./lifecycle.ts";
 
 const TICK_MS = 200;
@@ -48,6 +48,7 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
             if (myGeneration !== generation || typeof result.text !== "string") return;
             // 只有用户看完卡片后亲手输入的原话才作为决定依据
             revokeCapturedInput();
+            noteOpenedPanelItem({ repoId: entry.repoId, requirementId: entry.overview.requirementId, itemId: item.itemId });
             pi.sendMessage({ customType: "one-company.decision-packet", content: result.text, display: true }, { triggerTurn: true });
           }).catch((error: unknown) => ctx.ui.notify(`该事项无法打开：${message(error)}`, "warning"));
         },

@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { randomBytes } from "node:crypto";
 import { adviceOf } from "./tool-failure.ts";
 import { performance } from "node:perf_hooks";
@@ -29,7 +30,8 @@ import type { RequirementApprovalScope } from "./requirement-manage-contracts.ts
 import { INTERACTION_CONTINUITY_NAMESPACE } from "./interaction-continuity.ts";
 import { approvalManifestReference } from "./approval-manifest.ts";
 import { adjudicationSubject, applyAdjudication } from "./adjudication.ts";
-import { saveRequirementSummary } from "./requirement-summary.ts";
+import { requirementSummary, saveRequirementSummary } from "./requirement-summary.ts";
+import { confirmWindow, mutedLines } from "./question-window.ts";
 import type { AdjudicationSubject } from "./user-interaction-format.ts";
 import { inspectProdStructure, pageProdText, selectProdSection, PROD_SECTION_ID_PATTERN } from "./prod-view.ts";
 
@@ -68,6 +70,12 @@ interface ResultCheck {
   now: number; monotonicAt: number; wallAt: number;
 }
 interface Cursor { requestHash: string; version: number; epoch: number; offset: number; expiresAt: number }
+export interface MentionTarget { readonly repoId: string; readonly requirementId: string; readonly title: string }
+export interface InvalidMention { readonly token: string; readonly reason: string }
+const MENTION = /@\[([^\]\n]+)#([0-9a-f]{4,36})\]/gu;
+function parseMentions(text: string): Array<{ token: string; title: string; tail: string }> {
+  return [...text.matchAll(MENTION)].map((match) => ({ token: match[0].slice(1), title: match[1]!.trim(), tail: match[2]! }));
+}
 const digest = (value: unknown) => decisionDigest(JSON.parse(JSON.stringify(value ?? null)));
 const same = (a: unknown, b: unknown) => digest(a) === digest(b);
 const SAFE_ACTIONS = new Set(["analyze", "plan", "implement", "authorize-document"]);
@@ -92,8 +100,8 @@ export class MainRequirementInteraction {
   #unsubscribeState: (() => void) | undefined;
   readonly #unsubscribeHost: () => void;
   #busy = false;
-  #selecting = false;
-  #selectionAbort: AbortController | undefined;
+  #inputTargets: readonly MentionTarget[] = [];
+  #openedItem: { repoId: string; requirementId: string; itemId: string } | undefined;
   #generation = 0;
   #ctx: ExtensionContext | undefined;
   readonly #deliveries = new Map<string, Delivery>();
@@ -110,9 +118,10 @@ export class MainRequirementInteraction {
   #now() { return this.#options.now?.() ?? Date.now(); }
   /** 插入决策包时调用：此前截获的原话不能作为对这张卡片的回答。 */
   revokeInput(): void { this.revoke(); }
-  revoke(): void {
+  revoke(): void { this.#clearInput(); this.#openedItem = undefined; }
+  #clearInput(): void {
     this.#generation++;
-    this.#selectionAbort?.abort();
+    this.#inputTargets = [];
     this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined;
     this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#candidate = undefined; this.#adjudication = undefined; this.#resave = undefined;
     const input = this.#input; this.#input = undefined;
@@ -123,54 +132,32 @@ export class MainRequirementInteraction {
   }
   shutdown(): void { this.revoke(); this.#ctx = undefined; }
   dispose(): void { this.shutdown(); this.#unsubscribeHost(); }
-  /** 真实宿主UI只选择需求身份；不恢复输入、决定能力、PM或旧操作。 */
-  async selectRequirement(ctx: ExtensionContext, rpcAuthorized = false) {
-    if (this.#busy || this.#selecting) denied("selection_busy");
-    if (!ctx.hasUI || ctx.mode !== "tui" && !(ctx.mode === "rpc" && rpcAuthorized)) denied("selection_ui_unavailable");
-    this.#selecting = true;
-    const abort = new AbortController(); this.#selectionAbort = abort;
-    try {
-      const generation = this.#generation, host = this.#host(ctx), manager = ctx.sessionManager;
-      const { items, unavailableRepositories } = this.#authorization.prepareSelections(host.sessionId);
-      this.#live(ctx, host, generation);
-      if (!items.length) return { selected: false as const, unavailableRepositories };
-      const brief = (value: string, values: string[], suffix = false) => {
-        const part = (text: string, length: number) => suffix ? text.slice(-length) : text.slice(0, length);
-        let length = 8;
-        while (length < value.length && values.some((other) => other !== value && part(other, length) === part(value, length))) length++;
-        return part(value, length);
-      };
-      const labels = items.map((item, index) => `${index + 1} ${brief(item.repoId, items.map((i) => i.repoId))}/${brief(item.requirementId, items.map((i) => i.requirementId), true)} · ${item.lifecycle === "draft" ? "草稿" : "活动"} · ${item.requirementId}`);
-      const choice = await ctx.ui.select("选择当前需求身份（不恢复旧授权）", labels, { timeout: 120_000, signal: abort.signal });
-      this.#live(ctx, host, generation);
-      if (manager !== ctx.sessionManager || abort.signal.aborted) denied("selection_expired");
-      if (choice === undefined) return { selected: false as const, unavailableRepositories };
-      const index = labels.indexOf(choice);
-      if (index < 0) denied("selection_unrecognized");
-      const selected = items[index]!;
-      const record = this.#authorization.verifySelection(selected.selection, host.sessionId);
-      if (record.data.workspace) await verifyRequirementWorkspace(this.#options.dataRoot, record.data.workspace);
-      this.#live(ctx, host, generation);
-      if (manager !== ctx.sessionManager || abort.signal.aborted) denied("selection_expired");
-      this.revoke();
-      this.#authorization.bindSelection(selected.selection, host.sessionId);
-      return { selected: true as const, requirementId: selected.requirementId, repoId: selected.repoId, unavailableRepositories };
-    } finally {
-      if (this.#selectionAbort === abort) this.#selectionAbort = undefined;
-      this.#selecting = false;
-    }
-  }
   /** 只由SDK input事件调用；RPC许可由宿主传入，默认不接受RPC。 */
-  captureInput(event: { source: string; text: string }, ctx: ExtensionContext, rpcAuthorized = false): void {
-    this.revoke();
+  captureInput(event: { source: string; text: string }, ctx: ExtensionContext, rpcAuthorized = false): { invalid: InvalidMention[] } {
+    this.#clearInput();
     const host = this.#host(ctx);
-    if (event.source !== "interactive" && !(event.source === "rpc" && rpcAuthorized)) return;
-    if (typeof event.text !== "string" || !event.text.trim() || Buffer.byteLength(event.text) > 32_768) return;
+    if (event.source !== "interactive" && !(event.source === "rpc" && rpcAuthorized)) return { invalid: [] };
+    if (typeof event.text !== "string" || !event.text.trim() || Buffer.byteLength(event.text) > 32_768) return { invalid: [] };
     const expiresAt = this.#now() + (this.#options.inputTtlMs ?? 900_000);
     this.#input = { event: { source: event.source, text: event.text }, sessionId: host.sessionId, expiresAt, abort: new AbortController() };
     this.#ctx = ctx;
-    this.#timer = setTimeout(() => this.revoke(), expiresAt - this.#now()); this.#timer.unref();
+    this.#timer = setTimeout(() => this.#clearInput(), expiresAt - this.#now()); this.#timer.unref();
+    const mentions = parseMentions(event.text);
+    if (!mentions.length) return { invalid: [] };
+    const listed = this.#authorization.listRequirements(host.sessionId), invalid: InvalidMention[] = [], targets: MentionTarget[] = [];
+    for (const mention of mentions) {
+      const matches = listed.filter((item) => item.requirementId.endsWith(mention.tail));
+      if (matches.length !== 1) { invalid.push({ token: mention.token, reason: matches.length ? "编号尾巴对应多个需求" : "不存在、已关闭或状态异常" }); continue; }
+      const { repoId, requirementId } = matches[0]!;
+      if (!targets.some((target) => target.requirementId === requirementId)) targets.push(Object.freeze({ repoId, requirementId, title: mention.title }));
+    }
+    this.#inputTargets = Object.freeze(targets);
+    return { invalid };
   }
+  /** 这句原话里 @ 到的有效需求，供系统提示附注；随下一句输入清空。 */
+  inputTargets(): readonly MentionTarget[] { return this.#inputTargets; }
+  /** 面板打开事项时由宿主记下；用户随后的回答就是对这个事项的裁决。 */
+  noteOpenedItem(item: { repoId: string; requirementId: string; itemId: string }): void { this.#openedItem = Object.freeze({ ...item }); }
   #host(ctx: ExtensionContext): RequirementManageHostContext {
     const host = this.#options.resolveHost(ctx), sessionId = ctx.sessionManager.getSessionId();
     const principal = this.#authorization.assertCurrentSession(sessionId);
@@ -253,7 +240,7 @@ export class MainRequirementInteraction {
     return { resultHash, manager, sessionId, windowId, repositoryPath, now, monotonicAt, wallAt };
   }
   #assertResultBinding(proof: HostResultProof, check: ResultCheck): void {
-    this.#authorization.assertRequirement(proof.repoId, proof.record.id, check.sessionId);
+    this.#authorization.assertRepository(proof.repoId, check.sessionId);
     const now = check.now + Math.max(0, performance.now() - check.monotonicAt, Date.now() - check.wallAt);
     if (!Number.isFinite(now) || proof.expiresAt <= now || check.resultHash !== proof.resultHash || check.manager !== proof.manager
       || check.sessionId !== proof.sessionId || check.windowId !== proof.windowId || check.repositoryPath !== proof.repositoryPath
@@ -280,7 +267,6 @@ export class MainRequirementInteraction {
     accepts: (request: ServiceAuthorizationRequest) => boolean, authorizeManifest?: RequirementServiceOptions["authorizeManifest"], localMutationOrigin?: object) {
     const host = this.#host(ctx), generation = this.#generation;
     this.#authorization.assertRepository(repoId, host.sessionId);
-    if (requirementId) this.#authorization.assertRequirement(repoId, requirementId, host.sessionId);
     const repository = host.repositories.get(repoId); if (!repository) return denied("foreign_repo");
     const service = await (this.#options.openService ?? RequirementService.open)({ repositoryRoot: repository.path,
       dataRoot: this.#options.dataRoot, repoId, authorizeManifest, localMutationOrigin,
@@ -311,7 +297,6 @@ export class MainRequirementInteraction {
     const authorize = (request: { action: string; repoId: string; input: Readonly<Record<string, unknown>> }) => {
       try {
         this.#live(ctx, host, generation);
-        this.#authorization.assertRequirement(repoId, requirementId, host.sessionId);
         return request.repoId === repoId && ["open", "read", "read-decisions", "record-decisions"].includes(request.action) &&
           (request.input.requirementId === undefined || request.input.requirementId === requirementId);
       } catch { return false; }
@@ -404,8 +389,6 @@ export class MainRequirementInteraction {
   }
   async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput, summary: string) {
     const host = this.#host(ctx), generation = this.#generation;
-    const bound = this.#authorization.binding(host.sessionId);
-    if (action === "create" && bound) denied("requirement_already_bound");
     const questions = action === "updateDraft" ? (this.#snapshot(host, repoId, (input as UpdateDraftInput).requirementId),
       this.#authorization.interactionRecords(repoId, (input as UpdateDraftInput).requirementId, host.sessionId).questions
         .map((q) => ({ question: q.proposal.conclusion, scope: q.proposal.scope }))) : [];
@@ -426,7 +409,6 @@ export class MainRequirementInteraction {
     }, undefined, pending?.origin);
     const receipt = action === "create" ? await service.create(input as CreateRequirementInput) : await service.updateDraft(input as UpdateDraftInput);
     this.#live(ctx, host, generation);
-    if (action === "create") this.#authorization.bindRequirement(repoId, receipt.requirementId, host.sessionId);
     const current = this.#snapshot(host, repoId, receipt.requirementId);
     if (current.version !== receipt.version || current.data.epoch !== receipt.epoch) denied("stale_result");
     saveRequirementSummary(this.#options.dataRoot, repoId, receipt.requirementId, receipt.prodHash, summary);
@@ -446,8 +428,8 @@ export class MainRequirementInteraction {
    */
   async adjudicate(ctx: ExtensionContext, request: { repoId: string; requirementId: string; itemId: string; itemVersion: string }): Promise<Record<string, unknown>> {
     this.#currentInput(ctx);
-    const host = this.#host(ctx);
-    this.#authorization.assertRequirement(request.repoId, request.requirementId, host.sessionId);
+    const host = this.#host(ctx), opened = this.#openedItem;
+    if (!opened || opened.repoId !== request.repoId || opened.requirementId !== request.requirementId || opened.itemId !== request.itemId) denied("decision_target_unknown");
     const subject = adjudicationSubject({ dataRoot: this.#options.dataRoot, repoId: request.repoId }, request.requirementId, request.itemId);
     // 用户看到的是决策包生成时的事项；此后事项已变化，须刷新重看，不能按新状态替用户登记
     if (subject.version !== request.itemVersion) return denied("item_changed");
@@ -490,6 +472,14 @@ export class MainRequirementInteraction {
     const sections = prodSectionsProblem(loaded.body, docSpec.sections);
     if (sections) throw new HostAuthorizationError("prod_sections_required", sections);
     if (!this.#ticket) return denied("current_input_required");
+    // 决定对象只认用户这句话里 @ 到的需求；得不出时由用户在程序窗口里亲手确认，不认模型填写的需求编号
+    if (!this.#inputTargets.some((target) => target.repoId === request.repoId && target.requirementId === request.requirementId)) {
+      const summary = record.data.saved ? requirementSummary(this.#options.dataRoot, request.repoId, request.requirementId, record.data.saved.hash) : undefined;
+      const approved = await confirmWindow(ctx, { title: "批准需求", lines: [{ text: `需求：${loaded.title}（第 ${record.data.revision + 1} 版）` },
+        ...mutedLines([`编号：${request.requirementId} · 仓库：${basename(host.repositories.get(request.repoId)!.path)}`, ...(summary ? [`简介：${summary}`] : [])])] });
+      if (!approved) denied("decision_declined");
+      this.#currentInput(ctx);
+    }
     if (!this.#capability) {
       const pending = this.#resave;
       if (pending && (!pending.complete || pending.requirementId !== request.requirementId || pending.operationId !== request.savedOperationId)) denied("resave_request_mismatch");
@@ -601,7 +591,7 @@ export class MainRequirementInteraction {
   }
   /** SDK execute与tool_result之间只保留来源元数据，最终交付仍读实际DB。 */
   async execute(toolCallId: string, ctx: ExtensionContext, repoId: string, params: Record<string, unknown>, run: () => Promise<unknown>, signal?: AbortSignal) {
-    if (this.#busy || this.#selecting) return denied("interaction_busy");
+    if (this.#busy) return denied("interaction_busy");
     this.#busy = true; this.#ctx = ctx;
     const abort = () => this.revoke();
     signal?.addEventListener("abort", abort, { once: true });

@@ -14,6 +14,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { answeringUi } from "../helpers/window-host.ts";
 import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
 import { repositoryIdentity, daemonSocketPath } from "../../runtime/identity.ts";
 import { socketPathByteLimit } from "../../daemon/lifecycle.ts";
@@ -169,7 +170,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
       select: async () => undefined,
       input: async () => undefined,
       editor: async () => undefined,
-      custom: async () => undefined as never,
+      custom: answeringUi(() => true).custom,
       notify: (message, type) => { notifications.push({ message, type }); },
     };
     bindAttempted = true;

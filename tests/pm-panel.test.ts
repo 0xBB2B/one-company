@@ -6,7 +6,7 @@ import type { PmPanelEntry } from "../runtime/pm-panel.ts";
 import pmPanelExtension from "../extensions/pm-panel.ts";
 import { createClock } from "../runtime/clock.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
-import { registerInputRevoker } from "../extensions/lifecycle.ts";
+import { registerRequirementInput } from "../extensions/lifecycle.ts";
 
 function overview(patch: Partial<PmOverview>): PmOverview {
   return { requirementId: "01900000-0000-7000-8000-000000000001", pmRunId: "01900000-0000-7000-8000-00000000000a", goals: ["角色跳跃", "跳跃动画"],
@@ -102,7 +102,8 @@ test("M7-AC33/AC35：主窗口面板拉取概览，↓ 进入面板、选中事�
     clients: { forRepo: (id: string) => (id === "r" ? client : undefined), all: () => [client], skipped: () => [], closeAll: () => {} } };
   pmPanelExtension(pi, { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock() });
   const revoke = vi.fn(() => { expect(sendMessage).not.toHaveBeenCalled(); });
-  registerInputRevoker(revoke);
+  const noteOpenedItem = vi.fn(() => { expect(revoke).toHaveBeenCalledTimes(1); expect(sendMessage).not.toHaveBeenCalled(); });
+  registerRequirementInput({ revoke, noteOpenedItem, mentionNote: () => "" });
   let input: ((data: string) => unknown) | undefined;
   const ctx = { mode: "tui", hasUI: true, ui: { setWidget: () => {}, onTerminalInput: (handler: (data: string) => unknown) => { input = handler; return () => {}; },
     getEditorText: () => "", notify: vi.fn() } };
@@ -112,7 +113,8 @@ test("M7-AC33/AC35：主窗口面板拉取概览，↓ 进入面板、选中事�
   input!("\x1b[B"); input!("\x1b[B"); input!("\r");
   await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ customType: "one-company.decision-packet", content: "决策包正文", display: true }, { triggerTurn: true }), { timeout: 5_000 });
   expect(revoke).toHaveBeenCalledTimes(1);
-  registerInputRevoker(undefined);
+  expect(noteOpenedItem).toHaveBeenCalledWith({ repoId: "r", requirementId: jump.requirementId, itemId: "task:t1" });
+  registerRequirementInput(undefined);
   const before = calls.filter((method) => method === "pm.overview").length;
   listeners.get("pm.overview.changed")!();
   await vi.waitFor(() => expect(calls.filter((method) => method === "pm.overview").length).toBe(before + 1));

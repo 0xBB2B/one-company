@@ -6,11 +6,12 @@ import { createRequirementManageTool } from "../runtime/requirement-manage-tool.
 import { createUserInteractTool } from "../runtime/user-interact-tool.ts";
 import { MainIntakeInteraction } from "../runtime/main-intake-interaction.ts";
 import type { MainIntakeProviders } from "../runtime/main-intake-interaction.ts";
+import type { MentionTarget } from "../runtime/main-requirement-interaction.ts";
 import { createPmIntakeProviders } from "../runtime/pm-intake-runtime.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
 import type { OpenRequirementService, RequirementManageHostContext } from "../runtime/main-requirement-interaction.ts";
 import { failureText, toolStep } from "../runtime/tool-failure.ts";
-import { registerInputRevoker, registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
+import { registerRequirementInput, registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
 
 export interface RequirementManageExtensionDeps {
   readonly authorization?: HostAuthorizationManager;
@@ -22,6 +23,12 @@ export interface RequirementManageExtensionDeps {
   readonly pmIntakeCallTtlMs?: number;
   readonly windowReady?: typeof windowReady;
   readonly windowContext?: typeof windowContext;
+}
+/** 这句话 @ 到的需求，写进本轮系统提示；编号由程序按用户原话解析，不是模型填写。 */
+export function mentionNote(targets: readonly MentionTarget[], repos: ReadonlyArray<{ repoId: string; path: string }>): string {
+  if (!targets.length) return "";
+  return ["## 这句话 @ 到的需求", "用户在这句话里用 @ 指明了下列需求；这句话里的批准只对这些需求有效：",
+    ...targets.map((target) => `- ${target.title}（仓库 ${repos.find((repo) => repo.repoId === target.repoId)?.path ?? target.repoId}，repoId ${target.repoId}，requirementId ${target.requirementId}）`)].join("\n");
 }
 export default function requirementManageExtension(pi: ExtensionAPI, deps: RequirementManageExtensionDeps = {}): void {
   const root = deps.dataRoot ?? dataRoot(process.env);
@@ -58,11 +65,17 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
       connections.push(client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => authorization.revoke()));
     }
     unregisterShutdown = registerWindowShutdownHook(window, shutdown);
-    registerInputRevoker(() => interaction.revokeInput());
+    registerRequirementInput({ revoke: () => interaction.revokeInput(), noteOpenedItem: (item) => interaction.noteOpenedItem(item),
+      mentionNote: () => mentionNote(interaction.inputTargets(), window.workspace.repos) });
     intake.startSession(ctx);
   });
   pi.on("input", (event, ctx) => {
-    interaction.captureInput(event, ctx, ctx.mode === "rpc" && pi.getFlag("requirement-rpc-input") === true);
+    const { invalid } = interaction.captureInput(event, ctx, ctx.mode === "rpc" && pi.getFlag("requirement-rpc-input") === true);
+    if (invalid.length) {
+      const valid = interaction.inputTargets().length;
+      ctx.ui.notify(`有 ${invalid.length} 个 @ 无效：${invalid.map((item) => `${item.token}（${item.reason}）`).join("、")}。` +
+        (valid ? `这句话只附上另外 ${valid} 个需求。` : "这句话没有附上任何需求。"), "warning");
+    }
     return { action: "continue" };
   });
   pi.on("session_before_switch", () => { authorization.revoke(); });
@@ -71,19 +84,6 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   pi.on("session_before_compact", (_event, ctx) => { intake.clearForCompaction(ctx); });
   pi.on("model_select", () => { authorization.revoke(); });
   pi.on("session_shutdown", () => { unregisterShutdown?.(); unregisterShutdown = undefined; shutdown(); });
-  pi.registerCommand("one:requirement-revoke", { description: "撤销当前窗口的需求输入与在途能力", handler: async () => { authorization.revoke(); } });
-  pi.registerCommand("one:requirement-select", {
-    description: "通过真实交互选择已有需求身份，不恢复旧输入、授权或执行",
-    handler: async (args, ctx) => {
-      if (args.trim()) { ctx.ui.notify("请从当前需求列表选择；命令参数不能直接绑定需求。", "warning"); return; }
-      try {
-        await ctx.waitForIdle();
-        const result = await interaction.selectRequirement(ctx, ctx.mode === "rpc" && pi.getFlag("requirement-rpc-input") === true);
-        ctx.ui.notify(result.selected ? `已绑定需求 ${result.requirementId}；未恢复旧输入、批准能力、PM或任务。`
-          : `未绑定新需求；已取消选择或没有可选择的已核验需求。未初始化仓库数：${result.unavailableRepositories}`, "info");
-      } catch { ctx.ui.notify("需求身份绑定未完成：缺少可信交互、列表超限，或会话/需求/工作区状态已变化。", "warning"); }
-    },
-  });
   pi.on("tool_call", (event, ctx) => { intake.observeToolCall(event, ctx); });
   pi.on("tool_execution_end", (event) => { intake.completeToolExecution(event); });
   pi.on("tool_result", (event, ctx) => {

@@ -61,7 +61,6 @@ test("短TTL、真实终态回收和32条活调用上限分离，迟到结果仍
   const repoId = "a".repeat(64), requirementId = uuidv7(), windowId = uuidv7(), sessionId = uuidv7();
   const authorization = new HostAuthorizationManager({ dataRoot: "/tmp/pm-intake-memory-only" });
   authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [repoId] });
-  authorization.bindRequirement(repoId, requirementId, sessionId);
   const controller = new AbortController(), manager = { getSessionId: () => sessionId };
   const ctx = { sessionManager: manager, cwd: "/tmp", mode: "rpc", signal: controller.signal } as unknown as ExtensionContext;
   const create = (ttl?: number) => {
@@ -97,7 +96,7 @@ test("短TTL、真实终态回收和32条活调用上限分离，迟到结果仍
 test.each([true, false])("逐调用TTL取消内存服务等待，只有实际结束才释放执行容量（合作=%s）", async (cooperative) => {
   const repoId = "a".repeat(64), requirementId = uuidv7(), windowId = uuidv7(), sessionId = uuidv7();
   const host = new HostAuthorizationManager({ dataRoot: "/tmp/pm-intake-memory-only" });
-  host.startWindow({ kind: "main", windowId, sessionId, repoIds: [repoId] }); host.bindRequirement(repoId, requirementId, sessionId);
+  host.startWindow({ kind: "main", windowId, sessionId, repoIds: [repoId] });
   const controller = new AbortController(), ctx = { sessionManager: { getSessionId: () => sessionId }, cwd: "/tmp", mode: "rpc", signal: controller.signal } as unknown as ExtensionContext;
   const state = vi.spyOn(RequirementStateStore, "open").mockResolvedValue({} as never);
   const service = vi.spyOn(RequirementService, "open").mockResolvedValue({} as never);

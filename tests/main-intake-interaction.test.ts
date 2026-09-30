@@ -109,7 +109,7 @@ test("tool_call后置改成原型action仍invalid_shape且不调用业务provide
   current.bridge.dispose();
 });
 
-test("需求未选、伪Main字段、PM自填passed和缺省provider都拒绝", async () => {
+test("伪Main字段、PM自填passed和缺省provider都拒绝", async () => {
   const fixture = await world(), current = bridgeFor(fixture), valid = ask(fixture);
   for (const patch of [{ role: "main" }, { actor: "user" }, { trusted: true }, { receipt: uuidv7() },
     { reviewer: { windowId: fixture.identity.windowId } }]) {
@@ -118,14 +118,8 @@ test("需求未选、伪Main字段、PM自填passed和缺省provider都拒绝", 
   }
   current.bridge.dispose();
 
-  const unbound = bridgeFor(fixture);
-  fixture.host.bindRequirement(fixture.repoId, uuidv7(), fixture.identity.sessionId);
-  expect(() => observe(unbound.bridge, unbound.ctx, "unbound", valid)).toThrow();
-  unbound.bridge.dispose();
-
   fixture.host.startWindow({ kind: "main", windowId: fixture.identity.windowId,
     sessionId: fixture.identity.sessionId, repoIds: [fixture.repoId] });
-  fixture.host.bindRequirement(fixture.repoId, fixture.requirementId, fixture.identity.sessionId);
   const noProvider = bridgeFor(fixture, undefined, false), missing = ask(fixture);
   observe(noProvider.bridge, noProvider.ctx, "missing-provider", missing);
   await expect(noProvider.bridge.execute("missing-provider", missing, noProvider.ctx, noProvider.signal))

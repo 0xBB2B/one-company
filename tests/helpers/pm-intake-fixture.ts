@@ -324,7 +324,6 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
   const host = new HostAuthorizationManager({ dataRoot });
   allocatedHost = host;
   host.startWindow({ kind: "main", windowId, sessionId, repoIds: [identity.repoId] });
-  host.bindRequirement(identity.repoId, saved.requirementId, sessionId);
   const calls = new WeakMap<object, MainIntakeCallIdentity>();
   const newCall = (patch: Partial<MainIntakeCallIdentity> = {}) => {
     const call: MainIntakeCall = Object.freeze({ kind: "main-intake-call" });

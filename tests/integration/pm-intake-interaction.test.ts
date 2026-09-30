@@ -292,8 +292,6 @@ async function withSdkWorld(
     };
     await session.bindExtensions({ mode: "rpc", uiContext: { ...session.extensionRunner.getUIContext(), notify: () => {} } });
     assertLifecycleHealthy();
-    authorization.bindRequirement(fixture.repoId, fixture.requirementId, sm.getSessionId());
-    expect(authorization.binding(sm.getSessionId())).toEqual({ repoId: fixture.repoId, requirementId: fixture.requirementId });
     await run({ fixture, session, provider, authorization, windowId, sessionManager: sm });
     assertLifecycleHealthy();
   } catch (error) {

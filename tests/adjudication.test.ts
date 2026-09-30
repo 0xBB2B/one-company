@@ -40,8 +40,8 @@ async function world() {
   const version = () => `task:${login}:${taskRow("login").version}`;
   const main = mainAdjudication(w, cleanups);
   const entry = (references: string[], patch: Record<string, unknown> = {}) => main.entry(references, { conclusion: "用户对任务 login 的裁决", scope: "任务 login", ...patch });
-  const adjudicate = (text: string, entries: unknown[] | null, target = itemId, itemVersion?: string) =>
-    main.adjudicate(text, entries, target, itemVersion ?? (target === itemId ? version() : `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`));
+  const adjudicate = (text: string, entries: unknown[] | null, target = itemId, itemVersion?: string, opened = true) =>
+    main.adjudicate(text, entries, target, itemVersion ?? (target === itemId ? version() : `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`), opened);
   const { interaction, ctx } = main;
   const decisions = () => w.db((db) => db.list("short_decisions")).length;
   return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx };
@@ -107,6 +107,17 @@ test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项�
   const second = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null });
   expect(second.maxTurns).toBe(3);
   expect(task("login").userDecision?.usedByRunId).toBe(second.runId);
+});
+
+test("M8D-AC3：裁决只认用户最后在面板打开的事项；没打开过或打开的不是这个事项时不登记", async () => {
+  const w = await world();
+  const before = w.decisions();
+  const retry = [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])];
+  await expect(w.adjudicate("再给一次，3 轮", retry, w.itemId, undefined, false)).rejects.toMatchObject({ code: "decision_target_unknown" });
+  w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: `requirement:${w.fixture.requirementId}` });
+  await expect(w.adjudicate("再给一次，3 轮", retry, w.itemId, undefined, false)).rejects.toMatchObject({ code: "decision_target_unknown" });
+  expect(w.decisions()).toBe(before);
+  expect(await w.adjudicate("再给一次，3 轮", retry)).toMatchObject({ status: "recorded", choice: "retry" });
 });
 
 test("M7-AC35：解释器引用了错误版本、用户没说清或没有当前原话时都不登记，任务仍待裁决", async () => {
@@ -374,7 +385,6 @@ test("M7-AC34：两个主窗口同时打开同一事项，先登记的生效，�
   const sessionId = uuidv7(), windowId = uuidv7();
   const authorization = new HostAuthorizationManager({ dataRoot: w.fixture.dataRoot });
   authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [w.fixture.repoId] });
-  authorization.bindRequirement(w.fixture.repoId, w.fixture.requirementId, sessionId);
   const ctxB = { ...w.ctx, sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   const windowB = new MainRequirementInteraction({ dataRoot: w.fixture.dataRoot, authorization,
     resolveHost: () => ({ windowId, sessionId, repositories: new Map([[w.fixture.repoId, { path: w.fixture.repositoryRoot }]]) }) });
@@ -386,6 +396,7 @@ test("M7-AC34：两个主窗口同时打开同一事项，先登记的生效，�
   w.provider.queue.push({ type: "text", text: "PM 收到用户决定", chunkDelayMs: 3_000 });
   await until(async () => (await w.manager.overviews())[0]!.pendingItems.every((item) => item.itemId !== w.itemId));
 
+  windowB.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
   windowB.captureInput({ source: "interactive", text: "再给一次，3 轮" }, ctxB);
   const id = uuidv7();
   await expect(createUserInteractTool({ interaction: windowB }).execute(id, { request: { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId,

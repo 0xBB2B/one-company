@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dataRoot as defaultDataRoot } from "../runtime/identity.ts";
 import { resolveRepositoryRequirementDoc, resolveRequirementDoc } from "../runtime/requirement-doc.ts";
 import type { ResolvedRequirementDoc } from "../runtime/requirement-doc.ts";
-import { windowContext as defaultWindowContext } from "./lifecycle.ts";
+import { currentMentionNote, windowContext as defaultWindowContext } from "./lifecycle.ts";
 import type { WindowContextValue } from "./lifecycle.ts";
 
 const rulesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "rules");
@@ -58,7 +58,7 @@ export default function rulesExtension(pi: ExtensionAPI, deps: { windowContext?:
 	const windowContext = deps.windowContext ?? defaultWindowContext;
 	const dataRoot = () => deps.dataRoot ?? defaultDataRoot(process.env);
 	pi.on("before_agent_start", async (event) => {
-		const extra = [rules, await requirementDocGuide(dataRoot, windowContext), repositoryList(windowContext)].filter(Boolean).join("\n\n");
+		const extra = [rules, await requirementDocGuide(dataRoot, windowContext), repositoryList(windowContext), currentMentionNote()].filter(Boolean).join("\n\n");
 		if (!extra) return;
 		return { systemPrompt: `${event.systemPrompt}\n\n${extra}` };
 	});

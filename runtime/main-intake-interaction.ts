@@ -95,7 +95,6 @@ const MAIN_INTAKE_ADVICE: Record<string, FailureAdvice> = {
   invalid_signal: { why: "取消信号不可用", next: "停止操作，不要重试；把这段原因告诉用户" },
   invalid_ttl: { why: "有效期设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   operation_cancelled: { why: "操作被取消", next: "需要时重新发起" },
-  requirement_not_bound: { why: "当前窗口没有绑定这个需求", next: "请用户用 /one:requirement-select 选择需求，或用当前绑定的需求编号" },
   response_budget_exceeded: { why: "返回内容超出上限", next: "重试一次；仍然失败就把这段原因告诉用户" },
   session_not_started: { why: "会话还没准备好", next: "稍等几秒再试" },
   source_directory_provider_unavailable: { why: "读不到接手出处目录", next: "重试一次；仍然失败就把这段原因告诉用户" },
@@ -199,7 +198,6 @@ interface CurrentContext {
   readonly session: SessionBinding;
   readonly manager: object;
   readonly host: RequirementManageHostContext;
-  readonly binding: { readonly repoId: string; readonly requirementId: string } | undefined;
   readonly signal: AbortSignal | undefined;
 }
 interface ObservedCall {
@@ -328,16 +326,13 @@ export class MainIntakeInteraction {
     if (manager !== session.manager || sessionId !== session.sessionId || cwd !== session.cwd || mode !== session.mode ||
       host.sessionId !== sessionId || host.windowId !== session.windowId || principal.windowId !== session.windowId ||
       decisionDigest(listed) !== decisionDigest(session.repositories)) deny("stale_context");
-    return { session, manager, host, binding: this.#authorization.binding(sessionId), signal };
+    return { session, manager, host, signal };
   }
 
   #assertInputContext(input: PmIntakeToolInput, current: CurrentContext): void {
-    if (!current.binding || current.binding.repoId !== input.repoId || current.binding.requirementId !== input.requirementId) {
-      deny("requirement_not_bound");
-    }
     const path = current.host.repositories.get(input.repoId)?.path;
     if (!path) deny("foreign_repo");
-    this.#authorization.assertRequirement(input.repoId, input.requirementId, current.session.sessionId);
+    this.#authorization.assertRepository(input.repoId, current.session.sessionId);
   }
 
   observeToolCall(event: Pick<ToolCallEvent, "toolName" | "toolCallId" | "input">, ctx: ExtensionContext): void {

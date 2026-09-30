@@ -381,10 +381,17 @@ export function windowReady(): Promise<WindowContextValue> {
   return readyController.promise;
 }
 
-let inputRevoker: (() => void) | undefined;
-/** 需求交互扩展登记：作废当前截获的用户原话票据。 */
-export function registerInputRevoker(revoke: (() => void) | undefined): void { inputRevoker = revoke; }
-export function revokeCapturedInput(): void { inputRevoker?.(); }
+/** 需求交互扩展登记给面板与规则扩展用的入口；各扩展是独立模块实例，只能经这里互通。 */
+export interface RequirementInputBridge {
+  revoke(): void;
+  noteOpenedItem(item: { repoId: string; requirementId: string; itemId: string }): void;
+  mentionNote(): string;
+}
+let requirementInput: RequirementInputBridge | undefined;
+export function registerRequirementInput(bridge: RequirementInputBridge | undefined): void { requirementInput = bridge; }
+export function revokeCapturedInput(): void { requirementInput?.revoke(); }
+export function noteOpenedPanelItem(item: { repoId: string; requirementId: string; itemId: string }): void { requirementInput?.noteOpenedItem(item); }
+export function currentMentionNote(): string { return requirementInput?.mentionNote() ?? ""; }
 
 export function registerDock(dock: BottomDock | undefined): void {
   sharedDock = dock;

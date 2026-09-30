@@ -136,7 +136,7 @@ describe("README 常量与实际代码一致", () => {
   test("命令表覆盖扩展注册的全部入口名，且不出现未注册的入口", async () => {
     const source = await readCommandSources();
     const registered = [...source.matchAll(/registerCommand\(\s*"([^"]+)"/g)].map((match) => match[1]).sort();
-    expect(registered).toEqual(["one:agents", "one:ps", "one:git-delivery", "one:requirement-select", "one:requirement-revoke"].sort());
+    expect(registered).toEqual(["one:agents", "one:ps", "one:git-delivery"].sort());
 
     const body = await readText(README);
     for (const name of registered) {

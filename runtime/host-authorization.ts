@@ -20,11 +20,7 @@ export interface MainHostPrincipal {
   readonly sessionId: string;
   readonly repoIds: readonly string[];
 }
-export interface RequirementSelection { readonly kind: "requirement-selection" }
-interface SelectionClaim {
-  repoId: string; requirementId: string; version: number; hash: string; databaseIdentity: string;
-  sessionId: string; windowId: string; generation: number; expiresAt: number;
-}
+export interface ListedRequirement { readonly repoId: string; readonly requirementId: string; readonly lifecycle: "draft" | "active" }
 const WAIT_USER = "等用户在主窗口说出新的一句话后再操作";
 const REREAD = "重新读取需求后按最新版本再试";
 const STOP = "停止操作，不要重试；把这段原因告诉用户";
@@ -35,12 +31,11 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   untrusted_host: { why: "当前会话不是这个窗口登记的会话", next: "在当前主窗口会话里重新发起" },
   foreign_repo: { why: "repoId 不是当前窗口工作区里的仓库", next: "改用当前工作区列出的仓库编号" },
   invalid_requirement: { why: "需求编号格式不对", next: "改用此前工具结果给出的需求编号" },
-  selection_limit: { why: "可选择的需求太多，超出一次能列出的上限", next: "请用户先关闭或取消不再需要的需求" },
-  selection_metadata_invalid: { why: "需求列表里有记录不合规", next: STOP },
   stale_host: { why: "窗口或会话已切换，本次操作作废", next: "在当前窗口里重新发起" },
-  selection_expired: { why: "需求选择已过期", next: "请用户用 /one:requirement-select 重新选择需求" },
-  selection_changed: { why: "选择后需求已被改动", next: "请用户用 /one:requirement-select 重新选择需求" },
-  requirement_not_bound: { why: "当前窗口没有绑定这个需求", next: "请用户用 /one:requirement-select 选择需求，或用当前绑定的需求编号" },
+  requirement_list_limit: { why: "草稿和进行中的需求太多，超出一次能列出的上限（32 个）", next: "请用户先关闭或取消不再需要的需求" },
+  requirement_list_invalid: { why: "需求列表里有记录不合规", next: STOP },
+  decision_target_unknown: { why: "用户没有在面板里打开这个事项，程序无法确认这句话是对哪个事项的裁决", next: "请用户在面板里打开这个事项后再回答" },
+  decision_declined: { why: "用户在确认窗口里没有确认这次批准", next: "不要重试；按用户的意思继续澄清或修改草稿" },
   listener_limit: { why: "监听数量超出上限", next: STOP },
   database_missing: { why: "找不到本机需求数据库", next: "请用户确认已初始化项目并在主窗口重试" },
   database_identity: { why: "本机需求数据库文件不安全（经过链接或有多个硬链接）", next: "请用户检查本机数据目录" },
@@ -52,9 +47,6 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   decision_identity: { why: "决定记录与编号不一致", next: STOP },
   question_identity: { why: "问题记录与编号不一致", next: STOP },
   invalid_ttl: { why: "有效期设置不合规", next: STOP },
-  selection_busy: { why: "上一个选择或操作还没结束", next: "等上一个操作结束后再试" },
-  selection_ui_unavailable: { why: "选择需求要在交互界面里由用户操作，当前会话没有界面", next: "请用户在有界面的主窗口里选择" },
-  selection_unrecognized: { why: "用户的选择无法识别", next: "请用户重新选择" },
   current_input_required: { why: "这个操作要基于用户当前说的话，但现在没有可用的用户原话（可能已过期或已被用过）", next: WAIT_USER },
   result_record_missing: { why: "结果依据的记录已不存在", next: REREAD },
   result_decision_superseded: { why: "结果依据的用户决定已被新的决定取代", next: "重新读取需求，按用户最新的决定处理" },
@@ -73,7 +65,6 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   draft_not_requested: { why: "核验模型的回答格式不对，无法判断用户是否要求这份草稿", next: "重试一次；仍然失败就请用户换一个模型" },
   draft_check_failed: { why: "调用核验模型失败，没有得到核验结果（不是核验不通过）", next: "稍后重试；反复失败就请用户检查模型或网络" },
   draft_interpretation_denied: { why: "核验器认为草稿与用户原话不符", next: "按核验器说明改正草稿中与用户原话不符的部分后重试" },
-  requirement_already_bound: { why: "当前窗口已绑定了一个需求，不能再创建新需求", next: "继续处理已绑定的需求，或请用户先切换需求" },
   resave_state_mismatch: { why: "重新保存的状态已变化", next: REREAD },
   item_changed: { why: "事项在用户做决定后已变化", next: "重新读取待裁决事项，请用户按当前情况重新决定" },
   prod_sections_required: { why: "需求正文不符合需求文档规范", next: "按需求文档规范改正正文后重新保存" },
@@ -106,10 +97,8 @@ export class HostAuthorizationError extends Error {
 export class HostAuthorizationManager {
   readonly #dataRoot: string;
   #principal: MainHostPrincipal | undefined;
-  #binding: { repoId: string; requirementId: string } | undefined;
   #generation = 0;
   readonly #listeners = new Set<() => void>();
-  readonly #selections = new WeakMap<object, SelectionClaim>();
   constructor(options: { dataRoot: string }) { this.#dataRoot = options.dataRoot; }
   get generation(): number { return this.#generation; }
   startWindow(principal: MainHostPrincipal): void {
@@ -125,72 +114,33 @@ export class HostAuthorizationManager {
   assertRepository(repoId: string, sessionId: string): void {
     if (!this.assertCurrentSession(sessionId).repoIds.includes(repoId)) throw new HostAuthorizationError("foreign_repo");
   }
-  /** 仅供可信宿主绑定或create成功后固定身份；不得直接转发工具中的requirementId来调用。 */
-  bindRequirement(repoId: string, requirementId: string, sessionId: string): void {
-    this.assertRepository(repoId, sessionId);
-    if (!UUID_V7_PATTERN.test(requirementId) || requirementId.length !== 36) throw new HostAuthorizationError("invalid_requirement");
-    if (this.#binding && (this.#binding.repoId !== repoId || this.#binding.requirementId !== requirementId)) this.revoke();
-    this.#binding = Object.freeze({ repoId, requirementId });
-  }
-  /** 只枚举有界生命周期元数据；选择对象只能由本实例签发，不能从模型JSON重建。 */
-  prepareSelections(sessionId: string) {
+  /** 列出本窗口各仓库里状态正常的草稿与进行中需求，只读生命周期元数据。 */
+  listRequirements(sessionId: string): ListedRequirement[] {
     const principal = this.assertCurrentSession(sessionId), generation = this.#generation;
-    const items: Array<{ selection: RequirementSelection; repoId: string; requirementId: string; lifecycle: "draft" | "active" }> = [];
-    let unavailableRepositories = 0;
+    const items: ListedRequirement[] = [];
     for (const repoId of principal.repoIds) {
-      const path = repositoryDatabase(this.#dataRoot, repoId);
-      let identity: string;
-      try { const stat = lstatSync(path); identity = `${stat.dev}:${stat.ino}`; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { unavailableRepositories++; continue; } throw error; }
+      try { lstatSync(repositoryDatabase(this.#dataRoot, repoId)); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
       const rows = this.#read(repoId, sessionId, (db) => db.prepare("SELECT record_key,id,version,CASE WHEN length(data)<=65536 THEN data ELSE NULL END AS data FROM records WHERE namespace='requirements' AND record_key GLOB ? AND json_extract(data,'$.lifecycle') IN ('draft','active') AND json_extract(data,'$.recovery')='ready' ORDER BY id LIMIT 33")
         .all("????????-????-7???-[89ab]???-????????????"));
-      if (rows.length > 32) throw new HostAuthorizationError("selection_limit");
       for (const row of rows) {
         if (typeof row.record_key !== "string" || !UUID_V7_PATTERN.test(row.record_key) || row.id !== row.record_key ||
-          !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.data !== "string") throw new HostAuthorizationError("selection_metadata_invalid");
+          !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.data !== "string") throw new HostAuthorizationError("requirement_list_invalid");
         const record = checkRequirement(JSON.parse(row.data), row.record_key, repoId);
         if (record.lifecycle !== "draft" && record.lifecycle !== "active" || record.recovery !== "ready") continue;
-        if (items.length >= 32) throw new HostAuthorizationError("selection_limit");
-        const selection: RequirementSelection = Object.freeze({ kind: "requirement-selection" });
-        this.#selections.set(selection, { repoId, requirementId: record.requirementId, version: Number(row.version), hash: decisionDigest(record), databaseIdentity: identity,
-          sessionId, windowId: principal.windowId, generation, expiresAt: Date.now() + 120_000 });
-        items.push({ selection, repoId, requirementId: record.requirementId, lifecycle: record.lifecycle });
+        if (items.length >= 32) throw new HostAuthorizationError("requirement_list_limit");
+        items.push(Object.freeze({ repoId, requirementId: record.requirementId, lifecycle: record.lifecycle }));
       }
     }
     if (this.#generation !== generation || this.assertCurrentSession(sessionId) !== principal) throw new HostAuthorizationError("stale_host");
-    return { items, unavailableRepositories };
-  }
-  verifySelection(selection: RequirementSelection, sessionId: string) {
-    const claim = this.#selections.get(selection), principal = this.assertCurrentSession(sessionId);
-    if (!claim || claim.sessionId !== sessionId || claim.windowId !== principal.windowId || claim.generation !== this.#generation || claim.expiresAt <= Date.now()) throw new HostAuthorizationError("selection_expired");
-    const result = this.#read(claim.repoId, sessionId, (db) => {
-      const row = db.prepare("SELECT id,version,CASE WHEN length(data)<=65536 THEN data ELSE NULL END AS data FROM records WHERE namespace='requirements' AND record_key=?").get(claim.requirementId);
-      if (!row || row.id !== claim.requirementId || row.version !== claim.version || typeof row.data !== "string") throw new HostAuthorizationError("selection_changed");
-      const record = checkRequirement(JSON.parse(row.data), claim.requirementId, claim.repoId);
-      if (decisionDigest(record) !== claim.hash || !["draft", "active"].includes(record.lifecycle) || record.recovery !== "ready") throw new HostAuthorizationError("selection_changed");
-      return { id: claim.requirementId, version: claim.version, data: record };
-    });
-    const stat = lstatSync(repositoryDatabase(this.#dataRoot, claim.repoId));
-    if (`${stat.dev}:${stat.ino}` !== claim.databaseIdentity || this.#generation !== claim.generation || this.assertCurrentSession(sessionId) !== principal) throw new HostAuthorizationError("selection_changed");
-    return result;
-  }
-  bindSelection(selection: RequirementSelection, sessionId: string): void {
-    const record = this.verifySelection(selection, sessionId);
-    this.#selections.delete(selection);
-    this.bindRequirement(record.data.repoId, record.id, sessionId);
-    this.assertRequirement(record.data.repoId, record.id, sessionId);
-  }
-  binding(sessionId: string) { this.assertCurrentSession(sessionId); return this.#binding; }
-  assertRequirement(repoId: string, requirementId: string, sessionId: string): void {
-    this.assertRepository(repoId, sessionId);
-    if (this.#binding?.repoId !== repoId || this.#binding.requirementId !== requirementId) throw new HostAuthorizationError("requirement_not_bound");
+    return items;
   }
   onRevoke(listener: () => void): () => void {
     if (this.#listeners.size >= 8) throw new HostAuthorizationError("listener_limit");
     this.#listeners.add(listener); return () => this.#listeners.delete(listener);
   }
   revoke(): void { this.#generation++; for (const listener of this.#listeners) listener(); }
-  shutdown(): void { this.revoke(); this.#principal = undefined; this.#binding = undefined; }
+  shutdown(): void { this.revoke(); this.#principal = undefined; }
   /** 只读打开既有data.db，缺失或用途未知时拒绝，不扫描prod或初始化空库。 */
   #read<T>(repoId: string, sessionId: string, run: (db: DatabaseSync) => T): T {
     this.assertRepository(repoId, sessionId);
@@ -211,7 +161,7 @@ export class HostAuthorizationManager {
     } finally { db.close(); }
   }
   snapshot(repoId: string, requirementId: string, sessionId: string): { id: string; version: number; data: RequirementRecord } {
-    this.assertRequirement(repoId, requirementId, sessionId);
+    this.assertRepository(repoId, sessionId);
     return this.#read(repoId, sessionId, (db) => {
       const row = db.prepare("SELECT id, version, data FROM records WHERE namespace='requirements' AND record_key=?").get(requirementId);
       if (!row || row.id !== requirementId || typeof row.data !== "string") throw new HostAuthorizationError("unknown_requirement");

@@ -24,6 +24,8 @@ import type { ConfirmationContext } from "../runtime/requirement-manage-contract
 import type { Static } from "typebox";
 import { ModelInterpretation } from "../runtime/interaction-derivation.ts";
 import { requirementSummary } from "../runtime/requirement-summary.ts";
+import { answeringUi } from "./helpers/window-host.ts";
+import type { ShownWindow } from "./helpers/window-host.ts";
 
 
 const exec = promisify(execFile), cleanup: Array<() => Promise<void>> = [];
@@ -44,9 +46,11 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
   const runtime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, refreshOnCreate: false });
   const provider = registerControlledProvider(runtime, { providerId: `host-${uuidv7()}`, modelId: "controlled" });
   const registry = new ModelRegistry(runtime), model = runtime.getModels(provider.providerId)[0]!;
-  const notifications: string[] = [];
+  const notifications: string[] = [], windows: ShownWindow[] = [];
+  let windowAnswer = true;
   const ctx = { cwd: repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
-    ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); } },
+    ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); },
+      ...answeringUi((window) => { windows.push(window); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   const interaction = new MainRequirementInteraction({ ...options, dataRoot, authorization,
     resolveHost: () => ({ windowId, sessionId, repositories: new Map([[repoId, { path: repositoryRoot }]]) }) });
@@ -57,17 +61,23 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
     const result = await (userTool ? user : manage).execute(toolCallId, { request: { repoId, ...params } } as never, undefined, undefined, ctx);
     interaction.assertDelivery(toolCallId, ctx); return result.details!;
   };
-  const capture = (text = PHONE, source = "interactive", rpc = false) => interaction.captureInput({ source, text }, ctx, rpc);
+  const mentioned: string[] = [];
+  /** 模拟用户这句话 @ 了已建的需求；mention=false 时原样输入。 */
+  const capture = (text = PHONE, source = "interactive", rpc = false, mention = true) =>
+    interaction.captureInput({ source, text: (mention ? mentioned.map((id) => `@[登录#${id.slice(-4)}] `).join("") : "") + text }, ctx, rpc);
   const service = await RequirementService.open({ dataRoot, repositoryRoot, repoId, authorize: () => true });
   const create = async (body = BODY) => {
     capture(); scriptReplies(provider, [{ type: "text", text: '{"allow":true}' }]);
-    return call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body });
+    const created = await call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body });
+    mentioned.push(String(created.requirementId));
+    return created;
   };
   const request = async (created: Record<string, unknown>, operationId = uuidv7()) => {
     const input = { requirementId: String(created.requirementId), savedOperationId: String(created.operationId), operationId, version: Number(created.version) };
     return { input, loaded: await service.loadConfirmationContext({ requirementId: input.requirementId, savedOperationId: input.savedOperationId, operationId }) };
   };
-  return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage };
+  return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage,
+    windows, answerWindows: (answer: boolean) => { windowAnswer = answer; } };
 }
 /** 明确fixture语义输出；调用仍经过真实ModelRegistry/provider与生产解释适配器。 */
 function phoneReview(c: Pick<ConfirmationContext, "candidate" | "partition">, action: "analyze" | "implement" = "analyze"): Static<typeof ModelInterpretation> {
@@ -92,6 +102,41 @@ function wholeReview(c: Pick<ConfirmationContext, "candidate" | "partition">, ta
 }
 
 describe("主窗口共享控制器的真实服务路径", () => {
+  test("M8D-AC3：这句话 @ 到的需求直接按原话登记，不弹窗；没 @ 到时弹出批准窗口，显示需求名、版本与简介，取消即不登记不生效", async () => {
+    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    w.capture("同意", "interactive", false, false); w.answerWindows(false);
+    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "decision_declined" });
+    expect(w.windows).toHaveLength(1);
+    expect(w.windows[0]!.title).toBe("批准需求");
+    expect(w.windows[0]!.text).toContain("需求：登录（第 1 版）");
+    expect(w.windows[0]!.text).toContain(`编号：${input.requirementId}`);
+    expect(w.windows[0]!.text).toContain("简介：手机号登录，保留邮箱登录");
+    expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
+    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ targetRecorded: true, prodActivated: true });
+    expect(w.windows).toHaveLength(1);
+  });
+
+  test("M8D-AC2：同一窗口可以处理多个需求，不需要绑定就能读取和修改其中任何一个的草稿", async () => {
+    const w = await world(), first = await w.create(), second = await w.create();
+    for (const created of [first, second]) {
+      expect(await w.call({ action: "read", requirementId: created.requirementId, source: "saved" })).toMatchObject({ requirementId: created.requirementId });
+      w.capture("补一句"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+      expect(await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version, operationId: uuidv7(),
+        summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补一句。\n" })).toMatchObject({ action: "updateDraft", requirementId: created.requirementId });
+    }
+  });
+
+  test("M8D-AC1：原话里的 @ 按编号尾巴认出需求，同一需求只算一次，无效的 @ 单独报出原因", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    const result = w.interaction.captureInput({ source: "interactive", text: `@[登录#${id.slice(-4)}] @[登录#${id.slice(-6)}] @[别的#ffff] 改一下` }, w.ctx);
+    expect(w.interaction.inputTargets()).toEqual([{ repoId: w.repoId, requirementId: id, title: "登录" }]);
+    expect(result.invalid).toEqual([{ token: "[别的#ffff]", reason: "不存在、已关闭或状态异常" }]);
+    w.interaction.captureInput({ source: "interactive", text: "下一句不带 @" }, w.ctx);
+    expect(w.interaction.inputTargets()).toEqual([]);
+  });
+
   test("M8D-AC7：新建和修改草稿都要写简介，程序按当前草稿版本记下简介；缺简介时拒绝并写明缺哪个字段", async () => {
     const w = await world();
     w.capture();
@@ -119,8 +164,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     }
     w.capture(); const selected = w.ctx.model; Object.defineProperty(w.ctx, "model", { value: undefined, configurable: true });
     await expect(w.call(input)).rejects.toMatchObject({ code: "model_unavailable" }); Object.defineProperty(w.ctx, "model", { value: selected });
-    w.authorization.bindRequirement(w.repoId, uuidv7(), w.sessionId);
-    await expect(w.call({ action: "metadata", requirementId: w.authorization.binding(w.sessionId)!.requirementId })).rejects.toMatchObject({ code: "database_missing" });
+    await expect(w.call({ action: "metadata", requirementId: uuidv7() })).rejects.toMatchObject({ code: "database_missing" });
     await expect(stat(repositoryDatabase(w.dataRoot, w.repoId))).rejects.toMatchObject({ code: "ENOENT" });
   });
   test("M8B：草稿核验器知道项目规范另经规范流程处理，草稿不含规范不影响放行", async () => {
@@ -182,7 +226,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(await git(directory, ["rev-list", "--count", "HEAD"])).toBe("1");
     expect(await git(directory, ["show", "--pretty=format:", "--name-only", "HEAD"])).toBe("prod.md");
     expect(await git(directory, ["show", "-s", "--format=%an <%ae>", "HEAD"])).toBe("pi prod storage <pi-prod-storage@localhost>");
-    await expect(w.call({ ...p, operationId: uuidv7(), requestId: uuidv7(), title: "无关付款" })).rejects.toMatchObject({ code: "requirement_already_bound" });
+    scriptReplies(w.provider, [{ type: "text", text: '{"allow":false}' }]);
+    await expect(w.call({ ...p, operationId: uuidv7(), requestId: uuidv7(), title: "无关付款" })).rejects.toMatchObject({ code: "draft_interpretation_denied" });
   });
   test("M8A-AC9：正文不是五大板块时批准被拒，不调用模型、不激活，并写明期望与实际", async () => {
     const w = await world();

@@ -31,16 +31,14 @@ describe("requirement_manage严格公开参数", () => {
     const unknown = await tool.execute("test", { request: { action: "approve", repoId: base.repoId } } as never, undefined, undefined, {} as never).catch((caught: unknown) => caught);
     expect((unknown as Error).message).toContain("可用 action：create、updateDraft、confirmUpdate、read、diff、metadata");
   });
-  test("宿主身份只接受已接入repo与绑定需求，切换撤权且无UI旧回执API", () => {
+  test("M8D-AC2：宿主身份只接受已接入的仓库，没有窗口绑定需求的入口，切换撤权且无UI旧回执API", () => {
     const auth = new HostAuthorizationManager({ dataRoot: "/unused-no-database" });
-    const requirementId = uuidv7(); let revokes = 0;
+    let revokes = 0;
     auth.onRevoke(() => revokes++);
     auth.startWindow({ kind: "main", windowId: "window", sessionId: "session", repoIds: [base.repoId] });
-    expect(() => auth.assertRequirement(base.repoId, requirementId, "session")).toThrow(/requirement_not_bound/);
-    auth.bindRequirement(base.repoId, requirementId, "session");
-    expect(() => auth.assertRequirement(base.repoId, requirementId, "session")).not.toThrow();
-    expect(() => auth.assertRequirement("b".repeat(64), requirementId, "session")).toThrow(/foreign_repo/);
-    expect(() => auth.assertRequirement(base.repoId, uuidv7(), "session")).toThrow(/requirement_not_bound/);
+    expect(() => auth.assertRepository(base.repoId, "session")).not.toThrow();
+    expect(() => auth.assertRepository("b".repeat(64), "session")).toThrow(/foreign_repo/);
+    for (const removed of ["bindRequirement", "assertRequirement", "binding", "prepareSelections", "bindSelection"]) expect(removed in auth).toBe(false);
     expect(() => auth.assertCurrentSession("forged")).toThrow(/untrusted_host/);
     expect("recordConfirmation" in auth).toBe(false);
     expect("captureInput" in auth).toBe(false);

@@ -16,7 +16,6 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
   const sessionId = uuidv7(), windowId = uuidv7();
   const authorization = new HostAuthorizationManager({ dataRoot: w.fixture.dataRoot });
   authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [w.fixture.repoId] });
-  authorization.bindRequirement(w.fixture.repoId, w.fixture.requirementId, sessionId);
   const registry = new ModelRegistry(w.runtime), model = w.runtime.getModels("team-model")[0]!;
   const ctx = { cwd: w.fixture.repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
     ui: { notify: () => {}, confirm: () => { throw new Error("UI.confirm forbidden"); } }, sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
@@ -26,7 +25,9 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
   const tool = createUserInteractTool({ interaction });
   const entry = (references: string[], patch: Record<string, unknown> = {}) => ({ kind: "adjudication", basis: "explicit", resolution: "direct", candidateId: null,
     requestId: null, actions: [], conclusion: "用户的裁决", scope: "待裁决事项", references, supersedes: [], ...patch });
-  async function adjudicate(text: string, entries: unknown[] | null, itemId: string, itemVersion: string) {
+  /** 模拟用户在面板里打开事项后作答；opened=false 时不打开。 */
+  async function adjudicate(text: string, entries: unknown[] | null, itemId: string, itemVersion: string, opened = true) {
+    if (opened) { interaction.revokeInput(); interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId }); }
     interaction.captureInput({ source: "interactive", text }, ctx);
     if (entries) interpret(JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries }));
     const toolCallId = uuidv7();

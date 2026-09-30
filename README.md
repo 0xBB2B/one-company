@@ -60,8 +60,6 @@ pi remove git:github.com/0xBB2B/one-company
 | `/one:agents` | 查看角色定义并复制为新定义 |
 | `/one:ps` | 查看和管理终端命令任务 |
 | `/one:git-delivery` | 开启或关闭可选的 Git 交付工具 |
-| `/one:requirement-select` | 从列表选择一个已有需求，绑定到当前窗口；重开窗口后要继续处理之前的需求时使用 |
-| `/one:requirement-revoke` | 作废当前窗口已记录的你的最近一句原话和未完成的确认，主代理不能再把它当作你的决定 |
 
 ### 当前项目索引
 

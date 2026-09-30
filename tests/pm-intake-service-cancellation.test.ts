@@ -53,7 +53,6 @@ test("Host撤权后即使重建相同window/session/需求绑定也不能取得�
   fixture.sourceProvider.loadHook = () => {
     fixture.host.revoke();
     fixture.host.startWindow({ kind: "main", windowId: fixture.identity.windowId, sessionId: fixture.identity.sessionId, repoIds: [fixture.repoId] });
-    fixture.host.bindRequirement(fixture.repoId, fixture.requirementId, fixture.identity.sessionId);
   };
   await expect(fixture.intake.openRequest(fixture.call, fixture.operationId())).rejects.toMatchObject({ code: "main_call_changed" });
   expect(persisted(fixture)[PM_INTAKE_NAMESPACES.requests]).toHaveLength(0);
