@@ -195,7 +195,7 @@ test.skipIf(!config || process.platform !== "darwin")("M8D-AC6：@需求追加�
       await copyFile(join(dataRoot, path), join(evidence, "runs", `${basename(dirname(path))}.jsonl`)).catch(() => undefined);
     }
     for (const file of await readdir(join(dataRoot, "repos"), { recursive: true }).catch(() => [] as string[])) {
-      if (/(^|\/)data\.db(-wal)?$/u.test(file)) await copyFile(join(dataRoot, "repos", file), join(evidence, basename(file))).catch(() => undefined);
+      if (/(^|\/)(data\.db(-wal)?|requirement-errors\.log)$/u.test(file)) await copyFile(join(dataRoot, "repos", file), join(evidence, basename(file))).catch(() => undefined);
     }
     await rm(join(agentDir, "auth.json"), { force: true });
     await rm(join(agentDir, "models.json"), { force: true });
