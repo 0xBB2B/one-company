@@ -12,7 +12,7 @@ import { killUnder, mainSessionFacts, sumUsage, waitMissing } from "./helpers/ev
 import { acceptanceConfig, copyCredentials, installProduct, startInstalledHost } from "./helpers/installed-host.ts";
 import type { InstalledHost } from "./helpers/installed-host.ts";
 import { createSampleProject } from "./helpers/sample-project.ts";
-import { driveUser } from "./helpers/user-driver.ts";
+import { asksToChoose, CHOOSE_RECOMMENDED, driveUser } from "./helpers/user-driver.ts";
 import type { DriverEvent, UserScript } from "./helpers/user-driver.ts";
 
 const config = acceptanceConfig();
@@ -93,9 +93,11 @@ test.skipIf(!config || process.platform !== "darwin")("M8D-AC6：@需求追加�
       await h.session.prompt(text, { source: "interactive" });
       await h.session.waitForIdle();
     };
-    /** 主代理没做到时，像用户一样按推荐再说一次，最多两次。 */
-    const until = async (condition: () => boolean | Promise<boolean>, followUp: string) => {
-      for (let i = 0; i < 2 && !(await condition()); i++) await say(followUp);
+    /** 主代理在草稿里留了带推荐的问题时，像用户一样先按推荐定下来，最多两次。 */
+    const settle = async (prefix = "") => { for (let i = 0; i < 2 && asksToChoose(h); i++) await say(`${prefix}${CHOOSE_RECOMMENDED}`); };
+    /** 主代理没做到时，先回答它留下的问题，再像用户一样说一次，最多两次。 */
+    const until = async (condition: () => boolean | Promise<boolean>, followUp: string, prefix = "") => {
+      for (let i = 0; i < 2 && !(await condition()); i++) { await settle(prefix); if (!(await condition())) await say(followUp); }
       return condition();
     };
     const limits = { userTurns: 12, wallMs: 30 * 60_000, sameMessage: 3, stopFile: join(evidence, "STOP") };
@@ -121,8 +123,9 @@ test.skipIf(!config || process.platform !== "darwin")("M8D-AC6：@需求追加�
     await say(`${A} 追加一条：快跑时角色头顶显示一个小箭头提示正在快跑；其余不变。请更新需求草稿给我确认。`);
     const updatedA = () => toolResults(since).some((r) => r.tool === "one_company_requirement_manage" && !r.isError && r.text.includes('"updateDraft"') && r.text.includes(a));
     check("@需求追加功能时主代理修改该需求草稿", await until(updatedA, `${A} 按你的推荐处理，更新草稿给我确认。`));
+    await settle(`${A} `);
     await say(`${A} 更新后的草稿我确认，批准这一版。`);
-    check("@到的需求直接批准不弹窗，批准后为 PM 记下批准版本变化", await until(() => revision(a) > rev, `${A} 这一版我确认，批准。`) && approvals() === dialogs && approvedEvent(a, revision(a)),
+    check("@到的需求直接批准不弹窗，批准后为 PM 记下批准版本变化", await until(() => revision(a) > rev, `${A} 这一版我确认，批准。`, `${A} `) && approvals() === dialogs && approvedEvent(a, revision(a)),
       { revision: revision(a), dialogs: approvals() - dialogs });
 
     record({ type: "phase", phase: "at-instruction", at: Date.now() });
@@ -137,8 +140,9 @@ test.skipIf(!config || process.platform !== "darwin")("M8D-AC6：@需求追加�
     const updated = (id: string) => () => toolResults(since).some((r) => r.tool === "one_company_requirement_manage" && !r.isError && r.text.includes('"updateDraft"') && r.text.includes(id));
     await say(`${A} ${B} 两个需求都补一条：所有速度常量集中写在 src/config.ts 里。请分别更新草稿给我确认。`);
     check("一句话 @ 两个需求时两个草稿都修改", await until(async () => updated(a)() && updated(b)(), `${A} ${B} 按你的推荐处理，两个草稿都更新后给我确认。`));
+    await settle(`${A} ${B} `);
     await say(`${A} ${B} 两处更新我都确认，批准。`);
-    check("@ 到的两个需求都直接批准，不弹窗", await until(() => revision(a) > ra && revision(b) > rb, `${A} ${B} 两处我都批准。`) && approvals() === dialogs,
+    check("@ 到的两个需求都直接批准，不弹窗", await until(() => revision(a) > ra && revision(b) > rb, `${A} ${B} 两处我都批准。`, `${A} ${B} `) && approvals() === dialogs,
       { revisions: [revision(a), revision(b)], dialogs: approvals() - dialogs });
 
     record({ type: "phase", phase: "plain-two", at: Date.now() });
@@ -146,6 +150,7 @@ test.skipIf(!config || process.platform !== "darwin")("M8D-AC6：@需求追加�
     const [pa, pb] = [revision(a), revision(b)];
     await say("快跑和跳跃这两个需求都再补一条：速度单位统一用像素每帧。请分别更新草稿给我确认。");
     check("不带 @ 时主代理判断出涉及两个现有需求并都修改", await until(async () => updated(a)() && updated(b)(), "按你的推荐处理，两个草稿都更新后给我确认。"));
+    await settle();
     await say("两处更新我都确认，批准。");
     check("不带 @ 的批准逐个弹出批准窗口，确认后两个都生效", await until(() => revision(a) > pa && revision(b) > pb, "两处我都批准。") && approvals() - dialogs >= 2,
       { revisions: [revision(a), revision(b)], dialogs: approvals() - dialogs });

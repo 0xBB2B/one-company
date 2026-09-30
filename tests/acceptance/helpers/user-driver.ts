@@ -58,7 +58,7 @@ function progress(host: InstalledHost, since: number) {
 /** 主代理提问并给出推荐项时，像真实用户一样按推荐定下来。 */
 export const CHOOSE_RECOMMENDED = "按你推荐的选项定，写进草稿后给我确认；其余不变。";
 
-function asksToChoose(host: InstalledHost): boolean {
+export function asksToChoose(host: InstalledHost): boolean {
   const last = host.session.messages.at(-1);
   if (last?.role !== "assistant") return false;
   const text = last.content.map((block) => block.type === "text" ? block.text : "").join("");
