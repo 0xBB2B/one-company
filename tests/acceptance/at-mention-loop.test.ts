@@ -106,7 +106,8 @@ test.skipIf(!config || process.platform !== "darwin")("M8D-AC6：@需求追加�
     check("不带 @ 的新需求建成草稿，批准时弹出批准窗口", approvals() >= 1, { dialogs: h.dialogs.map((d) => d.title) });
 
     record({ type: "phase", phase: "jump", at: Date.now() });
-    const jump = await driveUser(h, JUMP, limits, record, { since: h.session.messages.length,
+    // 快跑的 PM 已暂停但仍在面板上，驱动要在 PM 存在时照样回答主代理
+    const jump = await driveUser(h, JUMP, limits, record, { since: h.session.messages.length, approveWhileRunning: true,
       until: async () => requirements().length > 1 && Boolean(await pmOf(requirements().find((item) => item.requirementId !== a)!.requirementId)) });
     expect(jump, JSON.stringify(jump)).toMatchObject({ status: "reached" });
     await togglePms(h, true);
