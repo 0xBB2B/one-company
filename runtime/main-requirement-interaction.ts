@@ -29,6 +29,7 @@ import type { RequirementApprovalScope } from "./requirement-manage-contracts.ts
 import { INTERACTION_CONTINUITY_NAMESPACE } from "./interaction-continuity.ts";
 import { approvalManifestReference } from "./approval-manifest.ts";
 import { adjudicationSubject, applyAdjudication } from "./adjudication.ts";
+import { saveRequirementSummary } from "./requirement-summary.ts";
 import type { AdjudicationSubject } from "./user-interaction-format.ts";
 import { inspectProdStructure, pageProdText, selectProdSection, PROD_SECTION_ID_PATTERN } from "./prod-view.ts";
 
@@ -401,7 +402,7 @@ export class MainRequirementInteraction {
     // 原因是模型说法，只帮主代理改草稿，不改变拒绝本身
     if (refusal !== undefined) throw new HostAuthorizationError("draft_interpretation_denied", refusal ? `核验器说明，模型撰写，仅供参考：${refusal}` : undefined);
   }
-  async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput) {
+  async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput, summary: string) {
     const host = this.#host(ctx), generation = this.#generation;
     const bound = this.#authorization.binding(host.sessionId);
     if (action === "create" && bound) denied("requirement_already_bound");
@@ -428,6 +429,7 @@ export class MainRequirementInteraction {
     if (action === "create") this.#authorization.bindRequirement(repoId, receipt.requirementId, host.sessionId);
     const current = this.#snapshot(host, repoId, receipt.requirementId);
     if (current.version !== receipt.version || current.data.epoch !== receipt.epoch) denied("stale_result");
+    saveRequirementSummary(this.#options.dataRoot, repoId, receipt.requirementId, receipt.prodHash, summary);
     if (pending) {
       if (this.#resave !== pending || !this.#core) denied("resave_state_mismatch");
       this.#core.completeCandidateResave(pending.permit); pending.complete = true;

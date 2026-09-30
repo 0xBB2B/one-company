@@ -132,9 +132,9 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const body = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n通过真实 SDK input 进入生产授权路径。\n## 功能 {#features}\n保存需求草稿。\n" +
       "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n草稿能保存并批准。\n";
     scriptReplies(provider, [
-      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } } },
+      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, requestId, operationId, summary: "保存并批准一份草稿", title, body } } },
       { type: "text", text: '{"allow":true}' },
-      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, requestId, operationId, title, body } } },
+      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, requestId, operationId, summary: "保存并批准一份草稿", title, body } } },
       { type: "text", text: "done" },
     ]);
 

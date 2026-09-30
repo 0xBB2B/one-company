@@ -35,7 +35,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
       confirm: async () => { throw new Error("UI.confirm forbidden"); }, notify: (message) => notifications.push(message) } });
     const savedOperationId = uuidv7(), requestId = uuidv7();
     scriptReplies(provider, [
-      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, operationId: savedOperationId, requestId, title: "登录", body: "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n登录需求如下。\n### 手机号 {#A}\n增加手机号登录。\n### 微信 {#B}\n微信是否实施未决。\n" +
+      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, operationId: savedOperationId, requestId, summary: "手机号登录，保留邮箱登录", title: "登录", body: "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n登录需求如下。\n### 手机号 {#A}\n增加手机号登录。\n### 微信 {#B}\n微信是否实施未决。\n" +
         "## 功能 {#features}\n用手机号登录。\n## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n手机号能登录。\n" } } },
       { type: "text", text: '{"allow":true}' }, { type: "text", text: "done" },
     ]);

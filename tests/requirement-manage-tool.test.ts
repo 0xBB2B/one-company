@@ -5,7 +5,7 @@ import { REQUIREMENT_MANAGE_PARAMETERS, createRequirementManageTool } from "../r
 import { uuidv7 } from "../runtime/database.ts";
 
 describe("requirement_manage严格公开参数", () => {
-  const base = { action: "create", repoId: "a".repeat(64), requestId: uuidv7(), operationId: uuidv7(), title: "标题", body: "正文" };
+  const base = { action: "create", repoId: "a".repeat(64), requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "标题", body: "正文" };
   test("actor/role/cwd/receipt/hash/capability与外部用户转述均不成为输入字段", () => {
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: base })).toBe(true);
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, base)).toBe(false);
@@ -26,7 +26,7 @@ describe("requirement_manage严格公开参数", () => {
     const { body: _body, ...withoutBody } = base;
     const error = await tool.execute("test", { request: { ...withoutBody, requirementId: uuidv7(), sectionId: "x" } } as never, undefined, undefined, {} as never).catch((caught: unknown) => caught);
     expect(error).toMatchObject({ code: "invalid_shape" });
-    expect((error as Error).message).toContain("多余字段：requirementId、sectionId；缺少字段：body；本动作允许字段：action、repoId、requestId、operationId、title、body");
+    expect((error as Error).message).toContain("多余字段：requirementId、sectionId；缺少字段：body；本动作允许字段：action、repoId、requestId、operationId、summary、title、body");
     expect((error as Error).message).not.toContain("标题");
     const unknown = await tool.execute("test", { request: { action: "approve", repoId: base.repoId } } as never, undefined, undefined, {} as never).catch((caught: unknown) => caught);
     expect((unknown as Error).message).toContain("可用 action：create、updateDraft、confirmUpdate、read、diff、metadata");

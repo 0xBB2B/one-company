@@ -60,7 +60,7 @@ async function world() {
 
 test("真实SDK命令/UI选择和认证daemon：新会话只绑定已有身份，不恢复旧输入或执行", async () => {
   const w = await world(), first = await w.session();
-  const created = await first.call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "A需求", body: "# A {#A}\nA目标。\n" }, "rpc", true);
+  const created = await first.call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "A需求", body: "# A {#A}\nA目标。\n" }, "rpc", true);
   expect(created.isError).toBe(false);
   const requirementId = String(created.details!.requirementId), version = Number(created.details!.version);
   await first.close();
@@ -75,7 +75,7 @@ test("真实SDK命令/UI选择和认证daemon：新会话只绑定已有身份�
   expect(next.notifications.at(-1)).toContain("未恢复旧输入");
   expect((await next.call({ action: "metadata", requirementId }, "extension")).isError).toBe(false);
   const before = w.state.read(requirementId);
-  expect((await next.call({ action: "updateDraft", requirementId, version, operationId: uuidv7(), title: "改动", body: "未获真实输入许可" }, "extension")).isError).toBe(true);
+  expect((await next.call({ action: "updateDraft", requirementId, version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "改动", body: "未获真实输入许可" }, "extension")).isError).toBe(true);
   expect(w.state.read(requirementId)).toEqual(before);
   expect(JSON.stringify(next.session.messages)).not.toContain("首次输入标记");
   expect(withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => db.list("runs"))).toEqual([]);
