@@ -1,3 +1,4 @@
+import { answeringUi } from "./helpers/window-host.ts";
 import { afterEach, expect, test } from "vitest";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,7 +26,7 @@ async function world(status: Record<string, unknown> = { status: "closed", reaso
   const clients = { forRepo: () => ({ call: async (method: string, params: unknown) => { calls.push([method, params]); return { result: { close: status } }; } }) } as unknown as WorkspaceClientsHandle;
   registerGitDelivery(pi, () => ({ dataRoot: root, clients: () => clients }));
   const answers: string[] = [];
-  const ctx = { hasUI: true, ui: { select: async () => answers.shift(), confirm: async () => true, notify: () => {} } };
+  const ctx = { hasUI: true, ui: { ...answeringUi((window) => window.choices.includes("开启") ? answers.shift()! : true), notify: () => {} } };
   const run = async (params: unknown) => JSON.parse((await tools.get(GIT_DELIVER_TOOL)!.execute("t", params, undefined, undefined, ctx)).content[0]!.text) as Record<string, unknown>;
   return { active: () => active, handlers, commands, answers, ctx, run, calls };
 }

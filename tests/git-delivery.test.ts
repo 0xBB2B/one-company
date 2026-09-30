@@ -62,8 +62,8 @@ async function world(host: "github" | "gitlab" = "github") {
     worktree, branch: "refs/heads/req/login", codeHead: git(worktree, "rev-parse", "HEAD") };
   const prompts: string[] = [];
   const ui = (confirm = true, choice = REVIEW_CHOICE): DeliveryUi => ({
-    confirm: async (_title, message) => { prompts.push(message); return confirm; },
-    select: async (title) => { prompts.push(title); return choice; },
+    confirm: async (window) => { prompts.push(window.lines.map((line) => line.text).join("\n")); return confirm; },
+    choose: async (window) => { prompts.push(window.title); return choice; },
   });
   const calls = async () => (await readFile(join(state, "calls.log"), "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]);
   const remoteBranch = () => { try { return git(remote, "rev-parse", "refs/heads/req/login"); } catch { return null; } };

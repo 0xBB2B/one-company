@@ -9,6 +9,7 @@ import type { DeliveryFacts } from "../runtime/git-delivery.ts";
 import { AdvisedError, toolFailure } from "../runtime/tool-failure.ts";
 import { shapeIssue } from "../runtime/tool-request.ts";
 import { windowContext } from "./lifecycle.ts";
+import { chooseWindow, confirmWindow } from "../runtime/question-window.ts";
 
 export const GIT_DELIVER_TOOL = "one_company_git_deliver";
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
@@ -52,7 +53,7 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
       if (!close.delivery) fail(`需求没有以完成（completed）关闭并归档，当前状态 ${close.status}，关闭原因 ${close.reason ?? "无"}`,
         "只有用户验收通过并以完成关闭的需求才能交付；需求已取消或拒绝时不要交付");
       const facts: DeliveryFacts = { requirementId, closed: close.status === "closed", reason: close.reason ?? "", archive: close.archive ?? null, ...close.delivery };
-      try { return result(await deliverRequirement(facts, { confirm: (title, message) => ctx.ui.confirm(title, message), select: (title, options) => ctx.ui.select(title, options) })); }
+      try { return result(await deliverRequirement(facts, { confirm: (window) => confirmWindow(ctx, window), choose: (window) => chooseWindow(ctx, window) })); }
       catch (error) { throw toolFailure(GIT_DELIVER_TOOL, error); }
     },
   });
@@ -60,7 +61,8 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
     description: "开启或关闭可选的 Git 交付工具",
     handler: async (_args, ctx) => {
       const root = deps().dataRoot;
-      const choice = await ctx.ui.select(`Git 交付工具当前${gitDeliveryEnabled(root) ? "已开启" : "已关闭"}`, [ENABLE, DISABLE]);
+      const choice = await chooseWindow(ctx, { title: `Git 交付工具当前${gitDeliveryEnabled(root) ? "已开启" : "已关闭"}`, lines: [],
+        choices: [{ label: ENABLE }, { label: DISABLE }] });
       if (choice === undefined) return;
       setGitDeliveryEnabled(root, choice === ENABLE);
       showTool(pi, choice === ENABLE);

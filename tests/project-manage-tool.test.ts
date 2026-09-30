@@ -1,3 +1,4 @@
+import { answeringUi } from "./helpers/window-host.ts";
 import { uuidv7 } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
@@ -60,14 +61,14 @@ afterEach(async () => {
 
 function context(
   sessionId: string,
-  confirm: (title: string, message: string, options?: { signal?: AbortSignal }) => Promise<boolean>,
+  confirm: (title: string, message: string) => Promise<boolean>,
   hasUI = true,
 ): ExtensionContext {
   return {
     cwd: "/not-used",
     mode: hasUI ? "rpc" : "print",
     hasUI,
-    ui: { confirm } as never,
+    ui: answeringUi((window) => confirm(window.title, window.text)),
     sessionManager: { getSessionId: () => sessionId } as never,
   } as ExtensionContext;
 }

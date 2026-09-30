@@ -1,3 +1,4 @@
+import { chooseWindow } from "../runtime/question-window.ts";
 import { isAbsolute, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readGit } from "../runtime/git-read.ts";
@@ -71,11 +72,11 @@ export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<v
     if (!picked) return;
     const newName = (await ctx.ui.input(`复制 ${picked.name} 为新定义：输入名称`, picked.definition?.role === "pm" ? "pm" : `${picked.name}-copy`))?.trim();
     if (!newName) continue;
-    const layers = [`用户层 ${dirs.userDir}`, ...(projectTrusted ? [`项目层 ${dirs.projectDir}`] : [])];
-    const layer = await ctx.ui.select("复制到", layers);
+    const layer = await chooseWindow(ctx, { title: "复制到", lines: [], choices: [{ label: "用户层", description: dirs.userDir },
+      ...(projectTrusted ? [{ label: "项目层", description: dirs.projectDir }] : [])] });
     if (!layer) continue;
     try {
-      const target = await copyAgentDefinition({ entry: picked, newName, targetDir: layer === layers[0] ? dirs.userDir : dirs.projectDir,
+      const target = await copyAgentDefinition({ entry: picked, newName, targetDir: layer === "用户层" ? dirs.userDir : dirs.projectDir,
         layerDirs: [dirs.defaultDir, dirs.userDir, dirs.projectDir] });
       ctx.ui.notify(`已复制到 ${target}，请直接编辑该文件`);
     } catch (error) {

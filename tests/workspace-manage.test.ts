@@ -7,6 +7,7 @@ import { RequirementService, requirementIntentHash } from "../runtime/requiremen
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { verifyRequirementWorkspace } from "../runtime/requirement-workspace.ts";
 import { RequirementCloseService } from "../runtime/workflow-close.ts";
+import type { ProgramWindow } from "../runtime/question-window.ts";
 import { MANAGED_WORKSPACES, WorkspaceManageService, workspaceLocation } from "../runtime/workspace-manage.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
@@ -41,9 +42,9 @@ async function world(options: { draft?: boolean } = {}) {
   }
   const location = workspaceLocation(repo.root, requirementId);
   cleanups.push(() => rm(join(location.path, "..", ".."), { recursive: true, force: true }));
-  const prompts: string[] = [];
+  const prompts: ProgramWindow[] = [];
   let answer = true;
-  const workspace = await WorkspaceManageService.open({ ...paths, confirm: async (title, message) => { prompts.push(`${title}\n${message}`); return answer; } });
+  const workspace = await WorkspaceManageService.open({ ...paths, confirm: async (window) => { prompts.push(window); return answer; } });
   const setAnswer = (value: boolean) => { answer = value; };
   async function close() {
     const receipt = uuidv7();
@@ -88,7 +89,11 @@ test("M7-AC10：创建按 UUID 分支与固定目录建立 worktree 并绑定需
   expect(ready).toMatchObject({ status: "ready", branch: `refs/heads/req/${w.requirementId}`, baseCommit: head, path: w.location.path });
   expect(w.location.path).toBe(join(dirname(w.repo.root), ".one-company-worktrees", basename(w.repo.root), w.requirementId));
   expect(w.prompts).toHaveLength(1);
-  expect(w.prompts[0]).toContain(head);
+  expect(w.prompts[0]!.title).toBe("确认创建需求工作区");
+  expect(w.prompts[0]!.lines[0]).toEqual({ text: "需求：角色跳跃" });
+  expect(w.prompts[0]!.lines.slice(1).every((line) => line.tone === "muted")).toBe(true);
+  expect(w.prompts[0]!.lines.map((line) => line.text)).toEqual(expect.arrayContaining([`编号：${w.requirementId}`, `基线提交：${head}`]));
+  expect(ready.title).toBe("角色跳跃");
   expect((await runGit(["symbolic-ref", "HEAD"], ready.path)).trim()).toBe(ready.branch);
   expect(await exists(join(ready.path, "未提交.txt"))).toBe(false);
   const binding = w.state.read(w.requirementId).data.workspace!;
@@ -104,7 +109,7 @@ test("M7-AC11：创建在 worktree 已建、绑定前中断时，同一操作续
   const operationId = uuidv7();
   const head = (await runGit(["rev-parse", "HEAD"], w.repo.root)).trim();
   withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.create(MANAGED_WORKSPACES, w.requirementId, { format: "managed-workspace/v1",
-    requirementId: w.requirementId, operationId, baseCommit: head, branch: w.location.branch, path: w.location.path, status: "preparing", recycleOperationId: null }));
+    requirementId: w.requirementId, title: "角色跳跃", operationId, baseCommit: head, branch: w.location.branch, path: w.location.path, status: "preparing", recycleOperationId: null }));
   await mkdir(join(w.location.path, ".."), { recursive: true });
   await runGit(["worktree", "add", "-b", `req/${w.requirementId}`, w.location.path, head], w.repo.root);
   expect(await w.workspace.prepare({ requirementId: w.requirementId, operationId })).toMatchObject({ status: "ready" });
@@ -154,6 +159,8 @@ test("M7-AC11：活动需求不能回收；关闭后有未交付内容默认保�
   w.setAnswer(true);
   const operationId = uuidv7();
   expect(await w.workspace.recycle({ requirementId: w.requirementId, operationId })).toMatchObject({ status: "recycled", recycleOperationId: operationId });
+  expect(w.prompts.at(-1)!.title).toBe("确认回收需求工作区");
+  expect(w.prompts.at(-1)!.lines[0]).toEqual({ text: "需求：角色跳跃" });
   expect(await exists(ready.path)).toBe(false);
   await expect(runGit(["rev-parse", "--verify", `req/${w.requirementId}`], w.repo.root)).rejects.toThrow();
   expect(await w.workspace.recycle({ requirementId: w.requirementId, operationId: uuidv7() })).toMatchObject({ status: "recycled", recycleOperationId: operationId });

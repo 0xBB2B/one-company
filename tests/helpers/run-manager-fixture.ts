@@ -35,7 +35,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   db((d) => {
     const row = d.read<{ lease: { expiresAt: number } }>("pm_ownership", fixture.requirementId)!;
     d.update("pm_ownership", fixture.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
-    d.create("managed_workspaces", fixture.requirementId, { format: "managed-workspace/v1", requirementId: fixture.requirementId, operationId: uuidv7(),
+    d.create("managed_workspaces", fixture.requirementId, { format: "managed-workspace/v1", requirementId: fixture.requirementId, title: "角色跳跃", operationId: uuidv7(),
       baseCommit: record.workspace!.baseCommit, branch: record.workspace!.branch, path: record.workspace!.path, status: "ready", recycleOperationId: null });
   });
   const captured = fixture.captureCurrent();

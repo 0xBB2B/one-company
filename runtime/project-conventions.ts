@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ProgramWindow, WindowLine } from "./question-window.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -80,19 +81,20 @@ export type ConventionsUpdateResult = { status: "unchanged" | "cancelled"; hash:
 
 // 批准只能来自宿主界面的确认，模型参数里没有任何字段能代替它
 export async function updateConventions(input: { repositoryRoot: string; dataRoot: string; repoId: string; content: string;
-  confirm: (title: string, message: string) => Promise<boolean>; now?: () => number }): Promise<ConventionsUpdateResult> {
+  confirm: (window: ProgramWindow) => Promise<boolean>; now?: () => number }): Promise<ConventionsUpdateResult> {
   if (Buffer.byteLength(input.content, "utf8") > MAX_CONVENTIONS_BYTES) throw new ProjectConventionsError("too_large");
   const database = repositoryDatabase(input.dataRoot, input.repoId);
   const before = withDatabase(database, (db) => approvedConventionsIn(db, input.repoId));
   const next = sha256(input.content);
   if (before?.hash === next) return { status: "unchanged", hash: next };
-  const message = [
-    before ? `与当前批准版本（指纹 ${before.hash.slice(0, 12)}）相比的改动：` : "这是第一次批准项目规范，全文如下：",
-    ...lineDiff(before?.content ?? "", input.content),
-    "",
-    `确认后写入仓库根目录 ${CONVENTIONS_FILE}，此后派出的 PM、worker、reviewer 都按这一版规范工作。`,
-  ].join("\n");
-  if (!(await input.confirm(`确认更新项目规范 ${CONVENTIONS_FILE}`, message))) return { status: "cancelled", hash: next };
+  const lines: WindowLine[] = [
+    { text: before ? `与当前批准版本（指纹 ${before.hash.slice(0, 12)}）相比的改动：` : "这是第一次批准项目规范，全文如下：", tone: "muted" },
+    ...lineDiff(before?.content ?? "", input.content).map((line): WindowLine =>
+      ({ text: line, tone: line.startsWith("+ ") ? "added" : line.startsWith("- ") ? "removed" : "muted" })),
+    { text: "" },
+    { text: `确认后写入仓库根目录 ${CONVENTIONS_FILE}，此后派出的 PM、worker、reviewer 都按这一版规范工作。`, tone: "muted" },
+  ];
+  if (!(await input.confirm({ title: `确认更新项目规范 ${CONVENTIONS_FILE}`, lines }))) return { status: "cancelled", hash: next };
   await writeFileAtomic(join(input.repositoryRoot, CONVENTIONS_FILE), input.content);
   withDatabase(database, (db) => db.transaction(() => {
     const row = db.read<unknown>(PROJECT_CONVENTIONS, RECORD_KEY);

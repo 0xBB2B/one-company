@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { answeringUi } from "../../helpers/window-host.ts";
 import { chmod, copyFile, mkdir, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -142,11 +143,13 @@ export async function startInstalledHost(options: { installed: string; repo: str
   const defaultUI = session.extensionRunner.getUIContext();
   const ui: ExtensionUIContext = {
     ...defaultUI,
-    confirm: async (title, message) => { dialogs.push({ kind: "confirm", title, message, answer: true, at: Date.now() }); return true; },
-    select: async (title, choices) => { dialogs.push({ kind: "select", title, options: choices, answer: undefined, at: Date.now() }); return undefined; },
     input: async (title) => { dialogs.push({ kind: "input", title, answer: undefined, at: Date.now() }); return undefined; },
     editor: async () => undefined,
-    custom: async () => undefined as never,
+    custom: answeringUi((window) => {
+      const confirm = window.choices.includes("确认");
+      dialogs.push({ kind: confirm ? "confirm" : "select", title: window.title, message: window.text, options: window.choices, answer: confirm, at: Date.now() });
+      return confirm;
+    }).custom,
     notify: (message, type) => { notifications.push({ message, type, at: Date.now() }); },
     onTerminalInput: (handler) => { inputHandlers.add(handler); return () => { inputHandlers.delete(handler); }; },
     getEditorText: () => "",

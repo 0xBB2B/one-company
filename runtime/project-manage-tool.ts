@@ -1,4 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
+import { confirmWindow, mutedLines } from "./question-window.ts";
+import type { ProgramWindow } from "./question-window.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, join, posix, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -490,7 +492,7 @@ async function indexedWorkspace(path: string): Promise<{ root: string; branch: s
   return { root, branch: (await readGit(root, ["symbolic-ref", "--quiet", "HEAD"])).stdout.trim() };
 }
 
-function scanConfirmationMessage(repositoryRoot: string, dataRoot: string, repoId: string, preview: boolean, branch: string): string {
+function scanConfirmationLines(repositoryRoot: string, dataRoot: string, repoId: string, preview: boolean, branch: string): string[] {
   return [
     `仓库根：${repositoryRoot}`,
     `当前分支：${branch}`,
@@ -501,7 +503,7 @@ function scanConfirmationMessage(repositoryRoot: string, dataRoot: string, repoI
     preview
       ? "本次仅允许一次路径枚举预览，不能用于批准后续 init/refresh。"
       : "初始化后由仓库守护进程持有索引，不监听文件；每次知识查询前自动对账当前文件，窗口关闭后 PM 与子代理仍可查询。",
-  ].join("\n");
+  ];
 }
 
 function safeIdentifier(value: unknown): string | undefined {
@@ -880,7 +882,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
         if (params.action === "workspace-prepare" || params.action === "workspace-recycle") {
           if (!ctx.hasUI) throw new ProjectManageToolError("workspace_confirmation_required", "创建或回收工作区需要当前 session 的真实宿主 UI 确认");
           const workspace = await WorkspaceManageService.open({ repositoryRoot: root.path, dataRoot: options.dataRoot, repoId: params.repoId,
-            confirm: (title, message) => ctx.ui.confirm(title, message, { signal: operation.signal }) });
+            confirm: (window) => confirmWindow(ctx, window, operation.signal) });
           try {
             const result = params.action === "workspace-prepare"
               ? await workspace.prepare({ requirementId: params.requirementId, operationId: params.operationId })
@@ -903,7 +905,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
           if (!ctx.hasUI) throw new ProjectManageToolError("conventions_confirmation_required", "更新项目规范需要当前 session 的真实宿主 UI 确认");
           try {
             const result = await updateConventions({ repositoryRoot: root.path, dataRoot: options.dataRoot, repoId: params.repoId, content: params.content,
-              confirm: (title, message) => ctx.ui.confirm(title, message, { signal: operation.signal }) });
+              confirm: (window) => confirmWindow(ctx, window, operation.signal) });
             return textResult({ action: params.action, ...result });
           } catch (error) {
             if (error instanceof ProjectConventionsError) return textResult({ action: params.action, status: "blocked", reason: error.advice.why, next: error.advice.next });
@@ -915,7 +917,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
         if (params.action === "recovery-check" || params.action === "backup" || params.action === "restore") {
           if (!ctx.hasUI) throw new ProjectManageToolError("workspace_confirmation_required", "恢复对账、备份与恢复需要当前 session 的真实宿主 UI 确认");
           const maintenance = { repositoryRoot: root.path, dataRoot: options.dataRoot, repoId: params.repoId,
-            confirm: (title: string, message: string) => ctx.ui.confirm(title, message, { signal: operation.signal }) };
+            confirm: (window: ProgramWindow) => confirmWindow(ctx, window, operation.signal) };
           try {
             if (params.action === "recovery-check") {
               const receipt = await recoveryCheck(maintenance, params);
@@ -951,12 +953,11 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
             if (!ctx.hasUI) {
               throw new ProjectManageToolError("scan_confirmation_required", "项目索引扫描需要当前 session 的真实宿主 UI 确认");
             }
-            const approved = await ctx.ui.confirm(
-              serviceAction === "preview" ? "确认预览项目索引范围" : "确认项目索引范围",
-              await indexedWorkspace(root.path).then((indexed) =>
-                scanConfirmationMessage(indexed.root, options.dataRoot, params.repoId, serviceAction === "preview", indexed.branch)),
-              { signal: operation.signal },
-            );
+            const approved = await confirmWindow(ctx, {
+              title: serviceAction === "preview" ? "确认预览项目索引范围" : "确认项目索引范围",
+              lines: mutedLines(await indexedWorkspace(root.path).then((indexed) =>
+                scanConfirmationLines(indexed.root, options.dataRoot, params.repoId, serviceAction === "preview", indexed.branch))),
+            }, operation.signal);
             if (!approved) throw new ProjectManageToolError("scan_declined", "用户取消或拒绝项目索引扫描授权");
             const afterPrompt = await options.resolveHost(ctx).catch(() => {
               throw new ProjectManageToolError("host_unavailable", "确认后无法取得当前 lifecycle 窗口");

@@ -9,7 +9,10 @@ import type { Static } from "typebox";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import { readGit } from "./git-read.ts";
 import { checked, commit, id, object } from "./requirement-contracts.ts";
+import { RequirementService } from "./requirement-service.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
+import { mutedLines } from "./question-window.ts";
+import type { ProgramWindow } from "./question-window.ts";
 import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { RequirementCloseService } from "./workflow-close.ts";
 
@@ -18,7 +21,7 @@ export const MANAGED_WORKSPACES = "managed_workspaces";
 export const WORKTREE_CONTAINER = ".one-company-worktrees";
 
 const ManagedWorkspace = object({
-  format: Type.Literal("managed-workspace/v1"), requirementId: id, operationId: id, baseCommit: commit,
+  format: Type.Literal("managed-workspace/v1"), requirementId: id, title: Type.String({ minLength: 1, maxLength: 1024 }), operationId: id, baseCommit: commit,
   branch: Type.String({ pattern: "^refs/heads/req/" }), path: Type.String({ minLength: 1, maxLength: 4096 }),
   status: Type.Union([Type.Literal("preparing"), Type.Literal("ready"), Type.Literal("recycled")]),
   recycleOperationId: Type.Union([id, Type.Null()]),
@@ -54,7 +57,7 @@ export interface WorkspaceManageOptions {
   dataRoot: string;
   repoId: string;
   /** 真实用户在宿主界面的确认；返回 false 即拒绝。 */
-  confirm: (title: string, message: string) => Promise<boolean>;
+  confirm: (window: ProgramWindow) => Promise<boolean>;
 }
 
 // 固定参数写 Git：关闭 hook 与 fsmonitor，避免创建/回收现场时执行仓库内脚本
@@ -113,6 +116,14 @@ export class WorkspaceManageService {
     return this.state.read(checked(id, requirementId)).version;
   }
 
+  /** 需求关闭后正文拒读，所以标题在创建工作区时从已批准正文读出并随工作区记录保存，回收时直接用。 */
+  private async approvedTitle(requirementId: string): Promise<string> {
+    const service = await RequirementService.open({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.options.repoId,
+      authorize: (request) => request.repoId === this.options.repoId && ["metadata", "readApproved"].includes(request.action)
+        && (request.requirementId === undefined || request.requirementId === requirementId) });
+    return (await service.read({ requirementId, source: "approved" })).title;
+  }
+
   async prepare(input: { requirementId: string; operationId: string }): Promise<ManagedWorkspace> {
     checked(id, input.requirementId); checked(id, input.operationId);
     const record = this.state.read(input.requirementId);
@@ -126,10 +137,12 @@ export class WorkspaceManageService {
     const baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "HEAD"]);
     if (!baseCommit) throw new WorkspaceManageError("git_failed", ["rev-parse HEAD"]);
     if (!existing) {
-      const approved = await this.options.confirm("确认创建需求工作区",
-        `需求：${input.requirementId}\n分支：${location.branch}\n目录：${location.path}\n基线提交：${baseCommit}\n主仓库未提交的改动不会带入新工作区。`);
+      const title = await this.approvedTitle(input.requirementId);
+      const approved = await this.options.confirm({ title: "确认创建需求工作区", lines: [{ text: `需求：${title}` }, ...mutedLines([
+        `编号：${input.requirementId}`, `分支：${location.branch.slice("refs/heads/".length)}`, `目录：${location.path}`, `基线提交：${baseCommit}`,
+        "主仓库未提交的改动不会带入新工作区。"])] });
       if (!approved) throw new WorkspaceManageError("declined");
-      this.save({ format: "managed-workspace/v1", requirementId: input.requirementId, operationId: input.operationId, baseCommit,
+      this.save({ format: "managed-workspace/v1", requirementId: input.requirementId, title, operationId: input.operationId, baseCommit,
         branch: location.branch, path: location.path, status: "preparing", recycleOperationId: null });
     }
     const plan = this.read(input.requirementId)!;
@@ -167,8 +180,9 @@ export class WorkspaceManageService {
 
     const blockers = await this.recycleBlockers(plan, record.data.workspace);
     if (blockers.length > 0) throw new WorkspaceManageError("recycle_blocked", blockers);
-    const approved = await this.options.confirm("确认回收需求工作区",
-      `需求：${input.requirementId}\n将移除目录：${plan.path}\n将删除本地分支：${plan.branch}\n不删除主仓库、其他分支、远端分支或本机需求记录。`);
+    const approved = await this.options.confirm({ title: "确认回收需求工作区", lines: [{ text: `需求：${plan.title}` }, ...mutedLines([
+      `编号：${input.requirementId}`, `将移除目录：${plan.path}`, `将删除本地分支：${plan.branch.slice("refs/heads/".length)}`,
+      "不删除主仓库、其他分支、远端分支或本机需求记录。"])] });
     if (!approved) throw new WorkspaceManageError("declined");
     const recheck = await this.recycleBlockers(plan, record.data.workspace);
     if (recheck.length > 0) throw new WorkspaceManageError("recycle_blocked", recheck);

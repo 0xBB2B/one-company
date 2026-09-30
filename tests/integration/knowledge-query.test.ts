@@ -1,3 +1,4 @@
+import { answeringUi } from "../helpers/window-host.ts";
 import { expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, stat, utimes, writeFile } from "node:fs/promises";
@@ -95,7 +96,7 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
     const { session } = await createAgentSession({ cwd: f.repo.root, agentDir: f.home.agentDir, modelRuntime: runtime,
       model: runtime.getModels("query-sdk")[0], resourceLoader: loader, sessionManager: sm,
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }), tools: ["one_company_project_manage", queryName] });
-    await session.bindExtensions({ mode: "rpc", uiContext: { confirm: async () => { approvals++; return allow; }, notify: () => {}, setStatus: () => {}, setWidget: () => {} } as unknown as ExtensionUIContext,
+    await session.bindExtensions({ mode: "rpc", uiContext: { ...answeringUi(() => { approvals++; return allow; }), notify: () => {}, setStatus: () => {}, setWidget: () => {} } as unknown as ExtensionUIContext,
       onError: (event) => { extensionErrors.push(event.error); } });
     shutdownHost = async () => { live = false; await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); };
     let id = 0;

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mutedLines } from "./question-window.ts";
+import type { ProgramWindow, WindowChoice } from "./question-window.ts";
 import { commandOutputTail } from "./tool-failure.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -33,8 +35,8 @@ export interface DeliveryFacts {
   codeHead: string;
 }
 export interface DeliveryUi {
-  confirm(title: string, message: string): Promise<boolean>;
-  select(title: string, options: string[]): Promise<string | undefined>;
+  confirm(window: ProgramWindow): Promise<boolean>;
+  choose(window: ProgramWindow & { choices: WindowChoice[] }): Promise<string | undefined>;
 }
 export type DeliveryResult =
   | { status: "rejected"; reason: string; next: string }
@@ -61,7 +63,7 @@ const REJECT_ADVICE = {
 type RejectCode = keyof typeof REJECT_ADVICE;
 
 export const REVIEW_CHOICE = "自己 review";
-export const AUTO_MERGE_CHOICE = "自动合并（等检查通过，优先 squash）";
+export const AUTO_MERGE_CHOICE = "自动合并";
 
 type Provider = "gh" | "glab";
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
@@ -157,9 +159,10 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   if ((await git(["diff", "--cached", "--name-only", "-z"])).stdout.split("\0").filter(Boolean).some((path) => path !== archive.path)) return reject("unexpected_staged");
   const pending = (await git(["diff", "--cached", "--quiet"]).then(() => false, () => true));
   const head = (await git(["rev-parse", "HEAD"])).stdout.trim();
-  const approved = await ui.confirm("交付到 Git", [`需求 ${facts.requirementId}`, `分支 ${branch} → ${target.name}（${provider}）`,
-    pending ? `将提交归档 ${archive.path}` : "归档已在分支中", rebasedAfterAcceptance ? "目标分支在验收后前进，已自动 rebase，这部分未重新验证" : "目标分支未变化",
-    "确认后推送并建立或复用 PR。"].join("\n"));
+  const title = archive.path.slice(archive.path.lastIndexOf("/") + 1).replace(/^[0-9a-f-]{36}\./, "").replace(/\.md$/, "");
+  const approved = await ui.confirm({ title: "交付到 Git", lines: [{ text: `需求：${title}` }, ...mutedLines([`编号：${facts.requirementId}`,
+    `分支：${branch} → ${target.name}（${provider}）`, pending ? `将提交归档 ${archive.path}` : "归档已在分支中",
+    rebasedAfterAcceptance ? "目标分支在验收后前进，已自动 rebase，这部分未重新验证" : "目标分支未变化", "确认后推送并建立或复用 PR。"])] });
   if (!approved) return { status: "cancelled", head };
   if (pending) await git(["commit", "--quiet", "-m", `docs(prod): 归档需求 ${facts.requirementId}`]);
   const delivered = (await git(["rev-parse", "HEAD"])).stdout.trim();
@@ -171,7 +174,6 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   let request = await existingRequest(provider, facts.worktree, branch);
   const reused = request !== null;
   if (!request) {
-    const title = archive.path.slice(archive.path.lastIndexOf("/") + 1).replace(/^[0-9a-f-]{36}\./, "").replace(/\.md$/, "");
     const body = [`需求 ${facts.requirementId}`, `交付提交 ${delivered}`, `最终检查代码 ${facts.codeHead}`,
       ...(rebasedAfterAcceptance ? ["验收后已自动 rebase，这部分未重新验证。"] : [])].join("\n");
     let createError = "";
@@ -179,7 +181,9 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
     request = await existingRequest(provider, facts.worktree, branch);
     if (!request) return reject("pull_request_unknown", createError || undefined);
   }
-  const choice = await ui.select(`PR 已就绪：${request.url}`, [REVIEW_CHOICE, AUTO_MERGE_CHOICE]);
+  const choice = await ui.choose({ title: "PR 已就绪，怎么合并？", lines: [{ text: `需求：${title}` }, { text: `PR：${request.url}`, tone: "muted" }],
+    choices: [{ label: REVIEW_CHOICE, description: "PR 留着等你看，合并由你在网页上操作" },
+      { label: AUTO_MERGE_CHOICE, description: "等仓库要求的检查通过后自动合并，优先 squash" }] });
   const merge = choice === AUTO_MERGE_CHOICE ? "auto" as const : "review" as const;
   if (merge === "auto") await enableAutoMerge(provider, facts.worktree, request.number, delivered);
   return { status: "delivered", head: delivered, provider, url: request.url, reused, rebasedAfterAcceptance, merge };

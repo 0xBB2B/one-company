@@ -11,6 +11,7 @@ import { syncBuiltinESMExports } from "node:module";
 import type { AgentSession, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
 import type { IndexSnapshot } from "../../runtime/index-store.ts";
+import { answeringUi } from "./window-host.ts";
 
 const exec = promisify(execFile);
 const self = fileURLToPath(import.meta.url);
@@ -223,6 +224,7 @@ export class InstalledProjectFixture {
     assert.ok(this.installed.startsWith(`${consumer}/`));
     // 子进程测试装置本身从 consumer 启动；仅动态导入已安装产品，绝不导入源码版产品。
     await copyFile(self, join(consumer, "host.ts"));
+    await copyFile(new URL("./window-host.ts", import.meta.url), join(consumer, "window-host.ts"));
     await writeFile(join(consumer, "probe.ts"), `${await readFile(new URL("./project-index-daemon-child.ts", import.meta.url), "utf8")}\nglobalThis.fetch = async () => { throw new Error("安装夹具禁止外部网络请求"); };\n`);
   }
 
@@ -460,14 +462,14 @@ async function runHost(): Promise<void> {
       tools: ["one_company_project_manage", "one_company_knowledge_query", "read", "write", "edit", "bash"],
     }));
     const ui: ExtensionUIContext = { ...session.extensionRunner.getUIContext(),
-      confirm: async (title, message) => {
+      custom: answeringUi(({ title, text }) => {
         const approved = approvals.shift();
         assert.notEqual(approved, undefined, `未安排可信前端确认：${title}`);
-        confirmations.push({ title, message, approved: approved! }); return approved!;
-      },
+        confirmations.push({ title, message: text, approved: approved! }); return approved!;
+      }).custom,
       notify: (message, kind) => { notifications.push({ kind, message }); },
       setStatus: (key, message) => { notifications.push({ key, message }); },
-      select: async () => undefined, input: async () => undefined, editor: async () => undefined, custom: async () => undefined as never,
+      select: async () => undefined, input: async () => undefined, editor: async () => undefined,
     };
     bound = true; await session.bindExtensions({ uiContext: ui, mode: "rpc" });
     const get = (): HostReply => {

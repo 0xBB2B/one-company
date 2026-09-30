@@ -25,7 +25,7 @@ async function world() {
   await service.create({ requestId: uuidv7(), operationId, title: "t", body: "# 目标 {#goals}\n正文\n" });
   const prompts: string[] = [];
   let answer = true;
-  const maintenance = { ...options, confirm: async (title: string) => { prompts.push(title); return answer; } };
+  const maintenance = { ...options, confirm: async ({ title }: { title: string }) => { prompts.push(title); return answer; } };
   return { ...options, maintenance, prompts, setAnswer: (value: boolean) => { answer = value; } };
 }
 
