@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -472,8 +473,33 @@ describe("主窗口共享控制器的真实服务路径", () => {
         expect(error).toMatchObject({ code });
         expect((error as Error).message).toContain(code === "stale_version" ? "原因：需求在读取后已被改动，提交用的版本号过期了：详细说明" : "原因：需求操作被拒绝，底层没有给出可说明的原因");
         expect((error as Error).message).not.toContain("fixture_plain_failure");
+        const log = join(w.dataRoot, "repos", w.repoId, "logs", "requirement-errors.log");
+        if (code === "stale_version") expect(existsSync(log)).toBe(false);
+        else {
+          const text = readFileSync(log, "utf8");
+          expect(JSON.parse(text.trim())).toMatchObject({ action: "updateDraft", name: "Error" });
+          expect(text).not.toContain("fixture_plain_failure");
+        }
       } finally { fail.mockRestore(); }
     }
+  });
+  test("没有原因说明的失败记进本机日志，只保留最近 200 条，数据库错误记下代码与错误号", async () => {
+    const w = await world(), created = await w.create();
+    const dir = join(w.dataRoot, "repos", w.repoId, "logs"), log = join(dir, "requirement-errors.log");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(log, Array.from({ length: 205 }, (_, i) => JSON.stringify({ old: i })).join("\n") + "\n");
+    const busy = Object.assign(new Error("database is locked: 需求正文"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+    const fail = vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementation(() => { throw busy; });
+    try {
+      w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+      await expect(w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
+        summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充。\n" })).rejects.toMatchObject({ code: "interaction_denied" });
+    } finally { fail.mockRestore(); }
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(200);
+    expect(JSON.parse(lines[0]!)).toEqual({ old: 6 });
+    expect(JSON.parse(lines.at(-1)!)).toEqual({ at: expect.any(String), action: "updateDraft", name: "Error", code: "ERR_SQLITE_ERROR", errcode: 5 });
+    expect(lines.join("\n")).not.toContain("需求正文");
   });
   test("受控重存finalize失败保留实际数据但取消重解释permit", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created), review = phoneReview(loaded);

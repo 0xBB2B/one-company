@@ -1,4 +1,5 @@
-import { basename, dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { resolveInternalModel } from "./internal-model.ts";
 import { randomBytes } from "node:crypto";
 import { adviceOf } from "./tool-failure.ts";
@@ -81,6 +82,23 @@ const digest = (value: unknown) => decisionDigest(JSON.parse(JSON.stringify(valu
 const same = (a: unknown, b: unknown) => digest(a) === digest(b);
 const SAFE_ACTIONS = new Set(["analyze", "plan", "implement", "authorize-document"]);
 function denied(code: string): never { throw new HostAuthorizationError(code); }
+
+const UNEXPLAINED_LOG_LIMIT = 200;
+/** 报给模型的只有"被拒绝、没有原因"；异常类型与代码记进本机日志供排查，不记消息正文，以免带出需求内容。 */
+function recordUnexplained(dataRoot: string, repoId: string, action: unknown, error: unknown): void {
+  if (!/^[0-9a-f]{64}$/.test(repoId)) return;
+  const { code, errcode } = (error ?? {}) as { code?: unknown; errcode?: unknown };
+  const line = JSON.stringify({ at: new Date().toISOString(), action: typeof action === "string" && /^[A-Za-z]{1,32}$/.test(action) ? action : undefined,
+    name: error instanceof Error ? error.name.slice(0, 64) : typeof error,
+    code: typeof code === "number" || typeof code === "string" && /^[\w.-]{1,64}$/.test(code) ? code : undefined,
+    errcode: typeof errcode === "number" ? errcode : undefined });
+  try {
+    const dir = join(dataRoot, "repos", repoId, "logs"), path = join(dir, "requirement-errors.log");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const previous = existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
+    writeFileSync(path, `${[...previous, line].slice(-UNEXPLAINED_LOG_LIMIT).join("\n")}\n`, { mode: 0o600 });
+  } catch { /* 日志写不进去不能盖住原来的失败 */ }
+}
 // 预留2KiB给SDK的toolResult来源/调用ID封装；正文与details重复传输也计入。
 const TRANSPORT_BYTES = 49_152;
 
@@ -672,7 +690,9 @@ export class MainRequirementInteraction {
       if (error instanceof HostAuthorizationError || adviceOf(error)) throw error;
       // 没有原因说明的下层错误只回传错误代码，不回传可能带正文的错误消息
       const code = (error as { code?: unknown } | null)?.code;
-      throw new HostAuthorizationError(typeof code === "string" && /^[a-z][a-z_]{0,63}$/.test(code) ? code : "interaction_denied");
+      if (typeof code === "string" && /^[a-z][a-z_]{0,63}$/.test(code)) throw new HostAuthorizationError(code);
+      recordUnexplained(this.#options.dataRoot, repoId, params.action, error);
+      throw new HostAuthorizationError("interaction_denied");
     } finally { signal?.removeEventListener("abort", abort); this.#busy = false; }
   }
   #invalidateOperation(key: string): void {
