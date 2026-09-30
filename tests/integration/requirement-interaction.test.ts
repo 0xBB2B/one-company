@@ -1,4 +1,5 @@
 import { answeringUi } from "../helpers/window-host.ts";
+import type { ShownWindow } from "../helpers/window-host.ts";
 import { expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -26,14 +27,15 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     const window = { windowId: uuidv7(), sessionId: sm.getSessionId(), clients: { forRepo: () => ({ state: () => ({ status: "connected" }), subscribe: () => () => {} }) }, workspace: { repos: [{ ...identity, path: repo }] } } as unknown as WindowContextValue;
     const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
     const provider = registerControlledProvider(runtime, { providerId: "interaction-sdk", modelId: "controlled" });
-    const notifications: string[] = [];
+    const shown: ShownWindow[] = [];
     const loader = new DefaultResourceLoader({ cwd: repo, agentDir, settingsManager: SettingsManager.inMemory(), noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       extensionFactories: [(pi) => requirementManageExtension(pi, { dataRoot, windowReady: async () => window, windowContext: () => window })] });
     await loader.reload(); expect(loader.getExtensions().errors).toEqual([]);
     ({ session } = await createAgentSession({ cwd: repo, agentDir, sessionManager: sm, modelRuntime: runtime, model: runtime.getModels(provider.providerId)[0],
       resourceLoader: loader, noTools: "builtin", settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }) }));
     await session.bindExtensions({ mode: "rpc", uiContext: { ...session.extensionRunner.getUIContext(),
-      confirm: async () => { throw new Error("UI.confirm forbidden"); }, ...answeringUi(() => true), notify: (message) => notifications.push(message) } });
+      confirm: async () => { throw new Error("UI.confirm forbidden"); },
+      ...answeringUi((window) => { shown.push(window); return window.choices.includes("确认"); }) } });
     const savedOperationId = uuidv7(), requestId = uuidv7();
     scriptReplies(provider, [
       { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, operationId: savedOperationId, requestId, summary: "手机号登录，保留邮箱登录", title: "登录", body: "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n登录需求如下。\n### 手机号 {#A}\n增加手机号登录。\n### 微信 {#B}\n微信是否实施未决。\n" +
@@ -54,7 +56,9 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     expect(asked.isError, JSON.stringify(asked.content)).toBe(false);
     const questionId = (asked.details as { requestId: string }).requestId;
     expect(asked.details).toMatchObject({ status: "pending", authorized: false, unitIds: ["A"] });
-    expect(notifications.some((text) => text.includes(questionId) && text.includes("动作：implement") && text.includes("仅A，不包括B"))).toBe(true);
+    expect(asked.details).toMatchObject({ requestId: questionId, answer: null });
+    expect(shown.at(-1)!.text).toContain("是否实施手机号登录A？");
+    expect(shown.at(-1)!.choices).toEqual(["实施 A", "先不实施", "其他（自己输入）"]);
     const e = (kind: string, conclusion: string, candidate: string, request: string | null, basis = "explicit", resolution = "accept") => ({ kind, conclusion, candidateId: candidate, requestId: request,
       basis, resolution, scope: "仅A，不包括B", actions: kind === "action" ? ["implement"] : [], references: [], supersedes: [] });
     const interpretation = { format: "interaction-interpretation/v1", referenceResolution: "single-question", faithful: true, entries: [

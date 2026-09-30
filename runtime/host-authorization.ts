@@ -27,6 +27,7 @@ const STOP = "停止操作，不要重试；把这段原因告诉用户";
 const HOST_ADVICE: Record<string, FailureAdvice> = {
   invalid_shape: COMMON_ADVICE.invalid_shape,
   question_format: { why: "问题没有按要求写全", next: "按原因补全后重新登记问题" },
+  window_answer_not_decision: { why: "用户是在提问窗口里选的，这只算回答，不能当作批准或裁决", next: "请用户在主窗口直接说要批准什么或怎么裁决" },
   invalid_principal: { why: "主窗口身份不合规", next: STOP },
   host_unavailable: { why: "主窗口与守护进程的连接不可用，可能未连接、心跳失败或会话已切换", next: "稍等几秒重试；仍不可用就请用户重开窗口" },
   untrusted_host: { why: "当前会话不是这个窗口登记的会话", next: "在当前主窗口会话里重新发起" },

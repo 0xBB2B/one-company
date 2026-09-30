@@ -238,6 +238,11 @@ async function showWindow(host: WindowHost, questions: WindowQuestion[], tone: W
   });
 }
 
+/** 主代理提问窗口：标准颜色，一次一个问题；Esc 或没有界面时为 undefined。 */
+export async function askWindow(host: WindowHost, question: WindowQuestion, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
+  return (await showWindow(host, [question], "standard", signal))?.[0];
+}
+
 /** 程序确认窗口：只有用户选中"确认"才返回 true。 */
 export async function confirmWindow(host: WindowHost, window: ProgramWindow, signal?: AbortSignal): Promise<boolean> {
   const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: [{ label: "确认" }, { label: "取消" }] }], "warning", signal);

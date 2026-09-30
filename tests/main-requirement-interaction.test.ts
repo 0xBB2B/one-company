@@ -26,7 +26,7 @@ import type { Static } from "typebox";
 import { ModelInterpretation } from "../runtime/interaction-derivation.ts";
 import { requirementSummary } from "../runtime/requirement-summary.ts";
 import { answeringUi } from "./helpers/window-host.ts";
-import type { ShownWindow } from "./helpers/window-host.ts";
+import type { ShownWindow, WindowDecision } from "./helpers/window-host.ts";
 
 
 const exec = promisify(execFile), cleanup: Array<() => Promise<void>> = [];
@@ -48,7 +48,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
   const provider = registerControlledProvider(runtime, { providerId: `host-${uuidv7()}`, modelId: "controlled" });
   const registry = new ModelRegistry(runtime), model = runtime.getModels(provider.providerId)[0]!;
   const notifications: string[] = [], windows: ShownWindow[] = [];
-  let windowAnswer = true;
+  let windowAnswer: WindowDecision = true;
   const ctx = { cwd: repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
     ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); },
       ...answeringUi((window) => { windows.push(window); return windowAnswer; }) },
@@ -78,7 +78,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
     return { input, loaded: await service.loadConfirmationContext({ requirementId: input.requirementId, savedOperationId: input.savedOperationId, operationId }) };
   };
   return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage,
-    windows, answerWindows: (answer: boolean) => { windowAnswer = answer; } };
+    windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; } };
 }
 /** 明确fixture语义输出；调用仍经过真实ModelRegistry/provider与生产解释适配器。 */
 function phoneReview(c: Pick<ConfirmationContext, "candidate" | "partition">, action: "analyze" | "implement" = "analyze"): Static<typeof ModelInterpretation> {
@@ -214,7 +214,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
 
   test("M9：用户按主代理的推荐作答后更新草稿，草稿核验器能看到本需求上提过的问题，提示词说明被采纳的那项才算用户决定", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
-    w.capture();
+    w.capture(); w.answerWindows(false);
     await w.call({ action: "ask", ...input, operationId: uuidv7(), question: "短信验证码有效期选哪种？", rootCheck: "要定的是验证码多久失效，而不是另加重发限制",
       choices: [{ label: "5 分钟", reason: "更安全", recommended: true, recommendedReason: "常见做法，够用户收短信" }, { label: "10 分钟", reason: "信号差也来得及，但更容易被盗用" }], scope: "仅短信验证码期限",
       unitIds: [loaded.partition.units[1]!.id], actions: ["analyze"] }, true);
@@ -551,4 +551,61 @@ test("批准时生成批准范围这一步出错，如实报错，不说成草�
     expect(outcome).not.toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
     expect(outcome).toMatchObject({ code: "interaction_denied" });
   } finally { read.mockRestore(); }
+});
+
+const SMS_ASK = { question: "短信验证码有效期选哪种？", rootCheck: "要定的是验证码多久失效，而不是另加重发限制",
+  choices: [{ label: "5 分钟", reason: "更安全", recommended: true, recommendedReason: "常见做法，够用户收短信" }, { label: "10 分钟", reason: "信号差也来得及，但更容易被盗用" }],
+  scope: "仅短信验证码期限", actions: ["analyze"] };
+async function askedWorld() {
+  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+  const ask = (answer: WindowDecision, extra: Record<string, unknown> = {}) => {
+    w.capture(); w.answerWindows(answer);
+    return w.call({ action: "ask", ...input, operationId: uuidv7(), ...SMS_ASK, unitIds: [loaded.partition.units[1]!.id], ...extra }, true);
+  };
+  return { w, input, loaded, ask };
+}
+const verifierText = (w: Awaited<ReturnType<typeof world>>) =>
+  JSON.parse(String((w.provider.requests.filter((r) => r.systemPrompt?.includes("草拟意图核验器")).at(-1)!.messages[0] as { content: string }).content)).text;
+
+test("M8D-AC9：登记问题后弹出提问窗口，用户选推荐项，主代理拿到回答，回答当作用户这一轮的原话", async () => {
+  const { w, input, ask } = await askedWorld();
+  const result = await ask("5 分钟");
+  const shown = w.windows.at(-1)!;
+  expect(shown.title).toBe("提问 · 登录（第 1 版）");
+  expect(shown.text).toContain("根源自检  要定的是验证码多久失效");
+  expect(shown.choices).toEqual(["5 分钟", "10 分钟", "其他（自己输入）"]);
+  expect(result).toMatchObject({ status: "answered", answer: { text: "选第 1 项：5 分钟（推荐）", choice: 1 } });
+  scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
+  expect(verifierText(w)).toBe("选第 1 项：5 分钟（推荐）");
+});
+
+test("M8D-AC9：在其他里自己输入的文字原样当作用户原话；Esc 暂不回答时问题仍未决，不记新的原话", async () => {
+  const other = await askedWorld();
+  expect(await other.ask({ other: "7 分钟" })).toMatchObject({ status: "answered", answer: { text: "7 分钟", other: true } });
+  scriptReplies(other.w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  await other.w.call({ action: "updateDraft", requirementId: other.input.requirementId, version: other.input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 7 分钟有效。\n" });
+  expect(verifierText(other.w)).toBe("7 分钟");
+  const skipped = await askedWorld();
+  const result = await skipped.ask(false);
+  expect(result).toMatchObject({ status: "pending", answer: null });
+  expect(withDatabase(repositoryDatabase(skipped.w.dataRoot, skipped.w.repoId), (db) => db.list("interaction_questions_v1"))).toHaveLength(1);
+});
+
+test("M8D-AC9：窗口里的回答只算回答：拿它批准时不弹批准窗口、不生效，拿它裁决时被拒并写明原因", async () => {
+  const { w, input, loaded, ask } = await askedWorld();
+  const asked = await ask("批准这一版并实施", { choices: [{ label: "批准这一版并实施", reason: "马上开始", recommended: true, recommendedReason: "草稿已写全" }, { label: "先不批准", reason: "再看看" }], unitIds: ["SMS"] });
+  const before = w.windows.length, review = phoneReview(loaded);
+  review.referenceResolution = "explicit";
+  Object.assign(review.entries.find((entry) => entry.kind === "unresolved")!, { requestId: asked.requestId, resolution: "defer" });
+  scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }, { type: "text", text: JSON.stringify(review) }]);
+  const outcome = await w.call({ action: "reply", ...input }, true).then((r) => r, (e: unknown) => e);
+  expect(outcome).toMatchObject({ prodActivated: false, blockedBy: "window_answer_not_decision" });
+  expect(w.windows.length).toBe(before);
+  const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+  expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
+  const adjudicated = await w.call({ purpose: "adjudicate", action: "reply", requirementId: input.requirementId, operationId: uuidv7(),
+    itemId: `requirement:${input.requirementId}`, itemVersion: `requirement:${input.requirementId}:1` }, true).catch((e: unknown) => e);
+  expect(adjudicated).toMatchObject({ code: "window_answer_not_decision" });
+  expect((adjudicated as Error).message).toContain("原因：用户是在提问窗口里选的，这只算回答，不能当作批准或裁决");
 });

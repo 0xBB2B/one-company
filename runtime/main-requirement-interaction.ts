@@ -35,7 +35,7 @@ import { INTERACTION_CONTINUITY_NAMESPACE } from "./interaction-continuity.ts";
 import { approvalManifestReference } from "./approval-manifest.ts";
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "./adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "./requirement-summary.ts";
-import { confirmWindow, mutedLines } from "./question-window.ts";
+import { askWindow, confirmWindow, mutedLines } from "./question-window.ts";
 import type { AdjudicationSubject } from "./user-interaction-format.ts";
 import { inspectProdStructure, pageProdText, selectProdSection, PROD_SECTION_ID_PATTERN } from "./prod-view.ts";
 
@@ -56,6 +56,8 @@ export interface MainRequirementInteractionOptions {
 interface CapturedInput {
   event: { source: "interactive" | "rpc"; text: string };
   sessionId: string; expiresAt: number; abort: AbortController;
+  /** 用户在主代理的提问窗口里作答：只算回答，不能当作批准或裁决。 */
+  fromQuestionWindow?: true;
 }
 interface PendingResave { permit: CandidateResavePermit; origin: object; operationId: string; requirementId: string; complete: boolean }
 interface ConfirmationRequest extends LoadConfirmationInput { repoId: string; version: number }
@@ -482,7 +484,7 @@ export class MainRequirementInteraction {
    * 存为用户短决定后按记录让任务生效；不清楚时不登记。
    */
   async adjudicate(ctx: ExtensionContext, request: { repoId: string; requirementId: string; itemId: string; itemVersion: string }): Promise<Record<string, unknown>> {
-    this.#currentInput(ctx);
+    if (this.#currentInput(ctx).fromQuestionWindow) denied("window_answer_not_decision");
     const host = this.#host(ctx), opened = this.#openedItem, ref = { dataRoot: this.#options.dataRoot, repoId: request.repoId };
     const subject = adjudicationSubject(ref, request.requirementId, request.itemId);
     // 用户看到的是决策包生成时的事项；此后事项已变化，须刷新重看，不能按新状态替用户登记
@@ -525,7 +527,7 @@ export class MainRequirementInteraction {
     } finally { this.#adjudication = undefined; }
   }
   async confirm(ctx: ExtensionContext, request: ConfirmationRequest): Promise<Record<string, unknown>> {
-    this.#currentInput(ctx); this.#candidate = { ...request };
+    const input = this.#currentInput(ctx); this.#candidate = { ...request };
     const loaded = await this.#load(ctx, request), core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
     const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
     let docSpec = record.data.docSpec;
@@ -535,7 +537,7 @@ export class MainRequirementInteraction {
     if (sections) throw new HostAuthorizationError("prod_sections_required", sections);
     if (!this.#ticket) return denied("current_input_required");
     // 决定对象只认用户这句话里 @ 到的需求；得不出时由用户在程序窗口里亲手确认，不认模型填写的需求编号
-    if (!this.#inputTargets.some((target) => target.repoId === request.repoId && target.requirementId === request.requirementId)) {
+    if (!input.fromQuestionWindow && !this.#inputTargets.some((target) => target.repoId === request.repoId && target.requirementId === request.requirementId)) {
       const summary = record.data.saved ? requirementSummary(this.#options.dataRoot, request.repoId, request.requirementId, record.data.saved.hash) : undefined;
       const approved = await confirmWindow(ctx, { title: "批准需求", lines: [{ text: `需求：${loaded.title}（第 ${record.data.revision + 1} 版）` },
         ...mutedLines([`编号：${request.requirementId} · 仓库：${basename(host.repositories.get(request.repoId)!.path)}`, ...(summary ? [`简介：${summary}`] : [])])] });
@@ -580,6 +582,8 @@ export class MainRequirementInteraction {
     const registered: ResultScope = { kind: "registered", proof: { reference, admission: { receiptId: document.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: document.authorization.inputProof }, summary, allowedScopes } };
     if (!targetRecorded) return this.#prove(ctx, request.repoId, { ...base, allowedScopes,
       scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "explicit_target_required" }, registered, decisionProofs);
+    if (input.fromQuestionWindow) return this.#prove(ctx, request.repoId, { ...base, allowedScopes,
+      scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "window_answer_not_decision" }, registered, decisionProofs);
     const receiptId = document.authorization.receiptId;
     const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "confirmUpdate" &&
       r.operationId === request.operationId && r.version === loaded.version && r.intentHash === loaded.candidate.intentHash &&
@@ -590,7 +594,7 @@ export class MainRequirementInteraction {
     return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prodActivated: true, allowedScopes },
       { kind: "approved", scope: { status: "available", summary } }, decisionProofs);
   }
-  async ask(ctx: ExtensionContext, request: ConfirmationRequest & AskQuestion & { scope: string; unitIds: string[]; actions: InteractionAction[] }) {
+  async ask(ctx: ExtensionContext, request: ConfirmationRequest & AskQuestion & { scope: string; unitIds: string[]; actions: InteractionAction[] }, signal?: AbortSignal) {
     const loaded = await this.#load(ctx, request);
     if (!request.unitIds.length || request.unitIds.some((id) => !loaded.partition.units.some((u) => u.id === id))) denied("question_scope_mismatch");
     const records = this.#authorization.interactionRecords(request.repoId, request.requirementId, this.#host(ctx).sessionId,
@@ -602,9 +606,31 @@ export class MainRequirementInteraction {
       proposal: { conclusion: askRecordText(request), scope: request.scope, references: [], supersedes: [] }, unitIds: request.unitIds, actions: request.actions, partition: loaded.partition }));
     // 新问题改变解释范围；只能由之后真实收到的输入回答，不能沿用提问前能力。
     core.revoke(); this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
-    ctx.ui.notify(`问题 ${question.requestId}\n${request.question}\n申请范围：${request.scope}\n需求：${request.requirementId}\n版本：${loaded.version}\n单位：${request.unitIds.join(", ")}\n动作：${request.actions.join(", ") || "无"}\n候选指纹：${loaded.candidate.to.hash}\n问题本身不授予许可。`, "info");
+    const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
+    const picked = await askWindow(ctx, { caption: `提问 · ${loaded.title}（第 ${record.data.revision + 1} 版）`, question: request.question, rootCheck: request.rootCheck,
+      allowOther: true, escapeHint: "Esc 暂不回答（问题保留，之后在对话里回答也行）",
+      choices: request.choices.map((choice) => ({ label: choice.label, description: choice.reason, recommended: choice.recommended === true,
+        ...(choice.recommendedReason ? { recommendedReason: choice.recommendedReason } : {}) })) }, signal);
+    const index = picked ? request.choices.findIndex((choice) => choice.label === picked.choices[0]) : -1;
+    const answer = picked?.other ? { text: picked.other, other: true }
+      : index >= 0 ? { text: `选第 ${index + 1} 项：${request.choices[index]!.label}${request.choices[index]!.recommended ? "（推荐）" : ""}`, choice: index + 1 } : null;
+    if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx);
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: loaded.version, epoch: loaded.epoch, requestId: question.requestId,
-      question: request.question, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: "pending", authorized: false });
+      question: request.question, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false });
+  }
+  /** 窗口里的回答记成用户这一轮的原话；不走 captureInput，免得本次工具调用的代次失效、结果被当成过期。 */
+  #adoptQuestionAnswer(text: string, host: RequirementManageHostContext, ctx: ExtensionContext): void {
+    const previous = this.#input;
+    if (previous) { previous.event.text = ""; previous.abort.abort(); }
+    if (this.#timer) clearTimeout(this.#timer);
+    // 和用户新说一句话一样换掉解释核心，下次用到时按这句回答重新签发输入凭据
+    this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined;
+    this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
+    this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
+    const expiresAt = this.#now() + (this.#options.inputTtlMs ?? 900_000);
+    this.#input = { event: { source: "interactive", text }, sessionId: host.sessionId, expiresAt, abort: new AbortController(), fromQuestionWindow: true };
+    this.#inputTargets = []; this.#ctx = ctx;
+    this.#timer = setTimeout(() => this.#clearInput(), expiresAt - this.#now()); this.#timer.unref();
   }
   async metadata(ctx: ExtensionContext, repoId: string, requirementId: string) {
     const before = this.#snapshot(this.#host(ctx), repoId, requirementId, false);

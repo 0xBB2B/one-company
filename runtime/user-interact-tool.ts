@@ -76,7 +76,7 @@ export function createUserInteractTool(options: {
       operationId: string; savedOperationId: string; version: number; question?: string; rootCheck?: string; choices?: AskChoice[]; scope?: string; unitIds?: string[]; actions?: never[] };
     return options.interaction.execute(toolCallId, ctx, p.repoId, p, async () => {
       signal?.throwIfAborted();
-      return p.action === "ask" ? options.interaction.ask(ctx, { ...p, question: p.question!, rootCheck: p.rootCheck!, choices: p.choices!, scope: p.scope!, unitIds: p.unitIds!, actions: p.actions! })
+      return p.action === "ask" ? options.interaction.ask(ctx, { ...p, question: p.question!, rootCheck: p.rootCheck!, choices: p.choices!, scope: p.scope!, unitIds: p.unitIds!, actions: p.actions! }, signal ?? ctx.signal)
         : options.interaction.confirm(ctx, p);
     }, signal ?? ctx.signal);
   }
