@@ -3,16 +3,21 @@ import { decodeKittyPrintable, matchesKey, visibleWidth, wrapTextWithAnsi } from
 
 export type LineTone = "normal" | "muted" | "added" | "removed";
 export interface WindowLine { text: string; tone?: LineTone }
-export interface WindowChoice { label: string; description?: string; recommended?: boolean; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string }
+export interface WindowChoice { label: string; description?: string; recommended?: boolean; recommendedReason?: string; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string }
 export interface WindowQuestion {
   header?: string;
+  /** 问题上方的灰色一行，例如"提问 · 需求名（第 2 版）"。 */
+  caption?: string;
   question: string;
+  rootCheck?: string;
   lines?: WindowLine[];
   choices: WindowChoice[];
   multiSelect?: boolean;
   allowOther?: boolean;
   /** 按 Esc 取消时实际发生什么，写在提示行末尾的括号里。 */
   cancelNote?: string;
+  /** 整个替换提示行里 Esc 那一段。 */
+  escapeHint?: string;
 }
 export interface WindowAnswer { choices: string[]; other?: string }
 export interface WindowTheme { fg(kind: string, text: string): string; bold(text: string): string }
@@ -20,6 +25,26 @@ export interface WindowTheme { fg(kind: string, text: string): string; bold(text
 export type WindowTone = "warning" | "standard";
 
 const OTHER = "其他（自己输入）";
+const CLOSING = new Set([..."。，、；：？！）」』》,.;:!?)"]);
+const WORD = /[\w.~-]/u;
+
+/** 按显示宽度折行：放得下就放；行首不留句号逗号这类标点，英文单词与数字不从中间切开。 */
+function wrapPlain(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const char of text) {
+    if (visibleWidth(line + char) <= width) { line += char; continue; }
+    const chars = [...line];
+    let cut = chars.length;
+    if (CLOSING.has(char)) cut = chars.length - 1;
+    else if (WORD.test(char)) while (cut > 0 && WORD.test(chars[cut - 1]!)) cut--;
+    if (cut <= 0 || cut >= chars.length) { lines.push(line); line = char === " " ? "" : char; continue; }
+    lines.push(chars.slice(0, cut).join("").trimEnd());
+    line = chars.slice(cut).join("") + char;
+  }
+  lines.push(line);
+  return lines;
+}
 const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved" };
 
 interface QuestionState { cursor: number; picked: Set<number>; other: string; editing: boolean; answered: boolean }
@@ -33,7 +58,8 @@ export class QuestionWindowView {
 
   constructor(options: QuestionWindowView["options"]) {
     this.options = options;
-    this.states = options.questions.map((question) => ({ cursor: Math.max(0, question.choices.findIndex((choice) => !choice.disabled)),
+    this.states = options.questions.map((question) => ({ cursor: Math.max(0, question.choices.findIndex((choice) => choice.recommended && !choice.disabled),
+      question.choices.findIndex((choice) => !choice.disabled)),
       picked: new Set<number>(), other: "", editing: false, answered: false }));
   }
 
@@ -133,15 +159,20 @@ export class QuestionWindowView {
     }
 
     const index = this.tab, question = this.options.questions[index]!, state = this.states[index]!;
-    const title = warning ? theme.fg("warning", theme.bold(question.question)) : theme.bold(question.question);
-    lines.push(...wrap(title, 1), "");
+    if (!warning && question.caption) lines.push(...wrapPlain(question.caption, width - 1).map((piece) => ` ${muted(piece)}`), "");
+    if (warning) lines.push(...wrap(theme.fg("warning", theme.bold(question.question)), 1), "");
+    else lines.push(...wrapPlain(question.question, width - 1).map((piece) => ` ${theme.bold(piece)}`), "");
+    if (!warning && question.rootCheck) {
+      const label = "根源自检  ", indent = " ".repeat(visibleWidth(label));
+      lines.push(...wrapPlain(question.rootCheck, width - 1 - indent.length).map((piece, i) => ` ${muted(`${i ? indent : label}${piece}`)}`), "");
+    }
     for (const line of question.lines ?? []) {
       const color = TONE_COLOR[line.tone ?? "normal"];
       for (const piece of wrapTextWithAnsi(line.text, Math.max(8, width - 1))) lines.push(` ${color ? theme.fg(color, piece) : piece}`);
     }
     if (question.lines?.length) lines.push("");
 
-    const labels = [...question.choices.map((choice) => choice.label + (choice.recommended ? "（推荐）" : "")), ...(question.allowOther ? [OTHER] : [])];
+    const labels = [...question.choices.map((choice) => choice.label + (warning && choice.recommended ? "（推荐）" : "")), ...(question.allowOther ? [OTHER] : [])];
     const labelWidth = Math.max(...labels.map((label) => visibleWidth(label)));
     labels.forEach((label, i) => {
       const selected = i === state.cursor;
@@ -156,9 +187,16 @@ export class QuestionWindowView {
         const padded = description ? text + " ".repeat(labelWidth - visibleWidth(label) + 3) : text;
         lines.push((selected ? ` ${highlight(`→ ${text}`)}` : `   ${text}`) + (description ? padded.slice(text.length) + muted(description) : ""));
       } else {
-        const text = `${box}${i + 1}. ${label}`;
-        lines.push(selected ? ` ${highlight(`→ ${text}`)}` : `   ${text}`);
-        if (description) lines.push(...wrapTextWithAnsi(description, Math.max(8, width - 6)).map((piece) => `      ${muted(piece)}`));
+        const choice = question.choices[i], number = `${box}${i + 1}. `, tag = choice?.recommended ? `  ${theme.fg("success", theme.bold("推荐"))}` : "";
+        const pieces = wrapPlain(label, width - 3 - visibleWidth(number) - (tag ? 6 : 0));
+        pieces.forEach((piece, n) => {
+          const text = n ? `${" ".repeat(visibleWidth(number))}${piece}` : `${number}${piece}`;
+          lines.push((selected ? ` ${highlight(`${n ? "  " : "→ "}${text}`)}` : `   ${text}`) + (n === pieces.length - 1 ? tag : ""));
+        });
+        if (description) lines.push(...wrapPlain(description, width - 6).map((piece) => `      ${muted(piece)}`));
+        if (choice?.recommended && choice.recommendedReason) {
+          lines.push(...wrapPlain(`推荐理由：${choice.recommendedReason}`, width - 6).map((piece) => `      ${theme.fg("success", piece)}`));
+        }
       }
       if (this.isOther(index, i) && (state.editing || state.other)) lines.push(`      ${highlight("›")} ${state.other}`);
     });
@@ -168,9 +206,9 @@ export class QuestionWindowView {
           "↑↓ 选择",
           ...(question.multiSelect ? ["空格勾选", this.multi ? "回车下一题" : "回车确认"] : ["回车确认"]),
           ...(this.multi ? ["←→ 切换问题"] : []),
-          `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
+          question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
         ].join(" · ");
-    lines.push("", ` ${muted(hint)}`, border);
+    lines.push("", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), border);
     return lines;
   }
 

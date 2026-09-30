@@ -57,7 +57,7 @@ test("通用问答窗口：多个问题用顶部标签切换，选项编号、�
   expect(first).toContain("<border>" + "─".repeat(80) + "</>");
   expect(first).toMatch(/<accent><b> 接口格式 <\/b><\/>.*<muted> 登录方式 <\/>.*<muted> 提交 <\/>/u);
   expect(first).toContain("<b>用哪种返回格式？</b>");
-  expect(first).toContain("<accent>→ 1. 统一 {code, data}（推荐）</>");
+  expect(first).toContain("<accent>→ 1. 统一 {code, data}</>  <success><b>推荐</b></>");
   expect(first).toMatch(/^ {6}<muted>改动集中在后端<\/>$/mu);
   window.handleInput(ENTER);
   expect(done).toEqual([]);
@@ -161,4 +161,56 @@ test("M8D-AC8：不可选的选项整行变暗并写明原因，光标跳过它�
   expect(done).toEqual([[{ choices: ["项目层"] }]]);
   expect(await chooseWindow(fakeUi((c) => c.handleInput(ENTER)), { title: "复制到", lines: [],
     choices: [{ label: "用户层", disabled: "已有" }, { label: "项目层" }] })).toBe("项目层");
+});
+
+const ASK = {
+  caption: "提问 · 按住空格时长控制跳跃高度（第 2 版）",
+  question: "起跳时机怎么定？现在按下空格就立即起跳，那一刻还不知道你会按多久。",
+  rootCheck: "冲突的根源是\"初速度由按住时长决定\"和\"按下即起跳\"不能同时成立；下面是在两者之间选一条改，而不是加个延时凑合。",
+  allowOther: true, escapeHint: "Esc 暂不回答（问题保留，之后在对话里回答也行）",
+  choices: [
+    { label: "按下立即起跳，按住期间继续增加向上速度", description: "手感即时，但这就变成\"按住加速\"，不再是改起跳初速度。" },
+    { label: "松开空格时起跳，按满 0.3 秒自动起跳", description: "初速度按完整按住时长计算，完全符合你的描述；短按会晚一点点离地。", recommended: true,
+      recommendedReason: "只有这样\"起跳初速度\"才真正由按住时长决定。" },
+  ],
+};
+const plain = (text: string) => text.replace(/<\/?[a-z]*>/gu, "");
+
+test("M8D-AC9：主代理提问窗口按确认的预览显示：灰色标题行、问题加粗、根源自检灰色、选项白色、理由灰色、推荐项挂绿色推荐与推荐理由，光标停在推荐项", () => {
+  const { window, text, done } = view({ tone: "standard", questions: [ASK] });
+  const lines = text().split("\n");
+  expect(lines[0]).toBe("<border>" + "─".repeat(80) + "</>");
+  expect(lines[1]).toBe(" <muted>提问 · 按住空格时长控制跳跃高度（第 2 版）</>");
+  expect(lines[2]).toBe("");
+  expect(lines[3]).toBe(" <b>起跳时机怎么定？现在按下空格就立即起跳，那一刻还不知道你会按多久。</b>");
+  expect(lines[5]).toBe(" <muted>根源自检  冲突的根源是\"初速度由按住时长决定\"和\"按下即起跳\"不能同时成立；下面是</>");
+  expect(lines[6]).toBe(" <muted>          在两者之间选一条改，而不是加个延时凑合。</>");
+  expect(lines.slice(8, 15)).toEqual([
+    "   1. 按下立即起跳，按住期间继续增加向上速度",
+    "      <muted>手感即时，但这就变成\"按住加速\"，不再是改起跳初速度。</>",
+    " <accent>→ 2. 松开空格时起跳，按满 0.3 秒自动起跳</>  <success><b>推荐</b></>",
+    "      <muted>初速度按完整按住时长计算，完全符合你的描述；短按会晚一点点离地。</>",
+    "      <success>推荐理由：只有这样\"起跳初速度\"才真正由按住时长决定。</>",
+    "   3. 其他（自己输入）",
+    "",
+  ]);
+  expect(lines[15]).toBe(" <muted>↑↓ 选择 · 回车确认 · Esc 暂不回答（问题保留，之后在对话里回答也行）</>");
+  window.handleInput(UP);
+  expect(text()).toContain("<accent>→ 1. 按下立即起跳，按住期间继续增加向上速度</>");
+  expect(text()).toContain("   2. 松开空格时起跳，按满 0.3 秒自动起跳  <success><b>推荐</b></>");
+  window.handleInput(DOWN); window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: ["松开空格时起跳，按满 0.3 秒自动起跳"] }]]);
+});
+
+test("M8D-AC9：窄终端 56 列时放不下的文字换行不截断，续行对齐，标点不单独占行，英文数字不从中间切开", () => {
+  const lines = view({ tone: "standard", questions: [ASK] }).text(56).split("\n").map(plain);
+  for (const line of lines) expect([...line].reduce((w, c) => w + (/[\u2E80-\uFFEF]/u.test(c) ? 2 : 1), 0), line).toBeLessThanOrEqual(56);
+  expect(lines).toContain(" 根源自检  冲突的根源是\"初速度由按住时长决定\"和\"按下即起");
+  expect(lines).toContain("      推荐理由：只有这样\"起跳初速度\"才真正由按住时长决");
+  expect(lines).toContain("      定。");
+  for (const line of lines) expect(line.trimStart(), line).not.toMatch(/^[。，、；：？！）」』》]/u);
+  const tight = view({ tone: "standard", questions: [{ ...ASK, choices: [{ label: "甲", description: "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九。" }, ASK.choices[1]!] }] });
+  const tightLines = tight.text(56).split("\n").map(plain);
+  expect(tightLines.some((line) => line.trimStart().startsWith("。"))).toBe(false);
+  expect(tightLines.join("\n")).not.toMatch(/0\.\n|\n\s*3 秒/u);
 });
