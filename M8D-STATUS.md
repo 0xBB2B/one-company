@@ -12,6 +12,7 @@
 | AC4 agent_manage message 只给主代理，PM 收到标为主代理转述 | 通过 | 本提交；tests/pm-dispatch.test.ts「M8D-AC4」（PM 收到带【主代理转述】标签的消息、暂停时排队到恢复后送达、无 PM 与超长拒绝并写明原因）、tests/core-permissions.test.ts（只有 main 有 message，PM 与其他角色没有；主会话 agent_manage 的动作都在核心表内）、tests/daemon-protocol.test.ts（pm.message 登记与参数校验） | 无 |
 | AC5 两个命令与窗口绑定机制删除干净，README 写明 @需求 用法 | 通过 | c4273b8 与本提交；两个命令、绑定与一次性选择凭据、相关错误说明全部删除，tests/integration/host-requirement-continuation.test.ts 删除，全仓 grep 无残留；README 命令表删去两行，新增「@需求」一节写明补全、带 @ 与不带 @ 的处理、回答面板事项与恢复对话 | 无 |
 | AC6 真实模型跑一轮 | 部分 | 场景 tests/acceptance/at-mention-loop.test.ts（a2bfc3a、34f2125、b03b336）；5x/gpt-6-sol 跑了 3 次，第 1、3 次第一段（不带 @ 新建草稿、批准弹窗、派出并暂停 PM）通过（证据 .bb-spec/.cache/m8d/acceptance/at-mention-*） | 第 1 次卡在驱动在已有暂停 PM 时不回答主代理（已修）；第 2 次主代理提问未标推荐、用户直接批准，解释器首答未过核对、重答撞上 60 秒上限（已补全台词）；第 3 次按用户要求在跳跃阶段暂停。其余步骤尚未跑到 |
+| AC8 解释器与草稿核验器的模型可按内部定义设置 | 未开始 | 无 | /one:agents 新增"内部"分类要先出 HTML 预览 |
 | AC7 通用问答窗口与程序确认窗口，现有弹框全部改用 | 通过 | 本提交；tests/question-window.test.ts（多题、多选、其他输入、Esc 取消、无界面与中止按拒绝、警告色标题、需求名正常色、其余灰色、改动行红绿、全中文）；tests/workspace-manage.test.ts（创建与回收窗口显示需求标题，标题随工作区记录保存）；tests/project-manage-tool.test.ts、tests/project-maintenance.test.ts、tests/git-delivery*.test.ts 与安装测试 project-index-sync、project-manage 经真实渲染的窗口确认；typecheck、单元 2375（2 个并行负载下的偶发超时单独重跑通过）、集成、安装 11 通过（1 个需 Docker 跳过）；PR 合并方式窗口提示行的"（取消等于自己 review）"已按预览补上（tests/question-window.test.ts、tests/git-delivery.test.ts） | 无 |
 
 ## 当前阻塞
