@@ -211,3 +211,12 @@ describe("覆盖与导入规则", () => {
     expect(boss.reason).toContain("pm 职责只能由名为 pm 的定义承担");
   });
 });
+
+test("M8D-AC8：写错的定义带出错字段、文件里的写法和给人看的原因", async () => {
+  const dir = await tempDir();
+  await writeRole(dir, "broken", "name: broken\ndescription: d\nrole: worker\nthinking: extreme");
+  await writeRole(dir, "badmodel", "name: badmodel\ndescription: d\nrole: worker\nmodel: gpt");
+  const { roles } = await loadRoleCatalog({ defaultDir: "/nonexistent/d", userDir: dir, projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
+  expect(roles.find((entry) => entry.name === "broken")!.problem).toEqual({ field: "thinking", value: "extreme", display: "thinking 只能是 off、minimal、low、medium、high、xhigh、max" });
+  expect(roles.find((entry) => entry.name === "badmodel")!.problem).toEqual({ field: "model", value: "gpt", display: "model 要写成 provider/id，例如 5x/gpt-6-luna" });
+});

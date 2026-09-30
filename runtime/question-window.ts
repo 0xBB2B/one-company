@@ -3,7 +3,7 @@ import { decodeKittyPrintable, matchesKey, visibleWidth, wrapTextWithAnsi } from
 
 export type LineTone = "normal" | "muted" | "added" | "removed";
 export interface WindowLine { text: string; tone?: LineTone }
-export interface WindowChoice { label: string; description?: string; recommended?: boolean }
+export interface WindowChoice { label: string; description?: string; recommended?: boolean; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string }
 export interface WindowQuestion {
   header?: string;
   question: string;
@@ -33,7 +33,8 @@ export class QuestionWindowView {
 
   constructor(options: QuestionWindowView["options"]) {
     this.options = options;
-    this.states = options.questions.map(() => ({ cursor: 0, picked: new Set<number>(), other: "", editing: false, answered: false }));
+    this.states = options.questions.map((question) => ({ cursor: Math.max(0, question.choices.findIndex((choice) => !choice.disabled)),
+      picked: new Set<number>(), other: "", editing: false, answered: false }));
   }
 
   private get multi(): boolean { return this.options.questions.length > 1; }
@@ -43,6 +44,12 @@ export class QuestionWindowView {
     return question.choices.length + (question.allowOther ? 1 : 0);
   }
   private isOther(index: number, cursor: number): boolean { return cursor === this.options.questions[index]!.choices.length; }
+  private move(index: number, step: 1 | -1): void {
+    const state = this.states[index]!, question = this.options.questions[index]!;
+    for (let next = state.cursor + step; next >= 0 && next < this.choiceCount(index); next += step) {
+      if (!question.choices[next]?.disabled) { state.cursor = next; return; }
+    }
+  }
 
   private answer(index: number): WindowAnswer {
     const question = this.options.questions[index]!, state = this.states[index]!;
@@ -63,15 +70,15 @@ export class QuestionWindowView {
     if (matchesKey(data, "escape")) { this.options.onDone(undefined); return; }
     if (this.multi && matchesKey(data, "right")) { this.tab = Math.min(this.tab + 1, this.options.questions.length); return; }
     if (this.multi && matchesKey(data, "left")) { this.tab = Math.max(this.tab - 1, 0); return; }
-    if (matchesKey(data, "down")) { state.cursor = Math.min(state.cursor + 1, this.choiceCount(index) - 1); return; }
-    if (matchesKey(data, "up")) { state.cursor = Math.max(state.cursor - 1, 0); return; }
+    if (matchesKey(data, "down")) { this.move(index, 1); return; }
+    if (matchesKey(data, "up")) { this.move(index, -1); return; }
     if (question.multiSelect && matchesKey(data, "space")) {
       if (this.isOther(index, state.cursor)) state.editing = true;
       else if (state.picked.has(state.cursor)) state.picked.delete(state.cursor);
       else state.picked.add(state.cursor);
       return;
     }
-    if (!matchesKey(data, "enter")) return;
+    if (!matchesKey(data, "enter") || question.choices[state.cursor]?.disabled) return;
     if (this.isOther(index, state.cursor)) { state.editing = true; return; }
     if (question.multiSelect) { if (state.picked.size > 0 || state.other.trim()) this.complete(index); return; }
     state.picked = new Set([state.cursor]); state.other = "";
@@ -139,7 +146,11 @@ export class QuestionWindowView {
     labels.forEach((label, i) => {
       const selected = i === state.cursor;
       const box = question.multiSelect ? `[${state.picked.has(i) || (this.isOther(index, i) && state.other.trim()) ? "x" : " "}] ` : "";
-      const description = question.choices[i]?.description;
+      const description = question.choices[i]?.description, disabled = question.choices[i]?.disabled;
+      if (disabled) {
+        lines.push(`   ${muted(`${label}${" ".repeat(labelWidth - visibleWidth(label) + 3)}${disabled}`)}`);
+        return;
+      }
       if (warning) {
         const text = `${box}${label}`;
         const padded = description ? text + " ".repeat(labelWidth - visibleWidth(label) + 3) : text;

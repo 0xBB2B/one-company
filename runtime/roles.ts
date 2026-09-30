@@ -24,12 +24,20 @@ export interface RoleDefinition {
   body: string;
 }
 
+/** 定义写错时的结构化原因：field 为出错字段，value 为文件里的写法，display 是给人看的完整原因。 */
+export interface RoleDefinitionProblem { field?: string; value?: unknown; display: string }
+export class RoleDefinitionError extends Error {
+  readonly problem: RoleDefinitionProblem;
+  constructor(message: string, problem: RoleDefinitionProblem) { super(message); this.name = "RoleDefinitionError"; this.problem = problem; }
+}
+
 export interface RoleCatalogEntry {
   name: string;
   source: RoleSource;
   path: string;
   available: boolean;
   reason?: string;
+  problem?: RoleDefinitionProblem;
   definition?: RoleDefinition;
   /** 被本定义同名覆盖的下层来源。 */
   overrides?: RoleSource[];
@@ -81,7 +89,7 @@ export function projectRoleDir(repoRoot: string): string {
 
 function stringList(value: unknown, field: string, path: string): string[] {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && item.length > 0) || new Set(value).size !== value.length) {
-    throw new Error(`角色定义 ${field} 必须为不重复的非空字符串数组: ${path}`);
+    throw new RoleDefinitionError(`角色定义 ${field} 必须为不重复的非空字符串数组: ${path}`, { field, value, display: `${field} 要写成不重复的非空列表` });
   }
   return value as string[];
 }
@@ -90,31 +98,31 @@ export async function readRoleDefinition(path: string, parseFrontmatter: Frontma
   const content = await readFile(path, "utf8");
   const { frontmatter, body } = parseFrontmatter(content);
   const unknown = Object.keys(frontmatter).filter((key) => !FIELDS.has(key));
-  if (unknown.length > 0) throw new Error(`角色定义含未知字段 ${unknown.join("、")}: ${path}`);
+  if (unknown.length > 0) throw new RoleDefinitionError(`角色定义含未知字段 ${unknown.join("、")}: ${path}`, { field: unknown[0], display: `不认识的字段：${unknown.join("、")}` });
   const { name, description, role, model, thinking, mcp, skills } = frontmatter;
 
   if (typeof name !== "string" || !NAME_PATTERN.test(name)) {
-    throw new Error(`角色定义 name 必须为小写字母、数字或连字符（最多 64 字符）: ${path}`);
+    throw new RoleDefinitionError(`角色定义 name 必须为小写字母、数字或连字符（最多 64 字符）: ${path}`, { field: "name", value: name, display: "name 只能用小写字母、数字和连字符，最多 64 个字符" });
   }
   if (typeof description !== "string" || description.length === 0) {
-    throw new Error(`角色定义缺少必需字段 description: ${path}`);
+    throw new RoleDefinitionError(`角色定义缺少必需字段 description: ${path}`, { field: "description", display: "缺少 description" });
   }
   if ([...description].length > MAX_DESCRIPTION_CODEPOINTS) {
-    throw new Error(`角色定义 description 超过 ${MAX_DESCRIPTION_CODEPOINTS} 字符: ${path}`);
+    throw new RoleDefinitionError(`角色定义 description 超过 ${MAX_DESCRIPTION_CODEPOINTS} 字符: ${path}`, { field: "description", display: `description 超过 ${MAX_DESCRIPTION_CODEPOINTS} 个字符` });
   }
   if (typeof role !== "string" || ![...AGENT_ROLES, ...INTERNAL_ROLES].includes(role as DefinitionRole)) {
-    throw new Error(`角色定义 role 须为 ${[...AGENT_ROLES, ...INTERNAL_ROLES].join("/")}: ${path}`);
+    throw new RoleDefinitionError(`角色定义 role 须为 ${[...AGENT_ROLES, ...INTERNAL_ROLES].join("/")}: ${path}`, { field: "role", value: role, display: `role 只能是 ${[...AGENT_ROLES, ...INTERNAL_ROLES].join("、")}` });
   }
-  if (role === "pm" && name !== "pm") throw new Error(`pm 职责只能由名为 pm 的定义承担: ${path}`);
+  if (role === "pm" && name !== "pm") throw new RoleDefinitionError(`pm 职责只能由名为 pm 的定义承担: ${path}`, { field: "name", value: name, display: "pm 职责只能由名为 pm 的定义承担" });
   if ((INTERNAL_ROLES as readonly string[]).includes(role)) {
-    if (name !== role) throw new Error(`内部定义 ${role} 只能由名为 ${role} 的定义承担: ${path}`);
-    if (mcp !== undefined || skills !== undefined) throw new Error(`内部定义 ${role} 不接受 mcp 与 skills: ${path}`);
+    if (name !== role) throw new RoleDefinitionError(`内部定义 ${role} 只能由名为 ${role} 的定义承担: ${path}`, { field: "name", value: name, display: `内部定义 ${role} 只能由名为 ${role} 的定义承担` });
+    if (mcp !== undefined || skills !== undefined) throw new RoleDefinitionError(`内部定义 ${role} 不接受 mcp 与 skills: ${path}`, { field: mcp !== undefined ? "mcp" : "skills", display: `内部定义 ${role} 不接受 mcp 与 skills` });
   }
   if (model !== undefined && (typeof model !== "string" || !/^[^/\s]+\/\S+$/.test(model))) {
-    throw new Error(`角色定义 model 须为 provider/id: ${path}`);
+    throw new RoleDefinitionError(`角色定义 model 须为 provider/id: ${path}`, { field: "model", value: model, display: "model 要写成 provider/id，例如 5x/gpt-6-luna" });
   }
   if (thinking !== undefined && (typeof thinking !== "string" || !(THINKING_LEVELS as readonly string[]).includes(thinking))) {
-    throw new Error(`角色定义 thinking 须为 ${THINKING_LEVELS.join("/")}: ${path}`);
+    throw new RoleDefinitionError(`角色定义 thinking 须为 ${THINKING_LEVELS.join("/")}: ${path}`, { field: "thinking", value: thinking, display: `thinking 只能是 ${THINKING_LEVELS.join("、")}` });
   }
 
   return {
@@ -160,11 +168,12 @@ async function loadLayerEntries(
       }
       const definition = await readRoleDefinition(path, parseFrontmatter);
       if (definition.name !== name) {
-        throw new Error(`角色定义 name（${definition.name}）与文件名（${name}）不一致: ${path}`);
+        throw new RoleDefinitionError(`角色定义 name（${definition.name}）与文件名（${name}）不一致: ${path}`, { field: "name", value: definition.name, display: `name 要和文件名 ${name} 一致` });
       }
       entries.push({ name, source, path, available: true, definition });
     } catch (error) {
-      entries.push({ name, source, path, available: false, reason: errorText(error) });
+      entries.push({ name, source, path, available: false, reason: errorText(error),
+        problem: error instanceof RoleDefinitionError ? error.problem : { display: errorText(error) } });
     }
   }
   return entries;

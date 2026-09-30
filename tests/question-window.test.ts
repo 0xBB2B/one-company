@@ -147,3 +147,18 @@ test("chooseWindow 返回选中项的名字，Esc 返回 undefined", async () =>
   expect(await chooseWindow(fakeUi((c) => { c.handleInput(DOWN); c.handleInput(ENTER); }), request)).toBe("项目层");
   expect(await chooseWindow(fakeUi((c) => c.handleInput(ESC)), request)).toBeUndefined();
 });
+
+test("M8D-AC8：不可选的选项整行变暗并写明原因，光标跳过它，停在它上面也按不下去", async () => {
+  const { window, text, done } = view({ tone: "warning", questions: [{ question: "复制解释器到哪一层？",
+    choices: [{ label: "用户层", disabled: "已有 ~/.pi/agent/agents/interpreter.md" }, { label: "项目层", description: "~/p/.pi/agents/interpreter.md" }, { label: "别处", disabled: "项目未受信任" }] }] });
+  expect(text()).toMatch(/^ {3}<muted>用户层 +已有 ~\/\.pi\/agent\/agents\/interpreter\.md<\/>$/mu);
+  expect(text()).toContain("<warning>→ 项目层</>");
+  window.handleInput(DOWN);
+  expect(text()).toContain("<warning>→ 项目层</>");
+  window.handleInput(UP);
+  expect(text()).toContain("<warning>→ 项目层</>");
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: ["项目层"] }]]);
+  expect(await chooseWindow(fakeUi((c) => c.handleInput(ENTER)), { title: "复制到", lines: [],
+    choices: [{ label: "用户层", disabled: "已有" }, { label: "项目层" }] })).toBe("项目层");
+});
