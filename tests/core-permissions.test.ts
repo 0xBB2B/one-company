@@ -11,6 +11,7 @@ import { CHANGE_APPLY_PARAMETERS } from "../runtime/change-apply.ts";
 import { VERIFICATION_RUN_PARAMETERS } from "../runtime/verification-run.ts";
 import { RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { WORKFLOW_MANAGE_PARAMETERS } from "../runtime/workflow-manage.ts";
+import { MAIN_AGENT_MANAGE_PARAMETERS } from "../extensions/agent-manage.ts";
 
 function actionLiterals(schema: TSchema): string[] {
   const found = new Set<string>();
@@ -76,6 +77,8 @@ test("action 级上限按计划 §9.1/§9.3 收窄：分支工作区只归 main�
   for (const role of CORE_ROLES) expect(authorizeToolAction(role, "workflow_manage", "init")).toBe(false);
   for (const role of CORE_ROLES) if (role !== "worker") expect(authorizeToolAction(role, "change_apply", "apply")).toBe(false);
   for (const role of CORE_ROLES) if (role !== "main" && role !== "pm") expect(authorizeToolAction(role, "agent_manage", "dispatch")).toBe(false);
+  expect(authorizeToolAction("main", "agent_manage", "message")).toBe(true);
+  for (const role of CORE_ROLES) if (role !== "main") expect(authorizeToolAction(role, "agent_manage", "message")).toBe(false);
 });
 
 test("自报或伪造的职责、工具与 action 一律拒绝，不因大小写、空白或专业名称扩权", () => {
@@ -105,6 +108,7 @@ test("已注册工具的 action 枚举都落在核心表内", () => {
   within(USER_INTERACT_PARAMETERS, "user_interact");
   within(KnowledgeToolSchema, "knowledge_query");
   within(PROJECT_MANAGE_PARAMETERS, "project_manage");
+  within(MAIN_AGENT_MANAGE_PARAMETERS, "agent_manage");
 });
 
 test("受控写入的资源分类：change_apply 可写代码、测试、配置与 docs/spec 等普通文件，不写 docs/prod、.git、.pi/agents、.pi/skills", () => {

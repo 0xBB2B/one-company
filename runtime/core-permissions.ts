@@ -9,7 +9,7 @@ export const CORE_TOOL_ACTIONS = Object.freeze({
   knowledge_query: Object.freeze(["exact", "search", "facts"] as const),
   requirement_manage: Object.freeze(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata"] as const),
   plan_manage: Object.freeze(["propose", "read", "update", "confirm", "assess-update"] as const),
-  agent_manage: Object.freeze(["dispatch", "status", "pause", "resume", "stop", "catalog"] as const),
+  agent_manage: Object.freeze(["dispatch", "status", "pause", "resume", "stop", "catalog", "message"] as const),
   user_interact: Object.freeze(["ask", "reply", "forward"] as const),
   change_apply: Object.freeze(["prepare", "apply", "import", "status"] as const),
   verification_run: Object.freeze(["run", "stop", "status"] as const),
@@ -29,7 +29,7 @@ const MATRIX: Readonly<Record<CoreRole, Grants>> = Object.freeze({
   },
   pm: {
     knowledge_query: all("knowledge_query"), requirement_manage: REQUIREMENT_READ_ONLY, plan_manage: all("plan_manage"),
-    agent_manage: all("agent_manage"), user_interact: all("user_interact"),
+    agent_manage: all("agent_manage").filter((action) => action !== "message"), user_interact: all("user_interact"),
     verification_run: all("verification_run"), workflow_manage: all("workflow_manage").filter((action) => action !== "close"),
   },
   explore: { knowledge_query: all("knowledge_query"), result_submit: ["research"] },

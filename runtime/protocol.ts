@@ -5,6 +5,8 @@ import { KnowledgeTransportQuerySchema, parseKnowledgeTransportQuery } from "./k
 
 export const PROTOCOL_VERSION = 2;
 
+export const PM_MESSAGE_MAX_CHARS = 4000;
+
 export const METHODS = [
   "hello",
   "ping",
@@ -19,6 +21,7 @@ export const METHODS = [
   "explore.result",
   "pm.overview",
   "pm.packet",
+  "pm.message",
   "workflow.manage",
   "runs.pauseAll",
   "runs.stopAll",
@@ -143,6 +146,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
     thinking: Type.String() }, { additionalProperties: false }),
   "explore.result": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "pm.packet": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),
+  "pm.message": Type.Object({ requirementId: Type.String(), text: Type.String({ minLength: 1, maxLength: PM_MESSAGE_MAX_CHARS }) }, { additionalProperties: false }),
   "workflow.manage": Type.Object({ requirementId: Type.String(), request: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),
   "runs.stop": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.pauseAll": Type.Object({}, { additionalProperties: false }),

@@ -217,3 +217,25 @@ test("M7-AC5：两个派出请求同时竞争同一需求，只有一个取得�
   const owner = (await RequirementStateStore.open({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, authorize: () => true })).pmOwner(w.requirementId);
   expect(owner?.lease?.runId).toBe(running[0]!.id);
 }, 30000);
+
+test("M8D-AC4：主代理给 PM 发消息时 PM 收到程序加的主代理转述标签；PM 暂停时排队到恢复后送达；没有 PM 或超长时拒绝并写明原因", async () => {
+  const w = await world();
+  await expect(w.manager.messagePm({ requirementId: w.requirementId, text: "先做登录" })).rejects.toMatchObject({ code: "pm_not_running" });
+  scriptReplies(w.provider, [{ type: "text", text: "等待" }, { type: "text", text: "收到" }, { type: "text", text: "收到" }]);
+  const { runId } = await w.dispatch();
+  await until(() => w.provider.requests.length === 1);
+  await expect(w.manager.messagePm({ requirementId: w.requirementId, text: "x".repeat(4001) })).rejects.toMatchObject({ code: "invalid_params" });
+  expect(await w.manager.messagePm({ requirementId: w.requirementId, text: "先做登录再做注册" })).toEqual({ delivered: "now" });
+  await until(() => w.provider.requests.length === 2);
+  const delivered = JSON.stringify(w.provider.requests[1]!.messages.at(-1));
+  expect(delivered).toContain("【主代理转述】");
+  expect(delivered).toContain("不改变任务、计划或授权");
+  expect(delivered).toContain("先做登录再做注册");
+  await w.manager.pause(runId);
+  expect(await w.manager.messagePm({ requirementId: w.requirementId, text: "登录页先不做记住我" })).toEqual({ delivered: "after_resume" });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(w.provider.requests).toHaveLength(2);
+  await w.manager.resume(runId);
+  await until(() => w.provider.requests.length === 3);
+  expect(JSON.stringify(w.provider.requests[2]!.messages)).toContain("登录页先不做记住我");
+}, 30000);

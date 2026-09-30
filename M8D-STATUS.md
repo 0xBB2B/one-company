@@ -9,7 +9,7 @@
 | AC1 `@` 补全与多需求识别 | 未开始 | 无 | 界面部分等 HTML 预览确认 |
 | AC2 不带 @ 时无绑定也能读取、改草稿、核对接手，可涉及多个需求 | 未开始 | 无 | 无 |
 | AC3 决定对象由程序得出，得不出时逐个弹框确认 | 未开始 | 无 | 弹框部分等 HTML 预览确认 |
-| AC4 agent_manage message 只给主代理，PM 收到标为主代理转述 | 未开始 | 无 | 无 |
+| AC4 agent_manage message 只给主代理，PM 收到标为主代理转述 | 通过 | 本提交；tests/pm-dispatch.test.ts「M8D-AC4」（PM 收到带【主代理转述】标签的消息、暂停时排队到恢复后送达、无 PM 与超长拒绝并写明原因）、tests/core-permissions.test.ts（只有 main 有 message，PM 与其他角色没有；主会话 agent_manage 的动作都在核心表内）、tests/daemon-protocol.test.ts（pm.message 登记与参数校验） | 无 |
 | AC5 两个命令与窗口绑定机制删除干净，README 写明 @需求 用法 | 未开始 | 无 | 无 |
 | AC6 真实模型跑一轮 | 未开始 | 无 | 依赖 AC1—AC5、AC7 |
 | AC7 通用问答窗口与程序确认窗口，现有弹框全部改用 | 未开始 | 无 | 等 HTML 预览确认 |
