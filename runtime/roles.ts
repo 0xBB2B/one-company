@@ -10,6 +10,8 @@ export const INTERNAL_ROLES = ["interpreter", "draft-verifier"] as const;
 export type InternalRole = (typeof INTERNAL_ROLES)[number];
 export type DefinitionRole = AgentRole | InternalRole;
 export function isAgentRole(role: DefinitionRole): role is AgentRole { return (AGENT_ROLES as readonly string[]).includes(role); }
+/** pm 与内部定义各只有一份，只能同名复制来覆盖包内默认。 */
+export function sameNameOnly(role: DefinitionRole): boolean { return role === "pm" || !isAgentRole(role); }
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
@@ -54,9 +56,11 @@ export interface LoadRoleCatalogOptions {
 }
 
 export interface RoleCatalogProblem {
+  kind: "unreadable" | "foreign" | "invalid" | "untrusted";
   source: RoleSource;
   dir: string;
   reason: string;
+  problem?: RoleDefinitionProblem;
 }
 
 export interface RoleCatalog {
@@ -65,7 +69,7 @@ export interface RoleCatalog {
 }
 
 const FIELDS = new Set(["name", "description", "role", "model", "thinking", "mcp", "skills"]);
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const MAX_DESCRIPTION_CODEPOINTS = 1024;
 
 // 解析器的错误消息会附带出错处的源文本，只保留首行以免把文件内容带进不可用原因
@@ -148,7 +152,7 @@ async function loadLayerEntries(
     dirents = await readdir(dir, { withFileTypes: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      problems.push({ source, dir, reason: errorText(error) });
+      problems.push({ kind: "unreadable", source, dir, reason: errorText(error) });
     }
     return [];
   }
@@ -163,7 +167,7 @@ async function loadLayerEntries(
     try {
       // 缺 role 的是其他宿主的 agent 定义：不导入、不推断职责，也不影响默认团队
       if (parseFrontmatter(await readFile(path, "utf8")).frontmatter.role === undefined) {
-        problems.push({ source, dir: path, reason: "缺少 role，视为其他宿主定义，未导入" });
+        problems.push({ kind: "foreign", source, dir: path, reason: "缺少 role，视为其他宿主定义，未导入" });
         continue;
       }
       const definition = await readRoleDefinition(path, parseFrontmatter);
@@ -194,14 +198,14 @@ export async function loadRoleCatalog(options: LoadRoleCatalogOptions): Promise<
       const lower = merged.get(entry.name);
       // 无效定义不隐式顶掉下层有效定义；明确报错并保留下层
       if (!entry.available && lower?.available) {
-        problems.push({ source: entry.source, dir: entry.path, reason: `${entry.reason}；未覆盖${lower.source}层的 ${entry.name}` });
+        problems.push({ kind: "invalid", source: entry.source, dir: entry.path, reason: `${entry.reason}；未覆盖${lower.source}层的 ${entry.name}`, ...(entry.problem ? { problem: entry.problem } : {}) });
         continue;
       }
       merged.set(entry.name, lower ? { ...entry, overrides: [...(lower.overrides ?? []), lower.source] } : entry);
     }
   }
   if (!options.projectTrusted) {
-    problems.push({ source: "project", dir: options.projectDir, reason: "项目未受宿主信任，项目层角色定义未生效" });
+    problems.push({ kind: "untrusted", source: "project", dir: options.projectDir, reason: "项目未受宿主信任，项目层角色定义未生效" });
   }
 
   return { roles: [...merged.values()], problems };

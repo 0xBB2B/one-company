@@ -1,12 +1,15 @@
-import { chooseWindow } from "../runtime/question-window.ts";
+import { existsSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { chooseWindow, mutedLines } from "../runtime/question-window.ts";
+import type { WindowChoice } from "../runtime/question-window.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readGit } from "../runtime/git-read.ts";
-import { AgentCatalogView } from "../runtime/agent-catalog-ui.ts";
-import type { AgentCatalogTheme } from "../runtime/agent-catalog-ui.ts";
+import { AgentCatalogView, INTERNAL_LABEL, tilde } from "../runtime/agent-catalog-ui.ts";
+import type { AgentCatalogTheme, CatalogNotice, CatalogPageState, CopyRequest } from "../runtime/agent-catalog-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../runtime/agent-copy.ts";
-import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
-import type { FrontmatterParser, RoleCatalogEntry } from "../runtime/roles.ts";
+import { defaultRoleDir, isAgentRole, loadRoleCatalog, projectRoleDir, sameNameOnly, userRoleDir } from "../runtime/roles.ts";
+import type { FrontmatterParser } from "../runtime/roles.ts";
 
 function parseFrontmatterValue(raw: string): unknown {
   if (raw === "true") return true;
@@ -62,26 +65,42 @@ export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<v
   const projectTrusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true;
   const agentDir = resolveAgentDir(process.env);
   const dirs = { defaultDir: defaultRoleDir(), userDir: userRoleDir(agentDir), projectDir: projectRoleDir(await resolveRepoRoot(ctx.cwd)) };
+  const layers = [{ label: "内置层", dir: dirs.defaultDir }, { label: "用户层", dir: dirs.userDir }, { label: "项目层", dir: dirs.projectDir }];
+  const fileOf = (dir: string, name: string) => join(dir, `${name}.md`);
+  const nameTaken = (name: string) => layers.find((layer) => existsSync(fileOf(layer.dir, name)))?.label;
+  const untrustedProjectCount = projectTrusted ? 0 : await readdir(dirs.projectDir).then((files) => files.filter((file) => file.endsWith(".md")).length, () => 0);
+  let state: CatalogPageState | undefined;
   for (;;) {
     const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted });
-    const picked = await ctx.ui.custom<RoleCatalogEntry | undefined>((tui, theme, _keybindings, done) => {
-      const view = new AgentCatalogView({ catalog, theme: theme as unknown as AgentCatalogTheme, onCopy: (entry) => done(entry), onClose: () => done(undefined) });
+    const picked = await ctx.ui.custom<{ request: CopyRequest; state: CatalogPageState } | undefined>((tui, theme, _keybindings, done) => {
+      const view: AgentCatalogView = new AgentCatalogView({ catalog, theme: theme as unknown as AgentCatalogTheme, projectTrusted, untrustedProjectCount, nameTaken,
+        ...(state ? { state } : {}), onCopy: (request) => done({ request, state: view.state() }), onClose: () => done(undefined) });
       return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
         handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); } };
     });
     if (!picked) return;
-    const newName = (await ctx.ui.input(`复制 ${picked.name} 为新定义：输入名称`, picked.definition?.role === "pm" ? "pm" : `${picked.name}-copy`))?.trim();
-    if (!newName) continue;
-    const layer = await chooseWindow(ctx, { title: "复制到", lines: [], choices: [{ label: "用户层", description: dirs.userDir },
-      ...(projectTrusted ? [{ label: "项目层", description: dirs.projectDir }] : [])] });
-    if (!layer) continue;
+    const { entry, name } = picked.request;
+    const internal = !isAgentRole(entry.definition!.role);
+    const back = (notice: CatalogNotice, selectName = entry.name, fresh?: string) => { state = { ...picked.state, selectName, notice, ...(fresh ? { fresh } : {}) }; };
+    const target = (dir: string) => ({ path: fileOf(dir, name), taken: existsSync(fileOf(dir, name)) });
+    const user = target(dirs.userDir), project = target(dirs.projectDir);
+    const choices: WindowChoice[] = [
+      { label: "用户层", ...(user.taken ? { disabled: `已有 ${tilde(user.path)}` } : { description: tilde(user.path) }) },
+      { label: "项目层", ...(!projectTrusted ? { disabled: "项目未受信任，暂不能复制到这里" } : project.taken ? { disabled: `已有 ${tilde(project.path)}` } : { description: tilde(project.path) }) },
+    ];
+    if (choices.every((choice) => choice.disabled)) {
+      back({ tone: "muted", text: project.taken ? `用户层和项目层都已经有 ${name}，直接编辑对应文件即可` : `用户层已经有 ${name}，直接编辑这个文件即可；项目未受信任，不能复制到项目层` });
+      continue;
+    }
+    const layer = await chooseWindow(ctx, { title: `复制${internal ? INTERNAL_LABEL[entry.name] : ` ${entry.name} `}到哪一层？`,
+      lines: sameNameOnly(entry.definition!.role) ? [] : mutedLines([`新名称：${name}`]), choices });
+    if (!layer) { back({ tone: "muted", text: "已取消复制" }); continue; }
     try {
-      const target = await copyAgentDefinition({ entry: picked, newName, targetDir: layer === "用户层" ? dirs.userDir : dirs.projectDir,
-        layerDirs: [dirs.defaultDir, dirs.userDir, dirs.projectDir] });
-      ctx.ui.notify(`已复制到 ${target}，请直接编辑该文件`);
+      const copied = await copyAgentDefinition({ entry, newName: name, targetDir: layer === "用户层" ? dirs.userDir : dirs.projectDir, layerDirs: layers.map((item) => item.dir) });
+      back({ tone: "ok", text: `✓ 已复制到 ${tilde(copied)}，${internal ? "改 model 和 thinking 两行即可" : "请直接编辑这个文件"}` }, name, name);
     } catch (error) {
       if (!(error instanceof AgentCopyError)) throw error;
-      ctx.ui.notify(error.message, "error");
+      back({ tone: "muted", text: error.message });
     }
   }
 }
