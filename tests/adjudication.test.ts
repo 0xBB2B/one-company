@@ -44,7 +44,7 @@ async function world() {
     main.adjudicate(text, entries, target, itemVersion ?? (target === itemId ? version() : `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`), opened);
   const { interaction, ctx } = main;
   const decisions = () => w.db((db) => db.list("short_decisions")).length;
-  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx };
+  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx, windows: main.windows, answerWindows: main.answerWindows };
 }
 
 test("M7-AC35：用户原话选择再给一次机会时登记用户决定，任务回到可派出，事项从概览消失，PM 收到固定告知，按用户上限派出且不能带 retry", async () => {
@@ -109,15 +109,28 @@ test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项�
   expect(task("login").userDecision?.usedByRunId).toBe(second.runId);
 });
 
-test("M8D-AC3：裁决只认用户最后在面板打开的事项；没打开过或打开的不是这个事项时不登记", async () => {
+test("M8D-AC3：从面板打开的事项直接登记不弹窗；没打开过或打开的不是这个事项时弹出登记裁决窗口，显示需求名与事项名，取消即不登记", async () => {
   const w = await world();
   const before = w.decisions();
   const retry = [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])];
-  await expect(w.adjudicate("再给一次，3 轮", retry, w.itemId, undefined, false)).rejects.toMatchObject({ code: "decision_target_unknown" });
-  w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: `requirement:${w.fixture.requirementId}` });
-  await expect(w.adjudicate("再给一次，3 轮", retry, w.itemId, undefined, false)).rejects.toMatchObject({ code: "decision_target_unknown" });
+  w.answerWindows(false);
+  await expect(w.adjudicate("再给一次，3 轮", retry, w.itemId, undefined, false)).rejects.toMatchObject({ code: "adjudication_declined" });
+  expect(w.windows).toHaveLength(1);
+  expect(w.windows[0]!.title).toBe("登记裁决");
+  expect(w.windows[0]!.text).toMatch(/需求：\S+/u);
+  expect(w.windows[0]!.text).toContain("事项：待你裁决：任务 login");
+  expect(w.windows[0]!.text).toContain(`编号：${w.fixture.requirementId}`);
   expect(w.decisions()).toBe(before);
-  expect(await w.adjudicate("再给一次，3 轮", retry)).toMatchObject({ status: "recorded", choice: "retry" });
+  w.answerWindows(true);
+  w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: `requirement:${w.fixture.requirementId}` });
+  expect(await w.adjudicate("再给一次，3 轮", retry, w.itemId, undefined, false)).toMatchObject({ status: "recorded", choice: "retry" });
+  expect(w.windows).toHaveLength(2);
+});
+
+test("M8D-AC3：从面板打开事项后回答直接登记，不弹窗", async () => {
+  const w = await world();
+  expect(await w.adjudicate("再给一次，3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])])).toMatchObject({ status: "recorded" });
+  expect(w.windows).toHaveLength(0);
 });
 
 test("M7-AC35：解释器引用了错误版本、用户没说清或没有当前原话时都不登记，任务仍待裁决", async () => {

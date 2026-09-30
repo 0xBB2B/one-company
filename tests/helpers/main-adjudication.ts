@@ -5,6 +5,8 @@ import { HostAuthorizationManager } from "../../runtime/host-authorization.ts";
 import { MainRequirementInteraction } from "../../runtime/main-requirement-interaction.ts";
 import { createUserInteractTool } from "../../runtime/user-interact-tool.ts";
 import type { createPmRunWorld } from "./run-manager-fixture.ts";
+import { answeringUi } from "./window-host.ts";
+import type { ShownWindow } from "./window-host.ts";
 
 type PmRunWorld = Awaited<ReturnType<typeof createPmRunWorld>>;
 
@@ -17,8 +19,11 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
   const authorization = new HostAuthorizationManager({ dataRoot: w.fixture.dataRoot });
   authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [w.fixture.repoId] });
   const registry = new ModelRegistry(w.runtime), model = w.runtime.getModels("team-model")[0]!;
+  const windows: ShownWindow[] = [];
+  let windowAnswer = true;
   const ctx = { cwd: w.fixture.repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
-    ui: { notify: () => {}, confirm: () => { throw new Error("UI.confirm forbidden"); } }, sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
+    ui: { notify: () => {}, confirm: () => { throw new Error("UI.confirm forbidden"); }, ...answeringUi((window) => { windows.push(window); return windowAnswer; }) },
+    sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   const interaction = new MainRequirementInteraction({ dataRoot: w.fixture.dataRoot, authorization,
     resolveHost: () => ({ windowId, sessionId, repositories: new Map([[w.fixture.repoId, { path: w.fixture.repositoryRoot }]]) }) });
   cleanups.push(() => { interaction.dispose(); authorization.shutdown(); });
@@ -36,5 +41,5 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     interaction.assertDelivery(toolCallId, ctx);
     return result.details as Record<string, unknown>;
   }
-  return { entry, adjudicate, interaction, ctx };
+  return { entry, adjudicate, interaction, ctx, windows, answerWindows: (answer: boolean) => { windowAnswer = answer; } };
 }

@@ -29,7 +29,7 @@ import type { RequirementRecord } from "./requirement-contracts.ts";
 import type { RequirementApprovalScope } from "./requirement-manage-contracts.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE } from "./interaction-continuity.ts";
 import { approvalManifestReference } from "./approval-manifest.ts";
-import { adjudicationSubject, applyAdjudication } from "./adjudication.ts";
+import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "./adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "./requirement-summary.ts";
 import { confirmWindow, mutedLines } from "./question-window.ts";
 import type { AdjudicationSubject } from "./user-interaction-format.ts";
@@ -161,20 +161,25 @@ export class MainRequirementInteraction {
   async mentionCandidates(ctx: ExtensionContext): Promise<Array<{ repoId: string; requirementId: string; title: string; lifecycle: "draft" | "active" }>> {
     const host = this.#host(ctx), result: Array<{ repoId: string; requirementId: string; title: string; lifecycle: "draft" | "active" }> = [];
     for (const item of this.#authorization.listRequirements(host.sessionId)) {
-      const hash = this.#authorization.snapshot(item.repoId, item.requirementId, host.sessionId).data.saved?.hash;
-      const repository = host.repositories.get(item.repoId);
-      if (!hash || !repository) continue;
-      let cached = this.#titles.get(item.requirementId);
-      if (cached?.hash !== hash) {
-        const service = await (this.#options.openService ?? RequirementService.open)({ repositoryRoot: repository.path, dataRoot: this.#options.dataRoot, repoId: item.repoId,
-          authorize: (request) => request.repoId === item.repoId && ["metadata", "readSaved"].includes(request.action)
-            && (request.requirementId === undefined || request.requirementId === item.requirementId) });
-        cached = { hash, title: (await service.read({ requirementId: item.requirementId, source: "saved" })).title };
-        this.#titles.set(item.requirementId, cached);
-      }
-      result.push({ repoId: item.repoId, requirementId: item.requirementId, title: cached.title, lifecycle: item.lifecycle });
+      if (!host.repositories.has(item.repoId)) continue;
+      const title = await this.#requirementTitle(host, item.repoId, item.requirementId);
+      if (title !== undefined) result.push({ repoId: item.repoId, requirementId: item.requirementId, title, lifecycle: item.lifecycle });
     }
     return result;
+  }
+  async #requirementTitle(host: RequirementManageHostContext, repoId: string, requirementId: string): Promise<string | undefined> {
+    const hash = this.#authorization.snapshot(repoId, requirementId, host.sessionId).data.saved?.hash;
+    const repository = host.repositories.get(repoId);
+    if (!hash || !repository) return undefined;
+    let cached = this.#titles.get(requirementId);
+    if (cached?.hash !== hash) {
+      const service = await (this.#options.openService ?? RequirementService.open)({ repositoryRoot: repository.path, dataRoot: this.#options.dataRoot, repoId,
+        authorize: (request) => request.repoId === repoId && ["metadata", "readSaved"].includes(request.action)
+          && (request.requirementId === undefined || request.requirementId === requirementId) });
+      cached = { hash, title: (await service.read({ requirementId, source: "saved" })).title };
+      this.#titles.set(requirementId, cached);
+    }
+    return cached.title;
   }
   /** 面板打开事项时由宿主记下；用户随后的回答就是对这个事项的裁决。 */
   noteOpenedItem(item: { repoId: string; requirementId: string; itemId: string }): void { this.#openedItem = Object.freeze({ ...item }); }
@@ -448,11 +453,18 @@ export class MainRequirementInteraction {
    */
   async adjudicate(ctx: ExtensionContext, request: { repoId: string; requirementId: string; itemId: string; itemVersion: string }): Promise<Record<string, unknown>> {
     this.#currentInput(ctx);
-    const host = this.#host(ctx), opened = this.#openedItem;
-    if (!opened || opened.repoId !== request.repoId || opened.requirementId !== request.requirementId || opened.itemId !== request.itemId) denied("decision_target_unknown");
-    const subject = adjudicationSubject({ dataRoot: this.#options.dataRoot, repoId: request.repoId }, request.requirementId, request.itemId);
+    const host = this.#host(ctx), opened = this.#openedItem, ref = { dataRoot: this.#options.dataRoot, repoId: request.repoId };
+    const subject = adjudicationSubject(ref, request.requirementId, request.itemId);
     // 用户看到的是决策包生成时的事项；此后事项已变化，须刷新重看，不能按新状态替用户登记
     if (subject.version !== request.itemVersion) return denied("item_changed");
+    // 裁决对象只认用户在面板里打开的事项；没打开时由用户在程序窗口里亲手确认事项
+    if (!opened || opened.repoId !== request.repoId || opened.requirementId !== request.requirementId || opened.itemId !== request.itemId) {
+      const title = await this.#requirementTitle(host, request.repoId, request.requirementId);
+      const approved = await confirmWindow(ctx, { title: "登记裁决", lines: [{ text: `需求：${title}` }, { text: `事项：${adjudicationItemLabel(ref, request.requirementId, request.itemId)}` },
+        ...mutedLines([`编号：${request.requirementId} · 仓库：${basename(host.repositories.get(request.repoId)!.path)}`])] });
+      if (!approved) denied("adjudication_declined");
+      this.#currentInput(ctx);
+    }
     this.#candidate = undefined; this.#capability = undefined; this.#interpretation = undefined;
     this.#adjudication = { requirementId: request.requirementId, subject };
     try {

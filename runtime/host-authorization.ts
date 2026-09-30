@@ -34,7 +34,7 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   stale_host: { why: "窗口或会话已切换，本次操作作废", next: "在当前窗口里重新发起" },
   requirement_list_limit: { why: "草稿和进行中的需求太多，超出一次能列出的上限（32 个）", next: "请用户先关闭或取消不再需要的需求" },
   requirement_list_invalid: { why: "需求列表里有记录不合规", next: STOP },
-  decision_target_unknown: { why: "用户没有在面板里打开这个事项，程序无法确认这句话是对哪个事项的裁决", next: "请用户在面板里打开这个事项后再回答" },
+  adjudication_declined: { why: "用户在确认窗口里没有确认这次裁决", next: "不要重试；告诉用户这句话没有登记成裁决" },
   decision_declined: { why: "用户在确认窗口里没有确认这次批准", next: "不要重试；按用户的意思继续澄清或修改草稿" },
   listener_limit: { why: "监听数量超出上限", next: STOP },
   database_missing: { why: "找不到本机需求数据库", next: "请用户确认已初始化项目并在主窗口重试" },

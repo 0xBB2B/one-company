@@ -74,6 +74,16 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
   });
 }
 
+/** 裁决确认窗口里显示的事项名：面板上那一行的文字；取消或拒绝整个需求不对应面板的某一行。 */
+export function adjudicationItemLabel(ref: Ref, requirementId: string, itemId: string): string {
+  if (itemId === `requirement:${requirementId}`) return "取消或拒绝整个需求";
+  return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
+    const { record, lease } = current(db, requirementId);
+    const item = pendingItemsIn({ ...ref, db, record, lease }, readPlanIn(db, requirementId)?.tasks ?? []).find((candidate) => candidate.itemId === itemId);
+    return item?.label ?? deny("item_not_pending");
+  });
+}
+
 function parse(references: readonly string[]): { itemId: string; version: string; choice: AdjudicationChoice; maxTurns: number | null } {
   const value = (prefix: string) => {
     const found = references.filter((reference) => reference.startsWith(`${prefix}:`));
