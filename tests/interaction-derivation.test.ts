@@ -97,3 +97,66 @@ test("M9：动作列了一条目标里的某段就覆盖整条目标，漏列同
   separate.output.entries[2] = { ...separate.output.entries[0]!, conclusion: "微信也要", unitIds: ["B"] };
   expect(separate.derive().documentReview!.actions).toMatchObject([{ action: "implement", goalIds: ["A"] }]);
 });
+
+/** 上一版里 preamble 与 A 已被用户明确确认、字节没变；这一版只新增了 B。 */
+function retainedFixture() {
+  const f = fixture();
+  const evidence = (unitId: string, kind: "target" | "constraint") => {
+    const unit = f.context.document!.partition.units.find((candidate) => candidate.id === unitId)!;
+    return { fact: { id: uuidv7(), version: 1, hash: "c".repeat(64) }, decision: { id: uuidv7(), version: 1, hash: "d".repeat(64) },
+      sourceBasis: { ...f.context.basis }, sourceBinding: f.candidate, unitId, unitHash: unit.hash, kind };
+  };
+  const retained = [evidence("preamble", "constraint"), evidence("A", "target")];
+  f.context.retainedEvidence = retained;
+  const common = { basis: "explicit" as const, resolution: "direct" as const, candidateId: f.candidate.candidateId, requestId: null, actions: [], references: [], supersedes: [], scope: "仅微信" };
+  f.output.unitHints = [];
+  f.output.entries = [{ ...common, kind: "target", conclusion: "新增微信登录", unitIds: ["B"] }];
+  return { ...f, retained, common };
+}
+
+test("M8D-AC3：没改动且以前确认过的段落，解释器只列为待定时由程序沿用原依据，待定条目去掉，整份改判为忠实", () => {
+  const f = retainedFixture();
+  f.output.faithful = false;
+  f.output.entries.push({ ...f.common, kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "旧段落这次没提", unitIds: ["preamble", "A"] });
+  const result = f.derive(), units = result.documentReview!.units;
+  expect(result.entries).toHaveLength(1);
+  expect(result.documentReview!.faithful).toBe(true);
+  expect(units.find((u) => u.id === "preamble")).toMatchObject({ disposition: "confirmed", conclusionIndexes: [], retainedFactIds: [f.retained[0]!.fact.id] });
+  expect(units.find((u) => u.id === "A")).toMatchObject({ disposition: "confirmed", conclusionIndexes: [], retainedFactIds: [f.retained[1]!.fact.id] });
+  expect(units.find((u) => u.id === "B")).toMatchObject({ disposition: "confirmed", conclusionIndexes: [0] });
+});
+
+test("M8D-AC3：解释器完全没提到的没改动段落同样由程序沿用原依据", () => {
+  const f = retainedFixture();
+  const units = f.derive().documentReview!.units;
+  expect(units.find((u) => u.id === "A")).toMatchObject({ conclusionIndexes: [], retainedFactIds: [f.retained[1]!.fact.id] });
+  expect(units.find((u) => u.id === "preamble")).toMatchObject({ retainedFactIds: [f.retained[0]!.fact.id] });
+});
+
+test("M8D-AC3：用户要修改或排除的段落、挂在问题下的待定条目，不由程序沿用", () => {
+  const modify = retainedFixture();
+  modify.output.faithful = false;
+  modify.output.entries.push({ ...modify.common, kind: "target", resolution: "modify", conclusion: "手机号改成只支持大陆号码", unitIds: ["A"] });
+  const changed = modify.derive();
+  expect(changed.documentReview!.faithful).toBe(false);
+  expect(changed.documentReview!.units.find((u) => u.id === "A")).toMatchObject({ disposition: "pending-description", conclusionIndexes: [1] });
+  expect(changed.documentReview!.units.find((u) => u.id === "A")!.retainedFactIds).toBeUndefined();
+  const asked = retainedFixture(), requestId = uuidv7();
+  asked.context.questions = [{ format: "interaction-question/v1", requestId, repoId: "e".repeat(64), basis: asked.context.basis, candidate: asked.candidate,
+    proposal: { conclusion: "手机号要不要限制地区？", scope: "仅 A", references: [], supersedes: [] }, actions: [], createdAt: 1, unitIds: ["A"] }];
+  asked.output.faithful = false;
+  asked.output.entries.push({ ...asked.common, kind: "unresolved", basis: "uncertain", resolution: "defer", requestId, conclusion: "地区限制未答", unitIds: ["A"] });
+  const pending = asked.derive();
+  expect(pending.entries).toHaveLength(2);
+  expect(pending.documentReview!.faithful).toBe(false);
+  expect(pending.documentReview!.units.find((u) => u.id === "A")!.retainedFactIds).toBeUndefined();
+});
+
+test("M8D-AC3：沿用的原依据是排除时该段标为已排除；同一段里排除与确认混在一起时不由程序沿用", () => {
+  const excluded = retainedFixture();
+  excluded.retained[1]!.kind = "exclusion" as never;
+  expect(excluded.derive().documentReview!.units.find((u) => u.id === "A")).toMatchObject({ disposition: "excluded", retainedFactIds: [excluded.retained[1]!.fact.id] });
+  const mixed = retainedFixture();
+  mixed.context.retainedEvidence = [...mixed.retained, { ...mixed.retained[1]!, fact: { ...mixed.retained[1]!.fact, id: uuidv7() }, kind: "exclusion" }];
+  expect(mixed.derive().documentReview!.units.find((u) => u.id === "A")!.retainedFactIds).toBeUndefined();
+});

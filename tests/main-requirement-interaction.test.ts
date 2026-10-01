@@ -688,3 +688,23 @@ test("M8D-AC3：一句话 @ 两个需求并批准，两个需求按各自的版�
   expect(other).toMatchObject({ prodActivated: true });
   expect(w.windows).toHaveLength(0);
 });
+
+test("M8D-AC3：已批准的需求只改一段后再批准，解释器只确认改动的那段、把没改的段落列为待定，程序沿用原批准，更新照常生效", async () => {
+  const w = await world(), created = await w.create(), first = await w.request(created);
+  w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
+  expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prodActivated: true });
+  w.capture("验收补一条：手机号连续失败三次后锁定十分钟"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  const updateOperation = uuidv7();
+  const updated = await w.call({ action: "updateDraft", requirementId: first.input.requirementId, version: Number((await w.call({ action: "metadata", requirementId: first.input.requirementId })).version),
+    operationId: updateOperation, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "手机号连续失败三次后锁定十分钟。\n" });
+  const next = await w.request({ ...created, operationId: updateOperation, version: updated.version });
+  const base = phoneReview(next.loaded), entry = base.entries[0]!;
+  const sms = base.entries.find((e) => e.kind === "unresolved")!, delegation = base.entries.find((e) => e.kind === "delegation")!;
+  const untouched = next.loaded.partition.units.map((unit) => unit.id).filter((id) => !["acceptance", "SMS", "D"].includes(id));
+  const review = { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: false, entries: [
+    { ...entry, kind: "constraint", conclusion: "验收补充失败锁定", unitIds: ["acceptance"] }, sms, delegation,
+    { ...entry, kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "其余段落这次没有重新确认", unitIds: untouched }] };
+  w.capture("更新我确认，批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }, { type: "text", text: JSON.stringify(review) }]);
+  const outcome = await w.call({ action: "confirmUpdate", ...next.input }).then((r) => r, (e: unknown) => e);
+  expect(outcome).toMatchObject({ prodActivated: true });
+});

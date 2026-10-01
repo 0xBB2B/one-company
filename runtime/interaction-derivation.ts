@@ -29,9 +29,10 @@ export function uncoveredUnits(result: Static<typeof InteractionInterpretation>)
 /** 把模型回答转成标准解释结果；只做编号与闭包记账，是否可批准仍由 checkInterpretation 与 validateDocumentReview 判定。 */
 export function deriveInterpretation(source: string, context: InteractionContext): Static<typeof InteractionInterpretation> {
   const model = parseInteraction(ModelInterpretation, source);
-  const unitIds = model.entries.map((e) => e.unitIds ?? []);
-  const entries: Entry[] = model.entries.map(({ unitIds: _unitIds, ...entry }: ModelEntry) => entry);
-  const { faithful, unitHints, ...rest } = model;
+  let unitIds = model.entries.map((e) => e.unitIds ?? []);
+  let entries: Entry[] = model.entries.map(({ unitIds: _unitIds, ...entry }: ModelEntry) => entry);
+  const { faithful: modelFaithful, unitHints, ...rest } = model;
+  let faithful = modelFaithful;
   const document = context.document;
   if (!document) {
     // 没有正文时 faithful: true 与空 unitHints 不带信息，照忽略；带了单位或表示不忠实的仍拒绝
@@ -41,6 +42,27 @@ export function deriveInterpretation(source: string, context: InteractionContext
   if (faithful === undefined) return invalid();
   const hint = (id: string) => unitHints?.find((h) => h.id === id);
   const candidateId = document.candidate.candidateId;
+  // 字节没变且以前由用户明确确认过的段落，程序直接沿用原依据，不依赖模型每次都记得引用；
+  // 模型说要修改、排除，或条目挂在某个问题下的，仍按模型的来
+  const retainedFacts = new Map<string, string[]>(), retainedExclusion = new Map<string, boolean[]>();
+  for (const e of context.retainedEvidence ?? []) {
+    retainedFacts.set(e.unitId, [...(retainedFacts.get(e.unitId) ?? []), e.fact.id]);
+    retainedExclusion.set(e.unitId, [...(retainedExclusion.get(e.unitId) ?? []), e.kind === "exclusion"]);
+  }
+  // 同一段里排除与确认两类原依据混在一起时不替模型决定
+  const sameKind = (id: string) => new Set(retainedExclusion.get(id)).size === 1;
+  const onlyUnconfirmed = (e: Entry) => e.kind === "unresolved" && e.requestId === null && !e.supersedes.length;
+  const reused = new Set([...retainedFacts.keys()].filter((id) => sameKind(id) && !hint(id)?.retainedFactIds?.length &&
+    entries.every((e, i) => e.kind === "action" || !unitIds[i]!.includes(id) || onlyUnconfirmed(e))));
+  const stripped = unitIds.map((ids, i) => onlyUnconfirmed(entries[i]!) ? ids.filter((id) => !reused.has(id)) : ids);
+  const emptied = stripped.map((ids, i) => unitIds[i]!.length > 0 && ids.length === 0);
+  if (reused.size && !emptied.every(Boolean)) {
+    const cleared = stripped.some((ids, i) => ids.length !== unitIds[i]!.length);
+    entries = entries.filter((_, i) => !emptied[i]); unitIds = stripped.filter((_, i) => !emptied[i]);
+    // 模型判不忠实的理由若只是这些段落没被重新确认，沿用之后就不再成立
+    // 正文里写明的未决事项照样可以列为待定，不影响忠实；仍有要修改、暂缓或说不清的条目才算不忠实
+    if (cleared && !entries.some((e) => ["modify", "defer", "unclear"].includes(e.resolution))) faithful = true;
+  } else reused.clear();
   const units = document.partition.units.map(({ id }) => {
     let indexes = entries.flatMap((e, i) => e.kind !== "action" && unitIds[i]!.includes(id) ? [i] : []);
     // 身份与标题段：用户明确确认了同一候选的目标，即视为确认了这份草稿的身份；它永远不作动作目标
@@ -48,11 +70,13 @@ export function deriveInterpretation(source: string, context: InteractionContext
       indexes = entries.flatMap((e, i) => e.kind === "target" && explicit(e) && e.requestId === null && e.candidateId === candidateId ? [i] : []);
     }
     const related = indexes.map((i) => entries[i]!);
-    const disposition = related.length && related.every((e) => e.kind === "exclusion" && explicit(e)) ? "excluded" as const
-      : related.some((e) => !confirmed(e)) ? "pending-description" as const : "confirmed" as const;
     const h = hint(id);
+    const reusing = !h?.retainedFactIds?.length && reused.has(id) && !indexes.length;
+    const retainedFactIds = h?.retainedFactIds?.length ? h.retainedFactIds : reusing ? retainedFacts.get(id) : undefined;
+    const disposition = related.length && related.every((e) => e.kind === "exclusion" && explicit(e)) || reusing && retainedExclusion.get(id)![0] ? "excluded" as const
+      : related.some((e) => !confirmed(e)) ? "pending-description" as const : "confirmed" as const;
     return { id, disposition, globalConstraint: h?.globalConstraint ?? false, appliesTo: h?.appliesTo ?? [], dependsOn: h?.dependsOn ?? [],
-      conclusionIndexes: indexes, ...(h?.retainedFactIds?.length ? { retainedFactIds: h.retainedFactIds } : {}) };
+      conclusionIndexes: indexes, ...(retainedFactIds ? { retainedFactIds } : {}) };
   });
   const goalUnits = new Set(units.filter((u) => u.id !== "metadata" && u.conclusionIndexes.some((i) => entries[i]!.kind === "target" && explicit(entries[i]!))).map((u) => u.id));
   const targetGroups = entries.flatMap((e, i) => e.kind === "target" && explicit(e) ? [unitIds[i]!.filter((id) => goalUnits.has(id))] : []);
