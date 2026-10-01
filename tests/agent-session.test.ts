@@ -93,6 +93,18 @@ describe("工具集与模型请求一致", () => {
     expect(s.provider.requests[0]?.systemPrompt).toContain("ROLE-BODY-worker");
     expect(s.provider.requests[0]?.systemPrompt).toContain("TASK-CONTEXT");
   }, 20000);
+
+  test("M8D2-AC1：子代理的系统提示含共享规范，不含只给主窗口的规范", async () => {
+    const w = await world();
+    const s = await w.session("worker", [{ type: "text", text: "x" }]);
+    s.handle.prompt("开始");
+    await until(() => s.provider.requests.length === 1);
+    const prompt = s.provider.requests[0]!.systemPrompt!;
+    for (const heading of ["## 工作纪律", "## 收尾自检", "## 搜索范围"]) expect(prompt).toContain(heading);
+    expect(prompt.indexOf("ROLE-BODY-worker")).toBeLessThan(prompt.indexOf("## 工作纪律"));
+    expect(prompt.indexOf("## 搜索范围")).toBeLessThan(prompt.indexOf("## 本次任务"));
+    for (const heading of ["## 主会话职责", "## 沟通方式", "## 递进式澄清", "## 执行授权", "## 归档需求", "## 简报"]) expect(prompt).not.toContain(heading);
+  }, 20000);
 });
 
 describe("工具调用边界", () => {

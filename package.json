@@ -19,6 +19,7 @@
     "resources/tree-sitter",
     "runtime",
     "rules",
+    "shared",
     "skills",
     "README.md",
     "LICENSE"

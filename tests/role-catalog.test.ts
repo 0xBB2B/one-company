@@ -65,6 +65,11 @@ describe("内置默认团队", () => {
     expect(body("reviewer")).toMatch(/核对需求边界[\s\S]*「不做、不改」[\s\S]*违反列为阻塞[\s\S]*summary 逐条写明这些边界的核对结果/);
     expect(body("qa")).toContain("审查已覆盖的不标未验证，审查没提到的才标未验证");
   });
+  test("M8D2-AC1：角色说明不重复共享规范里的搜索范围", async () => {
+    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
+    for (const role of roles) expect(role.definition!.body).not.toContain("被 Git 忽略");
+    expect(await readFile(join(defaultRoleDir(), "..", "shared", "03-search-scope.md"), "utf8")).toContain("被 Git 忽略");
+  });
   test("M8B-AC4：主会话规则含规范与需求的分流，worker 遵守、reviewer 按项目规范把关、PM 不与之冲突，都不能改 AGENTS.md", async () => {
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
     const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;

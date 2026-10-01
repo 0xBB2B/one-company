@@ -30,9 +30,9 @@ describe("package.json 声明契约", () => {
     expect(pkg.pi?.prompts).toEqual([]);
   });
 
-  test("files 含 agents、daemon、extensions、runtime、rules", async () => {
+  test("files 含 agents、daemon、extensions、runtime、rules、shared", async () => {
     const pkg = await readPackageJson();
-    for (const entry of ["agents", "daemon", "extensions", "runtime", "rules"]) {
+    for (const entry of ["agents", "daemon", "extensions", "runtime", "rules", "shared"]) {
       expect(pkg.files).toContain(entry);
     }
   });

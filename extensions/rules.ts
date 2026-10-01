@@ -1,22 +1,11 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dataRoot as defaultDataRoot } from "../runtime/identity.ts";
+import { loadPackageRules } from "../runtime/package-rules.ts";
 import { resolveRepositoryRequirementDoc, resolveRequirementDoc } from "../runtime/requirement-doc.ts";
 import type { ResolvedRequirementDoc } from "../runtime/requirement-doc.ts";
 import { currentMentionNote, windowContext as defaultWindowContext } from "./lifecycle.ts";
 import type { WindowContextValue } from "./lifecycle.ts";
-
-const rulesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "rules");
-
-function loadRules(): string {
-	return readdirSync(rulesDir)
-		.filter((file) => file.endsWith(".md"))
-		.sort()
-		.map((file) => readFileSync(join(rulesDir, file), "utf8").trim())
-		.join("\n\n");
-}
 
 function repositoryList(windowContext: () => Pick<WindowContextValue, "workspace">): string {
 	let repos: WindowContextValue["workspace"]["repos"];
@@ -54,7 +43,7 @@ async function requirementDocGuide(dataRoot: () => string, windowContext: () => 
 }
 
 export default function rulesExtension(pi: ExtensionAPI, deps: { windowContext?: () => Pick<WindowContextValue, "workspace">; dataRoot?: string } = {}) {
-	const rules = loadRules();
+	const rules = [loadPackageRules("rules"), loadPackageRules("shared")].join("\n\n");
 	const windowContext = deps.windowContext ?? defaultWindowContext;
 	const dataRoot = () => deps.dataRoot ?? defaultDataRoot(process.env);
 	pi.on("before_agent_start", async (event) => {

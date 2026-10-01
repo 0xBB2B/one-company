@@ -8,6 +8,7 @@ import type { Clock, TimerHandle } from "../runtime/clock.ts";
 import { checkMcpCall, describeMcpStatus, loadMcpForRole } from "../runtime/mcp.ts";
 import type { McpConfig } from "../runtime/mcp.ts";
 import { classifyFailure } from "../runtime/network-pause.ts";
+import { loadPackageRules } from "../runtime/package-rules.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
 import { checkSearchCall, filterSearchResult } from "../runtime/search-exclusion.ts";
@@ -100,7 +101,7 @@ export async function withinRoots(cwd: string, candidate: string, roots: string[
 }
 
 export function buildAgentPrompt(definition: RoleDefinition, context: string, mcpStatus: string): string {
-  return [definition.body.trim(), "", `## 本次任务\n${context}`, "", `## MCP 状态\n${mcpStatus}`].join("\n");
+  return [definition.body.trim(), "", loadPackageRules("shared"), "", `## 本次任务\n${context}`, "", `## MCP 状态\n${mcpStatus}`].join("\n");
 }
 
 export async function checkAgentToolCall(event: ToolCallEvent, ctx: {

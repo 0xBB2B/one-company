@@ -14,7 +14,7 @@
 
 | AC | 状态 | 证据 | 剩余缺口 |
 |---|---|---|---|
-| AC1 主窗口含共享规范与主窗口规范，子代理含共享规范与角色说明、不含主窗口规范，角色文件无重复搜索范围说明 | 未开始 | 无 | 无 |
+| AC1 主窗口含共享规范与主窗口规范，子代理含共享规范与角色说明、不含主窗口规范，角色文件无重复搜索范围说明 | 通过 | 本提交；tests/rules-extension.test.ts「M8D2-AC1」（主窗口按顺序含六条主窗口规范与三条共享规范）、tests/agent-session.test.ts「M8D2-AC1」（子代理含共享规范，位于角色说明之后、本次任务之前，不含主窗口规范）、tests/role-catalog.test.ts「M8D2-AC1」（角色说明不再含搜索范围）、tests/package-skeleton.test.ts（发布文件含 shared） | 全量测试在 AC5 收口时一并跑 |
 | AC2 子代理上下文含启动时用户级与项目 AGENTS.md 的磁盘内容，文件不存在照常启动 | 未开始 | 无 | 无 |
 | AC3 三选弹窗：写入才写，不写入或无界面不写，修改意见交回主窗口，确认期间磁盘被改则拒绝，与预览一致 | 未开始 | 无 | 预览 .bb-spec/.cache/ui-preview/m8d2-conventions-window.html 待用户确认 |
 | AC4 主窗口 edit、write 写仓库根 AGENTS.md 被拒并提示改用 conventions-update，子代理写入保护不变 | 未开始 | 无 | 无 |

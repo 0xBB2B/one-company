@@ -36,6 +36,14 @@ test("窗口尚未启动时只附规则，不编造仓库", async () => {
   expect(systemPrompt).not.toContain("当前窗口已接入的仓库");
 });
 
+test("M8D2-AC1：主会话系统提示按编号顺序含六条主窗口规范，其后是三条共享规范", async () => {
+  const systemPrompt = await start(noWindow);
+  const positions = ["## 主会话职责", "## 沟通方式", "## 递进式澄清（禁止脑补）", "## 执行授权", "## 归档需求", "## 简报", "## 工作纪律", "## 收尾自检", "## 搜索范围"]
+    .map((heading) => systemPrompt.indexOf(`\n${heading}\n`));
+  expect(positions.every((position) => position > 0)).toBe(true);
+  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+});
+
 test("M8A-AC7：主会话规则要求先请用户批准草稿，需求生效后再建工作区、派 PM", async () => {
   const systemPrompt = await start(noWindow);
   const approve = systemPrompt.indexOf("confirmUpdate 登记"), prepare = systemPrompt.indexOf("workspace-prepare"), dispatch = systemPrompt.indexOf("role=pm");
