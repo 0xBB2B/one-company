@@ -559,7 +559,8 @@ export class MainRequirementInteraction {
       Boolean(document?.manifest.retainedSources?.some((source) => source.kind === "target"));
     const base = { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
       version: loaded.version, epoch: loaded.epoch, targetRecorded, prodActivated: false, decisionIds: saved.decisionIds };
-    if (!document) return this.#prove(ctx, request.repoId, { ...base, blockedBy: "candidate_requires_revision_or_clarification", allowedScopes: [] }, undefined, decisionProofs);
+    if (!document) return this.#prove(ctx, request.repoId, { ...base, blockedBy: "candidate_requires_revision_or_clarification",
+      blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId), allowedScopes: [] }, undefined, decisionProofs);
     const reference = approvalManifestReference(document.manifest);
     const authorizeManifest: NonNullable<RequirementServiceOptions["authorizeManifest"]> = (r) => {
       const current = core.authorizeDocument(capability, loaded);
@@ -618,6 +619,24 @@ export class MainRequirementInteraction {
     if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx);
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: loaded.version, epoch: loaded.epoch, requestId: question.requestId,
       caption, question: request.question, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false });
+  }
+  /** 整份草稿没能确认时，由程序按记录写明挡住的段落：以前登记的决定对不上的，和这次解读仍待定的；不转述模型写的结论。 */
+  #blockedReason(request: ConfirmationRequest, loaded: ConfirmationContext, interpretation: InteractionInterpretation, sessionId: string): string {
+    // 分区位置按完整需求文档（元数据在前）计，正文从末尾往前数
+    const body = Buffer.from(loaded.body), bodyStart = loaded.partition.totalBytes - body.length;
+    const title = (id: string) => {
+      const unit = loaded.partition.units.find((candidate) => candidate.id === id);
+      const heading = unit && unit.startByte >= bodyStart
+        ? body.subarray(unit.startByte - bodyStart, unit.endByte - bodyStart).toString().split("\n")[0]!.replace(/^\s*#+\s*/u, "").replace(/\s*\{#[^}]*\}\s*$/u, "").trim() : "";
+      return heading || id;
+    };
+    const list = (ids: string[]) => [...new Set(ids)].map(title).join("、");
+    const records = this.#authorization.interactionRecords(request.repoId, request.requirementId, sessionId,
+      { basis: loaded.basis, document: { candidate: loaded.candidate, title: loaded.title, body: loaded.body, partition: loaded.partition } });
+    const stale = ((records as { continuityIssues?: Array<{ unitId: string }> }).continuityIssues ?? []).map((issue) => issue.unitId);
+    const unclear = (interpretation.documentReview?.units ?? []).filter((unit) => unit.disposition === "pending-description").map((unit) => unit.id);
+    return [stale.length ? `以前登记的决定和现在的草稿对不上，涉及段落：${list(stale)}；请用户说明这些旧决定作废，或逐项确认` : "",
+      unclear.length ? `这次的解读里仍待定的段落：${list(unclear)}；请用户把这些段落说清楚` : ""].filter(Boolean).join("；") || "这次的解读没能确认整份草稿，请用户逐段确认";
   }
   /** 窗口里的回答记成用户这一轮的原话；不走 captureInput，免得本次工具调用的代次失效、结果被当成过期。 */
   #adoptQuestionAnswer(text: string, host: RequirementManageHostContext, ctx: ExtensionContext): void {

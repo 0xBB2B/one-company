@@ -609,3 +609,26 @@ test("M8D-AC9：窗口里的回答只算回答：拿它批准时不弹批准窗�
   expect(adjudicated).toMatchObject({ code: "window_answer_not_decision" });
   expect((adjudicated as Error).message).toContain("原因：用户是在提问窗口里选的，这只算回答，不能当作批准或裁决");
 });
+
+test("M8D-AC9：批准被挡时写明原因：以前登记的待定决定挡住了哪些段落、这次解读里还有哪些段落待定，用段落标题说", async () => {
+  const w = await world(), created = await w.create(), first = await w.request(created);
+  const allPending = (loaded: typeof first.loaded) => {
+    const review = phoneReview(loaded);
+    review.faithful = false;
+    review.entries = [{ ...review.entries[0]!, kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "整份待定",
+      unitIds: loaded.partition.units.map((unit) => unit.id).filter((id) => id !== "metadata") }, { ...review.entries[0]!, unitIds: ["metadata"] }];
+    return review;
+  };
+  const pending = allPending(first.loaded);
+  w.capture("用松开时起跳"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(pending) }, { type: "text", text: JSON.stringify(pending) }]);
+  const blocked = await w.call({ action: "reply", ...first.input }, true).then((r) => r, (e: unknown) => e);
+  expect(blocked).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
+  expect((blocked as { blockedReason: string }).blockedReason).toMatch(/段落：[^；]*手机号与邮箱/u);
+  const resaveOperation = uuidv7();
+  const resaved = await w.service.updateDraft({ requirementId: first.input.requirementId, version: first.input.version, operationId: resaveOperation, title: "登录", body: BODY + "补充一句。\n" });
+  const next = await w.request({ ...created, operationId: resaveOperation, version: resaved.version });
+  w.capture("内容正确，批准这一版"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(allPending(next.loaded)) }, { type: "text", text: JSON.stringify(allPending(next.loaded)) }]);
+  const again = await w.call({ action: "confirmUpdate", ...next.input }).then((r) => r, (e: unknown) => e);
+  expect(again).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
+  expect((again as { blockedReason: string }).blockedReason).toMatch(/以前登记的决定和现在的草稿对不上，涉及段落：[^；]*手机号与邮箱/u);
+});

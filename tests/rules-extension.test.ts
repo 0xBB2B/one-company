@@ -84,7 +84,8 @@ test("M8D-AC9：主会话规则要求需要用户决定的问题都用 ask 登�
   expect(systemPrompt).toMatch(/需要用户做决定的问题都用 `one_company_user_interact` ask 登记，不在对话里直接问/);
   expect(systemPrompt).toMatch(/根源自检（rootCheck）[\s\S]*2 到 4 个选项[\s\S]*恰好推荐一个（recommended）并写推荐理由（recommendedReason）/);
   expect(systemPrompt).toContain("登记后不要在对话里再列一遍选项");
-  expect(systemPrompt).toMatch(/status=answered[\s\S]*reply 登记[\s\S]*status=pending/);
+  expect(systemPrompt).toMatch(/status=answered[\s\S]*直接按回答用 updateDraft 修改草稿，不要再用 reply 登记[\s\S]*status=pending/);
+  expect(systemPrompt).toMatch(/带有 blockedReason 时，把它照实告诉用户[\s\S]*以前的决定是否作废/);
   expect(systemPrompt).toContain("blockedBy=window_answer_not_decision");
 });
 
