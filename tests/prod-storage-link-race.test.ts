@@ -20,6 +20,8 @@ const permissionRace = vi.hoisted(() => ({
   seen: 0,
 }));
 
+const siblingRace = vi.hoisted(() => ({ enabled: false, directory: "", newFile: "" }));
+
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
@@ -34,6 +36,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         }
       }
       const stats = await actual.lstat(path, options as never);
+      if (siblingRace.enabled && String(path) === siblingRace.directory) {
+        siblingRace.enabled = false;
+        await actual.writeFile(siblingRace.newFile, "别的进程写的文件");
+      }
       if (permissionRace.enabled && !permissionRace.parentPath && String(path) === permissionRace.targetPath) {
         permissionRace.seen += 1;
         if (permissionRace.seen === permissionRace.occurrence) {
@@ -73,6 +79,7 @@ afterEach(async () => {
   permissionRace.parentPath = "";
   permissionRace.occurrence = 1;
   permissionRace.seen = 0;
+  siblingRace.enabled = false;
   for (const root of roots.splice(0).reverse()) {
     await chmod(root, 0o700).catch(() => undefined);
     await rm(root, { recursive: true, force: true });
@@ -236,4 +243,19 @@ test("dataRoot 目录在 lstat 后被替换成链接时不会修改外部目录�
   expect((await stat(marker)).mode & 0o777).toBe(0o644);
   expect(await readFile(marker, "utf8")).toBe("外部目录内容");
   expect((await lstat(dataRoot)).isSymbolicLink()).toBe(true);
+});
+
+test("核对目录链期间别的进程往同一目录里放了文件，不算目录被换掉，保存照常完成", async () => {
+  const root = await mkdtemp(join(temporaryRoot(), "prod-storage-sibling-"));
+  roots.push(root);
+  const business = join(root, "business");
+  await mkdir(business, { mode: 0o700 });
+  const dataRoot = join(root, "private"), repoDir = join(dataRoot, "repos", "repo-1");
+  siblingRace.directory = repoDir;
+  siblingRace.newFile = join(repoDir, "data.db-wal");
+  siblingRace.enabled = true;
+  await expect(create({ dataRoot, repoId: "repo-1", requirementId: REQUIREMENT_ID, repositoryRoot: business, worktreeRoots: [], authorize: () => true,
+    operationId: "sibling-file", expectedParent: null, bytes: Buffer.from("自有正文") })).resolves.toBeDefined();
+  expect(siblingRace.enabled).toBe(false);
+  expect(await readFile(join(repoDir, "requirements", REQUIREMENT_ID, "prod.md"), "utf8")).toBe("自有正文");
 });

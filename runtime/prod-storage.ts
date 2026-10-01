@@ -249,8 +249,9 @@ function ownedObjectIdentity(stats: Stats): OwnedObjectIdentity {
   return { dev: stats.dev, ino: stats.ino, uid: stats.uid, nlink: stats.nlink };
 }
 
-function sameOwnedObjectIdentity(a: OwnedObjectIdentity, b: OwnedObjectIdentity): boolean {
-  return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.nlink === b.nlink;
+// 目录的链接数随目录内条目增减而变（别的进程写同一目录时会变），不能算身份；文件的链接数用来防硬链接，照旧核对
+function sameOwnedObjectIdentity(a: OwnedObjectIdentity, b: OwnedObjectIdentity, kind: OwnedObjectKind): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && (kind === "directory" || a.nlink === b.nlink);
 }
 
 function assertOwnedObject(stats: Stats, kind: OwnedObjectKind, code: string, message: string): void {
@@ -271,7 +272,7 @@ async function assertPathStillOwnedObject(path: string, expected: OwnedObjectIde
   try { stats = await lstat(path); }
   catch (error) { failOpenedPathRace(error, code, message); }
   assertOwnedObject(stats, kind, code, message);
-  if (!sameOwnedObjectIdentity(ownedObjectIdentity(stats), expected)) fail(code, message);
+  if (!sameOwnedObjectIdentity(ownedObjectIdentity(stats), expected, kind)) fail(code, message);
 }
 
 async function assertOwnedDirectories(parents: readonly OwnedDirectory[], code: string, message: string): Promise<void> {
@@ -295,13 +296,13 @@ async function chmodOpenedObject(path: string, observed: Stats, kind: OwnedObjec
     assertOwnedObject(opened, kind, code, message);
     const expected = ownedObjectIdentity(observed);
     const openedIdentity = ownedObjectIdentity(opened);
-    if (!sameOwnedObjectIdentity(openedIdentity, expected)) fail(code, message);
+    if (!sameOwnedObjectIdentity(openedIdentity, expected, kind)) fail(code, message);
     await assertOwnedDirectories(parents, code, message);
     await assertPathStillOwnedObject(path, openedIdentity, kind, code, message);
     await handle.chmod(mode);
     const hardened = await handle.stat();
     assertOwnedObject(hardened, kind, code, message);
-    if (!sameOwnedObjectIdentity(ownedObjectIdentity(hardened), openedIdentity)) fail(code, message);
+    if (!sameOwnedObjectIdentity(ownedObjectIdentity(hardened), openedIdentity, kind)) fail(code, message);
     await assertPathStillOwnedObject(path, openedIdentity, kind, code, message);
     return openedIdentity;
   } finally {
