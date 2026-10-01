@@ -114,6 +114,7 @@ export class MainRequirementInteraction {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #core: UserInteractionCore | undefined;
   #coreRepo: string | undefined;
+  #coreRequirement: string | undefined;
   #ticket: InputTicket | undefined;
   #capability: InteractionCapability | undefined;
   #interpretation: InteractionInterpretation | undefined;
@@ -146,7 +147,7 @@ export class MainRequirementInteraction {
   #clearInput(): void {
     this.#generation++;
     this.#inputTargets = [];
-    this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined;
+    this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined; this.#coreRequirement = undefined;
     this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#candidate = undefined; this.#adjudication = undefined; this.#resave = undefined;
     const input = this.#input; this.#input = undefined;
     if (input) { input.event.text = ""; input.abort.abort(); }
@@ -343,7 +344,13 @@ export class MainRequirementInteraction {
     return loaded;
   }
   async #ensureCore(ctx: ExtensionContext, repoId: string, requirementId: string): Promise<UserInteractionCore> {
-    if (this.#core && this.#coreRepo === repoId) return this.#core;
+    if (this.#core && this.#coreRepo === repoId && this.#coreRequirement === requirementId) return this.#core;
+    // 解释核心与输入凭据只对一个需求有效；同一句话轮到另一个需求时换一个，用同一句原话重新签发凭据
+    if (this.#core) {
+      this.#core.revoke(); this.#core.shutdown(); this.#core = undefined; this.#coreRepo = undefined; this.#coreRequirement = undefined;
+      this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
+      this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#resave = undefined;
+    }
     const host = this.#host(ctx), generation = this.#generation, input = this.#input;
     const repository = host.repositories.get(repoId); if (!repository) return denied("foreign_repo");
     this.#snapshot(host, repoId, requirementId);
@@ -403,7 +410,7 @@ export class MainRequirementInteraction {
         const current = this.#snapshot(host, repoId, requirementId, false);
         if (!["draft", "active"].includes(current.data.lifecycle) || current.data.recovery !== "ready") this.revoke();
       });
-      this.#core = core; this.#coreRepo = repoId; return core;
+      this.#core = core; this.#coreRepo = repoId; this.#coreRequirement = requirementId; return core;
     } catch (error) { core.shutdown(); throw error; }
   }
   async #draftIntent(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput, questions: Array<{ question: string; scope: string }>): Promise<void> {
@@ -644,7 +651,7 @@ export class MainRequirementInteraction {
     if (previous) { previous.event.text = ""; previous.abort.abort(); }
     if (this.#timer) clearTimeout(this.#timer);
     // 和用户新说一句话一样换掉解释核心，下次用到时按这句回答重新签发输入凭据
-    this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined;
+    this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined; this.#coreRequirement = undefined;
     this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
     this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
     const expiresAt = this.#now() + (this.#options.inputTtlMs ?? 900_000);

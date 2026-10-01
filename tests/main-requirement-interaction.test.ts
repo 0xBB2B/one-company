@@ -648,3 +648,15 @@ test("批准登记到一半失败后又登记了新问题，草稿仍能继续�
     summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" }).then((r) => r, (e: unknown) => e);
   expect(saved).toMatchObject({ status: "saved" });
 });
+
+test("M8D-AC3：一句话 @ 两个需求并批准，两个需求按各自的版本分别登记生效", async () => {
+  const w = await world(), a = await w.create(), b = await w.create();
+  const first = await w.request(a), second = await w.request(b);
+  w.capture("两处我都批准");
+  scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
+  expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prodActivated: true });
+  scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
+  const other = await w.call({ action: "confirmUpdate", ...second.input }).then((r) => r, (e: unknown) => e);
+  expect(other).toMatchObject({ prodActivated: true });
+  expect(w.windows).toHaveLength(0);
+});
