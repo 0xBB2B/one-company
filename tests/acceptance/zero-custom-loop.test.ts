@@ -8,7 +8,6 @@ import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { repositoryDatabase, withDatabase } from "../../runtime/database.ts";
 import type { RequirementRecord } from "../../runtime/requirement-contracts.ts";
 import { repositoryIdentity, daemonSocketPath } from "../../runtime/identity.ts";
-import { readApprovedConventions } from "../../runtime/project-conventions.ts";
 import { RunStore } from "../../runtime/run-store.ts";
 import type { RunRecord } from "../../runtime/run-store.ts";
 import { acceptanceConfig, copyCredentials, installProduct, startInstalledHost } from "./helpers/installed-host.ts";
@@ -70,7 +69,7 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
     const archives = worktree ? await readdir(join(worktree, "docs", "prod")).catch(() => []) : [];
     const archive = worktree && archives[0] ? await readFile(join(worktree, "docs", "prod", archives[0]), "utf8") : null;
     if (archive !== null) await writeFile(join(evidence, "archive.md"), archive, { mode: 0o600 });
-    const conventions = readApprovedConventions(join(agentDir, "one-company"), repoId);
+    const conventions = await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null);
     const report = {
       config: { model: `${cfg.provider}/${cfg.modelId}`, thinking: cfg.thinking },
       outcome, elapsedMs: Date.now() - started,
@@ -123,10 +122,8 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     for (const role of ["one-company.worker", "one-company.reviewer", "one-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
     expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
     expectInOrder(archive, ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "\n### 实现记录（关闭时由程序生成）\n", "{#acceptance}", "\n### 验收记录（关闭时由程序生成）\n"]);
-    const conventions = readApprovedConventions(join(agentDir, "one-company"), repoId);
-    expect(host.dialogs.some((dialog) => dialog.title === "确认更新项目规范 AGENTS.md")).toBe(true);
-    expect(conventions?.content).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
-    expect(await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null)).toBe(conventions?.content);
+    expect(host.dialogs.some((dialog) => dialog.title === "把这些改动写入项目规范 AGENTS.md？" && dialog.answer === "写入")).toBe(true);
+    expect(await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null)).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
   });
 }, 100 * 60_000);
 

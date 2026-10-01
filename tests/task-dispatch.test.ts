@@ -1,3 +1,5 @@
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
@@ -9,7 +11,6 @@ import { PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
-import { updateConventions } from "../runtime/project-conventions.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -194,23 +195,23 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
     .toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["有任务还没经过审查"]) });
 });
 
-test("M8B-AC2：worker 与 reviewer 的上下文含用户批准的项目规范", async () => {
+test("M8D2-AC2：worker 与 reviewer 的上下文含各自启动那一刻项目 AGENTS.md 的磁盘内容，文件改动后新派出的子代理读到新内容", async () => {
   const w = await world();
-  await updateConventions({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId,
-    content: "# 项目规范\n- 不使用泛型。\n", confirm: async () => true });
+  const file = join(w.fixture.repositoryRoot, "AGENTS.md");
+  await writeFile(file, "# 项目规范\n- 不使用泛型。\n");
   await w.plan.execute({ action: "propose", tasks: [spec("a", { writePaths: ["src/a/"] }), spec("b", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   w.provider.queue.push(submit("完成 a"), pmAck);
   await w.dispatch("a");
   await until(() => w.task("a").status === "awaiting_review");
+  await writeFile(file, "# 项目规范\n- 不使用泛型。\n- 文件名用小写。\n");
   w.provider.queue.push(submit("a 符合目标"), pmAck);
   await w.review("a");
   await until(() => w.task("a").status === "completed");
-  for (const marker of ["任务：a（", "审查任务：a（"]) {
-    const prompt = w.provider.requests.find((request) => request.systemPrompt?.includes(marker))!.systemPrompt!;
-    expect(prompt).toContain("项目规范（来源：用户在界面确认过的 AGENTS.md");
-    expect(prompt).toContain("- 不使用泛型。");
-  }
+  const prompt = (marker: string) => w.provider.requests.find((request) => request.systemPrompt?.includes(marker))!.systemPrompt!;
+  expect(prompt("任务：a（")).toContain("项目规范（来源：仓库根目录 AGENTS.md；本任务的改动必须遵守）：\n# 项目规范\n- 不使用泛型。");
+  expect(prompt("任务：a（")).not.toContain("文件名用小写");
+  expect(prompt("审查任务：a（")).toContain("- 不使用泛型。\n- 文件名用小写。");
 });
 
 test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因且不占执行重试；再次打回进入待用户裁决，拆分或改名不能重置", async () => {

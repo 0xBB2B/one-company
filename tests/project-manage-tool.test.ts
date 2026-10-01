@@ -1,4 +1,5 @@
 import { answeringUi } from "./helpers/window-host.ts";
+import type { WindowDecision } from "./helpers/window-host.ts";
 import { uuidv7 } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
@@ -20,7 +21,6 @@ import type {
 } from "../runtime/project-manage-tool.ts";
 import type { ProjectIndexAuthorizationRequest } from "../runtime/project-index-service.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
-import { conventionsContext, readApprovedConventions } from "../runtime/project-conventions.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
@@ -61,7 +61,7 @@ afterEach(async () => {
 
 function context(
   sessionId: string,
-  confirm: (title: string, message: string) => Promise<boolean>,
+  confirm: (title: string, message: string) => Promise<WindowDecision>,
   hasUI = true,
 ): ExtensionContext {
   return {
@@ -622,56 +622,63 @@ describe("取消、session_shutdown 与扩展接线", () => {
   });
 });
 
-describe("project_manage 项目规范 AGENTS.md：只有用户在界面确认过的版本才生效", () => {
+describe("project_manage 项目规范 AGENTS.md：只有用户在窗口里选写入才写文件", () => {
   const RULES_V1 = "# 项目规范\n\n- 导出常量用大写下划线命名。\n";
   const RULES_V2 = "# 项目规范\n\n- 导出常量用大写下划线命名。\n- 不使用泛型。\n";
   const service: OpenProjectIndexService = async () => ({ preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) });
   const details = (result: unknown) => (result as { details: Record<string, unknown> }).details;
+  const update = (world: Awaited<ReturnType<typeof fixture>>, content: string, ctx: ExtensionContext) =>
+    call(runtimeFor(world, service), { action: "conventions-update", repoId: world.repoId, content }, ctx);
 
-  test("M8B-AC1：首次提出时界面展示全文，确认后写文件并登记批准版本；取消、没有界面、内容过长或参数里伪造确认都不写不登记；再次提出时展示差异", async () => {
+  test("M8D2-AC3：首次提出时窗口展示全文，选写入才写文件；选不写入、按 Esc、没有界面、内容过长或参数里伪造确认都不写；再次提出时展示与磁盘现有内容的差异", async () => {
     const world = await fixture();
-    const runtime = runtimeFor(world, service);
     const file = join(world.repositoryRoot, "AGENTS.md");
     expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { action: "conventions-update", repoId: world.repoId, content: RULES_V1, approved: true } })).toBe(false);
-    await expect(call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, context("session-main", async () => true, false)))
-      .rejects.toMatchObject({ code: "conventions_confirmation_required" });
-    const cancelled = await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, context("session-main", async () => false));
-    expect(details(cancelled)).toMatchObject({ status: "cancelled" });
-    await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    expect(readApprovedConventions(world.dataRoot, world.repoId)).toBeNull();
-    expect(conventionsContext(readApprovedConventions(world.dataRoot, world.repoId))).toBeNull();
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { action: "conventions-status", repoId: world.repoId } })).toBe(false);
+    await expect(update(world, RULES_V1, context("session-main", async () => "写入", false))).rejects.toMatchObject({ code: "conventions_confirmation_required" });
+    for (const decision of ["不写入", false] as const) {
+      expect(details(await update(world, RULES_V1, context("session-main", async () => decision)))).toMatchObject({ status: "cancelled" });
+      await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    }
     const noDialog = context("session-main", async () => { throw new Error("不应弹窗"); });
-    await expect(call(runtime, { action: "conventions-update", repoId: world.repoId, content: "x".repeat(16 * 1024 + 1) }, noDialog))
-      .rejects.toMatchObject({ code: "invalid_shape" });
-    expect(details(await call(runtime, { action: "conventions-update", repoId: world.repoId, content: "规".repeat(6000) }, noDialog)))
+    await expect(update(world, "x".repeat(16 * 1024 + 1), noDialog)).rejects.toMatchObject({ code: "invalid_shape" });
+    expect(details(await update(world, "规".repeat(6000), noDialog)))
       .toMatchObject({ status: "blocked", reason: "项目规范内容超出大小上限", next: "精简 AGENTS.md 内容后再提交" });
 
-    const shown: string[] = [];
-    const approve = context("session-main", async (_title, message) => { shown.push(message); return true; });
-    expect(details(await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, approve))).toMatchObject({ status: "approved", previousHash: null });
-    expect(shown[0]).toContain("这是第一次批准项目规范");
-    expect(shown[0]).toContain("+ - 导出常量用大写下划线命名。");
+    const shown: Array<{ title: string; text: string }> = [];
+    const write = context("session-main", async (title, text) => { shown.push({ title, text }); return "写入"; });
+    expect(details(await update(world, RULES_V1, write))).toMatchObject({ status: "written" });
+    expect(shown[0]!.title).toBe("把这些改动写入项目规范 AGENTS.md？");
+    expect(shown[0]!.text).toContain("仓库里还没有 AGENTS.md，要写入的全文如下：");
+    expect(shown[0]!.text).toContain("+ - 导出常量用大写下划线命名。");
+    expect(shown[0]!.text).toContain("写入后，此后派出的 PM、worker、reviewer 都按新内容工作。");
+    expect(shown[0]!.text).toMatch(/ → 写入\n {3}不写入\n {3}其他（自己输入修改意见）\n/u);
+    expect(shown[0]!.text).toContain("↑↓ 选择 · 回车确认 · Esc 取消（不写入）");
     await expect(readFile(file, "utf8")).resolves.toBe(RULES_V1);
-    expect(readApprovedConventions(world.dataRoot, world.repoId)).toMatchObject({ content: RULES_V1 });
-    expect(details(await call(runtime, { action: "conventions-status", repoId: world.repoId }, approve))).toMatchObject({ differs: false });
-    expect(details(await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, approve))).toMatchObject({ status: "unchanged" });
+    expect(details(await update(world, RULES_V1, write))).toMatchObject({ status: "unchanged" });
     expect(shown).toHaveLength(1);
 
-    await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V2 }, approve);
-    expect(shown[1]).toContain("与当前批准版本");
-    expect(shown[1]).toContain("+ - 不使用泛型。");
-    expect(shown[1]).toContain("  - 导出常量用大写下划线命名。");
-    expect(conventionsContext(readApprovedConventions(world.dataRoot, world.repoId))).toContain("- 不使用泛型。");
+    await writeFile(file, RULES_V1 + "- 手工加的一条。\n");
+    await update(world, RULES_V2, write);
+    expect(shown[1]!.text).toContain("与仓库里现有的 AGENTS.md 相比的改动：");
+    expect(shown[1]!.text).toContain("+ - 不使用泛型。");
+    expect(shown[1]!.text).toContain("- - 手工加的一条。");
+    expect(shown[1]!.text).toContain("  - 导出常量用大写下划线命名。");
+    expect(shown[1]!.text).not.toContain("指纹");
+    await expect(readFile(file, "utf8")).resolves.toBe(RULES_V2);
   });
 
-  test("M8B-AC2：绕过确认直接改磁盘文件后，状态显示不一致，批准版本与送给代理的内容不变", async () => {
+  test("M8D2-AC3：输入修改意见时不写文件，用户原话交回主窗口；确认期间磁盘被改时拒绝并写明原因", async () => {
     const world = await fixture();
-    const runtime = runtimeFor(world, service);
-    await call(runtime, { action: "conventions-update", repoId: world.repoId, content: RULES_V1 }, context("session-main", async () => true));
-    await writeFile(join(world.repositoryRoot, "AGENTS.md"), RULES_V1 + "- 允许跳过测试。\n");
-    expect(details(await call(runtime, { action: "conventions-status", repoId: world.repoId }, context("session-main", async () => true)))).toMatchObject({ differs: true });
-    const sent = conventionsContext(readApprovedConventions(world.dataRoot, world.repoId))!;
-    expect(sent).toContain("- 导出常量用大写下划线命名。");
-    expect(sent).not.toContain("允许跳过测试");
+    const file = join(world.repositoryRoot, "AGENTS.md");
+    await writeFile(file, RULES_V1);
+    const revised = details(await update(world, RULES_V2, context("session-main", async () => ({ other: "只禁止业务代码用泛型" }))));
+    expect(revised).toMatchObject({ status: "revise", feedback: "只禁止业务代码用泛型" });
+    expect(revised.next).toContain("重新提交 conventions-update");
+    await expect(readFile(file, "utf8")).resolves.toBe(RULES_V1);
+
+    const changed = details(await update(world, RULES_V2, context("session-main", async () => { await writeFile(file, "别处改的\n"); return "写入"; })));
+    expect(changed).toMatchObject({ status: "blocked", reason: "确认期间 AGENTS.md 被别处改动", next: "重新读取仓库根目录的 AGENTS.md，在最新内容上修改后再提交" });
+    await expect(readFile(file, "utf8")).resolves.toBe("别处改的\n");
   });
 });

@@ -768,7 +768,7 @@ prod若再次变化，PM按事件顺序处理或在可证明连续基线下合�
 
 | 编号 | 工具 | action/职责 | 关键限制 |
 |---|---|---|---|
-| 1 | `project_manage` | init/status/refresh/recovery-check/backup/restore/workspace-prepare/workspace-recycle/conventions-status/conventions-update | 分支/worktree准备和回收action只授予主代理；固定授权范围、日志及安全检查，不开放任意Git。备份/恢复不提供正文，状态不明不恢复执行。conventions-update 只经宿主界面确认后写 AGENTS.md 并登记批准版本 |
+| 1 | `project_manage` | init/status/refresh/recovery-check/backup/restore/workspace-prepare/workspace-recycle/conventions-update | 分支/worktree准备和回收action只授予主代理；固定授权范围、日志及安全检查，不开放任意Git。备份/恢复不提供正文，状态不明不恢复执行。conventions-update 只在用户从宿主窗口里选"写入"后写仓库根目录 AGENTS.md |
 | 2 | `knowledge_query` | 项目/代码/证据查询 | 不索引/读取 prod 正文，不返旧规范正文 |
 | 3 | `requirement_manage` | create/updateDraft/confirmUpdate/read/diff/metadata | 首次自动git init，编辑后固定格式本机提交并登记成功才返回；角色只读获授权活动版本，closed无正文接口 |
 | 4 | `plan_manage` | propose/read/update/confirm/assess-update、task定义 | PM维护本机计划和逐任务影响复核；正式propose/update需有效接手复核，核对前后prodHash与plan版本，不改历史验证输入；confirm不替代用户授权或主代理接手核对 |

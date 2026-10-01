@@ -76,7 +76,9 @@ describe("内置默认团队", () => {
     const main = await readFile(join(defaultRoleDir(), "..", "rules", "01-main-session.md"), "utf8");
     expect(main).toMatch(/规范与需求分流[\s\S]*长期遵守的约定[\s\S]*conventions-update[\s\S]*用户确认[\s\S]*这次要做成的行为或功能写进需求草稿[\s\S]*两样都有就拆开/);
     expect(main).toContain("不要用 write、edit 或命令直接改 AGENTS.md");
-    expect(main).toContain("conventionsNotice");
+    expect(main).toMatch(/status=written[\s\S]*status=cancelled[\s\S]*status=revise，feedback 是用户的原话/);
+    expect(main).toContain("程序会拒绝 write 与 edit");
+    expect(main).not.toContain("conventionsNotice");
     expect(body("worker")).toMatch(/任务说明里有项目规范时，改动必须遵守[\s\S]*AGENTS\.md 不能改/);
     expect(body("reviewer")).toMatch(/核对项目规范[\s\S]*违反其中任何一条都列为阻塞[\s\S]*summary 写明规范的核对结果/);
     expect(body("pm")).toContain("任务说明里有项目规范时，计划与各任务的目标、通过条件不得与之冲突");

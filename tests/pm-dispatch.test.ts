@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/pi-ai";
 import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -22,7 +22,6 @@ import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts"
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { createFakeTimeSource } from "./helpers/fake-clock.ts";
-import { updateConventions } from "../runtime/project-conventions.ts";
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -122,24 +121,23 @@ test("M7-AC13、M8A-AC7：PM 只在工作区 ready、需求 active 且有实施�
   expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { kind: "requirement", state: "running", requirement: w.requirementId } });
 }, 30000);
 
-test("M8B-AC2：派 PM 时上下文含用户批准的项目规范并标明来源；磁盘 AGENTS.md 被绕过确认改过时仍只送批准版本，派工结果带不一致提示；没有批准版本时不送也不提示", async () => {
+test("M8D2-AC2：派 PM 时上下文含用户级与项目 AGENTS.md 此刻的磁盘内容并标明来源；两份都没有时照常启动、不带规范", async () => {
   const plain = await world();
   scriptReplies(plain.provider, [{ type: "text", text: "等待" }]);
-  expect(await plain.dispatch()).not.toHaveProperty("conventionsNotice");
+  await plain.dispatch();
   await until(() => plain.provider.requests.length === 1);
-  expect(plain.provider.requests[0]!.systemPrompt).not.toContain("项目规范（来源");
+  expect(plain.provider.requests[0]!.systemPrompt).not.toContain("规范（来源");
 
   const w = await world();
-  await updateConventions({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, content: "# 项目规范\n- 导出常量用大写下划线命名。\n", confirm: async () => true });
-  await writeFile(join(w.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 允许跳过测试。\n");
+  await writeFile(join(dirname(w.dataRoot), "AGENTS.md"), "# 用户规范\n- 说明用白话写。\n");
+  await writeFile(join(w.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 导出常量用大写下划线命名。\n");
   scriptReplies(w.provider, [{ type: "text", text: "等待" }]);
-  const result = await w.dispatch();
-  expect(result.conventionsNotice).toContain("与用户批准的项目规范版本不一致");
+  await w.dispatch();
   await until(() => w.provider.requests.length === 1);
   const prompt = w.provider.requests[0]!.systemPrompt!;
-  expect(prompt).toMatch(/项目规范（来源：用户在界面确认过的 AGENTS\.md，指纹 [0-9a-f]{12}/);
-  expect(prompt).toContain("- 导出常量用大写下划线命名。");
-  expect(prompt).not.toContain("允许跳过测试");
+  expect(prompt).toContain("用户规范（来源：用户级 AGENTS.md；必须遵守）：\n# 用户规范\n- 说明用白话写。");
+  expect(prompt).toContain("项目规范（来源：仓库根目录 AGENTS.md；本任务的改动必须遵守）：\n# 项目规范\n- 导出常量用大写下划线命名。");
+  expect(prompt.indexOf("用户规范（来源")).toBeLessThan(prompt.indexOf("项目规范（来源"));
 }, 60000);
 
 test("M7-AC5：同一需求只有一个有效 PM；停止后再派出取得更高 fence，旧运行的工具失效", async () => {

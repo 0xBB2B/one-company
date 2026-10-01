@@ -155,9 +155,9 @@ export async function startInstalledHost(options: { installed: string; repo: str
         dialogs.push({ kind: "select", title: window.title, message: window.text, options: window.choices, answer: decision, at: Date.now() });
         return decision;
       }
-      const confirm = window.choices.includes("确认");
-      dialogs.push({ kind: confirm ? "confirm" : "select", title: window.title, message: window.text, options: window.choices, answer: confirm, at: Date.now() });
-      return confirm;
+      const confirm = window.choices.includes("确认"), decision = window.choices.includes("写入") ? "写入" : confirm;
+      dialogs.push({ kind: confirm ? "confirm" : "select", title: window.title, message: window.text, options: window.choices, answer: decision, at: Date.now() });
+      return decision;
     }).custom,
     notify: (message, type) => { notifications.push({ message, type, at: Date.now() }); },
     onTerminalInput: (handler) => { inputHandlers.add(handler); return () => { inputHandlers.delete(handler); }; },

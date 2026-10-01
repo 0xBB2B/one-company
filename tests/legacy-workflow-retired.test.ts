@@ -71,12 +71,12 @@ describe("旧工作流永久移除，旧记录不产生授权", () => {
       await expect(tools[0].execute("x", { action, repoId: "a".repeat(64) })).rejects.toThrow(`one_company_agent_manage 的 ${action} 动作失败。\n原因：参数不符合该动作的格式`);
     }
   });
-  test("主会话只有核心工具：没有旧工作流、旧决定和主窗口提交工具，也不覆盖宿主 write/edit（tool_call 只有搜索排除与需求观察两处）", () => {
+  test("主会话只有核心工具：没有旧工作流、旧决定和主窗口提交工具，也不覆盖宿主 write/edit（tool_call 只有搜索排除、需求观察与项目规范写入拦截三处）", () => {
     const fakePi = createFakePi();
     registerExtensions(fakePi.pi);
     const names = fakePi.registeredTools().map((tool) => tool.name);
     for (const retired of ["one_company_workflow", "one_company_git_commit", "decision_record", "write", "edit"]) expect(names).not.toContain(retired);
-    expect(fakePi.handlersFor("tool_call")).toHaveLength(2);
+    expect(fakePi.handlersFor("tool_call")).toHaveLength(3);
   });
   test("RunManager 不再提供旧派工、恢复、转录与并行判定入口", async () => {
     const w = await world(); const paused = await w.createRun("paused"); const failed = await w.createRun("failed");
