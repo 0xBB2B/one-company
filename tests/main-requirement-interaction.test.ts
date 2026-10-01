@@ -632,3 +632,19 @@ test("M8D-AC9：批准被挡时写明原因：以前登记的待定决定挡住�
   expect(again).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
   expect((again as { blockedReason: string }).blockedReason).toMatch(/以前登记的决定和现在的草稿对不上，涉及段落：[^；]*手机号与邮箱/u);
 });
+
+test("批准登记到一半失败后又登记了新问题，草稿仍能继续保存，不会卡死在这一版", async () => {
+  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+  const storage = vi.spyOn(RequirementService.prototype, "confirmUpdate").mockRejectedValueOnce(new RequirementServiceError("stale_version", "模拟存储出错"));
+  try {
+    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "stale_version" });
+  } finally { storage.mockRestore(); }
+  expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("approval_manifests_v1"))).toHaveLength(1);
+  w.capture("再问我一下短信期限"); w.answerWindows(false);
+  await w.call({ action: "ask", ...input, operationId: uuidv7(), ...SMS_ASK, unitIds: ["SMS"] }, true);
+  w.capture("短信验证码 5 分钟有效，写进草稿"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  const saved = await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(),
+    summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" }).then((r) => r, (e: unknown) => e);
+  expect(saved).toMatchObject({ status: "saved" });
+});

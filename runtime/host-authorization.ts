@@ -192,8 +192,15 @@ export class HostAuthorizationManager {
       for (const row of registered) {
         const stored = JSON.parse(String(row.data)) as { manifest: ApprovalManifest; admission: { receiptId: string } };
         // 清单只提供旧决定的来源关系，不产生新能力；完整原ID/receipt交给Core逐次核验。
-        const manifest = withDatabase(repositoryDatabase(this.#dataRoot, repoId), (current) =>
-          registeredApprovalManifestIn(current, repoId, approvalManifestReference(stored.manifest), before, stored.admission.receiptId));
+        let manifest: ApprovalManifest;
+        try {
+          manifest = withDatabase(repositoryDatabase(this.#dataRoot, repoId), (current) =>
+            registeredApprovalManifestIn(current, repoId, approvalManifestReference(stored.manifest), before, stored.admission.receiptId));
+        } catch (error) {
+          // 登记后用户又有新输入的清单已经过期，只是不再提供旧决定；若让读取失败，这一版草稿就再也存不了
+          if ((error as { code?: unknown } | null)?.code === "manifest_input_changed") continue;
+          throw error;
+        }
         for (const id of [...manifest.units, ...manifest.actions, ...manifest.questions].flatMap((u) => u.decisionIds)) ids.add(id);
       }
       if (ids.size > 20) throw new HostAuthorizationError("interaction_context_limit");
