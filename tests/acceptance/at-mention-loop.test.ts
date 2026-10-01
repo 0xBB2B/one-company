@@ -26,24 +26,33 @@ const JUMP: UserScript = { requirement: "我要调整跳跃：短按空格保持
   approve: "跳跃这个需求的草稿我看过了，内容正确，批准这一版，按上面的授权直接实施。" };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** 像用户一样在 PM 面板里逐个按 p：暂停或恢复全部 PM，直到面板显示的状态一致。 */
+/** 面板里每个 PM：它在可选行（PM 行与事项行）里排第几、是否是用户暂停的（"等待你的决定"也画 ⏸，不算暂停）。 */
+function panelPms(host: InstalledHost): Array<{ index: number; paused: boolean }> {
+  const lines = host.panelLines();
+  let selectable = -1;
+  return lines.flatMap((line, at) => {
+    const pm = /[├└]─ /u.test(line);
+    if (pm || line.includes("⚑")) selectable += 1;
+    return pm ? [{ index: selectable, paused: /已暂停|等待你调整需求|暂停中/u.test(lines[at + 1] ?? "") }] : [];
+  });
+}
+
+/** 像用户一样在 PM 面板里按 p：暂停或恢复全部 PM。每按一次都重新读面板，行数变化不会按错行。 */
 async function togglePms(host: InstalledHost, paused: boolean): Promise<void> {
-  const selectable = () => host.panelLines().filter((line) => /[├└]─ /u.test(line) || line.includes("⚑"));
-  const pmIndexes = selectable().flatMap((line, index) => /[├└]─ /u.test(line) ? [index] : []);
-  for (const index of pmIndexes) {
-    const row = selectable()[index] ?? "";
-    if (row.includes("⏸") === paused) continue;
-    host.press(DOWN);
-    for (let i = 0; i < 50; i++) host.press(UP);
-    for (let i = 0; i < index; i++) host.press(DOWN);
-    host.press("p");
-    host.press(ESCAPE);
-    await sleep(1_000);
-  }
-  for (let i = 0; i < 60; i++) {
-    const rows = host.panelLines().filter((line) => /[├└]─ /u.test(line));
-    if (rows.length && rows.every((line) => line.includes("⏸") === paused)) return;
-    await sleep(1_000);
+  const wrong = () => panelPms(host).filter((pm) => pm.paused !== paused);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const pms = panelPms(host), target = wrong()[0];
+    if (pms.length && !target) return;
+    if (target) {
+      host.press(DOWN);
+      for (let n = 0; n < 50; n++) host.press(UP);
+      for (let n = 0; n < target.index; n++) host.press(DOWN);
+      host.press("p");
+      host.press(ESCAPE);
+    }
+    // 面板几秒后才刷新；没等到变化就再按会把刚切换的 PM 又切回去
+    const before = wrong().length;
+    for (let waited = 0; waited < 15 && (!panelPms(host).length || wrong().length === before); waited++) await sleep(1_000);
   }
   throw new Error(`PM 没能全部${paused ? "暂停" : "恢复"}：${host.panelLines().join("\n")}`);
 }
