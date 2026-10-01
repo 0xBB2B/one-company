@@ -55,22 +55,6 @@ function progress(host: InstalledHost, since: number) {
   };
 }
 
-const USER_PROMPT = `你在验收测试里扮演一个真实用户，和 AI 主代理对话推进需求。你的立场：需求以你最初的描述为准，不增加新要求；主代理给的选择题，选它标为推荐的那个，没标推荐就选它建议的那个，都没有就选改动最小、不扩大范围的那个；它要你补充的信息（如时长界限）按它的建议给出。
-下面是主代理最后一条回复。判断它在等你做什么：
-- 在等你回答问题或做选择：用一两句中文回答，写明具体选了什么，并要它写进草稿后再给你确认。
-- 只在等你批准草稿、没有待你回答的问题：只输出 APPROVE。
-只输出要发给主代理的话或 APPROVE，不要解释。`;
-
-/** 主代理停下等用户时，由扮演用户的模型读它最后一条回复：有问题就按推荐作答；只等批准时返回 undefined，由调用方说批准台词。 */
-export async function answerAsUser(host: InstalledHost): Promise<string | undefined> {
-  const last = host.session.messages.at(-1);
-  if (last?.role !== "assistant") return undefined;
-  const text = last.content.map((block) => block.type === "text" ? block.text : "").join("").trim();
-  if (!text) return undefined;
-  const reply = await host.userModel(USER_PROMPT, text);
-  return /^APPROVE\W*$/u.test(reply) || !reply ? undefined : reply;
-}
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function waitTurn(host: InstalledHost, startedCount: number, timeoutMs: number): Promise<void> {
@@ -144,13 +128,13 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
     }
     if (lines.length > 0) {
       if (options.approveWhileRunning && !state.approved && host.session.messages.at(-1)?.role === "assistant") {
-        result = await say(await answerAsUser(host) ?? script.approve); if (result) return result; continue;
+        result = await say(script.approve); if (result) return result; continue;
       }
       await sleep(5_000); continue;
     }
 
     // 需求原文只发一次；之后主代理停下等用户时，按真人会做的回答：未批准就确认草稿
-    const next = !state.approved ? await answerAsUser(host) ?? script.approve : state.accepted ? script.close : script.proceed;
+    const next = !state.approved ? script.approve : state.accepted ? script.close : script.proceed;
     result = await say(next);
     if (result) return result;
   }

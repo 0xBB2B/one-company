@@ -26,26 +26,19 @@ export interface AcceptanceConfig {
   thinking: Thinking;
   credentialsDir: string;
   output: string;
-  /** 扮演用户回答主代理提问的模型，默认与主会话相同。 */
-  userModel: { provider: string; modelId: string };
 }
 
 /** 只有显式给出模型与证据目录时才跑真实模型验收；缺任一项返回 null，由用例跳过。 */
 export function acceptanceConfig(): AcceptanceConfig | null {
   const model = process.env.ONE_COMPANY_ACCEPTANCE_MODEL, output = process.env.ONE_COMPANY_ACCEPTANCE_OUTPUT;
   if (!model || !output) return null;
-  const split = (name: string, value: string) => {
-    const slash = value.indexOf("/");
-    if (slash <= 0 || slash === value.length - 1) throw new Error(`${name} 须写成 <provider>/<model>`);
-    return { provider: value.slice(0, slash), modelId: value.slice(slash + 1) };
-  };
-  const main = split("ONE_COMPANY_ACCEPTANCE_MODEL", model);
-  const userModel = split("ONE_COMPANY_ACCEPTANCE_USER_MODEL", process.env.ONE_COMPANY_ACCEPTANCE_USER_MODEL ?? model);
+  const slash = model.indexOf("/");
+  if (slash <= 0 || slash === model.length - 1) throw new Error("ONE_COMPANY_ACCEPTANCE_MODEL 须写成 <provider>/<model>");
   if (!isAbsolute(output)) throw new Error("ONE_COMPANY_ACCEPTANCE_OUTPUT 须是绝对路径");
   const thinking = (process.env.ONE_COMPANY_ACCEPTANCE_THINKING ?? "high") as Thinking;
   if (!THINKING_LEVELS.includes(thinking)) throw new Error(`不支持的思考等级：${thinking}`);
   return {
-    ...main, userModel, thinking, output,
+    provider: model.slice(0, slash), modelId: model.slice(slash + 1), thinking, output,
     credentialsDir: process.env.ONE_COMPANY_ACCEPTANCE_CREDENTIALS ?? join(homedir(), ".pi", "agent"),
   };
 }
@@ -107,17 +100,12 @@ export interface InstalledHost {
   modelEvents: Array<{ type: string; detail: string; at: number }>;
   /** 扩展在主会话里另行发起的无工具模型调用（如需求解释器）的请求开头与模型原始回答，供排查校验失败。 */
   sideCalls: Array<{ systemPrompt: string; input: string; stopReason: string; output: string; at: number }>;
-  /** 驱动方扮演用户时调用的模型，不经过被测产品、不计入 sideCalls。 */
-  userModel(systemPrompt: string, text: string): Promise<string>;
   /** 按用户在终端里看到的样子渲染 PM 面板。 */
   panelLines(width?: number): string[];
   /** 模拟用户在终端按键（输入框为空时）。 */
   press(data: string): void;
   close(): Promise<void>;
 }
-
-const QUESTION_PROMPT = `你在验收测试里扮演一个真实用户。下面是 AI 主代理弹给你的提问窗口。按窗口里标"推荐"的选项作答，除非它和你之前说过的需求明显矛盾。
-只输出你选的那个选项的原文（不带编号），或者以"其他："开头写你自己的一句回答。不要解释。`;
 
 /**
  * 用真实 SDK 加载安装产物，模式为 tui：驱动方接管界面，确认框一律回答"是"并记录，
@@ -138,21 +126,9 @@ export async function startInstalledHost(options: { installed: string; repo: str
   }) as typeof runtime.complete;
   const model = runtime.getModel(config.provider, config.modelId);
   if (!model) throw new Error(`模型配置里找不到 ${config.provider}/${config.modelId}`);
-  const userModel = runtime.getModel(config.userModel.provider, config.userModel.modelId);
-  if (!userModel) throw new Error(`模型配置里找不到扮演用户的 ${config.userModel.provider}/${config.userModel.modelId}`);
-  const askUserModel = async (systemPrompt: string, text: string) => {
-    const response = await complete(userModel, { systemPrompt, messages: [{ role: "user", content: text, timestamp: Date.now() }] });
-    if (response.stopReason !== "stop") throw new Error(`扮演用户的模型没有正常作答：${response.stopReason} ${response.errorMessage ?? ""}`);
-    return response.content.map((block) => block.type === "text" ? block.text : "").join("").trim();
-  };
-  /** 主代理的提问窗口由扮演用户的模型作答：按推荐选，输出对不上任何选项时退回推荐项。 */
-  const answerQuestion = async (window: ShownWindow): Promise<WindowDecision> => {
-    const labels = window.choices.filter((choice) => choice !== "其他（自己输入）");
-    const recommended = window.text.match(/^ (?:→ | {2})\d+\. (.+?) {2}推荐$/mu)?.[1] ?? labels[0]!;
-    const reply = await askUserModel(QUESTION_PROMPT, window.text);
-    const other = reply.match(/^其他[:：]\s*(.+)$/su)?.[1]?.trim();
-    return labels.find((label) => reply === label) ?? (other ? { other } : recommended);
-  };
+  /** 主代理的提问窗口一律选程序标了"推荐"的那一项，每次结果相同。 */
+  const answerQuestion = (window: ShownWindow): WindowDecision =>
+    window.text.match(/^ (?:→ | {2})\d+\. (.+?) {2}推荐$/mu)?.[1] ?? window.choices[0]!;
   const loader = new DefaultResourceLoader({
     cwd: repo, agentDir, settingsManager: SettingsManager.inMemory(),
     additionalExtensionPaths: [join(installed, "extensions", "index.ts")], noContextFiles: true, noThemes: true,
@@ -173,9 +149,9 @@ export async function startInstalledHost(options: { installed: string; repo: str
     ...defaultUI,
     input: async (title) => { dialogs.push({ kind: "input", title, answer: undefined, at: Date.now() }); return undefined; },
     editor: async () => undefined,
-    custom: answeringUi(async (window) => {
+    custom: answeringUi((window) => {
       if (window.title.startsWith("提问 · ")) {
-        const decision = await answerQuestion(window);
+        const decision = answerQuestion(window);
         dialogs.push({ kind: "select", title: window.title, message: window.text, options: window.choices, answer: decision, at: Date.now() });
         return decision;
       }
@@ -205,7 +181,6 @@ export async function startInstalledHost(options: { installed: string; repo: str
 
   return {
     session, dialogs, notifications, modelEvents, sideCalls,
-    userModel: askUserModel,
     panelLines: (width = 160) => panel?.render(width) ?? [],
     press: (data) => { for (const handler of inputHandlers) handler(data); },
     close: async () => {
