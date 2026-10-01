@@ -15,7 +15,7 @@ import { DecisionItem, decisionDigest, parseDecisionBatch, checkDecisionRecord }
 import type { DecisionAdmission, DecisionBatch, ShortDecisionRecord } from "./short-decision-format.ts";
 import {
   InteractionAction, InteractionBasis, CandidateBinding, PendingQuestion, UserInteractionError,
-  checkInteraction, checkContext, checkProposal, checkInterpretation, candidateBinding, parseInteraction,
+  checkInteraction, checkContext, checkProposal, checkInterpretation, parseInteraction,
 } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
 import { ApprovalUnitIds, ApprovalPartition } from "./user-interaction-format.ts";
@@ -50,7 +50,7 @@ export interface InteractionAuthorization {
   readonly repoId: string;
   readonly basis: InteractionBasis;
   readonly candidate: CandidateBinding;
-  readonly action: InteractionAction | "confirm-target" | "authorize-document";
+  readonly action: InteractionAction | "authorize-document";
   readonly manifest?: ApprovalManifestReference;
   readonly goalIds?: readonly string[];
   readonly constraintIds?: readonly string[];
@@ -427,52 +427,6 @@ export class UserInteractionCore {
   }
   /** 合法保存的决定按活动需求读取；不要求输入、模型或原会话仍存在，也不将记录升级为能力。 */
   readDecision(requirementId: string, decisionId: string): ShortDecisionRecord { return this.#decisions.read(requirementId, decisionId); }
-  /** 内部接线核验：每次比较完整候选及当前状态；返回的JSON只是元数据，不是新的能力。 */
-  authorization(capability: InteractionCapability, binding: { basis: InteractionBasis; candidate: CandidateBinding }, action: InteractionAction | "confirm-target"): InteractionAuthorization | null {
-    if (this.#authorizing) return null;
-    this.#authorizing = true;
-    try {
-      const v = this.#requireVerified(capability);
-      if (v.context.document || !v.saved || !v.savedRecords || decisionDigest(v.context.basis) !== decisionDigest(binding.basis)) return null;
-      const candidate = v.context.candidates.find((c) => decisionDigest(candidateBinding(c)) === decisionDigest(binding.candidate));
-      if (!candidate) return null;
-      const related = v.result.entries.map((entry, index) => ({ entry, index })).filter(({ entry }) => relevant(entry, candidate.candidateId));
-      // 完整候选不能夹带任何未生效条目或修改；已明确独立的其他候选不受牵连。
-      if (related.some(({ entry }) => !confirmed(entry) || entry.resolution === "modify")) return null;
-      const entries = related.map(({ entry }) => entry).filter((e) => e.candidateId === candidate.candidateId);
-      const target = entries.find((e) => e.kind === "target" && e.basis === "explicit" && confirmed(e));
-      if (!target || v.result.referenceResolution === "ambiguous") return null;
-      const entry = action === "confirm-target" ? target : entries.find((e) => e.kind === "action" && e.basis === "explicit" && confirmed(e) && e.actions.includes(action));
-      if (!entry) return null;
-      const request = frozen({ repoId: this.#options.repoId, basis: structuredClone(v.context.basis), candidate: candidateBinding(candidate), action,
-        receiptId: v.receiptId, scope: entry.scope });
-      if (!synchronousPermission(this.#options.authorizeAction?.(request))) return null;
-      if (this.#requireVerified(capability) !== v) return null;
-      const records = related.map(({ index }) => v.savedRecords![index]!);
-      for (const { record } of records) {
-        if (decisionDigest(this.readDecision(v.context.basis.requirementId, record.decisionId)) !== decisionDigest(record)) return null;
-      }
-      const current = this.#state.read(v.context.basis.requirementId);
-      this.#assertInput(v.input); this.#assertModel(v.model);
-      // 所有可重入宿主回调结束后，在同一只读快照核对状态和相关决定；此后不再调用宿主。
-      const unchanged = withDatabase(this.#path(), (db) => db.transaction(() => {
-        this.#assertSavedRevisions(db, v, records);
-        const state = db.read("requirements", v.context.basis.requirementId);
-        if (!state || state.id !== current.id || state.version !== current.version ||
-          decisionDigest(state.data) !== decisionDigest(current.data) || current.version !== v.context.basis.version ||
-          current.data.epoch !== v.context.basis.epoch || current.data.recovery !== "ready" ||
-          !["draft", "active"].includes(current.data.lifecycle) ||
-          decisionDigest(current.data.lifecycle === "active" ? current.data.approved : current.data.saved) !== decisionDigest(v.context.basis.prod)) return false;
-        return records.every(({ version, record }) => {
-          const stored = db.read("short_decisions", record.decisionId);
-          return stored?.id === record.decisionId && stored.version === version && record.status === "confirmed" &&
-            stored.data !== null && decisionDigest(stored.data) === decisionDigest(record);
-        });
-      }));
-      return unchanged && this.#verified === v && this.#input === v.input && this.#session && !v.input.controller.signal.aborted ? request : null;
-    } catch { return null; }
-    finally { this.#authorizing = false; }
-  }
   /** 整份文档阅读/清单许可；全pending亦可读取，不授予active或PM启动，后者另核验明确目标和动作。 */
   authorizeDocument(capability: InteractionCapability, binding: { basis: InteractionBasis; candidate: CandidateBinding }): { authorization: InteractionAuthorization; manifest: ApprovalManifest } | null {
     const authorization = this.#authorizeManifest(capability, binding);

@@ -44,23 +44,10 @@ async function world() {
   const identity = await repositoryIdentity(repo.root);
   let now = 1_000_000, allowed = true;
   let authorizationHook: ((action: string) => void) | undefined;
-  const actionCalls: InteractionAuthorization[] = [];
-  const deniedActions = new Set<string>();
   let actionHook: ((request: InteractionAuthorization) => unknown) | undefined;
-  const permittedScopes = new Map<string, Set<string>>([
-    ["confirm-target", new Set(["保留邮箱登录，本次不做微信登录"])],
-    ["analyze", new Set(["仅分析手机号登录，不改代码", "仅分析，不修改代码"])],
-    ["implement", new Set(["只实施手机号登录，保留邮箱，不做微信"])],
-  ]);
   const options = { dataRoot: join(root, "private"), repoId: identity.repoId, repositoryRoot: repo.root,
     now: () => now, authorize: (request: { action: string }) => { authorizationHook?.(request.action); return allowed; },
-    authorizeAction: (request: InteractionAuthorization): boolean => {
-      actionCalls.push(structuredClone(request));
-      if (actionHook) return actionHook(request) as boolean;
-      return allowed && !deniedActions.has(request.action) && request.repoId === identity.repoId &&
-        decisionDigest(request.basis) === decisionDigest(basis) && decisionDigest(request.candidate) === decisionDigest(candidateBinding(candidate)) &&
-        permittedScopes.get(request.action)?.has(request.scope) === true;
-    } };
+    authorizeAction: (request: InteractionAuthorization): boolean => actionHook ? actionHook(request) as boolean : false };
   const state = await RequirementStateStore.open(options);
   const reserved = state.reserve({ requestId: uuidv7(), intentHash: "b".repeat(64) });
   const basis = { requirementId: reserved.id, version: reserved.version, epoch: reserved.data.epoch, prod: null };
@@ -85,7 +72,7 @@ async function world() {
     setImplementation: (fn: InteractionInterpreter["interpret"]) => { implementation = fn; },
     setNow: (value: number) => { now = value; }, setAllowed: (value: boolean) => { allowed = value; },
     setModel: (value: typeof model) => { selected = value; },
-    actionCalls, deniedActions, setActionHook: (hook: (request: InteractionAuthorization) => unknown) => { actionHook = hook; },
+    setActionHook: (hook: (request: InteractionAuthorization) => unknown) => { actionHook = hook; },
     setAuthorizationHook: (hook: (action: string) => void) => { authorizationHook = hook; } };
 }
 function phoneClassification(candidateId: string, direct = false) {
@@ -106,36 +93,21 @@ test("手机号原句分类固定：目标/保留/排除/未来/委托与仅分�
   const before = w.state.read(w.basis.requirementId);
   const interpreted = await w.interpret();
   expect(interpreted.interpretation.entries.map((e) => e.kind)).toEqual(["target", "constraint", "exclusion", "future", "delegation", "ai-choice", "action"]);
-  expect(w.core.authorization(interpreted.capability, w.binding, "analyze")).toBeNull();
   const saved = w.core.save(interpreted.capability);
-  expect(w.core.authorization(interpreted.capability, w.binding, "analyze")).toMatchObject({ action: "analyze" });
-  expect(w.core.authorization(interpreted.capability, w.binding, "implement")).toBeNull();
-  expect(w.core.authorization(interpreted.capability, w.binding, "confirm-target")).not.toBeNull();
   expect(w.core.readDecision(w.basis.requirementId, saved.decisionIds[3]!)).toMatchObject({ actor: "user", status: "pending" });
   expect(w.core.readDecision(w.basis.requirementId, saved.decisionIds[5]!)).toMatchObject({ actor: "ai", status: "confirmed" });
   expect(w.state.read(w.basis.requirementId)).toEqual(before);
 });
-test("明确直接实施无需重复审批，但不产生关闭、提交或推送许可", async () => {
-  const w = await world(); w.setOutput(phoneClassification(w.candidate.candidateId, true));
-  const { capability } = await w.interpret(DIRECT); w.core.save(capability);
-  expect(w.core.authorization(capability, w.binding, "implement")).toMatchObject({ action: "implement" });
-  for (const action of ["close", "commit", "push", "plan"] as const) expect(w.core.authorization(capability, w.binding, action)).toBeNull();
+test("明确直接实施无需重复审批，但不产生分析、计划、提交或推送许可", async () => {
+  const w = await documentWorld(), { capability } = await w.interpret(DIRECT); w.core.save(capability);
+  expect(w.core.authorizeScope(capability, w.binding(), w.scope)).toMatchObject({ action: "implement" });
+  for (const action of ["analyze", "plan", "commit", "push"] as const) expect(w.core.authorizeScope(capability, w.binding(), { ...w.scope, action })).toBeNull();
 });
-test("新增AI业务限制保持pending并阻塞其候选，不冒充用户要求", async () => {
+test("新增AI业务限制保持pending，不冒充用户要求", async () => {
   const w = await world(); const output = phoneClassification(w.candidate.candidateId, true);
   output.entries.push(entry({ kind: "suggestion", candidateId: w.candidate.candidateId, basis: "proposed", conclusion: "建议每个用户仅绑定一个手机号", scope: "需要补充确认" }));
   w.setOutput(output); const { capability } = await w.interpret(); const saved = w.core.save(capability);
-  expect(w.core.authorization(capability, w.binding, "implement")).toBeNull();
   expect(w.core.readDecision(w.basis.requirementId, saved.decisionIds.at(-1)!)).toMatchObject({ actor: "ai", status: "pending" });
-});
-test("局部未决只阻塞对应候选，独立已明确候选保留动作权限", async () => {
-  const w = await world(); const other = { ...w.candidate, candidateId: uuidv7(), operationId: uuidv7(), intentHash: "f".repeat(64),
-    to: { commit: "a".repeat(40), hash: "b".repeat(64) } };
-  w.context.candidates.push(other);
-  const output = w.output(); output.entries.push(entry({ kind: "unresolved", basis: "uncertain", candidateId: other.candidateId, conclusion: "另一个功能前提未知", scope: "仅该功能", resolution: "unclear" }));
-  const { capability } = await w.interpret(); w.core.save(capability);
-  expect(w.core.authorization(capability, w.binding, "analyze")).not.toBeNull();
-  expect(w.core.authorization(capability, { basis: w.basis, candidate: candidateBinding(other) }, "analyze")).toBeNull();
 });
 async function question(w: Awaited<ReturnType<typeof world>>) {
   const q = w.core.ask(JSON.stringify({ basis: w.basis, candidate: candidateBinding(w.candidate),
@@ -150,10 +122,10 @@ test("单请求短答关联实际请求，多个请求的可以不擅自选一�
   await question(w);
   await expect(w.interpret("可以")).rejects.toThrow(/ambiguous_reference/);
   w.setOutput(result([entry({ kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "请明确确认哪一个请求", scope: "两个请求均未确认" })], "ambiguous"));
-  const ambiguous = await w.interpret("可以"); w.core.save(ambiguous.capability);
-  expect(w.core.authorization(ambiguous.capability, w.binding, "analyze")).toBeNull();
+  const ambiguous = await w.interpret("可以");
+  expect(w.core.save(ambiguous.capability).decisionIds).toHaveLength(1);
 });
-test("长答部分接受/修改/暂缓保存真实分类，修改不能批准原候选hash，修订保留supersedes", async () => {
+test("长答部分接受/修改/暂缓保存真实分类，修订保留supersedes", async () => {
   const w = await world(); const first = await w.interpret(); const original = w.core.save(first.capability);
   w.context.priorDecisions = [w.core.readDecision(w.basis.requirementId, original.decisionIds[0]!)];
   const q = await question(w);
@@ -163,7 +135,6 @@ test("长答部分接受/修改/暂缓保存真实分类，修改不能批准原
     entry({ kind: "future", basis: "proposed", resolution: "defer", conclusion: "其他登录方式暂缓" }),
   ], "explicit"));
   const revised = await w.interpret("保留邮箱这项可以。手机号只给内测用户，其他先缓缓。"); const saved = w.core.save(revised.capability);
-  expect(w.core.authorization(revised.capability, w.binding, "confirm-target")).toBeNull();
   expect(w.core.readDecision(w.basis.requirementId, original.decisionIds[0]!)).toMatchObject({ status: "superseded", supersededBy: saved.decisionIds[0] });
 });
 for (const source of ["extension", "tool", "user", "model", "rpc-untrusted"]) test(`来源${source}不能产生输入能力`, async () => {
@@ -182,16 +153,21 @@ test("可信RPC可用，但宿主会话绑定不同、相同事件重入、已�
   expect(() => w.core.captureInput(event, "session")).toThrow(/input_reentry/);
 });
 test("JSON能力、旧hash/epoch/版本、跨需求和篡改前后引用拒绝授权", async () => {
-  const w = await world(); const { capability } = await w.interpret(); w.core.save(capability);
+  const w = await documentWorld(); const { capability } = await w.interpret(); w.core.save(capability);
   expect(() => w.core.save(JSON.parse(JSON.stringify(capability)))).toThrow(/invalid_capability/);
+  const binding = w.binding();
+  expect(w.core.authorizeDocument(capability, binding)).not.toBeNull();
   const variants = [
-    { ...w.binding, basis: { ...w.basis, requirementId: uuidv7() } },
-    { ...w.binding, basis: { ...w.basis, epoch: 2 } }, { ...w.binding, basis: { ...w.basis, version: 2 } },
-    { ...w.binding, candidate: { ...w.binding.candidate, intentHash: "0".repeat(64) } },
-    { ...w.binding, candidate: { ...w.binding.candidate, to: { ...w.candidate.to, hash: "0".repeat(64) } } },
-    { ...w.binding, candidate: { ...w.binding.candidate, from: w.candidate.to } },
+    { ...binding, basis: { ...binding.basis, requirementId: uuidv7() } },
+    { ...binding, basis: { ...binding.basis, epoch: 2 } }, { ...binding, basis: { ...binding.basis, version: binding.basis.version + 1 } },
+    { ...binding, candidate: { ...binding.candidate, intentHash: "0".repeat(64) } },
+    { ...binding, candidate: { ...binding.candidate, to: { ...binding.candidate.to, hash: "0".repeat(64) } } },
+    { ...binding, candidate: { ...binding.candidate, from: null } },
   ];
-  for (const binding of variants) expect(w.core.authorization(capability, binding, "analyze")).toBeNull();
+  for (const variant of variants) {
+    expect(w.core.authorizeDocument(capability, variant)).toBeNull();
+    expect(w.core.authorizeScope(capability, variant, w.scope)).toBeNull();
+  }
 });
 test("存在短决定和工具自填结论都不能直接得到admit；修改返回视图不改变内部批次", async () => {
   const w = await world(); const interpreted = await w.interpret(); interpreted.interpretation.entries[0]!.conclusion = "伪造推送批准";
@@ -201,7 +177,8 @@ test("存在短决定和工具自填结论都不能直接得到admit；修改返
   expect(() => store.append(JSON.stringify({ ...w.basis, operationId: uuidv7(), decisions: [{ conclusion: "推送", scope: "全部", references: [], supersedes: [] }] }))).toThrow(/trusted_admission_required/);
 });
 for (const revoke of ["clear", "shutdown", "switch", "expiry", "closing", "model", "permission"] as const) test(`${revoke}后旧能力不可用，closing不加载正文`, async () => {
-  const w = await world(); const { capability } = await w.interpret(); w.core.save(capability);
+  const w = await documentWorld(); const { capability } = await w.interpret(); w.core.save(capability);
+  expect(w.core.authorizeScope(capability, w.binding(), w.scope)).not.toBeNull();
   if (revoke === "clear") w.core.revoke();
   if (revoke === "shutdown") w.core.shutdown();
   if (revoke === "switch") w.core.startSession({ sessionId: "new-session", windowId: "window" });
@@ -212,7 +189,8 @@ for (const revoke of ["clear", "shutdown", "switch", "expiry", "closing", "model
     w.state.beginClose({ requirementId: w.basis.requirementId, version: w.basis.version, intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
     w.loader.mockClear(); await expect(w.interpret()).rejects.toThrow(); expect(w.loader).not.toHaveBeenCalled();
   }
-  expect(w.core.authorization(capability, w.binding, "analyze")).toBeNull();
+  expect(w.core.authorizeDocument(capability, w.binding())).toBeNull();
+  expect(w.core.authorizeScope(capability, w.binding(), w.scope)).toBeNull();
 });
 for (const race of ["input", "session", "closing", "version", "revoke", "model"]) test(`异步解释期间${race}变化，迟到结果不保存或签发能力`, async () => {
   const w = await world(); let settle!: (value: string) => void, entered!: () => void;
@@ -298,12 +276,10 @@ test("20条及16引用的合法边界写入真实SQLite，保存幂等，新增�
   expect(saved.decisionIds).toHaveLength(20); expect(w.core.save(capability)).toEqual(saved); expect(w.records()).toHaveLength(20);
   w.capture("新的需求"); expect(() => w.core.save(capability)).toThrow(/invalid_capability/);
 });
-test("短答不能把仅分析问题扩大为实施；不存在候选时只能保存目标，不能取得任意动作", async () => {
+test("短答不能把仅分析问题扩大为实施", async () => {
   const w = await world(); const q = await question(w);
   w.setOutput(result([entry({ kind: "action", candidateId: w.candidate.candidateId, requestId: q.requestId, resolution: "accept", actions: ["implement"] })], "single-question"));
   await expect(w.interpret("可以")).rejects.toThrow();
-  w.setOutput(result([entry()])); const { capability } = await w.interpret("我想增加手机号登录"); w.core.save(capability);
-  expect(w.core.authorization(capability, w.binding, "implement")).toBeNull();
 });
 test("迟到旧模型结果不会清掉后来的真实输入票据", async () => {
   const w = await world(); let settle!: (value: string) => void, ready!: () => void;
@@ -323,27 +299,16 @@ test("未决问题的陌生需求和旧版本无法从SQLite读出或重放", as
 });
 
 for (const [kind, basis] of [["future", "proposed"], ["constraint", "proposed"], ["constraint", "uncertain"]] as const) {
-  test(`F1 同候选${kind}/${basis}/direct未生效内容拒绝完整hash`, async () => {
+  test(`F1 同候选${kind}/${basis}/direct未生效内容保存为pending`, async () => {
     const w = await world(); w.setOutput(phoneClassification(w.candidate.candidateId, true));
     w.output().entries.push(entry({ kind, basis, candidateId: w.candidate.candidateId, conclusion: "微信仍未确认", scope: "当前候选中的未确认内容" }));
     const { capability } = await w.interpret("手机号现在实施，微信还没确认。"); const saved = w.core.save(capability);
     expect(w.core.readDecision(w.basis.requirementId, saved.decisionIds.at(-1)!)).toMatchObject({ status: "pending" });
-    expect(w.core.authorization(capability, w.binding, "implement")).toBeNull();
-    expect(w.core.authorization(capability, w.binding, "confirm-target")).toBeNull();
   });
 }
-test("F1 没有关联的未知约束不是已判断无关；原手机号future(null)仍为未来讨论", async () => {
-  const w = await world(); w.setOutput(phoneClassification(w.candidate.candidateId, true));
-  let parsed = await w.interpret(DIRECT); w.core.save(parsed.capability);
-  expect(w.core.authorization(parsed.capability, w.binding, "implement")).not.toBeNull();
-  w.output().entries.push(entry({ kind: "constraint", basis: "uncertain", candidateId: null, conclusion: "用户范围未知", scope: "影响尚未明确" }));
-  parsed = await w.interpret(DIRECT); w.core.save(parsed.capability);
-  expect(w.core.authorization(parsed.capability, w.binding, "implement")).toBeNull();
-});
-for (const kind of ["target", "action", "constraint"] as const) test(`F2 合法双core修订${kind}，原能力失效且不重新批准新记录`, async () => {
+for (const kind of ["target", "action", "constraint"] as const) test(`F2 合法双core修订${kind}，原决定被取代且需求状态不变`, async () => {
   const w = await world(); w.setOutput(phoneClassification(w.candidate.candidateId, true));
   const first = await w.interpret(DIRECT); const saved = w.core.save(first.capability);
-  expect(w.core.authorization(first.capability, w.binding, "implement")).not.toBeNull();
   const index = w.output().entries.findIndex((e) => e.kind === kind);
   const old = w.core.readDecision(w.basis.requirementId, saved.decisionIds[index]!);
   const before = w.state.read(w.basis.requirementId);
@@ -356,37 +321,22 @@ for (const kind of ["target", "action", "constraint"] as const) test(`F2 合法�
   const revised = second.save(next.capability);
   expect(w.core.readDecision(w.basis.requirementId, old.decisionId)).toMatchObject({ status: "superseded", supersededBy: revised.decisionIds[0] });
   expect(w.state.read(w.basis.requirementId)).toEqual(before);
-  expect(w.core.authorization(first.capability, w.binding, "implement")).toBeNull();
-  expect(second.authorization(next.capability, w.binding, "implement")).toBeNull();
-});
-test("F2 另一合法core仅修订独立候选不重置当前候选", async () => {
-  const w = await world(); const other = { ...w.candidate, candidateId: uuidv7(), operationId: uuidv7(), intentHash: "f".repeat(64),
-    to: { commit: "a".repeat(40), hash: "b".repeat(64) } };
-  w.context.candidates.push(other); w.output().entries.push(entry({ candidateId: other.candidateId, conclusion: "独立候选目标" }));
-  const first = await w.interpret(); const saved = w.core.save(first.capability);
-  const old = w.core.readDecision(w.basis.requirementId, saved.decisionIds[2]!);
-  const second = await UserInteractionCore.open({ ...w.options, loadContext: async () => ({ ...w.context, priorDecisions: [old] }),
-    interpreter: { identity: () => model, interpret: async () => JSON.stringify(result([entry({ candidateId: other.candidateId,
-      resolution: "modify", conclusion: "修订另一个独立候选", supersedes: [old.decisionId] })])) } });
-  cleanup.push(() => second.shutdown()); second.startSession({ sessionId: "B", windowId: "B" });
-  const next = await second.interpret(second.captureInput({ source: "interactive", text: "只修改另一个独立候选" }, "B"), w.basis.requirementId);
-  second.save(next.capability);
-  expect(w.core.readDecision(w.basis.requirementId, old.decisionId).status).toBe("superseded");
-  expect(w.core.authorization(first.capability, w.binding, "analyze")).not.toBeNull();
 });
 for (const field of ["conclusion", "scope", "operationId", "requirementVersion", "basisReceiptId", "actor", "prod", "recordedAt", "missing"] as const) {
   test(`F2 实际保存记录${field}改变拒绝旧能力（独立临时库完整性故障）`, async () => {
-    const w = await world(); const { capability } = await w.interpret(); const saved = w.core.save(capability);
+    const w = await documentWorld(); const { capability } = await w.interpret(); const saved = w.core.save(capability);
+    expect(w.core.authorizeDocument(capability, w.binding())).not.toBeNull();
     withDatabase(w.path, (db) => {
       const old = db.read("short_decisions", saved.decisionIds[1]!)!;
       if (field === "missing") db.remove("short_decisions", old.id, old.version);
       else {
-        const changed = { conclusion: "不同结论", scope: "不同范围", operationId: uuidv7(), requirementVersion: 2,
-          basisReceiptId: uuidv7(), actor: "ai", prod: w.candidate.to, recordedAt: 1_000_001 };
+        const changed = { conclusion: "不同结论", scope: "不同范围", operationId: uuidv7(), requirementVersion: w.basis.version + 1,
+          basisReceiptId: uuidv7(), actor: "ai", prod: { commit: "9".repeat(40), hash: "9".repeat(64) }, recordedAt: 1_000_001 };
         db.update("short_decisions", old.id, old.version, { ...old.data as object, [field]: changed[field] });
       }
     });
-    expect(w.core.authorization(capability, w.binding, "analyze")).toBeNull();
+    expect(w.core.authorizeDocument(capability, w.binding())).toBeNull();
+    expect(w.core.authorizeScope(capability, w.binding(), w.scope)).toBeNull();
   });
 }
 for (const name of ["user-interaction-format", "user-interaction", "user-interaction-model", "approval-manifest"]) test(`F3 当前Node原生strip-types导入${name}`, () => {
@@ -395,72 +345,51 @@ for (const name of ["user-interaction-format", "user-interaction", "user-interac
     { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8", timeout: 20_000, env: { ...process.env, NODE_OPTIONS: "" } });
   expect(child.error).toBeUndefined(); expect(child.signal).toBeNull(); expect(child.status, child.stderr).toBe(0);
 });
-test("F4 保留状态/决定read但单独撤销implement，逐次动作回调拒绝", async () => {
-  const w = await world(); w.setOutput(phoneClassification(w.candidate.candidateId, true));
-  const { capability } = await w.interpret(DIRECT); const saved = w.core.save(capability);
-  expect(w.core.authorization(capability, w.binding, "implement")).not.toBeNull();
-  w.deniedActions.add("implement");
-  expect(w.state.read(w.basis.requirementId)).toBeDefined();
-  expect(w.core.readDecision(w.basis.requirementId, saved.decisionIds[0]!).status).toBe("confirmed");
-  expect(w.core.authorization(capability, w.binding, "implement")).toBeNull();
-  expect(w.core.authorization(capability, w.binding, "confirm-target")).not.toBeNull();
-  expect(w.actionCalls.filter((r) => r.action === "implement")).toHaveLength(2);
-});
-test("F4 回调收到冻结的完整身份/候选/动作/receipt与scope，不匹配scope拒绝", async () => {
-  const w = await world(); const { capability } = await w.interpret(); const saved = w.core.save(capability);
+test("F4 回调收到冻结的完整身份/候选/动作/receipt与清单，回调不放行的动作被拒", async () => {
+  const w = await documentWorld(); const { capability } = await w.interpret(); const saved = w.core.save(capability);
   const receiptId = w.core.readDecision(w.basis.requirementId, saved.decisionIds[1]!).basisReceiptId;
+  const seen: InteractionAuthorization[] = [];
   w.setActionHook((r) => {
-    expect(r).toEqual({ repoId: w.options.repoId, ...w.binding, action: "analyze", receiptId, scope: "仅分析手机号登录，不改代码" });
-    expect(Object.isFrozen(r)).toBe(true); expect(Object.isFrozen(r.candidate.to)).toBe(true);
-    return r.scope === "只有另一个范围获得许可";
+    seen.push(r); expect(Object.isFrozen(r)).toBe(true); expect(Object.isFrozen(r.candidate.to)).toBe(true); expect(Object.isFrozen(r.manifest)).toBe(true);
+    return r.action !== "implement";
   });
-  expect(w.core.authorization(capability, w.binding, "analyze")).toBeNull();
+  expect(w.core.authorizeDocument(capability, w.binding())).not.toBeNull();
+  expect(seen[0]).toMatchObject({ repoId: w.options.repoId, ...w.binding(), action: "authorize-document", receiptId, scope: "manifest-bound-scope" });
+  expect(w.core.authorizeScope(capability, w.binding(), w.scope)).toBeNull();
+  expect(seen.at(-1)).toMatchObject({ action: "implement", receiptId, goalIds: ["A"], constraintIds: ["preamble"] });
 });
-for (const change of ["revoke", "shutdown", "state", "record", "recursive"] as const) test(`F4 动作回调重入${change}不能放行`, async () => {
-  const w = await world(); const { capability } = await w.interpret(); const saved = w.core.save(capability);
-  w.setActionHook(() => {
-    if (change === "revoke") w.core.revoke();
-    if (change === "shutdown") w.core.shutdown();
-    if (change === "state") w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version,
-      operationId: uuidv7(), reference: w.candidate.to });
-    if (change === "record") withDatabase(w.path, (db) => {
+test("F4 最后一次宿主回调之后保存记录被改，最终无回调快照仍拒绝", async () => {
+  const w = await documentWorld(); const { capability } = await w.interpret(); const saved = w.core.save(capability);
+  let calls = 0;
+  w.setAuthorizationHook(() => { calls++; });
+  expect(w.core.authorizeDocument(capability, w.binding())).not.toBeNull();
+  const total = calls; let mutated = false;
+  calls = 0;
+  w.setAuthorizationHook(() => {
+    if (++calls !== total) return;
+    withDatabase(w.path, (db) => {
       const old = db.read("short_decisions", saved.decisionIds[0]!)!;
-      db.update("short_decisions", old.id, old.version, { ...old.data as object, conclusion: "回调期间内容变化" });
+      db.update("short_decisions", old.id, old.version, { ...old.data as object, conclusion: "晚于回调的变化" });
     });
-    if (change === "recursive") { expect(w.core.authorization(capability, w.binding, "analyze")).toBeNull(); w.core.revoke(); }
-    return true;
+    mutated = true;
   });
-  expect(w.core.authorization(capability, w.binding, "analyze")).toBeNull();
-});
-test("F4 最后一个状态read回调改变保存记录，最终无回调快照仍拒绝", async () => {
-  const w = await world(); const { capability } = await w.interpret(); const saved = w.core.save(capability);
-  let decisionsRead = 0, stateRead = 0, mutated = false;
-  w.setAuthorizationHook((action) => {
-    if (action === "read-decisions") decisionsRead++;
-    // 两条决定均完成read-decisions的前后核验后，最后一次state.read的返回前回调才修改。
-    if (decisionsRead === 4 && action === "read" && ++stateRead === 2) withDatabase(w.path, (db) => {
-      const old = db.read("short_decisions", saved.decisionIds[0]!)!;
-      db.update("short_decisions", old.id, old.version, { ...old.data as object, conclusion: "晚于动作回调的变化" });
-      mutated = true;
-    });
-  });
-  expect(w.core.authorization(capability, w.binding, "analyze")).toBeNull(); expect(mutated).toBe(true);
+  expect(w.core.authorizeDocument(capability, w.binding())).toBeNull(); expect(mutated).toBe(true);
 });
 test("F4 动作回调中另一合法core保存撤权修订，旧能力不能返回授权", async () => {
-  const w = await world(); w.setOutput(phoneClassification(w.candidate.candidateId, true));
-  const first = await w.interpret(DIRECT); const original = w.core.save(first.capability);
+  const w = await documentWorld(), first = await w.interpret(), original = w.core.save(first.capability);
   const old = w.core.readDecision(w.basis.requirementId, original.decisionIds.at(-1)!);
-  const second = await UserInteractionCore.open({ ...w.options, loadContext: async () => ({ ...w.context, priorDecisions: [old] }),
+  const { document: _document, ...context } = w.context;
+  const second = await UserInteractionCore.open({ ...w.options, loadContext: async () => ({ ...context, priorDecisions: [old] }),
     interpreter: { identity: () => model, interpret: async () => JSON.stringify(result([entry({ kind: "action", candidateId: w.candidate.candidateId,
       actions: ["analyze"], conclusion: "撤销实施，只允许分析", scope: "不允许实施", supersedes: [old.decisionId] })])) } });
   cleanup.push(() => second.shutdown()); second.startSession({ sessionId: "B", windowId: "B" });
   const next = await second.interpret(second.captureInput({ source: "interactive", text: "取消实施许可，只分析" }, "B"), w.basis.requirementId);
   w.setActionHook(() => { second.save(next.capability); return true; });
-  expect(w.core.authorization(first.capability, w.binding, "implement")).toBeNull();
+  expect(w.core.authorizeScope(first.capability, w.binding(), w.scope)).toBeNull();
   expect(w.core.readDecision(w.basis.requirementId, old.decisionId).status).toBe("superseded");
 });
 for (const mode of ["promise-resolve", "promise-reject", "thenable-resolve", "thenable-reject"] as const) test(`F4 ${mode}不授权且迟到reject被收尾`, async () => {
-  const w = await world(); const { capability } = await w.interpret(); w.core.save(capability);
+  const w = await documentWorld(); const { capability } = await w.interpret(); w.core.save(capability);
   let finish!: () => void, completed = false;
   if (mode.startsWith("promise")) {
     const pending = new Promise<boolean>((resolve, reject) => { finish = () => { completed = true; mode.endsWith("reject") ? reject(new Error("late")) : resolve(true); }; });
@@ -470,18 +399,20 @@ for (const mode of ["promise-resolve", "promise-reject", "thenable-resolve", "th
       finish = () => { completed = true; mode.endsWith("reject") ? reject(new Error("late")) : resolve(true); };
     } }));
   }
-  expect(w.core.authorization(capability, w.binding, "analyze")).toBeNull();
+  expect(w.core.authorizeDocument(capability, w.binding())).toBeNull();
   await Promise.resolve(); finish(); await new Promise((resolve) => setImmediate(resolve)); expect(completed).toBe(true);
 });
 test("F4 未接入authorizeAction的运行时调用默认拒绝，不用恒真默认", async () => {
-  const w = await world(); const { authorizeAction: _omitted, ...withoutAction } = w.options;
+  const w = await documentWorld(); const { authorizeAction: _omitted, ...withoutAction } = w.options;
   // 编译时缺失必需回调也应报错；运行时来自未类型化接线仍须默认拒绝。
   // @ts-expect-error authorizeAction is required
   const core = await UserInteractionCore.open({ ...withoutAction, loadContext: async () => w.context,
     interpreter: { identity: () => model, interpret: async () => JSON.stringify(w.output()) } });
   cleanup.push(() => core.shutdown()); core.startSession({ sessionId: "B", windowId: "B" });
   const { capability } = await core.interpret(core.captureInput({ source: "interactive", text: PHONE }, "B"), w.basis.requirementId);
-  core.save(capability); expect(core.authorization(capability, w.binding, "analyze")).toBeNull();
+  core.save(capability);
+  expect(core.authorizeDocument(capability, w.binding())).toBeNull();
+  expect(core.authorizeScope(capability, w.binding(), w.scope)).toBeNull();
 });
 
 async function documentWorld() {
@@ -526,8 +457,6 @@ test("范围入口真实SQLite保存A确认+B未决，整份可阅读但仅A动�
   expect(w.core.authorizeScope(capability, w.binding(), w.scope)).toMatchObject({ action: "implement", goalIds: ["A"], constraintIds: ["preamble"] });
   expect(w.core.authorizeScope(capability, w.binding(), { ...w.scope, goalIds: ["B"] })).toBeNull();
   expect(w.core.authorizeScope(capability, w.binding(), { ...w.scope, goalIds: ["A", "B"] })).toBeNull();
-  expect(w.core.authorization(capability, w.binding(), "implement")).toBeNull();
-  expect(w.core.authorization(capability, w.binding(), "confirm-target")).toBeNull();
   doc.manifest.units[3]!.disposition = "confirmed";
   expect(w.core.authorizeDocument(capability, w.binding())!.manifest.units[3]!.disposition).toBe("pending-description");
   expect(JSON.stringify(w.records())).not.toContain(w.context.document!.body);
@@ -565,11 +494,13 @@ for (const kind of ["target", "constraint", "action"] as const) test(`范围F2 �
   const next = await core.interpret(core.captureInput({ source: "interactive", text: "修订刚才该决定，停止实施" }, "B"), w.basis.requirementId); core.save(next.capability);
   expect(w.core.authorizeDocument(first.capability, w.binding())).toBeNull(); expect(w.core.authorizeScope(first.capability, w.binding(), w.scope)).toBeNull();
 });
-for (const change of ["revoke", "record", "state", "async", "scope-denied", "document-denied"] as const) test(`范围F4逐次动作回调${change}拒绝`, async () => {
+for (const change of ["revoke", "shutdown", "recursive", "record", "state", "async", "scope-denied", "document-denied"] as const) test(`范围F4逐次动作回调${change}拒绝`, async () => {
   const w = await documentWorld(), { capability } = await w.interpret(), saved = w.core.save(capability);
   w.setActionHook((r) => {
     expect(Object.isFrozen(r.manifest)).toBe(true);
     if (change === "revoke") w.core.revoke();
+    if (change === "shutdown") w.core.shutdown();
+    if (change === "recursive") { expect(w.core.authorizeDocument(capability, w.binding())).toBeNull(); w.core.revoke(); }
     if (change === "record") withDatabase(w.path, (db) => { const record = db.read("short_decisions", saved.decisionIds[0]!)!; db.update("short_decisions", record.id, record.version, { ...record.data as object, conclusion: "changed" }); });
     if (change === "state") w.resave();
     if (change === "async") return Promise.reject(new Error("late"));
