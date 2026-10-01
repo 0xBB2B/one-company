@@ -610,27 +610,55 @@ test("M8D-AC9：窗口里的回答只算回答：拿它批准时不弹批准窗�
   expect((adjudicated as Error).message).toContain("原因：用户是在提问窗口里选的，这只算回答，不能当作批准或裁决");
 });
 
-test("M8D-AC9：批准被挡时写明原因：以前登记的待定决定挡住了哪些段落、这次解读里还有哪些段落待定，用段落标题说", async () => {
+const allPending = (loaded: Pick<ConfirmationContext, "candidate" | "partition">) => {
+  const review = phoneReview(loaded);
+  review.faithful = false;
+  review.entries = [{ ...review.entries[0]!, kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "整份待定",
+    unitIds: loaded.partition.units.map((unit) => unit.id).filter((id) => id !== "metadata") }, { ...review.entries[0]!, unitIds: ["metadata"] }];
+  return review;
+};
+const interpreterContext = (w: Awaited<ReturnType<typeof world>>) =>
+  JSON.parse(String((w.provider.requests.filter((r) => r.systemPrompt?.includes("需求解释器")).at(-1)!.messages[0] as { content: string }).content)).context;
+
+test("M8D-AC9：批准被挡时写明原因：以前登记的决定挡住了哪些段落、这次解读里还有哪些段落待定，用段落标题说", async () => {
   const w = await world(), created = await w.create(), first = await w.request(created);
-  const allPending = (loaded: typeof first.loaded) => {
-    const review = phoneReview(loaded);
-    review.faithful = false;
-    review.entries = [{ ...review.entries[0]!, kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "整份待定",
-      unitIds: loaded.partition.units.map((unit) => unit.id).filter((id) => id !== "metadata") }, { ...review.entries[0]!, unitIds: ["metadata"] }];
-    return review;
-  };
-  const pending = allPending(first.loaded);
-  w.capture("用松开时起跳"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(pending) }, { type: "text", text: JSON.stringify(pending) }]);
-  const blocked = await w.call({ action: "reply", ...first.input }, true).then((r) => r, (e: unknown) => e);
-  expect(blocked).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
-  expect((blocked as { blockedReason: string }).blockedReason).toMatch(/段落：[^；]*手机号与邮箱/u);
+  const modify = phoneReview(first.loaded);
+  modify.faithful = false; modify.entries[1]!.resolution = "modify"; modify.entries.splice(5, 1);
+  w.capture("手机号登录要改一下"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(modify) }]);
+  expect(await w.call({ action: "reply", ...first.input }, true)).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
   const resaveOperation = uuidv7();
   const resaved = await w.service.updateDraft({ requirementId: first.input.requirementId, version: first.input.version, operationId: resaveOperation, title: "登录", body: BODY + "补充一句。\n" });
   const next = await w.request({ ...created, operationId: resaveOperation, version: resaved.version });
   w.capture("内容正确，批准这一版"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(allPending(next.loaded)) }, { type: "text", text: JSON.stringify(allPending(next.loaded)) }]);
   const again = await w.call({ action: "confirmUpdate", ...next.input }).then((r) => r, (e: unknown) => e);
   expect(again).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
-  expect((again as { blockedReason: string }).blockedReason).toMatch(/以前登记的决定和现在的草稿对不上，涉及段落：[^；]*手机号与邮箱/u);
+  const reason = (again as { blockedReason: string }).blockedReason;
+  expect(reason).toMatch(/以前登记的决定和现在的草稿对不上，涉及段落：[^；]*手机号与邮箱/u);
+  expect(reason).toMatch(/这次的解读里仍待定的段落：[^；]*手机号与邮箱/u);
+});
+
+test("M8D-AC3：没有确认任何正文段落的解读不留下决定记录，随后一次明确的批准照常生效", async () => {
+  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+  const decisions = () => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"));
+  w.capture("两处我都批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(allPending(loaded)) }]);
+  const blocked = await w.call({ action: "confirmUpdate", ...input });
+  expect(blocked).toMatchObject({ prodActivated: false, blockedBy: "candidate_requires_revision_or_clarification", decisionIds: [] });
+  expect((blocked as { blockedReason: string }).blockedReason).toMatch(/这次的解读里仍待定的段落：[^；]*手机号与邮箱/u);
+  expect(decisions()).toEqual([]);
+  w.capture("我批准登录这个需求的这一版"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+  expect(await w.call({ action: "confirmUpdate", ...input, operationId: input.operationId })).toMatchObject({ prodActivated: true });
+});
+
+test("M8D-AC3：解释器的上下文里带有程序认定的对象事实：@ 到的写 mention 与同一句话针对的其他需求数，批准窗口确认的写 window", async () => {
+  const w = await world(), a = await w.create(), b = await w.create();
+  const first = await w.request(a), second = await w.request(b);
+  w.capture("两处我都批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
+  await w.call({ action: "confirmUpdate", ...first.input });
+  expect(interpreterContext(w).addressed).toEqual({ how: "mention", others: 1 });
+  w.capture("批准登录", "interactive", false, false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
+  await w.call({ action: "confirmUpdate", ...second.input });
+  expect(interpreterContext(w).addressed).toEqual({ how: "window", others: 0 });
+  expect(w.provider.requests.filter((r) => r.systemPrompt?.includes("需求解释器")).at(-1)!.systemPrompt).toContain("context.addressed");
 });
 
 test("批准登记到一半失败后又登记了新问题，草稿仍能继续保存，不会卡死在这一版", async () => {

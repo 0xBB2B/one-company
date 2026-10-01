@@ -115,6 +115,8 @@ export class MainRequirementInteraction {
   #core: UserInteractionCore | undefined;
   #coreRepo: string | undefined;
   #coreRequirement: string | undefined;
+  /** 这句话由程序认定针对哪些需求、怎么认定的：@ 到的，或用户在批准窗口里确认的。 */
+  #addressed = new Map<string, "mention" | "window">();
   #ticket: InputTicket | undefined;
   #capability: InteractionCapability | undefined;
   #interpretation: InteractionInterpretation | undefined;
@@ -146,7 +148,7 @@ export class MainRequirementInteraction {
   revoke(): void { this.#clearInput(); this.#openedItem = undefined; }
   #clearInput(): void {
     this.#generation++;
-    this.#inputTargets = [];
+    this.#inputTargets = []; this.#addressed.clear();
     this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined; this.#coreRequirement = undefined;
     this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#candidate = undefined; this.#adjudication = undefined; this.#resave = undefined;
     const input = this.#input; this.#input = undefined;
@@ -387,9 +389,11 @@ export class MainRequirementInteraction {
         const document = { candidate: loaded.candidate, title: loaded.title, body: loaded.body, partition: loaded.partition };
         const records = this.#authorization.interactionRecords(repoId, id, host.sessionId, { basis: loaded.basis, document });
         signal.throwIfAborted();
+        const how = this.#addressed.get(id);
         return { basis: loaded.basis, currentGoal: loaded.approved ? "当前批准基线由candidate.from与真实差异绑定。" : "尚无已批准目标；full_candidate.from=null。",
           candidates: [{ ...loaded.candidate, diff: loaded.difference.text || "准确提交对没有正文差异。" }],
-          document, savedOperationId: loaded.savedOperationId, ...records };
+          document, savedOperationId: loaded.savedOperationId, ...records,
+          ...(how ? { addressed: { how, others: (how === "mention" ? this.#inputTargets.length : this.#addressed.size) - 1 } } : {}) };
       } });
     try {
       this.#live(ctx, host, generation);
@@ -550,7 +554,8 @@ export class MainRequirementInteraction {
         ...mutedLines([`编号：${request.requirementId} · 仓库：${basename(host.repositories.get(request.repoId)!.path)}`, ...(summary ? [`简介：${summary}`] : [])])] });
       if (!approved) denied("decision_declined");
       this.#currentInput(ctx);
-    }
+      this.#addressed.set(request.requirementId, "window");
+    } else if (!input.fromQuestionWindow) this.#addressed.set(request.requirementId, "mention");
     if (!this.#capability) {
       const pending = this.#resave;
       if (pending && (!pending.complete || pending.requirementId !== request.requirementId || pending.operationId !== request.savedOperationId)) denied("resave_request_mismatch");
@@ -559,6 +564,15 @@ export class MainRequirementInteraction {
       this.#capability = result.capability; this.#interpretation = result.interpretation;
     }
     const capability = this.#capability, interpretation = this.#interpretation!;
+    const review = interpretation.documentReview;
+    // 这次解读没有确认任何正文段落：存下它只会留一条挡住之后所有批准的待定记录，所以不存，只把原因交回
+    if (review && !review.faithful && review.questions.every((question) => !question.answeredIds.length) &&
+      review.units.every((unit) => unit.id === "metadata" || unit.disposition === "pending-description")) {
+      this.#capability = undefined; this.#interpretation = undefined;
+      return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
+        version: loaded.version, epoch: loaded.epoch, targetRecorded: false, prodActivated: false, decisionIds: [], blockedBy: "candidate_requires_revision_or_clarification",
+        blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, []), allowedScopes: [] });
+    }
     const saved = core.save(capability);
     const decisionProofs = this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId);
     const document = core.authorizeDocument(capability, loaded);
@@ -658,7 +672,7 @@ export class MainRequirementInteraction {
     this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
     const expiresAt = this.#now() + (this.#options.inputTtlMs ?? 900_000);
     this.#input = { event: { source: "interactive", text }, sessionId: host.sessionId, expiresAt, abort: new AbortController(), fromQuestionWindow: true };
-    this.#inputTargets = []; this.#ctx = ctx;
+    this.#inputTargets = []; this.#addressed.clear(); this.#ctx = ctx;
     this.#timer = setTimeout(() => this.#clearInput(), expiresAt - this.#now()); this.#timer.unref();
   }
   async metadata(ctx: ExtensionContext, repoId: string, requirementId: string) {
