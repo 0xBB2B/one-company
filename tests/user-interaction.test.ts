@@ -903,3 +903,18 @@ test("M9：批准核验与交互核验用到的每个拒绝码都配了原因与
   expect(codes.size).toBeGreaterThan(30);
   for (const code of codes) expect(new UserInteractionError(code).advice.why, code).not.toMatch(/^未归类/u);
 });
+
+test("写决定前的检查碰到数据库或程序出错时如实报错，不说成没有授权；带原因的失效仍按没有授权处理", async () => {
+  const w = await world(), { capability } = await w.interpret();
+  const busy = Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+  w.setAuthorizationHook((action) => { if (action === "record-decisions") throw busy; });
+  let thrown: unknown;
+  try { w.core.save(capability); } catch (error) { thrown = error; }
+  expect(thrown).toBe(busy);
+  const other = await world(), next = await other.interpret();
+  other.setAuthorizationHook((action) => { if (action === "record-decisions") throw new UserInteractionError("input_changed"); });
+  let denied: unknown;
+  try { other.core.save(next.capability); } catch (error) { denied = error; }
+  expect(denied).not.toBeInstanceOf(UserInteractionError);
+  expect(denied).toMatchObject({ code: expect.stringMatching(/authoriz/u) });
+});

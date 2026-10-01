@@ -573,7 +573,11 @@ export class UserInteractionCore {
       if (allowed !== true) return false;
       if (request.action !== "record-decisions") return true;
       return saving !== undefined && this.#saving === saving && this.#requireVerified(saving.capability) === saving;
-    } catch { return false; }
+    } catch (error) {
+      // 带原因的失效按设计算作没有授权；数据库或程序出错要如实上报，不能说成没有授权
+      if (adviceOf(error)) return false;
+      throw error;
+    }
   }
   #admit(request: DecisionAdmissionRequest): DecisionAdmission | null {
     try {
@@ -581,6 +585,9 @@ export class UserInteractionCore {
       if (!v || this.#requireVerified(v.capability) !== v || request.repoId !== this.#options.repoId ||
         request.requestHash !== v.admission.requestHash || decisionDigest(request.batch) !== decisionDigest(v.batch)) return null;
       return v.admission;
-    } catch { return null; }
+    } catch (error) {
+      if (adviceOf(error)) return null;
+      throw error;
+    }
   }
 }
