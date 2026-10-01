@@ -14,6 +14,8 @@ export interface WindowQuestion {
   choices: WindowChoice[];
   multiSelect?: boolean;
   allowOther?: boolean;
+  /** "其他"一行显示的名称，缺省为"其他（自己输入）"。 */
+  otherLabel?: string;
   /** 按 Esc 取消时实际发生什么，写在提示行末尾的括号里。 */
   cancelNote?: string;
   /** 整个替换提示行里 Esc 那一段。 */
@@ -27,6 +29,7 @@ export type WindowTone = "warning" | "standard";
 const OTHER = "其他（自己输入）";
 const CLOSING = new Set([..."。，、；：？！）」』》,.;:!?)"]);
 const WORD = /[\w.~-]/u;
+const CARET = "\x1b[7m \x1b[27m";
 
 /** 按显示宽度折行：放得下就放；行首不留句号逗号这类标点，英文单词与数字不从中间切开。 */
 function wrapPlain(text: string, width: number): string[] {
@@ -47,7 +50,7 @@ function wrapPlain(text: string, width: number): string[] {
 }
 const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved" };
 
-interface QuestionState { cursor: number; picked: Set<number>; other: string; editing: boolean; answered: boolean }
+interface QuestionState { cursor: number; picked: Set<number>; other: string; answered: boolean }
 
 /** 通用问答窗口：一到多个问题，单选或多选，可带"其他（自己输入）"；Esc 取消时答案为 undefined。 */
 export class QuestionWindowView {
@@ -60,7 +63,7 @@ export class QuestionWindowView {
     this.options = options;
     this.states = options.questions.map((question) => ({ cursor: Math.max(0, question.choices.findIndex((choice) => choice.recommended && !choice.disabled),
       question.choices.findIndex((choice) => !choice.disabled)),
-      picked: new Set<number>(), other: "", editing: false, answered: false }));
+      picked: new Set<number>(), other: "", answered: false }));
   }
 
   private get multi(): boolean { return this.options.questions.length > 1; }
@@ -92,31 +95,28 @@ export class QuestionWindowView {
   handleInput(data: string): void {
     if (this.onReview) { this.handleReview(data); return; }
     const index = this.tab, state = this.states[index]!, question = this.options.questions[index]!;
-    if (state.editing) { this.handleEditing(data, index); return; }
     if (matchesKey(data, "escape")) { this.options.onDone(undefined); return; }
     if (this.multi && matchesKey(data, "right")) { this.tab = Math.min(this.tab + 1, this.options.questions.length); return; }
     if (this.multi && matchesKey(data, "left")) { this.tab = Math.max(this.tab - 1, 0); return; }
     if (matchesKey(data, "down")) { this.move(index, 1); return; }
     if (matchesKey(data, "up")) { this.move(index, -1); return; }
+    if (this.isOther(index, state.cursor)) { this.handleOther(data, index); return; }
     if (question.multiSelect && matchesKey(data, "space")) {
-      if (this.isOther(index, state.cursor)) state.editing = true;
-      else if (state.picked.has(state.cursor)) state.picked.delete(state.cursor);
+      if (state.picked.has(state.cursor)) state.picked.delete(state.cursor);
       else state.picked.add(state.cursor);
       return;
     }
     if (!matchesKey(data, "enter") || question.choices[state.cursor]?.disabled) return;
-    if (this.isOther(index, state.cursor)) { state.editing = true; return; }
     if (question.multiSelect) { if (state.picked.size > 0 || state.other.trim()) this.complete(index); return; }
     state.picked = new Set([state.cursor]); state.other = "";
     this.complete(index);
   }
 
-  private handleEditing(data: string, index: number): void {
+  /** 光标在"其他"一行时，按键直接进输入栏；有字时回车才提交。 */
+  private handleOther(data: string, index: number): void {
     const state = this.states[index]!, question = this.options.questions[index]!;
-    if (matchesKey(data, "escape")) { state.editing = false; return; }
     if (matchesKey(data, "enter")) {
       if (!state.other.trim()) return;
-      state.editing = false;
       if (!question.multiSelect) state.picked.clear();
       this.complete(index);
       return;
@@ -172,7 +172,7 @@ export class QuestionWindowView {
     }
     if (question.lines?.length) lines.push("");
 
-    const labels = [...question.choices.map((choice) => choice.label + (warning && choice.recommended ? "（推荐）" : "")), ...(question.allowOther ? [OTHER] : [])];
+    const labels = [...question.choices.map((choice) => choice.label + (warning && choice.recommended ? "（推荐）" : "")), ...(question.allowOther ? [question.otherLabel ?? OTHER] : [])];
     const labelWidth = Math.max(...labels.map((label) => visibleWidth(label)));
     labels.forEach((label, i) => {
       const selected = i === state.cursor;
@@ -198,16 +198,15 @@ export class QuestionWindowView {
           lines.push(...wrapPlain(`推荐理由：${choice.recommendedReason}`, width - 6).map((piece) => `      ${theme.fg("success", piece)}`));
         }
       }
-      if (this.isOther(index, i) && (state.editing || state.other)) lines.push(`      ${highlight("›")} ${state.other}`);
+      if (this.isOther(index, i) && (selected || state.other)) lines.push(`      ${highlight("›")} ${state.other}${selected ? CARET : ""}`);
     });
 
-    const hint = state.editing ? "输入后回车确认 · Esc 返回选项"
-      : [
-          "↑↓ 选择",
-          ...(question.multiSelect ? ["空格勾选", this.multi ? "回车下一题" : "回车确认"] : ["回车确认"]),
-          ...(this.multi ? ["←→ 切换问题"] : []),
-          question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
-        ].join(" · ");
+    const enter = question.multiSelect && this.multi ? "回车下一题" : "回车确认";
+    const hint = [
+      ...(this.isOther(index, state.cursor) ? ["直接输入", enter, "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
+      ...(this.multi ? ["←→ 切换问题"] : []),
+      question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
+    ].join(" · ");
     lines.push("", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), border);
     return lines;
   }

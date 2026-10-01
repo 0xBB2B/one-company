@@ -91,23 +91,43 @@ test("通用问答窗口：←→ 切换问题，提交页可取消；只有一�
   expect(single.done).toEqual([[{ choices: ["a"] }]]);
 });
 
-test("通用问答窗口：其他（自己输入）进入输入行，退格可删，空内容不能确认，Esc 回到选项并保留已输入的文字", () => {
+test("M8D2-AC3：光标移到其他一行就能直接输入，退格可删，空内容回车不提交，离开后文字保留，Esc 取消整个窗口", () => {
   const { window, text, done } = view({ tone: "standard", questions: [{ question: "用哪种格式？", allowOther: true, choices: [{ label: "统一" }] }] });
+  expect(text()).not.toContain("›");
   window.handleInput(DOWN);
   expect(text()).toContain("<accent>→ 2. 其他（自己输入）</>");
-  window.handleInput(ENTER);
+  expect(text()).toContain("<accent>›</> \x1b[7m \x1b[27m");
+  expect(text()).toContain("<muted>直接输入 · 回车确认 · ↑↓ 选择 · Esc 取消</>");
   window.handleInput(ENTER);
   expect(done).toEqual([]);
-  for (const char of "后端统一x") window.handleInput(char);
+  for (const char of "后端 统一x") window.handleInput(char);
   window.handleInput(BACKSPACE);
-  expect(text()).toContain("<accent>›</> 后端统一");
-  expect(text()).toContain("<muted>输入后回车确认 · Esc 返回选项</>");
-  window.handleInput(ESC);
+  expect(text()).toContain("<accent>›</> 后端 统一\x1b[7m \x1b[27m");
+  window.handleInput(UP);
+  expect(text()).toContain("<accent>›</> 后端 统一\n");
   expect(text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 取消</>");
-  expect(done).toEqual([]);
+  window.handleInput(DOWN);
   window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [], other: "后端 统一" }]]);
+
+  const picked = view({ tone: "standard", questions: [{ question: "用哪种格式？", allowOther: true, choices: [{ label: "统一" }] }] });
+  picked.window.handleInput(DOWN); picked.window.handleInput("x"); picked.window.handleInput(UP); picked.window.handleInput(ENTER);
+  expect(picked.done).toEqual([[{ choices: ["统一"] }]]);
+
+  const cancelled = view({ tone: "standard", questions: [{ question: "用哪种格式？", allowOther: true, choices: [{ label: "统一" }] }] });
+  cancelled.window.handleInput(DOWN); cancelled.window.handleInput("x"); cancelled.window.handleInput(ESC);
+  expect(cancelled.done).toEqual([undefined]);
+});
+
+test("M8D2-AC3：多选题里其他一行按空格是输入空格，有字就算勾上；其他一行的名称可由调用方指定", () => {
+  const { window, text, done } = view({ tone: "warning", questions: [{ question: "选哪些？", allowOther: true, otherLabel: "其他（自己输入修改意见）", multiSelect: true, choices: [{ label: "甲" }] }] });
+  window.handleInput(SPACE); window.handleInput(DOWN);
+  expect(text()).toContain("<warning>→ [ ] 其他（自己输入修改意见）</>");
+  expect(text()).toContain("<muted>直接输入 · 回车确认 · ↑↓ 选择 · Esc 取消</>");
+  for (const char of "a b") window.handleInput(char);
+  expect(text()).toContain("<warning>→ [x] 其他（自己输入修改意见）</>");
   window.handleInput(ENTER);
-  expect(done).toEqual([[{ choices: [], other: "后端统一" }]]);
+  expect(done).toEqual([[{ choices: ["甲"], other: "a b" }]]);
 });
 
 test("长说明按窗口宽度折行，不超出宽度", () => {

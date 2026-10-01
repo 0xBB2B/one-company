@@ -4,7 +4,7 @@ const UP = "\x1b[A", DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b";
 const plainTheme = { fg: (_kind: string, text: string) => text, bold: (text: string) => text };
 
 export interface ShownWindow { title: string; text: string; choices: string[] }
-/** true 选确认，false 按 Esc，字符串选同名选项，{ other } 在"其他（自己输入）"里输入文字。 */
+/** true 选确认，false 按 Esc，字符串选同名选项，{ other } 在"其他"一行里输入文字。 */
 export type WindowDecision = boolean | string | { other: string };
 
 /** 渲染程序窗口或主代理提问窗口，交给 answer 判断怎么答。 */
@@ -22,13 +22,13 @@ export function answeringUi(answer: (window: ShownWindow) => WindowDecision | Pr
         const shown = { title: lines[1]!.trim(), text: lines.join("\n"), choices };
         void Promise.resolve(answer(shown)).then((decision) => {
           if (decision === false) { component.handleInput(ESC); return; }
-          const label = decision === true ? "确认" : typeof decision === "string" ? decision : "其他（自己输入）";
-          const index = choices.indexOf(label);
+          const label = decision === true ? "确认" : typeof decision === "string" ? decision : "其他";
+          const index = typeof decision === "object" ? choices.findIndex((choice) => choice.startsWith("其他（")) : choices.indexOf(label);
           if (index < 0) throw new Error(`窗口里没有选项：${label}`);
           for (let i = cursor; i < index; i++) component.handleInput(DOWN);
           for (let i = cursor; i > index; i--) component.handleInput(UP);
+          if (typeof decision === "object") for (const char of decision.other) component.handleInput(char);
           component.handleInput(ENTER);
-          if (typeof decision === "object") { for (const char of decision.other) component.handleInput(char); component.handleInput(ENTER); }
         }).catch(reject);
       });
     },
