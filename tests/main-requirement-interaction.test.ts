@@ -657,7 +657,7 @@ test("M8D-AC3：解释器的上下文里带有程序认定的对象事实：@ �
   expect(interpreterContext(w).addressed).toEqual({ how: "mention", others: 1 });
   w.capture("批准登录", "interactive", false, false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
   await w.call({ action: "confirmUpdate", ...second.input });
-  expect(interpreterContext(w).addressed).toEqual({ how: "window", others: 0 });
+  expect(interpreterContext(w).addressed).toEqual({ how: "window" });
   expect(w.provider.requests.filter((r) => r.systemPrompt?.includes("需求解释器")).at(-1)!.systemPrompt).toContain("context.addressed");
 });
 

@@ -393,7 +393,7 @@ export class MainRequirementInteraction {
         return { basis: loaded.basis, currentGoal: loaded.approved ? "当前批准基线由candidate.from与真实差异绑定。" : "尚无已批准目标；full_candidate.from=null。",
           candidates: [{ ...loaded.candidate, diff: loaded.difference.text || "准确提交对没有正文差异。" }],
           document, savedOperationId: loaded.savedOperationId, ...records,
-          ...(how ? { addressed: { how, others: (how === "mention" ? this.#inputTargets.length : this.#addressed.size) - 1 } } : {}) };
+          ...(how ? { addressed: how === "mention" ? { how, others: this.#inputTargets.length - 1 } : { how } } : {}) };
       } });
     try {
       this.#live(ctx, host, generation);
