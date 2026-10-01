@@ -4,6 +4,7 @@ import type { LocalDatabase } from "./database.ts";
 import { confirmedPlanKey, readPlanIn, stalledStage, TASKS, terminationPending } from "./plan-manage.ts";
 import type { TaskRecord, UserDecision } from "./plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
+import { latestPrototype } from "./prototype.ts";
 import { checked } from "./requirement-contracts.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { checkDecisionRecord } from "./short-decision-format.ts";
@@ -185,6 +186,15 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
       messages.push(`用户未通过完成报告，要求返工。用户意见：「${opinion}」\n原报告已作废。在本需求内按意见追加返修任务，经任务级审查与新的检查轮后重新提交完成报告；意见超出已批准范围时，说明情况等待用户调整需求。`);
     }
     for (const task of plan?.tasks ?? []) {
+      const prototype = latestPrototype(task);
+      if (!prototype?.decision || prototype.decision.notified) continue;
+      const row = db.read<TaskRecord>(TASKS, task.taskId)!;
+      db.update(TASKS, task.taskId, row.version, { ...row.data, prototypes: [...row.data.prototypes!.slice(0, -1), { ...prototype, decision: { ...prototype.decision, notified: true } }] });
+      messages.push(prototype.decision.choice === "accept"
+        ? `用户通过了任务 ${task.key} 的原型第 ${prototype.version} 版，现在可以用 agent_manage dispatch 派出这个任务的实现；实现的界面须与这一版原型一致。`
+        : `用户要求任务 ${task.key} 的原型第 ${prototype.version} 版返工。用户意见：「${prototype.decision.opinion}」\n用 agent_manage dispatch taskId=${task.taskId} 带 prototype 再派 worker 改出新版本，新版本仍须用户确认。`);
+    }
+    for (const task of readPlanIn(db, requirementId)?.tasks ?? []) {
       const decision = task.userDecision;
       if (!decision || decision.notified) continue;
       const row = db.read<TaskRecord>(TASKS, task.taskId)!;

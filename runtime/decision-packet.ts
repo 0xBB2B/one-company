@@ -29,6 +29,8 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
     const tasks = readPlanIn(db, requirementId)?.tasks ?? [];
     const item = pendingItemsIn({ ...ref, db, record, lease }, tasks).find((candidate) => candidate.itemId === itemId);
     if (!item) throw new DecisionPacketError("item_not_pending");
+    // 原型只在程序确认窗口里确认，不生成决策包
+    if (item.kind === "prototype") throw new DecisionPacketError("item_not_pending");
     const head = [`[待处理事项] ${item.label}`, `需求 ${requirementId} · 当前批准版本 r${record.revision} · 事项 ${item.itemId} · 版本 ${item.version}`];
     if (item.kind === "adjudicate") {
       const task = tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;

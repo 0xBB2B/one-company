@@ -12,6 +12,7 @@ import { checkExploreSession, EXPLORE_STALE_TEXT } from "./explore-session.ts";
 import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 import type { ExploreSessionConfig } from "./explore-session.ts";
+import { PrototypeError, submitPrototype } from "./prototype.ts";
 import { shapeIssue } from "./tool-request.ts";
 import { submitVerdict, VERDICT_PAYLOAD, VerdictError } from "./verdicts.ts";
 import type { VerdictBinding } from "./verdicts.ts";
@@ -23,9 +24,12 @@ const Grant = object({
 export type ResultSubmitGrant = Static<typeof Grant>;
 /** worker、reviewer、QA 看到的参数：result 直接给出裁决格式，模型不必猜字段。 */
 export const VERDICT_SUBMIT_PARAMETERS = object({ action: Type.Literal("verdict"), result: VERDICT_PAYLOAD });
+/** 做原型的 worker 看到的参数：html 是完整的单个 HTML 文件，note 用一句话说明画了什么。 */
+export const PROTOTYPE_SUBMIT_PARAMETERS = object({ action: Type.Literal("prototype"), html: Type.String({ minLength: 1 }), note: Type.String({ minLength: 1, maxLength: 1024 }) });
 export const RESULT_SUBMIT_PARAMETERS = Type.Union([
   object({ action: Type.Literal("research"), result: Type.Unknown() }),
   VERDICT_SUBMIT_PARAMETERS,
+  PROTOTYPE_SUBMIT_PARAMETERS,
 ]);
 export type ResultSubmitParameters = Static<typeof RESULT_SUBMIT_PARAMETERS>;
 export type ResultSubmitAction = ResultSubmitParameters["action"];
@@ -39,7 +43,9 @@ const RESULT_SUBMIT_ADVICE = {
   invalid_binding: { why: "提交内容与派工绑定不一致", next: "按派工给定的任务、检查轮和验证编号提交" },
   out_of_scope: { why: "提交内容超出了本运行允许的范围", next: "按原因改正后重交" },
   resource_limit: { why: "提交内容超出了允许的数量或长度", next: "精简内容后重交" },
-  verdict_unavailable: { why: "本运行没有可提交裁决的任务绑定", next: "检索运行改用 research 提交" },
+  verdict_unavailable: { why: "本运行没有可提交裁决的任务绑定", next: "检索运行改用 research 提交；做原型的运行改用 prototype 提交" },
+  prototype_unavailable: { why: "本运行不是做原型的运行，或已不是该任务当前的原型运行", next: "实现运行改用 verdict 提交结果" },
+  prototype_too_large: { why: "原型超出大小上限", next: "精简原型后重交" },
   stale_session: { why: "本次检索已不是当前有效的检索，结果不会再被收下", next: "停止操作，不要重试" },
   submit_failed: { why: "保存提交内容时出错", next: "重试一次；仍然失败就在回复里说明原因，由上级处理" },
 } as const satisfies Record<string, FailureAdvice>;
@@ -58,6 +64,8 @@ export interface ResultSubmitToolOptions {
   exploreInput?: ExploreInput;
   /** worker/reviewer/QA 的裁决绑定由可信派工服务提供；缺失时 verdict 动作不可用。 */
   verdictBinding?: VerdictBinding;
+  /** 做原型的运行绑定的任务；有它时只收 prototype，不收 verdict。 */
+  prototypeBinding?: { dataRoot: string; repoId: string; requirementId: string; taskId: string };
   /** 已登记的 explore 搜索会话：需求关闭、父撤权、PM 接管或会话回收后 research 一律拒收。 */
   exploreSession?: ExploreSessionConfig;
   /** 宿主按实际内容核对 research 引用的来源；不一致即拒收。 */
@@ -94,8 +102,18 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
       throw new ResultSubmitError("invalid_shape", raw.action === "verdict" ? shapeIssue(VERDICT_PAYLOAD, raw.result) : undefined);
     }
     host(params.action);
+    if (params.action === "prototype") {
+      if (!options.prototypeBinding) throw new ResultSubmitError("prototype_unavailable");
+      return submitPrototype({ ...options.prototypeBinding, runId: grant.runId }, { html: params.html, note: params.note }).then((prototype) => {
+        host("prototype");
+        return freeze({ kind: "prototype" as const, accepted: true, isPass: false, version: prototype.version, hash: prototype.hash, bytes: prototype.bytes, runId: grant.runId });
+      }, (error: unknown) => {
+        throw error instanceof PrototypeError && (error.code === "prototype_unavailable" || error.code === "prototype_too_large")
+          ? new ResultSubmitError(error.code, error.detail) : new ResultSubmitError("submit_failed", (error as Error).message);
+      });
+    }
     if (params.action === "verdict") {
-      if (!options.verdictBinding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
+      if (!options.verdictBinding || options.prototypeBinding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
       let verdict;
       try { verdict = submitVerdict(options.verdictBinding, { role: grant.role, runId: grant.runId, parentRunId: grant.parentRunId }, params.result); }
       catch (error) { throw error instanceof VerdictError ? new ResultSubmitError(error.code, error.detail) : new ResultSubmitError("submit_failed", (error as Error).message); }

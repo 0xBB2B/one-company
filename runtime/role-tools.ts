@@ -17,6 +17,9 @@ export const ROLE_HOST_TOOLS: Readonly<Record<AgentRole, readonly string[]>> = O
   qa: [],
 });
 
+/** QA 验收界面任务时多给的宿主工具：只有 read，且读取范围限定为用户已通过的原型文件。 */
+export const QA_PROTOTYPE_HOST_TOOLS: readonly string[] = Object.freeze(["read"]);
+
 export function coreToolName(tool: CoreTool): string {
   return `${CORE_TOOL_PREFIX}${tool}`;
 }

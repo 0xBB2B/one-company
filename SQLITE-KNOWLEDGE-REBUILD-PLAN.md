@@ -776,7 +776,7 @@ prod若再次变化，PM按事件顺序处理或在可证明连续基线下合�
 | 6 | `user_interact` | ask/reply/forward、简短决策与授权记录 | 支持长段输入；按目的区分用户确认与PM接手核对，可信主代理结果不是用户新回执，PM不得自填通过；简短结论入库，不额外存原话，目标确认不等于实施授权 |
 | 7 | `change_apply` | 授权代码/测试/配置批量变更 | 仅限绑定 worktree；不能写 docs/prod、.git、.pi/agents 与本机数据目录。.git 可被植入 hook 在用户后续 Git 操作中执行；.pi/agents 决定子代理的工具与权限 |
 | 8 | `verification_run` | 受控测试/黑盒操作/检查停止与结果查询 | formal核验本轮worker结束、检查阶段互斥、实际基线和变化检测；PM可请求停止，程序确认结束后才允许修改 |
-| 9 | `result_submit` | explore research结果、worker/reviewer/QA裁决 | research仅是待父代理核验的证据，不是PASS；结构化事实不以自填PASS作独立证明，旧epoch/父run失效的结果不能当当前 |
+| 9 | `result_submit` | explore research结果、worker/reviewer/QA裁决、worker提交界面原型（prototype） | research仅是待父代理核验的证据，不是PASS；结构化事实不以自填PASS作独立证明，旧epoch/父run失效的结果不能当当前 |
 | 10 | `workflow_manage` | status/advance/finish/repair/check-decision/report/escalate/close/delivery-check | report与escalate仅PM、close仅主代理；escalate只把等待PM处置的任务转为待用户裁决；现有动作核验接手复核及正式规划/派工门槛、修改/检查互斥、PM中断/等待、pending更新、归档与交付；PM受限接手由agent_manage派出，不设init；repair只重试未完成的关闭与归档收尾；不执行业务Git commit/push |
 
 不另外暴露独立goal_confirm、自由写决定工具、任意SQL、关闭prod历史读取或业务Git写入核心工具。本机需求git init/commit/diff仅为requirement_manage内部固定存储操作，不增加工具数量，不允许用action传任意命令或扩展业务Git权限。
@@ -794,7 +794,7 @@ prod若再次变化，PM按事件顺序处理或在可证明连续基线下合�
 | reviewer | knowledge_query、requirement_manage、plan_manage、verification_run、result_submit |
 | acceptance/QA | requirement_manage、verification_run、result_submit |
 
-宿主非业务工具按职责固定：pm、worker、reviewer为read/grep/find/ls；explore为read/grep/find/ls及获授权时的web_search/web_fetch；qa不给宿主读写工具。任何职责不给bash、write、edit，代码写入只经change_apply，命令只经verification_run。MCP服务缺省时pm、worker、reviewer、qa沿用主会话可用服务，explore缺省不用MCP；定义声明mcp时以声明为准；所有职责只能调用可信MCP配置标为只读的工具。
+宿主非业务工具按职责固定：pm、worker、reviewer为read/grep/find/ls；explore为read/grep/find/ls及获授权时的web_search/web_fetch；qa不给宿主读写工具，只在需求里有用户已通过的界面原型时多给read，且只能读这些原型文件（M8E）。任何职责不给bash、write、edit，代码写入只经change_apply，命令只经verification_run。MCP服务缺省时pm、worker、reviewer、qa沿用主会话可用服务，explore缺省不用MCP；定义声明mcp时以声明为准；所有职责只能调用可信MCP配置标为只读的工具。
 
 本表列六类固定职责的权限上限，不是只能安装六个agent定义。默认团队与专业定义均按绑定的单一role取权限，并与任务/状态授权取交集；专业名称、description、model或skills不能扩权。首版专业自动选择集中于explore、worker、reviewer、QA，不开放任意新main/PM或第二PM；规则见 §10.6。
 
@@ -1733,7 +1733,7 @@ M0 → M1 → M2 → M3 → M4；M5基于M1—M4；M6基于M5；M7基于M3—M6�
 - 原型的写法（用户 2026-10-01 决定，写进 worker 角色说明）：单个 HTML 文件，样式和脚本都写在文件里，不依赖构建，浏览器直接打开就能看。图形界面还原布局、配色、文案，把正常、空数据、加载中、出错几种状态都画出来，有交互的地方做成可点击的。终端界面在 HTML 里模拟终端窗口，用深色背景、等宽字体、固定 80 列，颜色按实际效果还原，多步交互按顺序画出每一步。
 - 确认（用户 2026-10-01 决定并确认预览）：原型提交后，PM 面板出现"待你确认原型"事项。用户在事项上按回车时，程序在默认浏览器里打开该原型文件，同时弹出程序确认窗口，显示需求、任务、原型版本、文件路径、大小、指纹和 worker 的说明（标明是模型写的），给出"通过"和"返工（自己输入要改什么）"两项。用户在窗口里的选择由程序直接登记，不经主代理转述；返工意见按用户输入的原话交回 PM，PM 派 worker 改出新版本，新版本重新走确认，返工不限次数。按 Esc 或没有界面时不登记，事项留在面板里。登记后只在对话区显示一行提示，不触发主代理回复。用户直接在对话里说"原型可以"不登记，主代理只提醒用户去面板打开事项。打开时文件内容与登记的指纹不一致即拒绝打开并写明原因。
 - 程序门槛：界面任务没有"用户已通过的原型"时，程序拒绝派出实现 worker；通过只对当时那一版原型的指纹有效，原型有新版本时要重新确认。PM 和其他代理都不能替用户通过原型。
-- 审查与验收：reviewer 与 QA 的输入里给出已通过原型的文件路径、版本和指纹，由它们自己读取；reviewer 审查时核对，改了界面却没有已通过原型的任务打回；QA 验收界面任务时对照原型检查实际效果。实现 worker 的输入里同样给出已通过原型的路径。
+- 审查与验收：reviewer 与 QA 的输入里给出已通过原型的文件路径、版本和指纹，由它们自己读取（QA 平时没有读文件的工具，这时多给一个只能读这些原型文件的 read；现有的命令运行工具只回传输出末尾 8 KB，读不完整份原型）；reviewer 审查时核对，改了界面却没有已通过原型的任务打回；QA 验收界面任务时对照原型检查实际效果。实现 worker 的输入里同样给出已通过原型的路径。
 - 两条威胁模型：原型内容是模型输出，只供用户查看，窗口里只给文件路径、不显示原型内容；原型的通过只来自用户在程序确认窗口里的选择，并绑定原型指纹；旧版本原型的通过不能用于新版本。
 - 非目标：不做截图比对或像素级核对；不自动判断任务是否涉及界面，PM 不标出的情况靠 reviewer 发现；原型不进入业务仓库；不改需求批准流程；主代理自己的工作不受这条约束；原型不经 reviewer 审查，只由用户确认；面板里其他事项仍按回车插入决策包，改用窗口放到下一版。
 
@@ -1751,7 +1751,7 @@ M0 → M1 → M2 → M3 → M4；M5基于M1—M4；M6基于M5；M7基于M3—M6�
 - M8E-AC1：worker 能提交 HTML 原型，程序存入本机数据目录并记录版本与指纹，不写业务仓库；超出 1 MB 时拒绝并写明原因；非 worker 角色不能提交原型。
 - M8E-AC2：原型提交后面板出现"待你确认原型"事项；按回车时程序在默认浏览器打开原型并弹出程序确认窗口，窗口给出文件路径；用户选通过或返工都由程序直接登记，返工意见按原话交回 PM；Esc 或没有界面时不登记；窗口与确认过的预览一致。
 - M8E-AC3：界面任务没有已通过原型时派出实现 worker 被拒并写明原因；通过后可以派出；原型出新版本后旧的通过失效，要重新确认；PM 与其他代理不能替用户通过。
-- M8E-AC4：实现 worker、reviewer 与 QA 的输入里带有已通过原型的路径、版本和指纹，QA 能用现有的命令运行工具读到这份文件，角色说明写明核对要求；非界面任务的流程不受影响，现有测试全部通过。
+- M8E-AC4：实现 worker、reviewer 与 QA 的输入里带有已通过原型的路径、版本和指纹；QA 多一个 read 工具，只能读这些原型文件，读别的路径被拒，没有已通过原型时不给；角色说明写明核对要求；非界面任务的流程不受影响，现有测试全部通过。
 - M8E-AC5：真实模型的界面需求验收并入 M9-AC13，在 M8E 完成后重跑：PM 标出界面任务，worker 先做原型，用户确认后再实现，QA 对照原型验收。
 - 性能：不新增指标。
 

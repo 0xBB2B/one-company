@@ -12,6 +12,7 @@ export interface FakePiApi {
   registerTool(tool: { name: string }): void;
   registerCommand(name: string, options: { description: string; handler: FakeCommandHandler }): void;
   registerMessageRenderer(type: string, renderer: unknown): void;
+  registerEntryRenderer(type: string, renderer: unknown): void;
   registerFlag(name: string, options: unknown): void;
 }
 
@@ -42,6 +43,7 @@ export function createFakePi(): FakePi {
         commands.push({ name, description: options.description, handler: options.handler });
       },
       registerMessageRenderer() {},
+      registerEntryRenderer() {},
       registerFlag() {},
     },
     async trigger(event: string, payload: unknown, ctx: unknown): Promise<unknown[]> {

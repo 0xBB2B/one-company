@@ -41,6 +41,8 @@ export const TaskSpec = object({
   agent: Type.Optional(agentName), agentReason: Type.Optional(text),
   /** 审查该 worker 任务的角色定义名称；缺省用默认 reviewer。 */
   reviewAgent: Type.Optional(agentName),
+  /** 界面任务：涉及用户看得到的界面，须先有用户通过的原型才能派出实现。 */
+  ui: Type.Optional(Type.Boolean()),
 });
 export type TaskSpec = Static<typeof TaskSpec>;
 const MAX_PASS_CRITERIA = 8;
@@ -109,6 +111,18 @@ const UserDecision = object({
   confirmedPlan: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })),
 });
 export type UserDecision = Static<typeof UserDecision>;
+/** 原型的一个版本；decision 只由用户在程序确认窗口里的选择写入。 */
+const PrototypeVersion = object({
+  version: positive, hash, bytes: positive, path: Type.String({ minLength: 1 }), runId: id, note: text, submittedAt: positive,
+  decision: Type.Optional(object({ choice: Type.Union([Type.Literal("accept"), Type.Literal("rework")]),
+    opinion: Type.Union([Type.String({ minLength: 1, maxLength: 4000 }), Type.Null()]), decidedAt: positive, notified: Type.Boolean() })),
+});
+export type PrototypeVersion = Static<typeof PrototypeVersion>;
+/** 最近一次做原型的运行；不计入任务的尝试次数。 */
+const PrototypeRun = object({ runId: id, maxTurns: positive, turnsUsed: Type.Integer({ minimum: 0 }),
+  outcome: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("incomplete"), Type.Literal("turn_limit_reached"),
+    Type.Literal("failed"), Type.Literal("stopped"), Type.Literal("superseded")]) });
+export type PrototypeRun = Static<typeof PrototypeRun>;
 const TaskRecord = object({
   format: Type.Literal("plan-task/v1"), taskId: id, requirementId: id, version: positive, key, role: DelegatedRole,
   goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0), closure: Type.Array(UnitRef, { maxItems: 20 }),
@@ -123,6 +137,7 @@ const TaskRecord = object({
   reviews: Type.Array(Review, { maxItems: 16 }),
   userDecision: Type.Optional(UserDecision),
   sizeHold: Type.Optional(Type.Array(text, { minItems: 1, maxItems: 2 })),
+  ui: Type.Optional(Type.Literal(true)), prototypes: Type.Optional(Type.Array(PrototypeVersion)), prototypeRun: Type.Optional(PrototypeRun),
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
@@ -289,6 +304,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const unwritable = specs.filter((spec) => spec.role === "worker")
       .flatMap((spec) => spec.writePaths.filter((path) => !writePathAllowed(path)).map((path) => `${spec.key} 的 ${path} 不能由 worker 写入`));
     if (unwritable.length) deny("dependency_invalid", unwritable);
+    const strayUi = specs.filter((spec) => spec.role !== "worker" && spec.ui);
+    if (strayUi.length) deny("dependency_invalid", strayUi.map((spec) => `${spec.key} 不是实现任务，不能标为界面任务`));
     const strayReview = specs.filter((spec) => spec.role !== "worker" && spec.reviewAgent !== undefined);
     if (strayReview.length) deny("dependency_invalid", strayReview.map((spec) => `${spec.key} 不是实现任务，不能指定审查定义`));
     const keys = specs.map((spec) => spec.key);
@@ -330,6 +347,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
         ...(spec.reviewAgent ? { reviewAgent: spec.reviewAgent } : {}),
         detail: await writeDetail(taskId, version, spec), status: hold.length ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: previous.get(taskId)!.userDecision } : {}),
+        ...(spec.ui ? { ui: true } : {}),
+        ...(previous?.get(taskId)?.prototypes ? { prototypes: previous.get(taskId)!.prototypes } : {}),
+        ...(previous?.get(taskId)?.prototypeRun ? { prototypeRun: previous.get(taskId)!.prototypeRun } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));
     }
     return records;

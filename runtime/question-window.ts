@@ -255,9 +255,9 @@ export async function chooseWindow(host: WindowHost, window: ProgramWindow & { c
 }
 
 /** 带"其他"输入行的程序选择窗口：返回选中的选项或用户输入的文字，取消时为 undefined。 */
-export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel: string; cancelNote?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
+export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel: string; cancelNote?: string; escapeHint?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
   const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, allowOther: true, otherLabel: window.otherLabel,
-    ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}) }], "warning", signal);
+    ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}), ...(window.escapeHint ? { escapeHint: window.escapeHint } : {}) }], "warning", signal);
   return answers?.[0];
 }
 

@@ -7,7 +7,8 @@ import { activeCheckRoundIn } from "./check-round.ts";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
 import { countedAttempts, implementScope, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, TASKS, terminationPending } from "./plan-manage.ts";
-import type { TaskAttempt, TaskRecord, TaskReview } from "./plan-manage.ts";
+import type { PrototypeRun, TaskAttempt, TaskRecord, TaskReview } from "./plan-manage.ts";
+import { approvedPrototype, latestPrototype } from "./prototype.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 
@@ -27,6 +28,8 @@ const TASK_DISPATCH_ADVICE = {
   rework_required: { why: "审查打回后再派必须带 rework（原因与新的轮次上限）", next: "核对审查意见后带 rework 派 worker 返修" },
   rework_exhausted: { why: "任务已用完返修机会", next: "用 workflow_manage escalate 把任务交用户裁决" },
   rework_not_needed: { why: "这次派工不需要 rework", next: "去掉 rework 后再派" },
+  prototype_required: { why: "界面任务还没有用户通过的原型", next: "先用 agent_manage dispatch 带 prototype 派 worker 做原型，等用户在面板里确认通过后再派实现" },
+  not_ui_task: { why: "这个任务没有标为界面任务，不需要原型", next: "直接派出实现；确实涉及界面时先用 plan_manage update 把任务标为界面任务" },
   round_not_open: { why: "没有开放中的检查轮", next: "按原因开检查轮后再派 QA" },
 } as const satisfies Record<string, FailureAdvice>;
 export type TaskDispatchErrorCode = keyof typeof TASK_DISPATCH_ADVICE;
@@ -95,7 +98,7 @@ function schedulingGateIn(db: LocalDatabase, request: { repoId: string; lease: P
   if (task.role === "qa" && round?.data.status !== "open") {
     deny("round_not_open", ["QA 只能在检查轮内派出：先提交全部改动并用 one_company_git_sync 同步，再用 one_company_workflow_manage action=advance 开检查轮"]);
   }
-  if (task.attempts.some((attempt) => attempt.outcome === "running") || task.reviews.some((review) => review.outcome === "running")) {
+  if (task.attempts.some((attempt) => attempt.outcome === "running") || task.reviews.some((review) => review.outcome === "running") || task.prototypeRun?.outcome === "running") {
     deny("task_not_ready", [`${task.key} 仍有运行中的子代理`]);
   }
   return { task, tasks: current.tasks };
@@ -113,7 +116,7 @@ const OCCUPYING: ReadonlySet<TaskRecord["status"]> = new Set(["running", "awaiti
 /** 同时执行的 worker 任务所在目录不能重叠：同目录的半成品会让另一个任务的自测失败。 */
 function assertDirectoriesFree(task: TaskRecord, tasks: readonly TaskRecord[]): void {
   const mine = directoriesOf(task.writePaths);
-  const busy = tasks.filter((other) => other.taskId !== task.taskId && other.role === "worker" && OCCUPYING.has(other.status) &&
+  const busy = tasks.filter((other) => other.taskId !== task.taskId && other.role === "worker" && (OCCUPYING.has(other.status) || other.prototypeRun?.outcome === "running") &&
     directoriesOf(other.writePaths).some((dir) => mine.some((own) => own.startsWith(dir) || dir.startsWith(own))));
   if (busy.length) deny("write_scope_busy", busy.map((other) => other.key));
 }
@@ -136,6 +139,10 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
     const { task, tasks } = schedulingGateIn(db, request);
     if (!["pending", "awaiting_parent", "awaiting_rework"].includes(task.status)) deny("task_not_ready", [`${task.key}:${task.status}`]);
     if (task.role === "worker") assertDirectoriesFree(task, tasks);
+    if (task.ui && !approvedPrototype(task)) {
+      const latest = latestPrototype(task);
+      deny("prototype_required", [!latest ? `${task.key} 还没有原型` : latest.decision ? `${task.key} 的原型第 ${latest.version} 版被用户要求返工` : `${task.key} 的原型第 ${latest.version} 版还在等用户确认`]);
+    }
     const rework = request.rework ?? null;
     let maxTurns: number, reason: string | null, grantedDecision = false;
     if (task.status === "awaiting_rework") {
@@ -166,6 +173,39 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
     db.update(TASKS, task.taskId, row.version, { ...task, status: "running", attempts: [...task.attempts, attempt],
       ...(grantedDecision ? { userDecision: { ...task.userDecision!, usedByRunId: request.runId } } : {}), updatedAt: request.now ?? Date.now() });
     return { task, maxTurns };
+  }));
+}
+
+/**
+ * 派出做原型的运行：只用于界面任务，过与实现相同的派工门槛；单独登记在任务上，不计入尝试次数，也不改变任务状态。
+ */
+export function beginPrototypeRun(request: Omit<TaskDispatchRequest, "retry" | "rework"> & { runId: string; maxTurns: number }): { task: TaskRecord; maxTurns: number } {
+  const gate = evaluatePmIntakeGate({ dataRoot: request.dataRoot, repoId: request.repoId, lease: request.lease });
+  if (!gate.allowed) deny(gate.reasons.includes("pending_approved_update") ? "pending_update" : "intake_gate", gate.reasons.map(intakeReasonText));
+  return withDatabase(repositoryDatabase(request.dataRoot, request.repoId), (db) => db.transaction(() => {
+    const { task, tasks } = schedulingGateIn(db, request);
+    if (task.role !== "worker" || !task.ui) deny("not_ui_task", [task.key]);
+    if (!["pending", "awaiting_parent", "awaiting_rework"].includes(task.status)) deny("task_not_ready", [`${task.key}:${task.status}`]);
+    assertDirectoriesFree(task, tasks);
+    const row = db.read<unknown>(TASKS, task.taskId)!;
+    db.update(TASKS, task.taskId, row.version, { ...task, prototypeRun: { runId: request.runId, maxTurns: request.maxTurns, turnsUsed: 0, outcome: "running" } });
+    return { task, maxTurns: request.maxTurns };
+  }));
+}
+
+/** 登记一次原型运行的真实结局：交出了新版本才算完成，否则按实际结局记，由 PM 决定是否再派。 */
+export function finishPrototypeRun(request: { dataRoot: string; repoId: string; taskId: string; runId: string; turnsUsed: number;
+  outcome: Exclude<PrototypeRun["outcome"], "running"> }): TaskRecord {
+  return withDatabase(repositoryDatabase(request.dataRoot, request.repoId), (db) => db.transaction(() => {
+    const row = db.read<TaskRecord>(TASKS, request.taskId);
+    if (!row) throw new PlanManageError("plan_missing");
+    const task = row.data;
+    if (task.prototypeRun?.runId !== request.runId || task.prototypeRun.outcome !== "running") return task;
+    const submitted = latestPrototype(task)?.runId === request.runId;
+    const outcome = submitted ? "completed" : request.outcome === "completed" ? "incomplete" : request.outcome;
+    const next = { ...task, prototypeRun: { ...task.prototypeRun, outcome, turnsUsed: request.turnsUsed } } as TaskRecord;
+    db.update(TASKS, task.taskId, row.version, next);
+    return next;
   }));
 }
 
