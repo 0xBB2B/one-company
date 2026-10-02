@@ -114,6 +114,8 @@ export type UserDecision = Static<typeof UserDecision>;
 /** 原型的一个版本；decision 只由用户在程序确认窗口里的选择写入。 */
 const PrototypeVersion = object({
   version: positive, hash, bytes: positive, path: Type.String({ minLength: 1 }), runId: id, note: text, submittedAt: positive,
+  /** 提交时的需求批准版本；此后用户批准了更新的版本，PM 才能取消这个任务。 */
+  revision: positive,
   decision: Type.Optional(object({ choice: Type.Union([Type.Literal("accept"), Type.Literal("rework")]),
     opinion: Type.Union([Type.String({ minLength: 1, maxLength: 4000 }), Type.Null()]), decidedAt: positive, notified: Type.Boolean() })),
 });
@@ -407,6 +409,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       if (task.status === "awaiting_user") deny("task_not_ready", [`${task.key} 等待用户裁决，不能修改或取消`]);
       if (task.userDecision?.choice === "terminate") deny("task_not_ready", [`${task.key} 已被用户终止，不能修改或取消`]);
     }
+    // 交过原型的界面任务只有在用户批准了更新的需求版本后才能取消，否则 PM 取消后另建任务就跳过了用户对原型的确认
+    const prototyped = (params.cancel ?? []).map((item) => byId.get(item.taskId)!).filter((task) => (task.prototypes?.at(-1)?.revision ?? 0) >= record.data.revision);
+    if (prototyped.length) deny("task_not_ready", prototyped.map((task) => `${task.key} 已交过原型，须等用户批准新的需求版本后才能取消`));
     // 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；只放开该任务修改时保留原目标的要求，且决定用过即失效
     const readjusted = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null &&
       record.data.revision > task.userDecision.revision;

@@ -80,7 +80,7 @@ test("M8E-AC1：worker 提交的原型存进本机数据目录并记版本与指
   expect(lastMessage(tooLarge)).toContain(`原型 ${PROTOTYPE_MAX_BYTES + 1} 字节，上限 ${PROTOTYPE_MAX_BYTES} 字节`);
 
   const hud = w.task("hud"), path = prototypePath(w.ref, w.requirementId, "hud", 1);
-  expect(hud.prototypes).toEqual([{ version: 1, hash: sha256(HTML), bytes: Buffer.byteLength(HTML), path, runId: run.runId, note: "三项状态横排", submittedAt: expect.any(Number) }]);
+  expect(hud.prototypes).toEqual([{ version: 1, hash: sha256(HTML), bytes: Buffer.byteLength(HTML), path, runId: run.runId, note: "三项状态横排", submittedAt: expect.any(Number), revision: 1 }]);
   expect(path.startsWith(w.fixture.dataRoot)).toBe(true);
   expect(await readFile(path, "utf8")).toBe(HTML);
   expect((await stat(path)).mode & 0o777).toBe(0o600);
@@ -198,7 +198,7 @@ test("M8E-AC2/AC3：原型待确认时面板出现事项；没有已通过原型
   expect(w.requestOf("任务：hud（").systemPrompt).toContain(`本任务是界面任务，用户已通过的原型（用 read 读取，实现的界面须与它一致）：\n- hud：第 3 版 ${prototypePath(w.ref, w.requirementId, "hud", 3)}（指纹 sha256:${sha256(HTML)}）`);
 });
 
-test("M8E-AC3：交过原型的任务修改后仍是界面任务，没做过原型的可以去掉标记；任务取消后待确认事项消失", async () => {
+test("M8E-AC3：交过原型的任务修改后仍是界面任务，没做过原型的可以去掉标记；用户批准新需求版本前取消被拒，批准后可以取消，事项消失", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("hud", { ui: true, writePaths: ["src/hud/"] }), spec("other", { ui: true, goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
@@ -218,10 +218,20 @@ test("M8E-AC3：交过原型的任务修改后仍是界面任务，没做过原�
   await w.dispatch("other");
   await until(() => w.task("other").status === "awaiting_review");
 
-  // 用户不要这个界面了：PM 取消任务，待确认事项消失，旧事项不能再登记
+  // PM 不能自行取消交过原型的任务；用户批准了新的需求版本后才能取消，待确认事项随之消失
   await w.prototype("hud", proto(HTML2, "新布局"));
   const pending = (await w.item("hud"))!;
-  await w.plan.execute({ action: "update", planVersion: 2, cancel: [{ taskId: w.task("hud").taskId, version: 2 }] });
+  const cancel = () => w.plan.execute({ action: "update", planVersion: w.db((db) => db.read<{ planVersion: number }>("plans", w.requirementId)!.data.planVersion),
+    cancel: [{ taskId: w.task("hud").taskId, version: w.task("hud").version }] });
+  await expect(cancel()).rejects.toMatchObject({ code: "task_not_ready", detail: ["hud 已交过原型，须等用户批准新的需求版本后才能取消"] });
+  expect(w.task("hud").status).toBe("pending");
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，不要状态面板。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n",
+    implementGoals: ["goal.login", "scenario.failure"] });
+  await until(() => w.owner().context.baseline?.revision === 2);
+  await w.readDiffs(["revision 1 → 2"]);
+  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: ["hud", "other"].map((key) => ({ taskId: w.task(key).taskId, version: w.task(key).version,
+    assessment: key === "hud" ? "affected" as const : "unaffected" as const, rationale: "用户不要状态面板" })), global: { assessment: "unaffected", rationale: "只去掉面板" } });
+  await cancel();
   expect(w.task("hud").status).toBe("cancelled");
   expect(await w.item("hud")).toBeUndefined();
   await expect(w.manager.decidePrototype({ requirementId: w.requirementId, itemId: pending.itemId, itemVersion: pending.version, choice: "accept", opinion: null }))

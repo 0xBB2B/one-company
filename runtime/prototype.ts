@@ -52,6 +52,7 @@ export async function submitPrototype(binding: Ref & { requirementId: string; ta
   const bytes = Buffer.byteLength(input.html, "utf8");
   if (bytes > PROTOTYPE_MAX_BYTES) deny("prototype_too_large", `原型 ${bytes} 字节，上限 ${PROTOTYPE_MAX_BYTES} 字节`);
   const database = repositoryDatabase(binding.dataRoot, binding.repoId);
+  const revision = withDatabase(database, (db) => db.read<RequirementRecord>("requirements", binding.requirementId)?.data.revision) ?? deny("prototype_unavailable");
   const current = (): TaskRecord => {
     const task = withDatabase(database, (db) => db.read<TaskRecord>(TASKS, binding.taskId)?.data);
     if (!task || task.requirementId !== binding.requirementId || task.prototypeRun?.runId !== binding.runId || task.prototypeRun.outcome !== "running") return deny("prototype_unavailable");
@@ -62,7 +63,7 @@ export async function submitPrototype(binding: Ref & { requirementId: string; ta
   const path = prototypePath(binding, binding.requirementId, task.key, version);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await writeFileAtomic(path, input.html);
-  const prototype: PrototypeVersion = { version, hash: sha256(input.html), bytes, path, runId: binding.runId, note: input.note, submittedAt: input.now ?? Date.now() };
+  const prototype: PrototypeVersion = { version, hash: sha256(input.html), bytes, path, runId: binding.runId, note: input.note, submittedAt: input.now ?? Date.now(), revision };
   return withDatabase(database, (db) => db.transaction(() => {
     const row = db.read<TaskRecord>(TASKS, binding.taskId)!;
     if (row.data.prototypeRun?.runId !== binding.runId || row.data.prototypeRun.outcome !== "running" || (row.data.prototypes?.length ?? 0) + 1 !== version) deny("prototype_unavailable");
