@@ -143,6 +143,10 @@ const TaskRecord = object({
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
+/** 修改任务时带上用户的决定：还没用掉的"再给一次机会"跟到新版本，PM 可以先补任务说明再派出；任务目标仍只能经需求批准改。 */
+function carriedDecision(decision: UserDecision, version: number): UserDecision {
+  return decision.choice === "retry" && decision.usedByRunId === null ? { ...decision, taskVersion: version } : decision;
+}
 const PlanRecord = object({
   format: Type.Literal("plan/v1"), requirementId: id, planVersion: positive, confirmedVersion: Type.Union([positive, Type.Null()]),
   confirmedTasks: Type.Array(object({ taskId: id, version: positive }), { maxItems: 256 }),
@@ -348,7 +352,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
         maxTurns: spec.maxTurns, ...(spec.agent ? { agent: spec.agent } : {}), ...(spec.agentReason ? { agentReason: spec.agentReason } : {}),
         ...(spec.reviewAgent ? { reviewAgent: spec.reviewAgent } : {}),
         detail: await writeDetail(taskId, version, spec), status: hold.length ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
-        ...(previous?.get(taskId)?.userDecision ? { userDecision: previous.get(taskId)!.userDecision } : {}),
+        ...(previous?.get(taskId)?.userDecision ? { userDecision: carriedDecision(previous.get(taskId)!.userDecision!, version) } : {}),
         // 交过原型的任务不能靠修改任务去掉界面标记，否则 PM 能跳过用户对原型的确认
         ...(spec.ui || previous?.get(taskId)?.prototypes?.length ? { ui: true } : {}),
         ...(previous?.get(taskId)?.prototypes ? { prototypes: previous.get(taskId)!.prototypes } : {}),

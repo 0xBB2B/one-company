@@ -121,7 +121,7 @@ function assertDirectoriesFree(task: TaskRecord, tasks: readonly TaskRecord[]): 
   if (busy.length) deny("write_scope_busy", busy.map((other) => other.key));
 }
 
-/** 用户对待裁决任务的"再给一次机会"：只用于裁决时的任务版本，用过即失效。 */
+/** 用户对待裁决任务的"再给一次机会"：用过即失效。 */
 function userRetryGranted(task: TaskRecord): boolean {
   const decision = task.userDecision;
   return decision !== undefined && decision.usedByRunId === null && decision.choice === "retry" && task.version === decision.taskVersion;
@@ -155,7 +155,7 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
       reason = grantedDecision ? "用户决定" : rework!.reason;
     } else {
       if (rework) deny("rework_not_needed");
-      // 两次尝试之后只有用户的新决定能再开一次：再给一次机会只用于用户裁决时的任务版本并按用户给的上限，调整范围须任务已按新批准版本修改
+      // 两次尝试之后只有用户的新决定能再开一次：再给一次机会按用户给的上限，调整范围须任务已按新批准版本修改
       const decision = task.userDecision;
       const counted = countedAttempts(task);
       // PM 上报的任务可能只尝试过一次，用户的新决定同样生效

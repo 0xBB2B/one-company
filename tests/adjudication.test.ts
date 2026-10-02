@@ -77,6 +77,23 @@ test("需求在草稿阶段提过问（问题记录基于旧版本）时，裁�
   expect(result).toMatchObject({ status: "recorded", choice: "retry" });
 });
 
+test("M8I-AC2：用户再给一次机会后 PM 先修改任务说明再派出：这次机会带到新版本，按用户给的上限派出，用过即失效", async () => {
+  const w = await world();
+  await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("再给一次机会，轮数上限 3")));
+  const planVersion = () => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
+  await w.plan.execute({ action: "update", planVersion: planVersion(), modify: [{ taskId: w.login, version: w.task("login").version,
+    spec: spec("login", "goal.login", { objective: "实现 login，并按用户的话如实写明没验证的部分" }) }] });
+  await w.plan.execute({ action: "confirm", planVersion: planVersion() });
+  expect(w.task("login")).toMatchObject({ status: "pending", userDecision: { choice: "retry", maxTurns: 3, usedByRunId: null, taskVersion: w.task("login").version } });
+
+  w.provider.queue.push({ type: "text", text: "第三次" }, { type: "text", text: "PM 收到" });
+  const third = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null });
+  expect(third.maxTurns).toBe(3);
+  expect(w.task("login").userDecision?.usedByRunId).toBe(third.runId);
+});
+
 test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项标明 PM 上报，说明只作模型说法；用户再给一次机会后按用户上限派出、不需 retry；主代理与不在等待处置的任务不能上报", async () => {
   const w = await createPmRunWorld(cleanups);
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
@@ -293,18 +310,6 @@ test("任务通过条件超过 8 条或轮数超过 100 时登记后停在待用
   const planVersion = w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
   await w.plan.execute({ action: "update", planVersion, modify: [{ taskId: login, version: task("login").version, spec: spec("login", "goal.login", { passCriteria: nine.slice(0, 8) }) }] });
   expect(task("login").status).toBe("pending");
-});
-
-test("M7-AC35：用户给了再一次机会后 PM 修改任务，用户的机会随之失效，不能用在改过的任务上", async () => {
-  const w = await world();
-  await w.adjudicate("再给一次，3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
-  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
-  await until(() => w.task("login").userDecision?.notified === true);
-  const planVersion = w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
-  await w.plan.execute({ action: "update", planVersion, modify: [{ taskId: w.login, version: w.task("login").version,
-    spec: spec("login", "goal.login", { writePaths: ["src/", "config/"] }) }] });
-  await w.plan.execute({ action: "confirm", planVersion: planVersion + 1 });
-  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null })).rejects.toMatchObject({ code: "retry_exhausted" });
 });
 
 test("M7-AC35：解释结果除裁决外还夹带其他条目时整体不登记", async () => {
