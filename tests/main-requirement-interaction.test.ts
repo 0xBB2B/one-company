@@ -151,6 +151,17 @@ describe("主窗口共享控制器的真实服务路径", () => {
     }
   });
 
+  test("M8G-AC1：修改草稿时核验器同时拿到上一版已保存的草稿，提示词写明只核改动的部分；新建草稿时没有上一版", async () => {
+    const w = await world(), created = await w.create();
+    const sentPayload = () => { const content = w.provider.requests.at(-1)!.messages[0]!.content; return JSON.parse(typeof content === "string" ? content : (content as Array<{ text: string }>).map((block) => block.text).join("")); };
+    expect(sentPayload()).not.toHaveProperty("previous");
+    w.capture("选第 1 项"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version, operationId: uuidv7(),
+      summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "验证码 5 分钟有效。\n" });
+    expect(sentPayload()).toMatchObject({ text: expect.stringContaining("选第 1 项"), action: "updateDraft", previous: { title: "登录", body: BODY }, candidate: { title: "登录", body: BODY + "验证码 5 分钟有效。\n" } });
+    expect(w.provider.requests.at(-1)!.systemPrompt).toContain("previous是程序保存的上一版草稿");
+  });
+
   test("M8D-AC1：@ 补全列出本窗口状态正常的草稿与进行中需求及当前草稿标题，改标题后列表跟着变", async () => {
     const w = await world(), created = await w.create();
     expect(await w.interaction.mentionCandidates(w.ctx)).toEqual([{ repoId: w.repoId, requirementId: created.requirementId, title: "登录", lifecycle: "draft" }]);
