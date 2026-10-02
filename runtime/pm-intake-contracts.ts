@@ -295,6 +295,11 @@ export function unknownIntakeSourceRefs(value: Omit<PmUnderstanding, "format" | 
   return [...new Set([...refs, ...scenarios])];
 }
 
+/** 出处里没有引用场景本身（prod-scenario:场景编号）的场景覆盖项；主代理核对时这样的提交会被拒收。 */
+export function scenariosWithoutOwnRef(value: Pick<PmUnderstanding, "scenarioCoverage">): string[] {
+  return value.scenarioCoverage.filter((item) => !item.sourceRefs.some((ref) => ref.kind === "prod-scenario" && ref.id === item.scenarioId)).map((item) => item.scenarioId);
+}
+
 function checkRefs(refs: readonly IntakeSourceRef[], directory: IntakeSourceDirectory): void {
   checkUnique(refs.map(sourceKey), "duplicate_source");
   if (refs.some((ref) => !knownSource(ref, directory))) fail("unknown_source");

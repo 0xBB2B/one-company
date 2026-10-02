@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { authorizeToolAction } from "../runtime/core-permissions.ts";
 import { PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
-import { unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
+import { scenariosWithoutOwnRef, unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
 import type { IntakeSubmissionBaseline } from "../runtime/pm-intake-runtime.ts";
 import { uuidv7 } from "../runtime/database.ts";
 import type { PmLease, WorkspaceBinding } from "../runtime/requirement-contracts.ts";
@@ -121,6 +121,9 @@ export function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
     const unknown = unknownIntakeSourceRefs((params as { understanding: Parameters<typeof unknownIntakeSourceRefs>[0] }).understanding, directory);
     if (unknown.length) throw new AdvisedError("pm_intake_unknown_source",
       { why: `引用了任务上下文里没有的出处编号：${unknown.join("、")}`, next: "只引用任务上下文列出的出处编号，改正后重交" });
+    const withoutOwnRef = scenariosWithoutOwnRef((params as { understanding: Parameters<typeof scenariosWithoutOwnRef>[0] }).understanding);
+    if (withoutOwnRef.length) throw new AdvisedError("pm_intake_unknown_source",
+      { why: `这些场景覆盖项的出处里没有引用场景本身：${withoutOwnRef.join("、")}`, next: "每个场景覆盖项的 sourceRefs 里加上 kind 为 prod-scenario、id 为该场景编号的一条，改正后重交" });
     return { content: [{ type: "text", text: JSON.stringify({ status: "submitted", next: "等待主代理核对接手理解" }) }],
       details: { intakeBaseline: input.currentBaseline() } };
   }

@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createPmIntakeProviders, evaluatePmIntakeGate, pmDecisionNotes, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
-import { unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
+import { intakeSubmitTool } from "../daemon/pm-tools.ts";
+import { scenariosWithoutOwnRef, unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
@@ -31,6 +32,17 @@ test("PM 接手可引用的出处清单与主代理核对时构造的清单一�
   forged.goals[0]!.sourceRefs.push({ kind: "decision", id: "guessed-decision" });
   forged.scenarioCoverage[0]!.scenarioId = "guessed-scenario";
   expect(unknownIntakeSourceRefs(forged, directory!)).toEqual(["decision:guessed-decision", "prod-scenario:guessed-scenario"]);
+  // 场景覆盖项的出处里没有该场景本身时，主代理核对会拒收；PM 提交时就要指出是哪几个场景
+  expect(scenariosWithoutOwnRef(kit.content)).toEqual([]);
+  const unitOnly = structuredClone(kit.content), first = unitOnly.scenarioCoverage[0]!;
+  first.sourceRefs = first.sourceRefs.map((ref) => ref.kind === "prod-scenario" ? { kind: "prod-unit" as const, id: ref.id } : ref);
+  expect(scenariosWithoutOwnRef(unitOnly)).toEqual([first.scenarioId]);
+  const tool = intakeSubmitTool({ alive: () => true, checkLease: async () => {}, dataRoot: fixture.dataRoot, repoId: fixture.repoId, lease: fixture.lease, currentBaseline: () => null } as never);
+  const call = (understanding: unknown) => (tool.execute as (id: string, params: unknown) => Promise<unknown>)("call", { action: "ask", purpose: "pm-intake", understanding });
+  await expect(call(unitOnly)).rejects.toThrow(`这些场景覆盖项的出处里没有引用场景本身：${first.scenarioId}`);
+  await expect(call(kit.content)).resolves.toMatchObject({ content: [{ text: expect.stringContaining("submitted") }] });
+  kit.submit(unitOnly);
+  await expect(kit.intake.openRequest(fixture.call, fixture.operationId())).rejects.toMatchObject({ code: "unknown_source" });
 });
 
 test("M7-AC13：主代理经真实提供方读到 PM 会话里的提交，核对通过前门槛拒绝，通过后放行", async () => {
