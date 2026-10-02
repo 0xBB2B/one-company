@@ -20,7 +20,7 @@
 | AC2 包内 7 份定义写明模型；零自定义时运行记录与内部调用用对应模型；本机没有时明确失败 | 通过 | tests/role-catalog.test.ts「M8F-AC2」两条（7 份定义的 model 与 thinking）；tests/zero-custom-loop.test.ts（零自定义闭环里每个运行记录的模型都是 gpt-6.1-sol）；tests/internal-model.test.ts「M8F-AC2」两条（内部调用用 gpt-6-luna 加 medium；本机没有该模型时报错、不改用主会话模型）；tests/model-ref.test.ts（子代理定义写的模型找不到时拒绝） | 无 |
 | AC3 用户层同名定义覆盖；不写 model 仍跟主会话 | 通过 | tests/internal-model.test.ts「M8D-AC8、M8F-AC3」；tests/model-ref.test.ts（不写 model 的 worker 定义用派出方的模型） | 无 |
 | AC4 README 写明默认模型与前提；typecheck 与单元、集成、安装测试全绿 | 通过 | README「角色定义」一节；typecheck 通过；单元 2446 条里 2444 通过，集成 56 条里 55 通过，安装 11 通过（1 个需 Docker 跳过） | 没通过的 3 条都是计时类：两条 SQLite 等锁计时、一条 tests/integration/network-and-sleep.test.ts，后者单独重跑通过。本机 python3 睡 10 毫秒 20 次实测 738 到 1195 毫秒（应为 200） |
-| AC5 真实模型验收并入 M9-AC12、AC13 | 不在本阶段运行 | 无 | M9 重跑 |
+| AC5 真实模型验收并入 M9-AC12、AC13 | 通过 | 2026-10-03 主会话 5x/gpt-6.1-sol：AC12 零自定义 16 分钟以完成关闭，AC13 28 分钟以完成关闭，批准都是一次登记成功（证据 .bb-spec/.cache/m9/acceptance-sol61/zero-custom-2026-10-02T17-44-18-713Z、.bb-spec/.cache/m9/acceptance-sol61/ui-worker-2026-10-02T17-15-22-144Z） | 无 |
 
 ## 当前阻塞
 

@@ -17,7 +17,7 @@
 | AC | 状态 | 证据 | 剩余缺口 |
 |---|---|---|---|
 | AC1 PM 角色说明写明提出或修改计划前先查一次角色目录 | 通过 | tests/role-catalog.test.ts「M8H-AC1」 | 无 |
-| AC2 真实模型验收并入 M9-AC13 | 不在本阶段运行 | 无 | M9 重跑 |
+| AC2 真实模型验收并入 M9-AC13 | 通过 | M9-AC13 第 10、11、13、14 轮 PM 都查了角色目录并选中 ui-worker；第 14 轮通过（证据 .bb-spec/.cache/m9/acceptance-sol61/ui-worker-2026-10-02T17-15-22-144Z/report.json、tasks.json） | 无 |
 
 ## 当前阻塞
 

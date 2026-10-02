@@ -17,7 +17,7 @@
 | AC | 状态 | 证据 | 剩余缺口 |
 |---|---|---|---|
 | AC1 修改草稿时核验器输入带上一版草稿，提示词写明只核改动的部分；新建草稿时没有上一版；原有测试全部通过 | 通过 | tests/main-requirement-interaction.test.ts「M8G-AC1」；该文件 41 条全部通过 | 无 |
-| AC2 真实模型验收并入 M9-AC12、AC13 | 不在本阶段运行 | 无 | M9 重跑 |
+| AC2 真实模型验收并入 M9-AC12、AC13 | 通过 | M9-AC13 第 14 轮：用户在提问窗口选了答案后，主代理把答案写回草稿一次保存成功，随后批准登记成功（证据 .bb-spec/.cache/m9/acceptance-sol61/ui-worker-2026-10-02T17-15-22-144Z/main-session.json、side-calls.json）；AC12 这一轮主代理没有提问 | 无 |
 
 ## 当前阻塞
 

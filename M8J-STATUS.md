@@ -17,7 +17,7 @@
 | AC | 状态 | 证据 | 剩余缺口 |
 |---|---|---|---|
 | AC1 解释器不指定时限时，过了 60 秒仍在等，到 120 秒才取消 | 通过 | tests/user-interaction.test.ts「M8J-AC1」（先失败后通过） | 无 |
-| AC2 真实模型验收并入 M9-AC12、AC13 | 不在本阶段运行 | 无 | M9 重跑 |
+| AC2 真实模型验收并入 M9-AC12、AC13 | 通过 | 2026-10-03 第 13、14 轮 AC13 与 AC12 的批准都是一次登记成功，解释器调用没有被时限掐断（证据 .bb-spec/.cache/m9/acceptance-sol61/zero-custom-2026-10-02T17-44-18-713Z/side-calls.json、.bb-spec/.cache/m9/acceptance-sol61/ui-worker-2026-10-02T17-15-22-144Z/side-calls.json） | 无 |
 
 ## 当前阻塞
 
