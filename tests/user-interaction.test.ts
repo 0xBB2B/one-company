@@ -808,6 +808,20 @@ for (const failure of ["auth", "tool", "length", "invalid", "wrong-model", "time
   await expect(interpreter.interpret({ text: PHONE, context: w.context,
     model: actualModel, signal: new AbortController().signal })).rejects.toThrow(SPECIFIC_DENIAL);
 });
+test("M8J-AC1：解释器不指定时限时默认 120 秒：过了 60 秒还在等，到 120 秒才取消", async () => {
+  const w = await world(), a = await adapterWorld(); const actualModel = a.interpreter.identity();
+  a.registry.complete = async () => new Promise(() => {});
+  const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel() });
+  vi.useFakeTimers();
+  try {
+    let outcome: unknown = "pending";
+    void interpreter.interpret({ text: PHONE, context: w.context, model: actualModel, signal: new AbortController().signal }).catch((error: unknown) => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(outcome).toBe("pending");
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(outcome).toMatchObject({ code: "model_cancelled" });
+  } finally { vi.useRealTimers(); }
+});
 test("M9：同一段落既有已确认又有未决条目时，重答反馈与最终拒绝都写明是哪一段、为什么、怎么改", async () => {
   const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete, calls: Context[] = [];
   const mixed = modelAnswer(w.output()) as { entries: Array<{ unitIds?: string[] }> };

@@ -40,7 +40,7 @@ function modelIdentity(model: Model<Api>): InteractionModelIdentity {
 /** pi 0.87.1 ModelRegistry通过pi-ai的真实provider完成调用；不创建会话、不持久化输入或响应。 */
 export function createPiInteractionInterpreter(options: PiInteractionInterpreterOptions): InteractionInterpreter {
   const registry = options.registry, selectedModel = options.selectedModel;
-  const timeoutMs = options.timeoutMs ?? 60_000;
+  const timeoutMs = options.timeoutMs ?? 120_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120_000) throw new UserInteractionError("invalid_model_timeout");
   function current(): Model<Api> {
     const model = selectedModel();
