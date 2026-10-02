@@ -295,7 +295,7 @@ test("M8E-AC4：worker、reviewer、QA、PM 的角色说明与主窗口规范写
   for (const phrase of ["对照核对改动后的界面", "改了界面但没有用户通过的原型"]) expect(reviewer).toContain(phrase);
   expect(await doc("agents/qa.md")).toContain("与原型文件逐项对照");
   // M8I-AC1：没有浏览器时按输出与原型文件对照，浏览器实际渲染不列为未验证项，worker 不自己启动浏览器
-  for (const role of ["qa", "reviewer"]) expect(await doc(`agents/${role}.md`)).toContain("浏览器里的实际渲染不列为未验证项");
+  for (const role of ["qa", "reviewer", "worker"]) expect(await doc(`agents/${role}.md`)).toContain("浏览器里的实际渲染不列为未验证项");
   expect(await doc("agents/worker.md")).toContain("不自己去启动浏览器");
   const pm = await doc("agents/pm.md");
   for (const phrase of ["在计划里把 ui 写成 true", "带 prototype（轮次上限）派 worker 做原型", "不要代为确认"]) expect(pm).toContain(phrase);
