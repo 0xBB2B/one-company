@@ -63,10 +63,16 @@ export function headingTitlesOf(body: string): Map<string, string> {
   return titles;
 }
 
-function reviewPassedFor(dataRoot: string, repoId: string, lease: PmLease): boolean {
-  const review = new PmIntakeStore({ dataRoot, repoId }).readHead(lease.requirementId)?.review;
-  return review?.result === "passed" && review.binding.pmRunId === lease.runId && review.binding.pmFence === lease.fence &&
-    review.binding.contextGeneration === lease.contextGeneration;
+/** 主代理的核对是否仍算数：通过的须是当前这个 PM 最新提交的那份，与派工门槛同一标准；PM 通过后又交了新的一份就要重新核对。 */
+function reviewPassedFor(input: Pick<PmOverviewInput, "dataRoot" | "repoId" | "lease" | "record">): boolean {
+  const { lease, record } = input;
+  const review = new PmIntakeStore({ dataRoot: input.dataRoot, repoId: input.repoId }).readHead(lease.requirementId)?.review;
+  if (review?.result !== "passed" || review.binding.pmRunId !== lease.runId || review.binding.pmFence !== lease.fence ||
+    review.binding.contextGeneration !== lease.contextGeneration) return false;
+  if (!record.approved || !record.approvalManifest || review.binding.approvedRevision !== record.revision) return true;
+  const latest = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: lease.runId, baseline: {
+    approvedRevision: record.revision, approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest.reference.manifestHash } });
+  return !latest || review.submissionRef === `pm/${lease.runId}/${latest.toolCallId}`;
 }
 
 function questionPending(db: LocalDatabase, repoId: string, record: RequirementRecord, row: ReturnType<typeof requirementRow>, questionId: string): boolean {
@@ -96,7 +102,7 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
       : ({ execute: "两次未完成", review: "两次审查未完成", rework: "两次未通过审查" } as const)[stalledStage(task)];
     items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label: `待你裁决：任务 ${task.key} ${cause}`, version: `task:${task.taskId}:${row.version}` });
   }
-  if (input.record.approved && input.record.approvalManifest && !reviewPassedFor(input.dataRoot, input.repoId, input.lease)) {
+  if (input.record.approved && input.record.approvalManifest && !reviewPassedFor(input)) {
     const submission = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: input.lease.runId, baseline: {
       approvedRevision: input.record.revision, approvedProdHash: input.record.approved.hash, approvalManifestHash: input.record.approvalManifest.reference.manifestHash } });
     if (submission) items.push({ itemId: `intake:${input.lease.runId}`, kind: "intake-review", label: `待你核对：PM 接手理解 r${input.record.revision}`,
@@ -133,7 +139,7 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
   }
   if (status === "waiting") return items.some((item) => item.kind === "acceptance") ? "等待你验收完成报告"
     : items.every((item) => item.kind === "prototype") ? "等待你确认原型" : "等待你的决定";
-  if (!reviewPassedFor(input.dataRoot, input.repoId, input.lease)) return items.some((item) => item.kind === "intake-review") ? "等待核对接手理解" : "接手中";
+  if (!reviewPassedFor(input)) return items.some((item) => item.kind === "intake-review") ? "等待核对接手理解" : "接手中";
   if (input.record.pendingRevision !== null) return `复核批准更新 r${input.record.pendingRevision}`;
   if (activeCheckRoundIn(input.db, input.repoId, input.lease.requirementId)) return "检查中";
   const running = input.children.filter((child) => ACTIVE_CHILD.has(child.state));

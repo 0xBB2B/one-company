@@ -3,6 +3,7 @@ import { repositoryDatabase, withDatabase } from "../runtime/database.ts";
 import { TASKS } from "../runtime/plan-manage.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
+import { PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -35,6 +36,22 @@ test("M7-AC33/AC34：接手理解待核对时显示待办并暂停计时，核�
   await until(async () => (await w.run(w.pm.runId)).pausedAt === undefined);
   expect((await w.run(w.pm.runId)).pausedMs).toBeGreaterThan(0);
 
+  await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
+  expect((await w.overview()).doing).toBe("规划中（计划 v1 · 2 个任务）");
+});
+
+test("核对通过后 PM 又交了一份接手理解：面板重新出现待核对事项，核对最新那份通过后事项消失、可以提计划", async () => {
+  const w = await world({ review: false });
+  await until(async () => (await w.overview()).status === "waiting");
+  // PM 收到通过通知后又交了一份，派工门槛只认最新那份
+  w.provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding: w.understanding } }, { type: "text", text: "又交了一份" });
+  await w.review();
+  await until(async () => (await w.overview()).pendingItems.length === 1);
+  expect(await w.overview()).toMatchObject({ pendingItems: [{ kind: "intake-review", label: "待你核对：PM 接手理解 r1" }] });
+  await expect(w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] })).rejects.toThrow("核对过的接手理解不是 PM 最新提交的那份");
+
+  await w.review();
+  await until(async () => (await w.overview()).pendingItems.length === 0);
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   expect((await w.overview()).doing).toBe("规划中（计划 v1 · 2 个任务）");
 });
