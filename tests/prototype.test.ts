@@ -119,7 +119,11 @@ test("M8E-AC1：worker 提交的原型存进本机数据目录并记版本与指
   w.script("hud", { type: "text", text: "慢慢做", chunkDelayMs: 20_000 });
   const slow = await w.dispatch("hud", { prototype: { maxTurns: 4 } });
   await until(async () => (await w.manager.overviews())[0]?.doing === "派 worker 做原型 hud");
-  await w.manager.stop(slow.runId, { reason: "main_agent" });
+  // 被停止的原型运行按实际结局收口，不会把任务一直占住：之后还能再派
+  await until(async () => (await w.manager.stop(slow.runId, { reason: "main_agent" })).confirmed);
+  expect(w.task("hud").prototypeRun).toMatchObject({ runId: slow.runId, outcome: "stopped" });
+  expect((await w.prototype("hud", proto(HTML2, "重做"))).submitted).toBe(true);
+  expect(w.task("hud").prototypes!.map((entry) => entry.version)).toEqual([1, 2]);
 });
 
 test("M8E-AC2/AC3：原型待确认时面板出现事项；没有已通过原型不能派实现；通过后可以派；返工意见原话交回 PM；新版本使旧的通过失效；PM 与其他代理不能替用户通过", async () => {
@@ -192,6 +196,36 @@ test("M8E-AC2/AC3：原型待确认时面板出现事项；没有已通过原型
   await w.dispatch("hud");
   await until(() => w.task("hud").status === "awaiting_review");
   expect(w.requestOf("任务：hud（").systemPrompt).toContain(`本任务是界面任务，用户已通过的原型（用 read 读取，实现的界面须与它一致）：\n- hud：第 3 版 ${prototypePath(w.ref, w.requirementId, "hud", 3)}（指纹 sha256:${sha256(HTML)}）`);
+});
+
+test("M8E-AC3：交过原型的任务修改后仍是界面任务，没做过原型的可以去掉标记；任务取消后待确认事项消失", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("hud", { ui: true, writePaths: ["src/hud/"] }), spec("other", { ui: true, goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  await w.prototype("hud", proto());
+  await w.decide("hud", "rework", "换个布局");
+  await w.pmHeard("用户意见：「换个布局」");
+
+  // PM 修改任务时不写界面标记：交过原型的 hud 标记保留，没做过原型的 other 标记去掉
+  await w.plan.execute({ action: "update", planVersion: 1, modify: [
+    { taskId: w.task("hud").taskId, version: 1, spec: spec("hud", { writePaths: ["src/hud/"], objective: "实现 hud（改过说明）" }) },
+    { taskId: w.task("other").taskId, version: 1, spec: spec("other", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] }) }] });
+  await w.plan.execute({ action: "confirm", planVersion: 2 });
+  expect(w.task("hud")).toMatchObject({ version: 2, ui: true, prototypes: [expect.objectContaining({ version: 1, decision: expect.objectContaining({ choice: "rework" }) })] });
+  expect(w.task("other").ui).toBeUndefined();
+  await expect(w.dispatch("hud")).rejects.toMatchObject({ code: "prototype_required", detail: ["hud 的原型第 1 版被用户要求返工"] });
+  w.script("other", verdict("完成 other"));
+  await w.dispatch("other");
+  await until(() => w.task("other").status === "awaiting_review");
+
+  // 用户不要这个界面了：PM 取消任务，待确认事项消失，旧事项不能再登记
+  await w.prototype("hud", proto(HTML2, "新布局"));
+  const pending = (await w.item("hud"))!;
+  await w.plan.execute({ action: "update", planVersion: 2, cancel: [{ taskId: w.task("hud").taskId, version: 2 }] });
+  expect(w.task("hud").status).toBe("cancelled");
+  expect(await w.item("hud")).toBeUndefined();
+  await expect(w.manager.decidePrototype({ requirementId: w.requirementId, itemId: pending.itemId, itemVersion: pending.version, choice: "accept", opinion: null }))
+    .rejects.toMatchObject({ code: "item_not_pending" });
 });
 
 test.skipIf(process.platform !== "darwin")("M8E-AC4：reviewer 与 QA 的输入带已通过原型的路径、版本和指纹；QA 多一个只能读这些原型文件的 read", async () => {

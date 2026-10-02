@@ -347,7 +347,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
         ...(spec.reviewAgent ? { reviewAgent: spec.reviewAgent } : {}),
         detail: await writeDetail(taskId, version, spec), status: hold.length ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: previous.get(taskId)!.userDecision } : {}),
-        ...(spec.ui ? { ui: true } : {}),
+        // 交过原型的任务不能靠修改任务去掉界面标记，否则 PM 能跳过用户对原型的确认
+        ...(spec.ui || previous?.get(taskId)?.prototypes?.length ? { ui: true } : {}),
         ...(previous?.get(taskId)?.prototypes ? { prototypes: previous.get(taskId)!.prototypes } : {}),
         ...(previous?.get(taskId)?.prototypeRun ? { prototypeRun: previous.get(taskId)!.prototypeRun } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));
