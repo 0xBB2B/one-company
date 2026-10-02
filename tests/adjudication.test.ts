@@ -67,6 +67,16 @@ test("M7-AC35：用户原话选择再给一次机会时登记用户决定，任�
   expect(w.task("login").userDecision?.usedByRunId).toBe(third.runId);
 });
 
+test("需求在草稿阶段提过问（问题记录基于旧版本）时，裁决照常登记", async () => {
+  const w = await world();
+  const requestId = uuidv7();
+  w.db((db) => db.create("interaction_questions_v1", requestId, { format: "interaction-question/v1", requestId, repoId: w.fixture.repoId,
+    basis: { requirementId: w.fixture.requirementId, version: 1, epoch: 1, prod: null }, candidate: null,
+    proposal: { conclusion: "速度怎么显示？", scope: "显示格式", references: [], supersedes: [] }, actions: [], createdAt: 1 }, requestId));
+  const result = await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
+  expect(result).toMatchObject({ status: "recorded", choice: "retry" });
+});
+
 test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项标明 PM 上报，说明只作模型说法；用户再给一次机会后按用户上限派出、不需 retry；主代理与不在等待处置的任务不能上报", async () => {
   const w = await createPmRunWorld(cleanups);
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });

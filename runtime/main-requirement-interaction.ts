@@ -380,8 +380,10 @@ export class MainRequirementInteraction {
           if (adjudication.requirementId !== id) return denied("adjudication_mismatch");
           const record = this.#authorization.snapshot(repoId, id, host.sessionId);
           const records = this.#authorization.interactionRecords(repoId, id, host.sessionId);
-          return { basis: { requirementId: id, version: record.version, epoch: record.data.epoch, prod: record.data.approved },
-            currentGoal: "", candidates: [], ...records, adjudication: adjudication.subject };
+          const basis = { requirementId: id, version: record.version, epoch: record.data.epoch, prod: record.data.approved };
+          // 裁决只针对面板事项；基于旧版本提的问题早已随批准处理，带上会让整次登记因版本不符被拒
+          return { basis, currentGoal: "", candidates: [], ...records, questions: records.questions.filter((question) => digest(question.basis) === digest(basis)),
+            adjudication: adjudication.subject };
         }
         const request = this.#candidate;
         if (!request || request.requirementId !== id || !this.#ctx) return denied("candidate_required");
