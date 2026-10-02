@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFile, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -6,16 +7,19 @@ import { promisify } from "node:util";
 import { expect, test } from "vitest";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { repositoryDatabase, withDatabase } from "../../runtime/database.ts";
+import { TASKS } from "../../runtime/plan-manage.ts";
+import type { TaskRecord } from "../../runtime/plan-manage.ts";
 import type { RequirementRecord } from "../../runtime/requirement-contracts.ts";
 import { repositoryIdentity, daemonSocketPath } from "../../runtime/identity.ts";
 import { RunStore } from "../../runtime/run-store.ts";
+import { sessionFilePath } from "../../runtime/session-records.ts";
 import type { RunRecord } from "../../runtime/run-store.ts";
-import { acceptanceConfig, copyCredentials, installProduct, startInstalledHost } from "./helpers/installed-host.ts";
+import { acceptanceConfig, copyCredentials, installProduct, PROTOTYPE_ACCEPT, startInstalledHost, stubSystemOpen } from "./helpers/installed-host.ts";
 import type { InstalledHost } from "./helpers/installed-host.ts";
 import { createSampleProject } from "./helpers/sample-project.ts";
 import { killUnder, mainSessionFacts, sumUsage, waitMissing } from "./helpers/evidence.ts";
 import { driveUser } from "./helpers/user-driver.ts";
-import type { DriverEvent, DriverOutcome } from "./helpers/user-driver.ts";
+import type { DriverEvent, DriverOutcome, UserScript } from "./helpers/user-driver.ts";
 
 const exec = promisify(execFile);
 const config = acceptanceConfig();
@@ -30,10 +34,11 @@ const SCRIPT = {
   close: "验收已通过，请以完成关闭这个需求。",
 };
 
-interface LoopResult { outcome: DriverOutcome | undefined; runs: RunRecord[]; archive: string | null; archives: string[]; host: InstalledHost; agentDir: string; repoId: string; repo: string }
+interface LoopResult { outcome: DriverOutcome | undefined; runs: RunRecord[]; archive: string | null; archives: string[]; host: InstalledHost; agentDir: string; repoId: string; repo: string;
+  /** 面板扩展交给系统 open 命令的路径，按先后顺序。 */ opened: string[]; evidence: string; worktree: string | undefined }
 
 /** 一轮真实模型闭环：装产品、建样例项目、按脚本驱动用户，把证据写进输出目录，再交给 verify 断言；现场与凭据在结束时清理。 */
-async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: string, agentDir: string, installed: string) => Promise<void>, verify: (result: LoopResult) => void | Promise<void>) {
+async function runLoop(name: string, script: UserScript, prepare: (repo: string, agentDir: string, installed: string) => Promise<void>, verify: (result: LoopResult) => void | Promise<void>) {
   const cfg = config!;
   const evidence = join(cfg.output, `${name}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   await mkdir(evidence, { recursive: true, mode: 0o700 });
@@ -42,7 +47,7 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
 
   const root = await mkdtemp(join(tmpdir(), "m9-"));
   const agentDir = join(root, "agent"), home = join(root, "home");
-  const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HOME", "PI_TELEMETRY", "ONE_COMPANY_IDLE_TIMEOUT_MS"].map((key) => [key, process.env[key]]));
+  const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HOME", "PI_TELEMETRY", "ONE_COMPANY_IDLE_TIMEOUT_MS", "PATH"].map((key) => [key, process.env[key]]));
   let host: InstalledHost | undefined, outcome: DriverOutcome | undefined, socketPath: string | undefined;
   const started = Date.now();
   try {
@@ -52,6 +57,7 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
     await mkdir(home, { recursive: true });
     await copyCredentials(cfg.credentialsDir, agentDir);
     await prepare(repo, agentDir, installed);
+    const openedLog = await stubSystemOpen(root);
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.HOME = home;
     process.env.PI_TELEMETRY = "0";
@@ -70,6 +76,7 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
     const archive = worktree && archives[0] ? await readFile(join(worktree, "docs", "prod", archives[0]), "utf8") : null;
     if (archive !== null) await writeFile(join(evidence, "archive.md"), archive, { mode: 0o600 });
     const conventions = await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null);
+    const opened = (await readFile(openedLog, "utf8").catch(() => "")).split("\n").filter(Boolean);
     const report = {
       config: { model: `${cfg.provider}/${cfg.modelId}`, thinking: cfg.thinking },
       outcome, elapsedMs: Date.now() - started,
@@ -77,11 +84,11 @@ async function runLoop(name: string, script: typeof SCRIPT, prepare: (repo: stri
       runs: runs.map((run) => ({ id: run.id, kind: run.kind, role: run.role, state: run.state, stateReason: run.stateReason, stopCause: run.stopCause, turns: run.turns,
         usage: run.usage, model: run.model, thinking: run.thinking, agentSource: run.agent?.source, agentName: run.agent?.name, agentSkills: run.agent?.skills.map((skill) => skill.name), task: run.task, parentRunId: run.parentRunId })),
       runUsage: sumUsage(runs.map((run) => run.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })),
-      dialogs: host.dialogs, notifications: host.notifications, modelEvents: host.modelEvents, worktree: worktree ?? null, archives, conventions,
+      dialogs: host.dialogs, notifications: host.notifications, modelEvents: host.modelEvents, worktree: worktree ?? null, archives, conventions, opened,
       worktreeLog: worktree ? (await exec("git", ["log", "--oneline", "-20"], { cwd: worktree })).stdout : null,
     };
     await writeFile(join(evidence, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
-    await verify({ outcome, runs, archive, archives, host, agentDir, repoId, repo });
+    await verify({ outcome, runs, archive, archives, host, agentDir, repoId, repo, opened, evidence, worktree });
   } finally {
     if (host) await writeFile(join(evidence, "side-calls.json"), JSON.stringify(host.sideCalls, null, 2), { mode: 0o600 }).catch(() => undefined);
     if (host) await writeFile(join(evidence, "model-events.json"), JSON.stringify(host.modelEvents, null, 2), { mode: 0o600 }).catch(() => undefined);
@@ -114,7 +121,7 @@ function expectInOrder(archive: string | null, markers: string[]) {
 }
 
 test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、全新数据根、零自定义定义，真实模型从需求草稿走到用户验收与完成关闭", async () => {
-  await runLoop("zero-custom", SCRIPT, async () => {}, async ({ outcome, runs, archive, archives, host, agentDir, repoId, repo }) => {
+  await runLoop("zero-custom", SCRIPT, async () => {}, async ({ outcome, runs, archive, archives, host, agentDir, repoId, repo, worktree }) => {
     expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
     expect(runs.length).toBeGreaterThan(0);
     expect(runs.every((run) => run.agent?.source === "default")).toBe(true);
@@ -124,6 +131,19 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     expectInOrder(archive, ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "\n### 实现记录（关闭时由程序生成）\n", "{#acceptance}", "\n### 验收记录（关闭时由程序生成）\n"]);
     expect(host.dialogs.some((dialog) => dialog.title === "把这些改动写入项目规范 AGENTS.md？" && dialog.answer === "写入")).toBe(true);
     expect(await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null)).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
+    // worker 遵守规范：交付的源码里导出的常量全是大写字母加下划线
+    const sources = (await readdir(join(worktree!, "src"), { recursive: true })).filter((name) => name.endsWith(".ts"));
+    const exported = (await Promise.all(sources.map((name) => readFile(join(worktree!, "src", name), "utf8")))).flatMap((text) => [...text.matchAll(/^export const (\w+)/gm)].map((match) => match[1]!));
+    expect(exported.filter((name) => !/^[A-Z][A-Z0-9_]*$/.test(name))).toEqual([]);
+    // 审查结论写明核对了该规范
+    const dataRoot = join(agentDir, "one-company");
+    const reviews = await Promise.all(runs.filter((run) => run.role === "one-company.reviewer" && run.state === "completed").map((run) => readFile(sessionFilePath({ dataRoot, repoId, runId: run.id }), "utf8")));
+    const summaries = reviews.flatMap((session) => session.split("\n").filter(Boolean).flatMap((line) => {
+      const content = (JSON.parse(line) as { message?: { content?: unknown } }).message?.content;
+      return Array.isArray(content) ? content.flatMap((block: { type?: string; name?: string; arguments?: { action?: string; result?: { summary?: string } } }) =>
+        block.type === "toolCall" && block.name?.endsWith("result_submit") && block.arguments?.action === "verdict" ? [block.arguments.result?.summary ?? ""] : []) : [];
+    }));
+    expect(summaries.some((summary) => /规范|AGENTS\.md/.test(summary) && /大写|常量/.test(summary)), JSON.stringify(summaries)).toBe(true);
   });
 }, 100 * 60_000);
 
@@ -171,12 +191,13 @@ description: 本项目的界面写法：HUD 与面板的 HTML 结构、类名与
 - 样式写在导出的 CSS 字符串常量里，主色 #2f6fed，字号 14px，不引入第三方库。
 `;
 
-test.skipIf(!config || process.platform !== "darwin")("M9-AC13：复制默认 worker 为 ui-worker 并挂项目 skill ui-basics，PM 自动选中它完成 HUD 面板的设计与实现，reviewer 与 QA 独立检查", async () => {
+test.skipIf(!config || process.platform !== "darwin")("M9-AC13：复制默认 worker 为 ui-worker 并挂项目 skill ui-basics，PM 自动选中它完成 HUD 面板的设计与实现，界面任务先做原型、用户通过后才实现，reviewer 与 QA 独立检查且 QA 读了原型", async () => {
   const script = {
     requirement: "我要给游戏加一个 HUD 状态面板：显示角色当前水平速度、是否在空中、是否在快跑。用 TypeScript 写一个函数，输入这三个状态，输出面板的 HTML 字符串，再导出面板的 CSS；用 node 单元测试验证输出。界面怎么设计你们按项目的界面约定来。" +
       "请整理成需求草稿给我确认。确认后授权你直接实施：创建独立工作区、派 PM 按计划实现、测试和验收，完成后由我验收报告。",
     approve: "需求草稿我看过了，内容正确，批准这一版，按上面的授权直接实施。", proceed: "继续：创建工作区并派出 PM 开始实施。",
     accept: "完成报告我看过了，验收通过。", close: "验收已通过，请以完成关闭这个需求。",
+    adjudicate: "再给一次机会，上限 10 轮：按已批准的需求和原型文件核对输出，浏览器里的实际视觉没法验证的，在报告里写明没验证就行。",
   };
   await runLoop("ui-worker", script, async (repo, agentDir, installed) => {
     const worker = await readFile(join(installed, "agents", "worker.md"), "utf8");
@@ -189,8 +210,38 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC13：复制默认 wo
     await exec("git", ["add", ".pi"], { cwd: repo });
     await exec("git", [...user, "commit", "-qm", "项目界面约定"], { cwd: repo });
     new ProjectTrustStore(agentDir).set(repo, true);
-  }, async ({ outcome, runs }) => {
+  }, async ({ outcome, runs, host, agentDir, repoId, opened, evidence }) => {
+    const dataRoot = join(agentDir, "one-company");
+    const tasks = withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.list<TaskRecord>(TASKS)).map((row) => row.data);
+    const uiTasks = tasks.filter((task) => task.ui && task.status !== "cancelled");
+    await writeFile(join(evidence, "tasks.json"), `${JSON.stringify(tasks, null, 2)}\n`, { mode: 0o600 });
+    for (const prototype of uiTasks.flatMap((task) => task.prototypes ?? [])) await copyFile(prototype.path, join(evidence, basename(prototype.path))).catch(() => undefined);
+
     expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
+    expect(uiTasks.length).toBeGreaterThan(0);
+    const sessionText = (runId: string) => readFile(sessionFilePath({ dataRoot, repoId, runId }), "utf8");
+    for (const task of uiTasks) {
+      const prototype = task.prototypes?.at(-1);
+      expect(prototype?.decision?.choice, task.key).toBe("accept");
+      expect(createHash("sha256").update(await readFile(prototype!.path)).digest("hex")).toBe(prototype!.hash);
+      expect(opened).toContain(prototype!.path);
+      expect(runs.find((run) => run.id === prototype!.runId)?.role).toBe("one-company.worker");
+      // 先原型后实现：这个任务的每次实现运行都在用户通过原型之后才开始
+      expect(task.attempts.length).toBeGreaterThan(0);
+      const firstAccepted = task.prototypes!.find((version) => version.decision?.choice === "accept")!.decision!.decidedAt;
+      for (const attempt of task.attempts) expect(Date.parse(runs.find((run) => run.id === attempt.runId)!.startedAt)).toBeGreaterThan(firstAccepted);
+    }
+    const confirmations = host.dialogs.filter((dialog) => dialog.title === "确认原型");
+    expect(confirmations.length).toBeGreaterThan(0);
+    expect(confirmations.every((dialog) => dialog.answer === PROTOTYPE_ACCEPT)).toBe(true);
+    // QA 对照原型：至少一个完成的 QA 运行用 read 读了某份已通过的原型文件
+    const approved = uiTasks.map((task) => join("prototypes", task.requirementId, basename(task.prototypes!.at(-1)!.path)));
+    const qaSessions = await Promise.all(runs.filter((run) => run.role === "one-company.qa" && run.state === "completed").map((run) => sessionText(run.id)));
+    const readsPrototype = (session: string) => session.split("\n").filter(Boolean).some((line) => {
+      const content = (JSON.parse(line) as { message?: { content?: unknown } }).message?.content;
+      return Array.isArray(content) && content.some((block: { type?: string; name?: string; arguments?: { path?: string } }) => block.type === "toolCall" && block.name === "read" && approved.some((path) => block.arguments?.path?.endsWith(path)));
+    });
+    expect(qaSessions.some(readsPrototype)).toBe(true);
     const ui = runs.filter((run) => run.agent?.name === "ui-worker");
     expect(ui.length).toBeGreaterThan(0);
     expect(ui.every((run) => run.role === "one-company.worker" && run.agent?.source === "user" && run.agent.skills.some((skill) => skill.name === "ui-basics"))).toBe(true);

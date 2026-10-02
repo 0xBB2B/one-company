@@ -90,6 +90,21 @@ export async function copyCredentials(from: string, agentDir: string): Promise<v
   }
 }
 
+/** "确认原型"窗口里表示通过的那一项。 */
+export const PROTOTYPE_ACCEPT = "通过（按这一版开始实现）";
+
+/**
+ * 面板扩展用系统的 open 命令打开原型。在 PATH 最前面放一个同名脚本，只把要打开的路径记进日志，
+ * 验收时就不会真的弹出浏览器；返回日志路径。调用方负责还原 PATH。
+ */
+export async function stubSystemOpen(root: string): Promise<string> {
+  const bin = join(root, "bin"), log = join(root, "opened.log");
+  await mkdir(bin, { recursive: true });
+  await writeFile(join(bin, "open"), `#!/bin/sh\nprintf '%s\\n' "$1" >> ${JSON.stringify(log)}\n`, { mode: 0o755 });
+  process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+  return log;
+}
+
 export interface DialogRecord { kind: "confirm" | "select" | "input"; title: string; message?: string; options?: string[]; answer: unknown; at: number }
 
 export interface InstalledHost {
@@ -108,7 +123,7 @@ export interface InstalledHost {
 }
 
 /**
- * 用真实 SDK 加载安装产物，模式为 tui：驱动方接管界面，确认框一律回答"是"并记录，
+ * 用真实 SDK 加载安装产物，模式为 tui：驱动方接管界面，确认框一律回答"是"、原型确认窗口一律选通过并记录，
  * PM 面板经 setWidget 挂载后可按用户所见渲染，按键经 onTerminalInput 送入。
  */
 export async function startInstalledHost(options: { installed: string; repo: string; agentDir: string; config: AcceptanceConfig }): Promise<InstalledHost> {
@@ -124,6 +139,21 @@ export async function startInstalledHost(options: { installed: string; repo: str
       stopReason: response.stopReason, output: response.content.map((b) => b.type === "text" ? b.text : `[${b.type}]`).join("").slice(0, 60_000), at: Date.now() });
     return response;
   }) as typeof runtime.complete;
+  // 解释器与草稿核验器开了思考后走流式入口，同样录下来
+  const streamSimple = runtime.streamSimple.bind(runtime);
+  runtime.streamSimple = ((...args: Parameters<typeof runtime.streamSimple>) => {
+    const [, context, options] = args, stream = streamSimple(...args);
+    if (options?.cacheRetention !== "none" || (context.tools?.length ?? 0) > 0) return stream;
+    const result = stream.result.bind(stream);
+    stream.result = async () => {
+      const response = await result();
+      const text = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value);
+      sideCalls.push({ systemPrompt: text(context.systemPrompt ?? "").slice(0, 200), input: context.messages.map((m) => text(m.content)).join("\n").slice(0, 20_000),
+        stopReason: response.stopReason, output: response.content.map((b) => b.type === "text" ? b.text : `[${b.type}]`).join("").slice(0, 60_000), at: Date.now() });
+      return response;
+    };
+    return stream;
+  }) as typeof runtime.streamSimple;
   const model = runtime.getModel(config.provider, config.modelId);
   if (!model) throw new Error(`模型配置里找不到 ${config.provider}/${config.modelId}`);
   /** 主代理的提问窗口一律选程序标了"推荐"的那一项，每次结果相同。 */
@@ -155,7 +185,8 @@ export async function startInstalledHost(options: { installed: string; repo: str
         dialogs.push({ kind: "select", title: window.title, message: window.text, options: window.choices, answer: decision, at: Date.now() });
         return decision;
       }
-      const confirm = window.choices.includes("确认"), decision = window.choices.includes("写入") ? "写入" : confirm;
+      const confirm = window.choices.includes("确认");
+      const decision = window.title === "确认原型" ? PROTOTYPE_ACCEPT : window.choices.includes("写入") ? "写入" : confirm;
       dialogs.push({ kind: confirm ? "confirm" : "select", title: window.title, message: window.text, options: window.choices, answer: decision, at: Date.now() });
       return decision;
     }).custom,

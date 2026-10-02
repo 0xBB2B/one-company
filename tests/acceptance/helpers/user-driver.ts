@@ -14,6 +14,8 @@ export interface UserScript {
   accept: string;
   /** 验收通过后需求仍未关闭时的原话。 */
   close: string;
+  /** 打开"待你裁决"的任务事项后的裁决原话；不给时碰到这类事项即停止。 */
+  adjudicate?: string;
 }
 
 export interface DriverLimits { userTurns: number; wallMs: number; sameMessage: number; /** 存在即按正常流程停止，便于人工中止且照常收尾。 */ stopFile?: string }
@@ -70,7 +72,7 @@ async function waitTurn(host: InstalledHost, startedCount: number, timeoutMs: nu
  */
 export async function driveUser(host: InstalledHost, script: UserScript, limits: DriverLimits, record: (event: DriverEvent) => void, options: DriveOptions = {}): Promise<DriverOutcome> {
   const since = options.since ?? host.session.messages.length;
-  const started = Date.now(), sent = new Map<string, number>(), opened = new Set<string>();
+  const started = Date.now(), sent = new Map<string, number>(), opened = new Map<string, { times: number; pmTurns: string }>();
   let userTurns = 0, lastPanel = "";
   const stop = (reason: string): DriverOutcome => { record({ type: "stop", reason, at: Date.now() }); return { status: "stopped", reason }; };
   const say = async (text: string): Promise<DriverOutcome | undefined> => {
@@ -101,8 +103,14 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
     if (itemIndex >= 0) {
       const label = lines[itemIndex]!.split("⚑ ")[1] ?? "";
       const key = `${label}@${lines.length}`;
-      if (!opened.has(key)) {
-        opened.add(key);
+      const seen = opened.get(key);
+      // PM 被要求改正后重交的接手理解，面板上还是同一行字。PM 这一轮已停下（⏸）且轮数比上次打开时多，说明它又动过，
+      // 主代理也已答完：像真人一样再打开一次。PM 还在跑时不重开，免得对同一份重复核对
+      const pmTurns = /↻(\d+)/.exec(lines.join("\n"))?.[1] ?? "";
+      const reopen = seen !== undefined && label.includes("接手") && seen.times < 6 && lines.some((line) => line.includes("⏸")) && pmTurns !== seen.pmTurns
+        && host.session.messages.at(-1)?.role === "assistant";
+      if (!seen || reopen) {
+        opened.set(key, { times: (seen?.times ?? 0) + 1, pmTurns });
         record({ type: "open-item", label, at: Date.now() });
         const before = host.session.messages.length;
         // 面板光标会保留上次位置：先回到第一行，再按可选行（PM 行与事项行）数到目标
@@ -115,7 +123,9 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
         host.press(ESCAPE);
         await waitTurn(host, before, 30_000);
         if (label.includes("待你验收")) { result = await say(script.accept); if (result) return result; }
-        else if (!label.includes("接手")) return stop(`出现台词未覆盖的事项：${label}`);
+        else if (label.includes("待你裁决") && script.adjudicate) { result = await say(script.adjudicate); if (result) return result; }
+        // 原型事项由宿主在确认窗口里直接选通过，用户不用说话
+        else if (!label.includes("接手") && !label.includes("待你确认原型")) return stop(`出现台词未覆盖的事项：${label}`);
         continue;
       }
       // 待验收事项仍在、主代理已答完等用户（例如登记失败请用户再说一次），像真人一样再回一次验收
@@ -126,6 +136,8 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
       await sleep(5_000);
       continue;
     }
+    // 事项处理完从面板上消失后，同样文字的事项再出现就是新的一次，要重新打开
+    opened.clear();
     if (lines.length > 0) {
       if (options.approveWhileRunning && !state.approved && host.session.messages.at(-1)?.role === "assistant") {
         result = await say(script.approve); if (result) return result; continue;
