@@ -29,7 +29,7 @@
 
 ## 当前阻塞
 
-无。M9 已恢复，AC12、AC13 在 2026-10-03 的基线上重跑通过；其余 AC 按状态表继续。AC2 第⑤题的预期是主窗口可以列出进行中需求的内容（M8D 去掉了窗口绑定）。
+无。M9 已恢复，AC12、AC13 在 2026-10-03 的基线上重跑通过；其余 AC 按状态表继续。最终基线上 typecheck 通过，单元 2454 条里 2452 通过（没过的 2 条是 SQLite 等锁计时，本机睡 10 毫秒 20 次实测 738 到 1195 毫秒），集成 56 条全过，安装 11 条通过（1 条需 Docker 跳过）。AC2 第⑤题的预期是主窗口可以列出进行中需求的内容（M8D 去掉了窗口绑定）。
 
 2026-10-02 至 03 为跑通 AC13 共跑 14 轮，途中的改动（设计改动均经用户决定）：
 - 设计改动：M8F 包内定义写明模型（解释器与草稿核验器 gpt-6-luna 加 medium，其余 gpt-6.1-sol）；M8G 修改草稿时核验器对照上一版；M8H PM 做计划前先查角色目录；M8I 没有浏览器时界面任务按输出与原型文件对照、没用掉的再给一次机会随任务修改保留；M8J 解释器时限 120 秒。
@@ -47,9 +47,9 @@
 用户已定的 M9 前提：
 - 真实模型验收的主会话用 5x / gpt-6.1-sol（2026-09-29 由 luna 改为 gpt-6-sol，2026-10-02 用户改为 gpt-6.1-sol），thinking high；子代理与内部调用的模型由包内定义写明（M8F）；隔离 agent 目录临时复制 models.json 与 auth.json（0600），每轮结束即删，不动 ~/.pi/agent。
 - 真实模型与联网验收走 pnpm run test:acceptance（pnpm test 默认不跑）；pi 开发依赖为 0.87.1。
-- 验证分工：AC2、3、10、11、12、13、17、18 用真实模型；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
+- 验证分工：AC2、3、10、11、17、18 用真实模型（AC12、13 已通过）；AC9、14、15、16 在安装产物中用受控模型验程序门槛。
 - AC2 问题集 11 题（快跑跑到关闭并归档、跳跃动画进行中之后提问：①水平速度怎么算在哪；②Go 的 Greet 做什么谁调用；③空中能否再跳依据哪段代码与测试；④进行中的跳跃动画要求哪些姿态；⑤不指定需求列出所有进行中需求内容；⑥最新批准版比上一版改了什么；⑦已完成快跑当时的验收标准；⑧快跑与跳跃的实现有没有相互影响（依据代码与测试）；⑨快跑测试正式通过了吗；⑩这次改动让移动计算快了多少；⑪参考 docs/prod 旧需求写新需求）。⑤M8D 后主窗口可以列出进行中需求内容，但仍不得绕开需求工具直接读本机需求存储；⑦⑪主代理可直接读 docs/prod 归档（2026-09-30 用户决定）；⑨⑩无记录须答"未知"。
 - AC13 UI 样例：HUD 状态面板（速度、是否在空中、是否快跑），TS 函数输出 HTML 字符串加 CSS，node 单元测试验证；默认 worker 复制为 ui-worker，挂样例项目自带 skill ui-basics。
-当前：M8A 到 M8J 已收口，M9 恢复，AC12、AC13 已在 2026-10-03 重跑通过；M8C 起需求文档规范由 requirement-doc skill 定义（包内默认五大板块），运行记录 stopCause 写明停止原因，卡点可从 report.json 的 runs[].stopCause 查。接下来按状态表推进其余 AC（建议先 AC2 问题集，它依赖快跑已关闭并归档的状态）。真实模型运行命令：ONE_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6.1-sol ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
+当前：M8A 到 M8J 已收口，M9 恢复，AC12、AC13 已在 2026-10-03 重跑通过；M8C 起需求文档规范由 requirement-doc skill 定义（包内默认五大板块），运行记录 stopCause 写明停止原因，卡点可从 report.json 的 runs[].stopCause 查。M8I 有一处口径待用户答复：PM 修改任务的可写目录后仍能用掉用户给的那次机会，是否收紧成只允许改说明文字。接下来按状态表推进其余 AC（建议先 AC2 问题集，它依赖快跑已关闭并归档的状态）。真实模型运行命令：ONE_COMPANY_ACCEPTANCE_MODEL=5x/gpt-6.1-sol ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance，用后台运行加看门狗：证据目录 events.jsonl 10 分钟无更新就在该目录放 STOP 文件。每轮卡点从证据目录的 main-session.json、side-calls.json、runs/*.jsonl 查。
 验证入口：pnpm run typecheck；pnpm test；pnpm run test:integration；pnpm run test:installation。
 ```
