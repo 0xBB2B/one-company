@@ -2,6 +2,9 @@ import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTo
 import type { Api, AssistantMessage, Context, Model, TranscriptContext, Usage } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+/** 包内角色定义写明的模型名。 */
+export const PACKAGED_MODEL_IDS = ["gpt-6.1-sol", "gpt-6-luna"];
+
 export interface RegisterControlledProviderOptions {
   providerId: string;
   modelId: string;
@@ -52,17 +55,16 @@ export function registerControlledProvider(
     apiKey: "controlled-key",
     baseUrl: baseUrl ?? "http://127.0.0.1:1",
     api: "anthropic-messages" as Api,
-    models: [
-      {
-        id: modelId,
-        name: modelId,
-        reasoning: false,
-        input: ["text"],
-        contextWindow: 100000,
-        maxTokens: 4096,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      },
-    ],
+    // 包内定义写明的两个默认模型也挂在这个提供方下，零自定义的派工与内部调用才能落到脚本化回复上
+    models: [modelId, ...PACKAGED_MODEL_IDS.filter((id) => id !== modelId)].map((id) => ({
+      id,
+      name: id,
+      reasoning: id === "gpt-6-luna",
+      input: ["text" as const],
+      contextWindow: 100000,
+      maxTokens: 4096,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    })),
     streamSimple(model: Model<Api>, context: TranscriptContext, options) {
       // 提供方收到的是系统消息内嵌的规范化请求；还原成断言所用的提示词、工具与对话三部分
       handle.reasoning.push(options?.reasoning);

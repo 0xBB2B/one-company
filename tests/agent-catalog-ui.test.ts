@@ -51,7 +51,7 @@ test("M8D-AC8：打开时停在 pm，标题写各层数量，分类标签带数�
   expect(p.lines()[1]).toContain("<error> 问题 1 </>");
   expect(lines[1]).toHaveLength(80 - 4);
   expect(lines[3]).toMatch(/^ {3}名称 +来源 +模型 +思考/u);
-  expect(lines[4]).toMatch(/^ › pm +内置 +继承主会话 +继承 *$/u);
+  expect(lines[4]).toMatch(/^ › pm +内置 +gpt-6\.1-sol +继承 *$/u);
   expect(p.lines()[4].startsWith("[selectedBg]")).toBe(true);
   expect(p.text()).toContain("C 复制（只能同名）");
 });
@@ -59,7 +59,7 @@ test("M8D-AC8：打开时停在 pm，标题写各层数量，分类标签带数�
 test("M8D-AC8：同一职责下用户层与项目层排在内置前面，底部说明随选中行变化，被盖住的下层不再列出", async () => {
   const p = await page();
   p.press(RIGHT);
-  expect(p.text()).toMatch(/› ui-worker +用户 +5x\/gpt-6-luna +medium *\n +worker +内置 +继承主会话 +继承/u);
+  expect(p.text()).toMatch(/› ui-worker +用户 +5x\/gpt-6-luna +medium *\n +worker +内置 +gpt-6\.1-sol +继承/u);
   expect(p.lines().join("\n")).toContain("!<accent> 用户 </>!");
   expect(p.lines().join("\n")).toContain("<accent>5x/gpt-6-luna</>");
   expect(p.text()).toContain("界面设计与实现，产出 HTML 预览 · skills ui-basics");
@@ -73,7 +73,7 @@ test("M8D-AC8：同一职责下用户层与项目层排在内置前面，底部�
 test("M8D-AC8：内部分类用中文名，没设思考显示不思考；回车就地展开详情，再按回车或 Esc 收起，列表里 Esc 退出", async () => {
   const p = await page();
   for (let i = 0; i < 5; i++) p.press(RIGHT);
-  expect(p.text()).toMatch(/› 解释器 +用户 +5x\/gpt-6-luna +不思考 *\n +草稿核验器 +内置 +继承主会话 +不思考/u);
+  expect(p.text()).toMatch(/› 解释器 +用户 +5x\/gpt-6-luna +不思考 *\n +草稿核验器 +内置 +gpt-6-luna +medium/u);
   expect(p.text()).toContain("只有模型和思考生效");
   p.press(ENTER);
   const detail = p.text(200);

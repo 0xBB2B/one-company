@@ -102,6 +102,12 @@ function wholeReview(c: Pick<ConfirmationContext, "candidate" | "partition">, ta
     entries: [base("constraint", "需求身份、标题与格式板块", others), base("target", "增加手机号登录", [targetId]), base("action", "本轮授权动作", [targetId])] };
 }
 
+/** 用户层把两个内部调用设成跟主会话模型、不思考，供拦截 complete 调用的用例使用。 */
+async function plainInternalModels(root: string) {
+  await mkdir(join(root, "agents"), { recursive: true });
+  for (const role of ["interpreter", "draft-verifier"]) await writeFile(join(root, "agents", `${role}.md`), `---\nname: ${role}\ndescription: d\nrole: ${role}\nthinking: off\n---\n`);
+}
+
 describe("主窗口共享控制器的真实服务路径", () => {
   test("M8D-AC3：这句话 @ 到的需求直接按原话登记，不弹窗；没 @ 到时弹出批准窗口，显示需求名、版本与简介，取消即不登记不生效", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
@@ -131,7 +137,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await writeFile(join(agents, "draft-verifier.md"), "---\nname: draft-verifier\ndescription: d\nrole: draft-verifier\nmodel: nowhere/missing\n---\n");
     w.capture("再建一个需求"); const calls = w.provider.requests.length;
     await expect(w.call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "简介", title: "另一个", body: BODY }))
-      .rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("草稿核验器配置的模型 nowhere/missing 在本机的模型配置里找不到") });
+      .rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("草稿核验器配置的模型 nowhere/missing 不可用：本机的模型配置里找不到模型 nowhere/missing") });
     expect(w.provider.requests.length).toBe(calls);
   });
 
@@ -189,7 +195,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
       await expect(w.call(input)).rejects.toMatchObject({ code: "draft_interpretation_denied" });
     }
     w.capture(); const selected = w.ctx.model; Object.defineProperty(w.ctx, "model", { value: undefined, configurable: true });
-    await expect(w.call(input)).rejects.toMatchObject({ code: "model_unavailable" }); Object.defineProperty(w.ctx, "model", { value: selected });
+    await expect(w.call(input)).rejects.toMatchObject({ code: "internal_model_unavailable" }); Object.defineProperty(w.ctx, "model", { value: selected });
     await expect(w.call({ action: "metadata", requirementId: uuidv7() })).rejects.toMatchObject({ code: "database_missing" });
     await expect(stat(repositoryDatabase(w.dataRoot, w.repoId))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -303,6 +309,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
   test("手机号原句仅分析：未建工作区也激活并记短决定与完整scope，不弹审批；清会话不生成原话表/文件", async () => {
     const w = await world(), sent: Array<{ messages: unknown[] }> = [];
+    await plainInternalModels(w.root);
     const original = w.ctx.modelRegistry.complete.bind(w.ctx.modelRegistry);
     vi.spyOn(w.ctx.modelRegistry, "complete").mockImplementation((model, context, options) => { sent.push(context); return original(model, context, options); });
     const created = await w.create(), { input, loaded } = await w.request(created);
@@ -389,8 +396,9 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
   test("一次真实输入完成modify-resave-reinterpret；旧capability立即失效，三次上限和原TTL均保留", async () => {
     let now = 1000;
-    const w = await world({ now: () => now, inputTtlMs: 100_000 }), created = await w.create();
-    const captured: unknown[] = [], texts: string[] = [];
+    const w = await world({ now: () => now, inputTtlMs: 100_000 });
+    await plainInternalModels(w.root);
+    const created = await w.create(), captured: unknown[] = [], texts: string[] = [];
     const capture = vi.spyOn(UserInteractionCore.prototype, "captureInput");
     const original = w.ctx.modelRegistry.complete.bind(w.ctx.modelRegistry);
     let expectedInput: { requirementId: string; savedOperationId: string; operationId: string; version: number };

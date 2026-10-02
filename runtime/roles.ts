@@ -122,8 +122,8 @@ export async function readRoleDefinition(path: string, parseFrontmatter: Frontma
     if (name !== role) throw new RoleDefinitionError(`内部定义 ${role} 只能由名为 ${role} 的定义承担: ${path}`, { field: "name", value: name, display: `内部定义 ${role} 只能由名为 ${role} 的定义承担` });
     if (mcp !== undefined || skills !== undefined) throw new RoleDefinitionError(`内部定义 ${role} 不接受 mcp 与 skills: ${path}`, { field: mcp !== undefined ? "mcp" : "skills", display: `内部定义 ${role} 不接受 mcp 与 skills` });
   }
-  if (model !== undefined && (typeof model !== "string" || !/^[^/\s]+\/\S+$/.test(model))) {
-    throw new RoleDefinitionError(`角色定义 model 须为 provider/id: ${path}`, { field: "model", value: model, display: "model 要写成 provider/id，例如 5x/gpt-6-luna" });
+  if (model !== undefined && (typeof model !== "string" || !/^[^/\s]+(\/\S+)?$/.test(model))) {
+    throw new RoleDefinitionError(`角色定义 model 须为模型名或 provider/id: ${path}`, { field: "model", value: model, display: "model 要写成模型名或 provider/id，例如 gpt-6-luna 或 5x/gpt-6-luna" });
   }
   if (thinking !== undefined && (typeof thinking !== "string" || !(THINKING_LEVELS as readonly string[]).includes(thinking))) {
     throw new RoleDefinitionError(`角色定义 thinking 须为 ${THINKING_LEVELS.join("/")}: ${path}`, { field: "thinking", value: thinking, display: `thinking 只能是 ${THINKING_LEVELS.join("、")}` });

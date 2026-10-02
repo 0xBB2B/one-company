@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { findDefinedModel } from "./model-ref.ts";
 import type { AgentRole, RoleCatalogEntry, RoleDefinition, RoleSource } from "./roles.ts";
 
 export interface AgentFingerprint {
@@ -39,7 +40,8 @@ export async function definitionHash(path: string): Promise<string> {
  */
 export async function resolveAgent(input: {
   catalog: readonly RoleCatalogEntry[]; name: string; role: AgentRole;
-  models(provider: string): readonly ModelLike[];
+  /** 不给 provider 时返回本机全部模型。 */
+  models(provider?: string): readonly ModelLike[];
   fallback: { model: { provider: string; id: string }; thinking: string };
   skillDirs: readonly string[];
 }): Promise<ResolvedAgent> {
@@ -48,11 +50,16 @@ export async function resolveAgent(input: {
   if (!entry.available || !entry.definition) throw new AgentResolveError("agent_unavailable", `${input.name} 定义不可用：${entry.reason ?? "未知原因"}`);
   const definition = entry.definition;
   if (definition.role !== input.role) throw new AgentResolveError("agent_unavailable", `${input.name} 的职责是 ${definition.role}，不能承担 ${input.role} 任务`);
-  const model = definition.model
-    ? { provider: definition.model.slice(0, definition.model.indexOf("/")), id: definition.model.slice(definition.model.indexOf("/") + 1) }
-    : input.fallback.model;
-  const found = input.models(model.provider).find((candidate) => candidate.id === model.id);
-  if (!found) throw new AgentResolveError("model_unavailable", `模型不可用：${model.provider}/${model.id}`);
+  let found: ModelLike | undefined;
+  if (definition.model) {
+    const defined = findDefinedModel(definition.model, input.models(), input.fallback.model.provider);
+    if (!defined.ok) throw new AgentResolveError("model_unavailable", `模型不可用：${defined.reason}`);
+    found = defined.model;
+  } else {
+    found = input.models(input.fallback.model.provider).find((candidate) => candidate.id === input.fallback.model.id);
+    if (!found) throw new AgentResolveError("model_unavailable", `模型不可用：${input.fallback.model.provider}/${input.fallback.model.id}`);
+  }
+  const model = { provider: found.provider, id: found.id };
   const thinking = definition.thinking ?? input.fallback.thinking;
   if (thinking !== "off" && (!found.reasoning || found.thinkingLevelMap?.[thinking] === null)) {
     throw new AgentResolveError("thinking_unsupported", `模型 ${model.provider}/${model.id} 不支持思考等级 ${thinking}`);

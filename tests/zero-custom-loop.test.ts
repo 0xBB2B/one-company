@@ -182,6 +182,8 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   const runs = (await w.runStore.list({ requirement: requirementId, limit: 100 })).items;
   const all = await Promise.all(runs.map(async (run) => { const got = await w.runStore.get(run.id); if (!got.ok) throw new Error(got.reason); return got.run; }));
   expect(all.every((run) => run.agent?.source === "default")).toBe(true);
+  // M8F-AC2：包内定义写明的模型落到运行记录上，不跟派出方的模型
+  expect(all.map((run) => run.model.id)).toEqual(all.map(() => "gpt-6.1-sol"));
   expect(all.filter((run) => run.state === "failed")).toEqual([]);
   expect(all.every((run) => run.state === "completed" || run.state === "stopped")).toBe(true);
   expect(all.find((run) => run.kind === "requirement")?.state).toBe("stopped");

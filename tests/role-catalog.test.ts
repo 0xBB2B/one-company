@@ -25,7 +25,7 @@ async function writeRole(dir: string, name: string, frontmatter: string, body = 
 }
 
 describe("内置默认团队", () => {
-  test("安装资源恰好提供 pm、explore、worker、reviewer、qa 五个职责定义与解释器、草稿核验器两个内部定义，不含 planner", async () => {
+  test("M8F-AC2：安装资源恰好提供 pm、explore、worker、reviewer、qa 五个职责定义与解释器、草稿核验器两个内部定义，不含 planner；五个职责定义写明 gpt-6.1-sol、不写思考等级", async () => {
     const files = (await readdir(defaultRoleDir())).filter((name) => name.endsWith(".md")).sort();
     expect(files).toEqual(["draft-verifier.md", "explore.md", "interpreter.md", "pm.md", "qa.md", "reviewer.md", "worker.md"]);
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
@@ -33,20 +33,18 @@ describe("内置默认团队", () => {
       const entry = roles.find((candidate) => candidate.name === role);
       expect(entry?.available, entry?.reason).toBe(true);
       expect(entry?.definition?.role).toBe(role);
-      expect(entry?.definition?.model).toBeUndefined();
+      expect(entry?.definition?.model).toBe("gpt-6.1-sol");
       expect(entry?.definition?.thinking).toBeUndefined();
       expect(entry?.definition?.body.trim().length).toBeGreaterThan(0);
     }
   });
 
-  test("M8D-AC8：内置的两个内部定义默认沿用主会话模型、不设思考等级", async () => {
+  test("M8F-AC2：内置的两个内部定义写明 gpt-6-luna 与 medium 思考", async () => {
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
     for (const role of INTERNAL_ROLES) {
       const entry = roles.find((candidate) => candidate.name === role);
       expect(entry?.available, entry?.reason).toBe(true);
-      expect(entry?.definition).toMatchObject({ role });
-      expect(entry?.definition?.model).toBeUndefined();
-      expect(entry?.definition?.thinking).toBeUndefined();
+      expect(entry?.definition).toMatchObject({ role, model: "gpt-6-luna", thinking: "medium" });
     }
   });
 
@@ -116,7 +114,7 @@ describe("定义格式", () => {
     ["缺少 role", "name: w\ndescription: d"],
     ["缺少 description", "name: w\nrole: worker"],
     ["name 含大写", "name: W\ndescription: d\nrole: worker"],
-    ["model 不是 provider/id", "name: w\ndescription: d\nrole: worker\nmodel: gpt"],
+    ["model 以斜杠结尾", "name: w\ndescription: d\nrole: worker\nmodel: gpt/"],
     ["thinking 非法", "name: w\ndescription: d\nrole: worker\nthinking: extreme"],
     ["mcp 不是数组", "name: w\ndescription: d\nrole: worker\nmcp: figma"],
     ["skills 重复", "name: w\ndescription: d\nrole: worker\nskills: [a, a]"],
@@ -222,8 +220,8 @@ describe("覆盖与导入规则", () => {
 test("M8D-AC8：写错的定义带出错字段、文件里的写法和给人看的原因", async () => {
   const dir = await tempDir();
   await writeRole(dir, "broken", "name: broken\ndescription: d\nrole: worker\nthinking: extreme");
-  await writeRole(dir, "badmodel", "name: badmodel\ndescription: d\nrole: worker\nmodel: gpt");
+  await writeRole(dir, "badmodel", "name: badmodel\ndescription: d\nrole: worker\nmodel: gpt/");
   const { roles } = await loadRoleCatalog({ defaultDir: "/nonexistent/d", userDir: dir, projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
   expect(roles.find((entry) => entry.name === "broken")!.problem).toEqual({ field: "thinking", value: "extreme", display: "thinking 只能是 off、minimal、low、medium、high、xhigh、max" });
-  expect(roles.find((entry) => entry.name === "badmodel")!.problem).toEqual({ field: "model", value: "gpt", display: "model 要写成 provider/id，例如 5x/gpt-6-luna" });
+  expect(roles.find((entry) => entry.name === "badmodel")!.problem).toEqual({ field: "model", value: "gpt/", display: "model 要写成模型名或 provider/id，例如 gpt-6-luna 或 5x/gpt-6-luna" });
 });

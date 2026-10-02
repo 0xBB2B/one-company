@@ -139,7 +139,7 @@ test("M9-AC15/AC16：零匹配走默认 worker、指定专业定义按定义派�
   await w.reply("gate-model", dispatch("a"), dispatch("b"), dispatch("c"), dispatch("d"), dispatch("e"), dispatch("ui"), dispatch("plain"), { type: "text", text: "完成" }, { type: "text", text: "开工" });
   expect(await w.toolResult(4)).toContain("未找到角色定义 nobody");
   expect(await w.toolResult(5)).toContain("找不到 skill missing（ghost-skill 声明）");
-  expect(await w.toolResult(6)).toContain("模型不可用：nowhere/none");
+  expect(await w.toolResult(6)).toContain("模型不可用：本机的模型配置里找不到模型 nowhere/none");
   expect(await w.toolResult(7)).toContain("不支持思考等级 xhigh");
   expect(await w.toolResult(8)).toContain("tool-grab 定义不可用");
   await w.toolResult(10);
