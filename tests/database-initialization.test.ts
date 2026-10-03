@@ -63,7 +63,8 @@ catch (error) { console.log(JSON.stringify({ ok: false, code: error.errcode, ela
       if (!release) {
         expect(result.code & 0xff).toBe(5);
         expect(result.elapsed).toBeGreaterThanOrEqual(4500);
-        expect(result.elapsed).toBeLessThan(7500);
+        // SQLite 按计划睡眠时长累计 5 秒，系统睡眠偏慢时实际用时会超出，上限只防一直卡住
+        expect(result.elapsed).toBeLessThan(15_000);
         holder.proc.stdin.write("release\n");
         await holder.closed;
       }
@@ -80,7 +81,7 @@ catch (error) { console.log(JSON.stringify({ ok: false, code: error.errcode, ela
       await Promise.allSettled([holder.closed, ...(opener ? [opener.closed] : [])]);
       await rm(root, { recursive: true, force: true });
     }
-  }, 12_000);
+  }, 40_000);
 }
 
 test("多进程同时首次开库：每轮四个进程全部完成，不重复或漏掉写入", async () => {

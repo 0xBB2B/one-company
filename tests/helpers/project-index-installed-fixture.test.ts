@@ -11,7 +11,7 @@ const writerSource = `
   const db = new DatabaseSync(process.argv[1]);
   db.exec('BEGIN EXCLUSIVE');
   db.prepare('UPDATE records SET data = ?').run(JSON.stringify({ sequence: 2 }));
-  const watchdog = setTimeout(() => { db.exec('ROLLBACK'); db.close(); process.exit(1); }, 10000);
+  const watchdog = setTimeout(() => { db.exec('ROLLBACK'); db.close(); process.exit(1); }, 30000);
   const finish = (commit) => {
     clearTimeout(watchdog);
     db.exec(commit ? 'COMMIT' : 'ROLLBACK'); db.close(); process.disconnect();
@@ -94,10 +94,11 @@ test('databaseRows：真实SQLite锁超过5000ms明确抛SQLITE_BUSY，不用空
       result = { elapsedMs, code: (error as SqliteError | undefined)?.code, errcode: (error as SqliteError | undefined)?.errcode };
       expect(error).toMatchObject({ code: 'ERR_SQLITE_ERROR', errcode: 5 });
       expect(elapsedMs).toBeGreaterThanOrEqual(4_900);
-      expect(elapsedMs).toBeLessThan(7_000);
+      // SQLite 按计划睡眠时长累计 5 秒，系统睡眠偏慢时实际用时会超出，上限只防一直卡住
+      expect(elapsedMs).toBeLessThan(15_000);
     });
   } finally { await evidence('busy-expired', result); }
-}, 15_000);
+}, 40_000);
 
 test('databaseRows：WAL普通写事务不阻塞只读观察，提交前读旧值、提交后读实际新值', async () => {
   await competition((path, commitSoon) => {
