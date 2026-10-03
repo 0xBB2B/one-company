@@ -25,7 +25,7 @@ const manifestProd = object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[
 export const ApprovalManifestReferenceSchema = object({ requirementId: manifestId, manifestHash,
   candidate: object({ candidateId: manifestId, operationId: manifestId, intentHash: manifestHash,
     from: nullable(manifestProd), to: manifestProd }) });
-const summaryIds = Type.Array(Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}(?![\\s\\S])", maxLength: 96 }), { maxItems: 20, uniqueItems: true });
+const summaryIds = Type.Array(Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}(?![\\s\\S])", maxLength: 96 }), { uniqueItems: true });
 export const ApprovalSummary = object({ reference: ApprovalManifestReferenceSchema,
   confirmed: summaryIds, pending: summaryIds, excluded: summaryIds, blocked: summaryIds });
 export type ApprovalSummary = Static<typeof ApprovalSummary>;

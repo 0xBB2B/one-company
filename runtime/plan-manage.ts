@@ -26,7 +26,7 @@ export const TASKS = "tasks";
 const text = Type.String({ minLength: 1, maxLength: 1024 });
 const texts = (min: number) => Type.Array(text, { minItems: min, maxItems: 16 });
 const unitId = Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}$" });
-const unitIds = (min: number) => Type.Array(unitId, { minItems: min, maxItems: 20, uniqueItems: true });
+const unitIds = (min: number) => Type.Array(unitId, { minItems: min, uniqueItems: true });
 const key = Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9._-]+$" });
 /** 执行该任务的角色定义名称；缺省用与职责同名的默认定义。 */
 const agentName = Type.String({ pattern: "^[a-z0-9][a-z0-9-]{0,63}$" });
@@ -127,7 +127,7 @@ const PrototypeRun = object({ runId: id, maxTurns: positive, turnsUsed: Type.Int
 export type PrototypeRun = Static<typeof PrototypeRun>;
 const TaskRecord = object({
   format: Type.Literal("plan-task/v1"), taskId: id, requirementId: id, version: positive, key, role: DelegatedRole,
-  goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0), closure: Type.Array(UnitRef, { maxItems: 20 }),
+  goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0), closure: Type.Array(UnitRef),
   dependsOn: Type.Array(id, { maxItems: 32 }), writePaths: Type.Array(Type.String(), { maxItems: 64 }),
   blockedByQuestionIds: Type.Array(id, { maxItems: 16 }), maxTurns: positive,
   agent: Type.Optional(agentName), agentReason: Type.Optional(text), reviewAgent: Type.Optional(agentName),
@@ -159,7 +159,7 @@ function carriedDecision(decision: UserDecision, version: number): UserDecision 
 const PlanRecord = object({
   format: Type.Literal("plan/v1"), requirementId: id, planVersion: positive, confirmedVersion: Type.Union([positive, Type.Null()]),
   confirmedTasks: Type.Array(object({ taskId: id, version: positive }), { maxItems: 256 }),
-  taskIds: Type.Array(id, { maxItems: 256 }), knownUnits: Type.Array(UnitRef, { maxItems: 20 }), prodRevision: positive, confirmedRevision: Type.Optional(positive), updatedAt: positive,
+  taskIds: Type.Array(id, { maxItems: 256 }), knownUnits: Type.Array(UnitRef), prodRevision: positive, confirmedRevision: Type.Optional(positive), updatedAt: positive,
 });
 export type PlanRecord = Static<typeof PlanRecord>;
 

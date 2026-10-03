@@ -17,8 +17,8 @@ function spec(key: string, patch: Partial<TaskSpec> = {}): TaskSpec {
     maxTurns: 30, objective: `TASK-DETAIL-SENTINEL ${key}`, passCriteria: ["正确验证码可登录"], scope: { in: ["登录接口"], out: ["微信登录"] }, performance: NA, ...patch };
 }
 
-async function world(options: { review?: boolean } = {}) {
-  const fixture: PmIntakeFixture = await createPmIntakeFixture();
+async function world(options: { review?: boolean; body?: string } = {}) {
+  const fixture: PmIntakeFixture = await createPmIntakeFixture(options.body ? { body: options.body } : {});
   clean.push(() => fixture.cleanup());
   const kit = await pmIntakeReviewKit(fixture);
   if (options.review !== false) await kit.pass();
@@ -43,6 +43,15 @@ test("M7-AC13：接手核对通过前正式提出计划被拒，通过后可以�
   await w.kit.pass();
   const view = await pm.execute({ action: "propose", tasks: [spec("login")] }) as PlanView;
   expect(view.plan).toMatchObject({ planVersion: 1, confirmedVersion: null });
+}, 30000);
+
+test("需求有 25 段时，从保存、批准到 PM 提出覆盖全部目标的计划都不被段数卡住", async () => {
+  const extra = Array.from({ length: 23 }, (_, i) => `# 附加约束 ${i} {#extra.c${i}}\n约束 ${i}。\n`).join("");
+  const w = await world({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" + extra });
+  const pm = await w.tool();
+  const view = await pm.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"] })] }) as PlanView;
+  expect(view.plan).toMatchObject({ planVersion: 1 });
+  expect(w.db((db) => db.read<{ knownUnits: unknown[] }>(PLANS, w.fixture.requirementId)!.data.knownUnits)).toHaveLength(26);
 }, 30000);
 
 test("M7-AC31：任务缺目标、通过条件、范围、性能条件或有效轮次上限时拒绝登记", async () => {

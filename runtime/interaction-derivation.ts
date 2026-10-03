@@ -12,7 +12,7 @@ export const ModelInterpretation = object({
   entries: Type.Array(object({ ...InteractionEntry.properties, unitIds: Type.Optional(ApprovalUnitIds) }), { minItems: 1, maxItems: 20 }),
   faithful: Type.Optional(Type.Boolean()),
   unitHints: Type.Optional(Type.Array(object({ id: ApprovalUnitId, globalConstraint: Type.Boolean(), appliesTo: ApprovalUnitIds, dependsOn: ApprovalUnitIds,
-    retainedFactIds: UnitReview.properties.retainedFactIds }), { maxItems: 20 })),
+    retainedFactIds: UnitReview.properties.retainedFactIds }))),
 });
 type ModelEntry = Static<typeof ModelInterpretation>["entries"][number];
 type Entry = Static<typeof InteractionEntry>;

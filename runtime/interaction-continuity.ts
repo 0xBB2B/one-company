@@ -18,14 +18,14 @@ const Fact = object({ format: Type.Literal("interaction-resolution-fact/v1"), re
   savedOperation: ContinuityRecordRef,
   byteReview: Type.Optional(object({ accepted: Type.Boolean(), units: Type.Array(object({ ...Unit.properties,
     disposition: Type.Union([Type.Literal("confirmed"), Type.Literal("pending-description"), Type.Literal("excluded")]),
-    globalConstraint: Type.Boolean(), appliesTo: Type.Array(Unit.properties.id, { maxItems: 16 }),
-    dependsOn: Type.Array(Unit.properties.id, { maxItems: 16 }) }), { minItems: 1, maxItems: 20 }) })),
+    globalConstraint: Type.Boolean(), appliesTo: Type.Array(Unit.properties.id),
+    dependsOn: Type.Array(Unit.properties.id) }), { minItems: 1 }) })),
   decisions: Type.Array(object({ record: ContinuityRecordRef, kind: InteractionEntry.properties.kind,
     basis: InteractionEntry.properties.basis, resolution: InteractionEntry.properties.resolution,
-    unitIds: Type.Array(Unit, { maxItems: 20 }), requestId: InteractionEntry.properties.requestId }), { minItems: 1, maxItems: 20 }),
-  resolvedIssues: Type.Optional(Type.Array(object({ fact: ContinuityRecordRef, originDecision: ContinuityRecordRef, unit: Unit }), { maxItems: 40 })),
+    unitIds: Type.Array(Unit), requestId: InteractionEntry.properties.requestId }), { minItems: 1, maxItems: 20 }),
+  resolvedIssues: Type.Optional(Type.Array(object({ fact: ContinuityRecordRef, originDecision: ContinuityRecordRef, unit: Unit }))),
   questions: Type.Array(object({ requestId: id, originalHash: CandidateBinding.properties.intentHash,
-    accepted: Type.Array(Unit, { maxItems: 16 }), modified: Type.Array(Unit, { maxItems: 16 }), pending: Type.Optional(Type.Array(Unit, { maxItems: 16 })) }), { maxItems: 20 }) });
+    accepted: Type.Array(Unit), modified: Type.Array(Unit), pending: Type.Optional(Type.Array(Unit)) }), { maxItems: 20 }) });
 type FactData = import("typebox").Static<typeof Fact>;
 const same = (a: unknown, b: unknown) => decisionDigest(a) === decisionDigest(b);
 function deny(code: string): never { throw new UserInteractionError(code); }
@@ -269,7 +269,7 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
     for (const [id, decision] of priors) if (decision.status === "pending" && !continuityIssues.some((issue) => issue.decision.id === id || issue.originDecision.id === id)) {
       priors.delete(id); revisionSources.delete(id);
     }
-    if (questions.length > 20 || retainedEvidence.length > 40 || priors.size > 20 || continuityIssues.length > 40) deny("interaction_context_limit");
+    if (questions.length > 20 || priors.size > 20) deny("interaction_context_limit");
     const result = { questions, effectiveQuestions, retainedEvidence, continuityIssues, priorDecisions: [...priors.values()], revisionSources: [...revisionSources.values()],
       inputProof: collectionProof(facts.map((item) => item.row), questionRows, read) };
     if (Buffer.byteLength(JSON.stringify(result)) > 49_152) deny("interaction_context_limit");
