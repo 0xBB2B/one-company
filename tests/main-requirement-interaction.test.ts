@@ -171,12 +171,13 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect((await w.interaction.mentionCandidates(w.ctx)).map((item) => item.title)).toEqual(["手机号登录"]);
   });
 
-  test("M8K-AC1：list 列出本窗口草稿与进行中需求的编号、标题、状态与仓库，不含正文，不需要当前用户输入；指定仓库时只列该仓库", async () => {
+  test("M8K-AC3：list 列出本窗口草稿与进行中需求的编号、标题、状态与仓库，不含正文，不需要当前用户输入；指定仓库时只列该仓库，结果照常通过送达核对", async () => {
     const w = await world(), created = await w.create();
     const list = async (request: Record<string, unknown>) => (await w.manage.execute(uuidv7(), { request } as never, undefined, undefined, w.ctx)).details!;
     const expected = { requirements: [{ repoId: w.repoId, requirementId: created.requirementId, title: "登录", lifecycle: "draft" }] };
     expect(await list({ action: "list" })).toEqual(expected);
     expect(await list({ action: "list", repoId: w.repoId })).toEqual(expected);
+    expect(await w.call({ action: "list" })).toEqual(expected);
     expect(await list({ action: "list", repoId: "f".repeat(64) })).toEqual({ requirements: [] });
     expect(JSON.stringify(await list({ action: "list" }))).not.toContain("手机号");
   });

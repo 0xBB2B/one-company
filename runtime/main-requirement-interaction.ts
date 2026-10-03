@@ -63,7 +63,7 @@ interface PendingResave { permit: CandidateResavePermit; origin: object; operati
 interface ConfirmationRequest extends LoadConfirmationInput { repoId: string; version: number }
 interface ReadRequest { repoId: string; requirementId: string; action: "read" | "diff"; source?: "saved" | "approved";
   sectionId?: string; cursor?: string; maxBytes?: number; fromRevision?: number; toRevision?: number }
-interface Delivery { sessionId: string; windowId: string; generation: number; repoId: string; requirementId: string; result: object; expiresAt: number }
+interface Delivery { sessionId: string; windowId: string; generation: number; repoId?: string; requirementId?: string; result: object; expiresAt: number; listing?: true }
 interface RecordProof { namespace: string; key: string; id: string; version: number; hash: string }
 type ResultScope = { kind: "registered"; proof: RegisteredScopeReturnProof } | { kind: "approved"; scope: RequirementApprovalScope } | { kind: "none" };
 interface HostResultProof {
@@ -180,6 +180,15 @@ export class MainRequirementInteraction {
     }
     this.#inputTargets = Object.freeze(targets);
     return { invalid };
+  }
+  /** 需求工具 list 动作：本窗口草稿与进行中需求的编号、标题、状态与仓库；结果不对应单个需求，送达时只核对窗口与会话。 */
+  async list(toolCallId: string, ctx: ExtensionContext, repoId?: string) {
+    const host = this.#host(ctx), generation = this.#generation;
+    const result = { requirements: (await this.mentionCandidates(ctx)).filter((item) => !repoId || item.repoId === repoId) };
+    for (const [id, delivery] of this.#deliveries) if (delivery.expiresAt <= this.#now()) this.#deliveries.delete(id);
+    while (this.#deliveries.size >= 32) this.#deliveries.delete(this.#deliveries.keys().next().value!);
+    this.#deliveries.set(toolCallId, { sessionId: host.sessionId, windowId: host.windowId, generation, result, expiresAt: this.#now() + 30_000, listing: true });
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }], details: result };
   }
   /** 这句原话里 @ 到的有效需求，供系统提示附注；随下一句输入清空。 */
   inputTargets(): readonly MentionTarget[] { return this.#inputTargets; }
@@ -786,6 +795,7 @@ export class MainRequirementInteraction {
     if (!delivery || delivery.expiresAt <= this.#now()) denied("delivery_expired");
     const host = this.#host(ctx);
     if (host.windowId !== delivery.windowId || host.sessionId !== delivery.sessionId || this.#generation !== delivery.generation) denied("stale_host");
+    if (delivery.listing) return;
     try { this.assertResultCurrent(delivery.result, ctx); }
     catch (error) {
       this.#cursors.clear();

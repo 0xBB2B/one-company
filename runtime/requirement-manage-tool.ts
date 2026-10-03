@@ -44,10 +44,7 @@ export function createRequirementManageTool(options: { interaction: MainRequirem
     if (!Value.Check(schema, request)) throw new HostAuthorizationError("invalid_shape", shapeIssue(schema, request));
     if (Buffer.byteLength(JSON.stringify(request)) > 65_536) throw new HostAuthorizationError("invalid_shape", "参数超过 64KiB");
     const p = structuredClone(request) as Static<(typeof actions)[keyof typeof actions]>;
-    if (p.action === "list") {
-      const requirements = (await interaction.mentionCandidates(ctx)).filter((item) => !p.repoId || item.repoId === p.repoId);
-      return { content: [{ type: "text" as const, text: JSON.stringify({ requirements }) }], details: { requirements } };
-    }
+    if (p.action === "list") return interaction.list(toolCallId, ctx, p.repoId);
     return interaction.execute(toolCallId, ctx, p.repoId, p, async () => {
       signal?.throwIfAborted();
       switch (p.action) {
