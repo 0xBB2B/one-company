@@ -160,3 +160,16 @@ test("M8D-AC3：沿用的原依据是排除时该段标为已排除；同一段�
   mixed.context.retainedEvidence = [...mixed.retained, { ...mixed.retained[1]!, fact: { ...mixed.retained[1]!.fact, id: uuidv7() }, kind: "exclusion" }];
   expect(mixed.derive().documentReview!.units.find((u) => u.id === "A")!.retainedFactIds).toBeUndefined();
 });
+
+test("M9：本轮明确的实施动作列了沿用原目标依据的段落时，这些段落也算实施目标；没列的、或沿用的只是约束的段落不算", () => {
+  const f = retainedFixture();
+  f.output.entries.push({ ...f.common, kind: "action", actions: ["implement"], conclusion: "继续实施这一版", unitIds: ["preamble", "A", "B"] });
+  const result = f.derive();
+  expect(result.documentReview!.actions).toEqual([{ action: "implement", goalIds: ["A", "B"], constraintIds: [], conclusionIndexes: [1], unknown: false }]);
+  expect(() => validateDocumentReview(f.context, result)).not.toThrow();
+  const manifest = createApprovalManifest(f.context, result, result.entries.map(() => uuidv7()));
+  expect(approvedManifestScope(manifest, { action: "implement", goalIds: ["A", "B"], constraintIds: [] })).not.toBeNull();
+  const narrow = retainedFixture();
+  narrow.output.entries.push({ ...narrow.common, kind: "action", actions: ["implement"], conclusion: "只实施微信", unitIds: ["B"] });
+  expect(narrow.derive().documentReview!.actions.map((action) => action.goalIds)).toEqual([["B"]]);
+});
