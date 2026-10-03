@@ -239,13 +239,15 @@ async function openReadTool(options: RequirementReadToolOptions) {
       const sectionId = params.action === "read" ? params.sectionId : undefined;
       const maxBytes = params.maxBytes ?? PROD_PAGE_BYTES;
       const goal = target(before);
-      const cursor = params.cursor ? cursors.get(params.cursor) : undefined;
+      // 模型常给选填的 cursor 填全 0 占位；程序发的游标是随机字节，不会全为 0，按第一页处理
+      const given = params.cursor && !/^0+$/.test(params.cursor) ? params.cursor : undefined;
+      const cursor = given ? cursors.get(given) : undefined;
       const range = params.action === "diff" ? { fromRevision: params.fromRevision, toRevision: params.toRevision ?? before.data.revision } : undefined;
-      if (params.cursor && (!cursor || cursor.action !== params.action || cursor.sectionId !== sectionId || cursor.maxBytes !== maxBytes ||
+      if (given && (!cursor || cursor.action !== params.action || cursor.sectionId !== sectionId || cursor.maxBytes !== maxBytes ||
         cursor.fromRevision !== range?.fromRevision || cursor.toRevision !== range?.toRevision)) deny("cursor_invalid");
       if (cursor && (cursor.version !== before.version || cursor.revision !== goal.revision || cursor.epoch !== before.data.epoch ||
         cursor.commit !== goal.reference.commit || cursor.hash !== goal.reference.hash)) deny("version_changed");
-      if (params.cursor) cursors.delete(params.cursor);
+      if (given) cursors.delete(given);
       let rangeEnd: ProdReference | undefined;
       if (range) {
         if (binding.checkRoundId) deny("diff_unavailable");

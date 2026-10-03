@@ -210,7 +210,8 @@ export class KnowledgeQuerySession {
     if (this.#closed) fail("stale");
     if (this.#busy) fail("busy");
     this.#busy = true;
-    let cursor = query.cursor;
+    // 模型常给选填的 cursor 填全零字节的占位（base64url 下是全 A）；程序发的游标是随机字节，按第一页处理
+    let cursor = query.cursor && !/^A+$/.test(query.cursor) ? query.cursor : undefined;
     try {
       const now = this.#time();
       for (const [key, value] of this.#entries) if (value.expires <= now) this.#entries.delete(key);

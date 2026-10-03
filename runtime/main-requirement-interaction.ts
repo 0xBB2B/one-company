@@ -696,9 +696,11 @@ export class MainRequirementInteraction {
     const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === action);
     const maxBytes = request.maxBytes ?? 8192;
     const requestHash = digest({ ...request, cursor: undefined, maxBytes });
-    const cursor = request.cursor ? this.#cursors.get(request.cursor) : undefined;
-    if (request.cursor && (!cursor || cursor.expiresAt <= this.#now() || cursor.version !== before.version || cursor.epoch !== before.data.epoch || cursor.requestHash !== requestHash)) denied("cursor_expired");
-    if (request.cursor) this.#cursors.delete(request.cursor);
+    // 模型常给选填的 cursor 填全 0 占位；程序发的游标是随机字节，不会全为 0，按第一页处理
+    const given = request.cursor && !/^0+$/.test(request.cursor) ? request.cursor : undefined;
+    const cursor = given ? this.#cursors.get(given) : undefined;
+    if (given && (!cursor || cursor.expiresAt <= this.#now() || cursor.version !== before.version || cursor.epoch !== before.data.epoch || cursor.requestHash !== requestHash)) denied("cursor_expired");
+    if (given) this.#cursors.delete(given);
     const result = request.action === "read" ? await service.read({ requirementId: request.requirementId, source })
       : await service.diff({ requirementId: request.requirementId, fromRevision: request.fromRevision!, ...(request.toRevision ? { toRevision: request.toRevision } : {}) });
     const text = "body" in result ? selectProdSection(result.body, inspectProdStructure(result.body), request.sectionId) : result.diff;

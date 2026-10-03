@@ -265,6 +265,7 @@ test("游标不能篡改/跨角色工厂/页范围/需求复用，dispose废止�
   await expect(other.execute({ action: "read", maxBytes: 32, cursor })).rejects.toMatchObject({ code: "cursor_invalid" });
   await expect(tool.execute({ action: "read", maxBytes: 32, cursor: "a".repeat(64) })).rejects.toMatchObject({ code: "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
+  expect(content(await tool.execute({ action: "read", maxBytes: 32, cursor: "0".repeat(64) })).text).toBe(first.text);
   const next = content(await tool.execute({ action: "read", maxBytes: 32 }));
   probe.mockClear();
   await expect(tool.execute({ action: "read", maxBytes: 33, cursor: next.coverage.nextCursor })).rejects.toMatchObject({ code: "cursor_invalid" });

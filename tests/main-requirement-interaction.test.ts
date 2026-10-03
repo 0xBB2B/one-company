@@ -544,6 +544,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const cursor = (first.coverage as { nextCursor: string }).nextCursor;
     expect(await w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor })).toHaveProperty("text");
     w.capture("新输入"); await expect(w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor })).rejects.toMatchObject({ code: "cursor_expired" });
+    expect(await w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor: "0".repeat(64) })).toMatchObject({ text: first.text, coverage: { startByte: 0 } });
+    await expect(w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor: "a".repeat(64) })).rejects.toMatchObject({ code: "cursor_expired" });
   });
 });
 test("别的进程短暂占住数据库时，宿主读取需求记录等锁释放后照常完成，不立刻报数据库忙", async () => {
