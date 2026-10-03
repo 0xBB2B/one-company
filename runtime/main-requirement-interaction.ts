@@ -183,7 +183,7 @@ export class MainRequirementInteraction {
   }
   /** 这句原话里 @ 到的有效需求，供系统提示附注；随下一句输入清空。 */
   inputTargets(): readonly MentionTarget[] { return this.#inputTargets; }
-  /** @ 补全列表的数据：本窗口各仓库状态正常的草稿与进行中需求及其当前草稿标题；标题按草稿版本指纹缓存。 */
+  /** @ 补全与需求工具 list 动作的数据：本窗口各仓库状态正常的草稿与进行中需求及其当前草稿标题；标题按草稿版本指纹缓存。 */
   async mentionCandidates(ctx: ExtensionContext): Promise<Array<{ repoId: string; requirementId: string; title: string; lifecycle: "draft" | "active" }>> {
     const host = this.#host(ctx), result: Array<{ repoId: string; requirementId: string; title: string; lifecycle: "draft" | "active" }> = [];
     for (const item of this.#authorization.listRequirements(host.sessionId)) {

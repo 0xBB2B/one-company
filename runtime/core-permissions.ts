@@ -7,7 +7,7 @@ export type CoreRole = (typeof CORE_ROLES)[number];
 export const CORE_TOOL_ACTIONS = Object.freeze({
   project_manage: Object.freeze(["init", "status", "refresh", "recovery-check", "backup", "restore", "workspace-prepare", "workspace-recycle", "conventions-update"] as const),
   knowledge_query: Object.freeze(["exact", "search", "facts"] as const),
-  requirement_manage: Object.freeze(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata"] as const),
+  requirement_manage: Object.freeze(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata", "list"] as const),
   plan_manage: Object.freeze(["propose", "read", "update", "confirm", "assess-update"] as const),
   agent_manage: Object.freeze(["dispatch", "status", "pause", "resume", "stop", "catalog", "message"] as const),
   user_interact: Object.freeze(["ask", "reply", "forward"] as const),

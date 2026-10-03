@@ -22,12 +22,13 @@ const actions = {
   read: Type.Object({ action: Type.Literal("read"), repoId, requirementId: id, source: Type.Optional(StringEnum(["saved", "approved"] as const)), sectionId: Type.Optional(Type.String({ pattern: PROD_SECTION_ID_PATTERN, maxLength: 96 })), ...paging }, { additionalProperties: false }),
   diff: Type.Object({ action: Type.Literal("diff"), repoId, requirementId: id, fromRevision: version, toRevision: Type.Optional(version), ...paging }, { additionalProperties: false }),
   metadata: Type.Object({ action: Type.Literal("metadata"), repoId, requirementId: id }, { additionalProperties: false }),
+  list: Type.Object({ action: Type.Literal("list"), repoId: Type.Optional(repoId) }, { additionalProperties: false }),
 };
 export const REQUIREMENT_MANAGE_PARAMETERS = requestParameters(Object.values(actions));
 export function createRequirementManageTool(options: { interaction: MainRequirementInteraction }): ToolDefinition<typeof REQUIREMENT_MANAGE_PARAMETERS, Record<string, unknown>> {
   const interaction = options.interaction;
   return { name: "one_company_requirement_manage", label: "管理活动需求",
-    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requestId、operationId 每次新生成 UUIDv7，requirementId、version、savedOperationId 取自此前工具结果，不要自编。保存需求草稿，create 与 updateDraft 都要写 summary：一段话（最多 200 字）说明这个功能是什么，用户批准时的确认窗口会显示它；正文板块按系统提示里的需求文档规范写，每个标题（含各级小节标题）末尾都写唯一编号（字母开头，只含字母数字._-，不重复），缺编号或重复时批准被拒；confirmUpdate只接真实saved操作ID，不接正文或批准声明。只消费当前真实用户输入。read默认当前approved，草稿可指定saved，章节及UTF8分页逐次核权，完整封装不超过50KiB。无当前输入或模型不可用明确拒绝，不弹全量审批。",
+    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requestId、operationId 每次新生成 UUIDv7，requirementId、version、savedOperationId 取自此前工具结果，不要自编。保存需求草稿，create 与 updateDraft 都要写 summary：一段话（最多 200 字）说明这个功能是什么，用户批准时的确认窗口会显示它；正文板块按系统提示里的需求文档规范写，每个标题（含各级小节标题）末尾都写唯一编号（字母开头，只含字母数字._-，不重复），缺编号或重复时批准被拒；confirmUpdate只接真实saved操作ID，不接正文或批准声明。只消费当前真实用户输入。list 列出本窗口各仓库草稿与进行中需求的编号、标题与状态（不含正文，不列已关闭的），给 repoId 时只列该仓库；不知道需求编号时先 list。read默认当前approved，草稿可指定saved，章节及UTF8分页逐次核权，完整封装不超过50KiB。无当前输入或模型不可用明确拒绝，不弹全量审批。",
     promptSnippet: "整理当前需求、按范围记录决定，读取当前获准目标", parameters: REQUIREMENT_MANAGE_PARAMETERS, executionMode: "sequential",
     async execute(toolCallId, raw, signal, _update, ctx) {
       try { return await run(toolCallId, raw, signal, ctx); }
@@ -43,6 +44,10 @@ export function createRequirementManageTool(options: { interaction: MainRequirem
     if (!Value.Check(schema, request)) throw new HostAuthorizationError("invalid_shape", shapeIssue(schema, request));
     if (Buffer.byteLength(JSON.stringify(request)) > 65_536) throw new HostAuthorizationError("invalid_shape", "参数超过 64KiB");
     const p = structuredClone(request) as Static<(typeof actions)[keyof typeof actions]>;
+    if (p.action === "list") {
+      const requirements = (await interaction.mentionCandidates(ctx)).filter((item) => !p.repoId || item.repoId === p.repoId);
+      return { content: [{ type: "text" as const, text: JSON.stringify({ requirements }) }], details: { requirements } };
+    }
     return interaction.execute(toolCallId, ctx, p.repoId, p, async () => {
       signal?.throwIfAborted();
       switch (p.action) {

@@ -219,7 +219,7 @@ explore 在派出方工作区内用 read/grep 和 `one_company_knowledge_query` 
 
 检测到旧 `data.sqlite`、`global.sqlite` 或其 WAL/SHM 残留时不会新建替代空库。M1 内部存储服务已提供受控迁移、完整一致性备份和隔离恢复：操作先登记并核对授权与写入者停止状态，恢复副本默认 `needs_review`；旧备份中的 `active` 永不自动获得执行权限，较新的可信 closing/closed 元数据不会被旧状态覆盖。较新终态元数据可以保留，但旧备份不包含备份之后尚未纳入快照的新正文。
 
-M1 的 `requirement_manage` 已接通真实宿主 lifecycle、输入结构和 UI 交互授权，提供 create、updateDraft、confirmUpdate、read、diff 与 metadata。保存 draft 只保存正文版本，不批准目标；确认目标也不自动授予规划或实施权限。正文存储内部只提供 create、save、readVersion、diffVersions、verifyVersion 五个固定接口：每个需求使用 UUIDv7 身份和独立本机 Git，只提交 `prod.md`，完成归档名固定为 `<UUIDv7>.<需求描述>.md`。closing/closed 或未知、冲突状态拒绝专用正文读取，现有项目快照入口在读取内容前排除 `docs/prod`。内部状态职责见 [需求状态基础](runtime/requirement-state.md)。
+M1 的 `requirement_manage` 已接通真实宿主 lifecycle、输入结构和 UI 交互授权，提供 create、updateDraft、confirmUpdate、read、diff、metadata 与 list（只给主代理，列出本窗口草稿与进行中需求的编号、标题与状态，不含正文）。保存 draft 只保存正文版本，不批准目标；确认目标也不自动授予规划或实施权限。正文存储内部只提供 create、save、readVersion、diffVersions、verifyVersion 五个固定接口：每个需求使用 UUIDv7 身份和独立本机 Git，只提交 `prod.md`，完成归档名固定为 `<UUIDv7>.<需求描述>.md`。closing/closed 或未知、冲突状态拒绝专用正文读取，现有项目快照入口在读取内容前排除 `docs/prod`。内部状态职责见 [需求状态基础](runtime/requirement-state.md)。
 
 需求事件服务按已批准的准确提交对和 hash 即时提供差异，持久保存事件元数据及 PM 消费位置，不在 SQLite/outbox 保存正文或 patch；草稿及外部未确认修改不产生批准通知。专用服务在读取与交付正文时复核生命周期和访问代次，进入 `closing` 后先撤权，不等待普通索引或积压通知。这些基础能力不表示完整 PM 调度、最终 QA 和完成关闭流程已经上线。普通 read、Shell、Git 历史、MCP 等通用旁路没有全面正文拦截；主会话已有消息或摘要也不会自动清空。
 

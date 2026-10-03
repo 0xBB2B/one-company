@@ -38,7 +38,7 @@ test("固定六类职责与10个核心工具，action 枚举与计划 §9.1 一�
     "agent_manage", "user_interact", "change_apply", "verification_run", "result_submit", "workflow_manage"]);
   expect(CORE_TOOL_ACTIONS.project_manage).toEqual(["init", "status", "refresh", "recovery-check", "backup", "restore",
     "workspace-prepare", "workspace-recycle", "conventions-update"]);
-  expect(CORE_TOOL_ACTIONS.requirement_manage).toEqual(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata"]);
+  expect(CORE_TOOL_ACTIONS.requirement_manage).toEqual(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata", "list"]);
   expect(CORE_TOOL_ACTIONS.plan_manage).toEqual(["propose", "read", "update", "confirm", "assess-update"]);
   expect(CORE_TOOL_ACTIONS.workflow_manage).toEqual(["status", "advance", "finish", "repair", "check-decision", "report", "escalate", "close", "delivery-check"]);
   expect(Object.isFrozen(CORE_TOOL_ACTIONS)).toBe(true);

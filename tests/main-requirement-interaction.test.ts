@@ -171,6 +171,16 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect((await w.interaction.mentionCandidates(w.ctx)).map((item) => item.title)).toEqual(["手机号登录"]);
   });
 
+  test("M8K-AC1：list 列出本窗口草稿与进行中需求的编号、标题、状态与仓库，不含正文，不需要当前用户输入；指定仓库时只列该仓库", async () => {
+    const w = await world(), created = await w.create();
+    const list = async (request: Record<string, unknown>) => (await w.manage.execute(uuidv7(), { request } as never, undefined, undefined, w.ctx)).details!;
+    const expected = { requirements: [{ repoId: w.repoId, requirementId: created.requirementId, title: "登录", lifecycle: "draft" }] };
+    expect(await list({ action: "list" })).toEqual(expected);
+    expect(await list({ action: "list", repoId: w.repoId })).toEqual(expected);
+    expect(await list({ action: "list", repoId: "f".repeat(64) })).toEqual({ requirements: [] });
+    expect(JSON.stringify(await list({ action: "list" }))).not.toContain("手机号");
+  });
+
   test("M8D-AC1：原话里的 @ 按编号尾巴认出需求，同一需求只算一次，无效的 @ 单独报出原因", async () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
     const result = w.interaction.captureInput({ source: "interactive", text: `@[登录#${id.slice(-4)}] @[登录#${id.slice(-6)}] @[别的#ffff] 改一下` }, w.ctx);
