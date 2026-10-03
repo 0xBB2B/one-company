@@ -160,7 +160,7 @@ export class UserInteractionCore {
     checkProposal(input.proposal, input.basis);
     if (input.candidate && decisionDigest(input.candidate.from) !== decisionDigest(input.basis.prod)) throw new UserInteractionError("candidate_baseline_mismatch");
     const refs = input.proposal.references.length + input.proposal.supersedes.length + (input.basis.prod ? 2 : 0) + (input.candidate ? 4 : 0);
-    if (refs + (input.unitIds?.length ?? 0) > 16 || input.unitIds && (!input.unitIds.length || !input.candidate)) throw new UserInteractionError("reference_limit");
+    if (refs > 16 || input.unitIds && (!input.unitIds.length || !input.candidate)) throw new UserInteractionError("reference_limit");
     if (input.partition && (input.partition.prodHash !== input.candidate?.to.hash || input.unitIds?.some((id) => !input.partition!.units.some((u) => u.id === id)))) throw new UserInteractionError("question_partition_mismatch");
     const question = checkInteraction(PendingQuestion, { format: "interaction-question/v1", ...input,
       requestId: uuidv7(), repoId: this.#options.repoId, createdAt: this.#now() });

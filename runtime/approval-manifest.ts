@@ -7,16 +7,16 @@ import { ApprovalPartition, ApprovalUnitIds, CandidateBinding, InteractionAction
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
 import type { ProdApprovalPartition } from "./prod-view.ts";
 
-export const APPROVAL_MANIFEST_LIMITS = Object.freeze({ units: 20, actions: 20, references: 16, requestBytes: 65_536 });
+export const APPROVAL_MANIFEST_LIMITS = Object.freeze({ actions: 20, requestBytes: 65_536 });
 const id = CandidateBinding.properties.candidateId, hash = CandidateBinding.properties.intentHash;
 const decisionIds = Type.Array(id, { minItems: 1, maxItems: 16, uniqueItems: true });
 const { conclusionIndexes: _unitIndexes, ...unitFields } = UnitReview.properties;
 const { conclusionIndexes: _actionIndexes, ...actionFields } = ActionReview.properties;
 export const ApprovalManifest = object({ format: Type.Literal("approval-manifest/v1"), requirementId: id,
   candidate: CandidateBinding, manifestHash: hash, totalBytes: positive,
-  units: Type.Array(object({ ...unitFields, ...ApprovalPartition.properties.units.items.properties, decisionIds }), { minItems: 1, maxItems: 20 }),
+  units: Type.Array(object({ ...unitFields, ...ApprovalPartition.properties.units.items.properties, decisionIds }), { minItems: 1 }),
   actions: Type.Array(object({ ...actionFields, decisionIds }), { maxItems: 20 }),
-  retainedSources: Type.Optional(Type.Array(RetainedUnitEvidence, { maxItems: 40 })),
+  retainedSources: Type.Optional(Type.Array(RetainedUnitEvidence)),
   questions: Type.Array(object({ requestId: id, answeredIds: ApprovalUnitIds, pendingIds: ApprovalUnitIds,
     decisionIds: Type.Array(id, { maxItems: 16, uniqueItems: true }) }), { maxItems: 20 }) });
 export type ApprovalManifest = Static<typeof ApprovalManifest>;
@@ -67,7 +67,6 @@ function validateScopes(units: Unit[], actions: Array<{ goalIds: string[]; const
     if (!a.goalIds.length || a.goalIds.some((id) => id === "metadata" || a.constraintIds.includes(id))) deny("invalid_action_scope");
     const closure = approvalDependencyClosure(units, a.goalIds);
     if (!sameSet(closure, [...a.goalIds, ...a.constraintIds])) deny("incomplete_action_closure");
-    if (a.goalIds.length + a.constraintIds.length > 16) deny("reference_limit");
   }
 }
 /** hash不包含自身；只接受清单固定字段的调用方应先使用checkApprovalManifest。 */
@@ -86,7 +85,6 @@ export function checkApprovalManifest(value: unknown, expected: ApprovalManifest
     const actual = { id: u.id, hash: u.hash, startByte: u.startByte, endByte: u.endByte };
     if (u.startByte !== end || u.endByte <= end || decisionDigest(actual) !== decisionDigest(p.units[index])) deny("manifest_partition_mismatch");
     end = u.endByte;
-    if (u.dependsOn.length + u.appliesTo.length + u.decisionIds.length > 16) deny("reference_limit");
   }
   if (end !== m.totalBytes || m.units[0]?.id !== "metadata") deny("manifest_partition_mismatch");
   for (const e of m.retainedSources ?? []) {
@@ -96,12 +94,10 @@ export function checkApprovalManifest(value: unknown, expected: ApprovalManifest
   }
   for (const u of m.units) if ((u.retainedFactIds ?? []).some((id) => !m.retainedSources?.some((e) => e.fact.id === id && e.unitId === u.id))) deny("manifest_retained_mismatch");
   validateScopes(m.units, m.actions);
-  for (const a of m.actions) if (a.goalIds.length + a.constraintIds.length + a.decisionIds.length > 16) deny("reference_limit");
   const ids = new Set(m.units.map((u) => u.id));
   if (new Set(m.questions.map((q) => q.requestId)).size !== m.questions.length) deny("duplicate_question");
   for (const q of m.questions) {
-    if (q.answeredIds.some((id) => q.pendingIds.includes(id)) || [...q.answeredIds, ...q.pendingIds].some((id) => !ids.has(id)) ||
-      q.answeredIds.length + q.pendingIds.length + q.decisionIds.length + 1 > 16) deny("question_scope_mismatch");
+    if (q.answeredIds.some((id) => q.pendingIds.includes(id)) || [...q.answeredIds, ...q.pendingIds].some((id) => !ids.has(id))) deny("question_scope_mismatch");
   }
   if (approvalManifestDigest(m) !== m.manifestHash) deny("manifest_hash_mismatch");
   return m;
@@ -134,7 +130,6 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
       if (!evidence) return deny("retained_source_missing"); return evidence;
     });
     if (!related.length && !retained.length || retained.length && u.disposition === "pending-description") deny("review_entry_mismatch", `段落 ${u.id}`);
-    if (u.dependsOn.length + u.appliesTo.length + u.conclusionIndexes.length > 16) deny("reference_limit");
     if (u.globalConstraint && (!related.every((e) => ["constraint", "unresolved", "suggestion"].includes(e.kind)) || !retained.every((e) => e.kind === "constraint"))) deny("global_constraint_kind", `段落 ${u.id}`);
     if (review.faithful) {
       if (related.some((e) => e.resolution === "modify")) deny("document_needs_resave", `段落 ${u.id}`);
@@ -154,7 +149,6 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
   for (const a of review.actions) {
     a.conclusionIndexes.forEach((i) => actionUsed.add(i));
     const related = entries(a.conclusionIndexes);
-    if (a.goalIds.length + a.constraintIds.length + a.conclusionIndexes.length > 16) deny("reference_limit");
     if (!related.every((e) => e.kind === "action" && explicit(e) && e.actions.includes(a.action))) deny("action_not_explicit", `动作 ${a.action}`);
     for (const goalId of a.goalIds) {
       const u = review.units.find((u) => u.id === goalId)!;
@@ -164,7 +158,6 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
   }
   if (review.questions.length !== context.questions.length || new Set(review.questions.map((q) => q.requestId)).size !== review.questions.length) deny("incomplete_question_review");
   for (const q of review.questions) {
-    if (q.answeredIds.length + q.pendingIds.length + q.conclusionIndexes.length + 1 > 16) deny("reference_limit");
     const actual = context.questions.find((v) => v.requestId === q.requestId);
     const remaining = context.effectiveQuestions?.find((v) => v.requestId === q.requestId)?.remainingUnitIds ?? actual?.unitIds;
     if (!actual?.unitIds || !remaining || !sameSet(remaining, [...q.answeredIds, ...q.pendingIds]) || q.answeredIds.some((id) => q.pendingIds.includes(id))) deny("question_scope_mismatch");

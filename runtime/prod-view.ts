@@ -127,7 +127,6 @@ export function partitionProdDocument(requirementId: string, title: string, body
       starts.push(...headings.map((h) => ({ id: h.id!, offset: h.offset })));
     }
   }
-  if (starts.length > 20) throw new ProdViewError("approval_unit_limit");
   return { prodHash: document.prodHash, totalBytes: bytes.length,
     units: starts.map((start, index) => {
       const endByte = starts[index + 1]?.offset ?? bytes.length;

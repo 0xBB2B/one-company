@@ -40,6 +40,7 @@ test.each([
 });
 
 test("联网、需求存储、数据库与 Shell 的错误也给出原因与建议", () => {
+  expect(new HostAuthorizationError("invalid_approval_unit_id").advice.why).not.toMatch(/^需求操作被拒绝（/);
   expect(new WebAccessError("rate_limited").advice).toEqual({ why: "搜索服务限流", next: "等一会再搜，或改用 web_fetch 直接读已知网址" });
   expect(new ProdStorageError("git_unavailable", "Git 可执行文件不可用").advice).toEqual({ why: "Git 可执行文件不可用", next: "请用户检查本机 Git 与数据目录的安装、权限和链接" });
   expect(new StaleVersionError().advice.next).toBe("重新读取后再试");

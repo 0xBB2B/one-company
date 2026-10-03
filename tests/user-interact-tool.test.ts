@@ -25,11 +25,12 @@ test("user_interact不接受转述、请求选择、角色或回执", async () =
   expect((extra as Error).message).toContain("多余字段：sectionId");
 });
 const CHOICES = [{ label: "实施 A", reason: "马上能用", recommended: true, recommendedReason: "A 已写清楚" }, { label: "先不实施", reason: "等 B 一起做" }];
-test("ask问题、范围、action、unit限额严格且不接正文附件", async () => {
+test("ask问题、范围、action限额严格，章节数不设单独上限，且不接正文附件", async () => {
   const ask = { ...base, action: "ask", question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES, scope: "仅A", actions: ["implement"], unitIds: ["A"] };
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: ask })).toBe(true);
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...ask, purpose: "user-confirmation" } })).toBe(true);
-  for (const patch of [{ question: "甲".repeat(401) }, { scope: "乙".repeat(401) }, { unitIds: Array.from({ length: 17 }, (_, i) => `A${i}`) }, { actions: ["arbitrary-shell"] }, { attachment: "body" }]) {
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...ask, unitIds: Array.from({ length: 25 }, (_, i) => `A${i}`) } })).toBe(true);
+  for (const patch of [{ question: "甲".repeat(401) }, { scope: "乙".repeat(401) }, { actions: ["arbitrary-shell"] }, { attachment: "body" }]) {
     expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...ask, ...patch } })).toBe(false);
   }
 });

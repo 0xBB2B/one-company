@@ -121,7 +121,7 @@ test("无ID或混合标题只使用whole-body，空正文只有metadata；重复
   for (const body of ["# A {#a}\n# B {#a}", "# A {#metadata}", "# A {#preamble}", "# A {#whole-body}", "# A {#bad/id}"]) {
     expect(() => partitionProdDocument(approvalId, "标题", body)).toThrow(/invalid_approval_unit_id/);
   }
-  expect(() => partitionProdDocument(approvalId, "标题", Array.from({ length: 20 }, (_, i) => `# A {#s${i}}\n`).join(""))).toThrow(/approval_unit_limit/);
+  expect(partitionProdDocument(approvalId, "标题", Array.from({ length: 40 }, (_, i) => `# A {#s${i}}\n`).join("")).units).toHaveLength(41);
 });
 
 test("M8A-AC9：顶层须依次是背景、需求、功能、实现、验收五个带固定编号的二级标题", () => {

@@ -143,3 +143,30 @@ test("问题审核按实际unitIds覆盖已答与未答；部分答复不关闭�
   f.result.documentReview!.questions[0]!.pendingIds = [];
   expect(() => validateDocumentReview(f.context, f.result)).toThrow(/question_scope_mismatch/);
 });
+
+test("段数不设单独上限：25 段的需求，一个动作与一个提问各覆盖全部 25 段，仍能生成并核验清单", () => {
+  const requirementId = uuidv7(), title = "多段需求", ids = Array.from({ length: 25 }, (_, i) => `s${i}`);
+  const body = ids.map((id) => `## 段 ${id} {#${id}}\n内容 ${id}。\n`).join("");
+  const partition = partitionProdDocument(requirementId, title, body);
+  expect(partition.units).toHaveLength(26);
+  const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "a".repeat(64), from: null,
+    to: { commit: "b".repeat(40), hash: partition.prodHash } };
+  const requestId = uuidv7();
+  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prod: null }, currentGoal: "",
+    candidates: [{ ...candidate, diff: "+多段" }], priorDecisions: [], document: { candidate, title, body, partition },
+    questions: [{ format: "interaction-question/v1", requestId, repoId: "d".repeat(64), basis: { requirementId, version: 1, epoch: 1, prod: null },
+      candidate, actions: ["implement"], createdAt: 0, unitIds: ids, proposal: { conclusion: "确认全部段落", scope: "当前文档", references: [], supersedes: [] } }] };
+  const common = { basis: "explicit" as const, resolution: "direct" as const, candidateId: candidate.candidateId, requestId: null, actions: [], references: [], supersedes: [], scope: "全部段落" };
+  const result: InteractionInterpretation = { format: "interaction-interpretation/v1", referenceResolution: "explicit", entries: [
+    { ...common, kind: "target", requestId, conclusion: "实现全部段落" },
+    { ...common, kind: "action", actions: ["implement"], conclusion: "实施全部段落" },
+    { ...common, kind: "constraint", conclusion: "文档身份元数据" },
+  ], documentReview: { faithful: true,
+    units: partition.units.map((u) => ({ id: u.id, disposition: "confirmed", globalConstraint: false, appliesTo: [], dependsOn: [], conclusionIndexes: [u.id === "metadata" ? 2 : 0] })),
+    actions: [{ action: "implement", goalIds: ids, constraintIds: [], conclusionIndexes: [1], unknown: false }],
+    questions: [{ requestId, answeredIds: ids, pendingIds: [], conclusionIndexes: [0] }] } };
+  checkContext(context);
+  const m = createApprovalManifest(context, result, [uuidv7(), uuidv7(), uuidv7()]);
+  expect(checkApprovalManifest(m, { requirementId, candidate, partition })).toEqual(m);
+  expect(approvedManifestScope(m, { action: "implement", goalIds: ids, constraintIds: [] })).not.toBeNull();
+});

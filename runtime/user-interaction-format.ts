@@ -22,9 +22,9 @@ export const CandidateBinding = object({ candidateId: id, operationId: id, inten
 export type CandidateBinding = Static<typeof CandidateBinding>;
 export const InteractionCandidate = object({ ...CandidateBinding.properties, diff: Type.String({ minLength: 1 }) });
 export const ApprovalUnitId = Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}$", maxLength: 96 });
-export const ApprovalUnitIds = Type.Array(ApprovalUnitId, { maxItems: 16, uniqueItems: true });
+export const ApprovalUnitIds = Type.Array(ApprovalUnitId, { uniqueItems: true });
 export const ApprovalPartition = object({ prodHash: hash, totalBytes: positive,
-  units: Type.Array(object({ id: ApprovalUnitId, hash, startByte: counter, endByte: positive }), { minItems: 1, maxItems: 20 }) });
+  units: Type.Array(object({ id: ApprovalUnitId, hash, startByte: counter, endByte: positive }), { minItems: 1 }) });
 export const DocumentAnalysis = object({ candidate: CandidateBinding, title: Type.String(), body: Type.String(), partition: ApprovalPartition });
 export type DocumentAnalysis = Static<typeof DocumentAnalysis>;
 export const ContinuityRecordRef = object({ id, version: positive, hash });
@@ -35,17 +35,17 @@ export type RetainedUnitEvidence = Static<typeof RetainedUnitEvidence>;
 export const ContinuityIssue = object({ fact: ContinuityRecordRef, originDecision: ContinuityRecordRef, decision: ContinuityRecordRef,
   questionRefs: Type.Array(object({ requestId: id, hash }), { maxItems: 20 }),
   unitId: ApprovalUnitId, unitHash: hash, targetHash: nullable(hash),
-  affectedUnitIds: Type.Array(ApprovalUnitId, { maxItems: 20, uniqueItems: true }),
+  affectedUnitIds: Type.Array(ApprovalUnitId, { uniqueItems: true }),
   reason: enumeration(["modify", "pending"]) });
 export type ContinuityIssue = Static<typeof ContinuityIssue>;
 export const RevisionSource = object({ fact: ContinuityRecordRef, decision: ContinuityRecordRef, sourceBasis: InteractionBasis,
-  unitIds: Type.Array(object({ id: ApprovalUnitId, hash }), { maxItems: 20 }),
+  unitIds: Type.Array(object({ id: ApprovalUnitId, hash })),
   kind: enumeration(["target", "constraint", "exclusion", "future", "delegation", "action", "unresolved", "suggestion", "ai-choice"]) });
 export type RevisionSource = Static<typeof RevisionSource>;
 export const EffectiveQuestion = object({ requestId: id, originalHash: hash, remainingUnitIds: ApprovalUnitIds,
   currentBinding: CandidateBinding,
   resolutions: Type.Array(ContinuityRecordRef, { maxItems: 128 }),
-  unitMappings: Type.Array(object({ id: ApprovalUnitId, sourceHash: hash, targetHash: nullable(hash) }), { maxItems: 16 }) });
+  unitMappings: Type.Array(object({ id: ApprovalUnitId, sourceHash: hash, targetHash: nullable(hash) })) });
 export type EffectiveQuestion = Static<typeof EffectiveQuestion>;
 const ConclusionIndexes = Type.Array(Type.Integer({ minimum: 0, maximum: 19 }), { minItems: 1, maxItems: 16, uniqueItems: true });
 export const UnitReview = object({ id: ApprovalUnitId,
@@ -55,7 +55,7 @@ export const UnitReview = object({ id: ApprovalUnitId,
 export const ActionReview = object({ action: InteractionAction, goalIds: ApprovalUnitIds, constraintIds: ApprovalUnitIds,
   conclusionIndexes: ConclusionIndexes, unknown: Type.Boolean() });
 export const DocumentReview = object({ faithful: Type.Boolean(),
-  units: Type.Array(UnitReview, { minItems: 1, maxItems: 20 }),
+  units: Type.Array(UnitReview, { minItems: 1 }),
   actions: Type.Array(ActionReview, { maxItems: 20 }),
   questions: Type.Array(object({ requestId: id, answeredIds: ApprovalUnitIds, pendingIds: ApprovalUnitIds,
     conclusionIndexes: Type.Array(Type.Integer({ minimum: 0, maximum: 19 }), { maxItems: 16, uniqueItems: true }) }), { maxItems: 20 }) });
@@ -88,8 +88,8 @@ export const InteractionContext = object({
   savedOperationId: Type.Optional(id),
   inputProof: Type.Optional(hash),
   effectiveQuestions: Type.Optional(Type.Array(EffectiveQuestion, { maxItems: 20 })),
-  retainedEvidence: Type.Optional(Type.Array(RetainedUnitEvidence, { maxItems: 40 })),
-  continuityIssues: Type.Optional(Type.Array(ContinuityIssue, { maxItems: 40 })),
+  retainedEvidence: Type.Optional(Type.Array(RetainedUnitEvidence)),
+  continuityIssues: Type.Optional(Type.Array(ContinuityIssue)),
   revisionSources: Type.Optional(Type.Array(RevisionSource, { maxItems: 20 })),
   adjudication: Type.Optional(AdjudicationSubject),
   addressed: Type.Optional(object({ how: enumeration(["mention", "window"]), others: Type.Optional(Type.Integer({ minimum: 0, maximum: 32 })) })),
@@ -200,7 +200,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   question_unit_mismatch: { why: "问题引用的章节不在待批准版本里", next: "重新读取需求后按最新版本再试" },
   question_view_mismatch: { why: "问题剩余的章节与原问题不一致", next: "重新读取需求后按最新版本再试" },
   reconsideration_denied: { why: "不能再次复核：文档复核已判定一致、复核次数已用完（最多 3 次），或正在保存", next: "按当前复核结果继续，不要再次复核" },
-  reference_limit: { why: "引用的问题、决定或章节太多（最多 16 个），或引用章节时没有待批准版本", next: "减少引用数量后重试" },
+  reference_limit: { why: "引用的问题或决定太多（最多 16 个），或引用章节时没有待批准版本", next: "减少引用数量后重试" },
   request_limit: { why: "请求内容超出大小上限", next: "精简内容后重试" },
   resave_not_finalized: { why: "重新保存还没完成", next: "用原来的操作编号重试，让它续完" },
   resave_origin_mismatch: { why: "重新保存的起点与原复核不一致", next: "重新读取需求后按最新版本再试" },
