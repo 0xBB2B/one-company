@@ -143,7 +143,16 @@ const TaskRecord = object({
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
-/** 修改任务时带上用户的决定：还没用掉的"再给一次机会"跟到新版本，PM 可以先补任务说明再派出；任务目标仍只能经需求批准改。 */
+/** 修改后的任务除了说明文字（objective、passCriteria、agentReason）之外是否与原任务一致。 */
+async function textOnlyChange(task: TaskRecord, spec: TaskSpec, keys: ReadonlyMap<string, string>): Promise<boolean> {
+  const previous = JSON.parse(await readFile(task.detail.path, "utf8")) as Pick<TaskSpec, "scope" | "performance">;
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  return spec.key === task.key && spec.role === task.role && same(spec.goalUnitIds, task.goalUnitIds) && same(spec.constraintUnitIds, task.constraintUnitIds) &&
+    same(spec.dependsOn.map((dep) => keys.get(dep)), task.dependsOn) && same(spec.writePaths, task.writePaths) && same(spec.blockedByQuestionIds, task.blockedByQuestionIds) &&
+    spec.maxTurns === task.maxTurns && spec.agent === task.agent && spec.reviewAgent === task.reviewAgent &&
+    Boolean(spec.ui || task.prototypes?.length) === Boolean(task.ui) && same(spec.scope, previous.scope) && same(spec.performance, previous.performance);
+}
+/** 修改任务时带上用户的决定：还没用掉的"再给一次机会"跟到新版本，PM 可以先补任务说明再派出；这时只允许改说明文字。 */
 function carriedDecision(decision: UserDecision, version: number): UserDecision {
   return decision.choice === "retry" && decision.usedByRunId === null ? { ...decision, taskVersion: version } : decision;
 }
@@ -423,6 +432,13 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const resized = (task: TaskRecord) => task.sizeHold !== undefined && task.attempts.length === 0;
     const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!; return task.userDecision?.choice === "adjust" && !readjusted(task) && !resized(task); });
     if (waiting.length) deny("task_not_ready", waiting.map((item) => `${byId.get(item.taskId)!.key} 等待调整后的新批准版本`));
+    // 用户给的再一次机会还没用时只能改说明文字，机会随之带到新版本；改了别的，用户的决定就对不上原来的任务了
+    const beyondText: string[] = [];
+    for (const item of params.modify ?? []) {
+      const task = byId.get(item.taskId)!;
+      if (task.userDecision?.choice === "retry" && task.userDecision.usedByRunId === null && !await textOnlyChange(task, item.spec, keys)) beyondText.push(task.key);
+    }
+    if (beyondText.length) deny("task_not_ready", beyondText.map((key) => `${key} 有用户给的再一次机会还没用，这时只能改任务说明文字（objective、passCriteria、agentReason）；要改其他内容，先把这一次派出去`));
     // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被同角色的其他新增或修改任务揽走；用户终止的任务在新的批准版本前同样占住其目标。
     // 只占同角色：QA 的目标本就覆盖验收单元，若跨角色占用，QA 一报问题就再也追加不了 worker 返修任务
     const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" &&

@@ -94,6 +94,20 @@ test("M8I-AC2：用户再给一次机会后 PM 先修改任务说明再派出：
   expect(w.task("login").userDecision?.usedByRunId).toBe(third.runId);
 });
 
+test("M8I-AC4：用户给的再一次机会还没用时，PM 只能改任务说明文字；改可写目录等其他内容被拒并写明原因，任务与机会都不变", async () => {
+  const w = await world();
+  await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("再给一次机会，轮数上限 3")));
+  const planVersion = () => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
+  const before = w.task("login");
+  for (const patch of [{ writePaths: ["src/", "config/"] }, { maxTurns: 9 }, { scope: { in: ["login", "顺便改配置"], out: [] } }]) {
+    await expect(w.plan.execute({ action: "update", planVersion: planVersion(), modify: [{ taskId: w.login, version: before.version, spec: spec("login", "goal.login", patch) }] }))
+      .rejects.toThrow("login 有用户给的再一次机会还没用，这时只能改任务说明文字");
+  }
+  expect(w.task("login")).toEqual(before);
+});
+
 test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项标明 PM 上报，说明只作模型说法；用户再给一次机会后按用户上限派出、不需 retry；主代理与不在等待处置的任务不能上报", async () => {
   const w = await createPmRunWorld(cleanups);
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
