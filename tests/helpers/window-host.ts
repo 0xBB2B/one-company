@@ -23,7 +23,8 @@ export function answeringUi(answer: (window: ShownWindow) => WindowDecision | Pr
         void Promise.resolve(answer(shown)).then((decision) => {
           if (decision === false) { component.handleInput(ESC); return; }
           const label = decision === true ? "确认" : typeof decision === "string" ? decision : "其他";
-          const index = typeof decision === "object" ? choices.findIndex((choice) => choice.startsWith("其他（")) : choices.indexOf(label);
+          // 自己写的那一行默认叫"其他（自己输入）"，有的窗口改了名字（如"返工（自己输入要改什么）"），总在最后一行
+          const index = typeof decision === "object" ? (choices.findIndex((choice) => choice.startsWith("其他（")) + 1 || choices.length) - 1 : choices.indexOf(label);
           if (index < 0) throw new Error(`窗口里没有选项：${label}`);
           for (let i = cursor; i < index; i++) component.handleInput(DOWN);
           for (let i = cursor; i > index; i--) component.handleInput(UP);

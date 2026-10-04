@@ -119,6 +119,8 @@ export interface InstalledHost {
   panelLines(width?: number): string[];
   /** 模拟用户在终端按键（输入框为空时）。 */
   press(data: string): void;
+  /** 主代理针对面板事项弹出问答窗口时扮演用户作答；不设或返回 undefined 时按 Esc。 */
+  answerPanelWindow?: (window: ShownWindow) => WindowDecision | undefined;
   close(): Promise<void>;
 }
 
@@ -180,6 +182,11 @@ export async function startInstalledHost(options: { installed: string; repo: str
     input: async (title) => { dialogs.push({ kind: "input", title, answer: undefined, at: Date.now() }); return undefined; },
     editor: async () => undefined,
     custom: answeringUi((window) => {
+      if (window.title.startsWith("事项 · ")) {
+        const decision = host.answerPanelWindow?.(window) ?? false;
+        dialogs.push({ kind: "select", title: window.title, message: window.text, options: window.choices, answer: decision, at: Date.now() });
+        return decision;
+      }
       if (window.title.startsWith("提问 · ")) {
         const decision = answerQuestion(window);
         dialogs.push({ kind: "select", title: window.title, message: window.text, options: window.choices, answer: decision, at: Date.now() });
@@ -210,7 +217,7 @@ export async function startInstalledHost(options: { installed: string; repo: str
     else if (event.type === "agent_end") modelEvents.push({ type: event.type, detail: `willRetry=${event.willRetry}`, at });
   });
 
-  return {
+  const host: InstalledHost = {
     session, dialogs, notifications, modelEvents, sideCalls,
     panelLines: (width = 160) => panel?.render(width) ?? [],
     press: (data) => { for (const handler of inputHandlers) handler(data); },
@@ -220,4 +227,5 @@ export async function startInstalledHost(options: { installed: string; repo: str
       session.dispose();
     },
   };
+  return host;
 }
