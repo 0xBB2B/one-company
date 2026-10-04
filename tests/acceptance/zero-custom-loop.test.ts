@@ -250,16 +250,19 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC13：复制默认 wo
   });
 }, 100 * 60_000);
 
-/** 预埋的错误：空中按 Shift 也加速，且有一条测试断言这个错误行为；用户需求要求空中按 Shift 不改变水平速度。 */
+/** 预埋两处错误：快跑倍率在另一个文件里写成 1.2，空中按 Shift 也加速，且各有一条测试断言错误行为；用户需求要求 1.5 倍、空中不变。 */
+const SEEDED_TUNING = "/** 快跑时水平速度相对行走速度的倍率。 */\nexport const SPRINT_MULTIPLIER = 1.2;\n";
 const SEEDED_MOVEMENT = [
+  "import { SPRINT_MULTIPLIER } from \"./tuning.ts\";",
+  "",
   "export const WALK_SPEED = 4;",
   "",
   "export interface MoveInput { left: boolean; right: boolean; shift?: boolean; grounded?: boolean }",
   "",
-  "/** 每帧水平速度：只按一个方向键时朝该方向走，按住 Shift 时为行走速度的 1.5 倍；同时按或都不按时停下。 */",
+  "/** 每帧水平速度：只按一个方向键时朝该方向走，按住 Shift 时乘以快跑倍率；同时按或都不按时停下。 */",
   "export function horizontalVelocity(input: MoveInput): number {",
   "  if (input.left === input.right) return 0;",
-  "  const speed = input.shift ? WALK_SPEED * 1.5 : WALK_SPEED;",
+  "  const speed = input.shift ? WALK_SPEED * SPRINT_MULTIPLIER : WALK_SPEED;",
   "  return input.right ? speed : -speed;",
   "}",
   "",
@@ -275,8 +278,12 @@ const SEEDED_TEST = [
   "  assert.equal(horizontalVelocity({ left: true, right: true }), 0);",
   "});",
   "",
+  "test(\"快跑为行走速度的 1.2 倍\", () => {",
+  "  assert.equal(horizontalVelocity({ left: false, right: true, shift: true, grounded: true }), WALK_SPEED * 1.2);",
+  "});",
+  "",
   "test(\"空中按 Shift 同样加速\", () => {",
-  "  assert.equal(horizontalVelocity({ left: false, right: true, shift: true, grounded: false }), WALK_SPEED * 1.5);",
+  "  assert.equal(horizontalVelocity({ left: false, right: true, shift: true, grounded: false }), WALK_SPEED * 1.2);",
   "});",
   "",
   "test(\"空中再次按跳跃不重新起跳\", () => {",
@@ -291,11 +298,13 @@ const CODE_ERROR_SCRIPT: UserScript = {
     + "不做体力值，不改跳跃。请整理成需求草稿给我确认。确认后授权你直接实施：创建独立工作区、派 PM 按计划实现、测试和验收，完成后由我验收报告。",
 };
 
-test.skipIf(!config || process.platform !== "darwin")("M9-AC3：样例项目预埋“空中按 Shift 也加速”的代码与断言它的测试，需求要求空中不加速；PM 改正代码与测试，需求始终是批准的第 1 版，以完成关闭", async () => {
+test.skipIf(!config || process.platform !== "darwin")("M9-AC3：样例项目预埋两处错误——tuning.ts 里快跑倍率写成 1.2、空中按 Shift 也加速，各有测试断言错误行为；需求要求 1.5 倍且空中不加速；PM 改正代码与测试，需求始终是批准的第 1 版，以完成关闭", async () => {
   await runLoop("code-error", CODE_ERROR_SCRIPT, async (repo) => {
+    await writeFile(join(repo, "src/player/tuning.ts"), SEEDED_TUNING);
     await writeFile(join(repo, "src/player/movement.ts"), SEEDED_MOVEMENT);
     await writeFile(join(repo, "src/player/movement.test.ts"), SEEDED_TEST);
-    await exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", "commit", "-qam", "快跑初版"], { cwd: repo });
+    await exec("git", ["add", "."], { cwd: repo });
+    await exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", "commit", "-qm", "快跑初版"], { cwd: repo });
   }, async ({ outcome, agentDir, repoId, worktree, evidence }) => {
     expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
     const { requirements, tasks } = withDatabase(repositoryDatabase(join(agentDir, "one-company"), repoId), (db) => ({
