@@ -177,7 +177,7 @@ const PLAN_ADVICE = {
   plan_missing: { why: "本需求还没有计划", next: "先用 propose 提出计划" },
   version_conflict: { why: "计划或需求在读取后已被改动", next: "用 read 读取最新计划，按最新版本号重新提交" },
   unknown_unit: { why: "任务引用了批准正文里不存在的章节", next: "只引用批准正文里的章节编号" },
-  unit_not_authorized: { why: "任务目标不在用户批准的实施范围内", next: "把目标限定在实施授权覆盖的章节；需要扩大范围时请用户调整需求" },
+  unit_not_authorized: { why: "任务目标不在用户批准的实施范围内", next: "这些章节若是用户已确认的约束或说明（如不做事项、边界条件），放进 constraintUnitIds；若确实是要实现的目标，交用户裁决是否授权实施；不要为此修改需求内容" },
   dependency_invalid: { why: "任务的依赖、写入范围或审查设置不合规", next: "按原因改正任务后重新提交" },
   coverage_incomplete: { why: "计划没有覆盖所有实施授权的目标章节", next: "为缺少的章节补任务后再确认" },
   task_not_ready: { why: "任务当前状态不允许这个操作", next: "用 read 查看任务状态，按原因处理后再试" },

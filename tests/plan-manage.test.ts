@@ -77,6 +77,16 @@ test("M7-AC32：任务只能引用获准实施的需求章节，依赖须存在�
     .rejects.toThrow("a 的 docs/prod/x.md 不能由 worker 写入");
 }, 30000);
 
+test("M9：把用户已确认的约束段写成任务目标时，拒绝原因提示约束放进 constraintUnitIds、不要为此修改需求；放进约束后可以提出", async () => {
+  const w = await world({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 不做微信登录 {#scope.out}\n本次不做微信登录。\n" });
+  const pm = await w.tool();
+  const rejected = pm.execute({ action: "propose", tasks: [spec("login", { goalUnitIds: ["goal.login", "scope.out"] }), spec("failure", { goalUnitIds: ["scenario.failure"] })] });
+  await expect(rejected).rejects.toMatchObject({ code: "unit_not_authorized", detail: ["scope.out"], advice: { next: expect.stringContaining("constraintUnitIds") } });
+  await expect(rejected).rejects.toMatchObject({ advice: { next: expect.stringContaining("不要为此修改需求内容") } });
+  const view = await pm.execute({ action: "propose", tasks: [spec("login", { constraintUnitIds: ["scope.out"] }), spec("failure", { goalUnitIds: ["scenario.failure"] })] }) as PlanView;
+  expect(view.plan).toMatchObject({ planVersion: 1 });
+}, 30000);
+
 test("M7-AC6：计划与任务结构在 data.db，任务说明只在私有文件，数据库只留引用与指纹", async () => {
   const w = await world();
   const pm = await w.tool();
