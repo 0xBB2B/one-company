@@ -86,6 +86,14 @@ describe("内置默认团队", () => {
     expect(body("pm")).toContain("任务说明里有项目规范时，计划与各任务的目标、通过条件不得与之冲突");
   });
 
+  test("M8L-AC4：PM 角色说明写明计划被拒后按原因修改重交一次、仍被拒就停下等用户；主会话规则写明打开事项后先分析再用 panel-item 问答窗口给建议、决定类用固定选项登记", async () => {
+    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
+    const pm = roles.find((candidate) => candidate.name === "pm")!.definition!.body;
+    expect(pm).toMatch(/计划提交（propose、update、confirm）被拒时，先读清拒绝原因，按原因修改后重新提交一次[\s\S]*仍被拒时停下/);
+    const main = await readFile(join(defaultRoleDir(), "..", "rules", "01-main-session.md"), "utf8");
+    expect(main).toMatch(/先查运行记录、需求等把原因弄清，再用 `one_company_user_interact` purpose=panel-item[\s\S]*选项文字须用卡片写明的固定文字[\s\S]*purpose=adjudicate 登记[\s\S]*回答只是给你的指示/);
+  });
+
   test("M9：主会话规则写明测试或验收是否正式通过以需求的验收记录为依据并写出处，自己临时跑的测试不算正式通过", async () => {
     const main = await readFile(join(defaultRoleDir(), "..", "rules", "01-main-session.md"), "utf8");
     expect(main).toMatch(/是否正式通过时，以需求的验收记录为依据[\s\S]*docs\/prod 归档里的验收记录[\s\S]*写明出处[\s\S]*临时跑的测试[\s\S]*不能称为正式通过/);

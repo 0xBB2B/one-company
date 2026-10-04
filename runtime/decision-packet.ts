@@ -5,6 +5,7 @@ import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { checked } from "./requirement-contracts.ts";
 import { planRejectionsIn, stallIn } from "./pm-attention.ts";
 import { sessionFilePath } from "./session-records.ts";
+import { ACCEPTANCE_OTHER, FIXED_CHOICES } from "./panel-item-ask.ts";
 import { readVerdictsIn } from "./verdicts.ts";
 import { COMPLETION_REPORTS, CompletionReport, DELIVERY_RECEIPTS, DeliveryReceipt } from "./workflow-close.ts";
 
@@ -14,6 +15,10 @@ export class DecisionPacketError extends Error {
 }
 
 const MODEL_NOTE = "（模型输出，仅供参考，不是用户决定）";
+/** 要登记用户决定的事项：主代理分析后用问答窗口给建议，选项文字须是程序固定的那几条。 */
+function windowLine(itemId: string, version: string, fixed: readonly string[]): string {
+  return `请核对记录、分析后用 one_company_user_interact purpose=panel-item itemId=${itemId} itemVersion=${version} 向用户给出建议，选项文字须依次为：${fixed.map((label) => `「${label}」`).join("、")}（N 填你建议的轮数上限，1 到 1000）`;
+}
 /** 模型写的文字压成一行并加引号，不能换行伪装成程序生成的行。 */
 function quoted(text: string, limit: number): string {
   return `「${text.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]+/g, " ").replace(/[「」]/g, "\"").trim().slice(0, limit)}」`;
@@ -48,12 +53,14 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
       return [...head, `任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`, ...(resize ? [`拆分上限：${task.sizeHold!.join("；")}`] : []), ...attempts,
         resize ? "可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 prod）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
           : "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（经 prod 修改与批准后生效）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。",
-        `请向用户说明情况并询问选择；用户回答后以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 按其原话登记。`].join("\n");
+        windowLine(itemId, item.version, resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry),
+        `用户在窗口里选中或自己写后，以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 登记。`].join("\n");
     }
     if (item.kind === "adjust-requirement") {
       return [...head, "有任务已被用户终止，需求整体暂停。",
         "可选：1 调整需求：修改 prod 并经用户批准新版本，PM 随后自动恢复并重新规划；2 取消或拒绝整个需求。",
-        `请向用户说明并询问；取消或拒绝须以 one_company_user_interact purpose=adjudicate itemId=requirement:${requirementId} itemVersion=requirement:${requirementId}:${requirementVersion} 按用户原话登记，再以返回的 decisionId 调用 workflow_manage close。`].join("\n");
+        windowLine(itemId, item.version, FIXED_CHOICES.requirement),
+        `用户选调整需求时修改草稿并请用户批准新版本；选取消或拒绝时以 one_company_user_interact purpose=adjudicate itemId=requirement:${requirementId} itemVersion=requirement:${requirementId}:${requirementVersion} 登记，再以返回的 decisionId 调用 workflow_manage close。`].join("\n");
     }
     if (item.kind === "acceptance") {
       const report = checked(CompletionReport, db.read<unknown>(COMPLETION_REPORTS, itemId.slice("report:".length))!.data);
@@ -73,7 +80,8 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
         ...report.commits.map((commit) => `  ${commit.sha.slice(0, 12)} ${quoted(commit.subject, 200)}`),
         `PM 的说明${MODEL_NOTE}：${quoted(report.note, 4000)}`,
         "可选：1 验收通过（随后以完成关闭需求）；2 返工（请用户说明要改什么，意见交回 PM）。",
-        `请把报告交给用户阅读并询问选择；用户回答后以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 按其原话登记。`].join("\n");
+        `${windowLine(itemId, item.version, FIXED_CHOICES.acceptance)}；返工意见由用户写在“${ACCEPTANCE_OTHER}”一行`,
+        `用户在窗口里选中或写下返工意见后，以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 登记。`].join("\n");
     }
     const advise = `请读运行记录与批准需求分析原因，再用 one_company_user_interact purpose=panel-item itemId=${itemId} itemVersion=${item.version} 向用户给出建议`;
     const log = sessionFilePath({ ...ref, runId: lease.runId });
@@ -99,6 +107,6 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
     const questionId = itemId.slice("question:".length);
     const question = db.read<{ proposal?: { conclusion?: string } }>("interaction_questions_v1", questionId)?.data;
     return [...head, `问题${MODEL_NOTE}：${question?.proposal?.conclusion ? quoted(question.proposal.conclusion, 400) : "（问题记录不可读）"}`,
-      "请向用户转达该问题，用户答复后按需求确认流程登记。"].join("\n");
+      `请分析后用 one_company_user_interact purpose=panel-item itemId=${itemId} itemVersion=${item.version} 向用户转达该问题并给出建议；用户答复后按需求确认流程处理。`].join("\n");
   });
 }

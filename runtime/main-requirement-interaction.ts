@@ -36,6 +36,7 @@ import { approvalManifestReference } from "./approval-manifest.ts";
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "./adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "./requirement-summary.ts";
 import { askWindow, confirmWindow, mutedLines } from "./question-window.ts";
+import { fixedChoiceIssue, PanelItemAskError, panelItemTarget } from "./panel-item-ask.ts";
 import type { AdjudicationSubject } from "./user-interaction-format.ts";
 import { inspectProdStructure, pageProdText, selectProdSection, PROD_SECTION_ID_PATTERN } from "./prod-view.ts";
 
@@ -58,6 +59,8 @@ interface CapturedInput {
   sessionId: string; expiresAt: number; abort: AbortController;
   /** 用户在主代理的提问窗口里作答：只算回答，不能当作批准或裁决。 */
   fromQuestionWindow?: true;
+  /** 针对面板事项、选项文字由程序固定的窗口回答：只能登记为这一个决定。 */
+  panelDecision?: { itemId: string; itemVersion: string };
 }
 interface PendingResave { permit: CandidateResavePermit; origin: object; operationId: string; requirementId: string; complete: boolean }
 interface ConfirmationRequest extends LoadConfirmationInput { repoId: string; version: number }
@@ -512,7 +515,10 @@ export class MainRequirementInteraction {
    * 存为用户短决定后按记录让任务生效；不清楚时不登记。
    */
   async adjudicate(ctx: ExtensionContext, request: { repoId: string; requirementId: string; itemId: string; itemVersion: string }): Promise<Record<string, unknown>> {
-    if (this.#currentInput(ctx).fromQuestionWindow) denied("window_answer_not_decision");
+    const windowInput = this.#currentInput(ctx);
+    if (windowInput.fromQuestionWindow && (windowInput.panelDecision?.itemId !== request.itemId || windowInput.panelDecision.itemVersion !== request.itemVersion)) {
+      denied("window_answer_not_decision");
+    }
     const host = this.#host(ctx), opened = this.#openedItem, ref = { dataRoot: this.#options.dataRoot, repoId: request.repoId };
     const subject = adjudicationSubject(ref, request.requirementId, request.itemId);
     // 用户看到的是决策包生成时的事项；此后事项已变化，须刷新重看，不能按新状态替用户登记
@@ -679,7 +685,37 @@ export class MainRequirementInteraction {
       unclear.length ? `这次的解读里仍待定的段落：${list(unclear)}；请用户把这些段落说清楚` : ""].filter(Boolean).join("；") || "这次的解读没能确认整份草稿，请用户逐段确认";
   }
   /** 窗口里的回答记成用户这一轮的原话；不走 captureInput，免得本次工具调用的代次失效、结果被当成过期。 */
-  #adoptQuestionAnswer(text: string, host: RequirementManageHostContext, ctx: ExtensionContext): void {
+  /**
+   * 主代理分析完面板事项后用通用问答窗口给出建议。要登记用户决定的事项，选项文字由程序固定，
+   * 用户在窗口里的回答可登记为该决定；其余事项的回答只作为给主代理的指示。
+   */
+  async askPanelItem(ctx: ExtensionContext, request: AskQuestion & { repoId: string; requirementId: string; itemId: string; itemVersion: string }, signal?: AbortSignal) {
+    const host = this.#host(ctx);
+    if (!host.repositories.has(request.repoId)) denied("foreign_repo");
+    if (!ctx.hasUI) denied("question_display_unavailable");
+    let target: ReturnType<typeof panelItemTarget>;
+    try { target = panelItemTarget({ dataRoot: this.#options.dataRoot, repoId: request.repoId }, request.requirementId, request.itemId, request.itemVersion); }
+    catch (error) { if (error instanceof PanelItemAskError) throw new HostAuthorizationError(error.code, error.detail || undefined); throw error; }
+    const issue = target.fixed ? fixedChoiceIssue(target.fixed, request.choices.map((choice) => choice.label)) : null;
+    if (issue) throw new HostAuthorizationError("question_format", issue);
+    const title = await this.#requirementTitle(host, request.repoId, request.requirementId);
+    const caption = `事项 · ${target.label} · ${title ?? request.requirementId}`;
+    const picked = await askWindow(ctx, { caption, question: request.question, rootCheck: request.rootCheck, allowOther: true,
+      ...(target.otherLabel ? { otherLabel: target.otherLabel } : {}), escapeHint: "Esc 暂不回答（事项保留）",
+      choices: request.choices.map((choice) => ({ label: choice.label, description: choice.reason, recommended: choice.recommended === true,
+        ...(choice.recommendedReason ? { recommendedReason: choice.recommendedReason } : {}) })) }, signal);
+    const index = picked ? request.choices.findIndex((choice) => choice.label === picked.choices[0]) : -1;
+    const answer = picked?.other ? { text: picked.other, other: true }
+      : index >= 0 ? { text: `选第 ${index + 1} 项：${request.choices[index]!.label}${request.choices[index]!.recommended ? "（推荐）" : ""}`, choice: index + 1 } : null;
+    if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx, target.decision ?? undefined);
+    const record = this.#snapshot(host, request.repoId, request.requirementId);
+    const decision = answer ? target.decision : null;
+    return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: record.version, epoch: record.data.epoch, itemId: request.itemId,
+      caption, question: request.question, status: answer ? "answered" : "pending", answer, decision,
+      next: !answer ? "用户暂不回答，事项保留" : decision ? `按这个回答以 one_company_user_interact purpose=adjudicate itemId=${decision.itemId} itemVersion=${decision.itemVersion} 登记；回答不是登记选项时按其内容处理`
+        : "这个回答只作为给你的指示，不能登记为批准或裁决；按回答处理，需要转给 PM 时用 agent_manage message" });
+  }
+  #adoptQuestionAnswer(text: string, host: RequirementManageHostContext, ctx: ExtensionContext, panelDecision?: { itemId: string; itemVersion: string }): void {
     const previous = this.#input;
     if (previous) { previous.event.text = ""; previous.abort.abort(); }
     if (this.#timer) clearTimeout(this.#timer);
@@ -688,7 +724,8 @@ export class MainRequirementInteraction {
     this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
     this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
     const expiresAt = this.#now() + (this.#options.inputTtlMs ?? 900_000);
-    this.#input = { event: { source: "interactive", text }, sessionId: host.sessionId, expiresAt, abort: new AbortController(), fromQuestionWindow: true };
+    this.#input = { event: { source: "interactive", text }, sessionId: host.sessionId, expiresAt, abort: new AbortController(), fromQuestionWindow: true,
+      ...(panelDecision ? { panelDecision } : {}) };
     this.#inputTargets = []; this.#addressed.clear(); this.#ctx = ctx;
     this.#timer = setTimeout(() => this.#clearInput(), expiresAt - this.#now()); this.#timer.unref();
   }

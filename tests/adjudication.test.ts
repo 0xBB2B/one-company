@@ -12,6 +12,7 @@ import { checkInterpretation } from "../runtime/user-interaction-format.ts";
 import type { InteractionContext } from "../runtime/user-interaction-format.ts";
 import { RequirementCloseService } from "../runtime/workflow-close.ts";
 import { mainAdjudication } from "./helpers/main-adjudication.ts";
+import { notePlanRejection } from "../runtime/pm-attention.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 60_000 });
@@ -44,7 +45,7 @@ async function world() {
     main.adjudicate(text, entries, target, itemVersion ?? (target === itemId ? version() : `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`), opened);
   const { interaction, ctx } = main;
   const decisions = () => w.db((db) => db.list("short_decisions")).length;
-  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx, windows: main.windows, answerWindows: main.answerWindows };
+  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx, windows: main.windows, answerWindows: main.answerWindows, panelAsk: main.panelAsk, register: main.register };
 }
 
 test("M7-AC35：用户原话选择再给一次机会时登记用户决定，任务回到可派出，事项从概览消失，PM 收到固定告知，按用户上限派出且不能带 retry", async () => {
@@ -451,4 +452,44 @@ test("M7-AC34：两个主窗口同时打开同一事项，先登记的生效，�
   expect(overview.pendingItems.map((item) => item.kind)).toEqual(["adjust-requirement"]);
   const pm = await w.runStore.get(w.pm.runId);
   expect(pm.ok && pm.run.state).not.toBe("stopped");
+});
+
+const choice = (label: string, recommended = false) => ({ label, reason: `${label}的理由`, ...(recommended ? { recommended: true, recommendedReason: "推荐的理由" } : {}) });
+
+test("M8L-AC3：待你裁决经问答窗口给建议：选项文字须与程序固定的一致；用户选中“再给一次机会，轮数上限 3”后按这个回答登记，任务按 3 轮派出", async () => {
+  const w = await world();
+  w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
+  const ask = (labels: string[]) => w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "任务 login 两次未完成，怎么裁决？", rootCheck: "两次都是轮数用完",
+    choices: labels.map((label, index) => choice(label, index === 0)) });
+  await expect(ask(["多给几轮", "调整目标或范围", "终止这个任务"])).rejects.toThrow("「再给一次机会，轮数上限 N」、「调整目标或范围」、「终止这个任务」");
+  await expect(ask(["再给一次机会，轮数上限 1001", "调整目标或范围", "终止这个任务"])).rejects.toThrow("「再给一次机会，轮数上限 N」");
+  w.answerWindows("再给一次机会，轮数上限 3");
+  const answered = await ask(["再给一次机会，轮数上限 3", "调整目标或范围", "终止这个任务"]);
+  expect(answered).toMatchObject({ status: "answered", answer: { text: "选第 1 项：再给一次机会，轮数上限 3（推荐）", choice: 1 }, decision: { itemId: w.itemId, itemVersion: w.version() } });
+  expect(w.windows.at(-1)!.title).toContain("事项 · 待你裁决：任务 login 两次未完成");
+  const result = await w.register(w.itemId, w.version(), [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
+  expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3 });
+});
+
+test("M8L-AC3：主代理撰写选项的事项（计划两次被拒）窗口里的回答只作为指示，不能拿去登记任务裁决", async () => {
+  const w = await world();
+  for (const reason of ["原因一", "原因二"]) notePlanRejection({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, w.pm.runId, { action: "propose", reason, at: Date.now() });
+  const planItem = `plan:${w.fixture.requirementId}`;
+  w.answerWindows("告诉 PM 改用约束");
+  const answered = await w.panelAsk({ itemId: planItem, itemVersion: `${planItem}:2`, question: "PM 两次提交计划都被拒，怎么处理？", rootCheck: "约束被写成了目标",
+    choices: [choice("告诉 PM 改用约束", true), choice("调整需求")] });
+  expect(answered).toMatchObject({ status: "answered", decision: null });
+  await expect(w.register(w.itemId, w.version(), [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:terminate"])]))
+    .rejects.toThrow("这只算回答，不能当作批准或裁决");
+});
+
+test("M8L-AC3：取消或拒绝整个需求用 itemId=requirement:<编号> 的固定选项请用户确认，回答可登记为这个需求级决定", async () => {
+  const w = await world();
+  const target = `requirement:${w.fixture.requirementId}`, version = `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`;
+  w.answerWindows("取消需求");
+  const answered = await w.panelAsk({ itemId: target, itemVersion: version, question: "确认取消这个需求吗？", rootCheck: "用户在上一个窗口选了取消需求",
+    choices: [choice("调整需求"), choice("取消需求", true), choice("拒绝需求")] });
+  expect(answered).toMatchObject({ status: "answered", answer: { text: "选第 2 项：取消需求（推荐）" }, decision: { itemId: target, itemVersion: version } });
+  await expect(w.panelAsk({ itemId: target, itemVersion: `${target}:1`, question: "确认取消吗？", rootCheck: "x",
+    choices: [choice("调整需求"), choice("取消需求", true), choice("拒绝需求")] })).rejects.toThrow("事项在用户做决定后已变化");
 });
