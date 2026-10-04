@@ -249,3 +249,68 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC13：复制默认 wo
     expect(runs.filter((run) => run.role === "one-company.explore").every((run) => run.writePaths.length === 0)).toBe(true);
   });
 }, 100 * 60_000);
+
+/** 预埋的错误：空中按 Shift 也加速，且有一条测试断言这个错误行为；用户需求要求空中按 Shift 不改变水平速度。 */
+const SEEDED_MOVEMENT = [
+  "export const WALK_SPEED = 4;",
+  "",
+  "export interface MoveInput { left: boolean; right: boolean; shift?: boolean; grounded?: boolean }",
+  "",
+  "/** 每帧水平速度：只按一个方向键时朝该方向走，按住 Shift 时为行走速度的 1.5 倍；同时按或都不按时停下。 */",
+  "export function horizontalVelocity(input: MoveInput): number {",
+  "  if (input.left === input.right) return 0;",
+  "  const speed = input.shift ? WALK_SPEED * 1.5 : WALK_SPEED;",
+  "  return input.right ? speed : -speed;",
+  "}",
+  "",
+].join("\n");
+const SEEDED_TEST = [
+  "import { test } from \"node:test\";",
+  "import assert from \"node:assert/strict\";",
+  "import { horizontalVelocity, WALK_SPEED } from \"./movement.ts\";",
+  "import { pressJump } from \"./jump.ts\";",
+  "",
+  "test(\"按右键向右走，同时按两个方向键停下\", () => {",
+  "  assert.equal(horizontalVelocity({ left: false, right: true }), WALK_SPEED);",
+  "  assert.equal(horizontalVelocity({ left: true, right: true }), 0);",
+  "});",
+  "",
+  "test(\"空中按 Shift 同样加速\", () => {",
+  "  assert.equal(horizontalVelocity({ left: false, right: true, shift: true, grounded: false }), WALK_SPEED * 1.5);",
+  "});",
+  "",
+  "test(\"空中再次按跳跃不重新起跳\", () => {",
+  "  const airborne = pressJump({ grounded: true, verticalSpeed: 0 });",
+  "  assert.deepEqual(pressJump({ ...airborne, verticalSpeed: 3 }), { ...airborne, verticalSpeed: 3 });",
+  "});",
+  "",
+].join("\n");
+const CODE_ERROR_SCRIPT: UserScript = {
+  ...SCRIPT,
+  requirement: "我要给角色加快跑：按住 Shift 并按方向键时，水平速度变为行走速度的 1.5 倍；松开 Shift 立即恢复行走速度；角色在空中时按 Shift 不改变水平速度。"
+    + "不做体力值，不改跳跃。请整理成需求草稿给我确认。确认后授权你直接实施：创建独立工作区、派 PM 按计划实现、测试和验收，完成后由我验收报告。",
+};
+
+test.skipIf(!config || process.platform !== "darwin")("M9-AC3：样例项目预埋“空中按 Shift 也加速”的代码与断言它的测试，需求要求空中不加速；PM 改正代码与测试，需求始终是批准的第 1 版，以完成关闭", async () => {
+  await runLoop("code-error", CODE_ERROR_SCRIPT, async (repo) => {
+    await writeFile(join(repo, "src/player/movement.ts"), SEEDED_MOVEMENT);
+    await writeFile(join(repo, "src/player/movement.test.ts"), SEEDED_TEST);
+    await exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", "commit", "-qam", "快跑初版"], { cwd: repo });
+  }, async ({ outcome, agentDir, repoId, worktree, evidence }) => {
+    expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
+    const { requirements, tasks } = withDatabase(repositoryDatabase(join(agentDir, "one-company"), repoId), (db) => ({
+      requirements: db.list<RequirementRecord>("requirements").map((row) => row.data), tasks: db.list<TaskRecord>(TASKS).map((row) => row.data) }));
+    expect(requirements).toHaveLength(1);
+    const requirement = requirements[0]!;
+    expect(requirement).toMatchObject({ revision: 1, close: { reason: "completed" } });
+    expect(requirement.saved?.hash).toBe(requirement.approved?.hash);
+    expect(tasks.map((task) => task.status)).not.toContain("awaiting_user");
+    const probe = "import { horizontalVelocity, WALK_SPEED } from './src/player/movement.ts';"
+      + "console.log(JSON.stringify({ air: horizontalVelocity({ left: false, right: true, shift: true, grounded: false }), ground: horizontalVelocity({ left: false, right: true, shift: true, grounded: true }), walk: WALK_SPEED }));";
+    const behavior = JSON.parse((await exec(process.execPath, ["--input-type=module", "-e", probe], { cwd: worktree! })).stdout);
+    const npmTest = await exec("npm", ["test"], { cwd: worktree! }).then(() => 0, (error: { code?: number }) => error.code ?? 1);
+    await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ requirement: { revision: requirement.revision, close: requirement.close }, taskStatuses: tasks.map((task) => task.status), behavior, npmTest }, null, 2)}\n`, { mode: 0o600 });
+    expect(behavior).toEqual({ air: behavior.walk, ground: behavior.walk * 1.5, walk: behavior.walk });
+    expect(npmTest).toBe(0);
+  });
+}, 100 * 60_000);
