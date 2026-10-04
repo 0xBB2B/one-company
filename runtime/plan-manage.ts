@@ -551,7 +551,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       return result;
     } catch (error) {
       if (grant.lease && error instanceof PlanManageError && PLAN_CONTENT_CODES.has(error.code)) {
-        notePlanRejection(config, grant.requirementId, grant.runId, { action, reason: error.advice.why, at: now() });
+        notePlanRejection(config, grant.requirementId, grant.runId, { action, reason: PLAN_ADVICE[error.code].why, detail: error.detail.join("；"), at: now() });
       }
       throw error;
     }

@@ -473,7 +473,7 @@ test("M8L-AC3：待你裁决经问答窗口给建议：选项文字须与程序�
 
 test("M8L-AC3：主代理撰写选项的事项（计划两次被拒）窗口里的回答只作为指示，不能拿去登记任务裁决", async () => {
   const w = await world();
-  for (const reason of ["原因一", "原因二"]) notePlanRejection({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, w.pm.runId, { action: "propose", reason, at: Date.now() });
+  for (const reason of ["原因一", "原因二"]) notePlanRejection({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, w.pm.runId, { action: "propose", reason, detail: "", at: Date.now() });
   const planItem = `plan:${w.fixture.requirementId}`;
   w.answerWindows("告诉 PM 改用约束");
   const answered = await w.panelAsk({ itemId: planItem, itemVersion: `${planItem}:2`, question: "PM 两次提交计划都被拒，怎么处理？", rootCheck: "约束被写成了目标",

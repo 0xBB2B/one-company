@@ -965,7 +965,7 @@ export class RunManager {
     const rejections = withDatabase(this.database, (db) => planRejectionsIn(db, requirementId));
     if (rejections?.pmRunId === runId && rejections.count === 1 && !rejections.autoWoken) {
       markPlanRejectionWoken(this.attentionRef, requirementId);
-      entry.handle.prompt(`计划提交被拒：${rejections.rejections.map((rejection) => rejection.reason).join("；")}。请读清原因，按原因修改计划后重新提交；再被拒会交用户决定。`);
+      entry.handle.prompt(`计划提交被拒：${rejections.rejections.map((rejection) => `${rejection.reason}${rejection.detail ? `：${rejection.detail}` : ""}`).join("；")}。请读清原因，按原因修改计划后重新提交；再被拒会交用户决定。`);
       return;
     }
     if (rejections?.pmRunId === runId && rejections.count >= 2 && lastText) notePlanRejectionText(this.attentionRef, requirementId, lastText.slice(0, 2000));

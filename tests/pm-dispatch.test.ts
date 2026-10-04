@@ -257,7 +257,7 @@ test("M8L-AC1：计划第 1 次被拒后 PM 停下时程序自动唤醒它一次
   scriptReplies(w.provider, [{ type: "text", text: "计划被拒，先停下。", chunkDelayMs: 400 }, { type: "text", text: "我再想想。" }, { type: "text", text: "好的" }]);
   const { runId } = await w.dispatch();
   await until(() => w.provider.requests.length === 1);
-  notePlanRejection(ref, w.requirementId, runId, { action: "propose", reason: "任务目标不在用户批准的实施范围内：features.air", at: Date.now() });
+  notePlanRejection(ref, w.requirementId, runId, { action: "propose", reason: "任务目标不在用户批准的实施范围内", detail: "features.air", at: Date.now() });
   await until(() => w.provider.requests.length === 2);
   const woken = JSON.stringify(w.provider.requests[1]!.messages.at(-1));
   expect(woken).toContain("features.air");
@@ -275,7 +275,7 @@ test("M8L-AC1：计划已被拒 2 次时 PM 停下不再自动唤醒，也不出
   scriptReplies(w.provider, [{ type: "text", text: "两次都被拒，等用户决定。", chunkDelayMs: 400 }]);
   const { runId } = await w.dispatch();
   await until(() => w.provider.requests.length === 1);
-  for (const reason of ["原因一", "原因二"]) notePlanRejection(ref, w.requirementId, runId, { action: "propose", reason, at: Date.now() });
+  for (const reason of ["原因一", "原因二"]) notePlanRejection(ref, w.requirementId, runId, { action: "propose", reason, detail: "", at: Date.now() });
   // 回复延迟 400 毫秒才结束这一轮，再多等一段确认这一轮结束后既没有被唤醒也没有登记停下提醒
   await new Promise((resolve) => setTimeout(resolve, 1200));
   expect(w.provider.requests).toHaveLength(1);

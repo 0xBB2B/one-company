@@ -65,7 +65,7 @@ test("M8L-AC1：PM 的计划提交因计划内容被拒时逐次登记原因，�
   await expect(pm.execute({ action: "propose", tasks: [spec("x", { goalUnitIds: ["goal.unknown"] })] })).rejects.toMatchObject({ code: "unknown_unit" });
   await expect(pm.execute({ action: "propose", tasks: [spec("meta", { goalUnitIds: ["metadata"] })] })).rejects.toMatchObject({ code: "unit_not_authorized" });
   expect(rejections()).toMatchObject({ pmRunId: w.fixture.lease.runId, count: 2, autoWoken: false,
-    rejections: [{ action: "propose", reason: expect.stringContaining("goal.unknown") }, { action: "propose", reason: expect.stringContaining("metadata") }] });
+    rejections: [{ action: "propose", reason: "任务引用了批准正文里不存在的章节", detail: expect.stringContaining("goal.unknown") }, { action: "propose", reason: "任务目标不在用户批准的实施范围内", detail: expect.stringContaining("metadata") }] });
   await pm.execute({ action: "propose", tasks: [spec("login")] });
   expect(rejections()).toBeNull();
 }, 30000);

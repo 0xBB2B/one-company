@@ -4,7 +4,8 @@ import type { LocalDatabase, SyncResult } from "./database.ts";
 export const PLAN_REJECTIONS = "pm_plan_rejections";
 export const PM_STALLS = "pm_stalls";
 
-export interface PlanRejection { action: string; reason: string; at: number }
+/** reason 是程序固定的拒绝原因；detail 是拒绝时带出的明细，可能含 PM 提交的内容。 */
+export interface PlanRejection { action: string; reason: string; detail: string; at: number }
 /** count 是这个 PM 连续被拒的总次数，rejections 只留最近两次的原因。 */
 export interface PlanRejections { pmRunId: string; count: number; rejections: PlanRejection[]; autoWoken: boolean; lastText?: string }
 export interface PmStall { pmRunId: string; at: number; lastText: string; log: string }

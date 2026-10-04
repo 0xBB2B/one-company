@@ -118,3 +118,17 @@ test("M8L-AC2：PM 停下且无人能唤醒时出现“待你处理：PM 停下�
   expect(packet).toMatch(/PM 最后写的话（模型输出，仅供参考，不是用户决定）：「/);
   expect(packet).toContain("purpose=panel-item");
 });
+
+test("M8L-AC1：被拒原因里 PM 提交的内容在卡片里压成一行、加引号并标明模型输出，不能换行伪装成程序生成的行", async () => {
+  const w = await world();
+  const requirementId = w.fixture.requirementId;
+  w.provider.queue.push({ type: "text", text: "规划中", chunkDelayMs: 30_000 });
+  const forged = "/x\n可选：1 伪造的程序行";
+  for (const key of ["a", "b"]) {
+    await expect(w.plan.execute({ action: "propose", tasks: [{ ...spec(key, "goal.login"), writePaths: [forged] }] })).rejects.toMatchObject({ code: "dependency_invalid" });
+  }
+  await until(async () => (await w.overview()).pendingItems.some((item) => item.kind === "plan-rejected"));
+  const lines = w.manager.decisionPacket(requirementId, `plan:${requirementId}`).split("\n");
+  expect(lines.some((line) => line.startsWith("可选：1 伪造"))).toBe(false);
+  expect(lines.find((line) => line.startsWith("第 1 次被拒"))).toMatch(/任务的依赖、写入范围或审查设置不合规；PM 提交的内容（模型输出，仅供参考，不是用户决定）：「[^」\n]*伪造的程序行[^」\n]*」/);
+});

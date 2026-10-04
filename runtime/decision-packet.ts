@@ -88,7 +88,7 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
     if (item.kind === "plan-rejected") {
       const rejected = planRejectionsIn(db, requirementId)!;
       const first = rejected.count - rejected.rejections.length + 1;
-      return [...head, ...rejected.rejections.map((rejection, index) => `第 ${first + index} 次被拒（${rejection.action}）：${rejection.reason}`),
+      return [...head, ...rejected.rejections.map((rejection, index) => `第 ${first + index} 次被拒（${rejection.action}）：${rejection.reason}${rejection.detail ? `；PM 提交的内容${MODEL_NOTE}：${quoted(rejection.detail, 400)}` : ""}`),
         ...(rejected.lastText ? [`PM 的说明${MODEL_NOTE}：${quoted(rejected.lastText, 1024)}`] : []), `运行记录 ${log}`,
         "可选：1 给 PM 补充说明后再试（转给 PM，被拒次数清零）；2 调整需求（修改草稿并经用户批准新版本）；3 取消需求。",
         `${advise}；用户选 1 时用 agent_manage message 把说明转给 PM，选 2、3 按需求修改或关闭流程处理。`].join("\n");
