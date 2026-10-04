@@ -22,6 +22,7 @@ import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts"
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { createFakeTimeSource } from "./helpers/fake-clock.ts";
+import { notePlanRejection, planRejectionsIn, stallIn } from "../runtime/pm-attention.ts";
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -236,4 +237,48 @@ test("M8D-AC4：主代理给 PM 发消息时 PM 收到程序加的主代理转�
   await w.manager.resume(runId);
   await until(() => w.provider.requests.length === 3);
   expect(JSON.stringify(w.provider.requests[2]!.messages)).toContain("登录页先不做记住我");
+}, 30000);
+
+test("M8L-AC2：PM 一轮结束、没有在跑的子任务和待处理事项时登记停下提醒，带最后的话与运行记录；被唤醒后旧提醒清掉，再停下时按新的一轮重记", async () => {
+  const w = await world();
+  const stall = () => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => stallIn(db, w.requirementId));
+  scriptReplies(w.provider, [{ type: "text", text: "接手完成，接下来规划。" }, { type: "text", text: "收到，继续规划。" }]);
+  const { runId } = await w.dispatch();
+  await until(() => stall() !== null);
+  expect(stall()).toMatchObject({ pmRunId: runId, lastText: "接手完成，接下来规划。", log: expect.stringContaining(runId) });
+  await w.manager.messagePm({ requirementId: w.requirementId, text: "继续" });
+  await until(() => stall()?.lastText === "收到，继续规划。");
+}, 30000);
+
+test("M8L-AC1：计划第 1 次被拒后 PM 停下时程序自动唤醒它一次并附被拒原因；唤醒后仍停下转为停下提醒；主代理转话后被拒次数清零", async () => {
+  const w = await world();
+  const ref = { dataRoot: w.dataRoot, repoId: w.repoId };
+  const read = <T>(get: (db: Parameters<typeof stallIn>[0]) => T) => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), get);
+  scriptReplies(w.provider, [{ type: "text", text: "计划被拒，先停下。", chunkDelayMs: 400 }, { type: "text", text: "我再想想。" }, { type: "text", text: "好的" }]);
+  const { runId } = await w.dispatch();
+  await until(() => w.provider.requests.length === 1);
+  notePlanRejection(ref, w.requirementId, runId, { action: "propose", reason: "任务目标不在用户批准的实施范围内：features.air", at: Date.now() });
+  await until(() => w.provider.requests.length === 2);
+  const woken = JSON.stringify(w.provider.requests[1]!.messages.at(-1));
+  expect(woken).toContain("features.air");
+  expect(woken).toContain("按原因修改");
+  await until(() => read((db) => stallIn(db, w.requirementId)) !== null);
+  expect(read((db) => planRejectionsIn(db, w.requirementId))).toMatchObject({ count: 1, autoWoken: true });
+  expect(w.provider.requests).toHaveLength(2);
+  await w.manager.messagePm({ requirementId: w.requirementId, text: "把空中验收放进约束段" });
+  expect(read((db) => planRejectionsIn(db, w.requirementId))).toBeNull();
+}, 30000);
+
+test("M8L-AC1：计划已被拒 2 次时 PM 停下不再自动唤醒，也不出停下提醒，由“待你裁决”事项交用户", async () => {
+  const w = await world();
+  const ref = { dataRoot: w.dataRoot, repoId: w.repoId };
+  scriptReplies(w.provider, [{ type: "text", text: "两次都被拒，等用户决定。", chunkDelayMs: 400 }]);
+  const { runId } = await w.dispatch();
+  await until(() => w.provider.requests.length === 1);
+  for (const reason of ["原因一", "原因二"]) notePlanRejection(ref, w.requirementId, runId, { action: "propose", reason, at: Date.now() });
+  // 回复延迟 400 毫秒才结束这一轮，再多等一段确认这一轮结束后既没有被唤醒也没有登记停下提醒
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  expect(w.provider.requests).toHaveLength(1);
+  expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => stallIn(db, w.requirementId))).toBeNull();
+  expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => planRejectionsIn(db, w.requirementId))).toMatchObject({ count: 2, lastText: "两次都被拒，等用户决定。" });
 }, 30000);

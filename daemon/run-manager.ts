@@ -50,6 +50,7 @@ import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/res
 import { toPiTool } from "../runtime/role-tools.ts";
 import { AdvisedError, adviceOf, failureText, toolFailure } from "../runtime/tool-failure.ts";
 import { sessionFilePath } from "../runtime/session-records.ts";
+import { clearPlanRejections, clearStall, markPlanRejectionWoken, notePlanRejectionText, noteStall, planRejectionsIn } from "../runtime/pm-attention.ts";
 import { defaultPageGetter, defaultWebDeps, webFetch, webSearch } from "../runtime/web-access.ts";
 import type { PageGetter, WebDeps } from "../runtime/web-access.ts";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -426,6 +427,14 @@ export class RunManager {
     handle.events.on("turn", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     this.trackUsage(run.id, handle);
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishPm(run.id, "failed", reason); });
+    let lastText = "";
+    handle.events.on("transcript_message", (event: { type: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } }) => {
+      if (event.type !== "message_end" || event.message?.role !== "assistant") return;
+      const text = (event.message.content ?? []).flatMap((block) => block.type === "text" && block.text ? [block.text] : []).join("\n").trim();
+      if (text) lastText = text;
+    });
+    handle.events.on("turn_counted", () => { try { clearStall(this.attentionRef, input.requirementId); } catch { /* 下次停下时整体覆盖 */ } });
+    handle.events.on("idle", () => { void this.pmStopped(run.id, lastText).catch(() => {}); });
     await this.runStore.update(run.id, { state: "running" });
     const running = await this.runStore.get(run.id);
     if (running.ok) this.emitRun(running.run);
@@ -945,6 +954,29 @@ export class RunManager {
     return titles;
   }
 
+  private get attentionRef() { return { dataRoot: this.options.dataRoot, repoId: this.repoId }; }
+
+  /** PM 一轮结束后没有任何东西会再唤醒它时：计划第 1 次被拒就自动唤醒一次并附上原因，否则登记停下提醒交用户经面板处理。 */
+  private async pmStopped(runId: string, lastText: string): Promise<void> {
+    await new Promise((resolve) => setImmediate(resolve));
+    const entry = this.sessions.get(runId);
+    if (!entry?.pm || entry.handle.state() !== "running" || !entry.handle.idle()) return;
+    const requirementId = entry.pm.lease.requirementId;
+    const rejections = withDatabase(this.database, (db) => planRejectionsIn(db, requirementId));
+    if (rejections?.pmRunId === runId && rejections.count === 1 && !rejections.autoWoken) {
+      markPlanRejectionWoken(this.attentionRef, requirementId);
+      entry.handle.prompt(`计划提交被拒：${rejections.rejections.map((rejection) => rejection.reason).join("；")}。请读清原因，按原因修改计划后重新提交；再被拒会交用户决定。`);
+      return;
+    }
+    if (rejections?.pmRunId === runId && rejections.count >= 2 && lastText) notePlanRejectionText(this.attentionRef, requirementId, lastText.slice(0, 2000));
+    const overview = await this.overviewOf(runId);
+    if (!overview || overview.pendingItems.some((item) => item.kind !== "stall")) return;
+    const children = (await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER })).items;
+    if (children.some((child) => child.parentRunId === runId && !isTerminalState(child.state))) return;
+    noteStall(this.attentionRef, requirementId, { pmRunId: runId, at: Date.now(), lastText: lastText.slice(0, 2000), log: this.runLog(runId) });
+    await this.refreshOverview(runId);
+  }
+
   /** 计算 PM 面板概览：只读持久记录与本进程会话状态，不改 PM 行为。 */
   private async overviewOf(pmRunId: string): Promise<PmOverview | null> {
     const entry = this.sessions.get(pmRunId);
@@ -1100,6 +1132,7 @@ export class RunManager {
     const entry = [...this.sessions.values()].find((candidate) => candidate.pm?.lease.requirementId === input.requirementId
       && ["running", "paused", "paused_network"].includes(candidate.handle.state()));
     if (!entry) throw protocolError("pm_not_running", "该需求没有运行中或暂停中的 PM", "需要 PM 处理时先派出 PM；需求内容的改动走修改草稿并请用户批准");
+    clearPlanRejections(this.attentionRef, input.requirementId);
     entry.handle.prompt(`${PM_MESSAGE_LABEL}\n\n${input.text}`);
     return { delivered: entry.handle.state() === "running" ? "now" : "after_resume" };
   }

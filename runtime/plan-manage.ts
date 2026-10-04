@@ -14,6 +14,7 @@ import { VerificationPerformance } from "./check-round.ts";
 import { authorizeToolAction, writePathAllowed } from "./core-permissions.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
+import { clearPlanRejections, notePlanRejection, PLAN_CONTENT_CODES } from "./pm-attention.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
 import { checked, hash, id, object, PmLease, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
@@ -541,12 +542,18 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     let params: PlanManageParameters;
     try { params = checkServiceInput(PLAN_MANAGE_PARAMETERS, input); } catch (error) { throw new PlanManageError("invalid_shape", [(error as Error).message]); }
     host(params.action);
-    switch (params.action) {
-      case "read": return read();
-      case "propose": return propose(params.tasks);
-      case "update": return update(params);
-      case "confirm": return confirm(params.planVersion);
-      case "assess-update": return assessUpdate(params);
+    if (params.action === "read") return read();
+    if (params.action === "assess-update") return assessUpdate(params);
+    const action = params.action;
+    try {
+      const result = action === "propose" ? await propose(params.tasks) : action === "update" ? await update(params) : await confirm(params.planVersion);
+      if (grant.lease) clearPlanRejections(config, grant.requirementId);
+      return result;
+    } catch (error) {
+      if (grant.lease && error instanceof PlanManageError && PLAN_CONTENT_CODES.has(error.code)) {
+        notePlanRejection(config, grant.requirementId, grant.runId, { action, reason: error.advice.why, at: now() });
+      }
+      throw error;
     }
   }
   return { execute, dispose() { disposed = true; } };

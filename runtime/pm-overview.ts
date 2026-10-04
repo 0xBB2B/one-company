@@ -5,12 +5,13 @@ import { implementScope, readPlanIn, stalledStage, terminationPending } from "./
 import type { TaskRecord } from "./plan-manage.ts";
 import { latestPmSubmission } from "./pm-intake-runtime.ts";
 import { PmIntakeStore } from "./pm-intake-store.ts";
+import { planRejectionsIn, stallIn } from "./pm-attention.ts";
 import { latestPrototype, prototypeItemId, prototypeItemVersion } from "./prototype.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import type { RunRecord } from "./run-store.ts";
 import { pendingReportIn } from "./workflow-close.ts";
 
-export type PendingItemKind = "adjudicate" | "intake-review" | "question" | "adjust-requirement" | "acceptance" | "prototype";
+export type PendingItemKind = "adjudicate" | "intake-review" | "question" | "adjust-requirement" | "acceptance" | "prototype" | "plan-rejected" | "stall";
 export interface PendingItem {
   itemId: string;
   kind: PendingItemKind;
@@ -127,6 +128,13 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
   }
   const report = input.record.lifecycle === "active" ? pendingReportIn(input.db, input.repoId, input.lease.requirementId) : null;
   if (report) items.push({ itemId: `report:${report.data.reportId}`, kind: "acceptance", label: "待你验收：PM 完成报告", version: `report:${report.data.reportId}:${report.version}` });
+  const rejected = planRejectionsIn(input.db, input.lease.requirementId);
+  if (rejected?.pmRunId === input.lease.runId && rejected.count >= 2) items.push({ itemId: `plan:${input.lease.requirementId}`, kind: "plan-rejected",
+    label: "待你裁决：PM 计划两次提交被拒", version: `plan:${input.lease.requirementId}:${rejected.count}` });
+  // 已有别的事项交用户处理时，停下提醒是多余的
+  const stall = stallIn(input.db, input.lease.requirementId);
+  if (stall?.pmRunId === input.lease.runId && items.length === 0) items.push({ itemId: `stall:${input.lease.runId}`, kind: "stall",
+    label: "待你处理：PM 停下了，没有在跑的子任务", version: `stall:${input.lease.runId}:${stall.at}` });
   return items;
 }
 
@@ -137,7 +145,13 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
     const running = input.children.filter((child) => ACTIVE_CHILD.has(child.state));
     return running.length ? `暂停中：等待 ${running.map((child) => ROLE_LABEL[child.role ?? ""] ?? "子代理").join("、")} 结束` : "暂停中：等待当前工具结束";
   }
-  if (status === "waiting") return items.some((item) => item.kind === "acceptance") ? "等待你验收完成报告"
+  const rejected = planRejectionsIn(input.db, input.lease.requirementId);
+  const rejectedCount = rejected?.pmRunId === input.lease.runId ? rejected.count : 0;
+  if (rejectedCount > 0 && !input.children.some((child) => ACTIVE_CHILD.has(child.state))) {
+    return `规划中（计划提交被拒 ${rejectedCount} 次，${rejectedCount >= 2 ? "等你决定" : "PM 正在按原因修改"}）`;
+  }
+  // 停下提醒不改第二行：仍按 PM 停下时的真实进度显示
+  if (status === "waiting" && items.some((item) => item.kind !== "stall")) return items.some((item) => item.kind === "acceptance") ? "等待你验收完成报告"
     : items.every((item) => item.kind === "prototype") ? "等待你确认原型" : "等待你的决定";
   if (!reviewPassedFor(input)) return items.some((item) => item.kind === "intake-review") ? "等待核对接手理解" : "接手中";
   if (input.record.pendingRevision !== null) return `复核批准更新 r${input.record.pendingRevision}`;

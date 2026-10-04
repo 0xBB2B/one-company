@@ -3,6 +3,8 @@ import { readPlanIn } from "./plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { checked } from "./requirement-contracts.ts";
+import { planRejectionsIn, stallIn } from "./pm-attention.ts";
+import { sessionFilePath } from "./session-records.ts";
 import { readVerdictsIn } from "./verdicts.ts";
 import { COMPLETION_REPORTS, CompletionReport, DELIVERY_RECEIPTS, DeliveryReceipt } from "./workflow-close.ts";
 
@@ -72,6 +74,24 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
         `PM 的说明${MODEL_NOTE}：${quoted(report.note, 4000)}`,
         "可选：1 验收通过（随后以完成关闭需求）；2 返工（请用户说明要改什么，意见交回 PM）。",
         `请把报告交给用户阅读并询问选择；用户回答后以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 按其原话登记。`].join("\n");
+    }
+    const advise = `请读运行记录与批准需求分析原因，再用 one_company_user_interact purpose=panel-item itemId=${itemId} itemVersion=${item.version} 向用户给出建议`;
+    const log = sessionFilePath({ ...ref, runId: lease.runId });
+    if (item.kind === "plan-rejected") {
+      const rejected = planRejectionsIn(db, requirementId)!;
+      const first = rejected.count - rejected.rejections.length + 1;
+      return [...head, ...rejected.rejections.map((rejection, index) => `第 ${first + index} 次被拒（${rejection.action}）：${rejection.reason}`),
+        ...(rejected.lastText ? [`PM 的说明${MODEL_NOTE}：${quoted(rejected.lastText, 1024)}`] : []), `运行记录 ${log}`,
+        "可选：1 给 PM 补充说明后再试（转给 PM，被拒次数清零）；2 调整需求（修改草稿并经用户批准新版本）；3 取消需求。",
+        `${advise}；用户选 1 时用 agent_manage message 把说明转给 PM，选 2、3 按需求修改或关闭流程处理。`].join("\n");
+    }
+    if (item.kind === "stall") {
+      const stall = stallIn(db, requirementId)!;
+      const plan = readPlanIn(db, requirementId)?.plan;
+      return [...head, "PM 这一轮已结束：没有派出任务，没有在跑的子任务，也没有待你处理的事项；没有新的消息或事件，PM 不会自己继续。",
+        `停下时间 ${new Date(stall.at).toISOString()} · 计划 ${plan ? `v${plan.planVersion}${plan.confirmedVersion === null ? " 未确认" : " 已确认"}` : "未提出"} · 运行记录 ${stall.log}`,
+        `PM 最后写的话${MODEL_NOTE}：${stall.lastText ? quoted(stall.lastText, 1024) : "（没有写）"}`,
+        `${advise}；能由 PM 自己处理的用 agent_manage message 把说明转给 PM，需要用户决定的向用户说明并询问。`].join("\n");
     }
     if (item.kind === "intake-review") {
       return [...head, "PM 已提交接手理解，等待主代理核对。", "请用 one_company_user_interact purpose=pm-intake 开始接手核对。"].join("\n");

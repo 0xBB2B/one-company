@@ -30,6 +30,8 @@ test("M7-AC33/AC34：接手理解待核对时显示待办并暂停计时，核�
   await until(async () => (await w.run(w.pm.runId)).pausedAt !== undefined);
   expect(w.emit.mock.calls.some(([event]) => event === "pm.overview.changed")).toBe(true);
 
+  // PM 收到核对结果后在规划（回复要很久才结束），不是停下不动
+  w.provider.queue.push({ type: "text", text: "开始规划", chunkDelayMs: 30_000 });
   await w.review();
   await until(async () => (await w.overview()).status === "running");
   expect(await w.overview()).toMatchObject({ doing: "规划中", pendingItems: [] });
@@ -85,4 +87,34 @@ test("M7-AC33：两次未完成的任务成为待裁决事项；PM 空闲且无�
   await until(async () => (await w.overview()).status === "waiting");
   expect(await w.overview()).toMatchObject({ doing: "等待你的决定",
     pendingItems: [{ itemId: `task:${login}`, kind: "adjudicate", label: "待你裁决：任务 login 两次未完成" }] });
+});
+
+test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出现“待你裁决：PM 计划两次提交被拒”，卡片列出两次原因、运行记录与三个选择", async () => {
+  const w = await world();
+  const requirementId = w.fixture.requirementId;
+  w.provider.queue.push({ type: "text", text: "规划中", chunkDelayMs: 30_000 });
+  await expect(w.plan.execute({ action: "propose", tasks: [spec("x", "goal.unknown")] })).rejects.toMatchObject({ code: "unknown_unit" });
+  await until(async () => (await w.overview()).doing === "规划中（计划提交被拒 1 次，PM 正在按原因修改）");
+  await expect(w.plan.execute({ action: "propose", tasks: [spec("meta", "metadata")] })).rejects.toMatchObject({ code: "unit_not_authorized" });
+  await until(async () => (await w.overview()).pendingItems.some((item) => item.kind === "plan-rejected"));
+  expect(await w.overview()).toMatchObject({ doing: "规划中（计划提交被拒 2 次，等你决定）",
+    pendingItems: [{ itemId: `plan:${requirementId}`, kind: "plan-rejected", label: "待你裁决：PM 计划两次提交被拒", version: `plan:${requirementId}:2` }] });
+  const packet = w.manager.decisionPacket(requirementId, `plan:${requirementId}`);
+  expect(packet).toMatch(/第 1 次被拒（propose）：[^\n]*goal\.unknown[\s\S]*第 2 次被拒（propose）：[^\n]*metadata/);
+  expect(packet).toContain(`运行记录 `);
+  expect(packet).toContain("可选：1 给 PM 补充说明后再试（转给 PM，被拒次数清零）；2 调整需求（修改草稿并经用户批准新版本）；3 取消需求。");
+  expect(packet).toContain("purpose=panel-item");
+});
+
+test("M8L-AC2：PM 停下且无人能唤醒时出现“待你处理：PM 停下了”，卡片写明停下的事实、运行记录与 PM 最后的话（标明模型输出）", async () => {
+  const w = await world();
+  const requirementId = w.fixture.requirementId;
+  await until(async () => (await w.overview()).pendingItems.some((item) => item.kind === "stall"));
+  const item = (await w.overview()).pendingItems.find((candidate) => candidate.kind === "stall")!;
+  expect(item).toMatchObject({ itemId: `stall:${w.pm.runId}`, label: "待你处理：PM 停下了，没有在跑的子任务" });
+  const packet = w.manager.decisionPacket(requirementId, item.itemId);
+  expect(packet).toContain("PM 这一轮已结束：没有派出任务，没有在跑的子任务，也没有待你处理的事项；没有新的消息或事件，PM 不会自己继续。");
+  expect(packet).toContain(`运行记录 `);
+  expect(packet).toMatch(/PM 最后写的话（模型输出，仅供参考，不是用户决定）：「/);
+  expect(packet).toContain("purpose=panel-item");
 });

@@ -6,6 +6,7 @@ import type { TaskSpec } from "../runtime/plan-manage.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
+import { planRejectionsIn } from "../runtime/pm-attention.ts";
 
 vi.setConfig({ testTimeout: 30_000 });
 const clean: Array<() => unknown> = [];
@@ -52,6 +53,21 @@ test("需求有 25 段时，从保存、批准到 PM 提出覆盖全部目标的
   const view = await pm.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"] })] }) as PlanView;
   expect(view.plan).toMatchObject({ planVersion: 1 });
   expect(w.db((db) => db.read<{ knownUnits: unknown[] }>(PLANS, w.fixture.requirementId)!.data.knownUnits)).toHaveLength(26);
+}, 30000);
+
+test("M8L-AC1：PM 的计划提交因计划内容被拒时逐次登记原因，接手门槛等非内容原因不计；任何一次提交成功即清零", async () => {
+  const w = await world({ review: false });
+  const pm = await w.tool();
+  const rejections = () => w.db((db) => planRejectionsIn(db, w.fixture.requirementId));
+  await expect(pm.execute({ action: "propose", tasks: [spec("login")] })).rejects.toMatchObject({ code: "intake_gate" });
+  expect(rejections()).toBeNull();
+  await w.kit.pass();
+  await expect(pm.execute({ action: "propose", tasks: [spec("x", { goalUnitIds: ["goal.unknown"] })] })).rejects.toMatchObject({ code: "unknown_unit" });
+  await expect(pm.execute({ action: "propose", tasks: [spec("meta", { goalUnitIds: ["metadata"] })] })).rejects.toMatchObject({ code: "unit_not_authorized" });
+  expect(rejections()).toMatchObject({ pmRunId: w.fixture.lease.runId, count: 2, autoWoken: false,
+    rejections: [{ action: "propose", reason: expect.stringContaining("goal.unknown") }, { action: "propose", reason: expect.stringContaining("metadata") }] });
+  await pm.execute({ action: "propose", tasks: [spec("login")] });
+  expect(rejections()).toBeNull();
 }, 30000);
 
 test("M7-AC31：任务缺目标、通过条件、范围、性能条件或有效轮次上限时拒绝登记", async () => {
