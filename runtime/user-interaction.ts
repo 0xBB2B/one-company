@@ -11,7 +11,7 @@ import type { RequirementStoreOptions, StateAuthorizationRequest } from "./requi
 import { object, id, counter, checked } from "./requirement-contracts.ts";
 import { ShortDecisionStore } from "./short-decisions.ts";
 import type { DecisionAdmissionRequest } from "./short-decisions.ts";
-import { DecisionItem, decisionDigest, parseDecisionBatch, checkDecisionRecord } from "./short-decision-format.ts";
+import { DecisionItem, decisionDigest, parseDecisionBatch, checkDecisionRecord, ShortDecisionError } from "./short-decision-format.ts";
 import type { DecisionAdmission, DecisionBatch, ShortDecisionRecord } from "./short-decision-format.ts";
 import {
   InteractionAction, InteractionBasis, CandidateBinding, PendingQuestion, UserInteractionError,
@@ -159,8 +159,7 @@ export class UserInteractionCore {
     const input = parseInteraction(QuestionInput, source); this.#assertBasis(input.basis);
     checkProposal(input.proposal, input.basis);
     if (input.candidate && decisionDigest(input.candidate.from) !== decisionDigest(input.basis.prod)) throw new UserInteractionError("candidate_baseline_mismatch");
-    const refs = input.proposal.references.length + input.proposal.supersedes.length + (input.basis.prod ? 2 : 0) + (input.candidate ? 4 : 0);
-    if (refs > 16 || input.unitIds && (!input.unitIds.length || !input.candidate)) throw new UserInteractionError("reference_limit");
+    if (input.unitIds && (!input.unitIds.length || !input.candidate)) throw new UserInteractionError("question_units_without_candidate");
     if (input.partition && (input.partition.prodHash !== input.candidate?.to.hash || input.unitIds?.some((id) => !input.partition!.units.some((u) => u.id === id)))) throw new UserInteractionError("question_partition_mismatch");
     const question = checkInteraction(PendingQuestion, { format: "interaction-question/v1", ...input,
       requestId: uuidv7(), repoId: this.#options.repoId, createdAt: this.#now() });
@@ -238,8 +237,8 @@ export class UserInteractionCore {
       return { interpretation: structuredClone(result), capability };
     } catch (error) {
       if (this.#input === input) this.clearInput();
-      // 本模块的核验错误只含程序生成的原因，原样交给主代理；其余可能带原文、prod片段或供应商响应正文，只报笼统原因
-      if (error instanceof UserInteractionError) throw error;
+      // 本模块与短决定格式的核验错误只含程序生成的原因，原样交给主代理；其余可能带原文、prod片段或供应商响应正文，只报笼统原因
+      if (error instanceof UserInteractionError || error instanceof ShortDecisionError) throw error;
       throw new UserInteractionError("interpretation_denied");
     }
   }

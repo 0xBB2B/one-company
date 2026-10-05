@@ -8,11 +8,11 @@ import { object, positive, counter, ProdReference } from "./requirement-contract
 import { UUID_V7_PATTERN } from "./database.ts";
 import { canonicalJson, parseStrictJson } from "./strict-json.ts";
 
-export const SHORT_DECISION_LIMITS = Object.freeze({ textCodePoints: 400, references: 16, referenceLength: 128, batch: 20, requestBytes: 65_536 });
+export const SHORT_DECISION_LIMITS = Object.freeze({ textCodePoints: 400, referenceLength: 128, batch: 20, requestBytes: 65_536 });
 const id = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });
 const hash = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 });
 const text = Type.String({ minLength: 1 });
-const refs = Type.Array(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" }), { maxItems: 16, uniqueItems: true });
+const refs = Type.Array(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" }), { uniqueItems: true });
 const nullableId = Type.Union([id, Type.Null()]);
 export const DecisionItem = object({
   conclusion: text, scope: text, references: refs,
@@ -54,7 +54,6 @@ const SHORT_DECISION_ADVICE: Record<string, FailureAdvice> = {
   lifecycle_denied: { why: "需求不在草稿或活动状态，或需要先恢复核对", next: "重新读取需求后按最新版本再试" },
   operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "换一个新生成的操作编号重试" },
   prod_reference_changed: { why: "决定所基于的需求版本已变化", next: "重新读取需求后按最新版本再试" },
-  reference_limit: { why: "引用太多，超出上限", next: "减少引用数量后重试" },
   request_limit: { why: "请求内容超出大小上限", next: "精简内容后重试" },
   supersede_denied: { why: "这个决定不能被取代（状态不允许）", next: "重新读取需求后按最新版本再试" },
   text_limit: { why: "文字超出长度上限", next: "精简文字后重试" },
@@ -77,8 +76,6 @@ function checkText(value: string): void {
 function checkItem(item: Static<typeof DecisionItem>, prod: DecisionBatch["prod"]): void {
   checkText(item.conclusion); checkText(item.scope);
   if (prod && (![40, 64].includes(prod.commit.length) || prod.hash.length !== 64)) throw new ShortDecisionError("invalid_reference");
-  // 提交/hash及修订目标也是引用；需求和操作身份字段不计入业务引用限额。
-  if (item.references.length + item.supersedes.length + (prod ? 2 : 0) > SHORT_DECISION_LIMITS.references) throw new ShortDecisionError("reference_limit");
 }
 
 /** 只接收有界JSON文本，不接受文件、对象序列化钩子或任意扩展载荷。 */

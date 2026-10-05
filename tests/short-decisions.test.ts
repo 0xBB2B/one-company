@@ -33,13 +33,11 @@ for (const field of ["conclusion", "scope"] as const) {
   });
 }
 
-test("引用数量合并提交/hash和修订目标，ASCII长度128允许、129拒绝", () => {
+test("引用个数不设上限，单个引用ASCII长度128允许、129拒绝", () => {
   const input = batch(); input.prod = { commit: "a".repeat(40), hash: "b".repeat(64) };
-  input.decisions[0]!.references = Array.from({ length: 13 }, (_, i) => `S-${i}`);
+  input.decisions[0]!.references = Array.from({ length: 40 }, (_, i) => `S-${i}`);
   input.decisions[0]!.supersedes = [uuidv7()];
   expect(parseDecisionBatch(JSON.stringify(input))).toEqual(input);
-  input.decisions[0]!.references.push("extra");
-  expect(() => parseDecisionBatch(JSON.stringify(input))).toThrow(/reference_limit/);
   input.decisions[0]!.references = ["r".repeat(128)];
   expect(parseDecisionBatch(JSON.stringify(input))).toEqual(input);
   for (const value of ["r".repeat(129), "r\n", "中文", "../path", "{\"data\":1}", "a b"]) {

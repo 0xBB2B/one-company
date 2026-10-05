@@ -210,6 +210,17 @@ test("解释异常不回显原话/模型错误，后续新输入可正常解释"
   await expect(w.interpret()).rejects.toThrow(/^用户交互被拒绝：interpretation_denied$/);
   w.setImplementation(async () => JSON.stringify(w.output())); expect((await w.interpret()).capability.kind).toBe("interaction-capability");
 });
+test("一条决定引用很多章节时照常登记，引用个数不设上限", async () => {
+  const w = await world(); const sections = Array.from({ length: 30 }, (_, i) => `features.s${i}`);
+  w.setOutput(result([entry({ candidateId: w.candidate.candidateId, references: sections })]));
+  const { capability } = await w.interpret(); w.core.save(capability);
+  expect(w.records().map((row) => (row.data as { references: string[] }).references.length)).toEqual([34]);
+});
+test("解读结果不合短决定格式时报出程序写的具体原因，不报笼统的解读不能作为依据", async () => {
+  const w = await world();
+  w.setOutput(result([entry({ candidateId: w.candidate.candidateId, conclusion: "长".repeat(401) })]));
+  await expect(w.interpret()).rejects.toMatchObject({ code: "text_limit" });
+});
 test("真实SQLite只保存短结论与问题，无原话表/文件；清空会话后合法决定仍可读", async () => {
   const w = await world();
   const tables = () => { const db = new DatabaseSync(w.path, { readOnly: true }); try { return db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all(); } finally { db.close(); } };
@@ -228,16 +239,14 @@ for (const field of ["conclusion", "scope"] as const) test(`真实SQLite ${field
   const { capability } = await w.interpret(); w.core.save(capability); expect(w.records()).toHaveLength(2);
   w.output().entries[0]![field] += "中"; await expect(w.interpret()).rejects.toThrow(); expect(w.records()).toHaveLength(2);
 });
-test("固定schema拒绝未知字段、正文/patch/附件、重复键、超20批与引用超16", async () => {
+test("固定schema拒绝未知字段、正文/patch/附件、重复键与超20批", async () => {
   const w = await world();
   for (const field of ["actor", "role", "prodBody", "patch", "attachment", "rawContent", "transcript"]) {
     expect(() => checkInterpretation(JSON.stringify({ ...w.output(), [field]: "hidden" }), w.context)).toThrow();
     expect(() => w.core.ask(JSON.stringify({ basis: w.basis, candidate: null, proposal: { conclusion: "短决定", scope: "范围", references: [], supersedes: [], [field]: "hidden" }, actions: [] }))).toThrow();
   }
   expect(() => checkInterpretation(JSON.stringify(w.output()).replace('"entries":', '"format":"x","entries":'), w.context)).toThrow(/duplicate_key/);
-  w.setOutput(result(Array.from({ length: 21 }, () => entry()))); await expect(w.interpret()).rejects.toThrow();
-  w.setOutput(result([entry({ candidateId: w.candidate.candidateId, references: Array.from({ length: 13 }, (_, i) => `R-${i}`) })]));
-  await expect(w.interpret()).rejects.toThrow(); expect(w.records()).toEqual([]);
+  w.setOutput(result(Array.from({ length: 21 }, () => entry()))); await expect(w.interpret()).rejects.toThrow(); expect(w.records()).toEqual([]);
 });
 test("64KiB限制包含当前输入和解释上下文，超限不调用解释器", async () => {
   const w = await world(), spy = vi.fn(async () => JSON.stringify(w.output())); w.setImplementation(spy);
