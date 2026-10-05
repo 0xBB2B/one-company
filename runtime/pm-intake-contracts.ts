@@ -92,7 +92,7 @@ export const PmUnderstandingSchema = object({
 });
 export type PmUnderstanding = Static<typeof PmUnderstandingSchema>;
 
-const sourceIdList = Type.Array(opaqueId, { maxItems: PM_INTAKE_LIMITS.sourceRefs });
+const sourceIdList = Type.Array(opaqueId);
 export const IntakeSourceDirectorySchema = object({
   prodUnitIds: sourceIdList,
   prodScenarioIds: sourceIdList,

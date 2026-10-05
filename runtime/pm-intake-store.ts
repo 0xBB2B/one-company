@@ -59,7 +59,6 @@ const PM_INTAKE_STORE_ADVICE: Record<string, FailureAdvice> = {
   request_missing: { why: "找不到这个复核请求", next: "用 forward 取当前的复核请求" },
   request_not_current: { why: "这个复核请求已不是当前的请求", next: "用 forward 重新取当前的复核请求" },
   resource_limit: { why: "内容超出上限", next: "精简内容后重试" },
-  source_directory_limit: { why: "接手出处数量超出上限", next: "停止操作，不要重试；把这段原因告诉用户" },
   source_directory_mismatch: { why: "接手出处目录与需求当前版本不一致", next: "请 PM 按当前版本重新提交接手理解" },
   stale_pm_lease: { why: "PM 的租约已失效，可能已过期或被新 PM 接管", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
   stored_record_invalid: { why: "已存的接手复核记录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
@@ -253,7 +252,6 @@ export function intakeManifestDecisionIds(manifest: ApprovalManifest): string[] 
 function currentQuestionIds(db: LocalDatabase, repoId: string, requirementId: string): string[] {
   const rows = db.list("interaction_questions_v1").filter((row) =>
     (row.data as { basis?: { requirementId?: unknown } } | null)?.basis?.requirementId === requirementId);
-  if (rows.length > 128) deny("source_directory_limit");
   return sortedUnique(rows.map((row) => {
     const question = checkInteraction(PendingQuestion, row.data);
     if (row.id !== question.requestId || question.repoId !== repoId || !OPAQUE.test(row.id)) deny("question_changed");

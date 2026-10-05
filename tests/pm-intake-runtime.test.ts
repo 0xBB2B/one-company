@@ -103,3 +103,13 @@ test("M7-AC14：针对旧批准基线受理的理解不能被当作对当前基�
   w.submit(w.content);
   expect((await w.intake.openRequest(w.fixture.call, w.fixture.operationId())).understanding.goals).toEqual(w.content.goals);
 });
+
+test("M8M-AC4：需求累计提过 129 个问题时，PM 仍能交接手理解、主代理仍能打开核对且通过后放行", async () => {
+  const w = await world();
+  for (let i = 0; i < 129; i++) addQuestion(w.fixture);
+  w.submit(w.content);
+  const view = await w.intake.openRequest(w.fixture.call, w.fixture.operationId());
+  expect(view.sourceDirectory.questionIds).toHaveLength(129);
+  await w.intake.recordReview(w.fixture.call, view.requestId, w.fixture.operationId(), { result: "passed", shortIssues: [] });
+  expect(w.gate()).toMatchObject({ allowed: true });
+});

@@ -368,7 +368,7 @@ export class PmIntakeService {
     if (!material || !material.handle || typeof material.handle !== "object" || material.handle.kind !== "pm-source-directory-handle" ||
       !Array.isArray(material.scenarioIds) || material.scenarioIds.length === 0 || material.scenarioIds.length > 32 ||
       material.scenarioIds.some((id) => typeof id !== "string" || !OPAQUE.test(id)) || new Set(material.scenarioIds).size !== material.scenarioIds.length ||
-      !Array.isArray(material.questionIds) || material.questionIds.length > 128 ||
+      !Array.isArray(material.questionIds) ||
       material.questionIds.some((id) => typeof id !== "string" || !OPAQUE.test(id)) || new Set(material.questionIds).size !== material.questionIds.length) {
       deny("source_directory_unavailable");
     }
