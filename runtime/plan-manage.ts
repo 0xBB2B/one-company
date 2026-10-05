@@ -446,8 +446,10 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       (task.status !== "cancelled" || terminationPending([task], record.data.revision)));
     const cancelTried = (params.cancel ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId));
     if (cancelTried.length) deny("task_not_ready", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
+    // 新批准版本不再授权的目标谁也拿不走，从已开工任务里去掉它绕不开一次重试
+    const authorized = implementScope(manifest);
     const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && !readjusted(task)
-      && task.goalUnitIds.some((unit) => !item.spec.goalUnitIds.includes(unit))));
+      && task.goalUnitIds.some((unit) => authorized.has(unit) && !item.spec.goalUnitIds.includes(unit))));
     if (shrunk.length) deny("task_not_ready", shrunk.map((item) => `${item.spec.key} 已有尝试，修改须保留原有目标`));
     const heldBy = (unit: string, role: string, except?: string) => tried.some((task) => task.taskId !== except && task.role === role && task.goalUnitIds.includes(unit));
     const bypass = [...(params.add ?? []).map((spec) => ({ spec, taskId: undefined as string | undefined })),
