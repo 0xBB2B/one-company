@@ -177,7 +177,7 @@ export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }
     pmRunId: ref.lease.runId, pmFence: ref.lease.fence, contextGeneration: ref.lease.contextGeneration,
   };
   let binding: IntakeBinding;
-  try { binding = store.captureCurrent(basis, head.directory).binding; }
+  try { binding = store.recordedBinding(basis, head.directory); }
   catch (error) { return { allowed: false, reasons: [(error as { code?: string }).code ?? "binding_not_current"] }; }
   const owner = withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.read<{ lease?: PmLease }>("pm_ownership", ref.lease.requirementId)?.data);
   const submission = pmSubmissionFor(ref, binding);

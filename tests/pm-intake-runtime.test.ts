@@ -5,6 +5,7 @@ import { scenariosWithoutOwnRef, unknownIntakeSourceRefs } from "../runtime/pm-i
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
+import { addQuestion } from "./helpers/pm-intake-service-test-support.ts";
 
 vi.setConfig({ testTimeout: 30_000 });
 const clean: PmIntakeFixture[] = [];
@@ -54,6 +55,16 @@ test("M7-AC13：主代理经真实提供方读到 PM 会话里的提交，核对
   expect(view.understanding.goals).toEqual(w.content.goals);
   expect(w.gate()).toMatchObject({ allowed: false, reasons: ["review_missing"] });
   await w.intake.recordReview(w.fixture.call, view.requestId, w.fixture.operationId(), { result: "passed", shortIssues: [] });
+  expect(w.gate()).toMatchObject({ allowed: true });
+});
+
+test("接手核对通过后，主代理再就这个需求向用户提问，不让已通过的核对失效", async () => {
+  const w = await world();
+  w.submit(w.content);
+  const view = await w.intake.openRequest(w.fixture.call, w.fixture.operationId());
+  await w.intake.recordReview(w.fixture.call, view.requestId, w.fixture.operationId(), { result: "passed", shortIssues: [] });
+  expect(w.gate()).toMatchObject({ allowed: true });
+  addQuestion(w.fixture);
   expect(w.gate()).toMatchObject({ allowed: true });
 });
 

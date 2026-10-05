@@ -261,11 +261,11 @@ function currentQuestionIds(db: LocalDatabase, repoId: string, requirementId: st
   }));
 }
 
-function validateDirectory(db: LocalDatabase, repoId: string, requirementId: string, directory: IntakeSourceDirectory, manifest: ApprovalManifest): void {
+function validateDirectory(db: LocalDatabase, repoId: string, requirementId: string, directory: IntakeSourceDirectory, manifest: ApprovalManifest, questions: boolean): void {
   if (!same(directory.prodUnitIds, manifest.units.map((unit) => unit.id))) deny("source_directory_mismatch");
   if (directory.prodScenarioIds.some((id) => !directory.prodUnitIds.includes(id))) deny("source_directory_mismatch");
   if (!same(directory.decisionIds, intakeManifestDecisionIds(manifest))) deny("source_directory_mismatch");
-  if (!same(directory.questionIds, currentQuestionIds(db, repoId, requirementId))) deny("source_directory_mismatch");
+  if (questions && !same(directory.questionIds, currentQuestionIds(db, repoId, requirementId))) deny("source_directory_mismatch");
 }
 
 function decisionRows(db: LocalDatabase, manifest: ApprovalManifest) {
@@ -276,7 +276,7 @@ function decisionRows(db: LocalDatabase, manifest: ApprovalManifest) {
   });
 }
 
-function normalizedScopes(db: LocalDatabase, manifest: ApprovalManifest, directory: IntakeSourceDirectory, continuityProof: string) {
+function normalizedScopes(db: LocalDatabase, manifest: ApprovalManifest, directory: IntakeSourceDirectory, approvalInputProof: string) {
   const decisions = decisionRows(db, manifest);
   const approval = {
     format: "pm-intake-approval-scope/v1",
@@ -284,7 +284,7 @@ function normalizedScopes(db: LocalDatabase, manifest: ApprovalManifest, directo
     decisionRecords: decisions,
     retainedSources: clone(manifest.retainedSources ?? []),
     sourceDirectory: clone(directory),
-    continuityInputProof: continuityProof,
+    approvalInputProof,
   };
   const actions = manifest.actions.map((action) => {
     const declaredScope = sortedUnique([...action.goalIds, ...action.constraintIds]);
@@ -303,7 +303,7 @@ function normalizedScopes(db: LocalDatabase, manifest: ApprovalManifest, directo
   };
 }
 
-function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBindingBasis, directory: IntakeSourceDirectory, observedAt: number) {
+function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBindingBasis, directory: IntakeSourceDirectory, observedAt: number, questions = true) {
   const raw = db.read<RequirementRecord>("requirements", basis.requirementId);
   if (!raw || raw.id !== basis.requirementId) deny("unknown_requirement");
   const record = { ...raw, data: checkRequirement(raw.data, basis.requirementId, repoId) };
@@ -336,14 +336,15 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
   assertNoUnfinishedRequirementOperationsIn(db, basis.requirementId);
 
   const manifest = registeredApprovalManifestIn(db, repoId, data.approvalManifest.reference, record);
-  validateDirectory(db, repoId, basis.requirementId, directory, manifest);
+  validateDirectory(db, repoId, basis.requirementId, directory, manifest, questions);
   if (manifest.candidate.to.commit !== basis.approvedProdCommit || manifest.candidate.to.hash !== basis.approvedProdHash ||
     manifest.manifestHash !== basis.approvalManifestHash) deny("manifest_binding_changed");
   const manifestRow = db.read(APPROVAL_MANIFEST_NAMESPACE, basis.approvalManifestHash);
   const approvalUse = data.approvalReceiptId ? db.read("requirement_approval_uses", data.approvalReceiptId) : null;
-  if (!manifestRow || !approvalUse) deny("approval_record_missing");
+  const approvalInputProof = (manifestRow?.data as { admission?: { inputProof?: string } } | undefined)?.admission?.inputProof;
+  if (!manifestRow || !approvalUse || !approvalInputProof) deny("approval_record_missing");
   const continuityProof = continuityInputProofIn(db, basis.requirementId);
-  const scopes = normalizedScopes(db, manifest, directory, continuityProof);
+  const scopes = normalizedScopes(db, manifest, directory, approvalInputProof);
   const binding: IntakeBinding = { ...basis, approvalScopeVersion: scopes.approvalScopeVersion, actionScopeVersion: scopes.actionScopeVersion };
   const sourceDirectoryHash = digest({ format: "pm-intake-source-directory/v1", binding, sourceDirectory: directory });
   const fingerprint = digest({
@@ -598,6 +599,15 @@ export class PmIntakeStore {
     if (claim.leaseExpiresAt <= this.#observedAt(clock)) deny("stale_pm_lease");
     this.#mainDeadline();
     return result;
+  }
+
+  /** 正式规划与派工门槛用：按接手时记下的出处清单取当前绑定；接手后新增的提问不让已通过的核对失效。 */
+  recordedBinding(basisValue: unknown, directoryValue: unknown): IntakeBinding {
+    const basis = checkedBindingBasis(basisValue);
+    if (basis.repoId !== this.#repoId) deny("foreign_repo");
+    const sourceDirectory = checkedDirectory(directoryValue), clock = this.#clockAfter();
+    return withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() =>
+      clone(currentSnapshot(db, this.#repoId, basis, sourceDirectory, this.#observedAt(clock), false).binding)));
   }
 
   captureCurrent(basisValue: unknown, directoryValue: unknown): { binding: IntakeBinding; sourceDirectoryHash: string; proof: IntakeCurrentProof } {
