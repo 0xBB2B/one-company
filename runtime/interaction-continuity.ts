@@ -190,11 +190,20 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
       return unit ? source.decision.unitIds.some((u) => u.id === unit.id && u.hash === unit.hash && acceptedUnit(source.fact, u.id, source.decision.kind))
         : source.decision.kind === "exclusion" && source.decision.unitIds.some((u) => acceptedUnit(source.fact, u.id, "exclusion"));
     };
+    // 整段替换：段落只认最近一次被确认、且在那次有自己决定的事实；只沿用旧依据的那次不算确认，取代关系不靠模型声明。
+    // 已被取代的确认仍算一次：否则取代它的那次没被接受时，会退回更早那次已被替换的确认
+    const confirmedIn = new Map<string, string>();
+    for (const source of sources) {
+      if (!["confirmed", "superseded"].includes(currentSource(source)?.value.status ?? "")) continue;
+      for (const u of source.decision.unitIds) if (acceptedUnit(source.fact, u.id)) confirmedIn.set(u.id, source.row.id);
+    }
+    const currentConfirmation = (source: Source) => source.decision.unitIds.some((u) => confirmedIn.get(u.id) === source.row.id);
     const questions: PendingQuestion[] = [], effectiveQuestions: EffectiveQuestion[] = [], retainedEvidence: RetainedUnitEvidence[] = [], continuityIssues: ContinuityIssue[] = [];
-    const priors = new Map<string, ShortDecisionRecord>(), revisionSources = new Map<string, RevisionSource>();
+    const priors = new Map<string, ShortDecisionRecord>(), revisionSources = new Map<string, RevisionSource>(), replaced = new Set<string>();
     for (const source of sources) {
       const current = currentSource(source), d = source.decision;
       if (current?.value.status !== "superseded" && current && d.kind !== "action" && d.kind !== "adjudication" && d.unitIds.some((u) => u.id !== "metadata")) {
+        if (current.value.status === "confirmed" && !currentConfirmation(source)) replaced.add(d.record.id);
         priors.set(d.record.id, current.value);
         revisionSources.set(d.record.id, { fact: ref(source.row), decision: ref(current.row), sourceBasis: source.fact.basis, unitIds: d.unitIds, kind: d.kind });
       }
@@ -233,7 +242,8 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
       const { row, fact, decision: d } = source;
       if (!["target", "constraint", "exclusion"].includes(d.kind) || d.basis !== "explicit" || !["direct", "accept"].includes(d.resolution)) continue;
       for (const u of d.unitIds) {
-        if (!doc.partition.units.some((current) => current.id === u.id && current.hash === u.hash) || continuityIssues.some((issue) => issue.unitId === u.id)) continue;
+        if (confirmedIn.get(u.id) !== row.id || !doc.partition.units.some((current) => current.id === u.id && current.hash === u.hash) ||
+          continuityIssues.some((issue) => issue.unitId === u.id)) continue;
         const e: RetainedUnitEvidence = { fact: ref(row), decision: d.record, sourceBasis: fact.basis, sourceBinding: fact.candidate,
           unitId: u.id, unitHash: u.hash, kind: d.kind as RetainedUnitEvidence["kind"] };
         try { assertRetainedEvidenceIn({ read }, repoId, basis, doc, e); retainedEvidence.push(e); } catch { /* 无效来源不授予字节许可 */ }
@@ -266,7 +276,7 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
       questions.push(q); effectiveQuestions.push({ requestId: q.requestId, originalHash: decisionDigest(q), remainingUnitIds: remaining,
         currentBinding: doc.candidate, resolutions, unitMappings });
     }
-    for (const [id, decision] of priors) if (decision.status === "pending" && !continuityIssues.some((issue) => issue.decision.id === id || issue.originDecision.id === id)) {
+    for (const [id, decision] of priors) if ((decision.status === "pending" || replaced.has(id)) && !continuityIssues.some((issue) => issue.decision.id === id || issue.originDecision.id === id)) {
       priors.delete(id); revisionSources.delete(id);
     }
     if (questions.length > 20 || priors.size > 20) deny("interaction_context_limit");

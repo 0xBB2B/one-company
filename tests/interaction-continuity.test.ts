@@ -15,14 +15,13 @@ import { ApprovalManifestStore } from "../runtime/approval-manifest-store.ts";
 
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
-async function world() {
+async function world(body = "# A {#A}\nA目标。\n# B {#B}\nB目标。\n") {
   const root = await mkdtemp(join(temporaryRoot(), "ic-")), repo = join(root, "repo"), dataRoot = join(root, "data");
   await mkdir(repo); await mkdir(dataRoot); await exec("git", ["init", "--initial-branch=main"], { cwd: repo });
   await writeFile(join(repo, "README.md"), "fixture"); await exec("git", ["add", "README.md"], { cwd: repo });
   await exec("git", ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "init"], { cwd: repo });
   const { repoId } = await repositoryIdentity(repo), path = repositoryDatabase(dataRoot, repoId);
   const service = await RequirementService.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true });
-  const body = "# A {#A}\nA目标。\n# B {#B}\nB目标。\n";
   let saved = await service.create({ operationId: uuidv7(), requestId: uuidv7(), title: "候选", body });
   let loaded = await service.loadConfirmationContext({ requirementId: saved.requirementId, savedOperationId: saved.operationId, operationId: uuidv7() });
   const context = (): InteractionContext => {
@@ -320,4 +319,99 @@ test("别的进程短暂占住数据库时，读取交互连续性等锁释放�
   expect(() => w.context()).not.toThrow();
   expect(performance.now() - started).toBeGreaterThan(300);
   await new Promise((resolve) => holder.once("exit", resolve));
+});
+
+const factIds = (w: Awaited<ReturnType<typeof world>>) => withDatabase(w.path, (db) => db.list(INTERACTION_CONTINUITY_NAMESPACE)).map((row) => row.id).sort();
+test("M8N-AC1、AC4：同一段落后一次确认整体替换前一次：先目标后约束只认约束，以它为目标的动作被拒，引用被替换的旧确认也被拒", async () => {
+  const w = await world();
+  w.core.save((await w.interpret("A、B 都是目标")).capability);
+  w.setOutput((ctx) => { const r = review(ctx); r.entries[1] = { ...r.entries[1]!, kind: "constraint", conclusion: "A作为约束" }; return r; });
+  w.core.save((await w.interpret("A 只作约束")).capability);
+  const [first, second] = factIds(w), ctx = w.context();
+  expect(ctx.retainedEvidence!.filter((e) => e.unitId === "A").map((e) => [e.fact.id, e.kind])).toEqual([[second, "constraint"]]);
+  expect(ctx.priorDecisions.map((d) => d.conclusion).sort()).toEqual(["A作为约束", "B目标"]);
+  const targetA = (factId: string) => w.setOutput((c) => {
+    const r = review(c); r.entries.splice(1, 1);
+    r.documentReview!.units[1] = { ...r.documentReview!.units[1]!, conclusionIndexes: [], retainedFactIds: [factId] };
+    r.documentReview!.units[2]!.conclusionIndexes = [1];
+    r.documentReview!.actions = [{ action: "analyze", goalIds: ["A"], constraintIds: [], conclusionIndexes: [2], unknown: false }]; return r;
+  });
+  targetA(second!);
+  await expect(w.interpret("分析A")).rejects.toMatchObject({ code: "goal_not_explicit" });
+  targetA(first!);
+  await expect(w.interpret("按最早那次分析A")).rejects.toMatchObject({ code: "retained_source_missing" });
+});
+test("M8N-AC1：同一段落先被排除、后被确认为目标，此后只按目标沿用", async () => {
+  const w = await world();
+  w.setOutput((ctx) => {
+    const r = review(ctx); r.entries[2] = { ...r.entries[2]!, kind: "exclusion", conclusion: "B不做" };
+    r.documentReview!.units[2]!.disposition = "excluded";
+    r.documentReview!.actions = [{ action: "analyze", goalIds: ["A"], constraintIds: [], conclusionIndexes: [3], unknown: false }]; return r;
+  });
+  w.core.save((await w.interpret("B 不做，分析A")).capability);
+  w.setOutput((ctx) => review(ctx));
+  w.core.save((await w.interpret("B 还是要做")).capability);
+  const [, second] = factIds(w);
+  expect(w.context().retainedEvidence!.filter((e) => e.unitId === "B").map((e) => [e.fact.id, e.kind])).toEqual([[second, "target"]]);
+  w.setOutput((c) => {
+    const r = review(c); r.entries.splice(2, 1);
+    r.documentReview!.units[2] = { ...r.documentReview!.units[2]!, conclusionIndexes: [], retainedFactIds: [second!] };
+    r.documentReview!.actions = [{ action: "analyze", goalIds: ["B"], constraintIds: [], conclusionIndexes: [2], unknown: false }]; return r;
+  });
+  await expect(w.interpret("按上次说的分析B")).resolves.toBeDefined();
+});
+const SECTIONS = Array.from({ length: 25 }, (_, i) => `# S${i} {#s${i}}\nS${i}目标。\n`).join("");
+function reviewAll(ctx: InteractionContext): InteractionInterpretation {
+  const units = ctx.document!.partition.units, candidateId = ctx.document!.candidate.candidateId;
+  const e = (kind: "constraint" | "target" | "action", conclusion: string) => ({ kind, conclusion, scope: "当前明确范围", basis: "explicit" as const, resolution: "direct" as const,
+    candidateId, requestId: null, actions: kind === "action" ? ["analyze" as const] : [], references: [], supersedes: [] });
+  const groups = Math.ceil((units.length - 1) / 5);
+  const entries = [e("constraint", "文档身份"), ...Array.from({ length: groups }, (_, g) => e("target", `第${g}组目标`)), e("action", "分析第0组")];
+  return { format: "interaction-interpretation/v1", referenceResolution: "none", entries,
+    documentReview: { faithful: true, units: units.map((u, i) => ({ id: u.id, disposition: "confirmed", globalConstraint: false, appliesTo: [], dependsOn: [],
+      conclusionIndexes: [i === 0 ? 0 : 1 + Math.floor((i - 1) / 5)] })),
+      actions: [{ action: "analyze", goalIds: units.slice(1, 6).map((u) => u.id), constraintIds: [], conclusionIndexes: [entries.length - 1], unknown: false }], questions: [] } };
+}
+test("M8N-AC2、AC3：25 段草稿连续批准 5 个版本、每版改一段且解读模型从不写取代，之后解读与批准都成功，旧依据与旧决定不随版本增长", async () => {
+  const w = await world(SECTIONS);
+  w.setOutput(reviewAll);
+  const sizes: Array<{ priors: number; facts: number; decisions: number }> = [];
+  for (let v = 0; v < 5; v++) {
+    const result = await w.interpret(`批准第 ${v} 版`); w.core.save(result.capability);
+    const approved = w.core.authorizeDocument(result.capability, w.loaded)!;
+    const ctx = w.context();
+    sizes.push({ priors: ctx.priorDecisions.length, facts: new Set(ctx.retainedEvidence!.map((e) => e.fact.id)).size,
+      decisions: new Set(approved.manifest.units.flatMap((u) => u.decisionIds)).size });
+    await w.resave(w.loaded.body.replace(`S${v}目标。`, `S${v}目标改过。`));
+  }
+  expect(new Set(sizes.map((s) => JSON.stringify(s))).size).toBe(1);
+  w.setOutput((ctx) => {
+    const units = ctx.document!.partition.units, candidateId = ctx.document!.candidate.candidateId;
+    const offered = (id: string) => [...new Set(ctx.retainedEvidence!.filter((e) => e.unitId === id).map((e) => e.fact.id))];
+    const changed = units.filter((u) => !offered(u.id).length).map((u) => u.id);
+    const e = (kind: "target" | "action", conclusion: string) => ({ kind, conclusion, scope: "当前明确范围", basis: "explicit" as const, resolution: "direct" as const,
+      candidateId, requestId: null, actions: kind === "action" ? ["analyze" as const] : [], references: [], supersedes: [] });
+    return { format: "interaction-interpretation/v1", referenceResolution: "none", entries: [e("target", "改过的段落目标"), e("action", "分析改过的段落")],
+      documentReview: { faithful: true, units: units.map((u) => ({ id: u.id, disposition: "confirmed" as const, globalConstraint: false, appliesTo: [], dependsOn: [],
+        conclusionIndexes: changed.includes(u.id) ? [0] : [], ...(changed.includes(u.id) ? {} : { retainedFactIds: offered(u.id) }) })),
+        actions: [{ action: "analyze", goalIds: changed, constraintIds: [], conclusionIndexes: [1], unknown: false }], questions: [] } };
+  });
+  const last = await w.interpret("其余段落照旧，批准这一版");
+  w.core.save(last.capability);
+  const manifest = w.core.authorizeDocument(last.capability, w.loaded)!.manifest;
+  for (const unitId of new Set(manifest.retainedSources!.map((e) => e.unitId))) {
+    expect(new Set(manifest.retainedSources!.filter((e) => e.unitId === unitId).map((e) => e.fact.id)).size).toBe(1);
+  }
+  expect(new Set(manifest.units.flatMap((u) => u.decisionIds)).size).toBeLessThanOrEqual(manifest.units.length);
+}, 120_000);
+test("M8N-AC4：段落的当前确认被取代、而取代它的那次没被接受时，不退回更早那次已被替换的确认", async () => {
+  const w = await world();
+  w.core.save((await w.interpret("A、B 都是目标")).capability);
+  w.setOutput((ctx) => { const r = review(ctx); r.entries[1] = { ...r.entries[1]!, kind: "constraint", conclusion: "A作为约束" }; return r; });
+  w.core.save((await w.interpret("A 只作约束")).capability);
+  const constraintA = w.context().priorDecisions.find((d) => d.conclusion === "A作为约束")!;
+  w.setOutput((ctx) => { const r = review(ctx); r.documentReview!.faithful = false; r.entries[1] = { ...r.entries[1]!, conclusion: "A重新定", supersedes: [constraintA.decisionId] }; return r; });
+  w.core.save((await w.interpret("A 重新定，草稿还没改")).capability);
+  const [first] = factIds(w);
+  expect(w.context().retainedEvidence!.some((e) => e.unitId === "A" && e.fact.id === first)).toBe(false);
 });
