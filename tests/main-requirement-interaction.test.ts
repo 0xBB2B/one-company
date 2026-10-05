@@ -254,6 +254,31 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(verifier.systemPrompt).toContain("被采纳的那一项算用户决定");
   });
 
+  test("M8M-AC2：本需求的历史问题多到放不进核验器输入时，改草稿照常成功，核验器拿到的是从最新往旧放得下的那些问题", async () => {
+    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    const older = Array.from({ length: 60 }, () => uuidv7());
+    w.capture(); w.answerWindows(false);
+    await w.call({ action: "ask", ...input, operationId: uuidv7(), question: "短信验证码有效期选哪种？", rootCheck: "要定的是验证码多久失效，而不是另加重发限制",
+      choices: [{ label: "5 分钟", reason: "更安全", recommended: true, recommendedReason: "常见做法，够用户收短信" }, { label: "10 分钟", reason: "信号差也来得及，但更容易被盗用" }], scope: "仅短信验证码期限",
+      unitIds: [loaded.partition.units[1]!.id], actions: ["analyze"] }, true);
+    withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
+      for (const [i, requestId] of older.entries()) db.create("interaction_questions_v1", requestId, { format: "interaction-question/v1", requestId, repoId: w.repoId,
+        basis: { requirementId: input.requirementId, version: 1, epoch: 1, prod: null }, candidate: null,
+        proposal: { conclusion: `旧问题 ${i}：${"很久以前问过的细节".repeat(40)}`, scope: "旧范围", references: [], supersedes: [] }, actions: [], createdAt: 1 }, requestId);
+    });
+    w.capture("按你推荐的定，写进草稿"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
+    const verifier = w.provider.requests.filter((request) => request.systemPrompt?.includes("草拟意图核验器")).at(-1)!;
+    const content = String((verifier.messages[0] as { content: string }).content), payload = JSON.parse(content) as { questions: Array<{ question: string }> };
+    expect(Buffer.byteLength(content)).toBeLessThanOrEqual(65_536);
+    expect(payload.questions.at(-1)!.question).toContain("短信验证码有效期选哪种？");
+    const kept = payload.questions.slice(0, -1).map((question) => Number(/^旧问题 (\d+)：/u.exec(question.question)![1]));
+    const newest = older.map((id, i) => ({ id, i })).sort((a, b) => a.id.localeCompare(b.id)).slice(-kept.length).map((item) => item.i);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(60);
+    expect(kept).toEqual(newest);
+  });
+
   test("M9：草稿核验器拒绝时带回一句原因，标明是模型说法；原因只作参考，未知字段或类型不对仍按格式错误拒绝", async () => {
     const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY };
     w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":false,"reason":"需求里「不接入渲染循环」是用户没说过的限制"}' }]);
