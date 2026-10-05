@@ -155,7 +155,7 @@ test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项�
     { conclusion: "用户对任务 login 的裁决", scope: "任务 login" })], itemId, version);
   w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
   expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3, taskStatus: "pending" });
-  await until(async () => (await w.manager.overviews())[0]!.pendingItems.length === 0);
+  await until(async () => !(await w.manager.overviews())[0]!.pendingItems.some((item) => item.itemId === itemId));
   await until(() => w.provider.queue.length === 0);
   w.provider.queue.push({ type: "text", text: "第二次" }, { type: "text", text: "PM 收到" });
   const second = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null });
