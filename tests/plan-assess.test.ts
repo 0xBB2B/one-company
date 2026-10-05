@@ -207,3 +207,21 @@ test("M9：新批准版本不再授权已开工任务的某个目标时，PM 可
     spec: { ...spec("failure", "scenario.failure"), constraintUnitIds: ["goal.login"] } }] });
   expect(w.byKey(updated, "failure")).toMatchObject({ status: "pending" });
 });
+
+test("M8M-AC1：任务已有 16 条尝试和 16 条审查记录时，用户再给一次机会仍能派出第 17 次，之后计划照常可读", async () => {
+  const { beginTaskAttempt } = await import("../runtime/task-dispatch.ts");
+  const w = await world();
+  const login = w.byKey(w.first, "login");
+  const past = Array.from({ length: 16 }, () => uuidv7());
+  withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => {
+    const row = db.read<Record<string, unknown>>(TASKS, login.taskId)!;
+    db.update(TASKS, login.taskId, row.version, { ...row.data, status: "awaiting_parent",
+      attempts: past.map((runId) => ({ runId, maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" })),
+      reviews: past.map((attemptRunId) => ({ runId: uuidv7(), attemptRunId, maxTurns: 12, turnsUsed: 12, outcome: "turn_limit_reached" })),
+      userDecision: { decisionId: uuidv7(), choice: "retry", maxTurns: 40, revision: 1, taskVersion: 1, usedByRunId: null, notified: true } });
+  });
+  const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
+  expect(beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: null }).maxTurns).toBe(40);
+  const view = await w.run({ action: "read" });
+  expect(w.byKey(view, "login").status).toBe("running");
+});
