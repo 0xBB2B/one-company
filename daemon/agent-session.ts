@@ -48,7 +48,6 @@ export interface CreateAgentSessionOptions {
   completion: { kind: "on-result"; resultTool: string } | { kind: "idle-only" };
   clock: Clock;
   networkGate: NetworkPauseGate;
-  streamIdleTimeoutMs?: number;
   resume?: boolean;
 }
 
@@ -146,7 +145,6 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   let currentState: AgentSessionState = "running";
   let submitted = false;
   let queuedMessages: string[] = [];
-  let idleTimer: TimerHandle | null = null;
   let session!: AgentSession;
   let disposed = false;
   let prompting = false;
@@ -282,19 +280,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     pendingNetworkAbort = session.abort().catch(() => {});
   }
 
-  function armIdleWatchdog(): void {
-    if (options.streamIdleTimeoutMs === undefined) return;
-    if (idleTimer) options.clock.clearTimer(idleTimer);
-    idleTimer = options.clock.setTimeoutExcludingSleep(async () => {
-      idleTimer = null;
-      if (currentState !== "running") return;
-      requestNetworkPause();
-      await pendingNetworkAbort;
-    }, options.streamIdleTimeoutMs);
-  }
-
   const unsubscribe = session.subscribe((event) => {
-    armIdleWatchdog();
     if (event.type === "turn_end") events.emit("turn");
     if (event.type === "message_start" || event.type === "message_update" || event.type === "message_end") events.emit("transcript_message", event);
     if (event.type === "agent_end") {
@@ -330,7 +316,6 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     const text = queuedMessages.shift();
     if (text === undefined) return;
     prompting = true;
-    armIdleWatchdog();
     void session.prompt(text).catch(finishFailed).finally(() => {
       prompting = false;
       drainPrompts();
@@ -354,7 +339,6 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
 
   async function pause(): Promise<{ confirmed: boolean; reason?: string }> {
     if (isTerminal()) return { confirmed: true };
-    if (idleTimer) { options.clock.clearTimer(idleTimer); idleTimer = null; }
     currentState = "paused";
     const drained = session.clearQueue();
     queuedMessages.push(...drained.steering, ...drained.followUp);
@@ -379,7 +363,6 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
 
   async function stop(): Promise<{ stopped: boolean }> {
     if (isTerminal()) return { stopped: activeTools.size === 0 && !prompting };
-    if (idleTimer) { options.clock.clearTimer(idleTimer); idleTimer = null; }
     // 先切到 stopped 再 abort：abort 引发的 aborted 消息不能被当作业务失败
     currentState = "stopped";
     rejectResult(new Error("会话已被停止"));
@@ -391,7 +374,6 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     if (currentState === "paused") throw new Error("暂停态禁止释放会话");
     if (disposed) return;
     disposed = true;
-    if (idleTimer) options.clock.clearTimer(idleTimer);
     unsubscribe();
     session.dispose();
   }

@@ -8,7 +8,7 @@ import { object, positive, counter, ProdReference } from "./requirement-contract
 import { UUID_V7_PATTERN } from "./database.ts";
 import { canonicalJson, parseStrictJson } from "./strict-json.ts";
 
-export const SHORT_DECISION_LIMITS = Object.freeze({ textCodePoints: 400, referenceLength: 128, batch: 20, requestBytes: 65_536 });
+export const SHORT_DECISION_LIMITS = Object.freeze({ textCodePoints: 400, requestBytes: 65_536 });
 const id = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });
 const hash = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 });
 const text = Type.String({ minLength: 1 });

@@ -7,7 +7,6 @@ import { ApprovalPartition, ApprovalUnitIds, CandidateBinding, InteractionAction
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
 import type { ProdApprovalPartition } from "./prod-view.ts";
 
-export const APPROVAL_MANIFEST_LIMITS = Object.freeze({ actions: 20, requestBytes: 65_536 });
 const id = CandidateBinding.properties.candidateId, hash = CandidateBinding.properties.intentHash;
 const decisionIds = Type.Array(id, { minItems: 1, maxItems: 16, uniqueItems: true });
 const { conclusionIndexes: _unitIndexes, ...unitFields } = UnitReview.properties;

@@ -22,7 +22,6 @@ export const PM_INTAKE_LIMITS = Object.freeze({
   historicalSourceDirectories: 32,
   tasksPerLink: 32,
   jsonBytes: 32_768,
-  identifierCodepoints: 256,
 } as const);
 
 const object = <P extends TProperties>(properties: P) => Type.Object(properties, { additionalProperties: false });
