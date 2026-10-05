@@ -38,7 +38,6 @@ const PM_INTAKE_STORE_ADVICE: Record<string, FailureAdvice> = {
   foreign_repo: { why: "仓库不属于当前需求", next: "改用当前工作区列出的仓库编号" },
   impact_provider_unavailable: { why: "读不到接手影响分析", next: "重试一次；仍然失败就把这段原因告诉用户" },
   incomplete_scenario_directory: { why: "接手出处目录缺少必需场景", next: "停止操作，不要重试；把这段原因告诉用户" },
-  intake_frame_limit: { why: "接手复核记录数量超出上限", next: "停止操作，不要重试；把这段原因告诉用户" },
   intake_records_changed: { why: "接手复核记录在处理期间被改动", next: "重新发起一次" },
   invalid_binding: { why: "PM 绑定记录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   invalid_deadline: { why: "复核期限设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
@@ -444,7 +443,6 @@ function captureFrameIn(db: LocalDatabase, selector: FrameSelector, prior?: RowF
       data = directory;
     }
     rows[frameKey(namespace, key)] = { id: record.id, version: record.version, data };
-    if (Object.keys(rows).length > 256) deny("intake_frame_limit");
   };
   const headRow = db.read(ns.heads, selector.requirementId);
   if (headRow) {
@@ -499,7 +497,6 @@ function captureFrameIn(db: LocalDatabase, selector: FrameSelector, prior?: RowF
     const linked = reviews.filter((review) => review.requestId === head.requestId);
     if (!request || !same(head.binding, request.binding) || head.reviewId !== (linked[0]?.reviewId ?? null)) deny("request_not_current");
   } else if (requests.length) deny("request_not_current");
-  if (Object.keys(rows).length > 256 || Buffer.byteLength(JSON.stringify(frame)) > 524_288) deny("intake_frame_limit");
   return frame;
 }
 

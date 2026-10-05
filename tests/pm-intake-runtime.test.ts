@@ -113,3 +113,16 @@ test("M8M-AC4：需求累计提过 129 个问题时，PM 仍能交接手理解�
   await w.intake.recordReview(w.fixture.call, view.requestId, w.fixture.operationId(), { result: "passed", shortIssues: [] });
   expect(w.gate()).toMatchObject({ allowed: true });
 });
+
+test("M8M-AC4：PM 被要求改交 65 次、接手记录超过 256 行后，主代理仍能打开第 66 份并登记核对", async () => {
+  const w = await world();
+  for (let i = 0; i < 65; i++) {
+    w.submit({ ...w.content, goals: [{ text: `第 ${i} 次理解`, sourceRefs: w.content.goals[0]!.sourceRefs }] });
+    const view = await w.intake.openRequest(w.fixture.call, w.fixture.operationId());
+    await w.intake.recordReview(w.fixture.call, view.requestId, w.fixture.operationId(), { result: "pm_correction_required", shortIssues: ["目标理解有误"] });
+  }
+  w.submit(w.content);
+  const view = await w.intake.openRequest(w.fixture.call, w.fixture.operationId());
+  expect(view.understanding.goals).toEqual(w.content.goals);
+  await expect(w.intake.recordReview(w.fixture.call, view.requestId, w.fixture.operationId(), { result: "passed", shortIssues: [] })).resolves.toBeDefined();
+}, 120_000);
