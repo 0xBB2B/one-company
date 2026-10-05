@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { recommendedChoice } from "./installed-host.ts";
 import type { InstalledHost } from "./installed-host.ts";
 
 const DOWN = "\x1b[B", UP = "\x1b[A", ENTER = "\r", ESCAPE = "\x1b";
@@ -112,8 +113,10 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
       if (!seen || reopen) {
         opened.set(key, { times: (seen?.times ?? 0) + 1, pmTurns });
         record({ type: "open-item", label, at: Date.now() });
-        // 主代理分析完会针对这个事项弹问答窗口：像真人一样按台词在窗口里作答
-        host.answerPanelWindow = (window) => label.includes("待你验收")
+        // 主代理分析完会针对这个事项弹问答窗口：要登记决定的事项按台词作答；只作指示的事项（计划两次被拒、PM 停下）选主代理推荐的一项
+        const instruction = label.includes("计划两次提交被拒") || label.includes("PM 停下了");
+        let instructed = false;
+        host.answerPanelWindow = (window) => instruction ? (instructed = true, recommendedChoice(window)) : label.includes("待你验收")
           ? (/验收通过/.test(script.accept) && window.choices.includes("验收通过") ? "验收通过" : { other: script.accept })
           : label.includes("待你裁决") && script.adjudicate ? { other: script.adjudicate } : undefined;
         const before = host.session.messages.length;
@@ -129,7 +132,8 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
         await host.session.waitForIdle();
         // 已在问答窗口里答过、事项随之消失的，不再重复说台词
         if (!host.panelLines().some((line) => line.includes(label))) continue;
-        if (label.includes("待你验收")) { result = await say(script.accept); if (result) return result; }
+        if (instruction) { if (!instructed) return stop(`主代理没有为事项弹出问答窗口：${label}`); }
+        else if (label.includes("待你验收")) { result = await say(script.accept); if (result) return result; }
         else if (label.includes("待你裁决") && script.adjudicate) { result = await say(script.adjudicate); if (result) return result; }
         // 原型事项由宿主在确认窗口里直接选通过，用户不用说话
         else if (!label.includes("接手") && !label.includes("待你确认原型")) return stop(`出现台词未覆盖的事项：${label}`);

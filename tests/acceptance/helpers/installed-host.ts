@@ -124,6 +124,11 @@ export interface InstalledHost {
   close(): Promise<void>;
 }
 
+/** 主代理在问答窗口里标了推荐的那一项；没标时取第一项。 */
+export function recommendedChoice(window: ShownWindow): string {
+  return window.text.match(/^ (?:→ | {2})\d+\. (.+?) {2}推荐$/mu)?.[1] ?? window.choices[0]!;
+}
+
 /**
  * 用真实 SDK 加载安装产物，模式为 tui：驱动方接管界面，确认框一律回答"是"、原型确认窗口一律选通过并记录，
  * PM 面板经 setWidget 挂载后可按用户所见渲染，按键经 onTerminalInput 送入。
@@ -159,8 +164,7 @@ export async function startInstalledHost(options: { installed: string; repo: str
   const model = runtime.getModel(config.provider, config.modelId);
   if (!model) throw new Error(`模型配置里找不到 ${config.provider}/${config.modelId}`);
   /** 主代理的提问窗口一律选程序标了"推荐"的那一项，每次结果相同。 */
-  const answerQuestion = (window: ShownWindow): WindowDecision =>
-    window.text.match(/^ (?:→ | {2})\d+\. (.+?) {2}推荐$/mu)?.[1] ?? window.choices[0]!;
+  const answerQuestion = recommendedChoice;
   const loader = new DefaultResourceLoader({
     cwd: repo, agentDir, settingsManager: SettingsManager.inMemory(),
     additionalExtensionPaths: [join(installed, "extensions", "index.ts")], noContextFiles: true, noThemes: true,
