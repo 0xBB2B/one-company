@@ -13,7 +13,7 @@ export async function searchTargetExcluded(cwd: string, target: string): Promise
   const path = resolve(cwd, target);
   if (insideGit(path)) return true;
   const directory = await stat(path).then((entry) => entry.isDirectory() ? path : dirname(path), () => dirname(path));
-  return exec("git", ["-C", directory, "check-ignore", "-q", "--", path]).then(() => true, () => false);
+  return exec("git", ["-C", directory, "check-ignore", "-q", "--", path], { timeout: 10_000 }).then(() => true, () => false);
 }
 
 // grep 的行形如 `路径:行号: 内容` 或上下文行 `路径-行号- 内容`；find/ls 每行就是路径

@@ -6,7 +6,7 @@ const exec = promisify(execFile);
 /** 固定参数的 Git 调用：不运行 hook、不签名、不弹编辑器或凭据提示。 */
 export function gitIn(cwd: string, args: string[], input?: string) {
   const child = exec("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args],
-    { cwd, maxBuffer: 1 << 26, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true", LC_ALL: "C" } });
+    { cwd, maxBuffer: 1 << 26, timeout: 120_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true", LC_ALL: "C" } });
   if (input !== undefined) { child.child.stdin!.end(input); }
   return child;
 }
