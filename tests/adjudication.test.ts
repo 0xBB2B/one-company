@@ -78,6 +78,18 @@ test("需求在草稿阶段提过问（问题记录基于旧版本）时，裁�
   expect(result).toMatchObject({ status: "recorded", choice: "retry" });
 });
 
+test("M8M-AC2：需求累计提过 21 个问题时，面板裁决照常登记", async () => {
+  const w = await world();
+  for (let i = 0; i < 21; i++) {
+    const requestId = uuidv7();
+    w.db((db) => db.create("interaction_questions_v1", requestId, { format: "interaction-question/v1", requestId, repoId: w.fixture.repoId,
+      basis: { requirementId: w.fixture.requirementId, version: 1, epoch: 1, prod: null }, candidate: null,
+      proposal: { conclusion: `问题 ${i}`, scope: "显示格式", references: [], supersedes: [] }, actions: [], createdAt: 1 }, requestId));
+  }
+  const result = await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
+  expect(result).toMatchObject({ status: "recorded", choice: "retry" });
+});
+
 test("M8I-AC2：用户再给一次机会后 PM 先修改任务说明再派出：这次机会带到新版本，按用户给的上限派出，用过即失效", async () => {
   const w = await world();
   await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);

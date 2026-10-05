@@ -174,7 +174,7 @@ export class HostAuthorizationManager {
       return { id: requirementId, version: Number(row.version), data: checkRequirement(JSON.parse(row.data), requirementId, repoId) };
     });
   }
-  /** 读取全部相关问题（包括旧基线）而非模型挑选的一题；超限拒绝，不漏掉其余问题。 */
+  /** 读取全部相关问题（包括旧基线）而非模型挑选的一题。 */
   interactionRecords(repoId: string, requirementId: string, sessionId: string, context?: { basis: InteractionBasis; document: DocumentAnalysis }) {
     const before = this.snapshot(repoId, requirementId, sessionId);
     if (!["draft", "active"].includes(before.data.lifecycle) || before.data.recovery !== "ready") throw new HostAuthorizationError("lifecycle_denied");
@@ -187,8 +187,7 @@ export class HostAuthorizationManager {
     }
     return this.#read(repoId, sessionId, (db) => {
       // 问题的requirementId位于basis；不以候选版本过滤来隐藏旧问题。
-      const questions = db.prepare("SELECT id, data FROM records WHERE namespace='interaction_questions_v1' AND json_extract(data,'$.basis.requirementId')=? ORDER BY id LIMIT 21").all(requirementId);
-      if (questions.length > 20) throw new HostAuthorizationError("interaction_context_limit");
+      const questions = db.prepare("SELECT id, data FROM records WHERE namespace='interaction_questions_v1' AND json_extract(data,'$.basis.requirementId')=? ORDER BY id").all(requirementId);
       const registered = db.prepare("SELECT data FROM records WHERE namespace='approval_manifests_v1' AND json_extract(data,'$.manifest.requirementId')=? AND json_extract(data,'$.admission.version')=? AND json_extract(data,'$.admission.epoch')=? ORDER BY id LIMIT 21").all(requirementId, before.version, before.data.epoch);
       if (registered.length > 20) throw new HostAuthorizationError("interaction_context_limit");
       const ids = new Set<string>();
