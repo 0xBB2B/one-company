@@ -117,19 +117,25 @@ test("M7-AC2：连续加入快跑、跳跃、跳跃动画时各自成为独立�
   expect(w.gate()).toEqual({ allowed: true });
 });
 
-test("M7-AC32：新版本收回某目标的实施授权后，该目标的任务不能判为无关，也不能再派出；PM 改不动时可升级给用户裁决", async () => {
+test("M7-AC32：当前批准不再把某段列为实施目标时，以它为目标的任务不能判为无关、不能派出；已有尝试的任务目标全都不在授权内时直接取消，不上报", async () => {
   const { escalateTask } = await import("../runtime/task-dispatch.ts");
   const w = await world();
   const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
+  withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => {
+    const row = db.read<Record<string, unknown>>(TASKS, login.taskId)!;
+    db.update(TASKS, login.taskId, row.version, { ...row.data, status: "awaiting_parent",
+      attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" }] });
+  });
   await w.fixture.approveRevision({ body: BASE, implementGoals: ["scenario.failure"] });
   await expect(w.assess([[login, "unaffected"], [failure, "unaffected"]])).rejects.toMatchObject({ code: "assessment_invalid" });
   const assessed = await w.assess([[login, "affected"], [failure, "unaffected"]]);
   expect(w.byKey(assessed, "login").status).toBe("needs_update");
   await expect(w.run({ action: "update", planVersion: assessed.plan.planVersion,
     modify: [{ taskId: login.taskId, version: login.version, spec: spec("login", "goal.login") }] })).rejects.toMatchObject({ code: "unit_not_authorized" });
-  const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.fixture.lease, note: "登录目标被收回实施授权，计划改不动" };
-  expect(() => escalateTask({ ...ref, taskId: failure.taskId })).toThrow("failure:pending 不在等待 PM 处置，目标也没有被新版本收回实施授权");
-  expect(escalateTask({ ...ref, taskId: login.taskId }).status).toBe("awaiting_user");
+  const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.fixture.lease, note: "登录目标不在当前实施授权内" };
+  expect(() => escalateTask({ ...ref, taskId: login.taskId })).toThrow("login:needs_update 不在等待 PM 处置");
+  const cancelled = await w.run({ action: "update", planVersion: assessed.plan.planVersion, cancel: [{ taskId: login.taskId, version: login.version }] });
+  expect(w.byKey(cancelled, "login").status).toBe("cancelled");
 });
 
 test("M7-AC12：运行中任务被判为受影响后，子代理结局只记入尝试，不覆盖待更新状态，也不能按旧版本重派", async () => {

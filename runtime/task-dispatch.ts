@@ -236,7 +236,7 @@ export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "re
 }
 
 /**
- * PM 对等待其处置、或目标已被新批准版本收回实施授权的待更新任务放弃自行处理：转为等待用户裁决，说明记在最近一次尝试上。
+ * PM 对等待其处置的任务放弃自行处理：转为等待用户裁决，说明记在最近一次尝试上。
  * PM 因此不多任何权限，之后只有用户的决定能让任务继续。
  */
 export function escalateTask(request: { dataRoot: string; repoId: string; lease: PmLease; taskId: string; note: string; now?: number }): TaskRecord {
@@ -246,9 +246,7 @@ export function escalateTask(request: { dataRoot: string; repoId: string; lease:
     const row = db.read<TaskRecord>(TASKS, request.taskId);
     if (!row || row.data.requirementId !== request.lease.requirementId) deny("task_not_ready", ["任务不属于本需求"]);
     const task = row!.data;
-    if (task.status !== "awaiting_parent" && !(task.status === "needs_update" && revokedGoalsIn(db, request.repoId, task).length)) {
-      deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置，目标也没有被新版本收回实施授权`]);
-    }
+    if (task.status !== "awaiting_parent") deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置`]);
     const attempts = task.attempts.map((attempt, index) => index === task.attempts.length - 1 ? { ...attempt, escalation: request.note } : attempt);
     const next = { ...task, status: "awaiting_user", attempts, updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row!.version, next);

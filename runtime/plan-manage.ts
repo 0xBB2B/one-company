@@ -444,10 +444,10 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     // 只占同角色：QA 的目标本就覆盖验收单元，若跨角色占用，QA 一报问题就再也追加不了 worker 返修任务
     const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" &&
       (task.status !== "cancelled" || terminationPending([task], record.data.revision)));
-    const cancelTried = (params.cancel ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId));
-    if (cancelTried.length) deny("task_not_ready", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
-    // 新批准版本不再授权的目标谁也拿不走，从已开工任务里去掉它绕不开一次重试
+    // 当前批准不再列为实施目标的段谁也拿不走：从已开工任务里去掉它、目标全都不在授权内时取消任务，都绕不开一次重试
     const authorized = implementScope(manifest);
+    const cancelTried = (params.cancel ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && task.goalUnitIds.some((unit) => authorized.has(unit))));
+    if (cancelTried.length) deny("task_not_ready", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
     const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && !readjusted(task)
       && task.goalUnitIds.some((unit) => authorized.has(unit) && !item.spec.goalUnitIds.includes(unit))));
     if (shrunk.length) deny("task_not_ready", shrunk.map((item) => `${item.spec.key} 已有尝试，修改须保留原有目标`));
