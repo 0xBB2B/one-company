@@ -98,7 +98,7 @@ test("M7-AC27/28/29/30：到限自动上报 PM；重试须带原因且只有一�
   await until(() => w.task("login").status === "awaiting_user");
   expect(w.task("login").attempts[1]).toMatchObject({ runId: second.runId, maxTurns: 3, turnsUsed: 3, reason: "轮次估计不足", outcome: "turn_limit_reached" });
   await expect(w.dispatch("login", { reason: "再试一次", maxTurns: 5 })).rejects.toMatchObject({ code: "task_not_ready" });
-  await expect(w.plan.execute({ action: "update", planVersion: 1, add: [spec("login-again")] })).rejects.toMatchObject({ code: "task_not_ready" });
+  await expect(w.plan.execute({ action: "update", planVersion: 1, add: [spec("login-again")] })).rejects.toMatchObject({ code: "goal_held" });
   await expect(w.dispatch("failure", { reason: "无需重试", maxTurns: 2 })).rejects.toMatchObject({ code: "retry_not_needed" });
 });
 
@@ -248,7 +248,7 @@ test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因
   expect(secondRequest.systemPrompt).toContain("先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红");
   expect(w.task("login").reviews[1]).toMatchObject({ runId: second.runId, attemptRunId: fix.runId, outcome: "unverified" });
   await expect(w.rework("login")).rejects.toMatchObject({ code: "task_not_ready" });
-  await expect(w.plan.execute({ action: "update", planVersion: 1, add: [spec("login-fix")] })).rejects.toMatchObject({ code: "task_not_ready" });
+  await expect(w.plan.execute({ action: "update", planVersion: 1, add: [spec("login-fix")] })).rejects.toMatchObject({ code: "goal_held" });
 });
 
 test("M7A-AC4：审查未交出结论按被审尝试计数；用户再给一次机会后经打回、返修，新尝试的审查仍可派出", async () => {

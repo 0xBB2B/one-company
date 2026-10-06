@@ -224,7 +224,7 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   cleanups.push(() => close.dispose());
   expect((await close.deliveryCheck(w.fixture.requirementId)).blockers).toContain("terminated_goal_in_scope");
   const planVersion = () => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
-  await expect(w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-again", "goal.login")] })).rejects.toMatchObject({ code: "task_not_ready" });
+  await expect(w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-again", "goal.login")] })).rejects.toMatchObject({ code: "goal_held" });
   await expect(w.plan.execute({ action: "update", planVersion: planVersion(), modify: [{ taskId: w.login, version: w.task("login").version, spec: spec("login", "goal.login") }] }))
     .rejects.toMatchObject({ code: "task_not_ready" });
 
@@ -276,7 +276,7 @@ test("M7-AC35：调整目标或范围后须等新的批准版本才能按新范�
     { taskId: w.login, version: w.task("login").version, assessment: "affected", rationale: "登录目标改为测试桩" },
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
-  await expect(w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-again", "goal.login")] })).rejects.toMatchObject({ code: "task_not_ready" });
+  await expect(w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-again", "goal.login")] })).rejects.toMatchObject({ code: "goal_held" });
   await modify();
   await w.plan.execute({ action: "confirm", planVersion: planVersion() });
   w.provider.queue.push({ type: "text", text: "按新范围做" }, { type: "text", text: "PM 收到" });

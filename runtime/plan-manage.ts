@@ -182,6 +182,7 @@ const PLAN_ADVICE = {
   dependency_invalid: { why: "任务的依赖、写入范围或审查设置不合规", next: "按原因改正任务后重新提交" },
   coverage_incomplete: { why: "计划没有覆盖所有实施授权的目标章节", next: "为缺少的章节补任务后再确认" },
   task_not_ready: { why: "任务当前状态不允许这个操作", next: "用 read 查看任务状态，按原因处理后再试" },
+  goal_held: { why: "目标被已有尝试的任务占住", next: "已有尝试的任务保留原有目标、不能取消；新增任务只放新增的段落，改好计划再交" },
   assessment_incomplete: { why: "复核没有覆盖所有受影响的任务", next: "为缺少的任务补上复核结论后重交" },
   assessment_invalid: { why: "复核结论不成立", next: "按原因改正复核结论后重交" },
 } as const satisfies Record<string, FailureAdvice>;
@@ -447,15 +448,15 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     // 当前批准不再列为实施目标的段谁也拿不走：从已开工任务里去掉它、目标全都不在授权内时取消任务，都绕不开一次重试
     const authorized = implementScope(manifest);
     const cancelTried = (params.cancel ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && task.goalUnitIds.some((unit) => authorized.has(unit))));
-    if (cancelTried.length) deny("task_not_ready", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
+    if (cancelTried.length) deny("goal_held", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
     const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && !readjusted(task)
       && task.goalUnitIds.some((unit) => authorized.has(unit) && !item.spec.goalUnitIds.includes(unit))));
-    if (shrunk.length) deny("task_not_ready", shrunk.map((item) => `${item.spec.key} 已有尝试，修改须保留原有目标`));
+    if (shrunk.length) deny("goal_held", shrunk.map((item) => `${item.spec.key} 已有尝试，修改须保留原有目标`));
     const heldBy = (unit: string, role: string, except?: string) => tried.some((task) => task.taskId !== except && task.role === role && task.goalUnitIds.includes(unit));
     const bypass = [...(params.add ?? []).map((spec) => ({ spec, taskId: undefined as string | undefined })),
       ...(params.modify ?? []).map((item) => ({ spec: item.spec, taskId: item.taskId }))]
       .filter(({ spec, taskId }) => spec.goalUnitIds.some((unit) => heldBy(unit, spec.role, taskId)));
-    if (bypass.length) deny("task_not_ready", bypass.map(({ spec }) => `${spec.key} 覆盖已有尝试任务的目标`));
+    if (bypass.length) deny("goal_held", bypass.map(({ spec }) => `${spec.key} 覆盖已有尝试任务的目标`));
     const modifySpecs = (params.modify ?? []).map((item) => {
       if (item.spec.key !== byId.get(item.taskId)!.key) deny("dependency_invalid", ["修改不能改变任务 key"]);
       return item.spec;
