@@ -105,10 +105,10 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
       const label = lines[itemIndex]!.split("⚑ ")[1] ?? "";
       const key = `${label}@${lines.length}`;
       const seen = opened.get(key);
-      // PM 被要求改正后重交的接手理解，面板上还是同一行字。PM 这一轮已停下（⏸）且轮数比上次打开时多，说明它又动过，
+      // PM 改正后重交的接手理解或完成报告，面板上还是同一行字。PM 这一轮已停下（⏸）且轮数比上次打开时多，说明它又动过，
       // 主代理也已答完：像真人一样再打开一次。PM 还在跑时不重开，免得对同一份重复核对
       const pmTurns = /↻(\d+)/.exec(lines.join("\n"))?.[1] ?? "";
-      const reopen = seen !== undefined && label.includes("接手") && seen.times < 6 && lines.some((line) => line.includes("⏸")) && pmTurns !== seen.pmTurns
+      const reopen = seen !== undefined && (label.includes("接手") || label.includes("待你验收")) && seen.times < 6 && lines.some((line) => line.includes("⏸")) && pmTurns !== seen.pmTurns
         && host.session.messages.at(-1)?.role === "assistant";
       if (!seen || reopen) {
         opened.set(key, { times: (seen?.times ?? 0) + 1, pmTurns });
