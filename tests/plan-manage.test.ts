@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { readFile, stat } from "node:fs/promises";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { createPlanManageTool, implementScope, PLANS, TASKS } from "../runtime/plan-manage.ts";
+import { createPlanManageTool, holdResumes, implementScope, PLANS, TASKS } from "../runtime/plan-manage.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
@@ -49,6 +49,20 @@ test("M8O-AC2：实施目标等于实施目标板块下全部已确认段落，�
     .toEqual(["features", "features.animation", "features.hold"]);
   expect([...implementScope(manifest([{ action: "analyze", goalIds: ["features.hold"] }]), sections)]).toEqual([]);
   expect([...implementScope(manifest([{ action: "implement", goalIds: ["features.hold"], unknown: true }]), sections)]).toEqual([]);
+});
+
+test("M8O-AC1：批准新版本时暂停的子代理在计划确认后是否恢复：所属任务版本没变、在已确认计划里且这次运行仍是任务当前在做的那次才恢复", () => {
+  const plan = { confirmedTasks: [{ taskId: "t", version: 1 }] } as never;
+  const task = (patch: Record<string, unknown>) => ({ plan, tasks: [{ taskId: "t", version: 1, status: "running", prototypeRun: undefined, ...patch }] }) as never;
+  expect(holdResumes(null, null, "r")).toBe(true);
+  expect(holdResumes({ taskId: "t", version: 1, kind: "attempt" }, task({}), "r")).toBe(true);
+  expect(holdResumes({ taskId: "t", version: 1, kind: "attempt" }, task({ version: 2 }), "r")).toBe(false);
+  expect(holdResumes({ taskId: "t", version: 1, kind: "attempt" }, task({ status: "cancelled" }), "r")).toBe(false);
+  expect(holdResumes({ taskId: "t", version: 1, kind: "review" }, task({ status: "reviewing" }), "r")).toBe(true);
+  expect(holdResumes({ taskId: "t", version: 1, kind: "review" }, task({ status: "running" }), "r")).toBe(false);
+  expect(holdResumes({ taskId: "t", version: 1, kind: "prototype" }, task({ status: "pending", prototypeRun: { runId: "r", outcome: "running" } }), "r")).toBe(true);
+  expect(holdResumes({ taskId: "t", version: 1, kind: "prototype" }, task({ status: "pending", prototypeRun: { runId: "other", outcome: "running" } }), "r")).toBe(false);
+  expect(holdResumes({ taskId: "t", version: 1, kind: "attempt" }, { plan: { confirmedTasks: [] }, tasks: [{ taskId: "t", version: 1, status: "running" }] } as never, "r")).toBe(false);
 });
 
 test("M7-AC13：接手核对通过前正式提出计划被拒，通过后可以提出", async () => {

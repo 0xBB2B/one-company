@@ -255,6 +255,17 @@ export function replanPending(plan: Pick<PlanRecord, "confirmedVersion" | "confi
   return last > 0 && (plan.confirmedRevision ?? 0) <= last || plan.confirmedVersion !== null && (plan.confirmedRevision ?? 0) < revision;
 }
 
+/** 批准新版本时暂停的子代理属于哪个任务、是该任务的哪种运行，以及当时的任务版本。 */
+export type HoldRef = { taskId: string; version: number; kind: "attempt" | "review" | "prototype" };
+/** 计划确认后该子代理是否恢复：所属任务版本没变、在已确认计划里，且这次运行仍是任务当前在做的那次；不属于任务的运行直接恢复。 */
+export function holdResumes(ref: HoldRef | null, current: { plan: PlanRecord; tasks: readonly TaskRecord[] } | null, runId: string): boolean {
+  if (!ref) return true;
+  const task = current?.tasks.find((candidate) => candidate.taskId === ref.taskId);
+  if (!task || task.version !== ref.version || !current!.plan.confirmedTasks.some((entry) => entry.taskId === ref.taskId && entry.version === ref.version)) return false;
+  if (ref.kind === "prototype") return task.prototypeRun?.runId === runId && task.prototypeRun.outcome === "running";
+  return task.status === (ref.kind === "review" ? "reviewing" : "running");
+}
+
 export function confirmedPlanKey(plan: Pick<PlanRecord, "confirmedTasks"> | undefined): string {
   return sha256(JSON.stringify(plan?.confirmedTasks ?? []));
 }

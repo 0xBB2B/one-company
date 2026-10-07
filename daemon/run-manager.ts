@@ -21,7 +21,8 @@ import { createPmTools } from "./pm-tools.ts";
 import { createSubagentTools } from "./subagent-tools.ts";
 import { approvedPrototype, decidePrototype, latestPrototype, prototypeConfirmation, PrototypeError } from "../runtime/prototype.ts";
 import { beginPrototypeRun, beginTaskAttempt, beginTaskReview, finishPrototypeRun, finishTaskAttempt, finishTaskReview } from "../runtime/task-dispatch.ts";
-import { confirmedPlanKey, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../runtime/plan-manage.ts";
+import { confirmedPlanKey, holdResumes, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../runtime/plan-manage.ts";
+import type { HoldRef } from "../runtime/plan-manage.ts";
 import type { TaskAttempt, TaskRecord as PlanTask, TaskReview } from "../runtime/plan-manage.ts";
 import { VERDICTS } from "../runtime/verdicts.ts";
 import type { Finding, Verdict } from "../runtime/verdicts.ts";
@@ -87,7 +88,7 @@ export interface RunManagerOptions {
 }
 interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null;
   /** 批准新版本时暂停的子代理及其所属任务当时的版本；计划确认后逐个结算。 */
-  hold: Map<string, { taskId: string; version: number } | null> | null };
+  hold: Map<string, HoldRef | null> | null };
   subagent?: { parentRunId: string; taskId: string; review: boolean; prototype: boolean; dispose(): void };
   explore?: { parentRunId: string; dispose(): void; result(): ExploreResult | null } }
 /** main 派出的 explore 只属于派出它的主窗口会话，不写运行记录；窗口关闭即停止并作废结果。 */
@@ -873,7 +874,9 @@ export class RunManager {
     if (run.ok && entry.subagent && this.replanPending(run.run.requirement)) throw protocolError("plan_not_confirmed", "须先确认基于当前批准版本的计划");
     // 恢复前当场结算终止后的统一停止，不留"先恢复、后停止"的窗口
     if (entry.subagent) {
-      await this.settleHalt(entry.subagent.parentRunId);
+      const parentRunId = entry.subagent.parentRunId;
+      await this.settleHalt(parentRunId);
+      await this.applyApprovalHold(parentRunId);
       if (this.supersededRuns.has(runId) || this.sessions.get(runId)?.handle.state() !== "paused") throw protocolError("not_resumable", "该子代理已因计划变更被停止");
     }
     await entry.handle.resume();
@@ -885,7 +888,7 @@ export class RunManager {
       .filter((child) => child.parentRunId === runId && this.sessions.get(child.id)?.handle.state() === "paused");
     // 须重新确认计划时子代理保持暂停；已因计划变更待停的子代理不连带恢复，也不因此把已恢复的 PM 报成失败
     if (options.children !== false && !this.replanPending(updated.requirement)) {
-      if (entry.pm) await this.settleHalt(runId);
+      if (entry.pm) { await this.settleHalt(runId); await this.applyApprovalHold(runId); }
       for (const child of children) {
         if (!this.supersededRuns.has(child.id) && this.sessions.get(child.id)?.handle.state() === "paused") await this.resume(child.id);
       }
@@ -1055,21 +1058,25 @@ export class RunManager {
     const pending = this.replanPending(requirementId);
     if (pending && !entry.pm.hold) {
       const tasks = withDatabase(this.database, (db) => readPlanIn(db, requirementId)?.tasks ?? []);
-      const owner = (runId: string) => tasks.find((task) => task.attempts.some((a) => a.runId === runId) || task.reviews.some((r) => r.runId === runId) || task.prototypeRun?.runId === runId);
+      const owner = (runId: string): HoldRef | null => {
+        for (const task of tasks) {
+          const kind = task.attempts.some((a) => a.runId === runId) ? "attempt" : task.reviews.some((r) => r.runId === runId) ? "review" : task.prototypeRun?.runId === runId ? "prototype" : null;
+          if (kind) return { taskId: task.taskId, version: task.version, kind };
+        }
+        return null;
+      };
+      // 用户先暂停了 PM 或网络暂停时子代理已停着，同样列入名单，计划确认后一起结算
       const children = (await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER })).items
-        .filter((run) => run.parentRunId === pmRunId && ["running", "waiting_answer"].includes(run.state));
-      entry.pm.hold = new Map(children.map((run) => { const task = owner(run.id); return [run.id, task ? { taskId: task.taskId, version: task.version } : null]; }));
-      for (const child of children) await this.pause(child.id).catch(() => {});
+        .filter((run) => run.parentRunId === pmRunId && ["running", "waiting_answer", "pausing", "paused", "paused_network"].includes(run.state));
+      entry.pm.hold = new Map(children.map((run) => [run.id, owner(run.id)]));
+      for (const child of children) if (["running", "waiting_answer"].includes(child.state)) await this.pause(child.id).catch(() => {});
     } else if (!pending && entry.pm.hold) {
       const hold = entry.pm.hold;
       entry.pm.hold = null;
       const current = withDatabase(this.database, (db) => readPlanIn(db, requirementId));
       for (const [runId, ref] of hold) {
         if (this.sessions.get(runId)?.handle.state() !== "paused") continue;
-        const task = ref && current?.tasks.find((candidate) => candidate.taskId === ref.taskId);
-        const unchanged = !ref || task !== undefined && task !== null && task.version === ref.version && ["running", "reviewing"].includes(task.status) &&
-          current!.plan.confirmedTasks.some((entry) => entry.taskId === ref.taskId && entry.version === ref.version);
-        if (unchanged) { await this.resume(runId).catch(() => {}); continue; }
+        if (holdResumes(ref, current, runId)) { await this.resume(runId).catch(() => {}); continue; }
         this.supersededRuns.add(runId);
         await this.stop(runId, { reason: "replanned" }).catch(() => {});
       }

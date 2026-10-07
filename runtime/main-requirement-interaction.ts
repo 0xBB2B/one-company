@@ -575,7 +575,7 @@ export class MainRequirementInteraction {
     try { docSpec ??= (await resolveRepositoryRequirementDoc(this.#options.dataRoot, host.repositories.get(request.repoId)!.path)).spec; }
     catch (error) { if (error instanceof RequirementDocError) throw new HostAuthorizationError(error.code, error.message); throw error; }
     if (!docSpec.sections.some((section) => section.goal)) {
-      throw new HostAuthorizationError("requirement_doc_invalid", "需求文档规范没有标出实施目标板块（goal: true），批准后不知道要实施哪些段落");
+      throw new HostAuthorizationError("requirement_doc_invalid", "这个需求所用的需求文档规范（首次批准时存下的版本）没有标出实施目标板块（goal: true），批准后不知道要实施哪些段落");
     }
     const sections = prodSectionsProblem(loaded.body, docSpec.sections);
     if (sections) throw new HostAuthorizationError("prod_sections_required", sections);

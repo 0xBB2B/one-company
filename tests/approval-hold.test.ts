@@ -13,7 +13,7 @@ const spec = (key: string, goal: string, patch: Partial<TaskSpec> = {}): TaskSpe
   writePaths: [`${key}/`], blockedByQuestionIds: [], maxTurns: 5, objective: `实现 ${key}`, passCriteria: ["可观察通过"], scope: { in: [key], out: [] }, performance: NA, ...patch });
 
 /** 计划已确认、failure 任务的 worker 正在运行时，用户批准了只改登录段的新版本；PM 读完差异并按给定结论复核。 */
-async function approvedWhileRunning(failure: "affected" | "unaffected") {
+async function approvedWhileRunning(failure: "affected" | "unaffected", options: { pmPausedFirst?: boolean } = {}) {
   const w = await createPmRunWorld(cleanups);
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
@@ -23,8 +23,16 @@ async function approvedWhileRunning(failure: "affected" | "unaffected") {
   w.provider.queue.push({ type: "text", text: "慢慢写失败场景", chunkDelayMs: 30_000 });
   const run = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("failure").taskId, retry: null });
   await until(async () => await state(run.runId) === "running" && w.provider.queue.length === 0);
+  if (options.pmPausedFirst) {
+    await w.manager.pause(w.pm.runId);
+    await until(async () => await state(run.runId) === "paused" && await state(w.pm.runId) === "paused");
+  }
   w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
   await w.fixture.approveRevision({ body: BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。"), implementGoals: ["goal.login", "scenario.failure"] });
+  if (options.pmPausedFirst) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await w.manager.resume(w.pm.runId);
+  }
   await until(async () => await state(run.runId) === "paused");
   expect(await state(w.pm.runId)).not.toBe("paused");
   await expect(w.manager.resume(run.runId)).rejects.toMatchObject({ code: "plan_not_confirmed" });
@@ -116,4 +124,12 @@ test("M8O-AC4：任务 1 已完成、任务 2 进行中时追加需求且二者�
   w.provider.queue.push({ type: "text", text: "重做失败场景", chunkDelayMs: 30_000 });
   await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("failure").taskId, retry: null })).resolves.toBeDefined();
   expect(await rulings()).toEqual([]);
+});
+
+test("M8O-AC1：用户先暂停了 PM（子代理连带暂停）再批准新版本，恢复 PM 后子代理仍停着，计划确认后所属任务被改写的子代理停止并记为被取代", async () => {
+  const { w, task, state, run } = await approvedWhileRunning("affected", { pmPausedFirst: true });
+  await until(async () => await state(run.runId) === "stopped");
+  await until(() => task("failure").attempts[0]!.outcome !== "running");
+  expect(task("failure").attempts.map((attempt) => attempt.outcome)).toEqual(["superseded"]);
+  expect(await w.runStore.get(run.runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "replanned" } } });
 });
