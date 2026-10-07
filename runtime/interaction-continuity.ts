@@ -215,8 +215,8 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
         if (facts.some(({ row, fact }) => fact.resolvedIssues?.some((resolution) => same(resolution.fact, ref(source.row)) &&
           same(resolution.originDecision, d.record) && resolution.unit.id === unit.id && resolution.unit.hash === unit.hash) &&
           fact.decisions.some((decision) => { const next = latestSource({ row, fact, decision }, unit.id); return next && sourceAcceptsCurrentUnit(next, unit.id); }))) continue;
-        // 真正的新字节经后续完整审核后可解决重存待办；同hash或只改其他单位不能解决。
-        if (target && target.hash !== unit.hash && sources.some((s) => s.fact.basis.version > source.fact.basis.version && sourceAcceptsCurrentUnit(s, unit.id))) continue;
+        // 段落改过或删掉后，针对旧内容的修改、待定记录作废：新内容由这次批准重新解读，作废不产生任何授权
+        if (target?.hash !== unit.hash) continue;
         const policy = source.fact.byteReview?.units.find((u) => u.id === unit.id);
         const affected = new Set<string>(target ? [target.id] : []);
         if (!policy && d.kind === "constraint" || policy?.globalConstraint) {

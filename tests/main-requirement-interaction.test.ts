@@ -708,6 +708,21 @@ test("M8D-AC9：批准被挡时写明原因：以前登记的决定挡住了哪�
   expect(reason).toMatch(/解读模型对待定段落写的理由（模型写的，只用来决定问用户什么，不算批准）：「[^」]*手机号与邮箱[^」]*」整份待定/u);
 });
 
+test("M9-AC12：某段被记为要修改后，草稿改了这一段再请批准，这条旧的修改记录不再算连续性问题、不交给解读模型，没改的段落仍照旧；一次明确批准即生效", async () => {
+  const w = await world(), created = await w.create(), first = await w.request(created);
+  const modify = phoneReview(first.loaded);
+  modify.faithful = false; modify.entries[1]!.resolution = "modify"; modify.entries.splice(5, 1);
+  w.capture("手机号登录要改一下"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(modify) }]);
+  expect(await w.call({ action: "reply", ...first.input }, true)).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
+  const resaveOperation = uuidv7();
+  const resaved = await w.service.updateDraft({ requirementId: first.input.requirementId, version: first.input.version, operationId: resaveOperation, title: "登录",
+    body: BODY.replace("增加手机号登录，保留邮箱登录。", "增加手机号登录，保留邮箱登录，手机号须先验证。") });
+  const next = await w.request({ ...created, operationId: resaveOperation, version: resaved.version });
+  w.capture("内容正确，批准这一版"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(next.loaded)) }]);
+  expect(await w.call({ action: "confirmUpdate", ...next.input })).toMatchObject({ prodActivated: true });
+  expect((interpreterContext(w).continuityIssues as Array<{ unitId: string }>).map((issue) => issue.unitId)).toEqual(["SMS"]);
+});
+
 test("M8D-AC3：没有确认任何正文段落的解读不留下决定记录，随后一次明确的批准照常生效", async () => {
   const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
   const decisions = () => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"));
