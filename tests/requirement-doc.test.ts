@@ -64,6 +64,7 @@ test("M8C-AC4：skill 无效时报错写明原因与文件，不退回用户层�
     [skill("  - { id: a, title: 甲, record: design }\n  - { id: b, title: 乙, record: acceptance }\n"), "record"],
     ["---\nname: requirement-doc\nsections: []\n---\n", "sections"],
     [skill("  - { id: a, title: 甲, record: implementation }\n  - { id: b, title: 乙, record: acceptance }\n"), "goal: true"],
+    [skill("  - { id: c, title: 丙, goal: true }\n  - { id: c.extra, title: 丁 }\n  - { id: a, title: 甲, record: implementation }\n  - { id: b, title: 乙, record: acceptance }\n"), "c.extra"],
     [skill("  - { id: c, title: 丙, goal: yes }\n  - { id: a, title: 甲, record: implementation }\n  - { id: b, title: 乙, record: acceptance }\n"), "goal"],
   ];
   for (const [content, reason] of cases) {

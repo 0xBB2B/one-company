@@ -18,7 +18,7 @@ import { UserInteractionCore } from "../runtime/user-interaction.ts";
 
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
-const FIVE_SECTIONS = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n实施A。\n## 功能 {#features}\n### A {#A}\n实施A。\n" +
+const FIVE_SECTIONS = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n实施A。\n## 功能 {#features}\n### A {#features.A}\n实施A。\n" +
   "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\nA 可以使用。\n";
 async function world(active: boolean) {
   const root = await mkdtemp(join(temporaryRoot(), "hrc-")), repo = join(root, "repo"), dataRoot = join(root, "data");
@@ -50,7 +50,7 @@ async function world(active: boolean) {
   const entry = (kind: string, text: string) => ({ kind, conclusion: text, scope: "A范围", basis: "explicit", resolution: "direct", candidateId: c, requestId: null, actions: kind === "action" ? ["analyze"] : [], references: [], supersedes: [] });
   const units = loaded.partition.units.map((u) => u.id);
   scriptReplies(provider, [{ type: "text", text: JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true,
-    entries: active ? [{ ...entry("constraint", "文档身份"), unitIds: [units[0]] }, { ...entry("target", "实施A"), unitIds: units.slice(1) }, { ...entry("action", "只分析A"), unitIds: ["A"] }]
+    entries: active ? [{ ...entry("constraint", "文档身份"), unitIds: [units[0]] }, { ...entry("target", "实施A"), unitIds: units.slice(1) }, { ...entry("action", "只分析A"), unitIds: ["features.A"] }]
       : [{ ...entry("constraint", "文档身份"), unitIds: units }] }) }]);
   const id = uuidv7(), response = await call(params, id), superseded = (response.details!.decisionIds as string[])[active ? 1 : 0]!;
   const supersede = async () => {

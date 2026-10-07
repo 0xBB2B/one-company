@@ -146,3 +146,12 @@ test("M8C：批准核对按规范的板块清单，且每个标题（含各级�
   expect(prodSectionsProblem(three.replace("{#check.sprint}", "{#goal.sprint}"), sections)).toBe("每个标题都须以唯一编号结尾：编号 goal.sprint 重复");
   expect(prodSectionsProblem(three.replace("{#check.sprint}", "{#bad/id}"), sections)).toContain("「### 快跑 {#bad/id}」没有编号");
 });
+
+test("M8O-AC2：实施目标板块下的小节编号须以“板块编号.”开头，以它开头的小节也须写在该板块下，否则批准核对不通过", () => {
+  const sections = [{ id: "goal", title: "目标", goal: true as const }, { id: "build", title: "实现", record: "implementation" as const }, { id: "check", title: "验收", record: "acceptance" as const }];
+  const three = "## 目标 {#goal}\n跑得快。\n### 快跑 {#goal.sprint}\n按 Shift。\n## 实现 {#build}\n由 PM 规划。\n## 验收 {#check}\n### 快跑 {#check.sprint}\n1.5 倍。\n";
+  expect(prodSectionsProblem(three, sections)).toBeNull();
+  expect(prodSectionsProblem(three.replace("{#goal.sprint}", "{#sprint}"), sections)).toBe("实施目标板块 goal 下的小节编号须以「goal.」开头：「### 快跑 {#sprint}」");
+  expect(prodSectionsProblem(three.replace("{#check.sprint}", "{#goal.check}"), sections)).toBe("编号以「goal.」开头的小节须写在实施目标板块 goal 下：「### 快跑 {#goal.check}」在 check 下");
+  expect(prodSectionsProblem(three.replace("{#check.sprint}", "{#A}"), sections)).toBeNull();
+});

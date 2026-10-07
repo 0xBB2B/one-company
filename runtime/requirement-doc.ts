@@ -84,5 +84,7 @@ function checkSections(value: unknown, invalid: (reason: string) => never): Requ
   }
   // 批准并授权实施时，这些板块下已确认的段落就是实施目标
   if (!sections.some((section) => section.goal)) invalid("须至少有一个板块标 goal: true，标出批准后要实施的板块");
+  const nested = sections.find((outer) => sections.some((inner) => inner.id.startsWith(`${outer.id}.`)));
+  if (nested) invalid(`板块编号 ${sections.find((inner) => inner.id.startsWith(`${nested.id}.`))!.id} 以另一板块编号 ${nested.id} 加点开头，无法判断小节归属`);
   return sections;
 }

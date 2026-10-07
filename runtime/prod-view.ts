@@ -27,8 +27,11 @@ export interface ProdStructure {
   businessCompleteness: "not_mechanically_proven";
 }
 
-/** 批准前核对：每个标题都有唯一编号，顶层恰好是规范板块清单里的二级标题且按清单顺序；符合返回 null，否则返回期望与实际。 */
-export function prodSectionsProblem(body: string, sections: readonly { id: string }[]): string | null {
+/**
+ * 批准前核对：每个标题都有唯一编号，顶层恰好是规范板块清单里的二级标题且按清单顺序；
+ * 实施目标板块下的小节编号以"板块编号."开头，以它开头的小节也只写在该板块下。符合返回 null，否则返回期望与实际。
+ */
+export function prodSectionsProblem(body: string, sections: readonly { id: string; goal?: true }[]): string | null {
   const headings = headingsOf(body), seen = new Set<string>();
   for (const heading of headings) {
     if (heading.id === undefined) return `每个标题都须以唯一编号结尾：「${heading.text}」没有编号`;
@@ -37,8 +40,19 @@ export function prodSectionsProblem(body: string, sections: readonly { id: strin
   }
   const top = headings.filter((heading) => heading.level <= 2), expected = sections.map((section) => section.id);
   const actual = top.map((heading) => heading.id!);
-  if (top.every((heading) => heading.level === 2) && actual.join() === expected.join()) return null;
-  return `顶层须为二级标题且依次为 ${expected.join("、")}，当前为 ${actual.length ? actual.join("、") : "无标题"}`;
+  if (!top.every((heading) => heading.level === 2) || actual.join() !== expected.join()) {
+    return `顶层须为二级标题且依次为 ${expected.join("、")}，当前为 ${actual.length ? actual.join("、") : "无标题"}`;
+  }
+  // 实施目标按编号前缀认段落归属，所以前缀必须和所在板块一致
+  const goals = sections.filter((section) => section.goal).map((section) => section.id);
+  let current = "";
+  for (const heading of headings) {
+    if (heading.level <= 2) { current = heading.id!; continue; }
+    const claimed = goals.find((goal) => heading.id!.startsWith(`${goal}.`));
+    if (goals.includes(current) && claimed !== current) return `实施目标板块 ${current} 下的小节编号须以「${current}.」开头：「${heading.text}」`;
+    if (claimed !== undefined && claimed !== current) return `编号以「${claimed}.」开头的小节须写在实施目标板块 ${claimed} 下：「${heading.text}」在 ${current} 下`;
+  }
+  return null;
 }
 
 /** 编号为 id 的标题所在章节的结束字节位置（下一个同级或更高级标题处，或全文末尾）；找不到返回 null。 */

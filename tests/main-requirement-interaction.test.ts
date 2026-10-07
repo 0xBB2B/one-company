@@ -324,12 +324,12 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const skillFile = (ids: [string, string, string]) => `---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: ${ids[0]}, title: 目标, goal: true }\n` +
       `  - { id: ${ids[1]}, title: 实现, record: implementation }\n  - { id: ${ids[2]}, title: 验收, record: acceptance }\n---\n三板块写法。\n`;
     await mkdir(dir, { recursive: true }); await writeFile(join(dir, "SKILL.md"), skillFile(["goal", "build", "check"]));
-    const body = "## 目标 {#goal}\n登录需求。\n### 手机号 {#A}\n增加手机号登录。\n## 实现 {#build}\n由 PM 规划。\n## 验收 {#check}\n手机号能登录。\n";
+    const body = "## 目标 {#goal}\n登录需求。\n### 手机号 {#goal.A}\n增加手机号登录。\n## 实现 {#build}\n由 PM 规划。\n## 验收 {#check}\n手机号能登录。\n";
     const created = await w.create(body), first = await w.request(created), before = w.provider.requests.length;
     await expect(w.call({ action: "confirmUpdate", ...first.input })).rejects.toThrow("当前为 goal、build、check");
     expect(w.provider.requests).toHaveLength(before);
     new ProjectTrustStore(w.root).set(w.repositoryRoot, true);
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(wholeReview(first.loaded)) }]);
+    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(wholeReview(first.loaded, "goal.A")) }]);
     expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prodActivated: true });
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
     const snapshot = (await resolveRepositoryRequirementDoc(w.dataRoot, w.repositoryRoot)).spec;
@@ -339,7 +339,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect((await resolveRepositoryRequirementDoc(w.dataRoot, w.repositoryRoot)).spec.sections.map((section) => section.id)).toEqual(["aim", "make", "verify"]);
     const updated = await w.service.updateDraft({ requirementId: first.input.requirementId, version: state.read(first.input.requirementId).version, operationId: uuidv7(), title: "登录", body: body + "补充邮箱约束。\n" });
     const next = await w.request(updated);
-    w.capture("批准这版。"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(wholeReview(next.loaded)) }]);
+    w.capture("批准这版。"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(wholeReview(next.loaded, "goal.A")) }]);
     expect(await w.call({ action: "confirmUpdate", ...next.input })).toMatchObject({ prodActivated: true });
     expect(state.read(first.input.requirementId).data.docSpec).toEqual(snapshot);
   });
