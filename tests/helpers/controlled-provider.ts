@@ -105,7 +105,14 @@ export function registerControlledProvider(
           case "text": {
             if (reply.chunkDelayMs !== undefined) {
               stream.push({ type: "text_start", contentIndex: 0, partial: base });
-              setTimeout(() => {
+              // 慢速回答期间被中止时像真实连接一样立即结束，暂停与停止才能在时限内确认
+              const onAbort = () => {
+                clearTimeout(timer);
+                stream.push({ type: "error", reason: "aborted", error: { ...base, stopReason: "aborted", errorMessage: "aborted" } });
+              };
+              options?.signal?.addEventListener("abort", onAbort, { once: true });
+              const timer = setTimeout(() => {
+                options?.signal?.removeEventListener("abort", onAbort);
                 const message: AssistantMessage = {
                   ...base,
                   content: [{ type: "text", text: reply.text }],

@@ -85,7 +85,9 @@ export interface RunManagerOptions {
   /** 守护进程持有的主仓库索引；缺省时角色没有 knowledge_query。 */
   index?: ProjectIndexHost;
 }
-interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null };
+interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null;
+  /** 批准新版本时暂停的子代理及其所属任务当时的版本；计划确认后逐个结算。 */
+  hold: Map<string, { taskId: string; version: number } | null> | null };
   subagent?: { parentRunId: string; taskId: string; review: boolean; prototype: boolean; dispose(): void };
   explore?: { parentRunId: string; dispose(): void; result(): ExploreResult | null } }
 /** main 派出的 explore 只属于派出它的主窗口会话，不写运行记录；窗口关闭即停止并作废结果。 */
@@ -419,10 +421,10 @@ export class RunManager {
           const notice = pmIntakeReviewNotice({ dataRoot: this.options.dataRoot, repoId: this.repoId, lease });
           if (notice && notice.reviewId !== notifiedReviewId) { notifiedReviewId = notice.reviewId; handle.prompt(notice.text); }
         })
-        .catch(() => {}).then(() => this.applyHalt(run.id)).catch(() => {})
+        .catch(() => {}).then(() => this.applyHalt(run.id)).catch(() => {}).then(() => this.applyApprovalHold(run.id)).catch(() => {})
         .then(() => this.refreshOverview(run.id)).catch(() => {}).finally(() => { delivering = null; });
     }, PM_EVENT_POLL_MS);
-    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery, tick: async () => { await delivering; }, haltPaused: false, halt: null } });
+    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery, tick: async () => { await delivering; }, haltPaused: false, halt: null, hold: null } });
     registered = true;
     handle.events.on("turn", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     this.trackUsage(run.id, handle);
@@ -868,7 +870,7 @@ export class RunManager {
       await this.stop(runId, { reason: "config_changed" });
       throw protocolError("config_changed", "角色定义或 skills 在暂停期间已变化，已停止该运行；请按当前配置重新派工");
     }
-    if (run.ok && entry.subagent && this.replanPending(run.run.requirement)) throw protocolError("plan_not_confirmed", "须先确认基于调整后批准版本的计划");
+    if (run.ok && entry.subagent && this.replanPending(run.run.requirement)) throw protocolError("plan_not_confirmed", "须先确认基于当前批准版本的计划");
     // 恢复前当场结算终止后的统一停止，不留"先恢复、后停止"的窗口
     if (entry.subagent) {
       await this.settleHalt(entry.subagent.parentRunId);
@@ -1009,8 +1011,8 @@ export class RunManager {
 
   private replanPending(requirementId: string): boolean {
     return withDatabase(this.database, (db) => {
-      const current = readPlanIn(db, requirementId);
-      return current !== null && replanPending(current.plan, current.tasks);
+      const current = readPlanIn(db, requirementId), record = db.read<RequirementRecord>("requirements", requirementId)?.data;
+      return current !== null && record !== undefined && replanPending(current.plan, current.tasks, record.revision);
     });
   }
 
@@ -1039,6 +1041,39 @@ export class RunManager {
       await this.resume(pmRunId, { children: false });
     }
     await this.settleHalt(pmRunId);
+  }
+
+  /**
+   * 实施中批准了新版本：暂停本 PM 正在运行的子代理，PM 照常复核与重排。确认基于当前批准版本的计划后，
+   * 所属任务版本没变且仍在执行或审查的恢复；任务被修改、取消或判为受影响的停止，这次尝试记为被取代。
+   */
+  private async applyApprovalHold(pmRunId: string): Promise<void> {
+    const entry = this.sessions.get(pmRunId);
+    if (!entry?.pm) return;
+    const requirementId = entry.pm.lease.requirementId;
+    if (this.halted(requirementId)) return;
+    const pending = this.replanPending(requirementId);
+    if (pending && !entry.pm.hold) {
+      const tasks = withDatabase(this.database, (db) => readPlanIn(db, requirementId)?.tasks ?? []);
+      const owner = (runId: string) => tasks.find((task) => task.attempts.some((a) => a.runId === runId) || task.reviews.some((r) => r.runId === runId) || task.prototypeRun?.runId === runId);
+      const children = (await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER })).items
+        .filter((run) => run.parentRunId === pmRunId && ["running", "waiting_answer"].includes(run.state));
+      entry.pm.hold = new Map(children.map((run) => { const task = owner(run.id); return [run.id, task ? { taskId: task.taskId, version: task.version } : null]; }));
+      for (const child of children) await this.pause(child.id).catch(() => {});
+    } else if (!pending && entry.pm.hold) {
+      const hold = entry.pm.hold;
+      entry.pm.hold = null;
+      const current = withDatabase(this.database, (db) => readPlanIn(db, requirementId));
+      for (const [runId, ref] of hold) {
+        if (this.sessions.get(runId)?.handle.state() !== "paused") continue;
+        const task = ref && current?.tasks.find((candidate) => candidate.taskId === ref.taskId);
+        const unchanged = !ref || task !== undefined && task !== null && task.version === ref.version && ["running", "reviewing"].includes(task.status) &&
+          current!.plan.confirmedTasks.some((entry) => entry.taskId === ref.taskId && entry.version === ref.version);
+        if (unchanged) { await this.resume(runId).catch(() => {}); continue; }
+        this.supersededRuns.add(runId);
+        await this.stop(runId, { reason: "replanned" }).catch(() => {});
+      }
+    }
   }
 
   /** 新计划确认后与终止时的已确认计划有变更：原暂停子代理统一停止，由 PM 按新计划重新派出；未确认前不结算。 */

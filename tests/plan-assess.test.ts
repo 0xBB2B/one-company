@@ -138,7 +138,7 @@ test("M7-AC32：当前批准的正文删掉某段后，以它为目标的任务�
   expect(w.byKey(cancelled, "login").status).toBe("cancelled");
 });
 
-test("M7-AC12：运行中任务被判为受影响后，子代理结局只记入尝试，不覆盖待更新状态，也不能按旧版本重派", async () => {
+test("M7-AC12：运行中任务被判为受影响后，子代理结局只记入尝试，不覆盖待更新状态；确认基于当前批准版本的计划前不能重派", async () => {
   const { beginTaskAttempt, finishTaskAttempt } = await import("../runtime/task-dispatch.ts");
   const w = await world();
   const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
@@ -151,7 +151,7 @@ test("M7-AC12：运行中任务被判为受影响后，子代理结局只记入�
   const finished = finishTaskAttempt({ ...ref, taskId: login.taskId, runId, turnsUsed: 2, outcome: "turn_limit_reached" });
   expect(finished).toMatchObject({ status: "needs_update", attempts: [{ runId, outcome: "turn_limit_reached", turnsUsed: 2 }] });
   expect(() => beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: { reason: "重试", maxTurns: 3 } }))
-    .toThrow("task_not_ready");
+    .toThrow("plan_not_confirmed");
 });
 
 test("M7-AC30：任务仍有运行中的尝试时不能再次派出，旧版本的运行结局不能把新版本标为完成", async () => {

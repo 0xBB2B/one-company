@@ -82,7 +82,7 @@ function schedulingGateIn(db: LocalDatabase, request: { repoId: string; lease: P
   if (!current || current.plan.confirmedVersion === null) deny("plan_not_confirmed");
   // 用户终止任务后整个需求暂停：新的批准版本前不派任何子代理，批准后须先确认基于新版本的计划
   if (terminationPending(current.tasks, recordRow.data.revision)) deny("requirement_halted", ["任务已被用户终止，须先调整需求或取消需求"]);
-  if (replanPending(current.plan, current.tasks)) deny("plan_not_confirmed", ["须确认基于调整后批准版本的计划"]);
+  if (replanPending(current.plan, current.tasks, recordRow.data.revision)) deny("plan_not_confirmed", ["须确认基于当前批准版本的计划"]);
   const task = current.tasks.find((candidate) => candidate.taskId === request.taskId);
   const confirmed = current.plan.confirmedTasks.find((entry) => entry.taskId === request.taskId);
   if (!task || !confirmed || confirmed.version !== task.version) deny("plan_not_confirmed", ["任务不在已冻结的计划版本中"]);

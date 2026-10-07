@@ -249,10 +249,10 @@ export function terminationPending(tasks: readonly TaskRecord[], revision: numbe
   return tasks.some((task) => task.userDecision?.choice === "terminate" && task.userDecision.revision >= revision);
 }
 
-/** 用户终止任务后，须确认基于其后批准版本的计划才能派出或恢复子代理。 */
-export function replanPending(plan: Pick<PlanRecord, "confirmedRevision">, tasks: readonly TaskRecord[]): boolean {
+/** 用户终止任务后、或计划确认后又批准了新版本，须确认基于当前批准版本的计划才能派出或恢复子代理。 */
+export function replanPending(plan: Pick<PlanRecord, "confirmedVersion" | "confirmedRevision">, tasks: readonly TaskRecord[], revision: number): boolean {
   const last = Math.max(0, ...tasks.filter((task) => task.userDecision?.choice === "terminate").map((task) => task.userDecision!.revision));
-  return last > 0 && (plan.confirmedRevision ?? 0) <= last;
+  return last > 0 && (plan.confirmedRevision ?? 0) <= last || plan.confirmedVersion !== null && (plan.confirmedRevision ?? 0) < revision;
 }
 
 export function confirmedPlanKey(plan: Pick<PlanRecord, "confirmedTasks"> | undefined): string {
