@@ -31,6 +31,7 @@
     "test:integration:installed": "ONE_COMPANY_TEST_INSTALLED=1 vitest run tests/integration",
     "test:installation": "vitest run tests/installation",
     "test:acceptance": "vitest run tests/acceptance",
+    "test:acceptance:parallel": "node tests/acceptance/run-parallel.ts",
     "typecheck": "tsc --noEmit"
   },
   "pi": {

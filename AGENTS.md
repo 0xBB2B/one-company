@@ -67,3 +67,8 @@
 - 本地提交之外不授予推送、创建 PR、发布、覆盖真实数据库或删除用户文件的权限。保留用户和其他任务的已有改动，不覆盖、不重置、不擅自暂存。
 - 完整改造验收通过且用户明确确认结束后，由主代理移除两个标记之间的整个临时改造块，包括标记。
 <!-- FRAMEWORK_REBUILD_END -->
+
+## 测试
+
+- 纯代码测试（`pnpm test`、`pnpm run test:integration`、`pnpm run test:installation`）在当前基线上跑一遍、全部通过即可。
+- `tests/acceptance/` 下的真实模型验收彼此没有先后关系，一律同时跑：`ONE_COMPANY_ACCEPTANCE_MODEL=<提供方>/<模型> ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance:parallel [--repeat <次数>] [--only <编号…>]`。每条跑几次按当时需要用 `--repeat` 指定，默认 1 次；某次 10 分钟没有任何更新会被自动停下。
