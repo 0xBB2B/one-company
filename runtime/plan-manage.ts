@@ -446,8 +446,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     }
     if (beyondText.length) deny("task_not_ready", beyondText.map((key) => `${key} 有用户给的再一次机会还没用，这时只能改任务说明文字（objective、passCriteria、agentReason）；要改其他内容，先把这一次派出去`));
     // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被同角色的其他新增或修改任务揽走；用户终止的任务在新的批准版本前同样占住其目标。
-    // 只占同角色：QA 的目标本就覆盖验收单元，若跨角色占用，QA 一报问题就再也追加不了 worker 返修任务
-    const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" &&
+    // 只占同角色：QA 的目标本就覆盖验收单元，若跨角色占用，QA 一报问题就再也追加不了 worker 返修任务。
+    // 复核中判为受影响的任务按当前批准版本重排，不再占住目标
+    const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" && task.status !== "needs_update" &&
       (task.status !== "cancelled" || terminationPending([task], record.data.revision)));
     // 当前批准不再列为实施目标的段谁也拿不走：从已开工任务里去掉它、目标全都不在授权内时取消任务，都绕不开一次重试
     const authorized = implementScope(manifest, record.data.docSpec?.sections ?? []);

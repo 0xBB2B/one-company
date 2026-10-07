@@ -231,3 +231,23 @@ test("M8M-AC1：任务已有 16 条尝试和 16 条审查记录时，用户再�
   const view = await w.run({ action: "read" });
   expect(w.byKey(view, "login").status).toBe("running");
 });
+
+test("M8O-AC3：上一版本下做过尝试的任务被判为受影响后，可以取消并由新任务接手它的目标；没被判为受影响的已尝试任务仍占住目标", async () => {
+  const w = await world();
+  const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
+  withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => {
+    for (const task of [login, failure]) {
+      const row = db.read<Record<string, unknown>>(TASKS, task.taskId)!;
+      db.update(TASKS, task.taskId, row.version, { ...row.data, status: "awaiting_parent",
+        attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" }] });
+    }
+  });
+  await w.fixture.approveRevision({ body: BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。"), implementGoals: ["goal.login", "scenario.failure"] });
+  const assessed = await w.assess([[w.byKey(w.first, "login"), "affected"], [w.byKey(w.first, "failure"), "unaffected"]]);
+  await expect(w.run({ action: "update", planVersion: assessed.plan.planVersion, add: [spec("failure-again", "scenario.failure")] }))
+    .rejects.toMatchObject({ code: "goal_held" });
+  const replanned = await w.run({ action: "update", planVersion: assessed.plan.planVersion,
+    cancel: [{ taskId: login.taskId, version: w.byKey(assessed, "login").version }], add: [spec("login-fix", "goal.login")] });
+  expect(w.byKey(replanned, "login").status).toBe("cancelled");
+  expect(w.byKey(replanned, "login-fix").status).toBe("pending");
+});
