@@ -723,6 +723,29 @@ test("M9-AC12：某段被记为要修改后，草稿改了这一段再请批准�
   expect((interpreterContext(w).continuityIssues as Array<{ unitId: string }>).map((issue) => issue.unitId)).toEqual(["SMS"]);
 });
 
+test("M9-AC12：解读模型对某段拿不准留下的待定记录只在当次有效：同一份草稿再请批准时不算以前的决定、不交给解读模型，一次明确批准即生效", async () => {
+  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+  const unsure = phoneReview(loaded);
+  unsure.faithful = false; Object.assign(unsure.entries[1]!, { kind: "unresolved", basis: "uncertain", resolution: "unclear" }); unsure.entries.splice(5, 1);
+  w.capture("两处我都批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(unsure) }]);
+  expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ prodActivated: false, blockedBy: "candidate_requires_revision_or_clarification" });
+  w.capture("我批准登录这个需求的这一版"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+  expect(await w.call({ action: "confirmUpdate", ...input, operationId: input.operationId })).toMatchObject({ prodActivated: true });
+  expect((interpreterContext(w).continuityIssues as Array<{ unitId: string }>).map((issue) => issue.unitId)).toEqual(["SMS"]);
+});
+
+test("M8D-AC6：解释器的对象说明里带有本窗口其他还没批准的草稿（标题与待批准版本），已批准的不列", async () => {
+  const w = await world(), a = await w.create(), b = await w.create();
+  await w.create();
+  const first = await w.request(a), second = await w.request(b);
+  w.capture("两处我都批准", "interactive", false, false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
+  expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prodActivated: true });
+  expect(interpreterContext(w).addressed).toEqual({ how: "window", otherDrafts: [{ title: "登录", version: 1 }, { title: "登录", version: 1 }] });
+  w.capture("两处我都批准", "interactive", false, false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
+  await w.call({ action: "confirmUpdate", ...second.input });
+  expect(interpreterContext(w).addressed).toEqual({ how: "window", otherDrafts: [{ title: "登录", version: 1 }] });
+});
+
 test("M8D-AC3：没有确认任何正文段落的解读不留下决定记录，随后一次明确的批准照常生效", async () => {
   const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
   const decisions = () => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"));
@@ -740,7 +763,7 @@ test("M8D-AC3：解释器的上下文里带有程序认定的对象事实：@ �
   const first = await w.request(a), second = await w.request(b);
   w.capture("两处我都批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
   await w.call({ action: "confirmUpdate", ...first.input });
-  expect(interpreterContext(w).addressed).toEqual({ how: "mention", others: 1 });
+  expect(interpreterContext(w).addressed).toEqual({ how: "mention", others: 1, otherDrafts: [{ title: "登录", version: 1 }] });
   w.capture("批准登录", "interactive", false, false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
   await w.call({ action: "confirmUpdate", ...second.input });
   expect(interpreterContext(w).addressed).toEqual({ how: "window" });

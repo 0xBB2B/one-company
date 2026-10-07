@@ -205,6 +205,16 @@ export class MainRequirementInteraction {
     }
     return result;
   }
+  /** 本窗口其他已保存但还没批准的草稿（标题与待批准的版本），按需求状态列出，供解读“两处”“都”这类指代。 */
+  async #otherDrafts(ctx: ExtensionContext, repoId: string, requirementId: string): Promise<Array<{ title: string; version: number }>> {
+    const host = this.#host(ctx), drafts: Array<{ title: string; version: number }> = [];
+    for (const item of await this.mentionCandidates(ctx)) {
+      if (item.repoId === repoId && item.requirementId === requirementId) continue;
+      const record = this.#authorization.snapshot(item.repoId, item.requirementId, host.sessionId);
+      if (record.data.saved && record.data.saved.hash !== record.data.approved?.hash) drafts.push({ title: item.title, version: record.data.revision + 1 });
+    }
+    return drafts.slice(0, 32);
+  }
   #internalModel(ctx: ExtensionContext, role: "interpreter" | "draft-verifier", repoId: string) {
     const repository = this.#host(ctx).repositories.get(repoId);
     if (!repository) return denied("foreign_repo");
@@ -403,11 +413,11 @@ export class MainRequirementInteraction {
         const document = { candidate: loaded.candidate, title: loaded.title, body: loaded.body, partition: loaded.partition };
         const records = this.#authorization.interactionRecords(repoId, id, host.sessionId, { basis: loaded.basis, document });
         signal.throwIfAborted();
-        const how = this.#addressed.get(id);
+        const how = this.#addressed.get(id), otherDrafts = how ? await this.#otherDrafts(ctx, repoId, id) : [];
         return { basis: loaded.basis, currentGoal: loaded.approved ? "当前批准基线由candidate.from与真实差异绑定。" : "尚无已批准目标；full_candidate.from=null。",
           candidates: [{ ...loaded.candidate, diff: loaded.difference.text || "准确提交对没有正文差异。" }],
           document, savedOperationId: loaded.savedOperationId, ...records,
-          ...(how ? { addressed: how === "mention" ? { how, others: this.#inputTargets.length - 1 } : { how } } : {}) };
+          ...(how ? { addressed: { how, ...(how === "mention" ? { others: this.#inputTargets.length - 1 } : {}), ...(otherDrafts.length ? { otherDrafts } : {}) } } : {}) };
       } });
     try {
       this.#live(ctx, host, generation);

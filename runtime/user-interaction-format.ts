@@ -92,7 +92,8 @@ export const InteractionContext = object({
   continuityIssues: Type.Optional(Type.Array(ContinuityIssue)),
   revisionSources: Type.Optional(Type.Array(RevisionSource, { maxItems: 20 })),
   adjudication: Type.Optional(AdjudicationSubject),
-  addressed: Type.Optional(object({ how: enumeration(["mention", "window"]), others: Type.Optional(Type.Integer({ minimum: 0, maximum: 32 })) })),
+  addressed: Type.Optional(object({ how: enumeration(["mention", "window"]), others: Type.Optional(Type.Integer({ minimum: 0, maximum: 32 })),
+    otherDrafts: Type.Optional(Type.Array(object({ title: Type.String(), version: Type.Integer({ minimum: 1 }) }), { minItems: 1, maxItems: 32 })) })),
 });
 export type InteractionContext = Static<typeof InteractionContext>;
 export const InteractionEntry = object({

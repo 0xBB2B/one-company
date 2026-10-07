@@ -207,7 +207,8 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
         priors.set(d.record.id, current.value);
         revisionSources.set(d.record.id, { fact: ref(source.row), decision: ref(current.row), sourceBasis: source.fact.basis, unitIds: d.unitIds, kind: d.kind });
       }
-      if (!d.unitIds.length || !(d.resolution === "modify" || ["defer", "unclear"].includes(d.resolution) || ["proposed", "uncertain"].includes(d.basis))) continue;
+      // 解读模型拿不准（unclear）的记录只在当次有效，下一次批准重新解读；用户要改、暂缓或正文写明的未决事项才延续
+      if (!d.unitIds.length || d.resolution === "unclear" || !(d.resolution === "modify" || d.resolution === "defer" || ["proposed", "uncertain"].includes(d.basis))) continue;
       if (!current) deny("continuity_issue_source_changed");
       for (const unit of d.unitIds.filter((u) => u.id !== "metadata")) {
         const latest = latestSource(source, unit.id), target = doc.partition.units.find((u) => u.id === unit.id);
