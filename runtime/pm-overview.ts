@@ -186,7 +186,7 @@ export function pmOverview(input: PmOverviewInput): PmOverview {
   const pausedNow = input.pm.pausedAt ? Math.max(0, input.now - Date.parse(input.pm.pausedAt)) : 0;
   const manifest = input.record.approvalManifest
     ? registeredApprovalManifestIn(input.db, input.repoId, input.record.approvalManifest.reference, requirementRow(input.db, input.lease.requirementId)) : null;
-  const goals = manifest ? [...implementScope(manifest)].map((unitId) => input.headingTitles.get(unitId) ?? unitId) : [];
+  const goals = manifest ? [...implementScope(manifest, input.record.docSpec?.sections ?? [])].map((unitId) => input.headingTitles.get(unitId) ?? unitId) : [];
   return {
     requirementId: input.lease.requirementId, pmRunId: input.pm.id, goals, status,
     doing: doingOf(input, tasks, plan, status, items),

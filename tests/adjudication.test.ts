@@ -268,7 +268,7 @@ test("M7-AC35：调整目标或范围后须等新的批准版本才能按新范�
     spec: spec("login", "goal.stub", { objective: "用测试桩实现登录" }) }] });
   await expect(modify()).rejects.toMatchObject({ code: "task_not_ready" });
 
-  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 测试桩登录 {#goal.stub}\n短信用测试桩。\n",
+  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 测试桩登录 {#goal.stub}\n短信用测试桩。\n",
     implementGoals: ["goal.stub", "scenario.failure"] });
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
@@ -276,7 +276,6 @@ test("M7-AC35：调整目标或范围后须等新的批准版本才能按新范�
     { taskId: w.login, version: w.task("login").version, assessment: "affected", rationale: "登录目标改为测试桩" },
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
-  await expect(w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-again", "goal.login")] })).rejects.toMatchObject({ code: "goal_held" });
   await modify();
   await w.plan.execute({ action: "confirm", planVersion: planVersion() });
   w.provider.queue.push({ type: "text", text: "按新范围做" }, { type: "text", text: "PM 收到" });

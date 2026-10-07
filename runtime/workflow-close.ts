@@ -193,7 +193,7 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
   if (reviews === null) blockers.push("task_review_missing");
   // 用户终止任务后、批准新的 prod 版本前，其目标仍在实施授权内时需求不能以完成关闭
   if (record.data.lifecycle === "active" && record.data.approvalManifest) {
-    const scope = implementScope(registeredApprovalManifestIn(db, repoId, record.data.approvalManifest.reference, record));
+    const scope = implementScope(registeredApprovalManifestIn(db, repoId, record.data.approvalManifest.reference, record), record.data.docSpec?.sections ?? []);
     const terminated = readPlanIn(db, requirementId)?.tasks.filter((task) => terminationPending([task], record.data.revision)) ?? [];
     if (terminated.some((task) => task.goalUnitIds.some((unit) => scope.has(unit)))) blockers.push("terminated_goal_in_scope");
   }

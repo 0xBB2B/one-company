@@ -14,7 +14,7 @@ export interface ResolvedRequirementDoc { source: "project" | "user" | "package"
 
 /** M8C 之前批准的需求没有快照，它们是按这五大板块批准的。 */
 export const DEFAULT_DOC_SECTIONS: readonly RequirementDocSection[] = [
-  { id: "background", title: "背景" }, { id: "requirements", title: "需求" }, { id: "features", title: "功能" },
+  { id: "background", title: "背景" }, { id: "requirements", title: "需求" }, { id: "features", title: "功能", goal: true },
   { id: "implementation", title: "实现", record: "implementation" }, { id: "acceptance", title: "验收", record: "acceptance" },
 ];
 
@@ -67,19 +67,22 @@ function checkSections(value: unknown, invalid: (reason: string) => never): Requ
   const sections = (value as unknown[]).map((item, index) => {
     const at = `sections 第 ${index + 1} 项`;
     if (!item || typeof item !== "object" || Array.isArray(item)) return invalid(`${at} 须是含 id、title 的对象`);
-    const unknown = Object.keys(item).filter((key) => !["id", "title", "record"].includes(key));
+    const unknown = Object.keys(item).filter((key) => !["id", "title", "record", "goal"].includes(key));
     if (unknown.length) invalid(`${at} 有未知字段 ${unknown.join("、")}`);
-    const { id, title, record } = item as Record<string, unknown>;
+    const { id, title, record, goal } = item as Record<string, unknown>;
     if (typeof id !== "string" || !idPattern.test(id)) invalid(`${at} 的编号 ${String(id)} 须字母开头、只含字母数字._-`);
     if (typeof title !== "string" || !title.trim() || /[\r\n]/u.test(title)) invalid(`${at} 的 title 须是非空单行文字`);
     if (record !== undefined && record !== "implementation" && record !== "acceptance") invalid(`${at} 的 record 只能是 implementation 或 acceptance`);
+    if (goal !== undefined && goal !== true) invalid(`${at} 的 goal 只能写 true`);
     if (seen.has(id as string)) invalid(`板块编号 ${String(id)} 重复`);
     seen.add(id as string);
-    return { id: id as string, title: title as string, ...(record ? { record: record as "implementation" | "acceptance" } : {}) };
+    return { id: id as string, title: title as string, ...(record ? { record: record as "implementation" | "acceptance" } : {}), ...(goal ? { goal: true as const } : {}) };
   });
   for (const record of ["implementation", "acceptance"] as const) {
     const count = sections.filter((section) => section.record === record).length;
     if (count !== 1) invalid(`须恰好有一个板块标 record: ${record}，当前 ${count} 个`);
   }
+  // 批准并授权实施时，这些板块下已确认的段落就是实施目标
+  if (!sections.some((section) => section.goal)) invalid("须至少有一个板块标 goal: true，标出批准后要实施的板块");
   return sections;
 }

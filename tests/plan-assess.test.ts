@@ -117,7 +117,7 @@ test("M7-AC2：连续加入快跑、跳跃、跳跃动画时各自成为独立�
   expect(w.gate()).toEqual({ allowed: true });
 });
 
-test("M7-AC32：当前批准不再把某段列为实施目标时，以它为目标的任务不能判为无关、不能派出；已有尝试的任务目标全都不在授权内时直接取消，不上报", async () => {
+test("M7-AC32：当前批准的正文删掉某段后，以它为目标的任务不能判为无关、不能派出；已有尝试的任务目标全都不在授权内时直接取消，不上报", async () => {
   const { escalateTask } = await import("../runtime/task-dispatch.ts");
   const w = await world();
   const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
@@ -126,12 +126,12 @@ test("M7-AC32：当前批准不再把某段列为实施目标时，以它为目�
     db.update(TASKS, login.taskId, row.version, { ...row.data, status: "awaiting_parent",
       attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" }] });
   });
-  await w.fixture.approveRevision({ body: BASE, implementGoals: ["scenario.failure"] });
+  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n", implementGoals: ["scenario.failure"] });
   await expect(w.assess([[login, "unaffected"], [failure, "unaffected"]])).rejects.toMatchObject({ code: "assessment_invalid" });
   const assessed = await w.assess([[login, "affected"], [failure, "unaffected"]]);
   expect(w.byKey(assessed, "login").status).toBe("needs_update");
   await expect(w.run({ action: "update", planVersion: assessed.plan.planVersion,
-    modify: [{ taskId: login.taskId, version: login.version, spec: spec("login", "goal.login") }] })).rejects.toMatchObject({ code: "unit_not_authorized" });
+    modify: [{ taskId: login.taskId, version: login.version, spec: spec("login", "goal.login") }] })).rejects.toMatchObject({ code: "unknown_unit" });
   const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.fixture.lease, note: "登录目标不在当前实施授权内" };
   expect(() => escalateTask({ ...ref, taskId: login.taskId })).toThrow("login:needs_update 不在等待 PM 处置");
   const cancelled = await w.run({ action: "update", planVersion: assessed.plan.planVersion, cancel: [{ taskId: login.taskId, version: login.version }] });
@@ -197,7 +197,7 @@ test("M9：QA 只验实施授权覆盖的验收小节，未验证项指向授权
   expect(submit("整体交互").conclusion).toBe("unverified");
 });
 
-test("M9：新批准版本不再授权已开工任务的某个目标时，PM 可以把它从该任务的目标里去掉", async () => {
+test("M9：当前批准的正文删掉已开工任务的某个目标段后，PM 可以把它从该任务的目标里去掉", async () => {
   const w = await world();
   const failure = w.byKey(w.first, "failure");
   withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => {
@@ -206,11 +206,11 @@ test("M9：新批准版本不再授权已开工任务的某个目标时，PM 可
       attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" }] });
   });
   const login = w.byKey(w.first, "login");
-  await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n`, implementGoals: ["scenario.failure", "goal.resend"] });
+  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 重发验证码 {#goal.resend}\n可重发。\n", implementGoals: ["scenario.failure", "goal.resend"] });
   const assessed = await w.assess([[login, "affected"], [failure, "affected"]]);
   const tried = w.byKey(assessed, "failure");
   const updated = await w.run({ action: "update", planVersion: assessed.plan.planVersion, modify: [{ taskId: tried.taskId, version: tried.version,
-    spec: { ...spec("failure", "scenario.failure"), constraintUnitIds: ["goal.login"] } }] });
+    spec: spec("failure", "scenario.failure") }] });
   expect(w.byKey(updated, "failure")).toMatchObject({ status: "pending" });
 });
 

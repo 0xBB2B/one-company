@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { readFile, stat } from "node:fs/promises";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { createPlanManageTool, PLANS, TASKS } from "../runtime/plan-manage.ts";
+import { createPlanManageTool, implementScope, PLANS, TASKS } from "../runtime/plan-manage.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
@@ -36,6 +36,20 @@ async function world(options: { review?: boolean; body?: string } = {}) {
 }
 type PlanView = { plan: { planVersion: number; confirmedVersion: number | null }; tasks: Array<{ taskId: string; key: string; version: number; status: string;
   detail: { path?: string; hash: string; objective?: string } }> };
+
+test("M8O-AC2：实施目标等于实施目标板块下全部已确认段落，与解读模型在实施动作里列了哪些段无关；待定、排除的段与其他板块的段都不算", () => {
+  const sections = [{ id: "requirements", title: "需求" }, { id: "features", title: "功能", goal: true as const },
+    { id: "implementation", title: "实现", record: "implementation" as const }, { id: "acceptance", title: "验收", record: "acceptance" as const }];
+  const unit = (id: string, disposition = "confirmed") => ({ id, disposition });
+  const manifest = (actions: Array<{ action: string; goalIds: string[]; unknown?: boolean }>) => ({
+    units: [unit("metadata"), unit("requirements"), unit("features"), unit("features.hold"), unit("features.release", "pending-description"),
+      unit("features.old", "excluded"), unit("features.animation"), unit("acceptance"), unit("acceptance.hold")],
+    actions: actions.map((a) => ({ unknown: false, constraintIds: [], ...a })) }) as never;
+  expect([...implementScope(manifest([{ action: "implement", goalIds: ["features.animation"] }]), sections)].sort())
+    .toEqual(["features", "features.animation", "features.hold"]);
+  expect([...implementScope(manifest([{ action: "analyze", goalIds: ["features.hold"] }]), sections)]).toEqual([]);
+  expect([...implementScope(manifest([{ action: "implement", goalIds: ["features.hold"], unknown: true }]), sections)]).toEqual([]);
+});
 
 test("M7-AC13：接手核对通过前正式提出计划被拒，通过后可以提出", async () => {
   const w = await world({ review: false });

@@ -574,6 +574,9 @@ export class MainRequirementInteraction {
     let docSpec = record.data.docSpec;
     try { docSpec ??= (await resolveRepositoryRequirementDoc(this.#options.dataRoot, host.repositories.get(request.repoId)!.path)).spec; }
     catch (error) { if (error instanceof RequirementDocError) throw new HostAuthorizationError(error.code, error.message); throw error; }
+    if (!docSpec.sections.some((section) => section.goal)) {
+      throw new HostAuthorizationError("requirement_doc_invalid", "需求文档规范没有标出实施目标板块（goal: true），批准后不知道要实施哪些段落");
+    }
     const sections = prodSectionsProblem(loaded.body, docSpec.sections);
     if (sections) throw new HostAuthorizationError("prod_sections_required", sections);
     if (!this.#ticket) return denied("current_input_required");

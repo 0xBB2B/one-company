@@ -321,7 +321,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
   test("M8C-AC2/AC3/AC5：项目受信任后按它的规范核对并存快照；之后改 skill，已生效需求再批准仍按快照", async () => {
     const w = await world(), dir = join(w.repositoryRoot, ".pi", "skills", "requirement-doc");
-    const skillFile = (ids: [string, string, string]) => `---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: ${ids[0]}, title: 目标 }\n` +
+    const skillFile = (ids: [string, string, string]) => `---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: ${ids[0]}, title: 目标, goal: true }\n` +
       `  - { id: ${ids[1]}, title: 实现, record: implementation }\n  - { id: ${ids[2]}, title: 验收, record: acceptance }\n---\n三板块写法。\n`;
     await mkdir(dir, { recursive: true }); await writeFile(join(dir, "SKILL.md"), skillFile(["goal", "build", "check"]));
     const body = "## 目标 {#goal}\n登录需求。\n### 手机号 {#A}\n增加手机号登录。\n## 实现 {#build}\n由 PM 规划。\n## 验收 {#check}\n手机号能登录。\n";
@@ -342,6 +342,19 @@ describe("主窗口共享控制器的真实服务路径", () => {
     w.capture("批准这版。"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(wholeReview(next.loaded)) }]);
     expect(await w.call({ action: "confirmUpdate", ...next.input })).toMatchObject({ prodActivated: true });
     expect(state.read(first.input.requirementId).data.docSpec).toEqual(snapshot);
+  });
+  test("M8O-AC2：需求存下的规范快照没有标出实施目标板块时，批准直接报错写明原因，不调用模型、不激活", async () => {
+    const w = await world(), created = await w.create(), first = await w.request(created), before = w.provider.requests.length;
+    withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
+      const row = db.read<Record<string, unknown>>("requirements", first.input.requirementId)!;
+      db.update("requirements", first.input.requirementId, row.version, { ...row.data, docSpec: { skillHash: `sha256:${"b".repeat(64)}`,
+        sections: [{ id: "background", title: "背景" }, { id: "requirements", title: "需求" }, { id: "features", title: "功能" },
+          { id: "implementation", title: "实现", record: "implementation" }, { id: "acceptance", title: "验收", record: "acceptance" }] } });
+    });
+    const version = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.read("requirements", first.input.requirementId)!.version);
+    const error = await w.call({ action: "confirmUpdate", ...first.input, version }).catch((caught: Error) => caught);
+    expect((error as Error).message).toContain("实施目标板块");
+    expect(w.provider.requests).toHaveLength(before);
   });
   test("M8C-AC4：需求所在仓库的规范无效时批准直接报错写明原因，不调用模型、不激活、不退回默认", async () => {
     const w = await world(), dir = join(w.root, "skills", "requirement-doc");

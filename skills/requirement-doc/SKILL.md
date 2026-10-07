@@ -5,7 +5,7 @@ disable-model-invocation: true
 sections:
   - { id: background, title: 背景 }
   - { id: requirements, title: 需求 }
-  - { id: features, title: 功能 }
+  - { id: features, title: 功能, goal: true }
   - { id: implementation, title: 实现, record: implementation }
   - { id: acceptance, title: 验收, record: acceptance }
 ---

@@ -16,7 +16,7 @@ export const RecoveryReason = Type.Union([Type.Literal("archive_found"), Type.Li
 export const ProdReference = object({ commit, hash });
 export const RequirementDocSpecSchema = object({
   sections: Type.Array(object({ id: Type.String({ pattern: "^[a-zA-Z][a-zA-Z0-9._-]{0,95}$" }), title: Type.String({ minLength: 1, maxLength: 200 }),
-    record: Type.Optional(Type.Union([Type.Literal("implementation"), Type.Literal("acceptance")])) }), { minItems: 1, maxItems: 64 }),
+    record: Type.Optional(Type.Union([Type.Literal("implementation"), Type.Literal("acceptance")])), goal: Type.Optional(Type.Literal(true)) }), { minItems: 1, maxItems: 64 }),
   skillHash: Type.String({ pattern: "^sha256:[0-9a-f]{64}$" }),
 });
 const manifestId = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });

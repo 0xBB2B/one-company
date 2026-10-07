@@ -19,7 +19,7 @@ async function world() {
   return { repoRoot, agentDir, project: (c: string) => put(join(repoRoot, ".pi", "skills"), c), user: (c: string) => put(join(agentDir, "skills"), c) };
 }
 const skill = (sections: string, body = "按场景写。\n") => `---\nname: requirement-doc\ndescription: 需求文档规范\nsections:\n${sections}---\n${body}`;
-const FOUR = skill(`  - { id: goal, title: 目标 }\n  - { id: behavior, title: 行为 }\n  - { id: build, title: 实现, record: implementation }\n  - { id: check, title: 验收, record: acceptance }\n`, "四板块写法。\n");
+const FOUR = skill(`  - { id: goal, title: 目标 }\n  - { id: behavior, title: 行为, goal: true }\n  - { id: build, title: 实现, record: implementation }\n  - { id: check, title: 验收, record: acceptance }\n`, "四板块写法。\n");
 const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 
 test("M8C-AC1：零自定义时用包内默认 skill，板块清单就是 M8A 的五大板块，两段记录分别插在实现与验收", async () => {
@@ -31,6 +31,7 @@ test("M8C-AC1：零自定义时用包内默认 skill，板块清单就是 M8A �
   expect(doc.spec.skillHash).toBe(sha(await readFile(path, "utf8")));
   expect(doc.spec.sections).toEqual(DEFAULT_DOC_SECTIONS);
   expect(DEFAULT_DOC_SECTIONS.map((s) => s.id)).toEqual(["background", "requirements", "features", "implementation", "acceptance"]);
+  expect(DEFAULT_DOC_SECTIONS.filter((s) => s.goal).map((s) => s.id)).toEqual(["features"]);
   expect(recordSectionIds(doc.spec.sections)).toEqual({ implementation: "implementation", acceptance: "acceptance" });
   expect(doc.body).toContain("由 PM 规划");
   expect(doc.body).toMatch(/未决问题写成本板块下单独的三级小节[\s\S]*\{#requirements\.open\}[\s\S]*不和已确定的要求写在同一段/u);
@@ -39,7 +40,7 @@ test("M8C-AC1：零自定义时用包内默认 skill，板块清单就是 M8A �
 
 test("M8C-AC2：查找顺序为项目 > 用户 > 包内；项目未受信任时它的 skill 不生效", async () => {
   const w = await world();
-  const user = await w.user(skill("  - { id: a, title: 甲, record: implementation }\n  - { id: b, title: 乙, record: acceptance }\n", "用户版。\n"));
+  const user = await w.user(skill("  - { id: c, title: 丙, goal: true }\n  - { id: a, title: 甲, record: implementation }\n  - { id: b, title: 乙, record: acceptance }\n", "用户版。\n"));
   const project = await w.project(FOUR);
   const trusted = await resolveRequirementDoc({ repoRoot: w.repoRoot, agentDir: w.agentDir, projectTrusted: true });
   expect(trusted).toMatchObject({ source: "project", path: project, body: "四板块写法。" });
@@ -62,6 +63,8 @@ test("M8C-AC4：skill 无效时报错写明原因与文件，不退回用户层�
     [skill("  - { id: a, title: 甲, record: implementation, extra: 1 }\n  - { id: b, title: 乙, record: acceptance }\n"), "extra"],
     [skill("  - { id: a, title: 甲, record: design }\n  - { id: b, title: 乙, record: acceptance }\n"), "record"],
     ["---\nname: requirement-doc\nsections: []\n---\n", "sections"],
+    [skill("  - { id: a, title: 甲, record: implementation }\n  - { id: b, title: 乙, record: acceptance }\n"), "goal: true"],
+    [skill("  - { id: c, title: 丙, goal: yes }\n  - { id: a, title: 甲, record: implementation }\n  - { id: b, title: 乙, record: acceptance }\n"), "goal"],
   ];
   for (const [content, reason] of cases) {
     const w = await world();

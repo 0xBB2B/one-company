@@ -153,7 +153,7 @@ description: 本项目的需求文档规范。主会话写需求草稿时由框�
 disable-model-invocation: true
 sections:
   - { id: goal, title: 目标 }
-  - { id: scenarios, title: 场景 }
+  - { id: scenarios, title: 场景, goal: true }
   - { id: check, title: 检验, record: acceptance }
   - { id: approach, title: 做法, record: implementation }
 ---

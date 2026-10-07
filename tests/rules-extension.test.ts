@@ -67,7 +67,7 @@ test("M8C-AC1：零自定义时注入包内默认规范，按背景、需求、�
 test("M8C-AC2/AC4：受信任项目的规范取代默认注入主会话，项目未受信任时不生效；规范无效时写明原因", async () => {
   const { agentDir, dataRoot } = await agentRoot(), repo = join(agentDir, "repo"), dir = join(repo, ".pi", "skills", "requirement-doc");
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "SKILL.md"), "---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: goal, title: 目标 }\n" +
+  await writeFile(join(dir, "SKILL.md"), "---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: goal, title: 目标, goal: true }\n" +
     "  - { id: build, title: 做法, record: implementation }\n  - { id: check, title: 检验, record: acceptance }\n---\n目标写清楚谁要什么。\n");
   const window = () => ({ workspace: { repos: [{ path: repo, repoId: "b".repeat(64), commonDir: join(repo, ".git") }], skipped: [] } });
   expect(await start(window, dataRoot)).toContain("（包内默认）");

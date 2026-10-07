@@ -316,8 +316,12 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
     return Boolean(current && request.receiptId === current.authorization.receiptId &&
       decisionDigest(request.manifest) === decisionDigest(approvalManifestReference(current.manifest)));
   } });
+  // 夹具正文用 goal 与 scenario 两个板块，批准并授权实施时这两个板块下已确认的段落都是实施目标
+  const docSpec = { skillHash: `sha256:${"f".repeat(64)}`, sections: [{ id: "goal", title: "目标", goal: true as const },
+    { id: "scenario", title: "场景", goal: true as const }, { id: "implementation", title: "实现", record: "implementation" as const },
+    { id: "acceptance", title: "验收", record: "acceptance" as const }] };
   const approved = await approver.confirmUpdate({ requirementId: saved.requirementId, operationId: confirmOperationId, version: context.version,
-    title: context.title, body: context.body, receiptId: authorized.authorization.receiptId, manifest: approvalManifestReference(authorized.manifest) });
+    title: context.title, body: context.body, receiptId: authorized.authorization.receiptId, manifest: approvalManifestReference(authorized.manifest), docSpec });
   const lease = await state.acquirePm({ requirementId: saved.requirementId, version: approved.version, runId: uuidv7(), expectedFence: 0 });
 
   const sessionId = uuidv7(), windowId = uuidv7();

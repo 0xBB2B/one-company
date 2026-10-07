@@ -66,7 +66,7 @@ type SchedulingGate = { task: TaskRecord; tasks: TaskRecord[] };
 
 function revokedGoalsIn(db: LocalDatabase, repoId: string, task: TaskRecord): string[] {
   const record = db.read<RequirementRecord>("requirements", task.requirementId)!;
-  const scope = implementScope(registeredApprovalManifestIn(db, repoId, record.data.approvalManifest!.reference, record));
+  const scope = implementScope(registeredApprovalManifestIn(db, repoId, record.data.approvalManifest!.reference, record), record.data.docSpec?.sections ?? []);
   return task.goalUnitIds.filter((unit) => !scope.has(unit));
 }
 

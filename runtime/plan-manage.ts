@@ -18,6 +18,7 @@ import { clearPlanRejections, notePlanRejection, PLAN_CONTENT_CODES } from "./pm
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
 import { checked, hash, id, object, PmLease, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
+import type { RequirementDocSection } from "./requirement-doc.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
 import { writeFileAtomic } from "./store.ts";
@@ -214,13 +215,17 @@ function sha256(value: string): string { return createHash("sha256").update(valu
 function deny(code: PlanManageErrorCode, detail: string[] = []): never { throw new PlanManageError(code, detail); }
 
 /** 实施授权覆盖的目标章节：未确认、标为未知的实施动作不算授权。 */
-export function implementScope(manifest: ApprovalManifest): Set<string> {
-  const confirmed = new Set(manifest.units.filter((unit) => unit.disposition === "confirmed").map((unit) => unit.id));
-  return new Set(manifest.actions.filter((action) => action.action === "implement" && !action.unknown)
-    .flatMap((action) => action.goalIds).filter((unit) => confirmed.has(unit)));
+/** 用户批准并授权实施时，实施目标板块下全部已确认的段落都是实施目标，不看解读模型在实施动作里列了哪些段。 */
+export function implementScope(manifest: ApprovalManifest, sections: readonly RequirementDocSection[]): Set<string> {
+  if (!manifest.actions.some((action) => action.action === "implement" && !action.unknown)) return new Set();
+  const goals = sections.filter((section) => section.goal).map((section) => section.id);
+  return new Set(manifest.units.filter((unit) => unit.disposition === "confirmed" &&
+    goals.some((goal) => unit.id === goal || unit.id.startsWith(`${goal}.`))).map((unit) => unit.id));
 }
 function closureOf(manifest: ApprovalManifest, goalIds: string[], constraintIds: string[]): Array<{ unitId: string; hash: string }> {
-  const ids = approvalDependencyClosure(manifest.units, [...goalIds, ...constraintIds]);
+  // 当前正文已删掉的段不再参与：算出的依据与原来不同，引用它的任务随之被判为受影响
+  const present = new Set(manifest.units.map((unit) => unit.id));
+  const ids = approvalDependencyClosure(manifest.units, [...goalIds, ...constraintIds].filter((unit) => present.has(unit)));
   return manifest.units.filter((unit) => ids.includes(unit.id)).map((unit) => ({ unitId: unit.id, hash: unit.hash }));
 }
 function sameRefs(a: ReadonlyArray<{ unitId: string; hash: string }>, b: ReadonlyArray<{ unitId: string; hash: string }>): boolean {
@@ -309,9 +314,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     return { path, hash: sha256(content) };
   }
 
-  function validateSpecs(manifest: ApprovalManifest, specs: TaskSpec[], known: Map<string, string>): void {
+  function validateSpecs(manifest: ApprovalManifest, scope: Set<string>, specs: TaskSpec[], known: Map<string, string>): void {
     const units = new Set(manifest.units.map((unit) => unit.id));
-    const scope = implementScope(manifest);
     const unknownUnits = specs.flatMap((spec) => [...spec.goalUnitIds, ...spec.constraintUnitIds]).filter((unit) => !units.has(unit));
     if (unknownUnits.length) deny("unknown_unit", [...new Set(unknownUnits)]);
     const outside = specs.flatMap((spec) => spec.goalUnitIds).filter((unit) => !scope.has(unit));
@@ -402,7 +406,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     await formalGate();
     const { record, manifest, current } = snapshot();
     if (current) deny("plan_exists");
-    validateSpecs(manifest, specs, new Map());
+    validateSpecs(manifest, implementScope(manifest, record.data.docSpec?.sections ?? []), specs, new Map());
     const tasks = await materialize(manifest, specs, new Map(), record.data.revision);
     assertAcyclic(tasks);
     const plan = checked(PlanRecord, { format: "plan/v1", requirementId: grant.requirementId, planVersion: 1, confirmedVersion: null, confirmedTasks: [],
@@ -446,7 +450,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" &&
       (task.status !== "cancelled" || terminationPending([task], record.data.revision)));
     // 当前批准不再列为实施目标的段谁也拿不走：从已开工任务里去掉它、目标全都不在授权内时取消任务，都绕不开一次重试
-    const authorized = implementScope(manifest);
+    const authorized = implementScope(manifest, record.data.docSpec?.sections ?? []);
     const cancelTried = (params.cancel ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && task.goalUnitIds.some((unit) => authorized.has(unit))));
     if (cancelTried.length) deny("goal_held", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
     const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && !readjusted(task)
@@ -462,7 +466,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       return item.spec;
     });
     const specs = [...(params.add ?? []), ...modifySpecs];
-    validateSpecs(manifest, specs, keys);
+    validateSpecs(manifest, authorized, specs, keys);
     const changed = await materialize(manifest, specs, keys, record.data.revision, byId);
     const cancelled = (params.cancel ?? []).map((item) => ({ ...byId.get(item.taskId)!, status: "cancelled" as const, updatedAt: now() }));
     const merged = new Map(current.tasks.map((task) => [task.taskId, task]));
@@ -485,7 +489,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const stale = live.filter((task) => !sameRefs(task.closure, closureOf(manifest, task.goalUnitIds, task.constraintUnitIds)));
     if (stale.length) deny("task_not_ready", stale.map((task) => `${task.key}:依据已变化`));
     const covered = new Set(live.flatMap((task) => task.goalUnitIds));
-    const missing = [...implementScope(manifest)].filter((unit) => !covered.has(unit));
+    const missing = [...implementScope(manifest, record.data.docSpec?.sections ?? [])].filter((unit) => !covered.has(unit));
     if (missing.length) deny("coverage_incomplete", missing);
     const plan = checked(PlanRecord, { ...current.plan, confirmedVersion: planVersion, confirmedRevision: record.data.revision,
       confirmedTasks: live.map((task) => ({ taskId: task.taskId, version: task.version })), updatedAt: now() });
@@ -516,7 +520,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const forced = live.filter((task) => !sameRefs(task.closure, closureOf(manifest, task.goalUnitIds, task.constraintUnitIds)))
       .filter((task) => given.get(task.taskId)!.assessment === "unaffected");
     if (forced.length) deny("assessment_invalid", forced.map((task) => `${task.key} 依据的章节已变化，不能判为无关`));
-    const scope = implementScope(manifest);
+    const scope = implementScope(manifest, record.data.docSpec?.sections ?? []);
     const revoked = live.filter((task) => task.goalUnitIds.some((unit) => !scope.has(unit)) && given.get(task.taskId)!.assessment === "unaffected");
     if (revoked.length) deny("assessment_invalid", revoked.map((task) => `${task.key} 的目标已不在实施授权内，不能判为无关`));
     // 复核结论套用在提交时的最新任务行上：复核期间子代理结局登记的状态与尝试记录不被覆盖
