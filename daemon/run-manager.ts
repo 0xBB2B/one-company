@@ -843,6 +843,27 @@ export class RunManager {
     return main.report;
   }
 
+  /** 主窗口查看自己派出的 explore：只认派出它的那条连接；结果取回后不再可查。 */
+  mainExploreStatus(runId: string, connectionId: string | undefined): Record<string, unknown> | null {
+    const main = this.mainExplores.get(runId);
+    if (!main || main.connectionId !== connectionId) return null;
+    const outcome = main.report?.outcome;
+    return { id: runId, kind: "explore", state: outcome === undefined ? "running" : outcome === "completed" ? "completed" : "failed",
+      turns: main.handle.turnsUsed(), delivery: "结果到达后以卡片插入本会话" };
+  }
+
+  /** 主窗口停止自己派出的 explore：只认派出它的那条连接，已有结果作废。 */
+  async stopMainExplore(runId: string, connectionId: string | undefined): Promise<{ state: string; confirmed: boolean } | null> {
+    const main = this.mainExplores.get(runId);
+    if (!main || main.connectionId !== connectionId) return null;
+    this.mainExplores.delete(runId);
+    if (!main.report) main.dispose();
+    endExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, "stopped_by_main");
+    const outcome = await main.handle.stop().catch(() => ({ stopped: false }));
+    main.handle.dispose();
+    return { state: "stopped", confirmed: outcome.stopped };
+  }
+
   /** 主窗口连接断开（关闭窗口或切换会话都会断开）：停止由它派出的 explore，已有结果作废。 */
   async abandonMainExplores(match: { connectionId: string }): Promise<void> {
     this.liveConnections.delete(match.connectionId);
@@ -1407,7 +1428,10 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       || typeof params.thinking !== "string") throw protocolError("invalid_params", "派出 PM 参数无效");
     return manager.dispatchPm({ requirementId: params.requirementId, model: { provider: model.provider, id: model.id }, thinking: params.thinking });
   });
-  register("runs.resume", async (params) => manager.resume(params.runId as string));
+  const refuseMainExplore = (params: Record<string, unknown>, client: ClientInfo) => {
+    if (manager.mainExploreStatus(params.runId as string, client.connectionId)) throw protocolError("invalid_params", "主窗口派出的检索不能暂停或续接", "用 status 查看进度，用 stop 停止；结果到达后以卡片插入本会话");
+  };
+  register("runs.resume", async (params, client) => { refuseMainExplore(params, client); return manager.resume(params.runId as string); });
   register("pm.message", async (params) => {
     if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof params.text !== "string")
       throw protocolError("invalid_params", "给 PM 的消息参数无效");
@@ -1439,13 +1463,15 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     return { result: await manager.workflowManage(params.requirementId, params.request as Record<string, unknown>) };
   });
   register("runs.list", async (params) => manager.list({ kind: params.kind as RunKind | undefined, offset: params.offset as number | undefined, limit: params.limit === undefined ? 100 : params.limit as number }));
-  register("runs.get", async (params) => {
+  register("runs.get", async (params, client) => {
+    const main = manager.mainExploreStatus(params.runId as string, client.connectionId);
+    if (main) return { run: main };
     const result = await manager.status(params.runId as string);
     if (!result.ok) throw protocolError("not_found", "运行不存在");
     return { run: result.run };
   });
-  register("runs.pause", async (params) => manager.pause(params.runId as string));
-  register("runs.stop", async (params) => manager.stop(params.runId as string, { reason: "main_agent" }));
+  register("runs.pause", async (params, client) => { refuseMainExplore(params, client); return manager.pause(params.runId as string); });
+  register("runs.stop", async (params, client) => await manager.stopMainExplore(params.runId as string, client.connectionId) ?? manager.stop(params.runId as string, { reason: "main_agent" }));
   register("runs.pauseAll", async () => manager.pauseAll());
   register("runs.stopAll", async () => manager.stopAll());
   register("shells.list", async () => ({ tasks: shellRegistry.list().map(shellMetadata) }));

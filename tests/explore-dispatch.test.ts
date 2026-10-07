@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/pi-ai";
 import { checkExploreSession } from "../runtime/explore-session.ts";
+import { registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -80,6 +81,35 @@ test("M7-AC15/AC18：main 派出的 explore 只交给派出它的会话，取走
   expect(checkExploreSession({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, second.runId)).toMatchObject({ current: false });
   await new Promise((resolve) => setTimeout(resolve, 3_200));
   expect(w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === second.runId)).toBe(false);
+});
+
+test("M9-AC2：main 用 agent_manage 查询、停止自己派出的 explore：运行中与完成待取回时能查到状态与已用轮数，能停止且结果作废；别的窗口查不到，暂停与续接写明不支持", async () => {
+  const w = await world();
+  const handlers = new Map<string, (params: Record<string, unknown>, client: unknown) => Promise<Record<string, unknown>>>();
+  registerProtocolHandlers({ server: { registerHandler: (method: string, handler: never) => handlers.set(method, handler), markHandlersReady: () => {} } as never,
+    manager: w.manager, relayQueue: {} as never, shellRegistry: {} as never });
+  const call = (method: string, runId: string, connectionId: string) => handlers.get(method)!({ runId }, { connectionId, sessionId: "session-a" });
+  const readme = join(await realpath(w.fixture.repositoryRoot), "README.md");
+  const parent = { role: "main" as const, sessionId: "session-a", connectionId: "connection-a", model: { provider: "team-model", id: "test" }, thinking: "off" };
+  w.manager.connectionOpened("connection-a");
+
+  w.provider.queue.push(w.submit(readme, await w.hashOf(readme)));
+  const done = await w.manager.dispatchExplore({ parent, request: { question: "仓库说明写了什么", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
+  await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === done.runId));
+  await expect(call("runs.get", done.runId, "connection-a")).resolves.toMatchObject({ run: { id: done.runId, kind: "explore", state: "completed", turns: 1 } });
+
+  w.provider.queue.push({ type: "text", text: "慢慢查", chunkDelayMs: 3_000 });
+  const slow = await w.manager.dispatchExplore({ parent, request: { question: "再查一次", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
+  await expect(call("runs.get", slow.runId, "connection-a")).resolves.toMatchObject({ run: { id: slow.runId, kind: "explore", state: "running" } });
+  await expect(call("runs.get", slow.runId, "connection-b")).rejects.toMatchObject({ code: "not_found" });
+  await expect(call("runs.stop", slow.runId, "connection-b")).rejects.toMatchObject({ code: "not_found" });
+  for (const method of ["runs.pause", "runs.resume"]) await expect(call(method, slow.runId, "connection-a")).rejects.toMatchObject({ code: "invalid_params" });
+  await expect(call("runs.stop", slow.runId, "connection-a")).resolves.toMatchObject({ state: "stopped", confirmed: true });
+  expect(checkExploreSession({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, slow.runId)).toMatchObject({ current: false });
+  expect(() => w.manager.takeMainExploreReport(slow.runId, "connection-a")).toThrow();
+  await expect(call("runs.get", slow.runId, "connection-a")).rejects.toMatchObject({ code: "not_found" });
+  await new Promise((resolve) => setTimeout(resolve, 3_200));
+  expect(w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === slow.runId)).toBe(false);
 });
 
 test("M7-AC16：research 引用的本地文件 hash 由宿主按实际内容核对，不符即拒收；轮次上限须为正整数", async () => {
