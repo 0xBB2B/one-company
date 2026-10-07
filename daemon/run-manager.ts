@@ -1074,11 +1074,13 @@ export class RunManager {
       const hold = entry.pm.hold;
       entry.pm.hold = null;
       const current = withDatabase(this.database, (db) => readPlanIn(db, requirementId));
-      for (const [runId, ref] of hold) {
-        if (this.sessions.get(runId)?.handle.state() !== "paused") continue;
-        if (holdResumes(ref, current, runId)) { await this.resume(runId).catch(() => {}); continue; }
-        this.supersededRuns.add(runId);
-        await this.stop(runId, { reason: "replanned" }).catch(() => {});
+      const paused = [...hold].filter(([runId]) => this.sessions.get(runId)?.handle.state() === "paused")
+        .map(([runId, ref]) => ({ runId, resumes: holdResumes(ref, current, runId) }));
+      // 先整体登记为待停再逐个处理：期间用户连带恢复 PM 时，这些子代理不会被抢先恢复
+      for (const child of paused) if (!child.resumes) this.supersededRuns.add(child.runId);
+      for (const child of paused) {
+        if (child.resumes) await this.resume(child.runId).catch(() => {});
+        else await this.stop(child.runId, { reason: "replanned" }).catch(() => {});
       }
     }
   }
