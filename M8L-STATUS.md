@@ -20,11 +20,11 @@
 | AC2 PM 停下且无人能唤醒时生成提醒，被唤醒后消失 | 通过 | tests/pm-dispatch.test.ts「M8L-AC2」（登记最后的话与运行记录、被唤醒后清掉并按新一轮重记）、tests/pm-overview.test.ts「M8L-AC2」（事项与卡片），都先失败后通过；已有别的事项时不显示停下提醒（tests/adjudication.test.ts 原有用例） | 无 |
 | AC3 针对事项的问答窗口；决定类选项由程序写死且选中即登记，其余只作指示 | 通过 | tests/adjudication.test.ts 三条「M8L-AC3」（待你裁决选项须与固定文字一致、选中“再给一次机会，轮数上限 3”后可登记；计划两次被拒的回答不能登记任务裁决；需求级取消用 requirement:<编号> 固定选项、版本变化时拒绝）、tests/panel-item-ask.test.ts（固定文字与轮数 1 到 1000）；登记仍走原解释器与短决定路径，只放行与窗口所针对决定一致的回答。“待你验收”窗口因问答窗口至少 2 个选项，固定为“验收通过”“暂不验收”，返工写在“返工（自己输入要改什么）”一行，与预览只列“验收通过”一项不同 | 无 |
 | AC4 状态行被拒次数、PM 角色说明、主会话规则 | 通过 | 状态行见 tests/pm-overview.test.ts「M8L-AC1/AC4」；PM 角色说明与主会话规则见 tests/role-catalog.test.ts「M8L-AC4」；README 的 PM 面板一节同步 | 无 |
-| AC5 真实模型验收并入 M9-AC2、3、12、13 按 3 轮规则重跑 | 未通过 | 基线 7b5032a 上 AC3、AC12、AC13 各 3 轮通过，AC2 第 3 轮失败并修复（195db01）；之后 05eb061、ce96b11 又修了两处，M8M、M8N、M8O 也在改产品代码 | 在 M8O 完成后的基线上四项各连续 3 轮通过 |
+| AC5 真实模型验收并入 M9-AC2、3、12、13 按 3 轮规则重跑 | 通过 | 2026-10-07 基线 3536dc9 上四项各连续 3 轮通过（证据 .bb-spec/.cache/m9/acceptance-m8n/ 下 progressive、code-error、zero-custom、ui-worker 开头的 2026-10-07T06 至 T09 目录） | 无 |
 
 ## 当前阻塞
 
-等 M8M、M8N、M8O 全部提交后再跑 AC5。
+无。AC1 到 AC5 全部通过。
 
 ## 下一窗口续接提示
 

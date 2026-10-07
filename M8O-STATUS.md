@@ -20,11 +20,11 @@
 | AC2 实施目标由正文实施目标板块决定 | 通过 | tests/plan-manage.test.ts「M8O-AC2」、tests/requirement-doc.test.ts、tests/main-requirement-interaction.test.ts「M8O-AC2」、tests/prod-view.test.ts「M8O-AC2」（编号前缀核对，用户 2026-10-07 选甲）；2d6ca44、88a77c7 | 无 |
 | AC3 上一版本下的尝试被判受影响后可重排 | 通过 | tests/plan-assess.test.ts「M8O-AC3」；403e501 | 无 |
 | AC4 任务 1 完成、2 进行中时追加需求的两种情况 | 通过 | tests/approval-hold.test.ts「M8O-AC4」两条；1b59007 | 无 |
-| AC5 真实模型验收并入 M9-AC2、3、12、13 按 3 轮规则重跑 | 未开始 | 无 | 在 f1613c9 之后的基线上跑 |
+| AC5 真实模型验收并入 M9-AC2、3、12、13 按 3 轮规则重跑 | 通过 | 2026-10-07 基线 3536dc9 上四项各连续 3 轮通过（证据 .bb-spec/.cache/m9/acceptance-m8n/ 下 progressive、code-error、zero-custom、ui-worker 开头的 2026-10-07T06 至 T09 目录） | 无 |
 
 ## 当前阻塞
 
-无。基线 f1613c9 上 typecheck 通过、单元 2499 条全过，集成 56 条全过，安装 11 条通过（1 条需 Docker 跳过）。改动经独立审查，提出的 3 个问题（批准前已暂停的子代理漏进名单、原型运行被误停、段落归属与编号不一致）与复核发现的结算竞态均已修复并复核。
+无。AC1 到 AC5 全部通过。基线 f1613c9 上 typecheck 通过、单元 2499 条全过，集成 56 条全过，安装 11 条通过（1 条需 Docker 跳过）。改动经独立审查，提出的 3 个问题（批准前已暂停的子代理漏进名单、原型运行被误停、段落归属与编号不一致）与复核发现的结算竞态均已修复并复核。
 
 ## 下一窗口续接提示
 
