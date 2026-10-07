@@ -32,7 +32,7 @@ import { checkRequirement } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import type { RequirementApprovalScope } from "./requirement-manage-contracts.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE } from "./interaction-continuity.ts";
-import { approvalManifestReference } from "./approval-manifest.ts";
+import { approvalManifestReference, confirmed } from "./approval-manifest.ts";
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "./adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "./requirement-summary.ts";
 import { askWindow, confirmWindow, mutedLines } from "./question-window.ts";
@@ -674,7 +674,7 @@ export class MainRequirementInteraction {
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: loaded.version, epoch: loaded.epoch, requestId: question.requestId,
       caption, question: request.question, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false });
   }
-  /** 整份草稿没能确认时，由程序按记录写明挡住的段落：以前登记的决定对不上的，和这次解读仍待定的；不转述模型写的结论。 */
+  /** 整份草稿没能确认时，由程序按记录写明挡住的段落：以前登记的决定对不上的，和这次解读仍待定的；待定段落附上解读模型写的理由，供主代理决定问用户什么。 */
   #blockedReason(request: ConfirmationRequest, loaded: ConfirmationContext, interpretation: InteractionInterpretation, sessionId: string, justSaved: string[]): string {
     // 分区位置按完整需求文档（元数据在前）计，正文从末尾往前数
     const body = Buffer.from(loaded.body), bodyStart = loaded.partition.totalBytes - body.length;
@@ -690,9 +690,16 @@ export class MainRequirementInteraction {
     // 这一次解读刚存下的待定记录不算"以前登记的决定"
     const stale = ((records as { continuityIssues?: Array<{ unitId: string; decision: { id: string }; originDecision: { id: string } }> }).continuityIssues ?? [])
       .filter((issue) => !justSaved.includes(issue.decision.id) && !justSaved.includes(issue.originDecision.id)).map((issue) => issue.unitId);
-    const unclear = (interpretation.documentReview?.units ?? []).filter((unit) => unit.disposition === "pending-description").map((unit) => unit.id);
+    const pending = (interpretation.documentReview?.units ?? []).filter((unit) => unit.disposition === "pending-description");
+    const unclear = pending.map((unit) => unit.id), why = new Map<string, string[]>();
+    for (const unit of pending) for (const index of unit.conclusionIndexes) {
+      const entry = interpretation.entries[index]!;
+      if (!confirmed(entry)) why.set(entry.conclusion, [...(why.get(entry.conclusion) ?? []), unit.id]);
+    }
     return [stale.length ? `以前登记的决定和现在的草稿对不上，涉及段落：${list(stale)}；请用户说明这些旧决定作废，或逐项确认` : "",
-      unclear.length ? `这次的解读里仍待定的段落：${list(unclear)}；请用户把这些段落说清楚` : ""].filter(Boolean).join("；") || "这次的解读没能确认整份草稿，请用户逐段确认";
+      unclear.length ? `这次的解读里仍待定的段落：${list(unclear)}；请用户把这些段落说清楚` : "",
+      why.size ? `解读模型对待定段落写的理由（模型写的，只用来决定问用户什么，不算批准）：${[...why].map(([conclusion, ids]) => `「${list(ids)}」${conclusion}`).join("；")}` : ""]
+      .filter(Boolean).join("；") || "这次的解读没能确认整份草稿，请用户逐段确认";
   }
   /** 窗口里的回答记成用户这一轮的原话；不走 captureInput，免得本次工具调用的代次失效、结果被当成过期。 */
   /**

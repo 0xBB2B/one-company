@@ -690,7 +690,7 @@ const allPending = (loaded: Pick<ConfirmationContext, "candidate" | "partition">
 const interpreterContext = (w: Awaited<ReturnType<typeof world>>) =>
   JSON.parse(String((w.provider.requests.filter((r) => r.systemPrompt?.includes("需求解释器")).at(-1)!.messages[0] as { content: string }).content)).context;
 
-test("M8D-AC9：批准被挡时写明原因：以前登记的决定挡住了哪些段落、这次解读里还有哪些段落待定，用段落标题说", async () => {
+test("M8D-AC9：批准被挡时写明原因：以前登记的决定挡住了哪些段落、这次解读里还有哪些段落待定，用段落标题说，待定段落附上解读模型写的理由", async () => {
   const w = await world(), created = await w.create(), first = await w.request(created);
   const modify = phoneReview(first.loaded);
   modify.faithful = false; modify.entries[1]!.resolution = "modify"; modify.entries.splice(5, 1);
@@ -705,6 +705,7 @@ test("M8D-AC9：批准被挡时写明原因：以前登记的决定挡住了哪�
   const reason = (again as { blockedReason: string }).blockedReason;
   expect(reason).toMatch(/以前登记的决定和现在的草稿对不上，涉及段落：[^；]*手机号与邮箱/u);
   expect(reason).toMatch(/这次的解读里仍待定的段落：[^；]*手机号与邮箱/u);
+  expect(reason).toMatch(/解读模型对待定段落写的理由（模型写的，只用来决定问用户什么，不算批准）：「[^」]*手机号与邮箱[^」]*」整份待定/u);
 });
 
 test("M8D-AC3：没有确认任何正文段落的解读不留下决定记录，随后一次明确的批准照常生效", async () => {

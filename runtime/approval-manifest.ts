@@ -26,7 +26,7 @@ export interface ApprovalManifestExpected { requirementId: string; candidate: Ca
 function deny(code: string, detail?: string): never { throw new UserInteractionError(code, detail); }
 function sameSet(a: readonly string[], b: readonly string[]): boolean { return a.length === b.length && a.every((v) => b.includes(v)); }
 function explicit(e: InteractionEntry): boolean { return e.basis === "explicit" && !["modify", "defer", "unclear"].includes(e.resolution); }
-function confirmed(e: InteractionEntry): boolean { return ["explicit", "delegated"].includes(e.basis) && !["modify", "defer", "unclear"].includes(e.resolution); }
+export function confirmed(e: InteractionEntry): boolean { return ["explicit", "delegated"].includes(e.basis) && !["modify", "defer", "unclear"].includes(e.resolution); }
 type Unit = { id: string; dependsOn: string[]; globalConstraint: boolean; appliesTo: string[] };
 function graph(units: Unit[]): void {
   const ids = new Set(units.map((u) => u.id));
