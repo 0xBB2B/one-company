@@ -34,9 +34,6 @@ test("M7-AC33：每次模型回复的输入、输出、缓存读写与每次工�
   await until(async () => (await w.run(worker.runId)).state === "completed" && (await w.run(w.pm.runId)).usage?.input === 7);
   expect((await w.run(worker.runId)).usage).toEqual({ input: 110, output: 25, cacheRead: 700, cacheWrite: 50, toolUses: 2 });
   expect((await w.run(w.pm.runId)).usage).toEqual({ input: 7, output: 3, cacheRead: 0, cacheWrite: 0, toolUses: 1 });
-  const broadcast = w.emit.mock.calls.filter(([event, payload]) => event === "runs.changed" && (payload as { run: { id: string } }).run.id === worker.runId)
-    .map(([, payload]) => (payload as { run: { usage?: { input: number } } }).run.usage?.input);
-  expect(broadcast).toContain(110);
 });
 
 test("M7-AC33：暂停 PM 连带暂停子代理并记下起点，恢复连带恢复并累加暂停时长", async () => {

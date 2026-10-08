@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { realpath } from "node:fs/promises";
 import { dirname, join, resolve as resolvePath, sep } from "node:path";
 import { createAgentSession, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { AgentSession, ExtensionAPI, ModelRuntime, SessionManager, ToolCallEvent, ToolCallEventResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionAPI, ModelRuntime, ToolCallEvent, ToolCallEventResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Clock, TimerHandle } from "../runtime/clock.ts";
 import { checkMcpCall, describeMcpStatus, loadMcpForRole } from "../runtime/mcp.ts";
@@ -14,7 +14,7 @@ import { QA_PROTOTYPE_HOST_TOOLS, ROLE_HOST_TOOLS } from "../runtime/role-tools.
 import { checkSearchCall, filterSearchResult } from "../runtime/search-exclusion.ts";
 import type { RoleDefinition } from "../runtime/roles.ts";
 import { isAgentRole } from "../runtime/roles.ts";
-import { createSessionManagerForRun, openSessionManagerForRun } from "../runtime/session-records.ts";
+import { createSessionManagerForRun } from "../runtime/session-records.ts";
 
 export interface AgentSessionMcpOptions {
   servers: string[];
@@ -42,16 +42,13 @@ export interface CreateAgentSessionOptions {
   thinking?: string;
   /** 受限子代理的对话轮次上限；主代理与 PM 不设。一轮即一次模型生成请求。 */
   maxTurns?: number;
-  /** 已用轮数（续接时由运行记录提供），计数由运行时维护，不由模型自报。 */
-  turnsUsed?: number;
   /** on-result：结果工具成功提交后本轮结束即完成；idle-only：只交回控制权（PM）。 */
   completion: { kind: "on-result"; resultTool: string } | { kind: "idle-only" };
   clock: Clock;
   networkGate: NetworkPauseGate;
-  resume?: boolean;
 }
 
-export type AgentSessionState = "running" | "paused" | "paused_network" | "completed" | "failed" | "stopped" | "turn_limit_reached" | "ended_without_result";
+export type AgentSessionState = "running" | "paused" | "completed" | "failed" | "stopped" | "turn_limit_reached" | "ended_without_result";
 
 export interface AgentSessionHandle {
   events: EventEmitter;
@@ -156,9 +153,9 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   resultPromise.catch(() => {});
 
   const isTerminal = () => ["completed", "failed", "stopped", "turn_limit_reached", "ended_without_result"].includes(currentState);
-  let turns = options.turnsUsed ?? 0;
+  let turns = 0;
   if (options.maxTurns !== undefined && (!Number.isSafeInteger(options.maxTurns) || options.maxTurns < 1)) throw new Error("maxTurns 必须为正整数");
-  const isPaused = () => currentState === "paused" || currentState === "paused_network";
+  const isPaused = () => currentState === "paused";
 
   function finishFailed(cause: unknown): void {
     if (isTerminal()) return;
@@ -191,15 +188,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     void session?.abort().catch(() => {});
   }
 
-  let sessionManager: SessionManager;
-  const records = { dataRoot: options.dataRoot, repoId: options.repoId, runId: options.runId, cwd: options.cwd, onPersistError };
-  if (options.resume) {
-    const opened = openSessionManagerForRun(records);
-    if (!opened.ok) throw new Error(opened.detail);
-    sessionManager = opened.manager;
-  } else {
-    sessionManager = createSessionManagerForRun(records);
-  }
+  const sessionManager = createSessionManagerForRun({ dataRoot: options.dataRoot, repoId: options.repoId, runId: options.runId, cwd: options.cwd, onPersistError });
 
   const extensionFactory = async (pi: ExtensionAPI): Promise<void> => {
     const mcpResult = options.mcp
@@ -235,7 +224,6 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     pi.on("tool_result", (event) => filterSearchResult(event));
     pi.on("tool_execution_start", (event) => {
       activeTools.add(event.toolCallId);
-      events.emit("tool_start", { toolCallId: event.toolCallId, toolName: event.toolName });
     });
     pi.on("tool_execution_end", (event) => {
       activeTools.delete(event.toolCallId);
@@ -274,9 +262,9 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   session = created.session;
 
   function requestNetworkPause(): void {
-    currentState = "paused_network";
-    options.networkGate.requestPause(options.runId, "network");
-    events.emit("paused_network", { reason: "connection" });
+    currentState = "paused";
+    options.networkGate.requestPause(options.runId);
+    events.emit("network_paused");
     pendingNetworkAbort = session.abort().catch(() => {});
   }
 
@@ -306,13 +294,13 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     if (usage) events.emit("usage", { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite });
     failedMessage = null;
     if (event.message.stopReason !== "error" || currentState !== "running") return;
-    // 断网交网络暂停等恢复后续接；中止后的请求 SDK 不会重试
+    // 断网按暂停处理，等用户恢复后原地续接；中止后的请求 SDK 不会重试
     if (classifyFailure(new Error(event.message.errorMessage ?? "模型请求失败")) === "connection") requestNetworkPause();
     else failedMessage = event.message;
   });
 
   function drainPrompts(): void {
-    if (prompting || isTerminal() || isPaused() || !options.networkGate.canProceed(options.runId).allowed) return;
+    if (prompting || isTerminal() || isPaused() || !options.networkGate.canProceed(options.runId)) return;
     const text = queuedMessages.shift();
     if (text === undefined) return;
     prompting = true;

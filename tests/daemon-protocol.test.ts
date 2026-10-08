@@ -21,7 +21,6 @@ const EXPECTED_METHODS = [
   "hello",
   "ping",
   "shutdown",
-  "runs.list",
   "runs.get",
   "runs.pause",
   "runs.resume",
@@ -35,39 +34,27 @@ const EXPECTED_METHODS = [
   "pm.prototypeDecide",
   "pm.message",
   "workflow.manage",
-  "runs.pauseAll",
-  "runs.stopAll",
   "shells.list",
   "shells.stop",
-  "shells.markStopped",
   "mcp.register",
   "index.manage",
   "knowledge.query",
 ];
 
 const EXPECTED_EVENTS = [
-  "runs.changed",
   "pm.overview.changed",
   "explore.finished",
-  "relay.notice",
-  "shells.changed",
-  "daemon.idle",
 ];
 
 const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   hello: {
     authToken: "test-control-token",
     windowId: "win-1",
-    pid: 4321,
     sessionId: "session-abc",
-    cwd: "/repo",
-    workspaceRoot: "/workspace",
-    repoIds: ["repo-1", "repo-2"],
     protocolVersion: PROTOCOL_VERSION,
   },
   ping: {},
   shutdown: {},
-  "runs.list": {},
   "runs.get": { runId: "run-1" },
   "runs.pause": { runId: "run-1" },
   "runs.resume": { runId: "run-1" },
@@ -81,16 +68,8 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "pm.message": { requirementId: "req-1", text: "先做登录" },
   "workflow.manage": { requirementId: "req-1", request: { action: "status" } },
   "runs.stop": { runId: "run-1" },
-  "runs.pauseAll": {},
-  "runs.stopAll": {},
   "shells.list": {},
   "shells.stop": { taskId: "task-1", expectedPid: 123, expectedStartedAt: "2026-09-09T00:00:00.000Z" },
-  "shells.markStopped": {
-    taskId: "task-1",
-    expectedPid: 123,
-    expectedStartedAt: "2026-09-09T00:00:00.000Z",
-    decisionId: "decision-1",
-  },
   "mcp.register": { adapterEntry: "./adapter.ts", configPath: "/config.json" },
   "index.manage": { action: "status" },
   "knowledge.query": { query: { action: "search", text: "x" } },
@@ -136,13 +115,13 @@ describe("协议常量", () => {
 
   test("未知事件名被拒绝", () => {
     expect(catchError(() => createEvent("不存在的事件", {}))?.code).toBe("unknown_event");
-    expect(catchError(() => assertKnownEvent("runs.changed"))).toBeNull();
+    expect(catchError(() => assertKnownEvent("pm.overview.changed"))).toBeNull();
   });
 });
 
 describe("encodeFrame", () => {
   test("输出恰含一个换行且位于末尾", () => {
-    const frame = createEvent("daemon.idle", {});
+    const frame = createEvent("explore.finished", {});
     const line = encodeFrame(frame);
     expect(line.endsWith("\n")).toBe(true);
     expect(line.indexOf("\n")).toBe(line.length - 1);
@@ -166,7 +145,7 @@ describe("decodeFrames", () => {
   test("一次写入含三帧全部解出", () => {
     const f1 = createRequest("ping", {});
     const f2 = createResponse(f1.id, { pong: true });
-    const f3 = createEvent("daemon.idle", {});
+    const f3 = createEvent("explore.finished", {});
     const buffer = encodeFrame(f1) + encodeFrame(f2) + encodeFrame(f3);
     const { frames, rest } = decodeFrames(buffer);
     expect(frames.length).toBe(3);
@@ -211,7 +190,7 @@ describe("decodeFrames", () => {
 
   test("U+2028 与 U+2029 不被当作分隔符且往返后字符串相等", () => {
     const original = "line1 line2 tail";
-    const frame = createEvent("runs.changed", { text: original });
+    const frame = createEvent("pm.overview.changed", { text: original });
     const encoded = encodeFrame(frame);
     expect((encoded.match(/\n/g) ?? []).length).toBe(1);
 
@@ -222,8 +201,8 @@ describe("decodeFrames", () => {
   });
 
   test("非法 JSON 行进入 errors，前后帧与残余照常返回", () => {
-    const a = encodeFrame(createEvent("runs.changed", { runId: "r", kind: "turn", at: "t" }));
-    const b = encodeFrame(createEvent("daemon.idle", { exitAt: "x" }));
+    const a = encodeFrame(createEvent("pm.overview.changed", { runId: "r", kind: "turn", at: "t" }));
+    const b = encodeFrame(createEvent("explore.finished", { exitAt: "x" }));
     const result = decodeFrames(`${a}不是合法JSON\n${b}{"t":"evt","event"`);
     expect(result.frames.length).toBe(2);
     expect(result.rest).toBe('{"t":"evt","event"');
@@ -305,14 +284,14 @@ describe("createRequest / createResponse / createErrorResponse / createEvent", (
   });
 
   test("createEvent 生成事件帧", () => {
-    const evt = createEvent("runs.changed", { runId: "run-1", tool: "bash" });
-    expect(evt).toEqual({ t: "evt", event: "runs.changed", data: { runId: "run-1", tool: "bash" } });
+    const evt = createEvent("pm.overview.changed", { runId: "run-1", tool: "bash" });
+    expect(evt).toEqual({ t: "evt", event: "pm.overview.changed", data: { runId: "run-1", tool: "bash" } });
   });
 });
 
 test("守护进程注册的每个方法都在协议方法清单里，否则真实连接会以未知方法拒绝", () => {
   const registered: string[] = [];
-  registerProtocolHandlers({ server: { registerHandler: (method: string) => { registered.push(method); }, markHandlersReady: () => {} }, manager: {}, relayQueue: {}, shellRegistry: {} } as never);
+  registerProtocolHandlers({ server: { registerHandler: (method: string) => { registered.push(method); }, markHandlersReady: () => {} }, manager: {}, shellRegistry: {} } as never);
   expect(registered).toEqual(expect.arrayContaining(["pm.prototype", "pm.prototypeDecide"]));
   expect(registered.filter((method) => !(METHODS as readonly string[]).includes(method))).toEqual([]);
   expect(() => validateParams("pm.prototypeDecide", { requirementId: "r", itemId: "i", itemVersion: "v", choice: "accept", opinion: null })).not.toThrow();
@@ -352,10 +331,6 @@ describe("validateParams — 方法目录合法示例", () => {
     });
   }
 
-  test("runs.list 携带可选分页字段时通过校验", () => {
-    expect(() => validateParams("runs.list", { offset: 0, limit: 20 })).not.toThrow();
-  });
-
   test("index.manage只接受四种固定action", () => {
     for (const action of ["init", "preview", "refresh", "status"]) {
       expect(() => validateParams("index.manage", { action })).not.toThrow();
@@ -394,14 +369,6 @@ describe("validateParams — 缺字段被拒绝", () => {
     expect(error?.code).toBe("bad_params");
     expect(error?.message).toContain("configPath");
   });
-
-  test("shells.markStopped 缺少 decisionId 抛出 bad_params", () => {
-    const { decisionId: _decisionId, ...rest } = VALID_EXAMPLES["shells.markStopped"]!;
-    const error = catchError(() => validateParams("shells.markStopped", rest));
-    expect(error).not.toBeNull();
-    expect(error?.code).toBe("bad_params");
-    expect(error?.message).toContain("decisionId");
-  });
 });
 
 describe("validateParams — 多余字段被拒绝", () => {
@@ -411,8 +378,8 @@ describe("validateParams — 多余字段被拒绝", () => {
     expect(error?.code).toBe("bad_params");
   });
 
-  test("runs.pauseAll 携带未定义字段抛出 bad_params", () => {
-    const error = catchError(() => validateParams("runs.pauseAll", { runId: "run-1" }));
+  test("shells.list 携带未定义字段抛出 bad_params", () => {
+    const error = catchError(() => validateParams("shells.list", { runId: "run-1" }));
     expect(error).not.toBeNull();
     expect(error?.code).toBe("bad_params");
   });
@@ -420,13 +387,6 @@ describe("validateParams — 多余字段被拒绝", () => {
   test("hello 携带未定义字段抛出 bad_params", () => {
     const params = { ...VALID_EXAMPLES.hello!, unexpected: "x" };
     const error = catchError(() => validateParams("hello", params));
-    expect(error).not.toBeNull();
-    expect(error?.code).toBe("bad_params");
-  });
-
-  test("shells.markStopped 携带未定义字段抛出 bad_params", () => {
-    const params = { ...VALID_EXAMPLES["shells.markStopped"]!, unexpected: "x" };
-    const error = catchError(() => validateParams("shells.markStopped", params));
     expect(error).not.toBeNull();
     expect(error?.code).toBe("bad_params");
   });
@@ -442,14 +402,6 @@ describe("validateParams — 多余字段被拒绝", () => {
 });
 
 describe("validateParams — 字段类型被校验", () => {
-  test("shells.markStopped 的 expectedPid 非数字抛出 bad_params", () => {
-    const params = { ...VALID_EXAMPLES["shells.markStopped"]!, expectedPid: "123" };
-    const error = catchError(() => validateParams("shells.markStopped", params));
-    expect(error).not.toBeNull();
-    expect(error?.code).toBe("bad_params");
-    expect(error?.message).toContain("expectedPid");
-  });
-
   test("shells.stop 的 expectedPid 非数字抛出 bad_params", () => {
     const params = { ...VALID_EXAMPLES["shells.stop"]!, expectedPid: "123" };
     const error = catchError(() => validateParams("shells.stop", params));

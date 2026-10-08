@@ -4,10 +4,9 @@ import { join } from "node:path";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
-import { repositoryDatabase, withDatabase, UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
+import { UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
 import { RunStore } from "../runtime/run-store.ts";
-import { createSessionManagerForRun, openSessionManagerForRun, readTranscript } from "../runtime/session-records.ts";
-import { RelayQueue } from "../daemon/relay-queue.ts";
+import { createSessionManagerForRun, readSessionEntries } from "../runtime/session-records.ts";
 import { createClock } from "../runtime/clock.ts";
 import { WindowRegistry } from "../runtime/windows.ts";
 
@@ -20,7 +19,7 @@ async function fixture() {
   const repoDir = join(home.dataRoot, "repos", repoId);
   const clock = createClock(); cleanup.push(async () => clock.stopGapWatcher());
   const store = new RunStore({ dataRoot: home.dataRoot, repoId, daemonStartedAt: "sqlite-test" });
-  const requirement = "2026-09-10.sqlite-business";
+  const requirement = uuidv7();
   const input = { kind: "requirement" as const, requirement, task: "需求代理", cwd: repo.root, writePaths: [], readPaths: [repo.root], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] };
   return { repo, home, repoId, repoDir, clock, store, requirement, input };
 }
@@ -34,19 +33,16 @@ test("通用运行存储保证单个活动记录", async () => {
   expect((await readdir(w.repoDir)).every((name) => name.startsWith("data.db"))).toBe(true);
 });
 
-test("SDK 会话从私有会话文件恢复，不生成诊断文件", async () => {
+test("SDK 会话条目写入私有会话文件并可原样读回，不生成诊断文件", async () => {
   const w = await fixture();
   const run = await w.store.create(w.input);
   const ref = { dataRoot: w.home.dataRoot, repoId: w.repoId, runId: run.id };
   const session = createSessionManagerForRun({ ...ref, cwd: w.repo.root });
   session.appendMessage({ role: "user", content: [{ type: "text", text: "可恢复的对话" }], timestamp: Date.now() });
   expect(session.getSessionFile()).toBeUndefined();
-  const restored = openSessionManagerForRun(ref);
-  expect(restored.ok).toBe(true);
+  const restored = readSessionEntries(ref);
   if (!restored.ok) throw new Error(restored.detail);
-  expect(restored.manager.getEntries()).toEqual(session.getEntries());
-  const transcript = readTranscript(ref);
-  expect(transcript.ok && transcript.entries[0]?.summary).toBe("可恢复的对话");
+  expect(restored.entries.slice(1)).toEqual(session.getEntries());
   expect((await readdir(w.repoDir)).filter((name) => !name.startsWith("data.db"))).toEqual(["sessions"]);
 });
 
@@ -62,20 +58,6 @@ test("多个运行存储实例交错登记回合与用量不丢失活动", async
   if (!found.ok) throw new Error(found.reason);
   expect(found.run.turns).toBe(20);
   expect(found.run.usage?.toolUses).toBe(20);
-});
-
-test("两实例固定状态通知回执可并发合并", async () => {
-  const w = await fixture();
-  const options = { dataDir: w.repoDir, deliver: async () => [] };
-  const a = new RelayQueue(options); const b = new RelayQueue(options);
-  const run = await w.store.create(w.input);
-  const database = repositoryDatabase(w.home.dataRoot, w.repoId);
-  await expect(a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "completed" as never, message: "完成" })).rejects.toThrow("只支持");
-  expect(withDatabase(database, (db) => db.list("relay_notices"))).toEqual([]);
-  const notice = await a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "blocked", message: "不得回显的旧正文" });
-  await Promise.all([a.markDelivered("窗口甲", notice.id), b.markDelivered("窗口乙", notice.id)]);
-  const record = withDatabase(repositoryDatabase(w.home.dataRoot, w.repoId), (db) => db.read<{ deliveredTo: string[] }>("relay_notices", notice.id));
-  expect(record?.data.deliveredTo.sort()).toEqual(["窗口乙", "窗口甲"].sort());
 });
 
 test("注销后的迟到心跳不能复活窗口", async () => {

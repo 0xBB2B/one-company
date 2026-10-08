@@ -4,10 +4,10 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
+import { uuidv7 } from "../runtime/database.ts";
 import { promisify } from "node:util";
 import { DaemonServer } from "../daemon/server.ts";
 import { RunManager } from "../daemon/run-manager.ts";
-import { RelayQueue } from "../daemon/relay-queue.ts";
 import { controlToken } from "../runtime/daemon-auth.ts";
 import { connectDaemon } from "../runtime/daemon-client.ts";
 import { createClock } from "../runtime/clock.ts";
@@ -43,8 +43,8 @@ async function world() {
   return { root, cwd, dataRoot, git, repoId };
 }
 
-function hello(cwd: string, authToken: string) {
-  return { authToken, windowId: "test-window", pid: process.pid, sessionId: "test-session", cwd, workspaceRoot: cwd, repoIds: [], protocolVersion: PROTOCOL_VERSION };
+function hello(authToken: string) {
+  return { authToken, windowId: "test-window", sessionId: "test-session", protocolVersion: PROTOCOL_VERSION };
 }
 
 async function rawClient(path: string) {
@@ -85,18 +85,18 @@ test("控制连接拒绝伪造身份和错误凭证，真实凭证允许调用�
   const server = new DaemonServer({ repoId: w.repoId, startedAt: "test", authToken: token });
   server.onHello = () => {};
   let calls = 0;
-  server.registerHandler("runs.stopAll", () => { calls++; return { stopped: true }; });
+  server.registerHandler("pm.overview", () => { calls++; return { items: [] }; });
   server.markHandlersReady();
   const socketPath = join(w.root, "control.sock");
   await server.listen(socketPath); cleanups.push(() => server.close());
   const client = await rawClient(socketPath);
-  expect((await client.call("hello", hello(w.cwd, "forged"))).ok).toBe(false);
-  expect((await client.call("runs.stopAll", {})).ok).toBe(false);
+  expect((await client.call("hello", hello("forged"))).ok).toBe(false);
+  expect((await client.call("pm.overview", {})).ok).toBe(false);
   expect(calls).toBe(0);
-  const accepted = await client.call("hello", hello(w.cwd, token));
+  const accepted = await client.call("hello", hello(token));
   expect(accepted.ok).toBe(true);
   expect(JSON.stringify(accepted)).not.toContain(token);
-  expect((await client.call("runs.stopAll", {})).ok).toBe(true);
+  expect((await client.call("pm.overview", {})).ok).toBe(true);
   expect(calls).toBe(1);
 });
 
@@ -123,7 +123,7 @@ test("服务端跨汉字字节分包仍保留完整中文答复", async () => {
   const path = join(w.root, "server.sock");
   await server.listen(path); cleanups.push(() => server.close());
   const client = await rawClient(path);
-  await client.call("hello", hello(w.cwd, token));
+  await client.call("hello", hello(token));
   const result = await client.call("runs.get", { runId: "确认" }, "确");
   expect(result.result.message).toBe("确认");
 });
@@ -156,7 +156,7 @@ test("生产客户端携带凭证并正确解码跨包中文响应", async () =>
   });
   await new Promise<void>((resolve) => server.listen(path, resolve));
   cleanups.push(async () => { for (const socket of sockets) socket.destroy(); await new Promise<void>((resolve) => server.close(() => resolve())); });
-  const client = await connectDaemon({ repoDir: w.cwd, dataRoot: w.dataRoot, sdkDir: w.root, hello: hello(w.cwd, "unused") });
+  const client = await connectDaemon({ repoDir: w.cwd, dataRoot: w.dataRoot, sdkDir: w.root, hello: hello("unused") });
   cleanups.push(() => client.close());
   expect(receivedToken).toBe(controlToken(w.dataRoot));
   expect(await client.call("ping")).toEqual({ message: "确认" });
@@ -167,7 +167,7 @@ test("停止回执保留 Shell 不确定状态，重复停止可核验清理且�
   const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
   const shells = new ShellRegistry({ clock });
   const store = new RunStore({ dataRoot: w.dataRoot, repoId: w.repoId, daemonStartedAt: "test" });
-  const parent = await store.create({ kind: "requirement", requirement: "2026-09-10.stop", task: "parent", cwd: w.cwd, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
+  const parent = await store.create({ kind: "requirement", requirement: uuidv7(), task: "parent", cwd: w.cwd, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
   await store.update(parent.id, { state: "running" });
   const { id: _parentId, ...base } = parent;
   const child = await store.create({ ...base, kind: "role", role: "one-company.worker", parentRunId: parent.id });
@@ -175,23 +175,12 @@ test("停止回执保留 Shell 不确定状态，重复停止可核验清理且�
   let clear = false;
   shells.stopHost = async (host) => host.runId === child.id && !clear ? [{ taskId: "uncertain", result: { ok: false, reason: "无法确认进程身份" } }] : [];
   const manager = new RunManager({ dataRoot: w.dataRoot, repoId: w.repoId, runStore: store, shellRegistry: shells,
-    networkGate: new NetworkPauseGate(), relayQueue: new RelayQueue({ dataDir: join(w.dataRoot, "repos", w.repoId), deliver: async () => [] }),
-    roleCatalog: [], runtime: {} as any, selectModel: () => ({ provider: "test", id: "test" }), clock, workspaceRepoIds: [w.repoId], emit: () => {} });
+    networkGate: new NetworkPauseGate(), roleCatalog: [], runtime: {} as any, clock, workspaceRepoIds: [w.repoId], emit: () => {} });
   const concurrent = await Promise.all([manager.stop(parent.id, { reason: "main_agent" }), manager.stop(parent.id, { reason: "main_agent" })]);
   for (const result of concurrent) expect(result).toMatchObject({ state: "stopped", confirmed: false, reason: "子运行尚未确认停止" });
   expect(await manager.stop(child.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false });
-  const blocked = await manager.stopAll();
-  expect(blocked.coverage).toMatchObject({ total: 2, validated: 2, confirmed: 0, unconfirmed: 2, unknown: 0, shellUnconfirmed: 0 });
-  expect(blocked.coverage.notice).toContain("未知或未确认项仍受阻");
-  expect(blocked.results).toEqual(expect.arrayContaining([
-    expect.objectContaining({ runId: parent.id, state: "stopped", confirmed: false }),
-    expect.objectContaining({ runId: child.id, state: "stopped", confirmed: false }),
-  ]));
+  expect(await manager.stop(parent.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false });
   clear = true;
-  const stopped = await manager.stopAll();
-  expect(stopped.coverage).toMatchObject({ total: 2, validated: 2, returned: 2, remaining: 0, confirmed: 2, unconfirmed: 0, unknown: 0, shellUnconfirmed: 0, truncated: false, nextOffset: null });
-  expect(stopped.results).toEqual(expect.arrayContaining([
-    { runId: parent.id, state: "stopped", confirmed: true },
-    { runId: child.id, state: "stopped", confirmed: true },
-  ]));
+  expect(await manager.stop(parent.id, { reason: "main_agent" })).toEqual({ state: "stopped", confirmed: true });
+  expect(await manager.stop(child.id, { reason: "main_agent" })).toEqual({ state: "stopped", confirmed: true });
 });

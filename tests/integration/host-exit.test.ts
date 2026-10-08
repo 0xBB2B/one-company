@@ -276,7 +276,7 @@ async function world() {
   const clock = createClock(); resources.clock = clock;
   const shells = new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }); resources.shells = shells;
   const store = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: "host-exit-history" });
-  const run = await store.create({ kind: "role", standalone: true, role: "one-company.worker", requirement: "2026-09-10.host-exit", task: "测试自建待停止记录",
+  const run = await store.create({ kind: "requirement", requirement: uuidv7(), task: "测试自建待停止记录",
     cwd: fixture.repo.root, readPaths: [], writePaths: [], model: { provider: "unused", id: "unused" }, thinking: "off", mcp: [] });
   await store.update(run.id, { state: "running" });
   const spawned = await shells.spawn({ taskId: uuidv7(), host: { kind: "role", id: run.id, runId: run.id, role: run.role },
@@ -287,8 +287,8 @@ async function world() {
   const handle = await startDaemonForTest(fixture); resources.handle = handle;
   if (!handle.proc.pid) throw new Error("daemon未提供PID");
   resources.daemonIdentity = await captureIdentity(handle.proc.pid, handle.proc.pid);
-  const client = await connectTestClient(fixture.socketPath, { cwd: fixture.repo.root, workspaceRoot: fixture.repo.root, repoIds: [fixture.repoId] }); resources.client = client;
-  await client.call("runs.list");
+  const client = await connectTestClient(fixture.socketPath); resources.client = client;
+  await client.call("pm.overview");
   await until(() => client.call("shells.list"), (result) => (result.tasks as Array<{ taskId: string }>).some((task) => task.taskId === spawned.task.taskId));
   return { fixture, handle, client, task: spawned.task, members };
 }

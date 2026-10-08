@@ -39,7 +39,7 @@ async function world() {
   const providerLog = join(fixture.home.home, "provider-requests.jsonl");
   await writeFile(providerLog, "", { mode: 0o600 });
   const providers = await writeTestModelProviders(fixture.home.home, [{ providerId: "controlled-index", modelId: "controlled-model",
-    roleName: "requirement-agent", replies: [{ type: "text", text: "unexpected-model-call" }] }]);
+    replies: [{ type: "text", text: "unexpected-model-call" }] }]);
   const probePath = join(fixture.home.home, "probe.json");
   let daemon: SpawnedDaemon | undefined;
   cleanups.push(async () => {
@@ -60,7 +60,7 @@ async function world() {
   async function connect() {
     const clock = createClock();
     const client = await connectDaemon({ repoDir: fixture.repo.root, dataRoot: fixture.dataRoot, sdkDir: resolveSdkDir(), clock,
-      hello: { windowId: randomUUID(), sessionId: randomUUID(), pid: process.pid, cwd: fixture.repo.root, workspaceRoot: fixture.repo.root } });
+      hello: { windowId: randomUUID(), sessionId: randomUUID() } });
     const close = () => { client.close(); clock.stopGapWatcher(); };
     cleanups.push(async () => close());
     const query = async (query: Record<string, unknown>) => (await client.call("knowledge.query", { query })).page as KnowledgeFactPackage;
@@ -164,7 +164,7 @@ test("新索引对象装配之后的启动失败必须非零退出并清理socke
   const w = await world();
   const fixture = w.fixture;
   const child = spawnDaemonProcess({ home: fixture.home, repoDir: fixture.repoDir, dataRoot: fixture.dataRoot, idleTimeoutMs: 60_000, captureOutput: true,
-    extraEnv: { ONE_COMPANY_CONNECTIVITY_PROBE_MODULE: new URL("file:///nonexistent-m3-assembly-probe.ts").href } });
+    extraEnv: { ONE_COMPANY_MODEL_PROVIDER_MODULE: new URL("file:///nonexistent-m3-assembly-provider.ts").href } });
   const result = await within(() => child.exited, "装配失败退出", 10_000);
   expect(result.code).toBe(1);
   expect(result.stderr).toContain("daemon 装配失败");

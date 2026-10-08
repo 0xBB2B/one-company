@@ -17,7 +17,6 @@ import type { CoreTool } from "../runtime/core-permissions.ts";
 import { coreToolName, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
 import { AGENT_ROLES } from "../runtime/roles.ts";
 import type { AgentRole } from "../runtime/roles.ts";
-import { openSessionManagerForRun } from "../runtime/session-records.ts";
 import { registerControlledProvider, scriptReplies } from "./helpers/controlled-provider.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
 
@@ -41,23 +40,23 @@ async function world() {
   const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
   const gate = new NetworkPauseGate();
   let serial = 0;
-  async function session(role: AgentRole, replies: ScriptedReply[], options: { resume?: boolean; runId?: string; readRoots?: string[]; maxTurns?: number } = {}) {
+  async function session(role: AgentRole, replies: ScriptedReply[], options: { readRoots?: string[]; maxTurns?: number } = {}) {
     const provider = registerControlledProvider(runtime, { providerId: `agent-${++serial}`, modelId: "test" });
     scriptReplies(provider, replies);
     const calls: string[] = [];
-    const runId = options.runId ?? uuidv7();
+    const runId = uuidv7();
     const handle: AgentSessionHandle = await createAgentRoleSession({
       dataRoot, repoId: "a".repeat(64), runId, cwd,
       definition: { name: role, role, description: "fixture", body: `ROLE-BODY-${role}` },
       context: "TASK-CONTEXT", coreTools: fakeCoreTools(role, calls), readRoots: options.readRoots ?? (role === "qa" ? [] : [cwd]),
       runtime, modelRef: { provider: provider.providerId, id: "test" }, clock, networkGate: gate,
       completion: role === "pm" ? { kind: "idle-only" } : { kind: "on-result", resultTool: coreToolName("result_submit") },
-      resume: options.resume, maxTurns: options.maxTurns,
+      maxTurns: options.maxTurns,
     });
     cleanup.push(async () => { await handle.stop(); handle.dispose(); });
     return { handle, provider, calls, runId };
   }
-  return { root, dataRoot, cwd, outside, session };
+  return { root, dataRoot, cwd, outside, gate, session };
 }
 
 function toolNames(request: Context | undefined): string[] {
@@ -173,7 +172,7 @@ describe("完成与控制", () => {
     expect(s.handle.state()).toBe("running");
   }, 20000);
 
-  test("停止后状态为 stopped，结果以停止拒绝，会话记录可按运行续接", async () => {
+  test("停止后状态为 stopped，结果以停止拒绝", async () => {
     const w = await world();
     const s = await w.session("pm", [{ type: "text", text: "第一轮" }]);
     const idle: unknown[] = []; s.handle.events.on("idle", (event) => idle.push(event));
@@ -182,10 +181,26 @@ describe("完成与控制", () => {
     expect(await s.handle.stop()).toEqual({ stopped: true });
     expect(s.handle.state()).toBe("stopped");
     await expect(s.handle.result()).rejects.toThrow("停止");
-    const opened = openSessionManagerForRun({ dataRoot: w.dataRoot, repoId: "a".repeat(64), runId: s.runId });
-    expect(opened.ok).toBe(true);
-    const resumed = await w.session("pm", [{ type: "text", text: "续接" }], { resume: true, runId: s.runId });
-    expect(resumed.handle.state()).toBe("running");
+  }, 20000);
+
+  test("连接故障当作暂停：状态为 paused、发出 network_paused 并拦住新请求，resume 后放行网络门并原地续接", async () => {
+    const w = await world();
+    const s = await w.session("pm", [{ type: "error", message: "fetch failed: connection reset (network)" }, { type: "text", text: "恢复后继续" }]);
+    const paused: unknown[] = []; s.handle.events.on("network_paused", () => paused.push(true));
+    const idle: unknown[] = []; s.handle.events.on("idle", (event) => idle.push(event));
+    s.handle.prompt("开始");
+    await until(() => s.handle.state() === "paused");
+    expect(paused).toHaveLength(1);
+    expect(w.gate.canProceed(s.runId)).toBe(false);
+    s.handle.prompt("断网期间的消息");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(s.provider.requests).toHaveLength(1);
+    await s.handle.resume();
+    expect(s.handle.state()).toBe("running");
+    expect(w.gate.canProceed(s.runId)).toBe(true);
+    await until(() => idle.length === 1);
+    expect(s.provider.requests).toHaveLength(2);
+    expect(JSON.stringify(s.provider.requests[1]!.messages.at(-1))).toContain("断网期间的消息");
   }, 20000);
 });
 
@@ -223,7 +238,7 @@ describe("对话轮次上限", () => {
     expect(s.handle.state()).toBe("completed");
   }, 20000);
 
-  test("M7-AC27：非正整数的轮次上限直接拒绝创建会话；续接时按已用轮数继续计数", async () => {
+  test("M7-AC27：非正整数的轮次上限直接拒绝创建会话；合法上限内按实际请求计数", async () => {
     const w = await world();
     for (const maxTurns of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) await expect(w.session("worker", [], { maxTurns })).rejects.toThrow("maxTurns");
     const s = await w.session("worker", [call(1), call(2)], { maxTurns: 3 });

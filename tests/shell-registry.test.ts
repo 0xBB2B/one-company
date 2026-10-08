@@ -1092,62 +1092,6 @@ describe("订阅方异常隔离", () => {
   }, LONG_TIMEOUT);
 });
 
-describe("用户裁定", () => {
-  test("对 uncertain 任务裁定为 stopped，stoppedBy=user 且记录决定编号", async () => {
-    let throwOnProbe = false;
-    const registry = makeRegistry({
-      kill: (pid, signal) => {
-        if (throwOnProbe) throw new Error("探测失败");
-        process.kill(pid, signal);
-      },
-    });
-    const taskId = randomUUID();
-    const result = await registry.spawn({
-      taskId,
-      host: HOST_MAIN,
-      command: "sh",
-      args: ["-c", "sleep 30"],
-      mode: "background",
-      runToken: randomUUID(),
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    trackPgid(result.task.pgid);
-
-    throwOnProbe = true;
-    await waitFor(() => registry.get(taskId)?.status === "uncertain", 5_000);
-
-    const decisionId = "decision-42";
-    const adjudicated = registry.markStoppedByUser(taskId, { decisionId });
-    expect(adjudicated.ok).toBe(true);
-    if (!adjudicated.ok) return;
-    expect(adjudicated.task.status).toBe("stopped");
-    expect(adjudicated.task.stoppedBy).toBe("user");
-    expect(adjudicated.task.reason ?? "").toContain(decisionId);
-  }, LONG_TIMEOUT);
-
-  test("对非 uncertain（running）任务裁定被拒绝", async () => {
-    const registry = makeRegistry();
-    const taskId = randomUUID();
-    const result = await registry.spawn({
-      taskId,
-      host: HOST_MAIN,
-      command: "sh",
-      args: ["-c", "sleep 30"],
-      mode: "background",
-      runToken: randomUUID(),
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    trackPgid(result.task.pgid);
-
-    const adjudicated = registry.markStoppedByUser(taskId, { decisionId: "decision-99" });
-    expect(adjudicated.ok).toBe(false);
-
-    await registry.stop(taskId);
-  }, LONG_TIMEOUT);
-});
-
 describe("超时", () => {
   test("timeoutSeconds=1 时注入 30 秒时钟跳变不提前触发，真实约 1 秒后触发并确认清理为 timed_out", async () => {
     const jumpableTimeSource = createHybridTimeSource();

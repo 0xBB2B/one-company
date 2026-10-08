@@ -87,7 +87,7 @@ test("M9-AC2：main 用 agent_manage 查询、停止自己派出的 explore：�
   const w = await world();
   const handlers = new Map<string, (params: Record<string, unknown>, client: unknown) => Promise<Record<string, unknown>>>();
   registerProtocolHandlers({ server: { registerHandler: (method: string, handler: never) => handlers.set(method, handler), markHandlersReady: () => {} } as never,
-    manager: w.manager, relayQueue: {} as never, shellRegistry: {} as never });
+    manager: w.manager, shellRegistry: {} as never });
   const call = (method: string, runId: string, connectionId: string) => handlers.get(method)!({ runId }, { connectionId, sessionId: "session-a" });
   const readme = join(await realpath(w.fixture.repositoryRoot), "README.md");
   const parent = { role: "main" as const, sessionId: "session-a", connectionId: "connection-a", model: { provider: "team-model", id: "test" }, thinking: "off" };

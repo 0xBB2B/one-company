@@ -68,7 +68,7 @@ async function world() {
     await Promise.race([waitForSocketReady(daemonSocketPath(fixture.dataRoot, fixture.repoId)), current.exited.then(() => { throw new Error("daemon_exited_before_ready"); })]);
     const workspace = record.workspace!.path, clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
     client = await connectDaemon({ repoDir: workspace, dataRoot: fixture.dataRoot, sdkDir: resolveSdkDir(), clock, connectOnly: true,
-      hello: { windowId: uuidv7(), sessionId: SessionManager.inMemory(workspace).getSessionId(), pid: process.pid, cwd: workspace, workspaceRoot: workspace } });
+      hello: { windowId: uuidv7(), sessionId: SessionManager.inMemory(workspace).getSessionId() } });
     return client;
   };
   const reply = (providerId: string, ...replies: ScriptedReply[]) => appendFile(files.append, replies.map((item) => `${JSON.stringify({ providerId, reply: item })}\n`).join(""));

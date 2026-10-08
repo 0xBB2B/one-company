@@ -546,7 +546,6 @@ test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实�
     await flushMicrotasks();
     expect(page!.render(100).join("\n")).toContain("不确定");
     expect(page!.render(100).join("\n")).not.toContain("已停止");
-    expect(calls.some((call) => call.method === "shells.markStopped")).toBe(false);
     expect(JSON.stringify(calls)).not.toContain("USER");
   } finally {
     stopped.resolve({ task });

@@ -6,13 +6,12 @@ import { Type } from "typebox";
 import type { Clock } from "../runtime/clock.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import type { RoleCatalogEntry } from "../runtime/roles.ts";
-import type { ListRunOptions, RunKind, RunRecord, StopCause, StopReason } from "../runtime/run-store.ts";
+import type { RunKind, RunRecord, StopCause, StopReason } from "../runtime/run-store.ts";
 import { isTerminalState, RunStore } from "../runtime/run-store.ts";
 import type { Host, ShellRegistry, TaskRecord } from "../runtime/shell-registry.ts";
 import { repositoryDatabase, UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
 import { PM_MESSAGE_MAX_CHARS } from "../runtime/protocol.ts";
-import { assertRecordRequirementId, checkedMetadataPage, metadataPage, withReadOnlyDatabase } from "../runtime/run-metadata.ts";
-import type { MetadataPageOptions } from "../runtime/run-metadata.ts";
+import { withReadOnlyDatabase } from "../runtime/run-metadata.ts";
 import { createAgentRoleSession } from "./agent-session.ts";
 import type { AgentSessionHandle, AgentSessionMcpOptions } from "./agent-session.ts";
 import { detectMcpAdapter } from "../runtime/mcp.ts";
@@ -64,17 +63,15 @@ import type { AgentRole } from "../runtime/roles.ts";
 import { isAgentRole } from "../runtime/roles.ts";
 import { activeCheckRoundIn, assertWritersQuiescentIn } from "../runtime/check-round.ts";
 import type { ProjectIndexHost } from "./project-index-host.ts";
-import type { RelayQueue } from "./relay-queue.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
 import { agentConventionsContext } from "../runtime/project-conventions.ts";
 
 export interface SelectedModel { provider: string; id: string }
-export type ModelSelector = (input: { roleName: string; taskId?: string }) => SelectedModel;
 export type EmitFn = (event: string, data: Record<string, unknown>, filter?: (windowId: string) => boolean) => void;
 export interface RunManagerOptions {
   repositoryRoot: string; dataRoot: string; repoId: string; runStore: RunStore; shellRegistry: ShellRegistry;
-  networkGate: NetworkPauseGate; relayQueue: RelayQueue; roleCatalog: RoleCatalogEntry[];
-  runtime: ModelRuntime; selectModel: ModelSelector; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
+  networkGate: NetworkPauseGate; roleCatalog: RoleCatalogEntry[];
+  runtime: ModelRuntime; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
   /** 联网检索的网络依赖；缺省为 Node 内置实现，测试可注入。 */
   web?: { deps: WebDeps; getPage: PageGetter };
   /** 宿主 agentDir：explore 定义声明 MCP 服务时，从这里的 npm/node_modules/pi-mcp-adapter 与 mcp.json 装载。 */
@@ -189,15 +186,13 @@ export type RunMetadata = Pick<RunRecord, "id" | "kind" | "requirement" | "paren
 function runMetadata(run: RunRecord, logOf: (runId: string) => string): RunMetadata {
   const timestamp = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
   if (!run || !UUID_V7_PATTERN.test(run.id) || !["requirement", "role"].includes(run.kind)
-    || !["queued", "running", "pausing", "paused", "paused_network", "waiting_answer", "completed", "failed", "stopped", "interrupted"].includes(run.state)
+    || !UUID_V7_PATTERN.test(run.requirement) || !["queued", "running", "pausing", "paused", "completed", "failed", "stopped", "interrupted"].includes(run.state)
     || !timestamp(run.startedAt) || !timestamp(run.updatedAt) || run.endedAt !== undefined && !timestamp(run.endedAt)
-    || !Number.isSafeInteger(run.turns) || run.turns < 0 || run.parentRunId !== undefined && (!UUID_V7_PATTERN.test(run.parentRunId) || run.parentRunId === run.id || run.kind !== "role")) throw protocolError("legacy_metadata_unavailable", `运行记录 ${String(run?.id)} 的类型、状态、时间或轮次字段不合规`);
-  if (!UUID_V7_PATTERN.test(run.requirement)) assertRecordRequirementId(run.requirement);
+    || !Number.isSafeInteger(run.turns) || run.turns < 0 || run.parentRunId !== undefined && (!UUID_V7_PATTERN.test(run.parentRunId) || run.parentRunId === run.id || run.kind !== "role")) throw protocolError("run_metadata_invalid", `运行记录 ${String(run?.id)} 的类型、需求编号、状态、时间或轮次字段不合规`);
   return { id: run.id, kind: run.kind, requirement: run.requirement, parentRunId: run.parentRunId,
     state: run.state, startedAt: run.startedAt, updatedAt: run.updatedAt, endedAt: run.endedAt, turns: run.turns,
     ...(run.usage ? { usage: { ...run.usage } } : {}), ...(run.pausedMs ? { pausedMs: run.pausedMs } : {}), ...(run.pausedAt ? { pausedAt: run.pausedAt } : {}),
-    // 旧流程的运行记录可能在原因里存了旧目标正文，只有新需求（UUIDv7 编号）的运行才照实返回原因
-    ...(run.stateReason ? { stateReason: UUID_V7_PATTERN.test(run.requirement) ? run.stateReason : "旧流程运行，原因不返回" } : {}),
+    ...(run.stateReason ? { stateReason: run.stateReason } : {}),
     ...(run.stopCause ? { stopCause: { ...run.stopCause } } : {}), log: logOf(run.id) };
 }
 /** 续接前核对原绑定的角色定义与 skills 文件未变；读不到也视为已变。 */
@@ -221,7 +216,6 @@ const STOP_REASON_TEXT: Record<StopReason, string> = {
   lease_renewal_failed: "PM 租约续期失败",
   config_changed: "角色定义或技能在暂停期间被修改，不能按原定义续接",
   replanned: "计划已修改，该任务被重新规划",
-  stop_all: "用户停止了全部运行",
 };
 function stopReasonText(cause: StopCause): string {
   return cause.code ? `${STOP_REASON_TEXT[cause.reason]}（${cause.code}）` : STOP_REASON_TEXT[cause.reason];
@@ -271,21 +265,19 @@ const PROTOCOL_NEXT: Record<string, string> = {
   thinking_unsupported: "改用该模型支持的思考等级，或请用户改选模型",
   skill_unavailable: "指定的技能不可用：请用户检查技能安装，或调整角色定义",
   stop_unconfirmed: "稍后重试停止，并核对进程是否已结束",
-  trusted_stop_required: "改用安全停止并核对真实进程",
 };
 function protocolError(code: string, message: string, next?: string): Error & { code: string } {
   return Object.assign(new Error(message), { code, advice: { why: message, next: next ?? PROTOCOL_NEXT[code] ?? "按原因处理后重试；仍然失败就把原因告诉用户" } });
 }
 const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 
-/** 旧运行只保留元数据、暂停与安全停止；不存在派工、队列执行和恢复器。 */
+/** 派出与管理 PM、子代理和检索的会话，维护运行记录，暂停、续接与安全停止运行及其 Shell。 */
 export class RunManager {
   private readonly repoId: string;
   private readonly database: string;
   private readonly unconfirmedAdoptions = new Set<string>();
   private readonly runStore: RunStore;
   private readonly shellRegistry: ShellRegistry;
-  private readonly relayQueue: RelayQueue;
   private readonly emit: EmitFn;
   private readonly options: RunManagerOptions;
   private readonly sessions = new Map<string, SessionEntry>();
@@ -300,7 +292,6 @@ export class RunManager {
     this.database = repositoryDatabase(options.dataRoot, options.repoId);
     this.runStore = options.runStore;
     this.shellRegistry = options.shellRegistry;
-    this.relayQueue = options.relayQueue;
     this.emit = options.emit;
   }
   markStarted(): void { if (!this.started) { this.started = true; this.resolveStarted(); } }
@@ -352,7 +343,7 @@ export class RunManager {
     // 工具在会话创建前就会核验一次；登记前视为启动中，登记后按真实会话状态判断；任何时候都要求租约仍属于本运行
     const alive = () => {
       const current = this.sessions.get(run.id);
-      const sessionAlive = current === undefined ? !registered : ["running", "paused", "paused_network"].includes(current.handle.state());
+      const sessionAlive = current === undefined ? !registered : ["running", "paused"].includes(current.handle.state());
       return sessionAlive && leaseCurrent();
     };
     const checkPhaseActive = () => withDatabase(this.database, (db) => activeCheckRoundIn(db, this.repoId, input.requirementId) !== null);
@@ -429,6 +420,7 @@ export class RunManager {
     registered = true;
     handle.events.on("turn", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     this.trackUsage(run.id, handle);
+    this.trackNetworkPause(run.id, handle);
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishPm(run.id, "failed", reason); });
     let lastText = "";
     handle.events.on("transcript_message", (event: { type: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } }) => {
@@ -439,8 +431,6 @@ export class RunManager {
     handle.events.on("turn_counted", () => { try { clearStall(this.attentionRef, input.requirementId); } catch { /* 下次停下时整体覆盖 */ } });
     handle.events.on("idle", () => { void this.pmStopped(run.id, lastText).catch(() => {}); });
     await this.runStore.update(run.id, { state: "running" });
-    const running = await this.runStore.get(run.id);
-    if (running.ok) this.emitRun(running.run);
     handle.prompt("开始受限接手。");
     return { runId: run.id, fence: lease.fence };
   }
@@ -537,6 +527,7 @@ export class RunManager {
     registered = true;
     handle.events.on("turn_counted", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     this.trackUsage(run.id, handle);
+    this.trackNetworkPause(run.id, handle);
     handle.events.on("completed", () => { void this.finishSubagent(run.id, "completed"); });
     handle.events.on("turn_limit_reached", () => { void this.finishSubagent(run.id, "turn_limit_reached"); });
     handle.events.on("ended_without_result", () => { void this.finishSubagent(run.id, "ended_without_result"); });
@@ -630,7 +621,7 @@ export class RunManager {
         : `原因：${outcomeReason(outcome, failure)}。`,
       `建议：${next[task.status] ?? "请核对实际证据后再整合结果。"}`,
       `运行日志：${this.runLog(runId)}（证据不够判断时，读这份会话记录查看子代理的思考与工具调用）`];
-    if (parent?.pm && ["running", "paused", "paused_network"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
+    if (parent?.pm && ["running", "paused"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
   }
 
   /** 原型运行结束：交出新版本即等用户确认，否则把实际结局报给 PM，由 PM 决定是否再派。 */
@@ -650,7 +641,7 @@ export class RunManager {
         `原因：${outcomeReason(outcome, failure)}。`, `建议：核对原因后用 agent_manage dispatch taskId=${taskId} 带 prototype 再派一次。`];
     lines.push(`运行日志：${this.runLog(runId)}（证据不够判断时，读这份会话记录查看子代理的思考与工具调用）`);
     const parent = this.sessions.get(parentRunId);
-    if (parent?.pm && ["running", "paused", "paused_network"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
+    if (parent?.pm && ["running", "paused"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
     await this.refreshOverview(parentRunId).catch(() => {});
   }
 
@@ -720,6 +711,7 @@ export class RunManager {
       this.sessions.set(runId, { kind: "role", handle, explore: { parentRunId: parent.parentRunId, dispose: () => result.dispose(), result: capture } });
       handle.events.on("turn_counted", () => { void this.runStore.recordTurn(runId).catch(() => {}); });
       this.trackUsage(runId, handle);
+      this.trackNetworkPause(runId, handle);
       await this.runStore.update(runId, { state: "running" });
     } else {
       const request = input.parent as Extract<ExploreParentRequest, { role: "main" }>;
@@ -832,7 +824,7 @@ export class RunManager {
       await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcomeReason(outcome, failure) });
     }
     const parent = this.sessions.get(parentRunId);
-    if (outcome !== "stopped" && parent?.pm && ["running", "paused", "paused_network"].includes(parent.handle.state())) {
+    if (outcome !== "stopped" && parent?.pm && ["running", "paused"].includes(parent.handle.state())) {
       parent.handle.prompt(JSON.stringify(exploreReport(runId, outcome, result, entry.handle.turnsUsed(), this.runLog(runId), failure)));
     }
   }
@@ -905,7 +897,6 @@ export class RunManager {
     await entry.handle.resume();
     await this.runStore.update(runId, { state: "running" });
     const updated = await this.runStore.recordResume(runId, new Date().toISOString());
-    this.emitRun(updated);
     // 暂停连带子代理，恢复同样连带；子代理已结束或本就在运行的跳过
     const children = (await this.runStore.list({ requirement: updated.requirement, limit: Number.MAX_SAFE_INTEGER })).items
       .filter((child) => child.parentRunId === runId && this.sessions.get(child.id)?.handle.state() === "paused");
@@ -918,8 +909,6 @@ export class RunManager {
     }
     return { state: updated.state };
   }
-  /** 网络探测恢复只更新网络自身状态，不恢复任何旧运行。 */
-  async resumeNetworkPaused(_providerId: string): Promise<void> {}
   private metadataRows(): RunMetadata[] {
     try {
       return withReadOnlyDatabase(this.database, (db) => {
@@ -935,8 +924,8 @@ export class RunManager {
         return items.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || a.id.localeCompare(b.id));
       });
     } catch (error) {
-      throw protocolError("legacy_metadata_unavailable", `运行记录读取失败：${(error as Error).message}；记录已原样保留`,
-        "数据库忙时稍后重试；记录不合规时停止依赖运行列表，把这段原因告诉用户");
+      throw protocolError("run_metadata_invalid", `运行记录读取失败：${(error as Error).message}；记录已原样保留`,
+        "数据库忙时稍后重试；记录不合规时停止依赖运行状态，把这段原因告诉用户");
     }
   }
   async status(runId: string): Promise<{ ok: true; run: RunMetadata } | { ok: false; reason: string }> {
@@ -944,19 +933,11 @@ export class RunManager {
     const run = this.metadataRows().find((run) => run.id === runId);
     return run ? { ok: true, run } : { ok: false, reason: "not_found" };
   }
-  async list(options: ListRunOptions & MetadataPageOptions = { limit: 100 }) {
-    checkedMetadataPage(options);
-    if (options.kind !== undefined && !["requirement", "role"].includes(options.kind)) throw protocolError("invalid_params", "运行查询参数无效");
-    if (options.requirement !== undefined && !UUID_V7_PATTERN.test(options.requirement)) assertRecordRequirementId(options.requirement);
-    if (options.states !== undefined && (!Array.isArray(options.states) || options.states.length > 10 || options.states.some((state) => !["queued", "running", "pausing", "paused", "paused_network", "waiting_answer", "completed", "failed", "stopped", "interrupted"].includes(state)))) throw protocolError("invalid_params", "运行查询状态无效");
-    const rows = this.metadataRows().filter((run) => (options.kind === undefined || run.kind === options.kind) && (options.requirement === undefined || run.requirement === options.requirement) && (options.states === undefined || options.states.includes(run.state)));
-    return { ...metadataPage(rows, options, 0, true), total: rows.length, runningCount: rows.filter((run) => ["running", "pausing", "waiting_answer"].includes(run.state)).length };
-  }
   private async childrenOf(run: RunRecord): Promise<RunRecord[]> {
     const page = await this.runStore.list({ kind: "role", requirement: run.requirement, limit: Number.MAX_SAFE_INTEGER });
-    // 旧层级只有需求父运行和role子运行；畸形环不允许递归调用。
+    // 层级只有需求父运行和 role 子运行；畸形环不允许递归调用。
     const children = page.items.filter((candidate) => candidate.parentRunId === run.id);
-    if ((children.length > 0 && run.kind !== "requirement") || children.some((child) => child.id === run.id || child.kind !== "role")) throw protocolError("legacy_metadata_unavailable", "运行关联无效，未知记录已保全待核对");
+    if ((children.length > 0 && run.kind !== "requirement") || children.some((child) => child.id === run.id || child.kind !== "role")) throw protocolError("run_metadata_invalid", "运行关联无效，未知记录已保全待核对");
     return children;
   }
   private readonly dispatchingPm = new Set<string>();
@@ -1025,8 +1006,8 @@ export class RunManager {
     if (!overview) return;
     const pm = await this.runStore.get(pmRunId);
     if (pm.ok && pm.run.state === "running") {
-      if (overview.status === "waiting" && !pm.run.pausedAt) this.emitRun(await this.runStore.recordPause(pmRunId, new Date().toISOString()));
-      if (overview.status !== "waiting" && pm.run.pausedAt) this.emitRun(await this.runStore.recordResume(pmRunId, new Date().toISOString()));
+      if (overview.status === "waiting" && !pm.run.pausedAt) await this.runStore.recordPause(pmRunId, new Date().toISOString());
+      if (overview.status !== "waiting" && pm.run.pausedAt) await this.runStore.recordResume(pmRunId, new Date().toISOString());
     }
     const { elapsedMs: _elapsed, ...stable } = overview;
     const fingerprint = JSON.stringify(stable);
@@ -1059,7 +1040,7 @@ export class RunManager {
       if (state === "running") await this.pause(pmRunId);
       entry.pm.haltPaused = true;
       const children = (await this.runStore.list({ requirement: entry.pm.lease.requirementId, limit: Number.MAX_SAFE_INTEGER })).items
-        .filter((run) => run.parentRunId === pmRunId && ["paused", "paused_network"].includes(this.sessions.get(run.id)?.handle.state() ?? ""))
+        .filter((run) => run.parentRunId === pmRunId && this.sessions.get(run.id)?.handle.state() === "paused")
         .map((run) => run.id);
       entry.pm.halt = { children, plan: this.terminationPlanKey(entry.pm.lease.requirementId) };
     } else if (!halted && entry.pm.haltPaused && state === "paused") {
@@ -1088,11 +1069,11 @@ export class RunManager {
         }
         return null;
       };
-      // 用户先暂停了 PM 或网络暂停时子代理已停着，同样列入名单，计划确认后一起结算
+      // 用户先暂停了 PM 或断网暂停时子代理已停着，同样列入名单，计划确认后一起结算
       const children = (await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER })).items
-        .filter((run) => run.parentRunId === pmRunId && ["running", "waiting_answer", "pausing", "paused", "paused_network"].includes(run.state));
+        .filter((run) => run.parentRunId === pmRunId && ["running", "pausing", "paused"].includes(run.state));
       entry.pm.hold = new Map(children.map((run) => [run.id, owner(run.id)]));
-      for (const child of children) if (["running", "waiting_answer"].includes(child.state)) await this.pause(child.id).catch(() => {});
+      for (const child of children) if (child.state === "running") await this.pause(child.id).catch(() => {});
     } else if (!pending && entry.pm.hold) {
       const hold = entry.pm.hold;
       entry.pm.hold = null;
@@ -1186,18 +1167,31 @@ export class RunManager {
   /** 模型每次回复的用量与每次工具结束都累加进本运行记录；PM 与子代理的汇总在读取时按父运行相加。 */
   private trackUsage(runId: string, handle: AgentSessionHandle): void {
     const record = (delta: Parameters<RunStore["recordUsage"]>[1]) => {
-      void this.runStore.recordUsage(runId, delta).then((run) => this.emitRun(run)).catch(() => {});
+      void this.runStore.recordUsage(runId, delta).catch(() => {});
     };
     handle.events.on("usage", (usage: { input: number; output: number; cacheRead: number; cacheWrite: number }) => record(usage));
     handle.events.on("tool_end", () => record({ toolUses: 1 }));
   }
-  private emitRun(run: RunRecord): void { this.emit("runs.changed", { run: runMetadata(run, this.runLog) }); }
+  /** 断网按用户暂停处理：记录写成 paused 并开始计暂停时间，PM 的子代理连带暂停，之后由用户按 p 原地续接。 */
+  private trackNetworkPause(runId: string, handle: AgentSessionHandle): void {
+    handle.events.on("network_paused", () => { void this.networkPaused(runId).catch(() => {}); });
+  }
+  private async networkPaused(runId: string): Promise<void> {
+    const entry = this.sessions.get(runId);
+    const result = await this.runStore.get(runId);
+    if (!entry || !result.ok || result.run.state !== "running") return;
+    await this.runStore.update(runId, { state: "paused" });
+    await this.runStore.recordPause(runId, new Date().toISOString());
+    if (entry.pm) for (const child of await this.childrenOf(result.run)) if (child.state === "running") await this.pause(child.id).catch(() => {});
+    const pmRunId = entry.pm ? runId : entry.subagent?.parentRunId ?? entry.explore?.parentRunId;
+    if (pmRunId) await this.refreshOverview(pmRunId);
+  }
   private readonly runLog = (runId: string): string => sessionFilePath({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId });
 
   async messagePm(input: { requirementId: string; text: string }): Promise<{ delivered: "now" | "after_resume" }> {
     if (input.text.length === 0 || input.text.length > PM_MESSAGE_MAX_CHARS) throw protocolError("invalid_params", `消息长度须在 1 到 ${PM_MESSAGE_MAX_CHARS} 个字符之间`, "缩短后重发");
     const entry = [...this.sessions.values()].find((candidate) => candidate.pm?.lease.requirementId === input.requirementId
-      && ["running", "paused", "paused_network"].includes(candidate.handle.state()));
+      && ["running", "paused"].includes(candidate.handle.state()));
     if (!entry) throw protocolError("pm_not_running", "该需求没有运行中或暂停中的 PM", "需要 PM 处理时先派出 PM；需求内容的改动走修改草稿并请用户批准");
     clearPlanRejections(this.attentionRef, input.requirementId);
     entry.handle.prompt(`${PM_MESSAGE_LABEL}\n\n${input.text}`);
@@ -1213,12 +1207,12 @@ export class RunManager {
       for (const child of await this.childrenOf(run)) if (!await this.verifyRunShells(child, false)) confirmed = false;
       return { state: run.state, confirmed, ...(!confirmed ? { reason: "进程结束尚未核对" } : {}) };
     }
-    if (!["running", "waiting_answer", "pausing", "paused", "paused_network"].includes(run.state)) return { state: run.state, confirmed: false, reason: "运行状态不可暂停" };
+    if (!["running", "pausing", "paused"].includes(run.state)) return { state: run.state, confirmed: false, reason: "运行状态不可暂停" };
     // 没有内存会话不能证明进程已停；已有 Shell 仍由安全停止入口核验。
     const entry = this.sessions.get(runId);
     if (!entry) return { state: run.state, confirmed: false, reason: "没有可确认暂停的会话，请使用安全停止并核对进程" };
-    if (run.state === "paused" || run.state === "paused_network") return { state: run.state, confirmed: true };
-    if (run.state === "running" || run.state === "waiting_answer") await this.runStore.update(runId, { state: "pausing" });
+    if (run.state === "paused") return { state: run.state, confirmed: true };
+    if (run.state === "running") await this.runStore.update(runId, { state: "pausing" });
     const children = (await this.childrenOf(run)).filter((child) => !isTerminalState(child.state) && child.state !== "interrupted" && child.state !== "queued");
     const childResults = await Promise.all(children.map((child) => this.pause(child.id)));
     const outcome = await entry.handle.pause();
@@ -1227,8 +1221,6 @@ export class RunManager {
       await this.runStore.update(runId, { state: "paused" });
       await this.runStore.recordPause(runId, new Date().toISOString());
     }
-    const updated = await this.runStore.get(runId);
-    if (updated.ok) this.emitRun(updated.run);
     const pending = [...(!outcome.confirmed ? [`会话尚未确认暂停${outcome.reason ? `：${outcome.reason}` : ""}`] : []),
       ...childResults.flatMap((child, index) => child.confirmed ? [] : [`子运行 ${children[index]!.id} 尚未确认暂停${child.reason ? `：${child.reason}` : ""}`])];
     return { state: confirmed ? "paused" : "pausing", confirmed, ...(!confirmed ? { reason: pending.join("；") } : {}) };
@@ -1238,16 +1230,14 @@ export class RunManager {
     const result = await this.runStore.get(runId);
     if (!result.ok) throw protocolError("not_found", "运行不存在");
     let run = result.run;
-    let requested = false;
     if (!isTerminalState(run.state)) {
-      try { run = await this.runStore.update(runId, { state: "stopped", stopCause: cause }); requested = true; }
+      try { run = await this.runStore.update(runId, { state: "stopped", stopCause: cause }); }
       catch (error) {
         const latest = await this.runStore.get(runId);
         if (!latest.ok || !isTerminalState(latest.run.state)) throw error;
         run = latest.run;
       }
     }
-    if (requested) this.emitRun(run);
     const entry = this.sessions.get(runId);
     const [sessionStop, shellStop, childrenStop] = await Promise.allSettled([
       entry ? entry.handle.stop() : Promise.resolve({ stopped: true }),
@@ -1269,17 +1259,7 @@ export class RunManager {
     const reason = confirmed ? undefined : reasons.join("；");
     const stopText = run.stopCause ? stopReasonText(run.stopCause) : "运行被停止";
     if (run.state === "stopped") await this.runStore.update(runId, { stateReason: reason ? `${stopText}；${reason}` : stopText });
-    const updated = await this.runStore.get(runId);
-    if (updated.ok) this.emitRun(updated.run);
-    if (requested) await this.relayQueue.notify({ requirement: run.requirement, repoId: this.repoId, runId, kind: "stopped", message: confirmed ? `运行 ${runId} 已确认停止` : `运行 ${runId} 已接受停止请求；${reason}` }).catch(() => {});
     return { state: run.state, confirmed, ...(reason ? { reason } : {}) };
-  }
-  async pauseAll(): Promise<{ results: Array<{ runId: string; state: string; confirmed: boolean; reason?: string }> }> {
-    const page = await this.runStore.list({ limit: Number.MAX_SAFE_INTEGER });
-    const topLevel = page.items.filter((run) => !isTerminalState(run.state) && run.state !== "interrupted" && (run.kind === "requirement" || run.parentRunId === undefined));
-    const results = [];
-    for (const run of topLevel) results.push({ runId: run.id, ...(await this.pause(run.id)) });
-    return { results };
   }
   private async runsForStop(): Promise<{ runs: RunRecord[]; unknown: number }> {
     const rows = withReadOnlyDatabase(this.database, (db) => db.prepare("SELECT id, record_key FROM records WHERE namespace = 'runs'").all());
@@ -1291,32 +1271,8 @@ export class RunManager {
     }
     return { runs, unknown };
   }
-  async stopAll() {
-    let unknown = 0;
-    const results: Array<{ runId: string; state: string; confirmed: boolean; reason?: string }> = [];
-    try {
-      const page = await this.runsForStop(); unknown += page.unknown;
-      // 展示分页及旧终态不决定停止范围；一个坏记录不遮蔽其他可定位运行。
-      for (const run of page.runs) {
-        try { runMetadata(run, this.runLog); results.push({ runId: run.id, ...(await this.stop(run.id, { reason: "stop_all" })) }); }
-        catch { unknown++; await this.verifyRunShells(run, true); }
-      }
-    } catch { unknown++; }
-    let shellUnconfirmed = 0;
-    const hosts = new Map<string, Host>();
-    for (const task of this.shellRegistry.list()) hosts.set(JSON.stringify(task.host), task.host);
-    for (const host of hosts.values()) {
-      try { shellUnconfirmed += (await this.shellRegistry.stopHost(host)).filter(({ result }) => !result.ok || !this.verifiedEnd(result.task)).length; }
-      catch { shellUnconfirmed++; }
-    }
-    try { unknown += this.persistedShells().filter((row) => { const task = this.shellRegistry.get(row.taskId as string); return !task || !this.verifiedEnd(task) || task.pid !== row.pid || task.startedAt !== row.startedAt; }).length; }
-    catch { unknown++; }
-    const page = metadataPage(results, { limit: 100 }, unknown);
-    return { results: page.items, coverage: { ...page.coverage, confirmed: results.filter((item) => item.confirmed).length,
-      unconfirmed: results.filter((item) => !item.confirmed).length, shellUnconfirmed, notice: "停止已遍历全部可读运行及已知Shell；未知或未确认项仍受阻，展示可能分页" } };
-  }
   private verifiedEnd(task: TaskRecord): boolean {
-    return ["exited", "stopped", "timed_out"].includes(task.status) && task.activity === "ended" && task.stoppedBy !== "user" && task.identityVerified && task.descendantsScanned;
+    return ["exited", "stopped", "timed_out"].includes(task.status) && task.activity === "ended" && task.identityVerified && task.descendantsScanned;
   }
   private persistedShells() {
     return withReadOnlyDatabase(this.database, (db) => db.prepare("SELECT record_key, json_extract(data, '$.taskId') AS taskId, json_extract(data, '$.token') AS token, json_extract(data, '$.pid') AS pid, json_extract(data, '$.pgid') AS pgid, json_extract(data, '$.startedAt') AS startedAt, json_extract(data, '$.host.id') AS hostId, json_extract(data, '$.host.runId') AS runId FROM records WHERE namespace = 'shells'").all().map((row) => {
@@ -1389,17 +1345,17 @@ export class RunManager {
   }
 }
 
-export function registerProtocolHandlers(input: { server: DaemonServer; manager: RunManager; relayQueue: RelayQueue; shellRegistry: ShellRegistry }): void {
+export function registerProtocolHandlers(input: { server: DaemonServer; manager: RunManager; shellRegistry: ShellRegistry }): void {
   const { server, manager, shellRegistry } = input;
   const register = (method: string, handler: (params: Record<string, unknown>, client: ClientInfo) => Promise<Record<string, unknown>>): void => {
     server.registerHandler(method, async (params, client) => {
       await manager.awaitStarted();
       try { return await handler(params, client); }
       catch (error) {
-        if (error instanceof Error && ["trusted_stop_required", "stop_unconfirmed", "legacy_metadata_unavailable", "not_found", "invalid_params",
+        if (error instanceof Error && ["stop_unconfirmed", "run_metadata_invalid", "not_found", "invalid_params",
           "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "agent_unavailable", "thinking_unsupported", "skill_unavailable", "config_changed", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
           "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed", "requirement_halted"].includes((error as { code?: string }).code ?? "") || adviceOf(error)) throw error;
-        throw protocolError("legacy_metadata_unavailable", "旧运行状态不可读或操作尚未确认，未知记录已保全待核对", "用 status 或 list 重新查看运行状态；反复出现就把这段原因告诉用户");
+        throw protocolError("run_metadata_invalid", "运行状态不可读或操作尚未确认，未知记录已保全待核对", "用 status 重新查看运行状态；反复出现就把这段原因告诉用户");
       }
     });
   };
@@ -1464,7 +1420,6 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       throw protocolError("invalid_params", "workflow_manage 参数无效");
     return { result: await manager.workflowManage(params.requirementId, params.request as Record<string, unknown>) };
   });
-  register("runs.list", async (params) => manager.list({ kind: params.kind as RunKind | undefined, offset: params.offset as number | undefined, limit: params.limit === undefined ? 100 : params.limit as number }));
   register("runs.get", async (params, client) => {
     const main = manager.mainExploreStatus(params.runId as string, client.connectionId);
     if (main) return { run: main };
@@ -1474,8 +1429,6 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   });
   register("runs.pause", async (params, client) => { refuseMainExplore(params, client); return manager.pause(params.runId as string); });
   register("runs.stop", async (params, client) => await manager.stopMainExplore(params.runId as string, client.connectionId) ?? manager.stop(params.runId as string, { reason: "main_agent" }));
-  register("runs.pauseAll", async () => manager.pauseAll());
-  register("runs.stopAll", async () => manager.stopAll());
   register("shells.list", async () => ({ tasks: shellRegistry.list().map(shellMetadata) }));
   register("shells.stop", async (params) => {
     const taskId = params.taskId as string;
@@ -1484,9 +1437,6 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     if (task.pid !== params.expectedPid || String(task.startedAt) !== params.expectedStartedAt) return { status: "mismatch", reason: "任务身份已变化" };
     const result = await shellRegistry.stop(taskId);
     return result.ok ? { status: result.task.status } : { status: "error", reason: "Shell 进程尚未确认停止" };
-  });
-  register("shells.markStopped", async () => {
-    throw protocolError("trusted_stop_required", "缺少可信的人工停止裁定入口；USER 字符串不能证明进程已停止，请使用安全停止并核对真实进程");
   });
   server.onHello = async (client) => { manager.connectionOpened(client.connectionId); };
   server.markHandlersReady();

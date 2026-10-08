@@ -51,7 +51,7 @@ async function main(): Promise<void> {
         workspaceRoot: input.cwd,
         dataRoot: config.dataRoot,
         sdkDir: config.sdkDir,
-        hello: { windowId: input.windowId, pid: process.pid, sessionId: input.sessionId, cwd: input.cwd, workspaceRoot: input.cwd },
+        hello: { windowId: input.windowId, sessionId: input.sessionId },
       });
       connected = handle.all().length > 0 && handle.all().every((c) => c.state().status === "connected");
       return handle;

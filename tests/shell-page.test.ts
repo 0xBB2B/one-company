@@ -606,9 +606,8 @@ describe("ShellPage：不确定任务只能请求实际停止，不能人工裁�
     return { registry, taskId };
   }
 
-  test("本地身份核验失败仍为不确定，不调用人工标记也不生成 USER", async () => {
+  test("本地身份核验失败仍为不确定，不生成 USER", async () => {
     const { registry, taskId } = await makeUncertainLocalTask();
-    const mark = vi.spyOn(registry, "markStoppedByUser");
     const stop = vi.spyOn(registry, "stop");
     const page = new ShellPage(basePageOptions({ registry }));
     await page.refresh();
@@ -621,15 +620,13 @@ describe("ShellPage：不确定任务只能请求实际停止，不能人工裁�
     await waitFor(() => stop.mock.results.length === 1, 1_000);
     await stop.mock.results[0]!.value;
     await flushMicrotasks();
-    expect(mark).not.toHaveBeenCalled();
     expect(registry.get(taskId)?.status).toBe("uncertain");
     expect(JSON.stringify(registry.get(taskId))).not.toContain("USER-");
     expect(page.render(80).join("\n")).not.toContain("已停止");
   }, 10_000);
 
-  test("不确定任务默认取消及 Esc 不发停止、不裁定，原状态与原因保留", async () => {
+  test("不确定任务默认取消及 Esc 不发停止，原状态与原因保留", async () => {
     const { registry, taskId } = await makeUncertainLocalTask();
-    const mark = vi.spyOn(registry, "markStoppedByUser");
     const stop = vi.spyOn(registry, "stop");
     const before = registry.get(taskId);
     const page = new ShellPage(basePageOptions({ registry }));
@@ -640,16 +637,14 @@ describe("ShellPage：不确定任务只能请求实际停止，不能人工裁�
     page.handleInput(KEY.escape);
     await flushMicrotasks();
     expect(stop).not.toHaveBeenCalled();
-    expect(mark).not.toHaveBeenCalled();
     expect(registry.get(taskId)).toEqual(before);
     expect(page.render(80).join("\n")).toContain("不确定");
   }, 10_000);
 
-  test("本地实际停止失败显示原因，无人工裁定及未处理拒绝", async () => {
+  test("本地实际停止失败显示原因，无未处理拒绝", async () => {
     const rejection = countUnhandledRejections();
     try {
       const { registry, taskId } = await makeUncertainLocalTask();
-      const mark = vi.spyOn(registry, "markStoppedByUser");
       const stop = vi.spyOn(registry, "stop").mockResolvedValue({ ok: false, reason: "实际停止未确认（测试注入）" });
       const page = new ShellPage(basePageOptions({ registry }));
       await page.refresh();
@@ -658,7 +653,6 @@ describe("ShellPage：不确定任务只能请求实际停止，不能人工裁�
       page.handleInput(KEY.enter);
       await flushMicrotasks();
       expect(stop).toHaveBeenCalledWith(taskId);
-      expect(mark).not.toHaveBeenCalled();
       expect(registry.get(taskId)?.status).toBe("uncertain");
       expect(page.render(80).join("\n")).toContain("实际停止未确认");
       expect(rejection.count()).toBe(0);
@@ -713,7 +707,6 @@ describe("ShellPage：不确定任务只能请求实际停止，不能人工裁�
     await flushMicrotasks();
     expect(page.render(80).join("\n")).toContain("停止未确认");
     expect(page.render(80).join("\n")).not.toContain("已停止");
-    expect(repo.calls.some((c) => c.method === "shells.markStopped")).toBe(false);
     expect(JSON.stringify(repo.calls)).not.toContain("USER");
   });
 });
@@ -1288,17 +1281,6 @@ describe("ShellPage：本地结束证明和停止回执严格核对", () => {
       expect(text, label).toContain("停止未确认");
       expect(text, label).not.toContain("已停止");
     }
-  });
-
-  test("USER 终态即使扫描和身份均为 true 也始终未核实", async () => {
-    const task = localTask({ status: "stopped", activity: "ended", descendantsScanned: true, identityVerified: true, stoppedBy: "user" });
-    const registry = new ShellRegistry({ clock: createClock() });
-    registry.list = () => [task];
-    registry.get = () => task;
-    const page = new ShellPage(basePageOptions({ registry }));
-    await page.refresh();
-    expect(page.render(100).join("\n")).toContain("未核实");
-    expect(page.render(100).join("\n")).not.toContain("已停止  ");
   });
 });
 

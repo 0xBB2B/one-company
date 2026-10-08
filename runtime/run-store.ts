@@ -12,8 +12,6 @@ export type RunState =
   | "running"
   | "pausing"
   | "paused"
-  | "paused_network"
-  | "waiting_answer"
   | "completed"
   | "failed"
   | "stopped"
@@ -21,10 +19,10 @@ export type RunState =
 
 /** 运行被停止的原因，只作记录，不影响停止行为。 */
 export type StopReason = "main_agent" | "stopped_by_pm" | "parent_stopped" | "superseded_by_new_pm" | "requirement_closing" | "lease_renewal_failed"
-  | "config_changed" | "replanned" | "stop_all";
+  | "config_changed" | "replanned";
 export interface StopCause { reason: StopReason; code?: string }
 const STOP_REASONS: readonly StopReason[] = ["main_agent", "stopped_by_pm", "parent_stopped", "superseded_by_new_pm", "requirement_closing", "lease_renewal_failed",
-  "config_changed", "replanned", "stop_all"];
+  "config_changed", "replanned"];
 
 export interface RunRecord {
   id: string;
@@ -52,7 +50,6 @@ export interface RunRecord {
   usage?: RunUsage;
   pausedMs?: number;
   pausedAt?: string;
-  errorDetails: { recordId?: string; status: "none" | "saved" | "incomplete" | "unreadable" | "unavailable" };
   daemonStartedAt: string;
 }
 
@@ -65,7 +62,6 @@ export interface CreateRunInput {
   role?: string;
   requirement: string;
   parentRunId?: string;
-  standalone?: boolean;
   task: string;
   cwd: string;
   writePaths: string[];
@@ -93,7 +89,7 @@ export interface ListRunResult {
 }
 
 export type UpdateRunFields = Partial<
-  Pick<RunRecord, "state" | "stateReason" | "stopCause" | "turns" | "usage" | "pausedMs" | "pausedAt" | "errorDetails" | "endedAt">
+  Pick<RunRecord, "state" | "stateReason" | "stopCause" | "turns" | "usage" | "pausedMs" | "pausedAt" | "endedAt">
 >;
 
 const UPDATE_PATCH_KEYS = [
@@ -104,7 +100,6 @@ const UPDATE_PATCH_KEYS = [
   "usage",
   "pausedMs",
   "pausedAt",
-  "errorDetails",
   "endedAt",
 ] as const satisfies readonly (keyof UpdateRunFields)[];
 
@@ -112,15 +107,13 @@ const TERMINAL_STATES = new Set<RunState>(["completed", "failed", "stopped"]);
 const UNIVERSAL_TARGETS = new Set<RunState>(["failed", "stopped"]);
 const TRANSITIONS: Partial<Record<RunState, Set<RunState>>> = {
   queued: new Set(["running"]),
-  running: new Set(["pausing", "paused_network", "waiting_answer", "completed"]),
+  running: new Set(["pausing", "paused", "completed"]),
   pausing: new Set(["paused", "completed"]),
   paused: new Set(["running", "completed"]),
-  paused_network: new Set(["running"]),
-  waiting_answer: new Set(["running", "pausing"]),
   interrupted: new Set(["queued", "running"]),
 };
 
-const RUNNING_LIKE_STATES = new Set<RunState>(["running", "pausing", "waiting_answer"]);
+const RUNNING_LIKE_STATES = new Set<RunState>(["running", "pausing"]);
 
 export function isTerminalState(state: RunState): boolean {
   return TERMINAL_STATES.has(state);
@@ -169,10 +162,6 @@ const RunRecordSchema = Type.Object({
     cacheWrite: Type.Integer({ minimum: 0 }), toolUses: Type.Integer({ minimum: 0 }) }, { additionalProperties: false })),
   pausedMs: Type.Optional(Type.Integer({ minimum: 0 })),
   pausedAt: Type.Optional(Type.String({ minLength: 1 })),
-  errorDetails: Type.Object({
-    recordId: Type.Optional(Type.String({ pattern: UUID_PATTERN })),
-    status: Type.Union(["none", "saved", "incomplete", "unreadable", "unavailable"].map((status) => Type.Literal(status))),
-  }),
   daemonStartedAt: Type.String({ minLength: 1 }),
 });
 
@@ -199,7 +188,7 @@ export class RunStore {
       throw new Error("缺少 requirement");
     }
     if (input.kind === "role") {
-      if (!input.standalone && (typeof input.parentRunId !== "string" || input.parentRunId.length === 0)) {
+      if (typeof input.parentRunId !== "string" || input.parentRunId.length === 0) {
         throw new Error("kind 为 role 时必须提供 parentRunId");
       }
       if (typeof input.role !== "string" || !input.role.startsWith("one-company.")) {
@@ -228,7 +217,6 @@ export class RunStore {
       startedAt: now,
       updatedAt: now,
       turns: 0,
-      errorDetails: { status: "none" },
       daemonStartedAt: this.daemonStartedAt,
     };
     checkedRun(run, id);

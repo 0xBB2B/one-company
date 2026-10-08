@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { repositoryDatabase, uuidv7 } from "../runtime/database.ts";
 import { assertRegularDatabaseFiles } from "../runtime/database-paths.ts";
-import { createSessionManagerForRun, readTranscript } from "../runtime/session-records.ts";
+import { createSessionManagerForRun, readSessionEntries } from "../runtime/session-records.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const roots: string[] = [];
@@ -50,12 +50,12 @@ for (const suffix of ["-wal", "-shm"]) for (const detached of [false, true]) {
     }) as typeof fs.lstatSync);
     syncBuiltinESMExports();
     try {
-      const first = readTranscript(ctx);
+      const texts = () => { const read = readSessionEntries(ctx); return read.ok ? read.entries.flatMap((entry) => entry.type === "message" ? [JSON.stringify(entry.message.content)] : []) : read; };
+      const first = texts();
       expect(released).toBe(true);
-      expect(first).toMatchObject({ ok: true, entries: [{ summary: "已有会话内容" }] });
+      expect(first).toEqual([JSON.stringify("已有会话内容")]);
       manager.appendMessage({ role: "user", content: "后续新增标记", timestamp: Date.now() });
-      const next = readTranscript(ctx);
-      expect(next).toMatchObject({ ok: true, entries: [{ summary: "已有会话内容" }, { summary: "后续新增标记" }] });
+      expect(texts()).toEqual([JSON.stringify("已有会话内容"), JSON.stringify("后续新增标记")]);
     } finally { if (!released) holder.close(); }
   });
 }

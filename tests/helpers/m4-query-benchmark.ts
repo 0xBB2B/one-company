@@ -470,8 +470,6 @@ interface Peer {
 async function connectPeer(
   path: string,
   token: string,
-  repoId: string,
-  root: string,
   timeoutMs: number,
   protocol: ProtocolModule,
 ): Promise<Peer> {
@@ -543,11 +541,7 @@ async function connectPeer(
     await peer.call("hello", {
       authToken: token,
       windowId: "m4-query-benchmark",
-      pid: process.pid,
       sessionId: "m4-query-benchmark-session",
-      cwd: root,
-      workspaceRoot: root,
-      repoIds: [repoId],
       protocolVersion: protocol.PROTOCOL_VERSION,
     });
     return peer;
@@ -689,8 +683,6 @@ async function runTier(input: {
     peer = await connectPeer(
       socketPath,
       token,
-      identity.repoId,
-      fixture.repo,
       input.config.rpcTimeoutMs,
       protocolModule as unknown as ProtocolModule,
     );

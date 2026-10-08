@@ -4,18 +4,16 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
-import { RelayQueue } from "../daemon/relay-queue.ts";
 import { RunStore, type RunState, type RunRecord } from "../runtime/run-store.ts";
 import { ShellRegistry, type ShellRegistryProbes } from "../runtime/shell-registry.ts";
 import { createClock } from "../runtime/clock.ts";
-import { NetworkPauseGate, toValidHostUrl } from "../runtime/network-pause.ts";
+import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { repositoryDatabase, withDatabase, putRecord, uuidv7 } from "../runtime/database.ts";
 import { overlaps } from "../runtime/ranges.ts";
 import { authenticateTestClient, createDaemonFixture, removeDaemonFixture, startDaemonForTest, killDaemon, connectTestClient, connectRawClient } from "./helpers/daemon-harness.ts";
 import { modelProviderEnv, writeTestModelProviders, readProviderRequestsLog } from "./helpers/daemon-model-fixture.ts";
 
 const SECRET = "RUN_OLD_BODY_不能补进模型上下文";
-const REQUIREMENT = "2026-09-09.retired-manager";
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,13 +24,12 @@ async function world(probes?: ShellRegistryProbes) {
   const database = repositoryDatabase(fixture.dataRoot, fixture.repoId); const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
   const runs = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: "historical" });
   const shells = new ShellRegistry({ clock, database, probes }); cleanup.push(async () => { for (const task of shells.list()) { const result = await shells.stop(task.taskId); if (alive(task.pid)) throw new Error(`测试进程未清理 ${task.pid}: ${JSON.stringify(result)}`); } });
-  const gate = new NetworkPauseGate(); const deliver = vi.fn(async () => []); const emit = vi.fn(); const selectModel = vi.fn(() => { throw new Error("不应选择模型"); }); const modelAccess = vi.fn(() => { throw new Error("不应构造模型上下文"); });
-  const relay = new RelayQueue({ dataDir: join(fixture.dataRoot, "repos", fixture.repoId), deliver });
-  const options = { dataRoot: fixture.dataRoot, repoId: fixture.repoId, runStore: runs, shellRegistry: shells, networkGate: gate, relayQueue: relay, roleCatalog: [], runtime: new Proxy({}, { get: modelAccess }) as any, selectModel, clock, workspaceRepoIds: [fixture.repoId], emit };
+  const gate = new NetworkPauseGate(); const emit = vi.fn(); const modelAccess = vi.fn(() => { throw new Error("不应构造模型上下文"); });
+  const options = { dataRoot: fixture.dataRoot, repoId: fixture.repoId, runStore: runs, shellRegistry: shells, networkGate: gate, roleCatalog: [], runtime: new Proxy({}, { get: modelAccess }) as any, clock, workspaceRepoIds: [fixture.repoId], emit };
   const manager = new RunManager(options); manager.markStarted();
   const snapshot = () => withDatabase(database, (db) => JSON.stringify({ runs: db.list("runs"), sessions: db.list("sessions"), questions: db.list("relay_questions") }));
   async function create(state: RunState = "queued", parent?: RunRecord, provider = "provider-a") {
-    const run = await runs.create({ kind: parent ? "role" : "requirement", role: parent ? "one-company.worker" : undefined, parentRunId: parent?.id, requirement: parent?.requirement ?? `${REQUIREMENT}-${uuidv7()}`, task: SECRET, cwd: fixture.repo.root, writePaths: ["src"], readPaths: [], model: { provider, id: "test" }, thinking: "off", mcp: [], pendingDispatch: { instructions: SECRET }, reportPath: join(fixture.repo.root, "must-not-create.md") });
+    const run = await runs.create({ kind: parent ? "role" : "requirement", role: parent ? "one-company.worker" : undefined, parentRunId: parent?.id, requirement: parent?.requirement ?? uuidv7(), task: SECRET, cwd: fixture.repo.root, writePaths: ["src"], readPaths: [], model: { provider, id: "test" }, thinking: "off", mcp: [], pendingDispatch: { instructions: SECRET }, reportPath: join(fixture.repo.root, "must-not-create.md") });
     // 无授权的历史记录夹具，不经过会话工厂或重新启动入口。
     withDatabase(database, (db) => { const r = db.read<any>("runs", run.id)!; db.update("runs", run.id, r.version, { ...r.data, state, stateReason: SECRET, result: { verdict: "PASS", body: SECRET }, commands: [SECRET] }); });
     const result = await runs.get(run.id); if (!result.ok) throw new Error("夹具记录损坏"); return result.run;
@@ -41,44 +38,36 @@ async function world(probes?: ShellRegistryProbes) {
     const result = await shells.spawn({ taskId: uuidv7(), host: { kind: "role", id: run.id, role: run.role, runId: run.id }, command: process.execPath, args: ["-e", script], cwd: fixture.repo.root, mode: "background", runToken: run.shellToken });
     if (!result.ok) throw new Error(result.reason); expect(result.task.pid).toBeGreaterThan(1); expect(result.task.identityVerified).toBe(true); expect(alive(result.task.pid)).toBe(true); return result.task;
   }
-  return { fixture, database, clock, runs, shells, gate, relay, manager, options, snapshot, create, spawn, emit, deliver, selectModel, modelAccess };
+  return { fixture, database, clock, runs, shells, gate, manager, options, snapshot, create, spawn, emit, modelAccess };
 }
 function handlers(w: Awaited<ReturnType<typeof world>>) {
-  const map = new Map<string, (p: any, c?: any) => Promise<any>>(); registerProtocolHandlers({ manager: w.manager, relayQueue: w.relay, shellRegistry: w.shells, server: { registerHandler: (n: string, f: any) => map.set(n, f), markHandlersReady() {} } as any }); return map;
+  const map = new Map<string, (p: any, c?: any) => Promise<any>>(); registerProtocolHandlers({ manager: w.manager, shellRegistry: w.shells, server: { registerHandler: (n: string, f: any) => map.set(n, f), markHandlersReady() {} } as any }); return map;
 }
 
 describe("运行执行器永久淘汰", () => {
-  test.each(["queued", "running", "pausing", "paused", "paused_network", "waiting_answer", "completed", "failed", "stopped", "interrupted"] as RunState[])("R01 %s 历史运行不能恢复，旧派工与恢复入口不存在，也不新增运行或模型请求", async (state) => {
+  test.each(["queued", "running", "pausing", "paused", "completed", "failed", "stopped", "interrupted"] as RunState[])("R01 %s 历史运行不能恢复，也不新增运行或模型请求", async (state) => {
     const w = await world(); const run = await w.create(state); const before = w.snapshot();
-    expect("dispatchRequirement" in w.manager).toBe(false);
-    for (const key of ["dispatchReview", "resumeAll", "resumeInterrupted", "canRunInParallel", "verifyDelivery", "locateRequirementAgent", "subscribeTranscript"]) expect((w.manager as any)[key]).toBeUndefined();
-    await expect(w.manager.resume(run.id)).rejects.toMatchObject({ code: "not_resumable" }); await w.manager.resumeNetworkPaused("provider-a");
-    expect(w.snapshot()).toBe(before); expect(w.selectModel).not.toHaveBeenCalled(); expect(w.modelAccess).not.toHaveBeenCalled(); expect(w.emit).not.toHaveBeenCalled();
+    await expect(w.manager.resume(run.id)).rejects.toMatchObject({ code: "not_resumable" });
+    expect(w.snapshot()).toBe(before); expect(w.modelAccess).not.toHaveBeenCalled(); expect(w.emit).not.toHaveBeenCalled();
   });
-  test("R02 不存在旧子派工、排队、idle、结果回填或会话注册入口", async () => {
-    const w = await world();
-    for (const key of ["registerSession", "dispatchRoleInternal", "startRoleRun", "scheduleWaitingTasks", "assertRepairAllowed", "resumeInterruptedLocked", "buildRequirementDispatch", "buildRequirementRelay"]) expect((w.manager as any)[key]).toBeUndefined();
-  });
-  test("R03 旧流程运行的 status/list/activity 只给元数据与运行日志位置，不输出旧任务、模型、命令、结果或原因正文", async () => {
-    const w = await world(); const run = await w.create("failed"); const before = w.snapshot(); const map = handlers(w);
-    for (const output of [await w.manager.status(run.id), await w.manager.list(), await map.get("runs.list")!({ limit: 100 })]) {
-      expect(JSON.stringify(output)).not.toContain(SECRET); expect(JSON.stringify(output)).not.toContain("provider-a");
-    }
+  test("R03 status 只给元数据、原因与运行日志位置，不输出任务、模型、命令或结果正文", async () => {
+    const w = await world(); const run = await w.create("failed"); const before = w.snapshot();
     const status = await w.manager.status(run.id);
-    expect(status).toMatchObject({ ok: true, run: { id: run.id, state: "failed", stateReason: "旧流程运行，原因不返回", log: expect.stringMatching(new RegExp(`sessions/${run.id}/session\\.jsonl$`)) } });
-    if (status.ok) for (const key of ["task", "result", "commands", "cwd", "shellToken", "pendingDispatch", "errorDetails"]) expect(status.run).not.toHaveProperty(key);
+    expect(JSON.stringify(status)).not.toContain("provider-a");
+    expect(status).toMatchObject({ ok: true, run: { id: run.id, state: "failed", stateReason: SECRET, log: expect.stringMatching(new RegExp(`sessions/${run.id}/session\\.jsonl$`)) } });
+    if (status.ok) for (const key of ["task", "result", "commands", "cwd", "shellToken", "pendingDispatch", "model"]) expect(status.run).not.toHaveProperty(key);
     expect(w.snapshot()).toBe(before);
   });
 });
 
 describe("暂停与等待不伪造进程确认", () => {
-  test.each(["queued", "running", "pausing", "paused", "paused_network", "waiting_answer", "interrupted"] as RunState[])("R04 %s 没有内存会话不确认暂停，不更改记录", async (state) => {
+  test.each(["queued", "running", "pausing", "paused", "interrupted"] as RunState[])("R04 %s 没有内存会话不确认暂停，不更改记录", async (state) => {
     const w = await world(); const run = await w.create(state); const before = w.snapshot();
     expect(await w.manager.pause(run.id)).toMatchObject({ state, confirmed: false }); expect(w.snapshot()).toBe(before);
   });
-  test("R05 pauseAll 只计顶层非终态且不重复孩子，终态暂停保持原事实", async () => {
+  test("R05 没有会话的父运行暂停不确认，终态暂停保持原事实", async () => {
     const w = await world(); const parent = await w.create("running"); await w.create("running", parent); const terminal = await w.create("failed");
-    expect((await w.manager.pauseAll()).results).toEqual([{ runId: parent.id, state: "running", confirmed: false, reason: expect.any(String) }]);
+    expect(await w.manager.pause(parent.id)).toEqual({ state: "running", confirmed: false, reason: expect.any(String) });
     expect(await w.manager.pause(terminal.id)).toEqual({ state: "failed", confirmed: true }); await expect(w.manager.pause(uuidv7())).rejects.toThrow("不存在");
   });
   test("R06 wait 真实等待终态，超时返回当前态，未知运行拒绝", async () => {
@@ -99,26 +88,24 @@ describe("真实 Shell 停止、级联和身份", () => {
     for (const pid of [p.pid, c.pid, descendant, -p.pgid, -c.pgid]) expect(alive(pid)).toBe(false);
     expect(await w.runs.get(child.id)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "parent_stopped" } } }); expect(w.modelAccess).not.toHaveBeenCalled();
     expect(await w.runs.get(parent.id)).toMatchObject({ ok: true, run: { stopCause: { reason: "main_agent" } } });
-    const other = await w.create("running"); await w.manager.stopAll();
-    expect(await w.runs.get(other.id)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "stop_all" } } });
-    expect(JSON.stringify(w.emit.mock.calls)).not.toContain(SECRET); expect(JSON.stringify(w.deliver.mock.calls)).not.toContain(SECRET);
+    expect(JSON.stringify(w.emit.mock.calls)).not.toContain(SECRET);
   }, 15_000);
-  test("R08 真实EPERM不报告确认，stopAll重试实际结束进程；并发终态不能换成completed", async () => {
+  test("R08 真实EPERM不报告确认，重试停止实际结束进程；并发终态不能换成completed", async () => {
     let denied = false;
     const w = await world({ kill(pid, signal) { if (denied) throw Object.assign(new Error(SECRET), { code: "EPERM" }); process.kill(pid, signal); } });
     const run = await w.create("running"); const task = await w.spawn(run); cleanup.push(() => { denied = false; }); denied = true;
     const first = await w.manager.stop(run.id, { reason: "main_agent" });
     expect(first.confirmed).toBe(false); expect(alive(task.pid)).toBe(true); expect(first.reason).not.toContain(SECRET); expect(w.shells.get(task.taskId)?.status).toBe("uncertain");
-    const blocked = await w.manager.stopAll(); expect(blocked.coverage).toMatchObject({ confirmed: 0, unconfirmed: 1 }); expect(blocked.coverage.shellUnconfirmed).toBeGreaterThan(0); expect(alive(task.pid)).toBe(true);
+    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false }); expect(alive(task.pid)).toBe(true);
     denied = false;
-    const retry = await w.manager.stopAll(); expect(retry.results).toContainEqual({ runId: run.id, state: "stopped", confirmed: true }); expect(retry.coverage).toMatchObject({ confirmed: 1, unconfirmed: 0, unknown: 0, shellUnconfirmed: 0 }); expect(alive(task.pid)).toBe(false);
-    await expect(w.runs.update(run.id, { state: "completed" })).rejects.toThrow("状态转换"); expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true, state: "stopped" });
+    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: true }); expect(alive(task.pid)).toBe(false);
+    await expect(w.runs.update(run.id, { state: "completed" })).rejects.toThrow("状态转换");
   }, 15_000);
-  test("R09 Shell PID/startedAt 不匹配不发送停止，USER字符串裁定不能代替真实停止", async () => {
-    const w = await world(); const run = await w.create("running"); const task = await w.spawn(run); const map = handlers(w); const stop = vi.spyOn(w.shells, "stop"); const mark = vi.spyOn(w.shells, "markStoppedByUser");
+  test("R09 Shell PID/startedAt 不匹配不发送停止", async () => {
+    const w = await world(); const run = await w.create("running"); const task = await w.spawn(run); const map = handlers(w); const stop = vi.spyOn(w.shells, "stop");
     const params = { taskId: task.taskId, expectedPid: task.pid, expectedStartedAt: String(task.startedAt) };
     for (const bad of [{ ...params, expectedPid: task.pid + 1 }, { ...params, expectedStartedAt: "0" }]) expect(await map.get("shells.stop")!(bad)).toMatchObject({ status: "mismatch" });
-    await expect(map.get("shells.markStopped")!({ ...params, decisionId: "USER-001", actor: "user" })).rejects.toThrow("可信"); expect(stop).not.toHaveBeenCalled(); expect(mark).not.toHaveBeenCalled(); expect(alive(task.pid)).toBe(true);
+    expect(stop).not.toHaveBeenCalled(); expect(alive(task.pid)).toBe(true);
     const list = await map.get("shells.list")!({}); expect(list.tasks[0]).toMatchObject({ pid: task.pid, identityVerified: true, command: "[旧命令正文不提供]", cwd: "[旧工作目录不提供]" });
     expect(["stopped", "exited"]).toContain((await map.get("shells.stop")!(params)).status); expect(alive(task.pid)).toBe(false);
     expect(await map.get("shells.stop")!({ ...params, taskId: "missing" })).toMatchObject({ status: "not_found" });
@@ -126,7 +113,7 @@ describe("真实 Shell 停止、级联和身份", () => {
   test("R10 真 PID 的身份核验失败保持 uncertain/未确认，修复探针后才可真实停止", async () => {
     const w = await world(); const run = await w.create("running"); const task = await w.spawn(run); const startedAt = task.startedAt!;
     const identity = vi.spyOn(w.shells as any, "baselineStartedAt").mockResolvedValue(startedAt + 1000);
-    try { const result = await w.manager.stop(run.id, { reason: "main_agent" }); expect(result.confirmed).toBe(false); expect(w.shells.get(task.taskId)?.status).toBe("uncertain"); expect(alive(task.pid)).toBe(true); expect((await w.manager.list()).items.every((r) => r.state !== ("uncertain" as any))).toBe(true); }
+    try { const result = await w.manager.stop(run.id, { reason: "main_agent" }); expect(result.confirmed).toBe(false); expect(w.shells.get(task.taskId)?.status).toBe("uncertain"); expect(alive(task.pid)).toBe(true); expect(await w.runs.get(run.id)).toMatchObject({ ok: true, run: { state: "stopped" } }); }
     finally { identity.mockRestore(); }
     expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true }); expect(alive(task.pid)).toBe(false);
   }, 15_000);
@@ -152,47 +139,42 @@ describe("真实 Shell 停止、级联和身份", () => {
 });
 
 describe("持久重查、只读元数据与完整停止覆盖", () => {
-  test("R18 缺库list/status不创建库或目录，非法root/权限拒绝且不修改原库", async () => {
+  test("R18 缺库status不创建库或目录，非法root/权限拒绝且不修改原库", async () => {
     const w = await world(); const dir = join(w.fixture.dataRoot, "repos", w.fixture.repoId);
     expect(existsSync(dir)).toBe(false);
-    await expect(w.manager.list()).rejects.toThrow("运行记录读取失败"); await expect(w.manager.status(uuidv7())).rejects.toThrow("运行记录读取失败"); expect(existsSync(dir)).toBe(false);
+    await expect(w.manager.status(uuidv7())).rejects.toThrow("运行记录读取失败"); expect(existsSync(dir)).toBe(false);
     const run = await w.create("failed"); const before = w.snapshot(); const inode = (await stat(w.database)).ino;
     await chmod(w.database, 0o644);
-    try { await expect(w.manager.list()).rejects.toThrow("运行记录读取失败"); expect((await stat(w.database)).mode & 0o777).toBe(0o644); } finally { await chmod(w.database, 0o600); }
+    try { await expect(w.manager.status(run.id)).rejects.toThrow("运行记录读取失败"); expect((await stat(w.database)).mode & 0o777).toBe(0o644); } finally { await chmod(w.database, 0o600); }
     expect(() => new RunManager({ ...w.options, dataRoot: "relative-root" })).toThrow("绝对路径");
     const alias = join(w.fixture.dataRoot, "alias-root"); await mkdir(join(alias, "repos"), { recursive: true, mode: 0o700 }); await symlink(dir, join(alias, "repos", w.fixture.repoId));
     const invalid = new RunManager({ ...w.options, dataRoot: alias }); invalid.markStarted();
-    await expect(invalid.list()).rejects.toThrow("运行记录读取失败"); expect((await stat(w.database)).ino).toBe(inode); expect(w.snapshot()).toBe(before);
+    await expect(invalid.status(run.id)).rejects.toThrow("运行记录读取失败"); expect((await stat(w.database)).ino).toBe(inode); expect(w.snapshot()).toBe(before);
     expect(await w.manager.status(run.id)).toMatchObject({ ok: true, run: { id: run.id, state: "failed" } });
   });
   test("R19 合法身份/时间/父子metadata正例；坏key、时间及跨需求关联拒绝且保全", async () => {
     const w = await world(); const parent = await w.create("failed"); const child = await w.create("stopped", parent); const before = w.snapshot();
     const probe = vi.spyOn(w.shells, "adoptOrphans");
     expect(await w.manager.status(child.id)).toMatchObject({ ok: true, run: { id: child.id, parentRunId: parent.id, requirement: parent.requirement, startedAt: child.startedAt, turns: 0 } });
-    expect((await w.manager.list()).coverage).toMatchObject({ returned: 2, unknown: 0, unconfirmed: 2 }); expect(probe).not.toHaveBeenCalled(); expect(w.snapshot()).toBe(before);
+    expect(await w.manager.status(parent.id)).toMatchObject({ ok: true, run: { id: parent.id } }); expect(probe).not.toHaveBeenCalled(); expect(w.snapshot()).toBe(before);
+    // { requirement: "2026-13-45.invalid" }：非 UUIDv7 编号按坏记录拒绝
     for (const fields of [{ startedAt: SECRET }, { updatedAt: "2026-02-30T00:00:00.000Z" }, { endedAt: SECRET }, { turns: Number.MAX_SAFE_INTEGER + 1 }, { requirement: "2026-13-45.invalid" }, { parentRunId: child.id }, { parentRunId: uuidv7() }, { requirement: uuidv7() }]) {
       withDatabase(w.database, (db) => { const r = db.read<any>("runs", child.id)!; db.update("runs", child.id, r.version, { ...child, ...fields }); });
       const bad = w.snapshot();
-      await expect(w.manager.list()).rejects.toThrow("运行记录读取失败"); await expect(w.manager.status(child.id)).rejects.toThrow("运行记录读取失败"); expect(w.snapshot()).toBe(bad);
+      await expect(w.manager.status(parent.id)).rejects.toMatchObject({ code: "run_metadata_invalid", message: expect.stringContaining("运行记录读取失败") }); await expect(w.manager.status(child.id)).rejects.toThrow("运行记录读取失败"); expect(w.snapshot()).toBe(bad);
     }
     withDatabase(w.database, (db) => { const r = db.read<any>("runs", child.id)!; db.update("runs", child.id, r.version, child); db.create("runs", SECRET, { body: SECRET }); });
     const corrupted = w.snapshot(); const map = handlers(w);
-    await expect(map.get("runs.list")!({ limit: 1 })).rejects.toThrow("运行记录读取失败");
-    try { await w.manager.list(); } catch (error) { expect(String(error)).not.toContain(SECRET); }
+    await expect(map.get("runs.get")!({ runId: parent.id }, {})).rejects.toThrow("运行记录读取失败");
+    try { await w.manager.status(parent.id); } catch (error) { expect(String(error)).not.toContain(SECRET); }
     expect(await w.manager.status(SECRET)).toEqual({ ok: false, reason: "not_found" }); expect(w.snapshot()).toBe(corrupted); expect(probe).not.toHaveBeenCalled();
   });
-  test("R20 limit至多100且coverage明确页外未确认；stopAll实际停止展示页外运行", async () => {
+  test("R20 close 遍历全部运行记录，停止排在 100 条之外的运行的真实 Shell", async () => {
     const w = await world({ ps: async () => [] }); const template = await w.create("stopped"); const ids: string[] = [];
     withDatabase(w.database, (db) => db.transaction(() => { for (let i = 0; i < 105; i++) { const id = uuidv7(); ids.push(id); db.create("runs", id, { ...template, id, shellToken: id }, id); } }));
-    const initial = await w.manager.stopAll(); const omitted = ids.find((id) => !initial.results.some((r) => r.runId === id)); expect(omitted).toBeDefined();
-    const last = await w.runs.get(omitted!); if (!last.ok) throw new Error("夹具缺失"); const task = await w.spawn(last.run); const before = w.snapshot(); const probe = vi.spyOn(w.shells, "adoptOrphans");
-    const page = await w.manager.list({ limit: 3, offset: 1 }); expect(page.items).toHaveLength(3); expect(page.coverage).toMatchObject({ total: 106, returned: 3, offset: 1, remaining: 102, unconfirmed: 106, unconfirmedOutsidePage: 103, truncated: true });
-    for (const result of [page]) expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(16384);
-    for (const limit of [0, -1, 1.5, 101, Number.MAX_SAFE_INTEGER]) await expect(w.manager.list({ limit })).rejects.toThrow();
-    expect(probe).not.toHaveBeenCalled(); expect(w.snapshot()).toBe(before); expect(alive(task.pid)).toBe(true);
-    const stopped = await w.manager.stopAll(); expect(stopped.results.length).toBeLessThanOrEqual(100); expect(stopped.results.some((r) => r.runId === last.run.id)).toBe(false);
-    expect(stopped.coverage).toMatchObject({ total: 106, confirmed: 106, unconfirmed: 0, unknown: 0, shellUnconfirmed: 0, truncated: true }); expect(alive(task.pid)).toBe(false); expect(alive(-task.pgid)).toBe(false);
-    expect(Buffer.byteLength(JSON.stringify(stopped))).toBeLessThanOrEqual(16384);
+    const last = await w.runs.get(ids.at(-1)!); if (!last.ok) throw new Error("夹具缺失"); const task = await w.spawn(last.run);
+    expect(alive(task.pid)).toBe(true);
+    await w.manager.close(); expect(alive(task.pid)).toBe(false); expect(alive(-task.pgid)).toBe(false);
   }, 30_000);
   test("R21 空接管表不是停止证明；旧terminal重查持久Shell，恢复真实探针后重试", async () => {
     const w = await world(); const run = await w.create("stopped"); const task = await w.spawn(run);
@@ -204,7 +186,7 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
     const manager = new RunManager({ ...w.options, shellRegistry: adopted }); manager.markStarted();
     const before = withDatabase(w.database, (db) => db.list("shells"));
     expect(await manager.pause(run.id)).toMatchObject({ state: "stopped", confirmed: false }); expect(await manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false });
-    expect(adopted.list()).toHaveLength(0); expect((await manager.stopAll()).coverage).toMatchObject({ confirmed: 0, unconfirmed: 1 }); await expect(manager.close()).rejects.toThrow("关闭未完成"); expect(alive(task.pid)).toBe(true); expect(withDatabase(w.database, (db) => db.list("shells"))).toEqual(before);
+    expect(adopted.list()).toHaveLength(0); await expect(manager.close()).rejects.toThrow("关闭未完成"); expect(alive(task.pid)).toBe(true); expect(withDatabase(w.database, (db) => db.list("shells"))).toEqual(before);
     unavailable = false;
     expect(await manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true }); expect(alive(task.pid)).toBe(false); expect(adopted.get(task.taskId)).toMatchObject({ pid: task.pid, startedAt: task.startedAt, identityVerified: true, activity: "ended" }); await manager.close();
   }, 15_000);
@@ -217,7 +199,7 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
   test.each([
     { label: "EPERM持续", release: false },
     { label: "故障解除", release: true },
-  ])("R23 $label：USER标记不证明停止，stopAll按真实信号和探活更新coverage", async ({ release }) => {
+  ])("R23 $label：EPERM 下停止不报已停，close 按真实信号和探活核对", async ({ release }) => {
     let deniedPid = 0; const attempts: Array<{ pid: number; signal: NodeJS.Signals }> = [];
     const w = await world({ ps: async () => [], kill(pid, signal) {
       if (signal !== 0) attempts.push({ pid, signal });
@@ -233,35 +215,26 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
     deniedPid = task.pid;
     expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false });
     expect(w.shells.get(task.taskId)).toMatchObject({ status: "uncertain", identityVerified: true, descendantsScanned: true });
-    deniedPid = 0;
-    expect(w.shells.markStoppedByUser(task.taskId, { decisionId: "USER-001" })).toMatchObject({ ok: true });
-    const attemptsBeforeUserChecks = attempts.length;
-    expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: false });
-    expect(await w.manager.pause(run.id)).toMatchObject({ state: "stopped", confirmed: false });
-    expect(attempts).toHaveLength(attemptsBeforeUserChecks); expect(alive(task.pid)).toBe(true); expect(alive(-task.pgid)).toBe(true);
+    expect(await w.manager.pause(run.id)).toMatchObject({ state: "stopped", confirmed: false }); expect(alive(task.pid)).toBe(true); expect(alive(-task.pgid)).toBe(true);
 
     const other = await w.create("running"); const healthy = await w.spawn(other);
     putRecord({ database: w.database, namespace: "runs", key: SECRET }, { body: SECRET });
-    if (!release) deniedPid = task.pid;
-    const result = await w.manager.stopAll();
-    expect(result.coverage.unknown).toBeGreaterThan(0); expect(result.coverage.unconfirmed).toBeGreaterThan(0);
-    expect(result.results).toContainEqual({ runId: other.id, state: "stopped", confirmed: false, reason: expect.stringMatching(/^子运行停止失败：.+/) });
-    expect(alive(healthy.pid)).toBe(false); expect(alive(-healthy.pgid)).toBe(false);
-    expect(w.shells.get(healthy.taskId)).toMatchObject({ status: "stopped", stoppedBy: "signal", identityVerified: true, descendantsScanned: true, activity: "ended" });
-    expect(attempts).toContainEqual({ pid: -healthy.pgid, signal: "SIGTERM" }); expect(JSON.stringify(result)).not.toContain(SECRET);
-
-    const userTask = w.shells.get(task.taskId);
-    if (release) {
-      expect(result.coverage.shellUnconfirmed).toBe(0); expect(alive(task.pid)).toBe(false); expect(alive(-task.pgid)).toBe(false);
-      expect(userTask).toMatchObject({ status: "stopped", stoppedBy: "signal", identityVerified: true, descendantsScanned: true, activity: "ended" });
-      expect(attempts).toContainEqual({ pid: -task.pgid, signal: "SIGTERM" });
-    } else {
-      expect(result.coverage.shellUnconfirmed).toBeGreaterThan(0); expect(alive(task.pid)).toBe(true); expect(alive(-task.pgid)).toBe(true);
-      expect(userTask).toMatchObject({ status: "uncertain", stoppedBy: "user", identityVerified: true, descendantsScanned: true });
-    }
-
+    if (release) deniedPid = 0;
     let closeError: unknown;
     try { await w.manager.close(); } catch (error) { closeError = error; }
+    expect(alive(healthy.pid)).toBe(false); expect(alive(-healthy.pgid)).toBe(false);
+    expect(w.shells.get(healthy.taskId)).toMatchObject({ status: "stopped", stoppedBy: "signal", identityVerified: true, descendantsScanned: true, activity: "ended" });
+    expect(attempts).toContainEqual({ pid: -healthy.pgid, signal: "SIGTERM" });
+    const blockedTask = w.shells.get(task.taskId);
+    if (release) {
+      expect(alive(task.pid)).toBe(false); expect(alive(-task.pgid)).toBe(false);
+      expect(blockedTask).toMatchObject({ status: "stopped", stoppedBy: "signal", identityVerified: true, descendantsScanned: true, activity: "ended" });
+      expect(attempts).toContainEqual({ pid: -task.pgid, signal: "SIGTERM" });
+    } else {
+      expect(alive(task.pid)).toBe(true); expect(alive(-task.pgid)).toBe(true);
+      expect(blockedTask).toMatchObject({ status: "uncertain", identityVerified: true, descendantsScanned: true });
+    }
+
     expect(closeError).toBeInstanceOf(Error); expect((closeError as Error).message).toContain("关闭未完成"); expect((closeError as Error).message).not.toContain(SECRET);
     expect(await w.runs.get(run.id)).toMatchObject({ ok: true, run: { id: run.id, state: "stopped" } });
     expect(withDatabase(w.database, (db) => db.read("runs", SECRET))).not.toBeNull();
@@ -269,13 +242,11 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
 });
 
 describe("网络、版本及重启不能产生旧执行权限", () => {
-  test("R14 网络按运行区分手动暂停；任意 provider 恢复回调都不改变历史运行", async () => {
-    const w = await world(); const a = await w.create("paused_network", undefined, "a"); const b = await w.create("paused_network", undefined, "b"); const manual = await w.create("paused");
-    w.gate.requestPause(a.id, "network"); w.gate.requestPause(b.id, "network"); w.gate.requestPause(manual.id, "manual"); const before = w.snapshot();
-    for (const provider of ["a", "b", "", undefined]) await w.manager.resumeNetworkPaused(provider as any);
-    expect(w.snapshot()).toBe(before); expect(w.gate.listPaused()).toHaveLength(3); w.gate.resume(a.id); expect(w.gate.canProceed(b.id)).toEqual({ allowed: false, reason: "network" }); expect(w.gate.canProceed(manual.id)).toEqual({ allowed: false, reason: "manual" });
+  test("R14 网络门按运行区分；放行一个运行不影响其他运行，也不改变历史运行", async () => {
+    const w = await world(); const a = await w.create("paused", undefined, "a"); const b = await w.create("paused", undefined, "b");
+    w.gate.requestPause(a.id); w.gate.requestPause(b.id); const before = w.snapshot();
+    w.gate.resume(a.id); expect(w.gate.canProceed(a.id)).toBe(true); expect(w.gate.canProceed(b.id)).toBe(false);
     expect(w.snapshot()).toBe(before); expect(w.emit).not.toHaveBeenCalled(); expect(w.modelAccess).not.toHaveBeenCalled();
-    expect(toValidHostUrl("http://user:pass@evil.invalid/path")).toBeNull(); expect(toValidHostUrl("file:///tmp/a")).toBeNull(); expect(toValidHostUrl("https://example.invalid/v1")?.protocol).toBe("https:");
   });
   test("R15 真实 RunStore 并发版本不丢 turn，身份/token不能改写；范围规整保护仍独立有效", async () => {
     const w = await world(); const run = await w.create("running"); await Promise.all(Array.from({ length: 8 }, () => w.runs.recordTurn(run.id)));
@@ -294,18 +265,18 @@ describe("网络、版本及重启不能产生旧执行权限", () => {
     const sessionEvents = () => withDatabase(w.database, (db) => db.events(`session:${run.id}`)); const eventsBefore = sessionEvents();
     const legacyDir = join(w.fixture.repo.root, ".pi-company", "requirements", run.requirement); await mkdir(legacyDir, { recursive: true }); await writeFile(join(legacyDir, "spec.md"), SECRET, { mode: 0o600 });
     putRecord({ database: w.database, namespace: "relay_questions", key: uuidv7() }, { ...{ id: uuidv7(), requirement: run.requirement, repoId: w.fixture.repoId, runId: run.id, status: "pending", question: SECRET, options: [], recommended: "确认", createdAt: "old" } });
-    const providers = await writeTestModelProviders(w.fixture.dataRoot, [{ providerId: "provider-a", modelId: "test", roleName: "requirement-agent", replies: [{ type: "text", text: SECRET }] }]);
+    const providers = await writeTestModelProviders(w.fixture.dataRoot, [{ providerId: "provider-a", modelId: "test", replies: [{ type: "text", text: SECRET }] }]);
     const log = join(w.fixture.dataRoot, "requests.jsonl"); await writeFile(log, "", { mode: 0o600 });
     const sessionsBefore = withDatabase(w.database, (db) => db.list("sessions"));
     for (let i = 0; i < 2; i++) {
       const handle = await startDaemonForTest(w.fixture, { extraEnv: modelProviderEnv(providers, log) }); cleanup.push(async () => { if (handle.proc.exitCode === null && handle.proc.signalCode === null) await killDaemon(handle); });
       const raw = await connectRawClient(w.fixture.socketPath); cleanup.push(() => raw.close()); const events: unknown[] = [];
-      for (const name of ["relay.question", "relay.notice"]) raw.onEvent(name, (d) => events.push(d));
-      await authenticateTestClient(raw, { windowId: "window", pid: process.pid, sessionId: "session", cwd: w.fixture.repo.root, workspaceRoot: w.fixture.repo.root, repoIds: [w.fixture.repoId] }, { dataRoot: w.fixture.dataRoot, expectedRepoId: w.fixture.repoId });
+      for (const name of ["relay.question", "pm.overview.changed", "explore.finished"]) raw.onEvent(name, (d) => events.push(d));
+      await authenticateTestClient(raw, { windowId: "window", sessionId: "session" }, { dataRoot: w.fixture.dataRoot, expectedRepoId: w.fixture.repoId });
       expect(await raw.call("runs.get", { runId: run.id })).toMatchObject({ run: { state: "interrupted" } }); expect(await raw.call("runs.get", { runId: completed.id })).toMatchObject({ run: { state: "completed" } });
       const before = w.snapshot();
       for (const [method, params] of [["dispatch.requirement", { requirement: run.requirement, cwd: w.fixture.repo.root }], ["dispatch.review", { requirement: run.requirement, cwd: w.fixture.repo.root, baseline: "HEAD", snapshot: { head: "old", fingerprint: "old" } }], ["runs.resumeAll", {}], ["runs.resumeInterrupted", { runId: run.id }], ["relay.answer", { questionId: uuidv7(), answer: "USER-001", windowId: "window" }], ["relay.forward", { requirement: run.requirement, message: SECRET, windowId: "window" }], ["subscribe.transcript", { runId: run.id, fromSeq: 0 }]] as Array<[string, any]>) await expect(raw.call(method, params)).rejects.toThrow("unknown_method");
-      await expect(raw.call("relay.pending")).rejects.toThrow("unknown_method"); expect(JSON.stringify(await raw.call("runs.list", { limit: 100 }))).not.toContain(SECRET);
+      await expect(raw.call("relay.pending")).rejects.toThrow("unknown_method");
       await delay(1150); expect(events).toEqual([]); expect(await readProviderRequestsLog(log)).toEqual([]); expect(w.snapshot()).toBe(before);
       raw.close(); await killDaemon(handle);
     }
@@ -313,7 +284,7 @@ describe("网络、版本及重启不能产生旧执行权限", () => {
   }, 30_000);
   test("R17 socket 调用未 hello 不取得状态或执行权限", async () => {
     const w = await world(); const handle = await startDaemonForTest(w.fixture); cleanup.push(() => killDaemon(handle)); const raw = await connectRawClient(w.fixture.socketPath); cleanup.push(() => raw.close());
-    await expect(raw.call("runs.list", { limit: 1 })).rejects.toThrow();
-    const good = await connectTestClient(w.fixture.socketPath, { cwd: w.fixture.repo.root, repoIds: [w.fixture.repoId] }, { dataRoot: w.fixture.dataRoot }); cleanup.push(() => good.close()); expect(await good.call("runs.list", { limit: 1 })).toMatchObject({ items: [] });
+    await expect(raw.call("pm.overview", {})).rejects.toThrow();
+    const good = await connectTestClient(w.fixture.socketPath, {}, { dataRoot: w.fixture.dataRoot }); cleanup.push(() => good.close()); expect(await good.call("pm.overview", {})).toMatchObject({ items: [] });
   }, 15_000);
 });

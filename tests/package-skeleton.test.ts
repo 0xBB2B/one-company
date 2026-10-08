@@ -102,24 +102,3 @@ describe("被替代文件不存在", () => {
     });
   }
 });
-
-describe("旧测试文件不存在", () => {
-  const removedTests = [
-    "tests/decision-record.test.ts",
-    "tests/helpers/requirement-fixture.ts",
-    "tests/subagents-preflight.test.ts",
-    "tests/acceptance-direct-json.test.ts",
-    "tests/git-push-direct-json.test.ts",
-    "tests/git-push-auto-repair.test.ts",
-    "tests/review-failure-handling.test.ts",
-    "tests/spec-flow-auto-repair.test.ts",
-    "tests/task-file-line-limit-authoring.test.ts",
-    "tests/task-file-line-limit-planning-check.test.ts",
-  ];
-
-  for (const relativePath of removedTests) {
-    test(`${relativePath} 不存在`, async () => {
-      expect(await pathExists(join(PACKAGE_ROOT, relativePath))).toBe(false);
-    });
-  }
-});

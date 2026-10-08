@@ -165,13 +165,7 @@ async function defaultConnectWorkspaceClients(input: {
     workspaceRoot: input.cwd,
     dataRoot: dataRoot(process.env),
     sdkDir: resolveSdkDir(),
-    hello: {
-      windowId: input.windowId,
-      pid: process.pid,
-      sessionId: input.sessionId,
-      cwd: input.cwd,
-      workspaceRoot: input.cwd,
-    },
+    hello: { windowId: input.windowId, sessionId: input.sessionId },
   });
 }
 

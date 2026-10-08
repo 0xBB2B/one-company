@@ -16,11 +16,7 @@ import { adviceOf } from "../runtime/tool-failure.ts";
 
 export interface ClientInfo {
   windowId: string;
-  pid: number;
   sessionId: string;
-  cwd: string;
-  workspaceRoot: string;
-  repoIds: string[];
   /** 由服务端每次认证生成，模型或 hello 参数不能指定。 */
   readonly daemonInstanceId?: string;
   readonly connectionId?: string;
@@ -43,7 +39,7 @@ export interface DaemonServerOptions {
   repoId: string;
   startedAt: string;
   onActivity?: () => void;
-  hasActiveRuns?: () => Promise<boolean | { active: boolean; reason?: string }> | boolean | { active: boolean; reason?: string };
+  hasActiveRuns?: () => Promise<{ active: boolean; reason?: string }>;
   isReady?: () => boolean;
   onShutdownRequested?: () => void;
 }
@@ -231,15 +227,9 @@ export class DaemonServer {
     result: Record<string, unknown>;
   }> {
     assertProtocolVersion(params.protocolVersion as number);
-    const cwd = params.cwd as string;
-    const workspaceRoot = params.workspaceRoot as string;
     client.info = {
       windowId: params.windowId as string,
-      pid: params.pid as number,
       sessionId: params.sessionId as string,
-      cwd,
-      workspaceRoot,
-      repoIds: params.repoIds as string[],
       daemonInstanceId: this.daemonInstanceId,
       connectionId: randomUUID(),
     };
@@ -288,13 +278,9 @@ export class DaemonServer {
     this.assertClientCurrent(client, info);
     if (method === "shutdown") {
       if (!(this.options.isReady?.() ?? true)) return { accepted: false, reason: "守护进程正在启动" };
-      const activeResult = (await this.options.hasActiveRuns?.()) ?? false;
+      const activeResult = await this.options.hasActiveRuns?.();
       this.assertClientCurrent(client, info);
-      const active = typeof activeResult === "boolean" ? activeResult : activeResult.active;
-      if (active) {
-        const reason = typeof activeResult === "boolean" ? "存在活动的需求代理运行" : (activeResult.reason ?? "存在活动的需求代理运行");
-        return { accepted: false, reason };
-      }
+      if (activeResult?.active) return { accepted: false, reason: activeResult.reason ?? "存在活动的需求代理运行" };
       this.assertClientCurrent(client, info);
       this.options.onShutdownRequested?.();
       return { accepted: true };
@@ -325,7 +311,6 @@ export class DaemonServer {
       const info = client.info;
       if (!info) continue;
       try {
-        this.assertClientCurrent(client, info);
         const accepted = !filter || filter(info);
         this.assertClientCurrent(client, info);
         if (accepted) client.socket.write(encoded);

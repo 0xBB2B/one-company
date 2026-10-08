@@ -186,7 +186,7 @@ async function withSdkWorld(
     connectionAttempted = true;
     client = await connectDaemon({ repoDir: workspace.path, dataRoot: fixture.dataRoot, sdkDir: resolveSdkDir(), clock,
       connectOnly: true,
-      hello: { windowId, sessionId: sm.getSessionId(), pid: process.pid, cwd: workspace.path, workspaceRoot: workspace.path } });
+      hello: { windowId, sessionId: sm.getSessionId() } });
     authorization = new HostAuthorizationManager({ dataRoot: fixture.dataRoot });
     expect(client.state().status).toBe("connected");
     const hello = await client.call("hello", {});
@@ -236,12 +236,12 @@ async function withSdkWorld(
     };
     if (!sameTrustedConnection()) throw new Error("sdk_daemon_assembly_connection_untrusted");
     assemblyCallState = "pending";
-    assemblyCall = client.call("runs.list", { limit: 1 });
+    assemblyCall = client.call("pm.overview", {});
     let assembly: Record<string, unknown>;
     try { assembly = await assemblyCall; }
     finally { assemblyCallState = "settled"; }
     if (!sameTrustedConnection()) throw new Error("sdk_daemon_assembly_connection_untrusted");
-    if (!Array.isArray(assembly.items) || assembly.items.length !== 0 || assembly.total !== 0 || assembly.runningCount !== 0) {
+    if (!Array.isArray(assembly.items) || assembly.items.length !== 0) {
       throw new Error("sdk_daemon_assembly_unconfirmed");
     }
     const currentClient = client;

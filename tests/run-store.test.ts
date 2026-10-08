@@ -40,7 +40,7 @@ async function makeStore(overrides: { daemonStartedAt?: string } = {}): Promise<
 function requirementInput(overrides: Record<string, unknown> = {}) {
   return {
     kind: "requirement",
-    requirement: `2026-09-09.${uuidv7()}`,
+    requirement: uuidv7(),
     task: "示例任务",
     cwd: "/tmp/example-cwd",
     writePaths: [],
@@ -73,10 +73,9 @@ describe("RunStore.create", () => {
 
     expect(UUID_V7_PATTERN.test(run.id)).toBe(true);
     expect(run.kind).toBe("requirement");
-    expect(run.requirement).toMatch(/^2026-09-09\./);
+    expect(UUID_V7_PATTERN.test(run.requirement)).toBe(true);
     expect(run.state).toBe("queued");
     expect(run.turns).toBe(0);
-    expect(run.errorDetails.status).toBe("none");
     expect(run.daemonStartedAt).toBe(daemonStartedAt);
     expect(isValidUtcTimestamp(run.startedAt)).toBe(true);
     expect(isValidUtcTimestamp(run.updatedAt)).toBe(true);
@@ -136,17 +135,10 @@ describe("RunStore.create", () => {
     await expect(store.create(input)).rejects.toThrow();
   });
 
-  test("role 为 one-company.reviewer 但缺 parentRunId 且未声明 standalone 时仍抛错（不再按角色名特判）", async () => {
+  test("role 为 one-company.reviewer 但缺 parentRunId 时抛错（不按角色名特判）", async () => {
     const { store } = await makeStore();
     const input = requirementInput({ kind: "role", role: "one-company.reviewer" });
     await expect(store.create(input)).rejects.toThrow();
-  });
-
-  test("standalone: true 时允许缺少 parentRunId，不限角色名", async () => {
-    const { store } = await makeStore();
-    const input = requirementInput({ kind: "role", role: "one-company.worker", standalone: true });
-    const run = await store.create(input);
-    expect(run.parentRunId).toBeUndefined();
   });
 
 });
@@ -202,10 +194,10 @@ describe("RunStore.list", () => {
 
   test("按 requirement 过滤", async () => {
     const { store } = await makeStore();
-    const a = await store.create(requirementInput({ requirement: "2026-09-09.demo-a" }));
-    await store.create(requirementInput({ requirement: "2026-09-09.demo-b" }));
+    const a = await store.create(requirementInput());
+    await store.create(requirementInput());
 
-    const { items } = await store.list({ requirement: "2026-09-09.demo-a", limit: 100 });
+    const { items } = await store.list({ requirement: a.requirement, limit: 100 });
     expect(items.map((item) => item.id)).toEqual([a.id]);
   });
 
@@ -236,7 +228,7 @@ describe("RunStore.list", () => {
     expect(page1.items.map((item) => item.id)).not.toEqual(page2.items.map((item) => item.id));
   });
 
-  test("runningCount 统计 running/pausing/waiting_answer，结果不含 uncertainCount 字段", async () => {
+  test("runningCount 统计 running/pausing，结果不含 uncertainCount 字段", async () => {
     const { store } = await makeStore();
     const running = await store.create(requirementInput());
     await store.update(running.id, { state: "running" });
@@ -245,15 +237,11 @@ describe("RunStore.list", () => {
     await store.update(pausing.id, { state: "running" });
     await store.update(pausing.id, { state: "pausing" });
 
-    const waitingAnswer = await store.create(requirementInput());
-    await store.update(waitingAnswer.id, { state: "running" });
-    await store.update(waitingAnswer.id, { state: "waiting_answer" });
-
     const queued = await store.create(requirementInput());
 
     const result = await store.list({ limit: 100 });
-    expect(result.runningCount).toBe(3);
-    expect(result.total).toBe(4);
+    expect(result.runningCount).toBe(2);
+    expect(result.total).toBe(3);
     expect("uncertainCount" in result).toBe(false);
     void queued;
   });
@@ -347,14 +335,14 @@ describe("RunStore.update", () => {
 
     await Promise.all([
       ...reasons.map((reason) => store.update(created.id, { stateReason: reason })),
-      ...Array.from({ length: 5 }, () => store.update(created.id, { errorDetails: { status: "saved", recordId: "01991910-0000-7000-8000-000000000001" } })),
+      ...Array.from({ length: 5 }, () => store.update(created.id, { pausedAt: "2026-01-01T00:00:00.000Z" })),
       ...pauses.map((pausedMs) => store.update(created.id, { pausedMs })),
     ]);
 
     const after = await store.get(created.id);
     expect(after.ok).toBe(true);
     if (after.ok) {
-      expect(after.run.errorDetails).toEqual({ status: "saved", recordId: "01991910-0000-7000-8000-000000000001" });
+      expect(after.run.pausedAt).toBe("2026-01-01T00:00:00.000Z");
       expect(pauses).toContain(after.run.pausedMs);
       expect(reasons).toContain(after.run.stateReason);
       expect(after.run.turns).toBe(created.turns);
@@ -397,9 +385,6 @@ describe("RunStore.markInterruptedOnStartup", () => {
     await firstStore.update(paused.id, { state: "running" });
     await firstStore.update(paused.id, { state: "pausing" });
     await firstStore.update(paused.id, { state: "paused" });
-    const waitingAnswer = await firstStore.create(requirementInput());
-    await firstStore.update(waitingAnswer.id, { state: "running" });
-    await firstStore.update(waitingAnswer.id, { state: "waiting_answer" });
 
     const completedRun = await firstStore.create(requirementInput());
     await firstStore.update(completedRun.id, { state: "running" });
@@ -412,9 +397,9 @@ describe("RunStore.markInterruptedOnStartup", () => {
 
     const result = await secondStore.markInterruptedOnStartup();
 
-    expect(new Set(result.interrupted)).toEqual(new Set([running.id, paused.id, waitingAnswer.id]));
+    expect(new Set(result.interrupted)).toEqual(new Set([running.id, paused.id]));
 
-    for (const id of [running.id, paused.id, waitingAnswer.id]) {
+    for (const id of [running.id, paused.id]) {
       const got = await secondStore.get(id);
       expect(got.ok).toBe(true);
       if (got.ok) {
@@ -452,11 +437,8 @@ describe("assertTransition", () => {
     ["queued", "running"],
     ["running", "pausing"],
     ["pausing", "paused"],
-    ["running", "paused_network"],
-    ["running", "waiting_answer"],
-    ["waiting_answer", "running"],
+    ["running", "paused"],
     ["paused", "running"],
-    ["paused_network", "running"],
     ["running", "completed"],
     ["interrupted", "running"],
   ])("合法转换 %s→%s 不抛出", (from, to) => {
@@ -469,7 +451,6 @@ describe("assertTransition", () => {
     ["queued", "paused"],
     ["completed", "failed"],
     ["interrupted", "interrupted"],
-    ["running", "paused"],
     ["pausing", "running"],
     ["paused", "pausing"],
     ["failed", "running"],
@@ -483,13 +464,9 @@ describe("assertTransition", () => {
     ["running", "stopped"],
     ["pausing", "stopped"],
     ["paused", "stopped"],
-    ["paused_network", "stopped"],
-    ["waiting_answer", "stopped"],
     ["interrupted", "stopped"],
     ["queued", "failed"],
     ["pausing", "failed"],
-    ["paused_network", "failed"],
-    ["waiting_answer", "failed"],
     ["interrupted", "failed"],
   ])("任何非终态 %s→%s 均允许", (from, to) => {
     expect(() => assertTransition(from as never, to as never)).not.toThrow();
@@ -667,21 +644,18 @@ describe("RunStore.update 错误场景", () => {
     expect((after.run as Record<string, unknown>).bogus).toBeUndefined();
   });
 
-  test("state 转 failed 时 stateReason/errorDetails 落盘且写入 endedAt", async () => {
+  test("state 转 failed 时 stateReason 落盘且写入 endedAt", async () => {
     const { store, dataRoot, repoId } = await makeStore();
     const created = await store.create(requirementInput());
     await store.update(created.id, { state: "running" });
-    const errorDetailsPath = uuidv7();
 
     const failed = await store.update(created.id, {
       state: "failed",
       stateReason: "模型异常退出",
-      errorDetails: { recordId: errorDetailsPath, status: "saved" },
     });
 
     expect(failed.state).toBe("failed");
     expect(failed.stateReason).toBe("模型异常退出");
-    expect(failed.errorDetails).toEqual({ recordId: errorDetailsPath, status: "saved" });
     expect(isValidUtcTimestamp(failed.endedAt)).toBe(true);
   });
 
@@ -865,9 +839,9 @@ describe("启动标记的临界区与现场保留", () => {
     const home = await createTempHome();
     tempHomes.push(home);
     const first = new RunStore({ dataRoot: home.dataRoot, repoId: testRepoId("r"), daemonStartedAt: "2026-09-09T00:00:00.000Z" });
-    const run = await first.create({ kind: "requirement", requirement: "2026-09-08.x", task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
+    const run = await first.create({ kind: "requirement", requirement: uuidv7(), task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
     await first.update(run.id, { state: "running" });
-    await first.update(run.id, { state: "paused_network", stateReason: "连接中断" });
+    await first.update(run.id, { state: "paused", stateReason: "连接中断" });
     const second = new RunStore({ dataRoot: home.dataRoot, repoId: testRepoId("r"), daemonStartedAt: "2026-09-09T01:00:00.000Z" });
     await second.markInterruptedOnStartup();
     const read = await second.get(run.id);
@@ -879,7 +853,7 @@ describe("启动标记的临界区与现场保留", () => {
     const home = await createTempHome();
     tempHomes.push(home);
     const first = new RunStore({ dataRoot: home.dataRoot, repoId: testRepoId("r"), daemonStartedAt: "2026-09-09T00:00:00.000Z" });
-    const run = await first.create({ kind: "requirement", requirement: "2026-09-08.x", task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
+    const run = await first.create({ kind: "requirement", requirement: uuidv7(), task: "t", cwd: "/tmp", writePaths: [], readPaths: [], model: { provider: "p", id: "m" }, thinking: "high", mcp: [] });
     await first.update(run.id, { state: "running" });
     const second = new RunStore({ dataRoot: home.dataRoot, repoId: testRepoId("r"), daemonStartedAt: "2026-09-09T01:00:00.000Z" });
     const originalGet = second.get.bind(second);
@@ -897,7 +871,7 @@ describe("启动标记的临界区与现场保留", () => {
 
 
 describe("运行记录内容损坏", () => {
-  test.each(["state", "model", "errorDetails", "writePaths", "id"])("损坏 %s 不冒充合法记录且不允许列表判定安全", async (field) => {
+  test.each(["state", "model", "writePaths", "id"])("损坏 %s 不冒充合法记录且不允许列表判定安全", async (field) => {
     const { store, dataRoot, repoId } = await makeStore();
     const run = await store.create(requirementInput());
     await overwriteStateFile(await statePath(dataRoot, repoId, run.id), (data) => { data[field] = null; });

@@ -5,11 +5,10 @@ import { chmod, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "nod
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
 import { RunStore } from "../runtime/run-store.ts";
 import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
-import { putRecord, repositoryDatabase } from "../runtime/database.ts";
+import { putRecord, repositoryDatabase, uuidv7 } from "../runtime/database.ts";
 import { deleteRecord } from "./helpers/database-fixture.ts";
 import { PROTOCOL_VERSION } from "../runtime/protocol.ts";
 import {
@@ -60,7 +59,7 @@ async function exactLengthDataRoot(targetLength: number): Promise<string> {
 function requirementInput(overrides: Record<string, unknown> = {}) {
   return {
     kind: "requirement",
-    requirement: `2026-09-09.daemon-lifecycle-${randomUUID()}`,
+    requirement: uuidv7(),
     task: "daemon lifecycle 测试占位任务",
     cwd: "/tmp/daemon-lifecycle-test-cwd",
     writePaths: [],
@@ -182,8 +181,8 @@ describe("单实例收敛", () => {
     const client = await connectTestClient(fixture.socketPath);
     clients.push(client);
     // ping 绕过 handlersReady 闸门，与 acquireListener 内的陈旧文件清理无 happens-before；
-    // runs.list 经 register() 的 awaitStarted() 排队，只有清理与处理器登记都完成后才会返回
-    await client.call("runs.list", {});
+    // pm.overview 经 register() 的 awaitStarted() 排队，只有清理与处理器登记都完成后才会返回
+    await client.call("pm.overview", {});
 
     await expect(stat(stale)).rejects.toThrow();
   }, 20_000);
@@ -263,7 +262,7 @@ describe("socket 被替换", () => {
     const client = await connectTestClient(fixture.socketPath);
     const daemonStartedAt = String(client.helloResult.startedAt);
     // hello可以早于启动恢复完成；先经过awaitStarted门槛，再建立本测试的运行现场。
-    await client.call("runs.list");
+    await client.call("pm.overview", {});
     client.close();
 
     const ownStore = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt });
@@ -309,8 +308,8 @@ describe("SIGTERM 退出", () => {
     const client = await connectTestClient(fixture.socketPath);
     const daemonStartedAt = String(client.helloResult.startedAt);
     // hello 早于 handlersReady 闸门应答，与装配完成（runManager 等 SIGTERM 收尾所依赖的状态）无 happens-before；
-    // runs.list 经 register() 的 awaitStarted() 排队，返回即说明装配已完整完成，再发 SIGTERM 才有意义
-    await client.call("runs.list", {});
+    // pm.overview 经 register() 的 awaitStarted() 排队，返回即说明装配已完整完成，再发 SIGTERM 才有意义
+    await client.call("pm.overview", {});
     client.close();
 
     const ownStore = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt });
@@ -368,7 +367,7 @@ describe("空闲退出", () => {
     expect(result.code).toBe(0);
   }, 15_000);
 
-  test.each(["queued", "paused_network", "paused", "waiting_answer"])(
+  test.each(["queued", "paused"])(
     "存在 %s 状态的需求代理运行时不因空闲退出",
     async (targetState) => {
       const fixture = await createDaemonFixture();
@@ -384,8 +383,6 @@ describe("空闲退出", () => {
       if (targetState === "paused") {
         await store.update(run.id, { state: "pausing" });
         await store.update(run.id, { state: "paused" });
-      } else if (targetState === "paused_network" || targetState === "waiting_answer") {
-        await store.update(run.id, { state: targetState });
       }
       client.close();
 
@@ -448,7 +445,7 @@ describe("崩溃恢复", () => {
       repoId: fixture.repoId,
       daemonStartedAt: client.helloResult.startedAt as string,
     });
-    await createRunningRecord(ownStore, { requirement: "2026-09-09.shutdown-blocked" });
+    await createRunningRecord(ownStore, { requirement: uuidv7() });
 
     const result = await client.call("shutdown");
     expect(result.accepted).toBe(false);
@@ -466,7 +463,7 @@ describe("崩溃恢复", () => {
     });
     await Promise.all(
       Array.from({ length: 3 }, (_, i) =>
-        createRunningRecord(staleStore, { requirement: `2026-09-09.startup-window-${i}` }),
+        createRunningRecord(staleStore, { requirement: uuidv7() }),
       ),
     );
 
@@ -523,8 +520,8 @@ describe("RunStore 读失败不影响存活", () => {
     clients.push(client);
     const pong = await client.call("ping");
     expect(typeof pong.now).toBe("number");
-    // socket 可连早于启动收尾；runs.list 经 awaitStarted() 排队，返回（此处因记录损坏而报错）即说明已过"正在启动"阶段
-    await client.call("runs.list", {}).catch(() => undefined);
+    // socket 可连早于启动收尾；pm.overview 经 awaitStarted() 排队，返回即说明已过"正在启动"阶段
+    await client.call("pm.overview", {}).catch(() => undefined);
 
     const rejected = await client.call("shutdown");
     expect(rejected.accepted).toBe(false);
@@ -565,7 +562,7 @@ describe("进程级未处理拒绝兜底", () => {
 });
 
 describe("分发层就绪信号：socket 就绪早于业务方法登记完成", () => {
-  test("装配窗口内 socket 就绪后立即 hello + runs.list：排队等到登记完成后正常返回，而非 unknown_method", async () => {
+  test("装配窗口内 socket 就绪后立即 hello + pm.overview：排队等到登记完成后正常返回，而非 unknown_method", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
     const handle = trackHandle(
@@ -580,11 +577,11 @@ describe("分发层就绪信号：socket 就绪早于业务方法登记完成", 
 
     const client = await connectTestClient(fixture.socketPath);
     clients.push(client);
-    const result = await client.call("runs.list", {});
+    const result = await client.call("pm.overview", {});
     expect(Array.isArray(result.items)).toBe(true);
   }, 20_000);
 
-  test("装配长时间卡死（超过启动上界）时 runs.list 在上界后收到明确的启动中错误而非无限等待", async () => {
+  test("装配长时间卡死（超过启动上界）时 pm.overview 在上界后收到明确的启动中错误而非无限等待", async () => {
     const fixture = await createDaemonFixture();
     fixtures.push(fixture);
     const handle = trackHandle(
@@ -603,7 +600,7 @@ describe("分发层就绪信号：socket 就绪早于业务方法登记完成", 
     const start = Date.now();
     let rejected: Error | undefined;
     try {
-      await client.call("runs.list", {});
+      await client.call("pm.overview", {});
     } catch (error) {
       rejected = error as Error;
     }
@@ -817,11 +814,7 @@ describe("协议接线", () => {
     await expect(
       raw.call("hello", {
         windowId: "test-window",
-        pid: process.pid,
         sessionId: "test-session",
-        cwd: process.cwd(),
-        workspaceRoot: process.cwd(),
-        repoIds: [],
         protocolVersion: PROTOCOL_VERSION + 1,
       }),
     ).rejects.toThrow(/protocol_version/);

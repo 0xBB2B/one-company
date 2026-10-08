@@ -10,15 +10,6 @@ function parseIdleTimeoutMs(raw: string | undefined): number {
   return value;
 }
 
-function parseNetworkProbeIntervalMs(raw: string | undefined): number | undefined {
-  if (raw === undefined) return undefined;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`ONE_COMPANY_NETWORK_PROBE_INTERVAL_MS 必须是有限正数: ${raw}`);
-  }
-  return value;
-}
-
 async function main(): Promise<void> {
   const capturedEnv = { ...process.env };
   const startupConfig = parseDaemonStartupConfig(capturedEnv);
@@ -26,8 +17,6 @@ async function main(): Promise<void> {
   const idleTimeoutMs = parseIdleTimeoutMs(capturedEnv.ONE_COMPANY_IDLE_TIMEOUT_MS);
   const clockSkewFile = capturedEnv.ONE_COMPANY_CLOCK_SKEW_FILE;
   const modelProviderModulePath = capturedEnv.ONE_COMPANY_MODEL_PROVIDER_MODULE;
-  const connectivityProbeModulePath = capturedEnv.ONE_COMPANY_CONNECTIVITY_PROBE_MODULE;
-  const networkProbeIntervalMs = parseNetworkProbeIntervalMs(capturedEnv.ONE_COMPANY_NETWORK_PROBE_INTERVAL_MS);
   await loadSdk(sdkDir);
   await startDaemon({
     repoDir,
@@ -35,8 +24,6 @@ async function main(): Promise<void> {
     idleTimeoutMs,
     clockSkewFile,
     modelProviderModulePath,
-    connectivityProbeModulePath,
-    networkProbeIntervalMs,
   });
 }
 

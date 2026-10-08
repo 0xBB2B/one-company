@@ -158,8 +158,7 @@ function rowFromTaskRecord(task: TaskRecord): ShellRow {
     endVerified: ENDED_STATUSES.has(task.status)
       && task.activity === "ended"
       && task.identityVerified === true
-      && task.descendantsScanned === true
-      && task.stoppedBy !== "user",
+      && task.descendantsScanned === true,
     reason: typeof task.reason === "string" ? lineText(task.reason) : undefined,
     source: { kind: "local", repoId },
   };

@@ -157,7 +157,7 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
       ONE_COMPANY_DATA_ROOT: dataRoot, ONE_COMPANY_SDK_DIR: sdkRoot, ONE_COMPANY_IDLE_TIMEOUT_MS: "30000" };
     const first = child(node, [join(installed, "daemon/bootstrap.mjs")], extra);
     await Promise.race([waitForSocketReady(socket), first.closed.then((exit) => { throw new Error(`bootstrap 在 hello 前退出 ${exit.code}: ${exit.stderr}`); })]);
-    const client = await bounded(connectTestClient(socket, { cwd: repo, workspaceRoot: repo }, { dataRoot }));
+    const client = await bounded(connectTestClient(socket, {}, { dataRoot }));
     try {
       expect(client.helloResult.daemonPid).toBe(first.proc.pid);
       expect(client.helloResult.repoId).toBe(identity.repoId);

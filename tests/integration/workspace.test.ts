@@ -8,7 +8,7 @@ import { createTempHome, removeTempHome } from "../helpers/temp-home.ts";
 import { connectTestClient, killDaemon, startDaemonForTest } from "../helpers/daemon-harness.ts";
 import { modelProviderEnv, readProviderRequestsLog, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
 import { daemonSocketPath, discoverWorkspace, repositoryIdentity } from "../../runtime/identity.ts";
-import { repositoryDatabase, putRecord, withDatabase } from "../../runtime/database.ts";
+import { repositoryDatabase, putRecord, uuidv7, withDatabase } from "../../runtime/database.ts";
 import { RunStore } from "../../runtime/run-store.ts";
 
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
@@ -20,7 +20,7 @@ async function world() {
   const dataRoot = await mkdtemp(join(temporaryRoot(), "d")); cleanup.push(() => rm(dataRoot, { recursive: true, force: true }));
   const repos = [];
   for (const [index, root] of workspace.repos.entries()) {
-    const identity = await repositoryIdentity(root), requirement = `2026-09-10.workspace-${index}`;
+    const identity = await repositoryIdentity(root), requirement = uuidv7();
     const store = new RunStore({ dataRoot, repoId: identity.repoId, daemonStartedAt: "workspace-history" });
     const run = await store.create({ kind: "requirement", requirement, task: "历史跨仓目标", cwd: root, readPaths: [], writePaths: [], model: { provider: "workspace-probe", id: "test" }, thinking: "off", mcp: [] });
     putRecord({ database: repositoryDatabase(dataRoot, identity.repoId), namespace: "requirements", key: requirement }, { requirement, stage: "confirmed", tasks: {}, shape: { decisionId: "USER-001" } });
@@ -31,10 +31,10 @@ async function world() {
     const handle = await startDaemonForTest({ home, dataRoot, repoDir: identity.commonDir, socketPath }, { extraEnv: modelProviderEnv(scripts, log) }); cleanup.push(() => killDaemon(handle));
     repos.push({ root, ...identity, requirement, run, store, socketPath, log });
   }
-  async function connect(index: number, windowId: string, ids: string[]) {
+  async function connect(index: number, windowId: string) {
     const repo = repos[index]!;
-    const client = await connectTestClient(repo.socketPath, { windowId, sessionId: windowId, cwd: workspace.root, workspaceRoot: workspace.root, repoIds: ids }, { dataRoot }); cleanup.push(() => client.close());
-    await client.call("runs.list"); return client;
+    const client = await connectTestClient(repo.socketPath, { windowId, sessionId: windowId }, { dataRoot }); cleanup.push(() => client.close());
+    await client.call("shells.list"); return client;
   }
   const snapshot = () => repos.map((repo) => withDatabase(repositoryDatabase(dataRoot, repo.repoId), (db) => JSON.stringify({ requirements: db.list("requirements"), runs: db.list("runs"), sessions: db.list("sessions") })));
   return { home, workspace, dataRoot, repos, connect, snapshot };
@@ -48,23 +48,18 @@ test("父目录发现两个仓库并排除node_modules，仓库内只见自己�
   expect((await discoverWorkspace(unrelated)).repos).toEqual([]);
 });
 
-test("两仓真实socket的安全停止通知只投递对应repo窗口，工作区外窗口无事件或待办", async () => {
-  const w = await world(); const [a, b] = w.repos; const ids = w.repos.map((repo) => repo.repoId);
-  const parentA = await w.connect(0, "parent", ids), parentB = await w.connect(1, "parent", ids);
-  const insideA = await w.connect(0, "inside-a", [a!.repoId]);
-  const insideAOnB = await w.connect(1, "inside-a", [a!.repoId]);
-  const unrelated = await w.connect(0, "outside", ["0".repeat(64)]);
-  const events = [parentA, parentB, insideA, insideAOnB, unrelated].map((client) => { const values: Record<string, unknown>[] = []; client.onEvent("relay.notice", (value) => values.push(value)); return values; });
+test("两仓真实socket各自安全停止本仓运行，不改另一仓的运行记录", async () => {
+  const w = await world(); const [a, b] = w.repos;
+  const parentA = await w.connect(0, "parent"), parentB = await w.connect(1, "parent");
+  const beforeB = await b!.store.get(b!.run.id);
   expect(await parentA.call("runs.stop", { runId: a!.run.id })).toMatchObject({ confirmed: true });
+  expect(await b!.store.get(b!.run.id)).toEqual(beforeB);
   expect(await parentB.call("runs.stop", { runId: b!.run.id })).toMatchObject({ confirmed: true });
-  await delay(200);
-  expect(events[0]!.map((event) => event.repoId)).toEqual([a!.repoId]); expect(events[1]!.map((event) => event.repoId)).toEqual([b!.repoId]);
-  expect(events[2]!.map((event) => event.repoId)).toEqual([a!.repoId]); expect(events[3]).toEqual([]); expect(events[4]).toEqual([]);
-  for (const event of events.flat()) { expect(event.kind).toBe("stopped"); expect(event.message).not.toContain("历史跨仓目标"); }
+  for (const repo of w.repos) expect(await repo.store.get(repo.run.id)).toMatchObject({ ok: true, run: { state: "stopped" } });
 }, 30000);
 
 test("跨仓旧契约裁定不能经answer/forward产生用户授权或新模型请求", async () => {
-  const w = await world(); const clients = [await w.connect(0, "main", w.repos.map((repo) => repo.repoId)), await w.connect(1, "main", w.repos.map((repo) => repo.repoId))];
+  const w = await world(); const clients = [await w.connect(0, "main"), await w.connect(1, "main")];
   const before = w.snapshot();
   for (const [index, client] of clients.entries()) {
     await expect(client.call("relay.answer", { questionId: "old-question", answer: "主会话裁定批准契约", windowId: "main" })).rejects.toThrow("unknown_method");
@@ -75,7 +70,7 @@ test("跨仓旧契约裁定不能经answer/forward产生用户授权或新模型
 }, 30000);
 
 test("跨仓直连拒绝不改另一仓历史数据或文件，不创建角色会话", async () => {
-  const w = await world(); await w.connect(0, "a", [w.repos[0]!.repoId]); const b = await w.connect(1, "b", [w.repos[1]!.repoId]);
+  const w = await world(); await w.connect(0, "a"); const b = await w.connect(1, "b");
   const before = w.snapshot(), source = await readFile(join(w.repos[0]!.root, "README.md"), "utf8");
   await expect(b.call("relay.forward", { requirement: w.repos[0]!.requirement, message: "直接命令其他仓修改", windowId: "b" })).rejects.toThrow("unknown_method");
   await expect(b.call("dispatch.requirement", { requirement: w.repos[0]!.requirement, cwd: w.repos[0]!.root })).rejects.toThrow("unknown_method");
@@ -85,7 +80,7 @@ test("跨仓直连拒绝不改另一仓历史数据或文件，不创建角色�
 }, 30000);
 
 test("跨仓旧accepted依赖不启动排队记录，状态变化不会转为执行权限", async () => {
-  const w = await world(); const a = await w.connect(0, "main", w.repos.map((repo) => repo.repoId)); await w.connect(1, "main", w.repos.map((repo) => repo.repoId));
+  const w = await world(); const a = await w.connect(0, "main"); await w.connect(1, "main");
   const target = w.repos[1]!;
   putRecord({ database: repositoryDatabase(w.dataRoot, target.repoId), namespace: "requirements", key: target.requirement }, { requirement: target.requirement, stage: "accepted", tasks: {} });
   const before = w.snapshot();

@@ -15,10 +15,6 @@ interface CreateRunContext extends RunRef {
   cwd: string;
 }
 
-interface OpenRunContext extends RunRef {
-  cwd?: string;
-}
-
 export function sessionRecordRef(ref: RunRef) {
   if (!UUID_V7_PATTERN.test(ref.runId)) throw new Error("运行编号必须是 UUIDv7");
   return { database: repositoryDatabase(ref.dataRoot, ref.repoId), namespace: "sessions", key: ref.runId };
@@ -92,7 +88,7 @@ export function createSessionManagerForRun(ctx: CreateRunContext): SessionManage
   return persistManager(manager, ctx, 1);
 }
 
-export type SessionFileFailure = { ok: false; reason: "missing" | "corrupt" | "closed"; detail: string };
+export type SessionFileFailure = { ok: false; reason: "missing" | "corrupt"; detail: string };
 
 interface MinimalEntry {
   type?: string;
@@ -100,17 +96,16 @@ interface MinimalEntry {
   parentId?: string | null;
 }
 
-function validateSessionRecord(ref: RunRef): { ok: true; entries: FileEntry[]; leafId: string | null; version: number } | SessionFileFailure {
+/** 只读已登记运行的会话条目；不打开可写会话，也不据此恢复运行。 */
+export function readSessionEntries(ref: RunRef): { ok: true; entries: FileEntry[] } | SessionFileFailure {
   let rawEntries: unknown[];
   let leafId: string | null;
-  let version: number;
   try {
     const address = sessionRecordRef(ref);
     const stored = readRecord<{ cwd: string; leafId: string | null }>(address);
     if (!stored.exists) return { ok: false, reason: "missing", detail: `会话记录不存在: ${ref.runId}` };
     if (!stored.data || typeof stored.data.cwd !== "string" || !(stored.data.leafId === null || typeof stored.data.leafId === "string")) throw new Error("会话元数据结构无效");
     leafId = stored.data.leafId;
-    version = stored.version;
     rawEntries = readEntries(sessionFilePath(ref));
   } catch (error) { return { ok: false, reason: "corrupt", detail: `会话记录无法读取: ${(error as Error).message}` }; }
   const ids = new Set<string>();
@@ -140,138 +135,5 @@ function validateSessionRecord(ref: RunRef): { ok: true; entries: FileEntry[]; l
   if (header.type !== "session") return { ok: false, reason: "corrupt", detail: `首条记录不是 session header: ${ref.runId}` };
 
   if (leafId !== null && !ids.has(leafId)) return { ok: false, reason: "corrupt", detail: "会话当前位置指向不存在的条目" };
-  return { ok: true, entries: rawEntries as FileEntry[], leafId, version };
-}
-
-/** 只读已登记运行的会话条目；不打开可写会话，也不据此恢复运行。 */
-export function readSessionEntries(ref: RunRef): { ok: true; entries: FileEntry[] } | SessionFileFailure {
-  const validated = validateSessionRecord(ref);
-  return validated.ok ? { ok: true, entries: validated.entries } : validated;
-}
-
-export type OpenSessionOutcome = { ok: true; manager: SessionManager } | SessionFileFailure;
-
-function requirementClosedFor(ctx: RunRef): boolean {
-  return withDatabase(repositoryDatabase(ctx.dataRoot, ctx.repoId), (db) => {
-    const run = db.read<{ requirement?: unknown }>("runs", ctx.runId)?.data;
-    if (!run || typeof run.requirement !== "string") return false;
-    const requirement = db.read<{ lifecycle?: unknown }>("requirements", run.requirement)?.data;
-    return requirement?.lifecycle === "closing" || requirement?.lifecycle === "closed";
-  });
-}
-
-/** 已关闭需求的 PM/子会话不再续接：它们的消息与摘要不能进入任何新运行。 */
-export function openSessionManagerForRun(ctx: OpenRunContext): OpenSessionOutcome {
-  const validated = validateSessionRecord(ctx);
-  if (!validated.ok) return validated;
-  if (requirementClosedFor(ctx)) return { ok: false, reason: "closed", detail: `需求已关闭，会话不续接: ${ctx.runId}` };
-  try {
-    const header = validated.entries[0] as { cwd?: string };
-    const manager = SessionManager.inMemory(ctx.cwd ?? header.cwd, undefined, validated.entries);
-    if (validated.leafId === null) manager.resetLeaf();
-    else manager.branch(validated.leafId);
-    return { ok: true, manager: persistManager(manager, ctx, validated.version) };
-  } catch (error) { return { ok: false, reason: "corrupt", detail: (error as Error).message }; }
-}
-
-export type SynthesizeOutcome =
-  | { ok: true; appended: Array<{ toolCallId: string; toolName: string }> }
-  | SessionFileFailure;
-
-export function synthesizeInterruptedResults(ctx: RunRef): SynthesizeOutcome {
-  const opened = openSessionManagerForRun(ctx);
-  if (!opened.ok) return opened;
-  const manager = opened.manager;
-
-  const calls: Array<{ toolCallId: string; toolName: string }> = [];
-  const resultIds = new Set<string>();
-  for (const entry of manager.getBranch()) {
-    if (entry.type !== "message") continue;
-    const message = entry.message;
-    if (message.role === "assistant") {
-      for (const block of message.content) {
-        if (block.type === "toolCall") calls.push({ toolCallId: block.id, toolName: block.name });
-      }
-    } else if (message.role === "toolResult") {
-      resultIds.add(message.toolCallId);
-    }
-  }
-
-  const missing = calls.filter((call) => !resultIds.has(call.toolCallId));
-  for (const call of missing) {
-    manager.appendMessage({
-      role: "toolResult",
-      toolCallId: call.toolCallId,
-      toolName: call.toolName,
-      content: [{ type: "text", text: "调用因守护进程中断" }],
-      isError: true,
-      timestamp: Date.now(),
-    });
-  }
-  return { ok: true, appended: missing };
-}
-
-export type TranscriptEntryKind = "thinking" | "text" | "toolcall" | "tool_result" | "error";
-
-export interface TranscriptEntry {
-  seq: number;
-  kind: TranscriptEntryKind;
-  summary: string;
-  at?: string;
-}
-
-function extractText(content: string | Array<{ type: string; text?: string }>): string {
-  if (typeof content === "string") return content;
-  return content
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text as string)
-    .join("\n");
-}
-
-export type ReadTranscriptOutcome = { ok: true; entries: TranscriptEntry[]; ended: boolean } | SessionFileFailure;
-
-export function readTranscript(ctx: RunRef & { fromSeq?: number }): ReadTranscriptOutcome {
-  const validated = validateSessionRecord(ctx);
-  if (!validated.ok) return validated;
-
-  const entries: TranscriptEntry[] = [];
-  let seq = 0;
-
-  for (const fileEntry of validated.entries) {
-    if (fileEntry.type !== "message") continue;
-    const message = fileEntry.message;
-    const at = fileEntry.timestamp;
-    if (message.role === "user") {
-      const text = extractText(message.content);
-      if (text) entries.push({ seq: ++seq, kind: "text", summary: text, at });
-    } else if (message.role === "assistant") {
-      for (const block of message.content) {
-        if (block.type === "thinking") entries.push({ seq: ++seq, kind: "thinking", summary: block.thinking, at });
-        else if (block.type === "text") entries.push({ seq: ++seq, kind: "text", summary: block.text, at });
-        else if (block.type === "toolCall") entries.push({ seq: ++seq, kind: "toolcall", summary: block.name, at });
-      }
-    } else if (message.role === "toolResult") {
-      entries.push({
-        seq: ++seq,
-        kind: message.isError ? "error" : "tool_result",
-        summary: extractText(message.content),
-        at,
-      });
-    }
-  }
-
-  const run = readRecord<{ state: string }>({ database: repositoryDatabase(ctx.dataRoot, ctx.repoId), namespace: "runs", key: ctx.runId });
-  const ended = run.exists && ["completed", "failed", "stopped"].includes(run.data.state);
-
-  const filtered = ctx.fromSeq === undefined ? entries : entries.filter((entry) => entry.seq > (ctx.fromSeq as number));
-  return { ok: true, entries: filtered, ended };
-}
-
-export type TranscriptSeqOutcome = { ok: true; seq: number } | SessionFileFailure;
-
-export function transcriptSeq(ctx: RunRef): TranscriptSeqOutcome {
-  const result = readTranscript(ctx);
-  if (!result.ok) return result;
-  const last = result.entries[result.entries.length - 1];
-  return { ok: true, seq: last ? last.seq : 0 };
+  return { ok: true, entries: rawEntries as FileEntry[] };
 }

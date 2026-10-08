@@ -11,7 +11,6 @@ export const METHODS = [
   "hello",
   "ping",
   "shutdown",
-  "runs.list",
   "runs.get",
   "runs.pause",
   "runs.resume",
@@ -25,23 +24,16 @@ export const METHODS = [
   "pm.prototypeDecide",
   "pm.message",
   "workflow.manage",
-  "runs.pauseAll",
-  "runs.stopAll",
   "shells.list",
   "shells.stop",
-  "shells.markStopped",
   "mcp.register",
   "index.manage",
   "knowledge.query",
 ] as const;
 
 export const EVENTS = [
-  "runs.changed",
   "pm.overview.changed",
   "explore.finished",
-  "relay.notice",
-  "shells.changed",
-  "daemon.idle",
 ] as const;
 
 type RequestFrame = { t: "req"; id: string; method: string; params: Record<string, unknown> };
@@ -97,25 +89,13 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
     {
       authToken: Type.String({ minLength: 1 }),
       windowId: Type.String(),
-      pid: Type.Number(),
       sessionId: Type.String(),
-      cwd: Type.String(),
-      workspaceRoot: Type.String(),
-      repoIds: Type.Array(Type.String()),
       protocolVersion: Type.Number(),
     },
     { additionalProperties: false },
   ),
   ping: Type.Object({}, { additionalProperties: false }),
   shutdown: Type.Object({}, { additionalProperties: false }),
-  "runs.list": Type.Object(
-    {
-      kind: Type.Optional(Type.String()),
-      offset: Type.Optional(Type.Number()),
-      limit: Type.Optional(Type.Number()),
-    },
-    { additionalProperties: false },
-  ),
   "runs.get": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.pause": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.resume": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
@@ -135,23 +115,12 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   "pm.message": Type.Object({ requirementId: Type.String(), text: Type.String({ minLength: 1, maxLength: PM_MESSAGE_MAX_CHARS }) }, { additionalProperties: false }),
   "workflow.manage": Type.Object({ requirementId: Type.String(), request: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),
   "runs.stop": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
-  "runs.pauseAll": Type.Object({}, { additionalProperties: false }),
-  "runs.stopAll": Type.Object({}, { additionalProperties: false }),
   "shells.list": Type.Object({}, { additionalProperties: false }),
   "shells.stop": Type.Object(
     {
       taskId: Type.String(),
       expectedPid: Type.Number(),
       expectedStartedAt: Type.String(),
-    },
-    { additionalProperties: false },
-  ),
-  "shells.markStopped": Type.Object(
-    {
-      taskId: Type.String(),
-      expectedPid: Type.Number(),
-      expectedStartedAt: Type.String(),
-      decisionId: Type.String(),
     },
     { additionalProperties: false },
   ),

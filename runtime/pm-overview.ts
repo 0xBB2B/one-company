@@ -51,7 +51,7 @@ export interface PmOverviewInput {
   now: number;
 }
 
-const ACTIVE_CHILD = new Set(["queued", "running", "pausing", "waiting_answer", "paused_network"]);
+const ACTIVE_CHILD = new Set(["queued", "running", "pausing"]);
 const ROLE_LABEL: Record<string, string> = { "one-company.worker": "worker", "one-company.reviewer": "reviewer", "one-company.qa": "qa", "one-company.explore": "explore" };
 
 /** 已批准正文里带显式 ID 的标题：`# 标题 {#id}`。 */

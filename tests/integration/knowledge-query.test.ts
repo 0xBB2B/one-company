@@ -45,7 +45,7 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
   await writeFile(join(f.repo.root, "docs/prod/0197b7b0-6a20-7c51-8a32-b9465fb72d10.完成.md"), "角色跳跃SECRET_ARCHIVE_BODY", { mode: 0o000 });
   const probePath = join(f.home.home, "query-probe.json"), providerLog = join(f.home.home, "provider-log.jsonl");
   await writeFile(providerLog, "", { mode: 0o600 });
-  const providers = await writeTestModelProviders(f.home.home, [{ providerId: "query-daemon", modelId: "controlled", roleName: "requirement-agent", replies: [{ type: "text", text: "not called" }] }]);
+  const providers = await writeTestModelProviders(f.home.home, [{ providerId: "query-daemon", modelId: "controlled", replies: [{ type: "text", text: "not called" }] }]);
   const child = spawnDaemonProcess({ home: f.home, repoDir: f.repoDir, dataRoot: f.dataRoot, idleTimeoutMs: 120_000, captureOutput: true,
     extraEnv: { ...modelProviderEnv(providers, providerLog), NODE_OPTIONS: `--import=${fileURLToPath(new URL("../helpers/project-index-daemon-child.ts", import.meta.url))}`,
       M3_ASSEMBLY_PROBE: probePath, M3_ASSEMBLY_REPOSITORY: f.repo.root } });
@@ -56,7 +56,7 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
     await Promise.race([waitForSocketReady(f.socketPath), child.exited.then((exit) => { throw new Error(exit.stderr); })]);
     const sm = SessionManager.inMemory(f.repo.root), sessionId = sm.getSessionId(), windowId = randomUUID();
     const client = await connectDaemon({ repoDir: f.repo.root, dataRoot: f.dataRoot, sdkDir: resolveSdkDir(), clock,
-      hello: { windowId, sessionId, pid: process.pid, cwd: f.repo.root, workspaceRoot: f.repo.root } });
+      hello: { windowId, sessionId } });
     closeClient = () => client.close();
     expect((await client.call("hello")).daemonPid).toBe(child.proc.pid);
     const workspace = { repos: [{ path: f.repo.root, repoId: f.repoId, commonDir: f.repoDir }], skipped: [] };

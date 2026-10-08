@@ -90,11 +90,7 @@ function hello(windowId: string, authToken = "lifecycle-token"): Record<string, 
   return {
     authToken,
     windowId,
-    pid: process.pid,
     sessionId: `session-${windowId}`,
-    cwd: "/repo",
-    workspaceRoot: "/workspace",
-    repoIds: ["repo-lifecycle"],
     protocolVersion: PROTOCOL_VERSION,
   };
 }
@@ -197,7 +193,7 @@ describe("DaemonServer 已认证连接生命周期", () => {
     const disconnected: ClientInfo[] = [];
     const welcomed: ClientInfo[] = [];
     server.onDisconnect = (client) => disconnected.push(client);
-    server.registerHandler("runs.list", (_params, client) => ({ windowId: client.windowId }));
+    server.registerHandler("pm.overview", (_params, client) => ({ windowId: client.windowId }));
 
     const peer = await connectPeer(socketPath);
     await peer.call("hello", hello("old"));
@@ -212,7 +208,7 @@ describe("DaemonServer 已认证连接生命周期", () => {
     if (closesSocket) {
       await peer.waitClosed();
     } else {
-      await expect(peer.call("runs.list", {})).rejects.toThrow("bad_params");
+      await expect(peer.call("pm.overview", {})).rejects.toThrow("bad_params");
     }
 
     server.onHello = (client) => welcomed.push(client);

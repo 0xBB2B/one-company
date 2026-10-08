@@ -1,10 +1,9 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { spawn, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, statSync, mkdirSync, writeFileSync, unlinkSync, linkSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { DaemonServer } from "../daemon/server.ts";
-import { RelayQueue } from "../daemon/relay-queue.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import type { ShellRegistryProbes } from "../runtime/shell-registry.ts";
 import { createClock } from "../runtime/clock.ts";
@@ -16,7 +15,7 @@ import { repositoryDatabase, withDatabase, uuidv7 } from "../runtime/database.ts
 import { withReadOnlyDatabase } from "../runtime/run-metadata.ts";
 import { createDaemonFixture, removeDaemonFixture, connectTestClient } from "./helpers/daemon-harness.ts";
 
-const REQ = "2026-09-08.safety";
+const REQ = uuidv7();
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -38,19 +37,21 @@ async function fixture(probes?: ShellRegistryProbes, quotedName = false) {
   const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
   const shells = new ShellRegistry({ database, clock, probes });
   const runs = new RunStore({ dataRoot: f.dataRoot, repoId: f.repoId, daemonStartedAt: "new" });
-  const relay = new RelayQueue({ dataDir: join(f.dataRoot, "repos", f.repoId), deliver: async () => [] });
-  const manager = new RunManager({ dataRoot: f.dataRoot, repoId: f.repoId, runStore: runs, shellRegistry: shells, clock, relayQueue: relay,
-    networkGate: new NetworkPauseGate(), roleCatalog: [], runtime: {} as any, selectModel: () => { throw new Error("不得选择模型"); }, workspaceRepoIds: [f.repoId], emit: () => {} });
+  const manager = new RunManager({ dataRoot: f.dataRoot, repoId: f.repoId, runStore: runs, shellRegistry: shells, clock,
+    networkGate: new NetworkPauseGate(), roleCatalog: [], runtime: {} as any, workspaceRepoIds: [f.repoId], emit: () => {} });
   manager.markStarted();
-  const create = () => new RunStore({ dataRoot: f.dataRoot, repoId: f.repoId, daemonStartedAt: "old" }).create({ kind: "role", standalone: true, role: "one-company.worker", task: "T-1", requirement: REQ, cwd: f.repo.root, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
-  return { ...f, database, clock, shells, runs, manager, relay, create, ctx: { dataRoot: f.dataRoot, cwd: f.repo.root } };
+  const old = new RunStore({ dataRoot: f.dataRoot, repoId: f.repoId, daemonStartedAt: "old" });
+  const parent = await old.create({ kind: "requirement", task: "pm", requirement: REQ, cwd: f.repo.root, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
+  await old.update(parent.id, { state: "failed" });
+  const create = () => old.create({ kind: "role", parentRunId: parent.id, role: "one-company.worker", task: "T-1", requirement: REQ, cwd: f.repo.root, writePaths: [], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
+  return { ...f, database, clock, shells, runs, manager, create, ctx: { dataRoot: f.dataRoot, cwd: f.repo.root } };
 }
 async function socket(w: Awaited<ReturnType<typeof fixture>>) {
   mkdirSync(join(w.dataRoot, "sock"), { mode: 0o700 });
   const server = new DaemonServer({ authToken: controlToken(w.dataRoot), repoId: w.repoId, startedAt: new Date().toISOString() });
-  registerProtocolHandlers({ server, manager: w.manager, shellRegistry: w.shells, relayQueue: w.relay });
+  registerProtocolHandlers({ server, manager: w.manager, shellRegistry: w.shells });
   await server.listen(w.socketPath); cleanup.push(() => server.close());
-  const client = await connectTestClient(w.socketPath, { cwd: w.repo.root, workspaceRoot: w.repo.root, repoIds: [w.repoId] }, { dataRoot: w.dataRoot }); cleanup.push(() => client.close());
+  const client = await connectTestClient(w.socketPath, {}, { dataRoot: w.dataRoot }); cleanup.push(() => client.close());
   return client;
 }
 async function ownProcess() {
@@ -64,7 +65,7 @@ async function ownProcess() {
   return { pid, startedAt };
 }
 
-describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
+describe("M4 F1—F6 Shell 停止实际安全矩阵", () => {
   test.each([
     { action: "stop", late: false, finalScanFailure: false }, { action: "close", late: false, finalScanFailure: false },
     { action: "stop", late: true, finalScanFailure: false }, { action: "close", late: true, finalScanFailure: false },
@@ -155,7 +156,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(withReadOnlyDatabase(w.database, (db) => Number(db.prepare("SELECT 1 AS n").get()!.n))).toBe(1);
   });
 
-  test("F1 接管失败后stop/终态pause/stopAll/close均不能把活进程报已停", async () => {
+  test("F1 接管失败后stop/终态pause/close均不能把活进程报已停", async () => {
     const w = await fixture({ pidStartedAt: async () => null, ps: async () => { throw new Error("probe ps denied"); } });
     const run = await w.create(); await w.runs.markInterruptedOnStartup();
     expect((await w.runs.get(run.id))).toMatchObject({ ok: true, run: { state: "interrupted" } });
@@ -164,7 +165,6 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     await w.manager.adoptInterruptedShells(); expect(w.shells.list()).toHaveLength(0);
     expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: false });
     expect(await w.manager.pause(run.id)).toMatchObject({ confirmed: false });
-    expect((await w.manager.stopAll()).results).toContainEqual(expect.objectContaining({ runId: run.id, confirmed: false }));
     await expect(w.manager.close()).rejects.toThrow();
     expect(alive(process.pid)).toBe(true);
     expect(withDatabase(w.database, (db) => db.list("shells"))).toHaveLength(1);
@@ -207,28 +207,20 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     const w = await fixture(); const secret = "OLD_DETAIL_KEY_未核对正文";
     withDatabase(w.database, (db) => db.create("runs", secret, { bad: true }));
     const client = await socket(w);
-    let error: unknown; try { await client.call("runs.list", { limit: 10 }); } catch (e) { error = e; }
+    let error: unknown; try { await client.call("runs.get", { runId: uuidv7() }); } catch (e) { error = e; }
     expect(error).toBeDefined(); expect(String(error)).not.toContain(secret);
   });
-  test("F5/F6 2000条运行元数据；小预算必须说明遗漏和未确认", async () => {
-    const w = await fixture(); const template = await w.create();
+  test("F5/F6 2000条运行元数据：状态查询只返回所查运行，输出有界", async () => {
+    const w = await fixture(); const template = await w.create(); let last = "";
     withDatabase(w.database, (db) => db.transaction(() => {
       for (let i = 0; i < 2000; i++) {
-        const requirement = `2026-09-08.item-${i}`;
-        const id = uuidv7(); db.create("runs", id, { ...template, id, requirement, state: i === 1999 ? "interrupted" : "stopped" }, id);
+        const id = uuidv7(); last = id; db.create("runs", id, { ...template, id, state: i === 1999 ? "interrupted" : "stopped" }, id);
       }
     }));
-    const runs = await w.manager.list({ limit: 3 });
-    expect(runs.items).toHaveLength(3); expect((runs as any).coverage).toMatchObject({ truncated: true, unconfirmedOutsidePage: 1998 });
-    expect(Buffer.byteLength(JSON.stringify(runs))).toBeLessThanOrEqual(16_384);
     const client = await socket(w);
-    const listed = await client.call("runs.list", { limit: 100 });
-    expect(Buffer.byteLength(JSON.stringify(listed))).toBeLessThanOrEqual(16_384);
-    expect((listed.items as unknown[]).length).toBeLessThanOrEqual(100);
-    expect(listed.coverage).toMatchObject({ truncated: true });
-    for (const limit of [0, -1, 1.5, Number.MAX_SAFE_INTEGER]) {
-      await expect(w.manager.list({ limit })).rejects.toThrow();
-    }
+    const got = await client.call("runs.get", { runId: last });
+    expect(got).toMatchObject({ run: { id: last, state: "interrupted" } });
+    expect(Buffer.byteLength(JSON.stringify(got))).toBeLessThanOrEqual(16_384);
   });
   test("F1 持久Shell未接管即使ps扫描成功也不能以空列表确认，修复探针后可真实停止", async () => {
     let unavailable = true;
@@ -242,7 +234,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true }); expect(alive(child.pid)).toBe(false);
     await w.manager.close();
   }, 15_000);
-  test("F1/F2 内存USER终态不是证明；close不把已停止其他进程一并否认", async () => {
+  test("F1/F2 close不把已停止其他进程一并否认，未确认的进程重试仍报未完成", async () => {
     let deniedPid = 0;
     const w = await fixture({ kill(pid, signal) { if (Math.abs(pid) === deniedPid) throw Object.assign(new Error("probe EPERM"), { code: "EPERM" }); process.kill(pid, signal); } });
     const spawned = [];
@@ -254,10 +246,9 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     cleanup.push(async () => { deniedPid = 0; for (const task of spawned) { if (alive(task.pid)) { process.kill(-task.pid, "SIGKILL"); for (let n = 0; n < 100 && alive(task.pid); n++) await new Promise((r) => setTimeout(r, 10)); } expect(alive(task.pid)).toBe(false); } });
     await expect(w.manager.close()).rejects.toThrow("关闭未完成");
     expect(alive(spawned[0]!.pid)).toBe(true); expect(alive(spawned[1]!.pid)).toBe(false);
-    expect(w.shells.markStoppedByUser(spawned[0]!.taskId, { decisionId: "USER-001" }).ok).toBe(true);
     await expect(w.manager.close()).rejects.toThrow("关闭未完成"); expect(alive(spawned[0]!.pid)).toBe(true);
   }, 15_000);
-  test("F6 stopAll覆盖展示预算之外的旧终态运行及无run记录Shell", async () => {
+  test("F6 close覆盖第100条之外的旧终态运行及无run记录Shell", async () => {
     const w = await fixture({ ps: async () => [] });
     const template = await w.create(); const ids: string[] = [];
     withDatabase(w.database, (db) => db.transaction(() => { for (let i = 0; i < 105; i++) { const id = uuidv7(); ids.push(id); db.create("runs", id, { ...template, id, shellToken: id, state: "stopped" }, id); } }));
@@ -266,13 +257,10 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     const main = await w.shells.spawn({ taskId: uuidv7(), host: { kind: "main", id: "extra" }, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], cwd: w.repo.root, mode: "background", runToken: uuidv7() });
     if (!result.ok || !main.ok) throw new Error("spawn failed");
     cleanup.push(async () => { for (const task of [result.task, main.task]) { await w.shells.stop(task.taskId); expect(alive(task.pid)).toBe(false); } });
-    const stopped = await w.manager.stopAll();
+    await w.manager.close();
     expect(alive(result.task.pid)).toBe(false); expect(alive(main.task.pid)).toBe(false);
-    expect(stopped.coverage).toMatchObject({ confirmed: 106, unconfirmed: 0, unknown: 0, shellUnconfirmed: 0, truncated: true });
-    expect(stopped.results.length).toBeLessThanOrEqual(100);
-    expect(Buffer.byteLength(JSON.stringify(stopped))).toBeLessThanOrEqual(16_384);
   }, 30_000);
-  test("带旧字段的历史运行记录原样保留，仍可只读列出并参与停止枚举", async () => {
+  test("带旧字段的历史运行记录原样保留，仍可只读查询并参与停止枚举", async () => {
     const w = await fixture({ ps: async () => [] }); const run = await w.create(); const id = uuidv7();
     const legacy = { ...run, id, shellToken: id, requirement: REQ, state: "stopped", phase: "review", pendingDispatch: { instructions: "OLD_DISPATCH_正文" },
       dispatchContext: { projectTrusted: true }, sourceVersion: { definitionFingerprint: "old", codeHead: "old" }, reviewSnapshot: { head: "old", fingerprint: "old" },
@@ -280,13 +268,12 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     withDatabase(w.database, (db) => db.create("runs", id, legacy, id));
     const stored = await w.runs.get(id);
     expect(stored).toMatchObject({ ok: true, run: { id, phase: "review", pendingDispatch: { instructions: "OLD_DISPATCH_正文" }, result: { verdict: "PASS" } } });
-    expect(await w.manager.status(id)).toMatchObject({ ok: true, run: { id, state: "stopped" } });
-    const listed = await w.manager.list({ limit: 100 });
-    expect(listed.items.map((item) => item.id)).toContain(id);
-    expect(JSON.stringify(listed)).not.toContain("OLD_DISPATCH"); expect(JSON.stringify(listed)).not.toContain("OLD_RESULT");
-    const stopped = await w.manager.stopAll();
-    expect(stopped.results.map((item) => item.runId)).toContain(id);
-    expect(stopped.coverage).toMatchObject({ unknown: 0 });
+    const status = await w.manager.status(id);
+    expect(status).toMatchObject({ ok: true, run: { id, state: "stopped" } });
+    expect(JSON.stringify(status)).not.toContain("OLD_DISPATCH"); expect(JSON.stringify(status)).not.toContain("OLD_RESULT");
+    const verify = vi.spyOn(w.shells, "adoptOrphans");
+    await w.manager.close();
+    expect(verify.mock.calls.map(([input]) => input.owner.id)).toContain(id);
     expect(withDatabase(w.database, (db) => db.read<any>("runs", id)!.data)).toMatchObject({ phase: "review", commands: ["old command"], reportPath: "old/report.md" });
   }, 15_000);
   test("F2/F5 损坏run记录不能遮蔽其他持久Shell停止，但关闭仍报告未知", async () => {
@@ -297,7 +284,6 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     });
     await expect(w.manager.close()).rejects.toThrow("关闭未完成"); expect(alive(child.pid)).toBe(false);
     expect(withDatabase(w.database, (db) => db.read("runs", "UNVERIFIED_BODY"))).not.toBeNull();
-    expect((await w.manager.stopAll()).coverage.unknown).toBeGreaterThan(0);
   }, 15_000);
   test("F5 运行元数据不合法时状态查询说明读取失败，不回显字段内容", async () => {
     const w = await fixture(); const run = await w.create();

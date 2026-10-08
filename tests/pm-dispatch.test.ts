@@ -4,7 +4,6 @@ import { dirname, join } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/pi-ai";
 import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { RelayQueue } from "../daemon/relay-queue.ts";
 import { RunManager } from "../daemon/run-manager.ts";
 import { createPmTools } from "../daemon/pm-tools.ts";
 import { createClock } from "../runtime/clock.ts";
@@ -39,10 +38,8 @@ async function manager(base: { repositoryRoot: string; dataRoot: string; repoId:
   cleanups.push(() => clock.stopGapWatcher());
   const runStore = new RunStore({ dataRoot: base.dataRoot, repoId: base.repoId, daemonStartedAt: new Date().toISOString() });
   const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(root, "none-u"), projectDir: join(root, "none-p"), parseFrontmatter, projectTrusted: false });
-  const relay = new RelayQueue({ dataDir: join(base.dataRoot, "repos", base.repoId), deliver: async () => [] });
   const runs = new RunManager({ ...base, runStore, shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(base.dataRoot, base.repoId) }),
-    networkGate: new NetworkPauseGate(), relayQueue: relay, roleCatalog: catalog.roles, runtime, selectModel: () => { throw new Error("不应按旧规则选模型"); },
-    clock, workspaceRepoIds: [base.repoId], emit: vi.fn() });
+    networkGate: new NetworkPauseGate(), roleCatalog: catalog.roles, runtime, clock, workspaceRepoIds: [base.repoId], emit: vi.fn() });
   runs.markStarted();
   cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await runs.stop(run.id, { reason: "main_agent" }).catch(() => {}); });
   return { provider, runStore, runs };

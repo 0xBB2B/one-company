@@ -783,10 +783,7 @@ class DaemonClientImpl implements DaemonClient {
 
 export interface HelloInput {
   windowId: string;
-  pid: number;
   sessionId: string;
-  cwd: string;
-  workspaceRoot: string;
 }
 
 export interface ConnectDaemonOptions {
@@ -825,11 +822,7 @@ async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedCo
     ownsClock: captured.clock === undefined,
     helloParams: {
       windowId: captured.hello.windowId,
-      pid: captured.hello.pid,
       sessionId: captured.hello.sessionId,
-      cwd: captured.hello.cwd,
-      workspaceRoot: captured.hello.workspaceRoot,
-      repoIds: [identity.repoId],
       protocolVersion: PROTOCOL_VERSION,
     },
     connectOnly: captured.connectOnly,

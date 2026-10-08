@@ -34,8 +34,9 @@ async function world(blockedStop?: { value: boolean }) {
   });
   const log = join(fixture.dataRoot, "requests.jsonl"); await writeFile(log, "");
   const scripts = await writeTestModelProviders(fixture.dataRoot, [{ providerId: "control-fixture", modelId: "test", replies: [{ type: "text", text: "不应恢复旧运行" }] }]);
-  async function run(kind: "requirement" | "role" = "role", parentRunId?: string) {
-    return store.create({ kind, standalone: true, role: "one-company.worker", parentRunId, requirement: "2026-09-10.control",
+  const requirement = uuidv7();
+  async function run(kind: "requirement" | "role" = "requirement", parentRunId?: string) {
+    return store.create({ kind, role: "one-company.worker", parentRunId, requirement,
       task: "历史记录", cwd: fixture.repo.root, writePaths: ["README.md"], readPaths: [fixture.repo.root], model: { provider: "control-fixture", id: "test" }, thinking: "off", mcp: [],
       pendingDispatch: { instructions: "历史说明不能重新发给模型" } });
   }
@@ -46,8 +47,8 @@ async function world(blockedStop?: { value: boolean }) {
   }
   async function start() {
     const handle = await startDaemonForTest(fixture, { extraEnv: modelProviderEnv(scripts, log) }); cleanup.push(() => killDaemon(handle));
-    const client = await connectTestClient(fixture.socketPath, { cwd: fixture.repo.root, workspaceRoot: fixture.repo.root, repoIds: [fixture.repoId] }); cleanup.push(() => client.close());
-    await client.call("runs.list");
+    const client = await connectTestClient(fixture.socketPath); cleanup.push(() => client.close());
+    await client.call("pm.overview");
     return { handle, client };
   }
   const sessions = () => withDatabase(database, (db) => JSON.stringify(db.list("sessions").map((record) => ({ record, events: db.events(`session:${record.key}`) }))));
@@ -73,7 +74,7 @@ test("真实强杀重启后旧排队记录保持同一编号且内容不变，�
 test("跨窗口暂停不虚报确认；安全停止确认对应真实进程退出，旧恢复不重发上下文", async () => {
   const w = await world(); const run = await w.run(); await w.store.update(run.id, { state: "running" }); w.history(run);
   const task = await w.spawn(run); const a = await w.start();
-  const b = await connectTestClient(w.fixture.socketPath, { windowId: "window-b", cwd: w.fixture.repo.root, workspaceRoot: w.fixture.repo.root, repoIds: [w.fixture.repoId] }); cleanup.push(() => b.close());
+  const b = await connectTestClient(w.fixture.socketPath, { windowId: "window-b" }); cleanup.push(() => b.close());
   const before = w.sessions();
   expect(await b.call("runs.pause", { runId: run.id })).toMatchObject({ confirmed: false });
   expect(alive(task.pid)).toBe(true);

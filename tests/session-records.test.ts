@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createSessionManagerForRun, openSessionManagerForRun, readTranscript, sessionFilePath, sessionRecordRef, synthesizeInterruptedResults, transcriptSeq } from "../runtime/session-records.ts";
+import { createSessionManagerForRun, readSessionEntries, sessionFilePath, sessionRecordRef } from "../runtime/session-records.ts";
 import { withDatabase, putRecord, readRecord, uuidv7, repositoryDatabase } from "../runtime/database.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { testRepoId, sessionJson, failDatabaseWrites } from "./helpers/database-fixture.ts";
@@ -104,19 +104,6 @@ function writeTruncatedFixture(manager: SessionManager) {
   );
 }
 
-function writeDoubleDanglingFixture(manager: SessionManager) {
-  manager.appendMessage(userMessage("并发处理"));
-  manager.appendMessage(
-    assistantMessage(
-      [
-        { type: "toolCall", id: "call-x", name: "bash", arguments: { command: "a" } },
-        { type: "toolCall", id: "call-y", name: "bash", arguments: { command: "b" } },
-      ],
-      "toolUse",
-    ),
-  );
-}
-
 
 test("会话条目只存私有文件，data.db 只留元数据；重复创建拒绝且不覆盖历史", async () => {
   const ctx = await makeRunContext();
@@ -136,44 +123,21 @@ test("会话条目只存私有文件，data.db 只留元数据；重复创建拒
   expect(withDatabase(database, (db) => db.events(`session:${ctx.runId}`))).toEqual([]);
 });
 
-test("仅切换分支或重置位置后重开仍恢复同一上下文", async () => {
+const storedLeaf = (ctx: Awaited<ReturnType<typeof makeRunContext>>) => readRecord<{ leafId: string | null }>(sessionRecordRef(ctx)).data.leafId;
+
+test("切换分支与重置位置都写进会话元数据，条目文件不变", async () => {
   const ctx = await makeRunContext();
   const manager = createSessionManagerForRun(ctx);
   const first = manager.appendMessage(userMessage("第一条"));
   manager.appendMessage(userMessage("第二条"));
+  const before = sessionJson(ctx);
   manager.branch(first);
-  const reopened = openSessionManagerForRun(ctx);
-  if (!reopened.ok) throw new Error(reopened.detail);
-  expect(reopened.manager.getLeafId()).toBe(first);
-  expect(reopened.manager.buildSessionContext()).toEqual(manager.buildSessionContext());
-  reopened.manager.resetLeaf();
-  const reset = openSessionManagerForRun(ctx);
-  if (!reset.ok) throw new Error(reset.detail);
-  expect(reset.manager.getLeafId()).toBeNull();
-  expect(reset.manager.buildSessionContext().messages).toEqual([]);
-  expect(reset.manager.getEntries()).toHaveLength(2);
-});
-
-test("中断补全只处理当前分支的工具调用", async () => {
-  const ctx = await makeRunContext();
-  const manager = createSessionManagerForRun(ctx);
-  const first = manager.appendMessage(userMessage("第一条"));
-  writeDoubleDanglingFixture(manager);
-  manager.branch(first);
-  expect(synthesizeInterruptedResults(ctx)).toEqual({ ok: true, appended: [] });
-});
-
-test("两个会话写入者不能用旧上下文覆盖已提交位置", async () => {
-  const ctx = await makeRunContext();
-  const first = createSessionManagerForRun(ctx);
-  const second = openSessionManagerForRun(ctx);
-  if (!second.ok) throw new Error(second.detail);
-  const id = first.appendMessage(userMessage("先提交"));
-  expect(() => second.manager.appendMessage(userMessage("过期追加"))).toThrow("版本已变化");
-  const reopened = openSessionManagerForRun(ctx);
-  if (!reopened.ok) throw new Error(reopened.detail);
-  expect(reopened.manager.getLeafId()).toBe(id);
-  expect(reopened.manager.getEntries()).toHaveLength(1);
+  expect(storedLeaf(ctx)).toBe(first);
+  manager.resetLeaf();
+  expect(storedLeaf(ctx)).toBeNull();
+  expect(sessionJson(ctx)).toBe(before);
+  const read = readSessionEntries(ctx);
+  expect(read.ok && read.entries.slice(1)).toEqual(manager.getEntries());
 });
 
 test("受管理会话拒绝换身份和切换文件存储", async () => {
@@ -195,21 +159,17 @@ test("写入失败只通知一次，恢复数据库后也不能保存已污染�
   manager.appendMessage(userMessage("失败后追加"));
   expect(errors).toHaveLength(1);
   expect(() => manager.resetLeaf()).toThrow();
-  const reopened = openSessionManagerForRun(ctx);
-  if (!reopened.ok) throw new Error(reopened.detail);
-  expect(reopened.manager.getLeafId()).toBe(id);
-  expect(JSON.stringify(reopened.manager.buildSessionContext().messages)).not.toContain("写入失败");
+  expect(storedLeaf(ctx)).toBe(id);
   expect(sessionJson(ctx)).not.toContain("失败后追加");
 });
 
-test("工具原始结果与结构化提交原样保存，重开条目完全一致", async () => {
+test("工具原始结果与结构化提交原样保存，读回条目完全一致", async () => {
   const ctx = await makeRunContext();
   const manager = createSessionManagerForRun(ctx); writeCompleteFixture(manager);
   manager.appendMessage(assistantMessage([{ type: "toolCall", id: "submit-1", name: "structured_output", arguments: { verdict: "PASS" } }], "toolUse"));
-  const reopened = openSessionManagerForRun(ctx);
-  expect(reopened.ok).toBe(true);
-  if (!reopened.ok) throw new Error(reopened.detail);
-  expect(reopened.manager.getEntries()).toEqual(manager.getEntries());
+  const read = readSessionEntries(ctx);
+  if (!read.ok) throw new Error(read.detail);
+  expect(read.entries.slice(1)).toEqual(manager.getEntries());
   expect(sessionJson(ctx)).toContain("Authorization: Bearer abc123");
   expect(sessionJson(ctx)).toContain("MARKER-XYZ");
 });
@@ -218,28 +178,18 @@ test("压缩后按 SDK 视图重建上下文，原始完整历史仍保存在私
   const ctx = await makeRunContext();
   const manager = createSessionManagerForRun(ctx); const ids = writeCompleteFixture(manager);
   manager.appendCompaction("完成了两次工具调用", ids.textCallId, 999);
-  const before = sessionJson(ctx);
-  const reopened = openSessionManagerForRun(ctx);
-  if (!reopened.ok) throw new Error(reopened.detail);
-  expect(JSON.stringify(reopened.manager.buildSessionContext().messages)).not.toContain("运行任务");
+  expect(JSON.stringify(manager.buildSessionContext().messages)).not.toContain("运行任务");
   expect(sessionJson(ctx)).toContain("运行任务");
-  expect(sessionJson(ctx)).toBe(before);
 });
 
-test("会话缺失时打开、转录、序号及中断补全均明确失败", async () => {
+test("会话缺失时读取明确失败", async () => {
   const ctx = await makeRunContext();
-  for (const result of [openSessionManagerForRun(ctx), readTranscript(ctx), transcriptSeq(ctx), synthesizeInterruptedResults(ctx)]) {
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("missing");
-  }
+  expect(readSessionEntries(ctx)).toMatchObject({ ok: false, reason: "missing" });
 });
 
 test.each([null, { header: null }, { header: { type: "invalid", id: "header" } }])("损坏的会话元数据不冒充空记录: %j", async (data) => {
   const ctx = await makeRunContext(); createSessionManagerForRun(ctx); putRecord(sessionRecordRef(ctx), data);
-  for (const result of [openSessionManagerForRun(ctx), readTranscript(ctx), transcriptSeq(ctx), synthesizeInterruptedResults(ctx)]) {
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("corrupt");
-  }
+  expect(readSessionEntries(ctx)).toMatchObject({ ok: false, reason: "corrupt" });
 });
 
 test.each([
@@ -248,46 +198,5 @@ test.each([
 ])("坏消息或悬空父引用被拒绝: %j", async (entry) => {
   const ctx = await makeRunContext(); createSessionManagerForRun(ctx);
   appendFileSync(sessionFilePath(ctx), `${JSON.stringify(entry)}\n`);
-  expect(readTranscript(ctx).ok).toBe(false);
-  expect(openSessionManagerForRun(ctx).ok).toBe(false);
-});
-
-test("多条悬空调用按顺序补中断结果，再次补全不产生重复记录", async () => {
-  const ctx = await makeRunContext(); const manager = createSessionManagerForRun(ctx); writeDoubleDanglingFixture(manager);
-  const original = sessionJson(ctx);
-  const result = synthesizeInterruptedResults(ctx);
-  expect(result.ok && result.appended.map((entry) => entry.toolCallId)).toEqual(["call-x", "call-y"]);
-  expect(sessionJson(ctx).startsWith(original)).toBe(true);
-  const after = sessionJson(ctx);
-  const second = synthesizeInterruptedResults(ctx);
-  expect(second.ok && second.appended).toEqual([]);
-  expect(sessionJson(ctx)).toBe(after);
-  expect(openSessionManagerForRun(ctx).ok).toBe(true);
-});
-
-test("完整会话无需补写中断结果", async () => {
-  const ctx = await makeRunContext(); const manager = createSessionManagerForRun(ctx); writeCompleteFixture(manager);
-  const before = sessionJson(ctx); const result = synthesizeInterruptedResults(ctx);
-  expect(result.ok && result.appended).toEqual([]); expect(sessionJson(ctx)).toBe(before);
-});
-
-test("转录终态来自运行状态，普通文字回合结束不能把运行误判结束", async () => {
-  const ctx = await makeRunContext(); const manager = createSessionManagerForRun(ctx); writeCompleteFixture(manager);
-  expect(readTranscript(ctx).ok && (readTranscript(ctx) as { ended: boolean }).ended).toBe(false);
-  putRecord({ ...sessionRecordRef(ctx), namespace: "runs" }, { state: "completed" });
-  expect(readTranscript(ctx).ok && (readTranscript(ctx) as { ended: boolean }).ended).toBe(true);
-});
-
-test("转录序号稳定、追加不改旧序号，支持从序号后读取", async () => {
-  const ctx = await makeRunContext(); const manager = createSessionManagerForRun(ctx); writeCompleteFixture(manager);
-  const before = readTranscript(ctx); if (!before.ok) throw new Error(before.detail);
-  expect(readTranscript(ctx)).toEqual(before);
-  const last = before.entries.at(-1)!.seq;
-  manager.appendMessage(userMessage("新消息"));
-  const next = readTranscript({ ...ctx, fromSeq: last });
-  expect(next.ok && next.entries.map((entry) => entry.summary)).toEqual(["新消息"]);
-  expect(transcriptSeq(ctx)).toEqual({ ok: true, seq: last + 1 });
-  const all = readTranscript(ctx); if (!all.ok) throw new Error(all.detail);
-  expect(all.entries.slice(0, before.entries.length)).toEqual(before.entries);
-  expect(new Set(before.entries.map((entry) => entry.kind))).toEqual(new Set(["text", "thinking", "toolcall", "tool_result", "error"]));
+  expect(readSessionEntries(ctx).ok).toBe(false);
 });

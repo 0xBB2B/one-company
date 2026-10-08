@@ -201,7 +201,7 @@ export class LocalDatabase {
           ) STRICT;
           CREATE UNIQUE INDEX IF NOT EXISTS active_requirement ON records(json_extract(data, '$.requirement'))
             WHERE namespace = 'runs' AND json_extract(data, '$.kind') = 'requirement'
-            AND json_extract(data, '$.state') IN ('queued', 'running', 'pausing', 'paused', 'paused_network', 'waiting_answer');
+            AND json_extract(data, '$.state') IN ('queued', 'running', 'pausing', 'paused');
           CREATE TABLE IF NOT EXISTS events (
             id TEXT PRIMARY KEY NOT NULL CHECK (${ID_CONSTRAINT}),
             stream TEXT NOT NULL,

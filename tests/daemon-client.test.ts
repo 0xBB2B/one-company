@@ -91,7 +91,7 @@ async function startDaemonAndDisconnect(options: Parameters<typeof connectDaemon
 }
 
 function isolatedSpawnHello(cwd: string): HelloInput {
-  return { windowId: "spawn-test", pid: process.pid, sessionId: "spawn-test", cwd, workspaceRoot: cwd };
+  return { windowId: "spawn-test", sessionId: "spawn-test" };
 }
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs: number, intervalMs = 100): Promise<void> {
@@ -244,10 +244,7 @@ describe("单实例收敛", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-a",
-          pid: process.pid,
           sessionId: "session-a",
-          cwd: fixture.repo.root,
-          workspaceRoot: fixture.repo.root,
         },
       }),
       connectDaemon({
@@ -257,10 +254,7 @@ describe("单实例收敛", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-b",
-          pid: process.pid,
           sessionId: "session-b",
-          cwd: fixture.repo.root,
-          workspaceRoot: fixture.repo.root,
         },
       }),
     ]);
@@ -288,10 +282,7 @@ describe("单实例收敛", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-first",
-        pid: process.pid,
         sessionId: "session-first",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     });
     closables.push(client1);
@@ -307,10 +298,7 @@ describe("单实例收敛", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-second",
-        pid: process.pid,
         sessionId: "session-second",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     });
     closables.push(client2);
@@ -342,10 +330,7 @@ describe("worktree 与工作区", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-main",
-        pid: process.pid,
         sessionId: "session-main",
-        cwd: repo.root,
-        workspaceRoot: repo.root,
       },
     });
     closables.push(clientMain);
@@ -358,10 +343,7 @@ describe("worktree 与工作区", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-worktree",
-        pid: process.pid,
         sessionId: "session-worktree",
-        cwd: worktree.root,
-        workspaceRoot: worktree.root,
       },
     });
     closables.push(clientWorktree);
@@ -389,10 +371,7 @@ describe("worktree 与工作区", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-workspace",
-        pid: process.pid,
         sessionId: "session-workspace",
-        cwd: workspace.root,
-        workspaceRoot: workspace.root,
       },
     });
     closables.push(workspaceClients);
@@ -425,10 +404,7 @@ describe("worktree 与工作区", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-workspace-accessor",
-        pid: process.pid,
         sessionId: "session-workspace-accessor",
-        cwd: workspace.root,
-        workspaceRoot: workspace.root,
       },
     });
     closables.push(workspaceClients);
@@ -463,16 +439,13 @@ describe("不可达状态与自动重连", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-outage",
-        pid: process.pid,
         sessionId: "session-outage",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     });
     closables.push(client);
     await waitUntil(() => client.state().status === "connected", 15_000);
 
-    const cancelSubscription = client.subscribe("runs.changed", () => {});
+    const cancelSubscription = client.subscribe("pm.overview.changed", () => {});
 
     const pidBefore = await probeDaemonPid(fixture.socketPath);
     process.kill(pidBefore, "SIGKILL");
@@ -523,10 +496,7 @@ describe("睡眠感知重连", () => {
       clock,
       hello: {
         windowId: "window-sleep",
-        pid: process.pid,
         sessionId: "session-sleep",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     });
     closables.push(client);
@@ -557,7 +527,7 @@ describe("睡眠感知重连", () => {
 });
 
 describe("hello 帧", () => {
-  test("hello 请求帧包含 windowId、pid、sessionId、cwd、workspaceRoot、repoIds、protocolVersion", async () => {
+  test("hello 请求帧只含 authToken、windowId、sessionId、protocolVersion", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
@@ -597,10 +567,7 @@ describe("hello 帧", () => {
 
     const hello = {
       windowId: "window-hello",
-      pid: 4242,
       sessionId: "session-hello",
-      cwd: repo.root,
-      workspaceRoot: repo.root,
     };
 
     const client = await connectDaemon({
@@ -615,13 +582,9 @@ describe("hello 帧", () => {
     const frame = await capturedFrame;
     if (frame.t !== "req") throw new Error("未捕获到 hello 请求帧");
     const params = frame.params;
+    expect(Object.keys(params).sort()).toEqual(["authToken", "protocolVersion", "sessionId", "windowId"]);
     expect(params.windowId).toBe(hello.windowId);
-    expect(params.pid).toBe(hello.pid);
     expect(params.sessionId).toBe(hello.sessionId);
-    expect(params.cwd).toBe(hello.cwd);
-    expect(params.workspaceRoot).toBe(hello.workspaceRoot);
-    expect(Array.isArray(params.repoIds)).toBe(true);
-    expect(params.repoIds).toContain(identity.repoId);
     expect(params.protocolVersion).toBe(PROTOCOL_VERSION);
   }, 15_000);
 });
@@ -641,10 +604,7 @@ describe("spawn 失败归因", () => {
           execPath: "/no/such/executable-daemon-client-test",
           hello: {
             windowId: "window-bad-exec",
-            pid: process.pid,
             sessionId: "session-bad-exec",
-            cwd: fixture.repo.root,
-            workspaceRoot: fixture.repo.root,
           },
         }),
       ).rejects.toThrow();
@@ -668,10 +628,7 @@ describe("spawn 失败归因", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-badsdk",
-          pid: process.pid,
           sessionId: "session-badsdk",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       }),
     ).rejects.toThrow(/sdk-dir-daemon-client-test|SDK/);
@@ -690,10 +647,7 @@ describe("spawn 失败归因", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-toolong",
-          pid: process.pid,
           sessionId: "session-toolong",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       }),
     ).rejects.toThrow(/超限|超出|exceed/);
@@ -713,7 +667,7 @@ describe("守护进程日志归因边界", () => {
     repoFixtures.push(repo);
     const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
     extraTempDirs.push(dataRoot);
-    const hello = { windowId: "window-stale-log", pid: process.pid, sessionId: "session-stale-log", cwd: repo.root, workspaceRoot: repo.root };
+    const hello = { windowId: "window-stale-log", sessionId: "session-stale-log" };
 
     await expect(
       connectDaemon({ repoDir: repo.root, dataRoot, sdkDir: "/no/such/sdk-STALE-LOG-MARKER", execPath: resolveNodeExecutable(), hello }),
@@ -775,7 +729,7 @@ describe("事件分发隔离", () => {
           }),
         ),
       );
-      pushEvent = () => socket.write(encodeFrame(createEvent("runs.changed", { note: "test-event" })));
+      pushEvent = () => socket.write(encodeFrame(createEvent("pm.overview.changed", { note: "test-event" })));
     });
 
     const guard = captureUncaughtExceptions();
@@ -787,19 +741,16 @@ describe("事件分发隔离", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-isolation",
-          pid: process.pid,
           sessionId: "session-isolation",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       });
       closables.push(client);
 
       const secondReceived: unknown[] = [];
-      client.subscribe("runs.changed", () => {
+      client.subscribe("pm.overview.changed", () => {
         throw new Error("监听器故意抛错");
       });
-      client.subscribe("runs.changed", (data) => secondReceived.push(data));
+      client.subscribe("pm.overview.changed", (data) => secondReceived.push(data));
 
       pushEvent?.();
       await waitUntil(() => secondReceived.length > 0, 3_000);
@@ -848,10 +799,7 @@ describe("close 语义", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-close-pending",
-          pid: process.pid,
           sessionId: "session-close-pending",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       });
 
@@ -918,10 +866,7 @@ describe("close 语义", () => {
         env: { ONE_COMPANY_IDLE_TIMEOUT_MS: "1000" },
         hello: {
           windowId: "window-close-race",
-          pid: process.pid,
           sessionId: "session-close-race",
-          cwd: fixture.repo.root,
-          workspaceRoot: fixture.repo.root,
         },
       });
       closeClient = () => client.close();
@@ -993,10 +938,7 @@ describe("hello 阶段失败", () => {
           execPath: resolveNodeExecutable(),
           hello: {
             windowId: "window-version",
-            pid: process.pid,
             sessionId: "session-version",
-            cwd: repo.root,
-            workspaceRoot: repo.root,
           },
         }),
       ).rejects.toThrow();
@@ -1040,10 +982,7 @@ describe("hello 阶段失败", () => {
           execPath: resolveNodeExecutable(),
           hello: {
             windowId: "window-repoid",
-            pid: process.pid,
             sessionId: "session-repoid",
-            cwd: repo.root,
-            workspaceRoot: repo.root,
           },
         }),
       ).rejects.toThrow();
@@ -1090,10 +1029,7 @@ describe("失败帧转换为 DaemonCallError", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-error-data",
-          pid: process.pid,
           sessionId: "session-error-data",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       });
       closables.push(client);
@@ -1133,10 +1069,7 @@ describe("WorkspaceClients 去重与降级", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-dedupe",
-        pid: process.pid,
         sessionId: "session-dedupe",
-        cwd: workspaceRoot,
-        workspaceRoot,
       },
     });
     closables.push(workspaceClients);
@@ -1176,10 +1109,7 @@ describe("WorkspaceClients 去重与降级", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-degrade",
-          pid: process.pid,
           sessionId: "session-degrade",
-          cwd: workspaceRoot,
-          workspaceRoot,
         },
       });
       closables.push(workspaceClients);
@@ -1211,10 +1141,7 @@ describe("socket 残留文件", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-enotsock",
-        pid: process.pid,
         sessionId: "session-enotsock",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     });
     closables.push(client);
@@ -1236,10 +1163,7 @@ describe("env 透传", () => {
       env: { ONE_COMPANY_IDLE_TIMEOUT_MS: "1000" },
       hello: {
         windowId: "window-idle",
-        pid: process.pid,
         sessionId: "session-idle",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     });
     closables.push(client);
@@ -1277,7 +1201,7 @@ describe("重连事件恢复", () => {
       if (connectionIndex === 1) {
         setTimeout(() => socket.destroy(), 200);
       } else {
-        setTimeout(() => socket.write(encodeFrame(createEvent("runs.changed", { note: "after-reconnect" }))), 200);
+        setTimeout(() => socket.write(encodeFrame(createEvent("pm.overview.changed", { note: "after-reconnect" }))), 200);
       }
     });
 
@@ -1289,17 +1213,14 @@ describe("重连事件恢复", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-resub",
-          pid: process.pid,
           sessionId: "session-resub",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       });
       closables.push(client);
       await waitUntil(() => client.state().status === "connected", 5_000);
 
       const received: unknown[] = [];
-      client.subscribe("runs.changed", (data) => received.push(data));
+      client.subscribe("pm.overview.changed", (data) => received.push(data));
 
       await waitUntil(() => client.state().status === "unreachable", 5_000);
       await waitUntil(() => client.state().status === "connected", 5_000);
@@ -1336,8 +1257,8 @@ describe("hello 前协议事件隔离", () => {
       } else {
         socket.write(
           response
-          + encodeFrame(createEvent("runs.changed", { note: "same-write-1" }))
-          + encodeFrame(createEvent("runs.changed", { note: "same-write-2" })),
+          + encodeFrame(createEvent("pm.overview.changed", { note: "same-write-1" }))
+          + encodeFrame(createEvent("pm.overview.changed", { note: "same-write-2" })),
         );
       }
     });
@@ -1350,10 +1271,7 @@ describe("hello 前协议事件隔离", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-same-write",
-          pid: process.pid,
           sessionId: "session-same-write",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       });
       closables.push(client);
@@ -1363,18 +1281,18 @@ describe("hello 前协议事件隔离", () => {
         order.push(`connected:${String(data.connectionSequence)}`);
       });
       client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => order.push("disconnected"));
-      client.subscribe("runs.changed", (data) => {
+      client.subscribe("pm.overview.changed", (data) => {
         businessStates.push(client.state().status);
-        order.push(`runs.changed:${String(data.note)}`);
+        order.push(`pm.overview.changed:${String(data.note)}`);
       });
 
-      await waitUntil(() => order.includes("runs.changed:same-write-2"), 5_000);
+      await waitUntil(() => order.includes("pm.overview.changed:same-write-2"), 5_000);
       expect(order).toEqual([
         "connected:1",
         "disconnected",
         "connected:2",
-        "runs.changed:same-write-1",
-        "runs.changed:same-write-2",
+        "pm.overview.changed:same-write-1",
+        "pm.overview.changed:same-write-2",
       ]);
       expect(businessStates).toEqual(["connected", "connected"]);
     } finally {
@@ -1405,7 +1323,7 @@ describe("hello 前协议事件隔离", () => {
         socket.write(response);
         setTimeout(() => socket.destroy(), 75);
       } else if (connectionIndex === 2) {
-        socket.write(response + encodeFrame(createEvent("runs.changed", { note: "must-not-leak" })));
+        socket.write(response + encodeFrame(createEvent("pm.overview.changed", { note: "must-not-leak" })));
       }
     });
 
@@ -1417,17 +1335,14 @@ describe("hello 前协议事件隔离", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-wrong-repo-event",
-          pid: process.pid,
           sessionId: "session-wrong-repo-event",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       });
       closables.push(client);
       const connected: Array<Record<string, unknown>> = [];
       const received: Array<Record<string, unknown>> = [];
       client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (data) => connected.push(data));
-      client.subscribe("runs.changed", (data) => received.push(data));
+      client.subscribe("pm.overview.changed", (data) => received.push(data));
 
       await waitUntil(() => client.state().reason?.includes("身份字段缺失或不一致") === true, 5_000);
       expect(connected).toHaveLength(1);
@@ -1461,7 +1376,7 @@ describe("hello 前协议事件隔离", () => {
         setTimeout(() => socket.destroy(), 75);
       } else if (connectionIndex === 2) {
         const events = Array.from({ length: 257 }, (_, index) =>
-          encodeFrame(createEvent("runs.changed", { index }))).join("");
+          encodeFrame(createEvent("pm.overview.changed", { index }))).join("");
         socket.write(events + response);
       }
     });
@@ -1474,17 +1389,14 @@ describe("hello 前协议事件隔离", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-event-budget",
-          pid: process.pid,
           sessionId: "session-event-budget",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       });
       closables.push(client);
       const connected: Array<Record<string, unknown>> = [];
       const received: Array<Record<string, unknown>> = [];
       client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (data) => connected.push(data));
-      client.subscribe("runs.changed", (data) => received.push(data));
+      client.subscribe("pm.overview.changed", (data) => received.push(data));
 
       await waitUntil(() => client.state().reason?.includes("事件超出暂存上限") === true, 5_000);
       expect(connected).toHaveLength(1);
@@ -1517,8 +1429,8 @@ describe("握手未完成帧总预算", () => {
         })));
         setTimeout(() => socket.destroy(), 75);
       } else if (connections === 2) {
-        if (includeCompleteEvent) socket.write(encodeFrame(createEvent("runs.changed", { text: "x".repeat(600_000) })));
-        socket.write('{"t":"evt","event":"runs.changed","data":{"text":"');
+        if (includeCompleteEvent) socket.write(encodeFrame(createEvent("pm.overview.changed", { text: "x".repeat(600_000) })));
+        socket.write('{"t":"evt","event":"pm.overview.changed","data":{"text":"');
         let remaining = includeCompleteEvent ? 600_000 : 1_200_000;
         const send = () => {
           if (socket.destroyed || remaining <= 0) return;
@@ -1533,12 +1445,12 @@ describe("握手未完成帧总预算", () => {
     try {
       const client = await connectDaemon({
         repoDir: repo.root, dataRoot, sdkDir: resolveSdkDir(), execPath: resolveNodeExecutable(),
-        hello: { windowId: "raw-budget", pid: process.pid, sessionId: "raw-budget", cwd: repo.root, workspaceRoot: repo.root },
+        hello: { windowId: "raw-budget", sessionId: "raw-budget" },
       });
       closables.push(client);
       const connected: unknown[] = [], business: unknown[] = [];
       client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (event) => connected.push(event));
-      client.subscribe("runs.changed", (event) => business.push(event));
+      client.subscribe("pm.overview.changed", (event) => business.push(event));
       await waitUntil(() => client.state().reason?.includes("暂存上限") === true, 5_000);
       expect(connected).toHaveLength(1);
       expect(business).toEqual([]);
@@ -1570,8 +1482,8 @@ describe("握手未完成帧总预算", () => {
         setTimeout(() => socket.destroy(), 75);
       } else if (connections === 2) {
         lateSocket = socket;
-        socket.write(encodeFrame(createEvent("runs.changed", { text: "pending" })));
-        socket.write('{"t":"evt","event":"runs.changed","data":{"text":"' + "x".repeat(128_000));
+        socket.write(encodeFrame(createEvent("pm.overview.changed", { text: "pending" })));
+        socket.write('{"t":"evt","event":"pm.overview.changed","data":{"text":"' + "x".repeat(128_000));
       }
     });
     const unhandled: unknown[] = [];
@@ -1580,12 +1492,12 @@ describe("握手未完成帧总预算", () => {
     try {
       const client = await connectDaemon({
         repoDir: repo.root, dataRoot, sdkDir: resolveSdkDir(), execPath: resolveNodeExecutable(),
-        hello: { windowId: "raw-close", pid: process.pid, sessionId: "raw-close", cwd: repo.root, workspaceRoot: repo.root },
+        hello: { windowId: "raw-close", sessionId: "raw-close" },
       });
       closables.push(client);
       const connected: unknown[] = [], business: unknown[] = [];
       client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, (event) => connected.push(event));
-      client.subscribe("runs.changed", (event) => business.push(event));
+      client.subscribe("pm.overview.changed", (event) => business.push(event));
       const inspected = client as unknown as { link: { buffer: string; bufferedEvents: unknown[]; eventState: string } | null; reconnectTimer: unknown };
       await waitUntil(() => connections === 2 && (inspected.link?.buffer.length ?? 0) > 100_000, 5_000);
       const link = inspected.link!;
@@ -1630,7 +1542,7 @@ describe("本地连接生命周期通知", () => {
     });
     try {
       const client = await connectDaemon({ repoDir: repo.root, dataRoot, sdkDir: resolveSdkDir(),
-        hello: { windowId: "identity", pid: process.pid, sessionId: "session", cwd: repo.root, workspaceRoot: repo.root } });
+        hello: { windowId: "identity", sessionId: "session" } });
       closables.push(client);
       const identity = client.connectionIdentity!();
       expect(identity).toMatchObject({ daemonInstanceId, connectionSequence: 1 });
@@ -1692,10 +1604,7 @@ describe("本地连接生命周期通知", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-lifecycle",
-          pid: process.pid,
           sessionId: "session-lifecycle",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       });
       closables.push(client);
@@ -1788,10 +1697,7 @@ describe("本地连接生命周期通知", () => {
         execPath: resolveNodeExecutable(),
         hello: {
           windowId: "window-late-connected",
-          pid: process.pid,
           sessionId: "session-late-connected",
-          cwd: repo.root,
-          workspaceRoot: repo.root,
         },
       });
       closables.push(client);
@@ -1825,10 +1731,7 @@ describe("窗口退出不影响守护进程存活", () => {
       env: { ONE_COMPANY_IDLE_TIMEOUT_MS: "500" },
       hello: {
         windowId: "window-exiting",
-        pid: process.pid,
         sessionId: "session-exiting",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     };
     const childRun = await runChildProcess(spawnAndExitDaemonScript, [JSON.stringify(childOptions)]);
@@ -1853,10 +1756,7 @@ describe("窗口退出不影响守护进程存活", () => {
       execPath: resolveNodeExecutable(),
       hello: {
         windowId: "window-new",
-        pid: process.pid,
         sessionId: "session-new",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     });
     closables.push(client);
@@ -1884,10 +1784,7 @@ describe("spawn 后 hello 失败不得杀掉刚拉起的守护进程", () => {
         execPath: fakeDaemonShimPath,
         hello: {
           windowId: "window-hello-reject",
-          pid: process.pid,
           sessionId: "session-hello-reject",
-          cwd: fixture.repo.root,
-          workspaceRoot: fixture.repo.root,
         },
       }),
     ).rejects.toThrow();
@@ -1906,10 +1803,7 @@ describe("spawn 后 hello 失败不得杀掉刚拉起的守护进程", () => {
       execPath: fakeDaemonShimPath,
       hello: {
         windowId: "window-hello-retry",
-        pid: process.pid,
         sessionId: "session-hello-retry",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     });
     closables.push(client);
@@ -1959,7 +1853,7 @@ describe("工作区内单仓库首连失败自愈", () => {
                 }),
               ),
             );
-            pushEvent = () => socket.write(encodeFrame(createEvent("runs.changed", { note: "workspace-repair" })));
+            pushEvent = () => socket.write(encodeFrame(createEvent("pm.overview.changed", { note: "workspace-repair" })));
           }
         }
       });
@@ -1999,10 +1893,7 @@ describe("工作区内单仓库首连失败自愈", () => {
         env: { ONE_COMPANY_IDLE_TIMEOUT_MS: "1000" },
         hello: {
           windowId: "window-workspace-repair",
-          pid: process.pid,
           sessionId: "session-workspace-repair",
-          cwd: workspace.root,
-          workspaceRoot: workspace.root,
         },
       });
       closables.push(workspaceClients);
@@ -2015,7 +1906,7 @@ describe("工作区内单仓库首连失败自愈", () => {
       await expect(clientB?.call("ping", {})).rejects.toThrow(/不可达/);
 
       const received: unknown[] = [];
-      const cancelSubscription = clientB?.subscribe("runs.changed", (data) => received.push(data));
+      const cancelSubscription = clientB?.subscribe("pm.overview.changed", (data) => received.push(data));
 
       fakeB.succeed();
 
@@ -2060,10 +1951,7 @@ describe("睡眠感知重连（连接正常时不误判）", () => {
       clock,
       hello: {
         windowId: "window-sleep-connected",
-        pid: process.pid,
         sessionId: "session-sleep-connected",
-        cwd: fixture.repo.root,
-        workspaceRoot: fixture.repo.root,
       },
     });
     closables.push(client);

@@ -11,15 +11,13 @@ import { daemonSocketPath, listWorktrees, repoDataDir, repositoryIdentity } from
 import { readGit } from "../runtime/git-read.ts";
 import { ProjectIndexHost, registerIndexHandlers } from "./project-index-host.ts";
 import { ProjectIndexRequirements } from "./project-index-requirements.ts";
-import { ConnectivityProbe, NetworkPauseGate, toValidHostUrl } from "../runtime/network-pause.ts";
+import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { createRequest, decodeFrames } from "../runtime/protocol.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import type { RunState } from "../runtime/run-store.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
-import { RelayQueue } from "./relay-queue.ts";
 import { registerProtocolHandlers, RunManager } from "./run-manager.ts";
-import type { ModelSelector, SelectedModel } from "./run-manager.ts";
 import { DaemonServer } from "./server.ts";
 
 function loadDaemonRoleCatalog(agentDir: string, repoRoot: string) {
@@ -32,45 +30,12 @@ function loadDaemonRoleCatalog(agentDir: string, repoRoot: string) {
   });
 }
 
-function defaultSelectModel(runtime: ModelRuntime): ModelSelector {
-  return () => {
-    const models = runtime.getModels();
-    if (models.length === 0) throw new Error("没有可用模型：未配置任何模型提供方");
-    const first = models[0] as SelectedModel;
-    return { provider: first.provider, id: first.id };
-  };
-}
-
-async function setupModelRuntime(modulePath: string | undefined): Promise<{ runtime: ModelRuntime; selectModel: ModelSelector }> {
+async function setupModelRuntime(modulePath: string | undefined): Promise<ModelRuntime> {
   const runtime = await ModelRuntime.create({ refreshOnCreate: false });
-  if (!modulePath) return { runtime, selectModel: defaultSelectModel(runtime) };
-
-  const providerModule = (await import(modulePath)) as {
-    registerProviders: (runtime: ModelRuntime) => Promise<void>;
-    selectModel?: ModelSelector;
-  };
+  if (!modulePath) return runtime;
+  const providerModule = (await import(modulePath)) as { registerProviders: (runtime: ModelRuntime) => Promise<void> };
   await providerModule.registerProviders(runtime);
-  return { runtime, selectModel: providerModule.selectModel ?? defaultSelectModel(runtime) };
-}
-
-const DEFAULT_NETWORK_PROBE_INTERVAL_MS = 30_000;
-const NETWORK_PROBE_TIMEOUT_MS = 3_000;
-
-// 探测按已校验合法的 provider baseUrl 发起，不绑死任何具体厂商域名；
-// 测试经 modulePath 注入自己的探测模块时完全绕过生产 fetch 路径
-async function buildConnectivityProbeFn(modulePath: string | undefined): Promise<(baseUrl: string) => Promise<boolean | null>> {
-  if (modulePath) {
-    const probeModule = (await import(modulePath)) as { probe: (baseUrl?: string) => Promise<boolean | null> };
-    return (baseUrl: string) => probeModule.probe(baseUrl);
-  }
-  return async (baseUrl: string) => {
-    try {
-      await fetch(baseUrl, { signal: AbortSignal.timeout(NETWORK_PROBE_TIMEOUT_MS) });
-      return true;
-    } catch {
-      return false;
-    }
-  };
+  return runtime;
 }
 
 const PROBE_TIMEOUT_MS = 3_000;
@@ -88,8 +53,6 @@ const ACTIVE_REQUIREMENT_STATES: RunState[] = [
   "running",
   "pausing",
   "paused",
-  "paused_network",
-  "waiting_answer",
 ];
 
 function delay(ms: number): Promise<void> {
@@ -106,8 +69,6 @@ export interface StartDaemonOptions {
   idleTimeoutMs: number;
   clockSkewFile?: string;
   modelProviderModulePath?: string;
-  connectivityProbeModulePath?: string;
-  networkProbeIntervalMs?: number;
 }
 
 type ProbeResult = "existing" | "stale" | "ambiguous";
@@ -485,7 +446,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   let indexHost: ProjectIndexHost | undefined;
   let indexRequirements: ProjectIndexRequirements | undefined;
   let runManager: RunManager | undefined;
-  let networkProbe: ConnectivityProbe | undefined;
   let idleTimer: TimerHandle | undefined;
   let ownershipTimer: TimerHandle | undefined;
   async function shutdown(exitCode = 0): Promise<void> {
@@ -497,7 +457,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     await initializedPromise;
     if (idleTimer) clock.clearTimer(idleTimer);
     if (ownershipTimer) clock.clearTimer(ownershipTimer);
-    networkProbe?.stop();
     clock.stopGapWatcher();
 
     try {
@@ -555,7 +514,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     ready = true;
     const agentDir = dirname(capturedOptions.dataRoot);
     const repositoryRoot = await verifiedRepositoryRoot(capturedOptions.repoDir, repoId);
-    const [{ runtime, selectModel }, roleCatalogResult, repoDir] = await Promise.all([
+    const [runtime, roleCatalogResult, repoDir] = await Promise.all([
       setupModelRuntime(capturedOptions.modelProviderModulePath),
       loadDaemonRoleCatalog(agentDir, repositoryRoot),
       repoDataDir(capturedOptions.dataRoot, repoId, capturedOptions.repoDir),
@@ -573,18 +532,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       database: databaseFile(repoDir, "data"),
     });
     const networkGate = new NetworkPauseGate();
-    const relayQueue = new RelayQueue({
-      dataDir: repoDir,
-      deliver: async (event, payload, deliverOptions) => {
-        const targets = server
-          .clients()
-          .filter((info) => info.repoIds.includes(deliverOptions.repoId) && info.windowId !== deliverOptions.excludeWindowId);
-        for (const target of targets) {
-          server.broadcast(event, payload, (info) => info.windowId === target.windowId);
-        }
-        return targets.map((info) => info.windowId);
-      },
-    });
     runManager = new RunManager({
       repositoryRoot,
       dataRoot: capturedOptions.dataRoot,
@@ -592,10 +539,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       runStore,
       shellRegistry,
       networkGate,
-      relayQueue,
       roleCatalog: roleCatalogResult.roles,
       runtime,
-      selectModel,
       clock,
       workspaceRepoIds: [repoId],
       emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
@@ -605,29 +550,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       skillDirs: [...(new ProjectTrustStore(agentDir).get(repositoryRoot) === true ? [join(repositoryRoot, ".pi", "skills")] : []),
         join(agentDir, "skills"), join(dirname(defaultRoleDir()), "skills")],
     });
-    registerProtocolHandlers({ server, manager: runManager, relayQueue, shellRegistry });
-
-    const probeProvider = await buildConnectivityProbeFn(capturedOptions.connectivityProbeModulePath);
-    // 每轮只探测当前确有 paused_network 运行挂着的 provider，且只续接探测到已恢复的那个 provider——
-    // 无遗留暂停运行时完全不发起探测调用；baseUrl 未注册或校验不合法时跳过该 provider 本轮探测
-    networkProbe = new ConnectivityProbe({
-      clock,
-      intervalMs: capturedOptions.networkProbeIntervalMs ?? DEFAULT_NETWORK_PROBE_INTERVAL_MS,
-      probe: async () => {
-        const paused = await runStore.list({ states: ["paused_network"], limit: Number.MAX_SAFE_INTEGER });
-        const providerIds = new Set(paused.items.map((run) => run.model.provider));
-        for (const providerId of providerIds) {
-          const baseUrl = runtime.getProvider(providerId)?.baseUrl;
-          const validUrl = baseUrl ? toValidHostUrl(baseUrl) : null;
-          if (!validUrl) {
-            process.stderr.write(`跳过非法探测目标: provider=${providerId} baseUrl=${baseUrl ?? "未注册"}\n`);
-            continue;
-          }
-          if (await probeProvider(baseUrl!)) await runManager!.resumeNetworkPaused(providerId);
-        }
-      },
-    });
-    networkProbe.start();
+    registerProtocolHandlers({ server, manager: runManager, shellRegistry });
 
     try {
       await runStore.markInterruptedOnStartup();

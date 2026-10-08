@@ -373,8 +373,7 @@ const PROTECTED_ENV = new Set([
   "ONE_COMPANY_SDK_DIR", "ONE_COMPANY_CLOCK_SKEW_FILE",
 ]);
 const ALLOWED_EXTRA_ENV = new Set([
-  "NODE_OPTIONS", "ONE_COMPANY_MODEL_PROVIDER_MODULE", "ONE_COMPANY_CONNECTIVITY_PROBE_MODULE",
-  "ONE_COMPANY_NETWORK_PROBE_INTERVAL_MS", "M3_ASSEMBLY_PROBE", "M3_ASSEMBLY_REPOSITORY", "ONE_COMPANY_IDLE_TIMEOUT_MS",
+  "NODE_OPTIONS", "ONE_COMPANY_MODEL_PROVIDER_MODULE", "M3_ASSEMBLY_PROBE", "M3_ASSEMBLY_REPOSITORY", "ONE_COMPANY_IDLE_TIMEOUT_MS",
 ]);
 
 function validateExtraEnv(extra: Readonly<Record<string, string>>): void {
@@ -885,10 +884,6 @@ export async function startDaemonForTest(
             await authenticateTestClient(raw, {
               windowId: "daemon-readiness-test-peer",
               sessionId: "daemon-readiness-test-peer",
-              pid: process.pid,
-              cwd: repoDir,
-              workspaceRoot: repoDir,
-              repoIds: [identity.repoId],
             }, {
               dataRoot,
               expectedDaemonPid: proc.pid,
@@ -960,11 +955,7 @@ export function killDaemon(handle: Pick<DaemonHandle, "proc" | "exited">): Promi
 
 export interface HelloOverrides {
   windowId?: string;
-  pid?: number;
   sessionId?: string;
-  cwd?: string;
-  workspaceRoot?: string;
-  repoIds?: string[];
   protocolVersion?: number;
 }
 
@@ -1201,12 +1192,8 @@ export async function authenticateTestClient(
     assertOwnerActive(owner);
     assertAuthenticationRecord(raw, record);
     assertOwnerRoots(owner);
-    const cwd = hello.cwd ?? process.cwd();
-    const workspaceRoot = hello.workspaceRoot ?? process.cwd();
     const windowId = hello.windowId ?? "test-window";
-    const pid = hello.pid ?? process.pid;
     const sessionId = hello.sessionId ?? "test-session";
-    const repoIds = Object.freeze([...(hello.repoIds ?? [])]);
     const protocolVersion = hello.protocolVersion ?? PROTOCOL_VERSION;
     const optionSignal = options.signal;
     if (optionSignal?.aborted) throw optionSignal.reason ?? new Error("认证已取消");
@@ -1233,11 +1220,7 @@ export async function authenticateTestClient(
       const result = await raw.call("hello", {
         authToken,
         windowId,
-        pid,
         sessionId,
-        cwd,
-        workspaceRoot,
-        repoIds,
         protocolVersion,
       }, { timeoutMs, signal: linked.signal });
       if (result.protocolVersion !== PROTOCOL_VERSION) throw new Error("hello 响应协议版本不匹配");
@@ -1265,11 +1248,7 @@ export async function connectTestClient(
 ): Promise<TestClient> {
   const fixedHello: HelloOverrides = {
     windowId: hello.windowId,
-    pid: hello.pid,
     sessionId: hello.sessionId,
-    cwd: hello.cwd,
-    workspaceRoot: hello.workspaceRoot,
-    repoIds: hello.repoIds === undefined ? undefined : [...hello.repoIds],
     protocolVersion: hello.protocolVersion,
   };
   const fixedOptions: AuthenticateTestClientOptions = {

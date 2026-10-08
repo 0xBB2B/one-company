@@ -338,14 +338,14 @@ test("便利客户端保持同一登记对象，重 hello 确实发送并取得�
     requests += 1;
     socket.write(response(request, helloResult(request)));
   });
-  const client = await connectTestClient(endpoint.socketPath, { cwd: endpoint.root, workspaceRoot: endpoint.root }, {
+  const client = await connectTestClient(endpoint.socketPath, {}, {
     dataRoot: endpoint.dataRoot,
     expectedDaemonPid: process.pid,
     expectedRepoId: "a".repeat(64),
   });
   clients.push(client);
   const first = client.helloResult.connectionId;
-  const second = await authenticateTestClient(client, { cwd: endpoint.root, workspaceRoot: endpoint.root }, {
+  const second = await authenticateTestClient(client, {}, {
     dataRoot: endpoint.dataRoot,
     expectedDaemonPid: process.pid,
     expectedRepoId: "a".repeat(64),
@@ -390,7 +390,7 @@ test("authenticate 核验响应版本、PID、UUID 和 repoId", async () => {
     socket.write(response(request, helloResult(request)));
   });
   const raw = await connectRawClient(endpoint.socketPath, { dataRoot: endpoint.dataRoot }); clients.push(raw);
-  const result = await authenticateTestClient(raw, { cwd: endpoint.root, workspaceRoot: endpoint.dataRoot, repoIds: ["a".repeat(64)] },
+  const result = await authenticateTestClient(raw, {},
     { dataRoot: endpoint.dataRoot, expectedDaemonPid: process.pid, expectedRepoId: "a".repeat(64) });
   expect(result.daemonPid).toBe(process.pid);
 });
@@ -403,7 +403,7 @@ test.each([
 ])("authenticate 对%s不升级认证", async (_label, overrides) => {
   const endpoint = await socketServer((request, socket) => socket.write(response(request, helloResult(request, overrides))));
   const raw = await connectRawClient(endpoint.socketPath, { dataRoot: endpoint.dataRoot }); clients.push(raw);
-  await expect(authenticateTestClient(raw, { cwd: endpoint.root, workspaceRoot: endpoint.root }, {
+  await expect(authenticateTestClient(raw, {}, {
     dataRoot: endpoint.dataRoot, expectedDaemonPid: process.pid, expectedRepoId: "a".repeat(64), timeoutMs: 500,
   })).rejects.toThrow();
 });
@@ -411,8 +411,8 @@ test.each([
 test("未知 socket 不从路径猜 dataRoot，显式路径不匹配也拒绝写凭据", async () => {
   const endpoint = await socketServer((request, socket) => socket.write(response(request, helloResult(request))));
   const raw = await connectRawClient(endpoint.socketPath); clients.push(raw);
-  await expect(authenticateTestClient(raw, { cwd: endpoint.root, workspaceRoot: endpoint.root })).rejects.toThrow(/显式提供/);
-  await expect(authenticateTestClient(raw, { cwd: endpoint.root, workspaceRoot: endpoint.root }, { dataRoot: join(endpoint.root, "other") })).rejects.toThrow(/不匹配/);
+  await expect(authenticateTestClient(raw, {})).rejects.toThrow(/显式提供/);
+  await expect(authenticateTestClient(raw, {}, { dataRoot: join(endpoint.root, "other") })).rejects.toThrow(/不匹配/);
 });
 
 test("remove 先 fence 资源；结构化外来参数和后来可变 worktree 均不取得删除权", async () => {

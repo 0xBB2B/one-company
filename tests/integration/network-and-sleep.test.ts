@@ -6,20 +6,19 @@ import { join } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createAgentRoleSession } from "../../daemon/agent-session.ts";
-import { RunManager } from "../../daemon/run-manager.ts";
-import { RelayQueue } from "../../daemon/relay-queue.ts";
 import { RunStore } from "../../runtime/run-store.ts";
 import { repositoryIdentity } from "../../runtime/identity.ts";
 import { createClock } from "../../runtime/clock.ts";
 import { ShellRegistry } from "../../runtime/shell-registry.ts";
 import { uuidv7 } from "../../runtime/database.ts";
-import { ConnectivityProbe, NetworkPauseGate } from "../../runtime/network-pause.ts";
+import { NetworkPauseGate } from "../../runtime/network-pause.ts";
 import { startHeartbeat, WindowRegistry } from "../../runtime/windows.ts";
 import { createFakeTimeSource, withClockPump } from "../helpers/fake-clock.ts";
 import { createDaemonFixture, killDaemon, removeDaemonFixture, startDaemonForTest } from "../helpers/daemon-harness.ts";
 import { createRepoFixture, removeRepoFixture } from "../helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "../helpers/temp-home.ts";
 import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
+import { createPmRunWorld } from "../helpers/run-manager-fixture.ts";
 import type { ScriptedReply } from "../helpers/controlled-provider.ts";
 
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
@@ -42,10 +41,13 @@ async function world() {
   const gate = new NetworkPauseGate();
   const store = new RunStore({ dataRoot: home.dataRoot, repoId, daemonStartedAt: "network-history" });
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(home.home, "models.json"), refreshOnCreate: false });
+  const requirement = uuidv7();
+  const parent = await store.create({ kind: "requirement", requirement, task: "pm", cwd: repo.root, readPaths: [repo.root], writePaths: [],
+    model: { provider: "network-parent", id: "test" }, thinking: "off", mcp: [] });
   let serial = 0;
   async function role(replies: ScriptedReply[]) {
     const provider = registerControlledProvider(runtime, { providerId: `network-fixture-${++serial}`, modelId: "test" }); scriptReplies(provider, replies);
-    const run = await store.create({ kind: "role", standalone: true, role: "one-company.worker", requirement: "2026-09-10.network", task: `T-${serial}`,
+    const run = await store.create({ kind: "role", parentRunId: parent.id, role: "one-company.worker", requirement, task: `T-${serial}`,
       cwd: repo.root, readPaths: [repo.root], writePaths: [], model: { provider: provider.providerId, id: "test" }, thinking: "off", mcp: [] });
     const handle = await createAgentRoleSession({ dataRoot: home.dataRoot, repoId, runId: run.id, cwd: repo.root,
       definition: { name: "worker", role: "worker", description: "fixture", body: "fixture" }, context: run.task, coreTools: [resultTool()], readRoots: [repo.root],
@@ -61,11 +63,33 @@ test("真实SDK连接故障只暂停受影响角色，同批独立角色正常�
   const network = await w.role([{ type: "error", message: "fetch failed: connection reset (network)" }]);
   const normal = await w.role([{ type: "toolcall", name: "one_company_result_submit", input: {} }, { type: "text", text: "独立只读结果" }]);
   network.handle.prompt("触发连接故障"); normal.handle.prompt("不依赖其他角色");
-  await until(() => network.handle.state() === "paused_network"); await normal.handle.result();
-  expect(normal.handle.state()).toBe("completed"); expect(w.gate.canProceed(network.run.id)).toEqual({ allowed: false, reason: "network" });
-  expect(w.gate.canProceed(normal.run.id)).toEqual({ allowed: true });
+  await until(() => network.handle.state() === "paused"); await normal.handle.result();
+  expect(normal.handle.state()).toBe("completed"); expect(w.gate.canProceed(network.run.id)).toBe(false);
+  expect(w.gate.canProceed(normal.run.id)).toBe(true);
   await delay(100); expect(network.provider.requests).toHaveLength(1); expect(normal.provider.requests).toHaveLength(1);
 }, 20000);
+
+test("连接故障当作按了暂停：运行记录写成 paused 并计暂停时间，按 resume 原地恢复后继续请求模型", async () => {
+  const cleanups: Array<() => unknown | Promise<unknown>> = []; cleanup.push(async () => { for (const fn of cleanups.reverse()) await fn(); });
+  const w = await createPmRunWorld(cleanups);
+  const before = w.provider.requests.length;
+  w.provider.queue.push({ type: "error", message: "fetch failed: connection reset (network)" });
+  expect(await w.manager.messagePm({ requirementId: w.fixture.requirementId, text: "继续" })).toEqual({ delivered: "now" });
+  await until(async () => { const run = await w.runStore.get(w.pm.runId); return run.ok && run.run.state === "paused"; });
+  const paused = await w.runStore.get(w.pm.runId);
+  expect(paused.ok && paused.run.pausedAt).toEqual(expect.any(String));
+  expect((await w.manager.status(w.pm.runId))).toMatchObject({ ok: true, run: { state: "paused" } });
+  expect(await w.manager.messagePm({ requirementId: w.fixture.requirementId, text: "断网期间的消息" })).toEqual({ delivered: "after_resume" });
+  await delay(100); expect(w.provider.requests).toHaveLength(before + 1);
+  w.provider.queue.push({ type: "text", text: "网络恢复后继续" });
+  expect(await w.manager.resume(w.pm.runId)).toEqual({ state: "running" });
+  await until(() => w.provider.requests.length === before + 2);
+  expect(JSON.stringify(w.provider.requests.at(-1)?.messages.at(-1))).toContain("断网期间的消息");
+  const resumed = await w.runStore.get(w.pm.runId);
+  expect(resumed.ok && resumed.run.state).toBe("running");
+  expect(resumed.ok && resumed.run.pausedAt).toBeUndefined();
+  expect(resumed.ok && resumed.run.pausedMs).toBeGreaterThan(0);
+}, 30000);
 
 test("服务商断流、连接被中断等瞬时错误由 SDK 有限次重试后继续，不判失败也不转网络暂停", async () => {
   const w = await world();
@@ -75,7 +99,7 @@ test("服务商断流、连接被中断等瞬时错误由 SDK 有限次重试后
   await flaky.handle.result();
   expect(flaky.handle.state()).toBe("completed");
   expect(flaky.provider.requests).toHaveLength(3);
-  expect(w.gate.canProceed(flaky.run.id)).toEqual({ allowed: true });
+  expect(w.gate.canProceed(flaky.run.id)).toBe(true);
 }, 30000);
 
 test("真实SDK认证、额度、业务错误均failed且保留真实原因，不误分类为网络暂停", async () => {
@@ -83,32 +107,8 @@ test("真实SDK认证、额度、业务错误均failed且保留真实原因，�
   for (const message of ["unauthorized: invalid api key supplied", "quota exceeded for this billing period", "请求参数不合法，缺少必填字段"]) {
     const s = await w.role([{ type: "error", message }]); s.handle.prompt("分类测试");
     await expect(s.handle.result()).rejects.toThrow(message); expect(s.handle.state()).toBe("failed");
-    expect(w.gate.canProceed(s.run.id)).toEqual({ allowed: true }); expect(s.provider.requests).toHaveLength(1);
+    expect(w.gate.canProceed(s.run.id)).toBe(true); expect(s.provider.requests).toHaveLength(1);
   }
-}, 20000);
-
-test("真实网络探测恢复不复活旧暂停运行，手动暂停保持，且不调用模型", async () => {
-  const w = await world();
-  const network = await w.role([{ type: "error", message: "network fetch failed" }]);
-  const manual = await w.role([{ type: "text", text: "不应发出" }]);
-  // 历史状态数据不作为角色恢复授权；此处不启动两个SDK会话。
-  await w.store.update(network.run.id, { state: "running" }); await w.store.update(network.run.id, { state: "paused_network" });
-  await w.store.update(manual.run.id, { state: "running" }); await w.store.update(manual.run.id, { state: "pausing" }); await w.store.update(manual.run.id, { state: "paused" });
-  w.gate.requestPause(network.run.id, "network"); w.gate.requestPause(manual.run.id, "manual");
-  const relay = new RelayQueue({ dataDir: join(w.home.dataRoot, "repos", w.repoId), deliver: async () => [] });
-  const manager = new RunManager({ dataRoot: w.home.dataRoot, repoId: w.repoId, runStore: w.store, shellRegistry: w.shells, networkGate: w.gate, relayQueue: relay,
-    roleCatalog: [], runtime: w.runtime, selectModel: () => { throw new Error("不得选模型"); }, clock: w.clock, workspaceRepoIds: [w.repoId], emit: () => {} });
-  manager.markStarted(); cleanup.push(() => manager.close());
-  const before = await w.store.list({ limit: 100 }); let reachable = false, offlineTicks = 0, onlineTicks = 0;
-  const probe = new ConnectivityProbe({ clock: w.clock, intervalMs: 30, probe: async () => {
-    if (!reachable) { offlineTicks++; return; }
-    await manager.resumeNetworkPaused(network.run.model.provider); onlineTicks++;
-  } }); cleanup.push(() => probe.stop()); probe.start();
-  await until(() => offlineTicks > 0); reachable = true; await until(() => onlineTicks > 1); probe.stop();
-  expect(await w.store.list({ limit: 100 })).toEqual(before);
-  expect(w.gate.canProceed(manual.run.id)).toEqual({ allowed: false, reason: "manual" });
-  expect(w.gate.canProceed(network.run.id)).toEqual({ allowed: false, reason: "network" });
-  expect(network.provider.requests).toEqual([]); expect(manual.provider.requests).toEqual([]);
 }, 20000);
 
 test("daemon空闲计时不因注入五分钟睡眠时钟跳变提前退出", async () => {

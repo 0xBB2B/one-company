@@ -50,7 +50,7 @@ export interface TaskRecord {
   reason?: string;
   descendants: number[];
   descendantsScanned: boolean;
-  stoppedBy?: "signal" | "user";
+  stoppedBy?: "signal";
   identityVerified: boolean;
 }
 
@@ -70,7 +70,6 @@ export interface SpawnInput {
 
 export type SpawnResult = { ok: true; task: TaskRecord } | { ok: false; reason: string };
 export type StopResult = { ok: true; task: TaskRecord } | { ok: false; reason: string };
-export type MarkStoppedByUserResult = { ok: true; task: TaskRecord } | { ok: false; reason: string };
 export type AdoptOrphansResult = { ok: true; tasks: TaskRecord[] } | { ok: false; reason: string };
 export type ProbeGroupResult = { ok: true; state: "alive" | "gone" } | { ok: false; reason: string };
 
@@ -700,7 +699,7 @@ export class ShellRegistry {
       const scan = await this.scanDescendantsInto(task);
       if (this.tasks.get(taskId) !== task) return { ok: false, reason: "停止请求的原任务已被替代" };
       const group = probeProcessGroup(pgid, this.kill);
-      if (task.stoppedBy !== "user" && scan.scanned && group.ok && group.state === "gone"
+      if (scan.scanned && group.ok && group.state === "gone"
         && scan.descendants.every((pid) => probeSinglePid(pid, this.kill).state === "gone")) return { ok: true, task };
       this.markUncertain(task, "结束状态需重新核对进程、close及后代");
       return { ok: true, task };
@@ -845,22 +844,6 @@ export class ShellRegistry {
         }
       };
     });
-  }
-
-  markStoppedByUser(taskId: string, input: { decisionId: string }): MarkStoppedByUserResult {
-    const task = this.tasks.get(taskId);
-    if (!task) return { ok: false, reason: `未知任务：${taskId}` };
-    if (task.status !== "uncertain") {
-      return { ok: false, reason: `任务当前状态为 ${task.status}，非 uncertain 不可裁定` };
-    }
-    task.status = "stopped";
-    task.stoppedBy = "user";
-    task.activity = "ended";
-    task.reason = `用户裁定停止（决定编号 ${input.decisionId}）`;
-    this.clearTimeoutTimer(taskId);
-    this.notify(task);
-    void this.deleteTaskRecord(task);
-    return { ok: true, task };
   }
 
   async stopHost(host: Host): Promise<{ taskId: string; result: StopResult }[]> {

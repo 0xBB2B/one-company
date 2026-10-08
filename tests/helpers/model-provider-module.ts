@@ -16,16 +16,11 @@ export interface ProviderScript {
   providerId: string;
   modelId: string;
   baseUrl?: string;
-  roleName?: string;
-  taskId?: string;
   noAuth?: boolean;
   replies: ScriptedReply[];
 }
 
-export type SelectModel = (input: { roleName: string; taskId?: string }) => { provider: string; id: string };
-
-// 生产代码经 ONE_COMPANY_MODEL_PROVIDER_MODULE 动态导入本模块，只调用 registerProviders(runtime)；
-// 角色/任务到 provider 的路由脚本与匹配逻辑留在测试目录内，不进入生产路径
+// 生产代码经 ONE_COMPANY_MODEL_PROVIDER_MODULE 动态导入本模块，只调用 registerProviders(runtime)
 export async function registerProviders(runtime: ModelRuntime): Promise<void> {
   // 用于验证守护进程的进程级兜底：一次孤立的未处理拒绝不该把整个进程拖垮
   if (process.env[TRIGGER_UNHANDLED_REJECTION_ENV_VAR]) {
@@ -100,18 +95,4 @@ function watchRequests(provider: ControlledProvider, logPath: string): void {
     }
     return originalPush(...items);
   };
-}
-
-export function selectModel({ roleName, taskId }: { roleName: string; taskId?: string }): { provider: string; id: string } {
-  const scriptsPath = process.env[PROVIDER_SCRIPTS_ENV_VAR];
-  if (!scriptsPath) throw new Error("未设置 ONE_COMPANY_TEST_PROVIDER_SCRIPTS，无法解析测试模型");
-  const raw = readFileSync(scriptsPath, "utf8");
-  const scripts = JSON.parse(raw) as ProviderScript[];
-  const exact = scripts.find((script) => script.roleName === roleName && script.taskId === taskId);
-  if (exact) return { provider: exact.providerId, id: exact.modelId };
-  const byRole = scripts.find((script) => script.roleName === roleName && script.taskId === undefined);
-  if (byRole) return { provider: byRole.providerId, id: byRole.modelId };
-  const generic = scripts.find((script) => script.roleName === undefined && script.taskId === undefined);
-  if (generic) return { provider: generic.providerId, id: generic.modelId };
-  throw new Error(`未找到匹配的受控 provider 脚本: role=${roleName} task=${taskId ?? ""}`);
 }
