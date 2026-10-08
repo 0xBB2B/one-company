@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { createRequirementBackup, requirementBackupFiles, RequirementBackupError } from "../runtime/requirement-backup.ts";
-import type { RequirementBackupOptions, RequirementBackupStage } from "../runtime/requirement-backup.ts";
+import type { RequirementBackupOptions } from "../runtime/requirement-backup.ts";
 import { restoreRequirementBackup, RequirementRecoveryError } from "../runtime/requirement-recovery.ts";
-import type { RequirementRestoreOptions, RequirementRestoreStage } from "../runtime/requirement-recovery.ts";
+import type { RequirementRestoreOptions } from "../runtime/requirement-recovery.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE } from "../runtime/requirement-coordination.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
@@ -28,8 +28,6 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
-
-const authorization = (authorizationId: string) => ({ authorized: true as const, writesStopped: true as const, authorizationId, principal: "requirement-backup-test" });
 
 async function privateRepoDirectory(root: string, repoId: string): Promise<{ dataRoot: string; repoDirectory: string }> {
   const dataRoot = join(root, "private");
@@ -75,8 +73,8 @@ async function populatedWorld() {
   return { ...w, secret, activeId: created.requirementId, active, closedId: closedCreated.requirementId, closed };
 }
 
-function backupOptions(w: Awaited<ReturnType<typeof world>>, operationId = uuidv7(), authorize: RequirementBackupOptions["authorize"] = () => authorization("backup-auth")): RequirementBackupOptions {
-  return { repoDirectory: w.repoDirectory, repoId: w.identity.repoId, operationId, worktreeRoots: w.worktrees, authorize };
+function backupOptions(w: Awaited<ReturnType<typeof world>>, operationId = uuidv7()): RequirementBackupOptions {
+  return { repoDirectory: w.repoDirectory, repoId: w.identity.repoId, operationId, worktreeRoots: w.worktrees };
 }
 
 async function isolation(w: Awaited<ReturnType<typeof world>>) {
@@ -89,7 +87,6 @@ function restoreOptions(
   backup: Awaited<ReturnType<typeof createRequirementBackup>>,
   target: Awaited<ReturnType<typeof isolation>>,
   operationId = uuidv7(),
-  authorize: RequirementRestoreOptions["authorize"] = () => authorization("restore-auth"),
 ): RequirementRestoreOptions {
   return {
     backupDirectory: backup.backupDirectory,
@@ -99,7 +96,6 @@ function restoreOptions(
     repoId: w.identity.repoId,
     operationId,
     worktreeRoots: w.worktrees,
-    authorize,
   };
 }
 
@@ -279,7 +275,7 @@ test("已完成操作日志的未知字段和闲置阶段字段改写均拒绝",
   await expect(restoreRequirementBackup(input)).rejects.toMatchObject({ code: "restore_log_invalid" });
 }, 30_000);
 
-test("已完成操作仍有有效或损坏写占用、未完成操作、缺失或异步授权均默认拒绝；无占用时可备份", async () => {
+test("已完成操作仍有有效或损坏写占用、未完成操作或缺少业务现场均默认拒绝；无占用时可备份", async () => {
   const w = await world();
   const completedOperationId = uuidv7();
   const created = await w.service.create({ requestId: uuidv7(), operationId: completedOperationId, title: "需求", body: "正文" });
@@ -302,17 +298,20 @@ test("已完成操作仍有有效或损坏写占用、未完成操作、缺失�
     db.remove(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, created.requirementId, claim.version);
   });
   let injectedDuringMaintenance = false;
-  const maintenanceRace = backupOptions(w, uuidv7(), ({ stage }) => {
-    if (stage === "prepare" && !injectedDuringMaintenance) {
+  const prepare = DatabaseSync.prototype.prepare;
+  vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+    if (!injectedDuringMaintenance && sql.includes("AS occupied") && existsSync(join(w.repoDirectory, ".database-maintenance.json"))) {
+      injectedDuringMaintenance = true;
       const raw = new DatabaseSync(dataPath);
       try {
         raw.prepare("INSERT INTO records(id,namespace,record_key,version,data) VALUES(?,?,?,?,?)").run(uuidv7(), REQUIREMENT_WRITE_COORDINATION_NAMESPACE, created.requirementId, 1, JSON.stringify({ corrupt: "maintenance-race" }));
       } finally { raw.close(); }
-      injectedDuringMaintenance = true;
     }
-    return authorization("backup-maintenance-race");
+    return prepare.call(this, sql);
   });
-  await expect(createRequirementBackup(maintenanceRace)).rejects.toMatchObject({ name: "RequirementBackupError", code: "requirement_write_busy" });
+  try {
+    await expect(createRequirementBackup(backupOptions(w))).rejects.toMatchObject({ name: "RequirementBackupError", code: "requirement_write_busy" });
+  } finally { vi.restoreAllMocks(); }
   expect(injectedDuringMaintenance).toBe(true);
   withDatabase(dataPath, (db) => {
     const claim = db.read(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, created.requirementId)!;
@@ -326,30 +325,26 @@ test("已完成操作仍有有效或损坏写占用、未完成操作、缺失�
     requirementId: created.requirementId, finalVersion: null, git: null,
   }));
   await expect(createRequirementBackup(backupOptions(w))).rejects.toMatchObject({ name: "RequirementBackupError", code: "unfinished_requirement_operation" });
-  await expect(createRequirementBackup({ ...backupOptions(w), authorize: undefined as never })).rejects.toMatchObject({ code: "invalid_options" });
-  await expect(createRequirementBackup({ ...backupOptions(w), authorize: (async () => authorization("async")) as never })).rejects.toMatchObject({ code: "authorization_must_be_synchronous" });
+  await expect(createRequirementBackup({ ...backupOptions(w), worktreeRoots: [] })).rejects.toMatchObject({ code: "invalid_options" });
   expect(RequirementBackupError).toBeTypeOf("function");
 });
 
 test("备份完成响应中断后同operation重试复用快照与文件，不重复复制", async () => {
   const w = await populatedWorld();
   const operationId = uuidv7();
-  let denyComplete = true;
-  const seen: RequirementBackupStage[] = [];
-  const options = backupOptions(w, operationId, ({ stage }) => {
-    seen.push(stage);
-    if (stage === "complete" && denyComplete) return { authorized: false, writesStopped: true, authorizationId: "backup-retry", principal: "requirement-backup-test" } as never;
-    return authorization("backup-retry");
-  });
-  await expect(createRequirementBackup(options)).rejects.toMatchObject({ code: "authorization_failed" });
+  const options = backupOptions(w, operationId);
+  const first = await createRequirementBackup(options);
+  const operationPath = join(first.backupDirectory, requirementBackupFiles.operation);
+  // 把日志退回写完 manifest、尚未记 completed 的阶段，等价于完成那一步中断
+  const { manifestHash: _manifestHash, ...completed } = JSON.parse(await readFile(operationPath, "utf8"));
+  await writeFile(operationPath, JSON.stringify(sealOperationLog({ ...completed, phase: "copied" })), { mode: 0o600 });
   const helperBefore = (await readdir(join(w.repoDirectory, "backups"))).filter((name) => /^[0-9a-f-]{36}$/.test(name));
-  denyComplete = false;
   const receipt = await createRequirementBackup(options);
+  expect(receipt).toEqual(first);
   const helperAfter = (await readdir(join(w.repoDirectory, "backups"))).filter((name) => /^[0-9a-f-]{36}$/.test(name));
   expect(helperAfter).toEqual(helperBefore);
   expect(await createRequirementBackup(options)).toEqual(receipt);
   expect((await readdir(join(w.repoDirectory, "backups", "requirement-backups"))).filter((name) => name === operationId)).toHaveLength(1);
-  expect(seen.filter((stage) => stage === "snapshot")).toHaveLength(1);
 }, 30_000);
 
 test("恢复中断重试不覆盖外部新文件，且伪manifest或不同目标hash不能冒充本次备份", async () => {
@@ -357,16 +352,12 @@ test("恢复中断重试不覆盖外部新文件，且伪manifest或不同目标
   const backup = await createRequirementBackup(backupOptions(w));
   const target = await isolation(w);
   const operationId = uuidv7();
-  let denyReconcile = true;
-  const options = restoreOptions(w, backup, target, operationId, ({ stage }) => {
-    if (stage === "reconcile" && denyReconcile) return { authorized: false, writesStopped: true, authorizationId: "restore-retry", principal: "requirement-backup-test" } as never;
-    return authorization("restore-retry");
-  });
-  await expect(restoreRequirementBackup(options)).rejects.toMatchObject({ code: "authorization_failed", restoreStatus: "needs_review", executable: false });
+  // 归档目录不存在会让对账在复制完成后失败，留下停在 copied 阶段的恢复操作
+  const options = { ...restoreOptions(w, backup, target, operationId), archiveDirectory: join(w.root, "missing-archives") };
+  await expect(restoreRequirementBackup(options)).rejects.toMatchObject({ code: "recovery_failed" });
   const restoredProd = join(target.repoDirectory, "requirements", w.activeId, "prod.md");
   await writeFile(restoredProd, "external-new-content", { mode: 0o600 });
-  denyReconcile = false;
-  await expect(restoreRequirementBackup(options)).rejects.toMatchObject({ code: "restore_target_conflict" });
+  await expect(restoreRequirementBackup(options)).rejects.toMatchObject({ code: "restore_target_conflict", restoreStatus: "needs_review", executable: false });
   expect(await readFile(restoredProd, "utf8")).toBe("external-new-content");
 
   const another = await isolation(w);

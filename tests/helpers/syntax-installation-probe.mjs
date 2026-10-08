@@ -50,8 +50,6 @@ if (expectedCode === "valid") {
     assert.throws(() => new LocalDatabase(snapshot.snapshotPath), /snapshot_only/);
     const index = new LocalDatabase(databaseFile(storage, "index"));
     try { assert.throws(() => index.create("tasks", "forbidden", {}), /wrong_database_kind/); } finally { index.close(); }
-    await writeFile(join(storage, "data.sqlite"), "legacy fixture");
-    assert.throws(() => databaseFile(storage, "data"), /upgrade_required/);
   } finally { await rm(storage, { recursive: true, force: true }); }
 } else if (expectedCode === "warm-invalid") {
   await withSyntaxTree("js", "let a = 1;", () => null);

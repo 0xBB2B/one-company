@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { LocalDatabase, UUID_V7_PATTERN, uuidv7 } from "./database.ts";
+import { UUID_V7_PATTERN, uuidv7 } from "./database.ts";
 import { databaseMaintenanceDirectory } from "./database-maintenance.ts";
-import type { DatabaseMaintenancePermit, DatabaseManagementAuthorization } from "./database-maintenance.ts";
-import { assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_RECOVERY_FILE, DATABASE_SCHEMA_VERSIONS, DATABASE_SNAPSHOT_FILE, pathExists } from "./database-paths.ts";
+import type { DatabaseMaintenancePermit } from "./database-maintenance.ts";
+import { assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, DATABASE_SNAPSHOT_FILE, pathExists } from "./database-paths.ts";
 
 export class DatabaseRecoveryError extends Error {
   readonly code: string;
@@ -16,19 +16,17 @@ export class DatabaseRecoveryError extends Error {
   }
 }
 
-export type DatabaseRecoveryMode = "current_restart" | "index_rebuild" | "legacy_data";
-export type DatabaseRecoveryStage = "inspect" | "prepare" | "copy" | "reconcile" | "complete";
+export type DatabaseRecoveryMode = "current_restart" | "backup_data";
 
 export interface DatabaseRecoveryRequest {
   operationId: string;
   mode: DatabaseRecoveryMode;
-  /** legacy_data只接受维护目录backups内登记的一份data.db快照。 */
+  /** backup_data只接受维护目录backups内登记的一份data.db快照。 */
   snapshotPath?: string;
   /** 只枚举该目录下符合完整UUIDv7命名的归档路径，不读取文件正文或计算正文hash。 */
   archiveDirectory?: string;
   /** 若上层已登记固定归档路径，则只接受这些完整绝对路径；不做短ID或标题匹配。 */
   registeredArchivePaths?: readonly string[];
-  authorize(context: Readonly<{ operationId: string; mode: DatabaseRecoveryMode; stage: DatabaseRecoveryStage }>): DatabaseManagementAuthorization;
 }
 
 export interface ArchiveMetadata {
@@ -49,15 +47,12 @@ export interface RecoveryRequirementStatus {
 
 export type DatabaseRecoveryReceipt =
   | { operationId: string; mode: "current_restart"; state: "restart_ready"; executable: true; databasePath: string; databaseHash: string; requirementsChecked: number }
-  | { operationId: string; mode: "index_rebuild"; state: "rebuilt"; executable: false; restoreStatus: "needs_review"; rebuiltPath: string; dataHashBefore: string | null; dataHashAfter: string | null }
-  | { operationId: string; mode: "legacy_data"; state: "reconciled"; executable: false; restoreStatus: "needs_review"; recoveredPath: string | null; requirements: RecoveryRequirementStatus[]; archives: ArchiveMetadata[] };
+  | { operationId: string; mode: "backup_data"; state: "reconciled"; executable: false; restoreStatus: "needs_review"; recoveredPath: string | null; requirements: RecoveryRequirementStatus[]; archives: ArchiveMetadata[] };
 
 interface RecoveryManifest {
   format: "database-recovery/v1";
   operationId: string;
-  mode: "index_rebuild" | "legacy_data";
-  authorizationId: string;
-  principal: string;
+  mode: "backup_data";
   state: "prepared" | "copied" | "reconciled" | "completed";
   snapshotPath?: string;
   snapshotHash?: string;
@@ -158,23 +153,14 @@ function replaceJson(path: string, directory: string, expected: PrivateFileState
   return readPrivateText(path, "recovery_log_changed");
 }
 
-function authorize(request: DatabaseRecoveryRequest, stage: DatabaseRecoveryStage, expected?: Pick<RecoveryManifest, "authorizationId" | "principal">): DatabaseManagementAuthorization {
-  let result: DatabaseManagementAuthorization;
-  try { result = request.authorize(Object.freeze({ operationId: request.operationId, mode: request.mode, stage })); }
-  catch { throw new DatabaseRecoveryError("authorization_failed"); }
-  if (!result || result.authorized !== true || result.writesStopped !== true || !result.authorizationId || !result.principal) throw new DatabaseRecoveryError("authorization_failed");
-  if (expected && (result.authorizationId !== expected.authorizationId || result.principal !== expected.principal)) throw new DatabaseRecoveryError("authorization_changed");
-  return result;
-}
-
-function validateDatabase(path: string, applicationId: number, acceptedLegacy = false): { hash: string; requirements: Array<{ id: string; key: string; version: number; data: Record<string, unknown> }> } {
+function validateDatabase(path: string): { hash: string; requirements: Array<{ id: string; key: string; version: number; data: Record<string, unknown> }> } {
   assertRegularDatabaseFiles(path);
   const before = databaseFilesFingerprint(path);
   const db = new DatabaseSync(path, { readOnly: true, allowExtension: false });
   try {
     const version = Number(db.prepare("PRAGMA user_version").get()?.user_version);
     const identity = Number(db.prepare("PRAGMA application_id").get()?.application_id);
-    if (db.prepare("PRAGMA quick_check").get()?.quick_check !== "ok" || (version !== 1 && version !== DATABASE_SCHEMA_VERSIONS.data) || (identity !== applicationId && !(acceptedLegacy && identity === 0))) throw new DatabaseRecoveryError("unrecognized_database");
+    if (db.prepare("PRAGMA quick_check").get()?.quick_check !== "ok" || version !== DATABASE_SCHEMA_VERSIONS.data || identity !== DATABASE_APPLICATION_IDS.data) throw new DatabaseRecoveryError("unrecognized_database");
     const table = Number(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='records'").get()?.n);
     if (table !== 1) throw new DatabaseRecoveryError("unrecognized_database");
     const requirements = db.prepare("SELECT id, record_key, version, data FROM records WHERE namespace='requirements'").all().map((row) => {
@@ -230,50 +216,36 @@ function terminal(data: Record<string, unknown>): { lifecycle: "closing" | "clos
   return { lifecycle: data.lifecycle, reason };
 }
 
-function createEmptyIndex(path: string): void {
-  // 在独立恢复目录复用正式初始化器，确保UUID、版本、唯一性及索引命名空间约束完全一致。
-  const db = new LocalDatabase(path);
-  db.close();
-  chmodSync(path, 0o600);
-  const syncFd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(syncFd); } finally { closeSync(syncFd); }
-}
-
-function recoverLegacyCopy(source: string, destination: string): void {
+function recoverBackupCopy(source: string, destination: string): void {
   const sourceDb = new DatabaseSync(source, { readOnly: true, allowExtension: false });
   try {
     sourceDb.exec("PRAGMA trusted_schema=OFF; PRAGMA busy_timeout=5000;");
     const fd = openSync(destination, "wx", 0o600); closeSync(fd);
     sourceDb.prepare("VACUUM main INTO ?").run(destination);
   } finally { sourceDb.close(); }
-  const output = new DatabaseSync(destination, { allowExtension: false });
-  try { output.exec(`PRAGMA application_id=${DATABASE_APPLICATION_IDS.data}; PRAGMA user_version=1;`); }
-  finally { output.close(); }
 }
 
 function parseManifest(file: PrivateFileState): RecoveryManifest {
   let value: unknown;
   try { value = JSON.parse(file.contents); } catch { throw new DatabaseRecoveryError("recovery_log_invalid"); }
   const manifest = value as Partial<RecoveryManifest>;
-  if (manifest.format !== "database-recovery/v1" || !UUID_V7_PATTERN.test(String(manifest.operationId)) || !["index_rebuild", "legacy_data"].includes(String(manifest.mode)) || !["prepared", "copied", "reconciled", "completed"].includes(String(manifest.state))) throw new DatabaseRecoveryError("recovery_log_invalid");
+  if (manifest.format !== "database-recovery/v1" || !UUID_V7_PATTERN.test(String(manifest.operationId)) || manifest.mode !== "backup_data" || !["prepared", "copied", "reconciled", "completed"].includes(String(manifest.state))) throw new DatabaseRecoveryError("recovery_log_invalid");
   return manifest as RecoveryManifest;
 }
 
 /**
- * 分级核对当前运行库、可重建索引和历史不明的旧data快照。
- * 旧data产物始终位于带snapshot标记的私有恢复目录，并把活动状态改为needs_review；本接口不激活它。
+ * 分级核对当前运行库和历史不明的备份data快照。
+ * 恢复产物始终位于带snapshot标记的私有恢复目录，并把活动状态改为needs_review；本接口不激活它。
  */
 export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, request: DatabaseRecoveryRequest): DatabaseRecoveryReceipt {
-  if (!UUID_V7_PATTERN.test(request.operationId) || !["current_restart", "index_rebuild", "legacy_data"].includes(request.mode) || typeof request.authorize !== "function") throw new DatabaseRecoveryError("invalid_request");
+  if (!UUID_V7_PATTERN.test(request.operationId) || !["current_restart", "backup_data"].includes(request.mode)) throw new DatabaseRecoveryError("invalid_request");
   const directory = databaseMaintenanceDirectory(permit, request.operationId);
-  const first = authorize(request, "inspect");
   const currentData = join(directory, "data.db");
 
   if (request.mode === "current_restart") {
     if (request.snapshotPath || request.archiveDirectory || request.registeredArchivePaths) throw new DatabaseRecoveryError("invalid_request");
-    if (pathExists(join(directory, DATABASE_SNAPSHOT_FILE)) || pathExists(join(directory, DATABASE_RECOVERY_FILE))) throw new DatabaseRecoveryError("snapshot_not_current");
-    const result = validateDatabase(currentData, DATABASE_APPLICATION_IDS.data);
-    const completed = authorize(request, "complete");
-    if (completed.authorizationId !== first.authorizationId || completed.principal !== first.principal) throw new DatabaseRecoveryError("authorization_changed");
+    if (pathExists(join(directory, DATABASE_SNAPSHOT_FILE))) throw new DatabaseRecoveryError("snapshot_not_current");
+    const result = validateDatabase(currentData);
     return { operationId: request.operationId, mode: "current_restart", state: "restart_ready", executable: true, databasePath: currentData, databaseHash: result.hash, requirementsChecked: result.requirements.length };
   }
 
@@ -294,7 +266,7 @@ export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, req
     if (!pathExists(manifestPath)) throw new DatabaseRecoveryError("operation_conflict");
     manifestFile = readPrivateText(manifestPath, "recovery_log_invalid");
     manifest = parseManifest(manifestFile);
-    if (manifest.operationId !== request.operationId || manifest.mode !== request.mode || manifest.authorizationId !== first.authorizationId || manifest.principal !== first.principal) throw new DatabaseRecoveryError("operation_conflict");
+    if (manifest.operationId !== request.operationId || manifest.mode !== request.mode) throw new DatabaseRecoveryError("operation_conflict");
   } else {
     if (!pathExists(backupsDirectory)) mkdirSync(backupsDirectory, { mode: 0o700 });
     assertPrivateChildDirectory(backupsDirectory, directory);
@@ -302,7 +274,7 @@ export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, req
     assertPrivateChildDirectory(recoveryRoot, backupsDirectory);
     mkdirSync(operationDirectory, { mode: 0o700 });
     assertOperationDirectories();
-    manifest = { format: "database-recovery/v1", operationId: request.operationId, mode: request.mode, authorizationId: first.authorizationId, principal: first.principal, state: "prepared", snapshotPath: request.snapshotPath, archiveDirectory: request.archiveDirectory, registeredArchivePaths: request.registeredArchivePaths ? [...request.registeredArchivePaths] : undefined };
+    manifest = { format: "database-recovery/v1", operationId: request.operationId, mode: "backup_data", state: "prepared", snapshotPath: request.snapshotPath, archiveDirectory: request.archiveDirectory, registeredArchivePaths: request.registeredArchivePaths ? [...request.registeredArchivePaths] : undefined };
     writeNew(manifestPath, JSON.stringify(manifest)); syncDirectory(operationDirectory); syncDirectory(recoveryRoot);
     manifestFile = readPrivateText(manifestPath, "recovery_log_invalid");
   }
@@ -312,45 +284,16 @@ export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, req
     manifestFile = replaceJson(manifestPath, operationDirectory, manifestFile, next);
     manifest = next;
   };
-  const reauthorize = (stage: DatabaseRecoveryStage) => { databaseMaintenanceDirectory(permit, request.operationId); assertOperationDirectories(); authorize(request, stage, manifest); };
+  const recheckScope = () => { databaseMaintenanceDirectory(permit, request.operationId); assertOperationDirectories(); };
 
   try {
     if (manifest.state === "completed") {
-      reauthorize("complete");
-      if (!manifest.receipt || manifest.receipt.operationId !== request.operationId || manifest.receipt.mode !== request.mode) throw new DatabaseRecoveryError("recovery_log_invalid");
-      if (manifest.receipt.mode === "index_rebuild") {
-        if (manifest.receipt.rebuiltPath !== join(operationDirectory, "index.db")) throw new DatabaseRecoveryError("recovery_log_invalid");
-        validateDatabase(manifest.receipt.rebuiltPath, DATABASE_APPLICATION_IDS.index);
-      } else {
-        if (manifest.receipt.recoveredPath !== join(operationDirectory, "data.db")) throw new DatabaseRecoveryError("recovery_log_invalid");
-        if (manifest.receipt.recoveredPath) validateDatabase(manifest.receipt.recoveredPath, DATABASE_APPLICATION_IDS.data);
-      }
+      recheckScope();
+      if (!manifest.receipt || manifest.receipt.operationId !== request.operationId || manifest.receipt.mode !== "backup_data") throw new DatabaseRecoveryError("recovery_log_invalid");
+      if (manifest.receipt.recoveredPath !== join(operationDirectory, "data.db")) throw new DatabaseRecoveryError("recovery_log_invalid");
+      if (manifest.receipt.recoveredPath) validateDatabase(manifest.receipt.recoveredPath);
       readPrivateText(join(operationDirectory, DATABASE_SNAPSHOT_FILE), "snapshot_marker_invalid");
       return manifest.receipt;
-    }
-
-    const dataHashBefore = pathExists(currentData) ? databaseFilesFingerprint(currentData) : null;
-    if (request.mode === "index_rebuild") {
-      if (request.snapshotPath || request.archiveDirectory || request.registeredArchivePaths) throw new DatabaseRecoveryError("invalid_request");
-      const rebuiltPath = join(operationDirectory, "index.db");
-      if (manifest.state === "prepared") {
-        reauthorize("prepare");
-        if (pathExists(rebuiltPath)) throw new DatabaseRecoveryError("rebuild_output_conflict");
-        createEmptyIndex(rebuiltPath);
-        validateDatabase(rebuiltPath, DATABASE_APPLICATION_IDS.index);
-        save({ ...manifest, state: "reconciled", lastFailure: undefined });
-      }
-      validateDatabase(rebuiltPath, DATABASE_APPLICATION_IDS.index);
-      const dataHashAfter = pathExists(currentData) ? databaseFilesFingerprint(currentData) : null;
-      if (dataHashBefore !== dataHashAfter) throw new DatabaseRecoveryError("data_database_changed");
-      const reviewMarkerPath = join(operationDirectory, DATABASE_SNAPSHOT_FILE);
-      const reviewMarker = JSON.stringify({ operationId: request.operationId, kind: "index", restoreStatus: "needs_review", executable: false });
-      if (!pathExists(reviewMarkerPath)) writeNew(reviewMarkerPath, reviewMarker);
-      if (readPrivateText(reviewMarkerPath, "snapshot_marker_invalid").contents !== reviewMarker) throw new DatabaseRecoveryError("snapshot_marker_invalid");
-      syncDirectory(operationDirectory);
-      const receipt: DatabaseRecoveryReceipt = { operationId: request.operationId, mode: "index_rebuild", state: "rebuilt", executable: false, restoreStatus: "needs_review", rebuiltPath, dataHashBefore, dataHashAfter };
-      reauthorize("complete"); save({ ...manifest, state: "completed", receipt, lastFailure: undefined });
-      return receipt;
     }
 
     const snapshotPath = request.snapshotPath;
@@ -358,11 +301,11 @@ export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, req
     const snapshotActual = privateDescendantFile(backupsDirectory, snapshotPath);
     if (contained(operationDirectory, snapshotActual)) throw new DatabaseRecoveryError("snapshot_path_invalid");
     readPrivateText(join(dirname(snapshotActual), DATABASE_SNAPSHOT_FILE), "snapshot_marker_invalid");
-    const snapshot = validateDatabase(snapshotActual, DATABASE_APPLICATION_IDS.data, true);
+    const snapshot = validateDatabase(snapshotActual);
     const archiveDirectory = request.archiveDirectory;
     const archives = archiveDirectory ? enumerateArchiveMetadata(archiveDirectory, request.registeredArchivePaths) : [];
     if (!archiveDirectory && request.registeredArchivePaths) throw new DatabaseRecoveryError("registered_archive_path_invalid");
-    const current = pathExists(currentData) ? validateDatabase(currentData, DATABASE_APPLICATION_IDS.data) : null;
+    const current = pathExists(currentData) ? validateDatabase(currentData) : null;
     const archivePaths = archives.map((archive) => archive.path);
     if (manifest.snapshotHash !== undefined && manifest.snapshotHash !== snapshot.hash) throw new DatabaseRecoveryError("snapshot_changed");
     if (manifest.archivePaths !== undefined && JSON.stringify(manifest.archivePaths) !== JSON.stringify(archivePaths)) throw new DatabaseRecoveryError("archives_changed");
@@ -375,16 +318,16 @@ export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, req
     const recoveredPath = join(operationDirectory, "data.db");
 
     if (manifest.state === "prepared") {
-      reauthorize("copy");
+      recheckScope();
       if (pathExists(recoveredPath)) throw new DatabaseRecoveryError("recovery_output_conflict");
-      recoverLegacyCopy(snapshotActual, recoveredPath);
+      recoverBackupCopy(snapshotActual, recoveredPath);
       save({ ...manifest, state: "copied", lastFailure: undefined });
     }
 
     let statuses: RecoveryRequirementStatus[] = [];
     if (manifest.state === "copied") {
-      reauthorize("reconcile");
-      validateDatabase(recoveredPath, DATABASE_APPLICATION_IDS.data);
+      recheckScope();
+      validateDatabase(recoveredPath);
       const output = new DatabaseSync(recoveredPath, { allowExtension: false });
       try {
         output.exec("BEGIN IMMEDIATE");
@@ -424,7 +367,7 @@ export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, req
       statuses.sort((a, b) => a.requirementId.localeCompare(b.requirementId));
       save({ ...manifest, state: "reconciled", lastFailure: undefined });
     } else {
-      validateDatabase(recoveredPath, DATABASE_APPLICATION_IDS.data);
+      validateDatabase(recoveredPath);
       const output = new DatabaseSync(recoveredPath, { readOnly: true, allowExtension: false });
       try {
         statuses = output.prepare("SELECT requirement_id,source_lifecycle,retained_lifecycle,close_reason,archive_path,recovery_reason FROM recovery_reconciliation ORDER BY requirement_id").all().map((row) => ({
@@ -438,8 +381,8 @@ export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, req
     if (!pathExists(reviewMarkerPath)) writeNew(reviewMarkerPath, reviewMarker);
     if (readPrivateText(reviewMarkerPath, "snapshot_marker_invalid").contents !== reviewMarker) throw new DatabaseRecoveryError("snapshot_marker_invalid");
     syncDirectory(operationDirectory);
-    const receipt: DatabaseRecoveryReceipt = { operationId: request.operationId, mode: "legacy_data", state: "reconciled", executable: false, restoreStatus: "needs_review", recoveredPath, requirements: statuses, archives };
-    reauthorize("complete"); save({ ...manifest, state: "completed", receipt, lastFailure: undefined });
+    const receipt: DatabaseRecoveryReceipt = { operationId: request.operationId, mode: "backup_data", state: "reconciled", executable: false, restoreStatus: "needs_review", recoveredPath, requirements: statuses, archives };
+    recheckScope(); save({ ...manifest, state: "completed", receipt, lastFailure: undefined });
     return receipt;
   } catch (error) {
     try { save({ ...manifest, lastFailure: error instanceof DatabaseRecoveryError ? error.code : "recovery_failed" }); } catch { /* 保留最后一个可核对阶段。 */ }

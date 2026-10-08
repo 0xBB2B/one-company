@@ -150,7 +150,7 @@ export async function repoDataDir(dataRootPath: string, repoId: string, commonDi
   const captured = { dataRootPath, repoId, commonDir };
   const worktrees = await listWorktrees(captured.commonDir);
   assertDataRootOutsideWorktrees(captured.dataRootPath, worktrees);
-  // 旧库/维护状态必须先核对，不能先建立替代目录或空库。
+  // 维护状态必须先核对，不能先建立替代目录或空库。
   const database = repositoryDatabase(captured.dataRootPath, captured.repoId);
   const reposDir = join(captured.dataRootPath, "repos");
   const dir = join(reposDir, captured.repoId);

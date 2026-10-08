@@ -120,9 +120,8 @@ export class TransactionCleanupError extends AggregateError {
 
 export type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
 
-function schemaVersion(kind: DatabaseKind | undefined): number { return kind ? DATABASE_SCHEMA_VERSIONS[kind] : 1; }
-function assertSupportedVersion(kind: DatabaseKind | undefined, version: number): void {
-  if (version === 0 || version === schemaVersion(kind)) return;
+function assertSupportedVersion(kind: DatabaseKind, version: number): void {
+  if (version === 0 || version === DATABASE_SCHEMA_VERSIONS[kind]) return;
   if (kind === "data" && version === 1) {
     throw new DatabaseStorageError("outdated_database", "data.db 来自移除 spec 之前的版本，不再兼容；请备份后删除本机数据目录并重新初始化");
   }
@@ -161,25 +160,22 @@ export class LocalDatabase {
     // 失效事务的异步延续不能通过新连接绕过保护；必须先于路径和文件操作拒绝。
     if (hasInvalidTransactionOrigin()) throw new DatabaseUnavailableError();
     this.path = resolve(path);
-    assertDatabasePathReady(this.path);
+    const kind = assertDatabasePathReady(this.path);
     assertRegularDatabaseFiles(this.path);
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     this.connection = new Driver(this.path);
     try {
-      const kind = databaseKind(this.path);
-      if (kind) {
-        this.connection.exec("PRAGMA busy_timeout = 5000; BEGIN");
-        let identity;
-        try {
-          identity = { id: Number(this.connection.prepare("PRAGMA application_id").get()?.application_id),
-            version: Number(this.connection.prepare("PRAGMA user_version").get()?.user_version),
-            objects: Number(this.connection.prepare("SELECT count(*) AS n FROM sqlite_master").get()?.n) };
-        } finally { this.connection.exec("ROLLBACK"); }
-        if ((identity.version === 0 && identity.objects !== 0) || (identity.id !== DATABASE_APPLICATION_IDS[kind] && (identity.id !== 0 || identity.version !== 0 || identity.objects !== 0))) {
-          throw new DatabaseStorageError("wrong_database_kind", "数据库用途或版本来源不明，不自动接管或重建");
-        }
-        assertSupportedVersion(kind, identity.version);
+      this.connection.exec("PRAGMA busy_timeout = 5000; BEGIN");
+      let identity;
+      try {
+        identity = { id: Number(this.connection.prepare("PRAGMA application_id").get()?.application_id),
+          version: Number(this.connection.prepare("PRAGMA user_version").get()?.user_version),
+          objects: Number(this.connection.prepare("SELECT count(*) AS n FROM sqlite_master").get()?.n) };
+      } finally { this.connection.exec("ROLLBACK"); }
+      if ((identity.version === 0 && identity.objects !== 0) || (identity.id !== DATABASE_APPLICATION_IDS[kind] && (identity.id !== 0 || identity.version !== 0 || identity.objects !== 0))) {
+        throw new DatabaseStorageError("wrong_database_kind", "数据库用途或版本来源不明，不自动接管或重建");
       }
+      assertSupportedVersion(kind, identity.version);
       chmodSync(this.path, 0o600);
       this.connection.exec(`PRAGMA busy_timeout = ${DATABASE_BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`);
       enableWal(this.connection);
@@ -189,8 +185,8 @@ export class LocalDatabase {
       if (version === 0) this.transaction(() => {
         // 取得写锁后复核版本，不能用等待锁之前的旧版本覆盖其他进程的初始化。
         const lockedVersion = Number(this.connection.prepare("PRAGMA user_version").get()?.user_version);
-        if (lockedVersion === schemaVersion(kind)) {
-          if (kind && Number(this.connection.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS[kind]) throw new DatabaseStorageError("wrong_database_kind", "数据库身份已变化");
+        if (lockedVersion === DATABASE_SCHEMA_VERSIONS[kind]) {
+          if (Number(this.connection.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS[kind]) throw new DatabaseStorageError("wrong_database_kind", "数据库身份已变化");
           return;
         }
         if (lockedVersion !== 0) assertSupportedVersion(kind, lockedVersion);
@@ -213,11 +209,11 @@ export class LocalDatabase {
             data TEXT NOT NULL CHECK (json_valid(data)),
             UNIQUE (stream, sequence)
           ) STRICT;
-          PRAGMA application_id = ${kind ? DATABASE_APPLICATION_IDS[kind] : 0};
-          PRAGMA user_version = ${schemaVersion(kind)};
+          PRAGMA application_id = ${DATABASE_APPLICATION_IDS[kind]};
+          PRAGMA user_version = ${DATABASE_SCHEMA_VERSIONS[kind]};
         `);
       });
-      if (kind && Number(this.connection.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS[kind]) throw new DatabaseStorageError("wrong_database_kind", "数据库身份已变化");
+      if (Number(this.connection.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS[kind]) throw new DatabaseStorageError("wrong_database_kind", "数据库身份已变化");
       if (kind === "index") this.initializeIndexSchema();
       assertRegularDatabaseFiles(this.path);
       for (const suffix of ["-wal", "-shm"]) if (existsSync(this.path + suffix)) chmodSync(this.path + suffix, 0o600);

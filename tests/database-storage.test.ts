@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { copyFile, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { LocalDatabase, databaseFile, globalDatabase, indexDatabase, readRecord, repositoryDatabase, uuidv7 } from "../runtime/database.ts";
+import { LocalDatabase, databaseFile, globalDatabase, indexDatabase, repositoryDatabase, uuidv7 } from "../runtime/database.ts";
 import { DATABASE_APPLICATION_IDS, DATABASE_MAINTENANCE_FILE, DATABASE_SNAPSHOT_FILE } from "../runtime/database-paths.ts";
 import { createDatabaseSnapshot, withDatabaseMaintenance } from "../runtime/database-maintenance.ts";
 import type { DatabaseMaintenancePermit } from "../runtime/database-maintenance.ts";
@@ -57,25 +57,6 @@ test("三个固定.db路径与用途标签，索引不能保存任务或授权",
     const raw = new DatabaseSync(paths[i]!, { readOnly: true });
     try { expect(raw.prepare("PRAGMA application_id").get()?.application_id).toBe(DATABASE_APPLICATION_IDS[kind]); } finally { raw.close(); }
   }
-});
-
-for (const legacy of ["data.sqlite", "data.sqlite-wal", "data.sqlite-shm", "global.sqlite"]) {
-  test(`发现${legacy}不能悄悄创建空.db，读入口也拒绝`, async () => {
-    const w = await world(), target = join(w.directory, "data.db");
-    await writeFile(join(w.directory, legacy), "legacy-sentinel");
-    expect(() => databaseFile(w.directory, "data")).toThrow(/upgrade_required/);
-    expect(() => new LocalDatabase(target)).toThrow(/upgrade_required/);
-    expect(() => readRecord({ database: target, namespace: "requirements", key: "id" })).toThrow(/upgrade_required/);
-    expect(existsSync(target)).toBe(false);
-    expect(await readFile(join(w.directory, legacy), "utf8")).toBe("legacy-sentinel");
-  });
-}
-
-test("旧文件的悬空链接同样阻止新库，原路径不被修复或覆盖", async () => {
-  const w = await world();
-  await symlink(join(w.root, "missing"), join(w.directory, "data.sqlite"));
-  expect(() => databaseFile(w.directory, "index")).toThrow(/upgrade_required/);
-  expect(existsSync(join(w.directory, "index.db"))).toBe(false);
 });
 
 test("用途不符或未知旧布局的.db不被当成缓存重建", async () => {
@@ -173,19 +154,6 @@ test("快照包含仅在WAL中提交的记录，源字节保全且回执无正�
     const snapshot = new DatabaseSync(receipt.snapshotPath, { readOnly: true });
     try { expect(snapshot.prepare("SELECT data FROM records WHERE record_key='wal'").get()?.data).toBe(JSON.stringify({ secret })); } finally { snapshot.close(); }
   } finally { writer.close(); }
-});
-
-test("旧.sqlite只产生待审核副本，不改名、激活或丢失记录", async () => {
-  const w = await world(); const source = join(w.directory, "data.sqlite");
-  const old = new LocalDatabase(source); old.create("requirements", "r", { state: "active" }); old.close();
-  const before = await fileHash(source);
-  const receipt = await withDatabaseMaintenance(w.scope, (permit) => createDatabaseSnapshot(permit, "data", "legacy"));
-  expect(await fileHash(source)).toBe(before);
-  expect(receipt.sourceFormat).toBe("legacy"); expect(receipt.restoreStatus).toBe("needs_review");
-  expect(existsSync(join(w.directory, "data.db"))).toBe(false);
-  expect(() => databaseFile(w.directory, "data")).toThrow(/upgrade_required/);
-  const snapshot = new DatabaseSync(receipt.snapshotPath, { readOnly: true });
-  try { expect(snapshot.prepare("SELECT data FROM records WHERE namespace='requirements'").get()?.data).toBe('{"state":"active"}'); } finally { snapshot.close(); }
 });
 
 test("备份中发现外部写入则拒绝完成，不覆盖外部新内容", async () => {

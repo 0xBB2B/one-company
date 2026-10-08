@@ -1,8 +1,9 @@
 import { expect, test } from "vitest";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "../runtime/database-paths.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 function child(args: string[]) {
@@ -26,15 +27,18 @@ async function waitFor(predicate: () => boolean) {
 for (const release of [true, false]) {
   test(`真实读锁阻挡 WAL 切换：${release ? "释放后完成且保留内容" : "有界失败且不提交业务写入"}`, async () => {
     const root = await mkdtemp(join(temporaryRoot(), "wal-init-"));
-    const database = join(root, "data.sqlite");
+    const database = join(root, "data.db");
     const db = new DatabaseSync(database);
-    db.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('kept');");
+    db.exec(`CREATE TABLE records(id TEXT PRIMARY KEY NOT NULL, namespace TEXT NOT NULL, record_key TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL CHECK(json_valid(data)), UNIQUE(namespace,record_key)) STRICT;
+      CREATE TABLE events(id TEXT PRIMARY KEY NOT NULL, stream TEXT NOT NULL, sequence INTEGER NOT NULL, data TEXT NOT NULL CHECK(json_valid(data)), UNIQUE(stream,sequence)) STRICT;
+      INSERT INTO records VALUES ('0190a000-0000-7000-8000-000000000000', 'sentinel', 'kept', 1, '{}');
+      PRAGMA application_id=${DATABASE_APPLICATION_IDS.data}; PRAGMA user_version=${DATABASE_SCHEMA_VERSIONS.data};`);
     db.close();
     const holderPath = join(root, "reader.mjs");
     const openerPath = join(root, "opener.mjs");
     await writeFile(holderPath, `import { DatabaseSync } from 'node:sqlite';
 const db = new DatabaseSync(process.argv[2]);
-db.exec('BEGIN; SELECT * FROM sentinel;');
+db.exec('BEGIN; SELECT * FROM records;');
 console.log('LOCKED');
 process.stdin.once('data', () => { db.exec('COMMIT'); db.close(); process.exit(0); });
 `);
@@ -70,10 +74,9 @@ catch (error) { console.log(JSON.stringify({ ok: false, code: error.errcode, ela
       }
       const check = new DatabaseSync(database);
       try {
-        expect(check.prepare("SELECT value FROM sentinel").get()?.value).toBe("kept");
+        expect(check.prepare("SELECT record_key FROM records WHERE namespace = 'sentinel'").get()?.record_key).toBe("kept");
         expect(check.prepare("PRAGMA journal_mode").get()?.journal_mode).toBe(release ? "wal" : "delete");
-        if (release) expect(check.prepare("SELECT count(*) AS n FROM records WHERE namespace = 'probe'").get()?.n).toBe(1);
-        else expect(check.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'records'").get()?.n).toBe(0);
+        expect(check.prepare("SELECT count(*) AS n FROM records WHERE namespace = 'probe'").get()?.n).toBe(release ? 1 : 0);
       } finally { check.close(); }
     } finally {
       holder.proc.kill("SIGKILL");
@@ -97,7 +100,8 @@ process.stdin.once('data', () => {
 `);
   try {
     for (let round = 0; round < 10; round++) {
-      const path = join(root, `${round}.sqlite`);
+      const path = join(root, String(round), "data.db");
+      await mkdir(join(root, String(round)), { mode: 0o700 });
       const children = Array.from({ length: 4 }, () => child([script, path]));
       try {
         await waitFor(() => children.every((c) => c.output().includes("READY")));
@@ -109,7 +113,7 @@ process.stdin.once('data', () => {
           const events = check.prepare("SELECT sequence, data FROM events ORDER BY sequence").all();
           expect(events.map((event) => event.sequence)).toEqual(Array.from({ length: 40 }, (_, i) => i + 1));
           expect(new Set(events.map((event) => JSON.parse(String(event.data)).pid)).size).toBe(4);
-          expect(check.prepare("PRAGMA user_version").get()?.user_version).toBe(1);
+          expect(check.prepare("PRAGMA user_version").get()?.user_version).toBe(DATABASE_SCHEMA_VERSIONS.data);
         } finally { check.close(); }
       } finally {
         children.forEach((c) => c.proc.kill("SIGKILL"));

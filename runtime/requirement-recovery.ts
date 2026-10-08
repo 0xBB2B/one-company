@@ -6,7 +6,7 @@ import { UUID_V7_PATTERN } from "./database.ts";
 import { databaseFilesFingerprint, reconcileDatabaseRecovery } from "./database-recovery.ts";
 import type { RecoveryRequirementStatus } from "./database-recovery.ts";
 import { databaseMaintenanceDirectory, withDatabaseMaintenance } from "./database-maintenance.ts";
-import type { DatabaseMaintenancePermit, DatabaseManagementAuthorization } from "./database-maintenance.ts";
+import type { DatabaseMaintenancePermit } from "./database-maintenance.ts";
 import { DATABASE_SNAPSHOT_FILE, pathExists } from "./database-paths.ts";
 import { readRequirementBackupOperation, requirementBackupFiles } from "./requirement-backup.ts";
 import type { RequirementBackupFile, RequirementBackupManifest, RequirementBackupReference, RequirementBackupRequirement } from "./requirement-backup.ts";
@@ -30,8 +30,6 @@ export class RequirementRecoveryError extends Error {
   }
 }
 
-export type RequirementRestoreStage = "inspect" | "prepare" | "copy" | "reconcile" | "verify" | "complete";
-
 export interface RequirementRestoreOptions {
   /** createRequirementBackup返回的私有backupDirectory。 */
   backupDirectory: string;
@@ -44,8 +42,6 @@ export interface RequirementRestoreOptions {
   worktreeRoots: readonly string[];
   archiveDirectory?: string;
   registeredArchivePaths?: readonly string[];
-  /** 可信管理服务同步核验授权及所有相关写入者已经停止；这是内部集成点。 */
-  authorize(context: Readonly<{ operationId: string; repoId: string; backupOperationId: string; backupManifestHash: string; stage: RequirementRestoreStage }>): DatabaseManagementAuthorization;
 }
 
 export interface RequirementRestoreReceipt {
@@ -70,8 +66,6 @@ interface RestoreLog {
   backupOperationId: string;
   repoId: string;
   backupManifestHash: string;
-  authorizationId: string;
-  principal: string;
   repoDevice: number;
   repoInode: number;
   registrationHash: string;
@@ -134,27 +128,14 @@ function readPrivateBytes(path: string, code: string): Buffer {
     return bytes;
   } finally { closeSync(fd); }
 }
-function authorize(options: RequirementRestoreOptions, stage: RequirementRestoreStage, expected?: Pick<RestoreLog, "authorizationId" | "principal">): DatabaseManagementAuthorization {
-  let value: unknown;
-  try { value = options.authorize(Object.freeze({ operationId: options.operationId, repoId: options.repoId, backupOperationId: options.backupOperationId, backupManifestHash: options.backupManifestHash, stage })); } catch { fail("authorization_failed"); }
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    let then: unknown;
-    try { then = (value as { then?: unknown }).then; } catch { fail("authorization_failed"); }
-    if (typeof then === "function") { void Promise.resolve(value).catch(() => undefined); fail("authorization_must_be_synchronous"); }
-  }
-  const result = value as Partial<DatabaseManagementAuthorization> | null;
-  if (!result || result.authorized !== true || result.writesStopped !== true || !result.authorizationId || !result.principal) fail("authorization_failed");
-  if (expected && (result.authorizationId !== expected.authorizationId || result.principal !== expected.principal)) fail("authorization_changed");
-  return result as DatabaseManagementAuthorization;
-}
 function registrationHash(value: Omit<RestoreLog, "format" | "registrationHash" | "phase" | "recoveredDatabasePath" | "requirements">): string { return sha256(JSON.stringify(value)); }
 function parseRestoreLog(path: string): RestoreLog {
   let value: unknown;
   try { value = JSON.parse(readPrivateBytes(path, "restore_log_invalid").toString("utf8")); } catch (error) { if (error instanceof RequirementRecoveryError) throw error; fail("restore_log_invalid"); }
-  if (!validOperationLog(value) || Object.keys(value).some((key) => !["format", "operationId", "backupOperationId", "repoId", "backupManifestHash", "authorizationId", "principal", "repoDevice", "repoInode", "registrationHash", "phase", "recoveredDatabasePath", "recoveredDatabaseHash", "requirements", "integrityHash"].includes(key))) fail("restore_log_invalid");
+  if (!validOperationLog(value) || Object.keys(value).some((key) => !["format", "operationId", "backupOperationId", "repoId", "backupManifestHash", "repoDevice", "repoInode", "registrationHash", "phase", "recoveredDatabasePath", "recoveredDatabaseHash", "requirements", "integrityHash"].includes(key))) fail("restore_log_invalid");
   const log = value as Partial<RestoreLog>;
-  if (log.format !== RESTORE_FORMAT || !UUID_V7_PATTERN.test(String(log.operationId)) || !UUID_V7_PATTERN.test(String(log.backupOperationId)) || !HASH.test(String(log.repoId)) || !HASH.test(String(log.backupManifestHash)) || !log.authorizationId || !log.principal || !Number.isSafeInteger(log.repoDevice) || !Number.isSafeInteger(log.repoInode) || !HASH.test(String(log.registrationHash)) || !["prepared", "copying", "copied", "reconciled", "verified", "completed"].includes(String(log.phase))) fail("restore_log_invalid");
-  const registration = { operationId: log.operationId!, backupOperationId: log.backupOperationId!, repoId: log.repoId!, backupManifestHash: log.backupManifestHash!, authorizationId: log.authorizationId!, principal: log.principal!, repoDevice: log.repoDevice!, repoInode: log.repoInode! };
+  if (log.format !== RESTORE_FORMAT || !UUID_V7_PATTERN.test(String(log.operationId)) || !UUID_V7_PATTERN.test(String(log.backupOperationId)) || !HASH.test(String(log.repoId)) || !HASH.test(String(log.backupManifestHash)) || !Number.isSafeInteger(log.repoDevice) || !Number.isSafeInteger(log.repoInode) || !HASH.test(String(log.registrationHash)) || !["prepared", "copying", "copied", "reconciled", "verified", "completed"].includes(String(log.phase))) fail("restore_log_invalid");
+  const registration = { operationId: log.operationId!, backupOperationId: log.backupOperationId!, repoId: log.repoId!, backupManifestHash: log.backupManifestHash!, repoDevice: log.repoDevice!, repoInode: log.repoInode! };
   if (registrationHash(registration) !== log.registrationHash) fail("restore_log_invalid");
   if (["reconciled", "verified", "completed"].includes(log.phase!)) {
     if (typeof log.recoveredDatabasePath !== "string" || !isAbsolute(log.recoveredDatabasePath)) fail("restore_log_invalid");
@@ -299,7 +280,7 @@ function copyScanned(source: ScannedFile, destinationRoot: string, targetRelativ
   const copied = destinationFingerprint(destination);
   if (copied.size !== source.size || copied.hash !== source.hash) fail("restore_copy_mismatch");
 }
-async function verifyRestoredRepositories(options: RequirementRestoreOptions, dataRoot: string, requirements: RequirementBackupRequirement[], expectedAuthorization: Pick<RestoreLog, "authorizationId" | "principal">): Promise<void> {
+async function verifyRestoredRepositories(options: RequirementRestoreOptions, dataRoot: string, requirements: RequirementBackupRequirement[]): Promise<void> {
   for (const requirement of requirements) {
     const refs = [...new Map([requirement.saved, requirement.approved]
       .filter((value): value is RequirementBackupReference => value !== null)
@@ -312,7 +293,7 @@ async function verifyRestoredRepositories(options: RequirementRestoreOptions, da
         authorize: (check) => {
           const checkedHash = check.expectedHash ?? check.prodHash;
           if (check.action !== "verifyVersion" || !check.commit || !checkedHash || !allowed.has(`${check.commit}:${checkedHash}`)) return false;
-          authorize(options, "verify", expectedAuthorization); return true;
+          return true;
         },
       });
     }
@@ -403,15 +384,14 @@ function completedReceipt(options: RequirementRestoreOptions, repoDirectory: str
 }
 
 /**
- * 把完整备份复制到独立私有目录，并调用旧库分级对账。恢复结果始终needs_review，
+ * 把完整备份复制到独立私有目录，并调用备份快照分级对账。恢复结果始终needs_review，
  * 不切换活动data.db、不恢复PM、任务或执行授权，也不读取归档正文。
  */
 export async function restoreRequirementBackup(options: RequirementRestoreOptions): Promise<RequirementRestoreReceipt> {
-  if (!options || typeof options.authorize !== "function" || !UUID_V7_PATTERN.test(options.operationId) || !UUID_V7_PATTERN.test(options.backupOperationId) || !HASH.test(options.backupManifestHash) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");
+  if (!options || !UUID_V7_PATTERN.test(options.operationId) || !UUID_V7_PATTERN.test(options.backupOperationId) || !HASH.test(options.backupManifestHash) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");
   const backup = readBackup(options);
   const destination = assertRepoDirectory(options.repoDirectory, options.repoId);
   if (contained(destination.path, backup.directory) || contained(backup.directory, destination.path)) fail("backup_overlaps_isolation");
-  const initial = authorize(options, "inspect");
   return withDatabaseMaintenance({ directory: destination.path, worktreeRoots: [...options.worktreeRoots], operationId: options.operationId }, async (permit) => {
     if (databaseMaintenanceDirectory(permit) !== destination.path) fail("maintenance_scope_changed");
     const backups = ensurePrivateChild(destination.path, "backups");
@@ -423,12 +403,11 @@ export async function restoreRequirementBackup(options: RequirementRestoreOption
       privateDirectory(operationDirectory, "restore_operation_invalid");
       if (!pathExists(logPath)) fail("restore_operation_conflict");
       log = parseRestoreLog(logPath);
-      if (log.operationId !== options.operationId || log.backupOperationId !== options.backupOperationId || log.repoId !== options.repoId || log.backupManifestHash !== options.backupManifestHash || log.authorizationId !== initial.authorizationId || log.principal !== initial.principal || log.repoDevice !== destination.identity.dev || log.repoInode !== destination.identity.ino) fail("restore_operation_conflict");
+      if (log.operationId !== options.operationId || log.backupOperationId !== options.backupOperationId || log.repoId !== options.repoId || log.backupManifestHash !== options.backupManifestHash || log.repoDevice !== destination.identity.dev || log.repoInode !== destination.identity.ino) fail("restore_operation_conflict");
       if (log.phase === "completed") {
-        authorize(options, "complete", log);
         assertPayload(backup.payload, backup.manifest.files);
         assertRestoredPayload(destination.path, backup.manifest);
-        await verifyRestoredRepositories(options, destination.dataRoot, backup.manifest.requirements, log);
+        await verifyRestoredRepositories(options, destination.dataRoot, backup.manifest.requirements);
         const receipt = completedReceipt(options, destination.path, log, backup.manifest);
         if (!receipt.recoveredDatabasePath) fail("recovered_database_missing");
         if (databaseFilesFingerprint(receipt.recoveredDatabasePath) !== log.recoveredDatabaseHash) fail("recovered_database_changed");
@@ -439,15 +418,13 @@ export async function restoreRequirementBackup(options: RequirementRestoreOption
       }
     } else {
       mkdirSync(operationDirectory, { mode: 0o700 }); syncDirectory(restoreRoot);
-      const registration = { operationId: options.operationId, backupOperationId: options.backupOperationId, repoId: options.repoId, backupManifestHash: options.backupManifestHash, authorizationId: initial.authorizationId, principal: initial.principal, repoDevice: destination.identity.dev, repoInode: destination.identity.ino };
+      const registration = { operationId: options.operationId, backupOperationId: options.backupOperationId, repoId: options.repoId, backupManifestHash: options.backupManifestHash, repoDevice: destination.identity.dev, repoInode: destination.identity.ino };
       log = { format: RESTORE_FORMAT, ...registration, registrationHash: registrationHash(registration), phase: "prepared" };
       writeNewPrivate(logPath, JSON.stringify(sealOperationLog(log))); syncDirectory(operationDirectory);
       log = parseRestoreLog(logPath);
     }
-    authorize(options, "prepare", log);
     const sources = assertPayload(backup.payload, backup.manifest.files);
     if (log.phase === "prepared") log = saveRestoreLog(logPath, operationDirectory, log, { ...log, phase: "copying" });
-    authorize(options, "copy", log);
     const sourceFamily = ensurePrivateChild(backups, "requirement-restore-sources");
     const sourceDirectory = ensurePrivateChild(sourceFamily, options.backupOperationId);
     let restored = 0;
@@ -466,30 +443,23 @@ export async function restoreRequirementBackup(options: RequirementRestoreOption
     } else { writeNewPrivate(snapshotMarkerPath, snapshotMarker); syncDirectory(sourceDirectory); }
     if (log.phase === "copying") log = saveRestoreLog(logPath, operationDirectory, log, { ...log, phase: "copied" });
 
-    authorize(options, "reconcile", log);
     const recovery = reconcileDatabaseRecovery(permit, {
       operationId: options.operationId,
-      mode: "legacy_data",
+      mode: "backup_data",
       snapshotPath,
       archiveDirectory: options.archiveDirectory,
       registeredArchivePaths: options.registeredArchivePaths,
-      authorize: () => {
-        const authorization = authorize(options, "reconcile", log);
-        return authorization;
-      },
     });
-    if (recovery.mode !== "legacy_data" || recovery.executable !== false || recovery.restoreStatus !== "needs_review") fail("unsafe_recovery_result");
+    if (recovery.mode !== "backup_data" || recovery.executable !== false || recovery.restoreStatus !== "needs_review") fail("unsafe_recovery_result");
     if (!recovery.recoveredPath) fail("recovered_database_missing");
     revokeRecoveredCapabilities(permit, recovery.recoveredPath, options.operationId);
     log = saveRestoreLog(logPath, operationDirectory, log, { ...log, phase: "reconciled", recoveredDatabasePath: recovery.recoveredPath, requirements: recovery.requirements });
-    await verifyRestoredRepositories(options, destination.dataRoot, backup.manifest.requirements, log);
+    await verifyRestoredRepositories(options, destination.dataRoot, backup.manifest.requirements);
     verifyRecoveredState(recovery.recoveredPath, backup.manifest, recovery.requirements, join(destination.path, "data.db"));
     assertPayload(backup.payload, backup.manifest.files);
     assertRestoredPayload(destination.path, backup.manifest);
-    authorize(options, "verify", log);
     const recoveredDatabaseHash = databaseFilesFingerprint(recovery.recoveredPath);
     log = saveRestoreLog(logPath, operationDirectory, log, { ...log, phase: "verified", recoveredDatabaseHash });
-    authorize(options, "complete", log);
     assertRestoredPayload(destination.path, backup.manifest);
     if (databaseFilesFingerprint(recovery.recoveredPath) !== recoveredDatabaseHash) fail("recovered_database_changed");
     log = saveRestoreLog(logPath, operationDirectory, log, { ...log, phase: "completed" });

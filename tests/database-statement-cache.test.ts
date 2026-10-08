@@ -3,7 +3,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writ
 import { join } from "node:path";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { AsyncTransactionError, DatabaseUnavailableError, LocalDatabase, StaleVersionError, TransactionCleanupError } from "../runtime/database.ts";
-import { DATABASE_MAINTENANCE_FILE, DATABASE_RECOVERY_FILE, DATABASE_SNAPSHOT_FILE, pathExists } from "../runtime/database-paths.ts";
+import { DATABASE_MAINTENANCE_FILE, DATABASE_SNAPSHOT_FILE, pathExists } from "../runtime/database-paths.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const roots: string[] = [];
@@ -53,7 +53,7 @@ test("固定记录SQL只编译五次；不同namespace/key/id/版本逐次绑定
   expect(prepare).toHaveBeenCalledTimes(5);
 });
 
-for (const marker of [DATABASE_MAINTENANCE_FILE, DATABASE_RECOVERY_FILE, DATABASE_SNAPSHOT_FILE, "data.sqlite", "data.sqlite-wal", "data.sqlite-shm", "global.sqlite", "global.sqlite-wal", "global.sqlite-shm"]) {
+for (const marker of [DATABASE_MAINTENANCE_FILE, DATABASE_SNAPSHOT_FILE]) {
   test(`缓存命中后每次仍检查${marker}，普通文件/目录/悬空链接都拒绝`, () => {
     const { root, db } = fixture(); warm(db);
     const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
@@ -62,7 +62,7 @@ for (const marker of [DATABASE_MAINTENANCE_FILE, DATABASE_RECOVERY_FILE, DATABAS
       if (kind === "file") writeFileSync(target, "fixture", { mode: 0o600 });
       else if (kind === "directory") mkdirSync(target, { mode: 0o700 });
       else symlinkSync(join(root, "missing"), target);
-      blocked(db, /maintenance_required|recovery_required|snapshot_only|upgrade_required/);
+      blocked(db, /maintenance_required|snapshot_only/);
       rmSync(target, { recursive: kind === "directory" });
       warm(db);
     }

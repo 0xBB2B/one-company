@@ -10,11 +10,10 @@ export const DATABASE_APPLICATION_IDS: Readonly<Record<DatabaseKind, number>> = 
   index: 0x50494958,
 });
 export const DATABASE_MAINTENANCE_FILE = ".database-maintenance.json";
-export const DATABASE_RECOVERY_FILE = ".database-recovery-required.json";
 export const DATABASE_SNAPSHOT_FILE = ".database-snapshot.json";
 
 export class DatabaseStorageError extends Error {
-  readonly code: "upgrade_required" | "outdated_database" | "maintenance_required" | "recovery_required" | "snapshot_only" | "invalid_database_file" | "wrong_database_kind";
+  readonly code: "outdated_database" | "maintenance_required" | "snapshot_only" | "invalid_database_file" | "wrong_database_kind";
   constructor(code: DatabaseStorageError["code"], detail: string) {
     super(`本机数据库访问被阻止：${code}，${detail}`);
     this.name = "DatabaseStorageError"; this.code = code;
@@ -53,18 +52,14 @@ export function databaseKind(path: string): DatabaseKind | undefined {
   return name === "data.db" ? "data" : name === "global.db" ? "global" : name === "index.db" ? "index" : undefined;
 }
 
-/** 只检查路径元数据，发现旧库或未结束维护时不读取正文、不新建空库。 */
-export function assertDatabasePathReady(path: string): void {
+/** 只检查路径元数据，发现未结束维护时不读取正文、不新建空库。 */
+export function assertDatabasePathReady(path: string): DatabaseKind {
+  const kind = databaseKind(path);
+  if (!kind) throw new DatabaseStorageError("wrong_database_kind", `本机数据库文件名只能是data.db、global.db或index.db，收到${basename(path)}`);
   const directory = dirname(resolve(path));
   if (pathExists(join(directory, DATABASE_MAINTENANCE_FILE))) throw new DatabaseStorageError("maintenance_required", "维护范围尚未确认结束");
-  if (pathExists(join(directory, DATABASE_RECOVERY_FILE))) throw new DatabaseStorageError("recovery_required", "数据库切换或恢复尚未完成核对");
   if (pathExists(join(directory, DATABASE_SNAPSHOT_FILE))) throw new DatabaseStorageError("snapshot_only", "备份或待审核副本不是活动运行库");
-  if (!databaseKind(path)) return;
-  for (const legacy of ["data.sqlite", "global.sqlite"]) {
-    if (["", "-wal", "-shm"].some((suffix) => pathExists(join(directory, legacy + suffix)))) {
-      throw new DatabaseStorageError("upgrade_required", `检测到${legacy}或其附属文件，须先取得授权并核对迁移`);
-    }
-  }
+  return kind;
 }
 
 export function assertRegularDatabaseFiles(path: string): void {

@@ -192,7 +192,7 @@ describe("M4-LEGACY-RETIRE-01 F1—F6 实际安全矩阵", () => {
     expect(statSync(database).mode & 0o777).toBe(0o644);
     chmodSync(database, 0o600);
     const inode = statSync(database).ino;
-    for (const marker of [".database-maintenance.json", ".database-recovery-required.json", ".database-snapshot.json"]) {
+    for (const marker of [".database-maintenance.json", ".database-snapshot.json"]) {
       const path = join(f.dataRoot, "repos", f.repoId, marker);
       writeFileSync(path, "{}", { mode: 0o600 });
       expect(readable()).toBe(false);

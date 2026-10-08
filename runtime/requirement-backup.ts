@@ -5,7 +5,6 @@ import { DatabaseSync } from "node:sqlite";
 import { UUID_V7_PATTERN } from "./database.ts";
 import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, pathExists } from "./database-paths.ts";
 import { createDatabaseSnapshot, databaseMaintenanceDirectory, withDatabaseMaintenance } from "./database-maintenance.ts";
-import type { DatabaseManagementAuthorization } from "./database-maintenance.ts";
 import { checkRequirement } from "./requirement-contracts.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE, RequirementWriteCoordinator } from "./requirement-coordination.ts";
 import { verifyVersion } from "./prod-storage.ts";
@@ -27,16 +26,12 @@ export class RequirementBackupError extends Error {
   }
 }
 
-export type RequirementBackupStage = "inspect" | "prepare" | "snapshot" | "copy" | "verify" | "complete";
-
 export interface RequirementBackupOptions {
   /** <dataRoot>/repos/<repoId> 的绝对私有目录。 */
   repoDirectory: string;
   repoId: string;
   operationId: string;
   worktreeRoots: readonly string[];
-  /** 可信管理服务同步核验授权及所有相关写入者已经停止；这是内部集成点，不是代理自报凭据。 */
-  authorize(context: Readonly<{ operationId: string; repoId: string; stage: RequirementBackupStage }>): DatabaseManagementAuthorization;
 }
 
 export interface RequirementBackupReference {
@@ -112,8 +107,6 @@ interface BackupOperationLog {
   format: typeof OPERATION_FORMAT;
   operationId: string;
   repoId: string;
-  authorizationId: string;
-  principal: string;
   repoDevice: number;
   repoInode: number;
   registrationHash: string;
@@ -186,30 +179,17 @@ function readPrivateBytes(path: string, code: string): Buffer {
     return bytes;
   } finally { closeSync(fd); }
 }
-function authorize(options: RequirementBackupOptions, stage: RequirementBackupStage, expected?: Pick<BackupOperationLog, "authorizationId" | "principal">): DatabaseManagementAuthorization {
-  let value: unknown;
-  try { value = options.authorize(Object.freeze({ operationId: options.operationId, repoId: options.repoId, stage })); } catch { fail("authorization_failed"); }
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    let then: unknown;
-    try { then = (value as { then?: unknown }).then; } catch { fail("authorization_failed"); }
-    if (typeof then === "function") { void Promise.resolve(value).catch(() => undefined); fail("authorization_must_be_synchronous"); }
-  }
-  const result = value as Partial<DatabaseManagementAuthorization> | null;
-  if (!result || result.authorized !== true || result.writesStopped !== true || typeof result.authorizationId !== "string" || !result.authorizationId || typeof result.principal !== "string" || !result.principal) fail("authorization_failed");
-  if (expected && (result.authorizationId !== expected.authorizationId || result.principal !== expected.principal)) fail("authorization_changed");
-  return result as DatabaseManagementAuthorization;
-}
 function registrationHash(value: Omit<BackupOperationLog, "format" | "registrationHash" | "phase" | "sourceFingerprint" | "snapshotRelativePath" | "snapshotHash" | "manifestHash">): string {
   return sha256(JSON.stringify(value));
 }
 function parseOperation(path: string): BackupOperationLog {
   let value: unknown;
   try { value = JSON.parse(readPrivateBytes(path, "operation_log_invalid").toString("utf8")); } catch (error) { if (error instanceof RequirementBackupError) throw error; fail("operation_log_invalid"); }
-  if (!validOperationLog(value) || Object.keys(value).some((key) => !["format", "operationId", "repoId", "authorizationId", "principal", "repoDevice", "repoInode", "registrationHash", "phase", "sourceFingerprint", "snapshotRelativePath", "snapshotHash", "manifestHash", "integrityHash"].includes(key))) fail("operation_log_invalid");
+  if (!validOperationLog(value) || Object.keys(value).some((key) => !["format", "operationId", "repoId", "repoDevice", "repoInode", "registrationHash", "phase", "sourceFingerprint", "snapshotRelativePath", "snapshotHash", "manifestHash", "integrityHash"].includes(key))) fail("operation_log_invalid");
   const log = value as Partial<BackupOperationLog>;
   const phases = ["prepared", "inspected", "snapshotted", "copying", "copied", "completed"];
-  if (log.format !== OPERATION_FORMAT || !UUID_V7_PATTERN.test(String(log.operationId)) || !HASH.test(String(log.repoId)) || !log.authorizationId || !log.principal || !Number.isSafeInteger(log.repoDevice) || !Number.isSafeInteger(log.repoInode) || !HASH.test(String(log.registrationHash)) || !phases.includes(String(log.phase))) fail("operation_log_invalid");
-  const registration = { operationId: log.operationId!, repoId: log.repoId!, authorizationId: log.authorizationId!, principal: log.principal!, repoDevice: log.repoDevice!, repoInode: log.repoInode! };
+  if (log.format !== OPERATION_FORMAT || !UUID_V7_PATTERN.test(String(log.operationId)) || !HASH.test(String(log.repoId)) || !Number.isSafeInteger(log.repoDevice) || !Number.isSafeInteger(log.repoInode) || !HASH.test(String(log.registrationHash)) || !phases.includes(String(log.phase))) fail("operation_log_invalid");
+  const registration = { operationId: log.operationId!, repoId: log.repoId!, repoDevice: log.repoDevice!, repoInode: log.repoInode! };
   if (registrationHash(registration) !== log.registrationHash) fail("operation_log_invalid");
   if (log.sourceFingerprint !== undefined && !HASH.test(log.sourceFingerprint)) fail("operation_log_invalid");
   if (log.snapshotHash !== undefined && !HASH.test(log.snapshotHash)) fail("operation_log_invalid");
@@ -391,7 +371,7 @@ function assertExactPayload(root: string, expected: RequirementBackupFile[]): vo
   const actual = plansMetadata(scanTree(root, ""));
   if (JSON.stringify(actual) !== JSON.stringify([...expected].sort((a, b) => a.relativePath.localeCompare(b.relativePath)))) fail("backup_payload_mismatch");
 }
-async function verifyReferences(options: RequirementBackupOptions, dataRoot: string, requirements: RequirementBackupRequirement[], identities: Map<string, { dev: number; ino: number }>, expectedAuthorization: Pick<BackupOperationLog, "authorizationId" | "principal">): Promise<void> {
+async function verifyReferences(options: RequirementBackupOptions, dataRoot: string, requirements: RequirementBackupRequirement[], identities: Map<string, { dev: number; ino: number }>): Promise<void> {
   const allowed = new Map<string, Set<string>>();
   for (const requirement of requirements) {
     const refs = [...new Map([requirement.saved, requirement.approved]
@@ -407,7 +387,6 @@ async function verifyReferences(options: RequirementBackupOptions, dataRoot: str
         authorize: (check) => {
           const checkedHash = check.expectedHash ?? check.prodHash;
           if (check.action !== "verifyVersion" || !check.commit || !checkedHash || !allowed.get(requirement.requirementId)?.has(`${check.commit}:${checkedHash}`)) return false;
-          authorize(options, "verify", expectedAuthorization);
           return true;
         },
       });
@@ -432,9 +411,8 @@ function validateCompleted(log: BackupOperationLog, operationDirectory: string):
  * 返回值和manifest只有hash、大小、状态与提交引用，不包含prod正文或Git对象字节。
  */
 export async function createRequirementBackup(options: RequirementBackupOptions): Promise<RequirementBackupReceipt> {
-  if (!options || typeof options.authorize !== "function" || !UUID_V7_PATTERN.test(options.operationId) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");
+  if (!options || !UUID_V7_PATTERN.test(options.operationId) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");
   const repo = assertRepoDirectory(options.repoDirectory, options.repoId);
-  const initial = authorize(options, "inspect");
   const dataPath = join(repo.path, "data.db");
   if (!pathExists(dataPath)) fail("data_database_missing");
   try {
@@ -453,23 +431,20 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
       privateDirectory(operationDirectory, "operation_directory_invalid");
       if (!pathExists(operationPath)) fail("operation_conflict");
       log = parseOperation(operationPath);
-      if (log.operationId !== options.operationId || log.repoId !== options.repoId || log.authorizationId !== initial.authorizationId || log.principal !== initial.principal || !sameIdentity(repo.identity, { dev: log.repoDevice, ino: log.repoInode })) fail("operation_conflict");
+      if (log.operationId !== options.operationId || log.repoId !== options.repoId || !sameIdentity(repo.identity, { dev: log.repoDevice, ino: log.repoInode })) fail("operation_conflict");
       if (log.phase === "completed") {
-        authorize(options, "complete", log);
         inspectState(dataPath, options.repoId);
         return validateCompleted(log, operationDirectory);
       }
     } else {
       mkdirSync(operationDirectory, { mode: 0o700 }); syncDirectory(family);
-      const registration = { operationId: options.operationId, repoId: options.repoId, authorizationId: initial.authorizationId, principal: initial.principal, repoDevice: repo.identity.dev, repoInode: repo.identity.ino };
+      const registration = { operationId: options.operationId, repoId: options.repoId, repoDevice: repo.identity.dev, repoInode: repo.identity.ino };
       log = { format: OPERATION_FORMAT, ...registration, registrationHash: registrationHash(registration), phase: "prepared" };
       writeNewPrivate(operationPath, JSON.stringify(sealOperationLog(log))); syncDirectory(operationDirectory);
       log = parseOperation(operationPath);
     }
-    const reauthorize = (stage: RequirementBackupStage) => authorize(options, stage, log);
-    reauthorize("prepare");
     const state = inspectState(dataPath, options.repoId);
-    await verifyReferences(options, repo.dataRoot, state.requirements, state.identities, log);
+    await verifyReferences(options, repo.dataRoot, state.requirements, state.identities);
     const sourceFiles = requirementFiles(repo.path, state.requirements);
     const sourceFingerprint = sha256(JSON.stringify({ state: state.fingerprint, files: plansFingerprint(sourceFiles) }));
     if (log.sourceFingerprint !== undefined && log.sourceFingerprint !== sourceFingerprint) fail("source_changed");
@@ -482,7 +457,6 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
       const snapshot = fingerprintPrivateFile(snapshotPath);
       if (snapshot.hash !== log.snapshotHash) fail("snapshot_changed");
     } else {
-      reauthorize("snapshot");
       const snapshot = createDatabaseSnapshot(permit, "data");
       snapshotPath = snapshot.snapshotPath;
       const relativePath = relative(repo.path, snapshotPath).split(sep).join("/");
@@ -491,7 +465,6 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
     }
     inspectState(snapshotPath, options.repoId);
 
-    reauthorize("copy");
     const payloadTemporary = pathExists(join(operationDirectory, "payload")) ? join(operationDirectory, "payload") : ensurePrivateChild(operationDirectory, "payload.tmp");
     if (log.phase === "inspected" || log.phase === "snapshotted") log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "copying" });
     const snapshotPlan = scanFile(snapshotPath, "data.db");
@@ -504,8 +477,7 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
     const afterFiles = requirementFiles(repo.path, afterState.requirements);
     const afterFingerprint = sha256(JSON.stringify({ state: afterState.fingerprint, files: plansFingerprint(afterFiles) }));
     if (afterFingerprint !== sourceFingerprint) fail("source_changed");
-    await verifyReferences(options, repo.dataRoot, afterState.requirements, afterState.identities, log);
-    reauthorize("verify");
+    await verifyReferences(options, repo.dataRoot, afterState.requirements, afterState.identities);
     if (basename(payloadTemporary) === "payload.tmp") { renameSync(payloadTemporary, join(operationDirectory, "payload")); syncDirectory(operationDirectory); }
     if (log.phase !== "copied") log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "copied" });
 
@@ -518,7 +490,6 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
     if (pathExists(manifestPath)) {
       if (!readPrivateBytes(manifestPath, "manifest_invalid").equals(manifestBytes)) fail("manifest_conflict");
     } else { writeNewPrivate(manifestPath, manifestBytes); syncDirectory(operationDirectory); }
-    reauthorize("complete");
     const finalState = inspectState(dataPath, options.repoId);
     const finalFiles = requirementFiles(repo.path, finalState.requirements);
     const finalFingerprint = sha256(JSON.stringify({ state: finalState.fingerprint, files: plansFingerprint(finalFiles) }));
