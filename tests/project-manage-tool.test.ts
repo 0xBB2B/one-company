@@ -9,17 +9,12 @@ import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import projectManageExtension from "../extensions/project-manage.ts";
-import {
-  createProjectManageTool,
-  PROJECT_MANAGE_OUTPUT_LIMITS,
-  PROJECT_MANAGE_PARAMETERS,
-} from "../runtime/project-manage-tool.ts";
+import { createProjectManageTool, PROJECT_MANAGE_PARAMETERS } from "../runtime/project-manage-tool.ts";
 import type {
   OpenProjectIndexService,
   ProjectIndexServiceHandle,
   ProjectManageHostContext,
 } from "../runtime/project-manage-tool.ts";
-import type { ProjectIndexAuthorizationRequest } from "../runtime/project-index-service.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -73,17 +68,6 @@ function context(
   } as ExtensionContext;
 }
 
-function authorizationRequest(
-  action: "open" | "status" | "preview" | "init" | "refresh",
-  phase: "before" | "after" | "read" | "publish" | "return",
-  repoId: string,
-  repositoryRoot: string,
-  workspaceId: string | null,
-  path: string | null = null,
-): ProjectIndexAuthorizationRequest {
-  return { action, phase, repoId, repositoryRoot, workspaceId, path };
-}
-
 function statusResult(repoId: string) {
   return {
     action: "status",
@@ -125,9 +109,8 @@ async function call(
   params: Record<string, unknown>,
   ctx: ExtensionContext,
   signal?: AbortSignal,
-  onUpdate?: (result: unknown) => void,
 ) {
-  return runtime.tool.execute("tool-call", { request: params } as never, signal, onUpdate as never, ctx);
+  return runtime.tool.execute("tool-call", { request: params } as never, signal, undefined, ctx);
 }
 
 describe("project_manage 固定输入与主代理宿主边界", () => {
@@ -208,7 +191,7 @@ describe("project_manage 固定输入与主代理宿主边界", () => {
   });
 });
 
-describe("扫描确认、service 授权与有限输出", () => {
+describe("扫描确认、启动前与结束后核对、有限输出", () => {
   test("preview 一次枚举确认不升级持续权限，init 另经真实 UI 确认后 refresh 在同 session 复用", async () => {
     const world = await fixture();
     const calls: string[] = [];
@@ -220,13 +203,9 @@ describe("扫描确认、service 授权与有限输出", () => {
       expect(input.repositoryRoot).toBe(world.repositoryRoot);
       expect(input.dataRoot).toBe(world.dataRoot);
       expect(input.repoId).toBe(world.repoId);
-      expect(input.authorize(authorizationRequest("open", "before", world.repoId, world.repositoryRoot, null))).toBe(true);
-      expect(input.authorize(authorizationRequest("open", "after", world.repoId, world.repositoryRoot, null))).toBe(true);
       const service: ProjectIndexServiceHandle = {
         async preview(options) {
           calls.push("preview"); receivedOptions.push(options);
-          expect(input.authorize(authorizationRequest("preview", "read", world.repoId, world.repositoryRoot, workspaceId, "src/main.ts"))).toBe(true);
-          options?.onProgress?.({ phase: "read", path: "src/main.ts", completed: 1, total: 1 });
           return { action: "preview", workspace: { workspaceId, repoId: world.repoId, root: world.repositoryRoot, branch: "main" }, files: [], skipped: [], archives: { metadata: [], issues: [] }, partial: false, databaseCreated: false };
         },
         async init(options) { calls.push("init"); receivedOptions.push(options); return { action: "init", status: "ready", generation: 1, files: 1, skipped: [], partial: false }; },
@@ -236,10 +215,9 @@ describe("扫描确认、service 授权与有限输出", () => {
       return service;
     };
     const runtime = runtimeFor(world, openService);
-    const updates: unknown[] = [];
     const ctx = context("session-main", async (_title, message) => { confirms += 1; confirmation = message; return true; });
 
-    await call(runtime, { action: "init", repoId: world.repoId, preview: true }, ctx, undefined, (value) => updates.push(value));
+    await call(runtime, { action: "init", repoId: world.repoId, preview: true }, ctx);
     await call(runtime, { action: "init", repoId: world.repoId }, ctx);
     await call(runtime, { action: "refresh", repoId: world.repoId }, ctx);
 
@@ -252,32 +230,16 @@ describe("扫描确认、service 授权与有限输出", () => {
     for (const options of receivedOptions as Array<{ limits: Record<string, number> }>) {
       expect(options.limits).toEqual({ maxFileBytes: 2 * 1024 * 1024, maxTotalTextBytes: 20 * 1024 * 1024, maxEntries: 20_000, maxDepth: 64 });
     }
-    expect(JSON.stringify(updates)).toContain("src/main.ts");
     await runtime.shutdown();
   });
 
-  test("status 无需扫描确认但只输出绑定仓库最少 metadata；service 正文/根/branch 与进度额外字段不会外泄", async () => {
+  test("status 无需扫描确认但只输出绑定仓库最少 metadata；service 正文/根/branch 等额外字段不会外泄", async () => {
     const world = await fixture();
     let confirms = 0;
-    let authorize: ((request: ProjectIndexAuthorizationRequest) => boolean) | undefined;
-    let authorizationChecks: boolean[] = [];
-    const valid = authorizationRequest("status", "return", world.repoId, world.repositoryRoot, "b".repeat(64));
-    const runtime = runtimeFor(world, async (input) => {
-      authorize = input.authorize;
-      return {
-        preview: async () => ({}), init: async () => ({}), refresh: async () => ({}),
-        status: async () => {
-          authorizationChecks = [
-            input.authorize(valid),
-            input.authorize({ ...valid, action: "init" }),
-            input.authorize({ ...valid, repoId: "a".repeat(64) }),
-            input.authorize({ ...valid, path: "docs/prod/secret.md" }),
-            input.authorize({ ...valid, role: "main" } as ProjectIndexAuthorizationRequest),
-          ];
-          return statusResult(world.repoId);
-        },
-      };
-    });
+    const runtime = runtimeFor(world, async () => ({
+      preview: async () => ({}), init: async () => ({}), refresh: async () => ({}),
+      status: async () => statusResult(world.repoId),
+    }));
     const result = await call(runtime, { action: "status", repoId: world.repoId }, context("session-main", async () => { confirms += 1; return true; }));
     const encoded = JSON.stringify(result);
     expect(confirms).toBe(0);
@@ -286,12 +248,9 @@ describe("扫描确认、service 授权与有限输出", () => {
     expect(encoded).not.toContain("PROD_BODY_SENTINEL");
     expect(encoded).not.toContain("must/not/escape");
     expect(encoded).not.toContain("private-branch");
-    expect((result.details as { truncation: { maxBytes: number; maxEntries: number } }).truncation).toMatchObject(PROJECT_MANAGE_OUTPUT_LIMITS);
-
-    expect(authorizationChecks).toEqual([true, false, false, false, false]);
-    expect(authorize?.(valid)).toBe(false);
+    expect((result.details as { truncation: unknown }).truncation)
+      .toMatchObject({ truncated: false, maxBytes: 32 * 1024, maxEntries: 100, maxPathLength: 512 });
     await runtime.shutdown();
-    expect(authorize?.(valid)).toBe(false);
   });
 
   test("真实公开形状保留 building、完整预算、代次/hash/计数及必要 index 状态", async () => {
@@ -413,20 +372,16 @@ describe("扫描确认、service 授权与有限输出", () => {
     await runtime.shutdown();
   });
 
-  test("真实确认后切换HEAD分支，单次publish/return同步核验拒绝", async () => {
+  test("真实确认后操作期间切换HEAD分支，结束后核对拒绝返回结果", async () => {
     const world = await fixture();
-    const checks: boolean[] = [];
-    const runtime = runtimeFor(world, async (input) => ({
+    const runtime = runtimeFor(world, async () => ({
       preview: async () => ({}), refresh: async () => ({}), status: async () => ({}),
       async init() {
         await git(world.repositoryRoot, ["switch", "-c", "late-branch"]);
-        checks.push(input.authorize(authorizationRequest("init", "publish", world.repoId, world.repositoryRoot, "e".repeat(64))));
-        checks.push(input.authorize(authorizationRequest("init", "return", world.repoId, world.repositoryRoot, "e".repeat(64))));
         return { action: "init", status: "ready", generation: 1 };
       },
     }));
     await expect(call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true))).rejects.toMatchObject({ code: "repository_changed" });
-    expect(checks).toEqual([false, false]);
     await runtime.shutdown();
   });
 
@@ -436,7 +391,7 @@ describe("扫描确认、service 授权与有限输出", () => {
     await git(original.repositoryRoot, ["worktree", "add", "-b", "linked", repositoryRoot]);
     const world = { ...original, repositoryRoot,
       host: { ...original.host, repositories: new Map([[original.repoId, { path: repositoryRoot }]]) } };
-    const runtime = runtimeFor(world, async (input) => ({
+    const runtime = runtimeFor(world, async () => ({
       preview: async () => ({}), refresh: async () => ({}), status: async () => ({}),
       async init() {
         return { action: "init", status: "ready", generation: 1 };
@@ -449,22 +404,19 @@ describe("扫描确认、service 授权与有限输出", () => {
     await runtime.shutdown();
   });
 
-  test("授权后 index.db 被替换为指向 worktree 的链接时，逐次同步 authorize 拒绝发布", async () => {
+  test("授权后 index.db 被替换为指向 worktree 的链接时，结束后核对拒绝返回结果", async () => {
     const world = await fixture();
     const databasePath = join(world.dataRoot, "repos", world.repoId, "index.db");
     const trap = join(world.repositoryRoot, "index-db-trap");
-    let publishAuthorized: boolean | undefined;
-    const runtime = runtimeFor(world, async (input) => ({
+    const runtime = runtimeFor(world, async () => ({
       preview: async () => ({}), refresh: async () => ({}), status: async () => ({}),
       async init() {
         await writeFile(trap, "do-not-overwrite\n");
         await symlink(trap, databasePath);
-        publishAuthorized = input.authorize(authorizationRequest("init", "publish", world.repoId, world.repositoryRoot, "e".repeat(64)));
         return { action: "init", status: "ready", generation: 1 };
       },
     }));
     await expect(call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true))).rejects.toMatchObject({ code: "repository_changed" });
-    expect(publishAuthorized).toBe(false);
     expect(await readFile(trap, "utf8")).toBe("do-not-overwrite\n");
     await runtime.shutdown();
   });
@@ -490,7 +442,7 @@ describe("扫描确认、service 授权与有限输出", () => {
     }));
     const result = await call(runtime, { action: "init", repoId: world.repoId, preview: true }, context("session-main", async () => true));
     const encoded = JSON.stringify(result);
-    expect(Buffer.byteLength((result.content[0] as { text: string }).text)).toBeLessThanOrEqual(PROJECT_MANAGE_OUTPUT_LIMITS.maxBytes);
+    expect(Buffer.byteLength((result.content[0] as { text: string }).text)).toBeLessThanOrEqual(32 * 1024);
     expect(encoded).toContain("sensitive");
     expect(encoded).toContain("invalid_archive_name");
     expect(encoded).not.toContain("SENTINEL");
@@ -523,12 +475,10 @@ describe("扫描确认、service 授权与有限输出", () => {
 });
 
 describe("取消、session_shutdown 与扩展接线", () => {
-  test("session_shutdown 撤销许可、向 service 取消并等待真实操作收尾；新 session 不继承许可", async () => {
+  test("session_shutdown 撤销许可、中止操作信号并等待真实操作收尾；新 session 不继承许可", async () => {
     const world = await fixture();
     let startedResolve!: () => void;
     const started = new Promise<void>((resolve) => { startedResolve = resolve; });
-    let settleResolve!: (value: unknown) => void;
-    let cancelCalls = 0;
     let settled = false;
     let receivedSignal: AbortSignal | undefined;
     let currentHost = world.host;
@@ -537,12 +487,11 @@ describe("取消、session_shutdown 与扩展接线", () => {
       init: async (options) => {
         receivedSignal = options?.signal;
         startedResolve();
-        return new Promise((resolve) => { settleResolve = resolve; });
-      },
-      cancel() {
-        cancelCalls += 1;
-        setTimeout(() => { settled = true; settleResolve({ action: "init", status: "cancelled", generation: 0 }); }, 20);
-        return true;
+        return new Promise((resolve) => {
+          receivedSignal?.addEventListener("abort", () => {
+            setTimeout(() => { settled = true; resolve({ action: "init", status: "cancelled", generation: 0 }); }, 20);
+          });
+        });
       },
     }), () => currentHost);
     const pending = call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true)).then(
@@ -553,7 +502,6 @@ describe("取消、session_shutdown 与扩展接线", () => {
     expect(receivedSignal?.aborted).toBe(false);
     const shutdown = runtime.shutdown();
     expect(receivedSignal?.aborted).toBe(true);
-    expect(cancelCalls).toBe(1);
     expect(settled).toBe(false);
     await shutdown;
     expect(settled).toBe(true);

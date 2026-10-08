@@ -9,12 +9,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { assertDataRootOutsideWorktrees, assertRegularDatabaseFiles } from "./database-paths.ts";
 import { listWorktrees, repositoryIdentity } from "./identity.ts";
-import { ProjectIndexService } from "./project-index-service.ts";
-import type {
-  ProjectIndexAuthorizationRequest,
-  ProjectIndexOperationOptions,
-  ProjectIndexServiceOptions,
-} from "./project-index-service.ts";
+import type { ProjectIndexOperationOptions, ProjectIndexServiceOptions } from "./project-index-service.ts";
 import { DEFAULT_INDEX_LIMITS } from "./project-index-policy.ts";
 import { readGit } from "./git-read.ts";
 import { WorkspaceManageError, WorkspaceManageService } from "./workspace-manage.ts";
@@ -29,7 +24,6 @@ const REQUIREMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9
 const MAX_RESULT_BYTES = 32 * 1024;
 const MAX_RESULT_ENTRIES = 100;
 const MAX_PATH_LENGTH = 512;
-const MAX_PROGRESS_UPDATES = 64;
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const maintenanceSchema = (action: "recovery-check" | "backup") => Type.Object({
@@ -78,11 +72,6 @@ const actionSchemas = {
 
 const publicParameters = requestParameters(Object.values(actionSchemas));
 export const PROJECT_MANAGE_PARAMETERS = publicParameters;
-export const PROJECT_MANAGE_OUTPUT_LIMITS = Object.freeze({
-  maxBytes: MAX_RESULT_BYTES,
-  maxEntries: MAX_RESULT_ENTRIES,
-  maxPathLength: MAX_PATH_LENGTH,
-});
 
 export type ProjectManageAction = "init" | "status" | "refresh";
 
@@ -105,18 +94,9 @@ export interface ProjectIndexServiceHandle {
   init(options?: ProjectIndexOperationOptions): Promise<unknown>;
   refresh(options?: ProjectIndexOperationOptions): Promise<unknown>;
   status(): Promise<unknown>;
-  cancel?(): boolean;
-  close?(): void | Promise<void>;
 }
 
-export type OpenProjectIndexServiceInput = Readonly<
-  Pick<ProjectIndexServiceOptions, "repositoryRoot" | "dataRoot" | "repoId">
-  & {
-    authorize: NonNullable<ProjectIndexServiceOptions["authorize"]>;
-    action: "preview" | ProjectManageAction;
-    host: ProjectManageHostContext;
-  }
->;
+export type OpenProjectIndexServiceInput = Readonly<Pick<ProjectIndexServiceOptions, "repositoryRoot" | "dataRoot" | "repoId">>;
 
 export type OpenProjectIndexService = (input: OpenProjectIndexServiceInput) => Promise<ProjectIndexServiceHandle>;
 
@@ -124,7 +104,7 @@ export interface CreateProjectManageToolOptions {
   readonly dataRoot: string;
   readonly resolveHost: (ctx: ExtensionContext) => Promise<ProjectManageHostContext>;
   readonly currentHost: (ctx: ExtensionContext) => ProjectManageHostContext;
-  readonly openService?: OpenProjectIndexService;
+  readonly openService: OpenProjectIndexService;
 }
 
 export interface ProjectManageToolRuntime {
@@ -214,60 +194,36 @@ interface ScanGrant {
 interface ActiveOperation {
   readonly controller: AbortController;
   readonly completion: Promise<void>;
-  service?: ProjectIndexServiceHandle;
   finish(): void;
 }
 
-const SERVICE_ACTIONS: Readonly<Record<"preview" | ProjectManageAction, ReadonlySet<string>>> = Object.freeze({
-  preview: new Set(["open", "preview"]),
-  init: new Set(["open", "init"]),
-  status: new Set(["open", "status"]),
-  refresh: new Set(["open", "refresh"]),
-});
-
 const SAFE_ENUM_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   action: new Set(["preview", "init", "status", "refresh"]),
-  status: new Set(["absent", "building", "dirty", "ready", "partial", "valid", "invalid", "cancelled", "interrupted", "indexed", "unsupported", "parse_error", "skipped", "running"]),
-  state: new Set(["absent", "ready", "partial", "invalid", "cancelled", "interrupted", "building"]),
-  phase: new Set(["scan", "read", "parse", "verify", "before", "after", "publish", "return"]),
-  mode: new Set(["preview", "init", "status", "refresh"]),
+  status: new Set(["building", "ready", "partial", "invalid", "cancelled", "interrupted"]),
   reason: new Set([
     "prod_archive", "excluded_directory", "excluded_file", "sensitive", "database", "symbolic_link", "hard_link",
     "special_file", "unreadable", "outside_root", "nested_repository", "git_ignored", "file_too_large", "total_text_limit", "entry_limit",
-    "depth_limit", "unstable", "cancelled", "binary", "invalid_utf8", "unsupported", "invalid_archive_name",
+    "depth_limit", "unstable", "cancelled", "binary", "invalid_utf8", "invalid_archive_name",
     "duplicate_requirement_id",
   ]),
   code: new Set(["syntax_error", "unsupported_language", "unreadable", "budget_exceeded", "parser_unavailable", "unknown"]),
   kind: new Set(["code", "document", "config", "unsupported"]),
-  language: new Set(["ts", "tsx", "js", "jsx", "go", "json"]),
+  language: new Set(["ts", "tsx", "js", "jsx", "go"]),
   stoppedReason: new Set(["complete", "cancelled", "entry_limit"]),
   source: new Set(["archive", "local"]),
   lifecycle: new Set(["unknown"]),
 });
-const SAFE_VERSION_KEYS = new Set(["parserVersion", "policyVersion", "schemaVersion"]);
-const SAFE_HASH_KEYS = new Set(["workspaceId", "head", "hash"]);
-const SAFE_BOOLEAN_KEYS = new Set([
-  "initialized", "reused", "changed", "published", "complete", "cancelled", "partial", "invalid", "databaseCreated",
-  "cacheVerified",
-]);
+const SAFE_HASH_KEYS = new Set(["workspaceId", "head"]);
+const SAFE_BOOLEAN_KEYS = new Set(["initialized", "partial", "invalid", "databaseCreated", "cacheVerified"]);
 const SAFE_NUMBER_KEYS = new Set([
-  "generation", "previousGeneration", "currentGeneration", "targetGeneration", "version", "fence", "updatedAt", "count", "total",
-  "completed", "size", "entries", "maxFileBytes", "maxTotalTextBytes", "maxEntries", "maxDepth", "files", "parsedFiles",
-  "reusedFiles", "readBytes", "sourceCodepoints",
-  "symbols", "codeEdges", "edges", "fragments", "archives", "skipped", "errors", "warnings",
-  "textBytes", "valid", "unsupported",
+  "generation", "currentGeneration", "targetGeneration", "version", "fence", "updatedAt", "size", "entries",
+  "maxFileBytes", "maxTotalTextBytes", "maxEntries", "maxDepth", "files", "parsedFiles", "reusedFiles", "readBytes",
+  "sourceCodepoints", "symbols", "codeEdges", "textBytes",
 ]);
-const SAFE_OBJECT_KEYS = new Set([
-  "metadata", "counts", "budget", "limits", "used", "preview", "result", "summary", "truncation", "workspace", "index",
-  "archives",
-]);
-const SAFE_ARRAY_KEYS = new Set([
-  "files", "paths", "items", "skipped", "invalid", "errors", "warnings", "archives", "exhausted", "languages", "metadata",
-  "issues", "diagnostics",
-]);
+const SAFE_OBJECT_KEYS = new Set(["budget", "limits", "used", "workspace", "index", "archives"]);
+const SAFE_ARRAY_KEYS = new Set(["files", "skipped", "exhausted", "metadata", "issues", "diagnostics"]);
 const PRIORITY_KEYS = [
-  "status", "state", "generation", "previousGeneration", "initialized", "reused", "partial", "invalid", "errors",
-  "warnings", "skipped", "budget", "counts", "archives", "issues", "metadata", "files", "paths", "items",
+  "status", "generation", "initialized", "partial", "invalid", "skipped", "budget", "archives", "issues", "metadata", "files",
 ];
 
 function checkedParams(raw: unknown): ProjectManageParams {
@@ -277,7 +233,7 @@ function checkedParams(raw: unknown): ProjectManageParams {
   }
   const action = (value as { action?: unknown }).action;
   if (typeof action !== "string" || !Object.hasOwn(actionSchemas, action)) {
-    throw new ProjectManageToolError("invalid_action", `未知或尚未开放的 project_manage action；可用 action：${Object.keys(actionSchemas).join("、")}`);
+    throw new ProjectManageToolError("invalid_action", `未知的 project_manage action；可用 action：${Object.keys(actionSchemas).join("、")}`);
   }
   const schema = actionSchemas[action as keyof typeof actionSchemas];
   if (!Value.Check(schema, value)) {
@@ -501,11 +457,6 @@ function scanConfirmationLines(repositoryRoot: string, dataRoot: string, repoId:
   ];
 }
 
-function safeIdentifier(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length === 0 || value.length > 96) return undefined;
-  return /^[a-zA-Z0-9_.:@/-]+$/u.test(value) ? value : undefined;
-}
-
 function safeEnum(key: string, value: unknown): string | undefined {
   return typeof value === "string" && SAFE_ENUM_VALUES[key]?.has(value) ? value : undefined;
 }
@@ -530,19 +481,16 @@ function sanitizeArray(value: unknown[], key: string, budget: SanitizeBudget): u
   for (const item of value) {
     if (budget.entries >= MAX_RESULT_ENTRIES) {
       budget.omittedEntries += 1;
-      if (key === "invalid" || key === "errors") budget.invalidOmitted += 1;
       continue;
     }
     budget.entries += 1;
     if (typeof item === "number" && Number.isSafeInteger(item) && item >= 0) output.push(item);
     else if (typeof item === "string") {
-      const safe = key === "paths" || key === "files"
+      const safe = key === "files"
         ? safeRelativePath(item)
         : key === "exhausted"
           ? (["file_bytes", "total_text_bytes", "entries", "depth"].includes(item) ? item : undefined)
-          : key === "languages"
-            ? safeEnum("language", item)
-            : undefined;
+          : undefined;
       if (safe !== undefined) output.push(safe);
       else budget.omittedFields += 1;
     } else if (item && typeof item === "object" && !Array.isArray(item)) {
@@ -579,10 +527,6 @@ function sanitizeObject(value: Record<string, unknown>, budget: SanitizeBudget):
       const identifier = safeEnum(key, item);
       if (identifier) output[key] = identifier;
       else if (key === "language" && item === null) output[key] = null;
-      else budget.omittedFields += 1;
-    } else if (SAFE_VERSION_KEYS.has(key)) {
-      const version = safeIdentifier(item);
-      if (version) output[key] = version;
       else budget.omittedFields += 1;
     } else if (SAFE_BOOLEAN_KEYS.has(key) && typeof item === "boolean") output[key] = item;
     else if (SAFE_NUMBER_KEYS.has(key) && typeof item === "number" && Number.isSafeInteger(item) && item >= 0) output[key] = item;
@@ -714,7 +658,7 @@ function shapeServiceResult(action: "preview" | ProjectManageAction, value: unkn
     const index = raw.index === null ? null : publicRecord(raw.index);
     if (raw.index !== null && !index) return invalidServiceResult();
     const indexStatus = index?.status;
-    if (index && !["building", "dirty", "cancelled", "interrupted", "ready", "partial", "invalid"].includes(String(indexStatus))) {
+    if (index && !["building", "cancelled", "interrupted", "ready", "partial", "invalid"].includes(String(indexStatus))) {
       return invalidServiceResult();
     }
     return {
@@ -763,37 +707,22 @@ function sanitizeResult(value: unknown): Record<string, unknown> {
     : {};
   output.truncation = truncationMetadata(budget, budget.omittedEntries > 0);
   let encoded = JSON.stringify(output);
-  const removalOrder = ["files", "paths", "items", "metadata", "languages", "exhausted", "warnings", "diagnostics", "skipped", "issues", "errors", "invalid"];
+  const removalOrder = ["files", "metadata", "exhausted", "diagnostics", "skipped", "issues"];
   while (Buffer.byteLength(encoded) > MAX_RESULT_BYTES) {
     const key = removalOrder.find((candidate) => removeOneArrayEntry(output, candidate));
     if (!key) break;
     budget.omittedEntries += 1;
-    if (key === "invalid" || key === "errors" || key === "issues" || key === "diagnostics") budget.invalidOmitted += 1;
+    if (key === "issues" || key === "diagnostics") budget.invalidOmitted += 1;
     output.truncation = truncationMetadata(budget, true);
     encoded = JSON.stringify(output);
   }
   if (Buffer.byteLength(encoded) <= MAX_RESULT_BYTES) return output;
   const fallback: Record<string, unknown> = {};
-  for (const key of ["action", "status", "state", "generation", "previousGeneration", "initialized", "partial", "invalid", "counts"]) {
+  for (const key of ["action", "status", "generation", "initialized", "partial", "invalid"]) {
     if (output[key] !== undefined && !Array.isArray(output[key])) fallback[key] = output[key];
   }
   fallback.truncation = { ...truncationMetadata(budget, true), outputBudgetExceeded: true };
   return fallback;
-}
-
-function progressResult(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { status: "running" };
-  const input = value as Record<string, unknown>;
-  const output: Record<string, unknown> = { status: "running" };
-  const phase = safeEnum("phase", input.phase) ?? safeEnum("status", input.status);
-  if (phase) output.phase = phase;
-  const path = safeRelativePath(input.path);
-  if (path) output.path = path;
-  for (const key of ["completed", "total", "entries", "files", "textBytes", "symbols", "rules"] as const) {
-    const item = input[key];
-    if (typeof item === "number" && Number.isSafeInteger(item) && item >= 0) output[key] = item;
-  }
-  return output;
 }
 
 function textResult(value: Record<string, unknown>) {
@@ -802,27 +731,6 @@ function textResult(value: Record<string, unknown>) {
 
 function isCancellation(error: unknown, signal: AbortSignal): boolean {
   return signal.aborted || (error instanceof Error && (error.name === "AbortError" || error.message === "This operation was aborted"));
-}
-
-async function defaultOpenService(input: OpenProjectIndexServiceInput): Promise<ProjectIndexServiceHandle> {
-  return ProjectIndexService.open(input);
-}
-
-function serviceRequestMatches(
-  request: ProjectIndexAuthorizationRequest,
-  allowedActions: ReadonlySet<string>,
-  repoId: string,
-  repositoryRoot: string,
-): boolean {
-  if (!request || typeof request !== "object" || request.repoId !== repoId || !allowedActions.has(request.action)) return false;
-  if (!["before", "after", "read", "publish", "return"].includes(request.phase)) return false;
-  if (request.repositoryRoot !== repositoryRoot) return false;
-  if (request.workspaceId !== null && !/^[0-9a-f]{64}$/u.test(request.workspaceId)) return false;
-  if (request.path !== null) {
-    const path = safeRelativePath(request.path);
-    if (!path || path.toLowerCase() === "docs/prod" || path.toLowerCase().startsWith("docs/prod/")) return false;
-  }
-  return Object.keys(request).every((key) => ["action", "phase", "repoId", "repositoryRoot", "workspaceId", "path"].includes(key));
 }
 
 export function createProjectManageTool(options: CreateProjectManageToolOptions): ProjectManageToolRuntime {
@@ -844,10 +752,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
     activeHost = undefined;
     grants.clear();
     const current = [...operations];
-    for (const operation of current) {
-      operation.controller.abort();
-      operation.service?.cancel?.();
-    }
+    for (const operation of current) operation.controller.abort();
     await Promise.allSettled(current.map((operation) => operation.completion));
   };
 
@@ -855,10 +760,10 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
     name: "one_company_project_manage",
     label: "管理项目索引",
     description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；operationId 每次新生成 UUIDv7，requirementId 取自需求工具结果，不要自编。初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认；结果里的 version 是需求的新版本号，后续需求操作要用它。conventions-update 以 content 给出仓库根目录 AGENTS.md 的完整新内容，界面显示与现有文件的差异，用户选「写入」后才写文件，此后派出的子代理按新内容工作；用户输入修改意见时结果为 status=revise。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
-    promptSnippet: "通过受控宿主入口预览、初始化、查看或刷新当前项目索引",
+    promptSnippet: "预览、初始化、查看或刷新当前项目索引；为需求建立或回收独立工作区；更新项目规范 AGENTS.md",
     parameters: publicParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, rawParams, externalSignal, onUpdate, ctx) {
+    async execute(_toolCallId, rawParams, externalSignal, _onUpdate, ctx) {
       const operation = beginOperation(externalSignal);
       operations.add(operation);
       try {
@@ -979,58 +884,29 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
           }
         }
 
-        let updates = 0;
-        const onProgress = (progress: { phase: "scan" | "read" | "parse" | "verify"; path: string; completed: number; total: number }): void => {
-          if (updates >= MAX_PROGRESS_UPDATES || operation.signal.aborted) return;
-          updates += 1;
-          onUpdate?.(textResult(progressResult(progress)));
-        };
-        const allowedActions = SERVICE_ACTIONS[serviceAction];
-        const authorize = (request: ProjectIndexAuthorizationRequest): boolean => {
-          if (disposed || operation.signal.aborted || !operations.has(operation)) return false;
-          if (!currentHostMatches(options, activeHost, host, ctx) || !rootStillMatches(options.dataRoot, root)) return false;
-          if (serviceAction !== "status" && serviceAction !== "preview") {
-            const grant = grants.get(params.repoId);
-            if (!grant || grant.sessionId !== host.sessionId || grant.windowId !== host.windowId
-              || grant.repositoryRoot !== root.path || grant.device !== root.device || grant.inode !== root.inode) return false;
-          }
-          return serviceRequestMatches(request, allowedActions, params.repoId, root.path);
-        };
-
-        if (!authorize({
-          action: serviceAction,
-          phase: "before",
-          repoId: params.repoId,
-          repositoryRoot: root.path,
-          workspaceId: null,
-          path: null,
-        })) {
+        const grant = grants.get(params.repoId);
+        const needsGrant = serviceAction === "init" || serviceAction === "refresh";
+        if (disposed || operation.signal.aborted || !operations.has(operation)
+          || !currentHostMatches(options, activeHost, host, ctx) || !rootStillMatches(options.dataRoot, root)
+          || (needsGrant && (!grant || grant.sessionId !== host.sessionId || grant.windowId !== host.windowId
+            || grant.repositoryRoot !== root.path || grant.device !== root.device || grant.inode !== root.inode))) {
           throw new ProjectManageToolError("stale_window", "项目索引操作授权在启动前已失效");
         }
-        const service = await (options.openService ?? defaultOpenService)(Object.freeze({
+        const service = await options.openService(Object.freeze({
           repositoryRoot: root.path,
           dataRoot: options.dataRoot,
           repoId: params.repoId,
-          authorize,
-          action: serviceAction,
-          host: snapshotHost(host),
         }));
-        operation.service = service;
+        const operationOptions: ProjectIndexOperationOptions = {
+          signal: operation.signal,
+          limits: Object.freeze({ ...DEFAULT_INDEX_LIMITS }),
+        };
         let rawResult: unknown;
-        try {
-          const operationOptions: ProjectIndexOperationOptions = {
-            signal: operation.signal,
-            limits: Object.freeze({ ...DEFAULT_INDEX_LIMITS }),
-            onProgress,
-          };
-          switch (serviceAction) {
-            case "preview": rawResult = await service.preview(operationOptions); break;
-            case "init": rawResult = await service.init(operationOptions); break;
-            case "refresh": rawResult = await service.refresh(operationOptions); break;
-            case "status": rawResult = await service.status(); break;
-          }
-        } finally {
-          await service.close?.();
+        switch (serviceAction) {
+          case "preview": rawResult = await service.preview(operationOptions); break;
+          case "init": rawResult = await service.init(operationOptions); break;
+          case "refresh": rawResult = await service.refresh(operationOptions); break;
+          case "status": rawResult = await service.status(); break;
         }
         operation.signal.throwIfAborted();
         const finalHost = await options.resolveHost(ctx).catch(() => {

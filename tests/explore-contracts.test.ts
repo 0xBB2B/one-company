@@ -10,7 +10,7 @@ import { fillResearchSources } from "../runtime/explore-dispatch.ts";
 
 const requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
 const hashes = {
-  repo: "a".repeat(64), workspace: "b".repeat(64), baseline: "c".repeat(64), file: "d".repeat(64),
+  baseline: "c".repeat(64), file: "d".repeat(64),
 };
 const mainParent = {
   role: "main", parentSessionId: "session-main", parentRunId: "run-main", contextId: "context-main", requirementBinding: null,
@@ -20,14 +20,6 @@ const pmParent = {
   requirementBinding: { requirementId, epoch: 3, pmFence: 7 },
 } as const;
 const budget = { maxSources: 32, maxResultBytes: 32_768 };
-const workspace = { repoId: hashes.repo, workspaceId: hashes.workspace, branch: "refs/heads/test" };
-
-function knowledgeInput(parent: typeof mainParent | typeof pmParent = mainParent): ExploreInput {
-  return {
-    format: "explore-input/v1", parent, question: "定位当前校验逻辑", clues: ["只看获准文件"], budget,
-    source: { kind: "knowledge_query", workspace, root: "/safe/project", generation: 4, baselineHash: hashes.baseline },
-  };
-}
 function localInput(parent: typeof mainParent | typeof pmParent = mainParent): ExploreInput {
   return {
     format: "explore-input/v1", parent, question: "查看指定本地文件", clues: [], budget,
@@ -44,12 +36,6 @@ function resultFor(input: ExploreInput): ExploreResult {
   const common: Omit<ExploreResult, "sources" | "searchedScope"> = {
     format: "explore-result/v1", kind: "research", parent: input.parent, source: input.source,
     conclusions: ["找到一个有界来源"], notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [],
-  };
-  if (input.source.kind === "knowledge_query") return {
-    ...common,
-    sources: [{ kind: "knowledge_query", workspace: input.source.workspace, generation: input.source.generation,
-      baselineHash: input.source.baselineHash, path: "runtime/current.ts", fileHash: hashes.file, startLine: 1, endLine: 3 }],
-    searchedScope: { kind: "knowledge_query", paths: ["runtime/current.ts"] },
   };
   if (input.source.kind === "local_file") return {
     ...common,
@@ -74,10 +60,9 @@ const expectCode = (operation: () => unknown, code: string) => {
 };
 
 test.each([
-  ["main knowledge_query", knowledgeInput(mainParent)], ["PM knowledge_query", knowledgeInput(pmParent)],
   ["main local_file", localInput(mainParent)], ["PM local_file", localInput(pmParent)],
   ["main web", webInput(mainParent)], ["PM web", webInput(pmParent)],
-] as const)("双父三来源正向：%s", (_name, input) => {
+] as const)("双父两来源正向：%s", (_name, input) => {
   const checked = checkExploreInput(input);
   expect(checked).toEqual(input);
   expect(checked).not.toBe(input);
@@ -109,30 +94,24 @@ test("PM必须有需求、epoch和fence绑定，伪角色及伪载荷字段拒�
     expectCode(() => checkExploreInput({ ...webInput(), parent }), "invalid_shape");
   }
   for (const field of ["prodBody", "diff", "transcript", "rawContent", "detailedSummary", "parentMessages", "authorization", "newRole"]) {
-    const input = clone(knowledgeInput()) as unknown as Record<string, unknown>;
+    const input = clone(localInput()) as unknown as Record<string, unknown>;
     input[field] = "forbidden";
     expectCode(() => checkExploreInput(input), "invalid_shape");
   }
 });
 
 test("相邻来源字段不能混合，本地根须为规范绝对路径，结果路径不能越出根或写成相对上级", () => {
-  const knowledge = clone(knowledgeInput()) as unknown as { source: Record<string, unknown> };
-  knowledge.source.indexBaseline = "not_applicable";
-  expectCode(() => checkExploreInput(knowledge), "invalid_shape");
+  const mixed = clone(localInput()) as unknown as { source: Record<string, unknown> };
+  mixed.source.query = "公开 API 文档";
+  expectCode(() => checkExploreInput(mixed), "invalid_shape");
   for (const root of ["relative/project", "/safe/../project", "/safe/project/"]) {
     const input = clone(localInput());
     if (input.source.kind !== "local_file") throw new Error("local source required");
     input.source.root = root;
     expectCode(() => checkExploreInput(input), "out_of_scope");
   }
-  const knowledgeIn = knowledgeInput();
-  for (const path of ["../outside.ts", "/absolute.ts", "src/./a.ts"]) {
-    const result = clone(resultFor(knowledgeIn));
-    if (result.sources[0]?.kind === "knowledge_query") result.sources[0].path = path;
-    expectCode(() => checkExploreResult(result, knowledgeIn), "out_of_scope");
-  }
   const local = localInput();
-  for (const path of ["/outside/current.ts", "/safe/projectx/a.ts"]) {
+  for (const path of ["/outside/current.ts", "/safe/projectx/a.ts", "../outside.ts", "/safe/project/../outside.ts"]) {
     const result = clone(resultFor(local));
     if (result.sources[0]?.kind === "local_file") result.sources[0].path = path;
     expectCode(() => checkExploreResult(result, local), "out_of_scope");
@@ -149,41 +128,32 @@ test("工作区内任意文件（含 .pi、keys、docs/prod 等位置）都可�
   }
 });
 
-test("对象键重排不影响绑定，父身份或workspace真实字段变化仍拒绝", () => {
+test("对象键重排不影响绑定，父身份或来源真实字段变化仍拒绝", () => {
   const web = webInput();
   const reorderedParent = clone(resultFor(web));
   reorderedParent.parent = Object.fromEntries(Object.entries(reorderedParent.parent).reverse()) as typeof reorderedParent.parent;
   expect(() => checkExploreResult(reorderedParent, web)).not.toThrow();
 
-  const knowledge = knowledgeInput();
-  const reorderedWorkspace = clone(resultFor(knowledge));
-  const knowledgeSource = reorderedWorkspace.sources[0];
-  if (knowledgeSource?.kind !== "knowledge_query") throw new Error("knowledge source required");
-  knowledgeSource.workspace = Object.fromEntries(
-    Object.entries(knowledgeSource.workspace).reverse(),
-  ) as typeof knowledgeSource.workspace;
-  expect(() => checkExploreResult(reorderedWorkspace, knowledge)).not.toThrow();
+  const local = localInput();
+  const reorderedSource = clone(resultFor(local));
+  reorderedSource.source = Object.fromEntries(Object.entries(reorderedSource.source).reverse()) as typeof reorderedSource.source;
+  expect(() => checkExploreResult(reorderedSource, local)).not.toThrow();
 
   const changedParent = clone(resultFor(web));
   changedParent.parent.parentRunId = "changed-run";
   expectCode(() => checkExploreResult(changedParent, web), "invalid_binding");
 
-  const changedWorkspace = clone(resultFor(knowledge));
-  if (changedWorkspace.sources[0]?.kind !== "knowledge_query") throw new Error("knowledge source required");
-  changedWorkspace.sources[0].workspace.workspaceId = "f".repeat(64);
-  expectCode(() => checkExploreResult(changedWorkspace, knowledge), "invalid_binding");
+  const changedSource = clone(resultFor(local));
+  if (changedSource.source.kind !== "local_file") throw new Error("local source required");
+  changedSource.source.root = "/safe";
+  expectCode(() => checkExploreResult(changedSource, local), "invalid_binding");
 });
 
-test("结果绑定需求epoch与索引baseline，变化均拒绝", () => {
-  const pm = knowledgeInput(pmParent);
+test("结果绑定需求epoch，变化拒绝", () => {
+  const pm = localInput(pmParent);
   const changedParent = clone(resultFor(pm));
   if (changedParent.parent.requirementBinding) changedParent.parent.requirementBinding.epoch++;
   expectCode(() => checkExploreResult(changedParent, pm), "invalid_binding");
-
-  const changedBaseline = clone(resultFor(pm));
-  if (changedBaseline.sources[0]?.kind === "knowledge_query") changedBaseline.sources[0].baselineHash = "f".repeat(64);
-  expectCode(() => checkExploreResult(changedBaseline, pm), "invalid_binding");
-
 });
 
 test.each([
@@ -196,7 +166,7 @@ test.each([
 });
 
 test("结果只能是research，未知PASS/approved/authorization/newRole字段拒绝", () => {
-  const input = knowledgeInput();
+  const input = localInput();
   for (const mutation of [
     (value: Record<string, unknown>) => { value.kind = "PASS"; },
     (value: Record<string, unknown>) => { value.approved = true; },
@@ -264,11 +234,11 @@ test.each([" ", "\n", "\t", "　"])("所有非空文本项拒绝纯空白且不�
 });
 
 test("码点和条数固定边界：question、clue、source、结论、短引文、失败/unknown", () => {
-  const questionAt = { ...knowledgeInput(), question: "😀".repeat(EXPLORE_CONTRACT_LIMITS.questionCodepoints) };
+  const questionAt = { ...localInput(), question: "😀".repeat(EXPLORE_CONTRACT_LIMITS.questionCodepoints) };
   expect(() => checkExploreInput(questionAt)).not.toThrow();
   expectCode(() => checkExploreInput({ ...questionAt, question: `${questionAt.question}x` }), "resource_limit");
 
-  const cluesAt = { ...knowledgeInput(), clues: Array(EXPLORE_CONTRACT_LIMITS.clues).fill("界".repeat(EXPLORE_CONTRACT_LIMITS.clueCodepoints)) };
+  const cluesAt = { ...localInput(), clues: Array(EXPLORE_CONTRACT_LIMITS.clues).fill("界".repeat(EXPLORE_CONTRACT_LIMITS.clueCodepoints)) };
   expect(() => checkExploreInput(cluesAt)).not.toThrow();
   expectCode(() => checkExploreInput({ ...cluesAt, clues: [...cluesAt.clues, "多"] }), "invalid_shape");
   expectCode(() => checkExploreInput({ ...cluesAt, clues: [`${cluesAt.clues[0]}多`] }), "resource_limit");

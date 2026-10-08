@@ -35,9 +35,7 @@ const uuidV7 = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, max
 const positive = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 // ECMAScript Date 可精确表示的正 Unix epoch 毫秒上界。
 const unixEpochMilliseconds = Type.Integer({ minimum: 1, maximum: 8_640_000_000_000_000 });
-const branch = Type.String({ pattern: "^refs/heads/[^\\u0000-\\u0020]+$", maxLength: 1_024 });
 const textList = Type.Array(boundedText, { maxItems: EXPLORE_CONTRACT_LIMITS.statusItems });
-const workspace = object({ repoId: hash, workspaceId: hash, branch });
 const requirementBinding = object({ requirementId: uuidV7, epoch: positive });
 
 const mainParent = object({
@@ -56,13 +54,6 @@ const pmParent = object({
 });
 const parent = Type.Union([mainParent, pmParent]);
 
-const knowledgeInputSource = object({
-  kind: Type.Literal("knowledge_query"),
-  workspace,
-  root: Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }),
-  generation: positive,
-  baselineHash: hash,
-});
 const localInputSource = object({
   kind: Type.Literal("local_file"),
   indexBaseline: Type.Literal("not_applicable"),
@@ -73,7 +64,7 @@ const webInputSource = object({
   indexBaseline: Type.Literal("not_applicable"),
   query: boundedText,
 });
-const inputSource = Type.Union([knowledgeInputSource, localInputSource, webInputSource]);
+const inputSource = Type.Union([localInputSource, webInputSource]);
 
 export const ExploreInputSchema = object({
   format: Type.Literal("explore-input/v1"),
@@ -92,15 +83,6 @@ const lineRange = {
   startLine: positive,
   endLine: positive,
 };
-const knowledgeResultSource = object({
-  kind: Type.Literal("knowledge_query"),
-  workspace,
-  generation: positive,
-  baselineHash: hash,
-  path: Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }),
-  fileHash: hash,
-  ...lineRange,
-});
 const localResultSource = object({
   kind: Type.Literal("local_file"),
   indexBaseline: Type.Literal("not_applicable"),
@@ -115,15 +97,8 @@ const webResultSource = object({
   retrievedAt: unixEpochMilliseconds,
   quote: boundedText,
 });
-const resultSource = Type.Union([knowledgeResultSource, localResultSource, webResultSource]);
+const resultSource = Type.Union([localResultSource, webResultSource]);
 
-const knowledgeScope = object({
-  kind: Type.Literal("knowledge_query"),
-  paths: Type.Array(Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }), {
-    maxItems: EXPLORE_CONTRACT_LIMITS.sources,
-    uniqueItems: true,
-  }),
-});
 const localScope = object({
   kind: Type.Literal("local_file"),
   paths: Type.Array(Type.String({ minLength: 1, maxLength: EXPLORE_CONTRACT_LIMITS.pathBytes }), {
@@ -143,7 +118,7 @@ export const ExploreResultSchema = object({
   source: inputSource,
   conclusions: Type.Array(boundedText, { maxItems: EXPLORE_CONTRACT_LIMITS.conclusions }),
   sources: Type.Array(resultSource, { maxItems: EXPLORE_CONTRACT_LIMITS.sources }),
-  searchedScope: Type.Union([knowledgeScope, localScope, webScope]),
+  searchedScope: Type.Union([localScope, webScope]),
   notFound: textList,
   failures: textList,
   truncation: object({ truncated: Type.Boolean(), reasons: textList }),
@@ -195,11 +170,6 @@ function checkText(value: string, maximum: number): void {
 function checkTextList(values: readonly string[], maximum: number): void {
   for (const value of values) checkText(value, maximum);
 }
-function checkRelativePath(value: string): void {
-  if (bytes(value) > EXPLORE_CONTRACT_LIMITS.pathBytes || value.includes("\\") || /[\u0000-\u001f\u007f]/u.test(value)
-    || path.isAbsolute(value) || value === "." || path.normalize(value) !== value
-    || value.split("/").some((part) => part === "" || part === "." || part === "..")) fail("out_of_scope");
-}
 function checkAbsolutePath(value: string): void {
   if (bytes(value) > EXPLORE_CONTRACT_LIMITS.pathBytes || value.includes("\\") || /[\u0000-\u001f\u007f]/u.test(value)
     || !path.isAbsolute(value) || path.normalize(value) !== value
@@ -246,16 +216,7 @@ function validateResult(result: ExploreResult, input: ExploreInput): void {
   checkTextList(result.unknown, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints);
   if (result.truncation.truncated !== (result.truncation.reasons.length > 0)) fail("invalid_shape");
 
-  if (input.source.kind === "knowledge_query" && result.searchedScope.kind === "knowledge_query") {
-    const inputSource = input.source;
-    result.searchedScope.paths.forEach(checkRelativePath);
-    for (const source of result.sources) {
-      if (!("workspace" in source) || !same(source.workspace, inputSource.workspace)
-        || source.generation !== inputSource.generation || source.baselineHash !== inputSource.baselineHash) fail("invalid_binding");
-      checkRelativePath(source.path);
-      if (source.endLine < source.startLine) fail("invalid_shape");
-    }
-  } else if (input.source.kind === "local_file" && result.searchedScope.kind === "local_file") {
+  if (input.source.kind === "local_file" && result.searchedScope.kind === "local_file") {
     const root = input.source.root;
     const outside = (field: string, index: number, extra = "") => fail("out_of_scope", `${field} 第 ${index + 1} 项不是检索根 ${root} 下的路径${extra}`);
     result.searchedScope.paths.forEach((value, index) => {
@@ -263,7 +224,7 @@ function validateResult(result: ExploreResult, input: ExploreInput): void {
       if (!isUnder(value, root)) outside("searchedScope.paths", index, "；每项只写一个路径，说明写进 notFound 或 unknown");
     });
     for (const [index, source] of result.sources.entries()) {
-      if (!("path" in source) || "workspace" in source) fail("invalid_binding");
+      if (!("path" in source)) fail("invalid_binding");
       try { checkAbsolutePath(source.path); } catch { outside("sources", index); }
       if (!isUnder(source.path, root)) outside("sources", index);
       if (source.endLine < source.startLine) fail("invalid_shape");

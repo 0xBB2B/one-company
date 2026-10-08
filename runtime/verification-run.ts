@@ -170,7 +170,7 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
   }
   async function launchFor(started: VerificationRun, root: string) {
     const dataRoot = await realpath(options.dataRoot), outputRoot = await realpath(started.outputRoot), scratch = join(outputRoot, "tmp");
-    // 不得改写 Git 元数据（hook 会在用户后续 Git 操作中执行）、规则、归档与角色定义
+    // 不得改写 Git 元数据（hook 会在用户后续 Git 操作中执行）、归档与角色定义
     const agentDir = dirname(dataRoot), repositoryRoot = await realpath(options.repositoryRoot);
     const protectedPaths = [(await repositoryIdentity(root)).commonDir, ...[".git", "docs/prod", ".pi/agents", ".pi/skills", "AGENTS.md"].map((path) => join(root, path)),
       // 角色定义、skills 与项目信任在每次派工时重新读取，写入即可改变后续运行的说明、模型与能力

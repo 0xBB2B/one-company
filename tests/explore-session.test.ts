@@ -52,15 +52,14 @@ async function world() {
     return { id: created.requirementId, lease, worktree };
   }
   const runs = new RunStore({ dataRoot: options.dataRoot, repoId: options.repoId, daemonStartedAt: new Date().toISOString() });
-  const workspace = { repoId: options.repoId, workspaceId: sha("workspace"), branch: "refs/heads/test" };
   function input(parent: ExploreInput["parent"]): ExploreInput {
     return { format: "explore-input/v1", parent, question: "定位校验逻辑", clues: [], budget,
-      source: { kind: "knowledge_query", workspace, root: "/safe/project", generation: 4, baselineHash: sha("baseline") } };
+      source: { kind: "local_file", indexBaseline: "not_applicable", root: "/safe/project" } };
   }
   function research(explore: ExploreInput): ExploreResult {
     return { format: "explore-result/v1", kind: "research", parent: explore.parent, source: explore.source, conclusions: ["找到"],
-      sources: [{ kind: "knowledge_query", workspace, generation: 4, baselineHash: sha("baseline"), path: "src/a.ts", fileHash: sha("a"), startLine: 1, endLine: 2 }],
-      searchedScope: { kind: "knowledge_query", paths: ["src/a.ts"] }, notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] };
+      sources: [{ kind: "local_file", indexBaseline: "not_applicable", path: "/safe/project/src/a.ts", fileHash: sha("a"), startLine: 1, endLine: 2 }],
+      searchedScope: { kind: "local_file", paths: ["/safe/project/src/a.ts"] }, notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] };
   }
   function submit(runId: string, explore: ExploreInput) {
     return createResultSubmitTool({ grant: { role: "explore", callerId: uuidv7(), runId, parentRunId: explore.parent.parentRunId }, exploreInput: explore, authorize: () => true, exploreSession: options })

@@ -10,8 +10,8 @@ import { repositoryIdentity } from "../runtime/identity.ts";
 import { ProjectIndexService } from "../runtime/project-index-service.ts";
 import { readIndexFile } from "../runtime/project-index-policy.ts";
 import { KnowledgeQuerySession } from "../runtime/knowledge-query.ts";
-import type { KnowledgeQueryAdapter, KnowledgeQueryCapture, KnowledgeFactPackage, KnowledgeRequirementMetadata } from "../runtime/knowledge-query.ts";
-import { KNOWLEDGE_QUERY_LIMITS, KnowledgeQueryError, parseKnowledgeQuery } from "../runtime/knowledge-query-contracts.ts";
+import type { KnowledgeQueryAdapter, KnowledgeQueryCapture, KnowledgeFactPackage } from "../runtime/knowledge-query.ts";
+import { KNOWLEDGE_QUERY_LIMITS, parseKnowledgeQuery } from "../runtime/knowledge-query-contracts.ts";
 import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import type { RepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -49,7 +49,7 @@ async function fixture() {
     const current = await service.preview();
     const files: Array<{ path: string; hash: string }> = [];
     for (const file of current.files.filter((file) => scope.some((root) => root === "." || file.path === root || file.path.startsWith(`${root}/`)))) {
-      const read = await readIndexFile(repo.root, file, { readUnsupported: true });
+      const read = await readIndexFile(repo.root, file);
       if (read.status !== "success") throw new Error("unavailable file");
       files.push({ path: file.path, hash: read.sha256 });
     }
@@ -66,21 +66,7 @@ async function fixture() {
       if (JSON.stringify({ ...fresh, generation: 0 }) !== JSON.stringify({ ...origin, generation: 0 })) throw new Error("changed");
     },
   };
-  function withRequirement(readNow: () => KnowledgeRequirementMetadata | null, hooks: {
-    readMetadata?: () => Promise<KnowledgeRequirementMetadata | null>;
-    assertCurrent?: KnowledgeQueryAdapter["assertCurrent"];
-  } = {}): KnowledgeQueryAdapter {
-    const requirementMetadata = hooks.readMetadata ?? (async () => readNow());
-    return { ...adapter, requirementMetadata, async finalCheck(expected) {
-      const metadata = await requirementMetadata();
-      if (JSON.stringify(metadata) !== JSON.stringify(expected.requirementMetadata)) throw new KnowledgeQueryError("stale");
-      await (hooks.assertCurrent ?? adapter.assertCurrent)(expected.baseline);
-      // 本夹具的需求/撤权状态由本进程同步持有；所有I/O结束后联合核对，不伪造观察事件。
-      if (JSON.stringify(readNow()) !== JSON.stringify(expected.requirementMetadata) || !authorized || !connected
-        || observedSequence !== expected.baseline.observedSequence || authorityEpoch !== expected.baseline.authorityEpoch) throw new KnowledgeQueryError("stale");
-    } };
-  }
-  return { repo, dataRoot, repoId, service, adapter, capture, withRequirement, get build() { return build; },
+  return { repo, dataRoot, repoId, service, adapter, capture, get build() { return build; },
     async refresh() { build = await service.refresh(); return build; },
     revoke() { authorized = false; }, disconnect() { connected = false; }, observe() { observedSequence++; },
     epoch() { authorityEpoch += "x"; }, scope(value: string[]) { scope = value; } };
@@ -133,7 +119,7 @@ test("相对路径/同名符号保留真实行/hash/parser依据，不制造跨�
   expect(path.facts.some((item) => item.kind === "source")).toBe(true); session.close();
 });
 
-test("partial查询保留未知/语法诊断，dirty严禁重建快照兜底", async () => {
+test("partial查询保留未知/语法诊断，构建中严禁重建快照兜底", async () => {
   const w = await fixture();
   await put(w.repo.root, "broken.ts", "function broken( {\n"); await w.refresh();
   const session = new KnowledgeQuerySession(w.adapter);
@@ -141,7 +127,8 @@ test("partial查询保留未知/语法诊断，dirty严禁重建快照兜底", a
   expect(partial.indexStatus).toBe("partial"); expect(partial.limitations.diagnosticCounts.syntax_error).toBeGreaterThan(0);
   expect(partial.limitations.unknownCodeRelations).toBeGreaterThan(0); expect(partial.coverage.complete).toBe(false);
   const rebuild = vi.spyOn(IndexStore.prototype, "getRebuildSnapshot");
-  await w.service.markDirty();
+  const building = new IndexStore(indexDatabase(w.dataRoot, w.repoId), w.service.workspace);
+  try { building.begin(); } finally { building.close(); }
   await expect(session.query({ action: "facts" })).rejects.toBeDefined();
   expect(rebuild).not.toHaveBeenCalled(); session.close();
 });
@@ -210,73 +197,31 @@ test("返回前真实文件改动/撤权使第一页失败，未提供current ho
   await expect(denied.query({ action: "facts" })).rejects.toMatchObject({ code: "unavailable" }); denied.close();
 });
 
-test("历史PASS和伪formal不构成当前通过，性能始终unknown，正文证据字段拒绝", async () => {
-  const w = await fixture();
-  const session = new KnowledgeQuerySession({ ...w.adapter, async evidenceMetadata() { return [
-    { runId: "historical", kind: "legacy", result: "pass" },
-    { runId: "fake-formal", kind: "formal", result: "pass", verificationId: "claimed-id", verificationInputHash: sha("claimed") },
-  ]; } });
+test("性能与formal验证始终标注不可用，结果不带验证结果或需求元数据", async () => {
+  const w = await fixture(), session = new KnowledgeQuerySession(w.adapter);
   const result = await session.query({ action: "facts", pageSize: 1 });
-  expect(result.evidence.records).toHaveLength(2);
-  expect(result.evidence.records.every((value) => value.applicability === "unknown" && value.currentPass === false)).toBe(true);
-  expect(result.limitations).toMatchObject({ performanceImprovement: "unknown", formalVerification: "not_available" }); session.close();
-  const unsafe = new KnowledgeQuerySession({ ...w.adapter, async evidenceMetadata() { return [{ runId: "run", kind: "legacy", result: "pass", summary: "PROD_FROM_REPORT" }] as never; } });
-  await expect(unsafe.query({ action: "facts" })).rejects.toMatchObject({ code: "unavailable" }); unsafe.close();
+  expect(result.limitations).toMatchObject({ performanceImprovement: "unknown", formalVerification: "not_available" });
+  expect(result).not.toHaveProperty("evidence");
+  expect(result).not.toHaveProperty("requirement"); session.close();
 });
 
-test("关闭/未绑定不提供目标，活动元数据需可信绑定；分页中关闭不能继续旧目标", async () => {
+test.each(["file", "observation", "authority"])("返回前核对拒绝合法I/O等待中的%s变化", async (change) => {
   const w = await fixture();
-  let value: KnowledgeRequirementMetadata = { requirementId: prodId, workspaceId: w.service.workspace.workspaceId, branch: w.service.workspace.branch,
-    lifecycle: "active", approvedProdHash: sha("approved"), lifecycleEpoch: 1 };
-  const session = new KnowledgeQuerySession(w.withRequirement(() => value));
-  const first = await session.query({ action: "facts", pageSize: 1 }); expect(first.requirement).toHaveProperty("approvedProdHash");
-  value = { ...value, lifecycle: "closed" };
-  await expect(session.query({ action: "facts", pageSize: 1, cursor: first.nextCursor })).rejects.toMatchObject({ code: "stale" });
-  const closed = await session.query({ action: "facts", pageSize: 1 }); expect(closed.requirement).toEqual({ requirementId: prodId, lifecycle: "closed" });
-  value = { ...value, workspaceId: sha("foreign") };
-  await expect(session.query({ action: "facts" })).rejects.toMatchObject({ code: "unavailable" }); session.close();
-});
-
-test("返回前关闭变化废止在途活动需求元数据", async () => {
-  const w = await fixture();
-  let lifecycle: "active" | "closed" = "active";
-  const session = new KnowledgeQuerySession(w.withRequirement(() => ({ requirementId: prodId, workspaceId: w.service.workspace.workspaceId, branch: w.service.workspace.branch,
-    lifecycle, approvedProdHash: sha("approved"), lifecycleEpoch: 1 }), {
-    async assertCurrent(origin) { await w.adapter.assertCurrent(origin); lifecycle = "closed"; },
-  }));
-  await expect(session.query({ action: "facts", pageSize: 1 })).rejects.toMatchObject({ code: "stale" });
-  expect(session.diagnostics.sessions).toBe(0); session.close();
-});
-
-test.each(["file", "observation", "closing", "authority"])("联合返回门槛拒绝合法I/O等待中的%s变化", async (change) => {
-  const w = await fixture();
-  let value: KnowledgeRequirementMetadata | null = change === "closing" ? { requirementId: prodId,
-    workspaceId: w.service.workspace.workspaceId, branch: w.service.workspace.branch, lifecycle: "active",
-    approvedProdHash: sha("approved"), lifecycleEpoch: 1 } : null;
-  expect(() => new KnowledgeQuerySession({ ...w.adapter, async requirementMetadata() { return null; } })).toThrowError(expect.objectContaining({ code: "unavailable" }));
   let enter!: () => void, release!: () => void, calls = 0;
   const entered = new Promise<void>((resolve) => { enter = resolve; });
   const paused = new Promise<void>((resolve) => { release = resolve; });
-  const adapter = w.withRequirement(() => value, {
-    async readMetadata() {
-      if (++calls === 2 && change !== "closing") { enter(); await paused; }
-      return value;
-    },
-    async assertCurrent(origin) {
-      if (change === "closing") { enter(); await paused; }
-      await w.adapter.assertCurrent(origin);
-    },
-  });
-  const session = new KnowledgeQuerySession(adapter);
+  const session = new KnowledgeQuerySession({ ...w.adapter, async assertCurrent(origin) {
+    calls++; enter(); await paused;
+    await w.adapter.assertCurrent(origin);
+  } });
   const outcome = session.query({ action: "search", text: "角色跳跃" }).then(() => "returned", () => "rejected");
   await entered;
   if (change === "file") await put(w.repo.root, "src/动作😀.ts", "// actual changed bytes\n");
   if (change === "observation") w.observe();
   if (change === "authority") w.revoke();
-  if (change === "closing") value = { ...value!, lifecycle: "closing", lifecycleEpoch: 2 };
   release();
   expect(await outcome).toBe("rejected");
-  expect(calls).toBe(2); expect(session.diagnostics.sessions).toBe(0); session.close();
+  expect(calls).toBe(1); expect(session.diagnostics.sessions).toBe(0); session.close();
 });
 
 test("真实131072码点边界中文/emoji/CRLF命中一次，不能依据哈希ID或同startLine拼片", async () => {

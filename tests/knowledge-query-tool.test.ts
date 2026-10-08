@@ -10,7 +10,6 @@ const page = (body = "中文") => ({ format: "knowledge-facts/v1", trust: "untru
   limitations: { diagnosticCounts: { syntax_error: 1 }, diagnostics: [], diagnosticDetailsOmitted: 1, unknownCodeRelations: 1,
     unindexedFiles: 1, performanceImprovement: "unknown", formalVerification: "not_available", scope: "caller_allowed_files_only" },
   coverage: { matched: 1, returned: 1, omitted: 0, remaining: 1, sourceExcerptsTruncated: 0, complete: false },
-  evidence: { status: "not_available", records: [], omitted: 0 }, requirement: null,
   facts: [{ kind: "source", id: "source", source: { path: "a.ts", fileHash: "d".repeat(64), parserVersion: "test", startLine: 1, endLine: 1, rangeKind: "excerpt" }, data: { body }, complete: true }], nextCursor: "x".repeat(43),
 }) as KnowledgeFactPackage;
 

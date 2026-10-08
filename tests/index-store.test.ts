@@ -58,7 +58,7 @@ const entityNamespaces = ["files", "symbols", "code_edges", "source_fragments", 
 function fullPublication(word: string): IndexPublication {
   const publication = codePublication("src/main.ts", word), doc = docPublication(word);
   publication.files.push(...doc.files); publication.sourceFragments.push(...doc.sourceFragments);
-  publication.codeEdges.push({ id: "main-reference", fromSymbolId: null, toSymbolId: publication.symbols[0]!.id, kind: "references", certainty: "certain" });
+  publication.codeEdges.push({ id: "main-reference", fromSymbolId: null, toSymbolId: publication.symbols[0]!.id, kind: "calls", certainty: "certain" });
   const requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
   publication.prodMetadata.push({ requirementId, source: "archive", path: `docs/prod/${requirementId}.完成.md`, fileName: `${requirementId}.完成.md`, lifecycle: "unknown", epoch: null, hash: null });
   return publication;
@@ -470,7 +470,7 @@ test("source_fragments与FTS随同步事务一起回滚，异步违规连接仍�
   try { expect(other.list("source_fragments")).toEqual([]); } finally { other.close(); }
 });
 
-test("只读current按文件范围先过滤正文，metadataOnly不载入正文，dirty/invalid不回退", async () => {
+test("只读current按文件范围先过滤正文，metadataOnly不载入正文，构建中/invalid不回退", async () => {
   const w = await fixture(), identity = w.identity(hash("a"), w.workspaceA, "refs/heads/read-only");
   expect(() => IndexStore.readCurrent(w.databasePath, identity, [])).toThrow();
   const store = new IndexStore(w.databasePath, identity);
@@ -482,7 +482,7 @@ test("只读current按文件范围先过滤正文，metadataOnly不载入正文�
     const current = IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"]);
     expect(current.snapshot?.sourceFragments).toHaveLength(1);
     expect(current.snapshot).not.toHaveProperty("prodMetadata");
-    store.markDirty();
+    store.begin();
     expect(() => IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"])).toThrowError(expect.objectContaining({ code: "index_not_ready" }));
     store.publish(store.begin(), emptyPublication("invalid"));
     expect(IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"])).toMatchObject({ status: { status: "invalid" }, snapshot: null });

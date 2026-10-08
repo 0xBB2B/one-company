@@ -84,7 +84,7 @@ try {
   assert.notEqual(linkedIndex.workspace.branch, mainIndex.workspace.branch);
   const scan = await scanIndexWorkspace({ root: linked, dataRoot });
   record.scanFiles = scan.files.map(file => file.path);
-  const marker = await readIndexFile(linked, ".git", { readUnsupported: true });
+  const marker = await readIndexFile(linked, ".git");
   record.markerReadStatus = marker.status;
   // 先实际 init，再核对排除断言：失败时保留公开错误及 interrupted 状态。
   record.init = await linkedIndex.init();

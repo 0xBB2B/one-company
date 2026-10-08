@@ -1,4 +1,4 @@
-import { classifyIndexWatchEvent } from "./project-index-policy.ts";
+import { indexPathScope } from "./project-index-policy.ts";
 import { withDetail } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 
@@ -36,7 +36,7 @@ export class KnowledgeQueryError extends Error {
 export function isKnowledgePath(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 4096 || /^[A-Za-z]:/u.test(value)
     || /[\u0000-\u001f\u007f]/u.test(value)) return false;
-  try { return classifyIndexWatchEvent(value) === "index"; } catch { return false; }
+  try { return indexPathScope(value) === "index"; } catch { return false; }
 }
 
 export function parseKnowledgeQuery(input: unknown): KnowledgeQuery {

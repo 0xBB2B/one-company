@@ -36,8 +36,7 @@ export type IndexSkipReason =
   | "unstable"
   | "cancelled"
   | "binary"
-  | "invalid_utf8"
-  | "unsupported";
+  | "invalid_utf8";
 
 export interface IndexLimits {
   maxFileBytes: number;
@@ -93,10 +92,6 @@ export interface IndexWorkspaceScan {
   files: IndexFile[];
   skipped: IndexSkippedPath[];
   archives: IndexArchiveMetadata[];
-  /** 已通过真实路径、链接、嵌套仓库和排除策略核验，可注册非递归监听的目录。 */
-  watchDirectories: string[];
-  /** 只监听直接目录项名称、不得读取正文的归档目录。 */
-  archiveWatchDirectories: string[];
   budget: IndexBudgetResult;
   partial: boolean;
 }
@@ -108,8 +103,6 @@ export type ReadIndexFileResult =
 
 export interface ReadIndexFileOptions {
   signal?: AbortSignal;
-  maxBytes?: number;
-  readUnsupported?: boolean;
 }
 
 export class ProjectIndexPolicyError extends Error {
@@ -126,7 +119,6 @@ const UUID_V7_PREFIX = /^([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}
 const DIRECTORY_EXCLUSIONS = new Set([
   ".git",
   ".pi",
-  ".bb-spec",
   "node_modules",
   "bower_components",
   "dependencies",
@@ -212,14 +204,6 @@ function normalizedLimits(input: Partial<IndexLimits> | undefined): IndexLimits 
   return merged;
 }
 
-function normalizeReadLimit(value: number | undefined): number {
-  const limit = value ?? DEFAULT_INDEX_LIMITS.maxFileBytes;
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > DEFAULT_INDEX_LIMITS.maxFileBytes) {
-    throw new ProjectIndexPolicyError("invalid_limits", "单文件读取预算必须是正整数且不能超过安全默认值");
-  }
-  return limit;
-}
-
 function isAccessFailure(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
   return code === "EACCES" || code === "EPERM" || code === "EMFILE" || code === "ENFILE";
@@ -275,10 +259,10 @@ function filePolicy(parts: string[]): IndexSkipReason | undefined {
   return undefined;
 }
 
-export type IndexWatchEventKind = "index" | "archive_metadata" | "ignored";
+export type IndexPathScope = "index" | "archive_metadata" | "ignored";
 
-/** 只按规范相对路径分类监听事件；不访问目标，因此归档事件不会先读正文。 */
-export function classifyIndexWatchEvent(path: string): IndexWatchEventKind {
+/** 只按规范相对路径判断能否进索引；不访问目标，因此归档路径不会先读正文。 */
+export function indexPathScope(path: string): IndexPathScope {
   const parts = safeRelativePath(path);
   if (prodArchivePath(parts)) return "archive_metadata";
   if (parts.some((part) => directoryPolicy(part) !== undefined)) return "ignored";
@@ -429,8 +413,6 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
   const files: IndexFile[] = [];
   const skipped: IndexSkippedPath[] = [];
   const archives: IndexArchiveMetadata[] = [];
-  const watchDirectories: string[] = [];
-  const archiveWatchDirectories: string[] = [];
   const exhausted = new Set<IndexBudgetResult["exhausted"][number]>();
   let entriesUsed = 0;
   let textBytes = 0;
@@ -498,7 +480,6 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
       addSkip(directoryRelative, "unstable");
       return;
     }
-    archiveWatchDirectories.push(directoryRelative);
     entriesUsed += listed.entries.length;
     for (const entry of listed.entries) {
       if (cancelAtBoundary(directoryRelative)) return;
@@ -556,7 +537,6 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
       addSkip(directoryRelative, "nested_repository");
       return;
     }
-    watchDirectories.push(directoryRelative);
 
     for (const entry of listed.entries) {
       if (stopped || cancelAtBoundary(directoryRelative)) return;
@@ -653,8 +633,6 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
 
   files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
   archives.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
-  watchDirectories.sort();
-  archiveWatchDirectories.sort();
   skipped.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : left.reason.localeCompare(right.reason));
   const exhaustedList = [...exhausted].sort();
   return {
@@ -662,8 +640,6 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
     files,
     skipped,
     archives,
-    watchDirectories,
-    archiveWatchDirectories,
     budget: {
       limits,
       used: { entries: entriesUsed, textBytes },
@@ -827,7 +803,7 @@ export async function readIndexFile(
   file: string | Pick<IndexFile, "path" | "size">,
   options: ReadIndexFileOptions = {},
 ): Promise<ReadIndexFileResult> {
-  const maxBytes = normalizeReadLimit(options.maxBytes);
+  const maxBytes = DEFAULT_INDEX_LIMITS.maxFileBytes;
   // 路径深度受限；每次读取独立核验元数据，文件与句柄 I/O 保持异步。
   const workspace = await safeWorkspaceRoot(rootInput, true);
   const path = typeof file === "string" ? file : file.path;
@@ -835,10 +811,6 @@ export async function readIndexFile(
   const parts = safeRelativePath(path);
   const excluded = filePolicy(parts);
   if (excluded) return { status: "skipped", path, reason: excluded };
-  const classification = classifyFile(parts);
-  if (classification.kind === "unsupported" && options.readUnsupported !== true) {
-    return { status: "skipped", path, reason: "unsupported" };
-  }
   if (options.signal?.aborted) return { status: "skipped", path, reason: "cancelled" };
 
   const ancestors = await captureAncestorChain(workspace.root, parts);

@@ -136,7 +136,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const {
   DEFAULT_INDEX_LIMITS,
   ProjectIndexPolicyError,
-  classifyIndexWatchEvent,
+  indexPathScope,
   readIndexFile,
   scanIndexWorkspace,
 } = await import("../runtime/project-index-policy.ts");
@@ -270,13 +270,12 @@ test.each([".git", ".giT", ".gIt", ".gIT", ".Git", ".GiT", ".GIt", ".GIT"].flatM
   const result = await scanIndexWorkspace({ root, dataRoot });
   expect(result.files.map((file) => file.path)).toEqual(["main.ts"]);
   expect(skippedReason(result, name)).toBe(kind === "file" ? "excluded_file" : "excluded_directory");
-  expect(result.watchDirectories).toEqual(["."]);
-  expect(classifyIndexWatchEvent(name)).toBe("ignored");
-  expect(classifyIndexWatchEvent(`${name}/config`)).toBe("ignored");
+  expect(indexPathScope(name)).toBe("ignored");
+  expect(indexPathScope(`${name}/config`)).toBe("ignored");
   for (const file of [name, { path: name, size: 1 }]) {
-    expect(await readIndexFile(root, file, { readUnsupported: true })).toEqual({ status: "skipped", path: name, reason: "excluded_file" });
+    expect(await readIndexFile(root, file)).toEqual({ status: "skipped", path: name, reason: "excluded_file" });
   }
-  expect(await readIndexFile(root, `${name}/config`, { readUnsupported: true })).toEqual({
+  expect(await readIndexFile(root, `${name}/config`)).toEqual({
     status: "skipped", path: `${name}/config`, reason: "excluded_directory",
   });
   expect(gitIoProbe.opens).toEqual([]);
@@ -416,7 +415,7 @@ test("M2-AC1/7：正文读取保留 Unicode/CRLF 和字节 hash，并拒绝归�
   await put(root, "unicode.txt", source);
   await put(root, "binary.txt", Uint8Array.from([0x61, 0x00, 0x62]));
   await put(root, "invalid.txt", Uint8Array.from([0xc3, 0x28]));
-  await put(root, "large.txt", "123456");
+  await put(root, "large.txt", "1".repeat(DEFAULT_INDEX_LIMITS.maxFileBytes + 1));
   await put(root, "script.py", pythonSource);
   await put(root, "binary.py", Uint8Array.from([0x70, 0x79, 0x00]));
   await put(root, `docs/prod/${REQUIREMENT_ID}.secret.md`, "NEVER_READ_THIS_PROD");
@@ -433,16 +432,15 @@ test("M2-AC1/7：正文读取保留 Unicode/CRLF 和字节 hash，并拒绝归�
   });
   expect(await readIndexFile(root, "binary.txt")).toEqual({ status: "skipped", path: "binary.txt", reason: "binary" });
   expect(await readIndexFile(root, "invalid.txt")).toEqual({ status: "skipped", path: "invalid.txt", reason: "invalid_utf8" });
-  expect(await readIndexFile(root, "large.txt", { maxBytes: 5 })).toEqual({ status: "skipped", path: "large.txt", reason: "file_too_large" });
-  expect(await readIndexFile(root, "script.py")).toEqual({ status: "skipped", path: "script.py", reason: "unsupported" });
-  expect(await readIndexFile(root, "script.py", { readUnsupported: true })).toEqual({
+  expect(await readIndexFile(root, "large.txt")).toEqual({ status: "skipped", path: "large.txt", reason: "file_too_large" });
+  expect(await readIndexFile(root, "script.py")).toEqual({
     status: "success",
     path: "script.py",
     content: pythonSource,
     size: Buffer.byteLength(pythonSource),
     sha256: createHash("sha256").update(Buffer.from(pythonSource)).digest("hex"),
   });
-  expect(await readIndexFile(root, "binary.py", { readUnsupported: true })).toEqual({
+  expect(await readIndexFile(root, "binary.py")).toEqual({
     status: "skipped",
     path: "binary.py",
     reason: "binary",
@@ -736,7 +734,4 @@ test("安全预算只允许缩小，路径读取不能穿越或改用非 POSIX �
   })).rejects.toBeInstanceOf(ProjectIndexPolicyError);
   await expect(readIndexFile(root, "../outside.ts")).rejects.toMatchObject({ code: "invalid_path" });
   await expect(readIndexFile(root, "dir\\file.ts")).rejects.toMatchObject({ code: "invalid_path" });
-  await expect(readIndexFile(root, "main.ts", { maxBytes: DEFAULT_INDEX_LIMITS.maxFileBytes + 1 })).rejects.toMatchObject({
-    code: "invalid_limits",
-  });
 });

@@ -988,23 +988,19 @@ async function saveInternal(input: ProdStorageSaveInput, action: ProdStorageActi
 
 export async function create(input: ProdStorageSaveInput): Promise<ProdStorageWriteResult> {
   if (input.expectedParent !== null) fail("invalid_parent", "create 的 expectedParent 必须为 null");
-  const result = await saveInternal(input, "create", "create");
-  requireAuthorized(input, { phase: "beforeReturn", action: "create", operationId: input.operationId, prodHash: result.prodHash });
-  return result;
+  return saveInternal(input, "create", "create");
 }
 
 export async function save(input: ProdStorageSaveInput & { action: Exclude<ProdStorageAction, "create"> }): Promise<ProdStorageWriteResult> {
   if (input.action !== "updateDraft" && input.action !== "confirmUpdate") fail("invalid_action", "save action 只能是 updateDraft 或 confirmUpdate");
-  const result = await saveInternal(input, input.action, "save");
-  requireAuthorized(input, { phase: "beforeReturn", action: "save", operationId: input.operationId, prodHash: result.prodHash });
-  return result;
+  return saveInternal(input, input.action, "save");
 }
 
 function assertRequestedVersion(lineage: Map<string, string | null>, commit: string): void {
   if (!lineage.has(commit)) fail("unknown_version", "请求的提交不属于当前线性正文历史");
 }
 
-async function verifyVersionInternal(input: ProdStorageVerifyInput): Promise<ProdStorageVerifyResult> {
+export async function verifyVersion(input: ProdStorageVerifyInput): Promise<ProdStorageVerifyResult> {
   assertFullCommit(input.commit);
   assertHash(input.expectedHash);
   const { paths, identity, lineage } = await ensureReadyForRead(input, "verifyVersion", { commit: input.commit, expectedHash: input.expectedHash });
@@ -1014,7 +1010,7 @@ async function verifyVersionInternal(input: ProdStorageVerifyInput): Promise<Pro
   return { ok: true, commit: input.commit, prodHash: verified.prodHash, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
 }
 
-async function readVersionInternal(input: ProdStorageReadInput): Promise<ProdStorageReadResult> {
+export async function readVersion(input: ProdStorageReadInput): Promise<ProdStorageReadResult> {
   assertFullCommit(input.commit);
   assertHash(input.expectedHash);
   const { paths, lineage } = await ensureReadyForRead(input, "readVersion", { commit: input.commit, expectedHash: input.expectedHash });
@@ -1024,7 +1020,7 @@ async function readVersionInternal(input: ProdStorageReadInput): Promise<ProdSto
   return { commit: input.commit, prodHash: verified.prodHash, bytes: verified.bytes };
 }
 
-async function diffVersionsInternal(input: ProdStorageDiffInput): Promise<ProdStorageDiffResult> {
+export async function diffVersions(input: ProdStorageDiffInput): Promise<ProdStorageDiffResult> {
   assertFullCommit(input.fromCommit, "fromCommit");
   assertFullCommit(input.toCommit, "toCommit");
   assertHash(input.expectedFromHash);
@@ -1041,7 +1037,7 @@ async function diffVersionsInternal(input: ProdStorageDiffInput): Promise<ProdSt
   const to = input.toCommit === input.fromCommit
     ? from
     : await verifyCommitMatches(input, paths, input.toCommit, input.expectedToHash, lineage.get(input.toCommit)!);
-  if (input.expectedToHash && to.prodHash !== input.expectedToHash) fail("hash_mismatch", "toCommit 正文 hash 与期望不一致");
+  if (to.prodHash !== input.expectedToHash) fail("hash_mismatch", "toCommit 正文 hash 与期望不一致");
   const diff = (await runGit(input, paths, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--full-index", input.fromCommit, input.toCommit, "--", PROD_FILE])).stdout.toString("utf8");
   requireAuthorized(input, {
     phase: "beforeReturnBody",
@@ -1053,22 +1049,6 @@ async function diffVersionsInternal(input: ProdStorageDiffInput): Promise<ProdSt
     prodHash: to.prodHash,
   });
   return { fromCommit: input.fromCommit, toCommit: input.toCommit, fromHash: from.prodHash, toHash: to.prodHash, diff };
-}
-
-export async function verifyVersion(input: ProdStorageVerifyInput): Promise<ProdStorageVerifyResult> {
-  const result = await verifyVersionInternal(input);
-  requireAuthorized(input, { phase: "beforeReturn", action: "verifyVersion", commit: input.commit, prodHash: result.prodHash });
-  return result;
-}
-export async function readVersion(input: ProdStorageReadInput): Promise<ProdStorageReadResult> {
-  const result = await readVersionInternal(input);
-  requireAuthorized(input, { phase: "beforeReturnBody", action: "readVersion", commit: input.commit, prodHash: result.prodHash });
-  return result;
-}
-export async function diffVersions(input: ProdStorageDiffInput): Promise<ProdStorageDiffResult> {
-  const result = await diffVersionsInternal(input);
-  requireAuthorized(input, { phase: "beforeReturnBody", action: "diffVersions", fromCommit: input.fromCommit, toCommit: input.toCommit });
-  return result;
 }
 
 export function prodRequirementPath(config: Pick<ProdStorageConfig, "dataRoot" | "repoId" | "requirementId">): string {

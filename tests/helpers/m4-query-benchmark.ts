@@ -41,7 +41,6 @@ export interface QuerySample {
   pageBytes: number | null;
   generation: number | null;
   baselineHash: string | null;
-  requirement: unknown;
   hitCount: number | null;
   hitIdentifiers: string[];
   hitPaths: string[];
@@ -568,7 +567,6 @@ function emptySample(archiveCount: number, queryId: QueryCase["id"], index: numb
     pageBytes: null,
     generation: null,
     baselineHash: null,
-    requirement: null,
     hitCount: null,
     hitIdentifiers: [],
     hitPaths: [],
@@ -732,7 +730,6 @@ async function runTier(input: {
             workspace?: { repoId?: string; workspaceId?: string; branch?: string };
             generation?: number;
             baselineHash?: string;
-            requirement?: unknown;
             limitations?: Record<string, unknown>;
             coverage?: Record<string, unknown>;
             facts?: Array<{ kind?: string; id?: string; source?: { path?: string } }>;
@@ -741,7 +738,6 @@ async function runTier(input: {
           sample.pageBytes = byteLength(page);
           sample.generation = typeof page.generation === "number" ? page.generation : null;
           sample.baselineHash = typeof page.baselineHash === "string" ? page.baselineHash : null;
-          sample.requirement = page.requirement;
           assertQueryPageMetadata(page, Number(query.request.maxBytes));
           const hits = summarizeQueryHits(query.id, page.facts);
           sample.hitCount = hits.hitCount;
@@ -766,7 +762,7 @@ async function runTier(input: {
             unindexedFiles: page.limitations?.unindexedFiles,
           };
           const serialized = JSON.stringify(page);
-          if (page.format !== "knowledge-facts/v1" || page.requirement !== null
+          if (page.format !== "knowledge-facts/v1"
             || page.workspace?.repoId !== identity.repoId || page.workspace?.workspaceId !== service.workspace.workspaceId
             || page.workspace?.branch !== service.workspace.branch || page.baselineHash !== initialized.baselineHash
             || page.limitations?.performanceImprovement !== "unknown" || page.limitations?.formalVerification !== "not_available"

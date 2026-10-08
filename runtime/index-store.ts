@@ -31,7 +31,7 @@ const ENTITY_NAMESPACES = [
 ] as const;
 
 type EntityNamespace = typeof ENTITY_NAMESPACES[number];
-export type IndexState = "building" | "dirty" | "cancelled" | "interrupted" | "ready" | "partial" | "invalid";
+export type IndexState = "building" | "cancelled" | "interrupted" | "ready" | "partial" | "invalid";
 export type PublishedIndexState = Extract<IndexState, "ready" | "partial" | "invalid">;
 export type IndexedFileKind = "code" | "document" | "config";
 
@@ -51,7 +51,7 @@ export interface IndexedFile {
   path: string;
   hash: string;
   parserVersion: string;
-  status: "indexed" | "unsupported" | "parse_error" | "invalid" | "skipped";
+  status: "indexed" | "unsupported" | "parse_error";
   kind: IndexedFileKind;
   language: string | null;
   symbolIds: string[];
@@ -71,13 +71,13 @@ export interface IndexedSymbol {
   endOffset?: number;
 }
 
-export type CodeEdgeEvidence = "call_expression" | "new_expression" | "import_clause" | "export_clause" | "identifier_reference" | "member_reference" | "type_reference" | "unknown";
+export type CodeEdgeEvidence = "call_expression";
 
 export interface IndexedCodeEdge {
   id: string;
   fromSymbolId: string | null;
   toSymbolId: string | null;
-  kind: "calls" | "imports" | "exports" | "references" | "extends" | "implements" | "unknown";
+  kind: "calls";
   certainty: "certain" | "unknown";
   /** 引用位置依据为一个完整可选组；不能只提供其中部分字段。 */
   name?: string | null;
@@ -334,7 +334,7 @@ function validateFile(input: unknown): IndexedFile {
   const value = exact(input, ["path", "hash", "parserVersion", "status", "kind", "language", "symbolIds"]);
   return {
     path: normalizedRelativePath(value.path), hash: digest(value.hash), parserVersion: text(value.parserVersion, 128),
-    status: oneOf(value.status, ["indexed", "unsupported", "parse_error", "invalid", "skipped"] as const),
+    status: oneOf(value.status, ["indexed", "unsupported", "parse_error"] as const),
     kind: oneOf(value.kind, ["code", "document", "config"] as const),
     language: value.language === null ? null : text(value.language, 64), symbolIds: uniqueStrings(value.symbolIds, 20_000),
   };
@@ -361,13 +361,13 @@ function validateCodeEdge(input: unknown): IndexedCodeEdge {
   const value = exact(input, ["id", "fromSymbolId", "toSymbolId", "kind", "certainty", ...(detailCount ? detailKeys : [])]);
   const result: IndexedCodeEdge = {
     id: entityId(value.id), fromSymbolId: value.fromSymbolId === null ? null : entityId(value.fromSymbolId), toSymbolId: value.toSymbolId === null ? null : entityId(value.toSymbolId),
-    kind: oneOf(value.kind, ["calls", "imports", "exports", "references", "extends", "implements", "unknown"] as const),
+    kind: oneOf(value.kind, ["calls"] as const),
     certainty: oneOf(value.certainty, ["certain", "unknown"] as const),
   };
   if (result.toSymbolId === null && result.certainty === "certain") fail();
   if (detailCount) {
     result.name = value.name === null ? null : text(value.name, 512, true);
-    result.evidence = oneOf(value.evidence, ["call_expression", "new_expression", "import_clause", "export_clause", "identifier_reference", "member_reference", "type_reference", "unknown"] as const);
+    result.evidence = oneOf(value.evidence, ["call_expression"] as const);
     result.path = normalizedRelativePath(value.path);
     result.startLine = integer(value.startLine, 1); result.startColumn = integer(value.startColumn);
     result.endLine = integer(value.endLine, 1); result.endColumn = integer(value.endColumn);
@@ -437,7 +437,7 @@ function validateWorkspaceRow(stored: StoredRecord<unknown>, identity: Workspace
   if (value.format !== "index-workspace/v1") fail("invalid_index_state");
   const row: WorkspaceRow = {
     format: "index-workspace/v1", workspaceId: String(value.workspaceId), repoId: String(value.repoId), root: String(value.root), branch: String(value.branch),
-    status: oneOf(value.status, ["building", "dirty", "cancelled", "interrupted", "ready", "partial", "invalid"] as const),
+    status: oneOf(value.status, ["building", "cancelled", "interrupted", "ready", "partial", "invalid"] as const),
     fence: integer(value.fence, 1), currentGeneration: integer(value.currentGeneration), targetGeneration: integer(value.targetGeneration, 1),
     operationId: String(value.operationId), baselineHash: nullableHash(value.baselineHash),
     diagnostics: array(value.diagnostics, 1_000).map(validateDiagnostic), updatedAt: integer(value.updatedAt),
@@ -547,41 +547,6 @@ export class IndexStore {
   cancel(input: IndexBuildToken): IndexWorkspaceStatus { return this.stop(input, "cancelled"); }
   interrupt(input: IndexBuildToken): IndexWorkspaceStatus { return this.stop(input, "interrupted"); }
 
-  /** 先使普通查询失效；若构建正在进行，同时提高fence，旧构建不能清除这次dirty。 */
-  markDirty(): IndexWorkspaceStatus {
-    return this.database.transaction(() => {
-      const current = this.workspace(this.database);
-      if (!current) fail("no_index");
-      if (current.data.status === "dirty") return this.toStatus(current);
-      const fence = current.data.fence + 1;
-      if (!Number.isSafeInteger(fence)) fail("invalid_index_state");
-      const operationId = uuidv7(), updatedAt = this.time();
-      const row: WorkspaceRow = {
-        ...current.data,
-        status: "dirty",
-        fence,
-        operationId,
-        targetGeneration: current.data.currentGeneration + 1,
-        updatedAt,
-      };
-      const version = this.database.update("workspaces", this.identity.workspaceId, current.version, row);
-      const generation = this.database.read<GenerationRow>("index_generations", this.identity.workspaceId);
-      const nextGeneration: GenerationRow = {
-        format: "index-generation/v1",
-        workspaceId: this.identity.workspaceId,
-        operationId,
-        fence,
-        baseGeneration: current.data.currentGeneration,
-        targetGeneration: current.data.currentGeneration + 1,
-        state: "dirty",
-        updatedAt,
-      };
-      if (generation) this.database.update("index_generations", this.identity.workspaceId, generation.version, nextGeneration);
-      else this.database.create("index_generations", this.identity.workspaceId, nextGeneration);
-      return this.toStatus({ id: current.id, version, data: row });
-    });
-  }
-
   publish(input: IndexBuildToken, publicationInput: IndexPublication, verifiedBaselineHash?: string): IndexWorkspaceStatus {
     const publication = validatePublication(publicationInput);
     const baselineHash = verifiedBaselineHash === undefined ? publicationBaselineHash(this.identity, publication) : digest(verifiedBaselineHash);
@@ -653,7 +618,7 @@ export class IndexStore {
     });
   }
 
-  /** 可信基线核对只读取文件元数据，不加载符号、规则、FTS或正文片段。 */
+  /** 可信基线核对只读取文件元数据，不加载符号、调用关系、FTS或正文片段。 */
   getFileMetadata(): { status: IndexWorkspaceStatus; files: IndexedFile[] } {
     return this.database.transaction(() => {
       const status = this.status();
@@ -666,10 +631,10 @@ export class IndexStore {
     });
   }
 
-  /** 普通查询只读取已发布且未dirty的当前代次。 */
+  /** 普通查询只读取状态为 ready 或 partial 的当前代次。 */
   getSnapshot(): IndexSnapshot { return this.snapshot(false); }
 
-  /** 仅供可信重建复用已发布代次；即使dirty也不会把旧正文返回给普通查询。 */
+  /** 仅供可信重建复用已发布代次；构建中也不会把旧正文返回给普通查询。 */
   getRebuildSnapshot(): IndexSnapshot { return this.snapshot(true); }
 
   search(query: string, limit = 10): IndexSearchResponse {

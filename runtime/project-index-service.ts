@@ -28,7 +28,7 @@ import type {
 } from "./index-store.ts";
 import {
   DEFAULT_INDEX_LIMITS,
-  classifyIndexWatchEvent,
+  indexPathScope,
   readIndexFile,
   scanIndexWorkspace,
 } from "./project-index-policy.ts";
@@ -53,7 +53,7 @@ const ARCHIVE_NAME_LIMIT = 255;
 const MAX_PUBLISHED_SYMBOLS = 100_000;
 const MAX_PUBLISHED_EDGES = 200_000;
 
-export type ProjectIndexAction = "open" | "status" | "preview" | "init" | "refresh" | "invalidate" | "query";
+export type ProjectIndexAction = "open" | "status" | "preview" | "init" | "refresh" | "query";
 export type ProjectIndexAuthorizationPhase = "before" | "after" | "read" | "publish" | "return";
 
 export interface ProjectIndexAuthorizationRequest {
@@ -138,10 +138,6 @@ export interface ProjectIndexBuildResult {
   skipped: IndexSkippedPath[];
   archives: ProjectIndexArchiveSummary;
   budget: IndexBudgetResult;
-  watchPlan: {
-    directories: string[];
-    archiveDirectories: string[];
-  };
 }
 
 export type ProjectIndexServiceErrorCode =
@@ -472,8 +468,6 @@ function comparableScan(scan: IndexWorkspaceScan): string {
   return JSON.stringify({
     files: scan.files,
     archives: scan.archives,
-    watchDirectories: scan.watchDirectories,
-    archiveWatchDirectories: scan.archiveWatchDirectories,
   });
 }
 
@@ -642,51 +636,6 @@ export class ProjectIndexService {
     return true;
   }
 
-  /**
-   * 监听器先调用本方法使普通IndexStore查询失效。它不参加构建串行锁，因而可提高fence阻止在途旧构建发布。
-   */
-  async markDirty(): Promise<IndexWorkspaceStatus | null> {
-    this.authorizeAt("invalidate", "before");
-    await this.identity();
-    const chain = await inspectDataDirectoryChain(this.dataRoot, this.workspace.repoId, "invalidate-directory-chain");
-    if (!chain.complete) {
-      this.authorizeAt("invalidate", "return");
-      return null;
-    }
-    const databasePath = await this.checkedDatabasePath(chain.snapshots, "invalidate-database-path");
-    let stats: Stats;
-    try { stats = await lstat(databasePath); }
-    catch (error) {
-      if (missing(error)) {
-        this.authorizeAt("invalidate", "return");
-        return null;
-      }
-      throw new ProjectIndexServiceError("invalid_database", "invalidate-database");
-    }
-    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || (process.getuid && stats.uid !== process.getuid())) {
-      throw new ProjectIndexServiceError("invalid_database", "invalidate-database");
-    }
-    let store: IndexStore | null = null;
-    try {
-      await verifyDirectories(chain.snapshots, "invalidate-before-store");
-      assertRegularDatabaseFiles(databasePath);
-      store = new IndexStore(databasePath, this.workspace);
-      const status = store.markDirty();
-      await verifyDirectories(chain.snapshots, "invalidate-after-store");
-      await this.identity();
-      this.authorizeAt("invalidate", "return");
-      return status;
-    } catch (error) {
-      if (error instanceof IndexStoreError && error.code === "no_index") {
-        this.authorizeAt("invalidate", "return");
-        return null;
-      }
-      throw serviceError(error, "invalidate-store");
-    } finally {
-      try { store?.close(); } catch { /* 已标dirty的结果不能因关闭错误恢复成可查询。 */ }
-    }
-  }
-
   private authorizeAt(action: ProjectIndexAction, phase: ProjectIndexAuthorizationPhase, path: string | null = null): void {
     let allowed = false;
     try {
@@ -785,11 +734,9 @@ export class ProjectIndexService {
 
   /**
    * 可信宿主专用只读入口。paths 是调用者范围与可信基线文件的交集，不能从模型取授权。
-   * 不创建空库、不刷新、不使用重建快照；全文件新增/删除与观察序号由外层基线钩子核验。
-   * sourceFiles来自第一轮实际读取，单文件沿用读取策略上限、整组最多20MiB；持久片段顺序不作为连续性依据。
-   * 外层先 captureFresh，再调用本方法，最后联合核对需求/文件/权限；不要在同一 coordinator 队列内嵌套排队。
+   * 不创建空库、不刷新、不使用重建快照；文件的新增与删除由调用方在查询前对账。
+   * bodies 是需要从磁盘读取并核对哈希的路径子集，省略时读取全部 paths；单文件沿用读取策略上限、整组最多20MiB，持久片段顺序不作为连续性依据。
    */
-  /** bodies 是需要从磁盘读取并核对哈希的路径子集；省略时读取全部 paths。 */
   async readCurrentForQuery(options: { paths: readonly string[]; bodies?: readonly string[]; signal?: AbortSignal }): Promise<CurrentQueryIndex> {
     return this.withOperation("query", options?.signal, async (signal) => {
       this.authorizeAt("query", "before");
@@ -803,7 +750,7 @@ export class ProjectIndexService {
       for (const path of paths) {
         try {
           if (typeof path !== "string" || /^[A-Za-z]:/u.test(path) || /[\u0000-\u001f\u007f]/u.test(path)
-            || classifyIndexWatchEvent(path) !== "index") throw new Error("scope");
+            || indexPathScope(path) !== "index") throw new Error("scope");
         } catch { throw new ProjectIndexServiceError("authorization_denied", "query-scope"); }
         this.authorizeAt("query", "read", path);
       }
@@ -820,7 +767,7 @@ export class ProjectIndexService {
           for (const file of (before.snapshot?.files ?? []).filter((file) => bodies.has(file.path))) {
             if (signal.aborted) throw new ProjectIndexServiceError("unstable", "query-cancelled");
             this.authorizeAt("query", "read", file.path);
-            const read = await readIndexFile(this.workspace.root, file.path, { signal, readUnsupported: true });
+            const read = await readIndexFile(this.workspace.root, file.path, { signal });
             this.authorizeAt("query", "after", file.path);
             if (read.status !== "success" || read.sha256 !== file.hash) throw new ProjectIndexServiceError("unstable", "query-file-changed", true);
             bytes += read.size;
@@ -974,7 +921,7 @@ export class ProjectIndexService {
           }
           this.authorizeAt(action, "read", file.path);
           options.onProgress?.({ phase: "read", path: file.path, completed: index, total: scan.files.length });
-          const result = await readIndexFile(this.workspace.root, file, { signal, readUnsupported: true });
+          const result = await readIndexFile(this.workspace.root, file, { signal });
           this.authorizeAt(action, "after", file.path);
           metrics.readBytes += file.size;
           if (result.status !== "success") readSkipped.push({ path: file.path, reason: result.reason });
@@ -1080,7 +1027,7 @@ export class ProjectIndexService {
           const item = prepared[index]!;
           this.authorizeAt(action, "read", item.file.path);
           options.onProgress?.({ phase: "verify", path: item.file.path, completed: index, total: prepared.length });
-          const current = await readIndexFile(this.workspace.root, item.file, { signal, readUnsupported: true });
+          const current = await readIndexFile(this.workspace.root, item.file, { signal });
           verificationReadBytes += item.file.size;
           metrics.readBytes += item.file.size;
           if (verificationReadBytes > finalScan.budget.limits.maxTotalTextBytes) {
@@ -1117,10 +1064,6 @@ export class ProjectIndexService {
           skipped: [...scan.skipped, ...readSkipped].sort((a, b) => a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason)),
           archives,
           budget: scan.budget,
-          watchPlan: {
-            directories: [...scan.watchDirectories],
-            archiveDirectories: [...scan.archiveWatchDirectories],
-          },
         };
       } catch (error) {
         let cancelledStatus: IndexWorkspaceStatus | null = null;
@@ -1227,10 +1170,6 @@ export class ProjectIndexService {
       skipped: scan?.skipped ?? [],
       archives: archiveSummary(scan?.archives ?? []),
       budget: scan ? { ...scan.budget, stoppedReason: "cancelled" } : emptyBudget,
-      watchPlan: {
-        directories: [...(scan?.watchDirectories ?? [])],
-        archiveDirectories: [...(scan?.archiveWatchDirectories ?? [])],
-      },
     };
   }
 }

@@ -29,7 +29,6 @@ function sample(index: number, durationMs: number | null, ok = true): QuerySampl
     pageBytes: 80 + index,
     generation: 1,
     baselineHash: "a".repeat(64),
-    requirement: null,
     hitCount: ok ? 1 : null,
     hitIdentifiers: ok ? ["file:src/file0000.ts"] : [],
     hitPaths: ok ? ["src/file0000.ts"] : [],
@@ -165,7 +164,7 @@ test("smoke通过真实SQLite、认证socket上的knowledge.query，并清理夹
     expect(samples).toHaveLength(QUERY_CASES.length * 2);
     expect(samples.every((value) => value.ok && value.queryMs >= 0 && value.combinedMs >= value.queryMs
       && value.responseBytes > 0
-      && value.requirement === null && value.hitCount > 0 && value.expectedHitObserved
+      && value.hitCount > 0 && value.expectedHitObserved
       && Number.isSafeInteger(value.generation) && value.generation >= 1
       && value.pageBytes <= Number(QUERY_CASES.find((query) => query.id === value.queryId)!.request.maxBytes)
       && value.coverage.complete && !value.coverage.nextCursor)).toBe(true);

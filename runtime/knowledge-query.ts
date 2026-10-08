@@ -28,31 +28,11 @@ export interface KnowledgeQueryCapture {
   build: { workspaceId: string; generation: number; baselineHash: string };
 }
 
-/** 只接受可信服务的固定无正文记录；本内核不读取报告、命令或会话，也不签发 formal 通过。 */
-export interface KnowledgeEvidenceMetadata {
-  runId: string;
-  kind: "legacy" | "debug" | "formal";
-  result: "pass" | "fail" | "cancelled" | "unknown";
-  verificationId?: string;
-  verificationInputHash?: string;
-}
-export interface KnowledgeRequirementMetadata {
-  requirementId: string;
-  workspaceId: string;
-  branch: string;
-  lifecycle: "active" | "closing" | "closed";
-  approvedProdHash?: string;
-  lifecycleEpoch?: number;
-}
-
 /**
  * 每个可信 caller/连接独占 session。adapter 由宿主创建，绝不能作为模型参数反序列化。
  * captureFresh 核对当前已发布状态及全部允许输入（含增删/实际 hash/schema/观察序号/权限 epoch），返回前排空通知。
  * assertCurrent 每次重新核对实际输入和当前权限；不能只比缓存/mtime。故障、断连、撤权必须抛错。
- * finalCheck 是联合返回门槛：绑定预期需求元数据/epoch、源码、观察序号与当前授权；
- * 所有异步读取结束后以同一协调范围内的同步失效/撤权栅栏核对，不能仅顺序await两种独立检查。
- * 提供 requirementMetadata 时必须提供 finalCheck；没有需求适配器时可仅用 assertCurrent。
- * 调用顺序：captureFresh 完成并退出 coordinator 队列 → readCurrent/元数据 → finalCheck（最后一次await）。
+ * 调用顺序：captureFresh 完成并退出 coordinator 队列 → readCurrent → assertCurrent（最后一次await）。
  * 若在 coordinator 内调用，必须提供不再向同一队列排队的内部钩子，避免嵌套等待死锁。
  */
 export interface KnowledgeQueryAdapter {
@@ -60,9 +40,6 @@ export interface KnowledgeQueryAdapter {
   /** bodies 为需要磁盘正文并核对哈希的路径子集；其余路径只提供索引元数据与片段。 */
   readCurrent(paths: readonly string[], bodies: readonly string[]): Promise<CurrentQueryIndex>;
   assertCurrent(snapshot: ProjectBaselineSnapshot): Promise<void>;
-  evidenceMetadata?(): Promise<readonly KnowledgeEvidenceMetadata[]>;
-  requirementMetadata?(): Promise<KnowledgeRequirementMetadata | null>;
-  finalCheck?(expected: { baseline: ProjectBaselineSnapshot; requirementMetadata: KnowledgeRequirementMetadata | null }): Promise<void>;
 }
 
 export interface KnowledgeSource {
@@ -100,8 +77,6 @@ export interface KnowledgeFactPackage {
     scope: "caller_allowed_files_only";
   };
   coverage: { matched: number; returned: number; omitted: number; remaining: number; sourceExcerptsTruncated: number; complete: boolean };
-  evidence: { status: "not_available" | "metadata_only"; records: Array<KnowledgeEvidenceMetadata & { applicability: "unknown"; currentPass: false }>; omitted: number };
-  requirement: { requirementId: string; lifecycle: "active" | "closing" | "closed"; approvedProdHash?: string; lifecycleEpoch?: number } | null;
   facts: KnowledgeFact[];
   nextCursor: string | null;
 }
@@ -117,12 +92,10 @@ interface Entry {
   excerpts: number;
   offset: number;
   returned: number;
-  requirementMetadata?: KnowledgeRequirementMetadata | null;
   expires: number;
   bytes: number;
 }
 const HASH = /^[0-9a-f]{64}$/u;
-const idText = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256 && /^[\p{L}\p{N}._:/#@+-]+$/u.test(value);
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 function fail(code: KnowledgeQueryError["code"], detail?: string): never { throw new KnowledgeQueryError(code, detail); }
 const under = (path: string, root: string): boolean => root === "." || path === root || path.startsWith(`${root}/`);
@@ -168,26 +141,6 @@ function excerpt(fragment: SourceFragment, text: string): { body: string; startL
   const startLine = fragment.startLine + (fragment.body.slice(0, start).match(/\n/gu)?.length ?? 0);
   return { body, startLine, endLine: startLine + (body.match(/\n/gu)?.length ?? 0), complete: start === 0 && body.length === fragment.body.length };
 }
-function fixedEvidence(values: readonly KnowledgeEvidenceMetadata[]): Header["evidence"] {
-  if (!Array.isArray(values) || values.length > 1000) fail("unavailable");
-  for (const value of values) {
-    if (!value || Object.keys(value).some((key) => !["runId", "kind", "result", "verificationId", "verificationInputHash"].includes(key))
-      || !idText(value.runId) || !["legacy", "debug", "formal"].includes(value.kind) || !["pass", "fail", "cancelled", "unknown"].includes(value.result)
-      || (value.verificationId !== undefined && !idText(value.verificationId)) || (value.verificationInputHash !== undefined && !HASH.test(value.verificationInputHash))) fail("unavailable");
-  }
-  // 元数据不是 formal 阶段、原始输入及当前适用性的证明；即使标注 PASS 也保持 unknown。
-  const ordered = [...values].sort((a, b) => Number(a.result === "pass") - Number(b.result === "pass"));
-  return { status: "metadata_only", records: ordered.slice(0, 4).map((value) => ({ ...value, applicability: "unknown", currentPass: false })), omitted: Math.max(0, values.length - 4) };
-}
-function fixedRequirement(value: KnowledgeRequirementMetadata | null, baseline: ProjectBaselineSnapshot): Header["requirement"] {
-  if (value === null) return null;
-  if (!value || Object.keys(value).some((key) => !["requirementId", "workspaceId", "branch", "lifecycle", "approvedProdHash", "lifecycleEpoch"].includes(key))
-    || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value.requirementId)
-    || value.workspaceId !== baseline.workspaceId || value.branch !== baseline.branch || !["active", "closing", "closed"].includes(value.lifecycle)) fail("unavailable");
-  if (value.lifecycle !== "active") return { requirementId: value.requirementId, lifecycle: value.lifecycle };
-  if (!value.approvedProdHash || !HASH.test(value.approvedProdHash) || !Number.isSafeInteger(value.lifecycleEpoch) || value.lifecycleEpoch! < 1) fail("unavailable");
-  return { requirementId: value.requirementId, lifecycle: value.lifecycle, approvedProdHash: value.approvedProdHash, lifecycleEpoch: value.lifecycleEpoch };
-}
 
 /** 有界、短时、caller/连接独占的分页缓存；close 后所有游标立即失效。 */
 export class KnowledgeQuerySession {
@@ -198,7 +151,6 @@ export class KnowledgeQuerySession {
   #busy = false;
   constructor(adapter: KnowledgeQueryAdapter, options: { now?: () => number } = {}) {
     if (!adapter || typeof adapter.captureFresh !== "function" || typeof adapter.assertCurrent !== "function" || typeof adapter.readCurrent !== "function") fail("unavailable");
-    if (adapter.requirementMetadata && typeof adapter.finalCheck !== "function") fail("unavailable");
     this.#adapter = adapter;
     this.#now = options.now ?? Date.now;
   }
@@ -226,13 +178,6 @@ export class KnowledgeQuerySession {
         const capture = copyCapture(await this.#adapter.captureFresh());
         entry = await this.#collect(query, capture, this.#time());
       }
-      // 每一页都重新读取元数据适配器；不能缓存已关闭目标或旧证据授权。
-      entry.header.evidence = this.#adapter.evidenceMetadata ? fixedEvidence(await this.#adapter.evidenceMetadata()) : { status: "not_available", records: [], omitted: 0 };
-      const requirementMetadata = this.#adapter.requirementMetadata ? structuredClone(await this.#adapter.requirementMetadata()) : null;
-      const requirement = fixedRequirement(requirementMetadata, entry.capture.baseline);
-      if (cursor && JSON.stringify(requirementMetadata) !== JSON.stringify(entry.requirementMetadata)) fail("stale");
-      entry.requirementMetadata = requirementMetadata;
-      entry.header.requirement = requirement;
       const facts: KnowledgeFact[] = [];
       let offset = entry.offset, omitted = entry.omitted;
       const makePage = (nextCursor: string | null): KnowledgeFactPackage => ({ ...entry.header,
@@ -251,12 +196,8 @@ export class KnowledgeQuerySession {
           offset++; omitted++;
         }
       }
-      // 返回前只经过一个可信联合门槛；其后不得再进行异步元数据/文件读取。
-      if (this.#adapter.finalCheck) await this.#adapter.finalCheck(structuredClone({ baseline: entry.capture.baseline, requirementMetadata }));
-      else {
-        if (this.#adapter.requirementMetadata) fail("unavailable");
-        await this.#adapter.assertCurrent(structuredClone(entry.capture.baseline));
-      }
+      // 返回前只经过一次当前性核对；其后不得再进行异步文件读取。
+      await this.#adapter.assertCurrent(structuredClone(entry.capture.baseline));
       if (this.#closed || entry.expires <= this.#time()) fail("stale");
       const next = offset < entry.items.length ? pendingCursor : null;
       const result = makePage(next);
@@ -317,7 +258,6 @@ export class KnowledgeQuerySession {
         unknownCodeRelations: snapshot?.codeEdges.filter((edge) => edge.certainty === "unknown").length ?? null,
         unindexedFiles: snapshot?.files.filter((file) => file.status !== "indexed").length ?? null,
         performanceImprovement: "unknown", formalVerification: "not_available", scope: "caller_allowed_files_only" },
-      evidence: { status: "not_available", records: [], omitted: 0 }, requirement: null,
     };
     let matched = 0, omitted = 0, excerpts = 0, cost = 0;
     const items: KnowledgeFact[] = [];

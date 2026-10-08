@@ -129,7 +129,7 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
     expect(new Set(notes.map((fact) => fact.source.path)).size).toBe(12);
     expect(pages.length).toBeGreaterThan(1);
     expect(pages.flatMap((page) => page.facts).some((fact) => fact.kind === "source" && fact.source.path === "动作.ts")).toBe(true);
-    expect(pages[0]).toMatchObject({ requirement: null, limitations: { performanceImprovement: "unknown", formalVerification: "not_available" } });
+    expect(pages[0]).toMatchObject({ limitations: { performanceImprovement: "unknown", formalVerification: "not_available" } });
     expect(approvals).toBe(2); // 一次拒绝、一次批准；查询不重新审批。
     const text = (result: { content: unknown[] }) => (result.content[0] as { text: string }).text;
     const exactAction = { repoId: f.repoId, query: { action: "exact", by: "path", value: "动作.ts" } };

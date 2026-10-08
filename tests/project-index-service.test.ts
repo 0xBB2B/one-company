@@ -392,7 +392,7 @@ test("真实默认解析器的运行时与语法加载瞬时失败后同进程�
   expect(JSON.parse(child.stdout.trim())).toEqual({ states: ["partial", "partial", "ready", "ready"], parsed: [0, 0, 1, 0], reused: [0, 0, 0, 1], initCalls: 2, loadCalls: 2 });
 });
 
-test("query逐路径返回前再授权；读取期间dirty禁止旧代次返回", async () => {
+test("query逐路径返回前再授权；读取期间开始新构建禁止旧代次返回", async () => {
   const w = await world();
   await put(w.repo.root, "src/query.ts", "export const CURRENT = true;\n");
   let revokeOnReturn = false, dirtyOnRead = false;
@@ -400,7 +400,7 @@ test("query逐路径返回前再授权；读取期间dirty禁止旧代次返回"
   const index = await ProjectIndexService.open({ repositoryRoot: w.repo.root, dataRoot: w.dataRoot, repoId: w.repoId,
     authorize(request) {
       if (request.action === "query" && request.phase === "after" && dirtyOnRead) {
-        dirtyOnRead = false; dirtyStore!.markDirty();
+        dirtyOnRead = false; dirtyStore!.begin();
       }
       return !(revokeOnReturn && request.action === "query" && request.phase === "return" && request.path !== null);
     },
@@ -413,7 +413,7 @@ test("query逐路径返回前再授权；读取期间dirty禁止旧代次返回"
   try {
     dirtyOnRead = true;
     await expect(index.readCurrentForQuery({ paths: ["src/query.ts"] })).rejects.toBeDefined();
-    expect(dirtyStore.status().status).toBe("dirty");
+    expect(dirtyStore.status().status).toBe("building");
   } finally { dirtyStore.close(); }
 });
 
