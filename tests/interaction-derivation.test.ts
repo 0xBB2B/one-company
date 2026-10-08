@@ -2,7 +2,8 @@ import { expect, test } from "vitest";
 import { uuidv7 } from "../runtime/database.ts";
 import { partitionProdDocument } from "../runtime/prod-view.ts";
 import type { InteractionContext } from "../runtime/user-interaction-format.ts";
-import { approvedManifestScope, createApprovalManifest, validateDocumentReview } from "../runtime/approval-manifest.ts";
+import { createApprovalManifest, validateDocumentReview } from "../runtime/approval-manifest.ts";
+import { summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
 import { deriveInterpretation } from "../runtime/interaction-derivation.ts";
 
 function fixture() {
@@ -36,7 +37,8 @@ test("按每条决定涉及的段机械生成逐段审阅：编号、处理结�
   expect(result.entries.every((entry) => !("unitIds" in entry))).toBe(true);
   expect(() => validateDocumentReview(f.context, result)).not.toThrow();
   const manifest = createApprovalManifest(f.context, result, result.entries.map(() => uuidv7()));
-  expect(approvedManifestScope(manifest, { action: "implement", goalIds: ["A"], constraintIds: ["preamble"] })).not.toBeNull();
+  expect(manifest.actions).toEqual([expect.objectContaining({ action: "implement", goalIds: ["A"], constraintIds: ["preamble"], unknown: false })]);
+  expect(summarizeApprovalManifest(manifest).blocked).toEqual([]);
 });
 
 test("metadata 段只跟随同一候选里明确确认、不挂在提问下的目标决定，且永远不作动作目标", () => {
@@ -168,7 +170,8 @@ test("M9：本轮明确的实施动作列了沿用原目标依据的段落时，
   expect(result.documentReview!.actions).toEqual([{ action: "implement", goalIds: ["A", "B"], constraintIds: [], conclusionIndexes: [1], unknown: false }]);
   expect(() => validateDocumentReview(f.context, result)).not.toThrow();
   const manifest = createApprovalManifest(f.context, result, result.entries.map(() => uuidv7()));
-  expect(approvedManifestScope(manifest, { action: "implement", goalIds: ["A", "B"], constraintIds: [] })).not.toBeNull();
+  expect(manifest.actions).toEqual([expect.objectContaining({ action: "implement", goalIds: ["A", "B"], constraintIds: [], unknown: false })]);
+  expect(summarizeApprovalManifest(manifest).blocked).toEqual([]);
   const narrow = retainedFixture();
   narrow.output.entries.push({ ...narrow.common, kind: "action", actions: ["implement"], conclusion: "只实施微信", unitIds: ["B"] });
   expect(narrow.derive().documentReview!.actions.map((action) => action.goalIds)).toEqual([["B"]]);

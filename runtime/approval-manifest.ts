@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { object, positive } from "./requirement-contracts.ts";
 import { decisionDigest } from "./short-decision-format.ts";
-import { ApprovalPartition, ApprovalUnitIds, CandidateBinding, InteractionAction, UnitReview, ActionReview,
+import { ApprovalPartition, ApprovalUnitIds, CandidateBinding, UnitReview, ActionReview,
   checkInteraction, UserInteractionError, RetainedUnitEvidence, resolvesContinuityIssue } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
 import type { ProdApprovalPartition } from "./prod-view.ts";
@@ -19,8 +19,6 @@ export const ApprovalManifest = object({ format: Type.Literal("approval-manifest
   questions: Type.Array(object({ requestId: id, answeredIds: ApprovalUnitIds, pendingIds: ApprovalUnitIds,
     decisionIds: Type.Array(id, { maxItems: 16, uniqueItems: true }) }), { maxItems: 20 }) });
 export type ApprovalManifest = Static<typeof ApprovalManifest>;
-export const ApprovalScope = object({ action: InteractionAction, goalIds: ApprovalUnitIds, constraintIds: ApprovalUnitIds });
-export type ApprovalScope = Static<typeof ApprovalScope>;
 export interface ApprovalManifestReference { requirementId: string; candidate: CandidateBinding; manifestHash: string }
 export interface ApprovalManifestExpected { requirementId: string; candidate: CandidateBinding; partition: ProdApprovalPartition }
 function deny(code: string, detail?: string): never { throw new UserInteractionError(code, detail); }
@@ -223,13 +221,4 @@ export function createApprovalManifest(context: InteractionContext, result: Inte
     actions: review.actions.map(({ conclusionIndexes, ...a }) => ({ ...a, decisionIds: mapped(conclusionIndexes) })),
     questions: review.questions.map(({ conclusionIndexes, ...q }) => ({ ...q, decisionIds: mapped(conclusionIndexes) })) };
   return checkApprovalManifest({ ...payload, manifestHash: approvalManifestDigest(payload) }, { requirementId: context.basis.requirementId, candidate: doc.candidate, partition: doc.partition });
-}
-/** 只匹配显式请求的完整集合，不把子集猜测为已有许可，也不以scope自然语言替代ID闭包。 */
-export function approvedManifestScope(manifest: ApprovalManifest, value: unknown): ApprovalManifest["actions"][number] | null {
-  const scope = checkInteraction(ApprovalScope, value);
-  const a = manifest.actions.find((a) => a.action === scope.action && sameSet(a.goalIds, scope.goalIds) && sameSet(a.constraintIds, scope.constraintIds));
-  if (!a || a.unknown) return null;
-  const closure = approvalDependencyClosure(manifest.units, scope.goalIds);
-  if (!sameSet(closure, [...scope.goalIds, ...scope.constraintIds]) || closure.some((id) => manifest.units.find((u) => u.id === id)?.disposition !== "confirmed")) return null;
-  return a;
 }

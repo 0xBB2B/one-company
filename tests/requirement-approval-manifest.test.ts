@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { RequirementService } from "../runtime/requirement-service.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
-import { ApprovalManifestStore, APPROVAL_MANIFEST_NAMESPACE } from "../runtime/approval-manifest-store.ts";
-import { approvalManifestReference, approvedManifestScope } from "../runtime/approval-manifest.ts";
+import { ApprovalManifestStore, APPROVAL_MANIFEST_NAMESPACE, summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
+import { approvalManifestReference } from "../runtime/approval-manifest.ts";
 import { UserInteractionCore } from "../runtime/user-interaction.ts";
 import type { InteractionCapability, InteractionContext } from "../runtime/user-interaction.ts";
 import { decisionDigest } from "../runtime/short-decision-format.ts";
@@ -146,8 +146,8 @@ for (const change of ["superseded", "modified", "missing"] as const) test(`真�
   const authorized = document()!; expect(authorized).not.toBeNull();
   expect(authorized.manifest.units.find((u) => u.id === "C")!.decisionIds).toEqual([saved.decisionIds[4], oldId]);
   expect(authorized.authorization.receiptId).not.toBe(old.basisReceiptId);
-  expect(approvedManifestScope(authorized.manifest, { action: "implement", goalIds: ["A"], constraintIds: ["C"] })).not.toBeNull();
-  expect(approvedManifestScope(authorized.manifest, { action: "implement", goalIds: ["C"], constraintIds: [] })).toBeNull();
+  expect(authorized.manifest.actions).toEqual([expect.objectContaining({ action: "implement", goalIds: ["A"], constraintIds: ["C"], unknown: false })]);
+  expect(summarizeApprovalManifest(authorized.manifest).blocked).toEqual([]);
   const store = new ApprovalManifestStore({ ...f.options, authorize: () => true,
     loadExpected: async () => { const c = await load(); return { requirementId: c.requirementId, candidate: c.candidate, partition: c.partition }; },
     admit: (r) => { const d = document(); return d && decisionDigest(d.authorization.manifest) === decisionDigest(r.reference)
@@ -183,8 +183,8 @@ test("真实saved候选→Core部分批准→元数据清单→prod批准/read/�
   const path = join(prodRequirementPath({ ...f.options, requirementId: f.saved.requirementId }), "prod.md");
   const bytes = await readFile(path);
   const manifest = f.document()!.manifest;
-  expect(approvedManifestScope(manifest, { action: "implement", goalIds: ["A"], constraintIds: [] })).not.toBeNull();
-  expect(approvedManifestScope(manifest, { action: "implement", goalIds: ["B"], constraintIds: [] })).toBeNull();
+  expect(manifest.actions).toEqual([expect.objectContaining({ action: "implement", goalIds: ["A"], constraintIds: [], unknown: false })]);
+  expect(summarizeApprovalManifest(manifest)).toMatchObject({ pending: ["B"], blocked: [] });
   expect(f.core.authorizeDocument(JSON.parse(JSON.stringify(f.interpreted.capability)) as InteractionCapability, f.binding())).toBeNull();
   const ref = await f.store.register(manifest);
   expect(await f.store.register(manifest)).toEqual(ref);
@@ -193,7 +193,7 @@ test("真实saved候选→Core部分批准→元数据清单→prod批准/read/�
   const confirmed = await f.approver.confirmUpdate(f.confirm());
   expect(confirmed.commit).toBe(f.saved.commit); expect(confirmed.lifecycle).toBe("active");
   expect(f.store.read(ref)).toEqual(manifest);
-  expect(approvedManifestScope(f.store.read(ref), { action: "implement", goalIds: ["B"], constraintIds: [] })).toBeNull();
+  expect(f.store.read(ref).actions.some((a) => a.goalIds.includes("B"))).toBe(false);
   expect((await f.service.read({ requirementId: f.saved.requirementId, source: "approved" })).approvalScope).toMatchObject({
     status: "available", summary: { reference: ref, confirmed: ["metadata", "A"], pending: ["B"], excluded: [], blocked: [] } });
   expect((await f.service.metadata(f.saved.requirementId)).approvalScope).toEqual(confirmed.approvalScope);

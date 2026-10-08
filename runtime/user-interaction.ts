@@ -50,21 +50,19 @@ export interface InteractionAuthorization {
   readonly repoId: string;
   readonly basis: InteractionBasis;
   readonly candidate: CandidateBinding;
-  readonly action: InteractionAction | "authorize-document";
-  readonly manifest?: ApprovalManifestReference;
-  readonly goalIds?: readonly string[];
-  readonly constraintIds?: readonly string[];
+  readonly action: "authorize-document";
+  readonly manifest: ApprovalManifestReference;
   readonly receiptId: string;
   readonly scope: string;
   readonly inputProof?: string;
 }
 const QuestionInput = object({ basis: InteractionBasis, candidate: Type.Union([CandidateBinding, Type.Null()]), proposal: DecisionItem,
   actions: Type.Array(InteractionAction, { maxItems: 5, uniqueItems: true }), unitIds: Type.Optional(ApprovalUnitIds), partition: Type.Optional(ApprovalPartition) });
-const Input = object({ source: Type.Union([Type.Literal("interactive"), Type.Literal("rpc")]), text: Type.String({ minLength: 1 }) });
+const Input = object({ source: Type.Literal("interactive"), text: Type.String({ minLength: 1 }) });
 const Session = object({ sessionId: Type.String({ minLength: 1, maxLength: 128 }), windowId: Type.String({ minLength: 1, maxLength: 128 }) });
 const QUESTIONS = "interaction_questions_v1";
 interface ActiveInput {
-  ticket: InputTicket; text: string; source: "interactive" | "rpc"; expiresAt: number; controller: AbortController; used: boolean; reconsiderations: number;
+  ticket: InputTicket; text: string; expiresAt: number; controller: AbortController; used: boolean; reconsiderations: number;
 }
 interface Verified {
   capability: InteractionCapability; input: ActiveInput; context: InteractionContext; model: InteractionModelIdentity;
@@ -149,7 +147,7 @@ export class UserInteractionCore {
     const ticket: InputTicket = Object.freeze({ kind: "host-input-ticket" });
     const now = this.#now(), expiresAt = checked(counter, Math.min(now + this.#ttl, deadline ?? now + this.#ttl));
     if (expiresAt <= now) throw new UserInteractionError("input_expired");
-    this.#input = { ticket, text: checkedInput.text, source: checkedInput.source, expiresAt, controller: new AbortController(), used: false, reconsiderations: 0 };
+    this.#input = { ticket, text: checkedInput.text, expiresAt, controller: new AbortController(), used: false, reconsiderations: 0 };
     this.#timer = setTimeout(() => this.clearInput(), expiresAt - now); this.#timer.unref();
     return ticket;
   }

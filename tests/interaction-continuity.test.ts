@@ -11,8 +11,7 @@ import { RequirementService } from "../runtime/requirement-service.ts";
 import { UserInteractionCore } from "../runtime/user-interaction.ts";
 import type { InteractionContext, InteractionInterpretation } from "../runtime/user-interaction-format.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, loadInteractionContinuity } from "../runtime/interaction-continuity.ts";
-import { ApprovalManifestStore } from "../runtime/approval-manifest-store.ts";
-import { approvedManifestScope } from "../runtime/approval-manifest.ts";
+import { ApprovalManifestStore, summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
 
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
@@ -110,8 +109,8 @@ test("A/B两题先答A再答B，已答A收束但原问题保留；短答B不授�
   });
   const second = await w.interpret("可以"); w.core.save(second.capability);
   const manifest = w.core.authorizeDocument(second.capability, w.loaded)!.manifest;
-  expect(approvedManifestScope(manifest, { action: "analyze", goalIds: ["B"], constraintIds: [] })).not.toBeNull();
-  expect(approvedManifestScope(manifest, { action: "analyze", goalIds: ["A"], constraintIds: [] })).toBeNull();
+  expect(manifest.actions).toEqual([expect.objectContaining({ action: "analyze", goalIds: ["B"], constraintIds: [], unknown: false })]);
+  expect(summarizeApprovalManifest(manifest).blocked).toEqual([]);
   expect(w.context().questions).toEqual([]);
   expect(withDatabase(w.path, (db) => db.list("interaction_questions_v1"))).toHaveLength(2);
   expect(withDatabase(w.path, (db) => db.list<{ conclusion: string }>("short_decisions")).filter((r) => r.data.conclusion === "A目标")).toHaveLength(1);
@@ -205,7 +204,9 @@ test("共享未决约束的影响不能通过下一轮丢global标记绕过，�
   expect(w.context().continuityIssues).toContainEqual(expect.objectContaining({ unitId: "G", affectedUnitIds: expect.arrayContaining(["A"]) }));
   w.setOutput((ctx) => render(ctx, false, "A")); await expect(w.interpret("G未解决，仅看A")).rejects.toThrow();
   w.setOutput((ctx) => render(ctx, true, "B")); const next = await w.interpret("G继续待确认，只分析不依赖G的B"); w.core.save(next.capability);
-  expect(approvedManifestScope(w.core.authorizeDocument(next.capability, w.loaded)!.manifest, { action: "analyze", goalIds: ["B"], constraintIds: [] })).not.toBeNull();
+  const manifest = w.core.authorizeDocument(next.capability, w.loaded)!.manifest;
+  expect(manifest.actions).toEqual([expect.objectContaining({ action: "analyze", goalIds: ["B"], constraintIds: [], unknown: false })]);
+  expect(summarizeApprovalManifest(manifest).blocked).not.toContain("B");
 });
 
 test("G约束H且H约束A时，未决影响传递到A及完整约束范围", async () => {

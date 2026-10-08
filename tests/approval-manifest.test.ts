@@ -3,7 +3,8 @@ import { uuidv7 } from "../runtime/database.ts";
 import { partitionProdDocument } from "../runtime/prod-view.ts";
 import { checkContext } from "../runtime/user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation } from "../runtime/user-interaction-format.ts";
-import { createApprovalManifest, checkApprovalManifest, approvalManifestDigest, approvedManifestScope, approvalManifestReference, validateDocumentReview } from "../runtime/approval-manifest.ts";
+import { createApprovalManifest, checkApprovalManifest, approvalManifestDigest, approvalManifestReference, validateDocumentReview } from "../runtime/approval-manifest.ts";
+import { summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
 
 function fixture() {
   const requirementId = uuidv7(), title = "渐进登录", body = "前言：保留邮箱。\r\n# 手机号 {#A}\r\n实现手机号登录。😀\r\n# 微信 {#B}\r\n微信需求未决，不实施。\r\n";
@@ -32,8 +33,8 @@ test("完整文档含明确未决B，清单无正文/任意载荷，只有A依�
   expect(approvalManifestDigest(m)).toBe(m.manifestHash);
   expect(approvalManifestReference(m)).toEqual({ requirementId: f.expected.requirementId, candidate: f.expected.candidate, manifestHash: m.manifestHash });
   expect(JSON.stringify(m)).not.toMatch(/前言|手机号|微信|body|conclusion|scope/);
-  expect(approvedManifestScope(m, { action: "implement", goalIds: ["A"], constraintIds: ["preamble"] })).not.toBeNull();
-  for (const goalIds of [["B"], ["A", "B"], ["whole-body"], []]) expect(approvedManifestScope(m, { action: "implement", goalIds, constraintIds: [] })).toBeNull();
+  expect(m.actions).toEqual([expect.objectContaining({ action: "implement", goalIds: ["A"], constraintIds: ["preamble"], unknown: false })]);
+  expect(summarizeApprovalManifest(m)).toMatchObject({ confirmed: ["metadata", "preamble", "A"], pending: ["B"], blocked: [] });
 });
 for (const attack of ["metadata", "preamble", "unit", "overlap", "hash", "dependency", "cycle", "decision-index", "duplicate", "false-confirmed", "modify", "actor", "duplicate-action"] as const) {
   test(`审核拒绝${attack}省略或伪造`, () => {
@@ -59,16 +60,19 @@ test("全局未决作用于A则A受阻，独立目标不被改成全量受阻", 
   r.units[3]!.globalConstraint = true; r.units[3]!.appliesTo = ["A"];
   r.actions[0]!.constraintIds.push("B");
   const m = f.manifest();
-  expect(approvedManifestScope(m, { action: "implement", goalIds: ["A"], constraintIds: ["preamble", "B"] })).toBeNull();
+  expect(m.actions).toEqual([expect.objectContaining({ action: "implement", goalIds: ["A"], constraintIds: ["preamble", "B"], unknown: false })]);
+  expect(summarizeApprovalManifest(m).blocked).toEqual(["A"]);
   r.units[3]!.appliesTo = ["metadata"];
   r.actions[0]!.constraintIds = ["preamble"];
-  expect(approvedManifestScope(f.manifest(), { action: "implement", goalIds: ["A"], constraintIds: ["preamble"] })).not.toBeNull();
+  const independent = f.manifest();
+  expect(independent.actions).toEqual([expect.objectContaining({ action: "implement", goalIds: ["A"], constraintIds: ["preamble"], unknown: false })]);
+  expect(summarizeApprovalManifest(independent).blocked).toEqual(["metadata"]);
   r.units[3]!.appliesTo = [];
   expect(() => f.manifest()).toThrow(/incomplete_action_closure/);
 });
 test("未知影响阻止动作，未确认建议不能标确定正文，未映射相关条目不能被丢弃", () => {
   const f = fixture(); f.result.documentReview!.actions[0]!.unknown = true;
-  expect(approvedManifestScope(f.manifest(), { action: "implement", goalIds: ["A"], constraintIds: ["preamble"] })).toBeNull();
+  expect(summarizeApprovalManifest(f.manifest()).blocked).toEqual(["A"]);
   f.result.documentReview!.faithful = false;
   expect(() => f.manifest()).toThrow(/document_not_approved/);
   f.result.documentReview!.faithful = true;
@@ -168,5 +172,6 @@ test("段数不设单独上限：25 段的需求，一个动作与一个提问�
   checkContext(context);
   const m = createApprovalManifest(context, result, [uuidv7(), uuidv7(), uuidv7()]);
   expect(checkApprovalManifest(m, { requirementId, candidate, partition })).toEqual(m);
-  expect(approvedManifestScope(m, { action: "implement", goalIds: ids, constraintIds: [] })).not.toBeNull();
+  expect(m.actions).toEqual([expect.objectContaining({ action: "implement", goalIds: ids, constraintIds: [], unknown: false })]);
+  expect(summarizeApprovalManifest(m).blocked).toEqual([]);
 });

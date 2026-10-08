@@ -87,7 +87,6 @@ function parseMentions(text: string): Array<{ token: string; title: string; tail
 }
 const digest = (value: unknown) => decisionDigest(JSON.parse(JSON.stringify(value ?? null)));
 const same = (a: unknown, b: unknown) => digest(a) === digest(b);
-const SAFE_ACTIONS = new Set(["analyze", "plan", "implement", "authorize-document"]);
 function denied(code: string): never { throw new HostAuthorizationError(code); }
 
 const UNEXPLAINED_LOG_LIMIT = 200;
@@ -392,7 +391,7 @@ export class MainRequirementInteraction {
       inputTtlMs: input ? Math.max(1, input.expiresAt - this.#now()) : this.#options.inputTtlMs,
       authorizeAction: (request: InteractionAuthorization) => {
         try { this.#live(ctx, host, generation); this.#snapshot(host, repoId, requirementId);
-          return request.repoId === repoId && request.basis.requirementId === requirementId && SAFE_ACTIONS.has(request.action);
+          return request.repoId === repoId && request.basis.requirementId === requirementId;
         } catch { return false; }
       },
       loadContext: async (id, signal): Promise<InteractionContext> => {
