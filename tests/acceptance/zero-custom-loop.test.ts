@@ -105,12 +105,34 @@ async function runLoop(name: string, script: UserScript, prepare: (repo: string,
       await mkdir(join(evidence, "runs"), { recursive: true });
       await copyFile(join(agentDir, "one-company", path), join(evidence, "runs", `${basename(dirname(path))}.jsonl`)).catch(() => undefined);
     }
+    for (const file of await readdir(join(agentDir, "one-company", "repos"), { recursive: true }).catch(() => [] as string[])) {
+      if (/(^|\/)data\.db(-wal)?$/u.test(file)) await copyFile(join(agentDir, "one-company", "repos", file), join(evidence, basename(file))).catch(() => undefined);
+    }
     // 凭据无论成败都删；其余现场仅在守护进程已退出时整体删除，否则保留供排查
     await rm(join(agentDir, "auth.json"), { force: true });
     await rm(join(agentDir, "models.json"), { force: true });
     if (daemonGone) await rm(root, { recursive: true, force: true });
     else record({ type: "stop", reason: `守护进程未退出，保留现场：${root}`, at: Date.now() });
   }
+}
+
+/**
+ * M9-AC5、AC6：关闭后本机正文与私有版本库仍在、有多个版本；归档只有这一份完成需求，随实现提交进业务分支；
+ * 另起一份不带本机数据的克隆，按分支就能读到同样的归档与验收记录。
+ */
+async function expectArchiveDelivered(result: Pick<LoopResult, "agentDir" | "repoId" | "repo" | "worktree" | "archive" | "archives">) {
+  const { agentDir, repoId, repo, worktree, archive, archives } = result;
+  expect(archives.filter((name) => name.endsWith(".md"))).toHaveLength(1);
+  const requirementId = archives[0]!.split(".")[0]!;
+  const versions = join(agentDir, "one-company", "repos", repoId, "requirements", requirementId);
+  expect((await readFile(join(versions, "prod.md"), "utf8")).length).toBeGreaterThan(0);
+  expect(Number((await exec("git", ["rev-list", "--count", "HEAD"], { cwd: versions })).stdout.trim())).toBeGreaterThan(1);
+  const branch = (await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktree! })).stdout.trim();
+  expect((await exec("git", ["log", "--name-only", "--format=", branch], { cwd: repo })).stdout).toContain(`docs/prod/${archives[0]}`);
+  const clone = join(dirname(repo), "member-clone");
+  await exec("git", ["clone", "-q", "--branch", branch, repo, clone]);
+  expect(await readFile(join(clone, "docs", "prod", archives[0]!), "utf8")).toBe(archive);
+  expect(archive).toContain("\n### 验收记录（关闭时由程序生成）\n");
 }
 
 /** 记录插入位置按 markers 顺序出现在归档里。 */
@@ -129,6 +151,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     for (const role of ["one-company.worker", "one-company.reviewer", "one-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
     expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
     expectInOrder(archive, ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "\n### 实现记录（关闭时由程序生成）\n", "{#acceptance}", "\n### 验收记录（关闭时由程序生成）\n"]);
+    await expectArchiveDelivered({ agentDir, repoId, repo, worktree, archive, archives });
     expect(host.dialogs.some((dialog) => dialog.title === "把这些改动写入项目规范 AGENTS.md？" && dialog.answer === "写入")).toBe(true);
     expect(await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null)).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
     // worker 遵守规范：交付的源码里导出的常量全是大写字母加下划线
@@ -245,6 +268,13 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC13：复制默认 wo
     const ui = runs.filter((run) => run.agent?.name === "ui-worker");
     expect(ui.length).toBeGreaterThan(0);
     expect(ui.every((run) => run.role === "one-company.worker" && run.agent?.source === "user" && run.agent.skills.some((skill) => skill.name === "ui-basics"))).toBe(true);
+    // M9-AC17：ui-basics 的加载指纹就是项目里 SKILL.md 的实际内容；任务写明为什么选 ui-worker；本机库不存 skill 与角色定义的正文
+    const skillHash = createHash("sha256").update(UI_BASICS).digest("hex");
+    expect(ui.every((run) => run.agent!.skills.some((skill) => skill.name === "ui-basics" && skill.hash === skillHash))).toBe(true);
+    expect(uiTasks.every((task) => task.agent === "ui-worker" && Boolean(task.agentReason))).toBe(true);
+    const bodies = withDatabase(repositoryDatabase(dataRoot, repoId), (db) =>
+      (db.prepare("SELECT count(*) AS n FROM records WHERE data LIKE ? OR data LIKE ?").get("%主色 #2f6fed%", "%你是实现代理%") as { n: number }).n);
+    expect(bodies).toBe(0);
     for (const role of ["one-company.reviewer", "one-company.qa"]) expect(runs.some((run) => run.role === role && run.state === "completed")).toBe(true);
     expect(runs.filter((run) => run.role === "one-company.explore").every((run) => run.writePaths.length === 0)).toBe(true);
   });
