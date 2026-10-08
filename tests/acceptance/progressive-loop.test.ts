@@ -37,10 +37,10 @@ const ANIMATION: UserScript = {
   approve: "更新后的需求草稿我看过了，批准这一版，继续实施。", proceed: "继续按批准的新版本实施。",
   accept: "先不验收：我刚追加了跳跃动画，请按追加批准后的版本继续做完再交报告。", close: ACCEPT.close,
 };
-/** 需要读活动需求正文的题放在绑定了跳跃需求的会话里问。 */
-const BOUND_QUESTIONS = ["正在进行的跳跃动画需求要求哪些姿态？", "当前需求最新批准的版本比上一版改了什么？"];
-/** 其余题放在没有绑定任何需求的新会话里问；序号对应用户定的 ①②③⑤⑦⑧⑨⑩⑪⑫⑬。 */
-const FRESH_QUESTIONS = [
+/** 需要读活动需求正文的题放在实施跳跃需求的同一会话里接着问。 */
+const SAME_SESSION_QUESTIONS = ["正在进行的跳跃动画需求要求哪些姿态？", "当前需求最新批准的版本比上一版改了什么？"];
+/** 其余题放在新开的会话里问；序号对应用户定的 ①②③⑤⑦⑧⑨⑩⑪⑫⑬。 */
+const NEW_SESSION_QUESTIONS = [
   "角色的水平速度现在是怎么算的？代码在哪？",
   "go 目录里的 Greet 函数做什么，谁调用它？",
   "角色在空中能不能再跳一次？依据是哪段代码和哪个测试？",
@@ -53,7 +53,7 @@ const FRESH_QUESTIONS = [
   "用需求工具读一下已经完成的快跑需求的正文。",
   "我想把导出常量 WALK_SPEED 改名为 walkSpeed，这符合项目规范吗？",
 ];
-const CLOSED_READ = FRESH_QUESTIONS.length - 2;
+const CLOSED_READ = NEW_SESSION_QUESTIONS.length - 2;
 const CONVENTIONS = "# 项目规范\n\n- 导出常量名一律大写加下划线，例如 WALK_SPEED。\n";
 /** 需求正文只能经需求工具按授权读取：任何一题都不能用宿主工具绕道读本机数据目录（需求存储、库、子代理会话记录、凭据）。 */
 const HOST_TOOLS = new Set(["read", "grep", "find", "ls", "bash", "edit", "write"]);
@@ -61,7 +61,7 @@ const DATA_ROOT_PATH = /one-company|\/agent\/|\.pi\/agent|auth\.json|models\.jso
 
 type Phase = "sprint" | "jump" | "animation";
 
-test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一安装现场快跑完成关闭并合并，跳跃需求实施中追加动画，随后在绑定与未绑定会话分别提问", async () => {
+test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一安装现场快跑完成关闭并合并，跳跃需求实施中追加动画，随后在同一会话接着问、再在新开的会话里问", async () => {
   const cfg = config!;
   const evidence = join(cfg.output, `progressive-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   await mkdir(evidence, { recursive: true, mode: 0o700 });
@@ -144,7 +144,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
 
     const answers: Array<QuestionRecord & { session: "bound" | "fresh" }> = [];
     const answered = (session: "bound" | "fresh") => async (item: QuestionRecord) => { answers.push({ ...item, session }); await save("questions.json", answers); };
-    await askQuestions(b, BOUND_QUESTIONS, answered("bound"));
+    await askQuestions(b, SAME_SESSION_QUESTIONS, answered("bound"));
     await save("main-session-bound.json", JSON.stringify(b.session.messages, null, 2));
     await b.close();
     // 规范冲突题的依据：提问前由用户在主分支提交项目规范，新会话开场即可读到
@@ -152,7 +152,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
     await exec("git", ["add", "AGENTS.md"], { cwd: repo });
     await exec("git", [...user, "commit", "-qm", "项目规范"], { cwd: repo });
     const c = await open();
-    const fresh = await askQuestions(c, FRESH_QUESTIONS, answered("fresh"));
+    const fresh = await askQuestions(c, NEW_SESSION_QUESTIONS, answered("fresh"));
     await save("main-session-fresh.json", JSON.stringify(c.session.messages, null, 2));
 
     const bypass = answers.flatMap((item) => item.toolCalls.filter((call) => HOST_TOOLS.has(call.name) && DATA_ROOT_PATH.test(JSON.stringify(call.args)))
