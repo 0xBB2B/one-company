@@ -55,7 +55,7 @@ async function world() {
   const files = { scripts: join(fixture.root, "scripts.json"), log: join(fixture.root, "requests.jsonl"), append: join(fixture.root, "append.jsonl") };
   await writeFile(files.scripts, JSON.stringify([
     { providerId: "gate-model", modelId: "test", replies: [{ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding } }, { type: "text", text: "等待核对" }] },
-    { providerId: "spec-model", modelId: "test", replies: [] }]));
+    { providerId: "spec-model", modelId: "test", replies: [] }, { providerId: "nokey-model", modelId: "test", noAuth: true, replies: [] }]));
   const home = await createTempHome(); cleanups.push(() => removeTempHome(home));
   let daemon: SpawnedDaemon | undefined, client: DaemonClient | undefined;
   const start = async () => {
@@ -151,6 +151,18 @@ test("M9-AC15/AC16：零匹配走默认 worker、指定专业定义按定义派�
   for (const key of ["a", "b", "c", "d", "e"]) expect(w.task(key).status).toBe("pending");
   const specRequests = (await w.requests()).filter((entry) => entry.providerId === "spec-model");
   expect(specRequests[0]?.text).toContain("按钮统一用主色");
+}, 120_000);
+
+test("M9-AC16：指定定义的模型在本机配置里有、但没有可用凭据时派工明确拒绝，写明原因，不改用默认模型、不建运行", async () => {
+  const w = await world();
+  await mkdir(w.userAgents, { recursive: true });
+  await writeFile(join(w.userAgents, "no-key.md"), definition("no-key", "model: nokey-model/test\n"));
+  await w.readyPm([spec("k", { agent: "no-key" }), spec("plain", { goalUnitIds: ["scenario.failure"] })]);
+  await w.reply("gate-model", { type: "toolcall", name: "one_company_agent_manage", input: { action: "dispatch", taskId: w.task("k").taskId } }, { type: "text", text: "等用户处理" });
+  expect(await w.toolResult(4)).toContain("模型不可用：nokey-model/test 没有可用的凭据");
+  expect((await w.runs().list({ limit: 50 })).items.filter((run) => run.kind === "role")).toEqual([]);
+  expect(w.task("k").status).toBe("pending");
+  expect((await w.requests()).filter((entry) => entry.providerId === "nokey-model")).toEqual([]);
 }, 120_000);
 
 test("M9-AC9/AC16：未认证连接与已有有效 PM 时再派 PM 均被拒；专业 worker 暂停期间改了定义，续接被拒并以 config_changed 停止", async () => {

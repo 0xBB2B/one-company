@@ -18,6 +18,7 @@ export interface ProviderScript {
   baseUrl?: string;
   roleName?: string;
   taskId?: string;
+  noAuth?: boolean;
   replies: ScriptedReply[];
 }
 
@@ -54,6 +55,7 @@ export async function registerProviders(runtime: ModelRuntime): Promise<void> {
       providerId: script.providerId,
       modelId: script.modelId,
       baseUrl: script.baseUrl,
+      noAuth: script.noAuth,
     });
     scriptReplies(provider, script.replies);
     if (logPath) watchRequests(provider, logPath);

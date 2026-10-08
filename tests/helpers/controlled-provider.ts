@@ -9,6 +9,8 @@ export interface RegisterControlledProviderOptions {
   providerId: string;
   modelId: string;
   baseUrl?: string;
+  /** 注册成配置里有模型、却没有任何凭据的提供方 */
+  noAuth?: boolean;
 }
 
 export type ScriptedReply = (
@@ -45,14 +47,14 @@ export function registerControlledProvider(
   runtime: ModelRuntime,
   options: RegisterControlledProviderOptions,
 ): ControlledProvider {
-  const { providerId, modelId, baseUrl } = options;
+  const { providerId, modelId, baseUrl, noAuth } = options;
   if (runtime.getModels(providerId).length > 0) {
     throw new Error(`controlled provider 已在该 runtime 注册: ${providerId}`);
   }
   const handle: ControlledProvider = { providerId, modelId, baseUrl: baseUrl ?? "http://127.0.0.1:1", queue: [], requests: [], reasoning: [] };
 
   runtime.registerProvider(providerId, {
-    apiKey: "controlled-key",
+    ...(noAuth ? {} : { apiKey: "controlled-key" }),
     baseUrl: baseUrl ?? "http://127.0.0.1:1",
     api: "anthropic-messages" as Api,
     // 包内定义写明的两个默认模型也挂在这个提供方下，零自定义的派工与内部调用才能落到脚本化回复上
