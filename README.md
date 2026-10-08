@@ -84,7 +84,7 @@ grep、find、ls 工具在主会话和各角色中都不搜索 `.git` 与被 Git
 
 守护进程就是负责持续运行代理的后台进程。每个仓库一个守护进程；同一仓库通过 Git worktree 建立的多个工作目录共用这个进程。打开主窗口时会自动启动，不需要手动操作。
 
-进程会在空闲后自动退出，空闲时限为 10 分钟；设备合盖睡眠的时间不计入。进程崩溃或电脑重启后，之前未结束的运行会被标记为中断，不会自动续跑；需要继续时在对话中让主代理重新派出 PM。网络断开时，相关运行会停下，网络恢复后不会自动继续。
+进程会在空闲后自动退出，空闲时限为 10 分钟；设备合盖睡眠的时间不计入。进程崩溃或电脑重启后，之前未结束的运行会被标记为中断，不会自动续跑；需要继续时在对话中让主代理重新派出 PM。网络断开时，相关运行会暂停；网络恢复后在 PM 面板按 p 恢复，运行从断开的地方接着继续。
 
 ## PM 面板
 
@@ -205,7 +205,7 @@ explore 在派出方工作区内用 read/grep 和 `one_company_knowledge_query` 
 
 | 位置（相对于数据根目录） | 内容 |
 |---|---|
-| `repos/<仓库身份>/data.db` | 需求状态、运行、对话、决策、消息、窗口和文件占用 |
+| `repos/<仓库身份>/data.db` | 需求状态、运行、对话、决策和文件占用 |
 | `repos/<仓库身份>/index.db` | 当前代码、普通资料、结构关系与全文搜索片段的可重建持久索引；每次查询前按需增量对账，索引相关 action 为 init、status、refresh |
 | `repos/<仓库身份>/requirements/<UUIDv7>/` | 需求的 `prod.md` 和只跟踪该正文的独立本机 Git 仓库 |
 | `repos/<仓库身份>/prototypes/<UUIDv7>/` | 界面任务的 HTML 原型，每个版本一个文件 |
@@ -215,7 +215,7 @@ explore 在派出方工作区内用 read/grep 和 `one_company_knowledge_query` 
 
 业务数据使用 SQLite 保存，每条数据库记录以 UUIDv7 作为唯一主键。同一仓库的多个 worktree 共用仓库数据库；数据库文件及 WAL/SHM 附属文件只允许当前用户读写。数据根必须与该仓库全部 worktree 分离，初始化会核对真实路径。
 
-检测到旧 `data.sqlite`、`global.sqlite` 或其 WAL/SHM 残留时不会新建替代空库。内部存储服务提供完整一致性备份和隔离恢复：操作先登记并核对授权与写入者停止状态，恢复副本默认 `needs_review`；旧备份中的 `active` 永不自动获得执行权限，较新的可信 closing/closed 元数据不会被旧状态覆盖。较新终态元数据可以保留，但旧备份不包含备份之后尚未纳入快照的新正文。
+内部存储服务提供完整一致性备份和隔离恢复：操作前要你在界面上确认，还有代理在运行时拒绝执行，维护期间其他连接的写入会失败；恢复副本默认 `needs_review`；旧备份中的 `active` 永不自动获得执行权限，较新的可信 closing/closed 元数据不会被旧状态覆盖。较新终态元数据可以保留，但旧备份不包含备份之后尚未纳入快照的新正文。
 
 `one_company_requirement_manage` 经真实宿主 lifecycle、输入结构和 UI 交互授权，提供 create、updateDraft、confirmUpdate、read、diff、metadata 与 list（只给主代理，列出本窗口草稿与进行中需求的编号、标题与状态，不含正文）。保存 draft 只保存正文版本，不批准目标；确认目标也不自动授予规划或实施权限。正文存储内部只提供 create、save、readVersion、diffVersions、verifyVersion 五个固定接口：每个需求使用 UUIDv7 身份和独立本机 Git，只提交 `prod.md`，完成归档名固定为 `<UUIDv7>.<需求描述>.md`。closing/closed 或未知、冲突状态拒绝专用正文读取，现有项目快照入口在读取内容前排除 `docs/prod`。
 

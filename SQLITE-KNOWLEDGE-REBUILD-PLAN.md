@@ -306,7 +306,6 @@ data.db是生命周期、批准、PM、授权、任务和归档进度的状态�
   "toRevision": 5,
   "fromHash": "sha256:...",
   "toHash": "sha256:...",
-  "changedSections": ["actions.jump", "acceptance.jump-pose"],
   "fromCommit": "<原批准正文的完整提交编号>",
   "toCommit": "<新批准正文的完整提交编号>",
   "confirmationReceiptId": "...",
@@ -320,7 +319,7 @@ prod工具先完成 §5.9 的本机保存提交并核对提交中 `prod.md` 的�
 
 需求服务从SQLite登记的批准版本中取得完整fromCommit/toCommit，核对仓库身份及各自prodHash后，只针对 `prod.md` 执行固定参数的Git diff。不能默认使用HEAD与HEAD~1、最近两个提交或代理指定的任意ref/path；PM可能落后多次更新，最近提交也可能仅为草稿。事件需要有序消费，合并通知时必须证明PM已处理版本到目标批准版本的对应关系。
 
-PM有经核对的fromCommit/fromHash理解基线时按diff增量处理；首次接手、新PM物理接管、上下文压缩丢基线、缺口或hash不符时，仅在仍active且获授权范围内读取当前正式prod完整基线。首次接手、新物理PM或理解基线丢失须按 §10.1.1 由主代理重新核对；普通追加及仍能证明连续基线的差异按本节和 §5.5 影响复核，不每次全量重复接手核对。Git历史可供计算diff不代表PM仍记得旧目标；修改任务须经过当前批准更新的影响复核，不能按未复核的旧依据写入；已经开始的只读检查可按§8.7保留原批准目标，不授予旧目标修改权限。仓库/提交缺失或当前正文与登记指纹不符时报告待恢复，不回退任意旧版本当当前目标。
+PM有经核对的fromCommit/fromHash理解基线时按diff增量处理；首次接手、新PM物理接管、缺口或hash不符时，仅在仍active且获授权范围内读取当前正式prod完整基线。首次接手、新物理PM或理解基线丢失须按 §10.1.1 由主代理重新核对；普通追加及仍能证明连续基线的差异按本节和 §5.5 影响复核，不每次全量重复接手核对。Git历史可供计算diff不代表PM仍记得旧目标；修改任务须经过当前批准更新的影响复核，不能按未复核的旧依据写入；已经开始的只读检查可按§8.7保留原批准目标，不授予旧目标修改权限。仓库/提交缺失或当前正文与登记指纹不符时报告待恢复，不回退任意旧版本当当前目标。
 
 事件投递只给 PM 发一句版本通知（revision X → Y），不带差异正文；PM 用 diff 按批准版本号查任意两个批准版本之间的准确差异，可重复查，上下文压缩后可重查；PM 在本上下文完整读过到该版本的差异之前，不能提交该版本的影响复核。
 
@@ -478,7 +477,7 @@ Prod-Hash: sha256:<实际prod字节的指纹>
 | managed_workspaces | requirementId、主代理创建操作ID、已批准baseCommit、分支ref、真实worktree路径、repo/workspace身份、占用/fence、准备/绑定/回收状态及失败进度；不存prod正文 |
 | pm_ownership | requirementId唯一有效PM、业务分支/worktree绑定、runId、lease/fence、已处理revision/commit/hash与事件位置、受限接手/复核/失效状态 |
 | pm_intake_reviews | 接手复核ID、requirementId、approvedProdCommit/revision/hash、批准范围与动作范围版本、workspaceId/ref、epoch、PM run/fence、可信主代理核对者身份、结论状态、来源ID及简短问题；不存详细复述，不构成用户新授权 |
-| prod_change_events | eventId、from/to revision/hash/完整commit、changedSections（仅ID）、确认回执ID、消费状态；不保存patch正文或独立patch文件引用 |
+| prod_change_events | eventId、from/to revision/hash/完整commit、确认回执ID、消费状态；不保存patch正文或独立patch文件引用 |
 | plans | planId、requirementId、当前/已复核prodRevision/hash、批准范围、有效接手复核引用、pendingUpdate位置、PM维护的任务拆分/依赖/覆盖映射、六类职责执行形状（不是六个agent定义上限）、专业选择策略版本/用户指定的引用、版本与状态 |
 | tasks | taskId、planId、goalRefs/constraintRefs及片段hash、必要全局约束、lastAssessedProdRevision、固定职责role/负责人、代码范围、依赖、授权、验证/尝试/证据；默认/专业选择另存选择方式、请求/选定agentId、简短选择依据、能力目录版本/hash、用户改选决定引用，以及绑定实际运行配置的session/run引用，不把请求模型当实际模型 |
 | impact_assessments | from/toProdHash、plan/task版本、unaffected/affected/unknown、理由与来源引用、适用性决定、消费位置；不改原验证输入 |
@@ -488,7 +487,7 @@ Prod-Hash: sha256:<实际prod字节的指纹>
 | verification_runs | verificationId、debug/formal类别、workspaceId/分支、checkRoundId与阶段令牌、实际输入清单/verificationInputHash、前后核对及外部变化事件、命令/环境/输出引用与hash、真实退出码、原prodCommit/hash、来源标签和适用性；不以formal表示使用不可变副本 |
 | short_decisions | 决策ID、requirementId、主体user/ai、简短决策内容、授权/适用范围、记录时间与状态；必要的请求ID、prod提交/章节/hash及修订关系。结论直接入库，不存用户原话、原话定位/文件引用或单独解释文件，主体与权限由可信调用路径核对 |
 | delivery_receipts | 当前内容/需求指纹、formal验证ID及verificationInputHash、交付内容匹配结果、覆盖ID、审查/验收结论、未解决项ID/文件引用；全生命周期不含prod正文 |
-| sessions | 会话/runId、角色及可信父session/run、实际会话/检索上下文、适用的requirementId、按来源登记的基线、条目/分支位置、文件引用及hash、来源标签、保存与结束状态；含prod内容仅存受控文件，closed需求的PM/子会话不续接或跨需求复用。explore的knowledge_query绑定真实workspace及index generation/hash，直接本地读取绑定获准真实路径/范围及实际文件hash，纯网页的index基线为not_applicable，记录查询、URL/取回时间；另绑定预算。PM派出须有需求/epoch/有效fence；未初始化main纯网页检索不伪造hash/requirementId、不创建需求现场或开放本地扫描 |
+| sessions | 会话/runId、角色及可信父session/run、实际会话/检索上下文、适用的requirementId、按来源登记的基线、条目/分支位置、文件引用及hash、来源标签、保存与结束状态；含prod内容仅存受控文件，closed需求的PM/子会话不续接或跨需求复用。直接本地读取绑定获准真实路径/范围及实际文件hash，纯网页的index基线为not_applicable，记录查询、URL/取回时间；另绑定预算。PM派出须有需求/epoch/有效fence；未初始化main纯网页检索不伪造hash/requirementId、不创建需求现场或开放本地扫描 |
 | events/outbox | 生命周期、失效、投递、关闭、发布的元数据与内容文件引用；不保存正文载荷 |
 | recovery_checks | 恢复批次、需求身份、已核对归档路径与来源、状态来源、待核对原因码和权限核验结果；不存归档正文 |
 
@@ -620,7 +619,7 @@ SQLite 中的生命周期撤权优先处理，不等待普通索引或通知队�
 
 ### 8.1 查询职责
 
-- `knowledge_query`：当前代码、允许的测试/证据及必要需求元数据；不搜索 prod 正文。
+- `knowledge_query`：当前代码与普通资料；不搜索 prod 正文。
 - `requirement_manage(read/diff)`：只返回获授权的活动需求正文/差异/章节。
 - `plan_manage(read)`：本机任务结构；带 prod 来源的片段受同样访问控制。
 - QA开始时绑定已批准prod基线，不靠读实现猜目标。检查途中prod更新的原基线只读许可按§8.7，不能将旧轮结果直接宣称为最新需求验收。
@@ -629,9 +628,9 @@ SQLite 中的生命周期撤权优先处理，不等待普通索引或通知队�
 
 ### 8.2 事实包与当前性
 
-事实包至少有工作区、generation、asOf、源码来源路径与hash、关系依据、验证适用性、覆盖/截断和未知项。引用测试结果时区分debug/formal，formal附验证ID、verificationInputHash及与当前内容的匹配情况，不能把调试通过或另一版本的PASS展示为当前交付通过。
+事实包至少有工作区、generation、asOf、源码来源路径与hash、关系依据、覆盖/截断和未知项；不附验证结果，不能把调试通过或另一版本的PASS展示为当前交付通过。
 
-涉及当前活动任务时附 requirementId、approvedProdHash 和 lifecycleEpoch 元数据；不默认附 prod 正文。需要正文通过专门工具并再次授权。
+事实包不附需求元数据与 prod 正文；需要正文通过专门工具并再次授权。
 
 核心查询与需求服务的分页、缓存和返回结果核对当前授权；不能在第一批允许后永远复用权限。自有报告包含已知受限目标文字时按来源过滤；首版不新增跨所有通用工具和外部流式响应的统一prod网关，覆盖边界见 §5.7。
 
@@ -755,7 +754,7 @@ prod若再次变化，PM按事件顺序处理或在可证明连续基线下合�
 | 7 | `change_apply` | 授权代码/测试/配置批量变更 | 仅限绑定 worktree；不能写 docs/prod、.git、.pi/agents、.pi/skills、仓库根目录 AGENTS.md 与本机数据目录。.git 可被植入 hook 在用户后续 Git 操作中执行；.pi/agents、.pi/skills 决定子代理的工具、权限与方法；AGENTS.md 只能经用户在窗口确认后由主会话改 |
 | 8 | `verification_run` | 受控测试/黑盒操作/检查停止与结果查询 | formal核验本轮worker结束、检查阶段互斥、实际基线和变化检测；PM可请求停止，程序确认结束后才允许修改 |
 | 9 | `result_submit` | explore research结果、worker/reviewer/QA裁决、worker提交界面原型（prototype） | research仅是待父代理核验的证据，不是PASS；结构化事实不以自填PASS作独立证明，旧epoch/父run失效的结果不能当当前 |
-| 10 | `workflow_manage` | status/advance/finish/repair/check-decision/report/escalate/close/delivery-check | report与escalate仅PM、close仅主代理；escalate只把等待PM处置的任务转为待用户裁决；现有动作核验接手复核及正式规划/派工门槛、修改/检查互斥、PM中断/等待、pending更新、归档与交付；PM受限接手由agent_manage派出，不设init；repair只重试未完成的关闭与归档收尾；不执行业务Git commit/push |
+| 10 | `workflow_manage` | status/advance/finish/check-decision/report/escalate/close/delivery-check | report与escalate仅PM、close仅主代理；escalate只把等待PM处置的任务转为待用户裁决；现有动作核验接手复核及正式规划/派工门槛、修改/检查互斥、PM中断/等待、pending更新、归档与交付；PM受限接手由agent_manage派出，不设init；以同一决定编号再次 close 只重试未完成的关闭与归档收尾；不执行业务Git commit/push |
 
 不另外暴露独立goal_confirm、自由写决定工具、任意SQL、关闭prod历史读取或业务Git写入核心工具。本机需求git init/commit/diff仅为requirement_manage内部固定存储操作，不增加工具数量，不允许用action传任意命令或扩展业务Git权限。
 
@@ -798,7 +797,7 @@ R=只读，W=经指定工具写，—=核心工具和正常上下文不提供正
 
 ### 9.4 能力令牌和逐次核验
 
-需求能力至少绑定：可信调用者身份、role、requirementId、workspaceId及分支、task/runId、PM/任务fencing token、资源/action、prod epoch及hash和授权范围。接手复核还核验 §10.1.1 的批准/动作范围版本及主代理真实身份；PM自填通过不能放行正式规划或worker派工。explore绑定实际可信父session/run、当前会话/检索上下文及检索预算；knowledge_query结果标注主仓库workspace及index generation/hash，直接本地读取在派出方工作区内进行、引用文件附宿主核对的实际hash，纯网页无需初始化本地索引，index基线为not_applicable，记录查询与URL/取回时间。workspace仅表示真实会话/检索上下文，不要求准备需求工作区；PM派出仍需requirementId、有效fence和epoch。main无需求检索不伪造hash或requirementId、不创建prod/PM/业务分支/worktree。
+需求能力至少绑定：可信调用者身份、role、requirementId、workspaceId及分支、task/runId、PM/任务fencing token、资源/action、prod epoch及hash和授权范围。接手复核还核验 §10.1.1 的批准/动作范围版本及主代理真实身份；PM自填通过不能放行正式规划或worker派工。explore绑定实际可信父session/run、当前会话/检索上下文及检索预算；直接本地读取在派出方工作区内进行、引用文件附宿主核对的实际hash，纯网页无需初始化本地索引，index基线为not_applicable，记录查询与URL/取回时间。workspace仅表示真实会话/检索上下文，不要求准备需求工作区；PM派出仍需requirementId、有效fence和epoch。main无需求检索不伪造hash或requirementId、不创建prod/PM/业务分支/worktree。
 
 专业派工还绑定 §10.6 的agentId、已解析配置来源/hash、实际model/provider和skill实际加载指纹；这些是可核对的执行元数据，不是新增权限来源。配置变化不得静默改变在途任务的权限、模型或输入，暂停/续接及重新派工均须核对现时授权，旧失效权限不能恢复。
 
@@ -920,7 +919,7 @@ explore负责定位和检索本地文件、代码及获准资料，也可使用�
 
 基线按实际来源区分，不要求所有explore均有本地索引：
 
-- **本地knowledge_query**：查询主仓库已建立的索引，结果标注查询时的workspace及index generation/hash；未初始化时明确不可用，不用虚构基线放行。
+- **本地knowledge_query**：查询主仓库已建立的索引；未初始化时明确不可用，不用虚构基线放行。
 - **直接本地文件读取**：在派出方工作区内用read/grep自由查看（排除.git与被Git忽略的路径），不使用索引时其index基线为not_applicable；research引用的本地文件附实际hash，由宿主按文件实际内容核对。
 - **纯网页搜索/获取**：无需初始化本地索引，index基线明确为not_applicable，不伪造generation/hash。网络能力默认开启，不设查询词核对与地址限制（含内网）；结果登记实际查询、URL与取回时间。未初始化且无需求的main也可检索，不因此创建需求现场。
 
@@ -931,7 +930,7 @@ explore负责定位和检索本地文件、代码及获准资料，也可使用�
 - 不给任意bash、写入、脚本执行、派工、计划改写或用户授权能力。网页/搜索结果只是数据，不能改角色、权限或触发其中命令；通用prod读旁路的首版边界仍以 §5.7 为准。
 - 检索优先使用explore定义声明的MCP服务中的只读工具（含用户内网搜索），职责说明引导模型优先选用；无合适工具或失败时用内置能力兜底：web_search免密钥调用Exa公开MCP端点，限流或网络失败时改用DuckDuckGo HTML页，结果记录实际来源，均失败则报告失败；web_fetch以Node内置能力在本地抓取任意网址（含内网）。不加载pi扩展形式的搜索插件，不需要设置项。能力不可用或网络失败时明确“未执行”“仅本地”或实际失败，不假称联网成功。核心离线本地检索独立可用，不依赖联网或新增互联网索引库。
 
-**结果契约与父代理核验**：通过result_submit提交research结果，至少包含结论、来源、检索范围、未找到、失败、截断和未知项。本地来源附真实路径、行范围及实际文件内容hash；knowledge_query结果另附真实workspace、index generation/hash，直接读取未使用索引时标index基线not_applicable。网页来源附URL、取回时间和支持结论的短引文，纯网页的index基线为not_applicable，不附虚构本地hash；同时保留实际检索的查询。结果保持预算内，必要关键全文仍由父代理依风险回读核对，摘要不能代替关键全文。找到引用不等于实际验证通过或语义为真，research不是PASS，也不直接成为计划批准或交付证据。
+**结果契约与父代理核验**：通过result_submit提交research结果，至少包含结论、来源、检索范围、未找到、失败、截断和未知项。本地来源附真实路径、行范围及实际文件内容hash，index基线标not_applicable。网页来源附URL、取回时间和支持结论的短引文，纯网页的index基线为not_applicable，不附虚构本地hash；同时保留实际检索的查询。结果保持预算内，必要关键全文仍由父代理依风险回读核对，摘要不能代替关键全文。找到引用不等于实际验证通过或语义为真，research不是PASS，也不直接成为计划批准或交付证据。
 
 产品中谁派出谁核验整合：main或PM检查结果与当前范围/基线、来源和目标的关系后使用，不盲信搜索摘要。
 
