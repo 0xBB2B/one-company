@@ -105,3 +105,24 @@ test("M7-AC16：main 在无需求、索引未初始化时派出纯网页检索�
   expect((await w.runStore.list({ limit: 100 })).items.length).toBe(runsBefore);
   expect(requirements()).toBe(requirementsBefore);
 });
+
+test("M9-AC10：断网时 main 派出的联网检索如实交回失败：搜索与抓取都报网络错误，结果不带任何网页来源、写明失败与未找到，不当作联网成功", async () => {
+  const offline: WebDeps = { fetch: async () => { throw new TypeError("fetch failed"); } };
+  const w = await createPmRunWorld(cleanups, { review: false, web: { deps: offline, getPage: async () => { throw new TypeError("fetch failed"); } } });
+  const research = { conclusions: [], sources: [], searchedScope: { kind: "web", queries: ["node 异步文件"] }, notFound: ["node 如何异步读文件"],
+    failures: ["web_search：网络不可用", "web_fetch：网络不可用"], truncation: { truncated: false, reasons: [] }, unknown: [] };
+  w.provider.queue.push(
+    { type: "toolcall", name: "web_search", input: { query: "node 异步文件" } },
+    { type: "toolcall", name: "web_fetch", input: { url: "https://nodejs.org/api/" } },
+    { type: "toolcall", name: "one_company_result_submit", input: { action: "research", result: research } });
+  w.manager.connectionOpened("conn-main");
+  const parent = { role: "main" as const, sessionId: "session-main", connectionId: "conn-main", model: { provider: "team-model", id: "test" }, thinking: "off" };
+  const dispatched = await w.manager.dispatchExplore({ parent, request: { question: "node 如何异步读文件", clues: [], source: { kind: "web", query: "node 异步文件" } }, maxTurns: 5 });
+  await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === dispatched.runId));
+  const toolErrors = w.provider.requests.filter((request) => request.systemPrompt?.includes("检索来源：联网搜索")).at(-1)!.messages
+    .filter((message) => message.role === "toolResult" && ["web_search", "web_fetch"].includes((message as { toolName: string }).toolName));
+  expect(toolErrors.map((message) => [(message as { toolName: string }).toolName, (message as { isError: boolean }).isError])).toEqual([["web_search", true], ["web_fetch", true]]);
+  const report = w.manager.takeMainExploreReport(dispatched.runId, "conn-main") as { outcome: string; research: { sources: unknown[]; failures: string[]; notFound: string[] } };
+  expect(report.research).toMatchObject({ sources: [], notFound: ["node 如何异步读文件"] });
+  expect(report.research.failures.length).toBeGreaterThan(0);
+});
