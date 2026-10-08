@@ -767,7 +767,8 @@ export class RunManager {
     try {
       return await resolveAgent({ catalog, name, role, fallback, skillDirs: this.options.skillDirs ?? [],
         models: (provider) => this.options.runtime.getModels(provider) as readonly { provider: string; id: string; reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> }[],
-        hasAuth: (provider) => this.options.runtime.hasConfiguredAuth(provider) });
+        // 守护进程的模型运行时不预载快照，hasConfiguredAuth 恒为否；按实际解析凭据判断
+        hasAuth: async (provider) => await this.options.runtime.getAuth(provider) !== undefined });
     } catch (error) {
       if (error instanceof AgentResolveError) throw protocolError(error.code, error.message);
       throw error;

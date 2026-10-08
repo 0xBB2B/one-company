@@ -42,7 +42,7 @@ export async function resolveAgent(input: {
   catalog: readonly RoleCatalogEntry[]; name: string; role: AgentRole;
   /** 不给 provider 时返回本机全部模型。 */
   models(provider?: string): readonly ModelLike[];
-  hasAuth(provider: string): boolean;
+  hasAuth(provider: string): Promise<boolean>;
   fallback: { model: { provider: string; id: string }; thinking: string };
   skillDirs: readonly string[];
 }): Promise<ResolvedAgent> {
@@ -61,7 +61,7 @@ export async function resolveAgent(input: {
     if (!found) throw new AgentResolveError("model_unavailable", `模型不可用：${input.fallback.model.provider}/${input.fallback.model.id}`);
   }
   const model = { provider: found.provider, id: found.id };
-  if (!input.hasAuth(model.provider)) throw new AgentResolveError("model_unavailable", `模型不可用：${model.provider}/${model.id} 没有可用的凭据`);
+  if (!await input.hasAuth(model.provider)) throw new AgentResolveError("model_unavailable", `模型不可用：${model.provider}/${model.id} 没有可用的凭据`);
   const thinking = definition.thinking ?? input.fallback.thinking;
   if (thinking !== "off" && (!found.reasoning || found.thinkingLevelMap?.[thinking] === null)) {
     throw new AgentResolveError("thinking_unsupported", `模型 ${model.provider}/${model.id} 不支持思考等级 ${thinking}`);

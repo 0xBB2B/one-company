@@ -37,7 +37,7 @@ async function roleDir(frontmatter: Record<string, string>) {
 test("M8F-AC1：派子代理时只写模型名的定义按派出方的提供方找模型，多个提供方同名且派出方没有时拒绝", async () => {
   const { dir, root } = await roleDir({ w: "role: worker\nmodel: sol", only: "role: worker\nmodel: only", gone: "role: worker\nmodel: none", plain: "role: worker" });
   const catalog = (await loadRoleCatalog({ defaultDir: dir, userDir: join(root, "none"), projectDir: join(root, "none2"), parseFrontmatter, projectTrusted: false })).roles;
-  const resolve = (name: string, provider: string) => resolveAgent({ catalog, name, role: "worker", skillDirs: [], hasAuth: () => true,
+  const resolve = (name: string, provider: string) => resolveAgent({ catalog, name, role: "worker", skillDirs: [], hasAuth: async () => true,
     models: (wanted) => ALL.filter((entry) => wanted === undefined || entry.provider === wanted), fallback: { model: { provider, id: "luna" }, thinking: "off" } });
   expect((await resolve("w", "b")).model).toEqual({ provider: "b", id: "sol" });
   expect((await resolve("only", "a")).model).toEqual({ provider: "b", id: "only" });
