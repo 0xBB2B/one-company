@@ -128,7 +128,7 @@ async function expectArchiveDelivered(result: Pick<LoopResult, "agentDir" | "rep
   const versions = join(agentDir, "one-company", "repos", repoId, "requirements", requirementId);
   expect((await readFile(join(versions, "prod.md"), "utf8")).length).toBeGreaterThan(0);
   expect(Number((await exec("git", ["rev-list", "--count", "HEAD"], { cwd: versions })).stdout.trim())).toBeGreaterThan(0);
-  expect((await exec("git", ["-c", "core.quotePath=false", "status", "--porcelain", "docs/prod"], { cwd: worktree! })).stdout).toContain(archives[0]);
+  expect((await exec("git", ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all", "docs/prod"], { cwd: worktree! })).stdout).toContain(archives[0]);
   await exec("git", ["add", "docs/prod"], { cwd: worktree! });
   await exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", "commit", "-qm", "需求归档"], { cwd: worktree! });
   const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree! })).stdout.trim();
