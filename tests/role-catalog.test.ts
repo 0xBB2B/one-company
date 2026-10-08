@@ -25,7 +25,7 @@ async function writeRole(dir: string, name: string, frontmatter: string, body = 
 }
 
 describe("内置默认团队", () => {
-  test("M8F-AC2：安装资源恰好提供 pm、explore、worker、reviewer、qa 五个职责定义与解释器、草稿核验器两个内部定义，不含 planner；五个职责定义写明 gpt-6.1-sol、不写思考等级", async () => {
+  test("M8F-AC2：安装资源恰好提供 pm、explore、worker、reviewer、qa 五个职责定义与解释器、草稿核验器两个内部定义，不含 planner；五个职责定义写明 gpt-6.1-sol 与 high 思考", async () => {
     const files = (await readdir(defaultRoleDir())).filter((name) => name.endsWith(".md")).sort();
     expect(files).toEqual(["draft-verifier.md", "explore.md", "interpreter.md", "pm.md", "qa.md", "reviewer.md", "worker.md"]);
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
@@ -34,18 +34,17 @@ describe("内置默认团队", () => {
       expect(entry?.available, entry?.reason).toBe(true);
       expect(entry?.definition?.role).toBe(role);
       expect(entry?.definition?.model).toBe("gpt-6.1-sol");
-      expect(entry?.definition?.thinking).toBeUndefined();
+      expect(entry?.definition?.thinking).toBe("high");
       expect(entry?.definition?.body.trim().length).toBeGreaterThan(0);
     }
   });
 
-  test("M8F-AC2：内置的两个内部定义写明模型与 medium 思考：解释器 gpt-6.1-sol，草稿核验器 gpt-6-luna", async () => {
+  test("M8F-AC2：内置的两个内部定义都写明 gpt-6.1-sol 与 medium 思考", async () => {
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    const models: Record<string, string> = { interpreter: "gpt-6.1-sol", "draft-verifier": "gpt-6-luna" };
     for (const role of INTERNAL_ROLES) {
       const entry = roles.find((candidate) => candidate.name === role);
       expect(entry?.available, entry?.reason).toBe(true);
-      expect(entry?.definition).toMatchObject({ role, model: models[role], thinking: "medium" });
+      expect(entry?.definition).toMatchObject({ role, model: "gpt-6.1-sol", thinking: "medium" });
     }
   });
 

@@ -130,7 +130,7 @@ test("M9-AC15/AC16：零匹配走默认 worker、指定专业定义按定义派�
   await writeFile(join(w.userAgents, "ui-dev.md"), definition("ui-dev", "model: spec-model/test\nskills: [ui-kit]\n"));
   await writeFile(join(w.userAgents, "ghost-skill.md"), definition("ghost-skill", "skills: [missing]\n"));
   await writeFile(join(w.userAgents, "bad-model.md"), definition("bad-model", "model: nowhere/none\n"));
-  await writeFile(join(w.userAgents, "deep-think.md"), definition("deep-think", "model: spec-model/test\nthinking: xhigh\n"));
+  await writeFile(join(w.userAgents, "deep-think.md"), definition("deep-think", "model: spec-model/test\nthinking: minimal\n"));
   await writeFile(join(w.userAgents, "tool-grab.md"), definition("tool-grab", "tools: [bash, write]\n"));
   await w.readyPm([spec("a", { agent: "nobody" }), spec("b", { agent: "ghost-skill" }), spec("c", { agent: "bad-model" }), spec("d", { agent: "deep-think" }), spec("e", { agent: "tool-grab" }),
     spec("ui", { agent: "ui-dev", agentReason: "界面任务" }), spec("plain", { goalUnitIds: ["scenario.failure"] })]);
@@ -140,7 +140,7 @@ test("M9-AC15/AC16：零匹配走默认 worker、指定专业定义按定义派�
   expect(await w.toolResult(4)).toContain("未找到角色定义 nobody");
   expect(await w.toolResult(5)).toContain("找不到 skill missing（ghost-skill 声明）");
   expect(await w.toolResult(6)).toContain("模型不可用：本机的模型配置里找不到模型 nowhere/none");
-  expect(await w.toolResult(7)).toContain("不支持思考等级 xhigh");
+  expect(await w.toolResult(7)).toContain("不支持思考等级 minimal");
   expect(await w.toolResult(8)).toContain("tool-grab 定义不可用");
   await w.toolResult(10);
   const roles = (await w.runs().list({ limit: 50 })).items.filter((run) => run.kind === "role");

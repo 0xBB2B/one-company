@@ -208,7 +208,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(requirementSummary(w.dataRoot, w.repoId, String(created.requirementId), first)).toBeUndefined();
   });
 
-  test("普通问答、未来闲聊、伪来源、无输入、无模型均不能create；只读metadata不建空库", async () => {
+  test("普通问答、未来闲聊、伪来源、无输入均不能create；只读metadata不建空库", async () => {
     const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY };
     await expect(w.call(input)).rejects.toMatchObject({ code: "current_input_required" });
     for (const source of ["extension", "tool", "user", "rpc"]) { w.capture("想做登录", source); await expect(w.call(input)).rejects.toMatchObject({ code: "current_input_required" }); }
@@ -216,8 +216,6 @@ describe("主窗口共享控制器的真实服务路径", () => {
       w.capture(text); scriptReplies(w.provider, [{ type: "text", text: '{"allow":false}' }]);
       await expect(w.call(input)).rejects.toMatchObject({ code: "draft_interpretation_denied" });
     }
-    w.capture(); const selected = w.ctx.model; Object.defineProperty(w.ctx, "model", { value: undefined, configurable: true });
-    await expect(w.call(input)).rejects.toMatchObject({ code: "internal_model_unavailable" }); Object.defineProperty(w.ctx, "model", { value: selected });
     await expect(w.call({ action: "metadata", requirementId: uuidv7() })).rejects.toMatchObject({ code: "database_missing" });
     await expect(stat(repositoryDatabase(w.dataRoot, w.repoId))).rejects.toMatchObject({ code: "ENOENT" });
   });

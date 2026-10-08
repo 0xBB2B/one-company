@@ -68,7 +68,7 @@ test("M7-AC22/AC23：指定定义不存在、声明的 skill 缺失、模型不�
   const w = await world();
   await w.define("ghost-skill", "skills: [missing]\n");
   await w.define("bad-model", "model: nowhere/none\n");
-  await w.define("deep-think", "thinking: xhigh\n");
+  await w.define("deep-think", "thinking: minimal\n");
   await w.plan.execute({ action: "propose", tasks: [
     spec("a", { agent: "nobody" }), spec("b", { agent: "ghost-skill", goalUnitIds: ["scenario.failure"] }),
     spec("c", { agent: "bad-model" }), spec("d", { agent: "deep-think", goalUnitIds: ["scenario.failure"] })] });

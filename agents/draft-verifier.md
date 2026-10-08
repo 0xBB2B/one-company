@@ -2,7 +2,7 @@
 name: draft-verifier
 description: 核对需求草稿是不是用户原话要求的
 role: draft-verifier
-model: gpt-6-luna
+model: gpt-6.1-sol
 thinking: medium
 ---
 

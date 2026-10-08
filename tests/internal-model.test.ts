@@ -8,8 +8,8 @@ import { resolveInternalModel } from "../runtime/internal-model.ts";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const model = (provider: string, id: string) => ({ provider, id, api: "openai-responses" }) as unknown as Model<Api>;
-const MAIN = model("5x", "gpt-6-sol"), SOL = model("5x", "gpt-6.1-sol"), LUNA = model("5x", "gpt-6-luna"), NOAUTH = model("other", "fast");
-const registry = { getAll: () => [MAIN, SOL, LUNA, NOAUTH],
+const MAIN = model("5x", "gpt-6-sol"), SOL = model("5x", "gpt-6.1-sol"), NOAUTH = model("other", "fast");
+const registry = { getAll: () => [MAIN, SOL, NOAUTH],
   hasConfiguredAuth: (m: Model<Api>) => m !== NOAUTH };
 
 async function world() {
@@ -24,17 +24,16 @@ async function world() {
   return { agentDir, repo, user: join(agentDir, "agents"), project: join(repo, ".pi", "agents"), define, resolve };
 }
 
-test("M8F-AC2：没有自定义时解释器用包内写明的 gpt-6.1-sol、草稿核验器用 gpt-6-luna，都加 medium 思考", async () => {
+test("M8F-AC2：没有自定义时解释器与草稿核验器都用包内写明的 gpt-6.1-sol 加 medium 思考", async () => {
   const w = await world();
-  expect(await w.resolve("interpreter")).toEqual({ model: SOL, thinking: "medium" });
-  expect(await w.resolve("draft-verifier")).toEqual({ model: LUNA, thinking: "medium" });
+  for (const role of ["interpreter", "draft-verifier"] as const) expect(await w.resolve(role)).toEqual({ model: SOL, thinking: "medium" });
 });
 
 test("M8D-AC8、M8F-AC3：用户层同名定义改的模型与思考等级生效，只影响对应的那一个；定义不写 model 时跟主会话模型", async () => {
   const w = await world();
   await w.define(w.user, "interpreter", "model: 5x/gpt-6-sol\nthinking: low");
   expect(await w.resolve("interpreter")).toEqual({ model: MAIN, thinking: "low" });
-  expect(await w.resolve("draft-verifier")).toEqual({ model: LUNA, thinking: "medium" });
+  expect(await w.resolve("draft-verifier")).toEqual({ model: SOL, thinking: "medium" });
   await w.define(w.user, "draft-verifier", "thinking: off");
   expect(await w.resolve("draft-verifier")).toEqual({ model: MAIN, thinking: undefined });
 });

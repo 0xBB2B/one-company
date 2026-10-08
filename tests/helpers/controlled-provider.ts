@@ -3,7 +3,7 @@ import type { Api, AssistantMessage, Context, Model, TranscriptContext, Usage } 
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 /** 包内角色定义写明的模型名。 */
-export const PACKAGED_MODEL_IDS = ["gpt-6.1-sol", "gpt-6-luna"];
+export const PACKAGED_MODEL_IDS = ["gpt-6.1-sol"];
 
 export interface RegisterControlledProviderOptions {
   providerId: string;
@@ -61,7 +61,8 @@ export function registerControlledProvider(
     models: [modelId, ...PACKAGED_MODEL_IDS.filter((id) => id !== modelId)].map((id) => ({
       id,
       name: id,
-      reasoning: id === "gpt-6-luna",
+      reasoning: true,
+      thinkingLevelMap: { minimal: null },
       input: ["text" as const],
       contextWindow: 100000,
       maxTokens: 4096,
