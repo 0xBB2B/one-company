@@ -207,6 +207,10 @@ test("M7-AC16：PM 与 explore 都可调用 knowledge_query 查询主仓库索�
 
 test("M7-AC18：需求关闭停止其 PM 与绑定检索，但不误停无关的 main 无需求检索", async () => {
   const w = await world();
+  w.provider.queue.push({ type: "text", text: "慢慢查", chunkDelayMs: 3_000 });
+  const bound = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
+  await until(async () => { const run = await w.runStore.get(bound.runId); return run.ok && run.run.state === "running"; });
   const readme = join(await realpath(w.fixture.repositoryRoot), "README.md");
   const parent = { role: "main" as const, sessionId: "session-a", connectionId: "connection-a", model: { provider: "team-model", id: "test" }, thinking: "off" };
   w.manager.connectionOpened("connection-a");
@@ -215,6 +219,8 @@ test("M7-AC18：需求关闭停止其 PM 与绑定检索，但不误停无关的
   await w.manager.stopRequirement(w.fixture.requirementId, { reason: "requirement_closing" });
   const pm = await w.runStore.get(w.pm.runId);
   expect(pm.ok && pm.run.state).toBe("stopped");
+  expect(await w.runStore.get(bound.runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "requirement_closing" } } });
+  expect(checkExploreSession({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, bound.runId)).toMatchObject({ current: false });
   await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === main.runId));
   expect(w.manager.takeMainExploreReport(main.runId, "connection-a")).toMatchObject({ outcome: "completed", research: { conclusions: ["登录模块在 src/auth"] } });
 });

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProjectTrustStore, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../../runtime/clock.ts";
+import { checkExploreSession } from "../../runtime/explore-session.ts";
 import { connectDaemon } from "../../runtime/daemon-client.ts";
 import type { DaemonClient } from "../../runtime/daemon-client.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../runtime/database.ts";
@@ -202,4 +203,46 @@ test("M9-AC9：已通过接手的 PM 被停止后重新派出，新 PM 须重新
   expect(denied).not.toMatch(/understanding_baseline_missing|new_pm_run|intake_gate/);
   expect((await w.runs().list({ limit: 50 })).items.filter((run) => run.kind === "role")).toEqual([]);
   expect(w.task("login").status).toBe("pending");
+}, 120_000);
+
+/** PM 派出一个还在检索中的 explore：explore 用用户层定义改走 spec-model，回复故意放慢，派出后一直处于运行中。 */
+async function pmWithRunningExplore() {
+  const w = await world();
+  await mkdir(w.userAgents, { recursive: true });
+  await writeFile(join(w.userAgents, "explore.md"), "---\nname: explore\ndescription: 测试用检索\nrole: explore\nmodel: spec-model/test\n---\n你是只读检索代理。\n");
+  const pm = await w.readyPm([spec("login"), spec("plain", { goalUnitIds: ["scenario.failure"] })]);
+  await w.reply("spec-model", { type: "text", text: "慢慢查", chunkDelayMs: 60_000 });
+  await w.reply("gate-model", { type: "toolcall", name: "one_company_agent_manage", input: { action: "dispatch", role: "explore", question: "登录模块在哪里", clues: [], maxTurns: 2 } },
+    { type: "text", text: "等检索结果" });
+  const explore = async () => (await w.runs().list({ limit: 50 })).items.find((run) => run.role === "one-company.explore");
+  await until(async () => (await explore())?.state === "running");
+  const exploreId = (await explore())!.id;
+  const run = async (id: string) => { const got = await w.runs().get(id); return got.ok ? got.run : null; };
+  const session = () => checkExploreSession({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, exploreId);
+  return { w, pm, exploreId, run, session };
+}
+
+test("M9-AC10：安装产物中主代理停止 PM（撤权）时，PM 派出的 explore 随之停止、记为随父停止，检索会话失效", async () => {
+  const { w, pm, exploreId, run, session } = await pmWithRunningExplore();
+  expect(session()).toMatchObject({ current: true });
+  await w.client().call("runs.stop", { runId: pm.runId });
+  await until(async () => (await run(exploreId))?.state === "stopped");
+  expect(await run(exploreId)).toMatchObject({ state: "stopped", stopCause: { reason: "parent_stopped" } });
+  expect(await run(pm.runId)).toMatchObject({ state: "stopped" });
+  expect(session()).toMatchObject({ current: false });
+}, 120_000);
+
+test("M9-AC10：安装产物中旧 PM 租约失效后派出新 PM（接管）时，旧 PM 与它派出的 explore 都停止并记为被新 PM 取代，旧检索会话失效", async () => {
+  const { w, pm, exploreId, run, session } = await pmWithRunningExplore();
+  w.fixture.db((db) => {
+    const row = db.read<{ lease: { expiresAt: number } }>("pm_ownership", w.fixture.requirementId)!;
+    db.update("pm_ownership", w.fixture.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
+  });
+  await w.reply("gate-model", { type: "text", text: "新 PM 接手" });
+  const next = await w.client().call("agents.dispatchPm", { requirementId: w.fixture.requirementId, model: { provider: "gate-model", id: "test" }, thinking: "off" }) as { runId: string };
+  expect(next.runId).not.toBe(pm.runId);
+  await until(async () => (await run(exploreId))?.state === "stopped");
+  expect(await run(exploreId)).toMatchObject({ state: "stopped", stopCause: { reason: "superseded_by_new_pm" } });
+  expect(await run(pm.runId)).toMatchObject({ state: "stopped", stopCause: { reason: "superseded_by_new_pm" } });
+  expect(session()).toMatchObject({ current: false });
 }, 120_000);
