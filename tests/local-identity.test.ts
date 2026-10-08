@@ -390,11 +390,11 @@ describe("repoDataDir", () => {
       const rootInfo = await stat(freshRoot);
       const reposInfo = await stat(join(freshRoot, "repos"));
       const leafInfo = await stat(dir);
-      const repoJsonInfo = await stat(join(dir, "data.db"));
+      const databaseInfo = await stat(join(dir, "data.db"));
       expect(rootInfo.mode & 0o777).toBe(0o700);
       expect(reposInfo.mode & 0o777).toBe(0o700);
       expect(leafInfo.mode & 0o777).toBe(0o700);
-      expect(repoJsonInfo.mode & 0o777).toBe(0o600);
+      expect(databaseInfo.mode & 0o777).toBe(0o600);
     } finally {
       process.umask(previousUmask);
     }

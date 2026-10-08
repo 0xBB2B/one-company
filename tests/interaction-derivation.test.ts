@@ -85,7 +85,7 @@ test("模型自己写逐段审阅、缺少 faithful、或在没有草稿时给�
     .toThrow(/invalid_shape/);
 });
 
-test("M9：动作列了一条目标里的某段就覆盖整条目标，漏列同条目标的其他段不收窄授权；分开确认的另一条目标不被带入", () => {
+test("M9：动作列了一条目标里的某段就覆盖整条目标，漏列同条目标的其他段不收窄动作范围；分开确认的另一条目标不被带入", () => {
   const whole = fixture();
   whole.output.entries[0]!.unitIds = ["A", "B"];
   whole.output.entries[2] = { ...whole.output.entries[0]!, kind: "constraint", conclusion: "保留邮箱", unitIds: ["preamble"] };
@@ -161,7 +161,7 @@ test("M8D-AC3：沿用的原依据是排除时该段标为已排除；同一段�
   expect(mixed.derive().documentReview!.units.find((u) => u.id === "A")!.retainedFactIds).toBeUndefined();
 });
 
-test("M9：本轮明确的实施动作列了沿用原目标依据的段落时，这些段落也算实施目标；没列的、或沿用的只是约束的段落不算", () => {
+test("M9：本轮明确的实施动作列了沿用原目标依据的段落时，这些段落也列入动作范围；没列的、或沿用的只是约束的段落不列入", () => {
   const f = retainedFixture();
   f.output.entries.push({ ...f.common, kind: "action", actions: ["implement"], conclusion: "继续实施这一版", unitIds: ["preamble", "A", "B"] });
   const result = f.derive();

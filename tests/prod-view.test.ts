@@ -124,7 +124,7 @@ test("无ID或混合标题只使用whole-body，空正文只有metadata；重复
   expect(partitionProdDocument(approvalId, "标题", Array.from({ length: 40 }, (_, i) => `# A {#s${i}}\n`).join("")).units).toHaveLength(41);
 });
 
-test("M8A-AC9：顶层须依次是背景、需求、功能、实现、验收五个带固定编号的二级标题", () => {
+test("M8A-AC9：按包内默认规范，顶层须依次是背景、需求、功能、实现、验收二级标题", () => {
   const five = "## 背景 {#background}\n玩家想跑得更快。\n## 需求 {#requirements}\n增加快跑。\n## 功能 {#features}\n### 地面快跑 {#features.sprint}\n按住 Shift 快跑。\n" +
     "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n### 地面快跑 {#acceptance.sprint}\n速度为 1.5 倍。\n";
   const sections = DEFAULT_DOC_SECTIONS;

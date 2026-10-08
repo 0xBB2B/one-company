@@ -309,7 +309,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     scriptReplies(w.provider, [{ type: "text", text: '{"allow":false}' }]);
     await expect(w.call({ ...p, operationId: uuidv7(), requestId: uuidv7(), title: "无关付款" })).rejects.toMatchObject({ code: "draft_interpretation_denied" });
   });
-  test("M8A-AC9：正文不是五大板块时批准被拒，不调用模型、不激活，并写明期望与实际", async () => {
+  test("M8A-AC9：正文顶层标题不符合需求文档规范规定的板块时批准被拒，不调用模型、不激活，并写明期望与实际", async () => {
     const w = await world();
     const created = await w.create("## 手机号登录 {#A}\n增加手机号登录。\n"), { input } = await w.request(created);
     const before = w.provider.requests.length;

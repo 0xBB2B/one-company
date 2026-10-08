@@ -3,7 +3,7 @@ import { uuidv7, repositoryDatabase, readRecord, putRecord, UUID_V7_PATTERN } fr
 import { recordJson, mutateRecord, testRepoId } from "./helpers/database-fixture.ts";
 import type { RecordRef } from "../runtime/database.ts";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 import { RunStore, assertTransition, isTerminalState } from "../runtime/run-store.ts";
@@ -92,7 +92,7 @@ describe("RunStore.create", () => {
     expect(child.parentRunId).toBe(parent.id);
   });
 
-  test("state.json 写入目录权限 0700、文件权限 0600", async () => {
+  test("运行记录所在仓库目录权限 0700、data.db 文件权限 0600", async () => {
     const { store, dataRoot, repoId } = await makeStore();
     const run = await store.create(requirementInput());
     const dir = join(dataRoot, "repos", repoId);
@@ -166,7 +166,7 @@ describe("RunStore.get", () => {
     expect(result).toMatchObject({ ok: false, reason: "not_found" });
   });
 
-  test("文件损坏为非 JSON 时返回 unreadable 而不抛出", async () => {
+  test("运行记录损坏为非 JSON 时返回 unreadable 而不抛出", async () => {
     const { store, dataRoot, repoId } = await makeStore();
     const created = await store.create(requirementInput());
     const path = await statePath(dataRoot, repoId, created.id);
@@ -725,16 +725,12 @@ describe("RunStore.list 排序与容错", () => {
     }
   });
 
-  test("非 UUID 目录与普通文件不当运行，损坏记录阻止列表返回成功", async () => {
+  test("损坏的运行记录阻止列表返回成功，修好后列出全部运行", async () => {
     const { store, dataRoot, repoId } = await makeStore();
     const valid = await store.create(requirementInput());
     const corrupted = await store.create(requirementInput());
     const corruptedPath = await statePath(dataRoot, repoId, corrupted.id);
     putRecord(corruptedPath, "损坏的运行记录");
-
-    const runsDir = join(dataRoot, "repos", repoId, "runs");
-    await mkdir(join(runsDir, "not-a-uuid-dir"), { recursive: true });
-    await writeFile(join(runsDir, "stray-file.txt"), "noop", "utf8");
 
     await expect(store.list({ limit: 100 })).rejects.toThrow(corrupted.id);
     putRecord(corruptedPath, corrupted);
@@ -745,7 +741,7 @@ describe("RunStore.list 排序与容错", () => {
 });
 
 describe("RunStore.create 落盘内容", () => {
-  test("state.json 落盘内容包含 create 输入的全部字段", async () => {
+  test("data.db 里的运行记录包含 create 输入的全部字段", async () => {
     const { store, dataRoot, repoId } = await makeStore();
     const parent = await store.create(requirementInput());
     const input = roleInput(parent.id, {

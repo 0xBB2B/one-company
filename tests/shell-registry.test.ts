@@ -1408,7 +1408,7 @@ describe("守护进程重启后接管", () => {
 });
 
 describe("持久化任务记录接管（macOS 系统签名二进制场景）", () => {
-  test("spawn 后所属运行目录下出现该任务的持久记录，终态后记录被删除", async () => {
+  test("spawn 后 data.db 里出现该任务的持久记录，终态后记录被删除", async () => {
     const base = await makeTempDir();
     const database = join(base, "data.db");
     const host = roleHost("record-owner");
@@ -1566,7 +1566,7 @@ describe("持久化任务记录接管（macOS 系统签名二进制场景）", (
     expect(groupAlive(started.task.pgid)).toBe(true);
   }, LONG_TIMEOUT);
 
-  test("持久记录文件本身损坏（非法 JSON）时接管返回具体原因而不静默丢弃", async () => {
+  test("data.db 里该任务的持久记录内容损坏时接管返回具体原因而不静默丢弃", async () => {
     const base = await makeTempDir();
     const database = join(base, "data.db");
     const host = roleHost("corrupt-owner");

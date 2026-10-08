@@ -165,7 +165,7 @@ describe("README PM 面板事实与 runtime/pm-panel.ts 一致", () => {
     }
   });
 
-  test("说明决策包不是用户决定、只有用户亲手输入的话才算", async () => {
+  test("说明决策包不是用户决定，窗口里选中的固定选项、自己写的话或亲手输入的话才算", async () => {
     const section = extractSection(await readText(README), "PM 面板");
     expect(section).toContain("决策包");
     expect(section).toContain("亲手输入");

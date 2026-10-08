@@ -278,7 +278,7 @@ test("候选ID、hash和提交引用不接受尾部换行或隐藏载荷", async
   expect(() => checkContext({ ...w.context, candidates: [{ ...w.candidate, to: { ...w.candidate.to, commit: w.candidate.to.commit + "\n" } }] })).toThrow();
 });
 
-test("20条及16引用的合法边界写入真实SQLite，保存幂等，新增输入不能继续用旧能力", async () => {
+test("20 条的合法边界写入真实 SQLite，保存幂等，新增输入不能继续用旧能力", async () => {
   const w = await world();
   w.setOutput(result(Array.from({ length: 20 }, () => entry({ references: Array.from({ length: 16 }, (_, i) => `R-${i}`) }))));
   const { capability } = await w.interpret(); const saved = w.core.save(capability);

@@ -61,7 +61,7 @@ function specDocument(expected = "SPEC_SENTINEL") {
   };
 }
 
-async function putValidSpec(root: string): Promise<void> {
+async function putLegacyRulesFile(root: string): Promise<void> {
   await mkdir(join(root, "docs/spec"), { recursive: true });
   await writeFile(join(root, "docs/spec/jump.rules.json"), JSON.stringify(specDocument()));
 }
@@ -137,7 +137,7 @@ test("init接通真实Tree-sitter、遗留规则文件、未知语言、FTS与1�
   ].join("\r\n");
   await put(w.repo.root, "src/中文😀.ts", source);
   await put(w.repo.root, "tools/check.py", "print('UNSUPPORTED_SENTINEL')\n");
-  await putValidSpec(w.repo.root);
+  await putLegacyRulesFile(w.repo.root);
   const secondSpec = specDocument("落地");
   secondSpec.rules[0]!.id = "player.jump.land";
   secondSpec.rules[0]!.condition = "角色正在下落";

@@ -283,7 +283,7 @@ test.each([".git", ".giT", ".gIt", ".gIT", ".Git", ".GiT", ".GIt", ".GIT"].flatM
   expect(gitIoProbe.enumerations).toEqual([]);
 });
 
-test("M2-AC5：没有 docs/spec、本机需求记录或数据库时仍可只建代码文件清单", async () => {
+test("M2-AC5：没有本机需求记录或数据库时仍可只建代码文件清单", async () => {
   const { root, dataRoot } = await fixture();
   await put(root, "main.ts", "export {};\n");
 

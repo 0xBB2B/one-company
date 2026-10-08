@@ -30,7 +30,7 @@ async function initialize(host: Host) {
   return reply;
 }
 function spec(expected: string) {
-  return JSON.stringify({ $schema: "schema.json", schemaVersion: 1, feature: { id: "installed.sync", title: "当前规则", aliases: ["同步"] },
+  return JSON.stringify({ $schema: "schema.json", schemaVersion: 1, feature: { id: "installed.sync", title: "遗留规则文件", aliases: ["同步"] },
     rules: [{ id: "installed.sync.current", title: "当前行为", condition: "已初始化", trigger: "修改文件", expected,
       reason: "核对当前项目", dependsOn: [], exceptions: [], acceptance: [{ id: "current", given: "已初始化", when: "外部修改", then: expected }] }] });
 }

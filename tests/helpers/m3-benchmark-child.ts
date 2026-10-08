@@ -7,7 +7,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getHeapStatistics } from "node:v8";
 import { setTimeout as delay } from "node:timers/promises";
-import { appendSample, gitRun, jsonFile, specText, summarize } from "./m3-benchmark.ts";
+import { appendSample, gitRun, jsonFile, summarize } from "./m3-benchmark.ts";
 import type { ChildJob, Sample } from "./m3-benchmark.ts";
 import type { ProjectIndexService, ProjectIndexBuildResult } from "../../runtime/project-index-service.ts";
 import type { LocalDatabase } from "../../runtime/database.ts";
@@ -117,7 +117,7 @@ async function parserInstrumentation(): Promise<void> {
 function buildMetadata(built: ProjectIndexBuildResult) {
   return { status: built.status, generation: built.generation, parsedFiles: built.parsedFiles, reusedFiles: built.reusedFiles,
     readBytes: built.readBytes, sourceCodepoints: built.sourceCodepoints, files: built.files, symbols: built.symbols,
-    codeEdges: built.codeEdges, diagnostics: built.diagnostics, spec: built.spec, budget: built.budget,
+    codeEdges: built.codeEdges, diagnostics: built.diagnostics, budget: built.budget,
     archiveMetadataCount: built.archives.metadata.length, baselineHash: built.baselineHash };
 }
 async function openIndex() {

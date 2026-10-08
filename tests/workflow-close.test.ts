@@ -17,6 +17,7 @@ import { createWorkflowManageTool } from "../runtime/workflow-manage.ts";
 import type { WorkflowManageGrant, WorkflowManageToolOptions } from "../runtime/workflow-manage.ts";
 import { RequirementCloseService, COMPLETION_REPORTS, DELIVERY_RECEIPTS, decideReportIn } from "../runtime/workflow-close.ts";
 import type { CloseResult, DeliveryReceipt } from "../runtime/workflow-close.ts";
+import { resolveRepositoryRequirementDoc } from "../runtime/requirement-doc.ts";
 import type { RequirementDocSpec } from "../runtime/requirement-doc.ts";
 import { prodRequirementPath } from "../runtime/prod-storage.ts";
 import { syncTargetBranch } from "../runtime/pm-sync.ts";
@@ -26,7 +27,7 @@ import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const sections = (goal: string) => `## 背景 {#background}\n用户未说明。\n## 需求 {#goals}\n${goal}\n## 功能 {#features}\n左右移动。\n` +
+const sections = (goal: string) => `## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n${goal}\n## 功能 {#features}\n左右移动。\n` +
   "## 实现 {#implementation}\n由 PM 规划。\n\n## 验收 {#acceptance}\n按方向键能移动。\n";
 const BODY = sections("保留移动。");
 const BODY_2 = sections("保留移动并增加快跑。");
@@ -41,6 +42,7 @@ async function world(custom: { body: string; docSpec: RequirementDocSpec } | nul
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
   const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId };
+  const docSpec = custom?.docSpec ?? (await resolveRepositoryRequirementDoc(options.dataRoot, repo.root)).spec;
   const grants = new Map<string, { action: string; intent: string; receiptId?: string }>();
   const service = await RequirementService.open({ ...options, authorize: (request) => {
     if (request.repoId !== options.repoId) return false;
@@ -59,7 +61,7 @@ async function world(custom: { body: string; docSpec: RequirementDocSpec } | nul
   async function approve(body: string) {
     const confirm = { requirementId: created.requirementId, operationId: uuidv7(), version: state.read(created.requirementId).version, title: "角色跳跃", body, receiptId: uuidv7() };
     grants.set(confirm.operationId, { action: "confirmUpdate", intent: requirementIntentHash({ title: confirm.title, body }), receiptId: confirm.receiptId });
-    return service.confirmUpdate({ ...confirm, ...(custom ? { docSpec: custom.docSpec } : {}) });
+    return service.confirmUpdate({ ...confirm, docSpec });
   }
   await approve(custom?.body ?? BODY);
   await mkdir(join(worktree.root, "src"), { recursive: true });

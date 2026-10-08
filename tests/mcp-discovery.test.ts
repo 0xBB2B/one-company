@@ -398,7 +398,7 @@ describe("checkMcpCall", () => {
     if (!result.allowed) expect(result.reason).toMatch(/不一致|codegraph/);
   });
 
-  test("子代理对写文件参数的 call 请求拒绝并说明只读限制", () => {
+  test("工具不在可信只读声明里时 call 被拒并说明只读限制（参数为 path）", () => {
     const result = checkMcpCall({
       allowedServers: ["context7"],
       request: { mode: "call", server: "context7", tool: "context7_write", args: { path: "/etc/passwd" } },
@@ -415,7 +415,7 @@ describe("checkMcpCall", () => {
     expect(result.allowed).toBe(true);
   });
 
-  test("子代理对不含敏感键的 call 请求允许通过", () => {
+  test("工具在可信只读声明里时 call 放行（参数为 query）", () => {
     const result = checkMcpCall({
       allowedServers: ["context7"],
       readOnlyTools: ["context7_query"],
@@ -432,7 +432,7 @@ describe("checkMcpCall", () => {
     expect(result.allowed).toBe(false);
   });
 
-  test("子代理对含 output 键的 call 请求拒绝", () => {
+  test("chrome-devtools 的工具不在可信只读声明里时 call 被拒（参数为 output）", () => {
     const result = checkMcpCall({
       allowedServers: ["chrome-devtools"],
       request: { mode: "call", server: "chrome-devtools", tool: "chrome-devtools_run", args: { output: "y" } },
@@ -440,7 +440,7 @@ describe("checkMcpCall", () => {
     expect(result.allowed).toBe(false);
   });
 
-  test("子代理对含 content 键的 call 请求拒绝并说明只读限制", () => {
+  test("工具不在可信只读声明里时 call 被拒并说明只读限制（参数为 content）", () => {
     const result = checkMcpCall({
       allowedServers: ["context7"],
       request: { mode: "call", server: "context7", tool: "context7_write", args: { content: "x" } },
@@ -449,7 +449,7 @@ describe("checkMcpCall", () => {
     if (!result.allowed) expect(result.reason).toContain("只读 MCP 工具");
   });
 
-  test("子代理对同时含 text 与 dest 键的 call 请求拒绝", () => {
+  test("工具不在可信只读声明里时 call 被拒（参数为 text 与 dest）", () => {
     const result = checkMcpCall({
       allowedServers: ["context7"],
       request: { mode: "call", server: "context7", tool: "context7_write", args: { text: "x", dest: "y" } },
@@ -457,7 +457,7 @@ describe("checkMcpCall", () => {
     expect(result.allowed).toBe(false);
   });
 
-  test("子代理对仅含 profile 键的 call 请求放行", () => {
+  test("工具在可信只读声明里时 call 放行（参数为 profile）", () => {
     const result = checkMcpCall({
       allowedServers: ["context7"],
       readOnlyTools: ["context7_read"],
@@ -466,7 +466,7 @@ describe("checkMcpCall", () => {
     expect(result.allowed).toBe(true);
   });
 
-  test("子代理对仅含 filePattern 键的 call 请求放行", () => {
+  test("工具在可信只读声明里时 call 放行（参数为 filePattern）", () => {
     const result = checkMcpCall({
       allowedServers: ["context7"],
       readOnlyTools: ["context7_read"],
@@ -475,7 +475,7 @@ describe("checkMcpCall", () => {
     expect(result.allowed).toBe(true);
   });
 
-  test("子代理对仅含 projectPath 键的 call 请求放行", () => {
+  test("工具在可信只读声明里时 call 放行（参数为 projectPath）", () => {
     const result = checkMcpCall({
       allowedServers: ["context7"],
       readOnlyTools: ["context7_read"],

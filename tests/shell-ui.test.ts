@@ -626,7 +626,7 @@ describe("openShellUiPage：透传宿主 ctx.ui.theme 到页面主题", () => {
     const client = createPollableClient();
     const windowContextValue = createWindowContextValue("window-theme", "repo-theme", client);
 
-    // openShellUiPage 依赖 lifecycle 的共享 dock：本测试自行经 agents-ui 挂载注册，不依赖其他用例的残留状态
+    // openShellUiPage 依赖 lifecycle 的共享 dock：本测试自行经 PM 面板扩展挂载注册，不依赖其他用例的残留状态
     const panelDeps: PmPanelUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
