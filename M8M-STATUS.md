@@ -21,7 +21,7 @@
 | AC3 连续性记录 | 移交 M8N | 实测每个需求 2–4 条连续性记录，扫描条数上限不动；同一段落旧依据重复堆积由 M8N 处理 | 无 |
 | AC4 出处目录编号与接手记录读取不设条数上限 | 通过 | tests/pm-intake-runtime.test.ts 两条「M8M-AC4」先失败后通过（1f5a678、a2e6d2e） | 无 |
 | AC5 清理无引用常量与选项；三处 git 调用补超时 | 通过 | 3813f63；tests/git-timeouts.test.ts（7aa4701） | 无 |
-| AC6 真实模型验收并入 M9-AC2、3、12、13 按 3 轮规则重跑 | 通过 | 2026-10-07 基线 3536dc9 上四项各连续 3 轮通过（证据 .bb-spec/.cache/m9/acceptance-m8n/ 下 progressive、code-error、zero-custom、ui-worker 开头的 2026-10-07T06 至 T09 目录） | 无 |
+| AC6 真实模型验收并入 M9-AC2、3、12、13 重跑 | 通过 | 2026-10-08 基线 158f4fd 上四项各同时跑 3 次全部通过（证据 .bb-spec/.cache/m9/acceptance-158f4fd/） | 无 |
 
 ## 当前阻塞
 
