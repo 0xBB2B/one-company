@@ -63,7 +63,7 @@ export type DocumentReview = Static<typeof DocumentReview>;
 export const PendingQuestion = object({
   format: Type.Literal("interaction-question/v1"), requestId: id, repoId: hash, basis: InteractionBasis,
   candidate: nullable(CandidateBinding), proposal: DecisionItem,
-  actions: Type.Array(InteractionAction, { maxItems: 6, uniqueItems: true }), createdAt: counter,
+  actions: Type.Array(InteractionAction, { maxItems: 5, uniqueItems: true }), createdAt: counter,
   unitIds: Type.Optional(ApprovalUnitIds),
   partition: Type.Optional(ApprovalPartition),
 });
@@ -101,7 +101,7 @@ export const InteractionEntry = object({
   basis: enumeration(["explicit", "delegated", "proposed", "uncertain"]),
   resolution: enumeration(["direct", "accept", "modify", "defer", "unclear"]),
   candidateId: nullable(id), requestId: nullable(id),
-  actions: Type.Array(InteractionAction, { maxItems: 6, uniqueItems: true }),
+  actions: Type.Array(InteractionAction, { maxItems: 5, uniqueItems: true }),
   ...DecisionItem.properties,
 });
 export type InteractionEntry = Static<typeof InteractionEntry>;

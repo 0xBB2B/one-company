@@ -130,8 +130,7 @@ test("M7-AC4/AC13：只有依赖未决问题的任务被阻塞；批准新版本
   w.provider.queue.push({ type: "text", text: "做失败场景", chunkDelayMs: 20_000 });
   await w.dispatch("failure");
   w.provider.queue.push({ type: "text", text: "PM 收到差异" });
-  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败，并提示重试。\n",
-    implementGoals: ["goal.login", "scenario.failure"] });
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败，并提示重试。\n" });
   await w.manager.stop((await w.runStore.list({ limit: 10 })).items.find((run) => run.task === w.task("failure").taskId)!.id, { reason: "main_agent" });
   await expect(w.dispatch("failure", { reason: "中途停止", maxTurns: 2 })).rejects.toMatchObject({ code: "pending_update" });
 });

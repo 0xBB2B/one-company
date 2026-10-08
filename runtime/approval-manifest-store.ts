@@ -4,7 +4,7 @@ import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
 import { ApprovalManifestReferenceSchema, checkRequirement, checked, object, positive, hash, id } from "./requirement-contracts.ts";
 import type { ApprovalSummary, RequirementRecord } from "./requirement-contracts.ts";
-import { ApprovalManifest, approvalDependencyClosure, approvalManifestReference, approvedManifestScope, checkApprovalManifest } from "./approval-manifest.ts";
+import { ApprovalManifest, approvalDependencyClosure, approvalManifestReference, checkApprovalManifest } from "./approval-manifest.ts";
 import type { ApprovalManifestExpected, ApprovalManifestReference } from "./approval-manifest.ts";
 import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
 import { ApprovalPartition } from "./user-interaction-format.ts";
@@ -148,7 +148,6 @@ export interface RegisteredScopeReturnProof {
   reference: ApprovalManifestReference;
   admission: ManifestAdmission;
   summary: ApprovalSummary;
-  allowedScopes: Array<{ action: import("./user-interaction-format.ts").InteractionAction; goalIds: string[]; constraintIds: string[] }>;
 }
 /** 登记结果的窄检查；不要求active、不产生批准或恢复Core行为能力。 */
 export function assertRegisteredScopeReturnIn(db: LocalDatabase, repoId: string, record: StoredRecord<RequirementRecord>, proof: RegisteredScopeReturnProof): void {
@@ -156,8 +155,7 @@ export function assertRegisteredScopeReturnIn(db: LocalDatabase, repoId: string,
   const row = db.read(APPROVAL_MANIFEST_NAMESPACE, proof.reference.manifestHash);
   if (!row) deny("manifest_unregistered");
   const stored = checked(Stored, row.data) as StoredManifest;
-  if (!same(stored.admission, proof.admission) || !same(summarizeApprovalManifest(manifest), proof.summary) ||
-    proof.allowedScopes.some((scope) => !approvedManifestScope(manifest, scope))) deny("manifest_scope_changed");
+  if (!same(stored.admission, proof.admission) || !same(summarizeApprovalManifest(manifest), proof.summary)) deny("manifest_scope_changed");
 }
 
 /** 仅元数据复用data.db；不初始化新后端、不保存正文、不激活prod。 */

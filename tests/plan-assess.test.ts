@@ -48,7 +48,7 @@ async function world() {
 test("M7-AC3/AC4：新增独立功能时原任务经复核保留；复核前门槛阻塞，复核补齐后新任务独立登记", async () => {
   const w = await world();
   const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
-  await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n`, implementGoals: ["goal.login", "scenario.failure", "goal.resend"] });
+  await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n` });
   expect(w.revision().pendingRevision).toBe(w.revision().revision);
   expect(w.gate()).toMatchObject({ allowed: false });
   await expect(w.run({ action: "update", planVersion: 2, add: [spec("resend", "goal.resend")] })).rejects.toMatchObject({ code: "intake_gate" });
@@ -68,7 +68,7 @@ test("M7-AC3：另一章节新增全局输入屏蔽时，原任务段落未改�
   const w = await world();
   const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
   await w.fixture.approveRevision({ body: `${BASE}# 输入屏蔽 {#constraint.input-block}\n菜单打开时屏蔽输入。\n`,
-    units: { "constraint.input-block": { globalConstraint: true } }, implementGoals: ["goal.login", "scenario.failure"] });
+    units: { "constraint.input-block": { globalConstraint: true } } });
   await expect(w.assess([[login, "unaffected"], [failure, "affected"]])).rejects.toMatchObject({ code: "assessment_invalid" });
   const assessed = await w.assess([[login, "affected"], [failure, "affected"]]);
   expect(assessed.tasks.map((task) => task.status)).toEqual(["needs_update", "needs_update"]);
@@ -84,7 +84,7 @@ test("M7-AC12：运行中、已完成、失败任务按 unaffected/affected/unkn
   const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
   w.setStatus(login.taskId, "completed"); w.setStatus(failure.taskId, "running");
   const oldRevision = w.revision().revision;
-  await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n`, implementGoals: ["goal.login", "scenario.failure", "goal.resend"] });
+  await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n` });
   await expect(w.run({ action: "assess-update", revision: oldRevision, assessmentId: uuidv7(),
     tasks: [login, failure].map((task) => ({ taskId: task.taskId, version: task.version, assessment: "unaffected", rationale: "旧" })),
     global: { assessment: "unaffected", rationale: "旧" } })).rejects.toMatchObject({ code: "assessment_invalid" });
@@ -97,7 +97,7 @@ test("M7-AC12：运行中、已完成、失败任务按 unaffected/affected/unkn
   const vLogin = v.byKey(v.first, "login"), vFailure = v.byKey(v.first, "failure");
   v.setStatus(vLogin.taskId, "completed"); v.setStatus(vFailure.taskId, "failed");
   await v.fixture.approveRevision({ body: `${BASE}# 输入屏蔽 {#constraint.input-block}\n菜单打开时屏蔽输入。\n`,
-    units: { "constraint.input-block": { globalConstraint: true } }, implementGoals: ["goal.login", "scenario.failure"] });
+    units: { "constraint.input-block": { globalConstraint: true } } });
   const affected = await v.assess([[vLogin, "affected"], [vFailure, "affected"]]);
   expect(affected.tasks.map((task) => task.status)).toEqual(["needs_update", "needs_update"]);
   expect(v.revision().pendingRevision).toBeNull();
@@ -105,10 +105,10 @@ test("M7-AC12：运行中、已完成、失败任务按 unaffected/affected/unkn
 
 test("M7-AC2：连续加入快跑、跳跃、跳跃动画时各自成为独立任务，原任务不被改写", async () => {
   const w = await world();
-  let body = BASE, goals = ["goal.login", "scenario.failure"], view = w.first;
+  let body = BASE, view = w.first;
   for (const [key, title] of [["goal.sprint", "快跑"], ["goal.jump", "跳跃"], ["goal.jump-anim", "跳跃动画"]]) {
-    body += `# ${title} {#${key}}\n${title}的行为。\n`; goals = [...goals, key];
-    await w.fixture.approveRevision({ body, implementGoals: goals });
+    body += `# ${title} {#${key}}\n${title}的行为。\n`;
+    await w.fixture.approveRevision({ body });
     view = await w.assess(view.tasks.map((task) => [task, "unaffected"]));
     view = await w.run({ action: "update", planVersion: view.plan.planVersion, add: [spec(key, key)] });
     await w.run({ action: "confirm", planVersion: view.plan.planVersion });
@@ -126,7 +126,7 @@ test("M7-AC32：当前批准的正文删掉某段后，以它为目标的任务�
     db.update(TASKS, login.taskId, row.version, { ...row.data, status: "awaiting_parent",
       attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" }] });
   });
-  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n", implementGoals: ["scenario.failure"] });
+  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" });
   await expect(w.assess([[login, "unaffected"], [failure, "unaffected"]])).rejects.toMatchObject({ code: "assessment_invalid" });
   const assessed = await w.assess([[login, "affected"], [failure, "unaffected"]]);
   expect(w.byKey(assessed, "login").status).toBe("needs_update");
@@ -145,7 +145,7 @@ test("M7-AC12：运行中任务被判为受影响后，子代理结局只记入�
   const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
   const runId = uuidv7();
   beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId, retry: null });
-  await w.fixture.approveRevision({ body: BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。"), implementGoals: ["goal.login", "scenario.failure"] });
+  await w.fixture.approveRevision({ body: BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。") });
   const assessed = await w.assess([[{ ...login, version: 1 }, "affected"], [failure, "unaffected"]]);
   expect(w.byKey(assessed, "login").status).toBe("needs_update");
   const finished = finishTaskAttempt({ ...ref, taskId: login.taskId, runId, turnsUsed: 2, outcome: "turn_limit_reached" });
@@ -170,12 +170,12 @@ test("M7-AC30：任务仍有运行中的尝试时不能再次派出，旧版本�
   expect(() => beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: { reason: "改写后重试", maxTurns: 40 } })).not.toThrow();
 });
 
-test("M9：QA 只验实施授权覆盖的验收小节，未验证项指向授权外的章节时拒收并说明原因；授权内章节与非章节引用照常收下", async () => {
+test("M9：QA 只验已确认的实施目标段与验收段，未验证项指向待定段时拒收并说明原因；已确认的实施目标段、验收段与非章节引用照常收下", async () => {
   const { CheckRoundService } = await import("../runtime/check-round.ts");
   const { createVerificationRunTool } = await import("../runtime/verification-run.ts");
   const { createResultSubmitTool } = await import("../runtime/result-submit.ts");
   const w = await world();
-  await w.fixture.approveRevision({ body: BASE, implementGoals: ["goal.login"] });
+  await w.fixture.approveRevision({ body: `${BASE}# 登录验收 {#acceptance.login}\n输入正确验证码后看到首页。\n`, units: { "scenario.failure": { disposition: "pending-description" } } });
   await w.assess([[w.byKey(w.first, "login"), "unaffected"], [w.byKey(w.first, "failure"), "affected"]]);
   for (const task of w.first.tasks) w.setStatus(task.taskId, "completed");
   const { fixture } = w, record = w.revision();
@@ -192,8 +192,9 @@ test("M9：QA 只验实施授权覆盖的验收小节，未验证项指向授权
     verdictBinding: { dataRoot: fixture.dataRoot, requirementId: fixture.requirementId, repoId: fixture.repoId, workspaceId: record.workspace!.workspaceId, epoch: record.epoch } })
     .execute({ action: "verdict", result: { checkRoundId: round.checkRoundId, verificationIds: [formal.verificationId], summary: "验收",
       findings: [{ kind: "unverified", targetRef, evidenceRef: null, trigger: "没有对应测试", impact: "无法确认" }] } }) as { conclusion: string };
-  expect(() => submit("scenario.failure（待定场景）")).toThrow("scenario.failure 不在实施授权内（待定场景或交付流程要求），本轮不验");
+  expect(() => submit("scenario.failure（待定场景）")).toThrow("scenario.failure 不是已确认的实施目标或验收段落（待定、排除或交付流程要求），本轮不验");
   expect(submit("goal.login").conclusion).toBe("unverified");
+  expect(submit("acceptance.login").conclusion).toBe("unverified");
   expect(submit("整体交互").conclusion).toBe("unverified");
 });
 
@@ -206,7 +207,7 @@ test("M9：当前批准的正文删掉已开工任务的某个目标段后，PM 
       attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" }] });
   });
   const login = w.byKey(w.first, "login");
-  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 重发验证码 {#goal.resend}\n可重发。\n", implementGoals: ["scenario.failure", "goal.resend"] });
+  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 重发验证码 {#goal.resend}\n可重发。\n" });
   const assessed = await w.assess([[login, "affected"], [failure, "affected"]]);
   const tried = w.byKey(assessed, "failure");
   const updated = await w.run({ action: "update", planVersion: assessed.plan.planVersion, modify: [{ taskId: tried.taskId, version: tried.version,
@@ -242,7 +243,7 @@ test("M8O-AC3：上一版本下做过尝试的任务被判为受影响后，可�
         attempts: [{ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" }] });
     }
   });
-  await w.fixture.approveRevision({ body: BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。"), implementGoals: ["goal.login", "scenario.failure"] });
+  await w.fixture.approveRevision({ body: BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。") });
   const assessed = await w.assess([[w.byKey(w.first, "login"), "affected"], [w.byKey(w.first, "failure"), "unaffected"]]);
   await expect(w.run({ action: "update", planVersion: assessed.plan.planVersion, add: [spec("failure-again", "scenario.failure")] }))
     .rejects.toMatchObject({ code: "goal_held" });

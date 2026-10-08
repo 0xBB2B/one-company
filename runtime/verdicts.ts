@@ -4,6 +4,7 @@ import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { readCheckRoundIn, readVerificationIn } from "./check-round.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
+import { implementScope } from "./plan-manage.ts";
 import { checked, counter, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 
@@ -39,12 +40,12 @@ export class VerdictError extends Error {
   constructor(code: VerdictErrorCode, detail?: string) { super(detail ? `${code}: ${detail}` : code); this.name = "VerdictError"; this.code = code; this.detail = detail; }
 }
 
-/** QA 只验实施授权覆盖的验收小节：未验证项指向授权外的已知章节时返回这些章节。 */
+/** QA 只验实施目标板块与验收板块下已确认的段落：未验证项指向其他已知段落（待定、排除、交付要求等）时返回这些段落。 */
 function unverifiedOutsideImplement(db: LocalDatabase, repoId: string, row: StoredRecord<RequirementRecord>, findings: readonly Finding[]): string[] {
   if (!row.data.approvalManifest) return [];
   const manifest = registeredApprovalManifestIn(db, repoId, row.data.approvalManifest.reference, row);
   const known = new Set(manifest.units.map((unit) => unit.id));
-  const scope = new Set(manifest.actions.filter((action) => action.action === "implement" && !action.unknown).flatMap((action) => [...action.goalIds, ...action.constraintIds]));
+  const scope = implementScope(manifest, (row.data.docSpec?.sections ?? []).map((section) => section.record === "acceptance" ? { ...section, goal: true as const } : section));
   return [...new Set(findings.filter((finding) => finding.kind === "unverified")
     .map((finding) => /^[A-Za-z0-9_.-]+/u.exec(finding.targetRef)?.[0] ?? "").filter((unit) => known.has(unit) && !scope.has(unit)))];
 }
@@ -83,7 +84,7 @@ export function submitVerdict(binding: VerdictBinding, grant: { role: "worker" |
       if (!round || round.data.repoId !== binding.repoId || round.data.requirementId !== binding.requirementId || round.data.epoch !== binding.epoch) throw new VerdictError("invalid_binding");
       if (round.data.runId === grant.runId) throw new VerdictError("out_of_scope", "PM 自身不能充当独立裁决");
       const outside = unverifiedOutsideImplement(db, binding.repoId, row!, payload.findings);
-      if (outside.length) throw new VerdictError("out_of_scope", `${outside.join("、")} 不在实施授权内（待定场景或交付流程要求），本轮不验：不要列为未验证，删掉或改为建议后重交`);
+      if (outside.length) throw new VerdictError("out_of_scope", `${outside.join("、")} 不是已确认的实施目标或验收段落（待定、排除或交付流程要求），本轮不验：不要列为未验证，删掉或改为建议后重交`);
     }
     for (const verificationId of payload.verificationIds) {
       const run = readVerificationIn(db, verificationId)?.data;

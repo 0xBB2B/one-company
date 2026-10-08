@@ -59,7 +59,7 @@ export interface InteractionAuthorization {
   readonly inputProof?: string;
 }
 const QuestionInput = object({ basis: InteractionBasis, candidate: Type.Union([CandidateBinding, Type.Null()]), proposal: DecisionItem,
-  actions: Type.Array(InteractionAction, { maxItems: 6, uniqueItems: true }), unitIds: Type.Optional(ApprovalUnitIds), partition: Type.Optional(ApprovalPartition) });
+  actions: Type.Array(InteractionAction, { maxItems: 5, uniqueItems: true }), unitIds: Type.Optional(ApprovalUnitIds), partition: Type.Optional(ApprovalPartition) });
 const Input = object({ source: Type.Union([Type.Literal("interactive"), Type.Literal("rpc")]), text: Type.String({ minLength: 1 }) });
 const Session = object({ sessionId: Type.String({ minLength: 1, maxLength: 128 }), windowId: Type.String({ minLength: 1, maxLength: 128 }) });
 const QUESTIONS = "interaction_questions_v1";

@@ -229,8 +229,7 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
     .rejects.toMatchObject({ code: "task_not_ready" });
 
   w.provider.queue.push({ type: "text", text: "PM 恢复" }, { type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
-  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，改用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n",
-    implementGoals: ["goal.login", "scenario.failure"] });
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，改用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" });
   await until(async () => await state(w.pm.runId) === "running", 3_000);
   expect(await state(failureRun.runId)).toBe("paused");
   await expect(w.manager.resume(failureRun.runId)).rejects.toMatchObject({ code: "plan_not_confirmed" });
@@ -268,8 +267,7 @@ test("M7-AC35：调整目标或范围后须等新的批准版本才能按新范�
     spec: spec("login", "goal.stub", { objective: "用测试桩实现登录" }) }] });
   await expect(modify()).rejects.toMatchObject({ code: "task_not_ready" });
 
-  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 测试桩登录 {#goal.stub}\n短信用测试桩。\n",
-    implementGoals: ["goal.stub", "scenario.failure"] });
+  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 测试桩登录 {#goal.stub}\n短信用测试桩。\n" });
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
   await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
@@ -356,8 +354,7 @@ test("M7-AC35：用户先暂停 PM 再终止任务，批准新版本后 PM 同�
   const state = async () => { const run = await w.runStore.get(w.pm.runId); return run.ok ? run.run.state : "missing"; };
   await until(async () => (await w.manager.overviews())[0]!.doing === "等待你调整需求");
   w.provider.queue.push({ type: "text", text: "PM 恢复" }, { type: "text", text: "PM 收到用户决定" }, { type: "text", text: "PM 收到新版本差异" });
-  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n改用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n",
-    implementGoals: ["goal.login", "scenario.failure"] });
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n改用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" });
   await until(async () => await state() === "running");
 });
 

@@ -104,8 +104,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     await session.prompt("A 可以实施", { source: "interactive" });
     const reply = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "one_company_user_interact").at(-1)!;
     expect(reply.isError, JSON.stringify(reply.content)).toBe(false);
-    expect(reply.details).toMatchObject({ targetRecorded: true, prodActivated: true,
-      allowedScopes: [{ action: "implement", goalIds: ["A"], constraintIds: [] }], approvalScope: { summary: { pending: ["B"] } } });
+    expect(reply.details).toMatchObject({ targetRecorded: true, prodActivated: true, approvalScope: { summary: { pending: ["B"] } } });
     const short = withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"));
     expect(short).toHaveLength(4);
     expect(short.some((r) => JSON.stringify(r.data).includes(questionId))).toBe(true);

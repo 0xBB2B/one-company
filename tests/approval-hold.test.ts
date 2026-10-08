@@ -28,7 +28,7 @@ async function approvedWhileRunning(failure: "affected" | "unaffected", options:
     await until(async () => await state(run.runId) === "paused" && await state(w.pm.runId) === "paused");
   }
   w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
-  await w.fixture.approveRevision({ body: BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。"), implementGoals: ["goal.login", "scenario.failure"] });
+  await w.fixture.approveRevision({ body: BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。") });
   if (options.pmPausedFirst) {
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     await w.manager.resume(w.pm.runId);
@@ -83,7 +83,7 @@ async function midway(body: string) {
   const run = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("failure").taskId, retry: null });
   await until(async () => await state(run.runId) === "running" && w.provider.queue.length === 0);
   w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
-  await w.fixture.approveRevision({ body, implementGoals: ["scenario.failure"] });
+  await w.fixture.approveRevision({ body });
   await until(async () => await state(run.runId) === "paused");
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);

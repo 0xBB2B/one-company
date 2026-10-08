@@ -12,12 +12,6 @@ export type RequirementDocSpec = Static<typeof RequirementDocSpecSchema>;
 export type RequirementDocSection = RequirementDocSpec["sections"][number];
 export interface ResolvedRequirementDoc { source: "project" | "user" | "package"; path: string; spec: RequirementDocSpec; body: string }
 
-/** M8C 之前批准的需求没有快照，它们是按这五大板块批准的。 */
-export const DEFAULT_DOC_SECTIONS: readonly RequirementDocSection[] = [
-  { id: "background", title: "背景" }, { id: "requirements", title: "需求" }, { id: "features", title: "功能", goal: true },
-  { id: "implementation", title: "实现", record: "implementation" }, { id: "acceptance", title: "验收", record: "acceptance" },
-];
-
 export class RequirementDocError extends Error {
   readonly code = "requirement_doc_invalid";
 }

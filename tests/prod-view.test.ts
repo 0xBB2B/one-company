@@ -1,8 +1,12 @@
 import { expect, test } from "vitest";
 import { inspectProdStructure, prodSectionsProblem, pageProdText, pageProdResponse, selectProdSection, PROD_RESPONSE_MAX_BYTES, partitionProdDocument } from "../runtime/prod-view.ts";
 import { createProdDocument } from "../runtime/requirement-identity.ts";
-import { DEFAULT_DOC_SECTIONS } from "../runtime/requirement-doc.ts";
+import { resolveRequirementDoc } from "../runtime/requirement-doc.ts";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const packageSections = async () => (await resolveRequirementDoc({ agentDir: join(tmpdir(), `no-agent-${process.pid}-${Date.now()}`), projectTrusted: false })).spec.sections;
 
 /** 自包含的业务示例；结构检查并不证明业务完整或实现通过。 */
 export const MOVEMENT_PROD = `# 角色动作 {#movement}
@@ -124,10 +128,10 @@ test("无ID或混合标题只使用whole-body，空正文只有metadata；重复
   expect(partitionProdDocument(approvalId, "标题", Array.from({ length: 40 }, (_, i) => `# A {#s${i}}\n`).join("")).units).toHaveLength(41);
 });
 
-test("M8A-AC9：按包内默认规范，顶层须依次是背景、需求、功能、实现、验收二级标题", () => {
+test("M8A-AC9：按包内默认规范，顶层须依次是背景、需求、功能、实现、验收二级标题", async () => {
   const five = "## 背景 {#background}\n玩家想跑得更快。\n## 需求 {#requirements}\n增加快跑。\n## 功能 {#features}\n### 地面快跑 {#features.sprint}\n按住 Shift 快跑。\n" +
     "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n### 地面快跑 {#acceptance.sprint}\n速度为 1.5 倍。\n";
-  const sections = DEFAULT_DOC_SECTIONS;
+  const sections = await packageSections();
   expect(prodSectionsProblem(five, sections)).toBeNull();
   expect(prodSectionsProblem("```\n# 围栏里的标题 {#x}\n```\n" + five, sections)).toBeNull();
   expect(prodSectionsProblem(MOVEMENT_PROD, sections)).toContain("当前为 movement、scope、constraints");
@@ -137,11 +141,11 @@ test("M8A-AC9：按包内默认规范，顶层须依次是背景、需求、功�
   expect(prodSectionsProblem("# 总标题 {#top}\n" + five, sections)).toContain("当前为 top");
 });
 
-test("M8C：批准核对按规范的板块清单，且每个标题（含各级小节）都须有唯一编号", () => {
+test("M8C：批准核对按规范的板块清单，且每个标题（含各级小节）都须有唯一编号", async () => {
   const sections = [{ id: "goal", title: "目标" }, { id: "build", title: "实现", record: "implementation" as const }, { id: "check", title: "验收", record: "acceptance" as const }];
   const three = "## 目标 {#goal}\n跑得快。\n### 快跑 {#goal.sprint}\n按 Shift。\n## 实现 {#build}\n由 PM 规划。\n## 验收 {#check}\n### 快跑 {#check.sprint}\n1.5 倍。\n";
   expect(prodSectionsProblem(three, sections)).toBeNull();
-  expect(prodSectionsProblem(three, DEFAULT_DOC_SECTIONS)).toContain("依次为 background、requirements、features、implementation、acceptance，当前为 goal、build、check");
+  expect(prodSectionsProblem(three, await packageSections())).toContain("依次为 background、requirements、features、implementation、acceptance，当前为 goal、build、check");
   expect(prodSectionsProblem(three.replace("### 快跑 {#goal.sprint}", "### 快跑"), sections)).toBe("每个标题都须以唯一编号结尾：「### 快跑」没有编号");
   expect(prodSectionsProblem(three.replace("{#check.sprint}", "{#goal.sprint}"), sections)).toBe("每个标题都须以唯一编号结尾：编号 goal.sprint 重复");
   expect(prodSectionsProblem(three.replace("{#check.sprint}", "{#bad/id}"), sections)).toContain("「### 快跑 {#bad/id}」没有编号");

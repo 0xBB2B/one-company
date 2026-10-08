@@ -373,7 +373,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const created = await w.create(), { input, loaded } = await w.request(created);
     scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
     const result = await w.call({ action: "confirmUpdate", ...input });
-    expect(result).toMatchObject({ targetRecorded: true, prodActivated: true, allowedScopes: [{ action: "analyze", goalIds: ["A"], constraintIds: [] }] });
+    expect(result).toMatchObject({ targetRecorded: true, prodActivated: true });
     expect(result).not.toHaveProperty("blockedBy");
     expect(result.approvalScope).toMatchObject({ summary: { confirmed: ["metadata", "background", "requirements", "A", "D", "features", "implementation", "acceptance"], pending: ["SMS"], excluded: ["B"] } });
     expect(w.provider.requests).toHaveLength(2);
@@ -400,7 +400,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const { input, loaded } = await w.request({ ...created, version: bound.version });
     scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded, "implement")) }]);
     const params = { action: "confirmUpdate", ...input }, result = await w.call(params);
-    expect(result).toMatchObject({ targetRecorded: true, prodActivated: true, lifecycle: "active", allowedScopes: [{ action: "implement", goalIds: ["A"], constraintIds: [] }] });
+    expect(result).toMatchObject({ targetRecorded: true, prodActivated: true, lifecycle: "active" });
     expect(result).not.toHaveProperty("blockedBy");
     expect(result).not.toHaveProperty("unimplemented");
     expect(await w.call(params)).toEqual(result);
@@ -446,7 +446,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     review.entries.splice(5, 1);
     scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }]);
     const result = await w.call({ action: "confirmUpdate", ...input });
-    expect(result).toMatchObject({ targetRecorded: true, prodActivated: false, blockedBy: "candidate_requires_revision_or_clarification", allowedScopes: [] });
+    expect(result).toMatchObject({ targetRecorded: true, prodActivated: false, blockedBy: "candidate_requires_revision_or_clarification" });
     expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("approval_manifests_v1"))).toEqual([]);
     const updated = await w.service.updateDraft({ requirementId: input.requirementId, version: input.version, operationId: uuidv7(), title: "登录", body: BODY + "明确保留邮箱登录。\n" });
     await expect(w.call({ action: "confirmUpdate", requirementId: input.requirementId, version: updated.version, savedOperationId: updated.operationId, operationId: uuidv7() })).rejects.toThrow();

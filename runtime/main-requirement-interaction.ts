@@ -614,7 +614,7 @@ export class MainRequirementInteraction {
       this.#capability = undefined; this.#interpretation = undefined;
       return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
         version: loaded.version, epoch: loaded.epoch, targetRecorded: false, prodActivated: false, decisionIds: [], blockedBy: "candidate_requires_revision_or_clarification",
-        blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, []), allowedScopes: [] });
+        blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, []) });
     }
     const saved = core.save(capability);
     const decisionProofs = this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId);
@@ -624,7 +624,7 @@ export class MainRequirementInteraction {
     const base = { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
       version: loaded.version, epoch: loaded.epoch, targetRecorded, prodActivated: false, decisionIds: saved.decisionIds };
     if (!document) return this.#prove(ctx, request.repoId, { ...base, blockedBy: "candidate_requires_revision_or_clarification",
-      blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, saved.decisionIds), allowedScopes: [] }, undefined, decisionProofs);
+      blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, saved.decisionIds) }, undefined, decisionProofs);
     const reference = approvalManifestReference(document.manifest);
     const authorizeManifest: NonNullable<RequirementServiceOptions["authorizeManifest"]> = (r) => {
       const current = core.authorizeDocument(capability, loaded);
@@ -638,16 +638,12 @@ export class MainRequirementInteraction {
       admit: (r) => { const current = core.authorizeDocument(capability, loaded);
         return current && same(r.reference, approvalManifestReference(current.manifest))
           ? { receiptId: current.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: current.authorization.inputProof } : null; } });
-    const allowedScopes = document.manifest.actions.flatMap((action) => {
-      const scope = { action: action.action, goalIds: action.goalIds, constraintIds: action.constraintIds };
-      return core.authorizeScope(capability, loaded, scope) ? [scope] : [];
-    });
     const summary = summarizeApprovalManifest(document.manifest);
     await store.register(document.manifest);
-    const registered: ResultScope = { kind: "registered", proof: { reference, admission: { receiptId: document.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: document.authorization.inputProof }, summary, allowedScopes } };
-    if (!targetRecorded) return this.#prove(ctx, request.repoId, { ...base, allowedScopes,
+    const registered: ResultScope = { kind: "registered", proof: { reference, admission: { receiptId: document.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: document.authorization.inputProof }, summary } };
+    if (!targetRecorded) return this.#prove(ctx, request.repoId, { ...base,
       scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "explicit_target_required" }, registered, decisionProofs);
-    if (input.fromQuestionWindow) return this.#prove(ctx, request.repoId, { ...base, allowedScopes,
+    if (input.fromQuestionWindow) return this.#prove(ctx, request.repoId, { ...base,
       scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "window_answer_not_decision" }, registered, decisionProofs);
     const receiptId = document.authorization.receiptId;
     const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "confirmUpdate" &&
@@ -656,7 +652,7 @@ export class MainRequirementInteraction {
     const receipt = await service.confirmUpdate({ requirementId: request.requirementId, operationId: request.operationId, version: loaded.version,
       title: loaded.title, body: loaded.body, receiptId, manifest: reference, docSpec });
     // 这些只是该次决定的元数据，不是可转交worker的能力；激活不启动PM。
-    return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prodActivated: true, allowedScopes },
+    return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prodActivated: true },
       { kind: "approved", scope: { status: "available", summary } }, decisionProofs);
   }
   async ask(ctx: ExtensionContext, request: ConfirmationRequest & AskQuestion & { scope: string; unitIds: string[]; actions: InteractionAction[] }, signal?: AbortSignal) {

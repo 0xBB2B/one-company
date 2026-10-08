@@ -11,7 +11,7 @@ import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
 import { readVersion } from "./prod-storage.ts";
 import { sectionEndByte } from "./prod-view.ts";
-import { DEFAULT_DOC_SECTIONS, recordSectionIds } from "./requirement-doc.ts";
+import { recordSectionIds } from "./requirement-doc.ts";
 import { checked, counter, hash, id, object, positive, requirementStateWhy } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
@@ -48,7 +48,7 @@ const Archive = object({ path: Type.String({ minLength: 1, maxLength: 1024 }), p
 export const CloseOperation = object({
   format: Type.Literal("close-operation/v1"), requirementId: id, repoId: hash, operationId: id, receiptId: id, reason: CloseReason, basis: Basis,
   status: Type.Union([Type.Literal("closing"), Type.Literal("closed")]),
-  steps: object({ agentsStopped: Type.Boolean(), entriesCleared: Type.Boolean(), closed: Type.Boolean() }),
+  steps: object({ agentsStopped: Type.Boolean(), closed: Type.Boolean() }),
   archive: nullable(Archive), createdAt: counter, updatedAt: counter,
 });
 export type CloseOperation = Static<typeof CloseOperation>;
@@ -504,7 +504,7 @@ export class RequirementCloseService {
           const now = this.now();
           this.saveOperation(db, this.operation(db, request.requirementId), { format: "close-operation/v1", requirementId: request.requirementId, repoId: this.options.repoId,
             operationId: request.operationId, receiptId: request.receiptId, reason: request.reason, basis, status: "closing",
-            steps: { agentsStopped: false, entriesCleared: false, closed: false },
+            steps: { agentsStopped: false, closed: false },
             archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, records: { implementation: implementationRecord(readPlanIn(db, request.requirementId)?.tasks ?? [], acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId)!),
               acceptance: acceptanceRecord(facts) },
               archiveHash: null, status: "pending", attempts: 0, lastError: null } : null,
@@ -537,7 +537,7 @@ export class RequirementCloseService {
       if (owner?.lease) blockers.push("pm_lease_active");
       if (blockers.length === 0 && !current.data.steps.agentsStopped) {
         endRequirementExploreSessionsIn(db, this.options.repoId, requirementId, "requirement_closed");
-        this.saveOperation(db, current, { ...current.data, steps: { ...current.data.steps, agentsStopped: true, entriesCleared: true } });
+        this.saveOperation(db, current, { ...current.data, steps: { ...current.data.steps, agentsStopped: true } });
       }
       return blockers;
     }));
@@ -597,7 +597,8 @@ export class RequirementCloseService {
         expectedRepositoryIdentity: identity, commit: archive.commit, expectedHash: `sha256:${archive.prodHash}`,
         authorize: (check) => check.requirementId === requirementId && check.action === "readVersion" && (check.prodHash === undefined || check.prodHash === `sha256:${archive.prodHash}`) })).bytes;
       if (sha256(Buffer.from(bytes)) !== archive.prodHash) throw new Error("final_prod_hash_mismatch");
-      const content = archiveBytes(bytes, archive.records, recordSectionIds(record.data.docSpec?.sections ?? DEFAULT_DOC_SECTIONS));
+      if (!record.data.docSpec) throw new Error("archive_sections_missing");
+      const content = archiveBytes(bytes, archive.records, recordSectionIds(record.data.docSpec.sections));
       if (!content) throw new Error("archive_sections_missing");
       const archiveHash = sha256(content);
       const root = await realpath(workspace.path);

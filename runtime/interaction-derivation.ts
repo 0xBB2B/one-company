@@ -78,7 +78,7 @@ export function deriveInterpretation(source: string, context: InteractionContext
     return { id, disposition, globalConstraint: h?.globalConstraint ?? false, appliesTo: h?.appliesTo ?? [], dependsOn: h?.dependsOn ?? [],
       conclusionIndexes: indexes, ...(retainedFactIds ? { retainedFactIds } : {}) };
   });
-  // 沿用的原依据是用户以前确认的目标时，同样可作本轮明确实施动作的目标；动作许可仍只来自本轮条目
+  // 沿用的原依据是用户以前确认的目标时，同样可列入本轮动作的范围；动作许可仍只来自本轮条目
   const retainedTarget = (u: (typeof units)[number]) => (u.retainedFactIds ?? []).some((id) =>
     context.retainedEvidence?.some((e) => e.fact.id === id && e.unitId === u.id && e.kind === "target"));
   const goalUnits = new Set(units.filter((u) => u.id !== "metadata" && (u.conclusionIndexes.some((i) => entries[i]!.kind === "target" && explicit(entries[i]!)) || retainedTarget(u))).map((u) => u.id));
@@ -86,7 +86,7 @@ export function deriveInterpretation(source: string, context: InteractionContext
   const scopes = new Map<string, DocumentReview["actions"][number]>();
   entries.forEach((e, i) => {
     if (e.kind !== "action") return;
-    // 用户确认的一条目标是整体：动作列了其中一段就覆盖整条，模型漏列同条目标里的其他段（如对应验收小节）不收窄授权
+    // 用户确认的一条目标是整体：动作列了其中一段就覆盖整条，模型漏列同条目标里的其他段（如对应验收小节）不收窄动作范围
     const listed = unitIds[i]!.filter((id) => goalUnits.has(id));
     const goalIds = [...new Set([...listed, ...targetGroups.filter((group) => group.some((id) => listed.includes(id))).flat()])].sort();
     if (!goalIds.length) return;

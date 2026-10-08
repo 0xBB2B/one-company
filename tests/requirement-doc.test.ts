@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "vitest";
-import { DEFAULT_DOC_SECTIONS, packageSkillsDir, recordSectionIds, resolveRequirementDoc } from "../runtime/requirement-doc.ts";
+import { packageSkillsDir, recordSectionIds, resolveRequirementDoc } from "../runtime/requirement-doc.ts";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -29,9 +29,8 @@ test("M8C-AC1：零自定义时用包内默认 skill，板块清单就是 M8A �
   expect(doc.source).toBe("package");
   expect(doc.path).toBe(path);
   expect(doc.spec.skillHash).toBe(sha(await readFile(path, "utf8")));
-  expect(doc.spec.sections).toEqual(DEFAULT_DOC_SECTIONS);
-  expect(DEFAULT_DOC_SECTIONS.map((s) => s.id)).toEqual(["background", "requirements", "features", "implementation", "acceptance"]);
-  expect(DEFAULT_DOC_SECTIONS.filter((s) => s.goal).map((s) => s.id)).toEqual(["features"]);
+  expect(doc.spec.sections.map((s) => s.id)).toEqual(["background", "requirements", "features", "implementation", "acceptance"]);
+  expect(doc.spec.sections.filter((s) => s.goal).map((s) => s.id)).toEqual(["features"]);
   expect(recordSectionIds(doc.spec.sections)).toEqual({ implementation: "implementation", acceptance: "acceptance" });
   expect(doc.body).toContain("由 PM 规划");
   expect(doc.body).toMatch(/未决问题写成本板块下单独的三级小节[\s\S]*\{#requirements\.open\}[\s\S]*不和已确定的要求写在同一段/u);

@@ -24,7 +24,6 @@ test("真实连续决定保留A、修改B后，接手覆盖retained实际决定�
   expect(fixture.manifest.units.find((unit) => unit.id === "goal.login")!.decisionIds).toContain(retained!.decision.id);
   const view = await fixture.intake.openRequest(fixture.call, fixture.operationId());
   expect(view.sourceDirectory.decisionIds).toContain(retained!.decision.id);
-  expect(fixture.manifest.actions[0]!.goalIds).toEqual(["scenario.failure"]);
   expect(() => fixture.intake.assertResultCurrent(fixture.call, view)).not.toThrow();
   const approved = await fixture.service.read({ requirementId: fixture.requirementId, source: "approved" });
   const invalid = structuredClone(fixture.manifest);

@@ -154,9 +154,9 @@ export interface PmIntakeFixture {
   newCall(patch?: Partial<MainIntakeCallIdentity>): MainIntakeCall;
   makeIntake(options?: Partial<Pick<PmIntakeServiceOptions, "requirementService" | "now" | "sourceDirectoryProvider" | "submissionProvider">>): PmIntakeService;
   captureCurrent(): ReturnType<PmIntakeStore["captureCurrent"]>;
-  /** 按真实交互与清单登记流程批准一个新版本；units 覆盖各章节的全局约束与依赖，implementGoals 为本次实施授权的目标章节。 */
-  approveRevision(input: { body: string; units?: Record<string, { globalConstraint?: boolean; appliesTo?: string[]; dependsOn?: string[] }>;
-    implementGoals: string[] }): Promise<void>;
+  /** 按真实交互与清单登记流程批准一个新版本；units 覆盖各章节的全局约束、依赖与待定，实施动作列出实施目标板块下全部已确认的段落。 */
+  approveRevision(input: { body: string; units?: Record<string, { globalConstraint?: boolean; appliesTo?: string[]; dependsOn?: string[];
+    disposition?: "pending-description" }> }): Promise<void>;
   setNow(value: number): void;
   advanceNow(value: number): void;
   cleanup(): Promise<void>;
@@ -200,7 +200,12 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
   await state.bindWorkspace({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
   let confirmOperationId = uuidv7(), useRetained = false;
-  let revisionPlan: { units: Record<string, { globalConstraint?: boolean; appliesTo?: string[]; dependsOn?: string[] }>; implementGoals: string[] } | undefined;
+  let revisionPlan: { units: Record<string, { globalConstraint?: boolean; appliesTo?: string[]; dependsOn?: string[]; disposition?: "pending-description" }> } | undefined;
+  // 夹具正文用 goal 与 scenario 两个板块，批准并授权实施时这两个板块下已确认的段落都是实施目标
+  const docSpec = { skillHash: `sha256:${"f".repeat(64)}`, sections: [{ id: "goal", title: "目标", goal: true as const },
+    { id: "scenario", title: "场景", goal: true as const }, { id: "implementation", title: "实现", record: "implementation" as const },
+    { id: "acceptance", title: "验收", record: "acceptance" as const }] };
+  const goalSections = docSpec.sections.filter((section) => "goal" in section).map((section) => section.id);
   const load = () => service.loadConfirmationContext({ requirementId: saved.requirementId, savedOperationId: saved.operationId, operationId: confirmOperationId });
   let context = await load();
   const core = await UserInteractionCore.open({ ...config, now: () => now, authorize: () => true, authorizeAction: () => true,
@@ -219,16 +224,18 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
         if (revisionPlan) {
           const plan = revisionPlan;
           const units = current.document!.partition.units.map((unit) => unit.id);
-          const entries = units.map((unitId) => ({ ...common, kind: unitId === "metadata" || plan.units[unitId]?.globalConstraint ? "constraint" : "target",
-            conclusion: `确认章节 ${unitId}` }));
+          const pending = (unitId: string) => plan.units[unitId]?.disposition === "pending-description";
+          const entries = units.map((unitId) => pending(unitId) ? { ...common, kind: "unresolved", basis: "uncertain", resolution: "defer", conclusion: `待定章节 ${unitId}` }
+            : { ...common, kind: unitId === "metadata" || plan.units[unitId]?.globalConstraint ? "constraint" : "target", conclusion: `确认章节 ${unitId}` });
           entries.push({ ...common, kind: "action", actions: ["implement"], conclusion: "允许实施本次目标" } as never);
+          const goalIds = units.filter((unitId) => !pending(unitId) && goalSections.some((goal) => unitId === goal || unitId.startsWith(`${goal}.`)));
           return JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries, documentReview: { faithful: true,
-            units: units.map((unitId, index) => ({ id: unitId, disposition: "confirmed", globalConstraint: plan.units[unitId]?.globalConstraint ?? false,
+            units: units.map((unitId, index) => ({ id: unitId, disposition: pending(unitId) ? "pending-description" : "confirmed", globalConstraint: plan.units[unitId]?.globalConstraint ?? false,
               appliesTo: plan.units[unitId]?.appliesTo ?? [], dependsOn: plan.units[unitId]?.dependsOn ?? [], conclusionIndexes: [index] })),
-            actions: [{ action: "implement", goalIds: plan.implementGoals, conclusionIndexes: [units.length], unknown: false,
+            actions: [{ action: "implement", goalIds, conclusionIndexes: [units.length], unknown: false,
               constraintIds: approvalDependencyClosure(units.map((unitId) => ({ id: unitId, dependsOn: plan.units[unitId]?.dependsOn ?? [],
-                globalConstraint: plan.units[unitId]?.globalConstraint ?? false, appliesTo: plan.units[unitId]?.appliesTo ?? [] })), plan.implementGoals)
-                .filter((unitId) => !plan.implementGoals.includes(unitId)) }], questions: [] } });
+                globalConstraint: plan.units[unitId]?.globalConstraint ?? false, appliesTo: plan.units[unitId]?.appliesTo ?? [] })), goalIds)
+                .filter((unitId) => !goalIds.includes(unitId)) }], questions: [] } });
         }
         if (useRetained) {
           const evidence = current.retainedEvidence?.find((entry) => entry.unitId === "goal.login");
@@ -236,12 +243,12 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
           return JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries: [
             { ...common, kind: "constraint", conclusion: "需求身份元数据" },
             { ...common, kind: "target", conclusion: "错误验证码失败时提示重试" },
-            { ...common, kind: "action", actions: ["implement"], conclusion: "仅实施验证码失败场景" },
+            { ...common, kind: "action", actions: ["implement"], conclusion: "允许实施手机号目标" },
           ], documentReview: { faithful: true,
             units: current.document!.partition.units.map((unit) => ({ id: unit.id, disposition: "confirmed", globalConstraint: false,
               appliesTo: [], dependsOn: [], conclusionIndexes: unit.id === "goal.login" ? [] : [unit.id === "metadata" ? 0 : 1],
               ...(unit.id === "goal.login" ? { retainedFactIds: [evidence.fact.id] } : {}) })),
-            actions: [{ action: "implement", goalIds: ["scenario.failure"], constraintIds: [], conclusionIndexes: [2], unknown: false }], questions: [] } });
+            actions: [{ action: "implement", goalIds: ["goal.login", "scenario.failure"], constraintIds: [], conclusionIndexes: [2], unknown: false }], questions: [] } });
         }
         return JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries: [
           { ...common, kind: "constraint", conclusion: "需求身份元数据" },
@@ -264,7 +271,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
     saved = await service.updateDraft({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
       operationId: uuidv7(), title, body: body.replace("错误验证码显示失败。", "错误验证码显示失败并提示重试。") });
     confirmOperationId = uuidv7(); context = await load(); useRetained = true;
-    interpreted = await core.interpret(core.captureInput({ source: "interactive", text: "确认需求身份；正常登录保留，修改验证码失败提示并仅实施失败场景。" }, "fixture-core"), saved.requirementId);
+    interpreted = await core.interpret(core.captureInput({ source: "interactive", text: "确认需求身份；正常登录保留，修改验证码失败提示并允许实施。" }, "fixture-core"), saved.requirementId);
     decisions = core.save(interpreted.capability);
   }
   const document = () => core.authorizeDocument(interpreted.capability, { basis: context.basis, candidate: context.candidate });
@@ -284,10 +291,6 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
     return Boolean(current && request.receiptId === current.authorization.receiptId &&
       decisionDigest(request.manifest) === decisionDigest(approvalManifestReference(current.manifest)));
   } });
-  // 夹具正文用 goal 与 scenario 两个板块，批准并授权实施时这两个板块下已确认的段落都是实施目标
-  const docSpec = { skillHash: `sha256:${"f".repeat(64)}`, sections: [{ id: "goal", title: "目标", goal: true as const },
-    { id: "scenario", title: "场景", goal: true as const }, { id: "implementation", title: "实现", record: "implementation" as const },
-    { id: "acceptance", title: "验收", record: "acceptance" as const }] };
   const approved = await approver.confirmUpdate({ requirementId: saved.requirementId, operationId: confirmOperationId, version: context.version,
     title: context.title, body: context.body, receiptId: authorized.authorization.receiptId, manifest: approvalManifestReference(authorized.manifest), docSpec });
   const lease = await state.acquirePm({ requirementId: saved.requirementId, version: approved.version, runId: uuidv7(), expectedFence: 0 });
@@ -306,7 +309,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
   const callIdentity = calls.get(call)!;
   const sourceProvider = new FixtureSourceProvider();
   const actionDecisionId = authorized.manifest.actions[0]!.decisionIds.find((id) => decisions.decisionIds.includes(id))!;
-  const submissionProvider = new FixtureSubmissionProvider(actionDecisionId, options.retained ? "仅实施验证码失败场景" : "允许实施手机号目标");
+  const submissionProvider = new FixtureSubmissionProvider(actionDecisionId, "允许实施手机号目标");
   // 自定义正文多出的章节同样要在 PM 理解里标为已覆盖，接手核对才会通过
   const extraSections = [...body.matchAll(/\{#([^{}]+)\}/g)].map((match) => match[1]!).filter((id) => id !== "goal.login" && id !== "scenario.failure");
   if (extraSections.length) submissionProvider.mutate = (understanding) => {
@@ -340,7 +343,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
       saved = await service.updateDraft({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
         operationId: uuidv7(), title, body: input.body });
       confirmOperationId = uuidv7(); context = await load();
-      revisionPlan = { units: input.units ?? {}, implementGoals: input.implementGoals };
+      revisionPlan = { units: input.units ?? {} };
       try {
         interpreted = await core.interpret(core.captureInput({ source: "interactive", text: "确认本次修改并允许实施。" }, "fixture-core"), saved.requirementId);
         decisions = core.save(interpreted.capability);

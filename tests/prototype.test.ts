@@ -225,8 +225,7 @@ test("M8E-AC3：交过原型的任务修改后仍是界面任务，没做过原�
     cancel: [{ taskId: w.task("hud").taskId, version: w.task("hud").version }] });
   await expect(cancel()).rejects.toMatchObject({ code: "task_not_ready", detail: ["hud 已交过原型，须等用户批准新的需求版本后才能取消"] });
   expect(w.task("hud").status).toBe("pending");
-  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，不要状态面板。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n",
-    implementGoals: ["goal.login", "scenario.failure"] });
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，不要状态面板。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" });
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
   await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: ["hud", "other"].map((key) => ({ taskId: w.task(key).taskId, version: w.task(key).version,

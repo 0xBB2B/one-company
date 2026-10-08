@@ -16,7 +16,7 @@ import type { AskChoice } from "./ask-question.ts";
 const id = Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", minLength: 36, maxLength: 36 });
 const base = { repoId: Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 }), requirementId: id,
   savedOperationId: id, operationId: id, version: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) };
-const actions = Type.Array(StringEnum(["analyze", "plan", "implement", "commit", "push"] as const), { uniqueItems: true, maxItems: 6 });
+const actions = Type.Array(StringEnum(["analyze", "plan", "implement", "commit", "push"] as const), { uniqueItems: true, maxItems: 5 });
 const question = Type.String({ minLength: 1, maxLength: 400 });
 const confirmationPurpose = Type.Optional(Type.Literal("user-confirmation"));
 const schemas = {

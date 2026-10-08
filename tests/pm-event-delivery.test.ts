@@ -17,11 +17,11 @@ const text = (request: Context) => JSON.stringify(request.messages.at(-1) ?? "")
 
 async function world(options: { review?: boolean } = {}) {
   const w = await createPmRunWorld(cleanups, options);
-  let body = BASE, goals = ["goal.login", "scenario.failure"];
+  let body = BASE;
   async function approve(key: string, approveOptions: { replace?: boolean } = {}) {
-    if (approveOptions.replace) body = `${BASE}# 附加 {#goal.extra}\n${key} 的行为。\n`, goals = ["goal.login", "scenario.failure", "goal.extra"];
-    else body += `# ${key} {#goal.${key}}\n${key} 的行为。\n`, goals = [...goals, `goal.${key}`];
-    await w.fixture.approveRevision({ body, implementGoals: goals });
+    if (approveOptions.replace) body = `${BASE}# 附加 {#goal.extra}\n${key} 的行为。\n`;
+    else body += `# ${key} {#goal.${key}}\n${key} 的行为。\n`;
+    await w.fixture.approveRevision({ body });
     return w.fixture.state.read(w.fixture.requirementId).data.revision;
   }
   const diffPrompts = () => w.provider.requests.filter((request) => text(request).includes("已批准更新：revision"));
