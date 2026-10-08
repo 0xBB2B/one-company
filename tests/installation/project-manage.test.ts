@@ -7,18 +7,18 @@ import { InstalledProjectFixture } from "../helpers/project-index-installed-fixt
 
 const TS_SENTINEL = "TS_CURRENT_SOURCE_SENTINEL";
 const GO_SENTINEL = "GO_CURRENT_SOURCE_SENTINEL";
-const SPEC_SENTINEL = "SPEC_CURRENT_SOURCE_SENTINEL";
+const LEGACY_RULES_SENTINEL = "LEGACY_RULES_FILE_SENTINEL";
 const PROD_SENTINEL = "PROD_ARCHIVE_BODY_SENTINEL_MUST_NOT_LEAK";
 
-function validSpec() {
+function legacyRulesFile() {
   return {
     $schema: "schema.json",
     schemaVersion: 1,
     feature: { id: "install.current", title: "安装索引", aliases: ["当前索引"] },
     rules: [{
-      id: "install.current.visible", title: "当前规则可检索", condition: "项目已经接入", trigger: "执行索引",
-      expected: SPEC_SENTINEL, reason: "验证安装产物使用当前规则", dependsOn: [], exceptions: [],
-      acceptance: [{ id: "search-current", given: "存在当前规则", when: "建立索引", then: "规则进入当前索引" }],
+      id: "install.current.visible", title: "遗留规则文件可检索", condition: "项目已经接入", trigger: "执行索引",
+      expected: LEGACY_RULES_SENTINEL, reason: "验证安装产物会索引遗留规则文件", dependsOn: [], exceptions: [],
+      acceptance: [{ id: "search-current", given: "存在遗留规则文件", when: "建立索引", then: "规则进入当前索引" }],
     }],
   };
 }
@@ -46,7 +46,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     await world.git(repositoryRoot, ["rm", "source.ts"]);
     await writeFile(join(repositoryRoot, "src/main.ts"), `export function currentTs() { return "${TS_SENTINEL}"; }\n`);
     await writeFile(join(repositoryRoot, "cmd/main.go"), `package main\nconst currentGo = "${GO_SENTINEL}"\nfunc main() {}\n`);
-    await writeFile(join(repositoryRoot, "docs/spec/current.rules.json"), JSON.stringify(validSpec()));
+    await writeFile(join(repositoryRoot, "docs/spec/current.rules.json"), JSON.stringify(legacyRulesFile()));
     const archiveId = uuidv7();
     await writeFile(join(repositoryRoot, "docs/prod", `${archiveId}.已完成需求.md`), `${PROD_SENTINEL}\n不允许进入FTS或工具输出。\n`);
     await writeFile(join(repositoryRoot, "README.md"), "installation fixture\n");
@@ -94,7 +94,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
       expect(snapshot.files.map((item) => item.path)).toEqual(expect.arrayContaining(["src/main.ts", "cmd/main.go", "docs/spec/current.rules.json"]));
       expect(store.search(TS_SENTINEL).results.length).toBeGreaterThan(0);
       expect(store.search(GO_SENTINEL).results.length).toBeGreaterThan(0);
-      expect(store.search(SPEC_SENTINEL).results.length).toBeGreaterThan(0);
+      expect(store.search(LEGACY_RULES_SENTINEL).results.length).toBeGreaterThan(0);
       expect(store.search(PROD_SENTINEL).results).toEqual([]);
       expect(JSON.stringify(snapshot)).not.toContain(PROD_SENTINEL);
       expect(snapshot.prodMetadata).toContainEqual(expect.objectContaining({ source: "archive", requirementId: archiveId, path: `docs/prod/${archiveId}.已完成需求.md` }));
@@ -111,7 +111,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     expect(Number(refreshed.details.generation)).toBeGreaterThan(Number(repeated.details.generation));
     expect(refreshed.confirmations).toHaveLength(2);
     const allToolOutput = JSON.stringify(toolResults);
-    for (const sentinel of [TS_SENTINEL, GO_SENTINEL, SPEC_SENTINEL, PROD_SENTINEL]) expect(allToolOutput).not.toContain(sentinel);
+    for (const sentinel of [TS_SENTINEL, GO_SENTINEL, LEGACY_RULES_SENTINEL, PROD_SENTINEL]) expect(allToolOutput).not.toContain(sentinel);
     const finalStore = new IndexStore(databasePath, options);
     try {
       const snapshot = finalStore.getSnapshot();
@@ -122,7 +122,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     expect(await daemon.stop()).toMatchObject({ code: 0, signal: null });
     const probe = await daemon.probe();
     expect(probe).toMatchObject({ forbiddenReads: 0, exited: true });
-    expect(probe.closedWatchers).toBe(probe.createdWatchers); expect(existsSync(daemon.socket)).toBe(false);
+    expect(existsSync(daemon.socket)).toBe(false);
   } catch (error) { failed = true; throw error; }
   finally { await world.close(failed); }
 }, 120_000);

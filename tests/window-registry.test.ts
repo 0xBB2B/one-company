@@ -2,9 +2,9 @@ import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { uuidv7, readRecord, putRecord, withDatabase } from "../runtime/database.ts";
 import { afterEach, describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { createClock } from "../runtime/clock.ts";
 import { WindowRegistry, currentBootId, processStartedAt, startHeartbeat } from "../runtime/windows.ts";
 
@@ -71,7 +71,6 @@ const repoDirs: string[] = [];
 
 afterEach(async () => {
   for (const dir of repoDirs.splice(0)) {
-    await chmod(join(dir, "windows"), 0o700).catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -139,37 +138,6 @@ function flushIO(ms = 20): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function readIfExists(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-async function listDirIfExists(path: string): Promise<string[]> {
-  try {
-    return await readdir(path);
-  } catch {
-    return [];
-  }
-}
-
-async function makeSentinel(
-  repoDir: string,
-  content: string | ((maliciousWindowId: string) => string),
-): Promise<{ sentinelPath: string; maliciousWindowId: string }> {
-  const sentinelDir = await mkdtemp(join(tmpdir(), "window-registry-sentinel-"));
-  repoDirs.push(sentinelDir);
-  const sentinelPath = join(sentinelDir, "sentinel.json");
-  const windowsDir = join(repoDir, "windows");
-  const relPath = relative(windowsDir, sentinelPath);
-  const maliciousWindowId = relPath.slice(0, -".json".length);
-  const resolvedContent = typeof content === "function" ? content(maliciousWindowId) : content;
-  await writeFile(sentinelPath, resolvedContent, "utf8");
-  return { sentinelPath, maliciousWindowId };
-}
-
 function windowRef(repoDir: string, windowId: string) {
   return { database: join(repoDir, "data.db"), namespace: "windows", key: windowId };
 }
@@ -181,7 +149,7 @@ function windowJson(repoDir: string, windowId: string): string {
 }
 
 describe("WindowRegistry.register", () => {
-  test("登记原子写入 windows/<windowId>.json 且返回窗口标识", async () => {
+  test("登记写入 data.db 的 windows 记录且返回窗口标识", async () => {
     const { registry, repoDir } = await makeRegistry();
     const windowId = await registry.register(
       windowInput({ sessionId: "sess-1", cwd: "/repo/a", workspaceRoot: "/repo" }),
@@ -223,8 +191,7 @@ describe("WindowRegistry.register", () => {
     }
     expect(caught).toBeInstanceOf(Error);
 
-    const entries = await listDirIfExists(join(repoDir, "windows"));
-    expect(entries.length).toBe(0);
+    expect(await registry.list()).toEqual([]);
   });
 
   test("windowId 由调用方传入，返回值与记录中的 windowId 均等于传入值", async () => {
@@ -239,7 +206,7 @@ describe("WindowRegistry.register", () => {
   });
 
   test("缺少 windowId 时拒绝登记且不写入记录", async () => {
-    const { registry, repoDir } = await makeRegistry();
+    const { registry } = await makeRegistry();
     const input = windowInput() as Record<string, unknown>;
     delete input.windowId;
 
@@ -251,12 +218,11 @@ describe("WindowRegistry.register", () => {
     }
     expect(caught).toBeInstanceOf(Error);
 
-    const entries = await listDirIfExists(join(repoDir, "windows"));
-    expect(entries.length).toBe(0);
+    expect(await registry.list()).toEqual([]);
   });
 
   test("windowId 非合法 UUID 时拒绝登记且不写入记录", async () => {
-    const { registry, repoDir } = await makeRegistry();
+    const { registry } = await makeRegistry();
 
     let caught: unknown;
     try {
@@ -266,8 +232,7 @@ describe("WindowRegistry.register", () => {
     }
     expect(caught).toBeInstanceOf(Error);
 
-    const entries = await listDirIfExists(join(repoDir, "windows"));
-    expect(entries.length).toBe(0);
+    expect(await registry.list()).toEqual([]);
   });
 });
 
@@ -498,7 +463,7 @@ describe("WindowRegistry.holderGone", () => {
   });
 });
 
-describe("并发与文件完整性", () => {
+describe("并发与记录完整性", () => {
   test("依次调用心跳时 heartbeatSeq 严格递增", async () => {
     const { registry, timeSource } = await makeRegistry();
     const windowId = await registry.register(windowInput());
@@ -514,7 +479,7 @@ describe("并发与文件完整性", () => {
     }
   });
 
-  test("同一窗口 20 次并发心跳与另一窗口心跳并发执行后两个记录文件均为合法 JSON", async () => {
+  test("同一窗口 20 次并发心跳与另一窗口心跳并发执行后两条记录均可读", async () => {
     const { registry, repoDir } = await makeRegistry();
     const windowId = await registry.register(windowInput({ sessionId: "concurrent" }));
     const otherId = await registry.register(windowInput({ sessionId: "other" }));
@@ -534,7 +499,7 @@ describe("并发与文件完整性", () => {
     expect(otherRecord.windowId).toBe(otherId);
   });
 
-  test("heartbeat 遇到文件已被替换为其他窗口记录时拒绝写入且不覆盖", async () => {
+  test("heartbeat 遇到记录已被替换为其他窗口记录时拒绝写入且不覆盖", async () => {
     const { registry, repoDir } = await makeRegistry();
     const windowId = await registry.register(windowInput());
     const ref = windowRef(repoDir, windowId);
@@ -545,7 +510,7 @@ describe("并发与文件完整性", () => {
     try {
       await registry.heartbeat(windowId);
     } catch {
-      // 拒绝可能以抛错或返回值表示，此处只关心文件是否被覆盖
+      // 拒绝可能以抛错或返回值表示，此处只关心记录是否被覆盖
     }
 
     const after = JSON.parse(windowJson(repoDir, windowId));
@@ -577,71 +542,26 @@ describe("并发与文件完整性", () => {
   });
 });
 
+const TRAVERSAL_WINDOW_ID = "../../x/sentinel";
+
 describe("windowId 路径穿越防护", () => {
-  test("heartbeat 遇到含路径穿越的 windowId 时拒绝且不覆盖目录外的哨兵文件", async () => {
-    const { registry, repoDir } = await makeRegistry();
+  test("heartbeat 遇到含路径穿越的 windowId 时拒绝", async () => {
+    const { registry } = await makeRegistry();
     await registry.register(windowInput());
-    const { sentinelPath, maliciousWindowId } = await makeSentinel(repoDir, (id) =>
-      JSON.stringify({
-        windowId: id,
-        pid: 1,
-        processStartedAt: "start-1",
-        bootId: "boot-fixed",
-        sessionId: "sentinel",
-        cwd: "/c",
-        workspaceRoot: "/w",
-        startedAt: "1970-01-01T00:00:00.000Z",
-        heartbeatAt: "1970-01-01T00:00:00.000Z",
-        heartbeatSeq: 0,
-      }),
-    );
-    const beforeContent = await readFile(sentinelPath, "utf8");
-
-    try {
-      await registry.heartbeat(maliciousWindowId);
-    } catch {
-      // 拒绝可能以抛错或返回值表示，此处只关心哨兵文件是否被触碰
-    }
-
-    const afterContent = await readIfExists(sentinelPath);
-    expect(afterContent).toBe(beforeContent);
+    await expect(registry.heartbeat(TRAVERSAL_WINDOW_ID)).rejects.toThrow(/不合法的窗口标识/);
   });
 
-  test("unregister 遇到含路径穿越的 windowId 时拒绝且不删除目录外的哨兵文件", async () => {
-    const { registry, repoDir } = await makeRegistry();
-    const { sentinelPath, maliciousWindowId } = await makeSentinel(repoDir, "哨兵内容");
-
-    try {
-      await registry.unregister(maliciousWindowId);
-    } catch {
-      // 拒绝可能以抛错或返回值表示，此处只关心哨兵文件是否仍存在
-    }
-
-    const afterContent = await readIfExists(sentinelPath);
-    expect(afterContent).toBe("哨兵内容");
+  test("unregister 遇到含路径穿越的 windowId 时拒绝", async () => {
+    const { registry } = await makeRegistry();
+    await expect(registry.unregister(TRAVERSAL_WINDOW_ID)).rejects.toThrow(/不合法的窗口标识/);
   });
 
-  test("holderGone 遇到含路径穿越的 windowId 时拒绝，不读取目录外的哨兵文件内容", async () => {
-    const { registry, repoDir } = await makeRegistry();
-    const { maliciousWindowId } = await makeSentinel(
-      repoDir,
-      JSON.stringify({
-        windowId: "someone-else",
-        pid: 1,
-        processStartedAt: "start-1",
-        bootId: "boot-other",
-        sessionId: "sentinel",
-        cwd: "/c",
-        workspaceRoot: "/w",
-        startedAt: "1970-01-01T00:00:00.000Z",
-        heartbeatAt: "1970-01-01T00:00:00.000Z",
-        heartbeatSeq: 0,
-      }),
-    );
+  test("holderGone 遇到含路径穿越的 windowId 时拒绝", async () => {
+    const { registry } = await makeRegistry();
 
     let caught: unknown;
     try {
-      await registry.holderGone(maliciousWindowId);
+      await registry.holderGone(TRAVERSAL_WINDOW_ID);
     } catch (error) {
       caught = error;
     }
@@ -649,8 +569,8 @@ describe("windowId 路径穿越防护", () => {
   });
 });
 
-describe("list 对目录内陌生文件的容忍", () => {
-  test("windows 目录里非窗口标识命名的 json 文件被跳过，不影响其他记录", async () => {
+describe("list 对其他命名空间记录的容忍", () => {
+  test("其他命名空间的记录不影响 list", async () => {
     const { registry, repoDir } = await makeRegistry();
     const windowId = await registry.register(windowInput());
     withDatabase(join(repoDir, "data.db"), (db) => db.create("other_namespace", "note", {}));
@@ -660,7 +580,7 @@ describe("list 对目录内陌生文件的容忍", () => {
   });
 });
 
-describe("WindowRegistry.unregister 在目录不存在时", () => {
+describe("WindowRegistry.unregister 在从未登记过时", () => {
   test("从未登记过的仓库上注销合法标识不抛错", async () => {
     const { registry } = await makeRegistry();
     await registry.unregister(uuidv7());
@@ -702,7 +622,7 @@ describe("holderGone 与 register 在开机标识探测失败时", () => {
       processStartedAt: async () => "start-1",
     });
     await expect(registry.register(windowInput())).rejects.toThrow();
-    expect(await listDirIfExists(join(repoDir, "windows"))).toEqual([]);
+    expect(await registry.list()).toEqual([]);
   });
 });
 

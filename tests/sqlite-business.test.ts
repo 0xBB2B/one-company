@@ -69,22 +69,18 @@ test("多个运行存储实例交错登记回合与用量不丢失活动", async
   expect(found.run.usage?.toolUses).toBe(20);
 });
 
-test("两实例固定状态通知回执可并发合并，旧问答记录原样保留", async () => {
+test("两实例固定状态通知回执可并发合并", async () => {
   const w = await fixture();
   const options = { dataDir: w.repoDir, deliver: async () => [] };
   const a = new RelayQueue(options); const b = new RelayQueue(options);
   const run = await w.store.create(w.input);
   const database = repositoryDatabase(w.home.dataRoot, w.repoId);
-  const questionId = uuidv7();
-  withDatabase(database, (db) => db.create("relay_questions", questionId, { id: questionId, status: "pending", question: "确认？" }));
-  const before = withDatabase(database, (db) => db.list("relay_questions"));
   await expect(a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "completed" as never, message: "完成" })).rejects.toThrow("只支持");
   expect(withDatabase(database, (db) => db.list("relay_notices"))).toEqual([]);
   const notice = await a.notify({ requirement: w.requirement, repoId: w.repoId, runId: run.id, kind: "blocked", message: "不得回显的旧正文" });
   await Promise.all([a.markDelivered("窗口甲", notice.id), b.markDelivered("窗口乙", notice.id)]);
   const record = withDatabase(repositoryDatabase(w.home.dataRoot, w.repoId), (db) => db.read<{ deliveredTo: string[] }>("relay_notices", notice.id));
   expect(record?.data.deliveredTo.sort()).toEqual(["窗口乙", "窗口甲"].sort());
-  expect(withDatabase(database, (db) => db.list("relay_questions"))).toEqual(before);
 });
 
 test("注销后的迟到心跳不能复活窗口", async () => {

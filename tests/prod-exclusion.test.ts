@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { collectGitSnapshot } from "../runtime/git-snapshot.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -24,9 +24,8 @@ async function repoWithArchive() {
 }
 
 describe("M1-AC4/5：自有快照固定排除 docs/prod 正文", () => {
-  test("没有本机 DB 时，未跟踪、已跟踪、暂存和已提交归档变化都不改变内容快照", async () => {
+  test("未跟踪、已跟踪、暂存和已提交归档变化都不改变内容快照", async () => {
     const repo = await repoWithArchive();
-    await expect(stat(join(repo.root, ".pi-company"))).rejects.toMatchObject({ code: "ENOENT" });
 
     const cleanGit = await collectGitSnapshot({ repoRoot: repo.root });
 
@@ -94,10 +93,14 @@ describe("M1-AC4/5：自有快照固定排除 docs/prod 正文", () => {
 
   test("Node 内容枚举在 lstat/流读取前跳过归档，但普通不可读文件仍会失败", async () => {
     const repo = await repoWithArchive();
+    const clean = await collectGitSnapshot({ repoRoot: repo.root });
     const archive = join(repo.root, "docs", "prod", "archive.md");
     await chmod(archive, 0o000);
+    expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(clean.fingerprint);
 
-    const source = join(repo.root, "src", "source.ts");
+    const source = join(repo.root, "src", "new.ts");
+    await writeFile(source, "export const fresh = true;\n");
     await chmod(source, 0o000);
+    await expect(collectGitSnapshot({ repoRoot: repo.root })).rejects.toThrow("无法读取快照文件");
   });
 });
