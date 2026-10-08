@@ -2,12 +2,11 @@
   "name": "@0xbb2b/one-company",
   "version": "0.1.0",
   "packageManager": "pnpm@11.7.0",
-  "description": "pi 的需求驱动开发流程包：主会话对齐需求，守护进程内的需求代理按工作流形状调度角色子代理完成实施、审查与验收",
+  "description": "pi 的需求驱动开发流程包：主会话和用户确认需求，守护进程内的需求代理（PM）规划任务，派角色子代理完成实施、审查与验收",
   "type": "module",
   "license": "MIT",
   "keywords": [
     "pi-package",
-    "spec",
     "tdd",
     "workflow",
     "subagents"

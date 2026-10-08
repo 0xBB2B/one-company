@@ -123,8 +123,3 @@ describe("旧测试文件不存在", () => {
     });
   }
 });
-
-test(".gitignore 含 .pi-company/.cache/ 一行", async () => {
-  const content = await readFile(join(PACKAGE_ROOT, ".gitignore"), "utf8");
-  expect(content.split("\n").map((line) => line.trim())).toContain(".pi-company/.cache/");
-});

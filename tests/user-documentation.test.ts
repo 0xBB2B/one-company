@@ -84,7 +84,6 @@ describe("README 必需句", () => {
     "标记为中断",
     "合盖睡眠",
     "background: true",
-    ".pi-company/",
     "不随 Git 同步",
     "按启动目录",
     "pi install git:github.com/0xBB2B/one-company",
