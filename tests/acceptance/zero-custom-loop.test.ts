@@ -360,3 +360,50 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC3：样例项目预�
     expect(npmTest).toBe(0);
   });
 }, 100 * 60_000);
+
+const MOVEMENT_BASICS = `---
+name: movement-basics
+description: 本项目的移动逻辑写法：速度常量、地面与空中判断。改角色移动相关代码时使用。
+---
+- 速度相关常量集中放在 src/player/movement.ts 顶部，导出名用大写字母加下划线。
+- 地面与空中的判断只看输入里的 grounded 字段，不另外推断。
+- 每条速度规则都要有一条 node 单元测试覆盖地面与空中两种情况。
+`;
+
+/** 在 AC12 的快跑需求上另装一个用户层专业 worker（复制默认 worker 改名、改说明、挂项目 skill），项目受信任。 */
+function withSpecialist(name: string, description: string, skill: string, body: string) {
+  return async (repo: string, agentDir: string, installed: string) => {
+    const worker = await readFile(join(installed, "agents", "worker.md"), "utf8");
+    await mkdir(join(agentDir, "agents"), { recursive: true });
+    await writeFile(join(agentDir, "agents", `${name}.md`), worker.replace("name: worker\n", `name: ${name}\n`)
+      .replace(/description: .*\n/u, `description: ${description}\nskills: [${skill}]\n`));
+    await mkdir(join(repo, ".pi", "skills", skill), { recursive: true });
+    await writeFile(join(repo, ".pi", "skills", skill, "SKILL.md"), body);
+    const user = ["-c", "user.name=sample", "-c", "user.email=sample@localhost"];
+    await exec("git", ["add", ".pi"], { cwd: repo });
+    await exec("git", [...user, "commit", "-qm", "项目约定"], { cwd: repo });
+    new ProjectTrustStore(agentDir).set(repo, true);
+  };
+}
+
+test.skipIf(!config || process.platform !== "darwin")("M9-AC18：同一快跑需求，装了界面专业 worker 但当前任务不匹配，PM 仍用默认 worker 完成并关闭（测量对照：有专业无匹配）", async () => {
+  await runLoop("ac18-nomatch", SCRIPT, withSpecialist("ui-worker", "界面专业 worker：负责 HUD、面板等界面的设计与实现，按项目界面约定写 HTML 与 CSS", "ui-basics", UI_BASICS),
+    async ({ outcome, runs }) => {
+      expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
+      const workers = runs.filter((run) => run.role === "one-company.worker");
+      expect(workers.length).toBeGreaterThan(0);
+      expect(workers.every((run) => run.agent?.name === "worker" && run.agent.source === "default")).toBe(true);
+    });
+}, 100 * 60_000);
+
+test.skipIf(!config || process.platform !== "darwin")("M9-AC18：同一快跑需求，装了移动逻辑专业 worker 并挂项目 skill，PM 选中它完成并关闭，运行记录里 skill 指纹等于 SKILL.md 实际内容（测量对照：专业匹配）", async () => {
+  await runLoop("ac18-match", SCRIPT, withSpecialist("movement-worker", "移动逻辑专业 worker：负责角色水平移动、快跑、跳跃等运动逻辑的实现与单元测试", "movement-basics", MOVEMENT_BASICS),
+    async ({ outcome, runs }) => {
+      expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
+      const workers = runs.filter((run) => run.role === "one-company.worker");
+      expect(workers.length).toBeGreaterThan(0);
+      const skillHash = createHash("sha256").update(MOVEMENT_BASICS).digest("hex");
+      expect(workers.every((run) => run.agent?.name === "movement-worker" && run.agent.source === "user"
+        && run.agent.skills.some((skill) => skill.name === "movement-basics" && skill.hash === skillHash))).toBe(true);
+    });
+}, 100 * 60_000);

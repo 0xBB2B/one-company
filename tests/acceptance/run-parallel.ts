@@ -26,6 +26,11 @@ const all = (JSON.parse(readFileSync(listFile, "utf8")) as Array<{ name: string 
 const missing = only.filter((id) => !all.some((name) => idOf(name).split("/")[0] === id));
 if (missing.length) throw new Error(`没有这些编号的验收：${missing.join("、")}`);
 const tests = only.length ? all.filter((name) => only.includes(idOf(name).split("/")[0]!)) : all;
+// 同一编号下有多条用例时，目录名后加序号区分
+const labelOf = (name: string) => {
+  const same = tests.filter((other) => idOf(other) === idOf(name));
+  return same.length > 1 ? `${idOf(name)}#${same.indexOf(name) + 1}` : idOf(name);
+};
 
 const summary = join(output, "summary.txt");
 const log = (line: string) => { const text = `${new Date().toLocaleString("zh-CN", { hour12: false })} ${line}`; appendFileSync(summary, `${text}\n`); console.log(text); };
@@ -49,7 +54,7 @@ const watchdog = setInterval(() => {
 for (let n = 1; n <= repeat; n++) {
   for (const name of tests) {
     if (runs.length) await new Promise((resolve) => setTimeout(resolve, STAGGER_MS));
-    const id = idOf(name), dir = join(output, `${id.replaceAll("/", "_")}-${n}`);
+    const id = labelOf(name), dir = join(output, `${id.replaceAll("/", "_")}-${n}`);
     mkdirSync(dir, { recursive: true });
     const run: Run = { id, n, dir, started: Date.now(), done: false };
     runs.push(run);
