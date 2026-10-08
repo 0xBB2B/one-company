@@ -105,7 +105,6 @@ export const IntakeHistoricalSourceDirectorySchema = object({
   binding: IntakeBindingSchema,
   sourceDirectory: IntakeSourceDirectorySchema,
 });
-export type IntakeHistoricalSourceDirectory = Static<typeof IntakeHistoricalSourceDirectorySchema>;
 
 export const IntakeReviewRecordSchema = object({
   format: Type.Literal("pm-intake-review/v1"),
@@ -162,7 +161,6 @@ export const IntakeRootReviewBindingSchema = object({
   submissionRef: opaqueId,
   submissionHash: hash,
 });
-export type IntakeRootReviewBinding = Static<typeof IntakeRootReviewBindingSchema>;
 
 export const IntakeImpactLinkSchema = object({
   format: Type.Literal("pm-intake-impact-link/v1"),

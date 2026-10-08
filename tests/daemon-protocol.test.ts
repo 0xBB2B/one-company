@@ -1,7 +1,6 @@
 import { registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { describe, expect, test } from "vitest";
 import {
-  ERROR_CODES,
   EVENTS,
   METHODS,
   PROTOCOL_VERSION,
@@ -53,25 +52,6 @@ const EXPECTED_EVENTS = [
   "relay.notice",
   "shells.changed",
   "daemon.idle",
-];
-
-const EXPECTED_ERROR_CODES = [
-  "protocol_version",
-  "unauthorized",
-  "unknown_method",
-  "unknown_event",
-  "bad_params",
-  "not_found",
-  "already_active",
-  "not_confirmed",
-  "shape_violation",
-  "daemon_busy",
-  "daemon_starting",
-  "authorization_denied",
-  "resource_limit",
-  "not_initialized",
-  "index_unavailable",
-  "internal",
 ];
 
 const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
@@ -146,7 +126,6 @@ describe("协议常量", () => {
   test("目录精确等于协议成品", () => {
     expect([...METHODS].sort()).toEqual([...EXPECTED_METHODS].sort());
     expect([...EVENTS].sort()).toEqual([...EXPECTED_EVENTS].sort());
-    expect([...ERROR_CODES].sort()).toEqual([...EXPECTED_ERROR_CODES].sort());
   });
 
   test("目录内每个方法对空 params 都只抛 bad_params", () => {
@@ -304,17 +283,17 @@ describe("createRequest / createResponse / createErrorResponse / createEvent", (
   });
 
   test("createErrorResponse 支持可选 data 参数并原样保留", () => {
-    const err = createErrorResponse("42", "already_active", "需求已有活动运行", { runId: "run-1" });
+    const err = createErrorResponse("42", "pm_already_owned", "本需求已有有效 PM", { runId: "run-1" });
     expect(err).toEqual({
       t: "res",
       id: "42",
       ok: false,
-      error: { code: "already_active", message: "需求已有活动运行", data: { runId: "run-1" } },
+      error: { code: "pm_already_owned", message: "本需求已有有效 PM", data: { runId: "run-1" } },
     });
   });
 
   test("带 data 的错误响应经 encode → decode 往返后被 isFrame 接受，且 data 保留", () => {
-    const err = createErrorResponse("42", "already_active", "需求已有活动运行", { runId: "run-1", extra: [1, 2, 3] });
+    const err = createErrorResponse("42", "pm_already_owned", "本需求已有有效 PM", { runId: "run-1", extra: [1, 2, 3] });
     const encoded = encodeFrame(err);
     expect(isFrame(JSON.parse(encoded.trim()))).toBe(true);
 

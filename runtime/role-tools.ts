@@ -1,7 +1,6 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { toolActionsForRole } from "./core-permissions.ts";
-import type { CoreRole, CoreTool } from "./core-permissions.ts";
+import type { CoreTool } from "./core-permissions.ts";
 import type { AgentRole } from "./roles.ts";
 import { toolFailure, toolStep } from "./tool-failure.ts";
 
@@ -22,10 +21,6 @@ export const QA_PROTOTYPE_HOST_TOOLS: readonly string[] = Object.freeze(["read"]
 
 export function coreToolName(tool: CoreTool): string {
   return `${CORE_TOOL_PREFIX}${tool}`;
-}
-
-export function coreToolsForRole(role: CoreRole): CoreTool[] {
-  return Object.keys(toolActionsForRole(role)) as CoreTool[];
 }
 
 export interface CoreToolRuntime {

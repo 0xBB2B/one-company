@@ -54,35 +54,6 @@ export interface PmIntakeFixtureRootReceipt {
   readonly ino: number;
 }
 
-export interface PmIntakeFixtureRootReceipts {
-  readonly format: "pm-intake-fixture-roots/v1";
-  readonly pm: PmIntakeFixtureRootReceipt;
-  readonly repo: RepoFixtureRootReceipt;
-  readonly worktree: WorktreeFixtureRootReceipt;
-}
-
-interface PmFixtureOwnedRoots {
-  readonly pm: PmIntakeFixtureRootReceipt;
-  readonly repo: RepoFixtureRootReceipt;
-  readonly worktree: WorktreeFixtureRootReceipt;
-}
-
-const pmFixtureOwnedRoots = new WeakMap<object, PmFixtureOwnedRoots>();
-
-function copyRootReceipt(receipt: PmIntakeFixtureRootReceipt): PmIntakeFixtureRootReceipt {
-  return Object.freeze({ path: receipt.path, dev: receipt.dev, ino: receipt.ino });
-}
-
-export function pmIntakeFixtureRootReceipts(fixture: PmIntakeFixture): PmIntakeFixtureRootReceipts | undefined {
-  const roots = pmFixtureOwnedRoots.get(fixture);
-  if (!roots) return undefined;
-  return Object.freeze({
-    format: "pm-intake-fixture-roots/v1",
-    pm: copyRootReceipt(roots.pm),
-    repo: copyRootReceipt(roots.repo),
-    worktree: copyRootReceipt(roots.worktree),
-  });
-}
 // PM_FIXTURE_ROOT_RECEIPTS_END
 
 export class FixtureSourceProvider implements PmSourceDirectoryProvider {
@@ -395,11 +366,6 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
       await rm(root, { recursive: true, force: true });
     },
   };
-  pmFixtureOwnedRoots.set(fixture, Object.freeze({
-    pm: copyRootReceipt(allocation.pmReceipt),
-    repo: copyRootReceipt(allocation.repoReceipt),
-    worktree: copyRootReceipt(allocation.worktreeReceipt),
-  }));
   return fixture;
   } catch (error) {
     const cleanupErrors: unknown[] = [];

@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -45,12 +44,6 @@ export async function assertSdkVersion(sdkDir: string): Promise<string> {
     throw new Error(`SDK 版本过低: ${pkg.version}，要求 >= ${MIN_SDK_VERSION}（${sdkDir}）`);
   }
   return pkg.version;
-}
-
-export async function loadSdkModule(sdkDir: string, packageName: string): Promise<unknown> {
-  const packageRequire = createRequire(join(sdkDir, "package.json"));
-  const resolved = packageRequire.resolve(packageName);
-  return import(pathToFileURL(resolved).href);
 }
 
 export async function loadSdk(sdkDir: string): Promise<Record<string, unknown>> {

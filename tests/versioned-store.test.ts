@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { LocalDatabase, createRecord, readRecord, writeRecord, StaleVersionError } from "../runtime/database.ts";
-import { fileFingerprint, writeFileAtomic } from "../runtime/store.ts";
+import { writeFileAtomic } from "../runtime/store.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const roots: string[] = [];
@@ -108,14 +108,13 @@ test("数据库及 WAL/SHM 仅属主可读写", async () => {
   } finally { db.close(); }
 });
 
-test("Git 定义文件原子替换失败清理临时文件，成功写入可稳定计算指纹", async () => {
+test("Git 定义文件原子替换失败清理临时文件，成功写入后读到新正文", async () => {
   const ref = await fixture();
   const path = join(ref.root, "definition.md");
   await writeFileAtomic(path, "正文 A");
-  const before = await fileFingerprint(path);
-  expect(await fileFingerprint(path)).toBe(before);
+  expect(await readFile(path, "utf8")).toBe("正文 A");
   await writeFileAtomic(path, "正文 B");
-  expect(await fileFingerprint(path)).not.toBe(before);
+  expect(await readFile(path, "utf8")).toBe("正文 B");
   const blocked = join(ref.root, "directory");
   await mkdir(blocked);
   await expect(writeFileAtomic(blocked, "不能写入")).rejects.toThrow();

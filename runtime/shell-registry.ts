@@ -129,10 +129,6 @@ function defaultKill(pid: number, signal: NodeJS.Signals | 0): void {
   process.kill(pid, signal);
 }
 
-export function shellOwnerKey(input: { windowId: string; cwd: string; sessionId: string }): string {
-  return `${input.windowId}:${input.cwd}:${input.sessionId}`;
-}
-
 export function probeProcessGroup(
   pgid: number,
   kill: (pid: number, signal: NodeJS.Signals | 0) => void = defaultKill,
@@ -167,20 +163,6 @@ function scanDescendants(pgid: number, token: string, entries: PsEntry[]): numbe
     .filter(isValidPsEntry)
     .filter((entry) => entry.token === token && entry.pgid !== pgid)
     .map((entry) => entry.pid);
-}
-
-export async function findEscapedDescendants(
-  pgid: number,
-  token: string,
-  ps: () => Promise<PsEntry[]>,
-): Promise<{ ok: true; descendants: number[] } | { ok: false }> {
-  let entries: PsEntry[];
-  try {
-    entries = await ps();
-  } catch {
-    return { ok: false };
-  }
-  return { ok: true, descendants: scanDescendants(pgid, token, entries) };
 }
 
 async function queryPidStartedAt(pid: number): Promise<number | null> {

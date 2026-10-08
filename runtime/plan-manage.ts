@@ -214,7 +214,6 @@ export interface PlanManageToolOptions {
 function sha256(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
 function deny(code: PlanManageErrorCode, detail: string[] = []): never { throw new PlanManageError(code, detail); }
 
-/** 实施授权覆盖的目标章节：未确认、标为未知的实施动作不算授权。 */
 /** 用户批准并授权实施时，实施目标板块下全部已确认的段落都是实施目标，不看解读模型在实施动作里列了哪些段。 */
 export function implementScope(manifest: ApprovalManifest, sections: readonly RequirementDocSection[]): Set<string> {
   if (!manifest.actions.some((action) => action.action === "implement" && !action.unknown)) return new Set();

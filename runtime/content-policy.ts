@@ -1,4 +1,4 @@
-import { posix, resolve } from "node:path";
+import { posix } from "node:path";
 
 export const PROD_ARCHIVE_DIRECTORY = "docs/prod";
 
@@ -11,8 +11,4 @@ export const PROD_ARCHIVE_GIT_PATHSPECS = [
 export function isProdArchivePath(repoRelativePath: string): boolean {
   const normalized = posix.normalize(repoRelativePath.replace(/^\.\/+/, ""));
   return normalized === PROD_ARCHIVE_DIRECTORY || normalized.startsWith(`${PROD_ARCHIVE_DIRECTORY}/`);
-}
-
-export function prodArchiveRoot(repoRoot: string): string {
-  return resolve(repoRoot, "docs", "prod");
 }

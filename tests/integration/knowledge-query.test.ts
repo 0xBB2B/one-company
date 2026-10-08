@@ -17,7 +17,7 @@ import type { WindowContextValue } from "../../extensions/lifecycle.ts";
 import type { KnowledgeFactPackage } from "../../runtime/knowledge-query.ts";
 import { createDaemonFixture, removeDaemonFixture, resolveSdkDir, spawnDaemonProcess, waitForSocketReady } from "../helpers/daemon-harness.ts";
 import { modelProviderEnv, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
-import { within } from "../helpers/m3-cleanup.ts";
+import { within } from "../helpers/within.ts";
 
 const queryName = "one_company_knowledge_query";
 

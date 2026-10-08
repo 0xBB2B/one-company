@@ -44,25 +44,6 @@ export const EVENTS = [
   "daemon.idle",
 ] as const;
 
-export const ERROR_CODES = [
-  "protocol_version",
-  "unauthorized",
-  "unknown_method",
-  "unknown_event",
-  "bad_params",
-  "not_found",
-  "already_active",
-  "not_confirmed",
-  "shape_violation",
-  "daemon_busy",
-  "daemon_starting",
-  "authorization_denied",
-  "resource_limit",
-  "not_initialized",
-  "index_unavailable",
-  "internal",
-] as const;
-
 type RequestFrame = { t: "req"; id: string; method: string; params: Record<string, unknown> };
 type ResponseFrame =
   | { t: "res"; id: string; ok: true; result: Record<string, unknown> }

@@ -27,14 +27,6 @@ export interface McpConfig {
   settings?: Record<string, unknown>;
 }
 
-export interface McpServerInfo {
-  name: string;
-  disabled: boolean;
-  transport: "stdio" | "http" | "socket";
-}
-
-export type ListMcpServersResult = { ok: true; servers: McpServerInfo[] } | { ok: false; reason: string };
-
 export interface FilterMcpConfigResult {
   config: McpConfig;
   missing: string[];
@@ -140,44 +132,6 @@ export function detectMcpAdapter(input: DetectMcpAdapterInput): DetectMcpAdapter
 
   const configPath = parseConfigArg(input.argv) ?? join(input.agentDir, "mcp.json");
   return { installed: true, packageDir: found.dir, entryPath, configPath };
-}
-
-export function listMcpServers(configPath: string): ListMcpServersResult {
-  let raw: string;
-  try {
-    raw = readFileSync(configPath, "utf8");
-  } catch (error) {
-    return { ok: false, reason: `无法读取配置文件: ${(error as Error).message}` };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    return { ok: false, reason: `配置文件不是合法 JSON: ${(error as Error).message}` };
-  }
-
-  const mcpServers = (parsed as { mcpServers?: unknown }).mcpServers;
-  if (mcpServers === null || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
-    return { ok: false, reason: "配置文件缺少 mcpServers 对象" };
-  }
-
-  const entries = Object.entries(mcpServers as Record<string, unknown>);
-  for (const [name, server] of entries) {
-    if (server === null || typeof server !== "object" || Array.isArray(server)) {
-      return { ok: false, reason: `服务 ${name} 的配置不是对象` };
-    }
-  }
-
-  const servers: McpServerInfo[] = entries.map(([name, server]) => {
-    const entry = server as McpServerEntry;
-    return {
-      name,
-      disabled: entry.disabled === true,
-      transport: entry.socket !== undefined ? "socket" : entry.url !== undefined ? "http" : "stdio",
-    };
-  });
-  return { ok: true, servers };
 }
 
 export function filterMcpConfig(fullConfig: McpConfig, selected: string[]): FilterMcpConfigResult {

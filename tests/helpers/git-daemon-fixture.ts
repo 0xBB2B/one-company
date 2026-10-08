@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
-import { createConnection } from "node:net";
 import type { Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
@@ -102,10 +101,6 @@ export function registerOwnedSocket(socket: Socket): Socket {
   scope.sockets.add(record);
   return socket;
 }
-export function createOwnedSocket(path: string): Socket {
-  assertOpen(currentScope());
-  return registerOwnedSocket(createConnection(path));
-}
 export function registerOwnedServer<T extends ClosableServer>(server: T): T {
   const scope = currentScope();
   assertOpen(scope);
@@ -200,21 +195,6 @@ function registerChild(scope: Scope, child: ChildProcess): ChildRecord {
   childRecords.set(child, { scope, record });
   return record;
 }
-export function createOwnedSpawner(): typeof spawn {
-  const scope = currentScope();
-  assertOpen(scope);
-  const nativeSpawn = spawn;
-  return ((...args: Parameters<typeof spawn>) => {
-    assertOpen(scope);
-    const options = args[2] ?? args[1];
-    if (!options || typeof options !== "object" || Array.isArray(options) || !("detached" in options) || options.detached !== true) {
-      throw new Error("自有进程必须使用独立进程组");
-    }
-    const child = nativeSpawn(...args);
-    registerChild(scope, child);
-    return child;
-  }) as typeof spawn;
-}
 
 /** 绑定创建时的scope，旧异步链不能借用后来测试的scope。 */
 export function captureFixtureScope() {
@@ -302,15 +282,6 @@ export function runOwnedProcess(
       return { code: child.exitCode, signal: child.signalCode, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") };
     } finally { clearTimeout(timer); }
   });
-}
-export async function runJsonChild(
-  cwd: string, source: string, args: readonly string[] = [],
-  options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; home?: string } = {},
-): Promise<Record<string, unknown>> {
-  const result = await runOwnedProcess(process.execPath, ["--import", "jiti/register", "--input-type=module", "-e", source, ...args], cwd, options);
-  assertOpen(currentScope());
-  if (result.code !== 0) throw new Error(`自有子进程失败 code=${result.code} signal=${result.signal}: ${result.stderr}`);
-  return JSON.parse(result.stdout) as Record<string, unknown>;
 }
 
 function cleanupScope(scope: Scope): Promise<void> {

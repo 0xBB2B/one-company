@@ -132,12 +132,10 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
       assert.equal(daemonLoader.options.tryNative, false);
       const coordinator = pathToFileURL(root + '/daemon/project-index-host.ts').href;
       assert.strictEqual(await daemonLoader.import(coordinator), await daemonLoader.import(coordinator));
-      const { loadSdk, loadSdkModule } = await daemonLoader.import(pathToFileURL(root + '/daemon/sdk.ts').href);
+      const { loadSdk } = await daemonLoader.import(pathToFileURL(root + '/daemon/sdk.ts').href);
       assert.strictEqual(await loadSdk(sdkDir), nativeSdk);
       const aiUrl = daemonLoader.esmResolve('@earendil-works/pi-ai');
       assert.strictEqual(await daemonLoader.import('@earendil-works/pi-ai'), await import(aiUrl));
-      // 现有辅助函数使用 require 条件；仅 import 导出的包仍应明确拒绝，不能因转译暗中放行。
-      await assert.rejects(loadSdkModule(sdkDir, '@earendil-works/pi-ai'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
       assert.strictEqual(await daemonLoader.import('node:sqlite'), await import('node:sqlite'));
       assert.deepEqual(process.listeners('SIGTERM'), nativeSignalListeners);
     `;

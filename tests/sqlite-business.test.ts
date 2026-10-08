@@ -10,7 +10,6 @@ import { createSessionManagerForRun, openSessionManagerForRun, readTranscript } 
 import { RelayQueue } from "../daemon/relay-queue.ts";
 import { createClock } from "../runtime/clock.ts";
 import { WindowRegistry } from "../runtime/windows.ts";
-import { writeErrorDetails, readErrorDetails } from "../runtime/error-details.ts";
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -35,7 +34,7 @@ test("通用运行存储保证单个活动记录", async () => {
   expect((await readdir(w.repoDir)).every((name) => name.startsWith("data.db"))).toBe(true);
 });
 
-test("SDK 会话从私有会话文件恢复，原始错误详情从 SQLite 恢复，不生成诊断文件", async () => {
+test("SDK 会话从私有会话文件恢复，不生成诊断文件", async () => {
   const w = await fixture();
   const run = await w.store.create(w.input);
   const ref = { dataRoot: w.home.dataRoot, repoId: w.repoId, runId: run.id };
@@ -48,10 +47,6 @@ test("SDK 会话从私有会话文件恢复，原始错误详情从 SQLite 恢�
   expect(restored.manager.getEntries()).toEqual(session.getEntries());
   const transcript = readTranscript(ref);
   expect(transcript.ok && transcript.entries[0]?.summary).toBe("可恢复的对话");
-  const saved = await writeErrorDetails(ref, { runId: run.id, model: run.model, error: new Error("原始失败") });
-  expect(saved.saved).toBe(true);
-  const details = await readErrorDetails(ref);
-  expect(details.readable && details.details.original.message).toBe("原始失败");
   expect((await readdir(w.repoDir)).filter((name) => !name.startsWith("data.db"))).toEqual(["sessions"]);
 });
 

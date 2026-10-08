@@ -1,5 +1,4 @@
 import { isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import type { CaptureMode } from "./dock.ts";
 import type { PendingItem, PmOverview } from "./pm-overview.ts";
 import { sanitizeText } from "./text-sanitize.ts";
 
@@ -123,7 +122,6 @@ interface HostTuiLike {
   hasOverlay?: () => boolean;
   getFocusedComponent?: () => { isShowingAutocomplete?: () => boolean } | null | undefined;
   requestRender?: () => void;
-  mode?: CaptureMode;
 }
 export interface MountPmPanelCtx {
   mode?: string;

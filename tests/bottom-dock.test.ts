@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { BottomDock, canCapture } from "../runtime/dock.ts";
+import { BottomDock } from "../runtime/dock.ts";
 
 const KEY = {
   down: "\x1b[B",
@@ -81,16 +81,6 @@ function buildDock(
     },
   };
 }
-
-describe("canCapture 按终端模式判定鼠标捕获能力", () => {
-  test("普通终端模式不捕获鼠标", () => {
-    expect(canCapture("regular")).toBe(false);
-  });
-
-  test("全屏模式可捕获鼠标", () => {
-    expect(canCapture("fullscreen")).toBe(true);
-  });
-});
 
 describe("空输入且无遮挡时，↓ 直接进入面板", () => {
   test("↓ 被消费、焦点切到面板，但不执行面板任何操作", () => {

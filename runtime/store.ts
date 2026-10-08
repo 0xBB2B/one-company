@@ -1,5 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
-import { open, readFile, rename, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 export async function writeFileAtomic(path: string, content: string): Promise<void> {
@@ -21,8 +21,4 @@ export async function writeFileAtomic(path: string, content: string): Promise<vo
   try { await directory.sync(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "EINVAL") throw error; }
   finally { await directory.close(); }
-}
-
-export async function fileFingerprint(path: string): Promise<string> {
-  return createHash("sha256").update(await readFile(path)).digest("hex");
 }

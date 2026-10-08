@@ -169,12 +169,6 @@ async function launchDaemon(options: DaemonLaunchOptions, identity: RepositoryId
   return { listening };
 }
 
-export async function spawnDaemon(options: SpawnDaemonOptions): Promise<void> {
-  const client = await connectDaemon(options);
-  client.close();
-  await client.waitClosed();
-}
-
 function rawConnect(socketPath: string, register: (socket: Socket) => void): Promise<Socket> {
   const length = Buffer.byteLength(socketPath, "utf8");
   const limit = socketPathByteLimit();

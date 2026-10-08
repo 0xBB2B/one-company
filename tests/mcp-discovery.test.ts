@@ -16,7 +16,6 @@ import {
   describeMcpStatus,
   detectMcpAdapter,
   filterMcpConfig,
-  listMcpServers,
   loadMcpForRole,
 } from "../runtime/mcp.ts";
 import { registerControlledProvider, scriptReplies } from "./helpers/controlled-provider.ts";
@@ -221,77 +220,6 @@ describe("detectMcpAdapter", () => {
     await mkdir(sourcePath, { recursive: true });
     const result = detectMcpAdapter({ sourcePaths: [sourcePath], argv: [], agentDir });
     expect(result.installed).toBe(false);
-  });
-});
-
-describe("listMcpServers", () => {
-  test("解析出三个服务及各自 transport 与 disabled 标记", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "mcp-discovery-cfg-"));
-    tempRoots.push(dir);
-    const configPath = join(dir, "mcp.json");
-    await writeFile(configPath, JSON.stringify({ mcpServers: baseServers() }));
-    const result = listMcpServers(configPath);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      const byName = Object.fromEntries(result.servers.map((s) => [s.name, s]));
-      expect(byName.context7).toEqual({ name: "context7", disabled: false, transport: "stdio" });
-      expect(byName["chrome-devtools"]).toEqual({ name: "chrome-devtools", disabled: false, transport: "stdio" });
-      expect(byName.codegraph).toEqual({ name: "codegraph", disabled: true, transport: "http" });
-    }
-  });
-
-  test("识别 socket transport", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "mcp-discovery-cfg-socket-"));
-    tempRoots.push(dir);
-    const configPath = join(dir, "mcp.json");
-    await writeFile(configPath, JSON.stringify({ mcpServers: { local: { socket: "/tmp/mcp.sock" } } }));
-    const result = listMcpServers(configPath);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.servers[0]).toEqual({ name: "local", disabled: false, transport: "socket" });
-  });
-
-  test("文件不存在时返回 ok:false 带原因", () => {
-    const result = listMcpServers(join(tmpdir(), "definitely-missing-mcp-discovery.json"));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason.length).toBeGreaterThan(0);
-  });
-
-  test("非法 JSON 时返回 ok:false 带原因", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "mcp-discovery-cfg-bad-"));
-    tempRoots.push(dir);
-    const configPath = join(dir, "mcp.json");
-    await writeFile(configPath, "{ not json");
-    const result = listMcpServers(configPath);
-    expect(result.ok).toBe(false);
-  });
-
-  test("缺 mcpServers 对象时返回 ok:false 带原因", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "mcp-discovery-cfg-empty-"));
-    tempRoots.push(dir);
-    const configPath = join(dir, "mcp.json");
-    await writeFile(configPath, JSON.stringify({ settings: {} }));
-    const result = listMcpServers(configPath);
-    expect(result.ok).toBe(false);
-  });
-
-  test("服务项为 null 时返回 ok:false 且原因含服务名", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "mcp-discovery-cfg-null-"));
-    tempRoots.push(dir);
-    const configPath = join(dir, "mcp.json");
-    await writeFile(configPath, JSON.stringify({ mcpServers: { a: null } }));
-    const result = listMcpServers(configPath);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain("a");
-  });
-
-  test("服务项为字符串而非对象时返回 ok:false 且原因含服务名", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "mcp-discovery-cfg-string-"));
-    tempRoots.push(dir);
-    const configPath = join(dir, "mcp.json");
-    await writeFile(configPath, JSON.stringify({ mcpServers: { a: "x" } }));
-    const result = listMcpServers(configPath);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain("a");
   });
 });
 

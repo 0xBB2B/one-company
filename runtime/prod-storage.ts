@@ -1077,10 +1077,3 @@ export function prodRequirementPath(config: Pick<ProdStorageConfig, "dataRoot" |
   assertRequirementId(config.requirementId);
   return join(config.dataRoot, "repos", config.repoId, "requirements", config.requirementId);
 }
-
-export const prodStorageInternals = {
-  prodFile: PROD_FILE,
-  internalName: INTERNAL_NAME,
-  internalEmail: INTERNAL_EMAIL,
-  pathBaseName: basename,
-};

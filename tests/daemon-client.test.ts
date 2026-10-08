@@ -29,7 +29,6 @@ import {
   DaemonCallError,
   WorkspaceClients,
   connectDaemon,
-  spawnDaemon,
 } from "../runtime/daemon-client.ts";
 import type { HelloInput } from "../runtime/daemon-client.ts";
 import {
@@ -83,6 +82,12 @@ const closables: Closable[] = [];
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function startDaemonAndDisconnect(options: Parameters<typeof connectDaemon>[0]): Promise<void> {
+  const client = await connectDaemon(options);
+  client.close();
+  await client.waitClosed();
 }
 
 function isolatedSpawnHello(cwd: string): HelloInput {
@@ -218,12 +223,12 @@ describe("单实例收敛", () => {
     fixtures.push(fixture);
     const options = { repoDir: fixture.repoDir, dataRoot: fixture.dataRoot, sdkDir: resolveSdkDir(),
       execPath: join(fixture.dataRoot, "missing-node"), hello: isolatedSpawnHello(fixture.repo.root) };
-    const results = await Promise.allSettled(Array.from({ length: 3 }, () => spawnDaemon(options)));
+    const results = await Promise.allSettled(Array.from({ length: 3 }, () => startDaemonAndDisconnect(options)));
     expect(results.every((result) => result.status === "rejected")).toBe(true);
     for (const result of results) if (result.status === "rejected") expect(result.reason.message).toContain("拉起守护进程失败");
     const logs = join(fixture.dataRoot, "repos", fixture.repoId, "logs");
     expect(await readdir(logs)).toHaveLength(1);
-    await expect(spawnDaemon(options)).rejects.toThrow("拉起守护进程失败");
+    await expect(startDaemonAndDisconnect(options)).rejects.toThrow("拉起守护进程失败");
     expect(await readdir(logs)).toHaveLength(2);
   });
 
@@ -479,7 +484,7 @@ describe("不可达状态与自动重连", () => {
     await expect(client.call("ping", {})).rejects.toThrow();
     expect(Date.now() - rejectStart).toBeLessThan(3_000);
 
-    await spawnDaemon({
+    await startDaemonAndDisconnect({
       repoDir: fixture.repoDir,
       dataRoot: fixture.dataRoot,
       sdkDir: resolveSdkDir(),
@@ -534,7 +539,7 @@ describe("睡眠感知重连", () => {
     offset.value += 5 * 60 * 1000;
     await delay(1_500);
 
-    await spawnDaemon({
+    await startDaemonAndDisconnect({
       repoDir: fixture.repoDir,
       dataRoot: fixture.dataRoot,
       sdkDir: resolveSdkDir(),
@@ -728,7 +733,7 @@ describe("守护进程日志归因边界", () => {
     const logDir = join(dataRoot, "repos", identity.repoId, "logs");
     const markers = ["第一次启动失败标记", "第二次启动失败标记"];
     await Promise.all(markers.map(async (marker) => {
-      await expect(spawnDaemon({ repoDir: repo.root, dataRoot, sdkDir: `/no/such/${marker}`, execPath: resolveNodeExecutable(),
+      await expect(startDaemonAndDisconnect({ repoDir: repo.root, dataRoot, sdkDir: `/no/such/${marker}`, execPath: resolveNodeExecutable(),
         hello: isolatedSpawnHello(repo.root) })).rejects.toThrow(marker);
     }));
     const files = await readdir(logDir);
@@ -1073,7 +1078,7 @@ describe("失败帧转换为 DaemonCallError", () => {
         );
       },
       (frame, socket) => {
-        socket.write(encodeFrame(createErrorResponse(frame.id, "already_active", "需求已有活动运行", { runId: "run-1" })));
+        socket.write(encodeFrame(createErrorResponse(frame.id, "pm_already_owned", "本需求已有有效 PM", { runId: "run-1" })));
       },
     );
 
@@ -1101,7 +1106,7 @@ describe("失败帧转换为 DaemonCallError", () => {
       }
 
       expect(caught).toBeInstanceOf(DaemonCallError);
-      expect((caught as DaemonCallError).code).toBe("already_active");
+      expect((caught as DaemonCallError).code).toBe("pm_already_owned");
       expect((caught as DaemonCallError).data).toEqual({ runId: "run-1" });
     } finally {
       fake.close();

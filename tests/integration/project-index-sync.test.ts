@@ -16,7 +16,7 @@ import { addWorktree } from "../helpers/repo-fixture.ts";
 import { createDaemonFixture, removeDaemonFixture, resolveSdkDir, spawnDaemonProcess, waitForSocketReady } from "../helpers/daemon-harness.ts";
 import type { SpawnedDaemon } from "../helpers/daemon-harness.ts";
 import { modelProviderEnv, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
-import { within } from "../helpers/m3-cleanup.ts";
+import { within } from "../helpers/within.ts";
 
 const cleanups: Array<() => Promise<unknown>> = [];
 const probeModule = fileURLToPath(new URL("../helpers/project-index-daemon-child.ts", import.meta.url));

@@ -11,7 +11,7 @@ import { ProjectIndexService } from "../runtime/project-index-service.ts";
 import { readIndexFile } from "../runtime/project-index-policy.ts";
 import { KnowledgeQuerySession } from "../runtime/knowledge-query.ts";
 import type { KnowledgeQueryAdapter, KnowledgeQueryCapture, KnowledgeFactPackage, KnowledgeRequirementMetadata } from "../runtime/knowledge-query.ts";
-import { KNOWLEDGE_QUERY_LIMITS, KnowledgeQueryError, KnowledgeQuerySchema, parseKnowledgeQuery } from "../runtime/knowledge-query-contracts.ts";
+import { KNOWLEDGE_QUERY_LIMITS, KnowledgeQueryError, parseKnowledgeQuery } from "../runtime/knowledge-query-contracts.ts";
 import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import type { RepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -322,7 +322,6 @@ test("32个长中文/转义文件按最终JSON整包48KiB分页，限制字段�
   for (let i = 0; i < 32; i++) await put(w.repo.root, `docs/bulk-${i}.json`, JSON.stringify({ title: "批量", expected }));
   await w.refresh();
   expect(KNOWLEDGE_QUERY_LIMITS.pageBytes).toBe(49152);
-  for (const variant of KnowledgeQuerySchema.oneOf) expect(variant.properties.maxBytes.maximum).toBe(49152);
   for (const maxBytes of [49153, 65536]) expect(() => parseKnowledgeQuery({ action: "facts", maxBytes })).toThrow();
   const session = new KnowledgeQuerySession(w.adapter);
   const pages = await all(session, { action: "search", text: "批量", pageSize: 20, maxBytes: 49152 });

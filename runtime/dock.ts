@@ -1,7 +1,5 @@
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 
-export type CaptureMode = "regular" | "fullscreen";
-
 export type DockFocus = "editor" | "panel";
 
 export interface TerminalInputResult {
@@ -25,10 +23,6 @@ export interface BottomDockOptions {
   isCompletionOpen(): boolean;
   isOverlayOpen(): boolean;
   onFocusChange?(focus: DockFocus): void;
-}
-
-export function canCapture(mode: CaptureMode): boolean {
-  return mode === "fullscreen";
 }
 
 export class BottomDock {

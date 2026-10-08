@@ -33,7 +33,6 @@ export const REQUIREMENT_READ_PARAMETERS = Type.Union([
   object({ action: Type.Literal("diff"), fromRevision: positive, toRevision: Type.Optional(positive), ...paging }),
   object({ action: Type.Literal("metadata") }),
 ]);
-export type RequirementReadParameters = Static<typeof REQUIREMENT_READ_PARAMETERS>;
 export interface RequirementReadAuthorization {
   readonly binding: Readonly<RequirementReadBinding>;
   readonly action: "read" | "diff" | "metadata";

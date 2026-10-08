@@ -33,26 +33,6 @@ export class KnowledgeQueryError extends Error {
   }
 }
 
-const pageProperties = {
-  pageSize: { type: "integer", minimum: 1, maximum: KNOWLEDGE_QUERY_LIMITS.pageSize },
-  maxBytes: { type: "integer", minimum: KNOWLEDGE_QUERY_LIMITS.minimumPageBytes, maximum: KNOWLEDGE_QUERY_LIMITS.pageBytes },
-  cursor: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
-};
-/** 模型参数只有查询条件和预算；授权、角色、工作区和数据根由可信宿主绑定。 */
-export const KnowledgeQuerySchema = Object.freeze({
-  oneOf: [
-    { type: "object", additionalProperties: false, required: ["action", "by", "value"], properties: {
-      action: { const: "exact" }, by: { enum: ["id", "path", "symbol"] }, value: { type: "string", minLength: 1, maxLength: 4096 }, ...pageProperties,
-    } },
-    { type: "object", additionalProperties: false, required: ["action", "text"], properties: {
-      action: { const: "search" }, text: { type: "string", minLength: 1, maxLength: 256 }, ...pageProperties,
-    } },
-    { type: "object", additionalProperties: false, required: ["action"], properties: {
-      action: { const: "facts" }, text: { type: "string", minLength: 1, maxLength: 256 }, ...pageProperties,
-    } },
-  ],
-});
-
 export function isKnowledgePath(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 4096 || /^[A-Za-z]:/u.test(value)
     || /[\u0000-\u001f\u007f]/u.test(value)) return false;
