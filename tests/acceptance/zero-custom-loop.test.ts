@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { appendFile, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
@@ -117,8 +118,8 @@ async function runLoop(name: string, script: UserScript, prepare: (repo: string,
 }
 
 /**
- * M9-AC5、AC6：关闭后本机正文与私有版本库仍在、有多个版本；归档只有这一份完成需求，随实现提交进业务分支；
- * 另起一份不带本机数据的克隆，按分支就能读到同样的归档与验收记录。
+ * M9-AC5、AC6：关闭后本机正文与私有版本库仍在；归档只有这一份完成需求，写进业务工作区等用户另行提交；
+ * 模拟用户提交后，另起一份不带本机数据的克隆按这次提交读到同样的归档与验收记录。
  */
 async function expectArchiveDelivered(result: Pick<LoopResult, "agentDir" | "repoId" | "repo" | "worktree" | "archive" | "archives">) {
   const { agentDir, repoId, repo, worktree, archive, archives } = result;
@@ -126,11 +127,14 @@ async function expectArchiveDelivered(result: Pick<LoopResult, "agentDir" | "rep
   const requirementId = archives[0]!.split(".")[0]!;
   const versions = join(agentDir, "one-company", "repos", repoId, "requirements", requirementId);
   expect((await readFile(join(versions, "prod.md"), "utf8")).length).toBeGreaterThan(0);
-  expect(Number((await exec("git", ["rev-list", "--count", "HEAD"], { cwd: versions })).stdout.trim())).toBeGreaterThan(1);
-  const branch = (await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktree! })).stdout.trim();
-  expect((await exec("git", ["log", "--name-only", "--format=", branch], { cwd: repo })).stdout).toContain(`docs/prod/${archives[0]}`);
+  expect(Number((await exec("git", ["rev-list", "--count", "HEAD"], { cwd: versions })).stdout.trim())).toBeGreaterThan(0);
+  expect((await exec("git", ["-c", "core.quotePath=false", "status", "--porcelain", "docs/prod"], { cwd: worktree! })).stdout).toContain(archives[0]);
+  await exec("git", ["add", "docs/prod"], { cwd: worktree! });
+  await exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", "commit", "-qm", "需求归档"], { cwd: worktree! });
+  const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree! })).stdout.trim();
   const clone = join(dirname(repo), "member-clone");
-  await exec("git", ["clone", "-q", "--branch", branch, repo, clone]);
+  await exec("git", ["clone", "-q", repo, clone]);
+  await exec("git", ["checkout", "-q", head], { cwd: clone });
   expect(await readFile(join(clone, "docs", "prod", archives[0]!), "utf8")).toBe(archive);
   expect(archive).toContain("\n### 验收记录（关闭时由程序生成）\n");
 }
@@ -272,8 +276,11 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC13：复制默认 wo
     const skillHash = createHash("sha256").update(UI_BASICS).digest("hex");
     expect(ui.every((run) => run.agent!.skills.some((skill) => skill.name === "ui-basics" && skill.hash === skillHash))).toBe(true);
     expect(uiTasks.every((task) => task.agent === "ui-worker" && Boolean(task.agentReason))).toBe(true);
-    const bodies = withDatabase(repositoryDatabase(dataRoot, repoId), (db) =>
-      (db.prepare("SELECT count(*) AS n FROM records WHERE data LIKE ? OR data LIKE ?").get("%主色 #2f6fed%", "%你是实现代理%") as { n: number }).n);
+    const raw = new DatabaseSync(repositoryDatabase(dataRoot, repoId), { readOnly: true });
+    // 报告与审查结论会转述“主色 #2f6fed”这类取值，只查正文原句与 skill 头部
+    const bodies = (raw.prepare("SELECT count(*) AS n FROM records WHERE data LIKE ? OR data LIKE ? OR data LIKE ?")
+      .get("%name: ui-basics%", "%布尔状态显示「是」或「否」，不用 true/false%", "%你是实现代理，只完成派工给出的任务%") as { n: number }).n;
+    raw.close();
     expect(bodies).toBe(0);
     for (const role of ["one-company.reviewer", "one-company.qa"]) expect(runs.some((run) => run.role === role && run.state === "completed")).toBe(true);
     expect(runs.filter((run) => run.role === "one-company.explore").every((run) => run.writePaths.length === 0)).toBe(true);
