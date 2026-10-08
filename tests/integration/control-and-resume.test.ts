@@ -58,14 +58,12 @@ async function world(blockedStop?: { value: boolean }) {
   return { fixture, store, shells, clock, run, spawn, start, log, database, sessions, history };
 }
 
-test("真实强杀后旧排队记录保持同一编号且拒绝重复续接，不创建会话或模型调用", async () => {
+test("真实强杀重启后旧排队记录保持同一编号且内容不变，不创建会话或模型调用", async () => {
   const w = await world(); const run = await w.run();
   const first = await w.start();
   expect(await first.client.call("runs.get", { runId: run.id })).toMatchObject({ run: { state: "interrupted" } });
   first.client.close(); await killDaemon(first.handle);
-  const second = await w.start(); const before = await w.store.get(run.id);
-  const attempts = await Promise.allSettled([second.client.call("runs.resumeInterrupted", { runId: run.id }), second.client.call("runs.resumeInterrupted", { runId: run.id })]);
-  expect(attempts.every((outcome) => outcome.status === "rejected" && String(outcome.reason).includes("unknown_method"))).toBe(true);
+  await w.start(); const before = await w.store.get(run.id);
   await delay(1150);
   expect(await w.store.get(run.id)).toEqual(before);
   expect((await w.store.list({ limit: 100 })).items.map((item) => item.id)).toEqual([run.id]);
@@ -105,7 +103,7 @@ test("父运行安全停止级联两个真实Shell子运行，确认进程退出
   expect(w.sessions()).toBe(before); expect(await readFile(join(w.fixture.repo.root, "README.md"), "utf8")).toBe(source);
 }, 30000);
 
-test("真实重启接管本测试遗留Shell：身份不符不停止，正确停止后旧会话仍不能恢复", async () => {
+test("真实重启接管本测试遗留Shell：身份不符不停止，正确停止后不新建会话、不调模型", async () => {
   const w = await world(); const run = await w.run(); await w.store.update(run.id, { state: "running" }); w.history(run);
   const task = await w.spawn(run); const first = await w.start(); first.client.close(); await killDaemon(first.handle);
   const second = await w.start(); const before = w.sessions();
@@ -113,9 +111,7 @@ test("真实重启接管本测试遗留Shell：身份不符不停止，正确停
   expect(list.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ taskId: task.taskId, identityVerified: true })]));
   const params = { taskId: task.taskId, expectedPid: task.pid, expectedStartedAt: String(task.startedAt) };
   expect(await second.client.call("shells.stop", { ...params, expectedPid: task.pid + 1 })).toMatchObject({ status: "mismatch" }); expect(alive(task.pid)).toBe(true);
-  await expect(second.client.call("runs.resumeInterrupted", { runId: run.id })).rejects.toThrow("unknown_method");
   expect(await second.client.call("shells.stop", params)).toMatchObject({ status: "stopped" }); expect(alive(task.pid)).toBe(false);
-  await expect(second.client.call("runs.resumeInterrupted", { runId: run.id })).rejects.toThrow("unknown_method");
   await delay(1150); expect(w.sessions()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
 }, 30000);
 

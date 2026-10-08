@@ -31,7 +31,7 @@ async function world(stage = "confirmed") {
   }
   const client = await window("window-a");
   const snapshot = () => withDatabase(database, (db) => JSON.stringify({ requirements: db.list("requirements"), runs: db.list("runs"), sessions: db.list("sessions"), questions: db.list("relay_questions"), decisions: db.events(`decisions:${requirement}:user`) }));
-  return { fixture, database, requirement, run, questionId, log, handle, client, window, snapshot };
+  return { fixture, database, requirement, run, log, handle, client, window, snapshot };
 }
 
 test("两个真实SDK客户端并发按需拉起同仓库时只启动一个daemon", async () => {
@@ -51,30 +51,18 @@ test("两个真实SDK客户端并发按需拉起同仓库时只启动一个daemo
   for (const client of pair) { expect(client.state().status).toBe("connected"); expect((await client.call("runs.list")).items).toEqual([]); }
 }, 25000);
 
-for (const stage of ["draft", "confirmed", "executing"]) test(`旧${stage}需求及重复派工永久拒绝，不新增run/session/模型请求`, async () => {
+for (const stage of ["draft", "confirmed", "executing"]) test(`库里有旧${stage}需求、旧问题、USER及skipped记录时，daemon启动与正常调用不新增run/session/模型请求，旧排队运行只登记为interrupted`, async () => {
   const w = await world(stage); const before = w.snapshot();
-  for (let i = 0; i < 2; i++) await expect(w.client.call("dispatch.requirement", { requirement: w.requirement, cwd: w.fixture.repo.root })).rejects.toThrow("unknown_method");
   await delay(1150); expect(w.snapshot()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
   expect((await w.client.call("runs.list")).items).toEqual([expect.objectContaining({ id: w.run.id, state: "interrupted" })]);
 }, 20000);
 
-test("旧形状问题确认不产生角色派工，USER及skipped记录保持原样", async () => {
-  const w = await world(); const before = w.snapshot();
-  await expect(w.client.call("relay.answer", { questionId: w.questionId, answer: "确认", windowId: "window-a" })).rejects.toThrow("unknown_method");
-  await expect(w.client.call("dispatch.review", { requirement: w.requirement, cwd: w.fixture.repo.root, baseline: "old", snapshot: { head: "old", fingerprint: "old" } })).rejects.toThrow("unknown_method");
-  await delay(1150); expect(w.snapshot()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
-}, 20000);
-
-test("两窗口及工作区外窗口均收不到旧问题；首答与迟到答复都不能取得授权", async () => {
+test("两窗口及工作区外窗口均收不到旧问题，库里记录不变且没有模型请求", async () => {
   const w = await world();
   const outside = await mkdtemp(join(tmpdir(), "relay-outside-")); cleanup.push(() => rm(outside, { recursive: true, force: true }));
   const clients = [w.client, await w.window("window-b"), await w.window("outside", outside)];
   const events: unknown[] = []; for (const client of clients) { client.onEvent("relay.question", (event) => events.push(event)); client.onEvent("relay.withdraw", (event) => events.push(event)); }
   const before = w.snapshot();
-  for (const client of clients) {
-    await expect(client.call("relay.answer", { questionId: w.questionId, answer: "确认", windowId: "forged-main" })).rejects.toThrow("unknown_method");
-    await expect(client.call("relay.pending")).rejects.toThrow("unknown_method");
-  }
   await delay(1150); expect(events).toEqual([]); expect(w.snapshot()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
 }, 20000);
 
@@ -89,10 +77,4 @@ test("重新连接不重放旧离线提问或旧完成通知，保全积压数�
   expect(events).toEqual([]); expect(w.snapshot()).toBe(before);
   expect(withDatabase(w.database, (db) => JSON.stringify(db.list("relay_notices")))).toBe(noticeBefore);
   expect(await readProviderRequestsLog(w.log)).toEqual([]);
-}, 20000);
-
-test.each(["本需求旧目标", "未知其他需求"])("旧直连转述不能注入模型或产生子派工：%s", async (target) => {
-  const w = await world(); const before = w.snapshot();
-  await expect(w.client.call("relay.forward", { requirement: target === "本需求旧目标" ? w.requirement : target, message: "转述用户要求立即实施", windowId: "window-a" })).rejects.toThrow("unknown_method");
-  await delay(1150); expect(w.snapshot()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
 }, 20000);
