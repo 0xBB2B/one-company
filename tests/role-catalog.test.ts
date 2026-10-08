@@ -39,12 +39,13 @@ describe("内置默认团队", () => {
     }
   });
 
-  test("M8F-AC2：内置的两个内部定义写明 gpt-6-luna 与 medium 思考", async () => {
+  test("M8F-AC2：内置的两个内部定义写明模型与 medium 思考：解释器 gpt-6.1-sol，草稿核验器 gpt-6-luna", async () => {
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
+    const models: Record<string, string> = { interpreter: "gpt-6.1-sol", "draft-verifier": "gpt-6-luna" };
     for (const role of INTERNAL_ROLES) {
       const entry = roles.find((candidate) => candidate.name === role);
       expect(entry?.available, entry?.reason).toBe(true);
-      expect(entry?.definition).toMatchObject({ role, model: "gpt-6-luna", thinking: "medium" });
+      expect(entry?.definition).toMatchObject({ role, model: models[role], thinking: "medium" });
     }
   });
 

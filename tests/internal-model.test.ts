@@ -8,8 +8,8 @@ import { resolveInternalModel } from "../runtime/internal-model.ts";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const model = (provider: string, id: string) => ({ provider, id, api: "openai-responses" }) as unknown as Model<Api>;
-const MAIN = model("5x", "gpt-6-sol"), LUNA = model("5x", "gpt-6-luna"), NOAUTH = model("other", "fast");
-const registry = { getAll: () => [MAIN, LUNA, NOAUTH],
+const MAIN = model("5x", "gpt-6-sol"), SOL = model("5x", "gpt-6.1-sol"), LUNA = model("5x", "gpt-6-luna"), NOAUTH = model("other", "fast");
+const registry = { getAll: () => [MAIN, SOL, LUNA, NOAUTH],
   hasConfiguredAuth: (m: Model<Api>) => m !== NOAUTH };
 
 async function world() {
@@ -24,9 +24,10 @@ async function world() {
   return { agentDir, repo, user: join(agentDir, "agents"), project: join(repo, ".pi", "agents"), define, resolve };
 }
 
-test("M8F-AC2：没有自定义时解释器与草稿核验器用包内写明的 gpt-6-luna 加 medium 思考", async () => {
+test("M8F-AC2：没有自定义时解释器用包内写明的 gpt-6.1-sol、草稿核验器用 gpt-6-luna，都加 medium 思考", async () => {
   const w = await world();
-  for (const role of ["interpreter", "draft-verifier"] as const) expect(await w.resolve(role)).toEqual({ model: LUNA, thinking: "medium" });
+  expect(await w.resolve("interpreter")).toEqual({ model: SOL, thinking: "medium" });
+  expect(await w.resolve("draft-verifier")).toEqual({ model: LUNA, thinking: "medium" });
 });
 
 test("M8D-AC8、M8F-AC3：用户层同名定义改的模型与思考等级生效，只影响对应的那一个；定义不写 model 时跟主会话模型", async () => {
@@ -41,7 +42,7 @@ test("M8D-AC8、M8F-AC3：用户层同名定义改的模型与思考等级生效
 test("M8D-AC8：项目层定义只在项目受信任时生效", async () => {
   const w = await world();
   await w.define(w.project, "interpreter", "model: 5x/gpt-6-sol");
-  expect((await w.resolve("interpreter", false)).model).toBe(LUNA);
+  expect((await w.resolve("interpreter", false)).model).toBe(SOL);
   expect((await w.resolve("interpreter", true)).model).toBe(MAIN);
 });
 
@@ -58,7 +59,7 @@ test("M8D-AC8：配置的模型找不到或没有凭据时写明原因，不改�
 test("M8F-AC2：本机没有包内写明的模型时明确失败，不改用主会话模型", async () => {
   const w = await world();
   await expect(resolveInternalModel({ role: "interpreter", agentDir: w.agentDir, repositoryRoot: w.repo, projectTrusted: false, mainModel: MAIN,
-    registry: { getAll: () => [MAIN], hasConfiguredAuth: () => true } })).rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("找不到模型 gpt-6-luna") });
+    registry: { getAll: () => [MAIN], hasConfiguredAuth: () => true } })).rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("找不到模型 gpt-6.1-sol") });
 });
 
 test("M8D-AC8：定义没写模型且主会话也没选模型时写明原因", async () => {
