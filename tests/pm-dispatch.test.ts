@@ -11,6 +11,8 @@ import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
+import { draftApprover } from "./helpers/approval-fixture.ts";
+import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
 import { RunStore } from "../runtime/run-store.ts";
@@ -58,15 +60,14 @@ async function plainWorld(options: { prepare?: boolean; activate?: boolean } = {
     if (request.action === "metadata") return true;
     const grant = request.operationId ? grants.get(request.operationId) : undefined;
     return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
-  } });
+  }, authorizeManifest: () => true });
+  const grantWrite: WriteGrant = (r) => grants.set(r.operationId, { action: r.action, intent: requirementIntentHash({ title: r.title, body: r.body }), receiptId: r.receiptId });
   const state = await RequirementStateStore.open({ ...base, authorize: (request) => request.repoId === repoId && ["open", "read"].includes(request.action) });
   const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: BODY };
   grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: BODY }) });
   const { requirementId } = await service.create(create);
   if (options.activate !== false) {
-    const confirm = { requirementId, operationId: uuidv7(), version: state.read(requirementId).version, title: "角色跳跃", body: BODY, receiptId: uuidv7() };
-    grants.set(confirm.operationId, { action: "confirmUpdate", intent: requirementIntentHash({ title: confirm.title, body: BODY }), receiptId: confirm.receiptId });
-    await service.confirmUpdate(confirm);
+    await draftApprover(base, service, { requirementId, operationId: create.operationId, title: "角色跳跃", body: BODY }, grantWrite, false)();
     if (options.prepare !== false) {
       const workspace = await WorkspaceManageService.open({ ...base, confirm: async () => true });
       const ready = await workspace.prepare({ requirementId, operationId: uuidv7() });

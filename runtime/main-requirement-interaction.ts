@@ -289,10 +289,10 @@ export class MainRequirementInteraction {
       if (!current || current.id !== requirementId || current.version !== before.version || !same(current.data, before.data) ||
         current.version !== r.version || before.data.epoch !== r.epoch) denied("stale_result");
       const record = { ...current, data: checkRequirement(current.data, requirementId, repoId) };
-      const actualScope: ResultScope = scope ?? (record.data.lifecycle === "active" ? { kind: "approved", scope: record.data.approvalManifest
-        ? { status: "available", summary: record.data.approvalManifest } : { status: "unavailable" } } : { kind: "none" });
+      const actualScope: ResultScope = scope ?? (record.data.lifecycle === "active"
+        ? { kind: "approved", scope: { status: "available", summary: record.data.approvalManifest! } } : { kind: "none" });
       if (r.approvalScope !== undefined && actualScope.kind !== "none" && !same(r.approvalScope, actualScope.kind === "approved" ? actualScope.scope : { status: "available", summary: actualScope.proof.summary })) denied("result_scope_changed");
-      const reference = actualScope.kind === "registered" ? actualScope.proof.reference : actualScope.kind === "approved" && actualScope.scope.status === "available" ? actualScope.scope.summary.reference : undefined;
+      const reference = actualScope.kind === "registered" ? actualScope.proof.reference : actualScope.kind === "approved" ? actualScope.scope.summary.reference : undefined;
       const allRows = [...rows];
       if (reference) {
         const manifestRow = db.read(APPROVAL_MANIFEST_NAMESPACE, reference.manifestHash);
@@ -794,7 +794,7 @@ export class MainRequirementInteraction {
     // 历史diff端点不是当前执行许可；当前范围单独核验并标明。
     if (request.action === "diff" && request.toRevision !== undefined && request.toRevision !== current.data.revision) {
       return this.#prove(ctx, request.repoId, { ...wrapped, historicalEndpoints: true,
-        approvalScope: current.data.approvalManifest ? { status: "available", summary: current.data.approvalManifest } : { status: "unavailable" } });
+        approvalScope: { status: "available", summary: current.data.approvalManifest! } });
     }
     return this.#prove(ctx, request.repoId, wrapped);
   }

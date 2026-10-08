@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { repositoryDatabase, uuidv7 } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
+import { draftApprover } from "./helpers/approval-fixture.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { DatabaseSync } from "node:sqlite";
 import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -102,7 +103,7 @@ async function world() {
   await chmod(repo.root, 0o700);
   const identity = await repositoryIdentity(repo.root);
   const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId,
-    authorize: () => true };
+    authorize: () => true, authorizeManifest: () => true };
   const service = await RequirementService.open(options);
   const state = await RequirementStateStore.open(options);
   const created = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "进程事件测试", body: BODY1 });
@@ -110,10 +111,10 @@ async function world() {
   await chmod(worktree.root, 0o700);
   // 绑定所需的实际Git提交从已创建的测试仓库读取，不使用需求Git的HEAD。
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree.root, encoding: "utf8" }).trim();
-  const bound = await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
+  await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit: head });
-  const approved = await service.confirmUpdate({ requirementId: created.requirementId, operationId: uuidv7(), version: bound.version,
-    title: "进程事件测试", body: BODY1, receiptId: uuidv7() });
+  const approveBody = draftApprover(options, service, { requirementId: created.requirementId, operationId: created.operationId, title: "进程事件测试", body: BODY1 });
+  const approved = await approveBody();
   const effectsPath = join(root, "effects.txt");
   await writeFile(effectsPath, "", { mode: 0o600 });
   const now = Date.now();
@@ -131,8 +132,7 @@ async function world() {
   async function approve(body: string, draft?: string) {
     if (draft) await service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(),
       version: state.read(created.requirementId).version, title: "进程事件测试", body: draft });
-    return service.confirmUpdate({ requirementId: created.requirementId, operationId: uuidv7(),
-      version: state.read(created.requirementId).version, title: "进程事件测试", body, receiptId: uuidv7() });
+    return approveBody(body);
   }
   async function assertNoBodyInDatabase() {
     const path = repositoryDatabase(options.dataRoot, options.repoId);

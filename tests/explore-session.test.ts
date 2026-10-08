@@ -6,6 +6,8 @@ import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
+import { draftApprover } from "./helpers/approval-fixture.ts";
+import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { createResultSubmitTool } from "../runtime/result-submit.ts";
 import { checkExploreSession, endExploreSession, endRequirementExploreSessionsIn, registerExploreSession } from "../runtime/explore-session.ts";
@@ -34,7 +36,8 @@ async function world() {
     if (request.action === "metadata") return true;
     const grant = request.operationId ? grants.get(request.operationId) : undefined;
     return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
-  } });
+  }, authorizeManifest: () => true });
+  const grantWrite: WriteGrant = (r) => grants.set(r.operationId, { action: r.action, intent: requirementIntentHash({ title: r.title, body: r.body }), receiptId: r.receiptId });
   const state = await RequirementStateStore.open({ ...options, authorize: (request) => request.repoId === options.repoId &&
     ["open", "read", "bind-workspace", "acquire-pm", "release-pm", "check-pm", "begin-close", "finish-close", "events"].includes(request.action) });
   async function requirement(title: string) {
@@ -44,9 +47,7 @@ async function world() {
     const worktree = await addWorktree(repo);
     const baseCommit = (await runGit(["rev-parse", "HEAD"], worktree.root)).trim();
     await state.bindWorkspace({ requirementId: created.requirementId, version: state.read(created.requirementId).version, path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
-    const confirm = { requirementId: created.requirementId, operationId: uuidv7(), version: state.read(created.requirementId).version, title, body: BODY, receiptId: uuidv7() };
-    grants.set(confirm.operationId, { action: "confirmUpdate", intent: requirementIntentHash({ title, body: BODY }), receiptId: confirm.receiptId });
-    await service.confirmUpdate(confirm);
+    await draftApprover(options, service, { requirementId: created.requirementId, operationId: create.operationId, title, body: BODY }, grantWrite)();
     const lease = await state.acquirePm({ requirementId: created.requirementId, version: state.read(created.requirementId).version, runId: uuidv7(), expectedFence: 0 });
     return { id: created.requirementId, lease, worktree };
   }

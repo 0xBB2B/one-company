@@ -227,7 +227,7 @@ test("M8A-AC7：没有绑定工作区也按批准清单激活", async () => {
 test("新批准接缝拒绝缺manifest、假ref、不同正文、跨需求与漏hash", async () => {
   const f = await fixture(); const input = f.confirm();
   const { manifest: _manifest, ...missing } = input;
-  await expect(f.approver.confirmUpdate(missing)).rejects.toMatchObject({ code: "manifest_required" });
+  await expect(f.approver.confirmUpdate(missing as never)).rejects.toMatchObject({ code: "invalid_shape" });
   await expect(f.approver.confirmUpdate({ ...input, body: "只含A，偷换B" })).rejects.toMatchObject({ code: "manifest_candidate_mismatch" });
   await expect(f.approver.confirmUpdate({ ...input, manifest: { ...input.manifest, requirementId: uuidv7() } })).rejects.toMatchObject({ code: "manifest_candidate_mismatch" });
   const malformed = structuredClone(input) as any; delete malformed.manifest.manifestHash;
@@ -343,7 +343,7 @@ test("活动候选diff使用准确已批准到saved提交，不用最近两个Gi
   expect(context.difference).toMatchObject({ kind: "diff", from: { commit: approved.commit }, to: { commit: second.commit } });
   expect(context.difference.text).toContain("+草稿二"); expect(context.difference.text).not.toContain("-草稿一");
   expect(context.approved?.commit).toBe(approved.commit);
-  expect((await f.service.read({ requirementId: approved.requirementId, source: "saved" })).approvalScope).toEqual({ status: "unavailable" });
+  expect((await f.service.read({ requirementId: approved.requirementId, source: "saved" })).approvalScope).toBeUndefined();
 });
 
 test("纯重复confirm不换manifest，响应丢失后同操作仍只有一条批准事件", async () => {

@@ -9,6 +9,7 @@ import { RequirementEventService, RequirementEventServiceError } from "../runtim
 import type { ApprovedChangeDelivery, PreparedRequirementDelivery, RequirementEventAuthorizationRequest,
   RequirementEventServiceOptions } from "../runtime/requirement-events.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
+import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
 import { RequirementOperations } from "../runtime/requirement-operations.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
@@ -30,30 +31,33 @@ async function world(authorize: RequirementEventServiceOptions["authorize"] = ()
   const identity = await repositoryIdentity(repo.root);
   const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId,
     ...(now ? { now } : {}) };
-  const service = await RequirementService.open({ ...options, authorize: () => true });
+  const service = await RequirementService.open({ ...options, authorize: () => true, authorizeManifest: () => true });
   const state = await RequirementStateStore.open({ ...options, authorize: () => true });
   const events = await RequirementEventService.open({ ...options, authorize });
   cleanups.push(async () => { events.dispose(); });
   const created = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "可靠事件", body: "批准基线" });
   const worktree = await addWorktree(repo);
   const baseCommit = (await exec(GIT, ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
-  const bound = await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
+  await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
-  const approved = await service.confirmUpdate({ requirementId: created.requirementId, operationId: uuidv7(), version: bound.version,
-    title: "可靠事件", body: "批准基线", receiptId: uuidv7() });
+  const approved = await service.confirmUpdate(await manifestConfirmInput(options, { requirementId: created.requirementId, savedOperationId: created.operationId }));
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: approved.version, runId: uuidv7(), expectedFence: 0 });
   return { root, repo, identity, options, service, state, events, created, approved, lease, worktree };
 }
 
+async function save(w: Awaited<ReturnType<typeof world>>, body: string) {
+  return w.service.updateDraft({ requirementId: w.created.requirementId, operationId: uuidv7(),
+    version: w.state.read(w.created.requirementId).version, title: "可靠事件", body });
+}
+
+async function confirmInput(w: Awaited<ReturnType<typeof world>>, body: string) {
+  const saved = await save(w, body);
+  return manifestConfirmInput(w.options, { requirementId: w.created.requirementId, savedOperationId: saved.operationId });
+}
+
 async function approve(w: Awaited<ReturnType<typeof world>>, body: string, draft?: string) {
-  let current = w.state.read(w.created.requirementId);
-  if (draft !== undefined) {
-    await w.service.updateDraft({ requirementId: w.created.requirementId, operationId: uuidv7(), version: current.version,
-      title: "可靠事件", body: draft });
-    current = w.state.read(w.created.requirementId);
-  }
-  return w.service.confirmUpdate({ requirementId: w.created.requirementId, operationId: uuidv7(), version: current.version,
-    title: "可靠事件", body, receiptId: uuidv7() });
+  if (draft !== undefined) await save(w, draft);
+  return w.service.confirmUpdate(await confirmInput(w, body));
 }
 
 function consumePrepared(
@@ -123,9 +127,7 @@ test("批准事件只存白名单元数据，基线登记与确认分离且响�
 
 test("批准状态与持久事件同事务，事件写失败不留下半份批准", async () => {
   const w = await world();
-  const current = w.state.read(w.created.requirementId);
-  const input = { requirementId: w.created.requirementId, operationId: uuidv7(), version: current.version,
-    title: "可靠事件", body: "队列恢复后的批准", receiptId: uuidv7() };
+  const input = await confirmInput(w, "队列恢复后的批准");
   const database = repositoryDatabase(w.options.dataRoot, w.options.repoId);
   const restore = failDatabaseWrites(database, "events", "stream", `requirement_events:${w.created.requirementId}`);
   try { await expect(w.service.confirmUpdate(input)).rejects.toBeTruthy(); }
@@ -141,9 +143,7 @@ test("批准状态与持久事件同事务，事件写失败不留下半份批�
 
 test("批准落库后响应丢失，原操作重试不重复持久事件", async () => {
   const w = await world();
-  const current = w.state.read(w.created.requirementId);
-  const input = { requirementId: w.created.requirementId, operationId: uuidv7(), version: current.version,
-    title: "可靠事件", body: "响应丢失后的批准", receiptId: uuidv7() };
+  const input = await confirmInput(w, "响应丢失后的批准");
   const original = RequirementOperations.prototype.finalize;
   vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementationOnce(() => {
     throw new Error("lost approval response");

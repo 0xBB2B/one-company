@@ -72,7 +72,7 @@ export const ApprovedProdChange = object({
   fromRevision: nullable(positive), toRevision: positive,
   from: nullable(ProdReference), to: ProdReference, receiptId: id,
   lifecycleEpoch: positive, recordVersion: positive,
-  approvalManifest: Type.Optional(ApprovalSummary),
+  approvalManifest: ApprovalSummary,
 });
 export type ApprovedProdChange = Static<typeof ApprovedProdChange>;
 export const BaselineDelivery = object({
@@ -107,7 +107,7 @@ export const commands = {
   reserve: object({ requestId: id, intentHash: hash }),
   save: object({ requirementId: id, version: positive, operationId: id, reference: ProdReference }),
   approve: object({ requirementId: id, version: positive, receiptId: id, reference: ProdReference,
-    manifest: Type.Optional(ApprovalManifestReferenceSchema), docSpec: Type.Optional(RequirementDocSpecSchema) }),
+    manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema) }),
   bind: object({ requirementId: id, version: positive, path: Type.String({ minLength: 1, maxLength: 4096 }), prepareOperationId: id, baseCommit: commit }),
   acquire: object({ requirementId: id, version: positive, runId: id, expectedFence: counter }),
   close: object({ requirementId: id, version: positive, intent: CloseIntent }),
@@ -151,7 +151,6 @@ const REQUIREMENT_STATE_ADVICE = {
   workspace_claim_missing: { why: "找不到工作区的占用登记", next: COMMON_ADVICE.internal_state.next },
   operation_conflict: { why: "同一操作编号已用于不同的需求或内容", next: "换一个新生成的操作编号重试" },
   saved_event_missing: { why: "找不到已保存版本的事件记录", next: COMMON_ADVICE.internal_state.next },
-  manifest_required: { why: "批准需要附带批准清单", next: "先生成批准清单再批准" },
   manifest_authorization_required: { why: "宿主没有授权这份批准清单", next: "请用户在主窗口重新确认批准" },
   workspace_binding_changed: { why: "需求的工作区绑定已变化", next: STOP },
   saved_version_mismatch: { why: "要批准的版本不是当前保存的版本", next: "重新读取当前保存版本，按它重新确认" },
@@ -208,7 +207,7 @@ export function checkRequirement(value: unknown, requirementId: string, repoId: 
   if (record.requirementId !== requirementId || record.repoId !== repoId || record.updatedAt < record.createdAt ||
     ((record.approved === null) !== (record.approvalReceiptId === null)) || ((record.approved === null) !== (record.revision === 0)) ||
     (record.approved !== null && record.saved === null) ||
-    (record.approvalManifest !== undefined && (!record.approved || record.approvalManifest.reference.requirementId !== requirementId ||
+    (record.approved === null ? record.approvalManifest !== undefined : (record.approvalManifest === undefined || record.approvalManifest.reference.requirementId !== requirementId ||
       record.approvalManifest.reference.candidate.to.commit !== record.approved.commit || record.approvalManifest.reference.candidate.to.hash !== record.approved.hash)) ||
     (record.lifecycle === "draft" && record.approved !== null) ||
     ((record.recovery === "ready") !== (record.recoveryReason === null)) ||

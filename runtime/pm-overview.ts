@@ -70,15 +70,14 @@ function reviewPassedFor(input: Pick<PmOverviewInput, "dataRoot" | "repoId" | "l
   const review = new PmIntakeStore({ dataRoot: input.dataRoot, repoId: input.repoId }).readHead(lease.requirementId)?.review;
   if (review?.result !== "passed" || review.binding.pmRunId !== lease.runId || review.binding.pmFence !== lease.fence ||
     review.binding.contextGeneration !== lease.contextGeneration) return false;
-  if (!record.approved || !record.approvalManifest || review.binding.approvedRevision !== record.revision) return true;
+  if (!record.approved || review.binding.approvedRevision !== record.revision) return true;
   const latest = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: lease.runId, baseline: {
-    approvedRevision: record.revision, approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest.reference.manifestHash } });
+    approvedRevision: record.revision, approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash } });
   return !latest || review.submissionRef === `pm/${lease.runId}/${latest.toolCallId}`;
 }
 
 function questionPending(db: LocalDatabase, repoId: string, record: RequirementRecord, row: ReturnType<typeof requirementRow>, questionId: string): boolean {
-  if (!record.approvalManifest) return true;
-  const manifest = registeredApprovalManifestIn(db, repoId, record.approvalManifest.reference, row);
+  const manifest = registeredApprovalManifestIn(db, repoId, record.approvalManifest!.reference, row);
   const entry = manifest.questions.find((question) => question.requestId === questionId);
   return entry === undefined || entry.pendingIds.length > 0;
 }
@@ -103,9 +102,9 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
       : ({ execute: "两次未完成", review: "两次审查未完成", rework: "两次未通过审查" } as const)[stalledStage(task)];
     items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label: `待你裁决：任务 ${task.key} ${cause}`, version: `task:${task.taskId}:${row.version}` });
   }
-  if (input.record.approved && input.record.approvalManifest && !reviewPassedFor(input)) {
+  if (input.record.approved && !reviewPassedFor(input)) {
     const submission = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: input.lease.runId, baseline: {
-      approvedRevision: input.record.revision, approvedProdHash: input.record.approved.hash, approvalManifestHash: input.record.approvalManifest.reference.manifestHash } });
+      approvedRevision: input.record.revision, approvedProdHash: input.record.approved.hash, approvalManifestHash: input.record.approvalManifest!.reference.manifestHash } });
     if (submission) items.push({ itemId: `intake:${input.lease.runId}`, kind: "intake-review", label: `待你核对：PM 接手理解 r${input.record.revision}`,
       version: `intake:${input.lease.runId}:${submission.toolCallId}` });
   }
@@ -117,7 +116,7 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
       if (asked.has(questionId) || !questionPending(input.db, input.repoId, input.record, row, questionId)) continue;
       asked.add(questionId);
       items.push({ itemId: `question:${questionId}`, kind: "question", label: `待你回答：任务 ${task.key} 的未决问题`,
-        version: `question:${questionId}:${input.record.approvalManifest?.reference.manifestHash ?? "none"}` });
+        version: `question:${questionId}:${input.record.approvalManifest!.reference.manifestHash}` });
     }
   }
   for (const task of tasks) {
@@ -184,9 +183,8 @@ export function pmOverview(input: PmOverviewInput): PmOverview {
   const input_ = sum((run) => run.usage?.input ?? 0), cacheRead = sum((run) => run.usage?.cacheRead ?? 0), cacheWrite = sum((run) => run.usage?.cacheWrite ?? 0);
   const prompt = input_ + cacheRead + cacheWrite;
   const pausedNow = input.pm.pausedAt ? Math.max(0, input.now - Date.parse(input.pm.pausedAt)) : 0;
-  const manifest = input.record.approvalManifest
-    ? registeredApprovalManifestIn(input.db, input.repoId, input.record.approvalManifest.reference, requirementRow(input.db, input.lease.requirementId)) : null;
-  const goals = manifest ? [...implementScope(manifest, input.record.docSpec?.sections ?? [])].map((unitId) => input.headingTitles.get(unitId) ?? unitId) : [];
+  const manifest = registeredApprovalManifestIn(input.db, input.repoId, input.record.approvalManifest!.reference, requirementRow(input.db, input.lease.requirementId));
+  const goals = [...implementScope(manifest, input.record.docSpec?.sections ?? [])].map((unitId) => input.headingTitles.get(unitId) ?? unitId);
   return {
     requirementId: input.lease.requirementId, pmRunId: input.pm.id, goals, status,
     doing: doingOf(input, tasks, plan, status, items),

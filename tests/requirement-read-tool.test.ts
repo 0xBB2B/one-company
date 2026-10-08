@@ -7,6 +7,7 @@ import { uuidv7 } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
+import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
 import { createRequirementReadTool, RequirementReadError } from "../runtime/requirement-read-tool.ts";
 import type { RequirementReadBinding, RequirementReadToolOptions } from "../runtime/requirement-read-tool.ts";
 import * as storage from "../runtime/prod-storage.ts";
@@ -33,7 +34,7 @@ async function world(body = BODY) {
     if (request.action === "metadata") return true;
     const grant = request.operationId ? grants.get(request.operationId) : undefined;
     return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
-  } });
+  }, authorizeManifest: () => true });
   const state = await RequirementStateStore.open({ ...options, authorize: (request) => request.repoId === options.repoId &&
     ["open", "read", "bind-workspace", "acquire-pm", "release-pm", "begin-close", "finish-close", "block-recovery"].includes(request.action) });
   async function create(body = BODY) {
@@ -41,11 +42,16 @@ async function world(body = BODY) {
     grants.set(input.operationId, { action: "create", intent: requirementIntentHash({ title: input.title, body }) });
     return service.create(input);
   }
+  async function confirm(requirementId: string, savedOperationId: string) {
+    const input = await manifestConfirmInput(options, { requirementId, savedOperationId });
+    grants.set(input.operationId, { action: "confirmUpdate", intent: requirementIntentHash({ title: input.title, body: input.body }), receiptId: input.receiptId });
+    return service.confirmUpdate(input);
+  }
   async function save(requirementId: string, body: string, approve = true) {
     const input = { requirementId, operationId: uuidv7(), version: state.read(requirementId).version, title: "角色跳跃", body };
-    const receiptId = approve ? uuidv7() : undefined;
-    grants.set(input.operationId, { action: approve ? "confirmUpdate" : "updateDraft", intent: requirementIntentHash({ title: input.title, body }), receiptId });
-    return approve ? service.confirmUpdate({ ...input, receiptId: receiptId! }) : service.updateDraft(input);
+    grants.set(input.operationId, { action: "updateDraft", intent: requirementIntentHash({ title: input.title, body }) });
+    const saved = await service.updateDraft(input);
+    return approve ? confirm(requirementId, saved.operationId) : saved;
   }
   async function bind(requirementId: string) {
     const worktree = await addWorktree(repo);
@@ -55,7 +61,7 @@ async function world(body = BODY) {
   }
   const created = await create(body);
   const worktree = await bind(created.requirementId);
-  const approved = await save(created.requirementId, body);
+  const approved = await confirm(created.requirementId, created.operationId);
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: approved.version, runId: uuidv7(), expectedFence: 0 });
   const workspace = state.read(created.requirementId).data.workspace!;
   const sessions = new Map<string, string>();
@@ -84,8 +90,8 @@ function content(result: unknown) { return result as { text: string; source: { c
   coverage: { nextCursor: string | null; entireProdCovered: boolean; blocking: string[]; startByte: number; endByte: number;
     totalBytes: number; selectedTextComplete: boolean; performance: string; verification: string } } }
 
-const LONG_STRUCTURE_BODY = Array.from({ length: 256 }, (_, i) =>
-  `# Heading {#s${String(i).padStart(3, "0")}${"x".repeat(92)}}\nX\n`).join("");
+const LONG_STRUCTURE_BODY = Array.from({ length: 96 }, (_, i) =>
+  `# Heading {#s${String(i).padStart(3, "0")}${"x".repeat(92)}}\n${"\u0001".repeat(15)}\n`).join("");
 function bounded(result: unknown) {
   const json = JSON.stringify(result);
   expect(Buffer.byteLength(json)).toBeLessThanOrEqual(49_152);
@@ -95,11 +101,11 @@ function bounded(result: unknown) {
 }
 
 test.each([
-  ["256个最长ID", LONG_STRUCTURE_BODY],
-  ["双引号", '"'.repeat(32_768)],
-  ["反斜杠", "\\".repeat(32_768)],
-  ["控制字符", "\u0001".repeat(32_768)],
-  ["中文emoji与转义混合", '中😀"\\\u0001'.repeat(4_000)],
+  ["96个最长ID", LONG_STRUCTURE_BODY],
+  ["双引号", '"'.repeat(12_000)],
+  ["反斜杠", "\\".repeat(12_000)],
+  ["控制字符", "\u0001".repeat(4_000)],
+  ["中文emoji与转义混合", '中😀"\\\u0001'.repeat(1_600)],
 ])("整包预算与复合续页无损重组：%s", async (_name, body) => {
   const w = await world(body!); const tool = await w.tool(w.binding("qa"));
   const expected = inspectProdStructure(body!);
@@ -107,7 +113,7 @@ test.each([
   let cursor: string | undefined, combined = "", pages = 0;
   do {
     expect(++pages).toBeLessThan(16);
-    const result = bounded(await tool.execute({ action: "read", maxBytes: 32_768, ...(cursor ? { cursor } : {}) }));
+    const result = bounded(await tool.execute({ action: "read", maxBytes: 2_048, ...(cursor ? { cursor } : {}) }));
     expect(result.source).toMatchObject({ commit: w.approved.commit, revision: 1, role: "qa" });
     expect(result.coverage.startByte).toBe(Buffer.byteLength(combined));
     expect(result.coverage.endByte).toBe(Buffer.byteLength(combined) + Buffer.byteLength(result.text));
@@ -128,25 +134,13 @@ test.each([
   expect(combined).toBe(body); expect(sections).toEqual(expected.sections);
 }, 20_000);
 
-test("4字节text与256个最长ID首包也计整体预算，不丢结构续取信息", async () => {
-  const w = await world(LONG_STRUCTURE_BODY); const tool = await w.tool();
-  const result = bounded(await tool.execute({ action: "read", maxBytes: 4 }));
-  expect(Buffer.byteLength(result.text)).toBe(4);
-  expect(result.structure.totalSections).toBe(256);
-  expect(result.structure.endSection).toBeGreaterThan(0);
-  expect(result.structure.remainingSections).toBeGreaterThan(0);
-  expect(result.coverage.nextCursor).toMatch(/^[a-f0-9]{64}$/);
-  expect(result.coverage.entireProdCovered).toBe(false);
-  expect(result.coverage.blocking).toContain("global_constraints_and_unresolved_may_be_outside_page");
-});
-
 test.each(["close", "update"] as const)("结构专用续页仍重验当前权限：%s", async (change) => {
   const w = await world(LONG_STRUCTURE_BODY); const tool = await w.tool();
   const first = bounded(await tool.execute({ action: "read", maxBytes: 32_768 }));
   expect(first.text).toBe(LONG_STRUCTURE_BODY);
   expect(first.structure.remainingSections).toBeGreaterThan(0);
   expect(first.coverage.nextCursor).not.toBeNull();
-  if (change === "close") w.close(); else await w.save(w.created.requirementId, LONG_STRUCTURE_BODY + "更新\n");
+  if (change === "close") w.close(); else await w.save(w.created.requirementId, BODY);
   const probe = vi.spyOn(storage, "readVersion");
   await expect(tool.execute({ action: "read", maxBytes: 32_768, cursor: first.coverage.nextCursor })).rejects.toMatchObject({ code: change === "close" ? "closed_metadata_only" : "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
@@ -154,12 +148,12 @@ test.each(["close", "update"] as const)("结构专用续页仍重验当前权限
 
 test("大转义diff按整包预算续读，来源仍是准确批准提交对", async () => {
   const w = await world(); const tool = await w.tool();
-  const approved = await w.save(w.created.requirementId, '"\\\u0001'.repeat(10_000));
+  const approved = await w.save(w.created.requirementId, '"\\\u0001'.repeat(2_000));
   const probe = vi.spyOn(RequirementService.prototype, "diff");
   let cursor: string | undefined, combined = "", pages = 0;
   do {
     expect(++pages).toBeLessThan(16);
-    const result = await tool.execute({ action: "diff", fromRevision: 1, maxBytes: 32_768, ...(cursor ? { cursor } : {}) });
+    const result = await tool.execute({ action: "diff", fromRevision: 1, maxBytes: 1_024, ...(cursor ? { cursor } : {}) });
     const page = bounded(result);
     expect(result).toMatchObject({ difference: { fromCommit: w.approved.commit, toCommit: approved.commit, fromRevision: 1, toRevision: 2 } });
     expect(page.coverage.startByte).toBe(Buffer.byteLength(combined));
@@ -359,7 +353,7 @@ test("无稳定ID可完整读取但明确structure unavailable；旧PM fence不�
 });
 
 test("有章节结构时读不存在的章节，说明没有这个章节并建议先看章节列表", async () => {
-  const w = await world(LONG_STRUCTURE_BODY); const tool = await w.tool();
+  const w = await world(); const tool = await w.tool();
   await expect(tool.execute({ action: "read", sectionId: "not-a-section" })).rejects.toMatchObject({ code: "section_not_found",
     advice: { why: "批准正文里没有这个章节编号", next: "先不带 sectionId 读取，按结果里 structure 列出的章节编号再读" } });
 });

@@ -4,6 +4,7 @@ import { mkdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { databaseRows, fixtureSmoke, InstalledProjectFixture } from "../helpers/project-index-installed-fixture.ts";
 import type { Host, HostReply, InstalledRepository } from "../helpers/project-index-installed-fixture.ts";
+import { manifestConfirmInput } from "../helpers/approval-fixture.ts";
 
 
 // 正式执行必须在写入冻结后串行运行；fixture-smoke 不打包、不安装、不启动 daemon。
@@ -128,15 +129,14 @@ installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、
   const { RequirementService } = await w.product<typeof import("../../runtime/requirement-service.ts")>("runtime/requirement-service.ts");
   const { RequirementStateStore } = await w.product<typeof import("../../runtime/requirement-state.ts")>("runtime/requirement-state.ts");
   const { uuidv7 } = await w.product<typeof import("../../runtime/database.ts")>("runtime/database.ts");
-  const options = { repositoryRoot: b.path, dataRoot: b.dataRoot, repoId: b.repoId, authorize: () => true };
+  const options = { repositoryRoot: b.path, dataRoot: b.dataRoot, repoId: b.repoId, authorize: () => true, authorizeManifest: () => true };
   // 仅封闭的测试准备调用已安装存储层；它不证明模型拥有批准权限。扫描授权仍走真实UI。
   const service = await RequirementService.open(options), state = await RequirementStateStore.open(options);
   const created = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "归档风险", body: "LOCAL_PRIVATE_M3_INSTALL" });
   const worktree = join(w.root, "bound"); await w.git(b.path, ["worktree", "add", "-b", "fixture-bound", worktree]);
-  const bound = await state.bindWorkspace({ requirementId: created.requirementId, version: created.version, path: worktree,
+  await state.bindWorkspace({ requirementId: created.requirementId, version: created.version, path: worktree,
     prepareOperationId: uuidv7(), baseCommit: await w.git(b.path, ["rev-parse", "HEAD"]) });
-  const active = await service.confirmUpdate({ requirementId: created.requirementId, version: bound.version, operationId: uuidv7(),
-    title: "归档风险", body: "LOCAL_PRIVATE_M3_INSTALL", receiptId: uuidv7() });
+  const active = await service.confirmUpdate(await manifestConfirmInput(options, { requirementId: created.requirementId, savedOperationId: created.operationId }));
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: active.version, runId: uuidv7(), expectedFence: 0 });
   const da = await w.daemon(a), db = await w.daemon(b), ha = await w.host(a), hb = await w.host(b);
   await initialize(ha); await initialize(hb);

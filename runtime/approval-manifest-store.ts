@@ -9,7 +9,7 @@ import type { ApprovalManifestExpected, ApprovalManifestReference } from "./appr
 import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
 import { ApprovalPartition } from "./user-interaction-format.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
-import type { RequirementServiceErrorCode } from "./requirement-manage-contracts.ts";
+import type { RequirementApprovalScope, RequirementServiceErrorCode } from "./requirement-manage-contracts.ts";
 import { assertRetainedEvidenceIn, continuityInputProofIn } from "./interaction-continuity.ts";
 
 export const APPROVAL_MANIFEST_NAMESPACE = "approval_manifests_v1";
@@ -135,13 +135,12 @@ export function registeredApprovalManifestIn(db: LocalDatabase, repoId: string, 
 
 /** 仅供已授权的内部返回路径使用；调用方在最后一次await/宿主回调后开启同步DB快照，摘要不是授权。 */
 export function assertApprovalScopeReturnIn(db: LocalDatabase, repoId: string, record: StoredRecord<RequirementRecord>,
-  scope: { status: "available"; summary: ApprovalSummary } | { status: "unavailable" }): void {
+  scope: RequirementApprovalScope | undefined): void {
   const actual = current(db, repoId, record.id);
   if (actual.version !== record.version || !same(actual.data, record.data)) deny("manifest_stale");
-  const expected = actual.data.approvalManifest
-    ? { status: "available", summary: summarizeApprovalManifest(registeredApprovalManifestIn(db, repoId,
-      actual.data.approvalManifest.reference, actual)) } : { status: "unavailable" };
-  if (!same(scope, expected) || actual.data.approvalManifest && !same(actual.data.approvalManifest, expected.summary)) deny("manifest_scope_changed");
+  const manifest = actual.data.approvalManifest;
+  const expected = manifest && { status: "available", summary: summarizeApprovalManifest(registeredApprovalManifestIn(db, repoId, manifest.reference, actual)) };
+  if (!same(scope ?? null, expected ?? null) || manifest && !same(manifest, expected!.summary)) deny("manifest_scope_changed");
 }
 
 export interface RegisteredScopeReturnProof {

@@ -93,7 +93,6 @@ export interface IntakeReviewView {
 }
 
 const PM_INTAKE_SERVICE_ADVICE: Record<string, FailureAdvice> = {
-  approval_manifest_unavailable: { why: "读不到批准清单", next: "重试一次；仍然失败就把这段原因告诉用户" },
   approved_partition_changed: { why: "批准版本的章节划分已变化，接手理解需要按新版本重做", next: "请 PM 按新的批准版本重新提交接手理解" },
   approved_prod_changed: { why: "批准版本已变化，接手理解需要按新版本重做", next: "请 PM 按新的批准版本重新提交接手理解" },
   binding_changed: { why: "PM 与需求、工作区的绑定已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
@@ -304,7 +303,6 @@ export class PmIntakeService {
 
   #manifest(requirementId: string): ApprovalManifest {
     const record = this.#options.state.read(requirementId);
-    if (!record.data.approvalManifest) deny("approval_manifest_unavailable");
     return withDatabase(repositoryDatabase(this.#options.dataRoot, this.#options.repoId), (db) => db.transaction(() =>
       registeredApprovalManifestIn(db, this.#options.repoId, record.data.approvalManifest!.reference, record)));
   }
@@ -317,7 +315,7 @@ export class PmIntakeService {
     const initial = this.#options.state.read(identity.requirementId);
     const lease = this.#owner(identity.requirementId);
     // 只核对已批准版本；还没批准的草稿不产生授权，不挡核对
-    if (initial.data.lifecycle !== "active" || initial.data.recovery !== "ready" || !initial.data.approved || !initial.data.workspace || !initial.data.approvalManifest) {
+    if (initial.data.lifecycle !== "active" || initial.data.recovery !== "ready" || !initial.data.approved || !initial.data.workspace) {
       deny("intake_not_ready");
     }
     await this.#checkPm(lease, call, runtime);

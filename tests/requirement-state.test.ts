@@ -6,6 +6,8 @@ import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
+import { RequirementService } from "../runtime/requirement-service.ts";
+import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
 import type { RequirementStoreOptions } from "../runtime/requirement-state.ts";
 import { repositoryDatabase, uuidv7, UUID_V7_PATTERN, withDatabase } from "../runtime/database.ts";
 import * as databaseModule from "../runtime/database.ts";
@@ -26,8 +28,18 @@ async function world(authorize: RequirementStoreOptions["authorize"] = () => tru
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
   let now = 1_000_000;
-  const options: RequirementStoreOptions = { dataRoot: join(root, "private"), repoId: identity.repoId, repositoryRoot: repo.root, authorize, now: () => now };
+  const options: RequirementStoreOptions = { dataRoot: join(root, "private"), repoId: identity.repoId, repositoryRoot: repo.root, authorize,
+    authorizeManifest: () => true, now: () => now };
   const store = await RequirementStateStore.open(options);
+  const service = await RequirementService.open({ ...options, authorize: () => true });
+  const draft = (body = "状态正文") => service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "状态夹具", body });
+  const update = (requirementId: string, body: string) =>
+    service.updateDraft({ requirementId, operationId: uuidv7(), version: store.read(requirementId).version, title: "状态夹具", body });
+  const approve = async (requirementId: string, savedOperationId: string) => {
+    const confirm = await manifestConfirmInput(options, { requirementId, savedOperationId });
+    return store.recordApprovedVersion({ requirementId, version: confirm.version, receiptId: confirm.receiptId,
+      reference: store.read(requirementId).data.saved!, manifest: confirm.manifest });
+  };
   const reserve = () => store.reserve({ requestId: uuidv7(), intentHash: "b".repeat(64) });
   const bind = async (requirementId: string) => {
     const worktree = await addWorktree(repo);
@@ -36,11 +48,10 @@ async function world(authorize: RequirementStoreOptions["authorize"] = () => tru
     return store.bindWorkspace({ requirementId, version: record.version, path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
   };
   const activate = async () => {
-    const reserved = reserve(); const bound = await bind(reserved.id);
-    const saved = store.recordSavedVersion({ requirementId: reserved.id, version: bound.version, operationId: uuidv7(), reference: reference() });
-    return store.recordApprovedVersion({ requirementId: reserved.id, version: saved.version, receiptId: uuidv7(), reference: reference() });
+    const created = await draft(); await bind(created.requirementId);
+    return approve(created.requirementId, created.operationId);
   };
-  return { root, repo, identity, options, store, reserve, bind, activate, setNow: (value: number) => { now = value; } };
+  return { root, repo, identity, options, store, reserve, bind, draft, update, approve, activate, setNow: (value: number) => { now = value; } };
 }
 
 test("未接入可信核验默认拒绝，不创建数据库；模型额外角色或正文参数拒绝", async () => {
@@ -122,15 +133,17 @@ test("M8A-AC7：没有现场也能批准生效，保存版本不等于批准；�
   expect(w.store.recordSavedVersion({ ...save, version: saved.version, operationId: uuidv7() })).toEqual(saved);
   expect(w.store.events(first.id)).toHaveLength(2);
   expect(() => w.store.recordSavedVersion({ ...save, reference: reference("changed") })).toThrow(/operation_conflict/);
-  await expect(w.store.recordApprovedVersion({ requirementId: first.id, version: saved.version, receiptId: uuidv7(), reference: reference("wrong") })).rejects.toThrow(/saved_version_mismatch/);
-  const receiptId = uuidv7();
-  const approved = await w.store.recordApprovedVersion({ requirementId: first.id, version: saved.version, receiptId, reference: reference() });
+  const created = await w.draft(), requirementId = created.requirementId;
+  const confirm = await manifestConfirmInput(w.options, { requirementId, savedOperationId: created.operationId });
+  const approval = { requirementId, version: confirm.version, receiptId: confirm.receiptId, reference: w.store.read(requirementId).data.saved!, manifest: confirm.manifest };
+  await expect(w.store.recordApprovedVersion({ ...approval, receiptId: uuidv7(), reference: reference("wrong") })).rejects.toThrow(/saved_version_mismatch/);
+  const approved = await w.store.recordApprovedVersion(approval);
   expect(approved.data.lifecycle).toBe("active"); expect(approved.data.revision).toBe(1); expect(approved.data.workspace).toBeNull();
-  expect((await w.store.recordApprovedVersion({ requirementId: first.id, version: saved.version, receiptId, reference: reference() })).version).toBe(approved.version);
-  await expect(w.store.acquirePm({ requirementId: first.id, version: approved.version, runId: uuidv7(), expectedFence: 0 })).rejects.toThrow(/workspace_not_ready/);
-  const bound = await w.bind(first.id);
+  expect((await w.store.recordApprovedVersion(approval)).version).toBe(approved.version);
+  await expect(w.store.acquirePm({ requirementId, version: approved.version, runId: uuidv7(), expectedFence: 0 })).rejects.toThrow(/workspace_not_ready/);
+  const bound = await w.bind(requirementId);
   expect(bound.data.lifecycle).toBe("active");
-  await expect(w.store.acquirePm({ requirementId: first.id, version: bound.version, runId: uuidv7(), expectedFence: 0 })).resolves.toMatchObject({ requirementId: first.id });
+  await expect(w.store.acquirePm({ requirementId, version: bound.version, runId: uuidv7(), expectedFence: 0 })).resolves.toMatchObject({ requirementId });
 });
 
 test("一个有效PM：租约更新、到期接管及旧fence拒绝", async () => {
@@ -170,14 +183,13 @@ test("真实分支改变后旧绑定不能续租；同分支提交推进仍可�
 });
 
 test.each(unicodeRefSuffixes)("真实分支在旧绑定后追加%s时，旧PM检查必须拒绝", async (_label, suffix) => {
-  const w = await world(); const reserved = w.reserve();
+  const w = await world(); const created = await w.draft();
   const worktree = await addWorktree(w.repo); const originalBranch = "workspace-ref-fixture";
   await exec("git", ["branch", "-m", originalBranch], { cwd: worktree.root, env: GIT_ENV });
   const baseCommit = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
-  const bound = await w.store.bindWorkspace({ requirementId: reserved.id, version: reserved.version, path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
-  const saved = w.store.recordSavedVersion({ requirementId: reserved.id, version: bound.version, operationId: uuidv7(), reference: reference() });
-  const approved = await w.store.recordApprovedVersion({ requirementId: reserved.id, version: saved.version, receiptId: uuidv7(), reference: reference() });
-  const lease = await w.store.acquirePm({ requirementId: reserved.id, version: approved.version, runId: uuidv7(), expectedFence: 0 });
+  await w.store.bindWorkspace({ requirementId: created.requirementId, version: w.store.read(created.requirementId).version, path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
+  const approved = await w.approve(created.requirementId, created.operationId);
+  const lease = await w.store.acquirePm({ requirementId: created.requirementId, version: approved.version, runId: uuidv7(), expectedFence: 0 });
   await exec("git", ["checkout", "-b", `${originalBranch}${suffix}`], { cwd: worktree.root, env: GIT_ENV });
   await expect(w.store.checkPm(lease)).rejects.toThrow(/workspace_binding_changed/);
 });
@@ -208,15 +220,15 @@ test("确认更新保留准确前后引用，不清除pending，也不改历史�
   const lease = await w.store.acquirePm({ requirementId: record.id, version: record.version, runId: uuidv7(), expectedFence: 0 });
   const path = repositoryDatabase(w.options.dataRoot, w.identity.repoId);
   withDatabase(path, (db) => db.create("verification_runs", "fixture", { prodHash: record.data.approved!.hash, result: "PASS" }));
-  const saved = w.store.recordSavedVersion({ requirementId: record.id, version: w.store.read(record.id).version, operationId: uuidv7(), reference: reference("updated") });
-  const next = await w.store.recordApprovedVersion({ requirementId: record.id, version: saved.version, receiptId: uuidv7(), reference: reference("updated") });
+  const saved = await w.update(record.id, "更新后的状态正文");
+  const next = await w.approve(record.id, saved.operationId);
   expect(next.data.pendingRevision).toBe(2);
   await expect(w.store.checkScheduling(lease)).rejects.toThrow(/pending_update/);
   const event = w.store.events(record.id).at(-1)!;
-  expect(event.data.from).toEqual(reference()); expect(event.data.to).toEqual(reference("updated"));
+  expect(event.data.from).toEqual(record.data.approved); expect(event.data.to).toEqual({ commit: saved.commit, hash: saved.prodHash.slice("sha256:".length) });
   expect(w.store.read(record.id).data.pendingRevision).toBe(2);
   expect(() => w.store.beginClose({ requirementId: record.id, version: next.version, intent: { operationId: uuidv7(), reason: "completed", receiptId: uuidv7() } })).toThrow(/completion_blocked/);
-  expect(withDatabase(path, (db) => db.read("verification_runs", "fixture")!.data)).toEqual({ prodHash: reference().hash, result: "PASS" });
+  expect(withDatabase(path, (db) => db.read("verification_runs", "fixture")!.data)).toEqual({ prodHash: record.data.approved!.hash, result: "PASS" });
 });
 
 for (const reason of ["completed", "cancelled", "rejected"] as const) {
@@ -241,7 +253,8 @@ for (const reason of ["completed", "cancelled", "rejected"] as const) {
     const count = w.store.events(record.id).length;
     expect(w.store.finishClose({ requirementId: record.id, version: closing.version, operationId: intent.operationId })).toEqual(closed);
     expect(w.store.events(record.id)).toHaveLength(count);
-    await expect(w.store.recordApprovedVersion({ requirementId: record.id, version: closed.version, receiptId: uuidv7(), reference: reference() })).rejects.toThrow(/lifecycle_denied/);
+    await expect(w.store.recordApprovedVersion({ requirementId: record.id, version: closed.version, receiptId: uuidv7(), reference: record.data.approved!,
+      manifest: record.data.approvalManifest!.reference })).rejects.toThrow(/lifecycle_denied/);
   });
 }
 
@@ -281,11 +294,13 @@ test("旧日期需求不导入新状态，新UUID记录不受旧记录影响", a
 });
 
 test("批准回执不能重用于新范围，同内容新批准仍登记更新而非虚构diff", async () => {
-  const w = await world(); const record = await w.activate();
-  const next = await w.store.recordApprovedVersion({ requirementId: record.id, version: record.version, reference: reference(), receiptId: uuidv7() });
+  const w = await world(); const created = await w.draft(); await w.bind(created.requirementId);
+  const record = await w.approve(created.requirementId, created.operationId);
+  const next = await w.approve(record.id, created.operationId);
   expect(next.data.revision).toBe(2); expect(next.data.pendingRevision).toBe(2);
   expect(w.store.events(record.id).at(-1)!.data.from).toEqual(w.store.events(record.id).at(-1)!.data.to);
-  await expect(w.store.recordApprovedVersion({ requirementId: record.id, version: next.version, reference: reference(), receiptId: record.data.approvalReceiptId! })).rejects.toThrow(/approval_conflict/);
+  await expect(w.store.recordApprovedVersion({ requirementId: record.id, version: next.version, reference: record.data.approved!, receiptId: record.data.approvalReceiptId!,
+    manifest: record.data.approvalManifest!.reference })).rejects.toThrow(/approval_conflict/);
 });
 
 test("关闭事件落库失败时epoch与PM撤销也回滚，不能半关闭", async () => {

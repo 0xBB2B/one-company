@@ -9,6 +9,7 @@ import { connectDaemon } from "../../runtime/daemon-client.ts";
 import { uuidv7 } from "../../runtime/database.ts";
 import type { KnowledgeFactPackage } from "../../runtime/knowledge-query.ts";
 import { RequirementService } from "../../runtime/requirement-service.ts";
+import { manifestConfirmInput } from "../helpers/approval-fixture.ts";
 import { RequirementStateStore } from "../../runtime/requirement-state.ts";
 import { readGit } from "../../runtime/git-read.ts";
 import { repoDataDir } from "../../runtime/identity.ts";
@@ -119,7 +120,7 @@ test("发起init的连接断开后，新连接仍能查询当前内容", async (
 
 test("查询前对账发现docs/prod归档时先经归档风险核对，旧active需求被标记且不读取归档正文", async () => {
   const w = await world();
-  const options = { repositoryRoot: w.fixture.repo.root, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, authorize: () => true };
+  const options = { repositoryRoot: w.fixture.repo.root, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, authorize: () => true, authorizeManifest: () => true };
   const service = await RequirementService.open(options); const state = await RequirementStateStore.open(options);
   const created = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "归档装配", body: "PRIVATE-ACTIVE-SENTINEL" });
   const worktree = await addWorktree(w.fixture.repo);
@@ -127,10 +128,9 @@ test("查询前对账发现docs/prod归档时先经归档风险核对，旧activ
     await rm(worktree.root, { recursive: true, force: true });
     w.fixture.repo.worktrees.splice(w.fixture.repo.worktrees.indexOf(worktree.root), 1);
   });
-  const bound = await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
+  await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
     path: await realpath(worktree.root), prepareOperationId: uuidv7(), baseCommit: (await readGit(worktree.root, ["rev-parse", "HEAD"])).stdout.trim() });
-  const active = await service.confirmUpdate({ requirementId: created.requirementId, version: bound.version,
-    operationId: uuidv7(), title: "归档装配", body: "PRIVATE-ACTIVE-SENTINEL", receiptId: uuidv7() });
+  const active = await service.confirmUpdate(await manifestConfirmInput(options, { requirementId: created.requirementId, savedOperationId: created.operationId }));
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: active.version, runId: uuidv7(), expectedFence: 0 });
   await mkdir(join(w.fixture.repo.root, "docs", "prod"), { recursive: true });
   await w.start(); const a = await w.connect();

@@ -304,10 +304,10 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
   if (!raw || raw.id !== basis.requirementId) deny("unknown_requirement");
   const record = { ...raw, data: checkRequirement(raw.data, basis.requirementId, repoId) };
   const data = record.data;
-  if (data.lifecycle !== "active" || data.recovery !== "ready" || !data.approved || !data.workspace || !data.approvalManifest ||
+  if (data.lifecycle !== "active" || data.recovery !== "ready" || !data.approved || !data.workspace ||
     data.repoId !== repoId || data.requirementId !== basis.requirementId || data.revision !== basis.approvedRevision ||
     data.approved.commit !== basis.approvedProdCommit || data.approved.hash !== basis.approvedProdHash ||
-    data.approvalManifest.reference.manifestHash !== basis.approvalManifestHash || data.workspace.workspaceId !== basis.workspaceId ||
+    data.approvalManifest!.reference.manifestHash !== basis.approvalManifestHash || data.workspace.workspaceId !== basis.workspaceId ||
     data.workspace.branch !== basis.workspaceRef || data.epoch !== basis.epoch) deny("binding_changed");
 
   const ownerRow = db.read("pm_ownership", basis.requirementId);
@@ -331,7 +331,7 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
   assertNoRequirementWriteClaimIn(db, repoId, basis.requirementId);
   assertNoUnfinishedRequirementOperationsIn(db, basis.requirementId);
 
-  const manifest = registeredApprovalManifestIn(db, repoId, data.approvalManifest.reference, record);
+  const manifest = registeredApprovalManifestIn(db, repoId, data.approvalManifest!.reference, record);
   validateDirectory(db, repoId, basis.requirementId, directory, manifest, questions);
   if (manifest.candidate.to.commit !== basis.approvedProdCommit || manifest.candidate.to.hash !== basis.approvedProdHash ||
     manifest.manifestHash !== basis.approvalManifestHash) deny("manifest_binding_changed");

@@ -114,8 +114,7 @@ function authorizationForWrite(
     prodHash,
     version,
     epoch,
-    ...(action === "confirmUpdate" ? { receiptId: (input as ConfirmInput).receiptId,
-      ...((input as ConfirmInput).manifest ? { manifest: (input as ConfirmInput).manifest } : {}) } : {}),
+    ...(action === "confirmUpdate" ? { receiptId: (input as ConfirmInput).receiptId, manifest: (input as ConfirmInput).manifest } : {}),
   };
 }
 
@@ -288,7 +287,6 @@ export class RequirementService {
 
   async confirmUpdate(input: ConfirmInput): Promise<RequirementReceipt> {
     const request = checkServiceInput(ConfirmUpdateInput, input);
-    if (this.options.authorizeManifest && !request.manifest) throw new RequirementServiceError("manifest_required");
     return this.update("confirmUpdate", request);
   }
 
@@ -312,8 +310,8 @@ export class RequirementService {
       storageHash(document.prodHash),
     );
     this.authorize(authorization);
-    if (action === "confirmUpdate" && (input as ConfirmInput).manifest) {
-      const ref = (input as ConfirmInput).manifest!;
+    if (action === "confirmUpdate") {
+      const ref = (input as ConfirmInput).manifest;
       if (ref.requirementId !== input.requirementId || ref.candidate.operationId !== input.operationId ||
         ref.candidate.intentHash !== intentHash || !sameReference(ref.candidate.to, before.data.saved) ||
         ref.candidate.to.hash !== document.prodHash) throw new RequirementServiceError("manifest_candidate_mismatch");
@@ -340,8 +338,6 @@ export class RequirementService {
         withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) =>
           registeredApprovalManifestIn(db, this.options.repoId, ref, before, confirmed.receiptId));
       }
-    }
-    if (action === "confirmUpdate") {
       if (before.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
       this.authorize(authorization);
     }
@@ -400,7 +396,7 @@ export class RequirementService {
         receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
         archivePath: document.archivePath,
       };
-      if (decisionDigest(operation.manifest ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).manifest ?? null : null) ||
+      if (decisionDigest(operation.manifest ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).manifest : null) ||
         decisionDigest(operation.docSpec ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).docSpec ?? null : null)) {
         throw new RequirementServiceError("operation_conflict");
       }
@@ -425,7 +421,7 @@ export class RequirementService {
         saveVersion: before.version,
         epoch: before.data.epoch,
         receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
-        ...((input as ConfirmInput).manifest ? { manifest: (input as ConfirmInput).manifest } : {}),
+        ...(action === "confirmUpdate" ? { manifest: (input as ConfirmInput).manifest } : {}),
         ...((input as ConfirmInput).docSpec ? { docSpec: (input as ConfirmInput).docSpec } : {}),
         archivePath: document.archivePath,
         repositoryRoot: prodRequirementPath({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId: before.id }),
@@ -539,7 +535,7 @@ export class RequirementService {
         const afterApproval = saved.version === operation.approvalVersion + 1
           && sameReference(saved.data.approved, reference)
           && saved.data.approvalReceiptId === operation.receiptId
-          && decisionDigest(saved.data.approvalManifest?.reference ?? null) === decisionDigest(operation.manifest ?? null);
+          && decisionDigest(saved.data.approvalManifest?.reference ?? null) === decisionDigest(operation.manifest);
         if (!beforeApproval && !afterApproval) throw new RequirementServiceError("operation_state_mismatch");
       }
     }
@@ -553,7 +549,7 @@ export class RequirementService {
         version: operation.approvalVersion!,
         receiptId: operation.receiptId!,
         reference,
-        ...(operation.manifest ? { manifest: operation.manifest } : {}),
+        manifest: operation.manifest!,
         ...(operation.docSpec ? { docSpec: operation.docSpec } : {}),
       });
     }
@@ -569,7 +565,7 @@ export class RequirementService {
     }
     const reference = { commit: operation.git.commit, hash: operation.git.hash };
     if (!sameReference(record.saved, reference) || (operation.action === "confirmUpdate" && (!sameReference(record.approved, reference) || record.approvalReceiptId !== operation.receiptId ||
-      decisionDigest(record.approvalManifest?.reference ?? null) !== decisionDigest(operation.manifest ?? null)))) {
+      decisionDigest(record.approvalManifest?.reference ?? null) !== decisionDigest(operation.manifest)))) {
       throw new RequirementServiceError("operation_state_mismatch");
     }
   }
@@ -593,7 +589,7 @@ export class RequirementService {
       version: current.version,
       epoch: current.data.epoch,
       revision: current.data.revision,
-      approvalScope: this.approvalScope(current),
+      ...this.approvalScope(current),
     };
   }
 
@@ -669,7 +665,7 @@ export class RequirementService {
       epoch: after.data.epoch,
       title: parsed.title,
       body: parsed.body,
-      approvalScope: request.source === "approved" ? this.approvalScope(after) : { status: "unavailable" },
+      ...(request.source === "approved" ? this.approvalScope(after) : {}),
     };
   }
 
@@ -715,10 +711,11 @@ export class RequirementService {
     if (toRevision < request.fromRevision || toRevision > before.data.revision) throw new RequirementServiceError("invalid_revision_range");
     const approved = state.events(request.requirementId)
       .filter((event) => event.data.kind === "prod.approved" && event.data.to !== null)
-      .map((event) => ({ revision: event.data.revision, reference: event.data.to!, summary: event.data.approvalManifest }));
+      .map((event) => ({ revision: event.data.revision, reference: event.data.to!, summary: event.data.approvalManifest! }));
     const from = approved.find((event) => event.revision === request.fromRevision)?.reference;
-    const to = approved.find((event) => event.revision === toRevision)?.reference;
-    if (!from || !to) throw new RequirementServiceError("unknown_revision");
+    const toEvent = approved.find((event) => event.revision === toRevision);
+    if (!from || !toEvent) throw new RequirementServiceError("unknown_revision");
+    const to = toEvent.reference;
     const authorization: ServiceAuthorizationRequest = {
       ...initialAuthorization,
       prodHash: storageHash(to.hash),
@@ -757,19 +754,17 @@ export class RequirementService {
       version: after.version,
       epoch: after.data.epoch,
       diff: result.diff,
-      approvalScope: toRevision === after.data.revision ? this.approvalScope(after)
-        : approved.find((event) => event.revision === toRevision)?.summary
-          ? { status: "available", summary: approved.find((event) => event.revision === toRevision)!.summary! } : { status: "unavailable" },
+      ...(toRevision === after.data.revision ? this.approvalScope(after) : { approvalScope: { status: "available", summary: toEvent.summary } }),
     };
   }
 
-  private approvalScope(record: { id: string; version: number; data: RequirementRecord }): RequirementApprovalScope {
+  private approvalScope(record: { id: string; version: number; data: RequirementRecord }): { approvalScope?: RequirementApprovalScope } {
     return withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => db.transaction(() => {
-      const scope: RequirementApprovalScope = record.data.approvalManifest
-        ? { status: "available", summary: summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId,
-          record.data.approvalManifest.reference, record)) } : { status: "unavailable" };
+      const manifest = record.data.approvalManifest;
+      const scope: RequirementApprovalScope | undefined = manifest && { status: "available", summary: summarizeApprovalManifest(
+        registeredApprovalManifestIn(db, this.options.repoId, manifest.reference, record)) };
       assertApprovalScopeReturnIn(db, this.options.repoId, record, scope);
-      return scope;
+      return scope ? { approvalScope: scope } : {};
     }));
   }
 
@@ -851,7 +846,7 @@ export class RequirementService {
       saved: readable && after.data.saved ? { commit: after.data.saved.commit, prodHash: storageHash(after.data.saved.hash) } : null,
       approved: readable && after.data.approved ? { commit: after.data.approved.commit, prodHash: storageHash(after.data.approved.hash) } : null,
       archivePath,
-      ...(["draft", "active"].includes(after.data.lifecycle) ? { approvalScope: this.approvalScope(after) } : {}),
+      ...(["draft", "active"].includes(after.data.lifecycle) ? this.approvalScope(after) : {}),
     };
   }
 }

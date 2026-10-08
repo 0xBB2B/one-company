@@ -65,7 +65,7 @@ function requirementRow(ref: Ref, requirementId: string): StoredRecord<Requireme
 }
 
 function scenarioIdsFor(ref: Ref, query: Pick<PmSourceDirectoryQuery, "baseline" | "stableSectionIds" | "manifestUnitIds">): string[] {
-  const confirmed = requirementRow(ref, query.baseline.requirementId).data.approvalManifest?.confirmed ?? [];
+  const confirmed = requirementRow(ref, query.baseline.requirementId).data.approvalManifest!.confirmed;
   return confirmed.filter((id) => query.stableSectionIds.includes(id) && query.manifestUnitIds.includes(id));
 }
 
@@ -81,10 +81,10 @@ function questionIdsFor(ref: Ref, requirementId: string): string[] {
 export function pmSourceDirectory(ref: Ref, requirementId: string): IntakeSourceDirectory | null {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
     const row = db.read<RequirementRecord>("requirements", requirementId);
-    if (!row?.data.approvalManifest) return null;
-    const manifest = registeredApprovalManifestIn(db, ref.repoId, row.data.approvalManifest.reference, row);
+    if (!row) return null;
+    const manifest = registeredApprovalManifestIn(db, ref.repoId, row.data.approvalManifest!.reference, row);
     const unitIds = manifest.units.map((unit) => unit.id);
-    const scenarioIds = (row.data.approvalManifest.confirmed ?? []).filter((id) => unitIds.includes(id) && !["metadata", "preamble", "whole-body"].includes(id));
+    const scenarioIds = row.data.approvalManifest!.confirmed.filter((id) => unitIds.includes(id) && !["metadata", "preamble", "whole-body"].includes(id));
     const questionIds = db.list("interaction_questions_v1")
       .filter((q) => (q.data as { basis?: { requirementId?: unknown } } | null)?.basis?.requirementId === requirementId).map((q) => q.id).sort();
     return { prodUnitIds: unitIds, prodScenarioIds: scenarioIds, decisionIds: intakeManifestDecisionIds(manifest), questionIds, requiredScenarioIds: scenarioIds };
@@ -166,13 +166,13 @@ export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }
   const row = requirementRow(ref, ref.lease.requirementId), record = row.data;
   const head = store.readHead(ref.lease.requirementId);
   if (!head) return { allowed: false, reasons: ["review_missing"] };
-  if (!record.approved || !record.workspace || !record.approvalManifest) return { allowed: false, reasons: ["requirement_not_ready"] };
+  if (!record.approved || !record.workspace) return { allowed: false, reasons: ["requirement_not_ready"] };
   if (!implementAuthorized(ref, row)) return { allowed: false, reasons: ["action_authorization_not_reported_current"] };
   const review = head.review;
   if (review && record.revision > review.binding.approvedRevision) return advancedGate(ref, record, review, now);
   const basis: IntakeBindingBasis = {
     repoId: ref.repoId, requirementId: record.requirementId, approvedProdCommit: record.approved.commit, approvedRevision: record.revision,
-    approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest.reference.manifestHash,
+    approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash,
     workspaceId: record.workspace.workspaceId, workspaceRef: record.workspace.branch, epoch: record.epoch,
     pmRunId: ref.lease.runId, pmFence: ref.lease.fence, contextGeneration: ref.lease.contextGeneration,
   };

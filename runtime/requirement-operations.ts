@@ -140,7 +140,8 @@ function checkOperation(value: unknown): RequirementOperation {
     || (operation.action === "confirmUpdate") !== (operation.receiptId !== null)
     || operation.updatedAt < operation.createdAt
     || (operation.docSpec !== undefined && operation.action !== "confirmUpdate")
-    || (operation.manifest !== undefined && (operation.action !== "confirmUpdate" || operation.manifest.requirementId !== operation.requirementId ||
+    || (operation.action === "confirmUpdate") !== (operation.manifest !== undefined)
+    || (operation.manifest !== undefined && (operation.manifest.requirementId !== operation.requirementId ||
       operation.manifest.candidate.operationId !== operation.operationId || operation.manifest.candidate.intentHash !== operation.intentHash ||
       operation.manifest.candidate.to.hash !== operation.targetHash || operation.manifest.candidate.to.commit !== operation.expectedParent))
     || !gitConsistent

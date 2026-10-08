@@ -302,8 +302,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
   const now = () => Date.now();
 
   function manifestFor(db: LocalDatabase, record: StoredRecord<RequirementRecord>): ApprovalManifest {
-    if (!record.data.approvalManifest) deny("task_not_ready", ["需求没有批准清单"]);
-    return registeredApprovalManifestIn(db, grant.repoId, record.data.approvalManifest.reference, record);
+    return registeredApprovalManifestIn(db, grant.repoId, record.data.approvalManifest!.reference, record);
   }
   function lease() { if (!grant.lease) deny("lease_required"); return structuredClone(grant.lease); }
 

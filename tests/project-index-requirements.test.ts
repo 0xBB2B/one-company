@@ -12,6 +12,7 @@ import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { readGit } from "../runtime/git-read.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
+import { approveWithManifest } from "./helpers/approval-fixture.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { RequirementEventService } from "../runtime/requirement-events.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -59,10 +60,9 @@ async function world() {
   const worktree = await addWorktree(repo);
   worktree.root = await fsp.realpath(worktree.root);
   const baseCommit = (await readGit(worktree.root, ["rev-parse", "HEAD"])).stdout.trim();
-  const bound = await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
+  await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
-  const approved = await service.confirmUpdate({ requirementId: created.requirementId, operationId: uuidv7(),
-    version: bound.version, title: "归档适配", body: "ACTIVE-PRIVATE-BODY", receiptId: uuidv7() });
+  const approved = await approveWithManifest(options, { requirementId: created.requirementId, savedOperationId: created.operationId });
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: approved.version, runId: uuidv7(), expectedFence: 0 });
   const events = await RequirementEventService.open({ ...options, authorize: () => true });
   cleanups.push(async () => { events.dispose(); });

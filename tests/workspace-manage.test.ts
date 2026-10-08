@@ -4,6 +4,8 @@ import { basename, dirname, join } from "node:path";
 import { uuidv7, withDatabase, repositoryDatabase } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
+import { draftApprover } from "./helpers/approval-fixture.ts";
+import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { verifyRequirementWorkspace } from "../runtime/requirement-workspace.ts";
 import { RequirementCloseService } from "../runtime/workflow-close.ts";
@@ -30,16 +32,13 @@ async function world(options: { draft?: boolean } = {}) {
     if (request.action === "metadata") return true;
     const grant = request.operationId ? grants.get(request.operationId) : undefined;
     return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
-  } });
+  }, authorizeManifest: () => true });
+  const grantWrite: WriteGrant = (r) => grants.set(r.operationId, { action: r.action, intent: requirementIntentHash({ title: r.title, body: r.body }), receiptId: r.receiptId });
   const state = await RequirementStateStore.open({ ...paths, authorize: (request) => request.repoId === paths.repoId && ["open", "read"].includes(request.action) });
   const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: BODY };
   grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: BODY }) });
   const { requirementId } = await service.create(create);
-  async function activate() {
-    const confirm = { requirementId, operationId: uuidv7(), version: state.read(requirementId).version, title: "角色跳跃", body: BODY, receiptId: uuidv7() };
-    grants.set(confirm.operationId, { action: "confirmUpdate", intent: requirementIntentHash({ title: confirm.title, body: BODY }), receiptId: confirm.receiptId });
-    await service.confirmUpdate(confirm);
-  }
+  const activate = draftApprover(paths, service, { requirementId, operationId: create.operationId, title: "角色跳跃", body: BODY }, grantWrite);
   const location = workspaceLocation(repo.root, requirementId);
   cleanups.push(() => rm(join(location.path, "..", ".."), { recursive: true, force: true }));
   const prompts: ProgramWindow[] = [];

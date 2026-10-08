@@ -46,7 +46,7 @@ export interface ServiceAuthorizationRequest {
 export const CreateRequirementInput = strictObject({ requestId: id, operationId: id, title: text, body: text });
 export const UpdateDraftInput = strictObject({ requirementId: id, operationId: id, version, title: text, body: text });
 export const ConfirmUpdateInput = strictObject({ requirementId: id, operationId: id, version, title: text, body: text, receiptId: id,
-  manifest: Type.Optional(ApprovalManifestReferenceSchema), docSpec: Type.Optional(RequirementDocSpecSchema) });
+  manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema) });
 const confirmationId = ApprovalManifestReferenceSchema.properties.requirementId;
 export const LoadConfirmationInput = strictObject({ requirementId: confirmationId, savedOperationId: confirmationId, operationId: confirmationId });
 export type LoadConfirmationInput = Static<typeof LoadConfirmationInput>;
@@ -58,7 +58,7 @@ export interface ConfirmationContext {
   difference: { kind: "full_candidate"; from: null; to: ProdReference; text: string }
     | { kind: "diff"; from: ProdReference; to: ProdReference; text: string };
 }
-export type RequirementApprovalScope = { status: "available"; summary: ApprovalSummary } | { status: "unavailable" };
+export type RequirementApprovalScope = { status: "available"; summary: ApprovalSummary };
 export const ReadRequirementInput = strictObject({ requirementId: id, source: Type.Union([Type.Literal("saved"), Type.Literal("approved")]), revision: Type.Optional(revision) });
 export const DiffRequirementInput = strictObject({ requirementId: id, fromRevision: revision, toRevision: Type.Optional(revision) });
 export const MetadataRequirementInput = id;
@@ -134,7 +134,6 @@ const REQUIREMENT_SERVICE_ADVICE = {
   lifecycle_denied: { why: "需求当前的阶段不允许这个操作，可能正在关闭或已关闭", next: REREAD },
   authorization_required: { why: "宿主没有授权这次需求操作", next: "停止操作，不要重试；在回复里说明，由上级处理" },
   working_copy_mismatch: { why: "需求工作副本与登记的版本不一致", next: INTERNAL.next },
-  manifest_required: { why: "批准需要附带批准清单", next: "先按用户原话确认批准范围，再批准" },
   manifest_candidate_mismatch: { why: "批准清单对应的不是当前保存的版本", next: REREAD },
   repository_identity_missing: { why: "读不到仓库身份", next: INTERNAL.next },
   repository_identity_mismatch: { why: "仓库身份与需求登记的不一致", next: INTERNAL.next },

@@ -56,8 +56,7 @@ export interface TaskDispatchRequest {
 }
 
 function questionResolved(db: LocalDatabase, repoId: string, record: StoredRecord<RequirementRecord>, questionId: string): boolean {
-  if (!record.data.approvalManifest) return false;
-  const manifest = registeredApprovalManifestIn(db, repoId, record.data.approvalManifest.reference, record);
+  const manifest = registeredApprovalManifestIn(db, repoId, record.data.approvalManifest!.reference, record);
   const entry = manifest.questions.find((question) => question.requestId === questionId);
   return entry !== undefined && entry.pendingIds.length === 0;
 }

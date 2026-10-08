@@ -5,6 +5,8 @@ import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
+import { draftApprover } from "./helpers/approval-fixture.ts";
+import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { CheckRoundService } from "../runtime/check-round.ts";
 import { createVerificationRunTool } from "../runtime/verification-run.ts";
 import type { VerificationView } from "../runtime/verification-run.ts";
@@ -36,7 +38,8 @@ async function world() {
     if (request.action === "metadata") return true;
     const grant = request.operationId ? grants.get(request.operationId) : undefined;
     return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
-  } });
+  }, authorizeManifest: () => true });
+  const grantWrite: WriteGrant = (r) => grants.set(r.operationId, { action: r.action, intent: requirementIntentHash({ title: r.title, body: r.body }), receiptId: r.receiptId });
   const state = await RequirementStateStore.open({ ...options, authorize: (request) => request.repoId === options.repoId &&
     ["open", "read", "bind-workspace", "acquire-pm", "check-pm", "check-scheduling", "assess-update", "events"].includes(request.action) });
   const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: BODY };
@@ -45,11 +48,7 @@ async function world() {
   const worktree = await addWorktree(repo);
   const baseCommit = (await runGit(["rev-parse", "HEAD"], worktree.root)).trim();
   await state.bindWorkspace({ requirementId: created.requirementId, version: state.read(created.requirementId).version, path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
-  async function approve(body: string) {
-    const confirm = { requirementId: created.requirementId, operationId: uuidv7(), version: state.read(created.requirementId).version, title: "角色跳跃", body, receiptId: uuidv7() };
-    grants.set(confirm.operationId, { action: "confirmUpdate", intent: requirementIntentHash({ title: confirm.title, body }), receiptId: confirm.receiptId });
-    return service.confirmUpdate(confirm);
-  }
+  const approve = draftApprover(options, service, { requirementId: created.requirementId, operationId: created.operationId, title: "角色跳跃", body: BODY }, grantWrite);
   await approve(BODY);
   await mkdir(join(worktree.root, "src"), { recursive: true });
   await writeFile(join(worktree.root, "src", "a.ts"), "export const a = 1;\n");

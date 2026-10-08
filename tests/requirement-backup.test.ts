@@ -12,6 +12,7 @@ import { restoreRequirementBackup, RequirementRecoveryError } from "../runtime/r
 import type { RequirementRestoreOptions } from "../runtime/requirement-recovery.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE } from "../runtime/requirement-coordination.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
+import { draftApprover } from "./helpers/approval-fixture.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
@@ -45,7 +46,7 @@ async function world() {
   cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
   const local = await privateRepoDirectory(root, identity.repoId);
-  const options = { repositoryRoot: repo.root, dataRoot: local.dataRoot, repoId: identity.repoId, authorize: () => true };
+  const options = { repositoryRoot: repo.root, dataRoot: local.dataRoot, repoId: identity.repoId, authorize: () => true, authorizeManifest: () => true };
   const service = await RequirementService.open(options);
   const state = await RequirementStateStore.open({ ...options, authorize: () => true });
   const worktrees: string[] = [repo.root];
@@ -62,10 +63,11 @@ async function populatedWorld() {
   const w = await world();
   const secret = "PROD-BODY-MUST-NOT-ENTER-RECEIPTS-OR-SQLITE-85b179";
   const created = await w.service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "活动需求", body: `${secret}\n版本一` });
-  const bound = await w.bind(created.requirementId);
-  const first = await w.service.confirmUpdate({ requirementId: created.requirementId, operationId: uuidv7(), version: bound.version, title: "活动需求", body: `${secret}\n版本一`, receiptId: uuidv7() });
-  const draft = await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: first.version, title: "活动需求", body: `${secret}\n版本二草稿` });
-  const active = await w.service.confirmUpdate({ requirementId: created.requirementId, operationId: uuidv7(), version: draft.version, title: "活动需求", body: `${secret}\n版本三批准`, receiptId: uuidv7() });
+  await w.bind(created.requirementId);
+  const approve = draftApprover(w.options, w.service, { requirementId: created.requirementId, operationId: created.operationId, title: "活动需求", body: `${secret}\n版本一` });
+  const first = await approve();
+  await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: first.version, title: "活动需求", body: `${secret}\n版本二草稿` });
+  const active = await approve(`${secret}\n版本三批准`);
 
   const closedCreated = await w.service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "关闭需求", body: `${secret}\n关闭正文` });
   const closing = w.state.beginClose({ requirementId: closedCreated.requirementId, version: closedCreated.version, intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });

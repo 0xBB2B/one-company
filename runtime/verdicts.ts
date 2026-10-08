@@ -42,8 +42,7 @@ export class VerdictError extends Error {
 
 /** QA 只验实施目标板块与验收板块下已确认的段落：未验证项指向其他已知段落（待定、排除、交付要求等）时返回这些段落。 */
 function unverifiedOutsideImplement(db: LocalDatabase, repoId: string, row: StoredRecord<RequirementRecord>, findings: readonly Finding[]): string[] {
-  if (!row.data.approvalManifest) return [];
-  const manifest = registeredApprovalManifestIn(db, repoId, row.data.approvalManifest.reference, row);
+  const manifest = registeredApprovalManifestIn(db, repoId, row.data.approvalManifest!.reference, row);
   const known = new Set(manifest.units.map((unit) => unit.id));
   const scope = implementScope(manifest, (row.data.docSpec?.sections ?? []).map((section) => section.record === "acceptance" ? { ...section, goal: true as const } : section));
   return [...new Set(findings.filter((finding) => finding.kind === "unverified")

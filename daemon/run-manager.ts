@@ -316,7 +316,7 @@ export class RunManager {
     if (record.data.lifecycle !== "active") throw protocolError("requirement_not_active", "需求不是活动状态");
     const managed = withDatabase(this.database, (db) => db.read<{ status?: string }>(MANAGED_WORKSPACES, input.requirementId));
     if (managed?.data.status !== "ready" || !record.data.workspace || !record.data.approved) throw protocolError("workspace_not_ready", "需求工作区尚未 ready 或尚无批准版本");
-    if (!record.data.approvalManifest || !implementAuthorized({ dataRoot: this.options.dataRoot, repoId: this.repoId }, record)) {
+    if (!implementAuthorized({ dataRoot: this.options.dataRoot, repoId: this.repoId }, record)) {
       throw protocolError("implement_not_authorized", "批准清单没有实施授权，分析与规划阶段不派 PM");
     }
     const resolved = await this.resolveAgent("pm", "pm", { model: input.model, thinking: input.thinking });

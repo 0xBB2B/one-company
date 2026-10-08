@@ -159,8 +159,9 @@ async function events() {
   const { RequirementEventService } = await import("../../runtime/requirement-events.ts");
   const { LocalDatabase: DB, repositoryDatabase, uuidv7, withDatabase } = await import("../../runtime/database.ts");
   const { repositoryIdentity } = await import("../../runtime/identity.ts");
+  const { manifestConfirmInput } = await import("./approval-fixture.ts");
   const identity = await repositoryIdentity(job.repo);
-  const options = { repositoryRoot: job.repo, dataRoot: job.dataRoot, repoId: identity.repoId, authorize: () => true };
+  const options = { repositoryRoot: job.repo, dataRoot: job.dataRoot, repoId: identity.repoId, authorize: () => true, authorizeManifest: () => true };
   const requirements = await RequirementService.open(options);
   const state = await RequirementStateStore.open(options);
   const eventService = await RequirementEventService.open(options);
@@ -169,10 +170,9 @@ async function events() {
   const worktree = join(job.fixtureRoot, "event-worktree");
   gitRun(job.git, job.repo, ["worktree", "add", "-b", "benchmark-events", worktree], job.fixtureRoot);
   const baseCommit = gitRun(job.git, worktree, ["rev-parse", "HEAD"], job.fixtureRoot);
-  const bound = await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
+  await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
     path: worktree, prepareOperationId: uuidv7(), baseCommit });
-  let previous = await requirements.confirmUpdate({ requirementId: created.requirementId, operationId: uuidv7(), version: bound.version,
-    title: "测量夹具", body: "BASELINE_0", receiptId: uuidv7() });
+  let previous = await requirements.confirmUpdate(await manifestConfirmInput(options, { requirementId: created.requirementId, savedOperationId: created.operationId }));
   let lease = await state.acquirePm({ requirementId: created.requirementId, version: previous.version, runId: uuidv7(), expectedFence: 0 });
   const baseline = await eventService.prepareCurrentBaseline({ lease });
   eventService.consumePreparedDelivery({ lease, handle: baseline.handle, contextGeneration: lease.contextGeneration, version: baseline.version },
@@ -212,9 +212,11 @@ async function events() {
         assert.equal((await eventService.poll({ lease })).status, "caught_up", "样本开始不得已有积压");
         const draft = await requirements.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(),
           version: state.read(created.requirementId).version, title: "测量夹具", body: `DRAFT_NOT_APPROVED_${i}` });
+        const candidate = await requirements.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(),
+          version: draft.version, title: "测量夹具", body: `APPROVED_${i + 1}` });
+        const confirm = await manifestConfirmInput(options, { requirementId: created.requirementId, savedOperationId: candidate.operationId });
         const saveStarted = performance.now();
-        const approved = await requirements.confirmUpdate({ requirementId: created.requirementId, operationId: uuidv7(),
-          version: draft.version, title: "测量夹具", body: `APPROVED_${i + 1}`, receiptId: uuidv7() });
+        const approved = await requirements.confirmUpdate(confirm);
         const saveReturnedAt = performance.now();
         persisted = committed.get(approved.revision); assert.ok(persisted, "没有观察到真实提交边界");
         const delivery = await eventService.poll({ lease });

@@ -285,7 +285,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
           toCommit: result.toCommit, fromHash: result.fromHash, toHash: result.toHash };
       }
       const nextCursor = randomBytes(32).toString("hex");
-      const origin = source(before);
+      const origin = source(activeSync(before));
       const result = pageProdResponse({ text, startByte: cursor?.offset ?? 0, maxBytes, structure,
         startSection: cursor?.sectionOffset ?? 0, response: (page, structurePage, hasMore) => {
           const full = params.action === "read" && sectionId === undefined && page.complete && structurePage?.complete === true;
@@ -335,11 +335,9 @@ async function openReadTool(options: RequirementReadToolOptions) {
     } catch (error) { cursors.clear(); throw readFailure(error); }
   }
   function source(record: { version: number; data: RequirementRecord }) {
-    const approvalScope = record.data.approvalManifest
-      ? withDatabase(repositoryDatabase(config.dataRoot, binding.repoId), (db) => db.transaction(() => ({ status: "available" as const,
-        summary: summarizeApprovalManifest(registeredApprovalManifestIn(db, binding.repoId, record.data.approvalManifest!.reference,
-          { ...record, id: binding.requirementId })) })))
-      : { status: "unavailable" as const };
+    const approvalScope = withDatabase(repositoryDatabase(config.dataRoot, binding.repoId), (db) => db.transaction(() => ({ status: "available" as const,
+      summary: summarizeApprovalManifest(registeredApprovalManifestIn(db, binding.repoId, record.data.approvalManifest!.reference,
+        { ...record, id: binding.requirementId })) })));
     const goal = target(record);
     return { approvalScope, requirementId: binding.requirementId, repoId: binding.repoId, workspaceId: binding.workspaceId, branch: binding.branch,
       role: binding.role, purpose: binding.checkRoundId ? "check_round_original_baseline" : binding.role === "qa" ? "black_box_acceptance" : "approved_requirement_read",

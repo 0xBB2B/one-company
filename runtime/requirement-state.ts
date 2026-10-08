@@ -171,7 +171,7 @@ export class RequirementStateStore {
     checkRequirement(data, data.requirementId, this.options.repoId);
     const version = db.update("requirements", data.requirementId, record.version, data);
     const event = checked(RequirementEvent, { requirementId: data.requirementId, repoId: data.repoId, kind, version, epoch: data.epoch, revision: data.revision, from, to, receiptId, recoveryReason: data.recoveryReason,
-      ...(kind === "prod.approved" && data.approvalManifest ? { approvalManifest: data.approvalManifest } : {}) });
+      ...(kind === "prod.approved" ? { approvalManifest: data.approvalManifest } : {}) });
     const queued = db.append(eventStream(data.requirementId), event);
     return { record: { id: record.id, version, data }, event: queued };
   }
@@ -211,13 +211,12 @@ export class RequirementStateStore {
       const audit = checked(RequirementEvent, event.data);
       if (audit.requirementId !== requirementId || audit.repoId !== this.options.repoId) throw new RequirementStateError("event_identity_conflict");
       if (audit.kind !== "prod.approved") return [];
-      if (!audit.to || !audit.receiptId || ((audit.from === null) !== (audit.revision === 1))) throw new RequirementStateError("approved_event_invalid");
+      if (!audit.to || !audit.receiptId || !audit.approvalManifest || ((audit.from === null) !== (audit.revision === 1))) throw new RequirementStateError("approved_event_invalid");
       const data = checked(ApprovedProdChange, {
         format: "approved-prod-change/v1", requirementId, repoId: this.options.repoId,
         fromRevision: audit.from === null ? null : audit.revision - 1, toRevision: audit.revision,
         from: audit.from, to: audit.to, receiptId: audit.receiptId, lifecycleEpoch: audit.epoch,
-        recordVersion: audit.version,
-        ...(audit.approvalManifest ? { approvalManifest: audit.approvalManifest } : {}),
+        recordVersion: audit.version, approvalManifest: audit.approvalManifest,
       });
       return [{ ...event, data }];
     });
@@ -371,18 +370,17 @@ export class RequirementStateStore {
   }
   async recordApprovedVersion(input: Static<typeof commands.approve>): Promise<StoredRecord<RequirementRecord>> {
     const request = checked(commands.approve, input); this.authorize("approved-version", request);
-    if (this.options.authorizeManifest && !request.manifest) throw new RequirementStateError("manifest_required");
     const previous = this.read(request.requirementId);
     if (previous.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, previous.data.workspace);
     // Core使用独立SQLite核验快照；作为写事务前最后一次授权，事务内不再调用宿主。
-    const authorizeManifest = request.manifest ? () => {
+    const authorizeManifest = () => {
       if (previous.data.approvalReceiptId === request.receiptId &&
         equal(previous.data.approvalManifest?.reference ?? null, request.manifest)) return;
       const allowed = this.options.authorizeManifest?.(deepFreeze({ requirementId: request.requirementId,
-        version: request.version, receiptId: request.receiptId, manifest: structuredClone(request.manifest!) }));
+        version: request.version, receiptId: request.receiptId, manifest: structuredClone(request.manifest) }));
       if (isPromise(allowed)) void Promise.prototype.then.call(allowed, () => undefined, () => undefined);
       if (allowed !== true) throw new RequirementStateError("manifest_authorization_required");
-    } : undefined;
+    };
     const approvalTime = this.now();
     return this.mutate("approved-version", request, (db) => {
       const record = this.get(db, request.requirementId); this.active(record.data, true);
@@ -394,20 +392,16 @@ export class RequirementStateStore {
       if (consumed) {
         const use = checked(Operation, consumed.data);
         if (use.requirementId !== record.id || use.digest !== digest || record.data.approvalReceiptId !== request.receiptId || !equal(record.data.approved, request.reference) ||
-          !equal(record.data.approvalManifest?.reference ?? null, request.manifest ?? null)) throw new RequirementStateError("approval_conflict");
+          !equal(record.data.approvalManifest?.reference ?? null, request.manifest)) throw new RequirementStateError("approval_conflict");
         return record;
       }
       this.version(record, request.version);
-      let approvalManifest;
-      if (request.manifest) {
-        const final = this.get(db, request.requirementId);
-        if (final.version !== record.version || !equal(final.data, record.data)) throw new RequirementStateError("manifest_stale");
-        approvalManifest = summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId, request.manifest, final, request.receiptId));
-      }
+      const final = this.get(db, request.requirementId);
+      if (final.version !== record.version || !equal(final.data, record.data)) throw new RequirementStateError("manifest_stale");
+      const approvalManifest = summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId, request.manifest, final, request.receiptId));
       const revision = increment(record.data.revision);
-      const { approvalManifest: _previousManifest, ...baseline } = record.data;
-      const result = this.write(db, record, { ...baseline, ...(approvalManifest ? { approvalManifest } : {}),
-        ...(!baseline.docSpec && request.docSpec ? { docSpec: request.docSpec } : {}), lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
+      const result = this.write(db, record, { ...record.data, approvalManifest,
+        ...(!record.data.docSpec && request.docSpec ? { docSpec: request.docSpec } : {}), lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
         pendingRevision: record.data.lifecycle === "active" ? revision : null }, "prod.approved", record.data.approved, request.reference, request.receiptId, approvalTime);
       db.create("requirement_approval_uses", request.receiptId, { requirementId: record.id, digest, sequence: result.event.sequence });
       return result.record;
@@ -507,6 +501,7 @@ export class RequirementStateStore {
       return db.events(eventStream(requirementId), after).map((event) => {
         const data = checked(RequirementEvent, event.data);
         if (data.requirementId !== requirementId || data.repoId !== this.options.repoId) throw new RequirementStateError("event_identity_conflict");
+        if (data.kind === "prod.approved" && !data.approvalManifest) throw new RequirementStateError("approved_event_invalid");
         return { ...event, data };
       });
     });

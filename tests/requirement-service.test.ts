@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
+import { draftApprover, manifestConfirmInput } from "./helpers/approval-fixture.ts";
 import type { RequirementServiceOptions, ServiceAuthorizationRequest } from "../runtime/requirement-service.ts";
 import { RequirementOperations } from "../runtime/requirement-operations.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
@@ -37,6 +38,7 @@ async function world(authorize: RequirementServiceOptions["authorize"] = () => t
     dataRoot: join(root, "private"),
     repoId: identity.repoId,
     authorize,
+    authorizeManifest: () => true,
   };
   const service = await RequirementService.open(options);
   const state = await RequirementStateStore.open({ ...options, authorize: () => true });
@@ -109,16 +111,9 @@ async function waitForFile(path: string, diagnostics: () => string): Promise<voi
   }
 }
 
-async function activate(w: Awaited<ReturnType<typeof world>>, created: Awaited<ReturnType<RequirementService["create"]>>, body = "初始正文") {
-  const bound = await w.bind(created.requirementId);
-  return w.service.confirmUpdate({
-    requirementId: created.requirementId,
-    operationId: uuidv7(),
-    version: bound.version,
-    title: "需求标题",
-    body,
-    receiptId: uuidv7(),
-  });
+async function activate(w: Awaited<ReturnType<typeof world>>, created: Awaited<ReturnType<RequirementService["create"]>>) {
+  await w.bind(created.requirementId);
+  return w.service.confirmUpdate(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId }));
 }
 
 test("create 生成并持久复用 UUID，首提与同 operation 响应重试不重复提交或事件", async () => {
@@ -189,51 +184,38 @@ test("M8A-AC7：确认须有可信 receipt 授权，不要求已绑定 worktree"
     body: "初始正文",
   };
   await expect(w.service.confirmUpdate(base as never)).rejects.toMatchObject({ code: "invalid_shape" });
+  const confirm = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
   allowConfirmation = false;
-  await expect(w.service.confirmUpdate({ ...base, operationId: uuidv7(), receiptId: uuidv7() }))
-    .rejects.toMatchObject({ code: "authorization_required" });
+  await expect(w.service.confirmUpdate(confirm)).rejects.toMatchObject({ code: "authorization_required" });
   expect(w.state.read(created.requirementId).data.lifecycle).toBe("draft");
   expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
   allowConfirmation = true;
-  await w.service.confirmUpdate({ ...base, operationId: uuidv7(), receiptId: uuidv7() });
+  await w.service.confirmUpdate(confirm);
   expect(w.state.read(created.requirementId).data).toMatchObject({ lifecycle: "active", workspace: null });
 });
 
 test("diff 使用登记的跨版本 approved 事件，正确跨过中间 draft", async () => {
   const w = await world();
   const created = await w.service.create(createInput({ body: "批准一" }));
-  const first = await activate(w, created, "批准一");
+  const first = await activate(w, created);
+  const approve = draftApprover(w.options, w.service, { requirementId: created.requirementId, operationId: created.operationId, title: "需求标题", body: "批准一" });
 
-  const middleDraft = await w.service.updateDraft({
+  await w.service.updateDraft({
     requirementId: created.requirementId,
     operationId: uuidv7(),
     version: first.version,
     title: "需求标题",
     body: "未批准中间草稿",
   });
-  const second = await w.service.confirmUpdate({
-    requirementId: created.requirementId,
-    operationId: uuidv7(),
-    version: middleDraft.version,
-    title: "需求标题",
-    body: "批准二",
-    receiptId: uuidv7(),
-  });
-  const finalDraft = await w.service.updateDraft({
+  const second = await approve("批准二");
+  await w.service.updateDraft({
     requirementId: created.requirementId,
     operationId: uuidv7(),
     version: second.version,
     title: "需求标题",
     body: "另一份未批准草稿",
   });
-  const third = await w.service.confirmUpdate({
-    requirementId: created.requirementId,
-    operationId: uuidv7(),
-    version: finalDraft.version,
-    title: "需求标题",
-    body: "批准三",
-    receiptId: uuidv7(),
-  });
+  const third = await approve("批准三");
 
   const difference = await w.service.diff({ requirementId: created.requirementId, fromRevision: 1, toRevision: 3 });
   expect(difference.fromCommit).toBe(first.commit);
@@ -293,15 +275,8 @@ test("Git 完成后操作日志登记故障，原 operation 重试复用提交�
 test("批准已落库但 finalize 响应丢失时，同 operation 重试不重复批准事件", async () => {
   const w = await world();
   const created = await w.service.create(createInput());
-  const bound = await w.bind(created.requirementId);
-  const input = {
-    requirementId: created.requirementId,
-    operationId: uuidv7(),
-    version: bound.version,
-    title: "需求标题",
-    body: "初始正文",
-    receiptId: uuidv7(),
-  };
+  await w.bind(created.requirementId);
+  const input = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
   const original = RequirementOperations.prototype.finalize;
   vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementationOnce(() => {
     throw new Error("injected lost finalize response");
