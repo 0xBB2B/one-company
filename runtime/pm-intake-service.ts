@@ -97,9 +97,7 @@ const PM_INTAKE_SERVICE_ADVICE: Record<string, FailureAdvice> = {
   approved_partition_changed: { why: "批准版本的章节划分已变化，接手理解需要按新版本重做", next: "请 PM 按新的批准版本重新提交接手理解" },
   approved_prod_changed: { why: "批准版本已变化，接手理解需要按新版本重做", next: "请 PM 按新的批准版本重新提交接手理解" },
   binding_changed: { why: "PM 与需求、工作区的绑定已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
-  deadline_store_binding_unsupported: { why: "接手复核的期限配置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   foreign_request: { why: "这个复核请求不属于当前需求或 PM", next: "用 forward 重新取当前的复核请求" },
-  impact_provider_unavailable: { why: "读不到接手影响分析", next: "重试一次；仍然失败就把这段原因告诉用户" },
   intake_not_ready: { why: "PM 还没提交接手理解", next: "等 PM 提交接手理解后再复核" },
   invalid_deadline: { why: "复核期限设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   invalid_operation: { why: "操作编号不合规", next: "换一个新生成的操作编号重试" },
@@ -116,12 +114,10 @@ const PM_INTAKE_SERVICE_ADVICE: Record<string, FailureAdvice> = {
   result_changed: { why: "返回结果前复核记录被改动", next: "重新发起一次" },
   scenario_coverage_incomplete: { why: "接手理解没有覆盖所有必需场景", next: "请 PM 补齐场景覆盖后重新提交" },
   source_directory_mismatch: { why: "接手出处目录与需求当前版本不一致", next: "请 PM 按当前版本重新提交接手理解" },
-  source_directory_provider_unavailable: { why: "读不到接手出处目录", next: "重试一次；仍然失败就把这段原因告诉用户" },
   source_directory_unavailable: { why: "接手出处目录不可用", next: "重试一次；仍然失败就把这段原因告诉用户" },
   submission_binding_mismatch: { why: "PM 提交的接手理解与当前 PM 不对应", next: "停止操作，不要重试；把这段原因告诉用户" },
   submission_changed: { why: "PM 提交的接手理解在复核期间被改动", next: "用 forward 重新取当前的复核请求" },
   submission_hash_mismatch: { why: "PM 提交的接手理解内容与登记不一致", next: "停止操作，不要重试；把这段原因告诉用户" },
-  submission_provider_unavailable: { why: "读不到 PM 提交的接手理解", next: "重试一次；仍然失败就把这段原因告诉用户" },
   submission_unavailable: { why: "PM 还没有可复核的接手理解", next: "等 PM 提交接手理解后再复核" },
   unproven_result: { why: "结果不是本工具刚生成的", next: "停止操作，不要重试；把这段原因告诉用户" },
   untrusted_main_call: { why: "复核调用不是宿主看到的真实主代理调用", next: "重新发起一次" },
@@ -229,15 +225,14 @@ export interface PmIntakeServiceOptions {
   requirementService: RequirementService;
   authorization: HostAuthorizationManager;
   mainCallResolver?: MainIntakeCallResolver;
-  sourceDirectoryProvider?: PmSourceDirectoryProvider;
-  submissionProvider?: PmSubmissionProvider;
-  store?: PmIntakeStore;
+  sourceDirectoryProvider: PmSourceDirectoryProvider;
+  submissionProvider: PmSubmissionProvider;
   now?: () => number;
   /** 同进程 performance.now() 时间域中的可信绝对截止时间；不进入工具参数、数据库或 provider 查询。 */
   deadlineMonotonic?: number;
 }
 
-/** M4 需求侧服务：只登记接手元数据和主代理核对，不启动PM、plan、task或调度。 */
+/** 需求侧接手服务：只登记接手元数据和主代理核对，不启动PM、plan、task或调度。 */
 export class PmIntakeService {
   readonly #options: PmIntakeServiceOptions;
   readonly #store: PmIntakeStore;
@@ -247,9 +242,8 @@ export class PmIntakeService {
     if (!HASH.test(options.repoId)) deny("invalid_repo");
     if (options.deadlineMonotonic !== undefined &&
       (!Number.isFinite(options.deadlineMonotonic) || options.deadlineMonotonic < 0)) deny("invalid_deadline");
-    if (options.store && options.deadlineMonotonic !== undefined) deny("deadline_store_binding_unsupported");
     this.#options = { ...options };
-    this.#store = options.store ?? new PmIntakeStore({ dataRoot: options.dataRoot, repoId: options.repoId,
+    this.#store = new PmIntakeStore({ dataRoot: options.dataRoot, repoId: options.repoId,
       now: options.now, deadlineMonotonic: options.deadlineMonotonic });
   }
 
@@ -320,8 +314,6 @@ export class PmIntakeService {
     const identity = this.#main(call), hostGeneration = this.#options.authorization.generation;
     const runtime = { identity, hostGeneration, signal };
     this.#runtimeCurrent(call, runtime);
-    if (!this.#options.sourceDirectoryProvider) deny("source_directory_provider_unavailable");
-    if (!this.#options.submissionProvider) deny("submission_provider_unavailable");
     const initial = this.#options.state.read(identity.requirementId);
     const lease = this.#owner(identity.requirementId);
     // 只核对已批准版本；还没批准的草稿不产生授权，不挡核对
@@ -384,7 +376,7 @@ export class PmIntakeService {
     };
     const captured = this.#store.captureCurrent(basis, sourceDirectory);
     const finalSourceQuery: PmSourceDirectoryQuery = Object.freeze({ ...sourceQuery, binding: freeze(structuredClone(captured.binding)) });
-    syncOnly(() => this.#options.sourceDirectoryProvider!.assertCurrent(material.handle, finalSourceQuery), "async_source_directory_assertion");
+    syncOnly(() => this.#options.sourceDirectoryProvider.assertCurrent(material.handle, finalSourceQuery), "async_source_directory_assertion");
     this.#runtimeCurrent(call, runtime);
     return { identity, hostGeneration, signal, basis, binding: captured.binding, lease, manifest, sourceDirectory,
       sourceDirectoryHash: captured.sourceDirectoryHash, sourceHandle: material.handle, sourceQuery: finalSourceQuery, proof: captured.proof };
@@ -405,7 +397,7 @@ export class PmIntakeService {
     this.#runtimeCurrent(call, prepared);
     const query: PmSubmissionQuery = Object.freeze({ binding: freeze(structuredClone(prepared.binding)),
       sourceDirectoryHash: prepared.sourceDirectoryHash, maxBytes: MAX_INNER_BYTES, signal: prepared.signal });
-    const material = await this.#options.submissionProvider!.loadCurrent(query);
+    const material = await this.#options.submissionProvider.loadCurrent(query);
     this.#runtimeCurrent(call, prepared);
     await this.#checkPm(prepared.lease, call, prepared);
     if (!material || !material.handle || typeof material.handle !== "object" || material.handle.kind !== "pm-submission-handle" ||
@@ -416,10 +408,10 @@ export class PmIntakeService {
     const loaded: LoadedSubmission = { handle: material.handle, submissionRef: material.submissionRef,
       submissionHash: material.submissionHash, understanding: checked.understanding, status: checked.status,
       uncoveredScenarioIds: checked.uncoveredScenarioIds, query };
-    syncOnly(() => this.#options.sourceDirectoryProvider!.assertCurrent(prepared.sourceHandle, this.#sourceAssertionQuery(prepared)),
+    syncOnly(() => this.#options.sourceDirectoryProvider.assertCurrent(prepared.sourceHandle, this.#sourceAssertionQuery(prepared)),
       "async_source_directory_assertion");
     this.#runtimeCurrent(call, prepared);
-    syncOnly(() => this.#options.submissionProvider!.assertCurrent(material.handle, this.#submissionAssertionQuery(loaded)),
+    syncOnly(() => this.#options.submissionProvider.assertCurrent(material.handle, this.#submissionAssertionQuery(loaded)),
       "async_submission_assertion");
     this.#runtimeCurrent(call, prepared);
     this.#store.assertReturnCurrent(prepared.proof, this.#finalCallback(call, prepared, loaded));
@@ -431,9 +423,9 @@ export class PmIntakeService {
     const sourceQuery = this.#sourceAssertionQuery(prepared), submissionQuery = this.#submissionAssertionQuery(submission);
     return () => {
       this.#runtimeCurrent(call, prepared);
-      syncOnly(() => this.#options.sourceDirectoryProvider!.assertCurrent(prepared.sourceHandle, sourceQuery), "async_source_directory_assertion");
+      syncOnly(() => this.#options.sourceDirectoryProvider.assertCurrent(prepared.sourceHandle, sourceQuery), "async_source_directory_assertion");
       this.#runtimeCurrent(call, prepared);
-      syncOnly(() => this.#options.submissionProvider!.assertCurrent(submission.handle, submissionQuery), "async_submission_assertion");
+      syncOnly(() => this.#options.submissionProvider.assertCurrent(submission.handle, submissionQuery), "async_submission_assertion");
       this.#runtimeCurrent(call, prepared);
     };
   }
@@ -517,6 +509,4 @@ export class PmIntakeService {
     this.#runtimeCurrent(call, prepared);
     return this.#deliver(call, prepared, submission, stored.currentProof, bounded({ record: structuredClone(stored.record), ...noUserAuthorization }));
   }
-
-  recordImpact(): never { return deny("impact_provider_unavailable"); }
 }

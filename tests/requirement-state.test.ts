@@ -148,17 +148,6 @@ test("一个有效PM：租约更新、到期接管及旧fence拒绝", async () =
   expect(w.store.pmOwner(record.id)!.lease!.runId).toBe(next.runId);
 });
 
-test("PM释放与接管保留逻辑消费位置，不能因新会话从头重复处理", async () => {
-  const w = await world(); const record = await w.activate();
-  const lease = await w.store.acquirePm({ requirementId: record.id, version: record.version, runId: uuidv7(), expectedFence: 0 });
-  await w.store.acknowledge({ lease, sequence: 1 });
-  w.store.releasePm(lease);
-  expect(w.store.pmOwner(record.id)!.seenSequence).toBe(1);
-  const next = await w.store.acquirePm({ requirementId: record.id, version: w.store.read(record.id).version, runId: uuidv7(), expectedFence: lease.fence + 1 });
-  await w.store.acknowledge({ lease: next, sequence: 2 });
-  expect(w.store.pmOwner(record.id)!.seenSequence).toBe(2);
-});
-
 test("同一个PM运行ID不能绑定两个需求，释放后也不跨需求复用", async () => {
   const w = await world(); const a = await w.activate(), b = await w.activate();
   const runId = uuidv7();
@@ -214,7 +203,7 @@ test("同路径同分支被删除重建后，旧PM不能把新现场当成原绑
   } finally { await rootHandle.close(); await gitHandle.close(); }
 });
 
-test("确认更新保留准确前后引用，消费事件不清除pending，也不改历史证据", async () => {
+test("确认更新保留准确前后引用，不清除pending，也不改历史证据", async () => {
   const w = await world(); const record = await w.activate();
   const lease = await w.store.acquirePm({ requirementId: record.id, version: record.version, runId: uuidv7(), expectedFence: 0 });
   const path = repositoryDatabase(w.options.dataRoot, w.identity.repoId);
@@ -225,11 +214,6 @@ test("确认更新保留准确前后引用，消费事件不清除pending，也�
   await expect(w.store.checkScheduling(lease)).rejects.toThrow(/pending_update/);
   const event = w.store.events(record.id).at(-1)!;
   expect(event.data.from).toEqual(reference()); expect(event.data.to).toEqual(reference("updated"));
-  await expect(w.store.acknowledge({ lease, sequence: 2 })).rejects.toThrow(/event_gap/);
-  for (const event of w.store.events(record.id)) { await w.store.acknowledge({ lease, sequence: event.sequence }); await w.store.acknowledge({ lease, sequence: event.sequence }); }
-  const seen = w.store.pmOwner(record.id)!.seenSequence;
-  await w.store.acknowledge({ lease, sequence: 1 });
-  expect(w.store.pmOwner(record.id)!.seenSequence).toBe(seen);
   expect(w.store.read(record.id).data.pendingRevision).toBe(2);
   expect(() => w.store.beginClose({ requirementId: record.id, version: next.version, intent: { operationId: uuidv7(), reason: "completed", receiptId: uuidv7() } })).toThrow(/completion_blocked/);
   expect(withDatabase(path, (db) => db.read("verification_runs", "fixture")!.data)).toEqual({ prodHash: reference().hash, result: "PASS" });

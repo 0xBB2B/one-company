@@ -6,8 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { RequirementEventService, RequirementEventServiceError } from "../runtime/requirement-events.ts";
-import type { ApprovedBaselineResult, ApprovedChangeDelivery, ApprovedContentResult,
-  PreparedRequirementDelivery, RequirementEventAuthorizationRequest, RequirementEventServiceOptions } from "../runtime/requirement-events.ts";
+import type { ApprovedChangeDelivery, PreparedRequirementDelivery, RequirementEventAuthorizationRequest,
+  RequirementEventServiceOptions } from "../runtime/requirement-events.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
 import { RequirementOperations } from "../runtime/requirement-operations.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
@@ -60,12 +60,13 @@ function consumePrepared(
   events: RequirementEventService,
   lease: Awaited<ReturnType<RequirementStateStore["acquirePm"]>>,
   prepared: PreparedRequirementDelivery,
-): ApprovedContentResult {
-  let content: ApprovedContentResult | undefined;
+): void {
   events.consumePreparedDelivery({ lease, handle: prepared.handle, contextGeneration: lease.contextGeneration,
-    version: prepared.version }, (delivery) => { content = delivery; });
-  expect(content).toBeDefined();
-  return content!;
+    version: prepared.version });
+}
+
+function cursor(w: Awaited<ReturnType<typeof world>>, lease = w.lease) {
+  return w.state.approvedEventCursor({ lease });
 }
 
 async function understandBaseline(w: Awaited<ReturnType<typeof world>>) {
@@ -74,10 +75,10 @@ async function understandBaseline(w: Awaited<ReturnType<typeof world>>) {
     commit: w.approved.commit, prodHash: w.approved.prodHash });
   const prepared = await w.events.prepareCurrentBaseline({ lease: w.lease });
   expect(JSON.stringify(prepared)).not.toContain("批准基线");
-  const baseline = consumePrepared(w.events, w.lease, prepared) as ApprovedBaselineResult;
-  expect(baseline).toMatchObject({ revision: 1, body: "批准基线", commit: w.approved.commit, prodHash: w.approved.prodHash });
-  await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: baseline.deliveryId });
-  return baseline;
+  expect(prepared).toMatchObject({ revision: 1, commit: w.approved.commit, prodHash: w.approved.prodHash });
+  consumePrepared(w.events, w.lease, prepared);
+  await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: prepared.deliveryId });
+  return prepared;
 }
 
 function asEvent(value: Awaited<ReturnType<RequirementEventService["poll"]>>): ApprovedChangeDelivery {
@@ -90,7 +91,7 @@ function approvalEvents(database: string, requirementId: string) {
     .filter((event) => (event.data as { kind?: string }).kind === "prod.approved"));
 }
 
-test("批准事件只存白名单元数据，完整基线投递与确认分离且响应重试幂等", async () => {
+test("批准事件只存白名单元数据，基线登记与确认分离且响应重试幂等", async () => {
   const authorizations: RequirementEventAuthorizationRequest[] = [];
   const w = await world((request) => { authorizations.push(structuredClone(request)); return true; });
   const database = repositoryDatabase(w.options.dataRoot, w.options.repoId);
@@ -101,20 +102,14 @@ test("批准事件只存白名单元数据，完整基线投递与确认分离�
   expect(repeated.deliveryId).toBe(first.deliveryId);
   expect(repeated.handle).not.toBe(first.handle);
   expect(JSON.stringify([first, repeated])).not.toContain("批准基线");
-  const content = consumePrepared(w.events, w.lease, first) as ApprovedBaselineResult;
-  expect(content.body).toBe("批准基线");
-  w.events.cancelPreparedDelivery({ lease: w.lease, handle: repeated.handle,
-    contextGeneration: w.lease.contextGeneration, version: repeated.version });
-  expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: repeated.handle,
-    contextGeneration: w.lease.contextGeneration, version: repeated.version }, () => undefined))
-    .toThrow(/unknown_delivery_handle/);
-  let status = await w.events.status({ lease: w.lease });
-  expect(status).toMatchObject({ deliveredSequence: first.throughSequence, consumedSequence: 0, understoodRevision: null });
+  consumePrepared(w.events, w.lease, first);
+  expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: first.handle,
+    contextGeneration: w.lease.contextGeneration, version: first.version })).toThrow(/unknown_delivery_handle/);
+  expect(await cursor(w)).toMatchObject({ deliveredSequence: first.throughSequence, consumedSequence: 0, understoodRevision: null });
   await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: first.deliveryId });
   await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: first.deliveryId });
-  status = await w.events.status({ lease: w.lease });
-  expect(status).toMatchObject({ deliveredSequence: first.throughSequence, consumedSequence: first.throughSequence, understoodRevision: 1,
-    understoodCommit: w.approved.commit, understoodHash: w.approved.prodHash });
+  expect(await cursor(w)).toMatchObject({ deliveredSequence: first.throughSequence, consumedSequence: first.throughSequence, understoodRevision: 1,
+    understood: { commit: w.approved.commit, hash: w.approved.prodHash.slice("sha256:".length) } });
   await expect(w.events.prepareCurrentBaseline({ lease: w.lease })).rejects.toThrow(/baseline_not_required/);
 
   const raw = withDatabase(database, (db) => JSON.stringify({
@@ -168,19 +163,17 @@ test("跨过草稿的连续批准事件带准确提交对，投递不等于消�
   const delivery = asEvent(await w.events.poll({ lease: w.lease }));
   expect(delivery.sequence).toBeGreaterThan(baseline.throughSequence);
   expect(delivery).toMatchObject({ redelivery: false, fromRevision: 1, toRevision: 2,
-    fromCommit: w.approved.commit, toCommit: second.commit, fromHash: w.approved.prodHash, toHash: second.prodHash,
-    changedSections: null, impact: "unknown", impactReason: "section_structure_unavailable" });
+    fromCommit: w.approved.commit, toCommit: second.commit, fromHash: w.approved.prodHash, toHash: second.prodHash });
   const redelivery = asEvent(await w.events.poll({ lease: w.lease }));
   expect(redelivery.eventId).toBe(delivery.eventId);
   expect(redelivery.redelivery).toBe(true);
 
-  const statusBefore = await w.events.status({ lease: w.lease });
-  expect(statusBefore).toMatchObject({ deliveredSequence: delivery.sequence, consumedSequence: baseline.throughSequence, understoodRevision: 1 });
+  expect(await cursor(w)).toMatchObject({ deliveredSequence: delivery.sequence, consumedSequence: baseline.throughSequence, understoodRevision: 1 });
   await w.events.acknowledgeEvent({ lease: w.lease, eventId: delivery.eventId, sequence: delivery.sequence,
     toRevision: delivery.toRevision, toCommit: delivery.toCommit, toHash: delivery.toHash });
   await w.events.acknowledgeEvent({ lease: w.lease, eventId: delivery.eventId, sequence: delivery.sequence,
     toRevision: delivery.toRevision, toCommit: delivery.toCommit, toHash: delivery.toHash });
-  expect((await w.events.status({ lease: w.lease })).understoodRevision).toBe(2);
+  expect((await cursor(w)).understoodRevision).toBe(2);
   expect(w.state.read(w.created.requirementId).data.pendingRevision).toBe(2);
   await expect(w.state.checkScheduling(w.lease)).rejects.toThrow(/pending_update/);
 });
@@ -212,10 +205,10 @@ test("乱序确认拒绝，响应丢失可重投；PM接管保留消费基线而
   expect(await reopened.poll({ lease: nextLease })).toMatchObject({ status: "baseline_required", reason: "context_missing",
     revision: 3 });
   const refreshed = await reopened.prepareCurrentBaseline({ lease: nextLease });
-  const refreshedBody = consumePrepared(reopened, nextLease, refreshed) as ApprovedBaselineResult;
-  expect(refreshedBody).toMatchObject({ revision: 3, body: "批准版本三" });
+  expect(refreshed).toMatchObject({ revision: 3 });
+  consumePrepared(reopened, nextLease, refreshed);
   await reopened.acknowledgeBaseline({ lease: nextLease, deliveryId: refreshed.deliveryId });
-  expect((await reopened.status({ lease: nextLease })).understoodRevision).toBe(2);
+  expect((await cursor(w, nextLease)).understoodRevision).toBe(2);
   const third = asEvent(await reopened.poll({ lease: nextLease }));
   expect(third).toMatchObject({ eventId: thirdQueued.id, sequence: thirdQueued.sequence, fromRevision: 2, toRevision: 3, redelivery: false });
   await expect(reopened.poll({ lease: w.lease })).rejects.toThrow(/stale_pm_lease/);
@@ -238,10 +231,9 @@ test("事件缺口不越过，active范围只用当前批准正文补完整基�
   expect(gap).toMatchObject({ status: "baseline_required", reason: "event_gap", revision: 3,
     commit: third.commit, prodHash: third.prodHash });
   const prepared = await w.events.prepareCurrentBaseline({ lease: w.lease });
-  const baseline = consumePrepared(w.events, w.lease, prepared) as ApprovedBaselineResult;
-  expect(baseline).toMatchObject({ body: "批准版本三", revision: 3, commit: third.commit, prodHash: third.prodHash,
-    throughSequence: latest.sequence });
-  await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: baseline.deliveryId });
+  expect(prepared).toMatchObject({ revision: 3, commit: third.commit, prodHash: third.prodHash, throughSequence: latest.sequence });
+  consumePrepared(w.events, w.lease, prepared);
+  await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: prepared.deliveryId });
   expect(await w.events.poll({ lease: w.lease })).toMatchObject({ status: "caught_up", consumedSequence: latest.sequence,
     understoodRevision: 3, understoodCommit: third.commit });
 });
@@ -253,7 +245,7 @@ test("cursor超过剩余批准尾部时进入受控恢复，保留cursor、pendi
   const delivery = asEvent(await w.events.poll({ lease: w.lease }));
   await w.events.acknowledgeEvent({ lease: w.lease, eventId: delivery.eventId, sequence: delivery.sequence,
     toRevision: delivery.toRevision, toCommit: delivery.toCommit, toHash: delivery.toHash });
-  const before = await w.events.status({ lease: w.lease });
+  const before = await cursor(w);
   const path = repositoryDatabase(w.options.dataRoot, w.options.repoId);
   const sqlite = new DatabaseSync(path);
   try { sqlite.prepare("DELETE FROM events WHERE stream=? AND sequence=?").run(`requirement_events:${w.created.requirementId}`, delivery.sequence); }
@@ -289,120 +281,69 @@ test("全部批准事件丢失时不补造基线或假报caught_up，保持histo
   await expect(w.events.prepareCurrentBaseline({ lease: w.lease })).rejects.toThrow(/recovery_required|lifecycle_denied/);
 });
 
-test("异步正文准备完成后closing，最终同步consume拒绝且不调用sink", async () => {
+test("基线准备完成后closing，最终同步consume拒绝", async () => {
   const w = await world();
   const prepared = await w.events.prepareCurrentBaseline({ lease: w.lease });
   expect(JSON.stringify(prepared)).not.toContain("批准基线");
   const current = w.state.read(w.created.requirementId);
   w.state.beginClose({ requirementId: w.created.requirementId, version: current.version,
     intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
-  const sink = vi.fn();
   expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
-    contextGeneration: w.lease.contextGeneration, version: prepared.version }, sink)).toThrow(/unknown_delivery_handle/);
+    contextGeneration: w.lease.contextGeneration, version: prepared.version })).toThrow(/unknown_delivery_handle/);
   expect((w.events as unknown as { pending: Map<string, unknown> }).pending.size).toBe(0);
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closing");
-  expect(sink).not.toHaveBeenCalled();
-  expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
-    contextGeneration: w.lease.contextGeneration, version: prepared.version }, sink)).toThrow(/unknown_delivery_handle/);
 });
 
-test("过期或消费边界撤权的句柄被丢弃，不向sink提供正文", async () => {
+test("过期或消费边界撤权的句柄被丢弃", async () => {
   let now = Date.now();
   const expiring = await world(() => true, () => now);
   const expired = await expiring.events.prepareCurrentBaseline({ lease: expiring.lease });
   now = expired.expiresAt;
-  const expiredSink = vi.fn();
   expect(() => expiring.events.consumePreparedDelivery({ lease: expiring.lease, handle: expired.handle,
-    contextGeneration: expiring.lease.contextGeneration, version: expired.version }, expiredSink))
+    contextGeneration: expiring.lease.contextGeneration, version: expired.version }))
     .toThrow(/unknown_delivery_handle|expired_delivery_handle/);
-  expect(expiredSink).not.toHaveBeenCalled();
 
   let authorized = true;
   const revoked = await world(() => authorized);
   const prepared = await revoked.events.prepareCurrentBaseline({ lease: revoked.lease });
   authorized = false;
-  const revokedSink = vi.fn();
   expect(() => revoked.events.consumePreparedDelivery({ lease: revoked.lease, handle: prepared.handle,
-    contextGeneration: revoked.lease.contextGeneration, version: prepared.version }, revokedSink))
+    contextGeneration: revoked.lease.contextGeneration, version: prepared.version }))
     .toThrow(/authorization_required/);
-  expect(revokedSink).not.toHaveBeenCalled();
 });
 
-test("合法同步consume先于closing只交付一次，异步sink不能冒充同步成功", async () => {
+test("合法同步consume先于closing只消费一次", async () => {
   const w = await world();
   const prepared = await w.events.prepareCurrentBaseline({ lease: w.lease });
-  const received: ApprovedContentResult[] = [];
-  w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
-    contextGeneration: w.lease.contextGeneration, version: prepared.version }, (content) => { received.push(content); });
-  expect((received[0] as ApprovedBaselineResult).body).toBe("批准基线");
+  consumePrepared(w.events, w.lease, prepared);
   expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
-    contextGeneration: w.lease.contextGeneration, version: prepared.version }, () => undefined)).toThrow(/unknown_delivery_handle/);
-  const current = w.state.read(w.created.requirementId);
-  w.state.beginClose({ requirementId: w.created.requirementId, version: current.version,
-    intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
-  expect(received).toHaveLength(1);
-
-  const asyncWorld = await world();
-  const asyncPrepared = await asyncWorld.events.prepareCurrentBaseline({ lease: asyncWorld.lease });
-  let asyncSinkCalled = false;
-  const asyncSink = async () => { asyncSinkCalled = true; };
-  expect(() => asyncWorld.events.consumePreparedDelivery({ lease: asyncWorld.lease, handle: asyncPrepared.handle,
-    contextGeneration: asyncWorld.lease.contextGeneration, version: asyncPrepared.version }, asyncSink)).toThrow(/synchronous_sink_required/);
-  expect(asyncSinkCalled).toBe(false);
+    contextGeneration: w.lease.contextGeneration, version: prepared.version })).toThrow(/unknown_delivery_handle/);
 });
 
-test("正文句柄拒绝错误context、lease、version、撤权和跨需求使用", async () => {
+test("基线句柄拒绝错误context、lease、version和跨需求使用", async () => {
   const w = await world();
   const wrongContext = await w.events.prepareCurrentBaseline({ lease: w.lease });
   const changedContextLease = { ...w.lease, contextGeneration: w.lease.contextGeneration + 1 };
   expect(() => w.events.consumePreparedDelivery({ lease: changedContextLease, handle: wrongContext.handle,
-    contextGeneration: changedContextLease.contextGeneration, version: wrongContext.version }, () => undefined))
+    contextGeneration: changedContextLease.contextGeneration, version: wrongContext.version }))
     .toThrow(/delivery_binding_changed/);
 
   const wrongLease = await w.events.prepareCurrentBaseline({ lease: w.lease });
   const changedRunLease = { ...w.lease, runId: uuidv7() };
   expect(() => w.events.consumePreparedDelivery({ lease: changedRunLease, handle: wrongLease.handle,
-    contextGeneration: changedRunLease.contextGeneration, version: wrongLease.version }, () => undefined))
+    contextGeneration: changedRunLease.contextGeneration, version: wrongLease.version }))
     .toThrow(/delivery_binding_changed/);
 
   const wrongVersion = await w.events.prepareCurrentBaseline({ lease: w.lease });
   expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: wrongVersion.handle,
-    contextGeneration: w.lease.contextGeneration, version: wrongVersion.version + 1 }, () => undefined))
+    contextGeneration: w.lease.contextGeneration, version: wrongVersion.version + 1 }))
     .toThrow(/delivery_binding_changed/);
-
-  const revoked = await w.events.prepareCurrentBaseline({ lease: w.lease });
-  const nextContextLease = await w.events.rotateContext({ lease: w.lease });
-  expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: revoked.handle,
-    contextGeneration: w.lease.contextGeneration, version: revoked.version }, () => undefined))
-    .toThrow(/unknown_delivery_handle/);
-  expect(await w.events.poll({ lease: nextContextLease })).toMatchObject({ status: "baseline_required", reason: "baseline_missing" });
 
   const cross = await world();
-  const crossPrepared = await w.events.prepareCurrentBaseline({ lease: nextContextLease });
+  const crossPrepared = await w.events.prepareCurrentBaseline({ lease: w.lease });
   expect(() => w.events.consumePreparedDelivery({ lease: cross.lease, handle: crossPrepared.handle,
-    contextGeneration: cross.lease.contextGeneration, version: crossPrepared.version }, () => undefined))
+    contextGeneration: cross.lease.contextGeneration, version: crossPrepared.version }))
     .toThrow(/delivery_binding_changed/);
-});
-
-test("同run上下文换代需补基线，可信恢复只接受当前run/context/version/commit/hash", async () => {
-  const w = await world();
-  const baseline = await understandBaseline(w);
-  const before = await w.events.status({ lease: w.lease });
-  const nextLease = await w.events.rotateContext({ lease: w.lease });
-  expect(nextLease.runId).toBe(w.lease.runId);
-  expect(nextLease.contextGeneration).toBe(w.lease.contextGeneration + 1);
-  await expect(w.events.poll({ lease: w.lease })).rejects.toThrow(/stale_pm_lease/);
-  expect(await w.events.poll({ lease: nextLease })).toMatchObject({ status: "baseline_required", reason: "context_missing" });
-  await expect(w.events.restoreCurrentContext({ lease: nextLease, contextGeneration: nextLease.contextGeneration,
-    version: w.state.read(w.created.requirementId).version, epoch: nextLease.epoch, revision: baseline.revision,
-    commit: "a".repeat(40), prodHash: baseline.prodHash })).rejects.toThrow(/baseline_changed/);
-  const current = w.state.read(w.created.requirementId);
-  await w.events.restoreCurrentContext({ lease: nextLease, contextGeneration: nextLease.contextGeneration,
-    version: current.version, epoch: nextLease.epoch, revision: baseline.revision,
-    commit: baseline.commit, prodHash: baseline.prodHash });
-  expect(await w.events.poll({ lease: nextLease })).toMatchObject({ status: "caught_up",
-    consumedSequence: before.consumedSequence, understoodRevision: before.understoodRevision });
-  expect(w.state.read(w.created.requirementId).data.pendingRevision).toBeNull();
 });
 
 test("归档路径元数据优先撤销旧active，删除不恢复；多路径冲突且终态原因保留", async () => {
@@ -453,39 +394,6 @@ test("事件接口拒绝伪字段、非允许归档路径和缺少可信消费�
 });
 
 test.each([
-  ["active", "takeover"], ["released", "takeover"], ["active", "close"], ["released", "close"],
-])("接手回归：M1 %s owner支持安全%s且保留fence/sequence", async (kind, action) => {
-  let now = Date.now();
-  const w = await world(() => true, () => now);
-  if (kind === "released") w.state.releasePm(w.lease);
-  const database = repositoryDatabase(w.options.dataRoot, w.options.repoId);
-  const before = w.state.pmOwner(w.created.requirementId)!;
-  const { contextGeneration: _contextGeneration, ...oldLease } = w.lease;
-  const legacy = { requirementId: before.requirementId, fence: before.fence,
-    seenSequence: before.seenSequence, lease: kind === "active" ? oldLease : null };
-  withDatabase(database, (db) => {
-    const owner = db.read("pm_ownership", w.created.requirementId)!;
-    db.update("pm_ownership", w.created.requirementId, owner.version, legacy);
-  });
-  now += 60_000;
-  expect(w.state.pmOwner(w.created.requirementId)).toMatchObject({ fence: legacy.fence, seenSequence: legacy.seenSequence, lease: null });
-  if (action === "takeover") {
-    const next = await w.state.acquirePm({ requirementId: w.created.requirementId,
-      version: w.state.read(w.created.requirementId).version, runId: uuidv7(), expectedFence: legacy.fence });
-    expect(next.fence).toBe(legacy.fence + 1);
-    expect((await w.events.poll({ lease: next })).status).toBe("baseline_required");
-    expect(w.state.pmOwner(w.created.requirementId)!.seenSequence).toBe(legacy.seenSequence);
-  } else {
-    const closing = w.state.beginClose({ requirementId: w.created.requirementId,
-      version: w.state.read(w.created.requirementId).version,
-      intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
-    expect(closing.data.lifecycle).toBe("closing");
-    expect(w.state.pmOwner(w.created.requirementId)).toMatchObject({ fence: legacy.fence + 1, seenSequence: legacy.seenSequence, lease: null });
-  }
-  await expect(w.state.checkPm(oldLease as never)).rejects.toThrow(/invalid_shape/);
-});
-
-test.each([
   ["consume", 1], ["consume", 2], ["prepare-baseline", 1], ["prepare-baseline", 2],
 ] as const)("接手回归：%s授权第%s次重入closing不越过最终DB检查", async (action, occurrence) => {
   let armed = false;
@@ -503,20 +411,19 @@ test.each([
     version: w.state.read(w.created.requirementId).version,
     intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } }); };
   armed = true;
-  let sinkCalled = false;
   let failure: unknown;
   try {
     w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
-      contextGeneration: w.lease.contextGeneration, version: prepared.version }, () => { sinkCalled = true; });
+      contextGeneration: w.lease.contextGeneration, version: prepared.version });
   } catch (error) { failure = error; }
   const closing = w.state.read(w.created.requirementId).data.lifecycle === "closing";
-  expect(closing && sinkCalled).toBe(false);
+  expect(closing && failure === undefined).toBe(false);
   expect(calls).toBe(1);
   if (occurrence === 1) { expect(closing).toBe(true); expect(failure).toBeDefined(); }
-  else { expect(sinkCalled).toBe(true); expect(failure).toBeUndefined(); }
+  else expect(failure).toBeUndefined();
 });
 
-test("接手回归：closing提交立即清除同进程待正文", async () => {
+test("接手回归：closing提交立即清除同进程待消费句柄", async () => {
   const w = await world();
   await w.events.prepareCurrentBaseline({ lease: w.lease });
   const pending = (w.events as unknown as { pending: Map<string, unknown> }).pending;
@@ -526,7 +433,7 @@ test("接手回归：closing提交立即清除同进程待正文", async () => {
   expect(pending.size).toBe(0);
 });
 
-test("接手回归：空闲过期主动释放待正文", async () => {
+test("接手回归：空闲过期主动释放待消费句柄", async () => {
   let now = Date.now();
   const expiring = await world(() => true, () => now);
   await expiring.events.prepareCurrentBaseline({ lease: expiring.lease });
@@ -544,7 +451,7 @@ test("接手回归：dispose释放缓存并禁止复用", async () => {
   await expect(disposable.events.prepareCurrentBaseline({ lease: disposable.lease })).rejects.toThrow(/disposed/);
 });
 
-test("最终检查回归：history_unknown提交后立即清同需求其他正文且通知在事务外", async () => {
+test("最终检查回归：history_unknown提交后立即清同需求其他待消费句柄且通知在事务外", async () => {
   const w = await world();
   const first = await w.events.prepareCurrentBaseline({ lease: w.lease });
   await w.events.prepareCurrentBaseline({ lease: w.lease });
@@ -561,10 +468,8 @@ test("最终检查回归：history_unknown提交后立即清同需求其他正�
     finally { probe.close(); }
   });
   try {
-    const sink = vi.fn();
     expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: first.handle,
-      contextGeneration: w.lease.contextGeneration, version: first.version }, sink)).toThrow(/recovery_required/);
-    expect(sink).not.toHaveBeenCalled();
+      contextGeneration: w.lease.contextGeneration, version: first.version })).toThrow(/recovery_required/);
     expect(pending.size).toBe(0);
     expect(outsideTransaction).toBe(true);
     expect(w.state.read(w.created.requirementId).data).toMatchObject({ recovery: "needs_review", recoveryReason: "history_unknown" });
@@ -589,11 +494,9 @@ test("最终检查回归：宿主clock只在最终SQL事务外调用", async () 
   path = repositoryDatabase(w.options.dataRoot, w.options.repoId);
   const prepared = await w.events.prepareCurrentBaseline({ lease: w.lease });
   armed = true;
-  const sink = vi.fn();
   w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
-    contextGeneration: w.lease.contextGeneration, version: prepared.version }, sink);
+    contextGeneration: w.lease.contextGeneration, version: prepared.version });
   armed = false;
-  expect(sink).toHaveBeenCalledOnce();
   expect(locks.length).toBeGreaterThanOrEqual(3);
   expect(locks.every(Boolean)).toBe(true);
 });
@@ -602,6 +505,6 @@ test("M9：事件服务用到的每个拒绝码都配了原因与建议，不会
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../runtime/requirement-events.ts", import.meta.url), "utf8");
   const codes = new Set([...source.matchAll(/RequirementEventServiceError\("([a-z_]+)"/gu)].map((match) => match[1]!));
-  expect(codes.size).toBeGreaterThan(15);
+  expect(codes.size).toBeGreaterThan(12);
   for (const code of codes) expect(new RequirementEventServiceError(code).advice.why, code).not.toMatch(/^未归类/u);
 });

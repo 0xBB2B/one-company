@@ -6,17 +6,17 @@
 
 `open` 绑定明确的repoId、业务仓库路径和外部dataRoot，实际核对Git仓库身份及全部worktree的目录边界。读写沿已有 `data.db` 入口，旧库、快照、维护状态或数据库用途不符仍被拒绝。
 
-宿主提供的同步 `authorize` 函数必须从可信调用上下文取得角色、需求、运行身份、动作范围及有效凭据，不能使用模型自报role/actor。核验应只做同步内存或数据库元数据检查，不进行文件操作、联网、模型调用或启动后台工作；准备性I/O先在事务外完成。返回值必须严格为true，缺少函数、false、Promise或抛错均不放行。该回调是集成接口，不是本模块已实现用户交互批准的证明。
+宿主提供的同步 `authorize` 函数必须从可信调用上下文取得角色、需求、运行身份、动作范围及有效凭据，不能使用模型自报role/actor。核验应只做同步内存或数据库元数据检查，不进行文件操作、联网、模型调用或启动后台工作；准备性I/O先在事务外完成。返回值必须严格为true，缺少函数、false、Promise或抛错均不放行。
 
 状态改变前、事务内写入前及提交前均核验权限。接口参数采用字段白名单，不允许正文、任意扩展JSON或模型提供的身份声明。调用者不能将整个Store对象或核验函数暴露为工具参数/结果。
 
 ## 存储与职责
 
-- `requirements` 中的新UUIDv7记录使用 `requirement-lifecycle/v1` 格式，保存draft/active/closing/closed、版本、epoch（权限代次）、修订、提交/hash引用、绑定与恢复状态。原有日期型需求不导入该格式，日期工作流不查询UUID记录。
+- `requirements` 中的新UUIDv7记录使用 `requirement-lifecycle/v1` 格式，保存draft/active/closing/closed、版本、epoch（权限代次）、修订、提交/hash引用、绑定与恢复状态。不符合该格式的记录（含旧日期编号记录）读取时按 invalid_shape 拒绝。
 - `requirement_requests` 记录请求幂等键与首次分配的UUID；相同请求及意图hash复用身份，不同意图拒绝。UUID碰撞拒绝，不自动改号覆盖。
 - `requirement_operations`、`requirement_approval_uses` 保存已应用操作和批准回执的使用位置；重复请求不重复追加事件，已消费批准不能变成另一范围的新批准。
 - `managed_workspace_claims` 对实际worktree身份、真实路径和分支分别占用；同库同步事务保护跨进程竞争。关闭不自动释放工作区，也不删除分支或文件。
-- `pm_ownership` 每需求一个逻辑持有者，保存真实运行ID、30秒租约、fence（接管代数）及独立于租约的消费位置。释放或接管不会丢失消费位置；`pm_run_claims`固定运行ID对应的需求，禁止跨需求复用同一PM运行。接管提高代数，旧运行的续租、确认和释放均拒绝；租约到期不等于旧进程已物理退出。
+- `pm_ownership` 每需求一个逻辑持有者，保存真实运行ID、30秒租约、fence（接管代数）及独立于租约的已批准事件消费游标（已确认到的事件序号和已理解的批准版本）。释放或接管不会丢失消费游标；`pm_run_claims`固定运行ID对应的需求，禁止跨需求复用同一PM运行。接管提高代数，旧运行的续租、确认和释放均拒绝；租约到期不等于旧进程已物理退出。
 - `requirement_events:<UUID>` 只保存事件元数据，不存prod正文、diff或摘要；状态与事件在同一同步事务中提交或回滚。事件sequence用于顺序，不用UUID时间排序调度。
 
 保存引用与批准引用分开。`recordSavedVersion` 的调用者必须已核验实际正文存储操作；`recordApprovedVersion` 的调用者必须核验真实用户依据、动作授权、准确提交与字节hash。这些方法不替代Git存储模块，也不因传入一个完整提交字符串就证明提交存在。
@@ -25,18 +25,18 @@
 
 ## 更新、关闭与恢复
 
-批准更新追加准确from/to提交/hash元数据；活动期更新登记pendingRevision。PM可读取事件并按连续sequence确认收到，重复确认幂等、跨缺口拒绝。收到事件不等于完成逐任务影响复核，因此确认不会清除pending，不修改任务或历史验证输入。pending阻止 `checkScheduling` 通过，也阻止completed关闭。本模块尚无清除pending接口，应由后续plan_manage基于真实影响复核接入。
+批准更新追加准确from/to提交/hash元数据；活动期更新登记pendingRevision。PM收到的已批准事件按连续sequence确认，重复确认幂等、跨缺口拒绝。确认收到不等于完成逐任务影响复核，因此确认不会清除pending，不修改任务或历史验证输入。pending阻止 `checkScheduling` 通过，也阻止completed关闭。plan_manage assess-update 逐任务登记影响，全部任务不再 unknown 时清掉 pendingRevision。
 
-`checkPm` 只核对持有者，不授予任务写入或最终检查权限；`checkScheduling` 额外检查pending门槛，也只是调用时的元数据核对，不是跨文件原子锁或M6检查阶段令牌。后续派工/变更工具仍需完整任务、版本、范围和阶段授权。
+`checkPm` 只核对持有者，不授予任务写入或最终检查权限；`checkScheduling` 额外检查pending门槛，也只是调用时的元数据核对，不是跨文件原子锁或检查阶段令牌；派工与变更工具另外核对完整任务、版本、范围和阶段授权。
 
 `beginClose` 的授权核验须先完成对应关闭原因的真实资格预检。所有原因均须在同一事务内确认没有活动写占用；取消/拒绝只可清理已经确认主进程及全部登记 Git 进程组结束的占用。completed还须有批准基线、无pending及未完成保存操作，其他测试/QA/未决项由可信工作流核对；失败不能进入closing或撤权。成功在同事务中进入closing、提高epoch并撤销PM租约。
 
 `finishClose` 的核验必须确认该关闭意图的PM/子代理/写入进程及专用入口已经真正结束，不能只看停止请求或PM元数据为空。未接入这些服务时必须拒绝该动作。完成收尾才登记closed事件；重复同一意图不重复副作用，不能换关闭原因或重新打开。取消/拒绝不产生完成归档资格，本模块不归档文件或执行任何业务Git写入。
 
-`blockForRecovery` 只登记archive_found/history_unknown/identity_conflict等固定原因，收回租约和当前权限代次；保持原生命周期及真实关闭原因，不把归档存在判为completed，也没有重新授权或复活旧需求的入口。正常重启、备份恢复、实际归档路径核对和可信历史判定仍需上层服务完成。
+`blockForRecovery` 只登记archive_found/history_unknown/identity_conflict等固定原因，收回租约和当前权限代次；保持原生命周期及真实关闭原因，不把归档存在判为completed，也没有重新授权或复活旧需求的入口。实际归档路径核对、历史判定和备份恢复在本模块之外完成，本模块只登记结果。
 
 ## 保证范围
 
-该模块只提供经过校验的内部元数据和原子状态变化。测试中的授权回调与prod引用是合成夹具，不代表实际主会话已批准目标、主代理已受控创建现场或prod Git调用链已交付。
+该模块只提供经过校验的内部元数据和原子状态变化。
 
-本存储模块不注册工具、不加载prod正文、不恢复旧会话，也不自动发送目标或完成提醒。`requirement-service` 组合本状态存储、持久操作日志和本机 Git，`requirement-manage` 扩展提供真实宿主授权下的保存、确认与读取入口。逐任务影响复核、PM/角色调度、最终检查、完整关闭工作流及完成提醒属于后续工作流服务；本模块的状态记录不能代替那些服务的实际执行证据。
+本存储模块不注册工具、不加载prod正文、不恢复旧会话，也不自动发送目标或完成提醒。`requirement-service` 组合本状态存储、持久操作日志和本机 Git，`requirement-manage` 扩展提供真实宿主授权下的保存、确认与读取入口。PM/角色调度、最终检查、完整关闭工作流及完成提醒由其他工作流服务负责；本模块的状态记录不能代替那些服务的实际执行证据。

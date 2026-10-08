@@ -7,7 +7,7 @@ import { counts, requestInput, reviewRecord } from "./helpers/pm-intake-store-te
 
 vi.setConfig({ testTimeout: 20_000 });
 const clean: PmIntakeFixture[] = [];
-afterEach(async () => { for (const fixture of clean.splice(0).reverse()) await fixture.cleanup(); });
+afterEach(async () => { vi.restoreAllMocks(); for (const fixture of clean.splice(0).reverse()) await fixture.cleanup(); });
 async function world(): Promise<PmIntakeFixture> { const fixture = await createPmIntakeFixture(); clean.push(fixture); return fixture; }
 
 function addQuestion(fixture: PmIntakeFixture, requestId = uuidv7()): string {
@@ -76,19 +76,16 @@ test.each(["request", "review"] as const)("%s写事务前now撤销Host时零新�
   const before = counts(fixture);
   let armed = false, revoked = false;
   const base = Date.now();
-  class ObservedStore extends PmIntakeStore {
-    override commitRequest(...args: Parameters<PmIntakeStore["commitRequest"]>) {
-      if (mode === "request") armed = true;
-      return super.commitRequest(...args);
-    }
-    override commitReview(...args: Parameters<PmIntakeStore["commitReview"]>) {
-      if (mode === "review") armed = true;
-      return super.commitReview(...args);
-    }
-  }
-  const store = new ObservedStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId,
-    now: () => { if (armed && !revoked) { revoked = true; fixture.host.revoke(); } return base; } });
-  const intake = fixture.makeIntake({ store });
+  const commitRequest = PmIntakeStore.prototype.commitRequest, commitReview = PmIntakeStore.prototype.commitReview;
+  vi.spyOn(PmIntakeStore.prototype, "commitRequest").mockImplementation(function (this: PmIntakeStore, ...args) {
+    if (mode === "request") armed = true;
+    return commitRequest.apply(this, args);
+  });
+  vi.spyOn(PmIntakeStore.prototype, "commitReview").mockImplementation(function (this: PmIntakeStore, ...args) {
+    if (mode === "review") armed = true;
+    return commitReview.apply(this, args);
+  });
+  const intake = fixture.makeIntake({ now: () => { if (armed && !revoked) { revoked = true; fixture.host.revoke(); } return base; } });
   await expect(mode === "request" ? intake.openRequest(fixture.call, fixture.operationId())
     : intake.recordReview(fixture.call, request!.requestId, fixture.operationId(), { result: "passed", shortIssues: [] })).rejects.toThrow();
   expect(revoked).toBe(true);

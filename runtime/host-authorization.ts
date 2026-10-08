@@ -80,7 +80,6 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   question_limit: { why: "待回答的问题已达上限", next: "先请用户回答已有的问题" },
   question_display_unavailable: { why: "向用户提问要在交互界面里显示，当前会话没有界面", next: "请用户在有界面的主窗口里继续" },
   cursor_expired: { why: "翻页游标已过期或与本次请求不一致", next: "不带 cursor 从第一页重新读取" },
-  invalid_section: { why: "章节编号格式不对", next: "按读取结果里列出的章节编号填写" },
   invalid_approval_unit_id: { why: "需求正文的标题编号不合规：编号须以字母开头、只含字母数字和 . _ -、不超过 96 个字符、互不重复，且不能用 metadata、preamble、whole-body", next: "改正正文里的标题编号后重新保存" },
   response_limit: { why: "maxBytes 太小，放不下任何内容", next: "调大 maxBytes 后重试" },
   interaction_busy: { why: "上一个需求操作还没结束", next: "等上一个操作结束后再试" },

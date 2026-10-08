@@ -158,7 +158,7 @@ export type IntakeGateResult = { allowed: true } | { allowed: false; reasons: st
 /**
  * 正式规划与 worker 派工的强门槛：接手核对须通过、仍对应本 PM 租约与当前批准绑定，且批准清单含实施授权。
  * 批准版本前进时，要求核对后的每个版本都被本 PM 做出、不含 unknown 的影响复核覆盖；复核须先按序收到差异，较新版本的复核覆盖其前的连续版本。
- * 只读现有记录并调用 M4 连续性判定，不签发任何权限。
+ * 只读现有记录并调用连续性判定，不签发任何权限。
  */
 export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }): IntakeGateResult {
   const now = ref.now ?? Date.now();
@@ -181,20 +181,14 @@ export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }
   catch (error) { return { allowed: false, reasons: [(error as { code?: string }).code ?? "binding_not_current"] }; }
   const owner = withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.read<{ lease?: PmLease }>("pm_ownership", ref.lease.requirementId)?.data);
   const submission = pmSubmissionFor(ref, binding);
-  const historical: Array<{ binding: IntakeBinding; sourceDirectory: IntakeSourceDirectory }> = review && JSON.stringify(review.binding) !== JSON.stringify(binding)
-    ? [{ binding: review.binding, sourceDirectory: head.directory }] : [];
   const evaluation = evaluateIntakeContinuity({
     format: "pm-intake-continuity-facts/v1",
     currentBinding: binding,
     currentState: { lifecycle: record.lifecycle, requirementRecordVersion: row.version, leaseExpiresAt: owner?.lease?.expiresAt ?? 0, observedAt: now,
       actionAuthorizationReportedCurrent: true, sourceDirectoryReportedCurrent: true, pendingApprovedUpdate: record.pendingRevision !== null },
     sourceDirectory: head.directory,
-    historicalSourceDirectories: historical,
     rootReview: review,
     understandingBaseline: submission ? { submissionRef: submission.submissionRef, submissionHash: submission.submissionHash } : null,
-    rootEventSequence: 0,
-    impactLinks: [],
-    completeTaskSets: [],
   });
   return evaluation.contractReady ? { allowed: true } : { allowed: false, reasons: [...evaluation.reasons] };
 }

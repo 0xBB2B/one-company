@@ -152,10 +152,7 @@ export interface PmIntakeFixture {
   operationId(): string;
   db<T>(run: (db: LocalDatabase) => T): T;
   newCall(patch?: Partial<MainIntakeCallIdentity>): MainIntakeCall;
-  makeIntake(options?: Partial<Pick<PmIntakeServiceOptions, "requirementService" | "store" | "now">> & {
-    sourceDirectoryProvider?: PmSourceDirectoryProvider | null;
-    submissionProvider?: PmSubmissionProvider | null;
-  }): PmIntakeService;
+  makeIntake(options?: Partial<Pick<PmIntakeServiceOptions, "requirementService" | "now" | "sourceDirectoryProvider" | "submissionProvider">>): PmIntakeService;
   captureCurrent(): ReturnType<PmIntakeStore["captureCurrent"]>;
   /** 按真实交互与清单登记流程批准一个新版本；units 覆盖各章节的全局约束与依赖，implementGoals 为本次实施授权的目标章节。 */
   approveRevision(input: { body: string; units?: Record<string, { globalConstraint?: boolean; appliesTo?: string[]; dependsOn?: string[] }>;
@@ -317,13 +314,10 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
   };
   const intakeStore = new PmIntakeStore({ dataRoot, repoId: identity.repoId, now: () => now });
   const resolver = { resolve: (candidate: MainIntakeCall) => calls.get(candidate as object) ?? null };
-  const makeIntake = (options: Partial<Pick<PmIntakeServiceOptions, "requirementService" | "store" | "now">> & {
-    sourceDirectoryProvider?: PmSourceDirectoryProvider | null; submissionProvider?: PmSubmissionProvider | null;
-  } = {}) => new PmIntakeService({ dataRoot, repoId: identity.repoId, state, requirementService: options.requirementService ?? approver,
-    authorization: host, mainCallResolver: resolver,
-    sourceDirectoryProvider: "sourceDirectoryProvider" in options ? options.sourceDirectoryProvider ?? undefined : sourceProvider,
-    submissionProvider: "submissionProvider" in options ? options.submissionProvider ?? undefined : submissionProvider,
-    store: options.store ?? intakeStore, now: options.now ?? (() => now) });
+  const makeIntake = (options: Partial<Pick<PmIntakeServiceOptions, "requirementService" | "now" | "sourceDirectoryProvider" | "submissionProvider">> = {}) =>
+    new PmIntakeService({ dataRoot, repoId: identity.repoId, state, requirementService: options.requirementService ?? approver,
+      authorization: host, mainCallResolver: resolver, sourceDirectoryProvider: options.sourceDirectoryProvider ?? sourceProvider,
+      submissionProvider: options.submissionProvider ?? submissionProvider, now: options.now ?? (() => now) });
   const intake = makeIntake(), active = state.read(saved.requirementId);
   if (!active.data.approved || !active.data.workspace) throw new Error("fixture active baseline unavailable");
   const basis: IntakeBindingBasis = { repoId: identity.repoId, requirementId: saved.requirementId,

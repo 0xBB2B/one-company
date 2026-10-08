@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
 import { uuidv7 } from "../../runtime/database.ts";
 import { RequirementEventService } from "../../runtime/requirement-events.ts";
-import type { ApprovedBaselineResult, ApprovedContentResult, PreparedRequirementDelivery } from "../../runtime/requirement-events.ts";
+import type { PreparedRequirementDelivery } from "../../runtime/requirement-events.ts";
 import { RequirementService } from "../../runtime/requirement-service.ts";
 import { RequirementStateStore } from "../../runtime/requirement-state.ts";
 
@@ -24,18 +24,16 @@ let lease: Lease;
 let held: PreparedRequirementDelivery | undefined;
 let invalidations = 0;
 let invalidationsAtHold = 0;
-let readCalls = 0;
+let verifyCalls = 0;
 let unsubscribe: (() => void) | undefined;
-const originalRead = RequirementService.prototype.read;
-// 透传真实读取，只计次数，不替换正文或权限结果。
-RequirementService.prototype.read = function (...args) { readCalls++; return originalRead.apply(this, args); };
+const originalVerify = RequirementService.prototype.verifyApproved;
+// 透传真实核对，只计次数，不替换核对或权限结果。
+RequirementService.prototype.verifyApproved = function (...args) { verifyCalls++; return originalVerify.apply(this, args); };
 
-function consume(prepared: PreparedRequirementDelivery): ApprovedContentResult {
-  let content: ApprovedContentResult | undefined;
-  events.consumePreparedDelivery({ lease, handle: prepared.handle, contextGeneration: lease.contextGeneration,
-    version: prepared.version }, (value) => { content = value; });
-  assert.ok(content);
-  return content;
+async function cursor() {
+  const value = await state.approvedEventCursor({ lease });
+  return { deliveredSequence: value.deliveredSequence, consumedSequence: value.consumedSequence,
+    understoodRevision: value.understoodRevision, understoodCommit: value.understood?.commit ?? null };
 }
 
 async function run(command: string, input: any): Promise<unknown> {
@@ -51,15 +49,14 @@ async function run(command: string, input: any): Promise<unknown> {
     const current = state.read(config.requirementId);
     lease = await state.acquirePm({ requirementId: config.requirementId, version: current.version,
       runId: uuidv7(), expectedFence: state.pmOwner(config.requirementId)?.fence ?? 0 });
-    return { lease, cursor: await events.status({ lease }), notice: await events.poll({ lease }) };
+    return { lease, cursor: await cursor(), notice: await events.poll({ lease }) };
   }
   if (command === "baseline") {
     const prepared = await events.prepareCurrentBaseline({ lease });
-    const content = consume(prepared) as ApprovedBaselineResult;
-    assert.equal(content.body, input.expectedBody);
-    await events.acknowledgeBaseline({ lease, deliveryId: content.deliveryId });
-    return { revision: content.revision, commit: content.commit, prodHash: content.prodHash,
-      throughSequence: content.throughSequence, bodyMatched: true, cursor: await events.status({ lease }) };
+    events.consumePreparedDelivery({ lease, handle: prepared.handle, contextGeneration: lease.contextGeneration, version: prepared.version });
+    await events.acknowledgeBaseline({ lease, deliveryId: prepared.deliveryId });
+    return { revision: prepared.revision, commit: prepared.commit, prodHash: prepared.prodHash,
+      throughSequence: prepared.throughSequence, cursor: await cursor() };
   }
   if (command === "event") {
     const event = await events.poll({ lease });
@@ -75,7 +72,7 @@ async function run(command: string, input: any): Promise<unknown> {
       toRevision: event.toRevision, toCommit: event.toCommit, toHash: event.toHash };
     await events.acknowledgeEvent(ack);
     await events.acknowledgeEvent(ack);
-    return { event, cursor: await events.status({ lease }), next: await events.poll({ lease }) };
+    return { event, cursor: await cursor(), next: await events.poll({ lease }) };
   }
   if (command === "old-lease") {
     await assert.rejects(events.poll({ lease: input }), /stale_pm_lease/);
@@ -93,7 +90,7 @@ async function run(command: string, input: any): Promise<unknown> {
     invalidationsAtHold = invalidations;
     return { handle: held.handle, preparedEpoch: held.epoch, expiresAt: held.expiresAt,
       pending: internals.pending.size, cleanupTimerPaused: true, invalidationsBeforeBarrier: invalidationsAtHold,
-      invalidations: invalidations - invalidationsAtHold, readCalls };
+      invalidations: invalidations - invalidationsAtHold, verifyCalls };
   }
   if (command === "close") {
     const current = state.read(config.requirementId);
@@ -108,24 +105,21 @@ async function run(command: string, input: any): Promise<unknown> {
     assert.equal(presentBefore, true);
     assert.ok(config.now < held.expiresAt);
     assert.equal(invalidations - invalidationsAtHold, 0);
-    let sinkCalls = 0;
     let errorCode = "";
     assert.throws(() => {
       try { events.consumePreparedDelivery({ lease, handle: held!.handle, contextGeneration: lease.contextGeneration,
-        version: held!.version }, () => { sinkCalls++; }); }
+        version: held!.version }); }
       catch (error) { errorCode = (error as { code: string }).code; throw error; }
     }, /lifecycle_denied/);
-    assert.equal(sinkCalls, 0);
-    const readsBefore = readCalls;
+    const verifiesBefore = verifyCalls;
     await assert.rejects(events.prepareCurrentBaseline({ lease }), /lifecycle_denied/);
-    assert.equal(readCalls, readsBefore);
-    return { presentBefore, expired: false, invalidations: invalidations - invalidationsAtHold, sinkCalls, errorCode, pendingAfter: pending.size,
-      lifecycle: state.read(config.requirementId).data.lifecycle, bodyReadsAfterClosing: readCalls - readsBefore };
+    return { presentBefore, expired: false, invalidations: invalidations - invalidationsAtHold, errorCode, pendingAfter: pending.size,
+      lifecycle: state.read(config.requirementId).data.lifecycle, storageChecksAfterClosing: verifyCalls - verifiesBefore };
   }
   if (command === "shutdown") {
     events?.dispose();
     unsubscribe?.();
-    RequirementService.prototype.read = originalRead;
+    RequirementService.prototype.verifyApproved = originalVerify;
     return { disposed: true, pending: (events as unknown as { pending: Map<string, unknown> }).pending.size };
   }
   throw new Error("unknown child command");

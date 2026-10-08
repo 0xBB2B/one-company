@@ -26,7 +26,7 @@ export function counts(fixture: PmIntakeFixture) {
 export function finalWorkPause(run: () => unknown, milliseconds: number, observed: { reads: number; paused: boolean }, cloneTail = false): unknown {
   const read = LocalDatabase.prototype.read, list = LocalDatabase.prototype.list, copy = globalThis.structuredClone;
   const pause = () => {
-    if (observed.reads >= 2 && !observed.paused) {
+    if (observed.reads >= 1 && !observed.paused) {
       observed.paused = true;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
     }

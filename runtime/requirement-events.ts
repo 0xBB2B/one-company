@@ -1,5 +1,5 @@
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { isAsyncFunction, isPromise } from "node:util/types";
+import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { uuidv7 } from "./database.ts";
@@ -25,20 +25,14 @@ const AcknowledgeBaselineInput = object({ lease: PmLease, deliveryId: id });
 const ConsumeDeliveryInput = object({
   lease: PmLease, handle: id, contextGeneration: positive, version: positive,
 });
-const RestoreContextInput = object({
-  lease: PmLease, contextGeneration: positive, version: positive, epoch: positive, revision: positive,
-  commit, prodHash: Type.String({ pattern: "^sha256:[0-9a-f]{64}$" }),
-});
 export type PollRequirementEventInput = Static<typeof commands.eventLease>;
 export type PrepareApprovedBaselineInput = Static<typeof BaselineReadInput>;
 export type AcknowledgeApprovedEventInput = Static<typeof AcknowledgeEventInput>;
 export type AcknowledgeApprovedBaselineInput = Static<typeof AcknowledgeBaselineInput>;
 export type ConsumePreparedDeliveryInput = Static<typeof ConsumeDeliveryInput>;
-export type RestoreApprovedContextInput = Static<typeof RestoreContextInput>;
 export type ReconcileArchiveRiskInput = Static<typeof ArchiveRiskInput>;
 
-export type RequirementEventAction = "open" | "poll" | "prepare-baseline" | "consume" |
-  "cancel-delivery" | "rotate-context" | "restore-context" | "acknowledge" | "status" | "archive-risk";
+export type RequirementEventAction = "open" | "poll" | "prepare-baseline" | "consume" | "acknowledge" | "archive-risk";
 export interface RequirementEventAuthorizationRequest {
   readonly action: RequirementEventAction;
   readonly repoId: string;
@@ -83,9 +77,6 @@ export interface ApprovedChangeDelivery {
   confirmationReceiptId: string;
   lifecycleEpoch: number;
   recordVersion: number;
-  changedSections: null;
-  impact: "unknown";
-  impactReason: "section_structure_unavailable";
 }
 
 export interface BaselineRequiredDelivery {
@@ -140,15 +131,6 @@ export interface PreparedBaselineDelivery {
 
 export type PreparedRequirementDelivery = PreparedBaselineDelivery;
 
-export interface ApprovedBaselineResult extends Omit<PreparedBaselineDelivery, "handle" | "expiresAt" | "contextGeneration" | "kind"> {
-  kind: "baseline";
-  title: string;
-  body: string;
-}
-
-export type ApprovedContentResult = ApprovedBaselineResult;
-export type ApprovedContentSink = (delivery: Readonly<ApprovedContentResult>) => void;
-
 export interface ArchiveRiskResult {
   requirementId: string;
   lifecycle: "draft" | "active" | "closing" | "closed";
@@ -165,7 +147,6 @@ interface PendingDelivery {
   lease: PmLeaseData;
   authorization: RequirementEventAuthorizationRequest;
   state: RequirementStateStore;
-  content: ApprovedContentResult;
   finalCheck: Record<string, unknown>;
 }
 
@@ -175,8 +156,6 @@ const REQUIREMENT_EVENT_ADVICE: Readonly<Record<string, FailureAdvice>> = {
   archive_paths_too_large: { why: "需要核对的归档路径太多", next: "停止操作，把这段原因告诉用户" },
   authorization_required: { why: "宿主没有授权这次需求事件操作", next: "停止操作，把这段原因告诉主代理" },
   baseline_changed: { why: "理解基线在投递期间发生了变化", next: "等下一次自动投递，不用处理" },
-  baseline_event_not_incremental: { why: "首次批准没有上一版，不能按差异投递", next: "等下一次自动投递，不用处理" },
-  context_changed: { why: "PM 会话的上下文已换代，旧的投递作废", next: "等主代理重新核对接手理解后再继续" },
   delivery_binding_changed: { why: "投递期间 PM 租约或需求版本发生了变化", next: "等下一次自动投递，不用处理" },
   disposed: { why: "需求事件服务已关闭", next: "等下一次自动投递，不用处理" },
   duplicate_archive_path: { why: "有重复的归档路径", next: "停止操作，把这段原因告诉用户" },
@@ -184,7 +163,6 @@ const REQUIREMENT_EVENT_ADVICE: Readonly<Record<string, FailureAdvice>> = {
   expired_delivery_handle: { why: "投递凭据已过期", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
   invalid_prod_hash: { why: "需求正文的指纹格式不对", next: "停止操作，把这段原因告诉用户" },
   recovery_required: { why: "需求记录需要恢复核对", next: "停止正式规划与派工，把这段原因告诉主代理，由用户处理" },
-  synchronous_sink_required: { why: "投递接收方不是同步函数，属于程序内部错误", next: "停止操作，把这段原因告诉用户" },
   unknown_delivery_handle: { why: "投递凭据不存在或已过期被清除", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
 };
 export class RequirementEventServiceError extends Error {
@@ -240,9 +218,8 @@ function cursorResult(requirementId: string, cursor: PmEventCursor): CaughtUpDel
 }
 
 /**
- * PM可靠消费已批准prod事件的内部接缝。异步准备只生成一次性句柄和固定元数据，正文仅在
- * 可信同步sink边界交付；SQLite最终核验与sink都不在同一事务内，依赖同一进程事件循环的
- * 连续同步顺序，不能宣称能够与任意外部进程的竞争天然原子化。
+ * PM可靠消费已批准prod事件的内部接缝。基线只登记 PM 的理解基线，不投递正文：准备阶段核对存储里的
+ * 批准正文与登记指纹一致后签发一次性句柄，消费时同步做最终核验，再由确认推进游标。
  */
 export class RequirementEventService {
   private static readonly MAX_PENDING = 32;
@@ -304,14 +281,11 @@ export class RequirementEventService {
     return RequirementStateStore.open(options);
   }
 
-  private async requirementService(
-    request: RequirementEventAuthorizationRequest,
-    expectedAction: "readApproved",
-  ): Promise<RequirementService> {
+  private async requirementService(request: RequirementEventAuthorizationRequest): Promise<RequirementService> {
     const options: RequirementServiceOptions = {
       ...this.options,
       authorize: (inner: Readonly<ServiceAuthorizationRequest>) => {
-        if (inner.repoId !== this.options.repoId || !["metadata", expectedAction].includes(inner.action) ||
+        if (inner.repoId !== this.options.repoId || !["metadata", "readApproved"].includes(inner.action) ||
           (inner.requirementId !== undefined && inner.requirementId !== request.requirementId) ||
           (inner.epoch !== undefined && inner.epoch !== request.epoch)) return false;
         this.authorize({ ...request, epoch: inner.epoch ?? request.epoch, version: inner.version,
@@ -365,7 +339,7 @@ export class RequirementEventService {
     this.cleanupTimer.unref?.();
   }
 
-  /** 可信持有者结束时释放本服务自有缓存；不依赖已撤销的正文授权。 */
+  /** 可信持有者结束时释放本服务自有缓存。 */
   dispose(): void {
     this.disposed = true;
     this.pending.clear();
@@ -392,14 +366,6 @@ export class RequirementEventService {
     return delivery.prepared;
   }
 
-  private discardLease(lease: PmLeaseData): void {
-    for (const [handle, delivery] of this.pending) {
-      if (delivery.lease.requirementId === lease.requirementId && delivery.lease.runId === lease.runId &&
-        delivery.lease.fence === lease.fence) this.pending.delete(handle);
-    }
-    this.releaseUnusedSubscriptions();
-  }
-
   async poll(input: PollRequirementEventInput): Promise<RequirementEventDelivery> {
     const request = checked(commands.eventLease, input);
     const authorization = leaseAuthorization("poll", this.options.repoId, request.lease);
@@ -415,13 +381,11 @@ export class RequirementEventService {
         revision: result.event.toRevision, commit: result.event.to.commit, prodHash: sha256(result.event.to.hash) };
       this.authorize(eventAuthorization);
       const event = result.event;
-      if (event.fromRevision === null || event.from === null) throw new RequirementEventServiceError("baseline_event_not_incremental");
       return {
         status: "event", eventId: result.eventId, sequence: result.sequence, redelivery: result.redelivery,
-        requirementId: event.requirementId, fromRevision: event.fromRevision, toRevision: event.toRevision,
-        fromCommit: event.from.commit, toCommit: event.to.commit, fromHash: sha256(event.from.hash), toHash: sha256(event.to.hash),
+        requirementId: event.requirementId, fromRevision: event.fromRevision!, toRevision: event.toRevision,
+        fromCommit: event.from!.commit, toCommit: event.to.commit, fromHash: sha256(event.from!.hash), toHash: sha256(event.to.hash),
         confirmationReceiptId: event.receiptId, lifecycleEpoch: event.lifecycleEpoch, recordVersion: event.recordVersion,
-        changedSections: null, impact: "unknown", impactReason: event.impactReason,
       };
     }
     if (result.status === "baseline_required") {
@@ -436,29 +400,6 @@ export class RequirementEventService {
     return cursorResult(request.lease.requirementId, cursor);
   }
 
-  async rotateContext(input: PollRequirementEventInput): Promise<PmLeaseData> {
-    const request = checked(commands.eventLease, input);
-    const authorization = leaseAuthorization("rotate-context", this.options.repoId, request.lease);
-    this.authorize(authorization);
-    const state = await this.state(authorization, new Set(["open", "read", "rotate-pm-context"]));
-    const lease = await state.rotatePmContext(request);
-    this.discardLease(request.lease);
-    this.authorize(leaseAuthorization("rotate-context", this.options.repoId, lease));
-    return lease;
-  }
-
-  async restoreCurrentContext(input: RestoreApprovedContextInput): Promise<void> {
-    const request = checked(RestoreContextInput, input);
-    if (request.contextGeneration !== request.lease.contextGeneration) throw new RequirementEventServiceError("context_changed");
-    const authorization = { ...leaseAuthorization("restore-context", this.options.repoId, request.lease),
-      version: request.version, revision: request.revision, commit: request.commit, prodHash: request.prodHash as `sha256:${string}` };
-    this.authorize(authorization);
-    const state = await this.state(authorization, new Set(["open", "read", "restore-approved-context"]));
-    await state.restoreApprovedContext({ lease: request.lease, version: request.version, epoch: request.epoch,
-      revision: request.revision, reference: { commit: request.commit, hash: rawHash(request.prodHash) } });
-    this.authorize(authorization);
-  }
-
   async prepareCurrentBaseline(input: PrepareApprovedBaselineInput): Promise<PreparedBaselineDelivery> {
     const request = checked(BaselineReadInput, input);
     const authorization = leaseAuthorization("prepare-baseline", this.options.repoId, request.lease);
@@ -466,30 +407,27 @@ export class RequirementEventService {
     const state = await this.state(authorization, new Set(["open", "read", "check-approved-return", "issue-approved-baseline"]));
     const requirement = await state.approvedBaselineRequirement(request);
     if (requirement.status === "recovery_required") throw new RequirementEventServiceError("recovery_required");
-    const service = await this.requirementService(authorization, "readApproved");
-    const content = await service.read({ requirementId: request.lease.requirementId, source: "approved" });
-    if (content.epoch !== request.lease.epoch) throw new RequirementEventServiceError("epoch_changed");
+    const service = await this.requirementService(authorization);
+    const verified = await service.verifyApproved(request.lease.requirementId);
+    if (verified.epoch !== request.lease.epoch) throw new RequirementEventServiceError("epoch_changed");
     const metadata = await service.metadata(request.lease.requirementId);
-    const reference = { commit: content.commit, hash: rawHash(content.prodHash) };
-    if (metadata.version !== content.version || metadata.epoch !== content.epoch || metadata.revision !== requirement.revision ||
-      !metadata.approved || metadata.approved.commit !== content.commit || metadata.approved.prodHash !== content.prodHash ||
+    const reference = { commit: verified.commit, hash: rawHash(verified.prodHash) };
+    if (metadata.version !== verified.version || metadata.epoch !== verified.epoch || metadata.revision !== requirement.revision ||
+      !metadata.approved || metadata.approved.commit !== verified.commit || metadata.approved.prodHash !== verified.prodHash ||
       !sameReference(reference, requirement.reference)) throw new RequirementEventServiceError("baseline_changed");
-    const delivery = await state.issueApprovedBaseline({ lease: request.lease, version: content.version, epoch: content.epoch,
+    const delivery = await state.issueApprovedBaseline({ lease: request.lease, version: verified.version, epoch: verified.epoch,
       revision: metadata.revision, reference });
     const handle = uuidHandle();
     const prepared = freeze({ kind: "baseline" as const, handle, requirementId: request.lease.requirementId,
       deliveryId: delivery.deliveryId, throughSequence: delivery.throughSequence, revision: delivery.revision,
       commit: delivery.reference.commit, prodHash: sha256(delivery.reference.hash), version: delivery.recordVersion,
       epoch: delivery.epoch, contextGeneration: request.lease.contextGeneration, expiresAt: request.lease.expiresAt });
-    const body = freeze({ kind: "baseline" as const, requirementId: prepared.requirementId, deliveryId: prepared.deliveryId,
-      throughSequence: prepared.throughSequence, revision: prepared.revision, commit: prepared.commit,
-      prodHash: prepared.prodHash, version: prepared.version, epoch: prepared.epoch, title: content.title, body: content.body });
-    const finalCheck = { lease: request.lease, deliveryId: delivery.deliveryId, version: content.version,
-      epoch: content.epoch, revision: delivery.revision, reference: delivery.reference };
-    return this.retain({ prepared, lease: request.lease, authorization, state, content: body, finalCheck }) as PreparedBaselineDelivery;
+    const finalCheck = { lease: request.lease, deliveryId: delivery.deliveryId, version: verified.version,
+      epoch: verified.epoch, revision: delivery.revision, reference: delivery.reference };
+    return this.retain({ prepared, lease: request.lease, authorization, state, finalCheck }) as PreparedBaselineDelivery;
   }
 
-  consumePreparedDelivery(input: ConsumePreparedDeliveryInput, sink: ApprovedContentSink): void {
+  consumePreparedDelivery(input: ConsumePreparedDeliveryInput): void {
     const request = checked(ConsumeDeliveryInput, input);
     this.purgeExpired();
     const pending = this.pending.get(request.handle);
@@ -502,30 +440,10 @@ export class RequirementEventService {
       request.lease.requirementId !== pending.prepared.requirementId) {
       throw new RequirementEventServiceError("delivery_binding_changed");
     }
-    if (typeof sink !== "function" || isAsyncFunction(sink)) throw new RequirementEventServiceError("synchronous_sink_required");
     const authorization = { ...pending.authorization, action: "consume" as const, handle: request.handle,
       version: pending.prepared.version, contextGeneration: pending.prepared.contextGeneration };
     this.authorize(authorization);
     this.checkDelivery(pending);
-    // 所有宿主授权回调在最终DB核验前完成；核验后只有可信同步sink，不再进入可重入授权路径。
-    // 普通函数返回Promise只能事后识别；sink必须由可信宿主提供，不保证撤回已传给任意JS的正文。
-    const result: unknown = (sink as (delivery: Readonly<ApprovedContentResult>) => unknown)(pending.content);
-    if (isPromise(result) || (result && typeof result === "object" && typeof (result as { then?: unknown }).then === "function")) {
-      void Promise.resolve(result).catch(() => undefined);
-      throw new RequirementEventServiceError("synchronous_sink_required");
-    }
-  }
-
-  cancelPreparedDelivery(input: ConsumePreparedDeliveryInput): void {
-    const request = checked(ConsumeDeliveryInput, input);
-    const pending = this.pending.get(request.handle);
-    if (!pending) return;
-    if (!sameLease(pending.lease, request.lease) || request.contextGeneration !== pending.prepared.contextGeneration ||
-      request.version !== pending.prepared.version) throw new RequirementEventServiceError("delivery_binding_changed");
-    this.authorize({ ...pending.authorization, action: "cancel-delivery", handle: request.handle,
-      version: request.version, contextGeneration: request.contextGeneration });
-    this.pending.delete(request.handle);
-    this.releaseUnusedSubscriptions();
   }
 
   async acknowledgeBaseline(input: AcknowledgeApprovedBaselineInput): Promise<void> {
@@ -547,16 +465,6 @@ export class RequirementEventService {
     await state.acknowledgeApprovedEvent({ lease: request.lease, eventId: request.eventId, sequence: request.sequence,
       revision: request.toRevision, reference: { commit: request.toCommit, hash: rawHash(request.toHash) } });
     this.authorize(authorization);
-  }
-
-  async status(input: PollRequirementEventInput): Promise<CaughtUpDelivery> {
-    const request = checked(commands.eventLease, input);
-    const authorization = leaseAuthorization("status", this.options.repoId, request.lease);
-    this.authorize(authorization);
-    const state = await this.state(authorization, new Set(["open", "read", "check-approved-return"]));
-    const cursor = await state.approvedEventCursor(request);
-    this.authorize(authorization);
-    return cursorResult(request.lease.requirementId, cursor);
   }
 
   async reconcileArchiveRisk(input: ReconcileArchiveRiskInput): Promise<ArchiveRiskResult> {

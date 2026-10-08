@@ -193,7 +193,7 @@ test("M3-AC6/5：A独立Node消费ack并退出，B新Node有效lease恢复cursor
   const a = await w.child();
   const first = await a.call("acquire");
   expect(first.notice).toMatchObject({ status: "baseline_required", reason: "baseline_missing", revision: 1 });
-  await a.call("baseline", { expectedBody: BODY1 });
+  await a.call("baseline");
   const second = await w.approve(BODY2, DRAFT);
   const consumed = await a.call("event");
   expect(consumed).toMatchObject({ cursor: { understoodRevision: 2, understoodCommit: second.commit }, next: { status: "caught_up" } });
@@ -209,8 +209,8 @@ test("M3-AC6/5：A独立Node消费ack并退出，B新Node有效lease恢复cursor
   expect(takeover.cursor).toMatchObject({ consumedSequence: consumed.cursor.consumedSequence, understoodRevision: 2, understoodCommit: second.commit });
   expect(takeover.notice).toMatchObject({ status: "baseline_required", reason: "context_missing", revision: 3, commit: third.commit, prodHash: third.prodHash });
   expect(await b.call("old-lease", first.lease)).toEqual({ rejected: true });
-  const baseline = await b.call("baseline", { expectedBody: BODY3 });
-  expect(baseline).toMatchObject({ bodyMatched: true, revision: 3, commit: third.commit,
+  const baseline = await b.call("baseline");
+  expect(baseline).toMatchObject({ revision: 3, commit: third.commit,
     cursor: { consumedSequence: consumed.cursor.consumedSequence, understoodRevision: 2 } });
   const resumed = await b.call("event");
   expect(resumed).toMatchObject({ event: { fromRevision: 2, toRevision: 3, fromCommit: second.commit, toCommit: third.commit },
@@ -221,7 +221,7 @@ test("M3-AC6/5：A独立Node消费ack并退出，B新Node有效lease恢复cursor
     oldFence: first.lease.fence, newFence: takeover.lease.fence, recoveredCursor: consumed.cursor.consumedSequence, currentRevision: 3 };
 }, 45_000);
 
-test("M3-AC8：B独立Node提交closing后，A仍持真实prepared handle在最终DB门槛拒绝正文，不靠同进程撤销回调", async () => {
+test("M3-AC8：B独立Node提交closing后，A仍持真实prepared handle在最终DB门槛拒绝消费，不靠同进程撤销回调", async () => {
   const w = await world();
   const a = await w.child();
   const b = await w.child();
@@ -233,8 +233,8 @@ test("M3-AC8：B独立Node提交closing后，A仍持真实prepared handle在最�
   expect(closing.pid).not.toBe(a.child.pid);
   // IPC回执是明确屏障：B的closing事务成功之后才让A消费。
   const rejected = await a.call("consume-held");
-  expect(rejected).toEqual({ presentBefore: true, expired: false, invalidations: 0, sinkCalls: 0,
-    errorCode: "lifecycle_denied", pendingAfter: 0, lifecycle: "closing", bodyReadsAfterClosing: 0 });
+  expect(rejected).toEqual({ presentBefore: true, expired: false, invalidations: 0,
+    errorCode: "lifecycle_denied", pendingAfter: 0, lifecycle: "closing", storageChecksAfterClosing: 0 });
   expect(await readFile(w.effectsPath, "utf8")).toBe("");
   await w.assertNoBodyInDatabase();
   w.record.checks.closingRace = rejected;

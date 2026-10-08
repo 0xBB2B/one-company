@@ -36,7 +36,6 @@ const PM_INTAKE_STORE_ADVICE: Record<string, FailureAdvice> = {
   decision_changed: { why: "相关决定已被改动", next: "重新读取需求后按最新版本再试" },
   directory_conflict: { why: "接手出处目录冲突", next: "停止操作，不要重试；把这段原因告诉用户" },
   foreign_repo: { why: "仓库不属于当前需求", next: "改用当前工作区列出的仓库编号" },
-  impact_provider_unavailable: { why: "读不到接手影响分析", next: "重试一次；仍然失败就把这段原因告诉用户" },
   incomplete_scenario_directory: { why: "接手出处目录缺少必需场景", next: "停止操作，不要重试；把这段原因告诉用户" },
   intake_records_changed: { why: "接手复核记录在处理期间被改动", next: "重新发起一次" },
   invalid_binding: { why: "PM 绑定记录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
@@ -362,8 +361,7 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
 }
 
 function syncCallback(callback: () => unknown): void {
-  let result: unknown;
-  try { result = callback(); } catch (error) { throw error; }
+  const result: unknown = callback();
   if (isPromise(result)) {
     void Promise.prototype.then.call(result, () => undefined, () => undefined);
     deny("async_callback");
@@ -609,12 +607,8 @@ export class PmIntakeStore {
     const basis = checkedBindingBasis(basisValue);
     if (basis.repoId !== this.#repoId) deny("foreign_repo");
     const sourceDirectory = checkedDirectory(directoryValue), clock = this.#clockAfter();
-    const snapshot = withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() => {
-      const initial = currentSnapshot(db, this.#repoId, basis, sourceDirectory, this.#observedAt(clock));
-      const final = currentSnapshot(db, this.#repoId, basis, sourceDirectory, this.#observedAt(clock));
-      if (!same(initial, final)) deny("current_proof_changed");
-      return final;
-    }));
+    const snapshot = withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() =>
+      currentSnapshot(db, this.#repoId, basis, sourceDirectory, this.#observedAt(clock))));
     const proof: IntakeCurrentProof = Object.freeze({ kind: "pm-intake-current-proof" });
     this.#proofs.set(proof, { basis, binding: snapshot.binding, sourceDirectory, sourceDirectoryHash: snapshot.sourceDirectoryHash,
       continuityInputProof: snapshot.continuityInputProof, fingerprint: snapshot.fingerprint, leaseExpiresAt: snapshot.leaseExpiresAt });
@@ -694,7 +688,6 @@ export class PmIntakeStore {
     if (!this.#proofs.has(proof as object)) deny("untrusted_proof");
     const clock = this.#clockAfter(beforeTransaction);
     const checked = withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() => {
-      this.#assertClaimIn(db, proof, this.#observedAt(clock));
       const claim = this.#assertClaimIn(db, proof, this.#observedAt(clock));
       return this.#ready(claim, claim, clock);
     }));
@@ -821,6 +814,4 @@ export class PmIntakeStore {
       return { request: clone(request), review, directory: clone(directory) };
     }));
   }
-
-  recordImpact(): never { return deny("impact_provider_unavailable"); }
 }

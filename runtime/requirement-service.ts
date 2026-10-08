@@ -673,6 +673,35 @@ export class RequirementService {
     };
   }
 
+  /** 只核对存储里当前批准版本的正文与登记指纹一致，不取正文。 */
+  async verifyApproved(requirementId: string): Promise<{ commit: string; prodHash: `sha256:${string}`; version: number; epoch: number }> {
+    const id = checkServiceInput(MetadataRequirementInput, requirementId);
+    const initialAuthorization: ServiceAuthorizationRequest = { action: "readApproved", repoId: this.options.repoId, requirementId: id };
+    this.authorize(initialAuthorization);
+    const state = await this.state(initialAuthorization);
+    const before = state.read(id);
+    available(before.data);
+    await this.assertNoObservedArchive(state, id);
+    const reference = before.data.approved;
+    if (!reference) throw new RequirementServiceError("version_unavailable");
+    const authorization: ServiceAuthorizationRequest = { ...initialAuthorization, prodHash: storageHash(reference.hash), version: before.version, epoch: before.data.epoch };
+    this.authorize(authorization);
+    const identity = this.operations.repositoryIdentity(id);
+    if (!identity) throw new RequirementServiceError("repository_identity_missing");
+    const validateCurrent = () => {
+      const current = state.read(id);
+      available(current.data);
+      if (current.version !== before.version || current.data.epoch !== before.data.epoch || !sameReference(current.data.approved, reference)) {
+        throw new RequirementServiceError("state_changed_during_read");
+      }
+    };
+    const verified = await verifyVersion({ ...this.storageConfig(authorization, id, identity, validateCurrent),
+      commit: reference.commit, expectedHash: storageHash(reference.hash) });
+    validateCurrent();
+    this.authorize(authorization);
+    return { commit: verified.commit, prodHash: verified.prodHash, version: before.version, epoch: before.data.epoch };
+  }
+
   async diff(input: DiffInput): Promise<RequirementDiffResult> {
     const request = checkServiceInput(DiffRequirementInput, input);
     const initialAuthorization: ServiceAuthorizationRequest = { action: "diff", repoId: this.options.repoId, requirementId: request.requirementId };

@@ -9,7 +9,7 @@ import { addQuestion, persisted } from "./helpers/pm-intake-service-test-support
 
 vi.setConfig({ testTimeout: 20_000 });
 const clean: PmIntakeFixture[] = [];
-afterEach(async () => { for (const fixture of clean.splice(0).reverse()) await fixture.cleanup(); });
+afterEach(async () => { vi.restoreAllMocks(); for (const fixture of clean.splice(0).reverse()) await fixture.cleanup(); });
 async function world(): Promise<PmIntakeFixture> {
   const fixture = await createPmIntakeFixture();
   clean.push(fixture);
@@ -20,15 +20,13 @@ test.each(["open", "read", "review"] as const)("%s最后DB核验之后不再调�
   const fixture = await world();
   const request = mode === "open" ? undefined : await fixture.intake.openRequest(fixture.call, fixture.operationId());
   let checks = 0, finalChecked = false, lateResolverCalls = 0;
-  class ObservedStore extends PmIntakeStore {
-    override assertReturnCurrent(...args: Parameters<PmIntakeStore["assertReturnCurrent"]>) {
-      super.assertReturnCurrent(...args);
-      if (++checks === 2) finalChecked = true;
-    }
-  }
-  const store = new ObservedStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId });
+  const assertReturnCurrent = PmIntakeStore.prototype.assertReturnCurrent;
+  vi.spyOn(PmIntakeStore.prototype, "assertReturnCurrent").mockImplementation(function (this: PmIntakeStore, ...args) {
+    assertReturnCurrent.apply(this, args);
+    if (++checks === 2) finalChecked = true;
+  });
   const intake = new PmIntakeService({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, state: fixture.state,
-    requirementService: fixture.service, authorization: fixture.host, store,
+    requirementService: fixture.service, authorization: fixture.host,
     sourceDirectoryProvider: fixture.sourceProvider, submissionProvider: fixture.submissionProvider,
     mainCallResolver: { resolve(call) {
       if (finalChecked) { lateResolverCalls++; addQuestion(fixture); }

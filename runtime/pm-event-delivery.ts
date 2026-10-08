@@ -40,8 +40,8 @@ export async function deliverApprovedEvents(input: PmEventDeliveryInput): Promis
       if (polled.status === "baseline_required") {
         if (!reviewedCurrent(input)) return "awaiting_review";
         const prepared = await service.prepareCurrentBaseline({ lease });
-        // PM 已在接手时自行读取完整正文，这里只登记基线，不再重复注入正文
-        service.consumePreparedDelivery({ lease, handle: prepared.handle, contextGeneration: prepared.contextGeneration, version: prepared.version }, () => {});
+        // PM 已在接手时自行读取完整正文，这里只登记理解基线
+        service.consumePreparedDelivery({ lease, handle: prepared.handle, contextGeneration: prepared.contextGeneration, version: prepared.version });
         await service.acknowledgeBaseline({ lease, deliveryId: prepared.deliveryId });
         continue;
       }

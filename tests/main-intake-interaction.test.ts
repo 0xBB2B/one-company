@@ -109,7 +109,7 @@ test("tool_call后置改成原型action仍invalid_shape且不调用业务provide
   current.bridge.dispose();
 });
 
-test("伪Main字段、PM自填passed和缺省provider都拒绝", async () => {
+test("伪Main字段和PM自填passed都拒绝", async () => {
   const fixture = await world(), current = bridgeFor(fixture), valid = ask(fixture);
   for (const patch of [{ role: "main" }, { actor: "user" }, { trusted: true }, { receipt: uuidv7() },
     { reviewer: { windowId: fixture.identity.windowId } }]) {
@@ -117,13 +117,5 @@ test("伪Main字段、PM自填passed和缺省provider都拒绝", async () => {
       input: { request: { ...valid, ...patch } } } as unknown as ToolCallEvent, current.ctx)).toThrow(/invalid_shape/);
   }
   current.bridge.dispose();
-
-  fixture.host.startWindow({ kind: "main", windowId: fixture.identity.windowId,
-    sessionId: fixture.identity.sessionId, repoIds: [fixture.repoId] });
-  const noProvider = bridgeFor(fixture, undefined, false), missing = ask(fixture);
-  observe(noProvider.bridge, noProvider.ctx, "missing-provider", missing);
-  await expect(noProvider.bridge.execute("missing-provider", missing, noProvider.ctx, noProvider.signal))
-    .rejects.toMatchObject({ code: "source_directory_provider_unavailable" });
-  noProvider.bridge.dispose();
 });
 

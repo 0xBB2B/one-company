@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { isPromise } from "node:util/types";
 import { Type } from "typebox";
-import { Value } from "typebox/value";
 import type { Static } from "typebox";
 import { LocalDatabase, repositoryDatabase, StaleVersionError, uuidv7, withDatabase } from "./database.ts";
 import type { StoredRecord, SyncResult } from "./database.ts";
@@ -9,7 +8,7 @@ import { pathExists, assertDataRootOutsideWorktrees } from "./database-paths.ts"
 import { listWorktrees, repositoryIdentity } from "./identity.ts";
 import { canonicalJson } from "./strict-json.ts";
 import type { JsonValue } from "./strict-json.ts";
-import { checked, checkRequirement, commands, hash, id, object, counter, positive, ApprovedProdChange, BaselineDelivery, LegacyPmRecord, OwnerClaim, PmContext, PmEventCursor, PmRecord, PmLease, RequestRecord, RequirementEvent, RequirementStateError } from "./requirement-contracts.ts";
+import { checked, checkRequirement, commands, hash, id, object, counter, positive, ApprovedProdChange, BaselineDelivery, OwnerClaim, PmContext, PmEventCursor, PmRecord, PmLease, RequestRecord, RequirementEvent, RequirementStateError } from "./requirement-contracts.ts";
 import type { ApprovedProdChange as ApprovedProdChangeData, BaselineDelivery as BaselineDeliveryData, PmContext as PmContextData, PmEventCursor as PmEventCursorData, PmRecord as PmRecordData, RequirementRecord, ProdReference, WorkspaceBinding } from "./requirement-contracts.ts";
 import { inspectRequirementWorkspace, verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { readGit } from "./git-read.ts";
@@ -18,7 +17,7 @@ import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperation
 import { registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
 
-export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "rotate-pm-context" | "record-pm-diff" | "restore-approved-context" | "events" | "acknowledge" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "assess-update" | "record-decisions" | "read-decisions";
+export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "record-pm-diff" | "events" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "assess-update" | "record-decisions" | "read-decisions";
 export interface StateAuthorizationRequest { action: RequirementAction; repoId: string; input: Readonly<Record<string, unknown>> }
 export interface RequirementAccessState { record: StoredRecord<RequirementRecord> | null; pmLeaseHash: string }
 export interface RequirementAccessChange {
@@ -58,7 +57,7 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-/** 新UUID需求的内部元数据基础；不创建prod文件、不派工、不开放模型工具。 */
+/** 需求生命周期、PM 租约与已批准事件游标的内部存储；不创建prod文件、不派工、不开放模型工具。 */
 export class RequirementStateStore {
   private static readonly accessListeners = new Map<string, Set<(change: RequirementAccessChange) => void>>();
   private readonly options: RequirementStoreOptions;
@@ -179,27 +178,19 @@ export class RequirementStateStore {
   private owner(db: LocalDatabase, requirementId: string) {
     const stored = db.read("pm_ownership", requirementId);
     if (!stored) return null;
-    let data: PmRecordData;
-    if (Value.Check(LegacyPmRecord, stored.data)) {
-      const legacy = checked(LegacyPmRecord, stored.data);
-      if (legacy.lease && (legacy.lease.requirementId !== requirementId || legacy.lease.fence !== legacy.fence)) {
-        throw new RequirementStateError("invalid_pm_owner");
-      }
-      // 读取只归一化视图，不恢复旧租约；接管或撤权事务保留sequence并提升原fence。
-      data = { ...legacy, lease: null };
-    } else data = checked(PmRecord, stored.data);
-    const context = data.context ? checked(PmContext, data.context) : null;
+    const data: PmRecordData = checked(PmRecord, stored.data);
+    const context = data.context;
     if (data.requirementId !== requirementId ||
       (data.lease && (data.lease.requirementId !== requirementId || data.lease.fence !== data.fence ||
-        !context || context.runId !== data.lease.runId || context.fence !== data.lease.fence ||
+        context.runId !== data.lease.runId || context.fence !== data.lease.fence ||
         context.generation !== data.lease.contextGeneration)) ||
-      (!data.lease && context !== null && context.baseline !== null)) throw new RequirementStateError("invalid_pm_owner");
+      (!data.lease && context.baseline !== null)) throw new RequirementStateError("invalid_pm_owner");
     return { ...stored, data };
   }
   private revoke(db: LocalDatabase, requirementId: string): void {
     const owner = this.owner(db, requirementId);
     if (owner) db.update("pm_ownership", requirementId, owner.version, { ...owner.data, fence: increment(owner.data.fence), lease: null,
-      ...(owner.data.context ? { context: { ...owner.data.context, baseline: null } } : {}) });
+      context: { ...owner.data.context, baseline: null } });
   }
   private eventCursor(owner: StoredRecord<PmRecordData>): PmEventCursorData {
     const data = owner.data.prodEvents ? checked(PmEventCursor, owner.data.prodEvents) : this.cursorData(owner.data.requirementId);
@@ -225,7 +216,7 @@ export class RequirementStateStore {
         format: "approved-prod-change/v1", requirementId, repoId: this.options.repoId,
         fromRevision: audit.from === null ? null : audit.revision - 1, toRevision: audit.revision,
         from: audit.from, to: audit.to, receiptId: audit.receiptId, lifecycleEpoch: audit.epoch,
-        recordVersion: audit.version, changedSections: null, impactReason: "section_structure_unavailable",
+        recordVersion: audit.version,
         ...(audit.approvalManifest ? { approvalManifest: audit.approvalManifest } : {}),
       });
       return [{ ...event, data }];
@@ -236,8 +227,8 @@ export class RequirementStateStore {
     db.update("pm_ownership", data.requirementId, owner.version, { ...owner.data, prodEvents: data });
   }
   private context(owner: StoredRecord<PmRecordData>): PmContextData {
-    const context = owner.data.context ? checked(PmContext, owner.data.context) : null;
-    if (!owner.data.lease || !context || context.runId !== owner.data.lease.runId || context.fence !== owner.data.lease.fence ||
+    const context = owner.data.context;
+    if (!owner.data.lease || context.runId !== owner.data.lease.runId || context.fence !== owner.data.lease.fence ||
       context.generation !== owner.data.lease.contextGeneration) throw new RequirementStateError("invalid_pm_context");
     return context;
   }
@@ -441,14 +432,13 @@ export class RequirementStateStore {
         if (claim.requirementId !== record.id || claim.workspaceId !== record.data.workspace.workspaceId) throw new RequirementStateError("pm_run_already_bound");
       } else db.create("pm_run_claims", request.runId, { requirementId: record.id, workspaceId: record.data.workspace.workspaceId });
       const fence = increment(owner?.data.fence ?? 0);
-      const contextGeneration = increment(owner?.data.context?.generation ?? 0);
+      const contextGeneration = increment(owner?.data.context.generation ?? 0);
       const lease = checked(PmLease, { requirementId: record.id, workspaceId: record.data.workspace.workspaceId, runId: request.runId,
         epoch: record.data.epoch, fence, contextGeneration, expiresAt: now + LEASE_MS });
       const context = checked(PmContext, { format: "pm-physical-context/v1", runId: request.runId, fence,
         generation: contextGeneration, baseline: null });
       const prodEvents = owner?.data.prodEvents ? { ...owner.data.prodEvents, baselineDelivery: null } : undefined;
-      const ownership = { requirementId: record.id, fence: lease.fence, lease, context, seenSequence: owner?.data.seenSequence ?? 0,
-        ...(prodEvents ? { prodEvents } : {}) };
+      const ownership = { requirementId: record.id, fence: lease.fence, lease, context, ...(prodEvents ? { prodEvents } : {}) };
       if (owner) db.update("pm_ownership", record.id, owner.version, ownership);
       else db.create("pm_ownership", record.id, ownership);
       this.write(db, record, record.data, "pm.acquired");
@@ -497,22 +487,6 @@ export class RequirementStateStore {
     this.mutate("release-pm", lease, (db) => { const { record } = this.validateOwner(db, lease); this.revoke(db, record.id); this.write(db, record, record.data, "pm.released"); });
   }
 
-  async rotatePmContext(input: Static<typeof commands.rotateContext>): Promise<PmLease> {
-    const request = checked(commands.rotateContext, input);
-    await this.workspaceForLease("rotate-pm-context", request.lease);
-    return this.mutate("rotate-pm-context", request, (db) => {
-      const { owner } = this.validateOwner(db, request.lease);
-      const contextGeneration = increment(request.lease.contextGeneration);
-      const lease = checked(PmLease, { ...owner.data.lease!, contextGeneration });
-      const context = checked(PmContext, { format: "pm-physical-context/v1", runId: lease.runId, fence: lease.fence,
-        generation: contextGeneration, baseline: null });
-      const cursor = this.eventCursor(owner);
-      db.update("pm_ownership", lease.requirementId, owner.version, { ...owner.data, lease, context,
-        prodEvents: { ...cursor, baselineDelivery: null } });
-      return lease;
-    });
-  }
-
   /** 本 PM 物理上下文已完整读过到该批准版本的差异；复核门槛据此判断，换代后随上下文一起清空。 */
   async recordPmDiff(input: Static<typeof commands.recordPmDiff>): Promise<void> {
     const request = checked(commands.recordPmDiff, input);
@@ -522,24 +496,6 @@ export class RequirementStateStore {
       const context = this.context(owner);
       if ((context.diffRevision ?? 0) >= request.revision) return;
       db.update("pm_ownership", request.lease.requirementId, owner.version, { ...owner.data, context: { ...context, diffRevision: request.revision } });
-    });
-  }
-
-  async restoreApprovedContext(input: Static<typeof commands.restoreContext>): Promise<void> {
-    const request = checked(commands.restoreContext, input);
-    await this.workspaceForLease("restore-approved-context", request.lease);
-    this.mutate("restore-approved-context", request, (db) => {
-      const { record, owner } = this.validateOwner(db, request.lease);
-      if (!record.data.approved || record.version !== request.version || record.data.epoch !== request.epoch ||
-        record.data.revision !== request.revision || !equal(record.data.approved, request.reference)) {
-        throw new RequirementStateError("baseline_changed");
-      }
-      const context = this.context(owner);
-      const baseline = { runId: request.lease.runId, fence: request.lease.fence,
-        contextGeneration: request.lease.contextGeneration, revision: request.revision, reference: request.reference,
-        recordVersion: request.version, epoch: request.epoch };
-      db.update("pm_ownership", request.lease.requirementId, owner.version, { ...owner.data,
-        context: { ...context, baseline } });
     });
   }
 
@@ -556,21 +512,6 @@ export class RequirementStateStore {
     });
     this.authorize("events", { requirementId, after }); return events;
   }
-  async acknowledge(input: Static<typeof commands.acknowledge>): Promise<void> {
-    const request = checked(commands.acknowledge, input); await this.workspaceForLease("acknowledge", request.lease);
-    this.mutate("acknowledge", request, (db) => {
-      const { owner } = this.validateOwner(db, request.lease);
-      const current = owner.data.seenSequence;
-      if (request.sequence <= current) return;
-      const next = db.events(eventStream(request.lease.requirementId), current)[0];
-      if (request.sequence !== current + 1 || next?.sequence !== request.sequence) throw new RequirementStateError("event_gap");
-      const event = checked(RequirementEvent, next.data);
-      if (event.requirementId !== request.lease.requirementId || event.repoId !== this.options.repoId) throw new RequirementStateError("event_identity_conflict");
-      db.update("pm_ownership", request.lease.requirementId, owner.version, { ...owner.data, seenSequence: request.sequence });
-      // 接收事件不是逐任务影响复核，不解除pendingRevision或改写历史验证输入。
-    });
-  }
-
   async nextApprovedEvent(input: Static<typeof commands.eventLease>): Promise<ApprovedEventPoll> {
     const request = checked(commands.eventLease, input);
     await this.workspaceForLease("deliver-approved-event", request.lease);

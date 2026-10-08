@@ -18,7 +18,7 @@ export function ctxFor(fixture: PmIntakeFixture, signal: AbortSignal, manager: o
   } as unknown as ExtensionContext;
 }
 
-export function bridgeFor(fixture: PmIntakeFixture, ttl?: number, withProviders = true) {
+export function bridgeFor(fixture: PmIntakeFixture, ttl?: number) {
   const controller = new AbortController(), signal = controller.signal;
   const manager = { getSessionId: () => fixture.identity.sessionId };
   const ctx = ctxFor(fixture, signal, manager);
@@ -30,8 +30,7 @@ export function bridgeFor(fixture: PmIntakeFixture, ttl?: number, withProviders 
       return { windowId: fixture.identity.windowId, sessionId: fixture.identity.sessionId,
         repositories: new Map([[fixture.repoId, { path }]]) };
     },
-    ...(withProviders ? { providers: { sourceDirectoryProvider: fixture.sourceProvider,
-      submissionProvider: fixture.submissionProvider } } : {}) });
+    providers: { sourceDirectoryProvider: fixture.sourceProvider, submissionProvider: fixture.submissionProvider } });
   bridge.startSession(ctx);
   return { bridge, ctx, signal, controller, manager, hostState };
 }

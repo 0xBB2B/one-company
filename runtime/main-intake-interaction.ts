@@ -97,12 +97,10 @@ const MAIN_INTAKE_ADVICE: Record<string, FailureAdvice> = {
   operation_cancelled: { why: "操作被取消", next: "需要时重新发起" },
   response_budget_exceeded: { why: "返回内容超出上限", next: "重试一次；仍然失败就把这段原因告诉用户" },
   session_not_started: { why: "会话还没准备好", next: "稍等几秒再试" },
-  source_directory_provider_unavailable: { why: "读不到接手出处目录", next: "重试一次；仍然失败就把这段原因告诉用户" },
   stale_context: { why: "会话或窗口已切换，本次操作作废", next: "在当前窗口里重新发起" },
   stale_delivery: { why: "结果送达前已过期或被取消", next: "重新发起一次" },
   stale_host: { why: "窗口或会话已切换，本次操作作废", next: "在当前窗口里重新发起" },
   stale_tool_call: { why: "工具调用已过期", next: "重新发起一次" },
-  submission_provider_unavailable: { why: "读不到 PM 提交的接手理解", next: "重试一次；仍然失败就把这段原因告诉用户" },
   tool_call_limit: { why: "进行中的工具调用太多", next: "等已有调用结束后再试" },
   unobserved_tool_call: { why: "宿主没有看到这次工具调用的发起", next: "重新发起一次" },
 };
@@ -240,8 +238,7 @@ export interface MainIntakeInteractionOptions {
   readonly dataRoot: string;
   readonly authorization: HostAuthorizationManager;
   readonly resolveHost: (ctx: ExtensionContext) => RequirementManageHostContext;
-  /** 仅可信宿主或测试装置在构造时注入；缺失时生产路径明确拒绝。 */
-  readonly providers?: MainIntakeProviders;
+  readonly providers: MainIntakeProviders;
   readonly callTtlMs?: number;
 }
 
@@ -359,8 +356,6 @@ export class MainIntakeInteraction {
     guard: () => void;
   }> {
     const providers = this.#options.providers;
-    if (!providers?.sourceDirectoryProvider) deny("source_directory_provider_unavailable");
-    if (!providers.submissionProvider) deny("submission_provider_unavailable");
     const repositoryRoot = this.#context(ctx).host.repositories.get(input.repoId)?.path;
     if (!repositoryRoot) deny("foreign_repo");
     const guard = () => {

@@ -56,11 +56,6 @@ export const PmLease = object({
   contextGeneration: positive, expiresAt: counter,
 });
 export type PmLease = Static<typeof PmLease>;
-/** 仅用于识别已有持久记录；此租约格式不能作为当前调用授权。 */
-export const LegacyPmRecord = object({
-  requirementId: id, fence: counter, seenSequence: counter,
-  lease: nullable(object({ requirementId: id, runId: id, workspaceId: hash, epoch: positive, fence: positive, expiresAt: counter })),
-});
 export const PmContextBaseline = object({
   runId: id, fence: positive, contextGeneration: positive, revision: positive,
   reference: ProdReference, recordVersion: positive, epoch: positive,
@@ -77,7 +72,6 @@ export const ApprovedProdChange = object({
   fromRevision: nullable(positive), toRevision: positive,
   from: nullable(ProdReference), to: ProdReference, receiptId: id,
   lifecycleEpoch: positive, recordVersion: positive,
-  changedSections: Type.Null(), impactReason: Type.Literal("section_structure_unavailable"),
   approvalManifest: Type.Optional(ApprovalSummary),
 });
 export type ApprovedProdChange = Static<typeof ApprovedProdChange>;
@@ -95,8 +89,8 @@ export const PmEventCursor = object({
 });
 export type PmEventCursor = Static<typeof PmEventCursor>;
 export const PmRecord = object({
-  requirementId: id, fence: counter, seenSequence: counter, lease: nullable(PmLease),
-  prodEvents: Type.Optional(PmEventCursor), context: Type.Optional(PmContext),
+  requirementId: id, fence: counter, lease: nullable(PmLease),
+  prodEvents: Type.Optional(PmEventCursor), context: PmContext,
 });
 export type PmRecord = Static<typeof PmRecord>;
 export const OwnerClaim = object({ requirementId: id, workspaceId: hash });
@@ -119,14 +113,11 @@ export const commands = {
   close: object({ requirementId: id, version: positive, intent: CloseIntent }),
   finish: object({ requirementId: id, version: positive, operationId: id }),
   block: object({ requirementId: id, version: positive, reason: RecoveryReason }),
-  acknowledge: object({ lease: PmLease, sequence: counter }),
   assess: object({ lease: PmLease, version: positive, revision: positive, assessmentId: id,
     tasks: Type.Array(object({ taskId: Type.String({ minLength: 1, maxLength: 256 }), impact: Type.Union([Type.Literal("unaffected"), Type.Literal("affected"), Type.Literal("unknown")]),
       reason: Type.String({ maxLength: 1024 }) }), { minItems: 1, maxItems: 512 }) }),
   eventLease: object({ lease: PmLease }),
-  rotateContext: object({ lease: PmLease }),
   recordPmDiff: object({ lease: PmLease, revision: positive }),
-  restoreContext: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: ProdReference }),
   issueBaseline: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: ProdReference }),
   acknowledgeBaseline: object({ lease: PmLease, deliveryId: id }),
   eventDelivery: object({ lease: PmLease, eventId: id, sequence: positive }),

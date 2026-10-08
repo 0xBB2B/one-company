@@ -433,14 +433,13 @@ function validatePublication(input: IndexPublication): IndexPublication {
 }
 
 function validateWorkspaceRow(stored: StoredRecord<unknown>, identity: WorkspaceIdentity): StoredRecord<WorkspaceRow> {
-  const baselineKey = plain(stored.data) && Object.hasOwn(stored.data, "baselineHash") ? ["baselineHash"] : [];
-  const value = exact(stored.data, ["format", "workspaceId", "repoId", "root", "branch", "status", "fence", "currentGeneration", "targetGeneration", "operationId", ...baselineKey, "diagnostics", "updatedAt"], "invalid_index_state");
+  const value = exact(stored.data, ["format", "workspaceId", "repoId", "root", "branch", "status", "fence", "currentGeneration", "targetGeneration", "operationId", "baselineHash", "diagnostics", "updatedAt"], "invalid_index_state");
   if (value.format !== "index-workspace/v1") fail("invalid_index_state");
   const row: WorkspaceRow = {
     format: "index-workspace/v1", workspaceId: String(value.workspaceId), repoId: String(value.repoId), root: String(value.root), branch: String(value.branch),
     status: oneOf(value.status, ["building", "dirty", "cancelled", "interrupted", "ready", "partial", "invalid"] as const),
     fence: integer(value.fence, 1), currentGeneration: integer(value.currentGeneration), targetGeneration: integer(value.targetGeneration, 1),
-    operationId: String(value.operationId), baselineHash: baselineKey.length ? nullableHash(value.baselineHash) : null,
+    operationId: String(value.operationId), baselineHash: nullableHash(value.baselineHash),
     diagnostics: array(value.diagnostics, 1_000).map(validateDiagnostic), updatedAt: integer(value.updatedAt),
   };
   if (!UUID_V7_PATTERN.test(row.operationId) || !compareIdentity(row, identity) || row.targetGeneration !== row.currentGeneration + 1) fail("invalid_index_state");

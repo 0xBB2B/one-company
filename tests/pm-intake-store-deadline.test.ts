@@ -1,5 +1,4 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { PmIntakeService } from "../runtime/pm-intake-service.ts";
 import { PmIntakeStore, PM_INTAKE_NAMESPACES } from "../runtime/pm-intake-store.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
@@ -30,13 +29,10 @@ test.each(["request", "review", "clone-tail"] as const)("最后DB或clone跨Main
   expect(counts(fixture)).toEqual(before);
 });
 
-test("Main deadline参数只接受有限非负值，外部store与deadline无绑定协议时明确拒绝", async () => {
+test("Main deadline参数只接受有限非负值", async () => {
   const fixture = await world();
   for (const deadlineMonotonic of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
     expect(() => new PmIntakeStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, deadlineMonotonic })).toThrow(/invalid_deadline/);
   }
-  expect(() => new PmIntakeService({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, state: fixture.state,
-    requirementService: fixture.service, authorization: fixture.host, store: fixture.intakeStore,
-    deadlineMonotonic: performance.now() + 1_000 })).toThrow(/deadline_store_binding_unsupported/);
 });
 

@@ -8,8 +8,8 @@ import { Value } from "typebox/value";
 import { UUID_V7_PATTERN } from "./database.ts";
 
 /**
- * M4 只提供 PM 接手材料及连续关系的纯契约检查。
- * 外部事实、核对者身份、当前授权、来源目录和任务全集均须由未来可信服务提供；
+ * PM 接手材料及连续关系的纯契约检查。
+ * 外部事实、核对者身份、当前授权与来源目录由调用方提供；
  * 本模块不读取或写入任何存储，不制造主代理/用户身份，也不签发规划、派工或执行权限。
  */
 export const PM_INTAKE_LIMITS = Object.freeze({
@@ -18,9 +18,6 @@ export const PM_INTAKE_LIMITS = Object.freeze({
   sourceRefs: 128,
   sourceRefsPerItem: 32,
   shortIssues: 8,
-  impactLinks: 32,
-  historicalSourceDirectories: 32,
-  tasksPerLink: 32,
   jsonBytes: 32_768,
 } as const);
 
@@ -101,11 +98,6 @@ export const IntakeSourceDirectorySchema = object({
 });
 export type IntakeSourceDirectory = Static<typeof IntakeSourceDirectorySchema>;
 
-export const IntakeHistoricalSourceDirectorySchema = object({
-  binding: IntakeBindingSchema,
-  sourceDirectory: IntakeSourceDirectorySchema,
-});
-
 export const IntakeReviewRecordSchema = object({
   format: Type.Literal("pm-intake-review/v1"),
   reviewId: uuidV7,
@@ -125,65 +117,11 @@ export const IntakeReviewRecordSchema = object({
 });
 export type IntakeReviewRecord = Static<typeof IntakeReviewRecordSchema>;
 
-const taskVersionRef = object({ taskId: opaqueId, version: positive });
-const assessment = Type.Union([Type.Literal("unaffected"), Type.Literal("affected"), Type.Literal("unknown")]);
-export const IntakeImpactSourceRefSchema = object({
-  kind: Type.Union([
-    Type.Literal("prod-unit"),
-    Type.Literal("prod-scenario"),
-    Type.Literal("decision"),
-    Type.Literal("question"),
-  ]),
-  id: opaqueId,
-  baseline: Type.Union([Type.Literal("from"), Type.Literal("to")]),
-});
-export type IntakeImpactSourceRef = Static<typeof IntakeImpactSourceRefSchema>;
-const impactSourceRefs = Type.Array(IntakeImpactSourceRefSchema, {
-  minItems: 1,
-  maxItems: PM_INTAKE_LIMITS.sourceRefsPerItem,
-});
-const taskAssessment = object({ taskId: opaqueId, version: positive, assessment, rationale: boundedText, sourceRefs: impactSourceRefs });
-const globalAssessment = object({ assessment, rationale: boundedText, sourceRefs: impactSourceRefs });
-const approvedEvent = object({
-  eventId: uuidV7,
-  sequence: positive,
-  fromCommit: commit,
-  toCommit: commit,
-  fromRevision: positive,
-  toRevision: positive,
-  fromHash: hash,
-  toHash: hash,
-});
-
-export const IntakeRootReviewBindingSchema = object({
-  reviewId: uuidV7,
-  requestId: uuidV7,
-  submissionRef: opaqueId,
-  submissionHash: hash,
-});
-
-export const IntakeImpactLinkSchema = object({
-  format: Type.Literal("pm-intake-impact-link/v1"),
-  linkId: uuidV7,
-  previousLinkId: Type.Union([uuidV7, Type.Null()]),
-  rootReview: IntakeRootReviewBindingSchema,
-  from: IntakeBindingSchema,
-  to: IntakeBindingSchema,
-  approvedEvent,
-  taskAssessments: Type.Array(taskAssessment, { maxItems: PM_INTAKE_LIMITS.tasksPerLink }),
-  globalAssessment,
-});
-export type IntakeImpactLink = Static<typeof IntakeImpactLinkSchema>;
-
-const completeTaskSet = object({
-  eventId: uuidV7,
-  tasks: Type.Array(taskVersionRef, { maxItems: PM_INTAKE_LIMITS.tasksPerLink }),
-});
 const submissionBaseline = object({ submissionRef: opaqueId, submissionHash: hash });
 
 /**
  * currentState 是调用方在同一受控操作内提供的竞争检查数据，不是本模块验证出的安全事实。
- * sourceDirectory 只绑定 currentBinding；历史目录只保存链端点对应的有界来源 ID 元数据，不含旧正文。
+ * sourceDirectory 只绑定 currentBinding，接手记录的出处也按它核对。
  * requirementRecordVersion 与 leaseExpiresAt 只用于本次判定，不进入永久接手绑定。
  */
 export const IntakeContinuityFactsSchema = object({
@@ -199,14 +137,8 @@ export const IntakeContinuityFactsSchema = object({
     pendingApprovedUpdate: Type.Boolean(),
   }),
   sourceDirectory: IntakeSourceDirectorySchema,
-  historicalSourceDirectories: Type.Array(IntakeHistoricalSourceDirectorySchema, {
-    maxItems: PM_INTAKE_LIMITS.historicalSourceDirectories,
-  }),
   rootReview: Type.Union([IntakeReviewRecordSchema, Type.Null()]),
   understandingBaseline: Type.Union([submissionBaseline, Type.Null()]),
-  rootEventSequence: counter,
-  impactLinks: Type.Array(IntakeImpactLinkSchema, { maxItems: PM_INTAKE_LIMITS.impactLinks }),
-  completeTaskSets: Type.Array(completeTaskSet, { maxItems: PM_INTAKE_LIMITS.impactLinks }),
 });
 export type IntakeContinuityFacts = Static<typeof IntakeContinuityFactsSchema>;
 
@@ -387,20 +319,7 @@ export type IntakeContinuityReason =
   | "action_authorization_not_reported_current"
   | "source_directory_not_reported_current"
   | "pending_approved_update"
-  | "unexpected_impact_links"
-  | "impact_link_duplicate"
-  | "impact_link_conflict"
-  | "impact_link_out_of_order"
-  | "impact_link_gap"
-  | "impact_link_event_mismatch"
-  | "impact_link_root_mismatch"
-  | "impact_link_task_set_missing"
-  | "impact_link_task_set_conflict"
-  | "impact_link_unknown_task"
-  | "impact_link_missing_task"
-  | "impact_link_terminal_not_current"
-  | "impact_affected"
-  | "impact_unknown";
+  | "impact_link_gap";
 const INTAKE_REASON_TEXT: Record<IntakeContinuityReason | "requirement_not_ready", string> = {
   review_missing: "主代理还没有核对 PM 的接手理解",
   pm_correction_required: "主代理核对后要求 PM 改正接手理解",
@@ -423,20 +342,7 @@ const INTAKE_REASON_TEXT: Record<IntakeContinuityReason | "requirement_not_ready
   action_authorization_not_reported_current: "接手理解里的授权动作与当前批准不一致",
   source_directory_not_reported_current: "接手理解引用的出处目录不是当前的",
   pending_approved_update: "有新批准的需求版本还没复核",
-  unexpected_impact_links: "出现了不该有的影响复核记录",
-  impact_link_duplicate: "影响复核记录重复",
-  impact_link_conflict: "影响复核记录互相冲突",
-  impact_link_out_of_order: "影响复核记录顺序不对",
   impact_link_gap: "有批准更新还没做影响复核",
-  impact_link_event_mismatch: "影响复核与批准事件对不上",
-  impact_link_root_mismatch: "影响复核的起点与接手核对不一致",
-  impact_link_task_set_missing: "影响复核缺少任务集合",
-  impact_link_task_set_conflict: "影响复核的任务集合与计划冲突",
-  impact_link_unknown_task: "影响复核引用了计划里没有的任务",
-  impact_link_missing_task: "影响复核漏了计划里的任务",
-  impact_link_terminal_not_current: "最后一次影响复核不是当前的",
-  impact_affected: "有任务受批准更新影响，需要先处理",
-  impact_unknown: "有任务受批准更新的影响未知，需要先查清",
 };
 /** 接手核对未通过的缺项说明；租约等状态类原因取需求状态的说明。 */
 export function intakeReasonText(code: string): string {
@@ -444,22 +350,12 @@ export function intakeReasonText(code: string): string {
 }
 
 export interface IntakeContinuityEvaluation {
-  status: "contract_ready" | "review_required" | "impact_action_required" | "blocked";
+  status: "contract_ready" | "review_required" | "blocked";
   reasons: IntakeContinuityReason[];
   contractReady: boolean;
   reviewRequired: boolean;
-  impact: "not_applicable" | "unaffected" | "affected" | "unknown";
-  affectedTasks: Array<{ taskId: string; version: number }>;
-  unknownTasks: Array<{ taskId: string; version: number }>;
 }
 
-const bindingKeys = Object.keys(IntakeBindingSchema.properties) as Array<keyof IntakeBinding>;
-function sameBinding(left: IntakeBinding, right: IntakeBinding): boolean {
-  return bindingKeys.every((key) => left[key] === right[key]);
-}
-function sameTask(left: { taskId: string; version: number }, right: { taskId: string; version: number }): boolean {
-  return left.taskId === right.taskId && left.version === right.version;
-}
 function addReason(reasons: IntakeContinuityReason[], reason: IntakeContinuityReason): void {
   if (!reasons.includes(reason)) reasons.push(reason);
 }
@@ -471,67 +367,9 @@ function samePhysicalBinding(root: IntakeBinding, current: IntakeBinding, reason
   if (root.pmFence !== current.pmFence) addReason(reasons, "new_pm_fence");
   if (root.contextGeneration !== current.contextGeneration) addReason(reasons, "context_changed");
 }
-function bindingKey(value: IntakeBinding): string {
-  return bindingKeys.map((key) => `${String(key)}=${String(value[key])}`).join("\u0000");
-}
-function checkedHistoricalDirectories(
-  facts: IntakeContinuityFacts,
-  currentDirectory: IntakeSourceDirectory,
-): Map<string, IntakeSourceDirectory> {
-  const allowedBindings: IntakeBinding[] = [];
-  if (facts.rootReview) allowedBindings.push(facts.rootReview.binding);
-  for (const link of facts.impactLinks) allowedBindings.push(link.from, link.to);
-  const directories = new Map<string, IntakeSourceDirectory>();
-  for (const entry of facts.historicalSourceDirectories) {
-    const entryDirectory = checkedDirectory(entry.sourceDirectory);
-    if (sameBinding(entry.binding, facts.currentBinding)
-      || !allowedBindings.some((allowed) => sameBinding(allowed, entry.binding))) {
-      fail("invalid_source_directory");
-    }
-    const key = bindingKey(entry.binding);
-    if (directories.has(key)) fail("duplicate_source");
-    directories.set(key, entryDirectory);
-  }
-  directories.set(bindingKey(facts.currentBinding), currentDirectory);
-  return directories;
-}
-function directoryForBinding(
-  binding: IntakeBinding,
-  directories: ReadonlyMap<string, IntakeSourceDirectory>,
-): IntakeSourceDirectory {
-  return directories.get(bindingKey(binding)) ?? fail("invalid_source_directory");
-}
-function checkImpactRefs(
-  refs: readonly IntakeImpactSourceRef[],
-  link: IntakeImpactLink,
-  directories: ReadonlyMap<string, IntakeSourceDirectory>,
-): void {
-  checkUnique(refs.map((ref) => `${sourceKey(ref)}\u0000${ref.baseline}`), "duplicate_source");
-  for (const ref of refs) {
-    const directory = directoryForBinding(ref.baseline === "from" ? link.from : link.to, directories);
-    if (!knownSource(ref, directory)) fail("unknown_source");
-  }
-}
-function sameRootReview(link: IntakeImpactLink, review: IntakeReviewRecord): boolean {
-  return link.rootReview.reviewId === review.reviewId
-    && link.rootReview.requestId === review.requestId
-    && link.rootReview.submissionRef === review.submissionRef
-    && link.rootReview.submissionHash === review.submissionHash;
-}
-function exactEvent(link: IntakeImpactLink): boolean {
-  return link.approvedEvent.fromCommit === link.from.approvedProdCommit
-    && link.approvedEvent.toCommit === link.to.approvedProdCommit
-    && link.approvedEvent.fromRevision === link.from.approvedRevision
-    && link.approvedEvent.toRevision === link.to.approvedRevision
-    && link.approvedEvent.fromHash === link.from.approvedProdHash
-    && link.approvedEvent.toHash === link.to.approvedProdHash;
-}
-function uniqueTasks(tasks: ReadonlyArray<{ taskId: string; version: number }>): boolean {
-  return new Set(tasks.map((task) => task.taskId)).size === tasks.length;
-}
-
 /**
- * 纯判定接手记录到当前批准绑定的连续关系。输入中的“当前”布尔值只是未来服务提供的事实参数；
+ * 纯判定接手记录到当前批准绑定的连续关系。输入中的“当前”布尔值由调用方提供，本模块不核实；
+ * 批准版本前进后的逐次影响复核由调用方的门槛核对，这里只记缺口。
  * contractReady 只说明契约材料齐备，永远不签发权限或宣称外部事实已被本模块真实验证。
  */
 export function evaluateIntakeContinuity(value: unknown): IntakeContinuityEvaluation {
@@ -539,10 +377,7 @@ export function evaluateIntakeContinuity(value: unknown): IntakeContinuityEvalua
   if (bytes(checked.json) > PM_INTAKE_LIMITS.jsonBytes) fail("resource_limit");
   const facts = checked.value;
   const directory = checkedDirectory(facts.sourceDirectory);
-  const historicalDirectories = checkedHistoricalDirectories(facts, directory);
   const reasons: IntakeContinuityReason[] = [];
-  const affectedTasks: Array<{ taskId: string; version: number }> = [];
-  const unknownTasks: Array<{ taskId: string; version: number }> = [];
 
   if (facts.currentState.lifecycle !== "active") addReason(reasons, "requirement_not_active");
   if (facts.currentState.leaseExpiresAt <= facts.currentState.observedAt) addReason(reasons, "lease_not_current");
@@ -551,11 +386,9 @@ export function evaluateIntakeContinuity(value: unknown): IntakeContinuityEvalua
   if (facts.currentState.pendingApprovedUpdate) addReason(reasons, "pending_approved_update");
 
   const review = facts.rootReview;
-  if (review === null) {
-    addReason(reasons, "review_missing");
-    if (facts.impactLinks.length || facts.completeTaskSets.length) addReason(reasons, "unexpected_impact_links");
-  } else {
-    checkIntakeReviewRecord(review, directoryForBinding(review.binding, historicalDirectories));
+  if (review === null) addReason(reasons, "review_missing");
+  else {
+    checkIntakeReviewRecord(review, directory);
     if (review.result !== "passed") addReason(reasons, review.result);
     if (facts.understandingBaseline === null) addReason(reasons, "understanding_baseline_missing");
     else if (facts.understandingBaseline.submissionRef !== review.submissionRef || facts.understandingBaseline.submissionHash !== review.submissionHash) {
@@ -574,62 +407,7 @@ export function evaluateIntakeContinuity(value: unknown): IntakeContinuityEvalua
       addReason(reasons, "action_scope_changed");
     }
     if (sameApprovedRevision && !sameApprovedBundle) addReason(reasons, "approved_binding_changed_without_revision");
-    else if (sameApprovedRevision && sameApprovedBundle) {
-      if (facts.impactLinks.length || facts.completeTaskSets.length) addReason(reasons, "unexpected_impact_links");
-    } else if (facts.currentBinding.approvedRevision > review.binding.approvedRevision) {
-      const linkIds = facts.impactLinks.map((link) => link.linkId);
-      const eventIds = facts.impactLinks.map((link) => link.approvedEvent.eventId);
-      const taskSetEventIds = facts.completeTaskSets.map((set) => set.eventId);
-      if (new Set(linkIds).size !== linkIds.length || new Set(eventIds).size !== eventIds.length || new Set(taskSetEventIds).size !== taskSetEventIds.length) {
-        addReason(reasons, "impact_link_duplicate");
-      }
-      if (facts.completeTaskSets.length !== facts.impactLinks.length || facts.completeTaskSets.some((set) => !eventIds.includes(set.eventId))) {
-        addReason(reasons, "impact_link_task_set_conflict");
-      }
-      let cursor = review.binding;
-      let previousLinkId: string | null = null;
-      let expectedSequence = facts.rootEventSequence + 1;
-      let impactReferenceCount = review.sourceRefs.length;
-      for (const link of facts.impactLinks) {
-        link.taskAssessments.forEach((item) => { checkText(item.rationale); checkImpactRefs(item.sourceRefs, link, historicalDirectories); });
-        checkText(link.globalAssessment.rationale);
-        checkImpactRefs(link.globalAssessment.sourceRefs, link, historicalDirectories);
-        impactReferenceCount += link.globalAssessment.sourceRefs.length
-          + link.taskAssessments.reduce((total, item) => total + item.sourceRefs.length, 0);
-        if (impactReferenceCount > PM_INTAKE_LIMITS.sourceRefs) fail("resource_limit");
-        if (!sameBinding(link.from, cursor) || link.previousLinkId !== previousLinkId) addReason(reasons, "impact_link_out_of_order");
-        if (!sameRootReview(link, review)) addReason(reasons, "impact_link_root_mismatch");
-        samePhysicalBinding(review.binding, link.from, reasons);
-        samePhysicalBinding(review.binding, link.to, reasons);
-        if (link.to.approvedRevision !== link.from.approvedRevision + 1 || link.approvedEvent.sequence !== expectedSequence) {
-          addReason(reasons, "impact_link_gap");
-        }
-        if (!exactEvent(link) || link.from.approvedProdCommit.length !== link.to.approvedProdCommit.length) {
-          addReason(reasons, "impact_link_event_mismatch");
-        }
-
-        const expectedSet = facts.completeTaskSets.find((set) => set.eventId === link.approvedEvent.eventId);
-        if (!expectedSet) addReason(reasons, "impact_link_task_set_missing");
-        else {
-          if (!uniqueTasks(expectedSet.tasks) || !uniqueTasks(link.taskAssessments)) addReason(reasons, "impact_link_task_set_conflict");
-          for (const item of link.taskAssessments) {
-            if (!expectedSet.tasks.some((task) => sameTask(task, item))) addReason(reasons, "impact_link_unknown_task");
-            if (item.assessment === "affected" && !affectedTasks.some((task) => sameTask(task, item))) affectedTasks.push({ taskId: item.taskId, version: item.version });
-            if (item.assessment === "unknown" && !unknownTasks.some((task) => sameTask(task, item))) unknownTasks.push({ taskId: item.taskId, version: item.version });
-          }
-          if (expectedSet.tasks.some((task) => !link.taskAssessments.some((item) => sameTask(task, item)))) addReason(reasons, "impact_link_missing_task");
-        }
-        if (link.globalAssessment.assessment === "affected") addReason(reasons, "impact_affected");
-        if (link.globalAssessment.assessment === "unknown") addReason(reasons, "impact_unknown");
-        if (link.taskAssessments.some((item) => item.assessment === "affected")) addReason(reasons, "impact_affected");
-        if (link.taskAssessments.some((item) => item.assessment === "unknown")) addReason(reasons, "impact_unknown");
-        cursor = link.to;
-        previousLinkId = link.linkId;
-        expectedSequence++;
-      }
-      if (!sameBinding(cursor, facts.currentBinding)) addReason(reasons, "impact_link_terminal_not_current");
-      if (!facts.impactLinks.length) addReason(reasons, "impact_link_gap");
-    }
+    else if (facts.currentBinding.approvedRevision > review.binding.approvedRevision) addReason(reasons, "impact_link_gap");
   }
 
   const reviewReasons = new Set<IntakeContinuityReason>([
@@ -639,22 +417,9 @@ export function evaluateIntakeContinuity(value: unknown): IntakeContinuityEvalua
     "approved_revision_regressed", "approved_binding_changed_without_revision",
   ]);
   const reviewRequired = reasons.some((reason) => reviewReasons.has(reason));
-  const impact = reasons.includes("impact_unknown") ? "unknown"
-    : reasons.includes("impact_affected") ? "affected"
-      : review && facts.currentBinding.approvedRevision > review.binding.approvedRevision ? "unaffected" : "not_applicable";
   const contractReady = reasons.length === 0;
-  const status = contractReady ? "contract_ready"
-    : reviewRequired ? "review_required"
-      : impact === "affected" || impact === "unknown" ? "impact_action_required" : "blocked";
-  const result: IntakeContinuityEvaluation = {
-    status,
-    reasons,
-    contractReady,
-    reviewRequired,
-    impact,
-    affectedTasks,
-    unknownTasks,
-  };
+  const status = contractReady ? "contract_ready" : reviewRequired ? "review_required" : "blocked";
+  const result: IntakeContinuityEvaluation = { status, reasons, contractReady, reviewRequired };
   if (bytes(JSON.stringify(result)) > PM_INTAKE_LIMITS.jsonBytes) fail("resource_limit");
   return result;
 }

@@ -56,6 +56,8 @@ test("M7-AC1：主代理核对通过前不建立理解基线也不投递通知�
   expect(second).not.toContain("jump 的行为");
   await until(() => w.owner().context.baseline?.revision === 3);
   expect(w.owner().prodEvents?.understoodRevision).toBe(3);
+  expect(evaluatePmIntakeGate({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease }))
+    .toMatchObject({ allowed: false, reasons: expect.arrayContaining(["impact_link_gap"]) });
 
   const assess = (revision: number) => w.plan.execute({ action: "assess-update", revision, assessmentId: uuidv7(),
     tasks: view.tasks.map((task) => ({ taskId: task.taskId, version: task.version, assessment: "unaffected", rationale: "未涉及登录" })),

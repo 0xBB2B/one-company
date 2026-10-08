@@ -38,7 +38,7 @@ import { requirementSummary, saveRequirementSummary } from "./requirement-summar
 import { askWindow, confirmWindow, mutedLines } from "./question-window.ts";
 import { fixedChoiceIssue, PanelItemAskError, panelItemTarget } from "./panel-item-ask.ts";
 import type { AdjudicationSubject } from "./user-interaction-format.ts";
-import { inspectProdStructure, pageProdText, selectProdSection, PROD_SECTION_ID_PATTERN } from "./prod-view.ts";
+import { inspectProdStructure, pageProdText, selectProdSection } from "./prod-view.ts";
 
 export interface RequirementManageHostContext {
   readonly windowId: string; readonly sessionId: string;
@@ -711,7 +711,6 @@ export class MainRequirementInteraction {
       why.size ? `解读模型对待定段落写的理由（模型写的，只用来决定问用户什么，不算批准）：${[...why].map(([conclusion, ids]) => `「${list(ids)}」${conclusion}`).join("；")}` : ""]
       .filter(Boolean).join("；") || "这次的解读没能确认整份草稿，请用户逐段确认";
   }
-  /** 窗口里的回答记成用户这一轮的原话；不走 captureInput，免得本次工具调用的代次失效、结果被当成过期。 */
   /**
    * 主代理分析完面板事项后用通用问答窗口给出建议。要登记用户决定的事项，选项文字由程序固定，
    * 用户在窗口里的回答可登记为该决定；其余事项的回答只作为给主代理的指示。
@@ -742,6 +741,7 @@ export class MainRequirementInteraction {
       next: !answer ? "用户暂不回答，事项保留" : decision ? `按这个回答以 one_company_user_interact purpose=adjudicate itemId=${decision.itemId} itemVersion=${decision.itemVersion} 登记；回答不是登记选项时按其内容处理`
         : "这个回答只作为给你的指示，不能登记为批准或裁决；按回答处理，需要转给 PM 时用 agent_manage message" });
   }
+  /** 窗口里的回答记成用户这一轮的原话；不走 captureInput，免得本次工具调用的代次失效、结果被当成过期。 */
   #adoptQuestionAnswer(text: string, host: RequirementManageHostContext, ctx: ExtensionContext, panelDecision?: { itemId: string; itemVersion: string }): void {
     const previous = this.#input;
     if (previous) { previous.event.text = ""; previous.abort.abort(); }
@@ -777,7 +777,6 @@ export class MainRequirementInteraction {
     const result = request.action === "read" ? await service.read({ requirementId: request.requirementId, source })
       : await service.diff({ requirementId: request.requirementId, fromRevision: request.fromRevision!, ...(request.toRevision ? { toRevision: request.toRevision } : {}) });
     const text = "body" in result ? selectProdSection(result.body, inspectProdStructure(result.body), request.sectionId) : result.diff;
-    if (request.sectionId && !new RegExp(PROD_SECTION_ID_PATTERN).test(request.sectionId)) denied("invalid_section");
     const { body: _body, diff: _diff, ...metadata } = result as typeof result & { body?: string; diff?: string };
     const next = randomBytes(32).toString("hex");
     let page = pageProdText(text, cursor?.offset ?? 0, maxBytes);

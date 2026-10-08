@@ -268,18 +268,6 @@ test("新B决定不能supersede仍存在的A来源", async () => {
   expect(withDatabase(w.path, (db) => db.list("short_decisions"))).toEqual(before);
 });
 
-test("缺少字节审核证明的既存事实保留数据但不能支持retained", async () => {
-  const w = await world(), first = await w.interpret("A B明确"), create = LocalDatabase.prototype.create;
-  const legacyShape = vi.spyOn(LocalDatabase.prototype, "create").mockImplementation(function (namespace, key, data, ...args) {
-    if (namespace === INTERACTION_CONTINUITY_NAMESPACE) { const { byteReview: _review, resolvedIssues: _issues, ...metadata } = data as Record<string, unknown>; return create.call(this, namespace, key, metadata, ...args); }
-    return create.call(this, namespace, key, data, ...args);
-  });
-  try { w.core.save(first.capability); } finally { legacyShape.mockRestore(); }
-  const before = withDatabase(w.path, (db) => db.list(INTERACTION_CONTINUITY_NAMESPACE));
-  expect(w.context().retainedEvidence).toEqual([]);
-  expect(withDatabase(w.path, (db) => db.list(INTERACTION_CONTINUITY_NAMESPACE))).toEqual(before);
-});
-
 test("来源事实登记失败以固定operation补登，短决定不重复且事实没有正文输入", async () => {
   const w = await world(), result = await w.interpret("真实输入不应复制到来源事实"), original = LocalDatabase.prototype.create;
   const fail = vi.spyOn(LocalDatabase.prototype, "create").mockImplementation(function (namespace, ...args) {

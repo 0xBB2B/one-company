@@ -88,15 +88,6 @@ test("真实批准prod、独立worktree、PM lease和可信provider可登记请�
   expect(fixture.db((db) => db.list("receipts").length)).toBe(0);
 });
 
-test("source或submission provider缺失时默认拒绝，不使用fixture或旧流程兜底", async () => {
-  const fixture = await world();
-  await expect(fixture.makeIntake({ sourceDirectoryProvider: null }).openRequest(fixture.call, fixture.operationId()))
-    .rejects.toMatchObject({ code: "source_directory_provider_unavailable" });
-  await expect(fixture.makeIntake({ submissionProvider: null }).openRequest(fixture.call, fixture.operationId()))
-    .rejects.toMatchObject({ code: "submission_provider_unavailable" });
-  expect(persisted(fixture)[PM_INTAKE_NAMESPACES.requests]).toHaveLength(0);
-});
-
 test("来源handle和Main call不能由同形JSON重建", async () => {
   const fixture = await world();
   const source: PmSourceDirectoryProvider = {

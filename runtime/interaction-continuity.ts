@@ -16,16 +16,16 @@ const Unit = object({ id: ApprovalPartition.properties.units.items.properties.id
 const Fact = object({ format: Type.Literal("interaction-resolution-fact/v1"), repoId: CandidateBinding.properties.intentHash,
   basis: InteractionBasis, candidate: CandidateBinding, partition: ApprovalPartition, operationId: id, receiptId: id,
   savedOperation: ContinuityRecordRef,
-  byteReview: Type.Optional(object({ accepted: Type.Boolean(), units: Type.Array(object({ ...Unit.properties,
+  byteReview: object({ accepted: Type.Boolean(), units: Type.Array(object({ ...Unit.properties,
     disposition: Type.Union([Type.Literal("confirmed"), Type.Literal("pending-description"), Type.Literal("excluded")]),
     globalConstraint: Type.Boolean(), appliesTo: Type.Array(Unit.properties.id),
-    dependsOn: Type.Array(Unit.properties.id) }), { minItems: 1 }) })),
+    dependsOn: Type.Array(Unit.properties.id) }), { minItems: 1 }) }),
   decisions: Type.Array(object({ record: ContinuityRecordRef, kind: InteractionEntry.properties.kind,
     basis: InteractionEntry.properties.basis, resolution: InteractionEntry.properties.resolution,
     unitIds: Type.Array(Unit), requestId: InteractionEntry.properties.requestId }), { minItems: 1, maxItems: 20 }),
-  resolvedIssues: Type.Optional(Type.Array(object({ fact: ContinuityRecordRef, originDecision: ContinuityRecordRef, unit: Unit }))),
+  resolvedIssues: Type.Array(object({ fact: ContinuityRecordRef, originDecision: ContinuityRecordRef, unit: Unit })),
   questions: Type.Array(object({ requestId: id, originalHash: CandidateBinding.properties.intentHash,
-    accepted: Type.Array(Unit), modified: Type.Array(Unit), pending: Type.Optional(Type.Array(Unit)) }), { maxItems: 20 }) });
+    accepted: Type.Array(Unit), modified: Type.Array(Unit), pending: Type.Array(Unit) }), { maxItems: 20 }) });
 type FactData = import("typebox").Static<typeof Fact>;
 const same = (a: unknown, b: unknown) => decisionDigest(a) === decisionDigest(b);
 function deny(code: string): never { throw new UserInteractionError(code); }
@@ -36,7 +36,7 @@ function checkRef(row: StoredRecord | null, expected: { id: string; version: num
 function checkedFact(row: StoredRecord): FactData {
   if (row.version !== 1) deny("continuity_fact_mutated");
   const f = checkInteraction(Fact, row.data);
-  if (row.id !== f.operationId || f.partition.prodHash !== f.candidate.to.hash || f.byteReview &&
+  if (row.id !== f.operationId || f.partition.prodHash !== f.candidate.to.hash ||
     (f.byteReview.units.length !== f.partition.units.length || f.byteReview.units.some((u, i) => u.id !== f.partition.units[i]!.id || u.hash !== f.partition.units[i]!.hash))) deny("continuity_fact_identity");
   return f;
 }
@@ -83,11 +83,11 @@ export function recordInteractionResolutionIn(db: LocalDatabase, repoId: string,
   if (!old) db.create(INTERACTION_CONTINUITY_NAMESPACE, saved.operationId, fact, saved.operationId);
 }
 function acceptedUnit(fact: FactData, unitId: string, kind?: string): boolean {
-  const unit = fact.byteReview?.units.find((u) => u.id === unitId);
-  return fact.byteReview?.accepted === true && unit !== undefined && unit.disposition !== "pending-description" &&
+  const unit = fact.byteReview.units.find((u) => u.id === unitId);
+  return fact.byteReview.accepted === true && unit !== undefined && unit.disposition !== "pending-description" &&
     (kind === undefined || unit.disposition === (kind === "exclusion" ? "excluded" : "confirmed"));
 }
-/** 原来源只解释已接受的未改字节；缺少原文审核证明的事实只能作描述/修订参考。 */
+/** 原来源只解释已接受的未改字节。 */
 export function assertRetainedEvidenceIn(db: Pick<LocalDatabase, "read">, repoId: string, basis: InteractionBasis, doc: Pick<DocumentAnalysis, "partition">, e: RetainedUnitEvidence): void {
   const row = checkRef(db.read(INTERACTION_CONTINUITY_NAMESPACE, e.fact.id), e.fact), fact = checkedFact(row);
   const source = fact.decisions.find((d) => d.record.id === e.decision.id);
@@ -213,28 +213,28 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
       for (const unit of d.unitIds.filter((u) => u.id !== "metadata")) {
         const latest = latestSource(source, unit.id), target = doc.partition.units.find((u) => u.id === unit.id);
         if (latest && sourceAcceptsCurrentUnit(latest, unit.id)) continue;
-        if (facts.some(({ row, fact }) => fact.resolvedIssues?.some((resolution) => same(resolution.fact, ref(source.row)) &&
+        if (facts.some(({ row, fact }) => fact.resolvedIssues.some((resolution) => same(resolution.fact, ref(source.row)) &&
           same(resolution.originDecision, d.record) && resolution.unit.id === unit.id && resolution.unit.hash === unit.hash) &&
           fact.decisions.some((decision) => { const next = latestSource({ row, fact, decision }, unit.id); return next && sourceAcceptsCurrentUnit(next, unit.id); }))) continue;
         // 段落改过或删掉后，针对旧内容的修改、待定记录作废：新内容由这次批准重新解读，作废不产生任何授权
         if (target?.hash !== unit.hash) continue;
-        const policy = source.fact.byteReview?.units.find((u) => u.id === unit.id);
+        const policy = source.fact.byteReview.units.find((u) => u.id === unit.id);
         const affected = new Set<string>(target ? [target.id] : []);
-        if (!policy && d.kind === "constraint" || policy?.globalConstraint) {
-          for (const id of policy?.appliesTo.length ? policy.appliesTo : doc.partition.units.filter((u) => u.id !== "metadata").map((u) => u.id)) affected.add(id);
+        if (policy?.globalConstraint) {
+          for (const id of policy.appliesTo.length ? policy.appliesTo : doc.partition.units.filter((u) => u.id !== "metadata").map((u) => u.id)) affected.add(id);
         }
         let changed = true;
         while (changed) {
           changed = false;
-          for (const u of source.fact.byteReview?.units ?? []) {
+          for (const u of source.fact.byteReview.units) {
             if (!affected.has(u.id) && u.dependsOn.some((id) => affected.has(id))) { affected.add(u.id); changed = true; }
             if (affected.has(u.id) && u.globalConstraint) for (const id of u.appliesTo.length ? u.appliesTo : doc.partition.units.filter((unit) => unit.id !== "metadata").map((unit) => unit.id)) {
               if (!affected.has(id)) { affected.add(id); changed = true; }
             }
           }
         }
-        const questionRefs = source.fact.byteReview?.accepted && d.resolution !== "modify" ? source.fact.questions
-          .filter((q) => q.pending?.some((u) => u.id === unit.id && u.hash === unit.hash)).map((q) => ({ requestId: q.requestId, hash: q.originalHash })) : [];
+        const questionRefs = source.fact.byteReview.accepted && d.resolution !== "modify" ? source.fact.questions
+          .filter((q) => q.pending.some((u) => u.id === unit.id && u.hash === unit.hash)).map((q) => ({ requestId: q.requestId, hash: q.originalHash })) : [];
         continuityIssues.push({ fact: ref(source.row), originDecision: d.record, decision: ref(latest ? currentSource(latest)!.row : current.row), questionRefs, unitId: unit.id, unitHash: unit.hash,
           targetHash: target?.hash ?? null, affectedUnitIds: [...affected].filter((id) => doc.partition.units.some((u) => u.id === id)), reason: d.resolution === "modify" ? "modify" : "pending" });
       }
