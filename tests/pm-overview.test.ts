@@ -53,7 +53,8 @@ test("核对通过后 PM 又交了一份接手理解：面板重新出现待核�
   await expect(w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] })).rejects.toThrow("核对过的接手理解不是 PM 最新提交的那份");
 
   await w.review();
-  await until(async () => (await w.overview()).pendingItems.length === 0);
+  // PM 收到通过后停下会挂出停下提醒，面板全空只有几毫秒，只等待核对事项消失
+  await until(async () => !(await w.overview()).pendingItems.some((item) => item.kind === "intake-review"));
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   expect((await w.overview()).doing).toBe("规划中（计划 v1 · 2 个任务）");
 });
