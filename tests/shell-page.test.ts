@@ -6,7 +6,7 @@ import { BottomDock } from "../runtime/dock.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import type { Host, TaskRecord } from "../runtime/shell-registry.ts";
 import { ShellPage, hostLabel, openShellPage } from "../runtime/shell-page.ts";
-import type { ShellPageRepo } from "../runtime/shell-page.ts";
+import type { ShellPageClient, ShellPageRepo } from "../runtime/shell-page.ts";
 
 const MAIN_HOST: Host = { kind: "main", id: "main" };
 
@@ -110,9 +110,6 @@ function roleHost(role: string, runId = randomUUID(), id = `req-${role}`): Host 
   return { kind: "role", id, role, runId };
 }
 
-function requirementHost(id: string): Host {
-  return { kind: "requirement", id };
-}
 
 interface RepoCallLog {
   method: string;
@@ -125,24 +122,18 @@ function fakeRepo(
     list?: () => Record<string, unknown>[];
     stop?: (params: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   },
-  requirementTitle?: string,
-): ShellPageRepo & { calls: RepoCallLog[] } {
+): ShellPageRepo & { calls: RepoCallLog[]; client: ShellPageClient } {
   const calls: RepoCallLog[] = [];
-  const repo: ShellPageRepo & { calls: RepoCallLog[] } = {
-    repoId,
-    requirementTitle,
-    calls,
-    client: {
-      connectionIdentity: () => ({ daemonInstanceId: "fixture-daemon", connectionId: repoId, connectionSequence: 1 }),
-      call: async (method: string, params: Record<string, unknown> = {}) => {
-        calls.push({ method, params });
-        if (method === "shells.list") return { tasks: handlers.list?.() ?? [] };
-        if (method === "shells.stop") return await handlers.stop!(params);
-        throw new Error(`非白名单 RPC：${method}`);
-      },
+  const client: ShellPageClient = {
+    connectionIdentity: () => ({ daemonInstanceId: "fixture-daemon", connectionId: repoId, connectionSequence: 1 }),
+    call: async (method: string, params: Record<string, unknown> = {}) => {
+      calls.push({ method, params });
+      if (method === "shells.list") return { tasks: handlers.list?.() ?? [] };
+      if (method === "shells.stop") return await handlers.stop!(params);
+      throw new Error(`非白名单 RPC：${method}`);
     },
   };
-  return repo;
+  return { repoId, calls, client, resolveClient: () => client };
 }
 
 function fakeTheme() {
@@ -196,15 +187,6 @@ function countUnhandledRejections(): { count: () => number; stop: () => void } {
 describe("hostLabel", () => {
   test("main 宿主显示为主 agent", () => {
     expect(hostLabel(MAIN_HOST)).toBe("主 agent");
-  });
-
-  test("requirement 宿主显示为需求代理 + 需求标题", () => {
-    expect(hostLabel(requirementHost("req-1"), "示例需求标题")).toBe("需求代理 示例需求标题");
-  });
-
-  test("requirement 宿主缺少标题时不抛出且仍标注为需求代理", () => {
-    expect(() => hostLabel(requirementHost("req-1"))).not.toThrow();
-    expect(hostLabel(requirementHost("req-1"))).toContain("需求代理");
   });
 
   test("role 宿主显示为角色名#运行身份短码，不同运行身份短码不同", () => {
@@ -1292,7 +1274,7 @@ test("远端查询在途时本地证明或PID变化，最终刷新不能还原�
     const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "current", connectionSequence: 1 }),
       call: async () => hold ? new Promise<Record<string, unknown>>((resolve) => { finish = resolve; }) : { tasks: [] } };
     const registry = { list: () => [task], get: () => task } as unknown as ShellRegistry;
-    const page = new ShellPage(basePageOptions({ registry, clock, repos: [{ repoId: "remote", client }] }));
+    const page = new ShellPage(basePageOptions({ registry, clock, repos: [{ repoId: "remote", resolveClient: () => client }] }));
     await page.refresh(); time.advance(20_001); hold = true;
     const pending = page.refresh();
     if (mutation === "proof") task.descendantsScanned = false;
@@ -1324,7 +1306,7 @@ test("同对象连接epoch变化后旧list不报空、旧stop回执不进入新�
 
 test.each([null, undefined, "错误\x1b[2J\n伪造", { message: "对象错误\x1b[2J\n伪造" }])("未知异常%j只产生有界未知，不崩溃或报空", async (error) => {
   const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "c", connectionSequence: 1 }), call: async () => { throw error; } };
-  const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", client }] }));
+  const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", resolveClient: () => client }] }));
   await expect(page.refresh()).resolves.toBeUndefined();
   const lines = page.render(160); expect(lines.join("\n")).toContain("未知"); expect(lines.join("\n")).not.toContain("无活动 Shell");
   expect(lines.some((line) => /[\x00-\x1f\x7f-\x9f]/.test(line))).toBe(false);
@@ -1333,7 +1315,7 @@ test.each([null, undefined, "错误\x1b[2J\n伪造", { message: "对象错误\x1
 test("缺失列表和host非字符串身份属于未知数据，不转换成空或渲染崩溃", async () => {
   for (const response of [{}, { tasks: null }, { tasks: [{ ...localTask(), host: { kind: "role", id: 123, role: "worker" } }] }]) {
     const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "c", connectionSequence: 1 }), call: async () => response };
-    const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", client }] }));
+    const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", resolveClient: () => client }] }));
     await page.refresh(); expect(() => page.render(160)).not.toThrow();
     expect(page.render(160).join("\n")).toContain("未知"); expect(page.render(160).join("\n")).not.toContain("无活动 Shell");
   }
@@ -1344,8 +1326,9 @@ describe("ShellPage：缺连接属于未知覆盖，不当作空结果", () => {
     const calls: string[] = [];
     const connectedClient = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "connection", connectionSequence: 1 }),
       call: async (method: string) => { calls.push(method); return { tasks: [] }; } };
-    const missingA: ShellPageRepo = { repoId: "repo-missing-a" };
-    const missingB: ShellPageRepo = { repoId: "repo-missing-b" };
+    let restoredClient: ShellPageClient | undefined;
+    const missingA: ShellPageRepo = { repoId: "repo-missing-a", resolveClient: () => restoredClient };
+    const missingB: ShellPageRepo = { repoId: "repo-missing-b", resolveClient: () => undefined };
     const allMissing = new ShellPage(basePageOptions({ repos: [missingA, missingB] }));
     allMissing.resize(12, 1);
     await allMissing.refresh();
@@ -1354,13 +1337,13 @@ describe("ShellPage：缺连接属于未知覆盖，不当作空结果", () => {
     expect(allMissing.render(12)[0]).toContain("未知");
     expect(allMissing.render(12).join("\n")).not.toContain("无活动 Shell");
 
-    const partial = new ShellPage(basePageOptions({ repos: [{ repoId: "repo-ok", client: connectedClient }, missingA] }));
+    const partial = new ShellPage(basePageOptions({ repos: [{ repoId: "repo-ok", resolveClient: () => connectedClient }, missingA] }));
     await partial.refresh();
     expect(calls).toEqual(["shells.list"]);
     expect(partial.render(80).join("\n")).toContain("覆盖不完整");
     expect(partial.render(80).join("\n")).not.toContain("无活动 Shell");
 
-    missingA.client = connectedClient;
+    restoredClient = connectedClient;
     await partial.refresh();
     expect(calls).toEqual(["shells.list", "shells.list", "shells.list"]);
     expect(partial.render(80).join("\n")).toContain("无活动 Shell");

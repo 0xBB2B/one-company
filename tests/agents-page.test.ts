@@ -2,13 +2,15 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { openSettingsPage } from "../extensions/settings.ts";
 import type { SettingsExtensionContext } from "../extensions/settings.ts";
+import { readRoleDefinition, userRoleDir } from "../runtime/roles.ts";
 
 const RIGHT = "\x1b[C", DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const theme = { fg: (_kind: string, text: string) => text, bg: (_kind: string, text: string) => text, bold: (text: string) => text, inverse: (text: string) => text };
 
-interface Screen { text: string; keys(...keys: string[]): void }
+interface Screen { text: string; keys(...keys: string[]): void; now(): string }
 type Step = (screen: Screen) => void;
 
 let root = "", savedAgentDir: string | undefined;
@@ -27,14 +29,15 @@ function scripted(steps: Step[], trusted = true): SettingsExtensionContext & { s
         const component = factory({ requestRender() {} }, theme, undefined, resolve) as { render(width: number): string[]; handleInput(data: string): void };
         const step = steps.shift();
         if (!step) throw new Error("脚本步骤用完了");
-        const text = component.render(200).map((line) => line.trimEnd()).join("\n");
+        const now = () => component.render(200).map((line) => line.trimEnd()).join("\n");
+        const text = now();
         screens.push(text);
-        step({ text, keys: (...keys) => { for (const key of keys) component.handleInput(key); } });
+        step({ text, now, keys: (...keys) => { for (const key of keys) component.handleInput(key); } });
       });
     },
     notify() {},
   };
-  return { hasUI: true, cwd: join(root, "repo"), ui: ui as unknown as SettingsExtensionContext["ui"], isProjectTrusted: () => trusted, screens };
+  return { hasUI: true, mode: "tui", cwd: join(root, "repo"), ui: ui as unknown as SettingsExtensionContext["ui"], isProjectTrusted: () => trusted, screens };
 }
 const typed = (text: string) => [...text];
 
@@ -94,4 +97,21 @@ test("M8D-AC8：项目未受信任时项目层选项变暗并写明原因，页�
   ], false);
   await openSettingsPage(ctx);
   expect(window).toMatch(/项目层 +项目未受信任，暂不能复制到这里/u);
+});
+
+test("带引号的 model 与多行 description：设置页显示的内容与守护进程解析结果一致，不当成问题定义", async () => {
+  await mkdir(join(root, "repo"), { recursive: true });
+  const dir = userRoleDir(join(root, "agent"));
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, "quoted-worker.md");
+  await writeFile(path, '---\nname: quoted-worker\ndescription: >\n  多行描述第一行\n  第二行: 含冒号\nrole: worker\nmodel: "x/m-1"\nthinking: \'high\'\n---\n\n正文\n');
+  const parsed = await readRoleDefinition(path, parseFrontmatter);
+  expect(parsed).toMatchObject({ model: "x/m-1", thinking: "high", description: "多行描述第一行 第二行: 含冒号\n" });
+  let page = "";
+  const ctx = scripted([(s) => { s.keys(RIGHT); page = s.now(); s.keys(ESC); }]);
+  await openSettingsPage(ctx);
+  expect(page).toContain("quoted-worker");
+  expect(page).toContain(parsed.model!);
+  expect(page).not.toContain('"x/m-1"');
+  expect(page).not.toContain("问题");
 });

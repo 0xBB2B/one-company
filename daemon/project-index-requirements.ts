@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { lstat, opendir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -19,9 +18,6 @@ export interface ProjectIndexRequirementsOptions {
   readonly repositoryRoot: string;
   readonly dataRoot: string;
   readonly repoId: string;
-  /** 仅可收紧元数据枚举预算，不限制或读取归档正文大小。 */
-  readonly maxEntries?: number;
-  readonly maxMetadataBytes?: number;
 }
 
 export class ProjectIndexRequirementsError extends Error {
@@ -38,22 +34,9 @@ function absolute(path: string): boolean {
   return typeof path === "string" && isAbsolute(path) && resolve(path) === path;
 }
 
-function budget(value: number | undefined, maximum: number): number {
-  const result = value ?? maximum;
-  if (!Number.isSafeInteger(result) || result < 1 || result > maximum) throw new ProjectIndexRequirementsError("invalid_binding");
-  return result;
-}
-
 function sameDirectory(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode &&
     left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
-}
-
-/** 项目索引workspaceId按repo/root/branch的带字节长度字段编码；不同于需求的inode绑定ID。 */
-function indexWorkspaceId(repoId: string, root: string, branch: string): string {
-  const hash = createHash("sha256");
-  for (const part of [repoId, root, branch]) hash.update(String(Buffer.byteLength(part))).update(":").update(part).update("|");
-  return hash.digest("hex");
 }
 
 interface MetadataScan {
@@ -69,8 +52,6 @@ interface MetadataScan {
  */
 export class ProjectIndexRequirements {
   private readonly options: ProjectIndexRequirementsOptions;
-  private readonly maxEntries: number;
-  private readonly maxMetadataBytes: number;
   private closing = false;
   private pending = 0;
   private serial: Promise<void> = Promise.resolve();
@@ -78,8 +59,6 @@ export class ProjectIndexRequirements {
   constructor(options: ProjectIndexRequirementsOptions) {
     if (!options || !HASH.test(options.repoId) || !absolute(options.repositoryRoot) || !absolute(options.dataRoot)) throw new ProjectIndexRequirementsError("invalid_binding");
     this.options = Object.freeze({ ...options });
-    this.maxEntries = budget(options.maxEntries, LIMITS.maxEntries);
-    this.maxMetadataBytes = budget(options.maxMetadataBytes, LIMITS.maxMetadataBytes);
   }
 
   private assertOpen(): void {
@@ -152,13 +131,13 @@ export class ProjectIndexRequirements {
         this.assertOpen();
         scan.entries++;
         scan.bytes += Buffer.byteLength(entry.name) + Buffer.byteLength(archiveRoot) + 1;
-        if (scan.entries > this.maxEntries || scan.bytes > this.maxMetadataBytes) throw new ProjectIndexRequirementsError("metadata_limit");
+        if (scan.entries > LIMITS.maxEntries || scan.bytes > LIMITS.maxMetadataBytes) throw new ProjectIndexRequirementsError("metadata_limit");
         const path = join(archiveRoot, entry.name);
         if (path.length > 4096 || Buffer.byteLength(entry.name) > 255 || /[\u0000-\u001f\u007f/\\]/u.test(entry.name)) {
           throw new ProjectIndexRequirementsError("unsafe_archive_directory");
         }
         const info = await lstat(path, { bigint: true });
-        if (!entry.isFile() || !info.isFile() || info.isSymbolicLink() || info.nlink !== 1n) {
+        if (!entry.isFile() || !info.isFile() || info.isSymbolicLink()) {
           throw new ProjectIndexRequirementsError("unsafe_archive_directory");
         }
         const match = ARCHIVE_NAME.exec(entry.name);
@@ -181,8 +160,7 @@ export class ProjectIndexRequirements {
     const { repoId, repositoryRoot, dataRoot } = this.options;
     const workspace = event?.workspace;
     if (!workspace || workspace.repoId !== repoId || !absolute(workspace.root) || event.repositoryRoot !== workspace.root ||
-      typeof workspace.branch !== "string" || !workspace.branch.startsWith("refs/heads/") ||
-      workspace.workspaceId !== indexWorkspaceId(repoId, workspace.root, workspace.branch)) {
+      typeof workspace.branch !== "string" || !workspace.branch.startsWith("refs/heads/")) {
       throw new ProjectIndexRequirementsError("invalid_binding");
     }
     const identity = await repositoryIdentity(repositoryRoot);

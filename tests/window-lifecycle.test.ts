@@ -6,16 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock } from "../runtime/clock.ts";
-import { currentBootId, processStartedAt, WindowRegistry } from "../runtime/windows.ts";
-import { dataRoot, discoverWorkspace, repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
-import type { Workspace, WorkspaceRepo } from "../runtime/identity.ts";
+import { discoverWorkspace } from "../runtime/identity.ts";
+import type { Workspace } from "../runtime/identity.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import type { Host } from "../runtime/shell-registry.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { createFakeWorkspaceClients } from "./helpers/fake-workspace-clients.ts";
 import type { FakeWorkspaceClients, FakeWorkspaceClientsHandle } from "./helpers/fake-workspace-clients.ts";
-import { createRepoFixture, createWorkspaceFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
-import type { RepoFixture, WorkspaceFixture } from "./helpers/repo-fixture.ts";
+import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
+import type { RepoFixture } from "./helpers/repo-fixture.ts";
 import lifecycleExtension, {
   installExitSignalHandlers,
   registerWindowShutdownHook,
@@ -145,9 +144,8 @@ function groupAlive(pgid: number): boolean {
   }
 }
 
-const windowRepoDirs: string[] = [];
 const plainTempDirs: string[] = [];
-const repoFixtures: Array<RepoFixture | WorkspaceFixture> = [];
+const repoFixtures: RepoFixture[] = [];
 const spawnedPgids: number[] = [];
 
 function trackPgid(pgid: number | undefined): void {
@@ -180,9 +178,6 @@ afterEach(async () => {
       // 组已消失，无需处理
     }
   }
-  for (const dir of windowRepoDirs.splice(0)) {
-    await rm(dir, { recursive: true, force: true });
-  }
   for (const dir of plainTempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true });
   }
@@ -190,62 +185,6 @@ afterEach(async () => {
     await removeRepoFixture(repo);
   }
 });
-
-function createWindowRegistryFactory(wrap?: (registry: WindowRegistry, index: number) => WindowRegistry) {
-  const registries: WindowRegistry[] = [];
-  const registryByRepoId = new Map<string, WindowRegistry>();
-  const calls: Array<{ repoId: string }> = [];
-  const clocksSeen: Clock[] = [];
-  return {
-    createWindowRegistry: async (input: { repo: WorkspaceRepo; clock: Clock }): Promise<WindowRegistry> => {
-      const index = calls.length;
-      calls.push({ repoId: input.repo.repoId });
-      clocksSeen.push(input.clock);
-      const repoDir = await mkdtemp(join(tmpdir(), "window-lifecycle-repo-"));
-      windowRepoDirs.push(repoDir);
-      let registry: WindowRegistry = new WindowRegistry({
-        repoDir,
-        clock: input.clock,
-        bootId: async () => "boot-fixed",
-        processStartedAt: async (pid: number) => `start-${pid}`,
-      });
-      if (wrap) registry = wrap(registry, index);
-      registries.push(registry);
-      registryByRepoId.set(input.repo.repoId, registry);
-      return registry;
-    },
-    registryFor: (repoId: string) => registryByRepoId.get(repoId),
-    all: (): WindowRegistry[] => registries.slice(),
-    calls,
-    clocksSeen,
-  };
-}
-
-function wrapUnregisterThrows(registry: WindowRegistry): WindowRegistry {
-  return new Proxy(registry, {
-    get(target, prop, receiver) {
-      if (prop === "unregister") {
-        return async () => {
-          throw new Error("注销失败（测试注入）");
-        };
-      }
-      return Reflect.get(target, prop, receiver);
-    },
-  }) as WindowRegistry;
-}
-
-function wrapHeartbeatThrows(registry: WindowRegistry, reason: string): WindowRegistry {
-  return new Proxy(registry, {
-    get(target, prop, receiver) {
-      if (prop === "heartbeat") {
-        return async () => {
-          throw new Error(reason);
-        };
-      }
-      return Reflect.get(target, prop, receiver);
-    },
-  }) as WindowRegistry;
-}
 
 function wrapStopHostThrows(registry: ShellRegistry): ShellRegistry {
   return new Proxy(registry, {
@@ -290,7 +229,6 @@ interface BuildHarnessOptions {
   sessionId?: string;
   kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
   connectImpl?: (input: { windowId: string; sessionId: string; cwd: string }) => Promise<FakeWorkspaceClientsHandle>;
-  wrapWindowRegistry?: (registry: WindowRegistry, index: number) => WindowRegistry;
   wrapShellRegistry?: (registry: ShellRegistry) => ShellRegistry;
   // 走真实时钟而非可推进的假时钟：用于验证"需要真实等待才能收敛"的场景，
   // 不能用 withClockPump 加速，否则测不出预算是否被错误地套用到了不该套用的路径上
@@ -304,11 +242,11 @@ interface Harness {
   notifications: Array<{ message: string; level?: string }>;
   shutdownCalls: number[];
   clockCalls: () => number;
+  clocksCreated: () => Clock[];
   timeSource: FakeTimeSource;
   shellRegistryCalls: () => number;
   shellRegistry: () => ShellRegistry | undefined;
   shellRegistryClockSeen: () => Clock | undefined;
-  windowRegistryFactory: ReturnType<typeof createWindowRegistryFactory>;
   workspaceClients: FakeWorkspaceClients;
   connectCalls: Array<{ windowId: string; sessionId: string; cwd: string }>;
   fakeProcess: FakeProcess;
@@ -318,9 +256,12 @@ async function buildHarness(options: BuildHarnessOptions): Promise<Harness> {
   const sessionId = options.sessionId ?? randomUUID();
   const timeSource = createFakeTimeSource();
   let clockCalls = 0;
+  const clocksCreated: Clock[] = [];
   const createClockDep = (): Clock => {
     clockCalls++;
-    return options.useRealClock ? createClock() : createClock({ timeSource });
+    const clock = options.useRealClock ? createClock() : createClock({ timeSource });
+    clocksCreated.push(clock);
+    return clock;
   };
 
   let shellRegistryCalls = 0;
@@ -335,7 +276,6 @@ async function buildHarness(options: BuildHarnessOptions): Promise<Harness> {
     return registry;
   };
 
-  const windowRegistryFactory = createWindowRegistryFactory(options.wrapWindowRegistry);
   const workspace: Workspace = await discoverWorkspace(options.cwd);
   const workspaceClients = createFakeWorkspaceClients(workspace);
   const connectCalls: Array<{ windowId: string; sessionId: string; cwd: string }> = [];
@@ -347,7 +287,6 @@ async function buildHarness(options: BuildHarnessOptions): Promise<Harness> {
   lifecycleExtension(fakePi.pi, {
     createClock: createClockDep,
     createShellRegistry: createShellRegistryDep,
-    createWindowRegistry: windowRegistryFactory.createWindowRegistry,
     connectWorkspaceClients: async (input: { windowId: string; sessionId: string; cwd: string }) => {
       connectCalls.push(input);
       return connectImpl(input);
@@ -362,11 +301,11 @@ async function buildHarness(options: BuildHarnessOptions): Promise<Harness> {
     notifications,
     shutdownCalls,
     clockCalls: () => clockCalls,
+    clocksCreated: () => clocksCreated,
     timeSource,
     shellRegistryCalls: () => shellRegistryCalls,
     shellRegistry: () => shellRegistryInstance,
     shellRegistryClockSeen: () => shellRegistryClockSeen,
-    windowRegistryFactory,
     workspaceClients,
     connectCalls,
     fakeProcess,
@@ -378,11 +317,10 @@ async function triggerSessionStart(harness: Harness): Promise<void> {
 }
 
 describe("扩展工厂调用本身", () => {
-  test("不调用创建时钟/Shell 注册表/窗口注册表的工厂，不启动任何定时器", () => {
+  test("不调用创建时钟/Shell 注册表的工厂，不启动任何定时器", () => {
     const timeSource = createFakeTimeSource();
     let clockCalls = 0;
     let shellRegistryCalls = 0;
-    let windowRegistryCalls = 0;
     const fakePi = createFakePi();
 
     lifecycleExtension(fakePi.pi, {
@@ -394,10 +332,6 @@ describe("扩展工厂调用本身", () => {
         shellRegistryCalls++;
         return new ShellRegistry({ clock });
       },
-      createWindowRegistry: async () => {
-        windowRegistryCalls++;
-        throw new Error("不应被调用");
-      },
       connectWorkspaceClients: async () => {
         throw new Error("不应被调用");
       },
@@ -406,14 +340,13 @@ describe("扩展工厂调用本身", () => {
 
     expect(clockCalls).toBe(0);
     expect(shellRegistryCalls).toBe(0);
-    expect(windowRegistryCalls).toBe(0);
     expect(timeSource.timerCount()).toBe(0);
     expect(() => windowContext()).toThrow();
   });
 });
 
 describe("生产默认路径", () => {
-  test("仅注入 connectWorkspaceClients，其余走真实默认实现：登记存在 → shutdown → 记录删除", async () => {
+  test("仅注入 connectWorkspaceClients，其余走真实默认实现：窗口就绪 → shutdown → 窗口关闭、连接关闭", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const agentDir = await mkdtemp(join(tmpdir(), "window-lifecycle-agentdir-"));
@@ -439,20 +372,12 @@ describe("生产默认路径", () => {
       await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
       expect(connectCalls.length).toBe(1);
 
-      const identity = await repositoryIdentity(repo.root);
-      const repoDir = await repoDataDir(dataRoot({ PI_CODING_AGENT_DIR: agentDir }), identity.repoId, identity.commonDir);
-      const inspectionRegistry = new WindowRegistry({
-        repoDir,
-        clock: createClock(),
-        bootId: currentBootId,
-        processStartedAt,
-      });
-
-      expect((await inspectionRegistry.list()).length).toBe(1);
+      expect(windowContext().shellRegistry).toBeInstanceOf(ShellRegistry);
 
       await shutdownWindow();
 
-      expect((await inspectionRegistry.list()).length).toBe(0);
+      expect(() => windowContext()).toThrow();
+      expect(workspaceClients.closeAllCallCount()).toBe(1);
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -468,12 +393,10 @@ describe("session_before_switch 停止本窗口 Shell 后放行", () => {
     const harness = await buildHarness({ cwd: repo.root, useRealClock: true });
     await triggerSessionStart(harness);
 
-    const registry = harness.windowRegistryFactory.all()[0];
     const shellRegistry = harness.shellRegistry();
-    expect(registry).toBeDefined();
     expect(shellRegistry).toBeDefined();
-    if (!registry || !shellRegistry) return;
-    const windowId = (await registry.list())[0]?.windowId as string;
+    if (!shellRegistry) return;
+    const windowId = windowContext().windowId;
 
     const taskId = randomUUID();
     const spawned = await shellRegistry.spawn({
@@ -498,50 +421,6 @@ describe("session_before_switch 停止本窗口 Shell 后放行", () => {
   }, LONG_TIMEOUT);
 });
 
-describe("睡眠扣除", () => {
-  test("注入长睡眠间隔后窗口记录 liveness 仍为 alive", async () => {
-    const repo = await createRepoFixture();
-    repoFixtures.push(repo);
-    const harness = await buildHarness({ cwd: repo.root });
-    await triggerSessionStart(harness);
-
-    const registry = harness.windowRegistryFactory.all()[0];
-    expect(registry).toBeDefined();
-    if (!registry) return;
-    const windowId = (await registry.list())[0]?.windowId as string;
-
-    harness.timeSource.jump(600_000);
-
-    const list = await registry.list();
-    expect(list.find((r) => r.windowId === windowId)?.liveness).toBe("alive");
-  });
-});
-
-describe("心跳持续递增", () => {
-  test("heartbeatSeq 随时钟推进持续递增", async () => {
-    const repo = await createRepoFixture();
-    repoFixtures.push(repo);
-    const harness = await buildHarness({ cwd: repo.root });
-    await triggerSessionStart(harness);
-
-    const registry = harness.windowRegistryFactory.all()[0];
-    expect(registry).toBeDefined();
-    if (!registry) return;
-    const windowId = (await registry.list())[0]?.windowId as string;
-    const before = (await registry.list()).find((r) => r.windowId === windowId);
-
-    harness.timeSource.advance(5_000);
-    await sleepMs(20);
-    const afterOne = (await registry.list()).find((r) => r.windowId === windowId);
-    expect(afterOne?.heartbeatSeq).toBeGreaterThan((before?.heartbeatSeq as number) ?? 0);
-
-    harness.timeSource.advance(5_000);
-    await sleepMs(20);
-    const afterTwo = (await registry.list()).find((r) => r.windowId === windowId);
-    expect(afterTwo?.heartbeatSeq).toBeGreaterThan((afterOne?.heartbeatSeq as number) ?? 0);
-  });
-});
-
 describe("beforeSwitch / beforeFork 统一 fail-closed 门槛", () => {
   test("存在无法确认停止的 Shell 时，session_before_switch 与 session_before_fork 均取消并通知原因", async () => {
     const repo = await createRepoFixture();
@@ -549,12 +428,10 @@ describe("beforeSwitch / beforeFork 统一 fail-closed 门槛", () => {
     const harness = await buildHarness({ cwd: repo.root, kill: () => {} });
     await triggerSessionStart(harness);
 
-    const registry = harness.windowRegistryFactory.all()[0];
-    expect(registry).toBeDefined();
     const shellRegistry = harness.shellRegistry();
     expect(shellRegistry).toBeDefined();
-    if (!registry || !shellRegistry) return;
-    const windowId = (await registry.list())[0]?.windowId as string;
+    if (!shellRegistry) return;
+    const windowId = windowContext().windowId;
     const host: Host = { kind: "main", id: windowId };
 
     const taskId = randomUUID();
@@ -621,8 +498,8 @@ describe("beforeSwitch / beforeFork 统一 fail-closed 门槛", () => {
   });
 });
 
-describe("连接失败不留任何记录", () => {
-  test("connectWorkspaceClients 拒绝时不登记任何仓库窗口记录，windowContext 抛出含该原因的错误，且仅通知一次", async () => {
+describe("连接失败", () => {
+  test("connectWorkspaceClients 拒绝时 windowContext 抛出含该原因的错误，且仅通知一次", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const reason = "守护进程连接被测试拒绝";
@@ -635,7 +512,6 @@ describe("连接失败不留任何记录", () => {
 
     await triggerSessionStart(harness);
 
-    expect(harness.windowRegistryFactory.calls.length).toBe(0);
     expect(harness.notifications.length).toBe(1);
     expect(harness.notifications[0]?.message).toContain(reason);
 
@@ -650,39 +526,6 @@ describe("连接失败不留任何记录", () => {
   });
 });
 
-describe("注销抛错仍关闭连接", () => {
-  test("shutdown 时 unregister 抛错，closeAll 仍在 finally 中被调用一次", async () => {
-    const repo = await createRepoFixture();
-    repoFixtures.push(repo);
-    const harness = await buildHarness({ cwd: repo.root, wrapWindowRegistry: wrapUnregisterThrows });
-    await triggerSessionStart(harness);
-
-    await shutdownWindow().catch(() => {});
-
-    expect(harness.workspaceClients.closeAllCallCount()).toBe(1);
-  });
-});
-
-describe("多仓库注销单仓失败不中断其它仓库", () => {
-  test("第一个仓库 unregister 抛错，第二个仓库记录仍被删除，closeAll 仍调用一次", async () => {
-    const workspace = await createWorkspaceFixture();
-    repoFixtures.push(workspace);
-    const harness = await buildHarness({
-      cwd: workspace.root,
-      wrapWindowRegistry: (registry, index) => (index === 0 ? wrapUnregisterThrows(registry) : registry),
-    });
-    await triggerSessionStart(harness);
-
-    const registries = harness.windowRegistryFactory.all();
-    expect(registries.length).toBe(2);
-
-    await shutdownWindow().catch(() => {});
-
-    expect(await registries[1]!.list()).toEqual([]);
-    expect(harness.workspaceClients.closeAllCallCount()).toBe(1);
-  });
-});
-
 describe("session_shutdown 不受 3 秒预算限制", () => {
   test("Shell 停止需要超过 3 秒才能由注册表判定，session_shutdown 仍等到判定完成", async () => {
     const repo = await createRepoFixture();
@@ -690,12 +533,10 @@ describe("session_shutdown 不受 3 秒预算限制", () => {
     const harness = await buildHarness({ cwd: repo.root, kill: () => {}, useRealClock: true });
     await triggerSessionStart(harness);
 
-    const registry = harness.windowRegistryFactory.all()[0];
     const shellRegistry = harness.shellRegistry();
-    expect(registry).toBeDefined();
     expect(shellRegistry).toBeDefined();
-    if (!registry || !shellRegistry) return;
-    const windowId = (await registry.list())[0]?.windowId as string;
+    if (!shellRegistry) return;
+    const windowId = windowContext().windowId;
 
     const taskId = randomUUID();
     const spawned = await shellRegistry.spawn({
@@ -721,117 +562,6 @@ describe("session_shutdown 不受 3 秒预算限制", () => {
   }, 15_000);
 });
 
-describe("注销失败汇总", () => {
-  test("首仓 unregister 抛错：session_shutdown 处理器的 ctx.ui.notify 收到一次含 repoId 与原因的通知", async () => {
-    const workspace = await createWorkspaceFixture();
-    repoFixtures.push(workspace);
-    const reason = "注销失败（测试注入）";
-    const harness = await buildHarness({
-      cwd: workspace.root,
-      wrapWindowRegistry: (registry, index) => (index === 0 ? wrapUnregisterThrows(registry) : registry),
-    });
-    await triggerSessionStart(harness);
-
-    const failingRepoId = harness.windowRegistryFactory.calls[0]?.repoId as string;
-    expect(typeof failingRepoId).toBe("string");
-
-    await harness.fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, harness.ctx);
-
-    expect(harness.notifications.length).toBe(1);
-    const message = harness.notifications[0]?.message ?? "";
-    expect(message).toContain(reason);
-    expect(message).toContain(failingRepoId);
-  });
-
-  test("shutdownWindow() 直接调用时返回值 unregisterFailures 含 repoId 与原因", async () => {
-    const workspace = await createWorkspaceFixture();
-    repoFixtures.push(workspace);
-    const reason = "注销失败（测试注入）";
-    const harness = await buildHarness({
-      cwd: workspace.root,
-      wrapWindowRegistry: (registry, index) => (index === 0 ? wrapUnregisterThrows(registry) : registry),
-    });
-    await triggerSessionStart(harness);
-
-    const failingRepoId = harness.windowRegistryFactory.calls[0]?.repoId as string;
-
-    const result = await shutdownWindow();
-
-    expect(result.unregisterFailures.length).toBe(1);
-    expect(result.unregisterFailures[0]?.repoId).toBe(failingRepoId);
-    expect(result.unregisterFailures[0]?.reason).toContain(reason);
-  });
-
-  test("信号路径遇到同样的注销失败不触发 notify", async () => {
-    const workspace = await createWorkspaceFixture();
-    repoFixtures.push(workspace);
-    const harness = await buildHarness({
-      cwd: workspace.root,
-      wrapWindowRegistry: (registry, index) => (index === 0 ? wrapUnregisterThrows(registry) : registry),
-    });
-    await triggerSessionStart(harness);
-
-    harness.fakeProcess.emit("SIGTERM");
-
-    await waitFor(() => harness.shutdownCalls.length > 0, 5_000);
-
-    expect(harness.notifications.length).toBe(0);
-  });
-});
-
-describe("心跳失败可见", () => {
-  test("注册表心跳抛错时 windowContext().heartbeatError 含具体原因", async () => {
-    const repo = await createRepoFixture();
-    repoFixtures.push(repo);
-    const reason = "心跳写入失败（测试注入）";
-    const harness = await buildHarness({
-      cwd: repo.root,
-      wrapWindowRegistry: (registry) => wrapHeartbeatThrows(registry, reason),
-    });
-    await triggerSessionStart(harness);
-
-    harness.timeSource.advance(5_000);
-    await sleepMs(20);
-
-    expect(windowContext().heartbeatError).toContain(reason);
-  });
-});
-
-describe("关闭后心跳定时器释放", () => {
-  test("shutdown 后推进时钟，心跳回调不再被调用（而非仅记录列表为空）", async () => {
-    const repo = await createRepoFixture();
-    repoFixtures.push(repo);
-    let heartbeatCalls = 0;
-    const harness = await buildHarness({
-      cwd: repo.root,
-      wrapWindowRegistry: (registry) =>
-        new Proxy(registry, {
-          get(target, prop, receiver) {
-            if (prop === "heartbeat") {
-              return async (id: string) => {
-                heartbeatCalls++;
-                return target.heartbeat(id);
-              };
-            }
-            return Reflect.get(target, prop, receiver);
-          },
-        }) as WindowRegistry,
-    });
-    await triggerSessionStart(harness);
-
-    harness.timeSource.advance(5_000);
-    await sleepMs(20);
-    const callsBeforeShutdown = heartbeatCalls;
-    expect(callsBeforeShutdown).toBeGreaterThan(0);
-
-    await shutdownWindow();
-
-    harness.timeSource.advance(20_000);
-    await sleepMs(20);
-    expect(heartbeatCalls).toBe(callsBeforeShutdown);
-  });
-});
-
 describe("installExitSignalHandlers 只覆盖 SIGTERM/SIGHUP，SIGINT 永不挂载", () => {
   test("已有宿主 SIGHUP 监听时仍安装自身清理处理器，SIGINT 不新增", () => {
     const proc = new EventEmitter();
@@ -855,18 +585,16 @@ describe("installExitSignalHandlers 只覆盖 SIGTERM/SIGHUP，SIGINT 永不挂�
 });
 
 describe("退出信号触发窗口清理", () => {
-  test("SIGTERM 发出后 shutdownWindow 被调用：窗口记录删除、本窗口 Shell 停止、捕获的 ctx.shutdown 被调用一次且不调用 proc.exit", async () => {
+  test("SIGTERM 发出后 shutdownWindow 被调用：本窗口 Shell 停止、捕获的 ctx.shutdown 被调用一次且不调用 proc.exit", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const harness = await buildHarness({ cwd: repo.root });
     await triggerSessionStart(harness);
 
-    const registry = harness.windowRegistryFactory.all()[0];
     const shellRegistry = harness.shellRegistry();
-    expect(registry).toBeDefined();
     expect(shellRegistry).toBeDefined();
-    if (!registry || !shellRegistry) return;
-    const windowId = (await registry.list())[0]?.windowId as string;
+    if (!shellRegistry) return;
+    const windowId = windowContext().windowId;
 
     const taskId = randomUUID();
     const spawned = await shellRegistry.spawn({
@@ -884,12 +612,7 @@ describe("退出信号触发窗口清理", () => {
 
     harness.fakeProcess.emit("SIGTERM");
 
-    await withClockPump(harness.timeSource, () =>
-      waitFor(async () => {
-        const lists = await Promise.all(harness.windowRegistryFactory.all().map((r) => r.list()));
-        return lists.every((l) => l.length === 0);
-      }, 5_000),
-    );
+    await withClockPump(harness.timeSource, () => waitFor(() => harness.shutdownCalls.length > 0, 5_000));
 
     expect(groupAlive(spawned.task.pgid)).toBe(false);
     expect(harness.shutdownCalls.length).toBe(1);
@@ -903,12 +626,10 @@ describe("退出信号触发窗口清理", () => {
     const harness = await buildHarness({ cwd: repo.root, kill: () => {} });
     await triggerSessionStart(harness);
 
-    const registry = harness.windowRegistryFactory.all()[0];
     const shellRegistry = harness.shellRegistry();
-    expect(registry).toBeDefined();
     expect(shellRegistry).toBeDefined();
-    if (!registry || !shellRegistry) return;
-    const windowId = (await registry.list())[0]?.windowId as string;
+    if (!shellRegistry) return;
+    const windowId = windowContext().windowId;
 
     const taskId = randomUUID();
     const spawned = await shellRegistry.spawn({
@@ -928,10 +649,7 @@ describe("退出信号触发窗口清理", () => {
     const start = Date.now();
     harness.fakeProcess.emit("SIGHUP");
 
-    await waitFor(async () => {
-      const lists = await Promise.all(harness.windowRegistryFactory.all().map((r) => r.list()));
-      return lists.every((l) => l.length === 0);
-    }, 3_300);
+    await waitFor(() => harness.shutdownCalls.length > 0, 3_300);
 
     expect(Date.now() - start).toBeLessThan(3_300);
     expect(() => windowContext()).toThrow();
@@ -984,31 +702,6 @@ describe("session_shutdown 幂等清理", () => {
   });
 });
 
-describe("多仓库工作区", () => {
-  test("每个仓库的窗口目录都有记录（windowId 相同），shutdown 后全部删除", async () => {
-    const workspace = await createWorkspaceFixture();
-    repoFixtures.push(workspace);
-    const harness = await buildHarness({ cwd: workspace.root });
-    await triggerSessionStart(harness);
-
-    const registries = harness.windowRegistryFactory.all();
-    expect(registries.length).toBe(2);
-    const windowIds = new Set<string>();
-    for (const registry of registries) {
-      const list = await registry.list();
-      expect(list.length).toBe(1);
-      windowIds.add(list[0]!.windowId);
-    }
-    expect(windowIds.size).toBe(1);
-
-    await harness.fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, harness.ctx);
-
-    for (const registry of registries) {
-      expect(await registry.list()).toEqual([]);
-    }
-  });
-});
-
 describe("非仓库目录", () => {
   test("cwd 不在任何仓库时不抛出，通知一次，windowContext 抛出含'工作区'字样的原因", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "window-lifecycle-nonrepo-"));
@@ -1020,7 +713,6 @@ describe("非仓库目录", () => {
     // 发现工作区现在只发生在 connectWorkspaceClients 内部（经由 WorkspaceClients.create），
     // 所以 connect 仍会被尝试一次；只是拿到的 workspace().repos 为空，随后判定为启动失败
     expect(harness.connectCalls.length).toBe(1);
-    expect(harness.windowRegistryFactory.calls.length).toBe(0);
     expect(harness.notifications.length).toBe(1);
 
     let caught: unknown;
@@ -1034,23 +726,8 @@ describe("非仓库目录", () => {
   });
 });
 
-describe("窗口记录携带进程 pid", () => {
-  test("登记记录的 pid 与假 process 的 pid 一致", async () => {
-    const repo = await createRepoFixture();
-    repoFixtures.push(repo);
-    const harness = await buildHarness({ cwd: repo.root });
-    await triggerSessionStart(harness);
-
-    const registry = harness.windowRegistryFactory.all()[0];
-    expect(registry).toBeDefined();
-    if (!registry) return;
-    const [record] = await registry.list();
-    expect(record?.pid).toBe(harness.fakeProcess.pid);
-  });
-});
-
 describe("windowId 一致性", () => {
-  test("hello 的 windowId、windowContext() 与仓库登记记录三者相同", async () => {
+  test("hello 的 windowId 与 windowContext() 相同", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const harness = await buildHarness({ cwd: repo.root });
@@ -1061,17 +738,11 @@ describe("windowId 一致性", () => {
 
     const ctxWindowId = windowContext().windowId;
     expect(ctxWindowId).toBe(helloWindowId);
-
-    const registry = harness.windowRegistryFactory.all()[0];
-    expect(registry).toBeDefined();
-    if (!registry) return;
-    const recordWindowId = (await registry.list())[0]?.windowId;
-    expect(recordWindowId).toBe(helloWindowId);
   });
 });
 
 describe("共享时钟", () => {
-  test("createClock 只被调用一次，且 createShellRegistry 收到的时钟与心跳所用时钟是同一实例", async () => {
+  test("createClock 只被调用一次，createShellRegistry 收到的是同一个时钟", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const harness = await buildHarness({ cwd: repo.root });
@@ -1079,11 +750,7 @@ describe("共享时钟", () => {
 
     expect(harness.clockCalls()).toBe(1);
 
-    const windowRegistryClock = harness.windowRegistryFactory.clocksSeen[0];
-    const shellRegistryClock = harness.shellRegistryClockSeen();
-    expect(windowRegistryClock).toBeDefined();
-    expect(shellRegistryClock).toBeDefined();
-    expect(shellRegistryClock).toBe(windowRegistryClock);
+    expect(harness.shellRegistryClockSeen()).toBe(harness.clocksCreated()[0]);
   });
 });
 
@@ -1181,7 +848,6 @@ describe("可信前置关闭回调", () => {
     expect(result.shutdownHookFailures).toBe(1);
     expect(JSON.stringify(result)).not.toContain("SENTINEL");
     expect(harness.workspaceClients.closeAllCallCount()).toBe(1);
-    expect(await harness.windowRegistryFactory.all()[0]!.list()).toEqual([]);
   });
 });
 

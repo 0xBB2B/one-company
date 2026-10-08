@@ -49,7 +49,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
   const registry = new ModelRegistry(runtime), model = runtime.getModels(provider.providerId)[0]!;
   const notifications: string[] = [], windows: ShownWindow[] = [];
   let windowAnswer: WindowDecision = true;
-  const ctx = { cwd: repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
+  const ctx = { cwd: repositoryRoot, mode: "tui", hasUI: true, isProjectTrusted: () => false, modelRegistry: registry, model,
     ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); },
       ...answeringUi((window) => { windows.push(window); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;

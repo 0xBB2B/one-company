@@ -66,11 +66,10 @@ async function world() {
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: approved.version, runId: uuidv7(), expectedFence: 0 });
   const events = await RequirementEventService.open({ ...options, authorize: () => true });
   cleanups.push(async () => { events.dispose(); });
-  const hookEvent = (target = repo.root, event: Partial<ProjectIndexArchiveRiskHookEvent["event"]> = {}): ProjectIndexArchiveRiskHookEvent => {
+  const hookEvent = (target = repo.root): ProjectIndexArchiveRiskHookEvent => {
     const branch = target === repo.root ? "refs/heads/main" : `refs/heads/${worktree.branch}`;
     return { repositoryRoot: target, workspace: { repoId: identity.repoId, root: target, branch,
-      workspaceId: workspaceId(identity.repoId, target, branch) },
-    event: { eventSequence: 1, path: null, eventType: null, overflowed: false, ...event } };
+      workspaceId: workspaceId(identity.repoId, target, branch) } };
   };
   const archive = async (id = created.requirementId, description = "归档", target = repo.root) => {
     const directory = join(target, "docs", "prod");
@@ -142,7 +141,7 @@ test("新增归档先撤权清除旧正文交付，再允许常规同步/通知�
   const order: string[] = [];
   const unsubscribe = w.state.onAccessInvalidated(w.created.requirementId, () => { order.push("revoked"); });
   cleanups.push(async () => { unsubscribe(); });
-  await w.adapter.beforeArchiveRisk(w.hookEvent(w.repo.root, { path: `docs/prod/${path.split("/").at(-1)}`, eventType: "rename" }));
+  await w.adapter.beforeArchiveRisk(w.hookEvent());
   order.push("sync", "notify");
   expect(order).toEqual(["revoked", "sync", "notify"]);
   expect(assertBlocked(w).data.epoch).toBe(before.data.epoch + 1);
@@ -168,7 +167,7 @@ test.each(["completed", "cancelled", "rejected"] as const)("closing/closed保全
   expect(w.state.read(w.created.requirementId)).toEqual(closing);
   const closed = w.state.finishClose({ requirementId: w.created.requirementId, version: closing.version, operationId: intent.operationId });
   await w.archive(w.created.requirementId, "另一描述");
-  await w.adapter.beforeArchiveRisk(w.hookEvent(w.repo.root, { overflowed: true }));
+  await w.adapter.beforeArchiveRisk(w.hookEvent());
   expect(w.state.read(w.created.requirementId)).toEqual(closed);
   await fsp.rm(path);
   await w.adapter.beforeArchiveRisk(w.hookEvent());
@@ -253,12 +252,12 @@ test("未知UUID不创建需求/授权；短前缀、标题或非UUIDv7文件不
   expect(attempted).toEqual([]);
 });
 
-test("全量对账在初始化、溢出、重连/周期hook发现新增归档，不依赖新增路径事件", async () => {
+test("全量对账在初始化、重连/周期hook发现新增归档，不依赖新增路径事件", async () => {
   const w = await world();
   await w.adapter.beforeArchiveRisk(w.hookEvent());
   await w.archive(w.created.requirementId, "离线新增", w.worktree.root);
   const attempted = denyBodyReads(w);
-  await w.adapter.beforeArchiveRisk(w.hookEvent(w.worktree.root, { path: null, overflowed: true, eventSequence: 4 }));
+  await w.adapter.beforeArchiveRisk(w.hookEvent(w.worktree.root));
   assertBlocked(w);
   const before = w.state.read(w.created.requirementId);
   await w.adapter.close();
@@ -284,7 +283,7 @@ test("同UUID不同描述及repo/绑定worktree的多路径按identity_conflict�
   expect(attempted).toEqual([]);
 });
 
-test.each(["docs", "prod", "file", "hardlink", "subdirectory", "nested-repository", "unreadable"])("目录/文件不确定(%s)拒绝hook，不跟随链接或读正文", async (kind) => {
+test.each(["docs", "prod", "file", "subdirectory", "nested-repository", "unreadable"])("目录/文件不确定(%s)拒绝hook，不跟随链接或读正文", async (kind) => {
   const w = await world();
   const path = await w.archive();
   const target = join(w.root, "outside");
@@ -298,8 +297,6 @@ test.each(["docs", "prod", "file", "hardlink", "subdirectory", "nested-repositor
   } else if (kind === "file") {
     await fsp.rm(path);
     await fsp.symlink(join(w.options.dataRoot, "repos", w.options.repoId, "requirements", w.created.requirementId, "prod.md"), path);
-  } else if (kind === "hardlink") {
-    await fsp.link(path, join(target, "alias.md"));
   } else if (kind === "subdirectory") await fsp.mkdir(join(w.repo.root, "docs", "prod", "nested"));
   else if (kind === "nested-repository") await fsp.mkdir(join(w.repo.root, "docs", ".git"));
   else {
@@ -310,17 +307,6 @@ test.each(["docs", "prod", "file", "hardlink", "subdirectory", "nested-repositor
   const continuation = vi.fn();
   await expect(w.adapter.beforeArchiveRisk(w.hookEvent()).then(continuation)).rejects.toMatchObject({ code: "unsafe_archive_directory" });
   expect(continuation).not.toHaveBeenCalled();
-  expect(attempted).toEqual([]);
-});
-
-test.each([{ maxEntries: 1 }, { maxMetadataBytes: 1 }])("元数据预算不足%j明确失败，不部分放行或读正文", async (limits) => {
-  const w = await world();
-  await w.archive();
-  await w.archive(uuidv7());
-  const adapter = new ProjectIndexRequirements({ ...w.options, ...limits });
-  cleanups.push(() => adapter.close());
-  const attempted = denyBodyReads(w);
-  await expect(adapter.beforeArchiveRisk(w.hookEvent())).rejects.toMatchObject({ code: "metadata_limit" });
   expect(attempted).toEqual([]);
 });
 
@@ -339,11 +325,11 @@ test("hook生命周期失败向上传播阻止后续通知；重试重新枚举�
   await expect(w.adapter.beforeArchiveRisk(w.hookEvent())).rejects.toMatchObject({ code: "adapter_closed" });
 });
 
-test("伪repo/workspace/root/branch拒绝，不向生命周期服务扩权", async () => {
+test("伪repo/root/branch拒绝，不向生命周期服务扩权", async () => {
   const w = await world();
   await w.archive();
   const calls = vi.spyOn(RequirementEventService.prototype, "reconcileArchiveRisk");
-  for (const change of [{ repoId: "a".repeat(64) }, { workspaceId: "a".repeat(64) },
+  for (const change of [{ repoId: "a".repeat(64) },
     { branch: "refs/heads/forged" }, { root: join(w.repo.root, "docs") }]) {
     const event = w.hookEvent();
     await expect(w.adapter.beforeArchiveRisk({ ...event, workspace: { ...event.workspace, ...change } })).rejects.toMatchObject({ code: "invalid_binding" });
@@ -398,8 +384,7 @@ test("其他已登记worktree中的同UUID不匹配本需求绑定，不扩大�
   await w.archive(w.created.requirementId, "非绑定工作区", other.root);
   const branch = `refs/heads/${other.branch}`;
   const event: ProjectIndexArchiveRiskHookEvent = { repositoryRoot: other.root,
-    workspace: { root: other.root, branch, repoId: w.options.repoId, workspaceId: workspaceId(w.options.repoId, other.root, branch) },
-    event: { path: null, eventSequence: 1, eventType: null, overflowed: false } };
+    workspace: { root: other.root, branch, repoId: w.options.repoId, workspaceId: workspaceId(w.options.repoId, other.root, branch) } };
   const before = w.state.read(w.created.requirementId);
   const calls = vi.spyOn(RequirementEventService.prototype, "reconcileArchiveRisk");
   await w.adapter.beforeArchiveRisk(event);

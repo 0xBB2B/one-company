@@ -12,7 +12,7 @@ import type { AgentSessionHandle } from "../daemon/agent-session.ts";
 import { createClock } from "../runtime/clock.ts";
 import { uuidv7 } from "../runtime/database.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
-import { toolActionsForRole } from "../runtime/core-permissions.ts";
+import { authorizeToolAction, CORE_TOOL_ACTIONS } from "../runtime/core-permissions.ts";
 import type { CoreTool } from "../runtime/core-permissions.ts";
 import { coreToolName, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
 import { AGENT_ROLES } from "../runtime/roles.ts";
@@ -23,8 +23,12 @@ import type { ScriptedReply } from "./helpers/controlled-provider.ts";
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
+function grantedTools(role: AgentRole): CoreTool[] {
+  return (Object.keys(CORE_TOOL_ACTIONS) as CoreTool[]).filter((tool) => CORE_TOOL_ACTIONS[tool].some((action) => authorizeToolAction(role, tool, action)));
+}
+
 function fakeCoreTools(role: AgentRole, calls: string[]): ToolDefinition[] {
-  return (Object.keys(toolActionsForRole(role)) as CoreTool[]).map((tool) => ({
+  return grantedTools(role).map((tool) => ({
     name: coreToolName(tool), label: tool, description: `fixture ${tool}`, parameters: Type.Object({}, { additionalProperties: true }),
     async execute() { calls.push(tool); return { content: [{ type: "text" as const, text: "ok" }], details: {} }; },
   }) as unknown as ToolDefinition);
@@ -77,7 +81,7 @@ describe("工具集与模型请求一致", () => {
     const s = await w.session(role, [{ type: "text", text: "只看工具" }]);
     s.handle.prompt("开始");
     await until(() => s.provider.requests.length === 1);
-    const expected = [...ROLE_HOST_TOOLS[role], ...(Object.keys(toolActionsForRole(role)) as CoreTool[]).map(coreToolName)].sort();
+    const expected = [...ROLE_HOST_TOOLS[role], ...grantedTools(role).map(coreToolName)].sort();
     expect(toolNames(s.provider.requests[0])).toEqual(expected);
     for (const forbidden of ["bash", "write", "edit", "one_company_git_commit", "structured_output", "one_company_resume_check"]) {
       expect(toolNames(s.provider.requests[0])).not.toContain(forbidden);

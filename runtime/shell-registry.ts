@@ -7,7 +7,7 @@ import { withDatabase } from "./database.ts";
 const execFileAsync = promisify(execFile);
 
 export interface Host {
-  kind: "main" | "requirement" | "role";
+  kind: "main" | "role";
   id: string;
   role?: string;
   runId?: string;

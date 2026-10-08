@@ -11,7 +11,7 @@ import type {
   ShellPageRepo,
   ShellPageTheme,
 } from "../runtime/shell-page.ts";
-import { ShellRegistry } from "../runtime/shell-registry.ts";
+import type { ShellRegistry } from "../runtime/shell-registry.ts";
 import { sanitizeText } from "../runtime/text-sanitize.ts";
 import { AdvisedError, adviceOf, toolFailure } from "../runtime/tool-failure.ts";
 import type { Host } from "../runtime/shell-registry.ts";
@@ -26,7 +26,6 @@ const REFRESH_INTERVAL_MS = 1_000;
 export interface ShellUiDeps {
   windowReady?: () => Promise<WindowContextValue>;
   createClock?: () => Clock;
-  createShellRegistry?: (clock: Clock) => ShellRegistry;
 }
 
 interface CurrentSession {
@@ -69,7 +68,6 @@ function metadataBashOperations() {
 export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {}): void {
   const resolveWindowReady = deps.windowReady ?? defaultWindowReady;
   const resolveClock = deps.createClock ?? (() => createClock());
-  const resolveShellRegistry = deps.createShellRegistry ?? ((clock) => new ShellRegistry({ clock }));
 
   const metadataBase = createBashToolDefinition(process.cwd(), {
     operations: metadataBashOperations(),
@@ -120,7 +118,6 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
     startupFailure = undefined;
 
     const clock = resolveClock();
-    let registry = resolveShellRegistry(clock);
     const runToken = randomUUID();
 
     resolveWindowReady()
@@ -128,19 +125,19 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
         // session_shutdown 或更晚一次 session_start 可能在 windowReady 兑现前就已发生，此时这次会话已经过期
         if (myGeneration !== generation) { clock.stopGapWatcher(); return; }
 
-        registry = window.shellRegistry ?? registry;
+        const registry = window.shellRegistry;
         const host: Host = { kind: "main", id: window.windowId };
 
         type WindowRepoClient = NonNullable<ReturnType<typeof window.clients.forRepo>>;
         const wrappedClients = new WeakMap<WindowRepoClient, ShellPageClient>();
-        const resolveRepoClient = (repoId: string): ShellPageRepo["client"] => {
+        const resolveRepoClient = (repoId: string): ShellPageClient | undefined => {
           const client = window.clients.forRepo(repoId);
           if (!client) return undefined;
           const cached = wrappedClients.get(client);
           if (cached) return cached;
           const wrapped = {
             call: (method: string, params?: Record<string, unknown>) => client.call(method, params),
-            ...(client.connectionIdentity ? { connectionIdentity: () => client.connectionIdentity!() } : {}),
+            connectionIdentity: () => client.connectionIdentity(),
           };
           wrappedClients.set(client, wrapped);
           return wrapped;
@@ -164,7 +161,7 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
             repoId: repo.repoId,
             client: {
               call: (method, params) => {
-                const client = repo.resolveClient ? repo.resolveClient() : repo.client;
+                const client = repo.resolveClient();
                 if (!client) throw new Error("连接不可用，Shell 状态未知");
                 return client.call(method, params);
               },

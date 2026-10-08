@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { Type } from "typebox";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -12,7 +11,6 @@ import { createClock } from "../../runtime/clock.ts";
 import { ShellRegistry } from "../../runtime/shell-registry.ts";
 import { uuidv7 } from "../../runtime/database.ts";
 import { NetworkPauseGate } from "../../runtime/network-pause.ts";
-import { startHeartbeat, WindowRegistry } from "../../runtime/windows.ts";
 import { createFakeTimeSource, withClockPump } from "../helpers/fake-clock.ts";
 import { createDaemonFixture, killDaemon, removeDaemonFixture, startDaemonForTest } from "../helpers/daemon-harness.ts";
 import { createRepoFixture, removeRepoFixture } from "../helpers/repo-fixture.ts";
@@ -119,17 +117,12 @@ test("daemon空闲计时不因注入五分钟睡眠时钟跳变提前退出", as
   expect(handle.proc.exitCode).toBeNull(); expect(handle.proc.signalCode).toBeNull();
 }, 15000);
 
-test("同一时钟的60秒后台Shell超时与窗口心跳不因五分钟睡眠跳变失效", async () => {
+test("60秒后台Shell超时不因五分钟睡眠跳变失效", async () => {
   const time = createFakeTimeSource(), clock = createClock({ timeSource: time }); cleanup.push(() => clock.stopGapWatcher());
   const shells = new ShellRegistry({ clock });
   const spawned = await shells.spawn({ taskId: uuidv7(), host: { kind: "main", id: "sleep-test" }, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], mode: "background", timeoutSeconds: 60, runToken: uuidv7() });
   if (!spawned.ok) throw new Error(spawned.reason);
   cleanup.push(async () => { await withClockPump(time, () => shells.stop(spawned.task.taskId)); expect(() => process.kill(spawned.task.pid, 0)).toThrow(); });
-  const dir = await mkdtemp(join(tmpdir(), "sleep-window-")); cleanup.push(() => rm(dir, { recursive: true, force: true }));
-  const registry = new WindowRegistry({ repoDir: dir, clock, bootId: async () => "boot-fixed", processStartedAt: async (pid) => `start-${pid}` });
-  const id = uuidv7(); await registry.register({ windowId: id, pid: process.pid, sessionId: "sleep", cwd: dir, workspaceRoot: dir });
-  cleanup.push(() => registry.unregister(id)); const heartbeat = startHeartbeat(registry, id); cleanup.push(heartbeat);
   time.jump(5 * 60000); await delay(50);
-  expect(shells.get(spawned.task.taskId)?.status).not.toBe("timed_out"); expect(await registry.isAlive(id)).toBe(true);
-  expect((await registry.holderGone(id)).gone).toBe(false);
+  expect(shells.get(spawned.task.taskId)?.status).not.toBe("timed_out");
 }, 15000);

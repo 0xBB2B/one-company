@@ -12,7 +12,7 @@ import type { Clock, TimeSource } from "../runtime/clock.ts";
 import { createRecord, readRecord, putRecord } from "../runtime/database.ts";
 
 interface Host {
-  kind: "main" | "requirement" | "role";
+  kind: "main" | "role";
   id: string;
   role?: string;
   runId?: string;

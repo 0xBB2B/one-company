@@ -1,7 +1,9 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { authorizeToolAction } from "../runtime/core-permissions.ts";
+import { authorizeToolAction, CORE_TOOL_ACTIONS } from "../runtime/core-permissions.ts";
+import type { CoreAction } from "../runtime/core-permissions.ts";
 import { PM_INTAKE_SUBMIT_PARAMETERS, PM_INTAKE_TOOL, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
 import { scenariosWithoutOwnRef, unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
 import type { IntakeSubmissionBaseline } from "../runtime/pm-intake-runtime.ts";
@@ -44,19 +46,23 @@ export interface PmToolsInput {
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const runControl = (action: "status" | "pause" | "resume" | "stop") =>
   Type.Object({ action: Type.Literal(action), runId: Type.String({ pattern: UUID_V7 }) }, { additionalProperties: false });
-export const PM_AGENT_MANAGE_PARAMETERS = Type.Union([
-  ...(["retry", "rework"] as const).map((kind) => Type.Object({ action: Type.Literal("dispatch"), taskId: Type.String({ pattern: UUID_V7 }),
-    [kind]: Type.Optional(Type.Object({ reason: Type.String({ minLength: 1, maxLength: 1024 }), maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) },
-      { additionalProperties: false })) }, { additionalProperties: false })),
-  ...(["review", "prototype"] as const).map((kind) => Type.Object({ action: Type.Literal("dispatch"), taskId: Type.String({ pattern: UUID_V7 }),
-    [kind]: Type.Object({ maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) }, { additionalProperties: false }) }, { additionalProperties: false })),
-  ...[EXPLORE_WEB_QUERY].map((target) => Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), question: Type.String({ minLength: 1, maxLength: 1500 }),
-    clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })), ...target,
-    maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) }, { additionalProperties: false })),
-  runControl("status"), runControl("pause"), runControl("resume"), runControl("stop"),
-  Type.Object({ action: Type.Literal("catalog"), role: Type.Optional(Type.Union(["worker", "reviewer", "qa", "explore"].map((role) => Type.Literal(role)))),
-    cursor: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000 })) }, { additionalProperties: false }),
-]);
+const PM_ACTION_SHAPES: Partial<Record<CoreAction<"agent_manage">, TSchema[]>> = {
+  dispatch: [
+    ...(["retry", "rework"] as const).map((kind) => Type.Object({ action: Type.Literal("dispatch"), taskId: Type.String({ pattern: UUID_V7 }),
+      [kind]: Type.Optional(Type.Object({ reason: Type.String({ minLength: 1, maxLength: 1024 }), maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) },
+        { additionalProperties: false })) }, { additionalProperties: false })),
+    ...(["review", "prototype"] as const).map((kind) => Type.Object({ action: Type.Literal("dispatch"), taskId: Type.String({ pattern: UUID_V7 }),
+      [kind]: Type.Object({ maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) }, { additionalProperties: false }) }, { additionalProperties: false })),
+    Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), question: Type.String({ minLength: 1, maxLength: 1500 }),
+      clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })), ...EXPLORE_WEB_QUERY,
+      maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) }, { additionalProperties: false }),
+  ],
+  status: [runControl("status")], pause: [runControl("pause")], resume: [runControl("resume")], stop: [runControl("stop")],
+  catalog: [Type.Object({ action: Type.Literal("catalog"), role: Type.Optional(Type.Union(["worker", "reviewer", "qa", "explore"].map((role) => Type.Literal(role)))),
+    cursor: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000 })) }, { additionalProperties: false })],
+};
+export const PM_AGENT_MANAGE_PARAMETERS = Type.Union(CORE_TOOL_ACTIONS.agent_manage
+  .filter((action) => authorizeToolAction("pm", "agent_manage", action)).flatMap((action) => PM_ACTION_SHAPES[action] ?? []));
 
 const PM_GONE = () => new AdvisedError("pm_session_gone",
   { why: "本 PM 会话已结束、被停止或已被新 PM 取代", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" });
@@ -129,7 +135,7 @@ export function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
   }
 }
 
-/** PM 的 agent_manage：按已冻结任务派出子代理（首次或一次带原因的重试），控制本 PM 派出的运行。 */
+/** PM 的 agent_manage：按已冻结任务派出 worker、reviewer（含重试、审查、返修、原型），派出 explore，列出角色目录，并控制本 PM 派出的运行。 */
 export function agentManageTool(input: PmToolsInput): ToolDefinition {
   return {
     name: "one_company_agent_manage",

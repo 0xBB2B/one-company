@@ -1,53 +1,16 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import { chooseWindow, mutedLines } from "../runtime/question-window.ts";
 import type { WindowChoice } from "../runtime/question-window.ts";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { dataRoot } from "../runtime/data-root.ts";
 import { readGit } from "../runtime/git-read.ts";
 import { AgentCatalogView, INTERNAL_LABEL, tilde } from "../runtime/agent-catalog-ui.ts";
 import type { AgentCatalogTheme, CatalogNotice, CatalogPageState, CopyRequest } from "../runtime/agent-catalog-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../runtime/agent-copy.ts";
 import { defaultRoleDir, isAgentRole, loadRoleCatalog, projectRoleDir, sameNameOnly, userRoleDir } from "../runtime/roles.ts";
-import type { FrontmatterParser } from "../runtime/roles.ts";
-
-function parseFrontmatterValue(raw: string): unknown {
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  if (raw.startsWith("[") && raw.endsWith("]")) {
-    const inner = raw.slice(1, -1).trim();
-    return inner === "" ? [] : inner.split(",").map((item) => item.trim());
-  }
-  return raw;
-}
-
-const parseFrontmatter: FrontmatterParser = (content) => {
-  if (!content.startsWith("---")) return { frontmatter: {}, body: content };
-  const end = content.indexOf("\n---", 3);
-  if (end === -1) return { frontmatter: {}, body: content };
-  const header = content.slice(3, end).trim();
-  const bodyStart = content.indexOf("\n", end + 4);
-  const body = bodyStart === -1 ? "" : content.slice(bodyStart + 1);
-  const frontmatter: Record<string, unknown> = {};
-  for (const line of header.split("\n")) {
-    const separatorIndex = line.indexOf(":");
-    if (separatorIndex === -1) continue;
-    const key = line.slice(0, separatorIndex).trim();
-    frontmatter[key] = parseFrontmatterValue(line.slice(separatorIndex + 1).trim());
-  }
-  return { frontmatter, body };
-};
-
-function resolveAgentDir(env: NodeJS.ProcessEnv): string {
-  const override = env.PI_CODING_AGENT_DIR;
-  if (override !== undefined) {
-    if (!isAbsolute(override)) throw new Error(`PI_CODING_AGENT_DIR 必须是绝对路径: ${override}`);
-    return override;
-  }
-  const home = env.HOME;
-  if (!home) throw new Error("未设置 PI_CODING_AGENT_DIR 时必须设置 HOME");
-  return join(home, ".pi", "agent");
-}
 
 async function resolveRepoRoot(cwd: string): Promise<string> {
   try {
@@ -58,12 +21,12 @@ async function resolveRepoRoot(cwd: string): Promise<string> {
   }
 }
 
-export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui"> & { mode?: string; isProjectTrusted?: () => boolean };
+export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "isProjectTrusted">;
 
 /** /one:agents：只读查看内置、用户、项目三层的角色定义；C 复制为新定义，编辑请直接改对应目录下的 md。 */
 export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<void> {
-  const projectTrusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true;
-  const agentDir = resolveAgentDir(process.env);
+  const projectTrusted = ctx.isProjectTrusted();
+  const agentDir = dirname(dataRoot(process.env));
   const dirs = { defaultDir: defaultRoleDir(), userDir: userRoleDir(agentDir), projectDir: projectRoleDir(await resolveRepoRoot(ctx.cwd)) };
   const layers = [{ label: "内置层", dir: dirs.defaultDir }, { label: "用户层", dir: dirs.userDir }, { label: "项目层", dir: dirs.projectDir }];
   const fileOf = (dir: string, name: string) => join(dir, `${name}.md`);

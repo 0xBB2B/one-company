@@ -190,7 +190,7 @@ async function withSdkWorld(
     authorization = new HostAuthorizationManager({ dataRoot: fixture.dataRoot });
     expect(client.state().status).toBe("connected");
     const hello = await client.call("hello", {});
-    const connectedIdentity = client.connectionIdentity?.();
+    const connectedIdentity = client.connectionIdentity();
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
     if (hello.repoId !== fixture.repoId || hello.daemonPid !== daemon.proc.pid || hello.connectionSequence !== 1
       || typeof hello.daemonInstanceId !== "string" || !uuid.test(hello.daemonInstanceId)
@@ -209,19 +209,19 @@ async function withSdkWorld(
       if (!ownClose) connectionTrusted = false;
     }));
     connectionListeners.push(client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, () => {
-      const current = client?.connectionIdentity?.();
+      const current = client?.connectionIdentity();
       if (!current || current.daemonInstanceId !== originalConnection.daemonInstanceId
         || current.connectionId !== originalConnection.connectionId || current.connectionSequence !== originalConnection.connectionSequence) connectionTrusted = false;
     }));
     const sameTrustedConnection = () => {
       if (!connectionTrusted) return false;
-      let current: ReturnType<NonNullable<Client["connectionIdentity"]>> | undefined;
+      let current: ReturnType<Client["connectionIdentity"]> | undefined;
       try {
         if (client?.state().status !== "connected") {
           connectionTrusted = false;
           return false;
         }
-        current = client.connectionIdentity?.();
+        current = client.connectionIdentity();
       } catch (error) {
         connectionTrusted = false;
         throw error;

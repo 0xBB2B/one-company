@@ -6,14 +6,12 @@ import { sanitizeText } from "./text-sanitize.ts";
 
 export interface ShellPageClient {
   call(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
-  connectionIdentity?(): Readonly<DaemonConnectionIdentity> | null;
+  connectionIdentity(): Readonly<DaemonConnectionIdentity> | null;
 }
 
 export interface ShellPageRepo {
   repoId: string;
-  requirementTitle?: string;
-  client?: ShellPageClient;
-  resolveClient?: () => ShellPageClient | undefined;
+  resolveClient: () => ShellPageClient | undefined;
 }
 
 export interface ShellPageTheme {
@@ -79,12 +77,8 @@ const ENDED_STATUSES = new Set<TaskStatus>(["exited", "stopped", "failed", "time
 const ENDED_TTL_MS = 20_000;
 function lineText(value: string, limit = 256): string { return sanitizeText(value, limit).replace(/[\x00-\x1f\x7f-\x9f]/g, " "); }
 
-export function hostLabel(host: Host, requirementTitle?: string): string {
+export function hostLabel(host: Host): string {
   if (host.kind === "main") return "主 agent";
-  if (host.kind === "requirement") {
-    const title = requirementTitle ? lineText(requirementTitle) : undefined;
-    return title ? `需求代理 ${title}` : "需求代理";
-  }
   const role = lineText(host.role ?? "worker");
   const code = (host.runId ?? host.id).replace(/-/g, "").slice(0, 6);
   return `${role}#${code}`;
@@ -117,15 +111,11 @@ function truncatePlain(text: string, width: number): string {
   return sanitizeText(truncateToWidth(sanitizeText(text), width, "", false));
 }
 
-function repoClient(repo: ShellPageRepo): ShellPageClient | undefined {
-  return repo.resolveClient ? repo.resolveClient() : repo.client;
-}
 const clientIds = new WeakMap<object, number>();
 let nextClientId = 0;
 function connectionStamp(client: ShellPageClient): string | null {
   let id = clientIds.get(client);
   if (id === undefined) { id = ++nextClientId; clientIds.set(client, id); }
-  if (!client.connectionIdentity) return `${id}:unversioned`;
   const identity = client.connectionIdentity();
   return identity ? `${id}:${identity.daemonInstanceId}:${identity.connectionId}:${identity.connectionSequence}` : null;
 }
@@ -137,7 +127,7 @@ function safeError(error: unknown): string {
 }
 function validHost(host: Host): boolean {
   const text = (value: unknown, optional = false) => optional && value === undefined || typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\x00-\x1f\x7f-\x9f]/.test(value);
-  return !!host && typeof host === "object" && ["main", "requirement", "role"].includes(host.kind) && text(host.id) && text(host.runId, true) && (host.role === undefined || typeof host.role === "string" && host.role.length <= 256);
+  return !!host && typeof host === "object" && ["main", "role"].includes(host.kind) && text(host.id) && text(host.runId, true) && (host.role === undefined || typeof host.role === "string" && host.role.length <= 256);
 }
 
 function rowFromTaskRecord(task: TaskRecord): ShellRow {
@@ -267,11 +257,10 @@ export class ShellPage {
     const errors: string[] = [];
     for (const repo of this.repos) {
       try {
-        const client = repoClient(repo), stamp = client ? connectionStamp(client) : null;
+        const client = repo.resolveClient(), stamp = client ? connectionStamp(client) : null;
         if (!client || stamp === null) throw new Error("连接不可用");
-        if (!client.connectionIdentity) errors.push(`未知：${repo.repoId} 连接代次未核对，Shell 覆盖不完整`);
         const result = await client.call("shells.list");
-        if (repoClient(repo) !== client || connectionStamp(client) !== stamp) throw new Error("查询连接已变化");
+        if (repo.resolveClient() !== client || connectionStamp(client) !== stamp) throw new Error("查询连接已变化");
         if (!result || !Array.isArray(result.tasks)) throw new Error("缺少有效Shell列表");
         const rows = (result.tasks as DaemonTaskPayload[]).filter((task) => task?.inWorkspace !== false).map((task) => rowFromDaemonPayload(repo, client, stamp, task));
         remotes.push({ repo, client, stamp, rows });
@@ -282,7 +271,7 @@ export class ShellPage {
     if (refreshToken !== this.refreshSequence) return;
     for (const remote of remotes) {
       try {
-        if (repoClient(remote.repo) !== remote.client || connectionStamp(remote.client) !== remote.stamp) throw new Error("查询连接已变化");
+        if (remote.repo.resolveClient() !== remote.client || connectionStamp(remote.client) !== remote.stamp) throw new Error("查询连接已变化");
         rawRows.push(...remote.rows);
       } catch (error) { errors.push(`未知：${remote.repo.repoId} ${safeError(error)}，Shell 覆盖不完整`); }
     }
@@ -471,7 +460,7 @@ export class ShellPage {
           this.setFailureNotice(key, `停止未确认：${current.reason ?? returned.reason ?? "当前结束状态缺少身份或后代扫描证明"}`);
         }
       } else {
-        const currentClient = repoClient(target.source.repo);
+        const currentClient = target.source.repo.resolveClient();
         if (currentClient !== target.source.client || connectionStamp(target.source.client) !== target.source.connectionStamp) {
           if (this.requestIsCurrent(key, token)) this.setFailureNotice(key, "停止未确认：仓库连接已经变化，请刷新后重试");
           return;
@@ -483,14 +472,14 @@ export class ShellPage {
             expectedStartedAt: target.startedAt,
           });
           if (!this.requestIsCurrent(key, token)) return;
-          if (repoClient(target.source.repo) !== target.source.client || connectionStamp(target.source.client) !== target.source.connectionStamp || !target.source.client.connectionIdentity) {
+          if (target.source.repo.resolveClient() !== target.source.client || connectionStamp(target.source.client) !== target.source.connectionStamp) {
             this.setFailureNotice(key, "停止未确认：连接代次已变化或无法核对"); return;
           }
           // shells.stop 只提供登记状态；没有完整结束证明时必须保留目标和未核实提示。
           this.setFailureNotice(key, `停止未确认：${typeof result.reason === "string" ? result.reason : "回执仅含登记状态，请核对实际进程"}`);
         } catch (error) {
           if (this.requestIsCurrent(key, token)) this.setFailureNotice(key,
-            repoClient(target.source.repo) === target.source.client && connectionStamp(target.source.client) === target.source.connectionStamp
+            target.source.repo.resolveClient() === target.source.client && connectionStamp(target.source.client) === target.source.connectionStamp
               ? safeError(error) : "停止未确认：连接代次已变化");
         }
       }
@@ -503,8 +492,7 @@ export class ShellPage {
   }
 
   private rowHostLabel(row: ShellRow): string {
-    const title = row.source.kind === "daemon" ? row.source.repo.requirementTitle : undefined;
-    return hostLabel(row.host, title);
+    return hostLabel(row.host);
   }
 
   private rowStatusLabel(row: ShellRow): string {

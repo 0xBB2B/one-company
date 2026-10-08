@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { AGENT_ROLES, defaultRoleDir, INTERNAL_ROLES, loadRoleCatalog, readRoleDefinition } from "../runtime/roles.ts";
-import { toolActionsForRole } from "../runtime/core-permissions.ts";
+import { authorizeToolAction, CORE_TOOL_ACTIONS } from "../runtime/core-permissions.ts";
 import type { CoreTool } from "../runtime/core-permissions.ts";
 import { coreToolName, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
 
@@ -186,11 +186,13 @@ describe("分层加载", () => {
 });
 
 describe("按职责生成的工具集", () => {
+  const grantedTools = (role: string) => (Object.keys(CORE_TOOL_ACTIONS) as CoreTool[])
+    .filter((tool) => CORE_TOOL_ACTIONS[tool].some((action) => authorizeToolAction(role, tool, action)));
   test("核心工具集合由权限矩阵生成并统一加前缀", () => {
-    expect((Object.keys(toolActionsForRole("pm")) as CoreTool[]).map(coreToolName).sort()).toEqual(["one_company_agent_manage", "one_company_knowledge_query", "one_company_plan_manage",
+    expect(grantedTools("pm").map(coreToolName).sort()).toEqual(["one_company_agent_manage", "one_company_knowledge_query", "one_company_plan_manage",
       "one_company_requirement_manage", "one_company_user_interact", "one_company_verification_run", "one_company_workflow_manage"]);
-    expect(Object.keys(toolActionsForRole("explore")).sort()).toEqual(["knowledge_query", "result_submit"]);
-    expect(Object.keys(toolActionsForRole("qa")).sort()).toEqual(["requirement_manage", "result_submit", "verification_run"]);
+    expect(grantedTools("explore").sort()).toEqual(["knowledge_query", "result_submit"]);
+    expect(grantedTools("qa").sort()).toEqual(["requirement_manage", "result_submit", "verification_run"]);
   });
 
   test("任何职责都没有 bash、write、edit；qa 没有宿主读取工具，explore 只有本地只读", () => {

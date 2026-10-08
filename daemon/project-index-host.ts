@@ -23,7 +23,6 @@ const MAX_SESSIONS = 64;
 export interface ProjectIndexArchiveRiskHookEvent {
   readonly workspace: Readonly<WorkspaceIdentity>;
   readonly repositoryRoot: string;
-  readonly event: Readonly<{ eventSequence: number; path: string | null; eventType: "rename" | "change" | null; overflowed: boolean }>;
 }
 
 const HOST_NEXT = {
@@ -186,8 +185,7 @@ export class ProjectIndexHost {
   }
 
   private async archiveRisk(service: ProjectIndexService): Promise<void> {
-    await this.options.beforeArchiveRisk?.(Object.freeze({ workspace: Object.freeze({ ...service.workspace }), repositoryRoot: service.workspace.root,
-      event: Object.freeze({ eventSequence: 0, path: null, eventType: null, overflowed: true }) }));
+    await this.options.beforeArchiveRisk?.(Object.freeze({ workspace: Object.freeze({ ...service.workspace }), repositoryRoot: service.workspace.root }));
   }
 
   async close(): Promise<void> {

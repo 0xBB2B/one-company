@@ -5,11 +5,10 @@ import type { Clock } from "../runtime/clock.ts";
 import { WorkspaceClients, resolveSdkDir } from "../runtime/daemon-client.ts";
 import type { BottomDock } from "../runtime/dock.ts";
 import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
-import { dataRoot, repoDataDir } from "../runtime/identity.ts";
-import type { Workspace, WorkspaceRepo } from "../runtime/identity.ts";
+import { dataRoot } from "../runtime/identity.ts";
+import type { Workspace } from "../runtime/identity.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import type { Host, StopResult } from "../runtime/shell-registry.ts";
-import { currentBootId, processStartedAt, startHeartbeat, WindowRegistry } from "../runtime/windows.ts";
 
 const EXIT_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGHUP"];
 const SHELL_STOP_BUDGET_MS = 3_000;
@@ -18,7 +17,6 @@ const BEFORE_SWITCH_STOP_BUDGET_MS = 15_000;
 export interface LifecycleDeps {
   createClock?: () => Clock;
   createShellRegistry?: (clock: Clock) => ShellRegistry;
-  createWindowRegistry?: (input: { repo: WorkspaceRepo; clock: Clock }) => Promise<WindowRegistry>;
   connectWorkspaceClients?: (input: {
     windowId: string;
     sessionId: string;
@@ -28,27 +26,14 @@ export interface LifecycleDeps {
 }
 
 export interface WindowContextValue {
-  shellRegistry?: ShellRegistry;
+  shellRegistry: ShellRegistry;
   windowId: string;
   sessionId: string;
   workspace: Workspace;
   clients: WorkspaceClientsHandle;
-  heartbeatError?: string;
-}
-
-interface RepoRegistration {
-  repoId: string;
-  registry: WindowRegistry;
-  stopHeartbeat: () => void;
-}
-
-export interface UnregisterFailure {
-  repoId: string;
-  reason: string;
 }
 
 export interface ShutdownResult {
-  unregisterFailures: UnregisterFailure[];
   /** 可信前置撤权/收尾失败或未在信号预算内结束的数量。 */
   shutdownHookFailures?: number;
 }
@@ -96,8 +81,6 @@ interface ActiveWindow {
   workspace: Workspace;
   clients: WorkspaceClientsHandle;
   shellRegistry: ShellRegistry;
-  registrations: RepoRegistration[];
-  heartbeatError?: string;
 }
 
 interface ReadyController {
@@ -151,11 +134,6 @@ function defaultCreateShellRegistry(clock: Clock): ShellRegistry {
   return new ShellRegistry({ clock, database: globalDatabase(dataRoot(process.env)) });
 }
 
-async function defaultCreateWindowRegistry(input: { repo: WorkspaceRepo; clock: Clock }): Promise<WindowRegistry> {
-  const repoDir = await repoDataDir(dataRoot(process.env), input.repo.repoId, input.repo.commonDir);
-  return new WindowRegistry({ repoDir, clock: input.clock, bootId: currentBootId, processStartedAt });
-}
-
 async function defaultConnectWorkspaceClients(input: {
   windowId: string;
   sessionId: string;
@@ -193,11 +171,9 @@ function stopFailureReason(result: StopResult): string | undefined {
 interface StartWindowInput {
   cwd: string;
   sessionId: string;
-  processPid: number;
   notify: (message: string, level?: "info" | "warning" | "error") => void;
   resolveClock: () => Clock;
   resolveShellRegistry: (clock: Clock) => ShellRegistry;
-  createWindowRegistry: (input: { repo: WorkspaceRepo; clock: Clock }) => Promise<WindowRegistry>;
   connectWorkspaceClients: (input: {
     windowId: string;
     sessionId: string;
@@ -210,7 +186,6 @@ async function startWindow(input: StartWindowInput): Promise<void> {
   ensureFreshReadyController();
   const windowId = uuidv7();
   let clients: WorkspaceClientsHandle | undefined;
-  const registrations: RepoRegistration[] = [];
   try {
     clients = await input.connectWorkspaceClients({ windowId, sessionId: input.sessionId, cwd: input.cwd });
     const workspace = clients.workspace();
@@ -220,29 +195,10 @@ async function startWindow(input: StartWindowInput): Promise<void> {
 
     const clock = input.resolveClock();
     const shellRegistry = input.resolveShellRegistry(clock);
-    for (const repo of workspace.repos) {
-      const registry = await input.createWindowRegistry({ repo, clock });
-      await registry.register({
-        windowId,
-        pid: input.processPid,
-        sessionId: input.sessionId,
-        cwd: input.cwd,
-        workspaceRoot: input.cwd,
-      });
-      const stopHeartbeat = startHeartbeat(registry, windowId, (error) => {
-        if (activeWindow) activeWindow.heartbeatError = (error as Error).message;
-      });
-      registrations.push({ repoId: repo.repoId, registry, stopHeartbeat });
-    }
-
     startupError = undefined;
-    activeWindow = { windowId, sessionId: input.sessionId, workspace, clients, shellRegistry, registrations };
+    activeWindow = { windowId, sessionId: input.sessionId, workspace, clients, shellRegistry };
     readyController.resolve(windowContext());
   } catch (error) {
-    for (const reg of registrations) {
-      reg.stopHeartbeat();
-      await reg.registry.unregister(windowId).catch(() => {});
-    }
     clients?.closeAll();
     const err = error instanceof Error ? error : new Error(String(error));
     startupError = err;
@@ -287,7 +243,7 @@ export function shutdownWindow(budgetMs?: number): Promise<ShutdownResult> {
     return shutdownOperation;
   }
   const window = activeWindow;
-  if (!window) return Promise.resolve({ unregisterFailures: [] });
+  if (!window) return Promise.resolve({});
   activeWindow = undefined;
   let complete!: (result: ShutdownResult) => void;
   let failed!: (error: unknown) => void;
@@ -308,7 +264,6 @@ export function shutdownWindow(budgetMs?: number): Promise<ShutdownResult> {
   // 同步调用所有失效回调，之后才开始等待 Shell；此处保持原 daemon 通道可用。
   const hooks = beginWindowShutdown(window);
   const finish = async (): Promise<ShutdownResult> => {
-    const unregisterFailures: UnregisterFailure[] = [];
     let hookResults: PromiseSettledResult<void>[] | undefined;
     let shutdownHookFailures = 0;
     const hooksSettled = hooks.settled.then((results) => { hookResults = results; });
@@ -318,21 +273,13 @@ export function shutdownWindow(budgetMs?: number): Promise<ShutdownResult> {
       const allSettled = Promise.all([stopSettled, hooksSettled]);
       await Promise.race([allSettled, budgetEnded]);
       shutdownHookFailures = hookResults?.filter((result) => result.status === "rejected").length ?? (hooks.count > 0 ? 1 : 0);
-      for (const reg of window.registrations) {
-        try {
-          await reg.registry.unregister(window.windowId);
-        } catch (error) {
-          unregisterFailures.push({ repoId: reg.repoId, reason: (error as Error).message });
-        }
-      }
     } finally {
-      for (const reg of window.registrations) reg.stopHeartbeat();
       startupError = undefined;
       readyController = createReadyController();
       capturedShutdown = undefined;
       window.clients.closeAll();
     }
-    return { unregisterFailures, ...(shutdownHookFailures ? { shutdownHookFailures } : {}) };
+    return shutdownHookFailures ? { shutdownHookFailures } : {};
   };
   void finish().then(complete, failed);
   const clear = () => {
@@ -367,8 +314,8 @@ export function installExitSignalHandlers(proc: NodeJS.Process): void {
 
 export function windowContext(): WindowContextValue {
   if (!activeWindow) throw startupError ?? new Error("窗口未启动");
-  const { windowId, sessionId, workspace, clients, heartbeatError, shellRegistry } = activeWindow;
-  return { windowId, sessionId, workspace, clients, heartbeatError, shellRegistry };
+  const { windowId, sessionId, workspace, clients, shellRegistry } = activeWindow;
+  return { windowId, sessionId, workspace, clients, shellRegistry };
 }
 
 export function windowReady(): Promise<WindowContextValue> {
@@ -399,7 +346,6 @@ export default function lifecycleExtension(pi: ExtensionAPI, deps: LifecycleDeps
   const proc = deps.process ?? process;
   const createClockDep = deps.createClock ?? defaultCreateClock;
   const createShellRegistryDep = deps.createShellRegistry ?? defaultCreateShellRegistry;
-  const createWindowRegistryDep = deps.createWindowRegistry ?? defaultCreateWindowRegistry;
   const connectWorkspaceClients = deps.connectWorkspaceClients ?? defaultConnectWorkspaceClients;
 
   let cachedClock: Clock | undefined;
@@ -419,11 +365,9 @@ export default function lifecycleExtension(pi: ExtensionAPI, deps: LifecycleDeps
     await startWindow({
       cwd: ctx.cwd,
       sessionId: ctx.sessionManager.getSessionId(),
-      processPid: proc.pid,
       notify: ctx.ui.notify,
       resolveClock,
       resolveShellRegistry,
-      createWindowRegistry: createWindowRegistryDep,
       connectWorkspaceClients,
     });
     if (activeWindow?.sessionId === ctx.sessionManager.getSessionId()) capturedShutdown = ctx.shutdown;
@@ -436,8 +380,5 @@ export default function lifecycleExtension(pi: ExtensionAPI, deps: LifecycleDeps
   pi.on("session_shutdown", async (_event, ctx) => {
     const result = await shutdownWindow();
     if (result.shutdownHookFailures) ctx.ui.notify("窗口前置撤权或自有操作收尾未全部完成", "error");
-    for (const failure of result.unregisterFailures) {
-      ctx.ui.notify(`仓库 ${failure.repoId} 注销失败：${failure.reason}`, "error");
-    }
   });
 }

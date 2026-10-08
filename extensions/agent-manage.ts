@@ -12,12 +12,11 @@ const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const repoId = Type.String({ pattern: "^[0-9a-f]{64}$" });
 const runId = Type.String({ pattern: UUID_V7 });
 const strict = { additionalProperties: false } as const;
-const exploreDispatch = <T extends object>(target: T) => Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), repoId,
-  question: Type.String({ minLength: 1, maxLength: 1500 }), clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })),
-  maxTurns: Type.Integer({ minimum: 1, maximum: 100 }), ...target }, strict);
 export const MAIN_AGENT_MANAGE_PARAMETERS = Type.Union([
   Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("pm"), repoId, requirementId: Type.String({ pattern: UUID_V7 }) }, strict),
-  exploreDispatch(EXPLORE_WEB_QUERY),
+  Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), repoId,
+    question: Type.String({ minLength: 1, maxLength: 1500 }), clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })),
+    maxTurns: Type.Integer({ minimum: 1, maximum: 100 }), ...EXPLORE_WEB_QUERY }, strict),
   Type.Object({ action: Type.Literal("status"), repoId, runId }, strict),
   Type.Object({ action: Type.Literal("pause"), repoId, runId }, strict),
   Type.Object({ action: Type.Literal("resume"), repoId, runId }, strict),
@@ -33,7 +32,7 @@ function result(value: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
 }
 
-/** 主会话的 agent_manage：经守护进程派出唯一 PM、查询或控制运行；模型与思考等级取派工时主会话的当前值。 */
+/** 主会话的 agent_manage：经守护进程派出唯一 PM 或 explore、查询或控制运行、向 PM 转述说明；模型与思考等级取派工时主会话的当前值。 */
 export function registerAgentManageTool(pi: ExtensionAPI, context: () => AgentManageContext): void {
   pi.registerTool({
     name: "one_company_agent_manage",

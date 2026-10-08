@@ -55,9 +55,7 @@ interface CountAccumulator {
 }
 
 function groupLabel(host: Host): string {
-  if (host.kind === "main") return "主 agent";
-  if (host.kind === "role") return host.role ?? "worker";
-  return "需求代理";
+  return host.kind === "main" ? "主 agent" : host.role ?? "worker";
 }
 
 function newAccumulator(): CountAccumulator {

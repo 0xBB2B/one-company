@@ -25,11 +25,11 @@ const REQUIREMENT_READ_ONLY = ["read", "diff", "metadata"] as const;
 const MATRIX: Readonly<Record<CoreRole, Grants>> = Object.freeze({
   main: {
     project_manage: all("project_manage"), knowledge_query: all("knowledge_query"), requirement_manage: all("requirement_manage"),
-    user_interact: all("user_interact"), agent_manage: all("agent_manage"), workflow_manage: all("workflow_manage").filter((action) => action !== "report" && action !== "escalate"),
+    user_interact: all("user_interact"), agent_manage: all("agent_manage").filter((action) => action !== "catalog"), workflow_manage: all("workflow_manage").filter((action) => action !== "report" && action !== "escalate"),
   },
   pm: {
     knowledge_query: all("knowledge_query"), requirement_manage: REQUIREMENT_READ_ONLY, plan_manage: all("plan_manage"),
-    agent_manage: all("agent_manage").filter((action) => action !== "message"), user_interact: all("user_interact"),
+    agent_manage: all("agent_manage").filter((action) => action !== "message"), user_interact: ["ask"],
     verification_run: all("verification_run"), workflow_manage: all("workflow_manage").filter((action) => action !== "close"),
   },
   explore: { knowledge_query: all("knowledge_query"), result_submit: ["research"] },
@@ -52,13 +52,6 @@ export function authorizeToolAction(role: unknown, tool: unknown, action: unknow
   if (!isCoreRole(role) || !isCoreTool(tool) || typeof action !== "string") return false;
   const granted = MATRIX[role][tool] as readonly string[] | undefined;
   return granted !== undefined && granted.includes(action);
-}
-
-export function toolActionsForRole(role: CoreRole): { [T in CoreTool]?: string[] } {
-  if (!isCoreRole(role)) throw new Error(`未知职责: ${String(role)}`);
-  const result: { [T in CoreTool]?: string[] } = {};
-  for (const [tool, actions] of Object.entries(MATRIX[role])) result[tool as CoreTool] = [...(actions as readonly string[])];
-  return result;
 }
 
 export type ManagedWritePathClass = "code" | "prod_archive" | "git_metadata" | "agent_definition" | "project_conventions" | "outside";

@@ -8,7 +8,6 @@ import { UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { createSessionManagerForRun, readSessionEntries } from "../runtime/session-records.ts";
 import { createClock } from "../runtime/clock.ts";
-import { WindowRegistry } from "../runtime/windows.ts";
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -60,11 +59,3 @@ test("多个运行存储实例交错登记回合与用量不丢失活动", async
   expect(found.run.usage?.toolUses).toBe(20);
 });
 
-test("注销后的迟到心跳不能复活窗口", async () => {
-  const w = await fixture();
-  const windows = new WindowRegistry({ repoDir: w.repoDir, clock: w.clock, bootId: async () => "boot", processStartedAt: async () => "start" });
-  const windowId = uuidv7();
-  await windows.register({ windowId, pid: process.pid, sessionId: "sdk-session", cwd: w.repo.root, workspaceRoot: w.repo.root });
-  await windows.unregister(windowId); await windows.heartbeat(windowId);
-  expect(await windows.isAlive(windowId)).toBe(false);
-});

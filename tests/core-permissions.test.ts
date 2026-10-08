@@ -1,7 +1,8 @@
 import { expect, test } from "vitest";
 import type { TSchema } from "typebox";
-import { CORE_ROLES, CORE_TOOL_ACTIONS, authorizeToolAction, classifyManagedWritePath, toolActionsForRole,
+import { CORE_ROLES, CORE_TOOL_ACTIONS, authorizeToolAction, classifyManagedWritePath,
   writePathAllowed } from "../runtime/core-permissions.ts";
+import type { CoreRole, CoreTool } from "../runtime/core-permissions.ts";
 import { REQUIREMENT_MANAGE_PARAMETERS } from "../runtime/requirement-manage-tool.ts";
 import { USER_INTERACT_PARAMETERS } from "../runtime/user-interact-tool.ts";
 import { KnowledgeToolSchema } from "../runtime/knowledge-query-tool.ts";
@@ -44,8 +45,10 @@ test("固定六类职责与10个核心工具，action 枚举与计划 §9.1 一�
   expect(Object.isFrozen(CORE_TOOL_ACTIONS)).toBe(true);
 });
 
+const granted = (role: CoreRole, tool: CoreTool) => CORE_TOOL_ACTIONS[tool].filter((action) => authorizeToolAction(role, tool, action));
+
 test("六角色工具集合与计划 §9.2 逐项相等", () => {
-  const tools = (role: (typeof CORE_ROLES)[number]) => Object.keys(toolActionsForRole(role)).sort();
+  const tools = (role: CoreRole) => (Object.keys(CORE_TOOL_ACTIONS) as CoreTool[]).filter((tool) => granted(role, tool).length > 0).sort();
   expect(tools("main")).toEqual(["agent_manage", "knowledge_query", "project_manage", "requirement_manage", "user_interact", "workflow_manage"]);
   expect(tools("pm")).toEqual(["agent_manage", "knowledge_query", "plan_manage", "requirement_manage", "user_interact",
     "verification_run", "workflow_manage"]);
@@ -64,21 +67,24 @@ test("action 级上限按计划 §9.1/§9.3 收窄：分支工作区只归 main�
     for (const action of ["read", "diff", "metadata"]) expect(authorizeToolAction(role, "requirement_manage", action)).toBe(true);
     for (const action of ["create", "updateDraft", "confirmUpdate"]) expect(authorizeToolAction(role, "requirement_manage", action)).toBe(false);
   }
-  expect(toolActionsForRole("main").requirement_manage).toEqual(CORE_TOOL_ACTIONS.requirement_manage);
-  expect(toolActionsForRole("explore")).toEqual({ knowledge_query: ["exact", "search", "facts"], result_submit: ["research"] });
+  expect(granted("main", "requirement_manage")).toEqual(CORE_TOOL_ACTIONS.requirement_manage);
+  expect(granted("explore", "knowledge_query")).toEqual(["exact", "search", "facts"]);
+  expect(granted("explore", "result_submit")).toEqual(["research"]);
   expect(authorizeToolAction("explore", "result_submit", "verdict")).toBe(false);
   for (const role of ["worker", "reviewer", "qa"]) {
     expect(authorizeToolAction(role, "result_submit", "verdict")).toBe(true);
     expect(authorizeToolAction(role, "result_submit", "research")).toBe(false);
   }
-  expect(toolActionsForRole("reviewer").plan_manage).toEqual(["read"]);
-  expect(toolActionsForRole("pm").workflow_manage).toEqual(["status", "advance", "finish", "repair", "check-decision", "report", "escalate", "delivery-check"]);
-  expect(toolActionsForRole("main").workflow_manage).toEqual(["status", "advance", "finish", "repair", "check-decision", "close", "delivery-check"]);
+  expect(granted("reviewer", "plan_manage")).toEqual(["read"]);
+  expect(granted("pm", "workflow_manage")).toEqual(["status", "advance", "finish", "repair", "check-decision", "report", "escalate", "delivery-check"]);
+  expect(granted("main", "workflow_manage")).toEqual(["status", "advance", "finish", "repair", "check-decision", "close", "delivery-check"]);
   for (const role of CORE_ROLES) expect(authorizeToolAction(role, "workflow_manage", "init")).toBe(false);
   for (const role of CORE_ROLES) if (role !== "worker") expect(authorizeToolAction(role, "change_apply", "apply")).toBe(false);
   for (const role of CORE_ROLES) if (role !== "main" && role !== "pm") expect(authorizeToolAction(role, "agent_manage", "dispatch")).toBe(false);
   expect(authorizeToolAction("main", "agent_manage", "message")).toBe(true);
   for (const role of CORE_ROLES) if (role !== "main") expect(authorizeToolAction(role, "agent_manage", "message")).toBe(false);
+  expect(granted("main", "agent_manage")).toEqual(["dispatch", "status", "pause", "resume", "stop", "message"]);
+  expect(granted("pm", "user_interact")).toEqual(["ask"]);
 });
 
 test("自报或伪造的职责、工具与 action 一律拒绝，不因大小写、空白或专业名称扩权", () => {
@@ -94,7 +100,6 @@ test("自报或伪造的职责、工具与 action 一律拒绝，不因大小写
   expect(authorizeToolAction("__proto__", "knowledge_query", "search")).toBe(false);
   expect(authorizeToolAction("main", "constructor", "search")).toBe(false);
   expect(authorizeToolAction("main", "knowledge_query", "toString")).toBe(false);
-  expect(() => toolActionsForRole("planner" as never)).toThrow();
 });
 
 test("已注册工具的 action 枚举都落在核心表内", () => {

@@ -93,7 +93,7 @@ interface FakeRepoClient {
   subscribe: () => () => void;
   state: () => { status: "connected" | "unreachable" };
   close: () => void;
-  connectionIdentity?: () => { daemonInstanceId: string; connectionId: string; connectionSequence: number } | null;
+  connectionIdentity: () => { daemonInstanceId: string; connectionId: string; connectionSequence: number } | null;
 }
 
 function createPollableClient(): FakeRepoClient {
@@ -107,8 +107,10 @@ function createPollableClient(): FakeRepoClient {
   };
 }
 
-function createWindowContextValue(windowId: string, repoId: string, client: FakeRepoClient) {
+function createWindowContextValue(windowId: string, repoId: string, client: FakeRepoClient,
+  shellRegistry = new ShellRegistry({ clock: createClock({ timeSource: createFakeTimeSource() }) })) {
   return {
+    shellRegistry,
     windowId,
     sessionId: `session-${windowId}`,
     workspace: { repos: [{ repoId, path: `/workspace/${repoId}`, commonDir: `/workspace/${repoId}/.git` }], skipped: [] },
@@ -184,7 +186,6 @@ describe("shellUiExtension：注册与生命周期解耦——工厂返回时已
     const deps: ShellUiDeps = {
       windowReady: () => new Promise(() => {}),
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-      createShellRegistry: (clock) => new ShellRegistry({ clock }),
     };
 
     shellUiExtension(fakePi.pi, deps);
@@ -206,8 +207,7 @@ describe("shellUiExtension：会话未就绪时 bash 说清原因", () => {
   test("还在启动时说稍等；启动失败时带上失败原因", async () => {
     const run = async (windowReady: ShellUiDeps["windowReady"]) => {
       const fakePi = createFakePi();
-      shellUiExtension(fakePi.pi, { windowReady, createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-        createShellRegistry: (clock) => new ShellRegistry({ clock }) });
+      shellUiExtension(fakePi.pi, { windowReady, createClock: () => createClock({ timeSource: createFakeTimeSource() }) });
       await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, createFakeCtx(createFakeUi()));
       await delay(0);
       const bash = fakePi.registeredTools()[0] as unknown as { execute: (...args: unknown[]) => Promise<unknown> };
@@ -227,7 +227,6 @@ describe("shellUiExtension：无交互 UI 时 bash 能力仍可用", () => {
     const deps: ShellUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-      createShellRegistry: (clock) => new ShellRegistry({ clock }),
     };
     shellUiExtension(fakePi.pi, deps);
 
@@ -263,7 +262,6 @@ describe("shellUiExtension：session_start 内不 await windowReady", () => {
     const deps: ShellUiDeps = {
       windowReady: () => deferred.promise as never,
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-      createShellRegistry: (clock) => new ShellRegistry({ clock }),
     };
     shellUiExtension(fakePi.pi, deps);
 
@@ -279,19 +277,15 @@ describe("shellUiExtension：session_shutdown 清理", () => {
   test("清空状态栏、停止刷新定时器、clock.stopGapWatcher 被调、当前会话注册表 closeOwner 被调", async () => {
     const fakePi = createFakePi();
     const client = createPollableClient();
-    const windowContextValue = createWindowContextValue("window-a", "repo-a", client);
     const timeSource = createFakeTimeSource();
-    let capturedRegistry: (ShellRegistry & { closeOwnerCalls: () => number }) | undefined;
+    const capturedRegistry = spyRegistry(new ShellRegistry({ clock: createClock({ timeSource }) }));
+    const windowContextValue = createWindowContextValue("window-a", "repo-a", client, capturedRegistry);
     let capturedClock: (Clock & { stopGapWatcherCalls: () => number }) | undefined;
     const deps: ShellUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => {
         capturedClock = spyClock(createClock({ timeSource }));
         return capturedClock;
-      },
-      createShellRegistry: (clock) => {
-        capturedRegistry = spyRegistry(new ShellRegistry({ clock }));
-        return capturedRegistry;
       },
     };
     shellUiExtension(fakePi.pi, deps);
@@ -324,13 +318,12 @@ describe("shellUiExtension：两次 session_start 后注册表随会话切换", 
     const fakePi = createFakePi();
     const registries: ShellRegistry[] = [];
     const deps: ShellUiDeps = {
-      windowReady: () => Promise.resolve(createWindowContextValue(`window-${registries.length}`, `repo-${registries.length}`, createPollableClient())) as never,
-      createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-      createShellRegistry: (clock) => {
-        const registry = new ShellRegistry({ clock });
+      windowReady: () => {
+        const registry = new ShellRegistry({ clock: createClock({ timeSource: createFakeTimeSource() }) });
         registries.push(registry);
-        return registry;
+        return Promise.resolve(createWindowContextValue(`window-${registries.length}`, `repo-${registries.length}`, createPollableClient(), registry)) as never;
       },
+      createClock: () => createClock({ timeSource: createFakeTimeSource() }),
     };
     shellUiExtension(fakePi.pi, deps);
 
@@ -365,14 +358,9 @@ describe("shellUiExtension：两次 session_start 后注册表随会话切换", 
 describe("shellUiExtension：user_bash 未就绪时优雅降级", () => {
   test("窗口尚未就绪时触发 user_bash：不抛错，返回符合 SDK UserBashEventResult 的 result（未执行命令），且注册表未登记任何任务", async () => {
     const fakePi = createFakePi();
-    let capturedRegistry: ShellRegistry | undefined;
     const deps: ShellUiDeps = {
       windowReady: () => new Promise(() => {}),
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-      createShellRegistry: (clock) => {
-        capturedRegistry = new ShellRegistry({ clock });
-        return capturedRegistry;
-      },
     };
     shellUiExtension(fakePi.pi, deps);
 
@@ -397,21 +385,16 @@ describe("shellUiExtension：user_bash 未就绪时优雅降级", () => {
     expect(handled?.result?.exitCode).toBe(1);
     expect(typeof handled?.result?.output).toBe("string");
     expect((handled?.result?.output ?? "").length).toBeGreaterThan(0);
-    expect(capturedRegistry?.list() ?? []).toEqual([]);
   });
 
   test("session_shutdown 后触发 user_bash：同样不抛错，返回符合 SDK UserBashEventResult 的 result，且注册表未登记任何任务", async () => {
     const fakePi = createFakePi();
     const client = createPollableClient();
-    const windowContextValue = createWindowContextValue("window-shutdown", "repo-shutdown", client);
-    let capturedRegistry: ShellRegistry | undefined;
+    const capturedRegistry = new ShellRegistry({ clock: createClock({ timeSource: createFakeTimeSource() }) });
+    const windowContextValue = createWindowContextValue("window-shutdown", "repo-shutdown", client, capturedRegistry);
     const deps: ShellUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-      createShellRegistry: (clock) => {
-        capturedRegistry = new ShellRegistry({ clock });
-        return capturedRegistry;
-      },
     };
     shellUiExtension(fakePi.pi, deps);
 
@@ -439,7 +422,7 @@ describe("shellUiExtension：user_bash 未就绪时优雅降级", () => {
     expect(handled?.result?.exitCode).toBe(1);
     expect(typeof handled?.result?.output).toBe("string");
     expect((handled?.result?.output ?? "").length).toBeGreaterThan(0);
-    expect(capturedRegistry?.list() ?? []).toEqual([]);
+    expect(capturedRegistry.list()).toEqual([]);
   });
 });
 
@@ -459,7 +442,6 @@ describe("sharedDock 生命周期：PM 面板 teardown 后 lifecycle.currentDock
     const shellDeps: ShellUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-      createShellRegistry: (clock) => new ShellRegistry({ clock }),
     };
     shellUiExtension(fakePi.pi, shellDeps);
 
@@ -502,7 +484,7 @@ describe("sharedDock 生命周期：PM 面板 teardown 后 lifecycle.currentDock
 test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实际停止", async () => {
   const fakePi = createFakePi();
   const calls: { method: string; params?: Record<string, unknown> }[] = [];
-  const task = { taskId: "ui-uncertain", host: { kind: "requirement", id: "req-ui" }, command: "", cwd: "", pid: 10, startedAt: new Date(0).toISOString(), status: "uncertain", activity: "uncertain", inWorkspace: true };
+  const task = { taskId: "ui-uncertain", host: { kind: "role", id: "run-ui", role: "worker" }, command: "", cwd: "", pid: 10, startedAt: new Date(0).toISOString(), status: "uncertain", activity: "uncertain", inWorkspace: true };
   const stopped = createDeferred<Record<string, unknown>>();
   const client = {
     ...createPollableClient(),
@@ -567,6 +549,7 @@ describe("openShellUiPage：保留缺连接仓库并可在连接恢复后查询"
     };
     let clientB: FakeRepoClient | undefined;
     const window = {
+      shellRegistry: new ShellRegistry({ clock: createClock({ timeSource: createFakeTimeSource() }) }),
       windowId: "window-coverage",
       sessionId: "session-coverage",
       workspace: {
@@ -635,7 +618,6 @@ describe("openShellUiPage：透传宿主 ctx.ui.theme 到页面主题", () => {
     const deps: ShellUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-      createShellRegistry: (clock) => new ShellRegistry({ clock }),
     };
     shellUiExtension(fakePi.pi, deps);
 

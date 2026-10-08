@@ -219,7 +219,7 @@ export class MainRequirementInteraction {
     const repository = this.#host(ctx).repositories.get(repoId);
     if (!repository) return denied("foreign_repo");
     return resolveInternalModel({ role, agentDir: dirname(this.#options.dataRoot), repositoryRoot: repository.path,
-      projectTrusted: typeof ctx.isProjectTrusted === "function" && ctx.isProjectTrusted(), registry: ctx.modelRegistry, mainModel: ctx.model });
+      projectTrusted: ctx.isProjectTrusted(), registry: ctx.modelRegistry, mainModel: ctx.model });
   }
   async #requirementTitle(host: RequirementManageHostContext, repoId: string, requirementId: string): Promise<string | undefined> {
     const hash = this.#authorization.snapshot(repoId, requirementId, host.sessionId).data.saved?.hash;

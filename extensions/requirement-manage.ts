@@ -41,7 +41,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   const awaitWindow = deps.windowReady ?? windowReady, currentWindow = deps.windowContext ?? windowContext;
   const resolveHost = (ctx: ExtensionContext): RequirementManageHostContext => {
     const window = currentWindow();
-    if (window.sessionId !== ctx.sessionManager.getSessionId() || window.heartbeatError ||
+    if (window.sessionId !== ctx.sessionManager.getSessionId() ||
       window.workspace.repos.some((repo) => window.clients.forRepo(repo.repoId)?.state().status !== "connected")) throw new HostAuthorizationError("host_unavailable");
     return { windowId: window.windowId, sessionId: window.sessionId,
       repositories: new Map(window.workspace.repos.map((repo) => [repo.repoId, { path: repo.path }])) };

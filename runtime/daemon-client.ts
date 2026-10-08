@@ -403,8 +403,8 @@ export interface DaemonClientConnectedData extends Record<string, unknown> {
   status: "connected";
   repoId: string;
   connectionSequence: number;
-  daemonInstanceId?: string;
-  connectionId?: string;
+  daemonInstanceId: string;
+  connectionId: string;
   reconnected: boolean;
 }
 
@@ -421,8 +421,8 @@ export interface DaemonClient {
   call(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
   subscribe(event: string, listener: (data: Record<string, unknown>) => void): () => void;
   state(): DaemonClientState;
-  /** 仅可信宿主控制面使用；旧服务端没有身份字段时返回 null，不能签发索引许可。 */
-  connectionIdentity?(): Readonly<DaemonConnectionIdentity> | null;
+  /** 仅可信宿主控制面使用；未连接、已关闭或握手失败时返回 null，不能签发索引许可。 */
+  connectionIdentity(): Readonly<DaemonConnectionIdentity> | null;
   close(): void;
   /** 等待本客户端已开始的连接/握手以及全部原始 socket 实际 close。 */
   waitClosed(): Promise<void>;
@@ -590,7 +590,8 @@ class DaemonClientImpl implements DaemonClient {
       repoId: this.ctx.repoId,
       connectionSequence: this.connectionSequence,
       reconnected: this.connectionSequence > 1,
-      ...(this.identity ? { daemonInstanceId: this.identity.daemonInstanceId, connectionId: this.identity.connectionId } : {}),
+      daemonInstanceId: this.identity!.daemonInstanceId,
+      connectionId: this.identity!.connectionId,
     };
   }
 
