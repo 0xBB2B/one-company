@@ -324,8 +324,8 @@ export class PmIntakeService {
     if (!this.#options.submissionProvider) deny("submission_provider_unavailable");
     const initial = this.#options.state.read(identity.requirementId);
     const lease = this.#owner(identity.requirementId);
-    if (initial.data.lifecycle !== "active" || initial.data.recovery !== "ready" || !initial.data.approved || !initial.data.workspace ||
-      !initial.data.approvalManifest || initial.data.saved?.commit !== initial.data.approved.commit || initial.data.saved.hash !== initial.data.approved.hash) {
+    // 只核对已批准版本；还没批准的草稿不产生授权，不挡核对
+    if (initial.data.lifecycle !== "active" || initial.data.recovery !== "ready" || !initial.data.approved || !initial.data.workspace || !initial.data.approvalManifest) {
       deny("intake_not_ready");
     }
     await this.#checkPm(lease, call, runtime);

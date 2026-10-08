@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { uuidv7 } from "../runtime/database.ts";
 import { createPmIntakeProviders, evaluatePmIntakeGate, pmDecisionNotes, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
 import { intakeSubmitTool } from "../daemon/pm-tools.ts";
 import { scenariosWithoutOwnRef, unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
@@ -54,6 +55,18 @@ test("M7-AC13：主代理经真实提供方读到 PM 会话里的提交，核对
   expect(view.submissionRef).toBe(`pm/${w.fixture.lease.runId}/${callId}`);
   expect(view.understanding.goals).toEqual(w.content.goals);
   expect(w.gate()).toMatchObject({ allowed: false, reasons: ["review_missing"] });
+  await w.intake.recordReview(w.fixture.call, view.requestId, w.fixture.operationId(), { result: "passed", shortIssues: [] });
+  expect(w.gate()).toMatchObject({ allowed: true });
+});
+
+test("M9-AC2：有一版保存了但还没批准的草稿时，主代理照样能打开并登记 PM 接手理解的核对，核对只认已批准版本", async () => {
+  const w = await world(), id = w.fixture.lease.requirementId;
+  w.submit(w.content);
+  const saved = await w.fixture.service.read({ requirementId: id, source: "saved" });
+  await w.fixture.service.updateDraft({ requirementId: id, version: w.fixture.state.read(id).version, operationId: uuidv7(), title: saved.title, body: `${saved.body}补充一句。\n` });
+  expect(w.fixture.state.read(id).data.saved!.hash).not.toBe(w.fixture.state.read(id).data.approved!.hash);
+  const view = await w.intake.openRequest(w.fixture.call, w.fixture.operationId());
+  expect(view.understanding.goals).toEqual(w.content.goals);
   await w.intake.recordReview(w.fixture.call, view.requestId, w.fixture.operationId(), { result: "passed", shortIssues: [] });
   expect(w.gate()).toMatchObject({ allowed: true });
 });
