@@ -21,7 +21,6 @@ export const WORKFLOW_MANAGE_PARAMETERS = Type.Union([
   object({ action: Type.Literal("status") }),
   object({ action: Type.Literal("advance") }),
   object({ action: Type.Literal("finish"), checkRoundId: id }),
-  object({ action: Type.Literal("repair") }),
   object({ action: Type.Literal("check-decision"), checkRoundId: id, kind: Type.Union([Type.Literal("interrupt"), Type.Literal("defer")]), revision: positive }),
   object({ action: Type.Literal("close"), reason: CloseReason, receiptId: id, operationId: id }),
   object({ action: Type.Literal("delivery-check") }),
@@ -38,7 +37,6 @@ const WORKFLOW_ADVICE = {
   grant_invalid: { why: "派工身份与 PM 租约不一致", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
   invalid_shape: COMMON_ADVICE.invalid_shape,
   lease_required: { why: "这个动作只有持有租约的 PM 能做", next: "改用职责内的动作" },
-  unavailable: { why: "续办关闭（repair）现在不能单独调用", next: "用 status 查看关闭进度，再以原决定编号重新 close 续办" },
 } as const satisfies Record<string, FailureAdvice>;
 export type WorkflowManageErrorCode = keyof typeof WORKFLOW_ADVICE;
 export class WorkflowManageError extends Error {
@@ -125,7 +123,6 @@ async function openWorkflowManageTool(options: WorkflowManageToolOptions) {
   }
   async function run(params: WorkflowManageParameters) {
     switch (params.action) {
-        case "repair": deny("unavailable");
         case "status": return freeze({ close: close.status(grant.requirementId) });
         case "advance": return rounds.openRound({ lease: lease() });
         case "finish": return rounds.release({ lease: lease(), checkRoundId: params.checkRoundId });

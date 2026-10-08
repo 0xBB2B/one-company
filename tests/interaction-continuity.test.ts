@@ -12,6 +12,7 @@ import { UserInteractionCore } from "../runtime/user-interaction.ts";
 import type { InteractionContext, InteractionInterpretation } from "../runtime/user-interaction-format.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, loadInteractionContinuity } from "../runtime/interaction-continuity.ts";
 import { ApprovalManifestStore } from "../runtime/approval-manifest-store.ts";
+import { approvedManifestScope } from "../runtime/approval-manifest.ts";
 
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
@@ -108,8 +109,9 @@ test("A/B两题先答A再答B，已答A收束但原问题保留；短答B不授�
     r.documentReview!.questions = [{ requestId: b.requestId, answeredIds: ["B"], pendingIds: [], conclusionIndexes: [1, 2] }]; return r;
   });
   const second = await w.interpret("可以"); w.core.save(second.capability);
-  expect(w.core.authorizeScope(second.capability, w.loaded, { action: "analyze", goalIds: ["B"], constraintIds: [] })).not.toBeNull();
-  expect(w.core.authorizeScope(second.capability, w.loaded, { action: "analyze", goalIds: ["A"], constraintIds: [] })).toBeNull();
+  const manifest = w.core.authorizeDocument(second.capability, w.loaded)!.manifest;
+  expect(approvedManifestScope(manifest, { action: "analyze", goalIds: ["B"], constraintIds: [] })).not.toBeNull();
+  expect(approvedManifestScope(manifest, { action: "analyze", goalIds: ["A"], constraintIds: [] })).toBeNull();
   expect(w.context().questions).toEqual([]);
   expect(withDatabase(w.path, (db) => db.list("interaction_questions_v1"))).toHaveLength(2);
   expect(withDatabase(w.path, (db) => db.list<{ conclusion: string }>("short_decisions")).filter((r) => r.data.conclusion === "A目标")).toHaveLength(1);
@@ -203,7 +205,7 @@ test("共享未决约束的影响不能通过下一轮丢global标记绕过，�
   expect(w.context().continuityIssues).toContainEqual(expect.objectContaining({ unitId: "G", affectedUnitIds: expect.arrayContaining(["A"]) }));
   w.setOutput((ctx) => render(ctx, false, "A")); await expect(w.interpret("G未解决，仅看A")).rejects.toThrow();
   w.setOutput((ctx) => render(ctx, true, "B")); const next = await w.interpret("G继续待确认，只分析不依赖G的B"); w.core.save(next.capability);
-  expect(w.core.authorizeScope(next.capability, w.loaded, { action: "analyze", goalIds: ["B"], constraintIds: [] })).not.toBeNull();
+  expect(approvedManifestScope(w.core.authorizeDocument(next.capability, w.loaded)!.manifest, { action: "analyze", goalIds: ["B"], constraintIds: [] })).not.toBeNull();
 });
 
 test("G约束H且H约束A时，未决影响传递到A及完整约束范围", async () => {
@@ -223,7 +225,7 @@ test("G约束H且H约束A时，未决影响传递到A及完整约束范围", asy
   w.setOutput((ctx) => render(ctx, false)); await expect(w.interpret("G仍未解决，却请求A")).rejects.toThrow();
 });
 
-test.each(["document", "scope", "register", "register-after-core", "cross-process"] as const)("最后回调新增真实问题使输入集合失效（%s）", async (mode) => {
+test.each(["document", "register", "register-after-core", "cross-process"] as const)("最后回调新增真实问题使输入集合失效（%s）", async (mode) => {
   const w = await world(), first = await w.interpret("A B明确"), old = w.core.save(first.capability);
   w.setOutput((ctx) => { const r = review(ctx); r.entries[1]!.supersedes = [old.decisionIds[1]!]; return r; });
   const current = await w.interpret("修订A，分析B"); w.core.save(current.capability);
@@ -253,8 +255,7 @@ test.each(["document", "scope", "register", "register-after-core", "cross-proces
       } });
     await expect(store.register(approved.manifest)).rejects.toThrow();
     expect(withDatabase(w.path, (db) => db.list("approval_manifests_v1"))).toEqual([]);
-  } else if (mode === "document") expect(w.core.authorizeDocument(current.capability, w.loaded)).toBeNull();
-  else expect(w.core.authorizeScope(current.capability, w.loaded, { action: "analyze", goalIds: ["B"], constraintIds: [] })).toBeNull();
+  } else expect(w.core.authorizeDocument(current.capability, w.loaded)).toBeNull();
   expect(questionId).toBeDefined(); w.setIdentityHook(undefined);
   expect(w.context().questions.some((question) => question.requestId === questionId)).toBe(true);
   expect(w.core.authorizeDocument(current.capability, w.loaded)).toBeNull();

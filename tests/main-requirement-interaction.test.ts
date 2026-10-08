@@ -64,8 +64,8 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
   };
   const mentioned: string[] = [];
   /** 模拟用户这句话 @ 了已建的需求；mention=false 时原样输入。 */
-  const capture = (text = PHONE, source = "interactive", rpc = false, mention = true) =>
-    interaction.captureInput({ source, text: (mention ? mentioned.map((id) => `@[登录#${id.slice(-4)}] `).join("") : "") + text }, ctx, rpc);
+  const capture = (text = PHONE, source = "interactive", mention = true) =>
+    interaction.captureInput({ source, text: (mention ? mentioned.map((id) => `@[登录#${id.slice(-4)}] `).join("") : "") + text }, ctx);
   const service = await RequirementService.open({ dataRoot, repositoryRoot, repoId, authorize: () => true });
   const create = async (body = BODY) => {
     capture(); scriptReplies(provider, [{ type: "text", text: '{"allow":true}' }]);
@@ -112,7 +112,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
   test("M8D-AC3：这句话 @ 到的需求直接按原话登记，不弹窗；没 @ 到时弹出批准窗口，显示需求名、版本与简介，取消即不登记不生效", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
-    w.capture("同意", "interactive", false, false); w.answerWindows(false);
+    w.capture("同意", "interactive", false); w.answerWindows(false);
     await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "decision_declined" });
     expect(w.windows).toHaveLength(1);
     expect(w.windows[0]!.title).toBe("批准需求");
@@ -736,10 +736,10 @@ test("M8D-AC6：解释器的对象说明里带有本窗口其他还没批准的�
   const w = await world(), a = await w.create(), b = await w.create();
   await w.create();
   const first = await w.request(a), second = await w.request(b);
-  w.capture("两处我都批准", "interactive", false, false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
+  w.capture("两处我都批准", "interactive", false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
   expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prodActivated: true });
   expect(interpreterContext(w).addressed).toEqual({ how: "window", otherDrafts: [{ title: "登录", version: 1 }, { title: "登录", version: 1 }] });
-  w.capture("两处我都批准", "interactive", false, false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
+  w.capture("两处我都批准", "interactive", false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
   await w.call({ action: "confirmUpdate", ...second.input });
   expect(interpreterContext(w).addressed).toEqual({ how: "window", otherDrafts: [{ title: "登录", version: 1 }] });
 });
@@ -762,7 +762,7 @@ test("M8D-AC3：解释器的上下文里带有程序认定的对象事实：@ �
   w.capture("两处我都批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
   await w.call({ action: "confirmUpdate", ...first.input });
   expect(interpreterContext(w).addressed).toEqual({ how: "mention", others: 1, otherDrafts: [{ title: "登录", version: 1 }] });
-  w.capture("批准登录", "interactive", false, false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
+  w.capture("批准登录", "interactive", false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
   await w.call({ action: "confirmUpdate", ...second.input });
   expect(interpreterContext(w).addressed).toEqual({ how: "window" });
   expect(w.provider.requests.filter((r) => r.systemPrompt?.includes("需求解释器")).at(-1)!.systemPrompt).toContain("context.addressed");

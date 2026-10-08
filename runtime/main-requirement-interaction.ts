@@ -55,7 +55,7 @@ export interface MainRequirementInteractionOptions {
   now?: () => number;
 }
 interface CapturedInput {
-  event: { source: "interactive" | "rpc"; text: string };
+  event: { source: "interactive"; text: string };
   sessionId: string; expiresAt: number; abort: AbortController;
   /** 用户在主代理的提问窗口里作答：只算回答，不能当作批准或裁决。 */
   fromQuestionWindow?: true;
@@ -162,11 +162,11 @@ export class MainRequirementInteraction {
   }
   shutdown(): void { this.revoke(); this.#ctx = undefined; }
   dispose(): void { this.shutdown(); this.#unsubscribeHost(); }
-  /** 只由SDK input事件调用；RPC许可由宿主传入，默认不接受RPC。 */
-  captureInput(event: { source: string; text: string }, ctx: ExtensionContext, rpcAuthorized = false): { invalid: InvalidMention[] } {
+  /** 只由SDK input事件调用；只认用户在界面里的真实输入。 */
+  captureInput(event: { source: string; text: string }, ctx: ExtensionContext): { invalid: InvalidMention[] } {
     this.#clearInput();
     const host = this.#host(ctx);
-    if (event.source !== "interactive" && !(event.source === "rpc" && rpcAuthorized)) return { invalid: [] };
+    if (event.source !== "interactive") return { invalid: [] };
     if (typeof event.text !== "string" || !event.text.trim() || Buffer.byteLength(event.text) > 32_768) return { invalid: [] };
     const expiresAt = this.#now() + (this.#options.inputTtlMs ?? 900_000);
     this.#input = { event: { source: event.source, text: event.text }, sessionId: host.sessionId, expiresAt, abort: new AbortController() };
@@ -823,7 +823,7 @@ export class MainRequirementInteraction {
       if (current.version !== result.version || current.data.epoch !== result.epoch) denied("stale_result");
       const content = [{ type: "text" as const, text: JSON.stringify(result) }], response = { content, details: result };
       if (Buffer.byteLength(JSON.stringify(response)) > TRANSPORT_BYTES) denied("response_limit");
-      if (key && !existing && ["create", "updateDraft", "confirmUpdate", "reply", "forward"].includes(String(params.action))) {
+      if (key && !existing && ["create", "updateDraft", "confirmUpdate", "reply"].includes(String(params.action))) {
         while (this.#completed.size >= 16) this.#completed.delete(this.#completed.keys().next().value!);
         this.#completed.set(key, { requestHash: decisionDigest(params), result, repoId });
       }

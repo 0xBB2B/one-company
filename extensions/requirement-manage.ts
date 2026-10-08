@@ -54,8 +54,6 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   let unregisterShutdown: (() => void) | undefined;
   const connections: Array<() => void> = [];
   const shutdown = () => { mention = undefined; for (const stop of connections.splice(0)) stop(); intake.shutdown(); interaction.shutdown(); authorization.shutdown(); };
-  pi.registerFlag("requirement-rpc-input", { type: "boolean", default: false,
-    description: "允许当前已接入RPC客户端的真实input用于需求决定；不接受扩展转述" });
   pi.on("session_start", async (_event, ctx) => {
     interaction.shutdown();
     intake.shutdown();
@@ -89,7 +87,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     intake.startSession(ctx);
   });
   pi.on("input", (event, ctx) => {
-    const { invalid } = interaction.captureInput(event, ctx, ctx.mode === "rpc" && pi.getFlag("requirement-rpc-input") === true);
+    const { invalid } = interaction.captureInput(event, ctx);
     if (invalid.length) {
       const valid = interaction.inputTargets().length;
       ctx.ui.notify(`有 ${invalid.length} 个 @ 无效：${invalid.map((item) => `${item.token}（${item.reason}）`).join("、")}。` +

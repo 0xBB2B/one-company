@@ -20,7 +20,7 @@ test("user_interact不接受转述、请求选择、角色或回执", async () =
   expect(Value.Check(USER_INTERACT_PARAMETERS, base)).toBe(false);
   await expect(tool.execute("call", base as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
   const unknown = await tool.execute("call", { request: { ...base, purpose: "approve" } } as never, undefined, undefined, {} as never).catch((error: unknown) => error);
-  expect((unknown as Error).message).toContain("可用 purpose:action：user-confirmation:ask、user-confirmation:reply、user-confirmation:forward、adjudicate:reply、panel-item:ask、pm-intake:ask、pm-intake:forward、pm-intake:reply");
+  expect((unknown as Error).message).toContain("可用 purpose:action：user-confirmation:ask、user-confirmation:reply、adjudicate:reply、panel-item:ask、pm-intake:ask、pm-intake:forward、pm-intake:reply");
   const extra = await tool.execute("call", { request: { ...base, sectionId: "x" } } as never, undefined, undefined, {} as never).catch((error: unknown) => error);
   expect((extra as Error).message).toContain("多余字段：sectionId");
 });

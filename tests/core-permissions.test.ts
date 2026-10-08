@@ -41,7 +41,7 @@ test("固定六类职责与10个核心工具，action 枚举与计划 §9.1 一�
     "workspace-prepare", "workspace-recycle", "conventions-update"]);
   expect(CORE_TOOL_ACTIONS.requirement_manage).toEqual(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata", "list"]);
   expect(CORE_TOOL_ACTIONS.plan_manage).toEqual(["propose", "read", "update", "confirm", "assess-update"]);
-  expect(CORE_TOOL_ACTIONS.workflow_manage).toEqual(["status", "advance", "finish", "repair", "check-decision", "report", "escalate", "close", "delivery-check"]);
+  expect(CORE_TOOL_ACTIONS.workflow_manage).toEqual(["status", "advance", "finish", "check-decision", "report", "escalate", "close", "delivery-check"]);
   expect(Object.isFrozen(CORE_TOOL_ACTIONS)).toBe(true);
 });
 
@@ -76,8 +76,8 @@ test("action 级上限按计划 §9.1/§9.3 收窄：分支工作区只归 main�
     expect(authorizeToolAction(role, "result_submit", "research")).toBe(false);
   }
   expect(granted("reviewer", "plan_manage")).toEqual(["read"]);
-  expect(granted("pm", "workflow_manage")).toEqual(["status", "advance", "finish", "repair", "check-decision", "report", "escalate", "delivery-check"]);
-  expect(granted("main", "workflow_manage")).toEqual(["status", "advance", "finish", "repair", "check-decision", "close", "delivery-check"]);
+  expect(granted("pm", "workflow_manage")).toEqual(["status", "advance", "finish", "check-decision", "report", "escalate", "delivery-check"]);
+  expect(granted("main", "workflow_manage")).toEqual(["status", "advance", "finish", "check-decision", "close", "delivery-check"]);
   for (const role of CORE_ROLES) expect(authorizeToolAction(role, "workflow_manage", "init")).toBe(false);
   for (const role of CORE_ROLES) if (role !== "worker") expect(authorizeToolAction(role, "change_apply", "apply")).toBe(false);
   for (const role of CORE_ROLES) if (role !== "main" && role !== "pm") expect(authorizeToolAction(role, "agent_manage", "dispatch")).toBe(false);

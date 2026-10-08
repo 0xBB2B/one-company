@@ -46,7 +46,7 @@ const VERIFICATION_ADVICE = {
   grant_invalid: { why: "派工身份记录不合规，角色或需求绑定无法识别", next: "停止操作，不要重试；在回复里说明，由上级处理" },
   requirement_changed: { why: "需求已不是派工时的状态", next: "停止操作，不要重试；在回复里说明，由上级按新状态重新安排" },
   invalid_shape: COMMON_ADVICE.invalid_shape,
-  kind_forbidden: { why: "worker 与 reviewer 只能运行调试检查（debug），PM 只能运行正式检查（formal）", next: "改用本角色允许的检查种类" },
+  kind_forbidden: { why: "worker 与 reviewer 只能运行调试检查（debug），PM 与 QA 只能运行正式检查（formal）", next: "改用本角色允许的检查种类" },
   check_phase_active: { why: "检查阶段进行中，不能运行调试检查", next: "等检查轮结束后再运行" },
   round_not_open: { why: "没有开放中的检查轮，或检查轮已失效", next: "先用 workflow_manage 开启检查轮，再运行正式检查" },
   input_changed: { why: "检查开始前受保护的输入已变化，本检查轮已失效", next: "结束本检查轮，重新开检查轮后再运行" },

@@ -205,7 +205,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
       entries: [{ ...entry("constraint", "需求身份、标题与格式板块"), unitIds: ["metadata", "background", "implementation", "acceptance"] },
         { ...entry("target", "通过真实SDK处理需求保存"), unitIds: ["requirements", "features"] }, { ...entry("action", "只分析接线"), unitIds: ["requirements", "features"] }] };
     scriptReplies(provider, [
-      { type: "toolcall", name: "one_company_user_interact", input: { request: { action: "forward", repoId: identity.repoId, requirementId: details.requirementId,
+      { type: "toolcall", name: "one_company_user_interact", input: { request: { action: "reply", repoId: identity.repoId, requirementId: details.requirementId,
         savedOperationId: operationId, operationId: confirmationOperationId, version: details.version } } },
       { type: "text", text: JSON.stringify(interpretation) },
       { type: "text", text: "done" },
@@ -213,9 +213,9 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     await session.prompt("安装产物需要通过真实SDK处理需求保存，本轮只分析接线，不实施", { source: "interactive" });
     await session.waitForIdle();
     expect(await git(requirementRoot, ["rev-list", "--count", "HEAD"])).toBe("1");
-    const forwarded = session.messages.find((message) => message.role === "toolResult" && message.toolName === "one_company_user_interact");
-    expect(forwarded?.isError, JSON.stringify(forwarded?.content)).toBe(false);
-    expect(forwarded?.details).toMatchObject({ targetRecorded: true, prodActivated: true });
+    const replied = session.messages.find((message) => message.role === "toolResult" && message.toolName === "one_company_user_interact");
+    expect(replied?.isError, JSON.stringify(replied?.content)).toBe(false);
+    expect(replied?.details).toMatchObject({ targetRecorded: true, prodActivated: true });
     expect(notifications.filter((entry) => entry.type === "error")).toEqual([]);
   } finally {
     const cleanupErrors: unknown[] = [];

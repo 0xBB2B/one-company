@@ -146,8 +146,8 @@ for (const change of ["superseded", "modified", "missing"] as const) test(`真�
   const authorized = document()!; expect(authorized).not.toBeNull();
   expect(authorized.manifest.units.find((u) => u.id === "C")!.decisionIds).toEqual([saved.decisionIds[4], oldId]);
   expect(authorized.authorization.receiptId).not.toBe(old.basisReceiptId);
-  expect(second.authorizeScope(interpreted.capability, binding, { action: "implement", goalIds: ["A"], constraintIds: ["C"] })).not.toBeNull();
-  expect(second.authorizeScope(interpreted.capability, binding, { action: "implement", goalIds: ["C"], constraintIds: [] })).toBeNull();
+  expect(approvedManifestScope(authorized.manifest, { action: "implement", goalIds: ["A"], constraintIds: ["C"] })).not.toBeNull();
+  expect(approvedManifestScope(authorized.manifest, { action: "implement", goalIds: ["C"], constraintIds: [] })).toBeNull();
   const store = new ApprovalManifestStore({ ...f.options, authorize: () => true,
     loadExpected: async () => { const c = await load(); return { requirementId: c.requirementId, candidate: c.candidate, partition: c.partition }; },
     admit: (r) => { const d = document(); return d && decisionDigest(d.authorization.manifest) === decisionDigest(r.reference)
@@ -183,8 +183,8 @@ test("真实saved候选→Core部分批准→元数据清单→prod批准/read/�
   const path = join(prodRequirementPath({ ...f.options, requirementId: f.saved.requirementId }), "prod.md");
   const bytes = await readFile(path);
   const manifest = f.document()!.manifest;
-  expect(f.core.authorizeScope(f.interpreted.capability, f.binding(), { action: "implement", goalIds: ["A"], constraintIds: [] })).not.toBeNull();
-  expect(f.core.authorizeScope(f.interpreted.capability, f.binding(), { action: "implement", goalIds: ["B"], constraintIds: [] })).toBeNull();
+  expect(approvedManifestScope(manifest, { action: "implement", goalIds: ["A"], constraintIds: [] })).not.toBeNull();
+  expect(approvedManifestScope(manifest, { action: "implement", goalIds: ["B"], constraintIds: [] })).toBeNull();
   expect(f.core.authorizeDocument(JSON.parse(JSON.stringify(f.interpreted.capability)) as InteractionCapability, f.binding())).toBeNull();
   const ref = await f.store.register(manifest);
   expect(await f.store.register(manifest)).toEqual(ref);

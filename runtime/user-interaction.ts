@@ -21,8 +21,8 @@ import type { InteractionContext, InteractionInterpretation, InteractionEntry } 
 import { ApprovalUnitIds, ApprovalPartition } from "./user-interaction-format.ts";
 import { adviceOf } from "./tool-failure.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, recordInteractionResolutionIn, loadInteractionContinuity, assertRetainedEvidenceIn, continuityInputProofIn } from "./interaction-continuity.ts";
-import { validateDocumentReview, createApprovalManifest, checkApprovalManifest, approvedManifestScope, approvalManifestReference } from "./approval-manifest.ts";
-import type { ApprovalManifest, ApprovalManifestReference, ApprovalScope } from "./approval-manifest.ts";
+import { validateDocumentReview, createApprovalManifest, checkApprovalManifest, approvalManifestReference } from "./approval-manifest.ts";
+import type { ApprovalManifest, ApprovalManifestReference } from "./approval-manifest.ts";
 
 export type { InteractionAction, InteractionBasis, CandidateBinding, PendingQuestion, InteractionContext, InteractionInterpretation } from "./user-interaction-format.ts";
 export { UserInteractionError } from "./user-interaction-format.ts";
@@ -102,7 +102,7 @@ function synchronousPermission(value: unknown): boolean {
   return value === true;
 }
 /**
- * 宿主内部组件：startSession/captureInput只能由真实input事件处理器持有，RPC连接须已获用户许可。
+ * 宿主内部组件：startSession/captureInput只能由真实input事件处理器持有。
  * 任意同进程恶意扩展不在隔离保证内；工具注册层不得转发原话、角色或能力参数。
  * 原文只驻留当前输入和一次无工具模型调用；释放JS引用不承诺擦除GC/远端已收到的字节。
  */
@@ -432,12 +432,7 @@ export class UserInteractionCore {
     const manifest = this.#verified?.manifest;
     return authorization && manifest ? { authorization, manifest: structuredClone(manifest) } : null;
   }
-  /** 每次按精确目标/约束集合核验；不能兑换旧完整候选的实施能力。 */
-  authorizeScope(capability: InteractionCapability, binding: { basis: InteractionBasis; candidate: CandidateBinding }, scope: ApprovalScope): InteractionAuthorization | null {
-    if (!scope || !this.authorizeDocument(capability, binding)) return null;
-    return this.#authorizeManifest(capability, binding, scope);
-  }
-  #authorizeManifest(capability: InteractionCapability, binding: { basis: InteractionBasis; candidate: CandidateBinding }, scope?: ApprovalScope): InteractionAuthorization | null {
+  #authorizeManifest(capability: InteractionCapability, binding: { basis: InteractionBasis; candidate: CandidateBinding }): InteractionAuthorization | null {
     if (this.#authorizing) return null;
     this.#authorizing = true;
     try {
@@ -445,11 +440,9 @@ export class UserInteractionCore {
       if (!doc || !v.manifest || !v.savedRecords || decisionDigest(binding.basis) !== decisionDigest(v.context.basis) ||
         decisionDigest(binding.candidate) !== decisionDigest(doc.candidate)) return null;
       const manifest = checkApprovalManifest(v.manifest, { requirementId: v.context.basis.requirementId, candidate: doc.candidate, partition: doc.partition });
-      const action = scope ? approvedManifestScope(manifest, scope) : undefined;
-      if (scope && !action) return null;
       const request: InteractionAuthorization = frozen({ repoId: this.#options.repoId, basis: structuredClone(v.context.basis), candidate: structuredClone(doc.candidate),
-        action: action?.action ?? "authorize-document", receiptId: v.receiptId, scope: "manifest-bound-scope",
-        manifest: approvalManifestReference(manifest), ...(v.savedInputProof ? { inputProof: v.savedInputProof } : {}), ...(action ? { goalIds: [...action.goalIds], constraintIds: [...action.constraintIds] } : {}) });
+        action: "authorize-document", receiptId: v.receiptId, scope: "manifest-bound-scope",
+        manifest: approvalManifestReference(manifest), ...(v.savedInputProof ? { inputProof: v.savedInputProof } : {}) });
       if (!synchronousPermission(this.#options.authorizeAction?.(request)) || this.#requireVerified(capability) !== v) return null;
       // 任一审核依据变化均保守失效；独立范围的后续续行需要可信局部影响复核，本组件不提供恢复通路。
       const records = v.savedRecords;

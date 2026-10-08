@@ -87,7 +87,7 @@ const CLOSE_ADVICE = {
   invalid_shape: COMMON_ADVICE.invalid_shape,
   not_found: { why: "找不到对应的关闭记录或待验收报告", next: "用 status 查看需求当前的关闭与报告状态" },
   not_closed: { why: "需求还没有以完成关闭，不能归档", next: "先以完成关闭需求，再归档" },
-  archive_conflict: { why: "归档位置已有内容不同的文件", next: "请用户检查归档目录里的同名文件，处理后用 repair 续办" },
+  archive_conflict: { why: "归档位置已有内容不同的文件", next: "请用户检查归档目录里的同名文件，处理后以原决定编号再次 close 续办" },
   archive_unavailable: { why: "这个需求没有归档资格或归档内容不可用", next: "只有以完成关闭的需求才会归档；其他情况不需要归档" },
 } as const satisfies Record<string, FailureAdvice>;
 export type CloseErrorCode = keyof typeof CLOSE_ADVICE;

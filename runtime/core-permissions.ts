@@ -14,7 +14,7 @@ export const CORE_TOOL_ACTIONS = Object.freeze({
   change_apply: Object.freeze(["prepare", "apply", "import", "status"] as const),
   verification_run: Object.freeze(["run", "stop", "status"] as const),
   result_submit: Object.freeze(["research", "verdict", "prototype"] as const),
-  workflow_manage: Object.freeze(["status", "advance", "finish", "repair", "check-decision", "report", "escalate", "close", "delivery-check"] as const),
+  workflow_manage: Object.freeze(["status", "advance", "finish", "check-decision", "report", "escalate", "close", "delivery-check"] as const),
 });
 export type CoreTool = keyof typeof CORE_TOOL_ACTIONS;
 export type CoreAction<T extends CoreTool> = (typeof CORE_TOOL_ACTIONS)[T][number];
