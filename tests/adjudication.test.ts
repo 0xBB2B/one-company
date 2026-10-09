@@ -501,3 +501,40 @@ test("M8L-AC3：取消或拒绝整个需求用 itemId=requirement:<编号> 的�
   await expect(w.panelAsk({ itemId: target, itemVersion: `${target}:1`, question: "确认取消吗？", rootCheck: "x",
     choices: [choice("调整需求"), choice("取消需求", true), choice("拒绝需求")] })).rejects.toThrow("事项在用户做决定后已变化");
 });
+
+test("用户再给一次机会后，那次运行因批准新版本、任务被改而被取代：任务交回用户裁决，不停在派不出去的待派出；用户再给机会后按用户上限派出", async () => {
+  const w = await world();
+  const state = async (id: string) => { const run = await w.runStore.get(id); return run.ok ? run.run.state : "missing"; };
+  const planVersion = () => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
+  await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  await until(() => w.provider.queue.length === 0);
+  w.provider.queue.push({ type: "text", text: "第三次慢慢写", chunkDelayMs: 30_000 });
+  const third = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null });
+  await until(async () => await state(third.runId) === "running" && w.provider.queue.length === 0);
+
+  w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功并记住设备。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" });
+  await until(async () => await state(third.runId) === "paused");
+  await until(() => w.owner().context.baseline?.revision === 2);
+  await w.readDiffs(["revision 1 → 2"]);
+  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    { taskId: w.login, version: w.task("login").version, assessment: "affected", rationale: "登录要记住设备" },
+    { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
+    global: { assessment: "unaffected", rationale: "无全局变化" } });
+  await w.plan.execute({ action: "update", planVersion: planVersion(), modify: [{ taskId: w.login, version: w.task("login").version, spec: spec("login", "goal.login", { objective: "登录并记住设备" }) }] });
+  await w.plan.execute({ action: "confirm", planVersion: planVersion() });
+  await until(async () => await state(third.runId) === "stopped");
+  await until(() => w.task("login").attempts.at(-1)!.outcome === "superseded");
+
+  expect(w.task("login").status).toBe("awaiting_user");
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null })).rejects.toMatchObject({ code: "task_not_ready" });
+  expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.itemId)).toContain(w.itemId);
+  const result = await w.adjudicate("再给一次机会，给 4 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:4"])]);
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 4, taskStatus: "pending" });
+  await until(() => w.provider.queue.length === 0);
+  w.provider.queue.push({ type: "text", text: "第四次" }, { type: "text", text: "PM 收到" });
+  const fourth = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null });
+  expect(fourth.maxTurns).toBe(4);
+});

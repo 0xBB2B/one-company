@@ -370,12 +370,16 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       const taskId = ids.get(spec.key)!;
       const version = (previous?.get(taskId)?.version ?? 0) + 1;
       const hold = sizeHoldOf(spec);
+      const prior = previous?.get(taskId), decision = prior?.userDecision && carriedDecision(prior.userDecision, version);
+      // 两次机会已用完又没有能用的用户决定时，待派出也派不出去，只能交回用户裁决
+      const exhausted = prior !== undefined && countedAttempts(prior) >= 2 && !(decision && decision.usedByRunId === null &&
+        ((decision.choice === "retry" && decision.taskVersion === version) || (decision.choice === "adjust" && version > decision.taskVersion)));
       records.push(checked(TaskRecord, { format: "plan-task/v1", taskId, requirementId: grant.requirementId, version, key: spec.key, role: spec.role,
         goalUnitIds: spec.goalUnitIds, constraintUnitIds: spec.constraintUnitIds, closure: closureOf(manifest, spec.goalUnitIds, spec.constraintUnitIds),
         dependsOn: spec.dependsOn.map((dep) => ids.get(dep)!), writePaths: spec.writePaths, blockedByQuestionIds: spec.blockedByQuestionIds,
         maxTurns: spec.maxTurns, ...(spec.agent ? { agent: spec.agent } : {}), ...(spec.agentReason ? { agentReason: spec.agentReason } : {}),
         ...(spec.reviewAgent ? { reviewAgent: spec.reviewAgent } : {}),
-        detail: await writeDetail(taskId, version, spec), status: hold.length ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
+        detail: await writeDetail(taskId, version, spec), status: hold.length || exhausted ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: carriedDecision(previous.get(taskId)!.userDecision!, version) } : {}),
         // 交过原型的任务不能靠修改任务去掉界面标记，否则 PM 能跳过用户对原型的确认
         ...(spec.ui || previous?.get(taskId)?.prototypes?.length ? { ui: true } : {}),
