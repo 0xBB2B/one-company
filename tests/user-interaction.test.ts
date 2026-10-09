@@ -834,6 +834,21 @@ test("M8J-AC1：解释器不指定时限时默认 120 秒：过了 60 秒还在�
     expect(outcome).toMatchObject({ code: "model_cancelled" });
   } finally { vi.useRealTimers(); }
 });
+test("M9：首次回答与重答各自计时：首答 100 秒未通过核对、重答再用 100 秒，合计超过 120 秒仍然采用重答结果", async () => {
+  const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
+  const good = modelAnswer(w.output()), missing = { ...good, entries: good.entries.map((e) => ({ ...e, unitIds: (e as { unitIds?: string[] }).unitIds?.filter((id) => id !== "B") })) };
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(missing))]), fauxAssistantMessage([fauxText(JSON.stringify(good))])]);
+  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => new Promise((resolve) => { setTimeout(() => resolve(complete(m, c, o)), 100_000); }));
+  const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel() });
+  vi.useFakeTimers();
+  try {
+    let outcome: unknown = "pending";
+    void interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal })
+      .then((output) => { outcome = JSON.parse(output); }, (error: unknown) => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(201_000);
+    expect(outcome).toMatchObject({ documentReview: { units: expect.any(Array) } });
+  } finally { vi.useRealTimers(); }
+});
 test("M9：同一段落既有已确认又有未决条目时，重答反馈与最终拒绝都写明是哪一段、为什么、怎么改", async () => {
   const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete, calls: Context[] = [];
   const mixed = modelAnswer(w.output()) as { entries: Array<{ unitIds?: string[] }> };

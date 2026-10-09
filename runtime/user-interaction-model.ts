@@ -56,8 +56,6 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
       const onAbort = () => controller.abort();
       input.signal.addEventListener("abort", onAbort, { once: true });
       if (input.signal.aborted) controller.abort();
-      const timer = setTimeout(onAbort, timeoutMs); timer.unref();
-      let rejectAborted: (() => void) | undefined;
       const context: Context = { systemPrompt: INSTRUCTIONS, messages: [], tools: [] };
       try {
         controller.signal.throwIfAborted();
@@ -68,18 +66,30 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
         const payload = JSON.stringify(request);
         if (Buffer.byteLength(payload) > 65_536) throw new UserInteractionError("request_limit");
         context.messages.push({ role: "user", content: payload, timestamp: Date.now() });
-        const aborted = new Promise<never>((_resolve, reject) => {
-          rejectAborted = () => reject(new UserInteractionError("model_cancelled"));
-          controller.signal.addEventListener("abort", rejectAborted, { once: true });
-          if (controller.signal.aborted) rejectAborted();
-        });
         // 核对不过时允许按错误代码重答一次：真实模型偶尔漏覆盖单位或写错结构提示，核对规则本身不放宽
         let firstRejection: string | undefined;
         for (;;) {
-          const response = await Promise.race([options.thinking
-            ? registry.streamSimple(model, context, { signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384), reasoning: options.thinking }).result()
-            : registry.complete(model, context, { signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384) }), aborted]);
-          controller.signal.throwIfAborted();
+          // 首次回答与重答各自计时：两次共用一个时限时，首答稍慢就会挤掉重答
+          const attempt = new AbortController(), stop = () => attempt.abort();
+          controller.signal.addEventListener("abort", stop, { once: true });
+          if (controller.signal.aborted) attempt.abort();
+          const timer = setTimeout(stop, timeoutMs); timer.unref();
+          let rejectAborted: (() => void) | undefined;
+          let response: Awaited<ReturnType<typeof registry.complete>>;
+          try {
+            const aborted = new Promise<never>((_resolve, reject) => {
+              rejectAborted = () => reject(new UserInteractionError("model_cancelled"));
+              attempt.signal.addEventListener("abort", rejectAborted, { once: true });
+              if (attempt.signal.aborted) rejectAborted();
+            });
+            response = await Promise.race([options.thinking
+              ? registry.streamSimple(model, context, { signal: attempt.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384), reasoning: options.thinking }).result()
+              : registry.complete(model, context, { signal: attempt.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384) }), aborted]);
+            attempt.signal.throwIfAborted();
+          } finally {
+            clearTimeout(timer); controller.signal.removeEventListener("abort", stop);
+            if (rejectAborted) attempt.signal.removeEventListener("abort", rejectAborted);
+          }
           if (response.stopReason !== "stop" || response.provider !== model.provider || response.model !== model.id ||
             response.content.some((block) => block.type !== "text" && block.type !== "thinking")) throw new UserInteractionError("model_response_denied");
           if (decisionDigest(modelIdentity(current())) !== decisionDigest(input.model)) throw new UserInteractionError("model_changed");
@@ -107,8 +117,7 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
         throw new UserInteractionError("model_interpretation_denied");
       } finally {
         context.messages.length = 0;
-        clearTimeout(timer); input.signal.removeEventListener("abort", onAbort);
-        if (rejectAborted) controller.signal.removeEventListener("abort", rejectAborted);
+        input.signal.removeEventListener("abort", onAbort);
         controller.abort();
       }
     },
