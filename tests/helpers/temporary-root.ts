@@ -201,7 +201,7 @@ export function temporaryRoot(): string {
   }
 
   if (testProcess[ROOT_PROPERTY]) return testProcess[ROOT_PROPERTY];
-  const systemRoot = process.platform === "win32" ? tmpdir() : "/tmp";
+  const systemRoot = process.env.ONE_COMPANY_TEST_RUN_ROOT ?? (process.platform === "win32" ? tmpdir() : "/tmp");
   const root = realpathSync(mkdtempSync(join(systemRoot, "pi-t-")));
   chmodSync(root, 0o700);
   testProcess[ROOT_PROPERTY] = root;
