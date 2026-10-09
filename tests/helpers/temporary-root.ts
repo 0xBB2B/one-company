@@ -1,6 +1,6 @@
-import { chmodSync, lstatSync, mkdtempSync, realpathSync, rmdirSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, realpathSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 
 const PARENT_BINDING_ENV = "ONE_COMPANY_TEST_PARENT_BINDING";
 const ROOT_PROPERTY = "__oneCompanyTestTemporaryRoot";
@@ -201,9 +201,10 @@ export function temporaryRoot(): string {
   }
 
   if (testProcess[ROOT_PROPERTY]) return testProcess[ROOT_PROPERTY];
-  const systemRoot = process.env.ONE_COMPANY_TEST_RUN_ROOT ?? (process.platform === "win32" ? tmpdir() : "/tmp");
-  const root = realpathSync(mkdtempSync(join(systemRoot, "pi-t-")));
+  const root = realpathSync(mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "pi-t-")));
   chmodSync(root, 0o700);
+  const runRegistry = process.env.ONE_COMPANY_TEST_RUN_ROOT;
+  if (runRegistry) writeFileSync(join(runRegistry, basename(root)), "");
   testProcess[ROOT_PROPERTY] = root;
   process.once("exit", cleanupTemporaryRoot);
   return root;
