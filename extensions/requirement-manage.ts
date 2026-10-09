@@ -15,6 +15,7 @@ import { MainRequirementInteraction } from "../runtime/main-requirement-interact
 import type { OpenRequirementService, RequirementManageHostContext } from "../runtime/main-requirement-interaction.ts";
 import { failureText, toolStep } from "../runtime/tool-failure.ts";
 import { registerRequirementInput, registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
+import type { WindowContextValue } from "./lifecycle.ts";
 
 export interface RequirementManageExtensionDeps {
   readonly authorization?: HostAuthorizationManager;
@@ -39,12 +40,13 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   const root = deps.dataRoot ?? dataRoot(process.env);
   const authorization = deps.authorization ?? new HostAuthorizationManager({ dataRoot: root });
   const awaitWindow = deps.windowReady ?? windowReady, currentWindow = deps.windowContext ?? windowContext;
+  const hostOf = (window: Pick<WindowContextValue, "windowId" | "sessionId" | "workspace">): RequirementManageHostContext => ({ windowId: window.windowId, sessionId: window.sessionId,
+    repositories: new Map(window.workspace.repos.map((repo) => [repo.repoId, { path: repo.path }])) });
   const resolveHost = (ctx: ExtensionContext): RequirementManageHostContext => {
     const window = currentWindow();
     if (window.sessionId !== ctx.sessionManager.getSessionId() ||
       window.workspace.repos.some((repo) => window.clients.forRepo(repo.repoId)?.state().status !== "connected")) throw new HostAuthorizationError("host_unavailable");
-    return { windowId: window.windowId, sessionId: window.sessionId,
-      repositories: new Map(window.workspace.repos.map((repo) => [repo.repoId, { path: repo.path }])) };
+    return hostOf(window);
   };
   const interaction = new MainRequirementInteraction({ dataRoot: root,
     authorization, resolveHost, ...(deps.openService ? { openService: deps.openService } : {}) });
@@ -64,7 +66,8 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     for (const stop of connections.splice(0)) stop();
     for (const repo of window.workspace.repos) {
       const client = window.clients.forRepo(repo.repoId);
-      if (!client || client.state().status !== "connected") { shutdown(); throw new HostAuthorizationError("host_unavailable"); }
+      // 首连失败时客户端在后台重连；连没连上交给每次调用的 resolveHost 判断，这里撤销登记会让本会话永远用不了需求工具
+      if (!client) { shutdown(); throw new HostAuthorizationError("host_unavailable"); }
       connections.push(client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => authorization.revoke()));
     }
     unregisterShutdown = registerWindowShutdownHook(window, shutdown);
@@ -84,7 +87,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
       ctx.ui.addAutocompleteProvider((current) => requirementMentionProvider(current,
         () => (mention?.candidates() ?? Promise.resolve([])).catch(() => []), () => mention?.multiRepo ?? false));
     }
-    intake.startSession(ctx);
+    intake.startSession(ctx, hostOf(window));
   });
   pi.on("input", (event, ctx) => {
     const { invalid } = interaction.captureInput(event, ctx);

@@ -270,12 +270,12 @@ export class MainIntakeInteraction {
     this.#unsubscribeHost = this.#authorization.onRevoke(() => this.revoke());
   }
 
-  startSession(ctx: ExtensionContext): void {
+  /** host 由窗口启动时给出，不要求守护进程已连上；每次调用仍按 resolveHost 核对连接。 */
+  startSession(ctx: ExtensionContext, host: RequirementManageHostContext = this.#options.resolveHost(ctx)): void {
     if (this.#disposed) deny("disposed");
     this.shutdown();
     const manager = ctx.sessionManager as object;
     const sessionId = ctx.sessionManager.getSessionId();
-    const host = this.#options.resolveHost(ctx);
     const principal = this.#authorization.assertCurrentSession(sessionId);
     if (host.sessionId !== sessionId || host.windowId !== principal.windowId) deny("stale_host");
     const listed = repositories(host);
