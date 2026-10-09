@@ -175,7 +175,7 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     const protectedPaths = [(await repositoryIdentity(root)).commonDir, ...[".git", "docs/prod", ".pi/agents", ".pi/skills", "AGENTS.md"].map((path) => join(root, path)),
       // 角色定义、skills 与项目信任在每次派工时重新读取，写入即可改变后续运行的说明、模型与能力
       ...["agents", "skills", "trust.json"].map((path) => join(agentDir, path)),
-      ...[".pi/agents", ".pi/skills"].map((path) => join(repositoryRoot, path)),
+      ...[".pi/agents", ".pi/skills", "AGENTS.md", "docs/prod"].map((path) => join(repositoryRoot, path)),
       // 安装包含内置角色定义、skills 与守护进程自身代码
       await realpath(dirname(defaultRoleDir()))];
     // 受保护路径若是指向别处的链接，写入会落到链接目标，故一并禁写其真实路径

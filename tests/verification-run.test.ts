@@ -431,7 +431,7 @@ test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承
   }
   const agentDir = join(w.dataRoot, "..");
   for (const target of [join(agentDir, "agents", "pm.md"), join(agentDir, "skills", "x", "SKILL.md"), join(agentDir, "trust.json"), join(w.repositoryRoot, ".pi", "agents", "pm.md"),
-    join(w.repositoryRoot, ".pi", "skills", "requirement-doc", "SKILL.md")]) {
+    join(w.repositoryRoot, ".pi", "skills", "requirement-doc", "SKILL.md"), join(w.repositoryRoot, "AGENTS.md"), join(w.repositoryRoot, "docs", "prod", "x.md")]) {
     const run = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(target, ".."))}; echo x > ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
     expect(run.status).toBe("failed");
     await expect(readFile(target, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
