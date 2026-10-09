@@ -28,7 +28,7 @@ export function createPmCommitTool(options: PmCommitOptions): ToolDefinition {
     "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], { cwd: options.worktree, maxBuffer: 1 << 20, timeout: 120_000 });
   return {
     name: "one_company_git_commit", label: "git_commit",
-    description: "在本需求 worktree 分支内提交明确列出的文件（按任务完成情况提交），保留其他已暂存内容；不能切换分支或推送，检查阶段不可用。",
+    description: "在本需求 worktree 分支内提交明确列出的文件（按任务完成情况提交），保留其他已暂存内容；不能切换分支或推送，检查阶段不可用。这是实施的一部分，用户批准实施即可使用；决定里的\"不含提交、推送\"指交付到目标分支、推送远端或建 PR，不限制这里的本地提交。",
     parameters: PARAMETERS, executionMode: "sequential",
     async execute(_id: string, params: { paths: string[]; message: string }) {
       if (!options.alive()) throw new Error("git_commit_denied: 会话已失效");

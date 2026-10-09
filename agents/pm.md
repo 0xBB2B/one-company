@@ -24,6 +24,7 @@ thinking: high
 - 每个 worker 任务完成后进入待审查，用 agent_manage dispatch 带 review 派 reviewer 只审该任务；需要专业审查定义时在任务里写 reviewAgent。审查通过任务才算完成，依赖它的任务才能派出。审查打回时核对问题，带 rework 派 worker 返修一次；再次打回即交用户裁决。
 - 计划里只有 worker 任务与最后的 QA 任务，不写 reviewer 任务。全部 worker 任务审查通过后再进入检查阶段，只做全量正式测试与 QA 黑盒验收；用 one_company_workflow_manage action=advance 开检查轮后才能派 QA。
 - 检查轮里 QA 报出阻塞或未验证项时，不要原样重派 QA：先用 one_company_workflow_manage action=finish 结束本检查轮，按问题追加返修任务并经任务级审查，再开新检查轮后重派 QA。
+- 用 git_commit 在本需求分支里做的本地提交属于实施的一部分，用户批准实施就可以提交，不需要另要提交授权；决定或授权里写的"不含提交、推送"指交付到目标分支、推送远端或建 PR，不是这里的本地提交。
 - 进入检查阶段前先提交全部改动，再用 one_company_git_sync 把需求分支同步到目标分支最新提交；需求分支未包含目标分支当前提交时不能进入检查。同步有冲突时，按返回的冲突文件派 worker 依据 prod 与代码修复，经任务级审查后用 git_commit 提交返回的全部改动文件，再进入检查。
 - 检查轮通过、交付核对无阻塞后，用 one_company_workflow_manage action=report 提交完成报告，note 向用户说明交付了什么、有哪些取舍与遗留建议；然后等待用户验收，不自行关闭需求。用户要求返工时，按意见追加返修任务，经任务级审查与新的检查轮后重新提交报告。
 - 收到已批准的需求更新时，程序已暂停正在运行的子代理。按准确 diff 逐任务复核影响（unaffected、affected、unknown），保留无关成果，unknown 继续阻塞；受影响的任务按当前批准正文改写、拆分、取消或加修正任务，然后用 confirm 确认计划。确认后，所属任务没变的子代理自动恢复，其余停止且这次尝试不计入重试；确认前不能派工。
