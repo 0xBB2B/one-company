@@ -173,7 +173,7 @@ export class UserInteractionCore {
     if (q.requestId !== requestId || q.repoId !== this.#options.repoId || decisionDigest(q.basis) !== decisionDigest(basis)) throw new UserInteractionError("question_identity_mismatch");
     this.#assertBasis(basis); this.#access("read-decisions", { requirementId: basis.requirementId, requestId }); return q;
   }
-  async interpret(ticket: InputTicket, requirementId: string): Promise<{ interpretation: InteractionInterpretation; capability: InteractionCapability }> {
+  async interpret(ticket: InputTicket, requirementId: string): Promise<{ interpretation: InteractionInterpretation; capability: InteractionCapability; notRecorded: string[] }> {
     const input = this.#currentInput();
     if (ticket !== input.ticket || input.used) throw new UserInteractionError("invalid_input_ticket");
     input.used = true;
@@ -195,7 +195,11 @@ export class UserInteractionCore {
       if (Buffer.byteLength(JSON.stringify({ text: input.text, context })) > 65_536) throw new UserInteractionError("request_limit");
       const source = await this.#options.interpreter.interpret({ text: input.text, context, model, signal: input.controller.signal });
       this.#assertInput(input); this.#assertBasis(context.basis); this.#assertModel(model);
-      const result = frozen(checkInterpretation(source, context));
+      const interpreted = checkInterpretation(source, context);
+      // 裁决入口只登记裁决条目：同一句里夹带的其他内容不能借裁决入口成为已确认的用户决定，原样交回主代理另行处理
+      const adjudicating = Boolean(context.adjudication) && interpreted.entries.some((e) => e.kind === "adjudication");
+      const notRecorded = adjudicating ? interpreted.entries.filter((e) => e.kind !== "adjudication").map((e) => e.conclusion) : [];
+      const result = frozen(adjudicating ? { ...interpreted, entries: interpreted.entries.filter((e) => e.kind === "adjudication") } : interpreted);
       if (context.document) {
         validateDocumentReview(context, result);
         for (const [index, entry] of result.entries.entries()) for (const oldId of entry.supersedes) {
@@ -228,7 +232,7 @@ export class UserInteractionCore {
       const retained = context.document ? frozen({ ...context, currentGoal: "", candidates: context.candidates.map((c) => ({ ...c, diff: "" })),
         document: { ...context.document, title: "", body: "" } }) : context;
       this.#verified = { capability, input, context: retained, model, result, batch: frozen(batch), admission: frozen(admission), receiptId, inputProof };
-      return { interpretation: structuredClone(result), capability };
+      return { interpretation: structuredClone(result), capability, notRecorded };
     } catch (error) {
       if (this.#input === input) this.clearInput();
       // 本模块与短决定格式的核验错误只含程序生成的原因，原样交给主代理；其余可能带原文、prod片段或供应商响应正文，只报笼统原因

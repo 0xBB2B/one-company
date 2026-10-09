@@ -336,14 +336,14 @@ test("任务通过条件超过 8 条或轮数超过 100 时登记后停在待用
   expect(task("login").status).toBe("pending");
 });
 
-test("M7-AC35：解释结果除裁决外还夹带其他条目时整体不登记", async () => {
+test("M7-AC35：解释结果除裁决外还夹带其他条目时只登记裁决，夹带内容不成为决定、原样列为未登记交回主代理", async () => {
   const w = await world();
   const before = w.decisions();
   const result = await w.adjudicate("再给一次 3 轮，另外登录也要支持微信", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"]),
     { ...w.entry([]), kind: "target", conclusion: "支持微信登录", references: [] }]);
-  expect(result).toMatchObject({ status: "unclear" });
-  expect(w.decisions()).toBe(before);
-  expect(w.task("login").status).toBe("awaiting_user");
+  expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3, notRecorded: ["支持微信登录"], notRecordedNext: expect.stringContaining("改草稿") });
+  expect(w.decisions()).toBe(before + 1);
+  expect(w.task("login").status).toBe("pending");
 });
 
 

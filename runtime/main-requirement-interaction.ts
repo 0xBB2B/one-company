@@ -554,11 +554,11 @@ export class MainRequirementInteraction {
     try {
       const core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
       if (!this.#ticket) return denied("current_input_required");
-      const { capability, interpretation } = await core.interpret(this.#ticket, request.requirementId);
-      // 只登记这一条裁决：同批其他条目不能借裁决入口成为已确认的用户决定
+      const { capability, interpretation, notRecorded } = await core.interpret(this.#ticket, request.requirementId);
       const index = interpretation.entries.length === 1 && interpretation.entries[0]!.kind === "adjudication" ? 0 : -1;
       const record = this.#snapshot(host, request.repoId, request.requirementId);
-      const base = { requirementId: request.requirementId, version: record.version, epoch: record.data.epoch, itemId: request.itemId };
+      const base = { requirementId: request.requirementId, version: record.version, epoch: record.data.epoch, itemId: request.itemId,
+        ...(notRecorded.length ? { notRecorded, notRecordedNext: "用户这句话里的这些内容没有登记成决定：执行要求用 agent_manage message 转告 PM；新的需求或范围改动按正常流程改草稿并请用户批准" } : {}) };
       if (index < 0) return this.#prove(ctx, request.repoId, { ...base, status: "unclear", next: "用户未明确选择处理方式或未给出轮数，请向用户确认后重试" });
       const saved = core.save(capability);
       const decisionId = saved.decisionIds[index]!;
