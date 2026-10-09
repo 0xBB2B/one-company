@@ -25,13 +25,13 @@ const Binding = object({ role: Role, callerId: id, runId: id, requirementId: id,
   /** 已开始的检查轮：defer 或等待 PM 决策期间只读该轮登记的原批准基线，由服务而非角色选择版本。 */
   checkRoundId: Type.Optional(id) });
 export type RequirementReadBinding = Static<typeof Binding>;
-const paging = { cursor: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
-  maxBytes: Type.Optional(Type.Integer({ minimum: 4, maximum: PROD_MAX_PAGE_BYTES })) };
+const paging = { maxBytes: Type.Optional(Type.Integer({ minimum: 4, maximum: PROD_MAX_PAGE_BYTES })) };
 export const REQUIREMENT_READ_PARAMETERS = Type.Union([
   object({ action: Type.Literal("read"), ...paging,
     sectionId: Type.Optional(Type.String({ pattern: PROD_SECTION_ID_PATTERN })) }),
   object({ action: Type.Literal("diff"), fromRevision: positive, toRevision: Type.Optional(positive), ...paging }),
   object({ action: Type.Literal("metadata") }),
+  object({ action: Type.Literal("next"), cursor: Type.String({ pattern: "^[a-f0-9]{64}$" }) }),
 ]);
 export interface RequirementReadAuthorization {
   readonly binding: Readonly<RequirementReadBinding>;
@@ -56,10 +56,10 @@ const READ_ADVICE = {
   workspace_changed: { why: "需求工作区绑定已变化", next: STALE },
   requirement_inactive: { why: "需求已不是可读取批准正文的状态", next: STALE },
   lease_stale: { why: "派出本运行的 PM 租约已失效，可能已过期或被新 PM 接管", next: STALE },
-  version_changed: { why: "读取期间批准版本已变化", next: "从第一页重新读取（不带 cursor）" },
+  version_changed: { why: "读取期间批准版本已变化", next: "用 read 或 diff 从第一页重新读取" },
   check_round_invalid: { why: "绑定的检查轮已结束、失效或被中断", next: STALE },
   closed_metadata_only: { why: "需求正在关闭或已关闭，只能读取 metadata", next: "改用 metadata；不要再读正文" },
-  cursor_invalid: { why: "翻页游标已过期、已用过，或与本次的动作、章节、maxBytes 不一致", next: "不带 cursor 从第一页重新读取，翻页时原样沿用上一页给出的 cursor 与参数" },
+  cursor_invalid: { why: "翻页游标不是上一页结果给出的 nextCursor，或已过期、已用过", next: "用 read 或 diff 从第一页重新读取；翻页时 next 原样填上一页结果给出的 nextCursor" },
   diff_unavailable: { why: "检查轮只读该轮登记的原批准基线，不能读取 diff", next: "改用 read 读取批准正文" },
   diff_range_invalid: { why: "diff 的版本范围不对，要求 1 ≤ fromRevision ≤ toRevision ≤ 当前批准版本", next: "按更新通知里的版本号重填 fromRevision 与 toRevision；toRevision 可省略，默认取当前批准版本" },
   response_too_large: { why: "这一页的结果超出了返回上限", next: "调小 maxBytes，或用 sectionId 只读一个章节" },
@@ -204,12 +204,21 @@ async function openReadTool(options: RequirementReadToolOptions) {
   } catch (error) { dispose(); throw readFailure(error); }
 
   async function execute(input: unknown) {
-    let params: ReturnType<typeof checkServiceInput<typeof REQUIREMENT_READ_PARAMETERS>>;
-    try { params = checkServiceInput(REQUIREMENT_READ_PARAMETERS, input); }
+    let request: ReturnType<typeof checkServiceInput<typeof REQUIREMENT_READ_PARAMETERS>>;
+    try { request = checkServiceInput(REQUIREMENT_READ_PARAMETERS, input); }
     catch (error) { throw new RequirementReadError("invalid_shape", (error as Error).message); }
     try {
-      host(params.action);
       purge();
+      const cursor = request.action === "next" ? cursors.get(request.cursor) : undefined;
+      if (request.action === "next" && !cursor) {
+        // 需求关闭时游标随之作废，按关闭说明拒绝，不让模型误以为重读第一页还能读到正文
+        host("metadata");
+        deny(["closing", "closed"].includes(current().data.lifecycle) ? "closed_metadata_only" : "cursor_invalid");
+      }
+      const params = !cursor ? request as Exclude<typeof request, { action: "next" }>
+        : cursor.action === "read" ? { action: "read" as const, maxBytes: cursor.maxBytes, ...(cursor.sectionId !== undefined ? { sectionId: cursor.sectionId } : {}) }
+        : { action: "diff" as const, maxBytes: cursor.maxBytes, fromRevision: cursor.fromRevision!, toRevision: cursor.toRevision! };
+      host(params.action);
       const status = current();
       if (status.data.lifecycle === "closing" || status.data.lifecycle === "closed") {
         cursors.clear();
@@ -238,15 +247,10 @@ async function openReadTool(options: RequirementReadToolOptions) {
       const sectionId = params.action === "read" ? params.sectionId : undefined;
       const maxBytes = params.maxBytes ?? PROD_PAGE_BYTES;
       const goal = target(before);
-      // 模型常给选填的 cursor 填全 0 占位；程序发的游标是随机字节，不会全为 0，按第一页处理
-      const given = params.cursor && !/^0+$/.test(params.cursor) ? params.cursor : undefined;
-      const cursor = given ? cursors.get(given) : undefined;
       const range = params.action === "diff" ? { fromRevision: params.fromRevision, toRevision: params.toRevision ?? before.data.revision } : undefined;
-      if (given && (!cursor || cursor.action !== params.action || cursor.sectionId !== sectionId || cursor.maxBytes !== maxBytes ||
-        cursor.fromRevision !== range?.fromRevision || cursor.toRevision !== range?.toRevision)) deny("cursor_invalid");
       if (cursor && (cursor.version !== before.version || cursor.revision !== goal.revision || cursor.epoch !== before.data.epoch ||
         cursor.commit !== goal.reference.commit || cursor.hash !== goal.reference.hash)) deny("version_changed");
-      if (given) cursors.delete(given);
+      if (request.action === "next") cursors.delete(request.cursor);
       let rangeEnd: ProdReference | undefined;
       if (range) {
         if (binding.checkRoundId) deny("diff_unavailable");

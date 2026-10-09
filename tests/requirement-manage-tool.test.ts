@@ -29,7 +29,7 @@ describe("requirement_manage严格公开参数", () => {
     expect((error as Error).message).toContain("多余字段：requirementId、sectionId；缺少字段：body；本动作允许字段：action、repoId、requestId、operationId、summary、title、body");
     expect((error as Error).message).not.toContain("标题");
     const unknown = await tool.execute("test", { request: { action: "approve", repoId: base.repoId } } as never, undefined, undefined, {} as never).catch((caught: unknown) => caught);
-    expect((unknown as Error).message).toContain("可用 action：create、updateDraft、confirmUpdate、read、diff、metadata");
+    expect((unknown as Error).message).toContain("可用 action：create、updateDraft、confirmUpdate、read、diff、next、metadata");
   });
   test("M8D-AC2：宿主身份只接受已接入的仓库，没有窗口绑定需求的入口，切换撤权且无UI旧回执API", () => {
     const auth = new HostAuthorizationManager({ dataRoot: "/unused-no-database" });

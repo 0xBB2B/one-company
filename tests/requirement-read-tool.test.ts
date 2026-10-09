@@ -113,7 +113,7 @@ test.each([
   let cursor: string | undefined, combined = "", pages = 0;
   do {
     expect(++pages).toBeLessThan(16);
-    const result = bounded(await tool.execute({ action: "read", maxBytes: 2_048, ...(cursor ? { cursor } : {}) }));
+    const result = bounded(await tool.execute(cursor ? { action: "next", cursor } : { action: "read", maxBytes: 2_048 }));
     expect(result.source).toMatchObject({ commit: w.approved.commit, revision: 1, role: "qa" });
     expect(result.coverage.startByte).toBe(Buffer.byteLength(combined));
     expect(result.coverage.endByte).toBe(Buffer.byteLength(combined) + Buffer.byteLength(result.text));
@@ -142,7 +142,7 @@ test.each(["close", "update"] as const)("结构专用续页仍重验当前权限
   expect(first.coverage.nextCursor).not.toBeNull();
   if (change === "close") w.close(); else await w.save(w.created.requirementId, BODY);
   const probe = vi.spyOn(storage, "readVersion");
-  await expect(tool.execute({ action: "read", maxBytes: 32_768, cursor: first.coverage.nextCursor })).rejects.toMatchObject({ code: change === "close" ? "closed_metadata_only" : "cursor_invalid" });
+  await expect(tool.execute({ action: "next", cursor: first.coverage.nextCursor })).rejects.toMatchObject({ code: change === "close" ? "closed_metadata_only" : "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
 });
 
@@ -153,7 +153,7 @@ test("大转义diff按整包预算续读，来源仍是准确批准提交对", a
   let cursor: string | undefined, combined = "", pages = 0;
   do {
     expect(++pages).toBeLessThan(16);
-    const result = await tool.execute({ action: "diff", fromRevision: 1, maxBytes: 1_024, ...(cursor ? { cursor } : {}) });
+    const result = await tool.execute(cursor ? { action: "next", cursor } : { action: "diff", fromRevision: 1, maxBytes: 1_024 });
     const page = bounded(result);
     expect(result).toMatchObject({ difference: { fromCommit: w.approved.commit, toCommit: approved.commit, fromRevision: 1, toRevision: 2 } });
     expect(page.coverage.startByte).toBe(Buffer.byteLength(combined));
@@ -195,7 +195,7 @@ test("分页有界、中文emoji无损；最后局部页仍保守阻塞整体覆
   const w = await world(); const tool = await w.tool(w.binding("qa"));
   let cursor: string | undefined, combined = "";
   do {
-    const result = content(await tool.execute({ action: "read", maxBytes: 31, ...(cursor ? { cursor } : {}) }));
+    const result = content(await tool.execute(cursor ? { action: "next", cursor } : { action: "read", maxBytes: 31 }));
     expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(31);
     expect(result.text).not.toContain("�");
     expect(result.coverage.entireProdCovered).toBe(false);
@@ -251,18 +251,20 @@ test("绑定时的租约快照过期但 PM 当前租约仍有效时照常读取�
   finally { now.mockRestore(); }
 });
 
-test("游标不能篡改/跨角色工厂/页范围/需求复用，dispose废止能力", async () => {
+test("游标不能篡改、跨角色工厂或重复使用，首次读取不收游标，dispose废止能力", async () => {
   const w = await world(); const tool = await w.tool(); const other = await w.tool(w.binding("qa"));
   const first = content(await tool.execute({ action: "read", maxBytes: 32 }));
   const cursor = first.coverage.nextCursor!;
   const probe = vi.spyOn(storage, "readVersion");
-  await expect(other.execute({ action: "read", maxBytes: 32, cursor })).rejects.toMatchObject({ code: "cursor_invalid" });
-  await expect(tool.execute({ action: "read", maxBytes: 32, cursor: "a".repeat(64) })).rejects.toMatchObject({ code: "cursor_invalid" });
+  await expect(other.execute({ action: "next", cursor })).rejects.toMatchObject({ code: "cursor_invalid" });
+  await expect(tool.execute({ action: "next", cursor: "a".repeat(64) })).rejects.toMatchObject({ code: "cursor_invalid" });
+  await expect(tool.execute({ action: "read", maxBytes: 32, cursor: "0".repeat(64) })).rejects.toMatchObject({ code: "invalid_shape" });
   expect(probe).not.toHaveBeenCalled();
-  expect(content(await tool.execute({ action: "read", maxBytes: 32, cursor: "0".repeat(64) })).text).toBe(first.text);
-  const next = content(await tool.execute({ action: "read", maxBytes: 32 }));
+  const again = content(await tool.execute({ action: "read", maxBytes: 32 }));
+  const second = content(await tool.execute({ action: "next", cursor: again.coverage.nextCursor }));
+  expect(second.coverage.startByte).toBe(Buffer.byteLength(again.text));
   probe.mockClear();
-  await expect(tool.execute({ action: "read", maxBytes: 33, cursor: next.coverage.nextCursor })).rejects.toMatchObject({ code: "cursor_invalid" });
+  await expect(tool.execute({ action: "next", cursor: again.coverage.nextCursor })).rejects.toMatchObject({ code: "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
   tool.dispose(); await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "tool_closed" });
 });
@@ -298,7 +300,7 @@ test("closing/closed不提供正文/diff或旧页，只返回固定最少metadat
   const w = await world(); const tool = await w.tool();
   const cursor = content(await tool.execute({ action: "read", maxBytes: 32 })).coverage.nextCursor;
   w.close(); const probe = vi.spyOn(storage, "readVersion"); const diffProbe = vi.spyOn(storage, "diffVersions");
-  for (const input of [{ action: "read" }, { action: "read", maxBytes: 32, cursor }, { action: "diff", fromRevision: 1 }]) {
+  for (const input of [{ action: "read" }, { action: "next", cursor }, { action: "diff", fromRevision: 1 }]) {
     await expect(tool.execute(input)).rejects.toMatchObject({ code: "closed_metadata_only" });
   }
   expect(await tool.execute({ action: "metadata" })).toEqual({ kind: "metadata", requirementId: w.created.requirementId, lifecycle: "closing" });
@@ -333,7 +335,7 @@ test("批准版本变化立即拒绝旧页；真实worktree分支变化拒绝", 
   const cursor = content(await tool.execute({ action: "read", maxBytes: 32 })).coverage.nextCursor;
   await w.save(w.created.requirementId, BODY + "追加\n");
   const probe = vi.spyOn(storage, "readVersion");
-  await expect(tool.execute({ action: "read", maxBytes: 32, cursor })).rejects.toMatchObject({ code: "cursor_invalid" });
+  await expect(tool.execute({ action: "next", cursor })).rejects.toMatchObject({ code: "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
   await exec("git", ["checkout", "-b", "changed-binding"], { cwd: w.worktree.root, env: GIT_ENV });
   await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "workspace_binding_changed" });

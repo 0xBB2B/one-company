@@ -73,7 +73,7 @@ async function fixture() {
 }
 async function all(session: KnowledgeQuerySession, query: Record<string, unknown>): Promise<KnowledgeFactPackage[]> {
   const pages: KnowledgeFactPackage[] = []; let cursor: string | undefined;
-  do { const page = await session.query({ ...query, ...(cursor ? { cursor } : {}) }); pages.push(page); cursor = page.nextCursor ?? undefined; } while (cursor);
+  do { const page = await session.query(cursor ? { action: "next", cursor } : query); pages.push(page); cursor = page.nextCursor ?? undefined; } while (cursor);
   return pages;
 }
 
@@ -85,7 +85,8 @@ test("strict exact/search/facts 拒绝权限、SQL/regex扩展、本机路径和
   for (const value of ["/tmp/index.db", "../secret", "C:/private", "docs/prod/x.md", ".env", "src/.git/config", "src//x", "src/./x"]) {
     expect(() => parseKnowledgeQuery({ action: "exact", by: "path", value })).toThrow();
   }
-  for (const input of [{ action: "search", text: "" }, { action: "search", text: "a".repeat(257) }, { action: "facts", maxBytes: 4095 }, { action: "facts", pageSize: 21 }, { action: "facts", cursor: "forged" }]) {
+  for (const input of [{ action: "search", text: "" }, { action: "search", text: "a".repeat(257) }, { action: "facts", maxBytes: 4095 }, { action: "facts", pageSize: 21 }, { action: "facts", cursor: "A".repeat(43) },
+    { action: "next", cursor: "forged" }, { action: "next", cursor: "A".repeat(43), pageSize: 1 }]) {
     expect(() => parseKnowledgeQuery(input)).toThrow();
   }
 });
@@ -146,19 +147,16 @@ test("有界UTF8/码点片段含emoji与CRLF，长行后部命中不会被切丢
   expect(page.coverage).toMatchObject({ sourceExcerptsTruncated: 1, complete: false }); session.close();
 });
 
-test("游标绑定caller/查询/预算，返回对象修改不能污染缓存，复用已消费游标拒绝", async () => {
+test("游标绑定caller、沿用首次查询的条件与预算，返回对象修改不能污染缓存，复用已消费游标拒绝", async () => {
   const w = await fixture(), a = new KnowledgeQuerySession(w.adapter), b = new KnowledgeQuerySession(w.adapter);
   const first = await a.query({ action: "facts", pageSize: 1 }); expect(first.nextCursor).toBeTruthy();
-  await expect(b.query({ action: "facts", pageSize: 1, cursor: first.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
-  expect((await b.query({ action: "facts", pageSize: 1, cursor: "A".repeat(43) })).facts).toEqual(first.facts);
-  await expect(b.query({ action: "facts", pageSize: 1, cursor: "B".repeat(43) })).rejects.toMatchObject({ code: "invalid_cursor" });
-  await expect(b.query({ action: "facts", pageSize: 1, cursor: first.nextCursor })).rejects.toMatchObject({ advice: { next: expect.stringContaining("第一次查询不带 cursor") } });
-  const altered = await a.query({ action: "facts", pageSize: 1 });
-  await expect(a.query({ action: "facts", pageSize: 2, cursor: altered.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
+  await expect(b.query({ action: "next", cursor: first.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
+  await expect(b.query({ action: "next", cursor: "B".repeat(43) })).rejects.toMatchObject({ code: "invalid_cursor" });
+  await expect(b.query({ action: "next", cursor: first.nextCursor })).rejects.toMatchObject({ advice: { next: expect.stringContaining("nextCursor") } });
   first.facts[0]!.source.fileHash = "forged";
-  const next = await a.query({ action: "facts", pageSize: 1, cursor: first.nextCursor });
-  expect(JSON.stringify(next)).not.toContain("forged"); expect(next.generation).toBe(first.generation);
-  await expect(a.query({ action: "facts", pageSize: 1, cursor: first.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
+  const next = await a.query({ action: "next", cursor: first.nextCursor });
+  expect(JSON.stringify(next)).not.toContain("forged"); expect(next.generation).toBe(first.generation); expect(next.facts).toHaveLength(1);
+  await expect(a.query({ action: "next", cursor: first.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
   a.close(); b.close();
 });
 
@@ -166,7 +164,7 @@ test("同hash机械generation增加可继续，原generation/asOf不改写", asy
   const w = await fixture(), session = new KnowledgeQuerySession(w.adapter);
   const first = await session.query({ action: "facts", pageSize: 1 });
   const refreshed = await w.refresh(); expect(refreshed.generation).toBe(first.generation + 1); expect(refreshed.baselineHash).toBe(first.baselineHash);
-  const next = await session.query({ action: "facts", pageSize: 1, cursor: first.nextCursor });
+  const next = await session.query({ action: "next", cursor: first.nextCursor });
   expect(next).toMatchObject({ generation: first.generation, asOf: first.asOf, baselineHash: first.baselineHash }); session.close();
 });
 
@@ -180,7 +178,7 @@ test.each(["file", "new-file", "observation", "epoch", "scope", "disconnect", "r
   if (change === "scope") w.scope(["src"]);
   if (change === "disconnect") w.disconnect();
   if (change === "revoke") w.revoke();
-  await expect(session.query({ action: "facts", pageSize: 1, cursor: first.nextCursor })).rejects.toBeDefined();
+  await expect(session.query({ action: "next", cursor: first.nextCursor })).rejects.toBeDefined();
   expect(session.diagnostics.sessions).toBe(0); session.close();
 });
 
@@ -386,8 +384,8 @@ test("最小输出预算仍保留所有阻塞类别/未覆盖统计，缓存条�
   const ninth = await session.query({ action: "facts", pageSize: 1 });
   expect(ninth.nextCursor).toBeTruthy();
   expect(session.diagnostics.sessions).toBe(8); expect(session.diagnostics.bytes).toBeLessThanOrEqual(2 * 1024 * 1024);
-  await expect(session.query({ action: "facts", pageSize: 1, maxBytes: 4096, cursor: result.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
+  await expect(session.query({ action: "next", cursor: result.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
   now += 30001;
-  await expect(session.query({ action: "facts", pageSize: 1, maxBytes: 4096, cursor: result.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
+  await expect(session.query({ action: "next", cursor: result.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
   expect(session.diagnostics.sessions).toBe(0); session.close();
 });

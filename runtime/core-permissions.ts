@@ -6,8 +6,8 @@ export type CoreRole = (typeof CORE_ROLES)[number];
 
 export const CORE_TOOL_ACTIONS = Object.freeze({
   project_manage: Object.freeze(["init", "status", "refresh", "recovery-check", "backup", "restore", "workspace-prepare", "workspace-recycle", "conventions-update"] as const),
-  knowledge_query: Object.freeze(["exact", "search", "facts"] as const),
-  requirement_manage: Object.freeze(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata", "list"] as const),
+  knowledge_query: Object.freeze(["exact", "search", "facts", "next"] as const),
+  requirement_manage: Object.freeze(["create", "updateDraft", "confirmUpdate", "read", "diff", "next", "metadata", "list"] as const),
   plan_manage: Object.freeze(["propose", "read", "update", "confirm", "assess-update"] as const),
   agent_manage: Object.freeze(["dispatch", "status", "pause", "resume", "stop", "catalog", "message"] as const),
   user_interact: Object.freeze(["ask", "reply", "forward"] as const),
@@ -21,7 +21,7 @@ export type CoreAction<T extends CoreTool> = (typeof CORE_TOOL_ACTIONS)[T][numbe
 
 type Grants = { readonly [T in CoreTool]?: readonly CoreAction<T>[] };
 const all = <T extends CoreTool>(tool: T) => CORE_TOOL_ACTIONS[tool];
-const REQUIREMENT_READ_ONLY = ["read", "diff", "metadata"] as const;
+const REQUIREMENT_READ_ONLY = ["read", "diff", "next", "metadata"] as const;
 const MATRIX: Readonly<Record<CoreRole, Grants>> = Object.freeze({
   main: {
     project_manage: all("project_manage"), knowledge_query: all("knowledge_query"), requirement_manage: all("requirement_manage"),

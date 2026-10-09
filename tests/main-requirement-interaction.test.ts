@@ -585,16 +585,19 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(current.version).toBeGreaterThan(input.version);
     await expect(w.call({ action: "confirmUpdate", requirementId: input.requirementId, version: current.version, savedOperationId: operationId, operationId: uuidv7() })).rejects.toThrow();
   });
-  test("分页保留中文、范围与未决标记，封装≤50KiB，游标跨新输入失效", async () => {
+  test("分页保留中文、范围与未决标记，封装≤50KiB，翻页用 next，游标只能用一次、跨新输入失效，首次读取不收游标", async () => {
     const w = await world(), created = await w.create("# 说明 {#A}\n" + "中文边界\\\"".repeat(2000)), requirementId = String(created.requirementId);
     const first = await w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024 });
     expect(Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: JSON.stringify(first) }], details: first }))).toBeLessThanOrEqual(50 * 1024);
     expect(first.text).not.toContain("�"); expect(first.coverage).toMatchObject({ complete: false, blocking: ["incomplete_prod_read", "global_constraints_and_unresolved_may_be_outside_page"] });
     const cursor = (first.coverage as { nextCursor: string }).nextCursor;
-    expect(await w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor })).toHaveProperty("text");
-    w.capture("新输入"); await expect(w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor })).rejects.toMatchObject({ code: "cursor_expired" });
-    expect(await w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor: "0".repeat(64) })).toMatchObject({ text: first.text, coverage: { startByte: 0 } });
-    await expect(w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor: "a".repeat(64) })).rejects.toMatchObject({ code: "cursor_expired" });
+    const second = await w.call({ action: "next", requirementId, cursor });
+    expect(second.coverage).toMatchObject({ startByte: Buffer.byteLength(first.text as string) });
+    await expect(w.call({ action: "next", requirementId, cursor })).rejects.toMatchObject({ code: "cursor_expired" });
+    const third = await w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024 });
+    w.capture("新输入"); await expect(w.call({ action: "next", requirementId, cursor: (third.coverage as { nextCursor: string }).nextCursor })).rejects.toMatchObject({ code: "cursor_expired" });
+    await expect(w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024, cursor: "0".repeat(64) })).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(w.call({ action: "next", requirementId, cursor: "a".repeat(64) })).rejects.toMatchObject({ code: "cursor_expired" });
   });
 });
 test("别的进程短暂占住数据库时，宿主读取需求记录等锁释放后照常完成，不立刻报数据库忙", async () => {

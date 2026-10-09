@@ -117,7 +117,7 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
     const pages: KnowledgeFactPackage[] = [];
     let cursor: string | undefined;
     do {
-      const result = await run(queryName, { repoId: f.repoId, query: { action: "search", text: "角色跳跃", pageSize: 20, maxBytes: 24576, ...(cursor ? { cursor } : {}) } });
+      const result = await run(queryName, { repoId: f.repoId, query: cursor ? { action: "next", cursor } : { action: "search", text: "角色跳跃", pageSize: 20, maxBytes: 24576 } });
       expect(result.isError, JSON.stringify(result)).toBe(false);
       expect(Buffer.byteLength(JSON.stringify({ content: result.content }))).toBeLessThanOrEqual(51200);
       const first = result.content[0]!;

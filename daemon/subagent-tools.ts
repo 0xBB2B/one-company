@@ -50,7 +50,7 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
       tools.push(toPiTool("change_apply", `只在授权范围 ${input.task.writePaths.join("、")} 内预检、写入或导入代码与测试。prepare 可省略 baseHash，结果会给出各文件当前的 baseHash；apply 可省略 baseHash，自动用本会话对该文件最近一次 prepare 的值，也可照填；新建文件未 prepare 时填 absent。operationId 每次新生成 UUIDv7。`, CHANGE_APPLY_PARAMETERS, change));
     } else {
       const read = track(await createRequirementReadTool({ ...shared, authorize, binding: { ...identity, role, lease: input.pmLease } }));
-      tools.push(toPiTool("requirement_manage", role === "qa" ? "读取已批准的需求正文、章节或差异（黑盒验收基线）。" : "读取已批准的需求正文、章节或差异。",
+      tools.push(toPiTool("requirement_manage", `${role === "qa" ? "读取已批准的需求正文、章节或差异（黑盒验收基线）。" : "读取已批准的需求正文、章节或差异。"}结果的 coverage.nextCursor 不为空时用 next 带上它读下一页。`,
         REQUIREMENT_READ_PARAMETERS, read));
     }
     if (role === "reviewer") {

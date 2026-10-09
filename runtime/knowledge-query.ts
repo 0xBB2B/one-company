@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { CurrentQueryIndex, IndexedFile, IndexedSymbol, SourceFragment } from "./index-store.ts";
 import { isKnowledgePath, KNOWLEDGE_QUERY_LIMITS as LIMIT, KnowledgeQueryError, parseKnowledgeQuery } from "./knowledge-query-contracts.ts";
-import type { KnowledgeQuery } from "./knowledge-query-contracts.ts";
+import type { KnowledgeFirstPageQuery } from "./knowledge-query-contracts.ts";
 
 /** 查询所用索引快照：工作区、代次、覆盖范围与文件 hash。 */
 export interface ProjectBaselineSnapshot {
@@ -83,7 +83,7 @@ export interface KnowledgeFactPackage {
 
 type Header = Omit<KnowledgeFactPackage, "facts" | "nextCursor" | "coverage">;
 interface Entry {
-  query: string;
+  query: KnowledgeFirstPageQuery;
   capture: KnowledgeQueryCapture;
   header: Header;
   items: KnowledgeFact[];
@@ -122,10 +122,6 @@ function sameCapture(a: KnowledgeQueryCapture, b: KnowledgeQueryCapture): boolea
     files: [...value.baseline.files].sort((a, b) => a.path.localeCompare(b.path)) });
   return b.baseline.generation >= a.baseline.generation && JSON.stringify(normalized(a)) === JSON.stringify(normalized(b));
 }
-function queryKey(query: KnowledgeQuery): string {
-  const selector = query.action === "exact" ? { by: query.by, value: query.value } : { text: query.text ?? null };
-  return JSON.stringify({ action: query.action, ...selector, pageSize: query.pageSize, maxBytes: query.maxBytes });
-}
 function excerpt(fragment: SourceFragment, text: string): { body: string; startLine: number; endLine: number; complete: boolean } {
   const found = text ? fragment.body.indexOf(text) : 0;
   // 从命中所在行开始，码点截断不会切开 emoji；CRLF 的行号按 LF 计算。
@@ -158,26 +154,26 @@ export class KnowledgeQuerySession {
   get diagnostics() { return { closed: this.#closed, sessions: this.#entries.size, bytes: [...this.#entries.values()].reduce((sum, entry) => sum + entry.bytes, 0) }; }
   #time(): number { const value = this.#now(); if (!Number.isSafeInteger(value) || value < 0) fail("unavailable"); return value; }
   async query(input: unknown): Promise<KnowledgeFactPackage> {
-    const query = parseKnowledgeQuery(input);
+    const request = parseKnowledgeQuery(input);
     if (this.#closed) fail("stale");
     if (this.#busy) fail("busy");
     this.#busy = true;
-    // 模型常给选填的 cursor 填全零字节的占位（base64url 下是全 A）；程序发的游标是随机字节，按第一页处理
-    let cursor = query.cursor && !/^A+$/.test(query.cursor) ? query.cursor : undefined;
+    let cursor = request.action === "next" ? request.cursor : undefined;
     try {
       const now = this.#time();
       for (const [key, value] of this.#entries) if (value.expires <= now) this.#entries.delete(key);
       let entry: Entry;
-      if (cursor) {
-        const cached = this.#entries.get(cursor);
-        if (!cached || cached.query !== queryKey(query)) fail("invalid_cursor");
+      if (request.action === "next") {
+        const cached = this.#entries.get(request.cursor);
+        if (!cached) fail("invalid_cursor");
         entry = cached;
         const fresh = copyCapture(await this.#adapter.captureFresh());
         if (!sameCapture(entry.capture, fresh)) fail("stale");
       } else {
         const capture = copyCapture(await this.#adapter.captureFresh());
-        entry = await this.#collect(query, capture, this.#time());
+        entry = await this.#collect(request, capture, this.#time());
       }
+      const query = entry.query;
       const facts: KnowledgeFact[] = [];
       let offset = entry.offset, omitted = entry.omitted;
       const makePage = (nextCursor: string | null): KnowledgeFactPackage => ({ ...entry.header,
@@ -223,7 +219,7 @@ export class KnowledgeQuerySession {
     } finally { this.#busy = false; }
   }
 
-  async #collect(query: KnowledgeQuery, capture: KnowledgeQueryCapture, asOf: number): Promise<Entry> {
+  async #collect(query: KnowledgeFirstPageQuery, capture: KnowledgeQueryCapture, asOf: number): Promise<Entry> {
     const baseline = capture.baseline;
     const paths = baseline.files.map((file) => file.path);
     const index = await this.#adapter.readCurrent(paths, []);
@@ -323,6 +319,6 @@ export class KnowledgeQuerySession {
       if (!part.complete) excerpts++;
       add({ kind: "source", id: fragment.id, source: source(fragment.path, { startLine: part.startLine, endLine: part.endLine, rangeKind: "excerpt" }), data: { body: part.body, kind: fragment.kind }, complete: part.complete });
     }
-    return { query: queryKey(query), capture, header, items, matched, omitted, excerpts, offset: 0, returned: 0, expires: asOf + LIMIT.ttlMs, bytes: cost + bytes(header) + bytes(capture) };
+    return { query, capture, header, items, matched, omitted, excerpts, offset: 0, returned: 0, expires: asOf + LIMIT.ttlMs, bytes: cost + bytes(header) + bytes(capture) };
   }
 }

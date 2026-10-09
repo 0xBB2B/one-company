@@ -64,7 +64,8 @@ interface CapturedInput {
 interface PendingResave { permit: CandidateResavePermit; origin: object; operationId: string; requirementId: string; complete: boolean }
 interface ConfirmationRequest extends LoadConfirmationInput { repoId: string; version: number }
 interface ReadRequest { repoId: string; requirementId: string; action: "read" | "diff"; source?: "saved" | "approved";
-  sectionId?: string; cursor?: string; maxBytes?: number; fromRevision?: number; toRevision?: number }
+  sectionId?: string; maxBytes?: number; fromRevision?: number; toRevision?: number }
+interface NextPageRequest { repoId: string; requirementId: string; action: "next"; cursor: string }
 interface Delivery { sessionId: string; windowId: string; generation: number; repoId?: string; requirementId?: string; result: object; expiresAt: number; listing?: true }
 interface RecordProof { namespace: string; key: string; id: string; version: number; hash: string }
 type ResultScope = { kind: "registered"; proof: RegisteredScopeReturnProof } | { kind: "approved"; scope: RequirementApprovalScope } | { kind: "none" };
@@ -77,7 +78,7 @@ interface ResultCheck {
   resultHash: string; manager: object; sessionId: string; windowId: string; repositoryPath: string | undefined;
   now: number; monotonicAt: number; wallAt: number;
 }
-interface Cursor { requestHash: string; version: number; epoch: number; offset: number; expiresAt: number }
+interface Cursor { request: ReadRequest; version: number; epoch: number; offset: number; expiresAt: number }
 export interface MentionTarget { readonly repoId: string; readonly requirementId: string; readonly title: string }
 export interface InvalidMention { readonly token: string; readonly reason: string }
 const MENTION = /@\[([^\]\n]+)#([0-9a-f]{4,36})\]/gu;
@@ -759,17 +760,18 @@ export class MainRequirementInteraction {
     const result = await service.metadata(requirementId);
     return this.#prove(ctx, repoId, result);
   }
-  async read(ctx: ExtensionContext, request: ReadRequest) {
-    const host = this.#host(ctx), before = this.#snapshot(host, request.repoId, request.requirementId);
+  async read(ctx: ExtensionContext, input: ReadRequest | NextPageRequest) {
+    const host = this.#host(ctx), before = this.#snapshot(host, input.repoId, input.requirementId);
+    const cursor = input.action === "next" ? this.#cursors.get(input.cursor) : undefined;
+    if (input.action === "next") {
+      if (!cursor || cursor.expiresAt <= this.#now() || cursor.version !== before.version || cursor.epoch !== before.data.epoch ||
+        cursor.request.repoId !== input.repoId || cursor.request.requirementId !== input.requirementId) denied("cursor_expired");
+      this.#cursors.delete(input.cursor);
+    }
+    const request = cursor ? cursor.request : input as ReadRequest;
     const source = request.source ?? "approved", action = request.action === "diff" ? "diff" : source === "saved" ? "readSaved" : "readApproved";
     const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === action);
     const maxBytes = request.maxBytes ?? 8192;
-    const requestHash = digest({ ...request, cursor: undefined, maxBytes });
-    // 模型常给选填的 cursor 填全 0 占位；程序发的游标是随机字节，不会全为 0，按第一页处理
-    const given = request.cursor && !/^0+$/.test(request.cursor) ? request.cursor : undefined;
-    const cursor = given ? this.#cursors.get(given) : undefined;
-    if (given && (!cursor || cursor.expiresAt <= this.#now() || cursor.version !== before.version || cursor.epoch !== before.data.epoch || cursor.requestHash !== requestHash)) denied("cursor_expired");
-    if (given) this.#cursors.delete(given);
     const result = request.action === "read" ? await service.read({ requirementId: request.requirementId, source })
       : await service.diff({ requirementId: request.requirementId, fromRevision: request.fromRevision!, ...(request.toRevision ? { toRevision: request.toRevision } : {}) });
     const text = "body" in result ? selectProdSection(result.body, inspectProdStructure(result.body), request.sectionId) : result.diff;
@@ -786,7 +788,7 @@ export class MainRequirementInteraction {
     }
     if (page.endByte < page.totalBytes) {
       while (this.#cursors.size >= 32) this.#cursors.delete(this.#cursors.keys().next().value!);
-      this.#cursors.set(next, { requestHash, version: before.version, epoch: before.data.epoch, offset: page.endByte, expiresAt: this.#now() + 30_000 });
+      this.#cursors.set(next, { request: { ...request, maxBytes }, version: before.version, epoch: before.data.epoch, offset: page.endByte, expiresAt: this.#now() + 30_000 });
     }
     const current = this.#snapshot(this.#host(ctx), request.repoId, request.requirementId);
     if (current.version !== before.version || !same(current.data, before.data)) denied("stale_result");

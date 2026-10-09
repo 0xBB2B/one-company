@@ -39,7 +39,7 @@ test("固定六类职责与10个核心工具，action 枚举与计划 §9.1 一�
     "agent_manage", "user_interact", "change_apply", "verification_run", "result_submit", "workflow_manage"]);
   expect(CORE_TOOL_ACTIONS.project_manage).toEqual(["init", "status", "refresh", "recovery-check", "backup", "restore",
     "workspace-prepare", "workspace-recycle", "conventions-update"]);
-  expect(CORE_TOOL_ACTIONS.requirement_manage).toEqual(["create", "updateDraft", "confirmUpdate", "read", "diff", "metadata", "list"]);
+  expect(CORE_TOOL_ACTIONS.requirement_manage).toEqual(["create", "updateDraft", "confirmUpdate", "read", "diff", "next", "metadata", "list"]);
   expect(CORE_TOOL_ACTIONS.plan_manage).toEqual(["propose", "read", "update", "confirm", "assess-update"]);
   expect(CORE_TOOL_ACTIONS.workflow_manage).toEqual(["status", "advance", "finish", "check-decision", "report", "escalate", "close", "delivery-check"]);
   expect(Object.isFrozen(CORE_TOOL_ACTIONS)).toBe(true);
@@ -64,11 +64,11 @@ test("action 级上限按计划 §9.1/§9.3 收窄：分支工作区只归 main�
     for (const role of ["pm", "explore", "worker", "reviewer", "qa"]) expect(authorizeToolAction(role, "project_manage", action)).toBe(false);
   }
   for (const role of ["pm", "reviewer", "qa"]) {
-    for (const action of ["read", "diff", "metadata"]) expect(authorizeToolAction(role, "requirement_manage", action)).toBe(true);
+    for (const action of ["read", "diff", "next", "metadata"]) expect(authorizeToolAction(role, "requirement_manage", action)).toBe(true);
     for (const action of ["create", "updateDraft", "confirmUpdate"]) expect(authorizeToolAction(role, "requirement_manage", action)).toBe(false);
   }
   expect(granted("main", "requirement_manage")).toEqual(CORE_TOOL_ACTIONS.requirement_manage);
-  expect(granted("explore", "knowledge_query")).toEqual(["exact", "search", "facts"]);
+  expect(granted("explore", "knowledge_query")).toEqual(["exact", "search", "facts", "next"]);
   expect(granted("explore", "result_submit")).toEqual(["research"]);
   expect(authorizeToolAction("explore", "result_submit", "verdict")).toBe(false);
   for (const role of ["worker", "reviewer", "qa"]) {

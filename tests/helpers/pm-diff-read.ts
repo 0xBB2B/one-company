@@ -17,7 +17,7 @@ export async function readNoticedDiffs(options: { repositoryRoot: string; dataRo
       if (!match) continue;
       let text = "", cursor: string | undefined;
       do {
-        const page = await tool.execute({ action: "diff", fromRevision: Number(match[1]), toRevision: Number(match[2]), ...(cursor ? { cursor } : {}) }) as
+        const page = await tool.execute(cursor ? { action: "next", cursor } : { action: "diff", fromRevision: Number(match[1]), toRevision: Number(match[2]) }) as
           { text: string; coverage: { nextCursor: string | null } };
         text += page.text;
         cursor = page.coverage.nextCursor ?? undefined;
