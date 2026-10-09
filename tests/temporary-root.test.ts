@@ -36,9 +36,9 @@ test("独立进程使用不同临时根并在自身退出时清理", async () =>
     const root = temporaryRoot();
     process.stdout.write(JSON.stringify({ root, mode: statSync(root).mode & 0o777 }));
   `;
-  const { stdout } = await exec(process.execPath, ["--input-type=module", "-e", script], {
-    env: { ...process.env },
-  });
+  // 不带整轮共用的受控根，验证独立进程自建临时根并在退出时清理
+  const { ONE_COMPANY_TEST_PARENT_BINDING: _binding, ...env } = process.env;
+  const { stdout } = await exec(process.execPath, ["--input-type=module", "-e", script], { env });
   const child = JSON.parse(stdout) as { root: string; mode: number };
 
   expect(child.root).not.toBe(parentRoot);

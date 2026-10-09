@@ -10,6 +10,6 @@ export default defineConfig({
     maxWorkers: 4,
     testTimeout: 30_000,
     setupFiles: ["./tests/helpers/test-environment.ts"],
-    globalSetup: ["./tests/helpers/installed-product-setup.ts"],
+    globalSetup: ["./tests/helpers/temporary-root-setup.ts", "./tests/helpers/installed-product-setup.ts"],
   },
 });
