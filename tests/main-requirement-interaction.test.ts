@@ -10,7 +10,7 @@ import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { registerControlledProvider, scriptReplies } from "./helpers/controlled-provider.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
-import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
+import { HostAuthorizationError, HostAuthorizationManager } from "../runtime/host-authorization.ts";
 import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
 import { UserInteractionCore } from "../runtime/user-interaction.ts";
 import { RequirementOperations } from "../runtime/requirement-operations.ts";
@@ -53,8 +53,9 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
     ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); },
       ...answeringUi((window) => { windows.push(window); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
+  let reachable = true;
   const interaction = new MainRequirementInteraction({ ...options, dataRoot, authorization,
-    resolveHost: () => ({ windowId, sessionId, repositories: new Map([[repoId, { path: repositoryRoot }]]) }) });
+    resolveHost: () => { if (!reachable) throw new HostAuthorizationError("host_unavailable"); return { windowId, sessionId, repositories: new Map([[repoId, { path: repositoryRoot }]]) }; } });
   cleanup.push(async () => { interaction.dispose(); authorization.shutdown(); await rm(root, { recursive: true, force: true }); });
   const manage = createRequirementManageTool({ interaction }), user = createUserInteractTool({ interaction });
   const call = async (params: Record<string, unknown>, userTool = false) => {
@@ -77,7 +78,8 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
     const input = { requirementId: String(created.requirementId), savedOperationId: String(created.operationId), operationId, version: Number(created.version) };
     return { input, loaded: await service.loadConfirmationContext({ requirementId: input.requirementId, savedOperationId: input.savedOperationId, operationId }) };
   };
-  return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage,
+  const setReachable = (value: boolean) => { reachable = value; };
+  return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable,
     windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; } };
 }
 /** 明确fixture语义输出；调用仍经过真实ModelRegistry/provider与生产解释适配器。 */
@@ -742,6 +744,15 @@ test("M8D-AC6：解释器的对象说明里带有本窗口其他还没批准的�
   w.capture("两处我都批准", "interactive", false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
   await w.call({ action: "confirmUpdate", ...second.input });
   expect(interpreterContext(w).addressed).toEqual({ how: "window", otherDrafts: [{ title: "登录", version: 1 }] });
+});
+
+test("M9：用户说第一句话时守护进程还没连上，原话照样记下；连上后主代理能用这句话保存草稿", async () => {
+  const w = await world();
+  w.setReachable(false);
+  expect(() => w.capture(PHONE, "interactive", false)).not.toThrow();
+  w.setReachable(true);
+  scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  expect(await w.call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY })).toMatchObject({ status: "created" });
 });
 
 test("M8D-AC3：没有确认任何正文段落的解读不留下决定记录，随后一次明确的批准照常生效", async () => {

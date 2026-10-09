@@ -163,16 +163,18 @@ export class MainRequirementInteraction {
   /** 只由SDK input事件调用；只认用户在界面里的真实输入。 */
   captureInput(event: { source: string; text: string }, ctx: ExtensionContext): { invalid: InvalidMention[] } {
     this.#clearInput();
-    const host = this.#host(ctx);
+    // 记下原话只需核对是登记过的当前会话，不依赖守护进程已连上；之后的实际操作仍逐次核对连接
+    const sessionId = ctx.sessionManager.getSessionId();
+    this.#authorization.assertCurrentSession(sessionId);
     if (event.source !== "interactive") return { invalid: [] };
     if (typeof event.text !== "string" || !event.text.trim() || Buffer.byteLength(event.text) > 32_768) return { invalid: [] };
     const expiresAt = this.#now() + (this.#options.inputTtlMs ?? 900_000);
-    this.#input = { event: { source: event.source, text: event.text }, sessionId: host.sessionId, expiresAt, abort: new AbortController() };
+    this.#input = { event: { source: event.source, text: event.text }, sessionId: sessionId, expiresAt, abort: new AbortController() };
     this.#ctx = ctx;
     this.#timer = setTimeout(() => this.#clearInput(), expiresAt - this.#now()); this.#timer.unref();
     const mentions = parseMentions(event.text);
     if (!mentions.length) return { invalid: [] };
-    const listed = this.#authorization.listRequirements(host.sessionId), invalid: InvalidMention[] = [], targets: MentionTarget[] = [];
+    const listed = this.#authorization.listRequirements(sessionId), invalid: InvalidMention[] = [], targets: MentionTarget[] = [];
     for (const mention of mentions) {
       const matches = listed.filter((item) => item.requirementId.endsWith(mention.tail));
       if (matches.length !== 1) { invalid.push({ token: mention.token, reason: matches.length ? "编号尾巴对应多个需求" : "不存在、已关闭或状态异常" }); continue; }
