@@ -20,7 +20,7 @@
 | AC2 PM 停下且无人能唤醒时生成提醒，被唤醒后消失 | 通过 | tests/pm-dispatch.test.ts「M8L-AC2」（登记最后的话与运行记录、被唤醒后清掉并按新一轮重记）、tests/pm-overview.test.ts「M8L-AC2」（事项与卡片），都先失败后通过；已有别的事项时不显示停下提醒（tests/adjudication.test.ts 原有用例） | 无 |
 | AC3 针对事项的问答窗口；决定类选项由程序写死且选中即登记，其余只作指示 | 通过 | tests/adjudication.test.ts 三条「M8L-AC3」（待你裁决选项须与固定文字一致、选中“再给一次机会，轮数上限 3”后可登记；计划两次被拒的回答不能登记任务裁决；需求级取消用 requirement:<编号> 固定选项、版本变化时拒绝）、tests/panel-item-ask.test.ts（固定文字与轮数 1 到 1000）；登记仍走原解释器与短决定路径，只放行与窗口所针对决定一致的回答。“待你验收”窗口因问答窗口至少 2 个选项，固定为“验收通过”“暂不验收”，返工写在“返工（自己输入要改什么）”一行，与预览只列“验收通过”一项不同 | 无 |
 | AC4 状态行被拒次数、PM 角色说明、主会话规则 | 通过 | 状态行见 tests/pm-overview.test.ts「M8L-AC1/AC4」；PM 角色说明与主会话规则见 tests/role-catalog.test.ts「M8L-AC4」；README 的 PM 面板一节同步 | 无 |
-| AC5 真实模型验收并入 M9-AC2、3、12、13 重跑 | 通过 | 2026-10-08 基线 158f4fd 上四项各同时跑 3 次全部通过（证据 .bb-spec/.cache/m9/acceptance-158f4fd/） | 无 |
+| AC5 真实模型验收并入 M9-AC2、3、12、13 重跑 | 通过 | 2026-10-08 基线 158f4fd 上四项各同时跑 3 次全部通过（证据 .bb-spec/.cache/m9/acceptance-158f4fd/）；2026-10-09 在 c1ec1f5 上同时跑 3 次全部通过（证据 .bb-spec/.cache/m9/acceptance-c1ec1f5/） | 无 |
 
 ## 当前阻塞
 

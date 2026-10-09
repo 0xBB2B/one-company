@@ -20,7 +20,7 @@
 | AC2 实施目标由正文实施目标板块决定 | 通过 | tests/plan-manage.test.ts「M8O-AC2」、tests/requirement-doc.test.ts、tests/main-requirement-interaction.test.ts「M8O-AC2」、tests/prod-view.test.ts「M8O-AC2」（编号前缀核对，用户 2026-10-07 选甲）；2d6ca44、88a77c7 | 无 |
 | AC3 上一版本下的尝试被判受影响后可重排 | 通过 | tests/plan-assess.test.ts「M8O-AC3」；403e501 | 无 |
 | AC4 任务 1 完成、2 进行中时追加需求的两种情况 | 通过 | tests/approval-hold.test.ts「M8O-AC4」两条；1b59007 | 无 |
-| AC5 真实模型验收并入 M9-AC2、3、12、13 重跑 | 通过 | 2026-10-08 基线 158f4fd 上四项各同时跑 3 次全部通过（证据 .bb-spec/.cache/m9/acceptance-158f4fd/） | 无 |
+| AC5 真实模型验收并入 M9-AC2、3、12、13 重跑 | 通过 | 2026-10-08 基线 158f4fd 上四项各同时跑 3 次全部通过（证据 .bb-spec/.cache/m9/acceptance-158f4fd/）；2026-10-09 在 c1ec1f5 上同时跑 3 次全部通过（证据 .bb-spec/.cache/m9/acceptance-c1ec1f5/） | 无 |
 
 ## 当前阻塞
 
