@@ -239,8 +239,7 @@ function exploreReport(runId: string, outcome: SessionOutcome, research: Explore
         next: "按原因决定是否调整问题、线索或轮次上限后重派；原因不够判断时读运行日志", log }) };
 }
 function shellMetadata(task: TaskRecord) {
-  return { taskId: task.taskId, host: { kind: task.host.kind, id: task.host.id, runId: task.host.runId },
-    command: "[旧命令正文不提供]", cwd: "[旧工作目录不提供]",
+  return { taskId: task.taskId, host: { kind: task.host.kind, id: task.host.id, runId: task.host.runId, role: task.host.role ?? (task.host.kind === "role" ? "one-company.pm" : undefined) },
     pid: task.pid, pgid: task.pgid, startedAt: task.startedAt, status: task.status, activity: task.activity,
     exitCode: task.exitCode, descendants: task.descendants, descendantsScanned: task.descendantsScanned,
     identityVerified: task.identityVerified, stoppedBy: task.stoppedBy };

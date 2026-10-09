@@ -5,6 +5,7 @@ import type { TimeSource } from "../runtime/clock.ts";
 import { BottomDock } from "../runtime/dock.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
 import type { Host, TaskRecord } from "../runtime/shell-registry.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { ShellPage, hostLabel, openShellPage } from "../runtime/shell-page.ts";
 import type { ShellPageClient, ShellPageRepo } from "../runtime/shell-page.ts";
 
@@ -185,6 +186,10 @@ function countUnhandledRejections(): { count: () => number; stop: () => void } {
 }
 
 describe("hostLabel", () => {
+  test("守护进程送来的完整角色名去掉 one-company. 前缀显示", () => {
+    expect(hostLabel({ kind: "role", id: "r", role: "one-company.reviewer", runId: "d4e5f6aa-0000" })).toBe("reviewer#d4e5f6");
+  });
+
   test("main 宿主显示为主 agent", () => {
     expect(hostLabel(MAIN_HOST)).toBe("主 agent");
   });
@@ -200,7 +205,7 @@ describe("hostLabel", () => {
   });
 });
 
-describe("ShellPage：列表只列本工作区任务，含编号/宿主/状态/耗时/命令", () => {
+describe("ShellPage：列表只列本工作区任务，含宿主/状态/耗时/命令/进程号", () => {
   test("inWorkspace=false 的守护进程任务不出现在列表中", async () => {
     const repo = fakeRepo("repo-scope", {
       list: () => [
@@ -211,10 +216,11 @@ describe("ShellPage：列表只列本工作区任务，含编号/宿主/状态/�
     const page = new ShellPage(basePageOptions({ repos: [repo] }));
     await page.refresh();
     const text = page.render(80).join("\n");
-    expect(text).toContain("in-scope");
-    expect(text).not.toContain("out-scope");
+    expect(text).toContain(" 101");
+    expect(text).toContain("（子代理命令不显示）");
     expect(text).not.toContain("范围内命令");
     expect(text).not.toContain("范围外命令");
+    expect(text).toContain("运行中 1");
   });
 
   test("耗时字段随时钟展示为约定格式（1m30s）", async () => {
@@ -229,18 +235,38 @@ describe("ShellPage：列表只列本工作区任务，含编号/宿主/状态/�
     const page = new ShellPage(basePageOptions({ repos: [repo], clock }));
     await page.refresh();
     expect(page.render(80).join("\n")).toContain("1m30s");
+    timeSource.advance(3_600_000 - 90_000 + 185_000);
+    expect(page.render(80).join("\n")).toContain("1h03m05s");
   });
 
-  test("每任务一行，编号从 1 开始", async () => {
+  test("秒数与分钟数不足两位时补零（5m02s）", async () => {
+    const timeSource = createFakeTimeSource();
+    timeSource.advance(302_000);
+    const repo = fakeRepo("repo-pad", {
+      list: () => [{ taskId: "t1", host: roleHost("worker"), pid: 101, startedAt: "0", status: "running", activity: "active", inWorkspace: true }],
+    });
+    const page = new ShellPage(basePageOptions({ repos: [repo], clock: createClock({ timeSource }) }));
+    await page.refresh();
+    expect(page.render(80).join("\n")).toContain(" 5m02s ");
+  });
+
+  test("标题、分隔线、表头、每任务一行、底部按键提示；选中行行首 ▸，其余行首三个空格", async () => {
     const registry = new ShellRegistry({ clock: createClock() });
     await spawnLocal(registry, "编号标记一");
     await spawnLocal(registry, "编号标记二");
     const page = new ShellPage(basePageOptions({ registry }));
     await page.refresh();
     const lines = page.render(100);
-    expect(lines.length).toBe(2);
-    expect(lines[0]!.startsWith("1")).toBe(true);
-    expect(lines[1]!.startsWith("2")).toBe(true);
+    expect(lines.length).toBe(7);
+    expect(lines[0]).toMatch(/^ Shell 任务 +运行中 2$/);
+    expect(lines[1]).toBe("─".repeat(100));
+    expect(lines[2]).toMatch(/^ {5}状态 +来源 +命令 +耗时 +进程$/);
+    expect(lines[3]!.startsWith(" ▸ ● 运行中   主 agent")).toBe(true);
+    expect(lines[3]).toContain("编号标记一");
+    expect(lines[4]!.startsWith("   ● 运行中   主 agent")).toBe(true);
+    expect(lines[4]).toContain("编号标记二");
+    expect(lines[5]).toBe("─".repeat(100));
+    expect(lines[6]).toBe(" ↑↓ 选择   Enter 详情   K 停止   Esc 关闭");
   });
 
   test("选中行带主题选中态标记，无箭头字符", async () => {
@@ -249,14 +275,15 @@ describe("ShellPage：列表只列本工作区任务，含编号/宿主/状态/�
     const page = new ShellPage(basePageOptions({ registry, theme: fakeTheme() }));
     await page.refresh();
 
-    const line = page.render(100)[0]!;
-    expect(line).toContain("[SEL]");
+    const line = page.render(100)[3]!;
+    expect(line.startsWith("[SEL] ▸ ")).toBe(true);
+    expect(line.endsWith("[/SEL]")).toBe(true);
     for (const arrow of ["→", "▶", "➤", ">"]) expect(line).not.toContain(arrow);
   });
 });
 
-describe("ShellPage：已结束任务仅保留结束后 20 秒内", () => {
-  test("任务结束后立即仍可见，19 秒内仍可见，超过 20 秒后从列表消失", async () => {
+describe("ShellPage：已结束任务仅保留结束后 1 分钟内", () => {
+  test("本窗口任务结束后立即仍可见，59 秒内仍可见，超过 60 秒后从列表消失，头部计数同步", async () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
     const registry = new ShellRegistry({ clock: createClock() });
@@ -277,19 +304,22 @@ describe("ShellPage：已结束任务仅保留结束后 20 秒内", () => {
     const page = new ShellPage(basePageOptions({ registry, clock }));
     await page.refresh();
     expect(page.render(80).join("\n")).toContain("ttl标记");
+    expect(page.render(80)[0]).toContain("已结束 1");
+    expect(page.render(80).join("\n")).toContain("✓ 已结束");
 
-    timeSource.advance(19_000);
+    timeSource.advance(59_000);
     await page.refresh();
     expect(page.render(80).join("\n")).toContain("ttl标记");
 
     timeSource.advance(2_000);
     await page.refresh();
     expect(page.render(80).join("\n")).not.toContain("ttl标记");
+    expect(page.render(80)[0]).not.toContain("已结束");
   }, 10_000);
 });
 
-describe("ShellPage：Enter 打开详情，仅展示身份/宿主/状态/完整命令/目录/进程号/耗时与 Esc 返回", () => {
-  test("详情视图不含查看输出或停止按钮字样，且完整命令未被截断", async () => {
+describe("ShellPage：Enter 打开详情，仅展示状态/来源/完整命令/目录/进程/耗时，K 停止与 Esc 返回", () => {
+  test("详情视图不含查看输出字样，完整命令折行显示不截断，每行不超过宽度", async () => {
     const registry = new ShellRegistry({ clock: createClock() });
     const longMarker = "详情命令标记".repeat(20);
     await spawnLocal(registry, longMarker);
@@ -298,13 +328,16 @@ describe("ShellPage：Enter 打开详情，仅展示身份/宿主/状态/完整�
     page.resize(60, 20);
 
     page.handleInput(KEY.enter);
-    const detail = page.render(60).join("\n");
+    const lines = page.render(60);
+    const detail = lines.join("\n");
 
-    expect(detail).toContain(longMarker);
-    expect(detail).toContain("Esc 返回");
+    expect(lines[0]).toBe(" Shell 任务 › 详情");
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+    expect(lines.filter((line) => /^ {3}命令 {4}| {11}\S/.test(line)).map((line) => line.slice(11)).join("")).toContain(longMarker);
+    expect(detail).toContain("Esc 返回列表");
     expect(detail).not.toContain("查看输出");
-    expect(detail).not.toContain("停止");
-    expect(detail).toContain("主 agent");
+    expect(detail).toContain("主 agent（本窗口）");
+    expect(lines.at(-1)).toBe(" K 停止   Esc 返回列表");
   });
 
   test("Esc 从详情返回列表，不触发关闭回调", async () => {
@@ -355,8 +388,10 @@ describe("ShellPage：详情按进入时固定的任务身份，刷新后不串�
     page.handleInput(KEY.enter);
     const before = page.render(80).join("\n");
     expect(before).toContain("111");
-    expect(before).toContain("[旧工作目录不提供]");
+    expect(before).toMatch(/目录 {4}不显示/);
+    expect(before).toContain("不显示（子代理的 Shell 只显示进程信息）");
     expect(before).not.toContain("/dir-x");
+    expect(before).not.toContain("命令X");
 
     await page.refresh();
     const after = page.render(80).join("\n");
@@ -367,17 +402,20 @@ describe("ShellPage：详情按进入时固定的任务身份，刷新后不串�
 });
 
 describe("ShellPage：K 打开停止确认，默认取消", () => {
-  test("确认页展示编号、宿主、命令；默认选中取消；Esc 取消后进程仍存活", async () => {
+  test("确认页列表照常显示并选中目标，底部写明停止谁的哪个进程；默认选中取消；Esc 取消后进程仍存活", async () => {
     const registry = new ShellRegistry({ clock: createClock() });
     const taskId = await spawnLocal(registry, "取消标记");
     const page = new ShellPage(basePageOptions({ registry, theme: fakeTheme() }));
     await page.refresh();
 
     page.handleInput(KEY.k);
-    const confirmText = page.render(80).join("\n");
-    expect(confirmText).toContain("主 agent");
+    const lines = page.render(80);
+    const confirmText = lines.join("\n");
     expect(confirmText).toContain("取消标记");
-    expect(confirmText).toContain("[SEL]取消[/SEL]");
+    expect(lines.at(-3)).toBe(` 停止 主 agent 的进程 ${registry.get(taskId)!.pid}？`);
+    expect(lines.at(-2)).toBe("   [SEL] 取消 [/SEL]   停止 ");
+    expect(lines.at(-1)).toBe("[DIM] ←→ 选择   Enter 确定   Esc 取消[/DIM]");
+    expect(lines.some((line) => line.startsWith("[SEL] ▸ "))).toBe(true);
 
     page.handleInput(KEY.escape);
     expect(registry.get(taskId)?.status).not.toBe("stopped");
@@ -552,8 +590,8 @@ describe("ShellPage：守护进程清理不确定时保留任务并显示原因"
     expect(stopCall?.params.expectedStartedAt).toBe(startedAtIso);
 
     const text = page.render(80).join("\n");
-    expect(text).toContain("不确定");
-    expect(text).toContain("清理确认超时（测试注入）");
+    expect(text).toContain("? 待确认");
+    expect(text).toContain("       └ 停止未确认：清理确认超时（测试注入）");
     expect(text).not.toContain("已停止");
   });
 });
@@ -595,7 +633,7 @@ describe("ShellPage：不确定任务只能请求实际停止，不能人工裁�
     await page.refresh();
     page.handleInput(KEY.k);
     const confirm = page.render(80).join("\n");
-    expect(confirm).toContain("停止尚未确认");
+    expect(confirm).toContain("  停止未确认，只能再次请求停止");
     expect(confirm).not.toContain("视为已停止");
     page.handleInput(KEY.right);
     page.handleInput(KEY.enter);
@@ -620,7 +658,7 @@ describe("ShellPage：不确定任务只能请求实际停止，不能人工裁�
     await flushMicrotasks();
     expect(stop).not.toHaveBeenCalled();
     expect(registry.get(taskId)).toEqual(before);
-    expect(page.render(80).join("\n")).toContain("不确定");
+    expect(page.render(80).join("\n")).toContain("? 待确认");
   }, 10_000);
 
   test("本地实际停止失败显示原因，无未处理拒绝", async () => {
@@ -747,7 +785,7 @@ describe("ShellPage：外来文本净化——命令/目录/原因/角色名不�
     const text = page.render(80).join("\n");
     expect(text).not.toContain("\x1b");
     expect(text).not.toContain("\r");
-    expect(text).toContain("进程停止未确认");
+    expect(text).toContain("└ 停止未确认：进程可能还在，再按 K 请求停止");
     expect(text).not.toContain("换行原因");
   });
 
@@ -765,10 +803,19 @@ describe("ShellPage：外来文本净化——命令/目录/原因/角色名不�
 });
 
 describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限", () => {
-  test("无任何任务时列表明确提示无活动 Shell", async () => {
+  test("无任何任务时列表明确提示没有正在运行或待确认的 Shell 任务", async () => {
     const page = new ShellPage(basePageOptions());
     await page.refresh();
-    expect(page.render(80).join("\n")).toContain("无活动 Shell");
+    expect(page.render(80)).toEqual([
+      " Shell 任务",
+      "─".repeat(80),
+      "",
+      "   没有正在运行或待确认的 Shell 任务",
+      "   代理用 bash 跑命令时，会出现在这里",
+      "",
+      "─".repeat(80),
+      " ↑↓ 选择   Enter 详情   K 停止   Esc 关闭",
+    ]);
   });
 
   test("仓库读取失败时展示具体错误（含 repoId 归属），且不显示无活动 Shell 措辞", async () => {
@@ -778,10 +825,9 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
     };
     const page = new ShellPage(basePageOptions({ repos: [repo] }));
     await page.refresh();
-    const text = page.render(80).join("\n");
-    expect(text).toContain("守护进程不可达（测试注入）");
-    expect(text).toContain("repo-broken");
-    expect(text).not.toContain("无活动 Shell");
+    const lines = page.render(80);
+    expect(lines[2]).toBe(" ✗ 刷新失败：repo-broken 守护进程不可达（测试注入），列表可能不是最新的");
+    expect(lines.join("\n")).not.toContain("没有正在运行");
   });
 
   test("多仓库时仅一个失败：错误文本可按 repoId 区分是哪个仓库读取失败，另一仓库任务正常展示", async () => {
@@ -797,9 +843,9 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
     const page = new ShellPage(basePageOptions({ repos: [brokenRepo, healthyRepo] }));
     await page.refresh();
     const text = page.render(80).join("\n");
-    expect(text).toContain("repo-a-broken");
+    expect(text).toContain("✗ 刷新失败：repo-a-broken 连接超时（测试注入）");
     expect(text).not.toContain("repo-b-healthy");
-    expect(text).toContain("healthy-task");
+    expect(text).toMatch(/● 运行中 +worker#.* 101$/m);
     expect(text).not.toContain("健康仓库命令");
   });
 
@@ -826,7 +872,7 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
     for (let i = 0; i < 29; i++) page.handleInput(KEY.down);
     const lines = page.render(80);
     expect(lines.length).toBeLessThanOrEqual(10);
-    expect(lines.some((l) => l.includes("daemon-29"))).toBe(true);
+    expect(lines.some((l) => l.endsWith(" 1029"))).toBe(true);
   });
 });
 
@@ -861,13 +907,13 @@ describe("ShellPage：守护进程任务载荷字段缺失/类型错误时 refre
       expect(rejection.count()).toBe(0);
 
       const text = page.render(80).join("\n");
-      expect(text).toContain("repo-malformed");
-      expect(text).toContain("good-task");
+      expect(text).toContain("✗ 刷新失败：repo-malformed");
+      expect(text).toMatch(/● 运行中 +worker#.* 2$/m);
 
       await expect(page.refresh()).resolves.toBeUndefined();
       await sleepMs(20);
       expect(rejection.count()).toBe(0);
-      expect(page.render(80).join("\n")).toContain("good-task");
+      expect(page.render(80).join("\n")).toMatch(/● 运行中 +worker#.* 2$/m);
     } finally {
       rejection.stop();
     }
@@ -1048,13 +1094,13 @@ describe("ShellPage：复合行身份隔离详情、选择和停止请求", () =
     await page.refresh();
 
     page.handleInput(KEY.enter);
-    expect(page.render(100).join("\n")).toContain("进程号：111");
-    expect(page.render(100).join("\n")).toContain("repo-A");
+    expect(page.render(100).join("\n")).toMatch(/进程 {4}111/);
+    expect(page.render(100).join("\n")).toContain("（仓库 repo-A）");
     page.handleInput(KEY.escape);
     page.handleInput(KEY.down);
     page.handleInput(KEY.enter);
-    expect(page.render(100).join("\n")).toContain("进程号：222");
-    expect(page.render(100).join("\n")).toContain("repo-B");
+    expect(page.render(100).join("\n")).toMatch(/进程 {4}222/);
+    expect(page.render(100).join("\n")).toContain("（仓库 repo-B）");
     page.handleInput(KEY.escape);
 
     page.handleInput(KEY.k);
@@ -1091,8 +1137,16 @@ describe("ShellPage：复合行身份隔离详情、选择和停止请求", () =
     const page = new ShellPage(basePageOptions({ registry, repos: [repo] }));
     await page.refresh();
     const list = page.render(120).join("\n");
-    expect(list).toContain("本机:");
-    expect(list).toContain("仓库:repo-remote");
+    expect(list).toContain("主 agent");
+    expect(list).toContain("worker#");
+    page.handleInput(KEY.enter);
+    expect(page.render(120).join("\n")).toContain("主 agent（本窗口）");
+    page.handleInput(KEY.escape);
+    page.handleInput(KEY.down);
+    page.handleInput(KEY.enter);
+    expect(page.render(120).join("\n")).toContain("（仓库 repo-remote）");
+    page.handleInput(KEY.escape);
+    page.handleInput(KEY.up);
 
     page.handleInput(KEY.k);
     page.handleInput(KEY.right);
@@ -1145,7 +1199,7 @@ describe("ShellPage：复合行身份隔离详情、选择和停止请求", () =
     await page.refresh();
     resolveOld({ status: "error", reason: "old-late-failure" });
     await flushMicrotasks();
-    expect(page.render(100).join("\n")).toContain("@402");
+    expect(page.render(100).some((line) => line.endsWith(" 402"))).toBe(true);
     expect(page.render(100).join("\n")).not.toContain("old-late-failure");
     expect(page.render(100).join("\n")).not.toContain("停止中");
 
@@ -1159,7 +1213,7 @@ describe("ShellPage：复合行身份隔离详情、选择和停止请求", () =
 });
 
 describe("ShellPage：本地结束证明和停止回执严格核对", () => {
-  test("descendantsScanned 缺失或 false 时 20 秒后仍保留；true 后才计时，证明撤销后旧 TTL 清零", async () => {
+  test("descendantsScanned 缺失或 false 时 60 秒后仍保留并写明结束未核实；true 后才计时，证明撤销后旧 TTL 清零", async () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
     let task = localTask({ status: "exited", activity: "ended", identityVerified: true, descendantsScanned: false });
@@ -1169,14 +1223,14 @@ describe("ShellPage：本地结束证明和停止回执严格核对", () => {
     const page = new ShellPage(basePageOptions({ registry, clock }));
 
     await page.refresh();
-    timeSource.advance(20_001);
+    timeSource.advance(60_001);
     await page.refresh();
-    expect(page.render(100).join("\n")).toContain("未核实");
+    expect(page.render(100).join("\n")).toContain("└ 结束未核实，不会自动从列表消失");
 
     task = { ...task, descendantsScanned: undefined as unknown as boolean };
-    timeSource.advance(20_001);
+    timeSource.advance(60_001);
     await page.refresh();
-    expect(page.render(100).join("\n")).toContain("未核实");
+    expect(page.render(100).join("\n")).toContain("└ 结束未核实，不会自动从列表消失");
 
     task = { ...task, descendantsScanned: true };
     await page.refresh();
@@ -1184,15 +1238,15 @@ describe("ShellPage：本地结束证明和停止回执严格核对", () => {
     timeSource.advance(10_000);
     task = { ...task, descendantsScanned: false };
     await page.refresh();
-    timeSource.advance(20_001);
+    timeSource.advance(60_001);
     await page.refresh();
-    expect(page.render(100).join("\n")).toContain("未核实");
+    expect(page.render(100).join("\n")).toContain("└ 结束未核实，不会自动从列表消失");
 
     task = { ...task, descendantsScanned: true };
     await page.refresh();
-    timeSource.advance(20_001);
+    timeSource.advance(60_001);
     await page.refresh();
-    expect(page.render(100).join("\n")).toContain("无活动 Shell");
+    expect(page.render(100).join("\n")).toContain("没有正在运行或待确认的 Shell 任务");
   });
 
   test("ok:true 只有结果身份与原请求一致且完整证明为 true 才显示确认结束", async () => {
@@ -1275,14 +1329,14 @@ test("远端查询在途时本地证明或PID变化，最终刷新不能还原�
       call: async () => hold ? new Promise<Record<string, unknown>>((resolve) => { finish = resolve; }) : { tasks: [] } };
     const registry = { list: () => [task], get: () => task } as unknown as ShellRegistry;
     const page = new ShellPage(basePageOptions({ registry, clock, repos: [{ repoId: "remote", resolveClient: () => client }] }));
-    await page.refresh(); time.advance(20_001); hold = true;
+    await page.refresh(); time.advance(60_001); hold = true;
     const pending = page.refresh();
     if (mutation === "proof") task.descendantsScanned = false;
     else task = localTask({ pid: 222, pgid: 222, startedAt: 2000 });
     finish({ tasks: [] }); await pending;
-    const text = page.render(160).join("\n"); expect(text).not.toContain("无活动 Shell");
-    if (mutation === "proof") expect(text).toContain("未核实");
-    else { page.handleInput(KEY.enter); expect(page.render(160).join("\n")).toContain("进程号：222"); }
+    const text = page.render(160).join("\n"); expect(text).not.toContain("没有正在运行或待确认的 Shell 任务");
+    if (mutation === "proof") expect(text).toContain("结束未核实");
+    else { page.handleInput(KEY.enter); expect(page.render(160).join("\n")).toMatch(/进程 {4}222/); }
     clock.stopGapWatcher();
   }
 });
@@ -1301,14 +1355,14 @@ test("同对象连接epoch变化后旧list不报空、旧stop回执不进入新�
   expect(page.render(160).join("\n")).not.toContain("OLD-CONNECTION-ONLY");
   holdList = true; const pending = page.refresh(); sequence++;
   resolveList({ tasks: [] }); await pending;
-  expect(page.render(160).join("\n")).toContain("未知"); expect(page.render(160).join("\n")).not.toContain("无活动 Shell");
+  expect(page.render(160).join("\n")).toContain("刷新失败"); expect(page.render(160).join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
 });
 
 test.each([null, undefined, "错误\x1b[2J\n伪造", { message: "对象错误\x1b[2J\n伪造" }])("未知异常%j只产生有界未知，不崩溃或报空", async (error) => {
   const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "c", connectionSequence: 1 }), call: async () => { throw error; } };
   const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", resolveClient: () => client }] }));
   await expect(page.refresh()).resolves.toBeUndefined();
-  const lines = page.render(160); expect(lines.join("\n")).toContain("未知"); expect(lines.join("\n")).not.toContain("无活动 Shell");
+  const lines = page.render(160); expect(lines.join("\n")).toContain("刷新失败"); expect(lines.join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
   expect(lines.some((line) => /[\x00-\x1f\x7f-\x9f]/.test(line))).toBe(false);
 });
 
@@ -1317,7 +1371,7 @@ test("缺失列表和host非字符串身份属于未知数据，不转换成空�
     const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "c", connectionSequence: 1 }), call: async () => response };
     const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", resolveClient: () => client }] }));
     await page.refresh(); expect(() => page.render(160)).not.toThrow();
-    expect(page.render(160).join("\n")).toContain("未知"); expect(page.render(160).join("\n")).not.toContain("无活动 Shell");
+    expect(page.render(160).join("\n")).toContain("刷新失败"); expect(page.render(160).join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
   }
 });
 
@@ -1330,22 +1384,171 @@ describe("ShellPage：缺连接属于未知覆盖，不当作空结果", () => {
     const missingA: ShellPageRepo = { repoId: "repo-missing-a", resolveClient: () => restoredClient };
     const missingB: ShellPageRepo = { repoId: "repo-missing-b", resolveClient: () => undefined };
     const allMissing = new ShellPage(basePageOptions({ repos: [missingA, missingB] }));
-    allMissing.resize(12, 1);
+    allMissing.resize(80, 6);
     await allMissing.refresh();
     expect(calls).toEqual([]);
-    expect(allMissing.render(12)).toHaveLength(1);
-    expect(allMissing.render(12)[0]).toContain("未知");
-    expect(allMissing.render(12).join("\n")).not.toContain("无活动 Shell");
+    expect(allMissing.render(80)).toHaveLength(6);
+    expect(allMissing.render(80)[2]).toBe(" ✗ 刷新失败：repo-missing-a 连接不可用，列表可能不是最新的");
+    expect(allMissing.render(80)[3]).toBe(" ✗ 刷新失败：repo-missing-b 连接不可用，列表可能不是最新的");
+    expect(allMissing.render(12).join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
 
     const partial = new ShellPage(basePageOptions({ repos: [{ repoId: "repo-ok", resolveClient: () => connectedClient }, missingA] }));
     await partial.refresh();
     expect(calls).toEqual(["shells.list"]);
-    expect(partial.render(80).join("\n")).toContain("覆盖不完整");
-    expect(partial.render(80).join("\n")).not.toContain("无活动 Shell");
+    expect(partial.render(80).join("\n")).toContain("✗ 刷新失败：repo-missing-a 连接不可用");
+    expect(partial.render(80).join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
 
     restoredClient = connectedClient;
     await partial.refresh();
     expect(calls).toEqual(["shells.list", "shells.list", "shells.list"]);
-    expect(partial.render(80).join("\n")).toContain("无活动 Shell");
+    expect(partial.render(80).join("\n")).toContain("没有正在运行或待确认的 Shell 任务");
   });
+});
+
+describe("ShellPage：表格列宽按显示宽度对齐", () => {
+  const colorTheme = () => ({
+    fg: (kind: string, text: string) => `<${kind}>${text}</${kind}>`,
+    bg: (kind: string, text: string) => `<${kind}>${text}</${kind}>`,
+  });
+
+  async function mixedPage(theme?: ReturnType<typeof colorTheme>) {
+    const local = [
+      localTask({ taskId: "cn", pid: 48102, command: "中文命令带全角字符很长很长很长很长很长很长很长很长很长" }),
+      localTask({ taskId: "timeout", pid: 7, status: "timed_out", activity: "ended", descendantsScanned: true, command: "npx vitest" }),
+    ];
+    const registry = new ShellRegistry({ clock: createClock() });
+    registry.list = () => local;
+    const repo = fakeRepo("3f9a2c1b7e04aa", {
+      list: () => [{ taskId: "sub", host: roleHost("reviewer"), pid: 48390, startedAt: "1000", status: "running", activity: "active", inWorkspace: true }],
+    });
+    const page = new ShellPage(basePageOptions({ registry, repos: [repo], theme }));
+    await page.refresh();
+    return page;
+  }
+
+  test("中文命令、子代理占位文字、超时停止混排时（状态列 11 格，超时停止后面留空格），表头与每行的状态、来源、命令、耗时、进程列起点一致", async () => {
+    const page = await mixedPage();
+    const lines = page.render(80);
+    const header = lines[2]!;
+    const rows = lines.slice(3, 6);
+    const col = (line: string, text: string) => visibleWidth(line.slice(0, line.indexOf(text)));
+    expect(col(header, "状态")).toBe(5);
+    expect(col(header, "来源")).toBe(14);
+    expect(col(header, "命令")).toBe(31);
+    expect(col(header, "耗时") + visibleWidth("耗时")).toBe(71);
+    expect(visibleWidth(header)).toBe(78);
+    expect(col(rows[0]!, "运行中")).toBe(5);
+    expect(col(rows[0]!, "主 agent")).toBe(14);
+    expect(col(rows[0]!, "中文命令")).toBe(31);
+    expect(col(rows[1]!, "超时停止")).toBe(5);
+    expect(col(rows[1]!, "主 agent")).toBe(14);
+    expect(col(rows[1]!, "npx vitest")).toBe(31);
+    expect(col(rows[2]!, "reviewer#")).toBe(14);
+    expect(col(rows[2]!, "（子代理命令不显示）")).toBe(31);
+    for (const row of rows) {
+      expect(visibleWidth(row)).toBe(78);
+      expect(row.slice(-15)).toMatch(/^ *\S+ +\d+$/);
+    }
+    expect(rows[0]!.endsWith(" 48102")).toBe(true);
+    expect(rows[0]).toContain("…");
+  });
+
+  test("窄终端每行都不超出宽度；着色只包在文字外面", async () => {
+    const page = await mixedPage();
+    for (const width of [20, 40, 60]) for (const line of page.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+    const colored = (await mixedPage(colorTheme())).render(80);
+    expect(colored[3]).toContain("<success>● 运行中   </success>");
+    expect(colored[4]).toContain("<error>✗ 超时停止 </error>");
+    expect(colored[5]).toContain("<accent>reviewer#");
+    expect(colored[5]).toContain("<dim>（子代理命令不显示）");
+    expect(colored[2]!.startsWith("<muted>     状态")).toBe(true);
+    expect(colored[1]).toBe(`<dim>${"─".repeat(80)}</dim>`);
+  });
+});
+
+describe("ShellPage：已结束的子代理任务同样 1 分钟后消失，待确认的不消失", () => {
+  test("守护进程返回的已结束任务（身份与后代核对完整）60 秒后消失；缺核对的保留并写明；待确认的一直保留", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    const repo = fakeRepo("repo-ended", {
+      list: () => [
+        { taskId: "done", host: roleHost("reviewer"), pid: 501, startedAt: "0", status: "exited", activity: "ended", identityVerified: true, descendantsScanned: true, inWorkspace: true },
+        { taskId: "unproven", host: roleHost("worker"), pid: 502, startedAt: "0", status: "stopped", activity: "ended", identityVerified: true, descendantsScanned: false, inWorkspace: true },
+        { taskId: "pending", host: roleHost("worker"), pid: 503, startedAt: "0", status: "uncertain", activity: "uncertain", inWorkspace: true },
+      ],
+    });
+    const page = new ShellPage(basePageOptions({ repos: [repo], clock }));
+    await page.refresh();
+    expect(page.render(80)[0]).toMatch(/待确认 1 · 已结束 2$/);
+    expect(page.render(80).some((line) => line.endsWith(" 501"))).toBe(true);
+
+    timeSource.advance(59_000);
+    await page.refresh();
+    expect(page.render(80).some((line) => line.endsWith(" 501"))).toBe(true);
+
+    timeSource.advance(2_000);
+    await page.refresh();
+    const lines = page.render(80);
+    expect(lines.some((line) => line.endsWith(" 501"))).toBe(false);
+    expect(lines.some((line) => line.endsWith(" 502"))).toBe(true);
+    expect(lines.join("\n")).toContain("└ 结束未核实，不会自动从列表消失");
+    expect(lines.some((line) => line.endsWith(" 503"))).toBe(true);
+    expect(lines[0]).toMatch(/待确认 1 · 已结束 1$/);
+
+    timeSource.advance(600_000);
+    await page.refresh();
+    expect(page.render(80).some((line) => line.endsWith(" 503"))).toBe(true);
+    clock.stopGapWatcher();
+  });
+});
+
+describe("ShellPage：刷新失败与停止失败的提示行", () => {
+  test("整次刷新失败时分隔线下显示红色刷新失败行，下面照常列出上次读到的任务", async () => {
+    const registry = new ShellRegistry({ clock: createClock() });
+    registry.list = () => [localTask({ pid: 4810 })];
+    const page = new ShellPage(basePageOptions({ registry, theme: { fg: (kind: string, text: string) => `<${kind}>${text}</${kind}>` } }));
+    await page.refresh();
+    page.reportRefreshFailure(new Error("和后台进程的连接已断开"));
+    const lines = page.render(80);
+    expect(lines[2]).toBe("<error> ✗ 刷新失败：和后台进程的连接已断开，列表可能不是最新的</error>");
+    expect(lines[3]!.startsWith("<muted>     状态")).toBe(true);
+    expect(lines[4]).toContain("4810");
+  });
+
+  test("停止后连接换过：该行下面用红色原因行写明连接已经换过", async () => {
+    let sequence = 1;
+    const client: ShellPageClient = {
+      connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "c", connectionSequence: sequence }),
+      call: async (method: string) => {
+        if (method === "shells.list") return { tasks: [{ taskId: "t", host: roleHost("worker"), pid: 48290, startedAt: "0", status: "running", activity: "active", inWorkspace: true }] };
+        sequence += 1;
+        return { status: "stopping" };
+      },
+    };
+    const page = new ShellPage(basePageOptions({ repos: [{ repoId: "repo", resolveClient: () => client }], theme: { fg: (kind: string, text: string) => `<${kind}>${text}</${kind}>` } }));
+    await page.refresh();
+    page.handleInput(KEY.k);
+    page.handleInput(KEY.right);
+    page.handleInput(KEY.enter);
+    await flushMicrotasks();
+    const lines = page.render(80);
+    const row = lines.findIndex((line) => line.includes("48290"));
+    expect(lines[row]).toContain("<warning>? 待确认   </warning>");
+    expect(lines[row + 1]).toBe("<dim>       └ </dim><error>停止未确认：和后台进程的连接已经换过，请刷新后重试</error>");
+  });
+});
+
+test("详情页按 K 打开该任务的停止确认，Esc 取消回到列表", async () => {
+  const registry = new ShellRegistry({ clock: createClock() });
+  registry.list = () => [localTask({ taskId: "a", pid: 601 }), localTask({ taskId: "b", pid: 602 })];
+  const page = new ShellPage(basePageOptions({ registry }));
+  await page.refresh();
+  page.handleInput(KEY.down);
+  page.handleInput(KEY.enter);
+  page.handleInput(KEY.k);
+  const lines = page.render(80);
+  expect(lines.at(-3)).toBe(" 停止 主 agent 的进程 602？");
+  expect(lines.find((line) => line.startsWith(" ▸ "))).toContain("602");
+  page.handleInput(KEY.escape);
+  expect(page.render(80).at(-1)).toBe(" ↑↓ 选择   Enter 详情   K 停止   Esc 关闭");
 });

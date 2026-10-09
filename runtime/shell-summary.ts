@@ -55,14 +55,14 @@ interface CountAccumulator {
 }
 
 function groupLabel(host: Host): string {
-  return host.kind === "main" ? "主 agent" : host.role ?? "worker";
+  return host.kind === "main" ? "主 agent" : (host.role ?? "worker").replace(/^one-company\./, "");
 }
 
 function newAccumulator(): CountAccumulator {
   return { total: 0, uncertain: 0, groupCounts: new Map(), groupOrder: [] };
 }
 
-// 不确定任务身份尚未核对清楚，不能计入"确定在跑"的总数与角色分组，只在 uncertain 里单独体现
+// 待确认任务身份尚未核对清楚，不能计入"确定在跑"的总数与角色分组，只在 uncertain 里单独体现
 function addEntry(acc: CountAccumulator, entry: DaemonShellEntry): void {
   if (entry.activity === "ended" || entry.inWorkspace === false) return;
   if (entry.activity === "uncertain") {
@@ -135,7 +135,7 @@ export function formatShellSummary(summary: ShellSummary): string | undefined {
     const groupText = summary.groups.map((g) => `${g.label}：${g.count}`).join(" · ");
     parts.push(groupText ? `shell：${summary.total} · ${groupText}` : `shell：${summary.total}`);
   }
-  if (summary.uncertain > 0) parts.push(`不确定：${summary.uncertain}`);
+  if (summary.uncertain > 0) parts.push(`待确认：${summary.uncertain}`);
   if (hasErrors) parts.push(summary.errors.join("; "));
   // 状态栏只占一行：通用净化保留换行以服务多行场景，这里额外把换行折叠成空格
   return sanitizeText(parts.join(" · "), MAX_STATUS_TEXT_LENGTH).replace(/\n/g, " ");

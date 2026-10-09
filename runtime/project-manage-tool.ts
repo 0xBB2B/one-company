@@ -757,7 +757,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
 
   const tool: ToolDefinition<typeof publicParameters, Record<string, unknown>> = {
     name: "one_company_project_manage",
-    label: "管理项目索引",
+    label: "管理项目（索引、工作区、规范）",
     description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；operationId 每次新生成 UUIDv7，requirementId 取自需求工具结果，不要自编。初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认；结果里的 version 是需求的新版本号，后续需求操作要用它。conventions-update 以 content 给出仓库根目录 AGENTS.md 的完整新内容，界面显示与现有文件的差异，用户选「写入」后才写文件，此后派出的子代理按新内容工作；用户输入修改意见时结果为 status=revise。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
     promptSnippet: "预览、初始化、查看或刷新当前项目索引；为需求建立或回收独立工作区；更新项目规范 AGENTS.md",
     parameters: publicParameters,

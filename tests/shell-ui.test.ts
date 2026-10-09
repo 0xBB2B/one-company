@@ -515,7 +515,7 @@ test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实�
     await waitFor(() => page !== undefined);
     await page!.refresh();
     page!.handleInput("K");
-    expect(page!.render(100).join("\n")).toContain("停止尚未确认");
+    expect(page!.render(100).join("\n")).toContain("停止未确认，只能再次请求停止");
     expect(page!.render(100).join("\n")).not.toContain("视为已停止");
     page!.handleInput("\x1b[C");
     page!.handleInput("\r");
@@ -526,7 +526,7 @@ test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实�
     ]);
     stopped.resolve({ task });
     await flushMicrotasks();
-    expect(page!.render(100).join("\n")).toContain("不确定");
+    expect(page!.render(100).join("\n")).toContain("? 待确认");
     expect(page!.render(100).join("\n")).not.toContain("已停止");
     expect(JSON.stringify(calls)).not.toContain("USER");
   } finally {
@@ -539,7 +539,7 @@ test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实�
 });
 
 describe("openShellUiPage：保留缺连接仓库并可在连接恢复后查询", () => {
-  test("workspace 中部分 repo 缺 client 时显示未知而非无活动，恢复后查询全部范围", async () => {
+  test("workspace 中部分 repo 缺 client 时显示刷新失败而非没有任务，恢复后查询全部范围", async () => {
     const fakePi = createFakePi();
     const callsA: string[] = [];
     const callsB: string[] = [];
@@ -579,13 +579,13 @@ describe("openShellUiPage：保留缺连接仓库并可在连接恢复后查询"
       await fakePi.trigger("session_start", { reason: "new" }, ctx);
       await flushMicrotasks();
       opened = openShellUiPage({ ui: { custom: (factory) => new Promise((resolve) => {
-        page = factory({ requestRender: () => {}, terminal: { columns: 14, rows: 1 } }, {}, {}, resolve);
+        page = factory({ requestRender: () => {}, terminal: { columns: 80, rows: 6 } }, {}, {}, resolve);
       }) } });
       await waitFor(() => page !== undefined);
       await page!.refresh();
       expect(callsB).toEqual([]);
-      expect(page!.render(14)[0]).toContain("未知");
-      expect(page!.render(80).join("\n")).not.toContain("无活动 Shell");
+      expect(page!.render(80)[2]).toContain(" ✗ 刷新失败：");
+      expect(page!.render(80).join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
 
       clientB = {
         ...createPollableClient(),
@@ -593,7 +593,7 @@ describe("openShellUiPage：保留缺连接仓库并可在连接恢复后查询"
       };
       await page!.refresh();
       expect(callsB).toEqual(["shells.list"]);
-      expect(page!.render(80).join("\n")).toContain("无活动 Shell");
+      expect(page!.render(80).join("\n")).toContain("没有正在运行或待确认的 Shell 任务");
     } finally {
       page?.handleInput("\x1b");
       await opened;
@@ -669,14 +669,14 @@ describe("openShellUiPage：透传宿主 ctx.ui.theme 到页面主题", () => {
     await waitFor(() => (component?.render(80).join("\n") ?? "").includes("theme-marker"));
 
     const listText = component!.render(80).join("\n");
-    expect(listText).toContain("<selectedBg>");
+    expect(listText).toContain("<selectedBg><accent> ▸ </accent>");
 
     component!.handleInput("K");
     const confirmText = component!.render(80).join("\n");
-    expect(confirmText).toContain("<selectedBg>取消</selectedBg>");
+    expect(confirmText).toContain("<selectedBg> 取消 </selectedBg>");
 
     component!.handleInput("\x1b");
-    expect(component!.render(80).join("\n")).not.toContain("<selectedBg>取消</selectedBg>");
+    expect(component!.render(80).join("\n")).not.toContain("<selectedBg> 取消 </selectedBg>");
     component!.handleInput("\x1b");
     await openPromise;
 

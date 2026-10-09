@@ -149,8 +149,8 @@ function createFakeTimeSource(): FakeTimeSource {
   return { now: () => current, setTimeout: setTimeoutFake, clearTimeout: clearTimeoutFake, advance };
 }
 
-describe("summarizeShells / formatShellSummary：不确定不计入总数与角色数", () => {
-  test("本窗口主 agent + 两守护进程各一个 worker（一个不确定）→ shell：2 · 主 agent：1 · worker：1，不确定另列为 1", async () => {
+describe("summarizeShells / formatShellSummary：待确认不计入总数与角色数", () => {
+  test("本窗口主 agent + 两守护进程各一个 worker（一个待确认）→ shell：2 · 主 agent：1 · worker：1，待确认另列为 1", async () => {
     const registry = new ShellRegistry({ clock: createClock() });
     await spawnBackgroundWithDescendants(registry);
 
@@ -172,10 +172,11 @@ describe("summarizeShells / formatShellSummary：不确定不计入总数与角�
 
     const text = formatShellSummary(summary);
     expect(text).toContain("shell：2 · 主 agent：1 · worker：1");
-    expect(text).toContain("不确定：1");
+    expect(text).toContain("待确认：1");
+    expect(text).not.toContain("不确定");
   });
 
-  test("仅本窗口一个不确定任务：不计入总数与角色分组，只体现在不确定计数里", async () => {
+  test("仅本窗口一个待确认任务：不计入总数与角色分组，只体现在待确认计数里", async () => {
     let baselineTaken = false;
     const registry = new ShellRegistry({
       clock: createClock(),
@@ -211,7 +212,8 @@ describe("summarizeShells / formatShellSummary：不确定不计入总数与角�
 
     const text = formatShellSummary(summary);
     expect(text).not.toContain("主 agent");
-    expect(text).toContain("不确定：1");
+    expect(text).toContain("待确认：1");
+    expect(text).not.toContain("不确定");
   }, 10_000);
 });
 

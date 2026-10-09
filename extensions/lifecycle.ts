@@ -190,7 +190,7 @@ async function startWindow(input: StartWindowInput): Promise<void> {
     clients = await input.connectWorkspaceClients({ windowId, sessionId: input.sessionId, cwd: input.cwd });
     const workspace = clients.workspace();
     if (workspace.repos.length === 0) {
-      throw new Error(`工作区（${input.cwd}）内未发现任何 Git 仓库，窗口无法登记`);
+      throw new Error(`工作区（${input.cwd}）内没有 Git 仓库，本窗口用不了需求和后台代理功能`);
     }
 
     const clock = input.resolveClock();

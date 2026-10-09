@@ -42,7 +42,11 @@ let startupFailure: string | undefined;
 function buildTheme(ctx: OpenShellPageCtx): ShellPageTheme | undefined {
   const hostTheme = ctx.ui.theme;
   if (!hostTheme) return undefined;
-  return { bg: (kind, text) => hostTheme.bg(kind, text) };
+  return {
+    fg: (kind, text) => hostTheme.fg(kind, text),
+    bg: (kind, text) => hostTheme.bg(kind, text),
+    ...(hostTheme.bold ? { bold: (text: string) => hostTheme.bold!(text) } : {}),
+  };
 }
 
 export async function openShellUiPage(ctx: OpenShellPageCtx): Promise<void> {

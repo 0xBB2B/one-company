@@ -7,6 +7,8 @@ import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { RunStore, type RunState, type RunRecord } from "../runtime/run-store.ts";
 import { ShellRegistry, type ShellRegistryProbes } from "../runtime/shell-registry.ts";
 import { createClock } from "../runtime/clock.ts";
+import { ShellPage } from "../runtime/shell-page.ts";
+import { formatShellSummary, summarizeShells } from "../runtime/shell-summary.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { repositoryDatabase, withDatabase, putRecord, uuidv7 } from "../runtime/database.ts";
 import { overlaps } from "../runtime/ranges.ts";
@@ -101,12 +103,35 @@ describe("真实 Shell 停止、级联和身份", () => {
     expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ state: "stopped", confirmed: true }); expect(alive(task.pid)).toBe(false);
     await expect(w.runs.update(run.id, { state: "completed" })).rejects.toThrow("状态转换");
   }, 15_000);
+  test("shells.list 的宿主带运行记录的角色，Shell 页据此显示角色名", async () => {
+    const w = await world(); const parent = await w.create("running"); const child = await w.create("running", parent); const task = await w.spawn(child); const map = handlers(w);
+    const list = await map.get("shells.list")!({});
+    expect(list.tasks.find((t: { pid: number }) => t.pid === task.pid)?.host).toMatchObject({ kind: "role", role: "one-company.worker", runId: child.id });
+    const client = { connectionIdentity: () => ({ daemonInstanceId: "d", connectionId: "c", connectionSequence: 1 }), call: (method: string) => map.get(method)!({}) };
+    const page = new ShellPage({ registry: new ShellRegistry({ clock: w.clock }), repos: [{ repoId: "repo", resolveClient: () => client }], clock: w.clock });
+    await page.refresh();
+    expect(page.render(80).find((line) => line.endsWith(` ${task.pid}`))).toContain(`worker#${child.id.replace(/-/g, "").slice(0, 6)}`);
+    await w.manager.stop(child.id, { reason: "main_agent" });
+  }, 15_000);
+  test("PM 运行（运行记录没有角色）的 Shell 在 shells.list 里角色为 pm，Shell 页显示 pm#…，状态栏计入 pm", async () => {
+    const w = await world(); const pm = await w.create("running"); const task = await w.spawn(pm); const map = handlers(w);
+    expect(pm.role).toBeUndefined();
+    const list = await map.get("shells.list")!({});
+    expect(list.tasks.find((t: { pid: number }) => t.pid === task.pid)?.host).toMatchObject({ kind: "role", role: "one-company.pm", runId: pm.id });
+    const client = { connectionIdentity: () => ({ daemonInstanceId: "d", connectionId: "c", connectionSequence: 1 }), call: (method: string) => map.get(method)!({}) };
+    const registry = new ShellRegistry({ clock: w.clock });
+    const page = new ShellPage({ registry, repos: [{ repoId: "repo", resolveClient: () => client }], clock: w.clock });
+    await page.refresh();
+    expect(page.render(80).find((line) => line.endsWith(` ${task.pid}`))).toContain(`pm#${pm.id.replace(/-/g, "").slice(0, 6)}`);
+    expect(formatShellSummary(await summarizeShells({ registry, repos: [{ repoId: "repo", client }], clock: w.clock }))).toBe("shell：1 · pm：1");
+    await w.manager.stop(pm.id, { reason: "main_agent" });
+  }, 15_000);
   test("R09 Shell PID/startedAt 不匹配不发送停止", async () => {
     const w = await world(); const run = await w.create("running"); const task = await w.spawn(run); const map = handlers(w); const stop = vi.spyOn(w.shells, "stop");
     const params = { taskId: task.taskId, expectedPid: task.pid, expectedStartedAt: String(task.startedAt) };
     for (const bad of [{ ...params, expectedPid: task.pid + 1 }, { ...params, expectedStartedAt: "0" }]) expect(await map.get("shells.stop")!(bad)).toMatchObject({ status: "mismatch" });
     expect(stop).not.toHaveBeenCalled(); expect(alive(task.pid)).toBe(true);
-    const list = await map.get("shells.list")!({}); expect(list.tasks[0]).toMatchObject({ pid: task.pid, identityVerified: true, command: "[旧命令正文不提供]", cwd: "[旧工作目录不提供]" });
+    const list = await map.get("shells.list")!({}); expect(list.tasks[0]).toMatchObject({ pid: task.pid, identityVerified: true }); expect(list.tasks[0]).not.toHaveProperty("command"); expect(list.tasks[0]).not.toHaveProperty("cwd");
     expect(["stopped", "exited"]).toContain((await map.get("shells.stop")!(params)).status); expect(alive(task.pid)).toBe(false);
     expect(await map.get("shells.stop")!({ ...params, taskId: "missing" })).toMatchObject({ status: "not_found" });
   }, 15_000);
