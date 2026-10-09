@@ -163,12 +163,12 @@ function jsonClone<T>(schema: TSchema, value: unknown): { copy: T; json: string 
   return fail("invalid_shape");
 }
 
-function checkText(value: string, maximum: number): void {
+function checkText(value: string, maximum: number, field: string): void {
   if (value.trim().length === 0) fail("invalid_shape");
-  if (codepoints(value) > maximum) fail("resource_limit");
+  if (codepoints(value) > maximum) fail("resource_limit", `${field} ${codepoints(value)} 字，上限 ${maximum} 字`);
 }
-function checkTextList(values: readonly string[], maximum: number): void {
-  for (const value of values) checkText(value, maximum);
+function checkTextList(values: readonly string[], maximum: number, field: string): void {
+  values.forEach((value, index) => checkText(value, maximum, `${field} 第 ${index + 1} 项`));
 }
 function checkAbsolutePath(value: string): void {
   if (bytes(value) > EXPLORE_CONTRACT_LIMITS.pathBytes || value.includes("\\") || /[\u0000-\u001f\u007f]/u.test(value)
@@ -179,7 +179,7 @@ function isUnder(value: string, root: string): boolean {
   return value === root || value.startsWith(root === "/" ? "/" : `${root}/`);
 }
 export function checkedUrl(value: string): URL {
-  if (bytes(value) > EXPLORE_CONTRACT_LIMITS.urlBytes) fail("resource_limit");
+  if (bytes(value) > EXPLORE_CONTRACT_LIMITS.urlBytes) fail("resource_limit", `网址 ${bytes(value)} 字节，上限 ${EXPLORE_CONTRACT_LIMITS.urlBytes} 字节`);
   const url = (() => {
     try { return new URL(value); } catch { return fail("out_of_scope"); }
   })();
@@ -191,9 +191,9 @@ function same(a: unknown, b: unknown): boolean {
 }
 
 function validateInput(input: ExploreInput): void {
-  checkText(input.question, EXPLORE_CONTRACT_LIMITS.questionCodepoints);
-  checkTextList(input.clues, EXPLORE_CONTRACT_LIMITS.clueCodepoints);
-  if (input.source.kind === "web") checkText(input.source.query, EXPLORE_CONTRACT_LIMITS.questionCodepoints);
+  checkText(input.question, EXPLORE_CONTRACT_LIMITS.questionCodepoints, "question");
+  checkTextList(input.clues, EXPLORE_CONTRACT_LIMITS.clueCodepoints, "clues");
+  if (input.source.kind === "web") checkText(input.source.query, EXPLORE_CONTRACT_LIMITS.questionCodepoints, "source.query");
   else checkAbsolutePath(input.source.root);
 }
 
@@ -201,7 +201,7 @@ function validateInput(input: ExploreInput): void {
 export function checkExploreInput(value: unknown): ExploreInput {
   const { copy, json } = jsonClone<ExploreInput>(ExploreInputSchema, value);
   validateInput(copy);
-  if (bytes(json) > EXPLORE_CONTRACT_LIMITS.inputBytes) fail("resource_limit");
+  if (bytes(json) > EXPLORE_CONTRACT_LIMITS.inputBytes) fail("resource_limit", `检索请求整体 ${bytes(json)} 字节，上限 ${EXPLORE_CONTRACT_LIMITS.inputBytes} 字节`);
   return copy;
 }
 
@@ -209,11 +209,11 @@ function validateResult(result: ExploreResult, input: ExploreInput): void {
   if (!same(result.parent, input.parent) || !same(result.source, input.source)) fail("invalid_binding");
   if (result.sources.length > input.budget.maxSources) fail("out_of_scope", `来源 ${result.sources.length} 条，超过预算 ${input.budget.maxSources} 条`);
   if (result.searchedScope.kind !== input.source.kind) fail("out_of_scope", `searchedScope 的种类须为 ${input.source.kind}`);
-  checkTextList(result.conclusions, EXPLORE_CONTRACT_LIMITS.conclusionCodepoints);
-  checkTextList(result.notFound, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints);
-  checkTextList(result.failures, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints);
-  checkTextList(result.truncation.reasons, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints);
-  checkTextList(result.unknown, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints);
+  checkTextList(result.conclusions, EXPLORE_CONTRACT_LIMITS.conclusionCodepoints, "conclusions");
+  checkTextList(result.notFound, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints, "notFound");
+  checkTextList(result.failures, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints, "failures");
+  checkTextList(result.truncation.reasons, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints, "truncation.reasons");
+  checkTextList(result.unknown, EXPLORE_CONTRACT_LIMITS.statusItemCodepoints, "unknown");
   if (result.truncation.truncated !== (result.truncation.reasons.length > 0)) fail("invalid_shape");
 
   if (input.source.kind === "local_file" && result.searchedScope.kind === "local_file") {
@@ -230,11 +230,11 @@ function validateResult(result: ExploreResult, input: ExploreInput): void {
       if (source.endLine < source.startLine) fail("invalid_shape");
     }
   } else if (input.source.kind === "web" && result.searchedScope.kind === "web") {
-    result.searchedScope.queries.forEach((query) => checkText(query, EXPLORE_CONTRACT_LIMITS.questionCodepoints));
-    for (const source of result.sources) {
+    result.searchedScope.queries.forEach((query, index) => checkText(query, EXPLORE_CONTRACT_LIMITS.questionCodepoints, `searchedScope.queries 第 ${index + 1} 项`));
+    for (const [index, source] of result.sources.entries()) {
       if (!("url" in source)) fail("invalid_binding");
       checkedUrl(source.url);
-      checkText(source.quote, EXPLORE_CONTRACT_LIMITS.quoteCodepoints);
+      checkText(source.quote, EXPLORE_CONTRACT_LIMITS.quoteCodepoints, `sources 第 ${index + 1} 项的 quote`);
     }
   } else fail("invalid_binding");
 }
@@ -247,6 +247,7 @@ export function checkExploreResult(value: unknown, input: ExploreInput): Explore
   const trustedInput = checkExploreInput(input);
   const { copy, json } = jsonClone<ExploreResult>(ExploreResultSchema, value);
   validateResult(copy, trustedInput);
-  if (bytes(json) > Math.min(EXPLORE_CONTRACT_LIMITS.outputBytes, trustedInput.budget.maxResultBytes)) fail("resource_limit");
+  const maxBytes = Math.min(EXPLORE_CONTRACT_LIMITS.outputBytes, trustedInput.budget.maxResultBytes);
+  if (bytes(json) > maxBytes) fail("resource_limit", `research 整体 ${bytes(json)} 字节，上限 ${maxBytes} 字节`);
   return copy;
 }

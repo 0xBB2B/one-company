@@ -340,6 +340,25 @@ test("调用者声明更低maxResultBytes时使用更低限制且不截断", () 
   expect(result.conclusions).toEqual(["找到一个有界来源"]);
 });
 
+test("超限被拒时原因写明哪个字段第几项、现在多少、上限多少，模型能照着精简", () => {
+  const input = webInput();
+  const result = resultFor(input);
+  const detailOf = (operation: () => unknown) => {
+    try { operation(); } catch (error) {
+      expect((error as ExploreContractError).code).toBe("resource_limit");
+      return JSON.stringify((error as ExploreContractError).advice);
+    }
+    throw new Error("没有被拒");
+  };
+  expect(detailOf(() => checkExploreResult({ ...result, conclusions: ["短结论", "结".repeat(474)] }, input))).toContain("conclusions 第 2 项 474 字，上限 400 字");
+  const quote = clone(result);
+  if (quote.sources[0]?.kind === "web") quote.sources[0].quote = "引".repeat(401);
+  expect(detailOf(() => checkExploreResult(quote, input))).toContain("sources 第 1 项的 quote 401 字，上限 400 字");
+  const exact = Buffer.byteLength(JSON.stringify(result));
+  expect(detailOf(() => checkExploreResult(result, { ...input, budget: { ...input.budget, maxResultBytes: exact - 1 } })))
+    .toContain(`research 整体 ${exact} 字节，上限 ${exact - 1} 字节`);
+});
+
 test("M9：网页检索的 research 只写 {queries} 时宿主补上种类后通过核对", () => {
   const input = webInput(), full = resultFor(input);
   const submitted = { conclusions: full.conclusions, sources: full.sources, searchedScope: { queries: [input.source.kind === "web" ? input.source.query : ""] },
