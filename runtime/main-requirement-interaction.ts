@@ -21,7 +21,6 @@ import type { InputTicket, InteractionCapability, InteractionAuthorization } fro
 import { createPiInteractionInterpreter } from "./user-interaction-model.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionAction } from "./user-interaction-format.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
-import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { decisionDigest } from "./short-decision-format.ts";
 import { parseStrictJson } from "./strict-json.ts";
 import { ApprovalManifestStore, summarizeApprovalManifest, assertApprovalScopeReturnIn, assertRegisteredScopeReturnIn, APPROVAL_MANIFEST_NAMESPACE } from "./approval-manifest-store.ts";

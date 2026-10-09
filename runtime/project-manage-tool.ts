@@ -3,7 +3,6 @@ import { chooseOrWriteWindow, confirmWindow, mutedLines } from "./question-windo
 import type { ProgramWindow } from "./question-window.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, join, posix, resolve } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";

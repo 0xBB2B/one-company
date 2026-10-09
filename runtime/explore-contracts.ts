@@ -1,5 +1,5 @@
 import { posix as path } from "node:path";
-import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import { withDetail } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";

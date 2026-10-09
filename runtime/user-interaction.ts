@@ -83,10 +83,6 @@ function frozen<T>(value: T): T {
 function confirmed(entry: InteractionEntry): boolean {
   return ["explicit", "delegated"].includes(entry.basis) && !["defer", "unclear"].includes(entry.resolution);
 }
-function relevant(entry: InteractionEntry, candidateId: string): boolean {
-  // 无关联的未来讨论未纳入执行；其他无关联约束/未知项不能被推定为与当前候选无关。
-  return entry.candidateId === candidateId || entry.candidateId === null && entry.kind !== "future";
-}
 function synchronousPermission(value: unknown): boolean {
   if (isPromise(value)) {
     void Promise.prototype.then.call(value, () => undefined, () => undefined);

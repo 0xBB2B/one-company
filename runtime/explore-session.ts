@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
+import { COMMON_ADVICE } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 import type { Static, TSchema } from "typebox";
 import { repositoryDatabase, withDatabase } from "./database.ts";

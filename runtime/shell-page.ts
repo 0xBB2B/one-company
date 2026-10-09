@@ -205,7 +205,6 @@ function computeLineWindow(groups: string[][], selected: number, limit: number):
   return { start, end };
 }
 
-const DEFAULT_WIDTH = 80;
 const DEFAULT_HEIGHT = 24;
 
 export class ShellPage {
@@ -221,7 +220,6 @@ export class ShellPage {
   private selectedIndex = 0;
   private selectedKey: string | undefined;
   private mode: PageMode = "list";
-  private width = DEFAULT_WIDTH;
   private height = DEFAULT_HEIGHT;
   private refreshSequence = 0;
   private stopSequence = 0;
@@ -245,8 +243,7 @@ export class ShellPage {
     this.onChange = options.onChange;
   }
 
-  resize(width: number, height: number): void {
-    this.width = width;
+  resize(_width: number, height: number): void {
     this.height = height;
   }
 
