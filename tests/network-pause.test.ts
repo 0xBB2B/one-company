@@ -56,8 +56,8 @@ describe("classifyFailure", () => {
     expect(classifyFailure(new Error("network error occurred"))).toBe("connection");
   });
 
-  test("消息含 timed out 归类为 connection", () => {
-    expect(classifyFailure(new Error("request timed out"))).toBe("connection");
+  test("模型请求超时不算断网，归类为 business，交给 SDK 自动重试", () => {
+    expect(classifyFailure(new Error("Request timed out."))).toBe("business");
   });
 
   test("status 401 归类为 auth", () => {

@@ -2,7 +2,8 @@ export type FailureCategory = "connection" | "auth" | "quota" | "business" | "ca
 
 const CONNECTION_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EAI_AGAIN"]);
 const CONNECTION_NAMES = new Set(["FetchError", "TimeoutError"]);
-const CONNECTION_MESSAGE = /fetch failed|socket hang up|network|timed out/i;
+// 模型请求超时不算断网：按断网处理会中止请求、SDK 就不再重试，所以交给 SDK 自动重试
+const CONNECTION_MESSAGE = /fetch failed|socket hang up|network/i;
 const AUTH_MESSAGE = /unauthorized|invalid api key|authentication/i;
 const QUOTA_MESSAGE = /quota|insufficient credits|billing|rate limit/i;
 const CANCELLED_MESSAGE = /aborted/i;

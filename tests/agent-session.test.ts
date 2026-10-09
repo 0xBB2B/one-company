@@ -206,6 +206,19 @@ describe("完成与控制", () => {
     expect(s.provider.requests).toHaveLength(2);
     expect(JSON.stringify(s.provider.requests[1]!.messages.at(-1))).toContain("断网期间的消息");
   }, 20000);
+
+  test("模型请求超时不当作断网：不暂停，由 SDK 自动重试后接着运行", async () => {
+    const w = await world();
+    const s = await w.session("pm", [{ type: "error", message: "Request timed out." }, { type: "text", text: "重试成功" }]);
+    const paused: unknown[] = []; s.handle.events.on("network_paused", () => paused.push(true));
+    const idle: unknown[] = []; s.handle.events.on("idle", (event) => idle.push(event));
+    s.handle.prompt("开始");
+    await until(() => idle.length === 1);
+    expect(paused).toHaveLength(0);
+    expect(s.handle.state()).toBe("running");
+    expect(w.gate.canProceed(s.runId)).toBe(true);
+    expect(s.provider.requests).toHaveLength(2);
+  }, 20000);
 });
 
 describe("对话轮次上限", () => {
