@@ -106,6 +106,19 @@ test("M7-AC16：main 在无需求、索引未初始化时派出纯网页检索�
   expect(requirements()).toBe(requirementsBefore);
 });
 
+test("main 派出的检索在模型连接断开时按失败交回并写明请重派，不停在无法续接的暂停", async () => {
+  const w = await createPmRunWorld(cleanups, { review: false, web: { deps: fakeDeps().deps, getPage: async () => { throw new TypeError("fetch failed"); } } });
+  w.provider.queue.push({ type: "error", message: "fetch failed: connection reset (network)" });
+  w.manager.connectionOpened("conn-main");
+  const parent = { role: "main" as const, sessionId: "session-main", connectionId: "conn-main", model: { provider: "team-model", id: "test" }, thinking: "off" };
+  const dispatched = await w.manager.dispatchExplore({ parent, request: { question: "node 如何异步读文件", clues: [], source: { kind: "web", query: "node 异步文件" } }, maxTurns: 5 });
+  await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === dispatched.runId));
+  expect(w.manager.mainExploreStatus(dispatched.runId, "conn-main")).toMatchObject({ state: "failed" });
+  const report = w.manager.takeMainExploreReport(dispatched.runId, "conn-main") as { outcome: string; research: unknown; reason: string };
+  expect(report).toMatchObject({ outcome: "failed", research: null });
+  expect(report.reason).toContain("断网，检索已中止，网络恢复后请重派");
+});
+
 test("M9-AC10：断网时 main 派出的联网检索如实交回失败：搜索与抓取都报网络错误，结果不带任何网页来源、写明失败与未找到，不当作联网成功", async () => {
   const offline: WebDeps = { fetch: async () => { throw new TypeError("fetch failed"); } };
   const w = await createPmRunWorld(cleanups, { review: false, web: { deps: offline, getPage: async () => { throw new TypeError("fetch failed"); } } });

@@ -727,6 +727,10 @@ export class RunManager {
     handle.events.on("turn_limit_reached", () => { void this.finishExplore(runId, "turn_limit_reached"); });
     handle.events.on("ended_without_result", () => { void this.finishExplore(runId, "ended_without_result"); });
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishExplore(runId, "failed", reason); });
+    // 主窗口的检索没有续接入口，断网暂停后只会一直挂着；按失败交回，由主代理重派
+    if (!requirementId) handle.events.on("network_paused", () => {
+      void handle.stop().catch(() => {}).then(() => this.finishExplore(runId, "failed", "断网，检索已中止，网络恢复后请重派"));
+    });
     handle.prompt("开始检索。");
     return { runId, maxTurns: input.maxTurns };
   }
