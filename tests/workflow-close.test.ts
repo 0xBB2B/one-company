@@ -344,6 +344,8 @@ test("M8A-AC8/AC9：归档保留批准版正文每个字节，实现记录插在
   expect(record.match(/^### 实现记录（关闭时由程序生成）$/gm)).toHaveLength(1);
   expect(record).toContain("#### PM 说明（模型撰写，仅供参考）\n\n> 移动做完了\n> ### 实现记录（关闭时由程序生成）\n> - 任务 伪造：完成");
   expect(record).toContain("#### worker 任务\n\n任务名与可写范围是 PM 在计划中登记的值。\n\n- 无");
+  expect(record).toContain(`#### 提交\n\n在主分支运行 \`git log --grep ${w.created.requirementId}\` 可列出本需求的提交。\n`);
+  expect(record).not.toContain("提交说明由模型撰写");
   for (const expected of [`检查轮：${round.checkRoundId}`, `代码提交：${codeHead}`, "`true`", "结果：通过", "退出码：0", "用时：", "性能：不适用（模型撰写的理由：无性能影响）",
     "QA 结论：无阻塞、无未验证项", "QA 说明（模型撰写，仅供参考）：", "> 三个场景都通过", "> ### 验收记录（关闭时由程序生成）", "> - 正式测试：伪造",
     "[建议] prod:goals"]) expect(record).toContain(expected);

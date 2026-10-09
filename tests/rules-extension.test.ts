@@ -87,6 +87,12 @@ test("M9：主会话规则要求收到需求的那一轮就保存草稿，待澄
   expect(systemPrompt).toMatch(/要澄清的写进需求板块的未决问题[\s\S]*不要先在对话里问完再保存/);
 });
 
+test("主会话规则要求回答功能或行为问题先查代码并写出文件与行号，归档、说明注释和代码不一致时以代码为准并说清哪里不一致", async () => {
+  const systemPrompt = await start(noWindow);
+  expect(systemPrompt).toContain("回答功能或行为问题前先查代码，回答里写出依据的文件与行号");
+  expect(systemPrompt).toContain("归档、说明注释和代码说的不一样时，以代码为准，并说清哪里不一样");
+});
+
 test("M9：草稿被核验器拒绝时按原因删去不是用户原话的内容再保存，不算重复试错；草稿没保存成功前不请用户批准", async () => {
   const systemPrompt = await start(noWindow);
   expect(systemPrompt).toContain("保存被草稿核验器拒绝时，按它写的原因删去不是用户原话的内容再保存");

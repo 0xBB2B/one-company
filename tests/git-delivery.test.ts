@@ -80,7 +80,7 @@ test("M8-AC5/AC6：确认后只提交归档、推送准确提交号、建 PR（�
   expect(w.git(w.worktree, "-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD")).toBe(ARCHIVE);
   const calls = await w.calls();
   const create = calls.find((call) => call[2] === "create")!;
-  expect(create).toEqual(expect.arrayContaining(["--head", "req/login", "--base", "main", "--title", "手机号登录"]));
+  expect(create).toEqual(expect.arrayContaining(["--head", "req/login", "--base", "main", "--title", `手机号登录 [${REQUIREMENT}]`]));
   expect(JSON.stringify(calls)).not.toContain("不得出现在 PR 里的需求正文");
   expect(calls.find((call) => call[2] === "merge")).toEqual(["gh", "pr", "merge", "1", "--auto", "--squash", "--match-head-commit", head]);
 });

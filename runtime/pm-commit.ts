@@ -13,6 +13,7 @@ const PARAMETERS = Type.Object({
 }, { additionalProperties: false });
 
 export interface PmCommitOptions {
+  requirementId: string;
   worktree: string;
   branch: string;
   /** 会话仍有效且持有当前租约时为真。 */
@@ -21,7 +22,7 @@ export interface PmCommitOptions {
   checkPhaseActive(): boolean;
 }
 
-/** PM 在所绑定需求 worktree 分支内按任务本地提交：明确文件、保留他人暂存内容，不能切分支或推送。 */
+/** PM 在所绑定需求 worktree 分支内按任务本地提交：明确文件、保留他人暂存内容，不能切分支或推送；提交说明末尾由程序加上需求编号，rebase 或 squash 合并后仍能按编号找回提交。 */
 export function createPmCommitTool(options: PmCommitOptions): ToolDefinition {
   const git = (args: string[]) => exec("git", ["--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
     "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], { cwd: options.worktree, maxBuffer: 1 << 20, timeout: 120_000 });
@@ -41,7 +42,7 @@ export function createPmCommitTool(options: PmCommitOptions): ToolDefinition {
       const present: string[] = [];
       for (const path of params.paths) if (await lstat(join(options.worktree, path)).then(() => true, () => false)) present.push(path);
       if (present.length) await git(["add", "--", ...present]);
-      await git(["commit", "--only", "-m", params.message, "--", ...params.paths]);
+      await git(["commit", "--only", "-m", params.message, "-m", `Requirement: ${options.requirementId}`, "--", ...params.paths]);
       const commit = (await git(["rev-parse", "HEAD"])).stdout.trim();
       return { content: [{ type: "text", text: JSON.stringify({ commit, branch: options.branch, paths: params.paths }) }], details: {} };
     },

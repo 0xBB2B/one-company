@@ -260,8 +260,8 @@ function acceptanceRecord(facts: DeliveryFacts): string {
 const TASK_STATUS: Record<TaskStatus, string> = { pending: "待派出", running: "执行中", completed: "完成", failed: "失败", needs_update: "待更新", blocked: "受阻",
   cancelled: "已取消", awaiting_parent: "等待 PM 处置", awaiting_user: "等待用户裁决", awaiting_review: "待审查", reviewing: "审查中", awaiting_rework: "待返修" };
 
-/** 插在实现板块末尾的实现记录：worker 任务取计划登记值，提交与说明取用户验收通过的完成报告；提交说明与 PM 说明是模型文字，进引用块或行内代码。 */
-function implementationRecord(tasks: readonly TaskRecord[], report: CompletionReport): string {
+/** 插在实现板块末尾的实现记录：worker 任务取计划登记值，说明取用户验收通过的完成报告，PM 说明是模型文字，进引用块；不列提交号，交付时的 rebase 与 squash 会改掉它们，改写需求编号查法。 */
+function implementationRecord(requirementId: string, tasks: readonly TaskRecord[], report: CompletionReport): string {
   const lines = ["### 实现记录（关闭时由程序生成）", "", "#### worker 任务", "", "任务名与可写范围是 PM 在计划中登记的值。", ""];
   const workers = tasks.filter((task) => task.role === "worker");
   if (!workers.length) lines.push("- 无");
@@ -269,10 +269,7 @@ function implementationRecord(tasks: readonly TaskRecord[], report: CompletionRe
     lines.push(`- 任务 ${task.key}：${TASK_STATUS[task.status]}；需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}；` +
       `可写范围：${task.writePaths.length ? task.writePaths.map(inlineCode).join("、") : "无"}`);
   }
-  lines.push("", "#### 提交", "");
-  if (!report.commits.length) lines.push("- 无");
-  for (const commit of report.commits) lines.push(`- ${commit.sha}：${inlineCode(commit.subject)}（提交说明由模型撰写）`);
-  if (report.commitsTruncated) lines.push(`- 只列出前 ${REPORT_COMMIT_LIMIT} 个提交`);
+  lines.push("", "#### 提交", "", `在主分支运行 ${inlineCode(`git log --grep ${requirementId}`)} 可列出本需求的提交。`);
   lines.push("", "#### PM 说明（模型撰写，仅供参考）", "", quoted(report.note));
   return `${lines.join("\n").trimEnd()}\n`;
 }
@@ -505,7 +502,7 @@ export class RequirementCloseService {
           this.saveOperation(db, this.operation(db, request.requirementId), { format: "close-operation/v1", requirementId: request.requirementId, repoId: this.options.repoId,
             operationId: request.operationId, receiptId: request.receiptId, reason: request.reason, basis, status: "closing",
             steps: { agentsStopped: false, closed: false },
-            archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, records: { implementation: implementationRecord(readPlanIn(db, request.requirementId)?.tasks ?? [], acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId)!),
+            archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, records: { implementation: implementationRecord(request.requirementId, readPlanIn(db, request.requirementId)?.tasks ?? [], acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId)!),
               acceptance: acceptanceRecord(facts) },
               archiveHash: null, status: "pending", attempts: 0, lastError: null } : null,
             createdAt: now, updatedAt: now });

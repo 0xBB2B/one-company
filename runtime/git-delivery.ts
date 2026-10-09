@@ -177,7 +177,7 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
     const body = [`需求 ${facts.requirementId}`, `交付提交 ${delivered}`, `最终检查代码 ${facts.codeHead}`,
       ...(rebasedAfterAcceptance ? ["验收后已自动 rebase，这部分未重新验证。"] : [])].join("\n");
     let createError = "";
-    await createRequest(provider, facts.worktree, { branch, base: target.name, title, body }).catch((error: unknown) => { createError = commandOutputTail(error); });
+    await createRequest(provider, facts.worktree, { branch, base: target.name, title: `${title} [${facts.requirementId}]`, body }).catch((error: unknown) => { createError = commandOutputTail(error); });
     request = await existingRequest(provider, facts.worktree, branch);
     if (!request) return reject("pull_request_unknown", createError || undefined);
   }
