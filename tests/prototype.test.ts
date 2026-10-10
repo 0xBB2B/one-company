@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
@@ -299,4 +301,21 @@ test("M8E-AC4：worker、reviewer、QA、PM 的角色说明与主窗口规范写
   const pm = await doc("agents/pm.md");
   for (const phrase of ["在计划里把 ui 写成 true", "带 prototype（轮次上限）派 worker 做原型", "不要代为确认"]) expect(pm).toContain(phrase);
   expect(await doc("rules/01-main-session.md")).toContain("你不能替用户登记，提醒用户去面板里选中这一事项按回车确认");
+});
+
+test("做原型的 worker 交原型时工作区有任务写入范围外的改动（新建 Cargo.toml）即拒收、不产生版本；删掉后重交才收下", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("hud", { ui: true, writePaths: ["src/hud/"] }), spec("plain", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const root = w.fixture.state.read(w.requirementId).data.workspace!.path;
+  await writeFile(join(root, "Cargo.toml"), "[dependencies]\nserde = \"1\"\n");
+  let rejection = "";
+  const { submitted } = await w.prototype("hud", proto(), (request) => {
+    rejection = lastMessage(request);
+    rmSync(join(root, "Cargo.toml"));
+    return proto();
+  });
+  expect(submitted).toBe(true);
+  expect(rejection).toContain("Cargo.toml");
+  expect(w.task("hud").prototypes).toHaveLength(1);
 });

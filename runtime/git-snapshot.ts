@@ -134,3 +134,8 @@ export async function collectGitSnapshot(input: CollectGitSnapshotInput): Promis
   }
   return { head, branch: rawBranch === "HEAD" ? null : rawBranch, fingerprint: hash.digest("hex") };
 }
+
+export async function listChangedPaths(repoRoot: string): Promise<string[]> {
+  const status = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "-uall", "--no-renames", "--", ".", ...PROD_ARCHIVE_GIT_PATHSPECS], undefined, GIT_TIMEOUT_MS, GIT_MAX_BUFFER);
+  return status.toString("utf8").split("\0").filter(Boolean).map((entry) => entry.slice(3));
+}

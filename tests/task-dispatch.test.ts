@@ -1,5 +1,5 @@
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
@@ -10,6 +10,7 @@ import type { TaskRecord } from "../runtime/plan-manage.ts";
 import { PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
+import { runGit } from "./helpers/git-run.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -281,4 +282,53 @@ test("M7A-AC4：审查未交出结论按被审尝试计数；用户再给一次�
   await w.review("login");
   await until(() => w.task("login").status === "completed");
   expect(w.task("login").reviews.at(-1)).toMatchObject({ attemptRunId: fix.runId, outcome: "clear" });
+});
+
+test("worker 交结果时工作区有任务写入范围外的改动（新建 go.mod、改了 README.md）即拒收并写明怎么恢复，不记裁决；恢复后重交才进入待审查", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const root = w.fixture.state.read(w.fixture.requirementId).data.workspace!.path;
+  const readme = await readFile(join(root, "README.md"), "utf8");
+  await mkdir(join(root, "src"), { recursive: true });
+  await writeFile(join(root, "src", "login.ts"), "export const login = 1;\n");
+  await writeFile(join(root, "go.mod"), "module demo\n\nrequire github.com/pkg/errors v0.9.1\n");
+  await writeFile(join(root, "README.md"), "被 worker 改了\n");
+  const submit: ScriptedReply = { type: "toolcall", name: "one_company_result_submit", input: { action: "verdict", result: { checkRoundId: null, verificationIds: [],
+    summary: "完成 login", findings: [] } } };
+  let rejection = "";
+  w.provider.queue.push(submit);
+  w.provider.awaitReply = async () => {
+    if (rejection) return { type: "text", text: "PM 收到完成结果" };
+    rejection = lastPrompt(w.provider.requests.at(-1));
+    await rm(join(root, "go.mod"));
+    await writeFile(join(root, "README.md"), readme);
+    return submit;
+  };
+  await w.dispatch("login");
+  await until(() => w.task("login").status === "awaiting_review");
+  expect(rejection).toContain("go.mod");
+  expect(rejection).toContain("README.md");
+  expect(rejection).not.toContain("src/login.ts");
+  expect(rejection).toContain("git show HEAD:");
+  expect(withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => db.list<Verdict>(VERDICTS).map((row) => row.data)
+    .filter((verdict) => verdict.role === "worker"))).toHaveLength(1);
+});
+
+test("同一需求里其他未取消任务写入范围内的改动和被 Git 忽略的文件，不算本任务范围外的改动", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("other", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const root = w.fixture.state.read(w.fixture.requirementId).data.workspace!.path;
+  const exclude = (await runGit(["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"], root)).trim();
+  await mkdir(dirname(exclude), { recursive: true });
+  await writeFile(exclude, "dist/\n");
+  for (const path of ["lib/other.ts", "dist/bundle.js"]) {
+    await mkdir(join(root, dirname(path)), { recursive: true });
+    await writeFile(join(root, path), "export {};\n");
+  }
+  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "verdict", result: { checkRoundId: null, verificationIds: [],
+    summary: "完成 login", findings: [] } } }, { type: "text", text: "PM 收到完成结果" });
+  await w.dispatch("login");
+  await until(() => w.task("login").status === "awaiting_review");
 });

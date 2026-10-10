@@ -42,6 +42,7 @@ const RESULT_SUBMIT_ADVICE = {
   invalid_shape: { why: "提交内容的字段不符合格式", next: "按原因改正字段后重交" },
   invalid_binding: { why: "提交内容与派工绑定不一致", next: "按派工给定的任务、检查轮和验证编号提交" },
   out_of_scope: { why: "提交内容超出了本运行允许的范围", next: "按原因改正后重交" },
+  out_of_scope_changes: { why: "工作区里有本任务写入范围以外的文件被改动", next: "先用命令把这些文件恢复成最新提交里的样子：已跟踪的文件用 git show HEAD:<路径> > <路径> 取回，新建的文件删掉（沙箱里 git checkout 与 git restore 用不了）；需要新增或升级第三方依赖时不要自己装，恢复后在 findings 里写明要什么、为什么，由 PM 交用户裁决；然后重交" },
   resource_limit: { why: "提交内容超出了允许的数量或长度", next: "精简内容后重交" },
   verdict_unavailable: { why: "本运行没有可提交裁决的任务绑定", next: "检索运行改用 research 提交；做原型的运行改用 prototype 提交" },
   prototype_unavailable: { why: "本运行不是做原型的运行，或已不是该任务当前的原型运行", next: "实现运行改用 verdict 提交结果" },
@@ -66,6 +67,8 @@ export interface ResultSubmitToolOptions {
   verdictBinding?: VerdictBinding;
   /** 做原型的运行绑定的任务；有它时只收 prototype，不收 verdict。 */
   prototypeBinding?: { dataRoot: string; repoId: string; requirementId: string; taskId: string };
+  /** worker 运行由派工服务提供：返回工作区里不在本需求任何未取消任务写入范围内、却有改动的路径；有这样的路径时拒收结果。 */
+  outOfScopeChanges?: () => Promise<string[]>;
   /** 已登记的 explore 搜索会话：需求关闭、父撤权、PM 接管或会话回收后 research 一律拒收。 */
   exploreSession?: ExploreSessionConfig;
   /** 宿主按实际内容核对 research 引用的来源；不一致即拒收。 */
@@ -95,6 +98,13 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     if (isPromise(result)) void Promise.prototype.then.call(result, () => undefined, () => undefined);
     if (result !== true) deny("session_inactive");
   }
+  function inScope<T>(submit: () => T | Promise<T>): T | Promise<T> {
+    if (!options.outOfScopeChanges) return submit();
+    return options.outOfScopeChanges().then((paths) => {
+      if (paths.length) deny("out_of_scope_changes", `${paths.slice(0, 20).join("、")}${paths.length > 20 ? ` 等共 ${paths.length} 个` : ""}`);
+      return submit();
+    });
+  }
   function execute(input: unknown) {
     let params: ResultSubmitParameters;
     try { params = checkServiceInput(RESULT_SUBMIT_PARAMETERS, input); } catch {
@@ -104,22 +114,27 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     host(params.action);
     if (params.action === "prototype") {
       if (!options.prototypeBinding) throw new ResultSubmitError("prototype_unavailable");
-      return submitPrototype({ ...options.prototypeBinding, runId: grant.runId }, { html: params.html, note: params.note }).then((prototype) => {
+      const binding = options.prototypeBinding;
+      return inScope(() => submitPrototype({ ...binding, runId: grant.runId }, { html: params.html, note: params.note }).then((prototype) => {
         host("prototype");
         return freeze({ kind: "prototype" as const, accepted: true, isPass: false, version: prototype.version, hash: prototype.hash, bytes: prototype.bytes, runId: grant.runId });
       }, (error: unknown) => {
         throw error instanceof PrototypeError && (error.code === "prototype_unavailable" || error.code === "prototype_too_large")
           ? new ResultSubmitError(error.code, error.detail) : new ResultSubmitError("submit_failed", (error as Error).message);
-      });
+      }));
     }
     if (params.action === "verdict") {
-      if (!options.verdictBinding || options.prototypeBinding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
-      let verdict;
-      try { verdict = submitVerdict(options.verdictBinding, { role: grant.role, runId: grant.runId, parentRunId: grant.parentRunId }, params.result); }
-      catch (error) { throw error instanceof VerdictError ? new ResultSubmitError(error.code, error.detail) : new ResultSubmitError("submit_failed", (error as Error).message); }
-      host("verdict");
-      return freeze({ kind: "verdict" as const, accepted: true, isPass: false, verdictId: verdict.verdictId, conclusion: verdict.conclusion,
-        checkRoundId: verdict.checkRoundId, findings: verdict.findings.length, runId: grant.runId });
+      const binding = options.verdictBinding;
+      if (!binding || options.prototypeBinding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
+      const role = grant.role;
+      return inScope(() => {
+        let verdict;
+        try { verdict = submitVerdict(binding, { role, runId: grant.runId, parentRunId: grant.parentRunId }, params.result); }
+        catch (error) { throw error instanceof VerdictError ? new ResultSubmitError(error.code, error.detail) : new ResultSubmitError("submit_failed", (error as Error).message); }
+        host("verdict");
+        return freeze({ kind: "verdict" as const, accepted: true, isPass: false, verdictId: verdict.verdictId, conclusion: verdict.conclusion,
+          checkRoundId: verdict.checkRoundId, findings: verdict.findings.length, runId: grant.runId });
+      });
     }
     if (!exploreInput) deny("research_unavailable");
     let result;

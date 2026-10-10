@@ -1,11 +1,13 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { CHANGE_APPLY_PARAMETERS, createChangeApplyTool } from "../runtime/change-apply.ts";
-import { uuidv7 } from "../runtime/database.ts";
-import { createPlanManageTool, PLAN_MANAGE_PARAMETERS } from "../runtime/plan-manage.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
+import { listChangedPaths } from "../runtime/git-snapshot.ts";
+import { createPlanManageTool, PLAN_MANAGE_PARAMETERS, readPlanIn } from "../runtime/plan-manage.ts";
 import type { TaskRecord } from "../runtime/plan-manage.ts";
 import type { PmLease, WorkspaceBinding } from "../runtime/requirement-contracts.ts";
 import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS } from "../runtime/requirement-read-tool.ts";
 import { PROTOTYPE_MAX_BYTES } from "../runtime/prototype.ts";
+import { overlaps } from "../runtime/ranges.ts";
 import { createResultSubmitTool, PROTOTYPE_SUBMIT_PARAMETERS, VERDICT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
 import type { CoreToolRuntime } from "../runtime/role-tools.ts";
@@ -58,6 +60,11 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
       tools.push(toPiTool("plan_manage", "只读当前计划与任务说明。", PLAN_MANAGE_PARAMETERS, plan));
     }
     const result = createResultSubmitTool({ authorize, grant: { role, callerId: identity.callerId, runId: input.runId, parentRunId: input.pmLease.runId },
+      ...(role === "worker" ? { outOfScopeChanges: async () => {
+        const allowed = withDatabase(repositoryDatabase(input.dataRoot, input.repoId), (db) => readPlanIn(db, input.task.requirementId)?.tasks ?? [])
+          .filter((task) => task.status !== "cancelled").flatMap((task) => task.writePaths);
+        return (await listChangedPaths(input.workspace.path)).filter((path) => !allowed.some((scope) => overlaps(scope, path)));
+      } } : {}),
       ...(input.prototype ? { prototypeBinding: { dataRoot: input.dataRoot, repoId: input.repoId, requirementId: input.task.requirementId, taskId: input.task.taskId } } : {}),
       verdictBinding: { dataRoot: input.dataRoot, ...scope, epoch: input.epoch,
         ...(input.review ? { review: { taskId: input.task.taskId, attemptRunId: input.review.attemptRunId } } : {}) } });
