@@ -370,7 +370,7 @@ export class RunManager {
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         context: withSkills(await this.withConventions(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
           pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId))), resolved.skillsContext), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ requirementId: input.requirementId, worktree: workspace.path, branch: workspace.branch, alive,
-          checkPhaseActive }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, alive, checkPhaseActive,
+          checkPhaseActive, writeScope: () => withDatabase(this.database, (db) => readPlanIn(db, input.requirementId)?.tasks ?? []).flatMap((task) => task.writePaths) }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, alive, checkPhaseActive,
           quiescent: () => this.metadataRows().every((row) => row.requirement !== input.requirementId || row.kind !== "role" || isTerminalState(row.state)) &&
             withDatabase(this.database, (db) => { try { assertWritersQuiescentIn(db, this.repoId, input.requirementId); return true; } catch { return false; } }) })],
         runtime: this.options.runtime, modelRef, thinking,

@@ -332,3 +332,25 @@ test("同一需求里其他未取消任务写入范围内的改动和被 Git 忽
   await w.dispatch("login");
   await until(() => w.task("login").status === "awaiting_review");
 });
+
+test("PM 提交时只认计划里任务的写入范围：已取消任务的范围仍算，范围外的 package.json 整次拒绝", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => {
+    const row = db.read<TaskRecord>(TASKS, w.task("failure").taskId)!;
+    db.update(TASKS, row.data.taskId, row.version, { ...row.data, status: "cancelled" });
+  });
+  const root = w.fixture.state.read(w.fixture.requirementId).data.workspace!.path;
+  for (const path of ["src/login.ts", "lib/old.ts", "package.json"]) {
+    await mkdir(join(root, dirname(path)), { recursive: true });
+    await writeFile(join(root, path), "export {};\n");
+  }
+  const commit = (paths: string[]): ScriptedReply => ({ type: "toolcall", name: "one_company_git_commit", input: { paths, message: "login" } });
+  w.provider.queue.push(commit(["src/login.ts", "lib/old.ts", "package.json"]), commit(["src/login.ts", "lib/old.ts"]), { type: "text", text: "已提交" });
+  await w.manager.messagePm({ requirementId: w.fixture.requirementId, text: "提交 login 的改动" });
+  await until(async () => (await runGit(["log", "-1", "--format=%s"], root)) .trim() === "login");
+  expect(w.provider.requests.some((request) => lastPrompt(request).includes("package.json") && lastPrompt(request).includes("out_of_scope"))).toBe(true);
+  expect((await runGit(["show", "--name-only", "--format=", "HEAD"], root)).trim().split("\n").sort()).toEqual(["lib/old.ts", "src/login.ts"]);
+  expect((await runGit(["status", "--porcelain"], root)).trim()).toBe("?? package.json");
+});

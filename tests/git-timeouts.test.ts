@@ -18,7 +18,8 @@ test("M8M-AC5：会写仓库或走网络的 git 调用超时 120 秒，搜索排
   expect(timeoutOf("fetch")).toBe(120_000);
 
   const { createPmCommitTool } = await import("../runtime/pm-commit.ts");
-  const tool = createPmCommitTool({ requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", worktree: "/repo", branch: "b", alive: () => true, checkPhaseActive: () => false });
+  const tool = createPmCommitTool({ requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", worktree: "/repo", branch: "b", alive: () => true, checkPhaseActive: () => false,
+    writeScope: () => ["src/"] });
   await (tool.execute as (id: string, params: unknown) => Promise<unknown>)("call", { paths: ["src/a.ts"], message: "提交" });
   expect(timeoutOf("commit")).toBe(120_000);
 
