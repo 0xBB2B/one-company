@@ -87,9 +87,10 @@ test("M9：主会话规则要求收到需求的那一轮就保存草稿，待澄
   expect(systemPrompt).toMatch(/要澄清的写进需求板块的未决问题[\s\S]*不要先在对话里问完再保存/);
 });
 
-test("主会话规则要求回答功能或行为问题先查代码并写出文件与行号，归档、说明注释和代码不一致时以代码为准并说清哪里不一致", async () => {
+test("主会话规则要求回答功能或行为问题先查代码并写出文件与行号、行号取自带行号的结果，归档、说明注释和代码不一致时以代码为准并说清哪里不一致", async () => {
   const systemPrompt = await start(noWindow);
   expect(systemPrompt).toContain("回答功能或行为问题前先查代码，回答里写出依据的文件与行号");
+  expect(systemPrompt).toContain("行号取自知识查询结果里的起止行或 `grep -n` 的输出，读文件工具返回的正文不带行号，不要自己数");
   expect(systemPrompt).toContain("归档、说明注释和代码说的不一样时，以代码为准，并说清哪里不一样");
 });
 
