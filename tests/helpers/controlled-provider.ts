@@ -3,7 +3,7 @@ import type { Api, AssistantMessage, Context, Model, TranscriptContext, Usage } 
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 /** 包内角色定义写明的模型名。 */
-export const PACKAGED_MODEL_IDS = ["gpt-6.1-sol"];
+export const PACKAGED_MODEL_IDS = ["gpt-6.1-sol", "gpt-6-luna"];
 
 export interface RegisterControlledProviderOptions {
   providerId: string;

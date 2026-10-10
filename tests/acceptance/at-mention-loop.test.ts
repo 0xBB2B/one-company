@@ -79,7 +79,7 @@ test.skipIf(!config || process.platform !== "darwin")("M8D-AC6：@需求追加�
     await mkdir(home, { recursive: true });
     await copyCredentials(cfg.credentialsDir, agentDir);
     await mkdir(join(agentDir, "agents"), { recursive: true });
-    await writeFile(join(agentDir, "agents", "interpreter.md"), "---\nname: interpreter\ndescription: 验收用的解释器\nrole: interpreter\nmodel: 5x/gpt-6.1-sol\nthinking: medium\n---\n");
+    await writeFile(join(agentDir, "agents", "interpreter.md"), "---\nname: interpreter\ndescription: 验收用的解释器\nrole: interpreter\nmodel: 5x/gpt-6-luna\nthinking: medium\n---\n");
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.HOME = home;
     process.env.PI_TELEMETRY = "0";
