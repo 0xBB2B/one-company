@@ -33,7 +33,7 @@ function actionLiterals(schema: TSchema): string[] {
   return [...found].sort();
 }
 
-test("固定六类职责与10个核心工具，action 枚举与计划 §9.1 一致", () => {
+test("固定六类职责与10个核心工具，action 枚举固定", () => {
   expect([...CORE_ROLES]).toEqual(["main", "pm", "explore", "worker", "reviewer", "qa"]);
   expect(Object.keys(CORE_TOOL_ACTIONS)).toEqual(["project_manage", "knowledge_query", "requirement_manage", "plan_manage",
     "agent_manage", "user_interact", "change_apply", "verification_run", "result_submit", "workflow_manage"]);
@@ -47,7 +47,7 @@ test("固定六类职责与10个核心工具，action 枚举与计划 §9.1 一�
 
 const granted = (role: CoreRole, tool: CoreTool) => CORE_TOOL_ACTIONS[tool].filter((action) => authorizeToolAction(role, tool, action));
 
-test("六角色工具集合与计划 §9.2 逐项相等", () => {
+test("六角色工具集合逐项固定", () => {
   const tools = (role: CoreRole) => (Object.keys(CORE_TOOL_ACTIONS) as CoreTool[]).filter((tool) => granted(role, tool).length > 0).sort();
   expect(tools("main")).toEqual(["agent_manage", "knowledge_query", "project_manage", "requirement_manage", "user_interact", "workflow_manage"]);
   expect(tools("pm")).toEqual(["agent_manage", "knowledge_query", "plan_manage", "requirement_manage", "user_interact",
@@ -58,7 +58,7 @@ test("六角色工具集合与计划 §9.2 逐项相等", () => {
   expect(tools("qa")).toEqual(["requirement_manage", "result_submit", "verification_run"]);
 });
 
-test("action 级上限按计划 §9.1/§9.3 收窄：分支工作区只归 main，PM/reviewer/QA 只读需求，explore 只交 research", () => {
+test("action 级上限收窄：分支工作区只归 main，PM/reviewer/QA 只读需求，explore 只交 research", () => {
   for (const action of ["workspace-prepare", "workspace-recycle", "backup", "restore", "recovery-check"]) {
     expect(authorizeToolAction("main", "project_manage", action)).toBe(true);
     for (const role of ["pm", "explore", "worker", "reviewer", "qa"]) expect(authorizeToolAction(role, "project_manage", action)).toBe(false);

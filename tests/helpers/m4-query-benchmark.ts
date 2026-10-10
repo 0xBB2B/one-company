@@ -90,19 +90,19 @@ export const QUERY_CASES: readonly QueryCase[] = Object.freeze([
     id: "exact-path" as const,
     request: Object.freeze({ action: "exact", by: "path", value: "src/file0000.ts", pageSize: 10, maxBytes: 16_384 }),
     combinedThresholdMs: 500,
-    thresholdSource: "SQLITE-KNOWLEDGE-REBUILD-PLAN.md §13.2 hot exact query reference",
+    thresholdSource: "hot exact query p95 within 500 ms",
   }),
   Object.freeze({
     id: "chinese-search" as const,
     request: Object.freeze({ action: "search", text: "中文搜索问题固定词", pageSize: 20, maxBytes: 24_576 }),
     combinedThresholdMs: 2_000,
-    thresholdSource: "SQLITE-KNOWLEDGE-REBUILD-PLAN.md §13.2 bounded combined fact package reference",
+    thresholdSource: "bounded combined fact package p95 within 2 s",
   }),
   Object.freeze({
     id: "finite-facts" as const,
     request: Object.freeze({ action: "facts", text: "有限事实问题固定词", pageSize: 20, maxBytes: 24_576 }),
     combinedThresholdMs: 2_000,
-    thresholdSource: "SQLITE-KNOWLEDGE-REBUILD-PLAN.md §13.2 bounded combined fact package reference",
+    thresholdSource: "bounded combined fact package p95 within 2 s",
   }),
 ]);
 

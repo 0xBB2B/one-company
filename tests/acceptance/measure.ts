@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, join } from "node:path";
 
-// 用法：node tests/acceptance/measure.ts <验收输出目录>；按 M9-AC11、AC18 登记的方法从证据目录取数，报告写到 <目录>/measure.md
+// 用法：node tests/acceptance/measure.ts <验收输出目录>；从证据目录取 PM 接手、检索、角色目录与专业定义选择、各角色 token 与用时，报告写到 <目录>/measure.md
 const root = process.argv[2];
 if (!root || !existsSync(root)) throw new Error("须给出验收输出目录");
 

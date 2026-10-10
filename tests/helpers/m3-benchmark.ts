@@ -183,7 +183,7 @@ async function main(): Promise<void> {
   const config = smoke ? SMOKE : FROZEN;
   const scriptRoot = fileURLToPath(new URL("../../", import.meta.url));
   const inputPaths = ["tests/helpers/m3-benchmark.ts", "tests/helpers/m3-benchmark-child.ts", "pnpm-lock.yaml", "package.json",
-    "SQLITE-KNOWLEDGE-REBUILD-PLAN.md", "resources/tree-sitter/manifest.json",
+    "resources/tree-sitter/manifest.json",
     "runtime/project-index-service.ts", "runtime/project-index-policy.ts", "runtime/index-store.ts",
     "runtime/code-extractor.ts", "runtime/syntax-parser.ts", "runtime/database.ts", "runtime/requirement-events.ts",
     "runtime/requirement-service.ts", "runtime/requirement-state.ts", "runtime/prod-storage.ts"];
