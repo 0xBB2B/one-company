@@ -74,7 +74,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const pnpm = await realpath((await exec("/usr/bin/which", ["pnpm"])).stdout.trim());
     const artifact = await packPackage(pnpm, productRoot, packs);
     const runtimeArtifact = await packPackage(pnpm, dirname(fileURLToPath(import.meta.resolve("web-tree-sitter/web-tree-sitter.wasm"))), packs);
-    const typeboxArtifact = await packPackage(pnpm, await realpath(join(productRoot, "node_modules", "typebox")), packs);
+    const typeboxRoot = await realpath(join(productRoot, "node_modules", "typebox"));
     for (const file of ["extensions/index.ts", "extensions/requirement-manage.ts", "runtime/host-authorization.ts", "runtime/requirement-manage-tool.ts", "runtime/requirement-service.ts", "runtime/main-requirement-interaction.ts", "runtime/user-interact-tool.ts",
       "runtime/requirement-doc.ts", "skills/requirement-doc/SKILL.md"]) {
       expect(artifact.files).toContain(file);
@@ -93,12 +93,12 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
         "@earendil-works/pi-ai": `link:${aiRoot}`,
         "@earendil-works/pi-coding-agent": `link:${sdkRoot}`,
         "@earendil-works/pi-tui": `link:${tuiRoot}`,
+        typebox: `link:${typeboxRoot}`,
       },
     }));
     await writeFile(join(consumer, "pnpm-workspace.yaml"), [
       "autoInstallPeers: false",
       "overrides:",
-      `  typebox: ${JSON.stringify(`file:${typeboxArtifact.path}`)}`,
       `  web-tree-sitter: ${JSON.stringify(`file:${runtimeArtifact.path}`)}`,
       "",
     ].join("\n"));
@@ -108,8 +108,9 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const installed = await realpath(join(consumer, "node_modules", "@0xbb2b", "one-company"));
     expect(installed).not.toBe(productRoot);
     const installedPackage = JSON.parse(await readFile(join(installed, "package.json"), "utf8")) as { dependencies: Record<string, string>; peerDependencies: Record<string, string> };
-    expect(installedPackage.dependencies).toEqual(expect.objectContaining({ typebox: "1.3.29", "web-tree-sitter": "0.27.0" }));
-    expect(installedPackage.peerDependencies).toEqual(expect.objectContaining({ "@earendil-works/pi-coding-agent": "*" }));
+    expect(installedPackage.dependencies).toEqual(expect.objectContaining({ "web-tree-sitter": "0.27.0" }));
+    expect(installedPackage.dependencies).not.toHaveProperty("typebox");
+    expect(installedPackage.peerDependencies).toEqual(expect.objectContaining({ "@earendil-works/pi-coding-agent": "*", typebox: "*" }));
 
     await git(repositoryRoot, ["init", "--initial-branch=main"]);
     await writeFile(join(repositoryRoot, "README.md"), "installation fixture\n");

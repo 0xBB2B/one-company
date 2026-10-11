@@ -37,18 +37,25 @@ describe("package.json 声明契约", () => {
     }
   });
 
-  test("dependencies 含 typebox", async () => {
+  test("dependencies 不含任何宿主提供的包", async () => {
     const pkg = await readPackageJson();
-    expect(Object.keys(pkg.dependencies ?? {})).toContain("typebox");
+    const hostPackages = ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "@sinclair/typebox", "typebox"];
+    for (const name of hostPackages) expect(pkg.dependencies ?? {}).not.toHaveProperty(name);
   });
 
-  test("peerDependencies 恰为三项且值均为 \"*\"", async () => {
+  test("peerDependencies 恰为四项且值均为 \"*\"", async () => {
     const pkg = await readPackageJson();
     expect(pkg.peerDependencies).toEqual({
       "@earendil-works/pi-coding-agent": "*",
       "@earendil-works/pi-ai": "*",
       "@earendil-works/pi-tui": "*",
+      typebox: "*",
     });
+  });
+
+  test("devDependencies.typebox 与 pi 1.1.0 自带版本一致", async () => {
+    const pkg = await readPackageJson();
+    expect(pkg.devDependencies?.typebox).toBe("1.3.27");
   });
 
   test("engines.node 为 >=22.19.0", async () => {

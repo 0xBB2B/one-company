@@ -61,7 +61,7 @@ export async function installProduct(root: string): Promise<string> {
   const pnpm = await realpath((await exec("/usr/bin/which", ["pnpm"])).stdout.trim());
   const artifact = await pack(pnpm, productRoot, packs);
   const treeSitter = await pack(pnpm, dirname(fileURLToPath(import.meta.resolve("web-tree-sitter/web-tree-sitter.wasm"))), packs);
-  const typebox = await pack(pnpm, await realpath(join(productRoot, "node_modules", "typebox")), packs);
+  const typeboxRoot = await realpath(join(productRoot, "node_modules", "typebox"));
   await writeFile(join(consumer, "package.json"), JSON.stringify({
     name: "acceptance-consumer", version: "1.0.0", private: true, packageManager: "pnpm@11.7.0",
     dependencies: {
@@ -69,10 +69,11 @@ export async function installProduct(root: string): Promise<string> {
       "@earendil-works/pi-ai": `link:${installedPackageRoot("@earendil-works/pi-ai")}`,
       "@earendil-works/pi-coding-agent": `link:${installedPackageRoot("@earendil-works/pi-coding-agent")}`,
       "@earendil-works/pi-tui": `link:${installedPackageRoot("@earendil-works/pi-tui")}`,
+      typebox: `link:${typeboxRoot}`,
     },
   }));
   await writeFile(join(consumer, "pnpm-workspace.yaml"), ["autoInstallPeers: false", "overrides:",
-    `  typebox: ${JSON.stringify(`file:${typebox}`)}`, `  web-tree-sitter: ${JSON.stringify(`file:${treeSitter}`)}`, ""].join("\n"));
+    `  web-tree-sitter: ${JSON.stringify(`file:${treeSitter}`)}`, ""].join("\n"));
   const env = { ...process.env, npm_config_ignore_scripts: "true", npm_config_update_notifier: "false" };
   await exec(process.execPath, [pnpm, "install", "--offline", "--ignore-scripts", "--lockfile-only"], { cwd: consumer, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
   await exec(process.execPath, [pnpm, "install", "--offline", "--frozen-lockfile", "--ignore-scripts"], { cwd: consumer, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });

@@ -3,9 +3,9 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire, findPackageJSON } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { connectTestClient, waitForSocketReady } from "./helpers/daemon-harness.ts";
 import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
@@ -66,13 +66,10 @@ beforeAll(async () => {
   expect(artifact.files).toContain("daemon/bootstrap.mjs");
   expect(artifact.files).toContain("daemon/loader.mjs");
   const dependencyPacks: Record<string, string> = {};
-  for (const name of ["jiti", "typebox", "web-tree-sitter"]) dependencyPacks[name] = `file:${(await pack(await realpath(join(sourceRoot, "node_modules", name)))).path}`;
+  const sourceManifestRaw = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8")) as { dependencies: Record<string, string> };
+  for (const name of Object.keys(sourceManifestRaw.dependencies)) dependencyPacks[name] = `file:${(await pack(await realpath(join(sourceRoot, "node_modules", name)))).path}`;
   const dependencies: Record<string, string> = { "@0xbb2b/one-company": `file:${artifact.path}` };
-  for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
-    const path = await realpath(join(sourceRoot, "node_modules", name));
-    dependencies[name] = `link:${path}`;
-    if (name.endsWith("pi-coding-agent")) sdkRoot = path;
-  }
+  sdkRoot = await realpath(join(sourceRoot, "node_modules/@earendil-works/pi-coding-agent"));
   const consumer = join(root, "consumer");
   await writeFile(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module", packageManager: "pnpm@11.7.0", dependencies }), { mode: 0o600 });
   await writeFile(join(consumer, "pnpm-workspace.yaml"), `autoInstallPeers: false\noverrides:\n${Object.entries(dependencyPacks).map(([name, value]) => `  ${name}: ${JSON.stringify(value)}`).join("\n")}\n`, { mode: 0o600 });
@@ -91,6 +88,11 @@ beforeAll(async () => {
   expect(manifest).toEqual(sourceManifest);
   expect(manifest.dependencies.jiti).toBe("2.7.0");
   expect(manifest.devDependencies.jiti).toBeUndefined();
+  for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui", "typebox"]) {
+    let found: string | undefined;
+    try { found = findPackageJSON(name, pathToFileURL(join(installed, "package.json")).href); } catch { found = undefined; }
+    expect(found, `${name} 不应能从安装目录解析到`).toBeUndefined();
+  }
   // 任意 cwd 的同名模块不能接管正式 loader 的依赖解析。
   await mkdir(join(root, "cwd/node_modules/jiti"), { recursive: true, mode: 0o700 });
   await writeFile(join(root, "cwd/node_modules/jiti/package.json"), JSON.stringify({ type: "module", main: "index.js" }), { mode: 0o600 });
@@ -119,23 +121,17 @@ afterAll(async () => {
 }, 30_000);
 
 for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`, () => {
-  test("共享 loader 不启动 daemon，TS 缓存及 SDK/SQLite 的原生实例一致且不落磁盘缓存", async () => {
+  test("共享 loader 不启动 daemon，TS 缓存及 SQLite 的原生实例一致且不落磁盘缓存", async () => {
     const script = `
       import assert from 'node:assert/strict';
       import { pathToFileURL } from 'node:url';
       const root = ${JSON.stringify(installed)};
-      const sdkDir = ${JSON.stringify(sdkRoot)};
-      const nativeSdk = await import(pathToFileURL(sdkDir + '/dist/index.js'));
       const nativeSignalListeners = process.listeners('SIGTERM');
       const { daemonLoader } = await import(pathToFileURL(root + '/daemon/loader.mjs'));
       assert.equal(daemonLoader.options.fsCache, false);
       assert.equal(daemonLoader.options.tryNative, false);
-      const coordinator = pathToFileURL(root + '/daemon/project-index-host.ts').href;
+      const coordinator = pathToFileURL(root + '/runtime/daemon-startup-config.ts').href;
       assert.strictEqual(await daemonLoader.import(coordinator), await daemonLoader.import(coordinator));
-      const { loadSdk } = await daemonLoader.import(pathToFileURL(root + '/daemon/sdk.ts').href);
-      assert.strictEqual(await loadSdk(sdkDir), nativeSdk);
-      const aiUrl = daemonLoader.esmResolve('@earendil-works/pi-ai');
-      assert.strictEqual(await daemonLoader.import('@earendil-works/pi-ai'), await import(aiUrl));
       assert.strictEqual(await daemonLoader.import('node:sqlite'), await import('node:sqlite'));
       assert.deepEqual(process.listeners('SIGTERM'), nativeSignalListeners);
     `;
@@ -144,6 +140,39 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
     expect(existsSync(join(root, "forbidden-cache"))).toBe(false);
     expect(existsSync(join(root, "tmp/jiti"))).toBe(false);
     records.push({ node, scenario: "loader-native-identity", code: result.code });
+  }, 30_000);
+
+  test("宿主包经 createHostLoader 加载得到 SDK 目录自带的同一实例", async () => {
+    const script = `
+      import assert from 'node:assert/strict';
+      import { findPackageJSON } from 'node:module';
+      import { dirname, join } from 'node:path';
+      import { pathToFileURL } from 'node:url';
+      const root = ${JSON.stringify(installed)};
+      const sdkDir = ${JSON.stringify(sdkRoot)};
+      const sdkManifest = pathToFileURL(sdkDir + '/package.json');
+      const packageDir = (name) => dirname(findPackageJSON(name, sdkManifest));
+      const expectedEntries = {
+        '@earendil-works/pi-coding-agent': join(packageDir('@earendil-works/pi-coding-agent'), 'dist/index.js'),
+        '@earendil-works/pi-ai': join(packageDir('@earendil-works/pi-ai'), 'dist/compat.js'),
+        '@earendil-works/pi-tui': join(packageDir('@earendil-works/pi-tui'), 'dist/index.js'),
+        'typebox': join(packageDir('typebox'), 'build/index.mjs'),
+        'typebox/value': join(packageDir('typebox'), 'build/value/index.mjs'),
+        'typebox/compile': join(packageDir('typebox'), 'build/compile/index.mjs'),
+      };
+      const { createHostLoader } = await import(pathToFileURL(root + '/daemon/loader.mjs'));
+      const hostLoader = createHostLoader(sdkDir);
+      assert.equal(hostLoader.options.fsCache, false);
+      assert.equal(hostLoader.options.tryNative, false);
+      const coordinator = pathToFileURL(root + '/daemon/project-index-host.ts').href;
+      assert.strictEqual(await hostLoader.import(coordinator), await hostLoader.import(coordinator));
+      for (const [name, entry] of Object.entries(expectedEntries)) {
+        assert.strictEqual(await hostLoader.import(name), await import(pathToFileURL(entry).href), name);
+      }
+    `;
+    const result = await bounded(child(node, ["--input-type=module", "-e", script]).closed);
+    expect(result.code, result.stderr).toBe(0);
+    records.push({ node, scenario: "host-loader-identity", code: result.code });
   }, 30_000);
 
   test.each(["shutdown", "SIGTERM"])("真实 hello、唯一性与 %s 退出", async (method) => {

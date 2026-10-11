@@ -1,6 +1,6 @@
 import { parseDaemonStartupConfig } from "../runtime/daemon-startup-config.ts";
-import { loadSdk } from "./sdk.ts";
-import { startDaemon } from "./lifecycle.ts";
+import { assertSdkVersion } from "./sdk.ts";
+import { createHostLoader } from "./loader.mjs";
 
 function parseIdleTimeoutMs(raw: string | undefined): number {
   const value = Number(raw ?? "600000");
@@ -17,7 +17,10 @@ async function main(): Promise<void> {
   const idleTimeoutMs = parseIdleTimeoutMs(capturedEnv.ONE_COMPANY_IDLE_TIMEOUT_MS);
   const clockSkewFile = capturedEnv.ONE_COMPANY_CLOCK_SKEW_FILE;
   const modelProviderModulePath = capturedEnv.ONE_COMPANY_MODEL_PROVIDER_MODULE;
-  await loadSdk(sdkDir);
+  await assertSdkVersion(sdkDir);
+  const { startDaemon } = (await createHostLoader(sdkDir).import(
+    new URL("./lifecycle.ts", import.meta.url).href,
+  )) as typeof import("./lifecycle.ts");
   await startDaemon({
     repoDir,
     dataRoot: dataRootPath,

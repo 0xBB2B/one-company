@@ -51,7 +51,7 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     }
     const artifact = await pack(productRoot);
     const runtime = await pack(dirname(require.resolve("web-tree-sitter/web-tree-sitter.wasm")));
-    const typebox = await pack(await realpath(join(productRoot, "node_modules/typebox")));
+    const typeboxRoot = await realpath(join(productRoot, "node_modules/typebox"));
     const jitiRoot = await realpath(join(productRoot, "node_modules/jiti"));
     expect(JSON.parse(await readFile(join(jitiRoot, "package.json"), "utf8")).version).toBe("2.7.0");
     const jiti = await pack(jitiRoot);
@@ -61,9 +61,9 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     expect(artifact.files.some((file) => /(?:^|\/)(?:data|index|global)\.(?:db|sqlite)(?:-|$)/.test(file))).toBe(false);
     expect(artifact.files.some((file) => file.startsWith("tests/") || file.startsWith("node_modules/") || file.startsWith(".git/"))).toBe(false);
     await writeFile(join(root, "consumer/package.json"), JSON.stringify({ name: "parser-install-consumer", version: "1.0.0", private: true,
-      packageManager: "pnpm@11.7.0", dependencies: { "@0xbb2b/one-company": `file:${artifact.path}` } }));
+      packageManager: "pnpm@11.7.0", dependencies: { "@0xbb2b/one-company": `file:${artifact.path}`, typebox: `link:${typeboxRoot}` } }));
     // 宿主提供 peer 包；运行依赖固定为本机 tarball，仍使用 pnpm 的隔离链接布局。
-    await writeFile(join(root, "consumer/pnpm-workspace.yaml"), `autoInstallPeers: false\noverrides:\n  typebox: ${JSON.stringify(`file:${typebox.path}`)}\n  web-tree-sitter: ${JSON.stringify(`file:${runtime.path}`)}\n  jiti: ${JSON.stringify(`file:${jiti.path}`)}\n`);
+    await writeFile(join(root, "consumer/pnpm-workspace.yaml"), `autoInstallPeers: false\noverrides:\n  web-tree-sitter: ${JSON.stringify(`file:${runtime.path}`)}\n  jiti: ${JSON.stringify(`file:${jiti.path}`)}\n`);
     await run(node, [pnpm, "install", "--offline", "--ignore-scripts", "--lockfile-only"], join(root, "consumer"));
     await run(node, [pnpm, "install", "--offline", "--frozen-lockfile", "--ignore-scripts"], join(root, "consumer"));
     const installed = await realpath(join(root, "consumer/node_modules/@0xbb2b/one-company"));
