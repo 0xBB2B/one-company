@@ -227,14 +227,13 @@ describe("受管理 bash 工具 - 非后台执行委托底层", () => {
     expect(result.content[0]?.text).toContain("tool-output-ok");
   }, LONG_TIMEOUT);
 
-  test("失败命令：非 background 时抛出且消息含 exited with code 3", async () => {
+  test("失败命令：非 background 时返回 isError 且内容含 exited with code 3", async () => {
     const registry = makeRegistry();
     const tool = createManagedBashTool({ registry, host: HOST_MAIN, cwd, runToken: randomUUID() });
 
-    await expectRejects(
-      tool.execute(randomUUID(), { command: "sleep 0.2; exit 3" }, new AbortController().signal, () => {}, { cwd }),
-      /exited with code 3/,
-    );
+    const result = await tool.execute(randomUUID(), { command: "sleep 0.2; exit 3" }, new AbortController().signal, () => {}, { cwd });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/exited with code 3/);
   }, LONG_TIMEOUT);
 
   test("abort：非 background 执行中止后抛出", async () => {

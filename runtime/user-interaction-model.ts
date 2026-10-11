@@ -37,7 +37,7 @@ export interface PiInteractionInterpreterOptions {
 function modelIdentity(model: Model<Api>): InteractionModelIdentity {
   return Object.freeze({ provider: model.provider, id: model.id, configurationHash: decisionDigest(JSON.parse(JSON.stringify(model))) });
 }
-/** pi 0.87.1 ModelRegistry通过pi-ai的真实provider完成调用；不创建会话、不持久化输入或响应。 */
+/** pi ModelRegistry通过pi-ai的真实provider完成调用；不创建会话、不持久化输入或响应。 */
 export function createPiInteractionInterpreter(options: PiInteractionInterpreterOptions): InteractionInterpreter {
   const registry = options.registry, selectedModel = options.selectedModel;
   const timeoutMs = options.timeoutMs ?? 120_000;
