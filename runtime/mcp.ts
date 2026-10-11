@@ -51,5 +51,5 @@ export function describeMcpStatus(input: McpLoadResult): string {
   if (input.failures.length > 0) parts.push(`装载失败 ${input.failures.join("；")}`);
   if (parts.length === 0) return "未装载任何 MCP 服务";
   const status = parts.join("；");
-  return input.loaded.length > 0 ? `${status}。工具名形如 mcp__<服务名>__<工具名>，按系统提示里 MCP 服务一节的说明调用` : status;
+  return input.loaded.length > 0 ? `${status}。工具名形如 mcp__<服务名>__<工具名>，按系统提示里 mcp_servers 一节的说明调用` : status;
 }
