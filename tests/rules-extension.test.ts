@@ -30,6 +30,12 @@ test("主会话系统提示附上当前窗口已接入仓库的路径与 repoId�
   expect(systemPrompt).toContain(`## 当前窗口已接入的仓库\n调用需要 repoId 的工具时使用下列编号，不要自行计算：\n- /work/game → repoId ${repoId}`);
 });
 
+test("窗口没有接入仓库时告诉主代理需求和后台代理工具用不了，以及用户该怎么做", async () => {
+  const systemPrompt = await start(() => ({ workspace: { repos: [], skipped: [] } }));
+  expect(systemPrompt).toContain("## 当前窗口没有接入 Git 仓库\n当前目录和它的子目录里都没有 Git 仓库，需要 repoId 的需求和后台代理工具都用不了，不要调用。"
+    + "用户想用这些功能时，请告诉用户把当前目录建成 Git 仓库（git init），或者在子目录里各自建成 Git 仓库，然后重新启动 pi。");
+});
+
 test("窗口尚未启动时只附规则，不编造仓库", async () => {
   const systemPrompt = await start(noWindow);
   expect(systemPrompt).toContain("## 主会话职责");

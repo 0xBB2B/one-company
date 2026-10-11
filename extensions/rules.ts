@@ -10,7 +10,9 @@ import type { WindowContextValue } from "./lifecycle.ts";
 function repositoryList(windowContext: () => Pick<WindowContextValue, "workspace">): string {
 	let repos: WindowContextValue["workspace"]["repos"];
 	try { repos = windowContext().workspace.repos; } catch { return ""; }
-	if (repos.length === 0) return "";
+	if (repos.length === 0) return ["## 当前窗口没有接入 Git 仓库",
+		"当前目录和它的子目录里都没有 Git 仓库，需要 repoId 的需求和后台代理工具都用不了，不要调用。"
+		+ "用户想用这些功能时，请告诉用户把当前目录建成 Git 仓库（git init），或者在子目录里各自建成 Git 仓库，然后重新启动 pi。"].join("\n");
 	return ["## 当前窗口已接入的仓库", "调用需要 repoId 的工具时使用下列编号，不要自行计算：",
 		...repos.map((repo) => `- ${repo.path} → repoId ${repo.repoId}`)].join("\n");
 }

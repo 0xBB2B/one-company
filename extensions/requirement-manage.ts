@@ -61,6 +61,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     intake.shutdown();
     const window = await awaitWindow(), sessionId = ctx.sessionManager.getSessionId();
     if (window.sessionId !== sessionId) throw new HostAuthorizationError("host_unavailable");
+    if (window.workspace.repos.length === 0) return;
     authorization.startWindow({ kind: "main", windowId: window.windowId, sessionId, repoIds: window.workspace.repos.map((repo) => repo.repoId) });
     unregisterShutdown?.();
     for (const stop of connections.splice(0)) stop();

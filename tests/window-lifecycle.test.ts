@@ -703,26 +703,21 @@ describe("session_shutdown 幂等清理", () => {
 });
 
 describe("非仓库目录", () => {
-  test("cwd 不在任何仓库时不抛出，通知一次，windowContext 抛出含'工作区'字样的原因", async () => {
+  test("cwd 及子目录都没有仓库时警告一次，窗口照常启动且不接入仓库", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "window-lifecycle-nonrepo-"));
     plainTempDirs.push(cwd);
     const harness = await buildHarness({ cwd });
 
     await triggerSessionStart(harness);
 
-    // 发现工作区现在只发生在 connectWorkspaceClients 内部（经由 WorkspaceClients.create），
-    // 所以 connect 仍会被尝试一次；只是拿到的 workspace().repos 为空，随后判定为启动失败
-    expect(harness.connectCalls.length).toBe(1);
-    expect(harness.notifications.length).toBe(1);
-
-    let caught: unknown;
-    try {
-      windowContext();
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toContain("工作区");
+    expect(harness.notifications).toEqual([{
+      level: "warning",
+      message: `当前目录（${cwd}）和它的子目录里都没有 Git 仓库，需求和后台代理功能用不了。`
+        + "要用这两项功能，请把当前目录建成 Git 仓库（git init），或者把项目放在子目录里、每个子目录各自建成 Git 仓库，然后重新启动 pi。"
+        + "其他功能可以照常使用。",
+    }]);
+    expect((await windowReady()).workspace.repos).toEqual([]);
+    expect(windowContext().shellRegistry).toBeDefined();
   });
 });
 

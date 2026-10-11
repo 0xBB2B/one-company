@@ -190,7 +190,9 @@ async function startWindow(input: StartWindowInput): Promise<void> {
     clients = await input.connectWorkspaceClients({ windowId, sessionId: input.sessionId, cwd: input.cwd });
     const workspace = clients.workspace();
     if (workspace.repos.length === 0) {
-      throw new Error(`工作区（${input.cwd}）内没有 Git 仓库，本窗口用不了需求和后台代理功能`);
+      input.notify(`当前目录（${input.cwd}）和它的子目录里都没有 Git 仓库，需求和后台代理功能用不了。`
+        + "要用这两项功能，请把当前目录建成 Git 仓库（git init），或者把项目放在子目录里、每个子目录各自建成 Git 仓库，然后重新启动 pi。"
+        + "其他功能可以照常使用。", "warning");
     }
 
     const clock = input.resolveClock();
