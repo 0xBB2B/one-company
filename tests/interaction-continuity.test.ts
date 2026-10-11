@@ -330,7 +330,7 @@ test("M8N-AC1、AC4：同一段落后一次确认整体替换前一次：先目�
   targetA(second!);
   await expect(w.interpret("分析A")).rejects.toMatchObject({ code: "goal_not_explicit" });
   targetA(first!);
-  await expect(w.interpret("按最早那次分析A")).rejects.toMatchObject({ code: "retained_source_missing" });
+  await expect(w.interpret("按最早那次分析A")).rejects.toMatchObject({ code: "retained_source_missing", advice: { why: expect.stringContaining("段落 A") } });
 });
 test("M8N-AC1：同一段落先被排除、后被确认为目标，此后只按目标沿用", async () => {
   const w = await world();

@@ -124,7 +124,7 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
     const related = entries(u.conclusionIndexes);
     const retained = (u.retainedFactIds ?? []).map((id) => {
       const evidence = retainedEvidence.find((e) => e.fact.id === id && e.unitId === u.id);
-      if (!evidence) return deny("retained_source_missing"); return evidence;
+      if (!evidence) return deny("retained_source_missing", `段落 ${u.id}`); return evidence;
     });
     if (!related.length && !retained.length || retained.length && u.disposition === "pending-description") deny("review_entry_mismatch", `段落 ${u.id}`);
     if (u.globalConstraint && (!related.every((e) => ["constraint", "unresolved", "suggestion"].includes(e.kind)) || !retained.every((e) => e.kind === "constraint"))) deny("global_constraint_kind", `段落 ${u.id}`);
