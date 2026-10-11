@@ -1,6 +1,5 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { realpath } from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { Clock } from "../runtime/clock.ts";
@@ -13,9 +12,7 @@ import { repositoryDatabase, UUID_V7_PATTERN, uuidv7 } from "../runtime/database
 import { PM_MESSAGE_MAX_CHARS } from "../runtime/protocol.ts";
 import { withReadOnlyDatabase } from "../runtime/run-metadata.ts";
 import { createAgentRoleSession } from "./agent-session.ts";
-import type { AgentSessionHandle, AgentSessionMcpOptions } from "./agent-session.ts";
-import { detectMcpAdapter } from "../runtime/mcp.ts";
-import type { McpConfig } from "../runtime/mcp.ts";
+import type { AgentSessionHandle } from "./agent-session.ts";
 import { createPmTools } from "./pm-tools.ts";
 import { createSubagentTools } from "./subagent-tools.ts";
 import { approvedPrototype, decidePrototype, latestPrototype, prototypeConfirmation, PrototypeError } from "../runtime/prototype.ts";
@@ -74,8 +71,6 @@ export interface RunManagerOptions {
   runtime: ModelRuntime; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
   /** 联网检索的网络依赖；缺省为 Node 内置实现，测试可注入。 */
   web?: { deps: WebDeps; getPage: PageGetter };
-  /** 宿主 agentDir：explore 定义声明 MCP 服务时，从这里的 npm/node_modules/pi-mcp-adapter 与 mcp.json 装载。 */
-  agentDir?: string;
   /** 每次派出时重新读取角色目录；缺省用启动时的 roleCatalog。 */
   loadRoleCatalog?: () => Promise<RoleCatalogEntry[]>;
   /** 按顺序查找 skill 的目录（项目、用户、安装资源）。 */
@@ -327,7 +322,7 @@ export class RunManager {
     const expectedFence = owner?.fence ?? 0;
     const workspace = record.data.workspace;
     const run = await this.runStore.create({ kind: "requirement", requirement: input.requirementId, task: "pm", cwd: workspace.path,
-      readPaths: [workspace.path], writePaths: [], model: modelRef, thinking, mcp: [], agent: resolved.fingerprint });
+      readPaths: [workspace.path], writePaths: [], model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint });
     let lease: PmLease;
     try { lease = await state.acquirePm({ requirementId: input.requirementId, version: record.version, runId: run.id, expectedFence }); }
     catch (error) {
@@ -487,7 +482,7 @@ export class RunManager {
     let run: RunRecord;
     try {
       run = await this.runStore.create({ id: runId, kind: "role", role: `one-company.${role}`, requirement: lease.requirementId, parentRunId: input.pmRunId, task: task.taskId,
-        cwd: workspace.path, readPaths: [workspace.path], writePaths: review ? [] : task.writePaths, model: modelRef, thinking, mcp: [], agent: resolved.fingerprint });
+        cwd: workspace.path, readPaths: [workspace.path], writePaths: review ? [] : task.writePaths, model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint });
     } catch (error) {
       fail();
       throw error;
@@ -695,7 +690,7 @@ export class RunManager {
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, context: withSkills(await this.withConventions(exploreContext(explore, input.maxTurns)), resolved.skillsContext),
         coreTools: [toPiTool("result_submit", "提交 research（action=research）：结论、来源、检索范围、未找到、失败、截断与未知项；research 不是 PASS。", RESULT_SUBMIT_PARAMETERS, result),
           ...(source.kind === "web" ? this.webTools(alive) : this.knowledgeTool(runId))],
-        readRoots: source.kind === "local_file" ? [source.root] : [], mcp: this.mcpFor(definition.mcp), hostTools: source.kind === "local_file" ? ["read", "grep"] : [],
+        readRoots: source.kind === "local_file" ? [source.root] : [], hostTools: source.kind === "local_file" ? ["read", "grep"] : [],
         runtime: this.options.runtime, modelRef, thinking, maxTurns: input.maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") },
         clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
@@ -733,17 +728,6 @@ export class RunManager {
     });
     handle.prompt("开始检索。");
     return { runId, maxTurns: input.maxTurns };
-  }
-
-  /** explore 定义声明的 MCP 服务：适配器或配置缺失时不装载，模型只能用内置检索。 */
-  private mcpFor(servers: string[] | undefined): AgentSessionMcpOptions | undefined {
-    const agentDir = this.options.agentDir;
-    if (!servers?.length || !agentDir) return undefined;
-    const adapter = detectMcpAdapter({ sourcePaths: [join(agentDir, "npm", "node_modules", "pi-mcp-adapter")], argv: [], agentDir });
-    if (!adapter.installed) return undefined;
-    let config: McpConfig;
-    try { config = JSON.parse(readFileSync(adapter.configPath, "utf8")) as McpConfig; } catch { return undefined; }
-    return { servers, entryPath: adapter.entryPath, packageDir: adapter.packageDir, config };
   }
 
   /** PM 的有界能力目录：每页最多 20 条，只含名称、职责、描述与来源。 */

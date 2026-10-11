@@ -36,7 +36,6 @@ const EXPECTED_METHODS = [
   "workflow.manage",
   "shells.list",
   "shells.stop",
-  "mcp.register",
   "index.manage",
   "knowledge.query",
 ];
@@ -70,7 +69,6 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "runs.stop": { runId: "run-1" },
   "shells.list": {},
   "shells.stop": { taskId: "task-1", expectedPid: 123, expectedStartedAt: "2026-09-09T00:00:00.000Z" },
-  "mcp.register": { adapterEntry: "./adapter.ts", configPath: "/config.json" },
   "index.manage": { action: "status" },
   "knowledge.query": { query: { action: "search", text: "x" } },
 };
@@ -360,14 +358,6 @@ describe("validateParams — 缺字段被拒绝", () => {
     expect(error).not.toBeNull();
     expect(error?.code).toBe("bad_params");
     expect(error?.message).toContain("expectedPid");
-  });
-
-  test("mcp.register 缺少 configPath 抛出 bad_params", () => {
-    const { configPath: _configPath, ...rest } = VALID_EXAMPLES["mcp.register"]!;
-    const error = catchError(() => validateParams("mcp.register", rest));
-    expect(error).not.toBeNull();
-    expect(error?.code).toBe("bad_params");
-    expect(error?.message).toContain("configPath");
   });
 });
 

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/pi-ai";
@@ -44,14 +45,14 @@ async function world() {
   const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
   const gate = new NetworkPauseGate();
   let serial = 0;
-  async function session(role: AgentRole, replies: ScriptedReply[], options: { readRoots?: string[]; maxTurns?: number } = {}) {
+  async function session(role: AgentRole, replies: ScriptedReply[], options: { readRoots?: string[]; maxTurns?: number; mcp?: string[] } = {}) {
     const provider = registerControlledProvider(runtime, { providerId: `agent-${++serial}`, modelId: "test" });
     scriptReplies(provider, replies);
     const calls: string[] = [];
     const runId = uuidv7();
     const handle: AgentSessionHandle = await createAgentRoleSession({
       dataRoot, repoId: "a".repeat(64), runId, cwd,
-      definition: { name: role, role, description: "fixture", body: `ROLE-BODY-${role}` },
+      definition: { name: role, role, description: "fixture", body: `ROLE-BODY-${role}`, ...(options.mcp ? { mcp: options.mcp } : {}) },
       context: "TASK-CONTEXT", coreTools: fakeCoreTools(role, calls), readRoots: options.readRoots ?? (role === "qa" ? [] : [cwd]),
       runtime, modelRef: { provider: provider.providerId, id: "test" }, clock, networkGate: gate,
       completion: role === "pm" ? { kind: "idle-only" } : { kind: "on-result", resultTool: coreToolName("result_submit") },
@@ -138,20 +139,49 @@ describe("工具调用边界", () => {
     }
   });
 
-  test("MCP 调用只放行可信配置声明为只读的工具与所选服务", async () => {
+  test("mcp.json 里设为 direct 的服务，其工具直接列给模型并可直接调用", async () => {
     const w = await world();
-    const mcp = { servers: ["docs"], entryPath: "/x", packageDir: "/x", config: { mcpServers: { docs: { command: "x", readOnlyTools: ["docs__search"] } } } as never };
-    const ctx = { cwd: w.cwd, readRoots: [w.cwd], mcp, paused: () => false, submitted: () => false };
-    const call = (input: Record<string, unknown>) => checkAgentToolCall({ type: "tool_call", toolCallId: "m", toolName: "mcp", input } as never, ctx);
-    expect(await call({ tool: "docs__search", server: "docs", args: {} })).toBeUndefined();
-    expect(await call({ tool: "docs__write", server: "docs", args: {} })).toMatchObject({ block: true });
-    expect(await call({ tool: "other__search", server: "other", args: {} })).toMatchObject({ block: true });
-    expect(await call({ search: "", tool: "docs__write", args: {} })).toMatchObject({ block: true });
-    expect(await call({ describe: "x", tool: "docs__write", server: "docs" })).toMatchObject({ block: true });
-    for (const action of ["install", "auth-start", "auth-complete"]) expect(await call({ search: "", action, server: "docs", url: "https://x" })).toMatchObject({ block: true });
-    expect(await call({ search: "", connect: "docs" })).toMatchObject({ block: true });
-    expect(await call({ search: "docs", server: "docs" })).toBeUndefined();
-  });
+    const server = fileURLToPath(new URL("./fixtures/stdio-mcp-server.mjs", import.meta.url));
+    await writeFile(join(dirname(w.dataRoot), "mcp.json"), JSON.stringify({ mcpServers: {
+      docs: { command: process.execPath, args: [server], exposure: "direct", toolExposure: { "delete-all": "hidden" } } } }));
+    const s = await w.session("worker", [
+      { type: "toolcall", name: "mcp__docs__search", input: { q: "登录" } },
+      { type: "text", text: "结束" },
+    ], { mcp: ["docs"] });
+    s.handle.prompt("开始");
+    await until(() => s.provider.requests.length === 2);
+    expect(toolNames(s.provider.requests[0])).toContain("mcp__docs__search");
+    expect(toolNames(s.provider.requests[0])).not.toContain("mcp__docs__delete_all");
+    expect(toolResults(s.provider.requests[1])[0]?.text).toContain("内网文档：search");
+  }, 30000);
+
+  test("定义写了 mcp 时按 mcp.json 装载 pi 自带的 MCP，codemode 脚本可调用所选服务的全部工具，会话结束后服务进程退出", async () => {
+    const w = await world();
+    const pidFile = join(w.root, "mcp.pid");
+    const server = fileURLToPath(new URL("./fixtures/stdio-mcp-server.mjs", import.meta.url));
+    await writeFile(join(dirname(w.dataRoot), "mcp.json"), JSON.stringify({ mcpServers: {
+      docs: { command: process.execPath, args: [server, pidFile] }, unselected_wiki: { command: process.execPath, args: [server] } } }));
+    const script = "const a = await tools.mcp__docs__search({ q: '登录' }); const b = await tools.mcp__docs__delete_all({}); return [a.content[0].text, b.content[0].text].join(' | ');";
+    const s = await w.session("worker", [
+      { type: "toolcall", name: "codemode", input: { code: script } },
+      { type: "toolcall", name: coreToolName("result_submit"), input: {} },
+      { type: "text", text: "结束" },
+    ], { mcp: ["docs", "absent"] });
+    s.handle.prompt("开始");
+    await until(() => s.provider.requests.length === 2);
+    expect(toolNames(s.provider.requests[0])).toEqual(expect.arrayContaining(["codemode", "tool_search"]));
+    expect(s.provider.requests[0]?.systemPrompt).toContain("已装载 docs");
+    expect(s.provider.requests[0]?.systemPrompt).toContain("缺失 absent");
+    expect(s.provider.requests[0]?.systemPrompt).toContain("mcp__docs (codemode)");
+    expect(JSON.stringify(s.provider.requests[0])).not.toContain("unselected_wiki");
+    const [result] = toolResults(s.provider.requests[1]);
+    expect(result).toMatchObject({ isError: false });
+    expect(result!.text).toContain('内网文档：search {\\"q\\":\\"登录\\"} | 内网文档：delete-all {}');
+    await s.handle.result();
+    const pid = Number(await readFile(pidFile, "utf8"));
+    s.handle.dispose();
+    await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } });
+  }, 30000);
 });
 
 describe("完成与控制", () => {

@@ -26,7 +26,6 @@ export const METHODS = [
   "workflow.manage",
   "shells.list",
   "shells.stop",
-  "mcp.register",
   "index.manage",
   "knowledge.query",
 ] as const;
@@ -79,11 +78,6 @@ function protocolError(code: string, message: string): ProtocolError {
   return error;
 }
 
-const McpConfigSchema = Type.Object(
-  { adapterEntry: Type.String(), configPath: Type.String() },
-  { additionalProperties: false },
-);
-
 const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   hello: Type.Object(
     {
@@ -124,7 +118,6 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
     },
     { additionalProperties: false },
   ),
-  "mcp.register": McpConfigSchema,
   "index.manage": Type.Object({ action: Type.Union(["init", "preview", "refresh", "status"].map((action) => Type.Literal(action))) },
     { additionalProperties: false }),
   "knowledge.query": Type.Object({ query: KnowledgeTransportQuerySchema }, { additionalProperties: false }),

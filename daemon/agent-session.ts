@@ -3,10 +3,8 @@ import { realpath } from "node:fs/promises";
 import { dirname, join, resolve as resolvePath, sep } from "node:path";
 import { createAgentSession, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AgentSession, ExtensionAPI, ModelRuntime, ToolCallEvent, ToolCallEventResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import type { Clock, TimerHandle } from "../runtime/clock.ts";
-import { checkMcpCall, describeMcpStatus, loadMcpForRole } from "../runtime/mcp.ts";
-import type { McpConfig } from "../runtime/mcp.ts";
+import { describeMcpStatus, mcpExtensionFactories, registerMcpServers } from "../runtime/mcp.ts";
 import { classifyFailure } from "../runtime/network-pause.ts";
 import { loadPackageRules } from "../runtime/package-rules.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
@@ -15,13 +13,6 @@ import { checkSearchCall, filterSearchResult } from "../runtime/search-exclusion
 import type { RoleDefinition } from "../runtime/roles.ts";
 import { isAgentRole } from "../runtime/roles.ts";
 import { createSessionManagerForRun } from "../runtime/session-records.ts";
-
-export interface AgentSessionMcpOptions {
-  servers: string[];
-  entryPath: string;
-  packageDir: string;
-  config: McpConfig;
-}
 
 export interface CreateAgentSessionOptions {
   dataRoot: string;
@@ -36,7 +27,6 @@ export interface CreateAgentSessionOptions {
   readRoots?: string[];
   /** 覆盖职责默认的宿主工具（如按检索来源只给 explore 部分工具）；不能超出职责默认集合。 */
   hostTools?: string[];
-  mcp?: AgentSessionMcpOptions;
   runtime: ModelRuntime;
   modelRef: { provider: string; id: string };
   thinking?: string;
@@ -68,13 +58,6 @@ const READ_TOOL_NAMES = new Set(["read", "grep", "find", "ls"]);
 // SDK 读取前会去掉前导 @、展开 ~、解析 file:// 并替换特殊空白；这些写法的真实目标与按字面解析的不同，一律拒绝
 const REWRITTEN_PATH = /^[@~]|^file:|[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/iu;
 const PAUSE_ABORT_TIMEOUT_MS = 5000;
-const MCP_STUB_PARAMS = Type.Object({
-  tool: Type.Optional(Type.String()),
-  args: Type.Optional(Type.Unknown()),
-  describe: Type.Optional(Type.String()),
-  search: Type.Optional(Type.String()),
-  server: Type.Optional(Type.String()),
-});
 
 // 候选路径可能尚未创建；沿父目录逐级 realpath，找到已存在的祖先后再拼回后续片段
 export async function bestEffortRealpath(path: string): Promise<string> {
@@ -101,7 +84,7 @@ export function buildAgentPrompt(definition: RoleDefinition, context: string, mc
 }
 
 export async function checkAgentToolCall(event: ToolCallEvent, ctx: {
-  cwd: string; readRoots?: string[]; mcp?: AgentSessionMcpOptions; paused: () => boolean; submitted: () => boolean;
+  cwd: string; readRoots?: string[]; paused: () => boolean; submitted: () => boolean;
 }): Promise<ToolCallEventResult | void> {
   if (ctx.paused()) return { block: true, reason: "会话已暂停，拒绝新操作" };
   if (ctx.submitted()) return { block: true, reason: "结果已提交，会话即将结束", terminate: true };
@@ -113,27 +96,12 @@ export async function checkAgentToolCall(event: ToolCallEvent, ctx: {
     if (ctx.readRoots && !(await withinRoots(ctx.cwd, path, ctx.readRoots))) return { block: true, reason: `读取路径超出范围: ${path}` };
     return checkSearchCall(event, ctx.cwd);
   }
-  if (event.toolName === "mcp") {
-    const input = event.input as Record<string, unknown>;
-    // 适配器先看 action/connect 再看 tool：安装、授权、连接一律拒绝；只要带 tool 就按实际调用核对只读名单
-    if (input.action !== undefined || input.connect !== undefined) return { block: true, reason: "子代理不能执行 MCP 安装、授权或连接操作" };
-    const decision = checkMcpCall({
-      allowedServers: ctx.mcp?.servers ?? [],
-      readOnlyTools: Object.values(ctx.mcp?.config.mcpServers ?? {}).flatMap((server) => server.readOnlyTools ?? []),
-      request: {
-        mode: input.tool !== undefined ? "call" : input.describe !== undefined ? "describe" : "search",
-        server: input.server as string | undefined,
-        tool: input.tool as string | undefined,
-        args: input.args,
-      },
-    });
-    if (!decision.allowed) return { block: true, reason: decision.reason };
-  }
 }
 
 export async function createAgentRoleSession(options: CreateAgentSessionOptions): Promise<AgentSessionHandle> {
   const { definition } = options;
   const agentDir = dirname(options.dataRoot);
+  const usesMcp = (definition.mcp?.length ?? 0) > 0;
   const model = options.runtime.getModels(options.modelRef.provider).find((entry) => entry.id === options.modelRef.id);
   if (!model) throw new Error(`未找到模型: ${options.modelRef.provider}/${options.modelRef.id}`);
 
@@ -191,16 +159,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   const sessionManager = createSessionManagerForRun({ dataRoot: options.dataRoot, repoId: options.repoId, runId: options.runId, cwd: options.cwd, onPersistError });
 
   const extensionFactory = async (pi: ExtensionAPI): Promise<void> => {
-    const mcpResult = options.mcp
-      ? await loadMcpForRole({ pi, entryPath: options.mcp.entryPath, packageDir: options.mcp.packageDir, config: options.mcp.config, selected: options.mcp.servers })
-      : { loaded: [] as string[], missing: [] as string[], failure: undefined as string | undefined };
-    // 适配器装载失败时从未注册 mcp；补一个占位工具，让模型得到"服务不可用"而不是"工具不存在"
-    if (options.mcp && mcpResult.failure !== undefined) {
-      pi.registerTool({
-        name: "mcp", label: "MCP", description: "MCP 网关工具（装载失败占位）", parameters: MCP_STUB_PARAMS,
-        async execute() { throw new Error(`MCP 服务不可用（${mcpResult.failure}）`); },
-      });
-    }
+    const mcpResult = registerMcpServers(pi, join(agentDir, "mcp.json"), definition.mcp ?? []);
     const prompt = buildAgentPrompt(definition, options.context, describeMcpStatus(mcpResult));
     pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${prompt}` }));
     // 模型调用前计数：已用满 N 轮时在第 N+1 次请求发出前中止，不靠提示词或模型自报
@@ -218,7 +177,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
       events.emit("turn_counted", { turns });
     });
     pi.on("tool_call", (event) => checkAgentToolCall(event, {
-      cwd: options.cwd, readRoots: options.readRoots, mcp: options.mcp,
+      cwd: options.cwd, readRoots: options.readRoots,
       paused: () => isPaused() || isTerminal(), submitted: () => submitted,
     }));
     pi.on("tool_result", (event) => filterSearchResult(event));
@@ -233,7 +192,8 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   };
 
   const resourceLoader = new DefaultResourceLoader({
-    cwd: options.cwd, agentDir, noSkills: true, noContextFiles: true, noExtensions: true, extensionFactories: [extensionFactory],
+    cwd: options.cwd, agentDir, noSkills: true, noContextFiles: true, noExtensions: true,
+    extensionFactories: [...(usesMcp ? mcpExtensionFactories() : []), extensionFactory],
   });
   await resourceLoader.reload();
 
@@ -242,7 +202,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   const hostTools = options.hostTools ?? ROLE_HOST_TOOLS[role];
   const hostToolLimit = role === "qa" && options.readRoots?.length ? QA_PROTOTYPE_HOST_TOOLS : ROLE_HOST_TOOLS[role];
   if (hostTools.some((tool) => !hostToolLimit.includes(tool))) throw new Error("宿主工具超出职责默认集合");
-  const toolNames = [...hostTools, ...options.coreTools.map((tool) => tool.name), ...(options.mcp ? ["mcp"] : [])];
+  const toolNames = [...hostTools, ...options.coreTools.map((tool) => tool.name), ...(usesMcp ? ["codemode", "tool_search", "mcp__*"] : [])];
   const sdkSettings = SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });
   // 服务商断流等瞬时错误交 SDK 有限次重试；SDK 不重试被中止的请求，网络暂停发起的中止不会被重发
   const settingsManager = SettingsManager.inMemory({ ...sdkSettings.getGlobalSettings(),
@@ -260,6 +220,8 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     customTools: options.coreTools as NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["customTools"]>,
   });
   session = created.session;
+  // MCP 扩展在 session_start 时才连接服务
+  if (usesMcp) await session.bindExtensions({});
 
   function requestNetworkPause(): void {
     currentState = "paused";
@@ -363,7 +325,9 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     if (disposed) return;
     disposed = true;
     unsubscribe();
-    session.dispose();
+    // pi 的 dispose 不发 session_shutdown，不先发它 MCP 服务进程会一直留在后台
+    if (usesMcp) void session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }).catch(() => {}).finally(() => session.dispose());
+    else session.dispose();
   }
 
   return { events, state: () => currentState, turnsUsed: () => turns, idle: () => !prompting && queuedMessages.length === 0 && activeTools.size === 0, prompt, result: () => resultPromise, pause, resume, stop, dispose };

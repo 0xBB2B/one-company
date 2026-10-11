@@ -545,7 +545,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       workspaceRepoIds: [repoId],
       emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
       index: indexHost,
-      agentDir,
       loadRoleCatalog: async () => (await loadDaemonRoleCatalog(agentDir, repositoryRoot)).roles,
       skillDirs: [...(new ProjectTrustStore(agentDir).get(repositoryRoot) === true ? [join(repositoryRoot, ".pi", "skills")] : []),
         join(agentDir, "skills"), join(dirname(defaultRoleDir()), "skills")],

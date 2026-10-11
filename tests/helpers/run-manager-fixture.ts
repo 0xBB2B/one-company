@@ -27,7 +27,7 @@ export async function until(check: () => boolean | Promise<boolean>, limit = 600
  * 真实 RunManager 派出的 PM：夹具原有租约置为过期、工作区登记为 ready，PM 以脚本化模型提交接手理解。
  * review 为 false 时不做主代理核对，由用例自行调用 review()。
  */
-export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; agentDir?: string; body?: string } = {}) {
+export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string } = {}) {
   const fixture = await createPmIntakeFixture(options.body === undefined ? {} : { body: options.body }); cleanups.push(() => fixture.cleanup());
   const record = fixture.state.read(fixture.requirementId).data;
   const db = <T>(run: Parameters<typeof withDatabase<T>>[1]) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), run);
@@ -51,7 +51,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   if (index) { cleanups.push(() => index.close()); await index.init(); }
   const manager = new RunManager({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, runStore,
     shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }), networkGate: new NetworkPauseGate(),
-    roleCatalog: catalog.roles, runtime, clock, workspaceRepoIds: [fixture.repoId], emit, web: options.web, index, agentDir: options.agentDir });
+    roleCatalog: catalog.roles, runtime, clock, workspaceRepoIds: [fixture.repoId], emit, web: options.web, index });
   manager.markStarted();
   cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await manager.stop(run.id, { reason: "main_agent" }).catch(() => {}); });
 
