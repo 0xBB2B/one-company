@@ -1,6 +1,4 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { Context } from "@earendil-works/pi-ai";
 import { uuidv7 } from "../runtime/database.ts";
 import type { TaskSpec } from "../runtime/plan-manage.ts";
@@ -135,8 +133,6 @@ test("M7 性能：已批准更新持久化后 95% 在 2 秒内投递到可运行
   }
   const sorted = [...samples].sort((a, b) => a - b);
   const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1]!;
-  await mkdir(join(process.cwd(), ".bb-spec", ".cache", "m7"), { recursive: true });
-  await writeFile(join(process.cwd(), ".bb-spec", ".cache", "m7", "event-latency.json"), JSON.stringify({ samples, p95 }, null, 2));
   expect(samples).toHaveLength(20);
   expect(p95).toBeLessThanOrEqual(2_000);
 });
