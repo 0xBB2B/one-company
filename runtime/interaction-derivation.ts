@@ -72,7 +72,10 @@ export function deriveInterpretation(source: string, context: InteractionContext
     const related = indexes.map((i) => entries[i]!);
     const h = hint(id);
     const reusing = !h?.retainedFactIds?.length && reused.has(id) && !indexes.length;
-    const retainedFactIds = h?.retainedFactIds?.length ? h.retainedFactIds : reusing ? retainedFacts.get(id) : undefined;
+    // 模型给没改动的段引错了原依据编号时改用程序核验过的清单；改动过的段不在清单里，照样交核对拒绝
+    const cited = h?.retainedFactIds?.length && retainedFacts.has(id) && sameKind(id) && h.retainedFactIds.some((f) => !retainedFacts.get(id)!.includes(f))
+      ? retainedFacts.get(id) : h?.retainedFactIds;
+    const retainedFactIds = cited?.length ? cited : reusing ? retainedFacts.get(id) : undefined;
     const disposition = related.length && related.every((e) => e.kind === "exclusion" && explicit(e)) || reusing && retainedExclusion.get(id)![0] ? "excluded" as const
       : related.some((e) => !confirmed(e)) ? "pending-description" as const : "confirmed" as const;
     return { id, disposition, globalConstraint: h?.globalConstraint ?? false, appliesTo: h?.appliesTo ?? [], dependsOn: h?.dependsOn ?? [],

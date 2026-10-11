@@ -135,6 +135,17 @@ test("M8D-AC3：解释器完全没提到的没改动段落同样由程序沿用�
   expect(units.find((u) => u.id === "preamble")).toMatchObject({ retainedFactIds: [f.retained[0]!.fact.id] });
 });
 
+test("解释器给没改动的段引错了原依据编号时，程序改用清单里该段的原依据并通过核对；给改动过的段写沿用仍被拒绝", () => {
+  const f = retainedFixture();
+  f.output.unitHints = [{ id: "A", globalConstraint: false, appliesTo: [], dependsOn: [], retainedFactIds: [f.retained[0]!.fact.id] }];
+  const result = f.derive();
+  expect(result.documentReview!.units.find((u) => u.id === "A")).toMatchObject({ retainedFactIds: [f.retained[1]!.fact.id] });
+  expect(() => validateDocumentReview(f.context, result)).not.toThrow();
+  const changed = retainedFixture();
+  changed.output.unitHints = [{ id: "B", globalConstraint: false, appliesTo: [], dependsOn: [], retainedFactIds: [changed.retained[1]!.fact.id] }];
+  expect(() => validateDocumentReview(changed.context, changed.derive())).toThrow(expect.objectContaining({ code: "retained_source_missing" }));
+});
+
 test("M8D-AC3：用户要修改或排除的段落、挂在问题下的待定条目，不由程序沿用", () => {
   const modify = retainedFixture();
   modify.output.faithful = false;
