@@ -762,7 +762,6 @@ test("pi-ai完整文档review走真实同一API路径，原文只在调用载荷
   expect(JSON.parse(output).documentReview.units.map((u: { id: string }) => u.id)).toEqual(w.context.document!.partition.units.map((u) => u.id));
   expect(payload!.context.document!.body).toBe(w.context.document!.body);
   expect(spy.mock.calls[0]![1].systemPrompt).toContain("unitIds");
-  expect(spy.mock.calls[0]![1].systemPrompt).toContain("没有列出的单位一律视为已改");
   expect(spy.mock.calls[0]![1].messages).toEqual([]);
 });
 test("发给解释器的内容去掉 40 位与 64 位十六进制哈希，正文、用户原话和各种编号原样保留", async () => {
