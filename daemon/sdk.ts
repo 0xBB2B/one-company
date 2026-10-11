@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 
 const MIN_SDK_VERSION = "0.85.0";
 
@@ -44,11 +43,4 @@ export async function assertSdkVersion(sdkDir: string): Promise<string> {
     throw new Error(`SDK 版本过低: ${pkg.version}，要求 >= ${MIN_SDK_VERSION}（${sdkDir}）`);
   }
   return pkg.version;
-}
-
-export async function loadSdk(sdkDir: string): Promise<Record<string, unknown>> {
-  await assertSdkVersion(sdkDir);
-  const entry = join(sdkDir, "dist", "index.js");
-  const sdkModule = await import(pathToFileURL(entry).href);
-  return sdkModule as Record<string, unknown>;
 }

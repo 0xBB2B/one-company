@@ -202,7 +202,7 @@ export class InstalledProjectFixture {
     this.artifactFiles = artifact.files;
     this.artifactHash = contentHash(await readFile(artifact.path));
     const tree = await pack(dirname(fileURLToPath(import.meta.resolve("web-tree-sitter/web-tree-sitter.wasm"))));
-    const typebox = await pack(await realpath(join(sourceRoot, "node_modules/typebox")));
+    const typeboxRoot = await realpath(join(sourceRoot, "node_modules/typebox"));
     const jitiRoot = await realpath(join(sourceRoot, "node_modules/jiti"));
     assert.equal(JSON.parse(await readFile(join(jitiRoot, "package.json"), "utf8")).version, "2.7.0");
     const jiti = await pack(jitiRoot);
@@ -214,8 +214,9 @@ export class InstalledProjectFixture {
       "@earendil-works/pi-coding-agent": `link:${this.sdkRoot}`,
       "@earendil-works/pi-ai": `link:${sdk("@earendil-works/pi-ai")}`,
       "@earendil-works/pi-tui": `link:${sdk("@earendil-works/pi-tui")}`,
+      typebox: `link:${typeboxRoot}`,
     } }));
-    await writeFile(join(consumer, "pnpm-workspace.yaml"), `autoInstallPeers: false\noverrides:\n  typebox: ${JSON.stringify(`file:${typebox.path}`)}\n  web-tree-sitter: ${JSON.stringify(`file:${tree.path}`)}\n  jiti: ${JSON.stringify(`file:${jiti.path}`)}\n`);
+    await writeFile(join(consumer, "pnpm-workspace.yaml"), `autoInstallPeers: false\noverrides:\n  web-tree-sitter: ${JSON.stringify(`file:${tree.path}`)}\n  jiti: ${JSON.stringify(`file:${jiti.path}`)}\n`);
     for (const flags of [["--lockfile-only"], ["--frozen-lockfile"]]) {
       await exec(process.execPath, [pnpm, "install", "--offline", "--ignore-scripts", ...flags], { cwd: consumer, env, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
     }
