@@ -45,14 +45,16 @@ async function page(options: { trusted?: boolean; state?: ConstructorParameters<
 test("M8D-AC8：打开时停在 pm，标题写各层数量，分类标签带数量且内部与问题靠右，表格与底部两行按预览", async () => {
   const p = await page();
   const lines = p.lines().map(plain);
-  expect(lines[0]).toMatch(/^ 角色定义 +内置 7 · 用户 2 · 项目 1 $/u);
-  expect(lines[1]).toMatch(/^ {2}pm 1 {3}worker 2 {3}reviewer 1 {3}qa 1 {3}explore 1 +│ {2}内部 2 {3}问题 1 $/u);
-  expect(p.lines()[1]).toContain("[selectedBg]<accent>** pm 1 **</>[/]");
-  expect(p.lines()[1]).toContain("<error> 问题 1 </>");
-  expect(lines[1]).toHaveLength(80 - 4);
-  expect(lines[3]).toMatch(/^ {3}名称 +来源 +模型 +思考/u);
-  expect(lines[4]).toMatch(/^ › pm +内置 +gpt-6\.1-sol +high *$/u);
-  expect(p.lines()[4].startsWith("[selectedBg]")).toBe(true);
+  expect(p.lines()[0]).toBe(`<border>${"─".repeat(80)}</>`);
+  expect(p.lines().at(-1)).toBe(`<border>${"─".repeat(80)}</>`);
+  expect(lines[1]).toMatch(/^ 角色定义 +内置 7 · 用户 2 · 项目 1 $/u);
+  expect(lines[2]).toMatch(/^ {2}pm 1 {3}worker 2 {3}reviewer 1 {3}qa 1 {3}explore 1 +│ {2}内部 2 {3}问题 1 $/u);
+  expect(p.lines()[2]).toContain("[selectedBg]<accent>** pm 1 **</>[/]");
+  expect(p.lines()[2]).toContain("<error> 问题 1 </>");
+  expect(lines[2]).toHaveLength(80 - 4);
+  expect(lines[4]).toMatch(/^ {3}名称 +来源 +模型 +思考/u);
+  expect(lines[5]).toMatch(/^ › pm +内置 +gpt-6\.1-sol +high *$/u);
+  expect(p.lines()[5].startsWith("[selectedBg]")).toBe(true);
   expect(p.text()).toContain("C 复制（只能同名）");
 });
 
@@ -101,7 +103,7 @@ test("M8D-AC8：问题分类写短原因，展开写完整原因、现在的写�
   expect(p.text()).toMatch(/┊ 现在是 +extreme/u);
   expect(p.text()).toMatch(/┊ 影响 +这份定义没有生效/u);
   const u = await page({ trusted: false });
-  expect(plain(u.lines()[0])).toMatch(/内置 7 · 用户 2 $/u);
+  expect(plain(u.lines()[1])).toMatch(/内置 7 · 用户 2 $/u);
   for (let i = 0; i < 6; i++) u.press(RIGHT);
   expect(u.text()).toContain("问题 2");
   expect(u.text()).toMatch(/› \.pi\/agents\/ +项目 +项目未受信任，项目层定义没有生效/u);
@@ -112,6 +114,8 @@ test("M8D-AC8：复制在页内输入新名称，格式不对或重名当场拦�
   const p = await page({ taken: { "ui-worker": "用户层" } });
   p.press(RIGHT, DOWN, "c");
   expect(p.text()).toMatch(/复制 worker 为新定义\n\n 新名称 +worker-copy█\n 小写字母、数字、连字符，最多 64 个字符；三层里不能重名/u);
+  expect(p.lines()[0]).toBe(`<border>${"─".repeat(80)}</>`);
+  expect(p.lines().at(-1)).toBe(`<border>${"─".repeat(80)}</>`);
   for (let i = 0; i < 11; i++) p.press(BACKSPACE);
   p.press(..."ui-worker".split(""), ENTER);
   expect(p.text()).toContain("✗ 用户层已经有 ui-worker，换一个名字");
@@ -152,9 +156,9 @@ test("M8D-AC8：窄终端只在放不下时才省：左边职责只给选中的�
   const p = await page();
   p.press(RIGHT);
   const lines = p.lines(56).map(plain);
-  expect(lines[0]).toMatch(/内置 7 · 用户 2 · 项目 1 $/u);
-  expect(lines[1]).toMatch(/^ {2}pm {3}worker 2 {3}reviewer .*│ {2}内部 2 {3}问题 1 $/u);
-  expect(lines[1]).not.toContain("pm 1");
+  expect(lines[1]).toMatch(/内置 7 · 用户 2 · 项目 1 $/u);
+  expect(lines[2]).toMatch(/^ {2}pm {3}worker 2 {3}reviewer .*│ {2}内部 2 {3}问题 1 $/u);
+  expect(lines[2]).not.toContain("pm 1");
   expect(lines.join("\n")).toMatch(/ui-worker +用户 +5x\/gpt-6-luna +medium/u);
   const tight = p.lines(44).map(plain);
   expect(tight.find((line) => line.includes("ui-worker"))).toMatch(/5x\/gpt-\S*…/u);

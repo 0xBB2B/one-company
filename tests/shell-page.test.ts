@@ -257,16 +257,18 @@ describe("ShellPage：列表只列本工作区任务，含宿主/状态/耗时/�
     const page = new ShellPage(basePageOptions({ registry }));
     await page.refresh();
     const lines = page.render(100);
-    expect(lines.length).toBe(7);
-    expect(lines[0]).toMatch(/^ Shell 任务 +运行中 2$/);
-    expect(lines[1]).toBe("─".repeat(100));
-    expect(lines[2]).toMatch(/^ {5}状态 +来源 +命令 +耗时 +进程$/);
-    expect(lines[3]!.startsWith(" ▸ ● 运行中   主 agent")).toBe(true);
-    expect(lines[3]).toContain("编号标记一");
-    expect(lines[4]!.startsWith("   ● 运行中   主 agent")).toBe(true);
-    expect(lines[4]).toContain("编号标记二");
-    expect(lines[5]).toBe("─".repeat(100));
-    expect(lines[6]).toBe(" ↑↓ 选择   Enter 详情   K 停止   Esc 关闭");
+    expect(lines.length).toBe(9);
+    expect(lines[0]).toBe("─".repeat(100));
+    expect(lines[1]).toMatch(/^ Shell 任务 +运行中 2$/);
+    expect(lines[2]).toBe("─".repeat(100));
+    expect(lines[3]).toMatch(/^ {5}状态 +来源 +命令 +耗时 +进程$/);
+    expect(lines[4]!.startsWith(" ▸ ● 运行中   主 agent")).toBe(true);
+    expect(lines[4]).toContain("编号标记一");
+    expect(lines[5]!.startsWith("   ● 运行中   主 agent")).toBe(true);
+    expect(lines[5]).toContain("编号标记二");
+    expect(lines[6]).toBe("─".repeat(100));
+    expect(lines[7]).toBe(" ↑↓ 选择   Enter 详情   K 停止   Esc 关闭");
+    expect(lines[8]).toBe("─".repeat(100));
   });
 
   test("选中行带主题选中态标记，无箭头字符", async () => {
@@ -275,7 +277,7 @@ describe("ShellPage：列表只列本工作区任务，含宿主/状态/耗时/�
     const page = new ShellPage(basePageOptions({ registry, theme: fakeTheme() }));
     await page.refresh();
 
-    const line = page.render(100)[3]!;
+    const line = page.render(100)[4]!;
     expect(line.startsWith("[SEL] ▸ ")).toBe(true);
     expect(line.endsWith("[/SEL]")).toBe(true);
     for (const arrow of ["→", "▶", "➤", ">"]) expect(line).not.toContain(arrow);
@@ -304,7 +306,7 @@ describe("ShellPage：已结束任务仅保留结束后 1 分钟内", () => {
     const page = new ShellPage(basePageOptions({ registry, clock }));
     await page.refresh();
     expect(page.render(80).join("\n")).toContain("ttl标记");
-    expect(page.render(80)[0]).toContain("已结束 1");
+    expect(page.render(80)[1]).toContain("已结束 1");
     expect(page.render(80).join("\n")).toContain("✓ 已结束");
 
     timeSource.advance(59_000);
@@ -314,7 +316,7 @@ describe("ShellPage：已结束任务仅保留结束后 1 分钟内", () => {
     timeSource.advance(2_000);
     await page.refresh();
     expect(page.render(80).join("\n")).not.toContain("ttl标记");
-    expect(page.render(80)[0]).not.toContain("已结束");
+    expect(page.render(80)[1]).not.toContain("已结束");
   }, 10_000);
 });
 
@@ -331,13 +333,15 @@ describe("ShellPage：Enter 打开详情，仅展示状态/来源/完整命令/�
     const lines = page.render(60);
     const detail = lines.join("\n");
 
-    expect(lines[0]).toBe(" Shell 任务 › 详情");
+    expect(lines[0]).toBe("─".repeat(60));
+    expect(lines[1]).toBe(" Shell 任务 › 详情");
     for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
     expect(lines.filter((line) => /^ {3}命令 {4}| {11}\S/.test(line)).map((line) => line.slice(11)).join("")).toContain(longMarker);
     expect(detail).toContain("Esc 返回列表");
     expect(detail).not.toContain("查看输出");
     expect(detail).toContain("主 agent（本窗口）");
-    expect(lines.at(-1)).toBe(" K 停止   Esc 返回列表");
+    expect(lines.at(-2)).toBe(" K 停止   Esc 返回列表");
+    expect(lines.at(-1)).toBe("─".repeat(60));
   });
 
   test("Esc 从详情返回列表，不触发关闭回调", async () => {
@@ -412,9 +416,10 @@ describe("ShellPage：K 打开停止确认，默认取消", () => {
     const lines = page.render(80);
     const confirmText = lines.join("\n");
     expect(confirmText).toContain("取消标记");
-    expect(lines.at(-3)).toBe(` 停止 主 agent 的进程 ${registry.get(taskId)!.pid}？`);
-    expect(lines.at(-2)).toBe("   [SEL] 取消 [/SEL]   停止 ");
-    expect(lines.at(-1)).toBe("[DIM] ←→ 选择   Enter 确定   Esc 取消[/DIM]");
+    expect(lines.at(-4)).toBe(` 停止 主 agent 的进程 ${registry.get(taskId)!.pid}？`);
+    expect(lines.at(-3)).toBe("   [SEL] 取消 [/SEL]   停止 ");
+    expect(lines.at(-2)).toBe("[DIM] ←→ 选择   Enter 确定   Esc 取消[/DIM]");
+    expect(lines.at(-1)).toBe("─".repeat(80));
     expect(lines.some((line) => line.startsWith("[SEL] ▸ "))).toBe(true);
 
     page.handleInput(KEY.escape);
@@ -807,6 +812,7 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
     const page = new ShellPage(basePageOptions());
     await page.refresh();
     expect(page.render(80)).toEqual([
+      "─".repeat(80),
       " Shell 任务",
       "─".repeat(80),
       "",
@@ -815,6 +821,7 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
       "",
       "─".repeat(80),
       " ↑↓ 选择   Enter 详情   K 停止   Esc 关闭",
+      "─".repeat(80),
     ]);
   });
 
@@ -826,7 +833,7 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
     const page = new ShellPage(basePageOptions({ repos: [repo] }));
     await page.refresh();
     const lines = page.render(80);
-    expect(lines[2]).toBe(" ✗ 刷新失败：repo-broken 守护进程不可达（测试注入），列表可能不是最新的");
+    expect(lines[3]).toBe(" ✗ 刷新失败：repo-broken 守护进程不可达（测试注入），列表可能不是最新的");
     expect(lines.join("\n")).not.toContain("没有正在运行");
   });
 
@@ -1388,8 +1395,8 @@ describe("ShellPage：缺连接属于未知覆盖，不当作空结果", () => {
     await allMissing.refresh();
     expect(calls).toEqual([]);
     expect(allMissing.render(80)).toHaveLength(6);
-    expect(allMissing.render(80)[2]).toBe(" ✗ 刷新失败：repo-missing-a 连接不可用，列表可能不是最新的");
-    expect(allMissing.render(80)[3]).toBe(" ✗ 刷新失败：repo-missing-b 连接不可用，列表可能不是最新的");
+    expect(allMissing.render(80)[3]).toBe(" ✗ 刷新失败：repo-missing-a 连接不可用，列表可能不是最新的");
+    expect(allMissing.render(80)[4]).toBe(" ✗ 刷新失败：repo-missing-b 连接不可用，列表可能不是最新的");
     expect(allMissing.render(12).join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
 
     const partial = new ShellPage(basePageOptions({ repos: [{ repoId: "repo-ok", resolveClient: () => connectedClient }, missingA] }));
@@ -1429,8 +1436,8 @@ describe("ShellPage：表格列宽按显示宽度对齐", () => {
   test("中文命令、子代理占位文字、超时停止混排时（状态列 11 格，超时停止后面留空格），表头与每行的状态、来源、命令、耗时、进程列起点一致", async () => {
     const page = await mixedPage();
     const lines = page.render(80);
-    const header = lines[2]!;
-    const rows = lines.slice(3, 6);
+    const header = lines[3]!;
+    const rows = lines.slice(4, 7);
     const col = (line: string, text: string) => visibleWidth(line.slice(0, line.indexOf(text)));
     expect(col(header, "状态")).toBe(5);
     expect(col(header, "来源")).toBe(14);
@@ -1457,12 +1464,12 @@ describe("ShellPage：表格列宽按显示宽度对齐", () => {
     const page = await mixedPage();
     for (const width of [20, 40, 60]) for (const line of page.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
     const colored = (await mixedPage(colorTheme())).render(80);
-    expect(colored[3]).toContain("<success>● 运行中   </success>");
-    expect(colored[4]).toContain("<error>✗ 超时停止 </error>");
-    expect(colored[5]).toContain("<accent>reviewer#");
-    expect(colored[5]).toContain("<dim>（子代理命令不显示）");
-    expect(colored[2]!.startsWith("<muted>     状态")).toBe(true);
-    expect(colored[1]).toBe(`<dim>${"─".repeat(80)}</dim>`);
+    expect(colored[4]).toContain("<success>● 运行中   </success>");
+    expect(colored[5]).toContain("<error>✗ 超时停止 </error>");
+    expect(colored[6]).toContain("<accent>reviewer#");
+    expect(colored[6]).toContain("<dim>（子代理命令不显示）");
+    expect(colored[3]!.startsWith("<muted>     状态")).toBe(true);
+    expect(colored[2]).toBe(`<dim>${"─".repeat(80)}</dim>`);
   });
 });
 
@@ -1479,7 +1486,7 @@ describe("ShellPage：已结束的子代理任务同样 1 分钟后消失，待�
     });
     const page = new ShellPage(basePageOptions({ repos: [repo], clock }));
     await page.refresh();
-    expect(page.render(80)[0]).toMatch(/待确认 1 · 已结束 2$/);
+    expect(page.render(80)[1]).toMatch(/待确认 1 · 已结束 2$/);
     expect(page.render(80).some((line) => line.endsWith(" 501"))).toBe(true);
 
     timeSource.advance(59_000);
@@ -1493,7 +1500,7 @@ describe("ShellPage：已结束的子代理任务同样 1 分钟后消失，待�
     expect(lines.some((line) => line.endsWith(" 502"))).toBe(true);
     expect(lines.join("\n")).toContain("└ 结束未核实，不会自动从列表消失");
     expect(lines.some((line) => line.endsWith(" 503"))).toBe(true);
-    expect(lines[0]).toMatch(/待确认 1 · 已结束 1$/);
+    expect(lines[1]).toMatch(/待确认 1 · 已结束 1$/);
 
     timeSource.advance(600_000);
     await page.refresh();
@@ -1510,9 +1517,11 @@ describe("ShellPage：刷新失败与停止失败的提示行", () => {
     await page.refresh();
     page.reportRefreshFailure(new Error("和后台进程的连接已断开"));
     const lines = page.render(80);
-    expect(lines[2]).toBe("<error> ✗ 刷新失败：和后台进程的连接已断开，列表可能不是最新的</error>");
-    expect(lines[3]!.startsWith("<muted>     状态")).toBe(true);
-    expect(lines[4]).toContain("4810");
+    expect(lines[0]).toBe(`<border>${"─".repeat(80)}</border>`);
+    expect(lines.at(-1)).toBe(`<border>${"─".repeat(80)}</border>`);
+    expect(lines[3]).toBe("<error> ✗ 刷新失败：和后台进程的连接已断开，列表可能不是最新的</error>");
+    expect(lines[4]!.startsWith("<muted>     状态")).toBe(true);
+    expect(lines[5]).toContain("4810");
   });
 
   test("停止后连接换过：该行下面用红色原因行写明连接已经换过", async () => {
@@ -1547,8 +1556,8 @@ test("详情页按 K 打开该任务的停止确认，Esc 取消回到列表", a
   page.handleInput(KEY.enter);
   page.handleInput(KEY.k);
   const lines = page.render(80);
-  expect(lines.at(-3)).toBe(" 停止 主 agent 的进程 602？");
+  expect(lines.at(-4)).toBe(" 停止 主 agent 的进程 602？");
   expect(lines.find((line) => line.startsWith(" ▸ "))).toContain("602");
   page.handleInput(KEY.escape);
-  expect(page.render(80).at(-1)).toBe(" ↑↓ 选择   Enter 详情   K 停止   Esc 关闭");
+  expect(page.render(80).at(-2)).toBe(" ↑↓ 选择   Enter 详情   K 停止   Esc 关闭");
 });
