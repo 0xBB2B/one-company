@@ -1,7 +1,7 @@
 import type { Api, Context, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { decisionDigest } from "./short-decision-format.ts";
-import { checkContext, checkInterpretation, UserInteractionError } from "./user-interaction-format.ts";
+import { checkContext, checkInterpretation, interpreterView, UserInteractionError } from "./user-interaction-format.ts";
 import type { InteractionInterpretation } from "./user-interaction-format.ts";
 import { deriveInterpretation, ModelInterpretation, uncoveredUnits } from "./interaction-derivation.ts";
 import type { InteractionInterpreter, InteractionModelIdentity } from "./user-interaction.ts";
@@ -12,7 +12,7 @@ const INSTRUCTIONS = `你是受信交互路径中的需求解释器，不是执�
 逐项区分target明确目标、constraint保留约束、exclusion排除、future未来提议、delegation明确委托、action当前动作、unresolved冲突/未知、suggestion代理建议、ai-choice委托内技术选择。不要把长段输入压成全量批准。conclusion与scope各不超过400 Unicode码点，总共不超过20条，输出UTF-8最多65536字节。超出无法忠实表达时拒绝生成批准，不能截断限制或拆成详细需求副本。
 目标与动作分离。analyze/plan/implement/commit/push分别需要真实输入明确覆盖；完成关闭不是可预先授权的动作。仅想要功能不代表允许实施；只分析不能实施。明确直接实施则无需再要求说批准。保留原约束，不加入未经采纳的业务限制。动作必须是kind=action且actions仅列明确允许的动作；其他kind的actions必须为空。
 basis=explicit仅用于当前输入明确表达的内容。future、suggestion、unresolved使用proposed或uncertain且保持未生效。只有当前输入明确委托的同范围技术选择可标ai-choice/delegated，同时列出对应delegation/explicit；未采纳建议标suggestion/proposed，不能伪称用户决定。未知、冲突或新增限制应独立列unresolved，关联受影响candidateId。能明确对应另一个独立候选时只阻塞该候选；影响范围尚未查明时candidateId=null，不能把未知当成已判断无关。没有纳入当前候选的纯未来讨论标future且candidateId=null。
-没有context.document时，candidateId只引用确实被当前用户内容完整覆盖的候选diff。任何候选的新增限制、漏保留约束或不符用户内容，都不能标成完整接受。没有对应候选时可归纳目标但candidateId=null，不签发任意动作。候选的operationId、intentHash、from/to由宿主核对；不能修改这些内容。requestId只引用实际给出的待确认问题；不得发明ID或引用。
+没有context.document时，candidateId只引用确实被当前用户内容完整覆盖的候选diff。任何候选的新增限制、漏保留约束或不符用户内容，都不能标成完整接受。没有对应候选时可归纳目标但candidateId=null，不签发任意动作。候选的operationId由宿主核对，不能修改。requestId只引用实际给出的待确认问题；不得发明ID或引用。
 短答只有唯一明确问题才可referenceResolution=single-question并resolution=accept。多个问题指代不明用ambiguous和unclear，不替用户选择一个。用户明确指出具体问题可用explicit。无问题引用用none。长答分别表示accept接受、modify修改、defer暂缓、unclear不清楚；direct用于直接明确的新指令。context.questions为空时没有可接受的问题，用户对候选草稿的确认、批准或实施指令都用direct，不用accept。修改内容可以成为简短明确决定，但绝不能仍批准原候选整体hash。没有context.document时，对同一候选有任何修改或proposed/uncertain等未生效条目，不输出可批准其原内容的target/action组合，即使条目标成future或constraint也一样。多候选可分别处理。
 存在context.document时，它是唯一整个已保存prod候选。title/body和可信partition必须逐字核对，metadata与无标题前言也不能漏掉。顶层输出faithful：整份正文忠实表达已确认目标、排除和明确写出的未决问题，没有把新建议写成确定要求时为true；无法确认完整忠实或需要修改/重新保存时为false，不能批准原文。每个条目用unitIds列出它涉及的partition单位ID，只引用真实分区，不输出hash/range；candidateId均为该整份候选，不拆造多个完整候选。正文里写明的非目标、不做事项与边界，在用户确认它们时是已确认的约束，记为constraint；exclusion只记用户本次输入明确删掉、不批准或不做的正文单位或范围。正文里写明的实施或交付要求（如必须运行的测试、交付方式），用户确认时同样记为constraint并在unitIds列出该单位；需求文档规范规定的板块与格式占位内容（板块标题及其概述，以及如"用户未说明""由 PM 规划"这类按格式填写的内容）是格式要求的说明性内容，用户确认整份正文时记为constraint并在unitIds列出这些单位，不当作新增要求；action条目只表达本次授权的动作，不能代替对该单位内容的确认。逐段审阅由程序按unitIds生成：某单位的相关条目全是明确exclusion即为排除；有任何未生效条目（proposed/uncertain或defer/modify/unclear）即为待描述，因此正文明确写出的未决事项要列未生效条目并在unitIds列出该单位，不能把写成确定要求的建议伪装成未决；其余为已确认，需至少有一条target/constraint/delegation/ai-choice涉及。每个正文单位都必须被至少一条条目涉及或经unitHints的retainedFactIds保留原依据，否则整份不能批准。metadata单位没有条目涉及时，程序让它跟随同一候选里明确且requestId=null的target。
 unitHints按单位ID给结构提示：dependsOn列必要目标/约束依赖；globalConstraint标必要共享约束，appliesTo列受影响unit ID，空数组表示影响全部目标；非全局约束appliesTo必须为空；无依赖且非全局的单位可省略。未查明全局影响时不能把它当独立无关条件。kind=action条目的unitIds列出该动作要实施的目标单位；程序只取其中有明确target的单位作目标，并按依赖与全局约束补全约束范围。只允许真实明确action结论；未决/排除依赖不产生活动许可。不要靠自然语言scope掩盖遗漏依赖或从一个局部许可推导全量实施。
@@ -62,7 +62,7 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
         const model = current();
         if (decisionDigest(modelIdentity(model)) !== decisionDigest(input.model)) throw new UserInteractionError("model_changed");
         const checkedContext = checkContext(input.context);
-        const request = { text: input.text, context: checkedContext };
+        const request = { text: input.text, context: interpreterView(checkedContext) };
         const payload = JSON.stringify(request);
         if (Buffer.byteLength(payload) > 65_536) throw new UserInteractionError("request_limit");
         context.messages.push({ role: "user", content: payload, timestamp: Date.now() });

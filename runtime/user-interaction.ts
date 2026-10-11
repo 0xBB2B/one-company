@@ -15,7 +15,7 @@ import { DecisionItem, decisionDigest, parseDecisionBatch, checkDecisionRecord, 
 import type { DecisionAdmission, DecisionBatch, ShortDecisionRecord } from "./short-decision-format.ts";
 import {
   InteractionAction, InteractionBasis, CandidateBinding, PendingQuestion, UserInteractionError,
-  checkInteraction, checkContext, checkProposal, checkInterpretation, parseInteraction,
+  checkInteraction, checkContext, checkProposal, checkInterpretation, interpreterView, parseInteraction,
 } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
 import { ApprovalUnitIds, ApprovalPartition } from "./user-interaction-format.ts";
@@ -192,7 +192,7 @@ export class UserInteractionCore {
       this.#checkQuestions(context, true);
       const inputProof = context.document ? context.inputProof ?? withDatabase(this.#path(), (db) => continuityInputProofIn(db, requirementId)) : undefined;
       for (const old of context.priorDecisions) if (decisionDigest(this.readDecision(requirementId, old.decisionId)) !== decisionDigest(old)) throw new UserInteractionError("decision_changed");
-      if (Buffer.byteLength(JSON.stringify({ text: input.text, context })) > 65_536) throw new UserInteractionError("request_limit");
+      if (Buffer.byteLength(JSON.stringify({ text: input.text, context: interpreterView(context) })) > 65_536) throw new UserInteractionError("request_limit");
       const source = await this.#options.interpreter.interpret({ text: input.text, context, model, signal: input.controller.signal });
       this.#assertInput(input); this.#assertBasis(context.basis); this.#assertModel(model);
       const interpreted = checkInterpretation(source, context);

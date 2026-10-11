@@ -13,7 +13,7 @@ import { ShortDecisionStore } from "../runtime/short-decisions.ts";
 import { decisionDigest } from "../runtime/short-decision-format.ts";
 import { UserInteractionCore } from "../runtime/user-interaction.ts";
 import type { InteractionInterpreter, InteractionAuthorization } from "../runtime/user-interaction.ts";
-import { candidateBinding, checkInterpretation, checkContext, UserInteractionError } from "../runtime/user-interaction-format.ts";
+import { candidateBinding, checkInterpretation, checkContext, interpreterView, UserInteractionError } from "../runtime/user-interaction-format.ts";
 import type { InteractionContext, InteractionEntry, InteractionInterpretation } from "../runtime/user-interaction-format.ts";
 import { createPiInteractionInterpreter } from "../runtime/user-interaction-model.ts";
 import { partitionProdDocument } from "../runtime/prod-view.ts";
@@ -251,7 +251,8 @@ test("固定schema拒绝未知字段、正文/patch/附件、重复键与超20�
 test("64KiB限制包含当前输入和解释上下文，超限不调用解释器", async () => {
   const w = await world(), spy = vi.fn(async () => JSON.stringify(w.output())); w.setImplementation(spy);
   expect(() => w.capture("中".repeat(30_000))).toThrow(/request_limit/);
-  await expect(w.interpret("a".repeat(65_000))).rejects.toThrow(); expect(spy).not.toHaveBeenCalled();
+  const room = 65_536 - Buffer.byteLength(JSON.stringify({ text: "", context: interpreterView(w.context) }));
+  await expect(w.interpret("a".repeat(room + 1))).rejects.toThrow(/request_limit/); expect(spy).not.toHaveBeenCalled();
   const source = JSON.stringify(w.output()); expect(checkInterpretation(source + " ".repeat(65_536 - Buffer.byteLength(source)), w.context)).toEqual(w.output());
   expect(() => checkInterpretation(source + " ".repeat(65_537 - Buffer.byteLength(source)), w.context)).toThrow(/request_limit/);
 });
@@ -734,7 +735,7 @@ test("真实pi-ai适配路径使用选定模型、单条当前输入、固定指
   a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(w.output()))])]);
   const output = await a.interpreter.interpret({ text: PHONE, context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal });
   expect(JSON.parse(output)).toEqual(w.output());
-  expect(requestMessages).toMatchObject([{ role: "user", content: JSON.stringify({ text: PHONE, context: w.context }) }]);
+  expect(requestMessages).toMatchObject([{ role: "user", content: JSON.stringify({ text: PHONE, context: interpreterView(w.context) }) }]);
   expect(spy.mock.calls[0]![1].tools).toEqual([]); expect(spy.mock.calls[0]![1].systemPrompt).toContain("仅输出符合");
   expect(spy.mock.calls[0]![2]).toMatchObject({ cacheRetention: "none" });
   expect(spy.mock.calls[0]![1].messages).toEqual([]); // finally释放适配器持有的原文
@@ -762,6 +763,21 @@ test("pi-ai完整文档review走真实同一API路径，原文只在调用载荷
   expect(payload!.context.document!.body).toBe(w.context.document!.body);
   expect(spy.mock.calls[0]![1].systemPrompt).toContain("unitIds");
   expect(spy.mock.calls[0]![1].messages).toEqual([]);
+});
+test("发给解释器的内容去掉 40 位与 64 位十六进制哈希，正文、用户原话和各种编号原样保留", async () => {
+  const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
+  let content = "";
+  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => { content = String((c.messages[0] as { content: string }).content); return complete(m, c, o); });
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(modelAnswer(w.output())))])]);
+  await a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal });
+  expect(JSON.stringify(w.context)).toMatch(/"[0-9a-f]{64}"/u);
+  expect(content).not.toMatch(/"(?:[0-9a-f]{40}|[0-9a-f]{64})"/u);
+  const sent = JSON.parse(content) as { text: string; context: InteractionContext };
+  expect(sent.text).toBe("A实施，B未决");
+  expect(sent.context.document!.body).toBe(w.context.document!.body);
+  expect(sent.context.document!.candidate.candidateId).toBe(w.context.document!.candidate.candidateId);
+  expect(sent.context.document!.partition.units.map((u) => u.id)).toEqual(w.context.document!.partition.units.map((u) => u.id));
+  expect(sent.context).toEqual(interpreterView(w.context));
 });
 test("解释结果未通过核对时，带错误代码与未覆盖单位让解释器重答一次；第二次通过即采用", async () => {
   const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
@@ -874,6 +890,7 @@ test("M9：批准核验与交互核验用到的每个拒绝码都配了原因与
   }
   expect(codes.size).toBeGreaterThan(30);
   for (const code of codes) expect(new UserInteractionError(code).advice.why, code).not.toMatch(/^未归类/u);
+  expect(new UserInteractionError("interaction_context_limit").advice.why).toContain("解释器");
 });
 
 test("写决定前的检查碰到数据库或程序出错时如实报错，不说成没有授权；带原因的失效仍按没有授权处理", async () => {

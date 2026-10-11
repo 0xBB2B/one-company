@@ -4,7 +4,7 @@ import { repositoryDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
 import { checkRequirement, object } from "./requirement-contracts.ts";
 import { decisionDigest, checkDecisionRecord } from "./short-decision-format.ts";
-import { InteractionBasis, CandidateBinding, ApprovalPartition, ContinuityRecordRef, InteractionEntry, PendingQuestion, checkInteraction, UserInteractionError, resolvesContinuityIssue } from "./user-interaction-format.ts";
+import { InteractionBasis, CandidateBinding, ApprovalPartition, ContinuityRecordRef, InteractionEntry, PendingQuestion, checkInteraction, interpreterView, UserInteractionError, resolvesContinuityIssue } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, DocumentAnalysis, RetainedUnitEvidence, EffectiveQuestion, ContinuityIssue, RevisionSource } from "./user-interaction-format.ts";
 import type { ShortDecisionRecord } from "./short-decision-format.ts";
 import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
@@ -283,7 +283,7 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
     if (questions.length > 20 || priors.size > 20) deny("interaction_context_limit");
     const result = { questions, effectiveQuestions, retainedEvidence, continuityIssues, priorDecisions: [...priors.values()], revisionSources: [...revisionSources.values()],
       inputProof: collectionProof(facts.map((item) => item.row), questionRows, read) };
-    if (Buffer.byteLength(JSON.stringify(result)) > 49_152) deny("interaction_context_limit");
+    if (Buffer.byteLength(JSON.stringify(interpreterView(result))) > 49_152) deny("interaction_context_limit");
     db.exec("COMMIT"); return result;
   } finally { db.close(); }
 }

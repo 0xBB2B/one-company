@@ -9,6 +9,7 @@ import { repositoryIdentity } from "../runtime/identity.ts";
 import { uuidv7, repositoryDatabase, withDatabase, LocalDatabase } from "../runtime/database.ts";
 import { RequirementService } from "../runtime/requirement-service.ts";
 import { UserInteractionCore } from "../runtime/user-interaction.ts";
+import { interpreterView } from "../runtime/user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation } from "../runtime/user-interaction-format.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, loadInteractionContinuity } from "../runtime/interaction-continuity.ts";
 import { ApprovalManifestStore, summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
@@ -405,3 +406,19 @@ test("M8N-AC4：段落的当前确认被取代、而取代它的那次没被接�
   const [first] = factIds(w);
   expect(w.context().retainedEvidence!.some((e) => e.unitId === "A" && e.fact.id === first)).toBe(false);
 });
+test("沿用的原依据很多时，按发给解释器的内容算 48K 上限：哈希不计入，60 段草稿改一段后照常解读并批准", async () => {
+  const w = await world(Array.from({ length: 60 }, (_, i) => `# S${i} {#s${i}}\nS${i}目标。\n`).join(""));
+  w.setOutput(reviewAll);
+  const first = await w.interpret("批准第一版");
+  w.core.save(first.capability); w.core.authorizeDocument(first.capability, w.loaded);
+  await w.resave(w.loaded.body.replace("S0目标。", "S0目标改过。"));
+  const continuity = w.context();
+  const { questions, effectiveQuestions, retainedEvidence, continuityIssues, priorDecisions, revisionSources, inputProof } = continuity;
+  const result = { questions, effectiveQuestions, retainedEvidence, continuityIssues, priorDecisions, revisionSources, inputProof };
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(49_152);
+  expect(Buffer.byteLength(JSON.stringify(interpreterView(result)))).toBeLessThanOrEqual(49_152);
+  w.setOutput(reviewAll);
+  const last = await w.interpret("其余段落照旧，批准这一版");
+  w.core.save(last.capability);
+  expect(w.core.authorizeDocument(last.capability, w.loaded)).toBeTruthy();
+}, 120_000);

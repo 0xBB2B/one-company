@@ -143,6 +143,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   input_changed: { why: "处理期间用户又说了新的话", next: "按用户最新的原话重新处理" },
   input_expired: { why: "用户原话已过期", next: "等用户在主窗口说出新的一句话后再操作" },
   input_reentry: { why: "同一句用户原话被重复使用", next: "等用户在主窗口说出新的一句话后再操作" },
+  interaction_context_limit: { why: "本需求累积的待答问题、以往决定或原依据太多，发给解释器的材料超出上限", next: "不要重试，重试结果相同；先回答或处理掉已有的问题和待定事项，仍不行就把这段原因告诉用户" },
   interpretation_denied: { why: "用户原话的解读不能作为这次决定的依据", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
   invalid_capability: { why: "确认能力无效或已用过", next: "重新读取需求后按最新版本再试" },
   invalid_input_ticket: { why: "用户原话的凭据无效或已用过", next: "等用户在主窗口说出新的一句话后再操作" },
@@ -225,22 +226,31 @@ export class UserInteractionError extends Error {
   readonly advice: FailureAdvice;
   constructor(code: string, detail?: string) { super(`用户交互被拒绝：${code}`); this.name = "UserInteractionError"; this.code = code; this.advice = adviceIn(USER_INTERACTION_ADVICE, code, detail); }
 }
-export function parseInteraction<T extends TSchema>(schema: T, source: string): Static<T> {
-  if (typeof source !== "string" || Buffer.byteLength(source) > SHORT_DECISION_LIMITS.requestBytes) throw new UserInteractionError("request_limit");
+export function parseInteraction<T extends TSchema>(schema: T, source: string, maxBytes: number = SHORT_DECISION_LIMITS.requestBytes): Static<T> {
+  if (typeof source !== "string" || Buffer.byteLength(source) > maxBytes) throw new UserInteractionError("request_limit");
   const value = parseStrictJson(source);
   if (!Value.Check(schema, value)) throw new UserInteractionError("invalid_shape");
   return value as Static<T>;
 }
-export function checkInteraction<T extends TSchema>(schema: T, value: unknown): Static<T> {
+export function checkInteraction<T extends TSchema>(schema: T, value: unknown, maxBytes?: number): Static<T> {
   let copy: unknown;
   try { copy = structuredClone(value); } catch { throw new UserInteractionError("invalid_shape"); }
-  return parseInteraction(schema, JSON.stringify(copy));
+  return parseInteraction(schema, JSON.stringify(copy), maxBytes);
 }
 export function checkProposal(item: Static<typeof DecisionItem>, basis: InteractionBasis): void {
   parseDecisionBatch(JSON.stringify({ ...basis, operationId: basis.requirementId, decisions: [item] }));
 }
+const HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+const isHash = (value: unknown) => typeof value === "string" && HASH.test(value);
+/** 发给解释器的内容：去掉哈希。模型只按编号引用，哈希留在程序侧核对，发过去只占输入大小。 */
+export function interpreterView<T>(value: T): T {
+  if (Array.isArray(value)) return value.filter((item) => !isHash(item)).map(interpreterView) as T;
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).filter(([, item]) => !isHash(item)).map(([key, item]) => [key, interpreterView(item)])) as T;
+  return value;
+}
 export function checkContext(value: unknown): InteractionContext {
-  const context = checkInteraction(InteractionContext, value);
+  // 大小上限按发给解释器的内容（interpreterView）算，完整上下文里只供程序核对的哈希不计入
+  const context = checkInteraction(InteractionContext, value, Number.POSITIVE_INFINITY);
   if (new Set(context.candidates.map((c) => c.candidateId)).size !== context.candidates.length ||
     new Set(context.questions.map((q) => q.requestId)).size !== context.questions.length) throw new UserInteractionError("duplicate_reference");
   if (new Set(context.candidates.map((c) => c.to.hash)).size !== context.candidates.length) throw new UserInteractionError("duplicate_document_candidate");
