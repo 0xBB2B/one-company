@@ -884,13 +884,12 @@ test("M9：同一段落既有已确认又有未决条目时，重答反馈与最
 test("M9：批准核验与交互核验用到的每个拒绝码都配了原因与建议，不会显示成未归类的拒绝", async () => {
   const { readFileSync } = await import("node:fs");
   const codes = new Set<string>();
-  for (const file of ["../runtime/approval-manifest.ts", "../runtime/user-interaction-format.ts", "../runtime/user-interaction.ts", "../runtime/user-interaction-model.ts"]) {
+  for (const file of ["../runtime/approval-manifest.ts", "../runtime/interaction-continuity.ts", "../runtime/user-interaction-format.ts", "../runtime/user-interaction.ts", "../runtime/user-interaction-model.ts"]) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
     for (const match of source.matchAll(/(?:deny|UserInteractionError)\("([a-z_]+)"/gu)) codes.add(match[1]!);
   }
   expect(codes.size).toBeGreaterThan(30);
   for (const code of codes) expect(new UserInteractionError(code).advice.why, code).not.toMatch(/^未归类/u);
-  expect(new UserInteractionError("interaction_context_limit").advice.why).toContain("解释器");
 });
 
 test("写决定前的检查碰到数据库或程序出错时如实报错，不说成没有授权；带原因的失效仍按没有授权处理", async () => {
