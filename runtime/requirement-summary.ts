@@ -1,0 +1,24 @@
+import { repositoryDatabase, withDatabase } from "./database.ts";
+
+const SUMMARIES = "requirement_summaries";
+export const SUMMARY_MAX_CHARS = 200;
+
+interface SummaryRecord { prodHash: string; summary: string }
+
+const hex = (prodHash: string) => prodHash.replace(/^sha256:/u, "");
+
+/** 记下某一版草稿的简介；只保留最新保存的那一版。 */
+export function saveRequirementSummary(dataRoot: string, repoId: string, requirementId: string, prodHash: string, summary: string): void {
+  const value: SummaryRecord = { prodHash: hex(prodHash), summary };
+  withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.transaction(() => {
+    const row = db.read<SummaryRecord>(SUMMARIES, requirementId);
+    if (row) db.update(SUMMARIES, requirementId, row.version, value);
+    else db.create(SUMMARIES, requirementId, value);
+  }));
+}
+
+/** 只返回与给定草稿版本指纹对应的简介，版本对不上时为 undefined。 */
+export function requirementSummary(dataRoot: string, repoId: string, requirementId: string, prodHash: string): string | undefined {
+  const row = withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.read<SummaryRecord>(SUMMARIES, requirementId));
+  return row && row.data.prodHash === hex(prodHash) ? row.data.summary : undefined;
+}

@@ -1,46 +1,63 @@
 {
-  "name": "@0xbb2b/pi-spec",
+  "name": "@0xbb2b/one-company",
   "version": "0.1.0",
-  "description": "pi 的需求驱动开发流程包：spec-flow / spec-docs / spec-revise / spec-sync / git-commit / git-push 技能、TDD 子代理定义、提示模板与流程规则注入",
+  "packageManager": "pnpm@11.7.0",
+  "description": "pi 的需求驱动开发流程包：主会话和用户确认需求，守护进程内的需求代理（PM）规划任务，派角色子代理完成实施、审查与验收",
   "type": "module",
   "license": "MIT",
   "keywords": [
     "pi-package",
-    "spec",
     "tdd",
-    "workflow"
+    "workflow",
+    "subagents"
   ],
   "files": [
     "agents",
+    "daemon",
     "extensions",
-    "prompts",
+    "resources/tree-sitter",
+    "runtime",
     "rules",
+    "shared",
     "skills",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test tests"
+    "preinstall": "node runtime/git-prerequisite.mjs --check",
+    "test": "vitest run --exclude 'tests/integration/**' --exclude 'tests/installation/**' --exclude 'tests/acceptance/**'",
+    "test:integration": "vitest run tests/integration",
+    "test:integration:installed": "ONE_COMPANY_TEST_INSTALLED=1 vitest run tests/integration",
+    "test:installation": "vitest run tests/installation",
+    "test:acceptance": "vitest run tests/acceptance",
+    "test:acceptance:parallel": "node tests/acceptance/run-parallel.ts",
+    "typecheck": "tsc --noEmit"
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/index.ts"
     ],
-    "skills": [
-      "./skills"
-    ],
-    "prompts": [
-      "./prompts"
-    ]
+    "prompts": []
+  },
+  "dependencies": {
+    "jiti": "2.7.0",
+    "typebox": "1.3.29",
+    "web-tree-sitter": "0.27.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "engines": {
-    "node": ">=22"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "typebox": "1.3.7"
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
+    "@types/node": "26.4.1",
+    "typescript": "^7.0.2",
+    "vitest": "4.1.6"
+  },
+  "engines": {
+    "node": ">=22.19.0"
   }
 }

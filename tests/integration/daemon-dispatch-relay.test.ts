@@ -1,0 +1,76 @@
+import { afterEach, expect, test } from "vitest";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { authenticateTestClient, connectRawClient, connectTestClient, createDaemonFixture, killDaemon, removeDaemonFixture, resolveNodeExecutable, resolveSdkDir, startDaemonForTest } from "../helpers/daemon-harness.ts";
+import { modelProviderEnv, readProviderRequestsLog, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
+import { connectDaemon } from "../../runtime/daemon-client.ts";
+import { repositoryDatabase, putRecord, uuidv7, withDatabase } from "../../runtime/database.ts";
+import { RunStore } from "../../runtime/run-store.ts";
+
+const cleanup: Array<() => unknown | Promise<unknown>> = [];
+afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+async function world(stage = "confirmed") {
+  const fixture = await createDaemonFixture(); cleanup.push(() => removeDaemonFixture(fixture));
+  const database = repositoryDatabase(fixture.dataRoot, fixture.repoId), requirement = uuidv7();
+  putRecord({ database, namespace: "requirements", key: requirement }, { requirement, stage, tasks: {}, shape: { decisionId: "USER-001", skipped: ["review", "acceptance"] } });
+  const store = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: "historical-record" });
+  const run = await store.create({ kind: "requirement", requirement, task: "旧目标敏感标记", cwd: fixture.repo.root, writePaths: [], readPaths: [], model: { provider: "retired-relay", id: "test" }, thinking: "off", mcp: [] });
+  const questionId = uuidv7();
+  withDatabase(database, (db) => {
+    db.append(`decisions:${requirement}:user`, { id: "USER-001", actor: "user", effects: ["scope"] });
+    db.create("relay_questions", questionId, { id: questionId, status: "pending", requirement, repoId: fixture.repoId, runId: run.id, question: "旧问题不能进入模型", options: [], recommended: "确认", sequence: 1 });
+  });
+  const log = join(fixture.dataRoot, "requests.jsonl"); await writeFile(log, "");
+  const scripts = await writeTestModelProviders(fixture.dataRoot, [{ providerId: "retired-relay", modelId: "test", replies: [{ type: "toolcall", name: "bash", input: { command: "printf forbidden > README.md" } }] }]);
+  const handle = await startDaemonForTest(fixture, { extraEnv: modelProviderEnv(scripts, log) }); cleanup.push(() => killDaemon(handle));
+  async function window(windowId: string) {
+    const client = await connectTestClient(fixture.socketPath, { windowId }, { dataRoot: fixture.dataRoot }); cleanup.push(() => client.close());
+    await client.call("pm.overview"); return client;
+  }
+  const client = await window("window-a");
+  const snapshot = () => withDatabase(database, (db) => JSON.stringify({ requirements: db.list("requirements"), runs: db.list("runs"), sessions: db.list("sessions"), questions: db.list("relay_questions"), decisions: db.events(`decisions:${requirement}:user`) }));
+  return { fixture, database, requirement, run, log, handle, client, window, snapshot };
+}
+
+test("两个真实SDK客户端并发按需拉起同仓库时只启动一个daemon", async () => {
+  const fixture = await createDaemonFixture(); cleanup.push(() => removeDaemonFixture(fixture));
+  const input = { repoDir: fixture.repo.root, dataRoot: fixture.dataRoot, sdkDir: resolveSdkDir(), execPath: resolveNodeExecutable(), env: { ...fixture.home.env, PI_CODING_AGENT_DIR: fixture.home.agentDir } };
+  const pair = await Promise.all(["a", "b"].map((id) => connectDaemon({ ...input, hello: { windowId: id, sessionId: id } })));
+  const probe = await connectTestClient(fixture.socketPath, undefined, { dataRoot: fixture.dataRoot });
+  const pid = probe.helloResult.daemonPid as number;
+  cleanup.push(async () => {
+    probe.close(); for (const client of pair) client.close();
+    process.kill(pid, "SIGTERM");
+    for (let i = 0; i < 150; i++) { try { process.kill(pid, 0); } catch { return; } await delay(50); }
+    throw new Error(`本测试daemon ${pid} 未退出`);
+  });
+  const second = await connectTestClient(fixture.socketPath, undefined, { dataRoot: fixture.dataRoot }); cleanup.push(() => second.close());
+  expect(second.helloResult.daemonPid).toBe(pid);
+  for (const client of pair) { expect(client.state().status).toBe("connected"); expect((await client.call("pm.overview")).items).toEqual([]); }
+}, 25000);
+
+for (const stage of ["draft", "confirmed", "executing"]) test(`库里有旧${stage}需求、旧问题、USER及skipped记录时，daemon启动与正常调用不新增run/session/模型请求，旧排队运行只登记为interrupted`, async () => {
+  const w = await world(stage); const before = w.snapshot();
+  await delay(1150); expect(w.snapshot()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
+  expect(await w.client.call("runs.get", { runId: w.run.id })).toEqual({ run: expect.objectContaining({ id: w.run.id, state: "interrupted" }) });
+}, 20000);
+
+test("多个窗口均收不到旧问题，库里记录不变且没有模型请求", async () => {
+  const w = await world();
+  const clients = [w.client, await w.window("window-b"), await w.window("window-c")];
+  const events: unknown[] = []; for (const client of clients) { client.onEvent("relay.question", (event) => events.push(event)); client.onEvent("relay.withdraw", (event) => events.push(event)); }
+  const before = w.snapshot();
+  await delay(1150); expect(events).toEqual([]); expect(w.snapshot()).toBe(before); expect(await readProviderRequestsLog(w.log)).toEqual([]);
+}, 20000);
+
+test("重新连接不重放旧离线提问，保全积压数据且不重启PM", async () => {
+  const w = await world();
+  const before = w.snapshot();
+  const raw = await connectRawClient(w.fixture.socketPath); cleanup.push(() => raw.close());
+  const events: unknown[] = []; raw.onEvent("relay.question", (event) => events.push(event));
+  await authenticateTestClient(raw, { windowId: "late", sessionId: "late" }, { dataRoot: w.fixture.dataRoot, expectedRepoId: w.fixture.repoId });
+  await raw.call("pm.overview"); await delay(1150);
+  expect(events).toEqual([]); expect(w.snapshot()).toBe(before);
+  expect(await readProviderRequestsLog(w.log)).toEqual([]);
+}, 20000);

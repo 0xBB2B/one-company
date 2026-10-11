@@ -1,0 +1,380 @@
+import { expect, test } from "vitest";
+import {
+  EXPLORE_CONTRACT_LIMITS,
+  ExploreContractError,
+  checkExploreInput,
+  checkExploreResult,
+} from "../runtime/explore-contracts.ts";
+import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
+import { fillResearchSources } from "../runtime/explore-dispatch.ts";
+
+const requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
+const hashes = {
+  baseline: "c".repeat(64), file: "d".repeat(64),
+};
+const mainParent = {
+  role: "main", parentSessionId: "session-main", parentRunId: "run-main", contextId: "context-main", requirementBinding: null,
+} as const;
+const pmParent = {
+  role: "PM", parentSessionId: "session-pm", parentRunId: "run-pm", contextId: "context-pm",
+  requirementBinding: { requirementId, epoch: 3, pmFence: 7 },
+} as const;
+const budget = { maxSources: 32, maxResultBytes: 32_768 };
+function localInput(parent: typeof mainParent | typeof pmParent = mainParent): ExploreInput {
+  return {
+    format: "explore-input/v1", parent, question: "查看指定本地文件", clues: [], budget,
+    source: { kind: "local_file", indexBaseline: "not_applicable", root: "/safe/project" },
+  };
+}
+function webInput(parent: typeof mainParent | typeof pmParent = mainParent): ExploreInput {
+  return {
+    format: "explore-input/v1", parent, question: "查公开文档", clues: ["只发公开问题"], budget,
+    source: { kind: "web", indexBaseline: "not_applicable", query: "公开 API 文档" },
+  };
+}
+function resultFor(input: ExploreInput): ExploreResult {
+  const common: Omit<ExploreResult, "sources" | "searchedScope"> = {
+    format: "explore-result/v1", kind: "research", parent: input.parent, source: input.source,
+    conclusions: ["找到一个有界来源"], notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [],
+  };
+  if (input.source.kind === "local_file") return {
+    ...common,
+    sources: [{ kind: "local_file", indexBaseline: "not_applicable", path: "/safe/project/current.ts", fileHash: hashes.file, startLine: 2, endLine: 4 }],
+    searchedScope: { kind: "local_file", paths: ["/safe/project/current.ts"] },
+  };
+  return {
+    ...common,
+    sources: [{ kind: "web", indexBaseline: "not_applicable", url: "https://example.com/docs", retrievedAt: 1_800_000_000_000,
+      quote: "公开短引文" }],
+    searchedScope: { kind: "web", queries: [input.source.query] },
+  };
+}
+const clone = <T>(value: T): T => structuredClone(value);
+const expectCode = (operation: () => unknown, code: string) => {
+  try { operation(); } catch (error) {
+    expect(error).toBeInstanceOf(ExploreContractError);
+    expect((error as ExploreContractError).code).toBe(code);
+    return;
+  }
+  throw new Error(`预期拒绝：${code}`);
+};
+
+test.each([
+  ["main local_file", localInput(mainParent)], ["PM local_file", localInput(pmParent)],
+  ["main web", webInput(mainParent)], ["PM web", webInput(pmParent)],
+] as const)("双父两来源正向：%s", (_name, input) => {
+  const checked = checkExploreInput(input);
+  expect(checked).toEqual(input);
+  expect(checked).not.toBe(input);
+  expect(checkExploreResult(resultFor(checked), checked)).toEqual(resultFor(checked));
+});
+
+test("main无需求、未声明本地索引的纯web输入有效", () => {
+  const input = webInput(mainParent);
+  const checked = checkExploreInput(input);
+  expect(checked.parent.requirementBinding).toBeNull();
+  expect(checked.source).toEqual(expect.objectContaining({ kind: "web", indexBaseline: "not_applicable" }));
+  expect(JSON.stringify(checked)).not.toMatch(/workspace|generation|baselineHash|requirementId|pmFence|root/);
+});
+
+test("web输入混入本地索引字段拒绝", () => {
+  for (const extra of [{ generation: 1 }, { baselineHash: hashes.baseline }, { root: "/safe/project" }]) {
+    const input = clone(webInput()) as unknown as { source: Record<string, unknown> };
+    Object.assign(input.source, extra);
+    expectCode(() => checkExploreInput(input), "invalid_shape");
+  }
+});
+
+test("PM必须有需求、epoch和fence绑定，伪角色及伪载荷字段拒绝", () => {
+  for (const parent of [
+    { ...pmParent, requirementBinding: null },
+    { ...pmParent, requirementBinding: { requirementId, epoch: 3 } },
+    { ...pmParent, role: "planner" },
+  ]) {
+    expectCode(() => checkExploreInput({ ...webInput(), parent }), "invalid_shape");
+  }
+  for (const field of ["prodBody", "diff", "transcript", "rawContent", "detailedSummary", "parentMessages", "authorization", "newRole"]) {
+    const input = clone(localInput()) as unknown as Record<string, unknown>;
+    input[field] = "forbidden";
+    expectCode(() => checkExploreInput(input), "invalid_shape");
+  }
+});
+
+test("相邻来源字段不能混合，本地根须为规范绝对路径，结果路径不能越出根或写成相对上级", () => {
+  const mixed = clone(localInput()) as unknown as { source: Record<string, unknown> };
+  mixed.source.query = "公开 API 文档";
+  expectCode(() => checkExploreInput(mixed), "invalid_shape");
+  for (const root of ["relative/project", "/safe/../project", "/safe/project/"]) {
+    const input = clone(localInput());
+    if (input.source.kind !== "local_file") throw new Error("local source required");
+    input.source.root = root;
+    expectCode(() => checkExploreInput(input), "out_of_scope");
+  }
+  const local = localInput();
+  for (const path of ["/outside/current.ts", "/safe/projectx/a.ts", "../outside.ts", "/safe/project/../outside.ts"]) {
+    const result = clone(resultFor(local));
+    if (result.sources[0]?.kind === "local_file") result.sources[0].path = path;
+    expectCode(() => checkExploreResult(result, local), "out_of_scope");
+  }
+});
+
+test("工作区内任意文件（含 .pi、keys、docs/prod 等位置）都可作为本地来源", () => {
+  const local = localInput();
+  for (const path of ["/safe/project/.pi/agents/a.md", "/safe/project/keys/readme.md", "/safe/project/docs/prod/a.md"]) {
+    const result = clone(resultFor(local));
+    if (result.sources[0]?.kind === "local_file") result.sources[0].path = path;
+    if (result.searchedScope.kind === "local_file") result.searchedScope.paths = [path];
+    expect(() => checkExploreResult(result, local)).not.toThrow();
+  }
+});
+
+test("对象键重排不影响绑定，父身份或来源真实字段变化仍拒绝", () => {
+  const web = webInput();
+  const reorderedParent = clone(resultFor(web));
+  reorderedParent.parent = Object.fromEntries(Object.entries(reorderedParent.parent).reverse()) as typeof reorderedParent.parent;
+  expect(() => checkExploreResult(reorderedParent, web)).not.toThrow();
+
+  const local = localInput();
+  const reorderedSource = clone(resultFor(local));
+  reorderedSource.source = Object.fromEntries(Object.entries(reorderedSource.source).reverse()) as typeof reorderedSource.source;
+  expect(() => checkExploreResult(reorderedSource, local)).not.toThrow();
+
+  const changedParent = clone(resultFor(web));
+  changedParent.parent.parentRunId = "changed-run";
+  expectCode(() => checkExploreResult(changedParent, web), "invalid_binding");
+
+  const changedSource = clone(resultFor(local));
+  if (changedSource.source.kind !== "local_file") throw new Error("local source required");
+  changedSource.source.root = "/safe";
+  expectCode(() => checkExploreResult(changedSource, local), "invalid_binding");
+});
+
+test("结果绑定需求epoch，变化拒绝", () => {
+  const pm = localInput(pmParent);
+  const changedParent = clone(resultFor(pm));
+  if (changedParent.parent.requirementBinding) changedParent.parent.requirementBinding.epoch++;
+  expectCode(() => checkExploreResult(changedParent, pm), "invalid_binding");
+});
+
+test.each([
+  "javascript:alert(1)", "file:///etc/passwd", "https://user:pass@example.com/", "https://EXAMPLE.com/", "https://example.com:443/",
+])("恶意或未规范化URL拒绝：%s", (url) => {
+  const input = webInput();
+  const result = clone(resultFor(input));
+  if (result.sources[0]?.kind === "web") result.sources[0].url = url;
+  expectCode(() => checkExploreResult(result, input), "out_of_scope");
+});
+
+test("结果只能是research，未知PASS/approved/authorization/newRole字段拒绝", () => {
+  const input = localInput();
+  for (const mutation of [
+    (value: Record<string, unknown>) => { value.kind = "PASS"; },
+    (value: Record<string, unknown>) => { value.approved = true; },
+    (value: Record<string, unknown>) => { value.authorization = "granted"; },
+    (value: Record<string, unknown>) => { value.newRole = "worker"; },
+  ]) {
+    const result = clone(resultFor(input)) as unknown as Record<string, unknown>;
+    mutation(result);
+    expectCode(() => checkExploreResult(result, input), "invalid_shape");
+  }
+});
+
+test("无结果仍必须明确失败、截断和未知字段，截断原因不能被丢弃", () => {
+  const input = webInput();
+  if (input.source.kind !== "web") throw new Error("web source required");
+  const result: ExploreResult = { ...resultFor(input), conclusions: [], sources: [], searchedScope: { kind: "web", queries: [input.source.query] },
+    notFound: ["没有命中"], failures: ["网络返回错误"], truncation: { truncated: true, reasons: ["来源预算耗尽"] }, unknown: ["正文是否已更新"] };
+  expect(checkExploreResult(result, input)).toEqual(result);
+  for (const field of ["notFound", "failures", "truncation", "unknown"]) {
+    const missing = clone(result) as unknown as Record<string, unknown>;
+    delete missing[field];
+    expectCode(() => checkExploreResult(missing, input), "invalid_shape");
+  }
+  expectCode(() => checkExploreResult({ ...result, truncation: { truncated: false, reasons: ["不能静默丢弃"] } }, input), "invalid_shape");
+});
+
+test.each([" ", "\n", "\t", "　"])("所有非空文本项拒绝纯空白且不修改有效文本：%s", (blank) => {
+  const question = { ...webInput(), question: blank };
+  expectCode(() => checkExploreInput(question), "invalid_shape");
+
+  const clue = { ...webInput(), clues: [blank] };
+  expectCode(() => checkExploreInput(clue), "invalid_shape");
+
+  const query = clone(webInput());
+  if (query.source.kind !== "web") throw new Error("web source required");
+  query.source.query = blank;
+  expectCode(() => checkExploreInput(query), "invalid_shape");
+
+  const input = webInput();
+  const quote = clone(resultFor(input));
+  if (quote.sources[0]?.kind !== "web") throw new Error("web source required");
+  quote.sources[0].quote = blank;
+  expectCode(() => checkExploreResult(quote, input), "invalid_shape");
+
+  for (const field of ["conclusions", "notFound", "failures", "unknown"] as const) {
+    expectCode(() => checkExploreResult({ ...resultFor(input), [field]: [blank] }, input), "invalid_shape");
+  }
+  expectCode(() => checkExploreResult({ ...resultFor(input), truncation: { truncated: true, reasons: [blank] } }, input), "invalid_shape");
+
+  const preservedInput = clone(webInput());
+  preservedInput.question = " 公开问题 ";
+  if (preservedInput.source.kind !== "web") throw new Error("web source required");
+  preservedInput.source.query = " 公开查询 ";
+  const checkedInput = checkExploreInput(preservedInput);
+  expect(checkedInput.question).toBe(" 公开问题 ");
+  if (checkedInput.source.kind !== "web") throw new Error("web source required");
+  expect(checkedInput.source.query).toBe(" 公开查询 ");
+  const preservedResult = resultFor(checkedInput);
+  if (preservedResult.sources[0]?.kind !== "web") throw new Error("web source required");
+  preservedResult.sources[0].quote = " 支持引文 ";
+  preservedResult.failures = [" 真实失败 "];
+  const checkedResult = checkExploreResult(preservedResult, checkedInput);
+  expect(checkedResult.sources[0]?.kind === "web" ? checkedResult.sources[0].quote : "").toBe(" 支持引文 ");
+  expect(checkedResult.failures).toEqual([" 真实失败 "]);
+});
+
+test("码点和条数固定边界：question、clue、source、结论、短引文、失败/unknown", () => {
+  const questionAt = { ...localInput(), question: "😀".repeat(EXPLORE_CONTRACT_LIMITS.questionCodepoints) };
+  expect(() => checkExploreInput(questionAt)).not.toThrow();
+  expectCode(() => checkExploreInput({ ...questionAt, question: `${questionAt.question}x` }), "resource_limit");
+
+  const cluesAt = { ...localInput(), clues: Array(EXPLORE_CONTRACT_LIMITS.clues).fill("界".repeat(EXPLORE_CONTRACT_LIMITS.clueCodepoints)) };
+  expect(() => checkExploreInput(cluesAt)).not.toThrow();
+  expectCode(() => checkExploreInput({ ...cluesAt, clues: [...cluesAt.clues, "多"] }), "invalid_shape");
+  expectCode(() => checkExploreInput({ ...cluesAt, clues: [`${cluesAt.clues[0]}多`] }), "resource_limit");
+
+  const web = webInput();
+  const result = resultFor(web);
+  const at = { ...result,
+    conclusions: Array(EXPLORE_CONTRACT_LIMITS.conclusions).fill("结".repeat(EXPLORE_CONTRACT_LIMITS.conclusionCodepoints)),
+    failures: Array(EXPLORE_CONTRACT_LIMITS.statusItems).fill("错".repeat(EXPLORE_CONTRACT_LIMITS.statusItemCodepoints)),
+    unknown: Array(EXPLORE_CONTRACT_LIMITS.statusItems).fill("疑".repeat(EXPLORE_CONTRACT_LIMITS.statusItemCodepoints)),
+  } as ExploreResult;
+  // 独立检查每组边界，避免组合后的总字节预算先触发。
+  expect(() => checkExploreResult({ ...result, conclusions: at.conclusions }, web)).not.toThrow();
+  expect(() => checkExploreResult({ ...result, failures: at.failures }, web)).not.toThrow();
+  expect(() => checkExploreResult({ ...result, unknown: at.unknown }, web)).not.toThrow();
+  expectCode(() => checkExploreResult({ ...result, conclusions: [`${"结".repeat(400)}多`] }, web), "resource_limit");
+  expectCode(() => checkExploreResult({ ...result, conclusions: Array(17).fill("结") }, web), "invalid_shape");
+  for (const field of ["notFound", "failures", "unknown"] as const) {
+    expect(() => checkExploreResult({ ...result, [field]: Array(16).fill("项".repeat(400)) }, web)).not.toThrow();
+    expectCode(() => checkExploreResult({ ...result, [field]: Array(17).fill("项") }, web), "invalid_shape");
+    expectCode(() => checkExploreResult({ ...result, [field]: [`${"项".repeat(400)}多`] }, web), "resource_limit");
+  }
+  expect(() => checkExploreResult({ ...result, truncation: { truncated: true, reasons: Array(16).fill("截".repeat(400)) } }, web)).not.toThrow();
+  expectCode(() => checkExploreResult({ ...result, truncation: { truncated: true, reasons: Array(17).fill("截") } }, web), "invalid_shape");
+  expectCode(() => checkExploreResult({ ...result, truncation: { truncated: true, reasons: [`${"截".repeat(400)}多`] } }, web), "resource_limit");
+  const quote = clone(result);
+  if (quote.sources[0]?.kind === "web") quote.sources[0].quote = "引".repeat(EXPLORE_CONTRACT_LIMITS.quoteCodepoints);
+  expect(() => checkExploreResult(quote, web)).not.toThrow();
+  if (quote.sources[0]?.kind === "web") quote.sources[0].quote += "多";
+  expectCode(() => checkExploreResult(quote, web), "resource_limit");
+});
+
+function exactOutputBytes(input: ExploreInput): ExploreResult {
+  if (input.source.kind !== "web") throw new Error("web input required");
+  for (let count = 1; count <= EXPLORE_CONTRACT_LIMITS.sources; count++) {
+    for (let quoteLength = 1; quoteLength <= EXPLORE_CONTRACT_LIMITS.quoteCodepoints; quoteLength++) {
+      const base: ExploreResult = { ...resultFor(input), conclusions: ["x"],
+        sources: Array.from({ length: count }, (_, index) => ({ kind: "web", indexBaseline: "not_applicable", url: `https://example.com/${index}`,
+          retrievedAt: 1_800_000_000_000, quote: "\u0001".repeat(quoteLength) })),
+      };
+      const conclusionLength = 1 + EXPLORE_CONTRACT_LIMITS.outputBytes - Buffer.byteLength(JSON.stringify(base));
+      if (conclusionLength >= 1 && conclusionLength <= EXPLORE_CONTRACT_LIMITS.conclusionCodepoints) {
+        return { ...base, conclusions: ["x".repeat(conclusionLength)] };
+      }
+    }
+  }
+  throw new Error("无法构造精确输出字节边界");
+}
+
+test("结果完整JSON UTF-8转义按实际字节执行精确32768边界，超一字节拒绝", () => {
+  const web = webInput();
+  const result = exactOutputBytes(web);
+  expect(Buffer.byteLength(JSON.stringify(result))).toBe(EXPLORE_CONTRACT_LIMITS.outputBytes);
+  expect(() => checkExploreResult(result, web)).not.toThrow();
+  const over = clone(result);
+  over.conclusions[0] += "x";
+  expect(Buffer.byteLength(JSON.stringify(over))).toBe(EXPLORE_CONTRACT_LIMITS.outputBytes + 1);
+  expectCode(() => checkExploreResult(over, web), "resource_limit");
+});
+
+test("来源数量同时受固定上限和调用预算限制，行号必须有效", () => {
+  const input = webInput();
+  const result = resultFor(input);
+  if (result.sources[0]?.kind !== "web") throw new Error("web source required");
+  const source = result.sources[0];
+  const at = { ...result, sources: Array(EXPLORE_CONTRACT_LIMITS.sources).fill(source) };
+  expect(() => checkExploreResult(at, input)).not.toThrow();
+  expectCode(() => checkExploreResult({ ...result, sources: Array(33).fill(source) }, input), "invalid_shape");
+  expectCode(() => checkExploreResult(at, { ...input, budget: { ...input.budget, maxSources: 31 } }), "out_of_scope");
+
+  const local = localInput();
+  const localResult = resultFor(local);
+  if (localResult.sources[0]?.kind !== "local_file") throw new Error("local source required");
+  expectCode(() => checkExploreResult({ ...localResult, sources: [{ ...localResult.sources[0], startLine: 5, endLine: 4 }] }, local), "invalid_shape");
+});
+
+test("网页取回时间是正Unix epoch毫秒，覆盖正常值、Date精确边界、越界和非整数", () => {
+  const input = webInput();
+  const result = resultFor(input);
+  if (result.sources[0]?.kind !== "web") throw new Error("web source required");
+  const source = result.sources[0];
+  const maximum = 8_640_000_000_000_000;
+
+  for (const retrievedAt of [1, 1_800_000_000_000, maximum]) {
+    expect(new Date(retrievedAt).getTime()).toBe(retrievedAt);
+    expect(() => checkExploreResult({ ...result, sources: [{ ...source, retrievedAt }] }, input)).not.toThrow();
+  }
+  for (const retrievedAt of [0, maximum + 1, Number.MAX_SAFE_INTEGER, 1.5]) {
+    expectCode(() => checkExploreResult({ ...result, sources: [{ ...source, retrievedAt }] }, input), "invalid_shape");
+  }
+});
+
+test("调用者声明更低maxResultBytes时使用更低限制且不截断", () => {
+  const input = webInput();
+  const result = resultFor(input);
+  const exact = Buffer.byteLength(JSON.stringify(result));
+  expect(() => checkExploreResult(result, { ...input, budget: { ...input.budget, maxResultBytes: exact } })).not.toThrow();
+  expectCode(() => checkExploreResult(result, { ...input, budget: { ...input.budget, maxResultBytes: exact - 1 } }), "resource_limit");
+  expect(result.conclusions).toEqual(["找到一个有界来源"]);
+});
+
+test("超限被拒时原因写明哪个字段第几项、现在多少、上限多少，模型能照着精简", () => {
+  const input = webInput();
+  const result = resultFor(input);
+  const detailOf = (operation: () => unknown) => {
+    try { operation(); } catch (error) {
+      expect((error as ExploreContractError).code).toBe("resource_limit");
+      return JSON.stringify((error as ExploreContractError).advice);
+    }
+    throw new Error("没有被拒");
+  };
+  expect(detailOf(() => checkExploreResult({ ...result, conclusions: ["短结论", "结".repeat(474)] }, input))).toContain("conclusions 第 2 项 474 字，上限 400 字");
+  const quote = clone(result);
+  if (quote.sources[0]?.kind === "web") quote.sources[0].quote = "引".repeat(401);
+  expect(detailOf(() => checkExploreResult(quote, input))).toContain("sources 第 1 项的 quote 401 字，上限 400 字");
+  const exact = Buffer.byteLength(JSON.stringify(result));
+  expect(detailOf(() => checkExploreResult(result, { ...input, budget: { ...input.budget, maxResultBytes: exact - 1 } })))
+    .toContain(`research 整体 ${exact} 字节，上限 ${exact - 1} 字节`);
+});
+
+test("M9：网页检索的 research 只写 {queries} 时宿主补上种类后通过核对", () => {
+  const input = webInput(), full = resultFor(input);
+  const submitted = { conclusions: full.conclusions, sources: full.sources, searchedScope: { queries: [input.source.kind === "web" ? input.source.query : ""] },
+    notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] };
+  expect(checkExploreResult({ format: "explore-result/v1", kind: "research", parent: input.parent, source: input.source, ...fillResearchSources(submitted, input) }, input)
+    .searchedScope).toEqual({ kind: "web", queries: ["公开 API 文档"] });
+});
+
+test("M9：超出范围的拒绝写明是哪一项、检索根是什么，便于模型改正", () => {
+  const input = localInput(), base = resultFor(input);
+  const message = (result: ExploreResult) => { try { checkExploreResult(result, input); } catch (error) { return (error as Error).message; } return ""; };
+  expect(message({ ...base, searchedScope: { kind: "local_file", paths: ["/safe/project（grep x，再读 a.ts）"] } }))
+    .toBe("explore 契约拒绝：out_of_scope（searchedScope.paths 第 1 项不是检索根 /safe/project 下的路径；每项只写一个路径，说明写进 notFound 或 unknown）");
+  expect(message({ ...base, sources: [{ ...base.sources[0]!, path: "/other/a.ts" } as ExploreResult["sources"][number]] }))
+    .toBe("explore 契约拒绝：out_of_scope（sources 第 1 项不是检索根 /safe/project 下的路径）");
+  const many = { ...input, budget: { ...input.budget, maxSources: 1 } };
+  expect((() => { try { checkExploreResult({ ...base, sources: [base.sources[0]!, base.sources[0]!] }, many); } catch (error) { return (error as Error).message; } return ""; })())
+    .toBe("explore 契约拒绝：out_of_scope（来源 2 条，超过预算 1 条）");
+});

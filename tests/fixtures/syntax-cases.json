@@ -1,0 +1,7 @@
+[
+  {"language":"ts","source":"// 中文😀\r\n// function fake() {}\r\nexport function greet(x: string): string { return x; }\r\n","nodeType":"function_declaration","name":"greet"},
+  {"language":"tsx","source":"// 中文😀\r\nexport const App = () => <div>中文😀</div>;","nodeType":"jsx_element","text":"<div>中文😀</div>"},
+  {"language":"js","source":"// function fake() {}\nexport function greet() { return 'function decoy() {} 😀'; }","nodeType":"function_declaration","name":"greet"},
+  {"language":"jsx","source":"export const App = () => <div>hello😀</div>;","nodeType":"jsx_element","text":"<div>hello😀</div>"},
+  {"language":"go","source":"package main\r\n// 中文😀 func fake() {}\r\nfunc Greet(x string) string { return x }\r\n","nodeType":"function_declaration","name":"Greet"}
+]

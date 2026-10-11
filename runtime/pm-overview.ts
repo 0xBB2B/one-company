@@ -1,0 +1,196 @@
+import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
+import { activeCheckRoundIn } from "./check-round.ts";
+import type { LocalDatabase } from "./database.ts";
+import { implementScope, readPlanIn, stalledStage, terminationPending } from "./plan-manage.ts";
+import type { TaskRecord } from "./plan-manage.ts";
+import { latestPmSubmission } from "./pm-intake-runtime.ts";
+import { PmIntakeStore } from "./pm-intake-store.ts";
+import { planRejectionsIn, stallIn } from "./pm-attention.ts";
+import { latestPrototype, prototypeItemId, prototypeItemVersion } from "./prototype.ts";
+import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
+import type { RunRecord } from "./run-store.ts";
+import { pendingReportIn } from "./workflow-close.ts";
+
+export type PendingItemKind = "adjudicate" | "intake-review" | "question" | "adjust-requirement" | "acceptance" | "prototype" | "plan-rejected" | "stall";
+export interface PendingItem {
+  itemId: string;
+  kind: PendingItemKind;
+  label: string;
+  /** 事项所依据记录的版本；登记决定时须与当前一致。 */
+  version: string;
+}
+export type PmOverviewStatus = "running" | "pausing" | "paused" | "waiting";
+export interface PmOverview {
+  requirementId: string;
+  pmRunId: string;
+  goals: string[];
+  status: PmOverviewStatus;
+  doing: string;
+  turns: number;
+  toolUses: number;
+  tokens: number;
+  /** 缓存读取 ÷（输入 + 缓存读取 + 缓存写入）；尚无输入时为 null。 */
+  cacheRate: number | null;
+  elapsedMs: number;
+  pendingItems: PendingItem[];
+}
+
+export interface PmOverviewInput {
+  dataRoot: string;
+  repoId: string;
+  db: LocalDatabase;
+  record: RequirementRecord;
+  lease: PmLease;
+  pm: RunRecord;
+  /** 该 PM 派出的全部子代理运行，含已结束的。 */
+  children: RunRecord[];
+  /** PM 会话当前没有进行中的模型回合、排队消息或工具。 */
+  pmIdle: boolean;
+  /** 已批准正文中各章节 ID 对应的标题。 */
+  headingTitles: ReadonlyMap<string, string>;
+  now: number;
+}
+
+const ACTIVE_CHILD = new Set(["queued", "running", "pausing"]);
+const ROLE_LABEL: Record<string, string> = { "one-company.worker": "worker", "one-company.reviewer": "reviewer", "one-company.qa": "qa", "one-company.explore": "explore" };
+
+/** 已批准正文里带显式 ID 的标题：`# 标题 {#id}`。 */
+export function headingTitlesOf(body: string): Map<string, string> {
+  const titles = new Map<string, string>();
+  for (const line of body.split("\n")) {
+    const match = /^ {0,3}#{1,6}[\t ]+(.+?)[\t ]*\{#([^{}]+)\}[\t ]*$/u.exec(line);
+    if (match) titles.set(match[2]!, match[1]!.trim());
+  }
+  return titles;
+}
+
+/** 主代理的核对是否仍算数：通过的须是当前这个 PM 最新提交的那份，与派工门槛同一标准；PM 通过后又交了新的一份就要重新核对。 */
+function reviewPassedFor(input: Pick<PmOverviewInput, "dataRoot" | "repoId" | "lease" | "record">): boolean {
+  const { lease, record } = input;
+  const review = new PmIntakeStore({ dataRoot: input.dataRoot, repoId: input.repoId }).readHead(lease.requirementId)?.review;
+  if (review?.result !== "passed" || review.binding.pmRunId !== lease.runId || review.binding.pmFence !== lease.fence ||
+    review.binding.contextGeneration !== lease.contextGeneration) return false;
+  if (!record.approved || review.binding.approvedRevision !== record.revision) return true;
+  const latest = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: lease.runId, baseline: {
+    approvedRevision: record.revision, approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash } });
+  return !latest || review.submissionRef === `pm/${lease.runId}/${latest.toolCallId}`;
+}
+
+function questionPending(db: LocalDatabase, repoId: string, record: RequirementRecord, row: ReturnType<typeof requirementRow>, questionId: string): boolean {
+  const manifest = registeredApprovalManifestIn(db, repoId, record.approvalManifest!.reference, row);
+  const entry = manifest.questions.find((question) => question.requestId === questionId);
+  return entry === undefined || entry.pendingIds.length > 0;
+}
+
+function requirementRow(db: LocalDatabase, requirementId: string) {
+  return db.read<RequirementRecord>("requirements", requirementId)!;
+}
+
+/** 待处理事项只取自已有持久记录：终止后待调整的需求、待用户裁决的任务、待核对的接手理解、阻塞任务的未决问题、待确认的原型。 */
+export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId" | "db" | "record" | "lease">, tasks: TaskRecord[]): PendingItem[] {
+  const items: PendingItem[] = [];
+  for (const task of tasks) {
+    if (!terminationPending([task], input.record.revision)) continue;
+    items.push({ itemId: `halt:${task.taskId}`, kind: "adjust-requirement", label: `待你决定：任务 ${task.key} 已终止，请调整需求或取消需求`,
+      version: `halt:${task.taskId}:${input.record.revision}` });
+  }
+  for (const task of tasks) {
+    if (task.status !== "awaiting_user") continue;
+    const row = input.db.read<TaskRecord>("tasks", task.taskId)!;
+    const cause = task.sizeHold && task.attempts.length === 0 ? task.sizeHold.join("；")
+      : task.attempts.at(-1)?.escalation !== undefined ? "PM 上报需要你决定"
+      : ({ execute: "两次未完成", review: "两次审查未完成", rework: "两次未通过审查" } as const)[stalledStage(task)];
+    items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label: `待你裁决：任务 ${task.key} ${cause}`, version: `task:${task.taskId}:${row.version}` });
+  }
+  if (input.record.approved && !reviewPassedFor(input)) {
+    const submission = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: input.lease.runId, baseline: {
+      approvedRevision: input.record.revision, approvedProdHash: input.record.approved.hash, approvalManifestHash: input.record.approvalManifest!.reference.manifestHash } });
+    if (submission) items.push({ itemId: `intake:${input.lease.runId}`, kind: "intake-review", label: `待你核对：PM 接手理解 r${input.record.revision}`,
+      version: `intake:${input.lease.runId}:${submission.toolCallId}` });
+  }
+  const row = requirementRow(input.db, input.lease.requirementId);
+  const asked = new Set<string>();
+  for (const task of tasks) {
+    if (["completed", "cancelled"].includes(task.status)) continue;
+    for (const questionId of task.blockedByQuestionIds) {
+      if (asked.has(questionId) || !questionPending(input.db, input.repoId, input.record, row, questionId)) continue;
+      asked.add(questionId);
+      items.push({ itemId: `question:${questionId}`, kind: "question", label: `待你回答：任务 ${task.key} 的未决问题`,
+        version: `question:${questionId}:${input.record.approvalManifest!.reference.manifestHash}` });
+    }
+  }
+  for (const task of tasks) {
+    const prototype = latestPrototype(task);
+    if (!task.ui || !prototype || prototype.decision || ["completed", "cancelled"].includes(task.status)) continue;
+    items.push({ itemId: prototypeItemId(task.taskId), kind: "prototype", label: `待你确认原型：任务 ${task.key}（第 ${prototype.version} 版）`,
+      version: prototypeItemVersion(task.taskId, prototype) });
+  }
+  const report = input.record.lifecycle === "active" ? pendingReportIn(input.db, input.repoId, input.lease.requirementId) : null;
+  if (report) items.push({ itemId: `report:${report.data.reportId}`, kind: "acceptance", label: "待你验收：PM 完成报告", version: `report:${report.data.reportId}:${report.version}` });
+  const rejected = planRejectionsIn(input.db, input.lease.requirementId);
+  if (rejected?.pmRunId === input.lease.runId && rejected.count >= 2) items.push({ itemId: `plan:${input.lease.requirementId}`, kind: "plan-rejected",
+    label: "待你裁决：PM 计划两次提交被拒", version: `plan:${input.lease.requirementId}:${rejected.count}` });
+  // 已有别的事项交用户处理时，停下提醒是多余的
+  const stall = stallIn(input.db, input.lease.requirementId);
+  if (stall?.pmRunId === input.lease.runId && items.length === 0) items.push({ itemId: `stall:${input.lease.runId}`, kind: "stall",
+    label: "待你处理：PM 停下了，没有在跑的子任务", version: `stall:${input.lease.runId}:${stall.at}` });
+  return items;
+}
+
+/** 第二行"在做什么"只按真实状态生成，不采用 PM 模型的自述。 */
+function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<typeof readPlanIn>, status: PmOverviewStatus, items: PendingItem[]): string {
+  if (status === "paused") return terminationPending(tasks, input.record.revision) ? "等待你调整需求" : "已暂停";
+  if (status === "pausing") {
+    const running = input.children.filter((child) => ACTIVE_CHILD.has(child.state));
+    return running.length ? `暂停中：等待 ${running.map((child) => ROLE_LABEL[child.role ?? ""] ?? "子代理").join("、")} 结束` : "暂停中：等待当前工具结束";
+  }
+  const rejected = planRejectionsIn(input.db, input.lease.requirementId);
+  const rejectedCount = rejected?.pmRunId === input.lease.runId ? rejected.count : 0;
+  if (rejectedCount > 0 && !input.children.some((child) => ACTIVE_CHILD.has(child.state))) {
+    return `规划中（计划提交被拒 ${rejectedCount} 次，${rejectedCount >= 2 ? "等你决定" : "PM 正在按原因修改"}）`;
+  }
+  // 停下提醒不改第二行：仍按 PM 停下时的真实进度显示
+  if (status === "waiting" && items.some((item) => item.kind !== "stall")) return items.some((item) => item.kind === "acceptance") ? "等待你验收完成报告"
+    : items.every((item) => item.kind === "prototype") ? "等待你确认原型" : "等待你的决定";
+  if (!reviewPassedFor(input)) return items.some((item) => item.kind === "intake-review") ? "等待核对接手理解" : "接手中";
+  if (input.record.pendingRevision !== null) return `复核批准更新 r${input.record.pendingRevision}`;
+  if (activeCheckRoundIn(input.db, input.repoId, input.lease.requirementId)) return "检查中";
+  const running = input.children.filter((child) => ACTIVE_CHILD.has(child.state));
+  if (running.length) {
+    const child = running[0]!, task = tasks.find((candidate) => candidate.taskId === child.task);
+    const attempt = task ? task.attempts.findIndex((entry) => entry.runId === child.id) + 1 : 0;
+    const review = task ? task.reviews.findIndex((entry) => entry.runId === child.id) + 1 : 0;
+    const head = child.role === "one-company.explore" ? "派 explore 检索"
+      : task?.prototypeRun?.runId === child.id ? `派 worker 做原型 ${task.key}`
+      : review > 0 ? `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 审查 ${task!.key}（第 ${review} 次审查）`
+        : `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 执行 ${task?.key ?? "任务"}${attempt > 0 ? `（第 ${attempt} 次尝试）` : ""}`;
+    return running.length > 1 ? `${head} 等 ${running.length} 个` : head;
+  }
+  if (!plan) return "规划中";
+  if (plan.plan.confirmedVersion === null) return `规划中（计划 v${plan.plan.planVersion} · ${tasks.filter((task) => task.status !== "cancelled").length} 个任务）`;
+  return "空闲";
+}
+
+export function pmOverview(input: PmOverviewInput): PmOverview {
+  const plan = readPlanIn(input.db, input.lease.requirementId);
+  const tasks = plan?.tasks ?? [];
+  const items = pendingItemsIn(input, tasks);
+  const childActive = input.children.some((child) => ACTIVE_CHILD.has(child.state));
+  const status: PmOverviewStatus = input.pm.state === "paused" ? "paused" : input.pm.state === "pausing" ? "pausing"
+    : items.length > 0 && input.pmIdle && !childActive ? "waiting" : "running";
+  const runs = [input.pm, ...input.children];
+  const sum = (pick: (run: RunRecord) => number) => runs.reduce((total, run) => total + pick(run), 0);
+  const input_ = sum((run) => run.usage?.input ?? 0), cacheRead = sum((run) => run.usage?.cacheRead ?? 0), cacheWrite = sum((run) => run.usage?.cacheWrite ?? 0);
+  const prompt = input_ + cacheRead + cacheWrite;
+  const pausedNow = input.pm.pausedAt ? Math.max(0, input.now - Date.parse(input.pm.pausedAt)) : 0;
+  const manifest = registeredApprovalManifestIn(input.db, input.repoId, input.record.approvalManifest!.reference, requirementRow(input.db, input.lease.requirementId));
+  const goals = [...implementScope(manifest, input.record.docSpec?.sections ?? [])].map((unitId) => input.headingTitles.get(unitId) ?? unitId);
+  return {
+    requirementId: input.lease.requirementId, pmRunId: input.pm.id, goals, status,
+    doing: doingOf(input, tasks, plan, status, items),
+    turns: sum((run) => run.turns), toolUses: sum((run) => run.usage?.toolUses ?? 0),
+    tokens: prompt + sum((run) => run.usage?.output ?? 0), cacheRate: prompt > 0 ? cacheRead / prompt : null,
+    elapsedMs: Math.max(0, input.now - Date.parse(input.pm.startedAt) - (input.pm.pausedMs ?? 0) - pausedNow),
+    pendingItems: items,
+  };
+}
