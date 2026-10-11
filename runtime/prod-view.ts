@@ -144,8 +144,9 @@ export function partitionProdDocument(requirementId: string, title: string, body
   return { prodHash: document.prodHash, totalBytes: bytes.length,
     units: starts.map((start, index) => {
       const endByte = starts[index + 1]?.offset ?? bytes.length;
+      // 段末换行随后面有没有下一段而变；计入哈希会让文字未变的原末段在追加新段后被当成已改
       return { id: start.id, startByte: start.offset, endByte,
-        hash: createHash("sha256").update(bytes.subarray(start.offset, endByte)).digest("hex") };
+        hash: createHash("sha256").update(bytes.subarray(start.offset, endByte).toString().replace(/[\r\n]+$/u, "")).digest("hex") };
     }) };
 }
 

@@ -111,11 +111,18 @@ test("授权分区覆盖metadata、BOM前言及父子ATX真实UTF8字节，无�
   const bytes = Buffer.from(doc.bytes); let end = 0, restored = "";
   for (const u of p.units) {
     expect(u.startByte).toBe(end); const fragment = bytes.subarray(u.startByte, u.endByte);
-    expect(createHash("sha256").update(fragment).digest("hex")).toBe(u.hash);
+    expect(createHash("sha256").update(fragment.toString().replace(/[\r\n]+$/u, "")).digest("hex")).toBe(u.hash);
     expect(fragment.toString()).not.toContain("�"); restored += fragment.toString(); end = u.endByte;
   }
   expect(end).toBe(bytes.length); expect(restored).toBe(bytes.toString());
   expect(selectProdSection(body, inspectProdStructure(body), "parent")).toContain("## 子");
+});
+test("在最后一段后面追加新段时，原最后一段文字未变，段落哈希也不变", () => {
+  const before = partitionProdDocument(approvalId, "标题", "## 暂停 {#pause}\n暂停时不响应。");
+  const after = partitionProdDocument(approvalId, "标题", "## 暂停 {#pause}\n暂停时不响应。\n\n## 死亡 {#death}\n死亡后不能快跑。");
+  expect(after.units.find((u) => u.id === "pause")!.hash).toBe(before.units.find((u) => u.id === "pause")!.hash);
+  expect(partitionProdDocument(approvalId, "标题", "## 暂停 {#pause}\n暂停时也响应。").units.find((u) => u.id === "pause")!.hash)
+    .not.toBe(before.units.find((u) => u.id === "pause")!.hash);
 });
 test("无ID或混合标题只使用whole-body，空正文只有metadata；重复及保留ID拒绝", () => {
   for (const body of ["# A\n文本", "# A {#a}\n## B\n文本", "无标题😀", "#\n空标题"]) {
