@@ -50,7 +50,7 @@ const VERIFICATION_ADVICE = {
   check_phase_active: { why: "检查阶段进行中，不能运行调试检查", next: "等检查轮结束后再运行" },
   round_not_open: { why: "没有开放中的检查轮，或检查轮已失效", next: "先用 workflow_manage 开启检查轮，再运行正式检查" },
   input_changed: { why: "检查开始前受保护的输入已变化，本检查轮已失效", next: "结束本检查轮，重新开检查轮后再运行" },
-  not_found: { why: "找不到这次检查运行，或它不属于本运行", next: "核对验证编号，只查询本运行发起的检查" },
+  not_found: { why: "找不到这次检查运行，或你没有权限查看它", next: "核对验证编号：能查看的只有本运行发起的检查，以及子代理提交里引用、本角色有权查看的记录；停止只能停本运行发起的检查" },
   resource_limit: { why: "请求内容超出 64 KiB", next: "精简命令或参数后重试" },
 } as const satisfies Record<string, FailureAdvice>;
 export type VerificationRunErrorCode = keyof typeof VERIFICATION_ADVICE;
