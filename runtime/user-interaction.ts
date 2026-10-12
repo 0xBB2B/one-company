@@ -38,7 +38,6 @@ export interface UserInteractionOptions extends RequirementStoreOptions {
   authorizeAction: (request: InteractionAuthorization) => boolean;
   /** 可信服务提供已核对的当前正文与候选准确diff；不能直接接模型工具传入的解释结论。 */
   loadContext: (requirementId: string, signal: AbortSignal) => Promise<InteractionContext>;
-  inputTtlMs?: number;
 }
 /** 仅对象身份有效，不可从JSON重建，不向模型工具暴露。 */
 export interface InteractionCapability { readonly kind: "interaction-capability" }
@@ -62,7 +61,7 @@ const Input = object({ source: Type.Literal("interactive"), text: Type.String({ 
 const Session = object({ sessionId: Type.String({ minLength: 1, maxLength: 128 }), windowId: Type.String({ minLength: 1, maxLength: 128 }) });
 const QUESTIONS = "interaction_questions_v1";
 interface ActiveInput {
-  ticket: InputTicket; text: string; expiresAt: number; controller: AbortController; used: boolean; reconsiderations: number;
+  ticket: InputTicket; text: string; controller: AbortController; used: boolean; reconsiderations: number;
 }
 interface Verified {
   capability: InteractionCapability; input: ActiveInput; context: InteractionContext; model: InteractionModelIdentity;
@@ -110,12 +109,9 @@ export class UserInteractionCore {
   #resave: CandidateResave | undefined;
   #saving: Verified | undefined;
   #authorizing = false;
-  #timer: ReturnType<typeof setTimeout> | undefined;
   #seen = new WeakSet<object>();
-  readonly #ttl: number;
   private constructor(options: UserInteractionOptions, state: RequirementStateStore) {
-    this.#options = { ...options }; this.#state = state; this.#ttl = options.inputTtlMs ?? 900_000;
-    if (!Number.isSafeInteger(this.#ttl) || this.#ttl <= 0 || this.#ttl > 900_000) throw new UserInteractionError("invalid_ttl");
+    this.#options = { ...options }; this.#state = state;
   }
   static async open(options: UserInteractionOptions): Promise<UserInteractionCore> {
     const core = new UserInteractionCore(options, await RequirementStateStore.open(options));
@@ -128,23 +124,19 @@ export class UserInteractionCore {
   clearInput(): void {
     const input = this.#input;
     this.#input = undefined; this.#verified = undefined; this.#saving = undefined; this.#resave = undefined;
-    if (this.#timer) clearTimeout(this.#timer); this.#timer = undefined;
     if (input) { input.text = ""; input.controller.abort(); }
   }
   shutdown(): void { this.clearInput(); this.#session = undefined; }
   /** 宿主在closing/epoch更新/显式撤权时立即调用；各次操作仍独立查真实状态。 */
   revoke(): void { this.clearInput(); }
-  captureInput(event: { source: string; text: string }, sessionId: string, deadline?: number): InputTicket {
+  captureInput(event: { source: string; text: string }, sessionId: string): InputTicket {
     this.clearInput(); this.#requireSession(sessionId);
     if (!event || typeof event !== "object" || this.#seen.has(event)) throw new UserInteractionError("input_reentry");
     this.#seen.add(event);
     const checkedInput = checkInteraction(Input, event);
     if (!checkedInput.text.trim()) throw new UserInteractionError("empty_input");
     const ticket: InputTicket = Object.freeze({ kind: "host-input-ticket" });
-    const now = this.#now(), expiresAt = checked(counter, Math.min(now + this.#ttl, deadline ?? now + this.#ttl));
-    if (expiresAt <= now) throw new UserInteractionError("input_expired");
-    this.#input = { ticket, text: checkedInput.text, expiresAt, controller: new AbortController(), used: false, reconsiderations: 0 };
-    this.#timer = setTimeout(() => this.clearInput(), expiresAt - now); this.#timer.unref();
+    this.#input = { ticket, text: checkedInput.text, controller: new AbortController(), used: false, reconsiderations: 0 };
     return ticket;
   }
   /** 问题是未生效的简短提议。答复与修订由短决策的requestId引用和supersedes表达。 */
@@ -228,7 +220,7 @@ export class UserInteractionCore {
         subjects: result.entries.map((e) => ({ actor: ["ai-choice", "suggestion"].includes(e.kind) ? "ai" : "user",
           status: confirmed(e) ? "confirmed" : "pending", basisReceiptId: confirmed(e) ? receiptId : null })) };
       const capability: InteractionCapability = Object.freeze({ kind: "interaction-capability" });
-      // 完整候选正文只用于本次模型输入；能力仅保留分区与审核元数据。原输入按TTL留在有界内存供宿主重解释。
+      // 完整候选正文只用于本次模型输入；能力仅保留分区与审核元数据。
       const retained = context.document ? frozen({ ...context, currentGoal: "", candidates: context.candidates.map((c) => ({ ...c, diff: "" })),
         document: { ...context.document, title: "", body: "" } }) : context;
       this.#verified = { capability, input, context: retained, model, result, batch: frozen(batch), admission: frozen(admission), receiptId, inputProof };
@@ -477,7 +469,7 @@ export class UserInteractionCore {
   }
   #currentInput(): ActiveInput {
     this.#requireSession(); const input = this.#input;
-    if (!input || input.expiresAt <= this.#now() || input.controller.signal.aborted) { this.clearInput(); throw new UserInteractionError("input_expired"); }
+    if (!input || input.controller.signal.aborted) { this.clearInput(); throw new UserInteractionError("input_unavailable"); }
     return input;
   }
   #assertInput(input: ActiveInput): void { if (this.#currentInput() !== input) throw new UserInteractionError("input_changed"); }

@@ -177,13 +177,12 @@ test("存在短决定和工具自填结论都不能直接得到admit；修改返
   const store = await ShortDecisionStore.open(w.options);
   expect(() => store.append(JSON.stringify({ ...w.basis, operationId: uuidv7(), decisions: [{ conclusion: "推送", scope: "全部", references: [], supersedes: [] }] }))).toThrow(/trusted_admission_required/);
 });
-for (const revoke of ["clear", "shutdown", "switch", "expiry", "closing", "model", "permission"] as const) test(`${revoke}后旧能力不可用，closing不加载正文`, async () => {
+for (const revoke of ["clear", "shutdown", "switch", "closing", "model", "permission"] as const) test(`${revoke}后旧能力不可用，closing不加载正文`, async () => {
   const w = await documentWorld(); const { capability } = await w.interpret(); w.core.save(capability);
   expect(w.core.authorizeDocument(capability, w.binding())).not.toBeNull();
   if (revoke === "clear") w.core.revoke();
   if (revoke === "shutdown") w.core.shutdown();
   if (revoke === "switch") w.core.startSession({ sessionId: "new-session", windowId: "window" });
-  if (revoke === "expiry") w.setNow(1_900_000);
   if (revoke === "model") w.setModel({ ...model, id: "changed" });
   if (revoke === "permission") w.setAllowed(false);
   if (revoke === "closing") {
@@ -191,6 +190,23 @@ for (const revoke of ["clear", "shutdown", "switch", "expiry", "closing", "model
     w.loader.mockClear(); await expect(w.interpret()).rejects.toThrow(); expect(w.loader).not.toHaveBeenCalled();
   }
   expect(w.core.authorizeDocument(capability, w.binding())).toBeNull();
+});
+test("原话没有时间期限：收下两小时后（时钟与计时器都推进）仍能解读、保存并得到批准清单", async () => {
+  vi.useFakeTimers();
+  try {
+    const w = await documentWorld(), ticket = w.capture();
+    w.setNow(1_000_000 + 7_200_000); await vi.advanceTimersByTimeAsync(7_200_000);
+    const { capability } = await w.core.interpret(ticket, w.basis.requirementId); w.core.save(capability);
+    expect(w.core.authorizeDocument(capability, w.binding())).not.toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+test("原话没有时间期限：解读保存后过两小时，批准清单仍可用", async () => {
+  vi.useFakeTimers();
+  try {
+    const w = await documentWorld(), { capability } = await w.interpret(); w.core.save(capability);
+    w.setNow(1_000_000 + 7_200_000); await vi.advanceTimersByTimeAsync(7_200_000);
+    expect(w.core.authorizeDocument(capability, w.binding())).not.toBeNull();
+  } finally { vi.useRealTimers(); }
 });
 for (const race of ["input", "session", "closing", "version", "revoke", "model"]) test(`异步解释期间${race}变化，迟到结果不保存或签发能力`, async () => {
   const w = await world(); let settle!: (value: string) => void, entered!: () => void;
@@ -531,11 +547,10 @@ test("没有受控permit的外部重存不能重解释，也不能用JSON伪造p
   expect(texts).toEqual([]); expect(w.core.authorizeDocument(previous.capability, w.binding())).toBeNull();
   w.core.revoke(); await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow();
 });
-for (const change of ["revoke", "expiry", "input", "resave"] as const) test(`无permit的外部重存经${change}不能启动模型或写决定`, async () => {
+for (const change of ["revoke", "input", "resave"] as const) test(`无permit的外部重存经${change}不能启动模型或写决定`, async () => {
   const w = await documentWorld(), ticket = w.capture(); await w.core.interpret(ticket, w.basis.requirementId); w.resave();
   let calls = 0; w.setImplementation(async () => { calls++; return JSON.stringify(w.output()); });
   if (change === "revoke") w.core.revoke();
-  if (change === "expiry") w.setNow(1_900_000);
   if (change === "input") w.capture("真正新的输入");
   if (change === "resave") w.resave();
   await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(); expect(calls).toBe(0); expect(w.records()).toEqual([]);

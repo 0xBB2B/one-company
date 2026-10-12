@@ -31,9 +31,9 @@ async function world(active: boolean) {
   const runtime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, refreshOnCreate: false });
   const provider = registerControlledProvider(runtime, { providerId: uuidv7(), modelId: "fixture" });
   const ctx = { cwd: repo, isProjectTrusted: () => false, modelRegistry: new ModelRegistry(runtime), model: runtime.getModels(provider.providerId)[0], sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
-  let onResolve: (() => void) | undefined, onNow: (() => void) | undefined, now = Date.now();
+  let onResolve: (() => void) | undefined;
   const interaction = new MainRequirementInteraction({ dataRoot, authorization,
-    now: () => { const value = now; onNow?.(); return value; }, resolveHost: () => {
+    resolveHost: () => {
     onResolve?.();
     return { windowId, sessionId, repositories: new Map([[repoId, { path: repo }]]) };
   } });
@@ -64,8 +64,7 @@ async function world(active: boolean) {
     expect(second.readDecision(requirementId, superseded).status).toBe("superseded");
   };
   return { call, ctx, interaction, params, id, response, supersede, dataRoot, repoId, requirementId, authorization,
-    onResolve(callback: () => void) { onResolve = callback; }, onNow(callback: () => void) { onNow = callback; },
-    advance(ms: number) { now += ms; } };
+    onResolve(callback: () => void) { onResolve = callback; } };
 }
 test("未激活登记结果：真实第二Core取代后，原对象、tool_result交付和缓存都拒绝", async () => {
   const w = await world(false);
@@ -92,34 +91,6 @@ test.each([false, true])("最后宿主回调撤权拒绝原交付及缓存（act
   expect(() => w.interaction.assertResultCurrent(w.response.details!, w.ctx)).toThrow();
   await expect(w.call(w.params)).rejects.toThrow();
 });
-
-test.each([false, true])("最后宿主回调跨越deadline时原交付立即拒绝（active=%s）", async (active) => {
-  const w = await world(active); let calls = 0;
-  w.onResolve(() => { if (++calls === 2) w.advance(900_001); });
-  expect(() => w.interaction.assertDelivery(w.id, w.ctx)).toThrow();
-  expect(calls).toBe(2);
-  expect(() => w.interaction.assertResultCurrent(w.response.details!, w.ctx)).toThrow();
-});
-
-for (const boundary of ["original", "delivery"] as const) test.each([false, true])(
-  `最后now回调同步耗时跨deadline时${boundary}首次即拒绝（active=%s）`, async (active) => {
-    const w = await world(active);
-    w.interaction.assertResultCurrent(w.response.details!, w.ctx);
-    if (boundary === "delivery") {
-      let resolves = 0;
-      w.onResolve(() => { if (++resolves === 2) w.advance(899_980); });
-    } else w.advance(899_980);
-    let calls = 0;
-    const lastCall = boundary === "delivery" ? 2 : 1;
-    w.onNow(() => {
-      if (++calls !== lastCall) return;
-      w.advance(60);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60);
-    });
-    expect(() => boundary === "delivery" ? w.interaction.assertDelivery(w.id, w.ctx)
-      : w.interaction.assertResultCurrent(w.response.details!, w.ctx)).toThrow(/stale_result/);
-    expect(calls).toBe(lastCall);
-  });
 
 test.each([false, true])("显式撤权使持有的原结果对象失效（active=%s）", async (active) => {
   const w = await world(active);

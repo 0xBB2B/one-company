@@ -31,7 +31,6 @@ async function fixture(ready = true, shared = false) {
   const options = { repositoryRoot: repo.root, dataRoot: join(root, "data"), repoId: identity.repoId};
   // 夹具宿主持有专用service/state句柄。此处仅fixture资源访问许可；真正批准另外核验Core对象能力。
   const access = { live: true };
-  const clock = { now: Date.now() };
   const service = await RequirementService.open({ ...options, authorize: (r) => access.live && r.repoId === identity.repoId });
   const state = await RequirementStateStore.open({ ...options, authorize: (r) => access.live && r.repoId === identity.repoId });
   const input = { requestId: uuidv7(), operationId: uuidv7(), title: "渐进登录", body: "# 手机号 {#A}\r\n实施手机号登录。😀\r\n# 微信 {#B}\r\n微信细节未决，不实施。\r\n" };
@@ -47,7 +46,7 @@ async function fixture(ready = true, shared = false) {
   const operationId = uuidv7();
   const load = () => service.loadConfirmationContext({ requirementId: saved.requirementId, savedOperationId: saved.operationId, operationId });
   let context = await load();
-  const core = await UserInteractionCore.open({ ...options, now: () => clock.now,
+  const core = await UserInteractionCore.open({ ...options,
     authorize: (r) => access.live && r.repoId === identity.repoId,
     authorizeAction: (r) => access.live && r.repoId === identity.repoId && r.basis.requirementId === saved.requirementId &&
       decisionDigest(r.candidate) === decisionDigest(context.candidate) && ["authorize-document", "implement"].includes(r.action),
@@ -103,7 +102,7 @@ async function fixture(ready = true, shared = false) {
     receiptId: authorized.authorization.receiptId, manifest: approvalManifestReference(authorized.manifest) });
   const dbPath = repositoryDatabase(options.dataRoot, options.repoId);
   const db = <T>(fn: (db: LocalDatabase) => T) => withDatabase(dbPath, fn);
-  return { options, input, saved, state, workspace, core, interpreted, document, context, service, approver, store, storeOptions, confirm, load, db, dbPath, access, clock, binding };
+  return { options, input, saved, state, workspace, core, interpreted, document, context, service, approver, store, storeOptions, confirm, load, db, dbPath, access, binding };
 }
 
 for (const change of ["superseded", "modified", "missing"] as const) test(`真实原约束→单题短答→register/ready confirm/read；原来源${change}使范围失效`, async () => {
@@ -322,14 +321,6 @@ test("状态普通授权回调中的撤权必须先于最后Core核验，不能�
     receiptId: f.confirm().receiptId, reference: f.context.saved, manifest: ref })).rejects.toMatchObject({ code: "manifest_authorization_required" });
   expect(f.state.read(f.saved.requirementId).data.approved).toBeNull();
   expect(f.state.events(f.saved.requirementId).filter((e) => e.data.kind === "prod.approved")).toHaveLength(0);
-});
-
-test("输入能力TTL过期后已存manifest不能变成批准", async () => {
-  const f = await fixture(); await f.store.register(f.document()!.manifest);
-  f.clock.now += 900_001;
-  expect(f.document()).toBeNull();
-  await expect(f.approver.confirmUpdate(f.confirm())).rejects.toMatchObject({ code: "manifest_authorization_required" });
-  expect(f.state.read(f.saved.requirementId).data.approved).toBeNull();
 });
 
 test("活动候选diff使用准确已批准到saved提交，不用最近两个Git提交", async () => {

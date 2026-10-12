@@ -5,7 +5,6 @@ import { askRecordText } from "./ask-question.ts";
 import type { AskQuestion } from "./ask-question.ts";
 import { randomBytes } from "node:crypto";
 import { adviceOf } from "./tool-failure.ts";
-import { performance } from "node:perf_hooks";
 import type { Context } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostAuthorizationError, HostAuthorizationManager } from "./host-authorization.ts";
@@ -50,12 +49,11 @@ export interface MainRequirementInteractionOptions {
   /** 同步读取真实lifecycle，不以调用者参数或旧闭包中的cwd/role代替身份。 */
   resolveHost: (ctx: ExtensionContext) => RequirementManageHostContext;
   openService?: OpenRequirementService;
-  inputTtlMs?: number;
   now?: () => number;
 }
 interface CapturedInput {
   event: { source: "interactive"; text: string };
-  sessionId: string; expiresAt: number; abort: AbortController;
+  sessionId: string; abort: AbortController;
   /** 用户在主代理的提问窗口里作答：只算回答，不能当作批准或裁决。 */
   fromQuestionWindow?: true;
   /** 针对面板事项、选项文字由程序固定的窗口回答：只能登记为这一个决定。 */
@@ -72,11 +70,10 @@ type ResultScope = { kind: "registered"; proof: RegisteredScopeReturnProof } | {
 interface HostResultProof {
   repoId: string; record: StoredRecord<RequirementRecord>; resultHash: string; rows: RecordProof[]; scope: ResultScope;
   sessionId: string; windowId: string; manager: object; repositoryPath: string;
-  generation: number; authorizationGeneration: number; expiresAt: number;
+  generation: number; authorizationGeneration: number;
 }
 interface ResultCheck {
   resultHash: string; manager: object; sessionId: string; windowId: string; repositoryPath: string | undefined;
-  now: number; monotonicAt: number; wallAt: number;
 }
 interface Cursor { request: ReadRequest; version: number; epoch: number; offset: number; expiresAt: number }
 export interface MentionTarget { readonly repoId: string; readonly requirementId: string; readonly title: string }
@@ -113,7 +110,6 @@ export class MainRequirementInteraction {
   readonly #options: MainRequirementInteractionOptions;
   readonly #authorization: HostAuthorizationManager;
   #input: CapturedInput | undefined;
-  #timer: ReturnType<typeof setTimeout> | undefined;
   #core: UserInteractionCore | undefined;
   #coreRepo: string | undefined;
   #coreRequirement: string | undefined;
@@ -140,8 +136,6 @@ export class MainRequirementInteraction {
   readonly #completed = new Map<string, { requestHash: string; result: Record<string, unknown>; repoId: string }>();
   constructor(options: MainRequirementInteractionOptions) {
     this.#options = { ...options }; this.#authorization = options.authorization;
-    const ttl = options.inputTtlMs ?? 900_000;
-    if (!Number.isSafeInteger(ttl) || ttl <= 0 || ttl > 900_000) denied("invalid_ttl");
     this.#unsubscribeHost = this.#authorization.onRevoke(() => this.revoke());
   }
   #now() { return this.#options.now?.() ?? Date.now(); }
@@ -155,7 +149,6 @@ export class MainRequirementInteraction {
     this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#candidate = undefined; this.#adjudication = undefined; this.#resave = undefined;
     const input = this.#input; this.#input = undefined;
     if (input) { input.event.text = ""; input.abort.abort(); }
-    if (this.#timer) clearTimeout(this.#timer); this.#timer = undefined;
     this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
     this.#cursors.clear(); this.#deliveries.clear(); this.#completed.clear(); this.#failedOperations.clear();
   }
@@ -169,10 +162,8 @@ export class MainRequirementInteraction {
     this.#authorization.assertCurrentSession(sessionId);
     if (event.source !== "interactive") return { invalid: [] };
     if (typeof event.text !== "string" || !event.text.trim() || Buffer.byteLength(event.text) > 32_768) return { invalid: [] };
-    const expiresAt = this.#now() + (this.#options.inputTtlMs ?? 900_000);
-    this.#input = { event: { source: event.source, text: event.text }, sessionId: sessionId, expiresAt, abort: new AbortController() };
+    this.#input = { event: { source: event.source, text: event.text }, sessionId: sessionId, abort: new AbortController() };
     this.#ctx = ctx;
-    this.#timer = setTimeout(() => this.#clearInput(), expiresAt - this.#now()); this.#timer.unref();
     const mentions = parseMentions(event.text);
     if (!mentions.length) return { invalid: [] };
     const listed = this.#authorization.listRequirements(sessionId), invalid: InvalidMention[] = [], targets: MentionTarget[] = [];
@@ -252,7 +243,7 @@ export class MainRequirementInteraction {
   }
   #currentInput(ctx: ExtensionContext): CapturedInput {
     const input = this.#input;
-    if (!input || input.sessionId !== this.#host(ctx).sessionId || input.abort.signal.aborted || input.expiresAt <= this.#now()) denied("current_input_required");
+    if (!input || input.sessionId !== this.#host(ctx).sessionId || input.abort.signal.aborted) denied("current_input_required");
     return input;
   }
   #snapshot(host: RequirementManageHostContext, repoId: string, requirementId: string, active = true) {
@@ -304,8 +295,7 @@ export class MainRequirementInteraction {
       }
       const proof: HostResultProof = { repoId, record: structuredClone(record), resultHash: material.resultHash, rows: allRows, scope: structuredClone(actualScope),
         sessionId: material.sessionId, windowId: material.windowId, manager: material.manager,
-        repositoryPath: material.repositoryPath ?? "", generation, authorizationGeneration,
-        expiresAt: this.#input?.expiresAt ?? material.now + 30_000 };
+        repositoryPath: material.repositoryPath ?? "", generation, authorizationGeneration };
       this.#checkProof(db, proof);
       this.#assertResultBinding(proof, material);
       this.#proofs.set(result, proof);
@@ -315,14 +305,11 @@ export class MainRequirementInteraction {
   #resultCheck(result: object, ctx: ExtensionContext, host: RequirementManageHostContext, repoId: string): ResultCheck {
     const resultHash = digest(result), manager = ctx.sessionManager;
     const sessionId = host.sessionId, windowId = host.windowId, repositoryPath = host.repositories.get(repoId)?.path;
-    // 耗时从注入式时钟调用前计起；允许保守提前拒绝，不能漏算回调耗时。
-    const monotonicAt = performance.now(), wallAt = Date.now(), now = this.#now();
-    return { resultHash, manager, sessionId, windowId, repositoryPath, now, monotonicAt, wallAt };
+    return { resultHash, manager, sessionId, windowId, repositoryPath };
   }
   #assertResultBinding(proof: HostResultProof, check: ResultCheck): void {
     this.#authorization.assertRepository(proof.repoId, check.sessionId);
-    const now = check.now + Math.max(0, performance.now() - check.monotonicAt, Date.now() - check.wallAt);
-    if (!Number.isFinite(now) || proof.expiresAt <= now || check.resultHash !== proof.resultHash || check.manager !== proof.manager
+    if (check.resultHash !== proof.resultHash || check.manager !== proof.manager
       || check.sessionId !== proof.sessionId || check.windowId !== proof.windowId || check.repositoryPath !== proof.repositoryPath
       || this.#generation !== proof.generation || this.#authorization.generation !== proof.authorizationGeneration) denied("stale_result");
   }
@@ -390,7 +377,6 @@ export class MainRequirementInteraction {
     };
     const core = await UserInteractionCore.open({ dataRoot: this.#options.dataRoot, repositoryRoot: repository.path, repoId,
       interpreter, authorize, now: this.#options.now,
-      inputTtlMs: input ? Math.max(1, input.expiresAt - this.#now()) : this.#options.inputTtlMs,
       authorizeAction: (request: InteractionAuthorization) => {
         try { this.#live(ctx, host, generation); this.#snapshot(host, repoId, requirementId);
           return request.repoId === repoId && request.basis.requirementId === requirementId;
@@ -422,9 +408,9 @@ export class MainRequirementInteraction {
       } });
     try {
       this.#live(ctx, host, generation);
-      if (input !== this.#input || input && (input.abort.signal.aborted || input.expiresAt <= this.#now())) denied("input_changed");
+      if (input !== this.#input || input && input.abort.signal.aborted) denied("input_changed");
       core.startSession({ sessionId: host.sessionId, windowId: host.windowId });
-      if (input) this.#ticket = core.captureInput(input.event, host.sessionId, input.expiresAt);
+      if (input) this.#ticket = core.captureInput(input.event, host.sessionId);
       const state = await RequirementStateStore.open({ dataRoot: this.#options.dataRoot, repositoryRoot: repository.path, repoId, authorize });
       this.#live(ctx, host, generation);
       if (input !== this.#input) denied("input_changed");
@@ -742,16 +728,13 @@ export class MainRequirementInteraction {
   #adoptQuestionAnswer(text: string, host: RequirementManageHostContext, ctx: ExtensionContext, panelDecision?: { itemId: string; itemVersion: string }): void {
     const previous = this.#input;
     if (previous) { previous.event.text = ""; previous.abort.abort(); }
-    if (this.#timer) clearTimeout(this.#timer);
     // 和用户新说一句话一样换掉解释核心，下次用到时按这句回答重新签发输入凭据
     this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined; this.#coreRequirement = undefined;
     this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
     this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
-    const expiresAt = this.#now() + (this.#options.inputTtlMs ?? 900_000);
-    this.#input = { event: { source: "interactive", text }, sessionId: host.sessionId, expiresAt, abort: new AbortController(), fromQuestionWindow: true,
+    this.#input = { event: { source: "interactive", text }, sessionId: host.sessionId, abort: new AbortController(), fromQuestionWindow: true,
       ...(panelDecision ? { panelDecision } : {}) };
     this.#inputTargets = []; this.#addressed.clear(); this.#ctx = ctx;
-    this.#timer = setTimeout(() => this.#clearInput(), expiresAt - this.#now()); this.#timer.unref();
   }
   async metadata(ctx: ExtensionContext, repoId: string, requirementId: string) {
     const before = this.#snapshot(this.#host(ctx), repoId, requirementId, false);

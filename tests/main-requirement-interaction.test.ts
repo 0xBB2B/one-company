@@ -37,7 +37,7 @@ const BODY = "## 背景 {#background}\n用户未说明。\n## 需求 {#requireme
 const FRAME = ["metadata", "background", "requirements", "features", "implementation", "acceptance"];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function git(cwd: string, args: string[]) { return (await exec("git", args, { cwd })).stdout.trim(); }
-async function world(options: Pick<MainRequirementInteractionOptions, "now" | "inputTtlMs"> = {}) {
+async function world(options: Pick<MainRequirementInteractionOptions, "now"> = {}) {
   const root = await mkdtemp(join(temporaryRoot(), "host-interaction-")), repositoryRoot = join(root, "repo"), dataRoot = join(root, "data");
   await mkdir(repositoryRoot); await mkdir(dataRoot); await git(repositoryRoot, ["init", "--initial-branch=main"]);
   await writeFile(join(repositoryRoot, "README.md"), "fixture\n"); await git(repositoryRoot, ["add", "README.md"]);
@@ -48,10 +48,10 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
   const provider = registerControlledProvider(runtime, { providerId: `host-${uuidv7()}`, modelId: "controlled" });
   const registry = new ModelRegistry(runtime), model = runtime.getModels(provider.providerId)[0]!;
   const notifications: string[] = [], windows: ShownWindow[] = [];
-  let windowAnswer: WindowDecision = true;
+  let windowAnswer: WindowDecision = true, beforeAnswer: (() => Promise<void>) | undefined;
   const ctx = { cwd: repositoryRoot, mode: "tui", hasUI: true, isProjectTrusted: () => false, modelRegistry: registry, model,
     ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); },
-      ...answeringUi((window) => { windows.push(window); return windowAnswer; }) },
+      ...answeringUi(async (window) => { windows.push(window); await beforeAnswer?.(); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   let reachable = true;
   const interaction = new MainRequirementInteraction({ ...options, dataRoot, authorization,
@@ -80,7 +80,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "i
   };
   const setReachable = (value: boolean) => { reachable = value; };
   return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable,
-    windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; } };
+    windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; }, beforeAnswer: (hook: () => Promise<void>) => { beforeAnswer = hook; } };
 }
 /** 明确fixture语义输出；调用仍经过真实ModelRegistry/provider与生产解释适配器。 */
 function phoneReview(c: Pick<ConfirmationContext, "candidate" | "partition">, action: "analyze" | "implement" = "analyze"): Static<typeof ModelInterpretation> {
@@ -454,9 +454,9 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await expect(w.call({ action: "confirmUpdate", requirementId: input.requirementId, version: updated.version, savedOperationId: updated.operationId, operationId: uuidv7() })).rejects.toThrow();
     expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.events(`requirement_events:${input.requirementId}`).filter((e) => (e.data as { kind: string }).kind === "prod.approved"))).toEqual([]);
   });
-  test("一次真实输入完成modify-resave-reinterpret；旧capability立即失效，三次上限和原TTL均保留", async () => {
+  test("一次真实输入完成modify-resave-reinterpret；旧capability立即失效，三次上限保留", async () => {
     let now = 1000;
-    const w = await world({ now: () => now, inputTtlMs: 100_000 });
+    const w = await world({ now: () => now });
     await plainInternalModels(w.root);
     const created = await w.create(), captured: unknown[] = [], texts: string[] = [];
     const capture = vi.spyOn(UserInteractionCore.prototype, "captureInput");
@@ -503,17 +503,16 @@ describe("主窗口共享控制器的真实服务路径", () => {
         now += 1000;
       }
       expect(reviewedDocuments).toBe(4);
-      expect(capture).toHaveBeenCalledTimes(1); expect(capture.mock.calls[0]![2]).toBe(101000);
+      expect(capture).toHaveBeenCalledTimes(1);
       expect(captured).toHaveLength(3); expect(captured.every((ticket) => ticket === captured[0])).toBe(true);
       expect(texts.every((text) => text === PHONE)).toBe(true);
       const directory = join(w.dataRoot, "repos", w.repoId, "requirements", String(created.requirementId));
       expect(await git(directory, ["rev-list", "--count", "HEAD"])).toBe("4");
-      now = 101000; await expect(w.call({ action: "confirmUpdate", ...inputFor(saved) })).rejects.toMatchObject({ code: "current_input_required" });
     } finally { capture.mockRestore(); complete.mockRestore(); prepare.mockRestore(); interpreted.mockRestore(); }
   });
-  for (const change of ["revoke", "expiry", "input", "resave"] as const) test(`受控重解释在模型等待期间${change}拒绝迟到结果`, async () => {
+  for (const change of ["revoke", "input", "resave"] as const) test(`受控重解释在模型等待期间${change}拒绝迟到结果`, async () => {
     let now = 1000;
-    const w = await world({ now: () => now, inputTtlMs: 100_000 }), created = await w.create(), first = await w.request(created), review = phoneReview(first.loaded);
+    const w = await world({ now: () => now }), created = await w.create(), first = await w.request(created), review = phoneReview(first.loaded);
     review.faithful = false; review.entries[1]!.resolution = "modify"; review.entries.splice(5, 1);
     scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }]); await w.call({ action: "confirmUpdate", ...first.input });
     scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
@@ -525,7 +524,6 @@ describe("主窗口共享控制器的真实服务路径", () => {
     while (w.provider.requests.length === count && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1));
     expect(w.provider.requests.length).toBe(count + 1);
     if (change === "revoke") w.authorization.revoke();
-    if (change === "expiry") now = 101000;
     if (change === "input") w.capture("新的真实输入");
     if (change === "resave") await w.service.updateDraft({ requirementId: next.input.requirementId, version: next.input.version, operationId: uuidv7(), title: "登录", body: BODY + "外部更新。\n" });
     await rejected; await new Promise((r) => setTimeout(r, 510));
@@ -629,8 +627,8 @@ test("批准时生成批准范围这一步出错，如实报错，不说成草�
 const SMS_ASK = { question: "短信验证码有效期选哪种？", rootCheck: "要定的是验证码多久失效，而不是另加重发限制",
   choices: [{ label: "5 分钟", reason: "更安全", recommended: true, recommendedReason: "常见做法，够用户收短信" }, { label: "10 分钟", reason: "信号差也来得及，但更容易被盗用" }],
   scope: "仅短信验证码期限", actions: ["analyze"] };
-async function askedWorld() {
-  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+async function askedWorld(options: Parameters<typeof world>[0] = {}) {
+  const w = await world(options), created = await w.create(), { input, loaded } = await w.request(created);
   const ask = (answer: WindowDecision, extra: Record<string, unknown> = {}) => {
     w.capture(); w.answerWindows(answer);
     return w.call({ action: "ask", ...input, operationId: uuidv7(), ...SMS_ASK, unitIds: [loaded.partition.units[1]!.id], ...extra }, true);
@@ -651,6 +649,53 @@ test("M8D-AC9：登记问题后弹出提问窗口，用户选推荐项，主代�
   scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
   await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
   expect(verifierText(w)).toBe("选第 1 项：5 分钟（推荐）");
+});
+
+const TWO_HOURS = 7_200_000;
+test("原话没有时间期限：截获两小时后（时钟与计时器都推进），依赖当前原话的批准仍成功", async () => {
+  let now = 1000;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const w = await world({ now: () => now }), created = await w.create(), { input, loaded } = await w.request(created);
+    w.capture("同意");
+    now += TWO_HOURS; await vi.advanceTimersByTimeAsync(TWO_HOURS);
+    vi.useRealTimers();
+    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ targetRecorded: true, prodActivated: true });
+  } finally { vi.useRealTimers(); }
+});
+test("工具结果凭证不按时间失效：同一 operationId 隔两小时重调，仍原样返回缓存结果而不是 stale_result", async () => {
+  let now = 1000;
+  const w = await world({ now: () => now }), created = await w.create();
+  w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  const update = { action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
+    summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" };
+  const first = await w.call(update);
+  now += TWO_HOURS;
+  const replay = await w.manage.execute(uuidv7(), { request: { repoId: w.repoId, ...update } } as never, undefined, undefined, w.ctx);
+  expect(replay.details).toEqual(first);
+});
+test("提问窗口开着两小时后才回答：ask 返回 answered，不报 stale_host，送达核对通过", async () => {
+  let now = 1000;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const { w, ask } = await askedWorld({ now: () => now });
+    w.beforeAnswer(async () => { now += TWO_HOURS; await vi.advanceTimersByTimeAsync(TWO_HOURS); vi.useRealTimers(); });
+    const result = await ask("5 分钟");
+    expect(result).toMatchObject({ status: "answered", answer: { text: "选第 1 项：5 分钟（推荐）", choice: 1 } });
+  } finally { vi.useRealTimers(); }
+});
+test("提问窗口两小时后回答的话成为新的原话，之后立即可用于更新草稿", async () => {
+  let now = 1000;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const { w, input, ask } = await askedWorld({ now: () => now });
+    w.beforeAnswer(async () => { now += TWO_HOURS; await vi.advanceTimersByTimeAsync(TWO_HOURS); vi.useRealTimers(); });
+    await ask("5 分钟");
+    scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
+    expect(verifierText(w)).toBe("选第 1 项：5 分钟（推荐）");
+  } finally { vi.useRealTimers(); }
 });
 
 test("M8D-AC9：在其他里自己输入的文字原样当作用户原话；Esc 暂不回答时问题仍未决，不记新的原话", async () => {
