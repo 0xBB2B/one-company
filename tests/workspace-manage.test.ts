@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { uuidv7, withDatabase, repositoryDatabase } from "../runtime/database.ts";
@@ -20,10 +20,10 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 const BODY = "# 目标 {#goals}\n保留移动。\n";
 const exists = (path: string) => lstat(path).then(() => true, () => false);
 
-async function world(options: { draft?: boolean } = {}) {
+async function world(options: { draft?: boolean; emptyRepo?: boolean } = {}) {
   const root = await mkdtemp(join(temporaryRoot(), "workspace-manage-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
+  const repo = await createRepoFixture({ empty: options.emptyRepo }); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
   const paths = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId };
   const grants = new Map<string, { action: string; intent: string; receiptId?: string }>();
@@ -78,6 +78,45 @@ test("M7-AC10：创建须真实确认；拒绝则不建分支、目录或记录"
   await expect(runGit(["rev-parse", "--verify", w.location.branch], w.repo.root)).rejects.toThrow();
   expect(w.workspace.read(w.requirementId)).toBeNull();
 });
+
+test("空仓库开工：确认窗口说明将建 init 空提交，确认后以它为基线建工作区，已暂存的文件仍留在暂存区", async () => {
+  const w = await world({ emptyRepo: true });
+  await writeFile(join(w.repo.root, "staged.txt"), "staged\n");
+  await runGit(["add", "staged.txt"], w.repo.root);
+  const prepared = await w.workspace.prepare({ requirementId: w.requirementId, operationId: uuidv7() });
+  expect(w.prompts[0]!.lines.map((line) => line.text)).toContain("基线提交：仓库还没有任何提交，确认后先在 main 分支上建一个空提交（说明为 init）作为基线");
+  expect((await runGit(["log", "--format=%s", "main"], w.repo.root)).trim()).toBe("init");
+  const init = (await runGit(["rev-parse", "main"], w.repo.root)).trim();
+  expect((await runGit(["ls-tree", init], w.repo.root)).trim()).toBe("");
+  expect(await runGit(["status", "--porcelain=v1"], w.repo.root)).toBe("A  staged.txt\n");
+  expect(prepared).toMatchObject({ status: "ready", baseCommit: init });
+  expect((await runGit(["rev-parse", "HEAD"], w.location.path)).trim()).toBe(init);
+}, 30000);
+
+test("M7-AC10：空仓库开工被拒时不建 init 提交、分支、目录或记录", async () => {
+  const w = await world({ emptyRepo: true });
+  w.setAnswer(false);
+  await expect(w.workspace.prepare({ requirementId: w.requirementId, operationId: uuidv7() })).rejects.toMatchObject({ code: "declined" });
+  await expect(runGit(["rev-parse", "--verify", "HEAD"], w.repo.root)).rejects.toThrow();
+  expect(await runGit(["for-each-ref", "refs/heads"], w.repo.root)).toBe("");
+  expect(await exists(w.location.path)).toBe(false);
+  expect(w.workspace.read(w.requirementId)).toBeNull();
+}, 30000);
+
+test("空仓库开工时没配 Git 用户名和邮箱，报出 Git 的原因，不建分支、目录或记录", async () => {
+  const w = await world({ emptyRepo: true });
+  await runGit(["config", "user.useConfigOnly", "true"], w.repo.root);
+  for (const name of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"]) vi.stubEnv(name, undefined);
+  vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null"); vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+  try {
+    const error = await w.workspace.prepare({ requirementId: w.requirementId, operationId: uuidv7() }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "git_failed" });
+    expect((error as Error).message).toMatch(/git commit-tree --no-gpg-sign：[\s\S]*no email was given/);
+  } finally { vi.unstubAllEnvs(); }
+  expect(await runGit(["for-each-ref", "refs/heads"], w.repo.root)).toBe("");
+  expect(await exists(w.location.path)).toBe(false);
+  expect(w.workspace.read(w.requirementId)).toBeNull();
+}, 30000);
 
 test("M7-AC10：创建按 UUID 分支与固定目录建立 worktree 并绑定需求，基线为主仓库 HEAD", async () => {
   const w = await world();

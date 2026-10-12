@@ -17,7 +17,7 @@ import { sessionFilePath } from "../../runtime/session-records.ts";
 import type { RunRecord } from "../../runtime/run-store.ts";
 import { acceptanceConfig, copyCredentials, installProduct, PROTOTYPE_ACCEPT, startInstalledHost, stubSystemOpen } from "./helpers/installed-host.ts";
 import type { InstalledHost } from "./helpers/installed-host.ts";
-import { createSampleProject } from "./helpers/sample-project.ts";
+import { createEmptyProject, createSampleProject } from "./helpers/sample-project.ts";
 import { killUnder, mainSessionFacts, sumUsage, waitMissing } from "./helpers/evidence.ts";
 import { driveUser } from "./helpers/user-driver.ts";
 import type { DriverEvent, DriverOutcome, UserScript } from "./helpers/user-driver.ts";
@@ -39,7 +39,8 @@ interface LoopResult { outcome: DriverOutcome | undefined; runs: RunRecord[]; ar
   /** 面板扩展交给系统 open 命令的路径，按先后顺序。 */ opened: string[]; evidence: string; worktree: string | undefined }
 
 /** 一轮真实模型闭环：装产品、建样例项目、按脚本驱动用户，把证据写进输出目录，再交给 verify 断言；现场与凭据在结束时清理。 */
-async function runLoop(name: string, script: UserScript, prepare: (repo: string, agentDir: string, installed: string) => Promise<void>, verify: (result: LoopResult) => void | Promise<void>) {
+async function runLoop(name: string, script: UserScript, prepare: (repo: string, agentDir: string, installed: string) => Promise<void>, verify: (result: LoopResult) => void | Promise<void>,
+  createRepo: (root: string) => Promise<string> = createSampleProject) {
   const cfg = config!;
   const evidence = join(cfg.output, `${name}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   await mkdir(evidence, { recursive: true, mode: 0o700 });
@@ -53,7 +54,7 @@ async function runLoop(name: string, script: UserScript, prepare: (repo: string,
   const started = Date.now();
   try {
     const installed = await installProduct(root);
-    const repo = await createSampleProject(root);
+    const repo = await createRepo(root);
     const { repoId } = await repositoryIdentity(repo);
     await mkdir(home, { recursive: true });
     await copyCredentials(cfg.credentialsDir, agentDir);
@@ -172,6 +173,27 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     }));
     expect(summaries.some((summary) => /规范|AGENTS\.md/.test(summary) && /大写|常量/.test(summary)), JSON.stringify(summaries)).toBe(true);
   });
+}, 100 * 60_000);
+
+const EMPTY_REPO_SCRIPT = {
+  ...SCRIPT,
+  requirement: "这是一个刚 git init 的空项目，还没有任何文件。我要用 Node 写一个问候小工具：src/greet.ts 导出函数 greet(name)，返回「你好，<name>」；"
+    + "name 是空字符串或只有空白时返回「你好，陌生人」。用 node --test 写单元测试，package.json 里配好 npm test。不做命令行参数解析，不加第三方依赖。"
+    + "请整理成需求草稿给我确认。确认后授权你直接实施：创建独立工作区、派 PM 按计划实现、测试和验收，完成后由我验收报告。",
+};
+
+test.skipIf(!config || process.platform !== "darwin")("M9-AC19：只 git init、没有任何文件和提交的空仓库，开工时确认先建 init 空提交作为基线，真实模型从需求草稿走到用户验收与完成关闭", async () => {
+  await runLoop("empty-repo", EMPTY_REPO_SCRIPT, async () => {}, async ({ outcome, runs, archive, archives, host, agentDir, repoId, repo, worktree }) => {
+    expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
+    for (const role of ["one-company.worker", "one-company.reviewer", "one-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
+    const branch = (await exec("git", ["symbolic-ref", "--short", "HEAD"], { cwd: repo })).stdout.trim();
+    const prepare = host.dialogs.find((dialog) => dialog.title === "确认创建需求工作区");
+    expect(prepare?.message?.replace(/[\s│]/gu, "")).toContain(`基线提交：仓库还没有任何提交，确认后先在${branch}分支上建一个空提交（说明为init）作为基线`);
+    expect((await exec("git", ["log", "--format=%s", branch], { cwd: repo })).stdout).toBe("init\n");
+    expect((await exec("git", ["ls-tree", branch], { cwd: repo })).stdout).toBe("");
+    await exec("node", ["--test"], { cwd: worktree! });
+    await expectArchiveDelivered({ agentDir, repoId, repo, worktree, archive, archives });
+  }, createEmptyProject);
 }, 100 * 60_000);
 
 const CUSTOM_DOC = `---

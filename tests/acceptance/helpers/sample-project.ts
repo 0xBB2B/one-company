@@ -66,3 +66,13 @@ export async function createSampleProject(root: string): Promise<string> {
   await git("commit", "-qm", "样例小游戏：水平移动与跳跃");
   return repo;
 }
+
+/** 在 root 下建一个只 git init、没有任何文件和提交的空仓库；分支名用 Git 自己的默认值，身份按用户已配好的情形写进仓库配置。 */
+export async function createEmptyProject(root: string): Promise<string> {
+  const repo = join(root, "empty");
+  await mkdir(repo, { recursive: true });
+  await exec("git", ["init", "-q"], { cwd: repo });
+  await exec("git", ["config", "user.name", "sample"], { cwd: repo });
+  await exec("git", ["config", "user.email", "sample@localhost"], { cwd: repo });
+  return repo;
+}

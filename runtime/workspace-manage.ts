@@ -61,11 +61,11 @@ export interface WorkspaceManageOptions {
 }
 
 // 固定参数写 Git：关闭 hook 与 fsmonitor，避免创建/回收现场时执行仓库内脚本
-async function writeGit(cwd: string, args: string[]): Promise<void> {
+async function writeGit(cwd: string, args: string[]): Promise<string> {
   try {
-    await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], {
+    return (await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], {
       cwd, env: { ...process.env, LC_ALL: "C" }, timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
-    });
+    })).stdout.trim();
   } catch (error) {
     throw new WorkspaceManageError("git_failed", [`git ${args.slice(0, 2).join(" ")}：${commandOutputTail(error)}`]);
   }
@@ -134,14 +134,17 @@ export class WorkspaceManageService {
       throw new WorkspaceManageError("operation_conflict");
     }
     const location = workspaceLocation(this.options.repositoryRoot, input.requirementId);
-    const baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "HEAD"]);
-    if (!baseCommit) throw new WorkspaceManageError("git_failed", ["rev-parse HEAD"]);
+    let baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+    const unbornBranch = baseCommit ? null : await gitOutput(this.options.repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    if (!baseCommit && !unbornBranch) throw new WorkspaceManageError("git_failed", ["rev-parse HEAD"]);
     if (!existing) {
       const title = await this.approvedTitle(input.requirementId);
       const approved = await this.options.confirm({ title: "确认创建需求工作区", lines: [{ text: `需求：${title}` }, ...mutedLines([
-        `编号：${input.requirementId}`, `分支：${location.branch.slice("refs/heads/".length)}`, `目录：${location.path}`, `基线提交：${baseCommit}`,
+        `编号：${input.requirementId}`, `分支：${location.branch.slice("refs/heads/".length)}`, `目录：${location.path}`,
+        `基线提交：${baseCommit ?? `仓库还没有任何提交，确认后先在 ${unbornBranch} 分支上建一个空提交（说明为 init）作为基线`}`,
         "主仓库未提交的改动不会带入新工作区。"])] });
       if (!approved) throw new WorkspaceManageError("declined");
+      baseCommit ??= await this.initCommit();
       this.save({ format: "managed-workspace/v1", requirementId: input.requirementId, title, operationId: input.operationId, baseCommit,
         branch: location.branch, path: location.path, status: "preparing", recycleOperationId: null });
     }
@@ -168,6 +171,15 @@ export class WorkspaceManageService {
     const ready = { ...plan, status: "ready" as const };
     this.save(ready);
     return ready;
+  }
+
+  // 用空树建提交并只在分支仍无提交时写入，不碰用户的暂存区和工作目录
+  private async initCommit(): Promise<string> {
+    const root = this.options.repositoryRoot;
+    const tree = await writeGit(root, ["hash-object", "-w", "-t", "tree", "/dev/null"]);
+    const commit = await writeGit(root, ["commit-tree", "--no-gpg-sign", "-m", "init", tree]);
+    await writeGit(root, ["update-ref", "-m", "init", "HEAD", commit, ""]);
+    return commit;
   }
 
   async recycle(input: { requirementId: string; operationId: string }): Promise<ManagedWorkspace> {
