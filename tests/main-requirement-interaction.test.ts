@@ -874,3 +874,56 @@ test("M8D-AC3：已批准的需求只改一段后再批准，解释器只确认�
   const outcome = await w.call({ action: "confirmUpdate", ...next.input }).then((r) => r, (e: unknown) => e);
   expect(outcome).toMatchObject({ prodActivated: true });
 });
+
+test("结果送达记录没有时间期限：工具结果登记两小时后才做送达核对，仍通过", async () => {
+  let now = 1000;
+  const w = await world({ now: () => now });
+  const toolCallId = uuidv7();
+  await w.manage.execute(toolCallId, { request: { repoId: w.repoId, action: "list" } } as never, undefined, undefined, w.ctx);
+  now += TWO_HOURS;
+  expect(() => w.interaction.assertDelivery(toolCallId, w.ctx)).not.toThrow();
+  expect(() => w.interaction.assertDelivery(toolCallId, w.ctx)).toThrow();
+});
+test("翻页记号没有时间期限：拿到下一页记号两小时后再翻页仍成功", async () => {
+  let now = 1000;
+  const w = await world({ now: () => now }), created = await w.create("# 说明 {#A}\n" + "中文边界".repeat(2000)), requirementId = String(created.requirementId);
+  const first = await w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024 });
+  now += TWO_HOURS;
+  const second = await w.call({ action: "next", requirementId, cursor: (first.coverage as { nextCursor: string }).nextCursor });
+  expect(second.coverage).toMatchObject({ startByte: Buffer.byteLength(first.text as string) });
+});
+describe("草稿核验模型没有 60 秒时限", () => {
+  /** 让 AbortSignal.timeout 跟着假计时器走，否则 Node 内部计时器不受假时钟影响。 */
+  const followFakeTimers = () => vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("timeout", "TimeoutError")), ms);
+    return controller.signal;
+  });
+  test("核验模型 2 分钟后才回答，草稿照常保存", async () => {
+    const w = await world(), created = await w.create();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const timeout = followFakeTimers();
+    try {
+      w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}', chunkDelayMs: 120_000 }]);
+      const count = w.provider.requests.length;
+      const pending = w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
+        summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" });
+      const settled = expect(pending).resolves.toMatchObject({ requirementId: created.requirementId });
+      while (w.provider.requests.length === count) await new Promise((r) => setImmediate(r));
+      for (let elapsed = 0; elapsed <= 130_000; elapsed += 1000) await vi.advanceTimersByTimeAsync(1000);
+      vi.useRealTimers();
+      await settled;
+    } finally { timeout.mockRestore(); vi.useRealTimers(); }
+  });
+  test("核验模型很慢时用户取消（ctx.signal 中止）仍能中止", async () => {
+    const w = await world(), created = await w.create(), abort = new AbortController();
+    w.capture(); (w.ctx as { signal?: AbortSignal }).signal = abort.signal; scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}', chunkDelayMs: 120_000 }]);
+    const count = w.provider.requests.length;
+    const pending = w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
+      summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" });
+    const rejected = expect(pending).rejects.toThrow();
+    while (w.provider.requests.length === count) await new Promise((r) => setTimeout(r, 1));
+    abort.abort();
+    await rejected;
+  });
+});

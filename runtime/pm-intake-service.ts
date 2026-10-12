@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { adviceIn } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
-import { performance } from "node:perf_hooks";
 import { isPromise } from "node:util/types";
 import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
@@ -98,7 +97,6 @@ const PM_INTAKE_SERVICE_ADVICE: Record<string, FailureAdvice> = {
   binding_changed: { why: "PM 与需求、工作区的绑定已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
   foreign_request: { why: "这个复核请求不属于当前需求或 PM", next: "用 forward 重新取当前的复核请求" },
   intake_not_ready: { why: "PM 还没提交接手理解", next: "等 PM 提交接手理解后再复核" },
-  invalid_deadline: { why: "复核期限设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   invalid_operation: { why: "操作编号不合规", next: "换一个新生成的操作编号重试" },
   invalid_repo: { why: "仓库编号不合规", next: "改用当前工作区列出的仓库编号" },
   invalid_review_decision: { why: "复核结论不合规，四类核对结果必须齐全且格式正确", next: "按原因改正后重试" },
@@ -106,7 +104,6 @@ const PM_INTAKE_SERVICE_ADVICE: Record<string, FailureAdvice> = {
   invalid_signal: { why: "取消信号不可用", next: "停止操作，不要重试；把这段原因告诉用户" },
   main_call_changed: { why: "主代理的复核调用在处理期间被改动", next: "重新发起一次" },
   main_call_provider_unavailable: { why: "读不到主代理的复核调用", next: "重试一次；仍然失败就把这段原因告诉用户" },
-  main_deadline_elapsed: { why: "复核已超过期限", next: "用 forward 重新取当前的复核请求" },
   operation_cancelled: { why: "操作被取消", next: "需要时重新发起" },
   pm_not_ready: { why: "PM 还没准备好接手", next: "等 PM 读完批准正文并提交接手理解" },
   request_not_current: { why: "这个复核请求已不是当前的请求", next: "用 forward 重新取当前的复核请求" },
@@ -227,8 +224,6 @@ export interface PmIntakeServiceOptions {
   sourceDirectoryProvider: PmSourceDirectoryProvider;
   submissionProvider: PmSubmissionProvider;
   now?: () => number;
-  /** 同进程 performance.now() 时间域中的可信绝对截止时间；不进入工具参数、数据库或 provider 查询。 */
-  deadlineMonotonic?: number;
 }
 
 /** 需求侧接手服务：只登记接手元数据和主代理核对，不启动PM、plan、task或调度。 */
@@ -239,11 +234,9 @@ export class PmIntakeService {
     proof: IntakeCurrentProof; bytes: string }>();
   constructor(options: PmIntakeServiceOptions) {
     if (!HASH.test(options.repoId)) deny("invalid_repo");
-    if (options.deadlineMonotonic !== undefined &&
-      (!Number.isFinite(options.deadlineMonotonic) || options.deadlineMonotonic < 0)) deny("invalid_deadline");
     this.#options = { ...options };
     this.#store = new PmIntakeStore({ dataRoot: options.dataRoot, repoId: options.repoId,
-      now: options.now, deadlineMonotonic: options.deadlineMonotonic });
+      now: options.now });
   }
 
   #signal(signal: AbortSignal): void {
@@ -252,13 +245,10 @@ export class PmIntakeService {
     if (aborted) deny("operation_cancelled");
   }
 
-  /** 最后DB检查后仅核对原生取消状态、固定截止时间与真实Host代次，不调用resolver/provider。 */
+  /** 最后DB检查后仅核对原生取消状态与真实Host代次，不调用resolver/provider。 */
   #fixedRuntimeCurrent(prepared: Pick<PreparedContext, "hostGeneration" | "signal">): void {
     this.#signal(prepared.signal);
     if (this.#options.authorization.generation !== prepared.hostGeneration) deny("main_call_changed");
-    if (this.#options.deadlineMonotonic !== undefined && performance.now() >= this.#options.deadlineMonotonic) {
-      deny("main_deadline_elapsed");
-    }
   }
 
   #main(call: MainIntakeCall, expected?: MainIntakeCallIdentity, generation?: number): Readonly<MainIntakeCallIdentity> {

@@ -62,7 +62,7 @@ describe("运行执行器永久淘汰", () => {
   });
 });
 
-describe("暂停与等待不伪造进程确认", () => {
+describe("暂停不伪造进程确认", () => {
   test.each(["queued", "running", "pausing", "paused", "interrupted"] as RunState[])("R04 %s 没有内存会话不确认暂停，不更改记录", async (state) => {
     const w = await world(); const run = await w.create(state); const before = w.snapshot();
     expect(await w.manager.pause(run.id)).toMatchObject({ state, confirmed: false }); expect(w.snapshot()).toBe(before);
@@ -71,13 +71,6 @@ describe("暂停与等待不伪造进程确认", () => {
     const w = await world(); const parent = await w.create("running"); await w.create("running", parent); const terminal = await w.create("failed");
     expect(await w.manager.pause(parent.id)).toEqual({ state: "running", confirmed: false, reason: expect.any(String) });
     expect(await w.manager.pause(terminal.id)).toEqual({ state: "failed", confirmed: true }); await expect(w.manager.pause(uuidv7())).rejects.toThrow("不存在");
-  });
-  test("R06 wait 真实等待终态，超时返回当前态，未知运行拒绝", async () => {
-    const w = await world(); const run = await w.create("running"); let settled = false;
-    const waiting = w.manager.wait(run.id, 2000).then((v) => { settled = true; return v; }); await delay(120); expect(settled).toBe(false);
-    await w.runs.update(run.id, { state: "failed" }); expect(await waiting).toEqual({ state: "failed" });
-    const queued = await w.create(); const start = Date.now(); expect(await w.manager.wait(queued.id, 150)).toEqual({ state: "queued" }); expect(Date.now() - start).toBeGreaterThanOrEqual(100); expect(Date.now() - start).toBeLessThan(1000);
-    await expect(w.manager.wait(uuidv7(), 1)).rejects.toThrow("不存在");
   });
 });
 
@@ -123,7 +116,7 @@ describe("真实 Shell 停止、级联和身份", () => {
     const page = new ShellPage({ registry, repos: [{ repoId: "repo", resolveClient: () => client }], clock: w.clock });
     await page.refresh();
     expect(page.render(80).find((line) => line.endsWith(` ${task.pid}`))).toContain(`pm#${pm.id.replace(/-/g, "").slice(0, 6)}`);
-    expect(formatShellSummary(await summarizeShells({ registry, repos: [{ repoId: "repo", client }], clock: w.clock }))).toBe("shell：1 · pm：1");
+    expect(formatShellSummary(await summarizeShells({ registry, repos: [{ repoId: "repo", client }] }))).toBe("shell：1 · pm：1");
     await w.manager.stop(pm.id, { reason: "main_agent" });
   }, 15_000);
   test("R09 Shell PID/startedAt 不匹配不发送停止", async () => {

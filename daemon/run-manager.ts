@@ -263,7 +263,6 @@ const PROTOCOL_NEXT: Record<string, string> = {
 function protocolError(code: string, message: string, next?: string): Error & { code: string } {
   return Object.assign(new Error(message), { code, advice: { why: message, next: next ?? PROTOCOL_NEXT[code] ?? "按原因处理后重试；仍然失败就把原因告诉用户" } });
 }
-const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 
 /** 派出与管理 PM、子代理和检索的会话，维护运行记录，暂停、续接与安全停止运行及其 Shell。 */
 export class RunManager {
@@ -1320,15 +1319,6 @@ export class RunManager {
       })) failed = true;
     } catch { failed = true; }
     if (failed || this.unconfirmedAdoptions.size > 0) throw protocolError("stop_unconfirmed", "关闭未完成：Shell 身份或进程结束尚未确认，保留现场待重试");
-  }
-  async wait(runId: string, timeoutMs = DEFAULT_WAIT_TIMEOUT_MS): Promise<{ state: string }> {
-    const deadline = Date.now() + timeoutMs;
-    while (true) {
-      const result = await this.runStore.get(runId);
-      if (!result.ok) throw protocolError("not_found", "运行不存在");
-      if (isTerminalState(result.run.state) || Date.now() >= deadline) return { state: result.run.state };
-      await new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now())));
-    }
   }
 }
 

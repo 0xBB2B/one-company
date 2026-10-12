@@ -36,7 +36,7 @@ async function world(body = BODY) {
     return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
   }, authorizeManifest: () => true });
   const state = await RequirementStateStore.open({ ...options, authorize: (request) => request.repoId === options.repoId &&
-    ["open", "read", "bind-workspace", "acquire-pm", "release-pm", "begin-close", "finish-close", "block-recovery"].includes(request.action) });
+    ["open", "read", "bind-workspace", "acquire-pm", "renew-pm", "release-pm", "begin-close", "finish-close", "block-recovery"].includes(request.action) });
   async function create(body = BODY) {
     const input = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body };
     grants.set(input.operationId, { action: "create", intent: requirementIntentHash({ title: input.title, body }) });
@@ -267,6 +267,24 @@ test("游标不能篡改、跨角色工厂或重复使用，首次读取不收�
   await expect(tool.execute({ action: "next", cursor: again.coverage.nextCursor })).rejects.toMatchObject({ code: "cursor_invalid" });
   expect(probe).not.toHaveBeenCalled();
   tool.dispose(); await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "tool_closed" });
+});
+
+test("翻页记号没有时间期限：拿到下一页记号 20 分钟后（PM 租约一路续期）再翻页仍成功", async () => {
+  const w = await world(); const tool = await w.tool();
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+  try {
+    const first = content(await tool.execute({ action: "read", maxBytes: 32 }));
+    let lease = w.lease;
+    for (let i = 0; i < 60; i++) { await vi.advanceTimersByTimeAsync(20_000); lease = await w.state.renewPm(lease); }
+    const second = content(await tool.execute({ action: "next", cursor: first.coverage.nextCursor }));
+    expect(second.coverage.startByte).toBe(Buffer.byteLength(first.text));
+  } finally { vi.useRealTimers(); }
+});
+
+test("读取工具不再起每秒一次的定时清理", async () => {
+  const w = await world(); const interval = vi.spyOn(globalThis, "setInterval");
+  await w.tool();
+  expect(interval).not.toHaveBeenCalled();
 });
 
 test("PM 按版本号查两个批准版本之间的 diff，不用 HEAD 或中间草稿；新版本批准后旧区间仍可重查；范围不对说明原因；读完登记已查到的版本", async () => {

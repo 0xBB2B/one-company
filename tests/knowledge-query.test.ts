@@ -361,7 +361,7 @@ test("大量匹配只缓存固定500项，其余计入遗漏而不是假报全�
   expect(session.diagnostics.bytes).toBeLessThanOrEqual(2 * 1024 * 1024); session.close();
 });
 
-test("最小输出预算仍保留所有阻塞类别/未覆盖统计，缓存条数与TTL有界", async () => {
+test("最小输出预算仍保留所有阻塞类别/未覆盖统计，缓存条数有界", async () => {
   const w = await fixture();
   const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), w.service.workspace);
   const original = store.getSnapshot();
@@ -385,7 +385,27 @@ test("最小输出预算仍保留所有阻塞类别/未覆盖统计，缓存条�
   expect(ninth.nextCursor).toBeTruthy();
   expect(session.diagnostics.sessions).toBe(8); expect(session.diagnostics.bytes).toBeLessThanOrEqual(2 * 1024 * 1024);
   await expect(session.query({ action: "next", cursor: result.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
-  now += 30001;
-  await expect(session.query({ action: "next", cursor: result.nextCursor })).rejects.toMatchObject({ code: "invalid_cursor" });
-  expect(session.diagnostics.sessions).toBe(0); session.close();
+  session.close();
+});
+
+test("分页缓存没有时间期限：首查两小时后翻页仍取到下一页", async () => {
+  const w = await fixture();
+  let now = 100;
+  const adapter = { ...w.adapter, async assertCurrent() { /* 只验证缓存不按时间淘汰 */ } };
+  const session = new KnowledgeQuerySession(adapter, { now: () => now });
+  const first = await session.query({ action: "facts", pageSize: 1 });
+  expect(first.nextCursor).toBeTruthy();
+  now += 7_200_000;
+  const next = await session.query({ action: "next", cursor: first.nextCursor });
+  expect(next.facts).toHaveLength(1);
+  session.close();
+});
+
+test("第一页本身算得慢也不报 stale：当前性核对前时钟已走过两小时，首查仍成功", async () => {
+  const w = await fixture();
+  let now = 100;
+  const adapter = { ...w.adapter, async assertCurrent() { now += 7_200_000; } };
+  const session = new KnowledgeQuerySession(adapter, { now: () => now });
+  await expect(session.query({ action: "facts", pageSize: 1 })).resolves.toMatchObject({ facts: expect.any(Array) });
+  session.close();
 });

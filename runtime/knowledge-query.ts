@@ -92,7 +92,6 @@ interface Entry {
   excerpts: number;
   offset: number;
   returned: number;
-  expires: number;
   bytes: number;
 }
 const HASH = /^[0-9a-f]{64}$/u;
@@ -160,8 +159,6 @@ export class KnowledgeQuerySession {
     this.#busy = true;
     let cursor = request.action === "next" ? request.cursor : undefined;
     try {
-      const now = this.#time();
-      for (const [key, value] of this.#entries) if (value.expires <= now) this.#entries.delete(key);
       let entry: Entry;
       if (request.action === "next") {
         const cached = this.#entries.get(request.cursor);
@@ -194,7 +191,7 @@ export class KnowledgeQuerySession {
       }
       // 返回前只经过一次当前性核对；其后不得再进行异步文件读取。
       await this.#adapter.assertCurrent(structuredClone(entry.capture.baseline));
-      if (this.#closed || entry.expires <= this.#time()) fail("stale");
+      if (this.#closed) fail("stale");
       const next = offset < entry.items.length ? pendingCursor : null;
       const result = makePage(next);
       if (bytes(result) > query.maxBytes! || bytes(result) > LIMIT.pageBytes) fail("resource_limit");
@@ -319,6 +316,6 @@ export class KnowledgeQuerySession {
       if (!part.complete) excerpts++;
       add({ kind: "source", id: fragment.id, source: source(fragment.path, { startLine: part.startLine, endLine: part.endLine, rangeKind: "excerpt" }), data: { body: part.body, kind: fragment.kind }, complete: part.complete });
     }
-    return { query, capture, header, items, matched, omitted, excerpts, offset: 0, returned: 0, expires: asOf + LIMIT.ttlMs, bytes: cost + bytes(header) + bytes(capture) };
+    return { query, capture, header, items, matched, omitted, excerpts, offset: 0, returned: 0, bytes: cost + bytes(header) + bytes(capture) };
   }
 }

@@ -161,8 +161,7 @@ describe("summarizeShells / formatShellSummary：待确认不计入总数与角�
       { taskId: randomUUID(), host: roleHost("worker"), activity: "uncertain", inWorkspace: true },
     ]);
 
-    const clock = createClock();
-    const summary = await summarizeShells({ registry, repos: [repoA, repoB], clock });
+    const summary = await summarizeShells({ registry, repos: [repoA, repoB] });
 
     expect(summary.total).toBe(2);
     expect(summary.uncertain).toBe(1);
@@ -204,8 +203,7 @@ describe("summarizeShells / formatShellSummary：待确认不计入总数与角�
     spawnedPgids.push(started.task.pgid);
     await waitFor(() => registry.get(taskId)?.status === "uncertain", 5_000);
 
-    const clock = createClock();
-    const summary = await summarizeShells({ registry, repos: [], clock });
+    const summary = await summarizeShells({ registry, repos: [] });
     expect(summary.total).toBe(0);
     expect(summary.uncertain).toBe(1);
     expect(summary.groups).toEqual([]);
@@ -220,8 +218,7 @@ describe("summarizeShells / formatShellSummary：待确认不计入总数与角�
 describe("summarizeShells / formatShellSummary：边界与错误场景", () => {
   test("无任何活动且无错误时总数为零，格式化结果被清空为 undefined", async () => {
     const registry = new ShellRegistry({ clock: createClock() });
-    const clock = createClock();
-    const summary = await summarizeShells({ registry, repos: [], clock });
+    const summary = await summarizeShells({ registry, repos: [] });
     expect(summary.total).toBe(0);
     expect(summary.errors).toEqual([]);
     expect(formatShellSummary(summary)).toBeUndefined();
@@ -230,9 +227,8 @@ describe("summarizeShells / formatShellSummary：边界与错误场景", () => {
   test("仓库读取失败：显示具体错误（含 repoId 归属）而非把总数呈现为零", async () => {
     const registry = new ShellRegistry({ clock: createClock() });
     const repo = rejectingRepo("repo-broken", "守护进程连接超时（测试注入）");
-    const clock = createClock();
 
-    const summary = await summarizeShells({ registry, repos: [repo], clock });
+    const summary = await summarizeShells({ registry, repos: [repo] });
     expect(summary.total).toBe(0);
     expect(summary.errors.length).toBe(1);
     expect(summary.errors[0]).toContain("守护进程连接超时（测试注入）");
@@ -252,9 +248,8 @@ describe("summarizeShells：多仓库场景下错误带仓库归属", () => {
       { taskId: randomUUID(), host: roleHost("worker"), activity: "active", inWorkspace: true },
     ]);
     const brokenRepo = rejectingRepo("repo-unreachable", "连接被拒绝（测试注入）");
-    const clock = createClock();
 
-    const summary = await summarizeShells({ registry, repos: [okRepo, brokenRepo], clock });
+    const summary = await summarizeShells({ registry, repos: [okRepo, brokenRepo] });
     expect(summary.total).toBe(1);
     expect(summary.errors.length).toBe(1);
     expect(summary.errors[0]).toContain("repo-unreachable");
@@ -266,9 +261,8 @@ describe("formatShellSummary：净化控制字符与换行，单行输出并按�
   test("错误消息含 ESC 序列与 CRLF 时，格式化文本不含原始控制字符但保留可读内容", async () => {
     const registry = new ShellRegistry({ clock: createClock() });
     const repo = rejectingRepo("repo-dirty", "连接失败\x1b[31m红色\x1b[0m\r\n第二行");
-    const clock = createClock();
 
-    const summary = await summarizeShells({ registry, repos: [repo], clock });
+    const summary = await summarizeShells({ registry, repos: [repo] });
     const text = formatShellSummary(summary) ?? "";
     expect(text).not.toContain("\x1b");
     expect(text).not.toContain("\r");
@@ -282,9 +276,8 @@ describe("formatShellSummary：净化控制字符与换行，单行输出并按�
     const repo = resolvedRepo("repo-role", [
       { taskId: randomUUID(), host: roleHost("wor\x1bker"), activity: "active", inWorkspace: true },
     ]);
-    const clock = createClock();
 
-    const summary = await summarizeShells({ registry, repos: [repo], clock });
+    const summary = await summarizeShells({ registry, repos: [repo] });
     const text = formatShellSummary(summary) ?? "";
     expect(text).not.toContain("\x1b");
   });
@@ -293,34 +286,13 @@ describe("formatShellSummary：净化控制字符与换行，单行输出并按�
     const registry = new ShellRegistry({ clock: createClock() });
     const longError = "错".repeat(10_000);
     const repo = rejectingRepo("repo-long", longError);
-    const clock = createClock();
 
-    const summary = await summarizeShells({ registry, repos: [repo], clock });
+    const summary = await summarizeShells({ registry, repos: [repo] });
     const text = formatShellSummary(summary) ?? "";
     expect(text).not.toContain("\n");
     expect(Array.from(text).length).toBeLessThanOrEqual(8_000);
     expect(Array.from(text).length).toBeLessThan(Array.from(longError).length);
   });
-});
-
-describe("summarizeShells：单个守护进程调用超时按该仓库读取失败呈现", () => {
-  test("仓库调用挂起超过超时阈值：注入时钟推进后该仓库计为读取失败，不阻塞整体结果", async () => {
-    const registry = new ShellRegistry({ clock: createClock() });
-    const timeSource = createFakeTimeSource();
-    const clock = createClock({ timeSource });
-    const deferred = createDeferred<Record<string, unknown>>();
-    const hangingRepo: ShellSummaryRepo = { repoId: "repo-hanging", client: { call: async () => deferred.promise } };
-
-    const summaryPromise = summarizeShells({ registry, repos: [hangingRepo], clock, repoTimeoutMs: 2_000 });
-    await flushMicrotasks();
-    timeSource.advance(2_000);
-
-    const summary = await summaryPromise;
-    expect(summary.errors.length).toBe(1);
-    expect(summary.total).toBe(0);
-
-    clock.stopGapWatcher();
-  }, 5_000);
 });
 
 describe("publishShellStatus", () => {
