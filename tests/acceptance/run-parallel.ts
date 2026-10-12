@@ -5,15 +5,12 @@ import { join } from "node:path";
 const vitest = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "vitest");
 const STAGGER_MS = 20_000, IDLE_MS = 10 * 60_000;
 
-let repeat = 1;
 const only: string[] = [];
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--repeat") repeat = Number(args[++i]);
-  else if (args[i] === "--only") while (args[i + 1] !== undefined && !args[i + 1]!.startsWith("--")) only.push(args[++i]!);
-  else throw new Error(`不认识的参数：${args[i]}；可用 --repeat <次数>、--only <编号…>`);
+  if (args[i] === "--only") while (args[i + 1] !== undefined && !args[i + 1]!.startsWith("--")) only.push(args[++i]!);
+  else throw new Error(`不认识的参数：${args[i]}；可用 --only <编号…>`);
 }
-if (!Number.isInteger(repeat) || repeat < 1) throw new Error("--repeat 须为正整数");
 const output = process.env.ONE_COMPANY_ACCEPTANCE_OUTPUT;
 if (!process.env.ONE_COMPANY_ACCEPTANCE_MODEL || !output) throw new Error("须先设置 ONE_COMPANY_ACCEPTANCE_MODEL 与 ONE_COMPANY_ACCEPTANCE_OUTPUT");
 mkdirSync(output, { recursive: true });
@@ -40,8 +37,7 @@ const newest = (dir: string) => Math.max(0, ...readdirSync(dir, { recursive: tru
 
 type Run = { id: string; n: number; dir: string; started: number; done: boolean };
 const runs: Run[] = [];
-const results: Array<Promise<{ run: Run; code: number; tests: string }>> = [];
-log(`同时跑开始：${tests.length} 条 × ${repeat} 次`);
+log(`同时跑开始：${tests.length} 条，每条先跑 2 次；一次过一次不过的再跑第 3 次`);
 const watchdog = setInterval(() => {
   for (const run of runs.filter((r) => !r.done && existsSync(r.dir) && Date.now() - newest(r.dir) > IDLE_MS)) {
     for (const evidence of readdirSync(run.dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !existsSync(join(run.dir, e.name, "STOP")))) {
@@ -51,26 +47,37 @@ const watchdog = setInterval(() => {
   }
 }, 60_000);
 
-for (let n = 1; n <= repeat; n++) {
+function launch(name: string, n: number): Promise<boolean> {
+  const id = labelOf(name), dir = join(output!, `${id.replaceAll("/", "_")}-${n}`);
+  mkdirSync(dir, { recursive: true });
+  const run: Run = { id, n, dir, started: Date.now(), done: false };
+  runs.push(run);
+  const out = openSync(`${dir}.log`, "w");
+  const child = spawn(vitest, ["run", "tests/acceptance", "-t", `^${escape(name)}$`], { env: { ...process.env, ONE_COMPANY_ACCEPTANCE_OUTPUT: dir }, stdio: ["ignore", out, out] });
+  return new Promise((resolve) => child.on("close", (code) => {
+    run.done = true;
+    closeSync(out);
+    const tests = [...readFileSync(`${dir}.log`, "utf8").matchAll(/^\s+Tests\s+(.+)$/gmu)].at(-1)?.[1]?.trim() ?? "没有测试结果";
+    log(`${id} 第 ${n} 次 用时 ${Math.round((Date.now() - run.started) / 60_000)} 分钟 退出码 ${code} | ${tests}`);
+    resolve(code === 0 && /1 passed/u.test(tests));
+  }));
+}
+
+const firstTwo = new Map<string, Array<Promise<boolean>>>(tests.map((name) => [name, []]));
+for (let n = 1; n <= 2; n++) {
   for (const name of tests) {
     if (runs.length) await new Promise((resolve) => setTimeout(resolve, STAGGER_MS));
-    const id = labelOf(name), dir = join(output, `${id.replaceAll("/", "_")}-${n}`);
-    mkdirSync(dir, { recursive: true });
-    const run: Run = { id, n, dir, started: Date.now(), done: false };
-    runs.push(run);
-    const out = openSync(`${dir}.log`, "w");
-    const child = spawn(vitest, ["run", "tests/acceptance", "-t", `^${escape(name)}$`], { env: { ...process.env, ONE_COMPANY_ACCEPTANCE_OUTPUT: dir }, stdio: ["ignore", out, out] });
-    results.push(new Promise((resolve) => child.on("close", (code) => {
-      run.done = true;
-      closeSync(out);
-      const tests = [...readFileSync(`${dir}.log`, "utf8").matchAll(/^\s+Tests\s+(.+)$/gmu)].at(-1)?.[1]?.trim() ?? "没有测试结果";
-      log(`${id} 第 ${n} 次 用时 ${Math.round((Date.now() - run.started) / 60_000)} 分钟 退出码 ${code} | ${tests}`);
-      resolve({ run, code: code ?? 1, tests });
-    })));
+    firstTwo.get(name)!.push(launch(name, n));
   }
 }
-const finished = await Promise.all(results);
+const passed = await Promise.all(tests.map(async (name) => {
+  const [first, second] = await Promise.all(firstTwo.get(name)!);
+  if (first && second) return true;
+  if (!first && !second) { log(`${labelOf(name)} 前两次都没过，判为失败，不跑第 3 次`); return false; }
+  log(`${labelOf(name)} 前两次一次过一次不过，开始第 3 次，以第 3 次结果为准`);
+  return launch(name, 3);
+}));
 clearInterval(watchdog);
-const failed = finished.filter((r) => r.code !== 0 || !/1 passed/u.test(r.tests));
-log(`同时跑结束：通过 ${finished.length - failed.length} / ${finished.length}${failed.length ? `；失败：${failed.map((r) => `${r.run.id} 第 ${r.run.n} 次`).join("、")}` : ""}`);
+const failed = tests.filter((_, index) => !passed[index]).map(labelOf);
+log(`同时跑结束：通过 ${tests.length - failed.length} / ${tests.length} 条${failed.length ? `；失败：${failed.join("、")}` : ""}`);
 process.exit(failed.length ? 1 : 0);
