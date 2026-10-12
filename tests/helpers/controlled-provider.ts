@@ -18,6 +18,7 @@ export type ScriptedReply = (
   | { type: "thinking"; text: string }
   | { type: "toolcall"; name: string; input: Record<string, unknown> }
   | { type: "error"; message: string }
+  | { type: "message"; message: AssistantMessage }
 ) & { usage?: Partial<Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite">> };
 
 export interface ControlledProvider {
@@ -29,7 +30,7 @@ export interface ControlledProvider {
   /** 每次调用传入的思考等级，没传时为 undefined。 */
   reasoning: Array<string | undefined>;
   /** 队列为空时改为等待这里给出的回复；不设时空队列立即报错。 */
-  awaitReply?: () => Promise<ScriptedReply | undefined>;
+  awaitReply?: (request: Context) => Promise<ScriptedReply | undefined>;
 }
 
 function zeroUsage(): Usage {
@@ -71,11 +72,12 @@ export function registerControlledProvider(
     streamSimple(model: Model<Api>, context: TranscriptContext, options) {
       // 提供方收到的是系统消息内嵌的规范化请求；还原成断言所用的提示词、工具与对话三部分
       handle.reasoning.push(options?.reasoning);
-      handle.requests.push({
+      const request: Context = {
         systemPrompt: getCurrentSystemPrompt(context.messages),
         tools: getCurrentTools(context.messages),
         messages: context.messages.filter((message) => message.role !== "system"),
-      });
+      };
+      handle.requests.push(request);
       const queued = handle.queue.shift();
       const stream = createAssistantMessageEventStream();
       const base: AssistantMessage = {
@@ -91,7 +93,7 @@ export function registerControlledProvider(
 
       queueMicrotask(() => { void (async () => {
         await options?.onPayload?.({ fixture: "controlled-provider" }, model);
-        const reply = queued ?? await handle.awaitReply?.();
+        const reply = queued ?? await handle.awaitReply?.(request);
         base.usage = { ...zeroUsage(), ...reply?.usage };
         if (!reply) {
           stream.push({
@@ -156,6 +158,13 @@ export function registerControlledProvider(
           case "error": {
             const message: AssistantMessage = { ...base, stopReason: "error", errorMessage: reply.message };
             stream.push({ type: "error", reason: "error", error: message });
+            break;
+          }
+          case "message": {
+            const message: AssistantMessage = { ...base, content: reply.message.content, usage: reply.message.usage, stopReason: reply.message.stopReason,
+              ...(reply.message.errorMessage ? { errorMessage: reply.message.errorMessage } : {}) };
+            if (message.stopReason === "stop" || message.stopReason === "length" || message.stopReason === "toolUse") stream.push({ type: "done", reason: message.stopReason, message });
+            else stream.push({ type: "error", reason: message.stopReason === "aborted" ? "aborted" : "error", error: message });
             break;
           }
         }
