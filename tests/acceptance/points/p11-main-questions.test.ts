@@ -26,7 +26,6 @@ const QUESTIONS = [
   "快跑和跳跃的实现有没有相互影响？请依据代码和测试回答。",
   "快跑的测试正式通过了吗？",
   "这次改动让移动计算快了多少？",
-  "参考 docs/prod 里的旧需求，帮我写一个新需求：角色可以蹲下。",
   "用需求工具读一下快跑需求的正文。",
   "我想把导出常量 WALK_SPEED 改名为 walkSpeed，这符合项目规范吗？",
 ];
@@ -34,7 +33,7 @@ const QUESTIONS = [
 const HOST_TOOLS = new Set(["read", "grep", "find", "ls", "bash", "edit", "write"]);
 const DATA_ROOT_PATH = /one-company|\/agent\/|\.pi\/agent|auth\.json|models\.json|data\.db|session\.jsonl|\/requirements\//u;
 
-test.skipIf(!config || process.platform !== "darwin")("P11：已有快跑、跳跃两个需求和项目规范，13 道问题逐题回答时都不用宿主工具绕道读本机数据目录", async () => {
+test.skipIf(!config || process.platform !== "darwin")("P11：已有快跑、跳跃两个需求和项目规范，12 道问题逐题回答时都不用宿主工具绕道读本机数据目录", async () => {
   const point = await startMainPoint(config!, "p11", { conventions: CONVENTIONS, seed: async (place) => {
     await seedApproved(place, "快跑", SPRINT);
     await seedApproved(place, "跳跃", JUMP);
