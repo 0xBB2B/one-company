@@ -795,6 +795,17 @@ test("解释结果未通过核对时，带错误代码与未覆盖单位让解�
   expect(retry).toMatchObject({ text: "A实施，B未决", context: { document: { body: w.context.document!.body } } });
   expect(retry.feedback).toContain("review_entry_mismatch");
 });
+test("解释结果格式不合规时，重答反馈写明出错的字段与原因，不只给一句格式不合规", async () => {
+  const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
+  const good = modelAnswer(w.output()), bad = { ...good, entries: good.entries.map((e, i) => i === 0 ? { ...e, kind: "goal" } : e) };
+  const calls: Array<{ messages: unknown[] }> = [];
+  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => { calls.push({ messages: structuredClone(c.messages) }); return complete(m, c, o); });
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(bad))]), fauxAssistantMessage([fauxText(JSON.stringify(good))])]);
+  await a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal });
+  const retry = JSON.parse(String((calls[1]!.messages.at(-1) as { content: string }).content));
+  expect(retry.feedback).toContain("invalid_shape");
+  expect(retry.feedback).toContain("/entries/0/kind");
+});
 test("M9：重答换了另一种错误仍不过时，最终报错同时带上首次被拒的原因", async () => {
   const w = await documentWorld(), a = await adapterWorld();
   const good = modelAnswer(w.output()), missing = { ...good, entries: good.entries.map((e) => ({ ...e, unitIds: (e as { unitIds?: string[] }).unitIds?.filter((id) => id !== "B") })) };

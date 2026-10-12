@@ -19,7 +19,7 @@ type Entry = Static<typeof InteractionEntry>;
 
 const confirmed = (e: Entry) => ["explicit", "delegated"].includes(e.basis) && !["modify", "defer", "unclear"].includes(e.resolution);
 const explicit = (e: Entry) => e.basis === "explicit" && !["modify", "defer", "unclear"].includes(e.resolution);
-const invalid = (): never => { throw new UserInteractionError("invalid_shape"); };
+const invalid = (detail: string): never => { throw new UserInteractionError("invalid_shape", detail); };
 
 /** 没有任何条目涉及、也未保留原依据的单位；只含分区单位 ID，供解释器改正遗漏。 */
 export function uncoveredUnits(result: Static<typeof InteractionInterpretation>): string[] {
@@ -36,10 +36,10 @@ export function deriveInterpretation(source: string, context: InteractionContext
   const document = context.document;
   if (!document) {
     // 没有正文时 faithful: true 与空 unitHints 不带信息，照忽略；带了单位或表示不忠实的仍拒绝
-    if (faithful === false || unitHints?.length || unitIds.some((ids) => ids.length)) invalid();
+    if (faithful === false || unitHints?.length || unitIds.some((ids) => ids.length)) invalid("这次没有草稿正文，不能给 faithful=false、unitHints 或条目的 unitIds");
     return { ...rest, entries };
   }
-  if (faithful === undefined) return invalid();
+  if (faithful === undefined) return invalid("有草稿正文时必须给出 faithful");
   const hint = (id: string) => unitHints?.find((h) => h.id === id);
   const candidateId = document.candidate.candidateId;
   // 字节没变且以前由用户明确确认过的段落，程序直接沿用原依据，不依赖模型每次都记得引用；

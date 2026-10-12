@@ -244,8 +244,19 @@ export class UserInteractionError extends Error {
 export function parseInteraction<T extends TSchema>(schema: T, source: string, maxBytes: number = SHORT_DECISION_LIMITS.requestBytes): Static<T> {
   if (typeof source !== "string" || Buffer.byteLength(source) > maxBytes) throw new UserInteractionError("request_limit");
   const value = parseStrictJson(source);
-  if (!Value.Check(schema, value)) throw new UserInteractionError("invalid_shape");
+  if (!Value.Check(schema, value)) throw new UserInteractionError("invalid_shape", shapeProblems(schema, value));
   return value as Static<T>;
+}
+// 格式检查最多报 8 条错误，取值列表会被截断，所以只指出字段，允许的取值让模型按 JSON schema 核对
+function shapeProblems(schema: TSchema, value: unknown): string {
+  const problems = new Set<string>();
+  for (const error of Value.Errors(schema, value)) {
+    const path = error.instancePath || "/";
+    if (error.keyword === "const") problems.add(`${path} 的取值不在 JSON schema 允许的范围里`);
+    else if (error.keyword === "additionalProperties") problems.add(`${path} 多了 JSON schema 里没有的字段 ${(error.params.additionalProperties as string[]).join("、")}`);
+    else if (error.keyword !== "boolean") problems.add(`${path} ${error.message}`);
+  }
+  return [...problems].slice(0, 3).map((problem) => problem.slice(0, 300)).join("；");
 }
 export function checkInteraction<T extends TSchema>(schema: T, value: unknown, maxBytes?: number): Static<T> {
   let copy: unknown;

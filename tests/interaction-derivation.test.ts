@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { uuidv7 } from "../runtime/database.ts";
 import { partitionProdDocument } from "../runtime/prod-view.ts";
-import type { InteractionContext } from "../runtime/user-interaction-format.ts";
+import type { InteractionContext, UserInteractionError } from "../runtime/user-interaction-format.ts";
 import { createApprovalManifest, validateDocumentReview } from "../runtime/approval-manifest.ts";
 import { summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
 import { deriveInterpretation } from "../runtime/interaction-derivation.ts";
@@ -85,6 +85,19 @@ test("模型自己写逐段审阅、缺少 faithful、或在没有草稿时给�
   expect(() => deriveInterpretation(JSON.stringify({ ...plain, faithful: false }), noDocument.context)).toThrow(/invalid_shape/);
   expect(() => deriveInterpretation(JSON.stringify({ ...plain, unitHints: [{ id: "A", globalConstraint: false, appliesTo: [], dependsOn: [] }] }), noDocument.context))
     .toThrow(/invalid_shape/);
+});
+
+test("按格式不合格拒绝时写明原因：多出的字段、有草稿却漏写 faithful、没有草稿却给出涉及段", () => {
+  const why = (run: () => unknown) => { try { run(); } catch (error) { return (error as UserInteractionError).advice.why; } throw new Error("没有拒绝"); };
+  const withReview = fixture();
+  Object.assign(withReview.output, { documentReview: { faithful: true, units: [], actions: [], questions: [] } });
+  expect(why(() => withReview.derive())).toContain("documentReview");
+  const noFaithful = fixture();
+  delete (noFaithful.output as Record<string, unknown>).faithful;
+  expect(why(() => noFaithful.derive())).toContain("faithful");
+  const noDocument = fixture();
+  delete noDocument.context.document;
+  expect(why(() => noDocument.derive())).toContain("unitIds");
 });
 
 test("M9：动作列了一条目标里的某段就覆盖整条目标，漏列同条目标的其他段不收窄动作范围；分开确认的另一条目标不被带入", () => {
