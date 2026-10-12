@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
-import { windowContext, windowReady } from "./lifecycle.ts";
+import { revokeCapturedInput, windowContext, windowReady } from "./lifecycle.ts";
 import { EXPLORE_WEB_QUERY, exploreSource } from "../runtime/explore-dispatch.ts";
 import { AdvisedError, toolFailure, toolStep } from "../runtime/tool-failure.ts";
 import { PM_MESSAGE_MAX_CHARS } from "../runtime/protocol.ts";
@@ -84,6 +84,7 @@ export function registerExploreDelivery(pi: ExtensionAPI, context: () => Promise
           const event = data as { runId?: unknown; parentSessionId?: unknown };
           if (event.parentSessionId !== sessionId || typeof event.runId !== "string") return;
           void client.call("explore.result", { runId: event.runId }).then((report) => {
+            revokeCapturedInput();
             pi.sendMessage({ customType: "one-company.explore-result", content: JSON.stringify(report), display: true }, { triggerTurn: true });
           }).catch(() => {});
         }));
