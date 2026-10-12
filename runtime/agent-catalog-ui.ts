@@ -164,10 +164,11 @@ export class AgentCatalogView {
 
   render(width: number): string[] {
     this.width = width;
-    if (this.naming) return this.renderNaming(width);
     const { theme } = this.options;
+    const edge = theme.fg("border", "─".repeat(width));
+    if (this.naming) return [edge, ...this.renderNaming(width), edge];
     const muted = (text: string) => theme.fg("muted", text), dim = (text: string) => theme.fg("dim", text);
-    const lines = [this.header(width), this.tabsLine(width), dim("─".repeat(width))];
+    const lines = [edge, this.header(width), this.tabsLine(width), dim("─".repeat(width))];
     const body = this.tab === PROBLEMS_TAB ? this.problemTable(width) : this.entryTable(width);
     const height = Math.max(3, ...ROLE_TABS.map((tab) => this.entries(tab).length + 1), this.entries(INTERNAL_TAB).length + 1, this.problemRows().length + 1);
     while (body.length < height) body.push("");
@@ -179,7 +180,7 @@ export class AgentCatalogView {
         lines.push(footer ? ` ${muted(fit(footer, width - 1))}` : "");
       }
     }
-    lines.push(` ${muted(fit(this.hint(), width - 1))}`);
+    lines.push(` ${muted(fit(this.hint(), width - 1))}`, edge);
     return lines;
   }
 

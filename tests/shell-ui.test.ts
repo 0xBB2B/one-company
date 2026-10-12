@@ -584,7 +584,7 @@ describe("openShellUiPage：保留缺连接仓库并可在连接恢复后查询"
       await waitFor(() => page !== undefined);
       await page!.refresh();
       expect(callsB).toEqual([]);
-      expect(page!.render(80)[2]).toContain(" ✗ 刷新失败：");
+      expect(page!.render(80)[3]).toContain(" ✗ 刷新失败：");
       expect(page!.render(80).join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
 
       clientB = {

@@ -80,7 +80,7 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
 const ENDED_STATUSES = new Set<TaskStatus>(["exited", "stopped", "failed", "timed_out"]);
 const ENDED_TTL_MS = 60_000;
 
-type Color = "accent" | "success" | "warning" | "error" | "muted" | "dim" | "text";
+type Color = "accent" | "success" | "warning" | "error" | "muted" | "dim" | "text" | "border";
 interface Seg { text: string; color?: Color; bold?: boolean; sel?: boolean }
 
 const STATUS_STYLE: Record<TaskStatus, { icon: string; color: Color }> = {
@@ -369,9 +369,9 @@ export class ShellPage {
   }
 
   render(width: number): string[] {
-    if (this.mode === "detail") return this.renderDetail(width);
-    if (this.mode === "confirm") return this.renderConfirm(width);
-    return this.renderList(width);
+    const page = this.mode === "detail" ? this.renderDetail(width) : this.mode === "confirm" ? this.renderConfirm(width) : this.renderList(width);
+    const edge = this.paint([{ text: "─".repeat(width), color: "border" }], width);
+    return [edge, ...page, edge];
   }
 
   invalidate(): void {}
@@ -629,7 +629,7 @@ export class ShellPage {
   }
 
   private renderFrame(width: number, selectedIndex: number, footer: string[]): string[] {
-    const budget = Math.max(1, this.height);
+    const budget = Math.max(1, this.height - 2);
     const errorLines = this.errors.map((error) => this.paint([{ text: ` ✗ 刷新失败：${error}，列表可能不是最新的`, color: "error" }], width));
     const top = [this.header(width), this.rule(width), ...errorLines];
     if (this.rows.length === 0) {
