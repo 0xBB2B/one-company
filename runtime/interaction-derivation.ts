@@ -21,6 +21,17 @@ const confirmed = (e: Entry) => ["explicit", "delegated"].includes(e.basis) && !
 const explicit = (e: Entry) => e.basis === "explicit" && !["modify", "defer", "unclear"].includes(e.resolution);
 const invalid = (detail: string): never => { throw new UserInteractionError("invalid_shape", detail); };
 
+const PLACEHOLDERS = new Set(["由 PM 规划", "用户未说明"]);
+/** 标题下只写了需求文档规范占位文字的段：它们不带业务内容，不需要模型逐段判断。 */
+function placeholderUnits(document: NonNullable<InteractionContext["document"]>): Set<string> {
+  const body = Buffer.from(document.body), bodyStart = document.partition.totalBytes - body.length;
+  return new Set(document.partition.units.filter((unit) => {
+    if (unit.startByte < bodyStart) return false;
+    const [heading, ...rest] = body.subarray(unit.startByte - bodyStart, unit.endByte - bodyStart).toString().split(/\r?\n/u);
+    return /^ {0,3}#{1,6}[\t ]/u.test(heading!) && PLACEHOLDERS.has(rest.join("\n").trim().replace(/[。.]$/u, ""));
+  }).map((unit) => unit.id));
+}
+
 /** 没有任何条目涉及、也未保留原依据的单位；只含分区单位 ID，供解释器改正遗漏。 */
 export function uncoveredUnits(result: Static<typeof InteractionInterpretation>): string[] {
   return result.documentReview?.units.filter((u) => !u.conclusionIndexes.length && !u.retainedFactIds?.length).map((u) => u.id) ?? [];
@@ -42,6 +53,17 @@ export function deriveInterpretation(source: string, context: InteractionContext
   if (faithful === undefined) return invalid("有草稿正文时必须给出 faithful");
   const hint = (id: string) => unitHints?.find((h) => h.id === id);
   const candidateId = document.candidate.candidateId;
+  const confirmedTarget = (e: Entry) => e.kind === "target" && explicit(e) && e.requestId === null && e.candidateId === candidateId;
+  // 占位段由程序判断：用户明确确认了同一份草稿的目标，模型只是拿不准而标的待定不算数；
+  // 用户要改、暂缓、排除或挂在问题下的仍按模型的来
+  const placeholders = entries.some(confirmedTarget) ? placeholderUnits(document) : new Set<string>();
+  const doubtOnly = (e: Entry) => !confirmed(e) && !["modify", "defer"].includes(e.resolution) && e.kind !== "exclusion" && e.requestId === null && !e.supersedes.length;
+  const kept = unitIds.map((ids, i) => doubtOnly(entries[i]!) ? ids.filter((id) => !placeholders.has(id)) : ids);
+  if (kept.some((ids, i) => ids.length !== unitIds[i]!.length)) {
+    const dropped = kept.map((ids, i) => unitIds[i]!.length > 0 && ids.length === 0);
+    entries = entries.filter((_, i) => !dropped[i]); unitIds = kept.filter((_, i) => !dropped[i]);
+    if (!entries.some((e) => ["modify", "defer", "unclear"].includes(e.resolution))) faithful = true;
+  }
   // 字节没变且以前由用户明确确认过的段落，程序直接沿用原依据，不依赖模型每次都记得引用；
   // 模型说要修改、排除，或条目挂在某个问题下的，仍按模型的来
   const retainedFacts = new Map<string, string[]>(), retainedExclusion = new Map<string, boolean[]>();
@@ -65,10 +87,8 @@ export function deriveInterpretation(source: string, context: InteractionContext
   } else reused.clear();
   const units = document.partition.units.map(({ id }) => {
     let indexes = entries.flatMap((e, i) => e.kind !== "action" && unitIds[i]!.includes(id) ? [i] : []);
-    // 身份与标题段：用户明确确认了同一候选的目标，即视为确认了这份草稿的身份；它永远不作动作目标
-    if (id === "metadata" && !indexes.length) {
-      indexes = entries.flatMap((e, i) => e.kind === "target" && explicit(e) && e.requestId === null && e.candidateId === candidateId ? [i] : []);
-    }
+    // 身份与标题段、占位段：用户明确确认了同一候选的目标即算确认；它们永远不作动作目标
+    if ((id === "metadata" || placeholders.has(id)) && !indexes.length) indexes = entries.flatMap((e, i) => confirmedTarget(e) ? [i] : []);
     const related = indexes.map((i) => entries[i]!);
     const h = hint(id);
     const reusing = !h?.retainedFactIds?.length && reused.has(id) && !indexes.length;
@@ -84,7 +104,7 @@ export function deriveInterpretation(source: string, context: InteractionContext
   // 沿用的原依据是用户以前确认的目标时，同样可列入本轮动作的范围；动作许可仍只来自本轮条目
   const retainedTarget = (u: (typeof units)[number]) => (u.retainedFactIds ?? []).some((id) =>
     context.retainedEvidence?.some((e) => e.fact.id === id && e.unitId === u.id && e.kind === "target"));
-  const goalUnits = new Set(units.filter((u) => u.id !== "metadata" && (u.conclusionIndexes.some((i) => entries[i]!.kind === "target" && explicit(entries[i]!)) || retainedTarget(u))).map((u) => u.id));
+  const goalUnits = new Set(units.filter((u) => u.id !== "metadata" && !placeholders.has(u.id) && (u.conclusionIndexes.some((i) => entries[i]!.kind === "target" && explicit(entries[i]!)) || retainedTarget(u))).map((u) => u.id));
   const targetGroups = entries.flatMap((e, i) => e.kind === "target" && explicit(e) ? [unitIds[i]!.filter((id) => goalUnits.has(id))] : []);
   const scopes = new Map<string, DocumentReview["actions"][number]>();
   entries.forEach((e, i) => {
