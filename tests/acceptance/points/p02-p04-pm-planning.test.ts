@@ -36,7 +36,7 @@ async function plan(name: string, body: string, specialists: Array<{ name: strin
   const real = await createRealModel(w.fixture.root, config!);
   cleanups.push(() => real.close(evidence));
   const tasks = () => w.db((db) => db.list<TaskRecord>(TASKS).map((row) => row.data));
-  const pm = realPm(w.provider, real, { evidence, maxTurns: 12, stopWhen: () => tasks().length > 0,
+  const pm = realPm(w.provider, real, { evidence, maxTurns: 12, endOnStop: false, stopWhen: () => tasks().length > 0,
     startWhen: (request) => /主代理已核对通过你的接手理解/.test(messageText(request.messages.at(-1))) });
   await w.review(undefined, false);
   await pm.settled();

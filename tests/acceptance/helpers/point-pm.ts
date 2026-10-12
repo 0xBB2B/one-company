@@ -23,14 +23,17 @@ export interface RealPmOptions {
   stopWhen(): boolean;
   maxTurns: number;
   evidence: string;
+  /** 为 false 时 PM 停下不算判断点结束（它可能在等检索结果），只按 stopWhen 或轮数结束。默认 true。 */
+  endOnStop?: boolean;
   /** 子代理的请求按任务 key 回复；不给时一律回"完成"。 */
   subagent?(key: string, request: Context): ScriptedReply | undefined | Promise<ScriptedReply | undefined>;
 }
 
-/** 判断点之前 PM 由脚本回"收到"，判断点之后由真实模型回答；真实模型停下不再调用工具时判断点也结束。 */
+/** 判断点之前 PM 由脚本回"收到"，判断点之后由真实模型回答；PM 派出的检索子代理也由真实模型回答。 */
 export function realPm(provider: ControlledProvider, real: RealModel, options: RealPmOptions) {
   let turns = 0, started = false, done = false;
   provider.awaitReply = async (request) => {
+    if ((request.systemPrompt ?? "").includes("你是只读检索代理")) return real.answer(request);
     const key = taskKey(request);
     if (key) return (await options.subagent?.(key, request)) ?? { type: "text", text: "完成" };
     if (!started && !options.startWhen(request)) return { type: "text", text: "收到" };
@@ -41,7 +44,7 @@ export function realPm(provider: ControlledProvider, real: RealModel, options: R
     if (done || turns >= options.maxTurns || options.stopWhen()) { done = true; return { type: "text", text: "收到" }; }
     turns += 1;
     const reply = await real.answer(request);
-    if (reply.type === "message" && reply.message.stopReason !== "toolUse") done = true;
+    if (options.endOnStop !== false && reply.type === "message" && reply.message.stopReason !== "toolUse") done = true;
     return reply;
   };
   return {

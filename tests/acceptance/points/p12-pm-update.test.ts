@@ -22,16 +22,17 @@ test.skipIf(!config || process.platform !== "darwin")("P12：计划已确认、�
   const real = await createRealModel(w.fixture.root, config!);
   cleanups.push(() => real.close(evidence));
   const current = () => w.db((db) => readPlanIn(db, w.fixture.requirementId));
-  let revision = 0;
-  const pm = realPm(w.provider, real, { evidence, maxTurns: 15, stopWhen: () => (current()?.plan.confirmedRevision ?? 0) >= revision,
+  let revision = Number.POSITIVE_INFINITY;
+  const pm = realPm(w.provider, real, { evidence, maxTurns: 15, endOnStop: false, stopWhen: () => (current()?.plan.confirmedRevision ?? 0) >= revision,
     startWhen: (request) => /已批准更新：revision/.test(messageText(request.messages.at(-1))) });
 
   await w.plan.execute({ action: "propose", tasks: [{ key: "login", role: "worker", goalUnitIds: ["goal.login", "scenario.failure"], constraintUnitIds: [], dependsOn: [],
     writePaths: ["src/"], blockedByQuestionIds: [], maxTurns: 6, objective: "实现手机号验证码登录：正确验证码成功，错误验证码失败",
     passCriteria: ["正确验证码登录成功，错误验证码显示失败"], scope: { in: ["手机号登录"], out: ["微信登录"] }, performance: NA }] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
+  // 更新通知可能在批准调用返回前就送到 PM，所以先定下要等的版本号
+  revision = w.fixture.state.read(w.fixture.requirementId).data.revision + 1;
   await w.fixture.approveRevision({ body: FEATURES + HINT + TAIL });
-  revision = w.fixture.state.read(w.fixture.requirementId).data.revision;
   await pm.settled();
 
   const plan = current()!;
