@@ -90,8 +90,8 @@ for (const dir of evidences) {
   }
   for (const run of runs.filter((entry) => entry.role === "one-company.explore" && !reported.has(entry.id))) limits.add(`${name}：explore ${run.id.slice(0, 13)} 有运行记录但父代理里没找到结果卡片`);
 
-  // 默认与专业路径：只统计单需求闭环的证据（零自定义与 AC18 对照组）
-  if (!["zero-custom", "ac18-nomatch", "ac18-match", "ui-worker"].includes(scenario)) continue;
+  // 默认与专业路径：只统计单需求闭环（零自定义）的证据
+  if (scenario !== "zero-custom") continue;
   const pmLog = runs.filter((run) => isPm(run) && existsSync(logPath(run.id))).flatMap((run) => logOf(logPath(run.id)));
   const catalogIds = new Set(pmLog.flatMap(({ message }) => blocks(message).filter((block) => block.type === "toolCall" && block.name === "one_company_agent_manage" && actionOf(block) === "catalog").map((block) => block.id)));
   const catalogChars = pmLog.filter(({ message }) => message.role === "toolResult" && catalogIds.has(message.toolCallId)).reduce((sum, { message }) => sum + textOf(message).length, 0);
@@ -123,7 +123,7 @@ function relativeName(dir: string) { return dir.slice(root.length).replace(/^\/+
 const summary = (stats: Record<string, number[]>) => Object.entries(stats).map(([key, values]) => `${key} 中位 ${median(values)}、最大 ${Math.max(...values)}（${values.length} 个样本）`).join("；") || "无样本";
 
 const report = [
-  "# M9-AC11、AC18 测量报告", "",
+  "# 验收测量报告", "",
   `证据目录：${root}。token 为运行记录与会话日志里模型返回的实际用量（输入、输出、缓存读写之和）；字数为工具返回或结果文字的字符数，不当作 token。只报实测数，不计算节省比例。`, "",
   "## 接手（PM 开工到核对通过）", "",
   "| 证据 | PM 运行 | 结果 | 用时秒 | token | 工具调用 | 读需求字数 | 提交理解次数 |", "|---|---|---|---|---|---|---|---|", ...intakeRows, "", `汇总：${summary(intakeStats)}`, "",

@@ -92,19 +92,7 @@ export async function copyCredentials(from: string, agentDir: string): Promise<v
 }
 
 /** "确认原型"窗口里表示通过的那一项。 */
-export const PROTOTYPE_ACCEPT = "通过（按这一版开始实现）";
-
-/**
- * 面板扩展用系统的 open 命令打开原型。在 PATH 最前面放一个同名脚本，只把要打开的路径记进日志，
- * 验收时就不会真的弹出浏览器；返回日志路径。调用方负责还原 PATH。
- */
-export async function stubSystemOpen(root: string): Promise<string> {
-  const bin = join(root, "bin"), log = join(root, "opened.log");
-  await mkdir(bin, { recursive: true });
-  await writeFile(join(bin, "open"), `#!/bin/sh\nprintf '%s\\n' "$1" >> ${JSON.stringify(log)}\n`, { mode: 0o755 });
-  process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
-  return log;
-}
+const PROTOTYPE_ACCEPT = "通过（按这一版开始实现）";
 
 export interface DialogRecord { kind: "confirm" | "select" | "input"; title: string; message?: string; options?: string[]; answer: unknown; at: number }
 
