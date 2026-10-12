@@ -311,13 +311,14 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     return viewOf(run.data);
   }
   // reviewer 要亲眼核对 worker 先红后绿的记录，不能只信 worker 自述；红绿可能分在同一任务的不同尝试里（如只改注释的返修），
-  // 所以放开被审任务各次尝试在提交里引用的那几条
+  // 所以放开被审任务各次尝试在提交里引用的那几条。PM 整合结果前要核对子代理引用的证据，查不到只能去读整份子代理会话记录，所以放开本需求所有子代理提交里引用的那几条
   function status(verificationId: string): VerificationView {
+    const pm = grant.role === "pm";
     const attempts = grant.role === "reviewer" ? options.reviewedAttemptRunIds : undefined;
-    const cited = attempts === undefined ? null : withDatabase(database, (db) => {
+    const cited = attempts === undefined && !pm ? null : withDatabase(database, (db) => {
       const run = readVerificationIn(db, verificationId)?.data;
-      if (!run || !attempts.includes(run.runId) || run.requirementId !== grant.requirementId || run.repoId !== grant.repoId || run.workspaceId !== grant.workspaceId) return null;
-      return readVerdictsIn(db, grant.repoId, grant.requirementId).some((verdict) => verdict.role === "worker" && verdict.runId === run.runId &&
+      if (!run || (attempts !== undefined && !attempts.includes(run.runId)) || run.requirementId !== grant.requirementId || run.repoId !== grant.repoId || run.workspaceId !== grant.workspaceId) return null;
+      return readVerdictsIn(db, grant.repoId, grant.requirementId).some((verdict) => (pm || verdict.role === "worker") && verdict.runId === run.runId &&
         verdict.verificationIds.includes(verificationId)) ? run : null;
     });
     return cited ? viewOf(cited) : ownStatus(verificationId);
