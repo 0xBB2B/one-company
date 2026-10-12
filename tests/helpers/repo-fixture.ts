@@ -143,22 +143,23 @@ async function git(args: string[], cwd: string, owned: OwnedRoot): Promise<void>
   await assertOwnedRoot(owned);
 }
 
-async function initRepo(root: string, owned: OwnedRoot): Promise<void> {
+async function initRepo(root: string, owned: OwnedRoot, empty = false): Promise<void> {
   await assertOwnedRoot(owned);
   await mkdir(root, { recursive: true });
   await git(["init", "-b", "main"], root, owned);
   await assertOwnedRoot(owned);
+  if (empty) return;
   await writeFile(join(root, "README.md"), "one-company test fixture\n");
   await git(["add", "README.md"], root, owned);
   await git(["commit", "-m", "initial commit"], root, owned);
   await assertOwnedRoot(owned);
 }
 
-export async function createRepoFixture(): Promise<RepoFixture> {
+export async function createRepoFixture(options: { empty?: boolean } = {}): Promise<RepoFixture> {
   const owned = await allocateOwnedRoot("one-company-repo-", "repo");
   try {
     await assertOwnedRoot(owned);
-    await initRepo(owned.path, owned);
+    await initRepo(owned.path, owned, options.empty);
     await assertOwnedRoot(owned);
     const fixture = { root: owned.path, worktrees: [] };
     repoRootReceipts.set(fixture, Object.freeze({ ...owned }));

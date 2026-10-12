@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { temporaryRoot } from "../helpers/temporary-root.ts";
-import { createWorkspaceFixture, removeRepoFixture } from "../helpers/repo-fixture.ts";
+import { createRepoFixture, createWorkspaceFixture, removeRepoFixture } from "../helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "../helpers/temp-home.ts";
 import { connectTestClient, killDaemon, startDaemonForTest } from "../helpers/daemon-harness.ts";
 import { modelProviderEnv, readProviderRequestsLog, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
@@ -47,6 +47,18 @@ test("父目录发现两个仓库并排除node_modules，仓库内只见自己�
   expect((await discoverWorkspace(workspace.repos[0]!)).repos.map((repo) => repo.path)).toEqual([workspace.repos[0]!]);
   expect((await discoverWorkspace(unrelated)).repos).toEqual([]);
 });
+
+test("只 git init、还没有提交的仓库被当成一个仓库接入，守护进程能启动、窗口能连上", async () => {
+  const home = await createTempHome(); cleanup.push(() => removeTempHome(home));
+  const repo = await createRepoFixture({ empty: true }); cleanup.push(() => removeRepoFixture(repo));
+  const dataRoot = await mkdtemp(join(temporaryRoot(), "d")); cleanup.push(() => rm(dataRoot, { recursive: true, force: true }));
+  const [discovered] = (await discoverWorkspace(repo.root)).repos;
+  expect(discovered).toMatchObject({ path: repo.root });
+  const socketPath = daemonSocketPath(dataRoot, discovered!.repoId);
+  const handle = await startDaemonForTest({ home, dataRoot, repoDir: discovered!.commonDir, socketPath }); cleanup.push(() => killDaemon(handle));
+  const client = await connectTestClient(socketPath, { windowId: "w", sessionId: "w" }, { dataRoot }); cleanup.push(() => client.close());
+  expect(await client.call("shells.list")).toBeDefined();
+}, 30000);
 
 test("两仓真实socket各自安全停止本仓运行，不改另一仓的运行记录", async () => {
   const w = await world(); const [a, b] = w.repos;
