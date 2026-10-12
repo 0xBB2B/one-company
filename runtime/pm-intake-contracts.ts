@@ -159,15 +159,15 @@ const INTAKE_CONTRACT_ADVICE: Record<string, FailureAdvice> = {
 export class IntakeContractError extends Error {
   readonly code: IntakeContractErrorCode;
   readonly advice: FailureAdvice;
-  constructor(code: IntakeContractErrorCode) {
+  constructor(code: IntakeContractErrorCode, detail?: string) {
     super(`PM 接手契约拒绝：${code}`);
     this.name = "IntakeContractError";
     this.code = code;
-    this.advice = adviceIn(INTAKE_CONTRACT_ADVICE, code);
+    this.advice = adviceIn(INTAKE_CONTRACT_ADVICE, code, detail);
   }
 }
 
-const fail = (code: IntakeContractErrorCode): never => { throw new IntakeContractError(code); };
+const fail = (code: IntakeContractErrorCode, detail?: string): never => { throw new IntakeContractError(code, detail); };
 const codepoints = (value: string): number => Array.from(value).length;
 const bytes = (value: string): number => Buffer.byteLength(value, "utf8");
 
@@ -294,7 +294,8 @@ export function checkIntakeReviewRecord(value: unknown, sourceDirectory: unknown
   const record = checked.value;
   checkRefs(record.sourceRefs, directory);
   record.shortIssues.forEach(checkText);
-  if ((record.result === "passed") !== (record.shortIssues.length === 0)) fail("invalid_shape");
+  if (record.result === "passed" && record.shortIssues.length) fail("invalid_shape", "result 为 passed 时 shortIssues 必须是空数组，核对通过的说明不要写进 shortIssues；确有问题要写时，result 改选 pm_correction_required、prod_revision_required 或 clarification_required");
+  if (record.result !== "passed" && !record.shortIssues.length) fail("invalid_shape", `result 为 ${record.result} 时 shortIssues 至少写一条问题；没有问题就把 result 改为 passed`);
   return { status: "accepted", record };
 }
 

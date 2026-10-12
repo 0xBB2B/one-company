@@ -159,7 +159,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   input_expired: { why: "用户原话已过期", next: "等用户在主窗口说出新的一句话后再操作" },
   input_reentry: { why: "同一句用户原话被重复使用", next: "等用户在主窗口说出新的一句话后再操作" },
   interaction_context_limit: { why: "本需求累积的待答问题、以往决定或原依据太多，发给解释器的材料超出上限", next: "不要重试，重试结果相同；先回答或处理掉已有的问题和待定事项，仍不行就把这段原因告诉用户" },
-  interpretation_denied: { why: "用户原话的解读不能作为这次决定的依据", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  interpretation_denied: { why: "解读用户原话时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: "重试一次；仍然失败就把这段原因告诉用户" },
   invalid_capability: { why: "确认能力无效或已用过", next: "重新读取需求后按最新版本再试" },
   invalid_input_ticket: { why: "用户原话的凭据无效或已用过", next: "等用户在主窗口说出新的一句话后再操作" },
   invalid_model_timeout: { why: "解读模型的超时设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
@@ -170,7 +170,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   model_cancelled: { why: "解读被取消", next: "需要时重新发起" },
   model_changed: { why: "解读期间模型被切换", next: "重试一次；仍然失败就把这段原因告诉用户" },
   model_configuration_changed: { why: "解读用的模型配置已变化", next: "重试一次；仍然失败就把这段原因告诉用户" },
-  model_interpretation_denied: { why: "解读模型没有给出可用的解读", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  model_interpretation_denied: { why: "调用解读模型或处理它的回答时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: "重试一次；仍然失败就把这段原因告诉用户" },
   model_response_denied: { why: "解读模型的回答格式不对或没有正常结束", next: "重试一次；仍然失败就把这段原因告诉用户" },
   model_unavailable: { why: "解读用的模型不可用", next: "请用户检查模型配置或改选模型" },
   action_not_explicit: { why: "授权动作不是用户明确说出的，或动作条目与授权范围对不上", next: "只把用户明确要求的动作写成 action 条目，并让它和授权范围一致" },
@@ -244,8 +244,19 @@ export class UserInteractionError extends Error {
 export function parseInteraction<T extends TSchema>(schema: T, source: string, maxBytes: number = SHORT_DECISION_LIMITS.requestBytes): Static<T> {
   if (typeof source !== "string" || Buffer.byteLength(source) > maxBytes) throw new UserInteractionError("request_limit");
   const value = parseStrictJson(source);
-  if (!Value.Check(schema, value)) throw new UserInteractionError("invalid_shape");
+  if (!Value.Check(schema, value)) throw new UserInteractionError("invalid_shape", shapeProblems(schema, value));
   return value as Static<T>;
+}
+// 格式检查最多报 8 条错误，取值列表会被截断，所以只指出字段，允许的取值让模型按 JSON schema 核对
+function shapeProblems(schema: TSchema, value: unknown): string {
+  const problems = new Set<string>();
+  for (const error of Value.Errors(schema, value)) {
+    const path = error.instancePath || "/";
+    if (error.keyword === "const") problems.add(`${path} 的取值不在 JSON schema 允许的范围里`);
+    else if (error.keyword === "additionalProperties") problems.add(`${path} 多了 JSON schema 里没有的字段 ${(error.params.additionalProperties as string[]).join("、")}`);
+    else if (error.keyword !== "boolean") problems.add(`${path} ${error.message}`);
+  }
+  return [...problems].slice(0, 3).map((problem) => problem.slice(0, 300)).join("；");
 }
 export function checkInteraction<T extends TSchema>(schema: T, value: unknown, maxBytes?: number): Static<T> {
   let copy: unknown;

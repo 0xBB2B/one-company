@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { uuidv7 } from "../runtime/database.ts";
 import { partitionProdDocument } from "../runtime/prod-view.ts";
-import type { InteractionContext } from "../runtime/user-interaction-format.ts";
+import type { InteractionContext, UserInteractionError } from "../runtime/user-interaction-format.ts";
 import { createApprovalManifest, validateDocumentReview } from "../runtime/approval-manifest.ts";
 import { summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
 import { deriveInterpretation } from "../runtime/interaction-derivation.ts";
@@ -87,6 +87,19 @@ test("模型自己写逐段审阅、缺少 faithful、或在没有草稿时给�
     .toThrow(/invalid_shape/);
 });
 
+test("按格式不合格拒绝时写明原因：多出的字段、有草稿却漏写 faithful、没有草稿却给出涉及段", () => {
+  const why = (run: () => unknown) => { try { run(); } catch (error) { return (error as UserInteractionError).advice.why; } throw new Error("没有拒绝"); };
+  const withReview = fixture();
+  Object.assign(withReview.output, { documentReview: { faithful: true, units: [], actions: [], questions: [] } });
+  expect(why(() => withReview.derive())).toContain("documentReview");
+  const noFaithful = fixture();
+  delete (noFaithful.output as Record<string, unknown>).faithful;
+  expect(why(() => noFaithful.derive())).toContain("faithful");
+  const noDocument = fixture();
+  delete noDocument.context.document;
+  expect(why(() => noDocument.derive())).toContain("unitIds");
+});
+
 test("M9：动作列了一条目标里的某段就覆盖整条目标，漏列同条目标的其他段不收窄动作范围；分开确认的另一条目标不被带入", () => {
   const whole = fixture();
   whole.output.entries[0]!.unitIds = ["A", "B"];
@@ -101,6 +114,49 @@ test("M9：动作列了一条目标里的某段就覆盖整条目标，漏列同
 });
 
 /** 上一版里 preamble 与 A 已被用户明确确认、字节没变；这一版只新增了 B。 */
+function placeholderFixture(implementation = "由 PM 规划。") {
+  const requirementId = uuidv7(), title = "手机号登录", body = `# 手机号 {#A}\n实现手机号登录。\n# 实现 {#impl}\n${implementation}\n# 背景 {#bg}\n用户未说明\n`;
+  const partition = partitionProdDocument(requirementId, title, body);
+  const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "a".repeat(64), from: null, to: { commit: "b".repeat(40), hash: partition.prodHash } };
+  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prod: null }, currentGoal: "",
+    candidates: [{ ...candidate, diff: "+手机号登录" }], questions: [], priorDecisions: [], document: { candidate, title, body, partition } };
+  const common = { basis: "explicit" as const, resolution: "direct" as const, candidateId: candidate.candidateId, requestId: null as string | null, actions: [], references: [], supersedes: [], scope: "手机号登录" };
+  const output = { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: false,
+    entries: [
+      { ...common, kind: "target", conclusion: "实现手机号登录", unitIds: ["A"] },
+      { ...common, kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "不确定由 PM 规划是否保留", unitIds: ["impl", "bg"] },
+      { ...common, kind: "action", actions: ["implement"], conclusion: "实施手机号登录", unitIds: ["A", "impl"] },
+    ] as Array<Record<string, unknown>> };
+  return { context, output, derive: () => deriveInterpretation(JSON.stringify(output), context) };
+}
+
+test("只写规范占位文字的段被解释器标成待定或没提到时，用户明确确认了同一草稿的目标就由程序算作已确认，整份改判忠实，占位段不作动作目标", () => {
+  const f = placeholderFixture(), result = f.derive();
+  expect(result.entries.map((e) => e.kind)).toEqual(["target", "action"]);
+  expect(result.documentReview).toMatchObject({ faithful: true, actions: [{ action: "implement", goalIds: ["A"], constraintIds: [] }] });
+  for (const id of ["impl", "bg"]) expect(result.documentReview!.units.find((u) => u.id === id)).toMatchObject({ disposition: "confirmed", conclusionIndexes: [0] });
+  expect(() => validateDocumentReview(f.context, result)).not.toThrow();
+  const silent = placeholderFixture();
+  silent.output.entries.splice(1, 1);
+  expect(silent.derive().documentReview!.units.find((u) => u.id === "impl")).toMatchObject({ disposition: "confirmed", conclusionIndexes: [0] });
+});
+
+test("用户要改占位段、待定挂在问题下、没有明确确认目标、或段里不只有占位文字时，不由程序代判", () => {
+  const pending = (f: ReturnType<typeof placeholderFixture>) => f.derive().documentReview!.units.find((u) => u.id === "impl")!.disposition;
+  const modify = placeholderFixture();
+  modify.output.entries[1]!.resolution = "modify";
+  expect(pending(modify)).toBe("pending-description");
+  const asked = placeholderFixture();
+  asked.output.entries[1]!.requestId = uuidv7();
+  expect(pending(asked)).toBe("pending-description");
+  const noTarget = placeholderFixture();
+  noTarget.output.entries[0]!.resolution = "defer";
+  expect(pending(noTarget)).toBe("pending-description");
+  const content = placeholderFixture("由 PM 规划，缓存用 Redis。");
+  expect(pending(content)).toBe("pending-description");
+  expect(content.derive().documentReview!.units.find((u) => u.id === "bg")).toMatchObject({ disposition: "confirmed" });
+});
+
 function retainedFixture() {
   const f = fixture();
   const evidence = (unitId: string, kind: "target" | "constraint") => {

@@ -208,6 +208,7 @@ for (const race of ["input", "session", "closing", "version", "revoke", "model"]
 test("解释异常不回显原话/模型错误，后续新输入可正常解释", async () => {
   const w = await world(); w.setImplementation(async () => { throw new Error(PHONE); });
   await expect(w.interpret()).rejects.toThrow(/^用户交互被拒绝：interpretation_denied$/);
+  await expect(w.interpret()).rejects.toMatchObject({ advice: { why: expect.stringContaining("不是用户的话说得不清楚"), next: expect.not.stringContaining("把话说得更明确") } });
   w.setImplementation(async () => JSON.stringify(w.output())); expect((await w.interpret()).capability.kind).toBe("interaction-capability");
 });
 test("一条决定引用很多章节时照常登记，引用个数不设上限", async () => {
@@ -795,6 +796,17 @@ test("解释结果未通过核对时，带错误代码与未覆盖单位让解�
   expect(retry).toMatchObject({ text: "A实施，B未决", context: { document: { body: w.context.document!.body } } });
   expect(retry.feedback).toContain("review_entry_mismatch");
 });
+test("解释结果格式不合规时，重答反馈写明出错的字段与原因，不只给一句格式不合规", async () => {
+  const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
+  const good = modelAnswer(w.output()), bad = { ...good, entries: good.entries.map((e, i) => i === 0 ? { ...e, kind: "goal" } : e) };
+  const calls: Array<{ messages: unknown[] }> = [];
+  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => { calls.push({ messages: structuredClone(c.messages) }); return complete(m, c, o); });
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(bad))]), fauxAssistantMessage([fauxText(JSON.stringify(good))])]);
+  await a.interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal });
+  const retry = JSON.parse(String((calls[1]!.messages.at(-1) as { content: string }).content));
+  expect(retry.feedback).toContain("invalid_shape");
+  expect(retry.feedback).toContain("/entries/0/kind");
+});
 test("M9：重答换了另一种错误仍不过时，最终报错同时带上首次被拒的原因", async () => {
   const w = await documentWorld(), a = await adapterWorld();
   const good = modelAnswer(w.output()), missing = { ...good, entries: good.entries.map((e) => ({ ...e, unitIds: (e as { unitIds?: string[] }).unitIds?.filter((id) => id !== "B") })) };
@@ -835,6 +847,12 @@ for (const failure of ["auth", "tool", "length", "invalid", "wrong-model", "time
   const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel(), timeoutMs: 10 });
   await expect(interpreter.interpret({ text: PHONE, context: w.context,
     model: actualModel, signal: new AbortController().signal })).rejects.toThrow(SPECIFIC_DENIAL);
+});
+test("调用解读模型抛出意外错误时，原因写明没得到解读结果，不让用户重说", async () => {
+  const w = await world(), a = await adapterWorld(); const actualModel = a.interpreter.identity();
+  a.registry.complete = async () => { throw new Error("socket hang up"); };
+  await expect(a.interpreter.interpret({ text: PHONE, context: w.context, model: actualModel, signal: new AbortController().signal }))
+    .rejects.toMatchObject({ code: "model_interpretation_denied", advice: { why: expect.stringContaining("不是用户的话说得不清楚"), next: expect.not.stringContaining("把话说得更明确") } });
 });
 test("M8J-AC1：解释器不指定时限时默认 120 秒：过了 60 秒还在等，到 120 秒才取消", async () => {
   const w = await world(), a = await adapterWorld(); const actualModel = a.interpreter.identity();
