@@ -50,7 +50,7 @@ const VERIFICATION_ADVICE = {
   check_phase_active: { why: "检查阶段进行中，不能运行调试检查", next: "等检查轮结束后再运行" },
   round_not_open: { why: "没有开放中的检查轮，或检查轮已失效", next: "先用 workflow_manage 开启检查轮，再运行正式检查" },
   input_changed: { why: "检查开始前受保护的输入已变化，本检查轮已失效", next: "结束本检查轮，重新开检查轮后再运行" },
-  not_found: { why: "找不到这次检查运行，或它不属于本运行", next: "核对验证编号，只查询本运行发起的检查" },
+  not_found: { why: "找不到这次检查运行，或你没有权限查看它", next: "核对验证编号：能查看的只有本运行发起的检查，以及子代理提交里引用、本角色有权查看的记录；停止只能停本运行发起的检查" },
   resource_limit: { why: "请求内容超出 64 KiB", next: "精简命令或参数后重试" },
 } as const satisfies Record<string, FailureAdvice>;
 export type VerificationRunErrorCode = keyof typeof VERIFICATION_ADVICE;
@@ -311,13 +311,14 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     return viewOf(run.data);
   }
   // reviewer 要亲眼核对 worker 先红后绿的记录，不能只信 worker 自述；红绿可能分在同一任务的不同尝试里（如只改注释的返修），
-  // 所以放开被审任务各次尝试在提交里引用的那几条
+  // 所以放开被审任务各次尝试在提交里引用的那几条。PM 整合结果前要核对子代理引用的证据，查不到只能去读整份子代理会话记录，所以放开本需求所有子代理提交里引用的那几条
   function status(verificationId: string): VerificationView {
+    const pm = grant.role === "pm";
     const attempts = grant.role === "reviewer" ? options.reviewedAttemptRunIds : undefined;
-    const cited = attempts === undefined ? null : withDatabase(database, (db) => {
+    const cited = attempts === undefined && !pm ? null : withDatabase(database, (db) => {
       const run = readVerificationIn(db, verificationId)?.data;
-      if (!run || !attempts.includes(run.runId) || run.requirementId !== grant.requirementId || run.repoId !== grant.repoId || run.workspaceId !== grant.workspaceId) return null;
-      return readVerdictsIn(db, grant.repoId, grant.requirementId).some((verdict) => verdict.role === "worker" && verdict.runId === run.runId &&
+      if (!run || (attempts !== undefined && !attempts.includes(run.runId)) || run.requirementId !== grant.requirementId || run.repoId !== grant.repoId || run.workspaceId !== grant.workspaceId) return null;
+      return readVerdictsIn(db, grant.repoId, grant.requirementId).some((verdict) => (pm || verdict.role === "worker") && verdict.runId === run.runId &&
         verdict.verificationIds.includes(verificationId)) ? run : null;
     });
     return cited ? viewOf(cited) : ownStatus(verificationId);

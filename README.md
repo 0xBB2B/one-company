@@ -330,17 +330,17 @@ pi install /absolute/path/to/one-company
 ```bash
 ONE_COMPANY_ACCEPTANCE_MODEL=<提供方>/<模型> \
 ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> \
-pnpm run test:acceptance:parallel --repeat 3 [--only <编号…>]
+pnpm run test:acceptance:parallel [--only <编号…>]
 ```
 
 - `ONE_COMPANY_ACCEPTANCE_MODEL`：主会话用的模型，例如 `5x/gpt-6.1-sol`。各角色和内部调用用包内定义里写的模型。
 - `ONE_COMPANY_ACCEPTANCE_OUTPUT`：证据输出目录。每条每次一个子目录，里面有会话记录、`data.db`、`report.json`；总进度写在 `summary.txt`。
-- `--repeat`：每条跑几次，默认 1。`--only`：只跑测试名冒号前编号匹配的那几条，例如 `--only M9-AC12`，所以测试名开头的编号不要删改。
+- `--only`：只跑测试名冒号前编号匹配的那几条，例如 `--only M9-AC12`，所以测试名开头的编号不要删改。
 - 运行时把 `~/.pi/agent/` 下的 `models.json` 和 `auth.json` 复制进一个只有当前用户能读写的临时 agent 目录，跑完随临时目录删除，不改动你自己的 `~/.pi/agent/`。
-- 各条各次同时启动，相隔 20 秒；某次 10 分钟没有任何更新会被自动停下。
+- 各条的前 2 次同时启动，相隔 20 秒；第 3 次在前 2 次一过一不过时立即启动；某次 10 分钟没有任何更新会被自动停下。
 - 用 gpt-6.1-sol 时，本机 `models.json` 里它的思考等级 `off` 要写成 `null`：这个模型不接受关闭思考。
 
-判定规则：真实模型输出有波动，所以要在同一个提交上同时跑 3 次，3 次全过才算通过；有一次不过，修好后在新提交上重新同时跑 3 次。改了产品代码后，相关验收在新提交上重跑；只改验收脚本或文档不重跑。全部失败时，先查会话记录里有没有 `429 usage_limit_reached`：模型服务有用量额度，用完后大约半小时恢复。
+判定规则：真实模型输出有波动，所以每条在同一个提交上先同时跑 2 次：2 次都过算通过；一次过一次不过，就再跑第 3 次，第 3 次过算通过、不过算失败；2 次都不过直接算失败，不跑第 3 次。脚本会自动按这个规则补跑和判定。失败的修好后，在新提交上按同样规则重跑。改了产品代码后，相关验收在新提交上重跑；只改验收脚本或文档不重跑。全部失败时，先查会话记录里有没有 `429 usage_limit_reached`：模型服务有用量额度，用完后大约半小时恢复。
 
 ### 性能基准与测量工具
 

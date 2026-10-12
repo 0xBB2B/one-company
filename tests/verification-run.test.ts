@@ -412,6 +412,27 @@ test("M8A-AC10：reviewer 只读查看被审任务各次 worker 尝试在提交�
   expect(diff.output!.stdout.text).toContain("+export const a = 2;");
 });
 
+test("PM 只读查看本需求子代理提交里引用的验证记录（worker 与 reviewer），查不到未引用的，也不能停止它们", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const binding = (grant: VerificationRunGrant) => ({ dataRoot: w.dataRoot, requirementId: w.created.requirementId, repoId: w.repoId, workspaceId: w.workspace.workspaceId, epoch: grant.epoch });
+  const workerGrant = w.grant({ role: "worker" });
+  const worker = await w.tool(workerGrant);
+  const green = await worker.execute({ action: "run", kind: "debug", command: "echo 'sprint.acceptance 通过'", performance: NA }) as VerificationView;
+  const uncited = await worker.execute({ action: "run", kind: "debug", command: "echo 其他", performance: NA }) as VerificationView;
+  submitVerdict(binding(workerGrant), { role: "worker", runId: workerGrant.runId, parentRunId: w.lease.runId },
+    { checkRoundId: null, verificationIds: [green.verificationId], summary: "通过", findings: [] });
+  const reviewerGrant = w.grant({ role: "reviewer" });
+  const rerun = await (await w.tool(reviewerGrant)).execute({ action: "run", kind: "debug", command: "echo '审查重跑通过'", performance: NA }) as VerificationView;
+  submitVerdict({ ...binding(reviewerGrant), review: { taskId: uuidv7(), attemptRunId: workerGrant.runId } }, { role: "reviewer", runId: reviewerGrant.runId, parentRunId: w.lease.runId },
+    { checkRoundId: null, verificationIds: [rerun.verificationId], summary: "通过", findings: [] });
+  const pm = await w.tool(w.grant({ role: "pm", runId: w.lease.runId }));
+  expect(await pm.execute({ action: "status", verificationId: green.verificationId })).toMatchObject({ status: "passed", output: { stdout: { text: "sprint.acceptance 通过\n" } } });
+  expect(await pm.execute({ action: "status", verificationId: rerun.verificationId })).toMatchObject({ status: "passed" });
+  await expect(pm.execute({ action: "status", verificationId: uncited.verificationId })).rejects.toMatchObject({ code: "not_found" });
+  await expect(pm.execute({ action: "stop", verificationId: green.verificationId })).rejects.toMatchObject({ code: "not_found" });
+});
+
 test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承完整环境变量；数据目录、Git 元数据、归档与角色定义不可写", async () => {
   if (!darwin) return;
   const w = await world();
