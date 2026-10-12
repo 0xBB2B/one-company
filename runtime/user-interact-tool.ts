@@ -50,20 +50,28 @@ function askRequest(args: unknown): NonNullable<AskArgs["request"]> {
   return request;
 }
 
-function renderAskCall(args: unknown, theme: RenderTheme, context: { state: { view?: AskView } }): Text {
-  const request = askRequest(args), view = context.state.view;
-  return new Text(`${theme.bold("提问")}  ${theme.fg("muted", view?.caption ?? request.question ?? "")}`, 0, 0);
+type AskState = { view?: AskView; header?: Text };
+
+function askHeader(theme: RenderTheme, caption: string): string {
+  return `${theme.bold("提问")}  ${theme.fg("muted", caption)}`;
+}
+
+function renderAskCall(args: unknown, theme: RenderTheme, context: { state: AskState }): Text {
+  const request = askRequest(args);
+  context.state.header = new Text(askHeader(theme, context.state.view?.caption ?? request.question ?? ""), 0, 0);
+  return context.state.header;
 }
 
 function renderAskResult(result: { content: Array<{ type: string; text?: string }>; details?: unknown }, theme: RenderTheme,
-  context: { args: unknown; state: { view?: AskView }; isError: boolean; invalidate(): void }): Text {
+  context: { args: unknown; state: AskState; isError: boolean }): Text {
   const request = askRequest(context.args);
   if (context.isError) {
     const reason = result.content.map((block) => block.text ?? "").join("").match(/^原因：(.*)$/mu)?.[1] ?? "";
     return new Text(theme.fg("error", `没有登记：${reason}`), 0, 0);
   }
   const view = result.details as AskView;
-  if (context.state.view !== view) { context.state.view = view; context.invalidate(); }
+  // 只原地改标题：在这里让 pi 重画整块会重入它正在进行的重画，问答块被加进去两份
+  if (context.state.view !== view) { context.state.view = view; context.state.header?.setText(askHeader(theme, view.caption ?? request.question ?? "")); }
   const choice = view.answer?.choice ? request.choices?.[view.answer.choice - 1] : undefined;
   const answer = !view.answer ? theme.fg("muted", "你暂不回答，问题保留。")
     : `${theme.fg("muted", "你的回答  ")}${choice ? `${view.answer.choice}. ${choice.label}${choice.recommended ? theme.fg("success", "（推荐）") : ""}`
