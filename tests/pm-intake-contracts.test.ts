@@ -175,7 +175,11 @@ test("核对记录只有受控元数据形状，passed与短问题保持一致",
   expect(result.record).toEqual(review());
 
   expectCode(() => checkIntakeReviewRecord({ ...review(), shortIssues: ["不能一边passed一边留问题"] }, directory), "invalid_shape");
+  expect(() => checkIntakeReviewRecord({ ...review(), shortIssues: ["目标核对通过"] }, directory)).toThrow(expect.objectContaining({
+    advice: expect.objectContaining({ why: expect.stringContaining("result 为 passed 时 shortIssues 必须是空数组") }) }));
   expectCode(() => checkIntakeReviewRecord({ ...review(binding(), "pm_correction_required"), shortIssues: [] }, directory), "invalid_shape");
+  expect(() => checkIntakeReviewRecord({ ...review(binding(), "pm_correction_required"), shortIssues: [] }, directory)).toThrow(expect.objectContaining({
+    advice: expect.objectContaining({ why: expect.stringContaining("result 为 pm_correction_required 时 shortIssues 至少写一条问题") }) }));
   expectCode(() => checkIntakeReviewRecord({ ...review(binding(), "prod_revision_required"), shortIssues: Array(9).fill("问题") }, directory), "invalid_shape");
 });
 

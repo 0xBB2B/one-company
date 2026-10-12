@@ -112,6 +112,13 @@ test("PM 租约续期只改到期时间与记录版本，不使已打开的接�
   await expect(fixture.intake.recordReview(fixture.call, view.requestId, fixture.operationId(), { result: "passed", shortIssues: [] })).resolves.toBeDefined();
 });
 
+test("登记 passed 却写了短问题时，拒绝原因写明 shortIssues 要留空，改正后照常登记", async () => {
+  const fixture = await world(), view = await fixture.intake.openRequest(fixture.call, fixture.operationId());
+  await expect(fixture.intake.recordReview(fixture.call, view.requestId, fixture.operationId(), { result: "passed", shortIssues: ["目标核对通过"] }))
+    .rejects.toMatchObject({ advice: { why: expect.stringContaining("result 为 passed 时 shortIssues 必须是空数组") } });
+  await expect(fixture.intake.recordReview(fixture.call, view.requestId, fixture.operationId(), { result: "passed", shortIssues: [] })).resolves.toBeDefined();
+});
+
 test.each(["revoke", "close", "release"] as const)("%s后拒绝原对象交付，已登记历史不删除", async (mode) => {
   const fixture = await world(), view = await fixture.intake.openRequest(fixture.call, fixture.operationId());
   const before = persisted(fixture);
