@@ -27,7 +27,7 @@ export async function until(check: () => boolean | Promise<boolean>, limit = 600
  * 真实 RunManager 派出的 PM：夹具原有租约置为过期、工作区登记为 ready，PM 以脚本化模型提交接手理解。
  * review 为 false 时不做主代理核对，由用例自行调用 review()。
  */
-export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string } = {}) {
+export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string; userDir?: string } = {}) {
   const fixture = await createPmIntakeFixture(options.body === undefined ? {} : { body: options.body }); cleanups.push(() => fixture.cleanup());
   const record = fixture.state.read(fixture.requirementId).data;
   const db = <T>(run: Parameters<typeof withDatabase<T>>[1]) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), run);
@@ -45,7 +45,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   const provider = registerControlledProvider(runtime, { providerId: "team-model", modelId: "test" });
   const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());
   const runStore = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: new Date().toISOString() });
-  const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(fixture.root, "none-u"), projectDir: join(fixture.root, "none-p"), parseFrontmatter, projectTrusted: false });
+  const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: options.userDir ?? join(fixture.root, "none-u"), projectDir: join(fixture.root, "none-p"), parseFrontmatter, projectTrusted: false });
   const emit = vi.fn();
   const index = options.index ? new ProjectIndexHost({ repoId: fixture.repoId, dataRoot: fixture.dataRoot, repositoryRoot: fixture.repositoryRoot }) : undefined;
   if (index) { cleanups.push(() => index.close()); await index.init(); }
@@ -61,12 +61,13 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   const lease = fixture.state.pmOwner(fixture.requirementId)!.lease!;
   const owner = () => db((d) => d.read<{ context: { baseline: { revision: number } | null }; prodEvents?: { consumedSequence: number; understoodRevision: number | null } }>(
     "pm_ownership", fixture.requirementId)!.data);
-  async function review(decision: IntakeReviewDecision = { result: "passed", shortIssues: [] }) {
+  /** scripted 为 false 时不替 PM 排回复，PM 对核对结论的反应交给 provider.awaitReply。 */
+  async function review(decision: IntakeReviewDecision = { result: "passed", shortIssues: [] }, scripted = true) {
     const intake = fixture.makeIntake(createPmIntakeProviders(fixture.dataRoot));
     const view = await intake.openRequest(fixture.call, fixture.operationId());
     const notices = () => provider.requests.filter((request) => /主代理(?:已核对通过|核对)你的接手理解/.test(JSON.stringify(request.messages.at(-1) ?? ""))).length;
     const before = notices();
-    provider.queue.push({ type: "text", text: "收到核对结论" });
+    if (scripted) provider.queue.push({ type: "text", text: "收到核对结论" });
     await intake.recordReview(fixture.call, view.requestId, fixture.operationId(), decision);
     await until(() => notices() > before);
   }
