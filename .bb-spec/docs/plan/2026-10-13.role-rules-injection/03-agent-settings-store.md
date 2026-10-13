@@ -59,14 +59,14 @@ declare module "proper-lockfile" {
 }
 ```
 
-### 问题原因的写法
+### 问题原因的写法（<角色名> 用中文名：PM、解释器、草稿核验器）
 ```text
 文件不是合法的 JSON，这一层的设定都没有生效
 one-company 要写成对象，这一层的设定都没有生效
 不认识的角色 <名字>，只能是 pm、interpreter、draft-verifier
-<角色名> 的设定要写成对象，同时包含 model 和 thinking
-<角色名> 的模型写法不对：<原值>；要写成模型名、提供方/模型名，或 null（跟随主会话）
-<角色名> 的思考等级写错了：<原值>；只能是 off、minimal、low、medium、high、xhigh、max
+「<角色名>」的设定要写成对象，同时包含 model 和 thinking
+「<角色名>」的模型写法不对：<原值>；要写成模型名、提供方/模型名，或 null（跟随主会话）
+「<角色名>」的思考等级写错了：<原值>；只能是 off、minimal、low、medium、high、xhigh、max
 ```
 
 ## 函数清单
