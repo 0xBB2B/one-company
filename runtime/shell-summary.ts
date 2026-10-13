@@ -30,11 +30,10 @@ export interface ShellSummary {
 export interface ShellSummaryInput {
   registry: ShellRegistry;
   repos: ShellSummaryRepo[];
-  clock: Clock;
-  repoTimeoutMs?: number;
 }
 
 export interface PublishShellStatusInput extends ShellSummaryInput {
+  clock: Clock;
   statusBar: ShellStatusBar;
 }
 
@@ -84,39 +83,13 @@ function finalize(acc: CountAccumulator, errors: string[]): ShellSummary {
   };
 }
 
-function withTimeout<T>(promise: Promise<T>, clock: Clock, ms: number | undefined): Promise<T> {
-  if (ms === undefined) return promise;
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const handle = clock.setTimeoutExcludingSleep(() => {
-      if (settled) return;
-      settled = true;
-      reject(new Error(`仓库读取超时（${ms}ms）`));
-    }, ms);
-    promise.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        clock.clearTimer(handle);
-        resolve(value);
-      },
-      (error) => {
-        if (settled) return;
-        settled = true;
-        clock.clearTimer(handle);
-        reject(error);
-      },
-    );
-  });
-}
-
 export async function summarizeShells(input: ShellSummaryInput): Promise<ShellSummary> {
   const acc = newAccumulator();
   for (const task of input.registry.list()) addEntry(acc, { host: task.host, activity: task.activity });
   const errors: string[] = [];
   for (const repo of input.repos) {
     try {
-      const result = await withTimeout(repo.client.call("shells.list"), input.clock, input.repoTimeoutMs);
+      const result = await repo.client.call("shells.list");
       const tasks = (result.tasks ?? []) as DaemonShellEntry[];
       for (const task of tasks) addEntry(acc, task);
     } catch (error) {

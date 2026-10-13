@@ -100,7 +100,6 @@ interface Cursor {
   commit: string;
   hash: string;
   epoch: number;
-  expiresAt: number;
 }
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) freeze(child); Object.freeze(value); }
@@ -128,7 +127,6 @@ async function openReadTool(options: RequirementReadToolOptions) {
   const returns = new WeakMap<object, { action: RequirementReadAuthorization["action"]; record: { version: number; data: RequirementRecord };
     scope?: ReturnType<typeof source>["approvalScope"] }>();
   let unsubscribe: (() => void) | undefined;
-  let timer: ReturnType<typeof setInterval> | undefined;
   const deny = (code: RequirementReadErrorCode, detail?: string): never => { throw new RequirementReadError(code, detail); };
   function bounded<T>(response: T): T {
     if (Buffer.byteLength(JSON.stringify(response)) > PROD_RESPONSE_MAX_BYTES) deny("response_too_large");
@@ -191,16 +189,13 @@ async function openReadTool(options: RequirementReadToolOptions) {
     host(action);
     return activeSync(expected);
   }
-  function purge() { for (const [key, cursor] of cursors) if (cursor.expiresAt <= Date.now()) cursors.delete(key); }
   function dispose() {
     disposed = true; cursors.clear(); unsubscribe?.(); unsubscribe = undefined;
-    if (timer) clearInterval(timer); timer = undefined;
   }
   try {
     host("metadata");
     current();
-    unsubscribe = state.onAccessInvalidated(binding.requirementId, () => cursors.clear());
-    timer = setInterval(purge, 1_000); timer.unref();
+    unsubscribe = state.onAccessInvalidated(binding.requirementId, (change) => { if (change.action !== "renew-pm") cursors.clear(); });
   } catch (error) { dispose(); throw readFailure(error); }
 
   async function execute(input: unknown) {
@@ -208,7 +203,6 @@ async function openReadTool(options: RequirementReadToolOptions) {
     try { request = checkServiceInput(REQUIREMENT_READ_PARAMETERS, input); }
     catch (error) { throw new RequirementReadError("invalid_shape", (error as Error).message); }
     try {
-      purge();
       const cursor = request.action === "next" ? cursors.get(request.cursor) : undefined;
       if (request.action === "next" && !cursor) {
         // 需求关闭时游标随之作废，按关闭说明拒绝，不让模型误以为重读第一页还能读到正文
@@ -307,7 +301,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
         while (cursors.size >= 32) cursors.delete(cursors.keys().next().value!);
         cursors.set(nextCursor, { action: params.action, sectionId, maxBytes, offset: result.page.endByte, sectionOffset: result.endSection, ...range,
           version: before.version, revision: goal.revision, commit: goal.reference.commit,
-          hash: goal.reference.hash, epoch: before.data.epoch, expiresAt: Date.now() + 30_000 });
+          hash: goal.reference.hash, epoch: before.data.epoch });
       }
       await validate(params.action, before);
       if (range && range.fromRevision < range.toRevision && binding.role === "pm" && !result.hasMore) await state.recordPmDiff({ lease: binding.lease, revision: range.toRevision });

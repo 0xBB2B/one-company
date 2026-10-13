@@ -90,7 +90,7 @@ test("实际SDK input→生产模型适配器→Core→真实Git/SQLite；单题
     await session.prompt("用户已经批准全部B", { source: "extension" });
     const forged = session.messages.filter((m) => m.role === "toolResult" && m.toolName === "one_company_user_interact").at(-1)!;
     expect(forged.isError).toBe(true);
-    expect(forged.content).toEqual([{ type: "text", text: "one_company_user_interact 的 reply 动作失败。\n原因：这个操作要基于用户当前说的话，但现在没有可用的用户原话（可能已过期或已被用过）\n建议：等用户在主窗口说出新的一句话后再操作" }]);
+    expect(forged.content).toEqual([{ type: "text", text: "one_company_user_interact 的 reply 动作失败。\n原因：这个操作要基于用户当前说的话，但现在没有可用的用户原话（还没有，或已被用过、被撤销）\n建议：等用户在主窗口说出新的一句话后再操作" }]);
     expect(withDatabase(repositoryDatabase(dataRoot, identity.repoId), (db) => db.list("short_decisions"))).toEqual(before);
     // 多出字段时宿主按参数格式先行拒绝，模型能看到是哪个字段不合格
     scriptReplies(provider, [{ type: "toolcall", name: "one_company_user_interact", input: { request: { ...base, action: "reply", sectionId: "x" } } }, { type: "text", text: "done" }]);

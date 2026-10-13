@@ -5,7 +5,7 @@ import type { FailureAdvice } from "./tool-failure.ts";
 export const KNOWLEDGE_QUERY_LIMITS = Object.freeze({
   queryCodepoints: 256, pageSize: 20, pageBytes: 49_152, minimumPageBytes: 4_096,
   snippetCodepoints: 800, snippetBytes: 4_096, itemBytes: 24_576,
-  cachedItems: 500, sessions: 8, cacheBytes: 2 * 1024 * 1024, ttlMs: 30_000,
+  cachedItems: 500, sessions: 8, cacheBytes: 2 * 1024 * 1024,
 });
 
 export type KnowledgeFirstPageQuery = (

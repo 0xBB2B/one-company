@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
-import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import { uuidv7 } from "../runtime/database.ts";
 import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../runtime/main-intake-interaction.ts";
@@ -157,4 +157,17 @@ test("M8D-AC9：提问以外的动作不改显示，交给 pi 的默认样式", 
   const context = { args: { request: base }, state: {}, isError: false, invalidate: () => {} } as never;
   expect(() => tool.renderCall!({ request: base } as never, renderTheme as never, context)).toThrow();
   expect(() => tool.renderResult!({ content: [], details: {} } as never, { expanded: false, isPartial: false }, renderTheme as never, context)).toThrow();
+});
+
+test("提问记录块在 pi 的工具显示组件里只画一份问题和回答，标题换成需求名", () => {
+  initTheme("dark");
+  const tool = createUserInteractTool({ interaction: {} as never });
+  const args = { request: { ...base, action: "ask", question: "起跳时机怎么定？", rootCheck: "根源", choices: CHOICES, scope: "仅起跳", actions: [], unitIds: ["A"] } };
+  const component = new ToolExecutionComponent(tool.name, "call", args, undefined, tool, { requestRender: () => {} } as never, "/");
+  const caption = "按住空格时长控制跳跃高度（第 2 版）";
+  component.updateResult({ content: [], details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "选第 1 项：实施 A（推荐）", choice: 1 } }, isError: false } as never);
+  const text = component.render(80).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  expect(text.split("起跳时机怎么定？").length - 1).toBe(1);
+  expect(text.split("你的回答").length - 1).toBe(1);
+  expect(text).toContain(caption);
 });

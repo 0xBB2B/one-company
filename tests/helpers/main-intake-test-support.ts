@@ -18,13 +18,13 @@ export function ctxFor(fixture: PmIntakeFixture, signal: AbortSignal, manager: o
   } as unknown as ExtensionContext;
 }
 
-export function bridgeFor(fixture: PmIntakeFixture, ttl?: number) {
+export function bridgeFor(fixture: PmIntakeFixture) {
   const controller = new AbortController(), signal = controller.signal;
   const manager = { getSessionId: () => fixture.identity.sessionId };
   const ctx = ctxFor(fixture, signal, manager);
   const path = fixture.state.read(fixture.requirementId).data.workspace!.path, hostState = { healthy: true };
   const bridge = new MainIntakeInteraction({ dataRoot: fixture.dataRoot,
-    authorization: fixture.host, callTtlMs: ttl,
+    authorization: fixture.host,
     resolveHost: () => {
       if (!hostState.healthy) throw new Error("host_unavailable");
       return { windowId: fixture.identity.windowId, sessionId: fixture.identity.sessionId,

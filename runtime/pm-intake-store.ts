@@ -39,14 +39,12 @@ const PM_INTAKE_STORE_ADVICE: Record<string, FailureAdvice> = {
   incomplete_scenario_directory: { why: "接手出处目录缺少必需场景", next: "停止操作，不要重试；把这段原因告诉用户" },
   intake_records_changed: { why: "接手复核记录在处理期间被改动", next: "重新发起一次" },
   invalid_binding: { why: "PM 绑定记录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
-  invalid_deadline: { why: "复核期限设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   invalid_repo: { why: "仓库编号不合规", next: "改用当前工作区列出的仓库编号" },
   invalid_request: { why: "复核请求不合规", next: "用 forward 重新取当前的复核请求" },
   invalid_requirement: { why: "需求编号不合规", next: "核对需求编号" },
   invalid_shape: { why: "接手复核记录格式不合规", next: "按原因改正后重试" },
   invalid_source_directory: { why: "接手出处目录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   invalid_time: { why: "系统时间不可用", next: "停止操作，不要重试；把这段原因告诉用户" },
-  main_deadline_elapsed: { why: "复核已超过期限", next: "用 forward 重新取当前的复核请求" },
   manifest_binding_changed: { why: "批准清单绑定已变化", next: "重新读取需求后按最新版本再试" },
   operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "换一个新生成的操作编号重试" },
   pm_missing: { why: "这个需求当前没有 PM", next: "先派出 PM" },
@@ -545,20 +543,16 @@ export class PmIntakeStore {
   readonly #repoId: string;
   readonly #now: () => number;
   readonly #hasInjectedClock: boolean;
-  readonly #deadlineMonotonic: number | undefined;
   readonly #proofs = new WeakMap<object, CurrentClaim>();
   readonly #requests = new WeakMap<object, RequestClaim>();
   readonly #reviews = new WeakMap<object, ReviewClaim>();
 
-  constructor(options: { dataRoot: string; repoId: string; now?: () => number; deadlineMonotonic?: number }) {
+  constructor(options: { dataRoot: string; repoId: string; now?: () => number }) {
     if (!HASH.test(options.repoId)) deny("invalid_repo");
-    if (options.deadlineMonotonic !== undefined &&
-      (!Number.isFinite(options.deadlineMonotonic) || options.deadlineMonotonic < 0)) deny("invalid_deadline");
     this.#dataRoot = options.dataRoot;
     this.#repoId = options.repoId;
     this.#hasInjectedClock = options.now !== undefined;
     this.#now = options.now ?? Date.now;
-    this.#deadlineMonotonic = options.deadlineMonotonic;
   }
 
   #time(): number {
@@ -567,16 +561,10 @@ export class PmIntakeStore {
     return value;
   }
 
-  #mainDeadline(): void {
-    if (this.#deadlineMonotonic !== undefined && performance.now() >= this.#deadlineMonotonic) deny("main_deadline_elapsed");
-  }
-
   #clockAfter(callback?: () => void): { base: number; sampledAt: number } {
     // 单调起点包住时钟采样与最后授权回调；回调之后不再调用注入时钟。
-    this.#mainDeadline();
     const sampledAt = performance.now(), first = this.#time(), second = this.#time();
     callback && syncCallback(callback);
-    this.#mainDeadline();
     return { base: Math.max(first, second), sampledAt };
   }
 
@@ -590,7 +578,6 @@ export class PmIntakeStore {
   /** 扫描、摘要和结果复制完成后只比较数值，不重新调用授权或注入时钟。 */
   #ready<T>(result: T, claim: { leaseExpiresAt: number }, clock: { base: number; sampledAt: number }): T {
     if (claim.leaseExpiresAt <= this.#observedAt(clock)) deny("stale_pm_lease");
-    this.#mainDeadline();
     return result;
   }
 

@@ -23,8 +23,6 @@ export interface RequirementManageExtensionDeps {
   readonly openService?: OpenRequirementService;
   /** 隔离测试注入；缺省使用读取批准清单与 PM 私有会话的真实提供方。 */
   readonly pmIntakeProviders?: MainIntakeProviders;
-  /** 仅隔离测试或可信宿主用于缩短在途调用期限。 */
-  readonly pmIntakeCallTtlMs?: number;
   readonly windowReady?: typeof windowReady;
   readonly windowContext?: typeof windowContext;
 }
@@ -51,8 +49,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   const interaction = new MainRequirementInteraction({ dataRoot: root,
     authorization, resolveHost, ...(deps.openService ? { openService: deps.openService } : {}) });
   const intake = new MainIntakeInteraction({ dataRoot: root, authorization, resolveHost,
-    providers: deps.pmIntakeProviders ?? createPmIntakeProviders(root),
-    ...(deps.pmIntakeCallTtlMs !== undefined ? { callTtlMs: deps.pmIntakeCallTtlMs } : {}) });
+    providers: deps.pmIntakeProviders ?? createPmIntakeProviders(root) });
   let unregisterShutdown: (() => void) | undefined;
   const connections: Array<() => void> = [];
   const shutdown = () => { mention = undefined; for (const stop of connections.splice(0)) stop(); intake.shutdown(); interaction.shutdown(); authorization.shutdown(); };

@@ -46,7 +46,6 @@ function visibleView(context: ControlledProvider["requests"][number]): Record<st
 async function withSdkWorld(
   run: (world: SdkWorld) => Promise<void>,
   options: {
-    callTtlMs?: number;
     extraExtension?: (pi: ExtensionAPI) => void;
     setupFaultAfter?: "fixture" | "home" | "daemon" | "before-client";
     cleanupFaultAt?: "session_shutdown";
@@ -273,8 +272,7 @@ async function withSdkWorld(
     const provider = registerControlledProvider(runtime, { providerId: "pm-intake-sdk", modelId: "controlled" });
     const extensions = [(pi: ExtensionAPI) => requirementManageExtension(pi, { dataRoot: fixture!.dataRoot, authorization,
       windowReady: async () => window, windowContext: () => window,
-      pmIntakeProviders: { sourceDirectoryProvider: fixture!.sourceProvider, submissionProvider: fixture!.submissionProvider },
-      ...(options.callTtlMs !== undefined ? { pmIntakeCallTtlMs: options.callTtlMs } : {}) })];
+      pmIntakeProviders: { sourceDirectoryProvider: fixture!.sourceProvider, submissionProvider: fixture!.submissionProvider } })];
     if (options.extraExtension) extensions.push(options.extraExtension);
     const loader = new DefaultResourceLoader({ cwd: workspace.path, agentDir: home.agentDir,
       settingsManager: SettingsManager.inMemory(), noExtensions: true, noSkills: true, noPromptTemplates: true,
@@ -468,19 +466,3 @@ test("真实SDK的后置block、preflight abort与execute failure各超过32次�
   } });
 }, 60_000);
 
-test("真实SDK后置block等待过期超过32次时timer与终态均回收详细材料", async () => {
-  await withSdkWorld(async ({ fixture, session, provider }) => {
-    for (let index = 0; index < 33; index++) {
-      setReplies(provider, [{ type: "toolcall", name: "one_company_user_interact", input: { request: ask(fixture) } }, { type: "text", text: "next" }]);
-      await session.prompt(`expired-${index}`, { source: "rpc" });
-      expect(JSON.stringify(intakeResults(session).at(-1)!.content)).not.toContain("tool_call_limit");
-    }
-  }, { callTtlMs: 5, extraExtension: (pi) => {
-    pi.on("tool_call", async (event) => {
-      if (event.toolName === "one_company_user_interact" && event.input.request?.purpose === "pm-intake") {
-        await new Promise((resolve) => setTimeout(resolve, 12));
-        return { block: true, reason: "expired-after-intake" };
-      }
-    });
-  } });
-}, 40_000);
