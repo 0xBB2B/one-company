@@ -996,6 +996,142 @@ describe("EPERM 探测结果", () => {
   }, LONG_TIMEOUT);
 });
 
+function epermOnGroupProbe(failTimes: number): { kill: (pid: number, signal: NodeJS.Signals | 0) => void; probes: () => number } {
+  let probes = 0;
+  return {
+    probes: () => probes,
+    kill: (pid, signal) => {
+      if (pid < 0 && signal === 0 && probes++ < failTimes) {
+        throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+      }
+      process.kill(pid, signal);
+    },
+  };
+}
+
+describe("进程组探测短暂 EPERM", () => {
+  test("停止时进程组探测前两次报 EPERM 后恢复：任务最终 stopped 且进程确实不在", async () => {
+    const eperm = epermOnGroupProbe(2);
+    const registry = makeRegistry({ kill: eperm.kill });
+    const taskId = randomUUID();
+    const started = await registry.spawn({
+      taskId,
+      host: HOST_MAIN,
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      mode: "background",
+      runToken: randomUUID(),
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    trackPgid(started.task.pgid);
+
+    const stopped = await registry.stop(taskId);
+    expect(stopped.ok).toBe(true);
+    if (!stopped.ok) return;
+    expect(stopped.task.status).toBe("stopped");
+    expect(stopped.task.activity).toBe("ended");
+    expect(stopped.task.reason).toBeUndefined();
+    expect(pidAlive(started.task.pgid)).toBe(false);
+    expect(eperm.probes()).toBeGreaterThanOrEqual(2);
+  }, LONG_TIMEOUT);
+
+  test("停止时进程组探测一直报 EPERM：15 秒期限到后 uncertain，原因是停止超时而非 kill EPERM", async () => {
+    const timeSource = createFakeTimeSource();
+    const eperm = epermOnGroupProbe(Number.POSITIVE_INFINITY);
+    let termSent = false;
+    const registry = makeRegistry({
+      clock: createClock({ timeSource }),
+      ps: async () => [],
+      kill: (pid, signal) => {
+        if (signal === "SIGTERM") termSent = true;
+        eperm.kill(pid, signal);
+      },
+    });
+    const taskId = randomUUID();
+    const started = await registry.spawn({
+      taskId,
+      host: HOST_MAIN,
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      mode: "background",
+      runToken: randomUUID(),
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    trackPgid(started.task.pgid);
+
+    const stopPromise = registry.stop(taskId);
+    await waitFor(() => termSent, 3_000);
+    await timeSource.waitPending();
+    await timeSource.advanceAsync(15_500);
+    const stopped = await stopPromise;
+    expect(stopped.ok).toBe(true);
+    if (!stopped.ok) return;
+    expect(stopped.task.status).toBe("uncertain");
+    expect(stopped.task.reason).toBe("停止超时未确认");
+  }, LONG_TIMEOUT);
+
+  test("巡检时进程组探测第一次报 EPERM 后恢复：自然退出的任务最终自动变为 exited", async () => {
+    const eperm = epermOnGroupProbe(1);
+    const registry = makeRegistry({ kill: eperm.kill });
+    const taskId = randomUUID();
+    const started = await registry.spawn({
+      taskId,
+      host: HOST_MAIN,
+      command: "sh",
+      args: ["-c", "sleep 0.3"],
+      mode: "background",
+      runToken: randomUUID(),
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    trackPgid(started.task.pgid);
+
+    await waitFor(() => registry.get(taskId)?.status === "exited", 5_000);
+    expect(registry.get(taskId)?.activity).toBe("ended");
+    expect(eperm.probes()).toBeGreaterThanOrEqual(1);
+  }, LONG_TIMEOUT);
+
+  test("停止时进程组探测报 EINVAL：不等 15 秒期限就立刻 uncertain，原因是 kill EINVAL", async () => {
+    const timeSource = createFakeTimeSource();
+    let termSent = false;
+    const registry = makeRegistry({
+      clock: createClock({ timeSource }),
+      ps: async () => [],
+      kill: (pid, signal) => {
+        if (signal === "SIGTERM") termSent = true;
+        if (pid < 0 && signal === 0) {
+          throw Object.assign(new Error("kill EINVAL"), { code: "EINVAL" });
+        }
+        process.kill(pid, signal);
+      },
+    });
+    const taskId = randomUUID();
+    const started = await registry.spawn({
+      taskId,
+      host: HOST_MAIN,
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      mode: "background",
+      runToken: randomUUID(),
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    trackPgid(started.task.pgid);
+
+    const stopPromise = registry.stop(taskId);
+    await waitFor(() => termSent, 3_000);
+    await timeSource.waitPending();
+    await timeSource.advanceAsync(1_000);
+    const stopped = await stopPromise;
+    expect(stopped.ok).toBe(true);
+    if (!stopped.ok) return;
+    expect(stopped.task.status).toBe("uncertain");
+    expect(stopped.task.reason).toBe("kill EINVAL");
+  }, LONG_TIMEOUT);
+});
+
 describe("逃逸后代探测 EPERM", () => {
   test("逃逸后代 pid 的 0 号信号探测抛 EPERM 时，任务判定为 uncertain 而非 stopped", async () => {
     const escapee = spawnChildProcess(process.execPath, ["-e", IDLE_SCRIPT], { stdio: "ignore" });
