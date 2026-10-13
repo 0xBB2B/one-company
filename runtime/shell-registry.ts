@@ -72,7 +72,7 @@ export interface SpawnInput {
 export type SpawnResult = { ok: true; task: TaskRecord } | { ok: false; reason: string };
 export type StopResult = { ok: true; task: TaskRecord } | { ok: false; reason: string };
 export type AdoptOrphansResult = { ok: true; tasks: TaskRecord[] } | { ok: false; reason: string };
-export type ProbeGroupResult = { ok: true; state: "alive" | "gone" } | { ok: false; reason: string };
+export type ProbeGroupResult = { ok: true; state: "alive" | "gone" } | { ok: false; reason: string; code?: string };
 
 export interface ShellRegistryProbes {
   kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
@@ -140,7 +140,7 @@ export function probeProcessGroup(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ESRCH") return { ok: true, state: "gone" };
-    return { ok: false, reason: (error as Error).message ?? String(error) };
+    return { ok: false, reason: (error as Error).message ?? String(error), code };
   }
 }
 
@@ -790,7 +790,8 @@ export class ShellRegistry {
         }
 
         const probe = probeProcessGroup(pgid, this.kill);
-        if (!probe.ok) {
+        // macOS 上子进程已退出但还没被回收时，探测它的进程组会短暂报 EPERM，继续等即可
+        if (!probe.ok && probe.code !== "EPERM") {
           this.markUncertain(task, probe.reason);
           finish({ ok: true, task });
           return;
@@ -805,7 +806,7 @@ export class ShellRegistry {
         }
         const descendantsAlive = descendantProbes.filter((p) => p.state === "alive").length;
 
-        if (probe.state === "gone" && descendantsAlive === 0) {
+        if (probe.ok && probe.state === "gone" && descendantsAlive === 0) {
           // 每次终态确认都重新扫描信号后的成员，不能复用停止前的范围。
           const finalEntries = await this.trySample();
           if (finished) return;
