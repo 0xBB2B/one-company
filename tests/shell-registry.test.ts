@@ -314,6 +314,32 @@ describe("存活探测", () => {
     expect(registry.get(taskId)?.exitCode).toBe(0);
   }, LONG_TIMEOUT);
 
+  test("巡检查启动时刻时进程恰好退出、查不到，任务正常结束后 identityVerified 仍为 true", async () => {
+    let calls = 0;
+    const registry = makeRegistry({
+      pidStartedAt: async (pid) => {
+        calls += 1;
+        if (calls === 1) return 1_000_000;
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          try { process.kill(-pid, 0); } catch { break; }
+          await sleepMs(20);
+        }
+        return null;
+      },
+    });
+    const taskId = randomUUID();
+    const result = await registry.spawn({ taskId, host: HOST_MAIN, command: "sh", args: ["-c", "sleep 0.3"], mode: "background", runToken: randomUUID() });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    trackPgid(result.task.pgid);
+    expect(result.task.identityVerified).toBe(true);
+
+    await waitFor(() => registry.get(taskId)?.activity === "ended", 5_000);
+    expect(calls).toBeGreaterThan(1);
+    expect(registry.get(taskId)).toMatchObject({ status: "exited", activity: "ended", identityVerified: true });
+  }, LONG_TIMEOUT);
+
   test("被动巡检发现根进程启动时刻不一致（pgid 被复用）时任务变为 uncertain", async () => {
     let baselineTaken = false;
     const registry = makeRegistry({
