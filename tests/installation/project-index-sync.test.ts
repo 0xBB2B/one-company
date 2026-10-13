@@ -26,7 +26,7 @@ async function initialize(host: Host) {
   const reply = await host.call("project", { action: "init" });
   expect(result(reply).isError, JSON.stringify(result(reply))).toBe(false);
   expect(result(reply).details).toMatchObject({ action: "init", status: "ready" });
-  expect(reply.node).toBe(process.execPath); expect(reply.version).toBe(process.version); expect(reply.sdkVersion).toBe("1.1.0");
+  expect(reply.node).toBe(process.execPath); expect(reply.version).toBe(process.version); expect(reply.sdkVersion).toBe("1.2.0");
   expect(reply.onPayloadCalls).toBeGreaterThan(0); expect(reply.payloadEvents).toBe(reply.onPayloadCalls);
   return reply;
 }
