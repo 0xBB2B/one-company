@@ -201,9 +201,9 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
     .toMatchObject({ checkRoundId: null, review: { attemptRunId: implRun.id } });
   expect(all.some((run) => run.role === "one-company.explore")).toBe(false);
   const systemPrompts = w.provider.requests.map((request) => request.systemPrompt ?? "");
-  for (const persona of ["你是一个活动需求的唯一 PM", "你是实现代理", "你是独立审查代理", "你是黑盒验收代理"]) expect(systemPrompts.some((prompt) => prompt.includes(persona))).toBe(true);
+  for (const persona of ["你是一个活动需求的唯一 PM", "按 TDD 先红后绿", "核对 worker 定义的规范", "按测试名写明的期望结果"]) expect(systemPrompts.some((prompt) => prompt.includes(persona))).toBe(true);
   expect(systemPrompts.some((prompt) => prompt.includes("你是只读检索代理"))).toBe(false);
-  const qaPrompt = systemPrompts.find((prompt) => prompt.includes("你是黑盒验收代理"))!;
+  const qaPrompt = systemPrompts.find((prompt) => prompt.includes("按测试名写明的期望结果"))!;
   expect(qaPrompt).toContain("已完成任务的审查结论");
   expect(qaPrompt).toContain("impl：实现符合已批准目标");
 });

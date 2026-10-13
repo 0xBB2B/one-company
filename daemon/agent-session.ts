@@ -20,6 +20,8 @@ export interface CreateAgentSessionOptions {
   runId: string;
   cwd: string;
   definition: RoleDefinition;
+  /** 本职责的流程规矩正文，排在定义正文之后。 */
+  roleRules: string;
   /** 程序按当前授权数据组装的任务上下文；不含父会话历史。 */
   context: string;
   coreTools: ToolDefinition[];
@@ -79,8 +81,10 @@ export async function withinRoots(cwd: string, candidate: string, roots: string[
   return false;
 }
 
-export function buildAgentPrompt(definition: RoleDefinition, context: string, mcpStatus: string): string {
-  return [definition.body.trim(), "", loadPackageRules("shared"), "", `## 本次任务\n${context}`, "", `## MCP 状态\n${mcpStatus}`].join("\n");
+export function buildAgentPrompt(definition: RoleDefinition, roleRules: string, context: string, mcpStatus: string): string {
+  const body = definition.body.trim();
+  const rulesHeading = body ? `## 职责规矩\n以下是 ${definition.role} 职责的流程规矩，由程序提供；与上面的定义正文冲突时以这里为准。` : "## 职责规矩";
+  return [...(body ? [body, ""] : []), rulesHeading, roleRules, "", loadPackageRules("shared"), "", `## 本次任务\n${context}`, "", `## MCP 状态\n${mcpStatus}`].join("\n");
 }
 
 export async function checkAgentToolCall(event: ToolCallEvent, ctx: {
@@ -160,7 +164,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
 
   const extensionFactory = async (pi: ExtensionAPI): Promise<void> => {
     const mcpResult = registerMcpServers(pi, join(agentDir, "mcp.json"), definition.mcp ?? []);
-    const prompt = buildAgentPrompt(definition, options.context, describeMcpStatus(mcpResult));
+    const prompt = buildAgentPrompt(definition, options.roleRules, options.context, describeMcpStatus(mcpResult));
     pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${prompt}` }));
     // 模型调用前计数：已用满 N 轮时在第 N+1 次请求发出前中止，不靠提示词或模型自报
     pi.on("turn_start", () => {

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { Clock } from "../runtime/clock.ts";
 import type { NetworkPauseGate } from "../runtime/network-pause.ts";
+import { loadRoleRules } from "../runtime/package-rules.ts";
 import type { RoleCatalogEntry } from "../runtime/roles.ts";
 import type { RunKind, RunRecord, StopCause, StopReason } from "../runtime/run-store.ts";
 import { isTerminalState, RunStore } from "../runtime/run-store.ts";
@@ -133,7 +134,7 @@ async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly 
 }
 
 async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: string, reportOf: (runId: string) => Pick<Verdict, "summary" | "verificationIds"> | undefined,
-  maxTurns: number): Promise<string> {
+  maxTurns: number, worker: { name: string; body: string }): Promise<string> {
   const detail = await readTaskDetail(task);
   return [
     `审查任务：${task.key}（${task.taskId}，版本 ${task.version}）的 worker 尝试 ${attemptRunId}`,
@@ -144,6 +145,7 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     `只审可写范围内的改动：${task.writePaths.join("、")}`,
     ...(task.ui ? [`本任务是界面任务，用户已通过的原型（用 read 读取，对照它核对改动后的界面）：${approvedPrototypeLine(task) ?? "无"}`] : []),
+    ...(worker.body.trim() ? [`被审任务所用 worker 定义（${worker.name}）的正文：\n${worker.body.trim()}`] : []),
     `查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff ${baseCommit} -- ${task.writePaths.join(" ")}（${baseCommit} 是本需求工作区的基线提交）`,
     "worker 各次尝试（先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红；引用的验证记录用 verification_run action=status 逐条查看）：",
     ...task.attempts.map((attempt, index) => {
@@ -352,7 +354,7 @@ export class RunManager {
           },
           catalog: (role, cursor) => this.agentCatalog(role, cursor),
         } });
-      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
+      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition, roleRules: loadRoleRules("pm"),
         context: withSkills(await this.withConventions(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
           pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId))), resolved.skillsContext), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ requirementId: input.requirementId, worktree: workspace.path, branch: workspace.branch, alive,
           checkPhaseActive, writeScope: () => withDatabase(this.database, (db) => readPlanIn(db, input.requirementId)?.tasks ?? []).flatMap((task) => task.writePaths) }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, alive, checkPhaseActive,
@@ -481,11 +483,17 @@ export class RunManager {
     try {
       tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
         pmLease: lease, workspace, epoch: record.epoch, task, alive, ...(review ? { review: { attemptRunId: attemptRunId! } } : {}), ...(prototype ? { prototype: true } : {}) });
-      const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns)
+      // 只取正文，不核验被审 worker 的模型：它的凭据失效不该挡住审查
+      const workerName = task.agent ?? "worker";
+      const workerEntry = review ? (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
+        .find((entry) => entry.name === workerName && entry.available && entry.definition?.role === "worker") : undefined;
+      const workerDefinition = { name: workerName, body: workerEntry?.definition?.body ?? "" };
+      const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns, workerDefinition)
         : prototype ? await prototypeContext(task, maxTurns)
         : await taskContext(task, maxTurns, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : [],
           task.role === "qa" ? this.approvedPrototypes(task.requirementId) : [approvedPrototypeLine(task)].filter((line) => line !== undefined));
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
+        roleRules: loadRoleRules(review ? "reviewer" : prototype ? "worker-prototype" : role as "worker" | "qa"),
         context: withSkills(await this.withConventions(context), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         ...(role === "qa" && qaPrototypePaths.length ? { hostTools: [...QA_PROTOTYPE_HOST_TOOLS], readRoots: qaPrototypePaths } : {}),
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
@@ -668,7 +676,7 @@ export class RunManager {
       exploreSession: { dataRoot: this.options.dataRoot, repoId: this.repoId }, authorize: () => alive(), verify: sourceHashesMatch, onResearch: (value) => { captured = value; } });
     let handle: AgentSessionHandle;
     try {
-      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, context: withSkills(await this.withConventions(exploreContext(explore, input.maxTurns)), resolved.skillsContext),
+      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, roleRules: loadRoleRules("explore"), context: withSkills(await this.withConventions(exploreContext(explore, input.maxTurns)), resolved.skillsContext),
         coreTools: [toPiTool("result_submit", "提交 research（action=research）：结论、来源、检索范围、未找到、失败、截断与未知项；research 不是 PASS。", RESULT_SUBMIT_PARAMETERS, result),
           ...(source.kind === "web" ? this.webTools(alive) : this.knowledgeTool(runId))],
         readRoots: source.kind === "local_file" ? [source.root] : [], hostTools: source.kind === "local_file" ? ["read", "grep"] : [],

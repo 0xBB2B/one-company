@@ -12,6 +12,7 @@ import { uuidv7 } from "../runtime/database.ts";
 import { decisionPacket } from "../runtime/decision-packet.ts";
 import { TASKS } from "../runtime/plan-manage.ts";
 import type { TaskRecord, TaskSpec } from "../runtime/plan-manage.ts";
+import { loadRoleRules } from "../runtime/package-rules.ts";
 import { PROTOTYPE_MAX_BYTES, prototypeItemId, prototypePath } from "../runtime/prototype.ts";
 import { createResultSubmitTool } from "../runtime/result-submit.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
@@ -288,17 +289,18 @@ test("M8E-AC4：QA 的 read 只放行已通过的原型文件", async () => {
   }
 });
 
-test("M8E-AC4：worker、reviewer、QA、PM 的角色说明与主窗口规范写明原型要求", async () => {
+test("M8E-AC4：worker、reviewer、QA、PM 的职责规矩与主窗口规范写明原型要求", async () => {
   const doc = (path: string) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
-  const worker = await doc("agents/worker.md");
-  for (const phrase of ["单个 HTML 文件，样式和脚本都写在文件里，不依赖构建", "正常、空数据、加载中、出错", "深色背景、等宽字体、固定 80 列", "action=prototype", "实现出来的界面须与它一致"]) expect(worker).toContain(phrase);
-  const reviewer = await doc("agents/reviewer.md");
+  const prototypeWorker = loadRoleRules("worker-prototype");
+  for (const phrase of ["单个 HTML 文件，样式和脚本都写在文件里，不依赖构建", "正常、空数据、加载中、出错", "深色背景、等宽字体、固定 80 列", "action=prototype"]) expect(prototypeWorker).toContain(phrase);
+  expect(loadRoleRules("worker")).toContain("实现出来的界面须与它一致");
+  const reviewer = loadRoleRules("reviewer");
   for (const phrase of ["对照核对改动后的界面", "改了界面但没有用户通过的原型"]) expect(reviewer).toContain(phrase);
-  expect(await doc("agents/qa.md")).toContain("与原型文件逐项对照");
+  expect(loadRoleRules("qa")).toContain("与原型文件逐项对照");
   // M8I-AC1：没有浏览器时按输出与原型文件对照，浏览器实际渲染不列为未验证项，worker 不自己启动浏览器
-  for (const role of ["qa", "reviewer", "worker"]) expect(await doc(`agents/${role}.md`)).toContain("浏览器里的实际渲染不列为未验证项");
-  expect(await doc("agents/worker.md")).toContain("不自己去启动浏览器");
-  const pm = await doc("agents/pm.md");
+  for (const role of ["qa", "reviewer", "worker"]) expect(loadRoleRules(role)).toContain("浏览器里的实际渲染不列为未验证项");
+  expect(loadRoleRules("worker")).toContain("不自己去启动浏览器");
+  const pm = loadRoleRules("pm");
   for (const phrase of ["在计划里把 ui 写成 true", "带 prototype（轮次上限）派 worker 做原型", "不要代为确认"]) expect(pm).toContain(phrase);
   expect(await doc("rules/01-main-session.md")).toContain("你不能替用户登记，提醒用户去面板里选中这一事项按回车确认");
 });
