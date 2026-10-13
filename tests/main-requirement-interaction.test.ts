@@ -252,6 +252,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const payload = JSON.parse(String((verifier.messages[0] as { content: string }).content));
     expect(payload.questions).toEqual([{ question: "短信验证码有效期选哪种？\n选项：1. 5 分钟（推荐）；2. 10 分钟", scope: "仅短信验证码期限" }]);
     expect(verifier.systemPrompt).toContain("被采纳的那一项算用户决定");
+    expect(verifier.systemPrompt).toContain('只含问题与选项名称，推荐项标"（推荐）"');
   });
 
   test("M8M-AC2：本需求的历史问题多到放不进核验器输入时，改草稿照常成功，核验器拿到的是从最新往旧放得下的那些问题", async () => {
@@ -648,7 +649,18 @@ test("M8D-AC9：登记问题后弹出提问窗口，用户选推荐项，主代�
   expect(result).toMatchObject({ status: "answered", answer: { text: "选第 1 项：5 分钟（推荐）", choice: 1 } });
   scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
   await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
-  expect(verifierText(w)).toBe("选第 1 项：5 分钟（推荐）");
+  expect(verifierText(w)).toBe("5 分钟\n更安全");
+});
+
+test("窗口里点选非首项的推荐项，交给核验器的原话就是该项标题加说明，不带序号、推荐标记和推荐理由", async () => {
+  const { w, input, ask } = await askedWorld();
+  const choices = [{ label: "先核对信息完整性，项目名称由用户填写", reason: "不查询项目系统，是否真实和能否按期交付由你判断。" },
+    { label: "你维护项目清单，BOT 匹配项目并核对信息完整性", reason: "按清单确认项目归属；交付可行性仍由你判断。", recommended: true, recommendedReason: "把交付承诺留给你，减少错误承诺。" }];
+  const result = await ask("你维护项目清单，BOT 匹配项目并核对信息完整性", { choices });
+  expect(result).toMatchObject({ status: "answered", answer: { text: "选第 2 项：你维护项目清单，BOT 匹配项目并核对信息完整性（推荐）", choice: 2 } });
+  scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "交付可行性由需求负责人判断。\n" });
+  expect(verifierText(w)).toBe("你维护项目清单，BOT 匹配项目并核对信息完整性\n按清单确认项目归属；交付可行性仍由你判断。");
 });
 
 const TWO_HOURS = 7_200_000;
@@ -694,7 +706,7 @@ test("提问窗口两小时后回答的话成为新的原话，之后立即可�
     await ask("5 分钟");
     scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
     await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
-    expect(verifierText(w)).toBe("选第 1 项：5 分钟（推荐）");
+    expect(verifierText(w)).toBe("5 分钟\n更安全");
   } finally { vi.useRealTimers(); }
 });
 

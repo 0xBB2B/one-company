@@ -477,6 +477,8 @@ test("M8L-AC3：待你裁决经问答窗口给建议：选项文字须与程序�
   expect(w.windows.at(-1)!.title).toContain("事项 · 待你裁决：任务 login 两次未完成");
   const result = await w.register(w.itemId, w.version(), [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
   expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3 });
+  const interpreter = w.provider.requests.filter((request) => request.systemPrompt?.includes("需求解释器")).at(-1)!;
+  expect(JSON.parse(String((interpreter.messages[0] as { content: string }).content)).text).toBe("再给一次机会，轮数上限 3\n再给一次机会，轮数上限 3的理由");
 });
 
 test("M8L-AC3：主代理撰写选项的事项（计划两次被拒）窗口里的回答只作为指示，不能拿去登记任务裁决", async () => {
