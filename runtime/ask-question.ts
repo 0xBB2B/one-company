@@ -15,7 +15,7 @@ export interface AskQuestion { question: string; rootCheck: string; choices: Ask
 
 const text = (value: unknown) => typeof value === "string" && value.trim() !== "";
 
-/** 解释器与草稿核验器只看这段文字：问题加各选项名称，推荐项标"（推荐）"；根源自检与理由只在窗口里给用户看。 */
+/** 问题记录只存问题加各选项名称，推荐项标"（推荐）"；用户点选的那一项连同它的说明另作为用户原话交给模型，根源自检与推荐理由只在窗口里给用户看。 */
 export function askRecordText(ask: AskQuestion): string {
   return `${ask.question}\n选项：${ask.choices.map((choice, i) => `${i + 1}. ${choice.label}${choice.recommended ? "（推荐）" : ""}`).join("；")}`;
 }
