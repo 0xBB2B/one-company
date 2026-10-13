@@ -80,8 +80,8 @@ export interface VerificationView {
 }
 export interface OutputTail { text: string; truncated: boolean }
 const OUTPUT_TAIL_BYTES = 8_192;
-const DEFAULT_TIMEOUT_MS = 600_000;
-const STOP_GRACE_MS = 2_000;
+const DEFAULT_TIMEOUT_MS = 3_600_000;
+const STOP_GRACE_MS = 10_000;
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) freeze(child); Object.freeze(value); }
   return value;

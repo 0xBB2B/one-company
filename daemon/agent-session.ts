@@ -57,7 +57,7 @@ export interface AgentSessionHandle {
 const READ_TOOL_NAMES = new Set(["read", "grep", "find", "ls"]);
 // SDK 读取前会去掉前导 @、展开 ~、解析 file:// 并替换特殊空白；这些写法的真实目标与按字面解析的不同，一律拒绝
 const REWRITTEN_PATH = /^[@~]|^file:|[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/iu;
-const PAUSE_ABORT_TIMEOUT_MS = 5000;
+const PAUSE_ABORT_TIMEOUT_MS = 15_000;
 
 // 候选路径可能尚未创建；沿父目录逐级 realpath，找到已存在的祖先后再拼回后续片段
 export async function bestEffortRealpath(path: string): Promise<string> {

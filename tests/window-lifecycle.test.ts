@@ -1,5 +1,6 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { setTimeout as realDelay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -465,6 +466,41 @@ describe("beforeSwitch / beforeFork 统一 fail-closed 门槛", () => {
     expect(shellRegistry.get(taskId)?.status).toBe("uncertain");
   }, LONG_TIMEOUT);
 
+  test("等本窗口 Shell 停止超过 20 秒才放弃：19.9 秒时还在等，20 秒后取消并提示 20 秒", async () => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const harness = await buildHarness({ cwd: repo.root, kill: () => {} });
+    await triggerSessionStart(harness);
+    const shellRegistry = harness.shellRegistry();
+    if (!shellRegistry) throw new Error("shellRegistry 未创建");
+    const spawned = await shellRegistry.spawn({
+      taskId: randomUUID(),
+      host: { kind: "main", id: windowContext().windowId },
+      command: "sh",
+      args: ["-c", "sleep 30"],
+      mode: "background",
+      runToken: randomUUID(),
+    });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) return;
+    trackPgid(spawned.task.pgid);
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let result: unknown;
+      const switching = harness.fakePi.trigger("session_before_switch", { type: "session_before_switch", reason: "new" }, harness.ctx)
+        .then((value) => { result = value; });
+      await realDelay(200);
+      vi.advanceTimersByTime(19_900);
+      await realDelay(100);
+      expect(result).toBeUndefined();
+      vi.advanceTimersByTime(200);
+      await switching;
+      expect((result as [{ cancel: boolean }])[0].cancel).toBe(true);
+      expect(harness.notifications.map((n) => n.message)).toContain("确认本窗口 Shell 已停止超时（20 秒）");
+    } finally { vi.useRealTimers(); }
+  }, LONG_TIMEOUT);
+
   test("窗口未启动时触发 session_before_switch：取消并通知，不报泛化错误", async () => {
     const fakePi = createFakePi();
     lifecycleExtension(fakePi.pi, { process: createFakeProcess() as unknown as NodeJS.Process });
@@ -526,8 +562,8 @@ describe("连接失败", () => {
   });
 });
 
-describe("session_shutdown 不受 3 秒预算限制", () => {
-  test("Shell 停止需要超过 3 秒才能由注册表判定，session_shutdown 仍等到判定完成", async () => {
+describe("session_shutdown 不受 15 秒退出等待限制", () => {
+  test("Shell 停止需要超过 15 秒才能由注册表判定，session_shutdown 仍等到判定完成", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const harness = await buildHarness({ cwd: repo.root, kill: () => {}, useRealClock: true });
@@ -555,11 +591,11 @@ describe("session_shutdown 不受 3 秒预算限制", () => {
     await harness.fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, harness.ctx);
     const elapsed = Date.now() - start;
 
-    expect(elapsed).toBeGreaterThan(3_000);
+    expect(elapsed).toBeGreaterThan(15_000);
     const finalStatus = shellRegistry.get(taskId)?.status;
     expect(finalStatus).not.toBe("stopping");
     expect(["stopped", "uncertain"]).toContain(finalStatus);
-  }, 15_000);
+  }, 30_000);
 });
 
 describe("installExitSignalHandlers 只覆盖 SIGTERM/SIGHUP，SIGINT 永不挂载", () => {
@@ -620,7 +656,7 @@ describe("退出信号触发窗口清理", () => {
     expect(() => windowContext()).toThrow();
   }, LONG_TIMEOUT);
 
-  test("永不确认的 Shell 不阻塞退出：约 3 秒内完成清理并放弃等待确认", async () => {
+  test("永不确认的 Shell 不阻塞退出：最多等 15 秒后照样完成清理并退出", async () => {
     const repo = await createRepoFixture();
     repoFixtures.push(repo);
     const harness = await buildHarness({ cwd: repo.root, kill: () => {} });
@@ -644,14 +680,17 @@ describe("退出信号触发窗口清理", () => {
     if (!spawned.ok) return;
     trackPgid(spawned.task.pgid);
 
-    // 本用例刻意不推进共享时钟：验证的是退出信号路径自身约 3 秒的放弃等待上限，
-    // 与共享时钟驱动的 ShellRegistry 内部确认超时是两回事，混着推进会掩盖这条独立的墙钟上限
-    const start = Date.now();
-    harness.fakeProcess.emit("SIGHUP");
-
-    await waitFor(() => harness.shutdownCalls.length > 0, 3_300);
-
-    expect(Date.now() - start).toBeLessThan(3_300);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      harness.fakeProcess.emit("SIGHUP");
+      await realDelay(200);
+      vi.advanceTimersByTime(14_700);
+      await realDelay(100);
+      expect(harness.shutdownCalls.length).toBe(0);
+      vi.advanceTimersByTime(300);
+      await realDelay(100);
+      expect(harness.shutdownCalls.length).toBe(1);
+    } finally { vi.useRealTimers(); }
     expect(() => windowContext()).toThrow();
   }, LONG_TIMEOUT);
 });

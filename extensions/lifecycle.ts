@@ -11,8 +11,8 @@ import { ShellRegistry } from "../runtime/shell-registry.ts";
 import type { Host, StopResult } from "../runtime/shell-registry.ts";
 
 const EXIT_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGHUP"];
-const SHELL_STOP_BUDGET_MS = 3_000;
-const BEFORE_SWITCH_STOP_BUDGET_MS = 15_000;
+const SHELL_STOP_BUDGET_MS = 15_000;
+const BEFORE_SWITCH_STOP_BUDGET_MS = 20_000;
 
 export interface LifecycleDeps {
   createClock?: () => Clock;

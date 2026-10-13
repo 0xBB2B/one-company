@@ -99,8 +99,8 @@ interface PersistedTaskRecord {
 const MONITOR_INTERVAL_MS = 150;
 const DESCENDANT_SCAN_THROTTLE_MS = 1_000;
 const STOP_POLL_INTERVAL_MS = 150;
-const STOP_QUIET_WAIT_MS = 1_000;
-const STOP_TIMEOUT_MS = 5_000;
+const STOP_QUIET_WAIT_MS = 10_000;
+const STOP_TIMEOUT_MS = 15_000;
 const STOP_CONFIRM_COUNT = 2;
 const TOKEN_ENV_VAR = "ONE_COMPANY_SHELL_TOKEN";
 const PS_SAMPLE_TIMEOUT_MS = 3_000;
@@ -847,13 +847,8 @@ export class ShellRegistry {
   }
 
   async stopHost(host: Host): Promise<{ taskId: string; result: StopResult }[]> {
-    const results: { taskId: string; result: StopResult }[] = [];
-    for (const task of this.tasks.values()) {
-      if (hostEquals(task.host, host)) {
-        results.push({ taskId: task.taskId, result: await this.stop(task.taskId) });
-      }
-    }
-    return results;
+    const taskIds = [...this.tasks.values()].filter((task) => hostEquals(task.host, host)).map((task) => task.taskId);
+    return Promise.all(taskIds.map(async (taskId) => ({ taskId, result: await this.stop(taskId) })));
   }
 
   async closeOwner(host: Host): Promise<{ taskId: string; result: StopResult }[]> {
