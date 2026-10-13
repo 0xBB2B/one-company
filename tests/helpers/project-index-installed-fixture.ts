@@ -208,7 +208,7 @@ export class InstalledProjectFixture {
     const jiti = await pack(jitiRoot);
     const sdk = (specifier: string) => dirname(dirname(fileURLToPath(import.meta.resolve(specifier))));
     this.sdkRoot = sdk("@earendil-works/pi-coding-agent");
-    assert.equal(JSON.parse(await readFile(join(this.sdkRoot, "package.json"), "utf8")).version, "1.1.0");
+    assert.equal(JSON.parse(await readFile(join(this.sdkRoot, "package.json"), "utf8")).version, "1.2.0");
     await writeFile(join(consumer, "package.json"), JSON.stringify({ name: "m3-installed-consumer", version: "1.0.0", private: true, type: "module", packageManager: "pnpm@11.7.0", dependencies: {
       "@0xbb2b/one-company": `file:${artifact.path}`,
       "@earendil-works/pi-coding-agent": `link:${this.sdkRoot}`,
@@ -376,7 +376,7 @@ export class InstalledProjectFixture {
       assert.ok(!resolve(evidence).startsWith(resolve(sourceRoot)), "证据不得写入产品源码树");
       await mkdir(evidence, { recursive: true, mode: 0o700 });
       await writeFile(join(evidence, `${this.root.split("/").at(-1)}.json`), JSON.stringify({
-        node: process.execPath, version: process.version, sdk: "1.1.0", artifactHash: this.artifactHash,
+        node: process.execPath, version: process.version, sdk: "1.2.0", artifactHash: this.artifactHash,
         root: this.root, preserved: preserve || failures.length > 0,
         artifactFiles: this.artifactFiles, packs: this.packs, finalInput: await installationInput(), registrations: this.registrations, processes,
         probes: await Promise.all(this.probes.map(async (path) => existsSync(path) ? JSON.parse(await readFile(path, "utf8")) : { missing: path })),
@@ -406,7 +406,7 @@ async function runHost(): Promise<void> {
   const ai = await import("@earendil-works/pi-ai");
   const cwd = await realpath(process.cwd()), agentDir = process.env.PI_CODING_AGENT_DIR!;
   const sdkVersion = JSON.parse(await readFile(join(process.env.M3_INSTALLED_SDK!, "package.json"), "utf8")).version as string;
-  assert.equal(sdkVersion, "1.1.0");
+  assert.equal(sdkVersion, "1.2.0");
   const runtime = await sdk.ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, modelsStorePath: join(agentDir, "models-store.json"), refreshOnCreate: false });
   type Reply = { calls?: ToolCall[]; text?: string };
   const queue: Reply[] = [], approvals: boolean[] = [];

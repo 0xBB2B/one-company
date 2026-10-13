@@ -55,7 +55,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     const toolResults: Array<{ details: Record<string, unknown>; text: string }> = [];
     const invoke = async (input: Record<string, unknown>) => {
       const reply = await host.call("project", input);
-      expect(reply.node).toBe(process.execPath); expect(reply.version).toBe(process.version); expect(reply.sdkVersion).toBe("1.1.0");
+      expect(reply.node).toBe(process.execPath); expect(reply.version).toBe(process.version); expect(reply.sdkVersion).toBe("1.2.0");
       expect(reply.onPayloadCalls).toBeGreaterThan(0); expect(reply.payloadEvents).toBe(reply.onPayloadCalls);
       const message = reply.messages.filter((item) => item.role === "toolResult" && item.toolName === "one_company_project_manage").at(-1);
       expect(message).toBeDefined(); expect(message!.isError, JSON.stringify(message!.content)).toBe(false);
