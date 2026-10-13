@@ -14,6 +14,8 @@ export interface ExploreRequest {
   maxSources?: number;
   maxResultBytes?: number;
 }
+/** 主窗口面板上一条运行中的检索。 */
+export interface MainExploreOverview { runId: string; source: "web" | "local"; question: string; turns: number; maxTurns: number; elapsedMs: number }
 export const EXPLORE_WEB_QUERY = { webQuery: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })) };
 export function exploreSource(params: { webQuery?: string }): ExploreSourceRequest {
   return params.webQuery !== undefined ? { kind: "web", query: params.webQuery } : { kind: "local_file" };

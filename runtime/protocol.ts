@@ -18,6 +18,7 @@ export const METHODS = [
   "agents.dispatchPm",
   "agents.dispatchExplore",
   "explore.result",
+  "explore.list",
   "pm.overview",
   "pm.packet",
   "pm.prototype",
@@ -33,6 +34,7 @@ export const METHODS = [
 export const EVENTS = [
   "pm.overview.changed",
   "explore.finished",
+  "explore.changed",
 ] as const;
 
 type RequestFrame = { t: "req"; id: string; method: string; params: Record<string, unknown> };
@@ -102,6 +104,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
     maxTurns: Type.Integer({ minimum: 1, maximum: 100 }), model: Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false }),
     thinking: Type.String() }, { additionalProperties: false }),
   "explore.result": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
+  "explore.list": Type.Object({}, { additionalProperties: false }),
   "pm.packet": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),
   "pm.prototype": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),
   "pm.prototypeDecide": Type.Object({ requirementId: Type.String(), itemId: Type.String(), itemVersion: Type.String(),

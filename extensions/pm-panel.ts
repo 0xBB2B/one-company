@@ -7,7 +7,8 @@ import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../runtime/daemon-client.ts";
 import { BottomDock } from "../runtime/dock.ts";
 import type { PendingItem, PmOverview } from "../runtime/pm-overview.ts";
 import { mountPmPanel } from "../runtime/pm-panel.ts";
-import type { PmPanelEntry } from "../runtime/pm-panel.ts";
+import type { ExplorePanelEntry, PmPanelEntry } from "../runtime/pm-panel.ts";
+import type { MainExploreOverview } from "../runtime/explore-dispatch.ts";
 import type { PrototypeConfirmation } from "../runtime/prototype.ts";
 import { chooseOrWriteWindow, mutedLines } from "../runtime/question-window.ts";
 import { sanitizeText } from "../runtime/text-sanitize.ts";
@@ -55,7 +56,7 @@ function formatBytes(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : bytes < 1_048_576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
-/** 主窗口 PM 面板：向各仓库守护进程拉取 PM 概览，概览变化信号到达时重拉；事项按回车插入决策包并由主代理接着回复。 */
+/** 主窗口 PM 面板：向各仓库守护进程拉取 PM 概览与本窗口派出的检索，变化信号到达时重拉；事项按回车插入决策包并由主代理接着回复。 */
 export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps = {}): void {
   const resolveWindowReady = deps.windowReady ?? defaultWindowReady;
   const resolveClock = deps.createClock ?? (() => createClock());
@@ -72,6 +73,7 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
       if (myGeneration !== generation) return;
       const clock = resolveClock();
       const byRepo = new Map<string, PmPanelEntry[]>();
+      const exploresByRepo = new Map<string, ExplorePanelEntry[]>();
       const client = (repoId: string) => window.clients.forRepo(repoId);
       const mounted = mountPmPanel({ mode: ctx.mode, hasUI: ctx.hasUI, ui: ctx.ui }, {
         now: () => Date.now(),
@@ -117,7 +119,7 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
       }
       if (!mounted) return;
       const { panel, host } = mounted;
-      const render = () => { panel.update([...byRepo.values()].flat()); host.requestRender(); };
+      const render = () => { panel.update([...byRepo.values()].flat()); panel.updateExplores([...exploresByRepo.values()].flat()); host.requestRender(); };
       async function refresh(repoId: string): Promise<void> {
         const target = client(repoId);
         if (!target || target.state().status !== "connected") { byRepo.delete(repoId); render(); return; }
@@ -129,14 +131,27 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
         } catch { byRepo.delete(repoId); }
         render();
       }
+      async function refreshExplores(repoId: string): Promise<void> {
+        const target = client(repoId);
+        if (!target || target.state().status !== "connected") { exploresByRepo.delete(repoId); render(); return; }
+        try {
+          const result = await target.call("explore.list", {});
+          if (myGeneration !== generation) return;
+          const items = Array.isArray(result.items) ? result.items as MainExploreOverview[] : [];
+          exploresByRepo.set(repoId, items.map((explore) => ({ repoId, explore, fetchedAt: Date.now() })));
+        } catch { exploresByRepo.delete(repoId); }
+        render();
+      }
+      const refreshAll = (repoId: string) => { void refresh(repoId); void refreshExplores(repoId); };
       const unsubscribes: Array<() => void> = [];
       for (const repo of window.workspace.repos) {
         const target = client(repo.repoId);
         if (!target) continue;
         unsubscribes.push(target.subscribe("pm.overview.changed", () => { void refresh(repo.repoId); }));
-        unsubscribes.push(target.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, () => { void refresh(repo.repoId); }));
-        unsubscribes.push(target.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => { byRepo.delete(repo.repoId); render(); }));
-        void refresh(repo.repoId);
+        unsubscribes.push(target.subscribe("explore.changed", () => { void refreshExplores(repo.repoId); }));
+        unsubscribes.push(target.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, () => refreshAll(repo.repoId)));
+        unsubscribes.push(target.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => { byRepo.delete(repo.repoId); exploresByRepo.delete(repo.repoId); render(); }));
+        refreshAll(repo.repoId);
       }
       const dock = new BottomDock({
         terminalInput: { onInput: (handler) => ctx.ui.onTerminalInput(handler) },
@@ -149,7 +164,7 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
       dock.attach();
       registerDock(dock);
       const ticker = clock.setIntervalExcludingSleep(() => { panel.tick(); host.requestRender(); }, TICK_MS);
-      const resync = clock.setIntervalExcludingSleep(() => { for (const repo of window.workspace.repos) void refresh(repo.repoId); }, RESYNC_MS);
+      const resync = clock.setIntervalExcludingSleep(() => { for (const repo of window.workspace.repos) refreshAll(repo.repoId); }, RESYNC_MS);
       teardown = () => {
         clock.clearTimer(ticker); clock.clearTimer(resync);
         for (const unsubscribe of unsubscribes) unsubscribe();

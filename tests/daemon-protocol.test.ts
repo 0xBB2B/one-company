@@ -28,6 +28,7 @@ const EXPECTED_METHODS = [
   "agents.dispatchPm",
   "agents.dispatchExplore",
   "explore.result",
+  "explore.list",
   "pm.overview",
   "pm.packet",
   "pm.prototype",
@@ -43,6 +44,7 @@ const EXPECTED_METHODS = [
 const EXPECTED_EVENTS = [
   "pm.overview.changed",
   "explore.finished",
+  "explore.changed",
 ];
 
 const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
@@ -61,6 +63,7 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "pm.overview": {},
   "agents.dispatchExplore": { request: { question: "q", clues: [], source: { kind: "local_file" } }, maxTurns: 3, model: { provider: "p", id: "m" }, thinking: "off" },
   "explore.result": { runId: "r" },
+  "explore.list": {},
   "pm.packet": { requirementId: "req-1", itemId: "task:x" },
   "pm.prototype": { requirementId: "req-1", itemId: "prototype:t1" },
   "pm.prototypeDecide": { requirementId: "req-1", itemId: "prototype:t1", itemVersion: "prototype:t1:1:abc", choice: "rework", opinion: "数字放大" },
