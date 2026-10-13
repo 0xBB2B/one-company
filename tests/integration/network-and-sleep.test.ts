@@ -48,7 +48,7 @@ async function world() {
     const run = await store.create({ kind: "role", parentRunId: parent.id, role: "one-company.worker", requirement, task: `T-${serial}`,
       cwd: repo.root, readPaths: [repo.root], writePaths: [], model: { provider: provider.providerId, id: "test" }, thinking: "off", mcp: [] });
     const handle = await createAgentRoleSession({ dataRoot: home.dataRoot, repoId, runId: run.id, cwd: repo.root,
-      definition: { name: "worker", role: "worker", description: "fixture", body: "fixture" }, context: run.task, coreTools: [resultTool()], readRoots: [repo.root],
+      definition: { name: "worker", role: "worker", description: "fixture", body: "fixture" }, roleRules: "fixture", context: run.task, coreTools: [resultTool()], readRoots: [repo.root],
       runtime, modelRef: run.model, clock, networkGate: gate, completion: { kind: "on-result", resultTool: "one_company_result_submit" } });
     cleanup.push(async () => { await handle.stop(); handle.dispose(); });
     return { handle, provider, run };

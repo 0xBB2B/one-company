@@ -16,6 +16,7 @@
     "daemon",
     "extensions",
     "resources/tree-sitter",
+    "role-rules",
     "runtime",
     "rules",
     "shared",

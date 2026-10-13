@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { loadRoleRules } from "../runtime/package-rules.ts";
 import { AGENT_ROLES, defaultRoleDir, INTERNAL_ROLES, loadRoleCatalog, readRoleDefinition } from "../runtime/roles.ts";
 import { authorizeToolAction, CORE_TOOL_ACTIONS } from "../runtime/core-permissions.ts";
 import type { CoreTool } from "../runtime/core-permissions.ts";
@@ -37,7 +38,6 @@ describe("内置默认团队", () => {
       expect(entry?.definition?.role).toBe(role);
       expect(entry?.definition?.model).toBe("gpt-6.1-sol");
       expect(entry?.definition?.thinking).toBe("high");
-      expect(entry?.definition?.body.trim().length).toBeGreaterThan(0);
     }
   });
 
@@ -51,33 +51,29 @@ describe("内置默认团队", () => {
     }
   });
 
-  test("默认 worker 按 Go 官方库写法给新增或修改的定义写说明注释，reviewer 把缺失或不符列为阻塞；角色定义不再提 spec", async () => {
-    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
-    expect(body("worker")).toMatch(/新增或修改的每个函数、方法、类、类型\/接口与导出常量写说明注释[\s\S]*参照 Go 官方库[\s\S]*参数[\s\S]*返回值/);
-    expect(body("worker")).not.toContain("注释默认不写");
-    expect(body("reviewer")).toMatch(/核对说明注释[\s\S]*有副作用的写明副作用[\s\S]*没有副作用的不要求注明，未改动的旧定义不要求补写，只按上述要点核对，不追加其他写法要求（如函数返回值的单位、示例）；缺失或不符列为阻塞。结论 summary 写明说明注释的核对结果/);
-    for (const role of AGENT_ROLES) expect(body(role)).not.toMatch(/\bspec\b|spec_change|规则候选/);
+  test("worker 规矩不含说明注释与章节编号，reviewer 规矩核对 worker 定义的规范而不核对说明注释；五个职责规矩都不提 spec", async () => {
+    expect(loadRoleRules("worker")).not.toContain("说明注释");
+    expect(loadRoleRules("worker")).not.toContain("章节编号");
+    expect(loadRoleRules("reviewer")).toContain("核对 worker 定义的规范");
+    expect(loadRoleRules("reviewer")).not.toContain("核对说明注释");
+    for (const role of AGENT_ROLES) expect(loadRoleRules(role)).not.toMatch(/\bspec\b|spec_change|规则候选/);
   });
 
   test("M9：reviewer 逐条核对需求里「不做、不改」的边界并在结论里写明，QA 凭审查结论判断这类边界", async () => {
-    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
+    const body = (name: string) => loadRoleRules(name);
     expect(body("reviewer")).toMatch(/核对需求边界[\s\S]*「不做、不改」[\s\S]*违反列为阻塞[\s\S]*summary 逐条写明这些边界的核对结果/);
     expect(body("qa")).toContain("审查已覆盖的不标未验证，审查没提到的才标未验证");
   });
   test("M8H-AC1：PM 角色说明写明提出或修改计划前先查一次角色目录", async () => {
-    expect(await readFile(join(defaultRoleDir(), "pm.md"), "utf8")).toContain("每次提出或修改计划前，先用 one_company_agent_manage action=catalog 查一次可用角色定义");
+    expect(loadRoleRules("pm")).toContain("每次提出或修改计划前，先用 one_company_agent_manage action=catalog 查一次可用角色定义");
   });
 
   test("M8D2-AC1：角色说明不重复共享规范里的搜索范围", async () => {
-    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    for (const role of roles) expect(role.definition!.body).not.toContain("被 Git 忽略");
+    for (const name of ["worker", "worker-prototype", "reviewer", "qa", "explore", "pm"] as const) expect(loadRoleRules(name)).not.toContain("被 Git 忽略");
     expect(await readFile(join(defaultRoleDir(), "..", "shared", "03-search-scope.md"), "utf8")).toContain("被 Git 忽略");
   });
   test("M8B-AC4：主会话规则含规范与需求的分流，worker 遵守、reviewer 按项目规范把关、PM 不与之冲突，都不能改 AGENTS.md", async () => {
-    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
+    const body = (name: string) => loadRoleRules(name);
     const main = await readFile(join(defaultRoleDir(), "..", "rules", "01-main-session.md"), "utf8");
     expect(main).toMatch(/规范与需求分流[\s\S]*长期遵守的约定[\s\S]*conventions-update[\s\S]*用户确认[\s\S]*这次要做成的行为或功能写进需求草稿[\s\S]*两样都有就拆开/);
     expect(main).toContain("不要用 write、edit 或命令直接改 AGENTS.md");
@@ -90,8 +86,7 @@ describe("内置默认团队", () => {
   });
 
   test("M8L-AC4：PM 角色说明写明计划被拒后按原因修改重交一次、仍被拒就停下等用户；主会话规则写明打开事项后先分析再用 panel-item 问答窗口给建议、决定类用固定选项登记", async () => {
-    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    const pm = roles.find((candidate) => candidate.name === "pm")!.definition!.body;
+    const pm = loadRoleRules("pm");
     expect(pm).toMatch(/计划提交（propose、update、confirm）被拒时，先读清拒绝原因，按原因修改后重新提交一次[\s\S]*仍被拒时停下/);
     const main = await readFile(join(defaultRoleDir(), "..", "rules", "01-main-session.md"), "utf8");
     expect(main).toMatch(/先查运行记录、需求等把原因弄清，再用 `one_company_user_interact` purpose=panel-item[\s\S]*选项文字须用卡片写明的固定文字[\s\S]*purpose=adjudicate 登记[\s\S]*回答只是给你的指示/);
@@ -103,8 +98,7 @@ describe("内置默认团队", () => {
   });
 
   test("默认 worker 按 TDD 先红后绿并提交两次运行，PM 不把测试拆成单独任务，reviewer 查看引用记录核对红绿", async () => {
-    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    const body = (name: string) => roles.find((candidate) => candidate.name === name)!.definition!.body;
+    const body = (name: string) => loadRoleRules(name);
     expect(body("worker")).toMatch(/先写测试[\s\S]*确认新测试失败（红）[\s\S]*再写实现[\s\S]*全部通过（绿）[\s\S]*同时列出红、绿两次运行/);
     expect(body("worker")).toContain("只为本来就正确的已有行为补回归测试（测试写好即通过，没有红阶段），在 summary 写明不适用及理由，不列为未验证问题");
     expect(body("pm")).toContain("实现任务的 writePaths 同时包含覆盖它的测试文件，由同一个 worker 先写测试再实现，不把测试单独拆成任务");

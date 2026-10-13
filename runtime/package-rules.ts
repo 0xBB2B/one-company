@@ -13,3 +13,10 @@ export function loadPackageRules(layer: "rules" | "shared"): string {
 		.map((file) => readFileSync(join(dir, file), "utf8").trim())
 		.join("\n\n");
 }
+
+export type RoleRulesName = "worker" | "worker-prototype" | "reviewer" | "qa" | "explore" | "pm";
+
+/** 读取包内某个职责的流程规矩正文；worker-prototype 是 worker 做界面原型时用的另一份。 */
+export function loadRoleRules(name: RoleRulesName): string {
+	return readFileSync(join(packageDir, "role-rules", `${name}.md`), "utf8").trim();
+}
