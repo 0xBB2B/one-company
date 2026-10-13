@@ -24,7 +24,7 @@ export function coreToolName(tool: CoreTool): string {
 }
 
 export interface CoreToolRuntime {
-  execute(input: unknown): unknown;
+  execute(input: unknown, signal?: AbortSignal): unknown;
   dispose(): void;
 }
 
@@ -36,9 +36,9 @@ export function toPiTool(tool: CoreTool, description: string, parameters: TSchem
     description,
     parameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       let result: unknown;
-      try { result = await runtime.execute(params); }
+      try { result = await runtime.execute(params, signal); }
       catch (error) { throw toolFailure(toolStep(coreToolName(tool), params), error); }
       return { content: [{ type: "text", text: JSON.stringify(result ?? null) }], details: {} };
     },

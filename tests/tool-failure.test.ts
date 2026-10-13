@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { Type } from "typebox";
 import { AdvisedError, commandOutputTail, failureText, toolStep } from "../runtime/tool-failure.ts";
 import { DaemonCallError } from "../runtime/daemon-client.ts";
@@ -34,6 +34,14 @@ test("核心工具抛错时，模型拿到的是三段原因", async () => {
   });
   const run = (tool.execute as (id: string, params: unknown) => Promise<unknown>)("t", { request: { action: "update" } });
   await expect(run).rejects.toThrow("one_company_plan_manage 的 update 动作失败。\n原因：PM 租约已被新 PM 接管\n建议：停止当前操作，等待主代理安排");
+});
+
+test("pi 给核心工具的取消信号原样传到工具实现", async () => {
+  const execute = vi.fn(async () => ({}));
+  const tool = toPiTool("verification_run", "验证", Type.Object({}), { execute, dispose: () => {} });
+  const controller = new AbortController();
+  await (tool.execute as (id: string, params: unknown, signal: AbortSignal) => Promise<unknown>)("t", { action: "run" }, controller.signal);
+  expect(execute).toHaveBeenCalledWith({ action: "run" }, controller.signal);
 });
 
 test("守护进程回错时把原因与建议放进 data.advice，客户端据此还原三段", () => {

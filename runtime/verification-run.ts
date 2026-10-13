@@ -52,6 +52,7 @@ const VERIFICATION_ADVICE = {
   input_changed: { why: "检查开始前受保护的输入已变化，本检查轮已失效", next: "结束本检查轮，重新开检查轮后再运行" },
   not_found: { why: "找不到这次检查运行，或你没有权限查看它", next: "核对验证编号：能查看的只有本运行发起的检查，以及子代理提交里引用、本角色有权查看的记录；停止只能停本运行发起的检查" },
   resource_limit: { why: "请求内容超出 64 KiB", next: "精简命令或参数后重试" },
+  call_cancelled: { why: "本次调用在检查开始前已被取消，没有创建检查记录也没有运行命令", next: "会话已被暂停或停止；恢复后如果仍需要这项检查，重新发起 run" },
 } as const satisfies Record<string, FailureAdvice>;
 export type VerificationRunErrorCode = keyof typeof VERIFICATION_ADVICE;
 export class VerificationRunError extends Error {
@@ -188,7 +189,8 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
       inputHash: manifest.inputHash, environment: manifest.environment, files: manifest.files }, null, 2) + "\n");
   }
 
-  async function run(params: Extract<VerificationRunParameters, { action: "run" }>): Promise<VerificationView> {
+  async function run(params: Extract<VerificationRunParameters, { action: "run" }>, signal?: AbortSignal): Promise<VerificationView> {
+    if (signal?.aborted) throw new VerificationRunError("call_cancelled");
     host("run");
     if ((grant.role === "worker" || grant.role === "reviewer") !== (params.kind === "debug")) deny("kind_forbidden");
     const record = activeRecord();
@@ -237,10 +239,10 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
       throw error;
     }
     if (!started) { await rm(outputRoot, { recursive: true, force: true }); throw new VerificationRunError("input_changed"); }
-    return execute(started, root, params.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    return execute(started, root, params.timeoutMs ?? DEFAULT_TIMEOUT_MS, signal);
   }
 
-  async function execute(started: VerificationRun, root: string, timeoutMs: number): Promise<VerificationView> {
+  async function execute(started: VerificationRun, root: string, timeoutMs: number, signal?: AbortSignal): Promise<VerificationView> {
     type Outcome = { status: VerificationRun["status"]; exitCode: number | null; signal: string | null; reason: string | null };
     let launch;
     try { launch = await launchFor(started, root); }
@@ -271,8 +273,11 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
       child.kill("SIGTERM");
       setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, STOP_GRACE_MS).unref();
     };
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
     const done = outcome.then(async (result) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
       await stdout.close(); await stderr.close();
       running.delete(started.verificationId);
       return finalize(started, root, result);
@@ -329,13 +334,13 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     if (active) { active.cancel(); await active.done; }
     return current.status === "running" && !active ? current : ownStatus(verificationId);
   }
-  async function executeAction(input: unknown) {
+  async function executeAction(input: unknown, signal?: AbortSignal) {
     if (Buffer.byteLength(JSON.stringify(input ?? null)) > 64 * 1024) throw new VerificationRunError("resource_limit");
     let params: VerificationRunParameters;
     try { params = checkServiceInput(VERIFICATION_RUN_PARAMETERS, input); } catch (error) { throw new VerificationRunError("invalid_shape", (error as Error).message); }
     host(params.action);
     switch (params.action) {
-      case "run": return run(params);
+      case "run": return run(params, signal);
       case "stop": return stop(params.verificationId);
       case "status": return status(params.verificationId);
     }

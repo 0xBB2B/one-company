@@ -553,3 +553,54 @@ for (const how of ["stop", "dispose"] as const) {
     } finally { vi.useRealTimers(); }
   }, 20_000);
 }
+
+test("验证命令跑着收到取消信号：按停止处理，记录为 cancelled，run 在进程退出后返回而不是等命令跑完", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const worker = await w.tool(w.grant({ role: "worker" }));
+  const controller = new AbortController();
+  const started = Date.now();
+  const run = (worker.execute as (input: unknown, signal: AbortSignal) => Promise<VerificationView>)({ action: "run", kind: "debug", command: "sleep 120", performance: NA }, controller.signal);
+  await realDelay(400);
+  const pid = runningPid(w);
+  cleanups.push(async () => { try { process.kill(pid, "SIGKILL"); } catch { /* 进程已退出 */ } });
+  controller.abort();
+  const view = await run;
+  expect(view.status).toBe("cancelled");
+  expect(pidAlive(pid)).toBe(false);
+  expect(Date.now() - started).toBeLessThan(10_000);
+}, 20_000);
+
+test("取消信号来了但命令不理 SIGTERM：10 秒后才 SIGKILL，记录为 cancelled", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const worker = await w.tool(w.grant({ role: "worker" }));
+  const controller = new AbortController();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const run = (worker.execute as (input: unknown, signal: AbortSignal) => Promise<VerificationView>)({ action: "run", kind: "debug", command: IGNORES_TERM, performance: NA }, controller.signal);
+    await realDelay(400);
+    const pid = runningPid(w);
+    cleanups.push(async () => { try { process.kill(pid, "SIGKILL"); } catch { /* 进程已退出 */ } });
+    controller.abort();
+    await realDelay(300);
+    expect(pidAlive(pid)).toBe(true);
+    vi.advanceTimersByTime(9_900);
+    await realDelay(300);
+    expect(pidAlive(pid)).toBe(true);
+    vi.advanceTimersByTime(200);
+    expect((await run).status).toBe("cancelled");
+    expect(pidAlive(pid)).toBe(false);
+  } finally { vi.useRealTimers(); }
+}, 20_000);
+
+test("取消信号在调用前就已中止：命令不启动", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const worker = await w.tool(w.grant({ role: "worker" }));
+  const controller = new AbortController();
+  controller.abort();
+  await expect((worker.execute as (input: unknown, signal: AbortSignal) => Promise<unknown>)({ action: "run", kind: "debug", command: "echo started", performance: NA }, controller.signal))
+    .rejects.toMatchObject({ code: "call_cancelled" });
+  expect(withDatabase(w.database, (db) => db.list(VERIFICATION_RUNS))).toEqual([]);
+}, 20_000);

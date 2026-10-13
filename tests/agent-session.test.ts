@@ -15,7 +15,7 @@ import { uuidv7 } from "../runtime/database.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { authorizeToolAction, CORE_TOOL_ACTIONS } from "../runtime/core-permissions.ts";
 import type { CoreTool } from "../runtime/core-permissions.ts";
-import { coreToolName, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
+import { coreToolName, ROLE_HOST_TOOLS, toPiTool } from "../runtime/role-tools.ts";
 import { AGENT_ROLES } from "../runtime/roles.ts";
 import type { AgentRole } from "../runtime/roles.ts";
 import { createFakeTimeSource } from "./helpers/fake-clock.ts";
@@ -30,7 +30,18 @@ function grantedTools(role: AgentRole): CoreTool[] {
   return (Object.keys(CORE_TOOL_ACTIONS) as CoreTool[]).filter((tool) => CORE_TOOL_ACTIONS[tool].some((action) => authorizeToolAction(role, tool, action)));
 }
 
-function fakeCoreTools(role: AgentRole, calls: string[], hangForever?: Promise<void>): ToolDefinition[] {
+function fakeCoreTools(role: AgentRole, calls: string[], hangForever?: Promise<void>, honorsAbort = false): ToolDefinition[] {
+  if (honorsAbort) {
+    return grantedTools(role).map((tool) => toPiTool(tool, `fixture ${tool}`, Type.Object({}, { additionalProperties: true }), {
+      async execute(_input: unknown, signal?: AbortSignal) {
+        calls.push(tool);
+        const aborted = new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("已取消")), { once: true }));
+        await Promise.race([hangForever, aborted]);
+        return {};
+      },
+      dispose() {},
+    }));
+  }
   return grantedTools(role).map((tool) => ({
     name: coreToolName(tool), label: tool, description: `fixture ${tool}`, parameters: Type.Object({}, { additionalProperties: true }),
     async execute() { calls.push(tool); if (hangForever) await hangForever; return { content: [{ type: "text" as const, text: "ok" }], details: {} }; },
@@ -47,7 +58,7 @@ async function world(timeSource?: FakeTimeSource) {
   const clock = createClock(timeSource ? { timeSource } : {}); cleanup.push(() => clock.stopGapWatcher());
   const gate = new NetworkPauseGate();
   let serial = 0;
-  async function session(role: AgentRole, replies: ScriptedReply[], options: { readRoots?: string[]; maxTurns?: number; mcp?: string[]; hangForever?: Promise<void> } = {}) {
+  async function session(role: AgentRole, replies: ScriptedReply[], options: { readRoots?: string[]; maxTurns?: number; mcp?: string[]; hangForever?: Promise<void>; honorsAbort?: boolean } = {}) {
     const provider = registerControlledProvider(runtime, { providerId: `agent-${++serial}`, modelId: "test" });
     scriptReplies(provider, replies);
     const calls: string[] = [];
@@ -55,7 +66,7 @@ async function world(timeSource?: FakeTimeSource) {
     const handle: AgentSessionHandle = await createAgentRoleSession({
       dataRoot, repoId: "a".repeat(64), runId, cwd,
       definition: { name: role, role, description: "fixture", body: `ROLE-BODY-${role}`, ...(options.mcp ? { mcp: options.mcp } : {}) },
-      context: "TASK-CONTEXT", coreTools: fakeCoreTools(role, calls, options.hangForever), readRoots: options.readRoots ?? (role === "qa" ? [] : [cwd]),
+      context: "TASK-CONTEXT", coreTools: fakeCoreTools(role, calls, options.hangForever, options.honorsAbort), readRoots: options.readRoots ?? (role === "qa" ? [] : [cwd]),
       runtime, modelRef: { provider: provider.providerId, id: "test" }, clock, networkGate: gate,
       completion: role === "pm" ? { kind: "idle-only" } : { kind: "on-result", resultTool: coreToolName("result_submit") },
       maxTurns: options.maxTurns,
@@ -274,6 +285,25 @@ describe("暂停确认时限", () => {
     await pausing;
     expect(outcome!.confirmed).toBe(false);
     expect(outcome!.reason).toContain("abort 未在超时内确认");
+  }, 20000);
+});
+
+describe("暂停时取消正在执行的核心工具", () => {
+  test("暂停把取消信号传给正在执行的核心工具，工具响应取消后暂停立即确认成功", async () => {
+    const w = await world();
+    let release!: () => void;
+    const hang = new Promise<void>((resolve) => { release = resolve; });
+    const toolName = grantedTools("pm")[0]!;
+    const s = await w.session("pm", [{ type: "toolcall", name: coreToolName(toolName), input: {} }], { hangForever: hang, honorsAbort: true });
+    cleanup.push(() => release());
+    s.handle.prompt("开始");
+    await until(() => s.calls.length > 0);
+
+    let outcome: { confirmed: boolean; reason?: string } | undefined;
+    const pausing = s.handle.pause().then((value) => { outcome = value; });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(outcome).toEqual({ confirmed: true });
+    await pausing;
   }, 20000);
 });
 
