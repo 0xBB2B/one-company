@@ -610,12 +610,14 @@ export class ShellRegistry {
 
       if (probe.state === "alive") {
         const identity = await this.checkIdentity(task);
+        const previouslyVerified = task.identityVerified;
         task.identityVerified = identity.verified;
         if (identity.mismatched) {
           this.stopMonitor(taskId);
           this.markUncertain(task, identity.reason ?? "身份核对不一致");
           return;
         }
+        if (previouslyVerified && probeSinglePid(task.pid, this.kill).state === "gone") task.identityVerified = true;
 
         const lastScan = this.lastDescendantScanAt.get(taskId);
         if (lastScan === undefined || this.clock.elapsedExcludingSleep(lastScan) >= DESCENDANT_SCAN_THROTTLE_MS) {
