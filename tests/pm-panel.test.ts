@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { PmOverview } from "../runtime/pm-overview.ts";
 import { formatElapsed, formatTokens, PmPanel } from "../runtime/pm-panel.ts";
-import type { PmPanelEntry } from "../runtime/pm-panel.ts";
+import type { ExplorePanelEntry, PmPanelEntry } from "../runtime/pm-panel.ts";
 import pmPanelExtension from "../extensions/pm-panel.ts";
 import { createClock } from "../runtime/clock.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
@@ -75,6 +75,38 @@ test("M7-AC34：另一窗口处理掉事项后，更新投影时该行消失，�
   expect(openItem).not.toHaveBeenCalled();
 });
 
+const webExplore: ExplorePanelEntry = { repoId: "r", fetchedAt: 1_000,
+  explore: { runId: "01900000-0000-7000-8000-0000000000e1", source: "web", question: "企业微信自建应用\n是否需要公网回调地址", turns: 2, maxTurns: 15, elapsedMs: 12_300 } };
+const localExplore: ExplorePanelEntry = { repoId: "r", fetchedAt: 1_000,
+  explore: { runId: "01900000-0000-7000-8000-0000000000e2", source: "local", question: "守护进程断网后怎么恢复", turns: 5, maxTurns: 20, elapsedMs: 64_000 } };
+
+test("主窗口派出的检索：没有 PM 时面板只列检索，按拉取后经过的时间累加；检索行不可进入", () => {
+  const instance = new PmPanel({ now: () => 2_000, openItem: vi.fn(), togglePause: vi.fn() });
+  instance.updateExplores([webExplore]);
+  expect(instance.render(200)).toEqual(["● 1 个检索运行中", "└─ ⠋ 联网 · 企业微信自建应用 是否需要公网回调地址 · ↻2/15 · 13.3s"]);
+  expect(instance.hasRows()).toBe(false);
+  instance.updateExplores([]);
+  expect(instance.render(200)).toEqual([]);
+});
+
+test("主窗口派出的检索：和 PM 同时在跑时列在 PM 下面，按派出先后排；↑↓ 只在 PM 与事项行间移动，按键提示在最后", () => {
+  const { instance, openItem } = panel();
+  instance.updateExplores([localExplore, webExplore]);
+  instance.focus();
+  const lines = instance.render(200);
+  expect(lines.slice(6)).toEqual([
+    "● 2 个检索运行中",
+    "├─ ⠋ 联网 · 企业微信自建应用 是否需要公网回调地址 · ↻2/15 · 12.3s",
+    "└─ ⠋ 本地 · 守护进程断网后怎么恢复 · ↻5/20 · 1m4s",
+    "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框",
+  ]);
+  for (let i = 0; i < 5; i++) instance.handleInput("\x1b[B");
+  instance.handleInput("\x1b[A");
+  instance.handleInput("\r");
+  expect(openItem).toHaveBeenCalledWith(expect.objectContaining({ overview: jump }), jump.pendingItems[0]);
+  expect(instance.render(20).every((line) => visibleWidth(line) <= 20)).toBe(true);
+});
+
 test("数字格式", () => {
   expect([formatTokens(999), formatTokens(33_800), formatTokens(2_500_000)]).toEqual(["999", "33.8k", "2.5M"]);
   expect([formatElapsed(12_300), formatElapsed(137_000), formatElapsed(3_723_000)]).toEqual(["12.3s", "2m17s", "1h2m3s"]);
@@ -91,6 +123,7 @@ test("M7-AC33/AC35：主窗口面板拉取概览，↓ 进入面板、选中事�
     call: async (method: string) => {
       calls.push(method);
       if (method === "pm.overview") return { items: [jump] };
+      if (method === "explore.list") return { items: [webExplore.explore] };
       if (method === "pm.packet") return { text: "决策包正文" };
       throw new Error(`未预期的 RPC ${method}`);
     },
@@ -105,10 +138,12 @@ test("M7-AC33/AC35：主窗口面板拉取概览，↓ 进入面板、选中事�
   const noteOpenedItem = vi.fn(() => { expect(revoke).toHaveBeenCalledTimes(1); expect(sendMessage).not.toHaveBeenCalled(); });
   registerRequirementInput({ revoke, noteOpenedItem, mentionNote: () => "" });
   let input: ((data: string) => unknown) | undefined;
-  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: () => {}, onTerminalInput: (handler: (data: string) => unknown) => { input = handler; return () => {}; },
-    getEditorText: () => "", notify: vi.fn() } };
+  let widget: { render(width: number): string[] } | undefined;
+  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({}, {}); },
+    onTerminalInput: (handler: (data: string) => unknown) => { input = handler; return () => {}; }, getEditorText: () => "", notify: vi.fn() } };
   await fake.trigger("session_start", { reason: "new" }, ctx);
   await vi.waitFor(() => expect(calls).toContain("pm.overview"));
+  await vi.waitFor(() => expect(widget!.render(200)).toContain("● 1 个检索运行中"));
   await new Promise((resolve) => setTimeout(resolve, 0));
   input!("\x1b[B"); input!("\x1b[B"); input!("\r");
   await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ customType: "one-company.decision-packet", content: "决策包正文", display: true }, { triggerTurn: true }), { timeout: 5_000 });
@@ -118,6 +153,10 @@ test("M7-AC33/AC35：主窗口面板拉取概览，↓ 进入面板、选中事�
   const before = calls.filter((method) => method === "pm.overview").length;
   listeners.get("pm.overview.changed")!();
   await vi.waitFor(() => expect(calls.filter((method) => method === "pm.overview").length).toBe(before + 1));
+  const exploreBefore = calls.filter((method) => method === "explore.list").length, overviewNow = calls.filter((method) => method === "pm.overview").length;
+  listeners.get("explore.changed")!();
+  await vi.waitFor(() => expect(calls.filter((method) => method === "explore.list").length).toBe(exploreBefore + 1));
+  expect(calls.filter((method) => method === "pm.overview").length).toBe(overviewNow);
   await fake.trigger("session_shutdown", {}, ctx);
 });
 

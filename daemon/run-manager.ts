@@ -40,7 +40,7 @@ import { implementAuthorized, pmDecisionNotes, pmIntakeReviewNotice, pmSourceDir
 import type { PmDecisionNote } from "../runtime/pm-intake-runtime.ts";
 import type { IntakeSourceDirectory } from "../runtime/pm-intake-contracts.ts";
 import { exploreContext, exploreInput, sourceHashesMatch } from "../runtime/explore-dispatch.ts";
-import type { ExploreRequest } from "../runtime/explore-dispatch.ts";
+import type { ExploreRequest, MainExploreOverview } from "../runtime/explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
 import { endExploreSession, registerExploreSession } from "../runtime/explore-session.ts";
 import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
@@ -84,7 +84,8 @@ interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease
   subagent?: { parentRunId: string; taskId: string; review: boolean; prototype: boolean; dispose(): void };
   explore?: { parentRunId: string; dispose(): void; result(): ExploreResult | null } }
 /** main 派出的 explore 只属于派出它的主窗口会话，不写运行记录；窗口关闭即停止并作废结果。 */
-interface MainExplore { handle: AgentSessionHandle; sessionId: string; connectionId: string; dispose(): void; result(): ExploreResult | null; report: Record<string, unknown> | null }
+interface MainExplore { handle: AgentSessionHandle; sessionId: string; connectionId: string; dispose(): void; result(): ExploreResult | null; report: Record<string, unknown> | null;
+  question: string; source: MainExploreOverview["source"]; maxTurns: number; startedAt: number }
 /** main 父身份来自守护进程已认证连接：connectionId 由服务端每次认证生成，重连或另开窗口都不同。 */
 export type ExploreParentRequest = { role: "main"; sessionId: string; connectionId: string; model: SelectedModel; thinking: string } | { role: "PM"; pmRunId: string };
 export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
@@ -689,13 +690,16 @@ export class RunManager {
       await this.runStore.update(runId, { state: "running" });
     } else {
       const request = input.parent as Extract<ExploreParentRequest, { role: "main" }>;
-      this.mainExplores.set(runId, { handle, sessionId: request.sessionId, connectionId: request.connectionId, dispose: () => result.dispose(), result: capture, report: null });
+      this.mainExplores.set(runId, { handle, sessionId: request.sessionId, connectionId: request.connectionId, dispose: () => result.dispose(), result: capture, report: null,
+        question: input.request.question, source: source.kind === "web" ? "web" : "local", maxTurns: input.maxTurns, startedAt: Date.now() });
       // 派出途中发起连接已断开：立即停止并作废，不留无人接收的检索
       if (!this.liveConnections.has(request.connectionId)) {
         registered = true;
         await this.abandonMainExplores({ connectionId: request.connectionId });
         throw protocolError("not_found", "发起派出的窗口连接已断开");
       }
+      handle.events.on("turn_counted", () => this.emit("explore.changed", {}));
+      this.emit("explore.changed", {});
     }
     registered = true;
     handle.events.on("completed", () => { void this.finishExplore(runId, "completed"); });
@@ -777,6 +781,7 @@ export class RunManager {
       if (main.report) return;
       main.dispose();
       main.report = exploreReport(runId, outcome, main.result(), main.handle.turnsUsed(), this.runLog(runId), failure);
+      this.emit("explore.changed", {});
       if (outcome === "stopped") { this.mainExplores.delete(runId); return; }
       this.emit("explore.finished", { runId, parentSessionId: main.sessionId });
       return;
@@ -813,12 +818,19 @@ export class RunManager {
       turns: main.handle.turnsUsed(), delivery: "结果到达后以卡片插入本会话" };
   }
 
+  /** 主窗口面板列出自己派出、还在运行的 explore：只认派出它的那条连接。 */
+  mainExploreList(connectionId: string | undefined): MainExploreOverview[] {
+    return [...this.mainExplores].filter(([, main]) => main.connectionId === connectionId && !main.report)
+      .map(([runId, main]) => ({ runId, source: main.source, question: main.question, turns: main.handle.turnsUsed(), maxTurns: main.maxTurns, elapsedMs: Date.now() - main.startedAt }));
+  }
+
   /** 主窗口停止自己派出的 explore：只认派出它的那条连接，已有结果作废。 */
   async stopMainExplore(runId: string, connectionId: string | undefined): Promise<{ state: string; confirmed: boolean } | null> {
     const main = this.mainExplores.get(runId);
     if (!main || main.connectionId !== connectionId) return null;
     this.mainExplores.delete(runId);
     if (!main.report) main.dispose();
+    this.emit("explore.changed", {});
     endExploreSession({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, "stopped_by_main");
     const outcome = await main.handle.stop().catch(() => ({ stopped: false }));
     main.handle.dispose();
@@ -1330,6 +1342,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       request: { question: request.question, clues: request.clues as string[], source: source!.kind === "web" ? { kind: "web", query: source!.query as string }
         : { kind: "local_file" } }, maxTurns: params.maxTurns });
   });
+  register("explore.list", async (_params, client) => ({ items: manager.mainExploreList(client.connectionId) }));
   register("explore.result", async (params, client) => {
     if (typeof params.runId !== "string") throw protocolError("invalid_params", "explore 结果参数无效");
     return manager.takeMainExploreReport(params.runId, client.connectionId);

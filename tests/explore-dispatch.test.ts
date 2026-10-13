@@ -112,6 +112,36 @@ test("M9-AC2：main 用 agent_manage 查询、停止自己派出的 explore：�
   expect(w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === slow.runId)).toBe(false);
 });
 
+test("主窗口面板列出本窗口派出、仍在运行的检索：问题、来源、已用轮次与上限；派出、每轮与结束都发变化信号，结束后不再列出", async () => {
+  const w = await world();
+  const handlers = new Map<string, (params: Record<string, unknown>, client: unknown) => Promise<Record<string, unknown>>>();
+  registerProtocolHandlers({ server: { registerHandler: (method: string, handler: never) => handlers.set(method, handler), markHandlersReady: () => {} } as never,
+    manager: w.manager, shellRegistry: {} as never });
+  const list = (connectionId: string) => handlers.get("explore.list")!({}, { connectionId, sessionId: "session-a" });
+  const changes = () => w.emit.mock.calls.filter(([event]) => event === "explore.changed").length;
+  const parent = { role: "main" as const, sessionId: "session-a", connectionId: "connection-a", model: { provider: "team-model", id: "test" }, thinking: "off" };
+  w.manager.connectionOpened("connection-a");
+  await expect(list("connection-a")).resolves.toEqual({ items: [] });
+
+  w.provider.queue.push({ type: "text", text: "慢慢查", chunkDelayMs: 3_000 });
+  const slow = await w.manager.dispatchExplore({ parent, request: { question: "企业微信要不要公网回调", clues: [], source: { kind: "web", query: "企业微信 回调" } }, maxTurns: 15 });
+  expect(changes()).toBe(1);
+  const { items } = await list("connection-a") as { items: Array<Record<string, unknown>> };
+  expect(items).toEqual([{ runId: slow.runId, source: "web", question: "企业微信要不要公网回调", turns: 0, maxTurns: 15, elapsedMs: expect.any(Number) }]);
+  await expect(list("connection-b")).resolves.toEqual({ items: [] });
+  await until(() => changes() >= 2);
+  await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === slow.runId));
+  await until(() => changes() >= 3);
+  await expect(list("connection-a")).resolves.toEqual({ items: [] });
+
+  w.provider.queue.push({ type: "text", text: "慢慢查", chunkDelayMs: 3_000 });
+  const stopped = await w.manager.dispatchExplore({ parent, request: { question: "再查一次", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
+  const beforeStop = changes();
+  await w.manager.stopMainExplore(stopped.runId, "connection-a");
+  expect(changes()).toBeGreaterThan(beforeStop);
+  await expect(list("connection-a")).resolves.toEqual({ items: [] });
+});
+
 test("M7-AC16：research 引用的本地文件 hash 由宿主按实际内容核对，不符即拒收；轮次上限须为正整数", async () => {
   const w = await world();
   w.provider.queue.push(w.submit(w.readme, "0".repeat(64)), { type: "text", text: "hash 被拒" }, { type: "text", text: "PM 收到" });
