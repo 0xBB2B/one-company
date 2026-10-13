@@ -135,7 +135,12 @@ test("受控写入的资源分类：change_apply 可写代码、测试、配置�
   expect(classifyManagedWritePath(".PI/Agents/x.md")).toBe("agent_definition");
   for (const skill of [".pi/skills/requirement-doc/SKILL.md", ".PI/Skills/x/SKILL.md"]) expect(classifyManagedWritePath(skill)).toBe("agent_definition");
   for (const path of ["docs/prod/x.md", ".git/config", ".pi/agents/worker.md", ".pi/skills/requirement-doc/SKILL.md", "../x.ts", "/abs/x.ts"]) expect(writePathAllowed(path)).toBe(false);
-  expect(writePathAllowed(".pi/settings.json")).toBe(true);
+  for (const settings of [".pi/settings.json", ".PI/Settings.json"]) {
+    expect(classifyManagedWritePath(settings)).toBe("host_settings");
+    expect(writePathAllowed(settings)).toBe(false);
+  }
+  expect(classifyManagedWritePath(".pi/other.json")).toBe("code");
+  expect(writePathAllowed(".pi/other.json")).toBe(true);
 });
 
 test("已实现全部 action 的工具，schema 与核心表双向一致", () => {

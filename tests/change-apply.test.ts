@@ -261,3 +261,19 @@ test("M5-AC3/AC7：非 worker 职责、伪造绑定、旧 epoch、宿主撤权�
   await expect(closingTool.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求不在活动状态" } });
   await expect(w.read("src/z.ts")).rejects.toMatchObject({ code: "ENOENT" });
 });
+
+test("写项目设置文件被拒并写明是哪个文件、为什么不能改，文件内容不变，写入范围里列了它也一样；.pi/other.json 不受影响", async () => {
+  const w = await world();
+  const settings = join(w.worktree.root, ".pi", "settings.json");
+  await mkdir(join(w.worktree.root, ".pi"), { recursive: true });
+  await writeFile(settings, "{}\n");
+  const tool = await w.tool(w.grant({ writePaths: ["src/", ".pi/"] }));
+  for (const path of [".pi/settings.json", ".PI/Settings.json"]) {
+    await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path, baseHash: sha("{}\n"), content: "{\"x\":1}\n" }] }))
+      .rejects.toMatchObject({ code: "host_settings", advice: { why: `这是 pi 的项目设置文件，只能由用户修改：${path}` } });
+  }
+  await expect(readFile(settings, "utf8")).resolves.toBe("{}\n");
+  const other = await tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: ".pi/other.json", baseHash: "absent", content: "{}\n" }] }) as Result;
+  expect(other.files[0]!.status).not.toBe("failed");
+  await expect(w.read(".pi/other.json")).resolves.toBe("{}\n");
+});
