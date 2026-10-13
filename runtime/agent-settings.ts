@@ -1,0 +1,164 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { lockSync } from "proper-lockfile";
+import { MODEL_PATTERN, THINKING_LEVELS, type ThinkingLevel } from "./roles.ts";
+
+export const SETTINGS_ROLES = [
+  { key: "pm", label: "PM", purpose: "活动需求的负责人，拆任务、派工、调度", effect: "下次启动 PM 时生效", failure: "启动 PM 会失败", model: "gpt-6.1-sol", thinking: "high" },
+  { key: "interpreter", label: "解释器", purpose: "把用户原话解读成结构化决定", effect: "下次调用时生效", failure: "批准需求时解读会失败", model: "gpt-6-luna", thinking: "medium" },
+  { key: "draft-verifier", label: "草稿核验器", purpose: "核对需求草稿是不是用户原话要求的", effect: "下次调用时生效", failure: "起草或修改需求草稿时核验会失败", model: "gpt-6.1-sol", thinking: "medium" },
+] as const;
+
+export type SettingsRoleKey = (typeof SETTINGS_ROLES)[number]["key"];
+export interface RoleSetting { model: string | null; thinking: ThinkingLevel }
+export type SettingsLayer = Partial<Record<SettingsRoleKey, RoleSetting>>;
+export interface SettingsProblem { path: string; role?: SettingsRoleKey; display: string }
+export interface EffectiveSetting extends RoleSetting { source: "project" | "user" | "default" }
+
+export function userSettingsPath(agentDir: string): string {
+  return join(agentDir, "settings.json");
+}
+
+export function projectSettingsPath(repositoryRoot: string): string {
+  return join(repositoryRoot, ".pi", "settings.json");
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error)).split("\n")[0];
+
+// 和 pi 读设置文件时一致：去掉开头的 BOM，空内容当作 {}
+function parseContent(text: string): unknown {
+  const content = text.replace(/^\uFEFF/, "");
+  return content.trim() === "" ? {} : JSON.parse(content);
+}
+
+export function parseSettingsLayer(path: string): { entries: SettingsLayer; problems: SettingsProblem[] } {
+  const entries: SettingsLayer = {};
+  const problems: SettingsProblem[] = [];
+  if (!existsSync(path)) return { entries, problems };
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    return { entries, problems: [{ path, display: `文件读不了（${errorText(error)}），这一层的设定都没有生效` }] };
+  }
+  let root: unknown;
+  try {
+    root = parseContent(text);
+  } catch {
+    return { entries, problems: [{ path, display: "文件不是合法的 JSON，这一层的设定都没有生效" }] };
+  }
+  if (!isObject(root)) return { entries, problems: [{ path, display: "文件内容要写成 JSON 对象，这一层的设定都没有生效" }] };
+  const section = root["one-company"];
+  if (section === undefined) return { entries, problems };
+  if (!isObject(section)) {
+    return { entries, problems: [{ path, display: "one-company 要写成对象，这一层的设定都没有生效" }] };
+  }
+  const keys = SETTINGS_ROLES.map((r) => r.key);
+  for (const [name, value] of Object.entries(section)) {
+    const role = SETTINGS_ROLES.find((r) => r.key === name);
+    if (!role) {
+      problems.push({ path, display: `不认识的角色 ${name}，只能是 ${keys.join("、")}` });
+      continue;
+    }
+    const problem = (display: string) => problems.push({ path, role: role.key, display });
+    if (!isObject(value) || !("model" in value) || !("thinking" in value)) {
+      problem(`「${role.label}」的设定要写成对象，同时包含 model 和 thinking`);
+      continue;
+    }
+    const { model, thinking } = value;
+    if (model !== null && (typeof model !== "string" || !MODEL_PATTERN.test(model))) {
+      problem(`「${role.label}」的模型写法不对：${typeof model === "string" ? model : JSON.stringify(model)}；要写成模型名、提供方/模型名，或 null（跟随主会话）`);
+      continue;
+    }
+    if (typeof thinking !== "string" || !(THINKING_LEVELS as readonly string[]).includes(thinking)) {
+      problem(`「${role.label}」的思考等级写错了：${typeof thinking === "string" ? thinking : JSON.stringify(thinking)}；只能是 ${THINKING_LEVELS.join("、")}`);
+      continue;
+    }
+    entries[role.key] = { model, thinking: thinking as ThinkingLevel };
+  }
+  return { entries, problems };
+}
+
+export async function readAgentSettings(input: { agentDir: string; repositoryRoot: string; projectTrusted: boolean }): Promise<{
+  values: Record<SettingsRoleKey, EffectiveSetting>;
+  layers: { user: SettingsLayer; project: SettingsLayer };
+  problems: SettingsProblem[];
+}> {
+  const user = parseSettingsLayer(userSettingsPath(input.agentDir));
+  const project = input.projectTrusted
+    ? parseSettingsLayer(projectSettingsPath(input.repositoryRoot))
+    : { entries: {} as SettingsLayer, problems: [] as SettingsProblem[] };
+  const values = {} as Record<SettingsRoleKey, EffectiveSetting>;
+  for (const role of SETTINGS_ROLES) {
+    const fromProject = project.entries[role.key];
+    const fromUser = user.entries[role.key];
+    values[role.key] = fromProject
+      ? { ...fromProject, source: "project" }
+      : fromUser
+        ? { ...fromUser, source: "user" }
+        : { model: role.model, thinking: role.thinking, source: "default" };
+  }
+  return {
+    values,
+    layers: { user: user.entries, project: project.entries },
+    problems: [...user.problems, ...project.problems],
+  };
+}
+
+async function acquireLock(path: string): Promise<() => void> {
+  const maxAttempts = 10;
+  const delayMs = 20;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return lockSync(path, { realpath: false });
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
+      if (code !== "ELOCKED") throw error;
+      if (attempt === maxAttempts) throw new Error("设置文件正在被别的进程写入，稍后再试");
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+async function withSettingsLock(path: string, change: (root: Record<string, unknown>) => Record<string, unknown> | undefined): Promise<void> {
+  let release: (() => void) | undefined;
+  try {
+    let root: Record<string, unknown> = {};
+    if (existsSync(path)) {
+      release = await acquireLock(path);
+      let text: string;
+      try { text = readFileSync(path, "utf8"); } catch (error) { throw new Error(`设置文件读不了（${errorText(error)}），没有改动：${path}`); }
+      let parsed: unknown;
+      try { parsed = parseContent(text); } catch { throw new Error(`设置文件不是合法的 JSON，没有改动：${path}`); }
+      if (!isObject(parsed)) throw new Error(`设置文件顶层不是对象，没有改动：${path}`);
+      root = parsed;
+    }
+    const next = change(root);
+    if (next === undefined) return;
+    mkdirSync(dirname(path), { recursive: true });
+    release ??= await acquireLock(path);
+    writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  } finally {
+    release?.();
+  }
+}
+
+export async function saveAgentSetting(input: { path: string; role: SettingsRoleKey; model: string | null; thinking: ThinkingLevel }): Promise<void> {
+  await withSettingsLock(input.path, (root) => {
+    const section = isObject(root["one-company"]) ? root["one-company"] : {};
+    return { ...root, "one-company": { ...section, [input.role]: { model: input.model, thinking: input.thinking } } };
+  });
+}
+
+export async function clearAgentSetting(input: { path: string; role: SettingsRoleKey }): Promise<void> {
+  await withSettingsLock(input.path, (root) => {
+    if (!isObject(root["one-company"]) || !(input.role in root["one-company"])) return undefined;
+    const { [input.role]: _removed, ...rest } = root["one-company"];
+    const { "one-company": _section, ...others } = root;
+    return Object.keys(rest).length > 0 ? { ...others, "one-company": rest } : others;
+  });
+}

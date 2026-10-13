@@ -13,6 +13,7 @@ export function isAgentRole(role: DefinitionRole): role is AgentRole { return (A
 /** pm 与内部定义各只有一份，只能同名复制来覆盖包内默认。 */
 export function sameNameOnly(role: DefinitionRole): boolean { return role === "pm" || !isAgentRole(role); }
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const MODEL_PATTERN = /^[^/\s]+(\/\S+)?$/;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export interface RoleDefinition {
@@ -122,7 +123,7 @@ export async function readRoleDefinition(path: string, parseFrontmatter: Frontma
     if (name !== role) throw new RoleDefinitionError(`内部定义 ${role} 只能由名为 ${role} 的定义承担: ${path}`, { field: "name", value: name, display: `内部定义 ${role} 只能由名为 ${role} 的定义承担` });
     if (mcp !== undefined || skills !== undefined) throw new RoleDefinitionError(`内部定义 ${role} 不接受 mcp 与 skills: ${path}`, { field: mcp !== undefined ? "mcp" : "skills", display: `内部定义 ${role} 不接受 mcp 与 skills` });
   }
-  if (model !== undefined && (typeof model !== "string" || !/^[^/\s]+(\/\S+)?$/.test(model))) {
+  if (model !== undefined && (typeof model !== "string" || !MODEL_PATTERN.test(model))) {
     throw new RoleDefinitionError(`角色定义 model 须为模型名或 provider/id: ${path}`, { field: "model", value: model, display: "model 要写成模型名或 provider/id，例如 gpt-6-luna 或 5x/gpt-6-luna" });
   }
   if (thinking !== undefined && (typeof thinking !== "string" || !(THINKING_LEVELS as readonly string[]).includes(thinking))) {
