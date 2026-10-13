@@ -70,3 +70,17 @@ test("提交的路径不在本需求任务写入范围内时整次拒绝、什�
   await run(tool, { paths: ["src/login.ts", "./a.ts"], message: "login" });
   expect(r.git("show", "--name-only", "--format=", "HEAD").split("\n").sort()).toEqual(["a.ts", "src/login.ts"]);
 });
+
+test("提交路径含项目设置文件时报 forbidden_path、不提交", async () => {
+  const r = await repo();
+  const tool = createPmCommitTool({ requirementId: REQUIREMENT, worktree: r.root, branch: "refs/heads/req-branch", alive: () => true, checkPhaseActive: () => false,
+    writeScope: () => [".pi/", "a.ts"] });
+  await mkdir(join(r.root, ".pi"), { recursive: true });
+  await writeFile(join(r.root, ".pi", "settings.json"), "{}\n");
+  await writeFile(join(r.root, "a.ts"), "a2\n");
+  const head = r.git("rev-parse", "HEAD");
+  for (const path of [".pi/settings.json", ".PI/Settings.json"]) {
+    await expect(run(tool, { paths: ["a.ts", path], message: "x" })).rejects.toThrow("forbidden_path");
+  }
+  expect(r.git("rev-parse", "HEAD")).toBe(head);
+});

@@ -38,7 +38,7 @@ export function createPmCommitTool(options: PmCommitOptions): ToolDefinition {
       if (options.checkPhaseActive()) throw new Error("check_phase_active: 检查阶段不能提交");
       for (const path of params.paths) {
         const kind = classifyManagedWritePath(path);
-        if (kind === "outside" || kind === "git_metadata" || kind === "prod_archive" || kind === "project_conventions") throw new Error(`forbidden_path: ${path}`);
+        if (kind === "outside" || kind === "git_metadata" || kind === "prod_archive" || kind === "host_settings" || kind === "project_conventions") throw new Error(`forbidden_path: ${path}`);
       }
       const scope = options.writeScope();
       const outside = params.paths.filter((path) => !scope.some((allowed) => overlaps(allowed, posix.normalize(path))));

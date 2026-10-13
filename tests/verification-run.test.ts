@@ -611,3 +611,35 @@ test("取消信号在调用前就已中止：命令不启动", async () => {
     .rejects.toMatchObject({ code: "call_cancelled" });
   expect(withDatabase(w.database, (db) => db.list(VERIFICATION_RUNS))).toEqual([]);
 }, 20_000);
+
+test("debug 命令写项目设置文件和用户层设置文件都失败、内容不变；写工作区普通文件仍成功", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const worker = await w.tool(w.grant({ role: "worker" }));
+  const agentDir = join(w.dataRoot, "..");
+  await mkdir(agentDir, { recursive: true });
+  const projectSettings = join(w.worktree.root, ".pi", "settings.json");
+  const userSettings = join(agentDir, "settings.json");
+  await mkdir(join(w.worktree.root, ".pi"), { recursive: true });
+  await writeFile(projectSettings, "{}\n");
+  await writeFile(userSettings, "{}\n");
+  for (const target of [projectSettings, userSettings]) {
+    const run = await worker.execute({ action: "run", kind: "debug", command: `echo x >> ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
+    expect(run.status).toBe("failed");
+    await expect(readFile(target, "utf8")).resolves.toBe("{}\n");
+  }
+  await worker.execute({ action: "run", kind: "debug", command: "echo ok > src/plain.txt", performance: NA });
+  await expect(w.read("src/plain.txt")).resolves.toBe("ok\n");
+});
+
+test("debug 命令写主仓库根下的项目设置文件失败、内容不变", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const worker = await w.tool(w.grant({ role: "worker" }));
+  const settings = join(w.repositoryRoot, ".pi", "settings.json");
+  await mkdir(join(w.repositoryRoot, ".pi"), { recursive: true });
+  await writeFile(settings, "{}\n");
+  const run = await worker.execute({ action: "run", kind: "debug", command: `echo x >> ${JSON.stringify(settings)}`, performance: NA }) as VerificationView;
+  expect(run.status).toBe("failed");
+  await expect(readFile(settings, "utf8")).resolves.toBe("{}\n");
+});
