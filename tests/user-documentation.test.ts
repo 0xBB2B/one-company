@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const README = join(PACKAGE_ROOT, "README.md");
+const CONTRIBUTING = join(PACKAGE_ROOT, "CONTRIBUTING.md");
 const DAEMON_MAIN = join(PACKAGE_ROOT, "daemon/main.ts");
 const COMMAND_SOURCES = [join(PACKAGE_ROOT, "extensions/commands.ts"), join(PACKAGE_ROOT, "extensions/git-delivery.ts"), join(PACKAGE_ROOT, "extensions/requirement-manage.ts")];
 const readCommandSources = async () => (await Promise.all(COMMAND_SOURCES.map(readText))).join("\n");
@@ -24,15 +25,15 @@ function extractH2Headings(body: string): string[] {
     .map((match) => match[1].trim());
 }
 
-function extractSection(body: string, sectionName: string): string {
+function extractSection(body: string, sectionName: string, level = 2): string {
   const lines = body.split("\n");
   let capturing = false;
   const buffer: string[] = [];
   for (const line of lines) {
-    const h2Match = line.match(/^##\s+(.+)$/);
-    if (h2Match) {
+    const headingMatch = line.match(/^(#+)\s+(.+)$/);
+    if (headingMatch && headingMatch[1].length <= level) {
       if (capturing) break;
-      if (h2Match[1].trim() === sectionName) capturing = true;
+      if (headingMatch[1].length === level && headingMatch[2].trim() === sectionName) capturing = true;
       continue;
     }
     if (capturing) buffer.push(line);
@@ -41,18 +42,14 @@ function extractSection(body: string, sectionName: string): string {
 }
 
 const REQUIRED_SECTION_ORDER = [
-  "这是什么",
+  "前置条件",
   "安装",
-  "卸载",
-  "快速开始",
-  "守护进程",
-  "PM 面板",
-  "角色与设置",
-  "Shell 管理",
-  "本机数据",
-  "多窗口与工作区",
+  "上手",
+  "功能",
+  "设置",
+  "原理",
+  "已知限制",
   "常见问题",
-  "开发",
 ];
 
 describe("README 二级标题", () => {
@@ -89,7 +86,6 @@ describe("README 必需句", () => {
     "pi install git:github.com/0xBB2B/one-company",
     "pi remove",
     "Node",
-    "pnpm test",
   ];
   for (const phrase of REQUIRED) {
     test(`含: ${phrase}`, async () => {
@@ -158,7 +154,7 @@ describe("README PM 面板事实与 runtime/pm-panel.ts 一致", () => {
     const source = await readText(PM_PANEL);
     const hint = source.match(/const HINT = "([^"]+)"/)?.[1];
     expect(hint).toBeDefined();
-    const section = extractSection(await readText(README), "PM 面板");
+    const section = extractSection(await readText(README), "PM 面板", 3);
     for (const key of ["↑↓", "Enter", "p", "Esc"]) {
       expect(hint).toContain(key);
       expect(section).toContain(key);
@@ -166,7 +162,7 @@ describe("README PM 面板事实与 runtime/pm-panel.ts 一致", () => {
   });
 
   test("说明决策包不是用户决定，窗口里选中的固定选项、自己写的话或亲手输入的话才算", async () => {
-    const section = extractSection(await readText(README), "PM 面板");
+    const section = extractSection(await readText(README), "PM 面板", 3);
     expect(section).toContain("决策包");
     expect(section).toContain("亲手输入");
   });
@@ -174,25 +170,29 @@ describe("README PM 面板事实与 runtime/pm-panel.ts 一致", () => {
 
 describe("README 主代理提问", () => {
   test("M8D-AC9：说明提问窗口的内容、回车按推荐、Esc 暂不回答、窗口回答不能批准或裁决", async () => {
-    const section = extractSection(await readText(README), "主代理提问");
+    const section = extractSection(await readText(README), "主代理提问", 3);
     for (const phrase of ["提问窗口", "根源自检", "2 到 4 个选项", "推荐理由", "其他（自己输入）", "直接按回车就是\"按推荐的来\"", "Esc 表示暂不回答", "不能用来批准需求或裁决事项"]) {
       expect(section, phrase).toContain(phrase);
     }
   });
 });
 
-describe("README 角色与设置", () => {
+describe("README 设置", () => {
   test("说明只读查看、按职责分类、复制与三层覆盖及项目信任", async () => {
-    const section = extractSection(await readText(README), "角色与设置");
+    const section = extractSection(await readText(README), "设置");
     for (const phrase of ["只读", "C 复制", "用户层", "项目层", "受信任", "不提供编辑"]) expect(section).toContain(phrase);
   });
 });
 
-describe("README 安装段本地开发使用 pnpm install --frozen-lockfile", () => {
-  test("含: pnpm install --frozen-lockfile，不含: npm install", async () => {
-    const section = extractSection(await readText(README), "安装");
+describe("CONTRIBUTING 本地开发使用 pnpm install --frozen-lockfile", () => {
+  test("本地安装段含: pnpm install --frozen-lockfile，不含: npm install", async () => {
+    const section = extractSection(await readText(CONTRIBUTING), "本地安装");
     expect(section).toContain("pnpm install --frozen-lockfile");
     expect(section).not.toMatch(/(^|[^\w-])npm\s+install\b/);
+  });
+
+  test("含: pnpm test", async () => {
+    expect(await readText(CONTRIBUTING)).toContain("pnpm test");
   });
 });
 
@@ -200,7 +200,7 @@ describe("README 本机数据事实", () => {
   test("socket 路径与 identity.ts 的 daemonSocketPath 一致：sock/ 独立于按仓库分目录的列表，明确标为数据根一级", async () => {
     const source = await readText(IDENTITY);
     expect(source).toContain('join(dataRootPath, "sock"');
-    const section = extractSection(await readText(README), "本机数据");
+    const section = extractSection(await readText(README), "本机数据", 3);
     const sockSegment = section.split("、").find((segment) => segment.includes("sock"));
     expect(sockSegment).toBeDefined();
     expect(sockSegment).toContain("数据根");
@@ -208,19 +208,19 @@ describe("README 本机数据事实", () => {
 
 });
 
-describe("README Shell 管理事实", () => {
+describe("README Shell 任务事实", () => {
   test("含: 本窗口主会话与本工作区守护进程", async () => {
-    const section = extractSection(await readText(README), "Shell 管理");
+    const section = extractSection(await readText(README), "Shell 任务", 3);
     expect(section).toContain("本窗口主会话与本工作区守护进程");
   });
 
   test("含: 工作区外不计入", async () => {
-    const section = extractSection(await readText(README), "Shell 管理");
+    const section = extractSection(await readText(README), "Shell 任务", 3);
     expect(section).toContain("工作区外不计入");
   });
 
   test("不含: 所有仓库", async () => {
-    const section = extractSection(await readText(README), "Shell 管理");
+    const section = extractSection(await readText(README), "Shell 任务", 3);
     expect(section).not.toContain("所有仓库");
   });
 });
