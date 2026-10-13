@@ -111,29 +111,31 @@ test("M7-AC1/AC5：PM 停止后不再向它投递；新 PM 须重新核对才建
   expect(w.diffPrompts()).toHaveLength(1);
 });
 
-test("M7 性能：已批准更新持久化后 95% 在 2 秒内投递到可运行且无积压的 PM", async () => {
-  const samples: number[] = [];
-  // 单个需求的交互上下文有上限，分四个需求各批准五次
-  for (let round = 0; round < 4; round++) {
-    const w = await world();
-    const view = await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] }) as { tasks: Array<{ taskId: string; version: number }> };
-    await w.plan.execute({ action: "confirm", planVersion: 1 });
-    for (let i = 0; i < 5; i++) {
-      w.provider.queue.push({ type: "text", text: `收到 ${i}` });
-      const revision = await w.approve(`f${i}`, { replace: true });
-      const start = performance.now();
-      await until(() => w.diffPrompts().some((request) => text(request).includes(`→ ${revision}。`)), 1_000);
-      samples.push(performance.now() - start);
-      await until(() => w.owner().context.baseline?.revision === revision);
-      await w.readDiffs([`revision ${revision - 1} → ${revision}`]);
-      await w.plan.execute({ action: "assess-update", revision, assessmentId: uuidv7(),
-        tasks: view.tasks.map((task) => ({ taskId: task.taskId, version: task.version, assessment: "unaffected", rationale: "附加章节不涉及登录" })),
-        global: { assessment: "unaffected", rationale: "附加章节" } });
-    }
+const deliverySamples: number[] = [];
+
+// 单个需求的交互上下文有上限，分四个需求各批准五次
+test.each([1, 2, 3, 4])("M7 性能采样：第 %i 个需求批准五次并记录投递耗时", async () => {
+  const w = await world();
+  const view = await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] }) as { tasks: Array<{ taskId: string; version: number }> };
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  for (let i = 0; i < 5; i++) {
+    w.provider.queue.push({ type: "text", text: `收到 ${i}` });
+    const revision = await w.approve(`f${i}`, { replace: true });
+    const start = performance.now();
+    await until(() => w.diffPrompts().some((request) => text(request).includes(`→ ${revision}。`)), 1_000);
+    deliverySamples.push(performance.now() - start);
+    await until(() => w.owner().context.baseline?.revision === revision);
+    await w.readDiffs([`revision ${revision - 1} → ${revision}`]);
+    await w.plan.execute({ action: "assess-update", revision, assessmentId: uuidv7(),
+      tasks: view.tasks.map((task) => ({ taskId: task.taskId, version: task.version, assessment: "unaffected", rationale: "附加章节不涉及登录" })),
+      global: { assessment: "unaffected", rationale: "附加章节" } });
   }
-  const sorted = [...samples].sort((a, b) => a - b);
+});
+
+test("M7 性能：已批准更新持久化后 95% 在 2 秒内投递到可运行且无积压的 PM", () => {
+  expect(deliverySamples, "前 4 条采样测试没有全部跑完（例如用 -t 只跑了汇总这一条），汇总需要和它们一起跑").toHaveLength(20);
+  const sorted = [...deliverySamples].sort((a, b) => a - b);
   const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1]!;
-  expect(samples).toHaveLength(20);
   expect(p95).toBeLessThanOrEqual(2_000);
 });
 
