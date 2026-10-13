@@ -3,6 +3,8 @@ import { uuidv7 } from "../runtime/database.ts";
 import { createPmIntakeProviders, evaluatePmIntakeGate, pmDecisionNotes, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
 import { intakeSubmitTool } from "../daemon/pm-tools.ts";
 import { scenariosWithoutOwnRef, unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
+import type { IntakeReviewRecord, PmUnderstanding } from "../runtime/pm-intake-contracts.ts";
+import { pmUnderstandingHash } from "../runtime/pm-intake-service.ts";
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
@@ -127,13 +129,33 @@ test("M8M-AC4：需求累计提过 129 个问题时，PM 仍能交接手理解�
   expect(w.gate()).toMatchObject({ allowed: true });
 });
 
-test("M8M-AC4：PM 被要求改交 65 次、接手记录超过 256 行后，主代理仍能打开第 66 份并登记核对", async () => {
+const DIRECT_CORRECTIONS = 64;
+
+test(`M8M-AC4：PM 被要求改交 ${DIRECT_CORRECTIONS + 1} 次、接手记录超过 256 行后，主代理仍能打开第 ${DIRECT_CORRECTIONS + 2} 份并登记核对`, async () => {
   const w = await world();
-  for (let i = 0; i < 65; i++) {
-    w.submit({ ...w.content, goals: [{ text: `第 ${i} 次理解`, sourceRefs: w.content.goals[0]!.sourceRefs }] });
-    const view = await w.intake.openRequest(w.fixture.call, w.fixture.operationId());
-    await w.intake.recordReview(w.fixture.call, view.requestId, w.fixture.operationId(), { result: "pm_correction_required", shortIssues: ["目标理解有误"] });
+  const goals = (i: number) => [{ text: `第 ${i} 次理解`, sourceRefs: w.content.goals[0]!.sourceRefs }];
+  // 直接写入与正式流程同样的“改交请求 + 核对结论”，省掉每轮重复的当前状态核对
+  for (let i = 0; i < DIRECT_CORRECTIONS; i++) {
+    const captured = w.fixture.captureCurrent();
+    const understanding: PmUnderstanding = { format: "pm-understanding/v1", binding: captured.binding, ...w.content, goals: goals(i) };
+    const submissionRef = `pm/${w.fixture.lease.runId}/call-direct-${i}`, submissionHash = pmUnderstandingHash(understanding);
+    const creator = { windowId: w.fixture.identity.windowId, sessionId: w.fixture.identity.sessionId, toolCallId: w.fixture.identity.toolCallId };
+    const prepared = w.fixture.intakeStore.prepareRequest({ operationId: w.fixture.operationId(), proof: captured.proof, submissionRef, submissionHash, creator });
+    const stored = w.fixture.intakeStore.commitRequest(prepared, () => {});
+    const refs = new Map<string, IntakeReviewRecord["sourceRefs"][number]>();
+    for (const item of [understanding.goals, understanding.nonGoals, understanding.constraints, understanding.allowedActions, understanding.unresolved, understanding.scenarioCoverage].flat()) {
+      for (const ref of item.sourceRefs) refs.set(`${ref.kind}\0${ref.id}`, { ...ref });
+    }
+    const record: IntakeReviewRecord = { format: "pm-intake-review/v1", reviewId: uuidv7(), requestId: stored.record.requestId, binding: structuredClone(captured.binding),
+      submissionRef, submissionHash, reviewer: creator, result: "pm_correction_required",
+      sourceRefs: [...refs.values()].sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id)), shortIssues: ["目标理解有误"] };
+    w.fixture.intakeStore.commitReview(w.fixture.intakeStore.prepareReview({ operationId: w.fixture.operationId(), proof: stored.currentProof, record }), () => {});
   }
+  w.submit({ ...w.content, goals: goals(DIRECT_CORRECTIONS) });
+  const corrected = await w.intake.openRequest(w.fixture.call, w.fixture.operationId());
+  await w.intake.recordReview(w.fixture.call, corrected.requestId, w.fixture.operationId(), { result: "pm_correction_required", shortIssues: ["目标理解有误"] });
+  const rows = w.fixture.db((db) => (db.connection.prepare("SELECT COUNT(*) AS n FROM records WHERE namespace LIKE 'pm_intake_%'").get() as { n: number }).n);
+  expect(rows).toBeGreaterThan(256);
   w.submit(w.content);
   const view = await w.intake.openRequest(w.fixture.call, w.fixture.operationId());
   expect(view.understanding.goals).toEqual(w.content.goals);
