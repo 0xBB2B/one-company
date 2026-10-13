@@ -149,7 +149,7 @@ test("M6-AC12/AC13：本轮 worker、未完成写入或写占用未收尾不能�
   await expect(readFile(join(denied.outputRoot, "outputs", "stderr.log"), "utf8")).resolves.toContain("forged.txt");
   await expect(readFile(forged, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 
-  const slow = qa.execute({ action: "run", kind: "formal", command: "sleep 5", performance: NA }) as Promise<VerificationView>;
+  const slow = qa.execute({ action: "run", kind: "formal", command: "sleep 60", performance: NA }) as Promise<VerificationView>;
   await new Promise((resolve) => setTimeout(resolve, 300));
   const status = w.rounds.status(round.checkRoundId);
   expect(status.active).toHaveLength(1);
@@ -309,7 +309,7 @@ test("M6-AC16：检查中收到已批准更新只能由有效 PM 记录 interrup
   const interruptWorld = await world();
   const qa2 = await interruptWorld.tool();
   const round2 = await interruptWorld.open();
-  const slow = qa2.execute({ action: "run", kind: "formal", command: "sleep 5", performance: NA }) as Promise<VerificationView>;
+  const slow = qa2.execute({ action: "run", kind: "formal", command: "sleep 60", performance: NA }) as Promise<VerificationView>;
   await new Promise((resolve) => setTimeout(resolve, 200));
   await interruptWorld.approve(BODY_2);
   const revision = interruptWorld.state.read(interruptWorld.created.requirementId).data.revision;
