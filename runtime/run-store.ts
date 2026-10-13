@@ -18,10 +18,10 @@ export type RunState =
   | "interrupted";
 
 /** 运行被停止的原因，只作记录，不影响停止行为。 */
-export type StopReason = "main_agent" | "stopped_by_pm" | "parent_stopped" | "superseded_by_new_pm" | "requirement_closing" | "lease_renewal_failed"
+export type StopReason = "main_agent" | "stopped_by_pm" | "parent_stopped" | "superseded_by_new_pm" | "requirement_closing"
   | "config_changed" | "replanned";
-export interface StopCause { reason: StopReason; code?: string }
-const STOP_REASONS: readonly StopReason[] = ["main_agent", "stopped_by_pm", "parent_stopped", "superseded_by_new_pm", "requirement_closing", "lease_renewal_failed",
+export interface StopCause { reason: StopReason }
+const STOP_REASONS: readonly StopReason[] = ["main_agent", "stopped_by_pm", "parent_stopped", "superseded_by_new_pm", "requirement_closing",
   "config_changed", "replanned"];
 
 export interface RunRecord {
@@ -154,7 +154,7 @@ const RunRecordSchema = Type.Object({
     skills: Type.Array(Type.Object({ name: Type.String(), path: Type.String(), hash: Type.String() })) })),
   state: Type.Union([...Object.keys(TRANSITIONS), ...TERMINAL_STATES].map((state) => Type.Literal(state))),
   stateReason: Type.Optional(Type.String()),
-  stopCause: Type.Optional(Type.Object({ reason: Type.Union(STOP_REASONS.map((reason) => Type.Literal(reason))), code: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })) },
+  stopCause: Type.Optional(Type.Object({ reason: Type.Union(STOP_REASONS.map((reason) => Type.Literal(reason))) },
     { additionalProperties: false })),
   startedAt: Type.String({ minLength: 1 }), updatedAt: Type.String({ minLength: 1 }), endedAt: Type.Optional(Type.String()),
   turns: Type.Integer({ minimum: 0 }),

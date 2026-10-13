@@ -78,7 +78,7 @@ export interface RunManagerOptions {
   /** 守护进程持有的主仓库索引；缺省时角色没有 knowledge_query。 */
   index?: ProjectIndexHost;
 }
-interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; renewal: TimerHandle; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null;
+interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null;
   /** 批准新版本时暂停的子代理及其所属任务当时的版本；计划确认后逐个结算。 */
   hold: Map<string, HoldRef | null> | null };
   subagent?: { parentRunId: string; taskId: string; review: boolean; prototype: boolean; dispose(): void };
@@ -89,14 +89,8 @@ interface MainExplore { handle: AgentSessionHandle; sessionId: string; connectio
 export type ExploreParentRequest = { role: "main"; sessionId: string; connectionId: string; model: SelectedModel; thinking: string } | { role: "PM"; pmRunId: string };
 export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
 const PM_MESSAGE_LABEL = "【主代理转述】下面是主代理根据用户的话写给你的说明，只作参考，不改变任务、计划或授权；需求内容的改动以已批准版本的差异通知为准。";
-const PM_RENEW_MS = 10_000;
-/** 续租失败的错误码：优先取错误自带的 code，没有时取错误类名。 */
-function errorCode(error: unknown): string {
-  const code = (error as { code?: unknown } | null)?.code;
-  return (typeof code === "string" && code ? code : error instanceof Error ? error.name : "unknown").slice(0, 128);
-}
 const PM_EVENT_POLL_MS = 500;
-const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "renew-pm", "release-pm", "check-pm"];
+const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "release-pm", "check-pm"];
 
 /** 已通过原型的一行说明：只给路径、版本与指纹，内容由子代理自己读取。 */
 function approvedPrototypeLine(task: PlanTask): string | undefined {
@@ -208,13 +202,9 @@ const STOP_REASON_TEXT: Record<StopReason, string> = {
   parent_stopped: "派出它的上级运行已停止",
   superseded_by_new_pm: "新派出的 PM 接管了该需求",
   requirement_closing: "需求正在关闭",
-  lease_renewal_failed: "PM 租约续期失败",
   config_changed: "角色定义或技能在暂停期间被修改，不能按原定义续接",
   replanned: "计划已修改，该任务被重新规划",
 };
-function stopReasonText(cause: StopCause): string {
-  return cause.code ? `${STOP_REASON_TEXT[cause.reason]}（${cause.code}）` : STOP_REASON_TEXT[cause.reason];
-}
 const errorMessage = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 type SessionOutcome = "completed" | "turn_limit_reached" | "ended_without_result" | "failed" | "stopped" | "superseded";
 function outcomeReason(outcome: SessionOutcome, failure?: string): string {
@@ -315,8 +305,8 @@ export class RunManager {
     const resolved = await this.resolveAgent("pm", "pm", { model: input.model, thinking: input.thinking });
     const { definition, model: modelRef, thinking } = resolved;
     const owner = state.pmOwner(input.requirementId);
-    if (owner?.lease && owner.lease.expiresAt > Date.now()) throw protocolError("pm_already_owned", "本需求已有有效 PM");
-    // 旧租约已失效：接管前先停止本需求仍登记在册的旧运行，旧会话不能继续调用工具
+    if (owner?.lease) throw protocolError("pm_already_owned", "本需求已有有效 PM");
+    // 接管前先停止本需求仍登记在册的旧运行，旧会话不能继续调用工具
     await this.stopRequirement(input.requirementId, { reason: "superseded_by_new_pm" });
     const expectedFence = owner?.fence ?? 0;
     const workspace = record.data.workspace;
@@ -331,7 +321,7 @@ export class RunManager {
     let registered = false;
     const leaseCurrent = () => withDatabase(this.database, (db) => {
       const owner = db.read<{ fence?: number; lease?: PmLease | null }>("pm_ownership", input.requirementId)?.data;
-      return owner?.lease?.runId === lease.runId && owner.lease.fence === lease.fence && owner.lease.expiresAt > Date.now();
+      return owner?.lease?.runId === lease.runId && owner.lease.fence === lease.fence;
     });
     // 工具在会话创建前就会核验一次；登记前视为启动中，登记后按真实会话状态判断；任何时候都要求租约仍属于本运行
     const alive = () => {
@@ -372,19 +362,11 @@ export class RunManager {
     } catch (error) {
       registered = true;
       tools?.dispose();
-      try { state.releasePm(lease); } catch { /* 租约到期后自然失效 */ }
+      try { state.releasePm(lease); } catch { /* 已被接管的租约无需释放 */ }
       const why = `PM 会话创建失败：${(error as Error).message}`;
       await this.runStore.update(run.id, { state: "failed", stateReason: why });
       throw protocolError("pm_session_failed", why, "按原因处理后重新派出 PM；原因涉及模型或凭据时请用户检查模型配置");
     }
-    const renewal = this.options.clock.setIntervalExcludingSleep(() => {
-      // 续租拿到的新到期时间要接回来：投递凭据按租约到期时间失效，沿用派出时的租约会让它一生成就过期
-      void state.renewPm(lease).then((renewed) => {
-        lease = renewed;
-        const current = this.sessions.get(run.id);
-        if (current?.pm) current.pm.lease = renewed;
-      }, (error: unknown) => { void this.stop(run.id, { reason: "lease_renewal_failed", code: errorCode(error) }).catch(() => {}); });
-    }, PM_RENEW_MS);
     let delivering: Promise<void> | null = null, notifiedReviewId: string | null = null;
     // 投递出错或需要恢复时把原因交给 PM 并写进运行记录，同一原因只报一次，恢复后清掉
     let deliveryIssue: string | null = null;
@@ -409,7 +391,7 @@ export class RunManager {
         .catch(() => {}).then(() => this.applyHalt(run.id)).catch(() => {}).then(() => this.applyApprovalHold(run.id)).catch(() => {})
         .then(() => this.refreshOverview(run.id)).catch(() => {}).finally(() => { delivering = null; });
     }, PM_EVENT_POLL_MS);
-    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, renewal, delivery, tick: async () => { await delivering; }, haltPaused: false, halt: null, hold: null } });
+    this.sessions.set(run.id, { kind: "requirement", handle, pm: { lease, tools, delivery, tick: async () => { await delivering; }, haltPaused: false, halt: null, hold: null } });
     registered = true;
     handle.events.on("turn", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     this.trackUsage(run.id, handle);
@@ -431,13 +413,12 @@ export class RunManager {
   private async finishPm(runId: string, state: "failed" | "stopped", reason?: string): Promise<void> {
     const entry = this.sessions.get(runId);
     if (!entry?.pm) return;
-    this.options.clock.clearTimer(entry.pm.renewal);
     this.options.clock.clearTimer(entry.pm.delivery);
     // 已开始的投递与概览刷新须结束后才释放租约与工具，避免停止后仍有迟到写入
     await entry.pm.tick();
     if (this.overviewFingerprints.delete(runId)) this.emit("pm.overview.changed", { requirementId: entry.pm.lease.requirementId, pmRunId: runId });
     entry.pm.tools.dispose();
-    try { (await this.pmState()).releasePm(entry.pm.lease); } catch { /* 已被接管或到期的租约无需释放 */ }
+    try { (await this.pmState()).releasePm(entry.pm.lease); } catch { /* 已被接管的租约无需释放 */ }
     const current = await this.runStore.get(runId);
     // PM 结束即撤权：它派出的 explore 随之停止，结果不再有人接收
     if (current.ok) {
@@ -1243,7 +1224,7 @@ export class RunManager {
     if (confirmed && entry?.explore) await this.finishExplore(runId, "stopped");
     if (confirmed && this.sessions.get(runId) === entry) { entry?.handle.dispose(); this.sessions.delete(runId); }
     const reason = confirmed ? undefined : reasons.join("；");
-    const stopText = run.stopCause ? stopReasonText(run.stopCause) : "运行被停止";
+    const stopText = run.stopCause ? STOP_REASON_TEXT[run.stopCause.reason] : "运行被停止";
     if (run.state === "stopped") await this.runStore.update(runId, { stateReason: reason ? `${stopText}；${reason}` : stopText });
     return { state: run.state, confirmed, ...(reason ? { reason } : {}) };
   }
@@ -1284,6 +1265,7 @@ export class RunManager {
     if (confirmed) this.unconfirmedAdoptions.delete(run.id); else this.unconfirmedAdoptions.add(run.id);
     return confirmed;
   }
+  async revokeStalePmLeases(): Promise<Array<{ requirementId: string; reason: string }>> { return (await this.pmState()).revokeAllPmLeases(); }
   async adoptInterruptedShells(): Promise<void> {
     const page = await this.runStore.list({ limit: Number.MAX_SAFE_INTEGER });
     for (const run of page.items) {

@@ -26,7 +26,7 @@ import { createFakeTimeSource } from "./helpers/fake-clock.ts";
 import { notePlanRejection, planRejectionsIn, stallIn } from "../runtime/pm-attention.ts";
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const BODY = "# 目标 {#goals}\n保留移动。\n";
 
 async function until(check: () => boolean | Promise<boolean>): Promise<void> {
@@ -78,13 +78,12 @@ async function plainWorld(options: { prepare?: boolean; activate?: boolean } = {
   return { dispatch: () => runs.dispatchPm({ requirementId, model: { provider: "pm-model", id: "test" }, thinking: "off" }) };
 }
 
-/** 带实施授权批准清单的需求：夹具原有的 PM 租约置为过期，工作区登记为 ready。 */
+/** 带实施授权批准清单的需求：夹具原有的 PM 租约已交还，工作区登记为 ready。 */
 async function world(clock?: ReturnType<typeof createClock>) {
   const fixture = await createPmIntakeFixture(); cleanups.push(() => fixture.cleanup());
   const record = fixture.state.read(fixture.requirementId).data;
+  fixture.state.releasePm(fixture.lease);
   withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), (db) => {
-    const row = db.read<{ lease: { expiresAt: number } }>("pm_ownership", fixture.requirementId)!;
-    db.update("pm_ownership", fixture.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
     db.create("managed_workspaces", fixture.requirementId, { format: "managed-workspace/v1", requirementId: fixture.requirementId, title: "角色跳跃", operationId: uuidv7(),
       baseCommit: record.workspace!.baseCommit, branch: record.workspace!.branch, path: record.workspace!.path, status: "ready", recycleOperationId: null });
   });
@@ -105,7 +104,7 @@ test("M7-AC13、M8A-AC7：PM 只在工作区 ready、需求 active 且有实施�
   const w = await world();
   scriptReplies(w.provider, [{ type: "text", text: "等待" }]);
   const { runId, fence } = await w.dispatch();
-  expect(fence).toBe(2);
+  expect(fence).toBe(3);
   await until(() => w.provider.requests.length === 1);
   const request = w.provider.requests[0]!;
   expect(request.systemPrompt).toContain(w.requirementId);
@@ -168,30 +167,38 @@ test("M7-AC9：按需求停止结束全部运行，关闭协议依赖的运行�
   expect(owner?.lease ?? null).toBeNull();
 }, 30000);
 
-test("M7-AC5：旧 PM 租约过期后再派出即接管，旧会话立即停止且其工具失效", async () => {
+test("M7-AC5：旧 PM 租约被交还后再派出即接管，旧会话立即停止且其工具失效", async () => {
   const w = await world();
   scriptReplies(w.provider, [{ type: "text", text: "一" }, { type: "text", text: "二" }]);
   const first = await w.dispatch();
-  withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
-    const row = db.read<{ lease: { expiresAt: number } }>("pm_ownership", w.requirementId)!;
-    db.update("pm_ownership", w.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
-  });
+  w.state.releasePm(w.state.pmOwner(w.requirementId)!.lease!);
   const second = await w.dispatch();
   expect(second.fence).toBeGreaterThan(first.fence);
   expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "superseded_by_new_pm" } } });
   expect(await w.runStore.get(second.runId)).toMatchObject({ ok: true, run: { state: "running" } });
 }, 30000);
 
-test("M8C-AC8：PM 续租失败时停止并记下原因与错误码；停止行为不变，租约已失效的旧运行照常停止", async () => {
+test("PM 租约没交还时，墙上时钟前跳 1 小时后再派新 PM 仍报已有有效 PM，原 PM 不受影响", async () => {
+  const w = await world();
+  scriptReplies(w.provider, [{ type: "text", text: "一" }, { type: "text", text: "二" }]);
+  const first = await w.dispatch();
+  const real = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(real + 3_600_000);
+  await expect(w.dispatch()).rejects.toMatchObject({ code: "pm_already_owned" });
+  expect(await w.runStore.get(first.runId)).toMatchObject({ ok: true, run: { state: "running" } });
+  expect(w.state.pmOwner(w.requirementId)!.lease!.runId).toBe(first.runId);
+}, 30000);
+
+test("合盖睡眠式时钟跳变 1 小时后，派出的 PM 不会被停，PM 仍持有租约", async () => {
   const time = createFakeTimeSource();
   const w = await world(createClock({ timeSource: time, sleepGapThresholdMs: Number.MAX_SAFE_INTEGER }));
   scriptReplies(w.provider, [{ type: "text", text: "一" }]);
-  const renew = vi.spyOn(RequirementStateStore.prototype, "renewPm").mockRejectedValue(Object.assign(new Error("租约已被接管"), { code: "lease_superseded" }));
-  cleanups.push(() => renew.mockRestore());
   const { runId } = await w.dispatch();
-  time.advance(10_000);
-  await until(async () => { const run = await w.runStore.get(runId); return run.ok && run.run.state === "stopped"; });
-  expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "lease_renewal_failed", code: "lease_superseded" } } });
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_600_000);
+  time.advance(3_600_000);
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { state: "running" } });
+  expect(w.state.pmOwner(w.requirementId)!.lease).toMatchObject({ runId });
 }, 30000);
 
 test("M7-AC10：需求已 active 但托管工作区尚未 ready 时不派 PM", async () => {

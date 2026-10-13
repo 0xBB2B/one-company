@@ -17,7 +17,7 @@ import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperation
 import { registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
 
-export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "renew-pm" | "release-pm" | "check-pm" | "check-scheduling" | "record-pm-diff" | "events" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "assess-update" | "record-decisions" | "read-decisions";
+export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "release-pm" | "check-pm" | "check-scheduling" | "record-pm-diff" | "events" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "assess-update" | "record-decisions" | "read-decisions";
 export interface StateAuthorizationRequest { action: RequirementAction; repoId: string; input: Readonly<Record<string, unknown>> }
 export interface RequirementAccessState { record: StoredRecord<RequirementRecord> | null; pmLeaseHash: string }
 export interface RequirementAccessChange {
@@ -41,7 +41,6 @@ export type ApprovedEventPoll =
   | { status: "baseline_required"; reason: "baseline_missing" | "event_gap" | "baseline_mismatch" | "context_missing"; cursor: PmEventCursorData; revision: number; reference: ProdReference; version: number; epoch: number }
   | { status: "recovery_required"; reason: "history_unknown"; cursor: PmEventCursorData; version: number; epoch: number }
   | { status: "event"; eventId: string; sequence: number; redelivery: boolean; event: ApprovedProdChangeData; cursor: PmEventCursorData };
-const LEASE_MS = 30_000;
 const Operation = object({ requirementId: id, digest: hash, sequence: positive });
 const BaselineReturn = object({
   lease: PmLease, deliveryId: id, version: positive, epoch: positive, revision: positive, reference: object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }), hash }),
@@ -417,8 +416,8 @@ export class RequirementStateStore {
       const record = this.get(db, request.requirementId); this.active(record.data); this.version(record, request.version);
       if (!record.data.workspace || !equal(record.data.workspace, previous.data.workspace)) throw new RequirementStateError("workspace_binding_changed");
       this.checkClaims(db, record.data.workspace);
-      const owner = this.owner(db, record.id), now = this.now();
-      if (owner?.data.lease && owner.data.lease.expiresAt > now) throw new RequirementStateError("pm_already_owned");
+      const owner = this.owner(db, record.id);
+      if (owner?.data.lease) throw new RequirementStateError("pm_already_owned");
       if ((owner?.data.fence ?? 0) !== request.expectedFence) throw new RequirementStateError("stale_fence");
       const runClaim = db.read("pm_run_claims", request.runId);
       if (runClaim) {
@@ -428,7 +427,7 @@ export class RequirementStateStore {
       const fence = increment(owner?.data.fence ?? 0);
       const contextGeneration = increment(owner?.data.context.generation ?? 0);
       const lease = checked(PmLease, { requirementId: record.id, workspaceId: record.data.workspace.workspaceId, runId: request.runId,
-        epoch: record.data.epoch, fence, contextGeneration, expiresAt: now + LEASE_MS });
+        epoch: record.data.epoch, fence, contextGeneration });
       const context = checked(PmContext, { format: "pm-physical-context/v1", runId: request.runId, fence,
         generation: contextGeneration, baseline: null });
       const prodEvents = owner?.data.prodEvents ? { ...owner.data.prodEvents, baselineDelivery: null } : undefined;
@@ -439,12 +438,12 @@ export class RequirementStateStore {
       return lease;
     });
   }
-  private validateOwner(db: LocalDatabase, lease: PmLease, now = this.now()) {
+  private validateOwner(db: LocalDatabase, lease: PmLease) {
     const record = this.get(db, lease.requirementId); this.active(record.data);
     const owner = this.owner(db, record.id);
     if (!owner?.data.lease || owner.data.fence !== lease.fence || owner.data.lease.runId !== lease.runId || record.data.epoch !== lease.epoch ||
       owner.data.lease.epoch !== lease.epoch || owner.data.lease.workspaceId !== lease.workspaceId ||
-      owner.data.lease.contextGeneration !== lease.contextGeneration || owner.data.lease.expiresAt <= now ||
+      owner.data.lease.contextGeneration !== lease.contextGeneration ||
       !record.data.workspace || record.data.workspace.workspaceId !== lease.workspaceId) throw new RequirementStateError("stale_pm_lease");
     this.checkClaims(db, record.data.workspace);
     const runClaim = db.read("pm_run_claims", lease.runId);
@@ -468,17 +467,18 @@ export class RequirementStateStore {
       if (record.data.pendingRevision !== null) throw new RequirementStateError("pending_update");
     });
   }
-  async renewPm(input: PmLease): Promise<PmLease> {
-    const lease = checked(PmLease, input); await this.workspaceForLease("renew-pm", lease);
-    return this.mutate("renew-pm", lease, (db) => {
-      const { owner } = this.validateOwner(db, lease);
-      const updated = checked(PmLease, { ...owner.data.lease!, expiresAt: this.now() + LEASE_MS });
-      db.update("pm_ownership", lease.requirementId, owner.version, { ...owner.data, lease: updated }); return updated;
-    });
-  }
   releasePm(input: PmLease): void {
     const lease = checked(PmLease, input);
     this.mutate("release-pm", lease, (db) => { const { record } = this.validateOwner(db, lease); this.revoke(db, record.id); this.write(db, record, record.data, "pm.released"); });
+  }
+  revokeAllPmLeases(): Array<{ requirementId: string; reason: string }> {
+    const ids = withDatabase(this.path(), (db) => db.list<PmRecordData>("pm_ownership").filter((row) => row.data.lease).map((row) => row.key));
+    const failures: Array<{ requirementId: string; reason: string }> = [];
+    for (const requirementId of ids) {
+      try { this.mutate("release-pm", { requirementId }, (db) => { const record = this.get(db, requirementId); this.revoke(db, requirementId); this.write(db, record, record.data, "pm.released"); }); }
+      catch (error) { failures.push({ requirementId, reason: error instanceof RequirementStateError ? `${error.advice.why}（${error.code}）` : (error as Error).message }); }
+    }
+    return failures;
   }
 
   /** 本 PM 物理上下文已完整读过到该批准版本的差异；复核门槛据此判断，换代后随上下文一起清空。 */
@@ -597,7 +597,7 @@ export class RequirementStateStore {
   checkApprovedBaselineReturnSync(input: Static<typeof BaselineReturn>): void {
     const request = checked(BaselineReturn, input);
     const valid = this.finalCheck("check-approved-return", request, (db, now) => {
-      const { record, owner } = this.validateOwner(db, request.lease, now);
+      const { record, owner } = this.validateOwner(db, request.lease);
       const cursor = this.eventCursor(owner);
       const events = this.approvedEvents(db, record.id);
       if (this.historyUnknown(record, cursor, events)) {

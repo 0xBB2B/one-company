@@ -26,7 +26,6 @@ const uuidV7 = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, max
 const hash = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 });
 const commit = Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" });
 const positive = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
-const counter = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
 const boundedText = Type.String({ minLength: 1 });
 const opaqueId = Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._:/#@+|-]{0,255}$", maxLength: 256 });
 const workspaceRef = Type.String({ pattern: "^refs/heads/[^\\u0000-\\u0020]+$", maxLength: 1_024 });
@@ -122,7 +121,7 @@ const submissionBaseline = object({ submissionRef: opaqueId, submissionHash: has
 /**
  * currentState 是调用方在同一受控操作内提供的竞争检查数据，不是本模块验证出的安全事实。
  * sourceDirectory 只绑定 currentBinding，接手记录的出处也按它核对。
- * requirementRecordVersion 与 leaseExpiresAt 只用于本次判定，不进入永久接手绑定。
+ * requirementRecordVersion 只用于本次判定，不进入永久接手绑定。
  */
 export const IntakeContinuityFactsSchema = object({
   format: Type.Literal("pm-intake-continuity-facts/v1"),
@@ -130,8 +129,6 @@ export const IntakeContinuityFactsSchema = object({
   currentState: object({
     lifecycle: Type.Union([Type.Literal("draft"), Type.Literal("active"), Type.Literal("closing"), Type.Literal("closed")]),
     requirementRecordVersion: positive,
-    leaseExpiresAt: counter,
-    observedAt: counter,
     actionAuthorizationReportedCurrent: Type.Boolean(),
     sourceDirectoryReportedCurrent: Type.Boolean(),
     pendingApprovedUpdate: Type.Boolean(),
@@ -381,7 +378,6 @@ export function evaluateIntakeContinuity(value: unknown): IntakeContinuityEvalua
   const reasons: IntakeContinuityReason[] = [];
 
   if (facts.currentState.lifecycle !== "active") addReason(reasons, "requirement_not_active");
-  if (facts.currentState.leaseExpiresAt <= facts.currentState.observedAt) addReason(reasons, "lease_not_current");
   if (!facts.currentState.actionAuthorizationReportedCurrent) addReason(reasons, "action_authorization_not_reported_current");
   if (!facts.currentState.sourceDirectoryReportedCurrent) addReason(reasons, "source_directory_not_reported_current");
   if (facts.currentState.pendingApprovedUpdate) addReason(reasons, "pending_approved_update");

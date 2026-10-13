@@ -24,7 +24,7 @@ export async function until(check: () => boolean | Promise<boolean>, limit = 600
 }
 
 /**
- * 真实 RunManager 派出的 PM：夹具原有租约置为过期、工作区登记为 ready，PM 以脚本化模型提交接手理解。
+ * 真实 RunManager 派出的 PM：夹具原有租约已交还、工作区登记为 ready，PM 以脚本化模型提交接手理解。
  * review 为 false 时不做主代理核对，由用例自行调用 review()。
  */
 export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string; userDir?: string } = {}) {
@@ -32,8 +32,6 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   const record = fixture.state.read(fixture.requirementId).data;
   const db = <T>(run: Parameters<typeof withDatabase<T>>[1]) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), run);
   db((d) => {
-    const row = d.read<{ lease: { expiresAt: number } }>("pm_ownership", fixture.requirementId)!;
-    d.update("pm_ownership", fixture.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
     d.create("managed_workspaces", fixture.requirementId, { format: "managed-workspace/v1", requirementId: fixture.requirementId, title: "角色跳跃", operationId: uuidv7(),
       baseCommit: record.workspace!.baseCommit, branch: record.workspace!.branch, path: record.workspace!.path, status: "ready", recycleOperationId: null });
   });
@@ -41,6 +39,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   const material = await fixture.submissionProvider.loadCurrent({ binding: captured.binding, sourceDirectoryHash: captured.sourceDirectoryHash,
     maxBytes: 49_152, signal: new AbortController().signal });
   const { format: _format, binding: _binding, ...understanding } = material!.understanding;
+  fixture.state.releasePm(fixture.lease);
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(fixture.root, "models.json"), refreshOnCreate: false });
   const provider = registerControlledProvider(runtime, { providerId: "team-model", modelId: "test" });
   const clock = createClock(); cleanups.push(() => clock.stopGapWatcher());

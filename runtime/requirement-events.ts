@@ -3,7 +3,7 @@ import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { uuidv7 } from "./database.ts";
-import { checked, commands, commit, counter, hash, id, object, PmLease, positive, RequirementStateError } from "./requirement-contracts.ts";
+import { checked, commands, commit, hash, id, object, PmLease, positive, RequirementStateError } from "./requirement-contracts.ts";
 import type { PmEventCursor, PmLease as PmLeaseData, ProdReference as ProdReferenceData } from "./requirement-contracts.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
 import type { RequirementAction, RequirementStoreOptions } from "./requirement-state.ts";
@@ -126,7 +126,6 @@ export interface PreparedBaselineDelivery {
   version: number;
   epoch: number;
   contextGeneration: number;
-  expiresAt: number;
 }
 
 export type PreparedRequirementDelivery = PreparedBaselineDelivery;
@@ -160,10 +159,9 @@ const REQUIREMENT_EVENT_ADVICE: Readonly<Record<string, FailureAdvice>> = {
   disposed: { why: "需求事件服务已关闭", next: "等下一次自动投递，不用处理" },
   duplicate_archive_path: { why: "有重复的归档路径", next: "停止操作，把这段原因告诉用户" },
   epoch_changed: { why: "需求在投递期间被关闭或重新开启", next: "停止操作，把这段原因告诉主代理" },
-  expired_delivery_handle: { why: "投递凭据已过期", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
   invalid_prod_hash: { why: "需求正文的指纹格式不对", next: "停止操作，把这段原因告诉用户" },
   recovery_required: { why: "需求记录需要恢复核对", next: "停止正式规划与派工，把这段原因告诉主代理，由用户处理" },
-  unknown_delivery_handle: { why: "投递凭据不存在或已过期被清除", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
+  unknown_delivery_handle: { why: "投递凭据不存在或已被清除", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
 };
 export class RequirementEventServiceError extends Error {
   readonly code: string;
@@ -205,8 +203,7 @@ function sameReference(left: ProdReferenceData, right: ProdReferenceData): boole
 
 function sameLease(left: PmLeaseData, right: PmLeaseData): boolean {
   return left.requirementId === right.requirementId && left.workspaceId === right.workspaceId && left.runId === right.runId &&
-    left.epoch === right.epoch && left.fence === right.fence && left.contextGeneration === right.contextGeneration &&
-    left.expiresAt === right.expiresAt;
+    left.epoch === right.epoch && left.fence === right.fence && left.contextGeneration === right.contextGeneration;
 }
 
 function cursorResult(requirementId: string, cursor: PmEventCursor): CaughtUpDelivery {
@@ -226,7 +223,6 @@ export class RequirementEventService {
   private readonly options: RequirementEventServiceOptions;
   private readonly pending = new Map<string, PendingDelivery>();
   private readonly invalidationSubscriptions = new Map<string, () => void>();
-  private cleanupTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
   private constructor(options: RequirementEventServiceOptions) { this.options = { ...options }; }
@@ -240,8 +236,6 @@ export class RequirementEventService {
     service.authorize(authorization);
     return service;
   }
-
-  private now(): number { return checked(counter, this.options.now?.() ?? Date.now()); }
 
   private authorize(input: RequirementEventAuthorizationRequest): void {
     if (this.disposed) throw new RequirementEventServiceError("disposed");
@@ -301,7 +295,6 @@ export class RequirementEventService {
     for (const [requirementId, unsubscribe] of this.invalidationSubscriptions) {
       if (!required.has(requirementId)) { unsubscribe(); this.invalidationSubscriptions.delete(requirementId); }
     }
-    if (this.pending.size === 0 && this.cleanupTimer) { clearTimeout(this.cleanupTimer); this.cleanupTimer = null; }
   }
 
   private discardRequirement(requirementId: string): void {
@@ -313,32 +306,6 @@ export class RequirementEventService {
     delivery.state.checkApprovedBaselineReturnSync(delivery.finalCheck as never);
   }
 
-  private purgeExpired(): void {
-    const now = this.now();
-    for (const [handle, delivery] of this.pending) {
-      if (delivery.prepared.expiresAt <= now) this.pending.delete(handle);
-    }
-    this.releaseUnusedSubscriptions();
-  }
-
-  private scheduleCleanup(): void {
-    if (this.disposed || this.pending.size === 0 || this.cleanupTimer) return;
-    const expiry = Math.min(...[...this.pending.values()].map((item) => item.prepared.expiresAt));
-    this.cleanupTimer = setTimeout(() => {
-      this.cleanupTimer = null;
-      try {
-        this.purgeExpired();
-        // 外部进程只能通过当前元数据被发现；消费边界仍每次同步拒绝失效结果，不等待此定时清理。
-        for (const [handle, delivery] of [...this.pending]) {
-          try { this.checkDelivery(delivery); } catch { this.pending.delete(handle); }
-        }
-      } catch { this.pending.clear(); }
-      this.releaseUnusedSubscriptions();
-      this.scheduleCleanup();
-    }, Math.max(1, Math.min(1_000, expiry - this.now())));
-    this.cleanupTimer.unref?.();
-  }
-
   /** 可信持有者结束时释放本服务自有缓存。 */
   dispose(): void {
     this.disposed = true;
@@ -347,7 +314,6 @@ export class RequirementEventService {
   }
 
   private retain(delivery: PendingDelivery): PreparedRequirementDelivery {
-    this.purgeExpired();
     const requirementId = delivery.lease.requirementId;
     if (!this.invalidationSubscriptions.has(requirementId)) {
       this.invalidationSubscriptions.set(requirementId,
@@ -362,7 +328,6 @@ export class RequirementEventService {
     }
     this.pending.set(delivery.prepared.handle, delivery);
     this.releaseUnusedSubscriptions();
-    this.scheduleCleanup();
     return delivery.prepared;
   }
 
@@ -421,7 +386,7 @@ export class RequirementEventService {
     const prepared = freeze({ kind: "baseline" as const, handle, requirementId: request.lease.requirementId,
       deliveryId: delivery.deliveryId, throughSequence: delivery.throughSequence, revision: delivery.revision,
       commit: delivery.reference.commit, prodHash: sha256(delivery.reference.hash), version: delivery.recordVersion,
-      epoch: delivery.epoch, contextGeneration: request.lease.contextGeneration, expiresAt: request.lease.expiresAt });
+      epoch: delivery.epoch, contextGeneration: request.lease.contextGeneration });
     const finalCheck = { lease: request.lease, deliveryId: delivery.deliveryId, version: verified.version,
       epoch: verified.epoch, revision: delivery.revision, reference: delivery.reference };
     return this.retain({ prepared, lease: request.lease, authorization, state, finalCheck }) as PreparedBaselineDelivery;
@@ -429,12 +394,10 @@ export class RequirementEventService {
 
   consumePreparedDelivery(input: ConsumePreparedDeliveryInput): void {
     const request = checked(ConsumeDeliveryInput, input);
-    this.purgeExpired();
     const pending = this.pending.get(request.handle);
     if (!pending) throw new RequirementEventServiceError("unknown_delivery_handle");
     this.pending.delete(request.handle);
     this.releaseUnusedSubscriptions();
-    if (pending.prepared.expiresAt <= this.now()) throw new RequirementEventServiceError("expired_delivery_handle");
     if (!sameLease(pending.lease, request.lease) || request.contextGeneration !== request.lease.contextGeneration ||
       request.contextGeneration !== pending.prepared.contextGeneration || request.version !== pending.prepared.version ||
       request.lease.requirementId !== pending.prepared.requirementId) {

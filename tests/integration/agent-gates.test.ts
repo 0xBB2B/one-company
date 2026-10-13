@@ -41,8 +41,6 @@ async function world() {
   const fixture = await createPmIntakeFixture(); cleanups.push(() => fixture.cleanup());
   const record = fixture.state.read(fixture.requirementId).data;
   fixture.db((db) => {
-    const row = db.read<{ lease: { expiresAt: number } }>("pm_ownership", fixture.requirementId)!;
-    db.update("pm_ownership", fixture.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
     db.create("managed_workspaces", fixture.requirementId, { format: "managed-workspace/v1", requirementId: fixture.requirementId, title: "角色跳跃", operationId: uuidv7(),
       baseCommit: record.workspace!.baseCommit, branch: record.workspace!.branch, path: record.workspace!.path, status: "ready", recycleOperationId: null });
   });
@@ -53,6 +51,7 @@ async function world() {
   const material = await fixture.submissionProvider.loadCurrent({ binding: captured.binding, sourceDirectoryHash: captured.sourceDirectoryHash,
     maxBytes: 49_152, signal: new AbortController().signal });
   const { format: _format, binding: _binding, ...understanding } = material!.understanding;
+  fixture.state.releasePm(fixture.lease);
   const files = { scripts: join(fixture.root, "scripts.json"), log: join(fixture.root, "requests.jsonl"), append: join(fixture.root, "append.jsonl") };
   await writeFile(files.scripts, JSON.stringify([
     { providerId: "gate-model", modelId: "test", replies: [{ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding } }, { type: "text", text: "等待核对" }] },
@@ -187,6 +186,18 @@ test("M9-AC9/AC16：未认证连接与已有有效 PM 时再派 PM 均被拒；�
   expect(await w.runs().get(runId)).toMatchObject({ ok: true, run: { state: "stopped", stopCause: { reason: "config_changed" } } });
 }, 120_000);
 
+test("daemon 启动时作废上一个 daemon 留下的全部 PM 租约，重启后立即可派新 PM", async () => {
+  const w = await world();
+  const { requirementId } = w.fixture;
+  const crashed = await w.fixture.state.acquirePm({ requirementId, version: w.fixture.state.read(requirementId).version, runId: uuidv7(),
+    expectedFence: w.fixture.state.pmOwner(requirementId)!.fence });
+  expect(w.fixture.state.pmOwner(requirementId)!.lease).toMatchObject({ runId: crashed.runId });
+  const client = await w.start();
+  await until(() => w.fixture.state.pmOwner(requirementId)!.lease === null);
+  expect(w.fixture.state.pmOwner(requirementId)!.fence).toBe(crashed.fence + 1);
+  await expect(client.call("agents.dispatchPm", { requirementId, model: { provider: "gate-model", id: "test" }, thinking: "off" })).resolves.toBeTruthy();
+}, 120_000);
+
 test("M9-AC9：已通过接手的 PM 被停止后重新派出，新 PM 须重新接手，主代理核对通过前派 worker 被拒", async () => {
   const w = await world();
   const first = await w.readyPm([spec("login"), spec("cover", { goalUnitIds: ["scenario.failure"] })]);
@@ -232,12 +243,9 @@ test("M9-AC10：安装产物中主代理停止 PM（撤权）时，PM 派出的 
   expect(session()).toMatchObject({ current: false });
 }, 120_000);
 
-test("M9-AC10：安装产物中旧 PM 租约失效后派出新 PM（接管）时，旧 PM 与它派出的 explore 都停止并记为被新 PM 取代，旧检索会话失效", async () => {
+test("M9-AC10：安装产物中旧 PM 租约被交还后派出新 PM（接管）时，旧 PM 与它派出的 explore 都停止并记为被新 PM 取代，旧检索会话失效", async () => {
   const { w, pm, exploreId, run, session } = await pmWithRunningExplore();
-  w.fixture.db((db) => {
-    const row = db.read<{ lease: { expiresAt: number } }>("pm_ownership", w.fixture.requirementId)!;
-    db.update("pm_ownership", w.fixture.requirementId, row.version, { ...row.data, lease: { ...row.data.lease, expiresAt: Date.now() - 1 } });
-  });
+  w.fixture.state.releasePm(w.fixture.state.pmOwner(w.fixture.requirementId)!.lease!);
   await w.reply("gate-model", { type: "text", text: "新 PM 接手" });
   const next = await w.client().call("agents.dispatchPm", { requirementId: w.fixture.requirementId, model: { provider: "gate-model", id: "test" }, thinking: "off" }) as { runId: string };
   expect(next.runId).not.toBe(pm.runId);

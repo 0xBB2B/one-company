@@ -55,7 +55,7 @@ const READ_ADVICE = {
   requirement_missing: { why: "找不到这个需求", next: STALE },
   workspace_changed: { why: "需求工作区绑定已变化", next: STALE },
   requirement_inactive: { why: "需求已不是可读取批准正文的状态", next: STALE },
-  lease_stale: { why: "派出本运行的 PM 租约已失效，可能已过期或被新 PM 接管", next: STALE },
+  lease_stale: { why: "PM 已交还租约、被新 PM 接管，或守护进程重启后作废了旧租约", next: STALE },
   version_changed: { why: "读取期间批准版本已变化", next: "用 read 或 diff 从第一页重新读取" },
   check_round_invalid: { why: "绑定的检查轮已结束、失效或被中断", next: STALE },
   closed_metadata_only: { why: "需求正在关闭或已关闭，只能读取 metadata", next: "改用 metadata；不要再读正文" },
@@ -168,7 +168,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
     const lease = owner?.lease;
     if (!lease || owner!.requirementId !== binding.requirementId || lease.requirementId !== binding.requirementId || owner!.fence !== binding.lease.fence || lease.fence !== binding.lease.fence ||
       lease.runId !== binding.lease.runId || lease.workspaceId !== binding.workspaceId || lease.epoch !== binding.lease.epoch ||
-      lease.contextGeneration !== binding.lease.contextGeneration || lease.expiresAt <= Date.now()) deny("lease_stale");
+      lease.contextGeneration !== binding.lease.contextGeneration) deny("lease_stale");
     if (expected && (record.version !== expected.version || record.data.revision !== expected.data.revision ||
       record.data.approved!.commit !== expected.data.approved?.commit || record.data.approved!.hash !== expected.data.approved?.hash)) deny("version_changed");
     return record;
@@ -195,7 +195,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
   try {
     host("metadata");
     current();
-    unsubscribe = state.onAccessInvalidated(binding.requirementId, (change) => { if (change.action !== "renew-pm") cursors.clear(); });
+    unsubscribe = state.onAccessInvalidated(binding.requirementId, () => { cursors.clear(); });
   } catch (error) { dispose(); throw readFailure(error); }
 
   async function execute(input: unknown) {

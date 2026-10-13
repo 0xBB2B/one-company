@@ -199,12 +199,12 @@ test("M3-AC6/5：A独立Node消费ack并退出，B新Node有效lease恢复cursor
   expect(consumed).toMatchObject({ cursor: { understoodRevision: 2, understoodCommit: second.commit }, next: { status: "caught_up" } });
   await a.stop();
   expect(a.isClosed()).toBe(true);
-  // A已经真实退出但未主动release租约；可信时钟只推进到旧租约到期后。
   const third = await w.approve(BODY3);
-  const b = await w.child(first.lease.expiresAt + 1);
+  w.state.revokeAllPmLeases();
+  const b = await w.child();
   expect(b.child.pid).not.toBe(a.child.pid);
   const takeover = await b.call("acquire");
-  expect(takeover.lease.fence).toBe(first.lease.fence + 1);
+  expect(takeover.lease.fence).toBe(first.lease.fence + 2);
   expect(takeover.lease.runId).not.toBe(first.lease.runId);
   expect(takeover.cursor).toMatchObject({ consumedSequence: consumed.cursor.consumedSequence, understoodRevision: 2, understoodCommit: second.commit });
   expect(takeover.notice).toMatchObject({ status: "baseline_required", reason: "context_missing", revision: 3, commit: third.commit, prodHash: third.prodHash });
@@ -227,7 +227,7 @@ test("M3-AC8：B独立Node提交closing后，A仍持真实prepared handle在最�
   const b = await w.child();
   await a.call("acquire");
   const held = await a.call("hold");
-  expect(held).toMatchObject({ pending: 1, cleanupTimerPaused: true, invalidations: 0 });
+  expect(held).toMatchObject({ pending: 1, invalidations: 0 });
   const closing = await b.call("close");
   expect(closing).toMatchObject({ lifecycle: "closing", epoch: held.preparedEpoch + 1 });
   expect(closing.pid).not.toBe(a.child.pid);

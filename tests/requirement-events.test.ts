@@ -294,15 +294,18 @@ test("基线准备完成后closing，最终同步consume拒绝", async () => {
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closing");
 });
 
-test("过期或消费边界撤权的句柄被丢弃", async () => {
+test("时钟前跳 1 小时后，PM 轮询、已准备的投递句柄消费与确认照常成功", async () => {
   let now = Date.now();
-  const expiring = await world(() => true, () => now);
-  const expired = await expiring.events.prepareCurrentBaseline({ lease: expiring.lease });
-  now = expired.expiresAt;
-  expect(() => expiring.events.consumePreparedDelivery({ lease: expiring.lease, handle: expired.handle,
-    contextGeneration: expiring.lease.contextGeneration, version: expired.version }))
-    .toThrow(/unknown_delivery_handle|expired_delivery_handle/);
+  const w = await world(() => true, () => now);
+  const prepared = await w.events.prepareCurrentBaseline({ lease: w.lease });
+  now += 3_600_000;
+  expect(() => w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
+    contextGeneration: w.lease.contextGeneration, version: prepared.version })).not.toThrow();
+  await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: prepared.deliveryId });
+  expect(await w.events.poll({ lease: w.lease })).toMatchObject({ status: "caught_up" });
+});
 
+test("消费边界撤权的句柄被丢弃", async () => {
   let authorized = true;
   const revoked = await world(() => authorized);
   const prepared = await revoked.events.prepareCurrentBaseline({ lease: revoked.lease });
@@ -433,16 +436,6 @@ test("接手回归：closing提交立即清除同进程待消费句柄", async (
   expect(pending.size).toBe(0);
 });
 
-test("接手回归：空闲过期主动释放待消费句柄", async () => {
-  let now = Date.now();
-  const expiring = await world(() => true, () => now);
-  await expiring.events.prepareCurrentBaseline({ lease: expiring.lease });
-  const pending = (expiring.events as unknown as { pending: Map<string, unknown> }).pending;
-  now = expiring.lease.expiresAt;
-  await new Promise((resolve) => setTimeout(resolve, 1_100));
-  expect(pending.size).toBe(0);
-});
-
 test("接手回归：dispose释放缓存并禁止复用", async () => {
   const disposable = await world();
   await disposable.events.prepareCurrentBaseline({ lease: disposable.lease });
@@ -497,7 +490,7 @@ test("最终检查回归：宿主clock只在最终SQL事务外调用", async () 
   w.events.consumePreparedDelivery({ lease: w.lease, handle: prepared.handle,
     contextGeneration: w.lease.contextGeneration, version: prepared.version });
   armed = false;
-  expect(locks.length).toBeGreaterThanOrEqual(3);
+  expect(locks.length).toBeGreaterThanOrEqual(1);
   expect(locks.every(Boolean)).toBe(true);
 });
 
@@ -505,6 +498,6 @@ test("M9：事件服务用到的每个拒绝码都配了原因与建议，不会
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../runtime/requirement-events.ts", import.meta.url), "utf8");
   const codes = new Set([...source.matchAll(/RequirementEventServiceError\("([a-z_]+)"/gu)].map((match) => match[1]!));
-  expect(codes.size).toBeGreaterThan(12);
+  expect(codes.size).toBeGreaterThan(11);
   for (const code of codes) expect(new RequirementEventServiceError(code).advice.why, code).not.toMatch(/^未归类/u);
 });

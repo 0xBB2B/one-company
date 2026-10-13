@@ -80,16 +80,11 @@ async function run(command: string, input: any): Promise<unknown> {
   }
   if (command === "hold") {
     held = await events.prepareCurrentBaseline({ lease });
-    const internals = events as unknown as { pending: Map<string, unknown>; cleanupTimer: ReturnType<typeof setTimeout> | null };
+    const internals = events as unknown as { pending: Map<string, unknown> };
     assert.equal(internals.pending.has(held.handle), true);
-    assert.ok(internals.cleanupTimer);
-    // 仅暂停缓存定时回收，保留真实handle、失效订阅、授权、epoch与最终DB核验。
-    // 因此跨进程closing不能被“定时器早已删掉handle”掩盖。
-    clearTimeout(internals.cleanupTimer);
-    internals.cleanupTimer = null;
     invalidationsAtHold = invalidations;
-    return { handle: held.handle, preparedEpoch: held.epoch, expiresAt: held.expiresAt,
-      pending: internals.pending.size, cleanupTimerPaused: true, invalidationsBeforeBarrier: invalidationsAtHold,
+    return { handle: held.handle, preparedEpoch: held.epoch,
+      pending: internals.pending.size, invalidationsBeforeBarrier: invalidationsAtHold,
       invalidations: invalidations - invalidationsAtHold, verifyCalls };
   }
   if (command === "close") {
@@ -103,7 +98,6 @@ async function run(command: string, input: any): Promise<unknown> {
     const pending = (events as unknown as { pending: Map<string, unknown> }).pending;
     const presentBefore = pending.has(held.handle);
     assert.equal(presentBefore, true);
-    assert.ok(config.now < held.expiresAt);
     assert.equal(invalidations - invalidationsAtHold, 0);
     let errorCode = "";
     assert.throws(() => {

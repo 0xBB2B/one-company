@@ -8,7 +8,7 @@ import { RequirementEventService } from "../runtime/requirement-events.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
-afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
+afterEach(async () => { vi.restoreAllMocks(); for (const fn of cleanups.splice(0).reverse()) await fn(); });
 const BASE = "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n";
 const NA = { applicable: false as const, reason: "无性能影响" };
 const text = (request: Context) => JSON.stringify(request.messages.at(-1) ?? "");
@@ -187,11 +187,11 @@ test("M9：批准差异投递出错时，PM 收到哪一步失败、原因与建
   await until(async () => (await reason()) === "", 1_000);
 }, 120_000);
 
-test("M9：PM 运行超过一个租约时长（其间已续租）后批准的新版本，照样送达通知，PM 用派出时绑定的工具照样能读差异并复核", async () => {
+test("墙上时钟前跳 1 小时（模拟合盖睡眠）后批准的新版本，照样送达通知，PM 用派出时绑定的工具照样能读差异并复核", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
-  await new Promise((resolve) => setTimeout(resolve, 35_000));
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_600_000);
   w.provider.queue.push({ type: "text", text: "收到差异" }, { type: "text", text: "继续" });
   const revision = await w.approve("animation");
   await until(() => w.diffPrompts().length === 1, 1_000);

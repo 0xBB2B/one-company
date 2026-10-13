@@ -36,7 +36,7 @@ async function world(body = BODY) {
     return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
   }, authorizeManifest: () => true });
   const state = await RequirementStateStore.open({ ...options, authorize: (request) => request.repoId === options.repoId &&
-    ["open", "read", "bind-workspace", "acquire-pm", "renew-pm", "release-pm", "begin-close", "finish-close", "block-recovery"].includes(request.action) });
+    ["open", "read", "bind-workspace", "acquire-pm", "release-pm", "begin-close", "finish-close", "block-recovery"].includes(request.action) });
   async function create(body = BODY) {
     const input = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body };
     grants.set(input.operationId, { action: "create", intent: requirementIntentHash({ title: input.title, body }) });
@@ -242,13 +242,14 @@ test("draft、其他需求、伪宿主身份、过期epoch/fence/run/workspace�
   expect(probe).not.toHaveBeenCalled();
 });
 
-test("绑定时的租约快照过期但 PM 当前租约仍有效时照常读取；当前租约过期才拒绝", async () => {
+test("时钟前跳 1 小时后，PM 读需求正文、元数据和差异仍照常成功", async () => {
   const w = await world();
-  const tool = await w.tool({ ...w.binding(), lease: { ...w.lease, expiresAt: 1 } });
+  const tool = await w.tool();
+  await w.save(w.created.requirementId, BODY + "新增批准目标\n");
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_600_000);
   await expect(tool.execute({ action: "metadata" })).resolves.toBeTruthy();
-  const now = vi.spyOn(Date, "now").mockReturnValue(w.lease.expiresAt + 1);
-  try { await expect(tool.execute({ action: "metadata" })).rejects.toMatchObject({ code: "lease_stale" }); }
-  finally { now.mockRestore(); }
+  expect(content(await tool.execute({ action: "read" })).text).toContain("不做二段跳");
+  expect(content(await tool.execute({ action: "diff", fromRevision: 1 })).text).toContain("+新增批准目标");
 });
 
 test("游标不能篡改、跨角色工厂或重复使用，首次读取不收游标，dispose废止能力", async () => {
@@ -269,13 +270,12 @@ test("游标不能篡改、跨角色工厂或重复使用，首次读取不收�
   tool.dispose(); await expect(tool.execute({ action: "read" })).rejects.toMatchObject({ code: "tool_closed" });
 });
 
-test("翻页记号没有时间期限：拿到下一页记号 20 分钟后（PM 租约一路续期）再翻页仍成功", async () => {
+test("翻页记号没有时间期限：拿到下一页记号 20 分钟后再翻页仍成功", async () => {
   const w = await world(); const tool = await w.tool();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
   try {
     const first = content(await tool.execute({ action: "read", maxBytes: 32 }));
-    let lease = w.lease;
-    for (let i = 0; i < 60; i++) { await vi.advanceTimersByTimeAsync(20_000); lease = await w.state.renewPm(lease); }
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
     const second = content(await tool.execute({ action: "next", cursor: first.coverage.nextCursor }));
     expect(second.coverage.startByte).toBe(Buffer.byteLength(first.text));
   } finally { vi.useRealTimers(); }

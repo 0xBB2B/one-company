@@ -72,7 +72,7 @@ const CHECK_ROUND_ADVICE = {
   round_not_open: { why: "检查轮已不是开放状态", next: "用 status 查看检查轮状态" },
   check_phase_active: { why: "检查阶段进行中，不能做这个操作", next: "等检查轮结束后再做" },
   decision_conflict: { why: "检查轮已登记了不同的中断或继续决定，或没有对应的待处理更新", next: "用 status 查看检查轮现有的决定" },
-  stale_pm_lease: { why: "本 PM 的租约已失效，可能已过期或被新 PM 接管，或需求已换代", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
+  stale_pm_lease: { why: "PM 已交还租约、被新 PM 接管，或守护进程重启后作废了旧租约，或需求已换代", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
   tasks_not_reviewed: { why: "还有完成的 worker 任务没经过审查", next: "先派 reviewer 审查这些任务，再开检查轮" },
   sync_required: { why: "需求分支没有包含目标分支的最新提交", next: "请用户把目标分支合入需求分支后再开检查轮" },
 } as const satisfies Record<string, FailureAdvice>;
@@ -231,7 +231,7 @@ export class CheckRoundService {
     const owner = db.read<{ fence?: number; lease?: PmLease | null }>("pm_ownership", lease.requirementId)?.data;
     const record = db.read<{ epoch?: number; lifecycle?: string; recovery?: string }>("requirements", lease.requirementId)?.data;
     if (!owner?.lease || owner.fence !== lease.fence || owner.lease.runId !== lease.runId || owner.lease.fence !== lease.fence ||
-      owner.lease.epoch !== lease.epoch || owner.lease.expiresAt <= this.now() || !record || record.epoch !== lease.epoch ||
+      owner.lease.epoch !== lease.epoch || !record || record.epoch !== lease.epoch ||
       record.lifecycle !== "active" || record.recovery !== "ready") throw new CheckRoundError("stale_pm_lease");
   }
   /** 崩溃后重新打开服务：已无进程的运行中验证标为中断，不再占用检查阶段。 */
