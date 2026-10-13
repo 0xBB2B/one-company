@@ -7,6 +7,8 @@ import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { RunStore, type RunState, type RunRecord } from "../runtime/run-store.ts";
 import { ShellRegistry, type ShellRegistryProbes } from "../runtime/shell-registry.ts";
 import { createClock } from "../runtime/clock.ts";
+import { createFakeTimeSource } from "./helpers/fake-clock.ts";
+import type { FakeTimeSource } from "./helpers/fake-clock.ts";
 import { ShellPage } from "../runtime/shell-page.ts";
 import { formatShellSummary, summarizeShells } from "../runtime/shell-summary.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
@@ -21,9 +23,9 @@ afterEach(async () => { vi.restoreAllMocks(); for (const fn of cleanup.splice(0)
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check: () => Promise<boolean> | boolean, timeout = 5000) { const end = Date.now() + timeout; while (!await check()) { if (Date.now() > end) throw new Error("测试等待条件超时"); await delay(25); } }
 function alive(pid: number) { try { process.kill(pid, 0); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; } }
-async function world(probes?: ShellRegistryProbes) {
+async function world(probes?: ShellRegistryProbes, timeSource?: FakeTimeSource) {
   const fixture = await createDaemonFixture(); cleanup.push(() => removeDaemonFixture(fixture));
-  const database = repositoryDatabase(fixture.dataRoot, fixture.repoId); const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
+  const database = repositoryDatabase(fixture.dataRoot, fixture.repoId); const clock = createClock(timeSource ? { timeSource } : {}); cleanup.push(() => clock.stopGapWatcher());
   const runs = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: "historical" });
   const shells = new ShellRegistry({ clock, database, probes }); cleanup.push(async () => { for (const task of shells.list()) { const result = await shells.stop(task.taskId); if (alive(task.pid)) throw new Error(`测试进程未清理 ${task.pid}: ${JSON.stringify(result)}`); } });
   const gate = new NetworkPauseGate(); const emit = vi.fn(); const modelAccess = vi.fn(() => { throw new Error("不应构造模型上下文"); });
@@ -208,6 +210,54 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
     unavailable = false;
     expect(await manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true }); expect(alive(task.pid)).toBe(false); expect(adopted.get(task.taskId)).toMatchObject({ pid: task.pid, startedAt: task.startedAt, identityVerified: true, activity: "ended" }); await manager.close();
   }, 15_000);
+  test("close 同时停止不同窗口的 Shell：两个不理 SIGTERM 的任务都在约 10 秒收到 SIGKILL", async () => {
+    const timeSource = createFakeTimeSource();
+    const signals: Array<{ pgid: number; signal: NodeJS.Signals | 0 }> = [];
+    const pump: { stop?: () => void } = {};
+    cleanup.push(() => pump.stop?.());
+    const w = await world({ ps: async () => [], kill(pid, signal) { signals.push({ pgid: Math.abs(pid), signal }); } }, timeSource);
+    const a = await w.create("interrupted"); const b = await w.create("failed");
+    const first = await w.spawn(a); const second = await w.spawn(b);
+    cleanup.push(async () => {
+      for (const task of [first, second]) { try { process.kill(-task.pgid, "SIGKILL"); } catch { /* 进程组已不存在 */ } }
+      const handle = setInterval(() => timeSource.advance(500), 20);
+      pump.stop = () => clearInterval(handle);
+      await closing.catch(() => {});
+    });
+    const sent = (pgid: number, signal: NodeJS.Signals) => signals.some((entry) => entry.pgid === pgid && entry.signal === signal);
+    const closing = w.manager.close();
+    await until(() => sent(first.pgid, "SIGTERM"));
+    await delay(200);
+    await timeSource.waitPending();
+    await timeSource.advanceAsync(10_500);
+    expect([first, second].map((task) => sent(task.pgid, "SIGKILL"))).toEqual([true, true]);
+  }, 20_000);
+  test("close 第二步按宿主停止不属于任何运行的 Shell 时也是同时停：两个窗口的任务都在约 10 秒收到 SIGKILL", async () => {
+    const timeSource = createFakeTimeSource();
+    const signals: Array<{ pgid: number; signal: NodeJS.Signals | 0 }> = [];
+    const pump: { stop?: () => void } = {};
+    cleanup.push(() => pump.stop?.());
+    const w = await world({ ps: async () => [], kill(pid, signal) { signals.push({ pgid: Math.abs(pid), signal }); } }, timeSource);
+    const tasks = [];
+    for (const id of ["orphan-a", "orphan-b"]) {
+      const result = await w.shells.spawn({ taskId: uuidv7(), host: { kind: "role", id, role: "one-company.worker", runId: uuidv7() }, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], cwd: w.fixture.repo.root, mode: "background", runToken: uuidv7() });
+      if (!result.ok) throw new Error(result.reason);
+      tasks.push(result.task);
+    }
+    cleanup.push(async () => {
+      for (const task of tasks) { try { process.kill(-task.pgid, "SIGKILL"); } catch { /* 进程组已不存在 */ } }
+      const handle = setInterval(() => timeSource.advance(500), 20);
+      pump.stop = () => clearInterval(handle);
+      await closing.catch(() => {});
+    });
+    const sent = (pgid: number, signal: NodeJS.Signals) => signals.some((entry) => entry.pgid === pgid && entry.signal === signal);
+    const closing = w.manager.close();
+    await until(() => sent(tasks[0]!.pgid, "SIGTERM"));
+    await delay(200);
+    await timeSource.waitPending();
+    await timeSource.advanceAsync(10_500);
+    expect(tasks.map((task) => sent(task.pgid, "SIGKILL"))).toEqual([true, true]);
+  }, 20_000);
   test("R22 close EPERM失败不吞且继续停止其他进程，解除故障可重试", async () => {
     let deniedPid = 0; const w = await world({ kill(pid, signal) { if (Math.abs(pid) === deniedPid) throw Object.assign(new Error(SECRET), { code: "EPERM" }); process.kill(pid, signal); } });
     const a = await w.create("interrupted"); const b = await w.create("failed"); const blocked = await w.spawn(a); const healthy = await w.spawn(b); cleanup.push(() => { deniedPid = 0; }); deniedPid = blocked.pid;

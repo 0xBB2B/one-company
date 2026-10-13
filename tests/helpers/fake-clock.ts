@@ -2,6 +2,8 @@ import type { TimeSource } from "../../runtime/clock.ts";
 
 export interface FakeTimeSource extends TimeSource {
   advance(ms: number): void;
+  advanceAsync(ms: number): Promise<void>;
+  waitPending(): Promise<void>;
   jump(ms: number): void;
 }
 
@@ -40,6 +42,34 @@ export function createFakeTimeSource(): FakeTimeSource {
     current = target;
   }
 
+  // 每触发一个到点定时器就让出事件循环，让依赖它的异步轮询先跑完再推进下一个
+  async function advanceAsync(ms: number): Promise<void> {
+    const target = current + ms;
+    for (;;) {
+      let earliestId: number | undefined;
+      let earliestFireAt = Infinity;
+      for (const [id, entry] of timers) {
+        if (entry.fireAt <= target && entry.fireAt < earliestFireAt) {
+          earliestId = id;
+          earliestFireAt = entry.fireAt;
+        }
+      }
+      if (earliestId === undefined) break;
+      const entry = timers.get(earliestId);
+      timers.delete(earliestId);
+      current = earliestFireAt;
+      entry?.fn();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    current = target;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  async function waitPending(): Promise<void> {
+    for (let i = 0; i < 100 && timers.size === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    if (timers.size === 0) throw new Error("没有等到定时器登记");
+  }
+
   function jump(ms: number): void {
     const target = current + ms;
     current = target;
@@ -53,7 +83,7 @@ export function createFakeTimeSource(): FakeTimeSource {
     for (const entry of due) entry.fn();
   }
 
-  return { now: () => current, setTimeout: setTimeoutFake, clearTimeout: clearTimeoutFake, advance, jump };
+  return { now: () => current, setTimeout: setTimeoutFake, clearTimeout: clearTimeoutFake, advance, advanceAsync, waitPending, jump };
 }
 
 // 停止确认的轮询本身依赖这把注入时钟才能收敛；真实等待与虚拟时间推进并行，

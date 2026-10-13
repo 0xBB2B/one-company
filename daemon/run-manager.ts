@@ -1296,22 +1296,22 @@ export class RunManager {
     try {
       const page = await this.runsForStop();
       if (page.unknown) failed = true;
-      for (const run of page.runs) {
+      await Promise.all(page.runs.map(async (run) => {
         if (!await this.verifyRunShells(run, true)) {
           failed = true;
           try { await this.runStore.update(run.id, { stateReason: "Shell 接管或进程结束尚未确认" }); }
           catch { /* 已确认的其他停止事实保留；关闭仍失败。 */ }
         }
-      }
+      }));
     } catch { failed = true; }
     const hosts = new Map<string, Host>();
     for (const task of this.shellRegistry.list()) hosts.set(JSON.stringify(task.host), task.host);
-    for (const host of hosts.values()) {
+    await Promise.all([...hosts.values()].map(async (host) => {
       try {
         const results = await this.shellRegistry.stopHost(host);
         if (results.some(({ result }) => !result.ok || !this.verifiedEnd(result.task))) failed = true;
       } catch { failed = true; }
-    }
+    }));
     try {
       if (this.persistedShells().some((row) => {
         const task = this.shellRegistry.get(row.taskId as string);

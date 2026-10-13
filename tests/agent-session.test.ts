@@ -18,6 +18,8 @@ import type { CoreTool } from "../runtime/core-permissions.ts";
 import { coreToolName, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
 import { AGENT_ROLES } from "../runtime/roles.ts";
 import type { AgentRole } from "../runtime/roles.ts";
+import { createFakeTimeSource } from "./helpers/fake-clock.ts";
+import type { FakeTimeSource } from "./helpers/fake-clock.ts";
 import { registerControlledProvider, scriptReplies } from "./helpers/controlled-provider.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
 
@@ -28,24 +30,24 @@ function grantedTools(role: AgentRole): CoreTool[] {
   return (Object.keys(CORE_TOOL_ACTIONS) as CoreTool[]).filter((tool) => CORE_TOOL_ACTIONS[tool].some((action) => authorizeToolAction(role, tool, action)));
 }
 
-function fakeCoreTools(role: AgentRole, calls: string[]): ToolDefinition[] {
+function fakeCoreTools(role: AgentRole, calls: string[], hangForever?: Promise<void>): ToolDefinition[] {
   return grantedTools(role).map((tool) => ({
     name: coreToolName(tool), label: tool, description: `fixture ${tool}`, parameters: Type.Object({}, { additionalProperties: true }),
-    async execute() { calls.push(tool); return { content: [{ type: "text" as const, text: "ok" }], details: {} }; },
+    async execute() { calls.push(tool); if (hangForever) await hangForever; return { content: [{ type: "text" as const, text: "ok" }], details: {} }; },
   }) as unknown as ToolDefinition);
 }
 
-async function world() {
+async function world(timeSource?: FakeTimeSource) {
   const root = await mkdtemp(join(tmpdir(), "agent-session-")); cleanup.push(() => rm(root, { recursive: true, force: true }));
   const dataRoot = join(root, "agent", "one-company"), cwd = join(root, "repo"), outside = join(root, "outside.txt");
   await import("node:fs/promises").then((fs) => Promise.all([fs.mkdir(dataRoot, { recursive: true }), fs.mkdir(cwd, { recursive: true })]));
   await writeFile(join(cwd, "inside.txt"), "inside");
   await writeFile(outside, "outside");
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(root, "models.json"), refreshOnCreate: false });
-  const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
+  const clock = createClock(timeSource ? { timeSource } : {}); cleanup.push(() => clock.stopGapWatcher());
   const gate = new NetworkPauseGate();
   let serial = 0;
-  async function session(role: AgentRole, replies: ScriptedReply[], options: { readRoots?: string[]; maxTurns?: number; mcp?: string[] } = {}) {
+  async function session(role: AgentRole, replies: ScriptedReply[], options: { readRoots?: string[]; maxTurns?: number; mcp?: string[]; hangForever?: Promise<void> } = {}) {
     const provider = registerControlledProvider(runtime, { providerId: `agent-${++serial}`, modelId: "test" });
     scriptReplies(provider, replies);
     const calls: string[] = [];
@@ -53,7 +55,7 @@ async function world() {
     const handle: AgentSessionHandle = await createAgentRoleSession({
       dataRoot, repoId: "a".repeat(64), runId, cwd,
       definition: { name: role, role, description: "fixture", body: `ROLE-BODY-${role}`, ...(options.mcp ? { mcp: options.mcp } : {}) },
-      context: "TASK-CONTEXT", coreTools: fakeCoreTools(role, calls), readRoots: options.readRoots ?? (role === "qa" ? [] : [cwd]),
+      context: "TASK-CONTEXT", coreTools: fakeCoreTools(role, calls, options.hangForever), readRoots: options.readRoots ?? (role === "qa" ? [] : [cwd]),
       runtime, modelRef: { provider: provider.providerId, id: "test" }, clock, networkGate: gate,
       completion: role === "pm" ? { kind: "idle-only" } : { kind: "on-result", resultTool: coreToolName("result_submit") },
       maxTurns: options.maxTurns,
@@ -248,6 +250,30 @@ describe("完成与控制", () => {
     expect(s.handle.state()).toBe("running");
     expect(w.gate.canProceed(s.runId)).toBe(true);
     expect(s.provider.requests).toHaveLength(2);
+  }, 20000);
+});
+
+describe("暂停确认时限", () => {
+  test("abort 迟迟确认不了：15 秒内一直等，超过 15 秒才报 abort 未在超时内确认", async () => {
+    const timeSource = createFakeTimeSource();
+    const w = await world(timeSource);
+    let release!: () => void;
+    const hang = new Promise<void>((resolve) => { release = resolve; });
+    const toolName = grantedTools("pm")[0]!;
+    const s = await w.session("pm", [{ type: "toolcall", name: coreToolName(toolName), input: {} }], { hangForever: hang });
+    cleanup.push(() => release());
+    s.handle.prompt("开始");
+    await until(() => s.calls.length > 0);
+
+    let outcome: { confirmed: boolean; reason?: string } | undefined;
+    const pausing = s.handle.pause().then((value) => { outcome = value; });
+    await timeSource.waitPending();
+    await timeSource.advanceAsync(14_900);
+    expect(outcome).toBeUndefined();
+    await timeSource.advanceAsync(200);
+    await pausing;
+    expect(outcome!.confirmed).toBe(false);
+    expect(outcome!.reason).toContain("abort 未在超时内确认");
   }, 20000);
 });
 

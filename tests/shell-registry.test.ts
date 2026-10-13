@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClock } from "../runtime/clock.ts";
+import { createFakeTimeSource } from "./helpers/fake-clock.ts";
 import { ShellRegistry, probeProcessGroup } from "../runtime/shell-registry.ts";
 import * as ShellRegistryModule from "../runtime/shell-registry.ts";
 import type { Clock, TimeSource } from "../runtime/clock.ts";
@@ -855,9 +856,13 @@ describe("停止流程", () => {
 });
 
 describe("停止上限未确认", () => {
-  test("信号发出但探测持续未确认，约 5 秒后判定为 uncertain（status 与 activity 均为）", async () => {
+  test("进程不退出：SIGTERM 后 10 秒才发 SIGKILL，15 秒内都不标 uncertain，15 秒后才标", async () => {
+    const timeSource = createFakeTimeSource();
+    const signals: Array<NodeJS.Signals | 0> = [];
     const registry = makeRegistry({
-      kill: () => {},
+      clock: createClock({ timeSource }),
+      ps: async () => [],
+      kill: (_pid, signal) => { signals.push(signal); },
     });
     const taskId = randomUUID();
     const started = await registry.spawn({
@@ -872,11 +877,63 @@ describe("停止上限未确认", () => {
     if (!started.ok) return;
     trackPgid(started.task.pgid);
 
-    const stopped = await registry.stop(taskId);
+    let settled = false;
+    const stopPromise = registry.stop(taskId).then((result) => { settled = true; return result; });
+    await waitFor(() => signals.includes("SIGTERM"), 3_000);
+    await timeSource.waitPending();
+
+    await timeSource.advanceAsync(9_900);
+    expect(signals).not.toContain("SIGKILL");
+    await timeSource.advanceAsync(600);
+    expect(signals).toContain("SIGKILL");
+    expect(settled).toBe(false);
+    expect(registry.get(taskId)?.status).not.toBe("uncertain");
+
+    await timeSource.advanceAsync(4_300);
+    expect(settled).toBe(false);
+    expect(registry.get(taskId)?.status).not.toBe("uncertain");
+
+    await timeSource.advanceAsync(500);
+    const stopped = await stopPromise;
     expect(stopped.ok).toBe(true);
     if (!stopped.ok) return;
     expect(stopped.task.status).toBe("uncertain");
     expect(stopped.task.activity).toBe("uncertain");
+  }, LONG_TIMEOUT);
+});
+
+describe("同一宿主多个任务同时停止", () => {
+  test("stopHost 对两个不理 SIGTERM 的任务同时发 SIGTERM，约 10 秒都收到 SIGKILL，约 15 秒都标待确认", async () => {
+    const timeSource = createFakeTimeSource();
+    const signals: Array<{ pgid: number; signal: NodeJS.Signals | 0 }> = [];
+    const registry = makeRegistry({
+      clock: createClock({ timeSource }),
+      ps: async () => [],
+      kill: (pid, signal) => { signals.push({ pgid: Math.abs(pid), signal }); },
+    });
+    const pgids: number[] = [];
+    for (let n = 0; n < 2; n++) {
+      const started = await registry.spawn({ taskId: randomUUID(), host: HOST_MAIN, command: "sh", args: ["-c", "sleep 30"], mode: "background", runToken: randomUUID() });
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+      trackPgid(started.task.pgid);
+      pgids.push(started.task.pgid);
+    }
+    const sent = (pgid: number, signal: NodeJS.Signals) => signals.some((entry) => entry.pgid === pgid && entry.signal === signal);
+
+    let settled = false;
+    const stopping = registry.stopHost(HOST_MAIN).then((results) => { settled = true; return results; });
+    await waitFor(() => sent(pgids[0]!, "SIGTERM"), 3_000);
+    await sleepMs(200);
+    await timeSource.waitPending();
+
+    await timeSource.advanceAsync(10_500);
+    expect(pgids.map((pgid) => sent(pgid, "SIGKILL"))).toEqual([true, true]);
+    await timeSource.advanceAsync(4_000);
+    expect(settled).toBe(false);
+    await timeSource.advanceAsync(1_000);
+    const results = await stopping;
+    expect(results.map(({ result }) => result.ok && result.task.status)).toEqual(["uncertain", "uncertain"]);
   }, LONG_TIMEOUT);
 });
 

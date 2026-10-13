@@ -1,6 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { Context } from "@earendil-works/pi-ai";
-import { webFetch, webSearch } from "../runtime/web-access.ts";
+import { defaultPageGetter, webFetch, webSearch } from "../runtime/web-access.ts";
 import type { FetchResponse, WebDeps } from "../runtime/web-access.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
@@ -139,3 +141,27 @@ test("M9-AC10：断网时 main 派出的联网检索如实交回失败：搜索�
   expect(report.research).toMatchObject({ sources: [], notFound: ["node 如何异步读文件"] });
   expect(report.research.failures.length).toBeGreaterThan(0);
 });
+
+async function serve(handler: Parameters<typeof createServer>[1]): Promise<URL> {
+  const server = createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanups.push(() => { server.closeAllConnections(); server.close(); });
+  return new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/`);
+}
+
+test("抓取按总时长计 10 秒：对方一直在发数据但发得慢，约 10 秒时也要失败；快速响应照常成功", async () => {
+  const fast = await serve((_req, res) => { res.writeHead(200, { "content-type": "text/plain" }); res.end("快速响应"); });
+  expect((await defaultPageGetter(fast)).body.toString("utf8")).toBe("快速响应");
+
+  const slow = await serve((_req, res) => {
+    res.writeHead(200, { "content-type": "text/plain" });
+    let sent = 0;
+    const timer = setInterval(() => { res.write("x"); if (++sent >= 7) { clearInterval(timer); res.end(); } }, 2_000);
+    res.on("close", () => clearInterval(timer));
+  });
+  const started = Date.now();
+  await expect(defaultPageGetter(slow)).rejects.toThrow("超时");
+  const elapsed = Date.now() - started;
+  expect(elapsed).toBeGreaterThan(9_000);
+  expect(elapsed).toBeLessThan(11_500);
+}, 20_000);

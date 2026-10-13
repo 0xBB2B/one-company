@@ -110,7 +110,8 @@ export interface FetchResponse { status: number; headers: Record<string, string 
 export type PageGetter = (url: URL) => Promise<FetchResponse>;
 export const defaultPageGetter: PageGetter = (url) => new Promise((resolve, reject) => {
     const client = url.protocol === "https:" ? httpsRequest : httpRequest;
-    const request = client(url, { method: "GET", timeout: TIMEOUT_MS,
+    const signal = withTimeout(TIMEOUT_MS);
+    const request = client(url, { method: "GET", signal,
       headers: { "user-agent": "Mozilla/5.0 (compatible; one-company)" } }, (response) => {
       const chunks: Buffer[] = []; let size = 0;
       response.on("data", (chunk: Buffer) => { size += chunk.length; if (size <= FETCH_MAX_BYTES) chunks.push(chunk); else response.destroy(); });
@@ -118,7 +119,7 @@ export const defaultPageGetter: PageGetter = (url) => new Promise((resolve, reje
       response.on("close", () => resolve({ status: response.statusCode ?? 0, headers: { location: response.headers.location, "content-type": response.headers["content-type"] }, body: Buffer.concat(chunks) }));
       response.on("error", reject);
     });
-    request.on("timeout", () => request.destroy(new WebAccessError("fetch_failed", "超时")));
+    signal.addEventListener("abort", () => reject(new WebAccessError("fetch_failed", "超时")), { once: true });
     request.on("error", reject);
     request.end();
 });

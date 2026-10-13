@@ -1,10 +1,11 @@
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installSignalHandlers } from "../daemon/lifecycle.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -635,14 +636,35 @@ describe("uncaughtException 看门狗", () => {
     const elapsedMs = Date.now() - start;
 
     expect(result.code).not.toBe(0);
-    expect(elapsedMs).toBeLessThan(8_000);
+    expect(elapsedMs).toBeLessThan(20_000);
     await delay(200);
     const exists = await stat(fixture.socketPath).then(
       () => true,
       () => false,
     );
     expect(exists).toBe(false);
-  }, 15_000);
+  }, 30_000);
+
+  test("未捕获异常后收尾卡住：15 秒内不强退，超过 15 秒才 exit(1) 并先尽力清理 socket", async () => {
+    const handlers = new Map<string, (error: Error) => void>();
+    vi.spyOn(process, "on").mockImplementation(((event: string, handler: (error: Error) => void) => { handlers.set(event, handler); return process; }) as never);
+    vi.spyOn(process.stderr, "write").mockImplementation((() => true) as never);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const forceCleanup = vi.fn(async () => {});
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      installSignalHandlers(() => {}, { onFatalException: () => new Promise<void>(() => {}), forceCleanup });
+      handlers.get("uncaughtException")!(new Error("装配期异常"));
+      await vi.advanceTimersByTimeAsync(14_900);
+      expect(exit).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(forceCleanup).toHaveBeenCalledTimes(1);
+      expect(exit).toHaveBeenCalledWith(1);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
 });
 
 describe("SDK 加载失败", () => {
@@ -820,4 +842,26 @@ describe("协议接线", () => {
     ).rejects.toThrow(/protocol_version/);
     await raw.waitClosed(5_000);
   }, 15_000);
+});
+
+describe("退出信号收尾时限", () => {
+  for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
+    test(`收到 ${signal} 后收尾卡住：15 秒内不强退，超过 15 秒才 exit(1)`, async () => {
+      const handlers = new Map<string, () => void>();
+      vi.spyOn(process, "on").mockImplementation(((event: string, handler: () => void) => { handlers.set(event, handler); return process; }) as never);
+      const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        installSignalHandlers(() => new Promise<void>(() => {}));
+        handlers.get(signal)!();
+        await vi.advanceTimersByTimeAsync(14_900);
+        expect(exit).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(200);
+        expect(exit).toHaveBeenCalledWith(1);
+      } finally {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+      }
+    });
+  }
 });

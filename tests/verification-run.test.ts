@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { setTimeout as realDelay } from "node:timers/promises";
 import { writeGuardLaunch } from "../runtime/command-boundary.ts";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -496,3 +497,59 @@ test("没有隔离后端的平台在启动前明确拒绝", () => {
     expect(() => writeGuardLaunch("touch forbidden", { deniedWrites: [], allowedWrites: [], deniedSockets: [], scratch: "/unused" })).toThrow("隔离后端");
   } finally { Object.defineProperty(process, "platform", descriptor); }
 });
+
+const IGNORES_TERM = "trap '' TERM; while :; do sleep 0.2; done";
+const MINUTE = 60_000;
+
+function runningPid(w: Awaited<ReturnType<typeof world>>): number {
+  return withDatabase(w.database, (db) => db.list<{ pid: number | null }>(VERIFICATION_RUNS))[0]!.data.pid!;
+}
+const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test("验证命令没传 timeoutMs 时默认 60 分钟才判超时，跑到 59 分钟仍在运行", async () => {
+  if (!darwin) return;
+  const w = await world();
+  const worker = await w.tool(w.grant({ role: "worker" }));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    let result: VerificationView | undefined;
+    const run = (worker.execute({ action: "run", kind: "debug", command: "sleep 120", performance: NA }) as Promise<VerificationView>).then((view) => { result = view; });
+    await realDelay(400);
+    vi.advanceTimersByTime(11 * MINUTE);
+    await realDelay(400);
+    expect(result).toBeUndefined();
+    expect(pidAlive(runningPid(w))).toBe(true);
+    vi.advanceTimersByTime(48 * MINUTE);
+    await realDelay(400);
+    expect(result).toBeUndefined();
+    expect(pidAlive(runningPid(w))).toBe(true);
+    vi.advanceTimersByTime(2 * MINUTE);
+    await run;
+    expect(result!.status).toBe("timeout");
+  } finally { vi.useRealTimers(); }
+}, 20_000);
+
+for (const how of ["stop", "dispose"] as const) {
+  test(`验证命令被${how === "stop" ? "stop 动作" : "工具释放"}停止后，不理 SIGTERM 的进程要等 10 秒才被 SIGKILL`, async () => {
+    if (!darwin) return;
+    const w = await world();
+    const worker = await w.tool(w.grant({ role: "worker" }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const run = worker.execute({ action: "run", kind: "debug", command: IGNORES_TERM, performance: NA }) as Promise<VerificationView>;
+      await realDelay(400);
+      const pid = runningPid(w);
+      const verificationId = withDatabase(w.database, (db) => db.list(VERIFICATION_RUNS))[0]!.key;
+      const stopping = how === "stop" ? worker.execute({ action: "stop", verificationId }) : worker.dispose();
+      await realDelay(300);
+      expect(pidAlive(pid)).toBe(true);
+      vi.advanceTimersByTime(9_900);
+      await realDelay(300);
+      expect(pidAlive(pid)).toBe(true);
+      vi.advanceTimersByTime(200);
+      await stopping;
+      expect((await run).status).toBe("cancelled");
+      expect(pidAlive(pid)).toBe(false);
+    } finally { vi.useRealTimers(); }
+  }, 20_000);
+}
