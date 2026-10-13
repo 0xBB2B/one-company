@@ -88,18 +88,25 @@ async function createRequest(provider: Provider, cwd: string, input: { branch: s
   if (provider === "gh") await cli("gh", cwd, ["pr", "create", "--head", input.branch, "--base", input.base, "--title", input.title, "--body", input.body]);
   else await cli("glab", cwd, ["mr", "create", "--source-branch", input.branch, "--target-branch", input.base, "--title", input.title, "--description", input.body, "--yes"]);
 }
-/** 自动合并只合并已推送的那个提交；优先 squash，仓库不允许时改用它允许的方式。 */
-async function enableAutoMerge(provider: Provider, cwd: string, number: string, head: string): Promise<void> {
-  if (provider === "gh") {
-    const allowed = JSON.parse(await cli("gh", cwd, ["repo", "view", "--json", "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"])) as
-      { squashMergeAllowed?: boolean; mergeCommitAllowed?: boolean; rebaseMergeAllowed?: boolean };
-    const method = allowed.squashMergeAllowed ? "--squash" : allowed.mergeCommitAllowed ? "--merge" : allowed.rebaseMergeAllowed ? "--rebase" : null;
-    if (!method) throw new Error("merge_method_unavailable: 仓库没有允许的合并方式");
-    await cli("gh", cwd, ["pr", "merge", number, "--auto", method, "--match-head-commit", head]);
-    return;
-  }
-  try { await cli("glab", cwd, ["mr", "merge", number, "--auto-merge", "--squash", "--sha", head, "--yes"]); }
-  catch { await cli("glab", cwd, ["mr", "merge", number, "--auto-merge", "--sha", head, "--yes"]); }
+type MergeFlag = "--rebase" | "--merge" | "--squash";
+/** 弹窗前按仓库允许的方式列出自动合并选项；GitHub 优先 rebase，不允许时才让用户在合并提交与 squash 间选。 */
+async function autoMergeOptions(provider: Provider, cwd: string): Promise<{ choices: WindowChoice[]; methods: Map<string, MergeFlag>; note: string[] }> {
+  if (provider === "glab") return { choices: [{ label: AUTO_MERGE_CHOICE, description: "等仓库要求的检查通过后，按项目设置的合并方式合并" }], methods: new Map(), note: [] };
+  let allowed: { squashMergeAllowed?: boolean; mergeCommitAllowed?: boolean; rebaseMergeAllowed?: boolean };
+  try { allowed = JSON.parse(await cli("gh", cwd, ["repo", "view", "--json", "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"])); }
+  catch (error) { return { choices: [{ label: AUTO_MERGE_CHOICE, disabled: `查不到仓库允许的合并方式：${commandOutputTail(error)}` }], methods: new Map(), note: [] }; }
+  if (allowed.rebaseMergeAllowed) return { choices: [{ label: AUTO_MERGE_CHOICE, description: "等仓库要求的检查通过后，用 rebase 自动合并" }], methods: new Map([[AUTO_MERGE_CHOICE, "--rebase"]]), note: [] };
+  const choices: WindowChoice[] = [];
+  const methods = new Map<string, MergeFlag>();
+  if (allowed.mergeCommitAllowed) { choices.push({ label: `${AUTO_MERGE_CHOICE}（合并提交）`, description: "保留每个提交，另加一个合并提交" }); methods.set(choices[choices.length - 1].label, "--merge"); }
+  if (allowed.squashMergeAllowed) { choices.push({ label: `${AUTO_MERGE_CHOICE}（squash）`, description: "所有提交压成一个" }); methods.set(choices[choices.length - 1].label, "--squash"); }
+  if (!choices.length) choices.push({ label: AUTO_MERGE_CHOICE, disabled: "仓库没有允许的合并方式" });
+  return { choices, methods, note: ["仓库不允许 rebase 合并，自动合并请从仓库允许的方式里选。"] };
+}
+/** 自动合并只合并已推送的那个提交。 */
+async function enableAutoMerge(provider: Provider, cwd: string, number: string, head: string, method?: MergeFlag): Promise<void> {
+  if (provider === "gh") await cli("gh", cwd, ["pr", "merge", number, "--auto", method!, "--match-head-commit", head]);
+  else await cli("glab", cwd, ["mr", "merge", number, "--auto-merge", "--sha", head, "--yes"]);
 }
 
 /**
@@ -181,10 +188,13 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
     request = await existingRequest(provider, facts.worktree, branch);
     if (!request) return reject("pull_request_unknown", createError || undefined);
   }
-  const choice = await ui.choose({ title: "PR 已就绪，怎么合并？", lines: [{ text: `需求：${title}` }, { text: `PR：${request.url}`, tone: "muted" }],
-    choices: [{ label: REVIEW_CHOICE, description: "PR 留着等你看，合并由你在网页上操作" },
-      { label: AUTO_MERGE_CHOICE, description: "等仓库要求的检查通过后自动合并，优先 squash" }], cancelNote: "取消等于自己 review" });
-  const merge = choice === AUTO_MERGE_CHOICE ? "auto" as const : "review" as const;
-  if (merge === "auto") await enableAutoMerge(provider, facts.worktree, request.number, delivered);
+  const noun = provider === "gh" ? "PR" : "MR";
+  const options = await autoMergeOptions(provider, facts.worktree);
+  const choice = await ui.choose({ title: "PR 已就绪，怎么合并？", lines: [{ text: `需求：${title}` }, { text: `${noun}：${request.url}`, tone: "muted" }, ...mutedLines(options.note)],
+    choices: [{ label: REVIEW_CHOICE, description: `${noun} 留着等你看，合并由你在网页上操作` }, ...options.choices], cancelNote: "取消等于自己 review" });
+  const selected = options.choices.find((item) => item.label === choice);
+  const method = choice === undefined ? undefined : options.methods.get(choice);
+  const merge = selected && !selected.disabled && (provider === "glab" || method) ? "auto" as const : "review" as const;
+  if (merge === "auto") await enableAutoMerge(provider, facts.worktree, request.number, delivered, method);
   return { status: "delivered", head: delivered, provider, url: request.url, reused, rebasedAfterAcceptance, merge };
 }
