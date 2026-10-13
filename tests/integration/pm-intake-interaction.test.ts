@@ -179,6 +179,10 @@ async function withSdkWorld(
     daemon = { ...spawned, socketPath };
     await Promise.race([waitForSocketReady(socketPath), daemon.exited.then(() => { throw new Error("daemon_exited_before_ready"); })]);
     failAfter("daemon");
+    // 守护进程启动时会作废全部旧租约，PM 要在它就绪之后再取租约
+    for (let waited = 0; fixture.state.pmOwner(fixture.requirementId)!.lease && waited < 30_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+    await fixture.state.acquirePm({ requirementId: fixture.requirementId, version: fixture.state.read(fixture.requirementId).version, runId: uuidv7(),
+      expectedFence: fixture.state.pmOwner(fixture.requirementId)!.fence });
     const sm = SessionManager.inMemory(workspace.path), windowId = uuidv7();
     clock = createClock();
     failAfter("before-client");

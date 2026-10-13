@@ -146,19 +146,55 @@ test("M8A-AC7：没有现场也能批准生效，保存版本不等于批准；�
   await expect(w.store.acquirePm({ requirementId, version: bound.version, runId: uuidv7(), expectedFence: 0 })).resolves.toMatchObject({ requirementId });
 });
 
-test("一个有效PM：租约更新、到期接管及旧fence拒绝", async () => {
+test("PM租约没有到期时间，时钟前跳1小时后仍持有，核对通过且不能再派新PM", async () => {
   const w = await world(); const record = await w.activate();
   const lease = await w.store.acquirePm({ requirementId: record.id, version: record.version, runId: uuidv7(), expectedFence: 0 });
   await w.store.checkPm(lease);
   await expect(w.store.acquirePm({ requirementId: record.id, version: w.store.read(record.id).version, runId: uuidv7(), expectedFence: lease.fence })).rejects.toThrow(/pm_already_owned/);
-  w.setNow(1_020_000); const renewed = await w.store.renewPm(lease); expect(renewed.expiresAt).toBeGreaterThan(lease.expiresAt);
-  w.setNow(renewed.expiresAt + 1);
-  await expect(w.store.checkPm(lease)).rejects.toThrow(/stale_pm_lease/);
-  const next = await w.store.acquirePm({ requirementId: record.id, version: w.store.read(record.id).version, runId: uuidv7(), expectedFence: lease.fence });
+  w.setNow(1_000_000 + 3_600_000);
+  await w.store.checkPm(lease);
+  await w.store.checkScheduling(lease);
+  expect(w.store.pmOwner(record.id)!.lease).toMatchObject({ runId: lease.runId, fence: lease.fence });
+  expect(w.store.pmOwner(record.id)!.lease).not.toHaveProperty("expiresAt");
+  await expect(w.store.acquirePm({ requirementId: record.id, version: w.store.read(record.id).version, runId: uuidv7(), expectedFence: lease.fence })).rejects.toThrow(/pm_already_owned/);
+});
+
+test("PM交还租约后立即可以派新PM；新PM接手后旧PM拿旧fence做任何操作都被拒绝", async () => {
+  const w = await world(); const record = await w.activate();
+  const lease = await w.store.acquirePm({ requirementId: record.id, version: record.version, runId: uuidv7(), expectedFence: 0 });
+  w.store.releasePm(lease);
+  const next = await w.store.acquirePm({ requirementId: record.id, version: w.store.read(record.id).version, runId: uuidv7(), expectedFence: w.store.pmOwner(record.id)!.fence });
   expect(next.fence).toBeGreaterThan(lease.fence);
-  await expect(w.store.renewPm(lease)).rejects.toThrow(/stale_pm_lease/);
+  await expect(w.store.checkPm(lease)).rejects.toThrow(/stale_pm_lease/);
   expect(() => w.store.releasePm(lease)).toThrow(/stale_pm_lease/);
   expect(w.store.pmOwner(record.id)!.lease!.runId).toBe(next.runId);
+});
+
+test("启动时作废上一个守护进程留下的全部租约，接手编号加1，旧租约被拒，重启后立即可派新PM", async () => {
+  const w = await world(); const record = await w.activate();
+  const lease = await w.store.acquirePm({ requirementId: record.id, version: record.version, runId: uuidv7(), expectedFence: 0 });
+  const restarted = await RequirementStateStore.open(w.options);
+  restarted.revokeAllPmLeases();
+  expect(restarted.pmOwner(record.id)).toMatchObject({ fence: lease.fence + 1, lease: null });
+  await expect(restarted.checkPm(lease)).rejects.toThrow(/stale_pm_lease/);
+  const next = await restarted.acquirePm({ requirementId: record.id, version: restarted.read(record.id).version, runId: uuidv7(), expectedFence: lease.fence + 1 });
+  expect(next.fence).toBe(lease.fence + 2);
+});
+
+test("启动作废旧租约时某个需求出错，不影响其他需求的租约被作废，也不抛错", async () => {
+  const w = await world(); const bad = await w.activate(), good = await w.activate();
+  const badLease = await w.store.acquirePm({ requirementId: bad.id, version: bad.version, runId: uuidv7(), expectedFence: 0 });
+  const goodLease = await w.store.acquirePm({ requirementId: good.id, version: good.version, runId: uuidv7(), expectedFence: 0 });
+  withDatabase(repositoryDatabase(w.options.dataRoot, w.options.repoId), (db) => {
+    const use = db.read("requirement_approval_uses", bad.data.approvalReceiptId!)!; db.remove("requirement_approval_uses", bad.data.approvalReceiptId!, use.version);
+  });
+  const restarted = await RequirementStateStore.open(w.options);
+  let failures: Array<{ requirementId: string; reason: string }> = [];
+  expect(() => { failures = restarted.revokeAllPmLeases(); }).not.toThrow();
+  expect(failures).toEqual([{ requirementId: bad.id, reason: expect.stringContaining("approval_record_missing") }]);
+  expect(restarted.pmOwner(good.id)).toMatchObject({ fence: goodLease.fence + 1, lease: null });
+  const rawBad = withDatabase(repositoryDatabase(w.options.dataRoot, w.options.repoId), (db) => db.read("pm_ownership", bad.id)!.data);
+  expect(rawBad).toMatchObject({ fence: badLease.fence, lease: { runId: badLease.runId } });
 });
 
 test("同一个PM运行ID不能绑定两个需求，释放后也不跨需求复用", async () => {
@@ -171,7 +207,7 @@ test("同一个PM运行ID不能绑定两个需求，释放后也不跨需求复�
   await expect(w.store.acquirePm(request)).rejects.toThrow(/pm_run_already_bound/);
 });
 
-test("真实分支改变后旧绑定不能续租；同分支提交推进仍可核对", async () => {
+test("真实分支改变后旧绑定不能再用；同分支提交推进仍可核对", async () => {
   const w = await world(); const record = await w.activate();
   const lease = await w.store.acquirePm({ requirementId: record.id, version: record.version, runId: uuidv7(), expectedFence: 0 });
   const cwd = record.data.workspace!.path;
@@ -179,7 +215,7 @@ test("真实分支改变后旧绑定不能续租；同分支提交推进仍可�
   await exec("git", ["add", "fixture.txt"], { cwd, env: GIT_ENV }); await exec("git", ["commit", "-m", "fixture advance"], { cwd, env: GIT_ENV });
   await w.store.checkPm(lease);
   await exec("git", ["checkout", "-b", "external-switch"], { cwd, env: GIT_ENV });
-  await expect(w.store.renewPm(lease)).rejects.toThrow(/workspace_binding_changed/);
+  await expect(w.store.checkPm(lease)).rejects.toThrow(/workspace_binding_changed/);
 });
 
 test.each(unicodeRefSuffixes)("真实分支在旧绑定后追加%s时，旧PM检查必须拒绝", async (_label, suffix) => {

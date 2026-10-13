@@ -557,6 +557,13 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       process.stderr.write(`标记启动前中断运行失败: ${(error as Error).message}\n`);
     }
     try {
+      for (const failure of await runManager.revokeStalePmLeases()) {
+        process.stderr.write(`需求 ${failure.requirementId} 的 PM 租约没有作废: ${failure.reason}\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`作废上一个守护进程留下的 PM 租约失败: ${(error as Error).message}\n`);
+    }
+    try {
       await runManager.adoptInterruptedShells();
     } catch (error) {
       process.stderr.write(`接管遗留 Shell 任务失败: ${(error as Error).message}\n`);

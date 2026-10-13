@@ -169,6 +169,13 @@ test("M6-AC12/AC13：本轮 worker、未完成写入或写占用未收尾不能�
   expect(debug.status).toBe("passed"); expect(debug.checkRoundId).toBeNull();
 });
 
+test("时钟前跳 1 小时后，PM 开检查轮时对 PM 的核对仍通过", async () => {
+  const w = await world();
+  const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_600_000);
+  try { expect((await w.open()).status).toBe("open"); }
+  finally { now.mockRestore(); }
+});
+
 test("M6-AC1/AC20：记录真实退出码、超时、取消，性能条件在运行前固定；自填结果字段、改标签或 hash 都不能把 debug 升级为正式证据", async () => {
   const w = await world();
   for (const extra of [{ status: "passed" }, { verdict: "PASS" }, { checkRoundId: uuidv7() }, { baseline: {} }, { exitCode: 0 }]) {

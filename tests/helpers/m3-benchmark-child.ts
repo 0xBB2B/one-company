@@ -173,7 +173,7 @@ async function events() {
   await state.bindWorkspace({ requirementId: created.requirementId, version: created.version,
     path: worktree, prepareOperationId: uuidv7(), baseCommit });
   let previous = await requirements.confirmUpdate(await manifestConfirmInput(options, { requirementId: created.requirementId, savedOperationId: created.operationId }));
-  let lease = await state.acquirePm({ requirementId: created.requirementId, version: previous.version, runId: uuidv7(), expectedFence: 0 });
+  const lease = await state.acquirePm({ requirementId: created.requirementId, version: previous.version, runId: uuidv7(), expectedFence: 0 });
   const baseline = await eventService.prepareCurrentBaseline({ lease });
   eventService.consumePreparedDelivery({ lease, handle: baseline.handle, contextGeneration: lease.contextGeneration, version: baseline.version },
     (content) => { assert.equal(content.kind, "baseline"); });
@@ -208,7 +208,6 @@ async function events() {
       const started = performance.now();
       try {
         guard();
-        lease = await state.renewPm(lease);
         assert.equal((await eventService.poll({ lease })).status, "caught_up", "样本开始不得已有积压");
         const draft = await requirements.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(),
           version: state.read(created.requirementId).version, title: "测量夹具", body: `DRAFT_NOT_APPROVED_${i}` });

@@ -53,7 +53,7 @@ export type WorkspaceBinding = Static<typeof WorkspaceBinding>;
 export type CloseIntent = Static<typeof CloseIntent>;
 export const PmLease = object({
   requirementId: id, runId: id, workspaceId: hash, epoch: positive, fence: positive,
-  contextGeneration: positive, expiresAt: counter,
+  contextGeneration: positive,
 });
 export type PmLease = Static<typeof PmLease>;
 export const PmContextBaseline = object({
@@ -160,7 +160,7 @@ const REQUIREMENT_STATE_ADVICE = {
   pm_already_owned: { why: "这个需求已有一个有效的 PM", next: "查询现有 PM 的运行状态，不要重复派出" },
   stale_fence: { why: "PM 租约代次已变化，可能刚有新 PM 接手", next: REREAD },
   pm_run_already_bound: { why: "这个 PM 运行已绑定到别的需求或工作区", next: STOP },
-  stale_pm_lease: { why: "本 PM 的租约已失效，可能已过期或被新 PM 接管", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
+  stale_pm_lease: { why: "PM 已交还租约、被新 PM 接管，或守护进程重启后作废了旧租约", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
   pm_run_binding_changed: { why: "本 PM 运行与需求的绑定已变化", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
   pending_update: { why: "有新批准的需求版本还没复核", next: "先用 requirement_manage diff 读完新版本与上一版的差异（上下文压缩后可再查），再用 plan_manage assess-update 逐任务复核，再继续" },
   baseline_changed: { why: "接手时的批准基线已变化", next: "重新读取批准正文后再提交接手理解" },

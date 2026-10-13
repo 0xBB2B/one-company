@@ -102,12 +102,9 @@ test("另一需求的隔离intake元数据变化不使当前原对象失效", as
   expect(() => fixture.intake.assertResultCurrent(fixture.call, view)).not.toThrow();
 });
 
-test("PM 租约续期只改到期时间与记录版本，不使已打开的接手核对失效，核对结论照常登记", async () => {
+test("时钟前跳 1 小时后，已打开的接手核对仍有效，核对结论照常登记", async () => {
   const fixture = await world(), view = await fixture.intake.openRequest(fixture.call, fixture.operationId());
-  const before = fixture.state.pmOwner(fixture.requirementId)!.lease!.expiresAt;
-  fixture.advanceNow(10_000);
-  await fixture.state.renewPm(fixture.lease);
-  expect(fixture.state.pmOwner(fixture.requirementId)!.lease!.expiresAt).toBeGreaterThan(before);
+  fixture.advanceNow(3_600_000);
   expect(() => fixture.intake.assertResultCurrent(fixture.call, view)).not.toThrow();
   await expect(fixture.intake.recordReview(fixture.call, view.requestId, fixture.operationId(), { result: "passed", shortIssues: [] })).resolves.toBeDefined();
 });

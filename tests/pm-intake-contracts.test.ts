@@ -89,8 +89,6 @@ function facts(current = binding(), root = review()): IntakeContinuityFacts {
     currentState: {
       lifecycle: "active",
       requirementRecordVersion: 9,
-      leaseExpiresAt: 2_000,
-      observedAt: 1_000,
       actionAuthorizationReportedCurrent: true,
       sourceDirectoryReportedCurrent: true,
       pendingApprovedUpdate: false,
@@ -223,7 +221,6 @@ test("准确同一binding与外部当前事实齐备时只得到contractReady", 
 
   const renewed = facts();
   renewed.currentState.requirementRecordVersion++;
-  renewed.currentState.leaseExpiresAt += 5_000;
   expect(evaluateIntakeContinuity(renewed).contractReady).toBe(true);
 
   const missingSource = facts();
@@ -263,11 +260,10 @@ test("对象键重排不影响binding比较，字段变化仍可见", () => {
   expect(intakeBindingsEqual(binding(), { ...binding(), epoch: 4 }).equal).toBe(false);
 });
 
-test("新批准更新、非活动、租约过期及外部当前性声明缺失都默认阻塞", () => {
+test("新批准更新、非活动及外部当前性声明缺失都默认阻塞", () => {
   const mutations: Array<[keyof IntakeContinuityFacts["currentState"], unknown, string]> = [
     ["pendingApprovedUpdate", true, "pending_approved_update"],
     ["lifecycle", "closing", "requirement_not_active"],
-    ["leaseExpiresAt", 1_000, "lease_not_current"],
     ["actionAuthorizationReportedCurrent", false, "action_authorization_not_reported_current"],
     ["sourceDirectoryReportedCurrent", false, "source_directory_not_reported_current"],
   ];

@@ -56,7 +56,7 @@ const PM_INTAKE_STORE_ADVICE: Record<string, FailureAdvice> = {
   request_not_current: { why: "这个复核请求已不是当前的请求", next: "用 forward 重新取当前的复核请求" },
   resource_limit: { why: "内容超出上限", next: "精简内容后重试" },
   source_directory_mismatch: { why: "接手出处目录与需求当前版本不一致", next: "请 PM 按当前版本重新提交接手理解" },
-  stale_pm_lease: { why: "PM 的租约已失效，可能已过期或被新 PM 接管", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
+  stale_pm_lease: { why: "PM 已交还租约、被新 PM 接管，或守护进程重启后作废了旧租约", next: "停止操作，不要重试；由主代理决定是否重新派出 PM" },
   stored_record_invalid: { why: "已存的接手复核记录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   unknown_requirement: { why: "找不到这个需求", next: "核对需求编号" },
   untrusted_prepared: { why: "准备好的复核记录不是宿主生成的", next: "停止操作，不要重试；把这段原因告诉用户" },
@@ -123,7 +123,6 @@ interface CurrentClaim {
   sourceDirectoryHash: string;
   continuityInputProof: string;
   fingerprint: string;
-  leaseExpiresAt: number;
   frame?: RowFrame;
 }
 interface RequestClaim {
@@ -297,7 +296,7 @@ function normalizedScopes(db: LocalDatabase, manifest: ApprovalManifest, directo
   };
 }
 
-function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBindingBasis, directory: IntakeSourceDirectory, observedAt: number, questions = true) {
+function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBindingBasis, directory: IntakeSourceDirectory, questions = true) {
   const raw = db.read<RequirementRecord>("requirements", basis.requirementId);
   if (!raw || raw.id !== basis.requirementId) deny("unknown_requirement");
   const record = { ...raw, data: checkRequirement(raw.data, basis.requirementId, repoId) };
@@ -314,7 +313,7 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
   const lease = owner.lease;
   const context = owner.context;
   if (!lease || !context || lease.runId !== basis.pmRunId || lease.fence !== basis.pmFence || lease.contextGeneration !== basis.contextGeneration ||
-    lease.workspaceId !== basis.workspaceId || lease.epoch !== basis.epoch || lease.expiresAt <= observedAt || owner.fence !== basis.pmFence ||
+    lease.workspaceId !== basis.workspaceId || lease.epoch !== basis.epoch || owner.fence !== basis.pmFence ||
     context.runId !== basis.pmRunId || context.fence !== basis.pmFence || context.generation !== basis.contextGeneration) deny("stale_pm_lease");
 
   const claims = claimKeys(data.workspace).map((key) => {
@@ -343,8 +342,7 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
   const sourceDirectoryHash = digest({ format: "pm-intake-source-directory/v1", binding, sourceDirectory: directory });
   const fingerprint = digest({
     requirement: { id: record.id, version: record.version, hash: decisionDigest(record.data) },
-    // PM 租约每 10 秒续期，只改到期时间与记录版本；续期不改变 PM 身份与权限，不能算作依据变化
-    owner: { id: ownerRow.id, hash: decisionDigest({ ...owner, lease: { ...lease, expiresAt: 0 } }) },
+    owner: { id: ownerRow.id, hash: decisionDigest(owner) },
     approvalUse: { id: approvalUse.id, version: approvalUse.version, hash: decisionDigest(approvalUse.data) },
     manifest: { id: manifestRow.id, version: manifestRow.version, hash: decisionDigest(manifestRow.data) },
     decisions: scopes.decisions,
@@ -355,7 +353,7 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
     approvalScopeVersion: scopes.approvalScopeVersion,
     actionScopeVersion: scopes.actionScopeVersion,
   });
-  return { binding, sourceDirectoryHash, continuityInputProof: continuityProof, fingerprint, leaseExpiresAt: lease.expiresAt };
+  return { binding, sourceDirectoryHash, continuityInputProof: continuityProof, fingerprint };
 }
 
 function syncCallback(callback: () => unknown): void {
@@ -542,7 +540,6 @@ export class PmIntakeStore {
   readonly #dataRoot: string;
   readonly #repoId: string;
   readonly #now: () => number;
-  readonly #hasInjectedClock: boolean;
   readonly #proofs = new WeakMap<object, CurrentClaim>();
   readonly #requests = new WeakMap<object, RequestClaim>();
   readonly #reviews = new WeakMap<object, ReviewClaim>();
@@ -551,7 +548,6 @@ export class PmIntakeStore {
     if (!HASH.test(options.repoId)) deny("invalid_repo");
     this.#dataRoot = options.dataRoot;
     this.#repoId = options.repoId;
-    this.#hasInjectedClock = options.now !== undefined;
     this.#now = options.now ?? Date.now;
   }
 
@@ -561,45 +557,25 @@ export class PmIntakeStore {
     return value;
   }
 
-  #clockAfter(callback?: () => void): { base: number; sampledAt: number } {
-    // 单调起点包住时钟采样与最后授权回调；回调之后不再调用注入时钟。
-    const sampledAt = performance.now(), first = this.#time(), second = this.#time();
-    callback && syncCallback(callback);
-    return { base: Math.max(first, second), sampledAt };
-  }
-
-  #observedAt(clock: { base: number; sampledAt: number }): number {
-    const elapsed = Math.max(0, Math.ceil(performance.now() - clock.sampledAt));
-    if (clock.base > Number.MAX_SAFE_INTEGER - elapsed) deny("invalid_time");
-    const conservative = clock.base + elapsed;
-    return this.#hasInjectedClock ? conservative : Math.max(conservative, Date.now());
-  }
-
-  /** 扫描、摘要和结果复制完成后只比较数值，不重新调用授权或注入时钟。 */
-  #ready<T>(result: T, claim: { leaseExpiresAt: number }, clock: { base: number; sampledAt: number }): T {
-    if (claim.leaseExpiresAt <= this.#observedAt(clock)) deny("stale_pm_lease");
-    return result;
-  }
-
   /** 正式规划与派工门槛用：按接手时记下的出处清单取当前绑定；接手后新增的提问不让已通过的核对失效。 */
   recordedBinding(basisValue: unknown, directoryValue: unknown): IntakeBinding {
     const basis = checkedBindingBasis(basisValue);
     if (basis.repoId !== this.#repoId) deny("foreign_repo");
-    const sourceDirectory = checkedDirectory(directoryValue), clock = this.#clockAfter();
+    const sourceDirectory = checkedDirectory(directoryValue);
     return withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() =>
-      clone(currentSnapshot(db, this.#repoId, basis, sourceDirectory, this.#observedAt(clock), false).binding)));
+      clone(currentSnapshot(db, this.#repoId, basis, sourceDirectory, false).binding)));
   }
 
   captureCurrent(basisValue: unknown, directoryValue: unknown): { binding: IntakeBinding; sourceDirectoryHash: string; proof: IntakeCurrentProof } {
     const basis = checkedBindingBasis(basisValue);
     if (basis.repoId !== this.#repoId) deny("foreign_repo");
-    const sourceDirectory = checkedDirectory(directoryValue), clock = this.#clockAfter();
+    const sourceDirectory = checkedDirectory(directoryValue);
     const snapshot = withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() =>
-      currentSnapshot(db, this.#repoId, basis, sourceDirectory, this.#observedAt(clock))));
+      currentSnapshot(db, this.#repoId, basis, sourceDirectory)));
     const proof: IntakeCurrentProof = Object.freeze({ kind: "pm-intake-current-proof" });
     this.#proofs.set(proof, { basis, binding: snapshot.binding, sourceDirectory, sourceDirectoryHash: snapshot.sourceDirectoryHash,
-      continuityInputProof: snapshot.continuityInputProof, fingerprint: snapshot.fingerprint, leaseExpiresAt: snapshot.leaseExpiresAt });
-    return this.#ready({ binding: clone(snapshot.binding), sourceDirectoryHash: snapshot.sourceDirectoryHash, proof }, snapshot, clock);
+      continuityInputProof: snapshot.continuityInputProof, fingerprint: snapshot.fingerprint });
+    return { binding: clone(snapshot.binding), sourceDirectoryHash: snapshot.sourceDirectoryHash, proof };
   }
 
   prepareRequest(input: { operationId: string; proof: IntakeCurrentProof; submissionRef: string; submissionHash: string;
@@ -640,10 +616,9 @@ export class PmIntakeStore {
   }
 
   #prepareFrame(proof: IntakeCurrentProof, selector: FrameSelector): RowFrame {
-    const clock = this.#clockAfter();
     return withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() => {
-      const claim = this.#assertClaimIn(db, proof, this.#observedAt(clock));
-      return this.#ready(captureFrameIn(db, selector), claim, clock);
+      this.#assertClaimIn(db, proof);
+      return captureFrameIn(db, selector);
     }));
   }
 
@@ -661,32 +636,28 @@ export class PmIntakeStore {
     return request;
   }
 
-  #assertClaimIn(db: LocalDatabase, proof: IntakeCurrentProof, observedAt: number, checkFrame = true): CurrentClaim {
+  #assertClaimIn(db: LocalDatabase, proof: IntakeCurrentProof, checkFrame = true): CurrentClaim {
     const claim = this.#proofs.get(proof as object);
     if (!claim) deny("untrusted_proof");
-    const current = currentSnapshot(db, this.#repoId, claim.basis, claim.sourceDirectory, observedAt);
+    const current = currentSnapshot(db, this.#repoId, claim.basis, claim.sourceDirectory);
     if (!same(current.binding, claim.binding) || current.sourceDirectoryHash !== claim.sourceDirectoryHash ||
       current.continuityInputProof !== claim.continuityInputProof || current.fingerprint !== claim.fingerprint) deny("current_proof_changed");
     if (checkFrame && claim.frame && !same(captureFrameIn(db, claim.frame.selector, claim.frame), claim.frame)) deny("intake_records_changed");
-    return { ...claim, leaseExpiresAt: current.leaseExpiresAt };
+    return claim;
   }
 
   assertReturnCurrent(proof: IntakeCurrentProof, beforeTransaction: () => void): void {
     if (!this.#proofs.has(proof as object)) deny("untrusted_proof");
-    const clock = this.#clockAfter(beforeTransaction);
-    const checked = withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() => {
-      const claim = this.#assertClaimIn(db, proof, this.#observedAt(clock));
-      return this.#ready(claim, claim, clock);
-    }));
-    this.#ready(undefined, checked, clock);
+    syncCallback(beforeTransaction);
+    withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() => { this.#assertClaimIn(db, proof); }));
   }
 
   commitRequest(prepared: PreparedIntakeRequest, beforeTransaction: () => void): StoredIntakeRequest {
     const preparedClaim = this.#requests.get(prepared as object);
     if (!preparedClaim) deny("untrusted_prepared");
-    const clock = this.#clockAfter(beforeTransaction);
+    syncCallback(beforeTransaction);
     return withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() => {
-      const claim = this.#assertClaimIn(db, preparedClaim.proof, this.#observedAt(clock), false);
+      const claim = this.#assertClaimIn(db, preparedClaim.proof, false);
       const frame = captureFrameIn(db, preparedClaim.frame.selector, preparedClaim.frame);
       const operation = frameData<IntakeOperationRecord>(frame, PM_INTAKE_NAMESPACES.operations, preparedClaim.operationId);
       if (operation) {
@@ -696,8 +667,8 @@ export class PmIntakeStore {
         if (preparedClaim.frame.rows[frameKey(PM_INTAKE_NAMESPACES.operations, preparedClaim.operationId)]) {
           if (!same(frame, preparedClaim.frame)) deny("intake_records_changed");
         } else assertTransition(preparedClaim.frame, frame, preparedClaim, record, claim);
-        this.#assertClaimIn(db, preparedClaim.proof, this.#observedAt(clock), false);
-        return this.#ready({ record: clone(record), sourceDirectory: clone(claim.sourceDirectory), currentProof: this.#resultProof(claim, frame), idempotent: true }, claim, clock);
+        this.#assertClaimIn(db, preparedClaim.proof, false);
+        return { record: clone(record), sourceDirectory: clone(claim.sourceDirectory), currentProof: this.#resultProof(claim, frame), idempotent: true };
       }
       if (!same(frame, preparedClaim.frame)) deny("intake_records_changed");
       const directoryData: IntakeDirectoryRecord = { format: "pm-intake-directory/v1", binding: claim.binding,
@@ -722,17 +693,17 @@ export class PmIntakeStore {
       const after = captureFrameIn(db, preparedClaim.frame.selector, preparedClaim.frame);
       assertTransition(preparedClaim.frame, after, preparedClaim, preparedClaim.record, claim);
       this.#currentResult(after, claim, preparedClaim.record.requestId);
-      this.#assertClaimIn(db, preparedClaim.proof, this.#observedAt(clock), false);
-      return this.#ready({ record: clone(preparedClaim.record), sourceDirectory: clone(claim.sourceDirectory), currentProof: this.#resultProof(claim, after), idempotent: false }, claim, clock);
+      this.#assertClaimIn(db, preparedClaim.proof, false);
+      return { record: clone(preparedClaim.record), sourceDirectory: clone(claim.sourceDirectory), currentProof: this.#resultProof(claim, after), idempotent: false };
     }));
   }
 
   commitReview(prepared: PreparedIntakeReview, beforeTransaction: () => void): StoredIntakeReview {
     const preparedClaim = this.#reviews.get(prepared as object);
     if (!preparedClaim) deny("untrusted_prepared");
-    const clock = this.#clockAfter(beforeTransaction);
+    syncCallback(beforeTransaction);
     return withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() => {
-      const claim = this.#assertClaimIn(db, preparedClaim.proof, this.#observedAt(clock), false);
+      const claim = this.#assertClaimIn(db, preparedClaim.proof, false);
       const frame = captureFrameIn(db, preparedClaim.frame.selector, preparedClaim.frame);
       const operation = frameData<IntakeOperationRecord>(frame, PM_INTAKE_NAMESPACES.operations, preparedClaim.operationId);
       if (operation) {
@@ -743,8 +714,8 @@ export class PmIntakeStore {
         if (preparedClaim.frame.rows[frameKey(PM_INTAKE_NAMESPACES.operations, preparedClaim.operationId)]) {
           if (!same(frame, preparedClaim.frame)) deny("intake_records_changed");
         } else assertTransition(preparedClaim.frame, frame, preparedClaim, record, claim);
-        this.#assertClaimIn(db, preparedClaim.proof, this.#observedAt(clock), false);
-        return this.#ready({ record: clone(record), currentProof: this.#resultProof(claim, frame), idempotent: true }, claim, clock);
+        this.#assertClaimIn(db, preparedClaim.proof, false);
+        return { record: clone(record), currentProof: this.#resultProof(claim, frame), idempotent: true };
       }
       if (!same(frame, preparedClaim.frame)) deny("intake_records_changed");
       const request = db.read<IntakeRequestRecord>(PM_INTAKE_NAMESPACES.requests, preparedClaim.record.requestId);
@@ -764,20 +735,19 @@ export class PmIntakeStore {
       const after = captureFrameIn(db, preparedClaim.frame.selector, preparedClaim.frame);
       assertTransition(preparedClaim.frame, after, preparedClaim, preparedClaim.record, claim);
       this.#currentResult(after, claim, preparedClaim.record.requestId, preparedClaim.record.reviewId);
-      this.#assertClaimIn(db, preparedClaim.proof, this.#observedAt(clock), false);
-      return this.#ready({ record: clone(preparedClaim.record), currentProof: this.#resultProof(claim, after), idempotent: false }, claim, clock);
+      this.#assertClaimIn(db, preparedClaim.proof, false);
+      return { record: clone(preparedClaim.record), currentProof: this.#resultProof(claim, after), idempotent: false };
     }));
   }
 
   readRequest(requestId: string, proof: IntakeCurrentProof): StoredIntakeRequest {
     if (!UUID.test(requestId)) deny("invalid_request");
-    const clock = this.#clockAfter();
     return withDatabase(repositoryDatabase(this.#dataRoot, this.#repoId), (db) => db.transaction(() => {
-      const claim = this.#assertClaimIn(db, proof, this.#observedAt(clock));
+      const claim = this.#assertClaimIn(db, proof);
       const frame = captureFrameIn(db, { requirementId: claim.binding.requirementId, directoryHash: claim.sourceDirectoryHash, requestId });
       const record = this.#currentResult(frame, claim, requestId);
-      this.#assertClaimIn(db, proof, this.#observedAt(clock));
-      return this.#ready({ record: clone(record), sourceDirectory: clone(claim.sourceDirectory), currentProof: this.#resultProof(claim, frame), idempotent: true }, claim, clock);
+      this.#assertClaimIn(db, proof);
+      return { record: clone(record), sourceDirectory: clone(claim.sourceDirectory), currentProof: this.#resultProof(claim, frame), idempotent: true };
     }));
   }
 

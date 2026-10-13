@@ -160,8 +160,7 @@ export type IntakeGateResult = { allowed: true } | { allowed: false; reasons: st
  * 批准版本前进时，要求核对后的每个版本都被本 PM 做出、不含 unknown 的影响复核覆盖；复核须先按序收到差异，较新版本的复核覆盖其前的连续版本。
  * 只读现有记录并调用连续性判定，不签发任何权限。
  */
-export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }): IntakeGateResult {
-  const now = ref.now ?? Date.now();
+export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease }): IntakeGateResult {
   const store = new PmIntakeStore({ dataRoot: ref.dataRoot, repoId: ref.repoId });
   const row = requirementRow(ref, ref.lease.requirementId), record = row.data;
   const head = store.readHead(ref.lease.requirementId);
@@ -169,7 +168,7 @@ export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }
   if (!record.approved || !record.workspace) return { allowed: false, reasons: ["requirement_not_ready"] };
   if (!implementAuthorized(ref, row)) return { allowed: false, reasons: ["action_authorization_not_reported_current"] };
   const review = head.review;
-  if (review && record.revision > review.binding.approvedRevision) return advancedGate(ref, record, review, now);
+  if (review && record.revision > review.binding.approvedRevision) return advancedGate(ref, record, review);
   const basis: IntakeBindingBasis = {
     repoId: ref.repoId, requirementId: record.requirementId, approvedProdCommit: record.approved.commit, approvedRevision: record.revision,
     approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash,
@@ -179,12 +178,11 @@ export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }
   let binding: IntakeBinding;
   try { binding = store.recordedBinding(basis, head.directory); }
   catch (error) { return { allowed: false, reasons: [(error as { code?: string }).code ?? "binding_not_current"] }; }
-  const owner = withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.read<{ lease?: PmLease }>("pm_ownership", ref.lease.requirementId)?.data);
   const submission = pmSubmissionFor(ref, binding);
   const evaluation = evaluateIntakeContinuity({
     format: "pm-intake-continuity-facts/v1",
     currentBinding: binding,
-    currentState: { lifecycle: record.lifecycle, requirementRecordVersion: row.version, leaseExpiresAt: owner?.lease?.expiresAt ?? 0, observedAt: now,
+    currentState: { lifecycle: record.lifecycle, requirementRecordVersion: row.version,
       actionAuthorizationReportedCurrent: true, sourceDirectoryReportedCurrent: true, pendingApprovedUpdate: record.pendingRevision !== null },
     sourceDirectory: head.directory,
     rootReview: review,
@@ -193,7 +191,7 @@ export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease; now?: number }
   return evaluation.contractReady ? { allowed: true } : { allowed: false, reasons: [...evaluation.reasons] };
 }
 
-function advancedGate(ref: Ref & { lease: PmLease }, record: RequirementRecord, review: IntakeReviewRecord, now: number): IntakeGateResult {
+function advancedGate(ref: Ref & { lease: PmLease }, record: RequirementRecord, review: IntakeReviewRecord): IntakeGateResult {
   const reasons: string[] = [];
   const binding = review.binding;
   if (review.result !== "passed") reasons.push(review.result);
@@ -209,7 +207,7 @@ function advancedGate(ref: Ref & { lease: PmLease }, record: RequirementRecord, 
     assessments: db.list<{ requirementId?: string; toRevision?: number; unknown?: number; runId?: string; fence?: number }>("impact_assessments")
       .map((entry) => entry.data).filter((entry) => entry.requirementId === ref.lease.requirementId),
   }));
-  if (owner?.lease?.runId !== ref.lease.runId || owner.lease.fence !== ref.lease.fence || owner.lease.expiresAt <= now) reasons.push("lease_not_current");
+  if (owner?.lease?.runId !== ref.lease.runId || owner.lease.fence !== ref.lease.fence) reasons.push("lease_not_current");
   for (let revision = binding.approvedRevision + 1; revision <= record.revision; revision++) {
     const covered = assessments.some((entry) => entry.toRevision! >= revision && entry.unknown === 0 && entry.runId === ref.lease.runId && entry.fence === ref.lease.fence);
     if (!covered) { reasons.push("impact_link_gap"); break; }

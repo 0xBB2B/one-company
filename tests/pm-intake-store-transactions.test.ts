@@ -37,55 +37,29 @@ test("最终回调后的完整inputProof捕获新增问题与决定取代，requ
   }
 });
 
-test("租约在最终回调或注入时钟自身采样期间到期时拒绝，不留下部分记录", async () => {
-  const callbackFixture = await world(), captured = callbackFixture.captureCurrent();
-  const prepared = callbackFixture.intakeStore.prepareRequest(requestInput(callbackFixture, captured.proof));
-  callbackFixture.setNow(callbackFixture.lease.expiresAt - 1);
-  expect(() => callbackFixture.intakeStore.commitRequest(prepared, () => callbackFixture.advanceNow(2))).toThrow(/stale_pm_lease/);
-  expect(counts(callbackFixture)[PM_INTAKE_NAMESPACES.requests]).toBe(0);
-
-  const clockFixture = await world();
-  let clock = clockFixture.lease.expiresAt - 10, tick = false;
-  const store = new PmIntakeStore({ dataRoot: clockFixture.dataRoot, repoId: clockFixture.repoId,
-    now: () => { const value = clock; if (tick) clock += 20; return value; } });
-  const current = store.captureCurrent(clockFixture.basis, clockFixture.sourceDirectory);
-  const clockPrepared = store.prepareRequest(requestInput(clockFixture, current.proof));
-  tick = true;
-  expect(() => store.commitRequest(clockPrepared, () => {})).toThrow(/stale_pm_lease/);
-  expect(counts(clockFixture)[PM_INTAKE_NAMESPACES.requests]).toBe(0);
+test("时钟前跳 1 小时后，PM 接手请求的判定与登记照常成功", async () => {
+  const fixture = await world(), captured = fixture.captureCurrent();
+  const prepared = fixture.intakeStore.prepareRequest(requestInput(fixture, captured.proof));
+  fixture.advanceNow(3_600_000);
+  expect(() => fixture.intakeStore.commitRequest(prepared, () => {})).not.toThrow();
+  expect(counts(fixture)[PM_INTAKE_NAMESPACES.requests]).toBe(1);
 });
 
-test("第二次now阻塞且返回旧值时，实际耗时仍计入租约预算并拒绝写入", async () => {
-  const fixture = await world();
-  let armed = false, calls = 0;
-  const base = fixture.lease.expiresAt - 150;
-  const store = new PmIntakeStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId,
-    now: () => { if (armed && ++calls === 2) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 230); return base; } });
-  const captured = store.captureCurrent(fixture.basis, fixture.sourceDirectory);
-  const prepared = store.prepareRequest(requestInput(fixture, captured.proof));
-  armed = true;
-  expect(() => store.commitRequest(prepared, () => {})).toThrow(/stale_pm_lease/);
-  expect(calls).toBe(2);
-  expect(counts(fixture)[PM_INTAKE_NAMESPACES.requests]).toBe(0);
-  expect(counts(fixture)[PM_INTAKE_NAMESPACES.operations]).toBe(0);
-});
-
-test.each(["request", "review"] as const)("%s写事务前now撤销Host时零新增，不以事后拒绝掩盖落库", async (mode) => {
+test.each(["request", "review"] as const)("%s写事务前撤销Host时零新增，不以事后拒绝掩盖落库", async (mode) => {
   const fixture = await world();
   const request = mode === "review" ? await fixture.intake.openRequest(fixture.call, fixture.operationId()) : undefined;
   const before = counts(fixture);
-  let armed = false, revoked = false;
-  const base = Date.now();
+  let revoked = false;
   const commitRequest = PmIntakeStore.prototype.commitRequest, commitReview = PmIntakeStore.prototype.commitReview;
   vi.spyOn(PmIntakeStore.prototype, "commitRequest").mockImplementation(function (this: PmIntakeStore, ...args) {
-    if (mode === "request") armed = true;
+    if (mode === "request") { revoked = true; fixture.host.revoke(); }
     return commitRequest.apply(this, args);
   });
   vi.spyOn(PmIntakeStore.prototype, "commitReview").mockImplementation(function (this: PmIntakeStore, ...args) {
-    if (mode === "review") armed = true;
+    if (mode === "review") { revoked = true; fixture.host.revoke(); }
     return commitReview.apply(this, args);
   });
-  const intake = fixture.makeIntake({ now: () => { if (armed && !revoked) { revoked = true; fixture.host.revoke(); } return base; } });
+  const intake = fixture.makeIntake();
   await expect(mode === "request" ? intake.openRequest(fixture.call, fixture.operationId())
     : intake.recordReview(fixture.call, request!.requestId, fixture.operationId(), { result: "passed", shortIssues: [] })).rejects.toThrow();
   expect(revoked).toBe(true);
