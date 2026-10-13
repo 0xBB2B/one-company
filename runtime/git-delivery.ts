@@ -89,7 +89,6 @@ async function createRequest(provider: Provider, cwd: string, input: { branch: s
   else await cli("glab", cwd, ["mr", "create", "--source-branch", input.branch, "--target-branch", input.base, "--title", input.title, "--description", input.body, "--yes"]);
 }
 type MergeFlag = "--rebase" | "--merge" | "--squash";
-/** 弹窗前按仓库允许的方式列出自动合并选项；GitHub 优先 rebase，不允许时才让用户在合并提交与 squash 间选。 */
 async function autoMergeOptions(provider: Provider, cwd: string): Promise<{ choices: WindowChoice[]; methods: Map<string, MergeFlag>; note: string[] }> {
   if (provider === "glab") return { choices: [{ label: AUTO_MERGE_CHOICE, description: "等仓库要求的检查通过后，按项目设置的合并方式合并" }], methods: new Map(), note: [] };
   let allowed: { squashMergeAllowed?: boolean; mergeCommitAllowed?: boolean; rebaseMergeAllowed?: boolean };
@@ -103,7 +102,7 @@ async function autoMergeOptions(provider: Provider, cwd: string): Promise<{ choi
   if (!choices.length) choices.push({ label: AUTO_MERGE_CHOICE, disabled: "仓库没有允许的合并方式" });
   return { choices, methods, note: ["仓库不允许 rebase 合并，自动合并请从仓库允许的方式里选。"] };
 }
-/** 自动合并只合并已推送的那个提交。 */
+/** 自动合并只合并已推送的那个提交；GitLab 不用 glab 的 --rebase，它会先改写源分支，和 --sha 绑定的已推送提交对不上。 */
 async function enableAutoMerge(provider: Provider, cwd: string, number: string, head: string, method?: MergeFlag): Promise<void> {
   if (provider === "gh") await cli("gh", cwd, ["pr", "merge", number, "--auto", method!, "--match-head-commit", head]);
   else await cli("glab", cwd, ["mr", "merge", number, "--auto-merge", "--sha", head, "--yes"]);
