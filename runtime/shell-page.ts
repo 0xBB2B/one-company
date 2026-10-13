@@ -41,6 +41,7 @@ interface DaemonTaskPayload {
   inWorkspace?: boolean;
   identityVerified?: boolean;
   descendantsScanned?: boolean;
+  endedAt?: number | null;
   reason?: string;
 }
 
@@ -59,6 +60,7 @@ interface ShellRow {
   status: TaskStatus;
   activity: TaskActivity;
   endVerified: boolean;
+  endedAt: number | null;
   reason?: string;
   source: RowSource;
 }
@@ -193,7 +195,9 @@ function rowFromTaskRecord(task: TaskRecord): ShellRow {
     endVerified: ENDED_STATUSES.has(task.status)
       && task.activity === "ended"
       && task.identityVerified === true
-      && task.descendantsScanned === true,
+      && task.descendantsScanned === true
+      && typeof task.endedAt === "number",
+    endedAt: task.endedAt,
     reason: typeof task.reason === "string" ? lineText(task.reason) : undefined,
     source: { kind: "local", repoId },
   };
@@ -203,7 +207,8 @@ function rowFromDaemonPayload(repo: ShellPageRepo, client: ShellPageClient, stam
   if (!task || typeof task.taskId !== "string" || !task.taskId || task.taskId.length > 256 || /[\x00-\x1f\x7f-\x9f]/.test(task.taskId) ||
     !Number.isSafeInteger(task.pid) || task.pid <= 1 || !validHost(task.host) || !Object.hasOwn(STATUS_LABEL, task.status) ||
     !["active", "uncertain", "ended"].includes(task.activity) || !(task.startedAt === null || typeof task.startedAt === "number" && Number.isFinite(task.startedAt) ||
-      typeof task.startedAt === "string" && task.startedAt.length <= 128 && !/[\x00-\x1f\x7f-\x9f]/.test(task.startedAt))) {
+      typeof task.startedAt === "string" && task.startedAt.length <= 128 && !/[\x00-\x1f\x7f-\x9f]/.test(task.startedAt)) ||
+    !(task.endedAt === undefined || task.endedAt === null || typeof task.endedAt === "number" && Number.isFinite(task.endedAt))) {
     throw new Error("Shell 元数据无法核对");
   }
   const startedAt = String(task.startedAt);
@@ -220,7 +225,9 @@ function rowFromDaemonPayload(repo: ShellPageRepo, client: ShellPageClient, stam
     endVerified: ENDED_STATUSES.has(task.status)
       && task.activity === "ended"
       && task.identityVerified === true
-      && task.descendantsScanned === true,
+      && task.descendantsScanned === true
+      && typeof task.endedAt === "number",
+    endedAt: task.endedAt ?? null,
     reason: task.activity === "uncertain" ? "停止未确认：进程可能还在，再按 K 请求停止" : undefined,
     source: { kind: "daemon", repo, client, connectionStamp: stamp },
   };
@@ -281,7 +288,6 @@ export class ShellPage {
   private confirmSelection: ConfirmSelection = "cancel";
   private readonly pendingStops = new Map<string, { token: string; target: ShellRow }>();
   private readonly noticeOverlay = new Map<string, string>();
-  private readonly endedAt = new Map<string, number>();
 
   constructor(options: ShellPageOptions) {
     this.registry = options.registry;
@@ -334,20 +340,11 @@ export class ShellPage {
     const liveKeys = new Set(rawRows.map((row) => row.key));
     for (const key of this.pendingStops.keys()) if (!liveKeys.has(key)) this.pendingStops.delete(key);
     for (const key of this.noticeOverlay.keys()) if (!liveKeys.has(key)) this.noticeOverlay.delete(key);
-    for (const key of this.endedAt.keys()) if (!liveKeys.has(key)) this.endedAt.delete(key);
 
     const now = this.clock.now();
     const rows = rawRows.filter((row) => {
-      if (!row.endVerified || this.noticeOverlay.has(row.key) || this.pendingStops.has(row.key)) {
-        this.endedAt.delete(row.key);
-        return true;
-      }
-      let at = this.endedAt.get(row.key);
-      if (at === undefined) {
-        at = now;
-        this.endedAt.set(row.key, at);
-      }
-      return now - at < ENDED_TTL_MS;
+      if (!row.endVerified || this.noticeOverlay.has(row.key) || this.pendingStops.has(row.key)) return true;
+      return now - row.endedAt! < ENDED_TTL_MS;
     });
 
     const selectedKey = this.selectedKey;
@@ -378,7 +375,6 @@ export class ShellPage {
 
   reportRefreshFailure(error: unknown): void {
     this.errors = [safeError(error)];
-    this.endedAt.clear();
     for (const row of this.rows) row.endVerified = false;
   }
 
@@ -562,7 +558,7 @@ export class ShellPage {
 
   private rowElapsed(row: ShellRow): string {
     const elapsedSource = /^\d+$/.test(row.startedAt) ? Number(row.startedAt) : Date.parse(row.startedAt);
-    return Number.isFinite(elapsedSource) ? formatElapsed(this.clock.now() - elapsedSource) : "未知";
+    return Number.isFinite(elapsedSource) ? formatElapsed((row.endedAt ?? this.clock.now()) - elapsedSource) : "未知";
   }
 
   private rowOwner(row: ShellRow): string {

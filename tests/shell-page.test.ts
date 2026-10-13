@@ -166,6 +166,7 @@ function localTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
     status: "running",
     activity: "active",
     exitCode: null,
+    endedAt: null,
     descendants: [],
     descendantsScanned: false,
     identityVerified: true,
@@ -288,7 +289,7 @@ describe("ShellPage：已结束任务仅保留结束后 1 分钟内", () => {
   test("本窗口任务结束后立即仍可见，59 秒内仍可见，超过 60 秒后从列表消失，头部计数同步", async () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
-    const registry = new ShellRegistry({ clock: createClock() });
+    const registry = new ShellRegistry({ clock });
     const taskId = randomUUID();
     const result = await registry.spawn({
       taskId,
@@ -312,12 +313,80 @@ describe("ShellPage：已结束任务仅保留结束后 1 分钟内", () => {
     timeSource.advance(59_000);
     await page.refresh();
     expect(page.render(80).join("\n")).toContain("ttl标记");
+    const reopenedEarly = new ShellPage(basePageOptions({ registry, clock }));
+    await reopenedEarly.refresh();
+    expect(reopenedEarly.render(80).join("\n")).toContain("ttl标记");
 
     timeSource.advance(2_000);
     await page.refresh();
     expect(page.render(80).join("\n")).not.toContain("ttl标记");
     expect(page.render(80)[1]).not.toContain("已结束");
+
+    const reopenedLate = new ShellPage(basePageOptions({ registry, clock }));
+    await reopenedLate.refresh();
+    expect(reopenedLate.render(80).join("\n")).not.toContain("ttl标记");
+    expect(reopenedLate.render(80)[1]).not.toContain("已结束");
   }, 10_000);
+
+  test("守护进程任务的结束时刻早于页面打开 60 秒以上，第一次看到就不显示", async () => {
+    const timeSource = createFakeTimeSource();
+    timeSource.advance(120_000);
+    const repo = fakeRepo("repo-stale-ended", {
+      list: () => [
+        { taskId: "old", host: roleHost("worker"), pid: 601, startedAt: "0", endedAt: 10_000, status: "exited", activity: "ended", identityVerified: true, descendantsScanned: true, inWorkspace: true },
+        { taskId: "fresh", host: roleHost("worker"), pid: 602, startedAt: "0", endedAt: 70_000, status: "exited", activity: "ended", identityVerified: true, descendantsScanned: true, inWorkspace: true },
+      ],
+    });
+    const page = new ShellPage(basePageOptions({ repos: [repo], clock: createClock({ timeSource }) }));
+    await page.refresh();
+    const lines = page.render(80);
+    expect(lines.some((line) => line.endsWith(" 601"))).toBe(false);
+    expect(lines.some((line) => line.endsWith(" 602"))).toBe(true);
+    expect(lines[1]).toMatch(/已结束 1$/);
+  });
+});
+
+describe("ShellPage：已结束任务耗时停在结束那一刻", () => {
+  test("已结束任务耗时为结束时刻减启动时刻，时钟往后走不变；运行中任务继续增长", async () => {
+    const timeSource = createFakeTimeSource();
+    timeSource.advance(100_000);
+    const repo = fakeRepo("repo-frozen", {
+      list: () => [
+        { taskId: "done", host: roleHost("worker"), pid: 701, startedAt: "0", endedAt: 90_000, status: "exited", activity: "ended", identityVerified: true, descendantsScanned: true, inWorkspace: true },
+        { taskId: "live", host: roleHost("worker"), pid: 702, startedAt: "0", endedAt: null, status: "running", activity: "active", inWorkspace: true },
+      ],
+    });
+    const page = new ShellPage(basePageOptions({ repos: [repo], clock: createClock({ timeSource }) }));
+    await page.refresh();
+    const rowOf = (pid: number) => page.render(80).find((line) => line.endsWith(` ${pid}`)) ?? "";
+    expect(rowOf(701)).toContain("1m30s");
+    expect(rowOf(702)).toContain("1m40s");
+
+    timeSource.advance(5_000);
+    await page.refresh();
+    expect(rowOf(701)).toContain("1m30s");
+    expect(rowOf(702)).toContain("1m45s");
+  });
+
+  test("详情里的耗时同样停在结束那一刻", async () => {
+    const timeSource = createFakeTimeSource();
+    timeSource.advance(100_000);
+    const repo = fakeRepo("repo-frozen-detail", {
+      list: () => [
+        { taskId: "done", host: roleHost("worker"), pid: 711, startedAt: "0", endedAt: 90_000, status: "exited", activity: "ended", identityVerified: true, descendantsScanned: true, inWorkspace: true },
+      ],
+    });
+    const page = new ShellPage(basePageOptions({ repos: [repo], clock: createClock({ timeSource }) }));
+    await page.refresh();
+    page.handleInput(KEY.enter);
+    expect(page.render(80).join("\n")).toContain("1m30s");
+
+    timeSource.advance(5_000);
+    await page.refresh();
+    const detail = page.render(80).join("\n");
+    expect(detail).toContain("1m30s");
+    expect(detail).not.toContain("1m35s");
+  });
 });
 
 describe("ShellPage：Enter 打开详情，仅展示状态/来源/完整命令/目录/进程/耗时，K 停止与 Esc 返回", () => {
@@ -1220,38 +1289,37 @@ describe("ShellPage：复合行身份隔离详情、选择和停止请求", () =
 });
 
 describe("ShellPage：本地结束证明和停止回执严格核对", () => {
-  test("descendantsScanned 缺失或 false 时 60 秒后仍保留并写明结束未核实；true 后才计时，证明撤销后旧 TTL 清零", async () => {
+  test("核对不完整时一直保留并写明结束未核实；核对完整时从固定的 endedAt 算起满 60 秒才消失，撤销再恢复核对不重新计时", async () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
-    let task = localTask({ status: "exited", activity: "ended", identityVerified: true, descendantsScanned: false });
+    let task = localTask({ status: "exited", activity: "ended", endedAt: 0, identityVerified: true, descendantsScanned: false });
     const registry = new ShellRegistry({ clock });
     registry.list = () => [task];
     registry.get = () => task;
     const page = new ShellPage(basePageOptions({ registry, clock }));
+    const unverifiedNote = "└ 结束未核实，不会自动从列表消失";
 
     await page.refresh();
-    timeSource.advance(60_001);
-    await page.refresh();
-    expect(page.render(100).join("\n")).toContain("└ 结束未核实，不会自动从列表消失");
+    expect(page.render(100).join("\n")).toContain(unverifiedNote);
 
+    timeSource.advance(30_000);
     task = { ...task, descendantsScanned: undefined as unknown as boolean };
-    timeSource.advance(60_001);
     await page.refresh();
-    expect(page.render(100).join("\n")).toContain("└ 结束未核实，不会自动从列表消失");
+    expect(page.render(100).join("\n")).toContain(unverifiedNote);
 
     task = { ...task, descendantsScanned: true };
     await page.refresh();
     expect(page.render(100).join("\n")).toContain("已结束");
+    expect(page.render(100).join("\n")).not.toContain(unverifiedNote);
+
     timeSource.advance(10_000);
     task = { ...task, descendantsScanned: false };
     await page.refresh();
     timeSource.advance(60_001);
     await page.refresh();
-    expect(page.render(100).join("\n")).toContain("└ 结束未核实，不会自动从列表消失");
+    expect(page.render(100).join("\n")).toContain(unverifiedNote);
 
     task = { ...task, descendantsScanned: true };
-    await page.refresh();
-    timeSource.advance(60_001);
     await page.refresh();
     expect(page.render(100).join("\n")).toContain("没有正在运行或待确认的 Shell 任务");
   });
@@ -1263,7 +1331,7 @@ describe("ShellPage：本地结束证明和停止回执严格核对", () => {
     registry.list = () => [current];
     registry.get = () => current;
     vi.spyOn(registry, "stop").mockImplementation(async () => {
-      current = localTask({ ...original, pid: 502, status: "stopped", activity: "ended", descendantsScanned: true, identityVerified: true, stoppedBy: "signal" });
+      current = localTask({ ...original, pid: 502, status: "stopped", activity: "ended", endedAt: Date.now(), descendantsScanned: true, identityVerified: true, stoppedBy: "signal" });
       return { ok: true, task: current };
     });
     const page = new ShellPage(basePageOptions({ registry }));
@@ -1284,7 +1352,7 @@ describe("ShellPage：本地结束证明和停止回执严格核对", () => {
     registry.get = () => current;
     vi.spyOn(registry, "stop").mockResolvedValue({
       ok: true,
-      task: { ...current, status: "stopped", activity: "ended", descendantsScanned: true, identityVerified: true, stoppedBy: "signal" },
+      task: { ...current, status: "stopped", activity: "ended", endedAt: Date.now(), descendantsScanned: true, identityVerified: true, stoppedBy: "signal" },
     });
     const page = new ShellPage(basePageOptions({ registry }));
     await page.refresh();
@@ -1311,7 +1379,7 @@ describe("ShellPage：本地结束证明和停止回执严格核对", () => {
       registry.list = () => [current];
       registry.get = () => current;
       vi.spyOn(registry, "stop").mockImplementation(async () => {
-        current = mutate({ ...original, status: "stopped", activity: "ended", descendantsScanned: true, identityVerified: true, stoppedBy: "signal" });
+        current = mutate({ ...original, status: "stopped", activity: "ended", endedAt: Date.now(), descendantsScanned: true, identityVerified: true, stoppedBy: "signal" });
         return { ok: true, task: current };
       });
       const page = new ShellPage(basePageOptions({ registry }));
@@ -1330,7 +1398,7 @@ describe("ShellPage：本地结束证明和停止回执严格核对", () => {
 test("远端查询在途时本地证明或PID变化，最终刷新不能还原旧记录", async () => {
   for (const mutation of ["proof", "pid"] as const) {
     const time = createFakeTimeSource(), clock = createClock({ timeSource: time });
-    let task = localTask({ pid: 111, pgid: 111, status: "stopped", activity: "ended", descendantsScanned: true });
+    let task = localTask({ pid: 111, pgid: 111, status: "stopped", activity: "ended", endedAt: 0, descendantsScanned: true });
     let hold = false, finish!: (value: Record<string, unknown>) => void;
     const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "current", connectionSequence: 1 }),
       call: async () => hold ? new Promise<Record<string, unknown>>((resolve) => { finish = resolve; }) : { tasks: [] } };
@@ -1421,7 +1489,7 @@ describe("ShellPage：表格列宽按显示宽度对齐", () => {
   async function mixedPage(theme?: ReturnType<typeof colorTheme>) {
     const local = [
       localTask({ taskId: "cn", pid: 48102, command: "中文命令带全角字符很长很长很长很长很长很长很长很长很长" }),
-      localTask({ taskId: "timeout", pid: 7, status: "timed_out", activity: "ended", descendantsScanned: true, command: "npx vitest" }),
+      localTask({ taskId: "timeout", pid: 7, status: "timed_out", activity: "ended", endedAt: Date.now(), descendantsScanned: true, command: "npx vitest" }),
     ];
     const registry = new ShellRegistry({ clock: createClock() });
     registry.list = () => local;
@@ -1479,9 +1547,9 @@ describe("ShellPage：已结束的子代理任务同样 1 分钟后消失，待�
     const clock = createClock({ timeSource });
     const repo = fakeRepo("repo-ended", {
       list: () => [
-        { taskId: "done", host: roleHost("reviewer"), pid: 501, startedAt: "0", status: "exited", activity: "ended", identityVerified: true, descendantsScanned: true, inWorkspace: true },
-        { taskId: "unproven", host: roleHost("worker"), pid: 502, startedAt: "0", status: "stopped", activity: "ended", identityVerified: true, descendantsScanned: false, inWorkspace: true },
-        { taskId: "pending", host: roleHost("worker"), pid: 503, startedAt: "0", status: "uncertain", activity: "uncertain", inWorkspace: true },
+        { taskId: "done", host: roleHost("reviewer"), pid: 501, startedAt: "0", endedAt: 0, status: "exited", activity: "ended", identityVerified: true, descendantsScanned: true, inWorkspace: true },
+        { taskId: "unproven", host: roleHost("worker"), pid: 502, startedAt: "0", endedAt: 0, status: "stopped", activity: "ended", identityVerified: true, descendantsScanned: false, inWorkspace: true },
+        { taskId: "pending", host: roleHost("worker"), pid: 503, startedAt: "0", endedAt: null, status: "uncertain", activity: "uncertain", inWorkspace: true },
       ],
     });
     const page = new ShellPage(basePageOptions({ repos: [repo], clock }));
@@ -1501,6 +1569,13 @@ describe("ShellPage：已结束的子代理任务同样 1 分钟后消失，待�
     expect(lines.join("\n")).toContain("└ 结束未核实，不会自动从列表消失");
     expect(lines.some((line) => line.endsWith(" 503"))).toBe(true);
     expect(lines[1]).toMatch(/待确认 1 · 已结束 1$/);
+
+    const reopened = new ShellPage(basePageOptions({ repos: [repo], clock }));
+    await reopened.refresh();
+    const reopenedLines = reopened.render(80);
+    expect(reopenedLines.some((line) => line.endsWith(" 501"))).toBe(false);
+    expect(reopenedLines.some((line) => line.endsWith(" 502"))).toBe(true);
+    expect(reopenedLines.some((line) => line.endsWith(" 503"))).toBe(true);
 
     timeSource.advance(600_000);
     await page.refresh();
