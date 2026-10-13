@@ -121,6 +121,30 @@ describe("真实 Shell 停止、级联和身份", () => {
     expect(formatShellSummary(await summarizeShells({ registry, repos: [{ repoId: "repo", client }] }))).toBe("shell：1 · pm：1");
     await w.manager.stop(pm.id, { reason: "main_agent" });
   }, 15_000);
+  test("任务运行中 endedAt 为 null；停止确认后 endedAt 是确认结束那一刻的时钟读数，shells.list 与注册表一致", async () => {
+    const w = await world(); const run = await w.create("running"); const task = await w.spawn(run); const map = handlers(w);
+    expect(w.shells.get(task.taskId)?.endedAt).toBeNull();
+    expect((await map.get("shells.list")!({})).tasks.find((t: { pid: number }) => t.pid === task.pid)).toMatchObject({ endedAt: null });
+    const before = w.clock.now();
+    await w.shells.stop(task.taskId);
+    const after = w.clock.now();
+    const record = w.shells.get(task.taskId)!;
+    expect(record).toMatchObject({ status: "stopped", activity: "ended" });
+    expect(record.endedAt).toBeGreaterThanOrEqual(before); expect(record.endedAt).toBeLessThanOrEqual(after);
+    const listed = (await map.get("shells.list")!({})).tasks.find((t: { pid: number }) => t.pid === task.pid);
+    expect(listed.endedAt).toBe(record.endedAt);
+  }, 15_000);
+  test("任务自然退出时 endedAt 记成退出那一刻，之后不再变化，shells.list 与注册表一致", async () => {
+    const w = await world(); const run = await w.create("running"); const map = handlers(w);
+    const task = await w.spawn(run, "setTimeout(()=>{},300)");
+    await until(() => w.shells.get(task.taskId)?.status === "exited");
+    const record = w.shells.get(task.taskId)!; const endedAt = record.endedAt!;
+    expect(record.activity).toBe("ended");
+    expect(endedAt).toBeGreaterThanOrEqual(task.startedAt + 250); expect(endedAt).toBeLessThanOrEqual(w.clock.now());
+    await delay(200);
+    expect(w.shells.get(task.taskId)?.endedAt).toBe(endedAt);
+    expect((await map.get("shells.list")!({})).tasks.find((t: { pid: number }) => t.pid === task.pid)).toMatchObject({ endedAt });
+  }, 15_000);
   test("R09 Shell PID/startedAt 不匹配不发送停止", async () => {
     const w = await world(); const run = await w.create("running"); const task = await w.spawn(run); const map = handlers(w); const stop = vi.spyOn(w.shells, "stop");
     const params = { taskId: task.taskId, expectedPid: task.pid, expectedStartedAt: String(task.startedAt) };
@@ -136,6 +160,13 @@ describe("真实 Shell 停止、级联和身份", () => {
     try { const result = await w.manager.stop(run.id, { reason: "main_agent" }); expect(result.confirmed).toBe(false); expect(w.shells.get(task.taskId)?.status).toBe("uncertain"); expect(alive(task.pid)).toBe(true); expect(await w.runs.get(run.id)).toMatchObject({ ok: true, run: { state: "stopped" } }); }
     finally { identity.mockRestore(); }
     expect(await w.manager.stop(run.id, { reason: "main_agent" })).toMatchObject({ confirmed: true }); expect(alive(task.pid)).toBe(false);
+  }, 15_000);
+  test("已结束但核对不完整的任务被停止后转成待确认，endedAt 变回 null", async () => {
+    const w = await world(); const run = await w.create("running"); const task = await w.spawn(run);
+    const record = w.shells.get(task.taskId)!; record.status = "exited"; record.activity = "ended"; record.endedAt = task.startedAt! + 1000; record.descendantsScanned = false;
+    const identity = vi.spyOn(w.shells as any, "baselineStartedAt").mockResolvedValue(task.startedAt! + 1000);
+    try { await w.shells.stop(task.taskId); expect(alive(task.pid)).toBe(true); expect(w.shells.get(task.taskId)).toMatchObject({ status: "uncertain", activity: "uncertain", endedAt: null }); }
+    finally { identity.mockRestore(); }
   }, 15_000);
   test("R11 stop Promise 在真实延迟退出前不确认，忽略TERM也能核实强杀结束", async () => {
     const w = await world(); const run = await w.create("running"); const ready = join(w.fixture.dataRoot, "ready");

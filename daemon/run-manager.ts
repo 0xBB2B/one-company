@@ -228,7 +228,7 @@ function shellMetadata(task: TaskRecord) {
   return { taskId: task.taskId, host: { kind: task.host.kind, id: task.host.id, runId: task.host.runId, role: task.host.role ?? (task.host.kind === "role" ? "one-company.pm" : undefined) },
     pid: task.pid, pgid: task.pgid, startedAt: task.startedAt, status: task.status, activity: task.activity,
     exitCode: task.exitCode, descendants: task.descendants, descendantsScanned: task.descendantsScanned,
-    identityVerified: task.identityVerified, stoppedBy: task.stoppedBy };
+    identityVerified: task.identityVerified, stoppedBy: task.stoppedBy, endedAt: task.endedAt };
 }
 function taskHost(run: RunRecord): Host { return { kind: "role", id: run.id, role: run.role, runId: run.id }; }
 const PROTOCOL_NEXT: Record<string, string> = {

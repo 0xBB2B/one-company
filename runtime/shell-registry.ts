@@ -52,6 +52,7 @@ export interface TaskRecord {
   descendantsScanned: boolean;
   stoppedBy?: "signal";
   identityVerified: boolean;
+  endedAt: number | null;
 }
 
 export interface SpawnInput {
@@ -405,6 +406,7 @@ export class ShellRegistry {
   private markUncertain(task: TaskRecord, reason: string): void {
     task.status = "uncertain";
     task.activity = "uncertain";
+    task.endedAt = null;
     task.reason = reason;
     this.clearTimeoutTimer(task.taskId);
     this.notify(task);
@@ -518,6 +520,7 @@ export class ShellRegistry {
       descendants: [],
       descendantsScanned: false,
       identityVerified: startedAt !== null,
+      endedAt: null,
     };
     this.tasks.set(taskId, task);
     this.taskGenerations.set(task, generation);
@@ -649,6 +652,7 @@ export class ShellRegistry {
       this.stopMonitor(taskId);
       task.status = "exited";
       task.activity = "ended";
+      task.endedAt = this.clock.now();
       this.clearTimeoutTimer(taskId);
       this.notify(task);
       await this.deleteTaskRecord(task);
@@ -829,6 +833,7 @@ export class ShellRegistry {
             task.status = finalStatus;
             task.stoppedBy = "signal";
             task.activity = "ended";
+            task.endedAt = this.clock.now();
             this.clearTimeoutTimer(taskId);
             this.notify(task);
             void this.deleteTaskRecord(task);
@@ -888,6 +893,7 @@ export class ShellRegistry {
         descendants: [],
         descendantsScanned: false,
         identityVerified: true,
+        endedAt: null,
       };
       this.tasks.set(taskId, task);
       this.taskTokens.set(taskId, record.token);
@@ -959,6 +965,7 @@ export class ShellRegistry {
         descendants: [],
         descendantsScanned: false,
         identityVerified: true,
+        endedAt: null,
       };
       this.tasks.set(taskId, task);
       this.taskTokens.set(taskId, `${input.runToken}:${taskId}`);
