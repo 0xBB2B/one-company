@@ -13,7 +13,7 @@ import { AgentCopyError, copyAgentDefinition } from "../runtime/agent-copy.ts";
 import { describeSetting } from "../runtime/agent-settings-ui.ts";
 import type { ClearSettingRequest, SaveSettingRequest, SettingsLayerName } from "../runtime/agent-settings-ui.ts";
 import { clearAgentSetting, projectSettingsPath, readAgentSettings, saveAgentSetting, SETTINGS_ROLES, userSettingsPath } from "../runtime/agent-settings.ts";
-import { defaultRoleDir, loadRoleCatalog, projectRoleDir, sameNameOnly, userRoleDir } from "../runtime/roles.ts";
+import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
 
 async function resolveRepoRoot(cwd: string): Promise<string> {
   try {
@@ -87,7 +87,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
       continue;
     }
     const layer = await chooseWindow(ctx, { title: `复制 ${entry.name} 到哪一层？`,
-      lines: sameNameOnly(entry.definition!.role) ? [] : mutedLines([`新名称：${name}`]), choices });
+      lines: mutedLines([`新名称：${name}`]), choices });
     if (!layer) { back({ tone: "muted", text: "已取消复制" }); continue; }
     try {
       const copied = await copyAgentDefinition({ entry, newName: name, targetDir: layer === "用户层" ? dirs.userDir : dirs.projectDir, layerDirs: layers.map((item) => item.dir) });

@@ -24,7 +24,7 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
   const ctx = { cwd: w.fixture.repositoryRoot, mode: "tui", hasUI: true, isProjectTrusted: () => false, modelRegistry: registry, model,
     ui: { notify: () => {}, confirm: () => { throw new Error("UI.confirm forbidden"); }, ...answeringUi((window) => { windows.push(window); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
-  const interaction = new MainRequirementInteraction({ dataRoot: w.fixture.dataRoot, authorization,
+  const interaction = new MainRequirementInteraction({ mainThinking: () => "off", dataRoot: w.fixture.dataRoot, authorization,
     resolveHost: () => ({ windowId, sessionId, repositories: new Map([[w.fixture.repoId, { path: w.fixture.repositoryRoot }]]) }) });
   cleanups.push(() => { interaction.dispose(); authorization.shutdown(); });
   const tool = createUserInteractTool({ interaction });

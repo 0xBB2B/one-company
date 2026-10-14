@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { resolveInternalModel } from "../runtime/internal-model.ts";
 
@@ -11,60 +11,85 @@ const model = (provider: string, id: string) => ({ provider, id, api: "openai-re
 const MAIN = model("5x", "gpt-6-sol"), SOL = model("5x", "gpt-6.1-sol"), LUNA = model("5x", "gpt-6-luna"), NOAUTH = model("other", "fast");
 const registry = { getAll: () => [MAIN, SOL, LUNA, NOAUTH],
   hasConfiguredAuth: (m: Model<Api>) => m !== NOAUTH };
+type Role = "interpreter" | "draft-verifier";
+type Setting = { model: string | null; thinking: string | null };
 
 async function world() {
   const root = await mkdtemp(join(tmpdir(), "internal-model-")); roots.push(root);
   const agentDir = join(root, "agent"), repo = join(root, "repo");
-  const define = async (dir: string, role: string, extra: string) => {
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, `${role}.md`), `---\nname: ${role}\ndescription: d\nrole: ${role}\n${extra}\n---\n正文不生效\n`);
+  const write = async (path: string, settings: Partial<Record<Role, Setting>>) => {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify({ "one-company": settings }));
   };
-  const resolve = (role: "interpreter" | "draft-verifier", projectTrusted = false) =>
-    resolveInternalModel({ role, agentDir, repositoryRoot: repo, projectTrusted, registry, mainModel: MAIN });
-  return { agentDir, repo, user: join(agentDir, "agents"), project: join(repo, ".pi", "agents"), define, resolve };
+  const resolve = (role: Role, options: { projectTrusted?: boolean; mainThinking?: string; mainModel?: Model<Api> | undefined } = {}) =>
+    resolveInternalModel({ role, agentDir, repositoryRoot: repo, projectTrusted: options.projectTrusted ?? false, registry,
+      mainModel: "mainModel" in options ? options.mainModel : MAIN, mainThinking: options.mainThinking ?? "off" });
+  return { agentDir, repo, user: (settings: Partial<Record<Role, Setting>>) => write(join(agentDir, "settings.json"), settings),
+    project: (settings: Partial<Record<Role, Setting>>) => write(join(repo, ".pi", "settings.json"), settings), resolve };
 }
 
-test("M8F-AC2：没有自定义时解释器用包内写明的 gpt-6-luna、草稿核验器用 gpt-6.1-sol，都加 medium 思考", async () => {
+test.each<Role>(["interpreter", "draft-verifier"])("两层都没有设定时%s用主窗口当前的模型和思考等级", async (role) => {
   const w = await world();
-  expect(await w.resolve("interpreter")).toEqual({ model: LUNA, thinking: "medium" });
-  expect(await w.resolve("draft-verifier")).toEqual({ model: SOL, thinking: "medium" });
+  expect(await w.resolve(role, { mainThinking: "high" })).toEqual({ model: MAIN, thinking: "high" });
 });
 
-test("M8D-AC8、M8F-AC3：用户层同名定义改的模型与思考等级生效，只影响对应的那一个；定义不写 model 时跟主会话模型", async () => {
+test.each<Role>(["interpreter", "draft-verifier"])("主窗口思考等级为 off 时%s不思考", async (role) => {
   const w = await world();
-  await w.define(w.user, "interpreter", "model: 5x/gpt-6-sol\nthinking: low");
-  expect(await w.resolve("interpreter")).toEqual({ model: MAIN, thinking: "low" });
-  expect(await w.resolve("draft-verifier")).toEqual({ model: SOL, thinking: "medium" });
-  await w.define(w.user, "draft-verifier", "thinking: off");
-  expect(await w.resolve("draft-verifier")).toEqual({ model: MAIN, thinking: undefined });
+  expect(await w.resolve(role, { mainThinking: "off" })).toEqual({ model: MAIN, thinking: undefined });
 });
 
-test("M8D-AC8：项目层定义只在项目受信任时生效", async () => {
+test("用户层的设定生效，只影响对应的那一个角色；思考等级写 null 时跟主窗口", async () => {
   const w = await world();
-  await w.define(w.project, "interpreter", "model: 5x/gpt-6-sol");
-  expect((await w.resolve("interpreter", false)).model).toBe(LUNA);
-  expect((await w.resolve("interpreter", true)).model).toBe(MAIN);
+  await w.user({ interpreter: { model: "5x/gpt-6.1-sol", thinking: null } });
+  expect(await w.resolve("interpreter", { mainThinking: "high" })).toEqual({ model: SOL, thinking: "high" });
+  expect(await w.resolve("draft-verifier", { mainThinking: "high" })).toEqual({ model: MAIN, thinking: "high" });
 });
 
-test("M8D-AC8：配置的模型找不到或没有凭据时写明原因，不改用主会话模型", async () => {
+test("设定里写明思考等级时用设定值，写 off 时不思考，模型写 null 时跟主窗口", async () => {
   const w = await world();
-  await w.define(w.user, "interpreter", "model: 5x/not-there");
+  await w.user({ interpreter: { model: null, thinking: "low" }, "draft-verifier": { model: null, thinking: "off" } });
+  expect(await w.resolve("interpreter", { mainThinking: "high" })).toEqual({ model: MAIN, thinking: "low" });
+  expect(await w.resolve("draft-verifier", { mainThinking: "high" })).toEqual({ model: MAIN, thinking: undefined });
+});
+
+test("项目层设定只在项目受信任时压过用户层", async () => {
+  const w = await world();
+  await w.user({ interpreter: { model: "5x/gpt-6-luna", thinking: null } });
+  await w.project({ interpreter: { model: "5x/gpt-6.1-sol", thinking: null } });
+  expect((await w.resolve("interpreter", { projectTrusted: false })).model).toBe(LUNA);
+  expect((await w.resolve("interpreter", { projectTrusted: true })).model).toBe(SOL);
+});
+
+test("每次调用都重新读设定，改了设定下一次调用用新值", async () => {
+  const w = await world();
+  await w.user({ interpreter: { model: "5x/gpt-6-luna", thinking: null } });
+  expect((await w.resolve("interpreter")).model).toBe(LUNA);
+  await w.user({ interpreter: { model: "5x/gpt-6.1-sol", thinking: null } });
+  expect((await w.resolve("interpreter")).model).toBe(SOL);
+});
+
+test("设定的模型找不到或没有凭据时，原因写明角色、模型和为什么，不改用主窗口的模型", async () => {
+  const w = await world();
+  await w.user({ interpreter: { model: "5x/not-there", thinking: null }, "draft-verifier": { model: "other/fast", thinking: null } });
   await expect(w.resolve("interpreter")).rejects.toMatchObject({ code: "internal_model_unavailable",
-    message: expect.stringContaining("解释器配置的模型 5x/not-there 不可用：本机的模型配置里找不到模型 5x/not-there") });
-  await w.define(w.user, "draft-verifier", "model: other/fast");
+    message: expect.stringContaining("解释器") });
+  await expect(w.resolve("interpreter")).rejects.toMatchObject({ message: expect.stringContaining("5x/not-there") });
+  await expect(w.resolve("interpreter")).rejects.toMatchObject({ message: expect.stringContaining("本机的模型配置里找不到模型 5x/not-there") });
   await expect(w.resolve("draft-verifier")).rejects.toMatchObject({ code: "internal_model_unavailable",
-    message: expect.stringContaining("草稿核验器配置的模型 other/fast 没有可用的凭据") });
+    message: expect.stringContaining("草稿核验器") });
+  await expect(w.resolve("draft-verifier")).rejects.toMatchObject({ message: expect.stringContaining("other/fast") });
+  await expect(w.resolve("draft-verifier")).rejects.toMatchObject({ message: expect.stringContaining("没有可用的凭据") });
 });
 
-test("M8F-AC2：本机没有包内写明的模型时明确失败，不改用主会话模型", async () => {
+test.each<[Role, string]>([["interpreter", "解释器"], ["draft-verifier", "草稿核验器"]])("设定跟随主窗口的模型但主窗口没有选定模型时，%s报错写明原因", async (role, label) => {
   const w = await world();
-  await expect(resolveInternalModel({ role: "interpreter", agentDir: w.agentDir, repositoryRoot: w.repo, projectTrusted: false, mainModel: MAIN,
-    registry: { getAll: () => [MAIN], hasConfiguredAuth: () => true } })).rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("找不到模型 gpt-6-luna") });
+  await expect(w.resolve(role, { mainModel: undefined })).rejects.toMatchObject({ code: "internal_model_unavailable",
+    message: expect.stringContaining(`${label}跟随主窗口的模型，但主窗口没有选定模型`) });
 });
 
-test("M8D-AC8：定义没写模型且主会话也没选模型时写明原因", async () => {
+test.each<Role>(["interpreter", "draft-verifier"])("用户层旧的%s定义文件不再生效", async (role) => {
   const w = await world();
-  await w.define(w.user, "interpreter", "thinking: off");
-  await expect(resolveInternalModel({ role: "interpreter", agentDir: w.agentDir, repositoryRoot: w.repo, projectTrusted: false, registry, mainModel: undefined }))
-    .rejects.toMatchObject({ code: "model_unavailable" });
+  await mkdir(join(w.agentDir, "agents"), { recursive: true });
+  await writeFile(join(w.agentDir, "agents", `${role}.md`), `---\nname: ${role}\ndescription: d\nrole: ${role}\nmodel: 5x/gpt-6-luna\nthinking: low\n---\n`);
+  expect(await w.resolve(role, { mainThinking: "high" })).toEqual({ model: MAIN, thinking: "high" });
 });

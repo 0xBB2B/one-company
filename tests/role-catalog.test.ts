@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { loadRoleRules } from "../runtime/package-rules.ts";
-import { AGENT_ROLES, defaultRoleDir, INTERNAL_ROLES, loadRoleCatalog, readRoleDefinition } from "../runtime/roles.ts";
+import { AGENT_ROLES, defaultRoleDir, loadRoleCatalog, readRoleDefinition } from "../runtime/roles.ts";
 import { authorizeToolAction, CORE_TOOL_ACTIONS } from "../runtime/core-permissions.ts";
 import type { CoreTool } from "../runtime/core-permissions.ts";
 import { coreToolName, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
@@ -28,31 +28,17 @@ async function writeRole(dir: string, name: string, frontmatter: string, body = 
 }
 
 describe("内置默认团队", () => {
-  test("M8F-AC2：安装资源恰好提供 pm、explore、worker、reviewer、qa 五个职责定义与解释器、草稿核验器两个内部定义，不含 planner；pm 写明 gpt-6.1-sol 与 high 思考，worker、reviewer、qa、explore 不写模型和思考", async () => {
+  test("安装资源恰好提供 explore、worker、reviewer、qa 四个职责定义，都不写模型和思考", async () => {
     const files = (await readdir(defaultRoleDir())).filter((name) => name.endsWith(".md")).sort();
-    expect(files).toEqual(["draft-verifier.md", "explore.md", "interpreter.md", "pm.md", "qa.md", "reviewer.md", "worker.md"]);
+    expect(files).toEqual(["explore.md", "qa.md", "reviewer.md", "worker.md"]);
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    for (const role of AGENT_ROLES) {
+    expect(roles.map((entry) => entry.name).sort()).toEqual(["explore", "qa", "reviewer", "worker"]);
+    for (const role of ["explore", "worker", "reviewer", "qa"]) {
       const entry = roles.find((candidate) => candidate.name === role);
       expect(entry?.available, entry?.reason).toBe(true);
       expect(entry?.definition?.role).toBe(role);
-      if (role === "pm") {
-        expect(entry?.definition?.model).toBe("gpt-6.1-sol");
-        expect(entry?.definition?.thinking).toBe("high");
-      } else {
-        expect(entry?.definition?.model).toBeUndefined();
-        expect(entry?.definition?.thinking).toBeUndefined();
-      }
-    }
-  });
-
-  test("M8F-AC2：内置的两个内部定义都写明 medium 思考，解释器用 gpt-6-luna、草稿核验器用 gpt-6.1-sol", async () => {
-    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    const models: Record<string, string> = { interpreter: "gpt-6-luna", "draft-verifier": "gpt-6.1-sol" };
-    for (const role of INTERNAL_ROLES) {
-      const entry = roles.find((candidate) => candidate.name === role);
-      expect(entry?.available, entry?.reason).toBe(true);
-      expect(entry?.definition).toMatchObject({ role, model: models[role], thinking: "medium" });
+      expect(entry?.definition?.model).toBeUndefined();
+      expect(entry?.definition?.thinking).toBeUndefined();
     }
   });
 
@@ -142,16 +128,6 @@ describe("定义格式", () => {
     await expect(readRoleDefinition(await writeRole(dir, "w", frontmatter), parseFrontmatter)).rejects.toThrow();
   });
 
-  test("M8D-AC8：内部定义只能同名，可以设置 model 与 thinking，不接受 mcp 与 skills", async () => {
-    const dir = await tempDir();
-    const ok = await writeRole(dir, "interpreter", "name: interpreter\ndescription: 解释器\nrole: interpreter\nmodel: 5x/gpt-6-luna\nthinking: off");
-    expect(await readRoleDefinition(ok, parseFrontmatter)).toMatchObject({ name: "interpreter", role: "interpreter", model: "5x/gpt-6-luna", thinking: "off" });
-    await expect(readRoleDefinition(await writeRole(dir, "fast-interpreter", "name: fast-interpreter\ndescription: d\nrole: interpreter"), parseFrontmatter))
-      .rejects.toThrow("只能由名为 interpreter 的定义承担");
-    await expect(readRoleDefinition(await writeRole(dir, "draft-verifier", "name: draft-verifier\ndescription: d\nrole: draft-verifier\nskills: [x]"), parseFrontmatter))
-      .rejects.toThrow("不接受 mcp 与 skills");
-  });
-
   test("description 以码点计，1024 通过、1025 拒绝", async () => {
     const dir = await tempDir();
     const ok = await writeRole(dir, "a", `name: a\ndescription: ${"界".repeat(1024)}\nrole: worker`);
@@ -229,12 +205,32 @@ describe("覆盖与导入规则", () => {
     expect(catalog.problems.map((problem) => problem.reason).join("\n")).toMatch(/缺少 role[\s\S]*未覆盖default层的 reviewer/u);
   });
 
-  test("pm 职责唯一：其他名字声明 role: pm 被拒", async () => {
+  const RETIRED = "已不再使用定义文件，请在设定栏修改";
+
+  test.each(["pm", "interpreter", "draft-verifier"])("用户层 role 写 %s 的定义文件不生效、不进角色目录，问题里记一条固定原因", async (role) => {
+    const root = await tempDir();
+    const path = await writeRole(join(root, "u"), role, `name: ${role}\ndescription: 旧定义\nrole: ${role}\nmodel: 5x/gpt-6-luna\nthinking: low`);
+    const { roles, problems } = await load(join(root, "u"), join(root, "p"));
+    expect(roles.map((entry) => entry.name).sort()).toEqual(["explore", "qa", "reviewer", "worker"]);
+    expect(problems.filter((problem) => problem.reason === RETIRED)).toMatchObject([{ source: "user", dir: path }]);
+  });
+
+  test("项目层 role 写 pm 的定义文件，项目受信任时同样不生效并记一条问题", async () => {
+    const root = await tempDir();
+    const path = await writeRole(join(root, "p"), "pm", "name: pm\ndescription: 旧定义\nrole: pm");
+    const { roles, problems } = await load(join(root, "u"), join(root, "p"));
+    expect(roles.find((entry) => entry.name === "pm")).toBeUndefined();
+    expect(problems.filter((problem) => problem.reason === RETIRED)).toMatchObject([{ source: "project", dir: path }]);
+  });
+
+  test("其他名字声明 role 为 pm 或内部角色时也不生效，且不顶掉同名的有效定义", async () => {
     const root = await tempDir();
     await writeRole(join(root, "u"), "boss", "name: boss\ndescription: 第二个 PM\nrole: pm");
-    const boss = (await load(join(root, "u"), join(root, "p"))).roles.find((role) => role.name === "boss")!;
-    expect(boss).toMatchObject({ available: false });
-    expect(boss.reason).toContain("pm 职责只能由名为 pm 的定义承担");
+    await writeRole(join(root, "u"), "worker", "name: worker\ndescription: 冒名\nrole: interpreter");
+    const { roles, problems } = await load(join(root, "u"), join(root, "p"));
+    expect(roles.find((entry) => entry.name === "boss")).toBeUndefined();
+    expect(roles.find((entry) => entry.name === "worker")).toMatchObject({ source: "default", available: true, definition: { role: "worker" } });
+    expect(problems.filter((problem) => problem.reason === RETIRED)).toHaveLength(2);
   });
 });
 

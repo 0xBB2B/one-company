@@ -11,7 +11,6 @@ import type { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { QA_PROTOTYPE_HOST_TOOLS, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
 import { checkSearchCall, filterSearchResult } from "../runtime/search-exclusion.ts";
 import type { RoleDefinition } from "../runtime/roles.ts";
-import { isAgentRole } from "../runtime/roles.ts";
 import { createSessionManagerForRun } from "../runtime/session-records.ts";
 
 export interface CreateAgentSessionOptions {
@@ -202,7 +201,6 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
   await resourceLoader.reload();
 
   const role = definition.role;
-  if (!isAgentRole(role)) throw new Error(`内部定义 ${role} 不能开代理会话`);
   const hostTools = options.hostTools ?? ROLE_HOST_TOOLS[role];
   const hostToolLimit = role === "qa" && options.readRoots?.length ? QA_PROTOTYPE_HOST_TOOLS : ROLE_HOST_TOOLS[role];
   if (hostTools.some((tool) => !hostToolLimit.includes(tool))) throw new Error("宿主工具超出职责默认集合");

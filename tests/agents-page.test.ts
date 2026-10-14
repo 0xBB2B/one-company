@@ -7,7 +7,7 @@ import { openSettingsPage } from "../extensions/settings.ts";
 import type { SettingsExtensionContext } from "../extensions/settings.ts";
 import { readRoleDefinition, userRoleDir } from "../runtime/roles.ts";
 
-const RIGHT = "\x1b[C", DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
+const DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const theme = { fg: (_kind: string, text: string) => text, bg: (_kind: string, text: string) => text, bold: (text: string) => text, inverse: (text: string) => text };
 
 interface Screen { text: string; keys(...keys: string[]): void; now(): string }
@@ -45,7 +45,7 @@ test("M8D-AC8：页内输入新名称，程序窗口列出两层与完整路径�
   await mkdir(join(root, "repo"), { recursive: true });
   let window = "";
   const ctx = scripted([
-    (s) => s.keys(RIGHT, "c", ...Array(11).fill(BACKSPACE), ...typed("api-worker"), ENTER),
+    (s) => s.keys("c", ...Array(11).fill(BACKSPACE), ...typed("api-worker"), ENTER),
     (s) => { window = s.text; s.keys(ENTER); },
     (s) => {
       expect(s.text).toMatch(/› api-worker +用户/u);
@@ -66,7 +66,7 @@ test("M8D-AC8：项目未受信任时项目层选项变暗并写明原因，页�
   await writeFile(join(root, "repo", ".pi", "agents", "reviewer.md"), "---\nname: reviewer\ndescription: d\nrole: reviewer\n---\n");
   let window = "";
   const ctx = scripted([
-    (s) => { expect(s.text.split("\n")[1]).toMatch(/内置 7 · 用户 0$/u); s.keys(RIGHT, "c", ENTER); },
+    (s) => { expect(s.text.split("\n")[1]).toMatch(/内置 4 · 用户 0$/u); s.keys("c", ENTER); },
     (s) => { window = s.text; s.keys(ESC); },
     (s) => s.keys(ESC),
   ], false);
@@ -83,7 +83,7 @@ test("带引号的 model 与多行 description：设置页显示的内容与守�
   const parsed = await readRoleDefinition(path, parseFrontmatter);
   expect(parsed).toMatchObject({ model: "x/m-1", thinking: "high", description: "多行描述第一行 第二行: 含冒号\n" });
   let page = "";
-  const ctx = scripted([(s) => { s.keys(RIGHT); page = s.now(); s.keys(ESC); }]);
+  const ctx = scripted([(s) => { page = s.now(); s.keys(ESC); }]);
   await openSettingsPage(ctx, { mainThinking: () => "high" });
   expect(page).toContain("quoted-worker");
   expect(page).toContain(parsed.model!);

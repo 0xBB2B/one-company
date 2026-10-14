@@ -22,7 +22,7 @@ pi install /absolute/path/to/one-company
 | `pnpm run test:installation` | 按真实 pi 安装方式装好再测；没有 Docker 时跳过 Docker 安装测试 |
 | `pnpm run test:acceptance:parallel` | 真实模型验收：12 个单点约 10 分钟，加两条完整流程约 35 分钟 |
 
-合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P12）和零自定义完整流程（M9-AC12）；改动碰到 `agents/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`runtime/requirement-state.ts`、`runtime/requirement-service.ts`、`runtime/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
+合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P12）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`runtime/requirement-state.ts`、`runtime/requirement-service.ts`、`runtime/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
 
 ### 测试注意事项
 
@@ -37,7 +37,7 @@ ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> \
 pnpm run test:acceptance:parallel [--only <编号…>]
 ```
 
-- `ONE_COMPANY_ACCEPTANCE_MODEL`：主会话用的模型，如 `5x/gpt-6.1-sol`。各角色和内部调用用包内定义里的模型。
+- `ONE_COMPANY_ACCEPTANCE_MODEL`：主会话用的模型，如 `5x/gpt-6.1-sol`。各角色和内部调用默认跟随主会话的模型和思考等级，在 /one:agents 的设定栏和角色定义里可改。
 - `ONE_COMPANY_ACCEPTANCE_OUTPUT`：证据目录。每条每次一个子目录，有会话记录、`data.db`、`report.json`；总进度在 `summary.txt`。
 - `--only`：只跑测试名冒号前编号匹配的几条，如 `--only P1 P2 M9-AC12`，所以测试名开头的编号不要删改。
 - 运行时把 `~/.pi/agent/` 下的 `models.json` 和 `auth.json` 复制进一个只有当前用户能读写的临时 agent 目录，跑完删除，不动你自己的 `~/.pi/agent/`。

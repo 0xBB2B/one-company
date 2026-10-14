@@ -13,6 +13,7 @@ import { ProjectIndexHost, registerIndexHandlers } from "./project-index-host.ts
 import { ProjectIndexRequirements } from "./project-index-requirements.ts";
 import { NetworkPauseGate } from "../runtime/network-pause.ts";
 import { createRequest, decodeFrames } from "../runtime/protocol.ts";
+import { readAgentSettings } from "../runtime/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import type { RunState } from "../runtime/run-store.ts";
@@ -545,6 +546,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       workspaceRepoIds: [repoId],
       emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
       index: indexHost,
+      loadAgentSettings: () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: new ProjectTrustStore(agentDir).get(repositoryRoot) === true }),
       loadRoleCatalog: async () => (await loadDaemonRoleCatalog(agentDir, repositoryRoot)).roles,
       skillDirs: [...(new ProjectTrustStore(agentDir).get(repositoryRoot) === true ? [join(repositoryRoot, ".pi", "skills")] : []),
         join(agentDir, "skills"), join(dirname(defaultRoleDir()), "skills")],

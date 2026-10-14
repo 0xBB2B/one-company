@@ -46,7 +46,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
       window.workspace.repos.some((repo) => window.clients.forRepo(repo.repoId)?.state().status !== "connected")) throw new HostAuthorizationError("host_unavailable");
     return hostOf(window);
   };
-  const interaction = new MainRequirementInteraction({ dataRoot: root,
+  const interaction = new MainRequirementInteraction({ dataRoot: root, mainThinking: () => pi.getThinkingLevel(),
     authorization, resolveHost, ...(deps.openService ? { openService: deps.openService } : {}) });
   const intake = new MainIntakeInteraction({ dataRoot: root, authorization, resolveHost,
     providers: deps.pmIntakeProviders ?? createPmIntakeProviders(root) });

@@ -30,7 +30,7 @@ export interface PiInteractionInterpreterOptions {
   /** 来自当前真实ExtensionContext的registry；不新建runtime或读取/改写模型配置。 */
   registry: Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "complete" | "streamSimple">;
   selectedModel: () => Model<Api> | undefined;
-  /** 内部定义设了思考等级时传入；不传即不思考。 */
+  /** 思考等级不是 off 时传入；不传即不思考。 */
   thinking?: ThinkingLevel;
   timeoutMs?: number;
 }

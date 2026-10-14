@@ -12,6 +12,7 @@ import { readNoticedDiffs } from "./pm-diff-read.ts";
 import { createPlanManageTool } from "../../runtime/plan-manage.ts";
 import { createPmIntakeProviders, PM_INTAKE_TOOL } from "../../runtime/pm-intake-runtime.ts";
 import type { IntakeReviewDecision } from "../../runtime/pm-intake-service.ts";
+import { readAgentSettings } from "../../runtime/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../../runtime/roles.ts";
 import { RunStore } from "../../runtime/run-store.ts";
 import { ShellRegistry } from "../../runtime/shell-registry.ts";
@@ -27,7 +28,8 @@ export async function until(check: () => boolean | Promise<boolean>, limit = 600
  * 真实 RunManager 派出的 PM：夹具原有租约已交还、工作区登记为 ready，PM 以脚本化模型提交接手理解。
  * review 为 false 时不做主代理核对，由用例自行调用 review()。
  */
-export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string; userDir?: string; reloadCatalog?: boolean } = {}) {
+export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string; userDir?: string; reloadCatalog?: boolean;
+  loadAgentSettings?: RunManagerOptions["loadAgentSettings"]; thinking?: string } = {}) {
   const fixture = await createPmIntakeFixture(options.body === undefined ? {} : { body: options.body }); cleanups.push(() => fixture.cleanup());
   const record = fixture.state.read(fixture.requirementId).data;
   const db = <T>(run: Parameters<typeof withDatabase<T>>[1]) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), run);
@@ -51,13 +53,14 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   if (index) { cleanups.push(() => index.close()); await index.init(); }
   const manager = new RunManager({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, runStore,
     shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }), networkGate: new NetworkPauseGate(),
+    loadAgentSettings: options.loadAgentSettings ?? (() => readAgentSettings({ agentDir: join(fixture.root, "none-a"), repositoryRoot: join(fixture.root, "none-r"), projectTrusted: false })),
     roleCatalog: catalog.roles, ...(options.reloadCatalog ? { loadRoleCatalog: async () => (await loadCatalog()).roles } : {}),
     runtime, clock, workspaceRepoIds: [fixture.repoId], emit, web: options.web, index });
   manager.markStarted();
   cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await manager.stop(run.id, { reason: "main_agent" }).catch(() => {}); });
 
   provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding } }, { type: "text", text: "等待核对" });
-  const pm = await manager.dispatchPm({ requirementId: fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: "off" });
+  const pm = await manager.dispatchPm({ requirementId: fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: options.thinking ?? "off" });
   await until(() => provider.requests.length === 2);
   const lease = fixture.state.pmOwner(fixture.requirementId)!.lease!;
   const owner = () => db((d) => d.read<{ context: { baseline: { revision: number } | null }; prodEvents?: { consumedSequence: number; understoodRevision: number | null } }>(

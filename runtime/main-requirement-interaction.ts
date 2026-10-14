@@ -46,6 +46,7 @@ export type RequirementServiceHandle = Pick<RequirementService, "create" | "upda
 export type OpenRequirementService = (options: RequirementServiceOptions) => Promise<RequirementServiceHandle>;
 export interface MainRequirementInteractionOptions {
   dataRoot: string; authorization: HostAuthorizationManager;
+  mainThinking: () => string;
   /** 同步读取真实lifecycle，不以调用者参数或旧闭包中的cwd/role代替身份。 */
   resolveHost: (ctx: ExtensionContext) => RequirementManageHostContext;
   openService?: OpenRequirementService;
@@ -210,7 +211,7 @@ export class MainRequirementInteraction {
     const repository = this.#host(ctx).repositories.get(repoId);
     if (!repository) return denied("foreign_repo");
     return resolveInternalModel({ role, agentDir: dirname(this.#options.dataRoot), repositoryRoot: repository.path,
-      projectTrusted: ctx.isProjectTrusted(), registry: ctx.modelRegistry, mainModel: ctx.model });
+      projectTrusted: ctx.isProjectTrusted(), registry: ctx.modelRegistry, mainModel: ctx.model, mainThinking: this.#options.mainThinking() });
   }
   async #requirementTitle(host: RequirementManageHostContext, repoId: string, requirementId: string): Promise<string | undefined> {
     const hash = this.#authorization.snapshot(repoId, requirementId, host.sessionId).data.saved?.hash;

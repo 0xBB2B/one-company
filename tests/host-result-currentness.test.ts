@@ -32,7 +32,7 @@ async function world(active: boolean) {
   const provider = registerControlledProvider(runtime, { providerId: uuidv7(), modelId: "fixture" });
   const ctx = { cwd: repo, isProjectTrusted: () => false, modelRegistry: new ModelRegistry(runtime), model: runtime.getModels(provider.providerId)[0], sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   let onResolve: (() => void) | undefined;
-  const interaction = new MainRequirementInteraction({ dataRoot, authorization,
+  const interaction = new MainRequirementInteraction({ mainThinking: () => "off", dataRoot, authorization,
     resolveHost: () => {
     onResolve?.();
     return { windowId, sessionId, repositories: new Map([[repoId, { path: repo }]]) };

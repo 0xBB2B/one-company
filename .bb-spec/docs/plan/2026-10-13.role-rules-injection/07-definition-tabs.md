@@ -9,7 +9,7 @@ description: /one:agents 去掉 pm 栏，所有定义都能复制成新名字，
 
 ## 业务规则（来源：PRD definition-tabs）
 - 界面以用户已确认的预览为准：`.bb-spec/.cache/ui-preview/agents-settings.html` 里「二、角色定义栏」的 4 个画面（列表、展开详情、复制、复制完成）和「三、文件内容」。实现完成后逐个对照，不一致要报告。
-- 分类栏左边依次是 worker、reviewer、qa、explore，右边竖线后是设定栏，有问题时再加问题栏；不再有 pm 栏。右上角计数只算这四种职责的定义。
+- （pm 栏的去掉与计数已在计划 06 完成。）
 - 任何定义按 C 都进"复制 <名称> 为新定义"，默认名 `<名称>-copy`，名字规则不变（小写字母、数字、连字符，最多 64 个字符，三层里不能重名）；不再有"只能同名""C 复制（只能同名）"。
 - 复制出来的文件：头部原样复制，只改 name；源文件没写 skills 或 mcp 时补上 `skills: []`、`mcp: []`，写了的原样保留；model、thinking 照源文件（内置定义不写，复制出来也不写，即跟随主窗口）；正文原样保留（内置定义正文为空）。
 - 展开详情在 MCP 和文件之间新增「正文」一行：正文为空时写"空 · 流程规矩由程序加上，正文只写专长和偏好"，写了正文时写"已写 · 流程规矩由程序加上，优先于正文"。
@@ -19,7 +19,6 @@ description: /one:agents 去掉 pm 栏，所有定义都能复制成新名字，
 ## 涉及文件
 - 修改 `runtime/agent-catalog-ui.ts`
 - 修改 `runtime/agent-copy.ts`
-- 修改 `runtime/roles.ts`（删 `sameNameOnly`）
 - 修改 `extensions/settings.ts`
 - 修改测试：`tests/agent-catalog-ui.test.ts`、`tests/agents-page.test.ts`、`tests/role-catalog.test.ts` 里与 pm 栏、同名复制相关的部分
 
@@ -39,26 +38,18 @@ mcp: []
 ### runtime/agent-catalog-ui.ts
 | 函数名 | 职责 |
 |---|---|
-| `ROLE_TABS` | 修改：只剩 worker、reviewer、qa、explore |
-| `header` | 修改：计数只算四种职责的定义 |
-| `handleInput` / `handleNaming` / `renderNaming` / `hint` | 修改：去掉只能同名复制的锁定分支 |
 | `entryDetail` | 修改：新增「正文」一行 |
 | `describe` | 不改：描述 · skills · MCP |
 
 ### runtime/agent-copy.ts
 | 函数名 | 职责 |
 |---|---|
-| `copyAgentDefinition` | 修改：去掉同名复制分支；改 name 的同时，头部缺 skills 或 mcp 时补上空列表 |
-
-### runtime/roles.ts
-| 函数名 | 职责 |
-|---|---|
-| `sameNameOnly` | 删除 |
+| `copyAgentDefinition` | 修改：改 name 的同时，头部缺 skills 或 mcp 时补上空列表（同名复制分支已在计划 06 删掉） |
 
 ### extensions/settings.ts
 | 函数名 | 职责 |
 |---|---|
-| `openSettingsPage` | 修改：复制流程去掉同名分支；复制完成提示改成上面那句 |
+| `openSettingsPage` | 修改：复制完成提示改成上面那句（同名分支已在计划 06 删掉） |
 
 ## 协作关系
 - `openSettingsPage` → `AgentCatalogView`（复制请求）→ 现有的选层窗口 `chooseWindow` → `copyAgentDefinition`。
