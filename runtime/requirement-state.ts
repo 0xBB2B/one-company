@@ -11,6 +11,8 @@ import type { JsonValue } from "./strict-json.ts";
 import { checked, checkRequirement, commands, hash, id, object, counter, positive, ApprovedProdChange, BaselineDelivery, OwnerClaim, PmContext, PmEventCursor, PmRecord, PmLease, RequestRecord, RequirementEvent, RequirementStateError } from "./requirement-contracts.ts";
 import type { ApprovedProdChange as ApprovedProdChangeData, BaselineDelivery as BaselineDeliveryData, PmContext as PmContextData, PmEventCursor as PmEventCursorData, PmRecord as PmRecordData, RequirementRecord, ProdReference, WorkspaceBinding } from "./requirement-contracts.ts";
 import { inspectRequirementWorkspace, verifyRequirementWorkspace } from "./requirement-workspace.ts";
+import { promoteOnApprovalIn, readBoardIn } from "./requirement-prototypes.ts";
+import { writePrototypeRevision } from "./requirement-prototype-revisions.ts";
 import { readGit } from "./git-read.ts";
 import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn, releaseDeadRequirementWriteIn } from "./requirement-coordination.ts";
 
@@ -399,6 +401,12 @@ export class RequirementStateStore {
       if (final.version !== record.version || !equal(final.data, record.data)) throw new RequirementStateError("manifest_stale");
       const approvalManifest = summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId, request.manifest, final, request.receiptId));
       const revision = increment(record.data.revision);
+      if (readBoardIn(db, record.id)?.data.entries.length) {
+        if (!request.prototypes) throw new RequirementStateError("prototype_digest_required");
+        const prototypes = promoteOnApprovalIn(db, { requirementId: record.id, digest: request.prototypes }).items
+          .filter((item) => item.label !== "removed").map(({ name, version, hash, bytes }) => ({ name, version, hash, bytes }));
+        if (prototypes.length) writePrototypeRevision(db, { requirementId: record.id, revision, prototypes });
+      }
       const result = this.write(db, record, { ...record.data, approvalManifest,
         ...(!record.data.docSpec && request.docSpec ? { docSpec: request.docSpec } : {}), lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
         pendingRevision: record.data.lifecycle === "active" ? revision : null }, "prod.approved", record.data.approved, request.reference, request.receiptId, approvalTime);

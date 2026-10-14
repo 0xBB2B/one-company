@@ -16,6 +16,8 @@ import { prodRequirementPath } from "../runtime/prod-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, readPrototypeBoard, removeFromDraft, submitDesign } from "../runtime/requirement-prototypes.ts";
+import { prototypesAtRevision } from "../runtime/requirement-prototype-revisions.ts";
 
 
 const exec = promisify(execFile);
@@ -192,6 +194,26 @@ test("M8A-AC7：确认须有可信 receipt 授权，不要求已绑定 worktree"
   allowConfirmation = true;
   await w.service.confirmUpdate(confirm);
   expect(w.state.read(created.requirementId).data).toMatchObject({ lifecycle: "active", workspace: null });
+});
+
+test("metadata 返回当前保存版本对应的保存操作编号，改草稿后跟着变", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  expect((await w.service.metadata(created.requirementId)).savedOperationId).toBe(created.operationId);
+  const operationId = uuidv7();
+  await w.service.updateDraft({ requirementId: created.requirementId, operationId, version: (await w.service.metadata(created.requirementId)).version,
+    title: "需求标题", body: "改过的正文" });
+  expect((await w.service.metadata(created.requirementId)).savedOperationId).toBe(operationId);
+});
+
+test("批准之后 metadata 返回的保存操作编号不变，可以直接用来读取确认上下文", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  await activate(w, created);
+  const meta = await w.service.metadata(created.requirementId);
+  expect(meta.savedOperationId).toBe(created.operationId);
+  const loaded = await w.service.loadConfirmationContext({ requirementId: created.requirementId, savedOperationId: meta.savedOperationId, operationId: uuidv7() });
+  expect(loaded.difference.text).toBe("");
 });
 
 test("diff 使用登记的跨版本 approved 事件，正确跨过中间 draft", async () => {
@@ -590,4 +612,113 @@ test("SQLite 原始 records/events 不含正文、patch 或正文副本字段", 
   for (const suffix of ["-wal", "-shm"]) {
     if (existsSync(path + suffix)) expect((await readFile(path + suffix)).includes(Buffer.from(secretBody))).toBe(false);
   }
+});
+
+const PROTOTYPE_HTML = "<!doctype html><html><body><h1>设置页</h1></body></html>";
+const boardRef = (w: Awaited<ReturnType<typeof world>>) => ({ dataRoot: w.options.dataRoot, repoId: w.options.repoId });
+
+async function acceptedPrototype(w: Awaited<ReturnType<typeof world>>, requirementId: string, name: string) {
+  const runId = uuidv7();
+  await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer" });
+  await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "说明" });
+  const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
+  await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", opinion: null });
+}
+
+async function rejection(run: () => Promise<unknown>): Promise<string> {
+  const error = await run().then(() => { throw new Error("预期被拒，但成功了"); }, (caught: unknown) => caught as { message: string; advice?: { why: string; next: string } });
+  return `${error.message} ${error.advice?.why ?? ""} ${error.advice?.next ?? ""}`;
+}
+
+async function prototypeApproval(w: Awaited<ReturnType<typeof world>>) {
+  const created = await w.service.create(createInput());
+  await acceptedPrototype(w, created.requirementId, "设置页");
+  const { digest } = await draftPrototypes(boardRef(w), created.requirementId);
+  const input = { ...(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId })), prototypes: digest };
+  return { created, input, digest };
+}
+
+test("看板里有原型时，批准不带原型指纹被拒并写明要带指纹", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  await acceptedPrototype(w, created.requirementId, "设置页");
+  const input = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
+  await expect(w.service.confirmUpdate(input)).rejects.toMatchObject({ code: "prototype_digest_required", advice: { why: expect.stringContaining("必须带上草稿原型集合的指纹") } });
+  expect(w.state.read(created.requirementId).data.lifecycle).toBe("draft");
+});
+
+test("批准带的原型指纹和草稿不一致时被拒且不留未完成的批准记录，之后改草稿和用正确指纹重批都成功", async () => {
+  const w = await world();
+  const { created, input } = await prototypeApproval(w);
+  await expect(w.service.confirmUpdate({ ...input, prototypes: "f".repeat(64) })).rejects.toThrow();
+  const updated = await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: (await w.service.metadata(created.requirementId)).version,
+    title: "需求标题", body: "批准被拒后改过的正文" });
+  expect(updated.status).toBe("saved");
+  const next = { ...(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: updated.operationId })), prototypes: input.prototypes };
+  expect((await w.service.confirmUpdate(next)).revision).toBe(1);
+  expect((await prototypesAtRevision(boardRef(w), created.requirementId, 1)).map((item) => item.name)).toEqual(["设置页"]);
+});
+
+test("草稿里还有在途原型时，批准被拒且不留未完成的批准记录，改草稿照常成功", async () => {
+  const w = await world();
+  const { created, input } = await prototypeApproval(w);
+  await beginDesign(boardRef(w), { requirementId: created.requirementId, name: "命令行输出", runId: uuidv7(), agent: "designer" });
+  await expect(w.service.confirmUpdate(input)).rejects.toThrow();
+  const updated = await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: (await w.service.metadata(created.requirementId)).version,
+    title: "需求标题", body: "批准被拒后改过的正文" });
+  expect(updated.status).toBe("saved");
+  expect(await prototypesAtRevision(boardRef(w), created.requirementId, 1)).toEqual([]);
+});
+
+test("批准操作没完成期间，原型看板锁住：登记通过、返工、放弃，移除，派出新设计都被拒，原因写明需求正在批准；完成后恢复正常", async () => {
+  const w = await world();
+  const { created, input } = await prototypeApproval(w);
+  const id = created.requirementId;
+  vi.spyOn(RequirementStateStore.prototype, "recordApprovedVersion").mockRejectedValueOnce(new Error("injected approve failure"));
+  await expect(w.service.confirmUpdate(input)).rejects.toThrow(/injected approve failure/);
+  const before = await readPrototypeBoard(boardRef(w), id);
+  const locked = async (run: () => Promise<unknown>) => {
+    const text = await rejection(run);
+    expect(text).toContain("需求正在批准");
+    expect(text).toContain("稍后再试");
+  };
+  await locked(() => beginDesign(boardRef(w), { requirementId: id, name: "命令行输出", runId: uuidv7(), agent: "designer" }));
+  await locked(() => removeFromDraft(boardRef(w), { requirementId: id, name: "设置页" }));
+  await locked(() => decidePrototype(boardRef(w), { requirementId: id, name: "设置页", version: 1, hash: "a".repeat(64), choice: "accept", opinion: null }));
+  expect(await readPrototypeBoard(boardRef(w), id)).toEqual(before);
+
+  expect((await w.service.confirmUpdate(input)).revision).toBe(1);
+  await beginDesign(boardRef(w), { requirementId: id, name: "命令行输出", runId: uuidv7(), agent: "designer" });
+});
+
+test("带原型指纹的批准在写入前中断后，用同一份请求重放能补完：快照写入、看板提升", async () => {
+  const w = await world();
+  const { created, input } = await prototypeApproval(w);
+  const id = created.requirementId;
+  vi.spyOn(RequirementStateStore.prototype, "recordApprovedVersion").mockRejectedValueOnce(new Error("injected approve failure"));
+  await expect(w.service.confirmUpdate(input)).rejects.toThrow(/injected approve failure/);
+  expect(await prototypesAtRevision(boardRef(w), id, 1)).toEqual([]);
+  expect((await readPrototypeBoard(boardRef(w), id)).entries[0]!.approved).toBeNull();
+
+  const recovered = await w.service.confirmUpdate(input);
+  expect(recovered).toMatchObject({ revision: 1, lifecycle: "active" });
+  expect((await prototypesAtRevision(boardRef(w), id, 1)).map((item) => `${item.name}:${item.version}`)).toEqual(["设置页:1"]);
+  const entry = (await readPrototypeBoard(boardRef(w), id)).entries[0]!;
+  expect(entry.approved?.version).toBe(1);
+  expect(entry.draft).toBeNull();
+});
+
+test("需求的 epoch 变化后，metadata 不再给出旧 epoch 的保存操作编号", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  expect((await w.service.metadata(created.requirementId)).savedOperationId).toBe(created.operationId);
+  withDatabase(repositoryDatabase(w.options.dataRoot, w.options.repoId), (db) => {
+    const row = db.read<{ epoch: number }>("requirements", created.requirementId)!;
+    db.update("requirements", created.requirementId, row.version, { ...row.data, epoch: row.data.epoch + 1 });
+  });
+  const current = w.state.read(created.requirementId);
+  const meta = await w.service.metadata(created.requirementId);
+  expect(meta.epoch).toBe(current.data.epoch);
+  expect(meta.epoch).toBe(created.epoch + 1);
+  expect(meta.savedOperationId).toBeNull();
 });
