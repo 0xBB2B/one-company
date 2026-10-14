@@ -20,7 +20,7 @@ export interface CatalogNotice { tone: "ok" | "muted"; text: string }
 export interface CatalogPageState { tab?: string; selectName?: string; fresh?: string; notice?: CatalogNotice }
 export interface CopyRequest { entry: RoleCatalogEntry; name: string }
 
-const ROLE_TABS = ["worker", "reviewer", "qa", "explore"] as const;
+const ROLE_TABS = ["worker", "reviewer", "qa", "explore", "prototype"] as const;
 const SETTINGS_TAB = "设定", PROBLEMS_TAB = "问题";
 const SOURCE_LABEL: Record<RoleSource, string> = { default: "内置", user: "用户", project: "项目" };
 const MARKER = 2, SOURCE = 7, THINKING = 8, NAME = 15, MODEL = 19, MIN_COLUMN = 8, KEY = 8;

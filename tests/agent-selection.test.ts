@@ -79,6 +79,19 @@ test("M7-AC22/AC23：指定定义不存在、声明的 skill 缺失、模型不�
   await expect(w.dispatch("d")).rejects.toMatchObject({ code: "thinking_unsupported" });
 });
 
+test("PM 指定 prototype 类定义承担 worker 任务时派出失败，原因写明只能由主窗口派出；角色目录不列 prototype 类", async () => {
+  const w = await world();
+  await mkdir(w.userDir, { recursive: true });
+  await writeFile(join(w.userDir, "proto-dev.md"), "---\nname: proto-dev\ndescription: 原型\nrole: prototype\n---\n你是 proto-dev。\n");
+  await w.plan.execute({ action: "propose", tasks: [spec("ui", { agent: "proto-dev" }), spec("rest", { goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  await expect(w.dispatch("ui")).rejects.toMatchObject({ code: "agent_unavailable", message: expect.stringContaining("只能由主窗口派出") });
+  const listed = await w.manager.agentCatalog(undefined, 0);
+  expect(listed.items.map((item) => item.role)).not.toContain("prototype");
+  expect(listed.items.map((item) => item.name)).not.toContain("prototype");
+  expect(listed.items.map((item) => item.name)).not.toContain("proto-dev");
+});
+
 test("M7-AC25：运行中改了定义文件，暂停后续接时发现配置已变即安全停止，不用旧配置续跑", async () => {
   const w = await world();
   await w.define("ui-dev", "");

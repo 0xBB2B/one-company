@@ -107,6 +107,7 @@ test("M7-AC31：任务缺目标、通过条件、范围、性能条件或有效�
   const { performance: _performance, ...withoutPerformance } = spec("login");
   await expect(pm.execute({ action: "propose", tasks: [withoutPerformance] })).rejects.toMatchObject({ code: "invalid_shape" });
   await expect(pm.execute({ action: "propose", tasks: [spec("login", { role: "pm" as never })] })).rejects.toMatchObject({ code: "invalid_shape" });
+  await expect(pm.execute({ action: "propose", tasks: [spec("login", { role: "prototype" as never })] })).rejects.toMatchObject({ code: "invalid_shape" });
   expect(w.db((db) => db.read(PLANS, w.fixture.requirementId))).toBeNull();
 }, 30000);
 

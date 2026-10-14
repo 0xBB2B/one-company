@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import { PROD_ARCHIVE_DIRECTORY } from "./content-policy.ts";
 
-export const CORE_ROLES = Object.freeze(["main", "pm", "explore", "worker", "reviewer", "qa"] as const);
+export const CORE_ROLES = Object.freeze(["main", "pm", "explore", "worker", "reviewer", "qa", "prototype"] as const);
 export type CoreRole = (typeof CORE_ROLES)[number];
 
 export const CORE_TOOL_ACTIONS = Object.freeze({
@@ -39,6 +39,7 @@ const MATRIX: Readonly<Record<CoreRole, Grants>> = Object.freeze({
     verification_run: all("verification_run"), result_submit: ["verdict"],
   },
   qa: { requirement_manage: REQUIREMENT_READ_ONLY, verification_run: all("verification_run"), result_submit: ["verdict"] },
+  prototype: { knowledge_query: all("knowledge_query"), result_submit: ["prototype"] },
 });
 
 function isCoreRole(value: unknown): value is CoreRole {

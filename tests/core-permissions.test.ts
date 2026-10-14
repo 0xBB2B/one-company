@@ -33,8 +33,8 @@ function actionLiterals(schema: TSchema): string[] {
   return [...found].sort();
 }
 
-test("固定六类职责与10个核心工具，action 枚举固定", () => {
-  expect([...CORE_ROLES]).toEqual(["main", "pm", "explore", "worker", "reviewer", "qa"]);
+test("固定七类职责与10个核心工具，action 枚举固定", () => {
+  expect([...CORE_ROLES]).toEqual(["main", "pm", "explore", "worker", "reviewer", "qa", "prototype"]);
   expect(Object.keys(CORE_TOOL_ACTIONS)).toEqual(["project_manage", "knowledge_query", "requirement_manage", "plan_manage",
     "agent_manage", "user_interact", "change_apply", "verification_run", "result_submit", "workflow_manage"]);
   expect(CORE_TOOL_ACTIONS.project_manage).toEqual(["init", "status", "refresh", "recovery-check", "backup", "restore",
@@ -47,12 +47,13 @@ test("固定六类职责与10个核心工具，action 枚举固定", () => {
 
 const granted = (role: CoreRole, tool: CoreTool) => CORE_TOOL_ACTIONS[tool].filter((action) => authorizeToolAction(role, tool, action));
 
-test("六角色工具集合逐项固定", () => {
+test("七角色工具集合逐项固定", () => {
   const tools = (role: CoreRole) => (Object.keys(CORE_TOOL_ACTIONS) as CoreTool[]).filter((tool) => granted(role, tool).length > 0).sort();
   expect(tools("main")).toEqual(["agent_manage", "knowledge_query", "project_manage", "requirement_manage", "user_interact", "workflow_manage"]);
   expect(tools("pm")).toEqual(["agent_manage", "knowledge_query", "plan_manage", "requirement_manage", "user_interact",
     "verification_run", "workflow_manage"]);
   expect(tools("explore")).toEqual(["knowledge_query", "result_submit"]);
+  expect(tools("prototype")).toEqual(["knowledge_query", "result_submit"]);
   expect(tools("worker")).toEqual(["change_apply", "knowledge_query", "result_submit", "verification_run"]);
   expect(tools("reviewer")).toEqual(["knowledge_query", "plan_manage", "requirement_manage", "result_submit", "verification_run"]);
   expect(tools("qa")).toEqual(["requirement_manage", "result_submit", "verification_run"]);
@@ -157,4 +158,12 @@ test("已实现全部 action 的工具，schema 与核心表双向一致", () =>
   exact(RESULT_SUBMIT_PARAMETERS, "result_submit");
   exact(WORKFLOW_MANAGE_PARAMETERS, "workflow_manage");
   exact(PROJECT_MANAGE_PARAMETERS, "project_manage");
+});
+
+test("prototype 只能交原型结果，没有写入和运行验证的权限", () => {
+  expect(authorizeToolAction("prototype", "result_submit", "prototype")).toBe(true);
+  expect(granted("prototype", "result_submit")).toEqual(["prototype"]);
+  expect(granted("prototype", "knowledge_query")).toEqual(CORE_TOOL_ACTIONS.knowledge_query);
+  expect(granted("prototype", "change_apply")).toEqual([]);
+  expect(granted("prototype", "verification_run")).toEqual([]);
 });

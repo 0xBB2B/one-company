@@ -146,7 +146,7 @@ test("头部写了 tools 的定义不生效，进问题栏，原因是不认识�
   expect(entry?.available).toBe(false);
   expect(entry?.problem?.display).toBe("不认识的字段：tools");
   const p = await viewOf(d);
-  for (let i = 0; i < 5; i++) p.view.handleInput(RIGHT);
+  for (let i = 0; i < 6; i++) p.view.handleInput(RIGHT);
   p.view.handleInput(ENTER);
   expect(p.text()).toMatch(/tooly\.md/u);
   expect(p.text()).toMatch(/┊ 原因 +不认识的字段：tools/u);

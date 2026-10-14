@@ -3,9 +3,9 @@ import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type RoleSource = "default" | "user" | "project";
-export const AGENT_ROLES = ["pm", "explore", "worker", "reviewer", "qa"] as const;
+export const AGENT_ROLES = ["pm", "explore", "worker", "reviewer", "qa", "prototype"] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
-export const DEFINITION_ROLES = ["explore", "worker", "reviewer", "qa"] as const;
+export const DEFINITION_ROLES = ["explore", "worker", "reviewer", "qa", "prototype"] as const;
 const RETIRED_ROLES = ["pm", "interpreter", "draft-verifier"];
 const RETIRED_REASON = "已不再使用定义文件，请在设定栏修改";
 export const PM_DEFINITION = { name: "pm", description: "活动需求的唯一负责人，通过接手复核后负责 plan/task 拆分、依赖、覆盖映射与增量调度", role: "pm", body: "" } as const;

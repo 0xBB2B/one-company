@@ -14,6 +14,7 @@ export const ROLE_HOST_TOOLS: Readonly<Record<AgentRole, readonly string[]>> = O
   worker: READ_TOOLS,
   reviewer: READ_TOOLS,
   qa: [],
+  prototype: READ_TOOLS,
 });
 
 /** QA 验收界面任务时多给的宿主工具：只有 read，且读取范围限定为用户已通过的原型文件。 */

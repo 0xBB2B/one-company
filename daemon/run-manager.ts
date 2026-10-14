@@ -727,7 +727,7 @@ export class RunManager {
   /** PM 的有界能力目录：每页最多 20 条，只含名称、职责、描述与来源。 */
   async agentCatalog(role: string | undefined, cursor: number) {
     const entries = (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
-      .filter((entry) => entry.available && entry.definition && (!role || entry.definition.role === role))
+      .filter((entry) => entry.available && entry.definition && entry.definition.role !== "prototype" && (!role || entry.definition.role === role))
       .sort((a, b) => a.name.localeCompare(b.name));
     const items = entries.slice(cursor, cursor + 20).map((entry) => ({ name: entry.name, role: entry.definition!.role,
       description: entry.definition!.description, source: entry.source }));

@@ -28,18 +28,27 @@ async function writeRole(dir: string, name: string, frontmatter: string, body = 
 }
 
 describe("内置默认团队", () => {
-  test("安装资源恰好提供 explore、worker、reviewer、qa 四个职责定义，都不写模型和思考", async () => {
+  test("安装资源恰好提供 explore、worker、reviewer、qa、prototype 五个职责定义，都不写模型和思考", async () => {
     const files = (await readdir(defaultRoleDir())).filter((name) => name.endsWith(".md")).sort();
-    expect(files).toEqual(["explore.md", "qa.md", "reviewer.md", "worker.md"]);
+    expect(files).toEqual(["explore.md", "prototype.md", "qa.md", "reviewer.md", "worker.md"]);
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    expect(roles.map((entry) => entry.name).sort()).toEqual(["explore", "qa", "reviewer", "worker"]);
-    for (const role of ["explore", "worker", "reviewer", "qa"]) {
+    expect(roles.map((entry) => entry.name).sort()).toEqual(["explore", "prototype", "qa", "reviewer", "worker"]);
+    for (const role of ["explore", "worker", "reviewer", "qa", "prototype"]) {
       const entry = roles.find((candidate) => candidate.name === role);
       expect(entry?.available, entry?.reason).toBe(true);
       expect(entry?.definition?.role).toBe(role);
       expect(entry?.definition?.model).toBeUndefined();
       expect(entry?.definition?.thinking).toBeUndefined();
     }
+  });
+
+  test("prototype 内置定义正文为空，描述写明只能由主窗口派出，不写模型和思考", async () => {
+    const definition = await readRoleDefinition(join(defaultRoleDir(), "prototype.md"), parseFrontmatter);
+    expect(definition.role).toBe("prototype");
+    expect(definition.body).toBe("");
+    expect(definition.description).toBe("只能由主窗口派出，在澄清阶段出界面原型（单个 HTML）。");
+    expect(definition.model).toBeUndefined();
+    expect(definition.thinking).toBeUndefined();
   });
 
   test("worker 规矩不含说明注释与章节编号，reviewer 规矩核对 worker 定义的规范而不核对说明注释；五个职责规矩都不提 spec", async () => {
@@ -60,7 +69,7 @@ describe("内置默认团队", () => {
   });
 
   test("M8D2-AC1：角色说明不重复共享规范里的搜索范围", async () => {
-    for (const name of ["worker", "worker-prototype", "reviewer", "qa", "explore", "pm"] as const) expect(loadRoleRules(name)).not.toContain("被 Git 忽略");
+    for (const name of ["worker", "worker-prototype", "reviewer", "qa", "explore", "pm", "prototype"] as const) expect(loadRoleRules(name)).not.toContain("被 Git 忽略");
     expect(await readFile(join(defaultRoleDir(), "..", "shared", "03-search-scope.md"), "utf8")).toContain("被 Git 忽略");
   });
   test("M8B-AC4：主会话规则含规范与需求的分流，worker 遵守、reviewer 按项目规范把关、PM 不与之冲突，都不能改 AGENTS.md", async () => {
@@ -168,6 +177,7 @@ describe("按职责生成的工具集", () => {
     expect(grantedTools("pm").map(coreToolName).sort()).toEqual(["one_company_agent_manage", "one_company_knowledge_query", "one_company_plan_manage",
       "one_company_requirement_manage", "one_company_user_interact", "one_company_verification_run", "one_company_workflow_manage"]);
     expect(grantedTools("explore").sort()).toEqual(["knowledge_query", "result_submit"]);
+    expect(grantedTools("prototype").sort()).toEqual(["knowledge_query", "result_submit"]);
     expect(grantedTools("qa").sort()).toEqual(["requirement_manage", "result_submit", "verification_run"]);
   });
 
@@ -175,6 +185,7 @@ describe("按职责生成的工具集", () => {
     for (const role of AGENT_ROLES) for (const tool of ["bash", "write", "edit"]) expect(ROLE_HOST_TOOLS[role]).not.toContain(tool);
     expect(ROLE_HOST_TOOLS.qa).toEqual([]);
     expect([...ROLE_HOST_TOOLS.explore]).toEqual(["read", "grep", "find", "ls"]);
+    expect([...ROLE_HOST_TOOLS.prototype]).toEqual(["read", "grep", "find", "ls"]);
     for (const role of ["pm", "worker", "reviewer"] as const) expect([...ROLE_HOST_TOOLS[role]]).toEqual(["read", "grep", "find", "ls"]);
   });
 });
@@ -211,7 +222,7 @@ describe("覆盖与导入规则", () => {
     const root = await tempDir();
     const path = await writeRole(join(root, "u"), role, `name: ${role}\ndescription: 旧定义\nrole: ${role}\nmodel: 5x/gpt-6-luna\nthinking: low`);
     const { roles, problems } = await load(join(root, "u"), join(root, "p"));
-    expect(roles.map((entry) => entry.name).sort()).toEqual(["explore", "qa", "reviewer", "worker"]);
+    expect(roles.map((entry) => entry.name).sort()).toEqual(["explore", "prototype", "qa", "reviewer", "worker"]);
     expect(problems.filter((problem) => problem.reason === RETIRED)).toMatchObject([{ source: "user", dir: path }]);
   });
 
