@@ -24,6 +24,30 @@ export const fit = (text: string, width: number) => {
   return `${kept}…`;
 };
 
+/** 按宽度折行：放不下时在本行最后一个空格、"，"或"/"之后断开，没有合适断点就直接换行。 */
+export function wrapText(text: string, room: number): string[] {
+  const chunks: string[] = [""];
+  for (const char of text) {
+    const line = chunks.at(-1)!;
+    if (visibleWidth(line + char) <= room) { chunks[chunks.length - 1] = line + char; continue; }
+    const cut = Math.max(line.lastIndexOf(" "), line.lastIndexOf("，"), line.lastIndexOf("/"));
+    if (cut > 0 && cut < line.length - 1) { chunks[chunks.length - 1] = line.slice(0, cut + 1); chunks.push(line.slice(cut + 1) + char); }
+    else chunks.push(char === " " ? "" : char);
+  }
+  return chunks;
+}
+
+/** 按键提示以两个空格分组，按组拼行，一组不拆。 */
+export function wrapHint(hint: string, room: number): string[] {
+  const rows: string[] = [];
+  for (const group of hint.split("  ")) {
+    const last = rows.at(-1);
+    if (last !== undefined && visibleWidth(`${last}  ${group}`) <= room) rows[rows.length - 1] = `${last}  ${group}`;
+    else rows.push(group);
+  }
+  return rows;
+}
+
 const roleOf = (key: SettingsRoleKey) => SETTINGS_ROLES.find((role) => role.key === key)!;
 export const thinkingLabel = (role: SettingsRoleKey, thinking: string | null) => thinking === null ? "跟随" : role !== "pm" && thinking === "off" ? "不思考" : thinking;
 export const describeSetting = (role: SettingsRoleKey, setting: RoleSetting) => `${setting.model ?? FOLLOW} · ${thinkingLabel(role, setting.thinking)}`;
@@ -157,20 +181,18 @@ export class SettingsTab {
     return lines;
   }
 
-  footer(role: SettingsRoleKey, width: number): string {
+  footer(role: SettingsRoleKey, width: number): string[] {
     const { theme, settings, models, mainModel } = this.options, value = settings.values[role], info = roleOf(role);
     const available = rowAvailability(role, value, models, mainModel);
-    if (!available.ok) {
-      const room = width - 1 - 2 - visibleWidth(available.consequence);
-      return theme.fg("error", room >= MIN_MODEL ? `✗ ${fit(available.reason, room)}${available.consequence}` : fit(`✗ ${available.reason}${available.consequence}`, width - 1));
-    }
+    if (!available.ok) return wrapText(`✗ ${available.reason}${available.consequence}`, width - 1).map((line) => theme.fg("error", line));
     const origin = value.source === "default" ? "内置默认值" : value.source === "user" ? "来自用户层" : "来自项目层";
-    return theme.fg("muted", fit(`${info.label}：${info.purpose} · ${origin} · ${info.effect}`, width - 1));
+    return wrapText(`${info.label}：${info.purpose} · ${origin} · ${info.effect}`, width - 1).map((line) => theme.fg("muted", line));
   }
 
   renderPicker(width: number): string[] {
     const { theme } = this.options, info = roleOf(this.role), rows = this.rows();
     const muted = (text: string) => theme.fg("muted", text), dim = (text: string) => theme.fg("dim", text);
+    const hint = (text: string) => wrapHint(text, width - 1).map((line) => ` ${muted(line)}`);
     const modelName = this.chosenModel?.name ?? "";
     const heading = this.step === 1 ? [`修改 ${info.label} 的模型`, "第 1 步，共 3 步"]
       : this.step === 2 ? [`修改 ${info.label} 的思考等级`, `第 2 步，共 3 步 · 模型 ${modelName}`]
@@ -191,10 +213,10 @@ export class SettingsTab {
     const head = ` ${theme.bold(title)}${step ? dim(`  ${step}`) : ""}`;
     if (this.step === 1) {
       const empty = this.options.models.length === 0;
-      return [head, "", ...list, "", ` ${empty ? muted(fit("本机还没有其他配了凭据的模型，先在 pi 里登录模型服务", width - 1)) : dim("只列出本机配了凭据的模型")}`,
-        ...(empty ? [""] : []), ` ${muted(empty ? "回车 下一步  Esc 取消" : "↑↓ 选择  回车 下一步  Esc 取消")}`];
+      return [head, "", ...list, "", ...(empty ? wrapText("本机还没有其他配了凭据的模型，先在 pi 里登录模型服务", width - 1).map((line) => ` ${muted(line)}`) : [` ${dim("只列出本机配了凭据的模型")}`]),
+        ...(empty ? [""] : []), ...hint(empty ? "回车 下一步  Esc 取消" : "↑↓ 选择  回车 下一步  Esc 取消")];
     }
-    if (this.step === 2) return [head, "", ...list, "", ` ${muted("↑↓ 选择  回车 下一步  Esc 上一步")}`];
-    return [head, "", ...list, "", this.options.projectTrusted ? "" : ` ${dim(fit("在 pi 里把这个项目设为受信任后，才能存到项目层", width - 1))}`, ` ${muted("↑↓ 选择  回车 保存  Esc 上一步")}`];
+    if (this.step === 2) return [head, "", ...list, "", ...hint("↑↓ 选择  回车 下一步  Esc 上一步")];
+    return [head, "", ...list, "", ...(this.options.projectTrusted ? [""] : wrapText("在 pi 里把这个项目设为受信任后，才能存到项目层", width - 1).map((line) => ` ${dim(line)}`)), ...hint("↑↓ 选择  回车 保存  Esc 上一步")];
   }
 }
