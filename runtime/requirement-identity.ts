@@ -65,15 +65,17 @@ function assertRequirementId(requirementId: unknown): asserts requirementId is s
   }
 }
 
+export function unsafeFilenameKind(name: string): "path" | "control" | null {
+  if (name === "." || name === ".." || WINDOWS_UNSAFE_FILENAME_CHARACTERS.test(name)) return "path";
+  return CONTROL_CHARACTER.test(name) ? "control" : null;
+}
+
 function filenameFor(requirementId: string, title: string): string {
   if (title.length === 0) fail("invalid_archive_title", "归档描述不能为空");
   assertUnicodeScalarText(title, "title");
-  if (title === "." || title === ".." || WINDOWS_UNSAFE_FILENAME_CHARACTERS.test(title)) {
-    fail("invalid_archive_title", "归档描述含路径分隔符、穿越片段或不支持的文件名字符");
-  }
-  if (CONTROL_CHARACTER.test(title)) {
-    fail("invalid_archive_title", "归档描述含控制字符");
-  }
+  const unsafe = unsafeFilenameKind(title);
+  if (unsafe === "path") fail("invalid_archive_title", "归档描述含路径分隔符、穿越片段或不支持的文件名字符");
+  if (unsafe === "control") fail("invalid_archive_title", "归档描述含控制字符");
 
   const filename = `${requirementId}.${title}.md`;
   if (Buffer.byteLength(filename, "utf8") > MAX_FILENAME_BYTES) {
