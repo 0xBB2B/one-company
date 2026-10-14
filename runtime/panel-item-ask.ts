@@ -49,7 +49,6 @@ export function panelItemTarget(ref: { dataRoot: string; repoId: string }, requi
   });
   const item = found.item ?? deny("item_not_pending");
   if (item.version !== itemVersion) deny("item_changed");
-  if (item.kind === "prototype") deny("prototype_window", "原型事项只在面板里按回车后由程序的确认窗口处理");
   if (item.kind === "adjudicate") return { label: item.label, decision: { itemId, itemVersion }, fixed: found.resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry };
   if (item.kind === "acceptance") return { label: item.label, decision: { itemId, itemVersion }, fixed: FIXED_CHOICES.acceptance, otherLabel: ACCEPTANCE_OTHER };
   if (item.kind === "adjust-requirement") {

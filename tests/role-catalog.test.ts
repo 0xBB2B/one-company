@@ -69,7 +69,7 @@ describe("内置默认团队", () => {
   });
 
   test("M8D2-AC1：角色说明不重复共享规范里的搜索范围", async () => {
-    for (const name of ["worker", "worker-prototype", "reviewer", "qa", "explore", "pm", "prototype"] as const) expect(loadRoleRules(name)).not.toContain("被 Git 忽略");
+    for (const name of ["worker", "reviewer", "qa", "explore", "pm", "prototype"] as const) expect(loadRoleRules(name)).not.toContain("被 Git 忽略");
     expect(await readFile(join(defaultRoleDir(), "..", "shared", "03-search-scope.md"), "utf8")).toContain("被 Git 忽略");
   });
   test("M8B-AC4：主会话规则含规范与需求的分流，worker 遵守、reviewer 按项目规范把关、PM 不与之冲突，都不能改 AGENTS.md", async () => {

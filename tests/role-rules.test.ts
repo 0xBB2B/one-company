@@ -26,9 +26,7 @@ describe("职责规矩文件", () => {
     ["worker", ["只完成派工给出的任务", "不清楚就停下来在结果里说明", "外科手术式改动", "\"步骤 → 验证项\"", "只经 one_company_change_apply 写入，只写授权范围",
       "只经 one_company_verification_run（debug）运行", "时不要自己装、不要改依赖清单文件", "项目规范文件 AGENTS.md 不能改", "按 TDD 先红后绿",
       "纯文档、配置等没有可测行为的改动", "测试名写明期望结果", "实现出来的界面须与它一致", "不伪造通过", "不读取 prod 全文，不主动读取 docs/prod 归档或已关闭需求"],
-      ["说明注释", "章节编号"]],
-    ["worker-prototype", ["本次只做界面原型", "单个 HTML 文件，样式和脚本都写在文件里", "正常、空数据、加载中、出错", "有交互的地方做成可点击的",
-      "深色背景、等宽字体、固定 80 列", "多步交互按顺序画出每一步", "按意见改出新版本", "action=prototype"], ["先红后绿"]],
+      ["说明注释", "章节编号", "本次只做界面原型"]],
     ["reviewer", ["只审查派工给出的 worker 任务在其可写范围内的改动，不修改任何文件", "目标符合性、安全性、与目标直接相关的鲁棒性、预定的性能条件",
       "先按任务说明里的 git diff 命令查看本次改动", "核对项目规范", "核对 worker 定义的规范", "违反的列为阻塞", "核对界面原型", "核对第三方依赖",
       "「不做、不改」的边界", "核对先红后绿", "未说明合理的不适用理由", "分为阻塞、非阻塞建议、未验证", "kind=debug，只跑被审任务范围的测试",
@@ -117,7 +115,7 @@ describe("派工后子代理收到的提示词", () => {
       await w.plan.execute({ action: "propose", tasks });
       await w.plan.execute({ action: "confirm", planVersion: 1 });
     };
-    const dispatch = (key: string, mode: { prototype?: { maxTurns: number }; review?: { maxTurns: number } } = {}) =>
+    const dispatch = (key: string, mode: { review?: { maxTurns: number } } = {}) =>
       w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry: null, ...mode });
     return { ...w, userDir, task, plan, dispatch };
   }
@@ -147,17 +145,6 @@ describe("派工后子代理收到的提示词", () => {
     expect(prompt).not.toContain("上面的定义正文");
     expect(prompt.indexOf("## 职责规矩")).toBeGreaterThanOrEqual(0);
     expect(prompt.indexOf("## 职责规矩")).toBeLessThan(prompt.indexOf("## 工作纪律"));
-  });
-
-  test("做原型的 worker 拿到原型规矩，不含先红后绿", async () => {
-    const w = await world();
-    await w.plan([spec("hud", { ui: true, writePaths: ["src/hud/"] }), spec("rest", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })]);
-    w.provider.queue.push({ type: "text", text: "开工" }, pmAck);
-    await w.dispatch("hud", { prototype: { maxTurns: 3 } });
-    await until(() => w.provider.requests.some((request) => request.systemPrompt?.includes("本次只做界面原型")));
-    const prompt = promptOf(w.provider.requests, "本次只做界面原型");
-    expect(prompt).toContain("固定 80 列");
-    expect(prompt).not.toContain("先红后绿");
   });
 
   test("审查所用 worker 定义的正文非空时，reviewer 的任务上下文附上该正文，且用 reviewer 规矩", async () => {

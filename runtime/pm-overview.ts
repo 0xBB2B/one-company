@@ -6,12 +6,11 @@ import type { TaskRecord } from "./plan-manage.ts";
 import { latestPmSubmission } from "./pm-intake-runtime.ts";
 import { PmIntakeStore } from "./pm-intake-store.ts";
 import { planRejectionsIn, stallIn } from "./pm-attention.ts";
-import { latestPrototype, prototypeItemId, prototypeItemVersion } from "./prototype.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import type { RunRecord } from "./run-store.ts";
 import { pendingReportIn } from "./workflow-close.ts";
 
-export type PendingItemKind = "adjudicate" | "intake-review" | "question" | "adjust-requirement" | "acceptance" | "prototype" | "plan-rejected" | "stall";
+export type PendingItemKind = "adjudicate" | "intake-review" | "question" | "adjust-requirement" | "acceptance" | "plan-rejected" | "stall";
 export interface PendingItem {
   itemId: string;
   kind: PendingItemKind;
@@ -52,7 +51,7 @@ export interface PmOverviewInput {
 }
 
 const ACTIVE_CHILD = new Set(["queued", "running", "pausing"]);
-const ROLE_LABEL: Record<string, string> = { "one-company.worker": "worker", "one-company.reviewer": "reviewer", "one-company.qa": "qa", "one-company.explore": "explore", "one-company.prototype": "prototype" };
+const ROLE_LABEL: Record<string, string> = { "one-company.worker": "worker", "one-company.reviewer": "reviewer", "one-company.qa": "qa", "one-company.explore": "explore" };
 
 /** 已批准正文里带显式 ID 的标题：`# 标题 {#id}`。 */
 export function headingTitlesOf(body: string): Map<string, string> {
@@ -86,7 +85,7 @@ function requirementRow(db: LocalDatabase, requirementId: string) {
   return db.read<RequirementRecord>("requirements", requirementId)!;
 }
 
-/** 待处理事项只取自已有持久记录：终止后待调整的需求、待用户裁决的任务、待核对的接手理解、阻塞任务的未决问题、待确认的原型。 */
+/** 待处理事项只取自已有持久记录：终止后待调整的需求、待用户裁决的任务、待核对的接手理解、阻塞任务的未决问题。 */
 export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId" | "db" | "record" | "lease">, tasks: TaskRecord[]): PendingItem[] {
   const items: PendingItem[] = [];
   for (const task of tasks) {
@@ -119,12 +118,6 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
         version: `question:${questionId}:${input.record.approvalManifest!.reference.manifestHash}` });
     }
   }
-  for (const task of tasks) {
-    const prototype = latestPrototype(task);
-    if (!task.ui || !prototype || prototype.decision || ["completed", "cancelled"].includes(task.status)) continue;
-    items.push({ itemId: prototypeItemId(task.taskId), kind: "prototype", label: `待你确认原型：任务 ${task.key}（第 ${prototype.version} 版）`,
-      version: prototypeItemVersion(task.taskId, prototype) });
-  }
   const report = input.record.lifecycle === "active" ? pendingReportIn(input.db, input.repoId, input.lease.requirementId) : null;
   if (report) items.push({ itemId: `report:${report.data.reportId}`, kind: "acceptance", label: "待你验收：PM 完成报告", version: `report:${report.data.reportId}:${report.version}` });
   const rejected = planRejectionsIn(input.db, input.lease.requirementId);
@@ -150,8 +143,7 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
     return `规划中（计划提交被拒 ${rejectedCount} 次，${rejectedCount >= 2 ? "等你决定" : "PM 正在按原因修改"}）`;
   }
   // 停下提醒不改第二行：仍按 PM 停下时的真实进度显示
-  if (status === "waiting" && items.some((item) => item.kind !== "stall")) return items.some((item) => item.kind === "acceptance") ? "等待你验收完成报告"
-    : items.every((item) => item.kind === "prototype") ? "等待你确认原型" : "等待你的决定";
+  if (status === "waiting" && items.some((item) => item.kind !== "stall")) return items.some((item) => item.kind === "acceptance") ? "等待你验收完成报告" : "等待你的决定";
   if (!reviewPassedFor(input)) return items.some((item) => item.kind === "intake-review") ? "等待核对接手理解" : "接手中";
   if (input.record.pendingRevision !== null) return `复核批准更新 r${input.record.pendingRevision}`;
   if (activeCheckRoundIn(input.db, input.repoId, input.lease.requirementId)) return "检查中";
@@ -161,7 +153,6 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
     const attempt = task ? task.attempts.findIndex((entry) => entry.runId === child.id) + 1 : 0;
     const review = task ? task.reviews.findIndex((entry) => entry.runId === child.id) + 1 : 0;
     const head = child.role === "one-company.explore" ? "派 explore 检索"
-      : task?.prototypeRun?.runId === child.id ? `派 worker 做原型 ${task.key}`
       : review > 0 ? `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 审查 ${task!.key}（第 ${review} 次审查）`
         : `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 执行 ${task?.key ?? "任务"}${attempt > 0 ? `（第 ${attempt} 次尝试）` : ""}`;
     return running.length > 1 ? `${head} 等 ${running.length} 个` : head;

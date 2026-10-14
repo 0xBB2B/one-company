@@ -31,8 +31,6 @@ const EXPECTED_METHODS = [
   "explore.list",
   "pm.overview",
   "pm.packet",
-  "pm.prototype",
-  "pm.prototypeDecide",
   "pm.message",
   "workflow.manage",
   "shells.list",
@@ -65,8 +63,6 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "explore.result": { runId: "r" },
   "explore.list": {},
   "pm.packet": { requirementId: "req-1", itemId: "task:x" },
-  "pm.prototype": { requirementId: "req-1", itemId: "prototype:t1" },
-  "pm.prototypeDecide": { requirementId: "req-1", itemId: "prototype:t1", itemVersion: "prototype:t1:1:abc", choice: "rework", opinion: "数字放大" },
   "pm.message": { requirementId: "req-1", text: "先做登录" },
   "workflow.manage": { requirementId: "req-1", request: { action: "status" } },
   "runs.stop": { runId: "run-1" },
@@ -293,9 +289,7 @@ describe("createRequest / createResponse / createErrorResponse / createEvent", (
 test("守护进程注册的每个方法都在协议方法清单里，否则真实连接会以未知方法拒绝", () => {
   const registered: string[] = [];
   registerProtocolHandlers({ server: { registerHandler: (method: string) => { registered.push(method); }, markHandlersReady: () => {} }, manager: {}, shellRegistry: {} } as never);
-  expect(registered).toEqual(expect.arrayContaining(["pm.prototype", "pm.prototypeDecide"]));
   expect(registered.filter((method) => !(METHODS as readonly string[]).includes(method))).toEqual([]);
-  expect(() => validateParams("pm.prototypeDecide", { requirementId: "r", itemId: "i", itemVersion: "v", choice: "accept", opinion: null })).not.toThrow();
 });
 
 describe("assertKnownMethod", () => {

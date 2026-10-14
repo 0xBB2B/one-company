@@ -16,14 +16,13 @@ import { createAgentRoleSession } from "./agent-session.ts";
 import type { AgentSessionHandle } from "./agent-session.ts";
 import { createPmTools } from "./pm-tools.ts";
 import { createSubagentTools } from "./subagent-tools.ts";
-import { approvedPrototype, decidePrototype, latestPrototype, prototypeConfirmation, PrototypeError } from "../runtime/prototype.ts";
-import { beginPrototypeRun, beginTaskAttempt, beginTaskReview, finishPrototypeRun, finishTaskAttempt, finishTaskReview } from "../runtime/task-dispatch.ts";
+import { beginTaskAttempt, beginTaskReview, finishTaskAttempt, finishTaskReview } from "../runtime/task-dispatch.ts";
 import { confirmedPlanKey, holdResumes, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../runtime/plan-manage.ts";
 import type { HoldRef } from "../runtime/plan-manage.ts";
 import type { TaskAttempt, TaskRecord as PlanTask, TaskReview } from "../runtime/plan-manage.ts";
 import { VERDICTS } from "../runtime/verdicts.ts";
 import type { Finding, Verdict } from "../runtime/verdicts.ts";
-import { coreToolName, QA_PROTOTYPE_HOST_TOOLS } from "../runtime/role-tools.ts";
+import { coreToolName } from "../runtime/role-tools.ts";
 import type { PmTools } from "./pm-tools.ts";
 import { withDatabase } from "../runtime/database.ts";
 import type { PmLease, RequirementRecord } from "../runtime/requirement-contracts.ts";
@@ -85,7 +84,7 @@ export interface RunManagerOptions {
 interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease: PmLease; tools: PmTools; delivery: TimerHandle; tick: () => Promise<void>; haltPaused: boolean; halt: { children: string[]; plan: string } | null;
   /** 批准新版本时暂停的子代理及其所属任务当时的版本；计划确认后逐个结算。 */
   hold: Map<string, HoldRef | null> | null };
-  subagent?: { parentRunId: string; taskId: string; review: boolean; prototype: boolean; dispose(): void };
+  subagent?: { parentRunId: string; taskId: string; review: boolean; dispose(): void };
   explore?: { parentRunId: string; dispose(): void; result(): ExploreResult | null } }
 /** main 派出的 explore 只属于派出它的主窗口会话，不写运行记录；窗口关闭即停止并作废结果。 */
 interface MainExplore { handle: AgentSessionHandle; sessionId: string; connectionId: string; dispose(): void; result(): ExploreResult | null; report: Record<string, unknown> | null;
@@ -97,29 +96,7 @@ const PM_MESSAGE_LABEL = "【主代理转述】下面是主代理根据用户的
 const PM_EVENT_POLL_MS = 500;
 const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "release-pm", "check-pm"];
 
-/** 已通过原型的一行说明：只给路径、版本与指纹，内容由子代理自己读取。 */
-function approvedPrototypeLine(task: PlanTask): string | undefined {
-  const prototype = approvedPrototype(task);
-  return prototype ? `${task.key}：第 ${prototype.version} 版 ${prototype.path}（指纹 sha256:${prototype.hash}）` : undefined;
-}
-
-async function prototypeContext(task: PlanTask, maxTurns: number): Promise<string> {
-  const detail = await readTaskDetail(task);
-  const previous = latestPrototype(task);
-  return [
-    `任务：${task.key}（${task.taskId}，版本 ${task.version}，职责 ${task.role}）。本次只做界面原型，不做实现。`,
-    `目标：${detail.objective}`,
-    `通过条件：\n${detail.passCriteria.map((item) => `- ${item}`).join("\n")}`,
-    `范围：${detail.scope.in.join("、")}；非目标：${detail.scope.out.join("、") || "无"}`,
-    `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
-    "要交的是一个能在浏览器里直接打开的 HTML 原型，给用户看效果；用 one_company_result_submit action=prototype 提交，不写进仓库。用户确认通过后才会派出实现。",
-    ...(previous ? [`上一版原型：第 ${previous.version} 版 ${previous.path}，可用 read 读取。`] : []),
-    ...(previous?.decision?.choice === "rework" ? [`用户看过上一版后要求返工，原话：「${previous.decision.opinion}」。按这些意见改出新版本。`] : []),
-    `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交原型。`,
-  ].join("\n");
-}
-
-async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly Finding[] = [], reviews: readonly string[] = [], prototypes: readonly string[] = []): Promise<string> {
+async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly Finding[] = [], reviews: readonly string[] = []): Promise<string> {
   const detail = await readTaskDetail(task);
   return [
     `任务：${task.key}（${task.taskId}，版本 ${task.version}，职责 ${task.role}）`,
@@ -131,7 +108,6 @@ async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly 
     ...(task.writePaths.length ? [`可写范围：${task.writePaths.join("、")}`] : []),
     ...(rejected.length ? [`本次是审查打回后的返修，须解决：\n${rejected.map((finding) => `- [${finding.kind}] ${finding.targetRef}：${finding.trigger} → ${finding.impact}`).join("\n")}`] : []),
     ...(reviews.length ? [`已完成任务的审查结论（审查已核对各任务的改动范围）：\n${reviews.map((line) => `- ${line}`).join("\n")}`] : []),
-    ...(prototypes.length ? [`${task.role === "qa" ? "界面任务用户已通过的原型（用 read 读取，对照它检查实际界面效果）" : "本任务是界面任务，用户已通过的原型（用 read 读取，实现的界面须与它一致）"}：\n${prototypes.map((line) => `- ${line}`).join("\n")}`] : []),
     `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交结果。`,
   ].join("\n");
 }
@@ -147,7 +123,6 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
     `性能条件：${detail.performance.applicable ? detail.performance.thresholds : `不适用（${detail.performance.reason}）`}`,
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     `只审可写范围内的改动：${task.writePaths.join("、")}`,
-    ...(task.ui ? [`本任务是界面任务，用户已通过的原型（用 read 读取，对照它核对改动后的界面）：${approvedPrototypeLine(task) ?? "无"}`] : []),
     ...(worker.body.trim() ? [`被审任务所用 worker 定义（${worker.name}）的正文：\n${worker.body.trim()}`] : []),
     `查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff ${baseCommit} -- ${task.writePaths.join(" ")}（${baseCommit} 是本需求工作区的基线提交）`,
     "worker 各次尝试（先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红；引用的验证记录用 verification_run action=status 逐条查看）：",
@@ -437,7 +412,7 @@ export class RunManager {
 
   /** PM 按已冻结任务派出受限子代理（执行、返修或任务级审查）：门槛与尝试登记在同一事务，子代理带运行时轮次上限，结局自动上报直属 PM。 */
   async dispatchTask(input: { pmRunId: string; taskId: string; retry: { reason: string; maxTurns: number } | null;
-    rework?: { reason: string; maxTurns: number } | null; review?: { maxTurns: number }; prototype?: { maxTurns: number } }): Promise<{ runId: string; maxTurns: number }> {
+    rework?: { reason: string; maxTurns: number } | null; review?: { maxTurns: number } }): Promise<{ runId: string; maxTurns: number }> {
     const pm = this.sessions.get(input.pmRunId);
     if (!pm?.pm) throw protocolError("pm_not_running", "派工的 PM 会话不存在");
     const lease = pm.pm.lease;
@@ -448,7 +423,7 @@ export class RunManager {
     const task = withDatabase(this.database, (db) => readPlanIn(db, lease.requirementId)?.tasks.find((candidate) => candidate.taskId === input.taskId));
     if (!task) throw protocolError("task_not_ready", "任务不存在");
     if (task.role === "explore") throw protocolError("role_unavailable", "explore 派工由检索入口负责");
-    const review = input.review !== undefined, prototype = !review && input.prototype !== undefined;
+    const review = input.review !== undefined;
     const role = review ? "reviewer" : task.role;
     const resolved = await this.resolveAgent(review ? task.reviewAgent ?? "reviewer" : task.agent ?? task.role, role, { model: pmRun.run.model, thinking: pmRun.run.thinking });
     const { definition, model: modelRef, thinking } = resolved;
@@ -459,10 +434,8 @@ export class RunManager {
     let maxTurns: number, attemptRunId: string | undefined;
     ({ maxTurns, attemptRunId } = review
       ? beginTaskReview({ ...ref, lease, taskId: task.taskId, runId, maxTurns: input.review!.maxTurns })
-      : prototype ? { ...beginPrototypeRun({ ...ref, lease, taskId: task.taskId, runId, maxTurns: input.prototype!.maxTurns }), attemptRunId: undefined }
       : { ...beginTaskAttempt({ ...ref, lease, taskId: task.taskId, runId, retry: input.retry, rework: input.rework ?? null }), attemptRunId: undefined });
     const fail = () => review ? finishTaskReview({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" })
-      : prototype ? finishPrototypeRun({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" })
       : finishTaskAttempt({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" });
     let run: RunRecord;
     try {
@@ -480,24 +453,19 @@ export class RunManager {
     };
     let tools: Awaited<ReturnType<typeof createSubagentTools>> | undefined;
     let handle: AgentSessionHandle;
-    const qaPrototypePaths = role === "qa" ? withDatabase(this.database, (db) => (readPlanIn(db, lease.requirementId)?.tasks ?? [])
-      .filter((candidate) => candidate.status !== "cancelled").flatMap((candidate) => approvedPrototype(candidate)?.path ?? [])) : [];
     try {
       tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
-        pmLease: lease, workspace, epoch: record.epoch, task, alive, ...(review ? { review: { attemptRunId: attemptRunId! } } : {}), ...(prototype ? { prototype: true } : {}) });
+        pmLease: lease, workspace, epoch: record.epoch, task, alive, ...(review ? { review: { attemptRunId: attemptRunId! } } : {}) });
       // 只取正文，不核验被审 worker 的模型：它的凭据失效不该挡住审查
       const workerName = task.agent ?? "worker";
       const workerEntry = review ? (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
         .find((entry) => entry.name === workerName && entry.available && entry.definition?.role === "worker") : undefined;
       const workerDefinition = { name: workerName, body: workerEntry?.definition?.body ?? "" };
       const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns, workerDefinition)
-        : prototype ? await prototypeContext(task, maxTurns)
-        : await taskContext(task, maxTurns, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : [],
-          task.role === "qa" ? this.approvedPrototypes(task.requirementId) : [approvedPrototypeLine(task)].filter((line) => line !== undefined));
+        : await taskContext(task, maxTurns, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        roleRules: loadRoleRules(review ? "reviewer" : prototype ? "worker-prototype" : role as "worker" | "qa"),
+        roleRules: loadRoleRules(review ? "reviewer" : role as "worker" | "qa"),
         context: withSkills(await this.withConventions(context), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
-        ...(role === "qa" && qaPrototypePaths.length ? { hostTools: [...QA_PROTOTYPE_HOST_TOOLS], readRoots: qaPrototypePaths } : {}),
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true;
@@ -508,7 +476,7 @@ export class RunManager {
       throw protocolError("subagent_session_failed", why, "按原因处理后重新派工；原因涉及模型、技能或定义配置时交用户处理");
     }
     const toolSet = tools;
-    this.sessions.set(run.id, { kind: "role", handle, subagent: { parentRunId: input.pmRunId, taskId: task.taskId, review, prototype, dispose: () => toolSet.dispose() } });
+    this.sessions.set(run.id, { kind: "role", handle, subagent: { parentRunId: input.pmRunId, taskId: task.taskId, review, dispose: () => toolSet.dispose() } });
     registered = true;
     handle.events.on("turn_counted", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     this.trackUsage(run.id, handle);
@@ -518,7 +486,7 @@ export class RunManager {
     handle.events.on("ended_without_result", () => { void this.finishSubagent(run.id, "ended_without_result"); });
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishSubagent(run.id, "failed", reason); });
     await this.runStore.update(run.id, { state: "running" });
-    handle.prompt(review ? "开始审查。" : prototype ? "开始做原型。" : "开始执行任务。");
+    handle.prompt(review ? "开始审查。" : "开始执行任务。");
     return { runId: run.id, maxTurns };
   }
 
@@ -541,12 +509,6 @@ export class RunManager {
       .filter((finding) => finding.kind !== "suggestion");
   }
 
-  /** 各界面任务用户已通过的原型，交给 QA 对照验收。 */
-  private approvedPrototypes(requirementId: string): string[] {
-    return withDatabase(this.database, (db) => (readPlanIn(db, requirementId)?.tasks ?? [])
-      .filter((task) => task.status !== "cancelled").map(approvedPrototypeLine).filter((line) => line !== undefined));
-  }
-
   /** QA 用于核对"不做某事"类边界：各已完成 worker 任务最近一次通过审查的裁决摘要。 */
   private reviewConclusions(requirementId: string): string[] {
     return withDatabase(this.database, (db) => {
@@ -563,10 +525,9 @@ export class RunManager {
     const entry = this.sessions.get(runId);
     if (!entry?.subagent) return;
     const outcome = this.supersededRuns.delete(runId) && reported === "stopped" ? "superseded" : reported;
-    const { parentRunId, taskId, review, prototype } = entry.subagent;
+    const { parentRunId, taskId, review } = entry.subagent;
     entry.subagent.dispose();
     delete entry.subagent;
-    if (prototype) { await this.finishPrototype(runId, parentRunId, taskId, outcome, entry.handle.turnsUsed(), failure); return; }
     const report = withDatabase(this.database, (db) => db.list<Verdict>(VERDICTS).map((row) => row.data).find((verdict) => verdict.runId === runId));
     const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };
     const turnsUsed = entry.handle.turnsUsed();
@@ -607,27 +568,6 @@ export class RunManager {
       `建议：${next[task.status] ?? "请核对实际证据后再整合结果。"}`,
       `运行日志：${this.runLog(runId)}（证据不够判断时，读这份会话记录查看子代理的思考与工具调用）`];
     if (parent?.pm && ["running", "paused"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
-  }
-
-  /** 原型运行结束：交出新版本即等用户确认，否则把实际结局报给 PM，由 PM 决定是否再派。 */
-  private async finishPrototype(runId: string, parentRunId: string, taskId: string, outcome: SessionOutcome, turnsUsed: number, failure?: string): Promise<void> {
-    const task = finishPrototypeRun({ dataRoot: this.options.dataRoot, repoId: this.repoId, taskId, runId, turnsUsed,
-      outcome: outcome === "ended_without_result" ? "incomplete" : outcome });
-    const done = task.prototypeRun?.runId === runId && task.prototypeRun.outcome === "completed";
-    const current = await this.runStore.get(runId);
-    if (current.ok && !isTerminalState(current.run.state)) {
-      await this.runStore.update(runId, { state: done ? "completed" : outcome === "stopped" ? "stopped" : "failed", ...(done ? {} : { stateReason: outcomeReason(outcome, failure) }) });
-    }
-    const latest = latestPrototype(task);
-    const lines = done
-      ? [`原型运行 ${runId} 已结束：任务 ${task.key} 的原型第 ${latest!.version} 版已提交，已用 ${turnsUsed}/${task.prototypeRun!.maxTurns} 轮。`,
-        "现在等用户在面板里确认。用户通过前不能派出这个任务的实现；用户的决定会自动通知你，不要自己催问或代为确认。"]
-      : [`原型运行 ${runId} 已结束：任务 ${task.key} 没有交出原型，已用 ${turnsUsed}/${task.prototypeRun?.maxTurns ?? 0} 轮。`,
-        `原因：${outcomeReason(outcome, failure)}。`, `建议：核对原因后用 agent_manage dispatch taskId=${taskId} 带 prototype 再派一次。`];
-    lines.push(`运行日志：${this.runLog(runId)}（证据不够判断时，读这份会话记录查看子代理的思考与工具调用）`);
-    const parent = this.sessions.get(parentRunId);
-    if (parent?.pm && ["running", "paused"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
-    await this.refreshOverview(parentRunId).catch(() => {});
   }
 
   /**
@@ -1068,7 +1008,7 @@ export class RunManager {
       const tasks = withDatabase(this.database, (db) => readPlanIn(db, requirementId)?.tasks ?? []);
       const owner = (runId: string): HoldRef | null => {
         for (const task of tasks) {
-          const kind = task.attempts.some((a) => a.runId === runId) ? "attempt" : task.reviews.some((r) => r.runId === runId) ? "review" : task.prototypeRun?.runId === runId ? "prototype" : null;
+          const kind = task.attempts.some((a) => a.runId === runId) ? "attempt" : task.reviews.some((r) => r.runId === runId) ? "review" : null;
           if (kind) return { taskId: task.taskId, version: task.version, kind };
         }
         return null;
@@ -1139,18 +1079,6 @@ export class RunManager {
     } catch (error) { throw adviceOf(error) ? error : protocolError("open_failed", `流程管理打开失败：${(error as Error).message}`, "重试一次；仍然失败就把这段原因告诉用户"); }
     try { return await tool.execute(request); }
     finally { tool.dispose(); }
-  }
-
-  /** 确认窗口要显示的原型信息；只读持久记录，文件与登记指纹不符时拒绝。 */
-  prototypeConfirmation(requirementId: string, itemId: string) {
-    return prototypeConfirmation({ dataRoot: this.options.dataRoot, repoId: this.repoId }, requirementId, itemId);
-  }
-
-  /** 登记用户在确认窗口里对原型的选择，并让各窗口的面板刷新；PM 由投递轮询收到通知。 */
-  async decidePrototype(input: { requirementId: string; itemId: string; itemVersion: string; choice: "accept" | "rework"; opinion: string | null }) {
-    const decided = decidePrototype({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input);
-    for (const [runId, entry] of this.sessions) if (entry.pm?.lease.requirementId === input.requirementId) await this.refreshOverview(runId).catch(() => {});
-    return { version: decided.version, choice: decided.decision!.choice };
   }
 
   decisionPacket(requirementId: string, itemId: string): string {
@@ -1398,19 +1326,6 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       throw protocolError("invalid_params", "决策包参数无效");
     try { return { text: manager.decisionPacket(params.requirementId, params.itemId) }; }
     catch (error) { if (error instanceof DecisionPacketError) throw protocolError("not_found", "该事项已处理或不存在"); throw error; }
-  });
-  register("pm.prototype", async (params) => {
-    if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof params.itemId !== "string")
-      throw protocolError("invalid_params", "原型事项参数无效");
-    try { return { ...await manager.prototypeConfirmation(params.requirementId, params.itemId) }; }
-    catch (error) { if (error instanceof PrototypeError) throw protocolError(error.code, error.advice.why, error.advice.next); throw error; }
-  });
-  register("pm.prototypeDecide", async (params) => {
-    if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof params.itemId !== "string" || typeof params.itemVersion !== "string" ||
-      (params.choice !== "accept" && params.choice !== "rework") || (params.opinion !== null && typeof params.opinion !== "string"))
-      throw protocolError("invalid_params", "原型决定参数无效");
-    try { return await manager.decidePrototype({ requirementId: params.requirementId, itemId: params.itemId, itemVersion: params.itemVersion, choice: params.choice, opinion: params.opinion }); }
-    catch (error) { if (error instanceof PrototypeError) throw protocolError(error.code, error.advice.why, error.advice.next); throw error; }
   });
   register("workflow.manage", async (params) => {
     if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof params.request !== "object" || params.request === null)

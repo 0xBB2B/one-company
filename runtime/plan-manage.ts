@@ -43,8 +43,6 @@ export const TaskSpec = object({
   agent: Type.Optional(agentName), agentReason: Type.Optional(text),
   /** 审查该 worker 任务的角色定义名称；缺省用默认 reviewer。 */
   reviewAgent: Type.Optional(agentName),
-  /** 界面任务：涉及用户看得到的界面，须先有用户通过的原型才能派出实现。 */
-  ui: Type.Optional(Type.Boolean()),
 });
 export type TaskSpec = Static<typeof TaskSpec>;
 const MAX_PASS_CRITERIA = 8;
@@ -113,20 +111,6 @@ const UserDecision = object({
   confirmedPlan: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })),
 });
 export type UserDecision = Static<typeof UserDecision>;
-/** 原型的一个版本；decision 只由用户在程序确认窗口里的选择写入。 */
-const PrototypeVersion = object({
-  version: positive, hash, bytes: positive, path: Type.String({ minLength: 1 }), runId: id, note: text, submittedAt: positive,
-  /** 提交时的需求批准版本；此后用户批准了更新的版本，PM 才能取消这个任务。 */
-  revision: positive,
-  decision: Type.Optional(object({ choice: Type.Union([Type.Literal("accept"), Type.Literal("rework")]),
-    opinion: Type.Union([Type.String({ minLength: 1, maxLength: 4000 }), Type.Null()]), decidedAt: positive, notified: Type.Boolean() })),
-});
-export type PrototypeVersion = Static<typeof PrototypeVersion>;
-/** 最近一次做原型的运行；不计入任务的尝试次数。 */
-const PrototypeRun = object({ runId: id, maxTurns: positive, turnsUsed: Type.Integer({ minimum: 0 }),
-  outcome: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("incomplete"), Type.Literal("turn_limit_reached"),
-    Type.Literal("failed"), Type.Literal("stopped"), Type.Literal("superseded")]) });
-export type PrototypeRun = Static<typeof PrototypeRun>;
 const TaskRecord = object({
   format: Type.Literal("plan-task/v1"), taskId: id, requirementId: id, version: positive, key, role: DelegatedRole,
   goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0), closure: Type.Array(UnitRef),
@@ -141,7 +125,6 @@ const TaskRecord = object({
   reviews: Type.Array(Review),
   userDecision: Type.Optional(UserDecision),
   sizeHold: Type.Optional(Type.Array(text, { minItems: 1, maxItems: 2 })),
-  ui: Type.Optional(Type.Literal(true)), prototypes: Type.Optional(Type.Array(PrototypeVersion)), prototypeRun: Type.Optional(PrototypeRun),
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
@@ -152,7 +135,7 @@ async function textOnlyChange(task: TaskRecord, spec: TaskSpec, keys: ReadonlyMa
   return spec.key === task.key && spec.role === task.role && same(spec.goalUnitIds, task.goalUnitIds) && same(spec.constraintUnitIds, task.constraintUnitIds) &&
     same(spec.dependsOn.map((dep) => keys.get(dep)), task.dependsOn) && same(spec.writePaths, task.writePaths) && same(spec.blockedByQuestionIds, task.blockedByQuestionIds) &&
     spec.maxTurns === task.maxTurns && spec.agent === task.agent && spec.reviewAgent === task.reviewAgent &&
-    Boolean(spec.ui || task.prototypes?.length) === Boolean(task.ui) && same(spec.scope, previous.scope) && same(spec.performance, previous.performance);
+    same(spec.scope, previous.scope) && same(spec.performance, previous.performance);
 }
 /** 修改任务时带上用户的决定：还没用掉的"再给一次机会"跟到新版本，PM 可以先补任务说明再派出；这时只允许改说明文字。 */
 function carriedDecision(decision: UserDecision, version: number): UserDecision {
@@ -255,14 +238,19 @@ export function replanPending(plan: Pick<PlanRecord, "confirmedVersion" | "confi
 }
 
 /** 批准新版本时暂停的子代理属于哪个任务、是该任务的哪种运行，以及当时的任务版本。 */
-export type HoldRef = { taskId: string; version: number; kind: "attempt" | "review" | "prototype" };
+export type HoldRef = { taskId: string; version: number; kind: "attempt" | "review" };
 /** 计划确认后该子代理是否恢复：所属任务版本没变、在已确认计划里，且这次运行仍是任务当前在做的那次；不属于任务的运行直接恢复。 */
 export function holdResumes(ref: HoldRef | null, current: { plan: PlanRecord; tasks: readonly TaskRecord[] } | null, runId: string): boolean {
   if (!ref) return true;
   const task = current?.tasks.find((candidate) => candidate.taskId === ref.taskId);
   if (!task || task.version !== ref.version || !current!.plan.confirmedTasks.some((entry) => entry.taskId === ref.taskId && entry.version === ref.version)) return false;
-  if (ref.kind === "prototype") return task.prototypeRun?.runId === runId && task.prototypeRun.outcome === "running";
   return task.status === (ref.kind === "review" ? "reviewing" : "running");
+}
+
+function hasUiMark(input: unknown): boolean {
+  const { tasks, add, modify } = (input ?? {}) as { tasks?: unknown; add?: unknown; modify?: unknown };
+  const specs = [tasks, add, Array.isArray(modify) ? modify.map((item) => item?.spec) : undefined].flatMap((list) => (Array.isArray(list) ? list : []));
+  return specs.some((spec) => spec && typeof spec === "object" && "ui" in spec);
 }
 
 export function confirmedPlanKey(plan: Pick<PlanRecord, "confirmedTasks"> | undefined): string {
@@ -334,8 +322,6 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const unwritable = specs.filter((spec) => spec.role === "worker")
       .flatMap((spec) => spec.writePaths.filter((path) => !writePathAllowed(path)).map((path) => `${spec.key} 的 ${path} 不能由 worker 写入`));
     if (unwritable.length) deny("dependency_invalid", unwritable);
-    const strayUi = specs.filter((spec) => spec.role !== "worker" && spec.ui);
-    if (strayUi.length) deny("dependency_invalid", strayUi.map((spec) => `${spec.key} 不是实现任务，不能标为界面任务`));
     const strayReview = specs.filter((spec) => spec.role !== "worker" && spec.reviewAgent !== undefined);
     if (strayReview.length) deny("dependency_invalid", strayReview.map((spec) => `${spec.key} 不是实现任务，不能指定审查定义`));
     const keys = specs.map((spec) => spec.key);
@@ -381,10 +367,6 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
         ...(spec.reviewAgent ? { reviewAgent: spec.reviewAgent } : {}),
         detail: await writeDetail(taskId, version, spec), status: hold.length || exhausted ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: carriedDecision(previous.get(taskId)!.userDecision!, version) } : {}),
-        // 交过原型的任务不能靠修改任务去掉界面标记，否则 PM 能跳过用户对原型的确认
-        ...(spec.ui || previous?.get(taskId)?.prototypes?.length ? { ui: true } : {}),
-        ...(previous?.get(taskId)?.prototypes ? { prototypes: previous.get(taskId)!.prototypes } : {}),
-        ...(previous?.get(taskId)?.prototypeRun ? { prototypeRun: previous.get(taskId)!.prototypeRun } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));
     }
     return records;
@@ -441,9 +423,6 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       if (task.status === "awaiting_user") deny("task_not_ready", [`${task.key} 等待用户裁决，不能修改或取消`]);
       if (task.userDecision?.choice === "terminate") deny("task_not_ready", [`${task.key} 已被用户终止，不能修改或取消`]);
     }
-    // 交过原型的界面任务只有在用户批准了更新的需求版本后才能取消，否则 PM 取消后另建任务就跳过了用户对原型的确认
-    const prototyped = (params.cancel ?? []).map((item) => byId.get(item.taskId)!).filter((task) => (task.prototypes?.at(-1)?.revision ?? 0) >= record.data.revision);
-    if (prototyped.length) deny("task_not_ready", prototyped.map((task) => `${task.key} 已交过原型，须等用户批准新的需求版本后才能取消`));
     // 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；只放开该任务修改时保留原目标的要求，且决定用过即失效
     const readjusted = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null &&
       record.data.revision > task.userDecision.revision;
@@ -561,7 +540,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
 
   async function execute(input: unknown) {
     let params: PlanManageParameters;
-    try { params = checkServiceInput(PLAN_MANAGE_PARAMETERS, input); } catch (error) { throw new PlanManageError("invalid_shape", [(error as Error).message]); }
+    try { params = checkServiceInput(PLAN_MANAGE_PARAMETERS, input); } catch (error) {
+      throw new PlanManageError("invalid_shape", [hasUiMark(input) ? "任务里的 ui 字段无效：界面标记已不存在，原型在主窗口澄清阶段做" : (error as Error).message]);
+    }
     host(params.action);
     if (params.action === "read") return read();
     if (params.action === "assess-update") return assessUpdate(params);

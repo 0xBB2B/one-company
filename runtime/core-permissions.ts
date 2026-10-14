@@ -33,7 +33,7 @@ const MATRIX: Readonly<Record<CoreRole, Grants>> = Object.freeze({
     verification_run: all("verification_run"), workflow_manage: all("workflow_manage").filter((action) => action !== "close"),
   },
   explore: { knowledge_query: all("knowledge_query"), result_submit: ["research"] },
-  worker: { knowledge_query: all("knowledge_query"), change_apply: all("change_apply"), verification_run: all("verification_run"), result_submit: ["verdict", "prototype"] },
+  worker: { knowledge_query: all("knowledge_query"), change_apply: all("change_apply"), verification_run: all("verification_run"), result_submit: ["verdict"] },
   reviewer: {
     knowledge_query: all("knowledge_query"), requirement_manage: REQUIREMENT_READ_ONLY, plan_manage: ["read"],
     verification_run: all("verification_run"), result_submit: ["verdict"],

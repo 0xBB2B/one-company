@@ -10,7 +10,8 @@ import { PROJECT_MANAGE_PARAMETERS } from "../runtime/project-manage-tool.ts";
 import { REQUIREMENT_READ_PARAMETERS } from "../runtime/requirement-read-tool.ts";
 import { CHANGE_APPLY_PARAMETERS } from "../runtime/change-apply.ts";
 import { VERIFICATION_RUN_PARAMETERS } from "../runtime/verification-run.ts";
-import { RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
+import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
+import { uuidv7 } from "../runtime/database.ts";
 import { WORKFLOW_MANAGE_PARAMETERS } from "../runtime/workflow-manage.ts";
 import { MAIN_AGENT_MANAGE_PARAMETERS } from "../extensions/agent-manage.ts";
 
@@ -166,4 +167,12 @@ test("prototype 只能交原型结果，没有写入和运行验证的权限", (
   expect(granted("prototype", "knowledge_query")).toEqual(CORE_TOOL_ACTIONS.knowledge_query);
   expect(granted("prototype", "change_apply")).toEqual([]);
   expect(granted("prototype", "verification_run")).toEqual([]);
+});
+
+test("worker 不能提交原型：授权为假，工具层以动作不允许拒绝", async () => {
+  expect(authorizeToolAction("worker", "result_submit", "prototype")).toBe(false);
+  expect(granted("worker", "result_submit")).toEqual(["verdict"]);
+  const tool = createResultSubmitTool({ grant: { role: "worker", callerId: uuidv7(), runId: uuidv7(), parentRunId: uuidv7() }, authorize: () => true });
+  await expect(Promise.resolve().then(() => tool.execute({ action: "prototype", html: "<html></html>", note: "说明" }))).rejects.toMatchObject({ code: "action_not_allowed" });
+  tool.dispose();
 });
