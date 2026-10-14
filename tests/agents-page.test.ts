@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmodSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -17,6 +18,7 @@ let root = "", savedAgentDir: string | undefined;
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "agents-page-")); savedAgentDir = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = join(root, "agent"); });
 afterEach(async () => {
   if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+  await chmod(join(root, "agent", "agents"), 0o755).catch(() => undefined);
   await rm(root, { recursive: true, force: true });
 });
 
@@ -89,4 +91,50 @@ test("带引号的 model 与多行 description：设置页显示的内容与守�
   expect(page).toContain(parsed.model!);
   expect(page).not.toContain('"x/m-1"');
   expect(page).not.toContain("问题");
+});
+
+const agentsDir = () => join(root, "agent", "agents");
+const SOURCE = () => join(agentsDir(), "ui-w.md");
+
+/** 页面里选中用户层的 ui-w，输入新名称 copy-w 并到选层窗口；之后的动作交给 atWindow，选层回车，最后一屏交给 afterCopy 检查。 */
+async function copyWith(atWindow: () => void, afterCopy: (s: PageScreen) => void) {
+  await mkdir(join(root, "repo"), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), "---\nname: ui-w\ndescription: d\nrole: worker\n---\n正文\n");
+  const ctx = scripted([
+    (s) => { expect(s.text).toMatch(/› ui-w +用户/u); s.keys("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
+    (s) => { atWindow(); s.keys(ENTER); },
+    (s) => { afterCopy(s); s.keys(ESC); },
+  ]);
+  await expect(openSettingsPage(ctx, { mainThinking: () => "high" })).resolves.toBeUndefined();
+}
+type PageScreen = Parameters<Step>[0];
+
+test("复制时源定义文件已被删除：页面不退出，底部灰字写源文件已经不存在", async () => {
+  await copyWith(() => rmSync(SOURCE()), (s) => {
+    expect(s.text).toContain("复制没有完成：源文件已经不存在，重新打开本页再试");
+    expect(s.text).toContain("内置 4");
+  });
+});
+
+test("选层之后目标位置刚出现同名文件：页面不退出，底部灰字写目标路径已经存在，换一个名字再复制", async () => {
+  const target = join(agentsDir(), "copy-w.md");
+  await copyWith(() => symlinkSync(join(root, "nowhere"), target), (s) => {
+    expect(s.text).toContain(`复制没有完成：${target} 已经存在，换一个名字再复制`);
+  });
+});
+
+test("目标目录没有写权限：页面不退出，底部灰字写没有权限写入该目录", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await copyWith(() => chmodSync(agentsDir(), 0o555), (s) => {
+    expect(s.text).toContain(`复制没有完成：没有权限写入 ${agentsDir()}`);
+  });
+  await expect(readFile(join(agentsDir(), "copy-w.md"), "utf8")).rejects.toThrow();
+});
+
+test("其他意外错误：页面不退出，底部灰字写错误信息首行", async () => {
+  await copyWith(() => { rmSync(SOURCE()); mkdirSync(SOURCE()); }, (s) => {
+    expect(s.text).toMatch(/复制没有完成：.*EISDIR/u);
+    expect(s.text).not.toContain("源文件已经不存在");
+  });
 });

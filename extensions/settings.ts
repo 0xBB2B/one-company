@@ -89,12 +89,18 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     const layer = await chooseWindow(ctx, { title: `复制 ${entry.name} 到哪一层？`,
       lines: mutedLines([`新名称：${name}`]), choices });
     if (!layer) { back({ tone: "muted", text: "已取消复制" }); continue; }
+    const targetDir = layer === "用户层" ? dirs.userDir : dirs.projectDir;
     try {
-      const copied = await copyAgentDefinition({ entry, newName: name, targetDir: layer === "用户层" ? dirs.userDir : dirs.projectDir, layerDirs: layers.map((item) => item.dir) });
+      const copied = await copyAgentDefinition({ entry, newName: name, targetDir, layerDirs: layers.map((item) => item.dir) });
       back({ tone: "ok", text: `✓ 已复制到 ${tilde(copied)}，打开它写专长、skills 和 mcp` }, name, name);
     } catch (error) {
-      if (!(error instanceof AgentCopyError)) throw error;
-      back({ tone: "muted", text: error.message });
+      const code = (error as { code?: unknown }).code;
+      const text = error instanceof AgentCopyError ? error.message
+        : code === "ENOENT" ? "复制没有完成：源文件已经不存在，重新打开本页再试"
+        : code === "EEXIST" ? `复制没有完成：${tilde(fileOf(targetDir, name))} 已经存在，换一个名字再复制`
+        : code === "EACCES" || code === "EPERM" ? `复制没有完成：没有权限写入 ${tilde(targetDir)}`
+        : `复制没有完成：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`;
+      back({ tone: "muted", text });
     }
   }
 }

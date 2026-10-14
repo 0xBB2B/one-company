@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { basename } from "node:path";
 import { decodeKittyPrintable, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
-import { fit, pad, SettingsTab } from "./agent-settings-ui.ts";
+import { fit, pad, SettingsTab, wrapHint, wrapText } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, SaveSettingRequest } from "./agent-settings-ui.ts";
 import type { ModelLike } from "./agent-resolve.ts";
 import { SETTINGS_ROLES, type SettingsRoleKey } from "./agent-settings.ts";
@@ -181,6 +181,10 @@ export class AgentCatalogView {
     return this.expanded ? "回车 收起  C 复制  Esc 收起" : "←→ 分类  ↑↓ 选择  回车 详情  C 复制  Esc 退出";
   }
 
+  private hintLines(width: number, hint = this.hint()): string[] {
+    return wrapHint(hint, width - 1).map((line) => ` ${this.options.theme.fg("muted", line)}`);
+  }
+
   render(width: number): string[] {
     this.width = width;
     const { theme } = this.options;
@@ -194,14 +198,14 @@ export class AgentCatalogView {
     while (body.length < height) body.push("");
     lines.push(...body, dim("─".repeat(width)));
     if (!this.expanded) {
-      if (this.notice) lines.push(` ${theme.fg(this.notice.tone === "ok" ? "success" : "muted", fit(this.notice.text, width - 1))}`);
-      else if (this.tab === SETTINGS_TAB) lines.push(` ${this.settingsTab.footer(this.settingRole(), width)}`);
+      if (this.notice) lines.push(...wrapText(this.notice.text, width - 1).map((line) => ` ${theme.fg(this.notice!.tone === "ok" ? "success" : "muted", line)}`));
+      else if (this.tab === SETTINGS_TAB) lines.push(...this.settingsTab.footer(this.settingRole(), width).map((line) => ` ${line}`));
       else {
         const footer = this.tab === PROBLEMS_TAB ? this.problemRows()[this.cursor]?.footer : this.entries()[this.cursor] && this.describe(this.entries()[this.cursor]!);
-        lines.push(footer ? ` ${muted(fit(footer, width - 1))}` : "");
+        lines.push(...(footer ? wrapText(footer, width - 1).map((line) => ` ${muted(line)}`) : [""]));
       }
     }
-    lines.push(` ${muted(fit(this.hint(), width - 1))}`, edge);
+    lines.push(...this.hintLines(width), edge);
     return lines;
   }
 
@@ -324,7 +328,7 @@ export class AgentCatalogView {
     const { theme } = this.options, naming = this.naming!, muted = (text: string) => theme.fg("muted", text), dim = (text: string) => theme.fg("dim", text);
     return [` ${theme.bold(`复制 ${naming.entry.name} 为新定义`)}`, "",
       ` ${muted("新名称")}  ${fit(`${naming.text}█`, Math.max(MIN_COLUMN, width - 9))}`,
-      ` ${naming.error ? theme.fg("error", `✗ ${naming.error}`) : dim(fit(NAME_RULE, width - 1))}`, "", ` ${muted("回车 下一步  Esc 取消")}`];
+      ...(naming.error ? wrapText(`✗ ${naming.error}`, width - 1).map((line) => ` ${theme.fg("error", line)}`) : wrapText(NAME_RULE, width - 1).map((line) => ` ${dim(line)}`)), "", ...this.hintLines(width, "回车 下一步  Esc 取消")];
   }
 
   invalidate(): void {}

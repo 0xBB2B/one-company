@@ -22,13 +22,13 @@ const theme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bg: (
   bold: (text: string) => `**${text}**`, inverse: (text: string) => `!${text}!` };
 const plain = (text: string) => text.replace(/<\/?[a-zA-Z]*>|\[\/?[a-zA-Z]*\]|\*\*|!/gu, "");
 
-async function page(options: { trusted?: boolean; state?: ConstructorParameters<typeof AgentCatalogView>[0]["state"]; taken?: Record<string, string> } = {}) {
+async function page(options: { trusted?: boolean; state?: ConstructorParameters<typeof AgentCatalogView>[0]["state"]; taken?: Record<string, string>; skills?: string } = {}) {
   const d = await dirs();
   const role = async (dir: string, name: string, frontmatter: string) => {
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${name}.md`), `---\nname: ${name}\n${frontmatter}\n---\n正文\n`);
   };
-  await role(d.userDir, "ui-worker", "description: 界面设计与实现，产出 HTML 预览\nrole: worker\nmodel: 5x/gpt-6-luna\nthinking: medium\nskills: [ui-basics]");
+  await role(d.userDir, "ui-worker", `description: 界面设计与实现，产出 HTML 预览\nrole: worker\nmodel: 5x/gpt-6-luna\nthinking: medium\nskills: [${options.skills ?? "ui-basics"}]`);
   await role(d.userDir, "broken", "description: 坏\nrole: worker\nthinking: extreme");
   await role(d.projectDir, "reviewer", "description: 本项目的审查\nrole: reviewer\nmodel: 5x/gpt-6-sol\nthinking: high");
   const trusted = options.trusted ?? true;
@@ -200,5 +200,109 @@ test("M8D-AC8：44、56、80 列下每个分类的列表、详情与命名画面
         for (const line of q.lines(width)) expect(visibleWidth(plain(line)), plain(line)).toBeLessThanOrEqual(width);
       }
     }
+  }
+});
+
+const NOTICE = "✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp";
+const squeeze = (text: string) => text.replace(/\s+/gu, "");
+const hintRowsOf = (rows: string[], groups: string[]) => rows.map((row) => row.trim()).filter((row) => row && row.split("  ").every((group) => groups.includes(group)));
+
+test("底部提示放不下时折成多行，整句每个字都看得到，不再以…截掉；放得下时仍只占一行", async () => {
+  const wide = await page({ state: { notice: { tone: "ok", text: NOTICE } } });
+  const baseline = await page({ state: { notice: { tone: "ok", text: "✓ 短" } } });
+  expect(wide.lines(200)).toHaveLength(baseline.lines(200).length);
+  expect(wide.lines(80).length).toBe(baseline.lines(80).length + (visibleWidth(NOTICE) + 1 > 80 ? 1 : 0));
+  for (const tone of ["ok", "muted"] as const) {
+    for (let width = 36; width <= 80; width++) {
+      const p = await page({ state: { notice: { tone, text: NOTICE } } });
+      const rows = p.lines(width).map(plain);
+      expect(squeeze(rows.join("")), `${width}`).toContain(squeeze(NOTICE));
+      for (const row of p.lines(width).map(plain)) expect(visibleWidth(row), `${width}: ${row}`).toBeLessThanOrEqual(width);
+    }
+  }
+  const narrow = await page({ state: { notice: { tone: "ok", text: NOTICE } } });
+  const short = await page({ state: { notice: { tone: "ok", text: "✓ 短" } } });
+  expect(narrow.lines(36).length).toBeGreaterThan(short.lines(36).length);
+});
+
+test("设定栏的底部提示放不下时同样折行，整句都看得到", async () => {
+  const text = "✓ PM 改为 5x/gpt-6-luna · xhigh，存到项目层，下次启动 PM 时生效";
+  for (let width = 36; width <= 80; width++) {
+    const p = await page({ state: { tab: "设定", notice: { tone: "ok", text } } });
+    expect(squeeze(p.lines(width).map(plain).join("")), `${width}`).toContain(squeeze(text));
+    for (const row of p.lines(width).map(plain)) expect(visibleWidth(row), `${width}: ${row}`).toBeLessThanOrEqual(width);
+  }
+});
+
+test("底部提示折行时尽量在空格后断开，每个词完整地留在一行里", async () => {
+  const words = ["alpha-one", "beta-two", "gamma-three", "delta-four", "epsilon-five", "zeta-six"];
+  const p = await page({ state: { notice: { tone: "muted", text: words.join(" ") } } });
+  const rows = p.lines(36).map(plain);
+  for (const word of words) expect(rows.some((row) => row.includes(word)), word).toBe(true);
+});
+
+test("按键提示放不下时按一组按键折行，一组不被拆开，放得下时仍是一行", async () => {
+  const screens: Array<{ hint: string; keys: string[]; open?: (p: Awaited<ReturnType<typeof page>>) => void }> = [
+    { hint: "←→ 分类  ↑↓ 选择  回车 详情  C 复制  Esc 退出", keys: [] },
+    { hint: "回车 收起  C 复制  Esc 收起", keys: [ENTER] },
+    { hint: "←→ 分类  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出", keys: [RIGHT, RIGHT, RIGHT, RIGHT] },
+    { hint: "←→ 分类  ↑↓ 选择  回车 详情  Esc 退出", keys: [RIGHT, RIGHT, RIGHT, RIGHT, RIGHT] },
+    { hint: "回车 收起  Esc 收起", keys: [RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, ENTER] },
+    { hint: "回车 下一步  Esc 取消", keys: ["c"] },
+  ];
+  for (const { hint, keys } of screens) {
+    const groups = hint.split("  ");
+    for (let width = 36; width <= 80; width++) {
+      const p = await page();
+      p.press(...keys);
+      const rows = p.lines(width).map(plain);
+      for (const row of rows) expect(visibleWidth(row), `${hint} ${width}: ${row}`).toBeLessThanOrEqual(width);
+      const hintRows = hintRowsOf(rows, groups);
+      expect(hintRows.flatMap((row) => row.split("  ")), `${hint} ${width}`).toEqual(groups);
+      if (visibleWidth(` ${hint}`) <= width) expect(hintRows, `${hint} ${width}`).toHaveLength(1);
+      else expect(hintRows.length, `${hint} ${width}`).toBeGreaterThan(1);
+    }
+  }
+});
+
+test("复制命名画面的红字错误放不下时折成多行，36 到 80 列每一行都不超宽，各行拼起来是完整的错误原文", async () => {
+  const longName = "a".repeat(60);
+  const cases: Array<{ error: string; type: string[] }> = [
+    { error: "✗ 只能用小写字母、数字和连字符，例如 ui-worker", type: ["U", "I"] },
+    { error: `✗ 用户层已经有 ${longName}，换一个名字`, type: [...longName] },
+  ];
+  for (const { error, type } of cases) {
+    for (let width = 36; width <= 80; width++) {
+      const p = await page({ taken: { [longName]: "用户层" } });
+      p.press("c", ...Array<string>("ui-worker-copy".length).fill(BACKSPACE), ...type, ENTER);
+      const rows = p.lines(width).map(plain);
+      for (const row of rows) expect(visibleWidth(row), `${width}: ${row}`).toBeLessThanOrEqual(width);
+      expect(squeeze(rows.join("")), `${width}`).toContain(squeeze(error));
+    }
+  }
+});
+
+const footerRows = (rows: string[]) => {
+  const start = rows.findIndex((row) => row.startsWith(" ✓ "));
+  const end = rows.findIndex((row, index) => index > start && row.trimStart().startsWith("←→"));
+  return rows.slice(start, end).map((row) => row.slice(1).trimEnd());
+};
+
+test("复制完成提示折行：在最后一个空格、中文逗号或斜杠之后断开，与确认过的预览一致", async () => {
+  const show = async (width: number, text: string) => footerRows((await page({ state: { notice: { tone: "ok", text } } })).lines(width).map(plain));
+  expect(await show(36, NOTICE)).toEqual(["✓ 已复制到 ~/.pi/agent/agents/", "vue-engineer.md，", "打开它写专长、skills 和 mcp"]);
+  expect(await show(80, "✓ 已复制到 ~/Projects/some-company/frontend-app/.pi/agents/vue-engineer.md，打开它写专长、skills 和 mcp"))
+    .toEqual(["✓ 已复制到 ~/Projects/some-company/frontend-app/.pi/agents/vue-engineer.md，", "打开它写专长、skills 和 mcp"]);
+  expect(await show(80, "✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp")).toEqual(["✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp"]);
+});
+
+test("展开详情里用顿号隔开的列表值放不下时在顿号之后断开，名字不被拆开", async () => {
+  const skills = ["ui-basics", "very-long-skill-name-number-one", "another-skill"];
+  for (const width of [36, 40, 48, 64]) {
+    const p = await page({ skills: skills.join(", ") });
+    p.press(ENTER);
+    const rows = p.lines(width).map(plain).filter((line) => line.includes("┊")).map((line) => line.replace(/^.*┊/u, "").trim());
+    expect(rows.some((row) => row.includes("ui-basics")), `${width} ui-basics: ${rows.join("|")}`).toBe(true);
+    expect(rows.some((row) => row.includes("another-skill")), `${width} another-skill: ${rows.join("|")}`).toBe(true);
   }
 });

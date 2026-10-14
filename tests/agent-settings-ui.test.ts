@@ -425,6 +425,40 @@ test("各分类和每一步的画面，在 44、56、80 列下都不超出终端
   }
 });
 
+test("三步选择画面的按键提示放不下时按一组按键折行，一组不被拆开，36 到 80 列下每行都不超出终端宽度", async () => {
+  const groupsOf = (hint: string) => hint.split("  ");
+  const screens: Array<{ hint: string; keys: string[]; models?: unknown[] }> = [
+    { hint: "↑↓ 选择  回车 下一步  Esc 取消", keys: [ENTER] },
+    { hint: "回车 下一步  Esc 取消", keys: [ENTER], models: [] },
+    { hint: "↑↓ 选择  回车 下一步  Esc 上一步", keys: [ENTER, ENTER] },
+    { hint: "↑↓ 选择  回车 保存  Esc 上一步", keys: [ENTER, ENTER, ENTER] },
+  ];
+  for (const { hint, keys, models } of screens) {
+    const groups = groupsOf(hint);
+    for (let width = 36; width <= 80; width++) {
+      const q = await settingsView({ ...(models ? { models } : {}) });
+      q.toSettings();
+      q.press(...keys);
+      const rows = q.text(width).split("\n");
+      for (const row of rows) expect(visibleWidth(row), `${hint} ${width}: ${row}`).toBeLessThanOrEqual(width);
+      const hintRows = rows.map((row) => row.trim()).filter((row) => row && row.split("  ").every((group) => groups.includes(group)));
+      expect(hintRows.flatMap((row) => row.split("  ")), `${hint} ${width}`).toEqual(groups);
+      if (visibleWidth(` ${hint}`) <= width) expect(hintRows, `${hint} ${width}`).toHaveLength(1);
+    }
+  }
+});
+
+test("设定栏里 PM 那一行的底部灰字在 36 列下折行后，任何一行都不以顿号或逗号开头", async () => {
+  const p = await settingsView();
+  p.toSettings();
+  const rows = p.text(36).split("\n");
+  expect(rows.some((row) => row.trimStart().startsWith("PM："))).toBe(true);
+  for (const row of rows) {
+    expect(visibleWidth(row), row).toBeLessThanOrEqual(36);
+    expect(row.trimStart(), row).not.toMatch(/^[、，]/u);
+  }
+});
+
 interface PageScreen extends Screen { now(): string }
 type Step = (screen: PageScreen) => void;
 
@@ -760,8 +794,12 @@ test("设定里的裸模型名在本机有多个提供方时，这一行不可�
     user: oneCompany({ pm: { model: "gpt-6.1-sol", thinking: "high" } }) });
   p.toSettings();
   expect(p.text()).toMatch(/PM +用户 +gpt-6\.1-sol ?不可用/u);
-  const footer = p.text().split("\n").find((line) => line.trimStart().startsWith("✗ "))!;
-  expect(footer).toBeDefined();
+  const rows = p.text(60).split("\n");
+  for (const row of rows) expect(visibleWidth(row), row).toBeLessThanOrEqual(60);
+  const start = rows.findIndex((line) => line.trimStart().startsWith("✗ "));
+  expect(start).toBeGreaterThan(-1);
+  const end = rows.findIndex((line, index) => index > start && (/^─+$/u.test(line) || line.includes("←→ 分类")));
+  const footer = rows.slice(start, end).map((line) => line.trimStart()).join("");
   expect(footer).toContain("多个提供方");
   expect(footer).toContain("启动 PM 会失败");
   expect(footer).not.toContain("没有可用的凭据");
