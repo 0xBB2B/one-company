@@ -13,19 +13,21 @@ export interface CommandsPi {
     name: string,
     options: { description: string; handler: (args: string, ctx: CommandsCtx) => Promise<void> },
   ): void;
+  getThinkingLevel(): string;
 }
 
 export interface RegisterCommandsOptions {
-  openSettingsPage: (ctx: SettingsExtensionContext) => Promise<void>;
+  openSettingsPage: (ctx: SettingsExtensionContext, options: { mainThinking: () => string }) => Promise<void>;
   openShellPage: (ctx: OpenShellPageCtx) => Promise<void>;
 }
 
 async function openSettingOrReport(
+  pi: CommandsPi,
   options: RegisterCommandsOptions,
   ctx: CommandsCtx,
 ): Promise<void> {
   try {
-    await options.openSettingsPage(ctx);
+    await options.openSettingsPage(ctx, { mainThinking: () => pi.getThinkingLevel() });
   } catch (error) {
     ctx.ui.notify((error as Error).message);
   }
@@ -50,7 +52,7 @@ export function registerCommands(pi: CommandsPi, options: RegisterCommandsOption
         ctx.ui.notify("需要交互终端才能打开设置页");
         return;
       }
-      await openSettingOrReport(options, ctx);
+      await openSettingOrReport(pi, options, ctx);
     },
   });
 

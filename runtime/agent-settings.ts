@@ -3,13 +3,13 @@ import { dirname, join } from "node:path";
 import { MODEL_PATTERN, THINKING_LEVELS, type ThinkingLevel } from "./roles.ts";
 
 export const SETTINGS_ROLES = [
-  { key: "pm", label: "PM", purpose: "活动需求的负责人，拆任务、派工、调度", effect: "下次启动 PM 时生效", failure: "启动 PM 会失败", model: "gpt-6.1-sol", thinking: "high" },
-  { key: "interpreter", label: "解释器", purpose: "把用户原话解读成结构化决定", effect: "下次调用时生效", failure: "批准需求时解读会失败", model: "gpt-6-luna", thinking: "medium" },
-  { key: "draft-verifier", label: "草稿核验器", purpose: "核对需求草稿是不是用户原话要求的", effect: "下次调用时生效", failure: "起草或修改需求草稿时核验会失败", model: "gpt-6.1-sol", thinking: "medium" },
+  { key: "pm", label: "PM", purpose: "活动需求的负责人，拆任务、派工、调度", effect: "下次启动 PM 时生效", failure: "启动 PM 会失败", model: null, thinking: null },
+  { key: "interpreter", label: "解释器", purpose: "把用户原话解读成结构化决定", effect: "下次调用时生效", failure: "批准需求时解读会失败", model: null, thinking: null },
+  { key: "draft-verifier", label: "草稿核验器", purpose: "核对需求草稿是不是用户原话要求的", effect: "下次调用时生效", failure: "起草或修改需求草稿时核验会失败", model: null, thinking: null },
 ] as const;
 
 export type SettingsRoleKey = (typeof SETTINGS_ROLES)[number]["key"];
-export interface RoleSetting { model: string | null; thinking: ThinkingLevel }
+export interface RoleSetting { model: string | null; thinking: ThinkingLevel | null }
 export type SettingsLayer = Partial<Record<SettingsRoleKey, RoleSetting>>;
 export interface SettingsProblem { path: string; layer: "user" | "project"; role?: SettingsRoleKey; display: string }
 export interface EffectiveSetting extends RoleSetting { source: "project" | "user" | "default" }
@@ -73,11 +73,11 @@ export function parseSettingsLayer(path: string, layer: "user" | "project"): { e
       problem(`「${role.label}」的模型写法不对：${typeof model === "string" ? model : JSON.stringify(model)}；要写成模型名、提供方/模型名，或 null（跟随主会话）`);
       continue;
     }
-    if (typeof thinking !== "string" || !(THINKING_LEVELS as readonly string[]).includes(thinking)) {
-      problem(`「${role.label}」的思考等级写错了：${typeof thinking === "string" ? thinking : JSON.stringify(thinking)}；只能是 ${THINKING_LEVELS.join("、")}`);
+    if (thinking !== null && (typeof thinking !== "string" || !(THINKING_LEVELS as readonly string[]).includes(thinking))) {
+      problem(`「${role.label}」的思考等级写错了：${typeof thinking === "string" ? thinking : JSON.stringify(thinking)}；只能是 ${THINKING_LEVELS.join("、")}，或 null（跟随主会话）`);
       continue;
     }
-    entries[role.key] = { model, thinking: thinking as ThinkingLevel };
+    entries[role.key] = { model, thinking: thinking as ThinkingLevel | null };
   }
   return { entries, problems };
 }
@@ -124,7 +124,7 @@ function rewriteSettings(path: string, change: (root: Record<string, unknown>) =
   writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
 }
 
-export async function saveAgentSetting(input: { path: string; role: SettingsRoleKey; model: string | null; thinking: ThinkingLevel }): Promise<void> {
+export async function saveAgentSetting(input: { path: string; role: SettingsRoleKey; model: string | null; thinking: ThinkingLevel | null }): Promise<void> {
   rewriteSettings(input.path, (root) => {
     const section = isObject(root["one-company"]) ? root["one-company"] : {};
     return { ...root, "one-company": { ...section, [input.role]: { model: input.model, thinking: input.thinking } } };

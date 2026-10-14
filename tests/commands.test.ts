@@ -11,6 +11,7 @@ function makeFakePi() {
     registerCommand(name, options) {
       registrations[name] = options;
     },
+    getThinkingLevel: () => "xhigh",
   };
   return { pi, registrations };
 }
@@ -84,6 +85,19 @@ describe("/one:agents", () => {
     await registrations["one:agents"]!.handler("", ctx);
 
     expect(settingsCalls.length).toBe(1);
+  });
+
+  test("传给设置页的 mainThinking 返回 pi 当前的思考等级", async () => {
+    const { pi, registrations } = makeFakePi();
+    const received: Array<{ mainThinking: () => string }> = [];
+    const { options } = makeOptions({ openSettingsPage: async (_ctx, page) => { received.push(page); } });
+    registerCommands(pi, options);
+    const { ctx } = makeFakeCtx({ hasUI: true, mode: "tui" });
+
+    await registrations["one:agents"]!.handler("", ctx);
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.mainThinking()).toBe("xhigh");
   });
 
   test("打开设置页回调抛错时通知具体原因，不调用其他入口", async () => {

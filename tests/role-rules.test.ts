@@ -44,8 +44,10 @@ describe("职责规矩文件", () => {
 });
 
 describe("内置定义只留元信息", () => {
-  test.each(["worker", "reviewer", "qa", "explore"])("%s 的正文为空串，skills 与 mcp 都是空数组", async (name) => {
+  test.each(["worker", "reviewer", "qa", "explore"])("%s 不写模型和思考，正文为空串，skills 与 mcp 都是空数组", async (name) => {
     const definition = await readRoleDefinition(join(defaultRoleDir(), `${name}.md`), parseFrontmatter);
+    expect(definition.model).toBeUndefined();
+    expect(definition.thinking).toBeUndefined();
     expect(definition.body).toBe("");
     expect(definition.skills).toEqual([]);
     expect(definition.mcp).toEqual([]);

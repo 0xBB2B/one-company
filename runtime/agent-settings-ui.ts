@@ -9,7 +9,7 @@ import { THINKING_LEVELS } from "./roles.ts";
 import type { RoleSource, ThinkingLevel } from "./roles.ts";
 
 export type SettingsLayerName = "user" | "project";
-export interface SaveSettingRequest { role: SettingsRoleKey; model: string | null; thinking: ThinkingLevel; layer: SettingsLayerName }
+export interface SaveSettingRequest { role: SettingsRoleKey; model: string | null; thinking: ThinkingLevel | null; layer: SettingsLayerName }
 export interface ClearSettingRequest { role: SettingsRoleKey; layer: SettingsLayerName }
 
 const MARKER = 3, NAME = 14, SOURCE = 8, THINKING = 8, MIN_NAME = 8, MIN_MODEL = 9, MAX_MODEL = 24, CHECK = 2;
@@ -25,11 +25,11 @@ export const fit = (text: string, width: number) => {
 };
 
 const roleOf = (key: SettingsRoleKey) => SETTINGS_ROLES.find((role) => role.key === key)!;
-export const thinkingLabel = (role: SettingsRoleKey, thinking: ThinkingLevel) => role !== "pm" && thinking === "off" ? "不思考" : thinking;
+export const thinkingLabel = (role: SettingsRoleKey, thinking: string | null) => thinking === null ? "跟随" : role !== "pm" && thinking === "off" ? "不思考" : thinking;
 export const describeSetting = (role: SettingsRoleKey, setting: RoleSetting) => `${setting.model ?? FOLLOW} · ${thinkingLabel(role, setting.thinking)}`;
 
 interface ModelChoice { name: string; note: string; value: string | null; model: ModelLike | undefined; current: boolean }
-interface LevelChoice { level: ThinkingLevel; unsupported?: string }
+interface LevelChoice { level: ThinkingLevel | null; unsupported?: string }
 interface PickerRow { name: string; note: string; current?: boolean; disabled?: boolean; soft?: boolean }
 
 export function modelChoices(models: readonly ModelLike[], mainModel: ModelLike | undefined, current: RoleSetting): ModelChoice[] {
@@ -41,7 +41,7 @@ export function modelChoices(models: readonly ModelLike[], mainModel: ModelLike 
 }
 
 export function thinkingChoices(model: ModelLike | undefined): LevelChoice[] {
-  return THINKING_LEVELS.map((level) => model && !thinkingSupported(model, level) ? { level, unsupported: `${model.id} 不支持` } : { level });
+  return [...THINKING_LEVELS.map((level) => model && !thinkingSupported(model, level) ? { level, unsupported: `${model.id} 不支持` } : { level }), { level: null }];
 }
 
 export function rowAvailability(role: SettingsRoleKey, setting: RoleSetting, models: readonly ModelLike[], mainModel: ModelLike | undefined): { ok: true } | { ok: false; reason: string; consequence: string } {
@@ -60,9 +60,9 @@ export class SettingsTab {
   private modelOptions: ModelChoice[] = [];
   private levelOptions: LevelChoice[] = [];
   private chosenModel: ModelChoice | undefined;
-  private chosenThinking: ThinkingLevel = "off";
+  private chosenThinking: ThinkingLevel | null = null;
   private readonly options: {
-    theme: AgentCatalogTheme; settings: { values: Record<SettingsRoleKey, EffectiveSetting> }; models: readonly ModelLike[]; mainModel: ModelLike | undefined;
+    theme: AgentCatalogTheme; settings: { values: Record<SettingsRoleKey, EffectiveSetting> }; models: readonly ModelLike[]; mainModel: ModelLike | undefined; mainThinking: string;
     projectTrusted: boolean; sourceTag(source: RoleSource): string;
     onSave(request: SaveSettingRequest): void; onClear(request: ClearSettingRequest): void;
   };
@@ -119,7 +119,9 @@ export class SettingsTab {
     if (this.step === 1) return this.modelOptions.map((choice) => ({ name: choice.name, note: choice.note, current: choice.current, soft: choice.value === null }));
     if (this.step === 2) {
       const current = this.options.settings.values[this.role].thinking;
-      return this.levelOptions.map((choice) => ({ name: thinkingLabel(this.role, choice.level), note: choice.unsupported ?? "", current: choice.level === current, disabled: !!choice.unsupported }));
+      return this.levelOptions.map((choice) => choice.level === null
+        ? { name: FOLLOW, note: `现在是 ${thinkingLabel(this.role, this.options.mainThinking)}`, current: current === null, soft: true }
+        : { name: thinkingLabel(this.role, choice.level), note: choice.unsupported ?? "", current: choice.level === current, disabled: !!choice.unsupported });
     }
     return [
       { name: "项目层", note: this.options.projectTrusted ? ".pi/settings.json · 只对这个项目生效" : "项目未受信任，项目层的设定不会生效", disabled: !this.options.projectTrusted },
@@ -148,7 +150,7 @@ export class SettingsTab {
         cell(pad(fit(role.label, nameWidth - 1), nameWidth), role.key === fresh ? (text) => theme.fg("success", text) : undefined),
         selected ? theme.bg("selectedBg", this.options.sourceTag(value.source)) : this.options.sourceTag(value.source), cell(" ".repeat(SOURCE - 6)),
         cell(pad(modelText, model), (text) => theme.fg(!available.ok ? "error" : value.model ? "accent" : "dim", text)),
-        cell(thinking),
+        cell(thinking, value.thinking === null ? (text) => theme.fg("dim", text) : undefined),
         ...(selected ? [cell(" ".repeat(Math.max(0, width - MARKER - nameWidth - SOURCE - model - visibleWidth(thinking))))] : []),
       ].join(""));
     });

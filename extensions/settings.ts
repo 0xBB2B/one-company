@@ -27,7 +27,7 @@ async function resolveRepoRoot(cwd: string): Promise<string> {
 export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "isProjectTrusted" | "modelRegistry" | "model">;
 
 /** /one:agents：查看内置、用户、项目三层的角色定义，C 复制为新定义；设定栏里可以改 PM、解释器、草稿核验器用的模型和思考等级。 */
-export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<void> {
+export async function openSettingsPage(ctx: SettingsExtensionContext, options: { mainThinking: () => string }): Promise<void> {
   const projectTrusted = ctx.isProjectTrusted();
   const agentDir = dirname(dataRoot(process.env));
   const repositoryRoot = await resolveRepoRoot(ctx.cwd);
@@ -47,7 +47,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<v
     const settings = await readSettings();
     const picked = await ctx.ui.custom<Picked | undefined>((tui, theme, _keybindings, done) => {
       const view: AgentCatalogView = new AgentCatalogView({ catalog, theme: theme as unknown as AgentCatalogTheme, projectTrusted, untrustedProjectCount, nameTaken,
-        settings, models, mainModel: ctx.model, ...(state ? { state } : {}),
+        settings, models, mainModel: ctx.model, mainThinking: options.mainThinking(), ...(state ? { state } : {}),
         onCopy: (copy) => done({ copy, state: view.state() }), onSaveSetting: (save) => done({ save, state: view.state() }), onClearSetting: (clear) => done({ clear, state: view.state() }),
         onClose: () => done(undefined) });
       return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
@@ -66,7 +66,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext): Promise<v
         } else {
           await clearAgentSetting({ path: settingsPaths[layer], role });
           const now = (await readSettings()).values[role];
-          text = `✓ 已清除${layerLabel[layer]}的 ${label} 设定，现在用${now.source === "user" ? "用户层的" : "内置默认值"} ${describeSetting(role, now)}`;
+          text = `✓ 已清除${layerLabel[layer]}的 ${label} 设定，现在用${now.source === "user" ? `用户层的 ${describeSetting(role, now)}` : "内置默认值：跟随主会话"}`;
         }
         state = { ...picked.state, fresh: role, notice: { tone: "ok", text } };
       } catch (error) {
