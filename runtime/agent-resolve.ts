@@ -79,6 +79,7 @@ export async function resolveAgent(input: {
   if (!entry) throw new AgentResolveError("agent_unavailable", `未找到角色定义 ${input.name}`);
   if (!entry.available || !entry.definition) throw new AgentResolveError("agent_unavailable", `${input.name} 定义不可用：${entry.reason ?? "未知原因"}`);
   const definition = entry.definition;
+  if (definition.role === "prototype" && input.role !== "prototype") throw new AgentResolveError("agent_unavailable", `${input.name} 是原型设计师，只能由主窗口派出，在澄清阶段出原型`);
   if (definition.role !== input.role) throw new AgentResolveError("agent_unavailable", `${input.name} 的职责是 ${definition.role}，不能承担 ${input.role} 任务`);
   const { model, thinking } = await resolveModelChoice({ model: definition.model ?? null, thinking: definition.thinking ?? null,
     models: input.models, hasAuth: input.hasAuth, fallback: input.fallback });

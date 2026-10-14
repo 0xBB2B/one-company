@@ -43,8 +43,18 @@ describe("职责规矩文件", () => {
   });
 });
 
+describe("prototype 职责规矩", () => {
+  test("含单个 HTML、四种状态、深色等宽 80 列终端、多步按顺序、先读上一版按意见改，不含先红后绿", () => {
+    const rules = loadRoleRules("prototype");
+    for (const phrase of ["单个 HTML", "样式和脚本", "写在文件里", "正常", "空数据", "加载中", "出错", "深色背景", "等宽字体", "80 列", "按顺序", "上一版", "意见"]) {
+      expect(rules).toContain(phrase);
+    }
+    expect(rules).not.toContain("先红后绿");
+  });
+});
+
 describe("内置定义只留元信息", () => {
-  test.each(["worker", "reviewer", "qa", "explore"])("%s 不写模型和思考，正文为空串，skills 与 mcp 都是空数组", async (name) => {
+  test.each(["worker", "reviewer", "qa", "explore", "prototype"])("%s 不写模型和思考，正文为空串，skills 与 mcp 都是空数组", async (name) => {
     const definition = await readRoleDefinition(join(defaultRoleDir(), `${name}.md`), parseFrontmatter);
     expect(definition.model).toBeUndefined();
     expect(definition.thinking).toBeUndefined();

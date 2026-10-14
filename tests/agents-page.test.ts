@@ -68,7 +68,7 @@ test("M8D-AC8：项目未受信任时项目层选项变暗并写明原因，页�
   await writeFile(join(root, "repo", ".pi", "agents", "reviewer.md"), "---\nname: reviewer\ndescription: d\nrole: reviewer\n---\n");
   let window = "";
   const ctx = scripted([
-    (s) => { expect(s.text.split("\n")[1]).toMatch(/内置 4 · 用户 0$/u); s.keys("c", ENTER); },
+    (s) => { expect(s.text.split("\n")[1]).toMatch(/内置 5 · 用户 0$/u); s.keys("c", ENTER); },
     (s) => { window = s.text; s.keys(ESC); },
     (s) => s.keys(ESC),
   ], false);

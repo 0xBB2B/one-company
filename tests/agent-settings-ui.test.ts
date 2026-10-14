@@ -65,7 +65,7 @@ async function settingsView(options: ViewOptions = {}) {
   const text = (width = 80) => view.render(width).join("\n");
   const press = (...keys: string[]) => { for (const key of keys) view.handleInput(key); };
   const screen: Screen = { text, press };
-  const toSettings = () => press(RIGHT, RIGHT, RIGHT, RIGHT);
+  const toSettings = () => press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
   return { view, text, press, screen, saves, clears, closed: () => closed, toSettings };
 }
 
@@ -405,10 +405,10 @@ test("模型有凭据的行不写“不可用”", async () => {
 
 test("问题分类列出设定文件写错的那一条，项目未受信任那条改成包含定义和设定", async () => {
   const p = await settingsView({ project: "{ not json" });
-  p.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
+  p.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
   expect(p.text()).toMatch(/settings\.json +项目 +文件不是合法的 JSON，这一层的设定都没有生效/u);
   const u = await settingsView({ trusted: false });
-  u.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
+  u.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
   expect(u.text()).toContain("项目未受信任，项目层的定义和设定没有生效");
 });
 
@@ -490,7 +490,7 @@ function scripted(steps: Step[], options: { trusted?: boolean; models?: unknown[
   return { hasUI: true, mode: "tui", cwd: repoDir(), ui: ui as unknown as SettingsExtensionContext["ui"], isProjectTrusted: () => options.trusted ?? true,
     modelRegistry: { getAll: () => models, hasConfiguredAuth: (model: { id: string }) => authorized.includes(model.id) }, model: SOL, screens } as unknown as SettingsExtensionContext & { screens: string[] };
 }
-const toSettings = (s: PageScreen) => s.press(RIGHT, RIGHT, RIGHT, RIGHT);
+const toSettings = (s: PageScreen) => s.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
 
 test("页面：选 gpt-6-luna、xhigh、项目层后项目设置文件写入 pm 条目，重开后 PM 来源是项目，底部绿字写生效时机", async () => {
   await mkdir(repoDir(), { recursive: true });
@@ -713,7 +713,7 @@ test("页面：项目设置文件写错时问题栏出现这一条", async () =>
   const ctx = scripted([
     (s) => {
       expect(s.now()).toMatch(/问题 1/u);
-      s.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
+      s.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
       expect(s.now()).toMatch(/settings\.json +项目 +文件不是合法的 JSON/u);
       s.press(ESC);
     },
@@ -820,7 +820,7 @@ test("来源为内置时按 R，底部提示恰好是“已经是内置默认值
 
 test("项目设置文件里思考等级写错时，问题栏的文件列显示路径，展开写影响是这一项没有生效改用下一层", async () => {
   const p = await settingsView({ project: oneCompany({ pm: { model: "gpt-6-luna", thinking: "super" } }) });
-  p.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
+  p.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
   const row = p.text().split("\n").find((line) => line.includes("项目") && line.includes("super")) ?? "";
   expect(row).toMatch(/\S*\/\S*settings\.json/u);
   expect(row).toContain("super");
@@ -831,7 +831,7 @@ test("项目设置文件里思考等级写错时，问题栏的文件列显示�
 test("agent 目录名叫 .pi 时，用户层坏文件在问题栏的层标签仍是“用户”", async () => {
   process.env.PI_CODING_AGENT_DIR = join(root, "home", ".pi");
   const p = await settingsView({ user: "{ not json" });
-  p.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
+  p.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
   expect(p.text()).toMatch(/用户 +文件不是合法的 JSON/u);
   expect(p.text()).not.toMatch(/项目 +文件不是合法的 JSON/u);
 });

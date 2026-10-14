@@ -49,8 +49,8 @@ test("打开时停在 worker，标题写各层数量，分类标签带数量且�
   const lines = p.lines().map(plain);
   expect(p.lines()[0]).toBe(`<border>${"─".repeat(80)}</>`);
   expect(p.lines().at(-1)).toBe(`<border>${"─".repeat(80)}</>`);
-  expect(lines[1]).toMatch(/^ 角色定义 +内置 4 · 用户 1 · 项目 1 $/u);
-  expect(lines[2]).toMatch(/^ {2}worker 2 {3}reviewer 1 {3}qa 1 {3}explore 1 +│ {2}设定 3 {3}问题 1 $/u);
+  expect(lines[1]).toMatch(/^ 角色定义 +内置 5 · 用户 1 · 项目 1 $/u);
+  expect(lines[2]).toMatch(/^ {2}worker 2 {3}reviewer 1 {3}qa 1 {3}explore 1 {3}prototype 1 +│ {2}设定 3 {3}问题 1 $/u);
   expect(p.lines()[2]).toContain("[selectedBg]<accent>** worker 2 **</>[/]");
   expect(p.lines()[2]).toContain("<error> 问题 1 </>");
   expect(lines[2]).toHaveLength(80 - 4);
@@ -75,6 +75,22 @@ test("M8D-AC8：同一职责下用户层与项目层排在内置前面，底部�
   expect(p.text().match(/reviewer +(内置|项目)/gu)).toHaveLength(1);
 });
 
+test("prototype 栏排在 explore 之后、设定之前，内置行跟随主会话，栏底写说明，C 复制的定义归在这一栏", async () => {
+  const p = await page();
+  p.press(RIGHT, RIGHT, RIGHT, RIGHT);
+  expect(p.text()).toMatch(/› prototype +内置 +跟随主会话 +跟随 *\n/u);
+  expect(p.text()).toContain("只能由主窗口派出，在澄清阶段出界面原型（单个 HTML）。");
+  p.press(RIGHT);
+  expect(p.text()).toMatch(/设定/u);
+  expect(p.text()).toMatch(/名称/u);
+  const d = await dirs();
+  const catalog = await loadRoleCatalog({ ...d, parseFrontmatter, projectTrusted: true });
+  const proto = catalog.roles.find((entry) => entry.name === "prototype")!;
+  await copyAgentDefinition({ entry: proto, newName: "proto-copy", targetDir: d.userDir, layerDirs: [d.defaultDir, d.userDir, d.projectDir] });
+  const reloaded = await loadRoleCatalog({ ...d, parseFrontmatter, projectTrusted: true });
+  expect(reloaded.roles.find((entry) => entry.name === "proto-copy")).toMatchObject({ source: "user", available: true, definition: { role: "prototype" } });
+});
+
 test("没写模型和思考的定义，模型列写“跟随主会话”、思考列写“跟随”，不再写“继承”", async () => {
   const p = await page();
   p.press(RIGHT, RIGHT);
@@ -87,7 +103,7 @@ test("没写模型和思考的定义，模型列写“跟随主会话”、思�
 
 test("M8D-AC8：问题分类写短原因，展开写完整原因、现在的写法与影响；项目未受信任用灰色另列一行", async () => {
   const p = await page();
-  p.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
+  p.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
   expect(p.text()).toMatch(/文件 +层 +原因\n › broken\.md +用户 +thinking 写错了/u);
   expect(p.lines().join("\n")).toContain("<error>thinking 写错了</>");
   expect(p.text()).toContain("这份定义没有生效 · 改正文件后重新打开本页");
@@ -97,8 +113,8 @@ test("M8D-AC8：问题分类写短原因，展开写完整原因、现在的写�
   expect(p.text()).toMatch(/┊ 现在是 +extreme/u);
   expect(p.text()).toMatch(/┊ 影响 +这份定义没有生效/u);
   const u = await page({ trusted: false });
-  expect(plain(u.lines()[1])).toMatch(/内置 4 · 用户 1 $/u);
-  for (let i = 0; i < 5; i++) u.press(RIGHT);
+  expect(plain(u.lines()[1])).toMatch(/内置 5 · 用户 1 $/u);
+  for (let i = 0; i < 6; i++) u.press(RIGHT);
   expect(u.text()).toContain("问题 2");
   expect(u.text()).toMatch(/› \.pi\/agents\/ +项目 +项目未受信任，项目层的定义和设定没有生效/u);
   expect(u.text()).toContain("在 pi 里把这个项目设为受信任后，项目层的 1 份定义就会生效");
@@ -153,7 +169,7 @@ test("M8D-AC8：复制后回到原分类，新定义被选中且名字绿色，�
 test("M8D-AC8：窄终端只在放不下时才省：左边职责只给选中的显示数量，设定与问题照带数量，更窄时才截断模型名末尾", async () => {
   const p = await page();
   const lines = p.lines(56).map(plain);
-  expect(lines[1]).toMatch(/内置 4 · 用户 1 · 项目 1 $/u);
+  expect(lines[1]).toMatch(/内置 5 · 用户 1 · 项目 1 $/u);
   expect(lines[2]).toMatch(/^ {2}worker 2 {3}reviewer .*│ {2}设定 3 {3}问题 1 $/u);
   expect(lines[2]).not.toContain("reviewer 1");
   expect(lines.join("\n")).toMatch(/ui-worker +用户 +5x\/gpt-6-luna +medium/u);
@@ -193,7 +209,7 @@ test("复制内置 worker 生成的文件头部不含 model 和 thinking，仍�
 
 test("M8D-AC8：44、56、80 列下每个分类的列表、详情与命名画面，任何一行的显示宽度都不超过终端宽度", async () => {
   for (const width of [44, 56, 80]) {
-    for (let tab = 0; tab < 6; tab++) {
+    for (let tab = 0; tab < 7; tab++) {
       for (const keys of [[], [ENTER], ["c"]]) {
         const q = await page({ trusted: tab % 2 === 0 });
         q.press(...Array<string>(tab).fill(RIGHT), ...keys);

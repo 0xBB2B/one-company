@@ -52,7 +52,7 @@ export interface PmOverviewInput {
 }
 
 const ACTIVE_CHILD = new Set(["queued", "running", "pausing"]);
-const ROLE_LABEL: Record<string, string> = { "one-company.worker": "worker", "one-company.reviewer": "reviewer", "one-company.qa": "qa", "one-company.explore": "explore" };
+const ROLE_LABEL: Record<string, string> = { "one-company.worker": "worker", "one-company.reviewer": "reviewer", "one-company.qa": "qa", "one-company.explore": "explore", "one-company.prototype": "prototype" };
 
 /** 已批准正文里带显式 ID 的标题：`# 标题 {#id}`。 */
 export function headingTitlesOf(body: string): Map<string, string> {
