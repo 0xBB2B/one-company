@@ -8,6 +8,7 @@ import type { RequirementDocSpec } from "./requirement-doc.ts";
 import type { ProdReference, RequirementRecord } from "./requirement-contracts.ts";
 import { prodRequirementPath } from "./prod-storage.ts";
 import type { ProdRepositoryIdentity, ProdStorageWriteResult } from "./prod-storage.ts";
+import { assertApprovableIn } from "./requirement-prototypes.ts";
 import { archivePathFor } from "./requirement-identity.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
 import {
@@ -46,6 +47,7 @@ const operationSchema = object({
   receiptId: nullable(id),
   manifest: Type.Optional(ApprovalManifestReferenceSchema),
   docSpec: Type.Optional(RequirementDocSpecSchema),
+  prototypes: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })),
   archivePath: Type.String({ minLength: 1, maxLength: 1024 }),
   repositoryRoot: Type.String({ minLength: 1, maxLength: 4096 }),
   expectedRepositoryIdentity: nullable(identity),
@@ -73,6 +75,7 @@ export interface RequirementOperation {
   receiptId: string | null;
   manifest?: ApprovalManifestReference;
   docSpec?: RequirementDocSpec;
+  prototypes?: string;
   archivePath: string;
   repositoryRoot: string;
   expectedRepositoryIdentity: ProdRepositoryIdentity | null;
@@ -106,6 +109,7 @@ export interface PrepareRequirementOperation {
   receiptId: string | null;
   manifest?: ApprovalManifestReference;
   docSpec?: RequirementDocSpec;
+  prototypes?: string;
   archivePath: string;
   repositoryRoot: string;
   expectedRepositoryIdentity: ProdRepositoryIdentity | null;
@@ -140,6 +144,7 @@ function checkOperation(value: unknown): RequirementOperation {
     || (operation.action === "confirmUpdate") !== (operation.receiptId !== null)
     || operation.updatedAt < operation.createdAt
     || (operation.docSpec !== undefined && operation.action !== "confirmUpdate")
+    || (operation.prototypes !== undefined && operation.action !== "confirmUpdate")
     || (operation.action === "confirmUpdate") !== (operation.manifest !== undefined)
     || (operation.manifest !== undefined && (operation.manifest.requirementId !== operation.requirementId ||
       operation.manifest.candidate.operationId !== operation.operationId || operation.manifest.candidate.intentHash !== operation.intentHash ||
@@ -168,6 +173,7 @@ function mutableFields(input: PrepareRequirementOperation) {
     receiptId: input.receiptId,
     ...(input.manifest ? { manifest: input.manifest } : {}),
     ...(input.docSpec ? { docSpec: input.docSpec } : {}),
+    ...(input.prototypes ? { prototypes: input.prototypes } : {}),
     archivePath: input.archivePath,
     repositoryRoot: input.repositoryRoot,
     expectedRepositoryIdentity: input.expectedRepositoryIdentity,
@@ -235,6 +241,7 @@ export class RequirementOperations {
       if (requirement.epoch !== input.epoch) throw new RequirementServiceError("epoch_changed");
       const parent = requirement.saved?.commit ?? null;
       if (parent !== input.expectedParent) throw new RequirementServiceError("saved_version_changed");
+      if (input.action === "confirmUpdate") assertApprovableIn(db, input.requirementId, input.prototypes);
       const now = this.checkedNow();
       const data: RequirementOperation = {
         format: "requirement-service-operation/v1",
@@ -358,6 +365,16 @@ export class RequirementOperations {
       .filter((operation) => reference === null || (operation.git!.commit === reference.commit && operation.git!.hash === reference.hash))
       .sort((left, right) => right.updatedAt - left.updatedAt));
     return matching[0]?.archivePath ?? null;
+  }
+
+  savedOperationFor(requirementId: string, reference: ProdReference | null, epoch: number): string | null {
+    if (!reference) return null;
+    const matching = withDatabase(this.path, (db) => db.list(NAMESPACE)
+      .map((stored) => checkOperation(stored.data))
+      .filter((operation) => operation.requirementId === requirementId && operation.epoch === epoch && operation.finalVersion !== null && operation.git !== null &&
+        operation.git.commit === reference.commit && operation.git.hash === reference.hash)
+      .sort((left, right) => right.updatedAt - left.updatedAt));
+    return matching.find((operation) => operation.action !== "confirmUpdate")?.operationId ?? null;
   }
 
   repositoryIdentity(requirementId: string): ProdRepositoryIdentity | null {

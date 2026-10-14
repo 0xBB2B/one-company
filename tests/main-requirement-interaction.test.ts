@@ -25,6 +25,8 @@ import type { ConfirmationContext } from "../runtime/requirement-manage-contract
 import type { Static } from "typebox";
 import { ModelInterpretation } from "../runtime/interaction-derivation.ts";
 import { requirementSummary } from "../runtime/requirement-summary.ts";
+import { beginDesign, decidePrototype, pendingConfirmation, readPrototypeBoard, removeFromDraft, submitDesign } from "../runtime/requirement-prototypes.ts";
+import { prototypesAtRevision } from "../runtime/requirement-prototype-revisions.ts";
 import { answeringUi } from "./helpers/window-host.ts";
 import type { ShownWindow, WindowDecision } from "./helpers/window-host.ts";
 
@@ -943,5 +945,203 @@ describe("草稿核验模型没有 60 秒时限", () => {
     while (w.provider.requests.length === count) await new Promise((r) => setTimeout(r, 1));
     abort.abort();
     await rejected;
+  });
+});
+
+const PROTOTYPE_HTML = "<!doctype html><html><body><h1>设置页</h1></body></html>";
+type World = Awaited<ReturnType<typeof world>>;
+const boardRef = (w: World) => ({ dataRoot: w.dataRoot, repoId: w.repoId });
+
+async function designed(w: World, requirementId: string, name: string, reworks = 0) {
+  for (let round = 0; round <= reworks; round++) {
+    const runId = uuidv7(), accept = round === reworks;
+    await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer" });
+    await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排" });
+    const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
+    await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash,
+      choice: accept ? "accept" : "rework", opinion: accept ? null : "再改一版" });
+  }
+}
+
+async function updatedBody(w: World, requirementId: string, body: string) {
+  w.capture("补一句"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  const meta = await w.call({ action: "metadata", requirementId }), operationId = uuidv7();
+  const updated = await w.call({ action: "updateDraft", requirementId, version: Number(meta.version), operationId,
+    summary: "手机号登录，保留邮箱登录", title: "登录", body });
+  return { operationId, version: Number(updated.version) };
+}
+
+async function approvedSaved(w: World, requirementId: string, saved: { operationId: string; version: number }) {
+  const { input, loaded } = await w.request({ requirementId, operationId: saved.operationId, version: saved.version });
+  w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+  return w.call({ action: "confirmUpdate", ...input });
+}
+
+const fresh = (created: Record<string, unknown>) => ({ operationId: String(created.operationId), version: Number(created.version) });
+const summaryOf = (items: Array<{ name: string; version: number }>) => items.map((item) => `${item.name}:${item.version}`).sort();
+
+/** 让批准窗口里的绿色、红色、灰色行带上标记，便于核对颜色。 */
+function markTones(w: World) {
+  const ui = w.ctx.ui as unknown as { custom: (factory: (...args: unknown[]) => unknown) => Promise<unknown> };
+  const original = ui.custom.bind(ui);
+  const marked = { bold: (text: string) => text, fg: (kind: string, text: string) => ["toolDiffAdded", "toolDiffRemoved", "muted"].includes(kind) ? `<${kind}>${text}</${kind}>` : text };
+  ui.custom = (factory) => original((tui: unknown, _theme: unknown, keybindings: unknown, done: unknown) => factory(tui, marked, keybindings, done));
+}
+
+describe("批准时连同草稿里的原型一起批准", () => {
+  test("草稿里有等确认和设计中的原型时，带 @ 和不带 @ 的批准都被拒，不弹窗，原因逐个写出名称和状态", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    const runId = uuidv7();
+    await beginDesign(boardRef(w), { requirementId: id, name: "设置页", runId, agent: "designer" });
+    await submitDesign(boardRef(w), { requirementId: id, name: "设置页", runId, html: PROTOTYPE_HTML, note: "说明" });
+    await beginDesign(boardRef(w), { requirementId: id, name: "命令行输出", runId: uuidv7(), agent: "designer" });
+    const before = await readPrototypeBoard(boardRef(w), id);
+    for (const mention of [true, false]) {
+      w.capture("同意", "interactive", mention);
+      const error = await w.call({ action: "confirmUpdate", ...(await w.request(created)).input }).then(() => { throw new Error("批准没有被拒"); }, (caught: unknown) => caught as Error);
+      expect(error.message).toContain("原因：还不能批准：");
+      expect(error.message).toContain("原型「设置页」第 1 版还在等你确认");
+      expect(error.message).toContain("原型「命令行输出」设计师还在做");
+      expect(error.message).toContain("建议：先把这 2 份处理完（通过、返工或放弃），再说批准");
+    }
+    expect(w.windows).toHaveLength(0);
+    expect(await readPrototypeBoard(boardRef(w), id)).toEqual(before);
+  });
+
+  test("草稿里只有一份在途原型时，建议写先把它处理完", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await beginDesign(boardRef(w), { requirementId: id, name: "设置页", runId: uuidv7(), agent: "designer" });
+    w.capture("同意");
+    const error = await w.call({ action: "confirmUpdate", ...(await w.request(created)).input }).then(() => { throw new Error("批准没有被拒"); }, (caught: unknown) => caught as Error);
+    expect(error.message).toContain("原因：还不能批准：原型「设置页」设计师还在做");
+    expect(error.message).toContain("建议：先把它处理完（通过、返工或放弃），再说批准");
+  });
+
+  test("原型名称很长时，名称和第几版之间仍至少隔两个空格", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await designed(w, id, "设置页深色模式外观");
+    await approvedSaved(w, id, fresh(created));
+    expect(w.windows[0]!.text).toMatch(/ {2}设置页深色模式外观 {2,}第 1 版 {2}本次新确认/);
+  });
+
+  test("首次批准时窗口的原型清单只有新确认的，确认后第 1 版快照记下它，看板 approved 更新、draft 清空", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    markTones(w);
+    await designed(w, id, "设置页", 1);
+    expect(await approvedSaved(w, id, fresh(created))).toMatchObject({ prodActivated: true });
+    expect(w.windows).toHaveLength(1);
+    expect(w.windows[0]!.text).toContain([
+      " 这一版一起批准的原型（1 份）：",
+      " <toolDiffAdded>  设置页        第 2 版  本次新确认</toolDiffAdded>",
+      " <muted>原型的样子以你在浏览器里通过的那一版为准。</muted>",
+    ].join("\n"));
+    expect(summaryOf(await prototypesAtRevision(boardRef(w), id, 1))).toEqual(["设置页:2"]);
+    const entry = (await readPrototypeBoard(boardRef(w), id)).entries.find((item) => item.name === "设置页")!;
+    expect(entry.approved?.version).toBe(2);
+    expect(entry.draft).toBeNull();
+  });
+
+  test("新确认、沿用、移除三类原型的清单在带 @ 时也弹窗，逐行对得上预览；取消后看板不变，确认后快照只含新确认与沿用", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    markTones(w);
+    await designed(w, id, "命令行输出"); await designed(w, id, "旧外观弹窗");
+    await approvedSaved(w, id, fresh(created));
+    await approvedSaved(w, id, await updatedBody(w, id, BODY + "第二版补充。\n"));
+    expect(w.windows).toHaveLength(2);
+    expect(w.windows[1]!.text).toContain([
+      " 这一版一起批准的原型（2 份）：",
+      "   命令行输出    第 1 版  沿用第 1 版需求",
+      "   旧外观弹窗    第 1 版  沿用第 1 版需求",
+    ].join("\n"));
+    expect(summaryOf(await prototypesAtRevision(boardRef(w), id, 2))).toEqual(["命令行输出:1", "旧外观弹窗:1"]);
+
+    await designed(w, id, "设置页", 2);
+    await removeFromDraft(boardRef(w), { requirementId: id, name: "旧外观弹窗" });
+    const saved = await updatedBody(w, id, BODY + "第二版补充。\n第三版补充。\n");
+    const before = await readPrototypeBoard(boardRef(w), id);
+    w.answerWindows(false);
+    const { input } = await w.request({ requirementId: id, operationId: saved.operationId, version: saved.version });
+    w.capture("同意");
+    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "decision_declined" });
+    expect(await readPrototypeBoard(boardRef(w), id)).toEqual(before);
+    expect(await prototypesAtRevision(boardRef(w), id, 3)).toEqual([]);
+
+    w.answerWindows(true);
+    expect(await approvedSaved(w, id, saved)).toMatchObject({ prodActivated: true });
+    const shown = w.windows.at(-1)!.text;
+    expect(shown).toContain("需求：登录（第 3 版）");
+    expect(shown).toContain([
+      " 这一版一起批准的原型（2 份）：",
+      " <toolDiffAdded>  设置页        第 3 版  本次新确认</toolDiffAdded>",
+      "   命令行输出    第 1 版  沿用第 2 版需求",
+      " <toolDiffRemoved>  旧外观弹窗    第 1 版  本次移除</toolDiffRemoved>",
+      " <muted>原型的样子以你在浏览器里通过的那一版为准。</muted>",
+    ].join("\n"));
+    expect(summaryOf(await prototypesAtRevision(boardRef(w), id, 3))).toEqual(["命令行输出:1", "设置页:3"]);
+    const entries = (await readPrototypeBoard(boardRef(w), id)).entries;
+    expect(entries.every((item) => item.draft === null)).toBe(true);
+    expect(entries.find((item) => item.name === "设置页")!.approved?.version).toBe(3);
+    expect(entries.find((item) => item.name === "命令行输出")!.approved?.version).toBe(1);
+    expect(entries.find((item) => item.name === "旧外观弹窗")!.approved).toBeNull();
+    const diff = String(interpreterContext(w).candidates[0].diff);
+    expect(diff).toContain("第三版补充");
+    expect(diff).not.toContain("正文没有差异。");
+    expect(diff).toContain("原型变化：设置页 新确认第 3 版；旧外观弹窗 移除");
+  });
+
+  test("没有任何原型的需求，带 @ 批准不弹窗，不带 @ 弹的窗口没有原型清单", async () => {
+    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    w.capture("同意", "interactive", false); w.answerWindows(false);
+    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "decision_declined" });
+    expect(w.windows).toHaveLength(1);
+    expect(w.windows[0]!.text).not.toContain("这一版一起批准的原型");
+    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ prodActivated: true });
+    expect(w.windows).toHaveLength(1);
+  });
+
+  test("窗口显示之后、写入之前草稿里的原型变了，批准被拒，看板不提升、不写快照", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await designed(w, id, "设置页");
+    w.beforeAnswer(async () => { await designed(w, id, "另一份"); });
+    const { input, loaded } = await w.request(created);
+    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toThrow("原型在批准过程中变了");
+    const entries = (await readPrototypeBoard(boardRef(w), id)).entries;
+    expect(entries.map((item) => item.approved)).toEqual([null, null]);
+    expect(await prototypesAtRevision(boardRef(w), id, 1)).toEqual([]);
+
+    w.beforeAnswer(async () => {});
+    expect(await approvedSaved(w, id, await updatedBody(w, id, BODY + "补一句。\n"))).toMatchObject({ prodActivated: true });
+    const shown = w.windows.at(-1)!.text;
+    expect(shown).toContain("这一版一起批准的原型（2 份）：");
+    expect(shown).toContain("另一份");
+    expect(summaryOf(await prototypesAtRevision(boardRef(w), id, 1))).toEqual(["另一份:1", "设置页:1"]);
+  });
+
+  test("正文没改、只改了原型时，用 metadata 给的保存操作编号就能批准，版本加 1，解读模型的差异文字写明正文没有差异并带原型变化", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await approvedSaved(w, id, fresh(created));
+    await designed(w, id, "设置页");
+    const meta = await w.call({ action: "metadata", requirementId: id });
+    expect(meta.savedOperationId).toBe(created.operationId);
+    expect(meta.revision).toBe(1);
+    expect(await approvedSaved(w, id, { operationId: String(meta.savedOperationId), version: Number(meta.version) })).toMatchObject({ prodActivated: true });
+    expect((await w.call({ action: "metadata", requirementId: id })).revision).toBe(2);
+    const diff = String(interpreterContext(w).candidates[0].diff);
+    expect(diff).toContain("正文没有差异。");
+    expect(diff).toContain("原型变化：设置页 新确认第 1 版");
+    expect(summaryOf(await prototypesAtRevision(boardRef(w), id, 2))).toEqual(["设置页:1"]);
+  });
+
+  test("只改正文再批准，新快照沿用上一版的原型，差异文字里没有原型变化", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await designed(w, id, "设置页");
+    await approvedSaved(w, id, fresh(created));
+    await approvedSaved(w, id, await updatedBody(w, id, BODY + "第二版补充。\n"));
+    expect(summaryOf(await prototypesAtRevision(boardRef(w), id, 2))).toEqual(["设置页:1"]);
+    const diff = String(interpreterContext(w).candidates[0].diff);
+    expect(diff).toContain("第二版补充");
+    expect(diff).not.toContain("原型变化");
   });
 });

@@ -8,7 +8,9 @@ import { Value } from "typebox/value";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase } from "./database.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
+import { RequirementStateError } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
+import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
 import { unsafeFilenameKind } from "./requirement-identity.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 
@@ -46,6 +48,12 @@ export class PrototypeBoardError extends Error {
 }
 const deny = (code: string, why: string, next: string): never => { throw new PrototypeBoardError(code, why, next); };
 
+const assertNotApproving = (db: LocalDatabase, requirementId: string): void => {
+  const approving = db.list<{ requirementId?: string; action?: string; finalVersion?: number | null }>(REQUIREMENT_OPERATION_NAMESPACE)
+    .some((row) => row.data.requirementId === requirementId && row.data.action === "confirmUpdate" && row.data.finalVersion === null);
+  if (approving) deny("approving", "需求正在批准，原型暂时不能改动", "稍后再试");
+};
+
 type Ref = { dataRoot: string; repoId: string };
 const sha256 = (content: string | Buffer) => createHash("sha256").update(content).digest("hex");
 const databaseOf = (ref: Ref) => repositoryDatabase(ref.dataRoot, ref.repoId);
@@ -63,7 +71,7 @@ export function checkPrototypeName(name: string): void {
 }
 
 const emptyBoard = (requirementId: string): PrototypeBoard => ({ requirementId, entries: [], updatedAt: Date.now() });
-const readBoardIn = (db: LocalDatabase, requirementId: string) => db.read<PrototypeBoard>(PROTOTYPES, requirementId);
+export const readBoardIn = (db: LocalDatabase, requirementId: string) => db.read<PrototypeBoard>(PROTOTYPES, requirementId);
 
 export async function readPrototypeBoard(ref: Ref, requirementId: string): Promise<PrototypeBoard> {
   return withDatabase(databaseOf(ref), (db) => readBoardIn(db, requirementId)?.data ?? emptyBoard(requirementId));
@@ -100,6 +108,7 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
   checkPrototypeName(input.name);
   return withDatabase(databaseOf(ref), (db) => {
     return mutate(db, input.requirementId, (board) => {
+      assertNotApproving(db, input.requirementId);
       const requirement = db.read<RequirementRecord>("requirements", input.requirementId)?.data;
       if (!requirement || requirement.lifecycle === "closing" || requirement.lifecycle === "closed" || requirement.recovery !== "ready") {
         deny("requirement_unavailable", "需求不存在、已完成或正在等用户恢复核对，不能再做原型", "先处理需求状态，不要继续派原型设计");
@@ -214,6 +223,7 @@ export async function pendingConfirmation(ref: Ref, input: { requirementId: stri
 }
 
 export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "rework" | "abandon"; opinion: string | null }): Promise<void> {
+  withDatabase(databaseOf(ref), (db) => assertNotApproving(db, input.requirementId));
   const opinion = input.opinion?.trim() ?? "";
   if (input.choice === "rework") {
     if (!opinion) deny("opinion_required", "返工须写明要改什么", "输入修改意见后再提交");
@@ -229,6 +239,7 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
   };
   await verifiedFile(ref, input.requirementId, input.name, matched(board).inFlight.file!);
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (current) => {
+    assertNotApproving(db, input.requirementId);
     const { entry, inFlight } = matched(current);
     if (input.choice === "accept") { entry.draft = inFlight.file; entry.removed = false; }
     entry.lastRework = input.choice === "rework" ? { version: inFlight.version, opinion } : null;
@@ -240,6 +251,7 @@ const inDraftSet = (entry: PrototypeEntry) => !entry.removed && (entry.draft ?? 
 
 export async function removeFromDraft(ref: Ref, input: { requirementId: string; name: string }): Promise<void> {
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (board) => {
+    assertNotApproving(db, input.requirementId);
     const entry = entryNamed(board, input.name);
     if (!entry || !inDraftSet(entry)) deny("not_in_draft", "这份原型不在当前草稿集合里，无法移除", "只能移除草稿集合里已有的原型");
     entry!.draft = null;
@@ -251,6 +263,12 @@ export async function removeFromDraft(ref: Ref, input: { requirementId: string; 
 export async function inFlightSummary(ref: Ref, requirementId: string): Promise<Array<{ name: string; version: number; status: "designing" | "awaiting" }>> {
   const board = await readPrototypeBoard(ref, requirementId);
   return board.entries.flatMap((entry) => entry.inFlight ? [{ name: entry.name, version: entry.inFlight.version, status: entry.inFlight.status }] : []);
+}
+
+export function inFlightBlock(items: Array<{ name: string; version: number; status: "designing" | "awaiting" }>): PrototypeBoardError | null {
+  if (!items.length) return null;
+  const why = `还不能批准：${items.map((item) => item.status === "awaiting" ? `原型「${item.name}」第 ${item.version} 版还在等你确认` : `原型「${item.name}」设计师还在做`).join("，")}`;
+  return new PrototypeBoardError("in_flight", why, `先把${items.length === 1 ? "它" : `这 ${items.length} 份`}处理完（通过、返工或放弃），再说批准`);
 }
 
 export interface DraftItem { name: string; version: number; hash: string; bytes: number; note: string; label: "new" | "kept" | "removed" }
@@ -269,8 +287,17 @@ export async function draftPrototypes(ref: Ref, requirementId: string): Promise<
   return draftSet(await readPrototypeBoard(ref, requirementId));
 }
 
-export async function promoteOnApproval(ref: Ref, input: { requirementId: string; digest: string }): Promise<{ items: DraftItem[]; digest: string }> {
-  return withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (board) => {
+export function assertApprovableIn(db: LocalDatabase, requirementId: string, digest: string | undefined): void {
+  const board = readBoardIn(db, requirementId)?.data;
+  if (!board?.entries.length) return;
+  if (!digest) throw new RequirementStateError("prototype_digest_required");
+  const blocked = inFlightBlock(board.entries.flatMap((entry) => entry.inFlight ? [{ name: entry.name, version: entry.inFlight.version, status: entry.inFlight.status }] : []));
+  if (blocked) throw blocked;
+  if (draftSet(board).digest !== digest) deny("digest_changed", "草稿里的原型与批准窗口显示时不一致", "重新打开批准窗口确认当前原型");
+}
+
+export function promoteOnApprovalIn(db: LocalDatabase, input: { requirementId: string; digest: string }): { items: DraftItem[]; digest: string } {
+  return apply(db, input.requirementId, (board) => {
     if (board.entries.some((entry) => entry.inFlight)) deny("in_flight", "还有原型在做或在等确认，不能批准", "等这些原型处理完再批准");
     const set = draftSet(board);
     if (set.digest !== input.digest) deny("digest_changed", "草稿里的原型与批准窗口显示时不一致", "重新打开批准窗口确认当前原型");
@@ -281,5 +308,9 @@ export async function promoteOnApproval(ref: Ref, input: { requirementId: string
       entry.removed = false;
     }
     return set;
-  }));
+  });
+}
+
+export async function promoteOnApproval(ref: Ref, input: { requirementId: string; digest: string }): Promise<{ items: DraftItem[]; digest: string }> {
+  return withDatabase(databaseOf(ref), (db) => db.transaction(() => promoteOnApprovalIn(db, input)));
 }

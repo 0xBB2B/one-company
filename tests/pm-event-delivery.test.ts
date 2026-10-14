@@ -5,6 +5,8 @@ import type { TaskSpec } from "../runtime/plan-manage.ts";
 import { evaluatePmIntakeGate, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 import { RequirementEventService } from "../runtime/requirement-events.ts";
+import { repositoryDatabase, withDatabase } from "../runtime/database.ts";
+import { writePrototypeRevision } from "../runtime/requirement-prototype-revisions.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -109,6 +111,34 @@ test("M7-AC1/AC5：PM 停止后不再向它投递；新 PM 须重新核对才建
     .rejects.toBeTruthy();
   await new Promise((resolve) => setTimeout(resolve, 1_200));
   expect(w.diffPrompts()).toHaveLength(1);
+});
+
+const proto = (name: string, version: number) => ({ name, version, hash: String(version).repeat(64).slice(0, 64), bytes: 200 });
+async function snapshots(w: Awaited<ReturnType<typeof world>>, byRevision: Record<number, ReturnType<typeof proto>[]>) {
+  for (const [revision, prototypes] of Object.entries(byRevision)) {
+    withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
+      writePrototypeRevision(db, { requirementId: w.fixture.requirementId, revision: Number(revision), prototypes }));
+  }
+}
+
+test("原型有变化时，已批准更新通知在原有两行后加一行原型变化", async () => {
+  const w = await world();
+  await snapshots(w, { 1: [proto("旧外观弹窗", 1), proto("设置页", 2)], 2: [proto("设置页", 3), proto("命令行输出", 1)] });
+  w.provider.queue.push({ type: "text", text: "收到 r2" });
+  await w.approve("sprint");
+  await until(() => w.diffPrompts().length === 1);
+  const notice = text(w.diffPrompts()[0]!);
+  expect(notice).toContain("revision 1 → 2");
+  expect(notice).toContain("原型变化：设置页 换成第 3 版；命令行输出 新确认第 1 版；旧外观弹窗 移除");
+});
+
+test("两个版本的原型没有变化时，通知里没有原型变化行", async () => {
+  const w = await world();
+  await snapshots(w, { 1: [proto("设置页", 2)], 2: [proto("设置页", 2)] });
+  w.provider.queue.push({ type: "text", text: "收到 r2" });
+  await w.approve("sprint");
+  await until(() => w.diffPrompts().length === 1);
+  expect(text(w.diffPrompts()[0]!)).not.toContain("原型变化");
 });
 
 const deliverySamples: number[] = [];

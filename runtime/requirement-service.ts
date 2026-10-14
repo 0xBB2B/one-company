@@ -397,7 +397,8 @@ export class RequirementService {
         archivePath: document.archivePath,
       };
       if (decisionDigest(operation.manifest ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).manifest : null) ||
-        decisionDigest(operation.docSpec ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).docSpec ?? null : null)) {
+        decisionDigest(operation.docSpec ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).docSpec ?? null : null) ||
+        (operation.prototypes ?? null) !== (action === "confirmUpdate" ? (input as ConfirmInput).prototypes ?? null : null)) {
         throw new RequirementServiceError("operation_conflict");
       }
       for (const [key, value] of Object.entries(expected)) {
@@ -423,6 +424,7 @@ export class RequirementService {
         receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
         ...(action === "confirmUpdate" ? { manifest: (input as ConfirmInput).manifest } : {}),
         ...((input as ConfirmInput).docSpec ? { docSpec: (input as ConfirmInput).docSpec } : {}),
+        ...((input as ConfirmInput).prototypes ? { prototypes: (input as ConfirmInput).prototypes } : {}),
         archivePath: document.archivePath,
         repositoryRoot: prodRequirementPath({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId: before.id }),
         expectedRepositoryIdentity,
@@ -551,6 +553,7 @@ export class RequirementService {
         reference,
         manifest: operation.manifest!,
         ...(operation.docSpec ? { docSpec: operation.docSpec } : {}),
+        ...(operation.prototypes ? { prototypes: operation.prototypes } : {}),
       });
     }
     this.authorize(authorization);
@@ -829,6 +832,7 @@ export class RequirementService {
     const before = (await this.state(authorization)).read(id);
     const readable = before.data.lifecycle === "draft" || before.data.lifecycle === "active";
     const archivePath = readable ? this.operations.archivePath(id, before.data.saved) : null;
+    const savedOperationId = readable ? this.operations.savedOperationFor(id, before.data.saved, before.data.epoch) : null;
     const after = (await this.state(authorization)).read(id);
     if (after.version !== before.version || after.data.epoch !== before.data.epoch) throw new RequirementServiceError("state_changed_during_read");
     this.authorize(authorization);
@@ -846,6 +850,7 @@ export class RequirementService {
       saved: readable && after.data.saved ? { commit: after.data.saved.commit, prodHash: storageHash(after.data.saved.hash) } : null,
       approved: readable && after.data.approved ? { commit: after.data.approved.commit, prodHash: storageHash(after.data.approved.hash) } : null,
       archivePath,
+      savedOperationId,
       ...(["draft", "active"].includes(after.data.lifecycle) ? this.approvalScope(after) : {}),
     };
   }

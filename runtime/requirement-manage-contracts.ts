@@ -46,7 +46,7 @@ export interface ServiceAuthorizationRequest {
 export const CreateRequirementInput = strictObject({ requestId: id, operationId: id, title: text, body: text });
 export const UpdateDraftInput = strictObject({ requirementId: id, operationId: id, version, title: text, body: text });
 export const ConfirmUpdateInput = strictObject({ requirementId: id, operationId: id, version, title: text, body: text, receiptId: id,
-  manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema) });
+  manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema), prototypes: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })) });
 const confirmationId = ApprovalManifestReferenceSchema.properties.requirementId;
 export const LoadConfirmationInput = strictObject({ requirementId: confirmationId, savedOperationId: confirmationId, operationId: confirmationId });
 export type LoadConfirmationInput = Static<typeof LoadConfirmationInput>;
@@ -122,6 +122,7 @@ export interface RequirementMetadataResult {
   saved: { commit: string; prodHash: `sha256:${string}` } | null;
   approved: { commit: string; prodHash: `sha256:${string}` } | null;
   archivePath: string | null;
+  savedOperationId: string | null;
   approvalScope?: RequirementApprovalScope;
 }
 
