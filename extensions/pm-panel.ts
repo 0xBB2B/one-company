@@ -50,7 +50,7 @@ function formatBytes(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : bytes < 1_048_576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
-/** 主窗口 PM 面板：向各仓库守护进程拉取 PM 概览与本窗口派出的检索，变化信号到达时重拉；事项按回车插入决策包并由主代理接着回复。 */
+/** 主窗口状态面板：向各仓库守护进程拉取 PM 概览与本窗口派出的检索，变化信号到达时重拉；事项按回车插入决策包并由主代理接着回复。 */
 export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps = {}): void {
   const resolveWindowReady = deps.windowReady ?? defaultWindowReady;
   const resolveClock = deps.createClock ?? (() => createClock());

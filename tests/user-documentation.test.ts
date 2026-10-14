@@ -149,12 +149,12 @@ describe("README 常量与实际代码一致", () => {
   });
 });
 
-describe("README PM 面板事实与 runtime/pm-panel.ts 一致", () => {
+describe("README 状态面板事实与 runtime/pm-panel.ts 一致", () => {
   test("面板按键提示中的每个按键都在 README 中说明", async () => {
     const source = await readText(PM_PANEL);
     const hint = source.match(/const HINT = "([^"]+)"/)?.[1];
     expect(hint).toBeDefined();
-    const section = extractSection(await readText(README), "PM 面板", 3);
+    const section = extractSection(await readText(README), "状态面板", 3);
     for (const key of ["↑↓", "Enter", "p", "Esc"]) {
       expect(hint).toContain(key);
       expect(section).toContain(key);
@@ -162,7 +162,7 @@ describe("README PM 面板事实与 runtime/pm-panel.ts 一致", () => {
   });
 
   test("说明决策包不是用户决定，窗口里选中的固定选项、自己写的话或亲手输入的话才算", async () => {
-    const section = extractSection(await readText(README), "PM 面板", 3);
+    const section = extractSection(await readText(README), "状态面板", 3);
     expect(section).toContain("决策包");
     expect(section).toContain("亲手输入");
   });

@@ -47,7 +47,7 @@ function toolResults(host: InstalledHost, since: number): ToolResultView[] {
 const has = (results: ToolResultView[], tool: string, pattern: RegExp) =>
   results.some((result) => result.toolName === tool && !result.isError && (pattern.test(JSON.stringify(result.details ?? null)) || pattern.test(result.text)));
 
-/** 只依据用户看得到的东西（工具结果摘要、PM 面板）判断进展。 */
+/** 只依据用户看得到的东西（工具结果摘要、状态面板）判断进展。 */
 function progress(host: InstalledHost, since: number) {
   const results = toolResults(host, since);
   return {

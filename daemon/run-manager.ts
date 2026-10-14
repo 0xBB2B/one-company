@@ -930,7 +930,7 @@ export class RunManager {
     await this.refreshOverview(runId);
   }
 
-  /** 计算 PM 面板概览：只读持久记录与本进程会话状态，不改 PM 行为。 */
+  /** 计算状态面板里 PM 的概览：只读持久记录与本进程会话状态，不改 PM 行为。 */
   private async overviewOf(pmRunId: string): Promise<PmOverview | null> {
     const entry = this.sessions.get(pmRunId);
     if (!entry?.pm) return null;
