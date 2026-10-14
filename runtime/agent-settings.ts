@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { lockSync } from "proper-lockfile";
 import { MODEL_PATTERN, THINKING_LEVELS, type ThinkingLevel } from "./roles.ts";
 
 export const SETTINGS_ROLES = [
@@ -109,53 +108,31 @@ export async function readAgentSettings(input: { agentDir: string; repositoryRoo
   };
 }
 
-async function acquireLock(path: string): Promise<() => void> {
-  const maxAttempts = 10;
-  const delayMs = 20;
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return lockSync(path, { realpath: false });
-    } catch (error) {
-      const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
-      if (code !== "ELOCKED") throw error;
-      if (attempt === maxAttempts) throw new Error("设置文件正在被别的进程写入，稍后再试");
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
+function rewriteSettings(path: string, change: (root: Record<string, unknown>) => Record<string, unknown> | undefined): void {
+  let root: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    let text: string;
+    try { text = readFileSync(path, "utf8"); } catch (error) { throw new Error(`设置文件读不了（${errorText(error)}），没有改动：${path}`); }
+    let parsed: unknown;
+    try { parsed = parseContent(text); } catch { throw new Error(`设置文件不是合法的 JSON，没有改动：${path}`); }
+    if (!isObject(parsed)) throw new Error(`设置文件顶层不是对象，没有改动：${path}`);
+    root = parsed;
   }
-}
-
-async function withSettingsLock(path: string, change: (root: Record<string, unknown>) => Record<string, unknown> | undefined): Promise<void> {
-  let release: (() => void) | undefined;
-  try {
-    let root: Record<string, unknown> = {};
-    if (existsSync(path)) {
-      release = await acquireLock(path);
-      let text: string;
-      try { text = readFileSync(path, "utf8"); } catch (error) { throw new Error(`设置文件读不了（${errorText(error)}），没有改动：${path}`); }
-      let parsed: unknown;
-      try { parsed = parseContent(text); } catch { throw new Error(`设置文件不是合法的 JSON，没有改动：${path}`); }
-      if (!isObject(parsed)) throw new Error(`设置文件顶层不是对象，没有改动：${path}`);
-      root = parsed;
-    }
-    const next = change(root);
-    if (next === undefined) return;
-    mkdirSync(dirname(path), { recursive: true });
-    release ??= await acquireLock(path);
-    writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-  } finally {
-    release?.();
-  }
+  const next = change(root);
+  if (next === undefined) return;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
 }
 
 export async function saveAgentSetting(input: { path: string; role: SettingsRoleKey; model: string | null; thinking: ThinkingLevel }): Promise<void> {
-  await withSettingsLock(input.path, (root) => {
+  rewriteSettings(input.path, (root) => {
     const section = isObject(root["one-company"]) ? root["one-company"] : {};
     return { ...root, "one-company": { ...section, [input.role]: { model: input.model, thinking: input.thinking } } };
   });
 }
 
 export async function clearAgentSetting(input: { path: string; role: SettingsRoleKey }): Promise<void> {
-  await withSettingsLock(input.path, (root) => {
+  rewriteSettings(input.path, (root) => {
     if (!isObject(root["one-company"]) || !(input.role in root["one-company"])) return undefined;
     const { [input.role]: _removed, ...rest } = root["one-company"];
     const { "one-company": _section, ...others } = root;
