@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { Type } from "typebox";
 import { AdvisedError, commandOutputTail, failureText, toolFailure, toolStep } from "../runtime/tool-failure.ts";
@@ -118,7 +118,7 @@ test("手工拼的外部命令错误对象：程序名取 cmd 的第一个词", 
 
 test("缺少 cmd、退出码不是数字或输出不是字符串的错误仍按未归类处理", () => {
   const base = { cmd: "git x", code: 1, stdout: "", stderr: "e" };
-  for (const patch of [{ cmd: undefined }, { code: "ENOENT" }, { stderr: undefined }, { stdout: undefined }]) {
+  for (const patch of [{ cmd: undefined }, { code: "EOTHER" }, { stderr: undefined }, { stdout: undefined }]) {
     const error = Object.assign(new Error("boom"), base, patch);
     expect(failureText("s", error)).toBe(`s失败。\n原因：未归类的错误（boom）\n建议：${UNCLASSIFIED_NEXT}`);
   }
@@ -165,4 +165,119 @@ test("命令输出摘要：真实触发的外部命令失败没有任何输出�
 test("命令输出摘要：手工拼的外部命令错误对象输出只有空白时写命令没有输出；不是外部命令的错误仍取消息", () => {
   expect(commandOutputTail(Object.assign(new Error("Command failed: tar -x"), { cmd: "tar -x", code: 2, stdout: " \n", stderr: "\t" }))).toBe("命令没有输出");
   expect(commandOutputTail(new Error("spawn tar ENOENT"))).toBe("spawn tar ENOENT");
+});
+
+const failureOf = async (file: string, args: string[], options: Parameters<typeof execFileAsync>[2] = {}) => {
+  try { await execFileAsync(file, args, options); } catch (error) { return error; }
+  throw new Error("命令没有失败");
+};
+const explained = (step: string, why: string, next: string) => `${step}失败。\n原因：${why}\n建议：${next}`;
+const RETRY_ONCE_NEXT = "可以重试一次；仍然超时就把这段原因告诉用户";
+const NO_RETRY_NEXT = "不要重试，把这段原因告诉用户";
+const NOT_FOUND_NEXT = "确认工作目录还在；仍然失败就把这段原因告诉用户，可能需要安装这个程序";
+
+test("真实触发：非零退出且没有输出", async () => {
+  const error = await failureOf("sh", ["-c", "exit 3"]);
+  expect(commandOutputTail(error)).toBe("命令没有输出");
+  expect(failureText("跑脚本", error)).toBe(explained("跑脚本", "sh 命令失败（退出码 3）：命令没有输出", COMMAND_NEXT));
+});
+
+test("真实触发：超时且没有输出", async () => {
+  const error = await failureOf("sleep", ["5"], { timeout: 200 });
+  expect(commandOutputTail(error)).toBe("命令超时，被程序停止");
+  expect(failureText("等待", error)).toBe(explained("等待", "sleep 命令超时，被程序停止", RETRY_ONCE_NEXT));
+});
+
+test("真实触发：超时但已有输出", async () => {
+  const error = await failureOf("sh", ["-c", "echo 'Cloning into x...' >&2; sleep 30"], { timeout: 3000 });
+  expect(commandOutputTail(error)).toBe("命令超时，被程序停止：Cloning into x...");
+  expect(failureText("克隆", error)).toBe(explained("克隆", "sh 命令超时，被程序停止：Cloning into x...", RETRY_ONCE_NEXT));
+});
+
+test("真实触发：被外部信号杀掉", async () => {
+  const error = await failureOf("sh", ["-c", "kill -9 $$"]);
+  expect(commandOutputTail(error)).toBe("命令被信号 SIGKILL 停止");
+  expect(failureText("跑脚本", error)).toBe(explained("跑脚本", "sh 命令被信号 SIGKILL 停止", UNCLASSIFIED_NEXT));
+});
+
+test("真实触发：输出超过读取上限，不附半截输出", async () => {
+  const error = await failureOf("sh", ["-c", "yes | head -c 5000"], { maxBuffer: 100 });
+  expect(commandOutputTail(error)).toBe("命令输出太多，超过程序的读取上限");
+  expect(failureText("读日志", error)).toBe(explained("读日志", "sh 命令输出太多，超过程序的读取上限", NO_RETRY_NEXT));
+});
+
+test("真实触发：找不到程序", async () => {
+  const error = await failureOf("pi-t-no-such-program", []);
+  expect(commandOutputTail(error)).toBe("命令无法启动：找不到这个程序，或者工作目录不存在");
+  expect(failureText("启动", error)).toBe(explained("启动", "pi-t-no-such-program 命令无法启动：找不到这个程序，或者工作目录不存在", NOT_FOUND_NEXT));
+});
+
+test("真实触发：工作目录不存在", async () => {
+  const error = await failureOf("git", ["--version"], { cwd: "/tmp/pi-t-no-such-dir" });
+  expect(commandOutputTail(error)).toBe("命令无法启动：找不到这个程序，或者工作目录不存在");
+  expect(failureText("查版本", error)).toBe(explained("查版本", "git 命令无法启动：找不到这个程序，或者工作目录不存在", NOT_FOUND_NEXT));
+});
+
+test("真实触发：没有权限进入工作目录", async () => {
+  const root = await mkdtemp("/tmp/pi-t-");
+  const locked = `${root}/locked`;
+  try {
+    await mkdir(locked);
+    await chmod(locked, 0o000);
+    const error = await failureOf("git", ["--version"], { cwd: locked });
+    expect(commandOutputTail(error)).toBe("命令无法启动：没有权限运行这个程序，或者没有权限进入工作目录");
+    expect(failureText("查版本", error)).toBe(explained("查版本", "git 命令无法启动：没有权限运行这个程序，或者没有权限进入工作目录", NO_RETRY_NEXT));
+  } finally {
+    await chmod(locked, 0o755);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("真实触发：命令被取消", async () => {
+  const error = await failureOf("sleep", ["5"], { signal: AbortSignal.timeout(200) });
+  expect(commandOutputTail(error)).toBe("命令被取消");
+  expect(failureText("等待", error)).toBe(explained("等待", "sleep 命令被取消", "不要重试，等待用户或上级的下一步安排"));
+});
+
+test("手工拼的错误对象：超时的有输出与没输出两种写法", () => {
+  const timeout = (output: { stdout: string; stderr: string }) => Object.assign(new Error("Command failed: git clone"), { cmd: "git clone u", code: null, killed: true, signal: "SIGTERM", ...output });
+  expect(commandOutputTail(timeout({ stdout: "", stderr: " \n" }))).toBe("命令超时，被程序停止");
+  expect(commandOutputTail(timeout({ stdout: "a\nb\nc\nd", stderr: "" }))).toBe("命令超时，被程序停止：b / c / d");
+  expect(failureText("克隆", timeout({ stdout: "", stderr: "Cloning" }))).toBe(explained("克隆", "git 命令超时，被程序停止：Cloning", RETRY_ONCE_NEXT));
+  expect(failureText("克隆", timeout({ stdout: "", stderr: "" }))).toBe(explained("克隆", "git 命令超时，被程序停止", RETRY_ONCE_NEXT));
+});
+
+test("手工拼的错误对象：外部信号的有输出与没输出两种写法", () => {
+  const killed = (output: { stdout: string; stderr: string }) => Object.assign(new Error("Command failed: tar -x"), { cmd: "tar -x", code: null, killed: false, signal: "SIGKILL", ...output });
+  expect(commandOutputTail(killed({ stdout: "", stderr: "" }))).toBe("命令被信号 SIGKILL 停止");
+  expect(commandOutputTail(killed({ stdout: "", stderr: "half" }))).toBe("命令被信号 SIGKILL 停止：half");
+  expect(failureText("解包", killed({ stdout: "x", stderr: "" }))).toBe(explained("解包", "tar 命令被信号 SIGKILL 停止：x", UNCLASSIFIED_NEXT));
+  expect(failureText("解包", killed({ stdout: "", stderr: "" }))).toBe(explained("解包", "tar 命令被信号 SIGKILL 停止", UNCLASSIFIED_NEXT));
+});
+
+test("手工拼的错误对象：输出超限时即使 stdout 有半截也不附输出", () => {
+  const error = Object.assign(new Error("m"), { cmd: "yes", code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", stdout: "y\ny\n", stderr: "" });
+  expect(commandOutputTail(error)).toBe("命令输出太多，超过程序的读取上限");
+  expect(failureText("读", error)).toBe(explained("读", "yes 命令输出太多，超过程序的读取上限", NO_RETRY_NEXT));
+});
+
+test("手工拼的错误对象：不在分类表里的情况仍按未归类处理", () => {
+  const base = { cmd: "git x", stdout: "", stderr: "e" };
+  for (const patch of [{ code: "EOTHER" }, { code: null }, { code: null, killed: false }]) {
+    const error = Object.assign(new Error("boom"), base, patch);
+    expect(failureText("s", error)).toBe(explained("s", "未归类的错误（boom）", UNCLASSIFIED_NEXT));
+    expect(commandOutputTail(error)).toBe("e");
+  }
+});
+
+test("手工拼的错误对象：缺 cmd 的超时、信号和找不到程序错误不归入外部命令分类", () => {
+  for (const patch of [{ code: null, killed: true }, { code: null, signal: "SIGKILL" }, { code: "ENOENT" }]) {
+    const error = Object.assign(new Error("boom"), { stdout: "", stderr: "e" }, patch);
+    expect(failureText("s", error)).toBe(explained("s", "未归类的错误（boom）", UNCLASSIFIED_NEXT));
+  }
+});
+
+test("带 advice 的超时错误仍用自带的原因与建议", () => {
+  const error = Object.assign(new Error("x"), { cmd: "git x", code: null, killed: true, signal: "SIGTERM", stdout: "", stderr: "", advice });
+  expect(failureText("s", error)).toBe(explained("s", advice.why, advice.next));
 });
