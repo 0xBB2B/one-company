@@ -11,7 +11,7 @@ export const SETTINGS_ROLES = [
 export type SettingsRoleKey = (typeof SETTINGS_ROLES)[number]["key"];
 export interface RoleSetting { model: string | null; thinking: ThinkingLevel }
 export type SettingsLayer = Partial<Record<SettingsRoleKey, RoleSetting>>;
-export interface SettingsProblem { path: string; role?: SettingsRoleKey; display: string }
+export interface SettingsProblem { path: string; layer: "user" | "project"; role?: SettingsRoleKey; display: string }
 export interface EffectiveSetting extends RoleSetting { source: "project" | "user" | "default" }
 
 export function userSettingsPath(agentDir: string): string {
@@ -34,7 +34,7 @@ function parseContent(text: string): unknown {
   return content.trim() === "" ? {} : JSON.parse(content);
 }
 
-export function parseSettingsLayer(path: string): { entries: SettingsLayer; problems: SettingsProblem[] } {
+export function parseSettingsLayer(path: string, layer: "user" | "project"): { entries: SettingsLayer; problems: SettingsProblem[] } {
   const entries: SettingsLayer = {};
   const problems: SettingsProblem[] = [];
   if (!existsSync(path)) return { entries, problems };
@@ -42,28 +42,28 @@ export function parseSettingsLayer(path: string): { entries: SettingsLayer; prob
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
-    return { entries, problems: [{ path, display: `文件读不了（${errorText(error)}），这一层的设定都没有生效` }] };
+    return { entries, problems: [{ path, layer, display: `文件读不了（${errorText(error)}），这一层的设定都没有生效` }] };
   }
   let root: unknown;
   try {
     root = parseContent(text);
   } catch {
-    return { entries, problems: [{ path, display: "文件不是合法的 JSON，这一层的设定都没有生效" }] };
+    return { entries, problems: [{ path, layer, display: "文件不是合法的 JSON，这一层的设定都没有生效" }] };
   }
-  if (!isObject(root)) return { entries, problems: [{ path, display: "文件内容要写成 JSON 对象，这一层的设定都没有生效" }] };
+  if (!isObject(root)) return { entries, problems: [{ path, layer, display: "文件内容要写成 JSON 对象，这一层的设定都没有生效" }] };
   const section = root["one-company"];
   if (section === undefined) return { entries, problems };
   if (!isObject(section)) {
-    return { entries, problems: [{ path, display: "one-company 要写成对象，这一层的设定都没有生效" }] };
+    return { entries, problems: [{ path, layer, display: "one-company 要写成对象，这一层的设定都没有生效" }] };
   }
   const keys = SETTINGS_ROLES.map((r) => r.key);
   for (const [name, value] of Object.entries(section)) {
     const role = SETTINGS_ROLES.find((r) => r.key === name);
     if (!role) {
-      problems.push({ path, display: `不认识的角色 ${name}，只能是 ${keys.join("、")}` });
+      problems.push({ path, layer, display: `不认识的角色 ${name}，只能是 ${keys.join("、")}` });
       continue;
     }
-    const problem = (display: string) => problems.push({ path, role: role.key, display });
+    const problem = (display: string) => problems.push({ path, layer, role: role.key, display });
     if (!isObject(value) || !("model" in value) || !("thinking" in value)) {
       problem(`「${role.label}」的设定要写成对象，同时包含 model 和 thinking`);
       continue;
@@ -87,9 +87,9 @@ export async function readAgentSettings(input: { agentDir: string; repositoryRoo
   layers: { user: SettingsLayer; project: SettingsLayer };
   problems: SettingsProblem[];
 }> {
-  const user = parseSettingsLayer(userSettingsPath(input.agentDir));
+  const user = parseSettingsLayer(userSettingsPath(input.agentDir), "user");
   const project = input.projectTrusted
-    ? parseSettingsLayer(projectSettingsPath(input.repositoryRoot))
+    ? parseSettingsLayer(projectSettingsPath(input.repositoryRoot), "project")
     : { entries: {} as SettingsLayer, problems: [] as SettingsProblem[] };
   const values = {} as Record<SettingsRoleKey, EffectiveSetting>;
   for (const role of SETTINGS_ROLES) {
