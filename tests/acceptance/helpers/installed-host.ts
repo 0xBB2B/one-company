@@ -104,7 +104,7 @@ export interface InstalledHost {
   modelEvents: Array<{ type: string; detail: string; at: number }>;
   /** 扩展在主会话里另行发起的无工具模型调用（如需求解释器）的请求开头与模型原始回答，供排查校验失败。 */
   sideCalls: Array<{ systemPrompt: string; input: string; stopReason: string; output: string; at: number }>;
-  /** 按用户在终端里看到的样子渲染 PM 面板。 */
+  /** 按用户在终端里看到的样子渲染 状态面板。 */
   panelLines(width?: number): string[];
   /** 模拟用户在终端按键（输入框为空时）。 */
   press(data: string): void;
@@ -120,7 +120,7 @@ export function recommendedChoice(window: ShownWindow): string {
 
 /**
  * 用真实 SDK 加载安装产物，模式为 tui：驱动方接管界面，确认框一律回答"是"、原型确认窗口一律选通过并记录，
- * PM 面板经 setWidget 挂载后可按用户所见渲染，按键经 onTerminalInput 送入。
+ * 状态面板经 setWidget 挂载后可按用户所见渲染，按键经 onTerminalInput 送入。
  */
 export async function startInstalledHost(options: { installed: string; repo: string; agentDir: string; config: AcceptanceConfig }): Promise<InstalledHost> {
   const { installed, repo, agentDir, config } = options;

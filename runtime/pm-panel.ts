@@ -35,7 +35,7 @@ export function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}h${minutes}m${rest}s` : `${minutes}m${rest}s`;
 }
 
-/** 输入栏下方的 PM 面板：显示运行中与暂停的 PM，以及本窗口派出、还在运行的检索；数据来自守护进程，窗口只做投影，不保存事项。 */
+/** 输入栏下方的状态面板：显示运行中与暂停的 PM，以及本窗口派出、还在运行的检索；数据来自守护进程，窗口只做投影，不保存事项。 */
 export class PmPanel {
   private readonly options: PmPanelOptions;
   private entries: PmPanelEntry[] = [];

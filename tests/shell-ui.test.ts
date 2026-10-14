@@ -426,7 +426,7 @@ describe("shellUiExtension：user_bash 未就绪时优雅降级", () => {
   });
 });
 
-describe("sharedDock 生命周期：PM 面板 teardown 后 lifecycle.currentDock() 应为 undefined", () => {
+describe("sharedDock 生命周期：状态面板 teardown 后 lifecycle.currentDock() 应为 undefined", () => {
   test("session_shutdown 后 currentDock() 为 undefined；此时 openShellUiPage 报未就绪而非拿到已释放的旧 dock", async () => {
     const fakePi = createFakePi();
     const client = createPollableClient();
@@ -608,7 +608,7 @@ describe("openShellUiPage：透传宿主 ctx.ui.theme 到页面主题", () => {
     const client = createPollableClient();
     const windowContextValue = createWindowContextValue("window-theme", "repo-theme", client);
 
-    // openShellUiPage 依赖 lifecycle 的共享 dock：本测试自行经 PM 面板扩展挂载注册，不依赖其他用例的残留状态
+    // openShellUiPage 依赖 lifecycle 的共享 dock：本测试自行经 状态面板扩展挂载注册，不依赖其他用例的残留状态
     const panelDeps: PmPanelUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,
       createClock: () => createClock({ timeSource: createFakeTimeSource() }),
