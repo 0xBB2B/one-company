@@ -46,10 +46,14 @@ test("M8F-AC1：派子代理时只写模型名的定义按派出方的提供方�
   await expect(resolve("gone", "a")).rejects.toMatchObject({ code: "model_unavailable", message: expect.stringContaining("找不到模型 none") });
 });
 
-test("M8F-AC1：内部调用只写模型名的定义按主会话的提供方找模型，多个提供方同名且主会话没有时拒绝并列出候选", async () => {
-  const { agentDir, root } = await roleDir({ interpreter: "role: interpreter\nmodel: sol\nthinking: medium", "draft-verifier": "role: draft-verifier\nmodel: none" });
+test("内部调用只写模型名的设定按主窗口的提供方找模型，多个提供方同名且主窗口没有时拒绝并列出候选", async () => {
+  const root = await mkdtemp(join(tmpdir(), "model-ref-")); roots.push(root);
+  const agentDir = join(root, "agent");
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ "one-company": {
+    interpreter: { model: "sol", thinking: "medium" }, "draft-verifier": { model: "none", thinking: null } } }));
   const registry = { hasConfiguredAuth: () => true, getAll: () => ALL };
-  const resolve = (role: "interpreter" | "draft-verifier", mainModel: Model<Api>) => resolveInternalModel({ role, agentDir, repositoryRoot: join(root, "repo"), projectTrusted: false, registry, mainModel });
+  const resolve = (role: "interpreter" | "draft-verifier", mainModel: Model<Api>) => resolveInternalModel({ role, agentDir, repositoryRoot: join(root, "repo"), projectTrusted: false, registry, mainModel, mainThinking: "off" });
   expect(await resolve("interpreter", B_ONLY)).toEqual({ model: B_SOL, thinking: "medium" });
   await expect(resolve("interpreter", model("c", "x"))).rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("a/sol、b/sol") });
   await expect(resolve("draft-verifier", A_SOL)).rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("草稿核验器配置的模型 none 不可用：本机的模型配置里找不到模型 none") });

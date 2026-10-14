@@ -459,7 +459,7 @@ test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承
     await expect(w.read(target)).rejects.toMatchObject({ code: "ENOENT" });
   }
   const agentDir = join(w.dataRoot, "..");
-  for (const target of [join(agentDir, "agents", "pm.md"), join(agentDir, "skills", "x", "SKILL.md"), join(agentDir, "trust.json"), join(w.repositoryRoot, ".pi", "agents", "pm.md"),
+  for (const target of [join(agentDir, "agents", "worker.md"), join(agentDir, "skills", "x", "SKILL.md"), join(agentDir, "trust.json"), join(w.repositoryRoot, ".pi", "agents", "worker.md"),
     join(w.repositoryRoot, ".pi", "skills", "requirement-doc", "SKILL.md"), join(w.repositoryRoot, "AGENTS.md"), join(w.repositoryRoot, "docs", "prod", "x.md")]) {
     const run = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(target, ".."))}; echo x > ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
     expect(run.status).toBe("failed");
@@ -474,10 +474,10 @@ test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承
   const dotfiles = join(w.dataRoot, "..", "dotfiles-pi");
   await mkdir(dotfiles, { recursive: true });
   await symlink(dotfiles, join(w.repositoryRoot, ".pi"));
-  const viaParent = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(w.repositoryRoot, ".pi", "agents"))} && echo x > ${JSON.stringify(join(w.repositoryRoot, ".pi", "agents", "pm.md"))}`, performance: NA }) as VerificationView;
+  const viaParent = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(w.repositoryRoot, ".pi", "agents"))} && echo x > ${JSON.stringify(join(w.repositoryRoot, ".pi", "agents", "worker.md"))}`, performance: NA }) as VerificationView;
   expect(viaParent.status).toBe("failed");
-  await expect(readFile(join(dotfiles, "agents", "pm.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-  const packageFile = join(defaultRoleDir(), "..", "agents", "pm.md");
+  await expect(readFile(join(dotfiles, "agents", "worker.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  const packageFile = join(defaultRoleDir(), "..", "agents", "worker.md");
   const packageBefore = await readFile(packageFile, "utf8");
   const tampered = await worker.execute({ action: "run", kind: "debug", command: `echo x >> ${JSON.stringify(packageFile)}`, performance: NA }) as VerificationView;
   expect(tampered.status).toBe("failed");

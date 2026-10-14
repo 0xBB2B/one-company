@@ -14,6 +14,7 @@ import { RequirementService, requirementIntentHash } from "../runtime/requiremen
 import { draftApprover } from "./helpers/approval-fixture.ts";
 import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { RequirementStateStore } from "../runtime/requirement-state.ts";
+import { readAgentSettings } from "../runtime/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
 import { RunStore } from "../runtime/run-store.ts";
 import { ShellRegistry } from "../runtime/shell-registry.ts";
@@ -41,7 +42,8 @@ async function manager(base: { repositoryRoot: string; dataRoot: string; repoId:
   const runStore = new RunStore({ dataRoot: base.dataRoot, repoId: base.repoId, daemonStartedAt: new Date().toISOString() });
   const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(root, "none-u"), projectDir: join(root, "none-p"), parseFrontmatter, projectTrusted: false });
   const runs = new RunManager({ ...base, runStore, shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(base.dataRoot, base.repoId) }),
-    networkGate: new NetworkPauseGate(), roleCatalog: catalog.roles, runtime, clock, workspaceRepoIds: [base.repoId], emit: vi.fn() });
+    networkGate: new NetworkPauseGate(), roleCatalog: catalog.roles,
+    loadAgentSettings: () => readAgentSettings({ agentDir: join(root, "none-a"), repositoryRoot: join(root, "none-r"), projectTrusted: false }), runtime, clock, workspaceRepoIds: [base.repoId], emit: vi.fn() });
   runs.markStarted();
   cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await runs.stop(run.id, { reason: "main_agent" }).catch(() => {}); });
   return { provider, runStore, runs };

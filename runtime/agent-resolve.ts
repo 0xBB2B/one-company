@@ -38,6 +38,31 @@ export async function definitionHash(path: string): Promise<string> {
   return sha256(await readFile(path));
 }
 
+/** 设定里的模型与思考等级为 null 时用 fallback；模型必须真实存在、配了凭据，思考等级必须受该模型支持，否则报错而不换模型。 */
+export async function resolveModelChoice(input: {
+  model: string | null; thinking: string | null;
+  models(provider?: string): readonly ModelLike[];
+  hasAuth(provider: string): Promise<boolean>;
+  fallback: { model: { provider: string; id: string }; thinking: string };
+}): Promise<{ model: { provider: string; id: string }; thinking: string }> {
+  let found: ModelLike | undefined;
+  if (input.model) {
+    const defined = findDefinedModel(input.model, input.models(), input.fallback.model.provider);
+    if (!defined.ok) throw new AgentResolveError("model_unavailable", `模型不可用：${defined.reason}`);
+    found = defined.model;
+  } else {
+    found = input.models(input.fallback.model.provider).find((candidate) => candidate.id === input.fallback.model.id);
+    if (!found) throw new AgentResolveError("model_unavailable", `模型不可用：${input.fallback.model.provider}/${input.fallback.model.id}`);
+  }
+  const model = { provider: found.provider, id: found.id };
+  if (!await input.hasAuth(model.provider)) throw new AgentResolveError("model_unavailable", `模型不可用：${model.provider}/${model.id} 没有可用的凭据`);
+  const thinking = input.thinking ?? input.fallback.thinking;
+  if (!thinkingSupported(found, thinking)) {
+    throw new AgentResolveError("thinking_unsupported", `模型 ${model.provider}/${model.id} 不支持思考等级 ${thinking}${input.thinking === undefined || input.thinking === null ? "（没有单独设定，跟随了派出方的思考等级）" : ""}`);
+  }
+  return { model, thinking };
+}
+
 /**
  * 按名称取角色定义并核验：定义可用且职责一致、指定模型真实存在且配了凭据、思考等级受该模型支持、声明的 skills 都能找到；
  * 任一不满足即报错，不静默换定义、换模型或跳过 skill。
@@ -55,21 +80,8 @@ export async function resolveAgent(input: {
   if (!entry.available || !entry.definition) throw new AgentResolveError("agent_unavailable", `${input.name} 定义不可用：${entry.reason ?? "未知原因"}`);
   const definition = entry.definition;
   if (definition.role !== input.role) throw new AgentResolveError("agent_unavailable", `${input.name} 的职责是 ${definition.role}，不能承担 ${input.role} 任务`);
-  let found: ModelLike | undefined;
-  if (definition.model) {
-    const defined = findDefinedModel(definition.model, input.models(), input.fallback.model.provider);
-    if (!defined.ok) throw new AgentResolveError("model_unavailable", `模型不可用：${defined.reason}`);
-    found = defined.model;
-  } else {
-    found = input.models(input.fallback.model.provider).find((candidate) => candidate.id === input.fallback.model.id);
-    if (!found) throw new AgentResolveError("model_unavailable", `模型不可用：${input.fallback.model.provider}/${input.fallback.model.id}`);
-  }
-  const model = { provider: found.provider, id: found.id };
-  if (!await input.hasAuth(model.provider)) throw new AgentResolveError("model_unavailable", `模型不可用：${model.provider}/${model.id} 没有可用的凭据`);
-  const thinking = definition.thinking ?? input.fallback.thinking;
-  if (!thinkingSupported(found, thinking)) {
-    throw new AgentResolveError("thinking_unsupported", `模型 ${model.provider}/${model.id} 不支持思考等级 ${thinking}`);
-  }
+  const { model, thinking } = await resolveModelChoice({ model: definition.model ?? null, thinking: definition.thinking ?? null,
+    models: input.models, hasAuth: input.hasAuth, fallback: input.fallback });
   const skills: AgentFingerprint["skills"] = [], bodies: string[] = [];
   for (const skill of definition.skills ?? []) {
     let loaded: { path: string; body: string } | undefined;

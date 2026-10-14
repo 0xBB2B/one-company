@@ -5,13 +5,10 @@ import { fileURLToPath } from "node:url";
 export type RoleSource = "default" | "user" | "project";
 export const AGENT_ROLES = ["pm", "explore", "worker", "reviewer", "qa"] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
-/** 程序内部的单次模型调用：不是能派工的职责，定义里只有 model 与 thinking 生效。 */
-export const INTERNAL_ROLES = ["interpreter", "draft-verifier"] as const;
-export type InternalRole = (typeof INTERNAL_ROLES)[number];
-export type DefinitionRole = AgentRole | InternalRole;
-export function isAgentRole(role: DefinitionRole): role is AgentRole { return (AGENT_ROLES as readonly string[]).includes(role); }
-/** pm 与内部定义各只有一份，只能同名复制来覆盖包内默认。 */
-export function sameNameOnly(role: DefinitionRole): boolean { return role === "pm" || !isAgentRole(role); }
+export const DEFINITION_ROLES = ["explore", "worker", "reviewer", "qa"] as const;
+const RETIRED_ROLES = ["pm", "interpreter", "draft-verifier"];
+const RETIRED_REASON = "已不再使用定义文件，请在设定栏修改";
+export const PM_DEFINITION = { name: "pm", description: "活动需求的唯一负责人，通过接手复核后负责 plan/task 拆分、依赖、覆盖映射与增量调度", role: "pm", body: "" } as const;
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export const MODEL_PATTERN = /^[^/\s]+(\/\S+)?$/;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
@@ -19,7 +16,7 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export interface RoleDefinition {
   name: string;
   description: string;
-  role: DefinitionRole;
+  role: AgentRole;
   model?: string;
   thinking?: ThinkingLevel;
   mcp?: string[];
@@ -57,7 +54,7 @@ export interface LoadRoleCatalogOptions {
 }
 
 export interface RoleCatalogProblem {
-  kind: "unreadable" | "foreign" | "invalid" | "untrusted";
+  kind: "unreadable" | "foreign" | "invalid" | "untrusted" | "retired";
   source: RoleSource;
   dir: string;
   reason: string;
@@ -115,13 +112,8 @@ export async function readRoleDefinition(path: string, parseFrontmatter: Frontma
   if ([...description].length > MAX_DESCRIPTION_CODEPOINTS) {
     throw new RoleDefinitionError(`角色定义 description 超过 ${MAX_DESCRIPTION_CODEPOINTS} 字符: ${path}`, { field: "description", display: `description 超过 ${MAX_DESCRIPTION_CODEPOINTS} 个字符` });
   }
-  if (typeof role !== "string" || ![...AGENT_ROLES, ...INTERNAL_ROLES].includes(role as DefinitionRole)) {
-    throw new RoleDefinitionError(`角色定义 role 须为 ${[...AGENT_ROLES, ...INTERNAL_ROLES].join("/")}: ${path}`, { field: "role", value: role, display: `role 只能是 ${[...AGENT_ROLES, ...INTERNAL_ROLES].join("、")}` });
-  }
-  if (role === "pm" && name !== "pm") throw new RoleDefinitionError(`pm 职责只能由名为 pm 的定义承担: ${path}`, { field: "name", value: name, display: "pm 职责只能由名为 pm 的定义承担" });
-  if ((INTERNAL_ROLES as readonly string[]).includes(role)) {
-    if (name !== role) throw new RoleDefinitionError(`内部定义 ${role} 只能由名为 ${role} 的定义承担: ${path}`, { field: "name", value: name, display: `内部定义 ${role} 只能由名为 ${role} 的定义承担` });
-    if (mcp !== undefined || skills !== undefined) throw new RoleDefinitionError(`内部定义 ${role} 不接受 mcp 与 skills: ${path}`, { field: mcp !== undefined ? "mcp" : "skills", display: `内部定义 ${role} 不接受 mcp 与 skills` });
+  if (typeof role !== "string" || !(DEFINITION_ROLES as readonly string[]).includes(role)) {
+    throw new RoleDefinitionError(`角色定义 role 须为 ${DEFINITION_ROLES.join("/")}: ${path}`, { field: "role", value: role, display: `role 只能是 ${DEFINITION_ROLES.join("、")}` });
   }
   if (model !== undefined && (typeof model !== "string" || !MODEL_PATTERN.test(model))) {
     throw new RoleDefinitionError(`角色定义 model 须为模型名或 provider/id: ${path}`, { field: "model", value: model, display: "model 要写成模型名或 provider/id，例如 gpt-6-luna 或 5x/gpt-6-luna" });
@@ -133,7 +125,7 @@ export async function readRoleDefinition(path: string, parseFrontmatter: Frontma
   return {
     name,
     description,
-    role: role as DefinitionRole,
+    role: role as AgentRole,
     ...(model !== undefined ? { model: model as string } : {}),
     ...(thinking !== undefined ? { thinking: thinking as ThinkingLevel } : {}),
     ...(mcp !== undefined ? { mcp: stringList(mcp, "mcp", path) } : {}),
@@ -167,8 +159,13 @@ async function loadLayerEntries(
     const path = join(dir, dirent.name);
     try {
       // 缺 role 的是其他宿主的 agent 定义：不导入、不推断职责，也不影响默认团队
-      if (parseFrontmatter(await readFile(path, "utf8")).frontmatter.role === undefined) {
+      const headerRole = parseFrontmatter(await readFile(path, "utf8")).frontmatter.role;
+      if (headerRole === undefined) {
         problems.push({ kind: "foreign", source, dir: path, reason: "缺少 role，视为其他宿主定义，未导入" });
+        continue;
+      }
+      if (typeof headerRole === "string" && RETIRED_ROLES.includes(headerRole)) {
+        problems.push({ kind: "retired", source, dir: path, reason: RETIRED_REASON });
         continue;
       }
       const definition = await readRoleDefinition(path, parseFrontmatter);

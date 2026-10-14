@@ -37,7 +37,7 @@ const BODY = "## 背景 {#background}\n用户未说明。\n## 需求 {#requireme
 const FRAME = ["metadata", "background", "requirements", "features", "implementation", "acceptance"];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function git(cwd: string, args: string[]) { return (await exec("git", args, { cwd })).stdout.trim(); }
-async function world(options: Pick<MainRequirementInteractionOptions, "now"> = {}) {
+async function world(options: Pick<MainRequirementInteractionOptions, "now" | "mainThinking"> = {}) {
   const root = await mkdtemp(join(temporaryRoot(), "host-interaction-")), repositoryRoot = join(root, "repo"), dataRoot = join(root, "data");
   await mkdir(repositoryRoot); await mkdir(dataRoot); await git(repositoryRoot, ["init", "--initial-branch=main"]);
   await writeFile(join(repositoryRoot, "README.md"), "fixture\n"); await git(repositoryRoot, ["add", "README.md"]);
@@ -54,7 +54,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now"> = {
       ...answeringUi(async (window) => { windows.push(window); await beforeAnswer?.(); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   let reachable = true;
-  const interaction = new MainRequirementInteraction({ ...options, dataRoot, authorization,
+  const interaction = new MainRequirementInteraction({ mainThinking: () => "off", ...options, dataRoot, authorization,
     resolveHost: () => { if (!reachable) throw new HostAuthorizationError("host_unavailable"); return { windowId, sessionId, repositories: new Map([[repoId, { path: repositoryRoot }]]) }; } });
   cleanup.push(async () => { interaction.dispose(); authorization.shutdown(); await rm(root, { recursive: true, force: true }); });
   const manage = createRequirementManageTool({ interaction }), user = createUserInteractTool({ interaction });
@@ -104,12 +104,6 @@ function wholeReview(c: Pick<ConfirmationContext, "candidate" | "partition">, ta
     entries: [base("constraint", "需求身份、标题与格式板块", others), base("target", "增加手机号登录", [targetId]), base("action", "本轮授权动作", [targetId])] };
 }
 
-/** 用户层把两个内部调用设成跟主会话模型、不思考，供拦截 complete 调用的用例使用。 */
-async function plainInternalModels(root: string) {
-  await mkdir(join(root, "agents"), { recursive: true });
-  for (const role of ["interpreter", "draft-verifier"]) await writeFile(join(root, "agents", `${role}.md`), `---\nname: ${role}\ndescription: d\nrole: ${role}\nthinking: off\n---\n`);
-}
-
 describe("主窗口共享控制器的真实服务路径", () => {
   test("M8D-AC3：这句话 @ 到的需求直接按原话登记，不弹窗；没 @ 到时弹出批准窗口，显示需求名、版本与简介，取消即不登记不生效", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
@@ -127,20 +121,34 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(w.windows).toHaveLength(1);
   });
 
-  test("M8D-AC8：解释器按用户层内部定义的思考等级调用；草稿核验器配置的模型不存在时写明原因，不改用主会话模型", async () => {
+  test("解释器按用户层设定的思考等级调用；草稿核验器设定的模型不存在时写明原因，不改用主窗口的模型", async () => {
     const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
-    const agents = join(w.root, "agents");
-    await mkdir(agents, { recursive: true });
-    await writeFile(join(agents, "interpreter.md"), `---\nname: interpreter\ndescription: d\nrole: interpreter\nmodel: ${w.provider.providerId}/${w.provider.modelId}\nthinking: low\n---\n`);
+    await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { interpreter: { model: `${w.provider.providerId}/${w.provider.modelId}`, thinking: "low" } } }));
     w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
     const before = w.provider.reasoning.length;
     await w.call({ action: "confirmUpdate", ...input });
     expect(w.provider.reasoning.slice(before)).toEqual(["low"]);
-    await writeFile(join(agents, "draft-verifier.md"), "---\nname: draft-verifier\ndescription: d\nrole: draft-verifier\nmodel: nowhere/missing\n---\n");
+    await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { "draft-verifier": { model: "nowhere/missing", thinking: null } } }));
     w.capture("再建一个需求"); const calls = w.provider.requests.length;
     await expect(w.call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "简介", title: "另一个", body: BODY }))
       .rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("草稿核验器配置的模型 nowhere/missing 不可用：本机的模型配置里找不到模型 nowhere/missing") });
     expect(w.provider.requests.length).toBe(calls);
+  });
+
+  test("设定没写思考等级时，解释器用主窗口当前的思考等级", async () => {
+    const w = await world({ mainThinking: () => "high" }), created = await w.create(), { input, loaded } = await w.request(created);
+    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    const before = w.provider.reasoning.length;
+    await w.call({ action: "confirmUpdate", ...input });
+    expect(w.provider.reasoning.slice(before)).toEqual(["high"]);
+  });
+
+  test("设定没写思考等级时，草稿核验器用主窗口当前的思考等级", async () => {
+    const w = await world({ mainThinking: () => "high" });
+    await w.create();
+    const verifier = w.provider.requests.map((request, index) => ({ request, index })).filter(({ request }) => request.systemPrompt?.includes("草拟意图核验器"));
+    expect(verifier.length).toBeGreaterThan(0);
+    for (const { index } of verifier) expect(w.provider.reasoning[index]).toBe("high");
   });
 
   test("M8D-AC2：同一窗口可以处理多个需求，不需要绑定就能读取和修改其中任何一个的草稿", async () => {
@@ -370,7 +378,6 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
   test("手机号原句仅分析：未建工作区也激活并记短决定与完整scope，不弹审批；清会话不生成原话表/文件", async () => {
     const w = await world(), sent: Array<{ messages: unknown[] }> = [];
-    await plainInternalModels(w.root);
     const original = w.ctx.modelRegistry.complete.bind(w.ctx.modelRegistry);
     vi.spyOn(w.ctx.modelRegistry, "complete").mockImplementation((model, context, options) => { sent.push(context); return original(model, context, options); });
     const created = await w.create(), { input, loaded } = await w.request(created);
@@ -458,7 +465,6 @@ describe("主窗口共享控制器的真实服务路径", () => {
   test("一次真实输入完成modify-resave-reinterpret；旧capability立即失效，三次上限保留", async () => {
     let now = 1000;
     const w = await world({ now: () => now });
-    await plainInternalModels(w.root);
     const created = await w.create(), captured: unknown[] = [], texts: string[] = [];
     const capture = vi.spyOn(UserInteractionCore.prototype, "captureInput");
     const original = w.ctx.modelRegistry.complete.bind(w.ctx.modelRegistry);

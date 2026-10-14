@@ -14,6 +14,7 @@ description: PM 与两个内部代理改按设定取模型和思考等级；删�
 - 每次启动 PM、每次调用内部代理都重新读设定，所以改完下次就生效。
 - 定义文件只认 worker、reviewer、qa、explore 四种职责。头部 role 写成 pm、interpreter、draft-verifier 的文件不生效，问题栏写一条，原因是"已不再使用定义文件，请在设定栏修改"；它们也不再顶掉任何定义。
 - 删除包内 `agents/pm.md`、`agents/interpreter.md`、`agents/draft-verifier.md`。不做兼容：同名覆盖、内部定义加载的代码一并删除。
+- /one:agents 去掉 pm 分类栏（pm 定义文件删掉后这一栏就空了，从计划 07 挪到这里做，避免中间状态留一个空栏）：左边只剩 worker、reviewer、qa、explore，打开页面默认停在 worker 栏，右上角计数只算这四种职责的定义。界面以用户确认的预览为准。
 - 仓库根 AGENTS.md「测试」一节里"PM 与主代理的提示词（`agents/pm.md`、`rules/*.md`）"改为 `role-rules/pm.md`，因为 pm.md 被删、PM 规矩已在 role-rules 下。
 
 ## 涉及文件
@@ -21,7 +22,8 @@ description: PM 与两个内部代理改按设定取模型和思考等级；删�
 - 修改 `runtime/roles.ts`、`runtime/agent-resolve.ts`、`runtime/internal-model.ts`
 - 修改 `daemon/run-manager.ts`、`daemon/lifecycle.ts`、`daemon/agent-session.ts`
 - 修改 `runtime/main-requirement-interaction.ts`、`extensions/requirement-manage.ts`（传入主窗口思考等级）
-- 修改 `runtime/agent-copy.ts`（删内部定义的同名复制分支，保证编译；页面上的 pm 栏在 07 去掉）
+- 修改 `runtime/agent-copy.ts`（删内部定义的同名复制分支，保证编译）
+- 修改 `runtime/agent-catalog-ui.ts`（`ROLE_TABS` 去掉 pm；右上角计数只算四种职责）
 - 修改 `AGENTS.md`（上面那一处路径）
 - 修改测试：`tests/role-catalog.test.ts`、`tests/internal-model.test.ts`、`tests/agent-selection.test.ts`、`tests/model-ref.test.ts`、`tests/main-requirement-interaction.test.ts`、`tests/question-window.test.ts`、`tests/prototype.test.ts` 里依赖这三份定义文件的部分
 

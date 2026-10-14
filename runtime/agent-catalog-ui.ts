@@ -6,7 +6,7 @@ import type { ClearSettingRequest, SaveSettingRequest } from "./agent-settings-u
 import type { ModelLike } from "./agent-resolve.ts";
 import { SETTINGS_ROLES, type SettingsRoleKey } from "./agent-settings.ts";
 import type { readAgentSettings } from "./agent-settings.ts";
-import { NAME_PATTERN, sameNameOnly } from "./roles.ts";
+import { NAME_PATTERN } from "./roles.ts";
 import type { RoleCatalog, RoleCatalogEntry, RoleDefinitionProblem, RoleSource } from "./roles.ts";
 
 export interface AgentCatalogTheme {
@@ -20,7 +20,7 @@ export interface CatalogNotice { tone: "ok" | "muted"; text: string }
 export interface CatalogPageState { tab?: string; selectName?: string; fresh?: string; notice?: CatalogNotice }
 export interface CopyRequest { entry: RoleCatalogEntry; name: string }
 
-const ROLE_TABS = ["pm", "worker", "reviewer", "qa", "explore"] as const;
+const ROLE_TABS = ["worker", "reviewer", "qa", "explore"] as const;
 const SETTINGS_TAB = "设定", PROBLEMS_TAB = "问题";
 const SOURCE_LABEL: Record<RoleSource, string> = { default: "内置", user: "用户", project: "项目" };
 const MARKER = 2, SOURCE = 7, THINKING = 8, NAME = 15, MODEL = 19, MIN_COLUMN = 8, KEY = 8;
@@ -45,7 +45,7 @@ export class AgentCatalogView {
   private width = 80;
   private notice: CatalogNotice | undefined;
   private fresh: string | undefined;
-  private naming: { entry: RoleCatalogEntry; text: string; locked: boolean; error?: string } | undefined;
+  private naming: { entry: RoleCatalogEntry; text: string; error?: string } | undefined;
   private readonly options: {
     catalog: RoleCatalog; theme: AgentCatalogTheme; projectTrusted: boolean; untrustedProjectCount: number; state?: CatalogPageState;
     settings: Awaited<ReturnType<typeof readAgentSettings>>; models: readonly ModelLike[]; mainModel: ModelLike | undefined; mainThinking: string;
@@ -102,6 +102,9 @@ export class AgentCatalogView {
       } else if (problem.kind === "foreign") {
         rows.push({ file: basename(problem.dir), source: problem.source, tone: "info", short: "不是 one-company 的定义，没有导入",
           detail: [{ key: "原因", value: "缺少 role 字段，视为其他工具的定义" }, { key: "文件", value: tilde(problem.dir) }], footer: "缺少 role 字段，视为其他工具的定义" });
+      } else if (problem.kind === "retired") {
+        rows.push({ file: basename(problem.dir), source: problem.source, tone: "info", short: problem.reason,
+          detail: [{ key: "原因", value: problem.reason }, { key: "文件", value: tilde(problem.dir) }], footer: "这份定义没有生效，模型和思考等级改在设定栏" });
       } else if (problem.kind === "invalid") {
         rows.push(invalid(basename(problem.dir), problem.source, problem.dir, problem.problem, problem.reason));
       } else {
@@ -140,8 +143,7 @@ export class AgentCatalogView {
     if ((data === "c" || data === "C") && this.tab !== PROBLEMS_TAB && this.tab !== SETTINGS_TAB) {
       const entry = this.entries()[this.cursor];
       if (!entry?.definition) return;
-      const locked = sameNameOnly(entry.definition.role);
-      this.naming = { entry, locked, text: locked ? entry.name : `${entry.name}-copy` };
+      this.naming = { entry, text: `${entry.name}-copy` };
     }
   }
 
@@ -149,15 +151,12 @@ export class AgentCatalogView {
     const naming = this.naming!;
     if (matchesKey(data, "escape")) { this.naming = undefined; this.notice = { tone: "muted", text: "已取消复制" }; return; }
     if (matchesKey(data, "enter")) {
-      if (!naming.locked) {
-        if (!NAME_PATTERN.test(naming.text)) { naming.error = "只能用小写字母、数字和连字符，例如 ui-worker"; return; }
-        const taken = this.options.nameTaken(naming.text);
-        if (taken) { naming.error = `${taken}已经有 ${naming.text}，换一个名字`; return; }
-      }
+      if (!NAME_PATTERN.test(naming.text)) { naming.error = "只能用小写字母、数字和连字符，例如 ui-worker"; return; }
+      const taken = this.options.nameTaken(naming.text);
+      if (taken) { naming.error = `${taken}已经有 ${naming.text}，换一个名字`; return; }
       this.options.onCopy({ entry: naming.entry, name: naming.text });
       return;
     }
-    if (naming.locked) return;
     if (matchesKey(data, "backspace")) { naming.text = [...naming.text].slice(0, -1).join(""); naming.error = undefined; return; }
     const printable = decodeKittyPrintable(data) ?? data;
     if (!/[\u0000-\u001f\u007f]/u.test(printable)) { naming.text += printable; naming.error = undefined; }
@@ -179,9 +178,7 @@ export class AgentCatalogView {
   private hint(): string {
     if (this.tab === SETTINGS_TAB) return "←→ 分类  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出";
     if (this.tab === PROBLEMS_TAB) return this.expanded ? "回车 收起  Esc 收起" : "←→ 分类  ↑↓ 选择  回车 详情  Esc 退出";
-    const selected = this.entries()[this.cursor];
-    const copy = selected?.definition && sameNameOnly(selected.definition.role) ? "C 复制（只能同名）" : "C 复制";
-    return this.expanded ? `回车 收起  ${copy}  Esc 收起` : `←→ 分类  ↑↓ 选择  回车 详情  ${copy}  Esc 退出`;
+    return this.expanded ? "回车 收起  C 复制  Esc 收起" : "←→ 分类  ↑↓ 选择  回车 详情  C 复制  Esc 退出";
   }
 
   render(width: number): string[] {
@@ -324,10 +321,6 @@ export class AgentCatalogView {
 
   private renderNaming(width: number): string[] {
     const { theme } = this.options, naming = this.naming!, muted = (text: string) => theme.fg("muted", text), dim = (text: string) => theme.fg("dim", text);
-    if (naming.locked) {
-      return [` ${theme.bold(`复制 ${naming.entry.name}`)}`, "",
-        ` ${muted(pad("名称", KEY))}${naming.entry.name}  ${dim("（只能同名，不能改）")}`, "", ` ${muted("回车 下一步  Esc 取消")}`];
-    }
     return [` ${theme.bold(`复制 ${naming.entry.name} 为新定义`)}`, "",
       ` ${muted("新名称")}  ${fit(`${naming.text}█`, Math.max(MIN_COLUMN, width - 9))}`,
       ` ${naming.error ? theme.fg("error", `✗ ${naming.error}`) : dim(fit(NAME_RULE, width - 1))}`, "", ` ${muted("回车 下一步  Esc 取消")}`];

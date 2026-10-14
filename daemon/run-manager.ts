@@ -55,10 +55,11 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { KnowledgeTransportQuerySchema } from "../runtime/knowledge-query-tool.ts";
 import { createPmCommitTool } from "../runtime/pm-commit.ts";
 import { createPmSyncTool } from "../runtime/pm-sync.ts";
-import { AgentResolveError, definitionHash, resolveAgent } from "../runtime/agent-resolve.ts";
+import { AgentResolveError, definitionHash, resolveAgent, resolveModelChoice } from "../runtime/agent-resolve.ts";
 import type { AgentFingerprint, ResolvedAgent } from "../runtime/agent-resolve.ts";
+import { readAgentSettings } from "../runtime/agent-settings.ts";
+import { PM_DEFINITION } from "../runtime/roles.ts";
 import type { AgentRole } from "../runtime/roles.ts";
-import { isAgentRole } from "../runtime/roles.ts";
 import { activeCheckRoundIn, assertWritersQuiescentIn } from "../runtime/check-round.ts";
 import type { ProjectIndexHost } from "./project-index-host.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
@@ -72,6 +73,8 @@ export interface RunManagerOptions {
   runtime: ModelRuntime; clock: Clock; workspaceRepoIds: string[]; emit: EmitFn;
   /** 联网检索的网络依赖；缺省为 Node 内置实现，测试可注入。 */
   web?: { deps: WebDeps; getPage: PageGetter };
+  /** 每次派出 PM 时重新读取模型与思考等级设定。 */
+  loadAgentSettings: () => ReturnType<typeof readAgentSettings>;
   /** 每次派出时重新读取角色目录；缺省用启动时的 roleCatalog。 */
   loadRoleCatalog?: () => Promise<RoleCatalogEntry[]>;
   /** 按顺序查找 skill 的目录（项目、用户、安装资源）。 */
@@ -249,7 +252,7 @@ const PROTOCOL_NEXT: Record<string, string> = {
   plan_not_confirmed: "先用 plan_manage confirm 冻结计划，再按冻结后的任务派工",
   agent_unavailable: "指定的角色定义不可用：向用户说明并请用户决定，不要自行改用别的定义",
   model_unavailable: "指定的模型不可用：请用户检查模型配置或改选模型",
-  thinking_unsupported: "改用该模型支持的思考等级，或请用户改选模型",
+  thinking_unsupported: "请用户改选模型，或在 /one:agents 给这个角色设定该模型支持的思考等级",
   skill_unavailable: "指定的技能不可用：请用户检查技能安装，或调整角色定义",
   stop_unconfirmed: "稍后重试停止，并核对进程是否已结束",
 };
@@ -305,8 +308,7 @@ export class RunManager {
     if (!implementAuthorized({ dataRoot: this.options.dataRoot, repoId: this.repoId }, record)) {
       throw protocolError("implement_not_authorized", "批准清单没有实施授权，分析与规划阶段不派 PM");
     }
-    const resolved = await this.resolveAgent("pm", "pm", { model: input.model, thinking: input.thinking });
-    const { definition, model: modelRef, thinking } = resolved;
+    const { model: modelRef, thinking } = await this.resolveModelChoice((await this.options.loadAgentSettings()).values.pm, { model: input.model, thinking: input.thinking });
     const owner = state.pmOwner(input.requirementId);
     if (owner?.lease) throw protocolError("pm_already_owned", "本需求已有有效 PM");
     // 接管前先停止本需求仍登记在册的旧运行，旧会话不能继续调用工具
@@ -314,7 +316,7 @@ export class RunManager {
     const expectedFence = owner?.fence ?? 0;
     const workspace = record.data.workspace;
     const run = await this.runStore.create({ kind: "requirement", requirement: input.requirementId, task: "pm", cwd: workspace.path,
-      readPaths: [workspace.path], writePaths: [], model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint });
+      readPaths: [workspace.path], writePaths: [], model: modelRef, thinking, mcp: [] });
     let lease: PmLease;
     try { lease = await state.acquirePm({ requirementId: input.requirementId, version: record.version, runId: run.id, expectedFence }); }
     catch (error) {
@@ -354,9 +356,9 @@ export class RunManager {
           },
           catalog: (role, cursor) => this.agentCatalog(role, cursor),
         } });
-      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition, roleRules: loadRoleRules("pm"),
-        context: withSkills(await this.withConventions(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
-          pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId))), resolved.skillsContext), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ requirementId: input.requirementId, worktree: workspace.path, branch: workspace.branch, alive,
+      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition: PM_DEFINITION, roleRules: loadRoleRules("pm"),
+        context: await this.withConventions(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
+          pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId))), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ requirementId: input.requirementId, worktree: workspace.path, branch: workspace.branch, alive,
           checkPhaseActive, writeScope: () => withDatabase(this.database, (db) => readPlanIn(db, input.requirementId)?.tasks ?? []).flatMap((task) => task.writePaths) }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, alive, checkPhaseActive,
           quiescent: () => this.metadataRows().every((row) => row.requirement !== input.requirementId || row.kind !== "role" || isTerminalState(row.state)) &&
             withDatabase(this.database, (db) => { try { assertWritersQuiescentIn(db, this.repoId, input.requirementId); return true; } catch { return false; } }) })],
@@ -725,7 +727,7 @@ export class RunManager {
   /** PM 的有界能力目录：每页最多 20 条，只含名称、职责、描述与来源。 */
   async agentCatalog(role: string | undefined, cursor: number) {
     const entries = (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
-      .filter((entry) => entry.available && entry.definition && isAgentRole(entry.definition.role) && entry.definition.role !== "pm" && (!role || entry.definition.role === role))
+      .filter((entry) => entry.available && entry.definition && (!role || entry.definition.role === role))
       .sort((a, b) => a.name.localeCompare(b.name));
     const items = entries.slice(cursor, cursor + 20).map((entry) => ({ name: entry.name, role: entry.definition!.role,
       description: entry.definition!.description, source: entry.source }));
@@ -736,14 +738,29 @@ export class RunManager {
   private async resolveAgent(name: string, role: AgentRole, fallback: { model: SelectedModel; thinking: string }): Promise<ResolvedAgent> {
     const catalog = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
     try {
-      return await resolveAgent({ catalog, name, role, fallback, skillDirs: this.options.skillDirs ?? [],
-        models: (provider) => this.options.runtime.getModels(provider) as readonly { provider: string; id: string; reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> }[],
-        // 守护进程的模型运行时不预载快照，hasConfiguredAuth 恒为否；按实际解析凭据判断
-        hasAuth: async (provider) => await this.options.runtime.getAuth(provider) !== undefined });
+      return await resolveAgent({ catalog, name, role, fallback, skillDirs: this.options.skillDirs ?? [], ...this.modelLookup() });
     } catch (error) {
       if (error instanceof AgentResolveError) throw protocolError(error.code, error.message);
       throw error;
     }
+  }
+
+  /** 按设定里的模型与思考等级核验；设定写 null 的项用派出方带来的值，不可用即报错，不换模型。 */
+  private async resolveModelChoice(setting: { model: string | null; thinking: string | null }, fallback: { model: SelectedModel; thinking: string }) {
+    try {
+      return await resolveModelChoice({ ...setting, fallback, ...this.modelLookup() });
+    } catch (error) {
+      if (error instanceof AgentResolveError) throw protocolError(error.code, error.message);
+      throw error;
+    }
+  }
+
+  private modelLookup() {
+    return {
+      models: (provider?: string) => this.options.runtime.getModels(provider) as readonly { provider: string; id: string; reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> }[],
+      // 守护进程的模型运行时不预载快照，hasConfiguredAuth 恒为否；按实际解析凭据判断
+      hasAuth: async (provider: string) => await this.options.runtime.getAuth(provider) !== undefined,
+    };
   }
 
   /** 角色查询主仓库索引：每次查询前对账，按运行分开分页游标。 */

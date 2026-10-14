@@ -437,7 +437,7 @@ test("M7-AC34：两个主窗口同时打开同一事项，先登记的生效，�
   const authorization = new HostAuthorizationManager({ dataRoot: w.fixture.dataRoot });
   authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [w.fixture.repoId] });
   const ctxB = { ...w.ctx, sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
-  const windowB = new MainRequirementInteraction({ dataRoot: w.fixture.dataRoot, authorization,
+  const windowB = new MainRequirementInteraction({ mainThinking: () => "off", dataRoot: w.fixture.dataRoot, authorization,
     resolveHost: () => ({ windowId, sessionId, repositories: new Map([[w.fixture.repoId, { path: w.fixture.repositoryRoot }]]) }) });
   cleanups.push(() => { windowB.dispose(); authorization.shutdown(); });
   const staleVersion = w.version();

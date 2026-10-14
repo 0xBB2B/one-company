@@ -1,22 +1,19 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { NAME_PATTERN, sameNameOnly } from "./roles.ts";
+import { NAME_PATTERN } from "./roles.ts";
 import type { RoleCatalogEntry } from "./roles.ts";
 
 export class AgentCopyError extends Error {}
 
 /**
- * 把一个角色定义复制为新定义：名字在内置、用户、项目三层都不能已存在；
- * pm 与内部定义只能同名复制到尚无同名文件的层，用于覆盖包内默认。
+ * 把一个角色定义复制为新定义：名字在内置、用户、项目三层都不能已存在。
  */
 export async function copyAgentDefinition(input: { entry: RoleCatalogEntry; newName: string; targetDir: string; layerDirs: string[] }): Promise<string> {
   const definition = input.entry.definition;
   if (!definition) throw new AgentCopyError("无效定义不能复制");
   if (!NAME_PATTERN.test(input.newName)) throw new AgentCopyError("名称只能用小写字母、数字或连字符，最多 64 字符");
-  const sameName = sameNameOnly(definition.role);
-  if (sameName && input.newName !== definition.name) throw new AgentCopyError(`${definition.name} 只能同名复制为 ${definition.name} 用于覆盖`);
   const exists = (dir: string) => access(join(dir, `${input.newName}.md`)).then(() => true, () => false);
-  const taken = sameName ? await exists(input.targetDir) : (await Promise.all(input.layerDirs.map(exists))).some(Boolean);
+  const taken = (await Promise.all(input.layerDirs.map(exists))).some(Boolean);
   if (taken) throw new AgentCopyError(`名称 ${input.newName} 已被使用`);
   const content = (await readFile(input.entry.path, "utf8")).replace(/^name:.*$/mu, `name: ${input.newName}`);
   await mkdir(input.targetDir, { recursive: true });
