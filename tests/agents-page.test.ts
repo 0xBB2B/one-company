@@ -49,7 +49,7 @@ test("M8D-AC8：页内输入新名称，程序窗口列出两层与完整路径�
     (s) => { window = s.text; s.keys(ENTER); },
     (s) => {
       expect(s.text).toMatch(/› api-worker +用户/u);
-      expect(s.text).toContain(`✓ 已复制到 ${join(root, "agent", "agents", "api-worker.md")}，请直接编辑这个文件`);
+      expect(s.text).toContain(`✓ 已复制到 ${join(root, "agent", "agents", "api-worker.md")}，打开它写专长、skills 和 mcp`);
       s.keys(ESC);
     },
   ]);

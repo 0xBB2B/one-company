@@ -293,6 +293,7 @@ export class AgentCatalogView {
     return [...this.detailLine(undefined, definition.description),
       ...this.detailLine("skills", definition.skills?.join("、") || "无", definition.skills?.length ? undefined : dim),
       ...this.detailLine("MCP", definition.mcp?.join("、") || "无", definition.mcp?.length ? undefined : dim),
+      ...this.detailLine("正文", definition.body.trim() ? "已写 · 流程规矩由程序加上，优先于正文" : "空 · 流程规矩由程序加上，正文只写专长和偏好"),
       ...this.detailLine("文件", tilde(entry.path), dim)];
   }
 

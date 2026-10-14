@@ -91,7 +91,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     if (!layer) { back({ tone: "muted", text: "已取消复制" }); continue; }
     try {
       const copied = await copyAgentDefinition({ entry, newName: name, targetDir: layer === "用户层" ? dirs.userDir : dirs.projectDir, layerDirs: layers.map((item) => item.dir) });
-      back({ tone: "ok", text: `✓ 已复制到 ${tilde(copied)}，请直接编辑这个文件` }, name, name);
+      back({ tone: "ok", text: `✓ 已复制到 ${tilde(copied)}，打开它写专长、skills 和 mcp` }, name, name);
     } catch (error) {
       if (!(error instanceof AgentCopyError)) throw error;
       back({ tone: "muted", text: error.message });
