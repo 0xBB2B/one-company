@@ -239,3 +239,29 @@ test("写入范围是仓库根时，paths 写 ./ 或 src/../ 按写法不合规�
   }
   expect(r.git("ls-tree", "-r", "--name-only", "HEAD")).not.toMatch(/AGENTS\.md|\.pi\//u);
 });
+
+const reasonOf = (message: string) => message.split("\n原因：")[1]!.split("\n建议：")[0]!;
+
+test("paths 里的文件没有任何改动时提交失败，原因是 git 的输出，不含命令行和提交说明，建议不叫重试", async () => {
+  const r = await repo();
+  const tool = createPmCommitTool({ requirementId: REQUIREMENT, worktree: r.root, branch: "refs/heads/req-branch", alive: () => true, checkPhaseActive: () => false, writeScope: () => ["a.ts", "other.ts"] });
+  await writeFile(join(r.root, "other.ts"), "o\n");
+  const head = r.git("rev-parse", "HEAD");
+  const message = await failureOf(run(tool, { paths: ["a.ts"], message: "独特提交说明-xyz" }));
+  expect(reasonOf(message)).toContain("git 命令失败（退出码 1）");
+  expect(reasonOf(message)).toContain("nothing");
+  expect(message).not.toContain("Command failed");
+  expect(message).not.toContain("独特提交说明-xyz");
+  expect(message.split("\n建议：")[1]).not.toContain("重试一次");
+  expect(r.git("rev-parse", "HEAD")).toBe(head);
+});
+
+test("paths 写不存在且从未跟踪的文件时，原因带 git 的 pathspec 报错，不含 Command failed", async () => {
+  const r = await repo();
+  const tool = createPmCommitTool({ requirementId: REQUIREMENT, worktree: r.root, branch: "refs/heads/req-branch", alive: () => true, checkPhaseActive: () => false, writeScope: () => ["ghost.ts"] });
+  const message = await failureOf(run(tool, { paths: ["ghost.ts"], message: "独特提交说明-xyz" }));
+  expect(reasonOf(message)).toContain("git 命令失败（退出码 1）");
+  expect(reasonOf(message)).toContain("pathspec");
+  expect(message).not.toContain("Command failed");
+  expect(message).not.toContain("独特提交说明-xyz");
+});

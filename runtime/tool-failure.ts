@@ -32,11 +32,19 @@ export function toolStep(toolName: string, params: unknown): string {
   return typeof action === "string" ? `${toolName} 的 ${action} 动作` : toolName;
 }
 
+function commandFailure(error: unknown): { cmd: string; code: number; silent: boolean } | undefined {
+  if (error === null || typeof error !== "object") return undefined;
+  const { cmd, stdout, stderr, code } = error as Record<string, unknown>;
+  if (typeof cmd !== "string" || typeof stdout !== "string" || typeof stderr !== "string" || typeof code !== "number") return undefined;
+  return { cmd, code, silent: !stdout.trim() && !stderr.trim() };
+}
+
 export function failureText(step: string, error: unknown): string {
   const advice = adviceOf(error);
   const message = error instanceof Error ? error.message : String(error);
-  const why = advice?.why ?? `未归类的错误（${message}）`;
-  const next = advice?.next ?? "可以重试一次；仍然失败就把这段原因告诉用户";
+  const command = advice ? undefined : commandFailure(error);
+  const why = advice?.why ?? (command ? `${command.cmd.trim().split(/\s+/)[0]} 命令失败（退出码 ${command.code}）：${command.silent ? "命令没有输出" : commandOutputTail(error)}` : `未归类的错误（${message}）`);
+  const next = advice?.next ?? (command ? "根据命令输出判断：参数或文件写错就改正后再试；看不懂就把这段原因告诉用户" : "可以重试一次；仍然失败就把这段原因告诉用户");
   return `${step}失败。\n原因：${why}\n建议：${next}`;
 }
 
@@ -69,10 +77,11 @@ export const COMMON_ADVICE = {
   internal_state: { why: "本机记录与预期不一致", next: "停止操作，把这段原因告诉用户" },
 } as const satisfies Record<string, FailureAdvice>;
 
-/** 外部命令失败时的原文摘要：取 stderr（没有就取消息）最后几行，限长。 */
+/** 外部命令失败时的原文摘要：取 stderr（空白就取 stdout，再没有取消息）最后几行，限长。 */
 export function commandOutputTail(error: unknown, lines = 3, limit = 300): string {
-  const record = error !== null && typeof error === "object" ? error as { stderr?: unknown; message?: unknown } : {};
-  const raw = typeof record.stderr === "string" && record.stderr.trim() ? record.stderr : typeof record.message === "string" ? record.message : String(error);
+  const record = error !== null && typeof error === "object" ? error as { stderr?: unknown; stdout?: unknown; message?: unknown } : {};
+  const text = (value: unknown): string | undefined => typeof value === "string" && value.trim() ? value : undefined;
+  const raw = text(record.stderr) ?? text(record.stdout) ?? (typeof record.message === "string" ? record.message : String(error));
   const tail = raw.split("\n").map((line) => line.trim()).filter(Boolean).slice(-lines).join(" / ");
   return tail.length > limit ? `…${tail.slice(-limit)}` : tail;
 }
