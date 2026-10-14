@@ -33,18 +33,25 @@ async function writeSettings(path: string, content: unknown) {
   await writeFile(path, typeof content === "string" ? content : JSON.stringify(content));
 }
 const readJson = async (path: string) => JSON.parse(await readFile(path, "utf8"));
-const oneCompany = (entries: Record<string, { model: string | null; thinking: string }>) => ({ "one-company": entries });
+const oneCompany = (entries: Record<string, { model: string | null; thinking: string | null }>) => ({ "one-company": entries });
 
 interface Screen { text(): string; press(...keys: string[]): void }
 const selectedLine = (text: string) => text.split("\n").find((line) => /^\s*›\s/u.test(line)) ?? "";
 function moveTo(screen: Screen, label: string) {
-  const here = () => selectedLine(screen.text()).split(/\s+/u).includes(label);
+  const here = () => selectedLine(screen.text()).split(/\s+/u).filter((word) => word && word !== "›" && word !== "✓")[0] === label;
   for (let i = 0; i < 8 && !here(); i++) screen.press(DOWN);
   for (let i = 0; i < 16 && !here(); i++) screen.press(UP);
   if (!here()) throw new Error(`光标移不到 ${label}：\n${screen.text()}`);
 }
 
-interface ViewOptions { trusted?: boolean; user?: unknown; project?: unknown; models?: unknown[]; mainModel?: unknown }
+function moveToRowWith(screen: Screen, word: string) {
+  const here = () => selectedLine(screen.text()).split(/\s+/u).includes(word);
+  for (let i = 0; i < 8 && !here(); i++) screen.press(DOWN);
+  for (let i = 0; i < 16 && !here(); i++) screen.press(UP);
+  if (!here()) throw new Error(`光标移不到含 ${word} 的行：\n${screen.text()}`);
+}
+
+interface ViewOptions { trusted?: boolean; user?: unknown; project?: unknown; models?: unknown[]; mainModel?: unknown; mainThinking?: string }
 async function settingsView(options: ViewOptions = {}) {
   const trusted = options.trusted ?? true;
   if (options.user !== undefined) await writeSettings(userFile(), options.user);
@@ -53,7 +60,7 @@ async function settingsView(options: ViewOptions = {}) {
   const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(root, "u"), projectDir: join(root, "p"), parseFrontmatter, projectTrusted: trusted });
   const saves: unknown[] = [], clears: unknown[] = []; let closed = false;
   const view = new AgentCatalogView({ catalog, theme, projectTrusted: trusted, untrustedProjectCount: 0, nameTaken: () => undefined, onCopy() {}, onClose: () => { closed = true; },
-    settings, models: options.models ?? [SOL, LUNA], mainModel: "mainModel" in options ? options.mainModel : SOL,
+    settings, models: options.models ?? [SOL, LUNA], mainModel: "mainModel" in options ? options.mainModel : SOL, mainThinking: options.mainThinking ?? "high",
     onSaveSetting: (request: unknown) => saves.push(request), onClearSetting: (request: unknown) => clears.push(request) } as ConstructorParameters<typeof AgentCatalogView>[0]);
   const text = (width = 80) => view.render(width).join("\n");
   const press = (...keys: string[]) => { for (const key of keys) view.handleInput(key); };
@@ -69,14 +76,30 @@ test("按右键到最右边的分类栏，看到“设定 3”且不再有“内
   expect(p.text()).not.toContain("内部");
 });
 
-test("设定栏三行默认值来源都是内置，列出名称、来源、模型、思考", async () => {
+test("设定栏没有设定时三行都是内置来源、模型跟随主会话、思考跟随", async () => {
   const p = await settingsView();
   p.toSettings();
   const text = p.text();
   expect(text).toMatch(/名称 +来源 +模型 +思考/u);
-  expect(text).toMatch(/› PM +内置 +gpt-6\.1-sol +high/u);
-  expect(text).toMatch(/解释器 +内置 +gpt-6-luna +medium/u);
-  expect(text).toMatch(/草稿核验器 +内置 +gpt-6\.1-sol +medium/u);
+  expect(text).toMatch(/› PM +内置 +跟随主会话 +跟随 *\n/u);
+  expect(text).toMatch(/解释器 +内置 +跟随主会话 +跟随 *\n/u);
+  expect(text).toMatch(/草稿核验器 +内置 +跟随主会话 +跟随 *\n/u);
+  expect(text).not.toContain("不思考");
+});
+
+test("思考设成 null 时思考列写“跟随”，同一行写了具体模型照写；解释器的 off 仍写“不思考”", async () => {
+  const p = await settingsView({ user: oneCompany({ pm: { model: "gpt-6-luna", thinking: null }, interpreter: { model: null, thinking: "off" }, "draft-verifier": { model: null, thinking: null } }) });
+  p.toSettings();
+  expect(p.text()).toMatch(/PM +用户 +gpt-6-luna +跟随 *\n/u);
+  expect(p.text()).toMatch(/解释器 +用户 +跟随主会话 +不思考/u);
+  expect(p.text()).toMatch(/草稿核验器 +用户 +跟随主会话 +跟随 *\n/u);
+});
+
+test("模型为 null 时即使本机没有任何有凭据的模型，这一行也不写“不可用”，底部不报错", async () => {
+  const p = await settingsView({ models: [], mainModel: undefined });
+  p.toSettings();
+  expect(p.text()).not.toContain("不可用");
+  expect(p.text()).not.toContain("✗");
 });
 
 test("底部一行写用途、来源说明和生效时机，随选中行变化", async () => {
@@ -148,8 +171,8 @@ test("没有可选模型时第 1 步只有跟随主会话，并提示先在 pi �
   expect(p.saves).toEqual([{ role: "pm", model: null, thinking: "high", layer: "project" }]);
 });
 
-test("第 2 步：所选模型不支持的等级变灰并写原因，光标上下都跳过；当前值打勾", async () => {
-  const p = await settingsView();
+test("第 2 步：所选模型不支持的等级变灰并写原因，光标上下都跳过；当前值打勾；跟随主会话总是可选", async () => {
+  const p = await settingsView({ user: oneCompany({ pm: { model: "gpt-6-luna", thinking: "high" } }) });
   p.toSettings();
   p.press(ENTER);
   moveTo(p.screen, "gpt-6-luna");
@@ -166,9 +189,97 @@ test("第 2 步：所选模型不支持的等级变灰并写原因，光标上�
     p.press(key);
     visited.add(selectedLine(p.text()).replace(/[›✓]/gu, "").trim().split(/\s+/u)[0]!);
   }
-  expect([...visited].sort()).toEqual(expect.arrayContaining(["off", "xhigh"]));
+  expect([...visited].sort()).toEqual(expect.arrayContaining(["off", "xhigh", "跟随主会话"]));
   expect(visited.has("minimal")).toBe(false);
   expect(visited.has("max")).toBe(false);
+});
+
+test("第 2 步在 max 后面多一项“跟随主会话”，后面写主窗口当前思考等级", async () => {
+  const p = await settingsView({ mainThinking: "high" });
+  p.toSettings();
+  p.press(ENTER, ENTER);
+  const lines = p.text().split("\n");
+  const max = lines.findIndex((line) => /\bmax\b/u.test(line)), follow = lines.findIndex((line, index) => index > max && line.includes("跟随主会话"));
+  expect(max).toBeGreaterThan(0);
+  expect(follow).toBe(max + 1);
+  expect(lines[follow]).toMatch(/跟随主会话 +现在是 high *$/u);
+});
+
+test("主窗口思考等级是 off 时：PM 写“现在是 off”，解释器和草稿核验器写“现在是 不思考”", async () => {
+  const p = await settingsView({ mainThinking: "off" });
+  p.toSettings();
+  p.press(ENTER, ENTER);
+  expect(p.text()).toMatch(/跟随主会话 +现在是 off *\n/u);
+  const q = await settingsView({ mainThinking: "off" });
+  q.toSettings();
+  q.press(DOWN, ENTER, ENTER);
+  expect(q.text()).toMatch(/跟随主会话 +现在是 不思考 *\n/u);
+  const r = await settingsView({ mainThinking: "off" });
+  r.toSettings();
+  r.press(DOWN, DOWN, ENTER, ENTER);
+  expect(r.text()).toMatch(/跟随主会话 +现在是 不思考 *\n/u);
+});
+
+test("第 2 步当前生效的思考是跟随时，✓ 打在“跟随主会话”上，别的等级没有 ✓", async () => {
+  const p = await settingsView({ user: oneCompany({ pm: { model: "gpt-6.1-sol", thinking: null } }) });
+  p.toSettings();
+  p.press(ENTER, ENTER);
+  const checked = p.text().split("\n").filter((line) => line.includes("✓"));
+  expect(checked).toHaveLength(1);
+  expect(checked[0]).toMatch(/✓ +跟随主会话/u);
+});
+
+test("没有设定时第 2 步光标默认停在“跟随主会话”，直接回车再选项目层，保存请求的 thinking 为 null", async () => {
+  const p = await settingsView();
+  p.toSettings();
+  p.press(ENTER, ENTER);
+  expect(selectedLine(p.text())).toMatch(/跟随主会话/u);
+  p.press(ENTER);
+  moveTo(p.screen, "项目层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "pm", model: null, thinking: null, layer: "project" }]);
+});
+
+test("选了不支持部分等级的模型后，“跟随主会话”仍可选，保存请求的 thinking 为 null", async () => {
+  const p = await settingsView();
+  p.toSettings();
+  p.press(ENTER);
+  moveTo(p.screen, "gpt-6-luna");
+  p.press(ENTER);
+  moveTo(p.screen, "跟随主会话");
+  expect(selectedLine(p.text())).toMatch(/跟随主会话/u);
+  p.press(ENTER);
+  moveTo(p.screen, "用户层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "pm", model: "gpt-6-luna", thinking: null, layer: "user" }]);
+});
+
+test("主窗口思考是 max、选了不支持 max 的模型时，“跟随主会话”仍可选、备注现在是 max，保存的 thinking 为 null", async () => {
+  const p = await settingsView({ mainThinking: "max" });
+  p.toSettings();
+  p.press(ENTER);
+  moveTo(p.screen, "gpt-6-luna");
+  p.press(ENTER);
+  expect(p.text()).toMatch(/max +gpt-6-luna 不支持/u);
+  moveTo(p.screen, "跟随主会话");
+  expect(selectedLine(p.text())).toMatch(/跟随主会话 +现在是 max/u);
+  p.press(ENTER);
+  moveTo(p.screen, "项目层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "pm", model: "gpt-6-luna", thinking: null, layer: "project" }]);
+});
+
+test("草稿核验器设成 { model: null, thinking: off } 时思考列写“不思考”", async () => {
+  const p = await settingsView({ user: oneCompany({ "draft-verifier": { model: null, thinking: "off" } }) });
+  p.toSettings();
+  expect(p.text()).toMatch(/草稿核验器 +用户 +跟随主会话 +不思考/u);
+});
+
+test("第 3 步标题里模型和思考都是跟随时写“跟随主会话 · 跟随”", async () => {
+  const p = await settingsView();
+  p.toSettings();
+  p.press(ENTER, ENTER, ENTER);
+  expect(p.text()).toMatch(/PM 改为 跟随主会话 · 跟随，存到哪一层 +第 3 步，共 3 步/u);
 });
 
 test("第 2 步选的是跟随主会话时，按主窗口当前模型判断支持的等级", async () => {
@@ -318,9 +429,9 @@ interface PageScreen extends Screen { now(): string }
 type Step = (screen: PageScreen) => void;
 
 const failures: unknown[] = [];
-async function run(ctx: SettingsExtensionContext) {
+async function run(ctx: SettingsExtensionContext, mainThinking = "high") {
   failures.length = 0;
-  await openSettingsPage(ctx);
+  await openSettingsPage(ctx, { mainThinking: () => mainThinking });
   if (failures.length) throw failures[0];
 }
 
@@ -426,7 +537,7 @@ test("页面：没有任何配了凭据的模型时选跟随主会话，文件�
       s.press(ENTER);
     },
     (s) => {
-      expect(s.now()).toMatch(/› PM +项目 +跟随主会话 +high/u);
+      expect(s.now()).toMatch(/› PM +项目 +跟随主会话 +high *\n/u);
       expect(s.now()).toMatch(/PM 改为 跟随主会话 · high，存到项目层/u);
       s.press(ESC);
     },
@@ -435,13 +546,85 @@ test("页面：没有任何配了凭据的模型时选跟随主会话，文件�
   expect((await readJson(projectFile()))["one-company"].pm).toEqual({ model: null, thinking: "high" });
 }, 5000);
 
+test("页面：第 2 步选“跟随主会话”保存后，文件里 thinking 为 null，列表思考列写跟随，保存提示写跟随", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      toSettings(s);
+      s.press(ENTER);
+      moveTo(s, "gpt-6-luna");
+      s.press(ENTER);
+      expect(s.now()).toMatch(/跟随主会话 +现在是 xhigh *\n/u);
+      moveTo(s, "跟随主会话");
+      s.press(ENTER);
+      moveTo(s, "用户层");
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.now()).toMatch(/› PM +用户 +gpt-6-luna +跟随 *\n/u);
+      expect(s.now()).toContain("✓ PM 改为 gpt-6-luna · 跟随，存到用户层，下次启动 PM 时生效");
+      s.press(ESC);
+    },
+  ]);
+  await run(ctx, "xhigh");
+  expect((await readJson(userFile()))["one-company"].pm).toEqual({ model: "gpt-6-luna", thinking: null });
+}, 5000);
+
+test("页面：第 1 步和第 2 步都选跟随主会话，保存后列表和提示都写跟随主会话 · 跟随", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      toSettings(s);
+      s.press(DOWN, ENTER);
+      moveTo(s, "跟随主会话");
+      s.press(ENTER);
+      moveTo(s, "跟随主会话");
+      s.press(ENTER);
+      moveTo(s, "项目层");
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.now()).toMatch(/› 解释器 +项目 +跟随主会话 +跟随 *\n/u);
+      expect(s.now()).toContain("✓ 解释器 改为 跟随主会话 · 跟随，存到项目层，下次调用时生效");
+      s.press(ESC);
+    },
+  ]);
+  await run(ctx);
+  expect((await readJson(projectFile()))["one-company"].interpreter).toEqual({ model: null, thinking: null });
+}, 5000);
+
+test("页面：清除用户层里模型和思考都跟随的设定后，提示写内置默认值：跟随主会话", async () => {
+  await writeSettings(userFile(), oneCompany({ pm: { model: null, thinking: null } }));
+  const ctx = scripted([
+    (s) => { toSettings(s); s.press("R"); },
+    (s) => {
+      expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除用户层的 PM 设定，现在用内置默认值：跟随主会话");
+      s.press(ESC);
+    },
+  ]);
+  await run(ctx);
+}, 5000);
+
+test("页面：设置文件里 thinking 写 null 时列表写跟随，问题栏没有这一条", async () => {
+  await writeSettings(userFile(), oneCompany({ pm: { model: "gpt-6-luna", thinking: null } }));
+  const ctx = scripted([
+    (s) => {
+      toSettings(s);
+      expect(s.now()).toMatch(/› PM +用户 +gpt-6-luna +跟随 *\n/u);
+      expect(s.now()).not.toMatch(/问题 \d/u);
+      s.press(ESC);
+    },
+  ]);
+  await run(ctx);
+}, 5000);
+
 test("页面：来源为项目的 PM 按 R 后项目层这一项被删，改用内置默认值并提示", async () => {
   await writeSettings(projectFile(), oneCompany({ pm: { model: "gpt-6-luna", thinking: "low" } }));
   const ctx = scripted([
     (s) => { toSettings(s); s.press("R"); },
     (s) => {
-      expect(s.now()).toMatch(/› PM +内置 +gpt-6\.1-sol +high/u);
-      expect(s.now()).toContain("✓ 已清除项目层的 PM 设定，现在用内置默认值 gpt-6.1-sol · high");
+      expect(s.now()).toMatch(/› PM +内置 +跟随主会话 +跟随/u);
+      expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除项目层的 PM 设定，现在用内置默认值：跟随主会话");
       s.press(ESC);
     },
   ]);
@@ -528,12 +711,32 @@ test("36 到 80 列下，设定栏列表和三步选择、未受信任、模型�
   }
 });
 
+test("36 到 80 列下，第 2 步多出的“跟随主会话”项和跟随值的列表每一行都不超出终端宽度", async () => {
+  const screens: Array<[string, Awaited<ReturnType<typeof settingsView>>]> = [];
+  for (const mainThinking of ["off", "xhigh"]) {
+    for (const user of [undefined, oneCompany({ pm: { model: "claude-opus-5-5-extended-context-preview", thinking: null }, interpreter: { model: null, thinking: null }, "draft-verifier": { model: null, thinking: "off" } })]) {
+      for (const keys of [[], [ENTER, ENTER], [DOWN, ENTER, ENTER], [DOWN, DOWN, ENTER, ENTER], [ENTER, ENTER, ENTER]]) {
+        const p = await settingsView({ models: [SOL, LONG], mainThinking, ...(user ? { user } : {}) });
+        p.toSettings();
+        p.press(...keys);
+        if (keys.length !== 3 && keys.length > 0) expect(p.text(80)).toMatch(new RegExp(`跟随主会话 +现在是 (${mainThinking}|不思考)`, "u"));
+        screens.push([`${mainThinking} ${user ? "有设定" : "默认"} ${keys.length}`, p]);
+      }
+    }
+  }
+  for (const [label, p] of screens) {
+    for (let width = 36; width <= 80; width++) {
+      for (const line of p.text(width).split("\n")) expect(visibleWidth(line), `${label} ${width} 列：${line}`).toBeLessThanOrEqual(width);
+    }
+  }
+});
+
 test("两家提供方都有 gpt-6.1-sol 时，选 openai 那一行保存的 model 是 openai/gpt-6.1-sol；唯一的 gpt-6-luna 仍不带提供方", async () => {
   const models = [OPENAI_SOL, SOL, LUNA];
   const p = await settingsView({ models });
   p.toSettings();
   p.press(ENTER);
-  moveTo(p.screen, "openai");
+  moveToRowWith(p.screen, "openai");
   p.press(ENTER);
   moveTo(p.screen, "high");
   p.press(ENTER);

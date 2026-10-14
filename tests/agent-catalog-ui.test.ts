@@ -37,7 +37,7 @@ async function page(options: { trusted?: boolean; state?: ConstructorParameters<
   const catalog = await loadRoleCatalog({ ...roleDirs, parseFrontmatter, projectTrusted: trusted });
   const settings = await readAgentSettings({ agentDir: join(d.root, "agent"), repositoryRoot: join(d.root, "repo"), projectTrusted: trusted });
   const copies: Array<{ name: string; entry: string }> = []; let closed = false;
-  const view = new AgentCatalogView({ catalog, theme, projectTrusted: trusted, untrustedProjectCount: 1, settings, models: [], mainModel: undefined, onSaveSetting() {}, onClearSetting() {}, ...(options.state ? { state: options.state } : {}),
+  const view = new AgentCatalogView({ catalog, theme, projectTrusted: trusted, untrustedProjectCount: 1, settings, models: [], mainModel: undefined, mainThinking: "high", onSaveSetting() {}, onClearSetting() {}, ...(options.state ? { state: options.state } : {}),
     nameTaken: (name) => options.taken?.[name], onCopy: (request) => copies.push({ name: request.name, entry: request.entry.name }), onClose: () => { closed = true; } });
   const lines = (width = 80) => view.render(width);
   const text = (width = 80) => plain(lines(width).join("\n"));
@@ -64,7 +64,7 @@ test("M8D-AC8：打开时停在 pm，标题写各层数量，分类标签带数�
 test("M8D-AC8：同一职责下用户层与项目层排在内置前面，底部说明随选中行变化，被盖住的下层不再列出", async () => {
   const p = await page();
   p.press(RIGHT);
-  expect(p.text()).toMatch(/› ui-worker +用户 +5x\/gpt-6-luna +medium *\n +worker +内置 +gpt-6\.1-sol +high/u);
+  expect(p.text()).toMatch(/› ui-worker +用户 +5x\/gpt-6-luna +medium *\n +worker +内置 +跟随主会话 +跟随 *\n/u);
   expect(p.lines().join("\n")).toContain("!<accent> 用户 </>!");
   expect(p.lines().join("\n")).toContain("<accent>5x/gpt-6-luna</>");
   expect(p.text()).toContain("界面设计与实现，产出 HTML 预览 · skills ui-basics");
@@ -73,6 +73,16 @@ test("M8D-AC8：同一职责下用户层与项目层排在内置前面，底部�
   p.press(RIGHT);
   expect(p.text()).toMatch(/› reviewer +项目 +5x\/gpt-6-sol +high/u);
   expect(p.text().match(/reviewer +(内置|项目)/gu)).toHaveLength(1);
+});
+
+test("没写模型和思考的定义，模型列写“跟随主会话”、思考列写“跟随”，不再写“继承”", async () => {
+  const p = await page();
+  p.press(RIGHT, RIGHT, RIGHT);
+  expect(p.text()).toMatch(/› qa +内置 +跟随主会话 +跟随 *\n/u);
+  p.press(RIGHT);
+  expect(p.text()).toMatch(/› explore +内置 +跟随主会话 +跟随 *\n/u);
+  expect(p.text()).not.toContain("继承");
+  expect(p.lines().join("\n")).toContain("<dim>跟随主会话</>");
 });
 
 test("M8D-AC8：问题分类写短原因，展开写完整原因、现在的写法与影响；项目未受信任用灰色另列一行", async () => {
@@ -167,6 +177,18 @@ test("复制：新名称三层不重复，pm 只能同名复制到尚无 pm 的�
   const reloaded = await loadRoleCatalog({ ...d, parseFrontmatter, projectTrusted: true });
   expect(reloaded.roles.find((entry) => entry.name === "pm")).toMatchObject({ source: "user", overrides: ["default"] });
   expect(reloaded.roles.find((entry) => entry.name === "ui-dev")).toMatchObject({ source: "project", available: true });
+});
+
+test("复制内置 worker 生成的文件头部不含 model 和 thinking，仍有 skills 与 mcp 空数组", async () => {
+  const d = await dirs();
+  const catalog = await loadRoleCatalog({ ...d, parseFrontmatter, projectTrusted: true });
+  const worker = catalog.roles.find((entry) => entry.name === "worker")!;
+  const target = await copyAgentDefinition({ entry: worker, newName: "ui-dev", targetDir: d.userDir, layerDirs: [d.defaultDir, d.userDir, d.projectDir] });
+  const head = (await readFile(target, "utf8")).split(/^---$/mu)[1]!;
+  expect(head).not.toMatch(/^model:/mu);
+  expect(head).not.toMatch(/^thinking:/mu);
+  expect(head).toMatch(/^skills: \[\]$/mu);
+  expect(head).toMatch(/^mcp: \[\]$/mu);
 });
 
 test("M8D-AC8：44、56、80 列下每个分类的列表、详情与命名画面，任何一行的显示宽度都不超过终端宽度", async () => {

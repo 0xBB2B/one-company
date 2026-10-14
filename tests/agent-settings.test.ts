@@ -26,15 +26,21 @@ async function world() {
 }
 
 const DEFAULTS = {
-  pm: { model: "gpt-6.1-sol", thinking: "high", source: "default" },
-  interpreter: { model: "gpt-6-luna", thinking: "medium", source: "default" },
-  "draft-verifier": { model: "gpt-6.1-sol", thinking: "medium", source: "default" },
+  pm: { model: null, thinking: null, source: "default" },
+  interpreter: { model: null, thinking: null, source: "default" },
+  "draft-verifier": { model: null, thinking: null, source: "default" },
 };
 
 describe("角色固定表", () => {
   test("三个角色按 key 和中文名列出", () => {
     expect(SETTINGS_ROLES.map((r) => [r.key, r.label])).toEqual([
       ["pm", "PM"], ["interpreter", "解释器"], ["draft-verifier", "草稿核验器"],
+    ]);
+  });
+
+  test("三个角色的内置默认模型和思考等级都是 null，表示跟随主会话", () => {
+    expect(SETTINGS_ROLES.map((r) => [r.key, r.model, r.thinking])).toEqual([
+      ["pm", null, null], ["interpreter", null, null], ["draft-verifier", null, null],
     ]);
   });
 });
@@ -54,6 +60,14 @@ describe("读取设定", () => {
     const { values, problems } = await w.read(true);
     expect(values.pm).toEqual({ model: "gpt-6.1-sol", thinking: "max", source: "project" });
     expect(problems).toEqual([]);
+  });
+
+  test("项目层 pm 写成跟随时整条覆盖用户层，不按字段落到下一层", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { pm: { model: "gpt-6-luna", thinking: "low" } } });
+    await w.write(w.project, { "one-company": { pm: { model: null, thinking: null } } });
+    const { values } = await w.read(true);
+    expect(values.pm).toEqual({ model: null, thinking: null, source: "project" });
   });
 
   test("项目不受信任时 pm 取用户层的值", async () => {
@@ -88,8 +102,34 @@ describe("读取设定", () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatchObject({
       path: w.project, role: "pm",
-      display: "「PM」的思考等级写错了：super；只能是 off、minimal、low、medium、high、xhigh、max",
+      display: "「PM」的思考等级写错了：super；只能是 off、minimal、low、medium、high、xhigh、max，或 null（跟随主会话）",
     });
+  });
+
+  test("thinking 写成 null 时读出 null 表示跟随主会话，且不记问题", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { pm: { model: "gpt-6-luna", thinking: null }, interpreter: { model: null, thinking: null } } });
+    const { values, problems } = await w.read(true);
+    expect(values.pm).toEqual({ model: "gpt-6-luna", thinking: null, source: "user" });
+    expect(values.interpreter).toEqual({ model: null, thinking: null, source: "user" });
+    expect(problems).toEqual([]);
+  });
+
+  test("thinking 写成数字时丢弃该项并记问题，原值按 JSON 显示", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { pm: { model: "gpt-6-luna", thinking: 5 } } });
+    const { values, problems } = await w.read(true);
+    expect(values.pm).toEqual(DEFAULTS.pm);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.display).toBe("「PM」的思考等级写错了：5；只能是 off、minimal、low、medium、high、xhigh、max，或 null（跟随主会话）");
+  });
+
+  test("条目缺 thinking 字段时仍记问题，thinking 为 null 不等于没写", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { pm: { model: null } } });
+    const { values, problems } = await w.read(true);
+    expect(values.pm).toEqual(DEFAULTS.pm);
+    expect(problems).toHaveLength(1);
   });
 
   test("文件不是合法 JSON 时这一层整层不生效并记问题", async () => {
@@ -174,6 +214,15 @@ describe("写入设定", () => {
     const expected = { ...original, "one-company": { ...original["one-company"], pm: { model: "5x/gpt-6-luna", thinking: "xhigh" } } };
     expect(JSON.parse(text)).toEqual(expected);
     expect(text.trimEnd()).toBe(JSON.stringify(expected, null, 2));
+  });
+
+  test("保存 thinking 为 null 后文件里是 null，再读出来仍是 null", async () => {
+    const w = await world();
+    await saveAgentSetting({ path: w.user, role: "interpreter", model: "gpt-6-luna", thinking: null });
+    expect(JSON.parse(await readFile(w.user, "utf8"))).toEqual({ "one-company": { interpreter: { model: "gpt-6-luna", thinking: null } } });
+    const { values, problems } = await w.read(true);
+    expect(values.interpreter).toEqual({ model: "gpt-6-luna", thinking: null, source: "user" });
+    expect(problems).toEqual([]);
   });
 
   test("保存 model 为 null 后再读出来仍是 null", async () => {

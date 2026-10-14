@@ -48,7 +48,7 @@ export class AgentCatalogView {
   private naming: { entry: RoleCatalogEntry; text: string; locked: boolean; error?: string } | undefined;
   private readonly options: {
     catalog: RoleCatalog; theme: AgentCatalogTheme; projectTrusted: boolean; untrustedProjectCount: number; state?: CatalogPageState;
-    settings: Awaited<ReturnType<typeof readAgentSettings>>; models: readonly ModelLike[]; mainModel: ModelLike | undefined;
+    settings: Awaited<ReturnType<typeof readAgentSettings>>; models: readonly ModelLike[]; mainModel: ModelLike | undefined; mainThinking: string;
     nameTaken(name: string): string | undefined; onCopy(request: CopyRequest): void; onClose(): void;
     onSaveSetting(request: SaveSettingRequest): void; onClearSetting(request: ClearSettingRequest): void;
   };
@@ -56,7 +56,7 @@ export class AgentCatalogView {
 
   constructor(options: AgentCatalogView["options"]) {
     this.options = options;
-    this.settingsTab = new SettingsTab({ theme: options.theme, settings: options.settings, models: options.models, mainModel: options.mainModel, projectTrusted: options.projectTrusted,
+    this.settingsTab = new SettingsTab({ theme: options.theme, settings: options.settings, models: options.models, mainModel: options.mainModel, mainThinking: options.mainThinking, projectTrusted: options.projectTrusted,
       sourceTag: (source) => this.sourceTag(source), onSave: options.onSaveSetting, onClear: options.onClearSetting });
     const state = options.state;
     const tab = state?.tab ? this.tabs().indexOf(state.tab) : -1;
@@ -257,8 +257,8 @@ export class AgentCatalogView {
       const definition = entry.definition!, selected = index === this.cursor;
       const cell = (text: string, style?: (text: string) => string) => selected ? theme.bg("selectedBg", style ? style(text) : text) : style ? style(text) : text;
       const name = fit(entry.name, cols.name);
-      const model = fit(definition.model ?? "继承主会话", cols.model);
-      const thinking = definition.thinking ?? "继承";
+      const model = fit(definition.model ?? "跟随主会话", cols.model);
+      const thinking = definition.thinking ?? "跟随";
       const plainWidth = MARKER + 1 + cols.name + 1 + SOURCE + 1 + cols.model + 1 + visibleWidth(thinking);
       lines.push([
         cell(pad(selected ? (this.expanded ? " ⌄" : " ›") : "", MARKER), (text) => theme.fg("accent", text)),

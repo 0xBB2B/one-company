@@ -28,7 +28,7 @@ async function writeRole(dir: string, name: string, frontmatter: string, body = 
 }
 
 describe("内置默认团队", () => {
-  test("M8F-AC2：安装资源恰好提供 pm、explore、worker、reviewer、qa 五个职责定义与解释器、草稿核验器两个内部定义，不含 planner；五个职责定义写明 gpt-6.1-sol 与 high 思考", async () => {
+  test("M8F-AC2：安装资源恰好提供 pm、explore、worker、reviewer、qa 五个职责定义与解释器、草稿核验器两个内部定义，不含 planner；pm 写明 gpt-6.1-sol 与 high 思考，worker、reviewer、qa、explore 不写模型和思考", async () => {
     const files = (await readdir(defaultRoleDir())).filter((name) => name.endsWith(".md")).sort();
     expect(files).toEqual(["draft-verifier.md", "explore.md", "interpreter.md", "pm.md", "qa.md", "reviewer.md", "worker.md"]);
     const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
@@ -36,8 +36,13 @@ describe("内置默认团队", () => {
       const entry = roles.find((candidate) => candidate.name === role);
       expect(entry?.available, entry?.reason).toBe(true);
       expect(entry?.definition?.role).toBe(role);
-      expect(entry?.definition?.model).toBe("gpt-6.1-sol");
-      expect(entry?.definition?.thinking).toBe("high");
+      if (role === "pm") {
+        expect(entry?.definition?.model).toBe("gpt-6.1-sol");
+        expect(entry?.definition?.thinking).toBe("high");
+      } else {
+        expect(entry?.definition?.model).toBeUndefined();
+        expect(entry?.definition?.thinking).toBeUndefined();
+      }
     }
   });
 

@@ -53,7 +53,7 @@ test("M8D-AC8：页内输入新名称，程序窗口列出两层与完整路径�
       s.keys(ESC);
     },
   ]);
-  await openSettingsPage(ctx);
+  await openSettingsPage(ctx, { mainThinking: () => "high" });
   expect(window).toContain("复制 worker 到哪一层？");
   expect(window).toContain("新名称：api-worker");
   expect(window).toMatch(new RegExp(`→ 用户层 +${join(root, "agent", "agents", "api-worker.md")}`, "u"));
@@ -70,7 +70,7 @@ test("M8D-AC8：项目未受信任时项目层选项变暗并写明原因，页�
     (s) => { window = s.text; s.keys(ESC); },
     (s) => s.keys(ESC),
   ], false);
-  await openSettingsPage(ctx);
+  await openSettingsPage(ctx, { mainThinking: () => "high" });
   expect(window).toMatch(/项目层 +项目未受信任，暂不能复制到这里/u);
 });
 
@@ -84,7 +84,7 @@ test("带引号的 model 与多行 description：设置页显示的内容与守�
   expect(parsed).toMatchObject({ model: "x/m-1", thinking: "high", description: "多行描述第一行 第二行: 含冒号\n" });
   let page = "";
   const ctx = scripted([(s) => { s.keys(RIGHT); page = s.now(); s.keys(ESC); }]);
-  await openSettingsPage(ctx);
+  await openSettingsPage(ctx, { mainThinking: () => "high" });
   expect(page).toContain("quoted-worker");
   expect(page).toContain(parsed.model!);
   expect(page).not.toContain('"x/m-1"');
