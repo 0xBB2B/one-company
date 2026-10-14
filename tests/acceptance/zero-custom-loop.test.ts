@@ -140,7 +140,8 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
   await runLoop("zero-custom", SCRIPT, async ({ outcome, runs, archive, archives, host, agentDir, repoId, repo, worktree }) => {
     expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: "closed" });
     expect(runs.length).toBeGreaterThan(0);
-    expect(runs.every((run) => run.agent?.source === "default")).toBe(true);
+    expect(runs.filter((run) => run.kind === "requirement").every((run) => run.agent === undefined)).toBe(true);
+    expect(runs.filter((run) => run.kind !== "requirement").every((run) => run.agent?.source === "default")).toBe(true);
     expect(runs.map((run) => run.kind)).toContain("requirement");
     for (const role of ["one-company.worker", "one-company.reviewer", "one-company.qa"]) expect(runs.map((run) => run.role)).toContain(role);
     expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
