@@ -53,15 +53,13 @@ test("M8O-AC2：实施目标等于实施目标板块下全部已确认段落，�
 
 test("M8O-AC1：批准新版本时暂停的子代理在计划确认后是否恢复：所属任务版本没变、在已确认计划里且这次运行仍是任务当前在做的那次才恢复", () => {
   const plan = { confirmedTasks: [{ taskId: "t", version: 1 }] } as never;
-  const task = (patch: Record<string, unknown>) => ({ plan, tasks: [{ taskId: "t", version: 1, status: "running", prototypeRun: undefined, ...patch }] }) as never;
+  const task = (patch: Record<string, unknown>) => ({ plan, tasks: [{ taskId: "t", version: 1, status: "running", ...patch }] }) as never;
   expect(holdResumes(null, null, "r")).toBe(true);
   expect(holdResumes({ taskId: "t", version: 1, kind: "attempt" }, task({}), "r")).toBe(true);
   expect(holdResumes({ taskId: "t", version: 1, kind: "attempt" }, task({ version: 2 }), "r")).toBe(false);
   expect(holdResumes({ taskId: "t", version: 1, kind: "attempt" }, task({ status: "cancelled" }), "r")).toBe(false);
   expect(holdResumes({ taskId: "t", version: 1, kind: "review" }, task({ status: "reviewing" }), "r")).toBe(true);
   expect(holdResumes({ taskId: "t", version: 1, kind: "review" }, task({ status: "running" }), "r")).toBe(false);
-  expect(holdResumes({ taskId: "t", version: 1, kind: "prototype" }, task({ status: "pending", prototypeRun: { runId: "r", outcome: "running" } }), "r")).toBe(true);
-  expect(holdResumes({ taskId: "t", version: 1, kind: "prototype" }, task({ status: "pending", prototypeRun: { runId: "other", outcome: "running" } }), "r")).toBe(false);
   expect(holdResumes({ taskId: "t", version: 1, kind: "attempt" }, { plan: { confirmedTasks: [] }, tasks: [{ taskId: "t", version: 1, status: "running" }] } as never, "r")).toBe(false);
 });
 
@@ -109,6 +107,17 @@ test("M7-AC31：任务缺目标、通过条件、范围、性能条件或有效�
   await expect(pm.execute({ action: "propose", tasks: [spec("login", { role: "pm" as never })] })).rejects.toMatchObject({ code: "invalid_shape" });
   await expect(pm.execute({ action: "propose", tasks: [spec("login", { role: "prototype" as never })] })).rejects.toMatchObject({ code: "invalid_shape" });
   expect(w.db((db) => db.read(PLANS, w.fixture.requirementId))).toBeNull();
+}, 30000);
+
+test("任务带 ui 字段的计划被拒绝，原因写明界面标记已不存在；不带的计划被接受", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await expect(pm.execute({ action: "propose", tasks: [spec("login", { ui: true } as Partial<TaskSpec>)] })).rejects.toMatchObject({ code: "invalid_shape", message: expect.stringContaining("界面标记已不存在") });
+  expect(w.db((db) => db.read(PLANS, w.fixture.requirementId))).toBeNull();
+  await pm.execute({ action: "propose", tasks: [spec("login")] });
+  expect(w.db((db) => db.read(PLANS, w.fixture.requirementId))).not.toBeNull();
+  await expect(pm.execute({ action: "update", planVersion: 1, add: [spec("signup", { ui: true } as Partial<TaskSpec>)] }))
+    .rejects.toMatchObject({ code: "invalid_shape", message: expect.stringContaining("界面标记已不存在") });
 }, 30000);
 
 test("M7-AC32：任务只能引用获准实施的需求章节，依赖须存在且无环", async () => {

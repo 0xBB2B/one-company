@@ -12,7 +12,6 @@ import { checkExploreSession, EXPLORE_STALE_TEXT } from "./explore-session.ts";
 import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
 import type { FailureAdvice } from "./tool-failure.ts";
 import type { ExploreSessionConfig } from "./explore-session.ts";
-import { PrototypeError, submitPrototype } from "./prototype.ts";
 import { shapeIssue } from "./tool-request.ts";
 import { submitVerdict, VERDICT_PAYLOAD, VerdictError } from "./verdicts.ts";
 import type { VerdictBinding } from "./verdicts.ts";
@@ -24,7 +23,7 @@ const Grant = object({
 export type ResultSubmitGrant = Static<typeof Grant>;
 /** worker、reviewer、QA 看到的参数：result 直接给出裁决格式，模型不必猜字段。 */
 export const VERDICT_SUBMIT_PARAMETERS = object({ action: Type.Literal("verdict"), result: VERDICT_PAYLOAD });
-/** 做原型的 worker 看到的参数：html 是完整的单个 HTML 文件，note 用一句话说明画了什么。 */
+/** 原型设计师看到的参数：html 是完整的单个 HTML 文件，note 用一句话说明画了什么。 */
 export const PROTOTYPE_SUBMIT_PARAMETERS = object({ action: Type.Literal("prototype"), html: Type.String({ minLength: 1 }), note: Type.String({ minLength: 1, maxLength: 1024 }) });
 export const RESULT_SUBMIT_PARAMETERS = Type.Union([
   object({ action: Type.Literal("research"), result: Type.Unknown() }),
@@ -44,9 +43,8 @@ const RESULT_SUBMIT_ADVICE = {
   out_of_scope: { why: "提交内容超出了本运行允许的范围", next: "按原因改正后重交" },
   out_of_scope_changes: { why: "工作区里有本任务写入范围以外的文件被改动", next: "先用命令把这些文件恢复成最新提交里的样子：已跟踪的文件用 git show HEAD:<路径> > <路径> 取回，新建的文件删掉（沙箱里 git checkout 与 git restore 用不了）；需要新增或升级第三方依赖时不要自己装，恢复后在 findings 里写明要什么、为什么，由 PM 交用户裁决；然后重交" },
   resource_limit: { why: "提交内容超出了允许的数量或长度", next: "精简内容后重交" },
-  verdict_unavailable: { why: "本运行没有可提交裁决的任务绑定", next: "检索运行改用 research 提交；做原型的运行改用 prototype 提交" },
-  prototype_unavailable: { why: "本运行不是做原型的运行，或已不是该任务当前的原型运行", next: "实现运行改用 verdict 提交结果" },
-  prototype_too_large: { why: "原型超出大小上限", next: "精简原型后重交" },
+  verdict_unavailable: { why: "本运行没有可提交裁决的任务绑定", next: "检索运行改用 research 提交" },
+  prototype_unavailable: { why: "本次运行没有可提交原型的设计任务", next: "不要再提交原型；在回复里说明，由上级处理" },
   stale_session: { why: "本次检索已不是当前有效的检索，结果不会再被收下", next: "停止操作，不要重试" },
   submit_failed: { why: "保存提交内容时出错", next: "重试一次；仍然失败就在回复里说明原因，由上级处理" },
 } as const satisfies Record<string, FailureAdvice>;
@@ -65,8 +63,6 @@ export interface ResultSubmitToolOptions {
   exploreInput?: ExploreInput;
   /** worker/reviewer/QA 的裁决绑定由可信派工服务提供；缺失时 verdict 动作不可用。 */
   verdictBinding?: VerdictBinding;
-  /** 做原型的运行绑定的任务；有它时只收 prototype，不收 verdict。 */
-  prototypeBinding?: { dataRoot: string; repoId: string; requirementId: string; taskId: string };
   /** worker 运行由派工服务提供：返回工作区里不在本需求任何未取消任务写入范围内、却有改动的路径；有这样的路径时拒收结果。 */
   outOfScopeChanges?: () => Promise<string[]>;
   /** 已登记的 explore 搜索会话：需求关闭、父撤权、PM 接管或会话回收后 research 一律拒收。 */
@@ -112,20 +108,10 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
       throw new ResultSubmitError("invalid_shape", raw.action === "verdict" ? shapeIssue(VERDICT_PAYLOAD, raw.result) : undefined);
     }
     host(params.action);
-    if (params.action === "prototype") {
-      if (!options.prototypeBinding) throw new ResultSubmitError("prototype_unavailable");
-      const binding = options.prototypeBinding;
-      return inScope(() => submitPrototype({ ...binding, runId: grant.runId }, { html: params.html, note: params.note }).then((prototype) => {
-        host("prototype");
-        return freeze({ kind: "prototype" as const, accepted: true, isPass: false, version: prototype.version, hash: prototype.hash, bytes: prototype.bytes, runId: grant.runId });
-      }, (error: unknown) => {
-        throw error instanceof PrototypeError && (error.code === "prototype_unavailable" || error.code === "prototype_too_large")
-          ? new ResultSubmitError(error.code, error.detail) : new ResultSubmitError("submit_failed", (error as Error).message);
-      }));
-    }
+    if (params.action === "prototype") throw new ResultSubmitError("prototype_unavailable");
     if (params.action === "verdict") {
       const binding = options.verdictBinding;
-      if (!binding || options.prototypeBinding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
+      if (!binding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
       const role = grant.role;
       return inScope(() => {
         let verdict;
