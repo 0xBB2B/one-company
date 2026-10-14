@@ -142,10 +142,10 @@ test("M8D-AC8：复制在页内输入新名称，格式不对或重名当场拦�
 });
 
 test("M8D-AC8：复制后回到原分类，新定义被选中且名字绿色，底部显示成功提示", async () => {
-  const p = await page({ state: { tab: "worker", selectName: "ui-worker", fresh: "ui-worker", notice: { tone: "ok", text: "✓ 已复制到 ~/.pi/agent/agents/ui-worker.md，请直接编辑这个文件" } } });
+  const p = await page({ state: { tab: "worker", selectName: "ui-worker", fresh: "ui-worker", notice: { tone: "ok", text: "✓ 已复制到 ~/.pi/agent/agents/ui-worker.md，打开它写专长、skills 和 mcp" } } });
   expect(p.text()).toMatch(/› ui-worker +用户/u);
   expect(p.lines().join("\n")).toContain("<success>ui-worker</>");
-  expect(p.lines().join("\n")).toContain("<success>✓ 已复制到 ~/.pi/agent/agents/ui-worker.md，请直接编辑这个文件</>");
+  expect(p.lines().join("\n")).toContain("<success>✓ 已复制到 ~/.pi/agent/agents/ui-worker.md，打开它写专长、skills 和 mcp</>");
   p.press(DOWN);
   expect(p.text()).not.toContain("已复制到");
 });
