@@ -65,9 +65,10 @@ Type.Union([
 ```
 协议新增：
 ```ts
-"prototypes.pending": { requirementId: id, name }                       // 返回确认窗口要显示的内容；没有待确认版本时报原因和当前状态
+"prototypes.pending": { requirementId: id, name }                       // 返回确认窗口要显示的内容：requirementTitle、draftVersion（revision+1）、name、version、path、bytes、hash、note、previousOpinion；没有待确认版本时报原因和当前状态
 "prototypes.decide":  { requirementId: id, name, version: positive, hash: sha256Hex, choice: "accept"|"rework"|"abandon", opinion: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]) }
 "prototypes.remove":  { requirementId: id, name }
+"prototypes.removal": { requirementId: id, name }                       // 移除窗口要显示的内容：requirementTitle、draftVersion、name、version、approvedRevision（null 表示本次草稿新通过）；草稿里没有时报原因
 ```
 
 ## 函数清单

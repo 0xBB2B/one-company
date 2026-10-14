@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
-import { id } from "./requirement-contracts.ts";
+import { hash, id, positive } from "./requirement-contracts.ts";
 import { PrototypeDispatchInput } from "./prototype-dispatch.ts";
 import { KnowledgeTransportQuerySchema, parseKnowledgeTransportQuery } from "./knowledge-query-tool.ts";
 
@@ -25,6 +25,10 @@ export const METHODS = [
   "prototypes.designers",
   "prototypes.list",
   "prototypes.board",
+  "prototypes.pending",
+  "prototypes.decide",
+  "prototypes.remove",
+  "prototypes.removal",
   "pm.overview",
   "pm.packet",
   "pm.message",
@@ -116,6 +120,12 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   "prototypes.designers": Type.Object({}, { additionalProperties: false }),
   "prototypes.list": Type.Object({}, { additionalProperties: false }),
   "prototypes.board": Type.Object({ requirementId: id }, { additionalProperties: false }),
+  "prototypes.pending": Type.Object({ requirementId: id, name: Type.String() }, { additionalProperties: false }),
+  "prototypes.decide": Type.Object({ requirementId: id, name: Type.String(), version: positive, hash,
+    choice: Type.Union([Type.Literal("accept"), Type.Literal("rework"), Type.Literal("abandon")]),
+    opinion: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]) }, { additionalProperties: false }),
+  "prototypes.remove": Type.Object({ requirementId: id, name: Type.String() }, { additionalProperties: false }),
+  "prototypes.removal": Type.Object({ requirementId: id, name: Type.String() }, { additionalProperties: false }),
   "pm.packet": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),
   "pm.message": Type.Object({ requirementId: Type.String(), text: Type.String({ minLength: 1, maxLength: PM_MESSAGE_MAX_CHARS }) }, { additionalProperties: false }),
   "workflow.manage": Type.Object({ requirementId: Type.String(), request: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),

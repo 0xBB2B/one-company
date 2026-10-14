@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { chooseWindow, mutedLines } from "../runtime/question-window.ts";
+import { chooseWindow, mutedLines, openProgramWindow } from "../runtime/question-window.ts";
 import type { WindowChoice } from "../runtime/question-window.ts";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -45,7 +45,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
   for (;;) {
     const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted });
     const settings = await readSettings();
-    const picked = await ctx.ui.custom<Picked | undefined>((tui, theme, _keybindings, done) => {
+    const picked = await openProgramWindow<Picked>(ctx, (tui, theme, _keybindings, done) => {
       const view: AgentCatalogView = new AgentCatalogView({ catalog, theme: theme as unknown as AgentCatalogTheme, projectTrusted, untrustedProjectCount, nameTaken,
         settings, models, mainModel: ctx.model, mainThinking: options.mainThinking(), ...(state ? { state } : {}),
         onCopy: (copy) => done({ copy, state: view.state() }), onSaveSetting: (save) => done({ save, state: view.state() }), onClearSetting: (clear) => done({ clear, state: view.state() }),

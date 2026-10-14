@@ -6,6 +6,7 @@ import requirementManageExtension from "./requirement-manage.ts";
 import rulesExtension from "./rules.ts";
 import agentManageExtension from "./agent-manage.ts";
 import workflowManageExtension from "./workflow-manage.ts";
+import prototypeExtension from "./prototype.ts";
 import pmPanelExtension from "./pm-panel.ts";
 import shellUiExtension from "./shell-ui.ts";
 import commandsExtension from "./commands.ts";
@@ -23,6 +24,7 @@ export default function registerExtensions(pi: ExtensionAPI): void {
   rulesExtension(pi);
   agentManageExtension(pi);
   workflowManageExtension(pi);
+  prototypeExtension(pi);
   pmPanelExtension(pi);
   shellUiExtension(pi);
   searchExclusionExtension(pi);

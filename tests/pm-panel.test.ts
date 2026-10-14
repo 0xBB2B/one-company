@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { PmOverview } from "../runtime/pm-overview.ts";
 import { formatElapsed, formatTokens, PmPanel } from "../runtime/pm-panel.ts";
-import type { ExplorePanelEntry, PmPanelEntry } from "../runtime/pm-panel.ts";
+import type { ExplorePanelEntry, PmPanelEntry, PrototypePanelEntry } from "../runtime/pm-panel.ts";
 import pmPanelExtension from "../extensions/pm-panel.ts";
 import { createClock } from "../runtime/clock.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
@@ -157,5 +157,67 @@ test("M7-AC33/AC35：主窗口面板拉取概览，↓ 进入面板、选中事�
   listeners.get("explore.changed")!();
   await vi.waitFor(() => expect(calls.filter((method) => method === "explore.list").length).toBe(exploreBefore + 1));
   expect(calls.filter((method) => method === "pm.overview").length).toBe(overviewNow);
+  await fake.trigger("session_shutdown", {}, ctx);
+});
+
+const designing: PrototypePanelEntry = { repoId: "r", fetchedAt: 1_000,
+  prototype: { runId: "01900000-0000-7000-8000-0000000000f1", requirementId: "01900000-0000-7000-8000-000000000001", name: "设置页", version: 3, agent: "prototype", turns: 3, maxTurns: 30, elapsedMs: 41_000 } };
+const designingCli: PrototypePanelEntry = { repoId: "r", fetchedAt: 1_000,
+  prototype: { runId: "01900000-0000-7000-8000-0000000000f2", requirementId: "01900000-0000-7000-8000-000000000001", name: "命令行输出", version: 1, agent: "brand-designer", turns: 9, maxTurns: 30, elapsedMs: 130_000 } };
+
+test("主窗口派出的原型设计师：单独运行时只列设计一组，按拉取后经过的时间累加；清空后不再显示", () => {
+  const instance = new PmPanel({ now: () => 2_000, openItem: vi.fn(), togglePause: vi.fn() });
+  instance.updatePrototypes([designing]);
+  expect(instance.render(200)).toEqual(["● 1 个原型设计运行中", "└─ ⠋ 设置页（第 3 版）· prototype · ↻3/30 · 42.0s"]);
+  expect(instance.hasRows()).toBe(false);
+  instance.updatePrototypes([]);
+  expect(instance.render(200)).toEqual([]);
+});
+
+test("面板同时有需求、原型设计、检索时按这个顺序显示，设计行带分支符号，按键提示在最后", () => {
+  const { instance } = panel();
+  instance.updateExplores([localExplore]);
+  instance.updatePrototypes([designing, designingCli]);
+  instance.focus();
+  const lines = instance.render(200);
+  expect(lines.slice(6)).toEqual([
+    "● 2 个原型设计运行中",
+    "├─ ⠋ 设置页（第 3 版）· prototype · ↻3/30 · 41.0s",
+    "└─ ⠋ 命令行输出（第 1 版）· brand-designer · ↻9/30 · 2m10s",
+    "● 1 个检索运行中",
+    "└─ ⠋ 本地 · 守护进程断网后怎么恢复 · ↻5/20 · 1m4s",
+    "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框",
+  ]);
+  expect(lines[0]).toBe("● 2 个需求运行中");
+  expect(instance.render(20).every((line) => visibleWidth(line) <= 20)).toBe(true);
+});
+
+test("原型设计变化信号到达时，主窗口面板重新拉取原型设计运行并显示", async () => {
+  const fake = createFakePi();
+  const listeners = new Map<string, () => void>();
+  const calls: string[] = [];
+  const client = {
+    connectionIdentity: () => ({ daemonInstanceId: "d", connectionId: "c", connectionSequence: 1 }),
+    call: async (method: string) => {
+      calls.push(method);
+      if (method === "pm.overview" || method === "explore.list") return { items: [] };
+      if (method === "prototypes.list") return { items: [designing.prototype] };
+      throw new Error(`未预期的 RPC ${method}`);
+    },
+    subscribe: (event: string, handler: () => void) => { listeners.set(event, handler); return () => listeners.delete(event); },
+    state: () => ({ status: "connected" as const }),
+    close: () => {},
+  };
+  const window = { windowId: "w", sessionId: "s", workspace: { repos: [{ repoId: "r", path: "/r", commonDir: "/r/.git" }], skipped: [] },
+    clients: { forRepo: (id: string) => (id === "r" ? client : undefined), all: () => [client], skipped: () => [], closeAll: () => {} } };
+  pmPanelExtension(fake.pi as never, { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock() });
+  let widget: { render(width: number): string[] } | undefined;
+  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({}, {}); },
+    onTerminalInput: () => () => {}, getEditorText: () => "", notify: vi.fn() } };
+  await fake.trigger("session_start", { reason: "new" }, ctx);
+  await vi.waitFor(() => expect(widget!.render(200)).toContain("● 1 个原型设计运行中"));
+  const before = calls.filter((method) => method === "prototypes.list").length;
+  listeners.get("prototype.changed")!();
+  await vi.waitFor(() => expect(calls.filter((method) => method === "prototypes.list").length).toBe(before + 1));
   await fake.trigger("session_shutdown", {}, ctx);
 });
