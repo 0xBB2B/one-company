@@ -32,19 +32,51 @@ export function toolStep(toolName: string, params: unknown): string {
   return typeof action === "string" ? `${toolName} 的 ${action} 动作` : toolName;
 }
 
-function commandFailure(error: unknown): { cmd: string; code: number; silent: boolean } | undefined {
+const RETRY_NEXT = "可以重试一次；仍然失败就把这段原因告诉用户";
+const NO_RETRY_NEXT = "不要重试，把这段原因告诉用户";
+
+interface CommandFailureKind { program: string; label: string; output: "always" | "if-any" | "never"; next: string }
+
+function commandFailureKind(error: unknown): CommandFailureKind | undefined {
   if (error === null || typeof error !== "object") return undefined;
-  const { cmd, stdout, stderr, code } = error as Record<string, unknown>;
-  if (typeof cmd !== "string" || typeof stdout !== "string" || typeof stderr !== "string" || typeof code !== "number") return undefined;
-  return { cmd, code, silent: !stdout.trim() && !stderr.trim() };
+  const { cmd, stdout, stderr, code, killed, signal } = error as Record<string, unknown>;
+  if (typeof cmd !== "string" || typeof stdout !== "string" || typeof stderr !== "string") return undefined;
+  const program = cmd.trim().split(/\s+/)[0]!;
+  const kind = (label: string, output: CommandFailureKind["output"], next: string) => ({ program, label, output, next });
+  if (typeof code === "number") return kind(`命令失败（退出码 ${code}）`, "always", "根据命令输出判断：参数或文件写错就改正后再试；看不懂就把这段原因告诉用户");
+  if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return kind("命令输出太多，超过程序的读取上限", "never", NO_RETRY_NEXT);
+  if (code === "ENOENT") return kind("命令无法启动：找不到这个程序，或者工作目录不存在", "never", "确认工作目录还在；仍然失败就把这段原因告诉用户，可能需要安装这个程序");
+  if (code === "EACCES") return kind("命令无法启动：没有权限运行这个程序，或者没有权限进入工作目录", "never", NO_RETRY_NEXT);
+  if (code === "ABORT_ERR") return kind("命令被取消", "never", "不要重试，等待用户或上级的下一步安排");
+  if (code !== null || typeof signal !== "string") return undefined;
+  if (killed === true) return kind("命令超时，被程序停止", "if-any", "可以重试一次；仍然超时就把这段原因告诉用户");
+  if (killed === false) return kind(`命令被信号 ${signal} 停止`, "if-any", RETRY_NEXT);
+  return undefined;
+}
+
+function describe(kind: CommandFailureKind, tail: string | undefined): string {
+  const detail = kind.output === "always" ? tail ?? "命令没有输出" : kind.output === "if-any" ? tail : undefined;
+  return detail ? `${kind.label}：${detail}` : kind.label;
+}
+
+function tailOf(raw: string, lines: number, limit: number): string {
+  const tail = raw.split("\n").map((line) => line.trim()).filter(Boolean).slice(-lines).join(" / ");
+  return tail.length > limit ? `…${tail.slice(-limit)}` : tail;
+}
+
+function outputTail(error: unknown, lines: number, limit: number): string | undefined {
+  const record = error !== null && typeof error === "object" ? error as { stderr?: unknown; stdout?: unknown } : {};
+  const text = (value: unknown): string | undefined => typeof value === "string" && value.trim() ? value : undefined;
+  const output = text(record.stderr) ?? text(record.stdout);
+  return output === undefined ? undefined : tailOf(output, lines, limit);
 }
 
 export function failureText(step: string, error: unknown): string {
   const advice = adviceOf(error);
   const message = error instanceof Error ? error.message : String(error);
-  const command = advice ? undefined : commandFailure(error);
-  const why = advice?.why ?? (command ? `${command.cmd.trim().split(/\s+/)[0]} 命令失败（退出码 ${command.code}）：${commandOutputTail(error)}` : `未归类的错误（${message}）`);
-  const next = advice?.next ?? (command ? "根据命令输出判断：参数或文件写错就改正后再试；看不懂就把这段原因告诉用户" : "可以重试一次；仍然失败就把这段原因告诉用户");
+  const kind = advice ? undefined : commandFailureKind(error);
+  const why = advice?.why ?? (kind ? `${kind.program} ${describe(kind, outputTail(error, 3, 300))}` : `未归类的错误（${message}）`);
+  const next = advice?.next ?? kind?.next ?? RETRY_NEXT;
   return `${step}失败。\n原因：${why}\n建议：${next}`;
 }
 
@@ -77,14 +109,14 @@ export const COMMON_ADVICE = {
   internal_state: { why: "本机记录与预期不一致", next: "停止操作，把这段原因告诉用户" },
 } as const satisfies Record<string, FailureAdvice>;
 
-/** 外部命令失败时的原文摘要：命令没有任何输出就写明；否则取 stderr（空白就取 stdout，再没有取消息）最后几行，限长。 */
+/** 外部命令失败时给调用方拼进报错的一句话：非零退出取命令输出摘要，其余类别取描述句。 */
 export function commandOutputTail(error: unknown, lines = 3, limit = 300): string {
-  if (commandFailure(error)?.silent) return "命令没有输出";
-  const record = error !== null && typeof error === "object" ? error as { stderr?: unknown; stdout?: unknown; message?: unknown } : {};
-  const text = (value: unknown): string | undefined => typeof value === "string" && value.trim() ? value : undefined;
-  const raw = text(record.stderr) ?? text(record.stdout) ?? (typeof record.message === "string" ? record.message : String(error));
-  const tail = raw.split("\n").map((line) => line.trim()).filter(Boolean).slice(-lines).join(" / ");
-  return tail.length > limit ? `…${tail.slice(-limit)}` : tail;
+  const tail = outputTail(error, lines, limit);
+  const kind = commandFailureKind(error);
+  if (kind) return kind.output === "always" ? tail ?? "命令没有输出" : describe(kind, tail);
+  if (tail !== undefined) return tail;
+  const message = error !== null && typeof error === "object" ? (error as { message?: unknown }).message : undefined;
+  return tailOf(typeof message === "string" ? message : String(error), lines, limit);
 }
 
 /** 按码查原因与建议；码不在表里时说明是未归类的拒绝，仍给出下一步。 */
