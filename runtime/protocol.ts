@@ -1,6 +1,8 @@
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
+import { id } from "./requirement-contracts.ts";
+import { PrototypeDispatchInput } from "./prototype-dispatch.ts";
 import { KnowledgeTransportQuerySchema, parseKnowledgeTransportQuery } from "./knowledge-query-tool.ts";
 
 export const PROTOCOL_VERSION = 2;
@@ -19,6 +21,10 @@ export const METHODS = [
   "agents.dispatchExplore",
   "explore.result",
   "explore.list",
+  "prototypes.dispatch",
+  "prototypes.designers",
+  "prototypes.list",
+  "prototypes.board",
   "pm.overview",
   "pm.packet",
   "pm.message",
@@ -33,6 +39,9 @@ export const EVENTS = [
   "pm.overview.changed",
   "explore.finished",
   "explore.changed",
+  "prototype.changed",
+  "prototype.submitted",
+  "prototype.finished",
 ] as const;
 
 type RequestFrame = { t: "req"; id: string; method: string; params: Record<string, unknown> };
@@ -103,6 +112,10 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
     thinking: Type.String() }, { additionalProperties: false }),
   "explore.result": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "explore.list": Type.Object({}, { additionalProperties: false }),
+  "prototypes.dispatch": PrototypeDispatchInput,
+  "prototypes.designers": Type.Object({}, { additionalProperties: false }),
+  "prototypes.list": Type.Object({}, { additionalProperties: false }),
+  "prototypes.board": Type.Object({ requirementId: id }, { additionalProperties: false }),
   "pm.packet": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),
   "pm.message": Type.Object({ requirementId: Type.String(), text: Type.String({ minLength: 1, maxLength: PM_MESSAGE_MAX_CHARS }) }, { additionalProperties: false }),
   "workflow.manage": Type.Object({ requirementId: Type.String(), request: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),

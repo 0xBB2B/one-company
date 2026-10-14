@@ -29,6 +29,10 @@ const EXPECTED_METHODS = [
   "agents.dispatchExplore",
   "explore.result",
   "explore.list",
+  "prototypes.dispatch",
+  "prototypes.designers",
+  "prototypes.list",
+  "prototypes.board",
   "pm.overview",
   "pm.packet",
   "pm.message",
@@ -43,6 +47,9 @@ const EXPECTED_EVENTS = [
   "pm.overview.changed",
   "explore.finished",
   "explore.changed",
+  "prototype.changed",
+  "prototype.submitted",
+  "prototype.finished",
 ];
 
 const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
@@ -62,6 +69,10 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "agents.dispatchExplore": { request: { question: "q", clues: [], source: { kind: "local_file" } }, maxTurns: 3, model: { provider: "p", id: "m" }, thinking: "off" },
   "explore.result": { runId: "r" },
   "explore.list": {},
+  "prototypes.dispatch": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", brief: "手机号登录界面", maxTurns: 10, model: { provider: "p", id: "m" }, thinking: "off" },
+  "prototypes.designers": {},
+  "prototypes.list": {},
+  "prototypes.board": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10" },
   "pm.packet": { requirementId: "req-1", itemId: "task:x" },
   "pm.message": { requirementId: "req-1", text: "先做登录" },
   "workflow.manage": { requirementId: "req-1", request: { action: "status" } },
@@ -97,6 +108,13 @@ test("知识RPC严格拒绝模型身份/SQL/超限及非授权路径，仅接受
 describe("协议常量", () => {
   test("PROTOCOL_VERSION 为 2", () => {
     expect(PROTOCOL_VERSION).toBe(2);
+  });
+
+  test("prototypes 方法的需求编号不是 UUIDv7 时以 bad_params 拒绝", () => {
+    for (const method of ["prototypes.dispatch", "prototypes.board"]) {
+      const params = { ...VALID_EXAMPLES[method]!, requirementId: "req-1" };
+      expect(catchError(() => validateParams(method, params))?.code).toBe("bad_params");
+    }
   });
 
   test("目录精确等于协议成品", () => {

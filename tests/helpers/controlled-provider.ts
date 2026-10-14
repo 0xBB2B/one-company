@@ -29,6 +29,8 @@ export interface ControlledProvider {
   requests: Context[];
   /** 每次调用传入的思考等级，没传时为 undefined。 */
   reasoning: Array<string | undefined>;
+  /** 每次调用所用的模型 id。 */
+  models: string[];
   /** 队列为空时改为等待这里给出的回复；不设时空队列立即报错。 */
   awaitReply?: (request: Context) => Promise<ScriptedReply | undefined>;
 }
@@ -52,7 +54,7 @@ export function registerControlledProvider(
   if (runtime.getModels(providerId).length > 0) {
     throw new Error(`controlled provider 已在该 runtime 注册: ${providerId}`);
   }
-  const handle: ControlledProvider = { providerId, modelId, baseUrl: baseUrl ?? "http://127.0.0.1:1", queue: [], requests: [], reasoning: [] };
+  const handle: ControlledProvider = { providerId, modelId, baseUrl: baseUrl ?? "http://127.0.0.1:1", queue: [], requests: [], reasoning: [], models: [] };
 
   runtime.registerProvider(providerId, {
     ...(noAuth ? {} : { apiKey: "controlled-key" }),
@@ -72,6 +74,7 @@ export function registerControlledProvider(
     streamSimple(model: Model<Api>, context: TranscriptContext, options) {
       // 提供方收到的是系统消息内嵌的规范化请求；还原成断言所用的提示词、工具与对话三部分
       handle.reasoning.push(options?.reasoning);
+      handle.models.push(model.id);
       const request: Context = {
         systemPrompt: getCurrentSystemPrompt(context.messages),
         tools: getCurrentTools(context.messages),

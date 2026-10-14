@@ -1,4 +1,5 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
@@ -43,7 +44,10 @@ import { exploreContext, exploreInput, sourceHashesMatch } from "../runtime/expl
 import type { ExploreRequest, MainExploreOverview } from "../runtime/explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
 import { endExploreSession, registerExploreSession } from "../runtime/explore-session.ts";
-import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
+import { prototypeContext } from "../runtime/prototype-dispatch.ts";
+import type { MainPrototypeOverview, PrototypeDispatchInput } from "../runtime/prototype-dispatch.ts";
+import { beginDesign, clearStaleDesigns, endDesign, readPrototypeBoard } from "../runtime/requirement-prototypes.ts";
+import { createResultSubmitTool, PROTOTYPE_SUBMIT_PARAMETERS, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
 import { AdvisedError, adviceOf, failureText, toolFailure } from "../runtime/tool-failure.ts";
 import { sessionFilePath } from "../runtime/session-records.ts";
@@ -89,6 +93,9 @@ interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease
 /** main 派出的 explore 只属于派出它的主窗口会话，不写运行记录；窗口关闭即停止并作废结果。 */
 interface MainExplore { handle: AgentSessionHandle; sessionId: string; connectionId: string; dispose(): void; result(): ExploreResult | null; report: Record<string, unknown> | null;
   question: string; source: MainExploreOverview["source"]; maxTurns: number; startedAt: number }
+/** 原型设计师只属于派出它的主窗口连接；交稿结果写在原型看板里，这里只管运行本身。 */
+interface MainPrototype { handle: AgentSessionHandle; sessionId: string; connectionId: string; requirementId: string; name: string; version: number; agent: string;
+  maxTurns: number; startedAt: number; submitted: boolean; dispose(): void }
 /** main 父身份来自守护进程已认证连接：connectionId 由服务端每次认证生成，重连或另开窗口都不同。 */
 export type ExploreParentRequest = { role: "main"; sessionId: string; connectionId: string; model: SelectedModel; thinking: string } | { role: "PM"; pmRunId: string };
 export interface DispatchPmInput { requirementId: string; model: SelectedModel; thinking: string }
@@ -258,7 +265,12 @@ export class RunManager {
     this.shellRegistry = options.shellRegistry;
     this.emit = options.emit;
   }
-  markStarted(): void { if (!this.started) { this.started = true; this.resolveStarted(); } }
+  markStarted(): void {
+    if (this.started) return;
+    // 库不存在就没有遗留的设计；clearStaleDesigns 会建库，不能在这里凭空建出来
+    if (existsSync(this.database)) clearStaleDesigns({ dataRoot: this.options.dataRoot, repoId: this.repoId }).catch((error: Error) => process.stderr.write(`清理上一个守护进程留下的原型设计失败: ${error.message}\n`));
+    this.started = true; this.resolveStarted();
+  }
   async awaitStarted(): Promise<void> { if (!this.started) await this.startedPromise; }
   private async pmState(): Promise<RequirementStateStore> {
     const { repositoryRoot, dataRoot, repoId } = this.options;
@@ -664,6 +676,138 @@ export class RunManager {
     return { runId, maxTurns: input.maxTurns };
   }
 
+  /** 主窗口派出原型设计师：先解析定义、再在看板登记，最后开会话；登记后任何一步失败都要在看板记下结束原因。 */
+  async dispatchPrototype(input: { parent: { sessionId: string; connectionId: string }; request: PrototypeDispatchInput }): Promise<{ runId: string; version: number }> {
+    const { request, parent } = input;
+    const resolved = await this.resolveAgent(request.agent ?? "prototype", "prototype", { model: request.model, thinking: request.thinking });
+    const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };
+    const runId = uuidv7();
+    const agent = request.agent ?? "prototype";
+    const { version, previous } = await beginDesign(ref, { requirementId: request.requirementId, name: request.name, runId, agent });
+    let registered = false;
+    const alive = () => {
+      const current = this.mainPrototypes.get(runId)?.handle;
+      return current === undefined ? !registered : current.state() === "running";
+    };
+    let handle: AgentSessionHandle;
+    let result: ReturnType<typeof createResultSubmitTool> | undefined;
+    try {
+      const title = await this.requirementTitle(request.requirementId);
+      result = createResultSubmitTool({ grant: { role: "prototype", callerId: uuidv7(), runId, parentRunId: `main:${parent.sessionId}` },
+        prototypeBinding: { ref, requirementId: request.requirementId, name: request.name, onSubmitted: () => {
+          const main = this.mainPrototypes.get(runId);
+          if (!main) return;
+          main.submitted = true;
+          this.emit("prototype.submitted", { parentSessionId: main.sessionId, requirementId: main.requirementId, name: main.name, version: main.version });
+          this.emit("prototype.changed", {});
+        } },
+        authorize: () => alive() });
+      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: this.options.repositoryRoot, definition: resolved.definition,
+        roleRules: loadRoleRules("prototype"),
+        context: withSkills(await this.withConventions(prototypeContext({ title, name: request.name, version, brief: request.brief, maxTurns: request.maxTurns, previous })), resolved.skillsContext),
+        coreTools: [toPiTool("result_submit", "提交原型（action=prototype）：html 是完整的单个 HTML 文件，note 用一句话说明画了什么。", PROTOTYPE_SUBMIT_PARAMETERS, result),
+          ...this.knowledgeTool(runId)],
+        readRoots: [this.options.repositoryRoot, ...(previous ? [previous.path] : [])],
+        runtime: this.options.runtime, modelRef: resolved.model, thinking: resolved.thinking, maxTurns: request.maxTurns,
+        completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
+    } catch (error) {
+      registered = true; result?.dispose();
+      const why = `原型设计会话创建失败：${(error as Error).message}`;
+      await endDesign(ref, { runId, reason: why }).catch(() => {});
+      throw protocolError("subagent_session_failed", why, "按原因处理后重派；原因涉及模型或联网配置时交用户处理");
+    }
+    const tool = result;
+    this.mainPrototypes.set(runId, { handle, sessionId: parent.sessionId, connectionId: parent.connectionId, requirementId: request.requirementId, name: request.name,
+      version, agent, maxTurns: request.maxTurns, startedAt: Date.now(), submitted: false, dispose: () => tool.dispose() });
+    if (!this.liveConnections.has(parent.connectionId)) {
+      registered = true;
+      await this.abandonMainPrototypes({ connectionId: parent.connectionId });
+      throw protocolError("not_found", "发起派出的窗口连接已断开");
+    }
+    handle.events.on("turn_counted", () => this.emit("prototype.changed", {}));
+    this.emit("prototype.changed", {});
+    registered = true;
+    handle.events.on("completed", () => { void this.finishPrototype(runId, "completed"); });
+    handle.events.on("turn_limit_reached", () => { void this.finishPrototype(runId, "turn_limit_reached"); });
+    handle.events.on("ended_without_result", () => { void this.finishPrototype(runId, "ended_without_result"); });
+    handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishPrototype(runId, "failed", reason); });
+    handle.events.on("network_paused", () => {
+      void handle.stop().catch(() => {}).then(() => this.finishPrototype(runId, "failed", "断网，设计已中止，网络恢复后请重派"));
+    });
+    handle.prompt("开始设计。");
+    return { runId, version };
+  }
+
+  private async requirementTitle(requirementId: string): Promise<string> {
+    const record = (await this.pmState()).read(requirementId).data;
+    const service = await RequirementService.open({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId,
+      authorize: (request) => request.repoId === this.repoId && ["metadata", "readSaved", "readApproved"].includes(request.action) &&
+        (request.requirementId === undefined || request.requirementId === requirementId) });
+    return (await service.read({ requirementId, source: record.approved ? "approved" : "saved" })).title;
+  }
+
+  private async finishPrototype(runId: string, outcome: Exclude<SessionOutcome, "superseded">, failure?: string): Promise<void> {
+    const main = this.mainPrototypes.get(runId);
+    if (!main) return;
+    this.mainPrototypes.delete(runId);
+    main.dispose();
+    if (!main.submitted) {
+      const reason = outcome === "turn_limit_reached" ? `轮数用满（${main.maxTurns} 轮），没有交稿`
+        : outcome === "ended_without_result" || outcome === "completed" ? "设计师停止回复，没有交稿" : outcomeReason(outcome, failure);
+      const cleared = await endDesign({ dataRoot: this.options.dataRoot, repoId: this.repoId }, { runId, reason }).then(() => reason, (error: Error) => `${reason}；看板没清成：${error.message}`);
+      this.emit("prototype.finished", { parentSessionId: main.sessionId, requirementId: main.requirementId, name: main.name, version: main.version, reason: cleared });
+    }
+    this.emit("prototype.changed", {});
+    main.handle.dispose();
+  }
+
+  mainPrototypeList(connectionId: string | undefined): MainPrototypeOverview[] {
+    return [...this.mainPrototypes].filter(([, main]) => main.connectionId === connectionId && !main.submitted)
+      .map(([runId, main]) => ({ runId, requirementId: main.requirementId, name: main.name, version: main.version, agent: main.agent,
+        turns: main.handle.turnsUsed(), maxTurns: main.maxTurns, elapsedMs: Date.now() - main.startedAt }));
+  }
+
+  mainPrototypeStatus(runId: string, connectionId: string | undefined): Record<string, unknown> | null {
+    const main = this.mainPrototypes.get(runId);
+    if (!main || main.connectionId !== connectionId) return null;
+    return { id: runId, kind: "prototype", state: main.submitted ? "completed" : "running", turns: main.handle.turnsUsed() };
+  }
+
+  async stopMainPrototype(runId: string, connectionId: string | undefined): Promise<{ state: string; confirmed: boolean } | null> {
+    const main = this.mainPrototypes.get(runId);
+    if (!main || main.connectionId !== connectionId) return null;
+    this.mainPrototypes.delete(runId);
+    main.dispose();
+    if (!main.submitted) {
+      const reason = "主代理停止了设计";
+      const cleared = await endDesign({ dataRoot: this.options.dataRoot, repoId: this.repoId }, { runId, reason }).then(() => reason, (error: Error) => `${reason}；看板没清成：${error.message}`);
+      this.emit("prototype.finished", { parentSessionId: main.sessionId, requirementId: main.requirementId, name: main.name, version: main.version, reason: cleared });
+    }
+    this.emit("prototype.changed", {});
+    const outcome = await main.handle.stop().catch(() => ({ stopped: false }));
+    main.handle.dispose();
+    return { state: "stopped", confirmed: outcome.stopped };
+  }
+
+  async abandonMainPrototypes(match: { connectionId: string }): Promise<void> {
+    for (const [runId, main] of [...this.mainPrototypes]) {
+      if (main.connectionId !== match.connectionId) continue;
+      this.mainPrototypes.delete(runId);
+      main.dispose();
+      if (!main.submitted) await endDesign({ dataRoot: this.options.dataRoot, repoId: this.repoId }, { runId, reason: "主窗口断开，设计已停止" }).catch(() => {});
+      await main.handle.stop().catch(() => ({ stopped: false }));
+      main.handle.dispose();
+    }
+  }
+
+  prototypeBoard(requirementId: string) { return readPrototypeBoard({ dataRoot: this.options.dataRoot, repoId: this.repoId }, requirementId); }
+
+  async prototypeDesigners(): Promise<Array<{ name: string; description: string; source: string }>> {
+    const entries = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
+    return entries.filter((entry) => entry.available && entry.definition?.role === "prototype").sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => ({ name: entry.name, description: entry.definition!.description, source: entry.source }));
+  }
+
   /** PM 的有界能力目录：每页最多 20 条，只含名称、职责、描述与来源。 */
   async agentCatalog(role: string | undefined, cursor: number) {
     const entries = (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
@@ -886,6 +1030,7 @@ export class RunManager {
   }
   private readonly dispatchingPm = new Set<string>();
   private readonly mainExplores = new Map<string, MainExplore>();
+  private readonly mainPrototypes = new Map<string, MainPrototype>();
   private readonly liveConnections = new Set<string>();
   connectionOpened(connectionId: string | undefined): void { if (connectionId) this.liveConnections.add(connectionId); }
   private readonly overviewFingerprints = new Map<string, string>();
@@ -1303,8 +1448,20 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   const previousDisconnect = server.onDisconnect;
   server.onDisconnect = async (client) => {
     await previousDisconnect?.(client);
-    if (client.connectionId) await manager.abandonMainExplores({ connectionId: client.connectionId });
+    if (client.connectionId) {
+      await manager.abandonMainExplores({ connectionId: client.connectionId }).catch(() => {});
+      await manager.abandonMainPrototypes({ connectionId: client.connectionId }).catch(() => {});
+    }
   };
+  register("prototypes.dispatch", async (params, client) => {
+    if (!client.connectionId) throw protocolError("not_found", "连接身份不可用");
+    return manager.dispatchPrototype({ parent: { sessionId: client.sessionId, connectionId: client.connectionId }, request: params as PrototypeDispatchInput });
+  });
+  register("prototypes.designers", async () => ({ items: await manager.prototypeDesigners() }));
+  register("prototypes.list", async (_params, client) => ({ items: manager.mainPrototypeList(client.connectionId) }));
+  register("prototypes.board", async (params) => {
+    return await manager.prototypeBoard(params.requirementId as string) as unknown as Record<string, unknown>;
+  });
   register("agents.dispatchPm", async (params) => {
     const model = params.model as { provider?: unknown; id?: unknown } | undefined;
     if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof model?.provider !== "string" || typeof model.id !== "string"
@@ -1312,6 +1469,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     return manager.dispatchPm({ requirementId: params.requirementId, model: { provider: model.provider, id: model.id }, thinking: params.thinking });
   });
   const refuseMainExplore = (params: Record<string, unknown>, client: ClientInfo) => {
+    if (manager.mainPrototypeStatus(params.runId as string, client.connectionId)) throw protocolError("invalid_params", "主窗口派出的原型设计不能暂停或续接", "用 status 查看进度，用 stop 停止");
     if (manager.mainExploreStatus(params.runId as string, client.connectionId)) throw protocolError("invalid_params", "主窗口派出的检索不能暂停或续接", "用 status 查看进度，用 stop 停止；结果到达后以卡片插入本会话");
   };
   register("runs.resume", async (params, client) => { refuseMainExplore(params, client); return manager.resume(params.runId as string); });
@@ -1333,14 +1491,14 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     return { result: await manager.workflowManage(params.requirementId, params.request as Record<string, unknown>) };
   });
   register("runs.get", async (params, client) => {
-    const main = manager.mainExploreStatus(params.runId as string, client.connectionId);
+    const main = manager.mainExploreStatus(params.runId as string, client.connectionId) ?? manager.mainPrototypeStatus(params.runId as string, client.connectionId);
     if (main) return { run: main };
     const result = await manager.status(params.runId as string);
     if (!result.ok) throw protocolError("not_found", "运行不存在");
     return { run: result.run };
   });
   register("runs.pause", async (params, client) => { refuseMainExplore(params, client); return manager.pause(params.runId as string); });
-  register("runs.stop", async (params, client) => await manager.stopMainExplore(params.runId as string, client.connectionId) ?? manager.stop(params.runId as string, { reason: "main_agent" }));
+  register("runs.stop", async (params, client) => await manager.stopMainExplore(params.runId as string, client.connectionId) ?? await manager.stopMainPrototype(params.runId as string, client.connectionId) ?? manager.stop(params.runId as string, { reason: "main_agent" }));
   register("shells.list", async () => ({ tasks: shellRegistry.list().map(shellMetadata) }));
   register("shells.stop", async (params) => {
     const taskId = params.taskId as string;

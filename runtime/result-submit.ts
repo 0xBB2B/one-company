@@ -7,6 +7,7 @@ import { checkExploreInput, checkExploreResult, ExploreContractError, ExploreRes
 import { fillResearchSources } from "./explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "./explore-contracts.ts";
 import { checked, id, object } from "./requirement-contracts.ts";
+import { submitDesign } from "./requirement-prototypes.ts";
 import { checkServiceInput } from "./requirement-manage-contracts.ts";
 import { checkExploreSession, EXPLORE_STALE_TEXT } from "./explore-session.ts";
 import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
@@ -17,7 +18,7 @@ import { submitVerdict, VERDICT_PAYLOAD, VerdictError } from "./verdicts.ts";
 import type { VerdictBinding } from "./verdicts.ts";
 
 const Grant = object({
-  role: Type.Union([Type.Literal("explore"), Type.Literal("worker"), Type.Literal("reviewer"), Type.Literal("qa")]),
+  role: Type.Union([Type.Literal("explore"), Type.Literal("worker"), Type.Literal("reviewer"), Type.Literal("qa"), Type.Literal("prototype")]),
   callerId: id, runId: id, parentRunId: Type.String({ minLength: 1, maxLength: 256 }),
 });
 export type ResultSubmitGrant = Static<typeof Grant>;
@@ -71,6 +72,8 @@ export interface ResultSubmitToolOptions {
   verify?: (result: ExploreResult) => boolean;
   /** 宿主收下已通过核验的 research，用于按派出方送回；不经模型转述。 */
   onResearch?: (result: ExploreResult) => void;
+  /** 原型设计师的看板绑定；缺失时 prototype 动作不可用。onSubmitted 在看板收下稿件后调用。 */
+  prototypeBinding?: { ref: { dataRoot: string; repoId: string }; requirementId: string; name: string; onSubmitted(): void };
   /** 必须由宿主核验当前物理角色会话/调用者及动作许可；不能从工具参数或角色文本构造true。 */
   authorize: (request: Readonly<ResultSubmitAuthorization>) => boolean;
 }
@@ -108,10 +111,17 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
       throw new ResultSubmitError("invalid_shape", raw.action === "verdict" ? shapeIssue(VERDICT_PAYLOAD, raw.result) : undefined);
     }
     host(params.action);
-    if (params.action === "prototype") throw new ResultSubmitError("prototype_unavailable");
+    if (params.action === "prototype") {
+      const binding = options.prototypeBinding;
+      if (!binding || grant.role !== "prototype") throw new ResultSubmitError("prototype_unavailable");
+      return submitDesign(binding.ref, { requirementId: binding.requirementId, name: binding.name, runId: grant.runId, html: params.html, note: params.note }).then(() => {
+        binding.onSubmitted();
+        return freeze({ kind: "prototype" as const, accepted: true, runId: grant.runId });
+      });
+    }
     if (params.action === "verdict") {
       const binding = options.verdictBinding;
-      if (!binding || grant.role === "explore") throw new ResultSubmitError("verdict_unavailable");
+      if (!binding || grant.role === "explore" || grant.role === "prototype") throw new ResultSubmitError("verdict_unavailable");
       const role = grant.role;
       return inScope(() => {
         let verdict;
