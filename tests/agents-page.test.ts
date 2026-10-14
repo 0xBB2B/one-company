@@ -37,7 +37,7 @@ function scripted(steps: Step[], trusted = true): SettingsExtensionContext & { s
     },
     notify() {},
   };
-  return { hasUI: true, mode: "tui", cwd: join(root, "repo"), ui: ui as unknown as SettingsExtensionContext["ui"], isProjectTrusted: () => trusted, screens };
+  return { hasUI: true, mode: "tui", cwd: join(root, "repo"), ui: ui as unknown as SettingsExtensionContext["ui"], isProjectTrusted: () => trusted, modelRegistry: { getAll: () => [], hasConfiguredAuth: () => false }, model: undefined, screens };
 }
 const typed = (text: string) => [...text];
 
@@ -59,31 +59,6 @@ test("M8D-AC8：页内输入新名称，程序窗口列出两层与完整路径�
   expect(window).toMatch(new RegExp(`→ 用户层 +${join(root, "agent", "agents", "api-worker.md")}`, "u"));
   expect(window).toMatch(new RegExp(`项目层 +${join(root, "repo", ".pi", "agents", "api-worker.md")}`, "u"));
   expect(await readFile(join(root, "agent", "agents", "api-worker.md"), "utf8")).toMatch(/^name: api-worker$/mu);
-});
-
-test("M8D-AC8：内部定义同名复制；取消回到页面说明已取消；已有同名文件的层变暗写明已有文件；两层都有时不弹窗直接提示", async () => {
-  await mkdir(join(root, "repo"), { recursive: true });
-  const windows: string[] = [];
-  const toInternal = [RIGHT, RIGHT, RIGHT, RIGHT, RIGHT];
-  const ctx = scripted([
-    (s) => s.keys(...toInternal, "c", ENTER),
-    (s) => { windows.push(s.text); s.keys(ESC); },
-    (s) => { expect(s.text).toContain("已取消复制"); s.keys("c", ENTER); },
-    (s) => s.keys(DOWN, ENTER),
-    (s) => {
-      expect(s.text).toMatch(/› 草稿核验器 +项目/u);
-      expect(s.text).toContain("draft-verifier.md，改 model 和 thinking 两行即可");
-      s.keys("c", ENTER);
-    },
-    (s) => { windows.push(s.text); s.keys(ENTER); },
-    (s) => { s.keys("c", ENTER); },
-    (s) => { expect(s.text).toContain("用户层和项目层都已经有 draft-verifier，直接编辑对应文件即可"); s.keys(ESC); },
-  ]);
-  await openSettingsPage(ctx);
-  expect(windows[0]).toContain("复制草稿核验器到哪一层？");
-  expect(windows[0]).not.toContain("新名称");
-  expect(windows[1]).toMatch(new RegExp(`项目层 +已有 ${join(root, "repo", ".pi", "agents", "draft-verifier.md")}`, "u"));
-  expect(await readFile(join(root, "agent", "agents", "draft-verifier.md"), "utf8")).toMatch(/^name: draft-verifier$/mu);
 });
 
 test("M8D-AC8：项目未受信任时项目层选项变暗并写明原因，页面标题不显示项目层数量", async () => {

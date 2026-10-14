@@ -6,13 +6,14 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { AgentCatalogView } from "../runtime/agent-catalog-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../runtime/agent-copy.ts";
+import { readAgentSettings } from "../runtime/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function dirs() {
   const root = await mkdtemp(join(tmpdir(), "agent-ui-")); roots.push(root);
-  return { defaultDir: defaultRoleDir(), userDir: join(root, "u"), projectDir: join(root, "p") };
+  return { root, defaultDir: defaultRoleDir(), userDir: join(root, "u"), projectDir: join(root, "p") };
 }
 const RIGHT = "\x1b[C", DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b";
 
@@ -32,9 +33,11 @@ async function page(options: { trusted?: boolean; state?: ConstructorParameters<
   await role(d.userDir, "broken", "description: 坏\nrole: worker\nthinking: extreme");
   await role(d.projectDir, "reviewer", "description: 本项目的审查\nrole: reviewer\nmodel: 5x/gpt-6-sol\nthinking: high");
   const trusted = options.trusted ?? true;
-  const catalog = await loadRoleCatalog({ ...d, parseFrontmatter, projectTrusted: trusted });
+  const { root: _root, ...roleDirs } = d;
+  const catalog = await loadRoleCatalog({ ...roleDirs, parseFrontmatter, projectTrusted: trusted });
+  const settings = await readAgentSettings({ agentDir: join(d.root, "agent"), repositoryRoot: join(d.root, "repo"), projectTrusted: trusted });
   const copies: Array<{ name: string; entry: string }> = []; let closed = false;
-  const view = new AgentCatalogView({ catalog, theme, projectTrusted: trusted, untrustedProjectCount: 1, ...(options.state ? { state: options.state } : {}),
+  const view = new AgentCatalogView({ catalog, theme, projectTrusted: trusted, untrustedProjectCount: 1, settings, models: [], mainModel: undefined, onSaveSetting() {}, onClearSetting() {}, ...(options.state ? { state: options.state } : {}),
     nameTaken: (name) => options.taken?.[name], onCopy: (request) => copies.push({ name: request.name, entry: request.entry.name }), onClose: () => { closed = true; } });
   const lines = (width = 80) => view.render(width);
   const text = (width = 80) => plain(lines(width).join("\n"));
@@ -42,13 +45,13 @@ async function page(options: { trusted?: boolean; state?: ConstructorParameters<
   return { view, lines, text, press, copies, closed: () => closed };
 }
 
-test("M8D-AC8：打开时停在 pm，标题写各层数量，分类标签带数量且内部与问题靠右，表格与底部两行按预览", async () => {
+test("M8D-AC8：打开时停在 pm，标题写各层数量，分类标签带数量且设定与问题靠右，表格与底部两行按预览", async () => {
   const p = await page();
   const lines = p.lines().map(plain);
   expect(p.lines()[0]).toBe(`<border>${"─".repeat(80)}</>`);
   expect(p.lines().at(-1)).toBe(`<border>${"─".repeat(80)}</>`);
   expect(lines[1]).toMatch(/^ 角色定义 +内置 7 · 用户 2 · 项目 1 $/u);
-  expect(lines[2]).toMatch(/^ {2}pm 1 {3}worker 2 {3}reviewer 1 {3}qa 1 {3}explore 1 +│ {2}内部 2 {3}问题 1 $/u);
+  expect(lines[2]).toMatch(/^ {2}pm 1 {3}worker 2 {3}reviewer 1 {3}qa 1 {3}explore 1 +│ {2}设定 3 {3}问题 1 $/u);
   expect(p.lines()[2]).toContain("[selectedBg]<accent>** pm 1 **</>[/]");
   expect(p.lines()[2]).toContain("<error> 问题 1 </>");
   expect(lines[2]).toHaveLength(80 - 4);
@@ -72,25 +75,6 @@ test("M8D-AC8：同一职责下用户层与项目层排在内置前面，底部�
   expect(p.text().match(/reviewer +(内置|项目)/gu)).toHaveLength(1);
 });
 
-test("M8D-AC8：内部分类用中文名，没设思考显示不思考；回车就地展开详情，再按回车或 Esc 收起，列表里 Esc 退出", async () => {
-  const p = await page();
-  for (let i = 0; i < 5; i++) p.press(RIGHT);
-  expect(p.text()).toMatch(/› 解释器 +用户 +5x\/gpt-6-luna +不思考 *\n +草稿核验器 +内置 +gpt-6\.1-sol +medium/u);
-  expect(p.text()).toContain("只有模型和思考生效");
-  p.press(ENTER);
-  const detail = p.text(200);
-  expect(detail).toMatch(/⌄ 解释器/u);
-  expect(detail).toMatch(/┊ 英文名 +interpreter/u);
-  expect(detail).toMatch(/┊ 文件 +\S+interpreter\.md/u);
-  expect(detail).toContain("┊ 只有模型和思考生效，提示词固定在程序里，文件正文不生效");
-  expect(detail).toContain("回车 收起  C 复制（只能同名）  Esc 收起");
-  p.press(ESC);
-  expect(p.text()).toMatch(/› 解释器/u);
-  expect(p.closed()).toBe(false);
-  p.press(ESC);
-  expect(p.closed()).toBe(true);
-});
-
 test("M8D-AC8：问题分类写短原因，展开写完整原因、现在的写法与影响；项目未受信任用灰色另列一行", async () => {
   const p = await page();
   p.press(RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT);
@@ -106,7 +90,7 @@ test("M8D-AC8：问题分类写短原因，展开写完整原因、现在的写�
   expect(plain(u.lines()[1])).toMatch(/内置 7 · 用户 2 $/u);
   for (let i = 0; i < 6; i++) u.press(RIGHT);
   expect(u.text()).toContain("问题 2");
-  expect(u.text()).toMatch(/› \.pi\/agents\/ +项目 +项目未受信任，项目层定义没有生效/u);
+  expect(u.text()).toMatch(/› \.pi\/agents\/ +项目 +项目未受信任，项目层的定义和设定没有生效/u);
   expect(u.text()).toContain("在 pi 里把这个项目设为受信任后，项目层的 1 份定义就会生效");
 });
 
@@ -131,16 +115,12 @@ test("M8D-AC8：复制在页内输入新名称，格式不对或重名当场拦�
   expect(cancel.text()).not.toContain("已取消复制");
 });
 
-test("M8D-AC8：pm 与内部定义复制时名称锁定，打字无效，回车即按原名复制", async () => {
-  const p = await page();
-  for (let i = 0; i < 5; i++) p.press(RIGHT);
-  p.press("c");
-  expect(p.text()).toMatch(/复制解释器\n\n 名称 +interpreter {2}（只能同名，不能改）\n 复制后只有 model 和 thinking 两项生效/u);
-  p.press("x", ENTER);
-  expect(p.copies).toEqual([{ name: "interpreter", entry: "interpreter" }]);
+test("M8D-AC8：pm 复制时名称锁定，打字无效，回车即按原名复制", async () => {
   const pm = await page();
   pm.press("c");
   expect(pm.text()).toMatch(/复制 pm\n\n 名称 +pm {2}（只能同名，不能改）/u);
+  pm.press("x", ENTER);
+  expect(pm.copies).toEqual([{ name: "pm", entry: "pm" }]);
 });
 
 test("M8D-AC8：复制后回到原分类，新定义被选中且名字绿色，底部显示成功提示", async () => {
@@ -152,12 +132,12 @@ test("M8D-AC8：复制后回到原分类，新定义被选中且名字绿色，�
   expect(p.text()).not.toContain("已复制到");
 });
 
-test("M8D-AC8：窄终端只在放不下时才省：左边职责只给选中的显示数量，内部与问题照带数量，更窄时才截断模型名末尾", async () => {
+test("M8D-AC8：窄终端只在放不下时才省：左边职责只给选中的显示数量，设定与问题照带数量，更窄时才截断模型名末尾", async () => {
   const p = await page();
   p.press(RIGHT);
   const lines = p.lines(56).map(plain);
   expect(lines[1]).toMatch(/内置 7 · 用户 2 · 项目 1 $/u);
-  expect(lines[2]).toMatch(/^ {2}pm {3}worker 2 {3}reviewer .*│ {2}内部 2 {3}问题 1 $/u);
+  expect(lines[2]).toMatch(/^ {2}pm {3}worker 2 {3}reviewer .*│ {2}设定 3 {3}问题 1 $/u);
   expect(lines[2]).not.toContain("pm 1");
   expect(lines.join("\n")).toMatch(/ui-worker +用户 +5x\/gpt-6-luna +medium/u);
   const tight = p.lines(44).map(plain);
@@ -199,17 +179,4 @@ test("M8D-AC8：44、56、80 列下每个分类的列表、详情与命名画面
       }
     }
   }
-});
-
-test("M8D-AC8：窄终端展开详情时放不下的内容换行，续行对齐，文件路径只在“/”后断开", async () => {
-  const p = await page();
-  for (let i = 0; i < 5; i++) p.press(RIGHT);
-  p.press(ENTER);
-  const lines = p.lines(44).map(plain);
-  const start = lines.findIndex((line) => line.includes("┊ 文件"));
-  const pieces = [lines[start]!.replace(/^ +┊ 文件 +/u, "")];
-  for (let i = start + 1; /^ +┊ {9}\S/u.test(lines[i]!); i++) pieces.push(lines[i]!.replace(/^ +┊ +/u, ""));
-  expect(pieces.length).toBeGreaterThan(1);
-  for (const piece of pieces.slice(0, -1)) expect(piece.endsWith("/"), piece).toBe(true);
-  expect(pieces.join("")).toMatch(/\/u\/interpreter\.md$/u);
 });

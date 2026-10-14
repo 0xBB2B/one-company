@@ -26,7 +26,11 @@ export class AgentResolveError extends Error {
   constructor(code: AgentResolveError["code"], message: string) { super(message); this.name = "AgentResolveError"; this.code = code; }
 }
 
-interface ModelLike { provider: string; id: string; reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> }
+export interface ModelLike { provider: string; id: string; reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> }
+
+export function thinkingSupported(model: ModelLike, thinking: string): boolean {
+  return thinking === "off" || (!!model.reasoning && model.thinkingLevelMap?.[thinking] !== null);
+}
 
 const sha256 = (content: string | Buffer) => createHash("sha256").update(content).digest("hex");
 
@@ -63,7 +67,7 @@ export async function resolveAgent(input: {
   const model = { provider: found.provider, id: found.id };
   if (!await input.hasAuth(model.provider)) throw new AgentResolveError("model_unavailable", `模型不可用：${model.provider}/${model.id} 没有可用的凭据`);
   const thinking = definition.thinking ?? input.fallback.thinking;
-  if (thinking !== "off" && (!found.reasoning || found.thinkingLevelMap?.[thinking] === null)) {
+  if (!thinkingSupported(found, thinking)) {
     throw new AgentResolveError("thinking_unsupported", `模型 ${model.provider}/${model.id} 不支持思考等级 ${thinking}`);
   }
   const skills: AgentFingerprint["skills"] = [], bodies: string[] = [];
