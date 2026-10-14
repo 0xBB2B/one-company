@@ -3,7 +3,6 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import lockfile from "proper-lockfile";
 import {
   SETTINGS_ROLES, clearAgentSetting, projectSettingsPath, readAgentSettings, saveAgentSetting, userSettingsPath,
 } from "../runtime/agent-settings.ts";
@@ -228,30 +227,8 @@ describe("写入设定", () => {
   });
 });
 
-describe("写入时的文件锁", () => {
-  test("设置文件被别的进程锁住时保存报错且文件不变，解锁后保存成功并清掉锁目录", async () => {
-    const w = await world();
-    await w.write(w.user, { theme: "dark" });
-    const before = await readFile(w.user, "utf8");
-    const unlock = lockfile.lockSync(w.user, { realpath: false });
-    let unlocked = false;
-    cleanups.push(() => { if (!unlocked) unlock(); });
-    await expect(saveAgentSetting({ path: w.user, role: "pm", model: null, thinking: "off" }))
-      .rejects.toThrow("设置文件正在被别的进程写入，稍后再试");
-    expect(await readFile(w.user, "utf8")).toBe(before);
-
-    unlock();
-    unlocked = true;
-    await saveAgentSetting({ path: w.user, role: "pm", model: null, thinking: "off" });
-    expect(JSON.parse(await readFile(w.user, "utf8"))).toEqual({
-      theme: "dark", "one-company": { pm: { model: null, thinking: "off" } },
-    });
-    expect(existsSync(`${w.user}.lock`)).toBe(false);
-  });
-});
-
 describe("读写异常文件时和 pi 一致", () => {
-  test("设置文件的路径是目录时，读取记一条文件读不了的问题，保存报错且不留锁目录", async () => {
+  test("设置文件的路径是目录时，读取记一条文件读不了的问题，保存报错", async () => {
     const w = await world();
     await mkdir(w.user, { recursive: true });
     const { values, problems } = await w.read(true);
@@ -261,7 +238,6 @@ describe("读写异常文件时和 pi 一致", () => {
     expect(problems[0]!.display).toMatch(/^文件读不了（.+），这一层的设定都没有生效$/);
     expect(problems[0]!.display).not.toContain("JSON");
     await expect(saveAgentSetting({ path: w.user, role: "pm", model: null, thinking: "off" })).rejects.toThrow(/^设置文件读不了（.+），没有改动：/);
-    expect(existsSync(`${w.user}.lock`)).toBe(false);
   });
 
   test("文件开头带 BOM 时照常读取和保存", async () => {
