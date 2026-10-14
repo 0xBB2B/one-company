@@ -152,3 +152,17 @@ test("手工拼的外部命令错误对象：输出只有空白时同样写命�
   const error = Object.assign(new Error("Command failed: tar -x -f a.tar"), { cmd: "tar -x -f a.tar", code: 2, stdout: " \n", stderr: "\t" });
   expect(failureText("解包", error)).toBe(`解包失败。\n原因：tar 命令失败（退出码 2）：命令没有输出\n建议：${COMMAND_NEXT}`);
 });
+
+test("命令输出摘要：真实触发的外部命令失败没有任何输出时写命令没有输出，不含整条命令行", async () => {
+  const error = await inCleanRepo(async (cwd) => {
+    await execFileAsync("git", ["checkout", "-q", "--detach"], { cwd });
+    try { await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "symbolic-ref", "--quiet", "HEAD"], { cwd }); } catch (caught) { return caught; }
+    throw new Error("命令没有失败");
+  });
+  expect(commandOutputTail(error)).toBe("命令没有输出");
+});
+
+test("命令输出摘要：手工拼的外部命令错误对象输出只有空白时写命令没有输出；不是外部命令的错误仍取消息", () => {
+  expect(commandOutputTail(Object.assign(new Error("Command failed: tar -x"), { cmd: "tar -x", code: 2, stdout: " \n", stderr: "\t" }))).toBe("命令没有输出");
+  expect(commandOutputTail(new Error("spawn tar ENOENT"))).toBe("spawn tar ENOENT");
+});
