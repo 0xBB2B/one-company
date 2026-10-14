@@ -739,7 +739,7 @@ async function adapterWorld() {
     find: (provider, id) => models.getModel(provider, id), hasConfiguredAuth: () => true,
     complete: (model, context, options) => models.complete(model, context, options),
   };
-  const interpreter = createPiInteractionInterpreter({ registry, selectedModel: () => selected, timeoutMs: 1000 });
+  const interpreter = createPiInteractionInterpreter({ registry, selectedModel: () => selected });
   return { faux, registry, interpreter, setSelected: (value: typeof selected) => { selected = value; } };
 }
 test("真实pi-ai适配路径使用选定模型、单条当前输入、固定指令、无工具且不存会话（faux只证明调用契约）", async () => {
@@ -851,15 +851,14 @@ test("pi-ai调用期间切换宿主模型，旧结果拒绝而不偷换模型", 
   await ready; a.setSelected({ ...a.faux.getModel(), id: "different-selection" }); proceed();
   await expect(pending).rejects.toThrow(/model_configuration_changed/);
 });
-for (const failure of ["auth", "tool", "length", "invalid", "wrong-model", "timeout"] as const) test(`pi-ai适配器${failure}失败默认拒绝，不降级模型或回显载荷`, async () => {
+for (const failure of ["auth", "tool", "length", "invalid", "wrong-model"] as const) test(`pi-ai适配器${failure}失败默认拒绝，不降级模型或回显载荷`, async () => {
   const w = await world(), a = await adapterWorld(); const actualModel = a.interpreter.identity();
   if (failure === "auth") a.registry.hasConfiguredAuth = () => false;
   else if (failure === "tool") a.faux.setResponses([fauxAssistantMessage([fauxToolCall("write", { path: "/tmp/no" })], { stopReason: "toolUse" })]);
   else if (failure === "length") a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(w.output()))], { stopReason: "length" })]);
   else if (failure === "invalid") a.faux.setResponses([fauxAssistantMessage([fauxText('{"actor":"user"}')])]);
   else if (failure === "wrong-model") a.registry.complete = async () => ({ ...fauxAssistantMessage([fauxText(JSON.stringify(w.output()))]), provider: "foreign", model: "foreign" });
-  else a.registry.complete = async () => new Promise(() => {});
-  const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel(), timeoutMs: 10 });
+  const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel() });
   await expect(interpreter.interpret({ text: PHONE, context: w.context,
     model: actualModel, signal: new AbortController().signal })).rejects.toThrow(SPECIFIC_DENIAL);
 });
@@ -869,34 +868,79 @@ test("调用解读模型抛出意外错误时，原因写明没得到解读结�
   await expect(a.interpreter.interpret({ text: PHONE, context: w.context, model: actualModel, signal: new AbortController().signal }))
     .rejects.toMatchObject({ code: "model_interpretation_denied", advice: { why: expect.stringContaining("不是用户的话说得不清楚"), next: expect.not.stringContaining("把话说得更明确") } });
 });
-test("M8J-AC1：解释器不指定时限时默认 120 秒：过了 60 秒还在等，到 120 秒才取消", async () => {
+test("解读模型一直不返回时，过了很久仍在等待，外部取消后以已取消结束", async () => {
   const w = await world(), a = await adapterWorld(); const actualModel = a.interpreter.identity();
   a.registry.complete = async () => new Promise(() => {});
+  const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel() });
+  const controller = new AbortController();
+  vi.useFakeTimers();
+  try {
+    let outcome: unknown = "pending";
+    void interpreter.interpret({ text: PHONE, context: w.context, model: actualModel, signal: controller.signal }).catch((error: unknown) => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(outcome).toBe("pending");
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(outcome).toMatchObject({ code: "model_cancelled" });
+  } finally { vi.useRealTimers(); }
+});
+test("首次回答 150 秒后才返回且格式正确，照常返回解读结果", async () => {
+  const w = await world(), a = await adapterWorld(), complete = a.registry.complete;
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(w.output()))])]);
+  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => new Promise((resolve) => { setTimeout(() => resolve(complete(m, c, o)), 150_000); }));
   const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel() });
   vi.useFakeTimers();
   try {
     let outcome: unknown = "pending";
-    void interpreter.interpret({ text: PHONE, context: w.context, model: actualModel, signal: new AbortController().signal }).catch((error: unknown) => { outcome = error; });
-    await vi.advanceTimersByTimeAsync(61_000);
-    expect(outcome).toBe("pending");
-    await vi.advanceTimersByTimeAsync(59_000);
-    expect(outcome).toMatchObject({ code: "model_cancelled" });
+    void interpreter.interpret({ text: PHONE, context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal })
+      .then((output) => { outcome = JSON.parse(output); }, (error: unknown) => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(151_000);
+    expect(outcome).toEqual(w.output());
   } finally { vi.useRealTimers(); }
 });
-test("M9：首次回答与重答各自计时：首答 100 秒未通过核对、重答再用 100 秒，合计超过 120 秒仍然采用重答结果", async () => {
+test("首次格式不对、重答 150 秒后才返回且格式正确，照常采用重答结果", async () => {
   const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
   const good = modelAnswer(w.output()), missing = { ...good, entries: good.entries.map((e) => ({ ...e, unitIds: (e as { unitIds?: string[] }).unitIds?.filter((id) => id !== "B") })) };
   a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(missing))]), fauxAssistantMessage([fauxText(JSON.stringify(good))])]);
-  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => new Promise((resolve) => { setTimeout(() => resolve(complete(m, c, o)), 100_000); }));
+  let call = 0;
+  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => { const delay = call++ === 0 ? 0 : 150_000;
+    return new Promise((resolve) => { setTimeout(() => resolve(complete(m, c, o)), delay); }); });
   const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel() });
   vi.useFakeTimers();
   try {
     let outcome: unknown = "pending";
     void interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: new AbortController().signal })
       .then((output) => { outcome = JSON.parse(output); }, (error: unknown) => { outcome = error; });
-    await vi.advanceTimersByTimeAsync(201_000);
+    await vi.advanceTimersByTimeAsync(151_000);
     expect(outcome).toMatchObject({ documentReview: { units: expect.any(Array) } });
   } finally { vi.useRealTimers(); }
+});
+test("重答等待期间外部取消，立即以已取消结束", async () => {
+  const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete;
+  const good = modelAnswer(w.output()), missing = { ...good, entries: good.entries.map((e) => ({ ...e, unitIds: (e as { unitIds?: string[] }).unitIds?.filter((id) => id !== "B") })) };
+  a.faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(missing))])]);
+  let call = 0;
+  vi.spyOn(a.registry, "complete").mockImplementation((m, c, o) => call++ === 0 ? complete(m, c, o) : new Promise(() => {}));
+  const interpreter = createPiInteractionInterpreter({ registry: a.registry, selectedModel: () => a.faux.getModel() });
+  vi.useFakeTimers();
+  try {
+    const controller = new AbortController();
+    let outcome: unknown = "pending";
+    void interpreter.interpret({ text: "A实施，B未决", context: w.context, model: a.interpreter.identity(), signal: controller.signal })
+      .then((output) => { outcome = output; }, (error: unknown) => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(call).toBe(2);
+    expect(outcome).toBe("pending");
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(outcome).toMatchObject({ code: "model_cancelled" });
+  } finally { vi.useRealTimers(); }
+});
+test("解读模型的源码里没有超时设置的报错码", async () => {
+  const { readFileSync } = await import("node:fs");
+  for (const file of ["../runtime/user-interaction-model.ts", "../runtime/user-interaction-format.ts"]) {
+    expect(readFileSync(new URL(file, import.meta.url), "utf8"), file).not.toContain("invalid_model_timeout");
+  }
 });
 test("M9：同一段落既有已确认又有未决条目时，重答反馈与最终拒绝都写明是哪一段、为什么、怎么改", async () => {
   const w = await documentWorld(), a = await adapterWorld(), complete = a.registry.complete, calls: Context[] = [];
