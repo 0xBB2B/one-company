@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { AdvisedError } from "./tool-failure.ts";
 
 const exec = promisify(execFile);
 
@@ -26,7 +27,7 @@ export async function fetchTargetBranch(repositoryRoot: string, worktree: string
 export async function fetchRemoteTarget(worktree: string): Promise<TargetBranch> {
   const symref = (await gitIn(worktree, ["ls-remote", "--symref", "origin", "HEAD"])).stdout;
   const name = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(symref)?.[1];
-  if (!name) throw new Error("target_unknown: 无法确定远端默认分支");
+  if (!name) throw new AdvisedError("target_unknown", { why: "无法确定远端默认分支：origin 没有默认分支，可能远端还是空仓库", next: "交用户处理：先把目标分支推送到远端，或设好远端默认分支" });
   const ref = `refs/remotes/origin/${name}`;
   await gitIn(worktree, ["fetch", "--no-tags", "origin", `+refs/heads/${name}:${ref}`]);
   await gitIn(worktree, ["symbolic-ref", "refs/remotes/origin/HEAD", ref]);

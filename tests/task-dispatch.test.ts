@@ -350,7 +350,7 @@ test("PM 提交时只认计划里任务的写入范围：已取消任务的范�
   w.provider.queue.push(commit(["src/login.ts", "lib/old.ts", "package.json"]), commit(["src/login.ts", "lib/old.ts"]), { type: "text", text: "已提交" });
   await w.manager.messagePm({ requirementId: w.fixture.requirementId, text: "提交 login 的改动" });
   await until(async () => (await runGit(["log", "-1", "--format=%s"], root)) .trim() === "login");
-  expect(w.provider.requests.some((request) => lastPrompt(request).includes("package.json") && lastPrompt(request).includes("out_of_scope"))).toBe(true);
+  expect(w.provider.requests.some((request) => lastPrompt(request).includes("package.json") && lastPrompt(request).includes("不在本需求任何任务的写入范围内") && !lastPrompt(request).includes("out_of_scope:"))).toBe(true);
   expect((await runGit(["show", "--name-only", "--format=", "HEAD"], root)).trim().split("\n").sort()).toEqual(["lib/old.ts", "src/login.ts"]);
   expect((await runGit(["status", "--porcelain"], root)).trim()).toBe("?? package.json");
 });
