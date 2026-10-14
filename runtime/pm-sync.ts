@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { AdvisedError, toolFailure, toolStep } from "./tool-failure.ts";
 import { fetchTargetBranch, gitIn, includesCommit } from "./target-branch.ts";
 
 export interface PmSyncOptions {
@@ -27,8 +28,8 @@ const entries = (text: string) => text.split("\0").filter(Boolean);
 export async function syncTargetBranch(options: Omit<PmSyncOptions, "alive" | "checkPhaseActive" | "quiescent">): Promise<SyncResult> {
   const git = (args: string[], input?: string) => gitIn(options.worktree, args, input);
   const head = (await git(["symbolic-ref", "--quiet", "HEAD"])).stdout.trim();
-  if (head !== options.branch) throw new Error(`branch_changed: 当前分支 ${head} 不是需求分支 ${options.branch}`);
-  if ((await git(["status", "--porcelain", "--untracked-files=all"])).stdout.trim()) throw new Error("worktree_dirty: 有未提交的改动，先提交后再同步");
+  if (head !== options.branch) throw new AdvisedError("branch_changed", { why: `当前分支 ${head} 不是需求分支 ${options.branch}`, next: "停止操作，不要自己切换分支；交用户处理" });
+  if ((await git(["status", "--porcelain", "--untracked-files=all"])).stdout.trim()) throw new AdvisedError("worktree_dirty", { why: "需求 worktree 里有未提交的改动", next: "先用 git_commit 提交这些改动，再同步" });
   const target = await fetchTargetBranch(options.repositoryRoot, options.worktree);
   const previousHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
   if (await includesCommit(options.worktree, target.sha)) return { status: "up_to_date", target: target.ref, head: previousHead };
@@ -42,7 +43,7 @@ export async function syncTargetBranch(options: Omit<PmSyncOptions, "alive" | "c
   const conflicted = entries((await git(["diff", "-z", "--name-only", "--diff-filter=U"])).stdout);
   if (!applied && conflicted.length === 0) {
     await git(["reset", "--hard", "--quiet", previousHead]);
-    throw new Error("sync_failed: 需求改动无法重新应用到目标分支，已恢复原提交");
+    throw new AdvisedError("sync_failed", { why: "需求改动无法重新应用到目标分支，已恢复原提交", next: "需求分支的改动没法自动合到目标分支上，交用户处理" });
   }
   await git(["reset", "--quiet"]);
   const changed = entries((await git(["status", "--porcelain", "-z", "--untracked-files=all"])).stdout).map((entry) => entry.slice(3));
@@ -55,11 +56,13 @@ export function createPmSyncTool(options: PmSyncOptions): ToolDefinition {
     description: "把需求分支同步到目标分支最新提交（进入最终检查前必须做）。能 rebase 就 rebase；有冲突时需求分支改动会合成一份重新应用在目标分支最新提交上，changed 列出全部待提交文件，conflicted 列出带冲突标记的文件，previousHead 是原提交；请派 worker 按 prod 与代码修复冲突，经任务级审查后用 git_commit 提交 changed 中的全部文件。须先提交所有改动，检查阶段与子代理执行期间不可用。",
     parameters: Type.Object({}, { additionalProperties: false }), executionMode: "sequential",
     async execute() {
-      if (!options.alive()) throw new Error("git_sync_denied: 会话已失效");
-      if (options.checkPhaseActive()) throw new Error("check_phase_active: 检查阶段不能同步");
-      if (!options.quiescent()) throw new Error("writers_active: 子代理执行或受管写入未结束");
-      const result = await syncTargetBranch(options);
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
+      try {
+        if (!options.alive()) throw new AdvisedError("git_sync_denied", { why: "PM 会话已失效，不能再同步", next: "停止操作，不要重试；在回复里说明，由上级处理" });
+        if (options.checkPhaseActive()) throw new AdvisedError("check_phase_active", { why: "检查阶段进行中，不能同步", next: "等检查轮结束后再同步" });
+        if (!options.quiescent()) throw new AdvisedError("writers_active", { why: "子代理执行或受管写入还没结束", next: "等子代理结束后再同步" });
+        const result = await syncTargetBranch(options);
+        return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
+      } catch (error) { throw toolFailure(toolStep("one_company_git_sync", {}), error); }
     },
   } as unknown as ToolDefinition;
 }

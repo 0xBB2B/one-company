@@ -58,7 +58,7 @@ export type ManagedWritePathClass = "code" | "prod_archive" | "git_metadata" | "
 
 export function classifyManagedWritePath(repoRelativePath: string): ManagedWritePathClass {
   if (repoRelativePath === "" || repoRelativePath.includes("\\") || repoRelativePath.includes("\u0000") || posix.isAbsolute(repoRelativePath)) return "outside";
-  const normalized = posix.normalize(repoRelativePath);
+  const normalized = posix.normalize(repoRelativePath).replace(/\/+$/, "");
   if (normalized === "." || normalized === ".." || normalized.startsWith("../")) return "outside";
   const parts = normalized.split("/");
   if (parts.some((part) => part.toLowerCase() === ".git")) return "git_metadata";

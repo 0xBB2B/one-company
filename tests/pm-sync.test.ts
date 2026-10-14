@@ -2,12 +2,24 @@ import { afterEach, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createPmSyncTool, syncTargetBranch } from "../runtime/pm-sync.ts";
 import { localTargetBranch } from "../runtime/target-branch.ts";
 
 const cleanups: string[] = [];
 afterEach(async () => { for (const dir of cleanups.splice(0)) await rm(dir, { recursive: true, force: true }); });
+
+const failureOf = async (promise: Promise<unknown>) => {
+  try { await promise; } catch (error) { return (error as Error).message; }
+  throw new Error("没有报错");
+};
+function expectFailure(message: string, why: string, next: string) {
+  expect(message).toMatch(/失败。\n原因：[\s\S]*\n建议：/u);
+  expect(message).not.toMatch(/\b[a-z]+_[a-z_]+:/u);
+  expect(message.split("\n原因：")[1]!.split("\n建议：")[0]).toContain(why);
+  expect(message.split("\n建议：")[1]).toContain(next);
+}
+type Tool = { execute(id: string, params: unknown): Promise<{ content: Array<{ text: string }> }> };
 
 /** 主仓库在 main 上，需求 worktree 在 req 分支；withOrigin 时主仓库克隆自一个裸远端。 */
 async function world(withOrigin = false) {
@@ -42,8 +54,34 @@ test("M8-AC9：目标分支前进后能 rebase 就 rebase，需求分支包含�
   expect(result).toMatchObject({ status: "rebased", target: "refs/heads/main", previousHead: before });
   expect(w.git(w.worktree, "log", "--format=%s", "-2").split("\n")).toEqual(["task-1", "main 前进"]);
   expect(w.git(w.worktree, "merge-base", "HEAD", mainHead)).toBe(mainHead);
+});
+
+test("需求 worktree 有未提交改动时同步被拒，原因写未提交的改动，建议先用 git_commit 提交", async () => {
+  const w = await world();
+  await w.commit(w.worktree, "b.ts", "b\n", "task-1");
+  await w.commit(w.main, "c.ts", "c\n", "main 前进");
+  const tool = createPmSyncTool({ ...w.options, alive: () => true, checkPhaseActive: () => false, quiescent: () => true }) as unknown as Tool;
   await writeFile(join(w.worktree, "b.ts"), "dirty\n");
-  await expect(syncTargetBranch(w.options)).rejects.toThrow("worktree_dirty");
+  expectFailure(await failureOf(tool.execute("s", {})), "需求 worktree 里有未提交的改动", "先用 git_commit 提交这些改动，再同步");
+});
+
+test("当前分支不是需求分支时同步被拒，原因写明两个分支，建议停止操作交用户处理", async () => {
+  const w = await world();
+  const tool = createPmSyncTool({ ...w.options, alive: () => true, checkPhaseActive: () => false, quiescent: () => true }) as unknown as Tool;
+  w.git(w.worktree, "checkout", "-q", "-b", "other");
+  expectFailure(await failureOf(tool.execute("s", {})), "当前分支 refs/heads/other 不是需求分支 refs/heads/req", "停止操作，不要自己切换分支；交用户处理");
+});
+
+test("需求改动无法重新应用到目标分支且没有冲突文件时，原因写已恢复原提交，建议交用户处理而不再提冲突文件", async () => {
+  const w = await world();
+  await w.commit(w.worktree, "a.ts", "需求改的\n", "task-1");
+  w.git(w.main, "rm", "-q", "a.ts"); w.git(w.main, "commit", "-qm", "main 删 a");
+  const before = w.git(w.worktree, "rev-parse", "HEAD");
+  const tool = createPmSyncTool({ ...w.options, alive: () => true, checkPhaseActive: () => false, quiescent: () => true }) as unknown as Tool;
+  const message = await failureOf(tool.execute("s", {}));
+  expectFailure(message, "需求改动无法重新应用到目标分支，已恢复原提交", "用户");
+  expect(message.split("\n建议：")[1]).not.toContain("冲突文件");
+  expect(w.git(w.worktree, "rev-parse", "HEAD")).toBe(before);
 });
 
 test("M8-AC9：rebase 冲突时改动合成一份重新应用到目标最新提交，冲突文件带标记、全部改动未暂存，分支不脱离，原提交可找回", async () => {
@@ -71,13 +109,26 @@ test("M8-AC9：有 origin 时拉取远端默认分支再同步，不联网的检
   expect(await localTargetBranch(w.options.repositoryRoot, w.worktree)).toMatchObject({ name: "main", ref: "refs/remotes/origin/main", sha: w.git(w.other, "rev-parse", "HEAD") });
 });
 
+test("origin 是从未推送过的空裸仓库时同步失败，原因写无法确定远端默认分支，建议让用户先推送目标分支或设好远端默认分支", async () => {
+  const w = await world();
+  const empty = join(dirname(w.main), "empty.git");
+  w.git(w.main, "init", "-q", "--bare", empty);
+  w.git(w.main, "remote", "add", "origin", empty);
+  const tool = createPmSyncTool({ ...w.options, alive: () => true, checkPhaseActive: () => false, quiescent: () => true }) as unknown as Tool;
+  const message = await failureOf(tool.execute("s", {}));
+  expectFailure(message, "无法确定远端默认分支", "用户");
+  const [reason, advice] = [message.split("\n原因：")[1]!.split("\n建议：")[0]!, message.split("\n建议：")[1]!];
+  expect(reason).not.toContain("target_unknown");
+  expect(reason).not.toContain("未归类");
+  expect(advice).not.toContain("重试");
+});
+
 test("同步工具在会话失效、检查阶段或子代理执行期间拒绝", async () => {
   const w = await world();
   const state = { alive: true, check: false, quiet: true };
-  const tool = createPmSyncTool({ ...w.options, alive: () => state.alive, checkPhaseActive: () => state.check, quiescent: () => state.quiet }) as unknown as
-    { execute(id: string, params: unknown): Promise<{ content: Array<{ text: string }> }> };
+  const tool = createPmSyncTool({ ...w.options, alive: () => state.alive, checkPhaseActive: () => state.check, quiescent: () => state.quiet }) as unknown as Tool;
   expect(JSON.parse((await tool.execute("s", {})).content[0]!.text)).toMatchObject({ status: "up_to_date" });
-  state.quiet = false; await expect(tool.execute("s", {})).rejects.toThrow("writers_active");
-  state.check = true; await expect(tool.execute("s", {})).rejects.toThrow("check_phase_active");
-  state.alive = false; await expect(tool.execute("s", {})).rejects.toThrow("git_sync_denied");
+  state.quiet = false; expectFailure(await failureOf(tool.execute("s", {})), "子代理执行或受管写入还没结束", "等子代理结束后再同步");
+  state.check = true; expectFailure(await failureOf(tool.execute("s", {})), "检查阶段进行中，不能同步", "等检查轮结束后再同步");
+  state.alive = false; expectFailure(await failureOf(tool.execute("s", {})), "PM 会话已失效，不能再同步", "停止操作，不要重试");
 });

@@ -126,6 +126,11 @@ test("受控写入的资源分类：change_apply 可写代码、测试、配置�
   expect(classifyManagedWritePath("sub/.git")).toBe("git_metadata");
   expect(classifyManagedWritePath("src/../docs/prod/x.md")).toBe("prod_archive");
   for (const outside of ["../x.ts", "/abs/x.ts", "", "a\\b.ts", "a\u0000b"]) expect(classifyManagedWritePath(outside)).toBe("outside");
+  for (const root of [".", "./", "src/../", "a/b/../../"]) {
+    expect(classifyManagedWritePath(root), root).toBe("outside");
+    expect(writePathAllowed(root), root).toBe(false);
+  }
+  for (const dir of ["src/", "src"]) expect(classifyManagedWritePath(dir), dir).toBe("code");
   expect(writePathAllowed("src/a.ts")).toBe(true);
   expect(writePathAllowed("docs/spec/player/jump.rules.json")).toBe(true);
   expect(classifyManagedWritePath(".pi/agents/worker.md")).toBe("agent_definition");
