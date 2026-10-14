@@ -46,7 +46,7 @@ import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.t
 import { endExploreSession, registerExploreSession } from "../runtime/explore-session.ts";
 import { prototypeContext } from "../runtime/prototype-dispatch.ts";
 import type { MainPrototypeOverview, PrototypeDispatchInput } from "../runtime/prototype-dispatch.ts";
-import { beginDesign, clearStaleDesigns, endDesign, readPrototypeBoard } from "../runtime/requirement-prototypes.ts";
+import { PrototypeBoardError, beginDesign, clearStaleDesigns, decidePrototype, endDesign, pendingConfirmation, readPrototypeBoard, removeFromDraft } from "../runtime/requirement-prototypes.ts";
 import { createResultSubmitTool, PROTOTYPE_SUBMIT_PARAMETERS, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
 import { AdvisedError, adviceOf, failureText, toolFailure } from "../runtime/tool-failure.ts";
@@ -755,7 +755,7 @@ export class RunManager {
       const reason = outcome === "turn_limit_reached" ? `轮数用满（${main.maxTurns} 轮），没有交稿`
         : outcome === "ended_without_result" || outcome === "completed" ? "设计师停止回复，没有交稿" : outcomeReason(outcome, failure);
       const cleared = await endDesign({ dataRoot: this.options.dataRoot, repoId: this.repoId }, { runId, reason }).then(() => reason, (error: Error) => `${reason}；看板没清成：${error.message}`);
-      this.emit("prototype.finished", { parentSessionId: main.sessionId, requirementId: main.requirementId, name: main.name, version: main.version, reason: cleared });
+      this.emit("prototype.finished", { parentSessionId: main.sessionId, requirementId: main.requirementId, name: main.name, version: main.version, runId, log: this.runLog(runId), reason: cleared });
     }
     this.emit("prototype.changed", {});
     main.handle.dispose();
@@ -781,7 +781,7 @@ export class RunManager {
     if (!main.submitted) {
       const reason = "主代理停止了设计";
       const cleared = await endDesign({ dataRoot: this.options.dataRoot, repoId: this.repoId }, { runId, reason }).then(() => reason, (error: Error) => `${reason}；看板没清成：${error.message}`);
-      this.emit("prototype.finished", { parentSessionId: main.sessionId, requirementId: main.requirementId, name: main.name, version: main.version, reason: cleared });
+      this.emit("prototype.finished", { parentSessionId: main.sessionId, requirementId: main.requirementId, name: main.name, version: main.version, runId, log: this.runLog(runId), reason: cleared });
     }
     this.emit("prototype.changed", {});
     const outcome = await main.handle.stop().catch(() => ({ stopped: false }));
@@ -801,6 +801,38 @@ export class RunManager {
   }
 
   prototypeBoard(requirementId: string) { return readPrototypeBoard({ dataRoot: this.options.dataRoot, repoId: this.repoId }, requirementId); }
+
+  private async draftContext(requirementId: string): Promise<{ requirementTitle: string; draftVersion: number }> {
+    const record = (await this.pmState()).read(requirementId).data;
+    return { requirementTitle: await this.requirementTitle(requirementId), draftVersion: record.revision + 1 };
+  }
+
+  async prototypePending(input: { requirementId: string; name: string }) {
+    const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };
+    try {
+      return { ...await this.draftContext(input.requirementId), ...await pendingConfirmation(ref, input) };
+    } catch (error) {
+      if (!(error instanceof PrototypeBoardError) || error.code !== "not_in_flight") throw error;
+      const entry = (await readPrototypeBoard(ref, input.requirementId)).entries.find((candidate) => candidate.name === input.name);
+      const state = entry?.inFlight ? `第 ${entry.inFlight.version} 版还在设计中` : entry?.removed ? "已从草稿移除"
+        : !entry?.draft && entry?.lastEnded?.reason.includes("文件在交稿后被改过") ? "上一版文件在交稿后被改过，已作废，请重派" : entry?.draft ? `当前第 ${entry.draft.version} 版已通过`
+        : entry?.approved ? `当前第 ${entry.approved.version} 版已在需求里批准` : "看板上还没有它的可用版本";
+      throw new PrototypeBoardError(error.code, `原型「${input.name}」没有待你确认的版本，${state}`, error.advice.next);
+    }
+  }
+
+  prototypeDecide(input: Parameters<typeof decidePrototype>[1]) { return decidePrototype({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input); }
+
+  prototypeRemove(input: { requirementId: string; name: string }) { return removeFromDraft({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input); }
+
+  async prototypeRemoval(input: { requirementId: string; name: string }) {
+    const board = await readPrototypeBoard({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId);
+    const entry = board.entries.find((candidate) => candidate.name === input.name);
+    const file = entry && !entry.removed ? entry.draft ?? entry.approved : null;
+    if (!entry || !file) throw new PrototypeBoardError("not_in_draft", `草稿里没有名为「${input.name}」的原型`, "用 status 查看草稿里有哪些原型");
+    const context = await this.draftContext(input.requirementId);
+    return { ...context, name: input.name, version: file.version, approvedRevision: !entry.draft && entry.approved ? context.draftVersion - 1 : null };
+  }
 
   async prototypeDesigners(): Promise<Array<{ name: string; description: string; source: string }>> {
     const entries = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
@@ -1462,6 +1494,10 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   register("prototypes.board", async (params) => {
     return await manager.prototypeBoard(params.requirementId as string) as unknown as Record<string, unknown>;
   });
+  register("prototypes.pending", async (params) => await manager.prototypePending(params as { requirementId: string; name: string }) as unknown as Record<string, unknown>);
+  register("prototypes.decide", async (params) => { await manager.prototypeDecide(params as Parameters<typeof decidePrototype>[1]); return {}; });
+  register("prototypes.remove", async (params) => { await manager.prototypeRemove(params as { requirementId: string; name: string }); return {}; });
+  register("prototypes.removal", async (params) => await manager.prototypeRemoval(params as { requirementId: string; name: string }) as unknown as Record<string, unknown>);
   register("agents.dispatchPm", async (params) => {
     const model = params.model as { provider?: unknown; id?: unknown } | undefined;
     if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof model?.provider !== "string" || typeof model.id !== "string"

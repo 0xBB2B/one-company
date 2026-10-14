@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../runtime/clock.ts";
 import type { Clock } from "../runtime/clock.ts";
@@ -6,8 +5,9 @@ import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../runtime/daemon-client.ts";
 import { BottomDock } from "../runtime/dock.ts";
 import type { PmOverview } from "../runtime/pm-overview.ts";
 import { mountPmPanel } from "../runtime/pm-panel.ts";
-import type { ExplorePanelEntry, PmPanelEntry } from "../runtime/pm-panel.ts";
+import type { ExplorePanelEntry, PmPanelEntry, PrototypePanelEntry } from "../runtime/pm-panel.ts";
 import type { MainExploreOverview } from "../runtime/explore-dispatch.ts";
+import type { MainPrototypeOverview } from "../runtime/prototype-dispatch.ts";
 import { sanitizeText } from "../runtime/text-sanitize.ts";
 import { noteOpenedPanelItem, registerDock, revokeCapturedInput, windowReady as defaultWindowReady } from "./lifecycle.ts";
 import type { WindowContextValue } from "./lifecycle.ts";
@@ -23,38 +23,12 @@ function message(error: unknown): string {
 export interface PmPanelUiDeps {
   windowReady?: () => Promise<WindowContextValue>;
   createClock?: () => Clock;
-  /** 用默认浏览器打开文件；返回是否打开成功。 */
-  openFile?: (path: string) => Promise<boolean>;
 }
 
-function openWithSystem(path: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = spawn("open", [path], { stdio: "ignore" });
-    child.once("error", () => resolve(false));
-    child.once("exit", (code) => resolve(code === 0));
-  });
-}
-
-/** 长路径在目录分隔处断开，续行缩进对齐，避免在 80 列窗口里被从中间硬折。 */
-function pathLines(path: string): string[] {
-  const lines: string[] = [];
-  let line = "文件：";
-  for (const segment of path.split(/(?<=\/)/)) {
-    if (line.trim() && line !== "文件：" && line.length + segment.length > 72) { lines.push(line); line = "      "; }
-    line += segment;
-  }
-  return [...lines, line];
-}
-
-function formatBytes(bytes: number): string {
-  return bytes < 1024 ? `${bytes} B` : bytes < 1_048_576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1_048_576).toFixed(1)} MB`;
-}
-
-/** 主窗口状态面板：向各仓库守护进程拉取 PM 概览与本窗口派出的检索，变化信号到达时重拉；事项按回车插入决策包并由主代理接着回复。 */
+/** 主窗口状态面板：向各仓库守护进程拉取 PM 概览与本窗口派出的检索、原型设计，变化信号到达时重拉；事项按回车插入决策包并由主代理接着回复。 */
 export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps = {}): void {
   const resolveWindowReady = deps.windowReady ?? defaultWindowReady;
   const resolveClock = deps.createClock ?? (() => createClock());
-  const openFile = deps.openFile ?? openWithSystem;
   let teardown: (() => void) | undefined;
   let generation = 0;
 
@@ -67,6 +41,7 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
       const clock = resolveClock();
       const byRepo = new Map<string, PmPanelEntry[]>();
       const exploresByRepo = new Map<string, ExplorePanelEntry[]>();
+      const prototypesByRepo = new Map<string, PrototypePanelEntry[]>();
       const client = (repoId: string) => window.clients.forRepo(repoId);
       const mounted = mountPmPanel({ mode: ctx.mode, hasUI: ctx.hasUI, ui: ctx.ui }, {
         now: () => Date.now(),
@@ -91,7 +66,7 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
       });
       if (!mounted) return;
       const { panel, host } = mounted;
-      const render = () => { panel.update([...byRepo.values()].flat()); panel.updateExplores([...exploresByRepo.values()].flat()); host.requestRender(); };
+      const render = () => { panel.update([...byRepo.values()].flat()); panel.updateExplores([...exploresByRepo.values()].flat()); panel.updatePrototypes([...prototypesByRepo.values()].flat()); host.requestRender(); };
       async function refresh(repoId: string): Promise<void> {
         const target = client(repoId);
         if (!target || target.state().status !== "connected") { byRepo.delete(repoId); render(); return; }
@@ -114,15 +89,27 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
         } catch { exploresByRepo.delete(repoId); }
         render();
       }
-      const refreshAll = (repoId: string) => { void refresh(repoId); void refreshExplores(repoId); };
+      async function refreshPrototypes(repoId: string): Promise<void> {
+        const target = client(repoId);
+        if (!target || target.state().status !== "connected") { prototypesByRepo.delete(repoId); render(); return; }
+        try {
+          const result = await target.call("prototypes.list", {});
+          if (myGeneration !== generation) return;
+          const items = Array.isArray(result.items) ? result.items as MainPrototypeOverview[] : [];
+          prototypesByRepo.set(repoId, items.map((prototype) => ({ repoId, prototype, fetchedAt: Date.now() })));
+        } catch { prototypesByRepo.delete(repoId); }
+        render();
+      }
+      const refreshAll = (repoId: string) => { void refresh(repoId); void refreshExplores(repoId); void refreshPrototypes(repoId); };
       const unsubscribes: Array<() => void> = [];
       for (const repo of window.workspace.repos) {
         const target = client(repo.repoId);
         if (!target) continue;
         unsubscribes.push(target.subscribe("pm.overview.changed", () => { void refresh(repo.repoId); }));
         unsubscribes.push(target.subscribe("explore.changed", () => { void refreshExplores(repo.repoId); }));
+        unsubscribes.push(target.subscribe("prototype.changed", () => { void refreshPrototypes(repo.repoId); }));
         unsubscribes.push(target.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, () => refreshAll(repo.repoId)));
-        unsubscribes.push(target.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => { byRepo.delete(repo.repoId); exploresByRepo.delete(repo.repoId); render(); }));
+        unsubscribes.push(target.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected, () => { byRepo.delete(repo.repoId); exploresByRepo.delete(repo.repoId); prototypesByRepo.delete(repo.repoId); render(); }));
         refreshAll(repo.repoId);
       }
       const dock = new BottomDock({

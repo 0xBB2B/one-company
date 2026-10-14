@@ -16,6 +16,8 @@ export interface WindowQuestion {
   allowOther?: boolean;
   /** "其他"一行显示的名称，缺省为"其他（自己输入）"。 */
   otherLabel?: string;
+  /** "其他"输入的最长字数；超出时回车不起作用，并在输入行下提示超出多少字。 */
+  otherMaxLength?: number;
   /** 按 Esc 取消时实际发生什么，写在提示行末尾的括号里。 */
   cancelNote?: string;
   /** 整个替换提示行里 Esc 那一段。 */
@@ -116,7 +118,7 @@ export class QuestionWindowView {
   private handleOther(data: string, index: number): void {
     const state = this.states[index]!, question = this.options.questions[index]!;
     if (matchesKey(data, "enter")) {
-      if (!state.other.trim()) return;
+      if (!state.other.trim() || (question.otherMaxLength !== undefined && state.other.trim().length > question.otherMaxLength)) return;
       if (!question.multiSelect) state.picked.clear();
       this.complete(index);
       return;
@@ -199,6 +201,8 @@ export class QuestionWindowView {
         }
       }
       if (this.isOther(index, i) && (selected || state.other)) lines.push(`      ${highlight("›")} ${state.other}${selected ? CARET : ""}`);
+      const excess = this.isOther(index, i) && question.otherMaxLength !== undefined ? state.other.trim().length - question.otherMaxLength : 0;
+      if (excess > 0) lines.push(`      ${muted(`超出 ${excess} 字，最多 ${question.otherMaxLength} 字`)}`);
     });
 
     const enter = question.multiSelect && this.multi ? "回车下一题" : "回车确认";
@@ -225,16 +229,45 @@ export class QuestionWindowView {
 export type WindowHost = Pick<ExtensionContext, "hasUI"> & { ui: Pick<ExtensionUIContext, "custom"> };
 export interface ProgramWindow { title: string; lines: WindowLine[] }
 
+export interface ProgramWindowHost {
+  hasUI?: boolean;
+  ui?: { custom?: unknown };
+}
+type WindowFactory<T> = (tui: any, theme: any, keybindings: any, done: (value: T | undefined) => void) => unknown;
+const QUEUE = Symbol.for("one-company.program-window-queue");
+
+/** 所有程序窗口共用一个先进先出队列，同一时间只显示一个；队列挂在 globalThis 上，模块被加载多份时也只有一份。 */
+export async function openProgramWindow<T>(host: ProgramWindowHost, factory: WindowFactory<T>, signal?: AbortSignal, options?: { overlay?: boolean }): Promise<T | undefined> {
+  const custom = host.ui?.custom as ((factory: WindowFactory<T>, options?: { overlay?: boolean }) => Promise<T | undefined>) | undefined;
+  if (host.hasUI === false || typeof custom !== "function" || signal?.aborted) return undefined;
+  const queue = ((globalThis as Record<symbol, unknown>)[QUEUE] ??= { tail: Promise.resolve() }) as { tail: Promise<void> };
+  const previous = queue.tail;
+  let release!: () => void;
+  queue.tail = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    const aborted = await new Promise<boolean>((resolve) => {
+      const onAbort = () => resolve(true);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      void previous.then(() => { signal?.removeEventListener("abort", onAbort); resolve(false); });
+    });
+    if (aborted || signal?.aborted) return undefined;
+    return await custom.call(host.ui, (tui, theme, keybindings, done) => {
+      const finish = (value: T | undefined) => { signal?.removeEventListener("abort", abort); done(value); };
+      const abort = () => finish(undefined);
+      signal?.addEventListener("abort", abort, { once: true });
+      return factory(tui, theme, keybindings, finish);
+    }, options);
+  } finally {
+    void previous.then(release);
+  }
+}
+
 async function showWindow(host: WindowHost, questions: WindowQuestion[], tone: WindowTone, signal?: AbortSignal): Promise<WindowAnswer[] | undefined> {
-  if (!host.hasUI || signal?.aborted) return undefined;
-  return host.ui.custom<WindowAnswer[] | undefined>((tui, theme, _keybindings, done) => {
-    const finish = (answers: WindowAnswer[] | undefined) => { signal?.removeEventListener("abort", abort); done(answers); };
-    const abort = () => finish(undefined);
-    signal?.addEventListener("abort", abort, { once: true });
-    const view = new QuestionWindowView({ questions, tone, theme: theme as unknown as WindowTheme, onDone: finish });
+  return openProgramWindow<WindowAnswer[]>(host, (tui, theme, _keybindings, done) => {
+    const view = new QuestionWindowView({ questions, tone, theme: theme as unknown as WindowTheme, onDone: done });
     return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
       handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); } };
-  });
+  }, signal);
 }
 
 /** 主代理提问窗口：标准颜色，一次一个问题；Esc 或没有界面时为 undefined。 */
@@ -255,8 +288,9 @@ export async function chooseWindow(host: WindowHost, window: ProgramWindow & { c
 }
 
 /** 带"其他"输入行的程序选择窗口：返回选中的选项或用户输入的文字，取消时为 undefined。 */
-export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel: string; cancelNote?: string; escapeHint?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
+export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel: string; otherMaxLength?: number; cancelNote?: string; escapeHint?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
   const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, allowOther: true, otherLabel: window.otherLabel,
+    ...(window.otherMaxLength !== undefined ? { otherMaxLength: window.otherMaxLength } : {}),
     ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}), ...(window.escapeHint ? { escapeHint: window.escapeHint } : {}) }], "warning", signal);
   return answers?.[0];
 }

@@ -1,4 +1,5 @@
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { openProgramWindow } from "./question-window.ts";
 import type { Clock } from "./clock.ts";
 import type { DaemonConnectionIdentity } from "./daemon-client.ts";
 import type { Host, ShellRegistry, TaskActivity, TaskRecord, TaskStatus } from "./shell-registry.ts";
@@ -737,7 +738,8 @@ export async function openShellPage(options: OpenShellPageOptions): Promise<void
   const { ctx, dock, clock, ...pageOptions } = options;
   let stopRefresh: (() => void) | undefined;
   try {
-    await ctx.ui.custom<undefined>(
+    await openProgramWindow<undefined>(
+      ctx,
       (tui, _theme, _keybindings, done) => {
         const hostTui = tui as OpenShellPageTui;
         const page = new ShellPage({
@@ -761,6 +763,7 @@ export async function openShellPage(options: OpenShellPageOptions): Promise<void
 
         return page;
       },
+      undefined,
       { overlay: false },
     );
   } finally {

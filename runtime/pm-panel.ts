@@ -1,10 +1,12 @@
 import { isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import type { MainExploreOverview } from "./explore-dispatch.ts";
+import type { MainPrototypeOverview } from "./prototype-dispatch.ts";
 import type { PendingItem, PmOverview } from "./pm-overview.ts";
 import { sanitizeText } from "./text-sanitize.ts";
 
 export interface PmPanelEntry { repoId: string; overview: PmOverview; fetchedAt: number }
 export interface ExplorePanelEntry { repoId: string; explore: MainExploreOverview; fetchedAt: number }
+export interface PrototypePanelEntry { repoId: string; prototype: MainPrototypeOverview; fetchedAt: number }
 export interface PmPanelTheme {
   fg?: (kind: string, text: string) => string;
   bg?: (kind: string, text: string) => string;
@@ -35,11 +37,12 @@ export function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}h${minutes}m${rest}s` : `${minutes}m${rest}s`;
 }
 
-/** 输入栏下方的状态面板：显示运行中与暂停的 PM，以及本窗口派出、还在运行的检索；数据来自守护进程，窗口只做投影，不保存事项。 */
+/** 输入栏下方的状态面板：显示运行中与暂停的 PM，以及本窗口派出、还在运行的检索和原型设计；数据来自守护进程，窗口只做投影，不保存事项。 */
 export class PmPanel {
   private readonly options: PmPanelOptions;
   private entries: PmPanelEntry[] = [];
   private explores: ExplorePanelEntry[] = [];
+  private prototypes: PrototypePanelEntry[] = [];
   private theme: PmPanelTheme | undefined;
   private cursor = 0;
   private frame = 0;
@@ -68,7 +71,9 @@ export class PmPanel {
     this.explores = [...entries].sort((a, b) => a.explore.runId.localeCompare(b.explore.runId));
   }
 
-  /** 只有 PM 与事项行可选；检索行没有可做的操作。 */
+  updatePrototypes(entries: PrototypePanelEntry[]): void { this.prototypes = [...entries]; }
+
+  /** 只有 PM 与事项行可选；检索和原型设计行没有可做的操作。 */
   hasRows(): boolean { return this.entries.length > 0; }
 
   private rows(): Row[] {
@@ -89,7 +94,7 @@ export class PmPanel {
 
   render(width: number): string[] {
     const safeWidth = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
-    if (safeWidth === 0 || (this.entries.length === 0 && this.explores.length === 0)) return [];
+    if (safeWidth === 0 || (this.entries.length === 0 && this.explores.length === 0 && this.prototypes.length === 0)) return [];
     const rows = this.rows(), selected = this.focused ? rows[this.cursor] : undefined;
     const lines = this.entries.length ? [this.fit(`● ${this.entries.length} 个需求运行中`, safeWidth)] : [];
     this.entries.forEach((entry, index) => {
@@ -108,6 +113,12 @@ export class PmPanel {
         const isSelected = selected !== undefined && selected.kind === "item" && selected.item.itemId === item.itemId && selected.entry === entry;
         lines.push(this.mark(this.fit(`${rail}     ${itemBranch} ⚑ ${item.label}`, safeWidth), isSelected));
       });
+    });
+    if (this.prototypes.length) lines.push(this.fit(`● ${this.prototypes.length} 个原型设计运行中`, safeWidth));
+    this.prototypes.forEach(({ prototype, fetchedAt }, index) => {
+      const branch = index === this.prototypes.length - 1 ? "└─" : "├─";
+      const elapsed = prototype.elapsedMs + Math.max(0, this.options.now() - fetchedAt);
+      lines.push(this.fit(`${branch} ${SPINNER[this.frame]} ${prototype.name}（第 ${prototype.version} 版）· ${prototype.agent} · ↻${prototype.turns}/${prototype.maxTurns} · ${formatElapsed(elapsed)}`, safeWidth));
     });
     if (this.explores.length) lines.push(this.fit(`● ${this.explores.length} 个检索运行中`, safeWidth));
     this.explores.forEach(({ explore, fetchedAt }, index) => {

@@ -5,7 +5,7 @@ import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { validateParams } from "../runtime/protocol.ts";
 import {
-  beginDesign, decidePrototype, pendingConfirmation, prototypeFilePath, readPrototypeBoard, submitDesign,
+  beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, promoteOnApproval, prototypeFilePath, readPrototypeBoard, submitDesign,
 } from "../runtime/requirement-prototypes.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
@@ -319,4 +319,89 @@ test("设计师会话带知识查询工具", async () => {
   const request = w.provider.requests.find((entry) => JSON.stringify(entry).includes("手机号加验证码登录界面"))!;
   expect(request.tools?.map((tool) => tool.name)).toContain("one_company_knowledge_query");
   await w.call("runs.stop", { runId });
+});
+
+async function awaitingPrototype(w: Awaited<ReturnType<typeof world>>, html = HTML) {
+  const before = w.events("prototype.submitted").length;
+  w.provider.queue.push(w.submit(html), { type: "text", text: "已交稿" });
+  const { version } = await w.dispatch();
+  await until(() => w.events("prototype.submitted").length === before + 1);
+  return version;
+}
+const pendingInput = (w: Awaited<ReturnType<typeof world>>) => ({ requirementId: w.fixture.requirementId, name: "登录页" });
+const decideInput = async (w: Awaited<ReturnType<typeof world>>, choice: "accept" | "abandon") => {
+  const pending = await w.call("prototypes.pending", pendingInput(w));
+  return w.call("prototypes.decide", { ...pendingInput(w), version: pending.version, hash: pending.hash, choice, opinion: null });
+};
+
+test("prototypes.pending 有待确认版本时带需求标题、草稿版本号（当前版本加一）和文件信息", async () => {
+  const w = await world();
+  const version = await awaitingPrototype(w);
+  const pending = await w.call("prototypes.pending", pendingInput(w));
+  const revision = w.fixture.state.read(w.fixture.requirementId).data.revision;
+  expect(pending).toMatchObject({ requirementTitle: expect.any(String), draftVersion: revision + 1, name: "登录页", version, bytes: Buffer.byteLength(HTML),
+    path: prototypeFilePath(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", version }), note: "手机号输入框加验证码按钮", previousOpinion: null });
+  expect((pending.requirementTitle as string).length).toBeGreaterThan(0);
+  expect(pending.hash).toMatch(/^[0-9a-f]{64}$/);
+});
+
+test("prototypes.pending 在设计中时被拒，原因写明还在设计中", async () => {
+  const w = await world();
+  w.provider.queue.push(w.slow);
+  const { runId } = await w.dispatch();
+  await w.started();
+  await expect(w.call("prototypes.pending", pendingInput(w))).rejects.toMatchObject({ message: expect.stringContaining("还在设计中") });
+  await w.call("runs.stop", { runId });
+});
+
+test("prototypes.pending 在这一版已通过进草稿后被拒，原因写明已通过", async () => {
+  const w = await world();
+  await awaitingPrototype(w);
+  await decideInput(w, "accept");
+  await expect(w.call("prototypes.pending", pendingInput(w))).rejects.toMatchObject({ message: expect.stringMatching(/已通过/u) });
+});
+
+test("prototypes.pending 在原型已从草稿移除后被拒，原因写明已移除", async () => {
+  const w = await world();
+  await awaitingPrototype(w);
+  await decideInput(w, "accept");
+  await w.call("prototypes.remove", pendingInput(w));
+  await expect(w.call("prototypes.pending", pendingInput(w))).rejects.toMatchObject({ message: expect.stringContaining("移除") });
+});
+
+test("prototypes.pending 在上一版因文件被改作废后被拒，原因写明文件被改过、这一版已作废", async () => {
+  const w = await world();
+  const version = await awaitingPrototype(w);
+  await writeFile(prototypeFilePath(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", version }), "<html>被改过</html>");
+  await expect(w.call("prototypes.pending", pendingInput(w))).rejects.toMatchObject({ message: expect.stringContaining("文件在交稿后被改过") });
+  await expect(w.call("prototypes.pending", pendingInput(w))).rejects.toMatchObject({ message: expect.stringMatching(/作废/u) });
+});
+
+test("prototypes.removal 本次草稿新通过的原型：草稿版本号是当前版本加一，approvedRevision 为 null", async () => {
+  const w = await world();
+  const version = await awaitingPrototype(w);
+  await decideInput(w, "accept");
+  const revision = w.fixture.state.read(w.fixture.requirementId).data.revision;
+  const removal = await w.call("prototypes.removal", pendingInput(w));
+  expect(removal).toMatchObject({ requirementTitle: expect.any(String), draftVersion: revision + 1, name: "登录页", version, approvedRevision: null });
+});
+
+test("prototypes.removal 已在需求里批准过的原型：approvedRevision 等于当前需求版本", async () => {
+  const w = await world();
+  const version = await awaitingPrototype(w);
+  await decideInput(w, "accept");
+  const { digest } = await draftPrototypes(w.ref, w.fixture.requirementId);
+  await promoteOnApproval(w.ref, { requirementId: w.fixture.requirementId, digest });
+  const revision = w.fixture.state.read(w.fixture.requirementId).data.revision;
+  const removal = await w.call("prototypes.removal", pendingInput(w));
+  expect(removal).toMatchObject({ draftVersion: revision + 1, name: "登录页", version, approvedRevision: revision });
+});
+
+test("prototypes.removal 对已移除的条目和不存在的名称都被拒并写明草稿里没有", async () => {
+  const w = await world();
+  await awaitingPrototype(w);
+  await decideInput(w, "accept");
+  await w.call("prototypes.remove", pendingInput(w));
+  await expect(w.call("prototypes.removal", pendingInput(w))).rejects.toMatchObject({ message: expect.stringContaining("草稿里没有") });
+  await expect(w.call("prototypes.removal", { requirementId: w.fixture.requirementId, name: "不存在" })).rejects.toMatchObject({ message: expect.stringContaining("草稿里没有") });
 });
