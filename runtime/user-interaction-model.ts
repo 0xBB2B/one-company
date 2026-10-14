@@ -32,7 +32,6 @@ export interface PiInteractionInterpreterOptions {
   selectedModel: () => Model<Api> | undefined;
   /** 思考等级不是 off 时传入；不传即不思考。 */
   thinking?: ThinkingLevel;
-  timeoutMs?: number;
 }
 function modelIdentity(model: Model<Api>): InteractionModelIdentity {
   return Object.freeze({ provider: model.provider, id: model.id, configurationHash: decisionDigest(JSON.parse(JSON.stringify(model))) });
@@ -40,8 +39,6 @@ function modelIdentity(model: Model<Api>): InteractionModelIdentity {
 /** pi ModelRegistry通过pi-ai的真实provider完成调用；不创建会话、不持久化输入或响应。 */
 export function createPiInteractionInterpreter(options: PiInteractionInterpreterOptions): InteractionInterpreter {
   const registry = options.registry, selectedModel = options.selectedModel;
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120_000) throw new UserInteractionError("invalid_model_timeout");
   function current(): Model<Api> {
     const model = selectedModel();
     if (!model || !registry.hasConfiguredAuth(model)) throw new UserInteractionError("model_auth_unavailable");
@@ -69,26 +66,20 @@ export function createPiInteractionInterpreter(options: PiInteractionInterpreter
         // 核对不过时允许按错误代码重答一次：真实模型偶尔漏覆盖单位或写错结构提示，核对规则本身不放宽
         let firstRejection: string | undefined;
         for (;;) {
-          // 首次回答与重答各自计时：两次共用一个时限时，首答稍慢就会挤掉重答
-          const attempt = new AbortController(), stop = () => attempt.abort();
-          controller.signal.addEventListener("abort", stop, { once: true });
-          if (controller.signal.aborted) attempt.abort();
-          const timer = setTimeout(stop, timeoutMs); timer.unref();
           let rejectAborted: (() => void) | undefined;
           let response: Awaited<ReturnType<typeof registry.complete>>;
           try {
             const aborted = new Promise<never>((_resolve, reject) => {
               rejectAborted = () => reject(new UserInteractionError("model_cancelled"));
-              attempt.signal.addEventListener("abort", rejectAborted, { once: true });
-              if (attempt.signal.aborted) rejectAborted();
+              controller.signal.addEventListener("abort", rejectAborted, { once: true });
+              if (controller.signal.aborted) rejectAborted();
             });
             response = await Promise.race([options.thinking
-              ? registry.streamSimple(model, context, { signal: attempt.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384), reasoning: options.thinking }).result()
-              : registry.complete(model, context, { signal: attempt.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384) }), aborted]);
-            attempt.signal.throwIfAborted();
+              ? registry.streamSimple(model, context, { signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384), reasoning: options.thinking }).result()
+              : registry.complete(model, context, { signal: controller.signal, cacheRetention: "none", maxTokens: Math.min(model.maxTokens, 16_384) }), aborted]);
+            controller.signal.throwIfAborted();
           } finally {
-            clearTimeout(timer); controller.signal.removeEventListener("abort", stop);
-            if (rejectAborted) attempt.signal.removeEventListener("abort", rejectAborted);
+            if (rejectAborted) controller.signal.removeEventListener("abort", rejectAborted);
           }
           if (response.stopReason !== "stop" || response.provider !== model.provider || response.model !== model.id ||
             response.content.some((block) => block.type !== "text" && block.type !== "thinking")) throw new UserInteractionError("model_response_denied");

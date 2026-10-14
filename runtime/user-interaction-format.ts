@@ -162,7 +162,6 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   interpretation_denied: { why: "解读用户原话时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: "重试一次；仍然失败就把这段原因告诉用户" },
   invalid_capability: { why: "确认能力无效或已用过", next: "重新读取需求后按最新版本再试" },
   invalid_input_ticket: { why: "用户原话的凭据无效或已用过", next: "等用户在主窗口说出新的一句话后再操作" },
-  invalid_model_timeout: { why: "解读模型的超时设置不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   invalid_shape: { why: "参数或解读结果的格式不合规", next: "按原因改正后重试" },
   lifecycle_denied: { why: "需求不在草稿或活动状态，或需要先恢复核对", next: "重新读取需求后按最新版本再试" },
   model_auth_unavailable: { why: "解读用的模型没有配置凭据", next: "请用户检查模型配置或改选模型" },
