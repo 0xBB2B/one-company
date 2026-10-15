@@ -90,6 +90,10 @@ export function archivePathFor(requirementId: string, title: string): string {
   return `${ARCHIVE_DIRECTORY_PARTS[0]}/${ARCHIVE_DIRECTORY_PARTS[1]}/${filenameFor(requirementId, title)}`;
 }
 
+export function prototypeArchivePathFor(requirementId: string, name: string): string {
+  return archivePathFor(requirementId, name).replace(/\.md$/, ".html");
+}
+
 export function createProdDocument(requirementId: string, title: string, body: string): CreatedProdDocument {
   assertRequirementId(requirementId);
   assertString(title, "title");
@@ -221,6 +225,7 @@ export async function inspectProdArchives(
   const paths: string[] = [];
   for (const entry of entries) {
     if (!entry.name.startsWith(prefix)) continue;
+    if (entry.name.endsWith(".html") && entry.isFile()) continue;
     if (!entry.name.endsWith(".md")) {
       fail("invalid_archive_entry", "完整 requirementId 对应的归档名格式无效");
     }

@@ -161,3 +161,30 @@ test("归档枚举拒绝目录链接和对应 UUID 的文件链接，不越界�
   await symlink(join(outside, "outside.md"), join(rootWithFileLink, archivePathFor(REQUIREMENT_ID, "linked")));
   await expect(inspectProdArchives(rootWithFileLink, REQUIREMENT_ID)).rejects.toThrow(/真实普通文件/);
 });
+
+test("归档目录里本需求的原型 html 不算正文：与一份正文并存时不冲突，路径清单只含正文", async () => {
+  const root = await workspace();
+  const body = archivePathFor(REQUIREMENT_ID, "角色动作扩展");
+  await mkdir(join(root, "docs", "prod"), { recursive: true });
+  await writeFile(join(root, body), "正文");
+  for (const name of ["设置页", "命令行输出"]) await writeFile(join(root, "docs", "prod", `${REQUIREMENT_ID}.${name}.html`), "<html></html>");
+  await writeFile(join(root, "docs", "prod", `${OTHER_REQUIREMENT_ID}.别人的原型.html`), "<html></html>");
+
+  expect(await inspectProdArchives(root, REQUIREMENT_ID)).toEqual({ paths: [body], conflict: false });
+});
+
+test("归档目录里只有本需求的原型 html、没有正文时，枚举结果为空", async () => {
+  const root = await workspace();
+  await mkdir(join(root, "docs", "prod"), { recursive: true });
+  await writeFile(join(root, "docs", "prod", `${REQUIREMENT_ID}.设置页.html`), "<html></html>");
+
+  expect(await inspectProdArchives(root, REQUIREMENT_ID)).toEqual({ paths: [], conflict: false });
+});
+
+test("本需求编号开头的非 md、非 html 文件仍按归档名格式无效拒绝", async () => {
+  const root = await workspace();
+  await mkdir(join(root, "docs", "prod"), { recursive: true });
+  await writeFile(join(root, "docs", "prod", `${REQUIREMENT_ID}.x.txt`), "杂物");
+
+  await expect(inspectProdArchives(root, REQUIREMENT_ID)).rejects.toThrow(/归档名格式无效/);
+});

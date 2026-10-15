@@ -29,6 +29,9 @@ import { implementScope, readPlanIn, terminationPending } from "./plan-manage.ts
 import type { TaskRecord, TaskStatus } from "./plan-manage.ts";
 import { endRequirementExploreSessionsIn } from "./explore-session.ts";
 import { readGit } from "./git-read.ts";
+import { prototypeArchivePathFor } from "./requirement-identity.ts";
+import { prototypeFilePath } from "./requirement-prototypes.ts";
+import { prototypesAtRevision } from "./requirement-prototype-revisions.ts";
 
 export const CLOSE_OPERATIONS = "close_operations";
 export const DELIVERY_RECEIPTS = "delivery_receipts";
@@ -44,6 +47,7 @@ const Basis = object({
 export type CloseBasis = Static<typeof Basis>;
 const Archive = object({ path: Type.String({ minLength: 1, maxLength: 1024 }), prodHash: hash, commit: Type.String({ minLength: 1 }),
   records: object({ implementation: Type.String({ minLength: 1 }), acceptance: Type.String({ minLength: 1 }) }), archiveHash: nullable(hash),
+  prototypes: Type.Array(object({ path: Type.String({ minLength: 1, maxLength: 512 }), name: Type.String({ minLength: 1, maxLength: 40 }), version: positive, hash }), { maxItems: 50 }),
   status: Type.Union([Type.Literal("pending"), Type.Literal("archived"), Type.Literal("blocked")]), attempts: counter, lastError: nullable(Type.String({ maxLength: 1024 })) });
 export const CloseOperation = object({
   format: Type.Literal("close-operation/v1"), requirementId: id, repoId: hash, operationId: id, receiptId: id, reason: CloseReason, basis: Basis,
@@ -88,6 +92,7 @@ const CLOSE_ADVICE = {
   not_found: { why: "找不到对应的关闭记录或待验收报告", next: "用 status 查看需求当前的关闭与报告状态" },
   not_closed: { why: "需求还没有以完成关闭，不能归档", next: "先以完成关闭需求，再归档" },
   archive_conflict: { why: "归档位置已有内容不同的文件", next: "请用户检查归档目录里的同名文件，处理后以原决定编号再次 close 续办" },
+  archive_prototype_mismatch: { why: "原型源文件内容与批准时登记的指纹不符", next: "请用户检查原型文件有没有被手动改动，处理后以原决定编号再次 close 续办" },
   archive_unavailable: { why: "这个需求没有归档资格或归档内容不可用", next: "只有以完成关闭的需求才会归档；其他情况不需要归档" },
 } as const satisfies Record<string, FailureAdvice>;
 export type CloseErrorCode = keyof typeof CLOSE_ADVICE;
@@ -488,6 +493,10 @@ export class RequirementCloseService {
       if (!preflight.eligible || !preflight.basis) return freeze({ status: "rejected" as const, missing: preflight.missing, ...(preflight.authorization ? { authorization: preflight.authorization } : {}) });
       const basis = preflight.basis;
       const intent = { operationId: request.operationId, reason: request.reason, receiptId: request.receiptId };
+      const prototypes = request.reason === "completed"
+        ? (await prototypesAtRevision(this.options, request.requirementId, basis.revision))
+          .map((item) => ({ path: prototypeArchivePathFor(request.requirementId, item.name), name: item.name, version: item.version, hash: item.hash }))
+        : [];
       try {
         this.state.beginClose({ requirementId: request.requirementId, version: basis.version, intent }, (db) => {
           const facts = deliveryFactsIn(db, this.options.repoId, request.requirementId);
@@ -504,7 +513,7 @@ export class RequirementCloseService {
             steps: { agentsStopped: false, closed: false },
             archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, records: { implementation: implementationRecord(request.requirementId, readPlanIn(db, request.requirementId)?.tasks ?? [], acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId)!),
               acceptance: acceptanceRecord(facts) },
-              archiveHash: null, status: "pending", attempts: 0, lastError: null } : null,
+              prototypes, archiveHash: null, status: "pending", attempts: 0, lastError: null } : null,
             createdAt: now, updatedAt: now });
         });
       } catch (error: unknown) {
@@ -565,7 +574,7 @@ export class RequirementCloseService {
       const round = db.read<unknown>(CHECK_ROUNDS, data.basis.checkRoundId!);
       return workspace && round ? { worktree: workspace.path, branch: workspace.branch, codeHead: checked(CheckRound, round.data).baseline.codeHead } : null;
     }) : null;
-    const archive = data.archive ? { path: data.archive.path, prodHash: data.archive.prodHash, archiveHash: data.archive.archiveHash, status: data.archive.status,
+    const archive = data.archive ? { path: data.archive.path, prodHash: data.archive.prodHash, archiveHash: data.archive.archiveHash, prototypes: data.archive.prototypes, status: data.archive.status,
       attempts: data.archive.attempts, lastError: data.archive.lastError } : null;
     return freeze({ status: data.status, operationId: data.operationId, reason: data.reason, steps: { ...data.steps }, archive, delivery });
   }
@@ -603,6 +612,22 @@ export class RequirementCloseService {
       await mkdir(dirname(target), { recursive: true });
       const real = await resolveRealRepoPath(root, target, false);
       if (real !== archive.path) throw new Error("archive_path_escape");
+      const htmls: Array<{ target: string; content: Buffer; existing: Buffer | null }> = [];
+      for (const item of archive.prototypes) {
+        const content = await readFile(prototypeFilePath(this.options, { requirementId, name: item.name, version: item.version }));
+        if (sha256(content) !== item.hash) {
+          const detail = `原型 ${item.name} 第 ${item.version} 版`;
+          save({ status: "blocked", attempts: archive.attempts + 1, lastError: `${detail}的源文件指纹不符` });
+          throw new CloseError("archive_prototype_mismatch", detail);
+        }
+        const htmlTarget = join(root, ...item.path.split("/"));
+        if (await resolveRealRepoPath(root, htmlTarget, false) !== item.path) throw new Error("archive_path_escape");
+        let current: Buffer | null = null;
+        try { const stats = await lstat(htmlTarget); if (!stats.isFile()) throw new Error("archive_target_not_file"); current = await readFile(htmlTarget); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        if (current && sha256(current) !== item.hash) { save({ status: "blocked", attempts: archive.attempts + 1, lastError: "archive_conflict" }); throw new CloseError("archive_conflict"); }
+        htmls.push({ target: htmlTarget, content, existing: current });
+      }
       let existing: Buffer | null = null;
       try { const stats = await lstat(target); if (!stats.isFile()) throw new Error("archive_target_not_file"); existing = await readFile(target); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -610,6 +635,11 @@ export class RequirementCloseService {
       if (!existing) {
         await writeFileAtomic(target, content.toString("utf8"));
         if (sha256(await readFile(target)) !== archiveHash) throw new Error("archive_write_mismatch");
+      }
+      for (const html of htmls) {
+        if (html.existing) continue;
+        await writeFileAtomic(html.target, html.content.toString("utf8"));
+        if (sha256(await readFile(html.target)) !== sha256(html.content)) throw new Error("archive_write_mismatch");
       }
       save({ status: "archived", archiveHash, attempts: archive.attempts + 1, lastError: null });
       return freeze({ status: "archived" as const, path: archive.path, prodHash: archive.prodHash, archiveHash, attempts: archive.attempts + 1, lastError: null });

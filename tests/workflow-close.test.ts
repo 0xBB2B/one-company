@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { repositoryIdentity } from "../runtime/identity.ts";
@@ -17,7 +17,9 @@ import { createChangeApplyTool } from "../runtime/change-apply.ts";
 import { createRequirementReadTool } from "../runtime/requirement-read-tool.ts";
 import { createWorkflowManageTool } from "../runtime/workflow-manage.ts";
 import type { WorkflowManageGrant, WorkflowManageToolOptions } from "../runtime/workflow-manage.ts";
-import { RequirementCloseService, COMPLETION_REPORTS, DELIVERY_RECEIPTS, decideReportIn } from "../runtime/workflow-close.ts";
+import { RequirementCloseService, CLOSE_OPERATIONS, COMPLETION_REPORTS, DELIVERY_RECEIPTS, decideReportIn } from "../runtime/workflow-close.ts";
+import { prototypeFilePath } from "../runtime/requirement-prototypes.ts";
+import { writePrototypeRevision } from "../runtime/requirement-prototype-revisions.ts";
 import type { CloseResult, DeliveryReceipt } from "../runtime/workflow-close.ts";
 import { resolveRepositoryRequirementDoc } from "../runtime/requirement-doc.ts";
 import type { RequirementDocSpec } from "../runtime/requirement-doc.ts";
@@ -415,4 +417,122 @@ test("M8-AC9：需求分支未包含目标分支当前提交时不能开启检�
   await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "sync_required" });
   expect(await syncTargetBranch({ repositoryRoot: w.repositoryRoot, worktree: w.worktree.root, branch: w.workspace.branch })).toMatchObject({ status: "rebased" });
   expect(await pm.execute({ action: "advance" })).toMatchObject({ status: "open" });
+});
+
+const PROTOTYPES = [{ name: "设置页", version: 3, html: "<html>设置页 v3</html>\n" }, { name: "命令行输出", version: 1, html: "<html>命令行输出 v1</html>\n" }];
+
+async function approvePrototypes(w: Awaited<ReturnType<typeof world>>, items = PROTOTYPES) {
+  const requirementId = w.created.requirementId;
+  for (const item of items) {
+    const file = prototypeFilePath(w, { requirementId, name: item.name, version: item.version });
+    await mkdir(join(file, ".."), { recursive: true });
+    await writeFile(file, item.html);
+  }
+  const revision = w.state.read(requirementId).data.revision;
+  withDatabase(w.database, (db) => writePrototypeRevision(db, { requirementId, revision,
+    prototypes: items.map((item) => ({ name: item.name, version: item.version, hash: sha(item.html), bytes: Buffer.byteLength(item.html) })) }));
+  return { revision, file: (item: (typeof PROTOTYPES)[number]) => prototypeFilePath(w, { requirementId, name: item.name, version: item.version }) };
+}
+
+async function closeCompleted(w: Awaited<ReturnType<typeof world>>) {
+  await w.fullEvidence();
+  const receiptId = await w.accept();
+  return await (await w.main()).execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
+}
+
+const htmlTarget = (w: Awaited<ReturnType<typeof world>>, name: string) => join(w.worktree.root, "docs", "prod", `${w.created.requirementId}.${name}.html`);
+const storedArchive = (w: Awaited<ReturnType<typeof world>>) => withDatabase(w.database, (db) => db.read<{ archive: { prototypes: unknown } }>(CLOSE_OPERATIONS, w.created.requirementId)!.data.archive);
+
+test("归档把最终批准版本的原型 html 和正文一起写进归档目录，内容与原型文件逐字节相同，关闭记录登记每份原型", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await approvePrototypes(w);
+  const closed = await closeCompleted(w);
+  expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  const dir = join(w.worktree.root, "docs", "prod");
+  const names = await readdir(dir);
+  expect(names.filter((name) => name.endsWith(".md"))).toHaveLength(1);
+  expect(names.filter((name) => name.endsWith(".html")).sort()).toEqual([`${w.created.requirementId}.命令行输出.html`, `${w.created.requirementId}.设置页.html`].sort());
+  expect(names).toHaveLength(3);
+  for (const item of PROTOTYPES) expect(await readFile(htmlTarget(w, item.name))).toEqual(Buffer.from(item.html));
+  expect(storedArchive(w).prototypes).toEqual(PROTOTYPES.map((item) => ({ path: `docs/prod/${w.created.requirementId}.${item.name}.html`, name: item.name, version: item.version, hash: sha(item.html) })));
+});
+
+test("归档位置已有内容不同的同名原型 html 时归档受阻、不覆盖，清掉后再归档成功", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await approvePrototypes(w);
+  await mkdir(join(w.worktree.root, "docs", "prod"), { recursive: true });
+  await writeFile(htmlTarget(w, "设置页"), "别人的文件\n");
+  const closed = await closeCompleted(w);
+  expect(closed).toMatchObject({ status: "closed", archive: { status: "blocked" } });
+  await expect(readFile(htmlTarget(w, "设置页"), "utf8")).resolves.toBe("别人的文件\n");
+  await expect(w.closeService.archive(w.created.requirementId)).rejects.toMatchObject({ code: "archive_conflict", advice: { why: "归档位置已有内容不同的文件" } });
+  await rm(htmlTarget(w, "设置页"));
+  expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived" });
+  expect(await readFile(htmlTarget(w, "设置页"))).toEqual(Buffer.from(PROTOTYPES[0].html));
+});
+
+test("归档位置已有内容相同的原型 html 时跳过写入，归档仍成功", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await approvePrototypes(w);
+  await mkdir(join(w.worktree.root, "docs", "prod"), { recursive: true });
+  await writeFile(htmlTarget(w, "设置页"), PROTOTYPES[0].html);
+  const before = (await stat(htmlTarget(w, "设置页"))).mtimeMs;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  expect((await stat(htmlTarget(w, "设置页"))).mtimeMs).toBe(before);
+  expect(await readFile(htmlTarget(w, "命令行输出"))).toEqual(Buffer.from(PROTOTYPES[1].html));
+});
+
+test("原型源文件内容与批准时的指纹不符时归档受阻，错误写明哪份原型第几版和下一步，正文也不写出", async () => {
+  const w = await world();
+  if (!darwin) return;
+  const approved = await approvePrototypes(w);
+  await writeFile(approved.file(PROTOTYPES[0]), "<html>被改过</html>\n");
+  expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "blocked" } });
+  const failure = await w.closeService.archive(w.created.requirementId).then(() => null, (error: unknown) => error as { name: string; code: string; advice: { why: string; next: string } });
+  expect(failure).toMatchObject({ name: "CloseError", code: expect.any(String) });
+  expect(failure!.advice.why).toContain("设置页");
+  expect(failure!.advice.why).toContain("3");
+  expect(failure!.advice.next.length).toBeGreaterThan(0);
+  expect(w.closeService.status(w.created.requirementId)).toMatchObject({ archive: { status: "blocked" } });
+  expect(await readdir(join(w.worktree.root, "docs", "prod")).catch(() => [] as string[])).toEqual([]);
+});
+
+test("某份原型的目标位置暂时是目录导致归档中断，恢复后续办补齐全部文件并最终归档", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await approvePrototypes(w);
+  await mkdir(htmlTarget(w, "命令行输出"), { recursive: true });
+  const closed = await closeCompleted(w) as { archive: { status: string } };
+  expect(closed.archive.status).not.toBe("archived");
+  await rm(htmlTarget(w, "命令行输出"), { recursive: true });
+  expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived" });
+  const names = await readdir(join(w.worktree.root, "docs", "prod"));
+  expect(names).toHaveLength(3);
+  for (const item of PROTOTYPES) expect(await readFile(htmlTarget(w, item.name))).toEqual(Buffer.from(item.html));
+});
+
+test("早先版本带原型、最终批准版本不带原型时，归档的原型清单为空且不写早先原型的 html", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await approvePrototypes(w, [PROTOTYPES[0]]);
+  await w.approve(BODY_2);
+  expect(w.state.read(w.created.requirementId).data.revision).toBeGreaterThan(1);
+  await w.state.assessUpdate({ lease: w.lease, version: w.state.read(w.created.requirementId).version, revision: w.state.read(w.created.requirementId).data.revision, assessmentId: uuidv7(), tasks: [{ taskId: "move", impact: "unaffected", reason: "章节未变" }] });
+  expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  expect(storedArchive(w).prototypes).toEqual([]);
+  expect((await readdir(join(w.worktree.root, "docs", "prod"))).filter((name) => name.endsWith(".html"))).toEqual([]);
+});
+
+test("最终批准版本没有原型时归档只有正文，关闭记录的原型清单为空", async () => {
+  const w = await world();
+  if (!darwin) return;
+  expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  const names = await readdir(join(w.worktree.root, "docs", "prod"));
+  expect(names).toHaveLength(1);
+  expect(names[0]).toMatch(/\.md$/);
+  expect(storedArchive(w).prototypes).toEqual([]);
 });
