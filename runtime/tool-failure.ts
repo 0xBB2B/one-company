@@ -35,12 +35,16 @@ export function toolStep(toolName: string, params: unknown): string {
 const RETRY_NEXT = "可以重试一次；仍然失败就把这段原因告诉用户";
 const NO_RETRY_NEXT = "不要重试，把这段原因告诉用户";
 
+function outputText(value: unknown): string | undefined {
+  return typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : undefined;
+}
+
 interface CommandFailureKind { program: string; label: string; output: "always" | "if-any" | "never"; next: string }
 
 function commandFailureKind(error: unknown): CommandFailureKind | undefined {
   if (error === null || typeof error !== "object") return undefined;
   const { cmd, stdout, stderr, code, killed, signal } = error as Record<string, unknown>;
-  if (typeof cmd !== "string" || typeof stdout !== "string" || typeof stderr !== "string") return undefined;
+  if (typeof cmd !== "string" || outputText(stdout) === undefined || outputText(stderr) === undefined) return undefined;
   const program = cmd.trim().split(/\s+/)[0]!;
   const kind = (label: string, output: CommandFailureKind["output"], next: string) => ({ program, label, output, next });
   if (typeof code === "number") return kind(`命令失败（退出码 ${code}）`, "always", "根据命令输出判断：参数或文件写错就改正后再试；看不懂就把这段原因告诉用户");
@@ -66,7 +70,7 @@ function tailOf(raw: string, lines: number, limit: number): string {
 
 function outputTail(error: unknown, lines: number, limit: number): string | undefined {
   const record = error !== null && typeof error === "object" ? error as { stderr?: unknown; stdout?: unknown } : {};
-  const text = (value: unknown): string | undefined => typeof value === "string" && value.trim() ? value : undefined;
+  const text = (value: unknown): string | undefined => { const output = outputText(value); return output?.trim() ? output : undefined; };
   const output = text(record.stderr) ?? text(record.stdout);
   return output === undefined ? undefined : tailOf(output, lines, limit);
 }
