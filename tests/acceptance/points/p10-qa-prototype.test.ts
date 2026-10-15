@@ -3,16 +3,20 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { activeCheckRoundIn } from "../../../runtime/check-round.ts";
-import { uuidv7 } from "../../../runtime/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../../runtime/database.ts";
 import { TASKS } from "../../../runtime/plan-manage.ts";
 import type { TaskRecord, TaskSpec } from "../../../runtime/plan-manage.ts";
 import { prototypesAtRevision, writePrototypeRevision } from "../../../runtime/requirement-prototype-revisions.ts";
-import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, promoteOnApproval, readPrototypeBoard, submitDesign } from "../../../runtime/requirement-prototypes.ts";
+import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, promoteOnApprovalIn, readPrototypeBoard, submitDesign } from "../../../runtime/requirement-prototypes.ts";
 import type { ScriptedReply } from "../../helpers/controlled-provider.ts";
 import { createPmRunWorld } from "../../helpers/run-manager-fixture.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { call, messageText, NA, pointEvidence, taskKey } from "../helpers/point-pm.ts";
 import { createRealModel } from "../helpers/real-model.ts";
+
+function promote(ref: { dataRoot: string; repoId: string }, input: { requirementId: string; digest: string }) {
+  return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => promoteOnApprovalIn(db, input)));
+}
 
 const config = acceptanceConfig();
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -53,7 +57,7 @@ test.skipIf(!config || process.platform !== "darwin")("P10：需求第 1 版带�
   const pending = await pendingConfirmation(ref, { requirementId, name: PROTOTYPE_NAME });
   await decidePrototype(ref, { requirementId, name: PROTOTYPE_NAME, version: pending.version, hash: pending.hash, choice: "accept", opinion: null });
   const draft = await draftPrototypes(ref, requirementId);
-  const promoted = await promoteOnApproval(ref, { requirementId, digest: draft.digest });
+  const promoted = promote(ref, { requirementId, digest: draft.digest });
   w.db((db) => writePrototypeRevision(db, { requirementId, revision: 1,
     prototypes: promoted.items.filter((item) => item.label !== "removed").map(({ name, version, hash, bytes }) => ({ name, version, hash, bytes })) }));
   const prototype = pending.path;

@@ -5,7 +5,7 @@ import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts
 import type { RequirementRecord } from "../runtime/requirement-contracts.ts";
 import {
   PrototypeBoardError, beginDesign, checkPrototypeName, clearStaleDesigns, decidePrototype, draftPrototypes, endDesign,
-  inFlightSummary, pendingConfirmation, prototypeFilePath, promoteOnApproval, readPrototypeBoard, removeFromDraft, submitDesign,
+  inFlightSummary, pendingConfirmation, prototypeFilePath, promoteOnApprovalIn, readPrototypeBoard, removeFromDraft, submitDesign,
 } from "../runtime/requirement-prototypes.ts";
 
 const HASH = "a".repeat(64);
@@ -34,6 +34,10 @@ beforeEach(() => {
   putRequirement(requirementId);
 });
 afterEach(() => { rmSync(dataRoot, { recursive: true, force: true }); });
+
+function promote(ref: { dataRoot: string; repoId: string }, input: { requirementId: string; digest: string }) {
+  return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => promoteOnApprovalIn(db, input)));
+}
 
 async function failure(run: () => unknown): Promise<PrototypeBoardError> {
   try { await run(); } catch (error) {
@@ -348,7 +352,7 @@ test("草稿集合：新确认的标 new，没动过的沿用批准版本标 kep
   await accepted("设置页");
   const first = await draftPrototypes(ref, requirementId);
   expect(first.items.map((item) => [item.name, item.label]).sort()).toEqual([["登录页", "new"], ["设置页", "new"]]);
-  await promoteOnApproval(ref, { requirementId, digest: first.digest });
+  promote(ref, { requirementId, digest: first.digest });
   await accepted("登录页", HTML2);
   const second = await draftPrototypes(ref, requirementId);
   const labels = Object.fromEntries(second.items.map((item) => [item.name, item.label]));
@@ -359,7 +363,7 @@ test("草稿集合：新确认的标 new，没动过的沿用批准版本标 kep
 test("草稿集合：已移除的批准版本带 removed 标签且不参与指纹", async () => {
   await accepted("登录页");
   const only = await draftPrototypes(ref, requirementId);
-  await promoteOnApproval(ref, { requirementId, digest: only.digest });
+  promote(ref, { requirementId, digest: only.digest });
   await accepted("设置页");
   const both = await draftPrototypes(ref, requirementId);
   await removeFromDraft(ref, { requirementId, name: "登录页" });
@@ -373,7 +377,7 @@ test("草稿集合相同则指纹相同，不同则指纹不同", async () => {
   await accepted("登录页");
   const one = await draftPrototypes(ref, requirementId);
   expect((await draftPrototypes(ref, requirementId)).digest).toBe(one.digest);
-  await promoteOnApproval(ref, { requirementId, digest: one.digest });
+  promote(ref, { requirementId, digest: one.digest });
   expect((await draftPrototypes(ref, requirementId)).digest).toBe(one.digest);
   await accepted("登录页", HTML2);
   expect((await draftPrototypes(ref, requirementId)).digest).not.toBe(one.digest);
@@ -383,7 +387,7 @@ test("还有原型在途时批准提升被拒且草稿不变", async () => {
   await accepted("登录页");
   const { digest } = await draftPrototypes(ref, requirementId);
   await begin("设置页");
-  await failure(() => promoteOnApproval(ref, { requirementId, digest }));
+  await failure(() => promote(ref, { requirementId, digest }));
   expect((await entryOf("登录页"))?.draft).not.toBeNull();
   expect((await entryOf("登录页"))?.approved ?? null).toBeNull();
 });
@@ -392,19 +396,19 @@ test("有原型等确认时批准提升也被拒", async () => {
   await accepted("登录页");
   const { digest } = await draftPrototypes(ref, requirementId);
   await designed("设置页");
-  await failure(() => promoteOnApproval(ref, { requirementId, digest }));
+  await failure(() => promote(ref, { requirementId, digest }));
 });
 
 test("指纹与当前草稿不一致时批准提升被拒", async () => {
   await accepted("登录页");
-  await failure(() => promoteOnApproval(ref, { requirementId, digest: "0".repeat(64) }));
+  await failure(() => promote(ref, { requirementId, digest: "0".repeat(64) }));
   expect((await entryOf("登录页"))?.approved ?? null).toBeNull();
 });
 
 test("批准提升后批准集合更新、草稿清空", async () => {
   const pending = await accepted("登录页");
   const { digest } = await draftPrototypes(ref, requirementId);
-  await promoteOnApproval(ref, { requirementId, digest });
+  promote(ref, { requirementId, digest });
   const entry = await entryOf("登录页");
   expect(entry?.approved).toMatchObject({ version: 1, hash: pending.hash });
   expect(entry?.draft).toBeNull();
@@ -413,10 +417,10 @@ test("批准提升后批准集合更新、草稿清空", async () => {
 
 test("批准提升会带走移除：被移除的原型不再在批准集合里", async () => {
   await accepted("登录页");
-  await promoteOnApproval(ref, { requirementId, digest: (await draftPrototypes(ref, requirementId)).digest });
+  promote(ref, { requirementId, digest: (await draftPrototypes(ref, requirementId)).digest });
   await accepted("设置页");
   await removeFromDraft(ref, { requirementId, name: "登录页" });
-  await promoteOnApproval(ref, { requirementId, digest: (await draftPrototypes(ref, requirementId)).digest });
+  promote(ref, { requirementId, digest: (await draftPrototypes(ref, requirementId)).digest });
   const removed = await entryOf("登录页"), kept = await entryOf("设置页");
   expect(removed).toMatchObject({ approved: null, draft: null, removed: false, lastVersion: 1 });
   expect(kept?.approved?.version).toBe(1);

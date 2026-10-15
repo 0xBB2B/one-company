@@ -310,7 +310,3 @@ export function promoteOnApprovalIn(db: LocalDatabase, input: { requirementId: s
     return set;
   });
 }
-
-export async function promoteOnApproval(ref: Ref, input: { requirementId: string; digest: string }): Promise<{ items: DraftItem[]; digest: string }> {
-  return withDatabase(databaseOf(ref), (db) => db.transaction(() => promoteOnApprovalIn(db, input)));
-}
