@@ -128,20 +128,24 @@ test("不同名称的原型可以同时在途", async () => {
   expect((await inFlightSummary(ref, requirementId)).map((entry) => entry.name).sort()).toEqual(["登录页", "设置页"]);
 });
 
-test("需求不存在时派出被拒", async () => {
-  await failure(() => begin("登录页", uuidv7(), uuidv7()));
+test("需求不存在时派出被拒，原因写明先建需求", async () => {
+  const error = await failure(() => begin("登录页", uuidv7(), uuidv7()));
+  expect(error.advice.why).toContain("需求不存在");
+  expect(error.advice.next).toContain("先建需求");
 });
 
-test("需求已完成时派出被拒", async () => {
-  const closed = uuidv7();
-  putRequirement(closed, { lifecycle: "closed" });
-  await failure(() => begin("登录页", uuidv7(), closed));
+test("需求已完成或正在完成时派出被拒，原因写明需求当前的状态", async () => {
+  for (const [lifecycle, state] of [["closed", "已完成"], ["closing", "正在完成"]] as const) {
+    const id = uuidv7();
+    putRequirement(id, { lifecycle });
+    expect((await failure(() => begin("登录页", uuidv7(), id))).advice.why).toContain(`需求${state}`);
+  }
 });
 
-test("需求处于待恢复状态时派出被拒", async () => {
+test("需求处于待恢复状态时派出被拒，原因写明正在等用户恢复核对", async () => {
   const stuck = uuidv7();
   putRequirement(stuck, { recovery: "needs_review", recoveryReason: "history_unknown" });
-  await failure(() => begin("登录页", uuidv7(), stuck));
+  expect((await failure(() => begin("登录页", uuidv7(), stuck))).advice.why).toContain("需求正在等用户恢复核对");
 });
 
 test("需求进行中时可以派出", async () => {
