@@ -47,7 +47,7 @@ const operationSchema = object({
   receiptId: nullable(id),
   manifest: Type.Optional(ApprovalManifestReferenceSchema),
   docSpec: Type.Optional(RequirementDocSpecSchema),
-  prototypes: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })),
+  prototypes: Type.Optional(hash),
   archivePath: Type.String({ minLength: 1, maxLength: 1024 }),
   repositoryRoot: Type.String({ minLength: 1, maxLength: 4096 }),
   expectedRepositoryIdentity: nullable(identity),

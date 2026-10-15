@@ -478,9 +478,9 @@ export class RunManager {
       const workerEntry = review ? (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
         .find((entry) => entry.name === workerName && entry.available && entry.definition?.role === "worker") : undefined;
       const workerDefinition = { name: workerName, body: workerEntry?.definition?.body ?? "" };
-      const promptRevision = role === "qa"
-        ? withDatabase(this.database, (db) => activeCheckRoundIn(db, this.repoId, task.requirementId))!.data.baseline.revision
-        : record.revision;
+      const checkRound = role === "qa" ? withDatabase(this.database, (db) => activeCheckRoundIn(db, this.repoId, task.requirementId)) : null;
+      if (role === "qa" && !checkRound) throw protocolError("check_round_closed", "派 QA 时检查轮已关闭或不存在", "重新开检查轮后再派 QA");
+      const promptRevision = checkRound ? checkRound.data.baseline.revision : record.revision;
       const prototypeItems = await prototypesAtRevision(ref, task.requirementId, promptRevision);
       const pathOf = (item: { name: string; version: number }) => prototypeFilePath(ref, { requirementId: task.requirementId, name: item.name, version: item.version });
       const prototypePaths = prototypeItems.map(pathOf);
@@ -496,8 +496,10 @@ export class RunManager {
       registered = true;
       tools?.dispose();
       fail();
-      const why = `子代理会话创建失败：${(error as Error).message}`;
+      const closed = (error as { code?: string }).code === "check_round_closed";
+      const why = closed ? (error as Error).message : `子代理会话创建失败：${(error as Error).message}`;
       await this.runStore.update(run.id, { state: "failed", stateReason: why });
+      if (closed) throw error;
       throw protocolError("subagent_session_failed", why, "按原因处理后重新派工；原因涉及模型、技能或定义配置时交用户处理");
     }
     const toolSet = tools;
@@ -1539,11 +1541,11 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       || typeof params.thinking !== "string") throw protocolError("invalid_params", "派出 PM 参数无效");
     return manager.dispatchPm({ requirementId: params.requirementId, model: { provider: model.provider, id: model.id }, thinking: params.thinking });
   });
-  const refuseMainExplore = (params: Record<string, unknown>, client: ClientInfo) => {
+  const refuseMainSessionControl = (params: Record<string, unknown>, client: ClientInfo) => {
     if (manager.mainPrototypeStatus(params.runId as string, client.connectionId)) throw protocolError("invalid_params", "主窗口派出的原型设计不能暂停或续接", "用 status 查看进度，用 stop 停止");
     if (manager.mainExploreStatus(params.runId as string, client.connectionId)) throw protocolError("invalid_params", "主窗口派出的检索不能暂停或续接", "用 status 查看进度，用 stop 停止；结果到达后以卡片插入本会话");
   };
-  register("runs.resume", async (params, client) => { refuseMainExplore(params, client); return manager.resume(params.runId as string); });
+  register("runs.resume", async (params, client) => { refuseMainSessionControl(params, client); return manager.resume(params.runId as string); });
   register("pm.message", async (params) => {
     if (typeof params.requirementId !== "string" || !UUID_V7_PATTERN.test(params.requirementId) || typeof params.text !== "string")
       throw protocolError("invalid_params", "给 PM 的消息参数无效");
@@ -1568,7 +1570,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     if (!result.ok) throw protocolError("not_found", "运行不存在");
     return { run: result.run };
   });
-  register("runs.pause", async (params, client) => { refuseMainExplore(params, client); return manager.pause(params.runId as string); });
+  register("runs.pause", async (params, client) => { refuseMainSessionControl(params, client); return manager.pause(params.runId as string); });
   register("runs.stop", async (params, client) => await manager.stopMainExplore(params.runId as string, client.connectionId) ?? await manager.stopMainPrototype(params.runId as string, client.connectionId) ?? manager.stop(params.runId as string, { reason: "main_agent" }));
   register("shells.list", async () => ({ tasks: shellRegistry.list().map(shellMetadata) }));
   register("shells.stop", async (params) => {

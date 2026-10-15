@@ -51,6 +51,7 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
       const resize = task.sizeHold !== undefined && unsentTask(task);
       return [...head, `任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`, ...(resize ? [`拆分上限：${task.sizeHold!.join("；")}`] : []), ...held, ...attempts,
         resize ? "可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 prod）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
+          : task.holdNote !== undefined && unsentTask(task) ? "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（PM 直接修改任务，不需要改 prod）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
           : "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（经 prod 修改与批准后生效）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。",
         windowLine(itemId, item.version, resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry),
         `用户在窗口里选中或自己写后，以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 登记。`].join("\n");

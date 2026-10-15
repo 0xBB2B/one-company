@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
+import { Value } from "typebox/value";
 import { approvalDependencyClosure } from "./approval-manifest.ts";
 import type { ApprovalManifest } from "./approval-manifest.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
@@ -250,6 +251,14 @@ export function holdResumes(ref: HoldRef | null, current: { plan: PlanRecord; ta
   const task = current?.tasks.find((candidate) => candidate.taskId === ref.taskId);
   if (!task || task.version !== ref.version || !current!.plan.confirmedTasks.some((entry) => entry.taskId === ref.taskId && entry.version === ref.version)) return false;
   return task.status === (ref.kind === "review" ? "reviewing" : "running");
+}
+
+function otherShapeErrors(input: unknown): string[] {
+  const action = (input as { action?: unknown } | null)?.action;
+  const branch = PLAN_MANAGE_PARAMETERS.anyOf.find((candidate) => candidate.properties.action.const === action) ?? PLAN_MANAGE_PARAMETERS;
+  return [...Value.Errors(branch, input)]
+    .filter((issue) => !issue.instancePath.endsWith("/ui") && !(issue.keyword === "additionalProperties" && JSON.stringify(issue.params.additionalProperties) === '["ui"]'))
+    .map((issue) => `${issue.instancePath} ${issue.message}`);
 }
 
 function hasUiMark(input: unknown): boolean {
@@ -546,7 +555,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
   async function execute(input: unknown) {
     let params: PlanManageParameters;
     try { params = checkServiceInput(PLAN_MANAGE_PARAMETERS, input); } catch (error) {
-      throw new PlanManageError("invalid_shape", [hasUiMark(input) ? "任务里的 ui 字段无效：界面标记已不存在，原型在主窗口澄清阶段做" : (error as Error).message]);
+      if (!hasUiMark(input)) throw new PlanManageError("invalid_shape", [(error as Error).message]);
+      throw new PlanManageError("invalid_shape", ["任务里的 ui 字段无效：界面标记已不存在，原型在主窗口澄清阶段做", ...otherShapeErrors(input)]);
     }
     host(params.action);
     if (params.action === "read") return read();

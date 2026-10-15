@@ -176,7 +176,6 @@ export function closeDecisionProblem(ref: Ref, input: { requirementId: string; r
 /** 取出尚未告知 PM 的用户决定并标记已告知；只含固定文字与用户返工意见，不含正文。 */
 export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string[] {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => {
-    const plan = readPlanIn(db, requirementId);
     const messages: string[] = [];
     for (const row of reportsIn(db, ref.repoId, requirementId)) {
       if (row.data.status !== "rework" || row.data.notified) continue;

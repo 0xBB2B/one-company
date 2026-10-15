@@ -291,6 +291,19 @@ test("PM 对还没派出的 pending 任务 escalate：任务待用户裁决，�
   expect(notice).not.toContain("等用户批准新的 prod 版本后");
 });
 
+test("PM 上报还没派出的任务时，决策说明里选项 2 写明 PM 直接修改任务、不需要改 prod，固定的窗口选项文字不变", async () => {
+  const w = await pendingWorld();
+  const failure = w.task("failure").taskId;
+  await w.escalate(failure, "设置页没有用户通过的原型，不能派");
+  const packet = w.manager.decisionPacket(w.fixture.requirementId, `task:${failure}`);
+  expect(packet).toContain("PM 直接修改任务，不需要改 prod");
+  expect(packet).not.toContain("经 prod 修改与批准后生效");
+  const main = mainAdjudication(w, cleanups);
+  const version = `task:${failure}:${w.db((db) => db.read<TaskRecord>(TASKS, failure)!.version)}`;
+  await expect(main.adjudicate("改选项文字", [main.entry([`item:task:${failure}`, `version:${version}`, "choice:adjust"], { conclusion: "用户对任务 failure 的裁决", scope: "任务 failure" })],
+    `task:${failure}`, version)).resolves.toMatchObject({ status: "recorded", choice: "adjust" });
+});
+
 async function userAdjudicates(w: Awaited<ReturnType<typeof pendingWorld>>, key: string, references: string[]) {
   const itemId = `task:${w.task(key).taskId}`;
   const main = mainAdjudication(w, cleanups);

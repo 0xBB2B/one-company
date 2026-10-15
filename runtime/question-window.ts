@@ -1,4 +1,5 @@
-import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { KeybindingsManager, TUI } from "@earendil-works/pi-tui";
 import { decodeKittyPrintable, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export type LineTone = "normal" | "muted" | "added" | "removed";
@@ -233,7 +234,7 @@ export interface ProgramWindowHost {
   hasUI?: boolean;
   ui?: { custom?: unknown };
 }
-type WindowFactory<T> = (tui: any, theme: any, keybindings: any, done: (value: T | undefined) => void) => unknown;
+type WindowFactory<T> = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (value: T | undefined) => void) => unknown;
 const QUEUE = Symbol.for("one-company.program-window-queue");
 
 /** 所有程序窗口共用一个先进先出队列，同一时间只显示一个；队列挂在 globalThis 上，模块被加载多份时也只有一份。 */
