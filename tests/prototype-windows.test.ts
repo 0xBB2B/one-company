@@ -269,7 +269,7 @@ test("remove 动作弹出移除窗口；选移除后调用 remove 并记一条�
   expect(view.render(80)).toEqual(REMOVE_FRAME("第 2 版需求里批准过"));
   view.handleInput("\r");
   await done;
-  expect(h.called("prototypes.remove")).toEqual([{ requirementId: REQ, name: "旧外观弹窗" }]);
+  expect(h.called("prototypes.remove")).toEqual([{ requirementId: REQ, name: "旧外观弹窗", version: 1 }]);
   expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「旧外观弹窗」从草稿移除，批准第 3 版后生效。" });
 });
 

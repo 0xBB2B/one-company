@@ -79,7 +79,7 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "prototypes.board": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10" },
   "prototypes.pending": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页" },
   "prototypes.decide": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", version: 1, hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", choice: "accept", opinion: null },
-  "prototypes.remove": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页" },
+  "prototypes.remove": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", version: 1 },
   "prototypes.removal": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页" },
   "pm.packet": { requirementId: "req-1", itemId: "task:x" },
   "pm.message": { requirementId: "req-1", text: "先做登录" },

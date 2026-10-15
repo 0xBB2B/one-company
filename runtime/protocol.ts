@@ -124,7 +124,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   "prototypes.decide": Type.Object({ requirementId: id, name: Type.String(), version: positive, hash,
     choice: Type.Union([Type.Literal("accept"), Type.Literal("rework"), Type.Literal("abandon")]),
     opinion: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]) }, { additionalProperties: false }),
-  "prototypes.remove": Type.Object({ requirementId: id, name: Type.String() }, { additionalProperties: false }),
+  "prototypes.remove": Type.Object({ requirementId: id, name: Type.String(), version: positive }, { additionalProperties: false }),
   "prototypes.removal": Type.Object({ requirementId: id, name: Type.String() }, { additionalProperties: false }),
   "pm.packet": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),
   "pm.message": Type.Object({ requirementId: Type.String(), text: Type.String({ minLength: 1, maxLength: PM_MESSAGE_MAX_CHARS }) }, { additionalProperties: false }),

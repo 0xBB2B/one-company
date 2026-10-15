@@ -17,6 +17,20 @@ let dataRoot: string;
 let ref: { dataRoot: string; repoId: string };
 let requirementId: string;
 
+type CloseReason = "completed" | "cancelled" | "rejected";
+function closedState(lifecycle: "closing" | "closed", reason: CloseReason): Partial<RequirementRecord> {
+  return { lifecycle, close: { operationId: uuidv7(), reason, receiptId: uuidv7() } };
+}
+
+const CLOSED_STATES: Array<[Partial<RequirementRecord>, string]> = [
+  [closedState("closed", "completed"), "需求已完成"],
+  [closedState("closing", "completed"), "需求正在完成"],
+  [closedState("closed", "cancelled"), "需求已取消"],
+  [closedState("closing", "cancelled"), "需求正在取消"],
+  [closedState("closed", "rejected"), "需求已驳回"],
+  [closedState("closing", "rejected"), "需求正在驳回"],
+];
+
 function putRequirement(id: string, patch: Partial<RequirementRecord> = {}): void {
   const data: RequirementRecord = {
     format: "requirement-lifecycle/v1", requirementId: id, repoId: ref.repoId, requestId: uuidv7(), intentHash: HASH,
@@ -134,11 +148,11 @@ test("需求不存在时派出被拒，原因写明先建需求", async () => {
   expect(error.advice.next).toContain("先建需求");
 });
 
-test("需求已完成或正在完成时派出被拒，原因写明需求当前的状态", async () => {
-  for (const [lifecycle, state] of [["closed", "已完成"], ["closing", "正在完成"]] as const) {
+test("需求已关闭或正在关闭时派出被拒，原因写明需求当前的状态", async () => {
+  for (const [patch, state] of CLOSED_STATES) {
     const id = uuidv7();
-    putRequirement(id, { lifecycle });
-    expect((await failure(() => begin("登录页", uuidv7(), id))).advice.why).toContain(`需求${state}`);
+    putRequirement(id, patch);
+    expect((await failure(() => begin("登录页", uuidv7(), id))).advice.why).toContain(state);
   }
 });
 
@@ -310,18 +324,18 @@ test("放弃后版本号仍然只增不减", async () => {
 });
 
 test("移除只对草稿里有的原型", async () => {
-  await failure(() => removeFromDraft(ref, { requirementId, name: "登录页" }));
+  await failure(() => removeFromDraft(ref, { requirementId, name: "登录页", version: 1 }));
 });
 
 test("移除后草稿里不再有这个原型", async () => {
   await accepted("登录页");
-  await removeFromDraft(ref, { requirementId, name: "登录页" });
+  await removeFromDraft(ref, { requirementId, name: "登录页", version: 1 });
   expect((await draftPrototypes(ref, requirementId)).items.filter((item) => item.label !== "removed")).toEqual([]);
 });
 
 test("通过后移除再派得到版本 2，版本 1 的文件仍在且内容不变", async () => {
   await accepted("登录页");
-  await removeFromDraft(ref, { requirementId, name: "登录页" });
+  await removeFromDraft(ref, { requirementId, name: "登录页", version: 1 });
   const next = await begin("登录页");
   expect(next.version).toBe(2);
   const first = prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 });
@@ -370,7 +384,7 @@ test("草稿集合：已移除的批准版本带 removed 标签且不参与指�
   promote(ref, { requirementId, digest: only.digest });
   await accepted("设置页");
   const both = await draftPrototypes(ref, requirementId);
-  await removeFromDraft(ref, { requirementId, name: "登录页" });
+  await removeFromDraft(ref, { requirementId, name: "登录页", version: 1 });
   const after = await draftPrototypes(ref, requirementId);
   expect(after.items.find((item) => item.name === "登录页")?.label).toBe("removed");
   expect(after.items.find((item) => item.name === "设置页")?.label).toBe("new");
@@ -423,7 +437,7 @@ test("批准提升会带走移除：被移除的原型不再在批准集合里",
   await accepted("登录页");
   promote(ref, { requirementId, digest: (await draftPrototypes(ref, requirementId)).digest });
   await accepted("设置页");
-  await removeFromDraft(ref, { requirementId, name: "登录页" });
+  await removeFromDraft(ref, { requirementId, name: "登录页", version: 1 });
   promote(ref, { requirementId, digest: (await draftPrototypes(ref, requirementId)).digest });
   const removed = await entryOf("登录页"), kept = await entryOf("设置页");
   expect(removed).toMatchObject({ approved: null, draft: null, removed: false, lastVersion: 1 });
@@ -436,7 +450,7 @@ test("v1 通过后 v2 返工，再移除，下次派出时返工意见已清掉"
   const { version } = await designed("登录页", HTML2);
   const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
   await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "rework", opinion: "改大" });
-  await removeFromDraft(ref, { requirementId, name: "登录页" });
+  await removeFromDraft(ref, { requirementId, name: "登录页", version: 1 });
   expect((await entryOf("登录页"))?.lastRework ?? null).toBeNull();
   expect((await begin("登录页")).previous?.opinion ?? null).toBeNull();
 });
@@ -565,4 +579,143 @@ test("清理残留写进结束记录的原因里含重启", async () => {
   await begin("登录页");
   await clearStaleDesigns(ref);
   expect((await entryOf("登录页"))?.lastEnded?.reason).toContain("重启");
+});
+
+function patchRequirement(id: string, patch: Partial<RequirementRecord>): void {
+  withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
+    const row = db.read("requirements", id)!;
+    db.update("requirements", id, row.version, { ...(row.data as RequirementRecord), ...patch });
+  });
+}
+
+const UNEDITABLE: Array<[Partial<RequirementRecord>, string]> = [
+  ...CLOSED_STATES,
+  [{ recovery: "needs_review", recoveryReason: "history_unknown" }, "需求正在等用户恢复核对"],
+];
+
+test("需求已关闭、正在关闭或待恢复时设计师交稿被拒，原因写明需求状态，看板仍是设计中", async () => {
+  for (const [patch, state] of UNEDITABLE) {
+    const id = uuidv7(), runId = uuidv7();
+    putRequirement(id);
+    await begin("登录页", runId, id);
+    patchRequirement(id, patch);
+    const error = await failure(() => submitDesign(ref, { requirementId: id, name: "登录页", runId, html: HTML, note: "n" }));
+    expect(error.advice.why).toContain(state);
+    expect(await inFlightSummary(ref, id)).toEqual([{ name: "登录页", version: 1, status: "designing" }]);
+  }
+});
+
+test("需求已关闭、正在关闭或待恢复时打开确认窗口被拒，原因写明需求状态，看板仍是等确认", async () => {
+  for (const [patch, state] of UNEDITABLE) {
+    const id = uuidv7(), runId = uuidv7();
+    putRequirement(id);
+    await begin("登录页", runId, id);
+    await submitDesign(ref, { requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
+    patchRequirement(id, patch);
+    const error = await failure(() => pendingConfirmation(ref, { requirementId: id, name: "登录页" }));
+    expect(error.advice.why).toContain(state);
+    expect(await inFlightSummary(ref, id)).toEqual([{ name: "登录页", version: 1, status: "awaiting" }]);
+  }
+});
+
+test("需求已关闭、正在关闭或待恢复时登记通过、返工、放弃都被拒，原因写明需求状态，看板不变", async () => {
+  for (const [patch, state] of UNEDITABLE) {
+    for (const choice of ["accept", "rework", "abandon"] as const) {
+      const id = uuidv7(), runId = uuidv7();
+      putRequirement(id);
+      await begin("登录页", runId, id);
+      await submitDesign(ref, { requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
+      const { hash } = await pendingConfirmation(ref, { requirementId: id, name: "登录页" });
+      patchRequirement(id, patch);
+      const before = await readPrototypeBoard(ref, id);
+      const error = await failure(() => decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice, opinion: choice === "rework" ? "再改" : null }));
+      expect(error.advice.why).toContain(state);
+      expect(await readPrototypeBoard(ref, id)).toEqual(before);
+    }
+  }
+});
+
+test("需求已关闭、正在关闭或待恢复时移除被拒，原因写明需求状态，草稿不变", async () => {
+  for (const [patch, state] of UNEDITABLE) {
+    const id = uuidv7(), runId = uuidv7();
+    putRequirement(id);
+    await begin("登录页", runId, id);
+    await submitDesign(ref, { requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
+    const { hash } = await pendingConfirmation(ref, { requirementId: id, name: "登录页" });
+    await decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice: "accept", opinion: null });
+    patchRequirement(id, patch);
+    const before = await readPrototypeBoard(ref, id);
+    const error = await failure(() => removeFromDraft(ref, { requirementId: id, name: "登录页", version: 1 }));
+    expect(error.advice.why).toContain(state);
+    expect(await readPrototypeBoard(ref, id)).toEqual(before);
+  }
+});
+
+test("需求已取消且文件已被改过时登记决定先因需求状态被拒，这一版不作废，仍是等确认", async () => {
+  const id = uuidv7(), runId = uuidv7();
+  putRequirement(id);
+  await begin("登录页", runId, id);
+  await submitDesign(ref, { requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
+  const { hash } = await pendingConfirmation(ref, { requirementId: id, name: "登录页" });
+  writeFileSync(prototypeFilePath(ref, { requirementId: id, name: "登录页", version: 1 }), `${HTML} `);
+  patchRequirement(id, closedState("closed", "cancelled"));
+  const error = await failure(() => decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice: "accept", opinion: null }));
+  expect(error.advice.why).toContain("需求已取消");
+  expect(error.advice.why).not.toContain("被改过");
+  expect(await inFlightSummary(ref, id)).toEqual([{ name: "登录页", version: 1, status: "awaiting" }]);
+});
+
+test("移除时请求带的版本和草稿里的版本不一致被拒，提示重新打开窗口，草稿不变", async () => {
+  await accepted("登录页");
+  await accepted("登录页", HTML2);
+  const before = await readPrototypeBoard(ref, requirementId);
+  const error = await failure(() => removeFromDraft(ref, { requirementId, name: "登录页", version: 1 }));
+  expect(`${error.advice.why}${error.advice.next}`).toContain("重新打开");
+  expect(await readPrototypeBoard(ref, requirementId)).toEqual(before);
+  expect((await entryOf("登录页"))?.draft?.version).toBe(2);
+});
+
+test("移除时这份原型已不在草稿里被拒，提示重新打开窗口，草稿不变", async () => {
+  await accepted("登录页");
+  await removeFromDraft(ref, { requirementId, name: "登录页", version: 1 });
+  const before = await readPrototypeBoard(ref, requirementId);
+  const error = await failure(() => removeFromDraft(ref, { requirementId, name: "登录页", version: 1 }));
+  expect(`${error.advice.why}${error.advice.next}`).toContain("重新打开");
+  expect(await readPrototypeBoard(ref, requirementId)).toEqual(before);
+});
+
+test("移除时版本一致照常移除", async () => {
+  await accepted("登录页");
+  await accepted("登录页", HTML2);
+  await removeFromDraft(ref, { requirementId, name: "登录页", version: 2 });
+  expect((await draftPrototypes(ref, requirementId)).items.filter((item) => item.label !== "removed")).toEqual([]);
+});
+
+test("批准提升时有原型设计中，原因逐个写出名称和设计师还在做，不说原型变了", async () => {
+  await accepted("登录页");
+  const { digest } = await draftPrototypes(ref, requirementId);
+  await begin("设置页");
+  const error = await failure(() => promote(ref, { requirementId, digest }));
+  expect(error.advice.why).toContain("设置页");
+  expect(error.advice.why).toContain("设计师还在做");
+  expect(`${error.advice.why}${error.advice.next}`).not.toContain("在批准过程中变了");
+  expect(error.advice.next).toMatch(/通过|返工|放弃/);
+});
+
+test("批准提升时有原型等确认，原因逐个写出名称和第几版还在等你确认", async () => {
+  await accepted("登录页");
+  const { digest } = await draftPrototypes(ref, requirementId);
+  await designed("设置页");
+  const error = await failure(() => promote(ref, { requirementId, digest }));
+  expect(error.advice.why).toContain("设置页");
+  expect(error.advice.why).toContain("第 1 版还在等你确认");
+  expect(`${error.advice.why}${error.advice.next}`).not.toContain("在批准过程中变了");
+});
+
+test("看板已有 50 份原型时再派新名称被拒，建议只写复用已有名称，不提移除", async () => {
+  for (let index = 0; index < 50; index += 1) await begin(`p${index}`);
+  const error = await failure(() => begin("p50"));
+  const text = `${error.advice.why}${error.advice.next}`;
+  expect(text).toContain("已有名称");
+  expect(text).not.toContain("移除");
 });

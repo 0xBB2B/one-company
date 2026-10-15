@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import {
-  allRevisionPrototypes, prototypeChangeLines, prototypeChanges, prototypesAtRevision, writePrototypeRevision,
+  prototypeChangeLines, prototypeChanges, prototypesAtRevision, writePrototypeRevision,
 } from "../runtime/requirement-prototype-revisions.ts";
 
 const REPO = "a".repeat(64);
@@ -83,17 +83,4 @@ test("只有一类变化时只写那一类", () => {
 
 test("没有任何变化时变化说明是空字符串", () => {
   expect(prototypeChangeLines({ added: [], replaced: [], removed: [] })).toBe("");
-});
-
-test("所有版本快照引用过的原型版本合并去重后列出", async () => {
-  await write(1, [file("设置页", 1), file("命令行输出", 1)]);
-  await write(2, [file("设置页", 1), file("命令行输出", 2)]);
-  await write(1, [file("别的需求的页", 9)], uuidv7());
-  const all = await allRevisionPrototypes(ref, requirementId);
-  expect(all.map((item) => `${item.name}:${item.version}`).sort()).toEqual(["命令行输出:1", "命令行输出:2", "设置页:1"]);
-  expect(all.every((item) => item.hash.length === 64 && item.bytes > 0)).toBe(true);
-});
-
-test("没有任何快照时合并列表为空", async () => {
-  expect(await allRevisionPrototypes(ref, requirementId)).toEqual([]);
 });

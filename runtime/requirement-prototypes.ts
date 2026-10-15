@@ -54,9 +54,22 @@ const assertNotApproving = (db: LocalDatabase, requirementId: string): void => {
   if (approving) deny("approving", "需求正在批准，原型暂时不能改动", "稍后再试");
 };
 
+const assertRequirementEditable = (db: LocalDatabase, requirementId: string): void => {
+  const requirement = db.read<RequirementRecord>("requirements", requirementId)?.data;
+  if (!requirement) deny("requirement_unavailable", "需求不存在", "先建需求草稿，再用它的编号派原型设计师");
+  else if (requirement.lifecycle === "closing" || requirement.lifecycle === "closed") {
+    const verb = { completed: "完成", cancelled: "取消", rejected: "驳回" }[requirement.close?.reason ?? "completed"];
+    deny("requirement_unavailable", `需求${requirement.lifecycle === "closed" ? "已" : "正在"}${verb}，不能再做原型`, "界面还要改就先建一个新需求，再派原型设计师");
+  } else if (requirement.recovery !== "ready") deny("requirement_unavailable", "需求正在等用户恢复核对，不能再做原型", "请用户先处理恢复核对，再派原型设计师");
+};
+
 type Ref = { dataRoot: string; repoId: string };
 const sha256 = (content: string | Buffer) => createHash("sha256").update(content).digest("hex");
 const databaseOf = (ref: Ref) => repositoryDatabase(ref.dataRoot, ref.repoId);
+
+export async function assertRequirementOpenForPrototypes(ref: Ref, requirementId: string): Promise<void> {
+  withDatabase(databaseOf(ref), (db) => assertRequirementEditable(db, requirementId));
+}
 
 export function prototypeFilePath(ref: Ref, input: { requirementId: string; name: string; version: number }): string {
   return join(dirname(databaseOf(ref)), "prototypes", input.requirementId, `${input.name}.v${input.version}.html`);
@@ -109,11 +122,7 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
   return withDatabase(databaseOf(ref), (db) => {
     return mutate(db, input.requirementId, (board) => {
       assertNotApproving(db, input.requirementId);
-      const requirement = db.read<RequirementRecord>("requirements", input.requirementId)?.data;
-      if (!requirement) deny("requirement_unavailable", "需求不存在", "先建需求草稿，再用它的编号派原型设计师");
-      else if (requirement.lifecycle === "closing" || requirement.lifecycle === "closed") {
-        deny("requirement_unavailable", `需求${requirement.lifecycle === "closed" ? "已完成" : "正在完成"}，不能再做原型`, "界面还要改就先建一个新需求，再派原型设计师");
-      } else if (requirement.recovery !== "ready") deny("requirement_unavailable", "需求正在等用户恢复核对，不能再做原型", "请用户先处理恢复核对，再派原型设计师");
+      assertRequirementEditable(db, input.requirementId);
       let entry = entryNamed(board, input.name);
       if (entry?.inFlight) {
         deny("in_flight", entry.inFlight.status === "designing" ? `原型「${input.name}」还在做` : `原型「${input.name}」还在等确认`,
@@ -122,7 +131,7 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
       if (!entry) {
         const sameLooking = board.entries.find((other) => foldName(other.name) === foldName(input.name));
         if (sameLooking) deny("name_conflict", `已有原型「${sameLooking.name}」，名称只差大小写或写法`, "请用已有名称或换个名字");
-        if (board.entries.length >= MAX_ENTRIES) deny("too_many_prototypes", `一个需求最多 ${MAX_ENTRIES} 份原型`, "复用已有名称，或先移除不用的原型");
+        if (board.entries.length >= MAX_ENTRIES) deny("too_many_prototypes", `一个需求最多 ${MAX_ENTRIES} 份原型`, "复用已有名称");
         entry = { name: input.name, lastVersion: 0, draft: null, approved: null, removed: false, inFlight: null, lastRework: null, lastEnded: null };
         board.entries.push(entry);
       }
@@ -145,6 +154,7 @@ export async function submitDesign(ref: Ref, input: { requirementId: string; nam
   if (!HTML_START.test(input.html)) deny("not_html", "交稿内容不是 HTML 页面", "交一份以 <!doctype html> 或 <html> 开头的完整页面");
   if (input.note.length > NOTE_MAX_LENGTH) deny("note_too_long", `交稿说明超过 ${NOTE_MAX_LENGTH} 字`, "缩短说明后重交");
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (board) => {
+    assertRequirementEditable(db, input.requirementId);
     const { inFlight } = requireInFlight(board, input.name, "designing");
     if (inFlight.runId !== input.runId) deny("run_mismatch", "这次运行不是这份原型当前的设计运行", "只有被派出的设计运行才能交稿");
     const path = prototypeFilePath(ref, { requirementId: input.requirementId, name: input.name, version: inFlight.version });
@@ -216,6 +226,7 @@ async function verifiedFile(ref: Ref, requirementId: string, name: string, file:
 
 export async function pendingConfirmation(ref: Ref, input: { requirementId: string; name: string }):
   Promise<{ name: string; version: number; hash: string; bytes: number; note: string; path: string; previousOpinion: string | null }> {
+  withDatabase(databaseOf(ref), (db) => assertRequirementEditable(db, input.requirementId));
   const board = await readPrototypeBoard(ref, input.requirementId);
   const { entry, inFlight } = requireInFlight(board, input.name, "awaiting");
   const file = inFlight.file!;
@@ -224,7 +235,7 @@ export async function pendingConfirmation(ref: Ref, input: { requirementId: stri
 }
 
 export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "rework" | "abandon"; opinion: string | null }): Promise<void> {
-  withDatabase(databaseOf(ref), (db) => assertNotApproving(db, input.requirementId));
+  withDatabase(databaseOf(ref), (db) => { assertNotApproving(db, input.requirementId); assertRequirementEditable(db, input.requirementId); });
   const opinion = input.opinion?.trim() ?? "";
   if (input.choice === "rework") {
     if (!opinion) deny("opinion_required", "返工须写明要改什么", "输入修改意见后再提交");
@@ -241,6 +252,7 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
   await verifiedFile(ref, input.requirementId, input.name, matched(board).inFlight.file!);
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (current) => {
     assertNotApproving(db, input.requirementId);
+    assertRequirementEditable(db, input.requirementId);
     const { entry, inFlight } = matched(current);
     if (input.choice === "accept") { entry.draft = inFlight.file; entry.removed = false; }
     entry.lastRework = input.choice === "rework" ? { version: inFlight.version, opinion } : null;
@@ -250,11 +262,13 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
 
 const inDraftSet = (entry: PrototypeEntry) => !entry.removed && (entry.draft ?? entry.approved);
 
-export async function removeFromDraft(ref: Ref, input: { requirementId: string; name: string }): Promise<void> {
+export async function removeFromDraft(ref: Ref, input: { requirementId: string; name: string; version: number }): Promise<void> {
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (board) => {
     assertNotApproving(db, input.requirementId);
+    assertRequirementEditable(db, input.requirementId);
     const entry = entryNamed(board, input.name);
-    if (!entry || !inDraftSet(entry)) deny("not_in_draft", "这份原型不在当前草稿集合里，无法移除", "只能移除草稿集合里已有的原型");
+    if (!entry || !inDraftSet(entry)) deny("not_in_draft", "这份原型不在当前草稿集合里，无法移除", "只能移除草稿集合里已有的原型，窗口显示的内容可能已过期，请重新打开移除窗口");
+    if ((entry!.draft ?? entry!.approved)!.version !== input.version) deny("item_changed", "窗口显示的版本已不是草稿里的那一版", "请重新打开移除窗口");
     entry!.draft = null;
     entry!.removed = true;
     entry!.lastRework = null;
@@ -288,6 +302,18 @@ export async function draftPrototypes(ref: Ref, requirementId: string): Promise<
   return draftSet(await readPrototypeBoard(ref, requirementId));
 }
 
+export async function verifyDraftFiles(ref: Ref, requirementId: string): Promise<void> {
+  const { items } = await draftPrototypes(ref, requirementId);
+  const changed: string[] = [];
+  for (const item of items) {
+    if (item.label === "removed") continue;
+    const content = await readFile(prototypeFilePath(ref, { requirementId, name: item.name, version: item.version }))
+      .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+    if (!content || sha256(content) !== item.hash) changed.push(`原型「${item.name}」第 ${item.version} 版的文件和通过时不一样或已不存在`);
+  }
+  if (changed.length) deny("file_changed", changed.join("；"), "重新派原型设计师出新版，或把它从草稿移除后再批准");
+}
+
 export function assertApprovableIn(db: LocalDatabase, requirementId: string, digest: string | undefined): void {
   const board = readBoardIn(db, requirementId)?.data;
   if (!board?.entries.length) return;
@@ -299,7 +325,8 @@ export function assertApprovableIn(db: LocalDatabase, requirementId: string, dig
 
 export function promoteOnApprovalIn(db: LocalDatabase, input: { requirementId: string; digest: string }): { items: DraftItem[]; digest: string } {
   return apply(db, input.requirementId, (board) => {
-    if (board.entries.some((entry) => entry.inFlight)) deny("in_flight", "还有原型在做或在等确认，不能批准", "等这些原型处理完再批准");
+    const blocked = inFlightBlock(board.entries.flatMap((entry) => entry.inFlight ? [{ name: entry.name, version: entry.inFlight.version, status: entry.inFlight.status }] : []));
+    if (blocked) throw blocked;
     const set = draftSet(board);
     if (set.digest !== input.digest) deny("digest_changed", "草稿里的原型与批准窗口显示时不一致", "重新打开批准窗口确认当前原型");
     for (const entry of board.entries) {

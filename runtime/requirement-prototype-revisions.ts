@@ -55,14 +55,3 @@ export function prototypeChangeLines(changes: PrototypeChanges): string {
   ];
   return parts.length ? `原型变化：${parts.join("；")}` : "";
 }
-
-export async function allRevisionPrototypes(ref: Ref, requirementId: string): Promise<RevisionPrototype[]> {
-  return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => {
-    const unique = new Map<string, RevisionPrototype>();
-    for (const row of db.list<PrototypeRevision>(REVISIONS)) {
-      if (row.data.requirementId !== requirementId) continue;
-      for (const item of row.data.prototypes) unique.set(`${item.name}:${item.version}`, item);
-    }
-    return [...unique.values()];
-  });
-}

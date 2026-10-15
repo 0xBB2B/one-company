@@ -47,7 +47,7 @@ import { endExploreSession, registerExploreSession } from "../runtime/explore-se
 import { approvedPrototypeListLines, prototypeContext, requirementPrototypeLines } from "../runtime/prototype-dispatch.ts";
 import type { MainPrototypeOverview, PrototypeDispatchInput } from "../runtime/prototype-dispatch.ts";
 import { prototypesAtRevision } from "../runtime/requirement-prototype-revisions.ts";
-import { PrototypeBoardError, prototypeFilePath, beginDesign, clearStaleDesigns, decidePrototype, endDesign, pendingConfirmation, readPrototypeBoard, removeFromDraft } from "../runtime/requirement-prototypes.ts";
+import { PrototypeBoardError, assertRequirementOpenForPrototypes, prototypeFilePath, beginDesign, clearStaleDesigns, decidePrototype, endDesign, pendingConfirmation, readPrototypeBoard, removeFromDraft } from "../runtime/requirement-prototypes.ts";
 import { createResultSubmitTool, PROTOTYPE_SUBMIT_PARAMETERS, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
 import { AdvisedError, adviceOf, failureText, toolFailure } from "../runtime/tool-failure.ts";
@@ -725,6 +725,11 @@ export class RunManager {
         completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true; result?.dispose();
+      const unavailable = await assertRequirementOpenForPrototypes(ref, request.requirementId).then(() => undefined, (denied: unknown) => denied);
+      if (unavailable instanceof PrototypeBoardError) {
+        await endDesign(ref, { runId, reason: unavailable.advice.why }).catch(() => {});
+        throw unavailable;
+      }
       const why = `原型设计会话创建失败：${(error as Error).message}`;
       await endDesign(ref, { runId, reason: why }).catch(() => {});
       throw protocolError("subagent_session_failed", why, "按原因处理后重派；原因涉及模型或联网配置时交用户处理");
@@ -732,6 +737,13 @@ export class RunManager {
     const tool = result;
     this.mainPrototypes.set(runId, { handle, sessionId: parent.sessionId, connectionId: parent.connectionId, requirementId: request.requirementId, name: request.name,
       version, agent, maxTurns: request.maxTurns, startedAt: Date.now(), submitted: false, dispose: () => tool.dispose() });
+    const unavailable = await assertRequirementOpenForPrototypes(ref, request.requirementId).then(() => undefined, (denied: unknown) => denied);
+    if (unavailable) {
+      registered = true;
+      const why = unavailable instanceof PrototypeBoardError ? unavailable.advice.why : `读不到需求状态：${(unavailable as Error).message}`;
+      await this.stopPrototype(runId, this.mainPrototypes.get(runId)!, why);
+      throw unavailable;
+    }
     if (!this.liveConnections.has(parent.connectionId)) {
       registered = true;
       await this.abandonMainPrototypes({ connectionId: parent.connectionId });
@@ -789,10 +801,13 @@ export class RunManager {
   async stopMainPrototype(runId: string, connectionId: string | undefined): Promise<{ state: string; confirmed: boolean } | null> {
     const main = this.mainPrototypes.get(runId);
     if (!main || main.connectionId !== connectionId) return null;
+    return this.stopPrototype(runId, main, "主代理停止了设计");
+  }
+
+  private async stopPrototype(runId: string, main: MainPrototype, reason: string): Promise<{ state: string; confirmed: boolean }> {
     this.mainPrototypes.delete(runId);
     main.dispose();
     if (!main.submitted) {
-      const reason = "主代理停止了设计";
       const cleared = await endDesign({ dataRoot: this.options.dataRoot, repoId: this.repoId }, { runId, reason }).then(() => reason, (error: Error) => `${reason}；看板没清成：${error.message}`);
       this.emit("prototype.finished", { parentSessionId: main.sessionId, requirementId: main.requirementId, name: main.name, version: main.version, runId, log: this.runLog(runId), reason: cleared });
     }
@@ -836,7 +851,7 @@ export class RunManager {
 
   prototypeDecide(input: Parameters<typeof decidePrototype>[1]) { return decidePrototype({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input); }
 
-  prototypeRemove(input: { requirementId: string; name: string }) { return removeFromDraft({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input); }
+  prototypeRemove(input: { requirementId: string; name: string; version: number }) { return removeFromDraft({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input); }
 
   async prototypeRemoval(input: { requirementId: string; name: string }) {
     const board = await readPrototypeBoard({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId);
@@ -1008,6 +1023,13 @@ export class RunManager {
   async stopRequirement(requirementId: string, cause: StopCause): Promise<void> {
     const page = await this.runStore.list({ requirement: requirementId, limit: Number.MAX_SAFE_INTEGER });
     for (const run of page.items) if (!isTerminalState(run.state)) await this.stop(run.id, cause);
+    if (cause.reason === "requirement_closing") await this.stopRequirementPrototypes(requirementId, "需求已关闭，设计师已停止");
+  }
+
+  private async stopRequirementPrototypes(requirementId: string, reason: string): Promise<void> {
+    for (const [runId, main] of [...this.mainPrototypes]) {
+      if (main.requirementId === requirementId && this.mainPrototypes.get(runId) === main) await this.stopPrototype(runId, main, reason);
+    }
   }
   /** 只续接本进程内仍持有会话的暂停运行；没有会话不能证明原运行可安全续接。 */
   async resume(runId: string, options: { children?: boolean } = {}): Promise<{ state: string }> {
@@ -1509,7 +1531,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   });
   register("prototypes.pending", async (params) => await manager.prototypePending(params as { requirementId: string; name: string }) as unknown as Record<string, unknown>);
   register("prototypes.decide", async (params) => { await manager.prototypeDecide(params as Parameters<typeof decidePrototype>[1]); return {}; });
-  register("prototypes.remove", async (params) => { await manager.prototypeRemove(params as { requirementId: string; name: string }); return {}; });
+  register("prototypes.remove", async (params) => { await manager.prototypeRemove(params as { requirementId: string; name: string; version: number }); return {}; });
   register("prototypes.removal", async (params) => await manager.prototypeRemoval(params as { requirementId: string; name: string }) as unknown as Record<string, unknown>);
   register("agents.dispatchPm", async (params) => {
     const model = params.model as { provider?: unknown; id?: unknown } | undefined;

@@ -36,7 +36,7 @@ import { requirementSummary, saveRequirementSummary } from "./requirement-summar
 import { askWindow, confirmWindow, mutedLines } from "./question-window.ts";
 import type { WindowLine } from "./question-window.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { draftPrototypes, inFlightBlock, inFlightSummary, PrototypeBoardError } from "./requirement-prototypes.ts";
+import { draftPrototypes, inFlightBlock, inFlightSummary, PrototypeBoardError, verifyDraftFiles } from "./requirement-prototypes.ts";
 import type { DraftItem } from "./requirement-prototypes.ts";
 import { prototypeChangeLines, prototypeChanges, prototypesAtRevision } from "./requirement-prototype-revisions.ts";
 import { fixedChoiceIssue, PanelItemAskError, panelItemTarget } from "./panel-item-ask.ts";
@@ -585,6 +585,7 @@ export class MainRequirementInteraction {
     const inFlight = await inFlightSummary(prototypeRef, request.requirementId);
     const blocked = inFlightBlock(inFlight);
     if (blocked) throw blocked;
+    await verifyDraftFiles(prototypeRef, request.requirementId);
     const draft = await draftPrototypes(prototypeRef, request.requirementId);
     const mentioned = this.#inputTargets.some((target) => target.repoId === request.repoId && target.requirementId === request.requirementId);
     // 决定对象只认用户这句话里 @ 到的需求；得不出时由用户在程序窗口里亲手确认，不认模型填写的需求编号
@@ -646,10 +647,11 @@ export class MainRequirementInteraction {
     const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "confirmUpdate" &&
       r.operationId === request.operationId && r.version === loaded.version && r.intentHash === loaded.candidate.intentHash &&
       r.receiptId === receiptId && (r.epoch === undefined || r.epoch === loaded.epoch) && same(r.manifest, reference), authorizeManifest);
+    await verifyDraftFiles(prototypeRef, request.requirementId);
     const receipt = await service.confirmUpdate({ requirementId: request.requirementId, operationId: request.operationId, version: loaded.version,
       title: loaded.title, body: loaded.body, receiptId, manifest: reference, docSpec, prototypes: draft.digest })
       .catch((error: unknown) => {
-        if (error instanceof PrototypeBoardError && (error.code === "in_flight" || error.code === "digest_changed")) throw new HostAuthorizationError("prototype_changed");
+        if (error instanceof PrototypeBoardError && error.code === "digest_changed") throw new HostAuthorizationError("prototype_changed");
         throw error;
       });
     // 这些只是该次决定的元数据，不是可转交worker的能力；激活不启动PM。

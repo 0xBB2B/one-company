@@ -683,7 +683,7 @@ test("批准操作没完成期间，原型看板锁住：登记通过、返工�
     expect(text).toContain("稍后再试");
   };
   await locked(() => beginDesign(boardRef(w), { requirementId: id, name: "命令行输出", runId: uuidv7(), agent: "designer" }));
-  await locked(() => removeFromDraft(boardRef(w), { requirementId: id, name: "设置页" }));
+  await locked(() => removeFromDraft(boardRef(w), { requirementId: id, name: "设置页", version: 1 }));
   await locked(() => decidePrototype(boardRef(w), { requirementId: id, name: "设置页", version: 1, hash: "a".repeat(64), choice: "accept", opinion: null }));
   expect(await readPrototypeBoard(boardRef(w), id)).toEqual(before);
 
