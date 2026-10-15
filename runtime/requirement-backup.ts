@@ -8,6 +8,7 @@ import { createDatabaseSnapshot, databaseMaintenanceDirectory, withDatabaseMaint
 import { checkRequirement } from "./requirement-contracts.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE, RequirementWriteCoordinator } from "./requirement-coordination.ts";
 import { verifyVersion } from "./prod-storage.ts";
+import { checkPrototypeName } from "./requirement-prototypes.ts";
 import { sealOperationLog, validOperationLog } from "./operation-log.ts";
 
 const FORMAT = "requirement-backup/v1" as const;
@@ -319,6 +320,33 @@ function requirementFiles(repoDirectory: string, requirements: RequirementBackup
   for (const id of expected) if (!actual.some((entry) => entry.name === id)) fail("requirement_repository_missing");
   return scanTree(root, "requirements");
 }
+function prototypeFiles(repoDirectory: string, requirements: RequirementBackupRequirement[]): FilePlan[] {
+  const db = new DatabaseSync(join(repoDirectory, "data.db"), { readOnly: true, allowExtension: false });
+  const items = new Map<string, { requirementId: string; name: string; version: number; hash: string; bytes: number }>();
+  try {
+    db.exec("PRAGMA busy_timeout=5000;");
+    const known = new Set(requirements.map((requirement) => requirement.requirementId));
+    for (const row of db.prepare("SELECT data FROM records WHERE namespace='requirement_prototype_revisions' ORDER BY record_key").all()) {
+      let data: { requirementId: string; prototypes: Array<{ name: string; version: number; hash: string; bytes: number }> };
+      try { data = JSON.parse(String(row.data)); } catch { fail("invalid_prototype_revision"); }
+      if (!known.has(data.requirementId)) continue;
+      for (const item of data.prototypes) items.set(`${data.requirementId}/${item.name}.v${item.version}`, { requirementId: data.requirementId, ...item });
+    }
+  } finally { db.close(); }
+  return [...items.values()].sort((a, b) => `${a.requirementId}/${a.name}.v${a.version}`.localeCompare(`${b.requirementId}/${b.name}.v${b.version}`)).map((item) => {
+    const label = `${item.name}第 ${item.version} 版`;
+    try { checkPrototypeName(item.name); } catch { fail(`prototype_invalid：原型 ${label} 的名称不能用作文件名`); }
+    const relativePath = `prototypes/${item.requirementId}/${item.name}.v${item.version}.html`;
+    const path = join(repoDirectory, ...relativePath.split("/"));
+    if (!pathExists(path)) fail(`prototype_missing：原型 ${label} 的文件不存在`);
+    const plan = scanFile(path, relativePath);
+    if (plan.hash !== item.hash || plan.size !== item.bytes) fail(`prototype_changed：原型 ${label} 的内容与批准时的指纹不一致`);
+    return plan;
+  });
+}
+function sourceFilePlans(repoDirectory: string, requirements: RequirementBackupRequirement[]): FilePlan[] {
+  return [...requirementFiles(repoDirectory, requirements), ...prototypeFiles(repoDirectory, requirements)];
+}
 function plansMetadata(plans: FilePlan[]): RequirementBackupFile[] {
   return plans.map(({ relativePath, size, hash }) => ({ relativePath, size, hash })).sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
@@ -445,7 +473,7 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
     }
     const state = inspectState(dataPath, options.repoId);
     await verifyReferences(options, repo.dataRoot, state.requirements, state.identities);
-    const sourceFiles = requirementFiles(repo.path, state.requirements);
+    const sourceFiles = sourceFilePlans(repo.path, state.requirements);
     const sourceFingerprint = sha256(JSON.stringify({ state: state.fingerprint, files: plansFingerprint(sourceFiles) }));
     if (log.sourceFingerprint !== undefined && log.sourceFingerprint !== sourceFingerprint) fail("source_changed");
     if (log.phase === "prepared") log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "inspected", sourceFingerprint });
@@ -474,7 +502,7 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
     const files = plansMetadata(allPlans);
     assertExactPayload(payloadTemporary, files);
     const afterState = inspectState(dataPath, options.repoId);
-    const afterFiles = requirementFiles(repo.path, afterState.requirements);
+    const afterFiles = sourceFilePlans(repo.path, afterState.requirements);
     const afterFingerprint = sha256(JSON.stringify({ state: afterState.fingerprint, files: plansFingerprint(afterFiles) }));
     if (afterFingerprint !== sourceFingerprint) fail("source_changed");
     await verifyReferences(options, repo.dataRoot, afterState.requirements, afterState.identities);
@@ -491,7 +519,7 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
       if (!readPrivateBytes(manifestPath, "manifest_invalid").equals(manifestBytes)) fail("manifest_conflict");
     } else { writeNewPrivate(manifestPath, manifestBytes); syncDirectory(operationDirectory); }
     const finalState = inspectState(dataPath, options.repoId);
-    const finalFiles = requirementFiles(repo.path, finalState.requirements);
+    const finalFiles = sourceFilePlans(repo.path, finalState.requirements);
     const finalFingerprint = sha256(JSON.stringify({ state: finalState.fingerprint, files: plansFingerprint(finalFiles) }));
     if (finalFingerprint !== sourceFingerprint) fail("source_changed");
     log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "completed", manifestHash });

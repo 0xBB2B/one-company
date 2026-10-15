@@ -8,10 +8,10 @@
 | 05 | main-window-prototype | done | 2026-10-15 |
 | 06 | approval-integration | done | 2026-10-15 |
 | 07 | downstream-context | done | 2026-10-15 |
-| 08 | backup | pending | — |
+| 08 | backup | done | 2026-10-15 |
 | 09 | archive | pending | — |
 | 10 | acceptance-scripts | pending | — |
 ## 当前
-准备执行 `08-backup.md`。07 实施中用户决定：PM 能对没派过的任务上报，接手说明与更新通知列出原型清单（2026-10-15）。
+准备执行 `09-archive.md`。
 ## 阻塞
 （无）
