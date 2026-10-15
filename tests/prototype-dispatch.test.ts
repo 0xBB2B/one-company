@@ -5,9 +5,13 @@ import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
 import { validateParams } from "../runtime/protocol.ts";
 import {
-  beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, promoteOnApproval, prototypeFilePath, readPrototypeBoard, submitDesign,
+  beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, promoteOnApprovalIn, prototypeFilePath, readPrototypeBoard, submitDesign,
 } from "../runtime/requirement-prototypes.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
+
+function promote(ref: { dataRoot: string; repoId: string }, input: { requirementId: string; digest: string }) {
+  return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => promoteOnApprovalIn(db, input)));
+}
 
 vi.setConfig({ testTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -391,7 +395,7 @@ test("prototypes.removal 已在需求里批准过的原型：approvedRevision �
   const version = await awaitingPrototype(w);
   await decideInput(w, "accept");
   const { digest } = await draftPrototypes(w.ref, w.fixture.requirementId);
-  await promoteOnApproval(w.ref, { requirementId: w.fixture.requirementId, digest });
+  promote(w.ref, { requirementId: w.fixture.requirementId, digest });
   const revision = w.fixture.state.read(w.fixture.requirementId).data.revision;
   const removal = await w.call("prototypes.removal", pendingInput(w));
   expect(removal).toMatchObject({ draftVersion: revision + 1, name: "登录页", version, approvedRevision: revision });
