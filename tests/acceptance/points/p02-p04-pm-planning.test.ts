@@ -40,7 +40,7 @@ async function plan(name: string, body: string, specialists: Array<{ name: strin
     startWhen: (request) => /主代理已核对通过你的接手理解/.test(messageText(request.messages.at(-1))) });
   await w.review(undefined, false);
   await pm.settled();
-  const planned = tasks().map((task) => ({ key: task.key, role: task.role, agent: task.agent ?? null, agentReason: task.agentReason ?? null, ui: task.ui ?? false }));
+  const planned = tasks().map((task) => ({ key: task.key, role: task.role, agent: task.agent ?? null, agentReason: task.agentReason ?? null }));
   await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ realTurns: pm.turns(), planned, calls: real.toolCalls().map((block) => ({ name: block.name, arguments: block.arguments })) }, null, 2)}\n`, { mode: 0o600 });
   return { planned, workers: planned.filter((task) => task.role === "worker"), turns: pm.turns() };
 }
@@ -57,7 +57,7 @@ test.skipIf(!config || process.platform !== "darwin")("P3：只装了不对口�
   expect(workers.every((task) => task.agent === null || task.agent === "worker"), JSON.stringify(planned)).toBe(true);
 }, 15 * 60_000);
 
-test.skipIf(!config || process.platform !== "darwin")("P4：登录页面需求，PM 把页面任务标为界面任务并选用界面专业 worker", async () => {
+test.skipIf(!config || process.platform !== "darwin")("P4：登录页面需求，PM 让页面任务选用界面专业 worker 并写明理由", async () => {
   const { planned } = await plan("p4", LOGIN_PAGE, [UI_WORKER]);
-  expect(planned.some((task) => task.ui && task.agent === "ui-worker"), JSON.stringify(planned)).toBe(true);
+  expect(planned.some((task) => task.role === "worker" && task.agent === "ui-worker" && Boolean(task.agentReason)), JSON.stringify(planned)).toBe(true);
 }, 15 * 60_000);

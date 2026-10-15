@@ -92,7 +92,7 @@ export async function copyCredentials(from: string, agentDir: string): Promise<v
 }
 
 /** "确认原型"窗口里表示通过的那一项。 */
-const PROTOTYPE_ACCEPT = "通过（按这一版开始实现）";
+const PROTOTYPE_ACCEPT = "通过（写进需求草稿）";
 
 export interface DialogRecord { kind: "confirm" | "select" | "input"; title: string; message?: string; options?: string[]; answer: unknown; at: number }
 

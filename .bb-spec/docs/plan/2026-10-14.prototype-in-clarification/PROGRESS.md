@@ -12,6 +12,6 @@
 | 09 | archive | done | 2026-10-15 |
 | 10 | acceptance-scripts | pending | — |
 ## 当前
-准备执行 `10-acceptance-scripts.md`（改写 P10、P4 与自动点窗口，再全量跑真实模型验收，模型 5x/gpt-6.1-sol）。
+10：脚本已改写，P10、P4 真实模型 2/2 通过；正在跑整批真实模型验收（P1–P12、M9-AC12、M9-AC2/AC3/AC11）。
 ## 阻塞
 （无）

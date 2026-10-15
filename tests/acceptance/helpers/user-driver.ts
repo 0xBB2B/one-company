@@ -135,8 +135,7 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
         if (instruction) { if (!instructed) return stop(`主代理没有为事项弹出问答窗口：${label}`); }
         else if (label.includes("待你验收")) { result = await say(script.accept); if (result) return result; }
         else if (label.includes("待你裁决") && script.adjudicate) { result = await say(script.adjudicate); if (result) return result; }
-        // 原型事项由宿主在确认窗口里直接选通过，用户不用说话
-        else if (!label.includes("接手") && !label.includes("待你确认原型")) return stop(`出现台词未覆盖的事项：${label}`);
+        else if (!label.includes("接手")) return stop(`出现台词未覆盖的事项：${label}`);
         continue;
       }
       // 待验收事项仍在、主代理已答完等用户（例如登记失败请用户再说一次），像真人一样再回一次验收
