@@ -369,7 +369,7 @@ test("prototypes.pending 在原型已从草稿移除后被拒，原因写明已�
   const w = await world();
   await awaitingPrototype(w);
   await decideInput(w, "accept");
-  await w.call("prototypes.remove", pendingInput(w));
+  await w.call("prototypes.remove", { ...pendingInput(w), version: 1 });
   await expect(w.call("prototypes.pending", pendingInput(w))).rejects.toMatchObject({ message: expect.stringContaining("移除") });
 });
 
@@ -405,7 +405,69 @@ test("prototypes.removal 对已移除的条目和不存在的名称都被拒并�
   const w = await world();
   await awaitingPrototype(w);
   await decideInput(w, "accept");
-  await w.call("prototypes.remove", pendingInput(w));
+  await w.call("prototypes.remove", { ...pendingInput(w), version: 1 });
   await expect(w.call("prototypes.removal", pendingInput(w))).rejects.toMatchObject({ message: expect.stringContaining("草稿里没有") });
   await expect(w.call("prototypes.removal", { requirementId: w.fixture.requirementId, name: "不存在" })).rejects.toMatchObject({ message: expect.stringContaining("草稿里没有") });
+});
+
+test("需求关闭时这个需求下还在运行的设计师被停止，这一版不再在途，结束原因写明需求已关闭", async () => {
+  const w = await world();
+  w.provider.queue.push(w.slow);
+  const { version } = await w.dispatch();
+  await w.started();
+  await w.manager.stopRequirement(w.fixture.requirementId, { reason: "requirement_closing" });
+  await until(async () => (await w.entry())?.inFlight === null);
+  expect((await w.entry())?.lastEnded).toMatchObject({ version, reason: expect.stringContaining("需求已关闭") });
+  await expect(w.call("prototypes.list", {})).resolves.toEqual({ items: [] });
+});
+
+test("需求的旧运行因新 PM 接管而结束时，还在运行的设计师继续运行，这一版仍在途", async () => {
+  const w = await world();
+  w.provider.queue.push(w.slow);
+  const { version } = await w.dispatch();
+  await w.started();
+  await w.manager.stopRequirement(w.fixture.requirementId, { reason: "superseded_by_new_pm" });
+  const entry = await w.entry();
+  expect(entry?.inFlight).toMatchObject({ version });
+  expect(entry?.lastEnded ?? null).toBeNull();
+});
+
+type DispatchWorld = Awaited<ReturnType<typeof world>>;
+function changeRequirementDuringDispatch(w: DispatchWorld, change: (record: Record<string, unknown>) => Record<string, unknown>) {
+  const original = (w.manager as unknown as { requirementTitle: (id: string) => Promise<string> }).requirementTitle.bind(w.manager);
+  vi.spyOn(w.manager as never, "requirementTitle").mockImplementationOnce((async (requirementId: string) => {
+    withDatabase(repositoryDatabase(w.ref.dataRoot, w.ref.repoId), (db) => {
+      const row = db.read<Record<string, unknown>>("requirements", requirementId)!;
+      db.update("requirements", requirementId, row.version, change(row.data));
+    });
+    return original(requirementId);
+  }) as never);
+}
+
+test("派出已被接受、会话还没建好时需求被取消：这一版不再在途，结束原因写需求已取消，派出被拒并建议先建新需求", async () => {
+  const w = await world();
+  w.provider.queue.push(w.slow);
+  changeRequirementDuringDispatch(w, (record) => ({ ...record, lifecycle: "closed",
+    close: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } }));
+  await expect(w.dispatch()).rejects.toMatchObject({ message: expect.stringContaining("需求已取消"),
+    advice: { next: expect.stringContaining("新需求") } });
+  const entry = await w.entry();
+  expect(entry?.inFlight).toBeNull();
+  expect(entry?.lastEnded?.reason).toContain("需求已取消");
+  await expect(w.call("prototypes.list", {})).resolves.toEqual({ items: [] });
+});
+
+test("派出已被接受、会话还没建好时需求进入等恢复核对：只停这一次派出的设计师，早已运行的另一个设计师不受影响，原因写等用户恢复核对并建议请用户先处理", async () => {
+  const w = await world();
+  w.provider.queue.push(w.slow, w.slow);
+  await w.dispatch({ name: "设置页" });
+  await w.started();
+  changeRequirementDuringDispatch(w, (record) => ({ ...record, recovery: "needs_review", recoveryReason: "archive_found" }));
+  await expect(w.dispatch({ name: "登录页" })).rejects.toMatchObject({ message: expect.stringContaining("需求正在等用户恢复核对"),
+    advice: { next: expect.stringContaining("恢复核对") } });
+  const stopped = await w.entry("登录页");
+  expect(stopped?.inFlight).toBeNull();
+  expect(stopped?.lastEnded?.reason).toContain("需求正在等用户恢复核对");
+  expect((await w.entry("设置页"))?.inFlight).toMatchObject({ version: 1 });
+  expect((await w.entry("设置页"))?.lastEnded ?? null).toBeNull();
 });

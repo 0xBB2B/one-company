@@ -102,7 +102,7 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     if (!ctx.hasUI) return "no_ui";
     const removal = await client.call("prototypes.removal", input) as unknown as PrototypeRemoval;
     if (await chooseWindow(ctx, removeWindowContent(removal), signal) !== REMOVE_LABEL) return "undecided";
-    await client.call("prototypes.remove", input);
+    await client.call("prototypes.remove", { ...input, version: removal.version });
     record({ kind: "remove", name: removal.name, draftVersion: removal.draftVersion });
     return "decided";
   }
