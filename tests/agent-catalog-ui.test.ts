@@ -281,6 +281,19 @@ test("按键提示放不下时按一组按键折行，一组不被拆开，放�
   }
 });
 
+test("36 到 38 列时选中任一角色栏，分类栏不超宽，选中的栏名和数量都在", async () => {
+  const roles = ["worker", "reviewer", "qa", "explore", "prototype"];
+  for (let width = 36; width <= 38; width++) {
+    for (const [index, role] of roles.entries()) {
+      const p = await page();
+      p.press(...Array<string>(index).fill(RIGHT));
+      const rows = p.lines(width).map(plain);
+      for (const row of rows) expect(visibleWidth(row), `${role} ${width}: ${row}`).toBeLessThanOrEqual(width);
+      expect(rows.find((row) => row.includes("│")), `${role} ${width}`).toMatch(new RegExp(` ${role} \\d+ `));
+    }
+  }
+});
+
 test("复制命名画面的红字错误放不下时折成多行，36 到 80 列每一行都不超宽，各行拼起来是完整的错误原文", async () => {
   const longName = "a".repeat(60);
   const cases: Array<{ error: string; type: string[] }> = [

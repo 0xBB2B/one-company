@@ -230,7 +230,7 @@ export class AgentCatalogView {
     if (leftWidth() + 2 + rightWidth > width) left = left.map((item) => item.tab === selected ? item : { tab: item.tab, text: ` ${item.tab} ` });
     while (leftWidth() + 2 + rightWidth > width) {
       const index = left.map((item) => item.tab).lastIndexOf(left.findLast((item) => item.tab !== selected && item.tab !== "…")?.tab ?? "");
-      if (index < 0) break;
+      if (index < 0) { left = left.filter((item) => item.tab !== "…"); break; }
       left.splice(index, 1);
       if (left.at(-1)?.tab !== "…") left.push({ tab: "…", text: " … " });
     }
