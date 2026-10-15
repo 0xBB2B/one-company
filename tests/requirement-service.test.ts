@@ -722,3 +722,17 @@ test("需求的 epoch 变化后，metadata 不再给出旧 epoch 的保存操作
   expect(meta.epoch).toBe(created.epoch + 1);
   expect(meta.savedOperationId).toBeNull();
 });
+
+test("归档目录里只有本需求的原型 html 时 read 照常成功；与正文并存时判为已有归档而不是身份冲突", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  const prod = join(w.repo.root, "docs", "prod");
+  await mkdir(prod, { recursive: true });
+  for (const name of ["设置页", "命令行输出"]) await writeFile(join(prod, `${created.requirementId}.${name}.html`), "<html></html>");
+  await expect(w.service.read({ requirementId: created.requirementId, source: "saved" })).resolves.toBeDefined();
+  expect(w.state.read(created.requirementId).data.recovery).toBe("ready");
+
+  await writeFile(join(prod, `${created.requirementId}.需求标题.md`), "正文");
+  await expect(w.service.read({ requirementId: created.requirementId, source: "saved" })).rejects.toMatchObject({ code: "recovery_required" });
+  expect(w.state.read(created.requirementId).data.recoveryReason).toBe("archive_found");
+});

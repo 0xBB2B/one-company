@@ -18,7 +18,7 @@ const ENABLE = "开启", DISABLE = "关闭";
 
 interface CloseStatus {
   status: string; reason?: string;
-  archive?: { path: string; archiveHash: string | null; status: string } | null;
+  archive?: DeliveryFacts["archive"];
   delivery?: { worktree: string; branch: string; codeHead: string } | null;
 }
 export interface GitDeliveryDeps { dataRoot: string; clients: () => WorkspaceClientsHandle }

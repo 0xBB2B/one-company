@@ -302,6 +302,32 @@ test("归档只登记完整UUID路径，正文不可读也能初始化；非法�
   } finally { store.close(); }
 });
 
+test("归档目录里的原型 html 不进归档登记，也不报归档名问题", async () => {
+  const w = await world();
+  const id = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
+  await put(w.repo.root, "src/main.ts", "export {}\n");
+  await put(w.repo.root, `docs/prod/${id}.完成A.md`, "ARCHIVE_BODY");
+  await put(w.repo.root, `docs/prod/${id}.设置页.html`, "<html>PROTOTYPE_SENTINEL</html>");
+  await put(w.repo.root, `docs/prod/${id}.命令行输出.html`, "<html>PROTOTYPE_SENTINEL</html>");
+  const index = await service(w);
+  const result = await index.init();
+  expect(result.archives.metadata.map((item) => item.fileName)).toEqual([`${id}.完成A.md`]);
+  expect(result.archives.issues).toEqual([]);
+  const refreshed = await index.refresh();
+  expect(refreshed.archives.issues).toEqual([]);
+  expect(refreshed.archives.metadata).toHaveLength(1);
+});
+
+test("归档目录里不以需求编号开头的 html 仍报归档名无效，以需求编号开头的原型 html 不报", async () => {
+  const w = await world();
+  const id = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
+  await put(w.repo.root, "src/main.ts", "export {}\n");
+  await put(w.repo.root, "docs/prod/notes.html", "<html></html>");
+  await put(w.repo.root, `docs/prod/${id}.设置页.html`, "<html></html>");
+  const result = await (await service(w)).init();
+  expect(result.archives.issues).toEqual([expect.objectContaining({ path: "docs/prod/notes.html", reason: "invalid_archive_name" })]);
+});
+
 test("取消把building落为cancelled，重新打开可用新fence恢复", async () => {
   const w = await world();
   await put(w.repo.root, "src/a-first.ts", "export function first() {}\n");

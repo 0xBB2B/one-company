@@ -338,6 +338,7 @@ function archiveSummary(entries: IndexArchiveMetadata[]): ProjectIndexArchiveSum
   const counts = new Map<string, number>();
   for (const entry of entries) {
     const fileName = basename(entry.path);
+    if (fileName.endsWith(".html") && UUID_V7_PATTERN.test(fileName.slice(0, 36)) && fileName[36] === ".") continue;
     const requirementId = fileName.slice(0, 36);
     const valid = fileName.length <= ARCHIVE_NAME_LIMIT
       && UUID_V7_PATTERN.test(requirementId)
