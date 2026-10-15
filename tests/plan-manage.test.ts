@@ -109,15 +109,36 @@ test("M7-AC31：任务缺目标、通过条件、范围、性能条件或有效�
   expect(w.db((db) => db.read(PLANS, w.fixture.requirementId))).toBeNull();
 }, 30000);
 
-test("任务带 ui 字段的计划被拒绝，原因写明界面标记已不存在；不带的计划被接受", async () => {
+const UI_ONLY_DETAIL = ["任务里的 ui 字段无效：界面标记已不存在，原型在主窗口澄清阶段做"];
+
+test("提出计划时任务带 ui 字段：说明列表只有 ui 这一条；不带的计划被接受", async () => {
   const w = await world();
   const pm = await w.tool();
-  await expect(pm.execute({ action: "propose", tasks: [spec("login", { ui: true } as Partial<TaskSpec>)] })).rejects.toMatchObject({ code: "invalid_shape", message: expect.stringContaining("界面标记已不存在") });
+  await expect(pm.execute({ action: "propose", tasks: [spec("login", { ui: true } as Partial<TaskSpec>)] })).rejects.toMatchObject({ code: "invalid_shape", detail: UI_ONLY_DETAIL });
   expect(w.db((db) => db.read(PLANS, w.fixture.requirementId))).toBeNull();
   await pm.execute({ action: "propose", tasks: [spec("login")] });
   expect(w.db((db) => db.read(PLANS, w.fixture.requirementId))).not.toBeNull();
+}, 30000);
+
+test("更新计划新增任务时带 ui 字段：说明列表只有 ui 这一条", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login")] });
   await expect(pm.execute({ action: "update", planVersion: 1, add: [spec("signup", { ui: true } as Partial<TaskSpec>)] }))
-    .rejects.toMatchObject({ code: "invalid_shape", message: expect.stringContaining("界面标记已不存在") });
+    .rejects.toMatchObject({ code: "invalid_shape", detail: UI_ONLY_DETAIL });
+}, 30000);
+
+test("任务的 ui 字段无效又同时有 maxTurns 错误时，说明列表正好两条：ui 一条，maxTurns 一条", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const bad = spec("login", { ui: true, maxTurns: 0 } as Partial<TaskSpec>);
+  const rejected = await pm.execute({ action: "propose", tasks: [bad] }).then(() => null, (error: Error & { detail?: string[] }) => error);
+  expect(rejected).toMatchObject({ code: "invalid_shape" });
+  const detail = (rejected as unknown as { detail: string[] }).detail;
+  expect(detail).toHaveLength(2);
+  expect(detail).toContain(UI_ONLY_DETAIL[0]);
+  expect(detail.filter((line) => line.includes("maxTurns"))).toHaveLength(1);
+  expect(w.db((db) => db.read(PLANS, w.fixture.requirementId))).toBeNull();
 }, 30000);
 
 test("M7-AC32：任务只能引用获准实施的需求章节，依赖须存在且无环", async () => {

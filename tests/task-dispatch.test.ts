@@ -45,6 +45,34 @@ test("没有开启的检查轮时派 QA 当场拒绝，并提示先开检查轮"
   expect(w.task("qa").attempts).toEqual([]);
 });
 
+test("派 QA 已被接受、会话还没建好时检查轮已不存在：派出被拒，原因写检查轮已关闭，不是程序内部报错", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"] }),
+    spec("qa", { role: "qa", writePaths: [], objective: "黑盒验收登录" })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const record = w.fixture.state.read(w.fixture.requirementId).data;
+  const database = repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId);
+  const roundId = uuidv7();
+  const round = { format: "check-round/v1", checkRoundId: roundId, requirementId: w.fixture.requirementId, repoId: w.fixture.repoId, workspaceId: record.workspace!.workspaceId,
+    branch: record.workspace!.branch, epoch: record.epoch, fence: w.lease.fence, runId: w.lease.runId,
+    baseline: { revision: 1, approved: record.approved!, codeHead: record.workspace!.baseCommit, inputHash: "d".repeat(64), inputCount: 0,
+      environment: { node: process.version, platform: process.platform, arch: process.arch } },
+    status: "open", invalidation: null, decision: null, verifications: [], active: [], createdAt: Date.now(), updatedAt: Date.now() };
+  withDatabase(database, (db) => db.create("check_rounds", roundId, round, roundId));
+  const originalCreate = w.runStore.create.bind(w.runStore);
+  vi.spyOn(w.runStore, "create").mockImplementationOnce((async (...args: Parameters<typeof originalCreate>) => {
+    withDatabase(database, (db) => { const row = db.read<typeof round>("check_rounds", roundId)!; db.update("check_rounds", roundId, row.version, { ...row.data, status: "released" }); });
+    return originalCreate(...args);
+  }) as never);
+  const failure = await w.dispatch("qa").then(() => null, (error: Error & { advice?: { next?: string } }) => error);
+  expect(failure).not.toBeNull();
+  expect(failure!.message).not.toContain("Cannot read properties");
+  expect(failure!.message).toContain("检查轮");
+  expect(failure!.message).toMatch(/已关闭|不存在/);
+  expect(failure!.advice?.next).toContain("检查轮");
+  expect(w.task("qa").attempts.map((attempt) => attempt.outcome)).toEqual(["failed"]);
+});
+
 test("worker 没提交结果就结束本轮时，本次尝试记为 incomplete 并上报 PM，由 PM 决定重试", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login", { maxTurns: 5 }), spec("failure", { goalUnitIds: ["scenario.failure"] })] });
