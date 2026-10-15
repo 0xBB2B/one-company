@@ -261,9 +261,9 @@ test("按键提示放不下时按一组按键折行，一组不被拆开，放�
   const screens: Array<{ hint: string; keys: string[]; open?: (p: Awaited<ReturnType<typeof page>>) => void }> = [
     { hint: "←→ 分类  ↑↓ 选择  回车 详情  C 复制  Esc 退出", keys: [] },
     { hint: "回车 收起  C 复制  Esc 收起", keys: [ENTER] },
-    { hint: "←→ 分类  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出", keys: [RIGHT, RIGHT, RIGHT, RIGHT] },
-    { hint: "←→ 分类  ↑↓ 选择  回车 详情  Esc 退出", keys: [RIGHT, RIGHT, RIGHT, RIGHT, RIGHT] },
-    { hint: "回车 收起  Esc 收起", keys: [RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, ENTER] },
+    { hint: "←→ 分类  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出", keys: [RIGHT, RIGHT, RIGHT, RIGHT, RIGHT] },
+    { hint: "←→ 分类  ↑↓ 选择  回车 详情  Esc 退出", keys: [RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT] },
+    { hint: "回车 收起  Esc 收起", keys: [RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, ENTER] },
     { hint: "回车 下一步  Esc 取消", keys: ["c"] },
   ];
   for (const { hint, keys } of screens) {

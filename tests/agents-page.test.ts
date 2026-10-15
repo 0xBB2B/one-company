@@ -113,7 +113,7 @@ type PageScreen = Parameters<Step>[0];
 test("复制时源定义文件已被删除：页面不退出，底部灰字写源文件已经不存在", async () => {
   await copyWith(() => rmSync(SOURCE()), (s) => {
     expect(s.text).toContain("复制没有完成：源文件已经不存在，重新打开本页再试");
-    expect(s.text).toContain("内置 4");
+    expect(s.text).toContain("内置 5");
   });
 });
 
