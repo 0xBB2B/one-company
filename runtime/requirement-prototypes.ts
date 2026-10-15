@@ -110,9 +110,10 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
     return mutate(db, input.requirementId, (board) => {
       assertNotApproving(db, input.requirementId);
       const requirement = db.read<RequirementRecord>("requirements", input.requirementId)?.data;
-      if (!requirement || requirement.lifecycle === "closing" || requirement.lifecycle === "closed" || requirement.recovery !== "ready") {
-        deny("requirement_unavailable", "需求不存在、已完成或正在等用户恢复核对，不能再做原型", "先处理需求状态，不要继续派原型设计");
-      }
+      if (!requirement) deny("requirement_unavailable", "需求不存在", "先建需求草稿，再用它的编号派原型设计师");
+      else if (requirement.lifecycle === "closing" || requirement.lifecycle === "closed") {
+        deny("requirement_unavailable", `需求${requirement.lifecycle === "closed" ? "已完成" : "正在完成"}，不能再做原型`, "界面还要改就先建一个新需求，再派原型设计师");
+      } else if (requirement.recovery !== "ready") deny("requirement_unavailable", "需求正在等用户恢复核对，不能再做原型", "请用户先处理恢复核对，再派原型设计师");
       let entry = entryNamed(board, input.name);
       if (entry?.inFlight) {
         deny("in_flight", entry.inFlight.status === "designing" ? `原型「${input.name}」还在做` : `原型「${input.name}」还在等确认`,
