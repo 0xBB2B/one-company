@@ -20,6 +20,8 @@ import { prodRequirementPath } from "../runtime/prod-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { sealOperationLog } from "../runtime/operation-log.ts";
+import { writePrototypeRevision } from "../runtime/requirement-prototype-revisions.ts";
+import { prototypeFilePath } from "../runtime/requirement-prototypes.ts";
 
 
 const exec = promisify(execFile);
@@ -381,4 +383,107 @@ test("归档只按完整UUID路径作线索，文件不可读仍可对账且读�
   } finally { await chmod(archivePath, 0o600); }
   expect(restore.requirements.find((item) => item.requirementId === w.activeId)).toMatchObject({ recoveryReason: "archive_found", archivePath, executable: false });
   expect(JSON.stringify(restore)).not.toContain("ARCHIVE-BODY-MUST-NOT-BE-READ");
+});
+
+async function worldWithPrototypes() {
+  const w = await populatedWorld();
+  const ref = { dataRoot: w.dataRoot, repoId: w.identity.repoId };
+  const files = [{ name: "设置页", version: 2, html: "<html>设置页第二版</html>" }, { name: "设置页", version: 3, html: "<html>设置页第三版，内容更长</html>" }];
+  const prototypes = [];
+  for (const file of files) {
+    const path = prototypeFilePath(ref, { requirementId: w.activeId, name: file.name, version: file.version });
+    await mkdir(join(path, ".."), { recursive: true, mode: 0o700 });
+    await writeFile(path, file.html, { mode: 0o600 });
+    prototypes.push({ name: file.name, version: file.version, hash: createHash("sha256").update(file.html).digest("hex"), bytes: Buffer.byteLength(file.html) });
+  }
+  withDatabase(repositoryDatabase(w.dataRoot, w.identity.repoId), (db) => {
+    writePrototypeRevision(db, { requirementId: w.activeId, revision: 1, prototypes: [prototypes[0]!] });
+    writePrototypeRevision(db, { requirementId: w.activeId, revision: 2, prototypes: [prototypes[1]!] });
+  });
+  const relative = (version: number) => `prototypes/${w.activeId}/设置页.v${version}.html`;
+  return { ...w, ref, files, prototypes, relative };
+}
+
+test("备份清单包含各批准版本引用的原型文件，记录路径、大小和指纹", async () => {
+  const w = await worldWithPrototypes();
+  const backup = await createRequirementBackup(backupOptions(w));
+  const manifest = JSON.parse(await readFile(backup.manifestPath, "utf8"));
+  for (const [index, file] of w.files.entries()) {
+    const entry = manifest.files.find((item: { relativePath: string }) => item.relativePath === w.relative(file.version));
+    expect(entry).toEqual({ relativePath: w.relative(file.version), size: w.prototypes[index]!.bytes, hash: w.prototypes[index]!.hash });
+  }
+});
+
+test("原型文件被改动一个字节后备份被拒，原因写明原型名称和版本", async () => {
+  const w = await worldWithPrototypes();
+  const path = prototypeFilePath(w.ref, { requirementId: w.activeId, name: "设置页", version: 2 });
+  await writeFile(path, w.files[0]!.html.replace("第二版", "第三版"), { mode: 0o600 });
+  await expect(createRequirementBackup(backupOptions(w))).rejects.toThrow(/设置页.*2/);
+});
+
+test("恢复到另一个数据目录后原型文件在原相对位置逐字节一致，并能按名称和版本读到", async () => {
+  const w = await worldWithPrototypes();
+  const backup = await createRequirementBackup(backupOptions(w));
+  const target = await isolation(w);
+  await restoreRequirementBackup(restoreOptions(w, backup, target));
+  const targetRef = { dataRoot: target.dataRoot, repoId: w.identity.repoId };
+  for (const file of w.files) {
+    const restored = prototypeFilePath(targetRef, { requirementId: w.activeId, name: file.name, version: file.version });
+    expect(restored).toBe(join(target.repoDirectory, w.relative(file.version)));
+    expect(await readFile(restored)).toEqual(await readFile(prototypeFilePath(w.ref, { requirementId: w.activeId, name: file.name, version: file.version })));
+  }
+}, 30_000);
+
+test("草稿里还没批准的原型文件不进备份，清单里的原型恰好是各批准版本引用的那几份", async () => {
+  const w = await worldWithPrototypes();
+  const draft = prototypeFilePath(w.ref, { requirementId: w.activeId, name: "命令行输出", version: 1 });
+  await writeFile(draft, "<html>命令行输出草稿</html>", { mode: 0o600 });
+  const backup = await createRequirementBackup(backupOptions(w));
+  const manifest = JSON.parse(await readFile(backup.manifestPath, "utf8"));
+  const prototypes = manifest.files.map((item: { relativePath: string }) => item.relativePath).filter((path: string) => path.startsWith("prototypes/"));
+  expect(prototypes.sort()).toEqual([w.relative(2), w.relative(3)].sort());
+});
+
+test("批准版本引用的原型文件不存在时备份被拒，原因写明原型名称和版本", async () => {
+  const w = await worldWithPrototypes();
+  await rm(prototypeFilePath(w.ref, { requirementId: w.activeId, name: "设置页", version: 2 }));
+  await expect(createRequirementBackup(backupOptions(w))).rejects.toThrow(/设置页.*2.*不存在/);
+});
+
+test("清单路径的先后顺序与本机语言环境的排序不同时照常恢复（备份和恢复时语言环境不同）", async () => {
+  const w = await worldWithPrototypes();
+  const backup = await createRequirementBackup(backupOptions(w));
+  const manifest = JSON.parse(await readFile(backup.manifestPath, "utf8"));
+  manifest.files.reverse();
+  const manifestBytes = Buffer.from(JSON.stringify(manifest));
+  await writeFile(backup.manifestPath, manifestBytes);
+  const manifestHash = createHash("sha256").update(manifestBytes).digest("hex");
+  const operationPath = join(backup.backupDirectory, requirementBackupFiles.operation);
+  const operation = JSON.parse(await readFile(operationPath, "utf8"));
+  await writeFile(operationPath, JSON.stringify(sealOperationLog({ ...operation, manifestHash })));
+  const target = await isolation(w);
+  await restoreRequirementBackup(restoreOptions(w, { ...backup, manifestHash }, target));
+  for (const file of w.files) expect(existsSync(join(target.repoDirectory, w.relative(file.version)))).toBe(true);
+}, 30_000);
+
+test.each([
+  ["prototypes/../x", "manifest_invalid"],
+  ["prototypes/<id>/子目录/设置页.v1.html", "manifest_path_not_allowed"],
+  ["prototypes/<id>/设置页.html", "manifest_path_not_allowed"],
+  ["notes/x", "manifest_path_not_allowed"],
+])("清单里出现需求仓库和原型路径以外的路径 %s 时恢复被拒", async (path, code) => {
+  const w = await worldWithPrototypes();
+  const backup = await createRequirementBackup(backupOptions(w));
+  const manifest = JSON.parse(await readFile(backup.manifestPath, "utf8"));
+  manifest.files.push({ relativePath: path.replace("<id>", w.activeId), size: 1, hash: "0".repeat(64) });
+  manifest.files.sort((a: { relativePath: string }, b: { relativePath: string }) => a.relativePath.localeCompare(b.relativePath));
+  const manifestBytes = Buffer.from(JSON.stringify(manifest));
+  await writeFile(backup.manifestPath, manifestBytes);
+  const manifestHash = createHash("sha256").update(manifestBytes).digest("hex");
+  const operationPath = join(backup.backupDirectory, requirementBackupFiles.operation);
+  const operation = JSON.parse(await readFile(operationPath, "utf8"));
+  await writeFile(operationPath, JSON.stringify(sealOperationLog({ ...operation, manifestHash })));
+  const target = await isolation(w);
+  await expect(restoreRequirementBackup(restoreOptions(w, { ...backup, manifestHash }, target))).rejects.toMatchObject({ code });
+  expect(existsSync(join(target.repoDirectory, "x"))).toBe(false);
 });

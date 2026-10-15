@@ -173,13 +173,13 @@ function validateManifest(value: unknown, options: RequirementRestoreOptions, re
   if (!manifest || typeof manifest !== "object" || !exactKeys(manifest, ["format", "operationId", "repoId", "registrationHash", "stateSource", "database", "requirements", "files"]) || manifest.format !== requirementBackupFiles.format || manifest.operationId !== options.backupOperationId || manifest.repoId !== options.repoId || manifest.registrationHash !== registrationHash || manifest.stateSource !== "data.db:requirements" || !validBackupFile(manifest.database) || manifest.database.relativePath !== "data.db" || !Array.isArray(manifest.requirements) || !manifest.requirements.every(validRequirement) || !Array.isArray(manifest.files) || !manifest.files.every(validBackupFile)) fail("manifest_invalid");
   const ids = manifest.requirements.map((item) => item.requirementId);
   const paths = manifest.files.map((item) => item.relativePath);
-  if (new Set(ids).size !== ids.length || new Set(paths).size !== paths.length || paths.slice().sort((a, b) => a.localeCompare(b)).some((path, index) => path !== paths[index])) fail("manifest_invalid");
+  if (new Set(ids).size !== ids.length || new Set(paths).size !== paths.length) fail("manifest_invalid");
   const database = manifest.files.find((file) => file.relativePath === "data.db");
   if (!database || database.hash !== manifest.database.hash || database.size !== manifest.database.size) fail("manifest_invalid");
   const known = new Set(ids);
   for (const file of manifest.files) {
     if (file.relativePath === "data.db") continue;
-    const match = /^requirements\/([0-9a-f-]{36})\/(prod\.md|\.git\/.+)$/.exec(file.relativePath);
+    const match = /^requirements\/([0-9a-f-]{36})\/(prod\.md|\.git\/.+)$/.exec(file.relativePath) ?? /^prototypes\/([0-9a-f-]{36})\/[^/]+\.v\d+\.html$/.exec(file.relativePath);
     if (!match || !UUID_V7_PATTERN.test(match[1]!) || !known.has(match[1]!)) fail("manifest_path_not_allowed");
   }
   for (const requirement of manifest.requirements.filter((item) => item.saved || item.approved)) {
@@ -230,17 +230,21 @@ function scanTree(root: string, prefix = ""): ScannedFile[] {
   if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) fail("backup_changed");
   return files;
 }
-function metadata(files: ScannedFile[]): RequirementBackupFile[] { return files.map(({ relativePath, size, hash }) => ({ relativePath, size, hash })).sort((a, b) => a.relativePath.localeCompare(b.relativePath)); }
+// 备份时按当时进程的语言环境排序，恢复时语言环境可能不同，所以两边都按码位重排后再比较
+const byPath = (a: RequirementBackupFile, b: RequirementBackupFile) => a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : 0;
+function metadata(files: RequirementBackupFile[]): RequirementBackupFile[] { return files.map(({ relativePath, size, hash }) => ({ relativePath, size, hash })).sort(byPath); }
 function assertPayload(payload: string, expected: RequirementBackupFile[]): Map<string, ScannedFile> {
   const scanned = scanTree(payload);
-  if (JSON.stringify(metadata(scanned)) !== JSON.stringify(expected)) fail("backup_payload_mismatch");
+  if (JSON.stringify(metadata(scanned)) !== JSON.stringify(metadata(expected))) fail("backup_payload_mismatch");
   return new Map(scanned.map((file) => [file.relativePath, file]));
 }
 function assertRestoredPayload(repoDirectory: string, manifest: RequirementBackupManifest): void {
-  const expected = manifest.files.filter((file) => file.relativePath.startsWith("requirements/"));
-  const directory = join(repoDirectory, "requirements");
-  const actual = pathExists(directory) ? metadata(scanTree(directory, "requirements")) : [];
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) fail("restore_target_conflict");
+  for (const family of ["requirements", "prototypes"]) {
+    const expected = manifest.files.filter((file) => file.relativePath.startsWith(`${family}/`));
+    const directory = join(repoDirectory, family);
+    const actual = pathExists(directory) ? metadata(scanTree(directory, family)) : [];
+    if (JSON.stringify(actual) !== JSON.stringify(metadata(expected))) fail("restore_target_conflict");
+  }
   const copiedDatabase = scanFile(join(repoDirectory, "backups", "requirement-restore-sources", manifest.operationId, "data.db"), "data.db");
   if (copiedDatabase.hash !== manifest.database.hash || copiedDatabase.size !== manifest.database.size) fail("restore_copy_mismatch");
 }
