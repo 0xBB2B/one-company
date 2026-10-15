@@ -1,5 +1,5 @@
 import { repositoryDatabase, withDatabase } from "./database.ts";
-import { readPlanIn } from "./plan-manage.ts";
+import { readPlanIn, unsentTask } from "./plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { checked } from "./requirement-contracts.ts";
@@ -40,6 +40,7 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
     if (item.kind === "adjudicate") {
       const task = tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;
       const verdicts = readVerdictsIn(db, ref.repoId, requirementId);
+      const held = task.holdNote !== undefined && unsentTask(task) ? [`PM 上报${MODEL_NOTE}：${quoted(task.holdNote, 1024)}`] : [];
       const attempts = task.attempts.flatMap((attempt, index) => {
         const verdict = verdicts.find((entry) => entry.runId === attempt.runId);
         return [`尝试 ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}`,
@@ -47,8 +48,8 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
           ...(attempt.escalation ? [`  PM 上报${MODEL_NOTE}：${quoted(attempt.escalation, 1024)}`] : []),
           ...(verdict ? [`  子代理自述${MODEL_NOTE}：${verdict.conclusion} · ${quoted(verdict.summary, 400)}`] : [])];
       });
-      const resize = task.sizeHold !== undefined && task.attempts.length === 0;
-      return [...head, `任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`, ...(resize ? [`拆分上限：${task.sizeHold!.join("；")}`] : []), ...attempts,
+      const resize = task.sizeHold !== undefined && unsentTask(task);
+      return [...head, `任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`, ...(resize ? [`拆分上限：${task.sizeHold!.join("；")}`] : []), ...held, ...attempts,
         resize ? "可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 prod）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
           : "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（经 prod 修改与批准后生效）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。",
         windowLine(itemId, item.version, resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry),

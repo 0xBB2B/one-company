@@ -2,6 +2,7 @@ import { repositoryDatabase, withDatabase } from "./database.ts";
 import { PmIntakeStore } from "./pm-intake-store.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
 import { RequirementEventService } from "./requirement-events.ts";
+import { approvedPrototypeListLines } from "./prototype-dispatch.ts";
 import { prototypeChangeLines, prototypeChanges, prototypesAtRevision } from "./requirement-prototype-revisions.ts";
 
 export interface PmEventDeliveryInput {
@@ -47,13 +48,14 @@ export async function deliverApprovedEvents(input: PmEventDeliveryInput): Promis
         continue;
       }
       const ref = { dataRoot: input.dataRoot, repoId: input.repoId };
-      const changeLines = prototypeChangeLines(prototypeChanges(
-        await prototypesAtRevision(ref, lease.requirementId, polled.fromRevision), await prototypesAtRevision(ref, lease.requirementId, polled.toRevision)));
+      const current = await prototypesAtRevision(ref, lease.requirementId, polled.toRevision);
+      const changeLines = prototypeChangeLines(prototypeChanges(await prototypesAtRevision(ref, lease.requirementId, polled.fromRevision), current));
       input.deliver([
         `已批准更新：revision ${polled.fromRevision} → ${polled.toRevision}。`,
         `先用 one_company_requirement_manage diff（fromRevision ${polled.fromRevision}，toRevision ${polled.toRevision}）读完全部分页，分析对规则、代码与各任务的影响；` +
         `再用 one_company_plan_manage assess-update（revision ${polled.toRevision}）逐任务复核，按需局部调整计划。上下文被压缩后差异丢了，可以再用 diff 查。`,
         ...(changeLines ? [changeLines] : []),
+        ...approvedPrototypeListLines(current),
       ].join("\n"));
       await service.acknowledgeEvent({ lease, eventId: polled.eventId, sequence: polled.sequence, toRevision: polled.toRevision,
         toCommit: polled.toCommit, toHash: polled.toHash });

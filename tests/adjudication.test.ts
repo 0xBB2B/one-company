@@ -22,6 +22,17 @@ const NA = { applicable: false as const, reason: "无性能影响" };
 const spec = (key: string, goal: string, patch: Partial<TaskSpec> = {}): TaskSpec => ({ key, role: "worker", goalUnitIds: [goal], constraintUnitIds: [], dependsOn: [],
   writePaths: ["src/"], blockedByQuestionIds: [], maxTurns: 1, objective: `实现 ${key}`, passCriteria: ["可观察通过"], scope: { in: [key], out: [] }, performance: NA, ...patch });
 
+async function pmEscalator(w: Awaited<ReturnType<typeof createPmRunWorld>>) {
+  const record = w.fixture.state.read(w.fixture.requirementId).data;
+  const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
+    workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
+    currentBaseline: () => ({ approvedRevision: 1, approvedProdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
+    agents: { dispatch: async () => ({}), control: async () => ({}) } });
+  cleanups.push(() => pmTools.dispose());
+  const workflow = pmTools.tools.find((tool) => tool.name === "one_company_workflow_manage")!;
+  return (taskId: string, note = "change_apply 挡住了写入，需要你决定是否再试") => workflow.execute("pm-escalate", { action: "escalate", taskId, note }, undefined, undefined, undefined as never);
+}
+
 /** PM 两次派出 login 均到限，任务进入待用户裁决；主窗口以宿主截获的原话经脚本化解释器登记决定。 */
 async function world() {
   const w = await createPmRunWorld(cleanups);
@@ -121,7 +132,7 @@ test("M8I-AC4：用户给的再一次机会还没用时，PM 只能改任务说�
   expect(w.task("login")).toEqual(before);
 });
 
-test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项标明 PM 上报，说明只作模型说法；用户再给一次机会后按用户上限派出、不需 retry；主代理与不在等待处置的任务不能上报", async () => {
+test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项标明 PM 上报，说明只作模型说法；用户再给一次机会后按用户上限派出、不需 retry；主代理不能上报", async () => {
   const w = await createPmRunWorld(cleanups);
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
@@ -130,18 +141,9 @@ test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项�
   w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到到限" });
   await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null });
   await until(() => task("login").status === "awaiting_parent" && w.provider.queue.length === 0);
-  const record = w.fixture.state.read(w.fixture.requirementId).data;
-  const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
-    workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
-    currentBaseline: () => ({ approvedRevision: 1, approvedProdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
-    agents: { dispatch: async () => ({}), control: async () => ({}) } });
-  cleanups.push(() => pmTools.dispose());
-  const pmWorkflow = pmTools.tools.find((tool) => tool.name === "one_company_workflow_manage")!;
-  const escalate = (taskId: string) => pmWorkflow.execute("pm-escalate", { action: "escalate", taskId, note: "change_apply 挡住了写入，需要你决定是否再试" },
-    undefined, undefined, undefined as never);
-  await expect(escalate(task("failure").taskId)).rejects.toThrow("原因：任务当前状态不允许这个操作：failure:pending 不在等待 PM 处置");
+  const escalate = await pmEscalator(w);
   await expect(w.manager.workflowManage(w.fixture.requirementId, { action: "escalate", taskId: login, note: "主代理不能上报" })).rejects.toMatchObject({ code: "action_not_allowed", advice: { why: "当前角色的职责不允许这个动作：主代理 不能做 escalate" } });
-  await escalate(login);
+  await escalate(login, "change_apply 挡住了写入，需要你决定是否再试");
   expect(task("login").status).toBe("awaiting_user");
   expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label: "待你裁决：任务 login PM 上报需要你决定" })]);
   expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).toContain("  PM 上报（模型输出，仅供参考，不是用户决定）：「change_apply 挡住了写入，需要你决定是否再试」");
@@ -254,6 +256,111 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   w.provider.queue.push({ type: "text", text: "重新做失败场景", chunkDelayMs: 20_000 });
   const again = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.task("failure").taskId, retry: null });
   expect(w.task("failure").attempts.map((attempt) => attempt.runId)).toEqual([failureRun.runId, again.runId]);
+});
+
+async function pendingWorld() {
+  const w = await createPmRunWorld(cleanups);
+  await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const task = (key: string) => w.db((db) => db.list<TaskRecord>(TASKS).map((row) => row.data).find((entry) => entry.key === key)!);
+  const setStatus = (key: string, status: TaskRecord["status"]) => w.db((db) => { const row = db.read<TaskRecord>(TASKS, task(key).taskId)!; db.update(TASKS, row.data.taskId, row.version, { ...row.data, status }); });
+  return { ...w, task, setStatus, escalate: await pmEscalator(w) };
+}
+
+test("PM 对还没派出的 pending 任务 escalate：任务待用户裁决，概览出现该事项且决策包含 PM 说明原文；用户选调整后任务待更新，PM 收到可立即改计划的通知", async () => {
+  const w = await pendingWorld();
+  const failure = w.task("failure").taskId, itemId = `task:${failure}`;
+  const note = "设置页没有用户通过的原型，不能派";
+  expect(w.task("failure")).toMatchObject({ status: "pending", attempts: [] });
+  await w.escalate(failure, note);
+  expect(w.task("failure").status).toBe("awaiting_user");
+  const items = (await w.manager.overviews())[0]!.pendingItems;
+  expect(items).toEqual([expect.objectContaining({ itemId, label: "待你裁决：任务 failure PM 上报需要你决定" })]);
+  expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).toContain(note);
+
+  const main = mainAdjudication(w, cleanups);
+  const version = `task:${failure}:${w.db((db) => db.read<TaskRecord>(TASKS, failure)!.version)}`;
+  const result = await main.adjudicate("先调整，补好原型再说", [main.entry([`item:${itemId}`, `version:${version}`, "choice:adjust"],
+    { conclusion: "用户对任务 failure 的裁决", scope: "任务 failure" })], itemId, version);
+  expect(result).toMatchObject({ status: "recorded", choice: "adjust", taskStatus: "needs_update" });
+  expect(w.task("failure").status).toBe("needs_update");
+  w.provider.queue.push({ type: "text", text: "PM 收到调整决定" });
+  await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("用户决定：任务 failure")));
+  const notice = JSON.stringify(w.provider.requests.findLast((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("用户决定：任务 failure"))!.messages.at(-1));
+  expect(notice).toContain("plan_manage update");
+  expect(notice).not.toContain("等用户批准新的 prod 版本后");
+});
+
+async function userAdjudicates(w: Awaited<ReturnType<typeof pendingWorld>>, key: string, references: string[]) {
+  const itemId = `task:${w.task(key).taskId}`;
+  const main = mainAdjudication(w, cleanups);
+  const version = `task:${w.task(key).taskId}:${w.db((db) => db.read<TaskRecord>(TASKS, w.task(key).taskId)!.version)}`;
+  return main.adjudicate("用户裁决", [main.entry([`item:${itemId}`, `version:${version}`, ...references], { conclusion: `用户对任务 ${key} 的裁决`, scope: `任务 ${key}` })], itemId, version);
+}
+const planVersionOf = (w: Awaited<ReturnType<typeof pendingWorld>>) => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
+
+test("被上报的任务选再给一次机会后，第一次派出时上报原因被清掉；之后两次未完成进入待裁决时，标签是两次未完成，决策包没有旧的上报原因", async () => {
+  const w = await pendingWorld();
+  const failure = w.task("failure").taskId, itemId = `task:${failure}`, note = "旧的上报原因-缺原型";
+  await w.escalate(failure, note);
+  const result = await userAdjudicates(w, "failure", ["choice:retry", "max-turns:3"]);
+  expect(result).toMatchObject({ status: "recorded", choice: "retry", taskStatus: "pending" });
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  await until(() => w.provider.queue.length === 0);
+  w.provider.queue.push({ type: "text", text: "没做完" }, { type: "text", text: "PM 收到" });
+  await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: failure, retry: null });
+  expect(w.task("failure").holdNote).toBeUndefined();
+  await until(() => w.task("failure").status === "awaiting_parent" && w.provider.queue.length === 0);
+  w.provider.queue.push({ type: "text", text: "还是没做完" }, { type: "text", text: "PM 看到两次未完成" });
+  await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: failure, retry: { reason: "再试一次", maxTurns: 1 } });
+  await until(() => w.task("failure").status === "awaiting_user" && w.provider.queue.length === 0);
+  const items = (await w.manager.overviews())[0]!.pendingItems;
+  expect(items).toEqual([expect.objectContaining({ itemId, label: "待你裁决：任务 failure 两次未完成" })]);
+  expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).not.toContain(note);
+});
+
+test("有一次作废尝试的 pending 任务 PM 也能上报；用户选调整后 PM 不等新批准版本就能直接 update", async () => {
+  const w = await pendingWorld();
+  const failure = w.task("failure");
+  w.db((db) => { const row = db.read<TaskRecord>(TASKS, failure.taskId)!;
+    db.update(TASKS, failure.taskId, row.version, { ...row.data, attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 0, reason: null, outcome: "superseded" }] }); });
+  await w.escalate(failure.taskId, "缺原型，不能派");
+  expect(w.task("failure").status).toBe("awaiting_user");
+  expect(await userAdjudicates(w, "failure", ["choice:adjust"])).toMatchObject({ status: "recorded", choice: "adjust", taskStatus: "needs_update" });
+  w.provider.queue.push({ type: "text", text: "PM 收到调整决定" });
+  await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: failure.taskId, version: w.task("failure").version,
+    spec: spec("failure", "scenario.failure", { objective: "先不碰界面的部分" }) }] });
+  expect(w.task("failure").status).toBe("pending");
+});
+
+test("上报后批准新版本，PM 复核判这个任务受影响：事项从面板消失，任务可被改写并派出", async () => {
+  const w = await pendingWorld();
+  const failure = w.task("failure").taskId, itemId = `task:${failure}`;
+  await w.escalate(failure, "缺原型，不能派");
+  expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.itemId)).toContain(itemId);
+  w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
+  await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败，并按原型提示。\n" });
+  await until(() => w.owner().context.baseline?.revision === 2);
+  await w.readDiffs(["revision 1 → 2"]);
+  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    { taskId: w.task("login").taskId, version: w.task("login").version, assessment: "unaffected", rationale: "登录不变" },
+    { taskId: failure, version: w.task("failure").version, assessment: "affected", rationale: "失败提示按原型" }],
+    global: { assessment: "unaffected", rationale: "无全局变化" } });
+  expect(w.task("failure").status).not.toBe("awaiting_user");
+  expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.itemId)).not.toContain(itemId);
+  await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: failure, version: w.task("failure").version,
+    spec: spec("failure", "scenario.failure", { objective: "按新批准的原型实现失败提示" }) }] });
+  await w.plan.execute({ action: "confirm", planVersion: planVersionOf(w) });
+  w.provider.queue.length = 0;
+  w.provider.queue.push({ type: "text", text: "按原型做" }, { type: "text", text: "PM 收到" });
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: failure, retry: null })).resolves.toMatchObject({ runId: expect.any(String) });
+});
+
+test.each(["completed", "running", "cancelled"] as const)("PM 不能对 %s 状态的任务 escalate", async (status) => {
+  const w = await pendingWorld();
+  w.setStatus("failure", status);
+  await expect(w.escalate(w.task("failure").taskId, "不该成功")).rejects.toThrow("任务当前状态不允许这个操作");
+  expect(w.task("failure").status).toBe(status);
 });
 
 test("M7-AC35：调整目标或范围后须等新的批准版本才能按新范围修改任务，修改后可再派出一次", async () => {
