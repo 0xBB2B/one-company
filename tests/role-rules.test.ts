@@ -51,6 +51,23 @@ describe("prototype 职责规矩", () => {
   });
 });
 
+describe("下游职责规矩的原型要求", () => {
+  test.each([
+    ["worker", ["有原型时先读原型", "与它一致"]],
+    ["reviewer", ["与原型不一致", "改了界面但需求里没有用户通过的原型"]],
+    ["qa", ["对照原型逐项验收", "不一致"]],
+    ["pm", ["要改用户看得到的界面", "批准版本里没有对应原型", "不派这个任务", "上报", "回主窗口补原型", "批准新版本", "面板上还有", "调整"]],
+  ] as const)("%s 的职责规矩含原型要求", (role, phrases) => {
+    const rules = loadRoleRules(role);
+    for (const phrase of phrases) expect(rules).toContain(phrase);
+  });
+
+  test("pm 的职责规矩不再让 PM 写 ui 标记或带 prototype 派工", () => {
+    const rules = loadRoleRules("pm");
+    for (const phrase of ["ui 写成 true", "带 prototype 派"]) expect(rules).not.toContain(phrase);
+  });
+});
+
 describe("内置定义只留元信息", () => {
   test.each(["worker", "reviewer", "qa", "explore", "prototype"])("%s 不写模型和思考，正文为空串，skills 与 mcp 都是空数组", async (name) => {
     const definition = await readRoleDefinition(join(defaultRoleDir(), `${name}.md`), parseFrontmatter);

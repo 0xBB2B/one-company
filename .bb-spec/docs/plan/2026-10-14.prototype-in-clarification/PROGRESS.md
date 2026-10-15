@@ -7,11 +7,11 @@
 | 04 | designer-dispatch | done | 2026-10-14 |
 | 05 | main-window-prototype | done | 2026-10-15 |
 | 06 | approval-integration | done | 2026-10-15 |
-| 07 | downstream-context | pending | — |
+| 07 | downstream-context | done | 2026-10-15 |
 | 08 | backup | pending | — |
 | 09 | archive | pending | — |
 | 10 | acceptance-scripts | pending | — |
 ## 当前
-准备执行 `07-downstream-context.md`。06 实施中用户决定：批准开始写入时就核对原型、批准进行中锁住看板（2026-10-15）。
+准备执行 `08-backup.md`。07 实施中用户决定：PM 能对没派过的任务上报，接手说明与更新通知列出原型清单（2026-10-15）。
 ## 阻塞
 （无）

@@ -141,6 +141,44 @@ test("两个版本的原型没有变化时，通知里没有原型变化行", as
   expect(text(w.diffPrompts()[0]!)).not.toContain("原型变化");
 });
 
+test("已批准更新通知除原型变化行外，还列出新版本的全部原型，没变化的也在内", async () => {
+  const w = await world();
+  await snapshots(w, { 1: [proto("设置页", 2), proto("日志页", 4)], 2: [proto("设置页", 3), proto("日志页", 4)] });
+  w.provider.queue.push({ type: "text", text: "收到 r2" });
+  await w.approve("sprint");
+  await until(() => w.diffPrompts().length === 1);
+  const lines = text(w.diffPrompts()[0]!).split("\\n");
+  expect(lines.some((line) => line.includes("设置页") && line.includes("第 3 版") && !line.includes("原型变化"))).toBe(true);
+  expect(lines.some((line) => line.includes("日志页") && line.includes("第 4 版") && !line.includes("原型变化"))).toBe(true);
+});
+
+test("新版本没有原型时，已批准更新通知写这一版没有原型", async () => {
+  const w = await world();
+  await snapshots(w, { 1: [proto("设置页", 2)] });
+  w.provider.queue.push({ type: "text", text: "收到 r2" });
+  await w.approve("sprint");
+  await until(() => w.diffPrompts().length === 1);
+  expect(text(w.diffPrompts()[0]!)).toContain("这一版没有原型");
+});
+
+test("PM 接手说明列出当前批准版本附带的全部原型的名称和第几版", async () => {
+  const w = await world();
+  await snapshots(w, { 1: [proto("设置页", 2), proto("命令行输出", 1)] });
+  await w.manager.stop(w.pm.runId, { reason: "main_agent" });
+  const before = w.provider.requests.length;
+  w.provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding: w.understanding } }, { type: "text", text: "等待核对" });
+  await w.manager.dispatchPm({ requirementId: w.fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: "off" });
+  await until(() => w.provider.requests.length > before);
+  const lines = (w.provider.requests[before]!.systemPrompt ?? "").split("\n");
+  expect(lines.some((line) => line.includes("设置页") && line.includes("第 2 版"))).toBe(true);
+  expect(lines.some((line) => line.includes("命令行输出") && line.includes("第 1 版"))).toBe(true);
+});
+
+test("批准版本没有原型时，PM 接手说明写这一版没有原型", async () => {
+  const w = await world();
+  expect(w.provider.requests[0]!.systemPrompt).toContain("这一版没有原型");
+});
+
 const deliverySamples: number[] = [];
 
 // 单个需求的交互上下文有上限，分四个需求各批准五次

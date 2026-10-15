@@ -87,6 +87,10 @@ export type TaskReview = Static<typeof Review>;
 export function countedAttempts(task: { attempts: readonly TaskAttempt[] }): number {
   return task.attempts.filter((attempt) => attempt.outcome !== "superseded" && !attempt.rework).length;
 }
+/** 任务还没派出过：没有计入次数的尝试（作废的不算）。 */
+export function unsentTask(task: { attempts: readonly TaskAttempt[] }): boolean {
+  return countedAttempts(task) === 0;
+}
 /** 审查打回次数：返修机会按此单独计数。 */
 export function reviewRejections(task: { reviews: readonly TaskReview[] }): number {
   return task.reviews.filter((review) => review.outcome === "blocked" || review.outcome === "unverified").length;
@@ -125,6 +129,7 @@ const TaskRecord = object({
   reviews: Type.Array(Review),
   userDecision: Type.Optional(UserDecision),
   sizeHold: Type.Optional(Type.Array(text, { minItems: 1, maxItems: 2 })),
+  holdNote: Type.Optional(text),
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
@@ -426,8 +431,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     // 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；只放开该任务修改时保留原目标的要求，且决定用过即失效
     const readjusted = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null &&
       record.data.revision > task.userDecision.revision;
-    // 因超出拆分上限被用户要求调整的任务还没派出过，PM 直接拆分或精简，不等新的批准版本
-    const resized = (task: TaskRecord) => task.sizeHold !== undefined && task.attempts.length === 0;
+    // 因超出拆分上限或 PM 在派出前上报而被用户要求调整的任务还没派出过，PM 直接拆分或精简，不等新的批准版本
+    const resized = (task: TaskRecord) => (task.sizeHold !== undefined || task.holdNote !== undefined) && unsentTask(task);
     const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!; return task.userDecision?.choice === "adjust" && !readjusted(task) && !resized(task); });
     if (waiting.length) deny("task_not_ready", waiting.map((item) => `${byId.get(item.taskId)!.key} 等待调整后的新批准版本`));
     // 用户给的再一次机会还没用时只能改说明文字，机会随之带到新版本；改了别的，用户的决定就对不上原来的任务了

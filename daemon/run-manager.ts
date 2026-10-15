@@ -23,7 +23,7 @@ import type { HoldRef } from "../runtime/plan-manage.ts";
 import type { TaskAttempt, TaskRecord as PlanTask, TaskReview } from "../runtime/plan-manage.ts";
 import { VERDICTS } from "../runtime/verdicts.ts";
 import type { Finding, Verdict } from "../runtime/verdicts.ts";
-import { coreToolName } from "../runtime/role-tools.ts";
+import { QA_PROTOTYPE_HOST_TOOLS, coreToolName } from "../runtime/role-tools.ts";
 import type { PmTools } from "./pm-tools.ts";
 import { withDatabase } from "../runtime/database.ts";
 import type { PmLease, RequirementRecord } from "../runtime/requirement-contracts.ts";
@@ -44,9 +44,10 @@ import { exploreContext, exploreInput, sourceHashesMatch } from "../runtime/expl
 import type { ExploreRequest, MainExploreOverview } from "../runtime/explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
 import { endExploreSession, registerExploreSession } from "../runtime/explore-session.ts";
-import { prototypeContext } from "../runtime/prototype-dispatch.ts";
+import { approvedPrototypeListLines, prototypeContext, requirementPrototypeLines } from "../runtime/prototype-dispatch.ts";
 import type { MainPrototypeOverview, PrototypeDispatchInput } from "../runtime/prototype-dispatch.ts";
-import { PrototypeBoardError, beginDesign, clearStaleDesigns, decidePrototype, endDesign, pendingConfirmation, readPrototypeBoard, removeFromDraft } from "../runtime/requirement-prototypes.ts";
+import { prototypesAtRevision } from "../runtime/requirement-prototype-revisions.ts";
+import { PrototypeBoardError, prototypeFilePath, beginDesign, clearStaleDesigns, decidePrototype, endDesign, pendingConfirmation, readPrototypeBoard, removeFromDraft } from "../runtime/requirement-prototypes.ts";
 import { createResultSubmitTool, PROTOTYPE_SUBMIT_PARAMETERS, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
 import { toPiTool } from "../runtime/role-tools.ts";
 import { AdvisedError, adviceOf, failureText, toolFailure } from "../runtime/tool-failure.ts";
@@ -103,7 +104,7 @@ const PM_MESSAGE_LABEL = "【主代理转述】下面是主代理根据用户的
 const PM_EVENT_POLL_MS = 500;
 const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "release-pm", "check-pm"];
 
-async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly Finding[] = [], reviews: readonly string[] = []): Promise<string> {
+async function taskContext(task: PlanTask, maxTurns: number, prototypes: string, rejected: readonly Finding[] = [], reviews: readonly string[] = []): Promise<string> {
   const detail = await readTaskDetail(task);
   return [
     `任务：${task.key}（${task.taskId}，版本 ${task.version}，职责 ${task.role}）`,
@@ -113,6 +114,7 @@ async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly 
     `性能条件：${detail.performance.applicable ? detail.performance.thresholds : `不适用（${detail.performance.reason}）`}`,
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     ...(task.writePaths.length ? [`可写范围：${task.writePaths.join("、")}`] : []),
+    ...(prototypes ? [prototypes] : []),
     ...(rejected.length ? [`本次是审查打回后的返修，须解决：\n${rejected.map((finding) => `- [${finding.kind}] ${finding.targetRef}：${finding.trigger} → ${finding.impact}`).join("\n")}`] : []),
     ...(reviews.length ? [`已完成任务的审查结论（审查已核对各任务的改动范围）：\n${reviews.map((line) => `- ${line}`).join("\n")}`] : []),
     `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交结果。`,
@@ -120,7 +122,7 @@ async function taskContext(task: PlanTask, maxTurns: number, rejected: readonly 
 }
 
 async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: string, reportOf: (runId: string) => Pick<Verdict, "summary" | "verificationIds"> | undefined,
-  maxTurns: number, worker: { name: string; body: string }): Promise<string> {
+  maxTurns: number, worker: { name: string; body: string }, prototypes: string): Promise<string> {
   const detail = await readTaskDetail(task);
   return [
     `审查任务：${task.key}（${task.taskId}，版本 ${task.version}）的 worker 尝试 ${attemptRunId}`,
@@ -130,6 +132,7 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
     `性能条件：${detail.performance.applicable ? detail.performance.thresholds : `不适用（${detail.performance.reason}）`}`,
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     `只审可写范围内的改动：${task.writePaths.join("、")}`,
+    ...(prototypes ? [prototypes] : []),
     ...(worker.body.trim() ? [`被审任务所用 worker 定义（${worker.name}）的正文：\n${worker.body.trim()}`] : []),
     `查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff ${baseCommit} -- ${task.writePaths.join(" ")}（${baseCommit} 是本需求工作区的基线提交）`,
     "worker 各次尝试（先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红；引用的验证记录用 verification_run action=status 逐条查看）：",
@@ -142,13 +145,14 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
   ].join("\n");
 }
 
-function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSourceDirectory | null, decisions: PmDecisionNote[]): string {
+function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSourceDirectory | null, decisions: PmDecisionNote[], prototypes: readonly { name: string; version: number }[]): string {
   const workspace = record.workspace!;
   const list = (ids: readonly string[]) => ids.length ? ids.join("、") : "无";
   return [
     `需求 ID：${record.requirementId}`,
     `工作区：${workspace.path}（分支 ${workspace.branch}）`,
     `当前批准版本：revision ${record.revision}，prod hash ${record.approved!.hash}`,
+    ...approvedPrototypeListLines(prototypes),
     `PM 运行：${lease.runId}，fence ${lease.fence}`,
     "当前处于受限接手：先用 one_company_requirement_manage 读取完整批准正文，再提交接手理解等待主代理核对；核对通过前不能正式提出或更新计划，也不能派 worker。",
     ...(sources ? ["接手理解每项的出处只能引用下列编号（kind 与 id），scenarioCoverage 要逐个覆盖必需场景：",
@@ -345,7 +349,8 @@ export class RunManager {
         } });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition: PM_DEFINITION, roleRules: loadRoleRules("pm"),
         context: await this.withConventions(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
-          pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId))), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ requirementId: input.requirementId, worktree: workspace.path, branch: workspace.branch, alive,
+          pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
+          await prototypesAtRevision({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId, record.data.revision))), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ requirementId: input.requirementId, worktree: workspace.path, branch: workspace.branch, alive,
           checkPhaseActive, writeScope: () => withDatabase(this.database, (db) => readPlanIn(db, input.requirementId)?.tasks ?? []).flatMap((task) => task.writePaths) }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, alive, checkPhaseActive,
           quiescent: () => this.metadataRows().every((row) => row.requirement !== input.requirementId || row.kind !== "role" || isTerminalState(row.state)) &&
             withDatabase(this.database, (db) => { try { assertWritersQuiescentIn(db, this.repoId, input.requirementId); return true; } catch { return false; } }) })],
@@ -473,11 +478,19 @@ export class RunManager {
       const workerEntry = review ? (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
         .find((entry) => entry.name === workerName && entry.available && entry.definition?.role === "worker") : undefined;
       const workerDefinition = { name: workerName, body: workerEntry?.definition?.body ?? "" };
-      const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns, workerDefinition)
-        : await taskContext(task, maxTurns, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
+      const promptRevision = role === "qa"
+        ? withDatabase(this.database, (db) => activeCheckRoundIn(db, this.repoId, task.requirementId))!.data.baseline.revision
+        : record.revision;
+      const prototypeItems = await prototypesAtRevision(ref, task.requirementId, promptRevision);
+      const pathOf = (item: { name: string; version: number }) => prototypeFilePath(ref, { requirementId: task.requirementId, name: item.name, version: item.version });
+      const prototypePaths = prototypeItems.map(pathOf);
+      const prototypes = requirementPrototypeLines(promptRevision, prototypeItems, pathOf);
+      const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns, workerDefinition, prototypes)
+        : await taskContext(task, maxTurns, prototypes, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         roleRules: loadRoleRules(review ? "reviewer" : role as "worker" | "qa"),
         context: withSkills(await this.withConventions(context), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
+        ...(role === "qa" && prototypePaths.length ? { hostTools: [...QA_PROTOTYPE_HOST_TOOLS], readRoots: prototypePaths } : {}),
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
       registered = true;

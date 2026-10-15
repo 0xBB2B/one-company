@@ -6,7 +6,7 @@ import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { activeCheckRoundIn } from "./check-round.ts";
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import type { LocalDatabase, StoredRecord } from "./database.ts";
-import { countedAttempts, implementScope, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, TASKS, terminationPending } from "./plan-manage.ts";
+import { countedAttempts, implementScope, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, TASKS, terminationPending, unsentTask } from "./plan-manage.ts";
 import type { TaskAttempt, TaskRecord, TaskReview } from "./plan-manage.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
 import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
@@ -162,7 +162,8 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
     }
     const attempt: TaskAttempt = { runId: request.runId, maxTurns, turnsUsed: 0, reason, outcome: "running", ...(task.status === "awaiting_rework" ? { rework: true as const } : {}) };
     const row = db.read<unknown>(TASKS, task.taskId)!;
-    db.update(TASKS, task.taskId, row.version, { ...task, status: "running", attempts: [...task.attempts, attempt],
+    const { holdNote: _held, ...kept } = task;
+    db.update(TASKS, task.taskId, row.version, { ...kept, status: "running", attempts: [...task.attempts, attempt],
       ...(grantedDecision ? { userDecision: { ...task.userDecision!, usedByRunId: request.runId } } : {}), updatedAt: request.now ?? Date.now() });
     return { task, maxTurns };
   }));
@@ -195,7 +196,7 @@ export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "re
 }
 
 /**
- * PM 对等待其处置的任务放弃自行处理：转为等待用户裁决，说明记在最近一次尝试上。
+ * PM 对等待其处置或还没派出的任务放弃自行处理：转为等待用户裁决，说明记在最近一次尝试上；还没有尝试的记在任务的 holdNote 上。
  * PM 因此不多任何权限，之后只有用户的决定能让任务继续。
  */
 export function escalateTask(request: { dataRoot: string; repoId: string; lease: PmLease; taskId: string; note: string; now?: number }): TaskRecord {
@@ -205,9 +206,10 @@ export function escalateTask(request: { dataRoot: string; repoId: string; lease:
     const row = db.read<TaskRecord>(TASKS, request.taskId);
     if (!row || row.data.requirementId !== request.lease.requirementId) deny("task_not_ready", ["任务不属于本需求"]);
     const task = row!.data;
-    if (task.status !== "awaiting_parent") deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置`]);
-    const attempts = task.attempts.map((attempt, index) => index === task.attempts.length - 1 ? { ...attempt, escalation: request.note } : attempt);
-    const next = { ...task, status: "awaiting_user", attempts, updatedAt: request.now ?? Date.now() } as TaskRecord;
+    const unsent = task.status === "pending" && unsentTask(task);
+    if (task.status !== "awaiting_parent" && !unsent) deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置，也不是还没派出的任务`]);
+    const attempts = unsent ? task.attempts : task.attempts.map((attempt, index) => index === task.attempts.length - 1 ? { ...attempt, escalation: request.note } : attempt);
+    const next = { ...task, status: "awaiting_user", attempts, ...(unsent ? { holdNote: request.note } : {}), updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row!.version, next);
     return next;
   }));
