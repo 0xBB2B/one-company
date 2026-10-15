@@ -501,6 +501,52 @@ test("原型源文件内容与批准时的指纹不符时归档受阻，错误�
   expect(await readdir(join(w.worktree.root, "docs", "prod")).catch(() => [] as string[])).toEqual([]);
 });
 
+test("原型源文件已不存在时归档受阻（不是待重试），错误写明哪份原型第几版，不带系统原始报错", async () => {
+  const w = await world();
+  if (!darwin) return;
+  const approved = await approvePrototypes(w);
+  await rm(approved.file(PROTOTYPES[0]));
+  expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "blocked" } });
+  const failure = await w.closeService.archive(w.created.requirementId).then(() => null, (error: unknown) => error as { name: string; code: string; advice: { why: string; next: string } });
+  expect(failure).toMatchObject({ name: "CloseError" });
+  expect(failure!.advice.why).toContain("设置页");
+  expect(failure!.advice.why).toContain("3");
+  expect(failure!.advice.why).not.toMatch(/ENOENT/);
+  expect(failure!.advice.next.length).toBeGreaterThan(0);
+  expect(w.closeService.status(w.created.requirementId)).toMatchObject({ archive: { status: "blocked" } });
+  expect(await readdir(join(w.worktree.root, "docs", "prod")).catch(() => [] as string[])).toEqual([]);
+});
+
+test("原型源文件不存在与指纹不符是同一类受阻原因", async () => {
+  const reasonOf = async (mutate: (file: string) => Promise<void>) => {
+    const w = await world();
+    const approved = await approvePrototypes(w);
+    await mutate(approved.file(PROTOTYPES[0]));
+    await closeCompleted(w);
+    const failure = await w.closeService.archive(w.created.requirementId).then(() => null, (error: unknown) => error as { code: string; advice: { why: string } });
+    return failure!;
+  };
+  if (!darwin) return;
+  const missing = await reasonOf((file) => rm(file));
+  const changed = await reasonOf((file) => writeFile(file, "<html>被改过</html>\n"));
+  expect(missing.code).toBe(changed.code);
+  expect(missing.advice.why).toBe(changed.advice.why);
+});
+
+test("原型源文件不存在时受阻原因要能看出文件已不存在或被删，指纹不符时同一原因也成立", async () => {
+  const reasonOf = async (mutate: (file: string) => Promise<void>) => {
+    const w = await world();
+    const approved = await approvePrototypes(w);
+    await mutate(approved.file(PROTOTYPES[0]));
+    await closeCompleted(w);
+    const failure = await w.closeService.archive(w.created.requirementId).then(() => null, (error: unknown) => error as { advice: { why: string } });
+    return failure!.advice.why;
+  };
+  if (!darwin) return;
+  expect(await reasonOf((file) => rm(file))).toMatch(/不存在|删/);
+  expect(await reasonOf((file) => writeFile(file, "<html>被改过</html>\n"))).toMatch(/不存在|删/);
+});
+
 test("某份原型的目标位置暂时是目录导致归档中断，恢复后续办补齐全部文件并最终归档", async () => {
   const w = await world();
   if (!darwin) return;
