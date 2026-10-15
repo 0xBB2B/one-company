@@ -92,7 +92,7 @@ const CLOSE_ADVICE = {
   not_found: { why: "找不到对应的关闭记录或待验收报告", next: "用 status 查看需求当前的关闭与报告状态" },
   not_closed: { why: "需求还没有以完成关闭，不能归档", next: "先以完成关闭需求，再归档" },
   archive_conflict: { why: "归档位置已有内容不同的文件", next: "请用户检查归档目录里的同名文件，处理后以原决定编号再次 close 续办" },
-  archive_prototype_mismatch: { why: "原型源文件内容与批准时登记的指纹不符", next: "请用户检查原型文件有没有被手动改动，处理后以原决定编号再次 close 续办" },
+  archive_prototype_mismatch: { why: "原型源文件已被改动或已不存在，和批准时登记的指纹对不上", next: "请用户检查原型文件有没有被手动改动或被删除，处理后以原决定编号再次 close 续办" },
   archive_unavailable: { why: "这个需求没有归档资格或归档内容不可用", next: "只有以完成关闭的需求才会归档；其他情况不需要归档" },
 } as const satisfies Record<string, FailureAdvice>;
 export type CloseErrorCode = keyof typeof CLOSE_ADVICE;
@@ -614,10 +614,11 @@ export class RequirementCloseService {
       if (real !== archive.path) throw new Error("archive_path_escape");
       const htmls: Array<{ target: string; content: Buffer; existing: Buffer | null }> = [];
       for (const item of archive.prototypes) {
-        const content = await readFile(prototypeFilePath(this.options, { requirementId, name: item.name, version: item.version }));
-        if (sha256(content) !== item.hash) {
+        const content = await readFile(prototypeFilePath(this.options, { requirementId, name: item.name, version: item.version }))
+          .catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
+        if (!content || sha256(content) !== item.hash) {
           const detail = `原型 ${item.name} 第 ${item.version} 版`;
-          save({ status: "blocked", attempts: archive.attempts + 1, lastError: `${detail}的源文件指纹不符` });
+          save({ status: "blocked", attempts: archive.attempts + 1, lastError: `${detail}的源文件和登记的不一致或已不存在` });
           throw new CloseError("archive_prototype_mismatch", detail);
         }
         const htmlTarget = join(root, ...item.path.split("/"));

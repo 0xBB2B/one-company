@@ -418,7 +418,9 @@ test("原型文件被改动一个字节后备份被拒，原因写明原型名�
   const w = await worldWithPrototypes();
   const path = prototypeFilePath(w.ref, { requirementId: w.activeId, name: "设置页", version: 2 });
   await writeFile(path, w.files[0]!.html.replace("第二版", "第三版"), { mode: 0o600 });
-  await expect(createRequirementBackup(backupOptions(w))).rejects.toThrow(/设置页.*2/);
+  const failure = await createRequirementBackup(backupOptions(w)).then(() => null, (error: unknown) => error as RequirementBackupError);
+  expect(failure).toMatchObject({ name: "RequirementBackupError", code: "prototype_changed" });
+  expect(failure!.message).toMatch(/设置页.*2/);
 });
 
 test("恢复到另一个数据目录后原型文件在原相对位置逐字节一致，并能按名称和版本读到", async () => {
@@ -447,7 +449,19 @@ test("草稿里还没批准的原型文件不进备份，清单里的原型恰�
 test("批准版本引用的原型文件不存在时备份被拒，原因写明原型名称和版本", async () => {
   const w = await worldWithPrototypes();
   await rm(prototypeFilePath(w.ref, { requirementId: w.activeId, name: "设置页", version: 2 }));
-  await expect(createRequirementBackup(backupOptions(w))).rejects.toThrow(/设置页.*2.*不存在/);
+  const failure = await createRequirementBackup(backupOptions(w)).then(() => null, (error: unknown) => error as RequirementBackupError);
+  expect(failure).toMatchObject({ name: "RequirementBackupError", code: "prototype_missing" });
+  expect(failure!.message).toMatch(/设置页.*2.*不存在/);
+});
+
+test("批准版本引用的原型名称不能用作文件名时备份被拒，错误码为稳定短码，原因写明原型名称和版本", async () => {
+  const w = await worldWithPrototypes();
+  withDatabase(repositoryDatabase(w.dataRoot, w.identity.repoId), (db) => {
+    writePrototypeRevision(db, { requirementId: w.activeId, revision: 3, prototypes: [{ name: "../越界", version: 1, hash: "0".repeat(64), bytes: 1 }] });
+  });
+  const failure = await createRequirementBackup(backupOptions(w)).then(() => null, (error: unknown) => error as RequirementBackupError);
+  expect(failure).toMatchObject({ name: "RequirementBackupError", code: "prototype_invalid" });
+  expect(failure!.message).toMatch(/越界.*1/);
 });
 
 test("清单路径的先后顺序与本机语言环境的排序不同时照常恢复（备份和恢复时语言环境不同）", async () => {

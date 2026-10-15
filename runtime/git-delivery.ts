@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { mutedLines } from "./question-window.ts";
 import type { ProgramWindow, WindowChoice } from "./question-window.ts";
 import { commandOutputTail } from "./tool-failure.ts";
@@ -158,14 +160,20 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   }
 
   const literal = groupPaths.map((path) => `:(literal)${path}`);
-  await git(["add", "-f", "--", ...literal]);
+  try { await git(["add", "-f", "--", ...literal]); }
+  catch (error) {
+    await git(["reset", "--quiet", "--", ...literal]);
+    const missing = group.find((file) => !existsSync(join(facts.worktree, ...file.path.split("/"))));
+    if (missing) return reject("archive_mismatch", missing.path);
+    throw error;
+  }
   for (const file of group) {
     const staged = /^\d+ ([0-9a-f]+) 0\t/.exec((await git(["ls-files", "-s", "--", `:(literal)${file.path}`])).stdout)?.[1];
     const stagedBytes = staged ? (await exec("git", ["cat-file", "blob", staged], { cwd: facts.worktree, encoding: "buffer", maxBuffer: 1 << 26 })).stdout : null;
     const worktreeMatchesIndex = await git(["diff", "--quiet", "--", `:(literal)${file.path}`]).then(() => true, () => false);
     if (!stagedBytes || sha256(stagedBytes) !== file.hash || !worktreeMatchesIndex) {
       await git(["reset", "--quiet", "--", ...literal]);
-      return reject("archive_mismatch");
+      return reject("archive_mismatch", file.path);
     }
   }
   if ((await git(["diff", "--cached", "--name-only", "-z"])).stdout.split("\0").filter(Boolean).some((path) => !groupPaths.includes(path))) return reject("unexpected_staged");

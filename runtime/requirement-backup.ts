@@ -20,8 +20,8 @@ const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 export class RequirementBackupError extends Error {
   readonly code: string;
-  constructor(code: string) {
-    super(`需求备份未完成：${code}；未返回正文或开放执行权限`);
+  constructor(code: string, detail?: string) {
+    super(`需求备份未完成：${detail ? `${code}：${detail}` : code}；未返回正文或开放执行权限`);
     this.name = "RequirementBackupError";
     this.code = code;
   }
@@ -118,7 +118,7 @@ interface BackupOperationLog {
   manifestHash?: string;
 }
 
-function fail(code: string): never { throw new RequirementBackupError(code); }
+function fail(code: string, detail?: string): never { throw new RequirementBackupError(code, detail); }
 function sha256(bytes: Uint8Array | string): string { return createHash("sha256").update(bytes).digest("hex"); }
 function exactKeys(value: object, expected: readonly string[]): boolean { return Object.keys(value).sort().join("\0") === [...expected].sort().join("\0"); }
 function syncDirectory(path: string): void {
@@ -335,12 +335,12 @@ function prototypeFiles(repoDirectory: string, requirements: RequirementBackupRe
   } finally { db.close(); }
   return [...items.values()].sort((a, b) => `${a.requirementId}/${a.name}.v${a.version}`.localeCompare(`${b.requirementId}/${b.name}.v${b.version}`)).map((item) => {
     const label = `${item.name}第 ${item.version} 版`;
-    try { checkPrototypeName(item.name); } catch { fail(`prototype_invalid：原型 ${label} 的名称不能用作文件名`); }
+    try { checkPrototypeName(item.name); } catch { fail("prototype_invalid", `原型 ${label} 的名称不能用作文件名`); }
     const relativePath = `prototypes/${item.requirementId}/${item.name}.v${item.version}.html`;
     const path = join(repoDirectory, ...relativePath.split("/"));
-    if (!pathExists(path)) fail(`prototype_missing：原型 ${label} 的文件不存在`);
+    if (!pathExists(path)) fail("prototype_missing", `原型 ${label} 的文件不存在`);
     const plan = scanFile(path, relativePath);
-    if (plan.hash !== item.hash || plan.size !== item.bytes) fail(`prototype_changed：原型 ${label} 的内容与批准时的指纹不一致`);
+    if (plan.hash !== item.hash || plan.size !== item.bytes) fail("prototype_changed", `原型 ${label} 的内容与批准时的指纹不一致`);
     return plan;
   });
 }

@@ -181,7 +181,7 @@ test("M8-AC2/AC5：未完成、归档未写入、归档字节与凭据不符、�
   expect(await deliverRequirement({ ...w.facts, reason: "cancelled" }, w.ui())).toMatchObject({ status: "rejected", reason: "需求没有以完成关闭" });
   expect(await deliverRequirement({ ...w.facts, archive: { ...w.facts.archive!, status: "pending" } }, w.ui())).toMatchObject({ status: "rejected", reason: "需求归档还没写好" });
   await writeFile(join(w.worktree, ARCHIVE), PROD + "被改过\n");
-  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: "归档文件与关闭时登记的内容不一致" });
+  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
   expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
   await writeFile(join(w.worktree, ARCHIVE), PROD);
   await writeFile(join(w.worktree, "extra.ts"), "x\n");
@@ -279,7 +279,41 @@ test("工作区里有本组以外的 docs/prod 未提交改动时拒绝交付", 
 test("原型 html 与关闭时登记的指纹不一致时拒绝交付并取消暂存", async () => {
   const w = await worldWithPrototypes();
   await writeFile(join(w.worktree, prototypePath("设置页")), "<html>被手动改过</html>\n");
-  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: "归档文件与关闭时登记的内容不一致" });
+  const result = await deliverRequirement(w.facts, w.ui());
+  expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
+  expect(result.status === "rejected" && result.reason).toContain(prototypePath("设置页"));
+  expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
+  expect(w.remoteBranch()).toBeNull();
+});
+
+test("正文内容与登记指纹不一致被拒绝时，原因写出正文文件的相对路径", async () => {
+  const w = await world();
+  await writeFile(join(w.worktree, ARCHIVE), PROD + "被改过\n");
+  const result = await deliverRequirement(w.facts, w.ui());
+  expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
+  expect(result.status === "rejected" && result.reason).toContain(ARCHIVE);
+});
+
+test("登记的正文文件在工作区里不存在且从未被 Git 跟踪时，按内容不一致拒绝，不抛出 git 的原始报错，暂存区不留文件", async () => {
+  const w = await world();
+  await rm(join(w.worktree, ARCHIVE));
+  const result = await deliverRequirement(w.facts, w.ui());
+  expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
+  const reason = result.status === "rejected" ? result.reason : "";
+  expect(reason).toContain(ARCHIVE);
+  expect(reason).not.toMatch(/pathspec|128/);
+  expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
+  expect(w.remoteBranch()).toBeNull();
+});
+
+test("登记的原型 html 在工作区里不存在且从未被 Git 跟踪时，按内容不一致拒绝并写出该原型的相对路径，暂存区不留文件", async () => {
+  const w = await worldWithPrototypes();
+  await rm(join(w.worktree, prototypePath("命令行输出")));
+  const result = await deliverRequirement(w.facts, w.ui());
+  expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
+  const reason = result.status === "rejected" ? result.reason : "";
+  expect(reason).toContain(prototypePath("命令行输出"));
+  expect(reason).not.toMatch(/pathspec|128/);
   expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
   expect(w.remoteBranch()).toBeNull();
 });
@@ -316,4 +350,32 @@ test("本需求编号开头、但不在登记清单里的 html 被提交到分�
   const facts = { ...w.facts, codeHead: w.git(w.worktree, "rev-parse", "HEAD") };
   expect(await deliverRequirement(facts, w.ui())).toMatchObject({ status: "rejected", reason: "分支里带了别的需求的归档文件" });
   expect(w.remoteBranch()).toBeNull();
+});
+
+test("用户在确认窗口取消后暂存区留有登记文件，再删掉其中一个登记文件重新交付，按内容不一致拒绝并写出相对路径，暂存区清空", async () => {
+  for (const victim of [ARCHIVE, prototypePath("设置页")]) {
+    const w = await worldWithPrototypes();
+    expect(await deliverRequirement(w.facts, w.ui(false))).toMatchObject({ status: "cancelled" });
+    await rm(join(w.worktree, victim));
+    const result = await deliverRequirement(w.facts, w.ui());
+    expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
+    expect(result.status === "rejected" && result.reason).toContain(victim);
+    expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
+    expect(w.remoteBranch()).toBeNull();
+  }
+});
+
+test("登记的文件已提交进分支、之后在工作区被删时，按内容不一致拒绝并写出相对路径，暂存区为空", async () => {
+  for (const victim of [ARCHIVE, prototypePath("命令行输出")]) {
+    const w = await worldWithPrototypes();
+    w.git(w.worktree, "add", "--", ARCHIVE, prototypePath("设置页"), prototypePath("命令行输出"));
+    w.git(w.worktree, "commit", "-qm", "归档");
+    const facts = { ...w.facts, codeHead: w.git(w.worktree, "rev-parse", "HEAD") };
+    await rm(join(w.worktree, victim));
+    const result = await deliverRequirement(facts, w.ui());
+    expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
+    expect(result.status === "rejected" && result.reason).toContain(victim);
+    expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
+    expect(w.remoteBranch()).toBeNull();
+  }
 });
