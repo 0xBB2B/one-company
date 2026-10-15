@@ -281,3 +281,13 @@ test("带 advice 的超时错误仍用自带的原因与建议", () => {
   const error = Object.assign(new Error("x"), { cmd: "git x", code: null, killed: true, signal: "SIGTERM", stdout: "", stderr: "", advice });
   expect(failureText("s", error)).toBe(explained("s", advice.why, advice.next));
 });
+
+test("真实触发：输出按字节读取（encoding buffer）的命令失败同样按类别写原因，不带整条命令行", async () => {
+  const exited = await inCleanRepo((cwd) => failureOf("git", ["-c", "core.fsmonitor=false", "cat-file", "blob", "deadbeef"], { cwd, encoding: "buffer" }));
+  expect(commandOutputTail(exited)).toBe("fatal: Not a valid object name deadbeef");
+  expect(failureText("读取文件", exited)).toBe(explained("读取文件", "git 命令失败（退出码 128）：fatal: Not a valid object name deadbeef", COMMAND_NEXT));
+  const silent = await failureOf("sh", ["-c", "exit 3"], { encoding: "buffer" });
+  expect(commandOutputTail(silent)).toBe("命令没有输出");
+  const timedOut = await failureOf("sleep", ["5"], { timeout: 200, encoding: "buffer" });
+  expect(failureText("读取文件", timedOut)).toBe(explained("读取文件", "sleep 命令超时，被程序停止", RETRY_ONCE_NEXT));
+});
