@@ -8,7 +8,7 @@ export function addQuestion(fixture: PmIntakeFixture, requestId = uuidv7()): str
     format: "interaction-question/v1",
     requestId,
     repoId: fixture.repoId,
-    basis: { requirementId: fixture.requirementId, version: current.version, epoch: current.data.epoch, prod: current.data.approved },
+    basis: { requirementId: fixture.requirementId, version: current.version, epoch: current.data.epoch, prd: current.data.approved },
     candidate: null,
     proposal: { conclusion: "短信有效期是多少", scope: "验证码失败场景", references: [], supersedes: [] },
     actions: [],

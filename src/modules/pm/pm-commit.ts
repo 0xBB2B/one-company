@@ -30,7 +30,7 @@ const PROTECTED_NEXT = "把它从 paths 里去掉，再提交其余文件";
 const PROTECTED_WHY: Partial<Record<ManagedWritePathClass, (path: string) => string>> = {
   outside: (path) => `路径在需求 worktree 之外或写法不合规：${path}`,
   git_metadata: (path) => `这是 Git 元数据，不能提交：${path}`,
-  prod_archive: (path) => `这是需求归档目录，由程序在关闭需求时写入，不能提交：${path}`,
+  prd_archive: (path) => `这是需求归档目录，由程序在关闭需求时写入，不能提交：${path}`,
   agent_definition: (path) => `这是角色定义或 skills 目录，只能由用户修改，不能提交：${path}`,
   host_settings: (path) => `这是 pi 的项目设置文件，只能由用户修改，不能提交：${path}`,
   project_conventions: (path) => `这是项目规范文件 AGENTS.md，只能经用户确认后修改，不能提交：${path}`,

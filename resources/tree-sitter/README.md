@@ -1,6 +1,6 @@
 # 本机语法解析资源
 
-`runtime/syntax-parser.ts` 提供内部函数 `withSyntaxTree(language, source, inspect)`。只接受 `ts`、`tsx`、`js`、`jsx`、`go` 和调用方提供的源码字符串；不扫描项目、不索引 prod、不写数据库，也不注册业务工具。
+`runtime/syntax-parser.ts` 提供内部函数 `withSyntaxTree(language, source, inspect)`。只接受 `ts`、`tsx`、`js`、`jsx`、`go` 和调用方提供的源码字符串；不扫描项目、不索引 PRD、不写数据库，也不注册业务工具。
 
 ## 分发与来源
 

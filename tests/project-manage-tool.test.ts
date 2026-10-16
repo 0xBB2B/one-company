@@ -76,7 +76,7 @@ function statusResult(repoId: string) {
     initialized: false,
     cacheVerified: false,
     index: null,
-    body: "PROD_BODY_SENTINEL",
+    body: "PRD_BODY_SENTINEL",
   };
 }
 
@@ -224,7 +224,7 @@ describe("扫描确认、启动前与结束后核对、有限输出", () => {
     expect(calls).toEqual(["preview", "init", "refresh"]);
     expect(confirms).toBe(2);
     expect(confirmation).toContain(`仓库根：${world.repositoryRoot}`);
-    expect(confirmation).toContain("docs/prod 只枚举有限路径元数据，不读取正文");
+    expect(confirmation).toContain("docs/prd 只枚举有限路径元数据，不读取正文");
     expect(confirmation).toContain(join(world.dataRoot, "repos", world.repoId));
     expect(confirmation).toContain("窗口关闭后 PM 与子代理仍可查询");
     for (const options of receivedOptions as Array<{ limits: Record<string, number> }>) {
@@ -245,7 +245,7 @@ describe("扫描确认、启动前与结束后核对、有限输出", () => {
     expect(confirms).toBe(0);
     expect(encoded).toContain(world.repoId);
     expect(encoded).toContain("initialized");
-    expect(encoded).not.toContain("PROD_BODY_SENTINEL");
+    expect(encoded).not.toContain("PRD_BODY_SENTINEL");
     expect(encoded).not.toContain("must/not/escape");
     expect(encoded).not.toContain("private-branch");
     expect((result.details as { truncation: unknown }).truncation)
@@ -431,11 +431,11 @@ describe("扫描确认、启动前与结束后核对、有限输出", () => {
           partial: true,
           databaseCreated: false,
           invalid: [{ code: "unknown", path: "docs/bad.json", body: "SPEC_SENTINEL" }],
-          skipped: [{ path: ".env", reason: "sensitive", body: "PROD_SENTINEL" }],
-          archives: { issues: [{ path: "docs/prod/bad", reason: "invalid_archive_name" }], metadata: [] },
+          skipped: [{ path: ".env", reason: "sensitive", body: "PRD_SENTINEL" }],
+          archives: { issues: [{ path: "docs/prd/bad", reason: "invalid_archive_name" }], metadata: [] },
           files,
           source: "SOURCE_SENTINEL",
-          body: "PROD_SENTINEL",
+          body: "PRD_SENTINEL",
         };
       },
       init: async () => ({}), refresh: async () => ({}), status: async () => ({}),
@@ -457,10 +457,10 @@ describe("扫描确认、启动前与结束后核对、有限输出", () => {
     const failing: OpenProjectIndexService = async () => {
       opens += 1;
       return {
-        preview: async () => { throw new Error("PROD_ERROR_SENTINEL"); },
-        init: async () => { throw new Error("PROD_ERROR_SENTINEL"); },
-        refresh: async () => { throw new Error("PROD_ERROR_SENTINEL"); },
-        status: async () => { throw new Error("PROD_ERROR_SENTINEL"); },
+        preview: async () => { throw new Error("PRD_ERROR_SENTINEL"); },
+        init: async () => { throw new Error("PRD_ERROR_SENTINEL"); },
+        refresh: async () => { throw new Error("PRD_ERROR_SENTINEL"); },
+        status: async () => { throw new Error("PRD_ERROR_SENTINEL"); },
       };
     };
     const runtime = runtimeFor(world, failing);

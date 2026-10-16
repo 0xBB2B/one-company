@@ -12,7 +12,7 @@ test("写占用元数据拒绝未知字段和记录键身份冲突", async () =>
   const claim = { format: "requirement-service-write-claim/v2", processGroups: [], repoId, requirementId,
     operationId: uuidv7(), ownerToken: uuidv7(), pid: process.pid, acquiredAt: Date.now() };
   try {
-    withDatabase(path, (db) => db.create(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, requirementId, { ...claim, prodBody: "不能作为元数据返回" }));
+    withDatabase(path, (db) => db.create(REQUIREMENT_WRITE_COORDINATION_NAMESPACE, requirementId, { ...claim, prdBody: "不能作为元数据返回" }));
     const coordinator = new RequirementWriteCoordinator({ dataRoot, repoId });
     expect(() => coordinator.inspect()).toThrow(/write_claim_corrupt/);
     withDatabase(path, (db) => {

@@ -140,17 +140,17 @@ test("32KiB understanding预算先独立拒绝，不冒充51,200字节transport�
 });
 
 test("合法view含Unicode与转义时transport精确接受51,200字节并拒绝51,201字节", () => {
-  const binding = { repoId: "a".repeat(64), requirementId: uuidv7(), approvedProdCommit: "b".repeat(40),
-    approvedRevision: 1, approvedProdHash: "c".repeat(64), approvalManifestHash: "d".repeat(64),
+  const binding = { repoId: "a".repeat(64), requirementId: uuidv7(), approvedPrdCommit: "b".repeat(40),
+    approvedRevision: 1, approvedPrdHash: "c".repeat(64), approvalManifestHash: "d".repeat(64),
     approvalScopeVersion: `intake-approval-scope/v1:${"e".repeat(64)}`,
     actionScopeVersion: `intake-action-scope/v1:${"f".repeat(64)}`, workspaceId: "1".repeat(64),
     workspaceRef: "refs/heads/pm-intake", epoch: 1, pmRunId: uuidv7(), pmFence: 1, contextGeneration: 1 };
-  const sourceDirectory = { prodUnitIds: ["goal.login", "scenario.failure"], prodScenarioIds: ["scenario.failure"],
+  const sourceDirectory = { prdUnitIds: ["goal.login", "scenario.failure"], prdScenarioIds: ["scenario.failure"],
     decisionIds: [], questionIds: [], requiredScenarioIds: ["scenario.failure"] };
   const understanding: PmUnderstanding = { format: "pm-understanding/v1", binding, goals: [
-    { text: "实现手机号登录", sourceRefs: [{ kind: "prod-unit", id: "goal.login" }] }], nonGoals: [], constraints: [],
+    { text: "实现手机号登录", sourceRefs: [{ kind: "prd-unit", id: "goal.login" }] }], nonGoals: [], constraints: [],
     allowedActions: [], unresolved: [], scenarioCoverage: [{ scenarioId: "scenario.failure", status: "covered",
-      summary: "失败时显示错误", sourceRefs: [{ kind: "prod-scenario", id: "scenario.failure" }] }] };
+      summary: "失败时显示错误", sourceRefs: [{ kind: "prd-scenario", id: "scenario.failure" }] }] };
   const view: IntakeRequestView = { requestId: uuidv7(), binding, submissionRef: "pm/submission/current",
     submissionHash: "2".repeat(64), sourceDirectoryHash: "3".repeat(64), sourceDirectory, understanding,
     understandingStatus: "accepted", uncoveredScenarioIds: [], createdAt: Date.now(), userAuthorizationCreated: false };

@@ -20,7 +20,7 @@ export const PM_INTAKE_SUBMIT_PARAMETERS = Type.Object({
 }, { additionalProperties: false });
 
 type Ref = { dataRoot: string; repoId: string };
-export interface IntakeSubmissionBaseline { approvedRevision: number; approvedProdHash: string; approvalManifestHash: string }
+export interface IntakeSubmissionBaseline { approvedRevision: number; approvedPrdHash: string; approvalManifestHash: string }
 type UnderstandingContent = Omit<PmUnderstanding, "format" | "binding">;
 
 /** PM 最近一次被工具成功受理、且受理时批准基线与给定基线一致的接手理解；正文只在该运行的私有会话文件里。 */
@@ -46,13 +46,13 @@ export function latestPmSubmission(ref: Ref & { runId: string; baseline: IntakeS
 }
 
 function sameBaseline(value: IntakeSubmissionBaseline | undefined, expected: IntakeSubmissionBaseline): boolean {
-  return value?.approvedRevision === expected.approvedRevision && value.approvedProdHash === expected.approvedProdHash
+  return value?.approvedRevision === expected.approvedRevision && value.approvedPrdHash === expected.approvedPrdHash
     && value.approvalManifestHash === expected.approvalManifestHash;
 }
 
 export function pmSubmissionFor(ref: Ref, binding: IntakeBinding): { submissionRef: string; submissionHash: string; understanding: PmUnderstanding } | null {
   const latest = latestPmSubmission({ ...ref, runId: binding.pmRunId, baseline: { approvedRevision: binding.approvedRevision,
-    approvedProdHash: binding.approvedProdHash, approvalManifestHash: binding.approvalManifestHash } });
+    approvedPrdHash: binding.approvedPrdHash, approvalManifestHash: binding.approvalManifestHash } });
   if (!latest) return null;
   const understanding = { format: "pm-understanding/v1" as const, binding: structuredClone(binding), ...structuredClone(latest.content) };
   return { submissionRef: `pm/${binding.pmRunId}/${latest.toolCallId}`, submissionHash: pmUnderstandingHash(understanding), understanding };
@@ -87,7 +87,7 @@ export function pmSourceDirectory(ref: Ref, requirementId: string): IntakeSource
     const scenarioIds = row.data.approvalManifest!.confirmed.filter((id) => unitIds.includes(id) && !["metadata", "preamble", "whole-body"].includes(id));
     const questionIds = db.list("interaction_questions_v1")
       .filter((q) => (q.data as { basis?: { requirementId?: unknown } } | null)?.basis?.requirementId === requirementId).map((q) => q.id).sort();
-    return { prodUnitIds: unitIds, prodScenarioIds: scenarioIds, decisionIds: intakeManifestDecisionIds(manifest), questionIds, requiredScenarioIds: scenarioIds };
+    return { prdUnitIds: unitIds, prdScenarioIds: scenarioIds, decisionIds: intakeManifestDecisionIds(manifest), questionIds, requiredScenarioIds: scenarioIds };
   });
 }
 
@@ -170,8 +170,8 @@ export function evaluatePmIntakeGate(ref: Ref & { lease: PmLease }): IntakeGateR
   const review = head.review;
   if (review && record.revision > review.binding.approvedRevision) return advancedGate(ref, record, review);
   const basis: IntakeBindingBasis = {
-    repoId: ref.repoId, requirementId: record.requirementId, approvedProdCommit: record.approved.commit, approvedRevision: record.revision,
-    approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash,
+    repoId: ref.repoId, requirementId: record.requirementId, approvedPrdCommit: record.approved.commit, approvedRevision: record.revision,
+    approvedPrdHash: record.approved.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash,
     workspaceId: record.workspace.workspaceId, workspaceRef: record.workspace.branch, epoch: record.epoch,
     pmRunId: ref.lease.runId, pmFence: ref.lease.fence, contextGeneration: ref.lease.contextGeneration,
   };

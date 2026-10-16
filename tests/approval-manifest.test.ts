@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { uuidv7 } from "../src/core/storage/database.ts";
-import { partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
+import { partitionPrdDocument } from "../src/modules/requirement/prd-view.ts";
 import { checkContext } from "../src/modules/requirement/user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation } from "../src/modules/requirement/user-interaction-format.ts";
 import { createApprovalManifest, checkApprovalManifest, approvalManifestDigest, approvalManifestReference, validateDocumentReview } from "../src/modules/requirement/approval-manifest.ts";
@@ -8,10 +8,10 @@ import { summarizeApprovalManifest } from "../src/modules/requirement/approval-m
 
 function fixture() {
   const requirementId = uuidv7(), title = "渐进登录", body = "前言：保留邮箱。\r\n# 手机号 {#A}\r\n实现手机号登录。😀\r\n# 微信 {#B}\r\n微信需求未决，不实施。\r\n";
-  const partition = partitionProdDocument(requirementId, title, body);
+  const partition = partitionPrdDocument(requirementId, title, body);
   const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "a".repeat(64), from: null,
-    to: { commit: "b".repeat(40), hash: partition.prodHash } };
-  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prod: null }, currentGoal: "",
+    to: { commit: "b".repeat(40), hash: partition.prdHash } };
+  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prd: null }, currentGoal: "",
     candidates: [{ ...candidate, diff: "+手机号与明确未决微信" }], questions: [], priorDecisions: [], document: { candidate, title, body, partition } };
   const common = { basis: "explicit" as const, resolution: "direct" as const, candidateId: candidate.candidateId, requestId: null, actions: [], references: [], supersedes: [], scope: "仅手机号" };
   const result: InteractionInterpretation = { format: "interaction-interpretation/v1", referenceResolution: "none", entries: [
@@ -81,7 +81,7 @@ test("未知影响阻止动作，未确认建议不能标确定正文，未映�
 });
 test("manifest严格未知字段、hash、引用及64KiB拒绝；hash不含自身且键顺序无关", () => {
   const f = fixture(), m = f.manifest();
-  for (const changed of [{ ...m, manifestHash: "f".repeat(64) }, { ...m, prodBody: "payload" },
+  for (const changed of [{ ...m, manifestHash: "f".repeat(64) }, { ...m, prdBody: "payload" },
     { ...m, units: m.units.map((u, i) => i ? u : { ...u, decisionIds: ["USER-001"] }) },
     { ...m, units: m.units.map((u, i) => i ? u : { ...u, decisionIds: [u.decisionIds[0] + "\n"] }) }]) expect(() => checkApprovalManifest(changed, f.expected)).toThrow();
   expect(approvalManifestDigest(JSON.parse(JSON.stringify(m, null, 2)))).toBe(m.manifestHash);
@@ -151,14 +151,14 @@ test("问题审核按实际unitIds覆盖已答与未答；部分答复不关闭�
 test("段数不设单独上限：25 段的需求，一个动作与一个提问各覆盖全部 25 段，仍能生成并核验清单", () => {
   const requirementId = uuidv7(), title = "多段需求", ids = Array.from({ length: 25 }, (_, i) => `s${i}`);
   const body = ids.map((id) => `## 段 ${id} {#${id}}\n内容 ${id}。\n`).join("");
-  const partition = partitionProdDocument(requirementId, title, body);
+  const partition = partitionPrdDocument(requirementId, title, body);
   expect(partition.units).toHaveLength(26);
   const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "a".repeat(64), from: null,
-    to: { commit: "b".repeat(40), hash: partition.prodHash } };
+    to: { commit: "b".repeat(40), hash: partition.prdHash } };
   const requestId = uuidv7();
-  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prod: null }, currentGoal: "",
+  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prd: null }, currentGoal: "",
     candidates: [{ ...candidate, diff: "+多段" }], priorDecisions: [], document: { candidate, title, body, partition },
-    questions: [{ format: "interaction-question/v1", requestId, repoId: "d".repeat(64), basis: { requirementId, version: 1, epoch: 1, prod: null },
+    questions: [{ format: "interaction-question/v1", requestId, repoId: "d".repeat(64), basis: { requirementId, version: 1, epoch: 1, prd: null },
       candidate, actions: ["implement"], createdAt: 0, unitIds: ids, proposal: { conclusion: "确认全部段落", scope: "当前文档", references: [], supersedes: [] } }] };
   const common = { basis: "explicit" as const, resolution: "direct" as const, candidateId: candidate.candidateId, requestId: null, actions: [], references: [], supersedes: [], scope: "全部段落" };
   const result: InteractionInterpretation = { format: "interaction-interpretation/v1", referenceResolution: "explicit", entries: [

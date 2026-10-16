@@ -26,7 +26,7 @@ async function pmEscalator(w: Awaited<ReturnType<typeof createPmRunWorld>>) {
   const record = w.fixture.state.read(w.fixture.requirementId).data;
   const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
     workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
-    currentBaseline: () => ({ approvedRevision: 1, approvedProdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
+    currentBaseline: () => ({ approvedRevision: 1, approvedPrdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
     agents: { dispatch: async () => ({}), control: async () => ({}) } });
   cleanups.push(() => pmTools.dispose());
   const workflow = pmTools.tools.find((tool) => tool.name === "one_company_workflow_manage")!;
@@ -83,7 +83,7 @@ test("需求在草稿阶段提过问（问题记录基于旧版本）时，裁�
   const w = await world();
   const requestId = uuidv7();
   w.db((db) => db.create("interaction_questions_v1", requestId, { format: "interaction-question/v1", requestId, repoId: w.fixture.repoId,
-    basis: { requirementId: w.fixture.requirementId, version: 1, epoch: 1, prod: null }, candidate: null,
+    basis: { requirementId: w.fixture.requirementId, version: 1, epoch: 1, prd: null }, candidate: null,
     proposal: { conclusion: "速度怎么显示？", scope: "显示格式", references: [], supersedes: [] }, actions: [], createdAt: 1 }, requestId));
   const result = await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
   expect(result).toMatchObject({ status: "recorded", choice: "retry" });
@@ -94,7 +94,7 @@ test("M8M-AC2：需求累计提过 21 个问题时，面板裁决照常登记", 
   for (let i = 0; i < 21; i++) {
     const requestId = uuidv7();
     w.db((db) => db.create("interaction_questions_v1", requestId, { format: "interaction-question/v1", requestId, repoId: w.fixture.repoId,
-      basis: { requirementId: w.fixture.requirementId, version: 1, epoch: 1, prod: null }, candidate: null,
+      basis: { requirementId: w.fixture.requirementId, version: 1, epoch: 1, prd: null }, candidate: null,
       proposal: { conclusion: `问题 ${i}`, scope: "显示格式", references: [], supersedes: [] }, actions: [], createdAt: 1 }, requestId));
   }
   const result = await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
@@ -288,16 +288,16 @@ test("PM 对还没派出的 pending 任务 escalate：任务待用户裁决，�
   await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("用户决定：任务 failure")));
   const notice = JSON.stringify(w.provider.requests.findLast((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("用户决定：任务 failure"))!.messages.at(-1));
   expect(notice).toContain("plan_manage update");
-  expect(notice).not.toContain("等用户批准新的 prod 版本后");
+  expect(notice).not.toContain("等用户批准新的 PRD 版本后");
 });
 
-test("PM 上报还没派出的任务时，决策说明里选项 2 写明 PM 直接修改任务、不需要改 prod，固定的窗口选项文字不变", async () => {
+test("PM 上报还没派出的任务时，决策说明里选项 2 写明 PM 直接修改任务、不需要改 PRD，固定的窗口选项文字不变", async () => {
   const w = await pendingWorld();
   const failure = w.task("failure").taskId;
   await w.escalate(failure, "设置页没有用户通过的原型，不能派");
   const packet = w.manager.decisionPacket(w.fixture.requirementId, `task:${failure}`);
-  expect(packet).toContain("PM 直接修改任务，不需要改 prod");
-  expect(packet).not.toContain("经 prod 修改与批准后生效");
+  expect(packet).toContain("PM 直接修改任务，不需要改 PRD");
+  expect(packet).not.toContain("经 PRD 修改与批准后生效");
   const main = mainAdjudication(w, cleanups);
   const version = `task:${failure}:${w.db((db) => db.read<TaskRecord>(TASKS, failure)!.version)}`;
   await expect(main.adjudicate("改选项文字", [main.entry([`item:task:${failure}`, `version:${version}`, "choice:adjust"], { conclusion: "用户对任务 failure 的裁决", scope: "任务 failure" })],
@@ -403,7 +403,7 @@ test("M7-AC35：调整目标或范围后须等新的批准版本才能按新范�
 });
 
 test("裁决引用前缀只能出现在裁决条目里，裁决条目必须对应宿主给出的事项", () => {
-  const context = { basis: { requirementId: uuidv7(), version: 1, epoch: 1, prod: null }, currentGoal: "", candidates: [], questions: [], priorDecisions: [] } as InteractionContext;
+  const context = { basis: { requirementId: uuidv7(), version: 1, epoch: 1, prd: null }, currentGoal: "", candidates: [], questions: [], priorDecisions: [] } as InteractionContext;
   const taskId = uuidv7(), subject = { itemId: `task:${taskId}`, version: `task:${taskId}:3`, summary: "尝试记录" };
   const interpretation = (entry: Record<string, unknown>) => JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries: [entry] });
   const base = { kind: "adjudication", basis: "explicit", resolution: "direct", candidateId: null, requestId: null, actions: [], conclusion: "裁决", scope: "任务", supersedes: [] };
@@ -432,7 +432,7 @@ test("任务通过条件超过 8 条或轮数超过 100 时登记后停在待用
     "待你裁决：任务 login 通过条件 9 条，超过 8 条", "待你裁决：任务 failure 申请 150 轮，超过 100 轮"]));
   const packet = w.manager.decisionPacket(w.fixture.requirementId, `task:${login}`);
   expect(packet).toContain("拆分上限：通过条件 9 条，超过 8 条");
-  expect(packet).toContain("可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 prod）；3 终止这个任务");
+  expect(packet).toContain("可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 PRD）；3 终止这个任务");
   expect(adjudicationSubject({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, `task:${failure}`).summary)
     .toContain("拆分上限：申请 150 轮，超过 100 轮");
 
@@ -488,7 +488,7 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
   const record = w.fixture.state.read(w.fixture.requirementId).data;
   const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
     workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
-    currentBaseline: () => ({ approvedRevision: 1, approvedProdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
+    currentBaseline: () => ({ approvedRevision: 1, approvedPrdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
     agents: { dispatch: async () => ({}), control: async () => ({}) } });
   cleanups.push(() => pmTools.dispose());
   const pmWorkflow = pmTools.tools.find((tool) => tool.name === "one_company_workflow_manage")!;
@@ -510,7 +510,7 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
 });
 
 test("需求事项只能选择取消或拒绝，任务事项不能选择取消，完成报告只能通过或返工", () => {
-  const context = { basis: { requirementId: uuidv7(), version: 1, epoch: 1, prod: null }, currentGoal: "", candidates: [], questions: [], priorDecisions: [] } as InteractionContext;
+  const context = { basis: { requirementId: uuidv7(), version: 1, epoch: 1, prd: null }, currentGoal: "", candidates: [], questions: [], priorDecisions: [] } as InteractionContext;
   const requirementId = uuidv7(), taskId = uuidv7();
   const base = { kind: "adjudication", basis: "explicit", resolution: "direct", candidateId: null, requestId: null, actions: [], conclusion: "裁决", scope: "需求", supersedes: [] };
   const interpretation = (references: string[]) => JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries: [{ ...base, references }] });

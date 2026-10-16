@@ -27,7 +27,7 @@ const MAX_SEARCH_SNIPPET_CODEPOINTS = 800;
 const MAX_SEARCH_OUTPUT_CODEPOINTS = 24_000;
 
 const ENTITY_NAMESPACES = [
-  "files", "symbols", "code_edges", "source_fragments", "prod_metadata",
+  "files", "symbols", "code_edges", "source_fragments", "prd_metadata",
 ] as const;
 
 type EntityNamespace = typeof ENTITY_NAMESPACES[number];
@@ -101,17 +101,17 @@ export interface SourceFragment {
   fileHash: string;
 }
 
-export interface LocalProdMetadata {
+export interface LocalPrdMetadata {
   requirementId: string;
   source: "local";
   path: string;
-  fileName: "prod.md";
+  fileName: "prd.md";
   lifecycle: "draft" | "active" | "closing" | "closed";
   epoch: number;
   hash: string | null;
 }
 
-export interface ArchiveProdMetadata {
+export interface ArchivePrdMetadata {
   requirementId: string;
   source: "archive";
   path: string;
@@ -121,7 +121,7 @@ export interface ArchiveProdMetadata {
   hash: null;
 }
 
-export type ProdMetadata = LocalProdMetadata | ArchiveProdMetadata;
+export type PrdMetadata = LocalPrdMetadata | ArchivePrdMetadata;
 
 export interface IndexPublication {
   status: PublishedIndexState;
@@ -130,7 +130,7 @@ export interface IndexPublication {
   symbols: IndexedSymbol[];
   codeEdges: IndexedCodeEdge[];
   sourceFragments: SourceFragment[];
-  prodMetadata: ProdMetadata[];
+  prdMetadata: PrdMetadata[];
 }
 
 export interface IndexBuildToken {
@@ -161,7 +161,7 @@ export interface IndexSnapshot extends WorkspaceIdentity {
   symbols: IndexedSymbol[];
   codeEdges: IndexedCodeEdge[];
   sourceFragments: SourceFragment[];
-  prodMetadata: ProdMetadata[];
+  prdMetadata: PrdMetadata[];
 }
 
 export interface CurrentQueryIndex {
@@ -169,7 +169,7 @@ export interface CurrentQueryIndex {
   /** 服务逐文件授权及hash核对后提供的完整文件视图；不依赖持久片段的ID/排序。 */
   sourceFiles?: SourceFragment[];
   /** invalid 只提供诊断；普通查询不能回退旧正文。 */
-  snapshot: (Omit<IndexSnapshot, "prodMetadata" | "codeEdges"> & {
+  snapshot: (Omit<IndexSnapshot, "prdMetadata" | "codeEdges"> & {
     codeEdges: Array<IndexedCodeEdge & { sourceCertainty?: IndexedCodeEdge["certainty"]; targetOutsideScope?: boolean }>;
   }) | null;
 }
@@ -290,12 +290,12 @@ function uniqueStrings(value: unknown, maximum: number, item: (value: unknown) =
   if (new Set(result).size !== result.length) fail();
   return result;
 }
-function normalizedRelativePath(value: unknown, allowProdMetadata = false): string {
+function normalizedRelativePath(value: unknown, allowPrdMetadata = false): string {
   const path = text(value, 4096);
   if (path.startsWith("/") || path.includes("\\") || path.includes("//") || /[\u0000-\u001f\u007f]/u.test(path)) fail("invalid_path");
   const parts = path.split("/"), folded = parts.map((part) => part.toLowerCase());
   if (parts.some((part) => !part || part === "." || part === "..") || folded.includes(".git")) fail("invalid_path");
-  if (!allowProdMetadata && folded[0] === "docs" && folded[1] === "prod") fail("invalid_path");
+  if (!allowPrdMetadata && folded[0] === "docs" && folded[1] === "prd") fail("invalid_path");
   return path;
 }
 function safeFileName(value: unknown): string {
@@ -385,18 +385,18 @@ function validateFragment(input: unknown): SourceFragment {
   if (result.endLine < result.startLine) fail();
   return result;
 }
-function validateProdMetadata(input: unknown): ProdMetadata {
+function validatePrdMetadata(input: unknown): PrdMetadata {
   const value = exact(input, ["requirementId", "source", "path", "fileName", "lifecycle", "epoch", "hash"], "metadata_body_forbidden");
   if (typeof value.requirementId !== "string" || !UUID_V7_PATTERN.test(value.requirementId)) fail("metadata_body_forbidden");
   const requirementId = value.requirementId, source = oneOf(value.source, ["local", "archive"] as const);
   const path = normalizedRelativePath(value.path, true), fileName = safeFileName(value.fileName);
   if (source === "local") {
     const lifecycle = oneOf(value.lifecycle, ["draft", "active", "closing", "closed"] as const);
-    if (path !== `requirements/${requirementId}/prod.md` || fileName !== "prod.md") fail("metadata_body_forbidden");
-    return { requirementId, source, path, fileName: "prod.md", lifecycle, epoch: integer(value.epoch, 1), hash: nullableHash(value.hash) };
+    if (path !== `requirements/${requirementId}/prd.md` || fileName !== "prd.md") fail("metadata_body_forbidden");
+    return { requirementId, source, path, fileName: "prd.md", lifecycle, epoch: integer(value.epoch, 1), hash: nullableHash(value.hash) };
   }
   const parts = path.split("/");
-  if (value.lifecycle !== "unknown" || value.epoch !== null || value.hash !== null || parts.length !== 3 || parts[0]!.toLowerCase() !== "docs" || parts[1]!.toLowerCase() !== "prod" || parts[2] !== fileName || !fileName.startsWith(`${requirementId}.`) || !fileName.endsWith(".md")) fail("metadata_body_forbidden");
+  if (value.lifecycle !== "unknown" || value.epoch !== null || value.hash !== null || parts.length !== 3 || parts[0]!.toLowerCase() !== "docs" || parts[1]!.toLowerCase() !== "prd" || parts[2] !== fileName || !fileName.startsWith(`${requirementId}.`) || !fileName.endsWith(".md")) fail("metadata_body_forbidden");
   return { requirementId, source, path, fileName, lifecycle: "unknown", epoch: null, hash: null };
 }
 function uniqueBy<T>(values: T[], key: (value: T) => string): void {
@@ -404,7 +404,7 @@ function uniqueBy<T>(values: T[], key: (value: T) => string): void {
 }
 
 function validatePublication(input: IndexPublication): IndexPublication {
-  const value = exact(input, ["status", "diagnostics", "files", "symbols", "codeEdges", "sourceFragments", "prodMetadata"]);
+  const value = exact(input, ["status", "diagnostics", "files", "symbols", "codeEdges", "sourceFragments", "prdMetadata"]);
   let bodyPoints = 0;
   const sourceFragments = array(value.sourceFragments, MAX_FRAGMENTS).map((item) => {
     const fragment = validateFragment(item);
@@ -416,10 +416,10 @@ function validatePublication(input: IndexPublication): IndexPublication {
     status: oneOf(value.status, ["ready", "partial", "invalid"] as const),
     diagnostics: array(value.diagnostics, 1_000).map(validateDiagnostic),
     files: array(value.files, MAX_FILES).map(validateFile), symbols: array(value.symbols, MAX_SYMBOLS).map(validateSymbol),
-    codeEdges: array(value.codeEdges, MAX_EDGES).map(validateCodeEdge), sourceFragments, prodMetadata: array(value.prodMetadata, MAX_FILES).map(validateProdMetadata),
+    codeEdges: array(value.codeEdges, MAX_EDGES).map(validateCodeEdge), sourceFragments, prdMetadata: array(value.prdMetadata, MAX_FILES).map(validatePrdMetadata),
   };
   uniqueBy(publication.files, (item) => item.path); uniqueBy(publication.symbols, (item) => item.id); uniqueBy(publication.codeEdges, (item) => item.id);
-  uniqueBy(publication.sourceFragments, (item) => item.id); uniqueBy(publication.prodMetadata, (item) => `${item.source}:${item.path}`);
+  uniqueBy(publication.sourceFragments, (item) => item.id); uniqueBy(publication.prdMetadata, (item) => `${item.source}:${item.path}`);
   const files = new Map(publication.files.map((item) => [item.path, item]));
   const symbols = new Map(publication.symbols.map((item) => [item.id, item]));
   for (const file of publication.files) for (const id of file.symbolIds) if (symbols.get(id)?.path !== file.path) fail();
@@ -469,7 +469,7 @@ function publicationBaselineHash(identity: WorkspaceIdentity, publication: Index
     status: publication.status,
     files: sorted(publication.files, (item) => item.path).map(({ path, hash, parserVersion, status, kind, language }) => ({ path, hash, parserVersion, status, kind, language })),
     diagnostics: sorted(publication.diagnostics, (item) => `${item.path ?? ""}:${item.code}`),
-    prodMetadata: sorted(publication.prodMetadata, (item) => `${item.source}:${item.path}`),
+    prdMetadata: sorted(publication.prdMetadata, (item) => `${item.source}:${item.path}`),
   };
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
@@ -572,7 +572,7 @@ export class IndexStore {
       reconcile("symbols", publication.symbols, (item) => item.id);
       reconcile("code_edges", publication.codeEdges, (item) => item.id);
       reconcile("source_fragments", publication.sourceFragments, (item) => item.id);
-      reconcile("prod_metadata", publication.prodMetadata, (item) => `${item.source}:${item.path}`);
+      reconcile("prd_metadata", publication.prdMetadata, (item) => `${item.source}:${item.path}`);
       const updatedAt = this.time();
       const nextWorkspace: WorkspaceRow = {
         ...workspace.data, status: publication.status, currentGeneration: token.targetGeneration,
@@ -613,7 +613,7 @@ export class IndexStore {
         diagnostics: workspace.data.diagnostics,
         files: by(rows<IndexedFile>("files"), (item) => item.path), symbols: by(rows<IndexedSymbol>("symbols"), (item) => item.id),
         codeEdges: by(rows<IndexedCodeEdge>("code_edges"), (item) => item.id),
-        sourceFragments: by(rows<SourceFragment>("source_fragments"), (item) => item.id), prodMetadata: by(rows<ProdMetadata>("prod_metadata"), (item) => `${item.source}:${item.path}`),
+        sourceFragments: by(rows<SourceFragment>("source_fragments"), (item) => item.id), prdMetadata: by(rows<PrdMetadata>("prd_metadata"), (item) => `${item.source}:${item.path}`),
       };
     });
   }
@@ -661,7 +661,7 @@ export class IndexStore {
   }
 
   /**
-   * 固定只读接缝，不初始化/升级数据库，也不加载 prod_metadata。
+   * 固定只读接缝，不初始化/升级数据库，也不加载 prd_metadata。
    * paths 来自可信调用者已核验的允许文件清单；在 SQLite 返回正文之前应用范围。
    * metadataOnly 用于授权/真实文件检查前的无正文预检。实际全文件当前性由宿主核对。
    */

@@ -10,8 +10,8 @@ import { RequirementService, requirementIntentHash } from "../src/modules/requir
 import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
 import { createRequirementReadTool, RequirementReadError } from "../src/modules/pm/requirement-read-tool.ts";
 import type { RequirementReadBinding, RequirementReadToolOptions } from "../src/modules/pm/requirement-read-tool.ts";
-import * as storage from "../src/modules/requirement/prod-storage.ts";
-import { inspectProdStructure } from "../src/modules/requirement/prod-view.ts";
+import * as storage from "../src/modules/requirement/prd-storage.ts";
+import { inspectPrdStructure } from "../src/modules/requirement/prd-view.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture, GIT_ENV } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
@@ -22,7 +22,7 @@ afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.spl
 const BODY = "# 目标 {#goals}\n保留移动，空格跳跃😀。不做二段跳。\n# 黑盒场景 {#scenario.jump}\n前置：角色在地面。操作：起跳后空中再次按空格。结果：第二次不再起跳，最终落地。\n# 整体约束 {#constraints}\n暂停时所有动作输入无效。\n# 未决 {#unresolved}\n跳跃高度未确认，相关验收阻塞。\n";
 
 async function world(body = BODY) {
-  const root = await mkdtemp(join(temporaryRoot(), "prod-read-"));
+  const root = await mkdtemp(join(temporaryRoot(), "prd-read-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
@@ -85,9 +85,9 @@ async function world(body = BODY) {
   return { ...options, root, repo, service, state, created, approved, lease, workspace, worktree, binding, sessions, host, tool, create, save, bind, close };
 }
 function content(result: unknown) { return result as { text: string; source: { commit: string; revision: number; role: string };
-  structure: ReturnType<typeof inspectProdStructure> & { totalSections: number; startSection: number; endSection: number;
+  structure: ReturnType<typeof inspectPrdStructure> & { totalSections: number; startSection: number; endSection: number;
     remainingSections: number; complete: boolean };
-  coverage: { nextCursor: string | null; entireProdCovered: boolean; blocking: string[]; startByte: number; endByte: number;
+  coverage: { nextCursor: string | null; entirePrdCovered: boolean; blocking: string[]; startByte: number; endByte: number;
     totalBytes: number; selectedTextComplete: boolean; performance: string; verification: string } } }
 
 const LONG_STRUCTURE_BODY = Array.from({ length: 96 }, (_, i) =>
@@ -108,7 +108,7 @@ test.each([
   ["中文emoji与转义混合", '中😀"\\\u0001'.repeat(1_600)],
 ])("整包预算与复合续页无损重组：%s", async (_name, body) => {
   const w = await world(body!); const tool = await w.tool(w.binding("qa"));
-  const expected = inspectProdStructure(body!);
+  const expected = inspectPrdStructure(body!);
   const sections: typeof expected.sections = [];
   let cursor: string | undefined, combined = "", pages = 0;
   do {
@@ -123,8 +123,8 @@ test.each([
     expect(result.structure.remainingSections).toBe(expected.sections.length - result.structure.endSection);
     expect(result.structure.complete).toBe(result.structure.startSection === 0 && result.structure.endSection === expected.sections.length);
     expect(result.text.length + result.structure.sections.length).toBeGreaterThan(0);
-    expect(result.coverage.entireProdCovered).toBe(false);
-    expect(result.coverage.blocking).toEqual(["incomplete_prod_read", "global_constraints_and_unresolved_may_be_outside_page"]);
+    expect(result.coverage.entirePrdCovered).toBe(false);
+    expect(result.coverage.blocking).toEqual(["incomplete_prd_read", "global_constraints_and_unresolved_may_be_outside_page"]);
     expect(result.coverage.performance).toBe("unknown"); expect(result.coverage.verification).toBe("not_evaluated");
     combined += result.text; sections.push(...result.structure.sections);
     expect(result.structure.endSection).toBe(sections.length);
@@ -158,7 +158,7 @@ test("大转义diff按整包预算续读，来源仍是准确批准提交对", a
     expect(result).toMatchObject({ difference: { fromCommit: w.approved.commit, toCommit: approved.commit, fromRevision: 1, toRevision: 2 } });
     expect(page.coverage.startByte).toBe(Buffer.byteLength(combined));
     expect(page.coverage.endByte).toBeGreaterThan(page.coverage.startByte);
-    expect(page.coverage.entireProdCovered).toBe(false);
+    expect(page.coverage.entirePrdCovered).toBe(false);
     expect(page.coverage.blocking).toContain("global_constraints_and_unresolved_may_be_outside_page");
     combined += page.text; cursor = page.coverage.nextCursor ?? undefined;
   } while (cursor);
@@ -184,7 +184,7 @@ test("PM/reviewer/QA绑定真实SQLite与独立worktree，只读当前批准版�
     const result = content(await tool.execute({ action: "read" }));
     expect(result.text).toBe(BODY);
     expect(result.source).toMatchObject({ commit: w.approved.commit, revision: 1, role });
-    expect(result.coverage.entireProdCovered).toBe(true);
+    expect(result.coverage.entirePrdCovered).toBe(true);
     expect(JSON.stringify(result)).not.toContain(w.dataRoot);
     expect(JSON.stringify(result)).not.toContain(w.worktree.root);
     expect(JSON.stringify(result)).not.toContain("绝不能泄漏");
@@ -198,21 +198,21 @@ test("分页有界、中文emoji无损；最后局部页仍保守阻塞整体覆
     const result = content(await tool.execute(cursor ? { action: "next", cursor } : { action: "read", maxBytes: 31 }));
     expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(31);
     expect(result.text).not.toContain("�");
-    expect(result.coverage.entireProdCovered).toBe(false);
+    expect(result.coverage.entirePrdCovered).toBe(false);
     expect(result.coverage.blocking).toContain("global_constraints_and_unresolved_may_be_outside_page");
     combined += result.text; cursor = result.coverage.nextCursor ?? undefined;
   } while (cursor);
   expect(combined).toBe(BODY);
   const section = content(await tool.execute({ action: "read", sectionId: "scenario.jump" }));
   expect(section.text).toContain("前置"); expect(section.text).not.toContain("高度");
-  expect(section.coverage.blocking).toContain("incomplete_prod_read");
+  expect(section.coverage.blocking).toContain("incomplete_prd_read");
 }, 60_000);
 
 test("伪角色/身份/path/ref/checkRound参数及worker工厂拒绝，正文探针为零", async () => {
   const w = await world(); const tool = await w.tool();
   const probe = vi.spyOn(storage, "readVersion");
   for (const extra of [{ role: "main" }, { actor: "user" }, { requirementId: uuidv7() }, { source: "saved" },
-    { path: "prod.md" }, { ref: "HEAD" }, { checkRoundId: uuidv7() }, { toRevision: 1 }]) {
+    { path: "prd.md" }, { ref: "HEAD" }, { checkRoundId: uuidv7() }, { toRevision: 1 }]) {
     await expect(tool.execute({ action: "read", ...extra })).rejects.toMatchObject({ code: "invalid_shape" });
   }
   await expect(w.tool({ ...w.binding(), role: "worker" } as never)).rejects.toMatchObject({ code: "binding_invalid" });
@@ -344,7 +344,7 @@ test("service读取后关闭/宿主返回前撤权都拒绝，不回显下层受
   await expect(next.execute({ action: "read" })).rejects.toMatchObject({ code: "session_inactive" });
   vi.restoreAllMocks();
   const third = await world(); const failing = await third.tool();
-  vi.spyOn(RequirementService.prototype, "read").mockRejectedValueOnce(new Error("秘密受限正文 /private/dataRoot/prod.md"));
+  vi.spyOn(RequirementService.prototype, "read").mockRejectedValueOnce(new Error("秘密受限正文 /private/dataRoot/prd.md"));
   await expect(failing.execute({ action: "read" })).rejects.toMatchObject({ code: "read_failed" });
 });
 

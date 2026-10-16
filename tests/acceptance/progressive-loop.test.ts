@@ -49,7 +49,7 @@ const NEW_SESSION_QUESTIONS = [
   "快跑和跳跃的实现有没有相互影响？请依据代码和测试回答。",
   "快跑的测试正式通过了吗？",
   "这次改动让移动计算快了多少？",
-  "参考 docs/prod 里的旧需求，帮我写一个新需求：角色可以蹲下。",
+  "参考 docs/prd 里的旧需求，帮我写一个新需求：角色可以蹲下。",
   "用需求工具读一下已经完成的快跑需求的正文。",
   "我想把导出常量 WALK_SPEED 改名为 walkSpeed，这符合项目规范吗？",
 ];
@@ -118,11 +118,11 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
     const worktree = /^worktree (.+)$/m.exec(entry)![1]!, branch = /^branch refs\/heads\/(.+)$/m.exec(entry)![1]!;
     // 交付工具未开启：用户在外部提交归档，再把完成的需求分支合回主分支，代码与归档随之进入主分支
     const user = ["-c", "user.name=sample", "-c", "user.email=sample@localhost"];
-    await exec("git", ["add", "docs/prod"], { cwd: worktree });
+    await exec("git", ["add", "docs/prd"], { cwd: worktree });
     await exec("git", [...user, "commit", "-qm", "快跑需求归档"], { cwd: worktree });
     await exec("git", [...user, "merge", "--no-ff", "-m", "合并快跑", branch], { cwd: repo });
-    const archives = await readdir(join(repo, "docs", "prod"));
-    const sprintArchive = await readFile(join(repo, "docs", "prod", archives.find((name) => name.startsWith(sprintId))!), "utf8");
+    const archives = await readdir(join(repo, "docs", "prd"));
+    const sprintArchive = await readFile(join(repo, "docs", "prd", archives.find((name) => name.startsWith(sprintId))!), "utf8");
     await save("archive-sprint.md", sprintArchive);
 
     record({ type: "phase", phase: "jump", at: Date.now() });

@@ -12,7 +12,7 @@ import { readGit } from "../../core/exec/git-read.ts";
 import { listWorktrees, repositoryIdentity } from "../../core/storage/identity.ts";
 import { IndexStore, IndexStoreError } from "./index-store.ts";
 import type {
-  ArchiveProdMetadata,
+  ArchivePrdMetadata,
   CurrentQueryIndex,
   CodeEdgeEvidence,
   IndexDiagnostic,
@@ -93,7 +93,7 @@ export interface ProjectIndexArchiveIssue {
 }
 
 export interface ProjectIndexArchiveSummary {
-  metadata: ArchiveProdMetadata[];
+  metadata: ArchivePrdMetadata[];
   issues: ProjectIndexArchiveIssue[];
 }
 
@@ -333,7 +333,7 @@ function safeIssuePath(path: string): string | null {
 }
 
 function archiveSummary(entries: IndexArchiveMetadata[]): ProjectIndexArchiveSummary {
-  const metadata: ArchiveProdMetadata[] = [];
+  const metadata: ArchivePrdMetadata[] = [];
   const issues: ProjectIndexArchiveIssue[] = [];
   const counts = new Map<string, number>();
   for (const entry of entries) {
@@ -946,7 +946,7 @@ export class ProjectIndexService {
           status: "ready",
           diagnostics: [],
           files: [], symbols: [], codeEdges: [],
-          sourceFragments: [], prodMetadata: archiveSummary(scan.archives).metadata,
+          sourceFragments: [], prdMetadata: archiveSummary(scan.archives).metadata,
         };
         for (let index = 0; index < prepared.length; index++) {
           const item = prepared[index]!;

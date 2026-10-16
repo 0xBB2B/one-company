@@ -79,7 +79,7 @@ const RECORD_SQL = Object.freeze({
   list: "SELECT id, record_key, version, data FROM records WHERE namespace = ? ORDER BY id",
 });
 
-const INDEX_NAMESPACES = new Set(["workspaces", "index_generations", "files", "symbols", "code_edges", "code_bindings", "source_fragments", "prod_metadata"]);
+const INDEX_NAMESPACES = new Set(["workspaces", "index_generations", "files", "symbols", "code_edges", "code_bindings", "source_fragments", "prd_metadata"]);
 
 export interface StoredRecord<T = unknown> {
   id: string;
@@ -273,8 +273,8 @@ export class LocalDatabase {
             OR length(json_extract(new.data, '$.path')) NOT BETWEEN 1 AND 4096
             OR substr(json_extract(new.data, '$.path'), 1, 1) = '/'
             OR instr(json_extract(new.data, '$.path'), char(92)) > 0
-            OR lower(json_extract(new.data, '$.path')) = 'docs/prod'
-            OR lower(json_extract(new.data, '$.path')) LIKE 'docs/prod/%'
+            OR lower(json_extract(new.data, '$.path')) = 'docs/prd'
+            OR lower(json_extract(new.data, '$.path')) LIKE 'docs/prd/%'
             OR lower(json_extract(new.data, '$.path')) = '.git'
             OR lower(json_extract(new.data, '$.path')) LIKE '.git/%'
             OR lower(json_extract(new.data, '$.path')) LIKE '%/.git/%'
@@ -312,8 +312,8 @@ export class LocalDatabase {
             OR length(json_extract(new.data, '$.path')) NOT BETWEEN 1 AND 4096
             OR substr(json_extract(new.data, '$.path'), 1, 1) = '/'
             OR instr(json_extract(new.data, '$.path'), char(92)) > 0
-            OR lower(json_extract(new.data, '$.path')) = 'docs/prod'
-            OR lower(json_extract(new.data, '$.path')) LIKE 'docs/prod/%'
+            OR lower(json_extract(new.data, '$.path')) = 'docs/prd'
+            OR lower(json_extract(new.data, '$.path')) LIKE 'docs/prd/%'
             OR lower(json_extract(new.data, '$.path')) = '.git'
             OR lower(json_extract(new.data, '$.path')) LIKE '.git/%'
             OR lower(json_extract(new.data, '$.path')) LIKE '%/.git/%'

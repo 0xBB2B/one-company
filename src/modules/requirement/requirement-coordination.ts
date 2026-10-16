@@ -166,7 +166,7 @@ export function assertNoUnfinishedRequirementOperationsIn(db: LocalDatabase, req
 }
 
 /**
- * 供关闭、备份和恢复服务使用的元数据接口。它不读取 prod 正文；死亡占用不会按时间自动清除。
+ * 供关闭、备份和恢复服务使用的元数据接口。它不读取 PRD 正文；死亡占用不会按时间自动清除。
  */
 export class RequirementWriteCoordinator {
   private readonly path: string;

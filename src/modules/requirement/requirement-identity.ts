@@ -6,22 +6,22 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 const UUID_V7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const WINDOWS_UNSAFE_FILENAME_CHARACTERS = /[<>:"/\\|?*]/u;
 const CONTROL_CHARACTER = /\p{Cc}/u;
-const ARCHIVE_DIRECTORY_PARTS = ["docs", "prod"] as const;
+const ARCHIVE_DIRECTORY_PARTS = ["docs", "prd"] as const;
 const MAX_FILENAME_BYTES = 255;
 
-export interface CreatedProdDocument {
+export interface CreatedPrdDocument {
   bytes: Uint8Array;
-  prodHash: string;
+  prdHash: string;
   archivePath: string;
 }
 
-export interface ParsedProdDocument {
+export interface ParsedPrdDocument {
   requirementId: string;
   title: string;
   body: string;
 }
 
-export interface ProdArchiveInspection {
+export interface PrdArchiveInspection {
   paths: string[];
   conflict: boolean;
 }
@@ -94,7 +94,7 @@ export function prototypeArchivePathFor(requirementId: string, name: string): st
   return archivePathFor(requirementId, name).replace(/\.md$/, ".html");
 }
 
-export function createProdDocument(requirementId: string, title: string, body: string): CreatedProdDocument {
+export function createPrdDocument(requirementId: string, title: string, body: string): CreatedPrdDocument {
   assertRequirementId(requirementId);
   assertString(title, "title");
   assertString(body, "body");
@@ -106,12 +106,12 @@ export function createProdDocument(requirementId: string, title: string, body: s
   const bytes = new TextEncoder().encode(source);
   return {
     bytes,
-    prodHash: createHash("sha256").update(bytes).digest("hex"),
+    prdHash: createHash("sha256").update(bytes).digest("hex"),
     archivePath,
   };
 }
 
-export function parseProdDocument(bytes: Uint8Array, expectedRequirementId: string): ParsedProdDocument {
+export function parsePrdDocument(bytes: Uint8Array, expectedRequirementId: string): ParsedPrdDocument {
   assertRequirementId(expectedRequirementId);
   if (!(bytes instanceof Uint8Array)) fail("invalid_type", "bytes 必须是 Uint8Array");
 
@@ -119,26 +119,26 @@ export function parseProdDocument(bytes: Uint8Array, expectedRequirementId: stri
   try {
     source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
-    fail("invalid_utf8", "prod 文档不是合法 UTF-8");
+    fail("invalid_utf8", "PRD 文档不是合法 UTF-8");
   }
-  assertUnicodeScalarText(source, "prod 文档");
+  assertUnicodeScalarText(source, "PRD 文档");
 
   const firstPrefix = "---\nrequirementId: ";
-  if (!source.startsWith(firstPrefix)) fail("invalid_prod_format", "prod 文档 frontmatter 格式无效");
+  if (!source.startsWith(firstPrefix)) fail("invalid_prd_format", "PRD 文档 frontmatter 格式无效");
   const requirementEnd = source.indexOf("\n", firstPrefix.length);
-  if (requirementEnd < 0) fail("invalid_prod_format", "prod 文档缺少 title 元数据");
+  if (requirementEnd < 0) fail("invalid_prd_format", "PRD 文档缺少 title 元数据");
   const requirementId = source.slice(firstPrefix.length, requirementEnd);
   assertRequirementId(requirementId);
   if (requirementId !== expectedRequirementId) {
-    fail("requirement_identity_mismatch", "prod 文档身份与预期 requirementId 不一致");
+    fail("requirement_identity_mismatch", "PRD 文档身份与预期 requirementId 不一致");
   }
 
   const titlePrefix = "title: ";
   const titleStart = requirementEnd + 1;
-  if (!source.startsWith(titlePrefix, titleStart)) fail("invalid_prod_format", "prod 文档 title 元数据格式无效");
+  if (!source.startsWith(titlePrefix, titleStart)) fail("invalid_prd_format", "PRD 文档 title 元数据格式无效");
   const titleEnd = source.indexOf("\n", titleStart + titlePrefix.length);
   if (titleEnd < 0 || source.slice(titleEnd, titleEnd + 5) !== "\n---\n") {
-    fail("invalid_prod_format", "prod 文档 frontmatter 结束标记无效");
+    fail("invalid_prd_format", "PRD 文档 frontmatter 结束标记无效");
   }
 
   const encodedTitle = source.slice(titleStart + titlePrefix.length, titleEnd);
@@ -146,10 +146,10 @@ export function parseProdDocument(bytes: Uint8Array, expectedRequirementId: stri
   try {
     title = JSON.parse(encodedTitle);
   } catch {
-    fail("invalid_prod_format", "prod 文档 title 不是合法 JSON 字符串");
+    fail("invalid_prd_format", "PRD 文档 title 不是合法 JSON 字符串");
   }
   if (typeof title !== "string" || JSON.stringify(title) !== encodedTitle) {
-    fail("invalid_prod_format", "prod 文档 title 必须使用固定的 JSON 双引号编码");
+    fail("invalid_prd_format", "PRD 文档 title 必须使用固定的 JSON 双引号编码");
   }
   assertUnicodeScalarText(title, "title");
   archivePathFor(requirementId, title);
@@ -191,10 +191,10 @@ async function assertDirectoryUnchanged(path: string, before: Stats, label: stri
   if (!after || !sameObject(before, after)) fail("archive_directory_changed", `${label} 在枚举期间发生变化`);
 }
 
-export async function inspectProdArchives(
+export async function inspectPrdArchives(
   workspaceRoot: string,
   requirementId: string,
-): Promise<ProdArchiveInspection> {
+): Promise<PrdArchiveInspection> {
   assertRequirementId(requirementId);
   assertString(workspaceRoot, "workspaceRoot");
   if (!isAbsolute(workspaceRoot)) fail("invalid_workspace_root", "workspaceRoot 必须是绝对路径");
@@ -212,15 +212,15 @@ export async function inspectProdArchives(
     fail("archive_directory_escape", "docs 目录链接或越过 workspaceRoot");
   }
 
-  const prodPath = join(docsPath, ARCHIVE_DIRECTORY_PARTS[1]);
-  const prodStats = await requiredDirectory(prodPath, "docs/prod", true);
-  if (!prodStats) return { paths: [], conflict: false };
-  const actualProd = await realpath(prodPath);
-  if (actualProd !== prodPath || !pathWithin(root, actualProd)) {
-    fail("archive_directory_escape", "docs/prod 目录链接或越过 workspaceRoot");
+  const prdPath = join(docsPath, ARCHIVE_DIRECTORY_PARTS[1]);
+  const prdStats = await requiredDirectory(prdPath, "docs/prd", true);
+  if (!prdStats) return { paths: [], conflict: false };
+  const actualPrd = await realpath(prdPath);
+  if (actualPrd !== prdPath || !pathWithin(root, actualPrd)) {
+    fail("archive_directory_escape", "docs/prd 目录链接或越过 workspaceRoot");
   }
 
-  const entries = await readdir(prodPath, { withFileTypes: true });
+  const entries = await readdir(prdPath, { withFileTypes: true });
   const prefix = `${requirementId}.`;
   const paths: string[] = [];
   for (const entry of entries) {
@@ -237,14 +237,14 @@ export async function inspectProdArchives(
     if (!entry.isFile() || entry.isSymbolicLink()) {
       fail("unsafe_archive_entry", "对应归档必须是真实普通文件");
     }
-    const entryStats = await lstat(join(prodPath, entry.name));
+    const entryStats = await lstat(join(prdPath, entry.name));
     if (entryStats.isSymbolicLink() || !entryStats.isFile()) {
       fail("unsafe_archive_entry", "对应归档必须是真实普通文件");
     }
     paths.push(archivePath);
   }
 
-  await assertDirectoryUnchanged(prodPath, prodStats, "docs/prod");
+  await assertDirectoryUnchanged(prdPath, prdStats, "docs/prd");
   await assertDirectoryUnchanged(docsPath, docsStats, "docs");
   await assertDirectoryUnchanged(requestedRoot, rootStats, "workspaceRoot");
   paths.sort();

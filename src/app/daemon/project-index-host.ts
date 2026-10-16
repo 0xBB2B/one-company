@@ -72,7 +72,7 @@ export class ProjectIndexHost {
 
   private open(): Promise<ProjectIndexService> {
     return ProjectIndexService.open({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.options.repoId,
-      authorize: (request) => !this.closed && (request.path === null || !/^docs\/prod(?:\/|$)/iu.test(request.path)) });
+      authorize: (request) => !this.closed && (request.path === null || !/^docs\/prd(?:\/|$)/iu.test(request.path)) });
   }
 
   initialized(): boolean {
@@ -175,7 +175,7 @@ export class ProjectIndexHost {
     const capture: KnowledgeQueryCapture = {
       baseline: { repoId: workspace.repoId, workspaceId: workspace.workspaceId, root: workspace.root, branch: workspace.branch,
         generation: build.generation, baselineHash: build.baselineHash, observedSequence: 0, authorityEpoch: "daemon",
-        coverage: { kind: "allowed-inputs", complete: true, roots: ["."], excludedPaths: ["docs/prod"], policyHash }, files },
+        coverage: { kind: "allowed-inputs", complete: true, roots: ["."], excludedPaths: ["docs/prd"], policyHash }, files },
       build: { workspaceId: workspace.workspaceId, generation: build.generation, baselineHash: build.baselineHash },
     };
     for (const session of this.sessions.values()) session.close();

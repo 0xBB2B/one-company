@@ -7,10 +7,10 @@ import { Value } from "typebox/value";
 import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 import { canonicalJson } from "../../core/storage/strict-json.ts";
 import { ApprovalManifestReferenceSchema, hash, RequirementDocSpecSchema } from "./requirement-contracts.ts";
-import type { ApprovalSummary, ProdReference, WorkspaceBinding } from "./requirement-contracts.ts";
+import type { ApprovalSummary, PrdReference, WorkspaceBinding } from "./requirement-contracts.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
 import type { CandidateBinding, InteractionBasis } from "./user-interaction-format.ts";
-import type { ProdApprovalPartition } from "./prod-view.ts";
+import type { PrdApprovalPartition } from "./prd-view.ts";
 
 const strictObject = <P extends TProperties>(properties: P) => Type.Object(properties, { additionalProperties: false });
 const id = Type.String({ pattern: UUID_V7_PATTERN.source });
@@ -36,7 +36,7 @@ export interface ServiceAuthorizationRequest {
   readonly operationId?: string;
   readonly requirementId?: string;
   readonly intentHash?: string;
-  readonly prodHash?: `sha256:${string}`;
+  readonly prdHash?: `sha256:${string}`;
   readonly version?: number;
   readonly epoch?: number;
   readonly receiptId?: string;
@@ -53,10 +53,10 @@ export type LoadConfirmationInput = Static<typeof LoadConfirmationInput>;
 export interface ConfirmationContext {
   requirementId: string; repoId: string; version: number; epoch: number;
   basis: InteractionBasis; candidate: CandidateBinding; savedOperationId: string;
-  saved: ProdReference; approved: ProdReference | null; workspace: WorkspaceBinding | null;
-  title: string; body: string; partition: ProdApprovalPartition;
-  difference: { kind: "full_candidate"; from: null; to: ProdReference; text: string }
-    | { kind: "diff"; from: ProdReference; to: ProdReference; text: string };
+  saved: PrdReference; approved: PrdReference | null; workspace: WorkspaceBinding | null;
+  title: string; body: string; partition: PrdApprovalPartition;
+  difference: { kind: "full_candidate"; from: null; to: PrdReference; text: string }
+    | { kind: "diff"; from: PrdReference; to: PrdReference; text: string };
 }
 export type RequirementApprovalScope = { status: "available"; summary: ApprovalSummary };
 export const ReadRequirementInput = strictObject({ requirementId: id, source: Type.Union([Type.Literal("saved"), Type.Literal("approved")]), revision: Type.Optional(revision) });
@@ -76,7 +76,7 @@ export interface RequirementReceipt {
   operationId: string;
   requirementId: string;
   commit: string;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
   status: RequirementWriteStatus;
   archivePath: string;
   lifecycle: "draft" | "active";
@@ -90,7 +90,7 @@ export interface RequirementReadResult {
   requirementId: string;
   source: "saved" | "approved";
   commit: string;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
   version: number;
   epoch: number;
   title: string;
@@ -119,8 +119,8 @@ export interface RequirementMetadataResult {
   version: number;
   epoch: number;
   revision: number;
-  saved: { commit: string; prodHash: `sha256:${string}` } | null;
-  approved: { commit: string; prodHash: `sha256:${string}` } | null;
+  saved: { commit: string; prdHash: `sha256:${string}` } | null;
+  approved: { commit: string; prdHash: `sha256:${string}` } | null;
   archivePath: string | null;
   savedOperationId: string | null;
   approvalScope?: RequirementApprovalScope;
@@ -130,7 +130,7 @@ const REREAD = "重新读取需求后按最新版本再试";
 const INTERNAL = COMMON_ADVICE.internal_state;
 const REQUIREMENT_SERVICE_ADVICE = {
   invalid_shape: COMMON_ADVICE.invalid_shape,
-  invalid_prod_hash: { why: "需求正文指纹格式不对", next: INTERNAL.next },
+  invalid_prd_hash: { why: "需求正文指纹格式不对", next: INTERNAL.next },
   recovery_required: { why: "需求记录需要先恢复核对才能继续", next: "停止操作，请用户在主窗口完成恢复核对" },
   lifecycle_denied: { why: "需求当前的阶段不允许这个操作，可能正在关闭或已关闭", next: REREAD },
   authorization_required: { why: "宿主没有授权这次需求操作", next: "停止操作，不要重试；在回复里说明，由上级处理" },

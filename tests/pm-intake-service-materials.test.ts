@@ -17,7 +17,7 @@ test("可信来源目录：允许非scenario前缀", async () => {
   const fixture = await world();
   fixture.sourceProvider.scenarioIds = ["goal.login"];
   fixture.submissionProvider.mutate = (value) => {
-    value.goals = value.goals.filter((item) => !item.sourceRefs.some((ref) => ref.kind === "prod-scenario" && ref.id === "scenario.failure"));
+    value.goals = value.goals.filter((item) => !item.sourceRefs.some((ref) => ref.kind === "prd-scenario" && ref.id === "scenario.failure"));
     value.scenarioCoverage = value.scenarioCoverage.filter((item) => item.scenarioId === "goal.login");
   };
   await expect(fixture.intake.openRequest(fixture.call, fixture.operationId())).resolves.toMatchObject({
@@ -27,7 +27,7 @@ test("可信来源目录：允许非scenario前缀", async () => {
 
 test("可信来源目录：拒绝正文外场景", async () => {
   const unknown = await world();
-  unknown.sourceProvider.scenarioIds = ["not.in.prod"];
+  unknown.sourceProvider.scenarioIds = ["not.in.prd"];
   await expect(unknown.intake.openRequest(unknown.call, unknown.operationId())).rejects.toMatchObject({ code: "source_directory_mismatch" });
 });
 

@@ -88,7 +88,7 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
     const plan = track(await createPlanManageTool({ ...shared, authorize, grant: { ...planIdentity, lease: input.lease } }));
     return {
       tools: [
-        toPiTool("requirement_manage", "读取本需求已批准的 prod 正文、章节（read）或两个批准版本之间的准确差异（diff，按 fromRevision/toRevision 查，可重复查）；metadata 看状态；结果的 coverage.nextCursor 不为空时用 next 带上它读下一页；不能读取草稿、其他需求或已关闭需求。", REQUIREMENT_READ_PARAMETERS, read),
+        toPiTool("requirement_manage", "读取本需求已批准的 PRD 正文、章节（read）或两个批准版本之间的准确差异（diff，按 fromRevision/toRevision 查，可重复查）；metadata 看状态；结果的 coverage.nextCursor 不为空时用 next 带上它读下一页；不能读取草稿、其他需求或已关闭需求。", REQUIREMENT_READ_PARAMETERS, read),
         toPiTool("workflow_manage", "查看状态、进入/退出检查阶段、提交中断或等待决策、交付核对；交付核对通过后以 report 提交完成报告（note 写给用户的说明）等待用户验收；等待你处置的任务自己处理不了时，以 escalate（taskId 与 note：卡在哪、需要用户决定什么）交用户裁决；还没派出的任务遇到需要用户决定的问题（如缺原型、要新增依赖）也可以 escalate。关闭需求只能由用户经主代理决定。", WORKFLOW_MANAGE_PARAMETERS, workflow),
         toPiTool("verification_run", "在绑定工作区的受控沙箱里运行正式检查命令，或查询、停止运行；status 也能查看本需求子代理提交里引用的验证记录（命令、退出码和输出末尾）。", VERIFICATION_RUN_PARAMETERS, verification),
         toPiTool("plan_manage", "维护本需求计划：propose 提出、update 修改、confirm 冻结为可执行基线（AI 决策，不是用户授权）、read 读取、assess-update 逐任务影响复核。接手核对通过且有实施授权才能提出或修改。", PLAN_MANAGE_PARAMETERS, plan),
@@ -129,7 +129,7 @@ export function intakeSubmitTool(input: PmToolsInput): ToolDefinition {
       { why: `引用了任务上下文里没有的出处编号：${unknown.join("、")}`, next: "只引用任务上下文列出的出处编号，改正后重交" });
     const withoutOwnRef = scenariosWithoutOwnRef((params as { understanding: Parameters<typeof scenariosWithoutOwnRef>[0] }).understanding);
     if (withoutOwnRef.length) throw new AdvisedError("pm_intake_unknown_source",
-      { why: `这些场景覆盖项的出处里没有引用场景本身：${withoutOwnRef.join("、")}`, next: "每个场景覆盖项的 sourceRefs 里加上 kind 为 prod-scenario、id 为该场景编号的一条，改正后重交" });
+      { why: `这些场景覆盖项的出处里没有引用场景本身：${withoutOwnRef.join("、")}`, next: "每个场景覆盖项的 sourceRefs 里加上 kind 为 prd-scenario、id 为该场景编号的一条，改正后重交" });
     return { content: [{ type: "text", text: JSON.stringify({ status: "submitted", next: "等待主代理核对接手理解" }) }],
       details: { intakeBaseline: input.currentBaseline() } };
   }

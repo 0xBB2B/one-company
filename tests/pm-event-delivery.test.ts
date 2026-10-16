@@ -39,7 +39,7 @@ test("M7-AC1：主代理核对通过前不建立理解基线也不投递通知�
   expect(w.owner().context.baseline).toBeNull();
   await w.review();
   await until(() => w.owner().context.baseline?.revision === 1);
-  expect(w.owner().prodEvents?.understoodRevision).toBe(1);
+  expect(w.owner().prdEvents?.understoodRevision).toBe(1);
   expect(w.diffPrompts()).toHaveLength(0);
 
   const view = await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] }) as { tasks: Array<{ taskId: string; version: number }> };
@@ -55,7 +55,7 @@ test("M7-AC1：主代理核对通过前不建立理解基线也不投递通知�
   expect(second).toContain("revision 2 → 3");
   expect(second).not.toContain("jump 的行为");
   await until(() => w.owner().context.baseline?.revision === 3);
-  expect(w.owner().prodEvents?.understoodRevision).toBe(3);
+  expect(w.owner().prdEvents?.understoodRevision).toBe(3);
   expect(evaluatePmIntakeGate({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease }))
     .toMatchObject({ allowed: false, reasons: expect.arrayContaining(["impact_link_gap"]) });
 
@@ -218,7 +218,7 @@ test("M9：PM 暂停期间批准的新版本，恢复后照样送达准确差异
   await w.manager.resume(w.pm.runId);
   await until(() => w.diffPrompts().length === 1, 1_000);
   expect(text(w.diffPrompts()[0]!)).toContain(`revision 1 → ${revision}`);
-  await until(() => w.owner().prodEvents?.understoodRevision === revision, 1_000);
+  await until(() => w.owner().prdEvents?.understoodRevision === revision, 1_000);
 }, 120_000);
 
 test("M9：PM 带着运行中的 worker 被暂停，期间批准新版本，恢复后照样送达准确差异", async () => {

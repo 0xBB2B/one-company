@@ -151,12 +151,12 @@ function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSou
   return [
     `需求 ID：${record.requirementId}`,
     `工作区：${workspace.path}（分支 ${workspace.branch}）`,
-    `当前批准版本：revision ${record.revision}，prod hash ${record.approved!.hash}`,
+    `当前批准版本：revision ${record.revision}，PRD hash ${record.approved!.hash}`,
     ...approvedPrototypeListLines(prototypes),
     `PM 运行：${lease.runId}，fence ${lease.fence}`,
     "当前处于受限接手：先用 one_company_requirement_manage 读取完整批准正文，再提交接手理解等待主代理核对；核对通过前不能正式提出或更新计划，也不能派 worker。",
     ...(sources ? ["接手理解每项的出处只能引用下列编号（kind 与 id），scenarioCoverage 要逐个覆盖必需场景：",
-      `- prod-unit：${list(sources.prodUnitIds)}`, `- prod-scenario（必需场景）：${list(sources.prodScenarioIds)}`,
+      `- prd-unit：${list(sources.prdUnitIds)}`, `- prd-scenario（必需场景）：${list(sources.prdScenarioIds)}`,
       `- decision：${list(sources.decisionIds)}`,
       ...decisions.map((d) => `  - ${d.id}（${d.status}，涉及 ${list(d.unitIds)}）：${d.conclusion}`),
       `- question：${list(sources.questionIds)}`] : ["出处清单暂不可用，接手理解提交会被拒绝。"]),
@@ -334,7 +334,7 @@ export class RunManager {
         currentBaseline: () => {
           const current = state.read(input.requirementId).data;
           if (!current.approved || !current.approvalManifest) throw new Error("approval_baseline_missing");
-          return { approvedRevision: current.revision, approvedProdHash: current.approved.hash, approvalManifestHash: current.approvalManifest.reference.manifestHash };
+          return { approvedRevision: current.revision, approvedPrdHash: current.approved.hash, approvalManifestHash: current.approvalManifest.reference.manifestHash };
         },
         agents: {
           dispatch: (taskId, mode) => this.dispatchTask({ pmRunId: run.id, taskId, ...mode }),
@@ -913,7 +913,7 @@ export class RunManager {
   private knowledgeTool(caller: string): ToolDefinition[] {
     const index = this.options.index;
     if (!index) return [];
-    return [toPiTool("knowledge_query", "查询主仓库索引中的当前代码（不含 prod）。query.action：exact（by 为 path/id/symbol）、search（文字检索）或 facts；每页最多 20 项，结果标注索引代次与来源。",
+    return [toPiTool("knowledge_query", "查询主仓库索引中的当前代码（不含 PRD）。query.action：exact（by 为 path/id/symbol）、search（文字检索）或 facts；每页最多 20 项，结果标注索引代次与来源。",
       Type.Object({ query: KnowledgeTransportQuerySchema }, { additionalProperties: false }),
       { execute: (input) => index.query(`run:${caller}`, (input as { query: unknown }).query), dispose: () => index.endCaller(`run:${caller}`) })];
   }
@@ -1116,7 +1116,7 @@ export class RunManager {
       authorize: (request) => request.repoId === this.repoId && ["metadata", "readApproved"].includes(request.action) &&
         (request.requirementId === undefined || request.requirementId === record.requirementId) });
     const read = await service.read({ requirementId: record.requirementId, source: "approved" });
-    const titles = read.prodHash === `sha256:${hash}` ? headingTitlesOf(read.body) : new Map<string, string>();
+    const titles = read.prdHash === `sha256:${hash}` ? headingTitlesOf(read.body) : new Map<string, string>();
     this.headingCache.set(record.requirementId, { hash, titles });
     return titles;
   }
@@ -1188,7 +1188,7 @@ export class RunManager {
     });
   }
 
-  /** 用户终止任务后暂停整个需求；用户批准新的 prod 版本后只恢复 PM，此前暂停的子代理由 PM 决定。 */
+  /** 用户终止任务后暂停整个需求；用户批准新的 PRD 版本后只恢复 PM，此前暂停的子代理由 PM 决定。 */
   private async applyHalt(pmRunId: string): Promise<void> {
     const entry = this.sessions.get(pmRunId);
     if (!entry?.pm) return;

@@ -214,7 +214,7 @@ test("M6-AC1/AC20：记录真实退出码、超时、取消，性能条件在运
   expect((await formalEvidence(w, passed.verificationId))!.reasons).toEqual(["round_binding_invalid", "round_not_released"]);
 });
 
-test("M6-AC2/AC14：证据适用性按实际内容重算；检查期间外部改动或观察到 A→B→A 使本轮失效；prod 变化后旧结果原样保留但不再适用", async () => {
+test("M6-AC2/AC14：证据适用性按实际内容重算；检查期间外部改动或观察到 A→B→A 使本轮失效；PRD 变化后旧结果原样保留但不再适用", async () => {
   const w = await world();
   if (!darwin) return;
   const qa = await w.tool();
@@ -275,8 +275,8 @@ test("M6-AC2/AC14：证据适用性按实际内容重算；检查期间外部改
   expect((await formalEvidence(w, good.verificationId))!.applicable).toBe(true);
   await w.approve(BODY_2);
   const after = await formalEvidence(w, good.verificationId);
-  expect(after!.reasons).toEqual(["prod_changed"]);
-  expect(after!.approvedProdHash).toBe(good.baseline.approved.hash);
+  expect(after!.reasons).toEqual(["prd_changed"]);
+  expect(after!.approvedPrdHash).toBe(good.baseline.approved.hash);
   expect((await qa.execute({ action: "status", verificationId: good.verificationId }) as VerificationView).status).toBe("passed");
   await expect(w.open()).rejects.toMatchObject({ code: "pending_update" });
 });
@@ -300,7 +300,7 @@ test("M6-AC16：检查中收到已批准更新只能由有效 PM 记录 interrup
   expect(original.baseline.approved).toEqual(before.approved);
   expect(original.baseline.revision).toBe(before.revision);
   const evidence = await formalEvidence(w, original.verificationId);
-  expect(evidence!.reasons).toEqual(["round_not_released", "prod_changed"]);
+  expect(evidence!.reasons).toEqual(["round_not_released", "prd_changed"]);
   const applier = await w.changeApply();
   await expect(applier.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "check_phase_active" });
   w.rounds.release({ lease: w.lease, checkRoundId: round.checkRoundId });
@@ -453,14 +453,14 @@ test("debug 命令可写工作区（含 docs/spec 这类普通文件）、继承
   await expect(w.read("src/generated.txt")).resolves.toBe("gen\n");
   await worker.execute({ action: "run", kind: "debug", command: "mkdir -p docs/spec && echo x > docs/spec/x.rules.json", performance: NA });
   await expect(w.read("docs/spec/x.rules.json")).resolves.toBe("x\n");
-  for (const target of ["docs/prod/x.md", ".pi/agents/worker.md", ".pi/skills/requirement-doc/SKILL.md", "AGENTS.md"]) {
+  for (const target of ["docs/prd/x.md", ".pi/agents/worker.md", ".pi/skills/requirement-doc/SKILL.md", "AGENTS.md"]) {
     const run = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(target, ".."))} && echo x > ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
     expect(run.status).toBe("failed");
     await expect(w.read(target)).rejects.toMatchObject({ code: "ENOENT" });
   }
   const agentDir = join(w.dataRoot, "..");
   for (const target of [join(agentDir, "agents", "worker.md"), join(agentDir, "skills", "x", "SKILL.md"), join(agentDir, "trust.json"), join(w.repositoryRoot, ".pi", "agents", "worker.md"),
-    join(w.repositoryRoot, ".pi", "skills", "requirement-doc", "SKILL.md"), join(w.repositoryRoot, "AGENTS.md"), join(w.repositoryRoot, "docs", "prod", "x.md")]) {
+    join(w.repositoryRoot, ".pi", "skills", "requirement-doc", "SKILL.md"), join(w.repositoryRoot, "AGENTS.md"), join(w.repositoryRoot, "docs", "prd", "x.md")]) {
     const run = await worker.execute({ action: "run", kind: "debug", command: `mkdir -p ${JSON.stringify(join(target, ".."))}; echo x > ${JSON.stringify(target)}`, performance: NA }) as VerificationView;
     expect(run.status).toBe("failed");
     await expect(readFile(target, "utf8")).rejects.toMatchObject({ code: "ENOENT" });

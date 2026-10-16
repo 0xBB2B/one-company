@@ -64,8 +64,8 @@ async function runLoop(name: string, script: UserScript, verify: (result: LoopRe
     const runs = (await Promise.all(listed.map(async (item) => { const got = await runStore.get(item.id); return got.ok ? [got.run] : []; }))).flat() as RunRecord[];
     const worktrees = (await exec("git", ["worktree", "list", "--porcelain"], { cwd: repo })).stdout;
     const worktree = /^worktree (.+)$/gm.exec(worktrees.split("\n\n").slice(1).join("\n\n"))?.[1];
-    const archives = worktree ? await readdir(join(worktree, "docs", "prod")).catch(() => []) : [];
-    const archive = worktree && archives[0] ? await readFile(join(worktree, "docs", "prod", archives[0]), "utf8") : null;
+    const archives = worktree ? await readdir(join(worktree, "docs", "prd")).catch(() => []) : [];
+    const archive = worktree && archives[0] ? await readFile(join(worktree, "docs", "prd", archives[0]), "utf8") : null;
     if (archive !== null) await writeFile(join(evidence, "archive.md"), archive, { mode: 0o600 });
     const conventions = await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null);
     const report = {
@@ -116,16 +116,16 @@ async function expectArchiveDelivered(result: Pick<LoopResult, "agentDir" | "rep
   expect(archives.filter((name) => name.endsWith(".md"))).toHaveLength(1);
   const requirementId = archives[0]!.split(".")[0]!;
   const versions = join(agentDir, "one-company", "repos", repoId, "requirements", requirementId);
-  expect((await readFile(join(versions, "prod.md"), "utf8")).length).toBeGreaterThan(0);
+  expect((await readFile(join(versions, "prd.md"), "utf8")).length).toBeGreaterThan(0);
   expect(Number((await exec("git", ["rev-list", "--count", "HEAD"], { cwd: versions })).stdout.trim())).toBeGreaterThan(0);
-  expect((await exec("git", ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all", "docs/prod"], { cwd: worktree! })).stdout).toContain(archives[0]);
-  await exec("git", ["add", "docs/prod"], { cwd: worktree! });
+  expect((await exec("git", ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all", "docs/prd"], { cwd: worktree! })).stdout).toContain(archives[0]);
+  await exec("git", ["add", "docs/prd"], { cwd: worktree! });
   await exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", "commit", "-qm", "需求归档"], { cwd: worktree! });
   const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree! })).stdout.trim();
   const clone = join(dirname(repo), "member-clone");
   await exec("git", ["clone", "-q", repo, clone]);
   await exec("git", ["checkout", "-q", head], { cwd: clone });
-  expect(await readFile(join(clone, "docs", "prod", archives[0]!), "utf8")).toBe(archive);
+  expect(await readFile(join(clone, "docs", "prd", archives[0]!), "utf8")).toBe(archive);
   expect(archive).toContain("\n### 验收记录（关闭时由程序生成）\n");
 }
 

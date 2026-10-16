@@ -76,10 +76,10 @@ function cursor(w: Awaited<ReturnType<typeof world>>, lease = w.lease) {
 async function understandBaseline(w: Awaited<ReturnType<typeof world>>) {
   const notice = await w.events.poll({ lease: w.lease });
   expect(notice).toMatchObject({ status: "baseline_required", reason: "baseline_missing", revision: 1,
-    commit: w.approved.commit, prodHash: w.approved.prodHash });
+    commit: w.approved.commit, prdHash: w.approved.prdHash });
   const prepared = await w.events.prepareCurrentBaseline({ lease: w.lease });
   expect(JSON.stringify(prepared)).not.toContain("批准基线");
-  expect(prepared).toMatchObject({ revision: 1, commit: w.approved.commit, prodHash: w.approved.prodHash });
+  expect(prepared).toMatchObject({ revision: 1, commit: w.approved.commit, prdHash: w.approved.prdHash });
   consumePrepared(w.events, w.lease, prepared);
   await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: prepared.deliveryId });
   return prepared;
@@ -92,14 +92,14 @@ function asEvent(value: Awaited<ReturnType<RequirementEventService["poll"]>>): A
 
 function approvalEvents(database: string, requirementId: string) {
   return withDatabase(database, (db) => db.events(`requirement_events:${requirementId}`)
-    .filter((event) => (event.data as { kind?: string }).kind === "prod.approved"));
+    .filter((event) => (event.data as { kind?: string }).kind === "prd.approved"));
 }
 
 test("批准事件只存白名单元数据，基线登记与确认分离且响应重试幂等", async () => {
   const authorizations: RequirementEventAuthorizationRequest[] = [];
   const w = await world((request) => { authorizations.push(structuredClone(request)); return true; });
   const database = repositoryDatabase(w.options.dataRoot, w.options.repoId);
-  expect(w.state.pmOwner(w.created.requirementId)!.prodEvents).toBeUndefined();
+  expect(w.state.pmOwner(w.created.requirementId)!.prdEvents).toBeUndefined();
 
   const first = await w.events.prepareCurrentBaseline({ lease: w.lease });
   const repeated = await w.events.prepareCurrentBaseline({ lease: w.lease });
@@ -113,7 +113,7 @@ test("批准事件只存白名单元数据，基线登记与确认分离且响�
   await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: first.deliveryId });
   await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: first.deliveryId });
   expect(await cursor(w)).toMatchObject({ deliveredSequence: first.throughSequence, consumedSequence: first.throughSequence, understoodRevision: 1,
-    understood: { commit: w.approved.commit, hash: w.approved.prodHash.slice("sha256:".length) } });
+    understood: { commit: w.approved.commit, hash: w.approved.prdHash.slice("sha256:".length) } });
   await expect(w.events.prepareCurrentBaseline({ lease: w.lease })).rejects.toThrow(/baseline_not_required/);
 
   const raw = withDatabase(database, (db) => JSON.stringify({
@@ -121,7 +121,7 @@ test("批准事件只存白名单元数据，基线登记与确认分离且响�
     owner: db.read("pm_ownership", w.created.requirementId),
   }));
   expect(raw).not.toContain("批准基线");
-  expect(raw).not.toMatch(/"(?:body|prodBody|patch|diff|bytes|rawContent)"/);
+  expect(raw).not.toMatch(/"(?:body|prdBody|patch|diff|bytes|rawContent)"/);
   expect(JSON.stringify(authorizations)).not.toContain("批准基线");
 });
 
@@ -163,7 +163,7 @@ test("跨过草稿的连续批准事件带准确提交对，投递不等于消�
   const delivery = asEvent(await w.events.poll({ lease: w.lease }));
   expect(delivery.sequence).toBeGreaterThan(baseline.throughSequence);
   expect(delivery).toMatchObject({ redelivery: false, fromRevision: 1, toRevision: 2,
-    fromCommit: w.approved.commit, toCommit: second.commit, fromHash: w.approved.prodHash, toHash: second.prodHash });
+    fromCommit: w.approved.commit, toCommit: second.commit, fromHash: w.approved.prdHash, toHash: second.prdHash });
   const redelivery = asEvent(await w.events.poll({ lease: w.lease }));
   expect(redelivery.eventId).toBe(delivery.eventId);
   expect(redelivery.redelivery).toBe(true);
@@ -229,9 +229,9 @@ test("事件缺口不越过，active范围只用当前批准正文补完整基�
 
   const gap = await w.events.poll({ lease: w.lease });
   expect(gap).toMatchObject({ status: "baseline_required", reason: "event_gap", revision: 3,
-    commit: third.commit, prodHash: third.prodHash });
+    commit: third.commit, prdHash: third.prdHash });
   const prepared = await w.events.prepareCurrentBaseline({ lease: w.lease });
-  expect(prepared).toMatchObject({ revision: 3, commit: third.commit, prodHash: third.prodHash, throughSequence: latest.sequence });
+  expect(prepared).toMatchObject({ revision: 3, commit: third.commit, prdHash: third.prdHash, throughSequence: latest.sequence });
   consumePrepared(w.events, w.lease, prepared);
   await w.events.acknowledgeBaseline({ lease: w.lease, deliveryId: prepared.deliveryId });
   expect(await w.events.poll({ lease: w.lease })).toMatchObject({ status: "caught_up", consumedSequence: latest.sequence,
@@ -256,7 +256,7 @@ test("cursor超过剩余批准尾部时进入受控恢复，保留cursor、pendi
   const record = w.state.read(w.created.requirementId);
   expect(record.data).toMatchObject({ lifecycle: "active", recovery: "needs_review", recoveryReason: "history_unknown",
     pendingRevision: 2 });
-  expect(w.state.pmOwner(w.created.requirementId)!.prodEvents).toMatchObject({
+  expect(w.state.pmOwner(w.created.requirementId)!.prdEvents).toMatchObject({
     consumedSequence: before.consumedSequence, understoodRevision: 2,
   });
   expect(w.state.pmOwner(w.created.requirementId)!.lease).toBeNull();
@@ -351,7 +351,7 @@ test("基线句柄拒绝错误context、lease、version和跨需求使用", asyn
 
 test("归档路径元数据优先撤销旧active，删除不恢复；多路径冲突且终态原因保留", async () => {
   const w = await world();
-  const archiveDirectory = join(w.repo.root, "docs", "prod");
+  const archiveDirectory = join(w.repo.root, "docs", "prd");
   await mkdir(archiveDirectory, { recursive: true });
   const path = join(archiveDirectory, `${w.created.requirementId}.完成归档.md`);
   await writeFile(path, "ARCHIVE-BODY-MUST-NOT-BE-READ");
@@ -368,7 +368,7 @@ test("归档路径元数据优先撤销旧active，删除不恢复；多路径�
   expect(escalated).toMatchObject({ recovery: "needs_review", recoveryReason: "identity_conflict", result: "blocked" });
 
   const conflict = await world();
-  const conflictDirectory = join(conflict.repo.root, "docs", "prod");
+  const conflictDirectory = join(conflict.repo.root, "docs", "prd");
   const paths = [join(conflictDirectory, `${conflict.created.requirementId}.一.md`),
     join(conflictDirectory, `${conflict.created.requirementId}.二.md`)];
   const conflicted = await conflict.events.reconcileArchiveRisk({ requirementId: conflict.created.requirementId, paths });
@@ -379,7 +379,7 @@ test("归档路径元数据优先撤销旧active，删除不恢复；多路径�
   const intent = { operationId: uuidv7(), reason: "rejected" as const, receiptId: uuidv7() };
   const closing = terminal.state.beginClose({ requirementId: terminal.created.requirementId, version: current.version, intent });
   const closed = terminal.state.finishClose({ requirementId: terminal.created.requirementId, version: closing.version, operationId: intent.operationId });
-  const retainedPath = join(terminal.repo.root, "docs", "prod", `${terminal.created.requirementId}.风险线索.md`);
+  const retainedPath = join(terminal.repo.root, "docs", "prd", `${terminal.created.requirementId}.风险线索.md`);
   const retained = await terminal.events.reconcileArchiveRisk({ requirementId: terminal.created.requirementId, paths: [retainedPath] });
   expect(retained).toMatchObject({ lifecycle: "closed", closeReason: "rejected", recovery: "ready",
     epoch: closed.data.epoch, result: "terminal_retained" });

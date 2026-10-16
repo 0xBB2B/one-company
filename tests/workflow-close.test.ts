@@ -23,7 +23,7 @@ import { writePrototypeRevision } from "../src/modules/requirement/requirement-p
 import type { CloseResult, DeliveryReceipt } from "../src/modules/delivery/workflow-close.ts";
 import { resolveRepositoryRequirementDoc } from "../src/modules/requirement/requirement-doc.ts";
 import type { RequirementDocSpec } from "../src/modules/requirement/requirement-doc.ts";
-import { prodRequirementPath } from "../src/modules/requirement/prod-storage.ts";
+import { prdRequirementPath } from "../src/modules/requirement/prd-storage.ts";
 import { syncTargetBranch } from "../src/modules/pm/pm-sync.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
@@ -38,7 +38,7 @@ const BODY_2 = sections("保留移动并增加快跑。");
 const NA = { applicable: false as const, reason: "无性能影响" };
 const darwin = process.platform === "darwin";
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
-const finding = (kind: "blocking" | "suggestion" | "unverified") => ({ kind, targetRef: "prod:goals", evidenceRef: null, trigger: "按方向键", impact: "无法移动" });
+const finding = (kind: "blocking" | "suggestion" | "unverified") => ({ kind, targetRef: "prd:goals", evidenceRef: null, trigger: "按方向键", impact: "无法移动" });
 
 async function world(custom: { body: string; docSpec: RequirementDocSpec } | null = null) {
   const root = await mkdtemp(join(temporaryRoot(), "close-"));
@@ -143,9 +143,9 @@ async function world(custom: { body: string; docSpec: RequirementDocSpec } | nul
   const closeService = await RequirementCloseService.open({ ...options, stopAgents,
     authorize: (request) => request.action !== "close" || request.receiptId === undefined || receipts.has(request.receiptId) });
   cleanups.push(async () => closeService.dispose());
-  const prodFile = join(prodRequirementPath({ dataRoot: options.dataRoot, repoId: options.repoId, requirementId: created.requirementId }), "prod.md");
+  const prdFile = join(prdRequirementPath({ dataRoot: options.dataRoot, repoId: options.repoId, requirementId: created.requirementId }), "prd.md");
   return { ...options, state, service, created, lease, workspace, worktree, database, runs, run, tool, main, accept, verification, verdict, reader, changeApply, fullEvidence, receipt, receipts,
-    stopped, setStop: (mode: typeof stopBehaviour) => { stopBehaviour = mode; }, closeService, approve, prodFile };
+    stopped, setStop: (mode: typeof stopBehaviour) => { stopBehaviour = mode; }, closeService, approve, prdFile };
 }
 
 test("M6-AC3/AC21：completed 预检列出缺项且不改状态、不撤权；只缺关闭授权时等待；取消/拒绝只核对授权与停止条件", async () => {
@@ -198,7 +198,7 @@ test("M6-AC3/AC21：completed 预检列出缺项且不改状态、不撤权；�
   await expect(other.closeService.archive(other.created.requirementId)).rejects.toMatchObject({ code: "archive_unavailable" });
 });
 
-test("M6-AC11：预检通过后注入 prod 更新、代码变化、阻塞裁决或新写入使正式关闭被拒；重复关闭不重复副作用、不改关闭原因", async () => {
+test("M6-AC11：预检通过后注入 PRD 更新、代码变化、阻塞裁决或新写入使正式关闭被拒；重复关闭不重复副作用、不改关闭原因", async () => {
   const w = await world();
   if (!darwin) return;
   await w.fullEvidence();
@@ -255,14 +255,14 @@ test("M6-AC11：预检通过后注入 prod 更新、代码变化、阻塞裁决�
   expect(withDatabase(w.database, (db) => db.list(DELIVERY_RECEIPTS)).length).toBeGreaterThan(0);
 });
 
-test("M6-AC6/AC4/AC15：closing 生效即撤权，代理未停止或收尾失败保持 closing 与拒读；收尾成功才 closed 并向主代理返回无正文结果与清空上下文建议；本机 prod 字节保留", async () => {
+test("M6-AC6/AC4/AC15：closing 生效即撤权，代理未停止或收尾失败保持 closing 与拒读；收尾成功才 closed 并向主代理返回无正文结果与清空上下文建议；本机 PRD 字节保留", async () => {
   const w = await world();
   if (!darwin) return;
   const pmRun = await w.run("requirement");
   const { pm } = await w.fullEvidence();
   const main = await w.main();
   const receiptId = await w.accept();
-  const bytes = await readFile(w.prodFile);
+  const bytes = await readFile(w.prdFile);
   w.setStop("throw");
   const operationId = uuidv7();
   const first = await main.execute({ action: "close", reason: "completed", receiptId, operationId }) as CloseResult;
@@ -285,13 +285,13 @@ test("M6-AC6/AC4/AC15：closing 生效即撤权，代理未停止或收尾失败
     message: `需求 ${w.created.requirementId} 已完成，PM 及相关子代理已结束。建议清空上下文后再开始新的需求，避免旧需求影响后续判断。` });
   expect((await w.runs.get(pmRun) as { run: { state: string } }).run.state).toBe("stopped");
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closed");
-  await expect(readFile(w.prodFile)).resolves.toEqual(bytes);
+  await expect(readFile(w.prdFile)).resolves.toEqual(bytes);
   await expect((await w.reader()).execute({ action: "metadata" })).resolves.toEqual({ kind: "metadata", requirementId: w.created.requirementId, lifecycle: "closed" });
   expect(w.stopped.length).toBe(3);
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closed");
 });
 
-test("M6-AC10：只有 completed 关闭可归档最终 prod；同内容幂等，不同内容阻塞不覆盖；归档失败保持待恢复且需求仍 closed", async () => {
+test("M6-AC10：只有 completed 关闭可归档最终 PRD；同内容幂等，不同内容阻塞不覆盖；归档失败保持待恢复且需求仍 closed", async () => {
   const w = await world();
   if (!darwin) return;
   await w.fullEvidence();
@@ -299,7 +299,7 @@ test("M6-AC10：只有 completed 关闭可归档最终 prod；同内容幂等，
   const receiptId = await w.accept();
   const archivePath = (await w.service.metadata(w.created.requirementId)).archivePath!;
   const target = join(w.worktree.root, ...archivePath.split("/"));
-  await mkdir(join(w.worktree.root, "docs", "prod"), { recursive: true });
+  await mkdir(join(w.worktree.root, "docs", "prd"), { recursive: true });
   await writeFile(target, "别人的文件\n");
   const closed = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
   expect(closed).toMatchObject({ status: "closed", archive: { path: archivePath, status: "blocked" } });
@@ -332,8 +332,8 @@ test("M8A-AC8/AC9：归档保留批准版正文每个字节，实现记录插在
   expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
   const archivePath = (closed as { archive: { path: string } }).archive.path;
   const bytes = await readFile(join(w.worktree.root, ...archivePath.split("/")));
-  const prod = (await readFile(w.prodFile, "utf8")), record = bytes.toString("utf8");
-  const cut = prod.indexOf("## 验收 {#acceptance}"), head = prod.slice(0, cut), tail = prod.slice(cut);
+  const prd = (await readFile(w.prdFile, "utf8")), record = bytes.toString("utf8");
+  const cut = prd.indexOf("## 验收 {#acceptance}"), head = prd.slice(0, cut), tail = prd.slice(cut);
   const implementation = record.indexOf("### 实现记录（关闭时由程序生成）"), acceptanceHeading = record.indexOf(tail), acceptance = record.indexOf("\n### 验收记录（关闭时由程序生成）\n") + 1;
   expect(record.startsWith(head)).toBe(true);
   expect(head.endsWith("由 PM 规划。\n\n")).toBe(true);
@@ -350,7 +350,7 @@ test("M8A-AC8/AC9：归档保留批准版正文每个字节，实现记录插在
   expect(record).not.toContain("提交说明由模型撰写");
   for (const expected of [`检查轮：${round.checkRoundId}`, `代码提交：${codeHead}`, "`true`", "结果：通过", "退出码：0", "用时：", "性能：不适用（模型撰写的理由：无性能影响）",
     "QA 结论：无阻塞、无未验证项", "QA 说明（模型撰写，仅供参考）：", "> 三个场景都通过", "> ### 验收记录（关闭时由程序生成）", "> - 正式测试：伪造",
-    "[建议] prod:goals"]) expect(record).toContain(expected);
+    "[建议] prd:goals"]) expect(record).toContain(expected);
   expect(record).not.toMatch(/^- 正式测试：伪造/m);
   const status = w.closeService.status(w.created.requirementId) as { archive: { archiveHash: string } };
   expect(status.archive.archiveHash).toBe(sha(bytes));
@@ -379,9 +379,9 @@ test("M8C-AC3/AC5：归档按批准时的规范快照插入两段记录，验收
   expect(at("### 验收记录（关闭时由程序生成）")).toBeLessThan(at("## 实现 {#build}"));
   expect(at("由 PM 规划。\n")).toBeLessThan(at("### 实现记录（关闭时由程序生成）"));
   expect(at("### 实现记录（关闭时由程序生成）")).toBeLessThan(at("## 风险 {#risk}"));
-  const prod = await readFile(w.prodFile, "utf8"), checkEnd = prod.indexOf("## 实现 {#build}");
-  expect(record.startsWith(prod.slice(0, checkEnd))).toBe(true);
-  expect(record.endsWith(prod.slice(prod.indexOf("## 风险 {#risk}")))).toBe(true);
+  const prd = await readFile(w.prdFile, "utf8"), checkEnd = prd.indexOf("## 实现 {#build}");
+  expect(record.startsWith(prd.slice(0, checkEnd))).toBe(true);
+  expect(record.endsWith(prd.slice(prd.indexOf("## 风险 {#risk}")))).toBe(true);
 });
 
 test("M7B-AC1/AC5：完成报告绑定交付依据，新报告作废旧报告；用户返工后依据未变不能重新提交，经新的检查轮后可重新提交且只认新报告的通过", async () => {
@@ -440,7 +440,7 @@ async function closeCompleted(w: Awaited<ReturnType<typeof world>>) {
   return await (await w.main()).execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
 }
 
-const htmlTarget = (w: Awaited<ReturnType<typeof world>>, name: string) => join(w.worktree.root, "docs", "prod", `${w.created.requirementId}.${name}.html`);
+const htmlTarget = (w: Awaited<ReturnType<typeof world>>, name: string) => join(w.worktree.root, "docs", "prd", `${w.created.requirementId}.${name}.html`);
 const storedArchive = (w: Awaited<ReturnType<typeof world>>) => withDatabase(w.database, (db) => db.read<{ archive: { prototypes: unknown } }>(CLOSE_OPERATIONS, w.created.requirementId)!.data.archive);
 
 test("归档把最终批准版本的原型 html 和正文一起写进归档目录，内容与原型文件逐字节相同，关闭记录登记每份原型", async () => {
@@ -449,20 +449,20 @@ test("归档把最终批准版本的原型 html 和正文一起写进归档目�
   await approvePrototypes(w);
   const closed = await closeCompleted(w);
   expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
-  const dir = join(w.worktree.root, "docs", "prod");
+  const dir = join(w.worktree.root, "docs", "prd");
   const names = await readdir(dir);
   expect(names.filter((name) => name.endsWith(".md"))).toHaveLength(1);
   expect(names.filter((name) => name.endsWith(".html")).sort()).toEqual([`${w.created.requirementId}.命令行输出.html`, `${w.created.requirementId}.设置页.html`].sort());
   expect(names).toHaveLength(3);
   for (const item of PROTOTYPES) expect(await readFile(htmlTarget(w, item.name))).toEqual(Buffer.from(item.html));
-  expect(storedArchive(w).prototypes).toEqual(PROTOTYPES.map((item) => ({ path: `docs/prod/${w.created.requirementId}.${item.name}.html`, name: item.name, version: item.version, hash: sha(item.html) })));
+  expect(storedArchive(w).prototypes).toEqual(PROTOTYPES.map((item) => ({ path: `docs/prd/${w.created.requirementId}.${item.name}.html`, name: item.name, version: item.version, hash: sha(item.html) })));
 });
 
 test("归档位置已有内容不同的同名原型 html 时归档受阻、不覆盖，清掉后再归档成功", async () => {
   const w = await world();
   if (!darwin) return;
   await approvePrototypes(w);
-  await mkdir(join(w.worktree.root, "docs", "prod"), { recursive: true });
+  await mkdir(join(w.worktree.root, "docs", "prd"), { recursive: true });
   await writeFile(htmlTarget(w, "设置页"), "别人的文件\n");
   const closed = await closeCompleted(w);
   expect(closed).toMatchObject({ status: "closed", archive: { status: "blocked" } });
@@ -477,7 +477,7 @@ test("归档位置已有内容相同的原型 html 时跳过写入，归档仍�
   const w = await world();
   if (!darwin) return;
   await approvePrototypes(w);
-  await mkdir(join(w.worktree.root, "docs", "prod"), { recursive: true });
+  await mkdir(join(w.worktree.root, "docs", "prd"), { recursive: true });
   await writeFile(htmlTarget(w, "设置页"), PROTOTYPES[0].html);
   const before = (await stat(htmlTarget(w, "设置页"))).mtimeMs;
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -498,7 +498,7 @@ test("原型源文件内容与批准时的指纹不符时归档受阻，错误�
   expect(failure!.advice.why).toContain("3");
   expect(failure!.advice.next.length).toBeGreaterThan(0);
   expect(w.closeService.status(w.created.requirementId)).toMatchObject({ archive: { status: "blocked" } });
-  expect(await readdir(join(w.worktree.root, "docs", "prod")).catch(() => [] as string[])).toEqual([]);
+  expect(await readdir(join(w.worktree.root, "docs", "prd")).catch(() => [] as string[])).toEqual([]);
 });
 
 test("原型源文件已不存在时归档受阻（不是待重试），错误写明哪份原型第几版，不带系统原始报错", async () => {
@@ -514,7 +514,7 @@ test("原型源文件已不存在时归档受阻（不是待重试），错误�
   expect(failure!.advice.why).not.toMatch(/ENOENT/);
   expect(failure!.advice.next.length).toBeGreaterThan(0);
   expect(w.closeService.status(w.created.requirementId)).toMatchObject({ archive: { status: "blocked" } });
-  expect(await readdir(join(w.worktree.root, "docs", "prod")).catch(() => [] as string[])).toEqual([]);
+  expect(await readdir(join(w.worktree.root, "docs", "prd")).catch(() => [] as string[])).toEqual([]);
 });
 
 test("原型源文件不存在与指纹不符是同一类受阻原因", async () => {
@@ -556,7 +556,7 @@ test("某份原型的目标位置暂时是目录导致归档中断，恢复后�
   expect(closed.archive.status).not.toBe("archived");
   await rm(htmlTarget(w, "命令行输出"), { recursive: true });
   expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived" });
-  const names = await readdir(join(w.worktree.root, "docs", "prod"));
+  const names = await readdir(join(w.worktree.root, "docs", "prd"));
   expect(names).toHaveLength(3);
   for (const item of PROTOTYPES) expect(await readFile(htmlTarget(w, item.name))).toEqual(Buffer.from(item.html));
 });
@@ -570,14 +570,14 @@ test("早先版本带原型、最终批准版本不带原型时，归档的原�
   await w.state.assessUpdate({ lease: w.lease, version: w.state.read(w.created.requirementId).version, revision: w.state.read(w.created.requirementId).data.revision, assessmentId: uuidv7(), tasks: [{ taskId: "move", impact: "unaffected", reason: "章节未变" }] });
   expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
   expect(storedArchive(w).prototypes).toEqual([]);
-  expect((await readdir(join(w.worktree.root, "docs", "prod"))).filter((name) => name.endsWith(".html"))).toEqual([]);
+  expect((await readdir(join(w.worktree.root, "docs", "prd"))).filter((name) => name.endsWith(".html"))).toEqual([]);
 });
 
 test("最终批准版本没有原型时归档只有正文，关闭记录的原型清单为空", async () => {
   const w = await world();
   if (!darwin) return;
   expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
-  const names = await readdir(join(w.worktree.root, "docs", "prod"));
+  const names = await readdir(join(w.worktree.root, "docs", "prd"));
   expect(names).toHaveLength(1);
   expect(names[0]).toMatch(/\.md$/);
   expect(storedArchive(w).prototypes).toEqual([]);

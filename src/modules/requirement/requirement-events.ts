@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { uuidv7 } from "../../core/storage/database.ts";
 import { checked, commands, commit, hash, id, object, PmLease, positive, RequirementStateError } from "./requirement-contracts.ts";
-import type { PmEventCursor, PmLease as PmLeaseData, ProdReference as ProdReferenceData } from "./requirement-contracts.ts";
+import type { PmEventCursor, PmLease as PmLeaseData, PrdReference as PrdReferenceData } from "./requirement-contracts.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
 import type { RequirementAction, RequirementStoreOptions } from "./requirement-state.ts";
 import { RequirementService } from "./requirement-service.ts";
@@ -46,7 +46,7 @@ export interface RequirementEventAuthorizationRequest {
   readonly sequence?: number;
   readonly revision?: number;
   readonly commit?: string;
-  readonly prodHash?: `sha256:${string}`;
+  readonly prdHash?: `sha256:${string}`;
   readonly version?: number;
   readonly deliveryId?: string;
   readonly handle?: string;
@@ -57,7 +57,7 @@ export interface RequirementEventServiceOptions {
   repositoryRoot: string;
   dataRoot: string;
   repoId: string;
-  /** 可信宿主同步核验调用者与PM租约；回调只收到固定元数据，不含prod正文或diff。 */
+  /** 可信宿主同步核验调用者与PM租约；回调只收到固定元数据，不含PRD正文或diff。 */
   authorize?: (request: Readonly<RequirementEventAuthorizationRequest>) => boolean;
   now?: () => number;
 }
@@ -85,7 +85,7 @@ export interface BaselineRequiredDelivery {
   requirementId: string;
   revision: number;
   commit: string;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
   version: number;
   epoch: number;
 }
@@ -122,7 +122,7 @@ export interface PreparedBaselineDelivery {
   throughSequence: number;
   revision: number;
   commit: string;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
   version: number;
   epoch: number;
   contextGeneration: number;
@@ -159,7 +159,7 @@ const REQUIREMENT_EVENT_ADVICE: Readonly<Record<string, FailureAdvice>> = {
   disposed: { why: "需求事件服务已关闭", next: "等下一次自动投递，不用处理" },
   duplicate_archive_path: { why: "有重复的归档路径", next: "停止操作，把这段原因告诉用户" },
   epoch_changed: { why: "需求在投递期间被关闭或重新开启", next: "停止操作，把这段原因告诉主代理" },
-  invalid_prod_hash: { why: "需求正文的指纹格式不对", next: "停止操作，把这段原因告诉用户" },
+  invalid_prd_hash: { why: "需求正文的指纹格式不对", next: "停止操作，把这段原因告诉用户" },
   recovery_required: { why: "需求记录需要恢复核对", next: "停止正式规划与派工，把这段原因告诉主代理，由用户处理" },
   unknown_delivery_handle: { why: "投递凭据不存在或已被清除", next: "等下一次自动投递；反复出现就把这段原因告诉主代理" },
 };
@@ -183,12 +183,12 @@ function freeze<T>(value: T): T {
 }
 
 function sha256(hashValue: string): `sha256:${string}` {
-  if (!/^[0-9a-f]{64}$/.test(hashValue)) throw new RequirementEventServiceError("invalid_prod_hash");
+  if (!/^[0-9a-f]{64}$/.test(hashValue)) throw new RequirementEventServiceError("invalid_prd_hash");
   return `sha256:${hashValue}`;
 }
 
 function rawHash(hashValue: string): string {
-  if (!/^sha256:[0-9a-f]{64}$/.test(hashValue)) throw new RequirementEventServiceError("invalid_prod_hash");
+  if (!/^sha256:[0-9a-f]{64}$/.test(hashValue)) throw new RequirementEventServiceError("invalid_prd_hash");
   return hashValue.slice("sha256:".length);
 }
 
@@ -197,7 +197,7 @@ function leaseAuthorization(action: RequirementEventAction, repoId: string, leas
     epoch: lease.epoch, fence: lease.fence, contextGeneration: lease.contextGeneration };
 }
 
-function sameReference(left: ProdReferenceData, right: ProdReferenceData): boolean {
+function sameReference(left: PrdReferenceData, right: PrdReferenceData): boolean {
   return left.commit === right.commit && left.hash === right.hash;
 }
 
@@ -215,7 +215,7 @@ function cursorResult(requirementId: string, cursor: PmEventCursor): CaughtUpDel
 }
 
 /**
- * PM可靠消费已批准prod事件的内部接缝。基线只登记 PM 的理解基线，不投递正文：准备阶段核对存储里的
+ * PM可靠消费已批准PRD事件的内部接缝。基线只登记 PM 的理解基线，不投递正文：准备阶段核对存储里的
  * 批准正文与登记指纹一致后签发一次性句柄，消费时同步做最终核验，再由确认推进游标。
  */
 export class RequirementEventService {
@@ -283,7 +283,7 @@ export class RequirementEventService {
           (inner.requirementId !== undefined && inner.requirementId !== request.requirementId) ||
           (inner.epoch !== undefined && inner.epoch !== request.epoch)) return false;
         this.authorize({ ...request, epoch: inner.epoch ?? request.epoch, version: inner.version,
-          prodHash: inner.prodHash ?? request.prodHash });
+          prdHash: inner.prdHash ?? request.prdHash });
         return true;
       },
     };
@@ -343,7 +343,7 @@ export class RequirementEventService {
     }
     if (result.status === "event") {
       const eventAuthorization = { ...authorization, eventId: result.eventId, sequence: result.sequence,
-        revision: result.event.toRevision, commit: result.event.to.commit, prodHash: sha256(result.event.to.hash) };
+        revision: result.event.toRevision, commit: result.event.to.commit, prdHash: sha256(result.event.to.hash) };
       this.authorize(eventAuthorization);
       const event = result.event;
       return {
@@ -354,10 +354,10 @@ export class RequirementEventService {
       };
     }
     if (result.status === "baseline_required") {
-      this.authorize({ ...authorization, revision: result.revision, commit: result.reference.commit, prodHash: sha256(result.reference.hash) });
+      this.authorize({ ...authorization, revision: result.revision, commit: result.reference.commit, prdHash: sha256(result.reference.hash) });
       await state.approvedEventCursor(request);
       return { status: "baseline_required", reason: result.reason, requirementId: request.lease.requirementId,
-        revision: result.revision, commit: result.reference.commit, prodHash: sha256(result.reference.hash),
+        revision: result.revision, commit: result.reference.commit, prdHash: sha256(result.reference.hash),
         version: result.version, epoch: result.epoch };
     }
     this.authorize(authorization);
@@ -376,16 +376,16 @@ export class RequirementEventService {
     const verified = await service.verifyApproved(request.lease.requirementId);
     if (verified.epoch !== request.lease.epoch) throw new RequirementEventServiceError("epoch_changed");
     const metadata = await service.metadata(request.lease.requirementId);
-    const reference = { commit: verified.commit, hash: rawHash(verified.prodHash) };
+    const reference = { commit: verified.commit, hash: rawHash(verified.prdHash) };
     if (metadata.version !== verified.version || metadata.epoch !== verified.epoch || metadata.revision !== requirement.revision ||
-      !metadata.approved || metadata.approved.commit !== verified.commit || metadata.approved.prodHash !== verified.prodHash ||
+      !metadata.approved || metadata.approved.commit !== verified.commit || metadata.approved.prdHash !== verified.prdHash ||
       !sameReference(reference, requirement.reference)) throw new RequirementEventServiceError("baseline_changed");
     const delivery = await state.issueApprovedBaseline({ lease: request.lease, version: verified.version, epoch: verified.epoch,
       revision: metadata.revision, reference });
     const handle = uuidHandle();
     const prepared = freeze({ kind: "baseline" as const, handle, requirementId: request.lease.requirementId,
       deliveryId: delivery.deliveryId, throughSequence: delivery.throughSequence, revision: delivery.revision,
-      commit: delivery.reference.commit, prodHash: sha256(delivery.reference.hash), version: delivery.recordVersion,
+      commit: delivery.reference.commit, prdHash: sha256(delivery.reference.hash), version: delivery.recordVersion,
       epoch: delivery.epoch, contextGeneration: request.lease.contextGeneration });
     const finalCheck = { lease: request.lease, deliveryId: delivery.deliveryId, version: verified.version,
       epoch: verified.epoch, revision: delivery.revision, reference: delivery.reference };
@@ -422,7 +422,7 @@ export class RequirementEventService {
     const request = checked(AcknowledgeEventInput, input);
     const authorization = { ...leaseAuthorization("acknowledge", this.options.repoId, request.lease),
       eventId: request.eventId, sequence: request.sequence, revision: request.toRevision,
-      commit: request.toCommit, prodHash: request.toHash as `sha256:${string}` };
+      commit: request.toCommit, prdHash: request.toHash as `sha256:${string}` };
     this.authorize(authorization);
     const state = await this.state(authorization, new Set(["open", "read", "acknowledge-approved-event", "check-approved-return"]));
     await state.acknowledgeApprovedEvent({ lease: request.lease, eventId: request.eventId, sequence: request.sequence,
@@ -442,7 +442,7 @@ export class RequirementEventService {
     const state = await this.state(authorization, new Set(["open", "read", "block-recovery"]));
     let current = state.read(request.requirementId);
     const roots = new Set([this.options.repositoryRoot, current.data.workspace?.path].filter((value): value is string => Boolean(value))
-      .map((root) => resolve(join(root, "docs", "prod"))));
+      .map((root) => resolve(join(root, "docs", "prd"))));
     for (const path of request.paths) {
       if (!isAbsolute(path) || resolve(path) !== path || !roots.has(dirname(path))) throw new RequirementEventServiceError("archive_path_not_allowed");
       const match = /^([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.(.+)\.md$/u.exec(basename(path));

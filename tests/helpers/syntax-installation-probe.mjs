@@ -29,7 +29,7 @@ if (expectedCode === "valid") {
   await assert.rejects(withSyntaxTree("python", "", () => null), { code: "unsupported_language" });
   const { LocalDatabase, databaseFile, uuidv7 } = await jiti.import(join(productRoot, "src/core/storage/database.ts"));
   const { parseDecisionBatch } = await jiti.import(join(productRoot, "src/modules/requirement/short-decision-format.ts"));
-  const decision = { operationId: uuidv7(), requirementId: uuidv7(), version: 1, epoch: 1, prod: null,
+  const decision = { operationId: uuidv7(), requirementId: uuidv7(), version: 1, epoch: 1, prd: null,
     decisions: [{ conclusion: "😀".repeat(400), scope: "只分析", references: ["G-1"], supersedes: [] }] };
   assert.equal(parseDecisionBatch(JSON.stringify(decision)).decisions[0].conclusion, decision.decisions[0].conclusion);
   assert.throws(() => parseDecisionBatch(JSON.stringify({ ...decision, actor: "user" })), /invalid_shape/);

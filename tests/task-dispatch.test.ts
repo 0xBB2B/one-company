@@ -182,7 +182,7 @@ test("M7-AC6：PM 停止后新派出的 PM 从数据库读回同一份计划与�
 
 const submit = (summary: string, findings: Array<{ kind: "blocking" | "suggestion" | "unverified" }> = []): ScriptedReply => ({ type: "toolcall", name: "one_company_result_submit",
   input: { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary,
-    findings: findings.map((finding) => ({ ...finding, targetRef: "prod:goal.login", evidenceRef: null, trigger: "输入错误验证码", impact: "没有失败提示" })) } } });
+    findings: findings.map((finding) => ({ ...finding, targetRef: "prd:goal.login", evidenceRef: null, trigger: "输入错误验证码", impact: "没有失败提示" })) } } });
 const pmAck: ScriptedReply = { type: "text", text: "PM 收到" };
 
 test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审查 A 时 C 照常写入；A 审查通过前依赖它的任务不能派出；有任务未审查时不能交付", async () => {

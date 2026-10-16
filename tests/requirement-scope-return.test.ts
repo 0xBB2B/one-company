@@ -61,7 +61,7 @@ async function fixture() {
   const baseline = state.read(saved.requirementId);
   // 第二个真实Core在当前active/PM基线上预先解释；save发生在被测返回窗口，不直接改SQL状态。
   const second = await UserInteractionCore.open({ ...options, authorize: () => true, authorizeAction: () => true,
-    loadContext: async () => ({ basis: { requirementId: saved.requirementId, version: baseline.version, epoch: baseline.data.epoch, prod: baseline.data.approved },
+    loadContext: async () => ({ basis: { requirementId: saved.requirementId, version: baseline.version, epoch: baseline.data.epoch, prd: baseline.data.approved },
       currentGoal: "", candidates: [], questions: [], priorDecisions: [first.readDecision(saved.requirementId, decisions.decisionIds[0]!)] }),
     interpreter: { identity: () => ({ provider: "fixture", id: "real-revision", configurationHash: "b".repeat(64) }),
       interpret: async () => JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "explicit", entries: [{

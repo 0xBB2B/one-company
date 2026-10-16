@@ -84,11 +84,11 @@ async function fixture(root: string, config: BenchmarkConfig, archives: number, 
   if (sourceFiles !== config.files || new Set(manifest.map((item) => item.sha256)).size !== config.files || textBytes > config.maxTextBytes) {
     throw new Error("夹具规模、内容唯一性或文本预算不匹配");
   }
-  await mkdir(join(repo, "docs/prod"), { recursive: true, mode: 0o700 });
+  await mkdir(join(repo, "docs/prd"), { recursive: true, mode: 0o700 });
   for (let i = 0; i < archives; i++) {
     const id = `019b76da-a800-7000-8000-${i.toString(16).padStart(12, "0")}`;
     // 正文仅由生成器写入；产品探针期间不读取、不计算磁盘正文hash。
-    await put(`docs/prod/${id}.benchmark.md`, `M3_ARCHIVE_BODY_CANARY_${i}\n`, "archive-excluded");
+    await put(`docs/prd/${id}.benchmark.md`, `M3_ARCHIVE_BODY_CANARY_${i}\n`, "archive-excluded");
   }
   manifest.sort((a, b) => a.path.localeCompare(b.path, "en"));
   jsonFile(join(output, "fixture-manifest.json"), { generator: "m3-deterministic-v1", sourceFiles, textBytes,
@@ -186,7 +186,7 @@ async function main(): Promise<void> {
     "resources/tree-sitter/manifest.json",
     "src/modules/project-index/project-index-service.ts", "src/modules/project-index/project-index-policy.ts", "src/modules/project-index/index-store.ts",
     "src/modules/project-index/code-extractor.ts", "src/modules/project-index/syntax-parser.ts", "src/core/storage/database.ts", "src/modules/requirement/requirement-events.ts",
-    "src/modules/requirement/requirement-service.ts", "src/modules/requirement/requirement-state.ts", "src/modules/requirement/prod-storage.ts"];
+    "src/modules/requirement/requirement-service.ts", "src/modules/requirement/requirement-state.ts", "src/modules/requirement/prd-storage.ts"];
   const hashes = async () => Promise.all(inputPaths.map(async (path) => ({ path, sha256: sha(await readFile(join(scriptRoot, path))) })));
   const before = await hashes();
   const disk = await statfs(output);

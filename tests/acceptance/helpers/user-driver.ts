@@ -52,7 +52,7 @@ function progress(host: InstalledHost, since: number) {
   const results = toolResults(host, since);
   return {
     // 只认批准登记成功的回执；查询已生效需求的元数据也带 lifecycle=active，不能当作本段已批准
-    approved: has(results, "one_company_user_interact", /"prodActivated":true/) || has(results, "one_company_requirement_manage", /"prodActivated":true/),
+    approved: has(results, "one_company_user_interact", /"prdActivated":true/) || has(results, "one_company_requirement_manage", /"prdActivated":true/),
     closed: has(results, "one_company_workflow_manage", /"status":"closed"/),
     accepted: has(results, "one_company_user_interact", /"choice":"accept"/),
   };

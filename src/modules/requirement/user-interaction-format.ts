@@ -7,23 +7,23 @@ import { object, positive, counter } from "./requirement-contracts.ts";
 import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 import { DecisionItem, ShortDecisionRecord, checkDecisionRecord, parseDecisionBatch, decisionDigest, SHORT_DECISION_LIMITS } from "./short-decision-format.ts";
 import { parseStrictJson } from "../../core/storage/strict-json.ts";
-import { partitionProdDocument } from "./prod-view.ts";
+import { partitionPrdDocument } from "./prd-view.ts";
 
 const id = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });
 const hash = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 });
-const ProdReference = object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])" }), hash });
+const PrdReference = object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])" }), hash });
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 const enumeration = <T extends string>(values: [T, ...T[]]) => Type.Union([Type.Literal(values[0]), ...values.slice(1).map((value) => Type.Literal(value))]);
 export const InteractionAction = enumeration(["analyze", "plan", "implement", "commit", "push"]);
 export type InteractionAction = Static<typeof InteractionAction>;
-export const InteractionBasis = object({ requirementId: id, version: positive, epoch: positive, prod: nullable(ProdReference) });
+export const InteractionBasis = object({ requirementId: id, version: positive, epoch: positive, prd: nullable(PrdReference) });
 export type InteractionBasis = Static<typeof InteractionBasis>;
-export const CandidateBinding = object({ candidateId: id, operationId: id, intentHash: hash, from: nullable(ProdReference), to: ProdReference });
+export const CandidateBinding = object({ candidateId: id, operationId: id, intentHash: hash, from: nullable(PrdReference), to: PrdReference });
 export type CandidateBinding = Static<typeof CandidateBinding>;
 export const InteractionCandidate = object({ ...CandidateBinding.properties, diff: Type.String({ minLength: 1 }) });
 export const ApprovalUnitId = Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}$", maxLength: 96 });
 export const ApprovalUnitIds = Type.Array(ApprovalUnitId, { uniqueItems: true });
-export const ApprovalPartition = object({ prodHash: hash, totalBytes: positive,
+export const ApprovalPartition = object({ prdHash: hash, totalBytes: positive,
   units: Type.Array(object({ id: ApprovalUnitId, hash, startByte: counter, endByte: positive }), { minItems: 1 }) });
 export const DocumentAnalysis = object({ candidate: CandidateBinding, title: Type.String(), body: Type.String(), partition: ApprovalPartition });
 export type DocumentAnalysis = Static<typeof DocumentAnalysis>;
@@ -278,12 +278,12 @@ export function checkContext(value: unknown): InteractionContext {
   if (new Set(context.candidates.map((c) => c.candidateId)).size !== context.candidates.length ||
     new Set(context.questions.map((q) => q.requestId)).size !== context.questions.length) throw new UserInteractionError("duplicate_reference");
   if (new Set(context.candidates.map((c) => c.to.hash)).size !== context.candidates.length) throw new UserInteractionError("duplicate_document_candidate");
-  for (const c of context.candidates) if (decisionDigest(c.from) !== decisionDigest(context.basis.prod)) throw new UserInteractionError("candidate_baseline_mismatch");
+  for (const c of context.candidates) if (decisionDigest(c.from) !== decisionDigest(context.basis.prd)) throw new UserInteractionError("candidate_baseline_mismatch");
   if (context.document) {
     const doc = context.document;
     if (context.candidates.length !== 1 || decisionDigest(candidateBinding(context.candidates[0]!)) !== decisionDigest(doc.candidate)) throw new UserInteractionError("document_candidate_mismatch");
-    const partition = partitionProdDocument(context.basis.requirementId, doc.title, doc.body);
-    if (partition.prodHash !== doc.candidate.to.hash || decisionDigest(partition) !== decisionDigest(doc.partition)) throw new UserInteractionError("document_partition_mismatch");
+    const partition = partitionPrdDocument(context.basis.requirementId, doc.title, doc.body);
+    if (partition.prdHash !== doc.candidate.to.hash || decisionDigest(partition) !== decisionDigest(doc.partition)) throw new UserInteractionError("document_partition_mismatch");
     for (const q of context.questions) {
       const view = context.effectiveQuestions?.find((v) => v.requestId === q.requestId);
       if (!q.unitIds?.length || (!view && q.unitIds.some((unitId) => !partition.units.some((u) => u.id === unitId)))) throw new UserInteractionError("question_unit_mismatch");

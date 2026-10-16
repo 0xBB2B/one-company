@@ -9,8 +9,8 @@ import type { Static, TSchema } from "typebox";
 import { activeCheckRoundIn, assertWritersQuiescentIn, CheckRound, CheckRoundError, collectInputManifest, formalEvidence, manifestMatchesBaseline, VerificationRun, CHECK_ROUNDS, VERIFICATION_RUNS } from "../verification/check-round.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { readVersion } from "../requirement/prod-storage.ts";
-import { sectionEndByte } from "../requirement/prod-view.ts";
+import { readVersion } from "../requirement/prd-storage.ts";
+import { sectionEndByte } from "../requirement/prd-view.ts";
 import { recordSectionIds } from "../requirement/requirement-doc.ts";
 import { checked, counter, hash, id, object, positive, requirementStateWhy } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
@@ -45,7 +45,7 @@ const Basis = object({
   verificationIds: Type.Array(id), verdictIds: Type.Array(id), digest: hash,
 });
 export type CloseBasis = Static<typeof Basis>;
-const Archive = object({ path: Type.String({ minLength: 1, maxLength: 1024 }), prodHash: hash, commit: Type.String({ minLength: 1 }),
+const Archive = object({ path: Type.String({ minLength: 1, maxLength: 1024 }), prdHash: hash, commit: Type.String({ minLength: 1 }),
   records: object({ implementation: Type.String({ minLength: 1 }), acceptance: Type.String({ minLength: 1 }) }), archiveHash: nullable(hash),
   prototypes: Type.Array(object({ path: Type.String({ minLength: 1, maxLength: 512 }), name: Type.String({ minLength: 1, maxLength: 40 }), version: positive, hash }), { maxItems: 50 }),
   status: Type.Union([Type.Literal("pending"), Type.Literal("archived"), Type.Literal("blocked")]), attempts: counter, lastError: nullable(Type.String({ maxLength: 1024 })) });
@@ -58,7 +58,7 @@ export const CloseOperation = object({
 export type CloseOperation = Static<typeof CloseOperation>;
 export const DeliveryReceipt = object({
   format: Type.Literal("delivery-receipt/v1"), receiptId: id, requirementId: id, repoId: hash, workspaceId: hash, branch: Type.String({ minLength: 1 }), epoch: positive,
-  revision: counter, approvedProdHash: nullable(hash), codeHead: Type.String({ minLength: 1 }), inputHash: hash,
+  revision: counter, approvedPrdHash: nullable(hash), codeHead: Type.String({ minLength: 1 }), inputHash: hash,
   checkRoundId: nullable(id), verificationIds: Type.Array(id), verdictIds: Type.Array(id), pendingRevision: nullable(positive),
   deliverable: Type.Boolean(), blockers: Type.Array(Type.String({ maxLength: 256 })), suggestions: counter, createdAt: counter,
 });
@@ -110,7 +110,7 @@ const CLOSE_ITEM_TEXT: Record<string, string> = {
   formal_check_missing: "还没有做过正式检查轮",
   check_round_not_released: "检查轮还没结束，或还有检查在运行",
   check_round_input_changed: "检查轮开始后受保护的输入已变化，检查轮已失效",
-  check_round_prod_mismatch: "检查轮依据的批准版本不是当前版本",
+  check_round_prd_mismatch: "检查轮依据的批准版本不是当前版本",
   formal_pass_missing: "检查轮里没有通过的正式检查",
   verification_running: "还有检查在运行",
   qa_verdict_missing: "还没有 QA 裁决",
@@ -186,7 +186,7 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
   else {
     if (round.status !== "released" || round.active.length > 0) blockers.push("check_round_not_released");
     if (round.invalidation) blockers.push(`check_round_${round.invalidation.reason}`);
-    if (round.baseline.revision !== record.data.revision || round.baseline.approved.hash !== record.data.approved?.hash) blockers.push("check_round_prod_mismatch");
+    if (round.baseline.revision !== record.data.revision || round.baseline.approved.hash !== record.data.approved?.hash) blockers.push("check_round_prd_mismatch");
     if (!verifications.some((run) => run.status === "passed")) blockers.push("formal_pass_missing");
     if (verifications.some((run) => run.status === "running")) blockers.push("verification_running");
     const qa = verdicts.filter((verdict) => verdict.role === "qa");
@@ -196,7 +196,7 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
   }
   const reviews = taskReviewsIn(db, repoId, requirementId, record.data.epoch);
   if (reviews === null) blockers.push("task_review_missing");
-  // 用户终止任务后、批准新的 prod 版本前，其目标仍在实施授权内时需求不能以完成关闭
+  // 用户终止任务后、批准新的 PRD 版本前，其目标仍在实施授权内时需求不能以完成关闭
   if (record.data.lifecycle === "active") {
     const scope = implementScope(registeredApprovalManifestIn(db, repoId, record.data.approvalManifest!.reference, record), record.data.docSpec?.sections ?? []);
     const terminated = readPlanIn(db, requirementId)?.tasks.filter((task) => terminationPending([task], record.data.revision)) ?? [];
@@ -279,8 +279,8 @@ function implementationRecord(requirementId: string, tasks: readonly TaskRecord[
   return `${lines.join("\n").trimEnd()}\n`;
 }
 /** 批准版正文每个字节原样保留，只在规范快照标出的两个板块末尾各插入一段程序记录，前后补足空行；板块缺失返回 null。 */
-function archiveBytes(prod: Uint8Array, records: { implementation: string; acceptance: string }, sectionIds: { implementation: string; acceptance: string }): Buffer | null {
-  const bytes = Buffer.from(prod), text = bytes.toString("utf8");
+function archiveBytes(prd: Uint8Array, records: { implementation: string; acceptance: string }, sectionIds: { implementation: string; acceptance: string }): Buffer | null {
+  const bytes = Buffer.from(prd), text = bytes.toString("utf8");
   const inserts = (["implementation", "acceptance"] as const).map((kind) => ({ at: sectionEndByte(text, sectionIds[kind]), record: records[kind] }));
   if (inserts.some((insert) => insert.at === null)) return null;
   inserts.sort((a, b) => a.at! - b.at!);
@@ -381,7 +381,7 @@ export class RequirementCloseService {
     else db.create(CLOSE_OPERATIONS, data.requirementId, next);
   }
 
-  /** 交付凭据：当前内容指纹、正式证据、独立裁决与阻塞项，全程无 prod 正文。 */
+  /** 交付凭据：当前内容指纹、正式证据、独立裁决与阻塞项，全程无 PRD 正文。 */
   async deliveryCheck(requirementId: string): Promise<DeliveryReceipt> {
     return (await this.deliveryCheckWithBasis(requirementId)).receipt;
   }
@@ -410,7 +410,7 @@ export class RequirementCloseService {
       if (facts.round && applicable.length === 0) blockers.push("formal_evidence_not_applicable");
       const receipt = checked(DeliveryReceipt, { format: "delivery-receipt/v1", receiptId: uuidv7(), requirementId, repoId: this.options.repoId,
         workspaceId: facts.record.data.workspace?.workspaceId ?? "0".repeat(64), branch: facts.record.data.workspace?.branch ?? "refs/heads/unbound", epoch: facts.record.data.epoch,
-        revision: facts.record.data.revision, approvedProdHash: facts.record.data.approved?.hash ?? null, codeHead: manifest?.codeHead ?? "unknown",
+        revision: facts.record.data.revision, approvedPrdHash: facts.record.data.approved?.hash ?? null, codeHead: manifest?.codeHead ?? "unknown",
         inputHash: manifest?.inputHash ?? "0".repeat(64), checkRoundId: facts.round?.checkRoundId ?? null,
         verificationIds: applicable, verdictIds: facts.verdicts.map((verdict) => verdict.verdictId), pendingRevision: facts.record.data.pendingRevision,
         deliverable: blockers.length === 0, blockers: [...new Set(blockers)], suggestions: facts.suggestions, createdAt: this.now() });
@@ -511,7 +511,7 @@ export class RequirementCloseService {
           this.saveOperation(db, this.operation(db, request.requirementId), { format: "close-operation/v1", requirementId: request.requirementId, repoId: this.options.repoId,
             operationId: request.operationId, receiptId: request.receiptId, reason: request.reason, basis, status: "closing",
             steps: { agentsStopped: false, closed: false },
-            archive: archivePath ? { path: archivePath, prodHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, records: { implementation: implementationRecord(request.requirementId, readPlanIn(db, request.requirementId)?.tasks ?? [], acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId)!),
+            archive: archivePath ? { path: archivePath, prdHash: facts.record.data.approved!.hash, commit: facts.record.data.approved!.commit, records: { implementation: implementationRecord(request.requirementId, readPlanIn(db, request.requirementId)?.tasks ?? [], acceptedReportIn(db, this.options.repoId, request.requirementId, request.receiptId)!),
               acceptance: acceptanceRecord(facts) },
               prototypes, archiveHash: null, status: "pending", attempts: 0, lastError: null } : null,
             createdAt: now, updatedAt: now });
@@ -574,13 +574,13 @@ export class RequirementCloseService {
       const round = db.read<unknown>(CHECK_ROUNDS, data.basis.checkRoundId!);
       return workspace && round ? { worktree: workspace.path, branch: workspace.branch, codeHead: checked(CheckRound, round.data).baseline.codeHead } : null;
     }) : null;
-    const archive = data.archive ? { path: data.archive.path, prodHash: data.archive.prodHash, archiveHash: data.archive.archiveHash, prototypes: data.archive.prototypes, status: data.archive.status,
+    const archive = data.archive ? { path: data.archive.path, prdHash: data.archive.prdHash, archiveHash: data.archive.archiveHash, prototypes: data.archive.prototypes, status: data.archive.status,
       attempts: data.archive.attempts, lastError: data.archive.lastError } : null;
     return freeze({ status: data.status, operationId: data.operationId, reason: data.reason, steps: { ...data.steps }, archive, delivery });
   }
 
-  /** 受限归档：把关闭前固化的最终 prod.md 字节原样写入登记路径，其后接关闭时登记的验收记录；同 hash 幂等，不同内容阻塞，不向调用方返回正文。 */
-  async archive(requirementId: string): Promise<{ status: "archived" | "blocked" | "pending"; path: string; prodHash: string; archiveHash: string | null; attempts: number; lastError: string | null }> {
+  /** 受限归档：把关闭前固化的最终 prd.md 字节原样写入登记路径，其后接关闭时登记的验收记录；同 hash 幂等，不同内容阻塞，不向调用方返回正文。 */
+  async archive(requirementId: string): Promise<{ status: "archived" | "blocked" | "pending"; path: string; prdHash: string; archiveHash: string | null; attempts: number; lastError: string | null }> {
     checked(id, requirementId);
     this.authorize({ action: "archive", requirementId });
     const loaded = withDatabase(this.database, (db) => ({ operation: this.operation(db, requirementId), record: requirementIn(db, this.options.repoId, requirementId) }));
@@ -588,7 +588,7 @@ export class RequirementCloseService {
     if (!operation || !operation.data.archive) throw new CloseError("archive_unavailable", "非完成关闭无归档资格");
     if (record.data.lifecycle !== "closed" || operation.data.status !== "closed" || record.data.close?.reason !== "completed" || operation.data.reason !== "completed") throw new CloseError("not_closed");
     const archive = operation.data.archive;
-    const view = () => freeze({ status: archive.status, path: archive.path, prodHash: archive.prodHash, archiveHash: archive.archiveHash, attempts: archive.attempts, lastError: archive.lastError });
+    const view = () => freeze({ status: archive.status, path: archive.path, prdHash: archive.prdHash, archiveHash: archive.archiveHash, attempts: archive.attempts, lastError: archive.lastError });
     if (archive.status === "archived") return view();
     const save = (next: Partial<NonNullable<CloseOperation["archive"]>>) => withDatabase(this.database, (db) => db.transaction(() => {
       const current = this.operation(db, requirementId)!;
@@ -600,9 +600,9 @@ export class RequirementCloseService {
       await verifyRequirementWorkspace(this.options.dataRoot, workspace);
       const identity = this.operations.repositoryIdentity(requirementId) ?? undefined;
       const bytes = (await readVersion({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId, repositoryRoot: this.options.repositoryRoot,
-        expectedRepositoryIdentity: identity, commit: archive.commit, expectedHash: `sha256:${archive.prodHash}`,
-        authorize: (check) => check.requirementId === requirementId && check.action === "readVersion" && (check.prodHash === undefined || check.prodHash === `sha256:${archive.prodHash}`) })).bytes;
-      if (sha256(Buffer.from(bytes)) !== archive.prodHash) throw new Error("final_prod_hash_mismatch");
+        expectedRepositoryIdentity: identity, commit: archive.commit, expectedHash: `sha256:${archive.prdHash}`,
+        authorize: (check) => check.requirementId === requirementId && check.action === "readVersion" && (check.prdHash === undefined || check.prdHash === `sha256:${archive.prdHash}`) })).bytes;
+      if (sha256(Buffer.from(bytes)) !== archive.prdHash) throw new Error("final_prd_hash_mismatch");
       if (!record.data.docSpec) throw new Error("archive_sections_missing");
       const content = archiveBytes(bytes, archive.records, recordSectionIds(record.data.docSpec.sections));
       if (!content) throw new Error("archive_sections_missing");
@@ -643,12 +643,12 @@ export class RequirementCloseService {
         if (sha256(await readFile(html.target)) !== sha256(html.content)) throw new Error("archive_write_mismatch");
       }
       save({ status: "archived", archiveHash, attempts: archive.attempts + 1, lastError: null });
-      return freeze({ status: "archived" as const, path: archive.path, prodHash: archive.prodHash, archiveHash, attempts: archive.attempts + 1, lastError: null });
+      return freeze({ status: "archived" as const, path: archive.path, prdHash: archive.prdHash, archiveHash, attempts: archive.attempts + 1, lastError: null });
     } catch (error) {
       if (error instanceof CloseError) throw error;
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 1024);
       save({ status: "pending", attempts: archive.attempts + 1, lastError: message });
-      return freeze({ status: "pending" as const, path: archive.path, prodHash: archive.prodHash, archiveHash: archive.archiveHash, attempts: archive.attempts + 1, lastError: message });
+      return freeze({ status: "pending" as const, path: archive.path, prdHash: archive.prdHash, archiveHash: archive.archiveHash, attempts: archive.attempts + 1, lastError: message });
     }
   }
 }

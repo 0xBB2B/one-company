@@ -69,7 +69,7 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
       ...(task.sizeHold && unsentTask(task) ? [`拆分上限：${task.sizeHold.join("；")}`] : []),
       ...task.attempts.map((attempt, index) => `${attempt.rework ? "返修" : "尝试"} ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}${attempt.escalation ? " · PM 已上报" : ""}`),
       ...task.reviews.map((review, index) => `审查 ${index + 1}：${review.turnsUsed}/${review.maxTurns} 轮 · 结局 ${review.outcome}`),
-      `依据：prod r${record.revision}`];
+      `依据：PRD r${record.revision}`];
     return { itemId, version: item.version, summary: lines.join("\n").slice(0, 2000) };
   });
 }
@@ -196,7 +196,7 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
         : decision.choice === "adjust" && task.holdNote && unsentTask(task)
           ? `用户决定：任务 ${task.key} 按你上报的问题调整（${task.holdNote}）。用 plan_manage update 修改该任务，或取消后另加任务，不需要等新的批准版本。`
         : decision.choice === "adjust"
-          ? `用户决定：任务 ${task.key} 调整目标或范围。等用户批准新的 prod 版本后，复核并按新范围修改该任务，修改后可再派出一次。`
+          ? `用户决定：任务 ${task.key} 调整目标或范围。等用户批准新的 PRD 版本后，复核并按新范围修改该任务，修改后可再派出一次。`
           : `用户决定：终止任务 ${task.key}，任务已取消，整个需求暂停，等用户调整需求或取消需求。恢复后先复核新批准版本的差异，确认基于新版本的计划后才能派子代理；此前暂停的子代理由你决定恢复或停止。`);
     }
     return messages;

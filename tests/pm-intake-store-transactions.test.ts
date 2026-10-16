@@ -14,7 +14,7 @@ function addQuestion(fixture: PmIntakeFixture, requestId = uuidv7()): string {
   const current = fixture.state.read(fixture.requirementId);
   fixture.db((db) => db.transaction(() => db.create("interaction_questions_v1", requestId, {
     format: "interaction-question/v1", requestId, repoId: fixture.repoId,
-    basis: { requirementId: fixture.requirementId, version: current.version, epoch: current.data.epoch, prod: current.data.approved },
+    basis: { requirementId: fixture.requirementId, version: current.version, epoch: current.data.epoch, prd: current.data.approved },
     candidate: null, proposal: { conclusion: "新增问题", scope: "当前需求", references: [], supersedes: [] },
     actions: [], createdAt: current.data.updatedAt,
   }, requestId)));

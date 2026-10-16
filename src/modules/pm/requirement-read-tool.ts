@@ -4,7 +4,7 @@ import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { checked, checkRequirement, hash, id, object, PmLease, PmRecord, ProdReference, positive } from "../requirement/requirement-contracts.ts";
+import { checked, checkRequirement, hash, id, object, PmLease, PmRecord, PrdReference, positive } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
 import { RequirementStateStore } from "../requirement/requirement-state.ts";
 import { readCheckRoundIn } from "../verification/check-round.ts";
@@ -16,8 +16,8 @@ import type { LocalDatabase } from "../../core/storage/database.ts";
 import { assertApprovalScopeReturnIn, registeredApprovalManifestIn, summarizeApprovalManifest } from "../requirement/approval-manifest-store.ts";
 import { checkServiceInput } from "../requirement/requirement-manage-contracts.ts";
 import type { ServiceAuthorizationRequest } from "../requirement/requirement-manage-contracts.ts";
-import { inspectProdStructure, pageProdResponse, selectProdSection, PROD_MAX_PAGE_BYTES, PROD_PAGE_BYTES,
-  PROD_SECTION_ID_PATTERN, PROD_RESPONSE_MAX_BYTES, ProdViewError } from "../requirement/prod-view.ts";
+import { inspectPrdStructure, pagePrdResponse, selectPrdSection, PRD_MAX_PAGE_BYTES, PRD_PAGE_BYTES,
+  PRD_SECTION_ID_PATTERN, PRD_RESPONSE_MAX_BYTES, PrdViewError } from "../requirement/prd-view.ts";
 
 const Role = Type.Union([Type.Literal("pm"), Type.Literal("reviewer"), Type.Literal("qa")]);
 const Binding = object({ role: Role, callerId: id, runId: id, requirementId: id, repoId: hash, workspaceId: hash,
@@ -25,10 +25,10 @@ const Binding = object({ role: Role, callerId: id, runId: id, requirementId: id,
   /** 已开始的检查轮：defer 或等待 PM 决策期间只读该轮登记的原批准基线，由服务而非角色选择版本。 */
   checkRoundId: Type.Optional(id) });
 export type RequirementReadBinding = Static<typeof Binding>;
-const paging = { maxBytes: Type.Optional(Type.Integer({ minimum: 4, maximum: PROD_MAX_PAGE_BYTES })) };
+const paging = { maxBytes: Type.Optional(Type.Integer({ minimum: 4, maximum: PRD_MAX_PAGE_BYTES })) };
 export const REQUIREMENT_READ_PARAMETERS = Type.Union([
   object({ action: Type.Literal("read"), ...paging,
-    sectionId: Type.Optional(Type.String({ pattern: PROD_SECTION_ID_PATTERN })) }),
+    sectionId: Type.Optional(Type.String({ pattern: PRD_SECTION_ID_PATTERN })) }),
   object({ action: Type.Literal("diff"), fromRevision: positive, toRevision: Type.Optional(positive), ...paging }),
   object({ action: Type.Literal("metadata") }),
   object({ action: Type.Literal("next"), cursor: Type.String({ pattern: "^[a-f0-9]{64}$" }) }),
@@ -75,8 +75,8 @@ export class RequirementReadError extends Error {
     super(detail ? `${code}: ${detail}` : code); this.name = "RequirementReadError"; this.code = code; this.advice = withDetail(READ_ADVICE[code], detail);
   }
 }
-const PROD_VIEW_FAILURES: Record<string, RequirementReadErrorCode> = {
-  prod_response_budget_exceeded: "response_too_large",
+const PRD_VIEW_FAILURES: Record<string, RequirementReadErrorCode> = {
+  prd_response_budget_exceeded: "response_too_large",
   unknown_section: "section_not_found",
   section_structure_unavailable: "structure_unavailable",
   invalid_page_range: "cursor_invalid",
@@ -84,7 +84,7 @@ const PROD_VIEW_FAILURES: Record<string, RequirementReadErrorCode> = {
 /** 下层带原因的错误原样交出；分页与章节的固定错误换成对应原因；其余只说读取出错，不回显可能含路径或受限文本的原始消息。 */
 function readFailure(error: unknown): Error {
   if (error instanceof RequirementReadError || adviceOf(error)) return error as Error;
-  const mapped = error instanceof ProdViewError ? PROD_VIEW_FAILURES[error.code] : undefined;
+  const mapped = error instanceof PrdViewError ? PRD_VIEW_FAILURES[error.code] : undefined;
   return new RequirementReadError(mapped ?? "read_failed");
 }
 interface Cursor {
@@ -129,7 +129,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
   let unsubscribe: (() => void) | undefined;
   const deny = (code: RequirementReadErrorCode, detail?: string): never => { throw new RequirementReadError(code, detail); };
   function bounded<T>(response: T): T {
-    if (Buffer.byteLength(JSON.stringify(response)) > PROD_RESPONSE_MAX_BYTES) deny("response_too_large");
+    if (Buffer.byteLength(JSON.stringify(response)) > PRD_RESPONSE_MAX_BYTES) deny("response_too_large");
     return freeze(response);
   }
   if (binding.requirementId !== binding.lease.requirementId || binding.workspaceId !== binding.lease.workspaceId ||
@@ -173,7 +173,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
       record.data.approved!.commit !== expected.data.approved?.commit || record.data.approved!.hash !== expected.data.approved?.hash)) deny("version_changed");
     return record;
   }
-  function target(record: { version: number; data: RequirementRecord }, db?: LocalDatabase): { revision: number; reference: ProdReference } {
+  function target(record: { version: number; data: RequirementRecord }, db?: LocalDatabase): { revision: number; reference: PrdReference } {
     if (!binding.checkRoundId) return { revision: record.data.revision, reference: record.data.approved! };
     const round = db ? readCheckRoundIn(db, binding.checkRoundId) : withDatabase(repositoryDatabase(config.dataRoot, binding.repoId), (inner) => readCheckRoundIn(inner, binding.checkRoundId!));
     if (!round || round.data.requirementId !== binding.requirementId || round.data.repoId !== binding.repoId || round.data.epoch !== binding.lease.epoch ||
@@ -239,16 +239,16 @@ async function openReadTool(options: RequirementReadToolOptions) {
         return response;
       }
       const sectionId = params.action === "read" ? params.sectionId : undefined;
-      const maxBytes = params.maxBytes ?? PROD_PAGE_BYTES;
+      const maxBytes = params.maxBytes ?? PRD_PAGE_BYTES;
       const goal = target(before);
       const range = params.action === "diff" ? { fromRevision: params.fromRevision, toRevision: params.toRevision ?? before.data.revision } : undefined;
       if (cursor && (cursor.version !== before.version || cursor.revision !== goal.revision || cursor.epoch !== before.data.epoch ||
         cursor.commit !== goal.reference.commit || cursor.hash !== goal.reference.hash)) deny("version_changed");
       if (request.action === "next") cursors.delete(request.cursor);
-      let rangeEnd: ProdReference | undefined;
+      let rangeEnd: PrdReference | undefined;
       if (range) {
         if (binding.checkRoundId) deny("diff_unavailable");
-        rangeEnd = state.events(binding.requirementId).find((event) => event.data.kind === "prod.approved" && event.data.revision === range.toRevision)?.data.to ?? undefined;
+        rangeEnd = state.events(binding.requirementId).find((event) => event.data.kind === "prd.approved" && event.data.revision === range.toRevision)?.data.to ?? undefined;
         if (range.fromRevision > range.toRevision || range.toRevision > before.data.revision || !rangeEnd) {
           deny("diff_range_invalid", `收到 ${range.fromRevision} → ${range.toRevision}，当前批准版本是 ${before.data.revision}`);
         }
@@ -258,22 +258,22 @@ async function openReadTool(options: RequirementReadToolOptions) {
           (request.requirementId !== undefined && request.requirementId !== binding.requirementId) ||
           (request.epoch !== undefined && request.epoch !== before.data.epoch) ||
           (request.version !== undefined && request.version !== before.version) ||
-          (request.prodHash !== undefined && request.prodHash !== `sha256:${(rangeEnd ?? goal.reference).hash}`)) return false;
+          (request.prdHash !== undefined && request.prdHash !== `sha256:${(rangeEnd ?? goal.reference).hash}`)) return false;
         host(params.action);
         activeSync(before);
         return true;
       } });
       let text: string;
       let title: string | undefined;
-      let structure: ReturnType<typeof inspectProdStructure> | undefined;
+      let structure: ReturnType<typeof inspectPrdStructure> | undefined;
       let difference: { fromRevision: number; toRevision: number; fromCommit: string; toCommit: string; fromHash: string; toHash: string } | undefined;
       if (params.action === "read") {
         const result = await service.read({ requirementId: binding.requirementId, source: "approved", ...(binding.checkRoundId ? { revision: goal.revision } : {}) });
-        if (result.commit !== goal.reference.commit || result.prodHash !== `sha256:${goal.reference.hash}` ||
+        if (result.commit !== goal.reference.commit || result.prdHash !== `sha256:${goal.reference.hash}` ||
           result.version !== before.version || result.epoch !== before.data.epoch) deny("version_changed");
         title = result.title;
-        structure = inspectProdStructure(result.body);
-        text = selectProdSection(result.body, structure, sectionId);
+        structure = inspectPrdStructure(result.body);
+        text = selectPrdSection(result.body, structure, sectionId);
       } else {
         const result = await service.diff({ requirementId: binding.requirementId, ...range! });
         if (result.fromRevision !== range!.fromRevision || result.toRevision !== range!.toRevision ||
@@ -284,14 +284,14 @@ async function openReadTool(options: RequirementReadToolOptions) {
       }
       const nextCursor = randomBytes(32).toString("hex");
       const origin = source(activeSync(before));
-      const result = pageProdResponse({ text, startByte: cursor?.offset ?? 0, maxBytes, structure,
+      const result = pagePrdResponse({ text, startByte: cursor?.offset ?? 0, maxBytes, structure,
         startSection: cursor?.sectionOffset ?? 0, response: (page, structurePage, hasMore) => {
           const full = params.action === "read" && sectionId === undefined && page.complete && structurePage?.complete === true;
           return { kind: params.action, source: origin,
-            coverage: { representation: params.action === "read" ? "parsed_prod_body" : "approved_diff",
+            coverage: { representation: params.action === "read" ? "parsed_prd_body" : "approved_diff",
               sectionId: sectionId ?? null, startByte: page.startByte, endByte: page.endByte, totalBytes: page.totalBytes,
-              selectedTextComplete: page.complete, entireProdCovered: full, nextCursor: hasMore ? nextCursor : null,
-              blocking: full ? [] : ["incomplete_prod_read", "global_constraints_and_unresolved_may_be_outside_page"],
+              selectedTextComplete: page.complete, entirePrdCovered: full, nextCursor: hasMore ? nextCursor : null,
+              blocking: full ? [] : ["incomplete_prd_read", "global_constraints_and_unresolved_may_be_outside_page"],
               businessCompleteness: "not_mechanically_proven", verification: "not_evaluated", performance: "unknown" },
             ...(title !== undefined ? { title } : {}), ...(difference ? { difference } : {}), text: page.text,
             ...(structurePage ? { structure: structurePage } : {}) };
@@ -340,7 +340,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
     return { approvalScope, requirementId: binding.requirementId, repoId: binding.repoId, workspaceId: binding.workspaceId, branch: binding.branch,
       role: binding.role, purpose: binding.checkRoundId ? "check_round_original_baseline" : binding.role === "qa" ? "black_box_acceptance" : "approved_requirement_read",
       ...(binding.checkRoundId ? { checkRoundId: binding.checkRoundId } : {}),
-      commit: goal.reference.commit, prodHash: `sha256:${goal.reference.hash}`, revision: goal.revision,
+      commit: goal.reference.commit, prdHash: `sha256:${goal.reference.hash}`, revision: goal.revision,
       version: record.version, lifecycleEpoch: record.data.epoch, asOf: Date.now() };
   }
   return Object.freeze({ name: "requirement_manage", parameters: REQUIREMENT_READ_PARAMETERS, execute, assertCurrent, dispose });

@@ -184,10 +184,10 @@ function checkedDirectory(value: unknown): IntakeSourceDirectory {
   const directory = clone(value);
   if (!Value.Check(IntakeSourceDirectorySchema, directory)) deny("invalid_source_directory");
   const result = directory as IntakeSourceDirectory;
-  for (const values of [result.prodUnitIds, result.prodScenarioIds, result.decisionIds, result.questionIds, result.requiredScenarioIds]) {
+  for (const values of [result.prdUnitIds, result.prdScenarioIds, result.decisionIds, result.questionIds, result.requiredScenarioIds]) {
     if (new Set(values).size !== values.length) deny("invalid_source_directory");
   }
-  if (!same(result.requiredScenarioIds, result.prodScenarioIds)) deny("incomplete_scenario_directory");
+  if (!same(result.requiredScenarioIds, result.prdScenarioIds)) deny("incomplete_scenario_directory");
   jsonBytes(result);
   return result;
 }
@@ -195,7 +195,7 @@ function checkedDirectory(value: unknown): IntakeSourceDirectory {
 function checkedBindingBasis(value: unknown): IntakeBindingBasis {
   const copy = clone(value) as Record<string, unknown>;
   if (!copy || typeof copy !== "object") deny("invalid_binding");
-  exactKeys(copy, ["repoId", "requirementId", "approvedProdCommit", "approvedRevision", "approvedProdHash", "approvalManifestHash",
+  exactKeys(copy, ["repoId", "requirementId", "approvedPrdCommit", "approvedRevision", "approvedPrdHash", "approvalManifestHash",
     "workspaceId", "workspaceRef", "epoch", "pmRunId", "pmFence", "contextGeneration"]);
   const candidate = { ...copy, approvalScopeVersion: `intake-approval-scope/v1:${"0".repeat(64)}`,
     actionScopeVersion: `intake-action-scope/v1:${"0".repeat(64)}` };
@@ -255,8 +255,8 @@ function currentQuestionIds(db: LocalDatabase, repoId: string, requirementId: st
 }
 
 function validateDirectory(db: LocalDatabase, repoId: string, requirementId: string, directory: IntakeSourceDirectory, manifest: ApprovalManifest, questions: boolean): void {
-  if (!same(directory.prodUnitIds, manifest.units.map((unit) => unit.id))) deny("source_directory_mismatch");
-  if (directory.prodScenarioIds.some((id) => !directory.prodUnitIds.includes(id))) deny("source_directory_mismatch");
+  if (!same(directory.prdUnitIds, manifest.units.map((unit) => unit.id))) deny("source_directory_mismatch");
+  if (directory.prdScenarioIds.some((id) => !directory.prdUnitIds.includes(id))) deny("source_directory_mismatch");
   if (!same(directory.decisionIds, intakeManifestDecisionIds(manifest))) deny("source_directory_mismatch");
   if (questions && !same(directory.questionIds, currentQuestionIds(db, repoId, requirementId))) deny("source_directory_mismatch");
 }
@@ -303,7 +303,7 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
   const data = record.data;
   if (data.lifecycle !== "active" || data.recovery !== "ready" || !data.approved || !data.workspace ||
     data.repoId !== repoId || data.requirementId !== basis.requirementId || data.revision !== basis.approvedRevision ||
-    data.approved.commit !== basis.approvedProdCommit || data.approved.hash !== basis.approvedProdHash ||
+    data.approved.commit !== basis.approvedPrdCommit || data.approved.hash !== basis.approvedPrdHash ||
     data.approvalManifest!.reference.manifestHash !== basis.approvalManifestHash || data.workspace.workspaceId !== basis.workspaceId ||
     data.workspace.branch !== basis.workspaceRef || data.epoch !== basis.epoch) deny("binding_changed");
 
@@ -330,7 +330,7 @@ function currentSnapshot(db: LocalDatabase, repoId: string, basis: IntakeBinding
 
   const manifest = registeredApprovalManifestIn(db, repoId, data.approvalManifest!.reference, record);
   validateDirectory(db, repoId, basis.requirementId, directory, manifest, questions);
-  if (manifest.candidate.to.commit !== basis.approvedProdCommit || manifest.candidate.to.hash !== basis.approvedProdHash ||
+  if (manifest.candidate.to.commit !== basis.approvedPrdCommit || manifest.candidate.to.hash !== basis.approvedPrdHash ||
     manifest.manifestHash !== basis.approvalManifestHash) deny("manifest_binding_changed");
   const manifestRow = db.read(APPROVAL_MANIFEST_NAMESPACE, basis.approvalManifestHash);
   const approvalUse = data.approvalReceiptId ? db.read("requirement_approval_uses", data.approvalReceiptId) : null;

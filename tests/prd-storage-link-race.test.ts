@@ -61,7 +61,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const { create, save, ProdStorageError } = await import("../src/modules/requirement/prod-storage.ts");
+const { create, save, PrdStorageError } = await import("../src/modules/requirement/prd-storage.ts");
 
 const GIT = "git";
 const REQUIREMENT_ID = "01941f29-7c00-7000-8000-000000000002";
@@ -87,7 +87,7 @@ afterEach(async () => {
 });
 
 test("rename 后路径被替换成链接时不会沿路径 chmod 外部目标", async () => {
-  const root = await mkdtemp(join(temporaryRoot(), "prod-storage-link-race-"));
+  const root = await mkdtemp(join(temporaryRoot(), "prd-storage-link-race-"));
   roots.push(root);
   const business = join(root, "business");
   const outside = join(root, "outside-target");
@@ -97,7 +97,7 @@ test("rename 后路径被替换成链接时不会沿路径 chmod 外部目标", 
 
   const dataRoot = join(root, "private");
   const requirementRoot = join(dataRoot, "repos", "repo-1", "requirements", REQUIREMENT_ID);
-  renameRace.targetPath = join(requirementRoot, "prod.md");
+  renameRace.targetPath = join(requirementRoot, "prd.md");
   renameRace.outsidePath = outside;
   renameRace.enabled = true;
 
@@ -113,19 +113,19 @@ test("rename 后路径被替换成链接时不会沿路径 chmod 外部目标", 
     bytes: Buffer.from("自有正文"),
   });
   await expect(result).rejects.toMatchObject({
-    name: "ProdStorageError",
+    name: "PrdStorageError",
     code: "working_copy_changed",
   });
-  expect(ProdStorageError).toBeTypeOf("function");
+  expect(PrdStorageError).toBeTypeOf("function");
 
   expect((await stat(outside)).mode & 0o777).toBe(0o644);
   expect(await readFile(outside, "utf8")).toBe("外部文件");
   expect((await lstat(renameRace.targetPath)).isSymbolicLink()).toBe(true);
-  expect(await readFile(join(requirementRoot, "prod.md.owned-by-storage"), "utf8")).toBe("自有正文");
+  expect(await readFile(join(requirementRoot, "prd.md.owned-by-storage"), "utf8")).toBe("自有正文");
 });
 
 test(".git/config 在 lstat 后被替换成链接时不会修改外部文件权限或字节", async () => {
-  const root = await mkdtemp(join(temporaryRoot(), "prod-storage-git-permission-race-"));
+  const root = await mkdtemp(join(temporaryRoot(), "prd-storage-git-permission-race-"));
   roots.push(root);
   const business = join(root, "business");
   const outside = join(root, "outside-config");
@@ -167,7 +167,7 @@ test(".git/config 在 lstat 后被替换成链接时不会修改外部文件权�
     operationId: "permission-race-save",
     expectedParent: initial.commit,
     bytes: Buffer.from("第二版"),
-  })).rejects.toMatchObject({ name: "ProdStorageError", code: "git_invalid" });
+  })).rejects.toMatchObject({ name: "PrdStorageError", code: "git_invalid" });
 
   expect(permissionRace.enabled).toBe(false);
   expect((await stat(outside)).mode & 0o777).toBe(0o644);
@@ -176,7 +176,7 @@ test(".git/config 在 lstat 后被替换成链接时不会修改外部文件权�
 });
 
 test("遍历子文件前父目录被替换时不修改替代目录中的文件", async () => {
-  const root = await mkdtemp(join(temporaryRoot(), "prod-parent-identity-"));
+  const root = await mkdtemp(join(temporaryRoot(), "prd-parent-identity-"));
   roots.push(root);
   const business = join(root, "business");
   const outside = join(root, "outside-directory");
@@ -204,7 +204,7 @@ test("遍历子文件前父目录被替换时不修改替代目录中的文件",
 });
 
 test("dataRoot 目录在 lstat 后被替换成链接时不会修改外部目录权限或内容", async () => {
-  const root = await mkdtemp(join(temporaryRoot(), "prod-storage-directory-permission-race-"));
+  const root = await mkdtemp(join(temporaryRoot(), "prd-storage-directory-permission-race-"));
   roots.push(root);
   const business = join(root, "business");
   const dataRoot = join(root, "private");
@@ -236,7 +236,7 @@ test("dataRoot 目录在 lstat 后被替换成链接时不会修改外部目录�
     operationId: "directory-permission-race",
     expectedParent: null,
     bytes: Buffer.from("正文"),
-  })).rejects.toMatchObject({ name: "ProdStorageError", code: "unsafe_path" });
+  })).rejects.toMatchObject({ name: "PrdStorageError", code: "unsafe_path" });
 
   expect(permissionRace.enabled).toBe(false);
   expect((await stat(outside)).mode & 0o777).toBe(0o755);
@@ -246,7 +246,7 @@ test("dataRoot 目录在 lstat 后被替换成链接时不会修改外部目录�
 });
 
 test("核对目录链期间别的进程往同一目录里放了文件，不算目录被换掉，保存照常完成", async () => {
-  const root = await mkdtemp(join(temporaryRoot(), "prod-storage-sibling-"));
+  const root = await mkdtemp(join(temporaryRoot(), "prd-storage-sibling-"));
   roots.push(root);
   const business = join(root, "business");
   await mkdir(business, { mode: 0o700 });
@@ -257,5 +257,5 @@ test("核对目录链期间别的进程往同一目录里放了文件，不算�
   await expect(create({ dataRoot, repoId: "repo-1", requirementId: REQUIREMENT_ID, repositoryRoot: business, worktreeRoots: [], authorize: () => true,
     operationId: "sibling-file", expectedParent: null, bytes: Buffer.from("自有正文") })).resolves.toBeDefined();
   expect(siblingRace.enabled).toBe(false);
-  expect(await readFile(join(repoDir, "requirements", REQUIREMENT_ID, "prod.md"), "utf8")).toBe("自有正文");
+  expect(await readFile(join(repoDir, "requirements", REQUIREMENT_ID, "prd.md"), "utf8")).toBe("自有正文");
 });

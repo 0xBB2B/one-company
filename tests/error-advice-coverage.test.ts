@@ -9,7 +9,7 @@ import { PmIntakeStoreError } from "../src/modules/pm/pm-intake-store.ts";
 import { ShortDecisionError } from "../src/modules/requirement/short-decision-format.ts";
 import { UserInteractionError } from "../src/modules/requirement/user-interaction-format.ts";
 import { WebAccessError } from "../src/modules/explore/web-access.ts";
-import { ProdStorageError } from "../src/modules/requirement/prod-storage.ts";
+import { PrdStorageError } from "../src/modules/requirement/prd-storage.ts";
 import { StaleVersionError } from "../src/core/storage/database.ts";
 import { UnsettledShellError } from "../src/modules/shell/shell-bash.ts";
 
@@ -49,7 +49,7 @@ test.each([
 test("联网、需求存储、数据库与 Shell 的错误也给出原因与建议", () => {
   expect(new HostAuthorizationError("invalid_approval_unit_id").advice.why).not.toMatch(/^需求操作被拒绝（/);
   expect(new WebAccessError("rate_limited").advice).toEqual({ why: "搜索服务限流", next: "等一会再搜，或改用 web_fetch 直接读已知网址" });
-  expect(new ProdStorageError("git_unavailable", "Git 可执行文件不可用").advice).toEqual({ why: "Git 可执行文件不可用", next: "请用户检查本机 Git 与数据目录的安装、权限和链接" });
+  expect(new PrdStorageError("git_unavailable", "Git 可执行文件不可用").advice).toEqual({ why: "Git 可执行文件不可用", next: "请用户检查本机 Git 与数据目录的安装、权限和链接" });
   expect(new StaleVersionError().advice.next).toBe("重新读取后再试");
   expect(new UnsettledShellError("Shell 停止尚未确认").advice.why).toBe("Shell 停止尚未确认");
 });

@@ -71,7 +71,7 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   item_changed: { why: "事项在用户做决定后已变化", next: "重新读取待裁决事项，请用户按当前情况重新决定" },
   item_not_pending: { why: "这个事项已经不在待处理之列", next: "请用户重新打开面板查看当前事项" },
   prototype_changed: { why: "原型在批准过程中变了", next: "请重新批准" },
-  prod_sections_required: { why: "需求正文不符合需求文档规范", next: "按需求文档规范改正正文后重新保存" },
+  prd_sections_required: { why: "需求正文不符合需求文档规范", next: "按需求文档规范改正正文后重新保存" },
   requirement_doc_invalid: { why: "读取需求文档规范失败", next: "请用户检查需求文档规范文件" },
   resave_request_mismatch: { why: "确认的保存操作与待确认的不是同一次", next: "用最近一次保存结果里的 savedOperationId 确认" },
   manifest_mismatch: { why: "批准清单与待确认版本不一致", next: REREAD },
@@ -145,7 +145,7 @@ export class HostAuthorizationManager {
   }
   revoke(): void { this.#generation++; for (const listener of this.#listeners) listener(); }
   shutdown(): void { this.revoke(); this.#principal = undefined; }
-  /** 只读打开既有data.db，缺失或用途未知时拒绝，不扫描prod或初始化空库。 */
+  /** 只读打开既有data.db，缺失或用途未知时拒绝，不扫描PRD或初始化空库。 */
   #read<T>(repoId: string, sessionId: string, run: (db: DatabaseSync) => T): T {
     this.assertRepository(repoId, sessionId);
     const path = repositoryDatabase(this.#dataRoot, repoId);

@@ -10,7 +10,7 @@ import { checkPmUnderstanding, intakeBindingsEqual } from "./pm-intake-contracts
 import type { IntakeBinding, IntakeReviewRecord, IntakeSourceDirectory, IntakeSourceRef, PmUnderstanding } from "./pm-intake-contracts.ts";
 import { PmIntakeStore, intakeManifestDecisionIds } from "./pm-intake-store.ts";
 import type { IntakeBindingBasis, IntakeCurrentProof, StoredIntakeRequest } from "./pm-intake-store.ts";
-import { inspectProdStructure, partitionProdDocument } from "../requirement/prod-view.ts";
+import { inspectPrdStructure, partitionPrdDocument } from "../requirement/prd-view.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
 import { RequirementStateStore } from "../requirement/requirement-state.ts";
 import type { PmLease } from "../requirement/requirement-contracts.ts";
@@ -93,7 +93,7 @@ export interface IntakeReviewView {
 
 const PM_INTAKE_SERVICE_ADVICE: Record<string, FailureAdvice> = {
   approved_partition_changed: { why: "批准版本的章节划分已变化，接手理解需要按新版本重做", next: "请 PM 按新的批准版本重新提交接手理解" },
-  approved_prod_changed: { why: "批准版本已变化，接手理解需要按新版本重做", next: "请 PM 按新的批准版本重新提交接手理解" },
+  approved_prd_changed: { why: "批准版本已变化，接手理解需要按新版本重做", next: "请 PM 按新的批准版本重新提交接手理解" },
   binding_changed: { why: "PM 与需求、工作区的绑定已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
   foreign_request: { why: "这个复核请求不属于当前需求或 PM", next: "用 forward 重新取当前的复核请求" },
   intake_not_ready: { why: "PM 还没提交接手理解", next: "等 PM 提交接手理解后再复核" },
@@ -174,7 +174,7 @@ function exactDecision(value: unknown): IntakeReviewDecision {
   let copy: IntakeReviewDecision;
   try { copy = structuredClone(value) as IntakeReviewDecision; } catch { return deny("invalid_review_decision"); }
   if (!copy || typeof copy !== "object" || Object.keys(copy).sort().join("\0") !== ["result", "shortIssues"].sort().join("\0") ||
-    !["passed", "pm_correction_required", "prod_revision_required", "clarification_required"].includes(copy.result) || !Array.isArray(copy.shortIssues)) {
+    !["passed", "pm_correction_required", "prd_revision_required", "clarification_required"].includes(copy.result) || !Array.isArray(copy.shortIssues)) {
     deny("invalid_review_decision");
   }
   return copy;
@@ -314,10 +314,10 @@ export class PmIntakeService {
     await this.#checkPm(lease, call, runtime);
     const current = this.#options.state.read(identity.requirementId);
     if (current.version !== initial.version || !same(current.data, initial.data) || read.version !== current.version || read.epoch !== current.data.epoch ||
-      read.commit !== current.data.approved!.commit || read.prodHash !== `sha256:${current.data.approved!.hash}`) deny("binding_changed");
-    const partition = partitionProdDocument(identity.requirementId, read.title, read.body);
-    if (partition.prodHash !== current.data.approved!.hash) deny("approved_prod_changed");
-    const structure = inspectProdStructure(read.body);
+      read.commit !== current.data.approved!.commit || read.prdHash !== `sha256:${current.data.approved!.hash}`) deny("binding_changed");
+    const partition = partitionPrdDocument(identity.requirementId, read.title, read.body);
+    if (partition.prdHash !== current.data.approved!.hash) deny("approved_prd_changed");
+    const structure = inspectPrdStructure(read.body);
     if (structure.status !== "available") deny("source_directory_unavailable");
     const manifest = this.#manifest(identity.requirementId);
     if (manifest.totalBytes !== partition.totalBytes || manifest.units.length !== partition.units.length || manifest.units.some((unit, index) => {
@@ -327,9 +327,9 @@ export class PmIntakeService {
     const basis: IntakeBindingBasis = {
       repoId: this.#options.repoId,
       requirementId: identity.requirementId,
-      approvedProdCommit: current.data.approved!.commit,
+      approvedPrdCommit: current.data.approved!.commit,
       approvedRevision: current.data.revision,
-      approvedProdHash: current.data.approved!.hash,
+      approvedPrdHash: current.data.approved!.hash,
       approvalManifestHash: manifest.manifestHash,
       workspaceId: current.data.workspace!.workspaceId,
       workspaceRef: current.data.workspace!.branch,
@@ -356,8 +356,8 @@ export class PmIntakeService {
     if (material.scenarioIds.some((id) => !stableSectionIds.includes(id) || !manifestIds.has(id))) deny("source_directory_mismatch");
     const decisionIds = intakeManifestDecisionIds(manifest);
     const sourceDirectory: IntakeSourceDirectory = {
-      prodUnitIds: manifest.units.map((unit) => unit.id),
-      prodScenarioIds: [...material.scenarioIds],
+      prdUnitIds: manifest.units.map((unit) => unit.id),
+      prdScenarioIds: [...material.scenarioIds],
       decisionIds,
       questionIds: sortedUnique(material.questionIds),
       requiredScenarioIds: [...material.scenarioIds],

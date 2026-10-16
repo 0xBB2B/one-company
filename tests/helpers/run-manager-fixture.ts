@@ -63,7 +63,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
   const pm = await manager.dispatchPm({ requirementId: fixture.requirementId, model: { provider: "team-model", id: "test" }, thinking: options.thinking ?? "off" });
   await until(() => provider.requests.length === 2);
   const lease = fixture.state.pmOwner(fixture.requirementId)!.lease!;
-  const owner = () => db((d) => d.read<{ context: { baseline: { revision: number } | null }; prodEvents?: { consumedSequence: number; understoodRevision: number | null } }>(
+  const owner = () => db((d) => d.read<{ context: { baseline: { revision: number } | null }; prdEvents?: { consumedSequence: number; understoodRevision: number | null } }>(
     "pm_ownership", fixture.requirementId)!.data);
   /** scripted 为 false 时不替 PM 排回复，PM 对核对结论的反应交给 provider.awaitReply。 */
   async function review(decision: IntakeReviewDecision = { result: "passed", shortIssues: [] }, scripted = true) {

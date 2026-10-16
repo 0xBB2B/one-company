@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { PROD_ARCHIVE_DIRECTORY } from "./content-policy.ts";
+import { PRD_ARCHIVE_DIRECTORY } from "./content-policy.ts";
 
 export const CORE_ROLES = Object.freeze(["main", "pm", "explore", "worker", "reviewer", "qa", "prototype"] as const);
 export type CoreRole = (typeof CORE_ROLES)[number];
@@ -55,7 +55,7 @@ export function authorizeToolAction(role: unknown, tool: unknown, action: unknow
   return granted !== undefined && granted.includes(action);
 }
 
-export type ManagedWritePathClass = "code" | "prod_archive" | "git_metadata" | "agent_definition" | "host_settings" | "project_conventions" | "outside";
+export type ManagedWritePathClass = "code" | "prd_archive" | "git_metadata" | "agent_definition" | "host_settings" | "project_conventions" | "outside";
 
 export function classifyManagedWritePath(repoRelativePath: string): ManagedWritePathClass {
   if (repoRelativePath === "" || repoRelativePath.includes("\\") || repoRelativePath.includes("\u0000") || posix.isAbsolute(repoRelativePath)) return "outside";
@@ -64,8 +64,8 @@ export function classifyManagedWritePath(repoRelativePath: string): ManagedWrite
   const parts = normalized.split("/");
   if (parts.some((part) => part.toLowerCase() === ".git")) return "git_metadata";
   const [first, second] = parts.map((part) => part.toLowerCase());
-  const [archiveFirst, archiveSecond] = PROD_ARCHIVE_DIRECTORY.split("/");
-  if (first === archiveFirst && second === archiveSecond) return "prod_archive";
+  const [archiveFirst, archiveSecond] = PRD_ARCHIVE_DIRECTORY.split("/");
+  if (first === archiveFirst && second === archiveSecond) return "prd_archive";
   if (first === ".pi" && (second === "agents" || second === "skills")) return "agent_definition";
   if (parts.length === 2 && first === ".pi" && second === "settings.json") return "host_settings";
   // 项目规范只能经用户在界面确认后由主会话改；文件系统可能不区分大小写，按小写比较

@@ -341,7 +341,7 @@ test("合法同步事务护栏不误杀requirement state与short decisions组合
       requirementId: requirement.id,
       version: requirement.version,
       epoch: requirement.data.epoch,
-      prod: null,
+      prd: null,
       decisions: [{ conclusion: "保留合法同步事务", scope: "数据库事务护栏回归", references: [], supersedes: [] }],
     }));
     expect(result.operationId).toBe(operationId);

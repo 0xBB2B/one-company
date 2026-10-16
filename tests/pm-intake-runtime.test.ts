@@ -30,16 +30,16 @@ test("PM 接手可引用的出处清单与主代理核对时构造的清单一�
   expect(directory).toEqual(view.sourceDirectory);
   const notes = pmDecisionNotes({ dataRoot: fixture.dataRoot, repoId: fixture.repoId }, fixture.requirementId);
   expect(notes.map((note) => note.id)).toEqual(directory!.decisionIds);
-  expect(notes.length > 0 && notes.every((note) => note.status === "confirmed" && note.unitIds.every((id) => directory!.prodUnitIds.includes(id)) && note.conclusion.length > 0)).toBe(true);
+  expect(notes.length > 0 && notes.every((note) => note.status === "confirmed" && note.unitIds.every((id) => directory!.prdUnitIds.includes(id)) && note.conclusion.length > 0)).toBe(true);
   expect(unknownIntakeSourceRefs(kit.content, directory!)).toEqual([]);
   const forged = structuredClone(kit.content);
   forged.goals[0]!.sourceRefs.push({ kind: "decision", id: "guessed-decision" });
   forged.scenarioCoverage[0]!.scenarioId = "guessed-scenario";
-  expect(unknownIntakeSourceRefs(forged, directory!)).toEqual(["decision:guessed-decision", "prod-scenario:guessed-scenario"]);
+  expect(unknownIntakeSourceRefs(forged, directory!)).toEqual(["decision:guessed-decision", "prd-scenario:guessed-scenario"]);
   // 场景覆盖项的出处里没有该场景本身时，主代理核对会拒收；PM 提交时就要指出是哪几个场景
   expect(scenariosWithoutOwnRef(kit.content)).toEqual([]);
   const unitOnly = structuredClone(kit.content), first = unitOnly.scenarioCoverage[0]!;
-  first.sourceRefs = first.sourceRefs.map((ref) => ref.kind === "prod-scenario" ? { kind: "prod-unit" as const, id: ref.id } : ref);
+  first.sourceRefs = first.sourceRefs.map((ref) => ref.kind === "prd-scenario" ? { kind: "prd-unit" as const, id: ref.id } : ref);
   expect(scenariosWithoutOwnRef(unitOnly)).toEqual([first.scenarioId]);
   const tool = intakeSubmitTool({ alive: () => true, checkLease: async () => {}, dataRoot: fixture.dataRoot, repoId: fixture.repoId, lease: fixture.lease, currentBaseline: () => null } as never);
   const call = (understanding: unknown) => (tool.execute as (id: string, params: unknown) => Promise<unknown>)("call", { action: "ask", purpose: "pm-intake", understanding });
@@ -113,7 +113,7 @@ test("M7-AC14：伪造的提交不能被当作 PM 的理解——只读取当前
 test("M7-AC14：针对旧批准基线受理的理解不能被当作对当前基线的理解", async () => {
   const w = await world();
   w.submit(w.content, false, { ...w.current, approvedRevision: w.current.approvedRevision - 1 });
-  w.submit(w.content, false, { ...w.current, approvedProdHash: "0".repeat(64) });
+  w.submit(w.content, false, { ...w.current, approvedPrdHash: "0".repeat(64) });
   await expect(w.intake.openRequest(w.fixture.call, w.fixture.operationId())).rejects.toThrow();
   w.submit(w.content);
   expect((await w.intake.openRequest(w.fixture.call, w.fixture.operationId())).understanding.goals).toEqual(w.content.goals);

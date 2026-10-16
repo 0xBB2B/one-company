@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { fileURLToPath } from "node:url";
 
-/** 测试专用Node预加载探针：拦截daemon对docs/prod、需求正文与会话目录的读取并计数，退出时落盘。 */
+/** 测试专用Node预加载探针：拦截daemon对docs/prd、需求正文与会话目录的读取并计数，退出时落盘。 */
 const reportPath = process.env.M3_ASSEMBLY_PROBE;
 const repositoryRoot = process.env.M3_ASSEMBLY_REPOSITORY;
 if (reportPath && repositoryRoot) {
@@ -17,7 +17,7 @@ if (reportPath && repositoryRoot) {
   const check = (input: unknown) => {
     if (typeof input === "number") return;
     const path = input instanceof URL ? fileURLToPath(input) : String(input);
-    if (path.includes("/docs/prod/") || path.includes("/requirements/") || path.includes("/sessions/")) {
+    if (path.includes("/docs/prd/") || path.includes("/requirements/") || path.includes("/sessions/")) {
       report.forbiddenReads++;
       publish();
       throw new Error("M3 assembly probe: forbidden body read");

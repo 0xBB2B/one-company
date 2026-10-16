@@ -7,7 +7,7 @@ import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, pathExists } from "
 import { createDatabaseSnapshot, databaseMaintenanceDirectory, withDatabaseMaintenance } from "../../core/storage/database-maintenance.ts";
 import { checkRequirement } from "./requirement-contracts.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE, RequirementWriteCoordinator } from "./requirement-coordination.ts";
-import { verifyVersion } from "./prod-storage.ts";
+import { verifyVersion } from "./prd-storage.ts";
 import { checkPrototypeName } from "./requirement-prototypes.ts";
 import { sealOperationLog, validOperationLog } from "../../core/storage/operation-log.ts";
 
@@ -37,7 +37,7 @@ export interface RequirementBackupOptions {
 
 export interface RequirementBackupReference {
   commit: string;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
 }
 
 export interface RequirementBackupRequirement {
@@ -214,7 +214,7 @@ function metadataReference(value: unknown): RequirementBackupReference | null {
   if (value === null) return null;
   const ref = value as { commit?: unknown; hash?: unknown };
   if (!ref || typeof ref !== "object" || !COMMIT.test(String(ref.commit)) || !HASH.test(String(ref.hash))) fail("invalid_requirement_state");
-  return { commit: String(ref.commit), prodHash: `sha256:${String(ref.hash)}` };
+  return { commit: String(ref.commit), prdHash: `sha256:${String(ref.hash)}` };
 }
 function parseOperationMetadata(row: Record<string, unknown>, repoId: string): RequirementOperationMetadata {
   let value: unknown;
@@ -258,7 +258,7 @@ function inspectState(path: string, repoId: string): StateInspection {
       requirements.push(requirement);
       for (const reference of [requirement.saved, requirement.approved]) {
         if (!reference) continue;
-        const hash = reference.prodHash.slice("sha256:".length);
+        const hash = reference.prdHash.slice("sha256:".length);
         const matches = operations.filter((operation) => operation.finalVersion !== null && operation.requirementId === requirement.requirementId && operation.git?.commit === reference.commit && operation.git.hash === hash);
         if (matches.length < 1) fail("registered_commit_missing");
         const roots = new Set(matches.map((operation) => operation.git!.repositoryRoot));
@@ -315,7 +315,7 @@ function requirementFiles(repoDirectory: string, requirements: RequirementBackup
   for (const entry of actual) {
     if (!entry.isDirectory() || entry.isSymbolicLink() || !UUID_V7_PATTERN.test(entry.name) || !expected.has(entry.name)) fail("unregistered_requirement_repository");
     const entries = readdirSync(join(root, entry.name)).sort();
-    if (entries.length !== 2 || entries[0] !== ".git" || entries[1] !== "prod.md") fail("invalid_requirement_repository");
+    if (entries.length !== 2 || entries[0] !== ".git" || entries[1] !== "prd.md") fail("invalid_requirement_repository");
   }
   for (const id of expected) if (!actual.some((entry) => entry.name === id)) fail("requirement_repository_missing");
   return scanTree(root, "requirements");
@@ -404,16 +404,16 @@ async function verifyReferences(options: RequirementBackupOptions, dataRoot: str
   for (const requirement of requirements) {
     const refs = [...new Map([requirement.saved, requirement.approved]
       .filter((value): value is RequirementBackupReference => value !== null)
-      .map((reference) => [`${reference.commit}:${reference.prodHash}`, reference])).values()];
-    allowed.set(requirement.requirementId, new Set(refs.map((ref) => `${ref.commit}:${ref.prodHash}`)));
+      .map((reference) => [`${reference.commit}:${reference.prdHash}`, reference])).values()];
+    allowed.set(requirement.requirementId, new Set(refs.map((ref) => `${ref.commit}:${ref.prdHash}`)));
     for (const reference of refs) {
       const identity = identities.get(requirement.requirementId);
       if (!identity) fail("repository_identity_missing");
       await verifyVersion({
         dataRoot, repoId: options.repoId, requirementId: requirement.requirementId,
-        worktreeRoots: [...options.worktreeRoots], expectedRepositoryIdentity: identity, commit: reference.commit, expectedHash: reference.prodHash,
+        worktreeRoots: [...options.worktreeRoots], expectedRepositoryIdentity: identity, commit: reference.commit, expectedHash: reference.prdHash,
         authorize: (check) => {
-          const checkedHash = check.expectedHash ?? check.prodHash;
+          const checkedHash = check.expectedHash ?? check.prdHash;
           if (check.action !== "verifyVersion" || !check.commit || !checkedHash || !allowed.get(requirement.requirementId)?.has(`${check.commit}:${checkedHash}`)) return false;
           return true;
         },
@@ -428,7 +428,7 @@ function validateCompleted(log: BackupOperationLog, operationDirectory: string):
   if (sha256(bytes) !== log.manifestHash) fail("manifest_changed");
   let manifest: RequirementBackupManifest;
   try { manifest = JSON.parse(bytes.toString("utf8")) as RequirementBackupManifest; } catch { fail("manifest_invalid"); }
-  if (!manifest || typeof manifest !== "object" || !exactKeys(manifest, ["format", "operationId", "repoId", "registrationHash", "stateSource", "database", "requirements", "files"]) || manifest.format !== FORMAT || manifest.operationId !== log.operationId || manifest.repoId !== log.repoId || manifest.registrationHash !== log.registrationHash || manifest.stateSource !== "data.db:requirements" || !manifest.database || !exactKeys(manifest.database, ["relativePath", "size", "hash"]) || manifest.database.relativePath !== "data.db" || !Number.isSafeInteger(manifest.database.size) || manifest.database.size < 0 || !HASH.test(manifest.database.hash) || !Array.isArray(manifest.files) || manifest.files.some((file) => !file || !exactKeys(file, ["relativePath", "size", "hash"]) || typeof file.relativePath !== "string" || !Number.isSafeInteger(file.size) || file.size < 0 || !HASH.test(file.hash)) || !Array.isArray(manifest.requirements) || manifest.requirements.some((item) => !item || !exactKeys(item, ["requirementId", "recordVersion", "lifecycle", "recovery", "epoch", "revision", "saved", "approved"]) || !UUID_V7_PATTERN.test(item.requirementId) || !Number.isSafeInteger(item.recordVersion) || item.recordVersion < 1 || !["draft", "active", "closing", "closed"].includes(item.lifecycle) || !["ready", "needs_review"].includes(item.recovery) || !Number.isSafeInteger(item.epoch) || item.epoch < 1 || !Number.isSafeInteger(item.revision) || item.revision < 0 || [item.saved, item.approved].some((ref) => ref !== null && (!exactKeys(ref, ["commit", "prodHash"]) || !COMMIT.test(ref.commit) || !/^sha256:[0-9a-f]{64}$/.test(ref.prodHash))))) fail("manifest_invalid");
+  if (!manifest || typeof manifest !== "object" || !exactKeys(manifest, ["format", "operationId", "repoId", "registrationHash", "stateSource", "database", "requirements", "files"]) || manifest.format !== FORMAT || manifest.operationId !== log.operationId || manifest.repoId !== log.repoId || manifest.registrationHash !== log.registrationHash || manifest.stateSource !== "data.db:requirements" || !manifest.database || !exactKeys(manifest.database, ["relativePath", "size", "hash"]) || manifest.database.relativePath !== "data.db" || !Number.isSafeInteger(manifest.database.size) || manifest.database.size < 0 || !HASH.test(manifest.database.hash) || !Array.isArray(manifest.files) || manifest.files.some((file) => !file || !exactKeys(file, ["relativePath", "size", "hash"]) || typeof file.relativePath !== "string" || !Number.isSafeInteger(file.size) || file.size < 0 || !HASH.test(file.hash)) || !Array.isArray(manifest.requirements) || manifest.requirements.some((item) => !item || !exactKeys(item, ["requirementId", "recordVersion", "lifecycle", "recovery", "epoch", "revision", "saved", "approved"]) || !UUID_V7_PATTERN.test(item.requirementId) || !Number.isSafeInteger(item.recordVersion) || item.recordVersion < 1 || !["draft", "active", "closing", "closed"].includes(item.lifecycle) || !["ready", "needs_review"].includes(item.recovery) || !Number.isSafeInteger(item.epoch) || item.epoch < 1 || !Number.isSafeInteger(item.revision) || item.revision < 0 || [item.saved, item.approved].some((ref) => ref !== null && (!exactKeys(ref, ["commit", "prdHash"]) || !COMMIT.test(ref.commit) || !/^sha256:[0-9a-f]{64}$/.test(ref.prdHash))))) fail("manifest_invalid");
   const payload = join(operationDirectory, "payload");
   assertExactPayload(payload, manifest.files);
   return { operationId: log.operationId, repoId: log.repoId, state: "completed", executable: false, backupDirectory: operationDirectory, manifestPath, manifestHash: log.manifestHash, databaseHash: manifest.database.hash, filesCopied: manifest.files.length, requirements: manifest.requirements };
@@ -436,7 +436,7 @@ function validateCompleted(log: BackupOperationLog, operationDirectory: string):
 
 /**
  * 在数据库维护许可内取得data.db一致快照，并按原始字节复制所有已登记需求仓库。
- * 返回值和manifest只有hash、大小、状态与提交引用，不包含prod正文或Git对象字节。
+ * 返回值和manifest只有hash、大小、状态与提交引用，不包含PRD正文或Git对象字节。
  */
 export async function createRequirementBackup(options: RequirementBackupOptions): Promise<RequirementBackupReceipt> {
   if (!options || !UUID_V7_PATTERN.test(options.operationId) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");

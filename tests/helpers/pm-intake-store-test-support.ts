@@ -15,7 +15,7 @@ export function reviewRecord(fixture: PmIntakeFixture, binding: IntakeBinding, r
   return { format: "pm-intake-review/v1", reviewId: uuidv7(), requestId, binding,
     submissionRef: "pm/submission/current", submissionHash: hash("a"),
     reviewer: { windowId: fixture.identity.windowId, sessionId: fixture.identity.sessionId, toolCallId: fixture.operationId() },
-    result: "passed", sourceRefs: [{ kind: "prod-unit", id: "goal.login" }], shortIssues: [], ...patch };
+    result: "passed", sourceRefs: [{ kind: "prd-unit", id: "goal.login" }], shortIssues: [], ...patch };
 }
 
 export function counts(fixture: PmIntakeFixture) {

@@ -65,7 +65,7 @@ export function exploreInput(parent: ExploreInput["parent"], request: ExploreReq
     budget: { maxSources: request.maxSources ?? 8, maxResultBytes: request.maxResultBytes ?? 16_384 }, source });
 }
 
-/** explore 会话的任务说明：只含检索问题、线索、范围与结果格式，不含父会话、prod 或私有数据。 */
+/** explore 会话的任务说明：只含检索问题、线索、范围与结果格式，不含父会话、PRD 或私有数据。 */
 export function exploreContext(input: ExploreInput, maxTurns: number): string {
   const source = input.source;
   const scope = source.kind === "local_file"

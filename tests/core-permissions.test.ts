@@ -118,15 +118,15 @@ test("已注册工具的 action 枚举都落在核心表内", () => {
   within(MAIN_AGENT_MANAGE_PARAMETERS, "agent_manage");
 });
 
-test("受控写入的资源分类：change_apply 可写代码、测试、配置与 docs/spec 等普通文件，不写 docs/prod、.git、.pi/agents、.pi/skills", () => {
+test("受控写入的资源分类：change_apply 可写代码、测试、配置与 docs/spec 等普通文件，不写 docs/prd、.git、.pi/agents、.pi/skills", () => {
   expect(classifyManagedWritePath("src/a.ts")).toBe("code");
   expect(classifyManagedWritePath("docs/specs/a.rules.json")).toBe("code");
   expect(classifyManagedWritePath("docs/spec/player/jump.rules.json")).toBe("code");
-  expect(classifyManagedWritePath("docs/prod/0197b7b0-6a20-7c51-8a32-b9465fb72d10.需求.md")).toBe("prod_archive");
-  expect(classifyManagedWritePath("DOCS/PROD/x.md")).toBe("prod_archive");
+  expect(classifyManagedWritePath("docs/prd/0197b7b0-6a20-7c51-8a32-b9465fb72d10.需求.md")).toBe("prd_archive");
+  expect(classifyManagedWritePath("DOCS/PRD/x.md")).toBe("prd_archive");
   expect(classifyManagedWritePath(".git/HEAD")).toBe("git_metadata");
   expect(classifyManagedWritePath("sub/.git")).toBe("git_metadata");
-  expect(classifyManagedWritePath("src/../docs/prod/x.md")).toBe("prod_archive");
+  expect(classifyManagedWritePath("src/../docs/prd/x.md")).toBe("prd_archive");
   for (const outside of ["../x.ts", "/abs/x.ts", "", "a\\b.ts", "a\u0000b"]) expect(classifyManagedWritePath(outside)).toBe("outside");
   for (const root of [".", "./", "src/../", "a/b/../../"]) {
     expect(classifyManagedWritePath(root), root).toBe("outside");
@@ -141,7 +141,7 @@ test("受控写入的资源分类：change_apply 可写代码、测试、配置�
   expect(classifyManagedWritePath("docs/AGENTS.md")).toBe("code");
   expect(classifyManagedWritePath(".PI/Agents/x.md")).toBe("agent_definition");
   for (const skill of [".pi/skills/requirement-doc/SKILL.md", ".PI/Skills/x/SKILL.md"]) expect(classifyManagedWritePath(skill)).toBe("agent_definition");
-  for (const path of ["docs/prod/x.md", ".git/config", ".pi/agents/worker.md", ".pi/skills/requirement-doc/SKILL.md", "../x.ts", "/abs/x.ts"]) expect(writePathAllowed(path)).toBe(false);
+  for (const path of ["docs/prd/x.md", ".git/config", ".pi/agents/worker.md", ".pi/skills/requirement-doc/SKILL.md", "../x.ts", "/abs/x.ts"]) expect(writePathAllowed(path)).toBe(false);
   for (const settings of [".pi/settings.json", ".PI/Settings.json"]) {
     expect(classifyManagedWritePath(settings)).toBe("host_settings");
     expect(writePathAllowed(settings)).toBe(false);

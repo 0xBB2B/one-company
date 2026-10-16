@@ -50,15 +50,15 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
       });
       const resize = task.sizeHold !== undefined && unsentTask(task);
       return [...head, `任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`, ...(resize ? [`拆分上限：${task.sizeHold!.join("；")}`] : []), ...held, ...attempts,
-        resize ? "可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 prod）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
-          : task.holdNote !== undefined && unsentTask(task) ? "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（PM 直接修改任务，不需要改 prod）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
-          : "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（经 prod 修改与批准后生效）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。",
+        resize ? "可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 PRD）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
+          : task.holdNote !== undefined && unsentTask(task) ? "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（PM 直接修改任务，不需要改 PRD）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
+          : "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（经 PRD 修改与批准后生效）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。",
         windowLine(itemId, item.version, resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry),
         `用户在窗口里选中或自己写后，以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 登记。`].join("\n");
     }
     if (item.kind === "adjust-requirement") {
       return [...head, "有任务已被用户终止，需求整体暂停。",
-        "可选：1 调整需求：修改 prod 并经用户批准新版本，PM 随后自动恢复并重新规划；2 取消或拒绝整个需求。",
+        "可选：1 调整需求：修改 PRD 并经用户批准新版本，PM 随后自动恢复并重新规划；2 取消或拒绝整个需求。",
         windowLine(itemId, item.version, FIXED_CHOICES.requirement),
         `用户选调整需求时修改草稿并请用户批准新版本；选取消或拒绝时以 one_company_user_interact purpose=adjudicate itemId=requirement:${requirementId} itemVersion=requirement:${requirementId}:${requirementVersion} 登记，再以返回的 decisionId 调用 workflow_manage close。`].join("\n");
     }

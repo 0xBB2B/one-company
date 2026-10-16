@@ -71,7 +71,7 @@ function reviewPassedFor(input: Pick<PmOverviewInput, "dataRoot" | "repoId" | "l
     review.binding.contextGeneration !== lease.contextGeneration) return false;
   if (!record.approved || review.binding.approvedRevision !== record.revision) return true;
   const latest = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: lease.runId, baseline: {
-    approvedRevision: record.revision, approvedProdHash: record.approved.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash } });
+    approvedRevision: record.revision, approvedPrdHash: record.approved.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash } });
   return !latest || review.submissionRef === `pm/${lease.runId}/${latest.toolCallId}`;
 }
 
@@ -103,7 +103,7 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
   }
   if (input.record.approved && !reviewPassedFor(input)) {
     const submission = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: input.lease.runId, baseline: {
-      approvedRevision: input.record.revision, approvedProdHash: input.record.approved.hash, approvalManifestHash: input.record.approvalManifest!.reference.manifestHash } });
+      approvedRevision: input.record.revision, approvedPrdHash: input.record.approved.hash, approvalManifestHash: input.record.approvalManifest!.reference.manifestHash } });
     if (submission) items.push({ itemId: `intake:${input.lease.runId}`, kind: "intake-review", label: `待你核对：PM 接手理解 r${input.record.revision}`,
       version: `intake:${input.lease.runId}:${submission.toolCallId}` });
   }

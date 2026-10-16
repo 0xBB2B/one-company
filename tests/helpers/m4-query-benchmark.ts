@@ -378,11 +378,11 @@ async function createFixture(
   await git.run(repo, ["init", "--template=", "-b", "main"]);
   await git.run(repo, ["add", "--", "src", "go", "docs/spec"]);
   await git.run(repo, ["commit", "-m", "query benchmark fixture"]);
-  await mkdir(join(repo, "docs/prod"), { recursive: true, mode: 0o700 });
+  await mkdir(join(repo, "docs/prd"), { recursive: true, mode: 0o700 });
   const archivePaths: string[] = [];
   for (let index = 0; index < archiveCount; index++) {
     const requirementId = `019b76da-a800-7000-8000-${index.toString(16).padStart(12, "0")}`;
-    const path = `docs/prod/${requirementId}.基准归档.md`;
+    const path = `docs/prd/${requirementId}.基准归档.md`;
     await writeFile(join(repo, path), `M4_ARCHIVE_BODY_CANARY_${index}\n`, { mode: 0o600, flag: "wx" });
     archivePaths.push(path);
   }
@@ -420,7 +420,7 @@ function pathFromFsArgument(value: unknown): string | null {
 
 function installArchiveReadProbe(repo: string, positivePath: string): { probe: ReadProbe; restore(): void } {
   const probe: ReadProbe = { positiveControlReads: 0, archiveBodyReadAttempts: 0, attemptedArchivePaths: [] };
-  const archivePrefix = `${join(repo, "docs/prod")}${sep}`;
+  const archivePrefix = `${join(repo, "docs/prd")}${sep}`;
   const restorers: Array<() => void> = [];
   const observe = (args: unknown[]) => {
     const path = pathFromFsArgument(args[0]);
@@ -767,7 +767,7 @@ async function runTier(input: {
             || page.workspace?.branch !== service.workspace.branch || page.baselineHash !== initialized.baselineHash
             || page.limitations?.performanceImprovement !== "unknown" || page.limitations?.formalVerification !== "not_available"
             || serialized.includes("M4_ARCHIVE_BODY_CANARY_")
-            || page.facts?.some((fact) => fact.source?.path === "docs/prod" || fact.source?.path?.startsWith("docs/prod/"))) {
+            || page.facts?.some((fact) => fact.source?.path === "docs/prd" || fact.source?.path?.startsWith("docs/prd/"))) {
             throw new Error("query_result_contract_failed");
           }
           if (!sample.coverage.complete || sample.coverage.omitted !== 0 || sample.coverage.remaining !== 0

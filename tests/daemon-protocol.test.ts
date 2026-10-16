@@ -107,7 +107,7 @@ test("知识RPC严格拒绝模型身份/SQL/超限及非授权路径，仅接受
     expect(catchError(() => validateParams("knowledge.query", { ...base, query: { action: "facts", [key]: "main" } }))?.code).toBe("bad_params");
   }
   for (const query of [{ action: "facts", maxBytes: 24577 }, { action: "facts", pageSize: 21 },
-    { action: "exact", by: "path", value: "docs/prod/secret.md" }, { action: "search", text: " " }, { action: "search", text: "中".repeat(257) }]) {
+    { action: "exact", by: "path", value: "docs/prd/secret.md" }, { action: "search", text: " " }, { action: "search", text: "中".repeat(257) }]) {
     expect(catchError(() => validateParams("knowledge.query", { ...base, query }))?.code).toBe("bad_params");
   }
   expect(() => validateParams("knowledge.query", base)).not.toThrow();

@@ -13,7 +13,7 @@ export const counter = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEG
 export const positive = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 export const RecoveryReason = Type.Union([Type.Literal("archive_found"), Type.Literal("history_unknown"), Type.Literal("identity_conflict")]);
-export const ProdReference = object({ commit, hash });
+export const PrdReference = object({ commit, hash });
 export const RequirementDocSpecSchema = object({
   sections: Type.Array(object({ id: Type.String({ pattern: "^[a-zA-Z][a-zA-Z0-9._-]{0,95}$" }), title: Type.String({ minLength: 1, maxLength: 200 }),
     record: Type.Optional(Type.Union([Type.Literal("implementation"), Type.Literal("acceptance")])), goal: Type.Optional(Type.Literal(true)) }), { minItems: 1, maxItems: 64 }),
@@ -21,10 +21,10 @@ export const RequirementDocSpecSchema = object({
 });
 const manifestId = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });
 const manifestHash = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 });
-const manifestProd = object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])" }), hash: manifestHash });
+const manifestPrd = object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])" }), hash: manifestHash });
 export const ApprovalManifestReferenceSchema = object({ requirementId: manifestId, manifestHash,
   candidate: object({ candidateId: manifestId, operationId: manifestId, intentHash: manifestHash,
-    from: nullable(manifestProd), to: manifestProd }) });
+    from: nullable(manifestPrd), to: manifestPrd }) });
 const summaryIds = Type.Array(Type.String({ pattern: "^[A-Za-z][A-Za-z0-9._-]{0,95}(?![\\s\\S])", maxLength: 96 }), { uniqueItems: true });
 export const ApprovalSummary = object({ reference: ApprovalManifestReferenceSchema,
   confirmed: summaryIds, pending: summaryIds, excluded: summaryIds, blocked: summaryIds });
@@ -42,13 +42,13 @@ export const RequirementRecord = object({
   format: Type.Literal("requirement-lifecycle/v1"), requirementId: id, repoId: hash,
   requestId: id, intentHash: hash,
   lifecycle: Type.Union([Type.Literal("draft"), Type.Literal("active"), Type.Literal("closing"), Type.Literal("closed")]),
-  revision: counter, epoch: positive, saved: nullable(ProdReference), approved: nullable(ProdReference), approvalReceiptId: nullable(id),
+  revision: counter, epoch: positive, saved: nullable(PrdReference), approved: nullable(PrdReference), approvalReceiptId: nullable(id),
   workspace: nullable(WorkspaceBinding), pendingRevision: nullable(positive), close: nullable(CloseIntent),
   approvalManifest: Type.Optional(ApprovalSummary), docSpec: Type.Optional(RequirementDocSpecSchema),
   recovery: Type.Union([Type.Literal("ready"), Type.Literal("needs_review")]), recoveryReason: nullable(RecoveryReason), createdAt: counter, updatedAt: counter,
 });
 export type RequirementRecord = Static<typeof RequirementRecord>;
-export type ProdReference = Static<typeof ProdReference>;
+export type PrdReference = Static<typeof PrdReference>;
 export type WorkspaceBinding = Static<typeof WorkspaceBinding>;
 export type CloseIntent = Static<typeof CloseIntent>;
 export const PmLease = object({
@@ -58,7 +58,7 @@ export const PmLease = object({
 export type PmLease = Static<typeof PmLease>;
 export const PmContextBaseline = object({
   runId: id, fence: positive, contextGeneration: positive, revision: positive,
-  reference: ProdReference, recordVersion: positive, epoch: positive,
+  reference: PrdReference, recordVersion: positive, epoch: positive,
 });
 export type PmContextBaseline = Static<typeof PmContextBaseline>;
 export const PmContext = object({
@@ -67,46 +67,46 @@ export const PmContext = object({
   diffRevision: Type.Optional(positive),
 });
 export type PmContext = Static<typeof PmContext>;
-export const ApprovedProdChange = object({
-  format: Type.Literal("approved-prod-change/v1"), requirementId: id, repoId: hash,
+export const ApprovedPrdChange = object({
+  format: Type.Literal("approved-prd-change/v1"), requirementId: id, repoId: hash,
   fromRevision: nullable(positive), toRevision: positive,
-  from: nullable(ProdReference), to: ProdReference, receiptId: id,
+  from: nullable(PrdReference), to: PrdReference, receiptId: id,
   lifecycleEpoch: positive, recordVersion: positive,
   approvalManifest: ApprovalSummary,
 });
-export type ApprovedProdChange = Static<typeof ApprovedProdChange>;
+export type ApprovedPrdChange = Static<typeof ApprovedPrdChange>;
 export const BaselineDelivery = object({
-  deliveryId: id, throughSequence: counter, revision: positive, reference: ProdReference,
+  deliveryId: id, throughSequence: counter, revision: positive, reference: PrdReference,
   recordVersion: positive, epoch: positive, runId: id, fence: positive, contextGeneration: positive,
   mode: Type.Union([Type.Literal("cursor_recovery"), Type.Literal("context_refresh")]),
 });
 export type BaselineDelivery = Static<typeof BaselineDelivery>;
 export const PmEventCursor = object({
-  format: Type.Literal("pm-prod-event-cursor/v1"), requirementId: id,
+  format: Type.Literal("pm-prd-event-cursor/v1"), requirementId: id,
   deliveredSequence: counter, consumedSequence: counter,
-  understoodRevision: nullable(positive), understood: nullable(ProdReference),
+  understoodRevision: nullable(positive), understood: nullable(PrdReference),
   baselineDelivery: nullable(BaselineDelivery),
 });
 export type PmEventCursor = Static<typeof PmEventCursor>;
 export const PmRecord = object({
   requirementId: id, fence: counter, lease: nullable(PmLease),
-  prodEvents: Type.Optional(PmEventCursor), context: PmContext,
+  prdEvents: Type.Optional(PmEventCursor), context: PmContext,
 });
 export type PmRecord = Static<typeof PmRecord>;
 export const OwnerClaim = object({ requirementId: id, workspaceId: hash });
 export const RequestRecord = object({ requirementId: id, intentHash: hash });
 export const RequirementEvent = object({
   requirementId: id, repoId: hash, kind: Type.Union([
-    Type.Literal("reserved"), Type.Literal("workspace.bound"), Type.Literal("prod.saved"), Type.Literal("prod.approved"),
+    Type.Literal("reserved"), Type.Literal("workspace.bound"), Type.Literal("prd.saved"), Type.Literal("prd.approved"),
     Type.Literal("pm.acquired"), Type.Literal("pm.released"), Type.Literal("update.assessed"), Type.Literal("closing"), Type.Literal("closed"), Type.Literal("recovery.blocked"),
-  ]), version: positive, epoch: positive, revision: counter, from: nullable(ProdReference), to: nullable(ProdReference), receiptId: nullable(id), recoveryReason: nullable(RecoveryReason),
+  ]), version: positive, epoch: positive, revision: counter, from: nullable(PrdReference), to: nullable(PrdReference), receiptId: nullable(id), recoveryReason: nullable(RecoveryReason),
   approvalManifest: Type.Optional(ApprovalSummary),
 });
 export type RequirementEvent = Static<typeof RequirementEvent>;
 export const commands = {
   reserve: object({ requestId: id, intentHash: hash }),
-  save: object({ requirementId: id, version: positive, operationId: id, reference: ProdReference }),
-  approve: object({ requirementId: id, version: positive, receiptId: id, reference: ProdReference,
+  save: object({ requirementId: id, version: positive, operationId: id, reference: PrdReference }),
+  approve: object({ requirementId: id, version: positive, receiptId: id, reference: PrdReference,
     manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema), prototypes: Type.Optional(hash) }),
   bind: object({ requirementId: id, version: positive, path: Type.String({ minLength: 1, maxLength: 4096 }), prepareOperationId: id, baseCommit: commit }),
   acquire: object({ requirementId: id, version: positive, runId: id, expectedFence: counter }),
@@ -118,10 +118,10 @@ export const commands = {
       reason: Type.String({ maxLength: 1024 }) }), { minItems: 1, maxItems: 512 }) }),
   eventLease: object({ lease: PmLease }),
   recordPmDiff: object({ lease: PmLease, revision: positive }),
-  issueBaseline: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: ProdReference }),
+  issueBaseline: object({ lease: PmLease, version: positive, epoch: positive, revision: positive, reference: PrdReference }),
   acknowledgeBaseline: object({ lease: PmLease, deliveryId: id }),
   eventDelivery: object({ lease: PmLease, eventId: id, sequence: positive }),
-  acknowledgeApproved: object({ lease: PmLease, eventId: id, sequence: positive, revision: positive, reference: ProdReference }),
+  acknowledgeApproved: object({ lease: PmLease, eventId: id, sequence: positive, revision: positive, reference: PrdReference }),
 };
 
 const REREAD = "重新读取需求状态后再决定下一步";

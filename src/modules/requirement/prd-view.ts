@@ -1,29 +1,29 @@
 import { createHash } from "node:crypto";
-import { createProdDocument } from "./requirement-identity.ts";
+import { createPrdDocument } from "./requirement-identity.ts";
 
-export class ProdViewError extends Error {
+export class PrdViewError extends Error {
   readonly code: string;
-  constructor(code: string) { super(code); this.name = "ProdViewError"; this.code = code; }
+  constructor(code: string) { super(code); this.name = "PrdViewError"; this.code = code; }
 }
 
-export const PROD_PAGE_BYTES = 16_384;
-export const PROD_MAX_PAGE_BYTES = 32_768;
+export const PRD_PAGE_BYTES = 16_384;
+export const PRD_MAX_PAGE_BYTES = 32_768;
 /** 紧凑JSON整包上限，另留2KiB供50KiB宿主的外层封装。maxBytes仍是原始text上限。 */
-export const PROD_RESPONSE_MAX_BYTES = 49_152;
-export const PROD_SECTION_ID_PATTERN = "^[a-zA-Z][a-zA-Z0-9._-]{0,95}$";
-const sectionId = new RegExp(PROD_SECTION_ID_PATTERN);
+export const PRD_RESPONSE_MAX_BYTES = 49_152;
+export const PRD_SECTION_ID_PATTERN = "^[a-zA-Z][a-zA-Z0-9._-]{0,95}$";
+const sectionId = new RegExp(PRD_SECTION_ID_PATTERN);
 
-export interface ProdSection {
+export interface PrdSection {
   id: string;
   /** UTF-8字节区间，包含本标题及下级章节，结束位置不包含在内。 */
   startByte: number;
   endByte: number;
   hash: `sha256:${string}`;
 }
-export interface ProdStructure {
+export interface PrdStructure {
   status: "available" | "section_structure_unavailable";
   reason: "explicit_ids" | "no_explicit_ids" | "duplicate_ids" | "too_many_sections";
-  sections: ProdSection[];
+  sections: PrdSection[];
   businessCompleteness: "not_mechanically_proven";
 }
 
@@ -31,7 +31,7 @@ export interface ProdStructure {
  * 批准前核对：每个标题都有唯一编号，顶层恰好是规范板块清单里的二级标题且按清单顺序；
  * 实施目标板块下的小节编号以"板块编号."开头，以它开头的小节也只写在该板块下。符合返回 null，否则返回期望与实际。
  */
-export function prodSectionsProblem(body: string, sections: readonly { id: string; goal?: true }[]): string | null {
+export function prdSectionsProblem(body: string, sections: readonly { id: string; goal?: true }[]): string | null {
   const headings = headingsOf(body), seen = new Set<string>();
   for (const heading of headings) {
     if (heading.id === undefined) return `每个标题都须以唯一编号结尾：「${heading.text}」没有编号`;
@@ -63,10 +63,10 @@ export function sectionEndByte(text: string, id: string): number | null {
 }
 
 /** 只识别代码围栏外的ATX标题末尾显式{#id}；不把自然语言标题变成永久身份。 */
-export function inspectProdStructure(body: string): ProdStructure {
+export function inspectPrdStructure(body: string): PrdStructure {
   const headings = headingsOf(body);
   const identified = headings.filter((heading) => heading.id !== undefined);
-  const unavailable = (reason: ProdStructure["reason"]): ProdStructure => ({ status: "section_structure_unavailable", reason,
+  const unavailable = (reason: PrdStructure["reason"]): PrdStructure => ({ status: "section_structure_unavailable", reason,
     sections: [], businessCompleteness: "not_mechanically_proven" });
   if (!identified.length) return unavailable("no_explicit_ids");
   if (identified.length > 256) return unavailable("too_many_sections");
@@ -105,15 +105,15 @@ function headingsOf(body: string): Array<{ level: number; id?: string; offset: n
   return headings;
 }
 
-export interface ProdApprovalPartition {
-  prodHash: string;
+export interface PrdApprovalPartition {
+  prdHash: string;
   totalBytes: number;
   units: Array<{ id: string; hash: string; startByte: number; endByte: number }>;
 }
 
-/** 授权分区按完整prod字节覆盖；父子标题各占到下一标题之前的范围，不沿用阅读区间。 */
-export function partitionProdDocument(requirementId: string, title: string, body: string): ProdApprovalPartition {
-  const document = createProdDocument(requirementId, title, body), bytes = Buffer.from(document.bytes);
+/** 授权分区按完整PRD字节覆盖；父子标题各占到下一标题之前的范围，不沿用阅读区间。 */
+export function partitionPrdDocument(requirementId: string, title: string, body: string): PrdApprovalPartition {
+  const document = createPrdDocument(requirementId, title, body), bytes = Buffer.from(document.bytes);
   const bodyStart = bytes.length - Buffer.byteLength(body);
   const headings: Array<{ id?: string; offset: number }> = [];
   let offset = bodyStart, fence: { char: string; length: number } | null = null;
@@ -127,7 +127,7 @@ export function partitionProdDocument(requirementId: string, title: string, body
     else if (/^ {0,3}#{1,6}(?:[\t ]|$)/u.test(text)) {
       const explicit = /\{#([^{}]+)\}[\t ]*(?:#+[\t ]*)?$/u.exec(text);
       const id = explicit?.[1];
-      if (id && (!sectionId.test(id) || id.length > 96 || reserved.has(id) || seen.has(id))) throw new ProdViewError("invalid_approval_unit_id");
+      if (id && (!sectionId.test(id) || id.length > 96 || reserved.has(id) || seen.has(id))) throw new PrdViewError("invalid_approval_unit_id");
       if (id) seen.add(id);
       headings.push({ id, offset });
     }
@@ -141,7 +141,7 @@ export function partitionProdDocument(requirementId: string, title: string, body
       starts.push(...headings.map((h) => ({ id: h.id!, offset: h.offset })));
     }
   }
-  return { prodHash: document.prodHash, totalBytes: bytes.length,
+  return { prdHash: document.prdHash, totalBytes: bytes.length,
     units: starts.map((start, index) => {
       const endByte = starts[index + 1]?.offset ?? bytes.length;
       // 段末换行随后面有没有下一段而变；计入哈希会让文字未变的原末段在追加新段后被当成已改
@@ -150,7 +150,7 @@ export function partitionProdDocument(requirementId: string, title: string, body
     }) };
 }
 
-export interface ProdTextPage {
+export interface PrdTextPage {
   text: string;
   startByte: number;
   endByte: number;
@@ -159,18 +159,18 @@ export interface ProdTextPage {
 }
 
 /** 字节预算内按Unicode码点切页，不拆开中文或emoji的UTF-8编码。 */
-export function pageProdText(text: string, startByte = 0, maxBytes = PROD_PAGE_BYTES): ProdTextPage {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 4 || maxBytes > PROD_MAX_PAGE_BYTES ||
-    !Number.isSafeInteger(startByte) || startByte < 0) throw new ProdViewError("invalid_page_range");
+export function pagePrdText(text: string, startByte = 0, maxBytes = PRD_PAGE_BYTES): PrdTextPage {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 4 || maxBytes > PRD_MAX_PAGE_BYTES ||
+    !Number.isSafeInteger(startByte) || startByte < 0) throw new PrdViewError("invalid_page_range");
   const bytes = Buffer.from(text);
-  if (startByte > bytes.length || (startByte < bytes.length && (bytes[startByte]! & 0xc0) === 0x80)) throw new ProdViewError("invalid_page_range");
+  if (startByte > bytes.length || (startByte < bytes.length && (bytes[startByte]! & 0xc0) === 0x80)) throw new PrdViewError("invalid_page_range");
   let endByte = Math.min(startByte + maxBytes, bytes.length);
   while (endByte < bytes.length && (bytes[endByte]! & 0xc0) === 0x80) endByte--;
   return { text: bytes.subarray(startByte, endByte).toString("utf8"), startByte, endByte, totalBytes: bytes.length,
     complete: startByte === 0 && endByte === bytes.length };
 }
 
-export interface ProdStructurePage extends ProdStructure {
+export interface PrdStructurePage extends PrdStructure {
   totalSections: number;
   /** 章节数组的半开区间；complete只表示本页包含全部结构，不累计以前的页。 */
   startSection: number;
@@ -180,30 +180,30 @@ export interface ProdStructurePage extends ProdStructure {
 }
 
 /** 整包JSON计入转义及所有元数据；先分正文，再以余量分结构，两种偏移均需由可信游标绑定。 */
-export function pageProdResponse<T>(options: {
-  text: string; startByte: number; maxBytes: number; structure?: ProdStructure; startSection: number;
-  response: (page: ProdTextPage, structure: ProdStructurePage | undefined, hasMore: boolean) => T;
-}): { response: T; page: ProdTextPage; endSection: number; hasMore: boolean } {
+export function pagePrdResponse<T>(options: {
+  text: string; startByte: number; maxBytes: number; structure?: PrdStructure; startSection: number;
+  response: (page: PrdTextPage, structure: PrdStructurePage | undefined, hasMore: boolean) => T;
+}): { response: T; page: PrdTextPage; endSection: number; hasMore: boolean } {
   const { text, startByte, maxBytes, structure, startSection } = options;
   const totalSections = structure?.sections.length ?? 0;
-  if (!Number.isSafeInteger(startSection) || startSection < 0 || startSection > totalSections) throw new ProdViewError("invalid_page_range");
-  function candidate(page: ProdTextPage, endSection: number) {
-    const structurePage: ProdStructurePage | undefined = structure ? { ...structure,
+  if (!Number.isSafeInteger(startSection) || startSection < 0 || startSection > totalSections) throw new PrdViewError("invalid_page_range");
+  function candidate(page: PrdTextPage, endSection: number) {
+    const structurePage: PrdStructurePage | undefined = structure ? { ...structure,
       sections: structure.sections.slice(startSection, endSection), totalSections, startSection, endSection,
       remainingSections: totalSections - endSection, complete: startSection === 0 && endSection === totalSections } : undefined;
     const hasMore = page.endByte < page.totalBytes || endSection < totalSections;
     return { response: options.response(page, structurePage, hasMore), page, endSection, hasMore };
   }
-  const fits = (result: { response: T }) => Buffer.byteLength(JSON.stringify(result.response)) <= PROD_RESPONSE_MAX_BYTES;
-  let page = pageProdText(text, startByte, maxBytes);
+  const fits = (result: { response: T }) => Buffer.byteLength(JSON.stringify(result.response)) <= PRD_RESPONSE_MAX_BYTES;
+  let page = pagePrdText(text, startByte, maxBytes);
   if (!fits(candidate(page, startSection))) {
     // 至少可送一个Unicode码点；固定来源/覆盖包不能容纳最小正文时安全失败。
     let low = 4, high = maxBytes;
-    page = pageProdText(text, startByte, low);
-    if (!fits(candidate(page, startSection))) throw new ProdViewError("prod_response_budget_exceeded");
+    page = pagePrdText(text, startByte, low);
+    if (!fits(candidate(page, startSection))) throw new PrdViewError("prd_response_budget_exceeded");
     while (low < high) {
       const middle = Math.ceil((low + high) / 2);
-      const trial = pageProdText(text, startByte, middle);
+      const trial = pagePrdText(text, startByte, middle);
       if (fits(candidate(trial, startSection))) { low = middle; page = trial; } else high = middle - 1;
     }
   }
@@ -214,15 +214,15 @@ export function pageProdResponse<T>(options: {
   }
   const result = candidate(page, low);
   if (!fits(result) || (result.hasMore && page.endByte === startByte && low === startSection)) {
-    throw new ProdViewError("prod_response_budget_exceeded");
+    throw new PrdViewError("prd_response_budget_exceeded");
   }
   return result;
 }
 
-export function selectProdSection(body: string, structure: ProdStructure, id?: string): string {
+export function selectPrdSection(body: string, structure: PrdStructure, id?: string): string {
   if (id === undefined) return body;
-  if (structure.status !== "available") throw new ProdViewError("section_structure_unavailable");
+  if (structure.status !== "available") throw new PrdViewError("section_structure_unavailable");
   const section = structure.sections.find((item) => item.id === id);
-  if (!section) throw new ProdViewError("unknown_section");
+  if (!section) throw new PrdViewError("unknown_section");
   return Buffer.from(body).subarray(section.startByte, section.endByte).toString("utf8");
 }

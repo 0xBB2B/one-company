@@ -34,7 +34,7 @@ function codePublication(path: string, word: string, fileHash = hash("a"), statu
     symbols: [{ id: symbolId, path, name: "main", kind: "function", startLine: 1, startColumn: 0, endLine: 1, endColumn: 20 }],
     codeEdges: [],
     sourceFragments: [{ id: fragmentId, path, kind: "code", language: "typescript", title: "main", body: `export function main() { return '${word}' }`, startLine: 1, endLine: 1, fileHash }],
-    prodMetadata: [],
+    prdMetadata: [],
   };
 }
 
@@ -45,22 +45,22 @@ function docPublication(word: string): IndexPublication {
     files: [{ path, hash: fileHash, parserVersion: "text@fixture", status: "indexed", kind: "config", language: null, symbolIds: [] }],
     symbols: [], codeEdges: [],
     sourceFragments: [{ id: `${path}#source`, path, kind: "config", language: null, title: "jump.rules.json", body: word, startLine: 1, endLine: 12, fileHash }],
-    prodMetadata: [],
+    prdMetadata: [],
   };
 }
 
 function emptyPublication(status: "ready" | "partial" | "invalid" = "ready"): IndexPublication {
-  return { status, diagnostics: status === "invalid" ? [{ code: "unknown", path: null }] : [], files: [], symbols: [], codeEdges: [], sourceFragments: [], prodMetadata: [] };
+  return { status, diagnostics: status === "invalid" ? [{ code: "unknown", path: null }] : [], files: [], symbols: [], codeEdges: [], sourceFragments: [], prdMetadata: [] };
 }
 
-const entityNamespaces = ["files", "symbols", "code_edges", "source_fragments", "prod_metadata"] as const;
+const entityNamespaces = ["files", "symbols", "code_edges", "source_fragments", "prd_metadata"] as const;
 
 function fullPublication(word: string): IndexPublication {
   const publication = codePublication("src/main.ts", word), doc = docPublication(word);
   publication.files.push(...doc.files); publication.sourceFragments.push(...doc.sourceFragments);
   publication.codeEdges.push({ id: "main-reference", fromSymbolId: null, toSymbolId: publication.symbols[0]!.id, kind: "calls", certainty: "certain" });
   const requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
-  publication.prodMetadata.push({ requirementId, source: "archive", path: `docs/prod/${requirementId}.完成.md`, fileName: `${requirementId}.完成.md`, lifecycle: "unknown", epoch: null, hash: null });
+  publication.prdMetadata.push({ requirementId, source: "archive", path: `docs/prd/${requirementId}.完成.md`, fileName: `${requirementId}.完成.md`, lifecycle: "unknown", epoch: null, hash: null });
   return publication;
 }
 
@@ -116,20 +116,20 @@ test("混合同键正文替换、新增、删除与重命名清除旧行和FTS",
     const specPath = "docs/spec/player/renamed.rules.json";
     next.files.find((file) => file.kind === "config")!.path = specPath;
     next.sourceFragments.find((fragment) => fragment.kind === "config")!.path = specPath;
-    const archive = next.prodMetadata[0]!;
+    const archive = next.prdMetadata[0]!;
     archive.path = archive.path.replace("完成.md", "改名.md"); archive.fileName = archive.fileName.replace("完成.md", "改名.md");
     next.codeEdges = [];
     store.publish(store.begin(), next);
     const snapshot = store.getSnapshot(), after = entityRows(db);
     expect(snapshot.symbols.find((symbol) => symbol.id === "src/main.ts#main")).not.toHaveProperty("startOffset");
     expect(snapshot.files.map((file) => file.path)).toEqual([specPath, "src/added.ts", "src/main.ts"]);
-    expect(snapshot.prodMetadata).toEqual(next.prodMetadata);
+    expect(snapshot.prdMetadata).toEqual(next.prdMetadata);
     expect(snapshot.codeEdges).toEqual([]);
     for (const namespace of ["source_fragments", "symbols"] as const) {
       const retained = before[namespace]!.find((row) => after[namespace]!.some((current) => current.key === row.key))!;
       expect(after[namespace]!.find((row) => row.key === retained.key)).toMatchObject({ id: retained.id, version: retained.version + 1, data: { generation: 2 } });
     }
-    expect(after.prod_metadata![0]!.id).not.toBe(before.prod_metadata![0]!.id);
+    expect(after.prd_metadata![0]!.id).not.toBe(before.prd_metadata![0]!.id);
     expect(store.search("previous_body_word").results).toEqual([]);
     expect(store.search("replacement_body_word").results.map((hit) => hit.path).sort()).toEqual([specPath, "src/main.ts"]);
     expect(store.search("added_body_word").results).toHaveLength(1);
@@ -152,7 +152,7 @@ test("发布末尾真实版本竞争使更新、新增、删除、FTS与代次�
     const originalUpdate = LocalDatabase.prototype.update;
     let conflicts = 0;
     const update = vi.spyOn(LocalDatabase.prototype, "update").mockImplementation(function (namespace, key, version, data) {
-      if (namespace === "prod_metadata") {
+      if (namespace === "prd_metadata") {
         const fragments = this.list<{ body: string; generation: number }>("source_fragments");
         expect(fragments.filter((row) => row.data.body.includes("rollback_conflict_word"))).toHaveLength(2);
         expect(fragments.filter((row) => row.data.body.includes("rollback_added_word"))).toHaveLength(1);
@@ -376,29 +376,29 @@ test("archive只保存未知风险线索，同UUID多路径保留且普通索引
   const store = new IndexStore(w.databasePath, identity), build = store.begin();
   const requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
   const withBody = emptyPublication();
-  withBody.prodMetadata.push({ requirementId, source: "local", path: `requirements/${requirementId}/prod.md`, fileName: "prod.md", lifecycle: "active", epoch: 1, hash: hash("a"), prodBody: "forbidden" } as never);
+  withBody.prdMetadata.push({ requirementId, source: "local", path: `requirements/${requirementId}/prd.md`, fileName: "prd.md", lifecycle: "active", epoch: 1, hash: hash("a"), prdBody: "forbidden" } as never);
   expect(() => store.publish(build, withBody)).toThrowError(expect.objectContaining({ code: "metadata_body_forbidden" }));
 
   const claimedArchive = emptyPublication();
-  claimedArchive.prodMetadata.push({ requirementId, source: "archive", path: `docs/prod/${requirementId}.伪完成.md`, fileName: `${requirementId}.伪完成.md`, lifecycle: "closed", epoch: 2, hash: hash("b") } as never);
+  claimedArchive.prdMetadata.push({ requirementId, source: "archive", path: `docs/prd/${requirementId}.伪完成.md`, fileName: `${requirementId}.伪完成.md`, lifecycle: "closed", epoch: 2, hash: hash("b") } as never);
   expect(() => store.publish(build, claimedArchive)).toThrowError(expect.objectContaining({ code: "metadata_body_forbidden" }));
 
   const metadata = emptyPublication();
-  metadata.prodMetadata.push(
-    { requirementId, source: "local", path: `requirements/${requirementId}/prod.md`, fileName: "prod.md", lifecycle: "active", epoch: 3, hash: hash("a") },
-    { requirementId, source: "archive", path: `Docs/Prod/${requirementId}.完成一.md`, fileName: `${requirementId}.完成一.md`, lifecycle: "unknown", epoch: null, hash: null },
-    { requirementId, source: "archive", path: `DOCS/PROD/${requirementId}.完成二.md`, fileName: `${requirementId}.完成二.md`, lifecycle: "unknown", epoch: null, hash: null },
+  metadata.prdMetadata.push(
+    { requirementId, source: "local", path: `requirements/${requirementId}/prd.md`, fileName: "prd.md", lifecycle: "active", epoch: 3, hash: hash("a") },
+    { requirementId, source: "archive", path: `Docs/Prd/${requirementId}.完成一.md`, fileName: `${requirementId}.完成一.md`, lifecycle: "unknown", epoch: null, hash: null },
+    { requirementId, source: "archive", path: `DOCS/PRD/${requirementId}.完成二.md`, fileName: `${requirementId}.完成二.md`, lifecycle: "unknown", epoch: null, hash: null },
   );
   store.publish(build, metadata);
-  const storedMetadata = store.getSnapshot().prodMetadata;
+  const storedMetadata = store.getSnapshot().prdMetadata;
   expect(storedMetadata).toHaveLength(3);
-  expect(storedMetadata).toEqual(expect.arrayContaining(metadata.prodMetadata));
+  expect(storedMetadata).toEqual(expect.arrayContaining(metadata.prdMetadata));
   expect(storedMetadata.filter((item) => item.source === "archive")).toEqual(expect.arrayContaining([
-    expect.objectContaining({ path: `Docs/Prod/${requirementId}.完成一.md`, lifecycle: "unknown", epoch: null, hash: null }),
-    expect.objectContaining({ path: `DOCS/PROD/${requirementId}.完成二.md`, lifecycle: "unknown", epoch: null, hash: null }),
+    expect.objectContaining({ path: `Docs/Prd/${requirementId}.完成一.md`, lifecycle: "unknown", epoch: null, hash: null }),
+    expect.objectContaining({ path: `DOCS/PRD/${requirementId}.完成二.md`, lifecycle: "unknown", epoch: null, hash: null }),
   ]));
 
-  const badPathBuild = store.begin(store.status().version), badPath = codePublication("Docs/Prod/closed.md", "must_not_index");
+  const badPathBuild = store.begin(store.status().version), badPath = codePublication("Docs/Prd/closed.md", "must_not_index");
   expect(() => store.publish(badPathBuild, badPath)).toThrowError(expect.objectContaining({ code: "invalid_path" }));
   const dotGit = codePublication("src/.GIT/config", "must_not_index");
   expect(() => store.publish(badPathBuild, dotGit)).toThrowError(expect.objectContaining({ code: "invalid_path" }));
@@ -454,7 +454,7 @@ test("source_fragments与FTS随同步事务一起回滚，异步违规连接仍�
     workspaceId: hash("8"), generation: 1, id: "fragment", path: "src/tx.ts", kind: "code", language: "typescript", title: null,
     body: "transaction_secret", startLine: 1, endLine: 1, fileHash: hash("a"),
   };
-  expect(() => db.create("source_fragments", "case-prod", { ...fragment, path: "Docs/Prod/closed.md" })).toThrow(/invalid source fragment/);
+  expect(() => db.create("source_fragments", "case-prd", { ...fragment, path: "Docs/Prd/closed.md" })).toThrow(/invalid source fragment/);
   expect(() => db.create("source_fragments", "case-git", { ...fragment, path: "src/.GIT/config" })).toThrow(/invalid source fragment/);
   expect(() => db.transaction(() => {
     db.create("source_fragments", "tx", fragment);
@@ -481,7 +481,7 @@ test("只读current按文件范围先过滤正文，metadataOnly不载入正文�
     expect(metadata.snapshot).toMatchObject({ files: [{ path: "src/main.ts" }], sourceFragments: [] });
     const current = IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"]);
     expect(current.snapshot?.sourceFragments).toHaveLength(1);
-    expect(current.snapshot).not.toHaveProperty("prodMetadata");
+    expect(current.snapshot).not.toHaveProperty("prdMetadata");
     store.begin();
     expect(() => IndexStore.readCurrent(w.databasePath, identity, ["src/main.ts"])).toThrowError(expect.objectContaining({ code: "index_not_ready" }));
     store.publish(store.begin(), emptyPublication("invalid"));

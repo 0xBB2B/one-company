@@ -25,7 +25,7 @@ async function repos() {
 test("M8-AC1/AC3：B 克隆 A 的仓库后，没有 A 的数据库也能用普通工具读代码和已完成归档、运行示例业务，且不产生本产品数据", async () => {
   const r = await repos();
   const archive = archivePathFor(uuidv7(), "角色跳跃");
-  await mkdir(join(r.a, "docs", "prod"), { recursive: true });
+  await mkdir(join(r.a, "docs", "prd"), { recursive: true });
   await writeFile(join(r.a, archive), "# 角色跳跃\n已完成的最终需求\n");
   await writeFile(join(r.a, "app.mjs"), "console.log('跳跃', 1 + 1);\n");
   r.git(r.a, "add", "."); r.git(r.a, "commit", "-qm", "交付跳跃");
@@ -45,11 +45,11 @@ test("M8-AC10：两个隔离克隆各自完成同标题需求，归档用不同 
   r.git(r.b, "config", "user.email", "b@example.com"); r.git(r.b, "config", "user.name", "b");
   const first = archivePathFor(uuidv7(), "角色跳跃"), second = archivePathFor(uuidv7(), "角色跳跃");
   expect(first).not.toBe(second);
-  expect([first, second].map((path) => path.replace(/^docs\/prod\/[0-9a-f-]{36}\./, ""))).toEqual(["角色跳跃.md", "角色跳跃.md"]);
+  expect([first, second].map((path) => path.replace(/^docs\/prd\/[0-9a-f-]{36}\./, ""))).toEqual(["角色跳跃.md", "角色跳跃.md"]);
   for (const [repo, path] of [[r.a, first], [r.b, second]] as const) {
-    await mkdir(join(repo, "docs", "prod"), { recursive: true });
+    await mkdir(join(repo, "docs", "prd"), { recursive: true });
     await writeFile(join(repo, path), `# 角色跳跃\n${repo}\n`); r.git(repo, "add", "."); r.git(repo, "commit", "-qm", "归档");
   }
   r.git(r.a, "pull", "-q", "--no-rebase", "--no-edit", r.b, "main");
-  expect(r.git(r.a, "ls-files", "docs/prod").split("\n").sort()).toEqual([first, second].sort());
+  expect(r.git(r.a, "ls-files", "docs/prd").split("\n").sort()).toEqual([first, second].sort());
 });

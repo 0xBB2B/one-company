@@ -47,7 +47,7 @@ interface MetadataScan {
 }
 
 /**
- * 可信daemon持有的撤权适配器。hook每次全量核对必要目录名称，不读prod正文、正文Git或会话。
+ * 可信daemon持有的撤权适配器。hook每次全量核对必要目录名称，不读PRD正文、正文Git或会话。
  * hook失败必须由调用方阻止常规同步/通知；close立即拒绝新授权，并等待自有在途操作结束。
  */
 export class ProjectIndexRequirements {
@@ -97,7 +97,7 @@ export class ProjectIndexRequirements {
 
   private async scan(root: string, scan: MetadataScan): Promise<void> {
     const snapshots: Array<{ path: string; info: BigIntStats | null }> = [];
-    for (const path of [root, join(root, "docs"), join(root, "docs", "prod")]) {
+    for (const path of [root, join(root, "docs"), join(root, "docs", "prd")]) {
       const info = await this.directory(path);
       snapshots.push({ path, info });
       if (!info) break;
@@ -123,7 +123,7 @@ export class ProjectIndexRequirements {
     };
     scan.checks.push(verify);
     if (snapshots.length !== 3 || snapshots[2]!.info === null) { await verify(); return; }
-    const archiveRoot = join(root, "docs", "prod");
+    const archiveRoot = join(root, "docs", "prd");
     // opendir逐项计数，避免先分配无界readdir数组；不递归、不打开任何归档文件。
     const directory = await opendir(archiveRoot, { bufferSize: 32 });
     try {
@@ -207,7 +207,7 @@ export class ProjectIndexRequirements {
         await scanRoot(binding.path);
       }
       const allowedRoots = new Set([repositoryRoot, binding?.path].filter((root): root is string => Boolean(root))
-        .map((root) => join(root, "docs", "prod")));
+        .map((root) => join(root, "docs", "prd")));
       const paths = scan.paths.get(requirementId)!.filter((path) => allowedRoots.has(dirname(path))).sort();
       if (paths.length === 0) continue;
       // 两条不同精确路径已足以证明身份冲突；不是挑选一个归档作为当前或可信正文。

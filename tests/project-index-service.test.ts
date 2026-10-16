@@ -284,17 +284,17 @@ test("归档只登记完整UUID路径，正文不可读也能初始化；非法�
   const w = await world();
   const id = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
   await put(w.repo.root, "src/main.ts", "export {}\n");
-  await put(w.repo.root, `docs/prod/${id}.完成A.md`, "ARCHIVE_SECRET_A");
-  await put(w.repo.root, `docs/prod/${id}.完成B.md`, "ARCHIVE_SECRET_B");
-  await put(w.repo.root, "docs/prod/not-a-uuid.md", "ARCHIVE_SECRET_BAD");
-  await chmod(join(w.repo.root, "docs/prod", `${id}.完成A.md`), 0o000);
+  await put(w.repo.root, `docs/prd/${id}.完成A.md`, "ARCHIVE_SECRET_A");
+  await put(w.repo.root, `docs/prd/${id}.完成B.md`, "ARCHIVE_SECRET_B");
+  await put(w.repo.root, "docs/prd/not-a-uuid.md", "ARCHIVE_SECRET_BAD");
+  await chmod(join(w.repo.root, "docs/prd", `${id}.完成A.md`), 0o000);
   const index = await service(w);
   const result = await index.init();
-  await chmod(join(w.repo.root, "docs/prod", `${id}.完成A.md`), 0o600);
+  await chmod(join(w.repo.root, "docs/prd", `${id}.完成A.md`), 0o600);
   expect(result.archives.metadata).toHaveLength(2);
   expect(result.archives.metadata.every((item) => item.lifecycle === "unknown" && item.epoch === null && item.hash === null)).toBe(true);
   expect(result.archives.issues.filter((item) => item.reason === "duplicate_requirement_id")).toHaveLength(2);
-  expect(result.archives.issues).toContainEqual(expect.objectContaining({ path: "docs/prod/not-a-uuid.md", reason: "invalid_archive_name" }));
+  expect(result.archives.issues).toContainEqual(expect.objectContaining({ path: "docs/prd/not-a-uuid.md", reason: "invalid_archive_name" }));
   const store = new IndexStore(indexDatabase(w.dataRoot, w.repoId), index.workspace);
   try {
     expect(store.search("ARCHIVE_SECRET_A").results).toEqual([]);
@@ -306,9 +306,9 @@ test("归档目录里的原型 html 不进归档登记，也不报归档名问�
   const w = await world();
   const id = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
   await put(w.repo.root, "src/main.ts", "export {}\n");
-  await put(w.repo.root, `docs/prod/${id}.完成A.md`, "ARCHIVE_BODY");
-  await put(w.repo.root, `docs/prod/${id}.设置页.html`, "<html>PROTOTYPE_SENTINEL</html>");
-  await put(w.repo.root, `docs/prod/${id}.命令行输出.html`, "<html>PROTOTYPE_SENTINEL</html>");
+  await put(w.repo.root, `docs/prd/${id}.完成A.md`, "ARCHIVE_BODY");
+  await put(w.repo.root, `docs/prd/${id}.设置页.html`, "<html>PROTOTYPE_SENTINEL</html>");
+  await put(w.repo.root, `docs/prd/${id}.命令行输出.html`, "<html>PROTOTYPE_SENTINEL</html>");
   const index = await service(w);
   const result = await index.init();
   expect(result.archives.metadata.map((item) => item.fileName)).toEqual([`${id}.完成A.md`]);
@@ -322,10 +322,10 @@ test("归档目录里不以需求编号开头的 html 仍报归档名无效，�
   const w = await world();
   const id = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
   await put(w.repo.root, "src/main.ts", "export {}\n");
-  await put(w.repo.root, "docs/prod/notes.html", "<html></html>");
-  await put(w.repo.root, `docs/prod/${id}.设置页.html`, "<html></html>");
+  await put(w.repo.root, "docs/prd/notes.html", "<html></html>");
+  await put(w.repo.root, `docs/prd/${id}.设置页.html`, "<html></html>");
   const result = await (await service(w)).init();
-  expect(result.archives.issues).toEqual([expect.objectContaining({ path: "docs/prod/notes.html", reason: "invalid_archive_name" })]);
+  expect(result.archives.issues).toEqual([expect.objectContaining({ path: "docs/prd/notes.html", reason: "invalid_archive_name" })]);
 });
 
 test("取消把building落为cancelled，重新打开可用新fence恢复", async () => {

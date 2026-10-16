@@ -4,7 +4,7 @@ import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import { createHash } from "node:crypto";
-import { object, positive, counter, ProdReference } from "./requirement-contracts.ts";
+import { object, positive, counter, PrdReference } from "./requirement-contracts.ts";
 import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 import { canonicalJson, parseStrictJson } from "../../core/storage/strict-json.ts";
 
@@ -20,7 +20,7 @@ export const DecisionItem = object({
 });
 export const DecisionBatch = object({
   operationId: id, requirementId: id, version: positive, epoch: positive,
-  prod: Type.Union([ProdReference, Type.Null()]),
+  prd: Type.Union([PrdReference, Type.Null()]),
   decisions: Type.Array(DecisionItem, { minItems: 1, maxItems: 20 }),
 });
 export type DecisionBatch = Static<typeof DecisionBatch>;
@@ -34,7 +34,7 @@ export const DecisionAdmission = object({ requestHash: hash, subjects: Type.Arra
 export type DecisionAdmission = Static<typeof DecisionAdmission>;
 export const ShortDecisionRecord = object({
   format: Type.Literal("short-decision/v1"), decisionId: id, operationId: id, requirementId: id, repoId: hash,
-  requirementVersion: positive, epoch: positive, prod: Type.Union([ProdReference, Type.Null()]),
+  requirementVersion: positive, epoch: positive, prd: Type.Union([PrdReference, Type.Null()]),
   conclusion: text, scope: text, references: refs, supersedes: Type.Array(id, { maxItems: 16, uniqueItems: true }),
   actor: Type.Union([Type.Literal("user"), Type.Literal("ai")]),
   status: Type.Union([Type.Literal("confirmed"), Type.Literal("pending"), Type.Literal("superseded")]),
@@ -53,7 +53,7 @@ const SHORT_DECISION_ADVICE: Record<string, FailureAdvice> = {
   invalid_shape: { why: "决定内容的格式不合规", next: "按原因改正后重试" },
   lifecycle_denied: { why: "需求不在草稿或活动状态，或需要先恢复核对", next: "重新读取需求后按最新版本再试" },
   operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "换一个新生成的操作编号重试" },
-  prod_reference_changed: { why: "决定所基于的需求版本已变化", next: "重新读取需求后按最新版本再试" },
+  prd_reference_changed: { why: "决定所基于的需求版本已变化", next: "重新读取需求后按最新版本再试" },
   request_limit: { why: "请求内容超出大小上限", next: "精简内容后重试" },
   supersede_denied: { why: "这个决定不能被取代（状态不允许）", next: "重新读取需求后按最新版本再试" },
   text_limit: { why: "文字超出长度上限", next: "精简文字后重试" },
@@ -73,9 +73,9 @@ export function decisionDigest(value: unknown): string {
 function checkText(value: string): void {
   if (!value.trim() || Array.from(value).length > SHORT_DECISION_LIMITS.textCodePoints) throw new ShortDecisionError("text_limit");
 }
-function checkItem(item: Static<typeof DecisionItem>, prod: DecisionBatch["prod"]): void {
+function checkItem(item: Static<typeof DecisionItem>, prd: DecisionBatch["prd"]): void {
   checkText(item.conclusion); checkText(item.scope);
-  if (prod && (![40, 64].includes(prod.commit.length) || prod.hash.length !== 64)) throw new ShortDecisionError("invalid_reference");
+  if (prd && (![40, 64].includes(prd.commit.length) || prd.hash.length !== 64)) throw new ShortDecisionError("invalid_reference");
 }
 
 /** 只接收有界JSON文本，不接受文件、对象序列化钩子或任意扩展载荷。 */
@@ -83,13 +83,13 @@ export function parseDecisionBatch(source: string): DecisionBatch {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > SHORT_DECISION_LIMITS.requestBytes) throw new ShortDecisionError("request_limit");
   const batch = parseStrictJson(source);
   if (!Value.Check(DecisionBatch, batch)) throw new ShortDecisionError("invalid_shape");
-  for (const item of batch.decisions) checkItem(item, batch.prod);
+  for (const item of batch.decisions) checkItem(item, batch.prd);
   return batch;
 }
 
 export function checkDecisionRecord(value: unknown): ShortDecisionRecord {
   if (!Value.Check(ShortDecisionRecord, value)) throw new ShortDecisionError("invalid_record");
-  checkItem(value, value.prod);
+  checkItem(value, value.prd);
   decisionDigest(value); // 同样核对存量记录的Unicode，禁止以孤立代理码点绕过解码约束。
   if ((value.status === "superseded") !== (value.supersededBy !== null) ||
     (value.status === "confirmed" && value.basisReceiptId === null)) throw new ShortDecisionError("invalid_record");

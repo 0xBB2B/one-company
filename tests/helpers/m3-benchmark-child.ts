@@ -39,7 +39,7 @@ function wrap(target: object, key: string, observer: (args: unknown[], invoke: (
 const restores: Array<() => void> = [];
 const probe = { positiveControlReads: 0, archiveReadAttempts: 0, archivePaths: [] as string[] };
 const positivePath = join(job.fixtureRoot, "probe-positive.txt");
-const archivePrefix = `${join(job.repo, "docs/prod")}${sep}`;
+const archivePrefix = `${join(job.repo, "docs/prd")}${sep}`;
 function observeRead(args: unknown[]): void {
   const value = args[0];
   let path: string | null = null;
@@ -179,7 +179,7 @@ async function events() {
     (content) => { assert.equal(content.kind, "baseline"); });
   await eventService.acknowledgeBaseline({ lease, deliveryId: baseline.deliveryId });
   capture("events-after-baseline");
-  // 同步原事务返回说明真实COMMIT已结束。只观察目标prod.approved，不用confirmUpdate返回时间替代落库边界。
+  // 同步原事务返回说明真实COMMIT已结束。只观察目标prd.approved，不用confirmUpdate返回时间替代落库边界。
   const pending = new WeakMap<LocalDatabase, { revision: number; eventId: string }[]>();
   const committed = new Map<number, { at: number; eventId: string }>();
   const restoreTransaction = wrap(DB.prototype, "transaction", (_args, invoke, receiver) => {
@@ -195,7 +195,7 @@ async function events() {
   const restoreAppend = wrap(DB.prototype, "append", (args, invoke, receiver) => {
     const result = invoke() as { id: string };
     const data = args[1] as { kind?: string; revision?: number };
-    if (args[0] === `requirement_events:${created.requirementId}` && data.kind === "prod.approved") {
+    if (args[0] === `requirement_events:${created.requirementId}` && data.kind === "prd.approved") {
       const transaction = pending.get(receiver as LocalDatabase);
       assert.ok(transaction, "批准事件必须位于实际同步事务中");
       transaction.push({ revision: data.revision!, eventId: result.id });
@@ -224,11 +224,11 @@ async function events() {
         if (delivery.status !== "event") throw new Error("event_not_deliverable");
         assert.equal(delivery.eventId, persisted.eventId);
         assert.equal(delivery.fromCommit, previous.commit); assert.equal(delivery.toCommit, approved.commit);
-        assert.equal(delivery.fromHash, previous.prodHash); assert.equal(delivery.toHash, approved.prodHash);
+        assert.equal(delivery.fromHash, previous.prdHash); assert.equal(delivery.toHash, approved.prdHash);
         await eventService.acknowledgeEvent({ lease, eventId: delivery.eventId, sequence: delivery.sequence,
           toRevision: delivery.toRevision, toCommit: delivery.toCommit, toHash: delivery.toHash });
         const metadata = withDatabase(repositoryDatabase(job.dataRoot, identity.repoId), (db) => JSON.stringify(db.events(`requirement_events:${created.requirementId}`)));
-        assert.equal(/DRAFT_NOT_APPROVED_|APPROVED_|BASELINE_0|"(?:body|patch|diff|prodBody)"/.test(metadata), false);
+        assert.equal(/DRAFT_NOT_APPROVED_|APPROVED_|BASELINE_0|"(?:body|patch|diff|prdBody)"/.test(metadata), false);
         record({ category: "approved-event", index: i, ok: true, durationMs: deliverableAt - persisted.at,
           commitToServiceReturnMs: saveReturnedAt - persisted.at, saveWithGitMs: saveReturnedAt - saveStarted,
           ackMs: performance.now() - deliverableAt, noBacklog: true, modelMs: null,

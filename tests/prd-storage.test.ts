@@ -8,14 +8,14 @@ import { promisify } from "node:util";
 import {
   create,
   diffVersions,
-  prodRequirementPath,
-  ProdStorageError,
+  prdRequirementPath,
+  PrdStorageError,
   readVersion,
   save,
   verifyVersion,
-  type ProdStorageAuthorize,
-  type ProdStorageConfig,
-} from "../src/modules/requirement/prod-storage.ts";
+  type PrdStorageAuthorize,
+  type PrdStorageConfig,
+} from "../src/modules/requirement/prd-storage.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const execFileAsync = promisify(execFile);
@@ -53,8 +53,8 @@ async function git(args: string[], cwd: string, home: string): Promise<string> {
   return result.stdout;
 }
 
-async function world(authorize: ProdStorageAuthorize = () => true): Promise<{ root: string; home: string; config: ProdStorageConfig }> {
-  const root = await mkdtemp(join(temporaryRoot(), "prod-storage-"));
+async function world(authorize: PrdStorageAuthorize = () => true): Promise<{ root: string; home: string; config: PrdStorageConfig }> {
+  const root = await mkdtemp(join(temporaryRoot(), "prd-storage-"));
   roots.push(root);
   const home = join(root, "home");
   const business = join(root, "business");
@@ -83,7 +83,7 @@ async function commitCount(repositoryRoot: string, home: string): Promise<number
 }
 
 async function expectCode(promise: Promise<unknown>, code: string): Promise<void> {
-  await expect(promise).rejects.toMatchObject({ name: "ProdStorageError", code });
+  await expect(promise).rejects.toMatchObject({ name: "PrdStorageError", code });
 }
 
 test("Git 更新引用失败时仍收紧中间对象权限，重试只产生一个可达版本", async () => {
@@ -111,21 +111,21 @@ test("首次 create 自动初始化并以固定身份、message、单文件 tree
   const w = await world();
   const body = "# 中文需求\r\n\r\n保留实际字节。\n";
   const result = await first(w, body);
-  expect(result).toMatchObject({ status: "created", action: "create", parent: null, changed: true, prodHash: hash(body) });
+  expect(result).toMatchObject({ status: "created", action: "create", parent: null, changed: true, prdHash: hash(body) });
   expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
-  expect(await readFile(join(result.repositoryRoot, "prod.md"))).toEqual(Buffer.from(body));
+  expect(await readFile(join(result.repositoryRoot, "prd.md"))).toEqual(Buffer.from(body));
   expect((await git(["show", "-s", "--format=%B", result.commit], result.repositoryRoot, w.home)).trimEnd()).toBe(
-    `prod(${REQUIREMENT_ID}): create\n\nOperation-Id: create-1\nProd-Hash: ${hash(body)}`,
+    `prd(${REQUIREMENT_ID}): create\n\nOperation-Id: create-1\nPrd-Hash: ${hash(body)}`,
   );
   expect((await git(["show", "-s", "--format=%an%x00%ae%x00%cn%x00%ce", result.commit], result.repositoryRoot, w.home)).trim()).toBe(
-    "pi prod storage\0pi-prod-storage@localhost\0pi prod storage\0pi-prod-storage@localhost",
+    "pi PRD storage\0pi-prd-storage@localhost\0pi PRD storage\0pi-prd-storage@localhost",
   );
-  expect((await git(["ls-tree", "-r", "--name-only", result.commit], result.repositoryRoot, w.home)).trim()).toBe("prod.md");
+  expect((await git(["ls-tree", "-r", "--name-only", result.commit], result.repositoryRoot, w.home)).trim()).toBe("prd.md");
   expect(await git(["status", "--porcelain"], result.repositoryRoot, w.home)).toBe("");
   expect((await stat(result.repositoryRoot)).mode & 0o077).toBe(0);
-  expect((await stat(join(result.repositoryRoot, "prod.md"))).mode & 0o077).toBe(0);
+  expect((await stat(join(result.repositoryRoot, "prd.md"))).mode & 0o077).toBe(0);
   expect((await stat(join(result.repositoryRoot, ".git"))).mode & 0o077).toBe(0);
-  expect(await verifyVersion({ ...w.config, expectedRepositoryIdentity: result.repositoryIdentity, commit: result.commit, expectedHash: result.prodHash })).toMatchObject({ ok: true, commit: result.commit, prodHash: result.prodHash });
+  expect(await verifyVersion({ ...w.config, expectedRepositoryIdentity: result.repositoryIdentity, commit: result.commit, expectedHash: result.prdHash })).toMatchObject({ ok: true, commit: result.commit, prdHash: result.prdHash });
 });
 
 test("updateDraft 与 confirmUpdate 形成精确线性版本，历史读取和草稿到确认 diff 使用指定提交", async () => {
@@ -136,13 +136,13 @@ test("updateDraft 与 confirmUpdate 形成精确线性版本，历史读取和�
   expect(draft).toMatchObject({ status: "saved", parent: initial.commit, changed: true });
   expect(confirmed).toMatchObject({ status: "saved", parent: draft.commit, changed: true });
   expect("approved" in confirmed).toBe(false);
-  expect(Buffer.from((await readVersion({ ...w.config, commit: initial.commit, expectedHash: initial.prodHash })).bytes).toString()).toBe("# 目标\n\n初稿\n");
+  expect(Buffer.from((await readVersion({ ...w.config, commit: initial.commit, expectedHash: initial.prdHash })).bytes).toString()).toBe("# 目标\n\n初稿\n");
   const difference = await diffVersions({
     ...w.config,
     fromCommit: draft.commit,
     toCommit: confirmed.commit,
-    expectedFromHash: draft.prodHash,
-    expectedToHash: confirmed.prodHash,
+    expectedFromHash: draft.prdHash,
+    expectedToHash: confirmed.prdHash,
   });
   expect(difference.diff).toContain("-草稿补充");
   expect(difference.diff).toContain("+批准内容");
@@ -167,10 +167,10 @@ test("正文无变化不产生空提交；同 operationId 的提交成功响应�
 
 test("无可信持久操作记录的临时文件会原样保留并阻塞；人工核对移除后可恢复 init", async () => {
   const interrupted = await world();
-  const interruptedRoot = prodRequirementPath(interrupted.config);
+  const interruptedRoot = prdRequirementPath(interrupted.config);
   const interruptedBody = "# 第一版\n";
   const staleBytes = Buffer.from("与文件名目标 hash 不同的外部临时内容");
-  const staleTemp = join(interruptedRoot, `.prod-storage-create-1-${hash(interruptedBody).slice("sha256:".length)}-deadbeef.tmp`);
+  const staleTemp = join(interruptedRoot, `.prd-storage-create-1-${hash(interruptedBody).slice("sha256:".length)}-deadbeef.tmp`);
   await mkdir(join(interruptedRoot, ".git"), { recursive: true, mode: 0o700 });
   await writeFile(staleTemp, staleBytes, { mode: 0o600 });
   await expectCode(first(interrupted, interruptedBody), "recovery_required");
@@ -179,11 +179,11 @@ test("无可信持久操作记录的临时文件会原样保留并阻塞；人�
   expect((await first(interrupted, interruptedBody)).status).toBe("created");
 
   const bodyOnly = await world();
-  const bodyOnlyRoot = prodRequirementPath(bodyOnly.config);
+  const bodyOnlyRoot = prdRequirementPath(bodyOnly.config);
   await mkdir(bodyOnlyRoot, { recursive: true, mode: 0o700 });
-  await writeFile(join(bodyOnlyRoot, "prod.md"), "外部正文", { mode: 0o600 });
+  await writeFile(join(bodyOnlyRoot, "prd.md"), "外部正文", { mode: 0o600 });
   await expectCode(first(bodyOnly), "git_missing");
-  expect(await readFile(join(bodyOnlyRoot, "prod.md"), "utf8")).toBe("外部正文");
+  expect(await readFile(join(bodyOnlyRoot, "prd.md"), "utf8")).toBe("外部正文");
 
   const missingHistory = await world();
   await expectCode(save({ ...missingHistory.config, action: "updateDraft", operationId: "save-1", expectedParent: "a".repeat(40), bytes: Buffer.from("目标") }), "git_missing");
@@ -196,7 +196,7 @@ test("文件替换后 Git 失败保留目标正文，清除锁后同操作从预
   await writeFile(lock, "阻塞", { mode: 0o600 });
   const request = { ...w.config, action: "updateDraft" as const, operationId: "write-failed-1", expectedParent: initial.commit, bytes: Buffer.from("# Git 失败后的目标\n") };
   await expectCode(save(request), "git_failed");
-  expect(await readFile(join(initial.repositoryRoot, "prod.md"), "utf8")).toBe("# Git 失败后的目标\n");
+  expect(await readFile(join(initial.repositoryRoot, "prd.md"), "utf8")).toBe("# Git 失败后的目标\n");
   expect((await git(["rev-parse", "HEAD"], initial.repositoryRoot, w.home)).trim()).toBe(initial.commit);
   await rm(lock);
   const resumed = await save(request);
@@ -214,9 +214,9 @@ test("未知 HEAD、外部正文、复用旧 operationId 和仓库目录身份�
 
   const outsideBody = await world();
   const original = await first(outsideBody);
-  await writeFile(join(original.repositoryRoot, "prod.md"), "编辑器中的新正文");
+  await writeFile(join(original.repositoryRoot, "prd.md"), "编辑器中的新正文");
   await expectCode(save({ ...outsideBody.config, action: "updateDraft", operationId: "save-3", expectedParent: original.commit, bytes: Buffer.from("另一目标") }), "working_copy_mismatch");
-  expect(await readFile(join(original.repositoryRoot, "prod.md"), "utf8")).toBe("编辑器中的新正文");
+  expect(await readFile(join(original.repositoryRoot, "prd.md"), "utf8")).toBe("编辑器中的新正文");
 
   const duplicateOperation = await world();
   const old = await first(duplicateOperation);
@@ -255,17 +255,17 @@ test("恶意本地与全局 Git 配置、hook、filter、textconv、签名和远
   await cp(probe, join(hookDir, "pre-commit"));
   await chmod(join(hookDir, "pre-commit"), 0o755);
   await mkdir(join(initial.repositoryRoot, ".git", "info"), { recursive: true });
-  await writeFile(join(initial.repositoryRoot, ".git", "info", "attributes"), "prod.md filter=probe diff=probe\n");
+  await writeFile(join(initial.repositoryRoot, ".git", "info", "attributes"), "prd.md filter=probe diff=probe\n");
   await writeFile(join(initial.repositoryRoot, ".git", "config"), `[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n\thooksPath = ${hookDir}\n\tworktree = ${join(w.root, "wrong-worktree")}\n[filter "probe"]\n\tclean = ${probe}\n\tsmudge = ${probe}\n\trequired = true\n[diff "probe"]\n\ttextconv = ${probe}\n[diff]\n\texternal = ${probe}\n[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = ${probe}\n[remote "origin"]\n\turl = ext::${probe}\n`);
   await writeFile(join(w.config.dataRoot, ".gitconfig"), `[include]\n\tpath = ${join(w.root, "global-evil")}\n[core]\n\thooksPath = ${hookDir}\n`);
   await writeFile(join(w.root, "global-evil"), `[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = ${probe}\n`);
 
   const saved = await save({ ...w.config, action: "updateDraft", operationId: "safe-config", expectedParent: initial.commit, bytes: Buffer.from("正文不经过 filter\n") });
-  const difference = await diffVersions({ ...w.config, fromCommit: initial.commit, toCommit: saved.commit, expectedFromHash: initial.prodHash, expectedToHash: saved.prodHash });
+  const difference = await diffVersions({ ...w.config, fromCommit: initial.commit, toCommit: saved.commit, expectedFromHash: initial.prdHash, expectedToHash: saved.prdHash });
   expect(difference.diff).toContain("正文不经过 filter");
   await expect(readFile(sentinel)).rejects.toMatchObject({ code: "ENOENT" });
-  expect(await readFile(join(saved.repositoryRoot, "prod.md"), "utf8")).toBe("正文不经过 filter\n");
-  expect(await git(["show", `${saved.commit}:prod.md`], saved.repositoryRoot, w.home)).toBe("正文不经过 filter\n");
+  expect(await readFile(join(saved.repositoryRoot, "prd.md"), "utf8")).toBe("正文不经过 filter\n");
+  expect(await git(["show", `${saved.commit}:prd.md`], saved.repositoryRoot, w.home)).toBe("正文不经过 filter\n");
 });
 
 test("PATH 上没有 git 时明确失败", async () => {
@@ -288,7 +288,7 @@ test("路径祖先链接、错误 .git 链接和权限拒绝不会被吞掉或�
   expect(await readdir(outside)).toEqual([]);
 
   const badGit = await world();
-  const requirementRoot = prodRequirementPath(badGit.config);
+  const requirementRoot = prdRequirementPath(badGit.config);
   const externalGit = join(badGit.root, "external-git");
   await mkdir(requirementRoot, { recursive: true });
   await mkdir(externalGit);
@@ -299,7 +299,7 @@ test("路径祖先链接、错误 .git 链接和权限拒绝不会被吞掉或�
   const created = await first(denied);
   await chmod(created.repositoryRoot, 0o000);
   try {
-    await expect(readVersion({ ...denied.config, commit: created.commit, expectedHash: created.prodHash })).rejects.toMatchObject({ code: "EACCES" });
+    await expect(readVersion({ ...denied.config, commit: created.commit, expectedHash: created.prdHash })).rejects.toMatchObject({ code: "EACCES" });
   } finally {
     await chmod(created.repositoryRoot, 0o700);
   }
@@ -309,14 +309,14 @@ test("读取前和正文返回前都重新授权；异步拒绝会安全吸收�
   let readChecks = 0;
   const revoke = await world(({ action }) => action !== "readVersion" || ++readChecks === 1);
   const initial = await first(revoke);
-  await expectCode(readVersion({ ...revoke.config, commit: initial.commit, expectedHash: initial.prodHash }), "permission_denied");
+  await expectCode(readVersion({ ...revoke.config, commit: initial.commit, expectedHash: initial.prdHash }), "permission_denied");
   expect(readChecks).toBe(2);
 
   const unhandled: unknown[] = [];
   const listener = (reason: unknown) => { unhandled.push(reason); };
   process.on("unhandledRejection", listener);
   try {
-    const late = await world((() => Promise.reject(new Error("late denial"))) as ProdStorageAuthorize);
+    const late = await world((() => Promise.reject(new Error("late denial"))) as PrdStorageAuthorize);
     await expectCode(first(late), "permission_denied");
     await new Promise((resolvePromise) => setImmediate(resolvePromise));
     expect(unhandled).toEqual([]);
@@ -330,7 +330,7 @@ test("返回前撤权使已完成 Git 提交保持可恢复状态，重试复用
   const w = await world(({ phase }) => phase !== "beforeReturn" || !denyReturn);
   const request = { ...w.config, operationId: "return-revoked", expectedParent: null, bytes: Buffer.from("已提交但未返回\n") };
   await expectCode(create(request), "permission_denied");
-  const repositoryRoot = prodRequirementPath(w.config);
+  const repositoryRoot = prdRequirementPath(w.config);
   const committed = (await git(["rev-parse", "HEAD"], repositoryRoot, w.home)).trim();
   denyReturn = false;
   const recovered = await create(request);
@@ -344,32 +344,32 @@ test("只允许当前 main 线性历史中的完整版本，侧支对象不能�
   const tree = (await git(["rev-parse", `${initial.commit}^{tree}`], initial.repositoryRoot, w.home)).trim();
   const side = (await git(["-c", "user.name=outside", "-c", "user.email=outside@example.com", "commit-tree", tree, "-m", "side"], initial.repositoryRoot, w.home)).trim();
   expect(side).toMatch(/^[0-9a-f]{40}$/);
-  await expectCode(readVersion({ ...w.config, commit: side, expectedHash: initial.prodHash }), "unknown_version");
-  await expectCode(diffVersions({ ...w.config, fromCommit: initial.commit, toCommit: side, expectedFromHash: initial.prodHash, expectedToHash: initial.prodHash }), "unknown_version");
-  await expectCode(readVersion({ ...w.config, commit: initial.commit.slice(0, 12), expectedHash: initial.prodHash }), "invalid_commit");
+  await expectCode(readVersion({ ...w.config, commit: side, expectedHash: initial.prdHash }), "unknown_version");
+  await expectCode(diffVersions({ ...w.config, fromCommit: initial.commit, toCommit: side, expectedFromHash: initial.prdHash, expectedToHash: initial.prdHash }), "unknown_version");
+  await expectCode(readVersion({ ...w.config, commit: initial.commit.slice(0, 12), expectedHash: initial.prdHash }), "invalid_commit");
 });
 
 test("仓库中的未登记工作正文阻止保存，但精确历史读取不读取未授权的当前工作正文", async () => {
   const w = await world();
   const initial = await first(w);
-  await writeFile(join(initial.repositoryRoot, "prod.md"), "外部内容");
+  await writeFile(join(initial.repositoryRoot, "prd.md"), "外部内容");
   await expectCode(save({ ...w.config, action: "updateDraft", operationId: "same-looking", expectedParent: initial.commit, bytes: Buffer.from("# 第一版\n") }), "working_copy_mismatch");
-  expect(Buffer.from((await readVersion({ ...w.config, commit: initial.commit, expectedHash: initial.prodHash })).bytes).toString()).toBe("# 第一版\n");
-  expect(await readFile(join(initial.repositoryRoot, "prod.md"), "utf8")).toBe("外部内容");
+  expect(Buffer.from((await readVersion({ ...w.config, commit: initial.commit, expectedHash: initial.prdHash })).bytes).toString()).toBe("# 第一版\n");
+  expect(await readFile(join(initial.repositoryRoot, "prd.md"), "utf8")).toBe("外部内容");
 });
 
 test("beforeWrite 授权回调后的外部正文替换按原身份和 hash 检出且不会覆盖", async () => {
-  let prodPath = "";
+  let prdPath = "";
   let injected = false;
   const w = await world((check) => {
     if (check.phase === "beforeWrite" && check.action === "save" && !injected) {
       injected = true;
-      writeFileSync(prodPath, "external-user-bytes");
+      writeFileSync(prdPath, "external-user-bytes");
     }
     return true;
   });
   const initial = await first(w);
-  prodPath = join(initial.repositoryRoot, "prod.md");
+  prdPath = join(initial.repositoryRoot, "prd.md");
   await expectCode(save({
     ...w.config,
     action: "updateDraft",
@@ -377,50 +377,50 @@ test("beforeWrite 授权回调后的外部正文替换按原身份和 hash 检�
     expectedParent: initial.commit,
     bytes: Buffer.from("内部目标字节"),
   }), "working_copy_changed");
-  expect(await readFile(prodPath, "utf8")).toBe("external-user-bytes");
-  const recoveryTemps = (await readdir(initial.repositoryRoot)).filter((entry) => entry.startsWith(".prod-storage-external-during-auth-") && entry.endsWith(".tmp"));
+  expect(await readFile(prdPath, "utf8")).toBe("external-user-bytes");
+  const recoveryTemps = (await readdir(initial.repositoryRoot)).filter((entry) => entry.startsWith(".prd-storage-external-during-auth-") && entry.endsWith(".tmp"));
   expect(recoveryTemps).toHaveLength(1);
   expect(await readFile(join(initial.repositoryRoot, recoveryTemps[0]!))).toEqual(Buffer.from("内部目标字节"));
   expect(await commitCount(initial.repositoryRoot, w.home)).toBe(1);
 });
 
 test("读取接口首次授权携带精确提交和预期 hash，且不读取请求外的历史正文", async () => {
-  const checks: Parameters<ProdStorageAuthorize>[0][] = [];
+  const checks: Parameters<PrdStorageAuthorize>[0][] = [];
   const w = await world((check) => { checks.push({ ...check }); return true; });
   const initial = await first(w, "版本一");
   const second = await save({ ...w.config, action: "updateDraft", operationId: "version-2", expectedParent: initial.commit, bytes: Buffer.from("版本二") });
   const latest = await save({ ...w.config, action: "confirmUpdate", operationId: "version-3", expectedParent: second.commit, bytes: Buffer.from("版本三") });
 
   checks.length = 0;
-  await readVersion({ ...w.config, commit: latest.commit, expectedHash: latest.prodHash });
-  expect(checks[0]).toMatchObject({ phase: "beforeAction", action: "readVersion", commit: latest.commit, expectedHash: latest.prodHash });
+  await readVersion({ ...w.config, commit: latest.commit, expectedHash: latest.prdHash });
+  expect(checks[0]).toMatchObject({ phase: "beforeAction", action: "readVersion", commit: latest.commit, expectedHash: latest.prdHash });
 
   checks.length = 0;
-  await verifyVersion({ ...w.config, commit: latest.commit, expectedHash: latest.prodHash });
-  expect(checks[0]).toMatchObject({ phase: "beforeAction", action: "verifyVersion", commit: latest.commit, expectedHash: latest.prodHash });
+  await verifyVersion({ ...w.config, commit: latest.commit, expectedHash: latest.prdHash });
+  expect(checks[0]).toMatchObject({ phase: "beforeAction", action: "verifyVersion", commit: latest.commit, expectedHash: latest.prdHash });
 
   checks.length = 0;
   await diffVersions({
     ...w.config,
     fromCommit: second.commit,
     toCommit: latest.commit,
-    expectedFromHash: second.prodHash,
-    expectedToHash: latest.prodHash,
+    expectedFromHash: second.prdHash,
+    expectedToHash: latest.prdHash,
   });
   expect(checks[0]).toMatchObject({
     phase: "beforeAction",
     action: "diffVersions",
     fromCommit: second.commit,
     toCommit: latest.commit,
-    expectedFromHash: second.prodHash,
-    expectedToHash: latest.prodHash,
+    expectedFromHash: second.prdHash,
+    expectedToHash: latest.prdHash,
   });
 
-  const oldBlob = (await git(["rev-parse", `${initial.commit}:prod.md`], initial.repositoryRoot, w.home)).trim();
+  const oldBlob = (await git(["rev-parse", `${initial.commit}:prd.md`], initial.repositoryRoot, w.home)).trim();
   const oldBlobPath = join(initial.repositoryRoot, ".git", "objects", oldBlob.slice(0, 2), oldBlob.slice(2));
-  await rename(oldBlobPath, join(w.root, "held-old-prod-blob"));
-  expect(Buffer.from((await readVersion({ ...w.config, commit: latest.commit, expectedHash: latest.prodHash })).bytes).toString()).toBe("版本三");
-  await expectCode(readVersion({ ...w.config, commit: initial.commit, expectedHash: initial.prodHash }), "git_failed");
+  await rename(oldBlobPath, join(w.root, "held-old-prd-blob"));
+  expect(Buffer.from((await readVersion({ ...w.config, commit: latest.commit, expectedHash: latest.prdHash })).bytes).toString()).toBe("版本三");
+  await expectCode(readVersion({ ...w.config, commit: initial.commit, expectedHash: initial.prdHash }), "git_failed");
 }, 30_000);
 
 test("update-ref 后 index 更新中断可由同 operation 精确补齐", async () => {
@@ -433,10 +433,10 @@ test("update-ref 后 index 更新中断可由同 operation 精确补齐", async 
     }
     return true;
   });
-  indexLock = join(prodRequirementPath(w.config), ".git", "index.lock");
+  indexLock = join(prdRequirementPath(w.config), ".git", "index.lock");
   const request = { ...w.config, operationId: "index-create", expectedParent: null, bytes: Buffer.from("首次正文") };
   await expectCode(create(request), "git_failed");
-  const repositoryRoot = prodRequirementPath(w.config);
+  const repositoryRoot = prdRequirementPath(w.config);
   const committed = (await git(["rev-parse", "HEAD"], repositoryRoot, w.home)).trim();
   expect(await git(["ls-files", "--stage"], repositoryRoot, w.home)).toBe("");
   await rm(indexLock);
@@ -471,9 +471,9 @@ test("同 operation 恢复遇到非旧父树也非新树的外部 index 时保�
   const source = join(w.root, "external-index-body");
   await writeFile(source, "外部 index 字节");
   const externalBlob = (await git(["hash-object", "-w", source], parent.repositoryRoot, w.home)).trim();
-  await git(["update-index", "--add", "--cacheinfo", `100644,${externalBlob},prod.md`], parent.repositoryRoot, w.home);
+  await git(["update-index", "--add", "--cacheinfo", `100644,${externalBlob},prd.md`], parent.repositoryRoot, w.home);
   await expectCode(save(request), "external_index");
-  expect(await git(["ls-files", "--stage", "prod.md"], parent.repositoryRoot, w.home)).toContain(externalBlob);
+  expect(await git(["ls-files", "--stage", "prd.md"], parent.repositoryRoot, w.home)).toContain(externalBlob);
   expect((await git(["rev-parse", "HEAD"], parent.repositoryRoot, w.home)).trim()).toBe(committed);
   expect(await commitCount(parent.repositoryRoot, w.home)).toBe(2);
 });
@@ -495,8 +495,8 @@ test("尾随换行的 requirementId、repoId、operationId、提交和 hash 在�
   const committed = await world(() => { authorizationCalls += 1; return true; });
   const initial = await first(committed);
   const callsAfterCreate = authorizationCalls;
-  await expectCode(readVersion({ ...committed.config, commit: `${initial.commit}\n`, expectedHash: initial.prodHash }), "invalid_commit");
-  await expectCode(readVersion({ ...committed.config, commit: initial.commit, expectedHash: `${initial.prodHash}\n` as `sha256:${string}` }), "hash_mismatch");
+  await expectCode(readVersion({ ...committed.config, commit: `${initial.commit}\n`, expectedHash: initial.prdHash }), "invalid_commit");
+  await expectCode(readVersion({ ...committed.config, commit: initial.commit, expectedHash: `${initial.prdHash}\n` as `sha256:${string}` }), "hash_mismatch");
   await expectCode(save({ ...committed.config, action: "updateDraft", operationId: "save-1", expectedParent: `${initial.commit}\n`, bytes: Buffer.from("下一版") }), "invalid_commit");
   expect(authorizationCalls).toBe(callsAfterCreate);
   expect(await commitCount(initial.repositoryRoot, committed.home)).toBe(1);
@@ -507,12 +507,12 @@ test("固定接口错误使用不会初始化仓库，也不会把 commit messag
   await expectCode(create({ ...w.config, operationId: "wrong-parent", expectedParent: "a".repeat(40), bytes: Buffer.from("内容") }), "invalid_parent");
   await expectCode(save({ ...w.config, action: "create" as never, operationId: "wrong-action", expectedParent: null, bytes: Buffer.from("内容") }), "invalid_action");
   expect(await lstat(w.config.dataRoot).then(() => true, (error: NodeJS.ErrnoException) => error.code !== "ENOENT")).toBe(false);
-  expect(ProdStorageError).toBeTypeOf("function");
+  expect(PrdStorageError).toBeTypeOf("function");
 });
 
 test("M9：授权回调抛出带原因的拒绝时，存储层的报错带上这个原因", async () => {
   const w = await world(() => { throw Object.assign(new Error("拒绝"), { advice: { why: "投递凭据已过期", next: "等下一次自动投递" } }); });
   const rejected = await first(w).catch((error: unknown) => error);
-  expect(rejected).toMatchObject({ name: "ProdStorageError", code: "permission_denied" });
+  expect(rejected).toMatchObject({ name: "PrdStorageError", code: "permission_denied" });
   expect((rejected as Error).message).toContain("投递凭据已过期");
 });

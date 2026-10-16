@@ -15,28 +15,28 @@ async function repoWithArchive() {
   const repo = await createRepoFixture();
   fixtures.push(repo);
   await mkdir(join(repo.root, "src"), { recursive: true });
-  await mkdir(join(repo.root, "docs", "prod"), { recursive: true });
+  await mkdir(join(repo.root, "docs", "prd"), { recursive: true });
   await writeFile(join(repo.root, "src", "source.ts"), "export const source = 'v1';\n");
-  await writeFile(join(repo.root, "docs", "prod", "archive.md"), "ARCHIVE-SECRET-v1\n");
-  await runGit(["add", "src/source.ts", "docs/prod/archive.md"], repo.root);
+  await writeFile(join(repo.root, "docs", "prd", "archive.md"), "ARCHIVE-SECRET-v1\n");
+  await runGit(["add", "src/source.ts", "docs/prd/archive.md"], repo.root);
   await runGit(["commit", "-m", "seed source and archive"], repo.root);
   return repo;
 }
 
-describe("M1-AC4/5：自有快照固定排除 docs/prod 正文", () => {
+describe("M1-AC4/5：自有快照固定排除 docs/prd 正文", () => {
   test("未跟踪、已跟踪、暂存和已提交归档变化都不改变内容快照", async () => {
     const repo = await repoWithArchive();
 
     const cleanGit = await collectGitSnapshot({ repoRoot: repo.root });
 
-    await mkdir(join(repo.root, "docs", "prod", "nested"), { recursive: true });
-    await writeFile(join(repo.root, "docs", "prod", "nested", "untracked.md"), "UNTRACKED-SECRET-v1\n");
+    await mkdir(join(repo.root, "docs", "prd", "nested"), { recursive: true });
+    await writeFile(join(repo.root, "docs", "prd", "nested", "untracked.md"), "UNTRACKED-SECRET-v1\n");
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(cleanGit.fingerprint);
 
-    await writeFile(join(repo.root, "docs", "prod", "archive.md"), "ARCHIVE-SECRET-v2\n");
+    await writeFile(join(repo.root, "docs", "prd", "archive.md"), "ARCHIVE-SECRET-v2\n");
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(cleanGit.fingerprint);
 
-    await runGit(["add", "docs/prod/archive.md", "docs/prod/nested/untracked.md"], repo.root);
+    await runGit(["add", "docs/prd/archive.md", "docs/prd/nested/untracked.md"], repo.root);
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(cleanGit.fingerprint);
 
     await runGit(["commit", "-m", "archive only"], repo.root);
@@ -44,7 +44,7 @@ describe("M1-AC4/5：自有快照固定排除 docs/prod 正文", () => {
     expect(committed.head).not.toBe(cleanGit.head);
     expect(committed.fingerprint).toBe(cleanGit.fingerprint);
 
-    await runGit(["rm", "docs/prod/archive.md"], repo.root);
+    await runGit(["rm", "docs/prd/archive.md"], repo.root);
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(cleanGit.fingerprint);
   });
 
@@ -69,23 +69,23 @@ describe("M1-AC4/5：自有快照固定排除 docs/prod 正文", () => {
     const repo = await repoWithArchive();
     const clean = await collectGitSnapshot({ repoRoot: repo.root });
 
-    await runGit(["mv", "src/source.ts", "docs/prod/source.ts"], repo.root);
+    await runGit(["mv", "src/source.ts", "docs/prd/source.ts"], repo.root);
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).not.toBe(clean.fingerprint);
 
     await runGit(["reset", "--hard", "HEAD"], repo.root);
-    await runGit(["mv", "docs/prod/archive.md", "src/restored.md"], repo.root);
+    await runGit(["mv", "docs/prd/archive.md", "src/restored.md"], repo.root);
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).not.toBe(clean.fingerprint);
 
     await runGit(["reset", "--hard", "HEAD"], repo.root);
-    await runGit(["mv", "docs/prod/archive.md", "docs/prod/moved.md"], repo.root);
+    await runGit(["mv", "docs/prd/archive.md", "docs/prd/moved.md"], repo.root);
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(clean.fingerprint);
   });
 
   test("大段归档差异不会进入 Git 输出缓冲区，调用方附加排除不能取消固定排除", async () => {
     const repo = await repoWithArchive();
     const clean = await collectGitSnapshot({ repoRoot: repo.root, gitMaxBuffer: 2_048, excludePaths: ["README.md"] });
-    await writeFile(join(repo.root, "docs", "prod", "archive.md"), `ARCHIVE-OUTPUT-PROBE\n${"x".repeat(128 * 1024)}`);
-    await runGit(["add", "docs/prod/archive.md"], repo.root);
+    await writeFile(join(repo.root, "docs", "prd", "archive.md"), `ARCHIVE-OUTPUT-PROBE\n${"x".repeat(128 * 1024)}`);
+    await runGit(["add", "docs/prd/archive.md"], repo.root);
 
     const changed = await collectGitSnapshot({ repoRoot: repo.root, gitMaxBuffer: 2_048, excludePaths: ["README.md"] });
     expect(changed.fingerprint).toBe(clean.fingerprint);
@@ -94,7 +94,7 @@ describe("M1-AC4/5：自有快照固定排除 docs/prod 正文", () => {
   test("Node 内容枚举在 lstat/流读取前跳过归档，但普通不可读文件仍会失败", async () => {
     const repo = await repoWithArchive();
     const clean = await collectGitSnapshot({ repoRoot: repo.root });
-    const archive = join(repo.root, "docs", "prod", "archive.md");
+    const archive = join(repo.root, "docs", "prd", "archive.md");
     await chmod(archive, 0o000);
     expect((await collectGitSnapshot({ repoRoot: repo.root })).fingerprint).toBe(clean.fingerprint);
 

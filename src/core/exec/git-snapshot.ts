@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { PROD_ARCHIVE_GIT_PATHSPECS, isProdArchivePath } from "../policy/content-policy.ts";
+import { PRD_ARCHIVE_GIT_PATHSPECS, isPrdArchivePath } from "../policy/content-policy.ts";
 import { readGitBytes } from "./git-read.ts";
 import { createHash } from "node:crypto";
 import { lstat, readlink } from "node:fs/promises";
@@ -111,7 +111,7 @@ export async function collectGitSnapshot(input: CollectGitSnapshotInput): Promis
   const pathspec = [
     "--",
     ".",
-    ...PROD_ARCHIVE_GIT_PATHSPECS,
+    ...PRD_ARCHIVE_GIT_PATHSPECS,
     ...(input.excludePaths ?? []).map((path) => `:(exclude,literal)${path}`),
   ];
   const head = (await runGit(repoRoot, ["rev-parse", "HEAD"], signal, timeoutMs, maxBuffer)).toString("utf8").trim();
@@ -128,7 +128,7 @@ export async function collectGitSnapshot(input: CollectGitSnapshotInput): Promis
   hashSegment(hash, await runGit(repoRoot, ["diff", "--cached", "--binary", "--no-renames", ...pathspec], signal, timeoutMs, maxBuffer));
   // 未跟踪文件的内容不出现在 diff 里，porcelain 状态行也不含内容——不单独喂入会漏检改动
   for (const relPath of parseUntrackedPaths(status).sort()) {
-    if (isProdArchivePath(relPath)) continue;
+    if (isPrdArchivePath(relPath)) continue;
     hashSegment(hash, Buffer.from(relPath, "utf8"));
     hashSegment(hash, await untrackedEntrySegment(repoRoot, relPath));
   }
@@ -136,6 +136,6 @@ export async function collectGitSnapshot(input: CollectGitSnapshotInput): Promis
 }
 
 export async function listChangedPaths(repoRoot: string): Promise<string[]> {
-  const status = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "-uall", "--no-renames", "--", ".", ...PROD_ARCHIVE_GIT_PATHSPECS], undefined, GIT_TIMEOUT_MS, GIT_MAX_BUFFER);
+  const status = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "-uall", "--no-renames", "--", ".", ...PRD_ARCHIVE_GIT_PATHSPECS], undefined, GIT_TIMEOUT_MS, GIT_MAX_BUFFER);
   return status.toString("utf8").split("\0").filter(Boolean).map((entry) => entry.slice(3));
 }

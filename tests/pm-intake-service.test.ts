@@ -62,7 +62,7 @@ test.each(["submissionRef", "creator"] as const)("已存request的%s类型损坏
   expect(persisted(fixture)).toEqual(before);
 });
 
-test("真实批准prod、独立worktree、PM lease和可信provider可登记请求、读取及passed复核", async () => {
+test("真实批准PRD、独立worktree、PM lease和可信provider可登记请求、读取及passed复核", async () => {
   const fixture = await world();
   const beforeRequirement = fixture.state.read(fixture.requirementId);
   const beforeOwner = fixture.db((db) => db.read("pm_ownership", fixture.requirementId));
@@ -84,7 +84,7 @@ test("真实批准prod、独立worktree、PM lease和可信provider可登记请�
   expect(all[PM_INTAKE_NAMESPACES.requests]).toHaveLength(1);
   expect(all[PM_INTAKE_NAMESPACES.reviews]).toHaveLength(1);
   const serialized = JSON.stringify(all);
-  expect(serialized).not.toMatch(/输入正确验证码|错误验证码显示失败|understanding|prodBody|transcript|userAuthorizationCreated/);
+  expect(serialized).not.toMatch(/输入正确验证码|错误验证码显示失败|understanding|prdBody|transcript|userAuthorizationCreated/);
   expect(fixture.db((db) => db.list("receipts").length)).toBe(0);
 });
 

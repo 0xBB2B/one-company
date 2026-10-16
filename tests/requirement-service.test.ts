@@ -12,7 +12,7 @@ import { RequirementStateStore } from "../src/modules/requirement/requirement-st
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import * as databaseModule from "../src/core/storage/database.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
-import { prodRequirementPath } from "../src/modules/requirement/prod-storage.ts";
+import { prdRequirementPath } from "../src/modules/requirement/prd-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -127,12 +127,12 @@ test("create 生成并持久复用 UUID，首提与同 operation 响应重试不
 
   expect(first.requirementId).toMatch(/^[0-9a-f-]{36}$/);
   expect(repeated).toEqual(first);
-  expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: first.requirementId }))).toBe(1);
-  expect(w.state.events(first.requirementId).filter((event) => event.data.kind === "prod.saved")).toHaveLength(1);
+  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: first.requirementId }))).toBe(1);
+  expect(w.state.events(first.requirementId).filter((event) => event.data.kind === "prd.saved")).toHaveLength(1);
   expect((await w.service.read({ requirementId: first.requirementId, source: "saved" })).body).toBe(input.body);
   expect(w.state.read(first.requirementId).data.saved!.hash).toMatch(/^[0-9a-f]{64}$/);
   expect(w.state.read(first.requirementId).data.saved!.hash).not.toContain("sha256:");
-  expect(authorizations.some((request) => request.prodHash === first.prodHash)).toBe(true);
+  expect(authorizations.some((request) => request.prdHash === first.prdHash)).toBe(true);
   expect(authorizations.every((request) => request.repoId === w.identity.repoId)).toBe(true);
   expect(JSON.stringify(authorizations)).not.toContain(input.body);
   expect(requirementIntentHash({ title: input.title, body: input.body })).toBe(requirementIntentHash({ body: input.body, title: input.title }));
@@ -146,8 +146,8 @@ test("相同 requestId 即使使用新 operationId 仍复用 UUID 与已有提�
   expect(second.requirementId).toBe(first.requirementId);
   expect(second.status).toBe("unchanged");
   expect(second.commit).toBe(first.commit);
-  expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: first.requirementId }))).toBe(1);
-  expect(w.state.events(first.requirementId).filter((event) => event.data.kind === "prod.saved")).toHaveLength(1);
+  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: first.requirementId }))).toBe(1);
+  expect(w.state.events(first.requirementId).filter((event) => event.data.kind === "prd.saved")).toHaveLength(1);
 });
 
 test("无变化 draft 不空提交；首次确认引用已有提交但仍激活并登记批准事件", async () => {
@@ -163,15 +163,15 @@ test("无变化 draft 不空提交；首次确认引用已有提交但仍激活�
   });
   expect(draft.status).toBe("unchanged");
   expect(draft.commit).toBe(created.commit);
-  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prod.saved")).toHaveLength(1);
+  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prd.saved")).toHaveLength(1);
 
   const approved = await activate(w, created);
   expect(approved.status).toBe("unchanged");
   expect(approved.commit).toBe(created.commit);
   expect(approved.lifecycle).toBe("active");
   expect(approved.revision).toBe(1);
-  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prod.approved")).toHaveLength(1);
-  expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
+  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prd.approved")).toHaveLength(1);
+  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
 });
 
 test("M8A-AC7：确认须有可信 receipt 授权，不要求已绑定 worktree", async () => {
@@ -190,7 +190,7 @@ test("M8A-AC7：确认须有可信 receipt 授权，不要求已绑定 worktree"
   allowConfirmation = false;
   await expect(w.service.confirmUpdate(confirm)).rejects.toMatchObject({ code: "authorization_required" });
   expect(w.state.read(created.requirementId).data.lifecycle).toBe("draft");
-  expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
+  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
   allowConfirmation = true;
   await w.service.confirmUpdate(confirm);
   expect(w.state.read(created.requirementId).data).toMatchObject({ lifecycle: "active", workspace: null });
@@ -284,13 +284,13 @@ test("Git 完成后操作日志登记故障，原 operation 重试复用提交�
   await expect(w.service.create(input)).rejects.toThrow(/injected operation DB failure/);
   const reserved = w.state.reserve({ requestId: input.requestId, intentHash: requirementIntentHash({ title: input.title, body: input.body }) });
   expect(reserved.data.saved).toBeNull();
-  const requirementRoot = prodRequirementPath({ ...w.options, requirementId: reserved.id });
+  const requirementRoot = prdRequirementPath({ ...w.options, requirementId: reserved.id });
   expect(await commitCount(requirementRoot)).toBe(1);
 
   const recovered = await w.service.create(input);
   expect(recovered.status).toBe("recovered");
   expect(await commitCount(requirementRoot)).toBe(1);
-  expect(w.state.events(reserved.id).filter((event) => event.data.kind === "prod.saved")).toHaveLength(1);
+  expect(w.state.events(reserved.id).filter((event) => event.data.kind === "prd.saved")).toHaveLength(1);
   expect(spy).toHaveBeenCalled();
 });
 
@@ -309,8 +309,8 @@ test("批准已落库但 finalize 响应丢失时，同 operation 重试不重�
   const recovered = await w.service.confirmUpdate(input);
   expect(recovered.revision).toBe(1);
   expect(recovered.lifecycle).toBe("active");
-  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prod.approved")).toHaveLength(1);
-  expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
+  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prd.approved")).toHaveLength(1);
+  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
 });
 
 test("状态保存已成功但 operation 日志未登记时，原 operation 核对恢复且不再写 Git", async () => {
@@ -330,12 +330,12 @@ test("状态保存已成功但 operation 日志未登记时，原 operation 核�
   await expect(w.service.updateDraft(input)).rejects.toThrow(/saved-version log failure/);
   const afterFailure = w.state.read(created.requirementId);
   expect(afterFailure.data.saved!.commit).not.toBe(created.commit);
-  const requirementRoot = prodRequirementPath({ ...w.options, requirementId: created.requirementId });
+  const requirementRoot = prdRequirementPath({ ...w.options, requirementId: created.requirementId });
   expect(await commitCount(requirementRoot)).toBe(2);
   const recovered = await w.service.updateDraft(input);
   expect(recovered.commit).toBe(afterFailure.data.saved!.commit);
   expect(await commitCount(requirementRoot)).toBe(2);
-  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prod.saved")).toHaveLength(2);
+  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prd.saved")).toHaveLength(2);
 });
 
 test("Git 成功后状态事件登记失败，重试按持久原 version 补齐且不重复 commit/event", async () => {
@@ -357,20 +357,20 @@ test("Git 成功后状态事件登记失败，重试按持久原 version 补齐�
   try { await expect(w.service.updateDraft(input)).rejects.toThrow(); }
   finally { restore(); }
 
-  const requirementRoot = prodRequirementPath({ ...w.options, requirementId: created.requirementId });
+  const requirementRoot = prdRequirementPath({ ...w.options, requirementId: created.requirementId });
   expect(await commitCount(requirementRoot)).toBe(2);
   expect((await w.service.metadata(created.requirementId)).saved!.commit).toBe(created.commit);
   const recovered = await w.service.updateDraft(input);
   expect(recovered.status).toBe("saved");
   expect(await commitCount(requirementRoot)).toBe(2);
-  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prod.saved")).toHaveLength(2);
+  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prd.saved")).toHaveLength(2);
 });
 
 test("外部正文与持久目标不匹配时保留外部内容并阻塞，不 reset 或覆盖", async () => {
   const w = await world();
   const created = await w.service.create(createInput());
-  const requirementRoot = prodRequirementPath({ ...w.options, requirementId: created.requirementId });
-  await writeFile(join(requirementRoot, "prod.md"), "external-user-content");
+  const requirementRoot = prdRequirementPath({ ...w.options, requirementId: created.requirementId });
+  await writeFile(join(requirementRoot, "prd.md"), "external-user-content");
   await expect(w.service.updateDraft({
     requirementId: created.requirementId,
     operationId: uuidv7(),
@@ -378,7 +378,7 @@ test("外部正文与持久目标不匹配时保留外部内容并阻塞，不 r
     title: "需求标题",
     body: "服务想写入的新正文",
   })).rejects.toMatchObject({ code: "working_copy_mismatch" });
-  expect(await readFile(join(requirementRoot, "prod.md"), "utf8")).toBe("external-user-content");
+  expect(await readFile(join(requirementRoot, "prd.md"), "utf8")).toBe("external-user-content");
   expect(await commitCount(requirementRoot)).toBe(1);
   expect((await w.service.metadata(created.requirementId)).saved!.commit).toBe(created.commit);
 });
@@ -386,7 +386,7 @@ test("外部正文与持久目标不匹配时保留外部内容并阻塞，不 r
 test("create 分配到已有完整 UUID 归档时持久降权，归档删除后也不自动恢复", async () => {
   const w = await world();
   const collisionId = uuidv7();
-  const archiveDirectory = join(w.repo.root, "docs", "prod");
+  const archiveDirectory = join(w.repo.root, "docs", "prd");
   await mkdir(archiveDirectory, { recursive: true });
   const archive = join(archiveDirectory, `${collisionId}.历史需求.md`);
   await writeFile(archive, "ARCHIVE-BODY-MUST-NOT-BE-READ");
@@ -397,7 +397,7 @@ test("create 分配到已有完整 UUID 归档时持久降权，归档删除后�
     .mockImplementation(originalUuid);
   await expect(w.service.create(input)).rejects.toMatchObject({ code: "recovery_required" });
   expect(w.state.read(collisionId).data).toMatchObject({ lifecycle: "draft", recovery: "needs_review", recoveryReason: "archive_found" });
-  expect(existsSync(prodRequirementPath({ ...w.options, requirementId: collisionId }))).toBe(false);
+  expect(existsSync(prdRequirementPath({ ...w.options, requirementId: collisionId }))).toBe(false);
   await rm(archive);
   await expect(w.service.create(input)).rejects.toMatchObject({ code: "recovery_required" });
   expect(w.state.read(collisionId).data.recoveryReason).toBe("archive_found");
@@ -426,7 +426,7 @@ test("两个独立 Node 服务竞争同一需求时只有持有者进入正文�
   await writeFile(release, "continue");
   expect(await first.closed).toBe(0);
   expect(JSON.parse(first.stdout().trim().split("\n").at(-1)!)).toMatchObject({ ok: true });
-  expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(2);
+  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(2);
   expect((await w.service.read({ requirementId: created.requirementId, source: "saved" })).body).toBe("第一个进程正文");
 }, 15_000);
 
@@ -450,7 +450,7 @@ test("活动持有者不能被偷占，进程真实结束后只有原 operation 
   expect(await child.closed).not.toBe(0);
   const recovered = await w.service.updateDraft(input);
   expect(recovered.status).toBe("saved");
-  expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(2);
+  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(2);
 }, 15_000);
 
 test("关闭与 storage.beforeWrite 互斥，预检失败不撤权且不写文件", async () => {
@@ -478,7 +478,7 @@ test("关闭与 storage.beforeWrite 互斥，预检失败不撤权且不写文�
   });
   await expect(w.service.updateDraft(input)).rejects.toBeTruthy();
   expect(checks).toBeGreaterThanOrEqual(3);
-  expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
+  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
   const after = w.state.read(created.requirementId);
   expect(after.data.lifecycle).toBe("draft");
   expect(after.data.epoch).toBe(created.epoch);
@@ -557,15 +557,15 @@ test("既有closing现场的写进程死亡后可安全结束，活持有者不�
   child.proc.kill("SIGKILL");
   expect(await child.closed).not.toBe(0);
   expect(w.state.finishClose(finish).data.lifecycle).toBe("closed");
-  expect(await commitCount(prodRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
+  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
 }, 15_000);
 
 test("完成 operation 的重复请求会核对当前工作正文，不把外部变化误报成功", async () => {
   const w = await world();
   const input = createInput();
   const created = await w.service.create(input);
-  const requirementRoot = prodRequirementPath({ ...w.options, requirementId: created.requirementId });
-  await writeFile(join(requirementRoot, "prod.md"), "external-after-finalize");
+  const requirementRoot = prdRequirementPath({ ...w.options, requirementId: created.requirementId });
+  await writeFile(join(requirementRoot, "prd.md"), "external-after-finalize");
   await expect(w.service.create(input)).rejects.toMatchObject({ code: "working_copy_mismatch" });
 });
 
@@ -605,7 +605,7 @@ test("SQLite 原始 records/events 不含正文、patch 或正文副本字段", 
     events: db.events(`requirement_events:${created.requirementId}`),
   }));
   expect(dump).not.toContain(secretBody);
-  expect(dump).not.toMatch(/"(?:body|prodBody|patch|diff|bytes|rawContent)"/);
+  expect(dump).not.toMatch(/"(?:body|prdBody|patch|diff|bytes|rawContent)"/);
 
   const databaseBytes = await readFile(path);
   expect(databaseBytes.includes(Buffer.from(secretBody))).toBe(false);
@@ -726,13 +726,13 @@ test("需求的 epoch 变化后，metadata 不再给出旧 epoch 的保存操作
 test("归档目录里只有本需求的原型 html 时 read 照常成功；与正文并存时判为已有归档而不是身份冲突", async () => {
   const w = await world();
   const created = await w.service.create(createInput());
-  const prod = join(w.repo.root, "docs", "prod");
-  await mkdir(prod, { recursive: true });
-  for (const name of ["设置页", "命令行输出"]) await writeFile(join(prod, `${created.requirementId}.${name}.html`), "<html></html>");
+  const prd = join(w.repo.root, "docs", "prd");
+  await mkdir(prd, { recursive: true });
+  for (const name of ["设置页", "命令行输出"]) await writeFile(join(prd, `${created.requirementId}.${name}.html`), "<html></html>");
   await expect(w.service.read({ requirementId: created.requirementId, source: "saved" })).resolves.toBeDefined();
   expect(w.state.read(created.requirementId).data.recovery).toBe("ready");
 
-  await writeFile(join(prod, `${created.requirementId}.需求标题.md`), "正文");
+  await writeFile(join(prd, `${created.requirementId}.需求标题.md`), "正文");
   await expect(w.service.read({ requirementId: created.requirementId, source: "saved" })).rejects.toMatchObject({ code: "recovery_required" });
   expect(w.state.read(created.requirementId).data.recoveryReason).toBe("archive_found");
 });

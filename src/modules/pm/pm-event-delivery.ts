@@ -22,7 +22,7 @@ function reviewedCurrent(input: PmEventDeliveryInput): boolean {
   const binding = head?.review?.result === "passed" ? head.review.binding : null;
   const record = withDatabase(repositoryDatabase(input.dataRoot, input.repoId), (db) => db.read<RequirementRecord>("requirements", input.lease.requirementId))?.data;
   return !!binding && !!record?.approved && binding.pmRunId === input.lease.runId && binding.pmFence === input.lease.fence &&
-    binding.contextGeneration === input.lease.contextGeneration && binding.approvedRevision === record.revision && binding.approvedProdHash === record.approved.hash;
+    binding.contextGeneration === input.lease.contextGeneration && binding.approvedRevision === record.revision && binding.approvedPrdHash === record.approved.hash;
 }
 
 /**
