@@ -11,7 +11,7 @@ export const SETTINGS_ROLES = [
 export type SettingsRoleKey = (typeof SETTINGS_ROLES)[number]["key"];
 export interface RoleSetting { model: string | null; thinking: ThinkingLevel | null }
 export type SettingsLayer = Partial<Record<SettingsRoleKey, RoleSetting>>;
-export interface SettingsProblem { path: string; layer: "user" | "project"; role?: SettingsRoleKey; display: string; value?: string }
+export interface SettingsProblem { path: string; layer: "user" | "project"; role?: SettingsRoleKey; key?: string; display: string; value?: string }
 export interface EffectiveSetting extends RoleSetting { source: "project" | "user" | "default" }
 
 export function userSettingsPath(agentDir: string): string {
@@ -61,12 +61,12 @@ export function parseSettingsLayer(path: string, layer: "user" | "project"): { e
   for (const [name, value] of Object.entries(section)) {
     if (name === "git-delivery") {
       if (typeof value === "boolean") gitDelivery = value;
-      else problems.push({ path, layer, display: "git-delivery 只能写 true 或 false", value: JSON.stringify(value) });
+      else problems.push({ path, layer, key: name, display: "git-delivery 只能写 true 或 false", value: JSON.stringify(value) });
       continue;
     }
     const role = SETTINGS_ROLES.find((r) => r.key === name);
     if (!role) {
-      problems.push({ path, layer, display: `不认识的设定 ${name}，只能是 ${keys.join("、")}` });
+      problems.push({ path, layer, key: name, display: `不认识的设定 ${name}，只能是 ${keys.join("、")}` });
       continue;
     }
     const problem = (display: string) => problems.push({ path, layer, role: role.key, display });
