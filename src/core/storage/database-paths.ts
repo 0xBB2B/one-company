@@ -2,8 +2,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export type DatabaseKind = "data" | "global" | "index";
-// data.db 的记录结构升到版本 2 且不迁移旧库；索引库可重建、全局库结构未变，仍为版本 1
-export const DATABASE_SCHEMA_VERSIONS: Readonly<Record<DatabaseKind, number>> = Object.freeze({ data: 2, global: 1, index: 1 });
+export const DATABASE_SCHEMA_VERSIONS: Readonly<Record<DatabaseKind, number>> = Object.freeze({ data: 3, global: 1, index: 2 });
 export const DATABASE_APPLICATION_IDS: Readonly<Record<DatabaseKind, number>> = Object.freeze({
   data: 0x50494441,
   global: 0x5049474c,

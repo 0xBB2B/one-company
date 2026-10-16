@@ -72,18 +72,35 @@ test("用途不符或未知旧布局的.db不被当成缓存重建", async () =>
   expect(() => new LocalDatabase(index)).toThrow(/wrong_database_kind/);
 });
 
-test("未知版本或带对象的零版本在切换WAL前拒绝，源库字节不变", async () => {
+const OLD_VERSION_MESSAGE = (file: string) => new RegExp(`outdated_database.*${file}.*请备份后删除本机数据目录并重新初始化`);
+
+test.each([
+  { kind: "data", version: 0, error: /wrong_database_kind/ },
+  { kind: "data", version: 1, error: OLD_VERSION_MESSAGE("data\\.db") },
+  { kind: "data", version: 2, error: OLD_VERSION_MESSAGE("data\\.db") },
+  { kind: "data", version: 99, error: /不支持的数据库版本/ },
+  { kind: "index", version: 1, error: OLD_VERSION_MESSAGE("index\\.db") },
+  { kind: "index", version: 99, error: /不支持的数据库版本/ },
+].map((c) => [c.kind, c.version, c.error] as const))("%s.db 版本号 %s 在切换WAL前拒绝，源库字节不变", async (kind, version, error) => {
   const w = await world();
-  for (const version of [0, 1, 99]) {
-    const directory = join(w.directory, `v${version}`); await mkdir(directory, { mode: 0o700 });
-    const path = databaseFile(directory, "data");
-    const raw = new DatabaseSync(path);
-    raw.exec(`PRAGMA application_id=${DATABASE_APPLICATION_IDS.data}; PRAGMA user_version=${version}; CREATE TABLE sentinel(value TEXT);`);
-    raw.close();
-    const before = await fileHash(path);
-    expect(() => new LocalDatabase(path)).toThrow(version === 0 ? /wrong_database_kind/ : version === 1 ? /outdated_database.*删除本机数据目录/ : /不支持的数据库版本/);
-    expect(await fileHash(path)).toBe(before);
-    expect(existsSync(path + "-wal")).toBe(false);
+  const path = databaseFile(w.directory, kind);
+  const raw = new DatabaseSync(path);
+  raw.exec(`PRAGMA application_id=${DATABASE_APPLICATION_IDS[kind]}; PRAGMA user_version=${version}; CREATE TABLE sentinel(value TEXT);`);
+  raw.close();
+  const before = await fileHash(path);
+  expect(() => new LocalDatabase(path)).toThrow(error);
+  expect(await fileHash(path)).toBe(before);
+  expect(existsSync(path + "-wal")).toBe(false);
+});
+
+test("新建的 data.db、index.db、global.db 版本号分别是 3、2、1", async () => {
+  const w = await world();
+  const expected = { data: 3, index: 2, global: 1 } as const;
+  for (const kind of ["data", "index", "global"] as const) {
+    const path = databaseFile(w.directory, kind);
+    new LocalDatabase(path).close();
+    const raw = new DatabaseSync(path, { readOnly: true });
+    try { expect(raw.prepare("PRAGMA user_version").get()?.user_version).toBe(expected[kind]); } finally { raw.close(); }
   }
 });
 

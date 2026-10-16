@@ -11,7 +11,7 @@ import {
   uuidv7,
 } from "../../core/storage/database.ts";
 import type { StoredRecord } from "../../core/storage/database.ts";
-import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, databaseKind } from "../../core/storage/database-paths.ts";
+import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, databaseKind } from "../../core/storage/database-paths.ts";
 
 const HASH = /^[0-9a-f]{64}$/;
 const ENTITY_ID = /^[\p{L}\p{N}][\p{L}\p{N}._:/#@+-]{0,255}$/u;
@@ -678,7 +678,7 @@ export class IndexStore {
     try {
       db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000; BEGIN");
       if (Number(db.prepare("PRAGMA application_id").get()?.application_id) !== DATABASE_APPLICATION_IDS.index
-        || Number(db.prepare("PRAGMA user_version").get()?.user_version) !== 1
+        || Number(db.prepare("PRAGMA user_version").get()?.user_version) !== DATABASE_SCHEMA_VERSIONS.index
         || Number(db.prepare("SELECT schema_version FROM index_schema_metadata WHERE schema_key = 'current'").get()?.schema_version) !== 1) fail("invalid_index_state");
       const row = db.prepare("SELECT id, version, data FROM records WHERE namespace = 'workspaces' AND record_key = ?").get(identity.workspaceId);
       if (!row || typeof row.data !== "string") fail("no_index");

@@ -120,10 +120,12 @@ export class TransactionCleanupError extends AggregateError {
 
 export type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
 
+const OUTDATED_VERSIONS: Partial<Record<DatabaseKind, readonly number[]>> = { data: [1, 2], index: [1] };
+
 function assertSupportedVersion(kind: DatabaseKind, version: number): void {
   if (version === 0 || version === DATABASE_SCHEMA_VERSIONS[kind]) return;
-  if (kind === "data" && version === 1) {
-    throw new DatabaseStorageError("outdated_database", "data.db 来自移除 spec 之前的版本，不再兼容；请备份后删除本机数据目录并重新初始化");
+  if (OUTDATED_VERSIONS[kind]?.includes(version)) {
+    throw new DatabaseStorageError("outdated_database", `${kind}.db 来自旧版本，和当前版本不兼容；请备份后删除本机数据目录并重新初始化`);
   }
   throw new Error(`不支持的数据库版本: ${version}`);
 }
