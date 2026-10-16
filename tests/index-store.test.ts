@@ -425,7 +425,7 @@ test("FTS参数、条数、截断和错误输出固定，非法语法不泄露SQ
   store.close();
 });
 
-test("已有user_version 1索引库会登记专属schema并回填合法source_fragments", async () => {
+test("已有user_version 2索引库会登记专属schema并回填合法source_fragments", async () => {
   const w = await fixture(), identity = w.identity(hash("c"), w.workspaceA, "refs/heads/schema-upgrade");
   const initial = new IndexStore(w.databasePath, identity);
   initial.publish(initial.begin(), codePublication("src/upgrade.ts", "upgrade_backfill_token")); initial.close();
@@ -440,7 +440,7 @@ test("已有user_version 1索引库会登记专属schema并回填合法source_fr
       DROP TABLE source_fragments_fts;
       DROP TABLE index_schema_metadata;
     `);
-    expect(oldLayout.prepare("PRAGMA user_version").get()?.user_version).toBe(1);
+    expect(oldLayout.prepare("PRAGMA user_version").get()?.user_version).toBe(2);
   } finally { oldLayout.close(); }
   const upgraded = new IndexStore(w.databasePath, identity);
   expect(upgraded.search("upgrade_backfill_token").results).toHaveLength(1);
@@ -531,14 +531,14 @@ test.each(["database", "wal", "shm", "directory"])("返回前再次拒绝读取�
   } finally { store.close(); }
 });
 
-test("含FTS专属schema的index.db可做一致快照，仍保持user_version 1", async () => {
+test("含FTS专属schema的index.db可做一致快照，仍保持user_version 2", async () => {
   const w = await fixture(), identity = w.identity(hash("9"), w.workspaceA, "refs/heads/backup");
   const store = new IndexStore(w.databasePath, identity);
   store.publish(store.begin(), codePublication("src/backup.ts", "backup_token")); store.close();
   const receipt = await withDatabaseMaintenance({ directory: w.directory, worktreeRoots: [w.workspaceA] }, (permit) => createDatabaseSnapshot(permit, "index"));
   const snapshot = new DatabaseSync(receipt.snapshotPath, { readOnly: true, allowExtension: false });
   try {
-    expect(snapshot.prepare("PRAGMA user_version").get()?.user_version).toBe(1);
+    expect(snapshot.prepare("PRAGMA user_version").get()?.user_version).toBe(2);
     expect(snapshot.prepare("SELECT schema_version FROM index_schema_metadata WHERE schema_key='current'").get()?.schema_version).toBe(1);
     expect(snapshot.prepare("SELECT count(*) AS n FROM source_fragments_fts WHERE source_fragments_fts MATCH ?").get("backup_token")?.n).toBe(1);
   } finally { snapshot.close(); }
