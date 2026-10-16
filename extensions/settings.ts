@@ -15,7 +15,7 @@ import type { ClearSettingRequest, SaveSettingRequest, SettingsLayerName } from 
 import { clearAgentSetting, projectSettingsPath, readAgentSettings, saveAgentSetting, SETTINGS_ROLES, userSettingsPath } from "../runtime/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
 
-async function resolveRepoRoot(cwd: string): Promise<string> {
+export async function resolveRepoRoot(cwd: string): Promise<string> {
   try {
     const { stdout } = await readGit(cwd, ["rev-parse", "--show-toplevel"]);
     return stdout.trim();

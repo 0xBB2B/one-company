@@ -6,24 +6,10 @@ import type { ProgramWindow, WindowChoice } from "./question-window.ts";
 import { commandOutputTail } from "./tool-failure.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { globalDatabase, withDatabase } from "./database.ts";
 import { isProdArchivePath } from "./content-policy.ts";
 import { fetchRemoteTarget, gitIn, includesCommit } from "./target-branch.ts";
 
 const exec = promisify(execFile);
-const SETTINGS = "settings";
-const SETTING_KEY = "git-delivery";
-
-export function gitDeliveryEnabled(dataRoot: string): boolean {
-  return withDatabase(globalDatabase(dataRoot), (db) => db.read<{ enabled?: boolean }>(SETTINGS, SETTING_KEY)?.data.enabled === true);
-}
-export function setGitDeliveryEnabled(dataRoot: string, enabled: boolean): void {
-  withDatabase(globalDatabase(dataRoot), (db) => db.transaction(() => {
-    const row = db.read<{ enabled: boolean }>(SETTINGS, SETTING_KEY);
-    if (row) db.update(SETTINGS, SETTING_KEY, row.version, { enabled });
-    else db.create(SETTINGS, SETTING_KEY, { enabled });
-  }));
-}
 
 /** 交付所需的无正文事实：来自可信关闭记录。 */
 export interface DeliveryFacts {

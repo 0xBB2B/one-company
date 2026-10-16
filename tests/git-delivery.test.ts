@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AUTO_MERGE_CHOICE, deliverRequirement, gitDeliveryEnabled, REVIEW_CHOICE, setGitDeliveryEnabled } from "../runtime/git-delivery.ts";
+import { AUTO_MERGE_CHOICE, deliverRequirement, REVIEW_CHOICE } from "../runtime/git-delivery.ts";
 import type { DeliveryFacts, DeliveryUi } from "../runtime/git-delivery.ts";
 
 const cleanups: string[] = [];
@@ -219,14 +219,6 @@ test("M8-AC6：GitLab 用 glab 建 MR，选项按项目设置的合并方式描�
     { label: "自己 review", description: "MR 留着等你看，合并由你在网页上操作" },
     { label: "自动合并", description: "等仓库要求的检查通过后，按项目设置的合并方式合并" }]);
   expect((await lab.calls()).filter((call) => call[2] === "merge")).toEqual([["glab", "mr", "merge", "1", "--auto-merge", "--sha", head, "--yes"]]);
-});
-
-test("交付工具开关存在全局设置里，默认关闭", async () => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "git-delivery-setting-")));
-  cleanups.push(root);
-  expect(gitDeliveryEnabled(root)).toBe(false);
-  setGitDeliveryEnabled(root, true); expect(gitDeliveryEnabled(root)).toBe(true);
-  setGitDeliveryEnabled(root, false); expect(gitDeliveryEnabled(root)).toBe(false);
 });
 
 const PROTOTYPE_HTMLS = [["设置页", "<html>设置页 v3</html>\n"], ["命令行输出", "<html>命令行输出 v1</html>\n"]] as const;
