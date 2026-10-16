@@ -7,7 +7,7 @@ import { createConnection } from "node:net";
 import type { Socket } from "node:net";
 import { isAbsolute, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { socketPathByteLimit } from "../../src/app/daemon/lifecycle.ts";
+import { socketPathByteLimit } from "../../src/core/host/daemon-probe.ts";
 import { controlToken } from "../../src/core/host/daemon-auth.ts";
 import { daemonSocketPath, repositoryIdentity } from "../../src/core/storage/identity.ts";
 import { createRequest, decodeFrames, PROTOCOL_VERSION } from "../../src/core/host/protocol.ts";

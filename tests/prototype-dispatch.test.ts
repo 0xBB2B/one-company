@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RunManager, registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
-import { validateParams } from "../src/core/host/protocol.ts";
+import { validateParams } from "../src/app/daemon/method-params.ts";
 import {
   beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, promoteOnApprovalIn, prototypeFilePath, readPrototypeBoard, submitDesign,
 } from "../src/modules/requirement/requirement-prototypes.ts";
