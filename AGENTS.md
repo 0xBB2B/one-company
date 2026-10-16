@@ -59,7 +59,7 @@
 
 ### 测试
 
-- 每个新功能合并、上线之前，必须跑完全量测试并全部通过：纯代码测试四项每次都跑；改了产品代码或提示词时，再加上真实模型验收：全部单点测试（P1–P13）和零自定义完整流程（M9-AC12）；改动还碰到 PM 与主代理的提示词（`role-rules/pm.md`、`rules/*.md`），或者新版本送到 PM、PM 复核计划的流程（`runtime/requirement-state.ts`、`runtime/requirement-service.ts`、`runtime/plan-manage.ts` 里待复核版本的部分）时，加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
+- 每个新功能合并、上线之前，必须跑完全量测试并全部通过：纯代码测试四项每次都跑；改了产品代码或提示词时，再加上真实模型验收：全部单点测试（P1–P13）和零自定义完整流程（M9-AC12）；改动还碰到 PM 与主代理的提示词（`role-rules/pm.md`、`rules/*.md`），或者新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分）时，加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
 - 纯代码测试（类型检查、单元、集成、安装）在当前提交上跑一遍、全部通过即可。命令是 `pnpm run typecheck`、`pnpm test`、`pnpm run test:integration`、`pnpm run test:installation`。
 - 真实模型验收在 `tests/acceptance/` 下，`pnpm test` 不包含它们。真实模型输出有波动，所以每条在同一个提交上先同时跑 2 次：2 次都过算通过；一次过一次不过，就再跑第 3 次，第 3 次过算通过、不过算失败；2 次都不过直接算失败，不跑第 3 次。脚本会自动按这个规则补跑和判定。失败的修好后，在新提交上按同样规则重跑。之后改了产品代码或提示词，按上一条在新提交上重跑；只改验收脚本、文档时不重跑。
 - 跑法：`ONE_COMPANY_ACCEPTANCE_MODEL=<提供方>/<模型> ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance:parallel [--only <编号…>]`。各条验收的前 2 次同时启动；某次 10 分钟没有任何更新会被自动停下。
