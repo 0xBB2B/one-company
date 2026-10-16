@@ -22,7 +22,7 @@ pi install /absolute/path/to/one-company
 | `pnpm run test:installation` | 按真实 pi 安装方式装好再测；没有 Docker 时跳过 Docker 安装测试 |
 | `pnpm run test:acceptance:parallel` | 真实模型验收：12 个单点约 10 分钟，加两条完整流程约 35 分钟 |
 
-合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P13）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`runtime/requirement-state.ts`、`runtime/requirement-service.ts`、`runtime/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
+合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P13）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
 
 ### 测试注意事项
 
@@ -80,4 +80,4 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 
 ## 语法解析资源
 
-`runtime/syntax-parser.ts` 使用随包分发的 TS/TSX、JS/JSX、Go 语法 WASM 和固定版本的 `web-tree-sitter`，装好后可离线解析，不需要 CodeGraph 或现场编译；资源缺失、损坏或版本不兼容时明确失败。它只解析调用方给的源码字符串；项目扫描、结构提取、持久化和宿主授权分别在 `runtime/project-index-policy.ts`、`runtime/code-extractor.ts`、`runtime/index-store.ts`、`runtime/project-index-service.ts`、`runtime/project-manage-tool.ts`。资源来源和许可证见 [解析资源说明](resources/tree-sitter/README.md)。
+`src/modules/project-index/syntax-parser.ts` 使用随包分发的 TS/TSX、JS/JSX、Go 语法 WASM 和固定版本的 `web-tree-sitter`，装好后可离线解析，不需要 CodeGraph 或现场编译；资源缺失、损坏或版本不兼容时明确失败。它只解析调用方给的源码字符串；项目扫描、结构提取、持久化和宿主授权分别在 `src/modules/project-index/project-index-policy.ts`、`src/modules/project-index/code-extractor.ts`、`src/modules/project-index/index-store.ts`、`src/modules/project-index/project-index-service.ts`、`src/modules/project-index/project-manage-tool.ts`。资源来源和许可证见 [解析资源说明](resources/tree-sitter/README.md)。
