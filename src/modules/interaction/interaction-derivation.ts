@@ -1,9 +1,9 @@
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { object } from "./requirement-contracts.ts";
-import { approvalDependencyClosure } from "./approval-manifest.ts";
-import { ApprovalUnitId, ApprovalUnitIds, InteractionEntry, InteractionInterpretation, parseInteraction, UnitReview, UserInteractionError } from "./user-interaction-format.ts";
-import type { DocumentReview, InteractionAction, InteractionContext } from "./user-interaction-format.ts";
+import { object } from "../requirement/requirement-contracts.ts";
+import { approvalDependencyClosure } from "../requirement/approval-manifest.ts";
+import { ApprovalUnitId, ApprovalUnitIds, InteractionEntry, InteractionInterpretation, parseInteraction, UnitReview, UserInteractionError } from "../requirement/user-interaction-format.ts";
+import type { DocumentReview, InteractionAction, InteractionContext } from "../requirement/user-interaction-format.ts";
 
 const { documentReview: _review, ...interpretationFields } = InteractionInterpretation.properties;
 /** 解释器模型的回答：每条决定写明涉及哪些段，逐段审阅的编号与闭包由程序生成，模型不再维护交叉编号。 */

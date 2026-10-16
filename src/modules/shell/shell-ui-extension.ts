@@ -1,24 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createClock } from "../runtime/clock.ts";
-import type { Clock } from "../runtime/clock.ts";
-import { BASH_PARAMETERS, createManagedBashTool, handleUserBash } from "../runtime/shell-bash.ts";
-import { openShellPage } from "../runtime/shell-page.ts";
+import { createClock } from "../../core/policy/clock.ts";
+import type { Clock } from "../../core/policy/clock.ts";
+import { BASH_PARAMETERS, createManagedBashTool, handleUserBash } from "./shell-bash.ts";
+import { openShellPage } from "./shell-page.ts";
 import type {
   OpenShellPageCtx,
   ShellPageClient,
   ShellPageRepo,
   ShellPageTheme,
-} from "../runtime/shell-page.ts";
-import type { ShellRegistry } from "../runtime/shell-registry.ts";
-import { sanitizeText } from "../runtime/text-sanitize.ts";
-import { AdvisedError, adviceOf, toolFailure } from "../runtime/tool-failure.ts";
-import type { Host } from "../runtime/shell-registry.ts";
-import { startShellStatusRefresh } from "../runtime/shell-summary.ts";
-import type { ShellSummaryRepo } from "../runtime/shell-summary.ts";
-import { currentDock, windowReady as defaultWindowReady } from "./lifecycle.ts";
-import type { WindowContextValue } from "./lifecycle.ts";
+} from "./shell-page.ts";
+import type { ShellRegistry } from "../../core/host/shell-registry.ts";
+import { sanitizeText } from "../../core/policy/text-sanitize.ts";
+import { AdvisedError, adviceOf, toolFailure } from "../../core/exec/tool-failure.ts";
+import type { Host } from "../../core/host/shell-registry.ts";
+import { startShellStatusRefresh } from "./shell-summary.ts";
+import type { ShellSummaryRepo } from "./shell-summary.ts";
+import { currentDock, windowReady as defaultWindowReady } from "../../core/host/extension-lifecycle.ts";
+import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
 
 const STATUS_KEY = "shell-summary";
 const REFRESH_INTERVAL_MS = 1_000;

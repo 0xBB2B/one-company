@@ -8,10 +8,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connectTestClient, createDaemonFixture, killDaemon, removeDaemonFixture, resolveNodeExecutable, resolveSdkDir, startDaemonForTest } from "../helpers/daemon-harness.ts";
 import type { DaemonFixture, DaemonHandle, TestClient } from "../helpers/daemon-harness.ts";
-import { createClock } from "../../runtime/clock.ts";
-import { RunStore } from "../../runtime/run-store.ts";
-import { repositoryDatabase, uuidv7 } from "../../runtime/database.ts";
-import { ShellRegistry } from "../../runtime/shell-registry.ts";
+import { createClock } from "../../src/core/policy/clock.ts";
+import { RunStore } from "../../src/modules/agents/run-store.ts";
+import { repositoryDatabase, uuidv7 } from "../../src/core/storage/database.ts";
+import { ShellRegistry } from "../../src/core/host/shell-registry.ts";
 
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => {

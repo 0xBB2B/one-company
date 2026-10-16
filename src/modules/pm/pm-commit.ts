@@ -4,9 +4,9 @@ import { join, posix } from "node:path";
 import { promisify } from "node:util";
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { classifyManagedWritePath, type ManagedWritePathClass } from "./core-permissions.ts";
-import { overlaps } from "./ranges.ts";
-import { AdvisedError, toolFailure, toolStep } from "./tool-failure.ts";
+import { classifyManagedWritePath, type ManagedWritePathClass } from "../../core/policy/core-permissions.ts";
+import { overlaps } from "../../core/policy/ranges.ts";
+import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 
 const exec = promisify(execFile);
 const PARAMETERS = Type.Object({

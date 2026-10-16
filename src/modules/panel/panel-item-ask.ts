@@ -1,9 +1,9 @@
 import { adjudicationSubject } from "./adjudication.ts";
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import { readPlanIn, unsentTask } from "./plan-manage.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { readPlanIn, unsentTask } from "../pm/plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
 import type { PendingItem } from "./pm-overview.ts";
-import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
+import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
 
 export class PanelItemAskError extends Error {
   readonly code: string;

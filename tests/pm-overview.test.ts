@@ -1,9 +1,9 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { repositoryDatabase, withDatabase } from "../runtime/database.ts";
-import { TASKS } from "../runtime/plan-manage.ts";
-import type { TaskSpec } from "../runtime/plan-manage.ts";
-import type { PmOverview } from "../runtime/pm-overview.ts";
-import { PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
+import { repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
+import { TASKS } from "../src/modules/pm/plan-manage.ts";
+import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
+import type { PmOverview } from "../src/modules/panel/pm-overview.ts";
+import { PM_INTAKE_TOOL } from "../src/modules/pm/pm-intake-runtime.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });

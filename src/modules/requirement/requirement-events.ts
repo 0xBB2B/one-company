@@ -2,15 +2,15 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { uuidv7 } from "./database.ts";
+import { uuidv7 } from "../../core/storage/database.ts";
 import { checked, commands, commit, hash, id, object, PmLease, positive, RequirementStateError } from "./requirement-contracts.ts";
 import type { PmEventCursor, PmLease as PmLeaseData, ProdReference as ProdReferenceData } from "./requirement-contracts.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
 import type { RequirementAction, RequirementStoreOptions } from "./requirement-state.ts";
 import { RequirementService } from "./requirement-service.ts";
 import type { RequirementServiceOptions, ServiceAuthorizationRequest } from "./requirement-service.ts";
-import { adviceIn } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceIn } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 
 const ArchiveRiskInput = object({
   requirementId: id,

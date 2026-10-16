@@ -8,10 +8,10 @@ import { promisify } from "node:util";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { temporaryRoot } from "../helpers/temporary-root.ts";
 import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
-import requirementManageExtension from "../../extensions/requirement-manage.ts";
-import type { WindowContextValue } from "../../extensions/lifecycle.ts";
-import { repositoryIdentity } from "../../runtime/identity.ts";
-import { uuidv7, repositoryDatabase, withDatabase } from "../../runtime/database.ts";
+import requirementManageExtension from "../../src/modules/interaction/requirement-manage-extension.ts";
+import type { WindowContextValue } from "../../src/core/host/extension-lifecycle.ts";
+import { repositoryIdentity } from "../../src/core/storage/identity.ts";
+import { uuidv7, repositoryDatabase, withDatabase } from "../../src/core/storage/database.ts";
 
 
 const exec = promisify(execFile);

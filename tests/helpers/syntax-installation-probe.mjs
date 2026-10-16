@@ -11,7 +11,7 @@ globalThis.fetch = async () => { networkAttempts++; throw new Error("测试禁�
 const require = createRequire(import.meta.url);
 const { createJiti } = require("jiti");
 const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: true, tryNative: false });
-const { withSyntaxTree } = await jiti.import(join(productRoot, "runtime/syntax-parser.ts"));
+const { withSyntaxTree } = await jiti.import(join(productRoot, "src/modules/project-index/syntax-parser.ts"));
 const cases = JSON.parse(await readFile(fixturePath, "utf8"));
 let count = 0;
 if (expectedCode === "valid") {
@@ -27,20 +27,20 @@ if (expectedCode === "valid") {
     count++;
   }
   await assert.rejects(withSyntaxTree("python", "", () => null), { code: "unsupported_language" });
-  const { LocalDatabase, databaseFile, uuidv7 } = await jiti.import(join(productRoot, "runtime/database.ts"));
-  const { parseDecisionBatch } = await jiti.import(join(productRoot, "runtime/short-decision-format.ts"));
+  const { LocalDatabase, databaseFile, uuidv7 } = await jiti.import(join(productRoot, "src/core/storage/database.ts"));
+  const { parseDecisionBatch } = await jiti.import(join(productRoot, "src/modules/requirement/short-decision-format.ts"));
   const decision = { operationId: uuidv7(), requirementId: uuidv7(), version: 1, epoch: 1, prod: null,
     decisions: [{ conclusion: "😀".repeat(400), scope: "只分析", references: ["G-1"], supersedes: [] }] };
   assert.equal(parseDecisionBatch(JSON.stringify(decision)).decisions[0].conclusion, decision.decisions[0].conclusion);
   assert.throws(() => parseDecisionBatch(JSON.stringify({ ...decision, actor: "user" })), /invalid_shape/);
   decision.decisions[0].conclusion += "中";
   assert.throws(() => parseDecisionBatch(JSON.stringify(decision)), /text_limit/);
-  const { withDatabaseMaintenance, createDatabaseSnapshot } = await jiti.import(join(productRoot, "runtime/database-maintenance.ts"));
+  const { withDatabaseMaintenance, createDatabaseSnapshot } = await jiti.import(join(productRoot, "src/core/storage/database-maintenance.ts"));
   const storage = await mkdtemp(join(tmpdir(), "installed-storage-"));
   try {
-    const { RequirementStateStore } = await jiti.import(join(productRoot, "runtime/requirement-state.ts"));
+    const { RequirementStateStore } = await jiti.import(join(productRoot, "src/modules/requirement/requirement-state.ts"));
     await assert.rejects(RequirementStateStore.open({ dataRoot: storage, repoId: "a".repeat(64), repositoryRoot: storage }), /authorization_required/);
-    const { ShortDecisionStore } = await jiti.import(join(productRoot, "runtime/short-decisions.ts"));
+    const { ShortDecisionStore } = await jiti.import(join(productRoot, "src/modules/requirement/short-decisions.ts"));
     await assert.rejects(ShortDecisionStore.open({ dataRoot: storage, repoId: "a".repeat(64), repositoryRoot: storage }), /authorization_required/);
     const path = databaseFile(storage, "data");
     const database = new LocalDatabase(path);

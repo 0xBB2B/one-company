@@ -1,12 +1,12 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import type { RequirementRecord } from "../runtime/requirement-contracts.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import type { RequirementRecord } from "../src/modules/requirement/requirement-contracts.ts";
 import {
   PrototypeBoardError, beginDesign, checkPrototypeName, clearStaleDesigns, decidePrototype, draftPrototypes, endDesign,
   inFlightSummary, pendingConfirmation, prototypeFilePath, promoteOnApprovalIn, readPrototypeBoard, removeFromDraft, submitDesign,
-} from "../runtime/requirement-prototypes.ts";
+} from "../src/modules/requirement/requirement-prototypes.ts";
 
 const HASH = "a".repeat(64);
 const HTML = "<!doctype html><html><body><h1>状态面板</h1></body></html>";

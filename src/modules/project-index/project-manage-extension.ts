@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { dataRoot } from "../runtime/identity.ts";
-import { createProjectManageTool } from "../runtime/project-manage-tool.ts";
-import type { OpenProjectIndexService, ProjectManageHostContext } from "../runtime/project-manage-tool.ts";
-import { windowContext, windowReady } from "./lifecycle.ts";
+import { dataRoot } from "../../core/storage/identity.ts";
+import { createProjectManageTool } from "./project-manage-tool.ts";
+import type { OpenProjectIndexService, ProjectManageHostContext } from "./project-manage-tool.ts";
+import { windowContext, windowReady } from "../../core/host/extension-lifecycle.ts";
 
 export interface ProjectManageExtensionDeps {
   readonly dataRoot?: string;

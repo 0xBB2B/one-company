@@ -13,19 +13,17 @@
   ],
   "files": [
     "agents",
-    "daemon",
-    "extensions",
     "resources/tree-sitter",
     "role-rules",
-    "runtime",
     "rules",
     "shared",
     "skills",
+    "src",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "preinstall": "node runtime/git-prerequisite.mjs --check",
+    "preinstall": "node src/core/exec/git-prerequisite.mjs --check",
     "test": "vitest run --exclude 'tests/integration/**' --exclude 'tests/installation/**' --exclude 'tests/acceptance/**'",
     "test:integration": "vitest run tests/integration",
     "test:integration:installed": "ONE_COMPANY_TEST_INSTALLED=1 vitest run tests/integration",
@@ -36,7 +34,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/index.ts"
+      "./src/app/extension/index.ts"
     ],
     "prompts": []
   },

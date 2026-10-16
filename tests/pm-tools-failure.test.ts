@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
-import { agentManageTool, intakeSubmitTool } from "../daemon/pm-tools.ts";
-import type { PmToolsInput } from "../daemon/pm-tools.ts";
+import { agentManageTool, intakeSubmitTool } from "../src/app/daemon/pm-tools.ts";
+import type { PmToolsInput } from "../src/app/daemon/pm-tools.ts";
 
 const TASK = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
 function input(alive: boolean): PmToolsInput {

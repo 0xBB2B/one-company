@@ -16,9 +16,9 @@ import {
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { answeringUi } from "../helpers/window-host.ts";
 import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
-import { repositoryIdentity, daemonSocketPath } from "../../runtime/identity.ts";
-import { socketPathByteLimit } from "../../daemon/lifecycle.ts";
-import { uuidv7 } from "../../runtime/database.ts";
+import { repositoryIdentity, daemonSocketPath } from "../../src/core/storage/identity.ts";
+import { socketPathByteLimit } from "../../src/app/daemon/lifecycle.ts";
+import { uuidv7 } from "../../src/core/storage/database.ts";
 
 
 const exec = promisify(execFile);
@@ -75,8 +75,8 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const artifact = await packPackage(pnpm, productRoot, packs);
     const runtimeArtifact = await packPackage(pnpm, dirname(fileURLToPath(import.meta.resolve("web-tree-sitter/web-tree-sitter.wasm"))), packs);
     const typeboxRoot = await realpath(join(productRoot, "node_modules", "typebox"));
-    for (const file of ["extensions/index.ts", "extensions/requirement-manage.ts", "runtime/host-authorization.ts", "runtime/requirement-manage-tool.ts", "runtime/requirement-service.ts", "runtime/main-requirement-interaction.ts", "runtime/user-interact-tool.ts",
-      "runtime/requirement-doc.ts", "skills/requirement-doc/SKILL.md"]) {
+    for (const file of ["src/app/extension/index.ts", "src/modules/interaction/requirement-manage-extension.ts", "src/modules/requirement/host-authorization.ts", "src/modules/interaction/requirement-manage-tool.ts", "src/modules/requirement/requirement-service.ts", "src/modules/interaction/main-requirement-interaction.ts", "src/modules/interaction/user-interact-tool.ts",
+      "src/modules/requirement/requirement-doc.ts", "skills/requirement-doc/SKILL.md"]) {
       expect(artifact.files).toContain(file);
     }
 
@@ -144,7 +144,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
       cwd: repositoryRoot,
       agentDir,
       settingsManager: SettingsManager.inMemory(),
-      additionalExtensionPaths: [join(installed, "extensions", "index.ts")],
+      additionalExtensionPaths: [join(installed, "src/app/extension/index.ts")],
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
@@ -152,7 +152,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     });
     await loader.reload();
     expect(loader.getExtensions().errors).toEqual([]);
-    expect(loader.getExtensions().extensions.some((extension) => extension.path === join(installed, "extensions", "index.ts"))).toBe(true);
+    expect(loader.getExtensions().extensions.some((extension) => extension.path === join(installed, "src/app/extension/index.ts"))).toBe(true);
 
     ({ session } = await createAgentSession({
       cwd: repositoryRoot,

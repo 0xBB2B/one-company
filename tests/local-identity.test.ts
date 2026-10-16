@@ -1,4 +1,4 @@
-import { withDatabase, uuidv7 } from "../runtime/database.ts";
+import { withDatabase, uuidv7 } from "../src/core/storage/database.ts";
 import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -21,7 +21,7 @@ import {
   listWorktrees,
   repoDataDir,
   repositoryIdentity,
-} from "../runtime/identity.ts";
+} from "../src/core/storage/identity.ts";
 
 const execFileAsync = promisify(execFile);
 

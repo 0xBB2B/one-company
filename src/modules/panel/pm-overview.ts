@@ -1,14 +1,14 @@
-import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
-import { activeCheckRoundIn } from "./check-round.ts";
-import type { LocalDatabase } from "./database.ts";
-import { implementScope, readPlanIn, stalledStage, terminationPending, unsentTask } from "./plan-manage.ts";
-import type { TaskRecord } from "./plan-manage.ts";
-import { latestPmSubmission } from "./pm-intake-runtime.ts";
-import { PmIntakeStore } from "./pm-intake-store.ts";
-import { planRejectionsIn, stallIn } from "./pm-attention.ts";
-import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
-import type { RunRecord } from "./run-store.ts";
-import { pendingReportIn } from "./workflow-close.ts";
+import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
+import { activeCheckRoundIn } from "../verification/check-round.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
+import { implementScope, readPlanIn, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import type { TaskRecord } from "../pm/plan-manage.ts";
+import { latestPmSubmission } from "../pm/pm-intake-runtime.ts";
+import { PmIntakeStore } from "../pm/pm-intake-store.ts";
+import { planRejectionsIn, stallIn } from "../pm/pm-attention.ts";
+import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
+import type { RunRecord } from "../agents/run-store.ts";
+import { pendingReportIn } from "../delivery/workflow-close.ts";
 
 export type PendingItemKind = "adjudicate" | "intake-review" | "question" | "adjust-requirement" | "acceptance" | "plan-rejected" | "stall";
 export interface PendingItem {

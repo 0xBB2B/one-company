@@ -1,15 +1,15 @@
 import { createHash } from "node:crypto";
-import type { FailureAdvice } from "./tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { lstatSync, realpathSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { assertDataRootOutsideWorktrees, assertRegularDatabaseFiles, indexDatabase } from "./database-paths.ts";
-import { UUID_V7_PATTERN } from "./database.ts";
+import { assertDataRootOutsideWorktrees, assertRegularDatabaseFiles, indexDatabase } from "../../core/storage/database-paths.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 import { extractCode, getCodeExtractorVersion } from "./code-extractor.ts";
 import type { ExtractCodeInput, ExtractCodeResult, CodeRange } from "./code-extractor.ts";
-import { readGit } from "./git-read.ts";
-import { listWorktrees, repositoryIdentity } from "./identity.ts";
+import { readGit } from "../../core/exec/git-read.ts";
+import { listWorktrees, repositoryIdentity } from "../../core/storage/identity.ts";
 import { IndexStore, IndexStoreError } from "./index-store.ts";
 import type {
   ArchiveProdMetadata,
@@ -41,7 +41,7 @@ import type {
   IndexWorkspaceScan,
   ReadIndexFileResult,
 } from "./project-index-policy.ts";
-import { canonicalJson } from "./strict-json.ts";
+import { canonicalJson } from "../../core/storage/strict-json.ts";
 import { verifySyntaxResources } from "./syntax-parser.ts";
 import type { SyntaxLanguage } from "./syntax-parser.ts";
 

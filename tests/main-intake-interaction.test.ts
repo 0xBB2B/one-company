@@ -1,10 +1,10 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import { uuidv7 } from "../runtime/database.ts";
-import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../runtime/main-intake-interaction.ts";
-import type { IntakeRequestView } from "../runtime/pm-intake-service.ts";
-import { PM_INTAKE_NAMESPACES } from "../runtime/pm-intake-store.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../src/modules/interaction/main-intake-interaction.ts";
+import type { IntakeRequestView } from "../src/modules/pm/pm-intake-service.ts";
+import { PM_INTAKE_NAMESPACES } from "../src/modules/pm/pm-intake-store.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { ask, bridgeFor, contentView, ctxFor, executeObserved, forward, observe, reply, resultEvent } from "./helpers/main-intake-test-support.ts";

@@ -1,21 +1,21 @@
 import { createHash } from "node:crypto";
-import { adviceIn } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceIn } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { isPromise } from "node:util/types";
-import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
-import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
-import type { ApprovalManifest } from "./approval-manifest.ts";
-import { HostAuthorizationManager } from "./host-authorization.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
+import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
+import type { ApprovalManifest } from "../requirement/approval-manifest.ts";
+import { HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import { checkPmUnderstanding, intakeBindingsEqual } from "./pm-intake-contracts.ts";
 import type { IntakeBinding, IntakeReviewRecord, IntakeSourceDirectory, IntakeSourceRef, PmUnderstanding } from "./pm-intake-contracts.ts";
 import { PmIntakeStore, intakeManifestDecisionIds } from "./pm-intake-store.ts";
 import type { IntakeBindingBasis, IntakeCurrentProof, StoredIntakeRequest } from "./pm-intake-store.ts";
-import { inspectProdStructure, partitionProdDocument } from "./prod-view.ts";
-import { RequirementService } from "./requirement-service.ts";
-import { RequirementStateStore } from "./requirement-state.ts";
-import type { PmLease } from "./requirement-contracts.ts";
-import { decisionDigest } from "./short-decision-format.ts";
-import { canonicalJson } from "./strict-json.ts";
+import { inspectProdStructure, partitionProdDocument } from "../requirement/prod-view.ts";
+import { RequirementService } from "../requirement/requirement-service.ts";
+import { RequirementStateStore } from "../requirement/requirement-state.ts";
+import type { PmLease } from "../requirement/requirement-contracts.ts";
+import { decisionDigest } from "../requirement/short-decision-format.ts";
+import { canonicalJson } from "../../core/storage/strict-json.ts";
 
 export interface MainIntakeCall { readonly kind: "main-intake-call" }
 export interface MainIntakeCallIdentity {

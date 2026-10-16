@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   SETTINGS_ROLES, clearAgentSetting, clearGitDeliverySetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, userSettingsPath,
-} from "../runtime/agent-settings.ts";
+} from "../src/modules/settings/agent-settings.ts";
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });

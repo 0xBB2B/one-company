@@ -1,10 +1,10 @@
-import { uuidv7 } from "./database.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { uuidv7 } from "../../core/storage/database.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BashOperations, BashToolDetails, ToolDefinition, UserBashEvent as SdkUserBashEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import type { Host, ShellRegistry, TaskRecord } from "./shell-registry.ts";
+import type { Host, ShellRegistry, TaskRecord } from "../../core/host/shell-registry.ts";
 
 export const BASH_PARAMETERS = Type.Object(
   {

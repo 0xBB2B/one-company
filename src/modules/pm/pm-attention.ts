@@ -1,5 +1,5 @@
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase, SyncResult } from "./database.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase, SyncResult } from "../../core/storage/database.ts";
 
 export const PLAN_REJECTIONS = "pm_plan_rejections";
 export const PM_STALLS = "pm_stalls";

@@ -1,9 +1,9 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { uuidv7 } from "../../../runtime/database.ts";
-import { TASKS } from "../../../runtime/plan-manage.ts";
-import type { TaskRecord } from "../../../runtime/plan-manage.ts";
+import { uuidv7 } from "../../../src/core/storage/database.ts";
+import { TASKS } from "../../../src/modules/pm/plan-manage.ts";
+import type { TaskRecord } from "../../../src/modules/pm/plan-manage.ts";
 import type { ScriptedReply } from "../../helpers/controlled-provider.ts";
 import { createPmRunWorld } from "../../helpers/run-manager-fixture.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";

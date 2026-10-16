@@ -1,12 +1,12 @@
 import { expect, test, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import type { PmOverview } from "../runtime/pm-overview.ts";
-import { formatElapsed, formatTokens, PmPanel } from "../runtime/pm-panel.ts";
-import type { ExplorePanelEntry, PmPanelEntry, PrototypePanelEntry } from "../runtime/pm-panel.ts";
-import pmPanelExtension from "../extensions/pm-panel.ts";
-import { createClock } from "../runtime/clock.ts";
+import type { PmOverview } from "../src/modules/panel/pm-overview.ts";
+import { formatElapsed, formatTokens, PmPanel } from "../src/modules/panel/pm-panel.ts";
+import type { ExplorePanelEntry, PmPanelEntry, PrototypePanelEntry } from "../src/modules/panel/pm-panel.ts";
+import pmPanelExtension from "../src/modules/panel/pm-panel-extension.ts";
+import { createClock } from "../src/core/policy/clock.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
-import { registerRequirementInput } from "../extensions/lifecycle.ts";
+import { registerRequirementInput } from "../src/core/host/extension-lifecycle.ts";
 
 function overview(patch: Partial<PmOverview>): PmOverview {
   return { requirementId: "01900000-0000-7000-8000-000000000001", pmRunId: "01900000-0000-7000-8000-00000000000a", goals: ["角色跳跃", "跳跃动画"],

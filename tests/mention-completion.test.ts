@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
-import { mentionItems, requirementMentionProvider } from "../runtime/mention-completion.ts";
+import { mentionItems, requirementMentionProvider } from "../src/modules/interaction/mention-completion.ts";
 
 const JUMP = "0192f3a4-7c1e-7b2a-9d4e-5f6a7b8c9d0e", ANIMATION = "0192f3a5-0000-7000-8000-0000000041c7", CLASH = "0192f3a6-0000-7000-8000-000000009d0e";
 const files: AutocompleteProvider = {

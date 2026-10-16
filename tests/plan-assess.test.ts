@@ -1,8 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { createPlanManageTool, TASKS } from "../runtime/plan-manage.ts";
-import type { TaskSpec } from "../runtime/plan-manage.ts";
-import { evaluatePmIntakeGate } from "../runtime/pm-intake-runtime.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { createPlanManageTool, TASKS } from "../src/modules/pm/plan-manage.ts";
+import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
+import { evaluatePmIntakeGate } from "../src/modules/pm/pm-intake-runtime.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
 
@@ -118,7 +118,7 @@ test("M7-AC2：连续加入快跑、跳跃、跳跃动画时各自成为独立�
 });
 
 test("M7-AC32：当前批准的正文删掉某段后，以它为目标的任务不能判为无关、不能派出；已有尝试的任务目标全都不在授权内时直接取消，不上报", async () => {
-  const { escalateTask } = await import("../runtime/task-dispatch.ts");
+  const { escalateTask } = await import("../src/modules/pm/task-dispatch.ts");
   const w = await world();
   const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
   withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => {
@@ -139,7 +139,7 @@ test("M7-AC32：当前批准的正文删掉某段后，以它为目标的任务�
 });
 
 test("M7-AC12：运行中任务被判为受影响后，子代理结局只记入尝试，不覆盖待更新状态；确认基于当前批准版本的计划前不能重派", async () => {
-  const { beginTaskAttempt, finishTaskAttempt } = await import("../runtime/task-dispatch.ts");
+  const { beginTaskAttempt, finishTaskAttempt } = await import("../src/modules/pm/task-dispatch.ts");
   const w = await world();
   const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
   const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
@@ -155,7 +155,7 @@ test("M7-AC12：运行中任务被判为受影响后，子代理结局只记入�
 });
 
 test("M7-AC30：任务仍有运行中的尝试时不能再次派出，旧版本的运行结局不能把新版本标为完成", async () => {
-  const { beginTaskAttempt, finishTaskAttempt } = await import("../runtime/task-dispatch.ts");
+  const { beginTaskAttempt, finishTaskAttempt } = await import("../src/modules/pm/task-dispatch.ts");
   const w = await world();
   const login = w.byKey(w.first, "login");
   const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
@@ -171,9 +171,9 @@ test("M7-AC30：任务仍有运行中的尝试时不能再次派出，旧版本�
 });
 
 test("M9：QA 只验已确认的实施目标段与验收段，未验证项指向待定段时拒收并说明原因；已确认的实施目标段、验收段与非章节引用照常收下", async () => {
-  const { CheckRoundService } = await import("../runtime/check-round.ts");
-  const { createVerificationRunTool } = await import("../runtime/verification-run.ts");
-  const { createResultSubmitTool } = await import("../runtime/result-submit.ts");
+  const { CheckRoundService } = await import("../src/modules/verification/check-round.ts");
+  const { createVerificationRunTool } = await import("../src/modules/pm/verification-run.ts");
+  const { createResultSubmitTool } = await import("../src/modules/pm/result-submit.ts");
   const w = await world();
   await w.fixture.approveRevision({ body: `${BASE}# 登录验收 {#acceptance.login}\n输入正确验证码后看到首页。\n`, units: { "scenario.failure": { disposition: "pending-description" } } });
   await w.assess([[w.byKey(w.first, "login"), "unaffected"], [w.byKey(w.first, "failure"), "affected"]]);
@@ -216,7 +216,7 @@ test("M9：当前批准的正文删掉已开工任务的某个目标段后，PM 
 });
 
 test("M8M-AC1：任务已有 16 条尝试和 16 条审查记录时，用户再给一次机会仍能派出第 17 次，之后计划照常可读", async () => {
-  const { beginTaskAttempt } = await import("../runtime/task-dispatch.ts");
+  const { beginTaskAttempt } = await import("../src/modules/pm/task-dispatch.ts");
   const w = await world();
   const login = w.byKey(w.first, "login");
   const past = Array.from({ length: 16 }, () => uuidv7());

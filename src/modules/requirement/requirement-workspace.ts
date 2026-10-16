@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { readGit } from "./git-read.ts";
-import { assertDataRootOutsideWorktrees } from "./database-paths.ts";
-import { listWorktrees, repositoryIdentity } from "./identity.ts";
+import { readGit } from "../../core/exec/git-read.ts";
+import { assertDataRootOutsideWorktrees } from "../../core/storage/database-paths.ts";
+import { listWorktrees, repositoryIdentity } from "../../core/storage/identity.ts";
 import { RequirementStateError } from "./requirement-contracts.ts";
 import type { WorkspaceBinding } from "./requirement-contracts.ts";
 

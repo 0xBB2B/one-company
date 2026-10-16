@@ -1,9 +1,9 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { TASKS } from "../../../runtime/plan-manage.ts";
-import type { TaskRecord } from "../../../runtime/plan-manage.ts";
-import { defaultRoleDir } from "../../../runtime/roles.ts";
+import { TASKS } from "../../../src/modules/pm/plan-manage.ts";
+import type { TaskRecord } from "../../../src/modules/pm/plan-manage.ts";
+import { defaultRoleDir } from "../../../src/modules/agents/roles.ts";
 import { createPmRunWorld } from "../../helpers/run-manager-fixture.ts";
 import { temporaryRoot } from "../../helpers/temporary-root.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";

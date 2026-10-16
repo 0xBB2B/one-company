@@ -1,19 +1,19 @@
 import { expect, test } from "vitest";
 import type { TSchema } from "typebox";
 import { CORE_ROLES, CORE_TOOL_ACTIONS, authorizeToolAction, classifyManagedWritePath,
-  writePathAllowed } from "../runtime/core-permissions.ts";
-import type { CoreRole, CoreTool } from "../runtime/core-permissions.ts";
-import { REQUIREMENT_MANAGE_PARAMETERS } from "../runtime/requirement-manage-tool.ts";
-import { USER_INTERACT_PARAMETERS } from "../runtime/user-interact-tool.ts";
-import { KnowledgeToolSchema } from "../runtime/knowledge-query-tool.ts";
-import { PROJECT_MANAGE_PARAMETERS } from "../runtime/project-manage-tool.ts";
-import { REQUIREMENT_READ_PARAMETERS } from "../runtime/requirement-read-tool.ts";
-import { CHANGE_APPLY_PARAMETERS } from "../runtime/change-apply.ts";
-import { VERIFICATION_RUN_PARAMETERS } from "../runtime/verification-run.ts";
-import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
-import { uuidv7 } from "../runtime/database.ts";
-import { WORKFLOW_MANAGE_PARAMETERS } from "../runtime/workflow-manage.ts";
-import { MAIN_AGENT_MANAGE_PARAMETERS } from "../extensions/agent-manage.ts";
+  writePathAllowed } from "../src/core/policy/core-permissions.ts";
+import type { CoreRole, CoreTool } from "../src/core/policy/core-permissions.ts";
+import { REQUIREMENT_MANAGE_PARAMETERS } from "../src/modules/interaction/requirement-manage-tool.ts";
+import { USER_INTERACT_PARAMETERS } from "../src/modules/interaction/user-interact-tool.ts";
+import { KnowledgeToolSchema } from "../src/modules/project-index/knowledge-query-tool.ts";
+import { PROJECT_MANAGE_PARAMETERS } from "../src/modules/project-index/project-manage-tool.ts";
+import { REQUIREMENT_READ_PARAMETERS } from "../src/modules/pm/requirement-read-tool.ts";
+import { CHANGE_APPLY_PARAMETERS } from "../src/modules/verification/change-apply.ts";
+import { VERIFICATION_RUN_PARAMETERS } from "../src/modules/pm/verification-run.ts";
+import { createResultSubmitTool, RESULT_SUBMIT_PARAMETERS } from "../src/modules/pm/result-submit.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { WORKFLOW_MANAGE_PARAMETERS } from "../src/modules/delivery/workflow-manage.ts";
+import { MAIN_AGENT_MANAGE_PARAMETERS } from "../src/modules/explore/agent-manage-extension.ts";
 
 function actionLiterals(schema: TSchema): string[] {
   const found = new Set<string>();

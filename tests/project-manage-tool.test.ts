@@ -1,6 +1,6 @@
 import { answeringUi } from "./helpers/window-host.ts";
 import type { WindowDecision } from "./helpers/window-host.ts";
-import { uuidv7 } from "../runtime/database.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
 import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -8,14 +8,14 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import projectManageExtension from "../extensions/project-manage.ts";
-import { createProjectManageTool, PROJECT_MANAGE_PARAMETERS } from "../runtime/project-manage-tool.ts";
+import projectManageExtension from "../src/modules/project-index/project-manage-extension.ts";
+import { createProjectManageTool, PROJECT_MANAGE_PARAMETERS } from "../src/modules/project-index/project-manage-tool.ts";
 import type {
   OpenProjectIndexService,
   ProjectIndexServiceHandle,
   ProjectManageHostContext,
-} from "../runtime/project-manage-tool.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
+} from "../src/modules/project-index/project-manage-tool.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 

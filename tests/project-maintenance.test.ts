@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { databaseFilesFingerprint } from "../runtime/database-recovery.ts";
-import { repositoryDatabase, uuidv7 } from "../runtime/database.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { backup, recoveryCheck, restore } from "../runtime/project-maintenance.ts";
-import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
-import { RunStore } from "../runtime/run-store.ts";
+import { databaseFilesFingerprint } from "../src/core/storage/database-recovery.ts";
+import { repositoryDatabase, uuidv7 } from "../src/core/storage/database.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { backup, recoveryCheck, restore } from "../src/modules/project-index/project-maintenance.ts";
+import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
+import { RunStore } from "../src/modules/agents/run-store.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 

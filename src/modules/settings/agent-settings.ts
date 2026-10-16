@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { MODEL_PATTERN, THINKING_LEVELS, type ThinkingLevel } from "./roles.ts";
+import { MODEL_PATTERN, THINKING_LEVELS, type ThinkingLevel } from "../agents/roles.ts";
 
 export const SETTINGS_ROLES = [
   { key: "pm", label: "PM", purpose: "活动需求的负责人，拆任务、派工、调度", effect: "下次启动 PM 时生效", failure: "启动 PM 会失败", model: null, thinking: null },

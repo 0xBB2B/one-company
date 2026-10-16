@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { SHORT_DECISION_LIMITS } from "./short-decision-format.ts";
+import { SHORT_DECISION_LIMITS } from "../requirement/short-decision-format.ts";
 
 export const AskChoice = Type.Object({
   label: Type.String({ minLength: 1, maxLength: 80 }),

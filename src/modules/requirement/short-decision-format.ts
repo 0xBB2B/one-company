@@ -1,12 +1,12 @@
 import { Type } from "typebox";
-import { adviceIn } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceIn } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import { createHash } from "node:crypto";
 import { object, positive, counter, ProdReference } from "./requirement-contracts.ts";
-import { UUID_V7_PATTERN } from "./database.ts";
-import { canonicalJson, parseStrictJson } from "./strict-json.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
+import { canonicalJson, parseStrictJson } from "../../core/storage/strict-json.ts";
 
 export const SHORT_DECISION_LIMITS = Object.freeze({ textCodePoints: 400, requestBytes: 65_536 });
 const id = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });

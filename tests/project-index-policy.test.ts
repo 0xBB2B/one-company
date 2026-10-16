@@ -139,7 +139,7 @@ const {
   indexPathScope,
   readIndexFile,
   scanIndexWorkspace,
-} = await import("../runtime/project-index-policy.ts");
+} = await import("../src/modules/project-index/project-index-policy.ts");
 
 const REQUIREMENT_ID = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
 const roots: string[] = [];

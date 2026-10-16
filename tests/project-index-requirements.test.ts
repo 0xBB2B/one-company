@@ -6,15 +6,15 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { join } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
-import { ProjectIndexRequirements } from "../daemon/project-index-requirements.ts";
-import type { ProjectIndexArchiveRiskHookEvent } from "../daemon/project-index-host.ts";
-import { uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { readGit } from "../runtime/git-read.ts";
-import { RequirementService } from "../runtime/requirement-service.ts";
+import { ProjectIndexRequirements } from "../src/app/daemon/project-index-requirements.ts";
+import type { ProjectIndexArchiveRiskHookEvent } from "../src/app/daemon/project-index-host.ts";
+import { uuidv7, repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { readGit } from "../src/core/exec/git-read.ts";
+import { RequirementService } from "../src/modules/requirement/requirement-service.ts";
 import { approveWithManifest } from "./helpers/approval-fixture.ts";
-import { RequirementStateStore } from "../runtime/requirement-state.ts";
-import { RequirementEventService } from "../runtime/requirement-events.ts";
+import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
+import { RequirementEventService } from "../src/modules/requirement/requirement-events.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 
 
@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 test("宿主Node直接导入适配器，不依赖Vitest转译或TypeScript变换参数", async () => {
-  const moduleUrl = new URL("../daemon/project-index-requirements.ts", import.meta.url).href;
+  const moduleUrl = new URL("../src/app/daemon/project-index-requirements.ts", import.meta.url).href;
   const script = `const module = await import(${JSON.stringify(moduleUrl)});
     const error = new module.ProjectIndexRequirementsError("adapter_closed");
     if (error.code !== "adapter_closed" || typeof module.ProjectIndexRequirements !== "function") process.exit(2);

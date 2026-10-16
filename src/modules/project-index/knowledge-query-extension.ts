@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createKnowledgeQueryTool } from "../runtime/knowledge-query-tool.ts";
-import { windowContext } from "./lifecycle.ts";
+import { createKnowledgeQueryTool } from "./knowledge-query-tool.ts";
+import { windowContext } from "../../core/host/extension-lifecycle.ts";
 
 export default function knowledgeQueryExtension(pi: ExtensionAPI, deps: { windowContext?: typeof windowContext } = {}): void {
   const currentWindow = deps.windowContext ?? windowContext;

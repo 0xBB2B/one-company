@@ -2,11 +2,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
-import rulesExtension from "../extensions/rules.ts";
-import type { WindowContextValue } from "../extensions/lifecycle.ts";
-import { registerRequirementInput } from "../extensions/lifecycle.ts";
-import { mentionNote } from "../extensions/requirement-manage.ts";
-import { packageSkillsDir } from "../runtime/requirement-doc.ts";
+import rulesExtension from "../src/app/extension/rules.ts";
+import type { WindowContextValue } from "../src/core/host/extension-lifecycle.ts";
+import { registerRequirementInput } from "../src/core/host/extension-lifecycle.ts";
+import { mentionNote } from "../src/modules/interaction/requirement-manage-extension.ts";
+import { packageSkillsDir } from "../src/modules/requirement/requirement-doc.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 

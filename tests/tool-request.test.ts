@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { requestParameters, shapeIssue, unwrapRequest } from "../runtime/tool-request.ts";
+import { requestParameters, shapeIssue, unwrapRequest } from "../src/core/exec/tool-request.ts";
 
 const create = Type.Object({ action: Type.Literal("create"), repoId: Type.String(), title: Type.String(), note: Type.Optional(Type.String()) }, { additionalProperties: false });
 const read = Type.Object({ action: Type.Literal("read"), repoId: Type.String(), requirementId: Type.String() }, { additionalProperties: false });

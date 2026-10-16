@@ -1,4 +1,4 @@
-import type { TimeSource } from "../../runtime/clock.ts";
+import type { TimeSource } from "../../src/core/policy/clock.ts";
 
 export interface FakeTimeSource extends TimeSource {
   advance(ms: number): void;

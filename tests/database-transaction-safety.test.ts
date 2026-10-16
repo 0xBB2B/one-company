@@ -7,11 +7,11 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { AsyncTransactionError, DatabaseUnavailableError, LocalDatabase, StaleVersionError, TransactionCleanupError, uuidv7, withDatabase } from "../runtime/database.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { RequirementStateStore } from "../runtime/requirement-state.ts";
-import { ShortDecisionStore } from "../runtime/short-decisions.ts";
-import type { DecisionAdmissionRequest } from "../runtime/short-decisions.ts";
+import { AsyncTransactionError, DatabaseUnavailableError, LocalDatabase, StaleVersionError, TransactionCleanupError, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
+import { ShortDecisionStore } from "../src/modules/requirement/short-decisions.ts";
+import type { DecisionAdmissionRequest } from "../src/modules/requirement/short-decisions.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { withoutSqliteExperimentalWarning } from "./helpers/node-warnings.ts";
@@ -41,7 +41,7 @@ function expectEmpty(path: string) {
   finally { other.close(); }
 }
 async function isolatedProbe(source: string): Promise<Record<string, unknown>> {
-  const databaseModule = new URL("../runtime/database.ts", import.meta.url).href;
+  const databaseModule = new URL("../src/core/storage/database.ts", import.meta.url).href;
   const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", `
 import { existsSync } from "node:fs";
 import { runInNewContext } from "node:vm";

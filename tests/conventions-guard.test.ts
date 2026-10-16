@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import conventionsGuardExtension from "../extensions/conventions-guard.ts";
-import { classifyManagedWritePath, writePathAllowed } from "../runtime/core-permissions.ts";
+import conventionsGuardExtension from "../src/modules/verification/conventions-guard-extension.ts";
+import { classifyManagedWritePath, writePathAllowed } from "../src/core/policy/core-permissions.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 

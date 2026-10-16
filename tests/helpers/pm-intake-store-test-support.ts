@@ -1,7 +1,7 @@
-import { uuidv7 } from "../../runtime/database.ts";
-import { PM_INTAKE_NAMESPACES } from "../../runtime/pm-intake-store.ts";
-import type { IntakeCurrentProof } from "../../runtime/pm-intake-store.ts";
-import type { IntakeBinding, IntakeReviewRecord } from "../../runtime/pm-intake-contracts.ts";
+import { uuidv7 } from "../../src/core/storage/database.ts";
+import { PM_INTAKE_NAMESPACES } from "../../src/modules/pm/pm-intake-store.ts";
+import type { IntakeCurrentProof } from "../../src/modules/pm/pm-intake-store.ts";
+import type { IntakeBinding, IntakeReviewRecord } from "../../src/modules/pm/pm-intake-contracts.ts";
 import type { PmIntakeFixture } from "./pm-intake-fixture.ts";
 
 export const hash = (value: string) => value.repeat(64);

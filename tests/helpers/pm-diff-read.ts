@@ -1,6 +1,6 @@
-import { repositoryDatabase, uuidv7, withDatabase } from "../../runtime/database.ts";
-import type { PmLease, RequirementRecord } from "../../runtime/requirement-contracts.ts";
-import { createRequirementReadTool } from "../../runtime/requirement-read-tool.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../src/core/storage/database.ts";
+import type { PmLease, RequirementRecord } from "../../src/modules/requirement/requirement-contracts.ts";
+import { createRequirementReadTool } from "../../src/modules/pm/requirement-read-tool.ts";
 
 /** 像 PM 收到更新通知后那样，按通知里的版本号用 diff 读完全部分页，返回每条通知对应的差异正文。 */
 export async function readNoticedDiffs(options: { repositoryRoot: string; dataRoot: string; repoId: string; lease: PmLease }, notices: string[]): Promise<string[]> {

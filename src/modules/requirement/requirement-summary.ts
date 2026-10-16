@@ -1,4 +1,4 @@
-import { repositoryDatabase, withDatabase } from "./database.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 
 const SUMMARIES = "requirement_summaries";
 export const SUMMARY_MAX_CHARS = 200;

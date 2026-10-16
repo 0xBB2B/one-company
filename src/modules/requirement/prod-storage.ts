@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { adviceOf } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceOf } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { mkdir, open, readlink, realpath, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -8,21 +8,21 @@ import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { activeCheckRoundIn, CHECK_ROUNDS, collectInputManifest, manifestMatchesBaseline, readCheckRoundIn, readVerificationIn,
-  VerificationPerformance, VerificationRun, VERIFICATION_RUNS } from "./check-round.ts";
-import type { CheckBaseline, CheckInvalidation, CheckRound, InputManifest } from "./check-round.ts";
-import { writeGuardLaunch } from "./command-boundary.ts";
-import { repositoryIdentity } from "./identity.ts";
-import { defaultRoleDir } from "./roles.ts";
-import { authorizeToolAction } from "./core-permissions.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
-import type { LocalDatabase } from "./database.ts";
-import { checked, hash, id, object, positive } from "./requirement-contracts.ts";
-import type { RequirementRecord } from "./requirement-contracts.ts";
-import { checkServiceInput } from "./requirement-manage-contracts.ts";
+  VerificationPerformance, VerificationRun, VERIFICATION_RUNS } from "../verification/check-round.ts";
+import type { CheckBaseline, CheckInvalidation, CheckRound, InputManifest } from "../verification/check-round.ts";
+import { writeGuardLaunch } from "../verification/command-boundary.ts";
+import { repositoryIdentity } from "../../core/storage/identity.ts";
+import { defaultRoleDir } from "../agents/roles.ts";
+import { authorizeToolAction } from "../../core/policy/core-permissions.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
+import { checked, hash, id, object, positive } from "../requirement/requirement-contracts.ts";
+import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
+import { checkServiceInput } from "../requirement/requirement-manage-contracts.ts";
 import { readVerdictsIn } from "./verdicts.ts";
-import { RequirementStateStore } from "./requirement-state.ts";
-import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
-import { writeFileAtomic } from "./store.ts";
+import { RequirementStateStore } from "../requirement/requirement-state.ts";
+import { verifyRequirementWorkspace } from "../requirement/requirement-workspace.ts";
+import { writeFileAtomic } from "../../core/storage/store.ts";
 
 const Grant = object({
   role: Type.Union([Type.Literal("worker"), Type.Literal("pm"), Type.Literal("reviewer"), Type.Literal("qa")]),

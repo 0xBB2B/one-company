@@ -1,4 +1,4 @@
-import { registerProtocolHandlers } from "../daemon/run-manager.ts";
+import { registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { describe, expect, test } from "vitest";
 import {
   EVENTS,
@@ -15,7 +15,7 @@ import {
   encodeFrame,
   isFrame,
   validateParams,
-} from "../runtime/protocol.ts";
+} from "../src/core/host/protocol.ts";
 
 const EXPECTED_METHODS = [
   "hello",

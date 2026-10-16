@@ -1,16 +1,16 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
-import { createClock } from "../runtime/clock.ts";
-import type { TimeSource } from "../runtime/clock.ts";
-import { ShellRegistry } from "../runtime/shell-registry.ts";
-import type { Host } from "../runtime/shell-registry.ts";
+import { createClock } from "../src/core/policy/clock.ts";
+import type { TimeSource } from "../src/core/policy/clock.ts";
+import { ShellRegistry } from "../src/core/host/shell-registry.ts";
+import type { Host } from "../src/core/host/shell-registry.ts";
 import {
   formatShellSummary,
   publishShellStatus,
   startShellStatusRefresh,
   summarizeShells,
-} from "../runtime/shell-summary.ts";
-import type { ShellSummaryRepo, ShellStatusBar } from "../runtime/shell-summary.ts";
+} from "../src/modules/shell/shell-summary.ts";
+import type { ShellSummaryRepo, ShellStatusBar } from "../src/modules/shell/shell-summary.ts";
 
 const MAIN_HOST: Host = { kind: "main", id: "main" };
 

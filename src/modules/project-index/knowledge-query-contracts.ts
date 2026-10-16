@@ -1,6 +1,6 @@
 import { indexPathScope } from "./project-index-policy.ts";
-import { withDetail } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { withDetail } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 
 export const KNOWLEDGE_QUERY_LIMITS = Object.freeze({
   queryCodepoints: 256, pageSize: 20, pageBytes: 49_152, minimumPageBytes: 4_096,

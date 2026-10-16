@@ -3,12 +3,12 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
-import { HostAuthorizationError } from "./host-authorization.ts";
+import { HostAuthorizationError } from "../requirement/host-authorization.ts";
 import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
-import { PROD_SECTION_ID_PATTERN } from "./prod-view.ts";
-import { requestParameters, shapeIssue, unwrapRequest } from "./tool-request.ts";
-import { toolFailure, toolStep } from "./tool-failure.ts";
-import { SUMMARY_MAX_CHARS } from "./requirement-summary.ts";
+import { PROD_SECTION_ID_PATTERN } from "../requirement/prod-view.ts";
+import { requestParameters, shapeIssue, unwrapRequest } from "../../core/exec/tool-request.ts";
+import { toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
+import { SUMMARY_MAX_CHARS } from "../requirement/requirement-summary.ts";
 export type { OpenRequirementService, RequirementManageHostContext, RequirementServiceHandle } from "./main-requirement-interaction.ts";
 const id = Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", minLength: 36, maxLength: 36 });
 const repoId = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 });

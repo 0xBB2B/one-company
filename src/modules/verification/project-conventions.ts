@@ -1,9 +1,9 @@
-import type { ProgramWindow, WindowAnswer, WindowChoice, WindowLine } from "./question-window.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import type { ProgramWindow, WindowAnswer, WindowChoice, WindowLine } from "../../core/host/question-window.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { writeFileAtomic } from "./store.ts";
+import { writeFileAtomic } from "../../core/storage/store.ts";
 
 export const CONVENTIONS_FILE = "AGENTS.md";
 /** 规范全文上限：项目规范随每次派工进入子代理的上下文，须保持简短。 */

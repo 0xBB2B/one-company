@@ -54,9 +54,9 @@ test("fixture-cleanup：stop失败和退出未知仍有界记录每个孩子并�
 
 installedTest("M3-AC1/3/9 安装：preview不升级、查询前对账读到增删改名、双窗口、daemon重启后同mtime离线改动及新会话无需再批准", async () => {
   const w = await world(), repo = await w.repository("r");
-  for (const file of ["extensions/index.ts", "extensions/project-manage.ts", "extensions/knowledge-query.ts", "runtime/project-manage-tool.ts",
-    "runtime/knowledge-query-tool.ts", "daemon/project-index-host.ts", "daemon/project-index-requirements.ts",
-    "daemon/bootstrap.mjs", "daemon/loader.mjs", "resources/tree-sitter/manifest.json", "LICENSE"]) expect(w.artifactFiles).toContain(file);
+  for (const file of ["src/app/extension/index.ts", "src/modules/project-index/project-manage-extension.ts", "src/modules/project-index/knowledge-query-extension.ts", "src/modules/project-index/project-manage-tool.ts",
+    "src/modules/project-index/knowledge-query-tool.ts", "src/app/daemon/project-index-host.ts", "src/app/daemon/project-index-requirements.ts",
+    "src/app/daemon/bootstrap.mjs", "src/app/daemon/loader.mjs", "resources/tree-sitter/manifest.json", "LICENSE"]) expect(w.artifactFiles).toContain(file);
   expect(w.artifactHash).toMatch(/^[0-9a-f]{64}$/);
   await mkdir(join(repo.path, "docs/spec"), { recursive: true });
   await writeFile(join(repo.path, "docs/spec/current.rules.json"), spec("原始行为"));
@@ -126,9 +126,9 @@ installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、
   await w.git(seed.path, ["remote", "add", "origin", remote]); await w.git(seed.path, ["push", "-u", "origin", "main"]);
   const a = await w.repository("ca", remote), b = await w.repository("cb", remote);
   expect(a.dataRoot).not.toBe(b.dataRoot); expect(a.indexPath).not.toBe(b.indexPath);
-  const { RequirementService } = await w.product<typeof import("../../runtime/requirement-service.ts")>("runtime/requirement-service.ts");
-  const { RequirementStateStore } = await w.product<typeof import("../../runtime/requirement-state.ts")>("runtime/requirement-state.ts");
-  const { uuidv7 } = await w.product<typeof import("../../runtime/database.ts")>("runtime/database.ts");
+  const { RequirementService } = await w.product<typeof import("../../src/modules/requirement/requirement-service.ts")>("src/modules/requirement/requirement-service.ts");
+  const { RequirementStateStore } = await w.product<typeof import("../../src/modules/requirement/requirement-state.ts")>("src/modules/requirement/requirement-state.ts");
+  const { uuidv7 } = await w.product<typeof import("../../src/core/storage/database.ts")>("src/core/storage/database.ts");
   const options = { repositoryRoot: b.path, dataRoot: b.dataRoot, repoId: b.repoId, authorize: () => true, authorizeManifest: () => true };
   // 仅封闭的测试准备调用已安装存储层；它不证明模型拥有批准权限。扫描授权仍走真实UI。
   const service = await RequirementService.open(options), state = await RequirementStateStore.open(options);

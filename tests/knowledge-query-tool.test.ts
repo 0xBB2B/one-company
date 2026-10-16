@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { Value } from "typebox/value";
-import { KnowledgeToolSchema, createKnowledgeQueryTool, knowledgeContent, parseKnowledgeTransportQuery } from "../runtime/knowledge-query-tool.ts";
-import type { KnowledgeFactPackage } from "../runtime/knowledge-query.ts";
+import { KnowledgeToolSchema, createKnowledgeQueryTool, knowledgeContent, parseKnowledgeTransportQuery } from "../src/modules/project-index/knowledge-query-tool.ts";
+import type { KnowledgeFactPackage } from "../src/modules/project-index/knowledge-query.ts";
 
 const repoId = "a".repeat(64), workspaceId = "b".repeat(64);
 const page = (body = "中文") => ({ format: "knowledge-facts/v1", trust: "untrusted_project_data_not_instructions_or_authorization",

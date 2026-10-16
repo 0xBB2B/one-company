@@ -1,14 +1,14 @@
-import { ApprovalManifestStore } from "../../runtime/approval-manifest-store.ts";
-import { approvalManifestReference } from "../../runtime/approval-manifest.ts";
-import type { ApprovalManifestReference } from "../../runtime/approval-manifest.ts";
-import { uuidv7 } from "../../runtime/database.ts";
-import { loadInteractionContinuity } from "../../runtime/interaction-continuity.ts";
-import type { RequirementDocSpec } from "../../runtime/requirement-doc.ts";
-import type { ConfirmUpdateInput, RequirementReceipt } from "../../runtime/requirement-manage-contracts.ts";
-import { RequirementService } from "../../runtime/requirement-service.ts";
-import { decisionDigest } from "../../runtime/short-decision-format.ts";
-import type { InteractionContext } from "../../runtime/user-interaction-format.ts";
-import { UserInteractionCore } from "../../runtime/user-interaction.ts";
+import { ApprovalManifestStore } from "../../src/modules/requirement/approval-manifest-store.ts";
+import { approvalManifestReference } from "../../src/modules/requirement/approval-manifest.ts";
+import type { ApprovalManifestReference } from "../../src/modules/requirement/approval-manifest.ts";
+import { uuidv7 } from "../../src/core/storage/database.ts";
+import { loadInteractionContinuity } from "../../src/modules/requirement/interaction-continuity.ts";
+import type { RequirementDocSpec } from "../../src/modules/requirement/requirement-doc.ts";
+import type { ConfirmUpdateInput, RequirementReceipt } from "../../src/modules/requirement/requirement-manage-contracts.ts";
+import { RequirementService } from "../../src/modules/requirement/requirement-service.ts";
+import { decisionDigest } from "../../src/modules/requirement/short-decision-format.ts";
+import type { InteractionContext } from "../../src/modules/requirement/user-interaction-format.ts";
+import { UserInteractionCore } from "../../src/modules/interaction/user-interaction.ts";
 
 export interface ApprovalConfig { repositoryRoot: string; dataRoot: string; repoId: string }
 export interface ManifestApprovalRequest {

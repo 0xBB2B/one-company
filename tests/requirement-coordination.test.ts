@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE, RequirementWriteCoordinator } from "../runtime/requirement-coordination.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE, RequirementWriteCoordinator } from "../src/modules/requirement/requirement-coordination.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 test("写占用元数据拒绝未知字段和记录键身份冲突", async () => {

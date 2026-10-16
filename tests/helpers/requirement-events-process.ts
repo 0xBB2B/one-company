@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
-import { uuidv7 } from "../../runtime/database.ts";
-import { RequirementEventService } from "../../runtime/requirement-events.ts";
-import type { PreparedRequirementDelivery } from "../../runtime/requirement-events.ts";
-import { RequirementService } from "../../runtime/requirement-service.ts";
-import { RequirementStateStore } from "../../runtime/requirement-state.ts";
+import { uuidv7 } from "../../src/core/storage/database.ts";
+import { RequirementEventService } from "../../src/modules/requirement/requirement-events.ts";
+import type { PreparedRequirementDelivery } from "../../src/modules/requirement/requirement-events.ts";
+import { RequirementService } from "../../src/modules/requirement/requirement-service.ts";
+import { RequirementStateStore } from "../../src/modules/requirement/requirement-state.ts";
 
 
 export interface EventProcessConfig {

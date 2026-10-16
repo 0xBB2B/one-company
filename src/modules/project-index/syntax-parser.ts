@@ -16,7 +16,7 @@ const GRAMMARS = {
   go: { package: "tree-sitter-go", version: "0.25.0" },
 } as const;
 const require = createRequire(import.meta.url);
-const resourceRoot = new URL("../resources/tree-sitter/", import.meta.url);
+const resourceRoot = new URL("../../../resources/tree-sitter/", import.meta.url);
 
 export type SyntaxResourceErrorCode = "unsupported_language" | "resource_missing" | "resource_invalid" | "resource_incompatible";
 

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "../runtime/database-paths.ts";
+import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "../src/core/storage/database-paths.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 function child(args: string[]) {
@@ -42,7 +42,7 @@ db.exec('BEGIN; SELECT * FROM records;');
 console.log('LOCKED');
 process.stdin.once('data', () => { db.exec('COMMIT'); db.close(); process.exit(0); });
 `);
-    await writeFile(openerPath, `import { LocalDatabase } from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).href)};
+    await writeFile(openerPath, `import { LocalDatabase } from ${JSON.stringify(new URL("../src/core/storage/database.ts", import.meta.url).href)};
 console.log('OPENING');
 const started = performance.now();
 try { const db = new LocalDatabase(process.argv[2]); db.create('probe', 'once', {}); db.close(); console.log(JSON.stringify({ ok: true })); }
@@ -90,7 +90,7 @@ catch (error) { console.log(JSON.stringify({ ok: false, code: error.errcode, ela
 test("多进程同时首次开库：每轮四个进程全部完成，不重复或漏掉写入", async () => {
   const root = await mkdtemp(join(temporaryRoot(), "init-race-"));
   const script = join(root, "writer.mjs");
-  await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).href)};
+  await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../src/core/storage/database.ts", import.meta.url).href)};
 console.log('READY');
 process.stdin.once('data', () => {
   const db = new LocalDatabase(process.argv[2]);

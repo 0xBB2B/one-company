@@ -4,20 +4,20 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { RequirementService, requirementIntentHash } from "../runtime/requirement-service.ts";
+import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
 import { draftApprover, manifestConfirmInput } from "./helpers/approval-fixture.ts";
-import type { RequirementServiceOptions, ServiceAuthorizationRequest } from "../runtime/requirement-service.ts";
-import { RequirementOperations } from "../runtime/requirement-operations.ts";
-import { RequirementStateStore } from "../runtime/requirement-state.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import * as databaseModule from "../runtime/database.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { prodRequirementPath } from "../runtime/prod-storage.ts";
+import type { RequirementServiceOptions, ServiceAuthorizationRequest } from "../src/modules/requirement/requirement-service.ts";
+import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
+import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import * as databaseModule from "../src/core/storage/database.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { prodRequirementPath } from "../src/modules/requirement/prod-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, readPrototypeBoard, removeFromDraft, submitDesign } from "../runtime/requirement-prototypes.ts";
-import { prototypesAtRevision } from "../runtime/requirement-prototype-revisions.ts";
+import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, readPrototypeBoard, removeFromDraft, submitDesign } from "../src/modules/requirement/requirement-prototypes.ts";
+import { prototypesAtRevision } from "../src/modules/requirement/requirement-prototype-revisions.ts";
 
 
 const exec = promisify(execFile);
@@ -72,8 +72,8 @@ function spawnServiceWrite(
 ) {
   const script = join(w.root, `service-child-${uuidv7()}.mjs`);
   const source = `import {existsSync,writeFileSync} from 'node:fs';
-import {RequirementService} from ${JSON.stringify(new URL("../runtime/requirement-service.ts", import.meta.url).href)};
-import {RequirementWriteCoordinator} from ${JSON.stringify(new URL("../runtime/requirement-coordination.ts", import.meta.url).href)};
+import {RequirementService} from ${JSON.stringify(new URL("../src/modules/requirement/requirement-service.ts", import.meta.url).href)};
+import {RequirementWriteCoordinator} from ${JSON.stringify(new URL("../src/modules/requirement/requirement-coordination.ts", import.meta.url).href)};
 const options=${JSON.stringify({ repositoryRoot: w.options.repositoryRoot, dataRoot: w.options.dataRoot, repoId: w.options.repoId})};
 const input=${JSON.stringify(input)};
 const hold=${JSON.stringify(hold ?? null)};

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { registerCommands } from "../extensions/commands.ts";
-import type { CommandsPi, RegisterCommandsOptions } from "../extensions/commands.ts";
+import { registerCommands } from "../src/app/extension/commands.ts";
+import type { CommandsPi, RegisterCommandsOptions } from "../src/app/extension/commands.ts";
 
 function makeFakePi() {
   const registrations: Record<

@@ -1,12 +1,12 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import { uuidv7 } from "../runtime/database.ts";
-import type { TaskSpec } from "../runtime/plan-manage.ts";
-import { evaluatePmIntakeGate, PM_INTAKE_TOOL } from "../runtime/pm-intake-runtime.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
+import { evaluatePmIntakeGate, PM_INTAKE_TOOL } from "../src/modules/pm/pm-intake-runtime.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
-import { RequirementEventService } from "../runtime/requirement-events.ts";
-import { repositoryDatabase, withDatabase } from "../runtime/database.ts";
-import { writePrototypeRevision } from "../runtime/requirement-prototype-revisions.ts";
+import { RequirementEventService } from "../src/modules/requirement/requirement-events.ts";
+import { repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
+import { writePrototypeRevision } from "../src/modules/requirement/requirement-prototype-revisions.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];

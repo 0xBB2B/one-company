@@ -1,11 +1,11 @@
 import { dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { dataRoot as defaultDataRoot } from "../runtime/identity.ts";
-import { loadPackageRules } from "../runtime/package-rules.ts";
-import { resolveRepositoryRequirementDoc, resolveRequirementDoc } from "../runtime/requirement-doc.ts";
-import type { ResolvedRequirementDoc } from "../runtime/requirement-doc.ts";
-import { currentMentionNote, windowContext as defaultWindowContext } from "./lifecycle.ts";
-import type { WindowContextValue } from "./lifecycle.ts";
+import { dataRoot as defaultDataRoot } from "../../core/storage/identity.ts";
+import { loadPackageRules } from "../../modules/agents/package-rules.ts";
+import { resolveRepositoryRequirementDoc, resolveRequirementDoc } from "../../modules/requirement/requirement-doc.ts";
+import type { ResolvedRequirementDoc } from "../../modules/requirement/requirement-doc.ts";
+import { currentMentionNote, windowContext as defaultWindowContext } from "../../core/host/extension-lifecycle.ts";
+import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
 
 function repositoryList(windowContext: () => Pick<WindowContextValue, "workspace">): string {
 	let repos: WindowContextValue["workspace"]["repos"];

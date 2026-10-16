@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { FIXED_CHOICES, fixedChoiceIssue } from "../runtime/panel-item-ask.ts";
+import { FIXED_CHOICES, fixedChoiceIssue } from "../src/modules/panel/panel-item-ask.ts";
 
 test("M8L-AC3：固定选项须逐一相同、顺序一致，轮数上限只能是 1 到 1000 的整数", () => {
   expect(fixedChoiceIssue(FIXED_CHOICES.retry, ["再给一次机会，轮数上限 40", "调整目标或范围", "终止这个任务"])).toBeNull();

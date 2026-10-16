@@ -1,8 +1,8 @@
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { isPromise } from "node:util/types";
-import { uuidv7, repositoryDatabase, withDatabase, StaleVersionError } from "./database.ts";
-import type { LocalDatabase } from "./database.ts";
+import { uuidv7, repositoryDatabase, withDatabase, StaleVersionError } from "../../core/storage/database.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
 import type { RequirementStoreOptions } from "./requirement-state.ts";
 import { checkRequirement, object, id, hash, positive, counter, checked } from "./requirement-contracts.ts";

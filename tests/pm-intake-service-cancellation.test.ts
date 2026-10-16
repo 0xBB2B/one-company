@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { PM_INTAKE_NAMESPACES } from "../runtime/pm-intake-store.ts";
-import type { RequirementService } from "../runtime/requirement-service.ts";
+import { PM_INTAKE_NAMESPACES } from "../src/modules/pm/pm-intake-store.ts";
+import type { RequirementService } from "../src/modules/requirement/requirement-service.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { addQuestion, persisted } from "./helpers/pm-intake-service-test-support.ts";

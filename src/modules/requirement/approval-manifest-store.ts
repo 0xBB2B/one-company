@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { isPromise } from "node:util/types";
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase, StoredRecord } from "./database.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { ApprovalManifestReferenceSchema, checkRequirement, checked, object, positive, hash, id } from "./requirement-contracts.ts";
 import type { ApprovalSummary, RequirementRecord } from "./requirement-contracts.ts";
 import { ApprovalManifest, approvalDependencyClosure, approvalManifestReference, checkApprovalManifest } from "./approval-manifest.ts";

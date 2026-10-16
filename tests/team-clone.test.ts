@@ -4,8 +4,8 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { uuidv7 } from "../runtime/database.ts";
-import { archivePathFor } from "../runtime/requirement-identity.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { archivePathFor } from "../src/modules/requirement/requirement-identity.ts";
 
 const exec = promisify(execFile);
 const cleanups: string[] = [];

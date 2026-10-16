@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { globalDatabase, withDatabase } from "./database.ts";
+import { globalDatabase, withDatabase } from "../storage/database.ts";
 
 // 控制凭证只保存在受管命令不可读取的数据目录中，不通过环境变量或运行记录传递。
 export function controlToken(dataRoot: string): string {

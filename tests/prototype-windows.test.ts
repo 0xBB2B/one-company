@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, expect, test, vi } from "vitest";
-import prototypeExtension from "../extensions/prototype.ts";
-import { askWindow } from "../runtime/question-window.ts";
+import prototypeExtension from "../src/modules/prototype/prototype-extension.ts";
+import { askWindow } from "../src/core/host/question-window.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 
 // 程序窗口排队是进程内唯一的一份，用例里没关掉的窗口会挡住后面用例的窗口

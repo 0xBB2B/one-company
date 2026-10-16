@@ -4,10 +4,10 @@ import { chmodSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { AsyncTransactionError, LocalDatabase, StaleVersionError } from "../runtime/database.ts";
-import { createDatabaseSnapshot, withDatabaseMaintenance } from "../runtime/database-maintenance.ts";
-import { IndexStore, IndexStoreError } from "../runtime/index-store.ts";
-import type { IndexPublication, SourceFragment, WorkspaceIdentity } from "../runtime/index-store.ts";
+import { AsyncTransactionError, LocalDatabase, StaleVersionError } from "../src/core/storage/database.ts";
+import { createDatabaseSnapshot, withDatabaseMaintenance } from "../src/core/storage/database-maintenance.ts";
+import { IndexStore, IndexStoreError } from "../src/modules/project-index/index-store.ts";
+import type { IndexPublication, SourceFragment, WorkspaceIdentity } from "../src/modules/project-index/index-store.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const roots: string[] = [];
@@ -284,7 +284,7 @@ test("发布事务中途强杀不会留下半份current，重启可用新fence�
   const w = await fixture(), identity = w.identity(hash("d"), w.workspaceA, "refs/heads/kill-recovery");
   const initial = new IndexStore(w.databasePath, identity);
   initial.publish(initial.begin(), codePublication("src/kill.ts", "before_kill_word")); initial.close();
-  const script = join(w.root, "kill-publish.mjs"), moduleUrl = new URL("../runtime/index-store.ts", import.meta.url).href;
+  const script = join(w.root, "kill-publish.mjs"), moduleUrl = new URL("../src/modules/project-index/index-store.ts", import.meta.url).href;
   await writeFile(script, `
 import { writeSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";

@@ -1,12 +1,12 @@
 import { Type } from "typebox";
-import { adviceIn } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceIn } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { object, positive, counter } from "./requirement-contracts.ts";
-import { UUID_V7_PATTERN } from "./database.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 import { DecisionItem, ShortDecisionRecord, checkDecisionRecord, parseDecisionBatch, decisionDigest, SHORT_DECISION_LIMITS } from "./short-decision-format.ts";
-import { parseStrictJson } from "./strict-json.ts";
+import { parseStrictJson } from "../../core/storage/strict-json.ts";
 import { partitionProdDocument } from "./prod-view.ts";
 
 const id = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });

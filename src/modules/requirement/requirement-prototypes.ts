@@ -5,14 +5,14 @@ import { basename, dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase } from "./database.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
 import { RequirementStateError } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
 import { unsafeFilenameKind } from "./requirement-identity.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 
 const PROTOTYPES = "requirement_prototypes";
 const PROTOTYPE_MAX_BYTES = 1_048_576;

@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Value } from "typebox/value";
-import { createClock } from "../runtime/clock.ts";
-import { ShellRegistry } from "../runtime/shell-registry.ts";
-import type { Host } from "../runtime/shell-registry.ts";
-import { createManagedBashOperations, createManagedBashTool, formatBackgroundReceipt, handleUserBash } from "../runtime/shell-bash.ts";
+import { createClock } from "../src/core/policy/clock.ts";
+import { ShellRegistry } from "../src/core/host/shell-registry.ts";
+import type { Host } from "../src/core/host/shell-registry.ts";
+import { createManagedBashOperations, createManagedBashTool, formatBackgroundReceipt, handleUserBash } from "../src/modules/shell/shell-bash.ts";
 
 const LONG_TIMEOUT = 20_000;
 const HOST_MAIN: Host = { kind: "main", id: "main" };

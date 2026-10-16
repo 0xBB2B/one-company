@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { AdvisedError, toolFailure, toolStep } from "./tool-failure.ts";
-import { fetchTargetBranch, gitIn, includesCommit } from "./target-branch.ts";
+import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
+import { fetchTargetBranch, gitIn, includesCommit } from "../../core/exec/target-branch.ts";
 
 export interface PmSyncOptions {
   repositoryRoot: string;

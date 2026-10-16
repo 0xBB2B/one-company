@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type { TProperties } from "typebox";
-import { toolFailure } from "./tool-failure.ts";
+import { toolFailure } from "../../core/exec/tool-failure.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { KNOWLEDGE_QUERY_LIMITS, KnowledgeQueryError, parseKnowledgeQuery } from "./knowledge-query-contracts.ts";
 import type { KnowledgeQuery } from "./knowledge-query-contracts.ts";

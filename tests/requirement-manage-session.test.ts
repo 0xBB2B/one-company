@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import requirementManageExtension from "../extensions/requirement-manage.ts";
-import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
+import requirementManageExtension from "../src/modules/interaction/requirement-manage-extension.ts";
+import { HostAuthorizationManager } from "../src/modules/requirement/host-authorization.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 
 const roots: string[] = [];

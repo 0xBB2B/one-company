@@ -1,9 +1,9 @@
 import { Type } from "typebox";
-import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { Static, TProperties, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { UUID_V7_PATTERN } from "./database.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 
 export const object = <P extends TProperties>(properties: P) => Type.Object(properties, { additionalProperties: false });
 export const id = Type.String({ pattern: UUID_V7_PATTERN.source });

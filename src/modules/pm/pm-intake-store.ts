@@ -1,23 +1,23 @@
 import { createHash } from "node:crypto";
-import { adviceIn } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceIn } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { performance } from "node:perf_hooks";
 import { isPromise } from "node:util/types";
 import { Value } from "typebox/value";
-import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
-import type { LocalDatabase, StoredRecord } from "./database.ts";
-import { registeredApprovalManifestIn, APPROVAL_MANIFEST_NAMESPACE } from "./approval-manifest-store.ts";
-import { approvalDependencyClosure } from "./approval-manifest.ts";
-import type { ApprovalManifest } from "./approval-manifest.ts";
-import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn } from "./requirement-coordination.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
+import { registeredApprovalManifestIn, APPROVAL_MANIFEST_NAMESPACE } from "../requirement/approval-manifest-store.ts";
+import { approvalDependencyClosure } from "../requirement/approval-manifest.ts";
+import type { ApprovalManifest } from "../requirement/approval-manifest.ts";
+import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn } from "../requirement/requirement-coordination.ts";
 import { IntakeBindingSchema, IntakeSourceDirectorySchema, IntakeReviewRecordSchema, checkIntakeReviewRecord } from "./pm-intake-contracts.ts";
 import type { IntakeBinding, IntakeReviewRecord, IntakeSourceDirectory } from "./pm-intake-contracts.ts";
-import { PmRecord, checkRequirement, checked } from "./requirement-contracts.ts";
-import type { RequirementRecord, WorkspaceBinding } from "./requirement-contracts.ts";
-import { continuityInputProofIn } from "./interaction-continuity.ts";
-import { decisionDigest } from "./short-decision-format.ts";
-import { canonicalJson } from "./strict-json.ts";
-import { checkInteraction, PendingQuestion } from "./user-interaction-format.ts";
+import { PmRecord, checkRequirement, checked } from "../requirement/requirement-contracts.ts";
+import type { RequirementRecord, WorkspaceBinding } from "../requirement/requirement-contracts.ts";
+import { continuityInputProofIn } from "../requirement/interaction-continuity.ts";
+import { decisionDigest } from "../requirement/short-decision-format.ts";
+import { canonicalJson } from "../../core/storage/strict-json.ts";
+import { checkInteraction, PendingQuestion } from "../requirement/user-interaction-format.ts";
 
 export const PM_INTAKE_NAMESPACES = Object.freeze({
   requests: "pm_intake_requests_v1",

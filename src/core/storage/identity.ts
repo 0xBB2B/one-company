@@ -1,4 +1,4 @@
-import { readGit } from "./git-read.ts";
+import { readGit } from "../exec/git-read.ts";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";

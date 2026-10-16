@@ -2,7 +2,7 @@ import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync
 import { dirname, join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { FileEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { repositoryDatabase, readRecord, withDatabase, UUID_V7_PATTERN, uuidv7, StaleVersionError } from "./database.ts";
+import { repositoryDatabase, readRecord, withDatabase, UUID_V7_PATTERN, uuidv7, StaleVersionError } from "../../core/storage/database.ts";
 
 interface RunRef {
   dataRoot: string;

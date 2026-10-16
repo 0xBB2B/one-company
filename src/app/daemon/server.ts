@@ -10,9 +10,9 @@ import {
   decodeFrames,
   encodeFrame,
   validateParams,
-} from "../runtime/protocol.ts";
-import type { Frame } from "../runtime/protocol.ts";
-import { adviceOf } from "../runtime/tool-failure.ts";
+} from "../../core/host/protocol.ts";
+import type { Frame } from "../../core/host/protocol.ts";
+import { adviceOf } from "../../core/exec/tool-failure.ts";
 
 export interface ClientInfo {
   windowId: string;

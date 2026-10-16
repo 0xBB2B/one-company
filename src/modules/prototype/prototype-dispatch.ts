@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { id } from "./requirement-contracts.ts";
+import { id } from "../requirement/requirement-contracts.ts";
 
 export const PrototypeDispatchInput = Type.Object({
   requirementId: id,

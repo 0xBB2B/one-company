@@ -8,13 +8,13 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import projectManageExtension from "../../extensions/project-manage.ts";
-import knowledgeQueryExtension from "../../extensions/knowledge-query.ts";
-import { connectDaemon } from "../../runtime/daemon-client.ts";
-import { createClock } from "../../runtime/clock.ts";
-import { repoDataDir } from "../../runtime/identity.ts";
-import type { WindowContextValue } from "../../extensions/lifecycle.ts";
-import type { KnowledgeFactPackage } from "../../runtime/knowledge-query.ts";
+import projectManageExtension from "../../src/modules/project-index/project-manage-extension.ts";
+import knowledgeQueryExtension from "../../src/modules/project-index/knowledge-query-extension.ts";
+import { connectDaemon } from "../../src/core/host/daemon-client.ts";
+import { createClock } from "../../src/core/policy/clock.ts";
+import { repoDataDir } from "../../src/core/storage/identity.ts";
+import type { WindowContextValue } from "../../src/core/host/extension-lifecycle.ts";
+import type { KnowledgeFactPackage } from "../../src/modules/project-index/knowledge-query.ts";
 import { createDaemonFixture, removeDaemonFixture, resolveSdkDir, spawnDaemonProcess, waitForSocketReady } from "../helpers/daemon-harness.ts";
 import { modelProviderEnv, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
 import { within } from "../helpers/within.ts";
@@ -26,7 +26,7 @@ test("真实SDK单一主入口注册knowledge工具且公开schema不含宿主�
   try {
     const loader = new DefaultResourceLoader({ cwd: fixture.repo.root, agentDir: fixture.home.agentDir,
       settingsManager: SettingsManager.inMemory(), noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,
-      additionalExtensionPaths: [fileURLToPath(new URL("../../extensions/index.ts", import.meta.url))] });
+      additionalExtensionPaths: [fileURLToPath(new URL("../../src/app/extension/index.ts", import.meta.url))] });
     await loader.reload();
     expect(loader.getExtensions().errors).toEqual([]);
     const tool = loader.getExtensions().extensions[0]!.tools.get(queryName)!;

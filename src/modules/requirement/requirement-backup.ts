@@ -2,14 +2,14 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { UUID_V7_PATTERN } from "./database.ts";
-import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, pathExists } from "./database-paths.ts";
-import { createDatabaseSnapshot, databaseMaintenanceDirectory, withDatabaseMaintenance } from "./database-maintenance.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
+import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, pathExists } from "../../core/storage/database-paths.ts";
+import { createDatabaseSnapshot, databaseMaintenanceDirectory, withDatabaseMaintenance } from "../../core/storage/database-maintenance.ts";
 import { checkRequirement } from "./requirement-contracts.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE, RequirementWriteCoordinator } from "./requirement-coordination.ts";
 import { verifyVersion } from "./prod-storage.ts";
 import { checkPrototypeName } from "./requirement-prototypes.ts";
-import { sealOperationLog, validOperationLog } from "./operation-log.ts";
+import { sealOperationLog, validOperationLog } from "../../core/storage/operation-log.ts";
 
 const FORMAT = "requirement-backup/v1" as const;
 const OPERATION_FORMAT = "requirement-backup-operation/v1" as const;

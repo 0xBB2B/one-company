@@ -9,8 +9,8 @@ import { getHeapStatistics } from "node:v8";
 import { setTimeout as delay } from "node:timers/promises";
 import { appendSample, gitRun, jsonFile, summarize } from "./m3-benchmark.ts";
 import type { ChildJob, Sample } from "./m3-benchmark.ts";
-import type { ProjectIndexService, ProjectIndexBuildResult } from "../../runtime/project-index-service.ts";
-import type { LocalDatabase } from "../../runtime/database.ts";
+import type { ProjectIndexService, ProjectIndexBuildResult } from "../../src/modules/project-index/project-index-service.ts";
+import type { LocalDatabase } from "../../src/core/storage/database.ts";
 
 
 const job = JSON.parse(await readFile(process.argv[2], "utf8")) as ChildJob;
@@ -121,8 +121,8 @@ function buildMetadata(built: ProjectIndexBuildResult) {
     archiveMetadataCount: built.archives.metadata.length, baselineHash: built.baselineHash };
 }
 async function openIndex() {
-  const { repositoryIdentity } = await import("../../runtime/identity.ts");
-  const { ProjectIndexService: Service } = await import("../../runtime/project-index-service.ts");
+  const { repositoryIdentity } = await import("../../src/core/storage/identity.ts");
+  const { ProjectIndexService: Service } = await import("../../src/modules/project-index/project-index-service.ts");
   const identity = await repositoryIdentity(job.repo);
   service = await Service.open({ repositoryRoot: job.repo, dataRoot: job.dataRoot, repoId: identity.repoId, authorize: () => true });
   return service;
@@ -154,11 +154,11 @@ async function indexBoot() {
       : "service import/open + persisted status + complete reconciliation; parser observer import and process start separate" });
 }
 async function events() {
-  const { RequirementService } = await import("../../runtime/requirement-service.ts");
-  const { RequirementStateStore } = await import("../../runtime/requirement-state.ts");
-  const { RequirementEventService } = await import("../../runtime/requirement-events.ts");
-  const { LocalDatabase: DB, repositoryDatabase, uuidv7, withDatabase } = await import("../../runtime/database.ts");
-  const { repositoryIdentity } = await import("../../runtime/identity.ts");
+  const { RequirementService } = await import("../../src/modules/requirement/requirement-service.ts");
+  const { RequirementStateStore } = await import("../../src/modules/requirement/requirement-state.ts");
+  const { RequirementEventService } = await import("../../src/modules/requirement/requirement-events.ts");
+  const { LocalDatabase: DB, repositoryDatabase, uuidv7, withDatabase } = await import("../../src/core/storage/database.ts");
+  const { repositoryIdentity } = await import("../../src/core/storage/identity.ts");
   const { manifestConfirmInput } = await import("./approval-fixture.ts");
   const identity = await repositoryIdentity(job.repo);
   const options = { repositoryRoot: job.repo, dataRoot: job.dataRoot, repoId: identity.repoId, authorize: () => true, authorizeManifest: () => true };

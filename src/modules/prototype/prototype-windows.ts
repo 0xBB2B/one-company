@@ -1,6 +1,6 @@
-import { mutedLines } from "./question-window.ts";
-import type { WindowLine } from "./question-window.ts";
-import { sanitizeText } from "./text-sanitize.ts";
+import { mutedLines } from "../../core/host/question-window.ts";
+import type { WindowLine } from "../../core/host/question-window.ts";
+import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 
 export const ACCEPT_LABEL = "通过（写进需求草稿）";
 export const ABANDON_LABEL = "放弃这一版";

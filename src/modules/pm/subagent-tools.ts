@@ -1,16 +1,16 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { CHANGE_APPLY_PARAMETERS, createChangeApplyTool } from "../runtime/change-apply.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { listChangedPaths } from "../runtime/git-snapshot.ts";
-import { createPlanManageTool, PLAN_MANAGE_PARAMETERS, readPlanIn } from "../runtime/plan-manage.ts";
-import type { TaskRecord } from "../runtime/plan-manage.ts";
-import type { PmLease, WorkspaceBinding } from "../runtime/requirement-contracts.ts";
-import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS } from "../runtime/requirement-read-tool.ts";
-import { overlaps } from "../runtime/ranges.ts";
-import { createResultSubmitTool, VERDICT_SUBMIT_PARAMETERS } from "../runtime/result-submit.ts";
-import { toPiTool } from "../runtime/role-tools.ts";
-import type { CoreToolRuntime } from "../runtime/role-tools.ts";
-import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS } from "../runtime/verification-run.ts";
+import { CHANGE_APPLY_PARAMETERS, createChangeApplyTool } from "../verification/change-apply.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
+import { listChangedPaths } from "../../core/exec/git-snapshot.ts";
+import { createPlanManageTool, PLAN_MANAGE_PARAMETERS, readPlanIn } from "./plan-manage.ts";
+import type { TaskRecord } from "./plan-manage.ts";
+import type { PmLease, WorkspaceBinding } from "../requirement/requirement-contracts.ts";
+import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS } from "./requirement-read-tool.ts";
+import { overlaps } from "../../core/policy/ranges.ts";
+import { createResultSubmitTool, VERDICT_SUBMIT_PARAMETERS } from "./result-submit.ts";
+import { toPiTool } from "../agents/role-tools.ts";
+import type { CoreToolRuntime } from "../agents/role-tools.ts";
+import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS } from "./verification-run.ts";
 
 export interface SubagentToolsInput {
   repositoryRoot: string;

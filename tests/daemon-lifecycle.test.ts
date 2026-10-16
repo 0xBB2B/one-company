@@ -5,13 +5,13 @@ import { chmod, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "nod
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { installSignalHandlers } from "../daemon/lifecycle.ts";
-import { RunStore } from "../runtime/run-store.ts";
-import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
+import { installSignalHandlers } from "../src/app/daemon/lifecycle.ts";
+import { RunStore } from "../src/modules/agents/run-store.ts";
+import { daemonSocketPath, repositoryIdentity } from "../src/core/storage/identity.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
-import { putRecord, repositoryDatabase, uuidv7 } from "../runtime/database.ts";
+import { putRecord, repositoryDatabase, uuidv7 } from "../src/core/storage/database.ts";
 import { deleteRecord } from "./helpers/database-fixture.ts";
-import { PROTOCOL_VERSION } from "../runtime/protocol.ts";
+import { PROTOCOL_VERSION } from "../src/core/host/protocol.ts";
 import {
   connectRawClient,
   connectTestClient,

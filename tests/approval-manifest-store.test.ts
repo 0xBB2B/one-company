@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
-import { uuidv7 } from "../runtime/database.ts";
-import { partitionProdDocument } from "../runtime/prod-view.ts";
-import { approvalManifestDigest, approvalManifestReference, checkApprovalManifest } from "../runtime/approval-manifest.ts";
-import { ApprovalManifestStore, summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
+import { approvalManifestDigest, approvalManifestReference, checkApprovalManifest } from "../src/modules/requirement/approval-manifest.ts";
+import { ApprovalManifestStore, summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
 
 function fixture() {
   const requirementId = uuidv7(), partition = partitionProdDocument(requirementId, "范围", "# A {#A}\n目标\n# B {#B}\n未决\n");

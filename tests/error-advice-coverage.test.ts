@@ -1,25 +1,32 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { expect, test } from "vitest";
-import { HostAuthorizationError } from "../runtime/host-authorization.ts";
-import { MainIntakeInteractionError } from "../runtime/main-intake-interaction.ts";
-import { IntakeContractError } from "../runtime/pm-intake-contracts.ts";
-import { PmIntakeServiceError } from "../runtime/pm-intake-service.ts";
-import { PmIntakeStoreError } from "../runtime/pm-intake-store.ts";
-import { ShortDecisionError } from "../runtime/short-decision-format.ts";
-import { UserInteractionError } from "../runtime/user-interaction-format.ts";
-import { WebAccessError } from "../runtime/web-access.ts";
-import { ProdStorageError } from "../runtime/prod-storage.ts";
-import { StaleVersionError } from "../runtime/database.ts";
-import { UnsettledShellError } from "../runtime/shell-bash.ts";
+import { HostAuthorizationError } from "../src/modules/requirement/host-authorization.ts";
+import { MainIntakeInteractionError } from "../src/modules/interaction/main-intake-interaction.ts";
+import { IntakeContractError } from "../src/modules/pm/pm-intake-contracts.ts";
+import { PmIntakeServiceError } from "../src/modules/pm/pm-intake-service.ts";
+import { PmIntakeStoreError } from "../src/modules/pm/pm-intake-store.ts";
+import { ShortDecisionError } from "../src/modules/requirement/short-decision-format.ts";
+import { UserInteractionError } from "../src/modules/requirement/user-interaction-format.ts";
+import { WebAccessError } from "../src/modules/explore/web-access.ts";
+import { ProdStorageError } from "../src/modules/requirement/prod-storage.ts";
+import { StaleVersionError } from "../src/core/storage/database.ts";
+import { UnsettledShellError } from "../src/modules/shell/shell-bash.ts";
 
-const runtime = join(import.meta.dirname, "..", "runtime");
-const sources = readdirSync(runtime).filter((name) => name.endsWith(".ts")).map((name) => ({ name, text: readFileSync(join(runtime, name), "utf8") }));
+const srcRoot = join(import.meta.dirname, "..", "src");
+const sources = readdirSync(srcRoot, { recursive: true, encoding: "utf8" })
+  .filter((name) => name.endsWith(".ts"))
+  .map((name) => ({ name, text: readFileSync(join(srcRoot, name), "utf8") }));
+
+test("递归扫到的源文件数不少于搬家前的 124 个", () => {
+  expect(sources.length).toBeGreaterThanOrEqual(124);
+});
+
 function codesOf(className: string, denyIn: string[] = []): string[] {
   const codes = new Set<string>();
   for (const { name, text } of sources) {
     for (const match of text.matchAll(new RegExp(`new ${className}\\("([a-z_]+)"`, "g"))) codes.add(match[1]!);
-    if (denyIn.includes(name)) for (const match of text.matchAll(/\b(?:deny|denied|fail)\("([a-z_]+)"/g)) codes.add(match[1]!);
+    if (denyIn.includes(basename(name))) for (const match of text.matchAll(/\b(?:deny|denied|fail)\("([a-z_]+)"/g)) codes.add(match[1]!);
   }
   return [...codes];
 }

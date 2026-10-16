@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "vitest";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { LocalDatabase, createRecord, readRecord, writeRecord, StaleVersionError } from "../runtime/database.ts";
-import { writeFileAtomic } from "../runtime/store.ts";
+import { LocalDatabase, createRecord, readRecord, writeRecord, StaleVersionError } from "../src/core/storage/database.ts";
+import { writeFileAtomic } from "../src/core/storage/store.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const roots: string[] = [];
@@ -35,7 +35,7 @@ test("过期版本拒绝且原内容完整；不同记录不会被覆盖", async
 test("未提交事务被强杀后全部回滚；已提交记录与序号保留且可继续写入", async () => {
   const ref = await fixture();
   const script = join(ref.root, "crash.mjs");
-  await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).pathname)};
+  await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../src/core/storage/database.ts", import.meta.url).pathname)};
 import { writeSync } from "node:fs";
 const db = new LocalDatabase(process.argv[2]);
 db.append("history", { committed: true });

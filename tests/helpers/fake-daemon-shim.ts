@@ -3,8 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname } from "node:path";
-import { daemonSocketPath } from "../../runtime/identity.ts";
-import { PROTOCOL_VERSION, createErrorResponse, createResponse, decodeFrames, encodeFrame } from "../../runtime/protocol.ts";
+import { daemonSocketPath } from "../../src/core/storage/identity.ts";
+import { PROTOCOL_VERSION, createErrorResponse, createResponse, decodeFrames, encodeFrame } from "../../src/core/host/protocol.ts";
 
 const repoDir = process.env.ONE_COMPANY_REPO_DIR ?? "";
 const dataRootPath = process.env.ONE_COMPANY_DATA_ROOT ?? "";

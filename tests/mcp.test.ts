@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describeMcpStatus, registerMcpServers } from "../runtime/mcp.ts";
+import { describeMcpStatus, registerMcpServers } from "../src/modules/agents/mcp.ts";
 
 const cleanup: string[] = [];
 afterEach(async () => { for (const dir of cleanup.splice(0)) await rm(dir, { recursive: true, force: true }); });

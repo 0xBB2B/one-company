@@ -3,11 +3,11 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
-import { RunStore } from "../runtime/run-store.ts";
-import { createSessionManagerForRun, readSessionEntries } from "../runtime/session-records.ts";
-import { createClock } from "../runtime/clock.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { UUID_V7_PATTERN, uuidv7 } from "../src/core/storage/database.ts";
+import { RunStore } from "../src/modules/agents/run-store.ts";
+import { createSessionManagerForRun, readSessionEntries } from "../src/modules/agents/session-records.ts";
+import { createClock } from "../src/core/policy/clock.ts";
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });

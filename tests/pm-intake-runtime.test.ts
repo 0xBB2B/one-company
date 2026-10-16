@@ -1,10 +1,10 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { uuidv7 } from "../runtime/database.ts";
-import { createPmIntakeProviders, evaluatePmIntakeGate, pmDecisionNotes, pmSourceDirectory } from "../runtime/pm-intake-runtime.ts";
-import { intakeSubmitTool } from "../daemon/pm-tools.ts";
-import { scenariosWithoutOwnRef, unknownIntakeSourceRefs } from "../runtime/pm-intake-contracts.ts";
-import type { IntakeReviewRecord, PmUnderstanding } from "../runtime/pm-intake-contracts.ts";
-import { pmUnderstandingHash } from "../runtime/pm-intake-service.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { createPmIntakeProviders, evaluatePmIntakeGate, pmDecisionNotes, pmSourceDirectory } from "../src/modules/pm/pm-intake-runtime.ts";
+import { intakeSubmitTool } from "../src/app/daemon/pm-tools.ts";
+import { scenariosWithoutOwnRef, unknownIntakeSourceRefs } from "../src/modules/pm/pm-intake-contracts.ts";
+import type { IntakeReviewRecord, PmUnderstanding } from "../src/modules/pm/pm-intake-contracts.ts";
+import { pmUnderstandingHash } from "../src/modules/pm/pm-intake-service.ts";
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";

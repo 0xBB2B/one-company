@@ -6,20 +6,20 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { RequirementStateStore } from "../runtime/requirement-state.ts";
-import { ShortDecisionStore } from "../runtime/short-decisions.ts";
-import { decisionDigest } from "../runtime/short-decision-format.ts";
-import { UserInteractionCore } from "../runtime/user-interaction.ts";
-import type { InteractionInterpreter, InteractionAuthorization } from "../runtime/user-interaction.ts";
-import { candidateBinding, checkInterpretation, checkContext, interpreterView, UserInteractionError } from "../runtime/user-interaction-format.ts";
-import type { InteractionContext, InteractionEntry, InteractionInterpretation } from "../runtime/user-interaction-format.ts";
-import { createPiInteractionInterpreter } from "../runtime/user-interaction-model.ts";
-import { partitionProdDocument } from "../runtime/prod-view.ts";
-import { createProdDocument } from "../runtime/requirement-identity.ts";
-import { create as createStoredProd } from "../runtime/prod-storage.ts";
-import { summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
+import { ShortDecisionStore } from "../src/modules/requirement/short-decisions.ts";
+import { decisionDigest } from "../src/modules/requirement/short-decision-format.ts";
+import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
+import type { InteractionInterpreter, InteractionAuthorization } from "../src/modules/interaction/user-interaction.ts";
+import { candidateBinding, checkInterpretation, checkContext, interpreterView, UserInteractionError } from "../src/modules/requirement/user-interaction-format.ts";
+import type { InteractionContext, InteractionEntry, InteractionInterpretation } from "../src/modules/requirement/user-interaction-format.ts";
+import { createPiInteractionInterpreter } from "../src/modules/interaction/user-interaction-model.ts";
+import { partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
+import { createProdDocument } from "../src/modules/requirement/requirement-identity.ts";
+import { create as createStoredProd } from "../src/modules/requirement/prod-storage.ts";
+import { summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 /** 核验不过时报出具体原因，而不是笼统的"解读不能作为依据"。 */
@@ -366,7 +366,8 @@ for (const field of ["conclusion", "scope", "operationId", "requirementVersion",
   });
 }
 for (const name of ["user-interaction-format", "user-interaction", "user-interaction-model", "approval-manifest"]) test(`F3 当前Node原生strip-types导入${name}`, () => {
-  const url = new URL(`../runtime/${name}.ts`, import.meta.url).href;
+  const moduleDir = { "user-interaction-format": "requirement", "user-interaction": "interaction", "user-interaction-model": "interaction", "approval-manifest": "requirement" }[name];
+  const url = new URL(`../src/modules/${moduleDir}/${name}.ts`, import.meta.url).href;
   const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `await import(${JSON.stringify(url)})`],
     { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8", timeout: 20_000, env: { ...process.env, NODE_OPTIONS: "" } });
   expect(child.error).toBeUndefined(); expect(child.signal).toBeNull(); expect(child.status, child.stderr).toBe(0);
@@ -938,7 +939,7 @@ test("重答等待期间外部取消，立即以已取消结束", async () => {
 });
 test("解读模型的源码里没有超时设置的报错码", async () => {
   const { readFileSync } = await import("node:fs");
-  for (const file of ["../runtime/user-interaction-model.ts", "../runtime/user-interaction-format.ts"]) {
+  for (const file of ["../src/modules/interaction/user-interaction-model.ts", "../src/modules/requirement/user-interaction-format.ts"]) {
     expect(readFileSync(new URL(file, import.meta.url), "utf8"), file).not.toContain("invalid_model_timeout");
   }
 });
@@ -961,7 +962,7 @@ test("M9：同一段落既有已确认又有未决条目时，重答反馈与最
 test("M9：批准核验与交互核验用到的每个拒绝码都配了原因与建议，不会显示成未归类的拒绝", async () => {
   const { readFileSync } = await import("node:fs");
   const codes = new Set<string>();
-  for (const file of ["../runtime/approval-manifest.ts", "../runtime/interaction-continuity.ts", "../runtime/user-interaction-format.ts", "../runtime/user-interaction.ts", "../runtime/user-interaction-model.ts"]) {
+  for (const file of ["../src/modules/requirement/approval-manifest.ts", "../src/modules/requirement/interaction-continuity.ts", "../src/modules/requirement/user-interaction-format.ts", "../src/modules/interaction/user-interaction.ts", "../src/modules/interaction/user-interaction-model.ts"]) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
     for (const match of source.matchAll(/(?:deny|UserInteractionError)\("([a-z_]+)"/gu)) codes.add(match[1]!);
   }

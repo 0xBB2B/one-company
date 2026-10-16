@@ -1,19 +1,19 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { chooseWindow, mutedLines, openProgramWindow } from "../runtime/question-window.ts";
-import type { WindowChoice } from "../runtime/question-window.ts";
+import { chooseWindow, mutedLines, openProgramWindow } from "../../core/host/question-window.ts";
+import type { WindowChoice } from "../../core/host/question-window.ts";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { dataRoot } from "../runtime/data-root.ts";
-import { resolveRepoRoot } from "../runtime/git-read.ts";
-import { SettingsPageView, tilde } from "../runtime/settings-page-ui.ts";
-import type { ClearSwitchRequest, CopyRequest, PageState, SaveSwitchRequest } from "../runtime/settings-page-ui.ts";
-import { AgentCopyError, copyAgentDefinition } from "../runtime/agent-copy.ts";
-import { describeSetting } from "../runtime/agent-settings-ui.ts";
-import type { ClearSettingRequest, PageNotice, PageTheme, SaveSettingRequest, SettingsLayerName } from "../runtime/agent-settings-ui.ts";
-import { clearAgentSetting, clearGitDeliverySetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, SETTINGS_ROLES, userSettingsPath } from "../runtime/agent-settings.ts";
-import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../runtime/roles.ts";
+import { dataRoot } from "../../core/storage/data-root.ts";
+import { resolveRepoRoot } from "../../core/exec/git-read.ts";
+import { SettingsPageView, tilde } from "./settings-page-ui.ts";
+import type { ClearSwitchRequest, CopyRequest, PageState, SaveSwitchRequest } from "./settings-page-ui.ts";
+import { AgentCopyError, copyAgentDefinition } from "../agents/agent-copy.ts";
+import { describeSetting } from "./agent-settings-ui.ts";
+import type { ClearSettingRequest, PageNotice, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
+import { clearAgentSetting, clearGitDeliverySetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
+import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../agents/roles.ts";
 
 export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "isProjectTrusted" | "modelRegistry" | "model">;
 

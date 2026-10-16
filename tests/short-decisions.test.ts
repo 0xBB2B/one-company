@@ -3,15 +3,15 @@ import { mkdtemp, rm, readdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { LocalDatabase, uuidv7, repositoryDatabase, withDatabase } from "../runtime/database.ts";
-import * as databaseModule from "../runtime/database.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { RequirementStateStore } from "../runtime/requirement-state.ts";
-import { ShortDecisionStore } from "../runtime/short-decisions.ts";
-import type { ShortDecisionStoreOptions } from "../runtime/short-decisions.ts";
-import { parseDecisionBatch, decisionDigest } from "../runtime/short-decision-format.ts";
-import type { DecisionBatch, DecisionSubject } from "../runtime/short-decision-format.ts";
-import { createDatabaseSnapshot, withDatabaseMaintenance } from "../runtime/database-maintenance.ts";
+import { LocalDatabase, uuidv7, repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
+import * as databaseModule from "../src/core/storage/database.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
+import { ShortDecisionStore } from "../src/modules/requirement/short-decisions.ts";
+import type { ShortDecisionStoreOptions } from "../src/modules/requirement/short-decisions.ts";
+import { parseDecisionBatch, decisionDigest } from "../src/modules/requirement/short-decision-format.ts";
+import type { DecisionBatch, DecisionSubject } from "../src/modules/requirement/short-decision-format.ts";
+import { createDatabaseSnapshot, withDatabaseMaintenance } from "../src/core/storage/database-maintenance.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
@@ -254,7 +254,7 @@ test("读取结束前权限撤销不返回结论", async () => {
 
 test("两个真实Node进程竞争相同操作只保存一份决定和事件", async () => {
   const w = await world(), path = join(w.root, "append.mjs");
-  await writeFile(path, `import { ShortDecisionStore } from ${JSON.stringify(new URL("../runtime/short-decisions.ts", import.meta.url).href)};
+  await writeFile(path, `import { ShortDecisionStore } from ${JSON.stringify(new URL("../src/modules/requirement/short-decisions.ts", import.meta.url).href)};
 const store = await ShortDecisionStore.open({ ...${JSON.stringify({ dataRoot: w.options.dataRoot, repoId: w.options.repoId, repositoryRoot: w.repo.root })},
   authorize: () => true, admit: ({ requestHash, batch }) => ({ requestHash, subjects: batch.decisions.map(() => (${JSON.stringify(w.subject)})) }) });
 console.log('READY');

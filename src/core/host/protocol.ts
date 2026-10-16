@@ -1,9 +1,9 @@
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
-import { hash, id, positive } from "./requirement-contracts.ts";
-import { PrototypeDispatchInput } from "./prototype-dispatch.ts";
-import { KnowledgeTransportQuerySchema, parseKnowledgeTransportQuery } from "./knowledge-query-tool.ts";
+import { hash, id, positive } from "../../modules/requirement/requirement-contracts.ts";
+import { PrototypeDispatchInput } from "../../modules/prototype/prototype-dispatch.ts";
+import { KnowledgeTransportQuerySchema, parseKnowledgeTransportQuery } from "../../modules/project-index/knowledge-query-tool.ts";
 
 export const PROTOCOL_VERSION = 2;
 

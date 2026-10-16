@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-import lifecycleExtension, { windowContext } from "../../extensions/lifecycle.ts";
-import type { Clock } from "../../runtime/clock.ts";
-import { WorkspaceClients } from "../../runtime/daemon-client.ts";
-import { ShellRegistry } from "../../runtime/shell-registry.ts";
+import lifecycleExtension, { windowContext } from "../../src/core/host/extension-lifecycle.ts";
+import type { Clock } from "../../src/core/policy/clock.ts";
+import { WorkspaceClients } from "../../src/core/host/daemon-client.ts";
+import { ShellRegistry } from "../../src/core/host/shell-registry.ts";
 import { createFakePi } from "./fake-pi.ts";
 
 

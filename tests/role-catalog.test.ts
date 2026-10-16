@@ -3,11 +3,11 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { loadRoleRules } from "../runtime/package-rules.ts";
-import { AGENT_ROLES, defaultRoleDir, loadRoleCatalog, readRoleDefinition } from "../runtime/roles.ts";
-import { authorizeToolAction, CORE_TOOL_ACTIONS } from "../runtime/core-permissions.ts";
-import type { CoreTool } from "../runtime/core-permissions.ts";
-import { coreToolName, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
+import { loadRoleRules } from "../src/modules/agents/package-rules.ts";
+import { AGENT_ROLES, defaultRoleDir, loadRoleCatalog, readRoleDefinition } from "../src/modules/agents/roles.ts";
+import { authorizeToolAction, CORE_TOOL_ACTIONS } from "../src/core/policy/core-permissions.ts";
+import type { CoreTool } from "../src/core/policy/core-permissions.ts";
+import { coreToolName, ROLE_HOST_TOOLS } from "../src/modules/agents/role-tools.ts";
 
 const tempRoots: string[] = [];
 afterEach(async () => {

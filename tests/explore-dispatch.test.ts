@@ -4,8 +4,8 @@ import { readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/pi-ai";
-import { checkExploreSession } from "../runtime/explore-session.ts";
-import { registerProtocolHandlers } from "../daemon/run-manager.ts";
+import { checkExploreSession } from "../src/modules/explore/explore-session.ts";
+import { registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });

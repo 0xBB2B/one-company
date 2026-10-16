@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPmCommitTool } from "../runtime/pm-commit.ts";
+import { createPmCommitTool } from "../src/modules/pm/pm-commit.ts";
 
 const REQUIREMENT = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
 const cleanups: string[] = [];

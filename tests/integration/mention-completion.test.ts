@@ -7,10 +7,10 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import { temporaryRoot } from "../helpers/temporary-root.ts";
 import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
-import requirementManageExtension from "../../extensions/requirement-manage.ts";
-import type { WindowContextValue } from "../../extensions/lifecycle.ts";
-import { repositoryIdentity } from "../../runtime/identity.ts";
-import { uuidv7 } from "../../runtime/database.ts";
+import requirementManageExtension from "../../src/modules/interaction/requirement-manage-extension.ts";
+import type { WindowContextValue } from "../../src/core/host/extension-lifecycle.ts";
+import { repositoryIdentity } from "../../src/core/storage/identity.ts";
+import { uuidv7 } from "../../src/core/storage/database.ts";
 
 const exec = promisify(execFile);
 const BODY = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n登录。\n## 功能 {#features}\n手机号登录。\n## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n能登录。\n";

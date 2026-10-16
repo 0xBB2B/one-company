@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/pi-ai";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { repositoryDatabase, withDatabase } from "../runtime/database.ts";
-import { TASKS } from "../runtime/plan-manage.ts";
-import { CheckRoundService } from "../runtime/check-round.ts";
-import type { TaskSpec } from "../runtime/plan-manage.ts";
-import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
+import { repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
+import { TASKS } from "../src/modules/pm/plan-manage.ts";
+import { CheckRoundService } from "../src/modules/verification/check-round.ts";
+import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
+import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });

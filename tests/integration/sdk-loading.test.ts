@@ -8,7 +8,7 @@ import { temporaryRoot } from "../helpers/temporary-root.ts";
 test("真实 SDK 从单一扩展入口加载全部命令、工具与生命周期处理器", async () => {
   const root = await mkdtemp(join(temporaryRoot(), "sdk-loading-"));
   try {
-    const entry = fileURLToPath(new URL("../../extensions/index.ts", import.meta.url));
+    const entry = fileURLToPath(new URL("../../src/app/extension/index.ts", import.meta.url));
     const loader = new DefaultResourceLoader({
       cwd: root, agentDir: join(root, "agent"), settingsManager: SettingsManager.inMemory(),
       additionalExtensionPaths: [entry], noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,

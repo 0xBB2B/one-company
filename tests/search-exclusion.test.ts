@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSearchCall, filterSearchResult, withoutGitEntries } from "../runtime/search-exclusion.ts";
+import { checkSearchCall, filterSearchResult, withoutGitEntries } from "../src/modules/agents/search-exclusion.ts";
 
 const cleanups: string[] = [];
 afterEach(async () => { for (const dir of cleanups.splice(0)) await rm(dir, { recursive: true, force: true }); });

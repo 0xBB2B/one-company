@@ -55,13 +55,13 @@ fs.open = async (...args) => {
 syncBuiltinESMExports();
 const url = (path) => pathToFileURL(join(project, path)).href;
 const load = mode === "loader"
-  ? (await import(url("daemon/loader.mjs"))).daemonLoader.import
+  ? (await import(url("src/app/daemon/loader.mjs"))).daemonLoader.import
   : (path) => import(path);
-const { ProjectIndexService } = await load(url("runtime/project-index-service.ts"));
-const { repositoryIdentity } = await load(url("runtime/identity.ts"));
-const { IndexStore } = await load(url("runtime/index-store.ts"));
-const { indexDatabase } = await load(url("runtime/database-paths.ts"));
-const { readIndexFile, scanIndexWorkspace } = await load(url("runtime/project-index-policy.ts"));
+const { ProjectIndexService } = await load(url("src/modules/project-index/project-index-service.ts"));
+const { repositoryIdentity } = await load(url("src/core/storage/identity.ts"));
+const { IndexStore } = await load(url("src/modules/project-index/index-store.ts"));
+const { indexDatabase } = await load(url("src/core/storage/database-paths.ts"));
+const { readIndexFile, scanIndexWorkspace } = await load(url("src/modules/project-index/project-index-policy.ts"));
 const record = { node: process.version, mode, installed: false, indexGitOpens, indexGitBodyReads };
 let linkedIndex;
 try {

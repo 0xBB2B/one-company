@@ -12,9 +12,7 @@
     ]
   },
   "include": [
-    "runtime/**/*.ts",
-    "daemon/**/*.ts",
-    "extensions/**/*.ts",
+    "src/**/*.ts",
     "tests/typecheck/**/*.ts"
   ]
 }

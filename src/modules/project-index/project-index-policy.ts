@@ -5,7 +5,7 @@ import type { BigIntStats, Dirent, Stats } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { assertDataRootOutsideWorktrees } from "./database-paths.ts";
+import { assertDataRootOutsideWorktrees } from "../../core/storage/database-paths.ts";
 
 export const DEFAULT_INDEX_LIMITS = Object.freeze({
   maxFileBytes: 2 * 1024 * 1024,

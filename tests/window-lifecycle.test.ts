@@ -5,12 +5,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClock } from "../runtime/clock.ts";
-import type { Clock } from "../runtime/clock.ts";
-import { discoverWorkspace } from "../runtime/identity.ts";
-import type { Workspace } from "../runtime/identity.ts";
-import { ShellRegistry } from "../runtime/shell-registry.ts";
-import type { Host } from "../runtime/shell-registry.ts";
+import { createClock } from "../src/core/policy/clock.ts";
+import type { Clock } from "../src/core/policy/clock.ts";
+import { discoverWorkspace } from "../src/core/storage/identity.ts";
+import type { Workspace } from "../src/core/storage/identity.ts";
+import { ShellRegistry } from "../src/core/host/shell-registry.ts";
+import type { Host } from "../src/core/host/shell-registry.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { createFakeWorkspaceClients } from "./helpers/fake-workspace-clients.ts";
 import type { FakeWorkspaceClients, FakeWorkspaceClientsHandle } from "./helpers/fake-workspace-clients.ts";
@@ -22,7 +22,7 @@ import lifecycleExtension, {
   shutdownWindow,
   windowContext,
   windowReady,
-} from "../extensions/lifecycle.ts";
+} from "../src/core/host/extension-lifecycle.ts";
 
 const LONG_TIMEOUT = 15_000;
 

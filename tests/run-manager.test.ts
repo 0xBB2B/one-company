@@ -3,17 +3,17 @@ import { readFile, writeFile, mkdir, readdir, chmod, stat, symlink } from "node:
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
-import { RunStore, type RunState, type RunRecord } from "../runtime/run-store.ts";
-import { ShellRegistry, type ShellRegistryProbes } from "../runtime/shell-registry.ts";
-import { createClock } from "../runtime/clock.ts";
+import { RunManager, registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
+import { RunStore, type RunState, type RunRecord } from "../src/modules/agents/run-store.ts";
+import { ShellRegistry, type ShellRegistryProbes } from "../src/core/host/shell-registry.ts";
+import { createClock } from "../src/core/policy/clock.ts";
 import { createFakeTimeSource } from "./helpers/fake-clock.ts";
 import type { FakeTimeSource } from "./helpers/fake-clock.ts";
-import { ShellPage } from "../runtime/shell-page.ts";
-import { formatShellSummary, summarizeShells } from "../runtime/shell-summary.ts";
-import { NetworkPauseGate } from "../runtime/network-pause.ts";
-import { repositoryDatabase, withDatabase, putRecord, uuidv7 } from "../runtime/database.ts";
-import { overlaps } from "../runtime/ranges.ts";
+import { ShellPage } from "../src/modules/shell/shell-page.ts";
+import { formatShellSummary, summarizeShells } from "../src/modules/shell/shell-summary.ts";
+import { NetworkPauseGate } from "../src/core/host/network-pause.ts";
+import { repositoryDatabase, withDatabase, putRecord, uuidv7 } from "../src/core/storage/database.ts";
+import { overlaps } from "../src/core/policy/ranges.ts";
 import { authenticateTestClient, createDaemonFixture, removeDaemonFixture, startDaemonForTest, killDaemon, connectTestClient, connectRawClient } from "./helpers/daemon-harness.ts";
 import { modelProviderEnv, writeTestModelProviders, readProviderRequestsLog } from "./helpers/daemon-model-fixture.ts";
 

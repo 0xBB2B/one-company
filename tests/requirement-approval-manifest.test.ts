@@ -3,18 +3,18 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { RequirementService } from "../runtime/requirement-service.ts";
-import { RequirementStateStore } from "../runtime/requirement-state.ts";
-import { ApprovalManifestStore, APPROVAL_MANIFEST_NAMESPACE, summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
-import { approvalManifestReference } from "../runtime/approval-manifest.ts";
-import { UserInteractionCore } from "../runtime/user-interaction.ts";
-import type { InteractionCapability, InteractionContext } from "../runtime/user-interaction.ts";
-import { decisionDigest } from "../runtime/short-decision-format.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import type { LocalDatabase } from "../runtime/database.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { prodRequirementPath } from "../runtime/prod-storage.ts";
-import { createRequirementReadTool } from "../runtime/requirement-read-tool.ts";
+import { RequirementService } from "../src/modules/requirement/requirement-service.ts";
+import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
+import { ApprovalManifestStore, APPROVAL_MANIFEST_NAMESPACE, summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
+import { approvalManifestReference } from "../src/modules/requirement/approval-manifest.ts";
+import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
+import type { InteractionCapability, InteractionContext } from "../src/modules/interaction/user-interaction.ts";
+import { decisionDigest } from "../src/modules/requirement/short-decision-format.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import type { LocalDatabase } from "../src/core/storage/database.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { prodRequirementPath } from "../src/modules/requirement/prod-storage.ts";
+import { createRequirementReadTool } from "../src/modules/pm/requirement-read-tool.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -289,7 +289,7 @@ test("真实saved loader拒绝历史操作/任意ref，当前版本变化使旧C
 
 test("manifest注册过程中reentry拒绝，漏字节/错hash/跨需求清单不入库", async () => {
   const f = await fixture(), manifest = f.document()!.manifest;
-  const { approvalManifestDigest } = await import("../runtime/approval-manifest.ts");
+  const { approvalManifestDigest } = await import("../src/modules/requirement/approval-manifest.ts");
   for (const value of [
     { ...manifest, totalBytes: manifest.totalBytes + 1 },
     { ...manifest, units: manifest.units.slice(0, -1) },

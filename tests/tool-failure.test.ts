@@ -3,10 +3,10 @@ import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { Type } from "typebox";
-import { AdvisedError, commandOutputTail, failureText, toolFailure, toolStep } from "../runtime/tool-failure.ts";
-import { DaemonCallError } from "../runtime/daemon-client.ts";
-import { toPiTool } from "../runtime/role-tools.ts";
-import { errorData } from "../daemon/server.ts";
+import { AdvisedError, commandOutputTail, failureText, toolFailure, toolStep } from "../src/core/exec/tool-failure.ts";
+import { DaemonCallError } from "../src/core/host/daemon-client.ts";
+import { toPiTool } from "../src/modules/agents/role-tools.ts";
+import { errorData } from "../src/app/daemon/server.ts";
 
 const advice = { why: "PM 租约已被新 PM 接管", next: "停止当前操作，等待主代理安排" };
 

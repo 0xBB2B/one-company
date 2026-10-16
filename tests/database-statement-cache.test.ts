@@ -2,8 +2,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, StatementSync } from "node:sqlite";
-import { AsyncTransactionError, DatabaseUnavailableError, LocalDatabase, StaleVersionError, TransactionCleanupError } from "../runtime/database.ts";
-import { DATABASE_MAINTENANCE_FILE, DATABASE_SNAPSHOT_FILE, pathExists } from "../runtime/database-paths.ts";
+import { AsyncTransactionError, DatabaseUnavailableError, LocalDatabase, StaleVersionError, TransactionCleanupError } from "../src/core/storage/database.ts";
+import { DATABASE_MAINTENANCE_FILE, DATABASE_SNAPSHOT_FILE, pathExists } from "../src/core/storage/database-paths.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const roots: string[] = [];

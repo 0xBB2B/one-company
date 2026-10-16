@@ -4,12 +4,12 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { Static, TObject, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { HostAuthorizationError } from "./host-authorization.ts";
+import { HostAuthorizationError } from "../requirement/host-authorization.ts";
 import { MainIntakeInteraction, PM_INTAKE_ASK_PARAMETERS, PM_INTAKE_FORWARD_PARAMETERS, PM_INTAKE_REPLY_PARAMETERS } from "./main-intake-interaction.ts";
-import { requestParameters, shapeIssue, unwrapRequest } from "./tool-request.ts";
-import { adviceOf, toolFailure, toolStep } from "./tool-failure.ts";
+import { requestParameters, shapeIssue, unwrapRequest } from "../../core/exec/tool-request.ts";
+import { adviceOf, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
-import { ApprovalUnitIds } from "./user-interaction-format.ts";
+import { ApprovalUnitIds } from "../requirement/user-interaction-format.ts";
 import { ASK_CHOICES, ASK_ROOT_CHECK, askQuestionIssues } from "./ask-question.ts";
 import type { AskChoice } from "./ask-question.ts";
 

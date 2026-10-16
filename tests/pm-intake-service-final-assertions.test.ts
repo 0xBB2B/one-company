@@ -1,8 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { uuidv7 } from "../runtime/database.ts";
-import { PmIntakeStore, PM_INTAKE_NAMESPACES } from "../runtime/pm-intake-store.ts";
-import { PmIntakeService } from "../runtime/pm-intake-service.ts";
-import type { PmSourceDirectoryProvider, PmSubmissionProvider } from "../runtime/pm-intake-service.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { PmIntakeStore, PM_INTAKE_NAMESPACES } from "../src/modules/pm/pm-intake-store.ts";
+import { PmIntakeService } from "../src/modules/pm/pm-intake-service.ts";
+import type { PmSourceDirectoryProvider, PmSubmissionProvider } from "../src/modules/pm/pm-intake-service.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { addQuestion, persisted } from "./helpers/pm-intake-service-test-support.ts";

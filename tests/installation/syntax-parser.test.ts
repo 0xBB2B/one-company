@@ -55,7 +55,7 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     const jitiRoot = await realpath(join(productRoot, "node_modules/jiti"));
     expect(JSON.parse(await readFile(join(jitiRoot, "package.json"), "utf8")).version).toBe("2.7.0");
     const jiti = await pack(jitiRoot);
-    for (const entry of ["runtime/short-decision-format.ts", "runtime/short-decisions.ts", "runtime/requirement-state.ts", "runtime/requirement-contracts.ts", "runtime/requirement-workspace.ts", "runtime/database-paths.ts", "runtime/database-maintenance.ts", "runtime/strict-json.ts", "runtime/syntax-parser.ts", "resources/tree-sitter/manifest.json", "resources/tree-sitter/tree-sitter-go.wasm", "resources/tree-sitter/tree-sitter-tsx.wasm", "resources/tree-sitter/tree-sitter-typescript.wasm", "resources/tree-sitter/tree-sitter-javascript.wasm"]) {
+    for (const entry of ["src/modules/requirement/short-decision-format.ts", "src/modules/requirement/short-decisions.ts", "src/modules/requirement/requirement-state.ts", "src/modules/requirement/requirement-contracts.ts", "src/modules/requirement/requirement-workspace.ts", "src/core/storage/database-paths.ts", "src/core/storage/database-maintenance.ts", "src/core/storage/strict-json.ts", "src/modules/project-index/syntax-parser.ts", "resources/tree-sitter/manifest.json", "resources/tree-sitter/tree-sitter-go.wasm", "resources/tree-sitter/tree-sitter-tsx.wasm", "resources/tree-sitter/tree-sitter-typescript.wasm", "resources/tree-sitter/tree-sitter-javascript.wasm"]) {
       expect(artifact.files).toContain(entry);
     }
     expect(artifact.files.some((file) => /(?:^|\/)(?:data|index|global)\.(?:db|sqlite)(?:-|$)/.test(file))).toBe(false);
@@ -79,7 +79,7 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     expect(installedPackage.dependencies.jiti).toBe("2.7.0");
     expect(installedPackage.dependencies["web-tree-sitter"]).toBe("0.27.0");
     expect(runtimePackage.version).toBe("0.27.0");
-    expect(installedPackage.scripts?.preinstall).toBe("node runtime/git-prerequisite.mjs --check");
+    expect(installedPackage.scripts?.preinstall).toBe("node src/core/exec/git-prerequisite.mjs --check");
     for (const hook of ["install", "postinstall"]) expect(installedPackage.scripts?.[hook]).toBeUndefined();
     for (const hook of ["preinstall", "install", "postinstall"]) expect(runtimePackage.scripts?.[hook]).toBeUndefined();
     const manifest = JSON.parse(await readFile(installedManifest, "utf8"));

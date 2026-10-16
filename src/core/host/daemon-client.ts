@@ -1,5 +1,5 @@
 import { controlToken } from "./daemon-auth.ts";
-import { AdvisedError } from "./tool-failure.ts";
+import { AdvisedError } from "../exec/tool-failure.ts";
 import { closeSync, openSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -8,17 +8,17 @@ import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
-import { probeExistingInstance, socketPathByteLimit } from "../daemon/lifecycle.ts";
-import { createClock } from "./clock.ts";
-import { uuidv7 } from "./database.ts";
-import type { Clock, TimerHandle } from "./clock.ts";
-import { daemonSocketPath, discoverWorkspace, repoDataDir, repositoryIdentity } from "./identity.ts";
-import type { RepositoryIdentity, Workspace, WorkspaceSkipped } from "./identity.ts";
+import { probeExistingInstance, socketPathByteLimit } from "../../app/daemon/lifecycle.ts";
+import { createClock } from "../policy/clock.ts";
+import { uuidv7 } from "../storage/database.ts";
+import type { Clock, TimerHandle } from "../policy/clock.ts";
+import { daemonSocketPath, discoverWorkspace, repoDataDir, repositoryIdentity } from "../storage/identity.ts";
+import type { RepositoryIdentity, Workspace, WorkspaceSkipped } from "../storage/identity.ts";
 import { createRequest, decodeFrames, encodeFrame, PROTOCOL_VERSION } from "./protocol.ts";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const packageRoot = dirname(moduleDir);
-const daemonBootstrapEntry = join(packageRoot, "daemon", "bootstrap.mjs");
+const packageRoot = join(moduleDir, "../../..");
+const daemonBootstrapEntry = join(packageRoot, "src/app/daemon/bootstrap.mjs");
 
 const RECONNECT_BASE_MS = 200;
 const RECONNECT_MAX_MS = 5_000;
