@@ -9,8 +9,8 @@ import {
   createResponse,
   decodeFrames,
   encodeFrame,
-  validateParams,
 } from "../../core/host/protocol.ts";
+import { validateParams } from "./method-params.ts";
 import type { Frame } from "../../core/host/protocol.ts";
 import { adviceOf } from "../../core/exec/tool-failure.ts";
 

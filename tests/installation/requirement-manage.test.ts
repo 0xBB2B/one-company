@@ -17,7 +17,7 @@ import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { answeringUi } from "../helpers/window-host.ts";
 import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
 import { repositoryIdentity, daemonSocketPath } from "../../src/core/storage/identity.ts";
-import { socketPathByteLimit } from "../../src/app/daemon/lifecycle.ts";
+import { socketPathByteLimit } from "../../src/core/host/daemon-probe.ts";
 import { uuidv7 } from "../../src/core/storage/database.ts";
 
 

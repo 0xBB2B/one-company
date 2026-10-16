@@ -8,7 +8,7 @@ import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
-import { probeExistingInstance, socketPathByteLimit } from "../../app/daemon/lifecycle.ts";
+import { probeExistingInstance, socketPathByteLimit } from "./daemon-probe.ts";
 import { createClock } from "../policy/clock.ts";
 import { uuidv7 } from "../storage/database.ts";
 import type { Clock, TimerHandle } from "../policy/clock.ts";

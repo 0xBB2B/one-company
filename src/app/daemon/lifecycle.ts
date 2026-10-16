@@ -2,7 +2,6 @@ import { controlToken } from "../../core/host/daemon-auth.ts";
 import { databaseFile } from "../../core/storage/database.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { link, mkdir, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
-import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { ModelRuntime, parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../../core/policy/clock.ts";
@@ -12,7 +11,7 @@ import { readGit } from "../../core/exec/git-read.ts";
 import { ProjectIndexHost, registerIndexHandlers } from "./project-index-host.ts";
 import { ProjectIndexRequirements } from "./project-index-requirements.ts";
 import { NetworkPauseGate } from "../../core/host/network-pause.ts";
-import { createRequest, decodeFrames } from "../../core/host/protocol.ts";
+import { probeExistingInstance, socketPathByteLimit } from "../../core/host/daemon-probe.ts";
 import { readAgentSettings } from "../../modules/settings/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../../modules/agents/roles.ts";
 import { RunStore } from "../../modules/agents/run-store.ts";
@@ -39,7 +38,6 @@ async function setupModelRuntime(modulePath: string | undefined): Promise<ModelR
   return runtime;
 }
 
-const PROBE_TIMEOUT_MS = 3_000;
 const SOCKET_CHECK_INTERVAL_MS = 5_000;
 const IDLE_CHECK_INTERVAL_MS = 200;
 const MAX_LISTEN_RETRIES = 20;
@@ -48,7 +46,6 @@ const SIGNAL_WATCHDOG_MS = 15_000;
 const STALE_TEMP_FILE_MAX_AGE_MS = 10 * 60 * 1000;
 const RUN_CHECK_BASE_BACKOFF_MS = 200;
 const RUN_CHECK_MAX_BACKOFF_MS = 5_000;
-const SOCKET_PATH_BYTE_LIMIT: Record<string, number> = { darwin: 104, linux: 108 };
 const ACTIVE_REQUIREMENT_STATES: RunState[] = [
   "queued",
   "running",
@@ -60,50 +57,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function socketPathByteLimit(platform: NodeJS.Platform = process.platform): number {
-  return SOCKET_PATH_BYTE_LIMIT[platform] ?? 108;
-}
-
 export interface StartDaemonOptions {
   repoDir: string;
   dataRoot: string;
   idleTimeoutMs: number;
   clockSkewFile?: string;
   modelProviderModulePath?: string;
-}
-
-type ProbeResult = "existing" | "stale" | "ambiguous";
-
-export async function probeExistingInstance(socketPath: string): Promise<ProbeResult> {
-  return new Promise((resolve) => {
-    const socket = createConnection(socketPath);
-    let settled = false;
-    let buffer = "";
-    const finish = (result: ProbeResult) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(result);
-    };
-    const timer = setTimeout(() => finish("ambiguous"), PROBE_TIMEOUT_MS);
-    socket.once("error", (error: NodeJS.ErrnoException) => {
-      // ECONNREFUSED（崩溃遗留的真实 socket）与 ENOTSOCK（占位普通文件）都能确认无人监听
-      finish(error.code === "ECONNREFUSED" || error.code === "ENOTSOCK" ? "stale" : "ambiguous");
-    });
-    socket.once("connect", () => {
-      const request = createRequest("ping", {});
-      socket.write(`${JSON.stringify(request)}\n`);
-      socket.on("data", (chunk: Buffer) => {
-        buffer += chunk.toString("utf8");
-        const { frames, rest } = decodeFrames(buffer);
-        buffer = rest;
-        for (const frame of frames) {
-          if (frame.t === "res" && frame.id === request.id) finish(frame.ok ? "existing" : "ambiguous");
-        }
-      });
-    });
-  });
 }
 
 function tempSocketPath(socketPath: string): string {

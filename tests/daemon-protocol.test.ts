@@ -14,8 +14,8 @@ import {
   decodeFrames,
   encodeFrame,
   isFrame,
-  validateParams,
 } from "../src/core/host/protocol.ts";
+import { validateParams } from "../src/app/daemon/method-params.ts";
 
 const EXPECTED_METHODS = [
   "hello",

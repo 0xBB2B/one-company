@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { daemonSocketPath } from "../src/core/storage/identity.ts";
-import { socketPathByteLimit } from "../src/app/daemon/lifecycle.ts";
+import { socketPathByteLimit } from "../src/core/host/daemon-probe.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const exec = promisify(execFile);
