@@ -3,7 +3,6 @@ import type { ModelLike } from "./agent-resolve.ts";
 import { thinkingSupported } from "./agent-resolve.ts";
 import { SETTINGS_ROLES } from "./agent-settings.ts";
 import type { EffectiveSetting, RoleSetting, SettingsRoleKey } from "./agent-settings.ts";
-import type { AgentCatalogTheme, CatalogNotice } from "./agent-catalog-ui.ts";
 import { findDefinedModel } from "./model-ref.ts";
 import { THINKING_LEVELS } from "./roles.ts";
 import type { RoleSource, ThinkingLevel } from "./roles.ts";
@@ -12,8 +11,18 @@ export type SettingsLayerName = "user" | "project";
 export interface SaveSettingRequest { role: SettingsRoleKey; model: string | null; thinking: ThinkingLevel | null; layer: SettingsLayerName }
 export interface ClearSettingRequest { role: SettingsRoleKey; layer: SettingsLayerName }
 
-const MARKER = 3, NAME = 14, SOURCE = 8, THINKING = 8, MIN_NAME = 8, MIN_MODEL = 9, MAX_MODEL = 24, CHECK = 2;
-const FOLLOW = "跟随主会话";
+export interface PageTheme {
+  fg(kind: string, text: string): string;
+  bg(kind: string, text: string): string;
+  bold(text: string): string;
+  inverse(text: string): string;
+}
+export interface PageNotice<Tone extends "ok" | "muted" | "error" = "ok" | "muted" | "error"> { tone: Tone; text: string }
+
+export const MARKER = 3, SOURCE = 8;
+const THINKING = 8;
+const NAME = 14, MIN_NAME = 8, MIN_MODEL = 6, MAX_MODEL = 24, CHECK = 2;
+export const FOLLOW = "跟随主会话";
 
 export const pad = (text: string, width: number) => text + " ".repeat(Math.max(0, width - visibleWidth(text)));
 export const fit = (text: string, width: number) => {
@@ -54,7 +63,53 @@ export const describeSetting = (role: SettingsRoleKey, setting: RoleSetting) => 
 
 interface ModelChoice { name: string; note: string; value: string | null; model: ModelLike | undefined; current: boolean }
 interface LevelChoice { level: ThinkingLevel | null; unsupported?: string }
-interface PickerRow { name: string; note: string; current?: boolean; disabled?: boolean; soft?: boolean }
+export interface PickerRow { name: string; note: string; current?: boolean; disabled?: boolean; soft?: boolean }
+
+export function tableColumns(width: number) {
+  let name = NAME, model = MAX_MODEL;
+  const total = () => MARKER + name + SOURCE + model + THINKING;
+  if (total() > width) model = Math.max(MIN_MODEL, model - (total() - width));
+  if (total() > width) name = Math.max(MIN_NAME, name - (total() - width));
+  return { name, model };
+}
+
+type Segment = [text: string, style?: (text: string) => string, styled?: string];
+export function tableRow(theme: PageTheme, selected: boolean, width: number, segments: Segment[]): string {
+  let used = 0;
+  const parts = segments.map(([text, style, styled]) => {
+    used += visibleWidth(text);
+    const out = styled ?? (style ? style(text) : text);
+    return selected ? theme.bg("selectedBg", out) : out;
+  });
+  if (selected) parts.push(theme.bg("selectedBg", " ".repeat(Math.max(0, width - used))));
+  return parts.join("");
+}
+
+export function pickerList(theme: PageTheme, rows: PickerRow[], cursor: number, nameWidth: number, width: number): string[] {
+  const muted = (text: string) => theme.fg("muted", text), dim = (text: string) => theme.fg("dim", text);
+  return rows.map((row, index) => {
+    const note = fit(row.note, Math.max(0, width - MARKER - CHECK - nameWidth - 1));
+    return tableRow(theme, index === cursor, width, [
+      [index === cursor ? " ▸ " : "   ", (text) => theme.fg("accent", text)],
+      [row.current ? "✓ " : "  ", (text) => theme.fg("success", text)],
+      [pad(fit(row.name, nameWidth), nameWidth), row.disabled ? dim : row.soft ? muted : undefined],
+      [note, dim],
+    ]);
+  });
+}
+
+export function pickerHead(theme: PageTheme, title: string, step: string, width: number): string {
+  const shown = fit(title, width - 1);
+  return ` ${theme.bold(shown)}${visibleWidth(step) <= width - 1 - visibleWidth(shown) - 2 ? theme.fg("dim", `  ${step}`) : ""}`;
+}
+
+export const layerRows = (projectTrusted: boolean): PickerRow[] => [
+  { name: "项目层", note: projectTrusted ? ".pi/settings.json · 只对这个项目生效" : "项目未受信任，项目层的设定不会生效", disabled: !projectTrusted },
+  { name: "用户层", note: "~/.pi/agent/settings.json · 所有项目" },
+];
+
+export const untrustedLayerNote = (theme: PageTheme, width: number) =>
+  wrapText("在 pi 里把这个项目设为受信任后，才能存到项目层", width - 1).map((line) => ` ${theme.fg("dim", line)}`);
 
 export function modelChoices(models: readonly ModelLike[], mainModel: ModelLike | undefined, current: RoleSetting): ModelChoice[] {
   const currentModel = current.model === null ? undefined : findDefinedModel(current.model, models, mainModel?.provider);
@@ -86,7 +141,7 @@ export class SettingsTab {
   private chosenModel: ModelChoice | undefined;
   private chosenThinking: ThinkingLevel | null = null;
   private readonly options: {
-    theme: AgentCatalogTheme; settings: { values: Record<SettingsRoleKey, EffectiveSetting> }; models: readonly ModelLike[]; mainModel: ModelLike | undefined; mainThinking: string;
+    theme: PageTheme; settings: { values: Record<SettingsRoleKey, EffectiveSetting> }; models: readonly ModelLike[]; mainModel: ModelLike | undefined; mainThinking: string;
     projectTrusted: boolean; sourceTag(source: RoleSource): string;
     onSave(request: SaveSettingRequest): void; onClear(request: ClearSettingRequest): void;
   };
@@ -101,14 +156,14 @@ export class SettingsTab {
     this.enterStep(1);
   }
 
-  clear(role: SettingsRoleKey): CatalogNotice | undefined {
+  clear(role: SettingsRoleKey): PageNotice<"muted"> | undefined {
     const source = this.options.settings.values[role].source;
     if (source === "default") return { tone: "muted", text: "已经是内置默认值" };
     this.options.onClear({ role, layer: source });
     return undefined;
   }
 
-  handleInput(data: string): CatalogNotice | undefined {
+  handleInput(data: string): PageNotice<"muted"> | undefined {
     if (matchesKey(data, "escape")) {
       if (this.step > 1) this.enterStep(this.step - 1);
       else { this.step = 0; return { tone: "muted", text: "已取消修改" }; }
@@ -132,6 +187,11 @@ export class SettingsTab {
     return undefined;
   }
 
+  hint(): string {
+    if (this.step === 1) return this.options.models.length === 0 ? "回车 下一步  Esc 取消" : "↑↓ 选择  回车 下一步  Esc 取消";
+    return this.step === 2 ? "↑↓ 选择  回车 下一步  Esc 上一步" : "↑↓ 选择  回车 保存  Esc 上一步";
+  }
+
   private enterStep(step: number): void {
     this.step = step;
     const rows = this.rows();
@@ -147,36 +207,23 @@ export class SettingsTab {
         ? { name: FOLLOW, note: `现在是 ${thinkingLabel(this.role, this.options.mainThinking)}`, current: current === null, soft: true }
         : { name: thinkingLabel(this.role, choice.level), note: choice.unsupported ?? "", current: choice.level === current, disabled: !!choice.unsupported });
     }
-    return [
-      { name: "项目层", note: this.options.projectTrusted ? ".pi/settings.json · 只对这个项目生效" : "项目未受信任，项目层的设定不会生效", disabled: !this.options.projectTrusted },
-      { name: "用户层", note: "~/.pi/agent/settings.json · 所有项目" },
-    ];
-  }
-
-  private columns(width: number) {
-    let name = NAME, model = MAX_MODEL;
-    const total = () => MARKER + name + SOURCE + model + THINKING;
-    if (total() > width) model = Math.max(MIN_MODEL, model - (total() - width));
-    if (total() > width) name = Math.max(MIN_NAME, name - (total() - width));
-    return { name, model };
+    return layerRows(this.options.projectTrusted);
   }
 
   renderList(width: number, cursor: number, fresh: string | undefined): string[] {
-    const { theme, settings, models, mainModel } = this.options, { name: nameWidth, model } = this.columns(width);
+    const { theme, settings, models, mainModel } = this.options, { name: nameWidth, model } = tableColumns(width);
     const lines = [theme.fg("muted", `${" ".repeat(MARKER)}${pad("名称", nameWidth)}${pad("来源", SOURCE)}${pad("模型", model)}思考`)];
     SETTINGS_ROLES.forEach((role, index) => {
       const value = settings.values[role.key], selected = index === cursor, available = rowAvailability(role.key, value, models, mainModel);
-      const cell = (text: string, style?: (text: string) => string) => selected ? theme.bg("selectedBg", style ? style(text) : text) : style ? style(text) : text;
       const modelText = fit(available.ok ? value.model ?? FOLLOW : `${value.model} 不可用`, model - 1);
       const thinking = thinkingLabel(role.key, value.thinking);
-      lines.push([
-        cell(selected ? " › " : "   ", (text) => theme.fg("accent", text)),
-        cell(pad(fit(role.label, nameWidth - 1), nameWidth), role.key === fresh ? (text) => theme.fg("success", text) : undefined),
-        selected ? theme.bg("selectedBg", this.options.sourceTag(value.source)) : this.options.sourceTag(value.source), cell(" ".repeat(SOURCE - 6)),
-        cell(pad(modelText, model), (text) => theme.fg(!available.ok ? "error" : value.model ? "accent" : "dim", text)),
-        cell(thinking, value.thinking === null ? (text) => theme.fg("dim", text) : undefined),
-        ...(selected ? [cell(" ".repeat(Math.max(0, width - MARKER - nameWidth - SOURCE - model - visibleWidth(thinking))))] : []),
-      ].join(""));
+      lines.push(tableRow(theme, selected, width, [
+        [selected ? " ▸ " : "   ", (text) => theme.fg("accent", text)],
+        [pad(fit(role.label, nameWidth - 1), nameWidth), role.key === fresh ? (text) => theme.fg("success", text) : undefined],
+        [" ".repeat(6), undefined, this.options.sourceTag(value.source)], [" ".repeat(SOURCE - 6)],
+        [pad(modelText, model), (text) => theme.fg(!available.ok ? "error" : value.model ? "accent" : "dim", text)],
+        [thinking, value.thinking === null ? (text) => theme.fg("dim", text) : undefined],
+      ]));
     });
     return lines;
   }
@@ -192,31 +239,17 @@ export class SettingsTab {
   renderPicker(width: number): string[] {
     const { theme } = this.options, info = roleOf(this.role), rows = this.rows();
     const muted = (text: string) => theme.fg("muted", text), dim = (text: string) => theme.fg("dim", text);
-    const hint = (text: string) => wrapHint(text, width - 1).map((line) => ` ${muted(line)}`);
     const modelName = this.chosenModel?.name ?? "";
     const heading = this.step === 1 ? [`修改 ${info.label} 的模型`, "第 1 步，共 3 步"]
       : this.step === 2 ? [`修改 ${info.label} 的思考等级`, `第 2 步，共 3 步 · 模型 ${modelName}`]
         : [`${info.label} 改为 ${describeSetting(this.role, { model: this.chosenModel!.value, thinking: this.chosenThinking })}，存到哪一层`, "第 3 步，共 3 步"];
-    const title = fit(heading[0]!, width - 1), step = visibleWidth(heading[1]!) <= width - 1 - visibleWidth(title) - 2 ? heading[1]! : "";
     const nameWidth = this.step === 1 ? 22 : this.step === 2 ? 12 : 10;
-    const list = rows.map((row, index) => {
-      const selected = index === this.cursor;
-      const cell = (text: string, style?: (text: string) => string) => selected ? theme.bg("selectedBg", style ? style(text) : text) : style ? style(text) : text;
-      const name = pad(fit(row.name, nameWidth), nameWidth), note = fit(row.note, Math.max(0, width - MARKER - CHECK - nameWidth - 1));
-      return [
-        cell(selected ? " › " : "   ", (text) => theme.fg("accent", text)),
-        cell(row.current ? "✓ " : "  ", (text) => theme.fg("success", text)),
-        cell(name, row.disabled ? dim : row.soft ? muted : undefined), cell(note, dim),
-        ...(selected ? [cell(" ".repeat(Math.max(0, width - MARKER - CHECK - nameWidth - visibleWidth(note))))] : []),
-      ].join("");
-    });
-    const head = ` ${theme.bold(title)}${step ? dim(`  ${step}`) : ""}`;
+    const head = [pickerHead(theme, heading[0]!, heading[1]!, width), "", ...pickerList(theme, rows, this.cursor, nameWidth, width)];
     if (this.step === 1) {
       const empty = this.options.models.length === 0;
-      return [head, "", ...list, "", ...(empty ? wrapText("本机还没有其他配了凭据的模型，先在 pi 里登录模型服务", width - 1).map((line) => ` ${muted(line)}`) : [` ${dim("只列出本机配了凭据的模型")}`]),
-        ...(empty ? [""] : []), ...hint(empty ? "回车 下一步  Esc 取消" : "↑↓ 选择  回车 下一步  Esc 取消")];
+      return [...head, "", ...(empty ? wrapText("本机还没有其他配了凭据的模型，先在 pi 里登录模型服务", width - 1).map((line) => ` ${muted(line)}`) : [` ${dim("只列出本机配了凭据的模型")}`])];
     }
-    if (this.step === 2) return [head, "", ...list, "", ...hint("↑↓ 选择  回车 下一步  Esc 上一步")];
-    return [head, "", ...list, "", ...(this.options.projectTrusted ? [""] : wrapText("在 pi 里把这个项目设为受信任后，才能存到项目层", width - 1).map((line) => ` ${dim(line)}`)), ...hint("↑↓ 选择  回车 保存  Esc 上一步")];
+    if (this.step === 2) return head;
+    return [...head, "", ...(this.options.projectTrusted ? [] : untrustedLayerNote(theme, width))];
   }
 }

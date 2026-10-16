@@ -1,0 +1,1285 @@
+import { afterEach, expect, test } from "vitest";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { SettingsPageView } from "../runtime/settings-page-ui.ts";
+import { AgentCopyError, copyAgentDefinition } from "../runtime/agent-copy.ts";
+import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../runtime/agent-settings.ts";
+import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
+
+const UP = "\x1b[A", DOWN = "\x1b[B", RIGHT = "\x1b[C", LEFT = "\x1b[D", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
+const SOL = { provider: "5x", id: "gpt-6.1-sol", reasoning: true, thinkingLevelMap: {} };
+const LUNA = { provider: "5x", id: "gpt-6-luna", reasoning: true, thinkingLevelMap: { minimal: null, max: null } };
+const OPENAI_SOL = { provider: "openai", id: "gpt-6.1-sol", reasoning: true, thinkingLevelMap: {} };
+const LONG = { provider: "some-long-provider", id: "claude-opus-5-5-extended-context-preview", reasoning: true, thinkingLevelMap: {} };
+const GRAY_NOTE = /gpt-6-luna 不支持/u;
+const NOTICE = "✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp";
+
+const theme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bg: (kind: string, text: string) => `[${kind}]${text}[/]`,
+  bold: (text: string) => `**${text}**`, inverse: (text: string) => `!!${text}!!` };
+const plain = (text: string) => text.replace(/<\/?[a-zA-Z]*>|\[\/?[a-zA-Z]*\]|\*\*|!!/gu, "");
+const squeeze = (text: string) => text.replace(/\s+/gu, "");
+
+const roots: string[] = [];
+afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+
+async function writeJson(path: string, content: unknown) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, typeof content === "string" ? content : JSON.stringify(content));
+}
+const oneCompany = (entries: Record<string, unknown>) => ({ "one-company": entries });
+
+interface PageOptions {
+  trusted?: boolean; state?: Record<string, unknown>; taken?: Record<string, string>; skills?: string; clean?: boolean; legacy?: boolean; longPath?: boolean; projectWorker?: boolean; noRole?: boolean;
+  user?: unknown; project?: unknown; models?: unknown[]; mainModel?: unknown; mainThinking?: string;
+}
+async function page(options: PageOptions = {}) {
+  const base = await mkdtemp(join(tmpdir(), "pi-t-")); roots.push(base);
+  const root = options.longPath ? join(base, "a-rather-long-directory-name-used-to-force-wrapping") : base;
+  const roleDirs = { defaultDir: defaultRoleDir(), userDir: join(root, "u"), projectDir: join(root, "p") };
+  const agentDir = join(root, "agent"), repositoryRoot = join(root, "repo");
+  const role = async (dir: string, name: string, frontmatter: string) => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `${name}.md`), `---\nname: ${name}\n${frontmatter}\n---\n正文\n`);
+  };
+  await role(roleDirs.userDir, "ui-worker", `description: 界面设计与实现，产出 HTML 预览\nrole: worker\nmodel: 5x/gpt-6-luna\nthinking: medium\nskills: [${options.skills ?? "ui-basics"}]`);
+  await role(roleDirs.projectDir, "reviewer", "description: 本项目的审查\nrole: reviewer\nmodel: 5x/gpt-6-sol\nthinking: high");
+  if (!options.clean) await role(roleDirs.userDir, "broken", "description: 坏\nrole: worker\nthinking: extreme");
+  if (options.projectWorker) await role(roleDirs.projectDir, "proj-worker", "description: 项目的 worker\nrole: worker");
+  if (options.noRole) await role(roleDirs.userDir, "other", "description: 别的工具的定义");
+  if (options.legacy) for (const name of ["pm", "interpreter", "draft-verifier"]) await role(roleDirs.userDir, name, `description: 旧定义\nrole: ${name}\nmodel: 5x/gpt-6-luna`);
+  if (options.user !== undefined) await writeJson(userSettingsPath(agentDir), options.user);
+  if (options.project !== undefined) await writeJson(projectSettingsPath(repositoryRoot), options.project);
+  const trusted = options.trusted ?? true;
+  const catalog = await loadRoleCatalog({ ...roleDirs, parseFrontmatter, projectTrusted: trusted });
+  const settings = await readAgentSettings({ agentDir, repositoryRoot, projectTrusted: trusted });
+  const copies: Array<{ name: string; entry: string }> = [], saves: unknown[] = [], clears: unknown[] = [], switchSaves: unknown[] = [], switchClears: unknown[] = [];
+  let closed = false;
+  const view = new SettingsPageView({
+    catalog, theme, projectTrusted: trusted, untrustedProjectCount: 1, settings, models: options.models ?? [SOL, LUNA],
+    mainModel: "mainModel" in options ? options.mainModel : SOL, mainThinking: options.mainThinking ?? "high",
+    ...(options.state ? { state: options.state } : {}),
+    nameTaken: (name: string) => options.taken?.[name],
+    onCopy: (request: { entry: { name: string }; name: string }) => copies.push({ name: request.name, entry: request.entry.name }),
+    onSaveSetting: (request: unknown) => saves.push(request), onClearSetting: (request: unknown) => clears.push(request),
+    onSaveSwitch: (request: unknown) => switchSaves.push(request), onClearSwitch: (request: unknown) => switchClears.push(request),
+    onClose: () => { closed = true; },
+  });
+  const lines = (width = 80) => view.render(width);
+  const rows = (width = 80) => lines(width).map(plain);
+  const text = (width = 80) => rows(width).join("\n");
+  const pane = (width = 80) => paneParts(rows(width)).join("\n");
+  const right = (width = 80) => rightParts(rows(width)).join("\n");
+  const press = (...keys: string[]) => { for (const key of keys) view.handleInput(key); };
+  return { view, root, right, lines, rows, text, pane, press, copies, saves, clears, switchSaves, switchClears, closed: () => closed };
+}
+type Page = Awaited<ReturnType<typeof page>>;
+
+const rightParts = (rows: string[]) => rows.map((row) => (row.includes("│") ? row.slice(row.indexOf("│") + 1) : row).trimEnd());
+const paneParts = (rows: string[]) => rows.filter((row) => row.includes("│")).map((row) => row.slice(row.indexOf("│") + 1).trimEnd());
+const navCells = (rows: string[]) => rows.filter((row) => row.includes("│")).map((row) => row.slice(0, row.indexOf("│")).replace(/\s+/gu, " ").trim());
+const selectedPaneLine = (p: Page) => paneParts(p.rows()).find((line) => /^\s*[▸▾]\s/u.test(line)) ?? "";
+const firstWord = (line: string) => line.split(/\s+/u).filter((word) => word && !/^[▸▾✓]$/u.test(word))[0];
+function moveTo(p: Page, label: string) {
+  const here = () => firstWord(selectedPaneLine(p)) === label;
+  for (let i = 0; i < 12 && !here(); i++) p.press(DOWN);
+  for (let i = 0; i < 24 && !here(); i++) p.press(UP);
+  if (!here()) throw new Error(`光标移不到 ${label}：\n${p.pane()}`);
+}
+function moveToRowWith(p: Page, word: string) {
+  const here = () => selectedPaneLine(p).includes(word);
+  for (let i = 0; i < 12 && !here(); i++) p.press(DOWN);
+  for (let i = 0; i < 24 && !here(); i++) p.press(UP);
+  if (!here()) throw new Error(`光标移不到含 ${word} 的行：\n${p.pane()}`);
+}
+const SECTIONS = ["worker", "reviewer", "qa", "explore", "prototype", "models", "switches", "problems"] as const;
+const inPane = (index: number) => [...Array<string>(index).fill(DOWN), RIGHT];
+const enterSection = (p: Page, section: (typeof SECTIONS)[number]) => p.press(...inPane(SECTIONS.indexOf(section)));
+const toModels = (p: Page) => enterSection(p, "models");
+const toSwitches = (p: Page) => enterSection(p, "switches");
+
+test("80 列打开：边框、标题、目录顺序与份数、worker 行带 ▸，没有问题时目录没有「问题」", async () => {
+  const p = await page({ clean: true });
+  const rows = p.rows();
+  expect(rows[0]).toBe("─".repeat(80));
+  expect(rows.at(-1)).toBe("─".repeat(80));
+  expect(rows[1]).toMatch(/^ 设置 +\/one:setting $/u);
+  expect(visibleWidth(rows[1]!)).toBe(80);
+  expect(p.lines()[1]).toMatch(/<accent>[^\n]*设置/u);
+  expect(p.lines()[1]).toMatch(/<muted>[^<]*\/one:setting/u);
+  expect(rows.find((row) => row.includes("┬"))).toBe(`${"─".repeat(20)}┬${"─".repeat(59)}`);
+  expect(rows.find((row) => row.includes("┴"))).toBe(`${"─".repeat(20)}┴${"─".repeat(59)}`);
+  const cells = navCells(rows);
+  expect(cells.slice(0, 10)).toEqual(["角色定义", "▸ worker 2", "reviewer 1", "qa 1", "explore 1", "prototype 1", "", "设定", "模型 3", "开关 1"]);
+  expect(cells.slice(10).every((cell) => cell === "")).toBe(true);
+  expect(p.text()).not.toContain("问题");
+  expect(p.lines().join("\n")).toContain("<muted>");
+});
+
+test("有写错的定义时目录出现「问题」和条数，与上面的「开关」隔一个空行，红字", async () => {
+  const p = await page();
+  const cells = navCells(p.rows());
+  expect(cells.slice(8, 12)).toEqual(["模型 3", "开关 1", "", "问题 1"]);
+  expect(p.lines().find((line) => /问题 +1/u.test(plain(line)))).toMatch(/<error>[^\n]*问题/u);
+});
+
+test("设置文件也写错时「问题」条数相加", async () => {
+  const p = await page({ project: oneCompany({ "git-delivery": "yes" }) });
+  expect(navCells(p.rows())).toContain("问题 2");
+});
+
+test("项目未受信任时标题下多一行黄字提示，「问题」条数多一条；受信任时没有这一行", async () => {
+  const u = await page({ trusted: false });
+  const rows = u.rows();
+  expect(rows[2]).toBe(" ! 项目未受信任：项目层的定义和设定都没有生效");
+  expect(u.lines()[2]).toContain("<warning>");
+  expect(rows[3]).toBe(`${"─".repeat(20)}┬${"─".repeat(59)}`);
+  expect(navCells(rows)).toContain("问题 2");
+  const t = await page();
+  expect(t.text()).not.toContain("项目未受信任：项目层的定义和设定都没有生效");
+  expect(t.rows()[2]).toContain("┬");
+});
+
+test("打开时焦点在目录，选中 worker，右栏显示 worker 的定义", async () => {
+  const p = await page();
+  const first = paneParts(p.rows());
+  expect(first[0]!.trim()).toBe("worker  写代码");
+  expect(first[1]!.trim()).toBe("");
+  expect(first[2]).toMatch(/^\s*名称 +来源 +模型 +思考\s*$/u);
+  expect(p.pane()).toMatch(/ui-worker +用户 +5x\/gpt-6-luna +medium/u);
+  expect(p.text()).toContain("↑↓ 选分类  → 进右栏  Esc 退出");
+});
+
+test("焦点在目录时目录选中行铺底色；焦点进右栏后目录选中行改为强调色粗体不铺底色，右栏选中行铺底色", async () => {
+  const p = await page();
+  const navPart = (raw: string) => raw.slice(0, raw.indexOf("│"));
+  const navRow = () => p.lines().find((line) => /worker +2/u.test(plain(line)) && plain(line).includes("│"))!;
+  expect(navPart(navRow())).toContain("[selectedBg]");
+  p.press(RIGHT);
+  expect(navPart(navRow())).not.toContain("[selectedBg]");
+  expect(navPart(navRow())).toMatch(/<accent>[^\n]*\*\*/u);
+  const paneRow = p.lines().find((line) => plain(line).includes("▸ ui-worker"))!;
+  expect(paneRow.slice(paneRow.indexOf("│"))).toContain("[selectedBg]");
+});
+
+test("目录里 ↓ 换分类，右栏跟着换：模型分类显示 PM、解释器、草稿核验器三行", async () => {
+  const p = await page();
+  p.press(...Array<string>(5).fill(DOWN));
+  const rows = paneParts(p.rows());
+  expect(rows[0]!.trim()).toBe("模型  PM 和两个内部代理用哪个模型");
+  expect(p.pane()).toMatch(/名称 +来源 +模型 +思考/u);
+  expect(p.pane()).toMatch(/PM +内置 +跟随主会话 +跟随/u);
+  expect(p.pane()).toMatch(/解释器 +内置/u);
+  expect(p.pane()).toMatch(/草稿核验器 +内置/u);
+  expect(navCells(p.rows())).toContain("▸ 模型 3");
+  p.press(UP);
+  expect(paneParts(p.rows())[0]!.trim()).toBe("prototype  需求涉及界面时出 HTML 原型");
+});
+
+test("目录里 ↑ 到顶不越界，↓ 跳过标题和空行直达问题，到底不越界", async () => {
+  const p = await page();
+  p.press(UP, UP);
+  expect(navCells(p.rows())).toContain("▸ worker 2");
+  p.press(...Array<string>(20).fill(DOWN));
+  expect(navCells(p.rows())).toContain("▸ 问题 1");
+  expect(paneParts(p.rows())[0]!.trim()).toBe("问题  这些文件写错了，没有生效");
+});
+
+test("→ 和回车都能进右栏，← 回目录，按键提示随焦点变化", async () => {
+  const p = await page();
+  p.press(...Array<string>(5).fill(DOWN), RIGHT);
+  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出");
+  expect(selectedPaneLine(p)).toMatch(/^\s*▸ PM/u);
+  p.press(LEFT);
+  expect(p.text()).toContain("↑↓ 选分类  → 进右栏  Esc 退出");
+  p.press(ENTER);
+  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出");
+});
+
+test("目录里按 Esc 调 onClose，右栏列表里按 Esc 也调 onClose", async () => {
+  const nav = await page();
+  nav.press(ESC);
+  expect(nav.closed()).toBe(true);
+  const inRight = await page();
+  toModels(inRight);
+  inRight.press(ESC);
+  expect(inRight.closed()).toBe(true);
+});
+
+test("八个分类的右栏第一行是分类名加两空格加说明", async () => {
+  const expected = ["worker  写代码", "reviewer  代码审查：实现是否合理", "qa  功能验收：行为是否符合目标", "explore  只读查资料", "prototype  需求涉及界面时出 HTML 原型",
+    "模型  PM 和两个内部代理用哪个模型", "开关  可选功能，默认都关闭", "问题  这些文件写错了，没有生效"];
+  for (const [index, line] of expected.entries()) {
+    const p = await page();
+    p.press(...Array<string>(index).fill(DOWN));
+    const first = paneParts(p.rows())[0]!;
+    expect(first.trim(), SECTIONS[index]).toBe(line);
+    expect(p.lines().find((raw) => plain(raw).includes(line.split("  ")[0]!) && plain(raw).includes("│"))).toMatch(/<accent>/u);
+  }
+});
+
+test("焦点在目录时底部写分类说明；职责分类写定义份数和各层份数", async () => {
+  const expected = ["worker：写代码 · 2 份定义（用户 1 · 内置 1）", "reviewer：代码审查：实现是否合理 · 1 份定义（项目 1）", "qa：功能验收：行为是否符合目标 · 1 份定义（内置 1）",
+    "explore：只读查资料 · 1 份定义（内置 1）", "prototype：需求涉及界面时出 HTML 原型 · 1 份定义（内置 1）", "模型：PM 和两个内部代理用哪个模型", "开关：可选功能，默认都关闭", "问题：这些文件写错了，没有生效"];
+  for (const [index, line] of expected.entries()) {
+    const p = await page();
+    p.press(...Array<string>(index).fill(DOWN));
+    expect(p.text(), SECTIONS[index]).toContain(line);
+  }
+});
+
+test("同一职责下用户层与项目层排在内置前面，被盖住的下层不再列出，底部说明随选中行变化", async () => {
+  const p = await page();
+  p.press(RIGHT);
+  expect(p.pane()).toMatch(/▸ ui-worker +用户 +5x\/gpt-6-luna +medium *\n +worker +内置 +跟随主会话 +跟随 *(\n|$)/u);
+  expect(p.lines().join("\n")).toContain("<accent>5x/gpt-6-luna</>");
+  expect(p.text()).toContain("界面设计与实现，产出 HTML 预览 · skills ui-basics");
+  p.press(DOWN);
+  expect(selectedPaneLine(p)).toMatch(/▸ worker +内置/u);
+  p.press(LEFT, DOWN, RIGHT);
+  expect(p.pane()).toMatch(/▸ reviewer +项目 +5x\/gpt-6-sol +high/u);
+  expect(p.pane().match(/reviewer +(内置|项目)/gu)).toHaveLength(1);
+});
+
+test("没写模型和思考的定义，模型列写“跟随主会话”、思考列写“跟随”，不写“继承”", async () => {
+  const p = await page();
+  p.press(DOWN, DOWN, RIGHT);
+  expect(p.pane()).toMatch(/▸ qa +内置 +跟随主会话 +跟随 *(\n|$)/u);
+  p.press(LEFT, DOWN, RIGHT);
+  expect(p.pane()).toMatch(/▸ explore +内置 +跟随主会话 +跟随 *(\n|$)/u);
+  expect(p.text()).not.toContain("继承");
+  expect(p.lines().join("\n")).toContain("<dim>跟随主会话</>");
+});
+
+test("prototype 分类内置行跟随主会话，底部写说明，复制出的定义归在这一类", async () => {
+  const p = await page();
+  enterSection(p, "prototype");
+  expect(p.pane()).toMatch(/▸ prototype +内置 +跟随主会话 +跟随 *(\n|$)/u);
+  expect(p.text()).toContain("只能由主窗口派出，在澄清阶段出界面原型（单个 HTML）。");
+  const d = await roleDirsOnly();
+  const catalog = await loadRoleCatalog({ ...d.dirs, parseFrontmatter, projectTrusted: true });
+  const proto = catalog.roles.find((entry) => entry.name === "prototype")!;
+  await copyAgentDefinition({ entry: proto, newName: "proto-copy", targetDir: d.dirs.userDir, layerDirs: [d.dirs.defaultDir, d.dirs.userDir, d.dirs.projectDir] });
+  const reloaded = await loadRoleCatalog({ ...d.dirs, parseFrontmatter, projectTrusted: true });
+  expect(reloaded.roles.find((entry) => entry.name === "proto-copy")).toMatchObject({ source: "user", available: true, definition: { role: "prototype" } });
+});
+
+async function roleDirsOnly() {
+  const root = await mkdtemp(join(tmpdir(), "pi-t-")); roots.push(root);
+  return { root, dirs: { defaultDir: defaultRoleDir(), userDir: join(root, "u"), projectDir: join(root, "p") } };
+}
+
+test("职责回车展开出说明、skills、MCP、正文、文件五行详情，光标变 ▾，再回车收起", async () => {
+  const p = await page();
+  p.press(RIGHT, ENTER);
+  expect(selectedPaneLine(p)).toMatch(/^\s*▾ ui-worker/u);
+  const detail = p.pane().split("\n").filter((line) => line.includes("┊"));
+  const at = ["说明", "skills", "MCP", "正文", "文件"].map((label) => detail.findIndex((line) => line.includes(label)));
+  expect(at.every((index) => index >= 0)).toBe(true);
+  expect([...at].sort((a, b) => a - b)).toEqual(at);
+  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 收起  C 复制  Esc 退出");
+  p.press(ENTER);
+  expect(selectedPaneLine(p)).toMatch(/^\s*▸ ui-worker/u);
+  expect(p.pane()).not.toContain("┊");
+});
+
+test("展开详情里用顿号隔开的列表值放不下时在顿号之后断开，名字不被拆开", async () => {
+  const skills = ["ui-basics", "very-long-skill-name-number-one", "another-skill"];
+  for (const width of [36, 40, 48, 64]) {
+    const p = await page({ skills: skills.join(", ") });
+    p.press(RIGHT, ENTER);
+    const detail = p.rows(width).filter((line) => line.includes("┊")).map((line) => line.replace(/^.*┊/u, "").trim());
+    expect(detail.some((row) => row.includes("ui-basics")), `${width} ui-basics: ${detail.join("|")}`).toBe(true);
+    expect(detail.some((row) => row.includes("another-skill")), `${width} another-skill: ${detail.join("|")}`).toBe(true);
+  }
+});
+
+test("复制：C 进入命名画面，格式不对或重名当场拦下，合规名触发 onCopy", async () => {
+  const p = await page({ taken: { "ui-worker": "用户层" } });
+  p.press(RIGHT, DOWN, "c");
+  const naming = p.pane();
+  expect(paneParts(p.rows())[0]!.trim()).toBe("复制 worker 为新定义");
+  expect(naming).toMatch(/ 新名称 +worker-copy█/u);
+  expect(squeeze(naming)).toContain(squeeze("小写字母、数字、连字符，最多 64 个字符；三层里不能重名"));
+  expect(p.text()).toContain("回车 下一步  Esc 取消");
+  for (let i = 0; i < 11; i++) p.press(BACKSPACE);
+  p.press(..."ui-worker".split(""), ENTER);
+  expect(squeeze(p.pane())).toContain(squeeze("✗ 用户层已经有 ui-worker，换一个名字"));
+  expect(p.lines().join("\n")).toMatch(/<error>[^\n]*用户层已经有/u);
+  for (let i = 0; i < 9; i++) p.press(BACKSPACE);
+  p.press("U", "I", ENTER);
+  expect(squeeze(p.pane())).toContain(squeeze("✗ 只能用小写字母、数字和连字符，例如 ui-worker"));
+  p.press(BACKSPACE, BACKSPACE, ..."api-worker".split(""), ENTER);
+  expect(p.copies).toEqual([{ name: "api-worker", entry: "worker" }]);
+});
+
+test("复制命名里 Esc 回到列表并提示已取消复制，下一次按键后提示消失", async () => {
+  const p = await page();
+  p.press(RIGHT, "c", ESC);
+  expect(p.text()).toContain("已取消复制");
+  expect(p.pane()).toMatch(/▸ ui-worker/u);
+  expect(p.copies).toEqual([]);
+  p.press(DOWN);
+  expect(p.text()).not.toContain("已取消复制");
+});
+
+test("复制完成后回到原分类，新定义被选中且名字绿色，底部显示成功提示，再按键后提示消失", async () => {
+  const text = "✓ 已复制到 ~/.pi/agent/agents/ui-worker.md，打开它写专长、skills 和 mcp";
+  const p = await page({ state: { section: "worker", focus: "pane", selectName: "ui-worker", fresh: "ui-worker", notice: { tone: "ok", text } } });
+  expect(selectedPaneLine(p)).toMatch(/▸ ui-worker +用户/u);
+  expect(p.lines().join("\n")).toMatch(/<success>ui-worker/u);
+  expect(p.lines().join("\n")).toContain(`<success>${text}</>`);
+  p.press(DOWN);
+  expect(p.text()).not.toContain("已复制到");
+});
+
+test("C 只在职责分类有效，R 在职责分类无效", async () => {
+  const p = await page();
+  toModels(p);
+  p.press("c");
+  expect(p.pane()).not.toContain("复制");
+  const q = await page();
+  q.press(RIGHT, "r");
+  expect(q.clears).toEqual([]);
+  expect(q.text()).not.toContain("内置默认值");
+});
+
+test("问题分类写短原因，展开依次写原因、现在是、影响，底部写没有生效；未受信任那条灰色", async () => {
+  const p = await page();
+  enterSection(p, "problems");
+  expect(p.pane()).toMatch(/文件 +层 +原因/u);
+  moveToRowWith(p, "broken.md");
+  expect(selectedPaneLine(p)).toMatch(/broken\.md +用户 +thinking 写错了/u);
+  expect(p.lines().join("\n")).toContain("<error>thinking 写错了");
+  expect(squeeze(p.text())).toContain(squeeze("这份定义没有生效 · 改正文件后重新打开本页"));
+  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 详情  Esc 退出");
+  p.press(ENTER);
+  expect(squeeze(p.pane().replaceAll("┊", ""))).toContain(squeeze("原因 thinking 只能是 off、minimal、low、medium、high、xhigh、max"));
+  expect(p.pane()).toMatch(/┊ 现在是 +extreme/u);
+  expect(p.pane()).toMatch(/┊ 影响 +这份定义没有生效/u);
+  for (const row of p.rows(80)) expect(visibleWidth(row), row).toBeLessThanOrEqual(80);
+  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 收起  Esc 退出");
+  const u = await page({ trusted: false });
+  enterSection(u, "problems");
+  moveToRowWith(u, ".pi/agents/");
+  expect(selectedPaneLine(u)).toMatch(/\.pi\/agents\/ +项目/u);
+  expect(u.lines().join("\n")).toMatch(/<muted>项目未受信任/u);
+  u.press(ENTER);
+  expect(squeeze(u.text())).toContain(squeeze("在 pi 里把这个项目设为受信任后，项目层的 1 份定义就会生效"));
+});
+
+test("设置文件里 git-delivery 写成 yes：展开依次是原因、现在是 \"yes\"、影响“这一项没有生效，改用下一层”、文件", async () => {
+  const p = await page({ project: oneCompany({ "git-delivery": "yes" }) });
+  enterSection(p, "problems");
+  moveToRowWith(p, "settings.json");
+  p.press(ENTER);
+  expect(squeeze(p.pane())).toMatch(/┊原因.*git-delivery.*┊现在是"yes".*┊影响这一项没有生效，改用下一层.*┊文件.*settings\.json/u);
+});
+
+test("设置文件里角色那一项思考等级写错：影响是这一项没有生效，改用下一层", async () => {
+  const p = await page({ project: oneCompany({ pm: { model: "gpt-6-luna", thinking: "super" } }) });
+  enterSection(p, "problems");
+  moveToRowWith(p, "settings.json");
+  expect(selectedPaneLine(p)).toContain("项目");
+  expect(selectedPaneLine(p)).toContain("super");
+  p.press(ENTER);
+  expect(p.pane()).toMatch(/┊ 影响 +这一项没有生效，改用下一层/u);
+});
+
+test("设置文件里不认识的键：影响是这一项没有生效，改用下一层", async () => {
+  const p = await page({ project: oneCompany({ "git-deliver": true }) });
+  enterSection(p, "problems");
+  moveToRowWith(p, "settings.json");
+  p.press(ENTER);
+  expect(p.pane()).toMatch(/┊ 影响 +这一项没有生效，改用下一层/u);
+});
+
+test("设置文件不是 JSON、one-company 不是对象：影响是这一层的设定都没有生效，改用下一层，没有“现在是”", async () => {
+  for (const project of ["{ not json", { "one-company": 3 }]) {
+    const p = await page({ project });
+    enterSection(p, "problems");
+    moveToRowWith(p, "settings.json");
+    expect(selectedPaneLine(p)).toMatch(/项目/u);
+    p.press(ENTER);
+    expect(p.pane()).toMatch(/┊ 影响 +这一层的设定都没有生效，改用下一层/u);
+    expect(p.pane()).not.toContain("现在是");
+  }
+});
+
+test("用户层坏文件在问题分类的层标签是“用户”，agent 目录名叫 .pi 时也一样", async () => {
+  const p = await page({ user: "{ not json" });
+  enterSection(p, "problems");
+  expect(p.pane()).toMatch(/用户 +文件不是合法的 JSON/u);
+  expect(p.pane()).not.toMatch(/项目 +文件不是合法的 JSON/u);
+});
+
+test("旧的 pm、解释器、草稿核验器定义列在问题里，选中时底部写模型和思考等级改在「模型」里", async () => {
+  const p = await page({ legacy: true });
+  enterSection(p, "problems");
+  for (const file of ["pm.md", "interpreter.md", "draft-verifier.md"]) {
+    moveToRowWith(p, file);
+    expect(squeeze(p.text(200))).toContain(squeeze("这份定义没有生效，模型和思考等级改在「模型」里"));
+  }
+});
+
+test("模型分类没有设定时三行都是内置来源、模型跟随主会话、思考跟随", async () => {
+  const p = await page();
+  toModels(p);
+  expect(p.pane()).toMatch(/名称 +来源 +模型 +思考/u);
+  expect(p.pane()).toMatch(/▸ PM +内置 +跟随主会话 +跟随 *\n/u);
+  expect(p.pane()).toMatch(/解释器 +内置 +跟随主会话 +跟随 *\n/u);
+  expect(p.pane()).toMatch(/草稿核验器 +内置 +跟随主会话 +跟随 *(\n|$)/u);
+  expect(p.pane()).not.toContain("不思考");
+});
+
+test("思考为 null 写“跟随”，解释器的 off 写“不思考”，PM 的 off 照写 off，模型为 null 写“跟随主会话”", async () => {
+  const p = await page({ user: oneCompany({ pm: { model: "gpt-6-luna", thinking: null }, interpreter: { model: null, thinking: "off" }, "draft-verifier": { model: null, thinking: null } }) });
+  toModels(p);
+  expect(p.pane()).toMatch(/PM +用户 +gpt-6-luna +跟随 *\n/u);
+  expect(p.pane()).toMatch(/解释器 +用户 +跟随主会话 +不思考/u);
+  expect(p.pane()).toMatch(/草稿核验器 +用户 +跟随主会话 +跟随 *(\n|$)/u);
+  const q = await page({ user: oneCompany({ pm: { model: "gpt-6.1-sol", thinking: "off" } }) });
+  toModels(q);
+  expect(q.pane()).toMatch(/PM +用户 +gpt-6\.1-sol +off *\n/u);
+});
+
+test("模型为 null 时即使本机没有任何有凭据的模型，也不写“不可用”，底部不报错", async () => {
+  const p = await page({ models: [], mainModel: undefined });
+  toModels(p);
+  expect(p.text()).not.toContain("不可用");
+  expect(p.text()).not.toContain("✗");
+});
+
+test("模型行底部写用途、来源说明和生效时机，随选中行变化", async () => {
+  const p = await page({ user: oneCompany({ interpreter: { model: "gpt-6-luna", thinking: "low" } }), project: oneCompany({ "draft-verifier": { model: "gpt-6-luna", thinking: "high" } }) });
+  toModels(p);
+  expect(p.text()).toContain("PM：活动需求的负责人，拆任务、派工、调度 · 内置默认值 · 下次启动 PM 时生效");
+  p.press(DOWN);
+  expect(p.text()).toContain("解释器：把用户原话解读成结构化决定 · 来自用户层 · 下次调用时生效");
+  p.press(DOWN);
+  expect(p.text()).toContain("草稿核验器：核对需求草稿是不是用户原话要求的 · 来自项目层 · 下次调用时生效");
+});
+
+test("设定的模型没有凭据时模型列红字写“不可用”，选中时底部红字写明后果", async () => {
+  const p = await page({
+    user: oneCompany({ interpreter: { model: "claude-opus-5-5", thinking: "medium" }, "draft-verifier": { model: "claude-opus-5-5", thinking: "medium" } }),
+    project: oneCompany({ pm: { model: "claude-opus-5-5", thinking: "high" } }),
+  });
+  toModels(p);
+  expect(p.pane()).toMatch(/PM +项目 +claude-opus-5-5 ?不可用/u);
+  expect(p.lines().join("\n")).toMatch(/<error>claude-opus-5-5 ?不可用/u);
+  expect(p.text()).toContain("✗ claude-opus-5-5 没有可用的凭据，启动 PM 会失败；回车重新选");
+  expect(p.lines().join("\n")).toMatch(/<error>✗ claude-opus-5-5/u);
+  p.press(DOWN);
+  expect(p.pane()).toMatch(/解释器 +用户 +claude-opus-5-5 ?不可用/u);
+  expect(p.text()).toContain("✗ claude-opus-5-5 没有可用的凭据，批准需求时解读会失败；回车重新选");
+  p.press(DOWN);
+  expect(p.text()).toContain("✗ claude-opus-5-5 没有可用的凭据，起草或修改需求草稿时核验会失败；回车重新选");
+});
+
+test("模型有凭据的行不写“不可用”", async () => {
+  const p = await page();
+  toModels(p);
+  expect(p.text()).not.toContain("不可用");
+});
+
+test("设定里的裸模型名在本机有多个提供方时这一行不可用，底部写“多个提供方”而不是没有凭据", async () => {
+  const p = await page({ models: [OPENAI_SOL, SOL, LUNA], mainModel: { provider: "anthropic", id: "claude-x", reasoning: true, thinkingLevelMap: {} },
+    user: oneCompany({ pm: { model: "gpt-6.1-sol", thinking: "high" } }) });
+  toModels(p);
+  expect(p.pane()).toMatch(/PM +用户 +gpt-6\.1-sol ?不可用/u);
+  const rows = p.rows(60);
+  for (const row of rows) expect(visibleWidth(row), row).toBeLessThanOrEqual(60);
+  const start = rows.findIndex((line) => line.trimStart().startsWith("✗ "));
+  expect(start).toBeGreaterThan(-1);
+  const end = rows.findIndex((line, index) => index > start && line.includes("←"));
+  const footer = rows.slice(start, end).map((line) => line.trimStart()).join("");
+  expect(footer).toContain("多个提供方");
+  expect(footer).toContain("启动 PM 会失败");
+  expect(footer).not.toContain("没有可用的凭据");
+});
+
+test("设定里的模型不在可选模型里时，底部仍写没有可用的凭据和后果", async () => {
+  const p = await page({ models: [OPENAI_SOL, SOL, LUNA], user: oneCompany({ pm: { model: "claude-opus-5-5", thinking: "high" } }) });
+  toModels(p);
+  expect(p.text()).toContain("✗ claude-opus-5-5 没有可用的凭据，启动 PM 会失败；回车重新选");
+});
+
+test("修改模型第 1 步：列出有凭据的模型和提供方，末项跟随主会话写明现在是什么，当前生效项打勾", async () => {
+  const p = await page({ user: oneCompany({ pm: { model: "gpt-6-luna", thinking: "high" } }) });
+  toModels(p);
+  p.press(ENTER);
+  const text = p.pane();
+  expect(text).toMatch(/修改 PM 的模型 +第 1 步，共 3 步/u);
+  expect(text).toMatch(/gpt-6\.1-sol +5x/u);
+  expect(text).toMatch(/✓ +gpt-6-luna +5x/u);
+  expect(text).not.toMatch(/✓ +gpt-6\.1-sol/u);
+  expect(text).toMatch(/跟随主会话 +现在是 5x\/gpt-6\.1-sol/u);
+  expect(text).toContain("只列出本机配了凭据的模型");
+  expect(selectedPaneLine(p)).toMatch(/^\s*▸ /u);
+  expect(p.text()).toContain("↑↓ 选择  回车 下一步  Esc 取消");
+});
+
+test("没有可选模型时第 1 步只有跟随主会话，并提示先在 pi 里登录；选它后保存的 model 为 null", async () => {
+  const p = await page({ models: [] });
+  toModels(p);
+  p.press(ENTER);
+  const text = p.pane();
+  expect(text).toMatch(/修改 PM 的模型 +第 1 步，共 3 步/u);
+  expect(text).toMatch(/跟随主会话 +现在是 5x\/gpt-6\.1-sol/u);
+  expect(text).not.toMatch(/gpt-6-luna|gpt-6\.1-sol +5x/u);
+  expect(text).toContain("本机还没有其他配了凭据的模型，先在 pi 里登录模型服务");
+  expect(p.text()).toContain("回车 下一步  Esc 取消");
+  p.press(ENTER);
+  moveTo(p, "high");
+  p.press(ENTER);
+  moveTo(p, "项目层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "pm", model: null, thinking: "high", layer: "project" }]);
+});
+
+test("第 2 步：所选模型不支持的等级变灰并写原因，光标跳过灰项；当前值打勾；跟随主会话总是可选", async () => {
+  const p = await page({ user: oneCompany({ pm: { model: "gpt-6-luna", thinking: "high" } }) });
+  toModels(p);
+  p.press(ENTER);
+  moveTo(p, "gpt-6-luna");
+  p.press(ENTER);
+  const text = p.pane();
+  expect(text).toMatch(/修改 PM 的思考等级 +第 2 步，共 3 步/u);
+  for (const level of ["off", "low", "medium", "high", "xhigh"]) expect(text, level).toMatch(new RegExp(`${level} *(\\n|$)`, "u"));
+  expect(text).toMatch(new RegExp(`minimal +${GRAY_NOTE.source}`, "u"));
+  expect(text).toMatch(new RegExp(`max +${GRAY_NOTE.source}`, "u"));
+  expect(text).toMatch(/✓ +high/u);
+  expect(p.text()).toContain("↑↓ 选择  回车 下一步  Esc 上一步");
+  const visited = new Set<string>();
+  for (const key of [...Array<string>(8).fill(DOWN), ...Array<string>(8).fill(UP)]) { p.press(key); visited.add(firstWord(selectedPaneLine(p))!); }
+  expect([...visited].sort()).toEqual(expect.arrayContaining(["off", "xhigh", "跟随主会话"]));
+  expect(visited.has("minimal")).toBe(false);
+  expect(visited.has("max")).toBe(false);
+});
+
+test("第 2 步在 max 后面多一项“跟随主会话”，后面写主窗口当前思考等级", async () => {
+  const p = await page({ mainThinking: "high" });
+  toModels(p);
+  p.press(ENTER, ENTER);
+  const lines = p.pane().split("\n");
+  const max = lines.findIndex((line) => /\bmax\b/u.test(line)), follow = lines.findIndex((line, index) => index > max && line.includes("跟随主会话"));
+  expect(max).toBeGreaterThan(0);
+  expect(follow).toBe(max + 1);
+  expect(lines[follow]).toMatch(/跟随主会话 +现在是 high *$/u);
+});
+
+test("主窗口思考等级是 off 时：PM 写“现在是 off”，解释器和草稿核验器写“现在是 不思考”", async () => {
+  const p = await page({ mainThinking: "off" });
+  toModels(p);
+  p.press(ENTER, ENTER);
+  expect(p.pane()).toMatch(/跟随主会话 +现在是 off *\n/u);
+  const q = await page({ mainThinking: "off" });
+  toModels(q);
+  q.press(DOWN, ENTER, ENTER);
+  expect(q.pane()).toMatch(/跟随主会话 +现在是 不思考 *\n/u);
+  const r = await page({ mainThinking: "off" });
+  toModels(r);
+  r.press(DOWN, DOWN, ENTER, ENTER);
+  expect(r.pane()).toMatch(/跟随主会话 +现在是 不思考 *\n/u);
+});
+
+test("第 2 步当前生效的思考是跟随时，✓ 打在“跟随主会话”上，别的等级没有 ✓", async () => {
+  const p = await page({ user: oneCompany({ pm: { model: "gpt-6.1-sol", thinking: null } }) });
+  toModels(p);
+  p.press(ENTER, ENTER);
+  const checked = p.pane().split("\n").filter((line) => line.includes("✓"));
+  expect(checked).toHaveLength(1);
+  expect(checked[0]).toMatch(/✓ +跟随主会话/u);
+});
+
+test("没有设定时第 2 步光标默认停在“跟随主会话”，直接回车再选项目层，保存请求的 thinking 为 null", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(ENTER, ENTER);
+  expect(selectedPaneLine(p)).toMatch(/跟随主会话/u);
+  p.press(ENTER);
+  moveTo(p, "项目层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "pm", model: null, thinking: null, layer: "project" }]);
+});
+
+test("选了不支持部分等级的模型后，“跟随主会话”仍可选，保存请求的 thinking 为 null", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(ENTER);
+  moveTo(p, "gpt-6-luna");
+  p.press(ENTER);
+  moveTo(p, "跟随主会话");
+  p.press(ENTER);
+  moveTo(p, "用户层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "pm", model: "gpt-6-luna", thinking: null, layer: "user" }]);
+});
+
+test("主窗口思考是 max、选了不支持 max 的模型时，“跟随主会话”仍可选、备注现在是 max，保存的 thinking 为 null", async () => {
+  const p = await page({ mainThinking: "max" });
+  toModels(p);
+  p.press(ENTER);
+  moveTo(p, "gpt-6-luna");
+  p.press(ENTER);
+  expect(p.pane()).toMatch(/max +gpt-6-luna 不支持/u);
+  moveTo(p, "跟随主会话");
+  expect(selectedPaneLine(p)).toMatch(/跟随主会话 +现在是 max/u);
+  p.press(ENTER);
+  moveTo(p, "项目层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "pm", model: "gpt-6-luna", thinking: null, layer: "project" }]);
+});
+
+test("第 2 步选的是跟随主会话时，按主窗口当前模型判断支持的等级", async () => {
+  const p = await page({ mainModel: LUNA });
+  toModels(p);
+  p.press(ENTER);
+  moveTo(p, "跟随主会话");
+  p.press(ENTER);
+  expect(p.pane()).toMatch(/minimal +(5x\/)?gpt-6-luna 不支持/u);
+  expect(p.pane()).toMatch(/max +(5x\/)?gpt-6-luna 不支持/u);
+});
+
+test("第 3 步标题里模型和思考都是跟随时写“跟随主会话 · 跟随”", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(ENTER, ENTER, ENTER);
+  expect(p.pane()).toMatch(/PM 改为 跟随主会话 · 跟随，存到哪一层 +第 3 步，共 3 步/u);
+});
+
+test("第 3 步：项目层和用户层各写文件位置与适用范围，标题写明改成什么", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(ENTER);
+  moveTo(p, "gpt-6-luna");
+  p.press(ENTER);
+  moveTo(p, "xhigh");
+  p.press(ENTER);
+  const text = p.pane();
+  expect(text).toMatch(/PM 改为 gpt-6-luna · xhigh，存到哪一层 +第 3 步，共 3 步/u);
+  expect(text).toMatch(/项目层 +\.pi\/settings\.json · 只对这个项目生效/u);
+  expect(text).toMatch(/用户层 +~\/\.pi\/agent\/settings\.json · 所有项目/u);
+  expect(p.text()).toContain("↑↓ 选择  回车 保存  Esc 上一步");
+});
+
+test("选 gpt-6-luna、xhigh、项目层后，onSaveSetting 收到完整的保存请求", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(ENTER);
+  moveTo(p, "gpt-6-luna");
+  p.press(ENTER);
+  moveTo(p, "xhigh");
+  p.press(ENTER);
+  moveTo(p, "项目层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "pm", model: "gpt-6-luna", thinking: "xhigh", layer: "project" }]);
+});
+
+test("选用户层时保存请求的 layer 是 user，改的是选中的那一行角色", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(DOWN, ENTER);
+  moveTo(p, "gpt-6.1-sol");
+  p.press(ENTER);
+  moveTo(p, "low");
+  p.press(ENTER);
+  moveTo(p, "用户层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "interpreter", model: "gpt-6.1-sol", thinking: "low", layer: "user" }]);
+});
+
+test("两家提供方都有 gpt-6.1-sol 时，选 openai 那一行保存的 model 是 openai/gpt-6.1-sol；唯一的 gpt-6-luna 不带提供方", async () => {
+  const models = [OPENAI_SOL, SOL, LUNA];
+  const p = await page({ models });
+  toModels(p);
+  p.press(ENTER);
+  moveToRowWith(p, "openai");
+  p.press(ENTER);
+  moveTo(p, "high");
+  p.press(ENTER);
+  moveTo(p, "项目层");
+  p.press(ENTER);
+  expect(p.saves).toEqual([{ role: "pm", model: "openai/gpt-6.1-sol", thinking: "high", layer: "project" }]);
+  const q = await page({ models });
+  toModels(q);
+  q.press(ENTER);
+  moveTo(q, "gpt-6-luna");
+  q.press(ENTER);
+  moveTo(q, "high");
+  q.press(ENTER);
+  moveTo(q, "项目层");
+  q.press(ENTER);
+  expect(q.saves).toEqual([{ role: "pm", model: "gpt-6-luna", thinking: "high", layer: "project" }]);
+});
+
+test("项目未受信任时第 3 步项目层不可选并写明原因，光标停在用户层，回车存到用户层", async () => {
+  const p = await page({ trusted: false });
+  toModels(p);
+  p.press(ENTER, ENTER, ENTER);
+  const text = p.pane();
+  expect(text).toMatch(/项目层 +项目未受信任，项目层的设定不会生效/u);
+  expect(text).toContain("在 pi 里把这个项目设为受信任后，才能存到项目层");
+  expect(selectedPaneLine(p)).toMatch(/用户层/u);
+  p.press(UP);
+  expect(selectedPaneLine(p)).toMatch(/用户层/u);
+  p.press(ENTER);
+  expect(p.saves).toMatchObject([{ role: "pm", layer: "user" }]);
+});
+
+test("Esc 逐步退回上一步，第一步 Esc 取消，什么也不保存，底部写已取消修改，页面不关闭", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(ENTER, ENTER, ENTER);
+  expect(p.pane()).toMatch(/第 3 步，共 3 步/u);
+  p.press(ESC);
+  expect(p.pane()).toMatch(/第 2 步，共 3 步/u);
+  p.press(ESC);
+  expect(p.pane()).toMatch(/第 1 步，共 3 步/u);
+  p.press(ESC);
+  expect(p.text()).toContain("已取消修改");
+  expect(p.text()).toContain("R 清除本层");
+  expect(p.saves).toEqual([]);
+  expect(p.closed()).toBe(false);
+});
+
+test("模型来源是内置时按 R 只提示已经是内置默认值，不发清除请求", async () => {
+  const p = await page();
+  toModels(p);
+  p.press("R");
+  expect(p.rows().map((line) => line.trim())).toContain("已经是内置默认值");
+  expect(p.clears).toEqual([]);
+});
+
+test("模型来源是项目或用户时按 R，onClearSetting 收到带层的清除请求", async () => {
+  const p = await page({ project: oneCompany({ pm: { model: "gpt-6-luna", thinking: "low" } }) });
+  toModels(p);
+  p.press("r");
+  expect(p.clears).toEqual([{ role: "pm", layer: "project" }]);
+  const q = await page({ user: oneCompany({ interpreter: { model: "gpt-6-luna", thinking: "low" } }) });
+  toModels(q);
+  q.press(DOWN, "R");
+  expect(q.clears).toEqual([{ role: "interpreter", layer: "user" }]);
+});
+
+test("开关分类一行 Git 交付，没有设定时来源内置、状态关闭（灰色）；设为 true 时状态开启（绿色）", async () => {
+  const p = await page();
+  toSwitches(p);
+  expect(p.pane()).toMatch(/名称 +来源 +状态/u);
+  expect(p.pane()).toMatch(/▸ Git 交付 +内置 +关闭/u);
+  expect(p.lines().join("\n")).toContain("<dim>关闭</>");
+  const q = await page({ user: oneCompany({ "git-delivery": true }) });
+  toSwitches(q);
+  expect(q.pane()).toMatch(/▸ Git 交付 +用户 +开启/u);
+  expect(q.lines().join("\n")).toContain("<success>开启</>");
+});
+
+test("开关行底部写说明、来源和立即生效", async () => {
+  const p = await page();
+  toSwitches(p);
+  expect(p.text()).toContain("Git 交付：开启后主代理可以替你提交归档、推送并建 PR · 内置默认值 · 立即生效");
+  const u = await page({ user: oneCompany({ "git-delivery": true }) });
+  toSwitches(u);
+  expect(u.text()).toContain("来自用户层 · 立即生效");
+  const q = await page({ project: oneCompany({ "git-delivery": true }) });
+  toSwitches(q);
+  expect(q.text()).toContain("来自项目层 · 立即生效");
+});
+
+test("修改开关第 1 步：标题、两个选项和说明，现值打勾，光标默认在另一项", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(ENTER);
+  const text = p.pane();
+  expect(text).toMatch(/修改 Git 交付 +第 1 步，共 2 步/u);
+  expect(text).toMatch(/开启 +主代理可以替你提交归档、推送并建 PR/u);
+  expect(text).toMatch(/关闭 +推送和合并由你自己做/u);
+  expect(text).toMatch(/✓ +关闭/u);
+  expect(selectedPaneLine(p)).toMatch(/开启/u);
+  const q = await page({ user: oneCompany({ "git-delivery": true }) });
+  toSwitches(q);
+  q.press(ENTER);
+  expect(q.pane()).toMatch(/✓ +开启/u);
+  expect(selectedPaneLine(q)).toMatch(/关闭/u);
+});
+
+test("修改开关两步走完：第 2 步写标题、项目层和用户层说明，选用户层后 onSaveSwitch 收到 enabled 和 layer", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(ENTER, ENTER);
+  const text = p.pane();
+  expect(text).toMatch(/Git 交付 改为开启，存到哪一层 +第 2 步，共 2 步/u);
+  expect(text).toMatch(/项目层 +\.pi\/settings\.json · 只对这个项目生效/u);
+  expect(text).toMatch(/用户层 +~\/\.pi\/agent\/settings\.json · 所有项目/u);
+  moveTo(p, "用户层");
+  p.press(ENTER);
+  expect(p.switchSaves).toEqual([{ enabled: true, layer: "user" }]);
+});
+
+test("把已开启的开关改为关闭：第 2 步标题写改为关闭，保存 enabled 为 false", async () => {
+  const p = await page({ user: oneCompany({ "git-delivery": true }) });
+  toSwitches(p);
+  p.press(ENTER, ENTER);
+  expect(p.pane()).toMatch(/Git 交付 改为关闭，存到哪一层/u);
+  moveTo(p, "项目层");
+  p.press(ENTER);
+  expect(p.switchSaves).toEqual([{ enabled: false, layer: "project" }]);
+});
+
+test("项目未受信任时开关第 2 步项目层不可选并写明原因，光标停在用户层", async () => {
+  const p = await page({ trusted: false });
+  toSwitches(p);
+  p.press(ENTER, ENTER);
+  expect(p.pane()).toMatch(/项目层 +项目未受信任，项目层的设定不会生效/u);
+  expect(selectedPaneLine(p)).toMatch(/用户层/u);
+  p.press(UP);
+  expect(selectedPaneLine(p)).toMatch(/用户层/u);
+  p.press(ENTER);
+  expect(p.switchSaves).toEqual([{ enabled: true, layer: "user" }]);
+});
+
+test("开关 Esc 逐步退回，第 1 步 Esc 取消并提示已取消修改，什么也不保存", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(ENTER, ENTER);
+  expect(p.pane()).toMatch(/第 2 步，共 2 步/u);
+  p.press(ESC);
+  expect(p.pane()).toMatch(/第 1 步，共 2 步/u);
+  p.press(ESC);
+  expect(p.text()).toContain("已取消修改");
+  expect(p.switchSaves).toEqual([]);
+  expect(p.closed()).toBe(false);
+});
+
+test("开关来源是内置时按 R 提示已经是内置默认值，否则 onClearSwitch 收到当前来源层", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press("R");
+  expect(p.rows().map((line) => line.trim())).toContain("已经是内置默认值");
+  expect(p.switchClears).toEqual([]);
+  const u = await page({ user: oneCompany({ "git-delivery": true }) });
+  toSwitches(u);
+  u.press("r");
+  expect(u.switchClears).toEqual([{ layer: "user" }]);
+  const q = await page({ project: oneCompany({ "git-delivery": true }) });
+  toSwitches(q);
+  q.press("R");
+  expect(q.switchClears).toEqual([{ layer: "project" }]);
+});
+
+test("notice 代替底部说明显示：ok 绿色、muted 灰色、error 红色", async () => {
+  for (const [tone, kind] of [["ok", "success"], ["muted", "muted"], ["error", "error"]] as const) {
+    const p = await page({ state: { notice: { tone, text: "提示内容" } } });
+    expect(p.lines().join("\n"), tone).toContain(`<${kind}>提示内容</>`);
+    expect(p.text(), tone).not.toContain("worker：写代码");
+  }
+});
+
+test("44 列焦点在目录时只画目录，没有分隔竖线，提示换成“→ 进入”", async () => {
+  const p = await page();
+  const rows = p.rows(44);
+  expect(rows.some((row) => row.includes("│"))).toBe(false);
+  expect(p.text(44)).toContain("角色定义");
+  expect(p.text(44)).toMatch(/worker +2/u);
+  expect(p.text(44)).not.toMatch(/名称 +来源/u);
+  expect(p.text(44)).toContain("↑↓ 选分类  → 进入  Esc 退出");
+});
+
+test("44 列 → 进右栏后只画右栏，首行“设置 › 模型”，提示换成“← 回目录”；回车改模型后首行“设置 › 模型 › PM”", async () => {
+  const p = await page();
+  p.press(...inPane(5));
+  const rows = p.rows(44);
+  expect(rows.some((row) => row.includes("│"))).toBe(false);
+  expect(rows[1]!.trim()).toBe("设置 › 模型");
+  expect(p.text(44)).toContain("← 回目录");
+  expect(p.text(44)).not.toContain("← 回左栏");
+  expect(p.text(44)).not.toContain("角色定义");
+  p.press(ENTER);
+  expect(p.rows(44)[1]!.trim()).toBe("设置 › 模型 › PM");
+});
+
+test("44 列职责分类首行“设置 › worker”，命名时首行“设置 › worker › 复制”，开关修改首行“设置 › 开关 › Git 交付”", async () => {
+  const p = await page();
+  p.press(RIGHT);
+  expect(p.rows(44)[1]!.trim()).toBe("设置 › worker");
+  p.press("c");
+  expect(p.rows(44)[1]!.trim()).toBe("设置 › worker › 复制");
+  const q = await page();
+  toSwitches(q);
+  q.press(ENTER);
+  expect(q.rows(44)[1]!.trim()).toBe("设置 › 开关 › Git 交付");
+});
+
+test("窄终端放不下的文字末尾用 … 截断", async () => {
+  const p = await page();
+  p.press(RIGHT);
+  const row = p.rows(36).find((line) => line.includes("ui-worker"))!;
+  expect(row).toContain("…");
+  expect(visibleWidth(row)).toBeLessThanOrEqual(36);
+});
+
+test("59 列是窄布局、60 列是宽布局", async () => {
+  const p = await page();
+  expect(p.rows(59).some((row) => row.includes("│"))).toBe(false);
+  expect(p.rows(60).some((row) => row.includes("│"))).toBe(true);
+});
+
+test("36 到 38 列时选中任一职责分类，目录不超宽，选中的分类名和数量都在", async () => {
+  const roles = ["worker", "reviewer", "qa", "explore", "prototype"];
+  for (let width = 36; width <= 38; width++) {
+    for (const [index, role] of roles.entries()) {
+      const p = await page();
+      p.press(...Array<string>(index).fill(DOWN));
+      const rows = p.rows(width);
+      for (const row of rows) expect(visibleWidth(row), `${role} ${width}: ${row}`).toBeLessThanOrEqual(width);
+      expect(rows.find((row) => row.includes(role)), `${role} ${width}`).toMatch(new RegExp(`${role} +\\d+`, "u"));
+    }
+  }
+});
+
+interface Screen { label: string; options?: PageOptions; keys: string[] }
+const toSection = (name: (typeof SECTIONS)[number], ...more: string[]) => [...inPane(SECTIONS.indexOf(name)), ...more];
+const SCREENS: Screen[] = [
+  { label: "目录", keys: [] },
+  { label: "未受信任的目录", options: { trusted: false }, keys: [] },
+  ...SECTIONS.flatMap((name, index): Screen[] => [
+    { label: `${name} 列表`, options: { trusted: index % 2 === 0 }, keys: toSection(name) },
+    ...(["models", "switches"].includes(name) ? [] : [{ label: `${name} 展开`, options: { trusted: index % 2 === 0 }, keys: toSection(name, ENTER) }]),
+  ]),
+  { label: "复制命名", keys: [RIGHT, "c"] },
+  { label: "模型第 1 步", options: { models: [SOL, LONG] }, keys: toSection("models", ENTER) },
+  { label: "模型第 2 步", options: { models: [SOL, LONG] }, keys: toSection("models", ENTER, ENTER) },
+  { label: "模型第 3 步", options: { models: [SOL, LONG] }, keys: toSection("models", ENTER, ENTER, ENTER) },
+  { label: "未受信任的模型第 3 步", options: { trusted: false }, keys: toSection("models", ENTER, ENTER, ENTER) },
+  { label: "没有可选模型的第 1 步", options: { models: [] }, keys: toSection("models", ENTER) },
+  { label: "模型不可用的列表", options: { user: oneCompany({ "draft-verifier": { model: "claude-opus-5-5-extended-context-preview-x", thinking: "medium" } }) }, keys: toSection("models", DOWN, DOWN) },
+  { label: "跟随值的列表", options: { models: [SOL, LONG], mainThinking: "off", user: oneCompany({ pm: { model: "claude-opus-5-5-extended-context-preview", thinking: null }, interpreter: { model: null, thinking: "off" } }) }, keys: toSection("models") },
+  { label: "第 2 步多出的跟随主会话", options: { mainThinking: "xhigh" }, keys: toSection("models", DOWN, ENTER, ENTER) },
+  { label: "开关第 1 步", keys: toSection("switches", ENTER) },
+  { label: "开关第 2 步", keys: toSection("switches", ENTER, ENTER) },
+  { label: "未受信任的开关第 2 步", options: { trusted: false }, keys: toSection("switches", ENTER, ENTER) },
+  { label: "问题展开含设置文件", options: { project: oneCompany({ "git-delivery": "yes" }) }, keys: toSection("problems", DOWN, ENTER) },
+  { label: "带提示的目录", options: { state: { notice: { tone: "ok", text: NOTICE } } }, keys: [] },
+];
+
+test("36、44、56、59、60、80 列下每个画面每一行的显示宽度都不超过终端宽度", async () => {
+  for (const screen of SCREENS) {
+    const p = await page(screen.options);
+    p.press(...screen.keys);
+    for (const width of [36, 44, 56, 59, 60, 80]) {
+      for (const row of p.rows(width)) expect(visibleWidth(row), `${screen.label} ${width} 列：${row}`).toBeLessThanOrEqual(width);
+    }
+  }
+});
+
+test("36 到 80 列下每个画面都不超宽（逐列）", async () => {
+  for (const screen of SCREENS) {
+    const p = await page(screen.options);
+    p.press(...screen.keys);
+    for (let width = 36; width <= 80; width++) {
+      for (const row of p.rows(width)) expect(visibleWidth(row), `${screen.label} ${width} 列：${row}`).toBeLessThanOrEqual(width);
+    }
+  }
+});
+
+test("底部提示放不下时折成多行，整句每个字都看得到，不以…截掉；放得下时仍只占一行", async () => {
+  const wide = await page({ state: { notice: { tone: "ok", text: NOTICE } } });
+  const baseline = await page({ state: { notice: { tone: "ok", text: "✓ 短" } } });
+  expect(wide.lines(200)).toHaveLength(baseline.lines(200).length);
+  expect(baseline.lines(36).length).toBeLessThan(wide.lines(36).length);
+  for (const tone of ["ok", "muted"] as const) {
+    for (let width = 36; width <= 80; width++) {
+      const p = await page({ state: { notice: { tone, text: NOTICE } } });
+      expect(squeeze(p.rows(width).join("")), `${width}`).toContain(squeeze(NOTICE));
+    }
+  }
+});
+
+test("模型行的成功提示放不下时同样折行，整句都看得到", async () => {
+  const text = "✓ PM 改为 5x/gpt-6-luna · xhigh，存到项目层，下次启动 PM 时生效";
+  for (let width = 36; width <= 80; width++) {
+    const p = await page({ state: { section: "models", focus: "pane", selectName: "pm", notice: { tone: "ok", text } } });
+    expect(squeeze(p.rows(width).join("")), `${width}`).toContain(squeeze(text));
+  }
+});
+
+test("底部提示折行时尽量在空格后断开，每个词完整地留在一行里", async () => {
+  const words = ["alpha-one", "beta-two", "gamma-three", "delta-four", "epsilon-five", "zeta-six"];
+  const p = await page({ state: { notice: { tone: "muted", text: words.join(" ") } } });
+  const rows = p.rows(36);
+  for (const word of words) expect(rows.some((row) => row.includes(word)), word).toBe(true);
+});
+
+test("复制完成提示折行：在最后一个空格、中文逗号或斜杠之后断开", async () => {
+  const footerRows = (rows: string[]) => {
+    const start = rows.findIndex((row) => row.startsWith(" ✓ "));
+    const end = rows.findIndex((row, index) => index > start && /^\s*(↑↓|←)/u.test(row));
+    return rows.slice(start, end).map((row) => row.slice(1).trimEnd());
+  };
+  const show = async (width: number, text: string) => footerRows((await page({ state: { notice: { tone: "ok", text } } })).rows(width));
+  expect(await show(36, NOTICE)).toEqual(["✓ 已复制到 ~/.pi/agent/agents/", "vue-engineer.md，", "打开它写专长、skills 和 mcp"]);
+  expect(await show(80, "✓ 已复制到 ~/Projects/some-company/frontend-app/.pi/agents/vue-engineer.md，打开它写专长、skills 和 mcp"))
+    .toEqual(["✓ 已复制到 ~/Projects/some-company/frontend-app/.pi/agents/vue-engineer.md，", "打开它写专长、skills 和 mcp"]);
+  expect(await show(80, "✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp")).toEqual(["✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp"]);
+});
+
+test("模型行底部说明在 36 列下折行后，任何一行都不以顿号或逗号开头", async () => {
+  const p = await page();
+  toModels(p);
+  const rows = p.rows(36);
+  expect(rows.some((row) => row.trimStart().startsWith("PM："))).toBe(true);
+  for (const row of rows) expect(row.trimStart(), row).not.toMatch(/^[、，]/u);
+});
+
+test("按键提示放不下时按两个空格分组折行，一组不被拆开，放得下时仍是一行", async () => {
+  const screens: Array<{ hint: string; keys: string[] }> = [
+    { hint: "↑↓ 选分类  → 进右栏  Esc 退出", keys: [] },
+    { hint: "← 回左栏  ↑↓ 选择  回车 详情  C 复制  Esc 退出", keys: [RIGHT] },
+    { hint: "← 回左栏  ↑↓ 选择  回车 收起  C 复制  Esc 退出", keys: [RIGHT, ENTER] },
+    { hint: "← 回左栏  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出", keys: toSection("models") },
+    { hint: "← 回左栏  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出", keys: toSection("switches") },
+    { hint: "← 回左栏  ↑↓ 选择  回车 详情  Esc 退出", keys: toSection("problems") },
+    { hint: "← 回左栏  ↑↓ 选择  回车 收起  Esc 退出", keys: toSection("problems", ENTER) },
+    { hint: "回车 下一步  Esc 取消", keys: [RIGHT, "c"] },
+    { hint: "↑↓ 选择  回车 下一步  Esc 取消", keys: toSection("models", ENTER) },
+    { hint: "↑↓ 选择  回车 下一步  Esc 上一步", keys: toSection("models", ENTER, ENTER) },
+    { hint: "↑↓ 选择  回车 保存  Esc 上一步", keys: toSection("models", ENTER, ENTER, ENTER) },
+  ];
+  for (const { hint, keys } of screens) {
+    for (let width = 36; width <= 80; width++) {
+      const shown = width < 60 ? hint.replace("← 回左栏", "← 回目录").replace("→ 进右栏", "→ 进入") : hint;
+      const groups = shown.split("  ");
+      const p = await page();
+      p.press(...keys);
+      const rows = p.rows(width);
+      const hintRows = rows.map((row) => row.trim()).filter((row) => row && row.split("  ").every((group) => groups.includes(group)));
+      expect(hintRows.flatMap((row) => row.split("  ")), `${shown} ${width}`).toEqual(groups);
+      if (visibleWidth(` ${shown}`) <= width) expect(hintRows, `${shown} ${width}`).toHaveLength(1);
+      else expect(hintRows.length, `${shown} ${width}`).toBeGreaterThan(1);
+    }
+  }
+});
+
+test("复制命名画面的红字错误放不下时折成多行，36 到 80 列各行拼起来是完整的错误原文", async () => {
+  const longName = "a".repeat(60);
+  const cases: Array<{ error: string; type: string[] }> = [
+    { error: "✗ 只能用小写字母、数字和连字符，例如 ui-worker", type: ["U", "I"] },
+    { error: `✗ 用户层已经有 ${longName}，换一个名字`, type: [...longName] },
+  ];
+  for (const { error, type } of cases) {
+    for (let width = 36; width <= 80; width++) {
+      const p = await page({ taken: { [longName]: "用户层" } });
+      p.press(RIGHT, "c", ...Array<string>("ui-worker-copy".length).fill(BACKSPACE), ...type, ENTER);
+      expect(squeeze(rightParts(p.rows(width)).join("")), `${width}`).toContain(squeeze(error));
+    }
+  }
+});
+
+test("state() 在右栏选中解释器时返回模型分类、右栏焦点、解释器，用它构造新视图后光标还原", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(DOWN);
+  expect(p.view.state()).toEqual({ section: "models", focus: "pane", selectName: "interpreter" });
+  const q = await page({ state: p.view.state() });
+  expect(selectedPaneLine(q)).toMatch(/▸ 解释器/u);
+  expect(paneParts(q.rows())[0]!.trim()).toBe("模型  PM 和两个内部代理用哪个模型");
+});
+
+test("state() 对定义行用定义名、对开关行用 git-delivery、在目录时焦点是 nav，都能还原", async () => {
+  const d = await page();
+  d.press(RIGHT);
+  expect(d.view.state()).toEqual({ section: "worker", focus: "pane", selectName: "ui-worker" });
+  const d2 = await page({ state: d.view.state() });
+  expect(selectedPaneLine(d2)).toMatch(/▸ ui-worker/u);
+  const s = await page();
+  toSwitches(s);
+  expect(s.view.state()).toEqual({ section: "switches", focus: "pane", selectName: "git-delivery" });
+  const nav = await page();
+  nav.press(DOWN, DOWN);
+  expect(nav.view.state()).toMatchObject({ section: "qa", focus: "nav" });
+  const nav2 = await page({ state: nav.view.state() });
+  expect(navCells(nav2.rows())).toContain("▸ qa 1");
+  expect(nav2.text()).toContain("↑↓ 选分类  → 进右栏  Esc 退出");
+});
+
+test("复制：新名称三层不重复，复制后 name 字段改为新名称", async () => {
+  const { dirs } = await roleDirsOnly();
+  const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted: true });
+  const worker = catalog.roles.find((entry) => entry.name === "worker")!;
+  const layerDirs = [dirs.defaultDir, dirs.userDir, dirs.projectDir];
+  const target = await copyAgentDefinition({ entry: worker, newName: "ui-dev", targetDir: dirs.projectDir, layerDirs });
+  expect(await readFile(target, "utf8")).toMatch(/^name: ui-dev$/mu);
+  await expect(copyAgentDefinition({ entry: worker, newName: "ui-dev", targetDir: dirs.userDir, layerDirs })).rejects.toBeInstanceOf(AgentCopyError);
+  await expect(copyAgentDefinition({ entry: worker, newName: "reviewer", targetDir: dirs.userDir, layerDirs })).rejects.toThrow("已被使用");
+  await expect(copyAgentDefinition({ entry: worker, newName: "Bad Name", targetDir: dirs.userDir, layerDirs })).rejects.toThrow("名称只能");
+  const reloaded = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted: true });
+  expect(reloaded.roles.find((entry) => entry.name === "ui-dev")).toMatchObject({ source: "project", available: true });
+});
+
+test("复制内置 worker 生成的文件头部不含 model 和 thinking，仍有 skills 与 mcp 空数组", async () => {
+  const { dirs } = await roleDirsOnly();
+  const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted: true });
+  const worker = catalog.roles.find((entry) => entry.name === "worker")!;
+  const target = await copyAgentDefinition({ entry: worker, newName: "ui-dev", targetDir: dirs.userDir, layerDirs: [dirs.defaultDir, dirs.userDir, dirs.projectDir] });
+  const head = (await readFile(target, "utf8")).split(/^---$/mu)[1]!;
+  expect(head).not.toMatch(/^model:/mu);
+  expect(head).not.toMatch(/^thinking:/mu);
+  expect(head).toMatch(/^skills: \[\]$/mu);
+  expect(head).toMatch(/^mcp: \[\]$/mu);
+});
+
+test("80 列下在 PM 上回车改模型、在开关上回车改开关、在 worker 上按 C 命名时，目录仍完整显示，当前分类行是焦点在右栏的样式", async () => {
+  const cases: Array<[RegExp, string[], string]> = [[/模型 +3/u, toSection("models", ENTER), "模型"], [/开关 +1/u, toSection("switches", ENTER), "开关"], [/worker +2/u, [RIGHT, "c"], "worker"]];
+  for (const [cell, keys] of cases) {
+    const p = await page();
+    p.press(...keys);
+    const joined = navCells(p.rows()).join("|");
+    for (const name of ["worker", "reviewer", "qa", "explore", "prototype", "模型", "开关"]) expect(joined, `${cell.source} ${name}`).toContain(name);
+    const raw = p.lines().find((line) => plain(line).includes("│") && cell.test(plain(line).slice(0, plain(line).indexOf("│"))))!;
+    const navPart = raw.slice(0, raw.indexOf("│"));
+    expect(navPart, cell.source).not.toContain("[selectedBg]");
+    expect(navPart, cell.source).toMatch(/<accent>[^\n]*\*\*/u);
+  }
+});
+
+test("展开详情里很长的文件路径折成多行完整显示，不用 … 截断，每行不超宽", async () => {
+  for (let width = 36; width <= 80; width++) {
+    const p = await page({ longPath: true });
+    p.press(RIGHT, ENTER);
+    const home = homedir();
+    const full = join(p.root, "u", "ui-worker.md");
+    const expected = full.startsWith(home) ? `~${full.slice(home.length)}` : full;
+    expect(squeeze(rightParts(p.rows(width)).join("").replaceAll("┊", "")), `${width}`).toContain(squeeze(expected));
+    for (const row of p.rows(width)) expect(visibleWidth(row), `${width}: ${row}`).toBeLessThanOrEqual(width);
+  }
+});
+
+const startCol = (row: string, needle: string) => {
+  const from = row.includes("│") ? row.indexOf("│") + 1 : 0;
+  const index = row.indexOf(needle, from);
+  return index < 0 ? -1 : visibleWidth(row.slice(0, index));
+};
+const rowWith = (rows: string[], needle: string) => rows.find((row) => startCol(row, needle) >= 0) ?? "";
+
+test("宽布局 60 和 80 列下，两条分隔线之间每一行的 │ 都恰好在第 21 个显示列，含目录空行和比目录长的右栏行", async () => {
+  const screens: Array<[string, PageOptions, string[]]> = [
+    ["目录", {}, []], ["职责展开", {}, [RIGHT, ENTER]], ["命名", {}, [RIGHT, "c"]], ["模型第 1 步", {}, toSection("models", ENTER)],
+    ["模型第 3 步", { models: [SOL, LONG] }, toSection("models", ENTER, ENTER, ENTER)], ["开关第 2 步", { trusted: false }, toSection("switches", ENTER, ENTER)],
+    ["问题展开", { trusted: false }, toSection("problems", ENTER)],
+  ];
+  for (const [label, options, keys] of screens) {
+    const p = await page(options);
+    p.press(...keys);
+    for (const width of [60, 80]) {
+      const rows = p.rows(width);
+      const top = rows.findIndex((row) => row.includes("┬")), bottom = rows.findIndex((row) => row.includes("┴"));
+      expect(top, label).toBeGreaterThan(-1);
+      for (const row of rows.slice(top + 1, bottom)) {
+        expect(row.includes("│"), `${label} ${width}: ${row}`).toBe(true);
+        expect(visibleWidth(row.slice(0, row.indexOf("│"))), `${label} ${width}: ${row}`).toBe(20);
+      }
+    }
+  }
+});
+
+test("宽布局职责表格：表头的来源、模型、思考与数据行的来源标签、模型、思考同一起始列", async () => {
+  const p = await page();
+  p.press(RIGHT);
+  const rows = p.rows();
+  const head = rowWith(rows, "名称");
+  const user = rows.find((row) => row.includes("ui-worker") && row.includes("│"))!;
+  const builtin = rows.find((row) => row.includes(" 内置 ") && row.includes("│") && row.includes("worker") && !row.includes("ui-worker"))!;
+  expect(startCol(head, "来源")).toBe(startCol(user, " 用户 "));
+  expect(startCol(head, "来源")).toBe(startCol(builtin, " 内置 "));
+  expect(startCol(head, "模型")).toBe(startCol(user, "5x/gpt-6-luna"));
+  expect(startCol(head, "模型")).toBe(startCol(builtin, "跟随主会话"));
+  expect(startCol(head, "思考")).toBe(startCol(user, "medium"));
+  expect(startCol(head, "思考")).toBe(visibleWidth(builtin.slice(0, builtin.lastIndexOf("跟随"))));
+});
+
+test("宽布局模型表格：表头的来源、模型、思考与 PM 行同一起始列", async () => {
+  const p = await page({ user: oneCompany({ pm: { model: "gpt-6-luna", thinking: "high" } }) });
+  toModels(p);
+  const rows = p.rows();
+  const head = rowWith(rows, "名称"), pm = rows.find((row) => row.includes("PM ") && row.includes("gpt-6-luna") && row.includes("│"))!;
+  expect(startCol(head, "来源")).toBe(startCol(pm, " 用户 "));
+  expect(startCol(head, "模型")).toBe(startCol(pm, "gpt-6-luna"));
+  expect(startCol(head, "思考")).toBe(startCol(pm, "high"));
+});
+
+test("宽布局开关表格：表头的来源、状态与 Git 交付行同一起始列", async () => {
+  const p = await page({ user: oneCompany({ "git-delivery": true }) });
+  toSwitches(p);
+  const rows = p.rows();
+  const head = rowWith(rows, "名称"), row = rows.find((r) => r.includes("Git 交付") && r.includes("│") && r.includes("开启"))!;
+  expect(startCol(head, "来源")).toBe(startCol(row, " 用户 "));
+  expect(startCol(head, "状态")).toBe(startCol(row, "开启"));
+});
+
+test("宽布局问题表格：表头的层、原因与数据行同一起始列", async () => {
+  const p = await page();
+  enterSection(p, "problems");
+  const rows = p.rows(200);
+  const head = rows.find((r) => /文件 +层 +原因/u.test(r))!, row = rows.find((r) => r.includes("broken.md"))!;
+  expect(startCol(head, "层")).toBe(startCol(row, " 用户 "));
+  expect(startCol(head, "原因")).toBe(startCol(row, "thinking 写错了"));
+});
+
+test("目录里标签左对齐，份数单独成一列，各行数字起始列相同", async () => {
+  const p = await page();
+  const cells = navCells(p.rows()).length && p.rows().filter((row) => row.includes("│")).map((row) => row.slice(0, row.indexOf("│")));
+  const labels = ["worker", "reviewer", "qa", "explore", "prototype", "模型", "开关", "问题"];
+  const found = labels.map((label) => (cells as string[]).find((cell) => cell.includes(label) && /\d+\s*$/u.test(cell))!);
+  expect(found.every(Boolean)).toBe(true);
+  const numberCols = found.map((cell) => visibleWidth(cell.slice(0, cell.search(/\d+\s*$/u))));
+  expect(new Set(numberCols).size).toBe(1);
+  const labelCols = found.map((cell, index) => visibleWidth(cell.slice(0, cell.indexOf(labels[index]!))));
+  expect(new Set(labelCols).size).toBe(1);
+});
+
+test("修改模型的三步里，底部继续写 PM 的说明，按键提示是步骤自己的", async () => {
+  const hints = ["↑↓ 选择  回车 下一步  Esc 取消", "↑↓ 选择  回车 下一步  Esc 上一步", "↑↓ 选择  回车 保存  Esc 上一步"];
+  for (const [index, hint] of hints.entries()) {
+    const p = await page();
+    p.press(...toSection("models", ...Array<string>(index + 1).fill(ENTER)));
+    expect(squeeze(p.text()), `第 ${index + 1} 步`).toContain(squeeze("PM：活动需求的负责人，拆任务、派工、调度 · 内置默认值 · 下次启动 PM 时生效"));
+    expect(p.text()).toContain(hint);
+  }
+});
+
+test("修改开关的两步里，底部继续写 Git 交付的说明，按键提示是步骤自己的", async () => {
+  const hints = ["↑↓ 选择  回车 下一步  Esc 取消", "↑↓ 选择  回车 保存  Esc 上一步"];
+  for (const [index, hint] of hints.entries()) {
+    const p = await page();
+    p.press(...toSection("switches", ...Array<string>(index + 1).fill(ENTER)));
+    expect(squeeze(p.text()), `第 ${index + 1} 步`).toContain(squeeze("Git 交付：开启后主代理可以替你提交归档、推送并建 PR · 内置默认值 · 立即生效"));
+    expect(p.text()).toContain(hint);
+  }
+});
+
+test("项目、用户、内置三层都有 worker 定义时，目录焦点底部按项目、用户、内置写份数", async () => {
+  const p = await page({ projectWorker: true });
+  expect(p.text()).toContain("worker：写代码 · 3 份定义（项目 1 · 用户 1 · 内置 1）");
+});
+
+test("问题分类里按 C 和 R 不起作用：不触发回调，不进入命名或修改，不出现提示", async () => {
+  const p = await page();
+  enterSection(p, "problems");
+  const before = p.text();
+  p.press("c", "C", "r", "R");
+  expect(p.copies).toEqual([]);
+  expect(p.saves).toEqual([]);
+  expect(p.clears).toEqual([]);
+  expect(p.switchClears).toEqual([]);
+  expect(p.text()).toBe(before);
+});
+
+test("缺少 role 字段的定义文件在问题分类里显示一行，短原因是不是 one-company 的定义，没有导入", async () => {
+  const p = await page({ noRole: true });
+  enterSection(p, "problems");
+  const row = paneParts(p.rows(200)).find((line) => line.includes("other.md"));
+  expect(row).toMatch(/other\.md +用户 +不是 one-company 的定义，没有导入/u);
+});
