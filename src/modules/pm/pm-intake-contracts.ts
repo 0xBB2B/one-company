@@ -35,9 +35,9 @@ const actionScopeVersion = Type.String({ pattern: "^intake-action-scope/v1:[0-9a
 export const IntakeBindingSchema = object({
   repoId: hash,
   requirementId: uuidV7,
-  approvedProdCommit: commit,
+  approvedPrdCommit: commit,
   approvedRevision: positive,
-  approvedProdHash: hash,
+  approvedPrdHash: hash,
   approvalManifestHash: hash,
   approvalScopeVersion,
   actionScopeVersion,
@@ -52,8 +52,8 @@ export type IntakeBinding = Static<typeof IntakeBindingSchema>;
 
 export const IntakeSourceRefSchema = object({
   kind: Type.Union([
-    Type.Literal("prod-unit"),
-    Type.Literal("prod-scenario"),
+    Type.Literal("prd-unit"),
+    Type.Literal("prd-scenario"),
     Type.Literal("decision"),
     Type.Literal("question"),
   ]),
@@ -89,8 +89,8 @@ export type PmUnderstanding = Static<typeof PmUnderstandingSchema>;
 
 const sourceIdList = Type.Array(opaqueId);
 export const IntakeSourceDirectorySchema = object({
-  prodUnitIds: sourceIdList,
-  prodScenarioIds: sourceIdList,
+  prdUnitIds: sourceIdList,
+  prdScenarioIds: sourceIdList,
   decisionIds: sourceIdList,
   questionIds: sourceIdList,
   requiredScenarioIds: Type.Array(opaqueId, { minItems: 1, maxItems: PM_INTAKE_LIMITS.groupItems }),
@@ -108,7 +108,7 @@ export const IntakeReviewRecordSchema = object({
   result: Type.Union([
     Type.Literal("passed"),
     Type.Literal("pm_correction_required"),
-    Type.Literal("prod_revision_required"),
+    Type.Literal("prd_revision_required"),
     Type.Literal("clarification_required"),
   ]),
   sourceRefs: Type.Array(IntakeSourceRefSchema, { maxItems: PM_INTAKE_LIMITS.sourceRefs }),
@@ -200,16 +200,16 @@ function checkedDirectory(value: unknown): IntakeSourceDirectory {
   const checked = cloneChecked<IntakeSourceDirectory>(IntakeSourceDirectorySchema, value);
   if (bytes(checked.json) > PM_INTAKE_LIMITS.jsonBytes) fail("resource_limit");
   const directory = checked.value;
-  for (const ids of [directory.prodUnitIds, directory.prodScenarioIds, directory.decisionIds, directory.questionIds, directory.requiredScenarioIds]) {
+  for (const ids of [directory.prdUnitIds, directory.prdScenarioIds, directory.decisionIds, directory.questionIds, directory.requiredScenarioIds]) {
     checkUnique(ids, "duplicate_source");
   }
-  if (directory.requiredScenarioIds.some((id) => !directory.prodScenarioIds.includes(id))) fail("invalid_source_directory");
+  if (directory.requiredScenarioIds.some((id) => !directory.prdScenarioIds.includes(id))) fail("invalid_source_directory");
   return directory;
 }
 
 function knownSource(ref: IntakeSourceRef, directory: IntakeSourceDirectory): boolean {
-  const ids = ref.kind === "prod-unit" ? directory.prodUnitIds
-    : ref.kind === "prod-scenario" ? directory.prodScenarioIds
+  const ids = ref.kind === "prd-unit" ? directory.prdUnitIds
+    : ref.kind === "prd-scenario" ? directory.prdScenarioIds
       : ref.kind === "decision" ? directory.decisionIds : directory.questionIds;
   return ids.includes(ref.id);
 }
@@ -217,13 +217,13 @@ function knownSource(ref: IntakeSourceRef, directory: IntakeSourceDirectory): bo
 /** 接手理解里不在出处清单中的引用（kind:id），供 PM 提交时当场改正。 */
 export function unknownIntakeSourceRefs(value: Omit<PmUnderstanding, "format" | "binding">, directory: IntakeSourceDirectory): string[] {
   const refs = understandingRefs(value as PmUnderstanding).flat().filter((ref) => !knownSource(ref, directory)).map((ref) => `${ref.kind}:${ref.id}`);
-  const scenarios = value.scenarioCoverage.filter((item) => !directory.prodScenarioIds.includes(item.scenarioId)).map((item) => `prod-scenario:${item.scenarioId}`);
+  const scenarios = value.scenarioCoverage.filter((item) => !directory.prdScenarioIds.includes(item.scenarioId)).map((item) => `prd-scenario:${item.scenarioId}`);
   return [...new Set([...refs, ...scenarios])];
 }
 
-/** 出处里没有引用场景本身（prod-scenario:场景编号）的场景覆盖项；主代理核对时这样的提交会被拒收。 */
+/** 出处里没有引用场景本身（prd-scenario:场景编号）的场景覆盖项；主代理核对时这样的提交会被拒收。 */
 export function scenariosWithoutOwnRef(value: Pick<PmUnderstanding, "scenarioCoverage">): string[] {
-  return value.scenarioCoverage.filter((item) => !item.sourceRefs.some((ref) => ref.kind === "prod-scenario" && ref.id === item.scenarioId)).map((item) => item.scenarioId);
+  return value.scenarioCoverage.filter((item) => !item.sourceRefs.some((ref) => ref.kind === "prd-scenario" && ref.id === item.scenarioId)).map((item) => item.scenarioId);
 }
 
 function checkRefs(refs: readonly IntakeSourceRef[], directory: IntakeSourceDirectory): void {
@@ -263,8 +263,8 @@ export function checkPmUnderstanding(value: unknown, sourceDirectory: unknown): 
   allRefs.forEach((refs) => checkRefs(refs, directory));
   checkUnique(understanding.scenarioCoverage.map((item) => item.scenarioId));
   for (const item of understanding.scenarioCoverage) {
-    if (!directory.prodScenarioIds.includes(item.scenarioId)) fail("unknown_source");
-    if (!item.sourceRefs.some((ref) => ref.kind === "prod-scenario" && ref.id === item.scenarioId)) fail("unknown_source");
+    if (!directory.prdScenarioIds.includes(item.scenarioId)) fail("unknown_source");
+    if (!item.sourceRefs.some((ref) => ref.kind === "prd-scenario" && ref.id === item.scenarioId)) fail("unknown_source");
   }
   const coverage = new Map(understanding.scenarioCoverage.map((item) => [item.scenarioId, item.status]));
   const uncoveredScenarioIds = directory.requiredScenarioIds.filter((id) => coverage.get(id) !== "covered");
@@ -291,7 +291,7 @@ export function checkIntakeReviewRecord(value: unknown, sourceDirectory: unknown
   const record = checked.value;
   checkRefs(record.sourceRefs, directory);
   record.shortIssues.forEach(checkText);
-  if (record.result === "passed" && record.shortIssues.length) fail("invalid_shape", "result 为 passed 时 shortIssues 必须是空数组，核对通过的说明不要写进 shortIssues；确有问题要写时，result 改选 pm_correction_required、prod_revision_required 或 clarification_required");
+  if (record.result === "passed" && record.shortIssues.length) fail("invalid_shape", "result 为 passed 时 shortIssues 必须是空数组，核对通过的说明不要写进 shortIssues；确有问题要写时，result 改选 pm_correction_required、prd_revision_required 或 clarification_required");
   if (record.result !== "passed" && !record.shortIssues.length) fail("invalid_shape", `result 为 ${record.result} 时 shortIssues 至少写一条问题；没有问题就把 result 改为 passed`);
   return { status: "accepted", record };
 }
@@ -299,7 +299,7 @@ export function checkIntakeReviewRecord(value: unknown, sourceDirectory: unknown
 export type IntakeContinuityReason =
   | "review_missing"
   | "pm_correction_required"
-  | "prod_revision_required"
+  | "prd_revision_required"
   | "clarification_required"
   | "understanding_baseline_missing"
   | "understanding_baseline_mismatch"
@@ -321,7 +321,7 @@ export type IntakeContinuityReason =
 const INTAKE_REASON_TEXT: Record<IntakeContinuityReason | "requirement_not_ready", string> = {
   review_missing: "主代理还没有核对 PM 的接手理解",
   pm_correction_required: "主代理核对后要求 PM 改正接手理解",
-  prod_revision_required: "主代理核对后认为需要先修订需求",
+  prd_revision_required: "主代理核对后认为需要先修订需求",
   clarification_required: "主代理核对后认为需要先向用户澄清",
   understanding_baseline_missing: "当前 PM 还没有提交接手理解",
   understanding_baseline_mismatch: "核对过的接手理解不是 PM 最新提交的那份",
@@ -394,8 +394,8 @@ export function evaluateIntakeContinuity(value: unknown): IntakeContinuityEvalua
     samePhysicalBinding(review.binding, facts.currentBinding, reasons);
 
     const sameApprovedRevision = review.binding.approvedRevision === facts.currentBinding.approvedRevision;
-    const sameApprovedBundle = review.binding.approvedProdCommit === facts.currentBinding.approvedProdCommit
-      && review.binding.approvedProdHash === facts.currentBinding.approvedProdHash
+    const sameApprovedBundle = review.binding.approvedPrdCommit === facts.currentBinding.approvedPrdCommit
+      && review.binding.approvedPrdHash === facts.currentBinding.approvedPrdHash
       && review.binding.approvalManifestHash === facts.currentBinding.approvalManifestHash
       && review.binding.approvalScopeVersion === facts.currentBinding.approvalScopeVersion;
 
@@ -408,7 +408,7 @@ export function evaluateIntakeContinuity(value: unknown): IntakeContinuityEvalua
   }
 
   const reviewReasons = new Set<IntakeContinuityReason>([
-    "review_missing", "pm_correction_required", "prod_revision_required", "clarification_required",
+    "review_missing", "pm_correction_required", "prd_revision_required", "clarification_required",
     "understanding_baseline_missing", "understanding_baseline_mismatch", "requirement_binding_changed", "workspace_changed",
     "epoch_changed", "new_pm_run", "new_pm_fence", "context_changed", "action_scope_changed",
     "approved_revision_regressed", "approved_binding_changed_without_revision",

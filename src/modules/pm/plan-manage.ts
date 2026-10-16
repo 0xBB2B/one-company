@@ -150,7 +150,7 @@ function carriedDecision(decision: UserDecision, version: number): UserDecision 
 const PlanRecord = object({
   format: Type.Literal("plan/v1"), requirementId: id, planVersion: positive, confirmedVersion: Type.Union([positive, Type.Null()]),
   confirmedTasks: Type.Array(object({ taskId: id, version: positive }), { maxItems: 256 }),
-  taskIds: Type.Array(id, { maxItems: 256 }), knownUnits: Type.Array(UnitRef), prodRevision: positive, confirmedRevision: Type.Optional(positive), updatedAt: positive,
+  taskIds: Type.Array(id, { maxItems: 256 }), knownUnits: Type.Array(UnitRef), prdRevision: positive, confirmedRevision: Type.Optional(positive), updatedAt: positive,
 });
 export type PlanRecord = Static<typeof PlanRecord>;
 
@@ -420,7 +420,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     assertAcyclic(tasks);
     const plan = checked(PlanRecord, { format: "plan/v1", requirementId: grant.requirementId, planVersion: 1, confirmedVersion: null, confirmedTasks: [],
       taskIds: tasks.map((task) => task.taskId), knownUnits: manifest.units.map((unit) => ({ unitId: unit.id, hash: unit.hash })),
-      prodRevision: record.data.revision, updatedAt: now() });
+      prdRevision: record.data.revision, updatedAt: now() });
     return commit({ planVersion: null, recordVersion: record.version, tasks: new Map() }, plan, tasks);
   }
 
@@ -541,7 +541,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
         { taskId: "global", impact: params.global.assessment, reason: params.global.rationale }] });
     const after = state.read(grant.requirementId);
     const next = checked(PlanRecord, { ...plan.plan, planVersion: plan.plan.planVersion + 1,
-      knownUnits: manifest.units.map((unit) => ({ unitId: unit.id, hash: unit.hash })), prodRevision: params.revision, updatedAt: now() });
+      knownUnits: manifest.units.map((unit) => ({ unitId: unit.id, hash: unit.hash })), prdRevision: params.revision, updatedAt: now() });
     return commit({ planVersion: plan.plan.planVersion, recordVersion: after.version, tasks: new Map() }, next, live, apply);
   }
 

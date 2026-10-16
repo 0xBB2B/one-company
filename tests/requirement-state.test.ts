@@ -60,7 +60,7 @@ test("未接入可信核验默认拒绝，不创建数据库；模型额外角�
   await expect(RequirementStateStore.open({ ...w.options, dataRoot: join(w.repo.root, "private") })).rejects.toThrow(/worktree分离/);
   expect(existsSync(repositoryDatabase(w.options.dataRoot, w.identity.repoId))).toBe(false);
   const input = { requestId: uuidv7(), intentHash: "b".repeat(64) };
-  for (const extra of [{ role: "main" }, { actor: "user" }, { prodBody: "forbidden" }, { metadata: {} }]) {
+  for (const extra of [{ role: "main" }, { actor: "user" }, { prdBody: "forbidden" }, { metadata: {} }]) {
     expect(() => w.store.reserve({ ...input, ...extra })).toThrow(/invalid_shape/);
   }
   expect(existsSync(repositoryDatabase(w.options.dataRoot, w.identity.repoId))).toBe(false);
@@ -255,16 +255,16 @@ test("确认更新保留准确前后引用，不清除pending，也不改历史�
   const w = await world(); const record = await w.activate();
   const lease = await w.store.acquirePm({ requirementId: record.id, version: record.version, runId: uuidv7(), expectedFence: 0 });
   const path = repositoryDatabase(w.options.dataRoot, w.identity.repoId);
-  withDatabase(path, (db) => db.create("verification_runs", "fixture", { prodHash: record.data.approved!.hash, result: "PASS" }));
+  withDatabase(path, (db) => db.create("verification_runs", "fixture", { prdHash: record.data.approved!.hash, result: "PASS" }));
   const saved = await w.update(record.id, "更新后的状态正文");
   const next = await w.approve(record.id, saved.operationId);
   expect(next.data.pendingRevision).toBe(2);
   await expect(w.store.checkScheduling(lease)).rejects.toThrow(/pending_update/);
   const event = w.store.events(record.id).at(-1)!;
-  expect(event.data.from).toEqual(record.data.approved); expect(event.data.to).toEqual({ commit: saved.commit, hash: saved.prodHash.slice("sha256:".length) });
+  expect(event.data.from).toEqual(record.data.approved); expect(event.data.to).toEqual({ commit: saved.commit, hash: saved.prdHash.slice("sha256:".length) });
   expect(w.store.read(record.id).data.pendingRevision).toBe(2);
   expect(() => w.store.beginClose({ requirementId: record.id, version: next.version, intent: { operationId: uuidv7(), reason: "completed", receiptId: uuidv7() } })).toThrow(/completion_blocked/);
-  expect(withDatabase(path, (db) => db.read("verification_runs", "fixture")!.data)).toEqual({ prodHash: record.data.approved!.hash, result: "PASS" });
+  expect(withDatabase(path, (db) => db.read("verification_runs", "fixture")!.data)).toEqual({ prdHash: record.data.approved!.hash, result: "PASS" });
 });
 
 for (const reason of ["completed", "cancelled", "rejected"] as const) {

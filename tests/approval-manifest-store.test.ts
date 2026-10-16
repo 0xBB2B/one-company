@@ -1,13 +1,13 @@
 import { expect, test } from "vitest";
 import { uuidv7 } from "../src/core/storage/database.ts";
-import { partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
+import { partitionPrdDocument } from "../src/modules/requirement/prd-view.ts";
 import { approvalManifestDigest, approvalManifestReference, checkApprovalManifest } from "../src/modules/requirement/approval-manifest.ts";
 import { ApprovalManifestStore, summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
 
 function fixture() {
-  const requirementId = uuidv7(), partition = partitionProdDocument(requirementId, "范围", "# A {#A}\n目标\n# B {#B}\n未决\n");
+  const requirementId = uuidv7(), partition = partitionPrdDocument(requirementId, "范围", "# A {#A}\n目标\n# B {#B}\n未决\n");
   const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "a".repeat(64), from: null,
-    to: { commit: "b".repeat(40), hash: partition.prodHash } };
+    to: { commit: "b".repeat(40), hash: partition.prdHash } };
   const payload = { format: "approval-manifest/v1" as const, requirementId, candidate, totalBytes: partition.totalBytes,
     units: partition.units.map((u) => ({ ...u, disposition: u.id === "B" ? "pending-description" as const : "confirmed" as const,
       globalConstraint: u.id === "B", appliesTo: u.id === "B" ? ["A"] : [], dependsOn: [], decisionIds: [uuidv7()] })),

@@ -78,7 +78,7 @@ async function world() {
     state.assessUpdate({ lease: structuredClone(extra.lease ?? lease), version: state.read(created.requirementId).version, revision, assessmentId: uuidv7(), tasks });
   return { ...options, state, created, lease, workspace, rounds, verification, submit, reader, approve, assess, database: repositoryDatabase(options.dataRoot, options.repoId) };
 }
-const finding = (kind: "blocking" | "suggestion" | "unverified") => ({ kind, targetRef: "prod:goals", evidenceRef: null, trigger: "按方向键", impact: "无法移动" });
+const finding = (kind: "blocking" | "suggestion" | "unverified") => ({ kind, targetRef: "prd:goals", evidenceRef: null, trigger: "按方向键", impact: "无法移动" });
 
 test("M6-AC19/M7A-AC2：裁决按阻塞/建议/未验证分级并关联目标与证据；worker 与 reviewer 只能引用自己的 debug 结果，reviewer 裁决绑定被审任务尝试；QA 必须绑定检查轮且不能是 PM 自身", async () => {
   const w = await world();

@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { uuidv7 } from "../src/core/storage/database.ts";
 import { approvalManifestDigest, checkApprovalManifest } from "../src/modules/requirement/approval-manifest.ts";
-import { partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
+import { partitionPrdDocument } from "../src/modules/requirement/prd-view.ts";
 import { decisionDigest } from "../src/modules/requirement/short-decision-format.ts";
 import { PM_INTAKE_NAMESPACES } from "../src/modules/pm/pm-intake-store.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
@@ -30,7 +30,7 @@ test("真实连续决定保留A、修改B后，接手覆盖retained实际决定�
   invalid.units.find((unit) => unit.id === "goal.login")!.decisionIds = [...invalid.units.find((unit) => unit.id === "scenario.failure")!.decisionIds];
   invalid.manifestHash = approvalManifestDigest(invalid);
   expect(() => checkApprovalManifest(invalid, { requirementId: fixture.requirementId, candidate: fixture.manifest.candidate,
-    partition: partitionProdDocument(fixture.requirementId, approved.title, approved.body) })).toThrow();
+    partition: partitionPrdDocument(fixture.requirementId, approved.title, approved.body) })).toThrow();
   fixture.db((db) => { const row = db.read("short_decisions", retained!.decision.id)!;
     db.update("short_decisions", retained!.decision.id, row.version, row.data); });
   expect(() => fixture.intake.assertResultCurrent(fixture.call, view)).toThrow();

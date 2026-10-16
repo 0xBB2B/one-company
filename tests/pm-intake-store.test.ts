@@ -29,8 +29,8 @@ test("capture逐字段绑定真实批准、工作区、epoch和PM身份，任一
   expect(captured.binding.approvalScopeVersion).toMatch(/^intake-approval-scope\/v1:[0-9a-f]{64}$/);
   expect(captured.binding.actionScopeVersion).toMatch(/^intake-action-scope\/v1:[0-9a-f]{64}$/);
   const mutations: Array<[keyof typeof fixture.basis, unknown]> = [
-    ["repoId", hash("9")], ["requirementId", uuidv7()], ["approvedProdCommit", "9".repeat(40)],
-    ["approvedRevision", fixture.basis.approvedRevision + 1], ["approvedProdHash", hash("9")],
+    ["repoId", hash("9")], ["requirementId", uuidv7()], ["approvedPrdCommit", "9".repeat(40)],
+    ["approvedRevision", fixture.basis.approvedRevision + 1], ["approvedPrdHash", hash("9")],
     ["approvalManifestHash", hash("9")], ["workspaceId", hash("9")], ["workspaceRef", "refs/heads/other"],
     ["epoch", fixture.basis.epoch + 1], ["pmRunId", uuidv7()], ["pmFence", fixture.basis.pmFence + 1],
     ["contextGeneration", fixture.basis.contextGeneration + 1],
@@ -53,7 +53,7 @@ test("请求原子落库、相同目录不同创建时间可复用，且不写�
   expect(counts(fixture)).toMatchObject({ [PM_INTAKE_NAMESPACES.requests]: 2, [PM_INTAKE_NAMESPACES.directories]: 1,
     [PM_INTAKE_NAMESPACES.operations]: 2, [PM_INTAKE_NAMESPACES.heads]: 1 });
   const persisted = fixture.db((db) => Object.values(PM_INTAKE_NAMESPACES).flatMap((namespace) => db.list(namespace).map((row) => row.data)));
-  expect(JSON.stringify(persisted)).not.toMatch(/understanding|输入正确验证码|错误验证码显示失败|prodBody|diff|transcript/);
+  expect(JSON.stringify(persisted)).not.toMatch(/understanding|输入正确验证码|错误验证码显示失败|prdBody|diff|transcript/);
   expect(fixture.state.read(fixture.requirementId)).toEqual(beforeRequirement);
   expect(fixture.db((db) => db.read("pm_ownership", fixture.requirementId))).toEqual(beforeOwner);
 });

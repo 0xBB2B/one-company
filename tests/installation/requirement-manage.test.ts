@@ -183,7 +183,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     await session.waitForIdle();
     const result = session.messages.find((message) => message.role === "toolResult" && message.toolName === "one_company_requirement_manage");
     expect(result?.isError, JSON.stringify(result?.content)).toBe(false);
-    const details = result?.details as { requirementId: string; commit: string; prodHash: string; lifecycle: string; revision: number; version: number };
+    const details = result?.details as { requirementId: string; commit: string; prdHash: string; lifecycle: string; revision: number; version: number };
     const createResults = session.messages.filter((message) => message.role === "toolResult" && message.toolName === "one_company_requirement_manage");
     expect(createResults).toHaveLength(2);
     expect(createResults[1]?.details).toEqual(details);
@@ -193,9 +193,9 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     expect(details.revision).toBe(0);
 
     const requirementRoot = join(agentDir, "one-company", "repos", identity.repoId, "requirements", details.requirementId);
-    const prod = await readFile(join(requirementRoot, "prod.md"));
-    expect(prod.toString()).toContain(`requirementId: ${details.requirementId}`);
-    expect(details.prodHash).toBe(`sha256:${createHash("sha256").update(prod).digest("hex")}`);
+    const prd = await readFile(join(requirementRoot, "prd.md"));
+    expect(prd.toString()).toContain(`requirementId: ${details.requirementId}`);
+    expect(details.prdHash).toBe(`sha256:${createHash("sha256").update(prd).digest("hex")}`);
     expect(await git(requirementRoot, ["rev-list", "--count", "HEAD"])).toBe("1");
     expect(await git(requirementRoot, ["show", "-s", "--format=%H", "HEAD"])).toBe(details.commit);
 
@@ -216,7 +216,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     expect(await git(requirementRoot, ["rev-list", "--count", "HEAD"])).toBe("1");
     const replied = session.messages.find((message) => message.role === "toolResult" && message.toolName === "one_company_user_interact");
     expect(replied?.isError, JSON.stringify(replied?.content)).toBe(false);
-    expect(replied?.details).toMatchObject({ targetRecorded: true, prodActivated: true });
+    expect(replied?.details).toMatchObject({ targetRecorded: true, prdActivated: true });
     expect(notifications.filter((entry) => entry.type === "error")).toEqual([]);
   } finally {
     const cleanupErrors: unknown[] = [];

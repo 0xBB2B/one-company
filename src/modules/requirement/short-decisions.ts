@@ -30,7 +30,7 @@ function available(record: RequirementRecord): void {
   if (record.recovery !== "ready" || !["draft", "active"].includes(record.lifecycle)) throw new ShortDecisionError("lifecycle_denied");
 }
 
-/** 内部短结论存储，不签发用户批准、不更新prod基线、不注册模型工具。 */
+/** 内部短结论存储，不签发用户批准、不更新PRD基线、不注册模型工具。 */
 export class ShortDecisionStore {
   private readonly options: ShortDecisionStoreOptions;
   private readonly state: RequirementStateStore;
@@ -91,12 +91,12 @@ export class ShortDecisionStore {
         return { operationId: batch.operationId, decisionIds: existing.decisionIds };
       }
       if (stored.version !== batch.version) throw new StaleVersionError();
-      if (decisionDigest(batch.prod) !== decisionDigest(requirement.lifecycle === "active" ? requirement.approved : requirement.saved)) throw new ShortDecisionError("prod_reference_changed");
+      if (decisionDigest(batch.prd) !== decisionDigest(requirement.lifecycle === "active" ? requirement.approved : requirement.saved)) throw new ShortDecisionError("prd_reference_changed");
       for (const [index, item] of batch.decisions.entries()) {
         const subject = admission.subjects[index]!, decisionId = ids[index]!;
         const record: ShortDecisionRecord = { format: "short-decision/v1", decisionId, operationId: batch.operationId,
           requirementId: batch.requirementId, repoId: this.options.repoId, requirementVersion: batch.version, epoch: batch.epoch,
-          prod: batch.prod, ...item, ...subject, supersededBy: null, recordedAt: now };
+          prd: batch.prd, ...item, ...subject, supersededBy: null, recordedAt: now };
         checkDecisionRecord(record);
         for (const target of item.supersedes) {
           const old = this.record(db, target, batch.requirementId);

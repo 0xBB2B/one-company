@@ -28,7 +28,7 @@ async function world() {
 }
 const text = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1) ?? "");
 
-test("M7-AC15/AC17：PM 派出 explore 只拿到问题、线索与工作区范围，不含 prod 正文与 PM 会话；结果非阻塞地注入 PM 会话并标明不是 PASS", async () => {
+test("M7-AC15/AC17：PM 派出 explore 只拿到问题、线索与工作区范围，不含 PRD 正文与 PM 会话；结果非阻塞地注入 PM 会话并标明不是 PASS", async () => {
   const w = await world();
   const fileHash = await w.hashOf(w.readme);
   w.provider.queue.push(w.submit(w.readme, fileHash), { type: "text", text: "PM 收到检索结果" });

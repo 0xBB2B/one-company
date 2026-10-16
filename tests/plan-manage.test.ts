@@ -148,8 +148,8 @@ test("M7-AC32：任务只能引用获准实施的需求章节，依赖须存在�
   await expect(pm.execute({ action: "propose", tasks: [spec("x", { goalUnitIds: ["goal.unknown"] })] })).rejects.toMatchObject({ code: "unknown_unit" });
   await expect(pm.execute({ action: "propose", tasks: [spec("a", { dependsOn: ["b"] }), spec("b", { dependsOn: ["a"] })] })).rejects.toMatchObject({ code: "dependency_invalid" });
   await expect(pm.execute({ action: "propose", tasks: [spec("a", { dependsOn: ["missing"] })] })).rejects.toMatchObject({ code: "dependency_invalid" });
-  await expect(pm.execute({ action: "propose", tasks: [spec("a", { writePaths: ["docs/prod/x.md"] })] }))
-    .rejects.toThrow("a 的 docs/prod/x.md 不能由 worker 写入");
+  await expect(pm.execute({ action: "propose", tasks: [spec("a", { writePaths: ["docs/prd/x.md"] })] }))
+    .rejects.toThrow("a 的 docs/prd/x.md 不能由 worker 写入");
 }, 30000);
 
 test("M9：把用户已确认的约束段写成任务目标时，拒绝原因提示约束放进 constraintUnitIds、不要为此修改需求；放进约束后可以提出", async () => {

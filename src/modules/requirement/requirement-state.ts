@@ -8,8 +8,8 @@ import { pathExists, assertDataRootOutsideWorktrees } from "../../core/storage/d
 import { listWorktrees, repositoryIdentity } from "../../core/storage/identity.ts";
 import { canonicalJson } from "../../core/storage/strict-json.ts";
 import type { JsonValue } from "../../core/storage/strict-json.ts";
-import { checked, checkRequirement, commands, hash, id, object, counter, positive, ApprovedProdChange, BaselineDelivery, OwnerClaim, PmContext, PmEventCursor, PmRecord, PmLease, RequestRecord, RequirementEvent, RequirementStateError } from "./requirement-contracts.ts";
-import type { ApprovedProdChange as ApprovedProdChangeData, BaselineDelivery as BaselineDeliveryData, PmContext as PmContextData, PmEventCursor as PmEventCursorData, PmRecord as PmRecordData, RequirementRecord, ProdReference, WorkspaceBinding } from "./requirement-contracts.ts";
+import { checked, checkRequirement, commands, hash, id, object, counter, positive, ApprovedPrdChange, BaselineDelivery, OwnerClaim, PmContext, PmEventCursor, PmRecord, PmLease, RequestRecord, RequirementEvent, RequirementStateError } from "./requirement-contracts.ts";
+import type { ApprovedPrdChange as ApprovedPrdChangeData, BaselineDelivery as BaselineDeliveryData, PmContext as PmContextData, PmEventCursor as PmEventCursorData, PmRecord as PmRecordData, RequirementRecord, PrdReference, WorkspaceBinding } from "./requirement-contracts.ts";
 import { inspectRequirementWorkspace, verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { promoteOnApprovalIn, readBoardIn } from "./requirement-prototypes.ts";
 import { writePrototypeRevision } from "./requirement-prototype-revisions.ts";
@@ -40,9 +40,9 @@ export interface RequirementStoreOptions {
 }
 export type ApprovedEventPoll =
   | { status: "caught_up"; cursor: PmEventCursorData }
-  | { status: "baseline_required"; reason: "baseline_missing" | "event_gap" | "baseline_mismatch" | "context_missing"; cursor: PmEventCursorData; revision: number; reference: ProdReference; version: number; epoch: number }
+  | { status: "baseline_required"; reason: "baseline_missing" | "event_gap" | "baseline_mismatch" | "context_missing"; cursor: PmEventCursorData; revision: number; reference: PrdReference; version: number; epoch: number }
   | { status: "recovery_required"; reason: "history_unknown"; cursor: PmEventCursorData; version: number; epoch: number }
-  | { status: "event"; eventId: string; sequence: number; redelivery: boolean; event: ApprovedProdChangeData; cursor: PmEventCursorData };
+  | { status: "event"; eventId: string; sequence: number; redelivery: boolean; event: ApprovedPrdChangeData; cursor: PmEventCursorData };
 const Operation = object({ requirementId: id, digest: hash, sequence: positive });
 const BaselineReturn = object({
   lease: PmLease, deliveryId: id, version: positive, epoch: positive, revision: positive, reference: object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }), hash }),
@@ -58,7 +58,7 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-/** 需求生命周期、PM 租约与已批准事件游标的内部存储；不创建prod文件、不派工、不开放模型工具。 */
+/** 需求生命周期、PM 租约与已批准事件游标的内部存储；不创建PRD文件、不派工、不开放模型工具。 */
 export class RequirementStateStore {
   private static readonly accessListeners = new Map<string, Set<(change: RequirementAccessChange) => void>>();
   private readonly options: RequirementStoreOptions;
@@ -167,12 +167,12 @@ export class RequirementStateStore {
     if (record.lifecycle !== "active" && !(allowDraft && record.lifecycle === "draft")) throw new RequirementStateError("lifecycle_denied");
   }
   private version(record: StoredRecord, expected: number): void { if (record.version !== expected) throw new StaleVersionError(); }
-  private write(db: LocalDatabase, record: StoredRecord<RequirementRecord>, data: RequirementRecord, kind: RequirementEvent["kind"], from: ProdReference | null = null, to: ProdReference | null = null, receiptId: string | null = null, now = this.now()) {
+  private write(db: LocalDatabase, record: StoredRecord<RequirementRecord>, data: RequirementRecord, kind: RequirementEvent["kind"], from: PrdReference | null = null, to: PrdReference | null = null, receiptId: string | null = null, now = this.now()) {
     data.updatedAt = Math.max(data.updatedAt, now);
     checkRequirement(data, data.requirementId, this.options.repoId);
     const version = db.update("requirements", data.requirementId, record.version, data);
     const event = checked(RequirementEvent, { requirementId: data.requirementId, repoId: data.repoId, kind, version, epoch: data.epoch, revision: data.revision, from, to, receiptId, recoveryReason: data.recoveryReason,
-      ...(kind === "prod.approved" ? { approvalManifest: data.approvalManifest } : {}) });
+      ...(kind === "prd.approved" ? { approvalManifest: data.approvalManifest } : {}) });
     const queued = db.append(eventStream(data.requirementId), event);
     return { record: { id: record.id, version, data }, event: queued };
   }
@@ -194,7 +194,7 @@ export class RequirementStateStore {
       context: { ...owner.data.context, baseline: null } });
   }
   private eventCursor(owner: StoredRecord<PmRecordData>): PmEventCursorData {
-    const data = owner.data.prodEvents ? checked(PmEventCursor, owner.data.prodEvents) : this.cursorData(owner.data.requirementId);
+    const data = owner.data.prdEvents ? checked(PmEventCursor, owner.data.prdEvents) : this.cursorData(owner.data.requirementId);
     if (data.requirementId !== owner.data.requirementId || data.deliveredSequence < data.consumedSequence ||
       ((data.understood === null) !== (data.understoodRevision === null)) ||
       (data.baselineDelivery !== null && data.baselineDelivery.mode === "cursor_recovery" &&
@@ -204,17 +204,17 @@ export class RequirementStateStore {
     return data;
   }
   private cursorData(requirementId: string): PmEventCursorData {
-    return { format: "pm-prod-event-cursor/v1", requirementId, deliveredSequence: 0, consumedSequence: 0,
+    return { format: "pm-prd-event-cursor/v1", requirementId, deliveredSequence: 0, consumedSequence: 0,
       understoodRevision: null, understood: null, baselineDelivery: null };
   }
   private approvedEvents(db: LocalDatabase, requirementId: string, after = 0) {
     return db.events(eventStream(requirementId), after).flatMap((event) => {
       const audit = checked(RequirementEvent, event.data);
       if (audit.requirementId !== requirementId || audit.repoId !== this.options.repoId) throw new RequirementStateError("event_identity_conflict");
-      if (audit.kind !== "prod.approved") return [];
+      if (audit.kind !== "prd.approved") return [];
       if (!audit.to || !audit.receiptId || !audit.approvalManifest || ((audit.from === null) !== (audit.revision === 1))) throw new RequirementStateError("approved_event_invalid");
-      const data = checked(ApprovedProdChange, {
-        format: "approved-prod-change/v1", requirementId, repoId: this.options.repoId,
+      const data = checked(ApprovedPrdChange, {
+        format: "approved-prd-change/v1", requirementId, repoId: this.options.repoId,
         fromRevision: audit.from === null ? null : audit.revision - 1, toRevision: audit.revision,
         from: audit.from, to: audit.to, receiptId: audit.receiptId, lifecycleEpoch: audit.epoch,
         recordVersion: audit.version, approvalManifest: audit.approvalManifest,
@@ -224,7 +224,7 @@ export class RequirementStateStore {
   }
   private putEventCursor(db: LocalDatabase, owner: StoredRecord<PmRecordData>, data: PmEventCursorData): void {
     checked(PmEventCursor, data);
-    db.update("pm_ownership", data.requirementId, owner.version, { ...owner.data, prodEvents: data });
+    db.update("pm_ownership", data.requirementId, owner.version, { ...owner.data, prdEvents: data });
   }
   private context(owner: StoredRecord<PmRecordData>): PmContextData {
     const context = owner.data.context;
@@ -235,7 +235,7 @@ export class RequirementStateStore {
   private historyUnknown(
     record: StoredRecord<RequirementRecord>,
     cursor: PmEventCursorData,
-    events: Array<{ sequence: number; data: ApprovedProdChangeData }>,
+    events: Array<{ sequence: number; data: ApprovedPrdChangeData }>,
   ): boolean {
     const last = events.at(-1);
     return !last || cursor.consumedSequence > last.sequence || last.data.toRevision !== record.data.revision ||
@@ -264,7 +264,7 @@ export class RequirementStateStore {
     record: StoredRecord<RequirementRecord>,
     owner: StoredRecord<PmRecordData>,
     cursor: PmEventCursorData,
-    events: Array<{ sequence: number; data: ApprovedProdChangeData }>,
+    events: Array<{ sequence: number; data: ApprovedPrdChangeData }>,
   ): Extract<ApprovedEventPoll, { status: "baseline_required" }>["reason"] | null {
     const next = events.find((event) => event.sequence > cursor.consumedSequence);
     if (cursor.understood === null || cursor.understoodRevision === null) return "baseline_missing";
@@ -358,13 +358,13 @@ export class RequirementStateStore {
       if (equal(record.data.saved, request.reference)) {
         const existingSave = db.events(eventStream(record.id)).reverse().find((event) => {
           const data = checked(RequirementEvent, event.data);
-          return data.requirementId === record.id && data.repoId === this.options.repoId && data.kind === "prod.saved" && equal(data.to, request.reference);
+          return data.requirementId === record.id && data.repoId === this.options.repoId && data.kind === "prd.saved" && equal(data.to, request.reference);
         });
         if (!existingSave) throw new RequirementStateError("saved_event_missing");
         db.create("requirement_operations", request.operationId, { requirementId: record.id, digest, sequence: existingSave.sequence });
         return record;
       }
-      const result = this.write(db, record, { ...record.data, saved: request.reference }, "prod.saved", record.data.saved, request.reference);
+      const result = this.write(db, record, { ...record.data, saved: request.reference }, "prd.saved", record.data.saved, request.reference);
       db.create("requirement_operations", request.operationId, { requirementId: record.id, digest, sequence: result.event.sequence });
       return result.record;
     });
@@ -409,7 +409,7 @@ export class RequirementStateStore {
       }
       const result = this.write(db, record, { ...record.data, approvalManifest,
         ...(!record.data.docSpec && request.docSpec ? { docSpec: request.docSpec } : {}), lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
-        pendingRevision: record.data.lifecycle === "active" ? revision : null }, "prod.approved", record.data.approved, request.reference, request.receiptId, approvalTime);
+        pendingRevision: record.data.lifecycle === "active" ? revision : null }, "prd.approved", record.data.approved, request.reference, request.receiptId, approvalTime);
       db.create("requirement_approval_uses", request.receiptId, { requirementId: record.id, digest, sequence: result.event.sequence });
       return result.record;
     }, authorizeManifest);
@@ -438,8 +438,8 @@ export class RequirementStateStore {
         epoch: record.data.epoch, fence, contextGeneration });
       const context = checked(PmContext, { format: "pm-physical-context/v1", runId: request.runId, fence,
         generation: contextGeneration, baseline: null });
-      const prodEvents = owner?.data.prodEvents ? { ...owner.data.prodEvents, baselineDelivery: null } : undefined;
-      const ownership = { requirementId: record.id, fence: lease.fence, lease, context, ...(prodEvents ? { prodEvents } : {}) };
+      const prdEvents = owner?.data.prdEvents ? { ...owner.data.prdEvents, baselineDelivery: null } : undefined;
+      const ownership = { requirementId: record.id, fence: lease.fence, lease, context, ...(prdEvents ? { prdEvents } : {}) };
       if (owner) db.update("pm_ownership", record.id, owner.version, ownership);
       else db.create("pm_ownership", record.id, ownership);
       this.write(db, record, record.data, "pm.acquired");
@@ -509,7 +509,7 @@ export class RequirementStateStore {
       return db.events(eventStream(requirementId), after).map((event) => {
         const data = checked(RequirementEvent, event.data);
         if (data.requirementId !== requirementId || data.repoId !== this.options.repoId) throw new RequirementStateError("event_identity_conflict");
-        if (data.kind === "prod.approved" && !data.approvalManifest) throw new RequirementStateError("approved_event_invalid");
+        if (data.kind === "prd.approved" && !data.approvalManifest) throw new RequirementStateError("approved_event_invalid");
         return { ...event, data };
       });
     });
@@ -656,7 +656,7 @@ export class RequirementStateStore {
       const baseline = { runId: request.lease.runId, fence: request.lease.fence,
         contextGeneration: request.lease.contextGeneration, revision: delivery.revision, reference: delivery.reference,
         recordVersion: delivery.recordVersion, epoch: delivery.epoch };
-      const updated = { ...owner.data, context: { ...context, baseline }, prodEvents: updatedCursor };
+      const updated = { ...owner.data, context: { ...context, baseline }, prdEvents: updatedCursor };
       if (!equal(updated, owner.data)) db.update("pm_ownership", request.lease.requirementId, owner.version, updated);
       // 上下文基线确认与持久消费位置分开；context_refresh不会倒退或跳过逻辑事件。
       return true;
@@ -690,7 +690,7 @@ export class RequirementStateStore {
         contextGeneration: request.lease.contextGeneration, revision: event.data.toRevision, reference: event.data.to,
         recordVersion: event.data.recordVersion, epoch: request.lease.epoch };
       db.update("pm_ownership", request.lease.requirementId, owner.version, { ...owner.data,
-        context: { ...context, baseline }, prodEvents: updatedCursor });
+        context: { ...context, baseline }, prdEvents: updatedCursor });
       // 消费确认推进逻辑cursor与本次物理上下文基线，不解除pendingRevision、不派worker或改写验证证据。
       return true;
     });

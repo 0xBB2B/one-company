@@ -8,7 +8,7 @@ import { InstalledProjectFixture } from "../helpers/project-index-installed-fixt
 const TS_SENTINEL = "TS_CURRENT_SOURCE_SENTINEL";
 const GO_SENTINEL = "GO_CURRENT_SOURCE_SENTINEL";
 const LEGACY_RULES_SENTINEL = "LEGACY_RULES_FILE_SENTINEL";
-const PROD_SENTINEL = "PROD_ARCHIVE_BODY_SENTINEL_MUST_NOT_LEAK";
+const PRD_SENTINEL = "PRD_ARCHIVE_BODY_SENTINEL_MUST_NOT_LEAK";
 
 function legacyRulesFile() {
   return {
@@ -41,14 +41,14 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     await mkdir(join(repositoryRoot, "src"), { recursive: true });
     await mkdir(join(repositoryRoot, "cmd"), { recursive: true });
     await mkdir(join(repositoryRoot, "docs/spec"), { recursive: true });
-    await mkdir(join(repositoryRoot, "docs/prod"), { recursive: true });
+    await mkdir(join(repositoryRoot, "docs/prd"), { recursive: true });
     // repository()只准备Git身份；该场景保留原有两份代码输入。
     await world.git(repositoryRoot, ["rm", "source.ts"]);
     await writeFile(join(repositoryRoot, "src/main.ts"), `export function currentTs() { return "${TS_SENTINEL}"; }\n`);
     await writeFile(join(repositoryRoot, "cmd/main.go"), `package main\nconst currentGo = "${GO_SENTINEL}"\nfunc main() {}\n`);
     await writeFile(join(repositoryRoot, "docs/spec/current.rules.json"), JSON.stringify(legacyRulesFile()));
     const archiveId = uuidv7();
-    await writeFile(join(repositoryRoot, "docs/prod", `${archiveId}.已完成需求.md`), `${PROD_SENTINEL}\n不允许进入FTS或工具输出。\n`);
+    await writeFile(join(repositoryRoot, "docs/prd", `${archiveId}.已完成需求.md`), `${PRD_SENTINEL}\n不允许进入FTS或工具输出。\n`);
     await writeFile(join(repositoryRoot, "README.md"), "installation fixture\n");
     await world.git(repositoryRoot, ["add", "."]); await world.git(repositoryRoot, ["commit", "-m", "index inputs"]);
     const daemon = await world.daemon(repo), host = await world.host(repo);
@@ -73,7 +73,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     expect(preview.confirmations).toHaveLength(1);
     expect(preview.confirmations[0]!.message).toContain(repositoryRoot);
     expect(preview.confirmations[0]!.message).toContain(join(dataRoot, "repos", identity.repoId));
-    expect(preview.confirmations[0]!.message).toContain("docs/prod 只枚举有限路径元数据，不读取正文");
+    expect(preview.confirmations[0]!.message).toContain("docs/prd 只枚举有限路径元数据，不读取正文");
 
     await host.call("approve", { value: true });
     const initialized = await invoke({ action: "init" });
@@ -95,9 +95,9 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
       expect(store.search(TS_SENTINEL).results.length).toBeGreaterThan(0);
       expect(store.search(GO_SENTINEL).results.length).toBeGreaterThan(0);
       expect(store.search(LEGACY_RULES_SENTINEL).results.length).toBeGreaterThan(0);
-      expect(store.search(PROD_SENTINEL).results).toEqual([]);
-      expect(JSON.stringify(snapshot)).not.toContain(PROD_SENTINEL);
-      expect(snapshot.prodMetadata).toContainEqual(expect.objectContaining({ source: "archive", requirementId: archiveId, path: `docs/prod/${archiveId}.已完成需求.md` }));
+      expect(store.search(PRD_SENTINEL).results).toEqual([]);
+      expect(JSON.stringify(snapshot)).not.toContain(PRD_SENTINEL);
+      expect(snapshot.prdMetadata).toContainEqual(expect.objectContaining({ source: "archive", requirementId: archiveId, path: `docs/prd/${archiveId}.已完成需求.md` }));
     } finally { store.close(); }
     const status = await invoke({ action: "status" });
     expect(status.details).toMatchObject({ action: "status", initialized: true, index: { status: "ready" } });
@@ -111,7 +111,7 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     expect(Number(refreshed.details.generation)).toBeGreaterThan(Number(repeated.details.generation));
     expect(refreshed.confirmations).toHaveLength(2);
     const allToolOutput = JSON.stringify(toolResults);
-    for (const sentinel of [TS_SENTINEL, GO_SENTINEL, LEGACY_RULES_SENTINEL, PROD_SENTINEL]) expect(allToolOutput).not.toContain(sentinel);
+    for (const sentinel of [TS_SENTINEL, GO_SENTINEL, LEGACY_RULES_SENTINEL, PRD_SENTINEL]) expect(allToolOutput).not.toContain(sentinel);
     const finalStore = new IndexStore(databasePath, options);
     try {
       const snapshot = finalStore.getSnapshot();

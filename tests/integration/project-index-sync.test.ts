@@ -118,7 +118,7 @@ test("发起init的连接断开后，新连接仍能查询当前内容", async (
   expect(JSON.stringify(await b.query(searchAlpha))).toContain("DDDD");
 }, 60_000);
 
-test("查询前对账发现docs/prod归档时先经归档风险核对，旧active需求被标记且不读取归档正文", async () => {
+test("查询前对账发现docs/prd归档时先经归档风险核对，旧active需求被标记且不读取归档正文", async () => {
   const w = await world();
   const options = { repositoryRoot: w.fixture.repo.root, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, authorize: () => true, authorizeManifest: () => true };
   const service = await RequirementService.open(options); const state = await RequirementStateStore.open(options);
@@ -132,12 +132,12 @@ test("查询前对账发现docs/prod归档时先经归档风险核对，旧activ
     path: await realpath(worktree.root), prepareOperationId: uuidv7(), baseCommit: (await readGit(worktree.root, ["rev-parse", "HEAD"])).stdout.trim() });
   const active = await service.confirmUpdate(await manifestConfirmInput(options, { requirementId: created.requirementId, savedOperationId: created.operationId }));
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: active.version, runId: uuidv7(), expectedFence: 0 });
-  await mkdir(join(w.fixture.repo.root, "docs", "prod"), { recursive: true });
+  await mkdir(join(w.fixture.repo.root, "docs", "prd"), { recursive: true });
   await w.start(); const a = await w.connect();
   await a.manage("init");
   await a.query(searchAlpha);
   expect(state.read(created.requirementId).data.recovery).not.toBe("needs_review");
-  await writeFile(join(w.fixture.repo.root, "docs", "prod", `${created.requirementId}.归档装配.md`), "ARCHIVE-BODY-SENTINEL", { mode: 0o000 });
+  await writeFile(join(w.fixture.repo.root, "docs", "prd", `${created.requirementId}.归档装配.md`), "ARCHIVE-BODY-SENTINEL", { mode: 0o000 });
   const page = await a.query(searchAlpha);
   // 查询返回时撤权已完成：对账在交付查询结果之前触发归档风险核对。
   expect(state.read(created.requirementId).data).toMatchObject({ lifecycle: "active", recovery: "needs_review", recoveryReason: "archive_found", close: null });

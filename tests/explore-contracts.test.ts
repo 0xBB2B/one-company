@@ -93,7 +93,7 @@ test("PM必须有需求、epoch和fence绑定，伪角色及伪载荷字段拒�
   ]) {
     expectCode(() => checkExploreInput({ ...webInput(), parent }), "invalid_shape");
   }
-  for (const field of ["prodBody", "diff", "transcript", "rawContent", "detailedSummary", "parentMessages", "authorization", "newRole"]) {
+  for (const field of ["prdBody", "diff", "transcript", "rawContent", "detailedSummary", "parentMessages", "authorization", "newRole"]) {
     const input = clone(localInput()) as unknown as Record<string, unknown>;
     input[field] = "forbidden";
     expectCode(() => checkExploreInput(input), "invalid_shape");
@@ -118,9 +118,9 @@ test("相邻来源字段不能混合，本地根须为规范绝对路径，结�
   }
 });
 
-test("工作区内任意文件（含 .pi、keys、docs/prod 等位置）都可作为本地来源", () => {
+test("工作区内任意文件（含 .pi、keys、docs/prd 等位置）都可作为本地来源", () => {
   const local = localInput();
-  for (const path of ["/safe/project/.pi/agents/a.md", "/safe/project/keys/readme.md", "/safe/project/docs/prod/a.md"]) {
+  for (const path of ["/safe/project/.pi/agents/a.md", "/safe/project/keys/readme.md", "/safe/project/docs/prd/a.md"]) {
     const result = clone(resultFor(local));
     if (result.sources[0]?.kind === "local_file") result.sources[0].path = path;
     if (result.searchedScope.kind === "local_file") result.searchedScope.paths = [path];

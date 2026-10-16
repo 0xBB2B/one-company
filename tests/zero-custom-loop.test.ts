@@ -94,7 +94,7 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("acceptance")!.taskId, retry: null })).rejects.toMatchObject({ code: "dependency_pending" });
 
-  const suggestion = { kind: "suggestion", targetRef: "prod:goal.login", evidenceRef: null, trigger: "输入验证码", impact: "可补充更多用例" };
+  const suggestion = { kind: "suggestion", targetRef: "prd:goal.login", evidenceRef: null, trigger: "输入验证码", impact: "可补充更多用例" };
   // 同一脚本先后服务 worker 与审查它的 reviewer：两者的任务说明都以该任务 key 标识
   const workThenReview = (path: string, content: string): Step[] => [
     call("change_apply", { action: "apply", operationId: uuidv7(), files: [{ path, baseHash: "absent", content }] }),

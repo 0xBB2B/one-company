@@ -6,7 +6,7 @@ import type { ProgramWindow, WindowChoice } from "../../core/host/question-windo
 import { commandOutputTail } from "../../core/exec/tool-failure.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { isProdArchivePath } from "../../core/policy/content-policy.ts";
+import { isPrdArchivePath } from "../../core/policy/content-policy.ts";
 import { fetchRemoteTarget, gitIn, includesCommit } from "../../core/exec/target-branch.ts";
 
 const exec = promisify(execFile);
@@ -40,7 +40,7 @@ const REJECT_ADVICE = {
   no_remote: { why: "仓库没有名为 origin 的远端", next: "请用户配置 origin 远端后再交付" },
   unknown_host: { why: "origin 远端不是 GitHub 或 GitLab，无法开 PR 或 MR", next: "请用户确认远端地址；其他平台需要手动交付" },
   head_changed: { why: "需求分支在最终检查后又有代码改动", next: "重新做交付核对和验收后再交付" },
-  foreign_prod_archive: { why: "分支里带了别的需求的归档文件", next: "请用户移除这些文件后再交付" },
+  foreign_prd_archive: { why: "分支里带了别的需求的归档文件", next: "请用户移除这些文件后再交付" },
   nested_repository: { why: "分支里有嵌套仓库（子模块）改动", next: "请用户处理子模块改动后再交付" },
   archive_mismatch: { why: "归档文件与关闭时登记的内容不一致", next: "请用户确认归档文件没有被手动改动" },
   unexpected_staged: { why: "暂存区里有归档以外的文件", next: "请用户清理暂存区后再交付" },
@@ -129,7 +129,7 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   };
   if ((await git(["rev-parse", "HEAD"])).stdout.trim() !== facts.codeHead && await ownChanges("HEAD") !== await ownChanges(facts.codeHead)) return reject("head_changed");
   const changed = entries((await git(["diff", "-z", "--name-only", `${target.sha}...HEAD`])).stdout);
-  if (changed.some((path) => isProdArchivePath(path) && !groupPaths.includes(path))) return reject("foreign_prod_archive");
+  if (changed.some((path) => isPrdArchivePath(path) && !groupPaths.includes(path))) return reject("foreign_prd_archive");
   if ((await git(["diff", "--raw", `${target.sha}...HEAD`])).stdout.split("\n").some((line) => /^:\d+ 160000 /.test(line))) return reject("nested_repository");
   let rebasedAfterAcceptance = false;
   if (!(await includesCommit(facts.worktree, target.sha))) {
@@ -170,7 +170,7 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
     `分支：${branch} → ${target.name}（${provider}）`, pending ? `将提交归档 ${archive.path}${prototypes.length ? `及 ${prototypes.length} 份原型` : ""}` : "归档已在分支中",
     rebasedAfterAcceptance ? "目标分支在验收后前进，已自动 rebase，这部分未重新验证" : "目标分支未变化", "确认后推送并建立或复用 PR。"])] });
   if (!approved) return { status: "cancelled", head };
-  if (pending) await git(["commit", "--quiet", "-m", `docs(prod): 归档需求 ${facts.requirementId}`]);
+  if (pending) await git(["commit", "--quiet", "-m", `docs(prd): 归档需求 ${facts.requirementId}`]);
   const delivered = (await git(["rev-parse", "HEAD"])).stdout.trim();
   const archiveOnly = entries((await git(["diff", "-z", "--name-only", head, delivered])).stdout);
   if (archiveOnly.some((path) => !groupPaths.includes(path))) return reject("unexpected_commit_content");

@@ -101,16 +101,16 @@ export class FixtureSubmissionProvider implements PmSubmissionProvider {
       format: "pm-understanding/v1",
       binding: structuredClone(query.binding),
       goals: [
-        { text: "实现手机号登录", sourceRefs: [{ kind: "prod-unit", id: "goal.login" }] },
-        { text: "失败场景给出可观察结果", sourceRefs: [{ kind: "prod-scenario", id: "scenario.failure" }] },
+        { text: "实现手机号登录", sourceRefs: [{ kind: "prd-unit", id: "goal.login" }] },
+        { text: "失败场景给出可观察结果", sourceRefs: [{ kind: "prd-scenario", id: "scenario.failure" }] },
       ],
       nonGoals: [],
-      constraints: [{ text: "只按已批准范围工作", sourceRefs: [{ kind: "prod-unit", id: "metadata" }] }],
+      constraints: [{ text: "只按已批准范围工作", sourceRefs: [{ kind: "prd-unit", id: "metadata" }] }],
       allowedActions: [{ text: this.actionText, sourceRefs: [{ kind: "decision", id: this.actionDecisionId }] }],
       unresolved: [],
       scenarioCoverage: [
-        { scenarioId: "goal.login", status: "covered", summary: "覆盖正常手机号登录", sourceRefs: [{ kind: "prod-scenario", id: "goal.login" }] },
-        { scenarioId: "scenario.failure", status: "covered", summary: "覆盖验证码失败", sourceRefs: [{ kind: "prod-scenario", id: "scenario.failure" }] },
+        { scenarioId: "goal.login", status: "covered", summary: "覆盖正常手机号登录", sourceRefs: [{ kind: "prd-scenario", id: "goal.login" }] },
+        { scenarioId: "scenario.failure", status: "covered", summary: "覆盖验证码失败", sourceRefs: [{ kind: "prd-scenario", id: "scenario.failure" }] },
       ],
     };
     this.mutate?.(understanding);
@@ -313,7 +313,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
   // 自定义正文多出的章节同样要在 PM 理解里标为已覆盖，接手核对才会通过
   const extraSections = [...body.matchAll(/\{#([^{}]+)\}/g)].map((match) => match[1]!).filter((id) => id !== "goal.login" && id !== "scenario.failure");
   if (extraSections.length) submissionProvider.mutate = (understanding) => {
-    understanding.scenarioCoverage.push(...extraSections.map((id) => ({ scenarioId: id, status: "covered" as const, summary: `覆盖 ${id}`, sourceRefs: [{ kind: "prod-scenario" as const, id }] })));
+    understanding.scenarioCoverage.push(...extraSections.map((id) => ({ scenarioId: id, status: "covered" as const, summary: `覆盖 ${id}`, sourceRefs: [{ kind: "prd-scenario" as const, id }] })));
   };
   const intakeStore = new PmIntakeStore({ dataRoot, repoId: identity.repoId, now: () => now });
   const resolver = { resolve: (candidate: MainIntakeCall) => calls.get(candidate as object) ?? null };
@@ -324,11 +324,11 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
   const intake = makeIntake(), active = state.read(saved.requirementId);
   if (!active.data.approved || !active.data.workspace) throw new Error("fixture active baseline unavailable");
   const basis: IntakeBindingBasis = { repoId: identity.repoId, requirementId: saved.requirementId,
-    approvedProdCommit: active.data.approved.commit, approvedRevision: active.data.revision, approvedProdHash: active.data.approved.hash,
+    approvedPrdCommit: active.data.approved.commit, approvedRevision: active.data.revision, approvedPrdHash: active.data.approved.hash,
     approvalManifestHash: authorized.manifest.manifestHash, workspaceId: lease.workspaceId, workspaceRef: active.data.workspace.branch,
     epoch: lease.epoch, pmRunId: lease.runId, pmFence: lease.fence, contextGeneration: lease.contextGeneration };
-  const sourceDirectory: IntakeSourceDirectory = { prodUnitIds: authorized.manifest.units.map((unit) => unit.id),
-    prodScenarioIds: [...sourceProvider.scenarioIds],
+  const sourceDirectory: IntakeSourceDirectory = { prdUnitIds: authorized.manifest.units.map((unit) => unit.id),
+    prdScenarioIds: [...sourceProvider.scenarioIds],
     decisionIds: intakeManifestDecisionIds(authorized.manifest), questionIds: [], requiredScenarioIds: [...sourceProvider.scenarioIds] };
   const dbPath = repositoryDatabase(dataRoot, identity.repoId);
   if (!allocation.pmReceipt || !allocation.repoReceipt || !allocation.worktreeReceipt) {

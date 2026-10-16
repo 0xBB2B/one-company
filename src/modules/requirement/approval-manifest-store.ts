@@ -62,12 +62,12 @@ function decisionSnapshots(db: LocalDatabase, manifest: ApprovalManifest, admiss
       const used = manifest.units.filter((u) => u.decisionIds.includes(decisionId));
       if (!used.length || manifest.actions.some((a) => a.decisionIds.includes(decisionId)) || manifest.questions.some((q) => q.decisionIds.includes(decisionId)) ||
         used.some((u) => !retained.some((e) => e.unitId === u.id && e.unitHash === u.hash && u.retainedFactIds?.includes(e.fact.id)))) deny("manifest_retained_escape");
-      for (const e of retained) assertRetainedEvidenceIn(db, repoId, { requirementId: manifest.requirementId, version: admission.version, epoch: admission.epoch, prod: manifest.candidate.from },
-        { partition: { prodHash: manifest.candidate.to.hash, totalBytes: manifest.totalBytes, units: manifest.units.map(({ id, hash, startByte, endByte }) => ({ id, hash, startByte, endByte })) } }, e);
+      for (const e of retained) assertRetainedEvidenceIn(db, repoId, { requirementId: manifest.requirementId, version: admission.version, epoch: admission.epoch, prd: manifest.candidate.from },
+        { partition: { prdHash: manifest.candidate.to.hash, totalBytes: manifest.totalBytes, units: manifest.units.map(({ id, hash, startByte, endByte }) => ({ id, hash, startByte, endByte })) } }, e);
       return { stored, d, retained: true };
     }
     if (d.decisionId !== decisionId || d.requirementId !== manifest.requirementId || d.repoId !== repoId ||
-      d.epoch !== admission.epoch || d.requirementVersion !== admission.version || d.status === "superseded" || !same(d.prod, manifest.candidate.from) ||
+      d.epoch !== admission.epoch || d.requirementVersion !== admission.version || d.status === "superseded" || !same(d.prd, manifest.candidate.from) ||
       ![manifest.candidate.to.commit, manifest.candidate.to.hash].every((ref) => d.references.includes(ref))) deny("manifest_decision_mismatch");
     return { stored, d, retained: false };
   });
@@ -157,7 +157,7 @@ export function assertRegisteredScopeReturnIn(db: LocalDatabase, repoId: string,
   if (!same(stored.admission, proof.admission) || !same(summarizeApprovalManifest(manifest), proof.summary)) deny("manifest_scope_changed");
 }
 
-/** 仅元数据复用data.db；不初始化新后端、不保存正文、不激活prod。 */
+/** 仅元数据复用data.db；不初始化新后端、不保存正文、不激活PRD。 */
 export class ApprovalManifestStore {
   readonly #options: ApprovalManifestStoreOptions;
   #busy = false;

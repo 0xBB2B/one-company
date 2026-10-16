@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
-import { PROD_SECTION_ID_PATTERN } from "./prod-view.ts";
+import { PRD_SECTION_ID_PATTERN } from "./prd-view.ts";
 import type { RequirementDocSpecSchema } from "./requirement-contracts.ts";
 
 /** 批准时存进需求记录的规范快照；之后修改 skill 不影响已批准的需求。 */
@@ -57,7 +57,7 @@ export function resolveRepositoryRequirementDoc(dataRoot: string, repoRoot: stri
 
 function checkSections(value: unknown, invalid: (reason: string) => never): RequirementDocSection[] {
   if (!Array.isArray(value) || !value.length) invalid("frontmatter 须有非空的 sections 板块清单");
-  const idPattern = new RegExp(PROD_SECTION_ID_PATTERN), seen = new Set<string>();
+  const idPattern = new RegExp(PRD_SECTION_ID_PATTERN), seen = new Set<string>();
   const sections = (value as unknown[]).map((item, index) => {
     const at = `sections 第 ${index + 1} 项`;
     if (!item || typeof item !== "object" || Array.isArray(item)) return invalid(`${at} 须是含 id、title 的对象`);

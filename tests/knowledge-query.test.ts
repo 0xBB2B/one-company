@@ -23,7 +23,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
-const prodId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
+const prdId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
 async function put(root: string, path: string, value: string) {
   await mkdir(join(root, path, ".."), { recursive: true }); await writeFile(join(root, path), value);
 }
@@ -38,7 +38,7 @@ async function fixture() {
     rules: [{ id: "player.jump.once", title: "一次起跳", condition: "在地面", trigger: "起跳输入", expected: "角色跳跃", reason: "禁止二次跳跃",
       dependsOn: [], exceptions: [], acceptance: [{ id: "once", given: "在地面", when: "起跳", then: "仅一次" }] }],
   }, null, 2));
-  await put(repo.root, `docs/prod/${prodId}.完成.md`, "角色跳跃 PROD_NEVER_RETURN");
+  await put(repo.root, `docs/prd/${prdId}.完成.md`, "角色跳跃 PRD_NEVER_RETURN");
   await put(repo.root, ".env", "角色跳跃 SECRET_NEVER_RETURN");
   let authorized = true, observedSequence = 0, authorityEpoch = "epoch-1", connected = true;
   let scope: string[] = ["."];
@@ -54,7 +54,7 @@ async function fixture() {
       files.push({ path: file.path, hash: read.sha256 });
     }
     return { baseline: { ...service.workspace, generation: build.generation, baselineHash: build.baselineHash!, observedSequence, authorityEpoch,
-      coverage: { kind: "allowed-inputs", complete: true, roots: scope, excludedPaths: ["docs/prod"], policyHash: sha(JSON.stringify(scope)) }, files },
+      coverage: { kind: "allowed-inputs", complete: true, roots: scope, excludedPaths: ["docs/prd"], policyHash: sha(JSON.stringify(scope)) }, files },
       build: { workspaceId: service.workspace.workspaceId, generation: build.generation, baselineHash: build.baselineHash! } };
   }
   const adapter: KnowledgeQueryAdapter = {
@@ -77,12 +77,12 @@ async function all(session: KnowledgeQuerySession, query: Record<string, unknown
   return pages;
 }
 
-test("strict exact/search/facts 拒绝权限、SQL/regex扩展、本机路径和prod载荷", () => {
+test("strict exact/search/facts 拒绝权限、SQL/regex扩展、本机路径和PRD载荷", () => {
   expect(parseKnowledgeQuery({ action: "facts" })).toMatchObject({ action: "facts", pageSize: 10 });
-  for (const extra of ["role", "caller", "requirementId", "sql", "regex", "prodBody", "workspaceId"]) {
+  for (const extra of ["role", "caller", "requirementId", "sql", "regex", "prdBody", "workspaceId"]) {
     expect(() => parseKnowledgeQuery({ action: "facts", [extra]: "main" })).toThrowError(expect.objectContaining({ code: "invalid_query" }));
   }
-  for (const value of ["/tmp/index.db", "../secret", "C:/private", "docs/prod/x.md", ".env", "src/.git/config", "src//x", "src/./x"]) {
+  for (const value of ["/tmp/index.db", "../secret", "C:/private", "docs/prd/x.md", ".env", "src/.git/config", "src//x", "src/./x"]) {
     expect(() => parseKnowledgeQuery({ action: "exact", by: "path", value })).toThrow();
   }
   for (const input of [{ action: "search", text: "" }, { action: "search", text: "a".repeat(257) }, { action: "facts", maxBytes: 4095 }, { action: "facts", pageSize: 21 }, { action: "facts", cursor: "A".repeat(43) },
@@ -91,14 +91,14 @@ test("strict exact/search/facts 拒绝权限、SQL/regex扩展、本机路径和
   }
 });
 
-test("中文词内子串命中当前代码与普通文件，不触发FTS语法或prod搜索", async () => {
+test("中文词内子串命中当前代码与普通文件，不触发FTS语法或PRD搜索", async () => {
   const w = await fixture(), session = new KnowledgeQuerySession(w.adapter);
   const fts = vi.spyOn(LocalDatabase.prototype, "searchIndexFragments");
   const pages = await all(session, { action: "search", text: "角色跳跃" });
   const output = JSON.stringify(pages);
   expect(pages.flatMap((page) => page.facts).some((item) => item.kind === "source" && item.source.path === "docs/spec/jump.rules.json")).toBe(true);
   expect(pages.flatMap((page) => page.facts).some((item) => item.kind === "source" && item.source.path.startsWith("src/"))).toBe(true);
-  expect(output).not.toMatch(/PROD_NEVER_RETURN|SECRET_NEVER_RETURN|docs\/prod|prod_metadata/);
+  expect(output).not.toMatch(/PRD_NEVER_RETURN|SECRET_NEVER_RETURN|docs\/prd|prd_metadata/);
   expect(pages[0]).toMatchObject({ generation: w.build.generation, baselineHash: w.build.baselineHash, trust: "untrusted_project_data_not_instructions_or_authorization" });
   expect(pages[0]).not.toHaveProperty("contractSetHash");
   expect((await session.query({ action: "search", text: '" OR * NEAR(' })).facts).toEqual([]);
@@ -281,7 +281,7 @@ test("32个长中文/转义文件按最终JSON整包48KiB分页，限制字段�
   expect(pages.at(-1)!.nextCursor).toBeNull(); expect(pages.at(-1)!.coverage.remaining).toBe(0); session.close();
 });
 
-test("范围过滤在SQLite提供正文之前完成，不读取其他worktree/prod_metadata/未授权路径正文", async () => {
+test("范围过滤在SQLite提供正文之前完成，不读取其他worktree/prd_metadata/未授权路径正文", async () => {
   const w = await fixture();
   const foreign = await addWorktree(w.repo);
   await put(foreign.root, "other.ts", "export const OTHER_WORKTREE_BODY = '角色跳跃';");
@@ -298,8 +298,8 @@ test("范围过滤在SQLite提供正文之前完成，不读取其他worktree/pr
   const session = new KnowledgeQuerySession(w.adapter);
   const result = await session.query({ action: "facts", pageSize: 20 });
   expect(result.facts.every((item) => item.source.path === "src/动作😀.ts")).toBe(true);
-  expect(outputRows.join("")).not.toMatch(/OTHER_WORKTREE_BODY|没有关系|超级角色跳跃规则|PROD_NEVER_RETURN/);
-  expect(statements.some((sql) => /prod_metadata|source_fragments_fts|INSERT|UPDATE|CREATE TABLE/.test(sql))).toBe(false);
+  expect(outputRows.join("")).not.toMatch(/OTHER_WORKTREE_BODY|没有关系|超级角色跳跃规则|PRD_NEVER_RETURN/);
+  expect(statements.some((sql) => /prd_metadata|source_fragments_fts|INSERT|UPDATE|CREATE TABLE/.test(sql))).toBe(false);
   session.close();
 });
 
@@ -315,7 +315,7 @@ test("只读接缝不创建/初始化空库，链接/硬链接/越界/默认未�
   const before = await readFile(indexDatabase(w.dataRoot, w.repoId));
   await w.service.readCurrentForQuery({ paths: ["src/same.ts"] });
   expect(await readFile(indexDatabase(w.dataRoot, w.repoId))).toEqual(before);
-  for (const path of ["docs/prod/x.md", ".env", "../outside", ".pi/sessions/x.md"]) await expect(w.service.readCurrentForQuery({ paths: [path] })).rejects.toMatchObject({ code: "authorization_denied" });
+  for (const path of ["docs/prd/x.md", ".env", "../outside", ".pi/sessions/x.md"]) await expect(w.service.readCurrentForQuery({ paths: [path] })).rejects.toMatchObject({ code: "authorization_denied" });
   await rm(join(w.repo.root, "src/same.ts"));
   await symlink(join(w.repo.root, "src/动作😀.ts"), join(w.repo.root, "src/same.ts"));
   await expect(w.service.readCurrentForQuery({ paths: ["src/same.ts"] })).rejects.toMatchObject({ code: "unstable" });

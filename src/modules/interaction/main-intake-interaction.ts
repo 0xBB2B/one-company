@@ -60,7 +60,7 @@ export const PM_INTAKE_REPLY_PARAMETERS = object({
   result: Type.Union([
     Type.Literal("passed"),
     Type.Literal("pm_correction_required"),
-    Type.Literal("prod_revision_required"),
+    Type.Literal("prd_revision_required"),
     Type.Literal("clarification_required"),
   ]),
   shortIssues: Type.Array(shortIssue, { maxItems: 8 }),

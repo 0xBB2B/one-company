@@ -143,7 +143,7 @@ async function world() {
       for (const { name } of tables) {
         const rows = JSON.stringify(database.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all());
         expect([BODY1, BODY2, BODY3, DRAFT].some((body) => rows.includes(body))).toBe(false);
-        expect(/"(?:body|prodBody|patch|diff|rawContent|transcript)"\s*:/.test(rows.replaceAll('\\"', '"'))).toBe(false);
+        expect(/"(?:body|prdBody|patch|diff|rawContent|transcript)"\s*:/.test(rows.replaceAll('\\"', '"'))).toBe(false);
       }
       record.checks.databaseTablesChecked = tables.map((table) => table.name);
       record.checks.databaseBodyOrPatch = false;
@@ -154,7 +154,7 @@ async function world() {
           throw error;
         });
         if (!bytes) continue;
-        expect([BODY1, BODY2, BODY3, DRAFT, "diff --git a/prod.md"].some((text) => bytes.includes(text))).toBe(false);
+        expect([BODY1, BODY2, BODY3, DRAFT, "diff --git a/prd.md"].some((text) => bytes.includes(text))).toBe(false);
         byteChecks.push(suffix || ".db");
       }
       record.checks.databaseByteFilesChecked = byteChecks;
@@ -207,7 +207,7 @@ test("M3-AC6/5：A独立Node消费ack并退出，B新Node有效lease恢复cursor
   expect(takeover.lease.fence).toBe(first.lease.fence + 2);
   expect(takeover.lease.runId).not.toBe(first.lease.runId);
   expect(takeover.cursor).toMatchObject({ consumedSequence: consumed.cursor.consumedSequence, understoodRevision: 2, understoodCommit: second.commit });
-  expect(takeover.notice).toMatchObject({ status: "baseline_required", reason: "context_missing", revision: 3, commit: third.commit, prodHash: third.prodHash });
+  expect(takeover.notice).toMatchObject({ status: "baseline_required", reason: "context_missing", revision: 3, commit: third.commit, prdHash: third.prdHash });
   expect(await b.call("old-lease", first.lease)).toEqual({ rejected: true });
   const baseline = await b.call("baseline");
   expect(baseline).toMatchObject({ revision: 3, commit: third.commit,

@@ -11,7 +11,7 @@ import { DATABASE_SNAPSHOT_FILE, pathExists } from "../../core/storage/database-
 import { readRequirementBackupOperation, requirementBackupFiles } from "./requirement-backup.ts";
 import type { RequirementBackupFile, RequirementBackupManifest, RequirementBackupReference, RequirementBackupRequirement } from "./requirement-backup.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE } from "./requirement-coordination.ts";
-import { verifyVersion } from "./prod-storage.ts";
+import { verifyVersion } from "./prd-storage.ts";
 import { sealOperationLog, validOperationLog } from "../../core/storage/operation-log.ts";
 
 const RESTORE_FORMAT = "requirement-restore-operation/v1" as const;
@@ -153,7 +153,7 @@ function exactKeys(value: object, expected: readonly string[]): boolean {
 }
 function validReference(value: unknown): value is RequirementBackupReference {
   const ref = value as Partial<RequirementBackupReference> | null;
-  return !!ref && exactKeys(ref, ["commit", "prodHash"]) && COMMIT.test(String(ref.commit)) && /^sha256:[0-9a-f]{64}$/.test(String(ref.prodHash));
+  return !!ref && exactKeys(ref, ["commit", "prdHash"]) && COMMIT.test(String(ref.commit)) && /^sha256:[0-9a-f]{64}$/.test(String(ref.prdHash));
 }
 function validRequirement(value: unknown): value is RequirementBackupRequirement {
   const item = value as Partial<RequirementBackupRequirement> | null;
@@ -179,11 +179,11 @@ function validateManifest(value: unknown, options: RequirementRestoreOptions, re
   const known = new Set(ids);
   for (const file of manifest.files) {
     if (file.relativePath === "data.db") continue;
-    const match = /^requirements\/([0-9a-f-]{36})\/(prod\.md|\.git\/.+)$/.exec(file.relativePath) ?? /^prototypes\/([0-9a-f-]{36})\/[^/]+\.v\d+\.html$/.exec(file.relativePath);
+    const match = /^requirements\/([0-9a-f-]{36})\/(prd\.md|\.git\/.+)$/.exec(file.relativePath) ?? /^prototypes\/([0-9a-f-]{36})\/[^/]+\.v\d+\.html$/.exec(file.relativePath);
     if (!match || !UUID_V7_PATTERN.test(match[1]!) || !known.has(match[1]!)) fail("manifest_path_not_allowed");
   }
   for (const requirement of manifest.requirements.filter((item) => item.saved || item.approved)) {
-    if (!paths.includes(`requirements/${requirement.requirementId}/prod.md`) || !paths.some((path) => path.startsWith(`requirements/${requirement.requirementId}/.git/`))) fail("manifest_requirement_incomplete");
+    if (!paths.includes(`requirements/${requirement.requirementId}/prd.md`) || !paths.some((path) => path.startsWith(`requirements/${requirement.requirementId}/.git/`))) fail("manifest_requirement_incomplete");
   }
   return manifest as RequirementBackupManifest;
 }
@@ -288,14 +288,14 @@ async function verifyRestoredRepositories(options: RequirementRestoreOptions, da
   for (const requirement of requirements) {
     const refs = [...new Map([requirement.saved, requirement.approved]
       .filter((value): value is RequirementBackupReference => value !== null)
-      .map((reference) => [`${reference.commit}:${reference.prodHash}`, reference])).values()];
-    const allowed = new Set(refs.map((ref) => `${ref.commit}:${ref.prodHash}`));
+      .map((reference) => [`${reference.commit}:${reference.prdHash}`, reference])).values()];
+    const allowed = new Set(refs.map((ref) => `${ref.commit}:${ref.prdHash}`));
     for (const reference of refs) {
       await verifyVersion({
         dataRoot, repoId: options.repoId, requirementId: requirement.requirementId,
-        worktreeRoots: [...options.worktreeRoots], commit: reference.commit, expectedHash: reference.prodHash,
+        worktreeRoots: [...options.worktreeRoots], commit: reference.commit, expectedHash: reference.prdHash,
         authorize: (check) => {
-          const checkedHash = check.expectedHash ?? check.prodHash;
+          const checkedHash = check.expectedHash ?? check.prdHash;
           if (check.action !== "verifyVersion" || !check.commit || !checkedHash || !allowed.has(`${check.commit}:${checkedHash}`)) return false;
           return true;
         },
@@ -348,7 +348,7 @@ function verifyRecoveredState(path: string, manifest: RequirementBackupManifest,
       const currentTerminal = currentTerminals.get(expected.requirementId);
       if (currentTerminal) {
         if (JSON.stringify(data) !== JSON.stringify(currentTerminal)) fail("terminal_state_not_retained");
-      } else if ((expected.saved === null) !== (saved === null) || (expected.approved === null) !== (approved === null) || (expected.saved && (saved?.commit !== expected.saved.commit || `sha256:${saved?.hash}` !== expected.saved.prodHash)) || (expected.approved && (approved?.commit !== expected.approved.commit || `sha256:${approved?.hash}` !== expected.approved.prodHash))) fail("recovered_reference_mismatch");
+      } else if ((expected.saved === null) !== (saved === null) || (expected.approved === null) !== (approved === null) || (expected.saved && (saved?.commit !== expected.saved.commit || `sha256:${saved?.hash}` !== expected.saved.prdHash)) || (expected.approved && (approved?.commit !== expected.approved.commit || `sha256:${approved?.hash}` !== expected.approved.prdHash))) fail("recovered_reference_mismatch");
       const status = statuses.find((item) => item.requirementId === expected.requirementId);
       if (!status || status.executable !== false) fail("recovery_status_missing");
       if (data.lifecycle !== status.retainedLifecycle) fail("retained_state_mismatch");

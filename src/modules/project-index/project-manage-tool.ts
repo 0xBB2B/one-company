@@ -200,7 +200,7 @@ const SAFE_ENUM_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.f
   action: new Set(["preview", "init", "status", "refresh"]),
   status: new Set(["building", "ready", "partial", "invalid", "cancelled", "interrupted"]),
   reason: new Set([
-    "prod_archive", "excluded_directory", "excluded_file", "sensitive", "database", "symbolic_link", "hard_link",
+    "prd_archive", "excluded_directory", "excluded_file", "sensitive", "database", "symbolic_link", "hard_link",
     "special_file", "unreadable", "outside_root", "nested_repository", "git_ignored", "file_too_large", "total_text_limit", "entry_limit",
     "depth_limit", "unstable", "cancelled", "binary", "invalid_utf8", "invalid_archive_name",
     "duplicate_requirement_id",
@@ -447,7 +447,7 @@ function scanConfirmationLines(repositoryRoot: string, dataRoot: string, repoId:
     `仓库根：${repositoryRoot}`,
     `当前分支：${branch}`,
     "允许读取：该仓库内通过安全边界核对的当前代码、配置、测试与文档。",
-    "固定排除：.git、被 Git 忽略的路径、依赖、构建/缓存/日志、数据库、敏感凭据、符号/硬链接、嵌套仓库；docs/prod 只枚举有限路径元数据，不读取正文。",
+    "固定排除：.git、被 Git 忽略的路径、依赖、构建/缓存/日志、数据库、敏感凭据、符号/硬链接、嵌套仓库；docs/prd 只枚举有限路径元数据，不读取正文。",
     `允许写入：仅仓库外本机目录 ${resolve(dataRoot, "repos", repoId)} 中的 index.db、data.db 的初始化登记及 SQLite 必要附属文件。`,
     "不运行仓库脚本，不创建需求、规则、PM、业务提交或其他共享文件。init 的 preview=true 仅枚举路径，不创建 index.db 或共享输出。",
     preview

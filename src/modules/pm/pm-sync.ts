@@ -53,7 +53,7 @@ export async function syncTargetBranch(options: Omit<PmSyncOptions, "alive" | "c
 export function createPmSyncTool(options: PmSyncOptions): ToolDefinition {
   return {
     name: "one_company_git_sync", label: "git_sync",
-    description: "把需求分支同步到目标分支最新提交（进入最终检查前必须做）。能 rebase 就 rebase；有冲突时需求分支改动会合成一份重新应用在目标分支最新提交上，changed 列出全部待提交文件，conflicted 列出带冲突标记的文件，previousHead 是原提交；请派 worker 按 prod 与代码修复冲突，经任务级审查后用 git_commit 提交 changed 中的全部文件。须先提交所有改动，检查阶段与子代理执行期间不可用。",
+    description: "把需求分支同步到目标分支最新提交（进入最终检查前必须做）。能 rebase 就 rebase；有冲突时需求分支改动会合成一份重新应用在目标分支最新提交上，changed 列出全部待提交文件，conflicted 列出带冲突标记的文件，previousHead 是原提交；请派 worker 按 PRD 与代码修复冲突，经任务级审查后用 git_commit 提交 changed 中的全部文件。须先提交所有改动，检查阶段与子代理执行期间不可用。",
     parameters: Type.Object({}, { additionalProperties: false }), executionMode: "sequential",
     async execute() {
       try {

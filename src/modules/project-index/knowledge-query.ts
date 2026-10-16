@@ -108,7 +108,7 @@ function copyCapture(input: KnowledgeQueryCapture): KnowledgeQueryCapture {
     || !Array.isArray(b.coverage.roots) || !b.coverage.roots.length || b.coverage.roots.length > 256
     || !Array.isArray(b.coverage.excludedPaths) || b.coverage.excludedPaths.length > 256
     || !b.coverage.roots.every((path) => path === "." || isKnowledgePath(path))
-    || !b.coverage.excludedPaths.includes("docs/prod")
+    || !b.coverage.excludedPaths.includes("docs/prd")
     || !Array.isArray(b.files) || b.files.length > 20_000
     || b.files.some((file) => !isKnowledgePath(file.path) || !HASH.test(file.hash)
       || !b.coverage.roots.some((root) => under(file.path, root)) || b.coverage.excludedPaths.some((path) => under(file.path, path)))

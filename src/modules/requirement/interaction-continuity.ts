@@ -36,7 +36,7 @@ function checkRef(row: StoredRecord | null, expected: { id: string; version: num
 function checkedFact(row: StoredRecord): FactData {
   if (row.version !== 1) deny("continuity_fact_mutated");
   const f = checkInteraction(Fact, row.data);
-  if (row.id !== f.operationId || f.partition.prodHash !== f.candidate.to.hash ||
+  if (row.id !== f.operationId || f.partition.prdHash !== f.candidate.to.hash ||
     (f.byteReview.units.length !== f.partition.units.length || f.byteReview.units.some((u, i) => u.id !== f.partition.units[i]!.id || u.hash !== f.partition.units[i]!.hash))) deny("continuity_fact_identity");
   return f;
 }
@@ -98,7 +98,7 @@ export function assertRetainedEvidenceIn(db: Pick<LocalDatabase, "read">, repoId
   const decision = checkDecisionRecord(checkRef(db.read("short_decisions", e.decision.id), e.decision).data);
   if (decision.actor !== "user" || decision.status !== "confirmed" || decision.basisReceiptId !== fact.receiptId ||
     decision.requirementId !== basis.requirementId || decision.requirementVersion !== fact.basis.version || decision.epoch !== basis.epoch ||
-    !same(decision.prod, fact.basis.prod)) deny("continuity_decision_changed");
+    !same(decision.prd, fact.basis.prd)) deny("continuity_decision_changed");
   savedMatches(checkRef(db.read(REQUIREMENT_OPERATION_NAMESPACE, fact.savedOperation.id), fact.savedOperation), fact);
 }
 type ProofRow = StoredRecord & { key?: string };
@@ -166,7 +166,7 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
       const row = read("short_decisions", d.record.id); if (!row) return null;
       const value = checkDecisionRecord(row.data);
       if (value.repoId !== repoId || value.requirementId !== basis.requirementId || value.epoch !== basis.epoch || value.operationId !== fact.operationId ||
-        value.requirementVersion !== fact.basis.version || value.basisReceiptId !== null && value.basisReceiptId !== fact.receiptId || !same(value.prod, fact.basis.prod)) return null;
+        value.requirementVersion !== fact.basis.version || value.basisReceiptId !== null && value.basisReceiptId !== fact.receiptId || !same(value.prd, fact.basis.prd)) return null;
       if (value.status !== "superseded") return same(ref(row), d.record) &&
         value.basisReceiptId === (value.status === "confirmed" ? fact.receiptId : null) ? { row, value } : null;
       // 原字段只能发生ShortDecisionStore的单次状态取代，不能把任意行变化解释成修订。

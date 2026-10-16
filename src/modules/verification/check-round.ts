@@ -7,11 +7,11 @@ import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static, TSchema } from "typebox";
 import { snapshotBranchState } from "../../core/exec/branch-guard.ts";
-import { isProdArchivePath } from "../../core/policy/content-policy.ts";
+import { isPrdArchivePath } from "../../core/policy/content-policy.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { readGitBytes } from "../../core/exec/git-read.ts";
-import { checked, commit, counter, hash, id, object, PmLease, positive, ProdReference } from "../requirement/requirement-contracts.ts";
+import { checked, commit, counter, hash, id, object, PmLease, positive, PrdReference } from "../requirement/requirement-contracts.ts";
 import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn } from "../requirement/requirement-coordination.ts";
 import { RequirementStateStore } from "../requirement/requirement-state.ts";
 import { verifyRequirementWorkspace } from "../requirement/requirement-workspace.ts";
@@ -26,7 +26,7 @@ const CHANGE_SETS = "change_sets";
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 export const InputEnvironment = object({ node: Type.String({ maxLength: 64 }), platform: Type.String({ maxLength: 32 }), arch: Type.String({ maxLength: 32 }) });
 export const CheckBaseline = object({
-  revision: positive, approved: ProdReference, codeHead: commit, inputHash: hash, inputCount: counter, environment: InputEnvironment,
+  revision: positive, approved: PrdReference, codeHead: commit, inputHash: hash, inputCount: counter, environment: InputEnvironment,
 });
 export type CheckBaseline = Static<typeof CheckBaseline>;
 const Invalidation = object({ reason: Type.Union([Type.Literal("input_changed"), Type.Literal("observed_change"), Type.Literal("interrupted"), Type.Literal("revoked")]),
@@ -100,11 +100,11 @@ function processIsAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
-/** 实际输入清单：worktree 中 Git 跟踪与未忽略文件的内容指纹，排除 docs/prod；不读取本机数据目录。 */
+/** 实际输入清单：worktree 中 Git 跟踪与未忽略文件的内容指纹，排除 docs/prd；不读取本机数据目录。 */
 export async function collectInputManifest(root: string): Promise<InputManifest> {
   const listing = await readGitBytes(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
   const paths = [...new Set(listing.stdout.toString("utf8").split("\u0000").filter((entry) => entry.length > 0))]
-    .filter((path) => !isProdArchivePath(path)).sort();
+    .filter((path) => !isPrdArchivePath(path)).sort();
   const files: Array<{ path: string; hash: string }> = [];
   for (const path of paths) {
     const absolute = join(root, ...path.split("/"));
@@ -365,7 +365,7 @@ export class CheckRoundService {
       if (!round) throw new CheckRoundError("not_found");
       if (round.data.status === "released" || round.data.invalidation) return round.data;
       const now = this.now();
-      const invalidation = { reason: "observed_change" as const, detail: request.paths.filter((path) => !isProdArchivePath(path)).slice(0, 16).join(",") };
+      const invalidation = { reason: "observed_change" as const, detail: request.paths.filter((path) => !isPrdArchivePath(path)).slice(0, 16).join(",") };
       for (const verificationId of round.data.verifications) {
         const run = readVerificationIn(db, verificationId);
         if (run && (run.data.status === "running" || run.data.status === "passed" || run.data.status === "failed")) {
@@ -381,7 +381,7 @@ export class CheckRoundService {
 
 export interface FormalEvidence {
   verificationId: string; kind: VerificationRun["kind"]; status: "passed" | "failed" | "unknown"; applicable: boolean; reasons: string[];
-  checkRoundId: string | null; approvedProdHash: string; revision: number; codeHead: string;
+  checkRoundId: string | null; approvedPrdHash: string; revision: number; codeHead: string;
   inputHash: string; performance: Static<typeof VerificationPerformance>;
 }
 /**
@@ -406,7 +406,7 @@ export async function formalEvidence(config: { dataRoot: string; repoId: string 
   if (round?.invalidation) reasons.push(`round_${round.invalidation.reason}`);
   if (round && round.status !== "released") reasons.push("round_not_released");
   if (!record) reasons.push("requirement_missing");
-  if (record && (record.approved?.hash !== run.baseline.approved.hash || record.revision !== run.baseline.revision)) reasons.push("prod_changed");
+  if (record && (record.approved?.hash !== run.baseline.approved.hash || record.revision !== run.baseline.revision)) reasons.push("prd_changed");
   if (record && record.epoch !== run.epoch) reasons.push("epoch_changed");
   if (record?.workspace?.path) {
     let manifest: InputManifest | null = null;
@@ -415,6 +415,6 @@ export async function formalEvidence(config: { dataRoot: string; repoId: string 
   } else reasons.push("workspace_unavailable");
   const status = run.status === "passed" ? "passed" : run.status === "running" ? "unknown" : "failed";
   return freeze({ verificationId: run.verificationId, kind: run.kind, status, applicable: reasons.length === 0, reasons, checkRoundId: run.checkRoundId,
-    approvedProdHash: run.baseline.approved.hash, revision: run.baseline.revision, codeHead: run.baseline.codeHead,
+    approvedPrdHash: run.baseline.approved.hash, revision: run.baseline.revision, codeHead: run.baseline.codeHead,
     inputHash: run.baseline.inputHash, performance: structuredClone(run.performance) });
 }

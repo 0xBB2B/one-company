@@ -94,7 +94,7 @@ describe("内置默认团队", () => {
 
   test("M9：主会话规则写明测试或验收是否正式通过以需求的验收记录为依据并写出处，自己临时跑的测试不算正式通过", async () => {
     const main = await readFile(join(defaultRoleDir(), "..", "rules", "01-main-session.md"), "utf8");
-    expect(main).toMatch(/是否正式通过时，以需求的验收记录为依据[\s\S]*docs\/prod 归档里的验收记录[\s\S]*写明出处[\s\S]*临时跑的测试[\s\S]*不能称为正式通过/);
+    expect(main).toMatch(/是否正式通过时，以需求的验收记录为依据[\s\S]*docs\/prd 归档里的验收记录[\s\S]*写明出处[\s\S]*临时跑的测试[\s\S]*不能称为正式通过/);
   });
 
   test("默认 worker 按 TDD 先红后绿并提交两次运行，PM 不把测试拆成单独任务，reviewer 查看引用记录核对红绿", async () => {

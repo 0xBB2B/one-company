@@ -15,7 +15,7 @@ export async function pmIntakeReviewKit(fixture: PmIntakeFixture) {
     maxBytes: 49_152, signal: new AbortController().signal });
   const { format: _format, binding: _binding, ...content } = material!.understanding;
   const session = createSessionManagerForRun({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, runId: fixture.lease.runId, cwd: fixture.root });
-  const current: IntakeSubmissionBaseline = { approvedRevision: captured.binding.approvedRevision, approvedProdHash: captured.binding.approvedProdHash,
+  const current: IntakeSubmissionBaseline = { approvedRevision: captured.binding.approvedRevision, approvedPrdHash: captured.binding.approvedPrdHash,
     approvalManifestHash: captured.binding.approvalManifestHash };
   let serial = 0;
   function submit(value: UnderstandingContent, isError = false, baseline: IntakeSubmissionBaseline = current): string {

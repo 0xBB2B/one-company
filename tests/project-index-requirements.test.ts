@@ -72,7 +72,7 @@ async function world() {
       workspaceId: workspaceId(identity.repoId, target, branch) } };
   };
   const archive = async (id = created.requirementId, description = "归档", target = repo.root) => {
-    const directory = join(target, "docs", "prod");
+    const directory = join(target, "docs", "prd");
     await fsp.mkdir(directory, { recursive: true });
     const path = join(directory, `${id}.${description}.md`);
     await fsp.writeFile(path, "ARCHIVE-BODY-MUST-NEVER-BE-READ");
@@ -94,7 +94,7 @@ function denyBodyReads(w: World) {
   const attempted: string[] = [];
   const forbidden = (value: unknown) => {
     const path = value instanceof URL ? value.pathname : String(value);
-    if (path.includes("/docs/prod/") || path.includes("/requirements/") || path.includes("/sessions/")) {
+    if (path.includes("/docs/prd/") || path.includes("/requirements/") || path.includes("/sessions/")) {
       attempted.push(path);
       throw new Error("forbidden body read");
     }
@@ -120,7 +120,7 @@ function denyBodyReads(w: World) {
     forbidden(args[0]); return createReadStream(...args);
   }) as typeof fs.createReadStream);
   syncBuiltinESMExports();
-  // 状态准备使用生产prod存储；适配阶段即使本机正文和.git不可访问，也只凭SQLite元数据撤权。
+  // 状态准备使用生产PRD存储；适配阶段即使本机正文和.git不可访问，也只凭SQLite元数据撤权。
   expect(w.options.dataRoot).not.toContain(w.repo.root);
   return attempted;
 }
@@ -212,7 +212,7 @@ test.each(([
     contextGeneration: w.lease.contextGeneration, version: prepared.version }, sink)).toThrow(/unknown_delivery_handle/);
   expect(sink).not.toHaveBeenCalled();
   expect(opendir.mock.calls.map(([directory]) => String(directory)))
-    .not.toContain(join(w.worktree.root, "docs", "prod"));
+    .not.toContain(join(w.worktree.root, "docs", "prd"));
   expect(attempted).toEqual([]);
 });
 
@@ -279,11 +279,11 @@ test("同UUID不同描述及repo/绑定worktree的多路径按identity_conflict�
   expect(calls).toHaveBeenCalledTimes(1);
   expect(calls.mock.calls[0]![0].paths).toHaveLength(2);
   expect(new Set(calls.mock.calls[0]![0].paths).size).toBe(2);
-  expect(calls.mock.calls[0]![0].paths.every((path) => path === first || path.startsWith(join(w.worktree.root, "docs", "prod")))).toBe(true);
+  expect(calls.mock.calls[0]![0].paths.every((path) => path === first || path.startsWith(join(w.worktree.root, "docs", "prd")))).toBe(true);
   expect(attempted).toEqual([]);
 });
 
-test.each(["docs", "prod", "file", "subdirectory", "nested-repository", "unreadable"])("目录/文件不确定(%s)拒绝hook，不跟随链接或读正文", async (kind) => {
+test.each(["docs", "prd", "file", "subdirectory", "nested-repository", "unreadable"])("目录/文件不确定(%s)拒绝hook，不跟随链接或读正文", async (kind) => {
   const w = await world();
   const path = await w.archive();
   const target = join(w.root, "outside");
@@ -291,17 +291,17 @@ test.each(["docs", "prod", "file", "subdirectory", "nested-repository", "unreada
   if (kind === "docs") {
     await fsp.rm(join(w.repo.root, "docs"), { recursive: true });
     await fsp.symlink(target, join(w.repo.root, "docs"));
-  } else if (kind === "prod") {
-    await fsp.rm(join(w.repo.root, "docs", "prod"), { recursive: true });
-    await fsp.symlink(target, join(w.repo.root, "docs", "prod"));
+  } else if (kind === "prd") {
+    await fsp.rm(join(w.repo.root, "docs", "prd"), { recursive: true });
+    await fsp.symlink(target, join(w.repo.root, "docs", "prd"));
   } else if (kind === "file") {
     await fsp.rm(path);
-    await fsp.symlink(join(w.options.dataRoot, "repos", w.options.repoId, "requirements", w.created.requirementId, "prod.md"), path);
-  } else if (kind === "subdirectory") await fsp.mkdir(join(w.repo.root, "docs", "prod", "nested"));
+    await fsp.symlink(join(w.options.dataRoot, "repos", w.options.repoId, "requirements", w.created.requirementId, "prd.md"), path);
+  } else if (kind === "subdirectory") await fsp.mkdir(join(w.repo.root, "docs", "prd", "nested"));
   else if (kind === "nested-repository") await fsp.mkdir(join(w.repo.root, "docs", ".git"));
   else {
-    await fsp.chmod(join(w.repo.root, "docs", "prod"), 0);
-    cleanups.push(() => fsp.chmod(join(w.repo.root, "docs", "prod"), 0o700));
+    await fsp.chmod(join(w.repo.root, "docs", "prd"), 0);
+    cleanups.push(() => fsp.chmod(join(w.repo.root, "docs", "prd"), 0o700));
   }
   const attempted = denyBodyReads(w);
   const continuation = vi.fn();

@@ -144,9 +144,9 @@ export class UserInteractionCore {
     this.#requireSession();
     const input = parseInteraction(QuestionInput, source); this.#assertBasis(input.basis);
     checkProposal(input.proposal, input.basis);
-    if (input.candidate && decisionDigest(input.candidate.from) !== decisionDigest(input.basis.prod)) throw new UserInteractionError("candidate_baseline_mismatch");
+    if (input.candidate && decisionDigest(input.candidate.from) !== decisionDigest(input.basis.prd)) throw new UserInteractionError("candidate_baseline_mismatch");
     if (input.unitIds && (!input.unitIds.length || !input.candidate)) throw new UserInteractionError("question_units_without_candidate");
-    if (input.partition && (input.partition.prodHash !== input.candidate?.to.hash || input.unitIds?.some((id) => !input.partition!.units.some((u) => u.id === id)))) throw new UserInteractionError("question_partition_mismatch");
+    if (input.partition && (input.partition.prdHash !== input.candidate?.to.hash || input.unitIds?.some((id) => !input.partition!.units.some((u) => u.id === id)))) throw new UserInteractionError("question_partition_mismatch");
     const question = checkInteraction(PendingQuestion, { format: "interaction-question/v1", ...input,
       requestId: uuidv7(), repoId: this.#options.repoId, createdAt: this.#now() });
     this.#access("record-decisions", { requirementId: input.basis.requirementId });
@@ -227,7 +227,7 @@ export class UserInteractionCore {
       return { interpretation: structuredClone(result), capability, notRecorded };
     } catch (error) {
       if (this.#input === input) this.clearInput();
-      // 本模块与短决定格式的核验错误只含程序生成的原因，原样交给主代理；其余可能带原文、prod片段或供应商响应正文，只报笼统原因
+      // 本模块与短决定格式的核验错误只含程序生成的原因，原样交给主代理；其余可能带原文、PRD片段或供应商响应正文，只报笼统原因
       if (error instanceof UserInteractionError || error instanceof ShortDecisionError) throw error;
       throw new UserInteractionError("interpretation_denied");
     }
@@ -326,7 +326,7 @@ export class UserInteractionCore {
         const { recordedAt: _recordedAt, ...facts } = record;
         const expected = { format: "short-decision/v1", decisionId, operationId: verified.batch.operationId,
           requirementId: verified.batch.requirementId, repoId: this.#options.repoId,
-          requirementVersion: verified.batch.version, epoch: verified.batch.epoch, prod: verified.batch.prod,
+          requirementVersion: verified.batch.version, epoch: verified.batch.epoch, prd: verified.batch.prd,
           ...verified.batch.decisions[index], ...verified.admission.subjects[index], supersededBy: null };
         if (decisionDigest(facts) !== decisionDigest(expected)) throw new UserInteractionError("saved_decision_changed");
         return { version: stored.version, record };
@@ -448,7 +448,7 @@ export class UserInteractionCore {
           decisionDigest(state.data) !== decisionDigest(current.data) || current.data.epoch !== v.context.basis.epoch ||
           current.data.recovery !== "ready" || !["draft", "active"].includes(current.data.lifecycle) ||
           decisionDigest(current.data.saved) !== decisionDigest(doc.candidate.to) ||
-          decisionDigest(current.data.lifecycle === "active" ? current.data.approved : current.data.saved) !== decisionDigest(v.context.basis.prod)) return false;
+          decisionDigest(current.data.lifecycle === "active" ? current.data.approved : current.data.saved) !== decisionDigest(v.context.basis.prd)) return false;
         return records.every(({ version, record }) => {
           const stored = db.read("short_decisions", record.decisionId);
           return stored?.id === record.decisionId && stored.version === version && record.status !== "superseded" &&
@@ -478,9 +478,9 @@ export class UserInteractionCore {
   }
   #assertBasis(basis: InteractionBasis): void {
     const current = this.#state.read(basis.requirementId);
-    const prod = current.data.lifecycle === "active" ? current.data.approved : current.data.saved;
+    const prd = current.data.lifecycle === "active" ? current.data.approved : current.data.saved;
     if (!["draft", "active"].includes(current.data.lifecycle) || current.data.recovery !== "ready" ||
-      current.version !== basis.version || current.data.epoch !== basis.epoch || decisionDigest(prod) !== decisionDigest(basis.prod)) {
+      current.version !== basis.version || current.data.epoch !== basis.epoch || decisionDigest(prd) !== decisionDigest(basis.prd)) {
       this.clearInput(); throw new UserInteractionError("basis_changed");
     }
   }

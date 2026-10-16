@@ -56,7 +56,7 @@ async function world(active: boolean) {
   const supersede = async () => {
     const before = state.read(requirementId);
     const second = await UserInteractionCore.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true, authorizeAction: () => true,
-      loadContext: async () => ({ basis: { requirementId, version: before.version, epoch: before.data.epoch, prod: before.data.lifecycle === "active" ? before.data.approved : before.data.saved }, currentGoal: "", candidates: [], questions: [], priorDecisions: [second.readDecision(requirementId, superseded)] }),
+      loadContext: async () => ({ basis: { requirementId, version: before.version, epoch: before.data.epoch, prd: before.data.lifecycle === "active" ? before.data.approved : before.data.saved }, currentGoal: "", candidates: [], questions: [], priorDecisions: [second.readDecision(requirementId, superseded)] }),
       interpreter: { identity: () => ({ provider: "fixture", id: "second", configurationHash: "a".repeat(64) }), interpret: async () => JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "explicit", entries: [{ ...entry(active ? "target" : "constraint", "修订A目标"), candidateId: null, supersedes: [superseded] }] }) } });
     clean.push(async () => second.shutdown()); second.startSession({ sessionId: "second", windowId: "second" });
     const result = await second.interpret(second.captureInput({ source: "interactive", text: "修订A目标" }, "second"), requirementId); second.save(result.capability);
@@ -68,7 +68,7 @@ async function world(active: boolean) {
 }
 test("未激活登记结果：真实第二Core取代后，原对象、tool_result交付和缓存都拒绝", async () => {
   const w = await world(false);
-  expect(w.response.details).toMatchObject({ prodActivated: false, scopeStatus: "registered", blockedBy: "explicit_target_required" });
+  expect(w.response.details).toMatchObject({ prdActivated: false, scopeStatus: "registered", blockedBy: "explicit_target_required" });
   expect(() => w.interaction.assertResultCurrent(structuredClone(w.response.details!), w.ctx)).toThrow(/unproven_result/);
   await w.supersede();
   expect(() => w.interaction.assertResultCurrent(w.response.details!, w.ctx)).toThrow();

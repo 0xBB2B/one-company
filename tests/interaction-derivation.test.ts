@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { uuidv7 } from "../src/core/storage/database.ts";
-import { partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
+import { partitionPrdDocument } from "../src/modules/requirement/prd-view.ts";
 import type { InteractionContext, UserInteractionError } from "../src/modules/requirement/user-interaction-format.ts";
 import { createApprovalManifest, validateDocumentReview } from "../src/modules/requirement/approval-manifest.ts";
 import { summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
@@ -8,9 +8,9 @@ import { deriveInterpretation } from "../src/modules/interaction/interaction-der
 
 function fixture() {
   const requirementId = uuidv7(), title = "渐进登录", body = "前言：保留邮箱。\r\n# 手机号 {#A}\r\n实现手机号登录。\r\n# 微信 {#B}\r\n微信需求未决，不实施。\r\n";
-  const partition = partitionProdDocument(requirementId, title, body);
-  const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "a".repeat(64), from: null, to: { commit: "b".repeat(40), hash: partition.prodHash } };
-  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prod: null }, currentGoal: "",
+  const partition = partitionPrdDocument(requirementId, title, body);
+  const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "a".repeat(64), from: null, to: { commit: "b".repeat(40), hash: partition.prdHash } };
+  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prd: null }, currentGoal: "",
     candidates: [{ ...candidate, diff: "+手机号与明确未决微信" }], questions: [], priorDecisions: [], document: { candidate, title, body, partition } };
   const common = { basis: "explicit" as const, resolution: "direct" as const, candidateId: candidate.candidateId, requestId: null, actions: [], references: [], supersedes: [], scope: "仅手机号" };
   const output = { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true,
@@ -116,9 +116,9 @@ test("M9：动作列了一条目标里的某段就覆盖整条目标，漏列同
 /** 上一版里 preamble 与 A 已被用户明确确认、字节没变；这一版只新增了 B。 */
 function placeholderFixture(implementation = "由 PM 规划。") {
   const requirementId = uuidv7(), title = "手机号登录", body = `# 手机号 {#A}\n实现手机号登录。\n# 实现 {#impl}\n${implementation}\n# 背景 {#bg}\n用户未说明\n`;
-  const partition = partitionProdDocument(requirementId, title, body);
-  const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "a".repeat(64), from: null, to: { commit: "b".repeat(40), hash: partition.prodHash } };
-  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prod: null }, currentGoal: "",
+  const partition = partitionPrdDocument(requirementId, title, body);
+  const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "a".repeat(64), from: null, to: { commit: "b".repeat(40), hash: partition.prdHash } };
+  const context: InteractionContext = { basis: { requirementId, version: 1, epoch: 1, prd: null }, currentGoal: "",
     candidates: [{ ...candidate, diff: "+手机号登录" }], questions: [], priorDecisions: [], document: { candidate, title, body, partition } };
   const common = { basis: "explicit" as const, resolution: "direct" as const, candidateId: candidate.candidateId, requestId: null as string | null, actions: [], references: [], supersedes: [], scope: "手机号登录" };
   const output = { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: false,

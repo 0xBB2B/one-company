@@ -17,7 +17,7 @@ export const DEFAULT_INDEX_LIMITS = Object.freeze({
 export type IndexLanguage = "ts" | "tsx" | "js" | "jsx" | "go" | null;
 export type IndexFileKind = "code" | "document" | "config" | "unsupported";
 export type IndexSkipReason =
-  | "prod_archive"
+  | "prd_archive"
   | "excluded_directory"
   | "excluded_file"
   | "sensitive"
@@ -231,8 +231,8 @@ function sameBigVersion(left: BigIntStats, right: BigIntStats): boolean {
     && left.nlink === right.nlink;
 }
 
-function prodArchivePath(parts: string[]): boolean {
-  return parts.length >= 2 && parts[0]?.toLowerCase() === "docs" && parts[1]?.toLowerCase() === "prod";
+function prdArchivePath(parts: string[]): boolean {
+  return parts.length >= 2 && parts[0]?.toLowerCase() === "docs" && parts[1]?.toLowerCase() === "prd";
 }
 
 function directoryPolicy(name: string): IndexSkipReason | undefined {
@@ -243,7 +243,7 @@ function directoryPolicy(name: string): IndexSkipReason | undefined {
 }
 
 function filePolicy(parts: string[]): IndexSkipReason | undefined {
-  if (prodArchivePath(parts)) return "prod_archive";
+  if (prdArchivePath(parts)) return "prd_archive";
   for (const part of parts.slice(0, -1)) {
     const reason = directoryPolicy(part);
     if (reason) return reason;
@@ -264,7 +264,7 @@ export type IndexPathScope = "index" | "archive_metadata" | "ignored";
 /** 只按规范相对路径判断能否进索引；不访问目标，因此归档路径不会先读正文。 */
 export function indexPathScope(path: string): IndexPathScope {
   const parts = safeRelativePath(path);
-  if (prodArchivePath(parts)) return "archive_metadata";
+  if (prdArchivePath(parts)) return "archive_metadata";
   if (parts.some((part) => directoryPolicy(part) !== undefined)) return "ignored";
   return filePolicy(parts) ? "ignored" : "index";
 }
@@ -488,7 +488,7 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
       archives.push({ path, requirementId: match?.[1] ?? null });
       report(path);
     }
-    addSkip(directoryRelative, "prod_archive");
+    addSkip(directoryRelative, "prd_archive");
   };
 
   const walk = async (directoryPath: string, directoryRelative: string, depth: number, before: Stats): Promise<void> => {
@@ -554,9 +554,9 @@ export async function scanIndexWorkspace(input: ScanIndexWorkspaceInput): Promis
         addSkip(rel, "symbolic_link");
         continue;
       }
-      if (prodArchivePath(parts)) {
+      if (prdArchivePath(parts)) {
         if (stats.isDirectory()) await enumerateArchives(fullPath, rel, stats);
-        else addSkip(rel, "prod_archive");
+        else addSkip(rel, "prd_archive");
         continue;
       }
       if (ignored.has(stats.isDirectory() ? `${rel}/` : rel)) {

@@ -83,7 +83,7 @@ test("当前data.db正常重启只核对现状，不生成恢复副本", async (
 for (const hasArchive of [false, true]) {
   test(`旧active且${hasArchive ? "有" : "无"}同UUID归档均保持needs_review和禁止执行`, async () => {
     const w = await world(), id = uuidv7(), snapshotPath = await snapshotFixture(w.directory, [{ id, lifecycle: "active" }]);
-    const archiveDirectory = join(w.root, "docs-prod"); await mkdir(archiveDirectory, { mode: 0o755 });
+    const archiveDirectory = join(w.root, "docs-prd"); await mkdir(archiveDirectory, { mode: 0o755 });
     if (hasArchive) await writeFile(join(archiveDirectory, `${id}.恢复线索.md`), "ARCHIVE_BODY_MUST_NOT_BE_READ");
     const result = await withDatabaseMaintenance(w.scope, (permit) => reconcileDatabaseRecovery(permit, { operationId: uuidv7(), mode: "backup_data", snapshotPath, archiveDirectory }));
     expect(result).toMatchObject({ mode: "backup_data", state: "reconciled", executable: false, restoreStatus: "needs_review" });
@@ -111,7 +111,7 @@ test("旧快照中不存在的当前终态仍完整保全，归档元数据不�
   ];
   createStore(join(w.directory, "data.db"), terminalRows, { applicationId: DATABASE_APPLICATION_IDS.data });
   const snapshotPath = await snapshotFixture(w.directory, []);
-  const archives = join(w.workspace, "docs", "prod");
+  const archives = join(w.workspace, "docs", "prd");
   await mkdir(archives, { recursive: true });
   await writeFile(join(archives, `${terminalRows[0]!.id}.归档.md`), "不应读取正文");
   const before = await hash(join(w.directory, "data.db"));
@@ -162,7 +162,7 @@ test("旧快照中的completed/cancelled/rejected终态保全原因但恢复产�
 
 test("仅归档存在只登记archive_found线索，不创建active或completed状态", async () => {
   const w = await world(), id = uuidv7(), snapshotPath = await snapshotFixture(w.directory, []);
-  const archiveDirectory = join(w.root, "docs-prod"); await mkdir(archiveDirectory); await writeFile(join(archiveDirectory, `${id}.only-archive.md`), "SECRET_ARCHIVE");
+  const archiveDirectory = join(w.root, "docs-prd"); await mkdir(archiveDirectory); await writeFile(join(archiveDirectory, `${id}.only-archive.md`), "SECRET_ARCHIVE");
   const result = await withDatabaseMaintenance(w.scope, (permit) => reconcileDatabaseRecovery(permit, { operationId: uuidv7(), mode: "backup_data", snapshotPath, archiveDirectory }));
   expect(result.mode).toBe("backup_data");
   if (result.mode === "backup_data") expect(result.requirements).toEqual([{ requirementId: id, sourceLifecycle: null, retainedLifecycle: null, closeReason: null, archivePath: join(archiveDirectory, `${id}.only-archive.md`), recoveryReason: "archive_found", executable: false }]);
@@ -220,7 +220,7 @@ test("旧维护标记即使提供接管回调也保持needs_review", async () =>
 
 test("归档枚举正文读取探针为零，并拒绝同UUID多路径冲突", async () => {
   const w = await world(), id = uuidv7(), snapshotPath = await snapshotFixture(w.directory, [{ id, lifecycle: "active" }]);
-  const archiveDirectory = join(w.root, "docs-prod"); await mkdir(archiveDirectory);
+  const archiveDirectory = join(w.root, "docs-prd"); await mkdir(archiveDirectory);
   const first = join(archiveDirectory, `${id}.one.md`); await writeFile(first, "DO_NOT_READ_ARCHIVE_BODY");
   const original = fs.readFileSync; let archiveReads = 0;
   vi.spyOn(fs, "readFileSync").mockImplementation(((path: fs.PathOrFileDescriptor, ...args: unknown[]) => {

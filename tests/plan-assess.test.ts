@@ -17,7 +17,7 @@ function spec(key: string, goal: string): TaskSpec {
     maxTurns: 30, objective: `实现 ${goal}`, passCriteria: [`${goal} 可观察通过`], scope: { in: [goal], out: ["微信登录"] }, performance: NA };
 }
 type Task = { taskId: string; key: string; version: number; status: string };
-type View = { plan: { planVersion: number; confirmedVersion: number | null; prodRevision: number }; tasks: Task[] };
+type View = { plan: { planVersion: number; confirmedVersion: number | null; prdRevision: number }; tasks: Task[] };
 
 async function world() {
   const fixture = await createPmIntakeFixture();

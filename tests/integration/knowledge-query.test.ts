@@ -35,14 +35,14 @@ test("真实SDK单一主入口注册knowledge工具且公开schema不含宿主�
   } finally { await removeDaemonFixture(fixture); }
 }, 30_000);
 
-test("真实SDK input→project_manage批准→独立daemon→knowledge.query对账→tool_result JSON及prod零读取", async () => {
+test("真实SDK input→project_manage批准→独立daemon→knowledge.query对账→tool_result JSON及PRD零读取", async () => {
   const f = await createDaemonFixture();
   f.repo.root = await realpath(f.repo.root); f.dataRoot = await realpath(f.dataRoot);
   await repoDataDir(f.dataRoot, f.repoId, f.repoDir);
-  await mkdir(join(f.repo.root, "docs/prod"), { recursive: true });
+  await mkdir(join(f.repo.root, "docs/prd"), { recursive: true });
   await writeFile(join(f.repo.root, "动作.ts"), 'export const 跳跃 = "角色跳跃\\\"\\n";\n');
   for (let index = 0; index < 12; index++) await writeFile(join(f.repo.root, `说明${index}.md`), `角色跳跃${'"\\\t中文😀'.repeat(140)}\n`);
-  await writeFile(join(f.repo.root, "docs/prod/0197b7b0-6a20-7c51-8a32-b9465fb72d10.完成.md"), "角色跳跃SECRET_ARCHIVE_BODY", { mode: 0o000 });
+  await writeFile(join(f.repo.root, "docs/prd/0197b7b0-6a20-7c51-8a32-b9465fb72d10.完成.md"), "角色跳跃SECRET_ARCHIVE_BODY", { mode: 0o000 });
   const probePath = join(f.home.home, "query-probe.json"), providerLog = join(f.home.home, "provider-log.jsonl");
   await writeFile(providerLog, "", { mode: 0o600 });
   const providers = await writeTestModelProviders(f.home.home, [{ providerId: "query-daemon", modelId: "controlled", replies: [{ type: "text", text: "not called" }] }]);

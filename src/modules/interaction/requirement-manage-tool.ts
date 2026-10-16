@@ -5,7 +5,7 @@ import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import { HostAuthorizationError } from "../requirement/host-authorization.ts";
 import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
-import { PROD_SECTION_ID_PATTERN } from "../requirement/prod-view.ts";
+import { PRD_SECTION_ID_PATTERN } from "../requirement/prd-view.ts";
 import { requestParameters, shapeIssue, unwrapRequest } from "../../core/exec/tool-request.ts";
 import { toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 import { SUMMARY_MAX_CHARS } from "../requirement/requirement-summary.ts";
@@ -19,7 +19,7 @@ const actions = {
   create: Type.Object({ action: Type.Literal("create"), repoId, requestId: id, operationId: id, summary, title: Type.String({ maxLength: 1024 }), body: Type.String({ maxLength: 65_536 }) }, { additionalProperties: false }),
   updateDraft: Type.Object({ action: Type.Literal("updateDraft"), repoId, requirementId: id, operationId: id, version, summary, title: Type.String({ maxLength: 1024 }), body: Type.String({ maxLength: 65_536 }) }, { additionalProperties: false }),
   confirmUpdate: Type.Object({ action: Type.Literal("confirmUpdate"), repoId, requirementId: id, savedOperationId: id, operationId: id, version }, { additionalProperties: false }),
-  read: Type.Object({ action: Type.Literal("read"), repoId, requirementId: id, source: Type.Optional(StringEnum(["saved", "approved"] as const)), sectionId: Type.Optional(Type.String({ pattern: PROD_SECTION_ID_PATTERN, maxLength: 96 })), ...paging }, { additionalProperties: false }),
+  read: Type.Object({ action: Type.Literal("read"), repoId, requirementId: id, source: Type.Optional(StringEnum(["saved", "approved"] as const)), sectionId: Type.Optional(Type.String({ pattern: PRD_SECTION_ID_PATTERN, maxLength: 96 })), ...paging }, { additionalProperties: false }),
   diff: Type.Object({ action: Type.Literal("diff"), repoId, requirementId: id, fromRevision: version, toRevision: Type.Optional(version), ...paging }, { additionalProperties: false }),
   next: Type.Object({ action: Type.Literal("next"), repoId, requirementId: id, cursor: Type.String({ pattern: "^[0-9a-f]{64}$", maxLength: 64 }) }, { additionalProperties: false }),
   metadata: Type.Object({ action: Type.Literal("metadata"), repoId, requirementId: id }, { additionalProperties: false }),

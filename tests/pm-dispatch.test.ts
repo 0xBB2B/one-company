@@ -99,7 +99,7 @@ function toolNames(request: Context | undefined): string[] {
   return (request?.tools ?? []).map((tool) => tool.name).sort();
 }
 
-test("M7-AC13、M8A-AC7：PM 只在工作区 ready、需求 active 且有实施授权时派出，已生效但没有工作区时被拒，受限接手上下文不含 prod 正文", async () => {
+test("M7-AC13、M8A-AC7：PM 只在工作区 ready、需求 active 且有实施授权时派出，已生效但没有工作区时被拒，受限接手上下文不含 PRD 正文", async () => {
   await expect((await plainWorld({ prepare: false })).dispatch()).rejects.toMatchObject({ code: "workspace_not_ready" });
   await expect((await plainWorld({ activate: false })).dispatch()).rejects.toMatchObject({ code: "requirement_not_active" });
   await expect((await plainWorld()).dispatch()).rejects.toMatchObject({ code: "implement_not_authorized" });
@@ -111,8 +111,8 @@ test("M7-AC13、M8A-AC7：PM 只在工作区 ready、需求 active 且有实施�
   const request = w.provider.requests[0]!;
   expect(request.systemPrompt).toContain(w.requirementId);
   expect(request.systemPrompt).toContain("受限接手");
-  expect(request.systemPrompt).toMatch(/- prod-unit：metadata/);
-  expect(request.systemPrompt).toContain("- prod-scenario（必需场景）：");
+  expect(request.systemPrompt).toMatch(/- prd-unit：metadata/);
+  expect(request.systemPrompt).toContain("- prd-scenario（必需场景）：");
   expect(request.systemPrompt).toContain("- decision：");
   expect(request.systemPrompt).toMatch(/\n  - [0-9a-f-]{36}（confirmed，涉及 [^）]+）：\S/);
   expect(JSON.stringify(request)).not.toContain("输入正确验证码后成功");

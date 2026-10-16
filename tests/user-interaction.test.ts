@@ -16,9 +16,9 @@ import type { InteractionInterpreter, InteractionAuthorization } from "../src/mo
 import { candidateBinding, checkInterpretation, checkContext, interpreterView, UserInteractionError } from "../src/modules/requirement/user-interaction-format.ts";
 import type { InteractionContext, InteractionEntry, InteractionInterpretation } from "../src/modules/requirement/user-interaction-format.ts";
 import { createPiInteractionInterpreter } from "../src/modules/interaction/user-interaction-model.ts";
-import { partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
-import { createProdDocument } from "../src/modules/requirement/requirement-identity.ts";
-import { create as createStoredProd } from "../src/modules/requirement/prod-storage.ts";
+import { partitionPrdDocument } from "../src/modules/requirement/prd-view.ts";
+import { createPrdDocument } from "../src/modules/requirement/requirement-identity.ts";
+import { create as createStoredPrd } from "../src/modules/requirement/prd-storage.ts";
 import { summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -51,7 +51,7 @@ async function world() {
     authorizeAction: (request: InteractionAuthorization): boolean => actionHook ? actionHook(request) as boolean : false };
   const state = await RequirementStateStore.open(options);
   const reserved = state.reserve({ requestId: uuidv7(), intentHash: "b".repeat(64) });
-  const basis = { requirementId: reserved.id, version: reserved.version, epoch: reserved.data.epoch, prod: null };
+  const basis = { requirementId: reserved.id, version: reserved.version, epoch: reserved.data.epoch, prd: null };
   const candidate = { candidateId: uuidv7(), operationId: uuidv7(), intentHash: "c".repeat(64), from: null,
     to: { commit: "d".repeat(40), hash: "e".repeat(64) }, diff: "+增加手机号登录；保留邮箱登录；本次不做微信登录" };
   const context: InteractionContext = { basis, currentGoal: "当前保留邮箱登录", candidates: [candidate], questions: [], priorDecisions: [] };
@@ -246,7 +246,7 @@ test("真实SQLite只保存短结论与问题，无原话表/文件；清空会�
   expect(tables()).toEqual(beforeTables);
   expect(w.core.readDecision(w.basis.requirementId, saved.decisionIds[0]!).conclusion).toBe("增加手机号登录");
   const rows = withDatabase(w.path, (db) => [...db.list("short_decisions"), ...db.list("interaction_questions_v1"), ...db.list("short_decision_operations")]);
-  expect(JSON.stringify(rows)).not.toContain(PHONE); expect(JSON.stringify(rows)).not.toMatch(/transcript|rawContent|prodBody|attachment/);
+  expect(JSON.stringify(rows)).not.toContain(PHONE); expect(JSON.stringify(rows)).not.toMatch(/transcript|rawContent|prdBody|attachment/);
   const names = await readdir(dirname(w.path)); expect(names.every((name) => ["data.db", "data.db-wal", "data.db-shm"].includes(name))).toBe(true);
   expect((await stat(w.path)).mode & 0o777).toBe(0o600);
   expect((await readFile(w.path)).includes(Buffer.from(PHONE))).toBe(false);
@@ -258,7 +258,7 @@ for (const field of ["conclusion", "scope"] as const) test(`真实SQLite ${field
 });
 test("固定schema拒绝未知字段、正文/patch/附件、重复键与超20批", async () => {
   const w = await world();
-  for (const field of ["actor", "role", "prodBody", "patch", "attachment", "rawContent", "transcript"]) {
+  for (const field of ["actor", "role", "prdBody", "patch", "attachment", "rawContent", "transcript"]) {
     expect(() => checkInterpretation(JSON.stringify({ ...w.output(), [field]: "hidden" }), w.context)).toThrow();
     expect(() => w.core.ask(JSON.stringify({ basis: w.basis, candidate: null, proposal: { conclusion: "短决定", scope: "范围", references: [], supersedes: [], [field]: "hidden" }, actions: [] }))).toThrow();
   }
@@ -349,7 +349,7 @@ for (const kind of ["target", "action", "constraint"] as const) test(`F2 合法�
   expect(w.core.readDecision(w.basis.requirementId, old.decisionId)).toMatchObject({ status: "superseded", supersededBy: revised.decisionIds[0] });
   expect(w.state.read(w.basis.requirementId)).toEqual(before);
 });
-for (const field of ["conclusion", "scope", "operationId", "requirementVersion", "basisReceiptId", "actor", "prod", "recordedAt", "missing"] as const) {
+for (const field of ["conclusion", "scope", "operationId", "requirementVersion", "basisReceiptId", "actor", "prd", "recordedAt", "missing"] as const) {
   test(`F2 实际保存记录${field}改变拒绝旧能力（独立临时库完整性故障）`, async () => {
     const w = await documentWorld(); const { capability } = await w.interpret(); const saved = w.core.save(capability);
     expect(w.core.authorizeDocument(capability, w.binding())).not.toBeNull();
@@ -358,7 +358,7 @@ for (const field of ["conclusion", "scope", "operationId", "requirementVersion",
       if (field === "missing") db.remove("short_decisions", old.id, old.version);
       else {
         const changed = { conclusion: "不同结论", scope: "不同范围", operationId: uuidv7(), requirementVersion: w.basis.version + 1,
-          basisReceiptId: uuidv7(), actor: "ai", prod: { commit: "9".repeat(40), hash: "9".repeat(64) }, recordedAt: 1_000_001 };
+          basisReceiptId: uuidv7(), actor: "ai", prd: { commit: "9".repeat(40), hash: "9".repeat(64) }, recordedAt: 1_000_001 };
         db.update("short_decisions", old.id, old.version, { ...old.data as object, [field]: changed[field] });
       }
     });
@@ -444,10 +444,10 @@ test("F4 未接入authorizeAction的运行时调用默认拒绝，不用恒真�
 async function documentWorld() {
   const w = await world(); w.setActionHook(() => true);
   const title = "渐进登录", body = "前言：保留邮箱。\r\n# 手机号 {#A}\r\n实施手机号。😀\r\n# 微信 {#B}\r\n未决，不实施。\r\n";
-  const partition = partitionProdDocument(w.basis.requirementId, title, body);
-  w.candidate.to.hash = partition.prodHash;
+  const partition = partitionPrdDocument(w.basis.requirementId, title, body);
+  w.candidate.to.hash = partition.prdHash;
   const saved = w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version, operationId: w.candidate.operationId, reference: w.candidate.to });
-  Object.assign(w.basis, { version: saved.version, prod: saved.data.saved }); Object.assign(w.candidate, { from: saved.data.saved });
+  Object.assign(w.basis, { version: saved.version, prd: saved.data.saved }); Object.assign(w.candidate, { from: saved.data.saved });
   w.context.document = { candidate: candidateBinding(w.candidate), title, body, partition };
   w.setOutput(result([
     entry({ candidateId: w.candidate.candidateId }),
@@ -462,11 +462,11 @@ async function documentWorld() {
   const binding = () => ({ basis: w.basis, candidate: candidateBinding(w.candidate) });
   const resave = () => {
     const document = w.context.document!; document.body += "补充仍不改变已确认范围。\n";
-    document.partition = partitionProdDocument(w.basis.requirementId, title, document.body);
-    w.candidate.to = { commit: (Number.parseInt(w.candidate.to.commit[0]!, 16) + 1).toString(16).slice(-1).repeat(40), hash: document.partition.prodHash };
+    document.partition = partitionPrdDocument(w.basis.requirementId, title, document.body);
+    w.candidate.to = { commit: (Number.parseInt(w.candidate.to.commit[0]!, 16) + 1).toString(16).slice(-1).repeat(40), hash: document.partition.prdHash };
     w.candidate.operationId = uuidv7(); w.candidate.candidateId = uuidv7(); w.candidate.intentHash = decisionDigest(w.candidate.to);
     const saved = w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version, operationId: w.candidate.operationId, reference: w.candidate.to });
-    Object.assign(w.basis, { version: saved.version, prod: saved.data.saved }); Object.assign(w.candidate, { from: saved.data.saved });
+    Object.assign(w.basis, { version: saved.version, prd: saved.data.saved }); Object.assign(w.candidate, { from: saved.data.saved });
     document.candidate = candidateBinding(w.candidate);
     for (const e of w.output().entries) e.candidateId = w.candidate.candidateId;
   };
@@ -585,7 +585,7 @@ test("重解释不能省略整份document审核退回完整候选授权", async 
   delete w.context.document; delete w.output().documentReview;
   await expect(w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId)).rejects.toThrow(/reconsideration_denied/);
 });
-test("全确认文档仍使用同一个完整prod清单；范围许可不能通过JSON能力重建", async () => {
+test("全确认文档仍使用同一个完整PRD清单；范围许可不能通过JSON能力重建", async () => {
   const w = await documentWorld();
   w.context.document!.body = w.context.document!.body.replace("未决，不实施。", "实施微信登录。"); w.resave();
   w.output().entries[2] = entry({ candidateId: w.candidate.candidateId, conclusion: "确认B" });
@@ -598,19 +598,19 @@ test("全确认文档仍使用同一个完整prod清单；范围许可不能通�
   expect(w.core.authorizeDocument(JSON.parse(JSON.stringify(capability)), w.binding())).toBeNull();
 });
 
-// F1回归使用真实独立prod Git、SQLite、core.ask与opaque能力；解释器只模拟错误映射。
+// F1回归使用真实独立PRD Git、SQLite、core.ask与opaque能力；解释器只模拟错误映射。
 async function requestScopeWorld(shared = false, bConfirmed = false) {
   const w = await world(); w.setActionHook(() => true);
   const title = "请求范围", body = "# A {#A}\n实施A。\n# B {#B}\n" + (bConfirmed ? "实施B。\n" : "B未决。\n") + (shared ? "# 共享约束 {#C}\n保留邮箱。\n" : "");
-  const document = createProdDocument(w.basis.requirementId, title, body);
-  const stored = await createStoredProd({ dataRoot: w.options.dataRoot, repoId: w.options.repoId,
+  const document = createPrdDocument(w.basis.requirementId, title, body);
+  const stored = await createStoredPrd({ dataRoot: w.options.dataRoot, repoId: w.options.repoId,
     requirementId: w.basis.requirementId, operationId: w.candidate.operationId, expectedParent: null,
     bytes: document.bytes, worktreeRoots: [w.options.repositoryRoot], authorize: () => true });
-  w.candidate.to = { commit: stored.commit, hash: stored.prodHash.slice(7) };
+  w.candidate.to = { commit: stored.commit, hash: stored.prdHash.slice(7) };
   const saved = w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version,
     operationId: w.candidate.operationId, reference: w.candidate.to });
-  Object.assign(w.basis, { version: saved.version, prod: saved.data.saved }); Object.assign(w.candidate, { from: saved.data.saved });
-  const partition = partitionProdDocument(w.basis.requirementId, title, body);
+  Object.assign(w.basis, { version: saved.version, prd: saved.data.saved }); Object.assign(w.candidate, { from: saved.data.saved });
+  const partition = partitionPrdDocument(w.basis.requirementId, title, body);
   w.context.document = { candidate: candidateBinding(w.candidate), title, body, partition };
   const e = (patch: Partial<InteractionEntry>) => entry({ candidateId: w.candidate.candidateId, ...patch });
   w.setOutput(result([e({ conclusion: "确认A" }), e({ kind: "unresolved", basis: "uncertain", resolution: "defer", conclusion: "B未决" }),

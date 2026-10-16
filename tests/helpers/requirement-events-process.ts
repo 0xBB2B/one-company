@@ -55,7 +55,7 @@ async function run(command: string, input: any): Promise<unknown> {
     const prepared = await events.prepareCurrentBaseline({ lease });
     events.consumePreparedDelivery({ lease, handle: prepared.handle, contextGeneration: lease.contextGeneration, version: prepared.version });
     await events.acknowledgeBaseline({ lease, deliveryId: prepared.deliveryId });
-    return { revision: prepared.revision, commit: prepared.commit, prodHash: prepared.prodHash,
+    return { revision: prepared.revision, commit: prepared.commit, prdHash: prepared.prdHash,
       throughSequence: prepared.throughSequence, cursor: await cursor() };
   }
   if (command === "event") {

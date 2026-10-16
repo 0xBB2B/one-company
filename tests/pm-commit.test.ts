@@ -58,7 +58,7 @@ const PROTECTED_ADVICE = "把它从 paths 里去掉，再提交其余文件";
 const PROTECTED_PATHS: Array<[string, string]> = [
   [".git/config", "这是 Git 元数据，不能提交：.git/config"],
   ["src/.GIT/x", "这是 Git 元数据，不能提交：src/.GIT/x"],
-  ["docs/prod/x.md", "这是需求归档目录，由程序在关闭需求时写入，不能提交：docs/prod/x.md"],
+  ["docs/prd/x.md", "这是需求归档目录，由程序在关闭需求时写入，不能提交：docs/prd/x.md"],
   ["AGENTS.md", "这是项目规范文件 AGENTS.md，只能经用户确认后修改，不能提交：AGENTS.md"],
   [".pi/settings.json", "这是 pi 的项目设置文件，只能由用户修改，不能提交：.pi/settings.json"],
   [".PI/Settings.json", "这是 pi 的项目设置文件，只能由用户修改，不能提交：.PI/Settings.json"],
@@ -125,9 +125,9 @@ test("提交路径含项目设置文件时按受保护文件拒绝、不提交",
 
 async function dirRepo() {
   const r = await repo();
-  for (const dir of [".pi", "docs/prod", "src"]) await mkdir(join(r.root, dir), { recursive: true });
+  for (const dir of [".pi", "docs/prd", "src"]) await mkdir(join(r.root, dir), { recursive: true });
   await writeFile(join(r.root, ".pi", "settings.json"), "{}\n");
-  await writeFile(join(r.root, "docs", "prod", "x.md"), "x\n");
+  await writeFile(join(r.root, "docs", "prd", "x.md"), "x\n");
   await writeFile(join(r.root, "AGENTS.md"), "rules\n");
   await writeFile(join(r.root, "src", "ok.ts"), "ok\n");
   const tool = createPmCommitTool({ requirementId: REQUIREMENT, worktree: r.root, branch: "refs/heads/req-branch", alive: () => true, checkPhaseActive: () => false,
@@ -141,7 +141,7 @@ test("paths 里的目录下含受保护的文件时整次拒绝，原因写明�
   const next = "把 paths 改成具体的文件，去掉受保护的文件后再提交";
   expectFailure(await failureOf(run(r.tool, { paths: [".pi"], message: "x" })), /目录 \.pi 里包含不能提交的文件 \.pi\/settings\.json/u, next);
   expectFailure(await failureOf(run(r.tool, { paths: [".pi/"], message: "x" })), /目录 \.pi\/? 里包含不能提交的文件 \.pi\/settings\.json/u, next);
-  expectFailure(await failureOf(run(r.tool, { paths: ["docs"], message: "x" })), /目录 docs 里包含不能提交的文件 docs\/prod\/x\.md/u, next);
+  expectFailure(await failureOf(run(r.tool, { paths: ["docs"], message: "x" })), /目录 docs 里包含不能提交的文件 docs\/prd\/x\.md/u, next);
   expect(r.git("rev-parse", "HEAD")).toBe(head);
   expect(r.git("diff", "--cached", "--name-only")).toBe("");
 });

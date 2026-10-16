@@ -34,7 +34,7 @@ one-company 是 pi（一个终端里的编码代理）的扩展包。用户在 p
 | storage | 本机 SQLite 数据库、数据根目录、仓库身份、操作日志 | `src/core/storage` | `database.ts`、`data-root.ts`、`identity.ts` |
 | host | 主窗口生命周期、守护进程客户端和通信格式、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts` |
 | agents | 角色定义的查找与复制、模型引用、职责规矩、MCP、检索排除、子代理会话、会话和运行记录 | `src/modules/agents` | `agent-session.ts`（`createAgentRoleSession`）、`roles.ts`、`run-store.ts` |
-| requirement | 需求草稿与正文存储、批准清单（记下这一版正文的每一段、每个允许的动作分别由哪些决定确认）、需求状态、事件、备份恢复、短决定（对话里做出的决定，用户说的或模型提议的，归纳成一句结论加适用范围记下来）、主窗口授权、原型记录 | `src/modules/requirement` | `RequirementService`、`RequirementStateStore`、`prod-storage.ts`、`approval-manifest.ts` |
+| requirement | 需求草稿与正文存储、批准清单（记下这一版正文的每一段、每个允许的动作分别由哪些决定确认）、需求状态、事件、备份恢复、短决定（对话里做出的决定，用户说的或模型提议的，归纳成一句结论加适用范围记下来）、主窗口授权、原型记录 | `src/modules/requirement` | `RequirementService`、`RequirementStateStore`、`prd-storage.ts`、`approval-manifest.ts` |
 | prototype | 派原型设计师、"确认原型"窗口 | `src/modules/prototype` | `prototype-extension.ts`、`prototype-windows.ts` |
 | verification | 检查轮（所有 worker 任务审查通过后，PM 开的最后一轮全量测试和 QA 验收）、worker 改动的应用、写入保护、命令边界、项目规范（AGENTS.md）写入 | `src/modules/verification` | `CheckRoundService`、`change-apply.ts`、`write-guard.ts` |
 | explore | 只读检索的约定、派发、会话、联网，以及主窗口的 `one_company_agent_manage` 工具 | `src/modules/explore` | `agent-manage-extension.ts`、`explore-dispatch.ts`、`web-access.ts` |
@@ -56,7 +56,7 @@ pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExte
 
 ### 一个需求从提出到交付
 
-1. 草稿：主代理调 `one_company_requirement_manage`（interaction：`createRequirementManageTool`）→ requirement：`RequirementService` 把正文存进需求自己的本机 Git 仓库（`prod-storage.ts`）。涉及界面时，主代理先调 `one_company_prototype`，守护进程派原型设计师，用户在"确认原型"窗口里拍板（prototype）。
+1. 草稿：主代理调 `one_company_requirement_manage`（interaction：`createRequirementManageTool`）→ requirement：`RequirementService` 把正文存进需求自己的本机 Git 仓库（`prd-storage.ts`）。涉及界面时，主代理先调 `one_company_prototype`，守护进程派原型设计师，用户在"确认原型"窗口里拍板（prototype）。
 2. 批准：用户说"批准" → interaction：用户这句话没 @ 到需求、或需求带原型草稿时，`MainRequirementInteraction` 先弹"批准需求"窗口，让用户亲手确认批准的是哪个需求 → 解释器（把用户原话解读成正式决定的内部模型调用，`createPiInteractionInterpreter`）解读原话 → `UserInteractionCore` 用 requirement 的 `createApprovalManifest` 生成批准清单 → `MainRequirementInteraction` 用 `ApprovalManifestStore` 把清单登记下来。
 3. 派 PM：主代理调 `one_company_agent_manage` → 守护进程方法 `agents.dispatchPm` → app/daemon：`RunManager` 用 agents 的 `createAgentRoleSession` 起 PM 会话，工具由 `createPmTools` 组装。
 4. 接手复核：PM 先交它对需求的理解 → pm：`PmIntakeService` 存档，主代理核对通过后 PM 才能写计划。

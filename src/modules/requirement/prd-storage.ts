@@ -9,10 +9,10 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const PROD_FILE = "prod.md";
+const PRD_FILE = "prd.md";
 const GIT_DIR = ".git";
-const INTERNAL_NAME = "pi prod storage";
-const INTERNAL_EMAIL = "pi-prod-storage@localhost";
+const INTERNAL_NAME = "pi PRD storage";
+const INTERNAL_EMAIL = "pi-prd-storage@localhost";
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\s\S])/;
@@ -22,13 +22,13 @@ const OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const HASH_RE = /^sha256:[0-9a-f]{64}(?![\s\S])/;
 const SAFE_PARTIAL_GIT_ENTRIES = new Set(["HEAD", "config", "description", "objects", "refs"]);
 
-export type ProdStorageAction = "create" | "updateDraft" | "confirmUpdate";
-export type ProdStorageInterfaceAction = "create" | "save" | "readVersion" | "diffVersions" | "verifyVersion";
-export type ProdStoragePermissionPhase = "beforeAction" | "beforeWrite" | "beforeReturn" | "beforeReturnBody";
+export type PrdStorageAction = "create" | "updateDraft" | "confirmUpdate";
+export type PrdStorageInterfaceAction = "create" | "save" | "readVersion" | "diffVersions" | "verifyVersion";
+export type PrdStoragePermissionPhase = "beforeAction" | "beforeWrite" | "beforeReturn" | "beforeReturnBody";
 
-export interface ProdStoragePermissionCheck {
-  phase: ProdStoragePermissionPhase;
-  action: ProdStorageInterfaceAction;
+export interface PrdStoragePermissionCheck {
+  phase: PrdStoragePermissionPhase;
+  action: PrdStorageInterfaceAction;
   repoId: string;
   requirementId: string;
   operationId?: string;
@@ -36,66 +36,66 @@ export interface ProdStoragePermissionCheck {
   fromCommit?: string;
   toCommit?: string;
   expectedParent?: string | null;
-  prodHash?: string;
+  prdHash?: string;
   expectedHash?: string;
   expectedFromHash?: string;
   expectedToHash?: string;
 }
 
-export type ProdStorageAuthorize = (check: ProdStoragePermissionCheck) => unknown;
+export type PrdStorageAuthorize = (check: PrdStoragePermissionCheck) => unknown;
 
-export interface ProdRepositoryIdentity {
+export interface PrdRepositoryIdentity {
   dev: number;
   ino: number;
 }
 
-export interface ProdStorageConfig {
+export interface PrdStorageConfig {
   dataRoot: string;
   repoId: string;
   requirementId: string;
   repositoryRoot?: string;
   worktreeRoots?: string[];
-  expectedRepositoryIdentity?: ProdRepositoryIdentity;
-  authorize?: ProdStorageAuthorize;
+  expectedRepositoryIdentity?: PrdRepositoryIdentity;
+  authorize?: PrdStorageAuthorize;
 }
 
-export interface ProdStorageSaveInput extends ProdStorageConfig {
+export interface PrdStorageSaveInput extends PrdStorageConfig {
   operationId: string;
   expectedParent: string | null;
   bytes: Uint8Array;
 }
 
-export interface ProdStorageWriteResult {
+export interface PrdStorageWriteResult {
   status: "created" | "saved" | "unchanged" | "recovered";
-  action: ProdStorageAction;
+  action: PrdStorageAction;
   operationId: string;
   commit: string;
   parent: string | null;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
   changed: boolean;
   repositoryRoot: string;
-  repositoryIdentity: ProdRepositoryIdentity;
+  repositoryIdentity: PrdRepositoryIdentity;
 }
 
-export interface ProdStorageReadInput extends ProdStorageConfig {
+export interface PrdStorageReadInput extends PrdStorageConfig {
   commit: string;
   expectedHash: `sha256:${string}`;
 }
 
-export interface ProdStorageReadResult {
+export interface PrdStorageReadResult {
   commit: string;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
   bytes: Uint8Array;
 }
 
-export interface ProdStorageDiffInput extends ProdStorageConfig {
+export interface PrdStorageDiffInput extends PrdStorageConfig {
   fromCommit: string;
   toCommit: string;
   expectedFromHash: `sha256:${string}`;
   expectedToHash: `sha256:${string}`;
 }
 
-export interface ProdStorageDiffResult {
+export interface PrdStorageDiffResult {
   fromCommit: string;
   toCommit: string;
   fromHash: `sha256:${string}`;
@@ -103,20 +103,20 @@ export interface ProdStorageDiffResult {
   diff: string;
 }
 
-export interface ProdStorageVerifyInput extends ProdStorageConfig {
+export interface PrdStorageVerifyInput extends PrdStorageConfig {
   commit: string;
   expectedHash: `sha256:${string}`;
 }
 
-export interface ProdStorageVerifyResult {
+export interface PrdStorageVerifyResult {
   ok: true;
   commit: string;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
   repositoryRoot: string;
-  repositoryIdentity: ProdRepositoryIdentity;
+  repositoryIdentity: PrdRepositoryIdentity;
 }
 
-function prodStorageNext(code: string): string {
+function prdStorageNext(code: string): string {
   if (code === "operation_conflict") return "换一个新生成的操作编号重试";
   if (code === "recovery_required") return "停止操作，请用户在主窗口完成恢复核对";
   if (code === "unknown_version") return "核对版本号，按需求当前的版本重新指定";
@@ -124,14 +124,14 @@ function prodStorageNext(code: string): string {
   if (/_mismatch$|_changed$/u.test(code)) return "需求版本库与记录不一致：停止操作，把这段原因告诉用户";
   return "按原因改正后重试；仍然失败就把这段原因告诉用户";
 }
-export class ProdStorageError extends Error {
+export class PrdStorageError extends Error {
   readonly code: string;
   readonly metadata: Record<string, string | number | boolean | null>;
 
-  get advice(): FailureAdvice { return { why: this.message, next: prodStorageNext(this.code) }; }
+  get advice(): FailureAdvice { return { why: this.message, next: prdStorageNext(this.code) }; }
   constructor(code: string, message: string, metadata: Record<string, string | number | boolean | null> = {}) {
     super(message);
-    this.name = "ProdStorageError";
+    this.name = "PrdStorageError";
     this.code = code;
     this.metadata = metadata;
   }
@@ -140,7 +140,7 @@ export class ProdStorageError extends Error {
 interface PreparedPaths {
   dataRoot: string;
   requirementRoot: string;
-  prodPath: string;
+  prdPath: string;
 }
 
 interface GitResult {
@@ -150,25 +150,25 @@ interface GitResult {
 }
 
 interface CommitMetadata {
-  action: ProdStorageAction;
+  action: PrdStorageAction;
   operationId: string;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
   parents: string[];
 }
 
 interface VerifiedCommit {
   metadata: CommitMetadata;
   bytes: Buffer;
-  prodHash: `sha256:${string}`;
+  prdHash: `sha256:${string}`;
 }
 
-type ProdFileSnapshot =
+type PrdFileSnapshot =
   | { exists: false }
   | {
     exists: true;
     dev: number;
     ino: number;
-    prodHash: `sha256:${string}`;
+    prdHash: `sha256:${string}`;
     bytes: Buffer;
   };
 
@@ -191,10 +191,10 @@ interface OwnedDirectory {
 }
 
 function fail(code: string, message: string, metadata: Record<string, string | number | boolean | null> = {}): never {
-  throw new ProdStorageError(code, message, metadata);
+  throw new PrdStorageError(code, message, metadata);
 }
 
-function requireAuthorized(config: ProdStorageConfig, check: Omit<ProdStoragePermissionCheck, "repoId" | "requirementId">): void {
+function requireAuthorized(config: PrdStorageConfig, check: Omit<PrdStoragePermissionCheck, "repoId" | "requirementId">): void {
   if (!config.authorize) fail("permission_denied", "正文存储权限未授权");
   let result: unknown;
   try {
@@ -229,7 +229,7 @@ function assertFullCommit(commit: string, name = "commit"): void {
 }
 
 function assertHash(hash: string): asserts hash is `sha256:${string}` {
-  if (!HASH_RE.test(hash)) fail("hash_mismatch", "prod hash 格式无效");
+  if (!HASH_RE.test(hash)) fail("hash_mismatch", "PRD hash 格式无效");
 }
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
@@ -352,7 +352,7 @@ async function canonicalCandidate(path: string): Promise<string> {
   return join(realExisting, ...missing);
 }
 
-async function preparePaths(config: ProdStorageConfig, allowCreateDataRoot: boolean): Promise<PreparedPaths> {
+async function preparePaths(config: PrdStorageConfig, allowCreateDataRoot: boolean): Promise<PreparedPaths> {
   if (!isAbsolute(config.dataRoot)) fail("invalid_config", "dataRoot 必须是绝对路径");
   assertSafeSegment("repoId", config.repoId);
   assertRequirementId(config.requirementId);
@@ -380,7 +380,7 @@ async function preparePaths(config: ProdStorageConfig, allowCreateDataRoot: bool
   const requirementRoot = join(dataRoot, "repos", config.repoId, "requirements", config.requirementId);
   if (!pathInside(dataRoot, requirementRoot)) fail("path_escape", "需求正文路径越过 dataRoot");
   await assertNoUntrustedSymlinkAncestors(requirementRoot);
-  return { dataRoot, requirementRoot, prodPath: join(requirementRoot, PROD_FILE) };
+  return { dataRoot, requirementRoot, prdPath: join(requirementRoot, PRD_FILE) };
 }
 
 async function ensurePrivateDirectoryChain(dataRoot: string, requirementRoot: string): Promise<void> {
@@ -413,7 +413,7 @@ function assertRegularOwnedFile(stats: Stats): void {
   if (typeof process.getuid === "function" && stats.uid !== process.getuid()) fail("unsafe_owner", "正文文件不属于当前用户");
 }
 
-async function readFileSnapshot(path: string): Promise<ProdFileSnapshot> {
+async function readFileSnapshot(path: string): Promise<PrdFileSnapshot> {
   let handle;
   try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
   catch (error) {
@@ -430,26 +430,26 @@ async function readFileSnapshot(path: string): Promise<ProdFileSnapshot> {
       fail("working_copy_changed", "读取正文期间文件身份发生变化");
     }
     assertRegularOwnedFile(pathStats);
-    return { exists: true, dev: openedStats.dev, ino: openedStats.ino, prodHash: sha256(bytes), bytes };
+    return { exists: true, dev: openedStats.dev, ino: openedStats.ino, prdHash: sha256(bytes), bytes };
   } finally {
     await handle.close();
   }
 }
 
-async function readProdIfExists(path: string): Promise<Buffer | undefined> {
+async function readPrdIfExists(path: string): Promise<Buffer | undefined> {
   const snapshot = await readFileSnapshot(path);
   return snapshot.exists ? snapshot.bytes : undefined;
 }
 
-function sameFileSnapshot(actual: ProdFileSnapshot, expected: ProdFileSnapshot): boolean {
+function sameFileSnapshot(actual: PrdFileSnapshot, expected: PrdFileSnapshot): boolean {
   if (actual.exists !== expected.exists) return false;
   if (!actual.exists || !expected.exists) return true;
-  return actual.dev === expected.dev && actual.ino === expected.ino && actual.prodHash === expected.prodHash;
+  return actual.dev === expected.dev && actual.ino === expected.ino && actual.prdHash === expected.prdHash;
 }
 
-async function assertFileSnapshot(path: string, expected: ProdFileSnapshot): Promise<void> {
+async function assertFileSnapshot(path: string, expected: PrdFileSnapshot): Promise<void> {
   const actual = await readFileSnapshot(path);
-  if (!sameFileSnapshot(actual, expected)) fail("working_copy_changed", "prod.md 在授权核对后被外部替换或修改，拒绝覆盖");
+  if (!sameFileSnapshot(actual, expected)) fail("working_copy_changed", "prd.md 在授权核对后被外部替换或修改，拒绝覆盖");
 }
 
 async function syncDirectory(path: string): Promise<void> {
@@ -460,21 +460,21 @@ async function syncDirectory(path: string): Promise<void> {
 }
 
 async function assertNoUnverifiedTemporaryFiles(requirementRoot: string): Promise<void> {
-  const pending = (await readdir(requirementRoot)).filter((entry) => entry.startsWith(".prod-storage-") && entry.endsWith(".tmp"));
+  const pending = (await readdir(requirementRoot)).filter((entry) => entry.startsWith(".prd-storage-") && entry.endsWith(".tmp"));
   if (pending.length > 0) {
     fail("recovery_required", "发现没有可信持久操作记录可核对的正文临时文件，已保留并等待人工复核", { count: pending.length });
   }
 }
 
-async function assertOnlyProdAndGit(requirementRoot: string): Promise<void> {
+async function assertOnlyPrdAndGit(requirementRoot: string): Promise<void> {
   let entries: string[];
   try { entries = await readdir(requirementRoot); }
   catch (error) {
     if (errno(error) === "ENOENT") return;
     throw error;
   }
-  const extras = entries.filter((entry) => entry !== PROD_FILE && entry !== GIT_DIR);
-  if (extras.length > 0) fail("external_content", "需求正文仓库含有 prod.md 之外的文件", { count: extras.length });
+  const extras = entries.filter((entry) => entry !== PRD_FILE && entry !== GIT_DIR);
+  if (extras.length > 0) fail("external_content", "需求正文仓库含有 prd.md 之外的文件", { count: extras.length });
 }
 
 async function assertGitDirectory(requirementRoot: string, required: boolean): Promise<boolean> {
@@ -502,16 +502,16 @@ async function assertPartialGitSafe(requirementRoot: string): Promise<void> {
   }
 }
 
-async function repositoryIdentity(requirementRoot: string): Promise<ProdRepositoryIdentity> {
+async function repositoryIdentity(requirementRoot: string): Promise<PrdRepositoryIdentity> {
   const stats = await stat(join(requirementRoot, GIT_DIR));
   return { dev: stats.dev, ino: stats.ino };
 }
 
-function sameIdentity(a: ProdRepositoryIdentity, b: ProdRepositoryIdentity): boolean {
+function sameIdentity(a: PrdRepositoryIdentity, b: PrdRepositoryIdentity): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
 
-async function assertRepositoryIdentity(config: ProdStorageConfig, requirementRoot: string): Promise<ProdRepositoryIdentity> {
+async function assertRepositoryIdentity(config: PrdStorageConfig, requirementRoot: string): Promise<PrdRepositoryIdentity> {
   const identity = await repositoryIdentity(requirementRoot);
   if (config.expectedRepositoryIdentity && !sameIdentity(config.expectedRepositoryIdentity, identity)) {
     fail("repository_identity_mismatch", "需求仓库身份与绑定信息不一致");
@@ -519,7 +519,7 @@ async function assertRepositoryIdentity(config: ProdStorageConfig, requirementRo
   return identity;
 }
 
-function gitEnvironment(config: ProdStorageConfig, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+function gitEnvironment(config: PrdStorageConfig, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "",
@@ -567,7 +567,7 @@ function fixedGitArgs(requirementRoot: string, args: string[], repository = true
   ];
 }
 
-async function runGit(config: ProdStorageConfig, paths: PreparedPaths, args: string[], options: {
+async function runGit(config: PrdStorageConfig, paths: PreparedPaths, args: string[], options: {
   input?: string | Buffer;
   env?: Record<string, string>;
   allowedExitCodes?: number[];
@@ -626,7 +626,7 @@ async function hardenGitPermissions(path: string, parents: readonly OwnedDirecto
   }
 }
 
-async function assertRepositoryLayout(config: ProdStorageConfig, paths: PreparedPaths): Promise<void> {
+async function assertRepositoryLayout(config: PrdStorageConfig, paths: PreparedPaths): Promise<void> {
   await assertGitDirectory(paths.requirementRoot, true);
   await assertGitTreeSafe(join(paths.requirementRoot, GIT_DIR));
   for (const unsafe of ["commondir", "gitdir", "shallow", join("info", "grafts"), join("objects", "info", "alternates")]) {
@@ -645,10 +645,10 @@ async function assertRepositoryLayout(config: ProdStorageConfig, paths: Prepared
   if (branch.exitCode !== 0 || branch.stdout.toString("utf8").trim() !== "refs/heads/main") fail("git_invalid", "需求仓库必须使用固定 main 分支");
 }
 
-async function initRepository(config: ProdStorageConfig, paths: PreparedPaths, mayResumeInitialOperation: boolean): Promise<void> {
+async function initRepository(config: PrdStorageConfig, paths: PreparedPaths, mayResumeInitialOperation: boolean): Promise<void> {
   const exists = await assertGitDirectory(paths.requirementRoot, false);
   if (!exists) {
-    if (await readProdIfExists(paths.prodPath)) fail("git_missing", "已有 prod.md 但缺少 .git，拒绝补建仓库");
+    if (await readPrdIfExists(paths.prdPath)) fail("git_missing", "已有 prd.md 但缺少 .git，拒绝补建仓库");
   } else {
     try {
       await assertRepositoryLayout(config, paths);
@@ -664,7 +664,7 @@ async function initRepository(config: ProdStorageConfig, paths: PreparedPaths, m
   await assertRepositoryLayout(config, paths);
 }
 
-async function currentHead(config: ProdStorageConfig, paths: PreparedPaths): Promise<string | null> {
+async function currentHead(config: PrdStorageConfig, paths: PreparedPaths): Promise<string | null> {
   const result = await runGit(config, paths, ["rev-parse", "--verify", "--quiet", "HEAD"], { allowedExitCodes: [0, 1] });
   if (result.exitCode === 1) return null;
   const head = result.stdout.toString("utf8").trim();
@@ -672,7 +672,7 @@ async function currentHead(config: ProdStorageConfig, paths: PreparedPaths): Pro
   return head;
 }
 
-async function assertOnlyMainRef(config: ProdStorageConfig, paths: PreparedPaths, head: string | null): Promise<void> {
+async function assertOnlyMainRef(config: PrdStorageConfig, paths: PreparedPaths, head: string | null): Promise<void> {
   const refs = (await runGit(config, paths, ["for-each-ref", "--format=%(refname)%00%(objectname)"])).stdout.toString("utf8").split("\n").filter(Boolean);
   if (head === null) {
     if (refs.length !== 0) fail("git_invalid", "无提交仓库不能含其他引用");
@@ -681,50 +681,50 @@ async function assertOnlyMainRef(config: ProdStorageConfig, paths: PreparedPaths
   if (refs.length !== 1 || refs[0] !== `refs/heads/main\0${head}`) fail("git_invalid", "需求仓库只能有指向 HEAD 的 main 引用");
 }
 
-async function repositoryProdBlob(config: ProdStorageConfig, paths: PreparedPaths, commit: string): Promise<string> {
+async function repositoryPrdBlob(config: PrdStorageConfig, paths: PreparedPaths, commit: string): Promise<string> {
   const entries = (await runGit(config, paths, ["ls-tree", "-r", "-z", commit])).stdout.toString("utf8").split("\0").filter(Boolean);
-  if (entries.length !== 1) fail("tree_mismatch", "提交树只能包含 prod.md");
-  const match = /^100644 blob ([0-9a-f]+)\tprod\.md$/.exec(entries[0]!);
-  if (!match || !OBJECT_ID_RE.test(match[1]!)) fail("tree_mismatch", "提交中的 prod.md 必须是普通文件");
+  if (entries.length !== 1) fail("tree_mismatch", "提交树只能包含 prd.md");
+  const match = /^100644 blob ([0-9a-f]+)\tprd\.md$/.exec(entries[0]!);
+  if (!match || !OBJECT_ID_RE.test(match[1]!)) fail("tree_mismatch", "提交中的 prd.md 必须是普通文件");
   return match[1]!;
 }
 
-async function managedIndexSnapshot(config: ProdStorageConfig, paths: PreparedPaths): Promise<ManagedIndexSnapshot> {
+async function managedIndexSnapshot(config: PrdStorageConfig, paths: PreparedPaths): Promise<ManagedIndexSnapshot> {
   const entries = (await runGit(config, paths, ["ls-files", "--stage", "-z"])).stdout.toString("utf8").split("\0").filter(Boolean);
-  const extras = entries.filter((entry) => !entry.endsWith(`\t${PROD_FILE}`));
-  if (extras.length > 0) fail("extra_index", "暂存区含有 prod.md 之外的路径", { count: extras.length });
+  const extras = entries.filter((entry) => !entry.endsWith(`\t${PRD_FILE}`));
+  if (extras.length > 0) fail("extra_index", "暂存区含有 prd.md 之外的路径", { count: extras.length });
   if (entries.length === 0) return { blob: null };
-  if (entries.length !== 1) fail("external_index", "prod.md 暂存区含多个阶段或未知内容");
-  const match = /^100644 ([0-9a-f]+) 0\tprod\.md$/.exec(entries[0]!);
-  if (!match || !OBJECT_ID_RE.test(match[1]!)) fail("external_index", "prod.md 暂存内容不是固定普通文件");
+  if (entries.length !== 1) fail("external_index", "prd.md 暂存区含多个阶段或未知内容");
+  const match = /^100644 ([0-9a-f]+) 0\tprd\.md$/.exec(entries[0]!);
+  if (!match || !OBJECT_ID_RE.test(match[1]!)) fail("external_index", "prd.md 暂存内容不是固定普通文件");
   return { blob: match[1]! };
 }
 
-async function assertManagedIndexClean(config: ProdStorageConfig, paths: PreparedPaths, head: string | null): Promise<void> {
+async function assertManagedIndexClean(config: PrdStorageConfig, paths: PreparedPaths, head: string | null): Promise<void> {
   const index = await managedIndexSnapshot(config, paths);
-  const expectedBlob = head === null ? null : await repositoryProdBlob(config, paths, head);
-  if (index.blob !== expectedBlob) fail("external_index", head === null ? "首次提交前暂存区必须为空" : "prod.md 暂存内容被外部修改");
+  const expectedBlob = head === null ? null : await repositoryPrdBlob(config, paths, head);
+  if (index.blob !== expectedBlob) fail("external_index", head === null ? "首次提交前暂存区必须为空" : "prd.md 暂存内容被外部修改");
 }
 
-async function recoverManagedIndex(config: ProdStorageConfig, paths: PreparedPaths, expectedParent: string | null, commit: string): Promise<void> {
+async function recoverManagedIndex(config: PrdStorageConfig, paths: PreparedPaths, expectedParent: string | null, commit: string): Promise<void> {
   const index = await managedIndexSnapshot(config, paths);
-  const committedBlob = await repositoryProdBlob(config, paths, commit);
+  const committedBlob = await repositoryPrdBlob(config, paths, commit);
   if (index.blob === committedBlob) {
     await hardenGitPermissions(join(paths.requirementRoot, GIT_DIR));
     return;
   }
-  const parentBlob = expectedParent === null ? null : await repositoryProdBlob(config, paths, expectedParent);
+  const parentBlob = expectedParent === null ? null : await repositoryPrdBlob(config, paths, expectedParent);
   if (index.blob !== parentBlob) fail("external_index", "提交中断后的暂存区既不匹配旧父树，也不匹配本操作的新树，已保留外部内容");
-  await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${committedBlob},${PROD_FILE}`]);
+  await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${committedBlob},${PRD_FILE}`]);
   const repaired = await managedIndexSnapshot(config, paths);
   if (repaired.blob !== committedBlob) fail("external_index", "暂存区补齐后未匹配本操作提交树");
   await hardenGitPermissions(join(paths.requirementRoot, GIT_DIR));
 }
 
-async function showProd(config: ProdStorageConfig, paths: PreparedPaths, commit: string): Promise<Buffer> {
+async function showPrd(config: PrdStorageConfig, paths: PreparedPaths, commit: string): Promise<Buffer> {
   assertFullCommit(commit);
-  await repositoryProdBlob(config, paths, commit);
-  return (await runGit(config, paths, ["show", `${commit}:${PROD_FILE}`])).stdout;
+  await repositoryPrdBlob(config, paths, commit);
+  return (await runGit(config, paths, ["show", `${commit}:${PRD_FILE}`])).stdout;
 }
 
 function exactIdentity(line: string, kind: "author" | "committer"): boolean {
@@ -733,7 +733,7 @@ function exactIdentity(line: string, kind: "author" | "committer"): boolean {
   return new RegExp(`^${kind} ${escapedName} <${escapedEmail}> [0-9]+ [+-][0-9]{4}$`).test(line);
 }
 
-async function parseCommitMetadata(config: ProdStorageConfig, paths: PreparedPaths, commit: string): Promise<CommitMetadata> {
+async function parseCommitMetadata(config: PrdStorageConfig, paths: PreparedPaths, commit: string): Promise<CommitMetadata> {
   const raw = (await runGit(config, paths, ["cat-file", "-p", commit])).stdout.toString("utf8");
   const separator = raw.indexOf("\n\n");
   if (separator < 0) fail("message_mismatch", "提交缺少固定正文信息");
@@ -752,13 +752,13 @@ async function parseCommitMetadata(config: ProdStorageConfig, paths: PreparedPat
   }
   if (lines.length !== trees.length + parents.length + authors.length + committers.length) fail("history_mismatch", "正文提交含非固定元数据");
   const escapedRequirement = config.requirementId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`^prod\\(${escapedRequirement}\\): (create|updateDraft|confirmUpdate)\\n\\nOperation-Id: ([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\nProd-Hash: (sha256:[0-9a-f]{64})\\n(?![\\s\\S])`).exec(message);
+  const match = new RegExp(`^prd\\(${escapedRequirement}\\): (create|updateDraft|confirmUpdate)\\n\\nOperation-Id: ([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\nPrd-Hash: (sha256:[0-9a-f]{64})\\n(?![\\s\\S])`).exec(message);
   if (!match) fail("message_mismatch", "提交信息不符合固定正文格式");
-  return { action: match[1] as ProdStorageAction, operationId: match[2]!, prodHash: match[3] as `sha256:${string}`, parents };
+  return { action: match[1] as PrdStorageAction, operationId: match[2]!, prdHash: match[3] as `sha256:${string}`, parents };
 }
 
-function assertCommitMetadataMatches(meta: CommitMetadata, expectedHash?: `sha256:${string}`, expectedParent?: string | null, operationId?: string, action?: ProdStorageAction): void {
-  if (expectedHash && meta.prodHash !== expectedHash) fail("hash_mismatch", "提交信息中的 Prod-Hash 与期望 hash 不一致");
+function assertCommitMetadataMatches(meta: CommitMetadata, expectedHash?: `sha256:${string}`, expectedParent?: string | null, operationId?: string, action?: PrdStorageAction): void {
+  if (expectedHash && meta.prdHash !== expectedHash) fail("hash_mismatch", "提交信息中的 Prd-Hash 与期望 hash 不一致");
   if (operationId && meta.operationId !== operationId) fail("message_mismatch", "提交信息中的 Operation-Id 与操作不一致");
   if (action && meta.action !== action) fail("message_mismatch", "提交信息中的 action 与操作不一致");
   if (expectedParent !== undefined) {
@@ -767,16 +767,16 @@ function assertCommitMetadataMatches(meta: CommitMetadata, expectedHash?: `sha25
   }
 }
 
-async function verifyCommitMatches(config: ProdStorageConfig, paths: PreparedPaths, commit: string, expectedHash?: `sha256:${string}`, expectedParent?: string | null, operationId?: string, action?: ProdStorageAction): Promise<VerifiedCommit> {
+async function verifyCommitMatches(config: PrdStorageConfig, paths: PreparedPaths, commit: string, expectedHash?: `sha256:${string}`, expectedParent?: string | null, operationId?: string, action?: PrdStorageAction): Promise<VerifiedCommit> {
   const metadata = await parseCommitMetadata(config, paths, commit);
   assertCommitMetadataMatches(metadata, expectedHash, expectedParent, operationId, action);
-  const bytes = await showProd(config, paths, commit);
-  const prodHash = sha256(bytes);
-  if (metadata.prodHash !== prodHash) fail("message_mismatch", "提交信息中的 Prod-Hash 与实际正文不一致");
-  return { metadata, bytes, prodHash };
+  const bytes = await showPrd(config, paths, commit);
+  const prdHash = sha256(bytes);
+  if (metadata.prdHash !== prdHash) fail("message_mismatch", "提交信息中的 Prd-Hash 与实际正文不一致");
+  return { metadata, bytes, prdHash };
 }
 
-async function validatedLineage(config: ProdStorageConfig, paths: PreparedPaths, head: string | null): Promise<Map<string, string | null>> {
+async function validatedLineage(config: PrdStorageConfig, paths: PreparedPaths, head: string | null): Promise<Map<string, string | null>> {
   await assertOnlyMainRef(config, paths, head);
   const lineage = new Map<string, string | null>();
   if (!head) return lineage;
@@ -795,7 +795,7 @@ async function validatedLineage(config: ProdStorageConfig, paths: PreparedPaths,
   return lineage;
 }
 
-async function operationIdsInHistory(config: ProdStorageConfig, paths: PreparedPaths, head: string | null): Promise<Set<string>> {
+async function operationIdsInHistory(config: PrdStorageConfig, paths: PreparedPaths, head: string | null): Promise<Set<string>> {
   if (!head) return new Set();
   const messages = (await runGit(config, paths, ["log", "--format=%B%x00", head])).stdout.toString("utf8");
   const operationIds = new Set<string>();
@@ -803,34 +803,34 @@ async function operationIdsInHistory(config: ProdStorageConfig, paths: PreparedP
   return operationIds;
 }
 
-async function assertWorktreeMatchesHash(prodPath: string, expectedHash: `sha256:${string}`): Promise<void> {
-  const bytes = await readProdIfExists(prodPath);
-  if (!bytes) fail("working_copy_mismatch", "prod.md 缺失，拒绝把版本记录当成当前正文");
-  if (sha256(bytes) !== expectedHash) fail("working_copy_mismatch", "prod.md 含未登记的外部内容，拒绝覆盖或返回旧状态");
+async function assertWorktreeMatchesHash(prdPath: string, expectedHash: `sha256:${string}`): Promise<void> {
+  const bytes = await readPrdIfExists(prdPath);
+  if (!bytes) fail("working_copy_mismatch", "prd.md 缺失，拒绝把版本记录当成当前正文");
+  if (sha256(bytes) !== expectedHash) fail("working_copy_mismatch", "prd.md 含未登记的外部内容，拒绝覆盖或返回旧状态");
 }
 
-async function writeProdFile(requirementRoot: string, prodPath: string, bytes: Uint8Array, operationId: string, prodHash: `sha256:${string}`, expectedWorkingFile: ProdFileSnapshot): Promise<void> {
+async function writePrdFile(requirementRoot: string, prdPath: string, bytes: Uint8Array, operationId: string, prdHash: `sha256:${string}`, expectedWorkingFile: PrdFileSnapshot): Promise<void> {
   const prepared = Buffer.from(bytes);
-  if (expectedWorkingFile.exists && expectedWorkingFile.prodHash === prodHash) {
-    await assertFileSnapshot(prodPath, expectedWorkingFile);
+  if (expectedWorkingFile.exists && expectedWorkingFile.prdHash === prdHash) {
+    await assertFileSnapshot(prdPath, expectedWorkingFile);
     return;
   }
-  const temp = join(requirementRoot, `.prod-storage-${operationId}-${prodHash.slice("sha256:".length)}-${randomBytes(8).toString("hex")}.tmp`);
+  const temp = join(requirementRoot, `.prd-storage-${operationId}-${prdHash.slice("sha256:".length)}-${randomBytes(8).toString("hex")}.tmp`);
   const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
   try {
     await handle.chmod(0o600);
     await handle.writeFile(prepared);
     await handle.sync();
-    await assertFileSnapshot(prodPath, expectedWorkingFile);
+    await assertFileSnapshot(prdPath, expectedWorkingFile);
     // 文件系统没有可移植的“按身份比较后替换”原语；这里缩小并在替换后核对竞争窗口，但不能宣称外部程序绝不可能在两步之间改写。
-    await rename(temp, prodPath);
+    await rename(temp, prdPath);
     await syncDirectory(requirementRoot);
     const ownedStats = await handle.stat();
     assertRegularOwnedFile(ownedStats);
     if (ownedStats.size !== prepared.length || (ownedStats.mode & 0o077) !== 0) fail("write_mismatch", "自有正文临时文件的长度或权限不符合预期");
-    const pathStats = await lstat(prodPath);
+    const pathStats = await lstat(prdPath);
     if (pathStats.isSymbolicLink() || pathStats.dev !== ownedStats.dev || pathStats.ino !== ownedStats.ino) {
-      fail("working_copy_changed", "prod.md 在原子替换后被外部替换，拒绝继续提交");
+      fail("working_copy_changed", "prd.md 在原子替换后被外部替换，拒绝继续提交");
     }
     assertRegularOwnedFile(pathStats);
     const actual = Buffer.alloc(prepared.length);
@@ -841,12 +841,12 @@ async function writeProdFile(requirementRoot: string, prodPath: string, bytes: U
   }
 }
 
-async function writeTreeCommit(config: ProdStorageConfig, paths: PreparedPaths, bytes: Uint8Array, action: ProdStorageAction, operationId: string, expectedParent: string | null, prodHash: `sha256:${string}`): Promise<string> {
+async function writeTreeCommit(config: PrdStorageConfig, paths: PreparedPaths, bytes: Uint8Array, action: PrdStorageAction, operationId: string, expectedParent: string | null, prdHash: `sha256:${string}`): Promise<string> {
   const gitRoot = join(paths.requirementRoot, GIT_DIR);
   const rootStats = await lstat(gitRoot);
   assertOwnedObject(rootStats, "directory", "git_invalid", "Git 目录身份无效");
   const directories = [{ path: gitRoot, identity: ownedObjectIdentity(rootStats) }];
-  const indexFile = join(gitRoot, `prod-storage-index-${process.pid}-${randomBytes(8).toString("hex")}`);
+  const indexFile = join(gitRoot, `prd-storage-index-${process.pid}-${randomBytes(8).toString("hex")}`);
   const treeEnv = { GIT_INDEX_FILE: indexFile };
   let indexIdentity: OwnedObjectIdentity | undefined;
   let failure: unknown;
@@ -854,19 +854,19 @@ async function writeTreeCommit(config: ProdStorageConfig, paths: PreparedPaths, 
   try {
     const blob = (await runGit(config, paths, ["hash-object", "-w", "--stdin", "--no-filters"], { input: Buffer.from(bytes) })).stdout.toString("utf8").trim();
     if (!OBJECT_ID_RE.test(blob)) fail("git_failed", "Git 未返回有效 blob");
-    await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${blob},${PROD_FILE}`], { env: treeEnv });
+    await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${blob},${PRD_FILE}`], { env: treeEnv });
     const tree = (await runGit(config, paths, ["write-tree"], { env: treeEnv })).stdout.toString("utf8").trim();
     if (!OBJECT_ID_RE.test(tree)) fail("git_failed", "Git 未返回有效 tree");
     const indexStats = await lstat(indexFile);
     assertOwnedObject(indexStats, "file", "git_invalid", "临时 Git 索引身份无效");
     indexIdentity = ownedObjectIdentity(indexStats);
-    const message = `prod(${config.requirementId}): ${action}\n\nOperation-Id: ${operationId}\nProd-Hash: ${prodHash}\n`;
+    const message = `prd(${config.requirementId}): ${action}\n\nOperation-Id: ${operationId}\nPrd-Hash: ${prdHash}\n`;
     const commitArgs = expectedParent ? ["commit-tree", tree, "-p", expectedParent] : ["commit-tree", tree];
     const commit = (await runGit(config, paths, commitArgs, { input: message })).stdout.toString("utf8").trim();
     assertFullCommit(commit);
     if (expectedParent) await runGit(config, paths, ["update-ref", "HEAD", commit, expectedParent]);
     else await runGit(config, paths, ["update-ref", "HEAD", commit, "0".repeat(commit.length)]);
-    await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${blob},${PROD_FILE}`]);
+    await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${blob},${PRD_FILE}`]);
     return commit;
   } catch (error) {
     failed = true;
@@ -885,19 +885,19 @@ async function writeTreeCommit(config: ProdStorageConfig, paths: PreparedPaths, 
     }
     if (cleanupErrors.length) {
       if (!failed) throw cleanupErrors[0];
-      if (failure instanceof ProdStorageError) failure.metadata.cleanupRequired = true;
+      if (failure instanceof PrdStorageError) failure.metadata.cleanupRequired = true;
       else throw new AggregateError([failure, ...cleanupErrors], "正文存储失败且收尾未完成");
     }
   }
 }
 
-async function ensureReadyForRead(config: ProdStorageConfig, interfaceAction: ProdStorageInterfaceAction, authorization: Omit<ProdStoragePermissionCheck, "phase" | "action" | "repoId" | "requirementId">): Promise<{ paths: PreparedPaths; identity: ProdRepositoryIdentity; head: string; lineage: Map<string, string | null> }> {
+async function ensureReadyForRead(config: PrdStorageConfig, interfaceAction: PrdStorageInterfaceAction, authorization: Omit<PrdStoragePermissionCheck, "phase" | "action" | "repoId" | "requirementId">): Promise<{ paths: PreparedPaths; identity: PrdRepositoryIdentity; head: string; lineage: Map<string, string | null> }> {
   requireAuthorized(config, { phase: "beforeAction", action: interfaceAction, ...authorization });
   const paths = await preparePaths(config, false);
   await assertGitDirectory(paths.requirementRoot, true);
   await assertRepositoryLayout(config, paths);
   const identity = await assertRepositoryIdentity(config, paths.requirementRoot);
-  await assertOnlyProdAndGit(paths.requirementRoot);
+  await assertOnlyPrdAndGit(paths.requirementRoot);
   await assertCurrentUser(paths.requirementRoot);
   const head = await currentHead(config, paths);
   if (!head) fail("git_invalid", "正文仓库尚无首个提交");
@@ -910,22 +910,22 @@ async function ensureReadyForRead(config: ProdStorageConfig, interfaceAction: Pr
   return { paths, identity, head, lineage };
 }
 
-async function saveInternal(input: ProdStorageSaveInput, action: ProdStorageAction, interfaceAction: ProdStorageInterfaceAction): Promise<ProdStorageWriteResult> {
+async function saveInternal(input: PrdStorageSaveInput, action: PrdStorageAction, interfaceAction: PrdStorageInterfaceAction): Promise<PrdStorageWriteResult> {
   if (!SAFE_SEGMENT_RE.test(input.operationId)) fail("invalid_operation", "operationId 必须是安全短标识");
   if (input.expectedParent !== null) assertFullCommit(input.expectedParent, "expectedParent");
   requireAuthorized(input, { phase: "beforeAction", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent });
   const bytes = Buffer.from(input.bytes);
-  const prodHash = sha256(bytes);
+  const prdHash = sha256(bytes);
   const paths = await preparePaths(input, true);
   await ensurePrivateDirectoryChain(paths.dataRoot, paths.requirementRoot);
   await assertCurrentUser(paths.requirementRoot);
   await assertNoUnverifiedTemporaryFiles(paths.requirementRoot);
-  await assertOnlyProdAndGit(paths.requirementRoot);
+  await assertOnlyPrdAndGit(paths.requirementRoot);
   const gitExists = await assertGitDirectory(paths.requirementRoot, false);
   if (!gitExists && input.expectedParent !== null) fail("git_missing", "已有版本记录却缺失 .git");
   await initRepository(input, paths, input.expectedParent === null);
   const identity = await assertRepositoryIdentity(input, paths.requirementRoot);
-  await assertOnlyProdAndGit(paths.requirementRoot);
+  await assertOnlyPrdAndGit(paths.requirementRoot);
 
   const head = await currentHead(input, paths);
   const lineage = await validatedLineage(input, paths, head);
@@ -937,61 +937,61 @@ async function saveInternal(input: ProdStorageSaveInput, action: ProdStorageActi
   if (head && head !== input.expectedParent) {
     const recoverable = headMetadata!.operationId === input.operationId
       && headMetadata!.action === action
-      && headMetadata!.prodHash === prodHash
+      && headMetadata!.prdHash === prdHash
       && (input.expectedParent === null ? headMetadata!.parents.length === 0 : headMetadata!.parents.length === 1 && headMetadata!.parents[0] === input.expectedParent);
     if (!recoverable) fail("parent_mismatch", "HEAD 与 expectedParent 不一致，拒绝覆盖外部内容");
-    const working = await readFileSnapshot(paths.prodPath);
-    if (!working.exists || working.prodHash !== prodHash) fail("working_copy_mismatch", "prod.md 含未登记的外部内容，拒绝恢复旧操作");
-    await verifyCommitMatches(input, paths, head, prodHash, input.expectedParent, input.operationId, action);
+    const working = await readFileSnapshot(paths.prdPath);
+    if (!working.exists || working.prdHash !== prdHash) fail("working_copy_mismatch", "prd.md 含未登记的外部内容，拒绝恢复旧操作");
+    await verifyCommitMatches(input, paths, head, prdHash, input.expectedParent, input.operationId, action);
     await recoverManagedIndex(input, paths, input.expectedParent, head);
-    requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prodHash });
-    return { status: "recovered", action, operationId: input.operationId, commit: head, parent: input.expectedParent, prodHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
+    requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prdHash });
+    return { status: "recovered", action, operationId: input.operationId, commit: head, parent: input.expectedParent, prdHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
   }
 
   await assertManagedIndexClean(input, paths, head);
   const operationIds = await operationIdsInHistory(input, paths, head);
-  let expectedWorkingFile: ProdFileSnapshot;
+  let expectedWorkingFile: PrdFileSnapshot;
   if (head) {
-    const headHash = headMetadata!.prodHash;
-    expectedWorkingFile = await readFileSnapshot(paths.prodPath);
-    if (!expectedWorkingFile.exists) fail("working_copy_mismatch", "prod.md 缺失，拒绝覆盖版本记录");
-    if (expectedWorkingFile.prodHash !== headHash && expectedWorkingFile.prodHash !== prodHash) {
-      fail("working_copy_mismatch", "prod.md 含不属于当前操作的外部内容，拒绝覆盖");
+    const headHash = headMetadata!.prdHash;
+    expectedWorkingFile = await readFileSnapshot(paths.prdPath);
+    if (!expectedWorkingFile.exists) fail("working_copy_mismatch", "prd.md 缺失，拒绝覆盖版本记录");
+    if (expectedWorkingFile.prdHash !== headHash && expectedWorkingFile.prdHash !== prdHash) {
+      fail("working_copy_mismatch", "prd.md 含不属于当前操作的外部内容，拒绝覆盖");
     }
     if (operationIds.has(input.operationId)) fail("operation_conflict", "operationId 已用于其他正文提交");
-    if (headHash === prodHash) {
-      requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prodHash });
-      return { status: "unchanged", action, operationId: input.operationId, commit: head, parent: headMetadata!.parents[0] ?? null, prodHash, changed: false, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
+    if (headHash === prdHash) {
+      requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prdHash });
+      return { status: "unchanged", action, operationId: input.operationId, commit: head, parent: headMetadata!.parents[0] ?? null, prdHash, changed: false, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
     }
   } else {
     if (input.expectedParent !== null) fail("parent_mismatch", "仓库尚无提交，expectedParent 不为 null");
-    expectedWorkingFile = await readFileSnapshot(paths.prodPath);
-    if (expectedWorkingFile.exists && expectedWorkingFile.prodHash !== prodHash) {
-      fail("working_copy_mismatch", "无提交仓库中的 prod.md 与登记操作目标不同，拒绝覆盖");
+    expectedWorkingFile = await readFileSnapshot(paths.prdPath);
+    if (expectedWorkingFile.exists && expectedWorkingFile.prdHash !== prdHash) {
+      fail("working_copy_mismatch", "无提交仓库中的 prd.md 与登记操作目标不同，拒绝覆盖");
     }
   }
 
-  requireAuthorized(input, { phase: "beforeWrite", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prodHash });
-  await writeProdFile(paths.requirementRoot, paths.prodPath, bytes, input.operationId, prodHash, expectedWorkingFile);
-  await assertOnlyProdAndGit(paths.requirementRoot);
-  const commit = await writeTreeCommit(input, paths, bytes, action, input.operationId, head, prodHash);
-  await verifyCommitMatches(input, paths, commit, prodHash, head, input.operationId, action);
-  await assertWorktreeMatchesHash(paths.prodPath, prodHash);
+  requireAuthorized(input, { phase: "beforeWrite", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prdHash });
+  await writePrdFile(paths.requirementRoot, paths.prdPath, bytes, input.operationId, prdHash, expectedWorkingFile);
+  await assertOnlyPrdAndGit(paths.requirementRoot);
+  const commit = await writeTreeCommit(input, paths, bytes, action, input.operationId, head, prdHash);
+  await verifyCommitMatches(input, paths, commit, prdHash, head, input.operationId, action);
+  await assertWorktreeMatchesHash(paths.prdPath, prdHash);
   const newHead = await currentHead(input, paths);
   if (newHead !== commit) fail("head_mismatch", "提交后 HEAD 与实际提交不一致");
   await assertManagedIndexClean(input, paths, commit);
   const newLineage = await validatedLineage(input, paths, commit);
   if (newLineage.get(commit) !== head) fail("history_mismatch", "新提交没有接到预期父提交");
-  requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prodHash });
-  return { status: head ? "saved" : "created", action, operationId: input.operationId, commit, parent: head, prodHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
+  requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prdHash });
+  return { status: head ? "saved" : "created", action, operationId: input.operationId, commit, parent: head, prdHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
 }
 
-export async function create(input: ProdStorageSaveInput): Promise<ProdStorageWriteResult> {
+export async function create(input: PrdStorageSaveInput): Promise<PrdStorageWriteResult> {
   if (input.expectedParent !== null) fail("invalid_parent", "create 的 expectedParent 必须为 null");
   return saveInternal(input, "create", "create");
 }
 
-export async function save(input: ProdStorageSaveInput & { action: Exclude<ProdStorageAction, "create"> }): Promise<ProdStorageWriteResult> {
+export async function save(input: PrdStorageSaveInput & { action: Exclude<PrdStorageAction, "create"> }): Promise<PrdStorageWriteResult> {
   if (input.action !== "updateDraft" && input.action !== "confirmUpdate") fail("invalid_action", "save action 只能是 updateDraft 或 confirmUpdate");
   return saveInternal(input, input.action, "save");
 }
@@ -1000,27 +1000,27 @@ function assertRequestedVersion(lineage: Map<string, string | null>, commit: str
   if (!lineage.has(commit)) fail("unknown_version", "请求的提交不属于当前线性正文历史");
 }
 
-export async function verifyVersion(input: ProdStorageVerifyInput): Promise<ProdStorageVerifyResult> {
+export async function verifyVersion(input: PrdStorageVerifyInput): Promise<PrdStorageVerifyResult> {
   assertFullCommit(input.commit);
   assertHash(input.expectedHash);
   const { paths, identity, lineage } = await ensureReadyForRead(input, "verifyVersion", { commit: input.commit, expectedHash: input.expectedHash });
   assertRequestedVersion(lineage, input.commit);
   const verified = await verifyCommitMatches(input, paths, input.commit, input.expectedHash, lineage.get(input.commit)!);
-  requireAuthorized(input, { phase: "beforeReturn", action: "verifyVersion", commit: input.commit, prodHash: verified.prodHash });
-  return { ok: true, commit: input.commit, prodHash: verified.prodHash, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
+  requireAuthorized(input, { phase: "beforeReturn", action: "verifyVersion", commit: input.commit, prdHash: verified.prdHash });
+  return { ok: true, commit: input.commit, prdHash: verified.prdHash, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
 }
 
-export async function readVersion(input: ProdStorageReadInput): Promise<ProdStorageReadResult> {
+export async function readVersion(input: PrdStorageReadInput): Promise<PrdStorageReadResult> {
   assertFullCommit(input.commit);
   assertHash(input.expectedHash);
   const { paths, lineage } = await ensureReadyForRead(input, "readVersion", { commit: input.commit, expectedHash: input.expectedHash });
   assertRequestedVersion(lineage, input.commit);
   const verified = await verifyCommitMatches(input, paths, input.commit, input.expectedHash, lineage.get(input.commit)!);
-  requireAuthorized(input, { phase: "beforeReturnBody", action: "readVersion", commit: input.commit, prodHash: verified.prodHash });
-  return { commit: input.commit, prodHash: verified.prodHash, bytes: verified.bytes };
+  requireAuthorized(input, { phase: "beforeReturnBody", action: "readVersion", commit: input.commit, prdHash: verified.prdHash });
+  return { commit: input.commit, prdHash: verified.prdHash, bytes: verified.bytes };
 }
 
-export async function diffVersions(input: ProdStorageDiffInput): Promise<ProdStorageDiffResult> {
+export async function diffVersions(input: PrdStorageDiffInput): Promise<PrdStorageDiffResult> {
   assertFullCommit(input.fromCommit, "fromCommit");
   assertFullCommit(input.toCommit, "toCommit");
   assertHash(input.expectedFromHash);
@@ -1037,8 +1037,8 @@ export async function diffVersions(input: ProdStorageDiffInput): Promise<ProdSto
   const to = input.toCommit === input.fromCommit
     ? from
     : await verifyCommitMatches(input, paths, input.toCommit, input.expectedToHash, lineage.get(input.toCommit)!);
-  if (to.prodHash !== input.expectedToHash) fail("hash_mismatch", "toCommit 正文 hash 与期望不一致");
-  const diff = (await runGit(input, paths, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--full-index", input.fromCommit, input.toCommit, "--", PROD_FILE])).stdout.toString("utf8");
+  if (to.prdHash !== input.expectedToHash) fail("hash_mismatch", "toCommit 正文 hash 与期望不一致");
+  const diff = (await runGit(input, paths, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--full-index", input.fromCommit, input.toCommit, "--", PRD_FILE])).stdout.toString("utf8");
   requireAuthorized(input, {
     phase: "beforeReturnBody",
     action: "diffVersions",
@@ -1046,12 +1046,12 @@ export async function diffVersions(input: ProdStorageDiffInput): Promise<ProdSto
     toCommit: input.toCommit,
     expectedFromHash: input.expectedFromHash,
     expectedToHash: input.expectedToHash,
-    prodHash: to.prodHash,
+    prdHash: to.prdHash,
   });
-  return { fromCommit: input.fromCommit, toCommit: input.toCommit, fromHash: from.prodHash, toHash: to.prodHash, diff };
+  return { fromCommit: input.fromCommit, toCommit: input.toCommit, fromHash: from.prdHash, toHash: to.prdHash, diff };
 }
 
-export function prodRequirementPath(config: Pick<ProdStorageConfig, "dataRoot" | "repoId" | "requirementId">): string {
+export function prdRequirementPath(config: Pick<PrdStorageConfig, "dataRoot" | "repoId" | "requirementId">): string {
   if (!isAbsolute(config.dataRoot)) fail("invalid_config", "dataRoot 必须是绝对路径");
   assertSafeSegment("repoId", config.repoId);
   assertRequirementId(config.requirementId);

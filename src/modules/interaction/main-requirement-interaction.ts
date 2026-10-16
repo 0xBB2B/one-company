@@ -13,7 +13,7 @@ import type { RequirementServiceOptions } from "../requirement/requirement-servi
 import type { ConfirmationContext, CreateRequirementInput, UpdateDraftInput, LoadConfirmationInput, ServiceAuthorizationRequest } from "../requirement/requirement-manage-contracts.ts";
 import { requirementIntentHash } from "../requirement/requirement-manage-contracts.ts";
 import { UserInteractionCore } from "./user-interaction.ts";
-import { partitionProdDocument, prodSectionsProblem } from "../requirement/prod-view.ts";
+import { partitionPrdDocument, prdSectionsProblem } from "../requirement/prd-view.ts";
 import { RequirementDocError, resolveRepositoryRequirementDoc } from "../requirement/requirement-doc.ts";
 import type { CandidateResavePermit } from "./user-interaction.ts";
 import type { InputTicket, InteractionCapability, InteractionAuthorization } from "./user-interaction.ts";
@@ -41,7 +41,7 @@ import type { DraftItem } from "../requirement/requirement-prototypes.ts";
 import { prototypeChangeLines, prototypeChanges, prototypesAtRevision } from "../requirement/requirement-prototype-revisions.ts";
 import { fixedChoiceIssue, PanelItemAskError, panelItemTarget } from "../panel/panel-item-ask.ts";
 import type { AdjudicationSubject } from "../requirement/user-interaction-format.ts";
-import { inspectProdStructure, pageProdText, selectProdSection } from "../requirement/prod-view.ts";
+import { inspectPrdStructure, pagePrdText, selectPrdSection } from "../requirement/prd-view.ts";
 
 export interface RequirementManageHostContext {
   readonly windowId: string; readonly sessionId: string;
@@ -394,7 +394,7 @@ export class MainRequirementInteraction {
           if (adjudication.requirementId !== id) return denied("adjudication_mismatch");
           const record = this.#authorization.snapshot(repoId, id, host.sessionId);
           const records = this.#authorization.interactionRecords(repoId, id, host.sessionId);
-          const basis = { requirementId: id, version: record.version, epoch: record.data.epoch, prod: record.data.approved };
+          const basis = { requirementId: id, version: record.version, epoch: record.data.epoch, prd: record.data.approved };
           // 裁决只针对面板事项；基于旧版本提的问题早已随批准处理，带上会让整次登记因版本不符被拒
           return { basis, currentGoal: "", candidates: [], ...records, questions: records.questions.filter((question) => digest(question.basis) === digest(basis)),
             adjudication: adjudication.subject };
@@ -494,7 +494,7 @@ export class MainRequirementInteraction {
     if (action === "updateDraft" && this.#core && this.#ticket && this.#interpretation?.documentReview?.faithful === false) {
       const update = input as UpdateDraftInput, origin = Object.freeze({});
       const permit = this.#core.prepareCandidateResave(this.#ticket, { origin, operationId: input.operationId, intentHash,
-        targetHash: partitionProdDocument(update.requirementId, update.title, update.body).prodHash });
+        targetHash: partitionPrdDocument(update.requirementId, update.title, update.body).prdHash });
       pending = this.#resave = { permit, origin, operationId: input.operationId, requirementId: update.requirementId, complete: false };
       this.#capability = undefined; this.#interpretation = undefined;
     }
@@ -507,7 +507,7 @@ export class MainRequirementInteraction {
     this.#live(ctx, host, generation);
     const current = this.#snapshot(host, repoId, receipt.requirementId);
     if (current.version !== receipt.version || current.data.epoch !== receipt.epoch) denied("stale_result");
-    saveRequirementSummary(this.#options.dataRoot, repoId, receipt.requirementId, receipt.prodHash, summary);
+    saveRequirementSummary(this.#options.dataRoot, repoId, receipt.requirementId, receipt.prdHash, summary);
     if (pending) {
       if (this.#resave !== pending || !this.#core) denied("resave_state_mismatch");
       this.#core.completeCandidateResave(pending.permit); pending.complete = true;
@@ -578,8 +578,8 @@ export class MainRequirementInteraction {
     if (!docSpec.sections.some((section) => section.goal)) {
       throw new HostAuthorizationError("requirement_doc_invalid", "这个需求所用的需求文档规范（首次批准时存下的版本）没有标出实施目标板块（goal: true），批准后不知道要实施哪些段落");
     }
-    const sections = prodSectionsProblem(loaded.body, docSpec.sections);
-    if (sections) throw new HostAuthorizationError("prod_sections_required", sections);
+    const sections = prdSectionsProblem(loaded.body, docSpec.sections);
+    if (sections) throw new HostAuthorizationError("prd_sections_required", sections);
     if (!this.#ticket) return denied("current_input_required");
     const prototypeRef = { dataRoot: this.#options.dataRoot, repoId: request.repoId };
     const inFlight = await inFlightSummary(prototypeRef, request.requirementId);
@@ -611,7 +611,7 @@ export class MainRequirementInteraction {
       review.units.every((unit) => unit.id === "metadata" || unit.disposition === "pending-description")) {
       this.#capability = undefined; this.#interpretation = undefined;
       return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
-        version: loaded.version, epoch: loaded.epoch, targetRecorded: false, prodActivated: false, decisionIds: [], blockedBy: "candidate_requires_revision_or_clarification",
+        version: loaded.version, epoch: loaded.epoch, targetRecorded: false, prdActivated: false, decisionIds: [], blockedBy: "candidate_requires_revision_or_clarification",
         blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, []) });
     }
     const saved = core.save(capability);
@@ -620,7 +620,7 @@ export class MainRequirementInteraction {
     const targetRecorded = interpretation.entries.some((e) => e.kind === "target" && e.basis === "explicit" && !["defer", "unclear"].includes(e.resolution)) ||
       Boolean(document?.manifest.retainedSources?.some((source) => source.kind === "target"));
     const base = { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
-      version: loaded.version, epoch: loaded.epoch, targetRecorded, prodActivated: false, decisionIds: saved.decisionIds };
+      version: loaded.version, epoch: loaded.epoch, targetRecorded, prdActivated: false, decisionIds: saved.decisionIds };
     if (!document) return this.#prove(ctx, request.repoId, { ...base, blockedBy: "candidate_requires_revision_or_clarification",
       blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, saved.decisionIds) }, undefined, decisionProofs);
     const reference = approvalManifestReference(document.manifest);
@@ -655,7 +655,7 @@ export class MainRequirementInteraction {
         throw error;
       });
     // 这些只是该次决定的元数据，不是可转交worker的能力；激活不启动PM。
-    return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prodActivated: true },
+    return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prdActivated: true },
       { kind: "approved", scope: { status: "available", summary } }, decisionProofs);
   }
   #prototypeLines(items: DraftItem[], revision: number): WindowLine[] {
@@ -789,17 +789,17 @@ export class MainRequirementInteraction {
     const maxBytes = request.maxBytes ?? 8192;
     const result = request.action === "read" ? await service.read({ requirementId: request.requirementId, source })
       : await service.diff({ requirementId: request.requirementId, fromRevision: request.fromRevision!, ...(request.toRevision ? { toRevision: request.toRevision } : {}) });
-    const text = "body" in result ? selectProdSection(result.body, inspectProdStructure(result.body), request.sectionId) : result.diff;
+    const text = "body" in result ? selectPrdSection(result.body, inspectPrdStructure(result.body), request.sectionId) : result.diff;
     const { body: _body, diff: _diff, ...metadata } = result as typeof result & { body?: string; diff?: string };
     const next = randomBytes(32).toString("hex");
-    let page = pageProdText(text, cursor?.offset ?? 0, maxBytes);
+    let page = pagePrdText(text, cursor?.offset ?? 0, maxBytes);
     const wrap = () => ({ ...metadata, text: page.text, coverage: { startByte: page.startByte, endByte: page.endByte, totalBytes: page.totalBytes,
       complete: page.complete, nextCursor: page.endByte < page.totalBytes ? next : null,
-      blocking: page.complete && !request.sectionId ? [] : ["incomplete_prod_read", "global_constraints_and_unresolved_may_be_outside_page"] } });
+      blocking: page.complete && !request.sectionId ? [] : ["incomplete_prd_read", "global_constraints_and_unresolved_may_be_outside_page"] } });
     while (Buffer.byteLength(JSON.stringify(wrap())) > 24_576 ||
       Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: JSON.stringify(wrap()) }], details: wrap() })) > TRANSPORT_BYTES) {
       if (Buffer.byteLength(page.text) <= 4) denied("response_limit");
-      page = pageProdText(text, cursor?.offset ?? 0, Math.max(4, Math.floor(Buffer.byteLength(page.text) / 2)));
+      page = pagePrdText(text, cursor?.offset ?? 0, Math.max(4, Math.floor(Buffer.byteLength(page.text) / 2)));
     }
     if (page.endByte < page.totalBytes) {
       while (this.#cursors.size >= 32) this.#cursors.delete(this.#cursors.keys().next().value!);

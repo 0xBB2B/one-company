@@ -142,8 +142,8 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     const business = join(root, "business");
     await mkdir(business);
     await writeFile(join(business, "spec.json"), '{"schemaVersion":1}');
-    await writeFile(join(business, "prod.md"), "# 人工文件夹具\n");
-    await run(node, ["--input-type=module", "-e", "import{readFileSync}from'node:fs';import assert from'node:assert/strict';assert.equal(JSON.parse(readFileSync('spec.json','utf8')).schemaVersion,1);assert(readFileSync('prod.md','utf8').startsWith('#'));"], business);
+    await writeFile(join(business, "prd.md"), "# 人工文件夹具\n");
+    await run(node, ["--input-type=module", "-e", "import{readFileSync}from'node:fs';import assert from'node:assert/strict';assert.equal(JSON.parse(readFileSync('spec.json','utf8')).schemaVersion,1);assert(readFileSync('prd.md','utf8').startsWith('#'));"], business);
     passed = true;
   } finally {
     // execFile 的回调在子进程 close 后完成；仅成功且命令全部收尾才删除安装现场。

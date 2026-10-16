@@ -95,7 +95,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     open: async (...args: Parameters<typeof actual.open>) => {
       const path = String(args[0]);
       if (gitIoProbe.enabled && path.split("/").some((part) => part.toLowerCase() === ".git")) gitIoProbe.opens.push(path);
-      if (archiveIoProbe.enabled && /\/docs\/prod\//i.test(path)) archiveIoProbe.openedArchiveFiles.push(path);
+      if (archiveIoProbe.enabled && /\/docs\/prd\//i.test(path)) archiveIoProbe.openedArchiveFiles.push(path);
       const handle = await actual.open(...args);
       if (!archiveIoProbe.enabled) return handle;
       return new Proxy(handle, {
@@ -192,7 +192,7 @@ afterEach(async () => {
   for (const root of roots.splice(0).reverse()) await rm(root, { recursive: true, force: true });
 });
 
-test("M2-AC1/5/7：混合文件确定分类，大小写 prod 只列直接路径且正文零打开", async () => {
+test("M2-AC1/5/7：混合文件确定分类，大小写 PRD 只列直接路径且正文零打开", async () => {
   const { root, dataRoot } = await fixture();
   await put(root, "src/主程序.ts", "export const answer = 42;\r\n");
   await put(root, "src/view.tsx", "export const View = () => <main />;\n");
@@ -205,10 +205,10 @@ test("M2-AC1/5/7：混合文件确定分类，大小写 prod 只列直接路径�
   await put(root, "package.json", "{}\n");
   await put(root, "tools/check.py", "print('file-level only')\n");
 
-  const archiveDirectory = join(root, "DoCs", "PrOd");
+  const archiveDirectory = join(root, "DoCs", "Prd");
   await mkdir(archiveDirectory, { recursive: true });
   const archiveRelative = relative(root, await realpath(archiveDirectory)).split(sep).join("/");
-  await writeFile(join(archiveDirectory, `${REQUIREMENT_ID}.完成需求.md`), "PROD_SECRET_NEVER_OPEN");
+  await writeFile(join(archiveDirectory, `${REQUIREMENT_ID}.完成需求.md`), "PRD_SECRET_NEVER_OPEN");
   await writeFile(join(archiveDirectory, `${REQUIREMENT_ID}.恶意\n名称.bin`), "ANOTHER_SECRET");
   await writeFile(join(archiveDirectory, "not-a-uuid.md"), "INVALID_SECRET");
   await mkdir(join(archiveDirectory, "nested"));
@@ -247,7 +247,7 @@ test("M2-AC1/5/7：混合文件确定分类，大小写 prod 只列直接路径�
   ]);
   expect(archiveIoProbe.openedArchiveFiles).toEqual([]);
   expect(archiveIoProbe.bodyReadCalls).toBe(0);
-  expect(skippedReason(result, archiveRelative)).toBe("prod_archive");
+  expect(skippedReason(result, archiveRelative)).toBe("prd_archive");
   expect(skippedReason(result, "node_modules")).toBe("excluded_directory");
   expect(skippedReason(result, "DIST")).toBe("excluded_directory");
   expect(skippedReason(result, ".env.production")).toBe("sensitive");
@@ -255,7 +255,7 @@ test("M2-AC1/5/7：混合文件确定分类，大小写 prod 只列直接路径�
   expect(skippedReason(result, "state/index.db")).toBe("database");
   expect(skippedReason(result, "state/index.db-wal")).toBe("database");
   expect(skippedReason(result, "logs")).toBe("excluded_directory");
-  expect(result.files.some((file) => file.path.toLowerCase().startsWith("docs/prod/"))).toBe(false);
+  expect(result.files.some((file) => file.path.toLowerCase().startsWith("docs/prd/"))).toBe(false);
 });
 
 test.each([".git", ".giT", ".gIt", ".gIT", ".Git", ".GiT", ".GIt", ".GIT"].flatMap((name) =>
@@ -418,7 +418,7 @@ test("M2-AC1/7：正文读取保留 Unicode/CRLF 和字节 hash，并拒绝归�
   await put(root, "large.txt", "1".repeat(DEFAULT_INDEX_LIMITS.maxFileBytes + 1));
   await put(root, "script.py", pythonSource);
   await put(root, "binary.py", Uint8Array.from([0x70, 0x79, 0x00]));
-  await put(root, `docs/prod/${REQUIREMENT_ID}.secret.md`, "NEVER_READ_THIS_PROD");
+  await put(root, `docs/prd/${REQUIREMENT_ID}.secret.md`, "NEVER_READ_THIS_PRD");
   const scan = await scanIndexWorkspace({ root, dataRoot });
   const unicode = scan.files.find((file) => file.path === "unicode.txt")!;
 
@@ -448,12 +448,12 @@ test("M2-AC1/7：正文读取保留 Unicode/CRLF 和字节 hash，并拒绝归�
   expect(scan.files.find((file) => file.path === "script.py")?.kind).toBe("unsupported");
 
   archiveIoProbe.enabled = true;
-  const archiveRead = await readIndexFile(root, `docs/prod/${REQUIREMENT_ID}.secret.md`);
+  const archiveRead = await readIndexFile(root, `docs/prd/${REQUIREMENT_ID}.secret.md`);
   archiveIoProbe.enabled = false;
   expect(archiveRead).toEqual({
     status: "skipped",
-    path: `docs/prod/${REQUIREMENT_ID}.secret.md`,
-    reason: "prod_archive",
+    path: `docs/prd/${REQUIREMENT_ID}.secret.md`,
+    reason: "prd_archive",
   });
   expect(archiveIoProbe.openedArchiveFiles).toEqual([]);
 });

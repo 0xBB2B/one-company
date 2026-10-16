@@ -78,7 +78,7 @@ installedTest("M3-AC1/3/9 安装：preview不升级、查询前对账读到增�
   expect(existsSync(repo.indexPath)).toBe(false);
   const initialized = await initialize(a);
   expect(initialized.confirmations).toHaveLength(3);
-  expect(initialized.confirmations[2]!.message).toContain("docs/prod");
+  expect(initialized.confirmations[2]!.message).toContain("docs/prd");
   expect(initialized.confirmations[2]!.message).toContain(repo.path);
   expect(initialized.confirmations[2]!.message).toContain(repo.dataRoot);
   const b = await w.host(repo);
@@ -120,7 +120,7 @@ installedTest("M3-AC1/3/9 安装：preview不升级、查询前对账读到增�
   await c.close(); await cleanDaemon(second);
 }, 180_000);
 
-installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、查询前对账经归档核对、prod入口禁正文及旧active待核对", async () => {
+installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、查询前对账经归档核对、PRD入口禁正文及旧active待核对", async () => {
   const w = await world(), seed = await w.repository("seed");
   const remote = join(w.root, "remote.git"); await w.git(w.root, ["init", "--bare", "--initial-branch=main", remote]);
   await w.git(seed.path, ["remote", "add", "origin", remote]); await w.git(seed.path, ["push", "-u", "origin", "main"]);
@@ -140,8 +140,8 @@ installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: active.version, runId: uuidv7(), expectedFence: 0 });
   const da = await w.daemon(a), db = await w.daemon(b), ha = await w.host(a), hb = await w.host(b);
   await initialize(ha); await initialize(hb);
-  const archive = `docs/prod/${created.requirementId}.归档风险.md`, secret = "ARCHIVE_PRIVATE_M3_INSTALL_DO_NOT_READ";
-  await mkdir(join(seed.path, "docs/prod"), { recursive: true });
+  const archive = `docs/prd/${created.requirementId}.归档风险.md`, secret = "ARCHIVE_PRIVATE_M3_INSTALL_DO_NOT_READ";
+  await mkdir(join(seed.path, "docs/prd"), { recursive: true });
   await writeFile(join(seed.path, archive), `---\nstate: active\n---\n${secret}\n`);
   const pulled = "export const pulled = 22;\n"; await writeFile(join(seed.path, "source.ts"), pulled);
   await w.git(seed.path, ["add", "."]); await w.git(seed.path, ["commit", "-m", "shared final files"]); await w.git(seed.path, ["push", "origin", "main"]);
@@ -157,8 +157,8 @@ installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、
   expect(state.pmOwner(created.requirementId)).toMatchObject({ lease: null }); await expect(state.checkPm(lease)).rejects.toThrow(/recovery_required/);
   for (const repo of [a, b]) {
     const snapshot = await w.snapshot(repo);
-    expect(snapshot.prodMetadata.some((item) => item.requirementId === created.requirementId && item.source === "archive")).toBe(true);
-    expect(snapshot.files.some((file) => file.path.startsWith("docs/prod/"))).toBe(false);
+    expect(snapshot.prdMetadata.some((item) => item.requirementId === created.requirementId && item.source === "archive")).toBe(true);
+    expect(snapshot.files.some((file) => file.path.startsWith("docs/prd/"))).toBe(false);
     for (const marker of [secret, "LOCAL_PRIVATE_M3_INSTALL"]) expect(JSON.stringify(snapshot)).not.toContain(marker);
     expect(JSON.stringify(databaseRows(repo.indexPath, "source_fragments"))).not.toContain(secret);
   }
@@ -167,7 +167,7 @@ installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、
   const blocked = state.read(created.requirementId);
   await rm(join(b.path, archive));
   await query(hb, b, exact("source.ts"));
-  expect((await w.snapshot(b)).prodMetadata.some((item) => item.source === "archive")).toBe(false);
+  expect((await w.snapshot(b)).prdMetadata.some((item) => item.source === "archive")).toBe(false);
   expect(state.read(created.requirementId)).toEqual(blocked);
   for (const host of [ha, hb]) {
     const reply = await host.call("text"); expect(JSON.stringify(reply.requests)).not.toContain(secret);
@@ -180,8 +180,8 @@ installedTest("M3-AC3/4 安装：本地bare远端双克隆pull、独立索引、
 installedTest("M9-AC1 安装：删除 index.db 后重启，下一次查询从允许文件自动重建并读到当前内容，不再弹确认，归档仍排除", async () => {
   const w = await world(), repo = await w.repository("rebuild");
   const secret = "ARCHIVE_PRIVATE_M9_REBUILD_DO_NOT_READ";
-  await mkdir(join(repo.path, "docs/prod"), { recursive: true });
-  await writeFile(join(repo.path, "docs/prod/0197b7b0-6a20-7c51-8a32-b9465fb72d10.旧需求.md"), `${secret}\n`);
+  await mkdir(join(repo.path, "docs/prd"), { recursive: true });
+  await writeFile(join(repo.path, "docs/prd/0197b7b0-6a20-7c51-8a32-b9465fb72d10.旧需求.md"), `${secret}\n`);
   const first = await w.daemon(repo), a = await w.host(repo);
   await initialize(a);
   expect(await query(a, repo, exact("source.ts"))).toContain("initial = 1");
@@ -196,7 +196,7 @@ installedTest("M9-AC1 安装：删除 index.db 后重启，下一次查询从允
   expect(JSON.stringify(result(rebuilt, "one_company_knowledge_query").content)).toContain("rebuilt = 7");
   expect(existsSync(repo.indexPath)).toBe(true);
   const snapshot = await w.snapshot(repo);
-  expect(snapshot.files.some((file) => file.path.startsWith("docs/prod/"))).toBe(false);
+  expect(snapshot.files.some((file) => file.path.startsWith("docs/prd/"))).toBe(false);
   expect(JSON.stringify(snapshot)).not.toContain(secret);
   expect(JSON.stringify(databaseRows(repo.indexPath, "source_fragments"))).not.toContain(secret);
   expect((await second.probe()).forbiddenReads).toBe(0);

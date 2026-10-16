@@ -5,7 +5,7 @@ import { decisionDigest } from "./short-decision-format.ts";
 import { ApprovalPartition, ApprovalUnitIds, CandidateBinding, UnitReview, ActionReview,
   checkInteraction, UserInteractionError, RetainedUnitEvidence, resolvesContinuityIssue } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
-import type { ProdApprovalPartition } from "./prod-view.ts";
+import type { PrdApprovalPartition } from "./prd-view.ts";
 
 const id = CandidateBinding.properties.candidateId, hash = CandidateBinding.properties.intentHash;
 const decisionIds = Type.Array(id, { minItems: 1, maxItems: 16, uniqueItems: true });
@@ -20,7 +20,7 @@ export const ApprovalManifest = object({ format: Type.Literal("approval-manifest
     decisionIds: Type.Array(id, { maxItems: 16, uniqueItems: true }) }), { maxItems: 20 }) });
 export type ApprovalManifest = Static<typeof ApprovalManifest>;
 export interface ApprovalManifestReference { requirementId: string; candidate: CandidateBinding; manifestHash: string }
-export interface ApprovalManifestExpected { requirementId: string; candidate: CandidateBinding; partition: ProdApprovalPartition }
+export interface ApprovalManifestExpected { requirementId: string; candidate: CandidateBinding; partition: PrdApprovalPartition }
 function deny(code: string, detail?: string): never { throw new UserInteractionError(code, detail); }
 function sameSet(a: readonly string[], b: readonly string[]): boolean { return a.length === b.length && a.every((v) => b.includes(v)); }
 function explicit(e: InteractionEntry): boolean { return e.basis === "explicit" && !["modify", "defer", "unclear"].includes(e.resolution); }
@@ -76,7 +76,7 @@ export function checkApprovalManifest(value: unknown, expected: ApprovalManifest
   const m = checkInteraction(ApprovalManifest, value);
   const p = checkInteraction(ApprovalPartition, expected.partition);
   if (m.requirementId !== expected.requirementId || decisionDigest(m.candidate) !== decisionDigest(expected.candidate) ||
-    p.prodHash !== m.candidate.to.hash || p.totalBytes !== m.totalBytes || p.units.length !== m.units.length) deny("manifest_binding_mismatch");
+    p.prdHash !== m.candidate.to.hash || p.totalBytes !== m.totalBytes || p.units.length !== m.units.length) deny("manifest_binding_mismatch");
   let end = 0;
   for (const [index, u] of m.units.entries()) {
     const actual = { id: u.id, hash: u.hash, startByte: u.startByte, endByte: u.endByte };
@@ -192,7 +192,7 @@ export function validateDocumentReview(context: InteractionContext, result: Inte
         const existingConstraint = e.kind === "constraint" && e.basis === "explicit" && e.resolution === "direct" && e.requestId === null &&
           !e.supersedes.length && prior?.actor === "user" && prior.status === "confirmed" && prior.basisReceiptId !== null &&
           prior.requirementId === context.basis.requirementId && prior.requirementVersion === context.basis.version && prior.epoch === context.basis.epoch &&
-          decisionDigest(prior.prod) === decisionDigest(context.basis.prod) && prior.references.includes(doc.candidate.to.commit) &&
+          decisionDigest(prior.prd) === decisionDigest(context.basis.prd) && prior.references.includes(doc.candidate.to.commit) &&
           prior.references.includes(doc.candidate.to.hash) && e.conclusion === prior.conclusion && e.scope === prior.scope;
         if ((!structural && !existingConstraint) || actionUsed.has(i) ||
           review.actions.some((a) => a.goalIds.some((id) => uses.some((u) => u.id === id)))) deny("single_question_scope_escape");

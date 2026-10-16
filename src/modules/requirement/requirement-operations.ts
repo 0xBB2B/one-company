@@ -5,9 +5,9 @@ import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts
 import { ApprovalManifestReferenceSchema, RequirementDocSpecSchema, checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
 import type { RequirementDocSpec } from "./requirement-doc.ts";
-import type { ProdReference, RequirementRecord } from "./requirement-contracts.ts";
-import { prodRequirementPath } from "./prod-storage.ts";
-import type { ProdRepositoryIdentity, ProdStorageWriteResult } from "./prod-storage.ts";
+import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
+import { prdRequirementPath } from "./prd-storage.ts";
+import type { PrdRepositoryIdentity, PrdStorageWriteResult } from "./prd-storage.ts";
 import { assertApprovableIn } from "./requirement-prototypes.ts";
 import { archivePathFor } from "./requirement-identity.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
@@ -78,15 +78,15 @@ export interface RequirementOperation {
   prototypes?: string;
   archivePath: string;
   repositoryRoot: string;
-  expectedRepositoryIdentity: ProdRepositoryIdentity | null;
+  expectedRepositoryIdentity: PrdRepositoryIdentity | null;
   git: {
-    status: ProdStorageWriteResult["status"];
+    status: PrdStorageWriteResult["status"];
     commit: string;
     parent: string | null;
     hash: string;
     changed: boolean;
     repositoryRoot: string;
-    repositoryIdentity: ProdRepositoryIdentity;
+    repositoryIdentity: PrdRepositoryIdentity;
   } | null;
   savedVersion: number | null;
   approvalVersion: number | null;
@@ -112,7 +112,7 @@ export interface PrepareRequirementOperation {
   prototypes?: string;
   archivePath: string;
   repositoryRoot: string;
-  expectedRepositoryIdentity: ProdRepositoryIdentity | null;
+  expectedRepositoryIdentity: PrdRepositoryIdentity | null;
 }
 
 const NAMESPACE = REQUIREMENT_OPERATION_NAMESPACE;
@@ -124,7 +124,7 @@ function same(left: unknown, right: unknown): boolean {
 function checkOperation(value: unknown): RequirementOperation {
   if (!Value.Check(operationSchema, value)) throw new RequirementServiceError("operation_corrupt", "持久操作记录格式冲突");
   const operation = value as RequirementOperation;
-  const archivePrefix = `docs/prod/${operation.requirementId}.`;
+  const archivePrefix = `docs/prd/${operation.requirementId}.`;
   const archiveTitle = operation.archivePath.startsWith(archivePrefix) && operation.archivePath.endsWith(".md")
     ? operation.archivePath.slice(archivePrefix.length, -3)
     : null;
@@ -202,7 +202,7 @@ export class RequirementOperations {
     const stored = db.read(NAMESPACE, operationId);
     if (!stored) return null;
     const data = checkOperation(stored.data);
-    const expectedRoot = prodRequirementPath({ dataRoot: this.dataRoot, repoId: this.repoId, requirementId: data.requirementId });
+    const expectedRoot = prdRequirementPath({ dataRoot: this.dataRoot, repoId: this.repoId, requirementId: data.requirementId });
     if (stored.id !== operationId || data.operationId !== operationId || data.repoId !== this.repoId || data.repositoryRoot !== expectedRoot) {
       throw new RequirementServiceError("operation_conflict");
     }
@@ -283,13 +283,13 @@ export class RequirementOperations {
     });
   }
 
-  recordGitResult(operationId: string, result: ProdStorageWriteResult, owner: RequirementWriteOwner): StoredRecord<RequirementOperation> {
+  recordGitResult(operationId: string, result: PrdStorageWriteResult, owner: RequirementWriteOwner): StoredRecord<RequirementOperation> {
     return this.update(operationId, owner, (operation) => {
       const git: RequirementOperation["git"] = {
         status: result.status,
         commit: result.commit,
         parent: result.changed ? result.parent : result.commit,
-        hash: result.prodHash.slice("sha256:".length),
+        hash: result.prdHash.slice("sha256:".length),
         changed: result.changed,
         repositoryRoot: result.repositoryRoot,
         repositoryIdentity: result.repositoryIdentity,
@@ -358,7 +358,7 @@ export class RequirementOperations {
     }));
   }
 
-  archivePath(requirementId: string, reference: ProdReference | null): string | null {
+  archivePath(requirementId: string, reference: PrdReference | null): string | null {
     const matching = withDatabase(this.path, (db) => db.list(NAMESPACE)
       .map((stored) => checkOperation(stored.data))
       .filter((operation) => operation.requirementId === requirementId && operation.finalVersion !== null && operation.git !== null)
@@ -367,7 +367,7 @@ export class RequirementOperations {
     return matching[0]?.archivePath ?? null;
   }
 
-  savedOperationFor(requirementId: string, reference: ProdReference | null, epoch: number): string | null {
+  savedOperationFor(requirementId: string, reference: PrdReference | null, epoch: number): string | null {
     if (!reference) return null;
     const matching = withDatabase(this.path, (db) => db.list(NAMESPACE)
       .map((stored) => checkOperation(stored.data))
@@ -377,7 +377,7 @@ export class RequirementOperations {
     return matching.find((operation) => operation.action !== "confirmUpdate")?.operationId ?? null;
   }
 
-  repositoryIdentity(requirementId: string): ProdRepositoryIdentity | null {
+  repositoryIdentity(requirementId: string): PrdRepositoryIdentity | null {
     const identities = withDatabase(this.path, (db) => db.list(NAMESPACE)
       .map((stored) => checkOperation(stored.data))
       .filter((operation) => operation.requirementId === requirementId && operation.git)

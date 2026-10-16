@@ -20,7 +20,7 @@ export function sessionRecordRef(ref: RunRef) {
   return { database: repositoryDatabase(ref.dataRoot, ref.repoId), namespace: "sessions", key: ref.runId };
 }
 
-/** 会话条目可能含 prod 正文，只存本机私有文件；data.db 只留 cwd 与当前位置元数据。 */
+/** 会话条目可能含 PRD 正文，只存本机私有文件；data.db 只留 cwd 与当前位置元数据。 */
 export function sessionFilePath(ref: RunRef): string {
   if (!UUID_V7_PATTERN.test(ref.runId)) throw new Error("运行编号必须是 UUIDv7");
   return join(dirname(repositoryDatabase(ref.dataRoot, ref.repoId)), "sessions", ref.runId, "session.jsonl");

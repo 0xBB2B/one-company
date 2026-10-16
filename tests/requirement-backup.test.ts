@@ -16,7 +16,7 @@ import { draftApprover } from "./helpers/approval-fixture.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
-import { prodRequirementPath } from "../src/modules/requirement/prod-storage.ts";
+import { prdRequirementPath } from "../src/modules/requirement/prd-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { sealOperationLog } from "../src/core/storage/operation-log.ts";
@@ -63,7 +63,7 @@ async function world() {
 
 async function populatedWorld() {
   const w = await world();
-  const secret = "PROD-BODY-MUST-NOT-ENTER-RECEIPTS-OR-SQLITE-85b179";
+  const secret = "PRD-BODY-MUST-NOT-ENTER-RECEIPTS-OR-SQLITE-85b179";
   const created = await w.service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "活动需求", body: `${secret}\n版本一` });
   await w.bind(created.requirementId);
   const approve = draftApprover(w.options, w.service, { requirementId: created.requirementId, operationId: created.operationId, title: "活动需求", body: `${secret}\n版本一` });
@@ -107,7 +107,7 @@ async function gitCount(path: string): Promise<number> {
   return Number((await exec(GIT, ["rev-list", "--count", "HEAD"], { cwd: path, env: GIT_ENV })).stdout.trim());
 }
 
-test("完整备份包含WAL一致状态、prod多版本Git对象/refs/config，回执和manifest不回显正文且没有远端动作", async () => {
+test("完整备份包含WAL一致状态、PRD多版本Git对象/refs/config，回执和manifest不回显正文且没有远端动作", async () => {
   const w = await populatedWorld();
   const remoteProbe = join(w.root, "remote-probe.sh"), remoteSentinel = join(w.root, "remote-ran");
   await writeFile(remoteProbe, `#!/bin/sh\nprintf remote > ${JSON.stringify(remoteSentinel)}\nexit 91\n`, { mode: 0o755 });
@@ -186,7 +186,7 @@ test("恢复复制到隔离目录并完整核对Git/数据引用；旧能力不�
     expect(JSON.parse(String(current.prepare("SELECT data FROM records WHERE namespace='requirements' AND record_key=?").get(w.activeId)?.data))).toMatchObject({ lifecycle: "closed", close: { reason: "rejected" } });
   } finally { current.close(); }
   expect(await gitCount(join(target.repoDirectory, "requirements", w.activeId))).toBe(3);
-  expect(await readFile(join(target.repoDirectory, "requirements", w.closedId, "prod.md"))).toEqual(await readFile(join(w.repoDirectory, "requirements", w.closedId, "prod.md")));
+  expect(await readFile(join(target.repoDirectory, "requirements", w.closedId, "prd.md"))).toEqual(await readFile(join(w.repoDirectory, "requirements", w.closedId, "prd.md")));
 
   const activeStatus = restored.requirements.find((item) => item.requirementId === w.activeId)!;
   const closedStatus = restored.requirements.find((item) => item.requirementId === w.closedId)!;
@@ -218,7 +218,7 @@ test("恢复完成后仍逐项核对完整Git和恢复库，不覆盖后续外�
   await expect(restoreRequirementBackup(input)).rejects.toMatchObject({ code: "restore_target_conflict" });
   await writeFile(configPath, config);
   const firstCommit = (await exec(GIT, ["rev-list", "--reverse", "HEAD"], { cwd: restoredRepo, env: GIT_ENV })).stdout.trim().split("\n")[0]!;
-  const oldBlob = (await exec(GIT, ["rev-parse", `${firstCommit}:prod.md`], { cwd: restoredRepo, env: GIT_ENV })).stdout.trim();
+  const oldBlob = (await exec(GIT, ["rev-parse", `${firstCommit}:prd.md`], { cwd: restoredRepo, env: GIT_ENV })).stdout.trim();
   const objectPath = join(restoredRepo, ".git", "objects", oldBlob.slice(0, 2), oldBlob.slice(2));
   const object = await readFile(objectPath);
   await rm(objectPath);
@@ -359,10 +359,10 @@ test("恢复中断重试不覆盖外部新文件，且伪manifest或不同目标
   // 归档目录不存在会让对账在复制完成后失败，留下停在 copied 阶段的恢复操作
   const options = { ...restoreOptions(w, backup, target, operationId), archiveDirectory: join(w.root, "missing-archives") };
   await expect(restoreRequirementBackup(options)).rejects.toMatchObject({ code: "recovery_failed" });
-  const restoredProd = join(target.repoDirectory, "requirements", w.activeId, "prod.md");
-  await writeFile(restoredProd, "external-new-content", { mode: 0o600 });
+  const restoredPrd = join(target.repoDirectory, "requirements", w.activeId, "prd.md");
+  await writeFile(restoredPrd, "external-new-content", { mode: 0o600 });
   await expect(restoreRequirementBackup(options)).rejects.toMatchObject({ code: "restore_target_conflict", restoreStatus: "needs_review", executable: false });
-  expect(await readFile(restoredProd, "utf8")).toBe("external-new-content");
+  expect(await readFile(restoredPrd, "utf8")).toBe("external-new-content");
 
   const another = await isolation(w);
   await expect(restoreRequirementBackup({ ...restoreOptions(w, backup, another), backupManifestHash: "0".repeat(64) })).rejects.toMatchObject({ code: "backup_operation_invalid" });

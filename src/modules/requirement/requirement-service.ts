@@ -5,16 +5,16 @@ import { join } from "node:path";
 import { isPromise } from "node:util/types";
 import { RequirementStateStore } from "./requirement-state.ts";
 import type { RequirementAction, RequirementStoreOptions } from "./requirement-state.ts";
-import type { ProdReference, RequirementRecord } from "./requirement-contracts.ts";
+import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
 import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
-import { createProdDocument, inspectProdArchives, parseProdDocument } from "./requirement-identity.ts";
-import { create as createStorage, diffVersions, prodRequirementPath, readVersion, save as saveStorage, verifyVersion } from "./prod-storage.ts";
-import type { ProdRepositoryIdentity, ProdStorageConfig, ProdStorageWriteResult } from "./prod-storage.ts";
+import { createPrdDocument, inspectPrdArchives, parsePrdDocument } from "./requirement-identity.ts";
+import { create as createStorage, diffVersions, prdRequirementPath, readVersion, save as saveStorage, verifyVersion } from "./prd-storage.ts";
+import type { PrdRepositoryIdentity, PrdStorageConfig, PrdStorageWriteResult } from "./prd-storage.ts";
 import { RequirementOperations } from "./requirement-operations.ts";
 import type { PrepareRequirementOperation, RequirementOperation, RequirementOperationAction } from "./requirement-operations.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 import { decisionDigest } from "./short-decision-format.ts";
-import { partitionProdDocument } from "./prod-view.ts";
+import { partitionPrdDocument } from "./prd-view.ts";
 import { assertApprovalScopeReturnIn, registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
 import type { RequirementWriteOwner } from "./requirement-coordination.ts";
 import {
@@ -81,11 +81,11 @@ function deepFreeze<T>(value: T): T {
 }
 
 function storageHash(hash: string): `sha256:${string}` {
-  if (!/^[0-9a-f]{64}$/.test(hash)) throw new RequirementServiceError("invalid_prod_hash");
+  if (!/^[0-9a-f]{64}$/.test(hash)) throw new RequirementServiceError("invalid_prd_hash");
   return `sha256:${hash}`;
 }
 
-function sameReference(left: ProdReference | null, right: ProdReference | null): boolean {
+function sameReference(left: PrdReference | null, right: PrdReference | null): boolean {
   return left?.commit === right?.commit && left?.hash === right?.hash && (left === null) === (right === null);
 }
 
@@ -102,7 +102,7 @@ function authorizationForWrite(
   requirementId?: string,
   version?: number,
   epoch?: number,
-  prodHash?: `sha256:${string}`,
+  prdHash?: `sha256:${string}`,
 ): ServiceAuthorizationRequest {
   return {
     action,
@@ -111,7 +111,7 @@ function authorizationForWrite(
     operationId: input.operationId,
     requirementId,
     intentHash,
-    prodHash,
+    prdHash,
     version,
     epoch,
     ...(action === "confirmUpdate" ? { receiptId: (input as ConfirmInput).receiptId, manifest: (input as ConfirmInput).manifest } : {}),
@@ -180,9 +180,9 @@ export class RequirementService {
   private storageConfig(
     request: ServiceAuthorizationRequest,
     requirementId: string,
-    expectedRepositoryIdentity: ProdRepositoryIdentity | null,
+    expectedRepositoryIdentity: PrdRepositoryIdentity | null,
     validateCurrent: () => void,
-  ): ProdStorageConfig {
+  ): PrdStorageConfig {
     return {
       dataRoot: this.options.dataRoot,
       repoId: this.options.repoId,
@@ -209,7 +209,7 @@ export class RequirementService {
     const paths = new Set<string>();
     try {
       for (const root of roots) {
-        const inspection = await inspectProdArchives(root, requirementId);
+        const inspection = await inspectPrdArchives(root, requirementId);
         if (inspection.conflict) reason = "identity_conflict";
         for (const path of inspection.paths) paths.add(path);
       }
@@ -236,7 +236,7 @@ export class RequirementService {
   }
 
   private async verifyWorkingCopy(operation: RequirementOperation): Promise<void> {
-    const path = join(operation.repositoryRoot, "prod.md");
+    const path = join(operation.repositoryRoot, "prd.md");
     let handle;
     try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
     catch { throw new RequirementServiceError("working_copy_mismatch"); }
@@ -259,14 +259,14 @@ export class RequirementService {
   async create(input: CreateInput): Promise<RequirementReceipt> {
     const request = checkServiceInput(CreateRequirementInput, input);
     const intentHash = requirementIntentHash({ title: request.title, body: request.body });
-    createProdDocument(VALIDATION_REQUIREMENT_ID, request.title, request.body);
+    createPrdDocument(VALIDATION_REQUIREMENT_ID, request.title, request.body);
     const initialAuthorization = authorizationForWrite(this.options.repoId, "create", request, intentHash);
     this.authorize(initialAuthorization);
     const state = await this.state(initialAuthorization);
     const reserved = state.reserve({ requestId: request.requestId, intentHash });
     available(reserved.data);
     await this.assertNoObservedArchive(state, reserved.id);
-    const document = createProdDocument(reserved.id, request.title, request.body);
+    const document = createPrdDocument(reserved.id, request.title, request.body);
     const authorization = authorizationForWrite(
       this.options.repoId,
       "create",
@@ -275,7 +275,7 @@ export class RequirementService {
       reserved.id,
       reserved.version,
       reserved.data.epoch,
-      storageHash(document.prodHash),
+      storageHash(document.prdHash),
     );
     return this.write("create", request, reserved, document, authorization);
   }
@@ -298,7 +298,7 @@ export class RequirementService {
     const before = initialState.read(input.requirementId);
     available(before.data);
     await this.assertNoObservedArchive(initialState, input.requirementId);
-    const document = createProdDocument(input.requirementId, input.title, input.body);
+    const document = createPrdDocument(input.requirementId, input.title, input.body);
     const authorization = authorizationForWrite(
       this.options.repoId,
       action,
@@ -307,14 +307,14 @@ export class RequirementService {
       input.requirementId,
       input.version,
       before.data.epoch,
-      storageHash(document.prodHash),
+      storageHash(document.prdHash),
     );
     this.authorize(authorization);
     if (action === "confirmUpdate") {
       const ref = (input as ConfirmInput).manifest;
       if (ref.requirementId !== input.requirementId || ref.candidate.operationId !== input.operationId ||
         ref.candidate.intentHash !== intentHash || !sameReference(ref.candidate.to, before.data.saved) ||
-        ref.candidate.to.hash !== document.prodHash) throw new RequirementServiceError("manifest_candidate_mismatch");
+        ref.candidate.to.hash !== document.prdHash) throw new RequirementServiceError("manifest_candidate_mismatch");
       const identity = this.operations.repositoryIdentity(input.requirementId);
       if (!identity) throw new RequirementServiceError("repository_identity_missing");
       const validate = () => {
@@ -348,7 +348,7 @@ export class RequirementService {
     action: RequirementOperationAction,
     input: CreateInput | UpdateInput | ConfirmInput,
     before: { id: string; version: number; data: RequirementRecord },
-    document: ReturnType<typeof createProdDocument>,
+    document: ReturnType<typeof createPrdDocument>,
     authorization: ServiceAuthorizationRequest,
   ): Promise<RequirementReceipt> {
     if (this.runningOperations.has(input.operationId)) throw new RequirementServiceError("requirement_write_busy");
@@ -378,7 +378,7 @@ export class RequirementService {
     action: RequirementOperationAction,
     input: CreateInput | UpdateInput | ConfirmInput,
     before: { id: string; version: number; data: RequirementRecord },
-    document: ReturnType<typeof createProdDocument>,
+    document: ReturnType<typeof createPrdDocument>,
     authorization: ServiceAuthorizationRequest,
     owner: RequirementWriteOwner,
   ): Promise<RequirementReceipt> {
@@ -392,7 +392,7 @@ export class RequirementService {
         requestId: action === "create" ? (input as CreateInput).requestId : null,
         requirementId: before.id,
         intentHash: authorization.intentHash!,
-        targetHash: document.prodHash,
+        targetHash: document.prdHash,
         receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
         archivePath: document.archivePath,
       };
@@ -417,7 +417,7 @@ export class RequirementService {
         requestId: action === "create" ? (input as CreateInput).requestId : null,
         requirementId: before.id,
         intentHash: authorization.intentHash!,
-        targetHash: document.prodHash,
+        targetHash: document.prdHash,
         expectedParent: before.data.saved?.commit ?? null,
         saveVersion: before.version,
         epoch: before.data.epoch,
@@ -426,7 +426,7 @@ export class RequirementService {
         ...((input as ConfirmInput).docSpec ? { docSpec: (input as ConfirmInput).docSpec } : {}),
         ...((input as ConfirmInput).prototypes ? { prototypes: (input as ConfirmInput).prototypes } : {}),
         archivePath: document.archivePath,
-        repositoryRoot: prodRequirementPath({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId: before.id }),
+        repositoryRoot: prdRequirementPath({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId: before.id }),
         expectedRepositoryIdentity,
       };
       this.authorize(authorization);
@@ -449,7 +449,7 @@ export class RequirementService {
       this.operations.assertOwned(operation.operationId, owner);
     };
     const config = this.storageConfig(authorization, operation.requirementId, operation.expectedRepositoryIdentity, validateOwnedActive);
-    let git: ProdStorageWriteResult;
+    let git: PrdStorageWriteResult;
     if (operation.git) {
       const verified = await verifyVersion({
         ...config,
@@ -464,7 +464,7 @@ export class RequirementService {
         operationId: operation.operationId,
         commit: verified.commit,
         parent: operation.expectedParent,
-        prodHash: verified.prodHash,
+        prdHash: verified.prdHash,
         changed: operation.git.changed,
         repositoryRoot: verified.repositoryRoot,
         repositoryIdentity: verified.repositoryIdentity,
@@ -485,7 +485,7 @@ export class RequirementService {
           operationId: operation.operationId,
           commit: verified.commit,
           parent: operation.expectedParent,
-          prodHash: verified.prodHash,
+          prdHash: verified.prdHash,
           changed: false,
           repositoryRoot: verified.repositoryRoot,
           repositoryIdentity: verified.repositoryIdentity,
@@ -496,7 +496,7 @@ export class RequirementService {
     }
 
     operation = this.operations.recordGitResult(operation.operationId, git, owner).data;
-    const reference: ProdReference = { commit: operation.git!.commit, hash: operation.git!.hash };
+    const reference: PrdReference = { commit: operation.git!.commit, hash: operation.git!.hash };
     if (operation.savedVersion === null) {
       const current = (await this.state(authorization)).read(operation.requirementId);
       available(current.data);
@@ -585,7 +585,7 @@ export class RequirementService {
       operationId: operation.operationId,
       requirementId: operation.requirementId,
       commit: operation.git!.commit,
-      prodHash: storageHash(operation.git!.hash),
+      prdHash: storageHash(operation.git!.hash),
       status: operation.git!.status,
       archivePath: operation.archivePath,
       lifecycle: current.data.lifecycle as "draft" | "active",
@@ -598,10 +598,10 @@ export class RequirementService {
 
   private async completedReceipt(
     operation: RequirementOperation,
-    document: ReturnType<typeof createProdDocument>,
+    document: ReturnType<typeof createPrdDocument>,
     authorization: ServiceAuthorizationRequest,
   ): Promise<RequirementReceipt> {
-    if (!operation.git || operation.targetHash !== document.prodHash) throw new RequirementServiceError("operation_state_mismatch");
+    if (!operation.git || operation.targetHash !== document.prdHash) throw new RequirementServiceError("operation_state_mismatch");
     const state = await this.state(authorization);
     const validateFinal = () => {
       const current = state.read(operation.requirementId);
@@ -628,13 +628,13 @@ export class RequirementService {
     if (!reference) throw new RequirementServiceError("version_unavailable");
     if (request.revision !== undefined) {
       if (request.source !== "approved" || request.revision > before.data.revision) throw new RequirementServiceError("invalid_revision_range");
-      const event = state.events(request.requirementId).find((entry) => entry.data.kind === "prod.approved" && entry.data.revision === request.revision && entry.data.to !== null);
+      const event = state.events(request.requirementId).find((entry) => entry.data.kind === "prd.approved" && entry.data.revision === request.revision && entry.data.to !== null);
       if (!event) throw new RequirementServiceError("unknown_revision");
       reference = event.data.to!;
     }
     const authorization: ServiceAuthorizationRequest = {
       ...initialAuthorization,
-      prodHash: storageHash(reference.hash),
+      prdHash: storageHash(reference.hash),
       version: before.version,
       epoch: before.data.epoch,
     };
@@ -654,7 +654,7 @@ export class RequirementService {
       commit: reference.commit,
       expectedHash: storageHash(reference.hash),
     });
-    const parsed = parseProdDocument(result.bytes, request.requirementId);
+    const parsed = parsePrdDocument(result.bytes, request.requirementId);
     validateCurrent();
     this.authorize(authorization);
     validateCurrent();
@@ -663,7 +663,7 @@ export class RequirementService {
       requirementId: request.requirementId,
       source: request.source,
       commit: result.commit,
-      prodHash: result.prodHash,
+      prdHash: result.prdHash,
       version: after.version,
       epoch: after.data.epoch,
       title: parsed.title,
@@ -673,7 +673,7 @@ export class RequirementService {
   }
 
   /** 只核对存储里当前批准版本的正文与登记指纹一致，不取正文。 */
-  async verifyApproved(requirementId: string): Promise<{ commit: string; prodHash: `sha256:${string}`; version: number; epoch: number }> {
+  async verifyApproved(requirementId: string): Promise<{ commit: string; prdHash: `sha256:${string}`; version: number; epoch: number }> {
     const id = checkServiceInput(MetadataRequirementInput, requirementId);
     const initialAuthorization: ServiceAuthorizationRequest = { action: "readApproved", repoId: this.options.repoId, requirementId: id };
     this.authorize(initialAuthorization);
@@ -683,7 +683,7 @@ export class RequirementService {
     await this.assertNoObservedArchive(state, id);
     const reference = before.data.approved;
     if (!reference) throw new RequirementServiceError("version_unavailable");
-    const authorization: ServiceAuthorizationRequest = { ...initialAuthorization, prodHash: storageHash(reference.hash), version: before.version, epoch: before.data.epoch };
+    const authorization: ServiceAuthorizationRequest = { ...initialAuthorization, prdHash: storageHash(reference.hash), version: before.version, epoch: before.data.epoch };
     this.authorize(authorization);
     const identity = this.operations.repositoryIdentity(id);
     if (!identity) throw new RequirementServiceError("repository_identity_missing");
@@ -698,7 +698,7 @@ export class RequirementService {
       commit: reference.commit, expectedHash: storageHash(reference.hash) });
     validateCurrent();
     this.authorize(authorization);
-    return { commit: verified.commit, prodHash: verified.prodHash, version: before.version, epoch: before.data.epoch };
+    return { commit: verified.commit, prdHash: verified.prdHash, version: before.version, epoch: before.data.epoch };
   }
 
   async diff(input: DiffInput): Promise<RequirementDiffResult> {
@@ -713,7 +713,7 @@ export class RequirementService {
     const toRevision = request.toRevision ?? before.data.revision;
     if (toRevision < request.fromRevision || toRevision > before.data.revision) throw new RequirementServiceError("invalid_revision_range");
     const approved = state.events(request.requirementId)
-      .filter((event) => event.data.kind === "prod.approved" && event.data.to !== null)
+      .filter((event) => event.data.kind === "prd.approved" && event.data.to !== null)
       .map((event) => ({ revision: event.data.revision, reference: event.data.to!, summary: event.data.approvalManifest! }));
     const from = approved.find((event) => event.revision === request.fromRevision)?.reference;
     const toEvent = approved.find((event) => event.revision === toRevision);
@@ -721,7 +721,7 @@ export class RequirementService {
     const to = toEvent.reference;
     const authorization: ServiceAuthorizationRequest = {
       ...initialAuthorization,
-      prodHash: storageHash(to.hash),
+      prdHash: storageHash(to.hash),
       version: before.version,
       epoch: before.data.epoch,
     };
@@ -786,7 +786,7 @@ export class RequirementService {
       throw new RequirementServiceError("saved_operation_mismatch");
     }
     const saved = before.data.saved!;
-    const bound = { ...authorization, version: before.version, epoch: before.data.epoch, prodHash: storageHash(saved.hash) };
+    const bound = { ...authorization, version: before.version, epoch: before.data.epoch, prdHash: storageHash(saved.hash) };
     const validate = () => {
       const current = state.read(request.requirementId); available(current.data);
       const actual = this.operations.read(request.savedOperationId);
@@ -801,11 +801,11 @@ export class RequirementService {
     const config = this.storageConfig(bound, request.requirementId, operation.data.git.repositoryIdentity, validate);
     const result = await readVersion({ ...config, commit: saved.commit, expectedHash: storageHash(saved.hash) });
     await this.verifyWorkingCopy(operation.data);
-    const parsed = parseProdDocument(result.bytes, request.requirementId);
+    const parsed = parsePrdDocument(result.bytes, request.requirementId);
     const intentHash = requirementIntentHash({ title: parsed.title, body: parsed.body });
     if (intentHash !== operation.data.intentHash) throw new RequirementServiceError("saved_operation_mismatch");
-    const partition = partitionProdDocument(request.requirementId, parsed.title, parsed.body);
-    if (partition.prodHash !== saved.hash) throw new RequirementServiceError("saved_operation_mismatch");
+    const partition = partitionPrdDocument(request.requirementId, parsed.title, parsed.body);
+    if (partition.prdHash !== saved.hash) throw new RequirementServiceError("saved_operation_mismatch");
     let difference: ConfirmationContext["difference"];
     if (!before.data.approved) {
       difference = { kind: "full_candidate", from: null, to: saved, text: Buffer.from(result.bytes).toString("utf8") };
@@ -817,10 +817,10 @@ export class RequirementService {
     if (before.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
     this.authorize(bound); validate();
     // Core的basis是当前生命周期依据；初次无approved的差异以difference.from=null明确表示。
-    const prod = before.data.lifecycle === "active" ? before.data.approved : saved;
+    const prd = before.data.lifecycle === "active" ? before.data.approved : saved;
     return { requirementId: request.requirementId, repoId: this.options.repoId, version: before.version, epoch: before.data.epoch,
-      basis: { requirementId: request.requirementId, version: before.version, epoch: before.data.epoch, prod },
-      candidate: { candidateId: request.operationId, operationId: request.operationId, intentHash, from: prod, to: saved },
+      basis: { requirementId: request.requirementId, version: before.version, epoch: before.data.epoch, prd },
+      candidate: { candidateId: request.operationId, operationId: request.operationId, intentHash, from: prd, to: saved },
       savedOperationId: request.savedOperationId, saved, approved: before.data.approved, workspace: before.data.workspace,
       title: parsed.title, body: parsed.body, partition, difference };
   }
@@ -847,8 +847,8 @@ export class RequirementService {
       version: after.version,
       epoch: after.data.epoch,
       revision: after.data.revision,
-      saved: readable && after.data.saved ? { commit: after.data.saved.commit, prodHash: storageHash(after.data.saved.hash) } : null,
-      approved: readable && after.data.approved ? { commit: after.data.approved.commit, prodHash: storageHash(after.data.approved.hash) } : null,
+      saved: readable && after.data.saved ? { commit: after.data.saved.commit, prdHash: storageHash(after.data.saved.hash) } : null,
+      approved: readable && after.data.approved ? { commit: after.data.approved.commit, prdHash: storageHash(after.data.approved.hash) } : null,
       archivePath,
       savedOperationId,
       ...(["draft", "active"].includes(after.data.lifecycle) ? this.approvalScope(after) : {}),

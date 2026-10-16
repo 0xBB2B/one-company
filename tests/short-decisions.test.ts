@@ -18,7 +18,7 @@ import { temporaryRoot } from "./helpers/temporary-root.ts";
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const item = () => ({ conclusion: "增加手机号登录，保留邮箱登录，本次不做微信登录", scope: "本轮只分析影响，不修改代码", references: ["G-1"], supersedes: [] as string[] });
-function batch(): DecisionBatch { return { operationId: uuidv7(), requirementId: uuidv7(), version: 1, epoch: 1, prod: null, decisions: [item()] }; }
+function batch(): DecisionBatch { return { operationId: uuidv7(), requirementId: uuidv7(), version: 1, epoch: 1, prd: null, decisions: [item()] }; }
 
 for (const field of ["conclusion", "scope"] as const) {
   test(`${field}按解码后码点计数，400允许、401拒绝且不截断`, () => {
@@ -34,7 +34,7 @@ for (const field of ["conclusion", "scope"] as const) {
 }
 
 test("引用个数不设上限，单个引用ASCII长度128允许、129拒绝", () => {
-  const input = batch(); input.prod = { commit: "a".repeat(40), hash: "b".repeat(64) };
+  const input = batch(); input.prd = { commit: "a".repeat(40), hash: "b".repeat(64) };
   input.decisions[0]!.references = Array.from({ length: 40 }, (_, i) => `S-${i}`);
   input.decisions[0]!.supersedes = [uuidv7()];
   expect(parseDecisionBatch(JSON.stringify(input))).toEqual(input);
@@ -56,7 +56,7 @@ test("20条和65536字节独立限制，超限及空批次拒绝", () => {
   input.decisions = []; expect(() => parseDecisionBatch(JSON.stringify(input))).toThrow(/invalid_shape/);
 });
 
-for (const field of ["actor", "status", "recordedAt", "prodBody", "patch", "transcript", "attachment", "rawContent", "metadata", "gitObject"]) {
+for (const field of ["actor", "status", "recordedAt", "prdBody", "patch", "transcript", "attachment", "rawContent", "metadata", "gitObject"]) {
   test(`模型不能通过${field}字段自填主体、状态或扩展载荷`, () => {
     const input = batch();
     expect(() => parseDecisionBatch(JSON.stringify({ ...input, [field]: "payload" }))).toThrow(/invalid_shape/);
@@ -162,9 +162,9 @@ test("事务末尾撤销权限或核验发生变化时，记录、事件、操�
   }
 });
 
-test("版本、epoch、prod引用及未知需求都默认拒绝", async () => {
+test("版本、epoch、PRD引用及未知需求都默认拒绝", async () => {
   const w = await world();
-  for (const patch of [{ version: 9 }, { epoch: 9 }, { requirementId: uuidv7() }, { prod: { commit: "a".repeat(40), hash: "b".repeat(64) } }]) {
+  for (const patch of [{ version: 9 }, { epoch: 9 }, { requirementId: uuidv7() }, { prd: { commit: "a".repeat(40), hash: "b".repeat(64) } }]) {
     expect(() => w.store.append(JSON.stringify({ ...w.input, ...patch }))).toThrow();
   }
   expect(w.records()).toEqual([]);

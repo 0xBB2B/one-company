@@ -20,12 +20,12 @@ const h = (character: string): string => character.repeat(64);
 const c = (character: string): string => character.repeat(40);
 const approvalScope = (character: string): string => `intake-approval-scope/v1:${h(character)}`;
 const actionScope = (character: string): string => `intake-action-scope/v1:${h(character)}`;
-const ref = (kind: "prod-unit" | "prod-scenario" | "decision" | "question", id: string) => ({ kind, id });
+const ref = (kind: "prd-unit" | "prd-scenario" | "decision" | "question", id: string) => ({ kind, id });
 const clone = <T>(value: T): T => structuredClone(value);
 
 const directory: IntakeSourceDirectory = {
-  prodUnitIds: ["goal.login", "constraint.current"],
-  prodScenarioIds: ["scenario.normal", "scenario.failure"],
+  prdUnitIds: ["goal.login", "constraint.current"],
+  prdScenarioIds: ["scenario.normal", "scenario.failure"],
   decisionIds: ["decision.analysis-only"],
   questionIds: ["question.expiry"],
   requiredScenarioIds: ["scenario.normal", "scenario.failure"],
@@ -36,9 +36,9 @@ function binding(revision = 1): IntakeBinding {
   return {
     repoId: h("a"),
     requirementId: v7(1),
-    approvedProdCommit: c(digit),
+    approvedPrdCommit: c(digit),
     approvedRevision: revision,
-    approvedProdHash: h(digit),
+    approvedPrdHash: h(digit),
     approvalManifestHash: h(String.fromCharCode(96 + revision)),
     approvalScopeVersion: approvalScope(digit),
     actionScopeVersion: actionScope("f"),
@@ -55,14 +55,14 @@ function understanding(bound = binding()): PmUnderstanding {
   return {
     format: "pm-understanding/v1",
     binding: bound,
-    goals: [{ text: "增加手机号登录", sourceRefs: [ref("prod-unit", "goal.login")] }],
+    goals: [{ text: "增加手机号登录", sourceRefs: [ref("prd-unit", "goal.login")] }],
     nonGoals: [{ text: "本次不做微信登录", sourceRefs: [ref("decision", "decision.analysis-only")] }],
-    constraints: [{ text: "保留邮箱登录", sourceRefs: [ref("prod-unit", "constraint.current")] }],
+    constraints: [{ text: "保留邮箱登录", sourceRefs: [ref("prd-unit", "constraint.current")] }],
     allowedActions: [{ text: "当前只做影响分析", sourceRefs: [ref("decision", "decision.analysis-only")] }],
     unresolved: [{ text: "短信有效期", impact: "影响验证码验收时间窗口", sourceRefs: [ref("question", "question.expiry")] }],
     scenarioCoverage: [
-      { scenarioId: "scenario.normal", status: "covered", summary: "覆盖手机号正常登录", sourceRefs: [ref("prod-scenario", "scenario.normal")] },
-      { scenarioId: "scenario.failure", status: "covered", summary: "覆盖验证码失败", sourceRefs: [ref("prod-scenario", "scenario.failure")] },
+      { scenarioId: "scenario.normal", status: "covered", summary: "覆盖手机号正常登录", sourceRefs: [ref("prd-scenario", "scenario.normal")] },
+      { scenarioId: "scenario.failure", status: "covered", summary: "覆盖验证码失败", sourceRefs: [ref("prd-scenario", "scenario.failure")] },
     ],
   };
 }
@@ -77,8 +77,8 @@ function review(bound = binding(), result: IntakeReviewRecord["result"] = "passe
     submissionHash: h("d"),
     reviewer: { windowId: "window-main", sessionId: "session-main", toolCallId: "tool-call-1" },
     result,
-    sourceRefs: [ref("prod-unit", "goal.login"), ref("prod-scenario", "scenario.normal")],
-    shortIssues: result === "passed" ? [] : [result === "pm_correction_required" ? "PM误解非目标" : "prod缺少失败场景"],
+    sourceRefs: [ref("prd-unit", "goal.login"), ref("prd-scenario", "scenario.normal")],
+    shortIssues: result === "passed" ? [] : [result === "pm_correction_required" ? "PM误解非目标" : "PRD缺少失败场景"],
   };
 }
 
@@ -133,23 +133,23 @@ test("必要场景缺项或明确未覆盖返回uncovered，未知来源则明�
   expect(checkPmUnderstanding(uncovered, directory)).toMatchObject({ status: "uncovered", uncoveredScenarioIds: ["scenario.failure"] });
 
   const unknown = understanding();
-  unknown.goals[0]!.sourceRefs = [ref("prod-unit", "goal.unknown")];
+  unknown.goals[0]!.sourceRefs = [ref("prd-unit", "goal.unknown")];
   expectCode(() => checkPmUnderstanding(unknown, directory), "unknown_source");
 
   const wronglyTyped = understanding();
-  wronglyTyped.scenarioCoverage[0]!.sourceRefs = [ref("prod-unit", "goal.login")];
+  wronglyTyped.scenarioCoverage[0]!.sourceRefs = [ref("prd-unit", "goal.login")];
   expectCode(() => checkPmUnderstanding(wronglyTyped, directory), "unknown_source");
 });
 
 test("理解分组、引用总量和每项文本采用固定边界，不截断", () => {
   const tooMany = understanding();
-  tooMany.constraints = Array.from({ length: 33 }, () => ({ text: "约束", sourceRefs: [ref("prod-unit", "constraint.current")] }));
+  tooMany.constraints = Array.from({ length: 33 }, () => ({ text: "约束", sourceRefs: [ref("prd-unit", "constraint.current")] }));
   expectCode(() => checkPmUnderstanding(tooMany, directory), "invalid_shape");
 
   const tooManyRefs = understanding();
-  const largeDirectory: IntakeSourceDirectory = { ...directory, prodUnitIds: Array.from({ length: 5 }, (_, i) => `unit.${i}`) };
+  const largeDirectory: IntakeSourceDirectory = { ...directory, prdUnitIds: Array.from({ length: 5 }, (_, i) => `unit.${i}`) };
   tooManyRefs.goals = Array.from({ length: 32 }, (_, group) => ({ text: `目标${group}`,
-    sourceRefs: Array.from({ length: 5 }, (_, i) => ref("prod-unit", `unit.${i}`)) }));
+    sourceRefs: Array.from({ length: 5 }, (_, i) => ref("prd-unit", `unit.${i}`)) }));
   expectCode(() => checkPmUnderstanding(tooManyRefs, largeDirectory), "resource_limit");
 
   const textAt = understanding();
@@ -163,7 +163,7 @@ test("来源目录和每项引用拒绝重复，要求的场景必须属于当�
   expectCode(() => checkPmUnderstanding(understanding(), { ...directory, decisionIds: ["decision.analysis-only", "decision.analysis-only"] }), "duplicate_source");
   expectCode(() => checkPmUnderstanding(understanding(), { ...directory, requiredScenarioIds: ["scenario.missing"] }), "invalid_source_directory");
   const duplicate = understanding();
-  duplicate.goals[0]!.sourceRefs = [ref("prod-unit", "goal.login"), ref("prod-unit", "goal.login")];
+  duplicate.goals[0]!.sourceRefs = [ref("prd-unit", "goal.login"), ref("prd-unit", "goal.login")];
   expectCode(() => checkPmUnderstanding(duplicate, directory), "duplicate_source");
 });
 
@@ -178,7 +178,7 @@ test("核对记录只有受控元数据形状，passed与短问题保持一致",
   expectCode(() => checkIntakeReviewRecord({ ...review(binding(), "pm_correction_required"), shortIssues: [] }, directory), "invalid_shape");
   expect(() => checkIntakeReviewRecord({ ...review(binding(), "pm_correction_required"), shortIssues: [] }, directory)).toThrow(expect.objectContaining({
     advice: expect.objectContaining({ why: expect.stringContaining("result 为 pm_correction_required 时 shortIssues 至少写一条问题") }) }));
-  expectCode(() => checkIntakeReviewRecord({ ...review(binding(), "prod_revision_required"), shortIssues: Array(9).fill("问题") }, directory), "invalid_shape");
+  expectCode(() => checkIntakeReviewRecord({ ...review(binding(), "prd_revision_required"), shortIssues: Array(9).fill("问题") }, directory), "invalid_shape");
 });
 
 test.each(["understanding", "body", "rawInput", "diff", "transcript", "details", "actor", "user", "receipt"])(
@@ -224,7 +224,7 @@ test("准确同一binding与外部当前事实齐备时只得到contractReady", 
   expect(evaluateIntakeContinuity(renewed).contractReady).toBe(true);
 
   const missingSource = facts();
-  missingSource.sourceDirectory.prodUnitIds = ["constraint.current"];
+  missingSource.sourceDirectory.prdUnitIds = ["constraint.current"];
   expectCode(() => evaluateIntakeContinuity(missingSource), "unknown_source");
 });
 
@@ -232,8 +232,8 @@ test("binding逐项变化都不能直接沿用旧记录", () => {
   const mutations: Array<[string, (value: IntakeBinding) => void, string]> = [
     ["repoId", (value) => { value.repoId = h("9"); }, "requirement_binding_changed"],
     ["requirementId", (value) => { value.requirementId = v7(90); }, "requirement_binding_changed"],
-    ["approvedProdCommit", (value) => { value.approvedProdCommit = c("9"); }, "approved_binding_changed_without_revision"],
-    ["approvedProdHash", (value) => { value.approvedProdHash = h("9"); }, "approved_binding_changed_without_revision"],
+    ["approvedPrdCommit", (value) => { value.approvedPrdCommit = c("9"); }, "approved_binding_changed_without_revision"],
+    ["approvedPrdHash", (value) => { value.approvedPrdHash = h("9"); }, "approved_binding_changed_without_revision"],
     ["approvalManifestHash", (value) => { value.approvalManifestHash = h("9"); }, "approved_binding_changed_without_revision"],
     ["approvalScopeVersion", (value) => { value.approvalScopeVersion = approvalScope("9"); }, "approved_binding_changed_without_revision"],
     ["actionScopeVersion", (value) => { value.actionScopeVersion = actionScope("9"); }, "action_scope_changed"],
@@ -274,16 +274,16 @@ test("新批准更新、非活动及外部当前性声明缺失都默认阻塞",
   }
 });
 
-test("PM理解错误与prod缺漏/重要歧义给出不同复核原因", () => {
+test("PM理解错误与PRD缺漏/重要歧义给出不同复核原因", () => {
   const pmWrong = facts(binding(), review(binding(), "pm_correction_required"));
   pmWrong.understandingBaseline = { submissionRef: pmWrong.rootReview!.submissionRef, submissionHash: pmWrong.rootReview!.submissionHash };
   expect(evaluateIntakeContinuity(pmWrong).reasons).toContain("pm_correction_required");
-  expect(evaluateIntakeContinuity(pmWrong).reasons).not.toContain("prod_revision_required");
+  expect(evaluateIntakeContinuity(pmWrong).reasons).not.toContain("prd_revision_required");
 
-  const prodMissing = facts(binding(), review(binding(), "prod_revision_required"));
-  prodMissing.understandingBaseline = { submissionRef: prodMissing.rootReview!.submissionRef, submissionHash: prodMissing.rootReview!.submissionHash };
-  expect(evaluateIntakeContinuity(prodMissing).reasons).toContain("prod_revision_required");
-  expect(evaluateIntakeContinuity(prodMissing).reasons).not.toContain("pm_correction_required");
+  const prdMissing = facts(binding(), review(binding(), "prd_revision_required"));
+  prdMissing.understandingBaseline = { submissionRef: prdMissing.rootReview!.submissionRef, submissionHash: prdMissing.rootReview!.submissionHash };
+  expect(evaluateIntakeContinuity(prdMissing).reasons).toContain("prd_revision_required");
+  expect(evaluateIntakeContinuity(prdMissing).reasons).not.toContain("pm_correction_required");
 
   const clarification = facts(binding(), review(binding(), "clarification_required"));
   clarification.understandingBaseline = { submissionRef: clarification.rootReview!.submissionRef, submissionHash: clarification.rootReview!.submissionHash };
@@ -292,9 +292,9 @@ test("PM理解错误与prod缺漏/重要歧义给出不同复核原因", () => {
 
 function exactBudgetUnderstanding(): { value: PmUnderstanding; directory: IntakeSourceDirectory } {
   const sourceDirectory: IntakeSourceDirectory = {
-    prodUnitIds: ["unit.one"], prodScenarioIds: ["scenario.one"], decisionIds: [], questionIds: [], requiredScenarioIds: ["scenario.one"],
+    prdUnitIds: ["unit.one"], prdScenarioIds: ["scenario.one"], decisionIds: [], questionIds: [], requiredScenarioIds: ["scenario.one"],
   };
-  const item = () => ({ text: "x", sourceRefs: [ref("prod-unit", "unit.one")] });
+  const item = () => ({ text: "x", sourceRefs: [ref("prd-unit", "unit.one")] });
   const value: PmUnderstanding = {
     format: "pm-understanding/v1", binding: binding(),
     goals: Array.from({ length: 32 }, item),
@@ -302,7 +302,7 @@ function exactBudgetUnderstanding(): { value: PmUnderstanding; directory: Intake
     constraints: Array.from({ length: 32 }, item),
     allowedActions: Array.from({ length: 31 }, item),
     unresolved: [],
-    scenarioCoverage: [{ scenarioId: "scenario.one", status: "covered", summary: "x", sourceRefs: [ref("prod-scenario", "scenario.one")] }],
+    scenarioCoverage: [{ scenarioId: "scenario.one", status: "covered", summary: "x", sourceRefs: [ref("prd-scenario", "scenario.one")] }],
   };
   const slots = [
     ...value.goals.map((entry) => () => entry), ...value.nonGoals.map((entry) => () => entry),
@@ -339,7 +339,7 @@ test("Unicode码点与完整JSON UTF-8/转义预算按32768边界执行", () => 
 test("严格schema拒绝Binding格式、连续事实详细副本和未知字段", () => {
   for (const mutation of [
     (value: IntakeBinding) => { value.requirementId = "not-uuid"; },
-    (value: IntakeBinding) => { value.approvedProdCommit = "abc"; },
+    (value: IntakeBinding) => { value.approvedPrdCommit = "abc"; },
     (value: IntakeBinding) => { value.approvalScopeVersion = h("a"); },
     (value: IntakeBinding) => { value.actionScopeVersion = h("a"); },
   ]) {
