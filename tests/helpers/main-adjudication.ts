@@ -1,9 +1,9 @@
 import { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { uuidv7 } from "../../runtime/database.ts";
-import { HostAuthorizationManager } from "../../runtime/host-authorization.ts";
-import { MainRequirementInteraction } from "../../runtime/main-requirement-interaction.ts";
-import { createUserInteractTool } from "../../runtime/user-interact-tool.ts";
+import { uuidv7 } from "../../src/core/storage/database.ts";
+import { HostAuthorizationManager } from "../../src/modules/requirement/host-authorization.ts";
+import { MainRequirementInteraction } from "../../src/modules/interaction/main-requirement-interaction.ts";
+import { createUserInteractTool } from "../../src/modules/interaction/user-interact-tool.ts";
 import type { createPmRunWorld } from "./run-manager-fixture.ts";
 import { answeringUi } from "./window-host.ts";
 import type { ShownWindow, WindowDecision } from "./window-host.ts";

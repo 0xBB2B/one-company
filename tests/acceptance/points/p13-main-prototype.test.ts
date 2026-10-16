@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { readPrototypeBoard } from "../../../runtime/requirement-prototypes.ts";
+import { readPrototypeBoard } from "../../../src/modules/requirement/requirement-prototypes.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { startMainPoint } from "../helpers/point-main.ts";
 

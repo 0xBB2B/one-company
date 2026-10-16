@@ -5,13 +5,13 @@ import { existsSync } from "node:fs";
 import { copyFile, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { LocalDatabase, databaseFile, globalDatabase, indexDatabase, repositoryDatabase, uuidv7 } from "../runtime/database.ts";
-import { DATABASE_APPLICATION_IDS, DATABASE_MAINTENANCE_FILE, DATABASE_SNAPSHOT_FILE } from "../runtime/database-paths.ts";
-import { createDatabaseSnapshot, withDatabaseMaintenance } from "../runtime/database-maintenance.ts";
-import type { DatabaseMaintenancePermit } from "../runtime/database-maintenance.ts";
+import { LocalDatabase, databaseFile, globalDatabase, indexDatabase, repositoryDatabase, uuidv7 } from "../src/core/storage/database.ts";
+import { DATABASE_APPLICATION_IDS, DATABASE_MAINTENANCE_FILE, DATABASE_SNAPSHOT_FILE } from "../src/core/storage/database-paths.ts";
+import { createDatabaseSnapshot, withDatabaseMaintenance } from "../src/core/storage/database-maintenance.ts";
+import type { DatabaseMaintenancePermit } from "../src/core/storage/database-maintenance.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
-import { repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
+import { repoDataDir, repositoryIdentity } from "../src/core/storage/identity.ts";
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -236,7 +236,7 @@ test("未知版本只记录备份失败，不伪报完成或替换源库", async
 test("维护进程强杀后保留阻塞标记，不自动恢复运行", async () => {
   const w = await world();
   const script = join(w.root, "hold.mjs");
-  await writeFile(script, `import {withDatabaseMaintenance} from ${JSON.stringify(new URL("../runtime/database-maintenance.ts", import.meta.url).href)};
+  await writeFile(script, `import {withDatabaseMaintenance} from ${JSON.stringify(new URL("../src/core/storage/database-maintenance.ts", import.meta.url).href)};
 process.stdin.resume();
 await withDatabaseMaintenance(${JSON.stringify(w.scope)}, async () => { console.log('LOCKED'); await new Promise(() => {}); });
 `);

@@ -78,7 +78,7 @@ function errorText(error: unknown): string {
 
 export function defaultRoleDir(): string {
   const moduleDir = dirname(fileURLToPath(import.meta.url));
-  return join(dirname(moduleDir), "agents");
+  return join(moduleDir, "../../..", "agents");
 }
 
 export function userRoleDir(agentDir: string): string {

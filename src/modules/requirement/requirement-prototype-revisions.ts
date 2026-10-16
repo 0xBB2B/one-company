@@ -1,8 +1,8 @@
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase } from "./database.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
 
 const REVISIONS = "requirement_prototype_revisions";

@@ -7,9 +7,9 @@ import { createRepoFixture, createWorkspaceFixture, removeRepoFixture } from "..
 import { createTempHome, removeTempHome } from "../helpers/temp-home.ts";
 import { connectTestClient, killDaemon, startDaemonForTest } from "../helpers/daemon-harness.ts";
 import { modelProviderEnv, readProviderRequestsLog, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
-import { daemonSocketPath, discoverWorkspace, repositoryIdentity } from "../../runtime/identity.ts";
-import { repositoryDatabase, putRecord, uuidv7, withDatabase } from "../../runtime/database.ts";
-import { RunStore } from "../../runtime/run-store.ts";
+import { daemonSocketPath, discoverWorkspace, repositoryIdentity } from "../../src/core/storage/identity.ts";
+import { repositoryDatabase, putRecord, uuidv7, withDatabase } from "../../src/core/storage/database.ts";
+import { RunStore } from "../../src/modules/agents/run-store.ts";
 
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });

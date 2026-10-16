@@ -2,7 +2,7 @@ import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { DatabaseSync as Database } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { UUID_V7_PATTERN } from "../runtime/database.ts";
+import { UUID_V7_PATTERN } from "../src/core/storage/database.ts";
 import childProcess, { execFileSync, spawn } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -10,10 +10,10 @@ import { createServer } from "node:net";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createClock } from "../runtime/clock.ts";
-import type { TimeSource } from "../runtime/clock.ts";
-import { daemonSocketPath, repoDataDir, repositoryIdentity } from "../runtime/identity.ts";
-import { putRecord, repositoryDatabase } from "../runtime/database.ts";
+import { createClock } from "../src/core/policy/clock.ts";
+import type { TimeSource } from "../src/core/policy/clock.ts";
+import { daemonSocketPath, repoDataDir, repositoryIdentity } from "../src/core/storage/identity.ts";
+import { putRecord, repositoryDatabase } from "../src/core/storage/database.ts";
 import { deleteRecord } from "./helpers/database-fixture.ts";
 import {
   PROTOCOL_VERSION,
@@ -22,15 +22,15 @@ import {
   createResponse,
   decodeFrames,
   encodeFrame,
-} from "../runtime/protocol.ts";
-import type { Frame } from "../runtime/protocol.ts";
+} from "../src/core/host/protocol.ts";
+import type { Frame } from "../src/core/host/protocol.ts";
 import {
   DAEMON_CLIENT_LIFECYCLE_EVENTS,
   DaemonCallError,
   WorkspaceClients,
   connectDaemon,
-} from "../runtime/daemon-client.ts";
-import type { HelloInput } from "../runtime/daemon-client.ts";
+} from "../src/core/host/daemon-client.ts";
+import type { HelloInput } from "../src/core/host/daemon-client.ts";
 import {
   connectTestClient,
   createDaemonFixture,
@@ -132,7 +132,7 @@ function daemonPidsForDataRoot(dataRoot: string): number[] {
   const table = execFileSync("ps", args, { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, maxBuffer: 32 * 1024 * 1024 });
   const pids: number[] = [];
   for (const line of table.split("\n")) {
-    if (!line.includes("daemon/bootstrap.mjs") || !line.includes(`ONE_COMPANY_DATA_ROOT=${dataRoot}`)) continue;
+    if (!line.includes("src/app/daemon/bootstrap.mjs") || !line.includes(`ONE_COMPANY_DATA_ROOT=${dataRoot}`)) continue;
     const pid = Number.parseInt(line.trim().split(/\s+/)[0] ?? "", 10);
     if (Number.isFinite(pid) && pid > 1) pids.push(pid);
   }

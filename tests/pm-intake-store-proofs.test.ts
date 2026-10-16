@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { uuidv7 } from "../runtime/database.ts";
-import { PM_INTAKE_NAMESPACES } from "../runtime/pm-intake-store.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { PM_INTAKE_NAMESPACES } from "../src/modules/pm/pm-intake-store.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { counts, requestInput, reviewRecord } from "./helpers/pm-intake-store-test-support.ts";

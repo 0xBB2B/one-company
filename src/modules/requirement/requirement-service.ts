@@ -12,7 +12,7 @@ import { create as createStorage, diffVersions, prodRequirementPath, readVersion
 import type { ProdRepositoryIdentity, ProdStorageConfig, ProdStorageWriteResult } from "./prod-storage.ts";
 import { RequirementOperations } from "./requirement-operations.ts";
 import type { PrepareRequirementOperation, RequirementOperation, RequirementOperationAction } from "./requirement-operations.ts";
-import { uuidv7, repositoryDatabase, withDatabase } from "./database.ts";
+import { uuidv7, repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 import { decisionDigest } from "./short-decision-format.ts";
 import { partitionProdDocument } from "./prod-view.ts";
 import { assertApprovalScopeReturnIn, registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";

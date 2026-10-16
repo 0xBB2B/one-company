@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { classifyFailure, NetworkPauseGate } from "../runtime/network-pause.ts";
+import { classifyFailure, NetworkPauseGate } from "../src/core/host/network-pause.ts";
 
 function withCode(message: string, code: string): Error {
   return Object.assign(new Error(message), { code });

@@ -6,16 +6,16 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, wr
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { extractCode, getCodeExtractorVersion } from "../runtime/code-extractor.ts";
-import { LocalDatabase } from "../runtime/database.ts";
-import { indexDatabase } from "../runtime/database-paths.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { IndexStore } from "../runtime/index-store.ts";
+import { extractCode, getCodeExtractorVersion } from "../src/modules/project-index/code-extractor.ts";
+import { LocalDatabase } from "../src/core/storage/database.ts";
+import { indexDatabase } from "../src/core/storage/database-paths.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { IndexStore } from "../src/modules/project-index/index-store.ts";
 import {
   ProjectIndexService,
   ProjectIndexServiceError,
-} from "../runtime/project-index-service.ts";
-import type { ProjectIndexExtractor } from "../runtime/project-index-service.ts";
+} from "../src/modules/project-index/project-index-service.ts";
+import type { ProjectIndexExtractor } from "../src/modules/project-index/project-index-service.ts";
 import { createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import type { RepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -404,7 +404,7 @@ test("真实默认解析器的运行时与语法加载瞬时失败后同进程�
   await put(w.repo.root, "main.go", "package main\nfunc main() {}\n");
   const script = `
     import { Parser, Language } from 'web-tree-sitter';
-    import { ProjectIndexService } from ${JSON.stringify(new URL("../runtime/project-index-service.ts", import.meta.url).href)};
+    import { ProjectIndexService } from ${JSON.stringify(new URL("../src/modules/project-index/project-index-service.ts", import.meta.url).href)};
     const init = Parser.init, load = Language.load;
     let initCalls = 0, loadCalls = 0;
     Parser.init = async function (...args) { if (++initCalls === 1) throw new Error('temporary runtime failure'); return init.apply(this, args); };

@@ -1,9 +1,9 @@
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { openProgramWindow } from "./question-window.ts";
-import type { Clock } from "./clock.ts";
-import type { DaemonConnectionIdentity } from "./daemon-client.ts";
-import type { Host, ShellRegistry, TaskActivity, TaskRecord, TaskStatus } from "./shell-registry.ts";
-import { sanitizeText } from "./text-sanitize.ts";
+import { openProgramWindow } from "../../core/host/question-window.ts";
+import type { Clock } from "../../core/policy/clock.ts";
+import type { DaemonConnectionIdentity } from "../../core/host/daemon-client.ts";
+import type { Host, ShellRegistry, TaskActivity, TaskRecord, TaskStatus } from "../../core/host/shell-registry.ts";
+import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 
 export interface ShellPageClient {
   call(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;

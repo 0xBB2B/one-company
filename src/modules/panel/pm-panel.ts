@@ -1,8 +1,8 @@
 import { isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import type { MainExploreOverview } from "./explore-dispatch.ts";
-import type { MainPrototypeOverview } from "./prototype-dispatch.ts";
+import type { MainExploreOverview } from "../explore/explore-dispatch.ts";
+import type { MainPrototypeOverview } from "../prototype/prototype-dispatch.ts";
 import type { PendingItem, PmOverview } from "./pm-overview.ts";
-import { sanitizeText } from "./text-sanitize.ts";
+import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 
 export interface PmPanelEntry { repoId: string; overview: PmOverview; fetchedAt: number }
 export interface ExplorePanelEntry { repoId: string; explore: MainExploreOverview; fetchedAt: number }

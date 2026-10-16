@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdir, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ProjectIndexHost } from "../daemon/project-index-host.ts";
+import { ProjectIndexHost } from "../src/app/daemon/project-index-host.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });

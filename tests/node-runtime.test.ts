@@ -37,7 +37,7 @@ test("pnpm版本、Node测试入口与Node类型显式声明，Bun配置不作�
 });
 
 test("Node原生类型剥离可加载生产数据库模块，不依赖测试转换器", async () => {
-  const module = new URL("runtime/database.ts", root).href;
+  const module = new URL("src/core/storage/database.ts", root).href;
   const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", `
 import { uuidv7, UUID_V7_PATTERN } from ${JSON.stringify(module)};
 if (!UUID_V7_PATTERN.test(uuidv7())) process.exit(1);

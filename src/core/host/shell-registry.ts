@@ -1,8 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
-import type { Clock, TimerHandle } from "./clock.ts";
-import { withDatabase } from "./database.ts";
+import type { Clock, TimerHandle } from "../policy/clock.ts";
+import { withDatabase } from "../storage/database.ts";
 
 const execFileAsync = promisify(execFile);
 

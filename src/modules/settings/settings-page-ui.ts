@@ -5,11 +5,11 @@ import {
   fit, FOLLOW, layerRows, MARKER, pad, pickerHead, pickerList, SettingsTab, SOURCE, tableColumns, tableRow, untrustedLayerNote, wrapHint, wrapText,
 } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PickerRow, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
-import type { ModelLike } from "./agent-resolve.ts";
+import type { ModelLike } from "../agents/agent-resolve.ts";
 import { SETTINGS_ROLES } from "./agent-settings.ts";
 import type { readAgentSettings } from "./agent-settings.ts";
-import { NAME_PATTERN } from "./roles.ts";
-import type { RoleCatalog, RoleCatalogEntry, RoleDefinitionProblem, RoleSource } from "./roles.ts";
+import { NAME_PATTERN } from "../agents/roles.ts";
+import type { RoleCatalog, RoleCatalogEntry, RoleDefinitionProblem, RoleSource } from "../agents/roles.ts";
 
 const ROLE_SECTIONS = ["worker", "reviewer", "qa", "explore", "prototype"] as const;
 type Section = (typeof ROLE_SECTIONS)[number] | "models" | "switches" | "problems";

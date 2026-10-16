@@ -1,4 +1,4 @@
-import type { LocalDatabase } from "../../runtime/database.ts";
+import type { LocalDatabase } from "../../src/core/storage/database.ts";
 
 // 由 typecheck 编译，不执行数据库操作。
 export function checkTransactionTypes(db: LocalDatabase, thenable: PromiseLike<void>) {

@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { uuidv7, repositoryDatabase, readRecord, putRecord, UUID_V7_PATTERN } from "../runtime/database.ts";
+import { uuidv7, repositoryDatabase, readRecord, putRecord, UUID_V7_PATTERN } from "../src/core/storage/database.ts";
 import { recordJson, mutateRecord, testRepoId } from "./helpers/database-fixture.ts";
-import type { RecordRef } from "../runtime/database.ts";
+import type { RecordRef } from "../src/core/storage/database.ts";
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
-import { RunStore, assertTransition, isTerminalState } from "../runtime/run-store.ts";
-import type { RunState } from "../runtime/run-store.ts";
+import { RunStore, assertTransition, isTerminalState } from "../src/modules/agents/run-store.ts";
+import type { RunState } from "../src/modules/agents/run-store.ts";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

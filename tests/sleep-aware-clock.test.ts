@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createClock } from "../runtime/clock.ts";
+import { createClock } from "../src/core/policy/clock.ts";
 
 interface FakeTimeSource {
   now(): number;

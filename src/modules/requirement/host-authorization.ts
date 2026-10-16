@@ -1,9 +1,9 @@
 import { lstatSync } from "node:fs";
-import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { DatabaseSync } from "node:sqlite";
-import { repositoryDatabase, UUID_V7_PATTERN, withDatabase } from "./database.ts";
-import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "./database-paths.ts";
+import { repositoryDatabase, UUID_V7_PATTERN, withDatabase } from "../../core/storage/database.ts";
+import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "../../core/storage/database-paths.ts";
 import { checkRequirement } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { checkInteraction, PendingQuestion } from "./user-interaction-format.ts";

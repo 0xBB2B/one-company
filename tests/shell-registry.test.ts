@@ -5,12 +5,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createClock } from "../runtime/clock.ts";
+import { createClock } from "../src/core/policy/clock.ts";
 import { createFakeTimeSource } from "./helpers/fake-clock.ts";
-import { ShellRegistry, probeProcessGroup } from "../runtime/shell-registry.ts";
-import * as ShellRegistryModule from "../runtime/shell-registry.ts";
-import type { Clock, TimeSource } from "../runtime/clock.ts";
-import { createRecord, readRecord, putRecord } from "../runtime/database.ts";
+import { ShellRegistry, probeProcessGroup } from "../src/core/host/shell-registry.ts";
+import * as ShellRegistryModule from "../src/core/host/shell-registry.ts";
+import type { Clock, TimeSource } from "../src/core/policy/clock.ts";
+import { createRecord, readRecord, putRecord } from "../src/core/storage/database.ts";
 
 interface Host {
   kind: "main" | "role";
@@ -1865,8 +1865,8 @@ describe("wait 模式管道背压（真实 Node 子进程）", () => {
     const nodePath = process.execPath;
     expect(typeof nodePath).toBe("string");
 
-    const clockPath = fileURLToPath(new URL("../runtime/clock.ts", import.meta.url));
-    const registryPath = fileURLToPath(new URL("../runtime/shell-registry.ts", import.meta.url));
+    const clockPath = fileURLToPath(new URL("../src/core/policy/clock.ts", import.meta.url));
+    const registryPath = fileURLToPath(new URL("../src/core/host/shell-registry.ts", import.meta.url));
     const shellCommand = 'head -c 1048576 /dev/zero | tr "\\0" a';
 
     const scriptSource = [

@@ -156,7 +156,7 @@ export async function startInstalledHost(options: { installed: string; repo: str
   const answerQuestion = recommendedChoice;
   const loader = new DefaultResourceLoader({
     cwd: repo, agentDir, settingsManager: SettingsManager.inMemory(),
-    additionalExtensionPaths: [join(installed, "extensions", "index.ts")], noContextFiles: true, noThemes: true,
+    additionalExtensionPaths: [join(installed, "src/app/extension/index.ts")], noContextFiles: true, noThemes: true,
   });
   await loader.reload();
   const errors = loader.getExtensions().errors;

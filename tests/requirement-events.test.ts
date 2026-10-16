@@ -4,15 +4,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { RequirementEventService, RequirementEventServiceError } from "../runtime/requirement-events.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { RequirementEventService, RequirementEventServiceError } from "../src/modules/requirement/requirement-events.ts";
 import type { ApprovedChangeDelivery, PreparedRequirementDelivery, RequirementEventAuthorizationRequest,
-  RequirementEventServiceOptions } from "../runtime/requirement-events.ts";
-import { RequirementService } from "../runtime/requirement-service.ts";
+  RequirementEventServiceOptions } from "../src/modules/requirement/requirement-events.ts";
+import { RequirementService } from "../src/modules/requirement/requirement-service.ts";
 import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
-import { RequirementOperations } from "../runtime/requirement-operations.ts";
-import { RequirementStateStore } from "../runtime/requirement-state.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
+import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
+import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -496,7 +496,7 @@ test("最终检查回归：宿主clock只在最终SQL事务外调用", async () 
 
 test("M9：事件服务用到的每个拒绝码都配了原因与建议，不会显示成未归类的拒绝", async () => {
   const { readFileSync } = await import("node:fs");
-  const source = readFileSync(new URL("../runtime/requirement-events.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/modules/requirement/requirement-events.ts", import.meta.url), "utf8");
   const codes = new Set([...source.matchAll(/RequirementEventServiceError\("([a-z_]+)"/gu)].map((match) => match[1]!));
   expect(codes.size).toBeGreaterThan(11);
   for (const code of codes) expect(new RequirementEventServiceError(code).advice.why, code).not.toMatch(/^未归类/u);

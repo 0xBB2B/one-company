@@ -1,15 +1,15 @@
-import { approvalDependencyClosure } from "../../runtime/approval-manifest.ts";
+import { approvalDependencyClosure } from "../../src/modules/requirement/approval-manifest.ts";
 import { execFile } from "node:child_process";
 import { lstat, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { ApprovalManifestStore } from "../../runtime/approval-manifest-store.ts";
-import { approvalManifestReference } from "../../runtime/approval-manifest.ts";
-import type { ApprovalManifest } from "../../runtime/approval-manifest.ts";
-import { uuidv7, repositoryDatabase, withDatabase } from "../../runtime/database.ts";
-import type { LocalDatabase } from "../../runtime/database.ts";
-import { HostAuthorizationManager } from "../../runtime/host-authorization.ts";
-import { PmIntakeService, pmUnderstandingHash } from "../../runtime/pm-intake-service.ts";
+import { ApprovalManifestStore } from "../../src/modules/requirement/approval-manifest-store.ts";
+import { approvalManifestReference } from "../../src/modules/requirement/approval-manifest.ts";
+import type { ApprovalManifest } from "../../src/modules/requirement/approval-manifest.ts";
+import { uuidv7, repositoryDatabase, withDatabase } from "../../src/core/storage/database.ts";
+import type { LocalDatabase } from "../../src/core/storage/database.ts";
+import { HostAuthorizationManager } from "../../src/modules/requirement/host-authorization.ts";
+import { PmIntakeService, pmUnderstandingHash } from "../../src/modules/pm/pm-intake-service.ts";
 import type {
   MainIntakeCall,
   MainIntakeCallIdentity,
@@ -22,18 +22,18 @@ import type {
   PmSubmissionProvider,
   PmSubmissionQuery,
   PmIntakeServiceOptions,
-} from "../../runtime/pm-intake-service.ts";
-import { PmIntakeStore, intakeManifestDecisionIds } from "../../runtime/pm-intake-store.ts";
-import { loadInteractionContinuity } from "../../runtime/interaction-continuity.ts";
-import type { IntakeBindingBasis } from "../../runtime/pm-intake-store.ts";
-import type { IntakeSourceDirectory, PmUnderstanding } from "../../runtime/pm-intake-contracts.ts";
-import type { PmLease } from "../../runtime/requirement-contracts.ts";
-import { RequirementService } from "../../runtime/requirement-service.ts";
-import { RequirementStateStore } from "../../runtime/requirement-state.ts";
-import { UserInteractionCore } from "../../runtime/user-interaction.ts";
-import type { InteractionContext } from "../../runtime/user-interaction-format.ts";
-import { decisionDigest } from "../../runtime/short-decision-format.ts";
-import { repositoryIdentity } from "../../runtime/identity.ts";
+} from "../../src/modules/pm/pm-intake-service.ts";
+import { PmIntakeStore, intakeManifestDecisionIds } from "../../src/modules/pm/pm-intake-store.ts";
+import { loadInteractionContinuity } from "../../src/modules/requirement/interaction-continuity.ts";
+import type { IntakeBindingBasis } from "../../src/modules/pm/pm-intake-store.ts";
+import type { IntakeSourceDirectory, PmUnderstanding } from "../../src/modules/pm/pm-intake-contracts.ts";
+import type { PmLease } from "../../src/modules/requirement/requirement-contracts.ts";
+import { RequirementService } from "../../src/modules/requirement/requirement-service.ts";
+import { RequirementStateStore } from "../../src/modules/requirement/requirement-state.ts";
+import { UserInteractionCore } from "../../src/modules/interaction/user-interaction.ts";
+import type { InteractionContext } from "../../src/modules/requirement/user-interaction-format.ts";
+import { decisionDigest } from "../../src/modules/requirement/short-decision-format.ts";
+import { repositoryIdentity } from "../../src/core/storage/identity.ts";
 import {
   addWorktree,
   createRepoFixture,

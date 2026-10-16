@@ -1,15 +1,15 @@
 import { posix } from "node:path";
 import { intakeReasonText } from "./pm-intake-contracts.ts";
-import { withDetail } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
-import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
-import { activeCheckRoundIn } from "./check-round.ts";
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase, StoredRecord } from "./database.ts";
+import { withDetail } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
+import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
+import { activeCheckRoundIn } from "../verification/check-round.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { countedAttempts, implementScope, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, TASKS, terminationPending, unsentTask } from "./plan-manage.ts";
 import type { TaskAttempt, TaskRecord, TaskReview } from "./plan-manage.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
-import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
+import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
 
 const TASK_DISPATCH_ADVICE = {
   intake_gate: { why: "接手核对还没通过，或 PM 租约已失效", next: "先完成接手核对；租约已失效时停止操作，由主代理决定是否重新派出 PM" },

@@ -4,9 +4,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { repositoryDatabase, uuidv7 } from "../runtime/database.ts";
-import { assertRegularDatabaseFiles } from "../runtime/database-paths.ts";
-import { createSessionManagerForRun, readSessionEntries } from "../runtime/session-records.ts";
+import { repositoryDatabase, uuidv7 } from "../src/core/storage/database.ts";
+import { assertRegularDatabaseFiles } from "../src/core/storage/database-paths.ts";
+import { createSessionManagerForRun, readSessionEntries } from "../src/modules/agents/session-records.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const roots: string[] = [];

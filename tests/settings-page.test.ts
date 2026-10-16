@@ -4,10 +4,10 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { openSettingsPage } from "../extensions/settings.ts";
-import type { SettingsExtensionContext } from "../extensions/settings.ts";
-import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../runtime/agent-settings.ts";
-import { readRoleDefinition, userRoleDir } from "../runtime/roles.ts";
+import { openSettingsPage } from "../src/modules/settings/settings-extension.ts";
+import type { SettingsExtensionContext } from "../src/modules/settings/settings-extension.ts";
+import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
+import { readRoleDefinition, userRoleDir } from "../src/modules/agents/roles.ts";
 
 const LEFT = "\x1b[D", RIGHT = "\x1b[C", UP = "\x1b[A", DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const theme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bg: (kind: string, text: string) => `[${kind}]${text}[/]`,

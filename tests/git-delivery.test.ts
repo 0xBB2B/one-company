@@ -4,8 +4,8 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AUTO_MERGE_CHOICE, deliverRequirement, REVIEW_CHOICE } from "../runtime/git-delivery.ts";
-import type { DeliveryFacts, DeliveryUi } from "../runtime/git-delivery.ts";
+import { AUTO_MERGE_CHOICE, deliverRequirement, REVIEW_CHOICE } from "../src/modules/delivery/git-delivery.ts";
+import type { DeliveryFacts, DeliveryUi } from "../src/modules/delivery/git-delivery.ts";
 
 const cleanups: string[] = [];
 const originalPath = process.env.PATH;

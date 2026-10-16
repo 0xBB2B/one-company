@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { openSettingsPage } from "../extensions/settings.ts";
-import type { SettingsExtensionContext } from "../extensions/settings.ts";
-import { copyAgentDefinition } from "../runtime/agent-copy.ts";
-import { readAgentSettings } from "../runtime/agent-settings.ts";
-import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
-import { SettingsPageView } from "../runtime/settings-page-ui.ts";
+import { openSettingsPage } from "../src/modules/settings/settings-extension.ts";
+import type { SettingsExtensionContext } from "../src/modules/settings/settings-extension.ts";
+import { copyAgentDefinition } from "../src/modules/agents/agent-copy.ts";
+import { readAgentSettings } from "../src/modules/settings/agent-settings.ts";
+import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
+import { SettingsPageView } from "../src/modules/settings/settings-page-ui.ts";
 
 const RIGHT = "\x1b[C", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const theme = { fg: (_kind: string, text: string) => text, bg: (_kind: string, text: string) => text, bold: (text: string) => text, inverse: (text: string) => text };

@@ -1,7 +1,7 @@
 import { writeSync } from "node:fs";
-import { extractCode, getCodeExtractorVersion } from "../../runtime/code-extractor.ts";
-import { ProjectIndexService } from "../../runtime/project-index-service.ts";
-import type { ProjectIndexExtractor } from "../../runtime/project-index-service.ts";
+import { extractCode, getCodeExtractorVersion } from "../../src/modules/project-index/code-extractor.ts";
+import { ProjectIndexService } from "../../src/modules/project-index/project-index-service.ts";
+import type { ProjectIndexExtractor } from "../../src/modules/project-index/project-index-service.ts";
 
 
 interface Input {

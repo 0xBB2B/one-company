@@ -3,12 +3,12 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connectTestClient, createDaemonFixture, killDaemon, removeDaemonFixture, startDaemonForTest } from "../helpers/daemon-harness.ts";
 import { modelProviderEnv, readProviderRequestsLog, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
-import { RunStore } from "../../runtime/run-store.ts";
-import type { RunRecord } from "../../runtime/run-store.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "../../runtime/database.ts";
-import { createSessionManagerForRun } from "../../runtime/session-records.ts";
-import { createClock } from "../../runtime/clock.ts";
-import { ShellRegistry } from "../../runtime/shell-registry.ts";
+import { RunStore } from "../../src/modules/agents/run-store.ts";
+import type { RunRecord } from "../../src/modules/agents/run-store.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../src/core/storage/database.ts";
+import { createSessionManagerForRun } from "../../src/modules/agents/session-records.ts";
+import { createClock } from "../../src/core/policy/clock.ts";
+import { ShellRegistry } from "../../src/core/host/shell-registry.ts";
 
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });

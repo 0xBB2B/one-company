@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { snapshotBranchState } from "../runtime/branch-guard.ts";
+import { snapshotBranchState } from "../src/core/exec/branch-guard.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
 

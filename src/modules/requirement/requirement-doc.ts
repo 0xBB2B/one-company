@@ -17,7 +17,7 @@ export class RequirementDocError extends Error {
 }
 
 export function packageSkillsDir(): string {
-  return join(dirname(dirname(fileURLToPath(import.meta.url))), "skills");
+  return join(dirname(fileURLToPath(import.meta.url)), "../../..", "skills");
 }
 
 /** 两段程序记录各自插入的板块编号。 */

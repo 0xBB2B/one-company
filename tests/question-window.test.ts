@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import { chooseWindow, confirmWindow, QuestionWindowView } from "../runtime/question-window.ts";
-import type { WindowAnswer, WindowHost } from "../runtime/question-window.ts";
+import { chooseWindow, confirmWindow, QuestionWindowView } from "../src/core/host/question-window.ts";
+import type { WindowAnswer, WindowHost } from "../src/core/host/question-window.ts";
 
 const UP = "\x1b[A", DOWN = "\x1b[B", RIGHT = "\x1b[C", LEFT = "\x1b[D", ENTER = "\r", ESC = "\x1b", SPACE = " ", BACKSPACE = "\x7f";
 const theme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bold: (text: string) => `<b>${text}</b>` };

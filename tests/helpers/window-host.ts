@@ -1,4 +1,4 @@
-import type { WindowHost } from "../../runtime/question-window.ts";
+import type { WindowHost } from "../../src/core/host/question-window.ts";
 
 const UP = "\x1b[A", DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b";
 const plainTheme = { fg: (_kind: string, text: string) => text, bold: (text: string) => text };

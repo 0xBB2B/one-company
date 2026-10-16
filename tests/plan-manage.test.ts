@@ -1,12 +1,12 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { readFile, stat } from "node:fs/promises";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { createPlanManageTool, holdResumes, implementScope, PLANS, TASKS } from "../runtime/plan-manage.ts";
-import type { TaskSpec } from "../runtime/plan-manage.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { createPlanManageTool, holdResumes, implementScope, PLANS, TASKS } from "../src/modules/pm/plan-manage.ts";
+import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
-import { planRejectionsIn } from "../runtime/pm-attention.ts";
+import { planRejectionsIn } from "../src/modules/pm/pm-attention.ts";
 
 vi.setConfig({ testTimeout: 30_000 });
 const clean: Array<() => unknown> = [];

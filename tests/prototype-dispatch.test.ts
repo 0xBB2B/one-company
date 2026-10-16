@@ -1,12 +1,12 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { RunManager, registerProtocolHandlers } from "../daemon/run-manager.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { validateParams } from "../runtime/protocol.ts";
+import { RunManager, registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { validateParams } from "../src/core/host/protocol.ts";
 import {
   beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, promoteOnApprovalIn, prototypeFilePath, readPrototypeBoard, submitDesign,
-} from "../runtime/requirement-prototypes.ts";
+} from "../src/modules/requirement/requirement-prototypes.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 function promote(ref: { dataRoot: string; repoId: string }, input: { requirementId: string; digest: string }) {

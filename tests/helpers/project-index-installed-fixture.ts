@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { syncBuiltinESMExports } from "node:module";
 import type { AgentSession, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
-import type { IndexSnapshot } from "../../runtime/index-store.ts";
+import type { IndexSnapshot } from "../../src/modules/project-index/index-store.ts";
 import { answeringUi } from "./window-host.ts";
 
 const exec = promisify(execFile);
@@ -231,7 +231,7 @@ export class InstalledProjectFixture {
 
   async product<T>(file: string): Promise<T> {
     // 普通ESM只加载产品自己的loader；所有安装TS共用正式daemon的模块缓存。
-    const { daemonLoader } = await import(pathToFileURL(join(this.installed, "daemon/loader.mjs")).href);
+    const { daemonLoader } = await import(pathToFileURL(join(this.installed, "src/app/daemon/loader.mjs")).href);
     return await daemonLoader.import(pathToFileURL(join(this.installed, file)).href) as T;
   }
   async git(path: string, args: string[]): Promise<string> {
@@ -249,7 +249,7 @@ export class InstalledProjectFixture {
       await writeFile(join(path, "source.ts"), "export const initial = 1;\n");
       await this.git(path, ["add", "."]); await this.git(path, ["commit", "-m", "fixture"]);
     }
-    const identity = await this.product<typeof import("../../runtime/identity.ts")>("runtime/identity.ts");
+    const identity = await this.product<typeof import("../../src/core/storage/identity.ts")>("src/core/storage/identity.ts");
     const { repoId, commonDir } = await identity.repositoryIdentity(path);
     const dataRoot = join(agentDir, "one-company");
     await identity.repoDataDir(dataRoot, repoId, commonDir);
@@ -280,13 +280,13 @@ export class InstalledProjectFixture {
   async daemon(repo: InstalledRepository) {
     const probePath = join(this.root, `probe-${this.probes.length}.json`);
     this.probes.push(probePath);
-    const owned = child(["--import", join(this.root, "c/probe.ts"), join(this.installed, "daemon/bootstrap.mjs")], repo.path, {
+    const owned = child(["--import", join(this.root, "c/probe.ts"), join(this.installed, "src/app/daemon/bootstrap.mjs")], repo.path, {
       ...repo.env, ONE_COMPANY_SDK_DIR: this.sdkRoot, ONE_COMPANY_REPO_DIR: repo.commonDir,
       ONE_COMPANY_DATA_ROOT: repo.dataRoot, ONE_COMPANY_IDLE_TIMEOUT_MS: "60000",
       M3_ASSEMBLY_PROBE: probePath, M3_ASSEMBLY_REPOSITORY: repo.path,
     });
     this.processes.push(owned);
-    const identity = await this.product<typeof import("../../runtime/identity.ts")>("runtime/identity.ts");
+    const identity = await this.product<typeof import("../../src/core/storage/identity.ts")>("src/core/storage/identity.ts");
     const socket = identity.daemonSocketPath(repo.dataRoot, repo.repoId);
     await Promise.race([eventually(() => existsSync(socket), "已安装daemon socket"), owned.exited.then((result) => { throw new Error(`daemon提前退出：${JSON.stringify(result)}`); })]);
     return { ...owned, probe: async () => JSON.parse(await readFile(probePath, "utf8")) as Probe,
@@ -341,7 +341,7 @@ export class InstalledProjectFixture {
   async snapshot(repo: InstalledRepository): Promise<IndexSnapshot> {
     // getSnapshot 是只读已发布结果；只有 index.db 存在才允许实例化，避免观察建立新库。
     assert.ok(existsSync(repo.indexPath), "尚未发布index.db");
-    const index = await this.product<typeof import("../../runtime/index-store.ts")>("runtime/index-store.ts");
+    const index = await this.product<typeof import("../../src/modules/project-index/index-store.ts")>("src/modules/project-index/index-store.ts");
     const workspaces = databaseRows<{ workspaceId: string; repoId: string; root: string; branch: string }>(repo.indexPath, "workspaces");
     const workspace = workspaces.find((item) => item.root === repo.path);
     assert.ok(workspace, "找不到已发布workspace");
@@ -395,7 +395,7 @@ async function runHost(): Promise<void> {
   const originalSpawn = childProcess.spawn;
   let unexpectedDaemonSpawns = 0;
   childProcess.spawn = ((...args: Parameters<typeof childProcess.spawn>) => {
-    if (Array.isArray(args[1]) && args[1].some((arg) => String(arg).endsWith("/daemon/bootstrap.mjs"))) {
+    if (Array.isArray(args[1]) && args[1].some((arg) => String(arg).endsWith("/src/app/daemon/bootstrap.mjs"))) {
       unexpectedDaemonSpawns++;
       throw new Error("安装夹具禁止未登记的daemon自动拉起");
     }
@@ -439,7 +439,7 @@ async function runHost(): Promise<void> {
   await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
   const installedExtensions = loader.getExtensions().extensions.filter((extension) => !extension.path.startsWith("<inline:"));
   assert.equal(installedExtensions.length, 1);
-  assert.equal(await realpath(installedExtensions[0]!.path), join(process.env.M3_INSTALLED_PRODUCT!, "extensions/index.ts"));
+  assert.equal(await realpath(installedExtensions[0]!.path), join(process.env.M3_INSTALLED_PRODUCT!, "src/app/extension/index.ts"));
   let session: AgentSession | undefined;
   let bound = false, disposed = false;
   const close = async () => {

@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { resolveAgent } from "../runtime/agent-resolve.ts";
-import { resolveInternalModel } from "../runtime/internal-model.ts";
-import { findDefinedModel } from "../runtime/model-ref.ts";
-import { loadRoleCatalog } from "../runtime/roles.ts";
+import { resolveAgent } from "../src/modules/agents/agent-resolve.ts";
+import { resolveInternalModel } from "../src/modules/settings/internal-model.ts";
+import { findDefinedModel } from "../src/modules/agents/model-ref.ts";
+import { loadRoleCatalog } from "../src/modules/agents/roles.ts";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });

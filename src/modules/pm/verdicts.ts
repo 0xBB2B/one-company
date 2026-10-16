@@ -1,12 +1,12 @@
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
-import { readCheckRoundIn, readVerificationIn } from "./check-round.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "./database.ts";
-import type { LocalDatabase, StoredRecord } from "./database.ts";
+import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
+import { readCheckRoundIn, readVerificationIn } from "../verification/check-round.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { implementScope } from "./plan-manage.ts";
-import { checked, counter, hash, id, object, positive } from "./requirement-contracts.ts";
-import type { RequirementRecord } from "./requirement-contracts.ts";
+import { checked, counter, hash, id, object, positive } from "../requirement/requirement-contracts.ts";
+import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
 
 export const VERDICTS = "verdicts";
 const text = (maxLength: number) => Type.String({ minLength: 1, maxLength });

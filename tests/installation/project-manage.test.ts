@@ -31,11 +31,11 @@ test.skipIf(process.platform !== "darwin")("M2-AC1/4/5/6/7：安装产物经真�
     const repo = await world.repository("r");
     const repositoryRoot = repo.path, dataRoot = repo.dataRoot, databasePath = repo.indexPath;
     const identity = { repoId: repo.repoId };
-    const { IndexStore } = await world.product<typeof import("../../runtime/index-store.ts")>("runtime/index-store.ts");
-    const { uuidv7 } = await world.product<typeof import("../../runtime/database.ts")>("runtime/database.ts");
-    for (const file of ["extensions/index.ts", "extensions/project-manage.ts", "runtime/project-manage-tool.ts",
-      "runtime/project-index-service.ts", "runtime/project-index-policy.ts", "runtime/index-store.ts", "runtime/code-extractor.ts",
-      "daemon/bootstrap.mjs", "daemon/loader.mjs"]) {
+    const { IndexStore } = await world.product<typeof import("../../src/modules/project-index/index-store.ts")>("src/modules/project-index/index-store.ts");
+    const { uuidv7 } = await world.product<typeof import("../../src/core/storage/database.ts")>("src/core/storage/database.ts");
+    for (const file of ["src/app/extension/index.ts", "src/modules/project-index/project-manage-extension.ts", "src/modules/project-index/project-manage-tool.ts",
+      "src/modules/project-index/project-index-service.ts", "src/modules/project-index/project-index-policy.ts", "src/modules/project-index/index-store.ts", "src/modules/project-index/code-extractor.ts",
+      "src/app/daemon/bootstrap.mjs", "src/app/daemon/loader.mjs"]) {
       expect(world.artifactFiles).toContain(file);
     }
     await mkdir(join(repositoryRoot, "src"), { recursive: true });

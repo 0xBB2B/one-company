@@ -1,14 +1,14 @@
-import { globalDatabase, uuidv7 } from "../runtime/database.ts";
+import { globalDatabase, uuidv7 } from "../storage/database.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createClock } from "../runtime/clock.ts";
-import type { Clock } from "../runtime/clock.ts";
-import { WorkspaceClients, resolveSdkDir } from "../runtime/daemon-client.ts";
-import type { BottomDock } from "../runtime/dock.ts";
-import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
-import { dataRoot } from "../runtime/identity.ts";
-import type { Workspace } from "../runtime/identity.ts";
-import { ShellRegistry } from "../runtime/shell-registry.ts";
-import type { Host, StopResult } from "../runtime/shell-registry.ts";
+import { createClock } from "../policy/clock.ts";
+import type { Clock } from "../policy/clock.ts";
+import { WorkspaceClients, resolveSdkDir } from "./daemon-client.ts";
+import type { BottomDock } from "./dock.ts";
+import type { WorkspaceClientsHandle } from "./daemon-client.ts";
+import { dataRoot } from "../storage/identity.ts";
+import type { Workspace } from "../storage/identity.ts";
+import { ShellRegistry } from "./shell-registry.ts";
+import type { Host, StopResult } from "./shell-registry.ts";
 
 const EXIT_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGHUP"];
 const SHELL_STOP_BUDGET_MS = 15_000;

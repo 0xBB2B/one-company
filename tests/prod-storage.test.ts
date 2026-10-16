@@ -15,7 +15,7 @@ import {
   verifyVersion,
   type ProdStorageAuthorize,
   type ProdStorageConfig,
-} from "../runtime/prod-storage.ts";
+} from "../src/modules/requirement/prod-storage.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const execFileAsync = promisify(execFile);

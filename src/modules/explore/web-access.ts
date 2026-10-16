@@ -1,6 +1,6 @@
 import { request as httpRequest } from "node:http";
-import { adviceIn } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceIn } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { request as httpsRequest } from "node:https";
 
 const WEB_ADVICE: Record<string, FailureAdvice> = {

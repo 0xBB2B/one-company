@@ -3,12 +3,12 @@ import { afterEach, expect, test } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { GIT_DELIVER_TOOL, registerGitDelivery, showGitDeliveryTool } from "../extensions/git-delivery.ts";
-import { dataRoot } from "../runtime/data-root.ts";
-import { globalDatabase, withDatabase } from "../runtime/database.ts";
-import * as gitDelivery from "../runtime/git-delivery.ts";
-import { projectSettingsPath, userSettingsPath } from "../runtime/agent-settings.ts";
-import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
+import { GIT_DELIVER_TOOL, registerGitDelivery, showGitDeliveryTool } from "../src/modules/delivery/git-delivery-extension.ts";
+import { dataRoot } from "../src/core/storage/data-root.ts";
+import { globalDatabase, withDatabase } from "../src/core/storage/database.ts";
+import * as gitDelivery from "../src/modules/delivery/git-delivery.ts";
+import { projectSettingsPath, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
+import type { WorkspaceClientsHandle } from "../src/core/host/daemon-client.ts";
 
 const cleanups: string[] = [];
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;

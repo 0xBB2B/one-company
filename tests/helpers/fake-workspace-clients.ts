@@ -1,4 +1,4 @@
-import type { Workspace } from "../../runtime/identity.ts";
+import type { Workspace } from "../../src/core/storage/identity.ts";
 
 export interface FakeDaemonClient {
   call(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;

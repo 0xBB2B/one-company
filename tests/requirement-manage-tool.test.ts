@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { Value } from "typebox/value";
-import { HostAuthorizationManager } from "../runtime/host-authorization.ts";
-import { REQUIREMENT_MANAGE_PARAMETERS, createRequirementManageTool } from "../runtime/requirement-manage-tool.ts";
-import { uuidv7 } from "../runtime/database.ts";
+import { HostAuthorizationManager } from "../src/modules/requirement/host-authorization.ts";
+import { REQUIREMENT_MANAGE_PARAMETERS, createRequirementManageTool } from "../src/modules/interaction/requirement-manage-tool.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
 
 describe("requirement_manage严格公开参数", () => {
   const base = { action: "create", repoId: "a".repeat(64), requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "标题", body: "正文" };

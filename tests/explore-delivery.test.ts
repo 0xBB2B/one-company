@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { registerExploreDelivery } from "../extensions/agent-manage.ts";
-import { registerRequirementInput } from "../extensions/lifecycle.ts";
+import { registerExploreDelivery } from "../src/modules/explore/agent-manage-extension.ts";
+import { registerRequirementInput } from "../src/core/host/extension-lifecycle.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 
 afterEach(() => registerRequirementInput(undefined));

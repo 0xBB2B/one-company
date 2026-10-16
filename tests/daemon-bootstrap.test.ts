@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { connectTestClient, waitForSocketReady } from "./helpers/daemon-harness.ts";
-import { daemonSocketPath, repositoryIdentity } from "../runtime/identity.ts";
+import { daemonSocketPath, repositoryIdentity } from "../src/core/storage/identity.ts";
 
 
 const exec = promisify(execFile);
@@ -63,8 +63,8 @@ beforeAll(async () => {
   }
   const artifact = await pack(sourceRoot);
   artifactHash = hash(await readFile(artifact.path));
-  expect(artifact.files).toContain("daemon/bootstrap.mjs");
-  expect(artifact.files).toContain("daemon/loader.mjs");
+  expect(artifact.files).toContain("src/app/daemon/bootstrap.mjs");
+  expect(artifact.files).toContain("src/app/daemon/loader.mjs");
   const dependencyPacks: Record<string, string> = {};
   const sourceManifestRaw = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8")) as { dependencies: Record<string, string> };
   for (const name of Object.keys(sourceManifestRaw.dependencies)) dependencyPacks[name] = `file:${(await pack(await realpath(join(sourceRoot, "node_modules", name)))).path}`;
@@ -77,7 +77,7 @@ beforeAll(async () => {
   installed = await realpath(join(consumer, "node_modules/@0xbb2b/one-company"));
   expect(installed.startsWith(`${consumer}/node_modules/`)).toBe(true);
   expect(installed).not.toBe(await realpath(sourceRoot));
-  for (const file of ["daemon/bootstrap.mjs", "daemon/loader.mjs", "daemon/main.ts", "daemon/sdk.ts", "runtime/daemon-client.ts", "package.json"]) {
+  for (const file of ["src/app/daemon/bootstrap.mjs", "src/app/daemon/loader.mjs", "src/app/daemon/main.ts", "src/app/daemon/sdk.ts", "src/core/host/daemon-client.ts", "package.json"]) {
     installedHashes[file] = hash(await readFile(join(installed, file)));
     if (file !== "package.json") expect(installedHashes[file], file).toBe(hash(await readFile(join(sourceRoot, file))));
   }
@@ -127,10 +127,10 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
       import { pathToFileURL } from 'node:url';
       const root = ${JSON.stringify(installed)};
       const nativeSignalListeners = process.listeners('SIGTERM');
-      const { daemonLoader } = await import(pathToFileURL(root + '/daemon/loader.mjs'));
+      const { daemonLoader } = await import(pathToFileURL(root + '/src/app/daemon/loader.mjs'));
       assert.equal(daemonLoader.options.fsCache, false);
       assert.equal(daemonLoader.options.tryNative, false);
-      const coordinator = pathToFileURL(root + '/runtime/daemon-startup-config.ts').href;
+      const coordinator = pathToFileURL(root + '/src/app/daemon/daemon-startup-config.ts').href;
       assert.strictEqual(await daemonLoader.import(coordinator), await daemonLoader.import(coordinator));
       assert.strictEqual(await daemonLoader.import('node:sqlite'), await import('node:sqlite'));
       assert.deepEqual(process.listeners('SIGTERM'), nativeSignalListeners);
@@ -160,11 +160,11 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
         'typebox/value': join(packageDir('typebox'), 'build/value/index.mjs'),
         'typebox/compile': join(packageDir('typebox'), 'build/compile/index.mjs'),
       };
-      const { createHostLoader } = await import(pathToFileURL(root + '/daemon/loader.mjs'));
+      const { createHostLoader } = await import(pathToFileURL(root + '/src/app/daemon/loader.mjs'));
       const hostLoader = createHostLoader(sdkDir);
       assert.equal(hostLoader.options.fsCache, false);
       assert.equal(hostLoader.options.tryNative, false);
-      const coordinator = pathToFileURL(root + '/daemon/project-index-host.ts').href;
+      const coordinator = pathToFileURL(root + '/src/app/daemon/project-index-host.ts').href;
       assert.strictEqual(await hostLoader.import(coordinator), await hostLoader.import(coordinator));
       for (const [name, entry] of Object.entries(expectedEntries)) {
         assert.strictEqual(await hostLoader.import(name), await import(pathToFileURL(entry).href), name);
@@ -184,7 +184,7 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
     const socket = daemonSocketPath(dataRoot, identity.repoId);
     const extra = { HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), ONE_COMPANY_REPO_DIR: identity.commonDir,
       ONE_COMPANY_DATA_ROOT: dataRoot, ONE_COMPANY_SDK_DIR: sdkRoot, ONE_COMPANY_IDLE_TIMEOUT_MS: "30000" };
-    const first = child(node, [join(installed, "daemon/bootstrap.mjs")], extra);
+    const first = child(node, [join(installed, "src/app/daemon/bootstrap.mjs")], extra);
     await Promise.race([waitForSocketReady(socket), first.closed.then((exit) => { throw new Error(`bootstrap 在 hello 前退出 ${exit.code}: ${exit.stderr}`); })]);
     const client = await bounded(connectTestClient(socket, {}, { dataRoot }));
     try {
@@ -192,7 +192,7 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
       expect(client.helloResult.repoId).toBe(identity.repoId);
       expect(client.helloResult.protocolVersion).toBe(2);
       expect(typeof client.helloResult.daemonInstanceId).toBe("string");
-      const duplicate = child(node, [join(installed, "daemon/bootstrap.mjs")], extra);
+      const duplicate = child(node, [join(installed, "src/app/daemon/bootstrap.mjs")], extra);
       expect((await bounded(duplicate.closed)).code).toBe(0);
       expect(first.result).toBeUndefined();
       await bounded(client.call("ping"));
@@ -215,14 +215,14 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
     else if (scenario === "old-sdk") {
       extra.ONE_COMPANY_SDK_DIR = join(root, "old-sdk"); await mkdir(extra.ONE_COMPANY_SDK_DIR, { recursive: true, mode: 0o700 });
       await writeFile(join(extra.ONE_COMPANY_SDK_DIR, "package.json"), '{"version":"0.84.0"}', { mode: 0o600 }); expected = "SDK 版本过低";
-    } else if (scenario === "missing-main") { moved = join(installed, "daemon/main.ts"); expected = "main.ts"; }
+    } else if (scenario === "missing-main") { moved = join(installed, "src/app/daemon/main.ts"); expected = "main.ts"; }
     else {
       const require = createRequire(join(installed, "package.json"));
       moved = join(dirname(require.resolve("jiti/package.json")), "lib/jiti.mjs"); expected = "jiti";
     }
     if (moved) await rename(moved, `${moved}.bootstrap-test-save`);
     try {
-      const result = await bounded(child(node, [join(installed, "daemon/bootstrap.mjs")], extra).closed);
+      const result = await bounded(child(node, [join(installed, "src/app/daemon/bootstrap.mjs")], extra).closed);
       expect(result.code).toBe(1); expect(result.signal).toBeNull(); expect(result.stderr).toContain(expected);
       expect(result.stderr).not.toContain("ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING");
       expect(existsSync(join(root, "error-data"))).toBe(false);

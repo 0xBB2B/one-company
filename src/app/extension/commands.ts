@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { showGitDeliveryTool } from "./git-delivery.ts";
-import { openSettingsPage } from "./settings.ts";
-import type { SettingsExtensionContext } from "./settings.ts";
-import { openShellUiPage } from "./shell-ui.ts";
-import type { OpenShellPageCtx } from "../runtime/shell-page.ts";
+import { showGitDeliveryTool } from "../../modules/delivery/git-delivery-extension.ts";
+import { openSettingsPage } from "../../modules/settings/settings-extension.ts";
+import type { SettingsExtensionContext } from "../../modules/settings/settings-extension.ts";
+import { openShellUiPage } from "../../modules/shell/shell-ui-extension.ts";
+import type { OpenShellPageCtx } from "../../modules/shell/shell-page.ts";
 
 // 两个命令共用同一个 registerCommand handler 签名，ctx 必须同时满足
 // openSettingsPage 与 openShellUiPage 各自的真实入参类型才能免于强转

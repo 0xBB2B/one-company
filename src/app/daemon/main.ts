@@ -1,4 +1,4 @@
-import { parseDaemonStartupConfig } from "../runtime/daemon-startup-config.ts";
+import { parseDaemonStartupConfig } from "./daemon-startup-config.ts";
 import { assertSdkVersion } from "./sdk.ts";
 import { createHostLoader } from "./loader.mjs";
 

@@ -1,9 +1,9 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { uuidv7 } from "../runtime/database.ts";
-import { approvalManifestDigest, checkApprovalManifest } from "../runtime/approval-manifest.ts";
-import { partitionProdDocument } from "../runtime/prod-view.ts";
-import { decisionDigest } from "../runtime/short-decision-format.ts";
-import { PM_INTAKE_NAMESPACES } from "../runtime/pm-intake-store.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { approvalManifestDigest, checkApprovalManifest } from "../src/modules/requirement/approval-manifest.ts";
+import { partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
+import { decisionDigest } from "../src/modules/requirement/short-decision-format.ts";
+import { PM_INTAKE_NAMESPACES } from "../src/modules/pm/pm-intake-store.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import type { PmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { persisted } from "./helpers/pm-intake-service-test-support.ts";

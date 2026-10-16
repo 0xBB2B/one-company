@@ -61,7 +61,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const { create, save, ProdStorageError } = await import("../runtime/prod-storage.ts");
+const { create, save, ProdStorageError } = await import("../src/modules/requirement/prod-storage.ts");
 
 const GIT = "git";
 const REQUIREMENT_ID = "01941f29-7c00-7000-8000-000000000002";

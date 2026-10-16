@@ -1,10 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import {
   prototypeChangeLines, prototypeChanges, prototypesAtRevision, writePrototypeRevision,
-} from "../runtime/requirement-prototype-revisions.ts";
+} from "../src/modules/requirement/requirement-prototype-revisions.ts";
 
 const REPO = "a".repeat(64);
 let dataRoot: string;

@@ -1,13 +1,13 @@
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import { readPlanIn, unsentTask } from "./plan-manage.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { readPlanIn, unsentTask } from "../pm/plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
-import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
-import { checked } from "./requirement-contracts.ts";
-import { planRejectionsIn, stallIn } from "./pm-attention.ts";
-import { sessionFilePath } from "./session-records.ts";
+import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
+import { checked } from "../requirement/requirement-contracts.ts";
+import { planRejectionsIn, stallIn } from "../pm/pm-attention.ts";
+import { sessionFilePath } from "../agents/session-records.ts";
 import { ACCEPTANCE_OTHER, FIXED_CHOICES } from "./panel-item-ask.ts";
-import { readVerdictsIn } from "./verdicts.ts";
-import { COMPLETION_REPORTS, CompletionReport, DELIVERY_RECEIPTS, DeliveryReceipt } from "./workflow-close.ts";
+import { readVerdictsIn } from "../pm/verdicts.ts";
+import { COMPLETION_REPORTS, CompletionReport, DELIVERY_RECEIPTS, DeliveryReceipt } from "../delivery/workflow-close.ts";
 
 export class DecisionPacketError extends Error {
   readonly code: string;

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { readFile } from "node:fs/promises";
 import { Parser, Tree } from "web-tree-sitter";
-import { verifySyntaxResources, withSyntaxTree } from "../runtime/syntax-parser.ts";
-import type { SyntaxLanguage } from "../runtime/syntax-parser.ts";
+import { verifySyntaxResources, withSyntaxTree } from "../src/modules/project-index/syntax-parser.ts";
+import type { SyntaxLanguage } from "../src/modules/project-index/syntax-parser.ts";
 
 const cases = JSON.parse(await readFile(new URL("./fixtures/syntax-cases.json", import.meta.url), "utf8")) as Array<{
   language: SyntaxLanguage; source: string; nodeType: string; name?: string; text?: string;

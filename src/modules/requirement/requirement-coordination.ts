@@ -1,6 +1,6 @@
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase, StoredRecord } from "./database.ts";
-import { UUID_V7_PATTERN } from "./database.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
 
 export const REQUIREMENT_WRITE_COORDINATION_NAMESPACE = "requirement_service_write_coordination";

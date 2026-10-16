@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { loadRoleRules } from "../runtime/package-rules.ts";
+import { loadRoleRules } from "../src/modules/agents/package-rules.ts";
 
 const root = (path: string) => fileURLToPath(new URL(`../${path}`, import.meta.url));
 
@@ -13,7 +13,7 @@ test("PM 规矩和主代理提示词不再提给任务打界面标记、带 prot
 });
 
 test("PM 概览不再产生原型事项和等待确认原型的状态行", async () => {
-  const source = await readFile(root("runtime/pm-overview.ts"), "utf8");
+  const source = await readFile(root("src/modules/panel/pm-overview.ts"), "utf8");
   expect(source).not.toMatch(/kind: "prototype"|\| "prototype"/u);
   expect(source).not.toContain("待你确认原型");
   expect(source).not.toContain("等待你确认原型");

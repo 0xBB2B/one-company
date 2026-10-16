@@ -3,8 +3,8 @@ import { execFile } from "node:child_process";
 import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
-import { daemonSocketPath } from "../runtime/identity.ts";
-import { socketPathByteLimit } from "../daemon/lifecycle.ts";
+import { daemonSocketPath } from "../src/core/storage/identity.ts";
+import { socketPathByteLimit } from "../src/app/daemon/lifecycle.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const exec = promisify(execFile);

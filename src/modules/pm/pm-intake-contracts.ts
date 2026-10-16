@@ -1,11 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
-import { requirementStateWhy } from "./requirement-contracts.ts";
-import { adviceIn } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { requirementStateWhy } from "../requirement/requirement-contracts.ts";
+import { adviceIn } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { Type } from "typebox";
 import type { Static, TProperties, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { UUID_V7_PATTERN } from "./database.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 
 /**
  * PM 接手材料及连续关系的纯契约检查。

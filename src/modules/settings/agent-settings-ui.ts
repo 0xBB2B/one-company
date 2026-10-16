@@ -1,11 +1,11 @@
 import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
-import type { ModelLike } from "./agent-resolve.ts";
-import { thinkingSupported } from "./agent-resolve.ts";
+import type { ModelLike } from "../agents/agent-resolve.ts";
+import { thinkingSupported } from "../agents/agent-resolve.ts";
 import { SETTINGS_ROLES } from "./agent-settings.ts";
 import type { EffectiveSetting, RoleSetting, SettingsRoleKey } from "./agent-settings.ts";
-import { findDefinedModel } from "./model-ref.ts";
-import { THINKING_LEVELS } from "./roles.ts";
-import type { RoleSource, ThinkingLevel } from "./roles.ts";
+import { findDefinedModel } from "../agents/model-ref.ts";
+import { THINKING_LEVELS } from "../agents/roles.ts";
+import type { RoleSource, ThinkingLevel } from "../agents/roles.ts";
 
 export type SettingsLayerName = "user" | "project";
 export interface SaveSettingRequest { role: SettingsRoleKey; model: string | null; thinking: ThinkingLevel | null; layer: SettingsLayerName }

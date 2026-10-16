@@ -77,14 +77,9 @@ async function checkErasableSyntax(dir: string): Promise<{ checked: string[]; vi
   return { checked: files, violations };
 }
 
-describe("runtime/ 与 daemon/ 的可剥离语法检查", () => {
-  test("runtime/ 全部文件通过可剥离语法检查（目录不存在时以零文件通过）", async () => {
-    const result = await checkErasableSyntax(join(PACKAGE_ROOT, "runtime"));
-    expect(result.violations).toEqual([]);
-  });
-
-  test("daemon/ 全部文件通过可剥离语法检查（目录不存在时以零文件通过）", async () => {
-    const result = await checkErasableSyntax(join(PACKAGE_ROOT, "daemon"));
+describe("src/ 的可剥离语法检查", () => {
+  test("src/ 全部文件通过可剥离语法检查（目录不存在时以零文件通过）", async () => {
+    const result = await checkErasableSyntax(join(PACKAGE_ROOT, "src"));
     expect(result.violations).toEqual([]);
   });
 

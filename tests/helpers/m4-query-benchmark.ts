@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { appendFileSync, chmodSync, lstatSync, realpathSync, writeFileSync } from "node:fs";
-import type { ProjectIndexHost } from "../../daemon/project-index-host.ts";
-import type { DaemonServer } from "../../daemon/server.ts";
+import type { ProjectIndexHost } from "../../src/app/daemon/project-index-host.ts";
+import type { DaemonServer } from "../../src/app/daemon/server.ts";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { createConnection } from "node:net";
@@ -590,18 +590,18 @@ function resourceSnapshot() {
 async function codeInputs(scriptRoot: string): Promise<Array<{ path: string; sha256: string }>> {
   const paths = [
     "tests/helpers/m4-query-benchmark.ts",
-    "daemon/project-index-host.ts",
-    "daemon/server.ts",
-    "runtime/knowledge-query.ts",
-    "runtime/knowledge-query-contracts.ts",
-    "runtime/project-index-service.ts",
-    "runtime/project-index-policy.ts",
-    "runtime/index-store.ts",
-    "runtime/protocol.ts",
-    "runtime/identity.ts",
-    "runtime/git-read.ts",
-    "runtime/command-boundary.ts",
-    "runtime/database.ts",
+    "src/app/daemon/project-index-host.ts",
+    "src/app/daemon/server.ts",
+    "src/modules/project-index/knowledge-query.ts",
+    "src/modules/project-index/knowledge-query-contracts.ts",
+    "src/modules/project-index/project-index-service.ts",
+    "src/modules/project-index/project-index-policy.ts",
+    "src/modules/project-index/index-store.ts",
+    "src/core/host/protocol.ts",
+    "src/core/storage/identity.ts",
+    "src/core/exec/git-read.ts",
+    "src/modules/verification/command-boundary.ts",
+    "src/core/storage/database.ts",
     "resources/tree-sitter/manifest.json",
     "package.json",
     "pnpm-lock.yaml",
@@ -645,11 +645,11 @@ async function runTier(input: {
     if (probeControl.probe.positiveControlReads < 1) throw new Error("archive_read_probe_positive_control_failed");
 
     const [{ DaemonServer }, { ProjectIndexHost: Host, registerIndexHandlers }, { repoDataDir, repositoryIdentity }, { ProjectIndexService }, protocolModule] = await Promise.all([
-      import("../../daemon/server.ts"),
-      import("../../daemon/project-index-host.ts"),
-      import("../../runtime/identity.ts"),
-      import("../../runtime/project-index-service.ts"),
-      import("../../runtime/protocol.ts"),
+      import("../../src/app/daemon/server.ts"),
+      import("../../src/app/daemon/project-index-host.ts"),
+      import("../../src/core/storage/identity.ts"),
+      import("../../src/modules/project-index/project-index-service.ts"),
+      import("../../src/core/host/protocol.ts"),
     ]);
     const identity = await repositoryIdentity(fixture.repo);
     await repoDataDir(fixture.dataRoot, identity.repoId, identity.commonDir);

@@ -4,8 +4,8 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createSessionManagerForRun, readSessionEntries, sessionFilePath, sessionRecordRef } from "../runtime/session-records.ts";
-import { withDatabase, putRecord, readRecord, uuidv7, repositoryDatabase } from "../runtime/database.ts";
+import { createSessionManagerForRun, readSessionEntries, sessionFilePath, sessionRecordRef } from "../src/modules/agents/session-records.ts";
+import { withDatabase, putRecord, readRecord, uuidv7, repositoryDatabase } from "../src/core/storage/database.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { testRepoId, sessionJson, failDatabaseWrites } from "./helpers/database-fixture.ts";
 

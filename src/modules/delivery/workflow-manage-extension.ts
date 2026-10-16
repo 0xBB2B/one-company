@@ -2,9 +2,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
-import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
-import { AdvisedError, toolFailure, toolStep } from "../runtime/tool-failure.ts";
-import { windowContext } from "./lifecycle.ts";
+import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
+import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
+import { windowContext } from "../../core/host/extension-lifecycle.ts";
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const target = { repoId: Type.String({ pattern: "^[0-9a-f]{64}$" }), requirementId: Type.String({ pattern: UUID_V7 }) };

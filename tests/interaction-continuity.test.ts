@@ -5,14 +5,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { repositoryIdentity } from "../runtime/identity.ts";
-import { uuidv7, repositoryDatabase, withDatabase, LocalDatabase } from "../runtime/database.ts";
-import { RequirementService } from "../runtime/requirement-service.ts";
-import { UserInteractionCore } from "../runtime/user-interaction.ts";
-import { interpreterView } from "../runtime/user-interaction-format.ts";
-import type { InteractionContext, InteractionInterpretation } from "../runtime/user-interaction-format.ts";
-import { INTERACTION_CONTINUITY_NAMESPACE, loadInteractionContinuity } from "../runtime/interaction-continuity.ts";
-import { ApprovalManifestStore, summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
+import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { uuidv7, repositoryDatabase, withDatabase, LocalDatabase } from "../src/core/storage/database.ts";
+import { RequirementService } from "../src/modules/requirement/requirement-service.ts";
+import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
+import { interpreterView } from "../src/modules/requirement/user-interaction-format.ts";
+import type { InteractionContext, InteractionInterpretation } from "../src/modules/requirement/user-interaction-format.ts";
+import { INTERACTION_CONTINUITY_NAMESPACE, loadInteractionContinuity } from "../src/modules/requirement/interaction-continuity.ts";
+import { ApprovalManifestStore, summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
 
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
@@ -240,7 +240,7 @@ test.each(["document", "register", "register-after-core", "cross-process"] as co
     const input = JSON.stringify({ basis: w.loaded.basis, candidate: w.loaded.candidate, partition: w.loaded.partition, unitIds: ["B"], actions: ["analyze"],
       proposal: { conclusion: "B新增未确认前提", scope: "B", references: [], supersedes: [] } });
     if (mode !== "cross-process") { questionId = other.ask(input).requestId; return; }
-    const modulePath = fileURLToPath(new URL("../runtime/user-interaction.ts", import.meta.url));
+    const modulePath = fileURLToPath(new URL("../src/modules/interaction/user-interaction.ts", import.meta.url));
     const source = `import {UserInteractionCore} from ${JSON.stringify(modulePath)}; const c=await UserInteractionCore.open({...${JSON.stringify({ dataRoot: w.dataRoot, repositoryRoot: w.repo, repoId: w.repoId })}, authorize:()=>true,authorizeAction:()=>true,loadContext:async()=>{throw Error('unused')},interpreter:{identity:()=>({provider:'fixture',id:'child',configurationHash:'c'.repeat(64)}),interpret:async()=>{throw Error('unused')}}});try{c.startSession({sessionId:'child',windowId:'child'});console.log(JSON.stringify(c.ask(${JSON.stringify(input)}).requestId));}finally{c.shutdown();}`;
     questionId = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", source], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }));
   };

@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { LocalDatabase, StaleVersionError, UUID_V7_PATTERN, uuidv7 } from "../runtime/database.ts";
+import { LocalDatabase, StaleVersionError, UUID_V7_PATTERN, uuidv7 } from "../src/core/storage/database.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const exec = promisify(execFile);
@@ -72,7 +72,7 @@ test("事务失败回滚全部记录与事件，异步事务被拒绝", async ()
 test("三个独立 Node 进程共享 SQLite，追加序号连续且记录不丢失", async () => {
   const { dir, path } = await fixture();
   const script = join(dir, "writer.mjs");
-  await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).pathname)};\nconst db = new LocalDatabase(process.argv[2]);\ntry { for (let i = 0; i < 30; i++) db.append("shared", { pid: process.pid, i }); } finally { db.close(); }\n`);
+  await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../src/core/storage/database.ts", import.meta.url).pathname)};\nconst db = new LocalDatabase(process.argv[2]);\ntry { for (let i = 0; i < 30; i++) db.append("shared", { pid: process.pid, i }); } finally { db.close(); }\n`);
   await Promise.all(Array.from({ length: 3 }, () => exec(process.execPath, [script, path])));
   const db = new LocalDatabase(path);
   try {
@@ -90,7 +90,7 @@ test("提交前强杀写入进程，重开数据库后保留历史并回滚整�
   initial.append("shared", { state: "committed" });
   initial.close();
   const script = join(dir, "interrupted-writer.mjs");
-  await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../runtime/database.ts", import.meta.url).pathname)};
+  await writeFile(script, `import { LocalDatabase } from ${JSON.stringify(new URL("../src/core/storage/database.ts", import.meta.url).pathname)};
 import { writeSync } from "node:fs";
 const db = new LocalDatabase(process.argv[2]);
 db.transaction(() => {

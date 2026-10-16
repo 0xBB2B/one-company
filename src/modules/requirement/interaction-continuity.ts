@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { DatabaseSync } from "node:sqlite";
-import { repositoryDatabase } from "./database.ts";
-import type { LocalDatabase, StoredRecord } from "./database.ts";
+import { repositoryDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checkRequirement, object } from "./requirement-contracts.ts";
 import { decisionDigest, checkDecisionRecord } from "./short-decision-format.ts";
 import { InteractionBasis, CandidateBinding, ApprovalPartition, ContinuityRecordRef, InteractionEntry, PendingQuestion, checkInteraction, interpreterView, UserInteractionError, resolvesContinuityIssue } from "./user-interaction-format.ts";

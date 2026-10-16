@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { readPlanIn } from "../../../runtime/plan-manage.ts";
+import { readPlanIn } from "../../../src/modules/pm/plan-manage.ts";
 import { createPmRunWorld } from "../../helpers/run-manager-fixture.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { messageText, NA, pointEvidence, realPm } from "../helpers/point-pm.ts";

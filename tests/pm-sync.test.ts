@@ -3,8 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createPmSyncTool, syncTargetBranch } from "../runtime/pm-sync.ts";
-import { localTargetBranch } from "../runtime/target-branch.ts";
+import { createPmSyncTool, syncTargetBranch } from "../src/modules/pm/pm-sync.ts";
+import { localTargetBranch } from "../src/core/exec/target-branch.ts";
 
 const cleanups: string[] = [];
 afterEach(async () => { for (const dir of cleanups.splice(0)) await rm(dir, { recursive: true, force: true }); });

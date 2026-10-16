@@ -1,9 +1,9 @@
-import { createSessionManagerForRun } from "../../runtime/session-records.ts";
-import { deliverApprovedEvents } from "../../runtime/pm-event-delivery.ts";
+import { createSessionManagerForRun } from "../../src/modules/agents/session-records.ts";
+import { deliverApprovedEvents } from "../../src/modules/pm/pm-event-delivery.ts";
 import { readNoticedDiffs } from "./pm-diff-read.ts";
-import { createPmIntakeProviders, PM_INTAKE_TOOL } from "../../runtime/pm-intake-runtime.ts";
-import type { IntakeSubmissionBaseline } from "../../runtime/pm-intake-runtime.ts";
-import type { PmUnderstanding } from "../../runtime/pm-intake-contracts.ts";
+import { createPmIntakeProviders, PM_INTAKE_TOOL } from "../../src/modules/pm/pm-intake-runtime.ts";
+import type { IntakeSubmissionBaseline } from "../../src/modules/pm/pm-intake-runtime.ts";
+import type { PmUnderstanding } from "../../src/modules/pm/pm-intake-contracts.ts";
 import type { PmIntakeFixture } from "./pm-intake-fixture.ts";
 
 export type UnderstandingContent = Omit<PmUnderstanding, "format" | "binding">;

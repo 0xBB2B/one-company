@@ -1,23 +1,23 @@
 import { randomBytes } from "node:crypto";
-import { adviceOf, COMMON_ADVICE, withDetail } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceOf, COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { checked, checkRequirement, hash, id, object, PmLease, PmRecord, ProdReference, positive } from "./requirement-contracts.ts";
-import type { RequirementRecord } from "./requirement-contracts.ts";
-import { RequirementStateStore } from "./requirement-state.ts";
-import { readCheckRoundIn } from "./check-round.ts";
-import { RequirementService } from "./requirement-service.ts";
-import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
-import { authorizeToolAction } from "./core-permissions.ts";
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase } from "./database.ts";
-import { assertApprovalScopeReturnIn, registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
-import { checkServiceInput } from "./requirement-manage-contracts.ts";
-import type { ServiceAuthorizationRequest } from "./requirement-manage-contracts.ts";
+import { checked, checkRequirement, hash, id, object, PmLease, PmRecord, ProdReference, positive } from "../requirement/requirement-contracts.ts";
+import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
+import { RequirementStateStore } from "../requirement/requirement-state.ts";
+import { readCheckRoundIn } from "../verification/check-round.ts";
+import { RequirementService } from "../requirement/requirement-service.ts";
+import { verifyRequirementWorkspace } from "../requirement/requirement-workspace.ts";
+import { authorizeToolAction } from "../../core/policy/core-permissions.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
+import { assertApprovalScopeReturnIn, registeredApprovalManifestIn, summarizeApprovalManifest } from "../requirement/approval-manifest-store.ts";
+import { checkServiceInput } from "../requirement/requirement-manage-contracts.ts";
+import type { ServiceAuthorizationRequest } from "../requirement/requirement-manage-contracts.ts";
 import { inspectProdStructure, pageProdResponse, selectProdSection, PROD_MAX_PAGE_BYTES, PROD_PAGE_BYTES,
-  PROD_SECTION_ID_PATTERN, PROD_RESPONSE_MAX_BYTES, ProdViewError } from "./prod-view.ts";
+  PROD_SECTION_ID_PATTERN, PROD_RESPONSE_MAX_BYTES, ProdViewError } from "../requirement/prod-view.ts";
 
 const Role = Type.Union([Type.Literal("pm"), Type.Literal("reviewer"), Type.Literal("qa")]);
 const Binding = object({ role: Role, callerId: id, runId: id, requirementId: id, repoId: hash, workspaceId: hash,

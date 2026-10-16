@@ -1,8 +1,8 @@
 import { expect, test, vi } from "vitest";
 import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { listenExclusive } from "../daemon/lifecycle.ts";
-import { DaemonServer } from "../daemon/server.ts";
+import { listenExclusive } from "../src/app/daemon/lifecycle.ts";
+import { DaemonServer } from "../src/app/daemon/server.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 test("残留监听探测结束后目标被替换，失败竞争者不能删除新文件", async () => {

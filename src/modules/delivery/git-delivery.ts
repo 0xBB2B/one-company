@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { mutedLines } from "./question-window.ts";
-import type { ProgramWindow, WindowChoice } from "./question-window.ts";
-import { commandOutputTail } from "./tool-failure.ts";
+import { mutedLines } from "../../core/host/question-window.ts";
+import type { ProgramWindow, WindowChoice } from "../../core/host/question-window.ts";
+import { commandOutputTail } from "../../core/exec/tool-failure.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { isProdArchivePath } from "./content-policy.ts";
-import { fetchRemoteTarget, gitIn, includesCommit } from "./target-branch.ts";
+import { isProdArchivePath } from "../../core/policy/content-policy.ts";
+import { fetchRemoteTarget, gitIn, includesCommit } from "../../core/exec/target-branch.ts";
 
 const exec = promisify(execFile);
 

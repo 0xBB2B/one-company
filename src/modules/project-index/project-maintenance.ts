@@ -1,14 +1,14 @@
 import { mkdir } from "node:fs/promises";
-import { mutedLines } from "./question-window.ts";
-import type { ProgramWindow } from "./question-window.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { mutedLines } from "../../core/host/question-window.ts";
+import type { ProgramWindow } from "../../core/host/question-window.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { join } from "node:path";
-import { withDatabaseMaintenance } from "./database-maintenance.ts";
-import { reconcileDatabaseRecovery } from "./database-recovery.ts";
-import { listWorktrees, repositoryIdentity } from "./identity.ts";
-import { createRequirementBackup } from "./requirement-backup.ts";
-import { restoreRequirementBackup } from "./requirement-recovery.ts";
-import { isTerminalState, RunStore } from "./run-store.ts";
+import { withDatabaseMaintenance } from "../../core/storage/database-maintenance.ts";
+import { reconcileDatabaseRecovery } from "../../core/storage/database-recovery.ts";
+import { listWorktrees, repositoryIdentity } from "../../core/storage/identity.ts";
+import { createRequirementBackup } from "../requirement/requirement-backup.ts";
+import { restoreRequirementBackup } from "../requirement/requirement-recovery.ts";
+import { isTerminalState, RunStore } from "../agents/run-store.ts";
 
 const MAINTENANCE_ADVICE = {
   declined: { why: "用户在界面上拒绝了这次操作", next: "不要重试；确实需要时先向用户说明原因再问" },

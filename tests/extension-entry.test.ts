@@ -2,8 +2,8 @@ import { describe, expect, test } from "vitest";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import registerExtensions from "../extensions/index.ts";
-import shellUiExtension from "../extensions/shell-ui.ts";
+import registerExtensions from "../src/app/extension/index.ts";
+import shellUiExtension from "../src/modules/shell/shell-ui-extension.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -13,7 +13,7 @@ const REQUIRED_COMMAND_NAMES = [
   "one:ps",
 ];
 
-// lifecycle.ts 的 session_start 处理器体内唯一出现的变量名，用来在不触发真实会话的前提下辨认注册顺序中的第一个处理器来自谁
+// extension-lifecycle.ts 的 session_start 处理器体内唯一出现的变量名，用来在不触发真实会话的前提下辨认注册顺序中的第一个处理器来自谁
 const LIFECYCLE_SESSION_START_MARKER = "capturedShutdown";
 
 function makeShellUiCtx() {
@@ -28,7 +28,7 @@ function makeShellUiCtx() {
   };
 }
 
-describe("extensions/index.ts 唯一扩展入口", () => {
+describe("src/app/extension/index.ts 唯一扩展入口", () => {
   test("registerCommand 收到的命令名无重复，包含 one:setting 和 one:ps，不含 spec-* 别名", () => {
     const fakePi = createFakePi();
 
@@ -69,7 +69,7 @@ describe("extensions/index.ts 唯一扩展入口", () => {
     const raw = await readFile(join(PACKAGE_ROOT, "package.json"), "utf8");
     const pkg = JSON.parse(raw) as { pi?: { extensions?: unknown } };
 
-    expect(pkg.pi?.extensions).toEqual(["./extensions/index.ts"]);
+    expect(pkg.pi?.extensions).toEqual(["./src/app/extension/index.ts"]);
   });
 
   test("session_start 处理器注册顺序中，首位来自 lifecycle（先于 pm-panel/shell-ui）", () => {

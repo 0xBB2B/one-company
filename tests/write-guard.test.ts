@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
-import { resolveRealRepoPath } from "../runtime/write-guard.ts";
+import { resolveRealRepoPath } from "../src/modules/verification/write-guard.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { createTempHome, removeTempHome } from "./helpers/temp-home.ts";
 

@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { checkConventionsWrite } from "../runtime/project-conventions.ts";
-import { windowContext as defaultWindowContext } from "./lifecycle.ts";
-import type { WindowContextValue } from "./lifecycle.ts";
+import { checkConventionsWrite } from "./project-conventions.ts";
+import { windowContext as defaultWindowContext } from "../../core/host/extension-lifecycle.ts";
+import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
 
 export default function conventionsGuardExtension(pi: ExtensionAPI, deps: { windowContext?: () => Pick<WindowContextValue, "workspace"> } = {}): void {
   const windowContext = deps.windowContext ?? defaultWindowContext;

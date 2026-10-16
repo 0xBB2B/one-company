@@ -2,9 +2,9 @@ import { lstatSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isPromise } from "node:util/types";
-import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "./database-paths.ts";
-import { createTransactionOrigin, finishTransactionOrigin, hasInvalidTransactionOrigin, invalidateTransactionOrigin, observeRejectedPromise, runOutsideTransactionOrigin, runWithTransactionOrigin, transactionOriginHasAsyncWork } from "./transaction-context.ts";
-import type { SyncResult } from "./database.ts";
+import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "../../core/storage/database-paths.ts";
+import { createTransactionOrigin, finishTransactionOrigin, hasInvalidTransactionOrigin, invalidateTransactionOrigin, observeRejectedPromise, runOutsideTransactionOrigin, runWithTransactionOrigin, transactionOriginHasAsyncWork } from "../../core/storage/transaction-context.ts";
+import type { SyncResult } from "../../core/storage/database.ts";
 
 /** 现存运行库的SQLite只读连接：不创建主库/目录、不升级或chmod；WAL附属文件按驱动读协议管理。 */
 export function withReadOnlyDatabase<T>(path: string, read: (db: DatabaseSync) => T & SyncResult<T>): T {

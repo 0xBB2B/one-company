@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
-import { sessionFilePath } from "../../runtime/session-records.ts";
+import { sessionFilePath } from "../../src/modules/agents/session-records.ts";
 import { DatabaseSync as Database } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { readRecord, putRecord, uuidv7, withDatabase, repositoryDatabase } from "../../runtime/database.ts";
-import type { RecordRef } from "../../runtime/database.ts";
+import { readRecord, putRecord, uuidv7, withDatabase, repositoryDatabase } from "../../src/core/storage/database.ts";
+import type { RecordRef } from "../../src/core/storage/database.ts";
 
 export function testRepoId(label = uuidv7()): string {
   return createHash("sha256").update(label).digest("hex");

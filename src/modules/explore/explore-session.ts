@@ -1,15 +1,15 @@
 import { Type } from "typebox";
-import { COMMON_ADVICE } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { COMMON_ADVICE } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { Static, TSchema } from "typebox";
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase } from "./database.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
 import { checkExploreInput } from "./explore-contracts.ts";
 import type { ExploreInput } from "./explore-contracts.ts";
-import { checked, counter, hash, id, object, positive } from "./requirement-contracts.ts";
-import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
-import { isTerminalState } from "./run-store.ts";
-import type { RunRecord } from "./run-store.ts";
+import { checked, counter, hash, id, object, positive } from "../requirement/requirement-contracts.ts";
+import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
+import { isTerminalState } from "../agents/run-store.ts";
+import type { RunRecord } from "../agents/run-store.ts";
 
 export const EXPLORE_SESSIONS = "explore_sessions";
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);

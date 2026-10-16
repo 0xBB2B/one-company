@@ -1,11 +1,11 @@
 import { posix as path } from "node:path";
-import { withDetail } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { withDetail } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import type { Static, TProperties, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { UUID_V7_PATTERN } from "./database.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 
 /**
  * explore 的有界输入/输出契约：parent 与来源基线由宿主填写；本模块只校验 JSON 形状、固定预算和输入输出一致性，

@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { uuidv7 } from "../runtime/database.ts";
-import { TASKS } from "../runtime/plan-manage.ts";
-import type { TaskRecord, TaskSpec } from "../runtime/plan-manage.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { TASKS } from "../src/modules/pm/plan-manage.ts";
+import type { TaskRecord, TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 60_000 });

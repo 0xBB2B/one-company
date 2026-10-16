@@ -3,9 +3,9 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import { uuidv7 } from "../runtime/database.ts";
-import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../runtime/main-intake-interaction.ts";
-import { createUserInteractTool, USER_INTERACT_PARAMETERS } from "../runtime/user-interact-tool.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../src/modules/interaction/main-intake-interaction.ts";
+import { createUserInteractTool, USER_INTERACT_PARAMETERS } from "../src/modules/interaction/user-interact-tool.ts";
 const base = { action: "reply", repoId: "a".repeat(64), requirementId: uuidv7(), operationId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
 test("user_interact不接受转述、请求选择、角色或回执", async () => {
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: base })).toBe(true);

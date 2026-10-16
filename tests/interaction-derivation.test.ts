@@ -1,10 +1,10 @@
 import { expect, test } from "vitest";
-import { uuidv7 } from "../runtime/database.ts";
-import { partitionProdDocument } from "../runtime/prod-view.ts";
-import type { InteractionContext, UserInteractionError } from "../runtime/user-interaction-format.ts";
-import { createApprovalManifest, validateDocumentReview } from "../runtime/approval-manifest.ts";
-import { summarizeApprovalManifest } from "../runtime/approval-manifest-store.ts";
-import { deriveInterpretation } from "../runtime/interaction-derivation.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
+import { partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
+import type { InteractionContext, UserInteractionError } from "../src/modules/requirement/user-interaction-format.ts";
+import { createApprovalManifest, validateDocumentReview } from "../src/modules/requirement/approval-manifest.ts";
+import { summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
+import { deriveInterpretation } from "../src/modules/interaction/interaction-derivation.ts";
 
 function fixture() {
   const requirementId = uuidv7(), title = "渐进登录", body = "前言：保留邮箱。\r\n# 手机号 {#A}\r\n实现手机号登录。\r\n# 微信 {#B}\r\n微信需求未决，不实施。\r\n";

@@ -1,15 +1,15 @@
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
-import type { LocalDatabase } from "./database.ts";
-import { confirmedPlanKey, readPlanIn, stalledStage, TASKS, terminationPending, unsentTask } from "./plan-manage.ts";
-import type { TaskRecord, UserDecision } from "./plan-manage.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
+import { confirmedPlanKey, readPlanIn, stalledStage, TASKS, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import type { TaskRecord, UserDecision } from "../pm/plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
-import { checked } from "./requirement-contracts.ts";
-import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
-import { checkDecisionRecord } from "./short-decision-format.ts";
-import type { AdjudicationChoice, AdjudicationSubject } from "./user-interaction-format.ts";
-import { ADJUDICATION_CHOICES } from "./user-interaction-format.ts";
-import { COMPLETION_REPORTS, CompletionReport, decideReportIn, pendingReportIn, reportsIn } from "./workflow-close.ts";
+import { checked } from "../requirement/requirement-contracts.ts";
+import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
+import { checkDecisionRecord } from "../requirement/short-decision-format.ts";
+import type { AdjudicationChoice, AdjudicationSubject } from "../requirement/user-interaction-format.ts";
+import { ADJUDICATION_CHOICES } from "../requirement/user-interaction-format.ts";
+import { COMPLETION_REPORTS, CompletionReport, decideReportIn, pendingReportIn, reportsIn } from "../delivery/workflow-close.ts";
 
 const ADJUDICATION_ADVICE = {
   unknown_requirement: { why: "找不到这个需求", next: "核对需求编号" },

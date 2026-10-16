@@ -1,7 +1,7 @@
 import { Type } from "typebox";
-import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { StoredRecord } from "./database.ts";
+import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { StoredRecord } from "../../core/storage/database.ts";
 import { evaluateIntakeContinuity, PmUnderstandingSchema } from "./pm-intake-contracts.ts";
 import type { IntakeBinding, IntakeReviewRecord, IntakeSourceDirectory, PmUnderstanding } from "./pm-intake-contracts.ts";
 import { pmUnderstandingHash } from "./pm-intake-service.ts";
@@ -9,9 +9,9 @@ import type { PmSourceDirectoryHandle, PmSourceDirectoryProvider, PmSourceDirect
   PmSubmissionQuery } from "./pm-intake-service.ts";
 import { intakeManifestDecisionIds, PmIntakeStore } from "./pm-intake-store.ts";
 import type { IntakeBindingBasis } from "./pm-intake-store.ts";
-import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
-import { readSessionEntries } from "./session-records.ts";
-import { checkDecisionRecord } from "./short-decision-format.ts";
+import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
+import { readSessionEntries } from "../agents/session-records.ts";
+import { checkDecisionRecord } from "../requirement/short-decision-format.ts";
 
 export const PM_INTAKE_TOOL = "one_company_user_interact";
 export const PM_UNDERSTANDING_CONTENT = Type.Omit(PmUnderstandingSchema, ["format", "binding"]);

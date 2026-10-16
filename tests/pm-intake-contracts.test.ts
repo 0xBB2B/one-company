@@ -6,14 +6,14 @@ import {
   checkPmUnderstanding,
   evaluateIntakeContinuity,
   intakeBindingsEqual,
-} from "../runtime/pm-intake-contracts.ts";
+} from "../src/modules/pm/pm-intake-contracts.ts";
 import type {
   IntakeBinding,
   IntakeContinuityFacts,
   IntakeReviewRecord,
   IntakeSourceDirectory,
   PmUnderstanding,
-} from "../runtime/pm-intake-contracts.ts";
+} from "../src/modules/pm/pm-intake-contracts.ts";
 
 const v7 = (value: number): string => `0197b7b0-6a20-7c51-8a32-${value.toString(16).padStart(12, "0")}`;
 const h = (character: string): string => character.repeat(64);

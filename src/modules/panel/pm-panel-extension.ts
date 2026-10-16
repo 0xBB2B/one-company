@@ -1,16 +1,16 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createClock } from "../runtime/clock.ts";
-import type { Clock } from "../runtime/clock.ts";
-import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../runtime/daemon-client.ts";
-import { BottomDock } from "../runtime/dock.ts";
-import type { PmOverview } from "../runtime/pm-overview.ts";
-import { mountPmPanel } from "../runtime/pm-panel.ts";
-import type { ExplorePanelEntry, PmPanelEntry, PrototypePanelEntry } from "../runtime/pm-panel.ts";
-import type { MainExploreOverview } from "../runtime/explore-dispatch.ts";
-import type { MainPrototypeOverview } from "../runtime/prototype-dispatch.ts";
-import { sanitizeText } from "../runtime/text-sanitize.ts";
-import { noteOpenedPanelItem, registerDock, revokeCapturedInput, windowReady as defaultWindowReady } from "./lifecycle.ts";
-import type { WindowContextValue } from "./lifecycle.ts";
+import { createClock } from "../../core/policy/clock.ts";
+import type { Clock } from "../../core/policy/clock.ts";
+import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../../core/host/daemon-client.ts";
+import { BottomDock } from "../../core/host/dock.ts";
+import type { PmOverview } from "./pm-overview.ts";
+import { mountPmPanel } from "./pm-panel.ts";
+import type { ExplorePanelEntry, PmPanelEntry, PrototypePanelEntry } from "./pm-panel.ts";
+import type { MainExploreOverview } from "../explore/explore-dispatch.ts";
+import type { MainPrototypeOverview } from "../prototype/prototype-dispatch.ts";
+import { sanitizeText } from "../../core/policy/text-sanitize.ts";
+import { noteOpenedPanelItem, registerDock, revokeCapturedInput, windowReady as defaultWindowReady } from "../../core/host/extension-lifecycle.ts";
+import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
 
 const TICK_MS = 200;
 const RESYNC_MS = 5_000;

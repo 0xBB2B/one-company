@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "vitest";
-import { packageSkillsDir, recordSectionIds, resolveRequirementDoc } from "../runtime/requirement-doc.ts";
+import { packageSkillsDir, recordSectionIds, resolveRequirementDoc } from "../src/modules/requirement/requirement-doc.ts";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });

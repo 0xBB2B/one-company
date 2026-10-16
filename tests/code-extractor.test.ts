@@ -4,9 +4,9 @@ import {
   CODE_EXTRACTOR_COORDINATES,
   extractCode,
   getCodeExtractorVersion,
-} from "../runtime/code-extractor.ts";
-import type { CodeRange } from "../runtime/code-extractor.ts";
-import type { SyntaxLanguage } from "../runtime/syntax-parser.ts";
+} from "../src/modules/project-index/code-extractor.ts";
+import type { CodeRange } from "../src/modules/project-index/code-extractor.ts";
+import type { SyntaxLanguage } from "../src/modules/project-index/syntax-parser.ts";
 
 function position(source: string, offset: number) {
   const before = source.slice(0, offset);

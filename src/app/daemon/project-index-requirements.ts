@@ -1,13 +1,13 @@
 import type { BigIntStats } from "node:fs";
 import { lstat, opendir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { assertDataRootOutsideWorktrees } from "../runtime/database-paths.ts";
-import { readGit } from "../runtime/git-read.ts";
-import { listWorktrees, repositoryIdentity } from "../runtime/identity.ts";
-import { RequirementStateError } from "../runtime/requirement-contracts.ts";
-import { RequirementEventService } from "../runtime/requirement-events.ts";
-import { RequirementStateStore } from "../runtime/requirement-state.ts";
-import { verifyRequirementWorkspace } from "../runtime/requirement-workspace.ts";
+import { assertDataRootOutsideWorktrees } from "../../core/storage/database-paths.ts";
+import { readGit } from "../../core/exec/git-read.ts";
+import { listWorktrees, repositoryIdentity } from "../../core/storage/identity.ts";
+import { RequirementStateError } from "../../modules/requirement/requirement-contracts.ts";
+import { RequirementEventService } from "../../modules/requirement/requirement-events.ts";
+import { RequirementStateStore } from "../../modules/requirement/requirement-state.ts";
+import { verifyRequirementWorkspace } from "../../modules/requirement/requirement-workspace.ts";
 import type { ProjectIndexArchiveRiskHookEvent } from "./project-index-host.ts";
 
 const HASH = /^[0-9a-f]{64}$/u;

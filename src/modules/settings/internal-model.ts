@@ -1,8 +1,8 @@
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
-import { HostAuthorizationError } from "./host-authorization.ts";
+import { HostAuthorizationError } from "../requirement/host-authorization.ts";
 import { readAgentSettings } from "./agent-settings.ts";
-import { findDefinedModel } from "./model-ref.ts";
+import { findDefinedModel } from "../agents/model-ref.ts";
 
 const LABEL = { interpreter: "解释器", "draft-verifier": "草稿核验器" } as const;
 

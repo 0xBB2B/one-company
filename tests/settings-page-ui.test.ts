@@ -4,10 +4,10 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { SettingsPageView } from "../runtime/settings-page-ui.ts";
-import { AgentCopyError, copyAgentDefinition } from "../runtime/agent-copy.ts";
-import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../runtime/agent-settings.ts";
-import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
+import { SettingsPageView } from "../src/modules/settings/settings-page-ui.ts";
+import { AgentCopyError, copyAgentDefinition } from "../src/modules/agents/agent-copy.ts";
+import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
+import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
 
 const UP = "\x1b[A", DOWN = "\x1b[B", RIGHT = "\x1b[C", LEFT = "\x1b[D", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const SOL = { provider: "5x", id: "gpt-6.1-sol", reasoning: true, thinkingLevelMap: {} };

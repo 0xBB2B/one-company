@@ -1,21 +1,21 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { HostAuthorizationError, HostAuthorizationManager } from "../runtime/host-authorization.ts";
-import { dataRoot } from "../runtime/identity.ts";
-import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../runtime/daemon-client.ts";
-import { createRequirementManageTool } from "../runtime/requirement-manage-tool.ts";
-import { createUserInteractTool } from "../runtime/user-interact-tool.ts";
-import { MainIntakeInteraction } from "../runtime/main-intake-interaction.ts";
-import type { MainIntakeProviders } from "../runtime/main-intake-interaction.ts";
-import type { MentionTarget } from "../runtime/main-requirement-interaction.ts";
-import { requirementMentionProvider } from "../runtime/mention-completion.ts";
-import type { MentionCandidate } from "../runtime/mention-completion.ts";
+import { HostAuthorizationError, HostAuthorizationManager } from "../requirement/host-authorization.ts";
+import { dataRoot } from "../../core/storage/identity.ts";
+import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../../core/host/daemon-client.ts";
+import { createRequirementManageTool } from "./requirement-manage-tool.ts";
+import { createUserInteractTool } from "./user-interact-tool.ts";
+import { MainIntakeInteraction } from "./main-intake-interaction.ts";
+import type { MainIntakeProviders } from "./main-intake-interaction.ts";
+import type { MentionTarget } from "./main-requirement-interaction.ts";
+import { requirementMentionProvider } from "./mention-completion.ts";
+import type { MentionCandidate } from "./mention-completion.ts";
 import { basename } from "node:path";
-import { createPmIntakeProviders } from "../runtime/pm-intake-runtime.ts";
-import { MainRequirementInteraction } from "../runtime/main-requirement-interaction.ts";
-import type { OpenRequirementService, RequirementManageHostContext } from "../runtime/main-requirement-interaction.ts";
-import { failureText, toolStep } from "../runtime/tool-failure.ts";
-import { registerRequirementInput, registerWindowShutdownHook, windowContext, windowReady } from "./lifecycle.ts";
-import type { WindowContextValue } from "./lifecycle.ts";
+import { createPmIntakeProviders } from "../pm/pm-intake-runtime.ts";
+import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
+import type { OpenRequirementService, RequirementManageHostContext } from "./main-requirement-interaction.ts";
+import { failureText, toolStep } from "../../core/exec/tool-failure.ts";
+import { registerRequirementInput, registerWindowShutdownHook, windowContext, windowReady } from "../../core/host/extension-lifecycle.ts";
+import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
 
 export interface RequirementManageExtensionDeps {
   readonly authorization?: HostAuthorizationManager;

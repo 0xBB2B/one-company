@@ -3,15 +3,15 @@ import { realpath } from "node:fs/promises";
 import { dirname, join, resolve as resolvePath, sep } from "node:path";
 import { createAgentSession, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AgentSession, ExtensionAPI, ModelRuntime, ToolCallEvent, ToolCallEventResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { Clock, TimerHandle } from "../runtime/clock.ts";
-import { describeMcpStatus, mcpExtensionFactories, registerMcpServers } from "../runtime/mcp.ts";
-import { classifyFailure } from "../runtime/network-pause.ts";
-import { loadPackageRules } from "../runtime/package-rules.ts";
-import type { NetworkPauseGate } from "../runtime/network-pause.ts";
-import { QA_PROTOTYPE_HOST_TOOLS, ROLE_HOST_TOOLS } from "../runtime/role-tools.ts";
-import { checkSearchCall, filterSearchResult } from "../runtime/search-exclusion.ts";
-import type { RoleDefinition } from "../runtime/roles.ts";
-import { createSessionManagerForRun } from "../runtime/session-records.ts";
+import type { Clock, TimerHandle } from "../../core/policy/clock.ts";
+import { describeMcpStatus, mcpExtensionFactories, registerMcpServers } from "./mcp.ts";
+import { classifyFailure } from "../../core/host/network-pause.ts";
+import { loadPackageRules } from "./package-rules.ts";
+import type { NetworkPauseGate } from "../../core/host/network-pause.ts";
+import { QA_PROTOTYPE_HOST_TOOLS, ROLE_HOST_TOOLS } from "./role-tools.ts";
+import { checkSearchCall, filterSearchResult } from "./search-exclusion.ts";
+import type { RoleDefinition } from "./roles.ts";
+import { createSessionManagerForRun } from "./session-records.ts";
 
 export interface CreateAgentSessionOptions {
   dataRoot: string;

@@ -6,11 +6,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { LocalDatabase, uuidv7 } from "../runtime/database.ts";
-import { withDatabaseMaintenance } from "../runtime/database-maintenance.ts";
-import type { DatabaseManagementAuthorization } from "../runtime/database-maintenance.ts";
-import { reconcileDatabaseRecovery } from "../runtime/database-recovery.ts";
-import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, DATABASE_SNAPSHOT_FILE } from "../runtime/database-paths.ts";
+import { LocalDatabase, uuidv7 } from "../src/core/storage/database.ts";
+import { withDatabaseMaintenance } from "../src/core/storage/database-maintenance.ts";
+import type { DatabaseManagementAuthorization } from "../src/core/storage/database-maintenance.ts";
+import { reconcileDatabaseRecovery } from "../src/core/storage/database-recovery.ts";
+import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, DATABASE_SNAPSHOT_FILE } from "../src/core/storage/database-paths.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const roots: string[] = [];
@@ -182,7 +182,7 @@ test("维护进程SIGKILL退出后仅同operationId和可信授权可接管续�
   const w = await world(), operationId = uuidv7(), script = join(w.root, "maintenance-owner.mjs"), preservedLog = join(w.directory, "preserved-operation.log");
   createStore(join(w.directory, "data.db"), [], { applicationId: DATABASE_APPLICATION_IDS.data });
   await writeFile(script, `import fs from "node:fs";
-import {withDatabaseMaintenance} from ${JSON.stringify(new URL("../runtime/database-maintenance.ts", import.meta.url).href)};
+import {withDatabaseMaintenance} from ${JSON.stringify(new URL("../src/core/storage/database-maintenance.ts", import.meta.url).href)};
 await withDatabaseMaintenance({...${JSON.stringify(w.scope)},operationId:${JSON.stringify(operationId)}},async()=>{fs.writeFileSync(${JSON.stringify(preservedLog)},"ORIGINAL_OPERATION_LOG",{mode:0o600});console.log("LOCKED");await new Promise(()=>{});});`);
   const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "pipe"] });
   const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));

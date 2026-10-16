@@ -3,9 +3,9 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { authenticateTestClient, connectRawClient, connectTestClient, createDaemonFixture, killDaemon, removeDaemonFixture, resolveNodeExecutable, resolveSdkDir, startDaemonForTest } from "../helpers/daemon-harness.ts";
 import { modelProviderEnv, readProviderRequestsLog, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
-import { connectDaemon } from "../../runtime/daemon-client.ts";
-import { repositoryDatabase, putRecord, uuidv7, withDatabase } from "../../runtime/database.ts";
-import { RunStore } from "../../runtime/run-store.ts";
+import { connectDaemon } from "../../src/core/host/daemon-client.ts";
+import { repositoryDatabase, putRecord, uuidv7, withDatabase } from "../../src/core/storage/database.ts";
+import { RunStore } from "../../src/modules/agents/run-store.ts";
 
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });

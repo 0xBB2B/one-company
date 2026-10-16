@@ -1,31 +1,31 @@
 import { Type } from "typebox";
 import { isPromise } from "node:util/types";
-import { uuidv7, repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase } from "./database.ts";
-import { RequirementStateStore } from "./requirement-state.ts";
+import { uuidv7, repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
+import { RequirementStateStore } from "../requirement/requirement-state.ts";
 import { createHash } from "node:crypto";
-import { RequirementOperations } from "./requirement-operations.ts";
-import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
-import type { RequirementAccessChange, RequirementAccessState } from "./requirement-state.ts";
-import type { RequirementStoreOptions, StateAuthorizationRequest } from "./requirement-state.ts";
-import { object, id, counter, checked } from "./requirement-contracts.ts";
-import { ShortDecisionStore } from "./short-decisions.ts";
-import type { DecisionAdmissionRequest } from "./short-decisions.ts";
-import { DecisionItem, decisionDigest, parseDecisionBatch, checkDecisionRecord, ShortDecisionError } from "./short-decision-format.ts";
-import type { DecisionAdmission, DecisionBatch, ShortDecisionRecord } from "./short-decision-format.ts";
+import { RequirementOperations } from "../requirement/requirement-operations.ts";
+import { REQUIREMENT_OPERATION_NAMESPACE } from "../requirement/requirement-coordination.ts";
+import type { RequirementAccessChange, RequirementAccessState } from "../requirement/requirement-state.ts";
+import type { RequirementStoreOptions, StateAuthorizationRequest } from "../requirement/requirement-state.ts";
+import { object, id, counter, checked } from "../requirement/requirement-contracts.ts";
+import { ShortDecisionStore } from "../requirement/short-decisions.ts";
+import type { DecisionAdmissionRequest } from "../requirement/short-decisions.ts";
+import { DecisionItem, decisionDigest, parseDecisionBatch, checkDecisionRecord, ShortDecisionError } from "../requirement/short-decision-format.ts";
+import type { DecisionAdmission, DecisionBatch, ShortDecisionRecord } from "../requirement/short-decision-format.ts";
 import {
   InteractionAction, InteractionBasis, CandidateBinding, PendingQuestion, UserInteractionError,
   checkInteraction, checkContext, checkProposal, checkInterpretation, interpreterView, parseInteraction,
-} from "./user-interaction-format.ts";
-import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
-import { ApprovalUnitIds, ApprovalPartition } from "./user-interaction-format.ts";
-import { adviceOf } from "./tool-failure.ts";
-import { INTERACTION_CONTINUITY_NAMESPACE, recordInteractionResolutionIn, loadInteractionContinuity, assertRetainedEvidenceIn, continuityInputProofIn } from "./interaction-continuity.ts";
-import { validateDocumentReview, createApprovalManifest, checkApprovalManifest, approvalManifestReference } from "./approval-manifest.ts";
-import type { ApprovalManifest, ApprovalManifestReference } from "./approval-manifest.ts";
+} from "../requirement/user-interaction-format.ts";
+import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "../requirement/user-interaction-format.ts";
+import { ApprovalUnitIds, ApprovalPartition } from "../requirement/user-interaction-format.ts";
+import { adviceOf } from "../../core/exec/tool-failure.ts";
+import { INTERACTION_CONTINUITY_NAMESPACE, recordInteractionResolutionIn, loadInteractionContinuity, assertRetainedEvidenceIn, continuityInputProofIn } from "../requirement/interaction-continuity.ts";
+import { validateDocumentReview, createApprovalManifest, checkApprovalManifest, approvalManifestReference } from "../requirement/approval-manifest.ts";
+import type { ApprovalManifest, ApprovalManifestReference } from "../requirement/approval-manifest.ts";
 
-export type { InteractionAction, InteractionBasis, CandidateBinding, PendingQuestion, InteractionContext, InteractionInterpretation } from "./user-interaction-format.ts";
-export { UserInteractionError } from "./user-interaction-format.ts";
+export type { InteractionAction, InteractionBasis, CandidateBinding, PendingQuestion, InteractionContext, InteractionInterpretation } from "../requirement/user-interaction-format.ts";
+export { UserInteractionError } from "../requirement/user-interaction-format.ts";
 export interface InteractionModelIdentity { readonly provider: string; readonly id: string; readonly configurationHash: string }
 export interface InteractionInterpreter {
   /** 真实适配器从宿主当前选择读取；fixture必须明确标为受控解释器。 */

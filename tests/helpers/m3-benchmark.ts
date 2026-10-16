@@ -184,9 +184,9 @@ async function main(): Promise<void> {
   const scriptRoot = fileURLToPath(new URL("../../", import.meta.url));
   const inputPaths = ["tests/helpers/m3-benchmark.ts", "tests/helpers/m3-benchmark-child.ts", "pnpm-lock.yaml", "package.json",
     "resources/tree-sitter/manifest.json",
-    "runtime/project-index-service.ts", "runtime/project-index-policy.ts", "runtime/index-store.ts",
-    "runtime/code-extractor.ts", "runtime/syntax-parser.ts", "runtime/database.ts", "runtime/requirement-events.ts",
-    "runtime/requirement-service.ts", "runtime/requirement-state.ts", "runtime/prod-storage.ts"];
+    "src/modules/project-index/project-index-service.ts", "src/modules/project-index/project-index-policy.ts", "src/modules/project-index/index-store.ts",
+    "src/modules/project-index/code-extractor.ts", "src/modules/project-index/syntax-parser.ts", "src/core/storage/database.ts", "src/modules/requirement/requirement-events.ts",
+    "src/modules/requirement/requirement-service.ts", "src/modules/requirement/requirement-state.ts", "src/modules/requirement/prod-storage.ts"];
   const hashes = async () => Promise.all(inputPaths.map(async (path) => ({ path, sha256: sha(await readFile(join(scriptRoot, path))) })));
   const before = await hashes();
   const disk = await statfs(output);

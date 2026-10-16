@@ -4,9 +4,9 @@ import { createConnection } from "node:net";
 import type { Socket } from "node:net";
 import { join } from "node:path";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { DaemonServer } from "../daemon/server.ts";
-import type { ClientInfo } from "../daemon/server.ts";
-import { PROTOCOL_VERSION, createRequest, decodeFrames, encodeFrame } from "../runtime/protocol.ts";
+import { DaemonServer } from "../src/app/daemon/server.ts";
+import type { ClientInfo } from "../src/app/daemon/server.ts";
+import { PROTOCOL_VERSION, createRequest, decodeFrames, encodeFrame } from "../src/core/host/protocol.ts";
 
 
 interface Peer {

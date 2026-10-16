@@ -2,11 +2,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
-import type { WorkspaceClientsHandle } from "../runtime/daemon-client.ts";
-import { revokeCapturedInput, windowContext, windowReady } from "./lifecycle.ts";
-import { EXPLORE_WEB_QUERY, exploreSource } from "../runtime/explore-dispatch.ts";
-import { AdvisedError, toolFailure, toolStep } from "../runtime/tool-failure.ts";
-import { PM_MESSAGE_MAX_CHARS } from "../runtime/protocol.ts";
+import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
+import { revokeCapturedInput, windowContext, windowReady } from "../../core/host/extension-lifecycle.ts";
+import { EXPLORE_WEB_QUERY, exploreSource } from "./explore-dispatch.ts";
+import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
+import { PM_MESSAGE_MAX_CHARS } from "../../core/host/protocol.ts";
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const repoId = Type.String({ pattern: "^[0-9a-f]{64}$" });

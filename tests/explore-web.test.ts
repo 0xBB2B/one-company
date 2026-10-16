@@ -2,8 +2,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Context } from "@earendil-works/pi-ai";
-import { defaultPageGetter, webFetch, webSearch } from "../runtime/web-access.ts";
-import type { FetchResponse, WebDeps } from "../runtime/web-access.ts";
+import { defaultPageGetter, webFetch, webSearch } from "../src/modules/explore/web-access.ts";
+import type { FetchResponse, WebDeps } from "../src/modules/explore/web-access.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });

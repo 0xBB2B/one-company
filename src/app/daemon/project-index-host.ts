@@ -1,20 +1,20 @@
 import { createHash } from "node:crypto";
-import { adviceOf } from "../runtime/tool-failure.ts";
-import type { FailureAdvice } from "../runtime/tool-failure.ts";
+import { adviceOf } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { readFileSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { repositoryDatabase, withDatabase } from "../runtime/database.ts";
-import { indexDatabase } from "../runtime/database-paths.ts";
-import { IndexStore } from "../runtime/index-store.ts";
-import type { WorkspaceIdentity } from "../runtime/index-store.ts";
-import { KnowledgeQuerySession } from "../runtime/knowledge-query.ts";
-import type { KnowledgeFactPackage, KnowledgeQueryCapture } from "../runtime/knowledge-query.ts";
-import { knowledgeContent, parseKnowledgeTransportQuery } from "../runtime/knowledge-query-tool.ts";
-import { DEFAULT_INDEX_LIMITS, scanIndexWorkspace } from "../runtime/project-index-policy.ts";
-import { ProjectIndexService } from "../runtime/project-index-service.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { indexDatabase } from "../../core/storage/database-paths.ts";
+import { IndexStore } from "../../modules/project-index/index-store.ts";
+import type { WorkspaceIdentity } from "../../modules/project-index/index-store.ts";
+import { KnowledgeQuerySession } from "../../modules/project-index/knowledge-query.ts";
+import type { KnowledgeFactPackage, KnowledgeQueryCapture } from "../../modules/project-index/knowledge-query.ts";
+import { knowledgeContent, parseKnowledgeTransportQuery } from "../../modules/project-index/knowledge-query-tool.ts";
+import { DEFAULT_INDEX_LIMITS, scanIndexWorkspace } from "../../modules/project-index/project-index-policy.ts";
+import { ProjectIndexService } from "../../modules/project-index/project-index-service.ts";
 import type { DaemonServer } from "./server.ts";
-import type { ProjectIndexBuildResult } from "../runtime/project-index-service.ts";
+import type { ProjectIndexBuildResult } from "../../modules/project-index/project-index-service.ts";
 
 export const PROJECT_INDEX_MANAGEMENT_NAMESPACE = "project_index_management";
 const MANAGEMENT_FORMAT = "project-index-management/v2";
@@ -46,7 +46,7 @@ export interface ProjectIndexHostOptions {
   beforeArchiveRisk?: (event: Readonly<ProjectIndexArchiveRiskHookEvent>) => Promise<void>;
 }
 
-const policyHash = createHash("sha256").update(readFileSync(new URL("../runtime/project-index-policy.ts", import.meta.url))).digest("hex");
+const policyHash = createHash("sha256").update(readFileSync(new URL("../../modules/project-index/project-index-policy.ts", import.meta.url))).digest("hex");
 
 /**
  * 守护进程持有主工作区索引：init 后登记为已初始化；不监听文件，每次查询前按 mtime/大小/ctime 指纹对账，

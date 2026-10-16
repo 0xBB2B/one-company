@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { repositoryDatabase, withDatabase } from "./database.ts";
-import type { LocalDatabase, StoredRecord } from "./database.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { ApprovalManifestReferenceSchema, RequirementDocSpecSchema, checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
 import type { RequirementDocSpec } from "./requirement-doc.ts";

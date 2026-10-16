@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
-import { inspectProdStructure, prodSectionsProblem, pageProdText, pageProdResponse, selectProdSection, PROD_RESPONSE_MAX_BYTES, partitionProdDocument } from "../runtime/prod-view.ts";
-import { createProdDocument } from "../runtime/requirement-identity.ts";
-import { resolveRequirementDoc } from "../runtime/requirement-doc.ts";
+import { inspectProdStructure, prodSectionsProblem, pageProdText, pageProdResponse, selectProdSection, PROD_RESPONSE_MAX_BYTES, partitionProdDocument } from "../src/modules/requirement/prod-view.ts";
+import { createProdDocument } from "../src/modules/requirement/requirement-identity.ts";
+import { resolveRequirementDoc } from "../src/modules/requirement/requirement-doc.ts";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

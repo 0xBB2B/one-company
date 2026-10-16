@@ -1,13 +1,13 @@
 import { isPromise } from "node:util/types";
-import { adviceOf, COMMON_ADVICE, withDetail } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceOf, COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { CheckRoundService } from "./check-round.ts";
-import { authorizeToolAction } from "./core-permissions.ts";
-import { checked, hash, id, object, PmLease, positive } from "./requirement-contracts.ts";
-import { checkServiceInput } from "./requirement-manage-contracts.ts";
-import { escalateTask } from "./task-dispatch.ts";
+import { CheckRoundService } from "../verification/check-round.ts";
+import { authorizeToolAction } from "../../core/policy/core-permissions.ts";
+import { checked, hash, id, object, PmLease, positive } from "../requirement/requirement-contracts.ts";
+import { checkServiceInput } from "../requirement/requirement-manage-contracts.ts";
+import { escalateTask } from "../pm/task-dispatch.ts";
 import { closeItemText, CloseError, RequirementCloseService } from "./workflow-close.ts";
 import type { RequirementCloseServiceOptions } from "./workflow-close.ts";
 

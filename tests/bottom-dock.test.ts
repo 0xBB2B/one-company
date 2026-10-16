@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { BottomDock } from "../runtime/dock.ts";
+import { BottomDock } from "../src/core/host/dock.ts";
 
 const KEY = {
   down: "\x1b[B",

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { repositoryDatabase, withDatabase, uuidv7, UUID_V7_PATTERN } from "./database.ts";
+import { repositoryDatabase, withDatabase, uuidv7, UUID_V7_PATTERN } from "../../core/storage/database.ts";
 
 export type RunKind = "requirement" | "role";
 

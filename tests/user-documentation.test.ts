@@ -7,12 +7,12 @@ import { fileURLToPath } from "node:url";
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const README = join(PACKAGE_ROOT, "README.md");
 const CONTRIBUTING = join(PACKAGE_ROOT, "CONTRIBUTING.md");
-const DAEMON_MAIN = join(PACKAGE_ROOT, "daemon/main.ts");
-const COMMAND_SOURCES = [join(PACKAGE_ROOT, "extensions/commands.ts"), join(PACKAGE_ROOT, "extensions/requirement-manage.ts")];
+const DAEMON_MAIN = join(PACKAGE_ROOT, "src/app/daemon/main.ts");
+const COMMAND_SOURCES = [join(PACKAGE_ROOT, "src/app/extension/commands.ts"), join(PACKAGE_ROOT, "src/modules/interaction/requirement-manage-extension.ts")];
 const readCommandSources = async () => (await Promise.all(COMMAND_SOURCES.map(readText))).join("\n");
 const PACKAGE_JSON = join(PACKAGE_ROOT, "package.json");
-const IDENTITY = join(PACKAGE_ROOT, "runtime/identity.ts");
-const PM_PANEL = join(PACKAGE_ROOT, "runtime/pm-panel.ts");
+const IDENTITY = join(PACKAGE_ROOT, "src/core/storage/identity.ts");
+const PM_PANEL = join(PACKAGE_ROOT, "src/modules/panel/pm-panel.ts");
 
 async function readText(path: string): Promise<string> {
   return readFile(path, "utf8");
@@ -151,7 +151,7 @@ describe("README 常量与实际代码一致", () => {
 });
 
 describe("旧命令与旧页面已清除", () => {
-  const SEARCHED = ["README.md", "CONTRIBUTING.md", "rules", "shared", "role-rules", "skills", "runtime", "daemon", "extensions"];
+  const SEARCHED = ["README.md", "CONTRIBUTING.md", "rules", "shared", "role-rules", "skills", "src"];
 
   async function filesUnder(path: string): Promise<string[]> {
     const entries = await readdir(path, { withFileTypes: true }).catch(() => null);
@@ -186,11 +186,11 @@ describe("旧命令与旧页面已清除", () => {
   });
 
   test("旧的角色定义页源文件已不存在", () => {
-    expect(existsSync(join(PACKAGE_ROOT, "runtime/agent-catalog-ui.ts"))).toBe(false);
+    expect(existsSync(join(PACKAGE_ROOT, "src/modules/settings/agent-catalog-ui.ts"))).toBe(false);
   });
 });
 
-describe("README 状态面板事实与 runtime/pm-panel.ts 一致", () => {
+describe("README 状态面板事实与 src/modules/panel/pm-panel.ts 一致", () => {
   test("面板按键提示中的每个按键都在 README 中说明", async () => {
     const source = await readText(PM_PANEL);
     const hint = source.match(/const HINT = "([^"]+)"/)?.[1];

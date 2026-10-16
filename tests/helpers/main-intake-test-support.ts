@@ -1,9 +1,9 @@
 import { expect } from "vitest";
 import type { ExtensionContext, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
-import { uuidv7 } from "../../runtime/database.ts";
-import { MainIntakeInteraction } from "../../runtime/main-intake-interaction.ts";
-import type { PmIntakeToolInput } from "../../runtime/main-intake-interaction.ts";
-import type { IntakeRequestView } from "../../runtime/pm-intake-service.ts";
+import { uuidv7 } from "../../src/core/storage/database.ts";
+import { MainIntakeInteraction } from "../../src/modules/interaction/main-intake-interaction.ts";
+import type { PmIntakeToolInput } from "../../src/modules/interaction/main-intake-interaction.ts";
+import type { IntakeRequestView } from "../../src/modules/pm/pm-intake-service.ts";
 import type { PmIntakeFixture } from "./pm-intake-fixture.ts";
 
 export function ctxFor(fixture: PmIntakeFixture, signal: AbortSignal, manager: object = {

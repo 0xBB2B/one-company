@@ -1,14 +1,14 @@
 import { describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
-import { createClock } from "../runtime/clock.ts";
-import type { Clock, TimeSource } from "../runtime/clock.ts";
-import { ShellRegistry } from "../runtime/shell-registry.ts";
+import { createClock } from "../src/core/policy/clock.ts";
+import type { Clock, TimeSource } from "../src/core/policy/clock.ts";
+import { ShellRegistry } from "../src/core/host/shell-registry.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
-import installShellUi, { openShellUiPage } from "../extensions/shell-ui.ts";
-import type { ShellUiDeps } from "../extensions/shell-ui.ts";
-import pmPanelExtension from "../extensions/pm-panel.ts";
-import type { PmPanelUiDeps } from "../extensions/pm-panel.ts";
-import { currentDock } from "../extensions/lifecycle.ts";
+import installShellUi, { openShellUiPage } from "../src/modules/shell/shell-ui-extension.ts";
+import type { ShellUiDeps } from "../src/modules/shell/shell-ui-extension.ts";
+import pmPanelExtension from "../src/modules/panel/pm-panel-extension.ts";
+import type { PmPanelUiDeps } from "../src/modules/panel/pm-panel-extension.ts";
+import { currentDock } from "../src/core/host/extension-lifecycle.ts";
 
 function shellUiExtension(pi: Parameters<typeof installShellUi>[0], deps: ShellUiDeps = {}) {
   installShellUi(pi, deps);
@@ -504,7 +504,7 @@ test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实�
     mode: "tui", hasUI: true, cwd: process.cwd(),
     ui: { ...createFakeUi().ui, setWidget: () => {}, onTerminalInput: () => () => {} },
   };
-  let page: import("../runtime/shell-page.ts").ShellPage | undefined;
+  let page: import("../src/modules/shell/shell-page.ts").ShellPage | undefined;
   let opened: Promise<void> | undefined;
   try {
     await fakePi.trigger("session_start", { reason: "new" }, ctx);
@@ -573,7 +573,7 @@ describe("openShellUiPage：保留缺连接仓库并可在连接恢复后查询"
       mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: { getSessionId: () => window.sessionId },
       ui: { ...createFakeUi().ui, setWidget: () => {}, onTerminalInput: () => () => {} },
     };
-    let page: import("../runtime/shell-page.ts").ShellPage | undefined;
+    let page: import("../src/modules/shell/shell-page.ts").ShellPage | undefined;
     let opened: Promise<void> | undefined;
     try {
       await fakePi.trigger("session_start", { reason: "new" }, ctx);

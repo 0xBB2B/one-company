@@ -1,5 +1,5 @@
 import { isAbsolute } from "node:path";
-import { dataRoot } from "./data-root.ts";
+import { dataRoot } from "../../core/storage/data-root.ts";
 
 export interface DaemonStartupConfig {
   readonly sdkDir: string;

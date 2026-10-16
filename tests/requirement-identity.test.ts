@@ -27,7 +27,7 @@ const {
   createProdDocument,
   inspectProdArchives,
   parseProdDocument,
-} = await import("../runtime/requirement-identity.ts");
+} = await import("../src/modules/requirement/requirement-identity.ts");
 
 const REQUIREMENT_ID = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
 const OTHER_REQUIREMENT_ID = "0197b7b0-6a20-7c51-8a32-b9465fb72d11";

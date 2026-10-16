@@ -1,5 +1,5 @@
-import { connectDaemon } from "../../runtime/daemon-client.ts";
-import type { ConnectDaemonOptions } from "../../runtime/daemon-client.ts";
+import { connectDaemon } from "../../src/core/host/daemon-client.ts";
+import type { ConnectDaemonOptions } from "../../src/core/host/daemon-client.ts";
 
 
 const options = JSON.parse(process.argv[2] as string) as ConnectDaemonOptions;

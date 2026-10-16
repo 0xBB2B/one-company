@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { collectGitSnapshot } from "../runtime/git-snapshot.ts";
+import { collectGitSnapshot } from "../src/core/exec/git-snapshot.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
 

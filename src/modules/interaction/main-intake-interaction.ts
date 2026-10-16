@@ -1,5 +1,5 @@
-import { adviceIn } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { adviceIn } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type {
   ExtensionContext,
   ToolCallEvent,
@@ -9,11 +9,11 @@ import type {
 import { Type } from "typebox";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { UUID_V7_PATTERN } from "./database.ts";
-import { HostAuthorizationManager } from "./host-authorization.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
+import { HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import type { RequirementManageHostContext } from "./main-requirement-interaction.ts";
-import { pmDecisionNotes } from "./pm-intake-runtime.ts";
-import type { PmDecisionNote } from "./pm-intake-runtime.ts";
+import { pmDecisionNotes } from "../pm/pm-intake-runtime.ts";
+import type { PmDecisionNote } from "../pm/pm-intake-runtime.ts";
 import {
   PmIntakeService,
   type IntakeRequestView,
@@ -23,11 +23,11 @@ import {
   type MainIntakeCallIdentity,
   type PmSourceDirectoryProvider,
   type PmSubmissionProvider,
-} from "./pm-intake-service.ts";
-import { RequirementService } from "./requirement-service.ts";
-import { RequirementStateStore } from "./requirement-state.ts";
-import { decisionDigest } from "./short-decision-format.ts";
-import { unwrapRequest } from "./tool-request.ts";
+} from "../pm/pm-intake-service.ts";
+import { RequirementService } from "../requirement/requirement-service.ts";
+import { RequirementStateStore } from "../requirement/requirement-state.ts";
+import { decisionDigest } from "../requirement/short-decision-format.ts";
+import { unwrapRequest } from "../../core/exec/tool-request.ts";
 
 const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });

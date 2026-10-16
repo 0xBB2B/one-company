@@ -4,9 +4,9 @@ import {
   ExploreContractError,
   checkExploreInput,
   checkExploreResult,
-} from "../runtime/explore-contracts.ts";
-import type { ExploreInput, ExploreResult } from "../runtime/explore-contracts.ts";
-import { fillResearchSources } from "../runtime/explore-dispatch.ts";
+} from "../src/modules/explore/explore-contracts.ts";
+import type { ExploreInput, ExploreResult } from "../src/modules/explore/explore-contracts.ts";
+import { fillResearchSources } from "../src/modules/explore/explore-dispatch.ts";
 
 const requirementId = "0197b7b0-6a20-7c51-8a32-b9465fb72d10";
 const hashes = {

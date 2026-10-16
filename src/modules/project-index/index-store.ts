@@ -2,16 +2,16 @@ import { createHash } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { lstatSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { hasInvalidTransactionOrigin } from "./transaction-context.ts";
+import { hasInvalidTransactionOrigin } from "../../core/storage/transaction-context.ts";
 import {
   InvalidIndexQueryError,
   LocalDatabase,
   StaleVersionError,
   UUID_V7_PATTERN,
   uuidv7,
-} from "./database.ts";
-import type { StoredRecord } from "./database.ts";
-import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, databaseKind } from "./database-paths.ts";
+} from "../../core/storage/database.ts";
+import type { StoredRecord } from "../../core/storage/database.ts";
+import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, databaseKind } from "../../core/storage/database-paths.ts";
 
 const HASH = /^[0-9a-f]{64}$/;
 const ENTITY_ID = /^[\p{L}\p{N}][\p{L}\p{N}._:/#@+-]{0,255}$/u;

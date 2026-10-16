@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { PROD_ARCHIVE_GIT_PATHSPECS, isProdArchivePath } from "./content-policy.ts";
+import { PROD_ARCHIVE_GIT_PATHSPECS, isProdArchivePath } from "../policy/content-policy.ts";
 import { readGitBytes } from "./git-read.ts";
 import { createHash } from "node:crypto";
 import { lstat, readlink } from "node:fs/promises";

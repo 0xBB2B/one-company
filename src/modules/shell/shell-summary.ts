@@ -1,6 +1,6 @@
-import type { Clock } from "./clock.ts";
-import type { Host, ShellRegistry, TaskActivity } from "./shell-registry.ts";
-import { sanitizeText } from "./text-sanitize.ts";
+import type { Clock } from "../../core/policy/clock.ts";
+import type { Host, ShellRegistry, TaskActivity } from "../../core/host/shell-registry.ts";
+import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 
 export interface ShellSummaryClient {
   call(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;

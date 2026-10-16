@@ -1,8 +1,8 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import type { CoreTool } from "./core-permissions.ts";
+import type { CoreTool } from "../../core/policy/core-permissions.ts";
 import type { AgentRole } from "./roles.ts";
-import { toolFailure, toolStep } from "./tool-failure.ts";
+import { toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 
 export const CORE_TOOL_PREFIX = "one_company_";
 

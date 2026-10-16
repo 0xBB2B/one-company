@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const script = fileURLToPath(new URL("../runtime/git-prerequisite.mjs", import.meta.url));
+const script = fileURLToPath(new URL("../src/core/exec/git-prerequisite.mjs", import.meta.url));
 
 test("preinstall 检查：PATH 上没有 git 时非零退出并提示，有 git 时通过", async () => {
   const emptyBin = await mkdtemp(join(tmpdir(), "one-company-no-git-"));

@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { COMMON_ADVICE, withDetail } from "./tool-failure.ts";
-import type { FailureAdvice } from "./tool-failure.ts";
+import { COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
+import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { Type } from "typebox";
 import type { Static, TProperties, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { UUID_V7_PATTERN } from "./database.ts";
-import { canonicalJson } from "./strict-json.ts";
+import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
+import { canonicalJson } from "../../core/storage/strict-json.ts";
 import { ApprovalManifestReferenceSchema, hash, RequirementDocSpecSchema } from "./requirement-contracts.ts";
 import type { ApprovalSummary, ProdReference, WorkspaceBinding } from "./requirement-contracts.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";

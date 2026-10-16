@@ -1,9 +1,9 @@
-import { repositoryDatabase, withDatabase } from "./database.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 import { PmIntakeStore } from "./pm-intake-store.ts";
-import type { PmLease, RequirementRecord } from "./requirement-contracts.ts";
-import { RequirementEventService } from "./requirement-events.ts";
-import { approvedPrototypeListLines } from "./prototype-dispatch.ts";
-import { prototypeChangeLines, prototypeChanges, prototypesAtRevision } from "./requirement-prototype-revisions.ts";
+import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
+import { RequirementEventService } from "../requirement/requirement-events.ts";
+import { approvedPrototypeListLines } from "../prototype/prototype-dispatch.ts";
+import { prototypeChangeLines, prototypeChanges, prototypesAtRevision } from "../requirement/requirement-prototype-revisions.ts";
 
 export interface PmEventDeliveryInput {
   repositoryRoot: string;

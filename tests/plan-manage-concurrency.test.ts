@@ -1,12 +1,12 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { repositoryDatabase, uuidv7, withDatabase } from "../runtime/database.ts";
-import { createPlanManageTool, TASKS } from "../runtime/plan-manage.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { createPlanManageTool, TASKS } from "../src/modules/pm/plan-manage.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 import { pmIntakeReviewKit } from "./helpers/pm-intake-review.ts";
 
 const hooks = vi.hoisted(() => ({ beforeWrite: undefined as (() => void) | undefined }));
-vi.mock("../runtime/store.ts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../runtime/store.ts")>();
+vi.mock("../src/core/storage/store.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../src/core/storage/store.ts")>();
   return { ...original, writeFileAtomic: async (path: string, content: string) => { hooks.beforeWrite?.(); return original.writeFileAtomic(path, content); } };
 });
 vi.setConfig({ testTimeout: 30_000 });
@@ -26,7 +26,7 @@ test("M7-AC30：计划修改读完快照后任务被派工改动时，提交以�
     writePaths: ["src/"], blockedByQuestionIds: [], maxTurns, objective: "登录", passCriteria: ["可登录"], scope: { in: ["登录"], out: [] }, performance: NA });
   const view = await pm.execute({ action: "propose", tasks: [spec(10)] }) as { tasks: Array<{ taskId: string }> };
   const taskId = view.tasks[0]!.taskId, attemptRun = uuidv7();
-  const db = <T>(run: (db: import("../runtime/database.ts").LocalDatabase) => T) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), run);
+  const db = <T>(run: (db: import("../src/core/storage/database.ts").LocalDatabase) => T) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), run);
   hooks.beforeWrite = () => {
     hooks.beforeWrite = undefined;
     db((d) => { const row = d.read<Record<string, unknown>>(TASKS, taskId)!;
