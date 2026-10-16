@@ -22,3 +22,12 @@ export async function readGit(cwd: string, args: string[], options: GitReadOptio
   const result = await readGitBytes(cwd, args, options);
   return { stdout: result.stdout.toString("utf8"), stderr: result.stderr.toString("utf8") };
 }
+
+export async function resolveRepoRoot(cwd: string): Promise<string> {
+  try {
+    const { stdout } = await readGit(cwd, ["rev-parse", "--show-toplevel"]);
+    return stdout.trim();
+  } catch {
+    return cwd;
+  }
+}

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,7 +8,7 @@ const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const README = join(PACKAGE_ROOT, "README.md");
 const CONTRIBUTING = join(PACKAGE_ROOT, "CONTRIBUTING.md");
 const DAEMON_MAIN = join(PACKAGE_ROOT, "daemon/main.ts");
-const COMMAND_SOURCES = [join(PACKAGE_ROOT, "extensions/commands.ts"), join(PACKAGE_ROOT, "extensions/git-delivery.ts"), join(PACKAGE_ROOT, "extensions/requirement-manage.ts")];
+const COMMAND_SOURCES = [join(PACKAGE_ROOT, "extensions/commands.ts"), join(PACKAGE_ROOT, "extensions/requirement-manage.ts")];
 const readCommandSources = async () => (await Promise.all(COMMAND_SOURCES.map(readText))).join("\n");
 const PACKAGE_JSON = join(PACKAGE_ROOT, "package.json");
 const IDENTITY = join(PACKAGE_ROOT, "runtime/identity.ts");
@@ -73,7 +74,7 @@ describe("README 二级标题", () => {
 
 describe("README 必需句", () => {
   const REQUIRED = [
-    "/one:agents",
+    "/one:setting",
     "/one:ps",
     "每个仓库一个守护进程",
     "自动启动",
@@ -131,7 +132,7 @@ describe("README 常量与实际代码一致", () => {
   test("命令表覆盖扩展注册的全部入口名，且不出现未注册的入口", async () => {
     const source = await readCommandSources();
     const registered = [...source.matchAll(/registerCommand\(\s*"([^"]+)"/g)].map((match) => match[1]).sort();
-    expect(registered).toEqual(["one:agents", "one:ps", "one:git-delivery"].sort());
+    expect(registered).toEqual(["one:setting", "one:ps"].sort());
 
     const body = await readText(README);
     for (const name of registered) {
@@ -146,6 +147,46 @@ describe("README 常量与实际代码一致", () => {
     const body = await readText(README);
     const mentioned = new Set([...body.matchAll(/\/one:([a-zA-Z-]+)/g)].map((match) => `one:${match[1]}`));
     for (const name of mentioned) expect(registered.has(name)).toBe(true);
+  });
+});
+
+describe("旧命令与旧页面已清除", () => {
+  const SEARCHED = ["README.md", "CONTRIBUTING.md", "rules", "shared", "role-rules", "skills", "runtime", "daemon", "extensions"];
+
+  async function filesUnder(path: string): Promise<string[]> {
+    const entries = await readdir(path, { withFileTypes: true }).catch(() => null);
+    if (!entries) return [path];
+    const nested = await Promise.all(entries.map((entry) => filesUnder(join(path, entry.name))));
+    return nested.flat();
+  }
+
+  for (const command of ["/one:agents", "/one:git-delivery"]) {
+    test(`文档、提示词和源码里搜不到 ${command}`, async () => {
+      const files = (await Promise.all(SEARCHED.map((name) => filesUnder(join(PACKAGE_ROOT, name))))).flat();
+      const hits: string[] = [];
+      for (const file of files) if ((await readText(file)).includes(command)) hits.push(file.slice(PACKAGE_ROOT.length + 1));
+      expect(hits).toEqual([]);
+    });
+  }
+
+  test("主代理提示词写在 /one:setting 的开关里开启 Git 交付", async () => {
+    expect(await readText(join(PACKAGE_ROOT, "rules/01-main-session.md"))).toContain("在 /one:setting 的开关里开启 Git 交付");
+  });
+
+  for (const phrase of ["设定栏", "右上角写着各层"]) {
+    test(`README 里搜不到旧页面的说法：${phrase}`, async () => {
+      expect(await readText(README)).not.toContain(phrase);
+    });
+  }
+
+  test("README 说明新页面导航时写了 ← 回目录和 R 清除本层", async () => {
+    const body = await readText(README);
+    expect(body).toMatch(/←[^\n]{0,6}回目录/u);
+    expect(body).toContain("R 清除本层");
+  });
+
+  test("旧的角色定义页源文件已不存在", () => {
+    expect(existsSync(join(PACKAGE_ROOT, "runtime/agent-catalog-ui.ts"))).toBe(false);
   });
 });
 

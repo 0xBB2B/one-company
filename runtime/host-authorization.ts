@@ -60,7 +60,7 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   adjudication_mismatch: { why: "决定针对的不是这个需求", next: "核对需求编号与事项" },
   candidate_required: { why: "没有待确认的需求版本", next: "先保存需求草稿" },
   input_changed: { why: "处理期间用户又说了新的话", next: "按用户最新的原话重新处理" },
-  internal_model_unavailable: { why: "解释器或草稿核验器要用的模型不可用", next: "请用户在 /one:agents 的设定栏检查这个角色的模型，或在主窗口选定模型、在本机配置该模型的凭据；不要自行改用别的模型重试" },
+  internal_model_unavailable: { why: "解释器或草稿核验器要用的模型不可用", next: "请用户在 /one:setting 的「模型」里检查这个角色的模型，或在主窗口选定模型、在本机配置该模型的凭据；不要自行改用别的模型重试" },
   model_unavailable: { why: "当前模型不可用或没有配置凭据，无法核验草稿", next: "请用户检查模型配置或改选模型" },
   draft_input_limit: { why: "草稿与用户原话合计超出 64 KiB", next: "精简草稿后重试" },
   draft_cancelled: { why: "草稿核验被取消", next: "需要时重新保存" },

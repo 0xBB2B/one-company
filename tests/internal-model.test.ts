@@ -81,6 +81,13 @@ test("设定的模型找不到或没有凭据时，原因写明角色、模型�
   await expect(w.resolve("draft-verifier")).rejects.toMatchObject({ message: expect.stringContaining("没有可用的凭据") });
 });
 
+test("模型不可用的建议指向 /one:setting 的「模型」，并禁止自行改用别的模型", async () => {
+  const w = await world();
+  await w.user({ interpreter: { model: "5x/not-there", thinking: null } });
+  await expect(w.resolve("interpreter")).rejects.toMatchObject({ advice: { next:
+    "请用户在 /one:setting 的「模型」里检查这个角色的模型，或在主窗口选定模型、在本机配置该模型的凭据；不要自行改用别的模型重试" } });
+});
+
 test.each<[Role, string]>([["interpreter", "解释器"], ["draft-verifier", "草稿核验器"]])("设定跟随主窗口的模型但主窗口没有选定模型时，%s报错写明原因", async (role, label) => {
   const w = await world();
   await expect(w.resolve(role, { mainModel: undefined })).rejects.toMatchObject({ code: "internal_model_unavailable",

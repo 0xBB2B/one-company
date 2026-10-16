@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { showGitDeliveryTool } from "./git-delivery.ts";
 import { openSettingsPage } from "./settings.ts";
 import type { SettingsExtensionContext } from "./settings.ts";
 import { openShellUiPage } from "./shell-ui.ts";
@@ -17,7 +18,8 @@ export interface CommandsPi {
 }
 
 export interface RegisterCommandsOptions {
-  openSettingsPage: (ctx: SettingsExtensionContext, options: { mainThinking: () => string }) => Promise<void>;
+  openSettingsPage: (ctx: SettingsExtensionContext, options: { mainThinking: () => string; onGitDeliveryChanged: (enabled: boolean) => void }) => Promise<void>;
+  onGitDeliveryChanged: (enabled: boolean) => void;
   openShellPage: (ctx: OpenShellPageCtx) => Promise<void>;
 }
 
@@ -27,7 +29,7 @@ async function openSettingOrReport(
   ctx: CommandsCtx,
 ): Promise<void> {
   try {
-    await options.openSettingsPage(ctx, { mainThinking: () => pi.getThinkingLevel() });
+    await options.openSettingsPage(ctx, { mainThinking: () => pi.getThinkingLevel(), onGitDeliveryChanged: options.onGitDeliveryChanged });
   } catch (error) {
     ctx.ui.notify((error as Error).message);
   }
@@ -45,8 +47,8 @@ async function openShellPageOrReport(
 }
 
 export function registerCommands(pi: CommandsPi, options: RegisterCommandsOptions): void {
-  pi.registerCommand("one:agents", {
-    description: "打开角色设置页",
+  pi.registerCommand("one:setting", {
+    description: "打开设置页",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI || ctx.mode !== "tui") {
         ctx.ui.notify("需要交互终端才能打开设置页");
@@ -68,5 +70,6 @@ export default function commandsExtension(pi: ExtensionAPI): void {
   registerCommands(pi, {
     openSettingsPage,
     openShellPage: openShellUiPage,
+    onGitDeliveryChanged: (enabled) => showGitDeliveryTool(pi, enabled),
   });
 }

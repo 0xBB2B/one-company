@@ -216,7 +216,7 @@ describe("覆盖与导入规则", () => {
     expect(catalog.problems.map((problem) => problem.reason).join("\n")).toMatch(/缺少 role[\s\S]*未覆盖default层的 reviewer/u);
   });
 
-  const RETIRED = "已不再使用定义文件，请在设定栏修改";
+  const RETIRED = "已不再使用定义文件，模型和思考等级改在「模型」里";
 
   test.each(["pm", "interpreter", "draft-verifier"])("用户层 role 写 %s 的定义文件不生效、不进角色目录，问题里记一条固定原因", async (role) => {
     const root = await tempDir();
