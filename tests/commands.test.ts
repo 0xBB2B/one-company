@@ -35,11 +35,16 @@ function makeOptions(overrides: Partial<RegisterCommandsOptions> = {}): {
   options: RegisterCommandsOptions;
   settingsCalls: unknown[];
   shellCalls: unknown[];
+  deliveryChanges: boolean[];
 } {
   const settingsCalls: unknown[] = [];
   const shellCalls: unknown[] = [];
+  const deliveryChanges: boolean[] = [];
   return {
     options: {
+      onGitDeliveryChanged: overrides.onGitDeliveryChanged ?? ((enabled: boolean) => {
+        deliveryChanges.push(enabled);
+      }),
       openSettingsPage: overrides.openSettingsPage ?? (async (ctx: unknown) => {
         settingsCalls.push(ctx);
       }),
@@ -49,6 +54,7 @@ function makeOptions(overrides: Partial<RegisterCommandsOptions> = {}): {
     },
     settingsCalls,
     shellCalls,
+    deliveryChanges,
   };
 }
 
@@ -63,7 +69,7 @@ describe("命令注册集合", () => {
   test("恰好注册两个命令，且不含任何 spec-* 别名", () => {
     const { registrations } = setup();
     const names = Object.keys(registrations).sort();
-    expect(names).toEqual(["one:agents", "one:ps"]);
+    expect(names).toEqual(["one:ps", "one:setting"]);
     expect(names.every((name) => name.startsWith("one:"))).toBe(true);
   });
 
@@ -73,16 +79,27 @@ describe("命令注册集合", () => {
       expect(registrations[name]!.description.length).toBeGreaterThan(0);
     }
   });
+
+  test("one:setting 的描述是打开设置页", () => {
+    const { registrations } = setup();
+    expect(registrations["one:setting"]!.description).toBe("打开设置页");
+  });
+
+  test("不再注册 one:agents 和 one:git-delivery", () => {
+    const { registrations } = setup();
+    expect(registrations).not.toHaveProperty("one:agents");
+    expect(registrations).not.toHaveProperty("one:git-delivery");
+  });
 });
 
-describe("/one:agents", () => {
+describe("/one:setting", () => {
   test("交互终端下调用打开设置页回调", async () => {
     const { pi, registrations } = makeFakePi();
     const { options, settingsCalls } = makeOptions();
     registerCommands(pi, options);
     const { ctx } = makeFakeCtx({ hasUI: true, mode: "tui" });
 
-    await registrations["one:agents"]!.handler("", ctx);
+    await registrations["one:setting"]!.handler("", ctx);
 
     expect(settingsCalls.length).toBe(1);
   });
@@ -94,10 +111,24 @@ describe("/one:agents", () => {
     registerCommands(pi, options);
     const { ctx } = makeFakeCtx({ hasUI: true, mode: "tui" });
 
-    await registrations["one:agents"]!.handler("", ctx);
+    await registrations["one:setting"]!.handler("", ctx);
 
     expect(received).toHaveLength(1);
     expect(received[0]!.mainThinking()).toBe("xhigh");
+  });
+
+  test("传给设置页的 onGitDeliveryChanged 把新的生效值交给注册时给的回调", async () => {
+    const { pi, registrations } = makeFakePi();
+    const received: Array<{ onGitDeliveryChanged: (enabled: boolean) => void }> = [];
+    const { options, deliveryChanges } = makeOptions({ openSettingsPage: async (_ctx, page) => { received.push(page); } });
+    registerCommands(pi, options);
+    const { ctx } = makeFakeCtx({ hasUI: true, mode: "tui" });
+
+    await registrations["one:setting"]!.handler("", ctx);
+    received[0]!.onGitDeliveryChanged(true);
+    received[0]!.onGitDeliveryChanged(false);
+
+    expect(deliveryChanges).toEqual([true, false]);
   });
 
   test("打开设置页回调抛错时通知具体原因，不调用其他入口", async () => {
@@ -110,7 +141,7 @@ describe("/one:agents", () => {
     registerCommands(pi, options);
     const { ctx, notifications } = makeFakeCtx({ hasUI: true, mode: "tui" });
 
-    await registrations["one:agents"]!.handler("", ctx);
+    await registrations["one:setting"]!.handler("", ctx);
 
     expect(shellCalls.length).toBe(0);
     expect(notifications.length).toBeGreaterThan(0);
@@ -123,10 +154,10 @@ describe("/one:agents", () => {
     registerCommands(pi, options);
     const { ctx, notifications } = makeFakeCtx({ hasUI: false, mode: "tui" });
 
-    await registrations["one:agents"]!.handler("", ctx);
+    await registrations["one:setting"]!.handler("", ctx);
 
     expect(settingsCalls.length).toBe(0);
-    expect(notifications.length).toBeGreaterThan(0);
+    expect(notifications.map((item) => item.message)).toEqual(["需要交互终端才能打开设置页"]);
   });
 
   test("mode 不为 tui 时通知原因，不调用打开设置页回调", async () => {
@@ -135,10 +166,10 @@ describe("/one:agents", () => {
     registerCommands(pi, options);
     const { ctx, notifications } = makeFakeCtx({ hasUI: true, mode: "other" });
 
-    await registrations["one:agents"]!.handler("", ctx);
+    await registrations["one:setting"]!.handler("", ctx);
 
     expect(settingsCalls.length).toBe(0);
-    expect(notifications.length).toBeGreaterThan(0);
+    expect(notifications.map((item) => item.message)).toEqual(["需要交互终端才能打开设置页"]);
   });
 });
 

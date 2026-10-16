@@ -11,7 +11,7 @@ import type { DeliveryFacts } from "../runtime/git-delivery.ts";
 import { AdvisedError, toolFailure } from "../runtime/tool-failure.ts";
 import { shapeIssue } from "../runtime/tool-request.ts";
 import { windowContext } from "./lifecycle.ts";
-import { resolveRepoRoot } from "./settings.ts";
+import { resolveRepoRoot } from "../runtime/git-read.ts";
 import { chooseWindow, confirmWindow } from "../runtime/question-window.ts";
 
 export const GIT_DELIVER_TOOL = "one_company_git_deliver";

@@ -120,7 +120,7 @@ test("同一个窗口开着时，状态页的窗口也排队，等前一个关�
   await page;
 });
 
-test("同一个窗口开着时，/one:agents 页面也排队，等前一个关掉才打开", async () => {
+test("同一个窗口开着时，/one:setting 页面也排队，等前一个关掉才打开", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-t-"));
   const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, "agent");
@@ -133,7 +133,7 @@ test("同一个窗口开着时，/one:agents 页面也排队，等前一个关�
   const asking = chooseWindow(r.host as never, { title: "先开的窗口", lines: [], choices: [{ label: "甲" }] });
   const ctx = { hasUI: true, mode: "tui", cwd: join(root, "repo"), ui: { ...r.host.ui, notify() {} }, isProjectTrusted: () => true,
     modelRegistry: { getAll: () => [], hasConfiguredAuth: () => false }, model: undefined } as unknown as SettingsExtensionContext;
-  const page = openSettingsPage(ctx, { mainThinking: () => "high" });
+  const page = openSettingsPage(ctx, { mainThinking: () => "high", onGitDeliveryChanged() {} });
   await settle(150);
   expect(r.custom).toHaveBeenCalledTimes(1);
   r.opened[0]!.component.handleInput(ENTER);

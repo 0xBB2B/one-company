@@ -109,6 +109,15 @@ describe("PM 的模型与思考等级取自设定", () => {
       .rejects.toMatchObject({ code: "thinking_unsupported", message: expect.stringContaining("（没有单独设定，跟随了派出方的思考等级）") });
   });
 
+  test("思考等级不被模型支持时，建议指向 /one:setting 的「模型」", async () => {
+    let current: Setting = { model: null, thinking: null };
+    const w = await createPmRunWorld(cleanups, { loadAgentSettings: () => settingsOf(current)() });
+    current = { model: null, thinking: "minimal" };
+    w.fixture.state.releasePm(w.lease);
+    await expect(w.manager.dispatchPm({ requirementId: w.fixture.requirementId, model: MAIN, thinking: "off" }))
+      .rejects.toMatchObject({ code: "thinking_unsupported", advice: { next: "请用户改选模型，或在 /one:setting 的「模型」里给这个角色设定该模型支持的思考等级" } });
+  });
+
   describe("设定的模型或思考等级用不了时直接报错并写明原因，不换别的模型", () => {
     const cases: Array<[string, Setting, string, string]> = [
       ["模型在本机找不到", { model: "team-model/missing", thinking: null }, "model_unavailable", "team-model/missing"],
@@ -152,6 +161,6 @@ describe("PM 的提示词只由程序给", () => {
     expect(JSON.stringify(await w.manager.agentCatalog(undefined, 0))).not.toContain("旧 pm");
     const { roles, problems } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir, projectDir: join(root, "none"), parseFrontmatter, projectTrusted: false });
     expect(roles.find((entry) => entry.name === "pm")).toBeUndefined();
-    expect(problems.some((problem) => problem.reason === "已不再使用定义文件，请在设定栏修改")).toBe(true);
+    expect(problems.some((problem) => problem.reason === "已不再使用定义文件，模型和思考等级改在「模型」里")).toBe(true);
   });
 });

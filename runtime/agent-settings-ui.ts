@@ -131,7 +131,7 @@ export function rowAvailability(role: SettingsRoleKey, setting: RoleSetting, mod
   return { ok: false, reason: ambiguous ? defined.reason : `${setting.model} 没有可用的凭据`, consequence: `，${roleOf(role).failure}；回车重新选` };
 }
 
-/** 设定栏：三行角色设定列表，加上回车进入的"模型 → 思考等级 → 存到哪一层"三步选择。 */
+/** 模型分类的右栏：三行角色设定列表，加上回车进入的"模型 → 思考等级 → 存到哪一层"三步选择。 */
 export class SettingsTab {
   private step = 0;
   private role: SettingsRoleKey = "pm";

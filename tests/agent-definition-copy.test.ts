@@ -6,10 +6,10 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { openSettingsPage } from "../extensions/settings.ts";
 import type { SettingsExtensionContext } from "../extensions/settings.ts";
-import { AgentCatalogView } from "../runtime/agent-catalog-ui.ts";
 import { copyAgentDefinition } from "../runtime/agent-copy.ts";
 import { readAgentSettings } from "../runtime/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../runtime/roles.ts";
+import { SettingsPageView } from "../runtime/settings-page-ui.ts";
 
 const RIGHT = "\x1b[C", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const theme = { fg: (_kind: string, text: string) => text, bg: (_kind: string, text: string) => text, bold: (text: string) => text, inverse: (text: string) => text };
@@ -88,8 +88,8 @@ test("只写了 skills 没写 mcp 时，只补 mcp 空数组", async () => {
 async function viewOf(d: Dirs) {
   const catalog = await loadCatalog(d);
   const settings = await readAgentSettings({ agentDir: join(root, "agent"), repositoryRoot: join(root, "repo"), projectTrusted: true });
-  const view = new AgentCatalogView({ catalog, theme, projectTrusted: true, untrustedProjectCount: 0, settings, models: [], mainModel: undefined, mainThinking: "high",
-    onSaveSetting() {}, onClearSetting() {}, nameTaken: () => undefined, onCopy() {}, onClose() {} });
+  const view = new SettingsPageView({ catalog, theme, projectTrusted: true, untrustedProjectCount: 0, settings, models: [], mainModel: undefined, mainThinking: "high",
+    onSaveSetting() {}, onClearSetting() {}, onSaveSwitch() {}, onClearSwitch() {}, nameTaken: () => undefined, onCopy() {}, onClose() {} });
   const lines = (width = 80) => view.render(width).map((line) => line.trimEnd());
   return { view, lines, text: (width = 80) => lines(width).join("\n") };
 }
@@ -98,10 +98,11 @@ test("展开内置 worker 详情：正文行写空，说明流程规矩由程序
   const d = await setup();
   await writeRole(d.userDir, "vue-engineer", "description: 写 Vue\nrole: worker\nskills: [a]\nmcp: [docs]", "擅长 Vue\n");
   const p = await viewOf(d);
+  p.view.handleInput(RIGHT);
   p.view.handleInput("\x1b[B");
   p.view.handleInput(ENTER);
   const lines = p.lines();
-  expect(p.text()).toMatch(/› worker|⌄ worker/u);
+  expect(p.text()).toMatch(/[▸▾] worker/u);
   const at = (key: RegExp) => lines.findIndex((line) => key.test(line));
   const mcp = at(/┊ MCP/u), body = at(/┊ 正文/u), file = at(/┊ 文件/u);
   expect(lines[body]).toMatch(/┊ 正文 +空 · 流程规矩由程序加上，正文只写专长和偏好$/u);
@@ -114,6 +115,7 @@ test("展开写了正文的 vue-engineer 详情：正文行写已写，说明流
   const d = await setup();
   await writeRole(d.userDir, "vue-engineer", "description: 写 Vue\nrole: worker\nskills: [a]\nmcp: [docs]", "擅长 Vue\n");
   const p = await viewOf(d);
+  p.view.handleInput(RIGHT);
   p.view.handleInput(ENTER);
   const lines = p.lines();
   expect(p.text()).toMatch(/vue-engineer/u);
@@ -130,6 +132,7 @@ test("36 到 80 列下展开详情，每一行的显示宽度都不超过终端�
   for (let width = 36; width <= 80; width++) {
     for (const downs of [0, 1]) {
       const p = await viewOf(d);
+      p.view.handleInput(RIGHT);
       for (let i = 0; i < downs; i++) p.view.handleInput("\x1b[B");
       p.view.handleInput(ENTER);
       expect(p.text(width)).toContain("正文");
@@ -146,7 +149,8 @@ test("头部写了 tools 的定义不生效，进问题栏，原因是不认识�
   expect(entry?.available).toBe(false);
   expect(entry?.problem?.display).toBe("不认识的字段：tools");
   const p = await viewOf(d);
-  for (let i = 0; i < 6; i++) p.view.handleInput(RIGHT);
+  for (let i = 0; i < 7; i++) p.view.handleInput("\x1b[B");
+  p.view.handleInput(RIGHT);
   p.view.handleInput(ENTER);
   expect(p.text()).toMatch(/tooly\.md/u);
   expect(p.text()).toMatch(/┊ 原因 +不认识的字段：tools/u);
@@ -160,7 +164,7 @@ test("页面复制完成后底部提示：已复制到新文件路径，打开�
   await mkdir(join(root, "repo"), { recursive: true });
   const screens: string[] = [];
   const steps: Array<(keys: (...k: string[]) => void, text: string) => void> = [
-    (keys) => keys("c", ...Array(11).fill(BACKSPACE), ..."vue-engineer", ENTER),
+    (keys) => keys(RIGHT, "c", ...Array(11).fill(BACKSPACE), ..."vue-engineer", ENTER),
     (keys) => keys(ENTER),
     (keys, text) => { screens.push(text); keys(ESC); },
   ];
@@ -176,7 +180,7 @@ test("页面复制完成后底部提示：已复制到新文件路径，打开�
     notify() {},
   };
   const ctx = { hasUI: true, mode: "tui", cwd: join(root, "repo"), ui, isProjectTrusted: () => true, modelRegistry: { getAll: () => [], hasConfiguredAuth: () => false }, model: undefined } as unknown as SettingsExtensionContext;
-  await openSettingsPage(ctx, { mainThinking: () => "high" });
+  await openSettingsPage(ctx, { mainThinking: () => "high", onGitDeliveryChanged() {} });
   expect(screens[0]).toContain(`✓ 已复制到 ${join(root, "agent", "agents", "vue-engineer.md")}，打开它写专长、skills 和 mcp`);
 });
 

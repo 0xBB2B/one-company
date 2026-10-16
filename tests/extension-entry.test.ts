@@ -9,7 +9,7 @@ import { createFakePi } from "./helpers/fake-pi.ts";
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const REQUIRED_COMMAND_NAMES = [
-  "one:agents",
+  "one:setting",
   "one:ps",
 ];
 
@@ -29,7 +29,7 @@ function makeShellUiCtx() {
 }
 
 describe("extensions/index.ts 唯一扩展入口", () => {
-  test("registerCommand 收到的命令名无重复，包含两个带 one: 前缀的命令，不含 spec-* 别名", () => {
+  test("registerCommand 收到的命令名无重复，包含 one:setting 和 one:ps，不含 spec-* 别名", () => {
     const fakePi = createFakePi();
 
     registerExtensions(fakePi.pi);
@@ -40,6 +40,8 @@ describe("extensions/index.ts 唯一扩展入口", () => {
       expect(names).toContain(required);
     }
     expect(names.some((name) => name.startsWith("spec-"))).toBe(false);
+    expect(names).not.toContain("one:agents");
+    expect(names).not.toContain("one:git-delivery");
   });
 
   test("registerTool 收到的工具名整体无重复（含 bash，覆盖各子扩展同步注册的全部工具）", () => {

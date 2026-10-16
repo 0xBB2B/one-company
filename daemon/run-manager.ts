@@ -238,7 +238,7 @@ const PROTOCOL_NEXT: Record<string, string> = {
   plan_not_confirmed: "先用 plan_manage confirm 冻结计划，再按冻结后的任务派工",
   agent_unavailable: "指定的角色定义不可用：向用户说明并请用户决定，不要自行改用别的定义",
   model_unavailable: "指定的模型不可用：请用户检查模型配置或改选模型",
-  thinking_unsupported: "请用户改选模型，或在 /one:agents 给这个角色设定该模型支持的思考等级",
+  thinking_unsupported: "请用户改选模型，或在 /one:setting 的「模型」里给这个角色设定该模型支持的思考等级",
   skill_unavailable: "指定的技能不可用：请用户检查技能安装，或调整角色定义",
   stop_unconfirmed: "稍后重试停止，并核对进程是否已结束",
 };

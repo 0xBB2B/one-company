@@ -385,7 +385,7 @@ export class SettingsPageView {
     const { theme, settings } = this.options, cols = tableColumns(width), { enabled, source } = settings.gitDelivery, selected = this.selectedRow(0);
     return [theme.fg("muted", `${" ".repeat(MARKER)}${pad("名称", cols.name)}${pad("来源", SOURCE)}状态`),
       tableRow(theme, selected, width, [
-        [selected ? " ▸ " : "   ", (text) => theme.fg("accent", text)], [pad("Git 交付", cols.name)],
+        [selected ? " ▸ " : "   ", (text) => theme.fg("accent", text)], [pad("Git 交付", cols.name), this.fresh === "git-delivery" ? (text) => theme.fg("success", text) : undefined],
         [" ".repeat(6), undefined, this.sourceTag(source)], [" ".repeat(SOURCE - 6)],
         [enabled ? "开启" : "关闭", (text) => theme.fg(enabled ? "success" : "dim", text)],
       ])];

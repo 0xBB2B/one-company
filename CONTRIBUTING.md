@@ -37,7 +37,7 @@ ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> \
 pnpm run test:acceptance:parallel [--only <编号…>]
 ```
 
-- `ONE_COMPANY_ACCEPTANCE_MODEL`：主会话用的模型，如 `5x/gpt-6.1-sol`。各角色和内部调用默认跟随主会话的模型和思考等级，在 /one:agents 的设定栏和角色定义里可改。
+- `ONE_COMPANY_ACCEPTANCE_MODEL`：主会话用的模型，如 `5x/gpt-6.1-sol`。各角色和内部调用默认跟随主会话的模型和思考等级，在 /one:setting 的「模型」和角色定义里可改。
 - `ONE_COMPANY_ACCEPTANCE_OUTPUT`：证据目录。每条每次一个子目录，有会话记录、`data.db`、`report.json`；总进度在 `summary.txt`。
 - `--only`：只跑测试名冒号前编号匹配的几条，如 `--only P1 P2 M9-AC12`，所以测试名开头的编号不要删改。
 - 运行时把 `~/.pi/agent/` 下的 `models.json` 和 `auth.json` 复制进一个只有当前用户能读写的临时 agent 目录，跑完删除，不动你自己的 `~/.pi/agent/`。
