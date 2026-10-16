@@ -11,7 +11,7 @@ import { DATABASE_SNAPSHOT_FILE, pathExists } from "../../core/storage/database-
 import { readRequirementBackupOperation, requirementBackupFiles } from "./requirement-backup.ts";
 import type { RequirementBackupFile, RequirementBackupManifest, RequirementBackupReference, RequirementBackupRequirement } from "./requirement-backup.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE } from "./requirement-coordination.ts";
-import { verifyVersion } from "./prd-storage.ts";
+import { PRD_FILE, PRD_FILE_PATTERN, verifyVersion } from "./prd-storage.ts";
 import { sealOperationLog, validOperationLog } from "../../core/storage/operation-log.ts";
 
 const RESTORE_FORMAT = "requirement-restore-operation/v1" as const;
@@ -179,11 +179,11 @@ function validateManifest(value: unknown, options: RequirementRestoreOptions, re
   const known = new Set(ids);
   for (const file of manifest.files) {
     if (file.relativePath === "data.db") continue;
-    const match = /^requirements\/([0-9a-f-]{36})\/(prd\.md|\.git\/.+)$/.exec(file.relativePath) ?? /^prototypes\/([0-9a-f-]{36})\/[^/]+\.v\d+\.html$/.exec(file.relativePath);
+    const match = new RegExp(`^requirements/([0-9a-f-]{36})/(${PRD_FILE_PATTERN}|\\.git/.+)$`).exec(file.relativePath) ?? /^prototypes\/([0-9a-f-]{36})\/[^/]+\.v\d+\.html$/.exec(file.relativePath);
     if (!match || !UUID_V7_PATTERN.test(match[1]!) || !known.has(match[1]!)) fail("manifest_path_not_allowed");
   }
   for (const requirement of manifest.requirements.filter((item) => item.saved || item.approved)) {
-    if (!paths.includes(`requirements/${requirement.requirementId}/prd.md`) || !paths.some((path) => path.startsWith(`requirements/${requirement.requirementId}/.git/`))) fail("manifest_requirement_incomplete");
+    if (!paths.includes(`requirements/${requirement.requirementId}/${PRD_FILE}`) || !paths.some((path) => path.startsWith(`requirements/${requirement.requirementId}/.git/`))) fail("manifest_requirement_incomplete");
   }
   return manifest as RequirementBackupManifest;
 }

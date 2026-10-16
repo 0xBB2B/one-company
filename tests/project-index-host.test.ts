@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ProjectIndexHost } from "../src/app/daemon/project-index-host.ts";
+import { ProjectIndexService } from "../src/modules/project-index/project-index-service.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -63,4 +64,16 @@ test("被 Git 忽略的文件不进入索引；切换分支后查询自动按当
   const page = await w.host.query("c", { action: "search", text: "分支标记" });
   expect(page.workspace.branch).toBe("refs/heads/feature-x");
   expect(JSON.stringify(page)).toContain("feature.ts");
+});
+
+test("宿主交给索引服务的授权对 docs/prd 开头的路径（不分大小写）拒绝，其他路径放行", async () => {
+  const w = await world();
+  const open = vi.spyOn(ProjectIndexService, "open");
+  try {
+    await w.host.init();
+    const authorize = open.mock.calls[0]![0].authorize!;
+    const request = (path: string | null) => ({ action: "query", phase: "read", repoId: w.fixture.repoId, repositoryRoot: w.root, workspaceId: null, path }) as never;
+    for (const path of ["docs/prd", "docs/prd/x.md", "DOCS/PRD/x.md", "Docs/Prd/sub/y.md"]) expect(authorize(request(path)), path).toBe(false);
+    for (const path of [null, "src/a.ts", "docs/prdx/a.md", "docs/spec/a.json"]) expect(authorize(request(path)), String(path)).toBe(true);
+  } finally { open.mockRestore(); }
 });

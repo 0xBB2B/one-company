@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { CurrentQueryIndex, IndexedFile, IndexedSymbol, SourceFragment } from "./index-store.ts";
 import { isKnowledgePath, KNOWLEDGE_QUERY_LIMITS as LIMIT, KnowledgeQueryError, parseKnowledgeQuery } from "./knowledge-query-contracts.ts";
 import type { KnowledgeFirstPageQuery } from "./knowledge-query-contracts.ts";
+import { PRD_ARCHIVE_DIRECTORY } from "../../core/policy/content-policy.ts";
 
 /** 查询所用索引快照：工作区、代次、覆盖范围与文件 hash。 */
 export interface ProjectBaselineSnapshot {
@@ -108,7 +109,7 @@ function copyCapture(input: KnowledgeQueryCapture): KnowledgeQueryCapture {
     || !Array.isArray(b.coverage.roots) || !b.coverage.roots.length || b.coverage.roots.length > 256
     || !Array.isArray(b.coverage.excludedPaths) || b.coverage.excludedPaths.length > 256
     || !b.coverage.roots.every((path) => path === "." || isKnowledgePath(path))
-    || !b.coverage.excludedPaths.includes("docs/prd")
+    || !b.coverage.excludedPaths.includes(PRD_ARCHIVE_DIRECTORY)
     || !Array.isArray(b.files) || b.files.length > 20_000
     || b.files.some((file) => !isKnowledgePath(file.path) || !HASH.test(file.hash)
       || !b.coverage.roots.some((root) => under(file.path, root)) || b.coverage.excludedPaths.some((path) => under(file.path, path)))

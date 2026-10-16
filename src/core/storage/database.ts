@@ -6,6 +6,7 @@ import { isPromise } from "node:util/types";
 import { assertDatabasePathReady, assertRegularDatabaseFiles, databaseKind, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, DatabaseStorageError } from "./database-paths.ts";
 import type { DatabaseKind } from "./database-paths.ts";
 import { createTransactionOrigin, finishTransactionOrigin, hasInvalidTransactionOrigin, invalidateTransactionOrigin, observeRejectedPromise, runOutsideTransactionOrigin, runWithTransactionOrigin, transactionOriginHasAsyncWork } from "./transaction-context.ts";
+import { PRD_ARCHIVE_DIRECTORY } from "../policy/content-policy.ts";
 export { repositoryDatabase, globalDatabase, indexDatabase, databaseFile } from "./database-paths.ts";
 
 export const UUID_V7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -79,7 +80,7 @@ const RECORD_SQL = Object.freeze({
   list: "SELECT id, record_key, version, data FROM records WHERE namespace = ? ORDER BY id",
 });
 
-const INDEX_NAMESPACES = new Set(["workspaces", "index_generations", "files", "symbols", "code_edges", "code_bindings", "source_fragments", "prd_metadata"]);
+const INDEX_NAMESPACES = new Set(["workspaces", "index_generations", "files", "symbols", "code_edges", "source_fragments", "prd_metadata"]);
 
 export interface StoredRecord<T = unknown> {
   id: string;
@@ -275,8 +276,8 @@ export class LocalDatabase {
             OR length(json_extract(new.data, '$.path')) NOT BETWEEN 1 AND 4096
             OR substr(json_extract(new.data, '$.path'), 1, 1) = '/'
             OR instr(json_extract(new.data, '$.path'), char(92)) > 0
-            OR lower(json_extract(new.data, '$.path')) = 'docs/prd'
-            OR lower(json_extract(new.data, '$.path')) LIKE 'docs/prd/%'
+            OR lower(json_extract(new.data, '$.path')) = '${PRD_ARCHIVE_DIRECTORY}'
+            OR lower(json_extract(new.data, '$.path')) LIKE '${PRD_ARCHIVE_DIRECTORY}/%'
             OR lower(json_extract(new.data, '$.path')) = '.git'
             OR lower(json_extract(new.data, '$.path')) LIKE '.git/%'
             OR lower(json_extract(new.data, '$.path')) LIKE '%/.git/%'
@@ -314,8 +315,8 @@ export class LocalDatabase {
             OR length(json_extract(new.data, '$.path')) NOT BETWEEN 1 AND 4096
             OR substr(json_extract(new.data, '$.path'), 1, 1) = '/'
             OR instr(json_extract(new.data, '$.path'), char(92)) > 0
-            OR lower(json_extract(new.data, '$.path')) = 'docs/prd'
-            OR lower(json_extract(new.data, '$.path')) LIKE 'docs/prd/%'
+            OR lower(json_extract(new.data, '$.path')) = '${PRD_ARCHIVE_DIRECTORY}'
+            OR lower(json_extract(new.data, '$.path')) LIKE '${PRD_ARCHIVE_DIRECTORY}/%'
             OR lower(json_extract(new.data, '$.path')) = '.git'
             OR lower(json_extract(new.data, '$.path')) LIKE '.git/%'
             OR lower(json_extract(new.data, '$.path')) LIKE '%/.git/%'

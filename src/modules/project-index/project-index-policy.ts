@@ -6,6 +6,7 @@ import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { assertDataRootOutsideWorktrees } from "../../core/storage/database-paths.ts";
+import { PRD_ARCHIVE_PARTS } from "../../core/policy/content-policy.ts";
 
 export const DEFAULT_INDEX_LIMITS = Object.freeze({
   maxFileBytes: 2 * 1024 * 1024,
@@ -232,7 +233,7 @@ function sameBigVersion(left: BigIntStats, right: BigIntStats): boolean {
 }
 
 function prdArchivePath(parts: string[]): boolean {
-  return parts.length >= 2 && parts[0]?.toLowerCase() === "docs" && parts[1]?.toLowerCase() === "prd";
+  return parts.length >= 2 && parts[0]?.toLowerCase() === PRD_ARCHIVE_PARTS[0] && parts[1]?.toLowerCase() === PRD_ARCHIVE_PARTS[1];
 }
 
 function directoryPolicy(name: string): IndexSkipReason | undefined {

@@ -9,7 +9,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const PRD_FILE = "prd.md";
+export const PRD_FILE = "prd.md";
+export const PRD_FILE_PATTERN = PRD_FILE.replace(".", "\\.");
 const GIT_DIR = ".git";
 const INTERNAL_NAME = "pi PRD storage";
 const INTERNAL_EMAIL = "pi-prd-storage@localhost";
@@ -684,7 +685,7 @@ async function assertOnlyMainRef(config: PrdStorageConfig, paths: PreparedPaths,
 async function repositoryPrdBlob(config: PrdStorageConfig, paths: PreparedPaths, commit: string): Promise<string> {
   const entries = (await runGit(config, paths, ["ls-tree", "-r", "-z", commit])).stdout.toString("utf8").split("\0").filter(Boolean);
   if (entries.length !== 1) fail("tree_mismatch", "提交树只能包含 prd.md");
-  const match = /^100644 blob ([0-9a-f]+)\tprd\.md$/.exec(entries[0]!);
+  const match = new RegExp(`^100644 blob ([0-9a-f]+)\\t${PRD_FILE_PATTERN}$`).exec(entries[0]!);
   if (!match || !OBJECT_ID_RE.test(match[1]!)) fail("tree_mismatch", "提交中的 prd.md 必须是普通文件");
   return match[1]!;
 }
@@ -695,7 +696,7 @@ async function managedIndexSnapshot(config: PrdStorageConfig, paths: PreparedPat
   if (extras.length > 0) fail("extra_index", "暂存区含有 prd.md 之外的路径", { count: extras.length });
   if (entries.length === 0) return { blob: null };
   if (entries.length !== 1) fail("external_index", "prd.md 暂存区含多个阶段或未知内容");
-  const match = /^100644 ([0-9a-f]+) 0\tprd\.md$/.exec(entries[0]!);
+  const match = new RegExp(`^100644 ([0-9a-f]+) 0\\t${PRD_FILE_PATTERN}$`).exec(entries[0]!);
   if (!match || !OBJECT_ID_RE.test(match[1]!)) fail("external_index", "prd.md 暂存内容不是固定普通文件");
   return { blob: match[1]! };
 }

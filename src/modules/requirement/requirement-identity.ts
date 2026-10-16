@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { PRD_ARCHIVE_DIRECTORY, PRD_ARCHIVE_PARTS } from "../../core/policy/content-policy.ts";
 
 const UUID_V7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const WINDOWS_UNSAFE_FILENAME_CHARACTERS = /[<>:"/\\|?*]/u;
 const CONTROL_CHARACTER = /\p{Cc}/u;
-const ARCHIVE_DIRECTORY_PARTS = ["docs", "prd"] as const;
 const MAX_FILENAME_BYTES = 255;
 
 export interface CreatedPrdDocument {
@@ -87,7 +87,7 @@ function filenameFor(requirementId: string, title: string): string {
 export function archivePathFor(requirementId: string, title: string): string {
   assertRequirementId(requirementId);
   assertString(title, "title");
-  return `${ARCHIVE_DIRECTORY_PARTS[0]}/${ARCHIVE_DIRECTORY_PARTS[1]}/${filenameFor(requirementId, title)}`;
+  return `${PRD_ARCHIVE_DIRECTORY}/${filenameFor(requirementId, title)}`;
 }
 
 export function prototypeArchivePathFor(requirementId: string, name: string): string {
@@ -204,7 +204,7 @@ export async function inspectPrdArchives(
   if (!rootStats) fail("invalid_workspace_root", "workspaceRoot 不存在");
   const root = await realpath(requestedRoot);
 
-  const docsPath = join(root, ARCHIVE_DIRECTORY_PARTS[0]);
+  const docsPath = join(root, PRD_ARCHIVE_PARTS[0]);
   const docsStats = await requiredDirectory(docsPath, "docs", true);
   if (!docsStats) return { paths: [], conflict: false };
   const actualDocs = await realpath(docsPath);
@@ -212,12 +212,12 @@ export async function inspectPrdArchives(
     fail("archive_directory_escape", "docs 目录链接或越过 workspaceRoot");
   }
 
-  const prdPath = join(docsPath, ARCHIVE_DIRECTORY_PARTS[1]);
-  const prdStats = await requiredDirectory(prdPath, "docs/prd", true);
+  const prdPath = join(docsPath, PRD_ARCHIVE_PARTS[1]);
+  const prdStats = await requiredDirectory(prdPath, PRD_ARCHIVE_DIRECTORY, true);
   if (!prdStats) return { paths: [], conflict: false };
   const actualPrd = await realpath(prdPath);
   if (actualPrd !== prdPath || !pathWithin(root, actualPrd)) {
-    fail("archive_directory_escape", "docs/prd 目录链接或越过 workspaceRoot");
+    fail("archive_directory_escape", `${PRD_ARCHIVE_DIRECTORY} 目录链接或越过 workspaceRoot`);
   }
 
   const entries = await readdir(prdPath, { withFileTypes: true });
@@ -231,7 +231,7 @@ export async function inspectPrdArchives(
     }
     const title = entry.name.slice(prefix.length, -".md".length);
     const archivePath = archivePathFor(requirementId, title);
-    if (archivePath !== `${ARCHIVE_DIRECTORY_PARTS[0]}/${ARCHIVE_DIRECTORY_PARTS[1]}/${entry.name}`) {
+    if (archivePath !== `${PRD_ARCHIVE_DIRECTORY}/${entry.name}`) {
       fail("invalid_archive_entry", "归档路径格式冲突");
     }
     if (!entry.isFile() || entry.isSymbolicLink()) {
@@ -244,7 +244,7 @@ export async function inspectPrdArchives(
     paths.push(archivePath);
   }
 
-  await assertDirectoryUnchanged(prdPath, prdStats, "docs/prd");
+  await assertDirectoryUnchanged(prdPath, prdStats, PRD_ARCHIVE_DIRECTORY);
   await assertDirectoryUnchanged(docsPath, docsStats, "docs");
   await assertDirectoryUnchanged(requestedRoot, rootStats, "workspaceRoot");
   paths.sort();

@@ -6,6 +6,7 @@ import { cpus, release, totalmem, version } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { PRD_ARCHIVE_DIRECTORY } from "../../src/core/policy/content-policy.ts";
 
 /** 内核层测量；不启动daemon/宿主/模型，不签发M3阶段验收。 */
 export const FROZEN = Object.freeze({ files: 1000, scriptFiles: 600, goFiles: 300, specFiles: 100,
@@ -84,11 +85,11 @@ async function fixture(root: string, config: BenchmarkConfig, archives: number, 
   if (sourceFiles !== config.files || new Set(manifest.map((item) => item.sha256)).size !== config.files || textBytes > config.maxTextBytes) {
     throw new Error("夹具规模、内容唯一性或文本预算不匹配");
   }
-  await mkdir(join(repo, "docs/prd"), { recursive: true, mode: 0o700 });
+  await mkdir(join(repo, PRD_ARCHIVE_DIRECTORY), { recursive: true, mode: 0o700 });
   for (let i = 0; i < archives; i++) {
     const id = `019b76da-a800-7000-8000-${i.toString(16).padStart(12, "0")}`;
     // 正文仅由生成器写入；产品探针期间不读取、不计算磁盘正文hash。
-    await put(`docs/prd/${id}.benchmark.md`, `M3_ARCHIVE_BODY_CANARY_${i}\n`, "archive-excluded");
+    await put(`${PRD_ARCHIVE_DIRECTORY}/${id}.benchmark.md`, `M3_ARCHIVE_BODY_CANARY_${i}\n`, "archive-excluded");
   }
   manifest.sort((a, b) => a.path.localeCompare(b.path, "en"));
   jsonFile(join(output, "fixture-manifest.json"), { generator: "m3-deterministic-v1", sourceFiles, textBytes,

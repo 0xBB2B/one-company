@@ -12,6 +12,8 @@ import {
 } from "../../core/storage/database.ts";
 import type { StoredRecord } from "../../core/storage/database.ts";
 import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, databaseKind } from "../../core/storage/database-paths.ts";
+import { PRD_FILE } from "../requirement/prd-storage.ts";
+import { PRD_ARCHIVE_PARTS } from "../../core/policy/content-policy.ts";
 
 const HASH = /^[0-9a-f]{64}$/;
 const ENTITY_ID = /^[\p{L}\p{N}][\p{L}\p{N}._:/#@+-]{0,255}$/u;
@@ -105,7 +107,7 @@ export interface LocalPrdMetadata {
   requirementId: string;
   source: "local";
   path: string;
-  fileName: "prd.md";
+  fileName: typeof PRD_FILE;
   lifecycle: "draft" | "active" | "closing" | "closed";
   epoch: number;
   hash: string | null;
@@ -295,7 +297,7 @@ function normalizedRelativePath(value: unknown, allowPrdMetadata = false): strin
   if (path.startsWith("/") || path.includes("\\") || path.includes("//") || /[\u0000-\u001f\u007f]/u.test(path)) fail("invalid_path");
   const parts = path.split("/"), folded = parts.map((part) => part.toLowerCase());
   if (parts.some((part) => !part || part === "." || part === "..") || folded.includes(".git")) fail("invalid_path");
-  if (!allowPrdMetadata && folded[0] === "docs" && folded[1] === "prd") fail("invalid_path");
+  if (!allowPrdMetadata && folded[0] === PRD_ARCHIVE_PARTS[0] && folded[1] === PRD_ARCHIVE_PARTS[1]) fail("invalid_path");
   return path;
 }
 function safeFileName(value: unknown): string {
@@ -392,11 +394,11 @@ function validatePrdMetadata(input: unknown): PrdMetadata {
   const path = normalizedRelativePath(value.path, true), fileName = safeFileName(value.fileName);
   if (source === "local") {
     const lifecycle = oneOf(value.lifecycle, ["draft", "active", "closing", "closed"] as const);
-    if (path !== `requirements/${requirementId}/prd.md` || fileName !== "prd.md") fail("metadata_body_forbidden");
-    return { requirementId, source, path, fileName: "prd.md", lifecycle, epoch: integer(value.epoch, 1), hash: nullableHash(value.hash) };
+    if (path !== `requirements/${requirementId}/${PRD_FILE}` || fileName !== PRD_FILE) fail("metadata_body_forbidden");
+    return { requirementId, source, path, fileName: PRD_FILE, lifecycle, epoch: integer(value.epoch, 1), hash: nullableHash(value.hash) };
   }
   const parts = path.split("/");
-  if (value.lifecycle !== "unknown" || value.epoch !== null || value.hash !== null || parts.length !== 3 || parts[0]!.toLowerCase() !== "docs" || parts[1]!.toLowerCase() !== "prd" || parts[2] !== fileName || !fileName.startsWith(`${requirementId}.`) || !fileName.endsWith(".md")) fail("metadata_body_forbidden");
+  if (value.lifecycle !== "unknown" || value.epoch !== null || value.hash !== null || parts.length !== 3 || parts[0]!.toLowerCase() !== PRD_ARCHIVE_PARTS[0] || parts[1]!.toLowerCase() !== PRD_ARCHIVE_PARTS[1] || parts[2] !== fileName || !fileName.startsWith(`${requirementId}.`) || !fileName.endsWith(".md")) fail("metadata_body_forbidden");
   return { requirementId, source, path, fileName, lifecycle: "unknown", epoch: null, hash: null };
 }
 function uniqueBy<T>(values: T[], key: (value: T) => string): void {

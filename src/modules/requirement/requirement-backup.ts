@@ -7,7 +7,7 @@ import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, pathExists } from "
 import { createDatabaseSnapshot, databaseMaintenanceDirectory, withDatabaseMaintenance } from "../../core/storage/database-maintenance.ts";
 import { checkRequirement } from "./requirement-contracts.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE, RequirementWriteCoordinator } from "./requirement-coordination.ts";
-import { verifyVersion } from "./prd-storage.ts";
+import { PRD_FILE, verifyVersion } from "./prd-storage.ts";
 import { checkPrototypeName } from "./requirement-prototypes.ts";
 import { sealOperationLog, validOperationLog } from "../../core/storage/operation-log.ts";
 
@@ -315,7 +315,7 @@ function requirementFiles(repoDirectory: string, requirements: RequirementBackup
   for (const entry of actual) {
     if (!entry.isDirectory() || entry.isSymbolicLink() || !UUID_V7_PATTERN.test(entry.name) || !expected.has(entry.name)) fail("unregistered_requirement_repository");
     const entries = readdirSync(join(root, entry.name)).sort();
-    if (entries.length !== 2 || entries[0] !== ".git" || entries[1] !== "prd.md") fail("invalid_requirement_repository");
+    if (entries.length !== 2 || entries[0] !== ".git" || entries[1] !== PRD_FILE) fail("invalid_requirement_repository");
   }
   for (const id of expected) if (!actual.some((entry) => entry.name === id)) fail("requirement_repository_missing");
   return scanTree(root, "requirements");

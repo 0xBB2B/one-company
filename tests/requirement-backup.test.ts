@@ -333,6 +333,16 @@ test("已完成操作仍有有效或损坏写占用、未完成操作或缺少�
   expect(RequirementBackupError).toBeTypeOf("function");
 });
 
+test("需求目录只能含 .git 和 prd.md：多出文件或缺 prd.md 时备份被拒", async () => {
+  const w = await populatedWorld();
+  const directory = join(w.repoDirectory, "requirements", w.activeId);
+  await writeFile(join(directory, "notes.md"), "额外文件");
+  await expect(createRequirementBackup(backupOptions(w))).rejects.toMatchObject({ code: "external_content" });
+  await rm(join(directory, "notes.md"));
+  await rm(join(directory, "prd.md"));
+  await expect(createRequirementBackup(backupOptions(w))).rejects.toMatchObject({ code: "invalid_requirement_repository" });
+});
+
 test("备份完成响应中断后同operation重试复用快照与文件，不重复复制", async () => {
   const w = await populatedWorld();
   const operationId = uuidv7();
@@ -480,11 +490,30 @@ test("清单路径的先后顺序与本机语言环境的排序不同时照常�
   for (const file of w.files) expect(existsSync(join(target.repoDirectory, w.relative(file.version)))).toBe(true);
 }, 30_000);
 
+test("清单缺少已保存需求的 prd.md 或 .git 文件时恢复被拒", async () => {
+  const w = await populatedWorld();
+  for (const keep of [(path: string) => !path.endsWith(`${w.activeId}/prd.md`), (path: string) => !path.startsWith(`requirements/${w.activeId}/.git/`)]) {
+    const backup = await createRequirementBackup(backupOptions(w));
+    const manifest = JSON.parse(await readFile(backup.manifestPath, "utf8"));
+    manifest.files = manifest.files.filter((file: { relativePath: string }) => keep(file.relativePath));
+    const manifestBytes = Buffer.from(JSON.stringify(manifest));
+    await writeFile(backup.manifestPath, manifestBytes);
+    const manifestHash = createHash("sha256").update(manifestBytes).digest("hex");
+    const operationPath = join(backup.backupDirectory, requirementBackupFiles.operation);
+    const operation = JSON.parse(await readFile(operationPath, "utf8"));
+    await writeFile(operationPath, JSON.stringify(sealOperationLog({ ...operation, manifestHash })));
+    const target = await isolation(w);
+    await expect(restoreRequirementBackup(restoreOptions(w, { ...backup, manifestHash }, target))).rejects.toMatchObject({ code: "manifest_requirement_incomplete" });
+  }
+});
+
 test.each([
   ["prototypes/../x", "manifest_invalid"],
   ["prototypes/<id>/子目录/设置页.v1.html", "manifest_path_not_allowed"],
   ["prototypes/<id>/设置页.html", "manifest_path_not_allowed"],
   ["notes/x", "manifest_path_not_allowed"],
+  ["requirements/<id>/notes.md", "manifest_path_not_allowed"],
+  ["requirements/<id>/PRD.md", "manifest_path_not_allowed"],
 ])("清单里出现需求仓库和原型路径以外的路径 %s 时恢复被拒", async (path, code) => {
   const w = await worldWithPrototypes();
   const backup = await createRequirementBackup(backupOptions(w));
