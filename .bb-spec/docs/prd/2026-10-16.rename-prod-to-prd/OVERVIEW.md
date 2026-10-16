@@ -35,7 +35,7 @@ features: [prd-storage, git-delivery]
 01 → 02。
 
 ## 整体验证路径
-1. 在仓库根执行 `grep -rIi 'prod' src rules role-rules agents skills shared tests README.md ARCHITECTURE.md CONTRIBUTING.md AGENTS.md | grep -vi 'produc'` → 没有输出；`git ls-files | grep -i prod | grep -vi produc` → 没有输出。
+1. 在仓库根执行 `grep -rIi 'prod' src rules role-rules agents skills shared tests README.md ARCHITECTURE.md CONTRIBUTING.md AGENTS.md | grep -vi 'produc'` → 没有输出；`git ls-files | grep -v '^\.bb-spec/' | grep -i prod | grep -vi produc` → 没有输出。
 2. 跑类型检查、单元、集成、安装四项纯代码测试 → 全部通过。
 3. 用新版本打开一个改名前留下的本机数据目录 → 报 `outdated_database`，说明写着"请备份后删除本机数据目录并重新初始化"，数据库文件内容没变。
 4. 删掉本机数据目录后，在一个样例项目里走完一个需求：起草、批准、PM 实施、完成、关闭 → 本机需求目录里是 `prd.md`；样例项目里出现 `docs/prd/<需求编号>.<标题>.md`，没有 `docs/prod/`。
@@ -48,3 +48,4 @@ features: [prd-storage, git-delivery]
 - **升数据库版本号，旧库直接报错**（用户 2026-10-16 决定）：沿用移除 spec 时的做法，data.db 版本号升一级，打开旧库报 `outdated_database` 并说明处理办法。被否决的是"不升版本"：旧记录里的 `prod.*` 事件读出来会在任意位置报格式错误，状态面板也可能显示不出来，出错位置事先不知道。项目索引库 index.db 里的 `prod_metadata` 表也要改名，写 PRD 时一并定为同样处理；index.db 本来就能删掉重建，删本机数据目录时会一起删掉。
 - **旧的 docs/prod 不提醒**（用户 2026-10-16 决定）：被否决的是"程序发现 docs/prod 时提醒用户搬目录"，这是一段新功能，也是过渡代码。代价是：用户不手动搬的话，旧归档会被当作普通文档进项目索引，代理按 `docs/prd` 找不到它们。
 - **正文写 PRD，代码写 prd**（用户 2026-10-16 决定）：提示词、README、ARCHITECTURE 的正文写大写 `PRD`，这是需求文档的通行写法，模型一眼就能认出；代码名、文件路径、工具参数值写小写 `prd`。被否决的是"正文也全小写"，差别只在正文里的大小写。
+- **验收命令排除本 PRD 目录、路径里的 prd 不算单词**（用户 2026-10-17 决定，分支自查时发现）：C-6 第二条命令原文会列出本 PRD 自己的文件（目录名 `2026-10-16.rename-prod-to-prd` 带 prod），改为先排除 `.bb-spec/`，与实施计划实际执行的命令一致；被否决的是给目录改名，6 个提交的 `Requirement:` 行都指向它。C-7 原文"反引号外面不出现小写单词 prd"可以读成路径也必须放进反引号，写明路径里的 prd 属于代码形态、不算单独成词，与已执行的检查一致；被否决的是给 6 行提示词里的 docs/prd 加反引号，只是写法统一，却要改 PM 与主代理提示词并重跑全部真实模型验收。
