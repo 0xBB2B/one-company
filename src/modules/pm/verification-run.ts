@@ -23,6 +23,7 @@ import { readVerdictsIn } from "./verdicts.ts";
 import { RequirementStateStore } from "../requirement/requirement-state.ts";
 import { verifyRequirementWorkspace } from "../requirement/requirement-workspace.ts";
 import { writeFileAtomic } from "../../core/storage/store.ts";
+import { PRD_ARCHIVE_DIRECTORY } from "../../core/policy/content-policy.ts";
 
 const Grant = object({
   role: Type.Union([Type.Literal("worker"), Type.Literal("pm"), Type.Literal("reviewer"), Type.Literal("qa")]),
@@ -173,10 +174,10 @@ async function openVerificationRunTool(options: VerificationRunToolOptions) {
     const dataRoot = await realpath(options.dataRoot), outputRoot = await realpath(started.outputRoot), scratch = join(outputRoot, "tmp");
     // 不得改写 Git 元数据（hook 会在用户后续 Git 操作中执行）、归档与角色定义
     const agentDir = dirname(dataRoot), repositoryRoot = await realpath(options.repositoryRoot);
-    const protectedPaths = [(await repositoryIdentity(root)).commonDir, ...[".git", "docs/prd", ".pi/agents", ".pi/skills", ".pi/settings.json", "AGENTS.md"].map((path) => join(root, path)),
+    const protectedPaths = [(await repositoryIdentity(root)).commonDir, ...[".git", PRD_ARCHIVE_DIRECTORY, ".pi/agents", ".pi/skills", ".pi/settings.json", "AGENTS.md"].map((path) => join(root, path)),
       // 角色定义、skills、项目信任与 pi 设置在每次派工时重新读取，写入即可改变后续运行的说明、模型与能力
       ...["agents", "skills", "trust.json", "settings.json"].map((path) => join(agentDir, path)),
-      ...[".pi/agents", ".pi/skills", ".pi/settings.json", "AGENTS.md", "docs/prd"].map((path) => join(repositoryRoot, path)),
+      ...[".pi/agents", ".pi/skills", ".pi/settings.json", "AGENTS.md", PRD_ARCHIVE_DIRECTORY].map((path) => join(repositoryRoot, path)),
       // 安装包含内置角色定义、skills 与守护进程自身代码
       await realpath(dirname(defaultRoleDir()))];
     // 受保护路径若是指向别处的链接，写入会落到链接目标，故一并禁写其真实路径

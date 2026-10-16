@@ -3,7 +3,7 @@ import { adviceIn } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { object, positive, counter } from "./requirement-contracts.ts";
+import { object, positive, counter, PrdReference } from "./requirement-contracts.ts";
 import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 import { DecisionItem, ShortDecisionRecord, checkDecisionRecord, parseDecisionBatch, decisionDigest, SHORT_DECISION_LIMITS } from "./short-decision-format.ts";
 import { parseStrictJson } from "../../core/storage/strict-json.ts";
@@ -11,7 +11,6 @@ import { partitionPrdDocument } from "./prd-view.ts";
 
 const id = Type.String({ pattern: UUID_V7_PATTERN.source, minLength: 36, maxLength: 36 });
 const hash = Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 });
-const PrdReference = object({ commit: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])" }), hash });
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 const enumeration = <T extends string>(values: [T, ...T[]]) => Type.Union([Type.Literal(values[0]), ...values.slice(1).map((value) => Type.Literal(value))]);
 export const InteractionAction = enumeration(["analyze", "plan", "implement", "commit", "push"]);

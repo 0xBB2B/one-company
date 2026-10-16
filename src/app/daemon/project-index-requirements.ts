@@ -9,6 +9,7 @@ import { RequirementEventService } from "../../modules/requirement/requirement-e
 import { RequirementStateStore } from "../../modules/requirement/requirement-state.ts";
 import { verifyRequirementWorkspace } from "../../modules/requirement/requirement-workspace.ts";
 import type { ProjectIndexArchiveRiskHookEvent } from "./project-index-host.ts";
+import { PRD_ARCHIVE_PARTS } from "../../core/policy/content-policy.ts";
 
 const HASH = /^[0-9a-f]{64}$/u;
 const ARCHIVE_NAME = /^([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.(.+)\.md$/u;
@@ -97,7 +98,7 @@ export class ProjectIndexRequirements {
 
   private async scan(root: string, scan: MetadataScan): Promise<void> {
     const snapshots: Array<{ path: string; info: BigIntStats | null }> = [];
-    for (const path of [root, join(root, "docs"), join(root, "docs", "prd")]) {
+    for (const path of [root, join(root, PRD_ARCHIVE_PARTS[0]), join(root, ...PRD_ARCHIVE_PARTS)]) {
       const info = await this.directory(path);
       snapshots.push({ path, info });
       if (!info) break;
@@ -123,7 +124,7 @@ export class ProjectIndexRequirements {
     };
     scan.checks.push(verify);
     if (snapshots.length !== 3 || snapshots[2]!.info === null) { await verify(); return; }
-    const archiveRoot = join(root, "docs", "prd");
+    const archiveRoot = join(root, ...PRD_ARCHIVE_PARTS);
     // opendir逐项计数，避免先分配无界readdir数组；不递归、不打开任何归档文件。
     const directory = await opendir(archiveRoot, { bufferSize: 32 });
     try {
@@ -207,7 +208,7 @@ export class ProjectIndexRequirements {
         await scanRoot(binding.path);
       }
       const allowedRoots = new Set([repositoryRoot, binding?.path].filter((root): root is string => Boolean(root))
-        .map((root) => join(root, "docs", "prd")));
+        .map((root) => join(root, ...PRD_ARCHIVE_PARTS)));
       const paths = scan.paths.get(requirementId)!.filter((path) => allowedRoots.has(dirname(path))).sort();
       if (paths.length === 0) continue;
       // 两条不同精确路径已足以证明身份冲突；不是挑选一个归档作为当前或可信正文。

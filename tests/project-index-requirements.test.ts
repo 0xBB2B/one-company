@@ -232,6 +232,18 @@ test.each(["removed", "branch-changed"] as const)("active的缺失或变化绑�
   expect(attempted).toEqual([]);
 });
 
+test("只认 docs/prd 下的归档：其他目录里带本需求完整 UUID 的文件不触发撤权", async () => {
+  const w = await world();
+  for (const directory of [["docs"], ["docs", "other"], ["src"]]) {
+    const target = join(w.repo.root, ...directory);
+    await fsp.mkdir(target, { recursive: true });
+    await fsp.writeFile(join(target, `${w.created.requirementId}.归档.md`), "NOT-AN-ARCHIVE");
+  }
+  const before = w.state.read(w.created.requirementId);
+  await w.adapter.beforeArchiveRisk(w.hookEvent());
+  expect(w.state.read(w.created.requirementId)).toEqual(before);
+});
+
 test("未知UUID不创建需求/授权；短前缀、标题或非UUIDv7文件不能匹配已知需求", async () => {
   const w = await world();
   const unknown = uuidv7();

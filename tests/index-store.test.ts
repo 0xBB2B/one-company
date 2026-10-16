@@ -470,6 +470,22 @@ test("source_fragments与FTS随同步事务一起回滚，异步违规连接仍�
   try { expect(other.list("source_fragments")).toEqual([]); } finally { other.close(); }
 });
 
+test("源码片段记录的 path 为 docs/prd 或其下路径（不分大小写）时被数据库层拒绝，无论新建还是改写", async () => {
+  const w = await fixture();
+  const db = new LocalDatabase(w.databasePath);
+  const fragment = { workspaceId: hash("8"), generation: 1, id: "fragment", path: "src/ok.ts", kind: "code", language: "typescript", title: null,
+    body: "prd_guard", startLine: 1, endLine: 1, fileHash: hash("a") };
+  try {
+    for (const path of ["docs/prd", "docs/prd/x.md", "DOCS/PRD/x.md", "Docs/Prd"]) {
+      expect(() => db.create("source_fragments", `new-${path}`, { ...fragment, path })).toThrow(/invalid source fragment/);
+    }
+    db.create("source_fragments", "ok", fragment);
+    expect(() => db.create("source_fragments", "docs-prdx", { ...fragment, path: "docs/prdx/a.md" })).not.toThrow();
+    const stored = db.read<typeof fragment>("source_fragments", "ok")!;
+    expect(() => db.update("source_fragments", "ok", stored.version, { ...fragment, path: "DOCS/PRD/x.md" })).toThrow(/invalid source fragment/);
+  } finally { db.close(); }
+});
+
 test("只读current按文件范围先过滤正文，metadataOnly不载入正文，构建中/invalid不回退", async () => {
   const w = await fixture(), identity = w.identity(hash("a"), w.workspaceA, "refs/heads/read-only");
   expect(() => IndexStore.readCurrent(w.databasePath, identity, [])).toThrow();

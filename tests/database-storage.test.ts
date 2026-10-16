@@ -59,6 +59,22 @@ test("三个固定.db路径与用途标签，索引不能保存任务或授权",
   }
 });
 
+test("索引库拒绝写入 code_bindings 命名空间的记录", async () => {
+  const w = await world();
+  const db = new LocalDatabase(indexDatabase(w.directory, "a".repeat(64)));
+  try { expect(() => db.create("code_bindings", "b", {})).toThrow(/wrong_database_kind/); } finally { db.close(); }
+});
+
+test("索引库白名单内的命名空间仍可写", async () => {
+  const w = await world();
+  const db = new LocalDatabase(indexDatabase(w.directory, "a".repeat(64)));
+  try {
+    for (const namespace of ["workspaces", "index_generations", "files", "symbols", "code_edges", "prd_metadata"]) {
+      expect(() => db.create(namespace, "k", { hash: "a".repeat(64) }), namespace).not.toThrow();
+    }
+  } finally { db.close(); }
+});
+
 test("用途不符或未知旧布局的.db不被当成缓存重建", async () => {
   const w = await world();
   const data = databaseFile(w.directory, "data"), index = databaseFile(w.directory, "index");

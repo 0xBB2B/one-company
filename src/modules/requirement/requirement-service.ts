@@ -8,7 +8,7 @@ import type { RequirementAction, RequirementStoreOptions } from "./requirement-s
 import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
 import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
 import { createPrdDocument, inspectPrdArchives, parsePrdDocument } from "./requirement-identity.ts";
-import { create as createStorage, diffVersions, prdRequirementPath, readVersion, save as saveStorage, verifyVersion } from "./prd-storage.ts";
+import { PRD_FILE, create as createStorage, diffVersions, prdRequirementPath, readVersion, save as saveStorage, verifyVersion } from "./prd-storage.ts";
 import type { PrdRepositoryIdentity, PrdStorageConfig, PrdStorageWriteResult } from "./prd-storage.ts";
 import { RequirementOperations } from "./requirement-operations.ts";
 import type { PrepareRequirementOperation, RequirementOperation, RequirementOperationAction } from "./requirement-operations.ts";
@@ -236,7 +236,7 @@ export class RequirementService {
   }
 
   private async verifyWorkingCopy(operation: RequirementOperation): Promise<void> {
-    const path = join(operation.repositoryRoot, "prd.md");
+    const path = join(operation.repositoryRoot, PRD_FILE);
     let handle;
     try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
     catch { throw new RequirementServiceError("working_copy_mismatch"); }

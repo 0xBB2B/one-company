@@ -11,6 +11,7 @@ import { RequirementService } from "./requirement-service.ts";
 import type { RequirementServiceOptions, ServiceAuthorizationRequest } from "./requirement-service.ts";
 import { adviceIn } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
+import { PRD_ARCHIVE_PARTS } from "../../core/policy/content-policy.ts";
 
 const ArchiveRiskInput = object({
   requirementId: id,
@@ -442,7 +443,7 @@ export class RequirementEventService {
     const state = await this.state(authorization, new Set(["open", "read", "block-recovery"]));
     let current = state.read(request.requirementId);
     const roots = new Set([this.options.repositoryRoot, current.data.workspace?.path].filter((value): value is string => Boolean(value))
-      .map((root) => resolve(join(root, "docs", "prd"))));
+      .map((root) => resolve(join(root, ...PRD_ARCHIVE_PARTS))));
     for (const path of request.paths) {
       if (!isAbsolute(path) || resolve(path) !== path || !roots.has(dirname(path))) throw new RequirementEventServiceError("archive_path_not_allowed");
       const match = /^([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.(.+)\.md$/u.exec(basename(path));

@@ -1,6 +1,7 @@
 import { posix } from "node:path";
 
-export const PRD_ARCHIVE_DIRECTORY = "docs/prd";
+export const PRD_ARCHIVE_PARTS = ["docs", "prd"] as const;
+export const PRD_ARCHIVE_DIRECTORY = PRD_ARCHIVE_PARTS.join("/");
 
 // Git 同时排除目录条目和其中任意深度的路径；这些固定规则不会被调用方的附加排除项替换。
 export const PRD_ARCHIVE_GIT_PATHSPECS = [

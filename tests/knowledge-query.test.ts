@@ -341,6 +341,14 @@ test("查询只对命中的文件读磁盘正文；readCurrentForQuery 按 bodie
   await expect(w.service.readCurrentForQuery({ paths, bodies: ["README.md"] })).rejects.toMatchObject({ code: "authorization_denied" });
 });
 
+test("覆盖信息的 excludedPaths 缺少 docs/prd 时不当作完整覆盖", async () => {
+  const w = await fixture();
+  for (const excludedPaths of [[], [".env"]]) {
+    const session = new KnowledgeQuerySession({ ...w.adapter, async captureFresh() { const capture = await w.capture(); capture.baseline.coverage.excludedPaths = excludedPaths; return capture; } });
+    await expect(session.query({ action: "facts" })).rejects.toMatchObject({ code: "unavailable" }); session.close();
+  }
+});
+
 test("同代次build与baseline的代次或hash不对应时拒绝", async () => {
   const w = await fixture();
   const session = new KnowledgeQuerySession({ ...w.adapter, async captureFresh() { const capture = await w.capture(); capture.build.generation++; return capture; } });

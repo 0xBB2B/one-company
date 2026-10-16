@@ -19,6 +19,7 @@ import {
   releaseRequirementWriteIn,
 } from "./requirement-coordination.ts";
 import type { RequirementWriteOwner } from "./requirement-coordination.ts";
+import { PRD_ARCHIVE_DIRECTORY } from "../../core/policy/content-policy.ts";
 
 const nullable = <T extends Parameters<typeof Type.Union>[0][number]>(schema: T) => Type.Union([schema, Type.Null()]);
 const action = Type.Union([Type.Literal("create"), Type.Literal("updateDraft"), Type.Literal("confirmUpdate")]);
@@ -124,7 +125,7 @@ function same(left: unknown, right: unknown): boolean {
 function checkOperation(value: unknown): RequirementOperation {
   if (!Value.Check(operationSchema, value)) throw new RequirementServiceError("operation_corrupt", "持久操作记录格式冲突");
   const operation = value as RequirementOperation;
-  const archivePrefix = `docs/prd/${operation.requirementId}.`;
+  const archivePrefix = `${PRD_ARCHIVE_DIRECTORY}/${operation.requirementId}.`;
   const archiveTitle = operation.archivePath.startsWith(archivePrefix) && operation.archivePath.endsWith(".md")
     ? operation.archivePath.slice(archivePrefix.length, -3)
     : null;

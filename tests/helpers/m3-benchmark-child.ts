@@ -7,6 +7,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getHeapStatistics } from "node:v8";
 import { setTimeout as delay } from "node:timers/promises";
+import { PRD_ARCHIVE_DIRECTORY } from "../../src/core/policy/content-policy.ts";
 import { appendSample, gitRun, jsonFile, summarize } from "./m3-benchmark.ts";
 import type { ChildJob, Sample } from "./m3-benchmark.ts";
 import type { ProjectIndexService, ProjectIndexBuildResult } from "../../src/modules/project-index/project-index-service.ts";
@@ -39,7 +40,7 @@ function wrap(target: object, key: string, observer: (args: unknown[], invoke: (
 const restores: Array<() => void> = [];
 const probe = { positiveControlReads: 0, archiveReadAttempts: 0, archivePaths: [] as string[] };
 const positivePath = join(job.fixtureRoot, "probe-positive.txt");
-const archivePrefix = `${join(job.repo, "docs/prd")}${sep}`;
+const archivePrefix = `${join(job.repo, PRD_ARCHIVE_DIRECTORY)}${sep}`;
 function observeRead(args: unknown[]): void {
   const value = args[0];
   let path: string | null = null;

@@ -15,6 +15,9 @@ import { DEFAULT_INDEX_LIMITS, scanIndexWorkspace } from "../../modules/project-
 import { ProjectIndexService } from "../../modules/project-index/project-index-service.ts";
 import type { DaemonServer } from "./server.ts";
 import type { ProjectIndexBuildResult } from "../../modules/project-index/project-index-service.ts";
+import { PRD_ARCHIVE_DIRECTORY } from "../../core/policy/content-policy.ts";
+
+const PRD_ARCHIVE_PATH_PATTERN = new RegExp(`^${PRD_ARCHIVE_DIRECTORY}(?:/|$)`, "iu");
 
 export const PROJECT_INDEX_MANAGEMENT_NAMESPACE = "project_index_management";
 const MANAGEMENT_FORMAT = "project-index-management/v2";
@@ -72,7 +75,7 @@ export class ProjectIndexHost {
 
   private open(): Promise<ProjectIndexService> {
     return ProjectIndexService.open({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.options.repoId,
-      authorize: (request) => !this.closed && (request.path === null || !/^docs\/prd(?:\/|$)/iu.test(request.path)) });
+      authorize: (request) => !this.closed && (request.path === null || !PRD_ARCHIVE_PATH_PATTERN.test(request.path)) });
   }
 
   initialized(): boolean {
@@ -175,7 +178,7 @@ export class ProjectIndexHost {
     const capture: KnowledgeQueryCapture = {
       baseline: { repoId: workspace.repoId, workspaceId: workspace.workspaceId, root: workspace.root, branch: workspace.branch,
         generation: build.generation, baselineHash: build.baselineHash, observedSequence: 0, authorityEpoch: "daemon",
-        coverage: { kind: "allowed-inputs", complete: true, roots: ["."], excludedPaths: ["docs/prd"], policyHash }, files },
+        coverage: { kind: "allowed-inputs", complete: true, roots: ["."], excludedPaths: [PRD_ARCHIVE_DIRECTORY], policyHash }, files },
       build: { workspaceId: workspace.workspaceId, generation: build.generation, baselineHash: build.baselineHash },
     };
     for (const session of this.sessions.values()) session.close();
