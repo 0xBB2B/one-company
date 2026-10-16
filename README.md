@@ -188,7 +188,7 @@ pi install git:github.com/0xBB2B/one-company
 
 - PM 在需求自己的 worktree 分支里，按任务本地提交明确列出的文件；检查阶段不提交。
 - 进入最终检查前，PM 会把需求分支同步到目标分支的最新提交。目标分支是 origin 的默认分支，没有 origin 时是主仓库当前检出的分支。
-- 推送和合并默认由你自己做。在 `/one:setting` 的「开关」里开启 Git 交付后，主代理可以替你提交归档、推送、建 PR，推送前和合并方式都会在界面上问你。
+- 推送和合并默认由你自己做。在 `/one:setting` 的「开关」里开启 Git 交付后，主代理可以替你提交归档、推送、建 PR，推送前和合并方式都会在界面上问你。开关存在 pi 设置文件 `one-company` 字段的 `git-delivery` 下（`true` 或 `false`），和模型设定一样分用户层和项目层，项目层优先，项目在 pi 里受信任才生效。
 
 <details>
 <summary>同步与交付的细节</summary>
@@ -382,7 +382,7 @@ pi install git:github.com/0xBB2B/one-company
 | `repos/<仓库身份>/requirements/<UUIDv7>/` | 需求正文 `prod.md`，和只跟踪它的独立本机 Git 仓库 |
 | `repos/<仓库身份>/prototypes/<需求编号>/<名称>.v<版本>.html` | 界面原型，每个版本一个文件 |
 | `repos/<仓库身份>/logs/<启动 UUIDv7>.log` | 每次后台进程启动的运行日志 |
-| `global.db` | 守护进程控制凭证、Git 交付开关、主会话 Shell 任务登记 |
+| `global.db` | 守护进程控制凭证、主会话 Shell 任务登记 |
 | `sock/` | 窗口与后台进程通信用的文件，位于数据根目录一级 |
 
 <details>
