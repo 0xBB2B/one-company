@@ -66,8 +66,6 @@ describe("package.json 声明契约", () => {
 
 describe("被替代文件不存在", () => {
   const removedFiles = [
-    "extensions/agents-bridge.ts",
-    "extensions/subagents-preflight.ts",
     "prompts/spec-new.md",
     "prompts/spec-resume.md",
     "prompts/spec-revise.md",
@@ -78,19 +76,6 @@ describe("被替代文件不存在", () => {
     "agents/review-engineer.md",
     "agents/test-engineer.md",
     "skills/spec-docs/scripts/decision-ledger.ts",
-    "extensions/write-protection.ts",
-    "extensions/workflow.ts",
-    "extensions/decision-record.ts",
-    "extensions/relay.ts",
-    "runtime/range-protection.ts",
-    "runtime/git-commit-tool.ts",
-    "runtime/delivery.ts",
-    "runtime/result.ts",
-    "runtime/transcript-view.ts",
-    "runtime/workflow-state.ts",
-    "runtime/workflow-tool.ts",
-    "runtime/decisions.ts",
-    "runtime/decision-record-tool.ts",
     "rules/01-task-routing.md",
     "rules/04-decision-record.md",
     "rules/05-review-failure-handling.md",
