@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
-  SETTINGS_ROLES, clearAgentSetting, projectSettingsPath, readAgentSettings, saveAgentSetting, userSettingsPath,
+  SETTINGS_ROLES, clearAgentSetting, clearGitDeliverySetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, userSettingsPath,
 } from "../runtime/agent-settings.ts";
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -150,7 +150,7 @@ describe("读取设定", () => {
     expect(problems[0]).toMatchObject({ path: w.user, display: "one-company 要写成对象，这一层的设定都没有生效" });
   });
 
-  test("不认识的角色被忽略并记问题，其余角色照常生效", async () => {
+  test("不认识的设定被忽略并记问题，其余角色照常生效", async () => {
     const w = await world();
     await w.write(w.user, { "one-company": {
       boss: { model: "x", thinking: "low" },
@@ -161,7 +161,7 @@ describe("读取设定", () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatchObject({
       path: w.user,
-      display: "不认识的角色 boss，只能是 pm、interpreter、draft-verifier",
+      display: "不认识的设定 boss，只能是 pm、interpreter、draft-verifier、git-delivery",
     });
   });
 
@@ -340,5 +340,159 @@ describe("读写异常文件时和 pi 一致", () => {
     await w.write(w.user, { "one-company": { pm: { model: { a: 1 }, thinking: "low" } } });
     const { problems } = await w.read(true);
     expect(problems[0]!.display).toBe("「PM」的模型写法不对：{\"a\":1}；要写成模型名、提供方/模型名，或 null（跟随主会话）");
+  });
+});
+
+describe("读取 git-delivery 开关", () => {
+  test("两层都没写时关闭，来源是默认", async () => {
+    const w = await world();
+    const { gitDelivery } = await w.read(true);
+    expect(gitDelivery).toEqual({ enabled: false, source: "default" });
+  });
+
+  test("项目层写 false 且受信任时覆盖用户层的 true", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": true } });
+    await w.write(w.project, { "one-company": { "git-delivery": false } });
+    expect((await w.read(true)).gitDelivery).toEqual({ enabled: false, source: "project" });
+  });
+
+  test("项目不受信任时取用户层的值", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": true } });
+    await w.write(w.project, { "one-company": { "git-delivery": false } });
+    expect((await w.read(false)).gitDelivery).toEqual({ enabled: true, source: "user" });
+  });
+
+  test("只写了用户层时取用户层的值", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": true } });
+    expect((await w.read(true)).gitDelivery).toEqual({ enabled: true, source: "user" });
+  });
+
+  test("用户层写成字符串时用默认值并记问题，带原样写法", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": "yes" } });
+    const { gitDelivery, problems } = await w.read(true);
+    expect(gitDelivery).toEqual({ enabled: false, source: "default" });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({
+      path: w.user, layer: "user",
+      display: "git-delivery 只能写 true 或 false", value: '"yes"',
+    });
+  });
+
+  test("项目层写错时这一项改用用户层的值并记问题", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": true } });
+    await w.write(w.project, { "one-company": { "git-delivery": 1 } });
+    const { gitDelivery, problems } = await w.read(true);
+    expect(gitDelivery).toEqual({ enabled: true, source: "user" });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({
+      path: w.project, layer: "project",
+      display: "git-delivery 只能写 true 或 false", value: "1",
+    });
+  });
+
+  test("git-delivery 写错不影响同层的角色设定", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": null, pm: { model: "gpt-6-luna", thinking: "low" } } });
+    const { values, problems } = await w.read(true);
+    expect(values.pm).toEqual({ model: "gpt-6-luna", thinking: "low", source: "user" });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({ display: "git-delivery 只能写 true 或 false", value: "null" });
+  });
+
+  test("one-company 下出现不认识的键时问题里列出四个可用设定", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { foo: true } });
+    const { problems } = await w.read(true);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({
+      path: w.user,
+      display: "不认识的设定 foo，只能是 pm、interpreter、draft-verifier、git-delivery",
+    });
+  });
+
+  test("只写 git-delivery 时不产生问题，角色仍是默认值", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": true } });
+    const { values, problems } = await w.read(true);
+    expect(values).toEqual(DEFAULTS);
+    expect(problems).toEqual([]);
+  });
+});
+
+describe("写入和清除 git-delivery", () => {
+  test("保存后其他键原样保留，one-company.git-delivery 为所写布尔", async () => {
+    const w = await world();
+    const original = { theme: "dark", "one-company": { pm: { model: "gpt-6-luna", thinking: "low" } } };
+    await w.write(w.user, original);
+    await saveGitDeliverySetting({ path: w.user, enabled: true });
+    expect(JSON.parse(await readFile(w.user, "utf8"))).toEqual({
+      theme: "dark", "one-company": { pm: { model: "gpt-6-luna", thinking: "low" }, "git-delivery": true },
+    });
+    await saveGitDeliverySetting({ path: w.user, enabled: false });
+    expect(JSON.parse(await readFile(w.user, "utf8"))["one-company"]["git-delivery"]).toBe(false);
+  });
+
+  test("保存后再读出来是所写的值", async () => {
+    const w = await world();
+    await saveGitDeliverySetting({ path: w.user, enabled: true });
+    const { gitDelivery, problems } = await w.read(true);
+    expect(gitDelivery).toEqual({ enabled: true, source: "user" });
+    expect(problems).toEqual([]);
+  });
+
+  test("保存到不存在的文件时自动建目录和文件", async () => {
+    const w = await world();
+    expect(existsSync(dirname(w.project))).toBe(false);
+    await saveGitDeliverySetting({ path: w.project, enabled: true });
+    expect(JSON.parse(await readFile(w.project, "utf8"))).toEqual({ "one-company": { "git-delivery": true } });
+  });
+
+  test("文件不是合法 JSON 时保存报错，信息含原因和路径，文件内容不变", async () => {
+    const w = await world();
+    await w.write(w.user, "{ 坏");
+    const err = await saveGitDeliverySetting({ path: w.user, enabled: true }).then(() => null, (e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain("设置文件不是合法的 JSON，没有改动");
+    expect(err!.message).toContain(w.user);
+    expect(await readFile(w.user, "utf8")).toBe("{ 坏");
+  });
+
+  test("清除只删 git-delivery，one-company 里其他项保留", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": true, pm: { model: null, thinking: "off" } } });
+    await clearGitDeliverySetting({ path: w.user });
+    expect(JSON.parse(await readFile(w.user, "utf8"))).toEqual({ "one-company": { pm: { model: null, thinking: "off" } } });
+  });
+
+  test("清除后 one-company 变空时整个去掉，其余字段不变", async () => {
+    const w = await world();
+    await w.write(w.user, { theme: "dark", "one-company": { "git-delivery": false } });
+    await clearGitDeliverySetting({ path: w.user });
+    expect(JSON.parse(await readFile(w.user, "utf8"))).toEqual({ theme: "dark" });
+  });
+
+  test("这一层本来没有 git-delivery 时不改动文件，内容和修改时间都不变", async () => {
+    const w = await world();
+    const original = JSON.stringify({ "one-company": { pm: { model: null, thinking: "off" } } });
+    await w.write(w.user, original);
+    const past = new Date(Date.now() - 3_600_000);
+    await utimes(w.user, past, past);
+    const before = (await stat(w.user)).mtimeMs;
+    await clearGitDeliverySetting({ path: w.user });
+    expect(await readFile(w.user, "utf8")).toBe(original);
+    expect((await stat(w.user)).mtimeMs).toBe(before);
+  });
+
+  test("清除时只动所选那一层", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": true } });
+    await w.write(w.project, { "one-company": { "git-delivery": false } });
+    await clearGitDeliverySetting({ path: w.project });
+    expect((await w.read(true)).gitDelivery).toEqual({ enabled: true, source: "user" });
   });
 });
