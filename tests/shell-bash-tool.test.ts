@@ -190,6 +190,28 @@ describe("createManagedBashOperations - 身份不确定", () => {
   }, LONG_TIMEOUT);
 });
 
+describe("createManagedBashOperations - 进程组探测 EPERM", () => {
+  test("进程组探测报 EPERM 但根进程号仍可探到：exec 正常返回 exitCode 0 而不抛错", async () => {
+    const registry = new ShellRegistry({
+      clock: createClock(),
+      probes: {
+        kill: (pid, signal) => {
+          if (pid < 0 && signal === 0) {
+            process.kill(-pid, 0);
+            throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+          }
+          process.kill(pid, signal);
+        },
+      },
+    });
+    const operations = createManagedBashOperations({ registry, host: HOST_MAIN, runToken: randomUUID() });
+
+    const result = await operations.exec("sleep 0.3", cwd, {});
+
+    expect(result.exitCode).toBe(0);
+  }, LONG_TIMEOUT);
+});
+
 describe("受管理 bash 工具 - 参数 schema", () => {
   test("合法参数（含 timeout 边界值 1 与 2147483）通过校验", () => {
     const registry = makeRegistry();

@@ -140,6 +140,13 @@ export function probeProcessGroup(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ESRCH") return { ok: true, state: "gone" };
+    if (code === "EPERM") {
+      // macOS 上根进程已退出但未被回收时，进程组探测报 EPERM 而按进程号探测成功；进程组号被别的用户占用时两者都报 EPERM
+      try {
+        kill(pgid, 0);
+        return { ok: true, state: "alive" };
+      } catch {}
+    }
     return { ok: false, reason: (error as Error).message ?? String(error), code };
   }
 }
@@ -790,7 +797,7 @@ export class ShellRegistry {
         }
 
         const probe = probeProcessGroup(pgid, this.kill);
-        // macOS 上子进程已退出但还没被回收时，探测它的进程组会短暂报 EPERM，继续等即可
+        // 组里还有本用户发不了信号的成员（如 setuid 程序）时进程组探测一直报 EPERM，它可能随后自己退出，所以等到停止期限再判
         if (!probe.ok && probe.code !== "EPERM") {
           this.markUncertain(task, probe.reason);
           finish({ ok: true, task });
