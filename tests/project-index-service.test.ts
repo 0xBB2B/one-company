@@ -2,13 +2,14 @@ import { afterEach, expect, test } from "vitest";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { extractCode, getCodeExtractorVersion } from "../src/modules/project-index/code-extractor.ts";
 import { LocalDatabase } from "../src/core/storage/database.ts";
-import { indexDatabase } from "../src/core/storage/database-paths.ts";
+import { DATABASE_APPLICATION_IDS, indexDatabase } from "../src/core/storage/database-paths.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { IndexStore } from "../src/modules/project-index/index-store.ts";
 import {
@@ -487,4 +488,28 @@ test("超过10MiB且不超过20MiB的文本集合完整索引，两轮读取与�
     expect(snapshot.files.filter((item) => item.path.startsWith("bulk/"))).toHaveLength(6);
     expect(snapshot.files.every((item) => /^[0-9a-f]{64}$/.test(item.hash))).toBe(true);
   } finally { store.close(); }
+});
+
+test("index.db是旧版本时init、refresh、status都报outdated_database，且不改动旧库", async () => {
+  const w = await world();
+  await put(w.repo.root, "src/main.ts", "export function main() {}\n");
+  const path = indexDatabase(w.dataRoot, w.repoId);
+  await mkdir(join(path, ".."), { recursive: true });
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`PRAGMA application_id=${DATABASE_APPLICATION_IDS.index}; PRAGMA user_version=1; CREATE TABLE sentinel(value TEXT);`);
+  legacy.close();
+  const before = createHash("sha256").update(await readFile(path)).digest("hex");
+  const index = await service(w);
+
+  for (const call of [() => index.init(), () => index.refresh(), () => index.status()]) {
+    let failure: unknown;
+    try { await call(); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProjectIndexServiceError);
+    const error = failure as ProjectIndexServiceError;
+    expect(error.code).toBe("outdated_database");
+    expect(error.advice.why).toContain("项目索引库 index.db 来自旧版本，和当前版本不兼容（阶段：");
+    expect(error.advice.next).toBe("请用户删除本机数据目录里的 index.db 后重新初始化索引");
+    expect(error.metadata.retryable).toBe(false);
+  }
+  expect(createHash("sha256").update(await readFile(path)).digest("hex")).toBe(before);
 });
