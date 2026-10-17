@@ -1,6 +1,6 @@
 # 本机语法解析资源
 
-`runtime/syntax-parser.ts` 提供内部函数 `withSyntaxTree(language, source, inspect)`。只接受 `ts`、`tsx`、`js`、`jsx`、`go` 和调用方提供的源码字符串；不扫描项目、不索引 PRD、不写数据库，也不注册业务工具。
+`src/modules/project-index/syntax-parser.ts` 提供内部函数 `withSyntaxTree(language, source, inspect)`。只接受 `ts`、`tsx`、`js`、`jsx`、`go` 和调用方提供的源码字符串；不扫描项目、不索引 PRD、不写数据库，也不注册业务工具。
 
 ## 分发与来源
 
@@ -15,7 +15,7 @@
 ## 使用和释放
 
 ```typescript
-import { withSyntaxTree } from "../../runtime/syntax-parser.ts";
+import { withSyntaxTree } from "../../src/modules/project-index/syntax-parser.ts";
 
 const summary = await withSyntaxTree("ts", "export const count = 1;", (tree) => ({
   rootType: tree.rootNode.type,
@@ -25,7 +25,7 @@ const summary = await withSyntaxTree("ts", "export const count = 1;", (tree) => 
 
 `inspect` 可以返回 Promise。函数等待它完成后，在正常返回或抛错时释放本次 Tree 和 Parser。回调必须提取普通数据，不能向外保留 Tree、Node 或 Cursor；自行创建的 cursor/query/copy 仍由调用方按 Tree-sitter API 释放。语法错误由树的 `hasError` 表达，不等于安装失败。
 
-坐标使用 JavaScript 字符串的 UTF-16 索引，不是 UTF-8 字节偏移；中文、emoji 与 CRLF 的切片行为由夹具验证。这里只提供语法树，不承诺语义理解、调用图或完整符号引用关系。
+坐标使用 JavaScript 字符串的 UTF-16 索引，不是 UTF-8 字节偏移；中文、emoji 与 CRLF 的切片行为由测试素材验证。这里只提供语法树，不承诺语义理解、调用图或完整符号引用关系。
 
 官方绑定不提供 Language 卸载接口。本模块实例缓存运行时和最多四种语法，不缓存源码或解析树；每次调用仍读取并核对本机资源指纹，已有缓存不能掩盖安装文件损坏。WASM 初始化或语法加载失败会保留失败状态，核对并修复安装后应在新进程中重试，不在同一损坏实例内自动重初始化。
 
