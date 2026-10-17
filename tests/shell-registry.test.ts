@@ -1070,9 +1070,14 @@ describe("进程组探测短暂 EPERM", () => {
     expect(stopped.task.reason).toBe("停止超时未确认");
   }, LONG_TIMEOUT);
 
-  test("巡检时进程组探测第一次报 EPERM 后恢复：自然退出的任务最终自动变为 exited", async () => {
-    const eperm = epermOnGroupProbe(1);
-    const registry = makeRegistry({ kill: eperm.kill });
+  test("进程组探测报 EPERM 但根进程号仍可探到：自然退出的任务状态全程不出现 uncertain，最终 exited 且无 reason", async () => {
+    const kill = (pid: number, signal: NodeJS.Signals | 0) => {
+      if (pid < 0 && signal === 0 && pidAlive(-pid)) {
+        throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+      }
+      process.kill(pid, signal);
+    };
+    const registry = makeRegistry({ kill });
     const taskId = randomUUID();
     const started = await registry.spawn({
       taskId,
@@ -1086,9 +1091,40 @@ describe("进程组探测短暂 EPERM", () => {
     if (!started.ok) return;
     trackPgid(started.task.pgid);
 
-    await waitFor(() => registry.get(taskId)?.status === "exited", 5_000);
-    expect(registry.get(taskId)?.activity).toBe("ended");
-    expect(eperm.probes()).toBeGreaterThanOrEqual(1);
+    const seen: string[] = [];
+    registry.subscribe(taskId, (task) => {
+      seen.push(task.status);
+    });
+
+    await waitFor(() => registry.get(taskId)?.status === "exited" || registry.get(taskId)?.status === "uncertain", 5_000);
+    const final = registry.get(taskId);
+    expect(seen).not.toContain("uncertain");
+    expect(final?.status).toBe("exited");
+    expect(final?.activity).toBe("ended");
+    expect(final?.reason).toBeUndefined();
+  }, LONG_TIMEOUT);
+
+  test("进程组探测和根进程号探测都报 EPERM：巡检把任务判为 uncertain 且带原因", async () => {
+    const kill = (pid: number, signal: NodeJS.Signals | 0) => {
+      if (signal === 0) throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+      process.kill(pid, signal);
+    };
+    const registry = makeRegistry({ kill });
+    const taskId = randomUUID();
+    const started = await registry.spawn({
+      taskId,
+      host: HOST_MAIN,
+      command: "sh",
+      args: ["-c", "sleep 0.3"],
+      mode: "background",
+      runToken: randomUUID(),
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    trackPgid(started.task.pgid);
+
+    await waitFor(() => registry.get(taskId)?.status === "uncertain", 5_000);
+    expect(registry.get(taskId)?.reason).toBe("kill EPERM");
   }, LONG_TIMEOUT);
 
   test("停止时进程组探测报 EINVAL：不等 15 秒期限就立刻 uncertain，原因是 kill EINVAL", async () => {
@@ -1797,6 +1833,24 @@ describe("进程组探测 probeProcessGroup", () => {
     expect(resultForOne?.ok).toBe(false);
     expect(resultForZero?.ok).toBe(false);
   }, LONG_TIMEOUT);
+});
+
+describe("进程组探测 probeProcessGroup 的 EPERM 处理", () => {
+  const eperm = () => Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+
+  test("进程组 0 号信号报 EPERM、根进程号 0 号信号成功：返回 alive", () => {
+    const kill = (pid: number, signal: NodeJS.Signals | 0) => {
+      if (pid < 0 && signal === 0) throw eperm();
+    };
+    expect(probeProcessGroup(4242, kill)).toEqual({ ok: true, state: "alive" });
+  });
+
+  test("进程组和根进程号的 0 号信号都报 EPERM：返回 ok:false", () => {
+    const kill = () => {
+      throw eperm();
+    };
+    expect(probeProcessGroup(4242, kill).ok).toBe(false);
+  });
 });
 
 describe("等待模式管道输出", () => {
