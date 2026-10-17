@@ -320,11 +320,9 @@ describe("存活探测", () => {
       pidStartedAt: async (pid) => {
         calls += 1;
         if (calls === 1) return 1_000_000;
+        // 真实 ps 在进程退出后、被回收前仍能查到启动时刻，所以要等根进程被回收才返回查不到
         const deadline = Date.now() + 5_000;
-        while (Date.now() < deadline) {
-          try { process.kill(-pid, 0); } catch { break; }
-          await sleepMs(20);
-        }
+        while (Date.now() < deadline && pidAlive(pid)) await sleepMs(20);
         return null;
       },
     });
