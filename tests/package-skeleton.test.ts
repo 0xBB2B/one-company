@@ -53,7 +53,7 @@ describe("package.json 声明契约", () => {
     });
   });
 
-  test("devDependencies.typebox 与 pi 1.2.0 自带版本一致", async () => {
+  test("devDependencies.typebox 与 pi 1.3.0 自带版本一致", async () => {
     const pkg = await readPackageJson();
     expect(pkg.devDependencies?.typebox).toBe("1.3.27");
   });
