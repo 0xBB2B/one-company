@@ -3,7 +3,6 @@ import { adviceOf, COMMON_ADVICE, withDetail } from "../../core/exec/tool-failur
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { uuidv7 } from "../../core/storage/database.ts";
 import { CheckRoundService } from "../verification/check-round.ts";
 import { authorizeToolAction } from "../../core/policy/core-permissions.ts";
 import { checked, hash, id, object, PmLease, positive } from "../requirement/requirement-contracts.ts";

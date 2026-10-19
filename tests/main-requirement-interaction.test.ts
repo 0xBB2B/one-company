@@ -1350,7 +1350,7 @@ describe("编号由程序生成", () => {
     expect(next.operationId).not.toBe(unfinished);
   });
 
-  test("续做 updateDraft 不再产生第二次正文提交", async () => {
+  test("续做 updateDraft 只留一次正文提交", async () => {
     const w = await world(), created = await w.create();
     allowDrafts(w);
     await leaveUnfinishedUpdate(w, created);

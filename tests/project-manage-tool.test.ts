@@ -800,7 +800,7 @@ describe("operationId 由程序生成：模型不填，中断后的续做由程�
     await runtime.shutdown();
   });
 
-  test("源码里不再有按操作编号续做的报错常量与关闭续办错误码", async () => {
+  test("源码里没有按操作编号续做的报错常量与关闭续办错误码", async () => {
     const { stdout } = await exec("grep", ["-rEl", "resume_not_found|resume_finished|RESUME_NOT_FOUND|RESUME_FINISHED|close_operation_mismatch|close_not_found|close_content_mismatch", join(import.meta.dirname, "..", "src")]).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "" }));
     expect(stdout.trim()).toBe("");
   });

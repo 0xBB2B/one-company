@@ -34,7 +34,6 @@ const WORKSPACE_ADVICE = {
   declined: { why: "用户在界面上拒绝了这次操作", next: "不要重试；确实需要时先向用户说明原因再问" },
   path_conflict: { why: "工作区目标路径已被占用", next: "请用户处理该路径后重试" },
   branch_conflict: { why: "需求分支名已被占用且不属于本需求", next: "请用户处理同名分支后重试" },
-  operation_conflict: { why: "这个需求的工作区已经回收", next: "不要再准备这个需求的工作区；需要时请用户处理" },
   not_prepared: { why: "需求还没有准备工作区", next: "先用 workspace-prepare 准备工作区" },
   recycle_blocked: { why: "工作区还不能回收", next: "按原因逐项处理后再回收" },
   git_failed: { why: "Git 命令执行失败", next: "按 Git 的报错处理；需要改动仓库时请用户介入" },
@@ -130,7 +129,6 @@ export class WorkspaceManageService {
     if (record.data.lifecycle !== "active") throw new WorkspaceManageError("requirement_not_active", ["需求批准生效后才能创建工作区"]);
     const existing = this.read(input.requirementId);
     if (existing?.status === "ready") return existing;
-    if (existing?.status === "recycled") throw new WorkspaceManageError("operation_conflict");
     const operationId = existing?.operationId ?? input.operationId ?? uuidv7();
     const location = workspaceLocation(this.options.repositoryRoot, input.requirementId);
     let baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);

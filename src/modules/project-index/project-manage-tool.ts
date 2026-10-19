@@ -132,7 +132,7 @@ const PROJECT_MANAGE_NEXT: Record<ProjectManageToolError["code"], string> = {
   operation_failed: "重试一次；仍然失败就把原因告诉用户",
   workspace_confirmation_required: "在有界面的主窗口里再做，这个操作要用户确认",
   workspace_failed: "按原因处理；需要改动仓库时请用户介入",
-  maintenance_failed: "按原因处理后再调一次，会从头开始一次新的备份或恢复",
+  maintenance_failed: "按原因处理；仍然失败就把原因告诉用户",
   conventions_confirmation_required: "在有界面的主窗口里再做，写入项目规范要用户在窗口里选择",
   conventions_failed: "按原因处理；仍然失败就把原因告诉用户",
 };
@@ -838,7 +838,8 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
           } catch (error) {
             if (error instanceof ProjectMaintenanceError) return textResult({ action: params.action, status: "blocked", reason: error.advice.why, next: error.advice.next });
             if (adviceOf(error)) throw error;
-            throw new ProjectManageToolError("maintenance_failed", `维护操作失败：${commandOutputTail(error)}`);
+            const restart = params.action === "recovery-check" ? "" : "；按原因处理后再调一次，会从头开始一次新的备份或恢复";
+            throw new ProjectManageToolError("maintenance_failed", `维护操作失败：${commandOutputTail(error)}${restart}`);
           }
         }
 
