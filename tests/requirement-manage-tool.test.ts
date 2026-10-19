@@ -14,7 +14,7 @@ describe("requirement_manage严格公开参数", () => {
       expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: base, [key]: "forged" }), key).toBe(false);
     }
   });
-  test("编号由程序生成：create不带requestId与operationId也合格，带requestId被拒，operationId可选", async () => {
+  test("编号由程序生成：create不带requestId与operationId也合格，带requestId被拒，create与updateDraft的operationId可选，confirmUpdate带operationId被拒", async () => {
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...base, operationId: uuidv7() } })).toBe(true);
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...base, requestId: uuidv7() } })).toBe(false);
     const tool = createRequirementManageTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
@@ -24,8 +24,9 @@ describe("requirement_manage严格公开参数", () => {
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...update, operationId: uuidv7() } })).toBe(true);
     const confirm = { action: "confirmUpdate", repoId: base.repoId, requirementId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: confirm })).toBe(true);
-    expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...confirm, operationId: uuidv7() } })).toBe(true);
+    expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...confirm, operationId: uuidv7() } })).toBe(false);
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...confirm, operationId: "不是编号" } })).toBe(false);
+    await expect(tool.execute("test", { request: { ...confirm, operationId: uuidv7() } } as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
   });
   test("工具说明不提新生成与UUIDv7，写明operationId平时不填、只在续做时照抄报错或结果给出的编号", () => {
     const { description } = createRequirementManageTool({ interaction: {} as never });

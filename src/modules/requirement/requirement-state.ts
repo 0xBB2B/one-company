@@ -388,6 +388,8 @@ export class RequirementStateStore {
       const record = this.get(db, request.requirementId); this.active(record.data, true);
       if (!equal(record.data.workspace, previous.data.workspace)) throw new RequirementStateError("workspace_binding_changed");
       if (record.data.workspace) this.checkClaims(db, record.data.workspace);
+      assertNoUnfinishedRequirementOperationsIn(db, record.id);
+      assertNoRequirementWriteClaimIn(db, this.options.repoId, record.id);
       if (!equal(record.data.saved, request.reference)) throw new RequirementStateError("saved_version_mismatch");
       const digest = createHash("sha256").update(canonicalJson(request)).digest("hex");
       const consumed = db.read("requirement_approval_uses", request.receiptId);

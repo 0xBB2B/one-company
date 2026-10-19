@@ -10,7 +10,6 @@ import type { ApprovedChangeDelivery, PreparedRequirementDelivery, RequirementEv
   RequirementEventServiceOptions } from "../src/modules/requirement/requirement-events.ts";
 import { RequirementService } from "../src/modules/requirement/requirement-service.ts";
 import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
-import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -139,21 +138,6 @@ test("批准状态与持久事件同事务，事件写失败不留下半份批�
   const recovered = await w.service.confirmUpdate(input);
   expect(recovered.revision).toBe(2);
   expect(approvalEvents(database, w.created.requirementId)).toHaveLength(2);
-});
-
-test("批准落库后响应丢失，原操作重试不重复持久事件", async () => {
-  const w = await world();
-  const input = await confirmInput(w, "响应丢失后的批准");
-  const original = RequirementOperations.prototype.finalize;
-  vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementationOnce(() => {
-    throw new Error("lost approval response");
-  }).mockImplementation(original);
-  await expect(w.service.confirmUpdate(input)).rejects.toThrow(/lost approval response/);
-  const recovered = await w.service.confirmUpdate(input);
-  expect(recovered.revision).toBe(2);
-  const queue = approvalEvents(repositoryDatabase(w.options.dataRoot, w.options.repoId), w.created.requirementId);
-  expect(queue).toHaveLength(2);
-  expect(queue.filter((event) => (event.data as { revision?: number }).revision === 2)).toHaveLength(1);
 });
 
 test("跨过草稿的连续批准事件带准确提交对，投递不等于消费也不解除pending", async () => {

@@ -571,8 +571,7 @@ export class MainRequirementInteraction {
         maxTurns: task.userDecision!.maxTurns, taskStatus: task.status }, undefined, proofs);
     } finally { this.#adjudication = undefined; }
   }
-  async confirm(ctx: ExtensionContext, request: ConfirmationRequest, resume = false): Promise<Record<string, unknown>> {
-    if (resume) this.#resumable(ctx, request.repoId, request.operationId, request.requirementId, "confirmUpdate");
+  async confirm(ctx: ExtensionContext, request: ConfirmationRequest): Promise<Record<string, unknown>> {
     const input = this.#currentInput(ctx); this.#candidate = { ...request };
     const loaded = await this.#load(ctx, request), core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
     const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);

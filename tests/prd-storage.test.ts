@@ -128,25 +128,26 @@ test("首次 create 自动初始化并以固定身份、message、单文件 tree
   expect(await verifyVersion({ ...w.config, expectedRepositoryIdentity: result.repositoryIdentity, commit: result.commit, expectedHash: result.prdHash })).toMatchObject({ ok: true, commit: result.commit, prdHash: result.prdHash });
 });
 
-test("updateDraft 与 confirmUpdate 形成精确线性版本，历史读取和草稿到确认 diff 使用指定提交", async () => {
+test("连续的 updateDraft 形成精确线性版本，历史读取和两版草稿之间的 diff 使用指定提交", async () => {
   const w = await world();
   const initial = await first(w, "# 目标\n\n初稿\n");
   const draft = await save({ ...w.config, action: "updateDraft", operationId: "draft-1", expectedParent: initial.commit, bytes: Buffer.from("# 目标\n\n草稿补充\n") });
-  const confirmed = await save({ ...w.config, action: "confirmUpdate", operationId: "confirm-1", expectedParent: draft.commit, bytes: Buffer.from("# 目标\n\n批准内容\n") });
+  await expectCode(save({ ...w.config, action: "confirmUpdate" as never, operationId: "confirm-0", expectedParent: draft.commit, bytes: Buffer.from("# 目标\n\n批准内容\n") }), "invalid_action");
+  const second = await save({ ...w.config, action: "updateDraft", operationId: "draft-2", expectedParent: draft.commit, bytes: Buffer.from("# 目标\n\n批准内容\n") });
   expect(draft).toMatchObject({ status: "saved", parent: initial.commit, changed: true });
-  expect(confirmed).toMatchObject({ status: "saved", parent: draft.commit, changed: true });
-  expect("approved" in confirmed).toBe(false);
+  expect(second).toMatchObject({ status: "saved", parent: draft.commit, changed: true });
+  expect("approved" in second).toBe(false);
   expect(Buffer.from((await readVersion({ ...w.config, commit: initial.commit, expectedHash: initial.prdHash })).bytes).toString()).toBe("# 目标\n\n初稿\n");
   const difference = await diffVersions({
     ...w.config,
     fromCommit: draft.commit,
-    toCommit: confirmed.commit,
+    toCommit: second.commit,
     expectedFromHash: draft.prdHash,
-    expectedToHash: confirmed.prdHash,
+    expectedToHash: second.prdHash,
   });
   expect(difference.diff).toContain("-草稿补充");
   expect(difference.diff).toContain("+批准内容");
-  expect((await git(["rev-list", "--first-parent", "--format=%P", "HEAD"], confirmed.repositoryRoot, w.home)).trim()).toContain(draft.commit);
+  expect((await git(["rev-list", "--first-parent", "--format=%P", "HEAD"], second.repositoryRoot, w.home)).trim()).toContain(draft.commit);
 });
 
 test("正文无变化不产生空提交；同 operationId 的提交成功响应丢失可恢复且不重复提交", async () => {
@@ -154,8 +155,8 @@ test("正文无变化不产生空提交；同 operationId 的提交成功响应�
   const initial = await first(w);
   const unchanged = await save({ ...w.config, action: "updateDraft", operationId: "unchanged-1", expectedParent: initial.commit, bytes: Buffer.from("# 第一版\n") });
   expect(unchanged).toMatchObject({ status: "unchanged", action: "updateDraft", commit: initial.commit, changed: false });
-  const sameContentConfirmation = await save({ ...w.config, action: "confirmUpdate", operationId: "confirm-same-1", expectedParent: initial.commit, bytes: Buffer.from("# 第一版\n") });
-  expect(sameContentConfirmation).toMatchObject({ status: "unchanged", action: "confirmUpdate", commit: initial.commit, changed: false });
+  const sameContent = await save({ ...w.config, action: "updateDraft", operationId: "draft-same-1", expectedParent: initial.commit, bytes: Buffer.from("# 第一版\n") });
+  expect(sameContent).toMatchObject({ status: "unchanged", action: "updateDraft", commit: initial.commit, changed: false });
   expect(await commitCount(initial.repositoryRoot, w.home)).toBe(1);
 
   const request = { ...w.config, action: "updateDraft" as const, operationId: "lost-response-1", expectedParent: initial.commit, bytes: Buffer.from("# 第二版\n") };
@@ -221,7 +222,7 @@ test("未知 HEAD、外部正文、复用旧 operationId 和仓库目录身份�
   const duplicateOperation = await world();
   const old = await first(duplicateOperation);
   const next = await save({ ...duplicateOperation.config, action: "updateDraft", operationId: "save-4", expectedParent: old.commit, bytes: Buffer.from("第二版") });
-  await expectCode(save({ ...duplicateOperation.config, action: "confirmUpdate", operationId: "save-4", expectedParent: next.commit, bytes: Buffer.from("第三版") }), "operation_conflict");
+  await expectCode(save({ ...duplicateOperation.config, action: "updateDraft", operationId: "save-4", expectedParent: next.commit, bytes: Buffer.from("第三版") }), "operation_conflict");
 
   const replacedRepository = await world();
   const bound = await first(replacedRepository);
@@ -389,7 +390,7 @@ test("读取接口首次授权携带精确提交和预期 hash，且不读取请
   const w = await world((check) => { checks.push({ ...check }); return true; });
   const initial = await first(w, "版本一");
   const second = await save({ ...w.config, action: "updateDraft", operationId: "version-2", expectedParent: initial.commit, bytes: Buffer.from("版本二") });
-  const latest = await save({ ...w.config, action: "confirmUpdate", operationId: "version-3", expectedParent: second.commit, bytes: Buffer.from("版本三") });
+  const latest = await save({ ...w.config, action: "updateDraft", operationId: "version-3", expectedParent: second.commit, bytes: Buffer.from("版本三") });
 
   checks.length = 0;
   await readVersion({ ...w.config, commit: latest.commit, expectedHash: latest.prdHash });

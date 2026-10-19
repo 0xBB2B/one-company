@@ -23,7 +23,7 @@ const OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const HASH_RE = /^sha256:[0-9a-f]{64}(?![\s\S])/;
 const SAFE_PARTIAL_GIT_ENTRIES = new Set(["HEAD", "config", "description", "objects", "refs"]);
 
-export type PrdStorageAction = "create" | "updateDraft" | "confirmUpdate";
+export type PrdStorageAction = "create" | "updateDraft";
 export type PrdStorageInterfaceAction = "create" | "save" | "readVersion" | "diffVersions" | "verifyVersion";
 export type PrdStoragePermissionPhase = "beforeAction" | "beforeWrite" | "beforeReturn" | "beforeReturnBody";
 
@@ -753,7 +753,7 @@ async function parseCommitMetadata(config: PrdStorageConfig, paths: PreparedPath
   }
   if (lines.length !== trees.length + parents.length + authors.length + committers.length) fail("history_mismatch", "正文提交含非固定元数据");
   const escapedRequirement = config.requirementId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`^prd\\(${escapedRequirement}\\): (create|updateDraft|confirmUpdate)\\n\\nOperation-Id: ([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\nPrd-Hash: (sha256:[0-9a-f]{64})\\n(?![\\s\\S])`).exec(message);
+  const match = new RegExp(`^prd\\(${escapedRequirement}\\): (create|updateDraft)\\n\\nOperation-Id: ([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\nPrd-Hash: (sha256:[0-9a-f]{64})\\n(?![\\s\\S])`).exec(message);
   if (!match) fail("message_mismatch", "提交信息不符合固定正文格式");
   return { action: match[1] as PrdStorageAction, operationId: match[2]!, prdHash: match[3] as `sha256:${string}`, parents };
 }
@@ -993,7 +993,7 @@ export async function create(input: PrdStorageSaveInput): Promise<PrdStorageWrit
 }
 
 export async function save(input: PrdStorageSaveInput & { action: Exclude<PrdStorageAction, "create"> }): Promise<PrdStorageWriteResult> {
-  if (input.action !== "updateDraft" && input.action !== "confirmUpdate") fail("invalid_action", "save action 只能是 updateDraft 或 confirmUpdate");
+  if (input.action !== "updateDraft") fail("invalid_action", "save action 只能是 updateDraft");
   return saveInternal(input, input.action, "save");
 }
 

@@ -1365,6 +1365,5 @@ test("续做时填了不属于本窗口的仓库编号：先按仓库鉴权拒�
   w.capture("改一下需求");
   const foreign = "f".repeat(64);
   await expect(w.call({ repoId: foreign, action: "updateDraft", requirementId: uuidv7(), operationId: uuidv7(), version: 1, summary: "手机号登录", title: "登录", body: BODY })).rejects.toThrow();
-  await expect(w.call({ repoId: foreign, action: "confirmUpdate", requirementId: uuidv7(), savedOperationId: uuidv7(), operationId: uuidv7(), version: 1 })).rejects.toThrow();
   await expect(stat(repositoryDatabase(w.dataRoot, foreign))).rejects.toMatchObject({ code: "ENOENT" });
 });

@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { join } from "node:path";
 import { isPromise } from "node:util/types";
+import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn } from "./requirement-coordination.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
 import type { RequirementAction, RequirementStoreOptions } from "./requirement-state.ts";
 import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
@@ -66,7 +67,7 @@ const VALIDATION_REQUIREMENT_ID = "00000000-0000-7000-8000-000000000000";
 const STATE_SCOPE: Record<RequirementServiceAction, ReadonlySet<RequirementAction>> = {
   create: new Set(["open", "reserve", "read", "saved-version", "block-recovery"]),
   updateDraft: new Set(["open", "read", "saved-version", "block-recovery"]),
-  confirmUpdate: new Set(["open", "read", "saved-version", "approved-version", "block-recovery"]),
+  confirmUpdate: new Set(["open", "read", "approved-version", "block-recovery"]),
   readSaved: new Set(["open", "read", "block-recovery"]),
   readApproved: new Set(["open", "read", "events", "block-recovery"]),
   diff: new Set(["open", "read", "events", "block-recovery"]),
@@ -97,7 +98,7 @@ function available(record: RequirementRecord): void {
 
 function authorizationForWrite(
   repoId: string,
-  action: RequirementOperationAction,
+  action: RequirementOperationAction | "confirmUpdate",
   input: CreateInput | UpdateInput | ConfirmInput,
   intentHash: string,
   requirementId?: string,
@@ -236,7 +237,7 @@ export class RequirementService {
     return { ownerToken, pid: process.pid };
   }
 
-  private async verifyWorkingCopy(operation: RequirementOperation): Promise<void> {
+  private async verifyWorkingCopy(operation: Pick<RequirementOperation, "repositoryRoot" | "targetHash">): Promise<void> {
     const path = join(operation.repositoryRoot, PRD_FILE);
     let handle;
     try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
@@ -283,26 +284,49 @@ export class RequirementService {
 
   async updateDraft(input: UpdateInput): Promise<RequirementReceipt> {
     const request = checkServiceInput(UpdateDraftInput, input);
-    return this.update("updateDraft", request);
+    const intentHash = requirementIntentHash({ title: request.title, body: request.body });
+    const initialAuthorization = authorizationForWrite(this.options.repoId, "updateDraft", request, intentHash, request.requirementId, request.version);
+    this.authorize(initialAuthorization);
+    const initialState = await this.state(initialAuthorization);
+    const before = initialState.read(request.requirementId);
+    available(before.data);
+    await this.assertNoObservedArchive(initialState, request.requirementId);
+    const document = createPrdDocument(request.requirementId, request.title, request.body);
+    const authorization = authorizationForWrite(
+      this.options.repoId,
+      "updateDraft",
+      request,
+      intentHash,
+      request.requirementId,
+      request.version,
+      before.data.epoch,
+      storageHash(document.prdHash),
+    );
+    this.authorize(authorization);
+    return this.write("updateDraft", request, before, document, authorization);
   }
 
   async confirmUpdate(input: ConfirmInput): Promise<RequirementReceipt> {
     const request = checkServiceInput(ConfirmUpdateInput, input);
-    return this.update("confirmUpdate", request);
+    return this.approve(request);
   }
 
-  private async update(action: "updateDraft" | "confirmUpdate", input: UpdateInput | ConfirmInput): Promise<RequirementReceipt> {
+  private async approve(input: ConfirmInput): Promise<RequirementReceipt> {
     const intentHash = requirementIntentHash({ title: input.title, body: input.body });
-    const initialAuthorization = authorizationForWrite(this.options.repoId, action, input, intentHash, input.requirementId, input.version);
+    const initialAuthorization = authorizationForWrite(this.options.repoId, "confirmUpdate", input, intentHash, input.requirementId, input.version);
     this.authorize(initialAuthorization);
     const initialState = await this.state(initialAuthorization);
     const before = initialState.read(input.requirementId);
     available(before.data);
+    withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => {
+      assertNoUnfinishedRequirementOperationsIn(db, input.requirementId);
+      assertNoRequirementWriteClaimIn(db, this.options.repoId, input.requirementId);
+    });
     await this.assertNoObservedArchive(initialState, input.requirementId);
     const document = createPrdDocument(input.requirementId, input.title, input.body);
     const authorization = authorizationForWrite(
       this.options.repoId,
-      action,
+      "confirmUpdate",
       input,
       intentHash,
       input.requirementId,
@@ -311,43 +335,72 @@ export class RequirementService {
       storageHash(document.prdHash),
     );
     this.authorize(authorization);
-    if (action === "confirmUpdate") {
-      const ref = (input as ConfirmInput).manifest;
-      if (ref.requirementId !== input.requirementId || ref.candidate.operationId !== input.operationId ||
-        ref.candidate.intentHash !== intentHash || !sameReference(ref.candidate.to, before.data.saved) ||
-        ref.candidate.to.hash !== document.prdHash) throw new RequirementServiceError("manifest_candidate_mismatch");
-      const identity = this.operations.repositoryIdentity(input.requirementId);
-      if (!identity) throw new RequirementServiceError("repository_identity_missing");
-      const validate = () => {
-        const current = initialState.read(input.requirementId); available(current.data);
-        if (current.version !== before.version || current.data.epoch !== before.data.epoch ||
-          !sameReference(current.data.saved, ref.candidate.to)) throw new RequirementServiceError("manifest_stale");
-      };
-      const saved = await readVersion({ ...this.storageConfig(authorization, input.requirementId, identity, validate),
-        commit: ref.candidate.to.commit, expectedHash: storageHash(ref.candidate.to.hash) });
-      if (!Buffer.from(saved.bytes).equals(Buffer.from(document.bytes))) throw new RequirementServiceError("manifest_candidate_mismatch");
-      validate();
-      const confirmed = input as ConfirmInput;
-      const alreadyApproved = before.data.approvalReceiptId === confirmed.receiptId &&
-        decisionDigest(before.data.approvalManifest?.reference ?? null) === decisionDigest(ref);
-      if (!alreadyApproved) {
-        const allowed = this.options.authorizeManifest?.(deepFreeze({ requirementId: input.requirementId,
-          version: input.version, receiptId: confirmed.receiptId, manifest: structuredClone(ref) }));
-        if (isPromise(allowed)) void Promise.prototype.then.call(allowed, () => undefined, () => undefined);
-        if (allowed !== true) throw new RequirementServiceError("manifest_authorization_required");
-        validate();
-        withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) =>
-          registeredApprovalManifestIn(db, this.options.repoId, ref, before, confirmed.receiptId));
-      }
-      if (before.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
-      this.authorize(authorization);
+    const ref = input.manifest;
+    if (ref.requirementId !== input.requirementId || ref.candidate.operationId !== input.operationId ||
+      ref.candidate.intentHash !== intentHash || !sameReference(ref.candidate.to, before.data.saved) ||
+      ref.candidate.to.hash !== document.prdHash) throw new RequirementServiceError("manifest_candidate_mismatch");
+    const identity = this.operations.repositoryIdentity(input.requirementId);
+    if (!identity) throw new RequirementServiceError("repository_identity_missing");
+    const validate = () => {
+      const current = initialState.read(input.requirementId); available(current.data);
+      if (current.version !== before.version || current.data.epoch !== before.data.epoch ||
+        !sameReference(current.data.saved, ref.candidate.to)) throw new RequirementServiceError("manifest_stale");
+    };
+    const saved = await readVersion({ ...this.storageConfig(authorization, input.requirementId, identity, validate),
+      commit: ref.candidate.to.commit, expectedHash: storageHash(ref.candidate.to.hash) });
+    if (!Buffer.from(saved.bytes).equals(Buffer.from(document.bytes))) throw new RequirementServiceError("manifest_candidate_mismatch");
+    validate();
+    if (before.data.approvalReceiptId === input.receiptId && sameReference(before.data.approved, ref.candidate.to) &&
+      decisionDigest(before.data.approvalManifest?.reference ?? null) === decisionDigest(ref)) {
+      return this.approvedReceipt(input, before, document.archivePath);
     }
-    return this.write(action, input, before, document, authorization);
+    const allowed = this.options.authorizeManifest?.(deepFreeze({ requirementId: input.requirementId,
+      version: input.version, receiptId: input.receiptId, manifest: structuredClone(ref) }));
+    if (isPromise(allowed)) void Promise.prototype.then.call(allowed, () => undefined, () => undefined);
+    if (allowed !== true) throw new RequirementServiceError("manifest_authorization_required");
+    validate();
+    withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) =>
+      registeredApprovalManifestIn(db, this.options.repoId, ref, before, input.receiptId));
+    if (before.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
+    await this.verifyWorkingCopy({
+      repositoryRoot: prdRequirementPath({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId: input.requirementId }),
+      targetHash: document.prdHash,
+    });
+    this.authorize(authorization);
+    const approved = await (await this.state(authorization)).recordApprovedVersion({
+      requirementId: input.requirementId,
+      version: input.version,
+      receiptId: input.receiptId,
+      reference: ref.candidate.to,
+      manifest: ref,
+      ...(input.docSpec ? { docSpec: input.docSpec } : {}),
+      ...(input.prototypes ? { prototypes: input.prototypes } : {}),
+    });
+    this.authorize(authorization);
+    return this.approvedReceipt(input, approved, document.archivePath);
+  }
+
+  private approvedReceipt(input: ConfirmInput, record: { id: string; version: number; data: RequirementRecord }, archivePath: string): RequirementReceipt {
+    const reference = input.manifest.candidate.to;
+    return {
+      action: "confirmUpdate",
+      operationId: input.operationId,
+      requirementId: input.requirementId,
+      commit: reference.commit,
+      prdHash: storageHash(reference.hash),
+      status: "unchanged",
+      archivePath,
+      lifecycle: record.data.lifecycle as "draft" | "active",
+      version: record.version,
+      epoch: record.data.epoch,
+      revision: record.data.revision,
+      ...this.approvalScope(record),
+    };
   }
 
   private async write(
     action: RequirementOperationAction,
-    input: CreateInput | UpdateInput | ConfirmInput,
+    input: CreateInput | UpdateInput,
     before: { id: string; version: number; data: RequirementRecord },
     document: ReturnType<typeof createPrdDocument>,
     authorization: ServiceAuthorizationRequest,
@@ -380,7 +433,7 @@ export class RequirementService {
 
   private async writeOwned(
     action: RequirementOperationAction,
-    input: CreateInput | UpdateInput | ConfirmInput,
+    input: CreateInput | UpdateInput,
     before: { id: string; version: number; data: RequirementRecord },
     document: ReturnType<typeof createPrdDocument>,
     authorization: ServiceAuthorizationRequest,
@@ -397,14 +450,8 @@ export class RequirementService {
         requirementId: before.id,
         intentHash: authorization.intentHash!,
         targetHash: document.prdHash,
-        receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
         archivePath: document.archivePath,
       };
-      if (decisionDigest(operation.manifest ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).manifest : null) ||
-        decisionDigest(operation.docSpec ?? null) !== decisionDigest(action === "confirmUpdate" ? (input as ConfirmInput).docSpec ?? null : null) ||
-        (operation.prototypes ?? null) !== (action === "confirmUpdate" ? (input as ConfirmInput).prototypes ?? null : null)) {
-        throw new RequirementServiceError("operation_conflict");
-      }
       for (const [key, value] of Object.entries(expected)) {
         if (operation[key as keyof RequirementOperation] !== value) throw new RequirementServiceError("operation_conflict");
       }
@@ -425,10 +472,6 @@ export class RequirementService {
         expectedParent: before.data.saved?.commit ?? null,
         saveVersion: before.version,
         epoch: before.data.epoch,
-        receiptId: action === "confirmUpdate" ? (input as ConfirmInput).receiptId : null,
-        ...(action === "confirmUpdate" ? { manifest: (input as ConfirmInput).manifest } : {}),
-        ...((input as ConfirmInput).docSpec ? { docSpec: (input as ConfirmInput).docSpec } : {}),
-        ...((input as ConfirmInput).prototypes ? { prototypes: (input as ConfirmInput).prototypes } : {}),
         archivePath: document.archivePath,
         repositoryRoot: prdRequirementPath({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId: before.id }),
         expectedRepositoryIdentity,
@@ -530,38 +573,11 @@ export class RequirementService {
       if (saved.data.epoch !== operation.epoch || !sameReference(saved.data.saved, reference)) {
         throw new RequirementServiceError("operation_state_mismatch");
       }
-      if (action !== "confirmUpdate" && saved.version !== operation.savedVersion) {
-        throw new RequirementServiceError("operation_state_mismatch");
-      }
-      if (action === "confirmUpdate" && operation.approvalVersion === null && saved.version !== operation.savedVersion) {
-        throw new RequirementServiceError("operation_state_mismatch");
-      }
-      if (action === "confirmUpdate" && operation.approvalVersion !== null) {
-        const beforeApproval = saved.version === operation.approvalVersion;
-        const afterApproval = saved.version === operation.approvalVersion + 1
-          && sameReference(saved.data.approved, reference)
-          && saved.data.approvalReceiptId === operation.receiptId
-          && decisionDigest(saved.data.approvalManifest?.reference ?? null) === decisionDigest(operation.manifest);
-        if (!beforeApproval && !afterApproval) throw new RequirementServiceError("operation_state_mismatch");
-      }
+      if (saved.version !== operation.savedVersion) throw new RequirementServiceError("operation_state_mismatch");
     }
 
-    let final = saved;
-    if (action === "confirmUpdate") {
-      if (operation.approvalVersion === null) operation = this.operations.prepareApproval(operation.operationId, saved.version, owner).data;
-      const approvalState = await this.state(authorization);
-      final = await approvalState.recordApprovedVersion({
-        requirementId: operation.requirementId,
-        version: operation.approvalVersion!,
-        receiptId: operation.receiptId!,
-        reference,
-        manifest: operation.manifest!,
-        ...(operation.docSpec ? { docSpec: operation.docSpec } : {}),
-        ...(operation.prototypes ? { prototypes: operation.prototypes } : {}),
-      });
-    }
     this.authorize(authorization);
-    operation = this.operations.finalize(operation.operationId, final.version, owner).data;
+    operation = this.operations.finalize(operation.operationId, saved.version, owner).data;
     return this.currentReceipt(operation, authorization);
   }
 
@@ -571,8 +587,7 @@ export class RequirementService {
       throw new RequirementServiceError("operation_state_mismatch");
     }
     const reference = { commit: operation.git.commit, hash: operation.git.hash };
-    if (!sameReference(record.saved, reference) || (operation.action === "confirmUpdate" && (!sameReference(record.approved, reference) || record.approvalReceiptId !== operation.receiptId ||
-      decisionDigest(record.approvalManifest?.reference ?? null) !== decisionDigest(operation.manifest)))) {
+    if (!sameReference(record.saved, reference)) {
       throw new RequirementServiceError("operation_state_mismatch");
     }
   }
