@@ -166,7 +166,7 @@ test("页面复制完成后底部提示：已复制到新文件路径，打开�
   const steps: Array<(keys: (...k: string[]) => void, text: string) => void> = [
     (keys) => keys(RIGHT, "c", ...Array(11).fill(BACKSPACE), ..."vue-engineer", ENTER),
     (keys) => keys(ENTER),
-    (keys, text) => { screens.push(text); keys(ESC); },
+    (keys, text) => { screens.push(text); keys(ESC, ESC); },
   ];
   const ui = {
     custom<T>(factory: (...args: unknown[]) => unknown): Promise<T> {

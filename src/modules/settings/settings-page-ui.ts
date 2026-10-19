@@ -219,8 +219,7 @@ export class SettingsPageView {
       else if (matchesKey(data, "escape")) this.options.onClose();
       return;
     }
-    if (matchesKey(data, "escape")) { this.options.onClose(); return; }
-    if (matchesKey(data, "left")) { this.focus = "nav"; this.expanded = false; return; }
+    if (matchesKey(data, "escape") || matchesKey(data, "left")) { this.focus = "nav"; this.expanded = false; return; }
     if (matchesKey(data, "down")) { this.cursor = Math.min(this.cursor + 1, Math.max(0, this.rowCount() - 1)); this.expanded = false; return; }
     if (matchesKey(data, "up")) { this.cursor = Math.max(this.cursor - 1, 0); this.expanded = false; return; }
     if (matchesKey(data, "enter")) {
@@ -433,9 +432,9 @@ export class SettingsPageView {
     else if (this.settingsTab.picking()) hint = this.settingsTab.hint();
     else if (this.switchPicker.picking()) hint = this.switchPicker.hint();
     else if (this.focus === "nav") hint = "↑↓ 选分类  → 进右栏  Esc 退出";
-    else if (this.section === "models" || this.section === "switches") hint = "← 回左栏  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出";
-    else hint = `← 回左栏  ↑↓ 选择  回车 ${this.expanded ? "收起" : "详情"}${this.section === "problems" ? "" : "  C 复制"}  Esc 退出`;
-    return narrow ? hint.replace("← 回左栏", "← 回目录").replace("→ 进右栏", "→ 进入") : hint;
+    else if (this.section === "models" || this.section === "switches") hint = "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层";
+    else hint = `←/Esc 回左栏  ↑↓ 选择  回车 ${this.expanded ? "收起" : "详情"}${this.section === "problems" ? "" : "  C 复制"}`;
+    return narrow ? hint.replace("←/Esc 回左栏", "←/Esc 回目录").replace("→ 进右栏", "→ 进入") : hint;
   }
 
   private hintLines(width: number, hint: string): string[] {

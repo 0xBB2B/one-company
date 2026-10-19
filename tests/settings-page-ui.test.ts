@@ -16,6 +16,7 @@ const OPENAI_SOL = { provider: "openai", id: "gpt-6.1-sol", reasoning: true, thi
 const LONG = { provider: "some-long-provider", id: "claude-opus-5-5-extended-context-preview", reasoning: true, thinkingLevelMap: {} };
 const GRAY_NOTE = /gpt-6-luna 不支持/u;
 const NOTICE = "✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp";
+const MODEL_HINT = "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层";
 
 const theme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bg: (kind: string, text: string) => `[${kind}]${text}[/]`,
   bold: (text: string) => `**${text}**`, inverse: (text: string) => `!!${text}!!` };
@@ -190,22 +191,104 @@ test("目录里 ↑ 到顶不越界，↓ 跳过标题和空行直达问题，�
 test("→ 和回车都能进右栏，← 回目录，按键提示随焦点变化", async () => {
   const p = await page();
   p.press(...Array<string>(5).fill(DOWN), RIGHT);
-  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出");
+  expect(p.text()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层");
   expect(selectedPaneLine(p)).toMatch(/^\s*▸ PM/u);
   p.press(LEFT);
   expect(p.text()).toContain("↑↓ 选分类  → 进右栏  Esc 退出");
   p.press(ENTER);
-  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出");
+  expect(p.text()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层");
 });
 
-test("目录里按 Esc 调 onClose，右栏列表里按 Esc 也调 onClose", async () => {
+test("目录里按 Esc 调 onClose", async () => {
   const nav = await page();
   nav.press(ESC);
   expect(nav.closed()).toBe(true);
-  const inRight = await page();
-  toModels(inRight);
-  inRight.press(ESC);
-  expect(inRight.closed()).toBe(true);
+});
+
+test("右栏列表里 Esc 与 ← 一样：焦点回目录，目录光标停在原分类，页面不关闭；再按 Esc 才关闭", async () => {
+  const p = await page();
+  p.press(DOWN, DOWN, DOWN, DOWN, DOWN, RIGHT, ESC);
+  expect(p.closed()).toBe(false);
+  expect(navCells(p.rows())).toContain("▸ 模型 3");
+  expect(p.lines().find((line) => /模型 +3/u.test(plain(line)) && plain(line).includes("│"))!.split("│")[0]).toContain("[selectedBg]");
+  expect(p.text()).toContain("↑↓ 选分类  → 进右栏  Esc 退出");
+  p.press(ESC);
+  expect(p.closed()).toBe(true);
+});
+
+test("Esc 与 ← 回目录后的整屏完全相同", async () => {
+  const byEsc = await page(), byLeft = await page();
+  byEsc.press(RIGHT, DOWN, ENTER, ESC);
+  byLeft.press(RIGHT, DOWN, ENTER, LEFT);
+  expect(byEsc.rows()).toEqual(byLeft.rows());
+  expect(byEsc.view.state()).toEqual(byLeft.view.state());
+});
+
+test("worker 展开详情后 Esc 回目录，详情收起，再 → 进右栏光标是 ▸ 不是 ▾", async () => {
+  const p = await page();
+  p.press(RIGHT, ENTER);
+  expect(selectedPaneLine(p)).toMatch(/^\s*▾ ui-worker/u);
+  p.press(ESC);
+  expect(p.pane()).not.toContain("┊");
+  p.press(RIGHT);
+  expect(selectedPaneLine(p)).toMatch(/^\s*▸ ui-worker/u);
+  expect(p.pane()).not.toContain("┊");
+  expect(p.closed()).toBe(false);
+});
+
+test("模型分步修改：第一步 Esc 取消并提示已取消修改，焦点留在右栏、页面不关闭、不保存；再 Esc 回目录，仍不关闭", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(ENTER, ENTER, ESC, ESC);
+  expect(p.text()).toContain("已取消修改");
+  expect(p.text()).toContain(MODEL_HINT);
+  expect(p.closed()).toBe(false);
+  expect(p.saves).toEqual([]);
+  p.press(ESC);
+  expect(p.text()).toContain("↑↓ 选分类  → 进右栏  Esc 退出");
+  expect(p.closed()).toBe(false);
+});
+
+test("开关分步修改：Esc 取消后焦点留在右栏，页面不关闭", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(ENTER, ESC);
+  expect(p.text()).toContain("已取消修改");
+  expect(p.text()).toContain(MODEL_HINT);
+  expect(p.closed()).toBe(false);
+  expect(p.switchSaves).toEqual([]);
+});
+
+test("复制起名里 Esc 取消并提示已取消复制，焦点留在右栏，页面不关闭，不复制", async () => {
+  const p = await page();
+  p.press(RIGHT, "c", ESC);
+  expect(p.text()).toContain("已取消复制");
+  expect(p.text()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 详情  C 复制");
+  expect(p.closed()).toBe(false);
+  expect(p.copies).toEqual([]);
+});
+
+test("窄屏 44 列：右栏 Esc 回目录且只画目录，再 Esc 调 onClose", async () => {
+  const p = await page();
+  p.press(...inPane(5));
+  expect(p.text(44)).toContain("←/Esc 回目录");
+  p.press(ESC);
+  expect(p.closed()).toBe(false);
+  const rows = p.rows(44);
+  expect(rows.some((row) => row.includes("│"))).toBe(false);
+  expect(p.text(44)).not.toMatch(/名称 +来源/u);
+  expect(p.text(44)).toContain("↑↓ 选分类  → 进入  Esc 退出");
+  p.press(ESC);
+  expect(p.closed()).toBe(true);
+});
+
+test("右栏的按键提示都不含“Esc 退出”", async () => {
+  for (const section of SECTIONS) {
+    const p = await page();
+    enterSection(p, section);
+    expect(p.text(), section).not.toContain("Esc 退出");
+    expect(p.text(), section).toContain("←/Esc 回左栏");
+  }
 });
 
 test("八个分类的右栏第一行是分类名加两空格加说明", async () => {
@@ -279,7 +362,7 @@ test("职责回车展开出说明、skills、MCP、正文、文件五行详情�
   const at = ["说明", "skills", "MCP", "正文", "文件"].map((label) => detail.findIndex((line) => line.includes(label)));
   expect(at.every((index) => index >= 0)).toBe(true);
   expect([...at].sort((a, b) => a - b)).toEqual(at);
-  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 收起  C 复制  Esc 退出");
+  expect(p.text()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 收起  C 复制");
   p.press(ENTER);
   expect(selectedPaneLine(p)).toMatch(/^\s*▸ ui-worker/u);
   expect(p.pane()).not.toContain("┊");
@@ -354,13 +437,13 @@ test("问题分类写短原因，展开依次写原因、现在是、影响，�
   expect(selectedPaneLine(p)).toMatch(/broken\.md +用户 +thinking 写错了/u);
   expect(p.lines().join("\n")).toContain("<error>thinking 写错了");
   expect(squeeze(p.text())).toContain(squeeze("这份定义没有生效 · 改正文件后重新打开本页"));
-  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 详情  Esc 退出");
+  expect(p.text()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 详情");
   p.press(ENTER);
   expect(squeeze(p.pane().replaceAll("┊", ""))).toContain(squeeze("原因 thinking 只能是 off、minimal、low、medium、high、xhigh、max"));
   expect(p.pane()).toMatch(/┊ 现在是 +extreme/u);
   expect(p.pane()).toMatch(/┊ 影响 +这份定义没有生效/u);
   for (const row of p.rows(80)) expect(visibleWidth(row), row).toBeLessThanOrEqual(80);
-  expect(p.text()).toContain("← 回左栏  ↑↓ 选择  回车 收起  Esc 退出");
+  expect(p.text()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 收起");
   const u = await page({ trusted: false });
   enterSection(u, "problems");
   moveToRowWith(u, ".pi/agents/");
@@ -888,14 +971,14 @@ test("44 列焦点在目录时只画目录，没有分隔竖线，提示换成�
   expect(p.text(44)).toContain("↑↓ 选分类  → 进入  Esc 退出");
 });
 
-test("44 列 → 进右栏后只画右栏，首行“设置 › 模型”，提示换成“← 回目录”；回车改模型后首行“设置 › 模型 › PM”", async () => {
+test("44 列 → 进右栏后只画右栏，首行“设置 › 模型”，提示换成“←/Esc 回目录”；回车改模型后首行“设置 › 模型 › PM”", async () => {
   const p = await page();
   p.press(...inPane(5));
   const rows = p.rows(44);
   expect(rows.some((row) => row.includes("│"))).toBe(false);
   expect(rows[1]!.trim()).toBe("设置 › 模型");
-  expect(p.text(44)).toContain("← 回目录");
-  expect(p.text(44)).not.toContain("← 回左栏");
+  expect(p.text(44)).toContain("←/Esc 回目录");
+  expect(p.text(44)).not.toContain("回左栏");
   expect(p.text(44)).not.toContain("角色定义");
   p.press(ENTER);
   expect(p.rows(44)[1]!.trim()).toBe("设置 › 模型 › PM");
@@ -1037,12 +1120,12 @@ test("模型行底部说明在 36 列下折行后，任何一行都不以顿号�
 test("按键提示放不下时按两个空格分组折行，一组不被拆开，放得下时仍是一行", async () => {
   const screens: Array<{ hint: string; keys: string[] }> = [
     { hint: "↑↓ 选分类  → 进右栏  Esc 退出", keys: [] },
-    { hint: "← 回左栏  ↑↓ 选择  回车 详情  C 复制  Esc 退出", keys: [RIGHT] },
-    { hint: "← 回左栏  ↑↓ 选择  回车 收起  C 复制  Esc 退出", keys: [RIGHT, ENTER] },
-    { hint: "← 回左栏  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出", keys: toSection("models") },
-    { hint: "← 回左栏  ↑↓ 选择  回车 修改  R 清除本层  Esc 退出", keys: toSection("switches") },
-    { hint: "← 回左栏  ↑↓ 选择  回车 详情  Esc 退出", keys: toSection("problems") },
-    { hint: "← 回左栏  ↑↓ 选择  回车 收起  Esc 退出", keys: toSection("problems", ENTER) },
+    { hint: "←/Esc 回左栏  ↑↓ 选择  回车 详情  C 复制", keys: [RIGHT] },
+    { hint: "←/Esc 回左栏  ↑↓ 选择  回车 收起  C 复制", keys: [RIGHT, ENTER] },
+    { hint: "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层", keys: toSection("models") },
+    { hint: "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层", keys: toSection("switches") },
+    { hint: "←/Esc 回左栏  ↑↓ 选择  回车 详情", keys: toSection("problems") },
+    { hint: "←/Esc 回左栏  ↑↓ 选择  回车 收起", keys: toSection("problems", ENTER) },
     { hint: "回车 下一步  Esc 取消", keys: [RIGHT, "c"] },
     { hint: "↑↓ 选择  回车 下一步  Esc 取消", keys: toSection("models", ENTER) },
     { hint: "↑↓ 选择  回车 下一步  Esc 上一步", keys: toSection("models", ENTER, ENTER) },
@@ -1050,7 +1133,7 @@ test("按键提示放不下时按两个空格分组折行，一组不被拆开�
   ];
   for (const { hint, keys } of screens) {
     for (let width = 36; width <= 80; width++) {
-      const shown = width < 60 ? hint.replace("← 回左栏", "← 回目录").replace("→ 进右栏", "→ 进入") : hint;
+      const shown = width < 60 ? hint.replace("←/Esc 回左栏", "←/Esc 回目录").replace("→ 进右栏", "→ 进入") : hint;
       const groups = shown.split("  ");
       const p = await page();
       p.press(...keys);
