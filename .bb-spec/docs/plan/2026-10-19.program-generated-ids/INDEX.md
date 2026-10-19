@@ -11,3 +11,8 @@
 
 ## 阶段 3：批准一次写完（执行时新增，用户 2026-10-19 决定）
 - [06-approval-atomic](06-approval-atomic.md) — 批准先做只读检查再在一个事务里写完，不建操作记录、不接受 operationId，data.db 升到 4 [依赖: 02-interaction-tools]
+
+## 阶段 4：续做由程序按内容认出（真实模型验收后改，用户 2026-10-19 决定）
+- [07-requirement-auto-resume](07-requirement-auto-resume.md) — 需求保存去掉 operationId，按内容认出没做完的保存 [依赖: 06-approval-atomic]
+- [09-change-apply-auto-resume](09-change-apply-auto-resume.md) — worker 写入去掉 operationId，按同一批文件续写
+- [08-close-workspace-backup](08-close-workspace-backup.md) — 关闭、工作区准备自动续办，备份恢复从头来 [依赖: 07-requirement-auto-resume]
