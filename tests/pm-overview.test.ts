@@ -25,8 +25,8 @@ async function world(options: { review?: boolean } = {}) {
 test("M7-AC33/AC34：接手理解待核对时显示待办并暂停计时，核对后事项消失、计时恢复，状态行按真实规划状态生成并广播变更信号", async () => {
   const w = await world({ review: false });
   await until(async () => (await w.overview()).status === "waiting");
-  expect(await w.overview()).toMatchObject({ goals: ["手机号正常登录", "验证码失败"], doing: "等待你的决定",
-    pendingItems: [{ kind: "intake-review", label: "待你核对：PM 接手理解 r1" }] });
+  expect(await w.overview()).toMatchObject({ goals: ["手机号正常登录", "验证码失败"], doing: "等待决定",
+    pendingItems: [{ kind: "intake-review", label: "待核对：PM 接手理解 r1" }] });
   await until(async () => (await w.run(w.pm.runId)).pausedAt !== undefined);
   expect(w.emit.mock.calls.some(([event]) => event === "pm.overview.changed")).toBe(true);
 
@@ -49,7 +49,7 @@ test("核对通过后 PM 又交了一份接手理解：面板重新出现待核�
   w.provider.queue.push({ type: "toolcall", name: PM_INTAKE_TOOL, input: { action: "ask", purpose: "pm-intake", understanding: w.understanding } }, { type: "text", text: "又交了一份" });
   await w.review();
   await until(async () => (await w.overview()).pendingItems.length === 1);
-  expect(await w.overview()).toMatchObject({ pendingItems: [{ kind: "intake-review", label: "待你核对：PM 接手理解 r1" }] });
+  expect(await w.overview()).toMatchObject({ pendingItems: [{ kind: "intake-review", label: "待核对：PM 接手理解 r1" }] });
   await expect(w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] })).rejects.toThrow("核对过的接手理解不是 PM 最新提交的那份");
 
   await w.review();
@@ -75,7 +75,7 @@ test("M7-AC33：子代理运行时状态行写明派工与尝试次数；用量�
   expect(overview.cacheRate).toBeCloseTo(300 / (100 + 300 + 100 + ((await w.run(w.pm.runId)).usage?.input ?? 0)), 5);
 });
 
-test("M7-AC33：两次未完成的任务成为待裁决事项；PM 空闲且无子代理运行时显示等待你的决定", async () => {
+test("M7-AC33：两次未完成的任务成为待裁决事项；PM 空闲且无子代理运行时显示等待决定", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
@@ -86,11 +86,11 @@ test("M7-AC33：两次未完成的任务成为待裁决事项；PM 空闲且无�
   w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到第二次到限" });
   await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: { reason: "估计不足", maxTurns: 1 } });
   await until(async () => (await w.overview()).status === "waiting");
-  expect(await w.overview()).toMatchObject({ doing: "等待你的决定",
-    pendingItems: [{ itemId: `task:${login}`, kind: "adjudicate", label: "待你裁决：任务 login 两次未完成" }] });
+  expect(await w.overview()).toMatchObject({ doing: "等待决定",
+    pendingItems: [{ itemId: `task:${login}`, kind: "adjudicate", label: "待裁决：任务 login 两次未完成" }] });
 });
 
-test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出现“待你裁决：PM 计划两次提交被拒”，卡片列出两次原因、运行记录与三个选择", async () => {
+test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出现“待裁决：PM 计划两次提交被拒”，卡片列出两次原因、运行记录与三个选择", async () => {
   const w = await world();
   const requirementId = w.fixture.requirementId;
   w.provider.queue.push({ type: "text", text: "规划中", chunkDelayMs: 30_000 });
@@ -98,8 +98,8 @@ test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出
   await until(async () => (await w.overview()).doing === "规划中（计划提交被拒 1 次，PM 正在按原因修改）");
   await expect(w.plan.execute({ action: "propose", tasks: [spec("meta", "metadata")] })).rejects.toMatchObject({ code: "unit_not_authorized" });
   await until(async () => (await w.overview()).pendingItems.some((item) => item.kind === "plan-rejected"));
-  expect(await w.overview()).toMatchObject({ doing: "规划中（计划提交被拒 2 次，等你决定）",
-    pendingItems: [{ itemId: `plan:${requirementId}`, kind: "plan-rejected", label: "待你裁决：PM 计划两次提交被拒", version: `plan:${requirementId}:2` }] });
+  expect(await w.overview()).toMatchObject({ doing: "规划中（计划提交被拒 2 次，等待决定）",
+    pendingItems: [{ itemId: `plan:${requirementId}`, kind: "plan-rejected", label: "待裁决：PM 计划两次提交被拒", version: `plan:${requirementId}:2` }] });
   const packet = w.manager.decisionPacket(requirementId, `plan:${requirementId}`);
   expect(packet).toMatch(/第 1 次被拒（propose）：[^\n]*goal\.unknown[\s\S]*第 2 次被拒（propose）：[^\n]*metadata/);
   expect(packet).toContain(`运行记录 `);
@@ -107,12 +107,12 @@ test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出
   expect(packet).toContain("purpose=panel-item");
 });
 
-test("M8L-AC2：PM 停下且无人能唤醒时出现“待你处理：PM 停下了”，卡片写明停下的事实、运行记录与 PM 最后的话（标明模型输出）", async () => {
+test("M8L-AC2：PM 停下且无人能唤醒时出现“待处理：PM 停下了”，卡片写明停下的事实、运行记录与 PM 最后的话（标明模型输出）", async () => {
   const w = await world();
   const requirementId = w.fixture.requirementId;
   await until(async () => (await w.overview()).pendingItems.some((item) => item.kind === "stall"));
   const item = (await w.overview()).pendingItems.find((candidate) => candidate.kind === "stall")!;
-  expect(item).toMatchObject({ itemId: `stall:${w.pm.runId}`, label: "待你处理：PM 停下了，没有在跑的子任务" });
+  expect(item).toMatchObject({ itemId: `stall:${w.pm.runId}`, label: "待处理：PM 停下了，没有在跑的子任务" });
   const packet = w.manager.decisionPacket(requirementId, item.itemId);
   expect(packet).toContain("PM 这一轮已结束：没有派出任务，没有在跑的子任务，也没有待你处理的事项；没有新的消息或事件，PM 不会自己继续。");
   expect(packet).toContain(`运行记录 `);

@@ -231,6 +231,14 @@ describe("README 主代理提问", () => {
   });
 });
 
+describe("主代理规则提到待处理事项", () => {
+  test("rules/01-main-session.md 写“待裁决”“待验收”，不出现“待你裁决”“待你验收”", async () => {
+    const rules = await readText(join(PACKAGE_ROOT, "rules/01-main-session.md"));
+    for (const phrase of ["待裁决", "待验收"]) expect(rules, phrase).toContain(phrase);
+    for (const phrase of ["待你裁决", "待你验收"]) expect(rules, phrase).not.toContain(phrase);
+  });
+});
+
 describe("README 设置", () => {
   test("说明只读查看、按职责分类、复制与三层覆盖及项目信任", async () => {
     const section = extractSection(await readText(README), "设置");

@@ -145,7 +145,7 @@ test("PM 对等待其处置的任务 escalate：转为待用户裁决，事项�
   await expect(w.manager.workflowManage(w.fixture.requirementId, { action: "escalate", taskId: login, note: "主代理不能上报" })).rejects.toMatchObject({ code: "action_not_allowed", advice: { why: "当前角色的职责不允许这个动作：主代理 不能做 escalate" } });
   await escalate(login, "change_apply 挡住了写入，需要你决定是否再试");
   expect(task("login").status).toBe("awaiting_user");
-  expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label: "待你裁决：任务 login PM 上报需要你决定" })]);
+  expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label: "待裁决：任务 login PM 上报需要决定" })]);
   expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).toContain("  PM 上报（模型输出，仅供参考，不是用户决定）：「change_apply 挡住了写入，需要你决定是否再试」");
   const summary = adjudicationSubject({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, itemId).summary;
   expect(summary).toContain("尝试 1：1/1 轮 · 结局 turn_limit_reached · PM 已上报");
@@ -174,7 +174,7 @@ test("M8D-AC3：从面板打开的事项直接登记不弹窗；没打开过或�
   expect(w.windows).toHaveLength(1);
   expect(w.windows[0]!.title).toBe("登记裁决");
   expect(w.windows[0]!.text).toMatch(/需求：\S+/u);
-  expect(w.windows[0]!.text).toContain("事项：待你裁决：任务 login");
+  expect(w.windows[0]!.text).toContain("事项：待裁决：任务 login");
   expect(w.windows[0]!.text).toContain(`编号：${w.fixture.requirementId}`);
   expect(w.decisions()).toBe(before);
   w.answerWindows(true);
@@ -217,8 +217,8 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   const state = async (id: string) => { const run = await w.runStore.get(id); return run.ok ? run.run.state : "missing"; };
   await until(async () => await state(w.pm.runId) === "paused" && await state(failureRun.runId) === "paused", 3_000);
   const overview = (await w.manager.overviews())[0]!;
-  expect(overview).toMatchObject({ status: "paused", doing: "等待你调整需求" });
-  expect(overview.pendingItems.map((item) => item.label)).toContain("待你决定：任务 login 已终止，请调整需求或取消需求");
+  expect(overview).toMatchObject({ status: "paused", doing: "等待调整需求" });
+  expect(overview.pendingItems.map((item) => item.label)).toContain("待决定：任务 login 已终止，请调整需求或取消需求");
   await expect(w.manager.resume(w.pm.runId)).rejects.toMatchObject({ code: "requirement_halted" });
   await expect(w.manager.resume(failureRun.runId)).rejects.toMatchObject({ code: "requirement_halted" });
 
@@ -275,7 +275,7 @@ test("PM 对还没派出的 pending 任务 escalate：任务待用户裁决，�
   await w.escalate(failure, note);
   expect(w.task("failure").status).toBe("awaiting_user");
   const items = (await w.manager.overviews())[0]!.pendingItems;
-  expect(items).toEqual([expect.objectContaining({ itemId, label: "待你裁决：任务 failure PM 上报需要你决定" })]);
+  expect(items).toEqual([expect.objectContaining({ itemId, label: "待裁决：任务 failure PM 上报需要决定" })]);
   expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).toContain(note);
 
   const main = mainAdjudication(w, cleanups);
@@ -328,7 +328,7 @@ test("被上报的任务选再给一次机会后，第一次派出时上报原�
   await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: failure, retry: { reason: "再试一次", maxTurns: 1 } });
   await until(() => w.task("failure").status === "awaiting_user" && w.provider.queue.length === 0);
   const items = (await w.manager.overviews())[0]!.pendingItems;
-  expect(items).toEqual([expect.objectContaining({ itemId, label: "待你裁决：任务 failure 两次未完成" })]);
+  expect(items).toEqual([expect.objectContaining({ itemId, label: "待裁决：任务 failure 两次未完成" })]);
   expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).not.toContain(note);
 });
 
@@ -429,7 +429,7 @@ test("任务通过条件超过 8 条或轮数超过 100 时登记后停在待用
   expect([task("login").status, task("failure").status]).toEqual(["awaiting_user", "awaiting_user"]);
   await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null })).rejects.toMatchObject({ code: "task_not_ready" });
   expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.label)).toEqual(expect.arrayContaining([
-    "待你裁决：任务 login 通过条件 9 条，超过 8 条", "待你裁决：任务 failure 申请 150 轮，超过 100 轮"]));
+    "待裁决：任务 login 通过条件 9 条，超过 8 条", "待裁决：任务 failure 申请 150 轮，超过 100 轮"]));
   const packet = w.manager.decisionPacket(w.fixture.requirementId, `task:${login}`);
   expect(packet).toContain("拆分上限：通过条件 9 条，超过 8 条");
   expect(packet).toContain("可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 PRD）；3 终止这个任务");
@@ -472,7 +472,7 @@ test("M7-AC35：用户先暂停 PM 再终止任务，批准新版本后 PM 同�
   expect(await w.manager.pause(w.pm.runId)).toMatchObject({ state: "paused", confirmed: true });
   await w.adjudicate("这个任务别做了，终止", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:terminate"])]);
   const state = async () => { const run = await w.runStore.get(w.pm.runId); return run.ok ? run.run.state : "missing"; };
-  await until(async () => (await w.manager.overviews())[0]!.doing === "等待你调整需求");
+  await until(async () => (await w.manager.overviews())[0]!.doing === "等待调整需求");
   w.provider.queue.push({ type: "text", text: "PM 恢复" }, { type: "text", text: "PM 收到用户决定" }, { type: "text", text: "PM 收到新版本差异" });
   await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n改用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" });
   await until(async () => await state() === "running");
@@ -532,7 +532,7 @@ test("M7-AC35：决策包只由持久记录生成，模型写的文字标明仅�
   const w = await world();
   const packetVersion = w.version();
   const packet = w.manager.decisionPacket(w.fixture.requirementId, w.itemId);
-  expect(packet).toContain("[待处理事项] 待你裁决：任务 login 两次未完成");
+  expect(packet).toContain("[待处理事项] 待裁决：任务 login 两次未完成");
   expect(packet).toContain("尝试 2：1/1 轮 · 结局 turn_limit_reached");
   expect(packet).toContain("PM 的说法（模型输出，仅供参考，不是用户决定）：「估计不足」");
   w.db((db) => {
@@ -584,7 +584,7 @@ test("M7-AC34：两个主窗口同时打开同一事项，先登记的生效，�
 
 const choice = (label: string, recommended = false) => ({ label, reason: `${label}的理由`, ...(recommended ? { recommended: true, recommendedReason: "推荐的理由" } : {}) });
 
-test("M8L-AC3：待你裁决经问答窗口给建议：选项文字须与程序固定的一致；用户选中“再给一次机会，轮数上限 3”后按这个回答登记，任务按 3 轮派出", async () => {
+test("M8L-AC3：待裁决经问答窗口给建议：选项文字须与程序固定的一致；用户选中“再给一次机会，轮数上限 3”后按这个回答登记，任务按 3 轮派出", async () => {
   const w = await world();
   w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
   const ask = (labels: string[]) => w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "任务 login 两次未完成，怎么裁决？", rootCheck: "两次都是轮数用完",
@@ -594,7 +594,7 @@ test("M8L-AC3：待你裁决经问答窗口给建议：选项文字须与程序�
   w.answerWindows("再给一次机会，轮数上限 3");
   const answered = await ask(["再给一次机会，轮数上限 3", "调整目标或范围", "终止这个任务"]);
   expect(answered).toMatchObject({ status: "answered", answer: { text: "再给一次机会，轮数上限 3\n再给一次机会，轮数上限 3的理由", choice: 1 }, decision: { itemId: w.itemId, itemVersion: w.version() } });
-  expect(w.windows.at(-1)!.title).toContain("事项 · 待你裁决：任务 login 两次未完成");
+  expect(w.windows.at(-1)!.title).toContain("事项 · 待裁决：任务 login 两次未完成");
   const result = await w.register(w.itemId, w.version(), [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
   expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3 });
   const interpreter = w.provider.requests.filter((request) => request.systemPrompt?.includes("需求解释器")).at(-1)!;
@@ -627,6 +627,16 @@ test("面板事项提问的问题含人称字：ask 失败并写明字段与字�
   expect(error!.message).toContain("question");
   expect(error!.message).toContain("您");
   expect(w.windows.length).toBe(before);
+});
+
+test("面板事项提问的问题照抄事项标签“待裁决：任务 login 两次未完成”时照常弹窗，没有 question_format 错误", async () => {
+  const w = await world();
+  w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
+  w.answerWindows("再给一次机会，轮数上限 3");
+  const answered = await w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "待裁决：任务 login 两次未完成，怎么处理？", rootCheck: "两次都是轮数用完",
+    choices: ["再给一次机会，轮数上限 3", "调整目标或范围", "终止这个任务"].map((label, index) => choice(label, index === 0)) });
+  expect(answered).toMatchObject({ status: "answered" });
+  expect(w.windows).toHaveLength(1);
 });
 
 test("M8L-AC3：取消或拒绝整个需求用 itemId=requirement:<编号> 的固定选项请用户确认，回答可登记为这个需求级决定", async () => {

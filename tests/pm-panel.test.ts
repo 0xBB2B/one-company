@@ -12,7 +12,7 @@ function overview(patch: Partial<PmOverview>): PmOverview {
   return { requirementId: "01900000-0000-7000-8000-000000000001", pmRunId: "01900000-0000-7000-8000-00000000000a", goals: ["角色跳跃", "跳跃动画"],
     status: "running", doing: "派 worker 执行 login（第 2 次尝试）", turns: 5, toolUses: 5, tokens: 33_800, cacheRate: 0.62, elapsedMs: 12_300, pendingItems: [], ...patch };
 }
-const jump = overview({ pendingItems: [{ itemId: "task:t1", kind: "adjudicate", label: "待你裁决：任务 login 两次未完成", version: "task:t1:3" }] });
+const jump = overview({ pendingItems: [{ itemId: "task:t1", kind: "adjudicate", label: "待裁决：任务 login 两次未完成", version: "task:t1:3" }] });
 const run = overview({ requirementId: "01900000-0000-7000-8000-000000000002", pmRunId: "01900000-0000-7000-8000-00000000000b", goals: ["角色快跑"],
   doing: "规划中（计划 v2 · 3 个任务）", turns: 42, toolUses: 38, tokens: 91_000, cacheRate: 0.84, elapsedMs: 137_000 });
 
@@ -30,7 +30,7 @@ test("M7-AC33：面板按树形显示运行中的 PM、在做什么与待处理�
     "● 2 个需求运行中",
     "├─ ⠋ 角色跳跃、跳跃动画 · ↻5 · 5 tool uses · 33.8k token (62%) · 12.3s",
     "│    └ 派 worker 执行 login（第 2 次尝试）",
-    "│      └ ⚑ 待你裁决：任务 login 两次未完成",
+    "│      └ ⚑ 待裁决：任务 login 两次未完成",
     "└─ ⠋ 角色快跑 · ↻42 · 38 tool uses · 91.0k token (84%) · 2m17s",
     "     └ 规划中（计划 v2 · 3 个任务）",
   ]);
@@ -39,7 +39,7 @@ test("M7-AC33：面板按树形显示运行中的 PM、在做什么与待处理�
 test("M7-AC33：等待决定或已暂停显示 ⏸ 且不累加本地计时，运行中按拉取后经过的时间累加；窄屏截断", () => {
   const openItem = vi.fn(), togglePause = vi.fn();
   const instance = new PmPanel({ now: () => 6_000, openItem, togglePause });
-  instance.update([{ repoId: "r", overview: overview({ status: "waiting", doing: "等待你的决定" }), fetchedAt: 1_000 },
+  instance.update([{ repoId: "r", overview: overview({ status: "waiting", doing: "等待决定" }), fetchedAt: 1_000 },
     { repoId: "r", overview: run, fetchedAt: 1_000 }]);
   const lines = instance.render(200);
   expect(lines[1]).toContain("⏸ 角色跳跃");
