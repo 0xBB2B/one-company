@@ -454,47 +454,26 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
     const family = ensurePrivateChild(backups, "requirement-backups");
     const operationDirectory = join(family, options.operationId);
     const operationPath = join(operationDirectory, OPERATION_FILE);
-    let log: BackupOperationLog;
-    if (pathExists(operationDirectory)) {
-      privateDirectory(operationDirectory, "operation_directory_invalid");
-      if (!pathExists(operationPath)) fail("operation_conflict");
-      log = parseOperation(operationPath);
-      if (log.operationId !== options.operationId || log.repoId !== options.repoId || !sameIdentity(repo.identity, { dev: log.repoDevice, ino: log.repoInode })) fail("operation_conflict");
-      if (log.phase === "completed") {
-        inspectState(dataPath, options.repoId);
-        return validateCompleted(log, operationDirectory);
-      }
-    } else {
-      mkdirSync(operationDirectory, { mode: 0o700 }); syncDirectory(family);
-      const registration = { operationId: options.operationId, repoId: options.repoId, repoDevice: repo.identity.dev, repoInode: repo.identity.ino };
-      log = { format: OPERATION_FORMAT, ...registration, registrationHash: registrationHash(registration), phase: "prepared" };
-      writeNewPrivate(operationPath, JSON.stringify(sealOperationLog(log))); syncDirectory(operationDirectory);
-      log = parseOperation(operationPath);
-    }
+    mkdirSync(operationDirectory, { mode: 0o700 }); syncDirectory(family);
+    const registration = { operationId: options.operationId, repoId: options.repoId, repoDevice: repo.identity.dev, repoInode: repo.identity.ino };
+    let log: BackupOperationLog = { format: OPERATION_FORMAT, ...registration, registrationHash: registrationHash(registration), phase: "prepared" };
+    writeNewPrivate(operationPath, JSON.stringify(sealOperationLog(log))); syncDirectory(operationDirectory);
+    log = parseOperation(operationPath);
     const state = inspectState(dataPath, options.repoId);
     await verifyReferences(options, repo.dataRoot, state.requirements, state.identities);
     const sourceFiles = sourceFilePlans(repo.path, state.requirements);
     const sourceFingerprint = sha256(JSON.stringify({ state: state.fingerprint, files: plansFingerprint(sourceFiles) }));
-    if (log.sourceFingerprint !== undefined && log.sourceFingerprint !== sourceFingerprint) fail("source_changed");
-    if (log.phase === "prepared") log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "inspected", sourceFingerprint });
+    log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "inspected", sourceFingerprint });
 
-    let snapshotPath: string;
-    if (log.snapshotRelativePath) {
-      snapshotPath = join(repo.path, ...log.snapshotRelativePath.split("/"));
-      if (!contained(backups, realpathSync(snapshotPath)) || basename(snapshotPath) !== "data.db") fail("snapshot_path_invalid");
-      const snapshot = fingerprintPrivateFile(snapshotPath);
-      if (snapshot.hash !== log.snapshotHash) fail("snapshot_changed");
-    } else {
-      const snapshot = createDatabaseSnapshot(permit, "data");
-      snapshotPath = snapshot.snapshotPath;
-      const relativePath = relative(repo.path, snapshotPath).split(sep).join("/");
-      if (!contained(backups, realpathSync(snapshotPath)) || !HASH.test(snapshot.snapshotHash)) fail("snapshot_path_invalid");
-      log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "snapshotted", snapshotRelativePath: relativePath, snapshotHash: snapshot.snapshotHash });
-    }
+    const snapshot = createDatabaseSnapshot(permit, "data");
+    const snapshotPath = snapshot.snapshotPath;
+    const relativePath = relative(repo.path, snapshotPath).split(sep).join("/");
+    if (!contained(backups, realpathSync(snapshotPath)) || !HASH.test(snapshot.snapshotHash)) fail("snapshot_path_invalid");
+    log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "snapshotted", snapshotRelativePath: relativePath, snapshotHash: snapshot.snapshotHash });
     inspectState(snapshotPath, options.repoId);
 
-    const payloadTemporary = pathExists(join(operationDirectory, "payload")) ? join(operationDirectory, "payload") : ensurePrivateChild(operationDirectory, "payload.tmp");
-    if (log.phase === "inspected" || log.phase === "snapshotted") log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "copying" });
+    const payloadTemporary = ensurePrivateChild(operationDirectory, "payload.tmp");
+    log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "copying" });
     const snapshotPlan = scanFile(snapshotPath, "data.db");
     if (snapshotPlan.hash !== log.snapshotHash) fail("snapshot_changed");
     const allPlans = [snapshotPlan, ...sourceFiles];
@@ -506,8 +485,8 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
     const afterFingerprint = sha256(JSON.stringify({ state: afterState.fingerprint, files: plansFingerprint(afterFiles) }));
     if (afterFingerprint !== sourceFingerprint) fail("source_changed");
     await verifyReferences(options, repo.dataRoot, afterState.requirements, afterState.identities);
-    if (basename(payloadTemporary) === "payload.tmp") { renameSync(payloadTemporary, join(operationDirectory, "payload")); syncDirectory(operationDirectory); }
-    if (log.phase !== "copied") log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "copied" });
+    renameSync(payloadTemporary, join(operationDirectory, "payload")); syncDirectory(operationDirectory);
+    log = saveOperation(operationPath, operationDirectory, log, { ...log, phase: "copied" });
 
     const database = files.find((file) => file.relativePath === "data.db");
     if (!database) fail("snapshot_missing");
@@ -515,9 +494,7 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
     const manifestPath = join(operationDirectory, MANIFEST_FILE);
     const manifestBytes = Buffer.from(JSON.stringify(manifest));
     const manifestHash = sha256(manifestBytes);
-    if (pathExists(manifestPath)) {
-      if (!readPrivateBytes(manifestPath, "manifest_invalid").equals(manifestBytes)) fail("manifest_conflict");
-    } else { writeNewPrivate(manifestPath, manifestBytes); syncDirectory(operationDirectory); }
+    writeNewPrivate(manifestPath, manifestBytes); syncDirectory(operationDirectory);
     const finalState = inspectState(dataPath, options.repoId);
     const finalFiles = sourceFilePlans(repo.path, finalState.requirements);
     const finalFingerprint = sha256(JSON.stringify({ state: finalState.fingerprint, files: plansFingerprint(finalFiles) }));

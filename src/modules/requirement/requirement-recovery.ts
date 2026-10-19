@@ -380,12 +380,6 @@ function checkedRecoveryStatuses(value: unknown): RecoveryRequirementStatus[] {
     return { requirementId: item.requirementId!, sourceLifecycle: item.sourceLifecycle!, retainedLifecycle: item.retainedLifecycle!, closeReason: item.closeReason!, archivePath: item.archivePath!, recoveryReason: item.recoveryReason!, executable: false };
   });
 }
-function completedReceipt(options: RequirementRestoreOptions, repoDirectory: string, log: RestoreLog, manifest: RequirementBackupManifest): RequirementRestoreReceipt {
-  const expectedRecoveredPath = join(repoDirectory, "backups", "recovery", options.operationId, "data.db");
-  if (log.phase !== "completed" || log.recoveredDatabasePath !== expectedRecoveredPath) fail("restore_not_completed");
-  const requirements = checkedRecoveryStatuses(log.requirements);
-  return { operationId: options.operationId, backupOperationId: options.backupOperationId, repoId: options.repoId, state: "reconciled", restoreStatus: "needs_review", executable: false, isolationDirectory: repoDirectory, recoveredDatabasePath: log.recoveredDatabasePath, backupManifestHash: options.backupManifestHash, filesRestored: manifest.files.length, requirements };
-}
 
 /**
  * 把完整备份复制到独立私有目录，并调用备份快照分级对账。恢复结果始终needs_review，
@@ -402,33 +396,13 @@ export async function restoreRequirementBackup(options: RequirementRestoreOption
     const restoreRoot = ensurePrivateChild(backups, "requirement-restores");
     const operationDirectory = join(restoreRoot, options.operationId);
     const logPath = join(operationDirectory, RESTORE_FILE);
-    let log: RestoreLog;
-    if (pathExists(operationDirectory)) {
-      privateDirectory(operationDirectory, "restore_operation_invalid");
-      if (!pathExists(logPath)) fail("restore_operation_conflict");
-      log = parseRestoreLog(logPath);
-      if (log.operationId !== options.operationId || log.backupOperationId !== options.backupOperationId || log.repoId !== options.repoId || log.backupManifestHash !== options.backupManifestHash || log.repoDevice !== destination.identity.dev || log.repoInode !== destination.identity.ino) fail("restore_operation_conflict");
-      if (log.phase === "completed") {
-        assertPayload(backup.payload, backup.manifest.files);
-        assertRestoredPayload(destination.path, backup.manifest);
-        await verifyRestoredRepositories(options, destination.dataRoot, backup.manifest.requirements);
-        const receipt = completedReceipt(options, destination.path, log, backup.manifest);
-        if (!receipt.recoveredDatabasePath) fail("recovered_database_missing");
-        if (databaseFilesFingerprint(receipt.recoveredDatabasePath) !== log.recoveredDatabaseHash) fail("recovered_database_changed");
-        verifyRecoveredState(receipt.recoveredDatabasePath, backup.manifest, receipt.requirements, join(destination.path, "data.db"));
-        assertRestoredPayload(destination.path, backup.manifest);
-        if (databaseFilesFingerprint(receipt.recoveredDatabasePath) !== log.recoveredDatabaseHash) fail("recovered_database_changed");
-        return receipt;
-      }
-    } else {
-      mkdirSync(operationDirectory, { mode: 0o700 }); syncDirectory(restoreRoot);
-      const registration = { operationId: options.operationId, backupOperationId: options.backupOperationId, repoId: options.repoId, backupManifestHash: options.backupManifestHash, repoDevice: destination.identity.dev, repoInode: destination.identity.ino };
-      log = { format: RESTORE_FORMAT, ...registration, registrationHash: registrationHash(registration), phase: "prepared" };
-      writeNewPrivate(logPath, JSON.stringify(sealOperationLog(log))); syncDirectory(operationDirectory);
-      log = parseRestoreLog(logPath);
-    }
+    mkdirSync(operationDirectory, { mode: 0o700 }); syncDirectory(restoreRoot);
+    const registration = { operationId: options.operationId, backupOperationId: options.backupOperationId, repoId: options.repoId, backupManifestHash: options.backupManifestHash, repoDevice: destination.identity.dev, repoInode: destination.identity.ino };
+    let log: RestoreLog = { format: RESTORE_FORMAT, ...registration, registrationHash: registrationHash(registration), phase: "prepared" };
+    writeNewPrivate(logPath, JSON.stringify(sealOperationLog(log))); syncDirectory(operationDirectory);
+    log = parseRestoreLog(logPath);
     const sources = assertPayload(backup.payload, backup.manifest.files);
-    if (log.phase === "prepared") log = saveRestoreLog(logPath, operationDirectory, log, { ...log, phase: "copying" });
+    log = saveRestoreLog(logPath, operationDirectory, log, { ...log, phase: "copying" });
     const sourceFamily = ensurePrivateChild(backups, "requirement-restore-sources");
     const sourceDirectory = ensurePrivateChild(sourceFamily, options.backupOperationId);
     let restored = 0;
@@ -445,7 +419,7 @@ export async function restoreRequirementBackup(options: RequirementRestoreOption
     if (pathExists(snapshotMarkerPath)) {
       if (readPrivateBytes(snapshotMarkerPath, "snapshot_marker_invalid").toString("utf8") !== snapshotMarker) fail("snapshot_marker_conflict");
     } else { writeNewPrivate(snapshotMarkerPath, snapshotMarker); syncDirectory(sourceDirectory); }
-    if (log.phase === "copying") log = saveRestoreLog(logPath, operationDirectory, log, { ...log, phase: "copied" });
+    log = saveRestoreLog(logPath, operationDirectory, log, { ...log, phase: "copied" });
 
     const recovery = reconcileDatabaseRecovery(permit, {
       operationId: options.operationId,

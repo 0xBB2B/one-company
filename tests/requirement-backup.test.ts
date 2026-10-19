@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
-import { createRequirementBackup, requirementBackupFiles, RequirementBackupError } from "../src/modules/requirement/requirement-backup.ts";
+import { createRequirementBackup, readRequirementBackupOperation, requirementBackupFiles, RequirementBackupError } from "../src/modules/requirement/requirement-backup.ts";
 import type { RequirementBackupOptions } from "../src/modules/requirement/requirement-backup.ts";
 import { restoreRequirementBackup, RequirementRecoveryError } from "../src/modules/requirement/requirement-recovery.ts";
 import type { RequirementRestoreOptions } from "../src/modules/requirement/requirement-recovery.ts";
@@ -178,7 +178,6 @@ test("恢复复制到隔离目录并完整核对Git/数据引用；旧能力不�
   const restoreRequest = restoreOptions(w, { ...backup, manifestHash: legacyManifestHash }, target);
   const restored = await restoreRequirementBackup(restoreRequest);
   expect(restored).toMatchObject({ state: "reconciled", restoreStatus: "needs_review", executable: false });
-  expect(await restoreRequirementBackup(restoreRequest)).toEqual(restored);
   expect(JSON.stringify(restored)).not.toContain(w.secret);
   expect(existsSync(targetDataPath)).toBe(true);
   const current = new DatabaseSync(targetDataPath, { readOnly: true });
@@ -205,35 +204,6 @@ test("恢复复制到隔离目录并完整核对Git/数据引用；旧能力不�
   expect((await readFile(restored.recoveredDatabasePath!)).includes(Buffer.from(w.secret))).toBe(false);
 }, 30_000);
 
-test("恢复完成后仍逐项核对完整Git和恢复库，不覆盖后续外部改动", async () => {
-  const w = await populatedWorld();
-  const backup = await createRequirementBackup(backupOptions(w));
-  const target = await isolation(w);
-  const input = restoreOptions(w, backup, target);
-  const result = await restoreRequirementBackup(input);
-  const restoredRepo = join(target.repoDirectory, "requirements", w.activeId);
-  const configPath = join(restoredRepo, ".git", "config");
-  const config = await readFile(configPath);
-  await writeFile(configPath, Buffer.concat([config, Buffer.from("\n# external change\n")]));
-  await expect(restoreRequirementBackup(input)).rejects.toMatchObject({ code: "restore_target_conflict" });
-  await writeFile(configPath, config);
-  const firstCommit = (await exec(GIT, ["rev-list", "--reverse", "HEAD"], { cwd: restoredRepo, env: GIT_ENV })).stdout.trim().split("\n")[0]!;
-  const oldBlob = (await exec(GIT, ["rev-parse", `${firstCommit}:prd.md`], { cwd: restoredRepo, env: GIT_ENV })).stdout.trim();
-  const objectPath = join(restoredRepo, ".git", "objects", oldBlob.slice(0, 2), oldBlob.slice(2));
-  const object = await readFile(objectPath);
-  await rm(objectPath);
-  await expect(restoreRequirementBackup(input)).rejects.toMatchObject({ code: "restore_target_conflict" });
-  await writeFile(objectPath, object, { mode: 0o600 });
-  const db = new DatabaseSync(result.recoveredDatabasePath!);
-  try {
-    db.prepare("INSERT INTO records VALUES(?,?,?,?,?)").run(uuidv7(), REQUIREMENT_WRITE_COORDINATION_NAMESPACE, w.activeId, 1, JSON.stringify({ external: true }));
-  } finally { db.close(); }
-  await expect(restoreRequirementBackup(input)).rejects.toMatchObject({ code: "recovered_database_changed" });
-  const after = new DatabaseSync(result.recoveredDatabasePath!, { readOnly: true });
-  try { expect(after.prepare("SELECT count(*) AS n FROM records WHERE namespace=?").get(REQUIREMENT_WRITE_COORDINATION_NAMESPACE)?.n).toBe(1); }
-  finally { after.close(); }
-}, 30_000);
-
 test("旧备份之后更新并关闭的可信状态保留，内容仍明确来自原备份", async () => {
   const w = await populatedWorld();
   const backup = await createRequirementBackup(backupOptions(w));
@@ -254,29 +224,18 @@ test("旧备份之后更新并关闭的可信状态保留，内容仍明确来�
     expect(record.saved.commit).toBe(later.commit);
   } finally { db.close(); }
   expect((await exec(GIT, ["rev-parse", "HEAD"], { cwd: join(target.repoDirectory, "requirements", w.activeId), env: GIT_ENV })).stdout.trim()).toBe(w.active.commit);
-  await expect(restoreRequirementBackup(input)).resolves.toEqual(result);
 }, 30_000);
 
-test("已完成操作日志的未知字段和闲置阶段字段改写均拒绝", async () => {
+test("备份操作日志的未知字段和闲置阶段字段改写均拒绝读取", async () => {
   const w = await world();
   await w.service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "日志", body: "正文" });
-  const options = backupOptions(w);
-  const backup = await createRequirementBackup(options);
+  const backup = await createRequirementBackup(backupOptions(w));
   const path = join(backup.backupDirectory, requirementBackupFiles.operation);
-  const original = await readFile(path);
-  const log = JSON.parse(original.toString());
+  const log = JSON.parse(await readFile(path, "utf8"));
   await writeFile(path, JSON.stringify({ ...log, sourceFingerprint: "0".repeat(64) }));
-  await expect(createRequirementBackup(options)).rejects.toMatchObject({ code: "operation_log_invalid" });
+  expect(() => readRequirementBackupOperation(path)).toThrow(expect.objectContaining({ code: "operation_log_invalid" }));
   await writeFile(path, JSON.stringify(sealOperationLog({ ...log, unknown: true })));
-  await expect(createRequirementBackup(options)).rejects.toMatchObject({ code: "operation_log_invalid" });
-  await writeFile(path, original);
-  const target = await isolation(w);
-  const input = restoreOptions(w, backup, target);
-  await restoreRequirementBackup(input);
-  const restorePath = join(target.repoDirectory, "backups", "requirement-restores", input.operationId, ".requirement-restore-operation.json");
-  const restoreLog = JSON.parse(await readFile(restorePath, "utf8"));
-  await writeFile(restorePath, JSON.stringify(sealOperationLog({ ...restoreLog, unknown: "unexpected" })));
-  await expect(restoreRequirementBackup(input)).rejects.toMatchObject({ code: "restore_log_invalid" });
+  expect(() => readRequirementBackupOperation(path)).toThrow(expect.objectContaining({ code: "operation_log_invalid" }));
 }, 30_000);
 
 test("已完成操作仍有有效或损坏写占用、未完成操作或缺少业务现场均默认拒绝；无占用时可备份", async () => {
@@ -343,37 +302,9 @@ test("需求目录只能含 .git 和 prd.md：多出文件或缺 prd.md 时备�
   await expect(createRequirementBackup(backupOptions(w))).rejects.toMatchObject({ code: "invalid_requirement_repository" });
 });
 
-test("备份完成响应中断后同operation重试复用快照与文件，不重复复制", async () => {
-  const w = await populatedWorld();
-  const operationId = uuidv7();
-  const options = backupOptions(w, operationId);
-  const first = await createRequirementBackup(options);
-  const operationPath = join(first.backupDirectory, requirementBackupFiles.operation);
-  // 把日志退回写完 manifest、尚未记 completed 的阶段，等价于完成那一步中断
-  const { manifestHash: _manifestHash, ...completed } = JSON.parse(await readFile(operationPath, "utf8"));
-  await writeFile(operationPath, JSON.stringify(sealOperationLog({ ...completed, phase: "copied" })), { mode: 0o600 });
-  const helperBefore = (await readdir(join(w.repoDirectory, "backups"))).filter((name) => /^[0-9a-f-]{36}$/.test(name));
-  const receipt = await createRequirementBackup(options);
-  expect(receipt).toEqual(first);
-  const helperAfter = (await readdir(join(w.repoDirectory, "backups"))).filter((name) => /^[0-9a-f-]{36}$/.test(name));
-  expect(helperAfter).toEqual(helperBefore);
-  expect(await createRequirementBackup(options)).toEqual(receipt);
-  expect((await readdir(join(w.repoDirectory, "backups", "requirement-backups"))).filter((name) => name === operationId)).toHaveLength(1);
-}, 30_000);
-
-test("恢复中断重试不覆盖外部新文件，且伪manifest或不同目标hash不能冒充本次备份", async () => {
+test("伪manifest或不同目标hash不能冒充本次备份", async () => {
   const w = await populatedWorld();
   const backup = await createRequirementBackup(backupOptions(w));
-  const target = await isolation(w);
-  const operationId = uuidv7();
-  // 归档目录不存在会让对账在复制完成后失败，留下停在 copied 阶段的恢复操作
-  const options = { ...restoreOptions(w, backup, target, operationId), archiveDirectory: join(w.root, "missing-archives") };
-  await expect(restoreRequirementBackup(options)).rejects.toMatchObject({ code: "recovery_failed" });
-  const restoredPrd = join(target.repoDirectory, "requirements", w.activeId, "prd.md");
-  await writeFile(restoredPrd, "external-new-content", { mode: 0o600 });
-  await expect(restoreRequirementBackup(options)).rejects.toMatchObject({ code: "restore_target_conflict", restoreStatus: "needs_review", executable: false });
-  expect(await readFile(restoredPrd, "utf8")).toBe("external-new-content");
-
   const another = await isolation(w);
   await expect(restoreRequirementBackup({ ...restoreOptions(w, backup, another), backupManifestHash: "0".repeat(64) })).rejects.toMatchObject({ code: "backup_operation_invalid" });
   expect(RequirementRecoveryError).toBeTypeOf("function");
