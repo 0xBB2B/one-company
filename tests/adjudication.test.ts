@@ -533,6 +533,8 @@ test("M7-AC35：决策包只由持久记录生成，模型写的文字标明仅�
   const packetVersion = w.version();
   const packet = w.manager.decisionPacket(w.fixture.requirementId, w.itemId);
   expect(packet).toContain("[待处理事项] 待裁决：任务 login 两次未完成");
+  expect(packet).toContain("（N 填建议的轮数上限，1 到 1000）");
+  expect(packet).not.toContain("N 填你建议");
   expect(packet).toContain("尝试 2：1/1 轮 · 结局 turn_limit_reached");
   expect(packet).toContain("PM 的说法（模型输出，仅供参考，不是用户决定）：「估计不足」");
   w.db((db) => {
