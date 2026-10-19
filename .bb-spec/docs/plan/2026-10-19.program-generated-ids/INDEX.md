@@ -8,3 +8,6 @@
 
 ## 阶段 2：主代理交互工具
 - [02-interaction-tools](02-interaction-tools.md) — 需求管理与提问工具由程序生成编号，删除按编号缓存结果的逻辑 [依赖: 01-requirement-resume]
+
+## 阶段 3：批准一次写完（执行时新增，用户 2026-10-19 决定）
+- [06-approval-atomic](06-approval-atomic.md) — 批准先做只读检查再在一个事务里写完，不建操作记录、不接受 operationId，data.db 升到 4 [依赖: 02-interaction-tools]
