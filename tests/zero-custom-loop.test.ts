@@ -121,10 +121,10 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   // PM 提交完成报告后不关闭需求，报告作为待验收事项出现在面板，决策包由程序事实与标明参考的 PM 说明组成
   await until(() => reports().length === 1, 3_000);
   expect(w.fixture.state.read(requirementId).data.lifecycle).toBe("active");
-  await until(async () => (await w.manager.overviews())[0]?.doing === "等待你验收完成报告", 3_000);
+  await until(async () => (await w.manager.overviews())[0]?.doing === "等待验收完成报告", 3_000);
   const [overview] = await w.manager.overviews();
   const item = overview!.pendingItems.find((entry) => entry.kind === "acceptance")!;
-  expect(item).toMatchObject({ itemId: `report:${reports()[0]!.reportId}`, label: "待你验收：PM 完成报告" });
+  expect(item).toMatchObject({ itemId: `report:${reports()[0]!.reportId}`, label: "待验收：PM 完成报告" });
   const packet = w.manager.decisionPacket(requirementId, item.itemId);
   for (const line of ["以下事实由程序从持久记录生成", "worker 任务 impl：completed · 任务级审查 clear", "QA 结论：clear", "非阻塞建议 2 条", "需求分支本地提交 0 个",
     "PM 的说明（模型输出，仅供参考，不是用户决定）：「交付手机号验证码登录（acceptance）」", `purpose=adjudicate itemId=${item.itemId} itemVersion=${item.version}`]) expect(packet).toContain(line);

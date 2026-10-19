@@ -276,7 +276,7 @@ test("M8L-AC1：计划第 1 次被拒后 PM 停下时程序自动唤醒它一次
   expect(read((db) => planRejectionsIn(db, w.requirementId))).toBeNull();
 }, 30000);
 
-test("M8L-AC1：计划已被拒 2 次时 PM 停下不再自动唤醒，也不出停下提醒，由“待你裁决”事项交用户", async () => {
+test("M8L-AC1：计划已被拒 2 次时 PM 停下不再自动唤醒，也不出停下提醒，由“待裁决”事项交用户", async () => {
   const w = await world();
   const ref = { dataRoot: w.dataRoot, repoId: w.repoId };
   scriptReplies(w.provider, [{ type: "text", text: "两次都被拒，等用户决定。", chunkDelayMs: 400 }]);

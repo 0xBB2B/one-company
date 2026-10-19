@@ -90,21 +90,21 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
   const items: PendingItem[] = [];
   for (const task of tasks) {
     if (!terminationPending([task], input.record.revision)) continue;
-    items.push({ itemId: `halt:${task.taskId}`, kind: "adjust-requirement", label: `待你决定：任务 ${task.key} 已终止，请调整需求或取消需求`,
+    items.push({ itemId: `halt:${task.taskId}`, kind: "adjust-requirement", label: `待决定：任务 ${task.key} 已终止，请调整需求或取消需求`,
       version: `halt:${task.taskId}:${input.record.revision}` });
   }
   for (const task of tasks) {
     if (task.status !== "awaiting_user") continue;
     const row = input.db.read<TaskRecord>("tasks", task.taskId)!;
     const cause = task.sizeHold && unsentTask(task) ? task.sizeHold.join("；")
-      : task.attempts.at(-1)?.escalation !== undefined || task.holdNote !== undefined && unsentTask(task) ? "PM 上报需要你决定"
+      : task.attempts.at(-1)?.escalation !== undefined || task.holdNote !== undefined && unsentTask(task) ? "PM 上报需要决定"
       : ({ execute: "两次未完成", review: "两次审查未完成", rework: "两次未通过审查" } as const)[stalledStage(task)];
-    items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label: `待你裁决：任务 ${task.key} ${cause}`, version: `task:${task.taskId}:${row.version}` });
+    items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label: `待裁决：任务 ${task.key} ${cause}`, version: `task:${task.taskId}:${row.version}` });
   }
   if (input.record.approved && !reviewPassedFor(input)) {
     const submission = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: input.lease.runId, baseline: {
       approvedRevision: input.record.revision, approvedPrdHash: input.record.approved.hash, approvalManifestHash: input.record.approvalManifest!.reference.manifestHash } });
-    if (submission) items.push({ itemId: `intake:${input.lease.runId}`, kind: "intake-review", label: `待你核对：PM 接手理解 r${input.record.revision}`,
+    if (submission) items.push({ itemId: `intake:${input.lease.runId}`, kind: "intake-review", label: `待核对：PM 接手理解 r${input.record.revision}`,
       version: `intake:${input.lease.runId}:${submission.toolCallId}` });
   }
   const row = requirementRow(input.db, input.lease.requirementId);
@@ -114,25 +114,25 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
     for (const questionId of task.blockedByQuestionIds) {
       if (asked.has(questionId) || !questionPending(input.db, input.repoId, input.record, row, questionId)) continue;
       asked.add(questionId);
-      items.push({ itemId: `question:${questionId}`, kind: "question", label: `待你回答：任务 ${task.key} 的未决问题`,
+      items.push({ itemId: `question:${questionId}`, kind: "question", label: `待回答：任务 ${task.key} 的未决问题`,
         version: `question:${questionId}:${input.record.approvalManifest!.reference.manifestHash}` });
     }
   }
   const report = input.record.lifecycle === "active" ? pendingReportIn(input.db, input.repoId, input.lease.requirementId) : null;
-  if (report) items.push({ itemId: `report:${report.data.reportId}`, kind: "acceptance", label: "待你验收：PM 完成报告", version: `report:${report.data.reportId}:${report.version}` });
+  if (report) items.push({ itemId: `report:${report.data.reportId}`, kind: "acceptance", label: "待验收：PM 完成报告", version: `report:${report.data.reportId}:${report.version}` });
   const rejected = planRejectionsIn(input.db, input.lease.requirementId);
   if (rejected?.pmRunId === input.lease.runId && rejected.count >= 2) items.push({ itemId: `plan:${input.lease.requirementId}`, kind: "plan-rejected",
-    label: "待你裁决：PM 计划两次提交被拒", version: `plan:${input.lease.requirementId}:${rejected.count}` });
+    label: "待裁决：PM 计划两次提交被拒", version: `plan:${input.lease.requirementId}:${rejected.count}` });
   // 已有别的事项交用户处理时，停下提醒是多余的
   const stall = stallIn(input.db, input.lease.requirementId);
   if (stall?.pmRunId === input.lease.runId && items.length === 0) items.push({ itemId: `stall:${input.lease.runId}`, kind: "stall",
-    label: "待你处理：PM 停下了，没有在跑的子任务", version: `stall:${input.lease.runId}:${stall.at}` });
+    label: "待处理：PM 停下了，没有在跑的子任务", version: `stall:${input.lease.runId}:${stall.at}` });
   return items;
 }
 
 /** 第二行"在做什么"只按真实状态生成，不采用 PM 模型的自述。 */
 function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<typeof readPlanIn>, status: PmOverviewStatus, items: PendingItem[]): string {
-  if (status === "paused") return terminationPending(tasks, input.record.revision) ? "等待你调整需求" : "已暂停";
+  if (status === "paused") return terminationPending(tasks, input.record.revision) ? "等待调整需求" : "已暂停";
   if (status === "pausing") {
     const running = input.children.filter((child) => ACTIVE_CHILD.has(child.state));
     return running.length ? `暂停中：等待 ${running.map((child) => ROLE_LABEL[child.role ?? ""] ?? "子代理").join("、")} 结束` : "暂停中：等待当前工具结束";
@@ -140,10 +140,10 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
   const rejected = planRejectionsIn(input.db, input.lease.requirementId);
   const rejectedCount = rejected?.pmRunId === input.lease.runId ? rejected.count : 0;
   if (rejectedCount > 0 && !input.children.some((child) => ACTIVE_CHILD.has(child.state))) {
-    return `规划中（计划提交被拒 ${rejectedCount} 次，${rejectedCount >= 2 ? "等你决定" : "PM 正在按原因修改"}）`;
+    return `规划中（计划提交被拒 ${rejectedCount} 次，${rejectedCount >= 2 ? "等待决定" : "PM 正在按原因修改"}）`;
   }
   // 停下提醒不改第二行：仍按 PM 停下时的真实进度显示
-  if (status === "waiting" && items.some((item) => item.kind !== "stall")) return items.some((item) => item.kind === "acceptance") ? "等待你验收完成报告" : "等待你的决定";
+  if (status === "waiting" && items.some((item) => item.kind !== "stall")) return items.some((item) => item.kind === "acceptance") ? "等待验收完成报告" : "等待决定";
   if (!reviewPassedFor(input)) return items.some((item) => item.kind === "intake-review") ? "等待核对接手理解" : "接手中";
   if (input.record.pendingRevision !== null) return `复核批准更新 r${input.record.pendingRevision}`;
   if (activeCheckRoundIn(input.db, input.repoId, input.lease.requirementId)) return "检查中";

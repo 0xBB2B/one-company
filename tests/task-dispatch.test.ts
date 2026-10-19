@@ -156,6 +156,7 @@ test("M7-AC4/AC13：只有依赖未决问题的任务被阻塞；批准新版本
   await w.plan.execute({ action: "propose", tasks: [spec("login", { blockedByQuestionIds: [question] }), spec("failure", { goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   await expect(w.dispatch("login")).rejects.toMatchObject({ code: "question_pending" });
+  expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.label)).toContain("待回答：任务 login 的未决问题");
   w.provider.queue.push({ type: "text", text: "做失败场景", chunkDelayMs: 20_000 });
   await w.dispatch("failure");
   w.provider.queue.push({ type: "text", text: "PM 收到差异" });

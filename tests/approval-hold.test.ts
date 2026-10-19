@@ -91,7 +91,7 @@ async function midway(body: string) {
     { taskId: task("login").taskId, version: task("login").version, assessment: login, rationale: "登录" },
     { taskId: task("failure").taskId, version: task("failure").version, assessment: failure, rationale: "失败场景" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
-  const rulings = async () => (await w.manager.overviews())[0]!.pendingItems.filter((item) => item.label.startsWith("待你裁决"));
+  const rulings = async () => (await w.manager.overviews())[0]!.pendingItems.filter((item) => item.label.startsWith("待裁决"));
   return { w, task, state, run, planVersion, assess, rulings };
 }
 
